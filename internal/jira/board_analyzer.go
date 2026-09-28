@@ -464,33 +464,8 @@ func (a *BoardAnalyzer) CheckAndRefreshProfiles(ctx context.Context, autoRefresh
 			continue // config unchanged
 		}
 
-		// Check cooldown.
-		if full.ProfileGeneratedAt != "" {
-			generated, err := time.Parse(time.RFC3339, full.ProfileGeneratedAt)
-			if err == nil && time.Since(generated) < RefreshCooldown {
-				a.logger.Printf("board %d (%s): config changed but cooldown not elapsed (generated %s ago)",
-					board.ID, board.Name, time.Since(generated).Truncate(time.Minute))
-				results = append(results, RefreshResult{
-					BoardID:   board.ID,
-					BoardName: board.Name,
-					Skipped:   true,
-				})
-				continue
-			}
-		}
-
-		// A failed re-analysis never advances ConfigHash/ProfileGeneratedAt
-		// (only a successful AnalyzeBoard does, via UpdateJiraBoardProfile),
-		// so without its own budget a board stuck on a failing analysis
-		// would retry the LLM call every pass forever — RefreshCooldown
-		// never engages. Silent: no log line on a budget-exhausted skip, so
-		// this doesn't spam every pass for the rest of the day.
-		if a.refreshBudgetSpent(board.ID, newHash) {
-			results = append(results, RefreshResult{
-				BoardID:   board.ID,
-				BoardName: board.Name,
-				Skipped:   true,
-			})
+		if a.skipRefresh(board.ID, board.Name, *full, newHash) {
+			results = append(results, RefreshResult{BoardID: board.ID, BoardName: board.Name, Skipped: true})
 			continue
 		}
 
@@ -514,13 +489,7 @@ func (a *BoardAnalyzer) CheckAndRefreshProfiles(ctx context.Context, autoRefresh
 		full.ConfigHash = ""
 		profile, err := a.AnalyzeBoard(ctx, *full)
 		if err != nil {
-			attempts := a.recordFailedRefresh(board.ID, newHash)
-			if attempts >= maxDailyBoardRefreshAttempts {
-				a.logger.Printf("board %d (%s): giving up for today after %d failed refresh attempts, will retry tomorrow: %v",
-					board.ID, board.Name, attempts, err)
-			} else {
-				a.logger.Printf("warning: re-analysis failed for board %d (%s): %v", board.ID, board.Name, err)
-			}
+			a.recordAndLogFailedRefresh(board.ID, board.Name, newHash, err)
 			results = append(results, RefreshResult{
 				BoardID:   board.ID,
 				BoardName: board.Name,
@@ -545,6 +514,43 @@ func (a *BoardAnalyzer) CheckAndRefreshProfiles(ctx context.Context, autoRefresh
 	}
 
 	return results, nil
+}
+
+// skipRefresh reports whether a board whose config changed must still be
+// skipped this pass — either the 24h cooldown since a last SUCCESSFUL
+// analysis (logged: an owner-visible "not yet, still cooling down"), or
+// today's failure-retry budget being spent (silent: recordAndLogFailedRefresh
+// already logged once when the budget was spent, so a skip on every later
+// same-day pass would just repeat that line for no new information).
+func (a *BoardAnalyzer) skipRefresh(boardID int, boardName string, full db.JiraBoard, newHash string) bool {
+	if full.ProfileGeneratedAt != "" {
+		generated, err := time.Parse(time.RFC3339, full.ProfileGeneratedAt)
+		if err == nil && time.Since(generated) < RefreshCooldown {
+			a.logger.Printf("board %d (%s): config changed but cooldown not elapsed (generated %s ago)",
+				boardID, boardName, time.Since(generated).Truncate(time.Minute))
+			return true
+		}
+	}
+	// A failed re-analysis never advances ConfigHash/ProfileGeneratedAt (only
+	// a successful AnalyzeBoard does, via UpdateJiraBoardProfile), so without
+	// its own budget a board stuck on a failing analysis would retry the LLM
+	// call every pass forever — the cooldown above never engages for it.
+	return a.refreshBudgetSpent(boardID, newHash)
+}
+
+// recordAndLogFailedRefresh spends one unit of today's retry budget for a
+// failed AnalyzeBoard call and logs either a per-attempt warning or, on the
+// attempt that spends the last of today's budget, a one-time "giving up for
+// today" line (skipRefresh's later same-day skips stay silent instead of
+// repeating it).
+func (a *BoardAnalyzer) recordAndLogFailedRefresh(boardID int, boardName, hash string, err error) {
+	attempts := a.recordFailedRefresh(boardID, hash)
+	if attempts >= maxDailyBoardRefreshAttempts {
+		a.logger.Printf("board %d (%s): giving up for today after %d failed refresh attempts, will retry tomorrow: %v",
+			boardID, boardName, attempts, err)
+		return
+	}
+	a.logger.Printf("warning: re-analysis failed for board %d (%s): %v", boardID, boardName, err)
 }
 
 // mergeUserOverrides re-applies user override stale thresholds on top of a freshly
