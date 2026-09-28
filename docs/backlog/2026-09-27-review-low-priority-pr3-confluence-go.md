@@ -11,12 +11,18 @@ created: 2026-09-27
 6 low-priority findings from the PR #3 Confluence connector (Go) track, bundled so the backlog
 stays readable. Split any item into its own file when it gets picked up.
 
-## HTML attachments that omit </head> (valid HTML5) index as empty text with status ok
+## HTML attachments that omit </head> (valid HTML5) index as empty text with status ok (fixed in fix/bl-confluence-content)
 
 - type: bug · confidence: high · tags: [extract, html, content-loss]
 - where: internal/extract/plain.go:65-66, 114-124 (skippedElements / tag)
 
 `stripHTML` runs the raw tokenizer, not the tree builder, and counts `skip` depth on start and end tags of `head`/`script`/`style`/`noscript`/`template`. An implied end tag never arrives. Reproduced: `<html><head><title>T</title><body><p>Hello body</p></body></html>` → `""`. With an explicit `</head>` the same document gives "Hello body". The status is `ok`, so the attachment is never retried and only its file name is searchable. Fix direction: drop `head` from the depth-counted set, or close it at `<body>`. Alternatively render with `html.Parse` (the tree builder handles implied tags), as `internal/confluence` already does.
+
+Resolution: `head` is tracked separately from the `skippedElements` depth
+counter via `htmlStripper.inHead`, closed explicitly by `</head>` and
+implicitly by a `<body>` start tag (HTML5 §13.2.6.4.6). Pinned by
+`TestHTMLMissingHeadClose` (`internal/extract/extract_test.go`), asserting
+the explicit- and implicit-close documents render identically.
 
 ## Storage XHTML nested deeper than 512 elements silently indexes as an empty page
 

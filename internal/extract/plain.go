@@ -62,8 +62,10 @@ func htmlText(r io.Reader) ([]extsync.Section, string, error) {
 	return oneSection(stripHTML(text)), StatusOK, nil
 }
 
-// skippedElements carry no document text.
-var skippedElements = map[string]bool{"head": true, "script": true, "style": true, "noscript": true, "template": true}
+// skippedElements carry no document text. "head" is handled separately (see
+// htmlStripper.tag) because HTML5 lets a document omit </head> entirely — a
+// <body> start tag implicitly closes it, and nothing else does.
+var skippedElements = map[string]bool{"script": true, "style": true, "noscript": true, "template": true}
 
 // blockElements end the current line.
 var blockElements = map[string]bool{
@@ -84,7 +86,7 @@ func stripHTML(doc string) string {
 			st.flush()
 			return strings.Join(st.lines, "\n")
 		case html.TextToken:
-			if st.skip == 0 {
+			if st.skip == 0 && !st.inHead {
 				st.cur.Write(z.Text())
 			}
 		case html.StartTagToken, html.SelfClosingTagToken, html.EndTagToken:
@@ -96,10 +98,11 @@ func stripHTML(doc string) string {
 
 // htmlStripper is stripHTML's state.
 type htmlStripper struct {
-	lines []string
-	cur   strings.Builder
-	skip  int // depth inside skipped elements
-	cells int // cells opened in the current table row
+	lines  []string
+	cur    strings.Builder
+	skip   int  // depth inside skippedElements
+	inHead bool // inside <head>, explicitly or implicitly (see tag)
+	cells  int  // cells opened in the current table row
 }
 
 func (st *htmlStripper) flush() {
@@ -113,6 +116,17 @@ func (st *htmlStripper) flush() {
 // line ends at block elements (tr among them).
 func (st *htmlStripper) tag(tt html.Token) {
 	name := tt.Data
+	if name == "head" {
+		st.inHead = tt.Type == html.StartTagToken
+		return
+	}
+	if name == "body" && tt.Type == html.StartTagToken {
+		// HTML5 §13.2.6.4.6: a <body> start tag implicitly closes an
+		// unclosed <head> — real-world HTML omitting </head> entirely
+		// relies on this, and without it every byte after a missing
+		// </head> (i.e. the whole document) reads as skipped head content.
+		st.inHead = false
+	}
 	if skippedElements[name] {
 		if tt.Type == html.StartTagToken {
 			st.skip++

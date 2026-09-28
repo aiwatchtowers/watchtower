@@ -123,6 +123,26 @@ func TestHTML(t *testing.T) {
 	assert.Equal(t, []extsync.Section{{Text: "Release notes\nFirst paragraph with bold text.\none\ntwo\nTail&end"}}, secs)
 }
 
+// TestHTMLMissingHeadClose pins that an HTML5 document omitting </head> (a
+// <body> start tag implicitly closes it — every browser accepts this) still
+// indexes its body text, not an empty page: before the fix, stripHTML's
+// skip-depth counter for "head" was only ever decremented by an explicit
+// </head>, so a missing one left the rest of the document — the whole
+// body — treated as skipped head content.
+func TestHTMLMissingHeadClose(t *testing.T) {
+	x := newExtractor(t, nil)
+	withClose := `<html><head><title>T</title></head><body><p>Hello body</p></body></html>`
+	noClose := `<html><head><title>T</title><body><p>Hello body</p></body></html>`
+	for name, doc := range map[string]string{"explicit </head>": withClose, "implicit (no </head>)": noClose} {
+		t.Run(name, func(t *testing.T) {
+			secs, status, err := x.Extract(context.Background(), "text/html", "t.html", strings.NewReader(doc))
+			require.NoError(t, err)
+			assert.Equal(t, StatusOK, status)
+			assert.Equal(t, []extsync.Section{{Text: "Hello body"}}, secs)
+		})
+	}
+}
+
 func TestHTMLTableCells(t *testing.T) {
 	x := newExtractor(t, nil)
 	doc := `<table><tr><th>Name</th><th>Qty</th></tr><tr><td>apple</td><td>3</td></tr></table><p>after</p>`
