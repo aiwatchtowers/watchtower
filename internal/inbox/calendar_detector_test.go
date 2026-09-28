@@ -143,16 +143,38 @@ func TestCalendarDetector_Cancelled(t *testing.T) {
 	}
 }
 
+// syncCalendarEvent writes an event through the production upsert, exactly
+// as the Google/CalDAV syncers do on each sync pass: synced_at is the pass's
+// own time and updated_at the provider's last-modified stamp, which always
+// precedes the pass that fetched it.
+func syncCalendarEvent(t *testing.T, database *db.DB, id, attendeesJSON string, start, end, updated, syncedAt time.Time) {
+	t.Helper()
+	ensureCalendar(t, database)
+	ev := db.CalendarEvent{
+		ID: id, CalendarID: "cal-1", Title: "Rescheduled meeting",
+		StartTime: start.UTC().Format(time.RFC3339), EndTime: end.UTC().Format(time.RFC3339),
+		Attendees: attendeesJSON, EventStatus: "confirmed", RawJSON: "{}",
+		UpdatedAt: updated.UTC().Format(time.RFC3339),
+	}
+	if err := database.UpsertCalendarEvent(ev, syncedAt.UTC().Format(time.RFC3339)); err != nil {
+		t.Fatalf("syncCalendarEvent: %v", err)
+	}
+}
+
 func TestCalendarDetector_TimeChange(t *testing.T) {
 	d := testDB(t)
-	// Event synced 2h ago but updated 30min ago (time changed).
-	syncedAt := time.Now().Add(-2 * time.Hour)
-	updatedAt := time.Now().Add(-30 * time.Minute)
-	seedCalendarEvent(t, d, "evt-3", "Rescheduled meeting",
-		`[{"email":"me@x.com","response_status":"accepted"}]`,
-		"confirmed", syncedAt, updatedAt)
+	attendees := `[{"email":"me@x.com","response_status":"accepted"}]`
+	start := time.Now().Add(3 * time.Hour)
+	// First sync 2h ago; the organizer then moves the meeting 30 min ago and
+	// the next sync (just now) picks the new time up. synced_at is rewritten
+	// on every pass, so it is always newer than the provider's updated_at.
+	syncCalendarEvent(t, d, "evt-3", attendees, start, start.Add(time.Hour),
+		time.Now().Add(-3*time.Hour), time.Now().Add(-2*time.Hour))
+	moved := start.Add(24 * time.Hour)
+	syncCalendarEvent(t, d, "evt-3", attendees, moved, moved.Add(time.Hour),
+		time.Now().Add(-30*time.Minute), time.Now())
 
-	n, err := DetectCalendar(context.Background(), d, "me@x.com", time.Now().Add(-3*time.Hour))
+	n, err := DetectCalendar(context.Background(), d, "me@x.com", time.Now().Add(-1*time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,6 +184,59 @@ func TestCalendarDetector_TimeChange(t *testing.T) {
 	got := queryInboxByTrigger(t, d, "calendar_time_change")
 	if len(got) != 1 {
 		t.Errorf("want 1 calendar_time_change item, got %d", len(got))
+	}
+
+	// A later edit that leaves the time alone (a new description, say) bumps
+	// updated_at again but is not another reschedule.
+	syncCalendarEvent(t, d, "evt-3", attendees, moved, moved.Add(time.Hour),
+		time.Now().Add(-5*time.Minute), time.Now().Add(time.Second))
+	if _, err := DetectCalendar(context.Background(), d, "me@x.com", time.Now().Add(-1*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if got := queryInboxByTrigger(t, d, "calendar_time_change"); len(got) != 1 {
+		t.Errorf("a non-time edit after a reschedule: want still 1 calendar_time_change item, got %d", len(got))
+	}
+}
+
+// TestCalendarDetector_ResyncWithoutTimeChange is the degenerate branch: an
+// event re-synced with a newer updated_at but the same start/end (a detail
+// edit) is not a reschedule and mints nothing.
+func TestCalendarDetector_ResyncWithoutTimeChange(t *testing.T) {
+	d := testDB(t)
+	attendees := `[{"email":"me@x.com","response_status":"accepted"}]`
+	start := time.Now().Add(3 * time.Hour)
+	syncCalendarEvent(t, d, "evt-4", attendees, start, start.Add(time.Hour),
+		time.Now().Add(-3*time.Hour), time.Now().Add(-2*time.Hour))
+	syncCalendarEvent(t, d, "evt-4", attendees, start, start.Add(time.Hour),
+		time.Now().Add(-30*time.Minute), time.Now())
+
+	n, err := DetectCalendar(context.Background(), d, "me@x.com", time.Now().Add(-1*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("want 0 for a re-sync without a time change, got %d", n)
+	}
+}
+
+// TestCalendarDetector_TimeChangeBeforeWindowIgnored: a reschedule the
+// detector already had its chance at (before sinceTS) does not fire again.
+func TestCalendarDetector_TimeChangeBeforeWindowIgnored(t *testing.T) {
+	d := testDB(t)
+	attendees := `[{"email":"me@x.com","response_status":"accepted"}]`
+	start := time.Now().Add(3 * time.Hour)
+	syncCalendarEvent(t, d, "evt-5", attendees, start, start.Add(time.Hour),
+		time.Now().Add(-5*time.Hour), time.Now().Add(-4*time.Hour))
+	moved := start.Add(time.Hour)
+	syncCalendarEvent(t, d, "evt-5", attendees, moved, moved.Add(time.Hour),
+		time.Now().Add(-3*time.Hour), time.Now().Add(-2*time.Hour))
+
+	n, err := DetectCalendar(context.Background(), d, "me@x.com", time.Now().Add(-1*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("want 0 for a reschedule before the window, got %d", n)
 	}
 }
 

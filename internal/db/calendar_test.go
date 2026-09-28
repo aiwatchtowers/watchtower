@@ -785,3 +785,42 @@ func TestAttendeeMap(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "U999", uid)
 }
+
+// TestUpsertCalendarEvent_TimeChangedAt pins the stamp the inbox's
+// calendar_time_change trigger keys on: empty on first insert and on a re-sync
+// that leaves start/end alone, the re-sync's synced_at when either moves, and
+// kept (not cleared) by a later re-sync with no further move.
+func TestUpsertCalendarEvent_TimeChangedAt(t *testing.T) {
+	db := openTestDB(t)
+	require.NoError(t, db.UpsertCalendar(0, CalendarCalendar{ID: "primary", Name: "Main"}))
+
+	base := time.Now().UTC().Truncate(time.Second)
+	ts := func(d time.Duration) string { return base.Add(d).Format(time.RFC3339) }
+	stamp := func() string {
+		t.Helper()
+		var s string
+		require.NoError(t, db.QueryRow(`SELECT time_changed_at FROM calendar_events WHERE id = 'evt1'`).Scan(&s))
+		return s
+	}
+	ev := CalendarEvent{ID: "evt1", CalendarID: "primary", StartTime: ts(24 * time.Hour), EndTime: ts(25 * time.Hour)}
+
+	require.NoError(t, db.UpsertCalendarEvent(ev, ts(-3*time.Hour)))
+	assert.Empty(t, stamp(), "first insert")
+
+	ev.Description = "agenda added"
+	require.NoError(t, db.UpsertCalendarEvent(ev, ts(-2*time.Hour)))
+	assert.Empty(t, stamp(), "re-sync without a time change")
+
+	ev.EndTime = ts(26 * time.Hour)
+	require.NoError(t, db.UpsertCalendarEvent(ev, ts(-1*time.Hour)))
+	assert.Equal(t, ts(-1*time.Hour), stamp(), "end moved")
+
+	require.NoError(t, db.UpsertCalendarEvent(ev, ts(0)))
+	assert.Equal(t, ts(-1*time.Hour), stamp(), "a later re-sync keeps the last move's stamp")
+
+	// The batch upsert shares the same ON CONFLICT clause.
+	ev.StartTime = ts(48 * time.Hour)
+	require.NoError(t, db.UpsertCalendarEvents([]CalendarEvent{ev}))
+	assert.NotEqual(t, ts(-1*time.Hour), stamp(), "start moved via the batch upsert")
+	assert.NotEmpty(t, stamp())
+}

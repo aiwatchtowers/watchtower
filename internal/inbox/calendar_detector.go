@@ -25,13 +25,15 @@ type calEventRow struct {
 	endTime     string
 	syncedAt    string
 	updatedAt   string
+	timeChanged string // calendar_events.time_changed_at, '' when never rescheduled
 }
 
 // DetectCalendar scans calendar_events for events that involve myEmail and were
 // synced or updated after sinceTS. It creates inbox items for three trigger types:
 //
 //   - calendar_invite: newly synced event where the attendee RSVP status is "needsAction"
-//   - calendar_time_change: event updated after it was first synced (rescheduled)
+//   - calendar_time_change: a sync after sinceTS saw the event's start/end move
+//     (time_changed_at, stamped by the calendar upsert — rescheduled)
 //   - calendar_cancelled: event whose event_status is "cancelled"
 //
 // Each event+trigger pair is deduplicated so repeated calls are idempotent.
@@ -48,10 +50,10 @@ func DetectCalendar(ctx context.Context, database *db.DB, myEmail string, sinceT
 	// with MaxOpenConns(1). The deferred Close is just a safety net for the
 	// scan/rows-error early-return paths.
 	rows, err := database.Query(`
-		SELECT id, title, attendees, event_status, end_time, synced_at, updated_at
+		SELECT id, title, attendees, event_status, end_time, synced_at, updated_at, time_changed_at
 		FROM calendar_events
-		WHERE synced_at > ? OR updated_at > ?`,
-		sinceISO, sinceISO)
+		WHERE synced_at > ? OR updated_at > ? OR time_changed_at > ?`,
+		sinceISO, sinceISO, sinceISO)
 	if err != nil {
 		return 0, fmt.Errorf("calendar_detector: query calendar_events: %w", err)
 	}
@@ -60,7 +62,7 @@ func DetectCalendar(ctx context.Context, database *db.DB, myEmail string, sinceT
 	var events []calEventRow
 	for rows.Next() {
 		var e calEventRow
-		if err := rows.Scan(&e.id, &e.title, &e.attendees, &e.eventStatus, &e.endTime, &e.syncedAt, &e.updatedAt); err != nil {
+		if err := rows.Scan(&e.id, &e.title, &e.attendees, &e.eventStatus, &e.endTime, &e.syncedAt, &e.updatedAt, &e.timeChanged); err != nil {
 			return 0, fmt.Errorf("calendar_detector: scan: %w", err)
 		}
 		events = append(events, e)
@@ -103,16 +105,23 @@ func DetectCalendar(ctx context.Context, database *db.DB, myEmail string, sinceT
 				continue
 			}
 			trig = "calendar_invite"
-		case e.updatedAt > e.syncedAt:
-			// Event was modified after it was first synced — treat as a time/detail change.
+		case e.timeChanged > sinceISO:
+			// A sync inside the window saw the start/end move. (Comparing
+			// updated_at with synced_at can never work: synced_at is rewritten
+			// on every pass, after the provider's updated_at.)
 			trig = "calendar_time_change"
 		}
 		if trig == "" {
 			continue
 		}
 
-		// Dedup key: event ID as channel_id, updatedAt (or syncedAt) as message_ts.
+		// Dedup key: event ID as channel_id, updatedAt (or syncedAt) as
+		// message_ts — for a time change the reschedule's own stamp, so a later
+		// detail edit (a new updated_at, same time) is not another item.
 		dedupeTS := e.updatedAt
+		if trig == "calendar_time_change" {
+			dedupeTS = e.timeChanged
+		}
 		if dedupeTS == "" {
 			dedupeTS = e.syncedAt
 		}

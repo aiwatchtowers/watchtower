@@ -808,7 +808,8 @@ CREATE TABLE IF NOT EXISTS calendar_events (
     raw_json        TEXT NOT NULL DEFAULT '{}',
     ical_uid        TEXT NOT NULL DEFAULT '',  -- dedup enabler across accounts/providers (see 00043)
     synced_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-    updated_at      TEXT NOT NULL DEFAULT ''
+    updated_at      TEXT NOT NULL DEFAULT '',
+    time_changed_at TEXT NOT NULL DEFAULT ''   -- sync pass that last saw start/end move, '' never (see 00079)
 );
 CREATE INDEX IF NOT EXISTS idx_calendar_events_calendar ON calendar_events(calendar_id);
 CREATE INDEX IF NOT EXISTS idx_calendar_events_start ON calendar_events(start_time);

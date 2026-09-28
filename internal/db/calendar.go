@@ -91,9 +91,12 @@ func (db *DB) SetCalendarSelected(id string, selected bool) error {
 }
 
 // calendarEventUpdateSet is the ON CONFLICT(id) DO UPDATE clause shared by the
-// single and batch event upserts — every column except the id. The upserts
-// must NEVER use INSERT OR REPLACE: with foreign_keys=ON, REPLACE resolves a
-// PK conflict as DELETE+INSERT, firing the FK actions on the children — it
+// single and batch event upserts — every column except the id.
+// time_changed_at is stamped with the pass's synced_at only when start/end
+// actually moved (a column qualified with the table name on the right-hand
+// side is the row's pre-update value); a first insert leaves it empty.
+// The upserts must NEVER use INSERT OR REPLACE: with foreign_keys=ON, REPLACE
+// resolves a PK conflict as DELETE+INSERT, firing the FK actions on the children — it
 // NULLs meeting_transcripts.event_id (ON DELETE SET NULL) and deletes the
 // event's meeting_recaps row (ON DELETE CASCADE) on every sync cycle.
 const calendarEventUpdateSet = `ON CONFLICT(id) DO UPDATE SET
@@ -104,7 +107,11 @@ const calendarEventUpdateSet = `ON CONFLICT(id) DO UPDATE SET
 		event_status=excluded.event_status, event_type=excluded.event_type,
 		html_link=excluded.html_link, conference_url=excluded.conference_url,
 		raw_json=excluded.raw_json, ical_uid=excluded.ical_uid,
-		synced_at=excluded.synced_at, updated_at=excluded.updated_at`
+		synced_at=excluded.synced_at, updated_at=excluded.updated_at,
+		time_changed_at=CASE
+			WHEN calendar_events.start_time <> excluded.start_time
+			  OR calendar_events.end_time <> excluded.end_time
+			THEN excluded.synced_at ELSE calendar_events.time_changed_at END`
 
 // UpsertCalendarEvent inserts or updates a calendar event (never REPLACE —
 // see calendarEventUpdateSet for why that would wipe FK children).
