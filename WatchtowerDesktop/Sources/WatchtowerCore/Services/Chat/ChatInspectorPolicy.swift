@@ -15,6 +15,14 @@ package struct ChatSourcesSelection: Equatable, Sendable {
         self.messageID = messageID
         self.sources = ChatSource.dedupe(sources)
     }
+
+    /// The selection re-read from the visible thread: nil once its message
+    /// left the active branch (a ‹ › variant switch, an edit) or has no
+    /// sources any more — the panel never shows a hidden answer's sources.
+    package func refreshed(in thread: [ChatThreadItem]) -> Self? {
+        guard let item = thread.first(where: { $0.id == messageID }), !item.sources.isEmpty else { return nil }
+        return Self(messageID: messageID, sources: item.sources)
+    }
 }
 
 /// The rule for sharing the one `.inspector` slot between the artifact panel

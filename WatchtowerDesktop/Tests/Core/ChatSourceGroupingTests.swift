@@ -101,8 +101,8 @@ final class ChatSourceGroupingTests: XCTestCase {
     // MARK: - Groups and the summary row
 
     private var sample: [ChatSource] {
-        (1...6).map { slack("#security — t\($0)", url: "https://acme.slack.com/archives/C1/p\($0)", ref: "s\($0)") }
-            + [slack("#sdlc — x", url: "https://acme.slack.com/archives/C2/p9", ref: "d1"),
+        (1...6).map { slack("#billing — t\($0)", url: "https://acme.slack.com/archives/C1/p\($0)", ref: "s\($0)") }
+            + [slack("#releases — x", url: "https://acme.slack.com/archives/C2/p9", ref: "d1"),
                ChatSource(kind: "jira", title: "PAY-1: A", url: nil, ref: "jira:PAY-1", group: "PAY"),
                ChatSource(kind: "jira", title: "PAY-2: B", url: nil, ref: "jira:PAY-2", group: "PAY"),
                ChatSource(kind: "document", title: "Daily digest", url: nil, ref: "digest:9"),
@@ -111,7 +111,7 @@ final class ChatSourceGroupingTests: XCTestCase {
 
     func testGroupsRankBySizeWithOtherLast() {
         let groups = ChatSourceGrouping.groups(sample + [sample[0]])
-        XCTAssertEqual(groups.map(\.name), ["#security", "PAY", "#sdlc", "Mail", "Other"])
+        XCTAssertEqual(groups.map(\.name), ["#billing", "PAY", "#releases", "Mail", "Other"])
         XCTAssertEqual(groups.map(\.sources.count), [6, 2, 1, 1, 1], "the duplicate is dropped")
         XCTAssertEqual(groups[0].kind, "slack")
         XCTAssertEqual(groups[1].kind, "jira")
@@ -122,7 +122,7 @@ final class ChatSourceGroupingTests: XCTestCase {
         XCTAssertEqual(summary.count, 11)
         XCTAssertEqual(summary.countLabel, "11 sources")
         XCTAssertEqual(summary.kinds, ["slack", "jira", "document", "email"])
-        XCTAssertEqual(summary.topGroups, "#security ×6, PAY ×2, #sdlc")
+        XCTAssertEqual(summary.topGroups, "#billing ×6, PAY ×2, #releases")
     }
 
     func testSummaryCapsIconsAndHandlesOneAndNone() {

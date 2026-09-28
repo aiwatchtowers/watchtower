@@ -16,6 +16,7 @@ struct SourcesSummaryRow: View {
                     iconStack(summary.kinds)
                     Text(summary.countLabel)
                         .fontWeight(.medium)
+                        .layoutPriority(1)
                     if !summary.topGroups.isEmpty {
                         Text(summary.topGroups)
                             .foregroundStyle(.secondary)
@@ -34,7 +35,7 @@ struct SourcesSummaryRow: View {
             }
             .buttonStyle(.plain)
             .help("Show sources")
-            .accessibilityLabel("\(summary.countLabel). Show sources")
+            .accessibilityLabel(Self.accessibilityLabel(summary))
         }
     }
 
@@ -49,6 +50,11 @@ struct SourcesSummaryRow: View {
             }
         }
         .accessibilityHidden(true)
+    }
+
+    static func accessibilityLabel(_ summary: ChatSourcesSummary) -> String {
+        let groups = summary.topGroups.isEmpty ? "" : ", mostly \(summary.topGroups)"
+        return "\(summary.countLabel)\(groups). Show sources"
     }
 
     static func icon(_ kind: String) -> String {

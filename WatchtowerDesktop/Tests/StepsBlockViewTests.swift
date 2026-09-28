@@ -40,6 +40,8 @@ final class StepsBlockViewTests: XCTestCase {
         XCTAssertNoThrow(try view.inspect().find(text: "10 sources"))
         XCTAssertNoThrow(try view.inspect().find(text: "#payments ×10"))
         XCTAssertEqual(try view.inspect().find(ViewType.HStack.self).lineLimit(), 1)
+        XCTAssertEqual(SourcesSummaryRow.accessibilityLabel(ChatSourceGrouping.summary(sources(10))),
+                       "10 sources, mostly #payments ×10. Show sources")
         try view.inspect().find(ViewType.Button.self).tap()
         XCTAssertEqual(opened, 1)
     }

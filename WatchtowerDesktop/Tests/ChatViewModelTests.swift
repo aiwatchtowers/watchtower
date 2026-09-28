@@ -461,6 +461,32 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertNil(vm.variant(of: previous, offset: -1))
     }
 
+    /// A ‹ › switch away from the answer whose sources are shown closes the
+    /// panel — it never keeps a hidden variant's sources on screen.
+    func testSourcesPanelClosesWhenItsAnswerLeavesTheBranch() async throws {
+        let vm = try makeViewModel()
+        _ = vm.newConversation()
+        vm.send(text: "q")
+        try await complete(vm, turn: "turn-1", text: "a1")
+        let firstAnswer = try XCTUnwrap(vm.thread.last?.id)
+        let sources = ChatSource.encodeList([ChatSource(kind: "jira", title: "PAY-1", url: nil, ref: "jira:PAY-1")])
+        try await dbManager.dbPool.write { d in
+            try ChatStepQueries.upsertStart(d, messageID: firstAnswer, seq: 0, toolID: "a", name: "get_jira_issue",
+                                            argsJSON: "{}", startedAt: 1)
+            try ChatStepQueries.finish(d, messageID: firstAnswer, toolID: "a", ok: true, summary: "s",
+                                       sourcesJSON: sources, endedAt: 2)
+        }
+        vm.reload()
+        let item = try XCTUnwrap(vm.thread.last)
+        vm.openSources(messageID: item.id, sources: item.sources)
+        vm.reload()
+        XCTAssertEqual(vm.sourcesPanel?.sources.count, 1, "a reload of the same branch keeps the panel")
+
+        vm.regenerate(messageID: firstAnswer)
+        try await complete(vm, turn: "turn-2", text: "a2")
+        XCTAssertNil(vm.sourcesPanel, "the shown answer is now a hidden variant")
+    }
+
     func testEditMakesAUserSiblingAndReplays() async throws {
         let vm = try makeViewModel()
         _ = vm.newConversation()

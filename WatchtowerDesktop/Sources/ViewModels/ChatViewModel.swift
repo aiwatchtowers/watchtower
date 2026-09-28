@@ -281,6 +281,8 @@ final class ChatViewModel {
             }
             currentConversation = conv
             if items != thread { thread = items }
+            let refreshedSources = sourcesPanel?.refreshed(in: items)
+            if refreshedSources != sourcesPanel { sourcesPanel = refreshedSources }
             artifactVersionsByMessage = versions
             gmailConnected = gmail
             slackLinks = slack

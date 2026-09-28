@@ -22,7 +22,8 @@ final class ArtifactChat05ScanTests: XCTestCase {
             "Views/Chat/ArtifactPanelView.swift",
             "Views/Chat/ArtifactCardView.swift",
             "Views/Chat/ArtifactActionPerformer.swift",
-            "Views/Chat/ChatMessageRow.swift"
+            "Views/Chat/ChatMessageRow.swift",
+            "Views/Chat/ChatInspectorContent.swift"
         ]
         let forbidden = ["Process(", "CLIRunner", "URLSession", "findCLIPath", "WatchtowerAIService", "ChatSessionPool"]
         for file in files {
