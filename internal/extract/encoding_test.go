@@ -429,19 +429,27 @@ func TestHTMLTitleTextIsNotHeadContent(t *testing.T) {
 // closing tag anywhere.
 func TestHTMLHeadClosedByTextDespiteVoidElements(t *testing.T) {
 	x := newExtractor(t, nil)
-	cases := map[string]string{
-		"meta only":            `<html><head><meta name="a" content="b">Body text<p>y`,
-		"link only":            `<html><head><link rel="x" href="y">Body text<p>y`,
-		"base only":            `<html><head><base href="x">Loose text<p>y`,
-		"title then meta+link": `<html><head><title>T</title><meta name="a"><link rel="b">After<p>y`,
+	// want asserts the FULL text, not just a substring: a subsequent <p>
+	// tag closes head on its own regardless of this bug (an ordinary,
+	// already-correct rule — any disallowed OPENING TAG closes head, not
+	// only loose text), so a Contains-only check on the text AFTER <p>
+	// would pass even with the bug reintroduced; what the bug actually drops
+	// is the loose head-text itself (checked first in "want").
+	cases := map[string]struct{ doc, want string }{
+		"meta only": {`<html><head><meta name="a" content="b">Body text<p>y`, "Body text\ny"},
+		"link only": {`<html><head><link rel="x" href="y">Body text<p>y`, "Body text\ny"},
+		"base only": {`<html><head><base href="x">Loose text<p>y`, "Loose text\ny"},
+		"title then meta+link": {
+			`<html><head><title>T</title><meta name="a"><link rel="b">After<p>y`, "After\ny",
+		},
 	}
-	for name, doc := range cases {
+	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
-			secs, status, err := x.Extract(context.Background(), "text/html", "t.html", strings.NewReader(doc))
+			secs, status, err := x.Extract(context.Background(), "text/html", "t.html", strings.NewReader(c.doc))
 			require.NoError(t, err)
 			assert.Equal(t, StatusOK, status)
 			require.Len(t, secs, 1)
-			assert.Contains(t, secs[0].Text, "y", "the loose head-text must not be dropped")
+			assert.Equal(t, c.want, secs[0].Text, "the loose head-text must not be dropped")
 		})
 	}
 }
