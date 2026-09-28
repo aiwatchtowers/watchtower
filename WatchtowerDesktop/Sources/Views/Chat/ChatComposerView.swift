@@ -54,6 +54,8 @@ struct ChatComposerView: View {
                 modelPill.padding(.horizontal, 16).padding(.bottom, 6)
             }
         }
+        // The main chat's bottom-most content, model pill included.
+        .clearsRecordingIndicator()
         .onChange(of: chatVM.draft) { old, new in
             if old.isEmpty, !new.isEmpty { chatVM.prewarm() }
         }
