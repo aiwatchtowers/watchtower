@@ -172,6 +172,20 @@ func TestHTMLMissingHeadClose(t *testing.T) {
 	}
 }
 
+// TestHTMLHeadClosedByOrdinaryTag pins the general form of the </head>
+// omission rule: not just a missing <body>, but ANY ordinary content tag
+// appearing right after a head element (with no <body> tag at all) must
+// still close head — HTML5's "in head" insertion mode treats any tag it
+// doesn't recognize as head content the same way it treats <body>.
+func TestHTMLHeadClosedByOrdinaryTag(t *testing.T) {
+	x := newExtractor(t, nil)
+	doc := `<html><head><title>T</title><p>Hello`
+	secs, status, err := x.Extract(context.Background(), "text/html", "t.html", strings.NewReader(doc))
+	require.NoError(t, err)
+	assert.Equal(t, StatusOK, status)
+	assert.Equal(t, []extsync.Section{{Text: "Hello"}}, secs)
+}
+
 func TestHTMLTableCells(t *testing.T) {
 	x := newExtractor(t, nil)
 	doc := `<table><tr><th>Name</th><th>Qty</th></tr><tr><td>apple</td><td>3</td></tr></table><p>after</p>`
