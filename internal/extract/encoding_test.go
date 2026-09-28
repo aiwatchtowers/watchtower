@@ -15,25 +15,13 @@ import (
 	xunicode "golang.org/x/text/encoding/unicode"
 )
 
-// Realistic, lowercase-heavy, multi-sentence prose fixtures (review round 3
-// finding R3-1: the round-2 case-based rules were caught out by capital-dense
-// fixtures that don't represent real text — ordinary Russian/Ukrainian prose
-// is mostly lowercase, with only sentence-initial and proper-noun capitals).
-const (
-	ruProse4Sentences = "Сегодня мы обсудили план на собрание. Все участники согласились с новыми условиями. " +
-		"После обеда команда начала работать над задачей. Результаты будут готовы к вечеру."
-	ukProse4Sentences = "Сьогодні ми обговорили план на зустріч. Усі учасники погодилися з новими умовами. " +
-		"Після обіду команда почала працювати над завданням. Результати будуть готові до вечора."
-)
-
-// TestPlainMojibakeFamiliesFail pins that every required mojibake family
-// still fails — realistic lowercase-heavy multi-sentence prose, not the
-// capital-dense fixtures round 2 used (which happened to pass only because
-// they were unusually capital-dense; see bestCyrillicText's doc comment for
-// the measured scores this relies on). KOI8-R/KOI8-U are intentionally NOT
-// here: bestCyrillicText recognizes them as a real candidate and decodes
-// them correctly instead of rejecting them — see
-// TestPlainKOI8ProseDecodesCorrectly.
+// TestPlainMojibakeFamiliesFail pins that undeclared non-UTF-8 bytes with no
+// byte-order mark fail, exactly as on main — including Cyrillic legacy
+// encodings (KOI8-R/KOI8-U), which this package's own encoding-detection
+// work tried and, across three review rounds, withdrew: see readUTF8's doc
+// comment and docs/backlog/2026-09-27-review-low-priority-pr3-confluence-go.md
+// for the record of what was attempted and why every version regressed on
+// some other real-world input.
 func TestPlainMojibakeFamiliesFail(t *testing.T) {
 	x := newExtractor(t, nil)
 
@@ -48,186 +36,40 @@ func TestPlainMojibakeFamiliesFail(t *testing.T) {
 			"你好世界，这是一个测试文字内容，希望能够正常显示出来，谢谢大家的耐心等待和支持"),
 		"shift-jis": encodeStr(t, japanese.ShiftJIS,
 			"こんにちは、世界。これはテストです。今日はいい天気ですね、散歩に行きましょう。"),
+		"koi8-r (Russian)": encodeStr(t, charmap.KOI8R,
+			"Сегодня мы обсудили план на собрание. Все участники согласились с новыми условиями."),
+		"koi8-u (Ukrainian)": encodeStr(t, charmap.KOI8U,
+			"Сьогодні ми обговорили план на зустріч. Усі учасники погодилися з новими умовами."),
+		"windows-1251 (Russian)": encodeStr(t, charmap.Windows1251,
+			"Оплата через ПриватБанк и МегаФон подтверждена сегодня утром, документы готовы."),
 	}
 	for name, doc := range cases {
 		t.Run(name, func(t *testing.T) {
 			secs, status, err := x.Extract(context.Background(), "text/plain", "a.txt", strings.NewReader(doc))
 			require.NoError(t, err)
-			assert.Equal(t, StatusFailed, status, "must not be silently indexed as mojibake Cyrillic")
+			assert.Equal(t, StatusFailed, status, "no undeclared single-byte-charset guess — see readUTF8's doc comment")
 			assert.Nil(t, secs)
 		})
 	}
 }
 
-// TestPlainKOI8ProseDecodesCorrectly pins the review round 3 fix: realistic
-// (lowercase-heavy, multi-sentence) KOI8-R and KOI8-U documents are no
-// longer rejected as cp1251 mojibake — bestCyrillicText recognizes koi8-r/
-// koi8-u as real candidates, scores them against windows-1251, and — since
-// they win here — returns THEIR OWN decode, so the file is searchable in
-// its actual content, not merely "accepted". This is the exact regression
-// review round 3 found (R3-1): round 2's case-flip/word-mixing rules
-// rejected ordinary KOI8 prose because normal sentence capitalization is
-// too sparse in a real paragraph to clear their thresholds; the frequency
-// score replacing them doesn't depend on case at all.
-func TestPlainKOI8ProseDecodesCorrectly(t *testing.T) {
+// TestPlainUTF8WithOneStrayByteFails pins the regression a letter-frequency
+// guess (tried and withdrawn in an earlier round — see readUTF8's doc
+// comment) introduced: an almost-entirely-valid UTF-8 Russian file carrying
+// a single stray non-UTF-8 byte must still fail outright, not be indexed as
+// a whole-document windows-1251/koi8 misread of its own (otherwise
+// perfectly good) UTF-8 bytes. utf8.Valid has no partial-credit notion —
+// one bad byte anywhere makes the whole byte stream invalid — so this falls
+// through decodeDirect to StatusFailed exactly like any other non-UTF-8,
+// no-BOM input.
+func TestPlainUTF8WithOneStrayByteFails(t *testing.T) {
 	x := newExtractor(t, nil)
-
-	cases := map[string]struct {
-		enc  encoding.Encoding
-		text string
-	}{
-		"koi8-r (Russian)":   {charmap.KOI8R, ruProse4Sentences},
-		"koi8-u (Ukrainian)": {charmap.KOI8U, ukProse4Sentences},
-	}
-	for name, c := range cases {
-		t.Run(name, func(t *testing.T) {
-			doc := encodeStr(t, c.enc, c.text)
-			secs, status, err := x.Extract(context.Background(), "text/plain", "a.txt", strings.NewReader(doc))
-			require.NoError(t, err)
-			assert.Equal(t, StatusOK, status)
-			require.Len(t, secs, 1)
-			assert.Equal(t, c.text, secs[0].Text)
-		})
-	}
-}
-
-// TestPlainAllLowercaseKOI8RPhraseDecodesCorrectly pins the exact regression
-// sample from the round 3 verify report: a short, entirely lowercase KOI8-R
-// phrase with no capitalization at all (so round 2's case-flip rule could
-// never have caught it even in principle) is recognized and decoded, not
-// rejected.
-func TestPlainAllLowercaseKOI8RPhraseDecodesCorrectly(t *testing.T) {
-	x := newExtractor(t, nil)
-	doc := encodeStr(t, charmap.KOI8R, "привет мир как дела")
-	secs, status, err := x.Extract(context.Background(), "text/plain", "a.txt", strings.NewReader(doc))
-	require.NoError(t, err)
-	assert.Equal(t, StatusOK, status)
-	require.Len(t, secs, 1)
-	assert.Equal(t, "привет мир как дела", secs[0].Text)
-}
-
-// TestPlainCyrillicCSVWithLatinHeadersDecodes pins the case the heuristic
-// exists to still accept: a mostly-Russian windows-1251 CSV whose header row
-// is plain (all-Latin) English column names decodes correctly, picking
-// windows-1251 over koi8-r/koi8-u by a wide margin (the Cyrillic rows score
-// far higher under their real encoding than under either KOI8 guess).
-func TestPlainCyrillicCSVWithLatinHeadersDecodes(t *testing.T) {
-	x := newExtractor(t, nil)
-	csv := "Name,Date,Amount\n" +
-		"Иванов Иван,2026-01-15,1500\n" +
-		"Петров Пётр,2026-02-20,2300\n" +
-		"Сидорова Анна,2026-03-05,900\n"
-	doc := encodeStr(t, charmap.Windows1251, csv)
-
-	secs, status, err := x.Extract(context.Background(), "text/csv", "a.csv", strings.NewReader(doc))
-	require.NoError(t, err)
-	assert.Equal(t, StatusOK, status)
-	require.Len(t, secs, 1)
-	assert.Equal(t, strings.TrimSpace(csv), secs[0].Text, "plainText trims surrounding whitespace, the trailing newline included")
-}
-
-// TestPlainAcceptsRealWorldCyrillicEdgeCases pins real-document shapes a
-// zero-tolerance (round 2) or case-based (round 3) heuristic rejected
-// outright: brand-style camelCase names embedded in ordinary prose, a
-// single keyboard-layout typo, an all-caps legacy export line, and a short
-// (<20 letters) real phrase. Each is a real windows-1251 document that must
-// decode, not fail.
-func TestPlainAcceptsRealWorldCyrillicEdgeCases(t *testing.T) {
-	x := newExtractor(t, nil)
-
-	cases := map[string]string{
-		"brand names in a full sentence": "Оплата через ПриватБанк и МегаФон подтверждена сегодня утром",
-		"a single keyboard-layout typo in a paragraph": "Договор и соглашение подписано вчера, но здесь опечатка: " +
-			"cоглашение подписано, а остальной текст документа читается нормально без проблем",
-		"all-caps legacy export line":     "ИТОГО ПО ДОГОВОРУ СУММА К ОПЛАТЕ",
-		"short real phrase (<20 letters)": "Привет мир",
-		"ultra-short single word":         "ИТОГО",
-	}
-	for name, src := range cases {
-		t.Run(name, func(t *testing.T) {
-			doc := encodeStr(t, charmap.Windows1251, src)
-			secs, status, err := x.Extract(context.Background(), "text/plain", "a.txt", strings.NewReader(doc))
-			require.NoError(t, err)
-			assert.Equal(t, StatusOK, status)
-			require.Len(t, secs, 1)
-			assert.Equal(t, strings.TrimSpace(src), secs[0].Text)
-		})
-	}
-}
-
-// TestPlainShortMojibakeFails pins the "short text" side of the same
-// question (review round 3 asked for short-text behaviour to be decided and
-// documented — see bestCyrillicText's doc comment): a short fragment that
-// is genuinely NOT Cyrillic still fails, exactly like a long one — no
-// separate leniency kicks in just because the input is brief.
-func TestPlainShortMojibakeFails(t *testing.T) {
-	x := newExtractor(t, nil)
-	doc := encodeStr(t, charmap.Windows1252, "Café Müller")
-	secs, status, err := x.Extract(context.Background(), "text/plain", "a.txt", strings.NewReader(doc))
+	valid := []byte("Привет, коллеги! Отчёт за неделю готов, все задачи выполнены в срок.")
+	doc := append(append([]byte(nil), valid...), 0xFF) // one stray byte, otherwise fully valid UTF-8
+	secs, status, err := x.Extract(context.Background(), "text/plain", "a.txt", strings.NewReader(string(doc)))
 	require.NoError(t, err)
 	assert.Equal(t, StatusFailed, status)
 	assert.Nil(t, secs)
-}
-
-// TestScoreCyrillicText pins scoreCyrillicText's measured values directly
-// (the numbers bestCyrillicText's doc comment documents cyrillicScoreMin/
-// cyrillicScoreMargin against) — mutation-testable independent of the
-// candidate-selection logic in bestCyrillicText.
-func TestScoreCyrillicText(t *testing.T) {
-	cases := []struct {
-		name      string
-		text      string
-		wantOver  float64 // score must be > this
-		wantUnder float64 // score must be < this
-	}{
-		{"real Russian prose", ruProse4Sentences, 1.6, 1.7},
-		{"real Ukrainian prose", ukProse4Sentences, 1.55, 1.7},
-		{"cp1252 mojibake (Latin, low ratio)", "Cafй rйsumй chвteaux naпve garзon", 0, 0.5},
-		{"all-caps real phrase", "ИТОГО ПО ДОГОВОРУ СУММА К ОПЛАТЕ", 1.55, 1.7},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			got := scoreCyrillicText(c.text)
-			assert.Greater(t, got, c.wantOver)
-			assert.Less(t, got, c.wantUnder)
-		})
-	}
-	t.Run("no letters at all", func(t *testing.T) {
-		assert.Equal(t, 0.0, scoreCyrillicText("12345 !@#$% ,,,"))
-	})
-}
-
-// TestPlainBOMIsTrimmedBeforeCyrillicScoring pins review round 3 finding
-// R3-2: the windows-1251/koi8 guess used to score the UNTRIMMED bytes, so a
-// file carrying a (spurious, since the body isn't valid UTF-8) UTF-8 BOM
-// decoded that BOM itself as three extra garbage characters ("п»ї") glued
-// onto the front of otherwise-correct text.
-func TestPlainBOMIsTrimmedBeforeCyrillicScoring(t *testing.T) {
-	x := newExtractor(t, nil)
-	doc := string(utf8BOM) + encodeStr(t, charmap.Windows1251, "Привет мир, это тест кодировки")
-	secs, status, err := x.Extract(context.Background(), "text/plain", "a.txt", strings.NewReader(doc))
-	require.NoError(t, err)
-	assert.Equal(t, StatusOK, status)
-	require.Len(t, secs, 1)
-	assert.Equal(t, "Привет мир, это тест кодировки", secs[0].Text)
-}
-
-// TestHTMLBOMIsTrimmedBeforeCyrillicScoring is R3-2's HTML-path variant: a
-// document that genuinely opens with a UTF-8 BOM (so charset.DetermineEncoding
-// resolves it "certain" UTF-8, and the F5 replacement-rune check falls it
-// through once the cp1251 body proves not to be valid UTF-8) must have that
-// same leading BOM trimmed before the fallback windows-1251/koi8 guess
-// scores the bytes, or the BOM itself decodes as three extra garbage
-// characters ("п»ї") glued onto the front of otherwise-correct text.
-func TestHTMLBOMIsTrimmedBeforeCyrillicScoring(t *testing.T) {
-	x := newExtractor(t, nil)
-	doc := string(utf8BOM) + `<html><body><p>` +
-		encodeStr(t, charmap.Windows1251, "Привет мир, это тест кодировки") + `</p></body></html>`
-	secs, status, err := x.Extract(context.Background(), "text/html", "a.html", strings.NewReader(doc))
-	require.NoError(t, err)
-	assert.Equal(t, StatusOK, status)
-	require.Len(t, secs, 1)
-	assert.Equal(t, "Привет мир, это тест кодировки", secs[0].Text)
 }
 
 // TestHTMLHonorsDeclaredMIMECharset pins that an HTML document's MIME
@@ -304,32 +146,35 @@ func TestHTMLMetaUTF16LabelDoesNotOverrideARealBOM(t *testing.T) {
 	assert.Equal(t, "Hi", secs[0].Text)
 }
 
-// TestHTMLDeclaredUTF8OverInvalidBytesFallsThrough pins review round 2
-// finding F5: a declared "utf-8" that doesn't error decoding — golang.org/x/
-// text's UTF-8 decoder silently substitutes U+FFFD for invalid bytes rather
-// than returning a Go error — must not be indexed as StatusOK replacement
-// characters. It falls through to the same undeclared path, which recovers
-// the real content here.
-func TestHTMLDeclaredUTF8OverInvalidBytesFallsThrough(t *testing.T) {
+// TestHTMLDeclaredUTF8OverInvalidBytesFails pins the final routing decision:
+// a declared "utf-8" that doesn't error decoding — golang.org/x/text's
+// UTF-8 decoder silently substitutes U+FFFD for invalid bytes rather than
+// returning a Go error — must not be indexed as StatusOK replacement
+// characters (review round 2 finding F5). Earlier rounds fell through to an
+// undeclared single-byte-charset guess here, which itself regressed
+// (see readUTF8's doc comment); the guess is withdrawn, so this now fails
+// outright rather than falling through to one.
+func TestHTMLDeclaredUTF8OverInvalidBytesFails(t *testing.T) {
 	x := newExtractor(t, nil)
 	inner := encodeStr(t, charmap.Windows1251, "привет мир, это тест")
 	doc := `<html><head><meta charset="utf-8"></head><body><p>` + inner + `</p></body></html>`
 	secs, status, err := x.Extract(context.Background(), "text/html", "a.html", strings.NewReader(doc))
 	require.NoError(t, err)
-	assert.Equal(t, StatusOK, status)
-	require.Len(t, secs, 1)
-	assert.Equal(t, "привет мир, это тест", secs[0].Text)
+	assert.Equal(t, StatusFailed, status)
+	assert.Nil(t, secs)
 }
 
-// TestHTMLDeclaredReplacementEncodingRecoversRealContent pins the same F5
-// rule for a declared charset the WHATWG spec maps to its dedicated
-// "replacement" encoding for security reasons (a handful of legacy CJK
-// labels, including iso-2022-kr): its decoder always succeeds with no error,
-// producing exactly one U+FFFD for any input whatsoever — that must not read
-// as StatusOK "�" either. Here the document's real bytes are plain ASCII,
-// so falling through to the undeclared path recovers the genuine content.
-func TestHTMLDeclaredReplacementEncodingRecoversRealContent(t *testing.T) {
+// TestHTMLDeclaredUTF8OverInvalidBytesRecoversValidUTF8 pins the flip side:
+// decodeDirect (kept — see readUTF8's doc comment) still gets a chance after
+// a failed declared decode, so a declaration that was simply wrong about
+// the charset — the real bytes are genuinely valid UTF-8 — is recovered
+// without needing any guess at all.
+func TestHTMLDeclaredUTF8OverInvalidBytesRecoversValidUTF8(t *testing.T) {
 	x := newExtractor(t, nil)
+	// A charset the WHATWG spec maps to its dedicated "replacement" encoding
+	// (a handful of legacy CJK labels, including iso-2022-kr): its decoder
+	// always succeeds with no Go error, producing exactly one U+FFFD for any
+	// input whatsoever, regardless of the actual bytes.
 	doc := `<html><head><meta charset="iso-2022-kr"></head><body><p>hello world, ordinary ascii text here</p></body></html>`
 	secs, status, err := x.Extract(context.Background(), "text/html", "a.html", strings.NewReader(doc))
 	require.NoError(t, err)
@@ -340,7 +185,7 @@ func TestHTMLDeclaredReplacementEncodingRecoversRealContent(t *testing.T) {
 
 // TestHTMLDeclaredReplacementEncodingOverMojibakeFails pins the other half:
 // when the document's real bytes are ALSO not recoverable (here, cp1252
-// mojibake) the undeclared fall-through's own scoring still fails it.
+// mojibake) there is no guess to fall back to, so this fails.
 func TestHTMLDeclaredReplacementEncodingOverMojibakeFails(t *testing.T) {
 	x := newExtractor(t, nil)
 	inner := encodeStr(t, charmap.Windows1252,
@@ -352,46 +197,57 @@ func TestHTMLDeclaredReplacementEncodingOverMojibakeFails(t *testing.T) {
 	assert.Nil(t, secs)
 }
 
-// TestHTMLUnknownMetaLabelFallsThroughToTheGuess pins that a meta tag naming
-// a charset this package doesn't recognize is not itself an error: the real
-// windows-1251 content behind it is still recovered via the undeclared path.
-func TestHTMLUnknownMetaLabelFallsThroughToTheGuess(t *testing.T) {
+// TestHTMLUnknownMetaLabelRecoversValidUTF8 pins that a meta tag naming a
+// charset this package doesn't recognize is not itself an error:
+// declaredHTMLEncoding reports ok=false for it (charset.Lookup returns a nil
+// encoding), and genuinely valid UTF-8 content behind it is still decoded
+// via decodeDirect — no guess needed for this case, since the real bytes
+// are already unambiguous.
+func TestHTMLUnknownMetaLabelRecoversValidUTF8(t *testing.T) {
+	x := newExtractor(t, nil)
+	doc := `<html><head><meta charset="totally-bogus-charset-name"></head><body><p>привет мир, это тест</p></body></html>`
+	secs, status, err := x.Extract(context.Background(), "text/html", "a.html", strings.NewReader(doc))
+	require.NoError(t, err)
+	assert.Equal(t, StatusOK, status)
+	require.Len(t, secs, 1)
+	assert.Equal(t, "привет мир, это тест", secs[0].Text)
+}
+
+// TestHTMLUnknownMetaLabelOverNonUTF8Fails pins the other half: an unknown
+// meta label over genuinely non-UTF-8 bytes has nothing left to fall back
+// to once decodeDirect also fails — there is no undeclared guess.
+func TestHTMLUnknownMetaLabelOverNonUTF8Fails(t *testing.T) {
 	x := newExtractor(t, nil)
 	inner := encodeStr(t, charmap.Windows1251, "привет мир, это тест")
 	doc := `<html><head><meta charset="totally-bogus-charset-name"></head><body><p>` + inner + `</p></body></html>`
 	secs, status, err := x.Extract(context.Background(), "text/html", "a.html", strings.NewReader(doc))
 	require.NoError(t, err)
-	assert.Equal(t, StatusOK, status)
-	require.Len(t, secs, 1)
-	assert.Equal(t, "привет мир, это тест", secs[0].Text)
-}
-
-// TestHTMLUndeclaredFallsBackToTheScoredGuess pins that an HTML document
-// with NO declared charset anywhere still runs through the same
-// UTF-8/windows-1251-or-koi8 scoring pipeline as plain text, rather than
-// charset.DetermineEncoding's own final windows-1252-by-default guess.
-func TestHTMLUndeclaredFallsBackToTheScoredGuess(t *testing.T) {
-	x := newExtractor(t, nil)
-	doc := `<html><body><p>` + encodeStr(t, charmap.Windows1251, "привет мир, это тест") + `</p></body></html>`
-	secs, status, err := x.Extract(context.Background(), "text/html", "a.html", strings.NewReader(doc))
-	require.NoError(t, err)
-	assert.Equal(t, StatusOK, status)
-	require.Len(t, secs, 1)
-	assert.Equal(t, "привет мир, это тест", secs[0].Text)
-}
-
-// TestHTMLUndeclaredMojibakeStillFails pins that an undeclared HTML document
-// whose bytes are actually some OTHER 8-bit encoding still fails, exactly
-// like the plain-text case.
-func TestHTMLUndeclaredMojibakeStillFails(t *testing.T) {
-	x := newExtractor(t, nil)
-	doc := `<html><body><p>` + encodeStr(t, charmap.Windows1252,
-		"Café résumé châteaux naïve garçon aujourd'hui il fait beau dehors et nous allons nous promener") +
-		`</p></body></html>`
-	secs, status, err := x.Extract(context.Background(), "text/html", "a.html", strings.NewReader(doc))
-	require.NoError(t, err)
 	assert.Equal(t, StatusFailed, status)
 	assert.Nil(t, secs)
+}
+
+// TestHTMLUndeclaredNonUTF8Fails pins that an HTML document with NO declared
+// charset anywhere, and bytes that are not valid UTF-8 (real Cyrillic text
+// included — see readUTF8's doc comment for why this package no longer
+// guesses a legacy single-byte charset), fails outright rather than
+// guessing charset.DetermineEncoding's own windows-1252-by-default (which
+// would silently misdecode it as Latin mojibake) or any other charset.
+func TestHTMLUndeclaredNonUTF8Fails(t *testing.T) {
+	x := newExtractor(t, nil)
+	cases := map[string]string{
+		"cp1251 Russian": encodeStr(t, charmap.Windows1251, "привет мир, это тест"),
+		"cp1252 mojibake": encodeStr(t, charmap.Windows1252,
+			"Café résumé châteaux naïve garçon aujourd'hui il fait beau dehors et nous allons nous promener"),
+	}
+	for name, inner := range cases {
+		t.Run(name, func(t *testing.T) {
+			doc := `<html><body><p>` + inner + `</p></body></html>`
+			secs, status, err := x.Extract(context.Background(), "text/html", "a.html", strings.NewReader(doc))
+			require.NoError(t, err)
+			assert.Equal(t, StatusFailed, status)
+			assert.Nil(t, secs)
+		})
+	}
 }
 
 // TestHTMLHeadClosedByTextWithNoTag pins review round 2 finding F7: HTML5's

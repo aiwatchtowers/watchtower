@@ -91,218 +91,29 @@ refresh-then-retry behavior, now on their own independent budget (see the go-bug
 `TestClient_PersistentUnauthorizedScopeIsNotRevoked`, updated to assert exactly one server call
 instead of the four the old behavior required.
 
-## Non-UTF-8 text attachments (UTF-16 or cp1251 CSV/TXT) are recorded as final failed (fixed in fix/bl-confluence-content)
+## Non-UTF-8 text attachments (UTF-16 or cp1251 CSV/TXT) are recorded as final failed (partially fixed in fix/bl-confluence-content — see below)
 
 - type: bug · confidence: med · tags: [extract, encoding, content-loss, localization]
-- where: internal/extract/plain.go:21-35 (readUTF8)
+- where: internal/extract/plain.go (readUTF8, decodeDirect, htmlText)
 
-`readUTF8` strips only a UTF-8 BOM and marks anything else that fails `utf8.Valid` as `StatusFailed`, which is final and never retried. Windows "Unicode" text (UTF-16LE with a `FF FE` BOM) and CSV saved by Excel in a Russian or Ukrainian locale (cp1251) are common in the owner's ru/uk environment, and their contents never become searchable. Fix direction: decode UTF-16 by its BOM, and try `golang.org/x/text` windows-1251 as a fallback when the UTF-8 check fails and the bytes decode cleanly.
+`readUTF8` strips only a UTF-8 BOM and marks anything else that fails `utf8.Valid` as `StatusFailed`, which is final and never retried. Windows "Unicode" text (UTF-16LE with a `FF FE` BOM) and CSV saved by Excel in a Russian or Ukrainian locale (cp1251) are common in the owner's ru/uk environment, and their contents never become searchable. Original fix direction: decode UTF-16 by its BOM, and try `golang.org/x/text` windows-1251 as a fallback when the UTF-8 check fails and the bytes decode cleanly.
 
-Resolution: `readUTF8` now decodes a UTF-16LE/BE BOM via
-`golang.org/x/text/encoding/unicode` (already an indirect dependency,
-promoted to direct by `go mod tidy` — no new module, no version change), and,
-failing that, tries `golang.org/x/text/encoding/charmap.Windows1251` when
-the UTF-8 check fails. **Round 2 correction:** `decodeCleanly`'s
-"no `utf8.RuneError`" check alone is *not* a reliable signal — cp1251 has
-only one undefined byte (0x98) in its whole 256-value table, so it "decodes
-cleanly" for almost any 8-bit byte stream, including cp1252/ISO-8859-2/
-KOI8-R/GBK mojibake. A windows-1251 decode is now additionally gated on
-`looksLikeCyrillicPlainText` (Cyrillic ≥ ~50% of all letters, no word mixing
-Latin+Cyrillic, no mid-word Cyrillic case flip, uppercase Cyrillic not
-outnumbering lowercase) before it's trusted as real Russian/Ukrainian text;
-for HTML the gate runs on the markup-stripped text, not the raw
-markup+content, since tag names are themselves Latin letters and would
-dilute the ratio. `TestPlainInvalidUTF8Fails`'s fixture changed — its old 3
-bytes happen to be valid cp1251 ("aяю"), exactly the content this fix
-recovers — to one still undecodable under every supported path (cp1251's one
-genuinely undefined byte, 0x98). Tests:
-`TestPlainUTF16BOMDecodes`/`TestPlainWindows1251Decodes`
-(`internal/extract/extract_test.go`);
-`TestPlainNonCyrillicMojibakeFails`/`TestPlainCyrillicCSVWithLatinHeadersDecodes`
-(`internal/extract/encoding_test.go`) pin the plausibility gate against
-cp1252/GBK/KOI8-R mojibake and a real mostly-Russian CSV with Latin headers.
+**Fixed and kept:** UTF-16 BOM decoding (`decodeByBOM`/`decodeDirect`), declared-charset handling for HTML (MIME `charset=`/`<meta charset>`/http-equiv, the HTML5 meta-declared-UTF-16→UTF-8 carve-out, the U+FFFD-share wrong-declaration check), BOM trimming ahead of any decode attempt, and the `<head>`-closing fixes (text-closes-head, void elements not blocking it). Tests: `TestPlainUTF16BOMDecodes`, `TestHTMLHonorsDeclaredMIMECharset`/`HonorsMetaCharset`/`HonorsHTTPEquivMetaCharset`, `TestHTMLMetaUTF16LabelIsTreatedAsUTF8`/`DoesNotOverrideARealBOM`, `TestHTMLDeclaredUTF8OverInvalidBytesFails`/`RecoversValidUTF8`, `TestHTMLDeclaredReplacementEncodingOverMojibakeFails`, `TestHTMLUnknownMetaLabelRecoversValidUTF8`/`OverNonUTF8Fails`, `TestHTMLHeadClosedByTextWithNoTag`/`TitleTextIsNotHeadContent`/`ByTextDespiteVoidElements` (all `internal/extract/encoding_test.go`).
 
-**Round 2 addition — HTML charset declarations honored first:** `htmlText`
-now honors a charset the document declares itself — the MIME Content-Type's
-charset param or a byte-order mark (both "certain" per
-`golang.org/x/net/html/charset.DetermineEncoding`), or an HTML
-`<meta charset>`/http-equiv Content-Type tag (`scanMetaCharset`, since
-`DetermineEncoding`'s own meta detection is, through its public API,
-indistinguishable from its final windows-1252-by-default guess) —
-unconditionally, before any guess. An HTML document with no declaration
-anywhere still falls through to the same UTF-8/windows-1251-plausibility
-path as plain text, never `DetermineEncoding`'s own windows-1252 default
-(which would reintroduce exactly the mojibake risk this fix guards against).
-Tests: `TestHTMLHonorsDeclaredMIMECharset`/`TestHTMLHonorsMetaCharset`/
-`TestHTMLHonorsHTTPEquivMetaCharset`/`TestHTMLUndeclaredFallsBackToPlausibilityGate`/
-`TestHTMLUndeclaredMojibakeStillFails` (`internal/extract/encoding_test.go`).
+**Withdrawn: the undeclared cp1251/KOI8 single-byte-charset guess.** This sub-item stays OPEN — no undeclared, BOM-less, non-UTF-8 plain-text or HTML attachment is decoded by guessing a legacy Cyrillic charset. `readUTF8`/`htmlText` return `StatusFailed` for such input, exactly as on `main` before this PR's encoding-detection work began. A declared-utf-8 HTML document whose decode trips the U+FFFD check also now falls straight to `StatusFailed` (or recovers via `decodeDirect` if the real bytes happen to be valid UTF-8 after all) — never to a guess.
 
-**Round 3 (verify-round findings F1–F7):**
-- **F1/F2/F3 — word rules turned into proportions.** `looksLikeCyrillicPlainText`'s
-  zero-tolerance word-mixing/case-flip checks rejected a whole real cp1251
-  document for a single camelCase brand name (`ПриватБанк`, `МегаФон`) or one
-  keyboard-layout typo, and its uppercase-dominance check rejected real
-  all-caps legacy exports (`ИТОГО`, a 1C/accounting CSV). Both word checks are
-  now proportions (`anomalyShareMax` 10%, `anomalyCountMin` 2 words — an
-  anomaly only disqualifies once it's a *meaningful share* of Cyrillic-bearing
-  words, never a single stray one). Uppercase-dominance is removed outright:
-  a real all-caps document and an all-caps mojibake decode are letter-case
-  *identical*, so no case-only signal can tell them apart without
-  misclassifying one or the other — documented as an accepted limitation in
-  the function's own doc comment. Tests:
-  `TestPlainAcceptsRealWorldCyrillicEdgeCases` (brand names, a typo, an
-  all-caps CSV, an all-caps word, all `StatusOK`); `TestLooksLikeCyrillicPlainText`
-  gained below-floor (accept) and over-threshold (reject) cases per condition,
-  replacing the old zero-tolerance cases.
-- **F4 — a meta-declared UTF-16 label is HTML5's own UTF-8 carve-out.** A
-  document actually encoded in UTF-16 could never spell out an ASCII
-  `<meta charset="utf-16">` tag without a byte-order mark in the first place,
-  so HTML5's encoding-sniffing algorithm remaps a META-declared (BOM-less)
-  `utf-16`/`utf-16le`/`utf-16be`/`unicode` label to UTF-8 — before this fix it
-  was honored literally, decoding real UTF-8 bytes as UTF-16 and indexing
-  CJK-looking garbage as `StatusOK` (real Word "Web Page" exports re-saved as
-  UTF-8 keep this legacy tag). A genuine BOM is unaffected — it resolves as
-  "certain" before the meta scan ever runs. Tests:
-  `TestHTMLMetaUTF16LabelIsTreatedAsUTF8`, `TestHTMLMetaUTF16LabelDoesNotOverrideARealBOM`.
-- **F5 — a declared-charset decode full of U+FFFD is a wrong declaration.**
-  `golang.org/x/text`'s decoders silently substitute U+FFFD for invalid bytes
-  with no Go error, so `htmlText`'s declared branch indexed replacement
-  characters as `StatusOK`. It now falls through to the same undeclared
-  UTF-8/windows-1251 path when the decode is mostly (or, for a declared
-  `utf-8` specifically, *at all*) U+FFFD — recovering the real content when
-  the underlying bytes are actually fine (a declared `utf-8` over real cp1251
-  bytes; a WHATWG-mapped "replacement" encoding like `iso-2022-kr` over plain
-  ASCII) or correctly failing when they aren't (the same over real mojibake).
-  Tests: `TestHTMLDeclaredUTF8OverInvalidBytesFallsThrough`,
-  `TestHTMLDeclaredReplacementEncodingRecoversRealContent`,
-  `TestHTMLDeclaredReplacementEncodingOverMojibakeFails`,
-  `TestHTMLUnknownMetaLabelFallsThroughToTheGuess`.
-- **F6 — pinning tests for the previously-unguarded families.** Added
-  ISO-8859-1/-2, KOI8-U and Shift-JIS to `TestPlainNonCyrillicMojibakeFails`
-  (each using a realistic, properly-capitalized sample — see F1–F3's note on
-  why an all-one-case sample doesn't exercise the real signal), plus the F4
-  meta-utf-16 and F5 unknown-label cases above.
-- **F7 — text directly in `<head>` also closes it.** HTML5's "in head"
-  insertion mode closes head on non-whitespace character data sitting
-  *directly* inside it, not only on a stray tag — `<html><head>Hello
-  there<p>x` was dropping "Hello there". Fixed via a `headChildDepth` counter
-  so an *allowed* head child's own text (`<title>`'s, in particular) is still
-  correctly recognized as head content and doesn't itself trigger the close.
-  Tests: `TestHTMLHeadClosedByTextWithNoTag`, `TestHTMLTitleTextIsNotHeadContent`.
+Three approaches were tried across rounds 2–4 and each regressed on some class of real-world input — the common failure is that every workable *signal* (case pattern, word-level anomaly rate, letter frequency) picks out SOME real documents as garbage or SOME garbage as real, because the family of confusable single-byte/legacy encodings is large and their outputs genuinely overlap statistically:
 
-Mutation-checked the proportion design (ratio, `anomalyShareMax`,
-`anomalyCountMin`) and the F4/F5/F7 mechanisms — each disabled/loosened in
-turn and confirmed to turn the matching test(s) red.
+1. **Round 2 — zero-tolerance rules** (Cyrillic-letter ratio, no word mixing Latin+Cyrillic, no mid-word case flip, uppercase not dominating lowercase): rejected a whole real document for a single camelCase brand name (`ПриватБанк`), a single keyboard-layout typo, or any all-caps content (a legacy 1C/accounting export — a real, common cp1251 source).
+2. **Round 3 — the same rules turned into proportions** (a share-of-words floor instead of zero tolerance; uppercase-dominance removed as mathematically unfixable — real all-caps prose and all-caps mojibake are letter-case-identical): fixed round 2's false rejections, but itself rejected realistic, lowercase-heavy KOI8-R/KOI8-U prose, because ordinary sentence capitalization is too sparse in a real paragraph to clear a 10%-of-words floor. Case-based rules oscillate between too strict and too loose because letter case is not actually the signal that distinguishes a correct decode from a wrong one for this encoding family.
+3. **Round 4 — letter-frequency scoring** (decode as windows-1251/koi8-r/koi8-u, score each by Cyrillic ratio + share of ~10 common ru/uk letters, accept the highest scorer past a floor and margin): fixed the round 3 regression (KOI8 prose now scored and decoded correctly), but an independent verify pass with a much broader probe corpus (business prose in RU/UK/BG/SR/DE/FR/PL/CS/EL/TR/HE/AR/ZH/JA/KO, plus sliding-window sweeps) found it still wrong on three fronts, at least one a real regression from `main`:
+   - an almost-entirely-valid UTF-8 Russian/Ukrainian file carrying a single stray non-UTF-8 byte (a concatenated cp1251 line, a stray NBSP, a file cut mid-rune) was indexed as full-document mojibake — a genuine regression, since `main` failed such files outright;
+   - Ukrainian KOI8-U text heavy in є/ї/ґ (not top-10 letters) was sometimes decoded as KOI8-R instead, turning those letters into box-drawing characters;
+   - Greek (cp1253/ISO-8859-7) and Hebrew (cp1255/ISO-8859-8) prose, and short (under ~100 char) GBK/EUC-JP/EUC-KR fragments, scored high enough via the KOI8 candidate to be indexed as garbage — KOI8 and these charsets share enough of a phonetic/frequency shape that the score can't always tell them apart, especially for short text.
 
-**Round 4 (verify-round finding: R3-1 regression + R3-2..R3-6) — replaced
-the case-based rules with letter-frequency scoring.** Round 3's
-case-based proportional rules (word-mixing, mid-word case-flip) were
-themselves found broken: realistic, lowercase-heavy KOI8-R/KOI8-U prose —
-ordinary sentence capitalization is far too sparse in a real paragraph to
-clear a 10%-of-words floor — was rejected as StatusFailed, when round 1/2
-already rejected it and this was meant to be the fix. Letter case is the
-wrong signal for telling a correct decode from a wrong one across the
-windows-1251/koi8-r/koi8-u family, so the whole case-based mechanism
-(`looksLikeCyrillicPlainText`, `isWordAnomalyMeaningful`, the anomaly
-constants) is removed and replaced with `bestCyrillicText`/
-`scoreCyrillicText`: decode the undeclared bytes as **all three** of
-windows-1251/koi8-r/koi8-u, score each by combining the Cyrillic-letter
-ratio with the share of Cyrillic letters among ~10 common Russian/
-Ukrainian letters (о е а и н т с р в л і, case-insensitive), and accept the
-winner only if it clears an absolute floor **and** beats the runner-up by a
-margin. When koi8-r/koi8-u wins, ITS OWN decode is returned, so a genuine
-KOI8 file is indexed correctly rather than merely "not rejected."
+**Suggested direction for a future attempt (not implemented here):** only attempt an undeclared guess when (a) the MIME type and the document itself declare no charset at all — never as a fallback that overrides a declaration or a mostly-valid decode — AND (b) a proper statistical detector trained/validated on a large real corpus per candidate charset (e.g. a byte- or trigram-frequency language model per encoding, not a hand-picked top-letter list) agrees, with a sample-size floor before it is trusted at all (the round 4 sweep showed short samples of *every* family are unreliable, not just Cyrillic). A cheaper alternative that sidesteps statistical detection entirely: let the owner configure an explicit per-space (or per-account) fallback charset for attachments with no declaration, since a given Confluence space/mail account typically has one consistent legacy charset in practice, if any.
 
-Measured scores (ratio + topShare; see `scoreCyrillicText`), each sample's
-own correct-encoding score:
-
-| sample | score | verdict |
-|---|---|---|
-| real Russian prose (4 sentences, cp1251) | 1.66 | accept |
-| real Ukrainian prose (4 sentences, cp1251) | 1.63 | accept |
-| the same paragraphs actually encoded in KOI8-R / KOI8-U | 1.66 / 1.63 | accept (decoded as KOI8, not cp1251) |
-| all-lowercase short "привет мир как дела" (KOI8-R) | 1.69 | accept |
-| cp1251 prose with brand names (ПриватБанк, МегаФон) | 1.66 | accept |
-| all-caps cp1251 line ("ИТОГО ПО ДОГОВОРУ …") | 1.63 (margin over koi8 ≈ 0.04 — the tightest accept-side gap measured) | accept |
-| CSV with Latin headers + Cyrillic rows (cp1251) | 1.57 | accept |
-| ultra-short "ИТОГО" alone (5 letters) | 1.80 | accept |
-| ultra-short "да" (2 letters) | 1.50 | accept |
-| "Привет мир" (10 letters) | 1.78 | accept |
-| cp1252 / ISO-8859-1 mojibake | 0.79 | reject |
-| ISO-8859-2 mojibake | 0.49 | reject |
-| GBK mojibake | 1.23 (closest any rejected sample comes to the accept side) | reject |
-| Shift-JIS mojibake | 0.99 | reject |
-| short mojibake "Café Müller" | 0.70 | reject |
-
-`cyrillicScoreMin` = **1.40** (between GBK's 1.23 worst-mojibake and 1.50
-least-accept); `cyrillicScoreMargin` = **0.02** (comfortably under the
-all-caps line's ~0.04, the tightest real accept-side margin observed).
-koi8-r and koi8-u are collapsed to whichever scores higher before the
-margin check runs against windows-1251 — their letter tables are nearly
-identical, so margin-checking them against EACH OTHER would reject genuine
-KOI8 content on that internal coin-flip (a Ukrainian paragraph's koi8-u vs.
-koi8-r margin measured ~0.016, well under any workable threshold, while its
-margin over the WRONG cp1251 reading is ~0.28). **No separate short-text
-rule**: the shortest accept cases above (2 and 5 letters) already clear
-both thresholds; a fragment too short to carry a meaningful letter
-distribution either fails the ratio component outright or is rare enough in
-practice not to special-case — documented in `bestCyrillicText`'s doc
-comment alongside the full table above.
-
-Also in this round:
-- **R3-2** (minor): the guess decoded the untrimmed bytes, so a file with a
-  spurious UTF-8 BOM followed by a non-UTF-8 body decoded that BOM as three
-  garbage characters ("п»ї") glued onto otherwise-correct text — on both the
-  plain-text path and, newly reachable since round 3's F5 fallthrough, the
-  HTML path. Fixed: both paths now score the BOM-trimmed bytes.
-- **R3-3** (minor): resolved as a side effect of the redesign — a short
-  cp1251 text with two brand names ("Договор с МегаФон и ПриватБанк
-  подписан") now scores comfortably above both thresholds, since the
-  frequency signal doesn't degrade with word count the way the old
-  word-count floor did.
-- **R3-4** (minor, test-quality): `headChildDepth` counted void head-only
-  elements (`meta`/`link`/`base`) the same as `title`/`style`/`script`, but
-  a void element never gets a matching end tag — so once a real `<head>`
-  (which almost always has at least one `meta` or `link`) was seen, the
-  depth stayed stuck above zero forever and the F7 text-closes-head rule
-  never fired again in practice, only in its own no-other-children test
-  fixture. Fixed: only `title`/`style`/`script`/`noscript`/`template`
-  (`headContainerTags`, a narrower set than `headAllowedTags`) bump the
-  depth. The first version of this fix's own test didn't actually exercise
-  the bug (a subsequent `<p>` tag closes head via its own, unrelated,
-  already-correct rule regardless) — fixed by asserting the full text
-  instead of a substring.
-- **R3-5** (minor, accepted limit): a declared **single-byte** charset that
-  is wrong still produces `StatusOK` mojibake — the U+FFFD share check
-  (F5) cannot see it, since a single-byte charmap never emits a replacement
-  character no matter which byte it reads. This is the same "an explicit
-  declaration is trusted over any guess" rule the whole declared-charset
-  path exists to implement (matching browser/HTML5 behavior), so it is left
-  as-is rather than special-cased further. Documented in
-  `replacementShareMax`'s doc comment and the PR description.
-- **R3-6** (nit, accepted limit): BOM-less UTF-16 HTML (no BOM, no
-  meta/MIME declaration at all) is still indexed as raw bytes with
-  interspersed NULs — `scanMetaCharset` cannot tokenize UTF-16 bytes, and
-  `utf8.Valid` happens to accept ASCII-plus-NUL. Pre-existing (predates this
-  PR) and rare in practice; left undocumented in code beyond this note,
-  per the routing for this round.
-
-Tests: `internal/extract/encoding_test.go` fixtures are now realistic,
-lowercase-heavy, multi-sentence paragraphs throughout (the exact gap the
-R3-1 regression exploited) —
-`TestPlainMojibakeFamiliesFail`/`TestPlainKOI8ProseDecodesCorrectly`
-(KOI8 now indexes **correctly**, not merely "accepted")/
-`TestPlainAllLowercaseKOI8RPhraseDecodesCorrectly` (the exact regression
-sample)/`TestPlainAcceptsRealWorldCyrillicEdgeCases`/
-`TestPlainShortMojibakeFails`/`TestScoreCyrillicText` (direct scoring
-pins)/`TestPlainBOMIsTrimmedBeforeCyrillicScoring`/
-`TestHTMLBOMIsTrimmedBeforeCyrillicScoring` (R3-2)/
-`TestHTMLHeadClosedByTextDespiteVoidElements` (R3-4). Mutation-checked the
-new thresholds (`cyrillicScoreMin`, `cyrillicScoreMargin`,
-`cyrillicTopLetters`) and the R3-2/R3-4 fixes — each disabled/reintroduced
-in turn and confirmed to turn the matching test(s) red; the first R3-4 test
-draft passed even with the bug reintroduced and was rewritten to actually
-exercise it (see above).
+Tests restored/added this round: `TestPlainInvalidUTF8Fails` reverted to its pre-detection-work fixture and intent; `TestPlainWindows1251WithoutDeclarationFails` (was `TestPlainWindows1251Decodes`) now asserts `StatusFailed`; `TestPlainMojibakeFamiliesFail` folds in koi8-r/koi8-u/windows-1251 alongside the other rejected families (undeclared Cyrillic content fails just like everything else now); `TestPlainUTF8WithOneStrayByteFails` pins the specific regression that triggered the withdrawal; `TestHTMLDeclaredUTF8OverInvalidBytesFails` (was `...FallsThrough`) now asserts failure instead of guess-recovery; `TestHTMLUnknownMetaLabelRecoversValidUTF8`/`OverNonUTF8Fails` and `TestHTMLUndeclaredNonUTF8Fails` split the old guess-recovery tests into their new fail/recover-via-decodeDirect halves. All of `looksLikeCyrillicPlainText`, `isWordAnomalyMeaningful`, `bestCyrillicText`, `scoreCyrillicText`, `scoreCandidate`, `cyrillicCandidate` and their constants are deleted; `decodeCleanly` stays (used only by the UTF-16-BOM path now).
 
 ## linkscan freezes a Slack message's from_ref at first sighting, so a root later promoted to a thread keeps its channel-day ref
 

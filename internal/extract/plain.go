@@ -6,13 +6,11 @@ import (
 	"io"
 	"mime"
 	"strings"
-	"unicode"
 	"unicode/utf8"
 
 	"golang.org/x/net/html"
 	"golang.org/x/net/html/charset"
 	"golang.org/x/text/encoding"
-	"golang.org/x/text/encoding/charmap"
 	xunicode "golang.org/x/text/encoding/unicode"
 
 	"watchtower/internal/extsync"
@@ -29,15 +27,25 @@ var (
 	utf16BOMBE = []byte{0xFE, 0xFF}
 )
 
-// readUTF8 reads r (≤ MaxDownload) as text with LF line endings. UTF-8 (with
-// or without a BOM) is read directly; failing that, a UTF-16 BOM, or the
-// best-scoring of windows-1251/koi8-r/koi8-u (see bestCyrillicText) — are
-// tried as fallbacks before giving up. Text that still isn't recognized is
-// StatusFailed, input above MaxDownload StatusTooLarge. There is no
-// declared-charset step here: a plain-text attachment carries no meta tag
-// and this package sees no MIME header to read a charset param from.
-// htmlText is the one caller with a real declaration available, and it
-// decodes before ever reaching this function.
+// readUTF8 reads r (≤ MaxDownload) as text with LF line endings: UTF-8 (with
+// or without a BOM) is read directly, a UTF-16 BOM decoded as UTF-16 —
+// anything else is StatusFailed, input above MaxDownload StatusTooLarge.
+//
+// There is deliberately no undeclared single-byte-charset guess here (a
+// windows-1251/koi8-r/koi8-u attempt was tried across three review rounds —
+// see docs/backlog/2026-09-27-review-low-priority-pr3-confluence-go.md's
+// "cp1251/KOI8 detection withdrawn" entry — and every version regressed:
+// case-based word rules rejected real prose too eagerly or not eagerly
+// enough, and letter-frequency scoring accepted Greek/Hebrew/short-CJK
+// mojibake and, worse, turned an almost-entirely-valid UTF-8 file carrying
+// one stray byte into full-document mojibake, a real regression from this
+// function's UTF-8-only behavior on main). A byte stream that isn't valid
+// UTF-8 and carries no BOM fails outright, exactly as before this PR's
+// encoding-detection work began. There is no declared-charset step here
+// either: a plain-text attachment carries no meta tag and this package sees
+// no MIME header to read a charset param from. htmlText is the one caller
+// with a real declaration available, and it decodes before ever reaching
+// this function.
 func readUTF8(r io.Reader) (text, status string, err error) {
 	b, err := readCapped(r)
 	if errors.Is(err, errTooLarge) {
@@ -49,23 +57,13 @@ func readUTF8(r io.Reader) (text, status string, err error) {
 	if text, ok := decodeDirect(b); ok {
 		return text, StatusOK, nil
 	}
-	trimmed := bytes.TrimPrefix(b, utf8BOM)
-	text, ok := bestCyrillicText(trimmed, identityText)
-	if !ok {
-		return "", StatusFailed, nil
-	}
-	return text, StatusOK, nil
+	return "", StatusFailed, nil
 }
 
-// identityText is the "no rendering" pass bestCyrillicText scores plain
-// text against — htmlText instead scores the markup-stripped text (see its
-// own call site).
-func identityText(s string) string { return s }
-
-// decodeDirect handles the two unambiguous "no scoring needed" cases: a
-// UTF-16 byte-order mark, or already-valid UTF-8 (with or without its own
-// BOM). ok=false means neither applies — the caller falls through to the
-// scored windows-1251/koi8-r/koi8-u guess (bestCyrillicText).
+// decodeDirect handles the two unambiguous cases: a UTF-16 byte-order mark,
+// or already-valid UTF-8 (with or without its own BOM). ok=false means
+// neither applies — the caller fails rather than guessing (see readUTF8's
+// doc comment).
 func decodeDirect(b []byte) (text string, ok bool) {
 	if decoded, gotBOM := decodeByBOM(b); gotBOM {
 		return normalizeNewlines(string(decoded)), true
@@ -99,170 +97,15 @@ func decodeByBOM(b []byte) ([]byte, bool) {
 
 // decodeCleanly decodes b with enc, reporting ok=false when the decode
 // itself errors or falls back to the Unicode replacement character anywhere.
-// This alone is NOT a signal that a single-byte candidate decode is the
-// RIGHT one: windows-1251/koi8-r/koi8-u each leave only a handful of byte
-// values undefined out of 256, so they decode "cleanly" for almost any 8-bit
-// byte stream regardless of what encoding actually produced it —
-// bestCyrillicText's scoring is what actually picks the right one (or
-// rejects all of them).
+// Used only for the unambiguous UTF-16-by-BOM case (decodeByBOM) — there is
+// no undeclared single-byte-charset guess in this package (see readUTF8's
+// doc comment).
 func decodeCleanly(b []byte, enc encoding.Encoding) ([]byte, bool) {
 	out, err := enc.NewDecoder().Bytes(b)
 	if err != nil || bytes.ContainsRune(out, utf8.RuneError) {
 		return nil, false
 	}
 	return out, true
-}
-
-// cyrillicTopLetters are Russian and Ukrainian's ~10 most frequent Cyrillic
-// letters (case-insensitive: compared via unicode.ToLower, so an all-caps
-// document scores the same as its lowercase form) — о е а и н т с р в л і
-// (і is Ukrainian's analogue of и, not used in Russian).
-var cyrillicTopLetters = func() map[rune]bool {
-	m := map[rune]bool{}
-	for _, r := range "оеаинтсрвлі" {
-		m[r] = true
-	}
-	return m
-}()
-
-// scoreCyrillicText scores how plausibly text is real Russian/Ukrainian
-// prose, combining two signals: the share of all letters that are Cyrillic
-// (Latin ASCII counted too, so English CSV headers alongside Russian rows —
-// a common shape — don't themselves hurt the score), and the share of the
-// CYRILLIC letters that are among cyrillicTopLetters. Real prose
-// concentrates heavily on a handful of common letters regardless of case;
-// a WRONG single-byte guess redistributes the same bytes across an
-// effectively arbitrary permutation of the Cyrillic alphabet, landing on the
-// top letters only by chance. Returns 0 for text with no Cyrillic letters at
-// all. See bestCyrillicText's doc comment for measured scores.
-func scoreCyrillicText(text string) float64 {
-	var cyr, lat, top int
-	for _, r := range text {
-		switch {
-		case unicode.Is(unicode.Cyrillic, r):
-			cyr++
-			if cyrillicTopLetters[unicode.ToLower(r)] {
-				top++
-			}
-		case unicode.Is(unicode.Latin, r):
-			lat++
-		}
-	}
-	total := cyr + lat
-	if total == 0 || cyr == 0 {
-		return 0
-	}
-	ratio := float64(cyr) / float64(total)
-	topShare := float64(top) / float64(cyr)
-	return ratio + topShare
-}
-
-// cyrillicScoreMin/cyrillicScoreMargin gate bestCyrillicText's winning
-// candidate. Measured scores (ratio + topShare, see scoreCyrillicText),
-// spot-checked with realistic multi-sentence samples (encoding_test.go
-// pins the mojibake and accept sides; scores below are each sample's own
-// correct-encoding score, i.e. what the winner reports):
-//
-//	Must accept (all pass with a wide margin over any other candidate):
-//	  real Russian prose (4 sentences, cp1251)          1.66
-//	  real Ukrainian prose (4 sentences, cp1251)         1.63
-//	  same paragraphs actually encoded in KOI8-R/KOI8-U  1.66 / 1.63
-//	    (bestCyrillicText picks KOI8-R/-U as the winner here and returns
-//	    ITS OWN decode — the file is indexed correctly, not merely accepted)
-//	  all-lowercase short "привет мир как дела"          1.69
-//	  cp1251 prose with brand names (ПриватБанк, ...)     1.66
-//	  all-caps cp1251 line ("ИТОГО ПО ДОГОВОРУ ...")      1.63 (margin over
-//	    its koi8 runner-up is the tightest of any accept case, ~0.04 — the
-//	    floor above sits below this and every other accept case; the margin
-//	    below sits under it)
-//	  a CSV with Latin headers + Cyrillic rows (cp1251)  1.57
-//	  ultra-short "ИТОГО" alone (5 letters)               1.80
-//	  ultra-short "да" (2 letters)                        1.50
-//	  "Привет мир" (10 letters)                           1.78
-//
-//	Must reject (every family's WINNING candidate, whichever it is):
-//	  cp1252 / ISO-8859-1 mojibake                        0.79
-//	  ISO-8859-2 mojibake                                 0.49
-//	  GBK mojibake                                        1.23 (the closest
-//	    any rejected sample comes to the accept side)
-//	  Shift-JIS mojibake                                  0.99
-//	  short mojibake "Café Müller"                        0.70
-//
-// cyrillicScoreMin sits at 1.40: comfortably above GBK's 1.23 (the worst
-// mojibake score observed) and below every accept case (least is 1.50).
-// cyrillicScoreMargin is 0.02: comfortably under the all-caps line's ~0.04
-// margin (the tightest accept-side gap), while still requiring a real
-// separation rather than an exact tie. No separate short-text rule: the
-// shortest accept cases above (2 and 5 letters) already clear both
-// thresholds with their measured scores; a fragment too short to carry a
-// meaningful letter distribution either doesn't reach the ratio floor at all
-// (mixed with enough non-Cyrillic content) or is rare enough in practice
-// not to special-case.
-const (
-	cyrillicScoreMin    = 1.40
-	cyrillicScoreMargin = 0.02
-)
-
-// cyrillicCandidate is one legacy single-byte guess and, once scored, its
-// decode.
-type cyrillicCandidate struct {
-	text  string
-	score float64
-	ok    bool // decoded cleanly (see decodeCleanly) — false = not a candidate at all
-}
-
-// scoreCandidate decodes b with enc and scores the result via render
-// (identityText for plain text, stripHTML for HTML — see bestCyrillicText).
-func scoreCandidate(b []byte, enc encoding.Encoding, render func(string) string) cyrillicCandidate {
-	decoded, ok := decodeCleanly(b, enc)
-	if !ok {
-		return cyrillicCandidate{}
-	}
-	text := normalizeNewlines(string(decoded))
-	return cyrillicCandidate{text: text, score: scoreCyrillicText(render(text)), ok: true}
-}
-
-// bestCyrillicText decodes b (already BOM-trimmed) as windows-1251, koi8-r
-// and koi8-u, and returns the best-scoring candidate's OWN decoded text —
-// so a genuine KOI8-R/KOI8-U file is indexed correctly, a bonus of scoring
-// against real candidates rather than only ever guessing windows-1251
-// (never a guess: it still has to win the same threshold as any other
-// candidate). render lets the caller score the MARKUP-STRIPPED text instead
-// of the raw candidate decode: for HTML, tag names (html, body, p, ...) are
-// themselves Latin letters that would dilute the ratio if scored directly.
-//
-// koi8-r and koi8-u are near-identical letter tables (Ukrainian adds a
-// handful of extra letters on top of the same Russian core), so a genuine
-// KOI8 file scores them within a hair of each other — margin-checking them
-// against EACH OTHER would reject real KOI8 content on that coin-flip. They
-// are collapsed to whichever one scores higher before the margin check runs
-// against windows-1251.
-//
-// ok=false when no candidate decodes cleanly, or the winner doesn't clear
-// cyrillicScoreMin/cyrillicScoreMargin — see their doc comment for the
-// measured scores behind these thresholds.
-func bestCyrillicText(b []byte, render func(string) string) (text string, ok bool) {
-	cp1251 := scoreCandidate(b, charmap.Windows1251, render)
-	koiR := scoreCandidate(b, charmap.KOI8R, render)
-	koiU := scoreCandidate(b, charmap.KOI8U, render)
-
-	koi := koiR
-	if koiU.ok && (!koi.ok || koiU.score > koi.score) {
-		koi = koiU
-	}
-
-	best, other := cp1251, koi
-	if koi.ok && (!best.ok || koi.score > best.score) {
-		best, other = koi, cp1251
-	}
-
-	if !best.ok || best.score < cyrillicScoreMin {
-		return "", false
-	}
-	if other.ok && best.score-other.score < cyrillicScoreMargin {
-		return "", false
-	}
-	return best.text, true
 }
 
 // plainText is one section holding the whole text (text, markdown, csv,
@@ -288,14 +131,13 @@ func oneSection(text string) []extsync.Section {
 // param, a byte-order mark, or an HTML <meta charset>/http-equiv
 // Content-Type tag — is honored unconditionally, before any guess (HTML5's
 // own "determining the character encoding" algorithm, minus its final
-// windows-1252-by-default step: an UNDECLARED document falls through to the
-// same UTF-8/windows-1251-or-koi8 scoring path as plain text instead of that
-// default, since silently guessing windows-1252 is exactly the mojibake risk
-// this package otherwise guards against for plain text). A declared charset
-// whose decode is mostly (or, for a declared utf-8, at all) U+FFFD
-// replacement characters is treated as a wrong declaration and also falls
-// through to the same undeclared path, rather than being indexed as ok
-// garbage — see tooManyReplacementRunes.
+// windows-1252-by-default step — an UNDECLARED document instead just gets
+// decodeDirect's UTF-16-BOM/valid-UTF-8 check, same as plain text; there is
+// no single-byte-charset guess in this package at all, see readUTF8's doc
+// comment). A declared charset whose decode is mostly (or, for a declared
+// utf-8, at all) U+FFFD replacement characters is treated as a wrong
+// declaration — see tooManyReplacementRunes — and falls back only to
+// decodeDirect, never to a guess.
 func htmlText(mediaType string, r io.Reader) ([]extsync.Section, string, error) {
 	b, err := readCapped(r)
 	if errors.Is(err, errTooLarge) {
@@ -315,23 +157,16 @@ func htmlText(mediaType string, r io.Reader) ([]extsync.Section, string, error) 
 		}
 		// The declared charset decoded without a Go error but is (mostly, or
 		// for a declared utf-8 at all) U+FFFD replacement characters — the
-		// declaration was wrong, not the content. Fall through to the same
-		// undeclared path used when nothing was declared at all, instead of
-		// indexing "�" as ok.
+		// declaration was wrong, not the content. There is no undeclared
+		// guess to fall back to (see readUTF8's doc comment): decodeDirect
+		// below still gets a chance (a real BOM, or genuinely valid UTF-8 a
+		// wrong declaration masked), but failing that this fails outright
+		// rather than indexing "�" as ok or guessing a single-byte charset.
 	}
 	if text, ok := decodeDirect(b); ok {
 		return oneSection(stripHTML(text)), StatusOK, nil
 	}
-	trimmed := bytes.TrimPrefix(b, utf8BOM)
-	// The score runs on the STRIPPED text, not the raw markup+content a
-	// candidate decode produces: tag names (html, body, p, ...) are
-	// themselves Latin letters, and counting them would dilute the ratio
-	// for any real Russian/Ukrainian page with enough markup.
-	text, ok := bestCyrillicText(trimmed, stripHTML)
-	if !ok {
-		return nil, StatusFailed, nil
-	}
-	return oneSection(stripHTML(text)), StatusOK, nil
+	return nil, StatusFailed, nil
 }
 
 // declaredHTMLEncoding reports a charset HTML itself declares — the encoding

@@ -109,14 +109,15 @@ func TestMediaTypeWithParams(t *testing.T) {
 	assert.Equal(t, []extsync.Section{{Text: "hi"}}, secs)
 }
 
+// TestPlainInvalidUTF8Fails restores this test's original intent (from
+// before this package tried, and across several review rounds withdrew, an
+// undeclared single-byte-charset guess — see readUTF8's doc comment and
+// docs/backlog/2026-09-27-review-low-priority-pr3-confluence-go.md): non-
+// UTF-8 bytes with no byte-order mark simply fail, with no attempt to guess
+// a legacy charset.
 func TestPlainInvalidUTF8Fails(t *testing.T) {
 	x := newExtractor(t, nil)
-	// 0x98 is invalid UTF-8 on its own AND the one byte windows-1251 (the
-	// encoding fallback below) leaves undefined — {'a', 0xff, 0xfe} alone
-	// would no longer do here, since it happens to be valid windows-1251
-	// ("aяю") and is exactly the kind of text that fallback exists to
-	// recover.
-	secs, status, err := x.Extract(context.Background(), "text/plain", "a.txt", bytes.NewReader([]byte{'a', 0xff, 0x98}))
+	secs, status, err := x.Extract(context.Background(), "text/plain", "a.txt", bytes.NewReader([]byte{'a', 0xff, 0xfe}))
 	require.NoError(t, err)
 	assert.Equal(t, StatusFailed, status)
 	assert.Nil(t, secs)
@@ -134,16 +135,21 @@ func TestPlainUTF16BOMDecodes(t *testing.T) {
 	assert.Equal(t, []extsync.Section{{Text: "hi"}}, secs)
 }
 
-// TestPlainWindows1251Decodes pins that windows-1251 text (common for a CSV
-// saved by Excel in a Russian/Ukrainian locale, with no BOM at all) is
-// recovered as a fallback once the UTF-8 check fails.
-func TestPlainWindows1251Decodes(t *testing.T) {
+// TestPlainWindows1251WithoutDeclarationFails pins the final routing
+// decision on undeclared legacy single-byte charsets (windows-1251, common
+// for a CSV saved by Excel in a Russian/Ukrainian locale, with no BOM at
+// all): this package tried, and across three review rounds withdrew, a
+// guess for exactly this case — see readUTF8's doc comment and
+// docs/backlog/2026-09-27-review-low-priority-pr3-confluence-go.md. With no
+// byte-order mark and no declared charset (a plain-text/CSV attachment
+// never carries one), such a file fails, same as any other non-UTF-8 bytes.
+func TestPlainWindows1251WithoutDeclarationFails(t *testing.T) {
 	x := newExtractor(t, nil)
 	doc := []byte{0xEF, 0xF0, 0xE8, 0xE2, 0xE5, 0xF2} // cp1251 for "привет"
 	secs, status, err := x.Extract(context.Background(), "text/csv", "a.csv", bytes.NewReader(doc))
 	require.NoError(t, err)
-	assert.Equal(t, StatusOK, status)
-	assert.Equal(t, []extsync.Section{{Text: "привет"}}, secs)
+	assert.Equal(t, StatusFailed, status)
+	assert.Nil(t, secs)
 }
 
 func TestHTML(t *testing.T) {
