@@ -322,6 +322,25 @@ struct ConfigServiceTests {
         #expect(svc.calendarSyncDaysAhead == 5)
     }
 
+    /// Go's `DefaultCalendarSyncDaysAhead` is 7. Swift used to default an
+    /// absent key to 2 and `save()` always writes it, so toggling "Enable
+    /// calendar sync" on an install without the key silently shrank the
+    /// daemon's horizon to 2 days.
+    @Test("An absent calendar.sync_days_ahead defaults to Go's 7 and saves as 7")
+    func calendarSyncDaysAheadDefaultMatchesGo() throws {
+        for yaml in ["calendar:\n  enabled: false\n", "active_workspace: acme\n"] {
+            let path = makeTempConfig(yaml)
+            let svc = ConfigService(configPath: path)
+            #expect(svc.calendarSyncDaysAhead == 7)
+
+            svc.calendarEnabled = true
+            try svc.save()
+            let saved = try Yams.load(yaml: String(contentsOfFile: path, encoding: .utf8)) as? [String: Any]
+            let calendar = saved?["calendar"] as? [String: Any]
+            #expect(calendar?["sync_days_ahead"] as? Int == 7)
+        }
+    }
+
     @Test("Load parses jira features")
     func loadJiraFeatures() {
         let path = makeTempConfig("""
