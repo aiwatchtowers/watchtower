@@ -116,3 +116,17 @@ func TestStorageStatusMacroLabel(t *testing.T) {
 	require.Len(t, sections, 1)
 	assert.Equal(t, "State: DONE", sections[0].Text)
 }
+
+// TestStorageFallbackScansJiraKeys pins that a document too deep for the
+// tree builder still links its plain-text Jira mentions: the fallback path
+// used to return jiraKeys=nil unconditionally, so a page like this would
+// silently drop out of doc_links even though its raw text names a key.
+func TestStorageFallbackScansJiraKeys(t *testing.T) {
+	body := strings.Repeat("<div>", 600) + "See PROJ-42 for details"
+	sections, users, keys, err := StorageToSections(body, maxBodyRunes)
+	require.Error(t, err, "600 levels of nesting must overflow the tree builder's 512-node stack")
+	require.Len(t, sections, 1)
+	assert.Contains(t, sections[0].Text, "PROJ-42")
+	assert.Nil(t, users, "the fallback strip parses no ac:link/ri:user element, so it can never find a mention")
+	assert.Equal(t, []string{"PROJ-42"}, keys)
+}

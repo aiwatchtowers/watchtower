@@ -22,7 +22,13 @@ Resolution: `head` is tracked separately from the `skippedElements` depth
 counter via `htmlStripper.inHead`, closed explicitly by `</head>` and
 implicitly by a `<body>` start tag (HTML5 §13.2.6.4.6). Pinned by
 `TestHTMLMissingHeadClose` (`internal/extract/extract_test.go`), asserting
-the explicit- and implicit-close documents render identically.
+the explicit- and implicit-close documents render identically. **Round 2
+generalization:** `<body>` is only the common case of HTML5's "in head"
+insertion mode's "anything else" rule — ANY opening tag not allowed inside
+`<head>` (`headAllowedTags`: title/meta/link/style/script/base/noscript/
+template) closes it, even with no `<body>` tag at all (e.g.
+`<html><head><title>T</title><p>Hello`). Pinned by
+`TestHTMLHeadClosedByOrdinaryTag`.
 
 ## Storage XHTML nested deeper than 512 elements silently indexes as an empty page (fixed in fix/bl-confluence-content)
 
@@ -36,11 +42,20 @@ and now falls back to `fallbackText` (a linear, tag-blind tokenizer strip —
 no tree, no open-element stack, so the resource bound `storage_depth_test.go`
 already pinned still holds) instead of an empty body when `parseFragment`
 fails. Both call sites (`Fetcher.pageItem`, `Fetcher.commentItem`) log the
-fallback through the fetcher's new `SetLogger` seam (wired in
-`cmd/sync.go`'s `wireExternalSync`, the `jira.Client.SetLogger` precedent).
-Pinned by the extended `TestStorageDeepNestingIsBounded`, which now also
-asserts a non-nil `parseErr` and that the fallback section still carries
-the body's text.
+fallback through the fetcher's new `SetLogger` seam (wired in both
+`cmd/sync.go`'s `wireExternalSync` — the daemon path — and, since round 2,
+`cmd/confluence.go`'s `runConfluenceSync` — the foreground `confluence sync`
+path — the `jira.Client.SetLogger` precedent). Pinned by the extended
+`TestStorageDeepNestingIsBounded`, which now also asserts a non-nil
+`parseErr` and that the fallback section still carries the body's text, and
+by `TestExternalSyncWiring_SetsFetcherLogger`/`TestConfluenceSync_SetsFetcherLogger`
+(`cmd/confluence_test.go`) for the two wiring points. **Round 2 addition:**
+the fallback also runs the plain-text Jira key scan
+(`jira.KeyRegexp`/`converter.scanJiraKeys`) over the fallback text, so
+`doc_links` still picks up a page's plain-text Jira mentions even on this
+path (`userIDs` stays nil — a mention token only ever comes from an
+`ac:link`/`ri:user` element the fallback never parses). Pinned by
+`TestStorageFallbackScansJiraKeys`.
 
 ## Storage converter drops date lozenges and status macro labels (fixed in fix/bl-confluence-content)
 
@@ -85,16 +100,42 @@ instead of the four the old behavior required.
 
 Resolution: `readUTF8` now decodes a UTF-16LE/BE BOM via
 `golang.org/x/text/encoding/unicode` (already an indirect dependency,
-promoted to direct by `go mod tidy` — no new module, no version change),
-and, failing that, tries `golang.org/x/text/encoding/charmap.Windows1251`
-when the UTF-8 check fails; either fallback is accepted only when it
-decodes with no `utf8.RuneError` (`decodeCleanly`), since a single-byte
-charmap maps nearly every byte to *some* rune. `TestPlainInvalidUTF8Fails`'s
-fixture changed — its old 3 bytes happen to be valid cp1251 ("aяю"), exactly
-the content this fix recovers — to one still undecodable under every
-supported path (cp1251's one genuinely undefined byte, 0x98). New:
-`TestPlainUTF16BOMDecodes`, `TestPlainWindows1251Decodes`
-(`internal/extract/extract_test.go`).
+promoted to direct by `go mod tidy` — no new module, no version change), and,
+failing that, tries `golang.org/x/text/encoding/charmap.Windows1251` when
+the UTF-8 check fails. **Round 2 correction:** `decodeCleanly`'s
+"no `utf8.RuneError`" check alone is *not* a reliable signal — cp1251 has
+only one undefined byte (0x98) in its whole 256-value table, so it "decodes
+cleanly" for almost any 8-bit byte stream, including cp1252/ISO-8859-2/
+KOI8-R/GBK mojibake. A windows-1251 decode is now additionally gated on
+`looksLikeCyrillicPlainText` (Cyrillic ≥ ~50% of all letters, no word mixing
+Latin+Cyrillic, no mid-word Cyrillic case flip, uppercase Cyrillic not
+outnumbering lowercase) before it's trusted as real Russian/Ukrainian text;
+for HTML the gate runs on the markup-stripped text, not the raw
+markup+content, since tag names are themselves Latin letters and would
+dilute the ratio. `TestPlainInvalidUTF8Fails`'s fixture changed — its old 3
+bytes happen to be valid cp1251 ("aяю"), exactly the content this fix
+recovers — to one still undecodable under every supported path (cp1251's one
+genuinely undefined byte, 0x98). Tests:
+`TestPlainUTF16BOMDecodes`/`TestPlainWindows1251Decodes`
+(`internal/extract/extract_test.go`);
+`TestPlainNonCyrillicMojibakeFails`/`TestPlainCyrillicCSVWithLatinHeadersDecodes`
+(`internal/extract/encoding_test.go`) pin the plausibility gate against
+cp1252/GBK/KOI8-R mojibake and a real mostly-Russian CSV with Latin headers.
+
+**Round 2 addition — HTML charset declarations honored first:** `htmlText`
+now honors a charset the document declares itself — the MIME Content-Type's
+charset param or a byte-order mark (both "certain" per
+`golang.org/x/net/html/charset.DetermineEncoding`), or an HTML
+`<meta charset>`/http-equiv Content-Type tag (`scanMetaCharset`, since
+`DetermineEncoding`'s own meta detection is, through its public API,
+indistinguishable from its final windows-1252-by-default guess) —
+unconditionally, before any guess. An HTML document with no declaration
+anywhere still falls through to the same UTF-8/windows-1251-plausibility
+path as plain text, never `DetermineEncoding`'s own windows-1252 default
+(which would reintroduce exactly the mojibake risk this fix guards against).
+Tests: `TestHTMLHonorsDeclaredMIMECharset`/`TestHTMLHonorsMetaCharset`/
+`TestHTMLHonorsHTTPEquivMetaCharset`/`TestHTMLUndeclaredFallsBackToPlausibilityGate`/
+`TestHTMLUndeclaredMojibakeStillFails` (`internal/extract/encoding_test.go`).
 
 ## linkscan freezes a Slack message's from_ref at first sighting, so a root later promoted to a thread keeps its channel-day ref
 

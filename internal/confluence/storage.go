@@ -35,21 +35,29 @@ var wsRun = regexp.MustCompile(`\s+`)
 // StorageToSections converts Confluence storage-format XHTML into sections
 // split at h1-h3. User mentions become "@[~<accountId>]" tokens (resolved to
 // names at index time from ext_users); returned userIDs lists them. jiraKeys
-// lists issue keys from Jira macros and plain text (deduped, in order).
+// lists issue keys from Jira macros and plain text (deduped, in order) — on
+// the fallback path below, plain-text keys only (no ac:name="jira" macro
+// parsing, since fallbackText renders no structure), so doc_links still picks
+// up whatever keys the page's raw text names.
 //
 // ParseFragment's HTML5 algorithm tolerates arbitrarily malformed input (there
 // is no equivalent of an XML well-formedness error) with one exception:
 // golang.org/x/net/html caps its open-element stack at 512 nodes and returns
 // an error past that depth (storage_depth_test.go). parseErr is non-nil only
-// in that case; sections/userIDs/jiraKeys still carry a best-effort
-// tag-blind text strip (fallbackText) rather than an empty page, so a
-// pathologically deep or malformed document is still searchable by its text.
+// in that case; sections/jiraKeys still carry a best-effort tag-blind text
+// strip (fallbackText) rather than an empty page, so a pathologically deep or
+// malformed document is still searchable by its text and still links its
+// Jira mentions — userIDs is always nil on this path, since a mention token
+// only ever comes from an ac:link/ri:user element the fallback never parses.
 // Callers should log a non-nil parseErr — there is no useful recovery action,
 // since re-parsing the same input gives the same result.
 func StorageToSections(xhtml string, maxRunes int) (sections []extsync.Section, userIDs []string, jiraKeys []string, parseErr error) {
 	nodes, err := parseFragment(xhtml)
 	if err != nil {
-		return capSections(fallbackSections(xhtml), maxRunes), nil, nil, err
+		text := fallbackText(xhtml)
+		c := &converter{}
+		c.scanJiraKeys(text)
+		return capSections(oneSection(text), maxRunes), nil, c.jiraKeys, err
 	}
 	c := &converter{}
 	nodes = flattenTransparent(nodes)
@@ -57,11 +65,10 @@ func StorageToSections(xhtml string, maxRunes int) (sections []extsync.Section, 
 	return sections, c.userIDs, c.jiraKeys, nil
 }
 
-// fallbackSections wraps fallbackText as the one-section shape the rest of
-// the pipeline expects ("" text = no section, matching capSections' input
-// convention elsewhere in this file).
-func fallbackSections(xhtml string) []extsync.Section {
-	text := fallbackText(xhtml)
+// oneSection wraps text as the one-section shape the rest of the pipeline
+// expects ("" text = no section, matching capSections' input convention
+// elsewhere in this file).
+func oneSection(text string) []extsync.Section {
 	if text == "" {
 		return nil
 	}
