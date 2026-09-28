@@ -840,3 +840,47 @@ func TestInbox09_UnresolvedSlackAccountSkippedDoesNotFreezeWatermark(t *testing.
 func TestInbox09Gap_SlackAccountGenuineErrorSiblingIsolation(t *testing.T) {
 	t.Skip("no mechanism found to make one Slack account's detector query fail while a sibling's succeeds against the same shared tables — see the doc comment above for what was tried; reported as a documented limitation, not silently treated as covered")
 }
+
+// TestAutoResolveJira_CommentEditIsNotAnAnswer pins that auto-resolve keys on
+// a comment's CREATION only: editing an own comment that predates the item
+// does not resolve it (the edit counts only toward the detector's own-bump
+// suppression).
+func TestAutoResolveJira_CommentEditIsNotAnAnswer(t *testing.T) {
+	d := newTestDB(t)
+	p := newPipelineForTest(t, d, "alice", "alice@x.com")
+	p.SetOwner(db.Owner{ID: "alice", SlackUserID: "alice", Email: "alice@x.com", JiraAccountID: "acc-alice"})
+	seedJiraComment(t, d, "WT-20", "acc-alice", "old note", time.Now().Add(-2*time.Hour))
+	mustCreateInboxItem(t, d, db.InboxItem{ChannelID: "WT-20", MessageTS: "x", SenderUserID: "WT-20",
+		TriggerType: "jira_assigned", ItemClass: "actionable", Status: "pending", Priority: "medium"})
+	_, err := d.Exec(`UPDATE jira_comments SET updated_at = ? WHERE issue_key = 'WT-20'`,
+		db.FormatJiraTime(time.Now().Add(5*time.Second).UTC()))
+	require.NoError(t, err)
+
+	assert.Equal(t, 0, p.autoResolveJira(context.Background(), newOwnJiraComments(d, p.owner)))
+}
+
+// TestCalendarTimeChange_ResolvedSameCycleWhenRSVPAnswered pins the CURRENT
+// end-to-end behaviour of a reschedule for an owner who already answered the
+// invite: the detector mints the calendar_time_change item and
+// autoResolveCalendar — which resolves any pending time change whose RSVP is
+// not needsAction — resolves it in the same Run, so no reader sees it
+// pending. This is pending an owner call on INBOX-02 (whether an answered
+// RSVP should close a reschedule); change this test only with that decision.
+func TestCalendarTimeChange_ResolvedSameCycleWhenRSVPAnswered(t *testing.T) {
+	d := newTestDB(t)
+	attendees := `[{"email":"alice@x.com","response_status":"accepted"}]`
+	start := time.Now().Add(3 * time.Hour)
+	syncCalendarEvent(t, d, "evt-tc", attendees, start, start.Add(time.Hour),
+		time.Now().Add(-3*time.Hour), time.Now().Add(-2*time.Hour))
+	moved := start.Add(24 * time.Hour)
+	syncCalendarEvent(t, d, "evt-tc", attendees, moved, moved.Add(time.Hour),
+		time.Now().Add(-30*time.Minute), time.Now())
+
+	p := newPipelineForTest(t, d, "alice", "alice@x.com")
+	_, _, err := p.Run(context.Background())
+	require.NoError(t, err)
+
+	got := queryInboxByTrigger(t, d, "calendar_time_change")
+	require.Len(t, got, 1, "the reschedule is detected")
+	assert.Equal(t, "resolved", got[0].Status, "and resolved in the same Run (current INBOX-02 behaviour)")
+}

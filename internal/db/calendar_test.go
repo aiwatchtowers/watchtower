@@ -821,6 +821,8 @@ func TestUpsertCalendarEvent_TimeChangedAt(t *testing.T) {
 	// The batch upsert shares the same ON CONFLICT clause.
 	ev.StartTime = ts(48 * time.Hour)
 	require.NoError(t, db.UpsertCalendarEvents([]CalendarEvent{ev}))
-	assert.NotEqual(t, ts(-1*time.Hour), stamp(), "start moved via the batch upsert")
-	assert.NotEmpty(t, stamp())
+	var syncedAt string
+	require.NoError(t, db.QueryRow(`SELECT synced_at FROM calendar_events WHERE id = 'evt1'`).Scan(&syncedAt))
+	assert.NotEqual(t, ts(-1*time.Hour), syncedAt, "the batch pass stamps its own synced_at")
+	assert.Equal(t, syncedAt, stamp(), "start moved via the batch upsert: stamped with that pass's synced_at")
 }
