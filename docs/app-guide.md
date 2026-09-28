@@ -21,7 +21,7 @@ A briefing contains five sections:
 
 The list panel shows briefings by date with unread indicator (blue dot), attention count, and task count. Selecting a briefing marks it as read. Briefings are generated once per day after the configured hour (default: 8:00 AM, configurable in Settings via `briefing.hour`).
 
-With no briefings yet, the empty list offers **Generate Briefing**. If the run fails, the reason appears in red under the button instead of the click silently doing nothing.
+With no briefings yet, the empty list offers **Generate Briefing**. If the run fails, the reason appears in red under the button instead of the click silently doing nothing. A run keeps going if you switch to another tab: coming back shows it still in progress (the button stays disabled, so a second click cannot start a parallel run) or shows its result or error.
 
 **No connected account:** a briefing is written for *you*, so Watchtower first needs to know who you are — it takes that from your Slack account #1, else your first Google account, else the first enabled Jira site whose owner identity is known. With none of them connected, the empty list instead says "Connect Slack, Google or Jira so Watchtower knows who you are", and its **Open Connections** button opens Settings on the Connections tab. There is no Generate button until an account is connected. A freshly connected Jira site can show this same empty state briefly, until Watchtower reads your identity from Jira in the background.
 

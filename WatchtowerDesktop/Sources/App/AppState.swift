@@ -154,6 +154,10 @@ final class AppState {
     /// Calendar ViewModel — persists across tab switches.
     private(set) var calendarViewModel: CalendarViewModel?
 
+    /// Briefings ViewModel — persists across tab switches so an in-flight
+    /// "Generate" run (and its error) survives navigating away and back.
+    private(set) var briefingViewModel: BriefingViewModel?
+
     /// Day Plan ViewModel — persists across tab switches.
     private(set) var dayPlanViewModel: DayPlanViewModel?
 
@@ -669,6 +673,7 @@ final class AppState {
         initCatchUp(dbPool: manager.dbPool)
         initMemory(dbPool: manager.dbPool)
         initIdeas(dbManager: manager)
+        initBriefings(dbManager: manager)
         initSecretaryProfile(dbManager: manager)
         initEmailAccounts(dbPool: manager.dbPool)
         initCalendarAccounts(dbPool: manager.dbPool)
@@ -720,6 +725,18 @@ final class AppState {
         let vm = IdeasViewModel(dbManager: dbManager)
         vm.startObserving()
         ideasViewModel = vm
+    }
+
+    /// Not marked `private` (the `initSecretaryProfile` precedent) so XCTest can
+    /// prove `briefingViewModel` identity — and its in-flight generate state —
+    /// persists across tab switches (`BriefingViewModelTests`).
+    func initBriefings(
+        dbManager: DatabaseManager,
+        cliRunner: (any CLIRunnerProtocol)? = ProcessCLIRunner.makeDefault()
+    ) {
+        let vm = BriefingViewModel(dbManager: dbManager, cliRunner: cliRunner)
+        vm.startObserving()
+        briefingViewModel = vm
     }
 
     /// Not marked `private` (unlike most of its siblings above) so XCTest can call it
