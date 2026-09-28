@@ -342,8 +342,8 @@ func (p *Pipeline) clampToFailingJiraProject(accountID int64, bound, now time.Ti
 	if lagging == "" {
 		return bound, nil
 	}
-	synced, err := time.Parse(time.RFC3339, lagging)
-	if err != nil {
+	synced, ok := parseSyncStamp(lagging)
+	if !ok {
 		p.logf("ideas: jira account %d: unparseable project last_synced_at %q, not clamping the floor", accountID, lagging)
 		return bound, nil
 	}
@@ -357,6 +357,12 @@ func (p *Pipeline) clampToFailingJiraProject(accountID int64, bound, now time.Ti
 	}
 	p.logf("ideas: jira account %d: a selected project is failing to sync (last success %s) — mining only up to %s", accountID, lagging, db.FormatJiraTime(clamp))
 	return clamp, nil
+}
+
+// parseSyncStamp parses a jira_sync_state.last_synced_at (RFC3339).
+func parseSyncStamp(s string) (time.Time, bool) {
+	t, err := time.Parse(time.RFC3339, s)
+	return t, err == nil
 }
 
 // initJiraFloor stamps a never-initialized account's ideas floor at now
