@@ -3,6 +3,7 @@ package catchup
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 
@@ -175,4 +176,68 @@ func TestSubmitTopicFeedback_InvalidTargetWritesNothing(t *testing.T) {
 	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM feedback`).Scan(&n))
 	assert.Equal(t, 0, n, "a rejected target must not leave a feedback row")
 	assert.False(t, gen.called)
+}
+
+// The model proposes, code disposes: an invented id, an unknown pipeline or
+// rule_type, or a key in the wrong shape is skipped (not persisted, not fatal),
+// an out-of-range weight is clamped, and the rest of the pass — later valid
+// rules and the regeneration — still runs.
+func TestSubmitTopicFeedback_InvalidRulesAreSkippedNotPersisted(t *testing.T) {
+	gen := &mockGenerator{}
+	p, d := newPipeline(t, gen, &fakeTopUp{})
+	digestID := seedDigest(t, d, 1500, 1900)
+	recapID := seedReadyRecap(t, d, digestID)
+	gen.fn = func(system, _ string) string {
+		if strings.HasPrefix(system, learnSystemPrompt) {
+			return `{"rules":[
+				{"pipeline":"digest","rule_type":"source_mute","scope_key":"digest:channel:Cxxx","weight":-1},
+				{"pipeline":"digest","rule_type":"trigger_nonsense","scope_key":"digest:channel:1:C1","weight":-1},
+				{"pipeline":"marketing","rule_type":"source_mute","scope_key":"marketing:channel:1:C1","weight":-1},
+				{"pipeline":"digest","rule_type":"source_mute","scope_key":"channel:1:C1","weight":-1},
+				{"pipeline":"inbox","rule_type":"source_mute","scope_key":"digest:channel:1:C1","weight":-1},
+				{"pipeline":"digest","rule_type":"source_mute","scope_key":"","weight":-1},
+				{"pipeline":"digest","rule_type":"source_mute","scope_key":"digest:channel:1:C1","weight":-7},
+				{"rule_type":"source_boost","scope_key":"channel:1:C1","weight":3}
+			],"regenerate":true}`
+		}
+		return fmt.Sprintf(composeOK, digestID)
+	}
+
+	newID, err := p.SubmitTopicFeedback(context.Background(), recapID, 0, -1, "this channel is noise, and fix the title")
+	require.NoError(t, err, "an invalid rule must not abort the pass")
+	assert.Greater(t, newID, int64(0), "the regeneration still runs after skipped rules")
+
+	digestRules, err := d.ListLearnedRulesByPipeline("digest", 10)
+	require.NoError(t, err)
+	require.Len(t, digestRules, 1, "only the well-formed digest rule persists")
+	assert.Equal(t, "digest:channel:1:C1", digestRules[0].ScopeKey)
+	assert.Equal(t, -1.0, digestRules[0].Weight, "weight clamped to [-1, 1]")
+
+	inboxRules, err := d.ListLearnedRulesByPipeline("inbox", 10)
+	require.NoError(t, err)
+	require.Len(t, inboxRules, 1, "an empty pipeline defaults to inbox with a bare key")
+	assert.Equal(t, "channel:1:C1", inboxRules[0].ScopeKey)
+	assert.Equal(t, 1.0, inboxRules[0].Weight)
+
+	for _, pipeline := range []string{"tracks", "briefing", "catchup", "marketing"} {
+		rules, rerr := d.ListLearnedRulesByPipeline(pipeline, 10)
+		require.NoError(t, rerr)
+		assert.Empty(t, rules, "nothing leaks into %q", pipeline)
+	}
+}
+
+func TestValidateLearnRule_SenderKeyAndNaN(t *testing.T) {
+	refs := []learnRef{{Area: "inbox", ChannelID: "1:D9", SenderID: "1:U7"}}
+	r, why := validateLearnRule(learnRule{Pipeline: "tracks", RuleType: "source_boost", ScopeKey: "tracks:sender:1:U7", Weight: 0.5}, refs)
+	assert.Empty(t, why)
+	assert.Equal(t, 0.5, r.Weight)
+
+	_, why = validateLearnRule(learnRule{Pipeline: "tracks", RuleType: "source_boost", ScopeKey: "tracks:sender:U7", Weight: 0.5}, refs)
+	assert.NotEmpty(t, why, "a raw id where the hint was namespaced is not the supplied id")
+
+	_, why = validateLearnRule(learnRule{Pipeline: "inbox", RuleType: "source_mute", ScopeKey: "sender:1:U7", Weight: math.NaN()}, refs)
+	assert.NotEmpty(t, why, "NaN weight is rejected")
+
+	_, why = validateLearnRule(learnRule{Pipeline: "inbox", RuleType: "source_mute", ScopeKey: "sender:1:U7", Weight: -0.3}, nil)
+	assert.NotEmpty(t, why, "no refs → no key can be valid")
 }
