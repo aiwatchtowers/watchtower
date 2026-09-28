@@ -27,6 +27,9 @@ struct RecordingIndicatorView: View {
     @Environment(AppState.self) private var appState
     @State private var expanded = false
     @AppStorage("transcription.provider") private var transcriptionProvider = "whisperkit"
+    /// Receives the bottom space composers must keep free while pills show
+    /// (`RecordingIndicatorInset.reserved`), 0 once the stack is empty.
+    var onReservedInsetChange: (CGFloat) -> Void = { _ in }
 
     /// Whether the active capture has a live transcript to offer: the engine
     /// can produce one AND the capture opted in — the Center's start-time
@@ -47,7 +50,10 @@ struct RecordingIndicatorView: View {
             recorderContent(center)
             provisionerContent(provisioner)
         }
-        .padding(16)
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+            onReservedInsetChange(RecordingIndicatorInset.reserved(stackHeight: height))
+        }
+        .padding(RecordingIndicatorInset.outerPadding)
     }
 
     @ViewBuilder

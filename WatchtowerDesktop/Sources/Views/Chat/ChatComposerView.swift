@@ -12,6 +12,7 @@ struct ChatComposerView: View {
     /// resolve the active `@`/`/` trigger on a mouse-click pick, which carries
     /// no caret of its own (spec §6.2).
     @State private var lastCursor = 0
+    @Environment(\.recordingIndicatorInset) private var recordingIndicatorInset
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -53,7 +54,11 @@ struct ChatComposerView: View {
                 )
                 modelPill.padding(.horizontal, 16).padding(.bottom, 6)
             }
+            // The whole composer (model pill included) keeps clear of the
+            // recorder pills below, so the inner input must not add it again.
+            .environment(\.recordingIndicatorInset, 0)
         }
+        .padding(.bottom, recordingIndicatorInset)
         .onChange(of: chatVM.draft) { old, new in
             if old.isEmpty, !new.isEmpty { chatVM.prewarm() }
         }

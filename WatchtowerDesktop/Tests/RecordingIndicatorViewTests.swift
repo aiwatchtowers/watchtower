@@ -201,4 +201,20 @@ final class RecordingIndicatorViewTests: XCTestCase {
     // Retry/dismiss eligibility now lives on the Center
     // (`retriableFailureID`/`dismissableFailureID`, so the buttons can never
     // disagree with what the Center would do); see MeetingRecorderQueueTests.
+
+    // MARK: - Reserved composer inset
+
+    /// Nothing recording, queued or failed: the empty stack measures zero and
+    /// composers keep their normal layout.
+    func testEmptyStackReservesNothing() {
+        XCTAssertEqual(RecordingIndicatorInset.reserved(stackHeight: 0), 0)
+    }
+
+    /// Visible pills reserve their own height plus the stack's gap to the
+    /// window bottom, so a composer sits entirely above the topmost pill.
+    func testVisibleStackReservesItsHeightPlusOuterPadding() {
+        XCTAssertEqual(RecordingIndicatorInset.reserved(stackHeight: 40),
+                       40 + RecordingIndicatorInset.outerPadding)
+        XCTAssertEqual(RecordingIndicatorInset.reserved(stackHeight: 150), 166)
+    }
 }

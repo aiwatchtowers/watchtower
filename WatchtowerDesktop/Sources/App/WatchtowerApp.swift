@@ -223,6 +223,9 @@ struct WatchtowerApp: App {
     /// never mounts one), and a singleton is what makes "the SwiftUI-managed
     /// state" and "the state the delegate initialized" provably identical.
     @State private var appState = AppState.shared
+    /// Bottom space the recorder pills need, handed to every composer so the
+    /// pills never cover what the owner is typing.
+    @State private var recordingIndicatorInset: CGFloat = 0
     /// Read here — not inside `TrayMenuView`, which has its own copy for the
     /// tray button — so the global hotkey's plain C callback (no SwiftUI
     /// environment of its own) has something to call through `AppState`.
@@ -279,9 +282,10 @@ struct WatchtowerApp: App {
 
     private var rootContent: some View {
         NavigationRoot()
+            .environment(\.recordingIndicatorInset, recordingIndicatorInset)
             .frame(minWidth: 800, minHeight: 600)
             .overlay(alignment: .bottomTrailing) {
-                RecordingIndicatorView()
+                RecordingIndicatorView { recordingIndicatorInset = $0 }
             }
             .overlay(alignment: .bottomTrailing) {
                 ExtractIndicatorView()
