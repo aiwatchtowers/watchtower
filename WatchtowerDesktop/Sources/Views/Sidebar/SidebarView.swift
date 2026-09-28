@@ -108,9 +108,13 @@ struct SidebarView: View {
                         Text(nextEvt.title)
                             .font(.caption)
                             .lineLimit(1)
-                        Text(nextEvt.startDate, style: .relative)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                            .truncationMode(.tail)
+                        TimelineView(.periodic(from: .now, by: 1)) { context in
+                            Text(Self.nextEventCountdownText(start: nextEvt.startDate, now: context.date))
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
                     }
                     if nextEvt.conferenceLink != nil {
                         Spacer(minLength: 4)
@@ -247,6 +251,21 @@ struct SidebarView: View {
         case .statistics: recommendationCount
         default: 0
         }
+    }
+
+    /// A single-line countdown to `start`: whole minutes until the final
+    /// minute, whole seconds only inside it. Replaces `Text(_, style: .relative)`,
+    /// whose built-in "34 min, 7 sec" phrasing has no line limit and wraps
+    /// across 2-3 lines in the sidebar's narrow footer, and whose per-second
+    /// seconds count is unnecessary noise until the meeting is about to start.
+    static func nextEventCountdownText(start: Date, now: Date) -> String {
+        let remaining = Int(start.timeIntervalSince(now).rounded())
+        guard remaining > 0 else { return "starting now" }
+        if remaining < 60 {
+            return remaining == 1 ? "in 1 sec" : "in \(remaining) sec"
+        }
+        let minutes = remaining / 60
+        return minutes == 1 ? "in 1 min" : "in \(minutes) min"
     }
 
     /// A section's items after BOTH filters: the user's own hide choices and
