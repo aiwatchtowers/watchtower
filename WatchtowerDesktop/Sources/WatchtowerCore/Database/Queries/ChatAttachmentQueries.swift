@@ -71,6 +71,14 @@ package enum ChatAttachmentQueries {
         return out
     }
 
+    /// A conversation's unsent files (not linked to any message yet): the
+    /// composer's pending set when that conversation is opened again.
+    package static func fetchPending(_ db: Database, conversationID: Int64) throws -> [ChatAttachment] {
+        try ChatAttachment.fetchAll(db, sql: """
+            SELECT * FROM chat_attachments WHERE conversation_id = ? AND message_id IS NULL ORDER BY id
+            """, arguments: [conversationID])
+    }
+
     package static func delete(_ db: Database, id: Int64) throws {
         try db.execute(sql: "DELETE FROM chat_attachments WHERE id = ?", arguments: [id])
     }

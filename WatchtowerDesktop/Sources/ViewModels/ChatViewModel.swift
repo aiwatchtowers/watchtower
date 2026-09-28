@@ -112,7 +112,19 @@ final class ChatViewModel {
     private(set) var isOnLanding = true
     /// The conversation the landing made (or reused) for its draft. Left for
     /// anything but its own first turn, it is deleted while still untouched.
-    @ObservationIgnored private(set) var landingDraftID: Int64?
+    /// Persisted per workspace database, so a draft abandoned by quitting is
+    /// found — and only that one is deleted — at the next launch.
+    @ObservationIgnored private(set) var landingDraftID: Int64? {
+        didSet {
+            if let landingDraftID {
+                defaults.set(landingDraftID, forKey: landingDraftKey)
+            } else {
+                defaults.removeObject(forKey: landingDraftKey)
+            }
+        }
+    }
+    @ObservationIgnored private let defaults: UserDefaults
+    private var landingDraftKey: String { "chat.landingDraftID.\(dbManager.dbPool.path)" }
     /// Active (unarchived) projects for the sidebar.
     private(set) var projects: [ChatProject] = []
     /// Keys the owner closed the panel for during the CURRENT turn — a
@@ -131,8 +143,10 @@ final class ChatViewModel {
         pool: ChatSessionPool,
         provider: AIProvider = .claude,
         cliRunner: CLIRunnerProtocol? = nil,
+        defaults: UserDefaults = .standard,
         makeTurnID: @escaping () -> String = { UUID().uuidString }
     ) {
+        self.defaults = defaults
         self.dbManager = dbManager
         self.pool = pool
         self.selectedProvider = provider
@@ -182,6 +196,7 @@ final class ChatViewModel {
         reload()
         guard switching else { return }
         errorMessage = nil
+        restorePendingAttachments(conversationID: id)
         artifactPanel = nil
         sourcesPanel = nil
         dismissedArtifactKeys = []
@@ -234,15 +249,13 @@ final class ChatViewModel {
 
     /// The landing: ⌘N, New Chat, and a tab entry outside the resume
     /// window. The session of the conversation left behind stays warm
-    /// (the pool's idle TTL). A still-untouched conversation outside any
-    /// project stays the landing's own, so no second empty row is made.
+    /// (the pool's idle TTL). The landing's own still-untouched draft stays
+    /// its draft, so no second empty row is made; any other chat is let go
+    /// (never adopted as a draft — it is not the landing's to delete).
     func showLanding() {
         openProjectID = nil
         isOnLanding = true
-        if let conv = currentConversation, conv.activeLeafMessageID == nil, conv.projectID == nil, !isStreaming {
-            landingDraftID = conv.id
-            return
-        }
+        if let id = conversationID, id == landingDraftID { return }
         clearShownConversation()
     }
 
@@ -251,15 +264,13 @@ final class ChatViewModel {
         !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !composerAttachments.pending.isEmpty
     }
 
-    /// App launch: drop the untouched chats an abandoned landing (or an
-    /// older ⌘N) left behind. Nothing is shown yet, so none is on screen.
+    /// App launch: drop the draft a landing left behind by quitting, while
+    /// it is still untouched. Nothing is shown yet, so it is not on screen;
+    /// no other chat is ever swept.
     func cleanUpUntouchedConversations() {
-        do {
-            let ids = try dbManager.dbPool.write { try ChatConversationQueries.deleteAllUntouched($0) }
-            if !ids.isEmpty { reloadConversations() }
-        } catch {
-            NSLog("ChatViewModel: cleaning up untouched chats failed: %@", error.localizedDescription)
-        }
+        guard let stale = defaults.object(forKey: landingDraftKey) as? Int64 else { return }
+        landingDraftID = stale
+        discardLandingDraft()
     }
 
     /// Leaving the landing for anything but its own first turn: its draft
@@ -301,7 +312,24 @@ final class ChatViewModel {
         }
     }
 
+    /// Pending files belong to their own conversation: opening another chat
+    /// shows that chat's unsent files, never carries the previous ones along.
+    private func restorePendingAttachments(conversationID id: Int64?) {
+        guard let id else {
+            composerAttachments.replacePending(with: [])
+            return
+        }
+        do {
+            let pending = try dbManager.dbPool.read { try ChatAttachmentQueries.fetchPending($0, conversationID: id) }
+            composerAttachments.replacePending(with: pending)
+        } catch {
+            composerAttachments.replacePending(with: [])
+            errorMessage = "Couldn't load this chat's unsent files: \(error.localizedDescription)"
+        }
+    }
+
     private func clearShownConversation() {
+        restorePendingAttachments(conversationID: nil)
         conversationID = nil
         currentConversation = nil
         thread = []
@@ -538,10 +566,14 @@ final class ChatViewModel {
     private func conversationIDCreatingIfNeeded() -> Int64? {
         if let conversationID { return conversationID }
         guard isOnLanding else { return newConversation() }
-        // An untouched chat is reused rather than a second empty row made.
+        // The landing's own earlier draft, still untouched, is reused rather
+        // than a second empty row made.
         let reusable: Int64?
         do {
-            reusable = try dbManager.dbPool.read { try ChatConversationQueries.fetchUntouched($0)?.id }
+            let previous = landingDraftID ?? defaults.object(forKey: landingDraftKey) as? Int64
+            reusable = try previous.flatMap { id in
+                try dbManager.dbPool.read { try ChatConversationQueries.fetchUntouched($0, id: id)?.id }
+            }
         } catch {
             NSLog("ChatViewModel: looking up an untouched chat failed: %@", error.localizedDescription)
             reusable = nil

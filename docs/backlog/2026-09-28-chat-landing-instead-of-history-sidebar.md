@@ -67,3 +67,11 @@ hides message-less chats unless they are selected. Unsent text or
 attachments force a resume. "On screen" is also stamped on backgrounding,
 on quit, and once a minute while the tab is visible, keyed by workspace.
 Archiving the shown chat and deleting the open project both land.
+
+Verify round: a chat counts as "untouched" (deletable, reusable) only if it
+is also unpinned and has no owner-set title. Deletion and reuse are scoped to
+the landing's own draft id, persisted per workspace, so empty chats of any
+other origin (moved out of a project, left by a deleted project) are never
+swept. Unsent files belong to their own chat: switching chats shows that
+chat's pending files, and a chat holding only unsent files stays listed in
+the history.

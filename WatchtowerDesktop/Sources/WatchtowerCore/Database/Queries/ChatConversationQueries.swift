@@ -8,11 +8,14 @@ package enum ChatConversationQueries {
         """)
     }
 
+    /// The main chat's list; `has_attachments` lets a message-less chat
+    /// that holds unsent files stay visible in the history.
     package static func fetchStandalone(_ db: Database) throws -> [ChatConversation] {
         try ChatConversation.fetchAll(db, sql: """
-            SELECT * FROM chat_conversations
-            WHERE context_type IS NULL AND archived_at IS NULL
-            ORDER BY updated_at DESC
+            SELECT c.*, EXISTS (SELECT 1 FROM chat_attachments a WHERE a.conversation_id = c.id) AS has_attachments
+            FROM chat_conversations c
+            WHERE c.context_type IS NULL AND c.archived_at IS NULL
+            ORDER BY c.updated_at DESC
         """)
     }
 
@@ -190,20 +193,23 @@ package enum ChatConversationQueries {
     }
 
     /// An "untouched" main chat: standalone, outside any project, not
-    /// archived, with no message and no attachment — what the Chat landing
-    /// makes on its first keystroke and discards when it is left unused.
+    /// archived, never pinned or renamed by the owner, with no message and no
+    /// attachment — what the Chat landing makes on its first keystroke and
+    /// discards when it is left unused. Callers only ever pass the landing's
+    /// own draft id: an empty chat of any other origin (moved out of a
+    /// project, or left by a deleted one) is never theirs to delete.
     private static let untouchedPredicate = """
         c.context_type IS NULL AND c.project_id IS NULL AND c.archived_at IS NULL
+        AND c.pinned = 0 AND c.title_source <> 'user'
         AND NOT EXISTS (SELECT 1 FROM chat_messages m WHERE m.conversation_id = c.id)
         AND NOT EXISTS (SELECT 1 FROM chat_attachments a WHERE a.conversation_id = c.id)
         """
 
-    /// The newest untouched main chat, for the landing to reuse.
-    package static func fetchUntouched(_ db: Database) throws -> ChatConversation? {
+    /// `id` while it is still untouched, for the landing to reuse its draft.
+    package static func fetchUntouched(_ db: Database, id: Int64) throws -> ChatConversation? {
         try ChatConversation.fetchOne(db, sql: """
-            SELECT c.* FROM chat_conversations c WHERE \(untouchedPredicate)
-            ORDER BY c.updated_at DESC, c.id DESC LIMIT 1
-            """)
+            SELECT c.* FROM chat_conversations c WHERE c.id = ? AND \(untouchedPredicate)
+            """, arguments: [id])
     }
 
     /// Deletes `id` only while it is still untouched; true when it was.
@@ -214,15 +220,6 @@ package enum ChatConversationQueries {
                 SELECT c.id FROM chat_conversations c WHERE c.id = ? AND \(untouchedPredicate))
             """, arguments: [id])
         return db.changesCount > 0
-    }
-
-    /// Launch cleanup: every untouched main chat left behind by an abandoned
-    /// landing (or an older ⌘N). Returns the deleted ids.
-    @discardableResult
-    package static func deleteAllUntouched(_ db: Database) throws -> [Int64] {
-        let ids = try Int64.fetchAll(db, sql: "SELECT c.id FROM chat_conversations c WHERE \(untouchedPredicate)")
-        for id in ids { try delete(db, id: id) }
-        return ids
     }
 
     package static func fetchByID(_ db: Database, id: Int64) throws -> ChatConversation? {

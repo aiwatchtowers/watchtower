@@ -148,11 +148,10 @@ final class ChatLandingPolicyTests: XCTestCase {
 
     // MARK: - Untouched chats (the landing's draft)
 
-    func testUntouchedQueriesSpareMessagesAttachmentsProjectsAndArchived() throws {
+    func testUntouchedQueriesSpareEverythingTheOwnerTouched() throws {
         let db = try TestDatabase.create()
         try db.write { d in
-            let untouched = try TestDatabase.insertChatConversation(d, title: "", updatedAt: 100)
-            let newer = try TestDatabase.insertChatConversation(d, title: "", updatedAt: 200)
+            let untouched = try TestDatabase.insertChatConversation(d, title: "")
             let messaged = try TestDatabase.insertChatConversation(d, title: "m")
             try TestDatabase.insertChatMessage(d, conversationID: messaged, role: "user", text: "hi")
             let attached = try TestDatabase.insertChatConversation(d, title: "a")
@@ -165,16 +164,35 @@ final class ChatLandingPolicyTests: XCTestCase {
             let archived = try TestDatabase.insertChatConversation(d, title: "")
             try ChatConversationQueries.archive(d, id: archived)
             let scoped = try TestDatabase.insertChatConversation(d, title: "", contextType: "target")
+            let pinned = try TestDatabase.insertChatConversation(d, title: "", pinned: true)
+            let renamed = try TestDatabase.insertChatConversation(d, title: "")
+            try ChatConversationQueries.rename(d, id: renamed, title: "Mine")
 
-            XCTAssertEqual(try ChatConversationQueries.fetchUntouched(d)?.id, newer)
-            for kept in [messaged, attached, inProject, archived, scoped] {
+            XCTAssertEqual(try ChatConversationQueries.fetchUntouched(d, id: untouched)?.id, untouched)
+            for kept in [messaged, attached, inProject, archived, scoped, pinned, renamed] {
+                XCTAssertNil(try ChatConversationQueries.fetchUntouched(d, id: kept), "\(kept)")
                 XCTAssertFalse(try ChatConversationQueries.deleteIfUntouched(d, id: kept), "\(kept)")
             }
-            XCTAssertTrue(try ChatConversationQueries.deleteIfUntouched(d, id: newer))
-            XCTAssertFalse(try ChatConversationQueries.deleteIfUntouched(d, id: newer), "already gone")
-            XCTAssertEqual(try ChatConversationQueries.deleteAllUntouched(d), [untouched])
-            XCTAssertNil(try ChatConversationQueries.fetchUntouched(d))
-            XCTAssertEqual(try ChatConversationQueries.deleteAllUntouched(d), [])
+            XCTAssertTrue(try ChatConversationQueries.deleteIfUntouched(d, id: untouched))
+            XCTAssertFalse(try ChatConversationQueries.deleteIfUntouched(d, id: untouched), "already gone")
+        }
+    }
+
+    func testStandaloneListFlagsChatsWithUnsentFiles() throws {
+        let db = try TestDatabase.create()
+        try db.write { d in
+            let plain = try TestDatabase.insertChatConversation(d, title: "plain")
+            let withFile = try TestDatabase.insertChatConversation(d, title: "file")
+            try d.execute(sql: """
+                INSERT INTO chat_attachments (conversation_id, name, mime, size, path, sha256, created_at)
+                VALUES (?, 'f.txt', 'text/plain', 1, 'f.txt', 'x', 0)
+                """, arguments: [withFile])
+            let byID = Dictionary(uniqueKeysWithValues: try ChatConversationQueries.fetchStandalone(d).map { ($0.id, $0) })
+            XCTAssertEqual(byID[plain]?.hasAttachments, false)
+            XCTAssertEqual(byID[withFile]?.hasAttachments, true)
+            XCTAssertEqual(ChatLandingPolicy.recents(Array(byID.values)).map(\.id), [withFile])
+            XCTAssertEqual(try ChatAttachmentQueries.fetchPending(d, conversationID: withFile).count, 1)
+            XCTAssertTrue(try ChatAttachmentQueries.fetchPending(d, conversationID: plain).isEmpty)
         }
     }
 }

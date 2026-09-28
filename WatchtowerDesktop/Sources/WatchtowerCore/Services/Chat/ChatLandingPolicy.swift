@@ -62,10 +62,11 @@ package enum ChatLandingPolicy {
     }
 
     /// The landing's jump-back list: pinned first, then recent; archived
-    /// and message-less conversations (an untouched "New Chat") are left out.
+    /// chats and chats with neither a message nor an unsent file (an
+    /// untouched "New Chat") are left out.
     package static func recents(_ conversations: [ChatConversation]) -> [ChatConversation] {
         let candidates = conversations
-            .filter { $0.archivedAt == nil && $0.activeLeafMessageID != nil }
+            .filter { $0.archivedAt == nil && ($0.activeLeafMessageID != nil || $0.hasAttachments) }
             .sorted { $0.updatedAt > $1.updatedAt }
         let pinned = candidates.filter(\.pinned).prefix(pinnedLimit)
         let recent = candidates.filter { !$0.pinned }.prefix(recentLimit)

@@ -13,9 +13,13 @@ final class ChatLandingViewModelTests: XCTestCase {
     private var pool: ChatSessionPool!
     private var fakes: [FakeChatSessionProcess] = []
     private var turnCounter = 0
+    private var defaults: UserDefaults!
+    private var defaultsSuite: String!
     private let window = ChatLandingPolicy.resumeWindow
 
     override func setUpWithError() throws {
+        defaultsSuite = "ChatLandingViewModelTests.\(UUID().uuidString)"
+        defaults = UserDefaults(suiteName: defaultsSuite)
         (dbManager, dbPath) = try TestDatabase.createDatabaseManager()
         fakes = []
         turnCounter = 0
@@ -33,10 +37,11 @@ final class ChatLandingViewModelTests: XCTestCase {
     override func tearDown() async throws {
         await pool.closeAll()
         TestDatabase.cleanup(path: dbPath)
+        defaults.removePersistentDomain(forName: defaultsSuite)
     }
 
     private func makeViewModel() -> ChatViewModel {
-        ChatViewModel(dbManager: dbManager, pool: pool, provider: .claude) { [weak self] in
+        ChatViewModel(dbManager: dbManager, pool: pool, provider: .claude, defaults: defaults) { [weak self] in
             guard let self else { return UUID().uuidString }
             self.turnCounter += 1
             return "turn-\(self.turnCounter)"
@@ -275,28 +280,135 @@ final class ChatLandingViewModelTests: XCTestCase {
         XCTAssertTrue(try rowExists(draftID))
     }
 
-    func testDraftStartedReusesAnExistingUntouchedRow() throws {
-        let existing = try dbManager.dbPool.write { try TestDatabase.insertChatConversation($0, title: "") }
-        let vm = makeViewModel()
-        vm.draftStarted()
-        XCTAssertEqual(vm.conversationID, existing)
-        XCTAssertTrue(vm.isOnLanding)
-        let rows = try dbManager.dbPool.read { try ChatConversationQueries.fetchStandalone($0) }
-        XCTAssertEqual(rows.map(\.id), [existing])
+    /// Only the landing's own draft is reused — here the one a previous
+    /// launch left behind — never an empty chat of another origin.
+    func testDraftStartedReusesOnlyTheLandingsOwnDraft() throws {
+        let foreign = try dbManager.dbPool.write { try TestDatabase.insertChatConversation($0, title: "") }
+        let first = makeViewModel()
+        first.draftStarted()
+        let draft = try XCTUnwrap(first.conversationID)
+        XCTAssertNotEqual(draft, foreign)
+
+        let relaunched = makeViewModel()
+        relaunched.draftStarted()
+        XCTAssertEqual(relaunched.conversationID, draft)
+        XCTAssertTrue(relaunched.isOnLanding)
+        XCTAssertTrue(try rowExists(foreign))
     }
 
-    func testLaunchCleanupDropsOnlyUntouchedStandaloneChats() async throws {
+    func testLaunchCleanupDropsOnlyTheAbandonedLandingDraft() async throws {
         let answered = try await answeredConversation(makeViewModel())
-        let (empty, inProject) = try await dbManager.dbPool.write { d -> (Int64, Int64) in
+        let quitter = makeViewModel()
+        quitter.draftStarted()
+        let draft = try XCTUnwrap(quitter.conversationID)
+        // Empty, in a project, moved out of one, left by a deleted one, pinned, renamed.
+        let others: [Int64] = try await dbManager.dbPool.write { d in
             let empty = try TestDatabase.insertChatConversation(d, title: "")
             let project = try ChatProjectQueries.create(d, name: "P")
             let inProject = try ChatConversationQueries.create(d, projectID: project.id).id
-            return (empty, inProject)
+            let movedOut = try ChatConversationQueries.create(d, projectID: project.id).id
+            try ChatConversationQueries.setProject(d, id: movedOut, projectID: nil)
+            let doomed = try ChatProjectQueries.create(d, name: "Gone")
+            let orphaned = try ChatConversationQueries.create(d, projectID: doomed.id).id
+            _ = try ChatProjectQueries.delete(d, id: doomed.id)
+            let pinned = try TestDatabase.insertChatConversation(d, title: "", pinned: true)
+            let renamed = try TestDatabase.insertChatConversation(d, title: "")
+            try ChatConversationQueries.rename(d, id: renamed, title: "Keep me")
+            return [empty, inProject, movedOut, orphaned, pinned, renamed]
         }
         makeViewModel().cleanUpUntouchedConversations()
-        XCTAssertFalse(try rowExists(empty))
-        XCTAssertTrue(try rowExists(answered))
-        XCTAssertTrue(try rowExists(inProject))
+        XCTAssertFalse(try rowExists(draft))
+        for kept in [answered] + others {
+            XCTAssertTrue(try rowExists(kept), "chat \(kept) survives the launch sweep")
+        }
+        XCTAssertNil(defaults.object(forKey: "chat.landingDraftID.\(dbManager.dbPool.path)"))
+    }
+
+    /// F1: a draft the owner pinned or renamed meanwhile is owner-touched.
+    func testAPinnedOrRenamedDraftIsNeverDiscarded() async throws {
+        let other = try await answeredConversation(makeViewModel())
+        for touch in ["pin", "rename"] {
+            let vm = makeViewModel()
+            vm.draftStarted()
+            let draft = try XCTUnwrap(vm.conversationID)
+            try await dbManager.dbPool.write { d in
+                if touch == "pin" {
+                    try ChatConversationQueries.pin(d, id: draft, pinned: true)
+                } else {
+                    try ChatConversationQueries.rename(d, id: draft, title: "Mine")
+                }
+            }
+            vm.select(conversationID: other)
+            XCTAssertTrue(try rowExists(draft), touch)
+        }
+    }
+
+    /// ⌘N on an empty chat that is not the landing's draft (here one moved
+    /// out of a project) lets it go instead of adopting it for deletion.
+    func testTheLandingNeverAdoptsAForeignEmptyChat() async throws {
+        let other = try await answeredConversation(makeViewModel())
+        let movedOut = try await dbManager.dbPool.write { d -> Int64 in
+            let project = try ChatProjectQueries.create(d, name: "P")
+            let id = try ChatConversationQueries.create(d, projectID: project.id).id
+            try ChatConversationQueries.setProject(d, id: id, projectID: nil)
+            return id
+        }
+        let vm = makeViewModel()
+        vm.select(conversationID: movedOut)
+        vm.showLanding()
+        XCTAssertNil(vm.conversationID)
+        XCTAssertNil(vm.landingDraftID)
+        vm.select(conversationID: other)
+        XCTAssertTrue(try rowExists(movedOut))
+    }
+
+    // MARK: - F2: unsent files belong to their own chat
+
+    private func insertPendingAttachment(_ conversationID: Int64) async throws {
+        try await dbManager.dbPool.write { d in
+            try d.execute(sql: """
+                INSERT INTO chat_attachments (conversation_id, name, mime, size, path, sha256, created_at)
+                VALUES (?, 'f.txt', 'text/plain', 1, 'f.txt', 'x', 0)
+                """, arguments: [conversationID])
+        }
+    }
+
+    func testPendingFilesStayWithTheirChat() async throws {
+        let other = try await answeredConversation(makeViewModel())
+        let vm = makeViewModel()
+        let withFile = try XCTUnwrap(vm.newConversation())
+        try await insertPendingAttachment(withFile)
+        vm.select(conversationID: other)
+        vm.select(conversationID: withFile)
+        XCTAssertEqual(vm.composerAttachments.pending.map(\.name), ["f.txt"], "reopened with its unsent file")
+        vm.select(conversationID: other)
+        XCTAssertTrue(vm.composerAttachments.pending.isEmpty, "not carried into another chat")
+        vm.showLanding()
+        XCTAssertTrue(vm.composerAttachments.pending.isEmpty)
+    }
+
+    /// A landing draft holding only a file, left for another chat: kept,
+    /// listed in the history, resumable with its file — not carried along.
+    func testALandingDraftWithOnlyAFileStaysVisibleAndResumable() async throws {
+        let other = try await answeredConversation(makeViewModel())
+        let (vm, history) = wiredPair()
+        vm.draftStarted()
+        let draft = try XCTUnwrap(vm.conversationID)
+        try await insertPendingAttachment(draft)
+        vm.select(conversationID: draft) // same id: nothing reloads, as when a file is added live
+        vm.select(conversationID: other)
+        XCTAssertTrue(try rowExists(draft))
+        XCTAssertTrue(vm.composerAttachments.pending.isEmpty)
+
+        let loaded = expectation(description: "load")
+        history.load { loaded.fulfill() }
+        await fulfillment(of: [loaded], timeout: 5)
+        history.selectedConversationID = other
+        XCTAssertTrue(history.sections.flatMap(\.conversations).contains { $0.id == draft })
+        XCTAssertTrue(ChatLandingPolicy.recents(history.conversations).contains { $0.id == draft })
+
+        vm.select(conversationID: draft)
+        XCTAssertEqual(vm.composerAttachments.pending.map(\.name), ["f.txt"])
     }
 
     /// I-3: unsent text forces a resume whatever the time.
