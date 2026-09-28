@@ -140,9 +140,13 @@ func (o *Orchestrator) syncViaSearch(ctx context.Context) error {
 						// expensive full sync — exactly wrong while
 						// throttled): just end the cycle with the watermark
 						// untouched and let the next cycle retry via search.
-						// searchRateLimited also suppresses the separate
+						// searchRateLimited also makes runSearchSync return
+						// early, skipping the read-state/roster refreshes and
+						// reactions sync (more calls against the same
+						// throttled token) as well as the separate
 						// "zero channels discovered" full-sync fallback.
 						o.searchRateLimited = true
+						o.searchGapNote = "search sync: rate-limited by Slack; retrying next cycle"
 						break
 					}
 					// The very first page failed for any other non-fatal

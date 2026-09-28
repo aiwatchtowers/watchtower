@@ -311,14 +311,26 @@ func (o *Orchestrator) runSearchSync(ctx context.Context, opts SyncOptions) erro
 		return fmt.Errorf("search sync: %w", err)
 	}
 
+	// Slack is already throttling this token (searchRateLimited, set by
+	// syncViaSearch's page-1 handling): end the cycle here rather than spend
+	// more of the same budget on the read-state/roster refreshes or the
+	// reactions sync below, or on the zero-channels full-sync fallback right
+	// after this. searchGapNote already carries a note so this doesn't look
+	// like a healthy "ok" cycle in the account row; finishSync (in
+	// particular TouchSyncedAt) is skipped too, so the Desktop's "last
+	// synced" time isn't refreshed for a cycle that fetched nothing. Neither
+	// readStateSyncedAt nor rosterSyncedAt is touched, so both refreshes are
+	// still due next cycle exactly as if this cycle hadn't run at all.
+	if o.searchRateLimited {
+		o.logger.Println("search sync: rate-limited by Slack, skipping the rest of this cycle")
+		return nil
+	}
+
 	// Fallback: if search found 0 channels (e.g. missing search:read scope),
 	// check if DB already has channels from a previous sync; if not, fall back
-	// to full sync so we have something to work with. Never while the search
-	// pass itself gave up because Slack was rate-limiting this token — full
-	// sync is dozens of additional Tier-2/3 calls, exactly wrong when the
-	// token is already being throttled.
+	// to full sync so we have something to work with.
 	snap := o.progress.Snapshot()
-	if snap.DiscoveryChannels == 0 && !o.searchRateLimited {
+	if snap.DiscoveryChannels == 0 {
 		stats, err := o.db.GetStats()
 		if err != nil || stats.ChannelCount == 0 {
 			o.logger.Println("search found 0 channels, falling back to full sync")

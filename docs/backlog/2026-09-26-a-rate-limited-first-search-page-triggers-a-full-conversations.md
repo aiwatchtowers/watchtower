@@ -34,10 +34,29 @@ above replaces it.) Pinned by
 `TestSyncViaSearch_RateLimitedFirstPageDoesNotFallBackToFullSync` (a real HTTP 429
 with `Retry-After`, asserting zero `conversations.list`/`conversations.history` hits
 and an unchanged watermark), `TestIsRateLimitError`, and
-`TestSyncSync_NonRateLimitNonFatalFirstPageFallsBackToFullSync` (channel_not_found
+`TestSyncViaSearch_NonRateLimitNonFatalFirstPageFallsBackToFullSync` (channel_not_found
 still falls back, alongside the pre-existing missing_scope coverage in
 `TestSearchSync_MissingScopeFallsBackToFullSync`).
 
 A second finding from the same PR #20 review (bisecting an over-100-page search
 window by date) was withdrawn as a separate, still-open backlog item — see sub-item 4
 of `docs/backlog/2026-09-26-review-low-priority-go-bugs-infra.md` for that note.
+
+**Verify round (same PR):** a rate-limited cycle wasn't actually "ending the cycle" —
+`syncViaSearch` returned `nil`, so `runSearchSync` went on to the channel read-state
+refresh, the user roster refresh and the inbox reactions sync, each a further Slack
+call against the same throttled token. `runSearchSync` now returns early right after
+`syncViaSearch` when `Orchestrator.searchRateLimited` is set, before any of those three
+phases and before `finishSync` (so `TouchSyncedAt` doesn't refresh the Desktop's "last
+synced" time for a cycle that fetched nothing); `readStateSyncedAt`/`rosterSyncedAt`
+are left untouched, so both refreshes are still due next cycle exactly as if the cycle
+hadn't run. `searchGapNote` is now set to a short note ("search sync: rate-limited by
+Slack; retrying next cycle") at the same point `searchRateLimited` is set, so it rides
+the existing gap-note mechanism into `recordAuthResult`'s "ok" write and shows up on
+the account row instead of a rate-limited token silently looking healthy. Extended
+`TestSyncViaSearch_RateLimitedFirstPageDoesNotFallBackToFullSync` to seed an unread
+digest and a pending inbox item (so the skipped phases would have real Slack calls to
+make if they ran) and assert zero `conversations.info`/`users.list`/`reactions.list`
+hits, both refresh timestamps still zero, and the account row's `status`/`error`
+after the run. `TestIsRateLimitError` also gained bare and `%w`-wrapped
+`*slack.RateLimitedError` positive cases (it previously asserted only negatives).
