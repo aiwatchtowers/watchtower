@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -25,12 +26,12 @@ type failingGenerator struct {
 	response  string
 }
 
-func (g *failingGenerator) Generate(_ context.Context, _, _, _ string) (string, *digest.Usage, string, error) {
+func (g *failingGenerator) Generate(_ context.Context, sys, user, _ string) (string, *digest.Usage, string, error) {
 	g.calls++
 	if g.calls <= g.failFirst {
 		return "", nil, "", errBatchGenerator
 	}
-	return g.response, &digest.Usage{InputTokens: 100, OutputTokens: 50}, "mock-session", nil
+	return answerForFirstChannel(g.response, sys+user), &digest.Usage{InputTokens: 100, OutputTokens: 50}, "mock-session", nil
 }
 
 // cancelingGenerator answers successfully and cancels the run's context, so the
@@ -41,10 +42,27 @@ type cancelingGenerator struct {
 	response string
 }
 
-func (g *cancelingGenerator) Generate(_ context.Context, _, _, _ string) (string, *digest.Usage, string, error) {
+func (g *cancelingGenerator) Generate(_ context.Context, sys, user, _ string) (string, *digest.Usage, string, error) {
 	g.calls++
 	g.cancel()
-	return g.response, &digest.Usage{InputTokens: 100, OutputTokens: 50}, "mock-session", nil
+	return answerForFirstChannel(g.response, sys+user), &digest.Usage{InputTokens: 100, OutputTokens: 50}, "mock-session", nil
+}
+
+// firstChannelBlock matches a batch prompt's channel block header,
+// "--- #name (channelID) ---".
+var firstChannelBlock = regexp.MustCompile(`--- #\S+ \(([^)]+)\) ---`)
+
+// answerForFirstChannel points seedTrackWindow's C1 result at the first
+// channel the batch prompt actually carries. A batch only stores results for
+// its own channels, and which channels share a batch is not deterministic
+// (equal topic counts), so a fixed "C1" answer would land only when C1
+// happened to be in that batch.
+func answerForFirstChannel(response, prompt string) string {
+	m := firstChannelBlock.FindStringSubmatch(prompt)
+	if m == nil {
+		return response
+	}
+	return strings.Replace(response, `"channel_id": "C1"`, fmt.Sprintf(`"channel_id": %q`, m[1]), 1)
 }
 
 // seedTrackWindow seeds a workspace, an owner, and n channels each carrying one
@@ -258,7 +276,7 @@ func (g *channelFailingGenerator) Generate(_ context.Context, sys, user, _ strin
 	if strings.Contains(sys+user, "("+g.failID+")") {
 		return "", nil, "", errBatchGenerator
 	}
-	return g.response, &digest.Usage{InputTokens: 100, OutputTokens: 50}, "mock-session", nil
+	return answerForFirstChannel(g.response, sys+user), &digest.Usage{InputTokens: 100, OutputTokens: 50}, "mock-session", nil
 }
 
 // retryAttempts returns the retry-set attempt count of the digest of channel
@@ -392,7 +410,7 @@ func (g *poisonGenerator) Generate(_ context.Context, sys, user, _ string) (stri
 		g.poisoned++
 		return "", nil, "", errBatchGenerator
 	}
-	return g.response, &digest.Usage{InputTokens: 100, OutputTokens: 50}, "mock-session", nil
+	return answerForFirstChannel(g.response, sys+user), &digest.Usage{InputTokens: 100, OutputTokens: 50}, "mock-session", nil
 }
 
 // An owed digest that always fails and a fresh digest of the SAME channel are
