@@ -137,6 +137,63 @@ Tests: `TestHTMLHonorsDeclaredMIMECharset`/`TestHTMLHonorsMetaCharset`/
 `TestHTMLHonorsHTTPEquivMetaCharset`/`TestHTMLUndeclaredFallsBackToPlausibilityGate`/
 `TestHTMLUndeclaredMojibakeStillFails` (`internal/extract/encoding_test.go`).
 
+**Round 3 (verify-round findings F1–F7):**
+- **F1/F2/F3 — word rules turned into proportions.** `looksLikeCyrillicPlainText`'s
+  zero-tolerance word-mixing/case-flip checks rejected a whole real cp1251
+  document for a single camelCase brand name (`ПриватБанк`, `МегаФон`) or one
+  keyboard-layout typo, and its uppercase-dominance check rejected real
+  all-caps legacy exports (`ИТОГО`, a 1C/accounting CSV). Both word checks are
+  now proportions (`anomalyShareMax` 10%, `anomalyCountMin` 2 words — an
+  anomaly only disqualifies once it's a *meaningful share* of Cyrillic-bearing
+  words, never a single stray one). Uppercase-dominance is removed outright:
+  a real all-caps document and an all-caps mojibake decode are letter-case
+  *identical*, so no case-only signal can tell them apart without
+  misclassifying one or the other — documented as an accepted limitation in
+  the function's own doc comment. Tests:
+  `TestPlainAcceptsRealWorldCyrillicEdgeCases` (brand names, a typo, an
+  all-caps CSV, an all-caps word, all `StatusOK`); `TestLooksLikeCyrillicPlainText`
+  gained below-floor (accept) and over-threshold (reject) cases per condition,
+  replacing the old zero-tolerance cases.
+- **F4 — a meta-declared UTF-16 label is HTML5's own UTF-8 carve-out.** A
+  document actually encoded in UTF-16 could never spell out an ASCII
+  `<meta charset="utf-16">` tag without a byte-order mark in the first place,
+  so HTML5's encoding-sniffing algorithm remaps a META-declared (BOM-less)
+  `utf-16`/`utf-16le`/`utf-16be`/`unicode` label to UTF-8 — before this fix it
+  was honored literally, decoding real UTF-8 bytes as UTF-16 and indexing
+  CJK-looking garbage as `StatusOK` (real Word "Web Page" exports re-saved as
+  UTF-8 keep this legacy tag). A genuine BOM is unaffected — it resolves as
+  "certain" before the meta scan ever runs. Tests:
+  `TestHTMLMetaUTF16LabelIsTreatedAsUTF8`, `TestHTMLMetaUTF16LabelDoesNotOverrideARealBOM`.
+- **F5 — a declared-charset decode full of U+FFFD is a wrong declaration.**
+  `golang.org/x/text`'s decoders silently substitute U+FFFD for invalid bytes
+  with no Go error, so `htmlText`'s declared branch indexed replacement
+  characters as `StatusOK`. It now falls through to the same undeclared
+  UTF-8/windows-1251 path when the decode is mostly (or, for a declared
+  `utf-8` specifically, *at all*) U+FFFD — recovering the real content when
+  the underlying bytes are actually fine (a declared `utf-8` over real cp1251
+  bytes; a WHATWG-mapped "replacement" encoding like `iso-2022-kr` over plain
+  ASCII) or correctly failing when they aren't (the same over real mojibake).
+  Tests: `TestHTMLDeclaredUTF8OverInvalidBytesFallsThrough`,
+  `TestHTMLDeclaredReplacementEncodingRecoversRealContent`,
+  `TestHTMLDeclaredReplacementEncodingOverMojibakeFails`,
+  `TestHTMLUnknownMetaLabelFallsThroughToTheGuess`.
+- **F6 — pinning tests for the previously-unguarded families.** Added
+  ISO-8859-1/-2, KOI8-U and Shift-JIS to `TestPlainNonCyrillicMojibakeFails`
+  (each using a realistic, properly-capitalized sample — see F1–F3's note on
+  why an all-one-case sample doesn't exercise the real signal), plus the F4
+  meta-utf-16 and F5 unknown-label cases above.
+- **F7 — text directly in `<head>` also closes it.** HTML5's "in head"
+  insertion mode closes head on non-whitespace character data sitting
+  *directly* inside it, not only on a stray tag — `<html><head>Hello
+  there<p>x` was dropping "Hello there". Fixed via a `headChildDepth` counter
+  so an *allowed* head child's own text (`<title>`'s, in particular) is still
+  correctly recognized as head content and doesn't itself trigger the close.
+  Tests: `TestHTMLHeadClosedByTextWithNoTag`, `TestHTMLTitleTextIsNotHeadContent`.
+
+Mutation-checked the proportion design (ratio, `anomalyShareMax`,
+`anomalyCountMin`) and the F4/F5/F7 mechanisms — each disabled/loosened in
+turn and confirmed to turn the matching test(s) red.
+
 ## linkscan freezes a Slack message's from_ref at first sighting, so a root later promoted to a thread keeps its channel-day ref
 
 - type: bug · confidence: med · tags: [doclinks, linkscan, slack, cursor]
