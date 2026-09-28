@@ -109,6 +109,7 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) (RunResult, error) 
 	// The row is now 'building'; every path below either finishes or fails it.
 	res := RunResult{RecapID: id, Status: statusReady, Window: w}
 	res.Coverage = p.runTopUp(ctx, opts, w)
+	res.Coverage.WindowTruncated = w.Truncated
 
 	g, err := p.gather(from, to)
 	if err != nil {

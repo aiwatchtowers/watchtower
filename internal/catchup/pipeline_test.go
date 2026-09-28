@@ -141,6 +141,26 @@ func TestRun_AutoWindowStartsAtLastAck(t *testing.T) {
 	assert.Equal(t, 2000.0, r.PeriodTo)
 }
 
+// An ack older than the 31-day cap no longer fails every auto run: the window
+// is clamped and the recap's coverage says so.
+func TestRun_AutoWindowClampsAncientAckAndRecordsIt(t *testing.T) {
+	gen := &mockGenerator{out: `{"tldr":"","topics":[]}`}
+	p, d := newPipeline(t, gen, &fakeTopUp{})
+	now := time.Now().Truncate(time.Second)
+	p.now = func() time.Time { return now }
+	ackTo := float64(now.Add(-60 * 24 * time.Hour).Unix())
+	prev, _ := d.InsertCatchupRecap(ackTo-3600, ackTo, 0)
+	require.NoError(t, d.FinishCatchupRecap(prev, "", "{}", "{}", "", 0, 0, 0))
+	require.NoError(t, d.AcknowledgeCatchupWindow(prev, ackTo-3600, ackTo))
+
+	res, err := p.Run(context.Background(), RunOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, now.Add(-maxWindowDays*24*time.Hour).Unix(), res.Window.From.Unix())
+	assert.True(t, res.Coverage.WindowTruncated)
+	r, _ := d.GetCatchupRecap(res.RecapID)
+	assert.Contains(t, r.CoverageJSON, `"window_truncated":true`)
+}
+
 // BEHAVIOR CATCHUP-02 — see docs/inventory/catchup.md
 func TestCatchup02_ComposePromptCarriesLanguageDirective(t *testing.T) {
 	var system string

@@ -53,6 +53,13 @@ final class CatchUpModelsTests: XCTestCase {
         XCTAssertEqual(line, "Slack to 17:40 · Jira/Gmail to 14:00 · 1 meeting")
     }
 
+    func testCoverageSummaryLineFlagsTruncatedWindow() throws {
+        let raw = #"{"slack_to":1000,"topup":"skipped","window_truncated":true}"#
+        let cov = try JSONDecoder().decode(CatchUpCoverage.self, from: Data(raw.utf8))
+        XCTAssertTrue(cov.windowTruncated)
+        XCTAssertEqual(cov.summaryLine { _ in "17:40" }, "Slack to 17:40 · window capped at 31 days")
+    }
+
     func testCoverageDecodesTolerantly() throws {
         let cov = try JSONDecoder().decode(CatchUpCoverage.self, from: Data("{}".utf8))
         XCTAssertEqual(cov, CatchUpCoverage())

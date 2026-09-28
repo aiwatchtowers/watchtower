@@ -184,12 +184,16 @@ package struct CatchUpCoverage: Codable, Equatable {
     /// `ok` | `skipped` | `failed` — the coverage top-up's outcome (CATCHUP-03).
     package let topup: String
     package let topupError: String
+    /// The auto window was clamped to the 31-day cap, so the recap does not
+    /// reach back to the last acknowledged one.
+    package let windowTruncated: Bool
 
     package enum CodingKeys: String, CodingKey {
         case slackTo = "slack_to"
         case streamsTo = "streams_to"
         case meetings, topup
         case topupError = "topup_error"
+        case windowTruncated = "window_truncated"
     }
 
     package init(
@@ -197,13 +201,15 @@ package struct CatchUpCoverage: Codable, Equatable {
         streamsTo: Double = 0,
         meetings: Int = 0,
         topup: String = "",
-        topupError: String = ""
+        topupError: String = "",
+        windowTruncated: Bool = false
     ) {
         self.slackTo = slackTo
         self.streamsTo = streamsTo
         self.meetings = meetings
         self.topup = topup
         self.topupError = topupError
+        self.windowTruncated = windowTruncated
     }
 
     package init(from decoder: Decoder) throws {
@@ -213,6 +219,7 @@ package struct CatchUpCoverage: Codable, Equatable {
         meetings = try container.decodeIfPresent(Int.self, forKey: .meetings) ?? 0
         topup = try container.decodeIfPresent(String.self, forKey: .topup) ?? ""
         topupError = try container.decodeIfPresent(String.self, forKey: .topupError) ?? ""
+        windowTruncated = try container.decodeIfPresent(Bool.self, forKey: .windowTruncated) ?? false
     }
 
     /// The recap footer, e.g. `"Slack to 17:40 · Jira/Gmail to 14:00 · 3 meetings"`.
@@ -235,6 +242,9 @@ package struct CatchUpCoverage: Codable, Equatable {
         }
         if topup == "failed" {
             parts.append("top-up failed")
+        }
+        if windowTruncated {
+            parts.append("window capped at 31 days")
         }
         return parts.joined(separator: " · ")
     }
