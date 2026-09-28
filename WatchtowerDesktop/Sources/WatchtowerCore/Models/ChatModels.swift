@@ -60,27 +60,65 @@ package enum StepState: Equatable, Sendable {
     case failed
 }
 
-/// One source chip (spec §3.4) — the `tool_end.sources[]` wire item.
+/// One cited source (spec §3.4) — the `tool_end.sources[]` wire item (Go
+/// `internal/chat/events.go` `Source`). `group`/`snippet`/`date` are optional
+/// presentation hints Go fills per tool; rows persisted before they existed
+/// decode with all three nil (`ChatSourceGrouping` derives a legacy group).
 package struct ChatSource: Codable, Hashable, Sendable {
     package let kind: String
     package let title: String
     package let url: String?
     package let ref: String
+    package let group: String?
+    package let snippet: String?
+    /// A `YYYY-MM-DD` day.
+    package let date: String?
 
-    package init(kind: String, title: String, url: String?, ref: String) {
+    package init(
+        kind: String,
+        title: String,
+        url: String?,
+        ref: String,
+        group: String? = nil,
+        snippet: String? = nil,
+        date: String? = nil
+    ) {
         self.kind = kind
         self.title = title
         self.url = url
         self.ref = ref
+        self.group = group
+        self.snippet = snippet
+        self.date = date
     }
 
+    /// Two sources with the same key are one item: the same Slack thread (a
+    /// permalink's `thread_ts`), otherwise the same URL, otherwise the same ref.
     package var dedupeKey: String {
-        if let url, !url.isEmpty { url } else { "\(kind):\(ref)" }
+        guard let url, !url.isEmpty else { return "\(kind):\(ref)" }
+        return ChatSourceGrouping.threadKey(url) ?? url
     }
 
+    /// Order-preserving dedupe; a later duplicate only fills the optional
+    /// fields the first one lacks.
     package static func dedupe(_ sources: [Self]) -> [Self] {
-        var seen = Set<String>()
-        return sources.filter { seen.insert($0.dedupeKey).inserted }
+        var order: [String] = []
+        var byKey: [String: Self] = [:]
+        for source in sources {
+            let key = source.dedupeKey
+            if let kept = byKey[key] {
+                byKey[key] = kept.filling(from: source)
+            } else {
+                order.append(key)
+                byKey[key] = source
+            }
+        }
+        return order.compactMap { byKey[$0] }
+    }
+
+    private func filling(from other: Self) -> Self {
+        Self(kind: kind, title: title.isEmpty ? other.title : title, url: url, ref: ref,
+             group: group ?? other.group, snippet: snippet ?? other.snippet, date: date ?? other.date)
     }
 
     /// Display-only column: an undecodable value renders as "no chips",

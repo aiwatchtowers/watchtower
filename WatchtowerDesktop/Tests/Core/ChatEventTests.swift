@@ -27,6 +27,17 @@ final class ChatEventTests: XCTestCase {
     }
 
     /// Every wire error code (Go `internal/chat/events.go`) maps to its own case.
+    /// Go's optional group/snippet/date ride tool_end; empty strings read as nil.
+    func testToolEndSourcePresentationFields() {
+        let line = #"{"type":"tool_end","turn_id":"t","id":"a","ok":true,"summary":"s","sources":["#
+            + ##"{"kind":"slack","title":"#pay · Ann","url":"","ref":"r","group":"#pay","snippet":"hi","date":"2026-05-13"},"##
+            + #"{"kind":"jira","title":"P-1","ref":"jira:P-1","group":""}]}"#
+        XCTAssertEqual(ChatEvent.parse(line), .toolEnd(ChatToolEnd(turnID: "t", id: "a", ok: true, summary: "s", sources: [
+            ChatSource(kind: "slack", title: "#pay · Ann", url: nil, ref: "r", group: "#pay", snippet: "hi", date: "2026-05-13"),
+            ChatSource(kind: "jira", title: "P-1", url: nil, ref: "jira:P-1")
+        ])))
+    }
+
     func testEveryWireErrorCodeRoundTrips() {
         let codes = ["auth", "rate_limit", "provider_unavailable", "session_lost",
                      "attachment_unsupported", "interrupted", "internal"]

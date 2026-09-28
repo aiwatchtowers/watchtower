@@ -79,15 +79,11 @@ private struct ChatSplitView: View {
             Button("Cancel", role: .cancel) {}
         }
         .inspector(isPresented: Binding(
-            get: { chatVM.artifactPanel != nil },
-            set: { if !$0 { chatVM.closeArtifactPanel() } }
+            get: { chatVM.inspectorMode != nil },
+            set: { if !$0 { chatVM.closeInspector() } }
         )) {
-            if let panel = chatVM.artifactPanel {
-                ArtifactPanelView(model: panel, gmailConnected: chatVM.gmailConnected, slackLinks: chatVM.slackLinks) {
-                    chatVM.closeArtifactPanel()
-                }
+            ChatInspectorContent(chatVM: chatVM)
                 .inspectorColumnWidth(min: 320, ideal: 460, max: 900)
-            }
         }
     }
 

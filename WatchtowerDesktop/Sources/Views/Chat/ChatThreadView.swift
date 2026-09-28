@@ -144,6 +144,7 @@ struct ChatThreadView: View {
     private func row(_ item: ChatThreadItem, proxy: ScrollViewProxy) -> some View {
         if let live = chatVM.liveTurn, live.messageID == item.id {
             LiveAssistantRow(turn: live, onOpenArtifact: { chatVM.openArtifact(key: $0) },
+                             onOpenSources: { chatVM.openSources(messageID: live.messageID, sources: $0) },
                              onStreamingTextChanged: { text in
                                  chatVM.updateLiveArtifacts(streamingText: text)
                                  if isFollowing { proxy.scrollTo(Self.bottomSentinelID, anchor: .bottom) }
@@ -171,7 +172,8 @@ struct ChatThreadView: View {
             beginEdit: { chatVM.editingMessageID = $0 },
             submitEdit: { chatVM.edit(messageID: $0, newText: $1) },
             cancelEdit: { chatVM.editingMessageID = nil },
-            openArtifact: { chatVM.openArtifact(key: $0) }
+            openArtifact: { chatVM.openArtifact(key: $0) },
+            openSources: { chatVM.openSources(messageID: $0, sources: $1) }
         )
     }
 
