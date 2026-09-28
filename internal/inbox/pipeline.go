@@ -593,16 +593,11 @@ func (p *Pipeline) loadContext(channelID, messageTS, threadTS string) string {
 		if line == "" {
 			continue
 		}
-		if len(line) > 200 {
-			line = line[:200] + "..."
-		}
+		line = truncateRunes(line, 200)
 		sb.WriteString(fmt.Sprintf("[%s] %s\n", name, line))
 	}
 	result := strings.TrimSpace(sb.String())
-	if len(result) > 2000 {
-		result = result[:2000] + "..."
-	}
-	return result
+	return truncateRunes(result, 2000)
 }
 
 // progress is a helper that calls OnProgress if set.
