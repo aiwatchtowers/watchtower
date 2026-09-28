@@ -18,12 +18,14 @@ stays readable. Split any item into its own file when it gets picked up.
 
 `compose` returns `transient=true` for any `Generate` error, so `dispatchOne` releases the provisional row and retries on the next poll. The feature now polls every cycle. A deterministic generator failure on one message (for example a provider rejecting that input, or a CLI that errors on it every time) therefore costs one AI call every cycle forever. The only visibility is a log line; there is no ledger status or strip card. Suggest a small per-key attempt counter (or an age limit) after which the row is finalized as `failed` with the last error. REACT-03's retry semantics would need an owner note.
 
-## Briefing stores model-emitted track/target/digest ids unvalidated; the Desktop navigates on them
+## Briefing stores model-emitted track/target/digest ids unvalidated; the Desktop navigates on them (fixed in fix/bl-ai-output-validation)
 
 - type: bug · confidence: high · tags: [briefing, ai-validation]
 - where: internal/briefing/pipeline.go:212-222 (plus WatchtowerDesktop/Sources/Views/Briefings/BriefingDetailView.swift:323, 394)
 
 `parseBriefingResult` output is marshalled straight into the briefing columns. `YourDayItem.TrackID/TargetID`, `WhatHappenedItem.DigestID` and `AttentionItem.SourceType/SourceID` are never checked against the ids that `gatherTargets`/`gatherTracks`/`gatherDigests` actually rendered. The Desktop turns them into navigation links, so an invented id either opens nothing or opens an unrelated row. The day plan already does this validation (`validateSource` against `targetsIDSet`/`jiraKeySet`), and so does Catch-Up (CATCHUP-04). Fix: collect the rendered id sets while gathering, and blank unknown ids while keeping the item (the `blankInventedMessageRefs` disposition). Minor, in the same file: `gatherTracks` byte-slices `t.Context[:200]` and `participants[:150]`, which can split a Cyrillic rune in the prompt. This affects the prompt only.
+
+Resolution: `RunForDate` records every target/track/digest/inbox/people-card id its gather functions render (`shownIDs`, internal/briefing/validate.go) and, before storing, blanks any `your_day` track/target id, `what_happened` digest id or `attention` source_id the prompt never showed, keeping the item; a people source_id is resolved to the shown namespaced id when the model echoes a unique raw form. Pinned by `TestRunForDate_BlanksIDsThePromptNeverShowed` and `TestShownIDs_ResolvePerson`. The byte-slice nit (`Context[:200]`) is left to the separate UTF-8 truncation item.
 
 ## Day plan: persistence is not atomic and an empty or partial plan sticks for the whole day (fixed in fix/bl-window-timing)
 
