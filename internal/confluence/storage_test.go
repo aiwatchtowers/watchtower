@@ -24,7 +24,7 @@ func TestStorageToSectionsGolden(t *testing.T) {
 		t.Run(filepath.Base(f), func(t *testing.T) {
 			raw, err := os.ReadFile(f)
 			require.NoError(t, err)
-			secs, users, keys := StorageToSections(string(raw), 1_000_000)
+			secs, users, keys, _ := StorageToSections(string(raw), 1_000_000)
 			got, err := json.MarshalIndent(map[string]any{"sections": secs, "userIDs": users, "jiraKeys": keys}, "", "  ")
 			require.NoError(t, err)
 			golden := strings.TrimSuffix(f, ".xhtml") + ".golden.json"
@@ -48,7 +48,7 @@ func TestStorageToSectionsGolden(t *testing.T) {
 func TestStorageCDATANoLeak(t *testing.T) {
 	raw, err := os.ReadFile("testdata/storage/cdata.xhtml")
 	require.NoError(t, err)
-	secs, _, _ := StorageToSections(string(raw), 1_000_000)
+	secs, _, _, _ := StorageToSections(string(raw), 1_000_000)
 	require.NotEmpty(t, secs)
 	for _, s := range secs {
 		assert.NotContains(t, s.Text, "]]>")
@@ -61,7 +61,7 @@ func TestStorageCap(t *testing.T) {
 	for i := 0; i < 3000; i++ {
 		fmt.Fprintf(&b, "<p>paragraph %d with some words in it</p>", i)
 	}
-	secs, _, _ := StorageToSections(b.String(), 5000)
+	secs, _, _, _ := StorageToSections(b.String(), 5000)
 	total := 0
 	for _, s := range secs {
 		total += utf8.RuneCountInString(s.Text)
@@ -82,7 +82,7 @@ func TestHeadingAnchor(t *testing.T) {
 // internal/kb/source_ext.go) — keep the two identical.
 func TestMentionTokenMatchesKBPattern(t *testing.T) {
 	kbPattern := regexp.MustCompile(`^@\[~([^\]]+)\]$`)
-	sections, users, _ := StorageToSections(
+	sections, users, _, _ := StorageToSections(
 		`<p><ac:link><ri:user ri:account-id="5b10:abc-123" /></ac:link></p>`, 1000)
 	require.Len(t, sections, 1)
 	require.Equal(t, []string{"5b10:abc-123"}, users)

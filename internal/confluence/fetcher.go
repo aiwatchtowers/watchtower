@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/url"
 	"strings"
 	"sync"
@@ -28,6 +29,10 @@ type Fetcher struct {
 	// kinds maps a page/blog post id to its kind, learned from listings and
 	// fetches, so Comments knows which v2 collection a parent lives in.
 	kinds sync.Map
+	// logger receives diagnostics that have no other reporting path (today:
+	// StorageToSections falling back on an over-deep body). Defaults to
+	// discarding, like every other SetLogger seam in this codebase.
+	logger *log.Logger
 }
 
 var _ extsync.Fetcher = (*Fetcher)(nil)
@@ -35,7 +40,19 @@ var _ extsync.Fetcher = (*Fetcher)(nil)
 // NewFetcher returns a Fetcher reading through api; siteURL
 // ("https://acme.atlassian.net") prefixes the web links of fetched items.
 func NewFetcher(api API, siteURL string) *Fetcher {
-	return &Fetcher{api: api, siteURL: strings.TrimRight(siteURL, "/")}
+	return &Fetcher{api: api, siteURL: strings.TrimRight(siteURL, "/"), logger: log.New(io.Discard, "", 0)}
+}
+
+// SetLogger points the fetcher's diagnostics at logger; a nil logger is a
+// no-op (keeps the default discard logger).
+func (f *Fetcher) SetLogger(logger *log.Logger) {
+	if logger != nil {
+		f.logger = logger
+	}
+}
+
+func (f *Fetcher) logf(format string, args ...any) {
+	f.logger.Printf(format, args...)
 }
 
 const (
@@ -445,7 +462,10 @@ func (f *Fetcher) pageItem(c extsync.Container, ref extsync.ItemRef, p *v2Page) 
 	if err != nil {
 		return nil, err
 	}
-	sections, users, keys := StorageToSections(p.Body.Storage.Value, maxBodyRunes)
+	sections, users, keys, parseErr := StorageToSections(p.Body.Storage.Value, maxBodyRunes)
+	if parseErr != nil {
+		f.logf("confluence: %s %s: storage body fell back to a flat text strip: %v", ref.Kind, p.ID, parseErr)
+	}
 	meta := map[string]string{"space": c.Key, "status": p.Status}
 	labels := make([]string, 0, len(p.Labels.Results))
 	for _, l := range p.Labels.Results {

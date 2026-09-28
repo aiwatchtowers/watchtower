@@ -24,12 +24,23 @@ implicitly by a `<body>` start tag (HTML5 §13.2.6.4.6). Pinned by
 `TestHTMLMissingHeadClose` (`internal/extract/extract_test.go`), asserting
 the explicit- and implicit-close documents render identically.
 
-## Storage XHTML nested deeper than 512 elements silently indexes as an empty page
+## Storage XHTML nested deeper than 512 elements silently indexes as an empty page (fixed in fix/bl-confluence-content)
 
 - type: bug · confidence: high · tags: [confluence, storage, parser, silent-failure]
 - where: internal/confluence/storage.go (StorageToSections, "in practice this never returns a non-nil error"), golang.org/x/net/html parser (open-element stack cap 512)
 
 `golang.org/x/net/html` returns an error once the stack of open elements passes 512. `StorageToSections` then returns `nil, nil, nil` with no log line, and its own comment says this "never" happens. Reproduced: 511 nested `<div>` → 1 section; 512 → 0 sections. The page is stored with `sections_json = []` (title only, no Jira keys, no mentions), and nothing records why. Hand-written storage format rarely gets that deep. It can happen with generated or imported pages, or with non-`ac:` self-closing tags the HTML5 parser leaves open (see the next finding). Fix direction: log the parse error through the fetcher, then fall back to a tokenizer-only text strip (or record a status) instead of an empty body.
+
+Resolution: `StorageToSections` gained a fourth return value, `parseErr`,
+and now falls back to `fallbackText` (a linear, tag-blind tokenizer strip —
+no tree, no open-element stack, so the resource bound `storage_depth_test.go`
+already pinned still holds) instead of an empty body when `parseFragment`
+fails. Both call sites (`Fetcher.pageItem`, `Fetcher.commentItem`) log the
+fallback through the fetcher's new `SetLogger` seam (wired in
+`cmd/sync.go`'s `wireExternalSync`, the `jira.Client.SetLogger` precedent).
+Pinned by the extended `TestStorageDeepNestingIsBounded`, which now also
+asserts a non-nil `parseErr` and that the fallback section still carries
+the body's text.
 
 ## Storage converter drops date lozenges and status macro labels
 
