@@ -1,6 +1,7 @@
 package db
 
 import (
+	"database/sql"
 	"fmt"
 	"time"
 )
@@ -299,6 +300,43 @@ func (db *DB) ClearGoogleAccountCalendarData(accountID int64) (int, error) {
 		return 0, fmt.Errorf("clearing calendar data for google account %d: %w", accountID, err)
 	}
 	return int(n), nil
+}
+
+// purgeGoogleAccountCalendarsTx deletes accountID's calendar events and
+// calendar rows inside tx, except that an event a meeting_transcripts or
+// meeting_recaps row references is spared (the DeleteStaleCalendarEvents
+// guard, owner decision 14), and so is the calendar row still holding such an
+// event (calendar_events.calendar_id is a foreign key). A spared calendar row
+// is detached — account_id NULL, is_selected 0 — so it no longer names the
+// account (whose row may be deleted next) and is never synced for it; a later
+// account sharing that calendar id claims it on UpsertCalendar. Returns the
+// number of events deleted.
+func purgeGoogleAccountCalendarsTx(tx *sql.Tx, accountID int64) (int64, error) {
+	result, err := tx.Exec(`
+		DELETE FROM calendar_events
+		 WHERE calendar_id IN (SELECT id FROM calendar_calendars WHERE account_id = ?)
+		   AND NOT EXISTS (SELECT 1 FROM meeting_transcripts t WHERE t.event_id = calendar_events.id)
+		   AND NOT EXISTS (SELECT 1 FROM meeting_recaps    r WHERE r.event_id = calendar_events.id)
+	`, accountID)
+	if err != nil {
+		return 0, fmt.Errorf("deleting calendar events of google account %d: %w", accountID, err)
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("counting deleted calendar events of google account %d: %w", accountID, err)
+	}
+	if _, err := tx.Exec(`
+		DELETE FROM calendar_calendars
+		 WHERE account_id = ?
+		   AND NOT EXISTS (SELECT 1 FROM calendar_events e WHERE e.calendar_id = calendar_calendars.id)
+	`, accountID); err != nil {
+		return 0, fmt.Errorf("deleting calendars of google account %d: %w", accountID, err)
+	}
+	if _, err := tx.Exec(`UPDATE calendar_calendars SET account_id = NULL, is_selected = 0 WHERE account_id = ?`,
+		accountID); err != nil {
+		return 0, fmt.Errorf("detaching kept calendars of google account %d: %w", accountID, err)
+	}
+	return n, nil
 }
 
 // UpsertAttendeeMap caches an email to slack_user_id mapping.
