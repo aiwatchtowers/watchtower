@@ -57,3 +57,13 @@ landing; the landing's first keystroke creates the conversation and prewarms
 its session without leaving the landing, and its first turn switches to the
 thread. Pinned by `ChatLandingPolicyTests` (Core) and
 `ChatLandingViewModelTests`.
+
+Review round 1: the landing's first turn is now an explicit callback
+(`onLandingTurnStarted`), so opening a project from the landing shows the
+project page. An untouched landing chat is deleted, and its session closed,
+when the landing is left any other way. An untouched row is reused on the
+next keystroke, and leftover rows are swept at launch. The history column
+hides message-less chats unless they are selected. Unsent text or
+attachments force a resume. "On screen" is also stamped on backgrounding,
+on quit, and once a minute while the tab is visible, keyed by workspace.
+Archiving the shown chat and deleting the open project both land.

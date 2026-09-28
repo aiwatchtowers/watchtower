@@ -189,6 +189,42 @@ package enum ChatConversationQueries {
         try db.execute(sql: "DELETE FROM chat_conversations WHERE id = ?", arguments: [id])
     }
 
+    /// An "untouched" main chat: standalone, outside any project, not
+    /// archived, with no message and no attachment — what the Chat landing
+    /// makes on its first keystroke and discards when it is left unused.
+    private static let untouchedPredicate = """
+        c.context_type IS NULL AND c.project_id IS NULL AND c.archived_at IS NULL
+        AND NOT EXISTS (SELECT 1 FROM chat_messages m WHERE m.conversation_id = c.id)
+        AND NOT EXISTS (SELECT 1 FROM chat_attachments a WHERE a.conversation_id = c.id)
+        """
+
+    /// The newest untouched main chat, for the landing to reuse.
+    package static func fetchUntouched(_ db: Database) throws -> ChatConversation? {
+        try ChatConversation.fetchOne(db, sql: """
+            SELECT c.* FROM chat_conversations c WHERE \(untouchedPredicate)
+            ORDER BY c.updated_at DESC, c.id DESC LIMIT 1
+            """)
+    }
+
+    /// Deletes `id` only while it is still untouched; true when it was.
+    @discardableResult
+    package static func deleteIfUntouched(_ db: Database, id: Int64) throws -> Bool {
+        try db.execute(sql: """
+            DELETE FROM chat_conversations WHERE id IN (
+                SELECT c.id FROM chat_conversations c WHERE c.id = ? AND \(untouchedPredicate))
+            """, arguments: [id])
+        return db.changesCount > 0
+    }
+
+    /// Launch cleanup: every untouched main chat left behind by an abandoned
+    /// landing (or an older ⌘N). Returns the deleted ids.
+    @discardableResult
+    package static func deleteAllUntouched(_ db: Database) throws -> [Int64] {
+        let ids = try Int64.fetchAll(db, sql: "SELECT c.id FROM chat_conversations c WHERE \(untouchedPredicate)")
+        for id in ids { try delete(db, id: id) }
+        return ids
+    }
+
     package static func fetchByID(_ db: Database, id: Int64) throws -> ChatConversation? {
         try ChatConversation.fetchOne(db, sql: "SELECT * FROM chat_conversations WHERE id = ?", arguments: [id])
     }

@@ -43,6 +43,23 @@ final class ChatLandingPolicyTests: XCTestCase {
         XCTAssertEqual(decide(last(idle: 2 * 3600, streaming: true)), .resume(7))
     }
 
+    /// Unsent text or attachments count as activity: resume whatever the time.
+    func testUnsentInputResumesWhateverTheTime() {
+        let stale = last(idle: 5 * 3600)
+        XCTAssertEqual(ChatLandingPolicy.decide(last: stale, lastViewedAt: nil, hasUnsentInput: true, now: now), .resume(7))
+        XCTAssertEqual(ChatLandingPolicy.decide(last: stale, lastViewedAt: nil, hasUnsentInput: false, now: now), .landing)
+        // An empty project chat with a half-typed message is resumed, not lost to the landing.
+        let emptyChat = last(idle: 5 * 3600, hasMessages: false)
+        XCTAssertEqual(ChatLandingPolicy.decide(last: emptyChat, lastViewedAt: nil, hasUnsentInput: true, now: now),
+                       .resume(7))
+    }
+
+    func testUnsentInputNeverResurrectsAGoneChat() {
+        XCTAssertEqual(ChatLandingPolicy.decide(last: nil, lastViewedAt: nil, hasUnsentInput: true, now: now), .landing)
+        XCTAssertEqual(ChatLandingPolicy.decide(last: last(idle: 60, archived: true), lastViewedAt: nil,
+                                                hasUnsentInput: true, now: now), .landing)
+    }
+
     func testNoLastConversationLands() {
         XCTAssertEqual(decide(nil), .landing)
         XCTAssertEqual(decide(nil, viewedAgo: 60), .landing)
@@ -127,5 +144,37 @@ final class ChatLandingPolicyTests: XCTestCase {
 
     func testRecentsOfNothingIsEmpty() {
         XCTAssertTrue(ChatLandingPolicy.recents([]).isEmpty)
+    }
+
+    // MARK: - Untouched chats (the landing's draft)
+
+    func testUntouchedQueriesSpareMessagesAttachmentsProjectsAndArchived() throws {
+        let db = try TestDatabase.create()
+        try db.write { d in
+            let untouched = try TestDatabase.insertChatConversation(d, title: "", updatedAt: 100)
+            let newer = try TestDatabase.insertChatConversation(d, title: "", updatedAt: 200)
+            let messaged = try TestDatabase.insertChatConversation(d, title: "m")
+            try TestDatabase.insertChatMessage(d, conversationID: messaged, role: "user", text: "hi")
+            let attached = try TestDatabase.insertChatConversation(d, title: "a")
+            try d.execute(sql: """
+                INSERT INTO chat_attachments (conversation_id, name, mime, size, path, sha256, created_at)
+                VALUES (?, 'f.txt', 'text/plain', 1, 'f.txt', 'x', 0)
+                """, arguments: [attached])
+            let project = try ChatProjectQueries.create(d, name: "P")
+            let inProject = try ChatConversationQueries.create(d, projectID: project.id).id
+            let archived = try TestDatabase.insertChatConversation(d, title: "")
+            try ChatConversationQueries.archive(d, id: archived)
+            let scoped = try TestDatabase.insertChatConversation(d, title: "", contextType: "target")
+
+            XCTAssertEqual(try ChatConversationQueries.fetchUntouched(d)?.id, newer)
+            for kept in [messaged, attached, inProject, archived, scoped] {
+                XCTAssertFalse(try ChatConversationQueries.deleteIfUntouched(d, id: kept), "\(kept)")
+            }
+            XCTAssertTrue(try ChatConversationQueries.deleteIfUntouched(d, id: newer))
+            XCTAssertFalse(try ChatConversationQueries.deleteIfUntouched(d, id: newer), "already gone")
+            XCTAssertEqual(try ChatConversationQueries.deleteAllUntouched(d), [untouched])
+            XCTAssertNil(try ChatConversationQueries.fetchUntouched(d))
+            XCTAssertEqual(try ChatConversationQueries.deleteAllUntouched(d), [])
+        }
     }
 }

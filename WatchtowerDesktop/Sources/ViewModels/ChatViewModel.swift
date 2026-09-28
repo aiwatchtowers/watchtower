@@ -71,6 +71,10 @@ final class ChatViewModel {
     var editingMessageID: Int64?
     /// History list refresh (conversation order, titles written by Go).
     @ObservationIgnored var onConversationsChanged: (() -> Void)?
+    /// The landing's first turn started in this conversation: the thread
+    /// takes over and the view makes it the history selection. Fired only
+    /// by `send`, never by other ways of leaving the landing.
+    @ObservationIgnored var onLandingTurnStarted: ((Int64) -> Void)?
 
     let actionFeed: AgentActionFeed
     let pool: ChatSessionPool
@@ -106,6 +110,9 @@ final class ChatViewModel {
     /// on the first keystroke so its session prewarms — and stays up until
     /// that conversation's first turn starts or another one is opened.
     private(set) var isOnLanding = true
+    /// The conversation the landing made (or reused) for its draft. Left for
+    /// anything but its own first turn, it is deleted while still untouched.
+    @ObservationIgnored private(set) var landingDraftID: Int64?
     /// Active (unarchived) projects for the sidebar.
     private(set) var projects: [ChatProject] = []
     /// Keys the owner closed the panel for during the CURRENT turn — a
@@ -166,6 +173,7 @@ final class ChatViewModel {
     // MARK: - Conversations
 
     func select(conversationID id: Int64) {
+        discardLandingDraft(except: id)
         openProjectID = nil
         isOnLanding = false
         let switching = id != conversationID
@@ -199,6 +207,7 @@ final class ChatViewModel {
     /// (the landing takes its place).
     func forget(conversationID id: Int64) {
         pool.close(conversationID: id)
+        if id == landingDraftID { landingDraftID = nil }
         guard id == conversationID else { return }
         isOnLanding = true
         clearShownConversation()
@@ -208,13 +217,16 @@ final class ChatViewModel {
     /// conversation when `ChatLandingPolicy` says so, otherwise the landing.
     /// `rememberedConversationID`/`lastViewedAt` are what the view stored on
     /// leaving — they matter after a relaunch, when nothing is shown yet. An
-    /// open project page is left as it is.
+    /// open project page is left as it is; so is the landing while it holds
+    /// unsent text or attachments, which otherwise force a resume.
     func enterTab(rememberedConversationID: Int64?, lastViewedAt: Date?, now: Date) {
         guard openProjectID == nil else { return }
+        let unsent = hasUnsentInput
+        if isOnLanding, unsent { return }
         let id = conversationID ?? rememberedConversationID
         let viewedAt = id == rememberedConversationID ? lastViewedAt : nil
         let last = id.flatMap(landingSnapshot(conversationID:))
-        switch ChatLandingPolicy.decide(last: last, lastViewedAt: viewedAt, now: now) {
+        switch ChatLandingPolicy.decide(last: last, lastViewedAt: viewedAt, hasUnsentInput: unsent, now: now) {
         case .resume(let id): select(conversationID: id)
         case .landing: showLanding()
         }
@@ -228,9 +240,42 @@ final class ChatViewModel {
         openProjectID = nil
         isOnLanding = true
         if let conv = currentConversation, conv.activeLeafMessageID == nil, conv.projectID == nil, !isStreaming {
+            landingDraftID = conv.id
             return
         }
         clearShownConversation()
+    }
+
+    /// Text or attachments typed but not sent.
+    var hasUnsentInput: Bool {
+        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !composerAttachments.pending.isEmpty
+    }
+
+    /// App launch: drop the untouched chats an abandoned landing (or an
+    /// older ⌘N) left behind. Nothing is shown yet, so none is on screen.
+    func cleanUpUntouchedConversations() {
+        do {
+            let ids = try dbManager.dbPool.write { try ChatConversationQueries.deleteAllUntouched($0) }
+            if !ids.isEmpty { reloadConversations() }
+        } catch {
+            NSLog("ChatViewModel: cleaning up untouched chats failed: %@", error.localizedDescription)
+        }
+    }
+
+    /// Leaving the landing for anything but its own first turn: its draft
+    /// conversation goes, unless it gained a message or an attachment (the
+    /// delete re-checks that in the same statement), and so does its session.
+    private func discardLandingDraft(except keep: Int64? = nil) {
+        guard let id = landingDraftID, id != keep else { return }
+        landingDraftID = nil
+        do {
+            let deleted = try dbManager.dbPool.write { try ChatConversationQueries.deleteIfUntouched($0, id: id) }
+            guard deleted else { return }
+            pool.close(conversationID: id)
+            reloadConversations()
+        } catch {
+            NSLog("ChatViewModel: discarding the landing's unused chat failed: %@", error.localizedDescription)
+        }
     }
 
     /// The composer's first keystroke: prewarm the session. On the landing
@@ -297,6 +342,9 @@ final class ChatViewModel {
 
     /// Shows a project page; the chat's artifact panel closes with the chat.
     func openProject(_ id: Int64) {
+        discardLandingDraft()
+        // The landing's (now discarded) draft is not what a later return shows.
+        if isOnLanding { clearShownConversation() }
         openProjectID = id
         isOnLanding = false
         artifactPanel = nil
@@ -306,9 +354,12 @@ final class ChatViewModel {
     /// Called by the project page after it deleted its project: its chats
     /// are detached (`ON DELETE SET NULL`), so the shown one reloads too.
     func projectDeleted(_ id: Int64) {
-        if openProjectID == id { openProjectID = nil }
         reloadProjects()
-        reload()
+        if openProjectID == id {
+            showLanding()
+        } else {
+            reload()
+        }
         reloadConversations()
     }
 
@@ -463,6 +514,7 @@ final class ChatViewModel {
         let turnText = ChatTurnComposer.compose(text: text, skill: skill, mentions: live)
         // A message may carry only attachments (no text) — the ChatInput canSend twin.
         guard !turnText.isEmpty || !attachments.isEmpty, !isStreaming else { return false }
+        let fromLanding = isOnLanding
         guard let id = conversationIDCreatingIfNeeded() else { return false }
         composer.reset()
         // The floor is the PREVIOUS owner message, and it alone: codex never
@@ -471,8 +523,12 @@ final class ChatViewModel {
         let started = startTurn(TurnPlan(conversationID: id, historyTipID: thread.last?.message.id, userText: turnText,
                                          reuseUserMessageID: nil, attachments: attachments, outcomes: outcomes,
                                          forceReplay: false, titleText: trimmed))
-        // The landing's first turn: the thread takes over.
-        if started { isOnLanding = false }
+        if started, fromLanding {
+            // The landing's first turn: its draft is a real chat now.
+            landingDraftID = nil
+            isOnLanding = false
+            onLandingTurnStarted?(id)
+        }
         return started
     }
 
@@ -481,9 +537,26 @@ final class ChatViewModel {
     /// Made from the landing, it keeps the landing up until the first turn.
     private func conversationIDCreatingIfNeeded() -> Int64? {
         if let conversationID { return conversationID }
-        let landing = isOnLanding
-        let id = newConversation()
-        if id != nil { isOnLanding = landing }
+        guard isOnLanding else { return newConversation() }
+        // An untouched chat is reused rather than a second empty row made.
+        let reusable: Int64?
+        do {
+            reusable = try dbManager.dbPool.read { try ChatConversationQueries.fetchUntouched($0)?.id }
+        } catch {
+            NSLog("ChatViewModel: looking up an untouched chat failed: %@", error.localizedDescription)
+            reusable = nil
+        }
+        let id: Int64?
+        if let reusable {
+            select(conversationID: reusable)
+            id = reusable
+        } else {
+            id = newConversation()
+        }
+        if let id {
+            isOnLanding = true
+            landingDraftID = id
+        }
         return id
     }
 

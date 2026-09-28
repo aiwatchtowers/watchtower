@@ -5,12 +5,14 @@ import Foundation
 /// injected (the `ChatSessionPolicy` precedent); `ChatViewModel.enterTab`
 /// gathers the snapshot and applies the decision.
 ///
-/// Resume when the last-open conversation still exists, is not archived,
-/// holds at least one message, and either has a turn running (always
-/// resumes, whatever the time) or saw activity less than `resumeWindow`
-/// ago. Activity is the later of its last stored message (`updated_at`) and
-/// the moment the owner last had it on screen. Exactly `resumeWindow` after
-/// the last activity is already outside the window.
+/// Resume when the last-open conversation still exists and is not
+/// archived, and either has a turn running or unsent composer input (both
+/// resume whatever the time), or holds at least one message and saw
+/// activity less than `resumeWindow` ago. Activity is the later of its last
+/// stored message (`updated_at`) and the last time the owner had it on
+/// screen (stamped on leaving the tab, on switching chats, on the app going
+/// to the background or quitting, and every minute while the tab is shown).
+/// Exactly `resumeWindow` after the last activity is already outside.
 package enum ChatLandingPolicy {
     package static let resumeWindow: TimeInterval = 2 * 60 * 60
     /// The landing's recent list: every pinned chat up to `pinnedLimit`,
@@ -47,10 +49,13 @@ package enum ChatLandingPolicy {
     }
 
     /// `last` is nil when there is no last-open conversation or it was
-    /// deleted; `lastViewedAt` is when the owner last had it on screen.
-    package static func decide(last: LastConversation?, lastViewedAt: Date?, now: Date) -> Decision {
+    /// deleted; `lastViewedAt` is when the owner last had it on screen;
+    /// `hasUnsentInput` is a non-empty draft or pending attachments.
+    package static func decide(
+        last: LastConversation?, lastViewedAt: Date?, hasUnsentInput: Bool = false, now: Date
+    ) -> Decision {
         guard let last, !last.isArchived else { return .landing }
-        if last.isStreaming { return .resume(last.id) }
+        if last.isStreaming || hasUnsentInput { return .resume(last.id) }
         guard last.hasMessages else { return .landing }
         let lastActivity = max(last.updatedAt, lastViewedAt ?? .distantPast)
         return now.timeIntervalSince(lastActivity) < resumeWindow ? .resume(last.id) : .landing
