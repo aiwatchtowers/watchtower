@@ -103,4 +103,25 @@ supported path (cp1251's one genuinely undefined byte, 0x98). New:
 
 `readSlack` builds `from_ref` from the row's current `thread_ts` and walks messages by a forward-only rowid cursor. A top-level message that gets its first reply later has `thread_ts` set by the sync upsert, with the same rowid, and moves from its channel-day document to a thread document ("promoted root", per CLAUDE.md). Its Confluence link keeps pointing at the day document, which no longer contains the message, and a reply that repeats the URL adds a second ref. "Discussed in: N Slack threads" (`kb/source_ext_links.go`) then over-counts, and the link names a document without the URL. This is related to, but not the same as, the accepted "edits are not rescanned" limit. Fix direction: when a row's `thread_ts` changes, re-point that message's `doc_links` rows (or derive `from_ref` at read time from the message's ts).
 
+Investigated (not fixed — needs a design decision, not a mechanical patch):
+confirmed both fix directions require a `doc_links` schema/migration change,
+not just a cursor tweak. `doc_links`' PRIMARY KEY is `(from_kind, from_ref,
+to_kind, to_ref)` (`internal/db/schema.sql`) with no per-message identity
+column — `from_ref` for a Slack row is *already* an aggregate (a whole
+channel-day or a whole thread), deliberately, so the KB can stamp/reconcile
+it as one document. A day-ref can legitimately aggregate several unrelated
+top-level messages' links, so "re-point on promotion" cannot correctly
+resolve to a `DELETE ... WHERE from_ref = <the stale day ref>` without also
+risking deleting a sibling message's still-valid link from that same day —
+there is currently no column to tell which day-ref row came from which
+message. Both fix directions in the finding (re-point on promotion, or
+derive `from_ref` at read time) therefore need a new per-message identity
+column on `doc_links` (e.g. `channel_id`+`ts`) plus a migration, a rewrite
+of the write path (`linkscan.link`, the generic reconcile in
+`internal/doclinks/detect.go`, which also keys deletes on `from_ref`), and
+of the one current reader (`discussedIn` in `internal/kb/source_ext_links.go`,
+whose `COUNT(DISTINCT from_ref)` would need to re-derive or re-group by the
+new column) — out of scope for a mechanical parser/converter fix. Left open
+for an owner design call; not attempted here.
+
 > Original note: «так там два больших фичи влилось. Пройдись еще разок, дополнии беклог и давай его начинать закрывать»
