@@ -331,7 +331,16 @@ func (p *Pipeline) withRetryDigests(digests []db.Digest) ([]db.Digest, map[int]b
 // this run processed it (its batch succeeded, or it was filtered out before
 // batching). An interrupted run only clears what its succeeded batches covered
 // — the batches that never ran are owed another go.
+//
+// Failed batches are charged only when at least one batch succeeded, i.e. the
+// provider demonstrably worked: a run in which every batch failed is an outage
+// (and freezes the watermark anyway), so it must not age owed digests toward
+// being given up on.
 func (p *Pipeline) settleRetryDigests(retryIDs map[int]bool, res trackBatchResult) {
+	charged := res.failedDigests
+	if res.succeeded == 0 {
+		charged = nil
+	}
 	failed := make(map[int]bool, len(res.failedDigests))
 	for _, id := range res.failedDigests {
 		failed[id] = true
@@ -350,7 +359,7 @@ func (p *Pipeline) settleRetryDigests(retryIDs map[int]bool, res trackBatchResul
 			}
 		}
 	}
-	gaveUp, err := p.db.SettleTrackRetryDigests(done, res.failedDigests, maxBatchRetryAttempts)
+	gaveUp, err := p.db.SettleTrackRetryDigests(done, charged, maxBatchRetryAttempts)
 	if err != nil {
 		p.logger.Printf("tracks: warning: could not record failed batches for retry: %v", err)
 		return

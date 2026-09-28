@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"testing"
 	"time"
 
@@ -244,29 +245,90 @@ func TestRunForWindow_PartialFailureReoffersFailedBatchDigests(t *testing.T) {
 	assert.Equal(t, 0, retryDigestCount(t, database), "a succeeded retry leaves the set")
 }
 
-// A batch that keeps failing is re-offered at most maxBatchRetryAttempts
-// times, then given up on — never re-sent forever.
+// channelFailingGenerator fails every batch whose prompt names the channel
+// failID and answers the rest with response.
+type channelFailingGenerator struct {
+	failID   string
+	response string
+	calls    int
+}
+
+func (g *channelFailingGenerator) Generate(_ context.Context, sys, user, _ string) (string, *digest.Usage, string, error) {
+	g.calls++
+	if strings.Contains(sys+user, "("+g.failID+")") {
+		return "", nil, "", errBatchGenerator
+	}
+	return g.response, &digest.Usage{InputTokens: 100, OutputTokens: 50}, "mock-session", nil
+}
+
+// retryAttempts returns the retry-set attempt count of the digest of channel
+// channelID, or 0 when it is not in the set.
+func retryAttempts(t *testing.T, database *db.DB, channelID string) int {
+	t.Helper()
+	var n int
+	err := database.QueryRow(`SELECT COALESCE(MAX(r.attempts), 0) FROM track_retry_digests r
+		JOIN digests d ON d.id = r.digest_id WHERE d.channel_id = ?`, channelID).Scan(&n)
+	require.NoError(t, err)
+	return n
+}
+
+// A batch that keeps failing inside otherwise successful runs is charged once
+// per run and given up on after maxBatchRetryAttempts — never re-sent forever.
+// 20 channels keep two batches even after the stored track's topic is
+// filtered out, so every run is a partial success.
 func TestRunForWindow_RetryGivesUpAfterMaxAttempts(t *testing.T) {
 	database := testDB(t)
-	seedTrackWindow(t, database, 2)
+	response := seedTrackWindow(t, database, 20)
 	owner, err := database.ResolveOwner()
 	require.NoError(t, err)
 	now := time.Now()
 	from, to := float64(now.Add(-3*time.Hour).Unix()), float64(now.Unix())
 
-	gen := &failingGenerator{failFirst: 1 << 30}
+	gen := &channelFailingGenerator{failID: "C20", response: response}
 	cfg := testConfig()
 	cfg.AI.Workers = 1
 	pipe := New(database, cfg, gen, log.Default())
 
-	_, err = pipe.RunForWindow(context.Background(), owner, from, to)
-	require.Error(t, err)
-	assert.Equal(t, 2, retryDigestCount(t, database))
-	for i := 1; i < maxBatchRetryAttempts+2; i++ {
-		_, _ = pipe.RunForWindow(context.Background(), owner, from, to, futureWatermark())
+	for attempt := 1; attempt < maxBatchRetryAttempts; attempt++ {
+		_, err = pipe.RunForWindow(context.Background(), owner, from, to)
+		require.NoError(t, err, "a partial failure stays a success")
+		require.Equal(t, attempt, retryAttempts(t, database, "C20"), "one charge per partially failed run")
 	}
-	assert.Equal(t, maxBatchRetryAttempts, gen.calls, "one call per attempt, then no more")
-	assert.Equal(t, 0, retryDigestCount(t, database))
+	_, err = pipe.RunForWindow(context.Background(), owner, from, to)
+	require.NoError(t, err)
+	assert.Equal(t, 0, retryAttempts(t, database, "C20"), "given up on after the last allowed attempt")
+}
+
+// An outage (every batch fails) must not age owed digests: however many
+// fully failed runs follow, a digest owed by an earlier partial run stays in
+// the retry set with its attempt count unchanged.
+func TestRunForWindow_FullyFailedRunsKeepRetryDigests(t *testing.T) {
+	database := testDB(t)
+	response := seedTrackWindow(t, database, 16)
+	owner, err := database.ResolveOwner()
+	require.NoError(t, err)
+	now := time.Now()
+	from, to := float64(now.Add(-3*time.Hour).Unix()), float64(now.Unix())
+	cfg := testConfig()
+	cfg.AI.Workers = 1
+
+	partial := &failingGenerator{failFirst: 1, response: response}
+	_, err = New(database, cfg, partial, log.Default()).RunForWindow(context.Background(), owner, from, to)
+	require.NoError(t, err)
+	owed := retryDigestCount(t, database)
+	require.Greater(t, owed, 0)
+
+	outage := &failingGenerator{failFirst: 1 << 30}
+	pipe := New(database, cfg, outage, log.Default())
+	for i := 0; i < maxBatchRetryAttempts+2; i++ {
+		_, err = pipe.RunForWindow(context.Background(), owner, from, to, futureWatermark())
+		require.Error(t, err, "every batch failed")
+	}
+	require.Greater(t, outage.calls, 0, "the outage runs did reach the AI")
+	assert.Equal(t, owed, retryDigestCount(t, database), "an outage keeps every owed digest")
+	var maxAttempts int
+	require.NoError(t, database.QueryRow(`SELECT MAX(attempts) FROM track_retry_digests`).Scan(&maxAttempts))
+	assert.Equal(t, 1, maxAttempts, "fully failed runs charge nothing")
 }
 
 // A shutdown is not a batch failure: an interrupted run charges nothing to
