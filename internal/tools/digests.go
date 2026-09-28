@@ -13,7 +13,7 @@ type getTodayBriefingArgs struct{}
 
 type listDigestsArgs struct {
 	Type    string `json:"type,omitempty" jsonschema:"digest type: channel|daily|weekly"`
-	Channel string `json:"channel,omitempty" jsonschema:"channel id to filter by"`
+	Channel string `json:"channel,omitempty" jsonschema:"Slack channel id to filter by, raw (C…) or namespaced (1:C…); a raw id matches that channel in every connected workspace"`
 	Since   string `json:"since,omitempty" jsonschema:"only digests whose period starts on/after this date (YYYY-MM-DD or RFC3339)"`
 	Limit   int    `json:"limit,omitempty" jsonschema:"max results, 0 = default (50), capped at 200"`
 }
@@ -80,9 +80,15 @@ func NewListDigests() *Tool {
 				}
 				fromUnix = float64(ts.Unix())
 			}
-			digests, err := d.GetDigests(db.DigestFilter{
-				Type: a.Type, ChannelID: a.Channel, FromUnix: fromUnix, Limit: listLimit(a.Limit),
-			})
+			filter := db.DigestFilter{Type: a.Type, FromUnix: fromUnix, Limit: listLimit(a.Limit)}
+			if a.Channel != "" {
+				ids, err := slackIDForms(d, a.Channel)
+				if err != nil {
+					return nil, err
+				}
+				filter.ChannelIDs = ids
+			}
+			digests, err := d.GetDigests(filter)
 			if err != nil {
 				return nil, fmt.Errorf("listing digests: %w", err)
 			}

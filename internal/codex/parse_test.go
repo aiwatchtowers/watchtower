@@ -1,6 +1,7 @@
 package codex
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -133,5 +134,21 @@ func TestCodexItem_MessageText(t *testing.T) {
 	item2 := &CodexItem{Content: "from content"}
 	if got := item2.MessageText(); got != "from content" {
 		t.Errorf("MessageText() = %q, want %q", got, "from content")
+	}
+}
+
+// A command/tool item larger than any scanner buffer must not end parsing
+// early: the final agent_message after it is the answer, not the preamble.
+func TestParseJSONLOutput_OversizedLineDoesNotHideFinalMessage(t *testing.T) {
+	big := strings.Repeat("x", 2*1024*1024)
+	jsonl := `{"type":"item.completed","item":{"id":"i0","type":"agent_message","text":"Let me look that up"}}` + "\n" +
+		`{"type":"item.completed","item":{"id":"i1","type":"command_execution","aggregated_output":"` + big + `"}}` + "\n" +
+		`{"type":"item.completed","item":{"id":"i2","type":"agent_message","text":"final answer"}}` + "\n"
+	result, _, err := parseJSONLOutput([]byte(jsonl))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "final answer" {
+		t.Fatalf("result = %q, want the final agent_message", result)
 	}
 }

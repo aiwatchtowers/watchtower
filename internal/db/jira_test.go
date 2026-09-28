@@ -624,10 +624,17 @@ func TestGetJiraActiveSprintStats(t *testing.T) {
 	db := openTestDB(t)
 	SeedTestJiraAccount(t, db)
 
+	// Dates are seeded from the wall clock: GetJiraActiveSprintStats computes
+	// DaysLeft against time.Now(), so a hardcoded end date turns this test red
+	// the day it passes. A date-only end 14 days out is midnight UTC of that
+	// day, so the remaining time is in (13, 14] days and Ceil yields 14.
+	today := time.Now().UTC()
 	require.NoError(t, db.UpsertJiraSprint(JiraSprint{
 		AccountID: 1,
 		ID:        1, BoardID: 10, Name: "Sprint 5", State: "active",
-		StartDate: "2026-04-01", EndDate: "2026-12-31", SyncedAt: "now",
+		StartDate: today.AddDate(0, 0, -7).Format("2006-01-02"),
+		EndDate:   today.AddDate(0, 0, 14).Format("2006-01-02"),
+		SyncedAt:  "now",
 	}))
 
 	// Issues in the sprint.
@@ -653,7 +660,7 @@ func TestGetJiraActiveSprintStats(t *testing.T) {
 	assert.Equal(t, 2, stats.Done)
 	assert.Equal(t, 1, stats.InProgress)
 	assert.Equal(t, 2, stats.Todo)
-	assert.True(t, stats.DaysLeft > 0)
+	assert.Equal(t, 14, stats.DaysLeft)
 }
 
 func TestGetJiraActiveSprintStats_NoSprint(t *testing.T) {

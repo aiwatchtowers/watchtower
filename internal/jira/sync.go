@@ -751,10 +751,19 @@ func (s *Syncer) ensureUserMap(u *User) {
 	})
 }
 
-// SyncSprints syncs active and recent closed sprints for all selected boards.
-// A per-board fetch failure is logged and skipped, except a revoked grant:
-// every remaining board would fail the same way, so it is returned for the
-// caller to record on the account row.
+// maxSprintPages bounds how many pages SyncSprints reads per board and state
+// (50 sprints each, so 2000 sprints — decades of two-week sprints). It only
+// guards against a server that never reports isLast.
+const maxSprintPages = 40
+
+// SyncSprints syncs active and closed sprints for all selected boards.
+// Every page is read: the Agile endpoint returns closed sprints oldest first,
+// so on a long-lived board the sprint that just ended is on the last page,
+// and stopping at page one would leave its row 'active' forever.
+// A per-board fetch failure is logged and skipped (sprints already fetched
+// for that board and state are still stored), except a revoked grant: every
+// remaining board would fail the same way, so it is returned for the caller
+// to record on the account row.
 func (s *Syncer) SyncSprints(ctx context.Context) error {
 	boards, err := s.db.GetJiraSelectedBoards(s.accountID)
 	if err != nil {
@@ -763,42 +772,67 @@ func (s *Syncer) SyncSprints(ctx context.Context) error {
 
 	for _, board := range boards {
 		for _, state := range []string{"active", "closed"} {
-			params := url.Values{
-				"state":      {state},
-				"maxResults": {"50"},
-			}
-			path := fmt.Sprintf("/rest/agile/1.0/board/%d/sprint", board.ID)
-			var resp SprintList
-			if err := s.client.getWithQuery(ctx, path, params, &resp); err != nil {
+			sprints, err := s.fetchBoardSprints(ctx, board.ID, state)
+			s.storeSprints(board.ID, sprints)
+			if err != nil {
 				if errors.Is(err, ErrAuthRevoked) {
 					return err
 				}
 				s.logger.Printf("failed to fetch %s sprints for board %d: %v", state, board.ID, err)
-				continue
-			}
-
-			now := time.Now().UTC().Format(time.RFC3339)
-			for _, sprint := range resp.Values {
-				dbSprint := db.JiraSprint{
-					AccountID:    s.accountID,
-					ID:           sprint.ID,
-					BoardID:      board.ID,
-					Name:         sprint.Name,
-					State:        sprint.State,
-					Goal:         sprint.Goal,
-					StartDate:    sprint.StartDate,
-					EndDate:      sprint.EndDate,
-					CompleteDate: sprint.CompleteDate,
-					SyncedAt:     now,
-				}
-				if err := s.db.UpsertJiraSprint(dbSprint); err != nil {
-					s.logger.Printf("failed to upsert sprint %d: %v", sprint.ID, err)
-				}
 			}
 		}
 	}
 
 	return nil
+}
+
+// fetchBoardSprints pages through /rest/agile/1.0/board/{id}/sprint for one
+// state until isLast (or an empty page), up to maxSprintPages. On an error it
+// returns the sprints read so far alongside the error.
+func (s *Syncer) fetchBoardSprints(ctx context.Context, boardID int, state string) ([]Sprint, error) {
+	path := fmt.Sprintf("/rest/agile/1.0/board/%d/sprint", boardID)
+	var all []Sprint
+	startAt := 0
+	for page := 0; page < maxSprintPages; page++ {
+		params := url.Values{
+			"state":      {state},
+			"startAt":    {strconv.Itoa(startAt)},
+			"maxResults": {"50"},
+		}
+		var resp SprintList
+		if err := s.client.getWithQuery(ctx, path, params, &resp); err != nil {
+			return all, fmt.Errorf("fetching %s sprints (startAt=%d): %w", state, startAt, err)
+		}
+		all = append(all, resp.Values...)
+		if resp.IsLast || len(resp.Values) == 0 {
+			return all, nil
+		}
+		startAt += len(resp.Values)
+	}
+	s.logger.Printf("board %d: stopped reading %s sprints after %d pages without isLast", boardID, state, maxSprintPages)
+	return all, nil
+}
+
+// storeSprints upserts fetched sprints; a failed row is logged and skipped.
+func (s *Syncer) storeSprints(boardID int, sprints []Sprint) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, sprint := range sprints {
+		dbSprint := db.JiraSprint{
+			AccountID:    s.accountID,
+			ID:           sprint.ID,
+			BoardID:      boardID,
+			Name:         sprint.Name,
+			State:        sprint.State,
+			Goal:         sprint.Goal,
+			StartDate:    sprint.StartDate,
+			EndDate:      sprint.EndDate,
+			CompleteDate: sprint.CompleteDate,
+			SyncedAt:     now,
+		}
+		if err := s.db.UpsertJiraSprint(dbSprint); err != nil {
+			s.logger.Printf("failed to upsert sprint %d: %v", sprint.ID, err)
+		}
+	}
 }
 
 // syncReleases fetches fix versions for each unique project key and upserts them.

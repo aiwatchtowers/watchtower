@@ -501,7 +501,7 @@ func TestPipeline_Run_OrderedPhases(t *testing.T) {
 
 	// Seed: a jira issue assigned to alice, a calendar invite for alice, a briefing.
 	seedJiraIssue(t, d, "WT-1", "alice", time.Now().Add(-5*time.Minute))
-	seedCalendarEvent(t, d, "evt-1", "Sync", `[{"email":"alice@x.com","rsvp_status":"needsAction"}]`, "confirmed",
+	seedCalendarEvent(t, d, "evt-1", "Sync", `[{"email":"alice@x.com","response_status":"needsAction"}]`, "confirmed",
 		time.Now().Add(-10*time.Minute), time.Now().Add(-10*time.Minute))
 	seedBriefing(t, d, "alice", time.Now().Format("2006-01-02"), time.Now().Add(-5*time.Minute))
 
@@ -617,7 +617,7 @@ func TestInbox02_AutoResolveCalendarOnUserRSVP(t *testing.T) {
 	// Do not weaken or remove without explicit owner approval.
 	d := newTestDB(t)
 	seedCalendarEvent(t, d, "evt-1", "Sync",
-		`[{"email":"alice@x.com","rsvp_status":"needsAction"}]`,
+		`[{"email":"alice@x.com","response_status":"needsAction"}]`,
 		"confirmed",
 		time.Now().Add(-30*time.Minute), time.Now().Add(-30*time.Minute))
 	p := newPipelineForTest(t, d, "alice", "alice@x.com")
@@ -625,7 +625,7 @@ func TestInbox02_AutoResolveCalendarOnUserRSVP(t *testing.T) {
 	require.NoError(t, err)
 	// Now alice responds — update attendees RSVP and run again.
 	_, err = d.Exec(`UPDATE calendar_events SET attendees=? WHERE id='evt-1'`,
-		`[{"email":"alice@x.com","rsvp_status":"accepted"}]`)
+		`[{"email":"alice@x.com","response_status":"accepted"}]`)
 	require.NoError(t, err)
 	_, _, err = p.Run(context.Background())
 	require.NoError(t, err)
@@ -634,6 +634,26 @@ func TestInbox02_AutoResolveCalendarOnUserRSVP(t *testing.T) {
 	if status != "resolved" {
 		t.Errorf("want resolved, got %q", status)
 	}
+}
+
+func TestAutoResolveCalendar_OwnerEmailCaseInsensitive(t *testing.T) {
+	d := newTestDB(t)
+	seedCalendarEvent(t, d, "evt-1", "Sync",
+		`[{"email":"alice@x.com","response_status":"needsAction"}]`,
+		"confirmed",
+		time.Now().Add(-30*time.Minute), time.Now().Add(-30*time.Minute))
+	p := newPipelineForTest(t, d, "alice", "alice@x.com")
+	_, _, err := p.Run(context.Background())
+	require.NoError(t, err)
+	// The syncer can store the attendee's address in a different case.
+	_, err = d.Exec(`UPDATE calendar_events SET attendees=? WHERE id='evt-1'`,
+		`[{"email":"Alice@X.com","response_status":"accepted"}]`)
+	require.NoError(t, err)
+	_, _, err = p.Run(context.Background())
+	require.NoError(t, err)
+	var status string
+	require.NoError(t, d.QueryRow(`SELECT status FROM inbox_items WHERE trigger_type='calendar_invite'`).Scan(&status))
+	assert.Equal(t, "resolved", status)
 }
 
 // TestRunPicksUpGmail: a Gmail message addressed to the current user's email

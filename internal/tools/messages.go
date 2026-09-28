@@ -11,8 +11,8 @@ import (
 )
 
 type listMessagesArgs struct {
-	Person  string `json:"person,omitempty" jsonschema:"filter to one person's messages: Slack user id (U…) or a name (username, display or real name, partial match)"`
-	Channel string `json:"channel,omitempty" jsonschema:"filter to one channel: Slack channel id (C…) or a channel name"`
+	Person  string `json:"person,omitempty" jsonschema:"filter to one person's messages: Slack user id, raw (U…) or namespaced (1:U…; a raw id matches that user in every connected workspace), or a name (username, display or real name, partial match)"`
+	Channel string `json:"channel,omitempty" jsonschema:"filter to one channel: Slack channel id, raw (C…/G…/D…) or namespaced (1:C…; a raw id matches that channel in every connected workspace), or a channel name"`
 	Query   string `json:"query,omitempty" jsonschema:"optional keywords for full-text search of the message body"`
 	Limit   int    `json:"limit,omitempty" jsonschema:"max results, 0 = default (30), capped at 200"`
 }
@@ -51,11 +51,11 @@ func NewListMessages() *Tool {
 				opts.UserIDs = userIDs
 			}
 			if a.Channel != "" {
-				channelID, err := resolveChannel(d, a.Channel)
+				channelIDs, err := resolveChannel(d, a.Channel)
 				if err != nil {
 					return nil, err
 				}
-				opts.ChannelIDs = []string{channelID}
+				opts.ChannelIDs = channelIDs
 			}
 			if a.Person == "" && a.Channel == "" && a.Query == "" {
 				return nil, &ValidationError{Msg: "provide at least one filter: person, channel, or query"}
@@ -90,10 +90,11 @@ func messageLimit(n int) int {
 // resolvePerson turns a person reference (user id or name) into the set of
 // matching user ids, or a model-facing *ValidationError when it cannot resolve.
 func resolvePerson(d *db.DB, person string) ([]string, error) {
-	// A Slack user id (U…/W…) is taken verbatim — LLM callers that already have
-	// an id from another tool should not be re-fuzzed against names.
+	// A Slack user id (U…/W…, raw or namespaced) is taken as an id — LLM
+	// callers that already have one from another tool should not be re-fuzzed
+	// against names. It expands to every stored form (slackIDForms).
 	if looksLikeUserID(person) {
-		return []string{person}, nil
+		return slackIDForms(d, person)
 	}
 	users, err := d.SearchUsersByName(person, 10)
 	if err != nil {
@@ -109,36 +110,38 @@ func resolvePerson(d *db.DB, person string) ([]string, error) {
 	return userIDs, nil
 }
 
-// resolveChannel turns a channel reference (channel id or name) into a channel
-// id, or a model-facing *ValidationError when unresolved.
-func resolveChannel(d *db.DB, channel string) (string, error) {
-	if strings.HasPrefix(channel, "C") && !strings.ContainsAny(channel, " #") {
-		if c, err := d.GetChannelByID(channel); err == nil && c != nil {
-			return c.ID, nil
+// resolveChannel turns a channel reference (channel id or name) into the
+// stored channel ids it names, or a model-facing *ValidationError when
+// unresolved. A raw id known in several workspaces returns each of them.
+func resolveChannel(d *db.DB, channel string) ([]string, error) {
+	if looksLikeChannelID(channel) {
+		forms, err := slackIDForms(d, channel)
+		if err != nil {
+			return nil, err
+		}
+		var ids []string
+		for _, id := range forms {
+			c, err := d.GetChannelByID(id)
+			if err != nil {
+				return nil, fmt.Errorf("resolving channel: %w", err)
+			}
+			if c != nil {
+				ids = append(ids, c.ID)
+			}
+		}
+		if len(ids) > 0 {
+			return ids, nil
 		}
 	}
 	name := strings.TrimPrefix(channel, "#")
 	c, err := d.GetChannelByName(name)
-	if err != nil || c == nil {
-		return "", &ValidationError{Msg: "no channel matches " + strconv.Quote(channel)}
+	if err != nil {
+		return nil, fmt.Errorf("resolving channel: %w", err)
 	}
-	return c.ID, nil
-}
-
-// looksLikeUserID reports whether s is shaped like a bare Slack user id: a
-// leading U or W followed by all-uppercase alphanumerics (e.g. U0FAKE08). The
-// strict shape keeps ordinary names that merely start with U/W (e.g. "Ulyana")
-// on the name-resolution path instead of being mistaken for an id.
-func looksLikeUserID(s string) bool {
-	if len(s) < 8 || (s[0] != 'U' && s[0] != 'W') {
-		return false
+	if c == nil {
+		return nil, &ValidationError{Msg: "no channel matches " + strconv.Quote(channel)}
 	}
-	for _, r := range s[1:] {
-		if !(r >= 'A' && r <= 'Z') && !(r >= '0' && r <= '9') {
-			return false
-		}
-	}
-	return true
+	return []string{c.ID}, nil
 }
 
 // renderMessages resolves sender/channel ids to display names for the LLM.

@@ -120,7 +120,7 @@ Meeting prep is generated via the CLI (`watchtower meeting-prep [event-id|next] 
 **CLI commands:**
 - `watchtower calendar` — show upcoming events (flags: `--days N`, `--json`)
 - `watchtower calendar login` — connect Google Calendar (OAuth flow)
-- `watchtower calendar logout` — disconnect and remove token + events
+- `watchtower calendar logout` — disconnect Google account #1's calendar and remove that account's events (other accounts, CalDAV/ICS and recorded meetings' events are kept)
 - `watchtower calendar sync` — manually sync events
 - `watchtower calendar status` — show connection status
 - `watchtower calendar list` — list synced calendars (with selection markers)

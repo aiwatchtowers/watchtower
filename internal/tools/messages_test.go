@@ -21,11 +21,11 @@ func messagesRegistry(t *testing.T, d *db.DB) *Registry {
 func seedMessagesDB(t *testing.T) *db.DB {
 	t.Helper()
 	d := openDB(t)
-	require.NoError(t, d.UpsertUser(db.User{ID: "U001", Name: "esaenko", DisplayName: "Женя Саенко"}))
-	require.NoError(t, d.UpsertUser(db.User{ID: "U002", Name: "bogdan", DisplayName: "Богдан"}))
-	require.NoError(t, d.UpsertMessage(db.Message{ChannelID: "C1", TS: "1700000001.0001", UserID: "U001", Text: "open questions for Cloudflare: latency and billing", Permalink: "https://slack/1", RawJSON: "{}"}))
-	require.NoError(t, d.UpsertMessage(db.Message{ChannelID: "C1", TS: "1700000002.0001", UserID: "U002", Text: "unrelated chatter", RawJSON: "{}"}))
-	require.NoError(t, d.UpsertMessage(db.Message{ChannelID: "C1", TS: "1700000003.0001", UserID: "U001", Text: "Cloudflare follow-up still open", Permalink: "https://slack/3", RawJSON: "{}"}))
+	require.NoError(t, d.UpsertUser(db.User{ID: "1:U001", Name: "ipetrenko", DisplayName: "Іра Петренко"}))
+	require.NoError(t, d.UpsertUser(db.User{ID: "1:U002", Name: "taras", DisplayName: "Тарас"}))
+	require.NoError(t, d.UpsertMessage(db.Message{ChannelID: "1:C1", TS: "1700000001.0001", UserID: "1:U001", Text: "open questions for Cloudflare: latency and billing", Permalink: "https://slack/1", RawJSON: "{}"}))
+	require.NoError(t, d.UpsertMessage(db.Message{ChannelID: "1:C1", TS: "1700000002.0001", UserID: "1:U002", Text: "unrelated chatter", RawJSON: "{}"}))
+	require.NoError(t, d.UpsertMessage(db.Message{ChannelID: "1:C1", TS: "1700000003.0001", UserID: "1:U001", Text: "Cloudflare follow-up still open", Permalink: "https://slack/3", RawJSON: "{}"}))
 	return d
 }
 
@@ -33,17 +33,17 @@ func seedMessagesDB(t *testing.T) *db.DB {
 // messages (rendered with a display name, not a raw id), and excludes others.
 func TestListMessages_ByPersonName(t *testing.T) {
 	d := seedMessagesDB(t)
-	got := callReadString(t, messagesRegistry(t, d), "list_messages", `{"person":"Саенко"}`)
+	got := callReadString(t, messagesRegistry(t, d), "list_messages", `{"person":"Петренко"}`)
 	assert.Contains(t, got, "open questions for Cloudflare")
 	assert.Contains(t, got, "Cloudflare follow-up")
 	assert.NotContains(t, got, "unrelated chatter")
-	assert.Contains(t, got, "Женя Саенко")
+	assert.Contains(t, got, "Іра Петренко")
 	assert.NotContains(t, got, "U001", "sender must render as a name, not a raw id")
 }
 
 func TestListMessages_PersonPlusKeyword(t *testing.T) {
 	d := seedMessagesDB(t)
-	got := callReadString(t, messagesRegistry(t, d), "list_messages", `{"person":"Саенко","query":"billing"}`)
+	got := callReadString(t, messagesRegistry(t, d), "list_messages", `{"person":"Петренко","query":"billing"}`)
 	assert.Contains(t, got, "latency and billing")
 	assert.NotContains(t, got, "follow-up still open")
 }

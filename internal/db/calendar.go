@@ -259,18 +259,46 @@ func (db *DB) DeleteStaleCalendarEvents(calendarID string, beforeSyncedAt string
 	return int(n), nil
 }
 
-// ClearCalendarEvents removes all calendar data (used on disconnect).
-func (db *DB) ClearCalendarEvents() error {
-	if _, err := db.Exec(`DELETE FROM calendar_events`); err != nil {
-		return fmt.Errorf("clearing calendar events: %w", err)
+// ClearGoogleAccountCalendarData removes one Google account's calendar data —
+// the `calendar logout` purge. Only calendars whose account_id is accountID
+// and their events are touched: other Google accounts, CalDAV/ICS calendars
+// (NULL account_id) and the shared calendar_attendee_map cache stay. An event
+// still referenced by a meeting_transcripts or meeting_recaps row is spared,
+// the same NOT EXISTS guard as DeleteStaleCalendarEvents (owner decision 14 —
+// deleting it would SET NULL the recording's event link for good), and so is
+// the calendar row that still holds such an event (calendar_events.calendar_id
+// is a foreign key). Returns the number of events deleted.
+func (db *DB) ClearGoogleAccountCalendarData(accountID int64) (int, error) {
+	tx, err := db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("clearing calendar data for google account %d: %w", accountID, err)
 	}
-	if _, err := db.Exec(`DELETE FROM calendar_calendars`); err != nil {
-		return fmt.Errorf("clearing calendars: %w", err)
+	defer tx.Rollback()
+
+	result, err := tx.Exec(`
+		DELETE FROM calendar_events
+		 WHERE calendar_id IN (SELECT id FROM calendar_calendars WHERE account_id = ?)
+		   AND NOT EXISTS (SELECT 1 FROM meeting_transcripts t WHERE t.event_id = calendar_events.id)
+		   AND NOT EXISTS (SELECT 1 FROM meeting_recaps    r WHERE r.event_id = calendar_events.id)
+	`, accountID)
+	if err != nil {
+		return 0, fmt.Errorf("clearing calendar events for google account %d: %w", accountID, err)
 	}
-	if _, err := db.Exec(`DELETE FROM calendar_attendee_map`); err != nil {
-		return fmt.Errorf("clearing attendee map: %w", err)
+	n, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("counting cleared calendar events for google account %d: %w", accountID, err)
 	}
-	return nil
+	if _, err := tx.Exec(`
+		DELETE FROM calendar_calendars
+		 WHERE account_id = ?
+		   AND NOT EXISTS (SELECT 1 FROM calendar_events e WHERE e.calendar_id = calendar_calendars.id)
+	`, accountID); err != nil {
+		return 0, fmt.Errorf("clearing calendars for google account %d: %w", accountID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("clearing calendar data for google account %d: %w", accountID, err)
+	}
+	return int(n), nil
 }
 
 // UpsertAttendeeMap caches an email to slack_user_id mapping.
