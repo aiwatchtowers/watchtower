@@ -28,15 +28,19 @@ Resolution: space is reserved rather than the indicator moved, so it stays
 visible from every screen. `RecordingIndicatorView` measures its pill stack
 and reports `RecordingIndicatorInset.reserved(stackHeight:expandedPanelHeight:)`
 to the root view, which injects it as the `recordingIndicatorInset`
-environment value. Only the collapsed pills reserve space; the expanded
-live-transcript panel is a transient overlay the owner opened and may cover
-content. Screens opt in with `.clearsRecordingIndicator()` on their
-bottom-most content: the main chat composer (`ChatComposerView`, model pill
-included), the target chat pane (below its error labels), the meeting chat tab
+environment value. Only the collapsed stack reserves space; while the
+live-transcript panel is expanded (a transient overlay the owner opened, at
+the bottom of the stack) nothing is reserved. Screens opt in with
+`.clearsRecordingIndicator()` on their bottom-most content: the main chat
+composer (`ChatComposerView`, model pill included), the target chat pane
+(below its error labels), the target Details tab's docked assistant input
+(`TargetDetailView`), the track Discuss chat (`TrackChatSection`, its own
+TextField + send, below its error label), the meeting chat tab
 (`RecordingChatTab`) and the idea/decision detail panes (below the action bar
 under the Discuss input). The shared `ChatInput` reserves nothing, so sheets,
 onboarding and the setup assistants are unaffected. Pinned by
-`RecordingIndicatorViewTests` (reservation arithmetic incl. the expanded panel,
-and a source scan pinning exactly those five call sites). Not covered: the
+`RecordingIndicatorViewTests` (reservation incl. the expanded panel, and a
+source scan pinning the exact per-file count of code occurrences at those
+seven sites). Not covered: the
 target extraction pill (`ExtractIndicatorView`, same corner, fixed 72 pt
 offset) — separate indicator, not part of this report.

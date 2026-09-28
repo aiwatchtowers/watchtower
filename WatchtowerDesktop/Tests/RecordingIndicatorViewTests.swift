@@ -218,43 +218,62 @@ final class RecordingIndicatorViewTests: XCTestCase {
         XCTAssertEqual(RecordingIndicatorInset.reserved(stackHeight: 150), 166)
     }
 
-    /// Reviewer finding I4: the expanded live-transcript panel is a transient
-    /// overlay — only the collapsed pills around it reserve space.
-    func testExpandedPanelIsExcludedFromTheReservation() {
-        // Panel alone: nothing reserved.
-        XCTAssertEqual(RecordingIndicatorInset.reserved(stackHeight: 310, expandedPanelHeight: 310), 0)
-        // Panel + one 40 pt job pill: only the pill (plus the gap to the bottom).
-        let stack = 40 + RecordingIndicatorInset.stackSpacing + 310
-        XCTAssertEqual(RecordingIndicatorInset.reserved(stackHeight: stack, expandedPanelHeight: 310),
+    /// While the live panel is expanded nothing is reserved: it sits at the
+    /// stack's bottom as a transient overlay, the other pills above it.
+    func testExpandedPanelReservesNothing() {
+        XCTAssertEqual(RecordingIndicatorInset.reserved(stackHeight: 310, expandedPanelShown: true), 0)
+        XCTAssertEqual(RecordingIndicatorInset.reserved(stackHeight: 360, expandedPanelShown: true), 0)
+        XCTAssertEqual(RecordingIndicatorInset.reserved(stackHeight: 40, expandedPanelShown: false),
                        40 + RecordingIndicatorInset.outerPadding)
     }
 
-    /// Reviewer finding I3: the inset is opt-in on the bottom-most content of
-    /// main-window screens only — never inside the shared `ChatInput`
-    /// (which also serves sheets, onboarding and setup assistants), and
-    /// never at a call site outside this list without a conscious decision.
+    /// The inset is opt-in on the bottom-most content of main-window screens
+    /// only — never inside the shared `ChatInput` (which also serves sheets,
+    /// onboarding and setup assistants). Exact per-file counts of code
+    /// (non-comment) occurrences, so a second opt-in inside a listed file
+    /// fails too.
     func testInsetIsAppliedOnlyAtTheAgreedMainWindowSites() throws {
         let sources = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent() // Tests
             .deletingLastPathComponent() // WatchtowerDesktop
             .appendingPathComponent("Sources")
         let enumerator = try XCTUnwrap(FileManager.default.enumerator(at: sources, includingPropertiesForKeys: nil))
-        var sites: Set<String> = []
+        var counts: [String: Int] = [:]
         for case let url as URL in enumerator where url.pathExtension == "swift" {
             let text = try String(contentsOf: url, encoding: .utf8)
-            if text.contains(".clearsRecordingIndicator()") && !url.path.hasSuffix("RecordingIndicatorInset.swift") {
-                sites.insert(url.lastPathComponent)
-            }
             if url.lastPathComponent == "ChatInput.swift" {
                 XCTAssertFalse(text.contains("recordingIndicatorInset"), "ChatInput must not reserve the pill inset")
             }
+            guard !url.path.hasSuffix("RecordingIndicatorInset.swift") else { continue }
+            let uses = Self.codeLines(text).reduce(0) { total, line in
+                total + line.components(separatedBy: ".clearsRecordingIndicator()").count - 1
+            }
+            if uses > 0 { counts[url.lastPathComponent, default: 0] += uses }
         }
-        XCTAssertEqual(sites, [
-            "ChatComposerView.swift",
-            "TargetChatView.swift",
-            "RecordingDetailTabs.swift",
-            "IdeaDetailPane.swift",
-            "DecisionDetailView.swift"
+        XCTAssertEqual(counts, [
+            "ChatComposerView.swift": 1,
+            "TargetChatView.swift": 1,
+            "TargetDetailView.swift": 1,
+            "TrackChatView.swift": 1,
+            "RecordingDetailTabs.swift": 1,
+            "IdeaDetailPane.swift": 1,
+            "DecisionDetailView.swift": 1
         ])
+    }
+
+    func testCodeLinesSkipsCommentLines() {
+        let text = """
+        // .clearsRecordingIndicator() in a comment
+        /// .clearsRecordingIndicator() in a doc comment
+          .clearsRecordingIndicator()
+        """
+        XCTAssertEqual(Self.codeLines(text), ["  .clearsRecordingIndicator()"])
+    }
+
+    /// Source lines minus `//` / `///` comment lines.
+    private static func codeLines(_ text: String) -> [String] {
+        text.components(separatedBy: "\n").filter {
+            !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//")
+        }
     }
 }

@@ -31,11 +31,16 @@ struct RecordingIndicatorView: View {
     /// (`RecordingIndicatorInset.reserved`), 0 once the stack is empty.
     var onReservedInsetChange: (CGFloat) -> Void = { _ in }
     @State private var stackHeight: CGFloat = 0
-    /// Height of the expanded live-transcript panel while shown, 0 otherwise.
-    @State private var expandedPanelHeight: CGFloat = 0
 
     private var reservedInset: CGFloat {
-        RecordingIndicatorInset.reserved(stackHeight: stackHeight, expandedPanelHeight: expandedPanelHeight)
+        RecordingIndicatorInset.reserved(stackHeight: stackHeight, expandedPanelShown: expandedPanelShown)
+    }
+
+    /// The same condition `recordingView` renders the expanded panel under.
+    private var expandedPanelShown: Bool {
+        let center = appState.meetingRecorderCenter
+        guard case .recording = center.captureState else { return false }
+        return expanded && showsLiveAffordance(center)
     }
 
     /// Whether the active capture has a live transcript to offer: the engine
@@ -223,9 +228,6 @@ struct RecordingIndicatorView: View {
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
         .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.separator))
         .shadow(radius: 8, y: 2)
-        // Excluded from the reserved inset — see `RecordingIndicatorInset.reserved`.
-        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { expandedPanelHeight = $0 }
-        .onDisappear { expandedPanelHeight = 0 }
     }
 
     @ViewBuilder
