@@ -292,40 +292,40 @@ func (p *Pipeline) RunForWindow(ctx context.Context, owner db.Owner, from, to fl
 	if err != nil {
 		return 0, err
 	}
-	digests, retryIDs := p.withRetryDigests(digests)
+	fresh, retry, retryIDs := p.splitRetryDigests(digests)
 
-	stored, res, err := p.extractFromDigests(ctx, owner, digests, from, to)
+	stored, res, err := p.extractFromDigests(ctx, owner, fresh, retry, from, to)
 	if err == nil || res.aborted != nil || res.failed > 0 {
 		p.settleRetryDigests(retryIDs, res)
 	}
 	return stored, err
 }
 
-// withRetryDigests appends the retry set's digests that the window query did
-// not already return, and reports which ids came from the retry set. A failed
-// read of the retry set is logged and the run proceeds on the window alone.
-func (p *Pipeline) withRetryDigests(digests []db.Digest) ([]db.Digest, map[int]bool) {
+// splitRetryDigests separates the window's fresh digests from the retry set's
+// owed digests (a digest in both counts as owed), and reports the owed ids. The
+// two groups are batched apart, so an owed digest that keeps failing never takes
+// fresh material down with it. A failed read of the retry set is logged and
+// the run proceeds on the window alone.
+func (p *Pipeline) splitRetryDigests(digests []db.Digest) (fresh, retry []db.Digest, ids map[int]bool) {
 	retry, err := p.db.GetTrackRetryDigests()
 	if err != nil {
 		p.logger.Printf("tracks: warning: could not load retry digests: %v", err)
-		return digests, nil
+		return digests, nil, nil
 	}
 	if len(retry) == 0 {
-		return digests, nil
+		return digests, nil, nil
 	}
-	seen := make(map[int]bool, len(digests))
-	for _, d := range digests {
-		seen[d.ID] = true
-	}
-	ids := make(map[int]bool, len(retry))
+	ids = make(map[int]bool, len(retry))
 	for _, d := range retry {
 		ids[d.ID] = true
-		if !seen[d.ID] {
-			digests = append(digests, d)
+	}
+	for _, d := range digests {
+		if !ids[d.ID] {
+			fresh = append(fresh, d)
 		}
 	}
 	p.logger.Printf("tracks: re-offering %d digest(s) from earlier failed batches", len(retry))
-	return digests, ids
+	return fresh, retry, ids
 }
 
 // settleRetryDigests records a run's batch outcome in the retry set: digests of
@@ -335,10 +335,12 @@ func (p *Pipeline) withRetryDigests(digests []db.Digest) ([]db.Digest, map[int]b
 // — the batches that never ran are owed another go.
 //
 // Failed batches are charged in full when at least one batch succeeded, i.e.
-// the provider demonstrably worked. A run in which every batch failed may be
-// an outage (and freezes the watermark anyway): it adds nothing new to the set
-// and charges an owed digest at most once per UTC day, so a short outage costs
-// nothing while a digest that fails even on its own still gives up.
+// the provider demonstrably worked (owed digests run in their own batches, so
+// a fresh batch's success charges a failing owed digest in full). A run in
+// which every batch failed may be an outage (and freezes the watermark
+// anyway): it adds nothing new to the set and charges an owed digest at most
+// once per UTC day, so each UTC day an outage touches costs an owed digest one
+// attempt, while a digest that fails even on its own still gives up.
 func (p *Pipeline) settleRetryDigests(retryIDs map[int]bool, res trackBatchResult) {
 	var charged, chargedDaily []int
 	if res.succeeded > 0 {
@@ -381,42 +383,41 @@ func (p *Pipeline) settleRetryDigests(retryIDs map[int]bool, res trackBatchResul
 
 // extractFromDigests runs relevance filtering and the AI batches over the
 // loaded digests and reports the batch outcome alongside the run error.
-func (p *Pipeline) extractFromDigests(ctx context.Context, owner db.Owner, digests []db.Digest, from, to float64) (int, trackBatchResult, error) {
+func (p *Pipeline) extractFromDigests(ctx context.Context, owner db.Owner, fresh, retry []db.Digest, from, to float64) (int, trackBatchResult, error) {
 	var res trackBatchResult
 	userID := owner.ID
 	profile, allActive := p.loadWindowContext(owner)
 	userName := p.userName(userID)
 
-	if len(digests) == 0 {
+	if len(fresh) == 0 && len(retry) == 0 {
 		p.progress(0, 0, "No new digests to process")
 		p.logger.Printf("tracks: no digests found")
 		return 0, res, nil
 	}
 
-	allEntries, err := p.buildDigestEntries(digests)
+	// Fresh and owed digests are planned into separate batches: an owed digest
+	// that fails deterministically must not fail the fresh batch of its channel.
+	signals := buildRelevanceSignals(profile, allActive)
+	freshEntries, err := p.relevantEntries(fresh, userID, signals)
 	if err != nil {
 		return 0, res, err
 	}
-	if len(allEntries) == 0 {
-		return 0, res, nil
+	retryEntries, err := p.relevantEntries(retry, userID, signals)
+	if err != nil {
+		return 0, res, err
 	}
-
-	signals := buildRelevanceSignals(profile, allActive)
-	allEntries = p.filterEntriesByRelevance(allEntries, userID, signals)
+	allEntries := make([]digestEntry, 0, len(freshEntries)+len(retryEntries))
+	allEntries = append(append(allEntries, freshEntries...), retryEntries...)
 	if len(allEntries) == 0 {
 		p.progress(0, 0, "No relevant topics after filtering")
 		return 0, res, nil
 	}
 
-	sort.Slice(allEntries, func(i, j int) bool {
-		return allEntries[i].topicCount > allEntries[j].topicCount
-	})
-
 	totalTopicCount := 0
 	for _, e := range allEntries {
 		totalTopicCount += e.topicCount
 	}
-	batches := p.planTrackBatches(allEntries)
+	batches := append(p.planTrackBatches(freshEntries), p.planTrackBatches(retryEntries)...)
 
 	p.logger.Printf("tracks: found %d topics across %d channels → %d batch(es), budget %d tokens",
 		totalTopicCount, len(allEntries), len(batches), p.contextBudget())
@@ -441,6 +442,23 @@ func (p *Pipeline) extractFromDigests(ctx context.Context, owner db.Owner, diges
 		return res.stored, res, fmt.Errorf("all %d track batch(es) failed, last error: %w", res.failed, res.lastErr)
 	}
 	return res.stored, res, nil //nolint:nilerr // partial success only: at least one batch stored tracks; the failed batches' digests go to the retry set
+}
+
+// relevantEntries groups digests per channel, drops the entries the relevance
+// filter rejects, and orders the rest largest-first for batching.
+func (p *Pipeline) relevantEntries(digests []db.Digest, userID string, signals relevanceSignals) ([]digestEntry, error) {
+	if len(digests) == 0 {
+		return nil, nil
+	}
+	entries, err := p.buildDigestEntries(digests)
+	if err != nil || len(entries) == 0 {
+		return nil, err
+	}
+	entries = p.filterEntriesByRelevance(entries, userID, signals)
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].topicCount > entries[j].topicCount
+	})
+	return entries, nil
 }
 
 // loadWindowContext caches the owner's profile + active-tracks reference and

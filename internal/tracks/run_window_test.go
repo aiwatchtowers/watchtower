@@ -378,6 +378,66 @@ func TestRunForWindow_OwedDigestAloneGivesUpOverUTCDays(t *testing.T) {
 	assert.Equal(t, calls, gen.calls, "a digest given up on is not re-sent")
 }
 
+// poisonGenerator fails every batch whose prompt carries the poison marker
+// and answers the rest with response.
+type poisonGenerator struct {
+	response string
+	calls    int
+	poisoned int
+}
+
+func (g *poisonGenerator) Generate(_ context.Context, sys, user, _ string) (string, *digest.Usage, string, error) {
+	g.calls++
+	if strings.Contains(sys+user, "POISON-TOPIC") {
+		g.poisoned++
+		return "", nil, "", errBatchGenerator
+	}
+	return g.response, &digest.Usage{InputTokens: 100, OutputTokens: 50}, "mock-session", nil
+}
+
+// An owed digest that always fails and a fresh digest of the SAME channel are
+// batched apart: the fresh digest is processed on the first run (the run is a
+// success, so the watermark advances) and the owed digest is charged in full.
+// Co-batching them would fail the whole run and stall the channel for days.
+func TestRunForWindow_PoisonRetryDigestDoesNotTakeFreshDigestDown(t *testing.T) {
+	database := testDB(t)
+	response := seedTrackWindow(t, database, 1) // the fresh C1 digest
+	owner, err := database.ResolveOwner()
+	require.NoError(t, err)
+	now := time.Now()
+	from, to := float64(now.Add(-3*time.Hour).Unix()), float64(now.Unix())
+
+	poisonID, err := database.UpsertDigest(db.Digest{
+		ChannelID: "C1", Type: "channel",
+		PeriodFrom: float64(now.Add(-6 * time.Hour).Unix()), PeriodTo: float64(now.Add(-5 * time.Hour).Unix()),
+		Summary: "older discussion", MessageCount: 5, Model: "test",
+	})
+	require.NoError(t, err)
+	_, err = database.Exec(`INSERT INTO digest_topics (digest_id, idx, title, summary, decisions, action_items, situations, key_messages)
+		VALUES (?, 0, 'POISON-TOPIC', 'Bob asked Alice about the migration.', '[]',
+		'[{"text":"Check migration","assignee":"@alice","status":"open"}]', '[]', '[]')`, poisonID)
+	require.NoError(t, err)
+	old := now.Add(-5 * time.Hour).UTC().Format("2006-01-02T15:04:05Z")
+	_, err = database.Exec(`UPDATE digests SET created_at = ? WHERE id = ?`, old, poisonID)
+	require.NoError(t, err)
+	_, err = database.Exec(`INSERT INTO track_retry_digests (digest_id, attempts, last_charged_day) VALUES (?, 1, ?)`,
+		poisonID, now.UTC().Format("2006-01-02"))
+	require.NoError(t, err)
+
+	gen := &poisonGenerator{response: response}
+	cfg := testConfig()
+	cfg.AI.Workers = 1
+	pipe := New(database, cfg, gen, log.Default())
+
+	since := now.Add(-time.Hour).UTC().Format(time.RFC3339) // the window holds only the fresh digest
+	stored, err := pipe.RunForWindow(context.Background(), owner, from, to, since)
+	require.NoError(t, err, "the fresh batch succeeded, so the run is a success and the watermark advances")
+	assert.Equal(t, 2, gen.calls, "fresh and owed digests run in separate batches")
+	assert.Equal(t, 1, gen.poisoned, "only the owed digest's batch carries the poison")
+	assert.Equal(t, 1, stored, "the fresh digest is processed on the first run")
+	assert.Equal(t, 2, retryAttempts(t, database, "C1"), "the owed digest is charged in full next to a successful batch")
+}
+
 // A shutdown is not a batch failure: an interrupted run charges nothing to
 // the retry set, whether the cut came between batches or mid-call.
 func TestRunForWindow_ShutdownIsNotChargedToRetrySet(t *testing.T) {

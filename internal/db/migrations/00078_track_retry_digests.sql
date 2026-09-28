@@ -7,8 +7,10 @@
 -- once its batch has failed attempts times (3), so a batch that fails
 -- deterministically is not re-sent forever. A run in which EVERY batch failed
 -- looks like an outage, so it charges an owed digest at most once per UTC day
--- (last_charged_day): a short outage costs nothing, while a digest that fails
--- even alone still gives up within a few days. Rows go away with their digest.
+-- (last_charged_day): each UTC day an outage touches costs one attempt, while a
+-- digest that fails even alone still gives up within a few days. Owed digests
+-- are batched apart from fresh ones, so a fresh batch's success charges a
+-- failing owed digest in full. Rows go away with their digest.
 CREATE TABLE IF NOT EXISTS track_retry_digests (
     digest_id  INTEGER PRIMARY KEY REFERENCES digests(id) ON DELETE CASCADE,
     attempts   INTEGER NOT NULL DEFAULT 0,
