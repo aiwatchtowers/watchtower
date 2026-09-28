@@ -73,7 +73,15 @@ func DetectJira(ctx context.Context, database *db.DB, owner db.Owner, sinceTS ti
 		return created, fmt.Errorf("jira detector: rows error: %w", err)
 	}
 
+	ownComments, err := ownJiraCommentsForAssigned(database, owner, len(assignedCandidates))
+	if err != nil {
+		return created, fmt.Errorf("jira detector: %w", err)
+	}
+
 	for _, c := range assignedCandidates {
+		if isOwnCommentBump(c.updatedAt, ownComments[c.key]) {
+			continue
+		}
 		// Every edit of an assigned issue — the owner's own included — bumps
 		// updated_at, so the (key, updated_at) check alone would mint a fresh
 		// item per update. One pending item per issue is enough; a resolved or
@@ -139,6 +147,39 @@ func DetectJira(ctx context.Context, database *db.DB, owner db.Owner, sinceTS ti
 	// using jira_watchers once that table is added to the schema.
 
 	return created, nil
+}
+
+// ownCommentBumpTolerance is how far an issue's updated_at may trail the
+// owner's newest comment on it and still count as that comment's own bump:
+// Jira stamps the issue a moment after the comment it just stored.
+const ownCommentBumpTolerance = 60 // seconds
+
+// ownJiraCommentsForAssigned returns, per issue key, the unix time of the
+// owner's newest comment — nil (no suppression) when there are no candidates,
+// no jira_comments table, or no known Atlassian id for the owner.
+func ownJiraCommentsForAssigned(database *db.DB, owner db.Owner, candidates int) (map[string]int64, error) {
+	if candidates == 0 || !jiraCommentsTableExists(database) {
+		return nil, nil
+	}
+	ids := ownerAtlassianIDs(database, owner)
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	return latestOwnJiraComments(database, ids)
+}
+
+// isOwnCommentBump reports whether an assigned issue's newest change is the
+// owner's own comment (ownCommentTS, 0 when none): its updated_at is not
+// later than that comment plus ownCommentBumpTolerance. Such a change is the
+// owner answering in the source — the thing that resolves a jira_assigned
+// item (INBOX-02) — so it must not mint a fresh one. An unparseable
+// updated_at never suppresses.
+func isOwnCommentBump(updatedAt string, ownCommentTS int64) bool {
+	if ownCommentTS == 0 {
+		return false
+	}
+	updated, ok := db.ParseJiraTime(updatedAt)
+	return ok && updated <= ownCommentTS+ownCommentBumpTolerance
 }
 
 // jiraCommentsTableExists returns true if the jira_comments table is present

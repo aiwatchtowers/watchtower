@@ -746,12 +746,23 @@ func (p *Pipeline) autoResolveJira(_ context.Context, owner db.Owner) int {
 	return resolved
 }
 
-// latestOwnJiraCommentPerIssue returns, per issue key, the unix time of the
-// newest comment authored by any of the given Atlassian account ids. One
+// latestOwnJiraCommentPerIssue is latestOwnJiraComments with its error
+// logged: auto-resolve is best-effort, so a failed read resolves nothing.
+func (p *Pipeline) latestOwnJiraCommentPerIssue(atlassianIDs []string) map[string]int64 {
+	latest, err := latestOwnJiraComments(p.db, atlassianIDs)
+	if err != nil {
+		p.logger.Printf("inbox: autoResolveJira: %v", err)
+	}
+	return latest
+}
+
+// latestOwnJiraComments returns, per issue key, the unix time of the newest
+// comment authored by any of the given Atlassian account ids. One
 // fully-drained query up front, so the caller's loop issues no reads at all
 // (the MaxOpenConns(1) SQLite deadlock rule). An unparseable timestamp is
-// skipped, matching ParseJiraTime's defensive-skip contract.
-func (p *Pipeline) latestOwnJiraCommentPerIssue(atlassianIDs []string) map[string]int64 {
+// skipped, matching ParseJiraTime's defensive-skip contract. On a scan error
+// the map read so far is returned alongside the error.
+func latestOwnJiraComments(database *db.DB, atlassianIDs []string) (map[string]int64, error) {
 	placeholders := make([]string, len(atlassianIDs))
 	args := make([]any, len(atlassianIDs))
 	for i, id := range atlassianIDs {
@@ -759,11 +770,10 @@ func (p *Pipeline) latestOwnJiraCommentPerIssue(atlassianIDs []string) map[strin
 		args[i] = id
 	}
 
-	rows, err := p.db.Query(fmt.Sprintf(`SELECT issue_key, created_at FROM jira_comments
+	rows, err := database.Query(fmt.Sprintf(`SELECT issue_key, created_at FROM jira_comments
 		WHERE author_account_id IN (%s)`, strings.Join(placeholders, ",")), args...)
 	if err != nil {
-		p.logger.Printf("inbox: autoResolveJira: comment query: %v", err)
-		return nil
+		return nil, fmt.Errorf("comment query: %w", err)
 	}
 	defer rows.Close()
 
@@ -771,8 +781,7 @@ func (p *Pipeline) latestOwnJiraCommentPerIssue(atlassianIDs []string) map[strin
 	for rows.Next() {
 		var issueKey, createdAt string
 		if err := rows.Scan(&issueKey, &createdAt); err != nil {
-			p.logger.Printf("inbox: autoResolveJira: comment scan: %v", err)
-			return latest
+			return latest, fmt.Errorf("comment scan: %w", err)
 		}
 		ts, ok := db.ParseJiraTime(createdAt)
 		if !ok {
@@ -782,7 +791,7 @@ func (p *Pipeline) latestOwnJiraCommentPerIssue(atlassianIDs []string) map[strin
 			latest[issueKey] = ts
 		}
 	}
-	return latest
+	return latest, rows.Err()
 }
 
 // autoResolveCalendar resolves pending calendar_invite and calendar_time_change

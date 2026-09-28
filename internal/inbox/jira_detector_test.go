@@ -271,3 +271,94 @@ func TestJiraDetector_AssignedArchivedPendingDoesNotBlock(t *testing.T) {
 		t.Fatalf("an update after the pending item was archived: want 2 jira_assigned items, got %d", len(got))
 	}
 }
+
+// The owner's own comment on an assigned issue resolves its jira_assigned item
+// (INBOX-02) and also bumps the issue's updated_at. That bump must not mint a
+// fresh pending item the next cycle — it would never auto-resolve (the owner's
+// latest comment predates it), so answering in the source would bring the
+// item back. A later change by someone else still surfaces a new item.
+func TestJiraDetector_AssignedOwnCommentDoesNotReMint(t *testing.T) {
+	d := testDB(t)
+	owner := db.Owner{JiraAccountID: "acc-alice"}
+	since := time.Now().Add(-3 * time.Hour)
+	seedJiraIssue(t, d, "WT-7", "acc-alice", time.Now().Add(-2*time.Hour))
+	detect := func() {
+		t.Helper()
+		if _, err := DetectJira(context.Background(), d, owner, since); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bump := func(updated time.Time) {
+		t.Helper()
+		if _, err := d.Exec(`UPDATE jira_issues SET updated_at = ? WHERE key = 'WT-7'`,
+			db.FormatJiraTime(updated.UTC())); err != nil {
+			t.Fatalf("bumping updated_at: %v", err)
+		}
+	}
+
+	detect()
+	if got := queryInboxByTrigger(t, d, "jira_assigned"); len(got) != 1 {
+		t.Fatalf("want 1 jira_assigned item, got %d", len(got))
+	}
+
+	// The owner answers in Jira: the comment resolves the item and Jira
+	// stamps the issue's updated_at a moment after the comment.
+	commentAt := time.Now().Add(-40 * time.Minute)
+	seedJiraComment(t, d, "WT-7", "acc-alice", "on it", commentAt)
+	bump(commentAt.Add(2 * time.Second))
+	if _, err := d.Exec(`UPDATE inbox_items SET status = 'resolved' WHERE trigger_type = 'jira_assigned'`); err != nil {
+		t.Fatalf("resolving item: %v", err)
+	}
+	detect()
+	if got := queryInboxByTrigger(t, d, "jira_assigned"); len(got) != 1 {
+		t.Fatalf("the owner's own comment must not re-mint: want 1 jira_assigned item, got %d", len(got))
+	}
+
+	// Someone else changes the issue afterwards: that surfaces again.
+	bump(time.Now().Add(-5 * time.Minute))
+	detect()
+	if got := queryInboxByTrigger(t, d, "jira_assigned"); len(got) != 2 {
+		t.Fatalf("a later change by someone else: want 2 jira_assigned items, got %d", len(got))
+	}
+}
+
+// Degenerate branch: an owner comment on a DIFFERENT issue never suppresses
+// this issue's jira_assigned item.
+func TestJiraDetector_AssignedOwnCommentOnOtherIssueDoesNotSuppress(t *testing.T) {
+	d := testDB(t)
+	owner := db.Owner{JiraAccountID: "acc-alice"}
+	updated := time.Now().Add(-1 * time.Hour)
+	seedJiraIssue(t, d, "WT-8", "acc-alice", updated)
+	seedJiraComment(t, d, "WT-9", "acc-alice", "elsewhere", updated)
+
+	n, err := DetectJira(context.Background(), d, owner, time.Now().Add(-2*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("want 1 jira_assigned item, got %d", n)
+	}
+}
+
+func TestIsOwnCommentBump(t *testing.T) {
+	comment := time.Now().Add(-time.Hour)
+	c := comment.Unix()
+	cases := []struct {
+		name      string
+		updatedAt string
+		ownTS     int64
+		want      bool
+	}{
+		{"no own comment", db.FormatJiraTime(comment.UTC()), 0, false},
+		{"updated at the comment", db.FormatJiraTime(comment.UTC()), c, true},
+		{"updated within tolerance", db.FormatJiraTime(comment.Add(ownCommentBumpTolerance * time.Second).UTC()), c, true},
+		{"updated past tolerance", db.FormatJiraTime(comment.Add((ownCommentBumpTolerance + 1) * time.Second).UTC()), c, false},
+		{"updated before the comment", db.FormatJiraTime(comment.Add(-time.Minute).UTC()), c, true},
+		{"unparseable updated_at", "not-a-date", c, false},
+	}
+	for _, tc := range cases {
+		if got := isOwnCommentBump(tc.updatedAt, tc.ownTS); got != tc.want {
+			t.Errorf("%s: isOwnCommentBump = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
