@@ -319,6 +319,46 @@ func (p *Pipeline) renderJiraWindow(accountID int64, issues []db.JiraIssue, comm
 	return block, tags, boundary
 }
 
+// jiraLaggingProjectOverlap mirrors the Jira sync's own watermark overlap
+// (buildIncrementalJQL re-reads 2 minutes before last_synced_at).
+const jiraLaggingProjectOverlap = 2 * time.Minute
+
+// jiraLaggingProjectMaxAge caps how long one failing project may hold the
+// account's ideas floor back. Past it the project is treated as abandoned
+// (logged) so a permanently broken board cannot stall Jira mining forever.
+const jiraLaggingProjectMaxAge = 7 * 24 * time.Hour
+
+// clampToFailingJiraProject lowers the pass's upper bound to the last
+// successful sync of any of the account's selected projects that is currently
+// failing. jira.Syncer.Sync skips a failing project and returns nil, so the
+// healthy projects' issues could otherwise carry the account-wide floor past
+// changes the failing project has not synced yet — those would land below the
+// floor on recovery and never be mined (IDEA-01).
+func (p *Pipeline) clampToFailingJiraProject(accountID int64, bound, now time.Time) (time.Time, error) {
+	lagging, err := p.db.OldestFailingJiraProjectSync(accountID)
+	if err != nil {
+		return bound, err
+	}
+	if lagging == "" {
+		return bound, nil
+	}
+	synced, err := time.Parse(time.RFC3339, lagging)
+	if err != nil {
+		p.logf("ideas: jira account %d: unparseable project last_synced_at %q, not clamping the floor", accountID, lagging)
+		return bound, nil
+	}
+	if now.Sub(synced) > jiraLaggingProjectMaxAge {
+		p.logf("ideas: jira account %d: a selected project has failed to sync since %s (over %s) — no longer holding the ideas floor for it", accountID, lagging, jiraLaggingProjectMaxAge)
+		return bound, nil
+	}
+	clamp := synced.Add(-jiraLaggingProjectOverlap)
+	if !bound.IsZero() && !clamp.Before(bound) {
+		return bound, nil
+	}
+	p.logf("ideas: jira account %d: a selected project is failing to sync (last success %s) — mining only up to %s", accountID, lagging, db.FormatJiraTime(clamp))
+	return clamp, nil
+}
+
 // initJiraFloor stamps a never-initialized account's ideas floor at now
 // (minus jiraFloorInitBackoff) and mines nothing — no backfill, the
 // initEmailFloor precedent.
@@ -365,6 +405,10 @@ func (p *Pipeline) runJiraDigestAccount(ctx context.Context, acct db.JiraAccount
 		return p.initJiraFloor(acct)
 	}
 
+	bound, err = p.clampToFailingJiraProject(acct.ID, bound, time.Now())
+	if err != nil {
+		return err
+	}
 	var beforeISO string
 	if !bound.IsZero() {
 		beforeISO = db.FormatJiraTime(bound)
