@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -163,28 +164,44 @@ func TestReadPIDWithStart_EmptyFile(t *testing.T) {
 func TestFindProcess_WithTimestamp_OwnProcess(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "daemon.pid")
 
-	// Write our PID with a timestamp — this should find us (not reused since we ARE watchtower test)
+	// Write our PID with a timestamp — FindProcess must not error either way,
+	// regardless of how the start-time comparison resolves.
 	require.NoError(t, WritePID(path))
 
 	pid, err := FindProcess(path)
 	require.NoError(t, err)
-	// Our process is running, but isReusedPID may detect we're "go test" not "watchtower".
-	// Either way, no error should occur.
 	_ = pid
 }
 
-func TestIsReusedPID_OwnProcess(t *testing.T) {
-	// Our own PID — ps will show "go" or something test-related, not "watchtower",
-	// so isReusedPID should return true (it's not watchtower).
-	reused := isReusedPID(os.Getpid())
-	// We expect true since our process name contains "go" not "watchtower"
-	assert.True(t, reused)
+func TestIsReusedPID_MatchingStartTime(t *testing.T) {
+	// storedStart set to this process's own actual OS start time: the
+	// process that "wrote" it is exactly the one at pid, so it must never
+	// be treated as reused.
+	actual, err := processStartTime(os.Getpid())
+	require.NoError(t, err)
+
+	assert.False(t, isReusedPID(os.Getpid(), actual))
+}
+
+func TestIsReusedPID_MismatchedStartTime(t *testing.T) {
+	// storedStart far in the past relative to this process's real start:
+	// pid now belongs to a different process than the one that recorded
+	// storedStart.
+	stale := time.Now().Add(-24 * time.Hour)
+	assert.True(t, isReusedPID(os.Getpid(), stale))
 }
 
 func TestIsReusedPID_NonexistentProcess(t *testing.T) {
 	// PID that doesn't exist — ps will fail, function returns false (conservative)
-	reused := isReusedPID(999999999)
+	reused := isReusedPID(999999999, time.Now())
 	assert.False(t, reused)
+}
+
+func TestIsReusedPID_ZeroStoredStart(t *testing.T) {
+	// Degenerate clean-exit branch: no stored start time at all (should not
+	// happen given FindProcess's own IsZero guard, but isReusedPID must stay
+	// conservative on its own too) never signals reuse.
+	assert.False(t, isReusedPID(os.Getpid(), time.Time{}))
 }
 
 func TestWritePID_AtomicWrite(t *testing.T) {
@@ -231,14 +248,38 @@ func TestFindProcess_StalePIDWithTimestamp(t *testing.T) {
 func TestFindProcess_LiveProcessWithTimestamp(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "daemon.pid")
 
-	// Write our PID with current timestamp
-	require.NoError(t, WritePID(path))
+	// Write our PID with a timestamp matching this process's actual OS start
+	// time (not just "now" — WritePID's own now() may already be a while
+	// after the process actually forked in a slow test run; a fetched exact
+	// value keeps this test deterministic). FindProcess must recognize this
+	// as the same process and NOT treat it as reused.
+	actual, err := processStartTime(os.Getpid())
+	require.NoError(t, err)
+	content := fmt.Sprintf("%d %d", os.Getpid(), actual.Unix())
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
 
 	pid, err := FindProcess(path)
 	require.NoError(t, err)
-	// Our process is "go test", not "watchtower", so isReusedPID returns true.
-	// FindProcess should therefore return 0 (detected as reused PID).
-	assert.Equal(t, 0, pid)
+	assert.Equal(t, os.Getpid(), pid, "a matching real start time must not be treated as PID reuse")
+}
+
+func TestFindProcess_ReusedPIDWithMismatchedTimestamp(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "daemon.pid")
+
+	// Our own PID is alive, but the stored start time is nowhere near our
+	// actual OS start time — as if the OS handed this PID to us long after
+	// whatever process originally wrote the file. FindProcess must treat it
+	// as reused: return 0 and clean up the file.
+	stale := time.Now().Add(-24 * time.Hour).Unix()
+	content := fmt.Sprintf("%d %d", os.Getpid(), stale)
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+
+	pid, err := FindProcess(path)
+	require.NoError(t, err)
+	assert.Equal(t, 0, pid, "mismatched start time should be treated as PID reuse")
+
+	_, statErr := os.Stat(path)
+	assert.True(t, os.IsNotExist(statErr), "reused PID file should be removed")
 }
 
 func TestFindProcess_EmptyPIDFile(t *testing.T) {

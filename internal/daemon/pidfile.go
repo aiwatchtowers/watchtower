@@ -106,10 +106,11 @@ func FindProcess(path string) (int, error) {
 		return 0, nil
 	}
 
-	// Detect PID reuse: if we have a timestamp, use process name check.
-	// Without a timestamp (legacy format), fall back to a 30-day heuristic.
+	// Detect PID reuse: if we have a timestamp, compare it against the
+	// process's actual OS-recorded start time. Without a timestamp (legacy
+	// format), fall back to a 30-day heuristic.
 	if !startTime.IsZero() {
-		if isReusedPID(pid) {
+		if isReusedPID(pid, startTime) {
 			if rmErr := os.Remove(path); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
 				fmt.Fprintf(os.Stderr, "warning: removing stale pid file: %v\n", rmErr)
 			}
@@ -142,15 +143,48 @@ func RemovePID(path string) {
 	}
 }
 
-// isReusedPID checks whether the given PID belongs to a process that is NOT
-// a watchtower instance. Uses `ps` to read the process command name.
-// Returns true if the PID is definitely reused by an unrelated process.
-// Returns false (conservative) if we can't determine or if it is watchtower.
-func isReusedPID(pid int) bool {
-	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "comm=").Output()
+// pidReuseTolerance bounds the gap between the daemon's actual OS process
+// start time and the timestamp WritePID recorded for it. WritePID is called
+// at the top of Daemon.Run — after cobra/config/DB setup already ran in the
+// same process — not at the moment the process actually forked, so some
+// slack is expected even for a legitimate, unreused PID. A pid the OS later
+// hands to an unrelated process differs by far more than this in practice
+// (the OS must cycle through the rest of the pid space first), so
+// isReusedPID treats anything past the tolerance as reused.
+const pidReuseTolerance = 2 * time.Minute
+
+// processStartTime reads pid's actual OS-recorded start time via
+// `ps -o lstart=` (wall-clock, second precision, in the local time zone).
+func processStartTime(pid int) (time.Time, error) {
+	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "lstart=").Output()
+	if err != nil {
+		return time.Time{}, err
+	}
+	line := strings.TrimSpace(string(out))
+	if line == "" {
+		return time.Time{}, fmt.Errorf("no lstart output for pid %d", pid)
+	}
+	return time.ParseInLocation("Mon Jan _2 15:04:05 2006", line, time.Local)
+}
+
+// isReusedPID reports whether pid now names a different process than the one
+// that recorded storedStart in the PID file: its actual OS start time (read
+// via processStartTime) differs from storedStart by more than
+// pidReuseTolerance. Returns false (conservative — assume it's still ours)
+// when storedStart is zero, the process is gone, or its start time can't be
+// read or parsed, so a transient `ps` hiccup never discards a live daemon's
+// PID file.
+func isReusedPID(pid int, storedStart time.Time) bool {
+	if storedStart.IsZero() {
+		return false
+	}
+	actual, err := processStartTime(pid)
 	if err != nil {
 		return false // can't determine — assume it's ours
 	}
-	comm := strings.TrimSpace(string(out))
-	return comm != "" && !strings.Contains(comm, "watchtower")
+	diff := actual.Sub(storedStart)
+	if diff < 0 {
+		diff = -diff
+	}
+	return diff > pidReuseTolerance
 }

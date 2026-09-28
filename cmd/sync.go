@@ -226,7 +226,15 @@ func runSyncStop(cfg *config.Config, force bool) error {
 	}
 
 	if waitForProcessExit(pid, syncStopGracePeriod) {
-		daemon.RemovePID(pidPath)
+		// pid is confirmed gone. Re-verify identity via verifyDaemonAlive
+		// before touching the pid file rather than unconditionally calling
+		// RemovePID: verifyDaemonAlive's FindProcess call removes the file
+		// itself when the pid it names is dead or reused, but — critically —
+		// leaves a *different*, live, correctly-identified daemon's pid file
+		// untouched, in case one started in the grace-period window we just
+		// waited out. Calling RemovePID directly here would delete such a
+		// fresh daemon's still-valid state.
+		verifyDaemonAlive(pidPath, pid)
 		fmt.Println("Daemon stopped.")
 		return nil
 	}

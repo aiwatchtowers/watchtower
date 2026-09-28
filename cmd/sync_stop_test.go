@@ -99,14 +99,90 @@ func syncStopTestConfig(t *testing.T) (*config.Config, string) {
 }
 
 // writeFakePIDFile writes pid in the legacy (no-timestamp) pid-file format,
-// so daemon.FindProcess's PID-reuse heuristic (which shells out to `ps` to
-// check the process name contains "watchtower" once a timestamp is present)
-// never fires against the go-test helper binary, which is not named
-// "watchtower".
+// so daemon.FindProcess's PID-reuse check (which, once a timestamp is
+// present, compares the process's actual OS start time against the stored
+// one) never engages at all — these tests care about signal/grace-period
+// behavior, not PID-reuse detection, which internal/daemon's own pidfile
+// tests cover directly.
 func writeFakePIDFile(t *testing.T, path string, pid int) {
 	t.Helper()
 	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
 	require.NoError(t, os.WriteFile(path, []byte(strconv.Itoa(pid)), 0o600))
+}
+
+// writeFakePIDFileWithTimestamp writes pid in the current "PID TIMESTAMP"
+// format, timestamped to the moment of the call. A pid whose process really
+// started only moments ago (any helper this file spawns) is always within
+// isReusedPID's tolerance of "now", so this reliably resolves as a live,
+// correctly-identified — not reused — process, without needing this
+// package to reach into internal/daemon's own real-start-time lookup.
+func writeFakePIDFileWithTimestamp(t *testing.T, path string, pid int) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	content := fmt.Sprintf("%d %d", pid, time.Now().Unix())
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+}
+
+// TestSyncStop_DelayedHelperProcess is another helper subprocess (same
+// re-exec pattern as TestSyncStop_HelperProcess) that exits shortly after
+// receiving SIGTERM instead of instantly (a plain `sleep`) or never (the
+// "stuck daemon" helper above) — giving a test a deterministic window in
+// which the process is still alive-but-dying, to mutate state during. Run
+// the ordinary way (no env var set) it is a silent no-op.
+func TestSyncStop_DelayedHelperProcess(t *testing.T) {
+	if os.Getenv("GO_WANT_HELPER_PROCESS_DELAYED") != "1" {
+		return
+	}
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM)
+
+	fmt.Println("ready")
+	<-sigCh
+	time.Sleep(300 * time.Millisecond)
+	os.Exit(0)
+}
+
+// startSyncStopDelayedHelper mirrors startSyncStopHelper but re-execs into
+// TestSyncStop_DelayedHelperProcess.
+func startSyncStopDelayedHelper(t *testing.T) (*exec.Cmd, <-chan string) {
+	t.Helper()
+
+	helper := exec.Command(os.Args[0], "-test.run=^TestSyncStop_DelayedHelperProcess$")
+	helper.Env = append(os.Environ(), "GO_WANT_HELPER_PROCESS_DELAYED=1")
+	helper.Stderr = os.Stderr
+
+	stdout, err := helper.StdoutPipe()
+	if err != nil {
+		t.Fatalf("stdout pipe: %v", err)
+	}
+	if err := helper.Start(); err != nil {
+		t.Fatalf("starting helper process: %v", err)
+	}
+
+	lines := make(chan string, 16)
+	go func() {
+		defer close(lines)
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			lines <- scanner.Text()
+		}
+	}()
+
+	return helper, lines
+}
+
+// drainAndReap consumes lines to completion (required before Cmd.Wait, which
+// os/exec forbids calling concurrently with an active StdoutPipe reader) and
+// returns cmd's exit error over the returned channel.
+func drainAndReap(cmd *exec.Cmd, lines <-chan string) <-chan error {
+	done := make(chan error, 1)
+	go func() {
+		for range lines {
+		}
+		done <- cmd.Wait()
+	}()
+	return done
 }
 
 func setSyncStopGraces(t *testing.T, grace, forceGrace, poll time.Duration) {
@@ -346,4 +422,100 @@ func TestForceStopSync_ReVerifiesIdentityBeforeSIGKILLSpecifically(t *testing.T)
 
 	_ = helper.Process.Kill()
 	<-waitCh
+}
+
+// TestRunSyncStop_PlainStopRemovesPIDFileOnCleanExit is a regression pin for
+// the plain (non-force) success path after the fix below: a daemon that
+// exits within the grace period on the first SIGTERM still gets its pid
+// file removed and "Daemon stopped." printed, with a nil error — the same
+// outcome as before, now reached via verifyDaemonAlive's re-check rather
+// than an unconditional RemovePID.
+func TestRunSyncStop_PlainStopRemovesPIDFileOnCleanExit(t *testing.T) {
+	setSyncStopGraces(t, 2*time.Second, 2*time.Second, 20*time.Millisecond)
+	cfg, pidPath := syncStopTestConfig(t)
+
+	helper, lines := startSyncStopDelayedHelper(t)
+	defer func() { _ = helper.Process.Kill() }() // safety net regardless of assertion outcome
+	waitForSyncStopHelperReady(t, lines)
+	writeFakePIDFileWithTimestamp(t, pidPath, helper.Process.Pid)
+
+	waitCh := drainAndReap(helper, lines)
+
+	var err error
+	stdout := captureStdout(t, func() {
+		err = runSyncStop(cfg, false)
+	})
+	require.NoError(t, err)
+	assert.Contains(t, stdout, "Daemon stopped.")
+
+	_, statErr := os.Stat(pidPath)
+	assert.True(t, os.IsNotExist(statErr), "pid file should be removed once the daemon is confirmed dead")
+
+	select {
+	case waitErr := <-waitCh:
+		assert.NoError(t, waitErr, "the delayed helper exits cleanly on its own")
+	case <-time.After(2 * time.Second):
+		t.Fatal("helper never exited")
+	}
+}
+
+// TestRunSyncStop_PlainStopSparesFreshDaemonThatWonTheRace pins the fix for
+// runSyncStop's plain-stop path: once the original daemon is confirmed gone,
+// it must not unconditionally RemovePID. Between SIGTERM landing and the
+// process actually exiting — the delayed helper's built-in gap — a FRESH,
+// unrelated daemon can start and claim the same pid file path. This test
+// simulates exactly that by swapping the pid file to a second, live,
+// correctly time-stamped helper mid-wait. The plain stop must still report
+// success (the daemon it was asked to stop did stop) but must leave the
+// second daemon's pid file untouched and must never signal it.
+func TestRunSyncStop_PlainStopSparesFreshDaemonThatWonTheRace(t *testing.T) {
+	setSyncStopGraces(t, 2*time.Second, 2*time.Second, 20*time.Millisecond)
+	cfg, pidPath := syncStopTestConfig(t)
+
+	original, originalLines := startSyncStopDelayedHelper(t)
+	defer func() { _ = original.Process.Kill() }()
+	waitForSyncStopHelperReady(t, originalLines)
+	writeFakePIDFileWithTimestamp(t, pidPath, original.Process.Pid)
+
+	fresh, freshLines := startSyncStopDelayedHelper(t)
+	defer func() { _ = fresh.Process.Kill() }()
+	waitForSyncStopHelperReady(t, freshLines)
+
+	// Swap the pid file to the "fresh daemon" partway through the original
+	// helper's 300ms post-SIGTERM delay — well before waitForProcessExit's
+	// 20ms polling can notice the original has died, and well before it
+	// actually does.
+	swapped := make(chan struct{})
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		writeFakePIDFileWithTimestamp(t, pidPath, fresh.Process.Pid)
+		close(swapped)
+	}()
+
+	origWait := drainAndReap(original, originalLines)
+
+	err := runSyncStop(cfg, false)
+	require.NoError(t, err)
+	<-swapped // the swap must have already happened for this assertion to mean anything
+
+	data, statErr := os.ReadFile(pidPath)
+	require.NoError(t, statErr, "a live, correctly-identified daemon's pid file must not be removed")
+	assert.Contains(t, string(data), strconv.Itoa(fresh.Process.Pid))
+
+	assert.NoError(t, syscall.Kill(fresh.Process.Pid, 0), "the fresh daemon must never have been signalled")
+
+	select {
+	case waitErr := <-origWait:
+		assert.NoError(t, waitErr, "the original delayed helper exits cleanly on its own")
+	case <-time.After(2 * time.Second):
+		t.Fatal("original helper never exited")
+	}
+
+	freshWait := drainAndReap(fresh, freshLines)
+	_ = fresh.Process.Kill()
+	select {
+	case <-freshWait:
+	case <-time.After(2 * time.Second):
+		t.Fatal("fresh helper never reaped")
+	}
 }
