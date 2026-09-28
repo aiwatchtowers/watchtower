@@ -61,3 +61,35 @@ func TestNewBatchChannelResolver_EmptyBatchResolvesNothing(t *testing.T) {
 	_, ok = resolve("")
 	assert.False(t, ok)
 }
+
+// Equal topic counts must not leave batch composition to the sort's whim.
+func TestSortEntriesForBatching_DeterministicTieBreak(t *testing.T) {
+	mk := func(ids ...string) []digestEntry {
+		out := make([]digestEntry, 0, len(ids))
+		for _, id := range ids {
+			n := 1
+			if id == "1:C9" {
+				n = 3
+			}
+			out = append(out, digestEntry{channelID: id, topicCount: n})
+		}
+		return out
+	}
+	order := func(es []digestEntry) []string {
+		ids := make([]string, 0, len(es))
+		for _, e := range es {
+			ids = append(ids, e.channelID)
+		}
+		return ids
+	}
+	want := []string{"1:C9", "1:C1", "1:C2", "1:C3", "2:C1"}
+	for _, in := range [][]string{
+		{"2:C1", "1:C3", "1:C9", "1:C1", "1:C2"},
+		{"1:C2", "2:C1", "1:C1", "1:C3", "1:C9"},
+	} {
+		es := mk(in...)
+		sortEntriesForBatching(es)
+		assert.Equal(t, want, order(es))
+	}
+	sortEntriesForBatching(nil)
+}

@@ -455,10 +455,19 @@ func (p *Pipeline) relevantEntries(digests []db.Digest, userID string, signals r
 		return nil, err
 	}
 	entries = p.filterEntriesByRelevance(entries, userID, signals)
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].topicCount > entries[j].topicCount
-	})
+	sortEntriesForBatching(entries)
 	return entries, nil
+}
+
+// sortEntriesForBatching orders entries largest-first, breaking ties by
+// channel id, so which channels share a batch is reproducible from run to run.
+func sortEntriesForBatching(entries []digestEntry) {
+	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].topicCount != entries[j].topicCount {
+			return entries[i].topicCount > entries[j].topicCount
+		}
+		return entries[i].channelID < entries[j].channelID
+	})
 }
 
 // loadWindowContext caches the owner's profile + active-tracks reference and

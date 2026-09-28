@@ -54,9 +54,8 @@ var firstChannelBlock = regexp.MustCompile(`--- #\S+ \(([^)]+)\) ---`)
 
 // answerForFirstChannel points seedTrackWindow's C1 result at the first
 // channel the batch prompt actually carries. A batch only stores results for
-// its own channels, and which channels share a batch is not deterministic
-// (equal topic counts), so a fixed "C1" answer would land only when C1
-// happened to be in that batch.
+// its own channels, so a fixed "C1" answer would land only in the batch that
+// holds C1.
 func answerForFirstChannel(response, prompt string) string {
 	m := firstChannelBlock.FindStringSubmatch(prompt)
 	if m == nil {
