@@ -933,6 +933,7 @@ struct RecordingChatTab: View {
                 dictationTargetID: "chat.meeting.\(chatVM.transcriptID)"
             )
         }
+        .clearsRecordingIndicator()
     }
 
     @ViewBuilder

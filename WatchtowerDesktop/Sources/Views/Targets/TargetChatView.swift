@@ -167,6 +167,8 @@ struct TargetChatPane: View {
                     .padding(.bottom, 6)
             }
         }
+        // Below the error labels, the pane's bottom-most content.
+        .clearsRecordingIndicator()
         .background(Color(.controlBackgroundColor).opacity(0.4))
     }
 

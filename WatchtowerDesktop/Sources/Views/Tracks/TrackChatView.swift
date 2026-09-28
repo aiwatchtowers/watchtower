@@ -504,6 +504,8 @@ struct TrackChatSection: View {
                     .padding(.bottom, 4)
             }
         }
+        // Below the error label, the track pane's bottom-most content.
+        .clearsRecordingIndicator()
     }
 
     @ViewBuilder
