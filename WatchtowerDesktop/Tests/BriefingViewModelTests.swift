@@ -78,7 +78,7 @@ final class BriefingViewModelTests: XCTestCase {
         let first = try XCTUnwrap(appState.briefingViewModel)
 
         let run = Task { await first.generateBriefing() }
-        await cli.started.wait()
+        await awaitStarted(cli)
 
         let returned = try XCTUnwrap(appState.briefingViewModel)
         XCTAssertTrue(returned === first)
@@ -108,7 +108,7 @@ final class BriefingViewModelTests: XCTestCase {
         let first = try XCTUnwrap(appState.briefingViewModel)
 
         let run = Task { await first.generateBriefing() }
-        await cli.started.wait()
+        await awaitStarted(cli)
         cli.release()
         await run.value
 

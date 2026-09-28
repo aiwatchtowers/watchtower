@@ -176,7 +176,7 @@ final class MeetingPrepViewModelTests: XCTestCase {
 
         let first = center.viewModel(for: "evt-1")
         first.generate(eventID: "evt-1")
-        await cli.started.wait()
+        await awaitStarted(cli)
 
         let returned = center.viewModel(for: "evt-1")
         XCTAssertTrue(returned === first)
@@ -208,5 +208,99 @@ final class MeetingPrepViewModelTests: XCTestCase {
             ["meeting-prep", "evt-1", "--json"],
             ["meeting-prep", "evt-1", "--json", "--force-refresh"]
         ])
+    }
+
+    // MARK: - startIfNeeded (the prep pane's on-appear entry)
+
+    func testStartIfNeededRunsWhenNothingIsThere() async {
+        let cli = FakeCLIRunner(stdout: Self.validJSON)
+        let vm = MeetingPrepViewModel(cliRunner: cli)
+
+        await runToCompletion(vm) { vm.startIfNeeded(eventID: "evt-1") }
+
+        XCTAssertEqual(cli.invocations, [["meeting-prep", "evt-1", "--json"]])
+        XCTAssertNotNil(vm.result)
+    }
+
+    /// Returning to an event that already has a prep shows it; no new run.
+    func testStartIfNeededIsANoOpWhenAResultExists() async {
+        let cli = FakeCLIRunner(stdout: Self.validJSON)
+        let vm = MeetingPrepViewModel(cliRunner: cli)
+        await runToCompletion(vm) { vm.generate(eventID: "evt-1") }
+
+        vm.startIfNeeded(eventID: "evt-1")
+        await vm.runTask?.value
+
+        XCTAssertEqual(cli.invocations.count, 1)
+    }
+
+    /// Returning mid-run re-attaches to it; no second run.
+    func testStartIfNeededIsANoOpWhileARunIsInFlight() async {
+        let cli = HeldCLIRunner(stdout: Self.validJSON)
+        let vm = MeetingPrepViewModel(cliRunner: cli)
+        vm.generate(eventID: "evt-1")
+        await awaitStarted(cli)
+        let firstRun = vm.runTask
+
+        vm.startIfNeeded(eventID: "evt-1")
+
+        cli.release()
+        await vm.runTask?.value
+        await firstRun?.value
+        XCTAssertEqual(cli.invocations, [["meeting-prep", "evt-1", "--json"]])
+        XCTAssertNotNil(vm.result)
+    }
+
+    // MARK: - Lazy runner resolution
+
+    /// A binary that could not be found once is looked up again on the next
+    /// start — the VM lives for the app's lifetime, so a nil must not stick.
+    func testRunnerIsResolvedAgainOnALaterStart() async {
+        let cli = FakeCLIRunner(stdout: Self.validJSON)
+        var available = false
+        let vm = MeetingPrepViewModel { available ? cli : nil }
+
+        vm.generate(eventID: "evt-1")
+        XCTAssertEqual(vm.error, "Watchtower CLI not found")
+        XCTAssertNil(vm.runTask)
+
+        available = true
+        await runToCompletion(vm) { vm.generate(eventID: "evt-1") }
+
+        XCTAssertEqual(cli.invocations, [["meeting-prep", "evt-1", "--json"]])
+        XCTAssertNotNil(vm.result)
+        XCTAssertNil(vm.error)
+    }
+
+    /// Through the center too: the per-event VM it hands out resolves lazily.
+    func testCenterViewModelResolvesRunnerLazily() async {
+        let cli = FakeCLIRunner(stdout: Self.validJSON)
+        var available = false
+        let center = MeetingPrepCenter { available ? cli : nil }
+        let vm = center.viewModel(for: "evt-1")
+
+        vm.generate(eventID: "evt-1")
+        XCTAssertEqual(vm.error, "Watchtower CLI not found")
+
+        available = true
+        await runToCompletion(vm) { vm.generate(eventID: "evt-1") }
+        XCTAssertEqual(cli.invocations.count, 1)
+    }
+
+    // MARK: - Failed refresh keeps the old result
+
+    /// A failed Refresh keeps the previous result AND exposes the error, so
+    /// the pane can show both (banner above the old prep).
+    func testFailedRefreshKeepsResultAndSetsError() async {
+        let cli = FakeCLIRunner(stdout: Self.validJSON)
+        let vm = MeetingPrepViewModel(cliRunner: cli)
+        await runToCompletion(vm) { vm.generate(eventID: "evt-1") }
+
+        cli.shouldThrow = CLIRunnerError.nonZeroExit(code: 1, stderr: "provider unavailable")
+        await runToCompletion(vm) { vm.regenerate(eventID: "evt-1") }
+
+        XCTAssertEqual(vm.result?.eventID, "evt-1")
+        XCTAssertEqual(vm.error, "provider unavailable")
+        XCTAssertFalse(vm.isLoading)
     }
 }

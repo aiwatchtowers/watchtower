@@ -96,11 +96,26 @@ final class MeetingPrepViewModel {
     /// The in-flight (or last) run, kept so tests can await its completion.
     @ObservationIgnored private(set) var runTask: Task<Void, Never>?
 
-    /// nil when the watchtower binary cannot be found.
-    private let cli: (any CLIRunnerProtocol)?
+    /// Resolved on the first run that finds a binary, not at init: this VM
+    /// lives for the app's lifetime, so a binary missing once must not stay
+    /// "not found" for good.
+    @ObservationIgnored private var cli: (any CLIRunnerProtocol)?
+    @ObservationIgnored private let makeRunner: () -> (any CLIRunnerProtocol)?
 
-    init(cliRunner: (any CLIRunnerProtocol)? = ProcessCLIRunner.makeDefault()) {
-        self.cli = cliRunner
+    init(makeRunner: @escaping () -> (any CLIRunnerProtocol)? = { ProcessCLIRunner.makeDefault() }) {
+        self.makeRunner = makeRunner
+    }
+
+    convenience init(cliRunner: (any CLIRunnerProtocol)?) {
+        self.init { cliRunner }
+    }
+
+    /// The prep pane's on-appear entry point: starts a run only when there is
+    /// neither a result nor a run in flight, so returning to an event shows
+    /// what is already there instead of re-running the strong-tier call.
+    func startIfNeeded(eventID: String) {
+        guard result == nil, !isLoading else { return }
+        generate(eventID: eventID)
     }
 
     /// Generate meeting prep for a specific event. A no-op while a run is
@@ -150,6 +165,7 @@ final class MeetingPrepViewModel {
         emptyStderrError: @escaping (Int32) -> String
     ) {
         guard !isLoading else { return }
+        if cli == nil { cli = makeRunner() }
         guard let cli else {
             error = "Watchtower CLI not found"
             return

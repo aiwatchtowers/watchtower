@@ -25,7 +25,7 @@ final class MeetingPrepCenter {
     /// lifetime (a handful of small results — one per event the owner prepped).
     func viewModel(for eventID: String) -> MeetingPrepViewModel {
         if let existing = sessions[eventID] { return existing }
-        let vm = MeetingPrepViewModel(cliRunner: makeRunner())
+        let vm = MeetingPrepViewModel(makeRunner: makeRunner)
         sessions[eventID] = vm
         return vm
     }

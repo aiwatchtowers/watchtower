@@ -1,4 +1,5 @@
 import Foundation
+import XCTest
 import WatchtowerCore
 
 /// A `CLIRunnerProtocol` that holds every `run` open until the test releases
@@ -40,5 +41,20 @@ final class HeldCLIRunner: CLIRunnerProtocol, @unchecked Sendable {
         await finish.wait()
         if let error { throw error }
         return stdoutData
+    }
+}
+
+extension XCTestCase {
+    /// Waits for `cli`'s first `run` to begin, failing (instead of hanging
+    /// the suite) if it never does — e.g. when a regression makes the code
+    /// under test skip the CLI call.
+    @MainActor
+    func awaitStarted(_ cli: HeldCLIRunner, timeout: TimeInterval = 5) async {
+        let started = expectation(description: "CLI run started")
+        Task {
+            await cli.started.wait()
+            started.fulfill()
+        }
+        await fulfillment(of: [started], timeout: timeout)
     }
 }

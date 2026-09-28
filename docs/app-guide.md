@@ -103,7 +103,7 @@ Google Calendar integration showing upcoming events and AI-powered meeting prepa
 - **People Notes** — communication tips and recent context for each attendee (from people cards)
 - **Suggested Prep** — action items to review before the meeting
 
-Meeting prep is generated via the CLI (`watchtower meeting-prep [event-id|next] --json`). Prep is kept per event for as long as the app runs: leaving Day Plan or Calendar mid-run does not lose it, and reopening Prepare on the same event shows the run still in progress or its finished result instead of starting another one (**Regenerate** forces a fresh one).
+Meeting prep is generated via the CLI (`watchtower meeting-prep [event-id|next] --json`). Prep is kept per event for as long as the app runs: leaving Day Plan or Calendar mid-run does not lose it, and reopening Prepare on the same event shows the run still in progress or its finished result instead of starting another one (**Refresh** forces a fresh one). That kept result is the one this app session produced; a newer prep generated elsewhere shows only after **Refresh**. If a Refresh fails, the previous prep stays on screen under an orange banner giving the reason.
 
 **Sidebar** — Shows a compact "next event" indicator with time and title when calendar is connected. The Calendar tab icon is "calendar" in the sidebar between Inbox and Tasks.
 
