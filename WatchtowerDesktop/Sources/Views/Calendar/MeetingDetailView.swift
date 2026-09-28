@@ -10,7 +10,6 @@ import WatchtowerCore
 /// ScrollView, the nested-NSScrollView collapse house gotcha).
 struct MeetingDetailView: View {
     let entry: MeetingListEntry
-    @Bindable var prepVM: MeetingPrepViewModel
     @Binding var userNotes: String
     let onDeleted: () -> Void
     let onChanged: () -> Void
@@ -31,7 +30,7 @@ struct MeetingDetailView: View {
             if showPrep {
                 MeetingPrepDetailView(
                     eventID: event.id,
-                    viewModel: prepVM,
+                    viewModel: appState.meetingPrepCenter.viewModel(for: event.id),
                     userNotes: $userNotes
                 ) { showPrep = false }
             } else {
@@ -165,8 +164,9 @@ struct MeetingDetailView: View {
 
             HStack(spacing: 8) {
                 Button {
+                    // The prep pane starts a run on appear unless this event's
+                    // AppState-owned VM already has a result or a run in flight.
                     showPrep = true
-                    prepVM.generate(eventID: event.id)
                 } label: {
                     Label("Prepare", systemImage: "doc.text.magnifyingglass")
                         .font(.caption)

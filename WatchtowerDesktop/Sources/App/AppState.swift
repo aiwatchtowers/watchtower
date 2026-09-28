@@ -120,6 +120,11 @@ final class AppState {
     /// navigation-surviving state).
     let transcriptNotesCenter = TranscriptNotesCenter()
 
+    /// App-wide per-event registry of meeting-prep runs and results, so a
+    /// `meeting-prep` CLI run started from Day Plan or Calendar survives
+    /// navigating away and back (same surviving-state contract).
+    let meetingPrepCenter = MeetingPrepCenter()
+
     /// App-wide, single-slot-per-transcript registry for "Suggest speaker
     /// names" runs and their suggestion chips (same surviving-state contract
     /// as TranscriptNotesCenter).
