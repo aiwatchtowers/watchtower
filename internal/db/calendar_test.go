@@ -237,10 +237,97 @@ func TestGetCalendarEventsForDate(t *testing.T) {
 	require.NoError(t, db.UpsertCalendarEvent(CalendarEvent{ID: "e1", CalendarID: "primary", Title: "Today", StartTime: "2026-04-02T10:00:00Z", EndTime: "2026-04-02T11:00:00Z"}))
 	require.NoError(t, db.UpsertCalendarEvent(CalendarEvent{ID: "e2", CalendarID: "primary", Title: "Tomorrow", StartTime: "2026-04-03T10:00:00Z", EndTime: "2026-04-03T11:00:00Z"}))
 
-	events, err := db.GetCalendarEventsForDate("2026-04-02")
+	events, err := db.GetCalendarEventsForDate("2026-04-02", time.UTC)
 	require.NoError(t, err)
 	assert.Len(t, events, 1)
 	assert.Equal(t, "Today", events[0].Title)
+}
+
+// The day window is the LOCAL day (converted to UTC for the timed-event
+// comparison), and an all-day event — stored as UTC midnight with an exclusive
+// end — matches only its own date, never the day after (its end == that day's
+// midnight) or, in a negative-offset zone, the day before.
+func TestGetCalendarEventsForDate_LocalDayAndAllDayBoundaries(t *testing.T) {
+	for _, zone := range []string{"America/Los_Angeles", "Asia/Tokyo", "UTC"} {
+		t.Run(zone, func(t *testing.T) {
+			loc, err := time.LoadLocation(zone)
+			require.NoError(t, err)
+			db := openTestDB(t)
+			require.NoError(t, db.UpsertCalendar(0, CalendarCalendar{ID: "primary", Name: "Main", SyncedAt: time.Now().UTC().Format(time.RFC3339)}))
+
+			now := time.Now().In(loc)
+			day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+			date := day.Format("2006-01-02")
+			utcDate := func(offsetDays int) string { return day.AddDate(0, 0, offsetDays).Format("2006-01-02") + "T00:00:00Z" }
+			ts := func(tm time.Time) string { return tm.UTC().Format(time.RFC3339) }
+
+			for _, ev := range []CalendarEvent{
+				{ID: "allday-yesterday", StartTime: utcDate(-1), EndTime: utcDate(0), IsAllDay: true},
+				{ID: "allday-today", StartTime: utcDate(0), EndTime: utcDate(1), IsAllDay: true},
+				{ID: "allday-tomorrow", StartTime: utcDate(1), EndTime: utcDate(2), IsAllDay: true},
+				{ID: "late-evening", StartTime: ts(day.Add(22 * time.Hour)), EndTime: ts(day.Add(23 * time.Hour))},
+				{ID: "early-morning", StartTime: ts(day.Add(30 * time.Minute)), EndTime: ts(day.Add(90 * time.Minute))},
+				{ID: "prev-evening", StartTime: ts(day.Add(-2 * time.Hour)), EndTime: ts(day.Add(-1 * time.Hour))},
+				{ID: "ends-at-midnight", StartTime: ts(day.Add(-time.Hour)), EndTime: ts(day)},
+				{ID: "next-morning", StartTime: ts(day.Add(25 * time.Hour)), EndTime: ts(day.Add(26 * time.Hour))},
+				{ID: "overnight", StartTime: ts(day.Add(-time.Hour)), EndTime: ts(day.Add(time.Hour))},
+			} {
+				ev.CalendarID, ev.Title = "primary", ev.ID
+				require.NoError(t, db.UpsertCalendarEvent(ev))
+			}
+
+			events, err := db.GetCalendarEventsForDate(date, loc)
+			require.NoError(t, err)
+			var got []string
+			for _, e := range events {
+				got = append(got, e.ID)
+			}
+			assert.ElementsMatch(t, []string{"allday-today", "early-morning", "late-evening", "overnight"}, got)
+		})
+	}
+}
+
+// A DST transition day is 23 or 25 hours long; the window must follow the
+// local calendar day, not a fixed 24h. Fixed past dates are fine here: this is
+// pure window arithmetic, not a date bomb.
+func TestGetCalendarEventsForDate_DSTTransitionDays(t *testing.T) {
+	loc, err := time.LoadLocation("America/Los_Angeles")
+	require.NoError(t, err)
+	for _, date := range []string{"2026-03-08", "2026-11-01"} {
+		t.Run(date, func(t *testing.T) {
+			db := openTestDB(t)
+			require.NoError(t, db.UpsertCalendar(0, CalendarCalendar{ID: "primary", Name: "Main", SyncedAt: time.Now().UTC().Format(time.RFC3339)}))
+			day, err := time.ParseInLocation("2006-01-02", date, loc)
+			require.NoError(t, err)
+			next := day.AddDate(0, 0, 1)
+			ts := func(tm time.Time) string { return tm.UTC().Format(time.RFC3339) }
+			for _, ev := range []CalendarEvent{
+				// On the 23h day, next-early falls inside a fixed day+24h window;
+				// on the 25h day, late falls outside it. Only the local-day
+				// window gets both right.
+				{ID: "late", StartTime: ts(next.Add(-30 * time.Minute)), EndTime: ts(next.Add(-10 * time.Minute))},
+				{ID: "next-early", StartTime: ts(next.Add(10 * time.Minute)), EndTime: ts(next.Add(40 * time.Minute))},
+				{ID: "prev-late", StartTime: ts(day.Add(-40 * time.Minute)), EndTime: ts(day.Add(-10 * time.Minute))},
+			} {
+				ev.CalendarID, ev.Title = "primary", ev.ID
+				require.NoError(t, db.UpsertCalendarEvent(ev))
+			}
+			events, err := db.GetCalendarEventsForDate(date, loc)
+			require.NoError(t, err)
+			var got []string
+			for _, e := range events {
+				got = append(got, e.ID)
+			}
+			assert.Equal(t, []string{"late"}, got)
+			assert.NotEqual(t, 24*time.Hour, next.Sub(day), "the fixture really is a DST transition day")
+		})
+	}
+}
+
+func TestGetCalendarEventsForDate_BadDate(t *testing.T) {
+	db := openTestDB(t)
+	_, err := db.GetCalendarEventsForDate("not-a-date", time.UTC)
+	assert.Error(t, err)
 }
 
 func TestGetNextEvent(t *testing.T) {
@@ -553,11 +640,18 @@ func TestClearGoogleAccountCalendarData(t *testing.T) {
 		got[c.ID] = c.IsSelected
 	}
 	assert.Equal(t, map[string]bool{
-		"a-recorded":   true, // still holds referenced events
-		"b-primary":    true, // selection of another account is untouched
+		"a-recorded":   false, // kept for its referenced events, detached and unselected
+		"b-primary":    true,  // selection of another account is untouched
 		"caldav:work":  true,
 		"ics:holidays": true,
 	}, got)
+
+	var keptOwner sql.NullInt64
+	require.NoError(t, db.QueryRow(`SELECT account_id FROM calendar_calendars WHERE id = 'a-recorded'`).Scan(&keptOwner))
+	assert.False(t, keptOwner.Valid, "a kept calendar no longer names the logged-out account")
+	selA, err := db.GetSelectedCalendarIDs(acctA)
+	require.NoError(t, err)
+	assert.Empty(t, selA, "nothing is left selected for the logged-out account")
 
 	m, err := db.GetAttendeeMap()
 	require.NoError(t, err)
@@ -567,6 +661,99 @@ func TestClearGoogleAccountCalendarData(t *testing.T) {
 	n, err = db.ClearGoogleAccountCalendarData(acctA)
 	require.NoError(t, err)
 	assert.Equal(t, 0, n)
+}
+
+// TestUpsertCalendar_ClaimsCalendarKeptByLogout pins the hand-off of a
+// calendar row that `calendar logout` kept only because a recording still
+// references one of its events: the row is detached (account_id NULL), so a
+// second Google account sharing that calendar id claims it on its next sync —
+// owner and selection both, as for a freshly discovered calendar — while a
+// row still owned by a connected account is never stolen, and a CalDAV/ICS
+// upsert (no account) never changes a detached row's selection.
+func TestUpsertCalendar_ClaimsCalendarKeptByLogout(t *testing.T) {
+	db := openTestDB(t)
+
+	acctA, err := db.CreateGoogleAccount(GoogleAccount{Email: "a@example.com", Label: "A", CalendarEnabled: true})
+	require.NoError(t, err)
+	acctB, err := db.CreateGoogleAccount(GoogleAccount{Email: "b@example.com", Label: "B", CalendarEnabled: true})
+	require.NoError(t, err)
+
+	start := time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339)
+	end := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)
+	for _, id := range []string{"shared", "a-owned"} {
+		require.NoError(t, db.UpsertCalendar(acctA, CalendarCalendar{ID: id, Name: id, IsSelected: true, SyncedAt: start}))
+	}
+	require.NoError(t, db.UpsertCalendarEvent(CalendarEvent{ID: "evt-recorded", CalendarID: "shared", Title: "M", StartTime: start, EndTime: end}))
+	_, err = db.InsertMeetingTranscript(MeetingTranscript{
+		EventID: sql.NullString{String: "evt-recorded", Valid: true}, Title: "T", TranscriptText: "hello",
+	})
+	require.NoError(t, err)
+
+	owner := func(id string) sql.NullInt64 {
+		t.Helper()
+		var v sql.NullInt64
+		require.NoError(t, db.QueryRow(`SELECT account_id FROM calendar_calendars WHERE id = ?`, id).Scan(&v))
+		return v
+	}
+
+	// B syncing a calendar A still owns never takes it over.
+	require.NoError(t, db.UpsertCalendar(acctB, CalendarCalendar{ID: "a-owned", Name: "a-owned", IsSelected: true, SyncedAt: start}))
+	assert.Equal(t, acctA, owner("a-owned").Int64, "a connected account's calendar is never stolen")
+
+	_, err = db.ClearGoogleAccountCalendarData(acctA)
+	require.NoError(t, err)
+	require.False(t, owner("shared").Valid, "logout detaches the kept calendar")
+
+	// A no-account (CalDAV/ICS-shaped) upsert leaves the detached row alone.
+	require.NoError(t, db.UpsertCalendar(0, CalendarCalendar{ID: "shared", Name: "shared", IsSelected: true, SyncedAt: start}))
+	assert.False(t, owner("shared").Valid)
+	sel, err := db.GetCalendars()
+	require.NoError(t, err)
+	for _, c := range sel {
+		if c.ID == "shared" {
+			assert.False(t, c.IsSelected, "a no-account upsert does not reselect a detached row")
+		}
+	}
+
+	require.NoError(t, db.UpsertCalendar(acctB, CalendarCalendar{ID: "shared", Name: "shared", IsSelected: true, SyncedAt: start}))
+	assert.Equal(t, acctB, owner("shared").Int64, "B claims the detached calendar")
+	selB, err := db.GetSelectedCalendarIDs(acctB)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"shared"}, selB, "the claimed calendar is selected for B, as a new calendar would be")
+
+	ev, err := db.GetCalendarEventByID("evt-recorded")
+	require.NoError(t, err)
+	require.NotNil(t, ev, "the recorded event survived the whole hand-off")
+}
+
+// TestUpsertCalendar_OwnedRowKeepsItsSelection pins the other half of the
+// claim rule: only a claim of an ownerless row takes the incoming is_selected.
+// A calendar its owner deselected stays deselected however often the owner's
+// or another account's syncer upserts it with IsSelected: true.
+func TestUpsertCalendar_OwnedRowKeepsItsSelection(t *testing.T) {
+	db := openTestDB(t)
+
+	acctA, err := db.CreateGoogleAccount(GoogleAccount{Email: "a@example.com", Label: "A", CalendarEnabled: true})
+	require.NoError(t, err)
+	acctB, err := db.CreateGoogleAccount(GoogleAccount{Email: "b@example.com", Label: "B", CalendarEnabled: true})
+	require.NoError(t, err)
+
+	syncedAt := time.Now().UTC().Format(time.RFC3339)
+	cal := CalendarCalendar{ID: "a-owned", Name: "a-owned", IsSelected: true, SyncedAt: syncedAt}
+	require.NoError(t, db.UpsertCalendar(acctA, cal))
+	require.NoError(t, db.SetCalendarSelected("a-owned", false))
+
+	require.NoError(t, db.UpsertCalendar(acctA, cal))
+	require.NoError(t, db.UpsertCalendar(acctB, cal))
+
+	var owner sql.NullInt64
+	var selected bool
+	require.NoError(t, db.QueryRow(`SELECT account_id, is_selected FROM calendar_calendars WHERE id = 'a-owned'`).Scan(&owner, &selected))
+	assert.Equal(t, sql.NullInt64{Int64: acctA, Valid: true}, owner, "the row stays owned by A")
+	assert.False(t, selected, "a deselected owned calendar is never re-selected by an upsert")
+	selA, err := db.GetSelectedCalendarIDs(acctA)
+	require.NoError(t, err)
+	assert.NotContains(t, selA, "a-owned")
 }
 
 func TestAttendeeMap(t *testing.T) {
@@ -597,4 +784,98 @@ func TestAttendeeMap(t *testing.T) {
 	uid, err = db.GetSlackUserIDByEmail("alice@example.com")
 	require.NoError(t, err)
 	assert.Equal(t, "U999", uid)
+}
+
+// TestUpsertCalendarEvent_TimeChangedAt pins the stamp the inbox's
+// calendar_time_change trigger keys on: empty on first insert and on a re-sync
+// that leaves start/end alone, the re-sync's synced_at when either moves, and
+// kept (not cleared) by a later re-sync with no further move.
+func TestUpsertCalendarEvent_TimeChangedAt(t *testing.T) {
+	db := openTestDB(t)
+	require.NoError(t, db.UpsertCalendar(0, CalendarCalendar{ID: "primary", Name: "Main"}))
+
+	base := time.Now().UTC().Truncate(time.Second)
+	ts := func(d time.Duration) string { return base.Add(d).Format(time.RFC3339) }
+	stamp := func() string {
+		t.Helper()
+		var s string
+		require.NoError(t, db.QueryRow(`SELECT time_changed_at FROM calendar_events WHERE id = 'evt1'`).Scan(&s))
+		return s
+	}
+	ev := CalendarEvent{ID: "evt1", CalendarID: "primary", StartTime: ts(24 * time.Hour), EndTime: ts(25 * time.Hour)}
+
+	require.NoError(t, db.UpsertCalendarEvent(ev, ts(-3*time.Hour)))
+	assert.Empty(t, stamp(), "first insert")
+
+	ev.Description = "agenda added"
+	require.NoError(t, db.UpsertCalendarEvent(ev, ts(-2*time.Hour)))
+	assert.Empty(t, stamp(), "re-sync without a time change")
+
+	ev.EndTime = ts(26 * time.Hour)
+	require.NoError(t, db.UpsertCalendarEvent(ev, ts(-1*time.Hour)))
+	assert.Equal(t, ts(-1*time.Hour), stamp(), "end moved")
+
+	require.NoError(t, db.UpsertCalendarEvent(ev, ts(0)))
+	assert.Equal(t, ts(-1*time.Hour), stamp(), "a later re-sync keeps the last move's stamp")
+
+	// The batch upsert shares the same ON CONFLICT clause.
+	ev.StartTime = ts(48 * time.Hour)
+	require.NoError(t, db.UpsertCalendarEvents([]CalendarEvent{ev}))
+	var syncedAt string
+	require.NoError(t, db.QueryRow(`SELECT synced_at FROM calendar_events WHERE id = 'evt1'`).Scan(&syncedAt))
+	assert.NotEqual(t, ts(-1*time.Hour), syncedAt, "the batch pass stamps its own synced_at")
+	assert.Equal(t, syncedAt, stamp(), "start moved via the batch upsert: stamped with that pass's synced_at")
+}
+
+// TestUpsertCalendarEvent_RSVPChanged pins the per-attendee RSVP stamps the
+// inbox's calendar_time_change auto-resolve reads (owner decision 2026-09-29):
+// nothing on first insert or on an unchanged re-sync; the pass's synced_at for
+// exactly the attendee whose response_status changed; earlier stamps kept.
+func TestUpsertCalendarEvent_RSVPChanged(t *testing.T) {
+	db := openTestDB(t)
+	require.NoError(t, db.UpsertCalendar(0, CalendarCalendar{ID: "primary", Name: "Main"}))
+
+	base := time.Now().UTC().Truncate(time.Second)
+	ts := func(d time.Duration) string { return base.Add(d).Format(time.RFC3339) }
+	att := func(me, other string) string {
+		return `[{"email":"Me@x.com","response_status":"` + me + `"},{"email":"other@x.com","response_status":"` + other + `"}]`
+	}
+	stored := func() string {
+		t.Helper()
+		var s string
+		require.NoError(t, db.QueryRow(`SELECT rsvp_changed FROM calendar_events WHERE id = 'evt1'`).Scan(&s))
+		return s
+	}
+	ev := CalendarEvent{ID: "evt1", CalendarID: "primary", StartTime: ts(24 * time.Hour), EndTime: ts(25 * time.Hour),
+		Attendees: att("needsAction", "needsAction")}
+
+	require.NoError(t, db.UpsertCalendarEvent(ev, ts(-3*time.Hour)))
+	assert.Equal(t, "{}", stored(), "first insert")
+
+	require.NoError(t, db.UpsertCalendarEvent(ev, ts(-2*time.Hour)))
+	assert.Equal(t, "{}", stored(), "unchanged re-sync")
+
+	ev.Attendees = att("needsAction", "accepted")
+	require.NoError(t, db.UpsertCalendarEvent(ev, ts(-90*time.Minute)))
+	assert.Empty(t, CalendarRSVPChangedAt(stored(), "me@x.com"), "a colleague's RSVP is not the owner's")
+	assert.Equal(t, ts(-90*time.Minute), CalendarRSVPChangedAt(stored(), "other@x.com"))
+
+	ev.Attendees = att("accepted", "accepted")
+	require.NoError(t, db.UpsertCalendarEvent(ev, ts(-1*time.Hour)))
+	assert.Equal(t, ts(-1*time.Hour), CalendarRSVPChangedAt(stored(), "ME@x.com"), "matched case-insensitively")
+	assert.Equal(t, ts(-90*time.Minute), CalendarRSVPChangedAt(stored(), "other@x.com"), "earlier stamps are kept")
+
+	require.NoError(t, db.UpsertCalendarEvents([]CalendarEvent{ev}))
+	assert.Equal(t, ts(-1*time.Hour), CalendarRSVPChangedAt(stored(), "me@x.com"), "the batch upsert keeps it on no change")
+}
+
+func TestMergeRSVPChanges_Degenerate(t *testing.T) {
+	stamp := time.Now().UTC().Format(time.RFC3339)
+	// Malformed stored/new lists and stamps degrade to "no change seen".
+	assert.Equal(t, "{}", mergeRSVPChanges("not json", "not json", `[{"email":"a@x.com","response_status":"accepted"}]`, stamp))
+	// An attendee newly added (or dropped) is not a response change.
+	assert.Equal(t, "{}", mergeRSVPChanges(`[]`, `{}`, `[{"email":"a@x.com","response_status":"accepted"}]`, stamp))
+	// An attendee with no email is never stamped.
+	assert.Equal(t, "{}", mergeRSVPChanges(`[{"response_status":"needsAction"}]`, `{}`, `[{"response_status":"accepted"}]`, stamp))
+	assert.Empty(t, CalendarRSVPChangedAt("", "a@x.com"))
 }

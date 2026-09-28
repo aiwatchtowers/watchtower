@@ -462,6 +462,10 @@ func (db *DB) RecomputeParentProgress(parentID int64) error {
 // auto-commit `RecomputeParentProgress` (taking *sql.DB) and the in-tx variant
 // invoked from `PromoteSubItemToChild` (taking *sql.Tx) so the recompute is
 // part of the same atomic unit as the mutations that triggered it.
+//
+// Dual path: the Desktop writes targets directly and ports this walk as
+// TargetQueries.recomputeParentProgress (WatchtowerCore). Both sides replay
+// testdata/target_progress_cases.json — change them together.
 func recomputeParentProgressOn(q targetsQuerier, parentID int64) error {
 	visited := make(map[int64]bool)
 	current := parentID

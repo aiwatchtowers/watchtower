@@ -57,6 +57,9 @@ type Coverage struct {
 	Meetings   int     `json:"meetings"`
 	Topup      string  `json:"topup"` // ok | skipped | failed
 	TopupError string  `json:"topup_error,omitempty"`
+	// WindowTruncated: the auto window was clamped to the 31-day cap, so the
+	// recap does not reach back to the last acknowledged recap.
+	WindowTruncated bool `json:"window_truncated,omitempty"`
 }
 
 // IsEmpty reports whether the recap has nothing to show.

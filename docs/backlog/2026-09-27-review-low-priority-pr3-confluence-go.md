@@ -32,12 +32,20 @@ stays readable. Split any item into its own file when it gets picked up.
 
 Confluence stores a date as `<time datetime="2026-09-01" />`. Reproduced: `<p>Due <time datetime="2026-09-01" /> ship it</p>` → "Due ship it", with the date gone. `time` has no children, and its `datetime` attribute is never read. The self-closing form isn't normalized either, because the name has no ':'. The `status` macro (`ac:parameter ac:name="title"`) has no body, so `renderMacroBody` returns "" and labels like "DONE"/"BLOCKED" vanish (confidence med, from code reading). Search for a due date or a status therefore misses these pages. Fix direction: render `time` as its `datetime` value, and render the status macro's `title` parameter (plus other body-less macros with a title-like parameter).
 
-## A "scope does not match" 401 rotates the Atlassian refresh token three times before it surfaces
+## A "scope does not match" 401 rotates the Atlassian refresh token three times before it surfaces (fixed in fix/bl-jira-hardening)
 
 - type: bug · confidence: high · tags: [jira, oauth, confluence, tokens]
 - where: internal/jira/client.go:117-176 (doURLWith 401 loop), internal/jira/client.go:180-195 (persistentUnauthorized)
 
 The PR's own comment says Atlassian answers a request the grant lacks a scope for with 401 "Unauthorized; scope does not match". `doURLWith` still treats every 401 on attempts 0–2 as a stale access token. It calls `refreshIfCurrent`, which really refreshes (the stored token equals the one just used), so three refresh-token rotations and three token-file rewrites happen before `persistentUnauthorized` finally classifies the body as a scope error. This can recur every cycle while an endpoint needs a scope missing from `ConfluenceScopes` (the scopes.go comment says the endpoint→scope mapping is "not verified page by page"). Each extra rotation widens the known cross-process refresh race and the non-atomic token write (backlog: token-files-for-rotating-refresh-tokens…). Fix direction: read the 401 body on the first response and return right away when it names a scope, without refreshing.
+
+Resolution: `persistentUnauthorized` is replaced by `classify401`, called on every 401 (not only the
+last retry) — a body naming a scope now returns immediately as a plain `*HTTPStatusError`, with no
+`refreshIfCurrent` call and so no refresh-token rotation. Non-scope 401s keep the existing
+refresh-then-retry behavior, now on their own independent budget (see the go-bugs-infra bundle's
+401/429 counter-split entry, fixed by the same change). Pinned by
+`TestClient_PersistentUnauthorizedScopeIsNotRevoked`, updated to assert exactly one server call
+instead of the four the old behavior required.
 
 ## Non-UTF-8 text attachments (UTF-16 or cp1251 CSV/TXT) are recorded as final failed
 

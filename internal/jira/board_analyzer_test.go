@@ -1,15 +1,33 @@
 package jira
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
+	"watchtower/internal/ai"
 	"watchtower/internal/db"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// failingAIProvider is an ai.Provider whose QuerySync always errors, so
+// AnalyzeBoard's LLM call fails deterministically without a network call.
+type failingAIProvider struct {
+	calls int
+}
+
+func (f *failingAIProvider) Query(context.Context, string, string, string) (<-chan ai.StreamChunk, <-chan error, <-chan string) {
+	panic("failingAIProvider.Query: not used by CheckAndRefreshProfiles")
+}
+
+func (f *failingAIProvider) QuerySync(context.Context, string, string, string) (string, *ai.Usage, error) {
+	f.calls++
+	return "", nil, fmt.Errorf("simulated LLM failure")
+}
 
 func TestComputeConfigHash(t *testing.T) {
 	rawData1 := &BoardRawData{
@@ -121,6 +139,65 @@ func TestCheckAndRefreshProfiles_CooldownElapsed(t *testing.T) {
 	generated, err := time.Parse(time.RFC3339, board.ProfileGeneratedAt)
 	require.NoError(t, err)
 	assert.True(t, time.Since(generated) >= RefreshCooldown, "board should be past cooldown period")
+}
+
+// TestCheckAndRefreshProfiles_GivesUpAfterDailyBudgetThenResumesNextDay pins
+// the fix for the indefinite-retry bug: a board whose config changed and
+// whose re-analysis keeps failing (LLM error) must stop retrying once
+// maxDailyBoardRefreshAttempts is spent for the day, and resume on the next
+// UTC calendar day rather than being stuck forever (a failed AnalyzeBoard
+// never advances ConfigHash/ProfileGeneratedAt, so RefreshCooldown alone
+// never engages for a failure).
+func TestCheckAndRefreshProfiles_GivesUpAfterDailyBudgetThenResumesNextDay(t *testing.T) {
+	d, err := db.Open(":memory:")
+	require.NoError(t, err)
+	defer d.Close()
+	db.SeedTestJiraAccount(t, d)
+
+	// Mark field discovery fresh with no useful fields, so AnalyzeBoard's
+	// discovery/mapping steps short-circuit on their own DB checks instead of
+	// ever reaching the (nil, in this test) Jira client.
+	_, err = d.Exec(`INSERT INTO jira_custom_fields (account_id, id, name, field_type, is_useful, synced_at)
+		VALUES (1, 'customfield_1', 'X', 'string', 0, ?)`, time.Now().UTC().Format(time.RFC3339))
+	require.NoError(t, err)
+
+	// project_key='' makes fetchProjectStatuses fail fast with no client
+	// call at all, so FetchBoardRawData's Config stays a deterministic zero
+	// value across every call in this test — the same hash every time.
+	_, err = d.Exec(`INSERT INTO jira_boards (account_id, id, name, project_key, board_type, is_selected, issue_count, synced_at,
+		config_hash, profile_generated_at, llm_profile_json, raw_columns_json, raw_config_json, workflow_summary)
+		VALUES (1, 1, 'Test Board', '', 'scrum', 1, 0, '2026-04-09T00:00:00Z',
+		'oldhash', '', '{"workflow_stages":[{"name":"x"}]}', '[]', '{}', 'summary')`)
+	require.NoError(t, err)
+
+	provider := &failingAIProvider{}
+	a := NewBoardAnalyzer(nil, d, provider, 1)
+	clock := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	a.now = func() time.Time { return clock }
+
+	for i := 1; i <= maxDailyBoardRefreshAttempts; i++ {
+		results, err := a.CheckAndRefreshProfiles(context.Background(), true)
+		require.NoError(t, err)
+		require.Len(t, results, 1)
+		assert.Error(t, results[0].Error, "attempt %d must fail (fake provider always errors)", i)
+		assert.Equal(t, i, provider.calls, "attempt %d must reach the LLM", i)
+	}
+
+	// Budget spent: a further same-day pass must not call the LLM again.
+	results, err := a.CheckAndRefreshProfiles(context.Background(), true)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.NoError(t, results[0].Error, "a budget-exhausted pass must not attempt AnalyzeBoard again")
+	assert.True(t, results[0].Skipped)
+	assert.Equal(t, maxDailyBoardRefreshAttempts, provider.calls, "no extra LLM call once the daily budget is spent")
+
+	// A new UTC calendar day resets the budget.
+	clock = clock.AddDate(0, 0, 1)
+	results, err = a.CheckAndRefreshProfiles(context.Background(), true)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Error(t, results[0].Error)
+	assert.Equal(t, maxDailyBoardRefreshAttempts+1, provider.calls, "a new UTC day must resume retrying")
 }
 
 func TestMergeUserOverridesLogic(t *testing.T) {

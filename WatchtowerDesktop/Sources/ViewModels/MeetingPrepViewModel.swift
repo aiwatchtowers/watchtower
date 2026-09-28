@@ -80,6 +80,10 @@ struct MeetingPrepResult: Codable, Equatable {
 
 // MARK: - ViewModel
 
+/// Prep state for ONE calendar event. Instances are handed out and kept by
+/// `MeetingPrepCenter` on AppState, so a `meeting-prep` run (a strong-tier
+/// CLI call taking tens of seconds) and its result survive navigating away
+/// from Day Plan / Calendar and back.
 @MainActor
 @Observable
 final class MeetingPrepViewModel {
@@ -89,22 +93,39 @@ final class MeetingPrepViewModel {
     var statusMessage: String = ""
     var isCached: Bool = false
 
-    /// Generate meeting prep for a specific event.
+    /// The in-flight (or last) run, kept so tests can await its completion.
+    @ObservationIgnored private(set) var runTask: Task<Void, Never>?
+
+    /// Resolved on the first run that finds a binary, not at init: this VM
+    /// lives for the app's lifetime, so a binary missing once must not stay
+    /// "not found" for good.
+    @ObservationIgnored private var cli: (any CLIRunnerProtocol)?
+    @ObservationIgnored private let makeRunner: () -> (any CLIRunnerProtocol)?
+
+    init(makeRunner: @escaping () -> (any CLIRunnerProtocol)? = { ProcessCLIRunner.makeDefault() }) {
+        self.makeRunner = makeRunner
+    }
+
+    convenience init(cliRunner: (any CLIRunnerProtocol)?) {
+        self.init { cliRunner }
+    }
+
+    /// The prep pane's on-appear entry point: starts a run only when there is
+    /// neither a result nor a run in flight, so returning to an event shows
+    /// what is already there instead of re-running the strong-tier call.
+    func startIfNeeded(eventID: String) {
+        guard result == nil, !isLoading else { return }
+        generate(eventID: eventID)
+    }
+
+    /// Generate meeting prep for a specific event. A no-op while a run is
+    /// already in flight, so returning to a still-running prep (or a second
+    /// click) never starts a parallel strong-tier call.
     /// - Parameters:
     ///   - eventID: The calendar event ID.
     ///   - userNotes: Optional agenda or context from the user.
     ///   - forceRefresh: If true, bypasses cache and regenerates.
     func generate(eventID: String, userNotes: String = "", forceRefresh: Bool = false) {
-        guard let cliPath = Constants.findCLIPath() else {
-            error = "Watchtower CLI not found"
-            return
-        }
-
-        isLoading = true
-        error = nil
-        isCached = false
-        statusMessage = "Gathering attendee context..."
-
         var args = ["meeting-prep", eventID, "--json"]
         if forceRefresh {
             args.append("--force-refresh")
@@ -112,63 +133,24 @@ final class MeetingPrepViewModel {
         if !userNotes.isEmpty {
             args.append(contentsOf: ["--user-notes", userNotes])
         }
-
-        Task.detached {
-            await MainActor.run { self.statusMessage = "Analyzing attendee activity..." }
-
-            let cliResult = await Self.runCLI(path: cliPath, arguments: args)
-
-            await MainActor.run {
-                self.isLoading = false
-                self.statusMessage = ""
-                if cliResult.exitCode == 0, !cliResult.stdout.isEmpty {
-                    self.parseCLIOutput(cliResult.stdout)
-                    if !forceRefresh {
-                        self.isCached = false // fresh generation looks same as cached from CLI
-                    }
-                } else {
-                    self.error = cliResult.stderr.isEmpty
-                        ? "Meeting prep failed (exit \(cliResult.exitCode))"
-                        : String(cliResult.stderr.prefix(300))
-                }
-            }
-        }
+        start(
+            args: args,
+            initialStatus: "Gathering attendee context...",
+            runningStatus: "Analyzing attendee activity..."
+        ) { "Meeting prep failed (exit \($0))" }
     }
 
     /// Generate meeting prep for the next upcoming meeting.
     func generateNext(userNotes: String = "") {
-        guard let cliPath = Constants.findCLIPath() else {
-            error = "Watchtower CLI not found"
-            return
-        }
-
-        isLoading = true
-        error = nil
-        isCached = false
-        statusMessage = "Finding next meeting..."
-
         var args = ["meeting-prep", "next", "--json"]
         if !userNotes.isEmpty {
             args.append(contentsOf: ["--user-notes", userNotes])
         }
-
-        Task.detached {
-            await MainActor.run { self.statusMessage = "Analyzing attendees..." }
-
-            let cliResult = await Self.runCLI(path: cliPath, arguments: args)
-
-            await MainActor.run {
-                self.isLoading = false
-                self.statusMessage = ""
-                if cliResult.exitCode == 0, !cliResult.stdout.isEmpty {
-                    self.parseCLIOutput(cliResult.stdout)
-                } else {
-                    self.error = cliResult.stderr.isEmpty
-                        ? "No upcoming meetings found"
-                        : String(cliResult.stderr.prefix(300))
-                }
-            }
-        }
+        start(
+            args: args,
+            initialStatus: "Finding next meeting...",
+            runningStatus: "Analyzing attendees..."
+        ) { _ in "No upcoming meetings found" }
     }
 
     /// Regenerate meeting prep, bypassing cache.
@@ -176,28 +158,51 @@ final class MeetingPrepViewModel {
         generate(eventID: eventID, userNotes: userNotes, forceRefresh: true)
     }
 
-    private func parseCLIOutput(_ output: String) {
-        guard let data = output.data(using: .utf8) else {
-            error = "Invalid CLI output encoding"
+    private func start(
+        args: [String],
+        initialStatus: String,
+        runningStatus: String,
+        emptyStderrError: @escaping (Int32) -> String
+    ) {
+        guard !isLoading else { return }
+        if cli == nil { cli = makeRunner() }
+        guard let cli else {
+            error = "Watchtower CLI not found"
             return
         }
+
+        isLoading = true
+        error = nil
+        isCached = false
+        statusMessage = initialStatus
+
+        runTask = Task {
+            statusMessage = runningStatus
+            defer {
+                isLoading = false
+                statusMessage = ""
+            }
+            do {
+                let data = try await cli.run(args: args)
+                // ASCII whitespace only: the old Process wrapper trimmed stdout.
+                if data.allSatisfy({ [0x20, 0x09, 0x0A, 0x0D].contains($0) }) {
+                    error = emptyStderrError(0)
+                } else {
+                    parseCLIOutput(data)
+                }
+            } catch let CLIRunnerError.nonZeroExit(code, stderr) {
+                error = stderr.isEmpty ? emptyStderrError(code) : String(stderr.prefix(300))
+            } catch {
+                self.error = error.localizedDescription
+            }
+        }
+    }
+
+    private func parseCLIOutput(_ data: Data) {
         do {
             result = try JSONDecoder().decode(MeetingPrepResult.self, from: data)
         } catch {
             self.error = "Failed to parse meeting prep: \(error.localizedDescription)"
         }
-    }
-
-    nonisolated private static func runCLI(
-        path: String,
-        arguments: [String]
-    ) async -> (exitCode: Int32, stdout: String, stderr: String) {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: path)
-        process.arguments = arguments
-        process.environment = Constants.resolvedEnvironment()
-        process.currentDirectoryURL = Constants.processWorkingDirectory()
-
-        return await ProcessPipes.run(process).trimmed
     }
 }

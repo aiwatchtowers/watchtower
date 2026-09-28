@@ -213,7 +213,13 @@ struct MainNavigationView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         case .briefings:
-            BriefingsListView()
+            if let vm = appState.briefingViewModel {
+                BriefingsListView(vm: vm)
+            } else {
+                Text("Briefings unavailable")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         case .dayPlan:
             if let vm = appState.dayPlanViewModel {
                 DayPlanView(vm: vm)

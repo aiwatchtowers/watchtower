@@ -460,7 +460,9 @@ extension TestDatabase {
         synced_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
         updated_at      TEXT NOT NULL DEFAULT '',
         ical_uid        TEXT NOT NULL DEFAULT '',
-        conference_url  TEXT NOT NULL DEFAULT ''
+        conference_url  TEXT NOT NULL DEFAULT '',
+        time_changed_at TEXT NOT NULL DEFAULT '',
+        rsvp_changed    TEXT NOT NULL DEFAULT '{}'
     );
     CREATE INDEX IF NOT EXISTS idx_calendar_events_calendar ON calendar_events(calendar_id);
     CREATE INDEX IF NOT EXISTS idx_calendar_events_start ON calendar_events(start_time);

@@ -2,42 +2,31 @@ import SwiftUI
 import WatchtowerCore
 
 struct BriefingsListView: View {
+    /// Owned by AppState (not view-local) so an in-flight Generate run and
+    /// its error survive the tab switch that destroys this view.
+    let vm: BriefingViewModel
     @Environment(AppState.self) private var appState
     @Environment(\.openSettings) private var openSettings
-    @State private var viewModel: BriefingViewModel?
     @State private var selectedBriefingID: Int?
 
     var body: some View {
         Group {
-            if let vm = viewModel {
-                if let selID = selectedBriefingID,
-                   let briefing = vm.briefings.first(where: { $0.id == selID }) {
-                    detailView(briefing)
-                } else {
-                    listView(vm)
-                }
+            if let selID = selectedBriefingID,
+               let briefing = vm.briefings.first(where: { $0.id == selID }) {
+                detailView(briefing)
             } else {
-                ProgressView("Loading...")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                listView(vm)
             }
         }
         .task { await appState.refreshOwner() }
         .onAppear {
-            if viewModel == nil, let db = appState.databaseManager {
-                let vm = BriefingViewModel(dbManager: db)
-                viewModel = vm
-                vm.startObserving()
-            }
+            // The VM outlives this view now; its observation tracks only the
+            // row count, so re-read on every visit (a regenerated or
+            // elsewhere-read briefing keeps the count unchanged).
+            vm.load()
             if let id = appState.pendingBriefingID {
                 selectedBriefingID = id
                 appState.pendingBriefingID = nil
-            }
-        }
-        .onChange(of: appState.isDBAvailable) {
-            if viewModel == nil, let db = appState.databaseManager {
-                let vm = BriefingViewModel(dbManager: db)
-                viewModel = vm
-                vm.startObserving()
             }
         }
         .onChange(of: appState.pendingBriefingID) { _, newID in
@@ -48,7 +37,7 @@ struct BriefingsListView: View {
         }
         .onChange(of: selectedBriefingID) { _, newID in
             if let id = newID {
-                viewModel?.markAsRead(id)
+                vm.markAsRead(id)
             }
         }
     }

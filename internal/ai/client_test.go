@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -316,6 +317,55 @@ func TestQuerySync_ExitError(t *testing.T) {
 	assert.Contains(t, err.Error(), "something went wrong")
 }
 
+// TestQuerySync_ExitErrorSurfacesEnvelopeMessage pins that a failed run whose
+// stderr is empty (the CLI reports an API/usage failure as an ordinary result
+// envelope on stdout and exits 1) surfaces the envelope's own actionable
+// message instead of a bare "claude CLI failed with exit code 1" — the
+// digest generator's already-reviewed precedent (internal/digest/generator.go).
+func TestQuerySync_ExitErrorSurfacesEnvelopeMessage(t *testing.T) {
+	mockPath := writeMockClaude(t, `printf '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Invalid API key. Please run /login"}'; exit 1`)
+
+	c := NewClient("test-model", "", "")
+	c.claudeCmd = mockPath
+
+	_, _, err := c.QuerySync(context.Background(), "system", "hello", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Invalid API key")
+	assert.Contains(t, err.Error(), "Please run /login")
+	assert.Contains(t, err.Error(), "error_during_execution")
+}
+
+// TestQuerySync_ExitErrorFallsBackWhenOutputUnparsable is the degenerate
+// counterpart: a non-zero exit whose stdout is not a result envelope at all
+// (empty, or garbage) must still fall back to the ordinary stderr-based
+// classifyError path rather than panicking or losing the exit code.
+func TestQuerySync_ExitErrorFallsBackWhenOutputUnparsable(t *testing.T) {
+	mockPath := writeMockClaude(t, `echo "network unreachable" >&2; exit 1`)
+
+	c := NewClient("test-model", "", "")
+	c.claudeCmd = mockPath
+
+	_, _, err := c.QuerySync(context.Background(), "system", "hello", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "claude CLI failed")
+	assert.Contains(t, err.Error(), "network unreachable")
+}
+
+// TestQuerySync_CleanExitIsErrorSurfacesEnvelopeMessage pins the exit-0 case:
+// the CLI can flag is_error in the envelope while still exiting 0, and that
+// message must reach the caller with the same subtype/truncation handling.
+func TestQuerySync_CleanExitIsErrorSurfacesEnvelopeMessage(t *testing.T) {
+	mockPath := writeMockClaude(t, `printf '{"type":"result","subtype":"error_max_turns","is_error":true,"result":"ran out of turns"}'`)
+
+	c := NewClient("test-model", "", "")
+	c.claudeCmd = mockPath
+
+	_, _, err := c.QuerySync(context.Background(), "system", "hello", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ran out of turns")
+	assert.Contains(t, err.Error(), "error_max_turns")
+}
+
 func TestQuerySync_ContextCancellation(t *testing.T) {
 	mockPath := writeMockClaude(t, `sleep 10; echo "too late"`)
 
@@ -435,6 +485,75 @@ func TestQuery_StreamingError(t *testing.T) {
 	err := <-errCh
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "claude CLI failed")
+}
+
+// TestQuery_StreamingExitErrorSurfacesEnvelopeMessage is Query's streaming
+// sibling of TestQuerySync_ExitErrorSurfacesEnvelopeMessage: a "result" event
+// with is_error:true reaches stdout before a non-zero exit with empty
+// stderr, and that message must reach errCh instead of a bare exit code.
+func TestQuery_StreamingExitErrorSurfacesEnvelopeMessage(t *testing.T) {
+	script := `
+printf '{"type":"assistant","message":{"content":[{"type":"text","text":"partial"}]}}\n'
+printf '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Invalid API key. Please run /login"}\n'
+exit 1
+`
+	mockPath := writeMockClaude(t, script)
+
+	c := NewClient("test-model", "", "")
+	c.claudeCmd = mockPath
+
+	textCh, errCh, _ := c.Query(context.Background(), "system", "hello", "")
+	for range textCh {
+	}
+
+	err := <-errCh
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Invalid API key")
+	assert.Contains(t, err.Error(), "Please run /login")
+	assert.Contains(t, err.Error(), "error_during_execution")
+}
+
+// TestQuery_StreamingCleanExitIsErrorSurfacesEnvelopeMessage pins the exit-0
+// counterpart: the CLI can flag is_error in the result event while the
+// process still exits 0, and Query must still surface it as an error rather
+// than a silent success with an empty answer.
+func TestQuery_StreamingCleanExitIsErrorSurfacesEnvelopeMessage(t *testing.T) {
+	script := `
+printf '{"type":"result","subtype":"error_max_turns","is_error":true,"result":"ran out of turns"}\n'
+`
+	mockPath := writeMockClaude(t, script)
+
+	c := NewClient("test-model", "", "")
+	c.claudeCmd = mockPath
+
+	textCh, errCh, _ := c.Query(context.Background(), "system", "hello", "")
+	for range textCh {
+	}
+
+	err := <-errCh
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ran out of turns")
+	assert.Contains(t, err.Error(), "error_max_turns")
+}
+
+// TestQuery_StreamingExitErrorFallsBackWhenNoResultEvent is the degenerate
+// clean-exit counterpart on the streaming path: a non-zero exit with no
+// "result" event at all (e.g. the process died before emitting one) must
+// still fall back to the ordinary stderr-based classifyError path.
+func TestQuery_StreamingExitErrorFallsBackWhenNoResultEvent(t *testing.T) {
+	mockPath := writeMockClaude(t, `echo "error occurred" >&2; exit 1`)
+
+	c := NewClient("test-model", "", "")
+	c.claudeCmd = mockPath
+
+	textCh, errCh, _ := c.Query(context.Background(), "system", "hello", "")
+	for range textCh {
+	}
+
+	err := <-errCh
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "claude CLI failed")
+	assert.Contains(t, err.Error(), "error occurred")
 }
 
 func TestQuery_ContextCancellation(t *testing.T) {
@@ -599,6 +718,26 @@ func TestParseCLIOutput_UnparsableOutputIsNotEchoed(t *testing.T) {
 	assert.Contains(t, err.Error(), "unexpected claude CLI output format")
 	assert.Contains(t, err.Error(), "looks like plain text")
 	assert.Contains(t, err.Error(), "sha256:")
+}
+
+func TestEnvelopeMessage_EmptyResultGetsPlaceholder(t *testing.T) {
+	assert.Equal(t, "no message in the CLI result envelope", envelopeMessage("   "))
+}
+
+func TestEnvelopeMessage_ShortResultPassesThrough(t *testing.T) {
+	assert.Equal(t, "Invalid API key", envelopeMessage("  Invalid API key  "))
+}
+
+// TestEnvelopeMessage_TruncatesAtRuneBoundary pins that an oversized envelope
+// message (subtype=error_max_turns can carry the model's own partial output,
+// routinely multi-byte Cyrillic) is capped rather than logged/surfaced in
+// full, and that the cut never lands mid-rune.
+func TestEnvelopeMessage_TruncatesAtRuneBoundary(t *testing.T) {
+	long := strings.Repeat("привет ", 1000) // well past the 4096-byte cap, all multi-byte runes
+	got := envelopeMessage(long)
+	assert.Less(t, len(got), len(long))
+	assert.Contains(t, got, "truncated")
+	assert.True(t, utf8.ValidString(got), "truncated message must not cut a rune in half")
 }
 
 func TestBuildMCPConfig_IncludesExtraArgs(t *testing.T) {

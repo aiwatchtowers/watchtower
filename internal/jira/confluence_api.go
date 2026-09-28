@@ -22,6 +22,32 @@ var ErrTooLarge = errors.New("atlassian: response exceeds size cap")
 // unbounded read of a pathological response.
 const maxErrorBodyBytes = 4096
 
+// maxSuccessBodyBytes caps how much of a 2xx GetJSON response body is read
+// before decoding, so a runaway response or a proxy error page fails loudly
+// instead of decoding (or OOMing on) an unbounded body.
+//
+// This is deliberately an OOM-only safety net, not a bound tuned to "the
+// largest legitimate page": GetJSON also serves Confluence page/blogpost
+// fetches (internal/confluence's Fetcher.fetchPage → Fetcher.get →
+// mapErr(GetJSON(...))), and unlike ConfluenceAPI.Download (used only for
+// attachment bytes, inside extsync's per-attachment extractOne), a Fetch
+// error here has no per-item outcome to fall back on: fetchAll
+// (internal/extsync/stream.go) treats any non-nil Fetch error as a hard
+// failure of the WHOLE batch via one errgroup.Wait — every other page or
+// blogpost enumerated alongside the oversized one goes unindexed too, the
+// version is never stored so the version gate never skips the oversized
+// page, and the next cycle re-lists and re-fails the same batch forever.
+// Giving pages their own per-item "too large" outcome (the extractTooLarge
+// shape attachments already have) would need new Item/extraction-status
+// plumbing through processBatch — an engine redesign, not a Client-level
+// fix — so instead the cap is raised well above any plausible real page (a
+// page's storage-format text is separately capped at maxBodyRunes =
+// 1,000,000 runes ≈ 4 MiB of UTF-8 by internal/confluence's fetcher; 64 MiB
+// leaves an order of magnitude of headroom for pathological but real pages
+// — huge generated tables, heavily macro-nested content — while still
+// catching a truly unbounded response).
+const maxSuccessBodyBytes = 64 * 1024 * 1024
+
 // HTTPStatusError is returned for a non-2xx response from GetJSON/Download.
 // Kept a plain, unwrapped struct (not composed with ErrAuthRevoked or a
 // sentinel of its own): a later generic sync engine maps Status/Body to its
@@ -84,7 +110,15 @@ func (a *ConfluenceAPI) GetJSON(ctx context.Context, path string, q url.Values, 
 		return newHTTPStatusError(resp)
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxSuccessBodyBytes+1))
+	if err != nil {
+		return fmt.Errorf("reading GET %s: %w", path, err)
+	}
+	if int64(len(data)) > maxSuccessBodyBytes {
+		return fmt.Errorf("GET %s: %w", path, ErrTooLarge)
+	}
+
+	if err := json.Unmarshal(data, out); err != nil {
 		return fmt.Errorf("decoding GET %s: %w", path, err)
 	}
 	return nil

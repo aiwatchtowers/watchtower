@@ -8,7 +8,6 @@ struct DayPlanView: View {
     @State private var showRegen = false
     @State private var showCreate = false
     @State private var meetingPrepEventID: String?
-    @State private var meetingPrepVM = MeetingPrepViewModel()
     @State private var userNotes: String = ""
     @State private var briefingExistsForDate: Bool = false
 
@@ -66,7 +65,7 @@ struct DayPlanView: View {
             if let id = meetingPrepEventID {
                 MeetingPrepDetailView(
                     eventID: id,
-                    viewModel: meetingPrepVM,
+                    viewModel: appState.meetingPrepCenter.viewModel(for: id),
                     userNotes: $userNotes,
                     onClose: { meetingPrepEventID = nil }
                 )
@@ -146,10 +145,10 @@ struct DayPlanView: View {
                             }
                         },
                         onPrepare: { eventID in
-                            // Fresh VM per meeting avoids showing cached prep from a previous event.
-                            meetingPrepVM = MeetingPrepViewModel()
+                            // The per-event VM lives on AppState; the prep view
+                            // starts a run on appear only when it has neither a
+                            // result nor a run in flight.
                             meetingPrepEventID = eventID
-                            meetingPrepVM.generate(eventID: eventID)
                         },
                         onNavigate: { item in
                             navigateToSource(item)

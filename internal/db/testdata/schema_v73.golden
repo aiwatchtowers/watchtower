@@ -151,6 +151,9 @@ CREATE INDEX idx_inbox_learned_rules_scope ON inbox_learned_rules(rule_type, sco
 index	idx_jira_comments_issue
 CREATE INDEX idx_jira_comments_issue ON jira_comments(account_id, issue_key)
 
+index	idx_jira_comments_issue_author
+CREATE INDEX idx_jira_comments_issue_author ON jira_comments(issue_key, author_account_id)
+
 index	idx_jira_comments_synced
 CREATE INDEX idx_jira_comments_synced ON jira_comments(synced_at)
 
@@ -470,7 +473,7 @@ html_link TEXT NOT NULL DEFAULT '',
 raw_json TEXT NOT NULL DEFAULT '{}',
 synced_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
 updated_at TEXT NOT NULL DEFAULT ''
-, ical_uid TEXT NOT NULL DEFAULT '', conference_url TEXT NOT NULL DEFAULT '')
+, ical_uid TEXT NOT NULL DEFAULT '', conference_url TEXT NOT NULL DEFAULT '', time_changed_at TEXT NOT NULL DEFAULT '', rsvp_changed TEXT NOT NULL DEFAULT '{}')
 
 table	catchup_recaps
 CREATE TABLE catchup_recaps (
@@ -1785,6 +1788,14 @@ read_at TEXT,
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 )
 
+table	track_retry_digests
+CREATE TABLE track_retry_digests (
+digest_id INTEGER PRIMARY KEY REFERENCES digests(id) ON DELETE CASCADE,
+attempts INTEGER NOT NULL DEFAULT 0,
+last_charged_day TEXT NOT NULL DEFAULT '',
+updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+)
+
 table	track_states
 CREATE TABLE track_states (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1847,7 +1858,7 @@ created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 , origin TEXT NOT NULL DEFAULT 'auto'
 CHECK(origin IN ('auto','custom')), instruction TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1, last_run_at TEXT NOT NULL DEFAULT '', linked_target_id INTEGER
-REFERENCES targets(id) ON DELETE SET NULL)
+REFERENCES targets(id) ON DELETE SET NULL, scan_attempts INTEGER NOT NULL DEFAULT 0, scan_attempted_at TEXT NOT NULL DEFAULT '')
 
 table	transcripts_fts
 CREATE VIRTUAL TABLE transcripts_fts USING fts5(
@@ -2182,6 +2193,8 @@ END
 16	updated_at	TEXT	notnull=1	dflt=''	pk=0
 17	ical_uid	TEXT	notnull=1	dflt=''	pk=0
 18	conference_url	TEXT	notnull=1	dflt=''	pk=0
+19	time_changed_at	TEXT	notnull=1	dflt=''	pk=0
+20	rsvp_changed	TEXT	notnull=1	dflt='{}'	pk=0
 
 ## catchup_recaps
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
@@ -3342,6 +3355,12 @@ END
 10	read_at	TEXT	notnull=0	dflt=NULL	pk=0
 11	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
 
+## track_retry_digests
+0	digest_id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	attempts	INTEGER	notnull=1	dflt=0	pk=0
+2	last_charged_day	TEXT	notnull=1	dflt=''	pk=0
+3	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
+
 ## track_states
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
 1	track_id	INTEGER	notnull=1	dflt=NULL	pk=0
@@ -3404,6 +3423,8 @@ END
 34	enabled	INTEGER	notnull=1	dflt=1	pk=0
 35	last_run_at	TEXT	notnull=1	dflt=''	pk=0
 36	linked_target_id	INTEGER	notnull=0	dflt=NULL	pk=0
+37	scan_attempts	INTEGER	notnull=1	dflt=0	pk=0
+38	scan_attempted_at	TEXT	notnull=1	dflt=''	pk=0
 
 ## transcripts_fts
 0	text		notnull=0	dflt=NULL	pk=0

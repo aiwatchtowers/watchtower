@@ -339,7 +339,9 @@ CREATE TABLE IF NOT EXISTS tracks (
     instruction         TEXT NOT NULL DEFAULT '',       -- custom tracks: watch instruction
     enabled             INTEGER NOT NULL DEFAULT 1,      -- custom tracks: scan on/off
     last_run_at         TEXT NOT NULL DEFAULT '',        -- custom tracks: scan watermark, ''=never
-    linked_target_id    INTEGER REFERENCES targets(id) ON DELETE SET NULL
+    linked_target_id    INTEGER REFERENCES targets(id) ON DELETE SET NULL,
+    scan_attempts       INTEGER NOT NULL DEFAULT 0,      -- custom tracks: failed scans on the UTC day of scan_attempted_at (3/day cap)
+    scan_attempted_at   TEXT NOT NULL DEFAULT ''         -- custom tracks: last failed scan, ISO8601 UTC
 );
 CREATE INDEX IF NOT EXISTS idx_tracks_priority ON tracks(priority);
 CREATE INDEX IF NOT EXISTS idx_tracks_has_updates ON tracks(has_updates);
@@ -375,6 +377,15 @@ CREATE TABLE IF NOT EXISTS track_states (
     created_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 CREATE INDEX IF NOT EXISTS idx_track_states_track ON track_states(track_id, created_at DESC);
+
+-- Channel digests whose track-extraction batch failed inside an otherwise
+-- successful tracks run; re-offered to later runs, dropped after 3 failures.
+CREATE TABLE IF NOT EXISTS track_retry_digests (
+    digest_id  INTEGER PRIMARY KEY REFERENCES digests(id) ON DELETE CASCADE,
+    attempts   INTEGER NOT NULL DEFAULT 0,             -- failed batches this digest was part of
+    last_charged_day TEXT NOT NULL DEFAULT '',         -- UTC YYYY-MM-DD of the last charge; an all-failed run charges once per day
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
 
 -- Hierarchical goal targets (replaces tasks)
 CREATE TABLE IF NOT EXISTS targets (
@@ -797,7 +808,9 @@ CREATE TABLE IF NOT EXISTS calendar_events (
     raw_json        TEXT NOT NULL DEFAULT '{}',
     ical_uid        TEXT NOT NULL DEFAULT '',  -- dedup enabler across accounts/providers (see 00043)
     synced_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-    updated_at      TEXT NOT NULL DEFAULT ''
+    updated_at      TEXT NOT NULL DEFAULT '',
+    time_changed_at TEXT NOT NULL DEFAULT '',  -- sync pass that last saw start/end move, '' never (see 00079)
+    rsvp_changed    TEXT NOT NULL DEFAULT '{}' -- JSON {lower(email): synced_at of the pass that saw their RSVP change} (see 00079)
 );
 CREATE INDEX IF NOT EXISTS idx_calendar_events_calendar ON calendar_events(calendar_id);
 CREATE INDEX IF NOT EXISTS idx_calendar_events_start ON calendar_events(start_time);
@@ -1561,6 +1574,7 @@ CREATE TABLE IF NOT EXISTS jira_comments (
     PRIMARY KEY (account_id, id)
 );
 CREATE INDEX IF NOT EXISTS idx_jira_comments_issue ON jira_comments(account_id, issue_key);
+CREATE INDEX IF NOT EXISTS idx_jira_comments_issue_author ON jira_comments(issue_key, author_account_id);
 CREATE INDEX IF NOT EXISTS idx_jira_comments_synced ON jira_comments(synced_at);
 
 CREATE TABLE IF NOT EXISTS agent_actions (

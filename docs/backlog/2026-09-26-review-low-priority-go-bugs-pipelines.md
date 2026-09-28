@@ -18,19 +18,23 @@ stays readable. Split any item into its own file when it gets picked up.
 
 `compose` returns `transient=true` for any `Generate` error, so `dispatchOne` releases the provisional row and retries on the next poll. The feature now polls every cycle. A deterministic generator failure on one message (for example a provider rejecting that input, or a CLI that errors on it every time) therefore costs one AI call every cycle forever. The only visibility is a log line; there is no ledger status or strip card. Suggest a small per-key attempt counter (or an age limit) after which the row is finalized as `failed` with the last error. REACT-03's retry semantics would need an owner note.
 
-## Briefing stores model-emitted track/target/digest ids unvalidated; the Desktop navigates on them
+## Briefing stores model-emitted track/target/digest ids unvalidated; the Desktop navigates on them (fixed in fix/bl-ai-output-validation)
 
 - type: bug · confidence: high · tags: [briefing, ai-validation]
 - where: internal/briefing/pipeline.go:212-222 (plus WatchtowerDesktop/Sources/Views/Briefings/BriefingDetailView.swift:323, 394)
 
 `parseBriefingResult` output is marshalled straight into the briefing columns. `YourDayItem.TrackID/TargetID`, `WhatHappenedItem.DigestID` and `AttentionItem.SourceType/SourceID` are never checked against the ids that `gatherTargets`/`gatherTracks`/`gatherDigests` actually rendered. The Desktop turns them into navigation links, so an invented id either opens nothing or opens an unrelated row. The day plan already does this validation (`validateSource` against `targetsIDSet`/`jiraKeySet`), and so does Catch-Up (CATCHUP-04). Fix: collect the rendered id sets while gathering, and blank unknown ids while keeping the item (the `blankInventedMessageRefs` disposition). Minor, in the same file: `gatherTracks` byte-slices `t.Context[:200]` and `participants[:150]`, which can split a Cyrillic rune in the prompt. This affects the prompt only.
 
-## Day plan: persistence is not atomic and an empty or partial plan sticks for the whole day
+Resolution: `RunForDate` records every target/track/digest/inbox/people-card id its gather functions render (`shownIDs`, internal/briefing/validate.go) and, before storing, blanks any `your_day` track/target id, `what_happened` digest id or `attention` source_id the prompt never showed, keeping the item; a people source_id is resolved to the shown namespaced id when the model echoes a unique raw form. Pinned by `TestRunForDate_BlanksIDsThePromptNeverShowed` and `TestShownIDs_ResolvePerson`. The byte-slice nit (`Context[:200]`) is left to the separate UTF-8 truncation item.
+
+## Day plan: persistence is not atomic and an empty or partial plan sticks for the whole day (fixed in fix/bl-window-timing)
 
 - type: bug · confidence: med · tags: [dayplan, atomicity, stuck-state]
 - where: internal/dayplan/pipeline.go:175-196, 59-65
 
 The comment says "persist atomically", but `UpsertDayPlan`, `ReplaceAIItems`, `syncCalendarItems` and `IncrementRegenerateCount` are separate writes. If `ReplaceAIItems` or `syncCalendarItems` fails after a first-time upsert, a plan row with no AI items remains. The next daemon cycle hits the `existing != nil && !Force` short-circuit and never regenerates it that day, and the attempt budget is never charged because the next call "succeeds". The same happens when `buildItems` drops every AI item: an empty plan is persisted as `active` with no retry. Fix: do the plan upsert and item replace in one transaction, and treat zero surviving AI items as a failed attempt rather than a finished plan.
+
+Resolution: `Pipeline.Run` now drops a freshly created plan row when its item writes (`ReplaceAIItems`/`syncCalendarItems`) fail, so the next run regenerates instead of short-circuiting on it (an existing plan is never dropped); the row cascade-deletes its items (new `db.DeleteDayPlan`). A compensating delete rather than one transaction, because the item writers each run on the pool. A response whose every item fails validation now returns an error before anything is persisted (a charged, retried attempt) when any drop was a real validation failure (unknown source, bad times — even on a meeting day) or when the day has nothing else to show (no timed meeting, no manual item); a meeting-heavy day whose proposals only restated or collided with the calendar is kept as a calendar-only plan (`buildItems` now reports how many drops were real validation failures); a real validation failure overrides both exemptions, so a model that keeps inventing a key on a meeting day ends the day with no plan after the daemon's 3 attempts (an existing plan is never touched), and a model that proposes nothing is still an honest empty plan. A failed `IncrementRegenerateCount` is logged instead of discarded. Pinned by `TestRun_PartialPersistFailureLeavesNoFreshPlan` (SQLite-trigger failure injection) `TestRun_AllItemsDroppedIsAFailedAttempt` `TestRun_AllItemsDroppedOnMeetingDayKeepsCalendarPlan` and `TestRun_AllItemsInvalidOnMeetingDayIsAFailedAttempt`.
 
 ## RunWeeklyTrends is dead code
 
@@ -46,19 +50,23 @@ No caller exists in `cmd/` or `internal/`. `RunRollups` runs only the daily roll
 
 `runOne` reads activity with `created_at > since` / `updated_at > since` and then sets `now := time.Now()` as the next watermark. The timestamps have second granularity, so a digest, track update or inbox item written after the read in the same second as `now` falls at `== now`. The next run's strict `>` never returns it. The window is narrow in the daemon, but a Desktop "Refresh" that runs concurrently with the digest phase makes it reachable. Fix: capture the watermark before the read (as `CappedAt` already does for the capped path) and accept the harmless overlap, since summary dedup already absorbs it.
 
-## Link suggestion can make a target its own parent or create a cycle
+## Link suggestion can make a target its own parent or create a cycle (fixed in fix/bl-ai-output-validation)
 
 - type: bug · confidence: med · tags: [targets, ai-validation, hierarchy]
 - where: internal/targets/linker.go:76-87 (plus internal/targets/pipeline.go:145-172, cmd/targets_ai.go:336-345)
 
 `parseLinkResponse` accepts any `parent_id` that is in the active snapshot. That snapshot includes the target itself (only the prompt rendering skips it, and the prompt header still prints `target.ID`) and all of its descendants. A reply echoing the target's own id, or picking one of its children (the link prompt shows no parent info, so the model can't tell), becomes a confirmed self-parent or cycle through `UpdateTarget`. `UpdateTarget` has no cycle check; only `recomputeParentProgressOn` detects cycles, and it just logs. Fix: exclude the target and its descendant set when validating `parent_id` and secondary `target_id`.
 
-## Inbox item context is byte-truncated before being persisted
+Resolution: `LinkExisting` computes `forbiddenParentIDs` (internal/targets/linker.go) — the target plus every snapshot target whose ancestor chain reaches it, walking through ancestors outside the snapshot via the DB, bounded at 20 levels — and `parseLinkResponse` drops a proposed `parent_id` in that set like an unknown id. A secondary link to the target itself is dropped too; a secondary link to a descendant is kept, since links are not hierarchy and cannot form a cycle. Pinned by `TestLinkExisting_RejectsSelfAndDescendantParents` and the `TestForbiddenParentIDs_*` tests (internal/targets/linker_cycle_test.go).
+
+## Inbox item context is byte-truncated before being persisted (fixed in fix/bl-inbox-triggers)
 
 - type: bug · confidence: high · tags: [inbox, utf8, persisted]
 - where: internal/inbox/pipeline.go:596-604
 
 `loadContext` cuts each line with `line[:200]` and the whole block with `result[:2000]`. For Cyrillic text this regularly splits a 2-byte rune, and the invalid UTF-8 is written into `inbox_items.context`, which Catch-Up, the briefing and meeting prep all read. The same file already has `truncateRunes` for the snippet. Fix: use it here too.
+
+Resolution: `loadContext` now caps each line and the whole block with `truncateRunes` (200 and 2000 runes) instead of byte slices, so the persisted context is always valid UTF-8. Pinned by `TestLoadContext_TruncatesByRunesNotBytes` (Cyrillic at odd byte offsets), `TestLoadContext_BlockCapCountsRunes` (the 2000-rune block cap crossed with multi-byte text) and `TestLoadContext_ShortLinesUntouched` (within-cap text stays verbatim).
 
 ## Episode-count caps silently drop overflow episodes while the batch is marked done
 
