@@ -30,14 +30,14 @@ var (
 )
 
 // readUTF8 reads r (≤ MaxDownload) as text with LF line endings. UTF-8 (with
-// or without a BOM) is read directly; failing that, a UTF-16 BOM or windows-
-// 1251 — only when the decoded text plausibly reads as Russian/Ukrainian, see
-// looksLikeCyrillicPlainText — are tried as fallbacks before giving up. Text
-// that still isn't recognized is StatusFailed, input above MaxDownload
-// StatusTooLarge. There is no declared-charset step here: a plain-text
-// attachment carries no meta tag and this package sees no MIME header to
-// read a charset param from. htmlText is the one caller with a real
-// declaration available, and it decodes before ever reaching this function.
+// or without a BOM) is read directly; failing that, a UTF-16 BOM, or the
+// best-scoring of windows-1251/koi8-r/koi8-u (see bestCyrillicText) — are
+// tried as fallbacks before giving up. Text that still isn't recognized is
+// StatusFailed, input above MaxDownload StatusTooLarge. There is no
+// declared-charset step here: a plain-text attachment carries no meta tag
+// and this package sees no MIME header to read a charset param from.
+// htmlText is the one caller with a real declaration available, and it
+// decodes before ever reaching this function.
 func readUTF8(r io.Reader) (text, status string, err error) {
 	b, err := readCapped(r)
 	if errors.Is(err, errTooLarge) {
@@ -46,39 +46,35 @@ func readUTF8(r io.Reader) (text, status string, err error) {
 	if err != nil {
 		return "", "", err
 	}
-	text, guessed, ok := decodeGuessed(b)
-	if !ok || (guessed && !looksLikeCyrillicPlainText(text)) {
+	if text, ok := decodeDirect(b); ok {
+		return text, StatusOK, nil
+	}
+	trimmed := bytes.TrimPrefix(b, utf8BOM)
+	text, ok := bestCyrillicText(trimmed, identityText)
+	if !ok {
 		return "", StatusFailed, nil
 	}
 	return text, StatusOK, nil
 }
 
-// decodeGuessed decodes b via the shared "no declared charset" candidate
-// order: UTF-8 (with or without a BOM) or a UTF-16 BOM directly (guessed =
-// false — these are unambiguous, no plausibility check needed), else a
-// windows-1251 attempt that merely decodes cleanly (RuneError-free; guessed
-// = true). ok=false only when nothing decodes at all.
-//
-// A guessed=true result is NOT YET validated as real text: windows-1251
-// (like most single-byte charmaps) has almost no undefined byte values, so
-// it "decodes cleanly" for nearly any 8-bit input regardless of its real
-// encoding. Every caller MUST run looksLikeCyrillicPlainText over the
-// candidate's RENDERED text — stripped of markup, for HTML, since counting
-// tag names as "letters" would dilute the ratio the check relies on — before
-// trusting a guessed decode.
-func decodeGuessed(b []byte) (text string, guessed, ok bool) {
+// identityText is the "no rendering" pass bestCyrillicText scores plain
+// text against — htmlText instead scores the markup-stripped text (see its
+// own call site).
+func identityText(s string) string { return s }
+
+// decodeDirect handles the two unambiguous "no scoring needed" cases: a
+// UTF-16 byte-order mark, or already-valid UTF-8 (with or without its own
+// BOM). ok=false means neither applies — the caller falls through to the
+// scored windows-1251/koi8-r/koi8-u guess (bestCyrillicText).
+func decodeDirect(b []byte) (text string, ok bool) {
 	if decoded, gotBOM := decodeByBOM(b); gotBOM {
-		return normalizeNewlines(string(decoded)), false, true
+		return normalizeNewlines(string(decoded)), true
 	}
 	trimmed := bytes.TrimPrefix(b, utf8BOM)
 	if utf8.Valid(trimmed) {
-		return normalizeNewlines(string(trimmed)), false, true
+		return normalizeNewlines(string(trimmed)), true
 	}
-	decoded, ok := decodeCleanly(b, charmap.Windows1251)
-	if !ok {
-		return "", false, false
-	}
-	return normalizeNewlines(string(decoded)), true, true
+	return "", false
 }
 
 // normalizeNewlines rewrites CRLF/CR to LF.
@@ -103,13 +99,12 @@ func decodeByBOM(b []byte) ([]byte, bool) {
 
 // decodeCleanly decodes b with enc, reporting ok=false when the decode
 // itself errors or falls back to the Unicode replacement character anywhere.
-// This alone is NOT a signal that the decode is the RIGHT one: a single-byte
-// charmap like windows-1251 leaves only one byte value undefined (0x98) out
-// of 256, so it decodes "cleanly" for almost any 8-bit byte stream regardless
-// of what encoding actually produced it. Every caller decoding with
-// charmap.Windows1251 MUST additionally gate the result through
-// looksLikeCyrillicPlainText before trusting it as real text — decodeCleanly
-// on its own only rules out garbage that hits the one undefined byte.
+// This alone is NOT a signal that a single-byte candidate decode is the
+// RIGHT one: windows-1251/koi8-r/koi8-u each leave only a handful of byte
+// values undefined out of 256, so they decode "cleanly" for almost any 8-bit
+// byte stream regardless of what encoding actually produced it —
+// bestCyrillicText's scoring is what actually picks the right one (or
+// rejects all of them).
 func decodeCleanly(b []byte, enc encoding.Encoding) ([]byte, bool) {
 	out, err := enc.NewDecoder().Bytes(b)
 	if err != nil || bytes.ContainsRune(out, utf8.RuneError) {
@@ -118,109 +113,156 @@ func decodeCleanly(b []byte, enc encoding.Encoding) ([]byte, bool) {
 	return out, true
 }
 
-// cyrillicRatioMin is looksLikeCyrillicPlainText's floor on Cyrillic's share
-// of all letters.
-const cyrillicRatioMin = 0.5
-
-// anomalyShareMax/anomalyCountMin gate looksLikeCyrillicPlainText's two
-// word-level anomaly counts (mixed-script words, mid-word case flips): an
-// anomaly is disqualifying only once it clears BOTH a share of Cyrillic-
-// bearing words (not a single stray typo, e.g. a keyboard-layout homoglyph,
-// or a one-off brand-style camelCase name like "ПриватБанк"/"МегаФон") and
-// an absolute floor (a short document has too few words for a percentage
-// alone to mean anything). Real mojibake reliably produces MANY such words
-// across a document of any realistic length, not one or two.
-const (
-	anomalyShareMax = 0.10
-	anomalyCountMin = 2
-)
-
-// looksLikeCyrillicPlainText reports whether text plausibly is Russian or
-// Ukrainian read through a correct windows-1251 decode, as opposed to
-// mojibake produced by decoding some OTHER single-byte (or byte-at-a-time
-// double-byte) encoding — cp1252, ISO-8859-1/-2, KOI8-R/-U, GBK, Shift-JIS,
-// ... — as if it were windows-1251. Both checks below must hold
-// (spot-checked against realistic, properly-capitalized samples of each,
-// each of which reliably breaks at least one — see encoding_test.go):
-//
-//   - Cyrillic letters are at least half of all letters (Latin ASCII
-//     included in the denominator, so English column headers alongside
-//     Russian data rows — a common CSV shape — don't by themselves fail
-//     this: the check is a ratio over all letters, not a ban on Latin).
-//   - word-level anomalies — a word mixing a Latin and a Cyrillic letter, or
-//     a lowercase-to-uppercase flip between two consecutive Cyrillic letters
-//     within one word — stay under anomalyShareMax/anomalyCountMin (see
-//     above). A flip only ever looks at Cyrillic-to-Cyrillic transitions —
-//     an all-Latin word (an English "CustomerID" header, say) is exempt,
-//     since its casing says nothing about whether the CYRILLIC portion of
-//     the text is real.
-//
-// Deliberately NOT checked: whether uppercase Cyrillic outnumbers lowercase.
-// A real all-caps document (a legacy 1C/accounting cp1251 export — "ФИО",
-// "ИТОГО", full rows of capitalized names — is a common real source of
-// cp1251 CSVs) is structurally IDENTICAL, letter-case-wise, to an all-caps
-// mojibake decode: nothing in the case pattern alone can tell them apart, so
-// a case-only signal here would either reject real all-caps exports or miss
-// all-caps mojibake — never both correctly. Accepted, disclosed limitation:
-// an all-caps-only decode (of any origin) always passes this function; the
-// ratio and word-anomaly checks still catch the vast majority of realistic
-// mojibake, since genuine prose in any of the rejected encodings almost
-// always has at least ordinary sentence capitalization somewhere, which
-// reliably trips the case-flip check when misdecoded as windows-1251.
-func looksLikeCyrillicPlainText(text string) bool {
-	var cyrillic, latinLetters int
-	var cyrillicWords, mixedWords, flippedWords int
-	wordHasCyrillic, wordHasLatin, wordHasFlip := false, false, false
-	hadPrevCyr, prevCyrLower := false, false
-
-	endWord := func() {
-		if wordHasCyrillic {
-			cyrillicWords++
-			if wordHasLatin {
-				mixedWords++
-			}
-			if wordHasFlip {
-				flippedWords++
-			}
-		}
-		wordHasCyrillic, wordHasLatin, wordHasFlip = false, false, false
+// cyrillicTopLetters are Russian and Ukrainian's ~10 most frequent Cyrillic
+// letters (case-insensitive: compared via unicode.ToLower, so an all-caps
+// document scores the same as its lowercase form) — о е а и н т с р в л і
+// (і is Ukrainian's analogue of и, not used in Russian).
+var cyrillicTopLetters = func() map[rune]bool {
+	m := map[rune]bool{}
+	for _, r := range "оеаинтсрвлі" {
+		m[r] = true
 	}
+	return m
+}()
 
+// scoreCyrillicText scores how plausibly text is real Russian/Ukrainian
+// prose, combining two signals: the share of all letters that are Cyrillic
+// (Latin ASCII counted too, so English CSV headers alongside Russian rows —
+// a common shape — don't themselves hurt the score), and the share of the
+// CYRILLIC letters that are among cyrillicTopLetters. Real prose
+// concentrates heavily on a handful of common letters regardless of case;
+// a WRONG single-byte guess redistributes the same bytes across an
+// effectively arbitrary permutation of the Cyrillic alphabet, landing on the
+// top letters only by chance. Returns 0 for text with no Cyrillic letters at
+// all. See bestCyrillicText's doc comment for measured scores.
+func scoreCyrillicText(text string) float64 {
+	var cyr, lat, top int
 	for _, r := range text {
 		switch {
 		case unicode.Is(unicode.Cyrillic, r):
-			cyrillic++
-			wordHasCyrillic = true
-			if hadPrevCyr && prevCyrLower && unicode.IsUpper(r) {
-				wordHasFlip = true
+			cyr++
+			if cyrillicTopLetters[unicode.ToLower(r)] {
+				top++
 			}
-			hadPrevCyr, prevCyrLower = true, unicode.IsLower(r)
 		case unicode.Is(unicode.Latin, r):
-			latinLetters++
-			wordHasLatin = true
-			hadPrevCyr = false
-		default:
-			endWord()
-			hadPrevCyr = false
+			lat++
 		}
 	}
-	endWord()
-
-	total := cyrillic + latinLetters
-	if total == 0 || cyrillic == 0 {
-		return false
+	total := cyr + lat
+	if total == 0 || cyr == 0 {
+		return 0
 	}
-	if float64(cyrillic)/float64(total) < cyrillicRatioMin {
-		return false
-	}
-	return !isWordAnomalyMeaningful(mixedWords, cyrillicWords) && !isWordAnomalyMeaningful(flippedWords, cyrillicWords)
+	ratio := float64(cyr) / float64(total)
+	topShare := float64(top) / float64(cyr)
+	return ratio + topShare
 }
 
-// isWordAnomalyMeaningful reports whether count anomalous words out of
-// cyrillicWords Cyrillic-bearing words is enough to call the whole decode
-// implausible — see anomalyShareMax/anomalyCountMin.
-func isWordAnomalyMeaningful(count, cyrillicWords int) bool {
-	return count >= anomalyCountMin && float64(count) > anomalyShareMax*float64(cyrillicWords)
+// cyrillicScoreMin/cyrillicScoreMargin gate bestCyrillicText's winning
+// candidate. Measured scores (ratio + topShare, see scoreCyrillicText),
+// spot-checked with realistic multi-sentence samples (encoding_test.go
+// pins the mojibake and accept sides; scores below are each sample's own
+// correct-encoding score, i.e. what the winner reports):
+//
+//	Must accept (all pass with a wide margin over any other candidate):
+//	  real Russian prose (4 sentences, cp1251)          1.66
+//	  real Ukrainian prose (4 sentences, cp1251)         1.63
+//	  same paragraphs actually encoded in KOI8-R/KOI8-U  1.66 / 1.63
+//	    (bestCyrillicText picks KOI8-R/-U as the winner here and returns
+//	    ITS OWN decode — the file is indexed correctly, not merely accepted)
+//	  all-lowercase short "привет мир как дела"          1.69
+//	  cp1251 prose with brand names (ПриватБанк, ...)     1.66
+//	  all-caps cp1251 line ("ИТОГО ПО ДОГОВОРУ ...")      1.63 (margin over
+//	    its koi8 runner-up is the tightest of any accept case, ~0.04 — the
+//	    floor above sits below this and every other accept case; the margin
+//	    below sits under it)
+//	  a CSV with Latin headers + Cyrillic rows (cp1251)  1.57
+//	  ultra-short "ИТОГО" alone (5 letters)               1.80
+//	  ultra-short "да" (2 letters)                        1.50
+//	  "Привет мир" (10 letters)                           1.78
+//
+//	Must reject (every family's WINNING candidate, whichever it is):
+//	  cp1252 / ISO-8859-1 mojibake                        0.79
+//	  ISO-8859-2 mojibake                                 0.49
+//	  GBK mojibake                                        1.23 (the closest
+//	    any rejected sample comes to the accept side)
+//	  Shift-JIS mojibake                                  0.99
+//	  short mojibake "Café Müller"                        0.70
+//
+// cyrillicScoreMin sits at 1.40: comfortably above GBK's 1.23 (the worst
+// mojibake score observed) and below every accept case (least is 1.50).
+// cyrillicScoreMargin is 0.02: comfortably under the all-caps line's ~0.04
+// margin (the tightest accept-side gap), while still requiring a real
+// separation rather than an exact tie. No separate short-text rule: the
+// shortest accept cases above (2 and 5 letters) already clear both
+// thresholds with their measured scores; a fragment too short to carry a
+// meaningful letter distribution either doesn't reach the ratio floor at all
+// (mixed with enough non-Cyrillic content) or is rare enough in practice
+// not to special-case.
+const (
+	cyrillicScoreMin    = 1.40
+	cyrillicScoreMargin = 0.02
+)
+
+// cyrillicCandidate is one legacy single-byte guess and, once scored, its
+// decode.
+type cyrillicCandidate struct {
+	text  string
+	score float64
+	ok    bool // decoded cleanly (see decodeCleanly) — false = not a candidate at all
+}
+
+// scoreCandidate decodes b with enc and scores the result via render
+// (identityText for plain text, stripHTML for HTML — see bestCyrillicText).
+func scoreCandidate(b []byte, enc encoding.Encoding, render func(string) string) cyrillicCandidate {
+	decoded, ok := decodeCleanly(b, enc)
+	if !ok {
+		return cyrillicCandidate{}
+	}
+	text := normalizeNewlines(string(decoded))
+	return cyrillicCandidate{text: text, score: scoreCyrillicText(render(text)), ok: true}
+}
+
+// bestCyrillicText decodes b (already BOM-trimmed) as windows-1251, koi8-r
+// and koi8-u, and returns the best-scoring candidate's OWN decoded text —
+// so a genuine KOI8-R/KOI8-U file is indexed correctly, a bonus of scoring
+// against real candidates rather than only ever guessing windows-1251
+// (never a guess: it still has to win the same threshold as any other
+// candidate). render lets the caller score the MARKUP-STRIPPED text instead
+// of the raw candidate decode: for HTML, tag names (html, body, p, ...) are
+// themselves Latin letters that would dilute the ratio if scored directly.
+//
+// koi8-r and koi8-u are near-identical letter tables (Ukrainian adds a
+// handful of extra letters on top of the same Russian core), so a genuine
+// KOI8 file scores them within a hair of each other — margin-checking them
+// against EACH OTHER would reject real KOI8 content on that coin-flip. They
+// are collapsed to whichever one scores higher before the margin check runs
+// against windows-1251.
+//
+// ok=false when no candidate decodes cleanly, or the winner doesn't clear
+// cyrillicScoreMin/cyrillicScoreMargin — see their doc comment for the
+// measured scores behind these thresholds.
+func bestCyrillicText(b []byte, render func(string) string) (text string, ok bool) {
+	cp1251 := scoreCandidate(b, charmap.Windows1251, render)
+	koiR := scoreCandidate(b, charmap.KOI8R, render)
+	koiU := scoreCandidate(b, charmap.KOI8U, render)
+
+	koi := koiR
+	if koiU.ok && (!koi.ok || koiU.score > koi.score) {
+		koi = koiU
+	}
+
+	best, other := cp1251, koi
+	if koi.ok && (!best.ok || koi.score > best.score) {
+		best, other = koi, cp1251
+	}
+
+	if !best.ok || best.score < cyrillicScoreMin {
+		return "", false
+	}
+	if other.ok && best.score-other.score < cyrillicScoreMargin {
+		return "", false
+	}
+	return best.text, true
 }
 
 // plainText is one section holding the whole text (text, markdown, csv,
@@ -246,8 +288,8 @@ func oneSection(text string) []extsync.Section {
 // param, a byte-order mark, or an HTML <meta charset>/http-equiv
 // Content-Type tag — is honored unconditionally, before any guess (HTML5's
 // own "determining the character encoding" algorithm, minus its final
-// windows-1252-by-default step: an UNDECLARED document falls through to
-// decodeGuessed's own UTF-8/windows-1251-plausibility path instead of that
+// windows-1252-by-default step: an UNDECLARED document falls through to the
+// same UTF-8/windows-1251-or-koi8 scoring path as plain text instead of that
 // default, since silently guessing windows-1252 is exactly the mojibake risk
 // this package otherwise guards against for plain text). A declared charset
 // whose decode is mostly (or, for a declared utf-8, at all) U+FFFD
@@ -277,19 +319,19 @@ func htmlText(mediaType string, r io.Reader) ([]extsync.Section, string, error) 
 		// undeclared path used when nothing was declared at all, instead of
 		// indexing "�" as ok.
 	}
-	text, guessed, ok := decodeGuessed(b)
+	if text, ok := decodeDirect(b); ok {
+		return oneSection(stripHTML(text)), StatusOK, nil
+	}
+	trimmed := bytes.TrimPrefix(b, utf8BOM)
+	// The score runs on the STRIPPED text, not the raw markup+content a
+	// candidate decode produces: tag names (html, body, p, ...) are
+	// themselves Latin letters, and counting them would dilute the ratio
+	// for any real Russian/Ukrainian page with enough markup.
+	text, ok := bestCyrillicText(trimmed, stripHTML)
 	if !ok {
 		return nil, StatusFailed, nil
 	}
-	stripped := stripHTML(text)
-	// The plausibility check runs on the STRIPPED text, not the raw
-	// markup+content decodeGuessed returned: tag names (html, body, p, ...)
-	// are themselves Latin letters, and counting them would dilute the
-	// Cyrillic ratio for any real Russian/Ukrainian page with enough markup.
-	if guessed && !looksLikeCyrillicPlainText(stripped) {
-		return nil, StatusFailed, nil
-	}
-	return oneSection(stripped), StatusOK, nil
+	return oneSection(stripHTML(text)), StatusOK, nil
 }
 
 // declaredHTMLEncoding reports a charset HTML itself declares — the encoding
@@ -339,6 +381,16 @@ var html5MetaUTF16Labels = map[string]bool{
 // document can legitimately contain an occasional stray replacement
 // character (one corrupted byte in an otherwise-fine file), but one that's
 // mostly replacement characters was decoded under the wrong charset.
+//
+// Accepted limit (round-3 finding R3-5): this check cannot see a WRONG
+// declared SINGLE-BYTE charset (windows-1252, iso-8859-1, ...) at all —
+// every byte maps to some character in a single-byte charmap, never a
+// replacement one, so a mislabelled document still decodes "cleanly" as
+// mojibake. This is the same "a document that explicitly declares a charset
+// is trusted over any guess" rule the whole declared-charset path exists to
+// implement (matching browser behavior), so it is deliberately not
+// special-cased further; see docs/backlog and the PR description for the
+// record of this trade-off.
 const replacementShareMax = 0.10
 
 // tooManyReplacementRunes reports whether text carries enough U+FFFD runes
@@ -457,7 +509,7 @@ type htmlStripper struct {
 	cur    strings.Builder
 	skip   int  // depth inside skippedElements
 	inHead bool // inside <head>, explicitly or implicitly (see tag)
-	// headChildDepth is the nesting depth inside a headAllowedTags element
+	// headChildDepth is the nesting depth inside a headContainerTags element
 	// (title, style, ...) while inHead: head's OWN text (character data with
 	// no wrapping element at all) closes it, per HTML5 — a nested allowed
 	// child's text, like <title>'s, does not.
@@ -483,6 +535,18 @@ var headAllowedTags = map[string]bool{
 	"script": true, "base": true, "noscript": true, "template": true,
 }
 
+// headContainerTags are the headAllowedTags elements that have a real end
+// tag (title/style/script/noscript/template) — the subset headChildDepth
+// tracks. meta/link/base are void: they never get a matching EndTagToken,
+// so counting them here would leave headChildDepth stuck above zero after
+// the first one (a real <head> almost always has one), permanently
+// disabling the text-closes-head rule above. They still belong in
+// headAllowedTags (an opening one must not itself close head), just not in
+// this narrower set.
+var headContainerTags = map[string]bool{
+	"title": true, "style": true, "script": true, "noscript": true, "template": true,
+}
+
 // tag handles one tag token: skipped-element depth, cell separators, and
 // line ends at block elements (tr among them).
 func (st *htmlStripper) tag(tt html.Token) {
@@ -495,12 +559,15 @@ func (st *htmlStripper) tag(tt html.Token) {
 	opening := tt.Type == html.StartTagToken || tt.Type == html.SelfClosingTagToken
 	if st.inHead {
 		switch {
-		case headAllowedTags[name]:
+		case headContainerTags[name]:
 			if tt.Type == html.StartTagToken {
 				st.headChildDepth++
 			} else if tt.Type == html.EndTagToken {
 				st.headChildDepth = max(st.headChildDepth-1, 0)
 			}
+		case headAllowedTags[name]:
+			// A void head-only tag (meta/link/base): allowed in head, but
+			// never wraps child text, so headChildDepth is untouched.
 		case opening:
 			st.inHead = false
 		}
