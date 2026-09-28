@@ -175,6 +175,10 @@ struct RecordingIndicatorView: View {
             .controlSize(.small)
             .tint(.red)
         }
+        // Ideal width, never compressed: a squeezed capsule blanked the Stop
+        // label and pushed the button out past the capsule's (and the
+        // window's) right edge.
+        .fixedSize()
     }
 
     @ViewBuilder

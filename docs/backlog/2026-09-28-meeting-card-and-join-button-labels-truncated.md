@@ -21,7 +21,7 @@ Several labels at the bottom of the main window are clipped:
    tooltip.
 3. **Recorder capture pill** (bottom right): the trailing red control is a
    blank red block — its label (Stop?) is clipped, and the pill itself runs
-   under the window's right edge.
+   under the window's right edge. (sub-item 3 fixed in fix/bl-chat-scroll-overlay)
 
 4. **Meeting reminder banner** (the floating "<meeting title> · in 1:55"
    popup with Record and close): the button between the title and Record is
@@ -43,3 +43,11 @@ Related: [[2026-09-28-recording-pills-cover-chat-composer]].
 > Follow-up note (reminder banner screenshot): «в догонку к какому-то пункту — поебаны надписи»
 
 > Original note: «чет надписи поебаные на митах и на джойне поебаны»
+
+Resolution (sub-item 3 only): the recording capsule in
+`RecordingIndicatorView` is now `.fixedSize()` — it always takes its ideal
+width, so the Stop button's label can no longer be compressed away and the
+button no longer spills past the capsule's right end. Layout-only change, no
+unit test (not observable without a rendered snapshot); verify by eye while
+recording. If the pill still overflows the window with the fix, the parent
+(`NavigationRoot` laid out wider than the window) is the next suspect.
