@@ -51,12 +51,28 @@ the scope-denied-401 sub-item in `docs/backlog/2026-09-27-review-low-priority-pr
 
 `SearchNewSince` fetches the UID range `lastUID+1:*`. RFC 3501 §6.4.8 says a range like `559:*` "always includes the UID of the last message in the mailbox, even if 559 is higher than any assigned UID value". So on a real server (Dovecot, Exchange, Gmail IMAP), a cycle with no new mail still returns the latest message. The code comment claims FETCH is immune and only SEARCH has this quirk; the RFC rule applies to UID sets in general. The effect is mostly waste, but it is real: every cycle re-fetches and re-upserts that message (bumping `synced_at`/`updated_at`), logs "imap: 1 messages synced", and re-feeds the inbox detector and kb cursor. The in-repo go-imap memory test server does not implement the rule (a throwaway overlay test with lastUID = highest returned `[]`), which is why tests pass. Fix: drop UIDs `<= lastUID` from the result.
 
-## Slack search sync can never finish a window with more than 100 result pages
+## Slack search sync can never finish a window with more than 100 result pages (fixed in fix/bl-slack-sync)
 
 - type: bug · confidence: low · tags: [slack, sync, pagination]
 - where: internal/sync/search_sync.go:118-246, internal/slack/client.go:350-373
 
 `search.messages` is paged at 100 results per page, and Slack serves at most 100 pages (10k matches) per query. `syncViaSearch` keeps going until `page >= result.Pages`, and sets the watermark only when `completed`. If a window holds more than 10k matches (a first run with `initial_history_days=30` for someone in many busy channels, or a 30-day clamped catch-up), page 101 either errors or comes back empty. If it errors, the watermark never moves: the same 100 pages (100 Tier-2 calls) are re-fetched every cycle and the pass never completes. If it comes back empty, `completed=true` and the newest matches beyond page 100 are skipped for good. This is unverified against the live API (hence low confidence). Fix: shrink the window (split by `before:`/`after:` date ranges) whenever `result.Pages > 100`.
+
+Resolution: `syncViaSearch` now delegates to a new recursive `runSearchWindow`
+(`internal/sync/search_sync.go`) that checks a window's page-1 `Pages` count before
+paging any further. A window over the new `maxSearchResultPages` (100) constant is
+never paged past page 1 at all — it is bisected by date (`bisectSearchDate`, day
+granularity) into an older `[after, mid)` half (queried with an explicit `before:`
+bound) and a newer half that reuses the original upper bound, each paged and
+completed in turn; the watermark only advances as far as the last half that fully
+completed, so a still-too-wide newer half (or a rate limit inside it) preserves the
+older half's progress rather than losing it. A window already down to a single day
+(the finest granularity `after:`/`before:` filters allow) that still exceeds the page
+cap is accepted as a permanent, logged gap (`recordUnsplittableSearchGap`, the
+existing `recordSearchGap`/`maxSearchCatchUpDays` precedent) rather than retried every
+cycle for zero progress. Pinned by `TestRunSearchWindow_SplitsOverCapWindowByDate`
+(asserts page 2+ of an over-cap window is never requested, and that the split halves
+together reach today) and `TestRunSearchWindow_UnsplittableFloorRecordsGapAndAdvances`.
 
 ## Google calendar events share one global id key across accounts, so shared meetings flip owner and account removal unlinks recordings
 

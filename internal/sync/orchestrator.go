@@ -62,6 +62,14 @@ type Orchestrator struct {
 	// column, so the only record of a permanent data gap outlives its run.
 	searchGapNote string
 
+	// searchRateLimited records whether the current Run's search sync gave up
+	// on a window because Slack was rate-limiting the token (as opposed to a
+	// scope/permission problem or a window that is genuinely empty). Run
+	// resets it; runSearchSync's "zero channels discovered" fallback must not
+	// escalate to the far more expensive full sync while this is true, or a
+	// rate-limited token gets hit with even more calls instead of backing off.
+	searchRateLimited bool
+
 	// jiraKeyDetector, if set, links Jira issue keys found in synced messages
 	// (the digest/tracks pipelines' SetJiraKeyDetector shape).
 	jiraKeyDetector interface {
@@ -152,6 +160,7 @@ func (o *Orchestrator) resolveWorkerCount(requested int) int {
 // later cycle's failure surfaces at the top level.
 func (o *Orchestrator) Run(ctx context.Context, opts SyncOptions) error {
 	o.searchGapNote = ""
+	o.searchRateLimited = false
 	err := o.run(ctx, opts)
 	o.recordAuthResult(ctx, err)
 	return err
@@ -303,9 +312,12 @@ func (o *Orchestrator) runSearchSync(ctx context.Context, opts SyncOptions) erro
 
 	// Fallback: if search found 0 channels (e.g. missing search:read scope),
 	// check if DB already has channels from a previous sync; if not, fall back
-	// to full sync so we have something to work with.
+	// to full sync so we have something to work with. Never while the search
+	// pass itself gave up because Slack was rate-limiting this token — full
+	// sync is dozens of additional Tier-2/3 calls, exactly wrong when the
+	// token is already being throttled.
 	snap := o.progress.Snapshot()
-	if snap.DiscoveryChannels == 0 {
+	if snap.DiscoveryChannels == 0 && !o.searchRateLimited {
 		stats, err := o.db.GetStats()
 		if err != nil || stats.ChannelCount == 0 {
 			o.logger.Println("search found 0 channels, falling back to full sync")
@@ -829,6 +841,34 @@ func isNonFatalError(err error) bool {
 	// These Slack error codes are specific enough that false positives are unlikely.
 	msg := err.Error()
 	for code := range nonFatalSlackErrors {
+		if strings.Contains(msg, code) {
+			return true
+		}
+	}
+	return false
+}
+
+// scopeSlackErrors are the Slack error codes that mean the token itself
+// genuinely lacks search access (as opposed to a transient condition like a
+// rate limit): the only case where falling back from search sync to the far
+// more expensive full conversations.history sync is worth it.
+var scopeSlackErrors = map[string]bool{
+	"missing_scope": true,
+	"access_denied": true,
+}
+
+// isScopeError reports whether err is a Slack API error indicating the
+// token lacks a required scope or was denied access.
+func isScopeError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var slackErr slack.SlackErrorResponse
+	if errors.As(err, &slackErr) {
+		return scopeSlackErrors[slackErr.Err]
+	}
+	msg := err.Error()
+	for code := range scopeSlackErrors {
 		if strings.Contains(msg, code) {
 			return true
 		}
