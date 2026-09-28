@@ -2,6 +2,8 @@ package inbox
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -464,5 +466,80 @@ func TestOwnJiraComments_NoIdentityReadsNothing(t *testing.T) {
 	got, err := newOwnJiraComments(d, db.Owner{}).latestFor([]string{"WT-13"})
 	if err != nil || got != nil {
 		t.Fatalf("latestFor with no identity = %+v, %v; want nil, nil", got, err)
+	}
+}
+
+// TestOwnJiraComments_QueryUsesIndex is the EXPLAIN guard for the own-comment
+// read: it must SEARCH through idx_jira_comments_issue_author, never SCAN
+// jira_comments (idx_jira_comments_issue leads with account_id, which this
+// read does not bind).
+func TestOwnJiraComments_QueryUsesIndex(t *testing.T) {
+	d := testDB(t)
+	rows, err := d.Query(`EXPLAIN QUERY PLAN `+ownCommentsQuery(2, 3), "k1", "k2", "k3", "a1", "a2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var plan []string
+	for rows.Next() {
+		var id, parent, notUsed int
+		var detail string
+		if err := rows.Scan(&id, &parent, &notUsed, &detail); err != nil {
+			t.Fatal(err)
+		}
+		plan = append(plan, detail)
+	}
+	joined := strings.Join(plan, "\n")
+	if !strings.Contains(joined, "idx_jira_comments_issue_author") || strings.Contains(joined, "SCAN jira_comments") {
+		t.Fatalf("own-comment read must search idx_jira_comments_issue_author, plan:\n%s", joined)
+	}
+}
+
+// More keys than one IN (...) chunk holds are read across several chunks,
+// and every key's comment is found.
+func TestOwnJiraComments_ChunksPastTheLimit(t *testing.T) {
+	d := testDB(t)
+	at := time.Now().Add(-1 * time.Hour)
+	n := ownCommentKeyChunk + 7
+	keys := make([]string, n)
+	for i := range keys {
+		keys[i] = fmt.Sprintf("WT-%d", i+1)
+	}
+	seedJiraComment(t, d, keys[0], "acc-alice", "first chunk", at)
+	seedJiraComment(t, d, keys[n-1], "acc-alice", "last chunk", at)
+
+	got, err := newOwnJiraComments(d, db.Owner{JiraAccountID: "acc-alice"}).latestFor(keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[keys[0]].created != at.Unix() || got[keys[n-1]].created != at.Unix() {
+		t.Fatalf("latestFor over %d keys = %+v, want both chunk ends", n, got)
+	}
+}
+
+// Degenerate branch: a known identity but no keys reads nothing.
+func TestOwnJiraComments_EmptyKeysWithIdentity(t *testing.T) {
+	d := testDB(t)
+	seedJiraComment(t, d, "WT-1", "acc-alice", "mine", time.Now())
+	got, err := newOwnJiraComments(d, db.Owner{JiraAccountID: "acc-alice"}).latestFor(nil)
+	if err != nil || got != nil {
+		t.Fatalf("latestFor(nil) = %+v, %v; want nil, nil", got, err)
+	}
+}
+
+// A failed read does not mark its keys as read: asking again retries and
+// reports the error again rather than serving "no comments" from the cache.
+func TestOwnJiraComments_FailedReadIsRetried(t *testing.T) {
+	d := testDB(t)
+	seedJiraComment(t, d, "WT-1", "acc-alice", "mine", time.Now())
+	own := newOwnJiraComments(d, db.Owner{JiraAccountID: "acc-alice"})
+	if _, err := d.Exec(`ALTER TABLE jira_comments RENAME COLUMN author_account_id TO author_gone`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := own.latestFor([]string{"WT-1"}); err == nil {
+		t.Fatal("want an error from a broken read")
+	}
+	if _, err := own.latestFor([]string{"WT-1"}); err == nil {
+		t.Fatal("a failed key must be re-read (and fail again), not served from the cache")
 	}
 }

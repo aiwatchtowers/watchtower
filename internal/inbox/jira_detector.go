@@ -162,8 +162,10 @@ const ownCommentBumpTolerance = 60 // seconds
 // ownJiraComments is one inbox cycle's view of the owner's own Jira
 // comments. The identity lookups (jira_comments present, the owner's
 // Atlassian ids) run once at construction; latestFor reads only the issue
-// keys it is asked about and caches them, so detection and auto-resolve in
-// the same cycle share one set of reads.
+// keys it is asked about, through an index, and caches them, so each key is
+// read at most once per cycle. Detection and auto-resolve ask about
+// different keys (issues updated in the window vs. pending items), so a
+// cycle can issue a read for each — never a full-table scan.
 type ownJiraComments struct {
 	database *db.DB
 	// ids is every Atlassian id that is the owner — empty when the owner has
@@ -203,15 +205,24 @@ func (o *ownJiraComments) latestFor(keys []string) (map[string]ownComment, error
 		return nil, nil
 	}
 	var missing []string
+	seen := make(map[string]bool, len(keys))
 	for _, k := range keys {
-		if !o.loaded[k] {
-			o.loaded[k] = true
+		if !o.loaded[k] && !seen[k] {
+			seen[k] = true
 			missing = append(missing, k)
 		}
 	}
 	var err error
 	for start := 0; start < len(missing) && err == nil; start += ownCommentKeyChunk {
-		err = o.load(missing[start:min(start+ownCommentKeyChunk, len(missing))])
+		chunk := missing[start:min(start+ownCommentKeyChunk, len(missing))]
+		// A chunk counts as read only once its read succeeded, so a failed
+		// read is retried (and fails loudly again) on the next ask instead
+		// of being served as "no comments" from the cache.
+		if err = o.load(chunk); err == nil {
+			for _, k := range chunk {
+				o.loaded[k] = true
+			}
+		}
 	}
 	out := make(map[string]ownComment, len(keys))
 	for _, k := range keys {
@@ -224,15 +235,13 @@ func (o *ownJiraComments) latestFor(keys []string) (map[string]ownComment, error
 
 func (o *ownJiraComments) load(keys []string) error {
 	args := make([]any, 0, len(o.ids)+len(keys))
-	for _, id := range o.ids {
-		args = append(args, id)
-	}
 	for _, k := range keys {
 		args = append(args, k)
 	}
-	rows, err := o.database.Query(fmt.Sprintf(`SELECT issue_key, created_at, updated_at FROM jira_comments
-		WHERE author_account_id IN (%s) AND issue_key IN (%s)`,
-		placeholders(len(o.ids)), placeholders(len(keys))), args...)
+	for _, id := range o.ids {
+		args = append(args, id)
+	}
+	rows, err := o.database.Query(ownCommentsQuery(len(o.ids), len(keys)), args...)
 	if err != nil {
 		return fmt.Errorf("own comment query: %w", err)
 	}
@@ -254,6 +263,17 @@ func (o *ownJiraComments) load(keys []string) error {
 		o.cached[issueKey] = ownComment{created: max(cur.created, created), touched: max(cur.touched, touched)}
 	}
 	return rows.Err()
+}
+
+// ownCommentsQuery reads the owner's comments on a set of issues: nIDs
+// author ids, then nKeys issue keys. The issue_key-first predicate is served
+// by idx_jira_comments_issue_author (migration 00079) — pinned by
+// TestOwnJiraComments_QueryUsesIndex, since idx_jira_comments_issue leads
+// with account_id, which this read does not bind.
+func ownCommentsQuery(nIDs, nKeys int) string {
+	return fmt.Sprintf(`SELECT issue_key, created_at, updated_at FROM jira_comments
+		WHERE issue_key IN (%s) AND author_account_id IN (%s)`,
+		placeholders(nKeys), placeholders(nIDs))
 }
 
 // placeholders renders n comma-separated SQL bind markers.
