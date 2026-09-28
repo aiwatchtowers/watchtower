@@ -1,10 +1,14 @@
 import XCTest
 @testable import WatchtowerCore
 
-/// The auto-scroll "is the user at the bottom" decision (Task P): a
-/// streaming delta or a new message should only pull the viewport down while
-/// this stays true, never yank the user back down after they scrolled up.
+/// The chat's "follow the latest content" decisions: a streaming delta, a
+/// tool step or a new row pulls the viewport down only while following, and a
+/// user who scrolled up is never yanked back down.
 final class ChatAutoScrollPolicyTests: XCTestCase {
+    private typealias Metrics = ChatAutoScrollPolicy.Metrics
+
+    // MARK: - isAtBottom
+
     func testConstant() {
         XCTAssertEqual(ChatAutoScrollPolicy.bottomThreshold, 40)
     }
@@ -29,130 +33,198 @@ final class ChatAutoScrollPolicyTests: XCTestCase {
         XCTAssertFalse(ChatAutoScrollPolicy.isAtBottom(distanceFromBottom: 400))
     }
 
-    // MARK: - decide(wasFollowing:previous:current:)
+    // MARK: - ChatFollowTracker
 
-    private typealias Metrics = ChatAutoScrollPolicy.Metrics
-
-    /// A viewport 500 pt tall scrolled to the very bottom of 2000 pt of content.
+    /// A 500 pt viewport at the very bottom of 2000 pt of content.
     private let atBottom = Metrics(contentTop: -1500, contentHeight: 2000, viewportHeight: 500)
 
-    private func decide(_ following: Bool, _ previous: Metrics?, _ current: Metrics)
-        -> ChatAutoScrollPolicy.Decision {
-        ChatAutoScrollPolicy.decide(wasFollowing: following, previous: previous, current: current)
+    /// A tracker that has already seen `first`.
+    private func tracker(following: Bool = true, seen first: Metrics) -> ChatFollowTracker {
+        var tracker = ChatFollowTracker(following: following)
+        _ = tracker.observe(first)
+        return tracker
     }
 
-    /// The reported bug: one streamed paragraph taller than the threshold
-    /// grows the content below a pinned viewport. The user never scrolled, so
-    /// the view must keep following and pull itself down.
-    func testStreamedGrowthTallerThanThresholdKeepsFollowingAndPulls() {
-        let grown = Metrics(contentTop: -1500, contentHeight: 2120, viewportHeight: 500)
-        XCTAssertEqual(decide(true, atBottom, grown), .init(following: true, pullToBottom: true))
+    /// Feeds a run of measurements; returns every pull decision.
+    private func feed(_ tracker: inout ChatFollowTracker, _ run: [Metrics]) -> [Bool] {
+        run.map { tracker.observe($0) }
     }
 
-    func testSmallGrowthKeepsFollowingAndPulls() {
-        let grown = Metrics(contentTop: -1500, contentHeight: 2010, viewportHeight: 500)
-        XCTAssertEqual(decide(true, atBottom, grown), .init(following: true, pullToBottom: true))
+    /// The reported bug: streamed text taller than the threshold grows the
+    /// content under a pinned viewport. The user never scrolled, so the view
+    /// keeps following and pulls itself down after every chunk.
+    func testStreamingRunKeepsFollowingAndPullsEveryGrowth() {
+        var tracker = tracker(seen: atBottom)
+        var run: [Metrics] = []
+        var height: CGFloat = 2000
+        var top: CGFloat = -1500
+        for _ in 0..<5 {
+            height += 120 // a streamed paragraph
+            run.append(Metrics(contentTop: top, contentHeight: height, viewportHeight: 500))
+            top = 500 - height // the pull lands at the new bottom
+            run.append(Metrics(contentTop: top, contentHeight: height, viewportHeight: 500))
+        }
+        XCTAssertEqual(feed(&tracker, run), [true, false, true, false, true, false, true, false, true, false])
+        XCTAssertTrue(tracker.following)
     }
 
-    /// A viewport that shrank (the composer grew) under a following view.
-    func testViewportShrinkKeepsFollowingAndPulls() {
-        let shrunk = Metrics(contentTop: -1500, contentHeight: 2000, viewportHeight: 420)
-        XCTAssertEqual(decide(true, atBottom, shrunk), .init(following: true, pullToBottom: true))
+    /// Tool steps and artifact blocks are growth like any other: a small one
+    /// still pulls.
+    func testSmallGrowthPulls() {
+        var tracker = tracker(seen: atBottom)
+        XCTAssertTrue(tracker.observe(Metrics(contentTop: -1500, contentHeight: 2010, viewportHeight: 500)))
+        XCTAssertTrue(tracker.following)
     }
 
-    /// After the pull lands, the view is at the bottom: follow, nothing to do.
-    func testAtBottomAfterPullIsSettled() {
-        let pulled = Metrics(contentTop: -1620, contentHeight: 2120, viewportHeight: 500)
-        let grown = Metrics(contentTop: -1500, contentHeight: 2120, viewportHeight: 500)
-        XCTAssertEqual(decide(true, grown, pulled), .init(following: true, pullToBottom: false))
+    /// The composer growing shrinks the viewport under a following view.
+    func testViewportShrinkPulls() {
+        var tracker = tracker(seen: atBottom)
+        XCTAssertTrue(tracker.observe(Metrics(contentTop: -1500, contentHeight: 2000, viewportHeight: 420)))
     }
 
-    /// Any real scroll up stops following — even one still inside the
-    /// threshold, so the next delta never yanks the reader back down.
+    /// Reviewer finding I1: a slow drag in sub-epsilon steps (0.6 pt per
+    /// frame) must add up to a scroll away and never be pulled back — with or
+    /// without anything streaming.
+    func testSlowSubEpsilonDragUpAccumulatesAndNeverPulls() {
+        var tracker = tracker(seen: atBottom)
+        let run = (1...10).map { step in
+            Metrics(contentTop: -1500 + 0.6 * CGFloat(step), contentHeight: 2000, viewportHeight: 500)
+        }
+        XCTAssertEqual(feed(&tracker, run), Array(repeating: false, count: 10))
+        XCTAssertFalse(tracker.following)
+    }
+
+    /// Once the slow drag stopped following, streaming continues below the
+    /// reader without pulling them back.
+    func testGrowthAfterSlowDragStaysPut() {
+        var tracker = tracker(seen: atBottom)
+        _ = feed(&tracker, (1...5).map { Metrics(contentTop: -1500 + 0.6 * CGFloat($0), contentHeight: 2000, viewportHeight: 500) })
+        let grown = (1...3).map { Metrics(contentTop: -1497, contentHeight: 2000 + 50 * CGFloat($0), viewportHeight: 500) }
+        XCTAssertEqual(feed(&tracker, grown), [false, false, false])
+        XCTAssertFalse(tracker.following)
+    }
+
+    /// A single real scroll up, even inside the threshold, stops following.
     func testScrollUpInsideThresholdStopsFollowing() {
-        let up = Metrics(contentTop: -1490, contentHeight: 2000, viewportHeight: 500)
-        XCTAssertEqual(decide(true, atBottom, up), .init(following: false, pullToBottom: false))
+        var tracker = tracker(seen: atBottom)
+        XCTAssertFalse(tracker.observe(Metrics(contentTop: -1490, contentHeight: 2000, viewportHeight: 500)))
+        XCTAssertFalse(tracker.following)
     }
 
-    func testFarScrollUpStopsFollowing() {
-        let up = Metrics(contentTop: -800, contentHeight: 2000, viewportHeight: 500)
-        XCTAssertEqual(decide(true, atBottom, up), .init(following: false, pullToBottom: false))
+    /// Streaming continues while the user reads far above: stay put.
+    func testGrowthWhileReadingAboveStaysPut() {
+        var tracker = tracker(seen: atBottom)
+        let run = [
+            Metrics(contentTop: -800, contentHeight: 2000, viewportHeight: 500),
+            Metrics(contentTop: -800, contentHeight: 2300, viewportHeight: 500),
+            Metrics(contentTop: -800, contentHeight: 2600, viewportHeight: 500)
+        ]
+        XCTAssertEqual(feed(&tracker, run), [false, false, false])
+        XCTAssertFalse(tracker.following)
     }
 
-    /// Streaming continues while the user reads above: stay put.
-    func testGrowthWhileScrolledUpStaysPut() {
-        let reading = Metrics(contentTop: -800, contentHeight: 2000, viewportHeight: 500)
-        let grown = Metrics(contentTop: -800, contentHeight: 2300, viewportHeight: 500)
-        XCTAssertEqual(decide(false, reading, grown), .init(following: false, pullToBottom: false))
-    }
-
-    /// Growth right after a small scroll up (distance still inside the
-    /// threshold) must not re-pin — only a scroll DOWN near the bottom does.
-    func testGrowthAfterSmallScrollUpDoesNotRepin() {
-        let up = Metrics(contentTop: -1490, contentHeight: 2000, viewportHeight: 500)
-        let grown = Metrics(contentTop: -1490, contentHeight: 2015, viewportHeight: 500)
-        XCTAssertEqual(decide(false, up, grown), .init(following: false, pullToBottom: false))
-    }
-
-    /// Scrolling back down to within the threshold re-pins and snaps.
-    func testScrollDownIntoThresholdRepins() {
-        let reading = Metrics(contentTop: -800, contentHeight: 2000, viewportHeight: 500)
-        let near = Metrics(contentTop: -1470, contentHeight: 2000, viewportHeight: 500)
-        XCTAssertEqual(decide(false, reading, near), .init(following: true, pullToBottom: true))
+    /// Scrolling back down near the bottom re-pins; the next growth pulls.
+    func testScrollDownIntoThresholdRepinsThenGrowthPulls() {
+        var tracker = tracker(seen: atBottom)
+        let run = [
+            Metrics(contentTop: -800, contentHeight: 2000, viewportHeight: 500),  // scrolled up
+            Metrics(contentTop: -1470, contentHeight: 2000, viewportHeight: 500), // back down, 30 pt off
+            Metrics(contentTop: -1470, contentHeight: 2100, viewportHeight: 500)  // growth
+        ]
+        XCTAssertEqual(feed(&tracker, run), [false, false, true])
+        XCTAssertTrue(tracker.following)
     }
 
     func testScrollDownStillFarAboveStaysUnpinned() {
-        let reading = Metrics(contentTop: -800, contentHeight: 2000, viewportHeight: 500)
-        let lower = Metrics(contentTop: -1200, contentHeight: 2000, viewportHeight: 500)
-        XCTAssertEqual(decide(false, reading, lower), .init(following: false, pullToBottom: false))
+        var tracker = tracker(seen: atBottom)
+        let run = [
+            Metrics(contentTop: -800, contentHeight: 2000, viewportHeight: 500),
+            Metrics(contentTop: -1200, contentHeight: 2000, viewportHeight: 500)
+        ]
+        XCTAssertEqual(feed(&tracker, run), [false, false])
+        XCTAssertFalse(tracker.following)
     }
 
     func testReachingTheExactBottomRepins() {
-        let reading = Metrics(contentTop: -800, contentHeight: 2000, viewportHeight: 500)
-        XCTAssertEqual(decide(false, reading, atBottom), .init(following: true, pullToBottom: false))
+        var tracker = tracker(seen: atBottom)
+        _ = tracker.observe(Metrics(contentTop: -800, contentHeight: 2000, viewportHeight: 500))
+        XCTAssertFalse(tracker.observe(atBottom))
+        XCTAssertTrue(tracker.following)
     }
 
     /// The rubber band past the bottom springing back moves the content top
     /// down, but the bottom never left the viewport: not a scroll away.
     func testOverscrollSpringBackKeepsFollowing() {
-        let overscrolled = Metrics(contentTop: -1560, contentHeight: 2000, viewportHeight: 500)
-        let springing = Metrics(contentTop: -1530, contentHeight: 2000, viewportHeight: 500)
-        XCTAssertEqual(decide(true, overscrolled, springing), .init(following: true, pullToBottom: false))
-    }
-
-    /// Sub-epsilon jitter of the content top is not a scroll.
-    func testLayoutJitterIsNotAScroll() {
-        let jitter = Metrics(contentTop: -1499.5, contentHeight: 2030, viewportHeight: 500)
-        XCTAssertEqual(decide(true, atBottom, jitter), .init(following: true, pullToBottom: true))
-    }
-
-    /// First measurement (conversation just opened): keep the starting state
-    /// and land at the bottom.
-    func testFirstMeasurementKeepsFollowingAndPulls() {
-        let top = Metrics(contentTop: 0, contentHeight: 2000, viewportHeight: 500)
-        XCTAssertEqual(decide(true, nil, top), .init(following: true, pullToBottom: true))
-    }
-
-    func testFirstMeasurementNotFollowingStaysPut() {
-        let top = Metrics(contentTop: 0, contentHeight: 2000, viewportHeight: 500)
-        XCTAssertEqual(decide(false, nil, top), .init(following: false, pullToBottom: false))
-    }
-
-    /// Degenerate: content shorter than the viewport is always at the bottom.
-    func testShortContentAlwaysFollowsWithoutPulling() {
-        let short = Metrics(contentTop: 0, contentHeight: 200, viewportHeight: 500)
-        XCTAssertEqual(decide(false, nil, short), .init(following: true, pullToBottom: false))
-        XCTAssertEqual(decide(false, short, short), .init(following: true, pullToBottom: false))
+        var tracker = tracker(seen: atBottom)
+        let run = [
+            Metrics(contentTop: -1560, contentHeight: 2000, viewportHeight: 500),
+            Metrics(contentTop: -1530, contentHeight: 2000, viewportHeight: 500),
+            atBottom
+        ]
+        XCTAssertEqual(feed(&tracker, run), [false, false, false])
+        XCTAssertTrue(tracker.following)
     }
 
     /// Content shrinking at the bottom (a regenerated reply replaced) clamps
     /// the offset, moving the top down — the bottom is still on screen.
     func testShrinkAtBottomKeepsFollowing() {
-        let shrunk = Metrics(contentTop: -1300, contentHeight: 1800, viewportHeight: 500)
-        XCTAssertEqual(decide(true, atBottom, shrunk), .init(following: true, pullToBottom: false))
+        var tracker = tracker(seen: atBottom)
+        XCTAssertFalse(tracker.observe(Metrics(contentTop: -1300, contentHeight: 1800, viewportHeight: 500)))
+        XCTAssertTrue(tracker.following)
     }
 
-    // MARK: - turnStarted(previousLiveMessageID:currentLiveMessageID:)
+    /// Degenerate: content shorter than the viewport is always at the bottom
+    /// and never pulls.
+    func testShortContentAlwaysFollowsWithoutPulling() {
+        var tracker = ChatFollowTracker(following: false)
+        let short = Metrics(contentTop: 0, contentHeight: 200, viewportHeight: 500)
+        XCTAssertEqual(feed(&tracker, [short, short, Metrics(contentTop: 0, contentHeight: 300, viewportHeight: 500)]),
+                       [false, false, false])
+        XCTAssertTrue(tracker.following)
+    }
+
+    /// Degenerate: the same measurement again is not growth.
+    func testRepeatedIdenticalMeasurementDoesNothing() {
+        var tracker = tracker(seen: atBottom)
+        let above = Metrics(contentTop: -1480, contentHeight: 2000, viewportHeight: 500)
+        _ = tracker.observe(above)
+        XCTAssertEqual(feed(&tracker, [above, above]), [false, false])
+    }
+
+    // MARK: Reset / repin
+
+    /// A plain conversation switch: the first measurement lands at the bottom.
+    func testResetFollowingFirstMeasurementPullsToBottom() {
+        var tracker = tracker(following: false, seen: atBottom)
+        tracker.reset(following: true)
+        XCTAssertNil(tracker.lastMetrics)
+        XCTAssertTrue(tracker.observe(Metrics(contentTop: 0, contentHeight: 2000, viewportHeight: 500)))
+        XCTAssertTrue(tracker.following)
+    }
+
+    /// Reviewer finding I2: a jump to a message (⌘K hit) lands on it and does
+    /// not follow — its first measurement, far from the bottom, must not pull.
+    func testResetNotFollowingFirstMeasurementStaysOnTheMessage() {
+        var tracker = tracker(seen: atBottom)
+        tracker.reset(following: false)
+        let hit = Metrics(contentTop: -600, contentHeight: 2000, viewportHeight: 500)
+        let grown = Metrics(contentTop: -600, contentHeight: 2100, viewportHeight: 500)
+        XCTAssertEqual(feed(&tracker, [hit, grown]), [false, false])
+        XCTAssertFalse(tracker.following)
+    }
+
+    /// A send (or "Jump to latest") re-pins wherever the view is; the next
+    /// growth pulls.
+    func testRepinFollowsAgain() {
+        var tracker = tracker(seen: atBottom)
+        _ = tracker.observe(Metrics(contentTop: -800, contentHeight: 2000, viewportHeight: 500))
+        XCTAssertFalse(tracker.following)
+        tracker.repin()
+        XCTAssertTrue(tracker.following)
+        XCTAssertTrue(tracker.observe(Metrics(contentTop: -800, contentHeight: 2100, viewportHeight: 500)))
+    }
+
+    // MARK: - turnStarted
 
     /// Sending (or regenerate/edit/continue) starts a live turn: always re-pin.
     func testNewLiveTurnIsATurnStart() {
@@ -164,5 +236,45 @@ final class ChatAutoScrollPolicyTests: XCTestCase {
         XCTAssertFalse(ChatAutoScrollPolicy.turnStarted(previousLiveMessageID: 7, currentLiveMessageID: 7))
         XCTAssertFalse(ChatAutoScrollPolicy.turnStarted(previousLiveMessageID: 7, currentLiveMessageID: nil))
         XCTAssertFalse(ChatAutoScrollPolicy.turnStarted(previousLiveMessageID: nil, currentLiveMessageID: nil))
+    }
+
+    // MARK: - threadChange
+
+    private typealias State = ChatAutoScrollPolicy.ThreadState
+
+    /// A ⌘K hit in another conversation switches AND targets in one update:
+    /// the jump wins, so the view lands on the message, not at the bottom.
+    func testSearchHitInAnotherConversationIsAJump() {
+        let old = State(conversationID: 1, lastMessageID: 10, scrollTarget: nil)
+        let new = State(conversationID: 2, lastMessageID: 20, scrollTarget: 15)
+        XCTAssertEqual(ChatAutoScrollPolicy.threadChange(from: old, to: new), .jumpToMessage(15))
+    }
+
+    func testSearchHitInTheOpenConversationIsAJump() {
+        let old = State(conversationID: 1, lastMessageID: 10, scrollTarget: nil)
+        let new = State(conversationID: 1, lastMessageID: 10, scrollTarget: 4)
+        XCTAssertEqual(ChatAutoScrollPolicy.threadChange(from: old, to: new), .jumpToMessage(4))
+    }
+
+    /// A plain switch leaves an earlier (stale) target untouched: it lands at
+    /// the bottom, following.
+    func testPlainSwitchWithStaleTargetIsASwitch() {
+        let old = State(conversationID: 2, lastMessageID: 20, scrollTarget: 15)
+        let new = State(conversationID: 3, lastMessageID: 30, scrollTarget: 15)
+        XCTAssertEqual(ChatAutoScrollPolicy.threadChange(from: old, to: new), .switchedConversation)
+    }
+
+    func testNewRowInTheSameConversation() {
+        let old = State(conversationID: 1, lastMessageID: 10, scrollTarget: nil)
+        let new = State(conversationID: 1, lastMessageID: 11, scrollTarget: nil)
+        XCTAssertEqual(ChatAutoScrollPolicy.threadChange(from: old, to: new), .newLastRow)
+    }
+
+    /// Degenerate: a cleared target or nothing changed is no scroll.
+    func testClearedTargetOrNoChangeIsNone() {
+        let state = State(conversationID: 1, lastMessageID: 10, scrollTarget: 4)
+        XCTAssertEqual(ChatAutoScrollPolicy.threadChange(from: state, to: state), .none)
+        let cleared = State(conversationID: 1, lastMessageID: 10, scrollTarget: nil)
+        XCTAssertEqual(ChatAutoScrollPolicy.threadChange(from: state, to: cleared), .none)
     }
 }

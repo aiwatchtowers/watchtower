@@ -1,18 +1,19 @@
 import CoreGraphics
 
-/// Pure "follow the conversation" decision (the `NowLine.visibility` /
-/// `ChatSessionPolicy` precedent): no view/geometry types, so it is testable
-/// without SwiftUI. `ChatThreadView` measures where the thread content sits in
-/// the viewport and feeds consecutive measurements here; the result decides
-/// whether the view keeps pinning itself to the latest content (a streaming
-/// delta, a tool step, an artifact block, a new row) or leaves it alone
-/// because the user scrolled up.
+/// Pure "follow the conversation" decisions (the `NowLine.visibility` /
+/// `ChatSessionPolicy` precedent): no view/geometry types, so they are
+/// testable without SwiftUI. `ChatThreadView` feeds consecutive measurements
+/// of the thread content into a `ChatFollowTracker`, which decides whether
+/// the view keeps pinning itself to the latest content (a streaming delta, a
+/// tool step, an artifact block, a new row) or leaves it alone because the
+/// user scrolled up.
 package enum ChatAutoScrollPolicy {
     /// Scrolling back down to within this many points of the true bottom
     /// re-pins the view.
     package static let bottomThreshold: CGFloat = 40
 
-    /// A content-top move no larger than this is layout jitter, not a scroll.
+    /// A content-top move no larger than this is not (yet) a scroll; moves
+    /// that small still add up against the tracker's baseline.
     package static let scrollEpsilon: CGFloat = 1
 
     /// `distanceFromBottom` is how far the content's bottom edge sits below
@@ -39,51 +40,116 @@ package enum ChatAutoScrollPolicy {
         package var distanceFromBottom: CGFloat { contentTop + contentHeight - viewportHeight }
     }
 
-    package struct Decision: Equatable, Sendable {
-        /// Whether the view keeps tracking the latest content.
-        package let following: Bool
-        /// Whether the view should scroll to the bottom now: the content grew
-        /// (or the viewport shrank) under a following view.
-        package let pullToBottom: Bool
-
-        package init(following: Bool, pullToBottom: Bool) {
-            self.following = following
-            self.pullToBottom = pullToBottom
-        }
-    }
-
-    /// Content growing under the viewport only moves the content's bottom
-    /// edge, so it never reads as "the user left the bottom" — a single
-    /// bottom-distance threshold could not tell the two apart, and one
-    /// streamed paragraph taller than the threshold flipped following off
-    /// with the user never touching the scroll view. Only the content's top
-    /// edge moving down (the viewport scrolled up) while the bottom is below
-    /// the viewport stops following — however small the scroll, so the next
-    /// delta never yanks a reader back. An upward move ending in overscroll
-    /// (the rubber band at the bottom springing back) is not a scroll away.
-    /// Following resumes at the exact bottom, or on a scroll down to within
-    /// `bottomThreshold` of it.
-    package static func decide(wasFollowing: Bool, previous: Metrics?, current: Metrics) -> Decision {
-        let distance = current.distanceFromBottom
-        let topMove = previous.map { current.contentTop - $0.contentTop } ?? 0
-        let following: Bool
-        if topMove > scrollEpsilon && distance > scrollEpsilon {
-            following = false
-        } else if distance <= scrollEpsilon {
-            following = true
-        } else if topMove < -scrollEpsilon && isAtBottom(distanceFromBottom: distance) {
-            following = true
-        } else {
-            following = wasFollowing
-        }
-        return Decision(following: following, pullToBottom: following && distance > scrollEpsilon)
-    }
-
     /// Whether a new live turn just started — a send, regenerate, edit or
     /// continue. Starting a turn always re-pins the view, whatever an earlier
     /// scroll left behind.
     package static func turnStarted(previousLiveMessageID: Int64?, currentLiveMessageID: Int64?) -> Bool {
         guard let current = currentLiveMessageID else { return false }
         return current != previousLiveMessageID
+    }
+
+    /// What the thread view watches for scroll purposes, in one value, so a
+    /// conversation switch and a search-hit jump landing in the same update
+    /// are told apart regardless of handler order.
+    package struct ThreadState: Equatable, Sendable {
+        package let conversationID: Int64?
+        package let lastMessageID: Int64?
+        package let scrollTarget: Int64?
+
+        package init(conversationID: Int64?, lastMessageID: Int64?, scrollTarget: Int64?) {
+            self.conversationID = conversationID
+            self.lastMessageID = lastMessageID
+            self.scrollTarget = scrollTarget
+        }
+    }
+
+    package enum ThreadChange: Equatable, Sendable {
+        /// A deliberate jump (a ⌘K search hit): land on that message, not
+        /// following — even when the same update switched the conversation.
+        case jumpToMessage(Int64)
+        /// A plain conversation switch: land at the bottom, following.
+        case switchedConversation
+        /// A new last row in the same conversation.
+        case newLastRow
+        case none
+    }
+
+    package static func threadChange(from old: ThreadState, to new: ThreadState) -> ThreadChange {
+        if new.scrollTarget != old.scrollTarget, let target = new.scrollTarget { return .jumpToMessage(target) }
+        if new.conversationID != old.conversationID { return .switchedConversation }
+        if new.lastMessageID != old.lastMessageID { return .newLastRow }
+        return .none
+    }
+}
+
+/// The follow state across consecutive measurements.
+///
+/// A scroll away is read from the content's top edge moving down against a
+/// baseline that only advances on a real move, so a slow drag made of
+/// sub-epsilon steps adds up to a scroll instead of being dropped as jitter
+/// one sample at a time. Content growing under the viewport only moves the
+/// content's bottom edge, so it never reads as a scroll (a single
+/// bottom-distance threshold could not tell the two apart: one streamed
+/// paragraph taller than the threshold flipped following off). A following
+/// view is pulled to the bottom only when the content grew or the viewport
+/// shrank, never merely because it sits a little above the bottom.
+package struct ChatFollowTracker: Equatable, Sendable {
+    package typealias Metrics = ChatAutoScrollPolicy.Metrics
+
+    package private(set) var following: Bool
+    /// The last measurement seen; nil right after a reset.
+    package private(set) var lastMetrics: Metrics?
+    /// `contentTop` at the last real move (or reset); small moves are
+    /// measured against it, not against the previous sample.
+    private var baselineTop: CGFloat?
+
+    package init(following: Bool = true) {
+        self.following = following
+    }
+
+    /// A conversation switch (`following: true`: land at the bottom) or a
+    /// jump to a specific message (`following: false`: stay on it). The next
+    /// measurement starts a fresh baseline.
+    package mutating func reset(following: Bool) {
+        self.following = following
+        lastMetrics = nil
+        baselineTop = nil
+    }
+
+    /// A send or "Jump to latest": follow again from wherever the view is.
+    package mutating func repin() {
+        following = true
+    }
+
+    /// Feeds one measurement; returns whether the view should scroll to the
+    /// bottom now.
+    package mutating func observe(_ current: Metrics) -> Bool {
+        let eps = ChatAutoScrollPolicy.scrollEpsilon
+        let distance = current.distanceFromBottom
+        defer { lastMetrics = current }
+        guard let baseline = baselineTop, let previous = lastMetrics else {
+            // First measurement after a reset: land at the bottom if following.
+            baselineTop = current.contentTop
+            if distance <= eps { following = true }
+            return following && distance > eps
+        }
+        let topMove = current.contentTop - baseline
+        if topMove > eps && distance > eps {
+            // Scrolled up with the bottom below the viewport: a scroll away,
+            // however small. An upward move ending in overscroll (the rubber
+            // band at the bottom springing back) takes the next branch.
+            following = false
+            baselineTop = current.contentTop
+        } else if distance <= eps {
+            following = true
+            baselineTop = current.contentTop
+        } else if topMove < -eps {
+            if ChatAutoScrollPolicy.isAtBottom(distanceFromBottom: distance) { following = true }
+            baselineTop = current.contentTop
+        }
+        // Otherwise a small move: the baseline stays, so slow moves add up.
+        let grew = current.contentHeight > previous.contentHeight + eps
+            || current.viewportHeight < previous.viewportHeight - eps
+        return following && grew && distance > eps
     }
 }

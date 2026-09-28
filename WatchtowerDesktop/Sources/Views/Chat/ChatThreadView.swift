@@ -11,10 +11,11 @@ private struct ChatContentFramePreferenceKey: PreferenceKey {
     }
 }
 
-/// Reference box for the last measurement — mutating it does not invalidate
-/// the view, unlike a plain `@State` (the `NowLineFrameBox` precedent).
-private final class ChatScrollMetricsBox {
-    var value: ChatAutoScrollPolicy.Metrics?
+/// Reference box for the follow tracker — feeding it a measurement does not
+/// invalidate the view, unlike a plain `@State` (the `NowLineFrameBox`
+/// precedent); `isFollowing` mirrors the one bit the view renders.
+private final class ChatFollowTrackerBox {
+    var tracker = ChatFollowTracker()
 }
 
 /// The centered thread column (spec §3.1, max ~760 pt). Reads `liveTurn`
@@ -25,16 +26,11 @@ struct ChatThreadView: View {
 
     /// Whether the view tracks the latest content — every content growth
     /// (streamed text, a tool step, an artifact block, a new row) pulls a
-    /// following view down; a user scroll up stops it
-    /// (`ChatAutoScrollPolicy.decide`). Starts `true` so opening a
-    /// conversation lands at the bottom.
+    /// following view down; a user scroll up stops it (`ChatFollowTracker`).
+    /// Starts `true` so opening a conversation lands at the bottom. Mirrors
+    /// `follow.tracker.following`.
     @State private var isFollowing = true
-    @State private var lastMetrics = ChatScrollMetricsBox()
-    /// Last conversation the bottom-follow logic reset for — a conversation
-    /// switch always lands at the bottom, ignoring whatever `isFollowing`
-    /// happened to be left over from the previous conversation's scroll
-    /// position (`ChatThreadView` keeps its `@State` across a `select`).
-    @State private var trackedConversationID: Int64?
+    @State private var follow = ChatFollowTrackerBox()
     private static let bottomSentinelID = "chat-bottom-sentinel"
     private static let scrollSpace = "chat-thread-scroll"
 
@@ -90,29 +86,25 @@ struct ChatThreadView: View {
                 // so the preference alone would go stale (the
                 // `CalendarEventsView` now-line precedent).
                 .onChange(of: viewport.size.height) { _, height in
-                    guard let last = lastMetrics.value else { return }
+                    guard let last = follow.tracker.lastMetrics else { return }
                     updateFollowState(.init(contentTop: last.contentTop, contentHeight: last.contentHeight,
                                             viewportHeight: height), proxy: proxy)
                 }
                 .overlay(alignment: .bottom) { jumpToLatestButton(proxy: proxy) }
-                .onChange(of: chatVM.thread.last?.id) {
-                    if trackedConversationID != chatVM.conversationID {
-                        trackedConversationID = chatVM.conversationID
-                        lastMetrics.value = nil
-                        isFollowing = true
-                    }
-                    if isFollowing, let last = chatVM.thread.last { proxy.scrollTo(last.id, anchor: .bottom) }
+                // One handler for switch/jump/new row, so a ⌘K hit that also
+                // switches the conversation lands on the hit whatever order
+                // separate handlers would have fired in.
+                .onChange(of: threadState) { old, new in
+                    handleThreadChange(ChatAutoScrollPolicy.threadChange(from: old, to: new), proxy: proxy)
                 }
                 // Sending (or regenerate/edit/continue) always re-pins,
                 // whatever an earlier scroll left behind.
                 .onChange(of: chatVM.liveTurn?.messageID) { old, new in
                     guard ChatAutoScrollPolicy.turnStarted(previousLiveMessageID: old, currentLiveMessageID: new)
                     else { return }
-                    isFollowing = true
+                    follow.tracker.repin()
+                    syncFollowing()
                     proxy.scrollTo(Self.bottomSentinelID, anchor: .bottom)
-                }
-                .onChange(of: chatVM.scrollTarget) {
-                    if let target = chatVM.scrollTarget { proxy.scrollTo(target, anchor: .center) }
                 }
             }
         }
@@ -126,15 +118,39 @@ struct ChatThreadView: View {
             .id(Self.bottomSentinelID)
     }
 
-    /// Feeds consecutive content measurements to `ChatAutoScrollPolicy` and
-    /// pulls a following view down when the content grew under it.
+    private var threadState: ChatAutoScrollPolicy.ThreadState {
+        .init(conversationID: chatVM.conversationID, lastMessageID: chatVM.thread.last?.id,
+              scrollTarget: chatVM.scrollTarget)
+    }
+
+    private func handleThreadChange(_ change: ChatAutoScrollPolicy.ThreadChange, proxy: ScrollViewProxy) {
+        switch change {
+        case let .jumpToMessage(target):
+            follow.tracker.reset(following: false)
+            syncFollowing()
+            proxy.scrollTo(target, anchor: .center)
+        case .switchedConversation:
+            follow.tracker.reset(following: true)
+            syncFollowing()
+            if let last = chatVM.thread.last { proxy.scrollTo(last.id, anchor: .bottom) }
+        case .newLastRow:
+            if isFollowing, let last = chatVM.thread.last { proxy.scrollTo(last.id, anchor: .bottom) }
+        case .none:
+            break
+        }
+    }
+
+    /// Feeds one content measurement to the tracker and pulls a following
+    /// view down when the content grew under it.
     private func updateFollowState(_ current: ChatAutoScrollPolicy.Metrics, proxy: ScrollViewProxy) {
         guard current.viewportHeight > 0 else { return }
-        let decision = ChatAutoScrollPolicy.decide(
-            wasFollowing: isFollowing, previous: lastMetrics.value, current: current)
-        lastMetrics.value = current
-        if decision.following != isFollowing { isFollowing = decision.following }
-        if decision.pullToBottom { proxy.scrollTo(Self.bottomSentinelID, anchor: .bottom) }
+        let pull = follow.tracker.observe(current)
+        syncFollowing()
+        if pull { proxy.scrollTo(Self.bottomSentinelID, anchor: .bottom) }
+    }
+
+    private func syncFollowing() {
+        if follow.tracker.following != isFollowing { isFollowing = follow.tracker.following }
     }
 
     /// Shown only once the user has scrolled away from the bottom; jumping
@@ -143,7 +159,8 @@ struct ChatThreadView: View {
     private func jumpToLatestButton(proxy: ScrollViewProxy) -> some View {
         if !isFollowing {
             Button {
-                isFollowing = true
+                follow.tracker.repin()
+                syncFollowing()
                 withAnimation(.easeOut(duration: 0.2)) {
                     proxy.scrollTo(Self.bottomSentinelID, anchor: .bottom)
                 }
