@@ -184,11 +184,19 @@ func escapeCDATASections(xhtml string) string {
 	}
 }
 
+// alwaysSelfClosingByName are non-namespaced tag names that real Confluence
+// storage format also always self-closes with no children — unlike ac:*/
+// ri:* below, these need listing by name since they carry no ':' to key on.
+// "time" is the date lozenge (<time datetime="2026-09-01" />); it is not a
+// void element in HTML5, so left alone it stays open and swallows whatever
+// follows as its children (see normalizeSelfClosing's doc).
+var alwaysSelfClosingByName = map[string]bool{"time": true}
+
 // normalizeSelfClosing rewrites every self-closing tag whose name contains
 // ':' (ac:*/ri:* — real Confluence storage format self-closes these
 // everywhere: <ri:user .../>, <ac:structured-macro ac:name="toc" .../>, ...)
-// into an explicit start+end tag pair before handing the document to
-// html.ParseFragment.
+// or is listed in alwaysSelfClosingByName, into an explicit start+end tag
+// pair before handing the document to html.ParseFragment.
 //
 // The HTML5 parsing algorithm ParseFragment implements has no concept of
 // XML-style self-closing on a non-void custom element: a trailing "/>" on
@@ -196,11 +204,14 @@ func escapeCDATASections(xhtml string) string {
 // every sibling that follows in the source (a heading, a paragraph, ...)
 // becomes a descendant of that "self-closed" element instead of a sibling —
 // for a macro that is dropped outright (like toc), this silently swallows
-// the rest of the document. Rewriting at the tokenizer level, before the
-// tree builder ever runs, sidesteps that HTML5 rule entirely rather than
-// working around its effects after the fact (e.g. with a regex, which
-// cannot reliably tell a real tag from one that only looks like one inside
-// a CDATA/comment/attribute value).
+// the rest of the document; for <time />, it swallows the rest of its
+// surrounding phrase and its datetime attribute is never read at all
+// (renderTime never runs on a node that isn't the empty, attribute-bearing
+// element the source actually wrote). Rewriting at the tokenizer level,
+// before the tree builder ever runs, sidesteps that HTML5 rule entirely
+// rather than working around its effects after the fact (e.g. with a
+// regex, which cannot reliably tell a real tag from one that only looks
+// like one inside a CDATA/comment/attribute value).
 func normalizeSelfClosing(xhtml string) string {
 	z := html.NewTokenizer(strings.NewReader(xhtml))
 	var b strings.Builder
@@ -210,7 +221,7 @@ func normalizeSelfClosing(xhtml string) string {
 			break // io.EOF (the normal end) or a tokenizer error; either way, stop.
 		}
 		tok := z.Token()
-		if tt == html.SelfClosingTagToken && strings.Contains(tok.Data, ":") {
+		if tt == html.SelfClosingTagToken && (strings.Contains(tok.Data, ":") || alwaysSelfClosingByName[tok.Data]) {
 			start := tok
 			start.Type = html.StartTagToken
 			b.WriteString(start.String())
@@ -357,6 +368,8 @@ func (c *converter) renderBlock(n *html.Node) string {
 		return c.renderMacro(n)
 	case "ac:task-list":
 		return c.renderTaskList(n)
+	case "time":
+		return c.renderTime(n)
 	case "ac:image":
 		return "" // images are dropped (spec §7)
 	case "script", "style":
@@ -364,6 +377,16 @@ func (c *converter) renderBlock(n *html.Node) string {
 	default:
 		return c.renderChildren(n)
 	}
+}
+
+// renderTime renders a date lozenge's datetime attribute ("2026-09-01"),
+// falling back to any child text on the rare node that carries no attribute
+// (never written by Confluence itself, but not worth an empty string over).
+func (c *converter) renderTime(n *html.Node) string {
+	if dt := attrValue(n, "datetime"); dt != "" {
+		return dt
+	}
+	return c.inlineText(n)
 }
 
 // renderTaskList renders an ac:task-list's ac:task children as "- " lines,
@@ -472,6 +495,8 @@ func (c *converter) inlineElement(n *html.Node) string {
 		return c.renderLink(n)
 	case "ac:structured-macro":
 		return c.renderMacro(n)
+	case "time":
+		return c.renderTime(n)
 	case "ac:image":
 		return ""
 	case "script", "style":
@@ -647,14 +672,27 @@ func (c *converter) renderJiraMacro(n *html.Node) string {
 	return ""
 }
 
-// renderMacroBody renders an ac:rich-text-body (as ordinary nested blocks)
-// or, failing that, an ac:plain-text-body (verbatim text) child.
+// renderMacroBody renders an ac:rich-text-body (as ordinary nested blocks),
+// an ac:plain-text-body (verbatim text), or — for a macro with neither, like
+// the status lozenge, which carries only ac:parameter children — its
+// ac:parameter[ac:name="title"] value (e.g. "DONE"/"BLOCKED").
 func (c *converter) renderMacroBody(n *html.Node) string {
 	if body := firstChildByTag(n, "ac:rich-text-body"); body != nil {
 		return c.renderChildren(body)
 	}
 	if body := firstChildByTag(n, "ac:plain-text-body"); body != nil {
 		return normalizeWS(plainText(body))
+	}
+	return c.macroTitleParameter(n)
+}
+
+// macroTitleParameter returns a macro's ac:parameter[ac:name="title"] text,
+// or "" when it has none.
+func (c *converter) macroTitleParameter(n *html.Node) string {
+	for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
+		if ch.Type == html.ElementNode && ch.Data == "ac:parameter" && attrValue(ch, "ac:name") == "title" {
+			return c.inlineText(ch)
+		}
 	}
 	return ""
 }

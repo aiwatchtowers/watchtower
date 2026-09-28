@@ -90,3 +90,29 @@ func TestMentionTokenMatchesKBPattern(t *testing.T) {
 	require.NotNil(t, m, "token %q must match kb's mention pattern", sections[0].Text)
 	assert.Equal(t, "5b10:abc-123", m[1])
 }
+
+// TestStorageDateLozenge pins that a Confluence date lozenge renders its
+// datetime attribute, and that the rest of the surrounding phrase survives:
+// <time /> is not a void element in HTML5, so left un-rewritten by
+// normalizeSelfClosing it stays open and swallows everything after it as
+// its own children, losing both the date and the following text.
+func TestStorageDateLozenge(t *testing.T) {
+	sections, _, _, err := StorageToSections(`<p>Due <time datetime="2026-09-01" /> ship it.</p>`, 1000)
+	require.NoError(t, err)
+	require.Len(t, sections, 1)
+	assert.Equal(t, "Due 2026-09-01 ship it.", sections[0].Text)
+}
+
+// TestStorageStatusMacroLabel pins that a body-less status-lozenge macro
+// (ac:parameter children only, no ac:rich-text-body/ac:plain-text-body)
+// renders its title parameter instead of an empty string.
+func TestStorageStatusMacroLabel(t *testing.T) {
+	sections, _, _, err := StorageToSections(
+		`<p>State: <ac:structured-macro ac:name="status">`+
+			`<ac:parameter ac:name="colour">Green</ac:parameter>`+
+			`<ac:parameter ac:name="title">DONE</ac:parameter>`+
+			`</ac:structured-macro></p>`, 1000)
+	require.NoError(t, err)
+	require.Len(t, sections, 1)
+	assert.Equal(t, "State: DONE", sections[0].Text)
+}

@@ -42,12 +42,24 @@ Pinned by the extended `TestStorageDeepNestingIsBounded`, which now also
 asserts a non-nil `parseErr` and that the fallback section still carries
 the body's text.
 
-## Storage converter drops date lozenges and status macro labels
+## Storage converter drops date lozenges and status macro labels (fixed in fix/bl-confluence-content)
 
 - type: bug · confidence: med · tags: [confluence, storage, content-loss, search]
 - where: internal/confluence/storage.go (inlineElement default → inlineChildren; renderMacro default → renderMacroBody), internal/confluence/storage.go (normalizeSelfClosing only rewrites names containing ':')
 
 Confluence stores a date as `<time datetime="2026-09-01" />`. Reproduced: `<p>Due <time datetime="2026-09-01" /> ship it</p>` → "Due ship it", with the date gone. `time` has no children, and its `datetime` attribute is never read. The self-closing form isn't normalized either, because the name has no ':'. The `status` macro (`ac:parameter ac:name="title"`) has no body, so `renderMacroBody` returns "" and labels like "DONE"/"BLOCKED" vanish (confidence med, from code reading). Search for a due date or a status therefore misses these pages. Fix direction: render `time` as its `datetime` value, and render the status macro's `title` parameter (plus other body-less macros with a title-like parameter).
+
+Resolution: `normalizeSelfClosing` now also rewrites `<time .../>` into an
+explicit start+end pair (added `alwaysSelfClosingByName`, since `time` has
+no ':' to key on), so it no longer swallows the rest of its surrounding
+phrase as children; a new `renderTime` (wired into both `renderBlock` and
+`inlineElement`) renders its `datetime` attribute. `renderMacroBody` falls
+back to a body-less macro's `ac:parameter[ac:name="title"]` value
+(`macroTitleParameter`) when it has neither `ac:rich-text-body` nor
+`ac:plain-text-body` — covers `status` and any other title-only macro.
+Pinned by `TestStorageDateLozenge`/`TestStorageStatusMacroLabel`
+(`internal/confluence/storage_test.go`) and extended into the
+`macros.xhtml`/`macros.golden.json` fixture pair.
 
 ## A "scope does not match" 401 rotates the Atlassian refresh token three times before it surfaces (fixed in fix/bl-jira-hardening)
 
