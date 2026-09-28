@@ -1,5 +1,6 @@
 import SwiftUI
 import GRDB
+import WatchtowerCore
 
 /// Mini dialog that shows AI-proposed parent + secondary links, lets the user
 /// deselect individual items, then applies the chosen set to the DB in a
@@ -125,10 +126,7 @@ struct SuggestLinksSheet: View {
         do {
             try db.dbPool.write { dbConn in
                 if applyParent, let parentID = suggestions.parentID {
-                    try dbConn.execute(
-                        sql: "UPDATE targets SET parent_id = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?",
-                        arguments: [parentID, targetID]
-                    )
+                    try TargetQueries.updateParent(dbConn, id: targetID, parentID: parentID)
                 }
                 for idx in selectedLinks.sorted() {
                     let link = suggestions.secondaryLinks[idx]
