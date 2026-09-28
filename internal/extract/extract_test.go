@@ -187,11 +187,13 @@ func TestZipBombCapped(t *testing.T) {
 	zw := zip.NewWriter(&buf)
 	w, err := zw.Create("word/document.xml")
 	require.NoError(t, err)
-	_, err = w.Write([]byte(`<w:document xmlns:w="w"><w:body><w:p><w:r><w:t>`))
+	// Many small runs, so the byte budget — not the per-token cap — is what
+	// the archive exceeds.
+	_, err = w.Write([]byte(`<w:document xmlns:w="w"><w:body><w:p>`))
 	require.NoError(t, err)
-	_, err = w.Write(bytes.Repeat([]byte("a"), 2<<20))
+	_, err = w.Write(bytes.Repeat([]byte(`<w:r><w:t>`+strings.Repeat("a", 1000)+`</w:t></w:r>`), 2<<10))
 	require.NoError(t, err)
-	_, err = w.Write([]byte(`</w:t></w:r></w:p></w:body></w:document>`))
+	_, err = w.Write([]byte(`</w:p></w:body></w:document>`))
 	require.NoError(t, err)
 	require.NoError(t, zw.Close())
 

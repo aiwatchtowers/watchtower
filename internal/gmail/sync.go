@@ -87,8 +87,15 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	for i, j := 0, len(ids)-1; i < j; i, j = i+1, j-1 {
 		ids[i], ids[j] = ids[j], ids[i]
 	}
-	if len(ids) > maxMsgs {
+	capped := len(ids) > maxMsgs
+	var cutUnix int64
+	var cutErr error
+	if capped {
 		s.logger.Printf("gmail: %d messages exceed cap %d, processing oldest %d; remainder next cycle", len(ids), maxMsgs, maxMsgs)
+		cutUnix, cutErr = s.client.GetMessageUnix(ctx, ids[maxMsgs])
+		if cutErr != nil {
+			s.logger.Printf("gmail: reading the date of the first message past the cap (%s): %v; holding the watermark a second below the last processed message", ids[maxMsgs], cutErr)
+		}
 		ids = ids[:maxMsgs]
 	}
 
@@ -102,6 +109,13 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 		m, err := s.client.GetMessage(ctx, id)
 		if err != nil {
 			s.logger.Printf("gmail: fetch message %s: %v", id, err)
+			// The lost message's date is unknown, but oldest-first order puts
+			// it at or after the last second the pass advanced to — a noise
+			// skip or a stored message in that same second must not leave
+			// the watermark on it.
+			if !stalled { // later losses sit at or after the first one
+				maxSeen = holdBelowLoss(maxSeen, watermark, maxSeen)
+			}
 			stalled = true
 			continue
 		}
@@ -113,11 +127,18 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 				break
 			}
 		}
+		msgUnix := isoToUnix(m.InternalDate)
 		if skip {
+			// A noise skip is deliberate non-storage, not a loss: move the
+			// watermark past it (unless an earlier message was lost), or every
+			// promo/social message newer than the last stored one is re-fetched
+			// each cycle — and a capped window of pure noise never advances.
+			if !stalled && msgUnix > maxSeen {
+				maxSeen = msgUnix
+			}
 			continue
 		}
 		// Watermark filter: skip already-seen messages (internalDate <= watermark).
-		msgUnix := isoToUnix(m.InternalDate)
 		if watermark > 0 && msgUnix <= watermark {
 			continue
 		}
@@ -134,6 +155,7 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 		row.SyncedAt = syncedAt
 		if err := s.db.UpsertGmailMessage(s.accountID, row); err != nil {
 			s.logger.Printf("gmail: upsert %s: %v", m.ID, err)
+			maxSeen = holdBelowLoss(maxSeen, watermark, msgUnix)
 			stalled = true
 			continue
 		}
@@ -153,12 +175,50 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 		}
 	}
 
+	if capped {
+		unclamped := maxSeen
+		maxSeen = clampBelowCut(maxSeen, cutUnix, cutErr)
+		if unclamped > watermark && maxSeen <= watermark {
+			s.logger.Printf("gmail: all %d processed messages share the cap cut-off's second; the watermark cannot advance past it", maxMsgs)
+		}
+	}
 	if maxSeen > watermark {
 		if err := s.db.SetGmailAccountWatermark(s.accountID, maxSeen); err != nil {
 			s.logger.Printf("gmail: advancing watermark: %v", err)
 		}
 	}
 	return count, nil
+}
+
+// holdBelowLoss keeps the watermark strictly below the second of a lost
+// message (lostUnix): everything at or below the watermark is excluded next
+// cycle, so a noise skip or stored message that already advanced maxSeen onto
+// that second would otherwise strand the lost one for good. It never goes
+// below the pass's starting watermark.
+func holdBelowLoss(maxSeen, watermark, lostUnix float64) float64 {
+	if lostUnix <= maxSeen {
+		maxSeen = max(lostUnix-1, watermark)
+	}
+	return maxSeen
+}
+
+// clampBelowCut keeps a capped pass's watermark strictly below the second of
+// the first message the cap cut off (cutUnix). The watermark has whole-second
+// resolution and both the next cycle's after:<watermark> query and the
+// already-seen filter exclude everything at or below it, so a processed
+// message (stored or noise) sharing that second would otherwise push the
+// watermark onto it and lose the cut-off message for good. When the cut-off
+// date could not be read (cutErr), the conservative bound is one second below
+// the last processed message: the cut-off message is never older than it
+// (oldest-first order), and re-listing that second only re-upserts what is
+// already stored. Accepted limit: more than MaxMessagesPerSync messages in a
+// single second can never advance the watermark (logged by Sync).
+func clampBelowCut(maxSeen float64, cutUnix int64, cutErr error) float64 {
+	limit := maxSeen - 1
+	if cutErr == nil {
+		limit = float64(cutUnix - 1)
+	}
+	return min(maxSeen, limit)
 }
 
 // recordAuthResult persists the gmail auth state. Pass err=nil to mark auth as healthy.

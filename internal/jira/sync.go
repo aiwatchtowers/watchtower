@@ -135,10 +135,7 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 			// log is the ONLY place this failure would otherwise land. Record
 			// it on the project's own row, which `jira status` renders and the
 			// next successful pass clears.
-			s.logger.Printf("sync error for project %s: %v", projectKey, err)
-			if rerr := s.db.RecordJiraSyncError(s.accountID, projectKey, err.Error(), time.Now().UTC().Format(time.RFC3339)); rerr != nil {
-				s.logger.Printf("recording sync error for project %s: %v", projectKey, rerr)
-			}
+			s.recordProjectError("sync", projectKey, err)
 			continue
 		}
 
@@ -349,6 +346,17 @@ func buildStatusNotIn(statuses []string) string {
 	return strings.Join(quoted, ",")
 }
 
+// recordProjectError logs a per-project failure and records it on the
+// project's jira_sync_state row (rendered by `jira status`, cleared by the
+// next successful pass), leaving its watermark alone. what names the pass
+// in the log line.
+func (s *Syncer) recordProjectError(what, projectKey string, err error) {
+	s.logger.Printf("%s error for project %s: %v", what, projectKey, err)
+	if rerr := s.db.RecordJiraSyncError(s.accountID, projectKey, err.Error(), time.Now().UTC().Format(time.RFC3339)); rerr != nil {
+		s.logger.Printf("recording %s error for project %s: %v", what, projectKey, rerr)
+	}
+}
+
 // InitialLoad performs a full backlog sync without the updated filter.
 func (s *Syncer) InitialLoad(ctx context.Context) (int, error) {
 	total := 0
@@ -375,7 +383,7 @@ func (s *Syncer) InitialLoad(ctx context.Context) (int, error) {
 		// backlog import from blowing the per-issue API budget.
 		n, _, err := s.syncWithJQL(ctx, jql, board.ID)
 		if err != nil {
-			s.logger.Printf("initial load error for project %s: %v", projectKey, err)
+			s.recordProjectError("initial load", projectKey, err)
 			continue
 		}
 		total += n
@@ -405,6 +413,12 @@ type fetchedPage struct {
 // It also returns the keys of every issue it upserted, in the JQL's
 // `ORDER BY updated ASC` order (oldest first) — the caller's comment sync
 // takes the tail of this slice to fetch the newest issues first.
+//
+// A failed batch write does not stop the pass: the batches after it are
+// still written (a deterministic poison batch must not freeze every later
+// issue of the project), and the first write error is returned at the end,
+// after the keys of the batches that did land, so the caller treats the
+// project as failed and does not advance its watermark past the lost issues.
 func (s *Syncer) syncWithJQL(ctx context.Context, jql string, boardID int) (int, []string, error) {
 	maxResults := 100
 	pageCh := make(chan fetchedPage, 2) // buffer 2 pages ahead
@@ -435,11 +449,20 @@ func (s *Syncer) syncWithJQL(ctx context.Context, jql string, boardID int) (int,
 	// Writer: convert and write batches to DB.
 	written := 0
 	var changedKeys []string
+	var writeErr error // the first failed batch write
 	for page := range pageCh {
 		dbIssues, dbLinks := s.prepareIssueBatch(ctx, page.issues, boardID)
 
 		if err := s.db.UpsertJiraIssueBatch(dbIssues, dbLinks); err != nil {
-			s.logger.Printf("batch upsert error: %v", err)
+			// A lost batch is a project failure: returning it (below) keeps
+			// the caller from stamping the project watermark past issues that
+			// never reached jira_issues (the next incremental JQL would never
+			// ask for them again). Keep writing the remaining batches.
+			s.logger.Printf("upserting issue batch (%d issues): %v", len(dbIssues), err)
+			if writeErr == nil {
+				writeErr = fmt.Errorf("upserting issue batch: %w", err)
+			}
+			continue
 		}
 		for i := range dbIssues {
 			changedKeys = append(changedKeys, dbIssues[i].Key)
@@ -452,13 +475,14 @@ func (s *Syncer) syncWithJQL(ctx context.Context, jql string, boardID int) (int,
 		}
 	}
 
-	// Check if reader exited with error.
+	// Reader error, if any. Joined with a write error rather than dropped,
+	// so a revoked grant (ErrAuthRevoked) still aborts the account.
+	var readErr error
 	select {
-	case err := <-fetchErr:
-		return written, changedKeys, err
+	case readErr = <-fetchErr:
 	default:
-		return written, changedKeys, nil
 	}
+	return written, changedKeys, errors.Join(writeErr, readErr)
 }
 
 // syncComments fetches and stores comments for at most commentSyncLimit of

@@ -68,6 +68,7 @@ func (o *Orchestrator) recordSearchGap(gapDays int, unclampedAfter, clampedAfter
 	msg := fmt.Sprintf("search sync: gap of %d days exceeds the %d-day catch-up cap; messages between %s and %s were not fetched",
 		gapDays, maxSearchCatchUpDays, unclampedAfter, clampedAfter)
 	o.logger.Printf("warning: %s", msg)
+	o.searchGapNote = msg // survives Run's closing "ok" auth-state write
 	if err := o.db.SetSlackAccountError(o.accountID, msg); err != nil {
 		o.logger.Printf("search sync: failed to record gap on account %d: %v", o.accountID, err)
 	}
