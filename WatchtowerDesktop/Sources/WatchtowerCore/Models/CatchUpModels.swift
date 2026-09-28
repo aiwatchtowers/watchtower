@@ -338,3 +338,37 @@ package struct CatchUpRecap: FetchableRecord, Identifiable, Equatable {
         return f
     }
 }
+
+/// Where the next **auto** Catch-Up window starts — a mirror of the auto branch
+/// of Go `catchup.ResolveWindow` (internal/catchup/window.go), so the caption
+/// shown before a build names the window the CLI will actually use. Change the
+/// two together.
+package enum CatchUpAutoWindow {
+    /// Go `maxWindowDays`: an older acknowledged start is clamped to this.
+    package static let maxDays = 31
+
+    package enum Start: Equatable {
+        /// Nothing acknowledged, or the last acknowledged end is not before
+        /// now: the CLI falls back to the last 24 hours.
+        case last24Hours
+        /// From the last acknowledged recap's end.
+        case since(Date)
+        /// The acknowledged end is older than `maxDays`: clamped to `now − maxDays`.
+        case capped(Date)
+    }
+
+    package static func start(lastAcknowledgedTo: Date?, now: Date) -> Start {
+        guard let ack = lastAcknowledgedTo, ack < now else { return .last24Hours }
+        let limit = now.addingTimeInterval(-Double(maxDays) * 24 * 3600)
+        return ack < limit ? .capped(limit) : .since(ack)
+    }
+
+    /// The caption under the Auto choice, e.g. "since Sep 3, 14:00".
+    package static func caption(_ start: Start, format: (Date) -> String) -> String {
+        switch start {
+        case .last24Hours: return "since 24 hours ago"
+        case .since(let date): return "since \(format(date))"
+        case .capped(let date): return "since \(format(date)) (capped at \(maxDays) days)"
+        }
+    }
+}

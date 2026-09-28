@@ -38,6 +38,8 @@ type Window struct {
 // older than maxWindowDays is clamped to now-maxWindowDays (Truncated=true) —
 // a long absence is exactly what the auto window is for, so it must not turn
 // into a permanent "longer than 31 days" error.
+// The auto branch is mirrored by the Desktop's pre-build caption (Swift
+// CatchUpAutoWindow in WatchtowerCore/Models/CatchUpModels.swift) — change both.
 func ResolveWindow(spec WindowSpec, now time.Time, lastAckTo float64) (Window, error) {
 	custom := !spec.From.IsZero() || !spec.To.IsZero()
 	if spec.Preset != "" && custom {
