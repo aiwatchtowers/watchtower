@@ -438,9 +438,13 @@ func TestOwnJiraComments_FiltersByKeyAndCaches(t *testing.T) {
 		t.Fatalf("latestFor(WT-11) = %+v, want only WT-11 at the owner's comment", got)
 	}
 
+	// Change the table under the cache: a re-read of WT-11 would now see the
+	// newer own comment below, and WT-12's row is gone before it is first
+	// asked for.
 	if _, err := d.Exec(`DELETE FROM jira_comments`); err != nil {
 		t.Fatal(err)
 	}
+	seedJiraComment(t, d, "WT-11", "acc-alice", "newer", time.Now())
 	got, err = own.latestFor([]string{"WT-11", "WT-12"})
 	if err != nil {
 		t.Fatal(err)
