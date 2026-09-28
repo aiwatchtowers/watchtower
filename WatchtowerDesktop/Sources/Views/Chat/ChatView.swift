@@ -18,11 +18,17 @@ struct ChatView: View {
 }
 
 /// Holds view-local layout state; the VMs live on AppState and survive tab switches.
+/// Two columns by default (app sidebar + conversation/landing): the chat
+/// history is opt-in, and the owner's show/hide choice is remembered.
 private struct ChatSplitView: View {
     @Environment(AppState.self) private var appState
     @Bindable var chatVM: ChatViewModel
     @Bindable var historyVM: ChatHistoryViewModel
-    @State private var showSidebar = true
+    @AppStorage("chat.historyVisible") private var showSidebar = false
+    /// The conversation on screen when the tab was last left (0 = the
+    /// landing) and when — `ChatLandingPolicy`'s inputs after a relaunch.
+    @AppStorage("chat.lastConversationID") private var lastConversationID = 0
+    @AppStorage("chat.lastViewedAt") private var lastViewedAt = 0.0
     @State private var showSearch = false
     @State private var showRename = false
     @State private var renameText = ""
@@ -49,6 +55,14 @@ private struct ChatSplitView: View {
                             onDeleted: { chatVM.projectDeleted($0) }
                         )
                         .id(projectID)
+                    } else if chatVM.isOnLanding {
+                        ChatLandingView(
+                            chatVM: chatVM,
+                            recents: ChatLandingPolicy.recents(historyVM.conversations),
+                            ownerName: appState.owner.displayName,
+                            modelSuggestions: appState.aiModelCatalog.suggestions(for: chatVM.selectedProvider.rawValue),
+                            maxComposerHeight: max(120, geo.size.height * 0.4)
+                        ) { historyVM.selectedConversationID = $0 }
                     } else {
                         ChatThreadView(chatVM: chatVM, ownerName: appState.owner.displayName)
                         ChatComposerView(
@@ -64,6 +78,15 @@ private struct ChatSplitView: View {
         }
         .onChange(of: historyVM.selectedConversationID) { _, newID in
             if let newID { chatVM.select(conversationID: newID) }
+        }
+        .onAppear(perform: enterTab)
+        .onDisappear(perform: rememberShownConversation)
+        // Also on every switch, so a quit while on the tab leaves a fresh stamp.
+        .onChange(of: chatVM.conversationID) { _, _ in rememberShownConversation() }
+        .onChange(of: chatVM.isOnLanding) { _, onLanding in
+            rememberShownConversation()
+            // The landing's first turn: its new chat becomes the history selection.
+            if !onLanding, let id = chatVM.conversationID { historyVM.selectedConversationID = id }
         }
         .sheet(isPresented: $showSearch) {
             ChatSearchView(search: { historyVM.search($0) }, onOpen: open)
@@ -98,7 +121,7 @@ private struct ChatSplitView: View {
                 .font(.headline)
                 .lineLimit(1)
                 .onTapGesture(count: 2) {
-                    guard chatVM.openProjectID == nil, chatVM.conversationID != nil else { return }
+                    guard chatVM.openProjectID == nil, !chatVM.isOnLanding, chatVM.conversationID != nil else { return }
                     renameText = chatVM.currentConversation?.title ?? ""
                     showRename = true
                 }
@@ -125,11 +148,34 @@ private struct ChatSplitView: View {
         if let projectID = chatVM.openProjectID {
             return chatVM.projects.first { $0.id == projectID }?.name ?? "Project"
         }
+        if chatVM.isOnLanding { return "New Chat" }
         return chatVM.currentConversation?.displayTitle ?? "New Chat"
     }
 
+    /// ⌘N / New Chat: the landing — its composer makes the conversation on
+    /// the first keystroke, so no empty row is written up front.
     private func createNewChat() {
-        if let id = chatVM.newConversation() { historyVM.selectedConversationID = id }
+        showLanding()
+    }
+
+    private func showLanding() {
+        chatVM.showLanding()
+        historyVM.selectedConversationID = nil
+    }
+
+    private func enterTab() {
+        let remembered = lastConversationID == 0 ? nil : Int64(lastConversationID)
+        let viewedAt = lastViewedAt == 0 ? nil : Date(timeIntervalSince1970: lastViewedAt)
+        chatVM.enterTab(rememberedConversationID: remembered, lastViewedAt: viewedAt, now: Date())
+        // A project page stays open, with no history selection.
+        guard chatVM.openProjectID == nil else { return }
+        historyVM.selectedConversationID = chatVM.isOnLanding ? nil : chatVM.conversationID
+    }
+
+    private func rememberShownConversation() {
+        guard chatVM.openProjectID == nil else { return }
+        lastConversationID = chatVM.isOnLanding ? 0 : Int(chatVM.conversationID ?? 0)
+        lastViewedAt = Date().timeIntervalSince1970
     }
 
     private func createNewChat(inProject projectID: Int64) {
@@ -137,9 +183,10 @@ private struct ChatSplitView: View {
     }
 
     private func delete(_ id: Int64) {
+        let wasShown = id == chatVM.conversationID
         chatVM.forget(conversationID: id)
         historyVM.deleteConversation(id)
-        if let next = historyVM.selectedConversationID { chatVM.select(conversationID: next) }
+        if wasShown { showLanding() }
     }
 
     private func open(_ hit: ChatSearchHit) {

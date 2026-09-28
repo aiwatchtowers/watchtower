@@ -99,8 +99,13 @@ final class ChatViewModel {
     private(set) var gmailConnected = false
     private(set) var slackLinks: SlackLinkResolver?
     /// The project page open in the detail area, or nil when a conversation
-    /// (or the empty state) is shown.
+    /// (or the landing) is shown.
     private(set) var openProjectID: Int64?
+    /// The landing (new-chat composer + recent chats) is shown instead of a
+    /// thread. It may already hold a fresh, message-less conversation — made
+    /// on the first keystroke so its session prewarms — and stays up until
+    /// that conversation's first turn starts or another one is opened.
+    private(set) var isOnLanding = true
     /// Active (unarchived) projects for the sidebar.
     private(set) var projects: [ChatProject] = []
     /// Keys the owner closed the panel for during the CURRENT turn — a
@@ -162,6 +167,7 @@ final class ChatViewModel {
 
     func select(conversationID id: Int64) {
         openProjectID = nil
+        isOnLanding = false
         let switching = id != conversationID
         conversationID = id
         editingMessageID = nil
@@ -189,10 +195,68 @@ final class ChatViewModel {
         }
     }
 
-    /// A conversation is being deleted: close its session; stop showing it.
+    /// A conversation is being deleted: close its session; stop showing it
+    /// (the landing takes its place).
     func forget(conversationID id: Int64) {
         pool.close(conversationID: id)
         guard id == conversationID else { return }
+        isOnLanding = true
+        clearShownConversation()
+    }
+
+    /// Entering the Chat tab (owner decision 2026-09-28): reopen the last
+    /// conversation when `ChatLandingPolicy` says so, otherwise the landing.
+    /// `rememberedConversationID`/`lastViewedAt` are what the view stored on
+    /// leaving — they matter after a relaunch, when nothing is shown yet. An
+    /// open project page is left as it is.
+    func enterTab(rememberedConversationID: Int64?, lastViewedAt: Date?, now: Date) {
+        guard openProjectID == nil else { return }
+        let id = conversationID ?? rememberedConversationID
+        let viewedAt = id == rememberedConversationID ? lastViewedAt : nil
+        let last = id.flatMap(landingSnapshot(conversationID:))
+        switch ChatLandingPolicy.decide(last: last, lastViewedAt: viewedAt, now: now) {
+        case .resume(let id): select(conversationID: id)
+        case .landing: showLanding()
+        }
+    }
+
+    /// The landing: ⌘N, New Chat, and a tab entry outside the resume
+    /// window. The session of the conversation left behind stays warm
+    /// (the pool's idle TTL). A still-untouched conversation outside any
+    /// project stays the landing's own, so no second empty row is made.
+    func showLanding() {
+        openProjectID = nil
+        isOnLanding = true
+        if let conv = currentConversation, conv.activeLeafMessageID == nil, conv.projectID == nil, !isStreaming {
+            return
+        }
+        clearShownConversation()
+    }
+
+    /// The composer's first keystroke: prewarm the session. On the landing
+    /// that first needs a conversation, made without leaving the landing.
+    func draftStarted() {
+        if conversationID == nil {
+            _ = conversationIDCreatingIfNeeded()
+        } else {
+            prewarm()
+        }
+    }
+
+    private func landingSnapshot(conversationID id: Int64) -> ChatLandingPolicy.LastConversation? {
+        do {
+            guard let conv = try dbManager.dbPool.read({ try ChatConversationQueries.fetchByID($0, id: id) }) else {
+                return nil // deleted
+            }
+            return ChatLandingPolicy.LastConversation(conv, isStreaming: pool.client(for: id)?.isBusy == true)
+        } catch {
+            // Unreadable: the landing is the safe place; the chat is still in the history.
+            NSLog("ChatViewModel: reading the last chat failed: %@", error.localizedDescription)
+            return nil
+        }
+    }
+
+    private func clearShownConversation() {
         conversationID = nil
         currentConversation = nil
         thread = []
@@ -234,6 +298,7 @@ final class ChatViewModel {
     /// Shows a project page; the chat's artifact panel closes with the chat.
     func openProject(_ id: Int64) {
         openProjectID = id
+        isOnLanding = false
         artifactPanel = nil
         sourcesPanel = nil
     }
@@ -403,15 +468,23 @@ final class ChatViewModel {
         // The floor is the PREVIOUS owner message, and it alone: codex never
         // emits a session id, so gating on the session would exclude it.
         let outcomes = actionFeed.outcomesBlock(after: thread.last { $0.message.isUser }?.message.createdDate)
-        return startTurn(TurnPlan(conversationID: id, historyTipID: thread.last?.message.id, userText: turnText,
-                                  reuseUserMessageID: nil, attachments: attachments, outcomes: outcomes,
-                                  forceReplay: false, titleText: trimmed))
+        let started = startTurn(TurnPlan(conversationID: id, historyTipID: thread.last?.message.id, userText: turnText,
+                                         reuseUserMessageID: nil, attachments: attachments, outcomes: outcomes,
+                                         forceReplay: false, titleText: trimmed))
+        // The landing's first turn: the thread takes over.
+        if started { isOnLanding = false }
+        return started
     }
 
     /// The conversation a turn/attachment writes into, creating one on first
     /// use (a paperclip click before any text still needs somewhere to land).
+    /// Made from the landing, it keeps the landing up until the first turn.
     private func conversationIDCreatingIfNeeded() -> Int64? {
-        conversationID ?? newConversation()
+        if let conversationID { return conversationID }
+        let landing = isOnLanding
+        let id = newConversation()
+        if id != nil { isOnLanding = landing }
+        return id
     }
 
     func stop() {
