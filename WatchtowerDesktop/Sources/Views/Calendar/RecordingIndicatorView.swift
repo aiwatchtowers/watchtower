@@ -31,9 +31,14 @@ struct RecordingIndicatorView: View {
     /// (`RecordingIndicatorInset.reserved`), 0 once the stack is empty.
     var onReservedInsetChange: (CGFloat) -> Void = { _ in }
     @State private var stackHeight: CGFloat = 0
+    /// Height of the model-download capsule drawn below the recorder pills,
+    /// read only while one shows.
+    @State private var provisionerHeight: CGFloat = 0
 
     private var reservedInset: CGFloat {
-        RecordingIndicatorInset.reserved(stackHeight: stackHeight, expandedPanelShown: expandedPanelShown)
+        let provisionerShown = appState.transcriptionModelProvisioner.state != .idle
+        return RecordingIndicatorInset.reserved(stackHeight: stackHeight, expandedPanelShown: expandedPanelShown,
+                                                belowPanelHeight: provisionerShown ? provisionerHeight : 0)
     }
 
     /// The same condition `recordingView` renders the expanded panel under.
@@ -114,8 +119,10 @@ struct RecordingIndicatorView: View {
                 ProgressView(value: progress).controlSize(.small).frame(width: 80)
                 Text("Downloading model… \(Int(progress * 100))%").font(.callout)
             }
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { provisionerHeight = $0 }
         case let .failed(message):
             modelFailedCapsule(provisioner, message: message)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { provisionerHeight = $0 }
         }
     }
 

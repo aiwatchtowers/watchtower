@@ -218,13 +218,26 @@ final class RecordingIndicatorViewTests: XCTestCase {
         XCTAssertEqual(RecordingIndicatorInset.reserved(stackHeight: 150), 166)
     }
 
-    /// While the live panel is expanded nothing is reserved: it sits at the
-    /// stack's bottom as a transient overlay, the other pills above it.
+    /// While the live panel is expanded the panel itself reserves nothing:
+    /// it is a transient overlay, with the recorder pills above it.
     func testExpandedPanelReservesNothing() {
         XCTAssertEqual(RecordingIndicatorInset.reserved(stackHeight: 310, expandedPanelShown: true), 0)
         XCTAssertEqual(RecordingIndicatorInset.reserved(stackHeight: 360, expandedPanelShown: true), 0)
         XCTAssertEqual(RecordingIndicatorInset.reserved(stackHeight: 40, expandedPanelShown: false),
                        40 + RecordingIndicatorInset.outerPadding)
+    }
+
+    /// Verify finding R1: a model-download capsule drawn BELOW the expanded
+    /// panel still reserves its own height, or it would cover the composer.
+    func testPillBelowTheExpandedPanelStillReserves() {
+        let stack = 310 + RecordingIndicatorInset.stackSpacing + 40
+        XCTAssertEqual(RecordingIndicatorInset.reserved(stackHeight: stack, expandedPanelShown: true,
+                                                        belowPanelHeight: 40),
+                       40 + RecordingIndicatorInset.outerPadding)
+        // Collapsed: the whole stack reserves, whatever sits at its bottom.
+        XCTAssertEqual(RecordingIndicatorInset.reserved(stackHeight: 90, expandedPanelShown: false,
+                                                        belowPanelHeight: 40),
+                       90 + RecordingIndicatorInset.outerPadding)
     }
 
     /// The inset is opt-in on the bottom-most content of main-window screens

@@ -314,6 +314,18 @@ final class ChatAutoScrollPolicyTests: XCTestCase {
                        .none)
     }
 
+    /// Verify finding R2: a ⌘K hit that mounts the thread view (opened from
+    /// a project page) arrives as the initial state — it jumps.
+    func testMountWithAPendingTargetIsAJump() {
+        XCTAssertEqual(ChatAutoScrollPolicy.mountChange(thread(1, last: 10, target: 4)), .jumpToMessage(4))
+    }
+
+    /// A plain mount leaves landing to the tracker's first measurement.
+    func testMountWithoutATargetIsNone() {
+        XCTAssertEqual(ChatAutoScrollPolicy.mountChange(thread(1, last: 10, live: 10)), .none)
+        XCTAssertEqual(ChatAutoScrollPolicy.mountChange(thread(nil, last: nil)), .none)
+    }
+
     /// Verify finding V6: once the view consumes a jump (target cleared),
     /// reopening the same hit is a jump again.
     func testReopeningTheSameHitAfterConsumingIsAJumpAgain() {

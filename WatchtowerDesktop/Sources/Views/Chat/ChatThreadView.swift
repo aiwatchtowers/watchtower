@@ -94,8 +94,13 @@ struct ChatThreadView: View {
                 // One handler for switch/jump/turn start/new row, so a ⌘K hit
                 // that also switches into a streaming conversation lands on
                 // the hit whatever order separate handlers would have fired in.
-                .onChange(of: threadState) { old, new in
-                    handleThreadChange(ChatAutoScrollPolicy.threadChange(from: old, to: new), proxy: proxy)
+                // `initial`: the view can mount together with a ⌘K hit (opened
+                // from a project page); the initial call passes old == new.
+                .onChange(of: threadState, initial: true) { old, new in
+                    let change = old == new
+                        ? ChatAutoScrollPolicy.mountChange(new)
+                        : ChatAutoScrollPolicy.threadChange(from: old, to: new)
+                    handleThreadChange(change, proxy: proxy)
                 }
             }
         }

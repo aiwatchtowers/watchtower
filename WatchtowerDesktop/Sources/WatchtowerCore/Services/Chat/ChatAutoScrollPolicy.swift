@@ -87,6 +87,14 @@ package enum ChatAutoScrollPolicy {
         case none
     }
 
+    /// The thread view's first state (it mounted): a pending target — a ⌘K
+    /// hit opened from a project page, which mounts the view in the same
+    /// update — is a jump; anything else lands via the tracker's first
+    /// measurement.
+    package static func mountChange(_ state: ThreadState) -> ThreadChange {
+        state.scrollTarget.map { .jumpToMessage($0) } ?? .none
+    }
+
     package static func threadChange(from old: ThreadState, to new: ThreadState) -> ThreadChange {
         if new.scrollTarget != old.scrollTarget, let target = new.scrollTarget { return .jumpToMessage(target) }
         if new.conversationID != old.conversationID { return .switchedConversation }

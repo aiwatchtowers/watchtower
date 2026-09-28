@@ -26,11 +26,12 @@ screen with a bottom composer (main chat, Discuss chats), not just the main one.
 
 Resolution: space is reserved rather than the indicator moved, so it stays
 visible from every screen. `RecordingIndicatorView` measures its pill stack
-and reports `RecordingIndicatorInset.reserved(stackHeight:expandedPanelHeight:)`
+and reports `RecordingIndicatorInset.reserved(stackHeight:expandedPanelShown:belowPanelHeight:)`
 to the root view, which injects it as the `recordingIndicatorInset`
-environment value. Only the collapsed stack reserves space; while the
-live-transcript panel is expanded (a transient overlay the owner opened, at
-the bottom of the stack) nothing is reserved. Screens opt in with
+environment value. While the live-transcript panel is expanded (a transient
+overlay the owner opened) the panel and the pills above it reserve nothing;
+only a model-download capsule drawn below it still reserves its height.
+Screens opt in with
 `.clearsRecordingIndicator()` on their bottom-most content: the main chat
 composer (`ChatComposerView`, model pill included), the target chat pane
 (below its error labels), the target Details tab's docked assistant input

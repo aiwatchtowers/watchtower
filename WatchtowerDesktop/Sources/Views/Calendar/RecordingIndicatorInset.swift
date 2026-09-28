@@ -14,15 +14,19 @@ enum RecordingIndicatorInset {
 
     /// `stackHeight` is the measured height of the pill stack without its
     /// outer padding; an empty stack (nothing recording, queued or failed)
-    /// measures zero and reserves nothing. Only the collapsed stack reserves
-    /// space: while the live-transcript panel is expanded it sits at the
-    /// bottom of the stack, a transient overlay the owner opened that may
-    /// cover content, with the other pills above it — reserving for any of
-    /// it would squeeze every screen or pad a gap that clears nothing, so
-    /// the whole stack reserves 0 then.
-    static func reserved(stackHeight: CGFloat, expandedPanelShown: Bool = false) -> CGFloat {
-        guard !expandedPanelShown, stackHeight > 0 else { return 0 }
-        return stackHeight + outerPadding
+    /// measures zero and reserves nothing. While the live-transcript panel is
+    /// expanded, the panel itself reserves nothing: it is a transient overlay
+    /// the owner opened that may cover content, and the recorder pills sit
+    /// above it, so reserving them would pad a gap that clears nothing. Only
+    /// what is drawn below the panel (`belowPanelHeight`: the model-download
+    /// capsules) still reserves its own height.
+    static func reserved(
+        stackHeight: CGFloat,
+        expandedPanelShown: Bool = false,
+        belowPanelHeight: CGFloat = 0
+    ) -> CGFloat {
+        let covered = expandedPanelShown ? belowPanelHeight : stackHeight
+        return covered > 0 ? covered + outerPadding : 0
     }
 }
 
