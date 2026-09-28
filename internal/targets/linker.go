@@ -3,6 +3,7 @@ package targets
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -143,38 +144,64 @@ func validParentID(id *int64, snapshotIDs, forbidden map[int64]bool) sql.NullInt
 // RecomputeParentProgress cap, so a pre-existing cycle cannot loop forever.
 const maxParentWalkDepth = 20
 
+// errParentWalkTooDeep reports an ancestor chain longer than
+// maxParentWalkDepth: the walk cannot prove the chain never reaches the target.
+var errParentWalkTooDeep = errors.New("ancestor chain deeper than the walk cap")
+
+// parentLookup resolves a target's parent: ok=false means it has none (or
+// does not exist); a non-nil error means the parent could not be read.
+type parentLookup func(id int64) (parent int64, ok bool, err error)
+
 // forbiddenParentIDs returns targetID plus every snapshot target that has
 // targetID among its ancestors: making any of them targetID's parent would
 // create a cycle. parentOf resolves a target outside the snapshot (an
-// intermediate ancestor the snapshot limit cut off); ok=false stops the walk.
-func forbiddenParentIDs(targetID int64, snapshot []db.Target, parentOf func(id int64) (parent int64, ok bool)) map[int64]bool {
+// intermediate ancestor the snapshot limit cut off). It fails closed: when an
+// ancestor cannot be read or a chain exceeds maxParentWalkDepth, it returns an
+// error and the caller must not propose any parent.
+func forbiddenParentIDs(targetID int64, snapshot []db.Target, parentOf parentLookup) (map[int64]bool, error) {
 	known := make(map[int64]sql.NullInt64, len(snapshot))
 	for _, t := range snapshot {
 		known[int64(t.ID)] = t.ParentID
 	}
-	parent := func(id int64) (int64, bool) {
+	parent := func(id int64) (int64, bool, error) {
 		if p, ok := known[id]; ok {
-			return p.Int64, p.Valid
+			return p.Int64, p.Valid, nil
 		}
 		return parentOf(id)
 	}
 
 	forbidden := map[int64]bool{targetID: true}
 	for _, t := range snapshot {
-		visited := map[int64]bool{}
-		id := int64(t.ID)
-		for depth := 0; depth < maxParentWalkDepth && !visited[id]; depth++ {
-			visited[id] = true
-			pid, ok := parent(id)
-			if !ok {
-				break
-			}
-			if pid == targetID {
-				forbidden[int64(t.ID)] = true
-				break
-			}
-			id = pid
+		reaches, err := chainReaches(int64(t.ID), targetID, parent)
+		if err != nil {
+			return nil, fmt.Errorf("checking ancestors of target %d: %w", t.ID, err)
+		}
+		if reaches {
+			forbidden[int64(t.ID)] = true
 		}
 	}
-	return forbidden
+	return forbidden, nil
+}
+
+// chainReaches walks start's ancestor chain and reports whether it passes
+// through targetID. A root or a pre-existing cycle ends the walk cleanly; a
+// lookup error or a chain longer than maxParentWalkDepth is an error.
+func chainReaches(start, targetID int64, parent parentLookup) (bool, error) {
+	visited := map[int64]bool{}
+	id := start
+	for depth := 0; depth < maxParentWalkDepth; depth++ {
+		if visited[id] {
+			return false, nil
+		}
+		visited[id] = true
+		pid, ok, err := parent(id)
+		if err != nil || !ok {
+			return false, err
+		}
+		if pid == targetID {
+			return true, nil
+		}
+		id = pid
+	}
+	return false, errParentWalkTooDeep
 }
