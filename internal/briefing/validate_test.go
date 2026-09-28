@@ -56,6 +56,11 @@ func TestRunForDate_BlanksIDsThePromptNeverShowed(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, b)
 
+	var rawAttention []map[string]any
+	require.NoError(t, json.Unmarshal([]byte(b.Attention), &rawAttention))
+	require.Len(t, rawAttention, 3)
+	assert.NotContains(t, rawAttention[1], "source_id", "a blanked id is omitted, not stored as \"\"")
+
 	var attention []AttentionItem
 	require.NoError(t, json.Unmarshal([]byte(b.Attention), &attention))
 	require.Len(t, attention, 3)

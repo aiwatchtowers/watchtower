@@ -28,9 +28,9 @@ type BriefingResult struct {
 // AttentionItem is something requiring the user's immediate focus.
 type AttentionItem struct {
 	Text          string `json:"text"`
-	SourceType    string `json:"source_type"` // track, digest, people, target
-	SourceID      string `json:"source_id"`
-	Priority      string `json:"priority"` // high, medium
+	SourceType    string `json:"source_type"`         // track, digest, people, target
+	SourceID      string `json:"source_id,omitempty"` // omitted when blanked (Swift decodes a missing key as nil)
+	Priority      string `json:"priority"`            // high, medium
 	Reason        string `json:"reason"`
 	SuggestTarget bool   `json:"suggest_target,omitempty"`
 }
