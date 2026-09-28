@@ -133,9 +133,10 @@ func (p *Pipeline) gatherTargets() ([]db.Target, error) {
 	return targets, rows.Err()
 }
 
-// gatherCalendarEvents returns all calendar events occurring on the given date (YYYY-MM-DD).
+// gatherCalendarEvents returns all calendar events occurring on the given
+// local date (YYYY-MM-DD) — every caller derives it from the local clock.
 func (p *Pipeline) gatherCalendarEvents(date string) ([]db.CalendarEvent, error) {
-	events, err := p.db.GetCalendarEventsForDate(date)
+	events, err := p.db.GetCalendarEventsForDate(date, time.Local)
 	if err != nil {
 		return nil, fmt.Errorf("querying calendar events for %s: %w", date, err)
 	}

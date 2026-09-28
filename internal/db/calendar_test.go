@@ -237,10 +237,97 @@ func TestGetCalendarEventsForDate(t *testing.T) {
 	require.NoError(t, db.UpsertCalendarEvent(CalendarEvent{ID: "e1", CalendarID: "primary", Title: "Today", StartTime: "2026-04-02T10:00:00Z", EndTime: "2026-04-02T11:00:00Z"}))
 	require.NoError(t, db.UpsertCalendarEvent(CalendarEvent{ID: "e2", CalendarID: "primary", Title: "Tomorrow", StartTime: "2026-04-03T10:00:00Z", EndTime: "2026-04-03T11:00:00Z"}))
 
-	events, err := db.GetCalendarEventsForDate("2026-04-02")
+	events, err := db.GetCalendarEventsForDate("2026-04-02", time.UTC)
 	require.NoError(t, err)
 	assert.Len(t, events, 1)
 	assert.Equal(t, "Today", events[0].Title)
+}
+
+// The day window is the LOCAL day (converted to UTC for the timed-event
+// comparison), and an all-day event — stored as UTC midnight with an exclusive
+// end — matches only its own date, never the day after (its end == that day's
+// midnight) or, in a negative-offset zone, the day before.
+func TestGetCalendarEventsForDate_LocalDayAndAllDayBoundaries(t *testing.T) {
+	for _, zone := range []string{"America/Los_Angeles", "Asia/Tokyo", "UTC"} {
+		t.Run(zone, func(t *testing.T) {
+			loc, err := time.LoadLocation(zone)
+			require.NoError(t, err)
+			db := openTestDB(t)
+			require.NoError(t, db.UpsertCalendar(0, CalendarCalendar{ID: "primary", Name: "Main", SyncedAt: time.Now().UTC().Format(time.RFC3339)}))
+
+			now := time.Now().In(loc)
+			day := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+			date := day.Format("2006-01-02")
+			utcDate := func(offsetDays int) string { return day.AddDate(0, 0, offsetDays).Format("2006-01-02") + "T00:00:00Z" }
+			ts := func(tm time.Time) string { return tm.UTC().Format(time.RFC3339) }
+
+			for _, ev := range []CalendarEvent{
+				{ID: "allday-yesterday", StartTime: utcDate(-1), EndTime: utcDate(0), IsAllDay: true},
+				{ID: "allday-today", StartTime: utcDate(0), EndTime: utcDate(1), IsAllDay: true},
+				{ID: "allday-tomorrow", StartTime: utcDate(1), EndTime: utcDate(2), IsAllDay: true},
+				{ID: "late-evening", StartTime: ts(day.Add(22 * time.Hour)), EndTime: ts(day.Add(23 * time.Hour))},
+				{ID: "early-morning", StartTime: ts(day.Add(30 * time.Minute)), EndTime: ts(day.Add(90 * time.Minute))},
+				{ID: "prev-evening", StartTime: ts(day.Add(-2 * time.Hour)), EndTime: ts(day.Add(-1 * time.Hour))},
+				{ID: "ends-at-midnight", StartTime: ts(day.Add(-time.Hour)), EndTime: ts(day)},
+				{ID: "next-morning", StartTime: ts(day.Add(25 * time.Hour)), EndTime: ts(day.Add(26 * time.Hour))},
+				{ID: "overnight", StartTime: ts(day.Add(-time.Hour)), EndTime: ts(day.Add(time.Hour))},
+			} {
+				ev.CalendarID, ev.Title = "primary", ev.ID
+				require.NoError(t, db.UpsertCalendarEvent(ev))
+			}
+
+			events, err := db.GetCalendarEventsForDate(date, loc)
+			require.NoError(t, err)
+			var got []string
+			for _, e := range events {
+				got = append(got, e.ID)
+			}
+			assert.ElementsMatch(t, []string{"allday-today", "early-morning", "late-evening", "overnight"}, got)
+		})
+	}
+}
+
+// A DST transition day is 23 or 25 hours long; the window must follow the
+// local calendar day, not a fixed 24h. Fixed past dates are fine here: this is
+// pure window arithmetic, not a date bomb.
+func TestGetCalendarEventsForDate_DSTTransitionDays(t *testing.T) {
+	loc, err := time.LoadLocation("America/Los_Angeles")
+	require.NoError(t, err)
+	for _, date := range []string{"2026-03-08", "2026-11-01"} {
+		t.Run(date, func(t *testing.T) {
+			db := openTestDB(t)
+			require.NoError(t, db.UpsertCalendar(0, CalendarCalendar{ID: "primary", Name: "Main", SyncedAt: time.Now().UTC().Format(time.RFC3339)}))
+			day, err := time.ParseInLocation("2006-01-02", date, loc)
+			require.NoError(t, err)
+			next := day.AddDate(0, 0, 1)
+			ts := func(tm time.Time) string { return tm.UTC().Format(time.RFC3339) }
+			for _, ev := range []CalendarEvent{
+				// On the 23h day, next-early falls inside a fixed day+24h window;
+				// on the 25h day, late falls outside it. Only the local-day
+				// window gets both right.
+				{ID: "late", StartTime: ts(next.Add(-30 * time.Minute)), EndTime: ts(next.Add(-10 * time.Minute))},
+				{ID: "next-early", StartTime: ts(next.Add(10 * time.Minute)), EndTime: ts(next.Add(40 * time.Minute))},
+				{ID: "prev-late", StartTime: ts(day.Add(-40 * time.Minute)), EndTime: ts(day.Add(-10 * time.Minute))},
+			} {
+				ev.CalendarID, ev.Title = "primary", ev.ID
+				require.NoError(t, db.UpsertCalendarEvent(ev))
+			}
+			events, err := db.GetCalendarEventsForDate(date, loc)
+			require.NoError(t, err)
+			var got []string
+			for _, e := range events {
+				got = append(got, e.ID)
+			}
+			assert.Equal(t, []string{"late"}, got)
+			assert.NotEqual(t, 24*time.Hour, next.Sub(day), "the fixture really is a DST transition day")
+		})
+	}
+}
+
+func TestGetCalendarEventsForDate_BadDate(t *testing.T) {
+	db := openTestDB(t)
+	_, err := db.GetCalendarEventsForDate("not-a-date", time.UTC)
+	assert.Error(t, err)
 }
 
 func TestGetNextEvent(t *testing.T) {
