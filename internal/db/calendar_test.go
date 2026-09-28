@@ -639,6 +639,36 @@ func TestUpsertCalendar_ClaimsCalendarKeptByLogout(t *testing.T) {
 	require.NotNil(t, ev, "the recorded event survived the whole hand-off")
 }
 
+// TestUpsertCalendar_OwnedRowKeepsItsSelection pins the other half of the
+// claim rule: only a claim of an ownerless row takes the incoming is_selected.
+// A calendar its owner deselected stays deselected however often the owner's
+// or another account's syncer upserts it with IsSelected: true.
+func TestUpsertCalendar_OwnedRowKeepsItsSelection(t *testing.T) {
+	db := openTestDB(t)
+
+	acctA, err := db.CreateGoogleAccount(GoogleAccount{Email: "a@example.com", Label: "A", CalendarEnabled: true})
+	require.NoError(t, err)
+	acctB, err := db.CreateGoogleAccount(GoogleAccount{Email: "b@example.com", Label: "B", CalendarEnabled: true})
+	require.NoError(t, err)
+
+	syncedAt := time.Now().UTC().Format(time.RFC3339)
+	cal := CalendarCalendar{ID: "a-owned", Name: "a-owned", IsSelected: true, SyncedAt: syncedAt}
+	require.NoError(t, db.UpsertCalendar(acctA, cal))
+	require.NoError(t, db.SetCalendarSelected("a-owned", false))
+
+	require.NoError(t, db.UpsertCalendar(acctA, cal))
+	require.NoError(t, db.UpsertCalendar(acctB, cal))
+
+	var owner sql.NullInt64
+	var selected bool
+	require.NoError(t, db.QueryRow(`SELECT account_id, is_selected FROM calendar_calendars WHERE id = 'a-owned'`).Scan(&owner, &selected))
+	assert.Equal(t, sql.NullInt64{Int64: acctA, Valid: true}, owner, "the row stays owned by A")
+	assert.False(t, selected, "a deselected owned calendar is never re-selected by an upsert")
+	selA, err := db.GetSelectedCalendarIDs(acctA)
+	require.NoError(t, err)
+	assert.NotContains(t, selA, "a-owned")
+}
+
 func TestAttendeeMap(t *testing.T) {
 	db := openTestDB(t)
 
