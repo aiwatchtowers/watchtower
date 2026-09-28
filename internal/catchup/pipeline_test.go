@@ -159,6 +159,13 @@ func TestRun_AutoWindowClampsAncientAckAndRecordsIt(t *testing.T) {
 	assert.True(t, res.Coverage.WindowTruncated)
 	r, _ := d.GetCatchupRecap(res.RecapID)
 	assert.Contains(t, r.CoverageJSON, `"window_truncated":true`)
+
+	// A regen of the capped recap keeps the flag.
+	regen, err := p.Run(context.Background(), RunOptions{RegenOfID: res.RecapID})
+	require.NoError(t, err)
+	assert.True(t, regen.Coverage.WindowTruncated, "--regen of a capped recap stays capped")
+	rr, _ := d.GetCatchupRecap(regen.RecapID)
+	assert.Contains(t, rr.CoverageJSON, `"window_truncated":true`)
 }
 
 // BEHAVIOR CATCHUP-02 — see docs/inventory/catchup.md

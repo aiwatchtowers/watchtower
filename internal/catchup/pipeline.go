@@ -206,10 +206,20 @@ func (p *Pipeline) resolveRunWindow(opts RunOptions) (Window, error) {
 		if err != nil {
 			return Window{}, err
 		}
+		// The truncation flag lives only in the source's coverage; carry it so
+		// a regenerated capped recap still says so. An unreadable coverage
+		// record just loses the flag — the window itself is what matters.
+		var srcCov Coverage
+		if src.CoverageJSON != "" {
+			if err := json.Unmarshal([]byte(src.CoverageJSON), &srcCov); err != nil {
+				p.logf("catchup: decoding recap %d coverage for regen: %v", src.ID, err)
+			}
+		}
 		return Window{
-			From:   time.Unix(int64(src.PeriodFrom), 0),
-			To:     time.Unix(int64(src.PeriodTo), 0),
-			Source: "regen",
+			From:      time.Unix(int64(src.PeriodFrom), 0),
+			To:        time.Unix(int64(src.PeriodTo), 0),
+			Source:    "regen",
+			Truncated: srcCov.WindowTruncated,
 		}, nil
 	}
 	lastAck, err := p.db.LastAcknowledgedCatchupTo()
