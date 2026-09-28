@@ -23,14 +23,23 @@ Several labels at the bottom of the main window are clipped:
    blank red block — its label (Stop?) is clipped, and the pill itself runs
    under the window's right edge.
 
+4. **Meeting reminder banner** (the floating "<meeting title> · in 1:55"
+   popup with Record and close): the button between the title and Record is
+   an empty grey capsule — no label, no icon. Almost certainly the same Join
+   control losing its label (same shape as item 2), which points at a shared
+   join-button component rendering its title as empty/clipped rather than at
+   each call site. The banner also floats over the chat transcript.
+
 Also visible in the same status bar: the version reads "vv0.10.1-…" — a
 doubled "v" prefix (the build string already starts with "v" and the view
 prepends another).
 
-Expected: sidebar footer card lays out at the sidebar's minimum width with a
+Expected: the reminder banner's Join button shows its label; sidebar footer card lays out at the sidebar's minimum width with a
 single-line countdown and a readable Join control; the recorder pill fits in
 the window; the version shows a single "v".
 
 Related: [[2026-09-28-recording-pills-cover-chat-composer]].
+
+> Follow-up note (reminder banner screenshot): «в догонку к какому-то пункту — поебаны надписи»
 
 > Original note: «чет надписи поебаные на митах и на джойне поебаны»
