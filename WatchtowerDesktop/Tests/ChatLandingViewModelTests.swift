@@ -324,6 +324,35 @@ final class ChatLandingViewModelTests: XCTestCase {
         XCTAssertNil(defaults.object(forKey: "chat.landingDraftID.\(dbManager.dbPool.path)"))
     }
 
+    /// A database reset at the same path can reissue the persisted draft's
+    /// id to an unrelated chat: id + created_at must both match, so that chat
+    /// is neither swept nor reused.
+    func testAReissuedDraftIDIsNeverSweptOrReused() throws {
+        let quitter = makeViewModel()
+        quitter.draftStarted()
+        let draft = try XCTUnwrap(quitter.conversationID)
+        let createdAt = try XCTUnwrap(quitter.currentConversation).createdAt
+        try dbManager.dbPool.write { d in
+            try ChatConversationQueries.delete(d, id: draft)
+            try d.execute(sql: """
+                INSERT INTO chat_conversations (id, title, created_at, updated_at) VALUES (?, '', ?, ?)
+                """, arguments: [draft, createdAt - 3600, createdAt - 3600])
+        }
+        makeViewModel().cleanUpUntouchedConversations()
+        XCTAssertTrue(try rowExists(draft), "the unrelated chat survives the sweep")
+
+        let vm = makeViewModel()
+        vm.draftStarted()
+        XCTAssertNotEqual(vm.conversationID, draft, "and is not reused as a draft")
+    }
+
+    func testLandingDraftStoredFormRoundTrips() {
+        let draft = LandingDraft(id: 42, createdAt: 1_700_000_000.123456)
+        XCTAssertEqual(LandingDraft(stored: draft.stored), draft)
+        XCTAssertNil(LandingDraft(stored: "42"))
+        XCTAssertNil(LandingDraft(stored: "x|1"))
+    }
+
     /// F1: a draft the owner pinned or renamed meanwhile is owner-touched.
     func testAPinnedOrRenamedDraftIsNeverDiscarded() async throws {
         let other = try await answeredConversation(makeViewModel())

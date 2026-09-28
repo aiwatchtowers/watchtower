@@ -205,20 +205,23 @@ package enum ChatConversationQueries {
         AND NOT EXISTS (SELECT 1 FROM chat_attachments a WHERE a.conversation_id = c.id)
         """
 
-    /// `id` while it is still untouched, for the landing to reuse its draft.
-    package static func fetchUntouched(_ db: Database, id: Int64) throws -> ChatConversation? {
+    /// The landing's draft while it is still untouched, for reuse. `createdAt`
+    /// must match too: the draft is persisted across launches, and a reset
+    /// database at the same path can reissue the id to an unrelated chat.
+    package static func fetchUntouched(_ db: Database, id: Int64, createdAt: Double) throws -> ChatConversation? {
         try ChatConversation.fetchOne(db, sql: """
-            SELECT c.* FROM chat_conversations c WHERE c.id = ? AND \(untouchedPredicate)
-            """, arguments: [id])
+            SELECT c.* FROM chat_conversations c WHERE c.id = ? AND c.created_at = ? AND \(untouchedPredicate)
+            """, arguments: [id, createdAt])
     }
 
-    /// Deletes `id` only while it is still untouched; true when it was.
+    /// Deletes the landing's draft only while it is still untouched (and is
+    /// still the same row: `createdAt` matches); true when it was deleted.
     @discardableResult
-    package static func deleteIfUntouched(_ db: Database, id: Int64) throws -> Bool {
+    package static func deleteIfUntouched(_ db: Database, id: Int64, createdAt: Double) throws -> Bool {
         try db.execute(sql: """
             DELETE FROM chat_conversations WHERE id IN (
-                SELECT c.id FROM chat_conversations c WHERE c.id = ? AND \(untouchedPredicate))
-            """, arguments: [id])
+                SELECT c.id FROM chat_conversations c WHERE c.id = ? AND c.created_at = ? AND \(untouchedPredicate))
+            """, arguments: [id, createdAt])
         return db.changesCount > 0
     }
 

@@ -113,18 +113,24 @@ final class ChatViewModel {
     /// The conversation the landing made (or reused) for its draft. Left for
     /// anything but its own first turn, it is deleted while still untouched.
     /// Persisted per workspace database, so a draft abandoned by quitting is
-    /// found — and only that one is deleted — at the next launch.
-    @ObservationIgnored private(set) var landingDraftID: Int64? {
+    /// found — and only that one is deleted — at the next launch. Its
+    /// `created_at` travels with the id: a database reset at the same path
+    /// can reissue the id, never the pair.
+    @ObservationIgnored private var landingDraft: LandingDraft? {
         didSet {
-            if let landingDraftID {
-                defaults.set(landingDraftID, forKey: landingDraftKey)
+            if let landingDraft {
+                defaults.set(landingDraft.stored, forKey: landingDraftKey)
             } else {
                 defaults.removeObject(forKey: landingDraftKey)
             }
         }
     }
+    var landingDraftID: Int64? { landingDraft?.id }
     @ObservationIgnored private let defaults: UserDefaults
-    private var landingDraftKey: String { "chat.landingDraftID.\(dbManager.dbPool.path)" }
+    private var landingDraftKey: String { "chat.landingDraft.\(dbManager.dbPool.path)" }
+    private var storedLandingDraft: LandingDraft? {
+        (defaults.string(forKey: landingDraftKey)).flatMap(LandingDraft.init(stored:))
+    }
     /// Active (unarchived) projects for the sidebar.
     private(set) var projects: [ChatProject] = []
     /// Keys the owner closed the panel for during the CURRENT turn — a
@@ -222,7 +228,7 @@ final class ChatViewModel {
     /// (the landing takes its place).
     func forget(conversationID id: Int64) {
         pool.close(conversationID: id)
-        if id == landingDraftID { landingDraftID = nil }
+        if id == landingDraftID { landingDraft = nil }
         guard id == conversationID else { return }
         isOnLanding = true
         clearShownConversation()
@@ -268,8 +274,11 @@ final class ChatViewModel {
     /// it is still untouched. Nothing is shown yet, so it is not on screen;
     /// no other chat is ever swept.
     func cleanUpUntouchedConversations() {
-        guard let stale = defaults.object(forKey: landingDraftKey) as? Int64 else { return }
-        landingDraftID = stale
+        guard let stale = storedLandingDraft else {
+            defaults.removeObject(forKey: landingDraftKey) // unreadable: forget it, delete nothing
+            return
+        }
+        landingDraft = stale
         discardLandingDraft()
     }
 
@@ -277,10 +286,13 @@ final class ChatViewModel {
     /// conversation goes, unless it gained a message or an attachment (the
     /// delete re-checks that in the same statement), and so does its session.
     private func discardLandingDraft(except keep: Int64? = nil) {
-        guard let id = landingDraftID, id != keep else { return }
-        landingDraftID = nil
+        guard let draft = landingDraft, draft.id != keep else { return }
+        landingDraft = nil
+        let id = draft.id
         do {
-            let deleted = try dbManager.dbPool.write { try ChatConversationQueries.deleteIfUntouched($0, id: id) }
+            let deleted = try dbManager.dbPool.write {
+                try ChatConversationQueries.deleteIfUntouched($0, id: id, createdAt: draft.createdAt)
+            }
             guard deleted else { return }
             pool.close(conversationID: id)
             reloadConversations()
@@ -553,7 +565,7 @@ final class ChatViewModel {
                                          forceReplay: false, titleText: trimmed))
         if started, fromLanding {
             // The landing's first turn: its draft is a real chat now.
-            landingDraftID = nil
+            landingDraft = nil
             isOnLanding = false
             onLandingTurnStarted?(id)
         }
@@ -570,9 +582,11 @@ final class ChatViewModel {
         // than a second empty row made.
         let reusable: Int64?
         do {
-            let previous = landingDraftID ?? defaults.object(forKey: landingDraftKey) as? Int64
-            reusable = try previous.flatMap { id in
-                try dbManager.dbPool.read { try ChatConversationQueries.fetchUntouched($0, id: id)?.id }
+            let previous = landingDraft ?? storedLandingDraft
+            reusable = try previous.flatMap { draft in
+                try dbManager.dbPool.read {
+                    try ChatConversationQueries.fetchUntouched($0, id: draft.id, createdAt: draft.createdAt)?.id
+                }
             }
         } catch {
             NSLog("ChatViewModel: looking up an untouched chat failed: %@", error.localizedDescription)
@@ -587,7 +601,7 @@ final class ChatViewModel {
         }
         if let id {
             isOnLanding = true
-            landingDraftID = id
+            landingDraft = currentConversation.map { LandingDraft(id: $0.id, createdAt: $0.createdAt) }
         }
         return id
     }
@@ -858,4 +872,23 @@ final class ChatViewModel {
             if self.conversationID == id { self.reload() }
         }
     }
+}
+
+/// The landing's draft as persisted: `"<id>|<created_at>"`.
+struct LandingDraft: Equatable {
+    let id: Int64
+    let createdAt: Double
+
+    init(id: Int64, createdAt: Double) {
+        self.id = id
+        self.createdAt = createdAt
+    }
+
+    init?(stored: String) {
+        let parts = stored.split(separator: "|")
+        guard parts.count == 2, let id = Int64(parts[0]), let createdAt = Double(parts[1]) else { return nil }
+        self.init(id: id, createdAt: createdAt)
+    }
+
+    var stored: String { "\(id)|\(createdAt)" }
 }

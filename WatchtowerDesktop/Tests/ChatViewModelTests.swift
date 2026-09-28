@@ -14,9 +14,15 @@ final class ChatViewModelTests: XCTestCase {
     private(set) var pool: ChatSessionPool!
     private var fakes: [FakeChatSessionProcess] = []
     private var turnCounter = 0
+    /// An isolated suite: the view model persists the landing's draft, and
+    /// nothing may leak into the test runner's own settings.
+    private var defaults: UserDefaults!
+    private var defaultsSuite: String!
 
     override func setUpWithError() throws {
         (dbManager, dbPath) = try TestDatabase.createDatabaseManager()
+        defaultsSuite = "ChatViewModelTests.\(UUID().uuidString)"
+        defaults = UserDefaults(suiteName: defaultsSuite)
         fakes = []
         turnCounter = 0
         pool = ChatSessionPool(
@@ -33,10 +39,12 @@ final class ChatViewModelTests: XCTestCase {
     override func tearDown() async throws {
         await pool.closeAll()
         TestDatabase.cleanup(path: dbPath)
+        defaults.removePersistentDomain(forName: defaultsSuite)
     }
 
     func makeViewModel(cliRunner: FakeCLIRunner? = nil) throws -> ChatViewModel {
-        ChatViewModel(dbManager: dbManager, pool: pool, provider: .claude, cliRunner: cliRunner) { [weak self] in
+        ChatViewModel(dbManager: dbManager, pool: pool, provider: .claude, cliRunner: cliRunner,
+                      defaults: defaults) { [weak self] in
             guard let self else { return UUID().uuidString }
             self.turnCounter += 1
             return "turn-\(self.turnCounter)"

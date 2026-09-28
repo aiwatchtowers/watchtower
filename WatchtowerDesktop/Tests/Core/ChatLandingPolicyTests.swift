@@ -168,13 +168,19 @@ final class ChatLandingPolicyTests: XCTestCase {
             let renamed = try TestDatabase.insertChatConversation(d, title: "")
             try ChatConversationQueries.rename(d, id: renamed, title: "Mine")
 
-            XCTAssertEqual(try ChatConversationQueries.fetchUntouched(d, id: untouched)?.id, untouched)
+            func created(_ id: Int64) throws -> Double { try XCTUnwrap(ChatConversationQueries.fetchByID(d, id: id)).createdAt }
+            let stamp = try created(untouched)
+            XCTAssertEqual(try ChatConversationQueries.fetchUntouched(d, id: untouched, createdAt: stamp)?.id, untouched)
             for kept in [messaged, attached, inProject, archived, scoped, pinned, renamed] {
-                XCTAssertNil(try ChatConversationQueries.fetchUntouched(d, id: kept), "\(kept)")
-                XCTAssertFalse(try ChatConversationQueries.deleteIfUntouched(d, id: kept), "\(kept)")
+                let at = try created(kept)
+                XCTAssertNil(try ChatConversationQueries.fetchUntouched(d, id: kept, createdAt: at), "\(kept)")
+                XCTAssertFalse(try ChatConversationQueries.deleteIfUntouched(d, id: kept, createdAt: at), "\(kept)")
             }
-            XCTAssertTrue(try ChatConversationQueries.deleteIfUntouched(d, id: untouched))
-            XCTAssertFalse(try ChatConversationQueries.deleteIfUntouched(d, id: untouched), "already gone")
+            // Same id, another row (a reset database): never matched.
+            XCTAssertNil(try ChatConversationQueries.fetchUntouched(d, id: untouched, createdAt: stamp + 1))
+            XCTAssertFalse(try ChatConversationQueries.deleteIfUntouched(d, id: untouched, createdAt: stamp + 1))
+            XCTAssertTrue(try ChatConversationQueries.deleteIfUntouched(d, id: untouched, createdAt: stamp))
+            XCTAssertFalse(try ChatConversationQueries.deleteIfUntouched(d, id: untouched, createdAt: stamp), "already gone")
         }
     }
 
