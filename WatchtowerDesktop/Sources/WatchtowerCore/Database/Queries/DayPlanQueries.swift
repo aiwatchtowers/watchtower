@@ -185,6 +185,7 @@ package enum DayPlanQueries {
                 """,
             arguments: [taskStatus, taskId]
         )
+        try TargetQueries.applyStatusProgress(db, id: Int(taskId), status: taskStatus)
     }
 
     package static func todayDateString() -> String {
