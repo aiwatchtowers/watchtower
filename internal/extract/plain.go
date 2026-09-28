@@ -8,6 +8,9 @@ import (
 	"unicode/utf8"
 
 	"golang.org/x/net/html"
+	"golang.org/x/text/encoding"
+	"golang.org/x/text/encoding/charmap"
+	"golang.org/x/text/encoding/unicode"
 
 	"watchtower/internal/extsync"
 )
@@ -15,9 +18,19 @@ import (
 // utf8BOM is stripped from the start of text input.
 var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
 
-// readUTF8 reads r (≤ MaxDownload) as UTF-8 text without a BOM, with LF
-// line endings. Invalid UTF-8 is StatusFailed, input above MaxDownload
-// StatusTooLarge.
+// utf16BOMLE/utf16BOMBE are the byte order marks that identify UTF-16 text
+// with no other signal (there is no MIME parameter for it here — these
+// files arrive as plain "text/plain" attachments).
+var (
+	utf16BOMLE = []byte{0xFF, 0xFE}
+	utf16BOMBE = []byte{0xFE, 0xFF}
+)
+
+// readUTF8 reads r (≤ MaxDownload) as text with LF line endings. UTF-8 (with
+// or without a BOM) is read directly; failing that, a UTF-16 BOM or a clean
+// windows-1251 decode (common Russian/Ukrainian-locale exports) are tried as
+// fallbacks before giving up. Text that still isn't recognized is
+// StatusFailed, input above MaxDownload StatusTooLarge.
 func readUTF8(r io.Reader) (text, status string, err error) {
 	b, err := readCapped(r)
 	if errors.Is(err, errTooLarge) {
@@ -26,12 +39,47 @@ func readUTF8(r io.Reader) (text, status string, err error) {
 	if err != nil {
 		return "", "", err
 	}
-	b = bytes.TrimPrefix(b, utf8BOM)
-	if !utf8.Valid(b) {
-		return "", StatusFailed, nil
+	if decoded, ok := decodeByBOM(b); ok {
+		b = decoded
+	} else {
+		b = bytes.TrimPrefix(b, utf8BOM)
+		if !utf8.Valid(b) {
+			decoded, ok := decodeCleanly(b, charmap.Windows1251)
+			if !ok {
+				return "", StatusFailed, nil
+			}
+			b = decoded
+		}
 	}
 	s := strings.ReplaceAll(string(b), "\r\n", "\n")
 	return strings.ReplaceAll(s, "\r", "\n"), StatusOK, nil
+}
+
+// decodeByBOM decodes b as UTF-16 when it opens with a UTF-16 byte order
+// mark, else reports ok=false (no BOM = not this function's problem: the
+// caller's own UTF-8-BOM/utf8.Valid path handles everything else).
+func decodeByBOM(b []byte) ([]byte, bool) {
+	switch {
+	case bytes.HasPrefix(b, utf16BOMLE):
+		return decodeCleanly(b, unicode.UTF16(unicode.LittleEndian, unicode.ExpectBOM))
+	case bytes.HasPrefix(b, utf16BOMBE):
+		return decodeCleanly(b, unicode.UTF16(unicode.BigEndian, unicode.ExpectBOM))
+	default:
+		return nil, false
+	}
+}
+
+// decodeCleanly decodes b with enc, reporting ok=false when the decode
+// itself errors or falls back to the Unicode replacement character anywhere
+// — a single-byte charmap like windows-1251 maps every byte to *some* rune,
+// so a wrong-encoding guess would otherwise "succeed" into garbage instead
+// of failing the way invalid UTF-8 does.
+func decodeCleanly(b []byte, enc encoding.Encoding) ([]byte, bool) {
+	out, err := enc.NewDecoder().Bytes(b)
+	if err != nil || bytes.ContainsRune(out, utf8.RuneError) {
+		return nil, false
+	}
+	return out, true
 }
 
 // plainText is one section holding the whole text (text, markdown, csv,

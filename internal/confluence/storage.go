@@ -101,6 +101,7 @@ func fallbackText(xhtml string) string {
 			} else if tok.Type == html.EndTagToken {
 				skip = max(skip-1, 0)
 			}
+		case html.CommentToken, html.DoctypeToken:
 		}
 	}
 }

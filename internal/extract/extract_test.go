@@ -111,10 +111,39 @@ func TestMediaTypeWithParams(t *testing.T) {
 
 func TestPlainInvalidUTF8Fails(t *testing.T) {
 	x := newExtractor(t, nil)
-	secs, status, err := x.Extract(context.Background(), "text/plain", "a.txt", bytes.NewReader([]byte{'a', 0xff, 0xfe}))
+	// 0x98 is invalid UTF-8 on its own AND the one byte windows-1251 (the
+	// encoding fallback below) leaves undefined — {'a', 0xff, 0xfe} alone
+	// would no longer do here, since it happens to be valid windows-1251
+	// ("aяю") and is exactly the kind of text that fallback exists to
+	// recover.
+	secs, status, err := x.Extract(context.Background(), "text/plain", "a.txt", bytes.NewReader([]byte{'a', 0xff, 0x98}))
 	require.NoError(t, err)
 	assert.Equal(t, StatusFailed, status)
 	assert.Nil(t, secs)
+}
+
+// TestPlainUTF16BOMDecodes pins that Windows "Unicode" text (UTF-16LE with a
+// BOM) is recognized instead of failing as invalid UTF-8 — common for text
+// files exported by Windows tools (Notepad's default "Unicode" save format).
+func TestPlainUTF16BOMDecodes(t *testing.T) {
+	x := newExtractor(t, nil)
+	doc := []byte{0xFF, 0xFE, 'h', 0x00, 'i', 0x00} // UTF-16LE BOM + "hi"
+	secs, status, err := x.Extract(context.Background(), "text/plain", "a.txt", bytes.NewReader(doc))
+	require.NoError(t, err)
+	assert.Equal(t, StatusOK, status)
+	assert.Equal(t, []extsync.Section{{Text: "hi"}}, secs)
+}
+
+// TestPlainWindows1251Decodes pins that windows-1251 text (common for a CSV
+// saved by Excel in a Russian/Ukrainian locale, with no BOM at all) is
+// recovered as a fallback once the UTF-8 check fails.
+func TestPlainWindows1251Decodes(t *testing.T) {
+	x := newExtractor(t, nil)
+	doc := []byte{0xEF, 0xF0, 0xE8, 0xE2, 0xE5, 0xF2} // cp1251 for "привет"
+	secs, status, err := x.Extract(context.Background(), "text/csv", "a.csv", bytes.NewReader(doc))
+	require.NoError(t, err)
+	assert.Equal(t, StatusOK, status)
+	assert.Equal(t, []extsync.Section{{Text: "привет"}}, secs)
 }
 
 func TestHTML(t *testing.T) {

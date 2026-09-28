@@ -76,12 +76,25 @@ refresh-then-retry behavior, now on their own independent budget (see the go-bug
 `TestClient_PersistentUnauthorizedScopeIsNotRevoked`, updated to assert exactly one server call
 instead of the four the old behavior required.
 
-## Non-UTF-8 text attachments (UTF-16 or cp1251 CSV/TXT) are recorded as final failed
+## Non-UTF-8 text attachments (UTF-16 or cp1251 CSV/TXT) are recorded as final failed (fixed in fix/bl-confluence-content)
 
 - type: bug · confidence: med · tags: [extract, encoding, content-loss, localization]
 - where: internal/extract/plain.go:21-35 (readUTF8)
 
 `readUTF8` strips only a UTF-8 BOM and marks anything else that fails `utf8.Valid` as `StatusFailed`, which is final and never retried. Windows "Unicode" text (UTF-16LE with a `FF FE` BOM) and CSV saved by Excel in a Russian or Ukrainian locale (cp1251) are common in the owner's ru/uk environment, and their contents never become searchable. Fix direction: decode UTF-16 by its BOM, and try `golang.org/x/text` windows-1251 as a fallback when the UTF-8 check fails and the bytes decode cleanly.
+
+Resolution: `readUTF8` now decodes a UTF-16LE/BE BOM via
+`golang.org/x/text/encoding/unicode` (already an indirect dependency,
+promoted to direct by `go mod tidy` — no new module, no version change),
+and, failing that, tries `golang.org/x/text/encoding/charmap.Windows1251`
+when the UTF-8 check fails; either fallback is accepted only when it
+decodes with no `utf8.RuneError` (`decodeCleanly`), since a single-byte
+charmap maps nearly every byte to *some* rune. `TestPlainInvalidUTF8Fails`'s
+fixture changed — its old 3 bytes happen to be valid cp1251 ("aяю"), exactly
+the content this fix recovers — to one still undecodable under every
+supported path (cp1251's one genuinely undefined byte, 0x98). New:
+`TestPlainUTF16BOMDecodes`, `TestPlainWindows1251Decodes`
+(`internal/extract/extract_test.go`).
 
 ## linkscan freezes a Slack message's from_ref at first sighting, so a root later promoted to a thread keeps its channel-day ref
 
