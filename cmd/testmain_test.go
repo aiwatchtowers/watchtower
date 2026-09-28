@@ -23,18 +23,23 @@ import (
 // instead resolve the real workspace and run the command for real (an AI
 // query, a Slack sync). Tests that need their own HOME still t.Setenv it.
 //
-// GO_WANT_HELPER_PROCESS short-circuit: several tests (cmd/shutdown_test.go,
-// cmd/sync_stop_test.go, cmd/ideas_test.go) re-exec the test binary into a
-// specific helper test via the standard os/exec.Command(os.Args[0], ...)
-// re-exec pattern. That helper still runs through THIS package's TestMain
-// first — it inherits it, there is no way to opt out per-test — so without
-// this short-circuit every helper process pays the full db.InitTestTemplate
-// cost (goose migrations against an in-memory db, ~8s under -race) before
-// it ever reaches its own test body and prints "ready", which blows through
-// the 5s readiness deadlines those tests use. None of the fixture setup
-// below (db template, isolated HOME) is relevant to a helper process — it
-// doesn't touch the database or read config — so it must run before any of
-// it, not just before the DB call specifically.
+// GO_WANT_HELPER_PROCESS(_DELAYED) short-circuit: several tests
+// (cmd/shutdown_test.go, cmd/sync_stop_test.go, cmd/ideas_test.go) re-exec
+// the test binary into a specific helper test via the standard
+// os/exec.Command(os.Args[0], ...) re-exec pattern — GO_WANT_HELPER_PROCESS
+// for the swallows-SIGTERM-forever helper, GO_WANT_HELPER_PROCESS_DELAYED
+// for the exits-shortly-after-SIGTERM one. That helper still runs through
+// THIS package's TestMain first — it inherits it, there is no way to opt
+// out per-test — so without this short-circuit every helper process pays
+// the full db.InitTestTemplate cost (goose migrations against an in-memory
+// db, ~8s under -race) before it ever reaches its own test body and prints
+// "ready", which blows through the 5s readiness deadlines those tests use,
+// and leaks a watchtower-cmd-tests-home-* temp dir per spawn (the helper
+// exits via os.Exit/SIGKILL, so TestMain's own RemoveAll never runs for
+// it). None of the fixture setup below (db template, isolated HOME) is
+// relevant to a helper process — it doesn't touch the database or read
+// config — so it must run before any of it, not just before the DB call
+// specifically.
 //
 // extract-pdf-text short-circuit: the attachment extractor parses PDFs by
 // re-executing os.Executable() with the hidden `extract-pdf-text <path>`
@@ -48,7 +53,7 @@ func TestMain(m *testing.M) {
 		}
 		os.Exit(0)
 	}
-	if os.Getenv("GO_WANT_HELPER_PROCESS") == "1" {
+	if os.Getenv("GO_WANT_HELPER_PROCESS") == "1" || os.Getenv("GO_WANT_HELPER_PROCESS_DELAYED") == "1" {
 		os.Exit(m.Run())
 	}
 	if err := db.InitTestTemplate(); err != nil {

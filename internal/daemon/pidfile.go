@@ -323,7 +323,16 @@ func removeStalePIDFile(path string) {
 // pid's new occupant, by definition, can only have forked AFTER
 // storedStart was written (which is itself after the ORIGINAL process's
 // fork) — so a kernel start meaningfully AFTER storedStart is reuse, and
-// one at or before it never is.
+// one at or before it never is. This ordering argument assumes the wall
+// clock does not step backward between the write and a later reuse of the
+// same pid by more than legacyStartTolerance (a manual clock set, or a
+// large NTP correction after a long sleep): if it does, a since-reused pid
+// whose new occupant happens to be comm-named "watchtower" too could be
+// misjudged confirmed-same. The exposure is narrow (needs an untagged
+// file, a backward step, AND a watchtower-named new occupant, all at
+// once) and a tagged file has none of it at all, since it compares the
+// same process's kernel start against itself rather than against a
+// wall-clock write time.
 //
 // Returns processUnknown, never a guess, when the identity read itself
 // fails — the read failing is a different kind of "I don't know" than "I
