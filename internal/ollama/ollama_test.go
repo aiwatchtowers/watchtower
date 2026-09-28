@@ -114,6 +114,23 @@ func TestGenerator_ErrorPaths(t *testing.T) {
 	if err != nil && strings.Contains(err.Error(), "no choices") {
 		t.Errorf("err = %v, must not fall back to the generic no-choices message", err)
 	}
+
+	// Same inline error, but with a numeric "code" (vLLM/llama.cpp shape) —
+	// must not break decoding the whole response body.
+	mux4 := http.NewServeMux()
+	mux4.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"error":{"message":"bad request","type":"invalid_request_error","code":400}}`))
+	})
+	srv4 := httptest.NewServer(mux4)
+	defer srv4.Close()
+	g4 := NewGenerator("l", "s", srv4.URL)
+	_, _, _, err4 := g4.Generate(context.Background(), "", "msg", "")
+	if err4 == nil || !strings.Contains(err4.Error(), "bad request") {
+		t.Errorf("want the inline error's message for a numeric code, got %v", err4)
+	}
+	if err4 != nil && strings.Contains(err4.Error(), "decoding ollama response") {
+		t.Errorf("err = %v, a numeric code must not break decoding the whole body", err4)
+	}
 }
 
 func TestClient_QuerySync(t *testing.T) {
@@ -200,6 +217,75 @@ func TestStreamSSE_InlineErrorObjectSurfacesAsError(t *testing.T) {
 	}
 }
 
+// TestStreamSSE_InlineErrorObjectWithNumericCodeSurfacesAsError pins the
+// review-round-1 regression: vLLM and llama.cpp send the inline error
+// object's "code" as a JSON NUMBER ("code":400), not a string. A
+// string-typed chatError.Code field fails json.Unmarshal on the WHOLE data
+// line, so streamSSE `continue`s right past the error — and when the server
+// then sends "[DONE]" (as vLLM does right after), the stream ends looking
+// completely clean: the exact silent failure this fix exists to catch.
+func TestStreamSSE_InlineErrorObjectWithNumericCodeSurfacesAsError(t *testing.T) {
+	body := strings.NewReader(
+		`data: {"choices":[{"delta":{"content":"partial "}}]}` + "\n\n" +
+			`data: {"error":{"message":"bad request","type":"invalid_request_error","code":400}}` + "\n\n" +
+			`data: [DONE]` + "\n\n",
+	)
+	textCh := make(chan ai.StreamChunk, 8)
+	errCh := make(chan error, 1)
+
+	streamSSE(context.Background(), body, textCh, errCh)
+	close(textCh)
+	close(errCh)
+
+	var got strings.Builder
+	for chunk := range textCh {
+		got.WriteString(chunk.Text)
+	}
+	if got.String() != "partial " {
+		t.Errorf("streamed text = %q, want the text delivered before the error", got.String())
+	}
+
+	err := <-errCh
+	if err == nil {
+		t.Fatal("want an error for a numeric-code inline error object, got nil (silently swallowed)")
+	}
+	if !strings.Contains(err.Error(), "bad request") {
+		t.Errorf("err = %v, want it to carry the server's message", err)
+	}
+}
+
+// TestStreamSSE_LegacyTopLevelErrorObjectSurfacesAsError covers vLLM's older
+// error shape: a top-level {"object":"error","message":"..."} with no
+// nested "error" key at all, rather than the standard {"error":{...}}.
+func TestStreamSSE_LegacyTopLevelErrorObjectSurfacesAsError(t *testing.T) {
+	body := strings.NewReader(
+		`data: {"choices":[{"delta":{"content":"partial "}}]}` + "\n\n" +
+			`data: {"object":"error","message":"model not found","type":"NotFoundError"}` + "\n\n",
+	)
+	textCh := make(chan ai.StreamChunk, 8)
+	errCh := make(chan error, 1)
+
+	streamSSE(context.Background(), body, textCh, errCh)
+	close(textCh)
+	close(errCh)
+
+	var got strings.Builder
+	for chunk := range textCh {
+		got.WriteString(chunk.Text)
+	}
+	if got.String() != "partial " {
+		t.Errorf("streamed text = %q, want the text delivered before the error", got.String())
+	}
+
+	err := <-errCh
+	if err == nil {
+		t.Fatal("want an error for the legacy top-level error object, got nil")
+	}
+	if !strings.Contains(err.Error(), "model not found") {
+		t.Errorf("err = %v, want it to carry the server's message", err)
+	}
+}
+
 // TestStreamSSE_ConnectionClosedBeforeDoneIsAnError pins the other silent-
 // failure shape: the connection ends (clean EOF, scanner.Err() == nil) after
 // ordinary deltas but before "[DONE]" or any finish_reason — a server
@@ -279,6 +365,55 @@ func TestQuerySync_InlineErrorObjectSurfacesAsError(t *testing.T) {
 		t.Fatal("want an error for the inline error object, got nil")
 	}
 	if !strings.Contains(err.Error(), "context length exceeded") {
+		t.Errorf("err = %v, want it to carry the server's message", err)
+	}
+	if strings.Contains(err.Error(), "no choices") {
+		t.Errorf("err = %v, must not fall back to the generic no-choices message", err)
+	}
+}
+
+// TestQuerySync_InlineErrorObjectWithNumericCodeSurfacesAsError is QuerySync's
+// counterpart to TestStreamSSE_InlineErrorObjectWithNumericCodeSurfacesAsError:
+// a numeric "code" must not break the decode of the whole response body (a
+// string-typed chatError.Code field would turn this into a "decoding ollama
+// response" error, hiding the server's actual message).
+func TestQuerySync_InlineErrorObjectWithNumericCodeSurfacesAsError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"error":{"message":"bad request","type":"invalid_request_error","code":400}}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := NewClient("m", srv.URL)
+	_, _, err := c.QuerySync(context.Background(), "", "hi", "")
+	if err == nil {
+		t.Fatal("want an error for the numeric-code inline error object, got nil")
+	}
+	if !strings.Contains(err.Error(), "bad request") {
+		t.Errorf("err = %v, want it to carry the server's message", err)
+	}
+	if strings.Contains(err.Error(), "decoding ollama response") {
+		t.Errorf("err = %v, a numeric code must not break decoding the whole body", err)
+	}
+}
+
+// TestQuerySync_LegacyTopLevelErrorObjectSurfacesAsError is QuerySync's
+// counterpart to TestStreamSSE_LegacyTopLevelErrorObjectSurfacesAsError.
+func TestQuerySync_LegacyTopLevelErrorObjectSurfacesAsError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"object":"error","message":"model not found","type":"NotFoundError"}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := NewClient("m", srv.URL)
+	_, _, err := c.QuerySync(context.Background(), "", "hi", "")
+	if err == nil {
+		t.Fatal("want an error for the legacy top-level error object, got nil")
+	}
+	if !strings.Contains(err.Error(), "model not found") {
 		t.Errorf("err = %v, want it to carry the server's message", err)
 	}
 	if strings.Contains(err.Error(), "no choices") {

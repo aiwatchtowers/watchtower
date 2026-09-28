@@ -58,11 +58,30 @@ type chatMessage struct {
 // after the initial 200 (model OOM, context overflow while generating) is
 // reported this way rather than as an HTTP status — an OpenAI-compatible
 // server (Ollama/vLLM/LM Studio) sends it as an "error" object with zero
-// choices instead of tearing down the connection.
+// choices instead of tearing down the connection. Object/Message additionally
+// catch vLLM's legacy top-level error shape, {"object":"error","message":
+// "..."} — no nested "error" key at all — alongside the standard one; see
+// asError.
 type chatResponse struct {
 	Choices []chatChoice `json:"choices"`
 	Usage   *chatUsage   `json:"usage,omitempty"`
 	Error   *chatError   `json:"error,omitempty"`
+	Object  string       `json:"object,omitempty"`
+	Message string       `json:"message,omitempty"`
+}
+
+// asError normalizes both inline-error shapes an OpenAI-compatible server
+// can send into one chatError: the standard {"error":{"message":...}}
+// object, and vLLM's legacy top-level {"object":"error","message":"..."}
+// shape. Returns nil when neither is present.
+func (r *chatResponse) asError() *chatError {
+	if r.Error != nil {
+		return r.Error
+	}
+	if r.Object == "error" && strings.TrimSpace(r.Message) != "" {
+		return &chatError{Message: r.Message}
+	}
+	return nil
 }
 
 type chatChoice struct {
@@ -77,11 +96,16 @@ type chatUsage struct {
 	TotalTokens      int `json:"total_tokens"`
 }
 
-// chatError is the OpenAI-compatible inline error object.
+// chatError is the OpenAI-compatible inline error object. Deliberately no
+// "code" field: vLLM and llama.cpp send it as a JSON number ("code":400),
+// and formatChatError never reads it anyway — a string-typed field here
+// would fail json.Unmarshal on the WHOLE chunk on those servers, which is
+// exactly the silent-failure shape this type exists to catch (an unmarshal
+// error on the SSE data line makes streamSSE `continue` right past the
+// error line, same as having no Error field at all).
 type chatError struct {
 	Message string `json:"message"`
 	Type    string `json:"type,omitempty"`
-	Code    string `json:"code,omitempty"`
 }
 
 // maxStreamErrorMessage caps a reported error's message the same way the
@@ -198,8 +222,8 @@ func streamSSE(ctx context.Context, body io.Reader, textCh chan<- ai.StreamChunk
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
 			continue
 		}
-		if chunk.Error != nil {
-			errCh <- fmt.Errorf("ollama stream error: %s", formatChatError(chunk.Error))
+		if errObj := chunk.asError(); errObj != nil {
+			errCh <- fmt.Errorf("ollama stream error: %s", formatChatError(errObj))
 			return
 		}
 		if len(chunk.Choices) == 0 {
@@ -267,11 +291,11 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 	}
 
 	// A 200 response can still carry an inline error object with zero
-	// choices (the same shape streamSSE now checks) — report it directly
-	// instead of the generic "no choices" below, which would otherwise hide
-	// the real reason.
-	if result.Error != nil {
-		return "", nil, fmt.Errorf("ollama returned an error: %s", formatChatError(result.Error))
+	// choices (the same shape streamSSE now checks, either error envelope) —
+	// report it directly instead of the generic "no choices" below, which
+	// would otherwise hide the real reason.
+	if errObj := result.asError(); errObj != nil {
+		return "", nil, fmt.Errorf("ollama returned an error: %s", formatChatError(errObj))
 	}
 
 	if len(result.Choices) == 0 {
