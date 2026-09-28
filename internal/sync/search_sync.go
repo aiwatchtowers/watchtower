@@ -132,10 +132,30 @@ func (o *Orchestrator) syncViaSearch(ctx context.Context) error {
 			if isNonFatalError(err) {
 				o.logger.Printf("search sync: non-fatal error on page %d, stopping early: %v", page, err)
 				if page == 1 {
-					// The very first page failed, so nothing was fetched (e.g. the
-					// token lacks the search:read scope). Return the error so
-					// runSearchSync falls back to full sync instead of reporting a
-					// silent success with zero messages and advancing the watermark.
+					if isRateLimitError(err) {
+						// Slack is already throttling this token: nothing was
+						// fetched, but unlike a scope/permission problem this
+						// is transient. Don't return the error (which would
+						// have runSearchSync fall back to the far more
+						// expensive full sync — exactly wrong while
+						// throttled): just end the cycle with the watermark
+						// untouched and let the next cycle retry via search.
+						// searchRateLimited also makes runSearchSync return
+						// early, skipping the read-state/roster refreshes and
+						// reactions sync (more calls against the same
+						// throttled token) as well as the separate
+						// "zero channels discovered" full-sync fallback.
+						o.searchRateLimited = true
+						o.searchGapNote = "search sync: rate-limited by Slack; retrying next cycle"
+						break
+					}
+					// The very first page failed for any other non-fatal
+					// reason (e.g. the token lacks the search:read scope, or
+					// a dead account/channel), so nothing was fetched. Return
+					// the error so runSearchSync falls back to full sync
+					// instead of reporting a silent success with zero
+					// messages and advancing the watermark — unchanged from
+					// before the rate-limit carve-out above.
 					return fmt.Errorf("search sync (page %d): %w", page, err)
 				}
 				// A later page failed after partial progress: keep what we fetched
