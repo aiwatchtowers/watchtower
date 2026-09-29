@@ -1,0 +1,245 @@
+# Confluence page editing from the chat — design
+
+Date: 2026-09-30. Status: approved in conversation (owner: "A", then the full design, then "go, review, merge when green").
+Builds on: `docs/superpowers/specs/2026-09-26-confluence-knowledge-connector-design.md` (read-only sync, EXT-01..04) and the agent-actions registry (`internal/tools`, AGENT-01..06).
+
+## 1. Goal
+
+From the Watchtower chat the owner works on a Confluence page with the assistant.
+The assistant reads the page **live**, including all its comments. It then
+proposes precise edits, either a fragment replacement or a whole-section
+replacement. The owner sees a word-level diff of only the touched region and
+approves it. The edit is applied only if the page has not changed since the
+preview.
+
+Owner decisions:
+- Comments are **input** only. The assistant reads them but never replies to or resolves them.
+- The edit unit is **both**. The assistant picks `replace_text` for small edits and `replace_section` for rewrites.
+- The approach is **native registry tools** with **markers** for rich elements.
+
+### Non-goals
+
+- Replying to, resolving or creating comments.
+- Creating new pages. Editing attachments. Moving or renaming pages.
+- Edits triggered from Confluence itself, such as `@watchtower` comments.
+- Editing through the sync engine or `ext_*`. The sync stays read-only; EXT-01 is unchanged.
+
+## 2. Auth
+
+- Write scopes are **opt-in**: `write:page:confluence write:blogpost:confluence`
+  (constant `ConfluenceWriteScopes` in `internal/jira/scopes.go`). They are
+  requested only by `jira login|add --with-confluence-write`, which implies
+  `--with-confluence`. The rule that a plain re-login keeps already-granted
+  scopes extends to the write scopes: re-login requests them when the stored
+  token already has them.
+- `HasConfluenceWriteScopes(tok)` mirrors `HasConfluenceScopes`.
+- Without write scopes, `edit_confluence_page`'s Validate returns a
+  `*ValidationError` telling the model to ask the owner to allow editing:
+  `Confluence editing not granted — run: watchtower jira login --account N --with-confluence-write`.
+  In the Desktop, the Confluence section of the Jira account gains an **Allow
+  editing** button, shown when the read scopes are present and the write scopes
+  are not. It runs the re-login with the flag.
+- All writes go through the account's `*jira.Client` via a new
+  `ConfluenceAPI.PutJSON` (method PUT only). It uses the shared single-flight
+  refresh, the 401/429 handling and the `HTTPStatusError`.
+- **EXT-01 is narrowed, not weakened.** The *sync engine and fetcher* stay
+  GET-only. The EXT-01 guard's method pin for `ConfluenceAPI` becomes
+  `{Download, GetJSON, PutJSON}`. A new guard asserts the extsync engine and
+  `confluence.Fetcher` can never reach `PutJSON`: they depend only on the
+  GET-only `confluence.API` interface. EXT-01's inventory text is updated to
+  say so. `PutJSON` is reachable only from `internal/confluenceedit`, the
+  package used by the edit tool.
+- **New contract EXT-05 — Confluence writes are approved, versioned and
+  bounded.**
+  - The only write path is `edit_confluence_page`, which is `External`, so it
+    runs only after Approve (AGENT-03).
+  - Every write carries the base version the owner saw. It is applied only if
+    the live version still equals it, as `PUT` with version+1.
+  - A rich element is removed only if it appears in the approved diff's
+    removal list.
+  - Guards:
+    - `TestEXT05_WriteRequiresMatchingVersion`: a live-version mismatch at apply time means no PUT.
+    - `TestEXT05_RichElementsSurviveUntouched`: a no-op edit round-trips the storage byte for byte.
+    - `TestEXT05_OnlyEditToolReachesPut`: a `go list -deps` / import guard.
+
+## 3. The editable text model (`internal/confluenceedit`)
+
+This is a pure package: no DB, no network. It converts between storage XHTML
+and an **editable text** view, and it applies edits.
+
+- `Parse(storageXHTML) (*Doc, error)` builds a block model. It reuses
+  `internal/confluence`'s normalisation for self-closing `ac:`/`ri:` tags and
+  CDATA escaping, so the rules for real storage input are shared.
+- **Blocks:** heading (h1–h6), paragraph, list (nested), table, code/noformat
+  macro, and "opaque" blocks.
+- **Inline:** text, bold/italic/strike/code, links (`a href`, `ac:link` to a
+  page), line breaks.
+- Anything else becomes a **marker**. This covers user mentions, Jira macros,
+  images, attachments, emoticons, status macros, and any other `ac:*`
+  element or unknown macro, inline or block. Each marker keeps its exact
+  original XHTML bytes.
+- `Doc.Text()` renders the editable text: markdown for the supported
+  formatting, and markers as `⟦k:label⟧`. Here `k` is a stable per-page ordinal
+  and `label` is a human hint, for example `⟦3:jira PROJ-123⟧`, `⟦5:@Ann Lee⟧`,
+  `⟦7:image diagram.png⟧`, `⟦9:macro toc⟧`. Headings render as `#`..`######`.
+  A table renders as a markdown pipe table only when every cell is plain
+  inline content; otherwise the whole table is one opaque block marker.
+- **Round-trip law:** `Render(Parse(x))` equals the canonicalised `x`. This
+  holds by construction: an untouched block re-emits its original bytes. Only
+  blocks that an edit touches are re-serialised from their new text.
+- **Edits:**
+  - `replace_text {old, new}`
+    - `old` is matched against `Doc.Text()` after whitespace normalisation.
+      It must occur **exactly once**, and it must lie within **one block**
+      (a paragraph, list item, table cell, heading or code block). Otherwise
+      the edit fails with a message saying why: not found, ambiguous, or spans
+      blocks.
+    - The block's text is rewritten, and the block alone is re-serialised from
+      the new text via a markdown-inline → XHTML converter.
+    - Markers present in the new text are restored to their original bytes.
+  - `replace_section {heading, new_body}`
+    - `heading` is matched against heading text (exactly one heading must
+      match). The section runs from that heading to the next heading of the
+      same or higher level.
+    - `new_body` is markdown (paragraphs, lists, pipe tables, fenced code,
+      markers). It replaces the section's body; the heading itself is kept.
+    - Converted blocks are emitted as storage XHTML: `p`, `ul/ol/li`, `table`,
+      and the `code` macro with CDATA.
+  - **Markers:**
+    - Each marker in the new text must exist in the original page, and must
+      appear at most once in the whole resulting document.
+    - An unknown or duplicated marker is an error.
+    - A marker present in the replaced region but absent from its new text is
+      **removed**, and it is reported in the removal list.
+- `Apply(doc, edits) (newStorage string, changes []Change, err error)`.
+  `Change{Kind, Locator, Before, After, Removed []string}`. `Before` and
+  `After` are the editable text of the touched region, and they feed the
+  card's diff.
+
+## 4. Tools (`internal/tools/confluence_page.go`)
+
+### `get_confluence_page` (read, chat surfaces main + target)
+
+- Args `{page: string, account?: int}`. `page` is a numeric id, a Confluence URL
+  (`/pages/<id>`), or a title resolved through `kb.Search` restricted to
+  `confluence`. An ambiguous title returns the candidates.
+- The tool is live. It fetches
+  `GET /wiki/api/v2/pages/{id}?body-format=storage` (blogpost fallback) and
+  gets comments through the existing fetcher's `Comments()`.
+- It returns:
+  - `{id, title, space, url, version, text, comments[]}`, where `text` is
+    `Doc.Text()`;
+  - each comment as `{author, created, kind footer|inline, anchor_text,
+    resolved, body, replies[]}`.
+- Caps: `text` is limited to 60 000 runes. The truncation is flagged, and
+  edits stay allowed only outside the truncated tail, which is enforced by
+  Validate. At most 200 comments.
+- `AccessRead`. It makes no writes. It is mounted only in chat mode (`--chat`),
+  never in dev-mode MCP: DEV-01 stays untouched because this is a network
+  read, not a local one.
+
+### `edit_confluence_page` (write, External, chat surfaces main + target)
+
+- Args `{page_id, base_version, edits: [{kind: replace_text|replace_section, old?, new?, heading?, new_body?}], reason?}`.
+- **Validate:**
+  - the write scopes are present;
+  - there are 1–20 edits;
+  - the field shapes are correct.
+- **Normalize** (at propose time):
+  - fetches the live page;
+  - requires `version == base_version`, otherwise returns a ValidationError
+    "page changed since you read it (now vN) — re-read with get_confluence_page";
+  - runs `Apply`.
+  On success it pins into the stored args:
+  `{account_id, page_id, title, url, base_version, new_storage, changes[]}`.
+  `new_storage` is what will be written; `changes` feeds the card.
+- **Execute** (after Approve):
+  - re-fetches the page;
+  - if `version != base_version`, returns an error; the card shows the
+    conflict and nothing is written;
+  - otherwise it issues
+    `PUT /wiki/api/v2/pages/{id}` `{id, status:"current", title, body:{representation:"storage", value:new_storage}, version:{number: base+1, message:"Edited via Watchtower"}}`.
+    A blogpost uses `/blogposts/{id}`.
+  - On success it re-fetches the page into `ext_documents` when that page
+    belongs to a selected source, so search reflects the edit on the next KB
+    cycle. This is best-effort and reported as `warning`.
+  - It returns `{url, version}`.
+- `External: true`, so it never auto-executes (AGENT-03).
+
+Both tools are registered in `cmd/actions_registry.go`'s `buildToolRegistry`,
+through a client factory built from the account's `*jira.Client` (the
+`jiraWriteClientFactory` shape). The registry pin test is updated.
+
+## 5. Chat prompt
+
+The Go chat prompt and the Swift prompt copies (the dual path) gain a short
+Confluence-editing paragraph:
+- read with `get_confluence_page` before editing;
+- keep every `⟦…⟧` marker you don't mean to delete, verbatim;
+- prefer `replace_text` for small edits;
+- pass `base_version` from the read;
+- after a "page changed" error, re-read.
+
+## 6. Desktop
+
+- **`AgentActionCardView`** renders `edit_confluence_page`:
+  - a title line with a link;
+  - per change: the locator (the section heading, or "text in <section>"),
+    followed by a **word-level diff** of Before → After (deleted words struck
+    through in red, inserted words in green);
+  - a "Removes: <labels>" line when `Removed` is non-empty;
+  - on conflict or failure, `result_json.error` is shown verbatim.
+  The word diff is a pure Swift function in WatchtowerCore, a Myers or LCS
+  diff over word tokens, and is unit-tested.
+- **Confluence section:** an **Allow editing** button, visible when read
+  access is OK and write access is not. The CLI reports `can_edit` in
+  `confluence spaces --json` output metadata, or through a new
+  `confluence access --json` command. The button runs
+  `jira login --account N --with-confluence-write` through the existing re-login flow.
+
+## 7. Errors
+
+- Every edit failure at propose time becomes a `ValidationError` with an
+  actionable message the model can follow: not found, ambiguous, spans
+  blocks, unknown or duplicate marker, version changed, no write scope, or
+  the page is too large.
+- At apply time:
+  - a version conflict returns the error `conflict: the page was edited after the preview (now vN); nothing was written`;
+  - 403 means missing scope, with the hint;
+  - 409 from Atlassian is treated the same as a conflict.
+- The card never manufactures success. `result_json` carries the new version.
+
+## 8. Testing
+
+- **`confluenceedit`:**
+  - golden round-trip on real-shape fixtures (the storage fixtures from
+    `internal/confluence/testdata/storage` plus new ones with tables, nested
+    lists, mentions, Jira macros, images, code, panels, layouts);
+  - `replace_text` cases: found, absent, ambiguous, spans blocks, inside a
+    table cell, inside a list item, inline formatting preserved around it;
+  - `replace_section`: the last section, a nested heading level, a new body
+    containing a table, a list and code;
+  - marker kept, marker removed and reported, marker unknown, marker
+    duplicated;
+  - a fuzz round-trip, bounded.
+- **Tools:**
+  - a fake client covering propose → Normalize pinning;
+  - version mismatch at propose;
+  - version conflict at apply, with no PUT;
+  - a successful PUT body shape;
+  - missing write scope;
+  - title resolution: ambiguous and unique.
+- **Guards:** EXT-05 (three tests, §2). The EXT-01 pin update plus the
+  "fetcher/engine can't reach PutJSON" guard.
+- **Swift:** the word-diff unit tests, the card summary lines, and the Allow
+  editing button logic in the VM.
+
+## 9. Slices
+
+1. Scopes plus `PutJSON`, the login flag, and the EXT-01 narrowing guard.
+2. The `confluenceedit` model: parse, text, markers and the round-trip law.
+3. `confluenceedit` edits: replace_text, replace_section, markdown → XHTML.
+4. Tools: get and edit, the registry wiring, the prompts (Go and Swift),
+   EXT-05, and the inventory.
+5. Desktop: the diff card, Allow editing, and the CLI access reporting.
+6. Docs: the CLAUDE.md note and the app-guide.
