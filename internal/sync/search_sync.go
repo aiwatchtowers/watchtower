@@ -44,7 +44,26 @@ func searchWindow(now time.Time, lastDate string, initialDays int) (after string
 	if lastDate != "" {
 		if t, err := time.Parse(searchDateFormat, lastDate); err == nil {
 			candidate := t.AddDate(0, 0, -2)
-			gapDays = int(now.Sub(candidate).Hours() / 24)
+			// gapDays must be an exact calendar-day count, not a real-instant
+			// subtraction: t (and so candidate) comes from time.Parse, which
+			// anchors the date-only string at UTC midnight, while now is the
+			// actual wall-clock instant in the local zone. Subtracting one
+			// from the other mixes a UTC-midnight anchor with a local
+			// time-of-day/offset residual, which time-truncates away as an
+			// off-by-one whenever the local zone sits ahead of UTC (or, in
+			// the other direction, behind it late in the day) — reproduced
+			// by TestSearchWindow under a positive UTC offset. Re-anchor
+			// "now" at its own calendar date's UTC midnight first so the
+			// subtraction is between two midnights and always lands on a
+			// whole number of days.
+			today, err := time.Parse(searchDateFormat, now.Format(searchDateFormat))
+			if err != nil {
+				// now.Format always produces a value time.Parse accepts;
+				// this can't fail, but fall back to the pre-fix math rather
+				// than panic-adjacent silence if it somehow does.
+				today = now
+			}
+			gapDays = int(today.Sub(candidate).Hours() / 24)
 			if gapDays > maxSearchCatchUpDays {
 				return now.AddDate(0, 0, -maxSearchCatchUpDays).Format(searchDateFormat), gapDays, true
 			}
