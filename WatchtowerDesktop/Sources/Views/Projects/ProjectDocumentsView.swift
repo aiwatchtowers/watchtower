@@ -9,6 +9,10 @@ struct ProjectDocumentsView: View {
     @State private var activeThreadID: Int64?
     @State private var composing = false
     @State private var draft = ""
+    /// The render the open composer's `selection` was computed against —
+    /// captured when the composer opens, so a reload while it's open (the
+    /// file watcher fires) is detected before the stale selection is written.
+    @State private var composeRenderVersion = 0
 
     var body: some View {
         HSplitView {
@@ -62,9 +66,12 @@ struct ProjectDocumentsView: View {
             HStack {
                 Text(docVM.document.relPath).font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                Button("Comment") { composing = true }
-                    .disabled(selection.length == 0 || docVM.rendered == nil)
-                    .popover(isPresented: $composing) { composer(docVM) }
+                Button("Comment") {
+                    composeRenderVersion = docVM.renderVersion
+                    composing = true
+                }
+                .disabled(selection.length == 0 || docVM.rendered == nil)
+                .popover(isPresented: $composing) { composer(docVM) }
             }
             .padding(8)
             Divider()
@@ -92,10 +99,17 @@ struct ProjectDocumentsView: View {
                 Spacer()
                 Button("Cancel") { composing = false }
                 Button("Comment") {
-                    let (text, range) = (draft, selection)
-                    draft = ""
-                    composing = false
-                    Task { await docVM.addComment(body: text, selection: range) }
+                    let (text, range, version) = (draft, selection, composeRenderVersion)
+                    Task {
+                        // Only clear the draft and close on a real write: a stale
+                        // `version` (the file reloaded while the popover was open)
+                        // must keep the owner's typed text so they don't lose it.
+                        let wrote = await docVM.addComment(body: text, selection: range, renderVersion: version)
+                        if wrote {
+                            draft = ""
+                            composing = false
+                        }
+                    }
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)

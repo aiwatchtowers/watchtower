@@ -106,6 +106,39 @@ final class ProjectDocumentViewModelTests: XCTestCase {
         XCTAssertEqual(count, 0)
     }
 
+    /// A composer opened against an old render, then a reload swapped `rendered`
+    /// out from under it (e.g. the file watcher fired) before the owner submitted:
+    /// the stale selection must never be written, and the composer's text must
+    /// survive so the owner can re-select and retry.
+    func testAddCommentRefusesAStaleRenderVersionAndKeepsTheDraftRecoverable() async throws {
+        let vm = makeVM()
+        await vm.load()
+        let staleVersion = vm.renderVersion
+        let range = try selection("retry budget small", in: vm)
+
+        try (plan + "\n\n## Task 3\n\nNew task.").write(to: fileURL, atomically: true, encoding: .utf8)
+        await vm.load()
+        XCTAssertNotEqual(vm.renderVersion, staleVersion, "the reload must have bumped the version")
+
+        let wrote = await vm.addComment(body: "Why small?", selection: range, renderVersion: staleVersion)
+        XCTAssertFalse(wrote, "a stale version must refuse the write")
+        XCTAssertNotNil(vm.errorMessage)
+        let count = try await pool.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM project_comments") }
+        XCTAssertEqual(count, 0, "the owner's typed comment must not be persisted against the wrong text")
+    }
+
+    func testAddCommentWritesWhenTheCapturedVersionStillMatches() async throws {
+        let vm = makeVM()
+        await vm.load()
+        let currentVersion = vm.renderVersion
+        let range = try selection("retry budget small", in: vm)
+
+        let wrote = await vm.addComment(body: "Why small?", selection: range, renderVersion: currentVersion)
+        XCTAssertTrue(wrote)
+        let count = try await pool.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM project_comments") }
+        XCTAssertEqual(count, 1)
+    }
+
     func testLostOpenThreadIsMarkedOutdatedAndCountsAsAnOwnerWrite() async throws {
         let vm = makeVM()
         await vm.load()

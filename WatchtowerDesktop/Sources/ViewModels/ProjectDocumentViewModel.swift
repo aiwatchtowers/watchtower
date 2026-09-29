@@ -19,6 +19,11 @@ final class ProjectDocumentViewModel {
     var errorMessage: String?
     /// The reload a file change scheduled (exposed for tests).
     private(set) var pendingReload: Task<Void, Never>?
+    /// Bumped on every successful `load()`. A composer captures this when it
+    /// opens; `addComment` refuses to write if the version has since moved,
+    /// since the selection it holds was computed against a render that no
+    /// longer exists (a reload swapped `rendered` for a fresh one).
+    private(set) var renderVersion = 0
 
     var onOwnerWrite: ((ProjectSubject) -> Void)?
 
@@ -70,6 +75,7 @@ final class ProjectDocumentViewModel {
         guard let text = readDocumentText() else { return }
         let doc = DocumentRendering.render(text)
         rendered = doc
+        renderVersion += 1
         let lost = reanchor(on: doc.text)
         if !lost.isEmpty { await markOutdated(lost) }
         await markRepliesRead()
@@ -144,10 +150,21 @@ final class ProjectDocumentViewModel {
 
     // MARK: - Owner actions
 
-    func addComment(body: String, selection: NSRange) async {
+    /// - Parameter renderVersion: the version the caller's selection was computed against
+    ///   (typically captured when a composer opened). `nil` skips the staleness check — used
+    ///   by callers that don't hold a composer across an `await` boundary. A mismatch means the
+    ///   file reloaded since the selection was made: the write is refused, the selection is
+    ///   surely wrong on the new text, and the caller keeps its draft so the owner can re-select.
+    /// - Returns: whether a comment was written, so a composer knows whether to close/clear.
+    @discardableResult
+    func addComment(body: String, selection: NSRange, renderVersion: Int? = nil) async -> Bool {
+        if let renderVersion, renderVersion != self.renderVersion {
+            errorMessage = "The document changed — select the passage again."
+            return false
+        }
         guard let rendered, selection.length > 0,
               let range = Range(selection, in: rendered.text),
-              !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+              !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
         let anchor = CommentAnchor.make(text: rendered.text, range: range, headings: rendered.headingOffsets)
         let (projectID, documentID) = (project.id, document.id)
         await ownerWrite { db in
@@ -156,6 +173,7 @@ final class ProjectDocumentViewModel {
             )
         }
         anchoredRanges = anchoredRangesAfterAdd(rendered.text)
+        return true
     }
 
     func reply(to rootID: Int64, body: String) async {
