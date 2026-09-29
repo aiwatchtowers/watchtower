@@ -56,7 +56,7 @@ During setup, create no targets, attach no documents and add no comments before 
 When you are the controller executing a plan whose tasks are on the board:
 
 - **Before dispatching a task:** `update_target` its sub-target to `in_progress`, then `list_comments` with its `target_id`. Put every owner comment verbatim into the implementer's brief, marked as the owner's words.
-- **After the task's review passes:** `update_target` to `done` (progress 100), then one `add_comment` on the sub-target: a summary of one to three lines — what landed, the commit, anything the owner should know.
+- **After the task's review passes:** `update_target` to `done` (status alone moves a leaf target's progress to 1.0), then one `add_comment` on the sub-target: a summary of one to three lines — what landed, the commit, anything the owner should know.
 - A task the review sends back stays `in_progress`; post no interim comments.
 - When every sub-target of a feature is done, set the feature target `done` too.
 
