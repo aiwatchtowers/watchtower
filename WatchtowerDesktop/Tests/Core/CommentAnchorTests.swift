@@ -119,4 +119,51 @@ final class CommentAnchorTests: XCTestCase {
         let made = try anchor("виклик 🔁 двічі", in: text)
         XCTAssertEqual(made.locate(in: "Новий абзац.\n\n" + text).map { String(("Новий абзац.\n\n" + text)[$0]) }, "виклик 🔁 двічі")
     }
+
+    // MARK: locate — performance (the collapsed-text path must stay near-linear)
+
+    /// A hand-rolled O(n·m) Character-array scan (the pre-fix implementation)
+    /// took over a second here; the stdlib-search-based version should
+    /// complete near-instantly. The bound is generous to avoid flakiness —
+    /// this is a regression guard against reintroducing quadratic behavior,
+    /// not a tight performance budget.
+    func testReflowMatchOnLargeDocumentCompletesQuickly() throws {
+        let paragraph = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore.\n\n"
+        let padding = String(repeating: paragraph, count: 8_000) // ~1 MB, contains no copy of the quote below.
+        let quote = "jumps over the lazy dog near the riverbank"
+        let made = try anchor(quote, in: "The quick brown fox " + quote + " at dawn.")
+
+        // The reflowed occurrence (line break + double space inside the quote) never matches
+        // exactly, so `locate` must fall through to the collapsed-text search path.
+        let reflowedQuote = "jumps over the\n  lazy dog near the riverbank"
+        let reflowedSentence = "The quick brown fox " + reflowedQuote + " at dawn."
+        let insertAt = padding.index(padding.startIndex, offsetBy: padding.count / 2)
+        let big = String(padding[..<insertAt]) + reflowedSentence + String(padding[insertAt...])
+
+        let start = Date()
+        let found = made.locate(in: big)
+        let elapsed = Date().timeIntervalSince(start)
+
+        XCTAssertLessThan(elapsed, 0.5, "reflow locate on a ~1 MB document should stay near-linear, took \(elapsed)s")
+        XCTAssertEqual(found.map { String(big[$0]) }, reflowedQuote)
+    }
+
+    /// Boundary check on the collapsed-text path itself: a match whose first
+    /// or last character sits at the very edge of the searched text exercises
+    /// the `position`/`origins` bookkeeping at both ends.
+    func testCollapsedMatchAtStartAndEndOfTextBoundaries() throws {
+        let made = try anchor("open the gate now", in: "open the gate now, then relax.")
+
+        let reflowedStart = "open   the\ngate now"
+        let startText = reflowedStart + ", then relax further into the evening."
+        let foundStart = made.locate(in: startText)
+        XCTAssertEqual(foundStart.map { String(startText[$0]) }, reflowedStart)
+        XCTAssertEqual(foundStart?.lowerBound, startText.startIndex)
+
+        let reflowedEnd = "open  the gate\nnow"
+        let endText = "Some preface before the payload arrives.  " + reflowedEnd
+        let foundEnd = made.locate(in: endText)
+        XCTAssertEqual(foundEnd.map { String(endText[$0]) }, reflowedEnd)
+        XCTAssertEqual(foundEnd?.upperBound, endText.endIndex)
+    }
 }

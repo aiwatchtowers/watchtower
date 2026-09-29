@@ -105,30 +105,52 @@ package struct CommentAnchor: Equatable, Sendable {
 
     /// Matches `needle` (already collapsed and trimmed) against `text` with
     /// whitespace runs collapsed, returning ranges in the ORIGINAL text.
+    ///
+    /// Builds the collapsed text once, then delegates the actual substring
+    /// search to `String.range(of:options:.literal,range:)` (the same
+    /// stdlib search `exactOccurrences` uses) instead of a hand-rolled
+    /// Character-array double loop — the naive version was O(n·m) and took
+    /// over a second on a ~1 MB document, tens of seconds on a repetitive
+    /// one. `position`/`cursor` walk the collapsed text forward in lockstep
+    /// with the search (never backward), so translating every hit back to
+    /// `origins` costs O(collapsed length) in total across the whole
+    /// search, not per hit.
     private static func collapsedOccurrences(of needle: [Character], in text: String) -> [Range<String.Index>] {
-        var chars: [Character] = []
+        var collapsedText = ""
         var origins: [String.Index] = []
         var lastWasSpace = false
         for index in text.indices {
             let character = text[index]
             if character.isWhitespace {
                 if !lastWasSpace {
-                    chars.append(" ")
+                    collapsedText.append(" ")
                     origins.append(index)
                 }
                 lastWasSpace = true
             } else {
-                chars.append(character)
+                collapsedText.append(character)
                 origins.append(index)
                 lastWasSpace = false
             }
         }
-        guard chars.count >= needle.count else { return [] }
+        guard origins.count >= needle.count else { return [] }
+        let needleString = String(needle)
+
         var found: [Range<String.Index>] = []
-        for start in 0...(chars.count - needle.count) where chars[start] == needle[0] {
-            guard chars[start..<(start + needle.count)].elementsEqual(needle) else { continue }
-            let last = origins[start + needle.count - 1]
-            found.append(origins[start]..<text.index(after: last))
+        var searchStart = collapsedText.startIndex
+        var cursor = collapsedText.startIndex
+        var position = 0
+        while searchStart < collapsedText.endIndex,
+              let hit = collapsedText.range(of: needleString, options: .literal, range: searchStart..<collapsedText.endIndex) {
+            while cursor < hit.lowerBound {
+                cursor = collapsedText.index(after: cursor)
+                position += 1
+            }
+            let last = origins[position + needle.count - 1]
+            found.append(origins[position]..<text.index(after: last))
+            searchStart = collapsedText.index(after: hit.lowerBound)
+            cursor = collapsedText.index(after: cursor)
+            position += 1
         }
         return found
     }
