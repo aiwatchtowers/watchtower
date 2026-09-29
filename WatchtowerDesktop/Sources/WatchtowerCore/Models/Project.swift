@@ -158,6 +158,28 @@ package struct ProjectCommentThread: Identifiable, Equatable, Sendable {
     }
 }
 
+extension ProjectCommentThread {
+    /// The thread as `CommentThreadView` shows it — the same labels the
+    /// Phase 4 view derived itself ("You"/the agent's label/"Agent";
+    /// "Resolved"/"Outdated — the quoted text changed").
+    package var content: CommentThreadContent {
+        let note: String? = switch root.status {
+        case "open": nil
+        case "resolved": "Resolved"
+        default: "Outdated — the quoted text changed"
+        }
+        return CommentThreadContent(
+            id: id,
+            quote: root.anchorQuote,
+            statusNote: note,
+            entries: ([root] + replies).map { comment in
+                let author = comment.isAgent ? (comment.agentLabel.isEmpty ? "Agent" : comment.agentLabel) : "You"
+                return CommentThreadContent.Entry(id: comment.id, author: author, body: comment.body)
+            }
+        )
+    }
+}
+
 /// One node of a project board: a project target with its sub-targets and
 /// the counters the board badges show.
 package struct ProjectBoardNode: Identifiable, Equatable {
@@ -170,6 +192,16 @@ package struct ProjectBoardNode: Identifiable, Equatable {
     package let documents: [ProjectDocument]
 
     package var id: Int { target.id }
+}
+
+/// A row of the Documents pane's list.
+package struct ProjectDocumentListItem: Identifiable, Equatable, Sendable {
+    package let document: ProjectDocument
+    package let targetTitle: String?
+    /// Open owner threads (roots) on the document.
+    package let openComments: Int
+
+    package var id: Int64 { document.id }
 }
 
 /// A project list row.

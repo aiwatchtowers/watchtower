@@ -168,6 +168,48 @@ final class ProjectsViewModelTests: XCTestCase {
         XCTAssertEqual(appState.selectedDestination, .projects)
         XCTAssertEqual(appState.pendingProjectRoute, ProjectRoute(projectID: 2, pane: .board))
     }
+
+    func testOpenDocumentMarksItViewedAndKeepsItsViewModelAcrossPaneSwitches() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent("docs"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try "# Plan".write(to: folder.appendingPathComponent("docs/plan.md"), atomically: true, encoding: .utf8)
+        let p = try await pool.write { d -> Int64 in
+            let p = try TestDatabase.insertProject(d, folder: folder.path)
+            _ = try TestDatabase.insertProjectDocument(d, projectID: p)
+            return p
+        }
+        let vm = makeVM()
+        await vm.reload()
+        vm.selectedProjectID = p
+        await vm.loadDocuments()
+        let doc = try XCTUnwrap(vm.documents.first?.document)
+
+        await vm.openDocument(doc)
+        let opened = try XCTUnwrap(vm.documentViewModel)
+        XCTAssertFalse(vm.isRevised(doc))
+        vm.pane = .terminal
+        vm.pane = .documents
+        XCTAssertTrue(vm.documentViewModel === opened)
+        XCTAssertEqual(opened.rendered?.text, "Plan\n\n")
+        vm.closeDocument()
+    }
+
+    func testSwitchingProjectClosesTheOpenDocument() async throws {
+        let (p1, p2) = try await pool.write { d -> (Int64, Int64) in
+            let p1 = try TestDatabase.insertProject(d, name: "one", folder: "/tmp/one")
+            _ = try TestDatabase.insertProjectDocument(d, projectID: p1)
+            return (p1, try TestDatabase.insertProject(d, name: "two", folder: "/tmp/two"))
+        }
+        let vm = makeVM()
+        await vm.reload()
+        vm.selectedProjectID = p1
+        await vm.loadDocuments()
+        await vm.openDocument(try XCTUnwrap(vm.documents.first?.document))
+        XCTAssertNotNil(vm.documentViewModel)
+        vm.selectedProjectID = p2
+        XCTAssertNil(vm.documentViewModel)
+    }
 }
 
 /// Returns one scripted result per call, in order (the last one repeats).

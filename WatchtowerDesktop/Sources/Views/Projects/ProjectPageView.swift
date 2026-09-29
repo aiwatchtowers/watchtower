@@ -64,13 +64,13 @@ struct ProjectPageView: View {
         case .board:
             ProjectPanePlaceholder(title: "Board")
         case .documents:
-            ProjectPanePlaceholder(title: "Documents")
+            ProjectDocumentsView(vm: vm)
         }
     }
 }
 
-/// A pane that is not built yet in this phase. Task 16 replaces Documents,
-/// Task 17 Terminal, Task 19 Board.
+/// A pane that is not built yet in this phase. Task 17 replaces Terminal,
+/// Task 19 Board.
 struct ProjectPanePlaceholder: View {
     let title: String
 

@@ -82,6 +82,28 @@ package enum ProjectQueries {
         try ProjectDocument.fetchOne(db, sql: "SELECT * FROM project_documents WHERE id = ?", arguments: [id])
     }
 
+    /// The Documents pane's list row: each document with its linked target's
+    /// title (if any) and its open owner-thread count.
+    package static func documentListItems(_ db: Database, projectID: Int64) throws -> [ProjectDocumentListItem] {
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT d.*, t.text AS target_title,
+                   (SELECT COUNT(*) FROM project_comments c
+                    WHERE c.document_id = d.id AND c.parent_id IS NULL
+                      AND c.author = 'owner' AND c.status = 'open') AS open_comments
+            FROM project_documents d
+            LEFT JOIN targets t ON t.id = d.target_id
+            WHERE d.project_id = ?
+            ORDER BY d.updated_at DESC, d.id DESC
+            """, arguments: [projectID])
+        return rows.map { row in
+            ProjectDocumentListItem(
+                document: ProjectDocument(row: row),
+                targetTitle: row["target_title"],
+                openComments: row["open_comments"]
+            )
+        }
+    }
+
     // MARK: - Comments
 
     package static func comments(_ db: Database, documentID: Int64) throws -> [ProjectComment] {

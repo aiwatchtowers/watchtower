@@ -157,4 +157,25 @@ final class ProjectQueriesTests: XCTestCase {
             XCTAssertTrue(threads[1].replies.isEmpty)
         }
     }
+
+    func testDocumentListItemsCarryTheLinkedTargetAndOpenOwnerThreads() throws {
+        try db.write { d in
+            let p = try TestDatabase.insertProject(d)
+            let t = try TestDatabase.insertProjectTarget(d, projectID: p, text: "Payments feature")
+            let linked = try TestDatabase.insertProjectDocument(
+                d, projectID: p, relPath: "docs/plan.md", targetID: t, updatedAt: "2026-09-29T11:00:00Z"
+            )
+            let loose = try TestDatabase.insertProjectDocument(d, projectID: p, relPath: "docs/notes.md", updatedAt: "2026-09-29T10:00:00Z")
+            let root = try TestDatabase.insertProjectComment(d, projectID: p, author: "owner", documentID: linked, quote: "x")
+            _ = try TestDatabase.insertProjectComment(d, projectID: p, author: "owner", documentID: linked, status: "resolved", quote: "y")
+            _ = try TestDatabase.insertProjectComment(d, projectID: p, documentID: linked, parentID: root)
+
+            let items = try ProjectQueries.documentListItems(d, projectID: p)
+            XCTAssertEqual(items.map(\.id), [linked, loose])
+            XCTAssertEqual(items[0].targetTitle, "Payments feature")
+            XCTAssertEqual(items[0].openComments, 1, "open owner roots only — not resolved roots, not replies")
+            XCTAssertNil(items[1].targetTitle)
+            XCTAssertEqual(items[1].openComments, 0)
+        }
+    }
 }

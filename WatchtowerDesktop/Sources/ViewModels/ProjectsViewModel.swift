@@ -16,7 +16,14 @@ final class ProjectsViewModel {
     static let viewedDocumentsKey = "projects.viewedDocuments"
 
     private(set) var summaries: [ProjectSummary] = []
-    var selectedProjectID: Int64?
+    var selectedProjectID: Int64? {
+        didSet {
+            if selectedProjectID != oldValue {
+                closeDocument()
+                documents = []
+            }
+        }
+    }
     var pane: ProjectPane = .terminal
     /// The document the documents pane should open next (a deep link); the
     /// pane consumes and clears it.
@@ -25,6 +32,10 @@ final class ProjectsViewModel {
     private(set) var repairing: Set<Int64> = []
     var errorMessage: String?
     private(set) var installStatus: [Int64: ProjectInstallStatus] = [:]
+    private(set) var documents: [ProjectDocumentListItem] = []
+    /// The open document. Kept here (not in the view) so it survives pane
+    /// switches and tab changes with its watcher running.
+    private(set) var documentViewModel: ProjectDocumentViewModel?
 
     /// A project was created: Task 17 opens its terminal with the first-run
     /// prompt, Task 18 seeds its notification baseline.
@@ -138,5 +149,34 @@ final class ProjectsViewModel {
             errorMessage = "Repair failed: \(error.localizedDescription)"
         }
         await refreshInstallStatus(projectID: projectID)
+    }
+
+    func loadDocuments() async {
+        guard let projectID = selectedProjectID else { return }
+        do {
+            documents = try await dbPool.read { try ProjectQueries.documentListItems($0, projectID: projectID) }
+        } catch {
+            errorMessage = "Could not load documents: \(error.localizedDescription)"
+        }
+    }
+
+    func openDocument(_ document: ProjectDocument) async {
+        guard let project = selectedProject, project.id == document.projectID else { return }
+        if documentViewModel?.document.id != document.id {
+            closeDocument()
+            let docVM = ProjectDocumentViewModel(dbPool: dbPool, project: project, document: document)
+            docVM.onOwnerWrite = { [weak self] subject in self?.onOwnerWrite?(project.id, subject) }
+            docVM.startWatching()
+            documentViewModel = docVM
+        }
+        await documentViewModel?.load()
+        if let loaded = documentViewModel?.document { markDocumentViewed(loaded) }
+        await loadDocuments()
+        await reload()
+    }
+
+    func closeDocument() {
+        documentViewModel?.stopWatching()
+        documentViewModel = nil
     }
 }
