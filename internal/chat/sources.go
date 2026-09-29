@@ -58,6 +58,7 @@ var sourceExtractors = map[string]func([]byte) (string, []Source){
 	"get_person":             personSource,
 	"get_digest":             digestSource,
 	"get_target":             targetSource,
+	"WebSearch":              webSearchSources,
 }
 
 type kbDoc struct {
@@ -138,6 +139,44 @@ func knowledgeDocSource(raw []byte) (string, []Source) {
 		return "", nil
 	}
 	return "Opened " + d.Title, []Source{d.source()}
+}
+
+// webGroup files every web search hit together.
+const webGroup = "Web"
+
+// webSearchSources parses Claude Code's WebSearch result: plain text with one
+// or more `Links: [{"title":…,"url":…}, …]` lines among the search notes.
+func webSearchSources(raw []byte) (string, []Source) {
+	var sources []Source
+	titles := make([]string, 0, 3)
+	for _, line := range strings.Split(string(raw), "\n") {
+		rest, ok := strings.CutPrefix(strings.TrimSpace(line), "Links:")
+		if !ok {
+			continue
+		}
+		var links []struct{ Title, URL string }
+		// Decode, not Unmarshal: tolerate text after the array on the line.
+		if json.NewDecoder(strings.NewReader(rest)).Decode(&links) != nil {
+			continue
+		}
+		for _, l := range links {
+			if l.URL == "" {
+				continue
+			}
+			sources = append(sources, Source{Kind: "web", Title: l.Title, URL: l.URL, Group: webGroup})
+			if len(titles) < 3 && l.Title != "" {
+				titles = append(titles, l.Title)
+			}
+		}
+	}
+	if len(sources) == 0 {
+		return "", nil
+	}
+	summary := fmt.Sprintf("%d web results", len(sources))
+	if len(titles) > 0 {
+		summary += ": " + strings.Join(titles, "; ")
+	}
+	return summary, sources
 }
 
 type jiraIssueView struct {

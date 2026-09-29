@@ -65,6 +65,7 @@ struct SourcesSummaryRow: View {
         case "meeting": "waveform"
         case "document": "doc.text"
         case "person": "person.crop.circle"
+        case "web": "globe"
         default: "link"
         }
     }

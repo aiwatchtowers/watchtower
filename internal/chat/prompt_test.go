@@ -127,6 +127,30 @@ func TestBuildSystemPrompt_GatesAndSurfaces(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// WebSearch swaps the "no internet" rule for the web-search rules; without it
+// the prompt keeps promising no internet access (the golden pins that side).
+func TestBuildSystemPrompt_WebSearch(t *testing.T) {
+	d, cfg, o := promptFixture(t)
+
+	got, err := BuildSystemPrompt(context.Background(), d, cfg, o)
+	require.NoError(t, err)
+	assert.Contains(t, got, "NO internet access")
+	assert.NotContains(t, got, "=== WEB SEARCH ===")
+
+	o.WebSearch = true
+	got, err = BuildSystemPrompt(context.Background(), d, cfg, o)
+	require.NoError(t, err)
+	assert.NotContains(t, got, "NO internet access")
+	assert.Contains(t, got, "=== WEB SEARCH ===")
+	assert.Contains(t, got, "Never put private data from the owner's sources into a search query")
+	assert.Less(t, strings.Index(got, "=== WEB SEARCH ==="), strings.Index(got, "=== WORKFLOW ==="))
+
+	o.ToolsAvailable = false
+	got, err = BuildSystemPrompt(context.Background(), d, cfg, o)
+	require.NoError(t, err)
+	assert.NotContains(t, got, "=== WEB SEARCH ===", "no tools → no web search either")
+}
+
 // TestBuildSystemPrompt_RemovedSlackAccountStaysLinkable pins Important I1
 // (task-5-review.md): `slack remove` is non-destructive, so a removed
 // account's namespaced "N:" ids stay in synced data and in tool results the
