@@ -75,6 +75,53 @@ func TestSearchWindow(t *testing.T) {
 	}
 }
 
+// TestSearchWindow_DeterministicAcrossUTCOffset pins the fix for the
+// production bug found via the ambient-TZ-dependent test flakes: searchWindow
+// used to compute gapDays by subtracting a UTC-midnight time.Parse anchor
+// from the real local-zone `now` instant, which leaked the local UTC offset
+// and time-of-day into the day count and truncated away as an off-by-one
+// whenever the local zone sat ahead of UTC. This test constructs `now`
+// directly at extreme positive and negative offsets (UTC+14, UTC-8) and at
+// both sides of local midnight (23:30 and 00:30), so it is deterministic
+// regardless of the machine's or CI's ambient timezone or time of day — no
+// t.Setenv("TZ"), which time.Now()'s already-cached time.Local would ignore.
+// No t.Parallel: mutating the package-global time.Local would race any
+// sibling test that also reads it.
+func TestSearchWindow_DeterministicAcrossUTCOffset(t *testing.T) {
+	prevLocal := time.Local
+	t.Cleanup(func() { time.Local = prevLocal })
+
+	offsets := []struct {
+		name   string
+		offset int // seconds east of UTC
+	}{
+		{"UTC+14", 14 * 3600},
+		{"UTC-8", -8 * 3600},
+	}
+	clockTimes := []struct {
+		hour, min int
+	}{
+		{23, 30}, // just before local midnight
+		{0, 30},  // just after local midnight
+	}
+
+	for _, oc := range offsets {
+		for _, ct := range clockTimes {
+			time.Local = time.FixedZone(oc.name, oc.offset)
+			now := time.Date(2026, 9, 30, ct.hour, ct.min, 0, 0, time.Local)
+
+			lastDate := now.AddDate(0, 0, -10).Format(searchDateFormat)
+			after, gapDays, clamped := searchWindow(now, lastDate, 7)
+
+			assert.Equal(t, 12, gapDays,
+				"offset=%s now=%v lastDate=%s: gapDays must be an exact calendar-day count", oc.name, now, lastDate)
+			assert.False(t, clamped, "offset=%s now=%v", oc.name, now)
+			assert.Equal(t, now.AddDate(0, 0, -12).Format(searchDateFormat), after,
+				"offset=%s now=%v", oc.name, now)
+		}
+	}
+}
+
 // TestSearchWindow_InvalidWatermarkFallsBackToFirstRun covers a corrupt
 // search_last_date value (should never happen since Watchtower is the only
 // writer, but the parse can't be trusted blindly) falling back to the same
