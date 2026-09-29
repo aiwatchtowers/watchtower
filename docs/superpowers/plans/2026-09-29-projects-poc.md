@@ -19,6 +19,8 @@ Detailed task steps live in per-phase files (same numbering):
 - `docs/superpowers/plans/2026-09-29-projects-poc/phase4-desktop-terminal-docs.md` — Tasks 13–18
 - `docs/superpowers/plans/2026-09-29-projects-poc/phase5-board-briefing-docs.md` — Tasks 19–22
 
+Each phase file ends with an **Interface errata** section. Errata are binding and override the interface list below (e.g. `CreateProjectTargetsTx` is a batch call over `[]ProjectTargetInput`; `WithTx`/`ErrNotInProject` come from Task 2; `integrate status --project N --json` is `{project_id, folder, skill, skill_path, hook, mcp, claude_found}`).
+
 ## Global Constraints
 
 - Everything in the repo (code, comments, docs, commits) in English. Public repo hygiene: no real ids/names/paths in fixtures — placeholders only (`acme`, `/tmp/…`, `t.TempDir()`).
