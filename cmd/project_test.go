@@ -31,6 +31,7 @@ func runProject(t *testing.T, args ...string) (stdout, stderr string, err error)
 	projectFlagJSON = false
 	projectCreateFlagFolder = ""
 	projectCreateFlagName = ""
+	projectBriefFlagProject = 0
 	return out.String(), errOut.String(), err
 }
 
