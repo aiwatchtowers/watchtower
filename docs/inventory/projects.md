@@ -52,10 +52,10 @@ calls on it.
 
 ## PROJ-02 — delete leaves nothing
 
-**Status:** Enforced for the database; the folder half lands with Task 12
+**Status:** Enforced
 
 **Observable:** `watchtower project delete N` first runs the folder removal
-(`projectRemoveInstall`, wired to `devpack.RemoveProject` in Task 12: the
+(`projectRemoveInstall`, wired to `devpack.RemoveProject`: the
 `watchtower-project` skill, our `SessionStart` hook entry, the local
 `watchtower-project` MCP registration and the `.git/info/exclude` lines
 Watchtower added) — a removal failure is reported and the delete still
@@ -64,7 +64,9 @@ source, document entry and comment in the same transaction
 (`db.DeleteProject`, `ON DELETE CASCADE` from `projects`). A Claude Code
 session still connected answers `project N no longer exists` on every tool
 (DEV-06). The document files themselves are the owner's and stay in the
-folder.
+folder. An exclude line is removed only when its path is gone — a skill the
+owner edited (kept, PROJ-04) or a settings file holding the owner's own keys
+keeps its line, so removal never surfaces an owner file in `git status`.
 
 **Why locked:** Owner decision D7. A half-deleted project — orphan targets, a
 hook that briefs about a project that no longer exists, an MCP server
@@ -75,6 +77,10 @@ must be able to undo the whole feature for a folder in one step.
 - `internal/db/projects_test.go::TestProj02_DeleteProjectLeavesNoRows`
 - `internal/tools/registry_project_test.go::TestProjectBinding_DeletedProjectAnswersNoLongerExists`
 - `internal/mcp/project_test.go::TestProjectMode_DeletedProjectEveryToolAnswersNoLongerExists`
+- `internal/devpack/project_test.go::TestProj02_RemoveProjectLeavesNothingInstalled`
+- `internal/devpack/project_test.go::TestProj02_RemoveProjectLeavesGitStatusClean`
+- `internal/devpack/project_test.go::TestProj02_RemoveProjectKeepsOwnerSettingsButDropsOurHook`
+- `cmd/integrate_project_test.go::TestProj02_ProjectDeleteRunsTheFolderRemoval`
 
 **Locked since:** 2026-09-29
 
@@ -102,7 +108,7 @@ side, by review: `grep -nE "os\.(WriteFile|Create|OpenFile|Rename|Remove)" inter
 
 ## PROJ-04 — the install never overwrites the owner's content
 
-**Status:** Planned (the installer lands with Tasks 11–12)
+**Status:** Enforced
 
 **Observable:** `watchtower integrate claude-code --project N` merges into
 `DIR/.claude/settings.local.json` preserving every key and every hook the
@@ -117,7 +123,11 @@ is never overwritten or deleted.
 that dropped one of the owner's settings keys or hooks, or clobbered an edited
 skill, would make every later `integrate` a risk to the owner's own setup.
 
-**Test guards:** land with Tasks 11–12 (Task 12 Step 9 records them here).
+**Test guards:**
+- `internal/devpack/project_settings_test.go::TestProj04_InstallKeepsOwnerSettingsKeysAndHooks`
+- `internal/devpack/project_settings_test.go::TestProj04_MalformedSettingsLeftByteIdentical`
+- `internal/devpack/project_settings_test.go::TestProj04_RemoveDeletesOnlyOurHook`
+- `internal/devpack/project_test.go::TestProj04_EditedProjectSkillIsNeverClobbered`
 
 **Locked since:** 2026-09-29
 
