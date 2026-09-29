@@ -1,12 +1,25 @@
 ---
 type: chore
 title: Sentrux god-file count is driven by name-based method resolution
-status: open
+status: resolved
 priority: med
 tags: [ci, sentrux, quality-gate, false-positive]
 context: PR #6 (fix/backlog-desktop-wave1) — Sentrux Quality Gate failed after merging main (god files 76 -> 96)
 created: 2026-09-28
+resolved: 2026-09-29
 ---
+
+**Resolved 2026-09-29 (owner decision):** the blocking CI job no longer runs
+`sentrux gate .` directly. `scripts/sentrux-gate.sh` measures the committed
+tree (a `git archive HEAD` scratch copy, so untracked/uncommitted noise never
+leaks in) with the real `sentrux gate`, then reclassifies a failure whose
+SOLE cause is the god-file count as informational — quality, coupling, import
+cycles and complex-function regressions still block exactly as before.
+`scripts/god-files.sh` (the committed source-file roster at fan-out > 30) is
+unaffected and remains the actual god-file protection. Wired into
+`.github/workflows/ci.yml`'s `sentrux-quality` job and `make sentrux-gate`
+(so `make quality`/`make release-check` pick it up too). First option below
+was the one taken; the other two are left as-is / superseded.
 
 `sentrux gate`'s god-file count (fan-out > 15) is not a property of the file
 being measured. Sentrux resolves an unresolved method call by its bare name to

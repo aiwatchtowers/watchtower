@@ -101,14 +101,16 @@ clean:
 
 # Architectural rules + structural regression via sentrux.
 # `make quality` runs both: check (rules in .sentrux/rules.toml) and gate
-# (regression vs .sentrux/baseline.json). `make sentrux-baseline` refreshes
-# the baseline after intentional structural changes.
+# (regression vs .sentrux/baseline.json, via scripts/sentrux-gate.sh — see
+# that script's header for why it doesn't block on the raw god-file count).
+# `make sentrux-baseline` refreshes the baseline after intentional structural
+# changes.
 SENTRUX ?= $(shell command -v sentrux 2>/dev/null || echo /opt/homebrew/bin/sentrux)
 sentrux-check:
 	$(SENTRUX) check .
 
 sentrux-gate:
-	$(SENTRUX) gate .
+	scripts/sentrux-gate.sh
 
 sentrux-baseline:
 	$(SENTRUX) gate --save .
