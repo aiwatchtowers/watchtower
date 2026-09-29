@@ -32,6 +32,9 @@ CREATE INDEX idx_channels_name ON channels(name)
 index	idx_channels_type
 CREATE INDEX idx_channels_type ON channels(type)
 
+index	idx_chat_artifact_comments_key
+CREATE INDEX idx_chat_artifact_comments_key ON chat_artifact_comments(conversation_id, artifact_key)
+
 index	idx_chat_attachments_conversation
 CREATE INDEX idx_chat_attachments_conversation ON chat_attachments(conversation_id)
 
@@ -547,6 +550,24 @@ num_members INTEGER NOT NULL DEFAULT 0,
 last_read TEXT NOT NULL DEFAULT '', -- Slack conversations.mark cursor (message ts)
 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 , digest_considered_ts INTEGER)
+
+table	chat_artifact_comments
+CREATE TABLE chat_artifact_comments (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+artifact_key TEXT NOT NULL,
+artifact_version INTEGER NOT NULL,
+body TEXT NOT NULL,
+anchor_quote TEXT NOT NULL,
+anchor_prefix TEXT NOT NULL DEFAULT '',
+anchor_suffix TEXT NOT NULL DEFAULT '',
+anchor_heading TEXT NOT NULL DEFAULT '',
+status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','sent','resolved','outdated')),
+created_at REAL NOT NULL,
+sent_at REAL,
+CHECK (anchor_quote != '' AND body != ''),
+CHECK (status != 'sent' OR sent_at IS NOT NULL)
+)
 
 table	chat_artifacts
 CREATE TABLE chat_artifacts (
@@ -2359,6 +2380,20 @@ END
 9	last_read	TEXT	notnull=1	dflt=''	pk=0
 10	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
 11	digest_considered_ts	INTEGER	notnull=0	dflt=NULL	pk=0
+
+## chat_artifact_comments
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	conversation_id	INTEGER	notnull=1	dflt=NULL	pk=0
+2	artifact_key	TEXT	notnull=1	dflt=NULL	pk=0
+3	artifact_version	INTEGER	notnull=1	dflt=NULL	pk=0
+4	body	TEXT	notnull=1	dflt=NULL	pk=0
+5	anchor_quote	TEXT	notnull=1	dflt=NULL	pk=0
+6	anchor_prefix	TEXT	notnull=1	dflt=''	pk=0
+7	anchor_suffix	TEXT	notnull=1	dflt=''	pk=0
+8	anchor_heading	TEXT	notnull=1	dflt=''	pk=0
+9	status	TEXT	notnull=1	dflt='open'	pk=0
+10	created_at	REAL	notnull=1	dflt=NULL	pk=0
+11	sent_at	REAL	notnull=0	dflt=NULL	pk=0
 
 ## chat_artifacts
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
