@@ -71,4 +71,24 @@ func TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces(t *testing.T) {
 	for _, w := range jiraWrites {
 		assert.False(t, reaction[w], "%s has no reacted message to act on", w)
 	}
+
+	// The project surface (`mcp --project N`, DEV-06): exactly the project
+	// tools plus the surface-less read tools — no other write tool, nothing
+	// External — and no project tool leaks onto another surface.
+	projectTools := []string{
+		"project_info", "project_board", "update_project", "add_project_source", "remove_project_source",
+		"create_targets", "update_target", "attach_document", "list_comments", "add_comment", "resolve_comment",
+	}
+	project := names("project")
+	for _, p := range projectTools {
+		assert.True(t, project[p], "%s missing on the project surface", p)
+		assert.False(t, main[p] || target[p] || reaction[p], "%s is project-surface only", p)
+	}
+	for _, rt := range tools.ReadTools() {
+		assert.True(t, project[rt.Name], "read tool %s missing on the project surface", rt.Name)
+	}
+	assert.Len(t, project, len(projectTools)+len(tools.ReadTools()), "nothing else on the project surface")
+	for _, tool := range reg.List("project") {
+		assert.False(t, tool.External, "%s is External on the project surface (DEV-06)", tool.Name)
+	}
 }

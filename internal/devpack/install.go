@@ -141,21 +141,30 @@ func Status(skillsDir string) ([]SkillStatus, error) {
 	skills := Skills()
 	out := make([]SkillStatus, 0, len(skills))
 	for _, s := range skills {
-		file := filepath.Join(skillsDir, s.Name, "SKILL.md")
-		if _, err := os.Stat(file); os.IsNotExist(err) {
-			out = append(out, SkillStatus{Name: s.Name, State: StateMissing, Path: file})
-			continue
-		}
-		state, err := planFor(file, s)
+		st, err := statusSkill(skillsDir, s)
 		if err != nil {
 			return out, err
 		}
-		if state == StateInstalled {
-			state = StateMissing
-		}
-		out = append(out, SkillStatus{Name: s.Name, State: state, Path: file})
+		out = append(out, st)
 	}
 	return out, nil
+}
+
+// statusSkill is Status's decision for exactly one skill; the project
+// install reports its own skill through it too.
+func statusSkill(skillsDir string, s Skill) (SkillStatus, error) {
+	file := filepath.Join(skillsDir, s.Name, "SKILL.md")
+	if _, err := os.Stat(file); os.IsNotExist(err) {
+		return SkillStatus{Name: s.Name, State: StateMissing, Path: file}, nil
+	}
+	state, err := planFor(file, s)
+	if err != nil {
+		return SkillStatus{}, err
+	}
+	if state == StateInstalled {
+		state = StateMissing
+	}
+	return SkillStatus{Name: s.Name, State: state, Path: file}, nil
 }
 
 // Remove deletes only the skills we shipped and still own: the file must
@@ -172,45 +181,51 @@ func Remove(skillsDir string) ([]SkillStatus, error) {
 	skills := Skills()
 	out := make([]SkillStatus, 0, len(skills))
 	for _, s := range skills {
-		dir := filepath.Join(skillsDir, s.Name)
-		file := filepath.Join(dir, "SKILL.md")
-
-		existing, err := os.ReadFile(file)
-		if os.IsNotExist(err) {
-			out = append(out, SkillStatus{Name: s.Name, State: StateMissing, Path: file})
-			continue
-		}
-		if err != nil {
-			return out, fmt.Errorf("reading %s: %w", file, err)
-		}
-		if !HasMarker(string(existing)) {
-			out = append(out, SkillStatus{Name: s.Name, State: StateForeign, Path: file})
-			continue
-		}
-		state, err := planFor(file, s)
+		st, err := removeSkill(skillsDir, s)
 		if err != nil {
 			return out, err
 		}
-		if state == StateDrifted {
-			out = append(out, SkillStatus{Name: s.Name, State: StateDrifted, Path: file})
-			continue
-		}
-
-		if err := os.Remove(file); err != nil && !os.IsNotExist(err) {
-			return out, fmt.Errorf("removing %s: %w", file, err)
-		}
-		if err := os.Remove(filepath.Join(dir, shippedDigestFile)); err != nil && !os.IsNotExist(err) {
-			return out, fmt.Errorf("removing sidecar in %s: %w", dir, err)
-		}
-		// Best-effort: only an empty directory is dropped. Any companion
-		// file left inside — ours or the user's — keeps the directory alive.
-		if entries, err := os.ReadDir(dir); err == nil && len(entries) == 0 {
-			_ = os.Remove(dir)
-		}
-
-		out = append(out, SkillStatus{Name: s.Name, State: StateRemoved, Path: file})
+		out = append(out, st)
 	}
 	return out, nil
+}
+
+// removeSkill is Remove's decision for exactly one skill: only a marked,
+// un-edited copy is deleted, by name, with its sidecar.
+func removeSkill(skillsDir string, s Skill) (SkillStatus, error) {
+	dir := filepath.Join(skillsDir, s.Name)
+	file := filepath.Join(dir, "SKILL.md")
+
+	existing, err := os.ReadFile(file)
+	if os.IsNotExist(err) {
+		return SkillStatus{Name: s.Name, State: StateMissing, Path: file}, nil
+	}
+	if err != nil {
+		return SkillStatus{}, fmt.Errorf("reading %s: %w", file, err)
+	}
+	if !HasMarker(string(existing)) {
+		return SkillStatus{Name: s.Name, State: StateForeign, Path: file}, nil
+	}
+	state, err := planFor(file, s)
+	if err != nil {
+		return SkillStatus{}, err
+	}
+	if state == StateDrifted {
+		return SkillStatus{Name: s.Name, State: StateDrifted, Path: file}, nil
+	}
+
+	if err := os.Remove(file); err != nil && !os.IsNotExist(err) {
+		return SkillStatus{}, fmt.Errorf("removing %s: %w", file, err)
+	}
+	if err := os.Remove(filepath.Join(dir, shippedDigestFile)); err != nil && !os.IsNotExist(err) {
+		return SkillStatus{}, fmt.Errorf("removing sidecar in %s: %w", dir, err)
+	}
+	// Best-effort: only an empty directory is dropped. Any companion
+	// file left inside — ours or the user's — keeps the directory alive.
+	if entries, err := os.ReadDir(dir); err == nil && len(entries) == 0 {
+		_ = os.Remove(dir)
+	}
+	return SkillStatus{Name: s.Name, State: StateRemoved, Path: file}, nil
 }
 
 // The sidecar records the digest of what WE last wrote, which is how a pack

@@ -188,7 +188,7 @@ func TestCallRead_ReturnsDataAndWritesNoRow(t *testing.T) {
 	reg := New(database)
 	require.NoError(t, reg.Register(newPeekTool(t, &executed)))
 
-	data, err := reg.CallRead(context.Background(), "peek", json.RawMessage(`{"query":"x"}`))
+	data, err := reg.CallRead(context.Background(), "peek", json.RawMessage(`{"query":"x"}`), Binding{})
 	require.NoError(t, err)
 	assert.Equal(t, map[string]any{"found": float64(2)}, data)
 	require.Len(t, executed, 1)
@@ -206,7 +206,7 @@ func TestCallRead_RefusesWriteTool(t *testing.T) {
 	reg := New(database)
 	require.NoError(t, reg.Register(newEchoTool(t, false, &executed)))
 
-	_, err := reg.CallRead(context.Background(), "echo", json.RawMessage(`{"text":"hi"}`))
+	_, err := reg.CallRead(context.Background(), "echo", json.RawMessage(`{"text":"hi"}`), Binding{})
 	assert.ErrorIs(t, err, ErrNotReadable)
 	assert.Empty(t, executed, "a write tool must never Execute through the read path")
 }
@@ -219,7 +219,7 @@ func TestCallRead_ValidatesSchema(t *testing.T) {
 	reg := New(database)
 	require.NoError(t, reg.Register(newPeekTool(t, &executed)))
 
-	_, err := reg.CallRead(context.Background(), "peek", json.RawMessage(`{"query":123}`))
+	_, err := reg.CallRead(context.Background(), "peek", json.RawMessage(`{"query":123}`), Binding{})
 	var verr *ValidationError
 	require.ErrorAs(t, err, &verr)
 	assert.Empty(t, executed)
@@ -227,7 +227,7 @@ func TestCallRead_ValidatesSchema(t *testing.T) {
 
 func TestCallRead_UnknownTool(t *testing.T) {
 	reg := New(openDB(t))
-	_, err := reg.CallRead(context.Background(), "nope", json.RawMessage(`{}`))
+	_, err := reg.CallRead(context.Background(), "nope", json.RawMessage(`{}`), Binding{})
 	assert.ErrorIs(t, err, ErrUnknownTool)
 }
 
@@ -239,7 +239,7 @@ func TestCallRead_NoArgsNormalizedToEmptyObject(t *testing.T) {
 	reg := New(openDB(t))
 	require.NoError(t, reg.Register(NewListTargets()))
 	for _, args := range []string{``, `null`, `{}`} {
-		_, err := reg.CallRead(context.Background(), "list_targets", json.RawMessage(args))
+		_, err := reg.CallRead(context.Background(), "list_targets", json.RawMessage(args), Binding{})
 		require.NoError(t, err, "args %q must be accepted", args)
 	}
 }

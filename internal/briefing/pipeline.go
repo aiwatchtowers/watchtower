@@ -160,10 +160,11 @@ func (p *Pipeline) RunForDate(ctx context.Context, date string) (int, error) {
 	peopleSummaryCtx := p.gatherPeopleSummary()
 	profileCtx := formatUserProfile(profile)
 	jiraCtx := p.gatherJiraContext(owner)
+	projectsCtx, hasRealProjects := p.gatherProjects(p.revisionWindowStart(currentUserID, date))
 	memRevisionsCtx := p.gatherMemoryRevisions(currentUserID, date)
 
 	// Check we have some data (suggestion text alone doesn't count).
-	hasData := digestsCtx != "" || dailyDigestCtx != "" || hasRealTracks || hasRealTargets || hasRealInbox
+	hasData := hasAnyData(digestsCtx, dailyDigestCtx, hasRealTracks, hasRealTargets, hasRealInbox, hasRealProjects)
 	if !hasData {
 		p.logger.Println("briefing: no digests or tracks available, skipping")
 		return 0, nil
@@ -199,6 +200,7 @@ func (p *Pipeline) RunForDate(ctx context.Context, date string) (int, error) {
 		peopleSummaryCtx,
 		profileCtx,
 		jiraCtx,
+		projectsCtx,
 		memRevisionsCtx,
 	)
 
@@ -271,6 +273,21 @@ func (p *Pipeline) RunForDate(ctx context.Context, date string) (int, error) {
 	return int(id), nil
 }
 
+// hasAnyData reports whether the briefing has real material: a digest, the
+// daily rollup, or any of the gathered sections that found real rows
+// (suggestion/placeholder text alone never counts).
+func hasAnyData(digests, dailyRollup string, found ...bool) bool {
+	if digests != "" || dailyRollup != "" {
+		return true
+	}
+	for _, f := range found {
+		if f {
+			return true
+		}
+	}
+	return false
+}
+
 // learnedPrefs loads this pipeline's learned rules (derived from catch-up
 // review feedback) and formats them for the prompt. Best-effort: empty on error.
 func (p *Pipeline) learnedPrefs() string {
@@ -283,23 +300,39 @@ func (p *Pipeline) learnedPrefs() string {
 }
 
 func (p *Pipeline) getPrompt(id, role string) (string, int) {
-	if p.promptStore != nil {
-		tmpl, version, err := p.promptStore.GetForRole(id, role)
-		if err == nil {
-			roleInstr := prompts.GetRoleInstruction(role)
-			if roleInstr != "" {
-				tmpl = roleInstr + "\n\n" + tmpl
-			}
-			return tmpl, version
-		}
+	tmpl, version := p.storedPrompt(id, role)
+	if tmpl == "" {
+		tmpl, version = prompts.Defaults[id], 0
 	}
-
-	tmpl := prompts.Defaults[id]
-	roleInstr := prompts.GetRoleInstruction(role)
-	if roleInstr != "" {
+	if roleInstr := prompts.GetRoleInstruction(role); roleInstr != "" {
 		tmpl = roleInstr + "\n\n" + tmpl
 	}
-	return tmpl, 0
+	return tmpl, version
+}
+
+// storedPrompt returns the prompt store's template, or "" when there is no
+// store, the lookup fails, or the stored template's %s count differs from the
+// shipped default's. The last case is a row the owner customized before a
+// version added a section: formatting it with the new argument list would
+// shift every later section and append %!(EXTRA ...) to the prompt.
+func (p *Pipeline) storedPrompt(id, role string) (string, int) {
+	if p.promptStore == nil {
+		return "", 0
+	}
+	tmpl, version, err := p.promptStore.GetForRole(id, role)
+	if err != nil {
+		return "", 0
+	}
+	if got, want := countVerbs(tmpl), countVerbs(prompts.Defaults[id]); got != want {
+		p.logger.Printf("briefing: stored %s template has %d placeholders, the default has %d — using the default (reset the prompt in Settings to pick up the new sections)", id, got, want)
+		return "", 0
+	}
+	return tmpl, version
+}
+
+// countVerbs counts %s verbs, not counting an escaped %%s.
+func countVerbs(tmpl string) int {
+	return strings.Count(tmpl, "%s") - strings.Count(tmpl, "%%s")
 }
 
 // gatherTargets loads active targets for the briefing.

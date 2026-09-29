@@ -1679,14 +1679,16 @@ type MirrorTrack struct {
 // the existing-mirror alias set (MirrorAliasNodeIDs) — a terminal target keeps
 // refreshing only while its mirror exists, and a terminal-before-the-source row
 // with no mirror is skipped in the step, before any body work. READ-ONLY
-// (MEM-14): targets are only read here, never written. targets is a core
-// (always-migrated) table, so a query failure propagates.
+// (MEM-14): targets are only read here, never written. Project targets are
+// never mirrored (PROJ-01). targets is a core (always-migrated) table, so a
+// query failure propagates.
 func (db *DB) ListTargetsForMirror() ([]MirrorTarget, error) {
 	rows, err := db.Query(`
 		SELECT id, text, intent, level, custom_label, period_start, period_end,
 		       status, priority, ball_on, due_date, sub_items, COALESCE(next_step, ''),
 		       (status IN ('done', 'dismissed'))
 		FROM targets
+		WHERE project_id IS NULL
 		ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("listing targets for mirror: %w", err)

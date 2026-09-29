@@ -49,6 +49,9 @@ func NewListTargets() *Tool {
 				// GetTargets excludes done/dismissed unless IncludeDone is set;
 				// without this, filtering by status=done/dismissed returns [].
 				IncludeDone: a.Status == "done" || a.Status == "dismissed",
+				// 0 (every non-project session) excludes project targets
+				// (PROJ-01); a project session sees only its own board.
+				ProjectID: call.Binding.ProjectID,
 			})
 			if err != nil {
 				return nil, fmt.Errorf("listing targets: %w", err)
@@ -79,6 +82,12 @@ func NewGetTarget() *Tool {
 					return nil, fmt.Errorf("no target with id %d", a.ID)
 				}
 				return nil, fmt.Errorf("getting target: %w", err)
+			}
+			// A target outside the session's scope reads as missing: a project
+			// target never reaches a non-project session (PROJ-01), and a
+			// project session sees only its own project's targets (DEV-06).
+			if target.ProjectID.Int64 != call.Binding.ProjectID {
+				return nil, fmt.Errorf("no target with id %d", a.ID)
 			}
 			return target, nil
 		},

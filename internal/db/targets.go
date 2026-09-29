@@ -13,7 +13,7 @@ const targetSelectCols = `id, text, intent, level, custom_label, period_start, p
 	parent_id, status, priority, ownership,
 	ball_on, due_date, snooze_until, blocking, tags, sub_items, notes,
 	progress, source_type, source_id, ai_level_confidence, created_at, updated_at,
-	next_step, next_step_at, next_step_attempts, next_step_attempted_at`
+	next_step, next_step_at, next_step_attempts, next_step_attempted_at, project_id`
 
 func scanTarget(row interface{ Scan(...any) error }) (*Target, error) {
 	var t Target
@@ -22,7 +22,7 @@ func scanTarget(row interface{ Scan(...any) error }) (*Target, error) {
 		&t.ParentID, &t.Status, &t.Priority, &t.Ownership,
 		&t.BallOn, &t.DueDate, &t.SnoozeUntil, &t.Blocking, &t.Tags, &t.SubItems, &t.Notes,
 		&t.Progress, &t.SourceType, &t.SourceID, &t.AILevelConfidence, &t.CreatedAt, &t.UpdatedAt,
-		&t.NextStep, &t.NextStepAt, &t.NextStepAttempts, &t.NextStepAttemptedAt,
+		&t.NextStep, &t.NextStepAt, &t.NextStepAttempts, &t.NextStepAttemptedAt, &t.ProjectID,
 	); err != nil {
 		return nil, err
 	}
@@ -56,11 +56,11 @@ func (db *DB) CreateTarget(t Target) (int64, error) {
 	res, err := db.Exec(`INSERT INTO targets
 		(text, intent, level, custom_label, period_start, period_end, parent_id,
 		 status, priority, ownership, ball_on, due_date, snooze_until, blocking,
-		 tags, sub_items, notes, progress, source_type, source_id, ai_level_confidence)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 tags, sub_items, notes, progress, source_type, source_id, ai_level_confidence, project_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.Text, t.Intent, t.Level, t.CustomLabel, t.PeriodStart, t.PeriodEnd, t.ParentID,
 		t.Status, t.Priority, t.Ownership, t.BallOn, t.DueDate, t.SnoozeUntil, t.Blocking,
-		t.Tags, t.SubItems, t.Notes, progress, t.SourceType, t.SourceID, t.AILevelConfidence,
+		t.Tags, t.SubItems, t.Notes, progress, t.SourceType, t.SourceID, t.AILevelConfidence, t.ProjectID,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("inserting target: %w", err)
@@ -96,13 +96,13 @@ func (db *DB) UpdateTarget(t Target) error {
 		text = ?, intent = ?, level = ?, custom_label = ?, period_start = ?, period_end = ?,
 		parent_id = ?, status = ?, priority = ?, ownership = ?,
 		ball_on = ?, due_date = ?, snooze_until = ?, blocking = ?,
-		tags = ?, sub_items = ?, notes = ?, source_type = ?, source_id = ?,
+		tags = ?, sub_items = ?, notes = ?, source_type = ?, source_id = ?, project_id = ?,
 		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
 		WHERE id = ?`,
 		t.Text, t.Intent, t.Level, t.CustomLabel, t.PeriodStart, t.PeriodEnd,
 		t.ParentID, t.Status, t.Priority, t.Ownership,
 		t.BallOn, t.DueDate, t.SnoozeUntil, t.Blocking,
-		t.Tags, t.SubItems, t.Notes, t.SourceType, t.SourceID,
+		t.Tags, t.SubItems, t.Notes, t.SourceType, t.SourceID, t.ProjectID,
 		t.ID,
 	)
 	if err != nil {
@@ -217,6 +217,7 @@ const nextStepAttemptBudget = 3
 func (db *DB) GetTargetsNeedingNextStep(limit int) ([]Target, error) {
 	query := fmt.Sprintf(`SELECT `+targetSelectCols+` FROM targets
 		WHERE status IN ('todo','in_progress','blocked')
+		  AND project_id IS NULL
 		  AND (next_step_at = '' OR next_step_at < updated_at)
 		  AND (
 		    next_step_attempted_at < updated_at
@@ -247,6 +248,15 @@ func (db *DB) GetTargetsNeedingNextStep(limit int) ([]Target, error) {
 	return targets, rows.Err()
 }
 
+// projectScope is the PROJ-01 clause of GetTargets: 0 keeps project targets
+// out, N selects only project N's board (docs/inventory/projects.md).
+func projectScope(projectID int64) (string, []any) {
+	if projectID > 0 {
+		return "project_id = ?", []any{projectID}
+	}
+	return "project_id IS NULL", nil
+}
+
 // GetTargets returns targets matching the filter.
 func (db *DB) GetTargets(f TargetFilter) ([]Target, error) {
 	query := `SELECT ` + targetSelectCols + ` FROM targets`
@@ -260,6 +270,9 @@ func (db *DB) GetTargets(f TargetFilter) ([]Target, error) {
 	if !f.IncludeDone && f.Status == "" {
 		conditions = append(conditions, "status NOT IN ('done','dismissed')")
 	}
+	scope, scopeArgs := projectScope(f.ProjectID)
+	conditions = append(conditions, scope)
+	args = append(args, scopeArgs...)
 	if f.Status != "" {
 		conditions = append(conditions, "status = ?")
 		args = append(args, f.Status)
@@ -397,7 +410,7 @@ func (db *DB) GetTargetCounts() (int, int, error) {
 	err := db.QueryRow(`SELECT
 		COUNT(*),
 		COALESCE(SUM(CASE WHEN due_date != '' AND due_date < ? THEN 1 ELSE 0 END), 0)
-		FROM targets WHERE status NOT IN ('done','dismissed')`, now).Scan(&active, &overdue)
+		FROM targets WHERE status NOT IN ('done','dismissed') AND project_id IS NULL`, now).Scan(&active, &overdue)
 	return active, overdue, err
 }
 
@@ -417,7 +430,7 @@ func (db *DB) UnsnoozeExpiredTargets() (int, error) {
 // GetTargetsForBriefing returns active targets relevant for the daily briefing.
 func (db *DB) GetTargetsForBriefing() ([]Target, error) {
 	rows, err := db.Query(`SELECT ` + targetSelectCols + ` FROM targets
-		WHERE status IN ('todo','in_progress','blocked')
+		WHERE status IN ('todo','in_progress','blocked') AND project_id IS NULL
 		ORDER BY
 			CASE level WHEN 'quarter' THEN 0 WHEN 'month' THEN 1 WHEN 'week' THEN 2 WHEN 'day' THEN 3 ELSE 4 END,
 			CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 END,
@@ -547,4 +560,22 @@ func statusToProgress(status string) float64 {
 	default: // todo, snoozed, dismissed
 		return 0.0
 	}
+}
+
+// SetTargetProgress stores an explicit progress (0..1) on one target and
+// recomputes its parent's. A target with children has its progress
+// re-derived from them on their next change; this is for leaves.
+func (db *DB) SetTargetProgress(id int, progress float64) error {
+	var parentID sql.NullInt64
+	if err := db.QueryRow(`SELECT parent_id FROM targets WHERE id = ?`, id).Scan(&parentID); err != nil {
+		return fmt.Errorf("loading target %d: %w", id, err)
+	}
+	if _, err := db.Exec(`UPDATE targets SET progress = ?,
+		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`, progress, id); err != nil {
+		return fmt.Errorf("setting target %d progress: %w", id, err)
+	}
+	if parentID.Valid {
+		return db.RecomputeParentProgress(parentID.Int64)
+	}
+	return nil
 }

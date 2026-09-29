@@ -1306,6 +1306,24 @@ extension TestDatabase {
         UNIQUE(conversation_id, artifact_key, version)
     );
 
+    CREATE TABLE IF NOT EXISTS chat_artifact_comments (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        conversation_id  INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+        artifact_key     TEXT NOT NULL,
+        artifact_version INTEGER NOT NULL,
+        body             TEXT NOT NULL,
+        anchor_quote     TEXT NOT NULL,
+        anchor_prefix    TEXT NOT NULL DEFAULT '',
+        anchor_suffix    TEXT NOT NULL DEFAULT '',
+        anchor_heading   TEXT NOT NULL DEFAULT '',
+        status           TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','sent','resolved','outdated')),
+        created_at       REAL NOT NULL,
+        sent_at          REAL,
+        CHECK (anchor_quote != '' AND body != ''),
+        CHECK (status != 'sent' OR sent_at IS NOT NULL)
+    );
+    CREATE INDEX IF NOT EXISTS idx_chat_artifact_comments_key ON chat_artifact_comments(conversation_id, artifact_key);
+
     CREATE TABLE IF NOT EXISTS chat_project_sources (
         id         INTEGER PRIMARY KEY AUTOINCREMENT,
         project_id INTEGER NOT NULL REFERENCES chat_projects(id) ON DELETE CASCADE,

@@ -49,6 +49,8 @@ type fakeReg struct {
 	proposed []string
 	reads    []string
 	readData any
+
+	readBindings []tools.Binding
 }
 
 func (f *fakeReg) List(string) []*tools.Tool {
@@ -63,8 +65,9 @@ func (f *fakeReg) Propose(_ context.Context, name string, _ json.RawMessage, _ t
 	f.proposed = append(f.proposed, name)
 	return tools.Receipt{ActionID: 7, Status: "pending", Tool: name, Message: "awaits approval"}, nil
 }
-func (f *fakeReg) CallRead(_ context.Context, name string, _ json.RawMessage) (any, error) {
+func (f *fakeReg) CallRead(_ context.Context, name string, _ json.RawMessage, b tools.Binding) (any, error) {
 	f.reads = append(f.reads, name)
+	f.readBindings = append(f.readBindings, b)
 	return f.readData, nil
 }
 
@@ -211,4 +214,18 @@ func TestLoop_EmitsToolEventsWhenEnabled(t *testing.T) {
 	assert.True(t, chunks[2].Tool.OK)
 	assert.Equal(t, "[]", chunks[2].Tool.Result)
 	assert.Equal(t, "here it is", chunks[3].Text)
+}
+
+// A read tool call reaches the registry with the loop's binding, so a
+// binding-scoped read (list_targets in a project session) sees its scope.
+func TestLoop_ReadCallCarriesTheBinding(t *testing.T) {
+	reg := &fakeReg{tools: map[string]*tools.Tool{"list_targets": tools.NewListTargets()}, readData: []any{}}
+	srv, _ := scriptedServer(t, toolCallResp("list_targets", `{}`), finalResp("done"))
+	c := clientWith(reg, srv.URL)
+	c.binding = tools.Binding{Surface: "main", ConversationID: 12}
+
+	_, _, err := c.run(context.Background(), "sys", "list", nil)
+	require.NoError(t, err)
+	require.Len(t, reg.readBindings, 1)
+	assert.Equal(t, int64(12), reg.readBindings[0].ConversationID)
 }
