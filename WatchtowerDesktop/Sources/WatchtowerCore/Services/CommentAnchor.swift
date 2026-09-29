@@ -1,8 +1,14 @@
 import Foundation
 
-/// A comment's anchor on a document's RENDERED plain text (spec §6.3):
-/// the selected quote, up to `contextLength` characters on either side, and
-/// the nearest preceding heading. Task 15 adds `make` and `locate`.
+/// A comment's anchor on a document's RENDERED plain text (spec §6.3): the
+/// selected quote, up to `contextLength` characters on either side, and the
+/// nearest preceding heading. Re-located on every load of a possibly revised
+/// file; `locate` returning nil means the thread is outdated.
+///
+/// Rules (index Review Focus #4): exact matches first, then a
+/// whitespace-collapsed match (reflow); several candidates are ranked by how
+/// much of the stored prefix/suffix still surrounds them; no candidate — or
+/// several with none of the original context — is nil. Never fuzzy.
 package struct CommentAnchor: Equatable, Sendable {
     package static let contextLength = 64
 
@@ -16,5 +22,114 @@ package struct CommentAnchor: Equatable, Sendable {
         self.prefix = prefix
         self.suffix = suffix
         self.heading = heading
+    }
+
+    /// `headings` carry UTF-16 offsets into `text`, in any order.
+    package static func make(
+        text: String,
+        range: Range<String.Index>,
+        headings: [(offset: Int, title: String)]
+    ) -> Self {
+        let start = text.index(range.lowerBound, offsetBy: -contextLength, limitedBy: text.startIndex) ?? text.startIndex
+        let end = text.index(range.upperBound, offsetBy: contextLength, limitedBy: text.endIndex) ?? text.endIndex
+        let offset = text.utf16.distance(from: text.startIndex, to: range.lowerBound)
+        let heading = headings.filter { $0.offset <= offset }.max { $0.offset < $1.offset }?.title ?? ""
+        return Self(
+            quote: String(text[range]),
+            prefix: String(text[start..<range.lowerBound]),
+            suffix: String(text[range.upperBound..<end]),
+            heading: heading
+        )
+    }
+
+    package func locate(in text: String) -> Range<String.Index>? {
+        let needle = Array(Self.collapsed(quote).trimmingCharacters(in: .whitespacesAndNewlines))
+        guard !needle.isEmpty else { return nil }
+        let exact = Self.exactOccurrences(of: quote, in: text)
+        let candidates = exact.isEmpty ? Self.collapsedOccurrences(of: needle, in: text) : exact
+        return pick(candidates, in: text)
+    }
+
+    // MARK: - Ranking
+
+    private func pick(_ candidates: [Range<String.Index>], in text: String) -> Range<String.Index>? {
+        guard candidates.count > 1 else { return candidates.first }
+        let storedPrefix = Array(Self.collapsed(prefix))
+        let storedSuffix = Array(Self.collapsed(suffix))
+        let scored = candidates.map { candidate -> (Range<String.Index>, Int) in
+            let before = Array(Self.collapsed(String(text[..<candidate.lowerBound].suffix(Self.contextLength * 2))))
+            let after = Array(Self.collapsed(String(text[candidate.upperBound...].prefix(Self.contextLength * 2))))
+            let score = Self.commonSuffixLength(before, storedPrefix) + Self.commonPrefixLength(after, storedSuffix)
+            return (candidate, score)
+        }
+        guard let best = scored.map(\.1).max(), best > 0 else { return nil }
+        return scored.first { $0.1 == best }?.0
+    }
+
+    private static func commonSuffixLength(_ lhs: [Character], _ rhs: [Character]) -> Int {
+        zip(lhs.reversed(), rhs.reversed()).prefix { $0 == $1 }.count
+    }
+
+    private static func commonPrefixLength(_ lhs: [Character], _ rhs: [Character]) -> Int {
+        zip(lhs, rhs).prefix { $0 == $1 }.count
+    }
+
+    // MARK: - Matching
+
+    /// Every run of whitespace collapsed to one space; not trimmed.
+    private static func collapsed(_ value: String) -> String {
+        var out = ""
+        var lastWasSpace = false
+        for character in value {
+            if character.isWhitespace {
+                if !lastWasSpace { out.append(" ") }
+                lastWasSpace = true
+            } else {
+                out.append(character)
+                lastWasSpace = false
+            }
+        }
+        return out
+    }
+
+    private static func exactOccurrences(of needle: String, in text: String) -> [Range<String.Index>] {
+        var found: [Range<String.Index>] = []
+        var start = text.startIndex
+        while start < text.endIndex,
+              let hit = text.range(of: needle, options: .literal, range: start..<text.endIndex) {
+            found.append(hit)
+            start = text.index(after: hit.lowerBound)
+        }
+        return found
+    }
+
+    /// Matches `needle` (already collapsed and trimmed) against `text` with
+    /// whitespace runs collapsed, returning ranges in the ORIGINAL text.
+    private static func collapsedOccurrences(of needle: [Character], in text: String) -> [Range<String.Index>] {
+        var chars: [Character] = []
+        var origins: [String.Index] = []
+        var lastWasSpace = false
+        for index in text.indices {
+            let character = text[index]
+            if character.isWhitespace {
+                if !lastWasSpace {
+                    chars.append(" ")
+                    origins.append(index)
+                }
+                lastWasSpace = true
+            } else {
+                chars.append(character)
+                origins.append(index)
+                lastWasSpace = false
+            }
+        }
+        guard chars.count >= needle.count else { return [] }
+        var found: [Range<String.Index>] = []
+        for start in 0...(chars.count - needle.count) where chars[start] == needle[0] {
+            guard chars[start..<(start + needle.count)].elementsEqual(needle) else { continue }
+            let last = origins[start + needle.count - 1]
+            found.append(origins[start]..<text.index(after: last))
+        }
+        return found
     }
 }
