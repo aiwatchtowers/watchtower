@@ -237,6 +237,7 @@ struct SidebarView: View {
                     : item == .inbox ? .blue
                     : item == .targets && overdueTaskCount > 0 ? .red
                     : item == .targets ? .blue
+                    : item == .projects ? .blue
                     : .red)
             }
         }
@@ -263,6 +264,7 @@ struct SidebarView: View {
         case .ideas: ideasCount
         case .targets: overdueTaskCount > 0 ? overdueTaskCount : activeTaskCount
         case .tracks: updatedTrackCount
+        case .projects: appState.projectsViewModel?.badgeCount ?? 0
         case .digests: digestsBadgeCount
         case .memory: memoryDisputedCount
         case .statistics: recommendationCount

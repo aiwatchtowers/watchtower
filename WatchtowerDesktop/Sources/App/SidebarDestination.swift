@@ -10,6 +10,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
     case calendar
     case targets
     case tracks
+    case projects
     case digests
     case people
     case memory
@@ -36,6 +37,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         case .calendar: "Calendar"
         case .targets: "Targets"
         case .tracks: "Tracks"
+        case .projects: "Projects"
         case .digests: "Digests"
         case .people: "People"
         case .memory: "Memory"
@@ -62,6 +64,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         case .calendar: "calendar"
         case .targets: "scope"
         case .tracks: "binoculars"
+        case .projects: "folder.badge.gearshape"
         case .digests: "doc.text.magnifyingglass"
         case .people: "person.2"
         case .memory: "archivebox"
@@ -79,7 +82,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
 
     /// Always-visible items rendered above the collapsible sections.
     static var rootItems: [Self] {
-        [.targets, .tracks]
+        [.targets, .tracks, .projects]
     }
 
     /// Always-visible items rendered below the collapsible sections, as the last

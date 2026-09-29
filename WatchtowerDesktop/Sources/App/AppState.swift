@@ -240,6 +240,12 @@ final class AppState {
     /// — persists across tab switches like its siblings above.
     private(set) var actionStripViewModel: ActionStripViewModel?
 
+    /// Projects tab (spec §6). Owned here so create/repair and the selection
+    /// survive navigation.
+    private(set) var projectsViewModel: ProjectsViewModel?
+    /// Set by `navigateToProject`; `ProjectsView` consumes and clears it.
+    var pendingProjectRoute: ProjectRoute?
+
     /// Whether legacy people analytics is enabled (analysis.legacy_mode in config).
     var analysisLegacyMode: Bool = false
 
@@ -369,6 +375,11 @@ final class AppState {
     func navigateToPerson(_ userID: String) {
         pendingPersonUserID = userID
         selectedDestination = .people
+    }
+
+    func navigateToProject(_ route: ProjectRoute) {
+        pendingProjectRoute = route
+        selectedDestination = .projects
     }
 
     private var isInitializing = false
@@ -763,6 +774,7 @@ final class AppState {
         initExternalConnections(dbPool: manager.dbPool)
         initReactionDictionary(dbPool: manager.dbPool)
         initActionStrip(dbPool: manager.dbPool)
+        initProjects(dbPool: manager.dbPool)
         startDigestWatcher(dbPool: manager.dbPool)
         startMeetingReminders(dbPool: manager.dbPool)
         startWarmEnginePolicy(dbPool: manager.dbPool)
@@ -907,6 +919,17 @@ final class AppState {
         let vm = ActionStripViewModel(dbPool: dbPool)
         vm.refresh()
         actionStripViewModel = vm
+    }
+
+    /// Not `private`: tests build the VM on a test pool (the
+    /// `initSecretaryProfile` precedent) to prove it survives navigation.
+    func initProjects(
+        dbPool: DatabasePool,
+        cliRunner: (any CLIRunnerProtocol)? = ProcessCLIRunner.makeDefault()
+    ) {
+        let vm = ProjectsViewModel(dbPool: dbPool, cli: cliRunner.map { ProjectCLI(runner: $0) })
+        projectsViewModel = vm
+        Task { await vm.reload() }
     }
 
     func initGoogleAccounts(dbPool: DatabasePool) {
