@@ -17,7 +17,7 @@ import (
 // test can assert on the model-facing shape.
 func callReadString(t *testing.T, reg *Registry, name, args string) string {
 	t.Helper()
-	data, err := reg.CallRead(context.Background(), name, json.RawMessage(args))
+	data, err := reg.CallRead(context.Background(), name, json.RawMessage(args), Binding{})
 	require.NoError(t, err)
 	b, err := json.Marshal(data)
 	require.NoError(t, err)
@@ -57,7 +57,7 @@ func TestGetDigest_ReturnsBody(t *testing.T) {
 }
 
 func TestGetDigest_NotFound(t *testing.T) {
-	_, err := digestsRegistry(t, openDB(t)).CallRead(context.Background(), "get_digest", json.RawMessage(`{"id":4242}`))
+	_, err := digestsRegistry(t, openDB(t)).CallRead(context.Background(), "get_digest", json.RawMessage(`{"id":4242}`), Binding{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no digest with id 4242")
 }
@@ -91,7 +91,7 @@ func TestGetTodayBriefing_EmptyIsNotError(t *testing.T) {
 	_, err := d.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U1"})
 	require.NoError(t, err)
 
-	data, err := digestsRegistry(t, d).CallRead(context.Background(), "get_today_briefing", json.RawMessage(`{}`))
+	data, err := digestsRegistry(t, d).CallRead(context.Background(), "get_today_briefing", json.RawMessage(`{}`), Binding{})
 	require.NoError(t, err, "a missing briefing must not be an error")
 	assert.Nil(t, data)
 }
@@ -102,13 +102,13 @@ func TestGetTodayBriefing_EmptyIsNotError(t *testing.T) {
 // null (which reads as "not generated yet").
 func TestOwner02_GetTodayBriefingToolErrorsWithoutOwner(t *testing.T) {
 	d := openDB(t)
-	_, err := digestsRegistry(t, d).CallRead(context.Background(), "get_today_briefing", json.RawMessage(`{}`))
+	_, err := digestsRegistry(t, d).CallRead(context.Background(), "get_today_briefing", json.RawMessage(`{}`), Binding{})
 	require.Error(t, err)
 	assert.ErrorIs(t, err, db.ErrNoOwner)
 }
 
 func TestListDigests_RejectsInvalidType(t *testing.T) {
-	_, err := digestsRegistry(t, openDB(t)).CallRead(context.Background(), "list_digests", json.RawMessage(`{"type":"monthly"}`))
+	_, err := digestsRegistry(t, openDB(t)).CallRead(context.Background(), "list_digests", json.RawMessage(`{"type":"monthly"}`), Binding{})
 	var verr *ValidationError
 	require.ErrorAs(t, err, &verr)
 	assert.Contains(t, verr.Msg, "monthly")
@@ -131,7 +131,7 @@ func TestListDigests_Since(t *testing.T) {
 }
 
 func TestListDigests_RejectsInvalidSince(t *testing.T) {
-	_, err := digestsRegistry(t, openDB(t)).CallRead(context.Background(), "list_digests", json.RawMessage(`{"since":"yesterday"}`))
+	_, err := digestsRegistry(t, openDB(t)).CallRead(context.Background(), "list_digests", json.RawMessage(`{"since":"yesterday"}`), Binding{})
 	var verr *ValidationError
 	require.ErrorAs(t, err, &verr)
 	assert.Contains(t, verr.Msg, "yesterday")

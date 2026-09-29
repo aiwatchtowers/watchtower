@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/google/jsonschema-go/jsonschema"
@@ -45,6 +46,12 @@ const (
 // turn the Desktop passed to the chat-mode server. TurnIDFunc, when set, is
 // read at propose time and wins over TurnID — a warm `ai session` spans many
 // turns and publishes the running one through a turn file (spec §1.2).
+//
+// ProjectID binds the session to one project (`watchtower mcp --project N`):
+// every call first checks the project still exists, and project tools scope
+// every row they touch to it (DEV-06). DirectApply makes Propose apply a
+// non-External tool inline for this call only — the owner's standing trust
+// rows are neither read nor changed — and refuses an External one outright.
 type Binding struct {
 	Surface        string
 	ConversationID int64
@@ -52,6 +59,8 @@ type Binding struct {
 	ContextID      string
 	TurnID         string
 	TurnIDFunc     func() string
+	ProjectID      int64
+	DirectApply    bool
 }
 
 // turnID is the turn a proposal attaches to right now.
@@ -97,6 +106,12 @@ type Tool struct {
 	// approval is of the resolved action, not of a string that gets
 	// re-interpreted at apply time. Optional; nil leaves args unchanged.
 	Normalize func(ctx context.Context, d *db.DB, args json.RawMessage) (json.RawMessage, error)
+
+	// Scope runs the checks that need the binding — "does this row belong to
+	// the bound project" — after Validate in Propose, and again in Apply
+	// before Execute, against the binding rebuilt from the stored row. A
+	// *ValidationError from Propose writes no row. Optional.
+	Scope func(ctx context.Context, d *db.DB, args json.RawMessage, b Binding) error
 
 	// resolved is InputSchema prepared for validation. Unexported: a tool
 	// author declares the schema, the registry prepares it once in Register
@@ -147,9 +162,16 @@ type Receipt struct {
 }
 
 // ValidationError carries a model-facing message; no row is written for it.
-type ValidationError struct{ Msg string }
+// Err, when set, is the sentinel behind it (e.g. db.ErrNotInProject), so a
+// caller can still match the cause with errors.Is.
+type ValidationError struct {
+	Msg string
+	Err error
+}
 
 func (e *ValidationError) Error() string { return e.Msg }
+
+func (e *ValidationError) Unwrap() error { return e.Err }
 
 var (
 	ErrUnknownTool     = errors.New("unknown tool")
@@ -276,34 +298,15 @@ func (r *Registry) Propose(ctx context.Context, name string, args json.RawMessag
 	if t.Access != AccessWrite {
 		return Receipt{}, ErrNotWritable
 	}
-	args, err := r.prepareProposalArgs(ctx, t, args)
+	args, err := r.admitProposal(ctx, t, args, b)
 	if err != nil {
 		return Receipt{}, err
 	}
-	reason := reasonOf(args)
-	if reason == "" {
-		return Receipt{}, &ValidationError{Msg: `"reason" is required: say why you propose this`}
-	}
-	trust, err := r.Trust(name)
+	trust, err := r.resolveTrust(t, b)
 	if err != nil {
 		return Receipt{}, err
 	}
-	// Defense in depth for AGENT-03: SetTrust refuses `execute` for an external
-	// tool, but db.SetToolTrust does not, and a trust row keyed by tool NAME
-	// outlives a tool later being marked External. The read side decides too.
-	if t.External {
-		trust = TrustAsk
-	}
-	row := db.AgentAction{
-		Tool: name, External: t.External, ArgsJSON: string(args), Reason: reason,
-		Surface: b.Surface, ConversationID: b.ConversationID,
-		ContextType: b.ContextType, ContextID: b.ContextID, TurnID: b.turnID(),
-		Status: "pending", TrustAtCreate: string(trust),
-	}
-	if trust == TrustExecute {
-		row.Status = "approved"
-	}
-	id, err := r.db.InsertAgentAction(row)
+	id, err := r.db.InsertAgentAction(newProposalRow(t, args, trust, b))
 	if err != nil {
 		return Receipt{}, err
 	}
@@ -315,6 +318,113 @@ func (r *Registry) Propose(ctx context.Context, name string, args json.RawMessag
 		Message: fmt.Sprintf("Proposal #%d recorded (%s). The owner must approve it in this chat before "+
 			"anything happens — tell the owner it awaits their approval and do not claim it is done.", id, name),
 	}, nil
+}
+
+// admitProposal runs every gate a write call passes before a row is written:
+// the bound project is alive, the direct-apply gate, the args checks, the
+// mandatory reason, then the tool's Scope. Any failure writes nothing.
+func (r *Registry) admitProposal(ctx context.Context, t *Tool, args json.RawMessage, b Binding) (json.RawMessage, error) {
+	if err := r.projectAlive(ctx, b); err != nil {
+		return nil, err
+	}
+	if err := directApplyGate(t, b); err != nil {
+		return nil, err
+	}
+	args, err := r.prepareProposalArgs(ctx, t, args)
+	if err != nil {
+		return nil, err
+	}
+	if reasonOf(args) == "" {
+		return nil, &ValidationError{Msg: `"reason" is required: say why you propose this`}
+	}
+	if err := t.scope(ctx, r.db, args, b); err != nil {
+		return nil, err
+	}
+	return args, nil
+}
+
+// directApplyGate is what keeps DirectApply narrow: it never runs an External
+// tool (AGENT-03, DEV-06), and it runs only a tool that names the binding's
+// surface explicitly — a surface-less tool is visible everywhere, so it must
+// not inherit direct apply by accident.
+func directApplyGate(t *Tool, b Binding) error {
+	if !b.DirectApply {
+		return nil
+	}
+	if t.External {
+		return &ValidationError{Msg: t.Name + " leaves this machine and never runs in a direct-apply session"}
+	}
+	if !slices.Contains(t.Surfaces, b.Surface) {
+		return &ValidationError{Msg: fmt.Sprintf("%s is not available on the %s surface", t.Name, b.Surface)}
+	}
+	return nil
+}
+
+// resolveTrust decides how this one call runs. External is always ask:
+// SetTrust refuses `execute` for an external tool, but db.SetToolTrust does
+// not, and a trust row keyed by tool NAME outlives a tool later being marked
+// External — the read side decides too (AGENT-03). DirectApply is execute for
+// this call only; the stored trust row is not consulted or changed.
+func (r *Registry) resolveTrust(t *Tool, b Binding) (Trust, error) {
+	if t.External {
+		return TrustAsk, nil
+	}
+	if b.DirectApply {
+		return TrustExecute, nil
+	}
+	return r.Trust(t.Name)
+}
+
+// newProposalRow is the agent_actions row a proposal records. A project-bound
+// call stores its project in context_type/context_id, so Apply — possibly a
+// later `actions apply` — rebuilds the same binding (bindingOf).
+func newProposalRow(t *Tool, args json.RawMessage, trust Trust, b Binding) db.AgentAction {
+	ctxType, ctxID := b.ContextType, b.ContextID
+	if b.ProjectID != 0 {
+		ctxType, ctxID = projectContextType, strconv.FormatInt(b.ProjectID, 10)
+	}
+	row := db.AgentAction{
+		Tool: t.Name, External: t.External, ArgsJSON: string(args), Reason: reasonOf(args),
+		Surface: b.Surface, ConversationID: b.ConversationID,
+		ContextType: ctxType, ContextID: ctxID, TurnID: b.turnID(),
+		Status: "pending", TrustAtCreate: string(trust),
+	}
+	if trust == TrustExecute {
+		row.Status = "approved"
+	}
+	return row
+}
+
+// bindingOf rebuilds the binding a stored row was proposed under.
+func bindingOf(row *db.AgentAction) Binding {
+	b := Binding{
+		Surface: row.Surface, ConversationID: row.ConversationID,
+		ContextType: row.ContextType, ContextID: row.ContextID, TurnID: row.TurnID,
+	}
+	if row.ContextType == projectContextType {
+		// A malformed id leaves ProjectID 0, which every project tool refuses.
+		b.ProjectID, _ = strconv.ParseInt(row.ContextID, 10, 64)
+	}
+	return b
+}
+
+// projectAlive fails a project-bound call once its project is gone — the
+// first check of every call, read or write, project tool or not, so a
+// session outliving its project answers "project N no longer exists".
+func (r *Registry) projectAlive(ctx context.Context, b Binding) error {
+	if b.ProjectID == 0 {
+		return nil
+	}
+	_, err := projectOf(ctx, r.db, b)
+	return err
+}
+
+// scope runs the tool's optional Scope.
+func (t *Tool) scope(ctx context.Context, d *db.DB, args json.RawMessage, b Binding) error {
+	if t.Scope == nil {
+		return nil
+	}
+	return t.Scope(ctx, d, args, b)
 }
 
 // prepareProposalArgs validates a write-tool call's arguments (JSON, schema,
@@ -367,18 +477,22 @@ func (r *Registry) applyTrusted(ctx context.Context, id int64) (Receipt, error) 
 	return receiptFor(applied), nil
 }
 
-// CallRead runs a read tool's Execute and returns its data. It is the runtime-B
-// in-process read path (the Go tool loop for HTTP providers) — the read twin of
+// CallRead runs a read tool's Execute and returns its data. It is the read
+// path of both adapters (MCP and the runtime-B loop) — the read twin of
 // Propose. It writes NO agent_actions row: a read is not a proposal. A write
 // tool is refused with ErrNotReadable, so the proposal flow can never be
-// bypassed by calling a write through the read path.
-func (r *Registry) CallRead(ctx context.Context, name string, args json.RawMessage) (any, error) {
+// bypassed by calling a write through the read path. b reaches Execute as
+// Call.Binding, so a read can scope itself (list_targets in a project session).
+func (r *Registry) CallRead(ctx context.Context, name string, args json.RawMessage, b Binding) (any, error) {
 	t, ok := r.tools[name]
 	if !ok {
 		return nil, ErrUnknownTool
 	}
 	if t.Access != AccessRead {
 		return nil, ErrNotReadable
+	}
+	if err := r.projectAlive(ctx, b); err != nil {
+		return nil, err
 	}
 	// A parameterless call arrives as absent, empty, or literal null (an MCP
 	// client with no arguments, e.g. `ls.Call(name, nil)`); all mean "no
@@ -393,7 +507,7 @@ func (r *Registry) CallRead(ctx context.Context, name string, args json.RawMessa
 	if err := t.validateSchema(args); err != nil {
 		return nil, err
 	}
-	return t.Execute(ctx, r.db, Call{Args: args})
+	return t.Execute(ctx, r.db, Call{Args: args, Binding: b})
 }
 
 // Apply executes an approved (or previously failed) row exactly once and
@@ -435,27 +549,37 @@ func (r *Registry) Apply(ctx context.Context, id int64) (*db.AgentAction, error)
 	if !ok {
 		return r.finishTransition(id, from, "failed", "", "unknown tool "+row.Tool)
 	}
-	call := Call{ActionID: id, Args: json.RawMessage(row.ArgsJSON), Binding: Binding{
-		Surface: row.Surface, ConversationID: row.ConversationID,
-		ContextType: row.ContextType, ContextID: row.ContextID, TurnID: row.TurnID,
-	}}
+	call := Call{ActionID: id, Args: json.RawMessage(row.ArgsJSON), Binding: bindingOf(row)}
+	// Re-scope against the stored binding: a retried or late-applied project
+	// row must still belong to a live project and touch only its rows.
+	if err := r.projectAlive(ctx, call.Binding); err != nil {
+		return r.recordFailure(id, from, err)
+	}
+	if err := t.scope(ctx, r.db, call.Args, call.Binding); err != nil {
+		return r.recordFailure(id, from, err)
+	}
 	result, execErr := t.Execute(ctx, r.db, call)
 	if execErr != nil {
-		row, dbErr := r.finishTransition(id, from, "failed", "", execErr.Error())
-		if dbErr != nil {
-			// finishTransition's own CAS can lose a race too (something else
-			// moved the row out of `executing` while Execute was still
-			// running) — the caller must still learn what the tool itself
-			// failed on, not just that recording the failure didn't stick.
-			return nil, fmt.Errorf("recording failure %q: %w", execErr, dbErr)
-		}
-		return row, nil
+		return r.recordFailure(id, from, execErr)
 	}
 	resultJSON, err := json.Marshal(result)
 	if err != nil {
 		resultJSON = []byte("{}")
 	}
 	return r.finishTransition(id, from, "applied", string(resultJSON), "")
+}
+
+// recordFailure lands a claimed row in `failed` with cause as its error.
+func (r *Registry) recordFailure(id int64, from []string, cause error) (*db.AgentAction, error) {
+	row, dbErr := r.finishTransition(id, from, "failed", "", cause.Error())
+	if dbErr != nil {
+		// finishTransition's own CAS can lose a race too (something else
+		// moved the row out of `executing` while Execute was still running) —
+		// the caller must still learn what the tool itself failed on, not
+		// just that recording the failure didn't stick.
+		return nil, fmt.Errorf("recording failure %q: %w", cause, dbErr)
+	}
+	return row, nil
 }
 
 // finishTransition moves id from one of `from` to `to` and re-reads the row.
