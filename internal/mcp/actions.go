@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -90,16 +91,25 @@ func registerRegistry(s *mcpsdk.Server, database *db.DB, reg *tools.Registry, bi
 		if err != nil {
 			return errResult("getting action: " + err.Error()), nil, nil
 		}
-		// A binding with no conversation (conversation_id 0: a CLI-only
-		// install, spec §12, or a dev/test session with none bound) sees every
-		// row; otherwise a row from a different conversation answers the same
-		// not-found error as a missing row, so the model cannot learn that an
-		// id it invented belongs to someone else's chat.
-		if row == nil || (binding.ConversationID != 0 && row.ConversationID != binding.ConversationID) {
+		if row == nil || !actionVisible(*row, binding) {
 			return errResult(fmt.Sprintf("no action #%d", args.ID)), nil, nil
 		}
 		return jsonResult(newActionView(*row))
 	})
+}
+
+// actionVisible decides whether get_action may show row to this session. A
+// project session sees only its own project's rows. A binding with no
+// conversation (conversation_id 0: a CLI-only install, spec §12, or a
+// dev/test session with none bound) sees every other row; otherwise a row
+// from a different conversation answers the same not-found error as a
+// missing row, so the model cannot learn that an id it invented belongs to
+// someone else's chat.
+func actionVisible(row db.AgentAction, binding tools.Binding) bool {
+	if binding.ProjectID != 0 {
+		return row.ContextType == "project" && row.ContextID == strconv.FormatInt(binding.ProjectID, 10)
+	}
+	return binding.ConversationID == 0 || row.ConversationID == binding.ConversationID
 }
 
 // actionView is the model-facing shape of an agent_actions row.
