@@ -261,6 +261,103 @@ func TestRemoveSessionStartHookWithoutAFileIsANoop(t *testing.T) {
 	}
 }
 
+func TestProj04_InstallAndRemovePreserveTheSettingsFileMode(t *testing.T) {
+	dir := t.TempDir()
+	file := settingsFile(dir)
+	writeTestFile(t, file, `{"model": "sonnet"}`)
+	if err := os.Chmod(file, 0o600); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+
+	if _, err := InstallSessionStartHook(dir, testHookCmd); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	info, err := os.Stat(file)
+	if err != nil {
+		t.Fatalf("stat after install: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("install must preserve the file mode, got %v", info.Mode().Perm())
+	}
+
+	if _, err := RemoveSessionStartHook(dir, testHookCmd); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	info2, err := os.Stat(file)
+	if err != nil {
+		t.Fatalf("stat after remove: %v", err)
+	}
+	if info2.Mode().Perm() != 0o600 {
+		t.Fatalf("remove must preserve the file mode, got %v", info2.Mode().Perm())
+	}
+}
+
+// PROJ-04: a settings file managed as a symlink (e.g. by a dotfiles tool)
+// must stay a symlink after install/remove — the write lands on its target,
+// never replacing the link with a plain file.
+func TestProj04_InstallAndRemoveThroughASymlinkKeepTheLink(t *testing.T) {
+	dir := t.TempDir()
+	realSettings := filepath.Join(t.TempDir(), "real-settings.json")
+	writeTestFile(t, realSettings, `{"model": "sonnet"}`)
+	link := settingsFile(dir)
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Symlink(realSettings, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	changed, err := InstallSessionStartHook(dir, testHookCmd)
+	if err != nil || !changed {
+		t.Fatalf("install: changed=%v err=%v", changed, err)
+	}
+	info, err := os.Lstat(link)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the settings symlink must survive the install, lstat mode=%v err=%v", info.Mode(), err)
+	}
+	targetContent := readTestFile(t, realSettings)
+	if !strings.Contains(targetContent, `"model": "sonnet"`) || !strings.Contains(targetContent, testHookCmd) {
+		t.Fatalf("the symlink target must hold both the owner's key and our hook:\n%s", targetContent)
+	}
+
+	if _, err := RemoveSessionStartHook(dir, testHookCmd); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	info2, err := os.Lstat(link)
+	if err != nil || info2.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the settings symlink must survive the remove, lstat mode=%v err=%v", info2.Mode(), err)
+	}
+	after := readTestFile(t, realSettings)
+	if !strings.Contains(after, `"model": "sonnet"`) || strings.Contains(after, testHookCmd) {
+		t.Fatalf("remove must drop our hook from the linked target: %s", after)
+	}
+}
+
+// A dangling symlink can never be safely written through: resolution fails
+// before any write, so the link is left exactly as it was.
+func TestProj04_InstallThroughADanglingSymlinkErrorsWithoutTouchingIt(t *testing.T) {
+	dir := t.TempDir()
+	link := settingsFile(dir)
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	missing := filepath.Join(t.TempDir(), "gone.json")
+	if err := os.Symlink(missing, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	if _, err := InstallSessionStartHook(dir, testHookCmd); err == nil {
+		t.Fatalf("expected an error installing through a dangling symlink")
+	}
+	info, err := os.Lstat(link)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("a dangling symlink must be left untouched, lstat mode=%v err=%v", info.Mode(), err)
+	}
+	if target, err := os.Readlink(link); err != nil || target != missing {
+		t.Fatalf("the dangling symlink's target must be unchanged: target=%q err=%v", target, err)
+	}
+}
+
 func TestHasSessionStartHook(t *testing.T) {
 	dir := t.TempDir()
 	if ok, err := HasSessionStartHook(dir, testHookCmd); err != nil || ok {
@@ -363,6 +460,28 @@ func TestRemoveGitExcludeRemovesOnlyTheGivenLines(t *testing.T) {
 	}
 	if got := readTestFile(t, exclude); got != "" {
 		t.Fatalf("an emptied block must lose its markers, got:\n%s", got)
+	}
+}
+
+// A CRLF-authored exclude file (some owner editors normalize this way) must
+// still be recognised: a pre-existing pattern is skipped, not duplicated,
+// and the owner's CRLF lines are kept byte-for-byte rather than rewritten.
+func TestEnsureGitExcludeRecognizesACRLFOwnerLine(t *testing.T) {
+	dir := fakeRepo(t)
+	exclude := filepath.Join(dir, ".git", "info", "exclude")
+	owner := "*.swp\r\n/.claude/settings.local.json\r\n"
+	writeTestFile(t, exclude, owner)
+
+	added, err := EnsureGitExclude(dir, testExcludeLines)
+	if err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	if len(added) != 1 || added[0] != "/.claude/skills/watchtower-project/" {
+		t.Fatalf("the CRLF-authored owner line must be recognised as already present, got %v", added)
+	}
+	content := readTestFile(t, exclude)
+	if !strings.HasPrefix(content, owner) {
+		t.Fatalf("the owner's CRLF lines must be kept byte-for-byte:\n%q", content)
 	}
 }
 

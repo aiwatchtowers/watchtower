@@ -229,7 +229,9 @@ func pruneEmpty(settings, hooks map[string]any, kept []any) {
 }
 
 // writeSettings replaces file atomically, keeping its mode. Keys come out
-// sorted (encoding/json), HTML characters unescaped, two-space indented.
+// sorted (encoding/json), HTML characters unescaped, two-space indented. When
+// file is a symlink (e.g. dotfiles-managed), the write lands on its resolved
+// target so the link itself survives.
 func writeSettings(file string, settings map[string]any, mode os.FileMode) error {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
@@ -238,16 +240,52 @@ func writeSettings(file string, settings map[string]any, mode os.FileMode) error
 	if err := enc.Encode(settings); err != nil {
 		return fmt.Errorf("encoding %s: %w", file, err)
 	}
-	dir := filepath.Dir(file)
+	target, err := resolveSymlink(file)
+	if err != nil {
+		return err
+	}
+	return atomicWriteFile(target, buf.Bytes(), mode)
+}
+
+// resolveSymlink returns the path an atomic write to file should target:
+// file itself when it is not a symlink (or does not exist yet), or the
+// symlink's resolved target when it is — so replacing the target's content
+// never replaces the link itself. A dangling symlink is an error: the file
+// is left untouched by the caller, since resolution fails before any write.
+func resolveSymlink(file string) (string, error) {
+	info, err := os.Lstat(file)
+	if errors.Is(err, os.ErrNotExist) {
+		return file, nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("inspecting %s: %w", file, err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return file, nil
+	}
+	target, err := filepath.EvalSymlinks(file)
+	if err != nil {
+		return "", fmt.Errorf("%s is a symlink to a missing file: %w", file, err)
+	}
+	return target, nil
+}
+
+// atomicWriteFile replaces path with data via a temp file in the same
+// directory, fsynced then renamed into place, with mode applied before the
+// rename. path is assumed already resolved past any symlink (resolveSymlink),
+// so a symlinked settings or exclude file keeps pointing at its target
+// instead of being replaced by a plain file.
+func atomicWriteFile(path string, data []byte, mode os.FileMode) error {
+	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("creating %s: %w", dir, err)
 	}
-	tmp, err := os.CreateTemp(dir, ".settings.local.json.*")
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*")
 	if err != nil {
 		return fmt.Errorf("creating a temp file in %s: %w", dir, err)
 	}
 	defer func() { _ = os.Remove(tmp.Name()) }() // no-op once renamed
-	if _, err := tmp.Write(buf.Bytes()); err != nil {
+	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("writing %s: %w", tmp.Name(), err)
 	}
@@ -255,13 +293,27 @@ func writeSettings(file string, settings map[string]any, mode os.FileMode) error
 		_ = tmp.Close()
 		return fmt.Errorf("setting the mode of %s: %w", tmp.Name(), err)
 	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("syncing %s: %w", tmp.Name(), err)
+	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("closing %s: %w", tmp.Name(), err)
 	}
-	if err := os.Rename(tmp.Name(), file); err != nil {
-		return fmt.Errorf("replacing %s: %w", file, err)
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		return fmt.Errorf("replacing %s: %w", path, err)
 	}
 	return nil
+}
+
+// filePerm returns path's current permission bits (following a symlink, so
+// a symlinked file's own mode is read), or def when path does not exist yet.
+func filePerm(path string, def os.FileMode) os.FileMode {
+	info, err := os.Stat(path)
+	if err != nil {
+		return def
+	}
+	return info.Mode().Perm()
 }
 
 // --- git exclude ---
@@ -315,7 +367,7 @@ func RemoveGitExclude(dir string, lines []string) error {
 	for _, l := range lines {
 		drop[loc.anchor(l)] = true
 	}
-	kept := slices.DeleteFunc(slices.Clone(doc.block), func(p string) bool { return drop[p] })
+	kept := slices.DeleteFunc(slices.Clone(doc.block), func(p string) bool { return drop[trimCR(p)] })
 	if len(kept) == len(doc.block) {
 		return nil
 	}
@@ -431,7 +483,15 @@ type excludeDoc struct {
 }
 
 func (d excludeDoc) has(p string) bool {
-	return slices.Contains(d.outside, p) || slices.Contains(d.block, p)
+	eq := func(l string) bool { return trimCR(l) == p }
+	return slices.ContainsFunc(d.outside, eq) || slices.ContainsFunc(d.block, eq)
+}
+
+// trimCR drops a trailing '\r' so a CRLF-authored line compares equal to its
+// LF-only counterpart. Lines are otherwise stored and rewritten verbatim —
+// this only affects comparisons, never what gets written back.
+func trimCR(s string) string {
+	return strings.TrimSuffix(s, "\r")
 }
 
 func readExclude(file string) (excludeDoc, error) {
@@ -446,9 +506,9 @@ func readExclude(file string) (excludeDoc, error) {
 	inBlock := false
 	for _, l := range splitLines(string(b)) {
 		switch {
-		case l == excludeBegin:
+		case trimCR(l) == excludeBegin:
 			inBlock = true
-		case l == excludeEnd:
+		case trimCR(l) == excludeEnd:
 			inBlock = false
 		case inBlock:
 			d.block = append(d.block, l)
@@ -460,7 +520,9 @@ func readExclude(file string) (excludeDoc, error) {
 }
 
 // writeExclude writes the owner's lines first, verbatim and in order, then
-// our block — or no block at all once it is empty.
+// our block — or no block at all once it is empty. Like writeSettings, a
+// symlinked exclude file is written through to its target, atomically, and
+// its existing permission bits (or 0o644 for a brand-new file) are kept.
 func writeExclude(file string, d excludeDoc) error {
 	out := slices.Clone(d.outside)
 	if len(d.block) > 0 {
@@ -472,13 +534,11 @@ func writeExclude(file string, d excludeDoc) error {
 	if len(out) > 0 {
 		content = strings.Join(out, "\n") + "\n"
 	}
-	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
-		return fmt.Errorf("creating %s: %w", filepath.Dir(file), err)
+	target, err := resolveSymlink(file)
+	if err != nil {
+		return err
 	}
-	if err := os.WriteFile(file, []byte(content), 0o644); err != nil {
-		return fmt.Errorf("writing %s: %w", file, err)
-	}
-	return nil
+	return atomicWriteFile(target, []byte(content), filePerm(file, 0o644))
 }
 
 func splitLines(s string) []string {
