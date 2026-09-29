@@ -116,20 +116,16 @@ extension TranscriptionConfig {
         if defaults.object(forKey: "transcription.margin") != nil {
             config.margin = Float(defaults.double(forKey: "transcription.margin"))
         }
-        if defaults.object(forKey: "transcription.contextPrompt") != nil {
-            config.contextPrompt = defaults.bool(forKey: "transcription.contextPrompt")
-        }
-        if defaults.object(forKey: "transcription.liveTranscription") != nil {
-            config.liveTranscription = defaults.bool(forKey: "transcription.liveTranscription")
-        }
-        if defaults.object(forKey: "transcription.diarization") != nil {
-            config.diarization = defaults.bool(forKey: "transcription.diarization")
-        }
-        if defaults.object(forKey: "transcription.voiceRecognition") != nil {
-            config.voiceRecognition = defaults.bool(forKey: "transcription.voiceRecognition")
-        }
-        if defaults.object(forKey: "transcription.voiceNotifications") != nil {
-            config.voiceNotifications = defaults.bool(forKey: "transcription.voiceNotifications")
+        // Boolean toggles: an absent key keeps the struct default.
+        let toggles: [(key: String, field: WritableKeyPath<TranscriptionConfig, Bool>)] = [
+            ("transcription.contextPrompt", \.contextPrompt),
+            ("transcription.liveTranscription", \.liveTranscription),
+            ("transcription.diarization", \.diarization),
+            ("transcription.voiceRecognition", \.voiceRecognition),
+            ("transcription.voiceNotifications", \.voiceNotifications)
+        ]
+        for toggle in toggles where defaults.object(forKey: toggle.key) != nil {
+            config[keyPath: toggle.field] = defaults.bool(forKey: toggle.key)
         }
         if defaults.object(forKey: "transcription.diarizationThreshold") != nil {
             let value = Float(defaults.double(forKey: "transcription.diarizationThreshold"))
