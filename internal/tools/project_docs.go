@@ -49,24 +49,32 @@ func checkDocumentFile(rel, abs string) error {
 
 // documentInProject loads a document and fails unless it belongs to projectID.
 func documentInProject(d *db.DB, projectID, documentID int64) (*db.ProjectDocument, error) {
+	notHere := notInProject("document", documentID)
+	if projectID <= 0 || documentID <= 0 {
+		return nil, notHere
+	}
 	doc, err := d.GetProjectDocument(documentID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("loading document %d: %w", documentID, err)
 	}
 	if doc == nil || doc.ProjectID != projectID {
-		return nil, notInProject("document", documentID)
+		return nil, notHere
 	}
 	return doc, nil
 }
 
 // commentInProject loads a comment and fails unless it belongs to projectID.
 func commentInProject(d *db.DB, projectID, commentID int64) (*db.ProjectComment, error) {
+	notHere := notInProject("comment", commentID)
+	if projectID <= 0 || commentID <= 0 {
+		return nil, notHere
+	}
 	c, err := d.GetProjectComment(commentID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("loading comment %d: %w", commentID, err)
 	}
 	if c == nil || c.ProjectID != projectID {
-		return nil, notInProject("comment", commentID)
+		return nil, notHere
 	}
 	return c, nil
 }

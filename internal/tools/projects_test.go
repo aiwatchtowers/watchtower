@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -269,24 +268,37 @@ func TestProj01_TargetReadsFollowTheSessionScope(t *testing.T) {
 }
 
 // outsideProjectCall is one write aimed at data outside the bound project.
-type outsideProjectCall struct{ name, tool, args string }
+// wantNotInProject is true when the refusal must specifically be
+// db.ErrNotInProject (as opposed to some other ValidationError, e.g. an
+// unknown-field decode failure from a smuggled project_id).
+type outsideProjectCall struct {
+	name             string
+	tool             string
+	args             string
+	wantNotInProject bool
+}
 
 // outsideProjectCalls lists every write the DEV-06 guard aims at project b (or
 // at no project) from a session bound to project a. Task 8 appends the
-// document and comment tools.
-func outsideProjectCalls(fx projectFixture) []outsideProjectCall {
+// document and comment tools. The attach_document case needs a real file
+// inside project a's folder — otherwise resolveInsideFolder's "does not
+// exist" check refuses the call before optionalTarget ever runs, making the
+// case vacuous for the cross-project-target guard it is meant to exercise.
+func outsideProjectCalls(t *testing.T, fx projectFixture) []outsideProjectCall {
+	t.Helper()
+	writeProjectFile(t, fx.d, fx.a, "docs/other-project-link.md", "# doc\n")
 	return []outsideProjectCall{
-		{"update another project's target", "update_target", fmt.Sprintf(`{"target_id":%d,"status":"done","reason":"r"}`, fx.bTarget)},
-		{"update a non-project target", "update_target", fmt.Sprintf(`{"target_id":%d,"status":"done","reason":"r"}`, fx.plain)},
-		{"nest under another project's target", "create_targets", fmt.Sprintf(`{"items":[{"text":"x","parent_id":%d}],"reason":"r"}`, fx.bTarget)},
-		{"smuggle a project_id", "create_targets", fmt.Sprintf(`{"project_id":%d,"items":[{"text":"x"}],"reason":"r"}`, fx.b)},
-		{"smuggle a project_id into a source", "add_project_source", fmt.Sprintf(`{"project_id":%d,"kind":"link","ref":"x","reason":"r"}`, fx.b)},
-		{"remove another project's source", "remove_project_source", fmt.Sprintf(`{"source_id":%d,"reason":"r"}`, fx.bSource)},
-		{"comment on another project's target", "add_comment", fmt.Sprintf(`{"target_id":%d,"body":"hi","reason":"r"}`, fx.bTarget)},
-		{"comment on a non-project target", "add_comment", fmt.Sprintf(`{"target_id":%d,"body":"hi","reason":"r"}`, fx.plain)},
-		{"reply in another project's thread", "add_comment", fmt.Sprintf(`{"parent_id":%d,"body":"hi","reason":"r"}`, fx.bComment)},
-		{"resolve another project's comment", "resolve_comment", fmt.Sprintf(`{"comment_id":%d,"reply":"done","reason":"r"}`, fx.bComment)},
-		{"link a document to another project's target", "attach_document", fmt.Sprintf(`{"rel_path":"README.md","kind":"doc","target_id":%d,"reason":"r"}`, fx.bTarget)},
+		{"update another project's target", "update_target", fmt.Sprintf(`{"target_id":%d,"status":"done","reason":"r"}`, fx.bTarget), true},
+		{"update a non-project target", "update_target", fmt.Sprintf(`{"target_id":%d,"status":"done","reason":"r"}`, fx.plain), true},
+		{"nest under another project's target", "create_targets", fmt.Sprintf(`{"items":[{"text":"x","parent_id":%d}],"reason":"r"}`, fx.bTarget), true},
+		{"smuggle a project_id", "create_targets", fmt.Sprintf(`{"project_id":%d,"items":[{"text":"x"}],"reason":"r"}`, fx.b), false},
+		{"smuggle a project_id into a source", "add_project_source", fmt.Sprintf(`{"project_id":%d,"kind":"link","ref":"x","reason":"r"}`, fx.b), false},
+		{"remove another project's source", "remove_project_source", fmt.Sprintf(`{"source_id":%d,"reason":"r"}`, fx.bSource), true},
+		{"comment on another project's target", "add_comment", fmt.Sprintf(`{"target_id":%d,"body":"hi","reason":"r"}`, fx.bTarget), true},
+		{"comment on a non-project target", "add_comment", fmt.Sprintf(`{"target_id":%d,"body":"hi","reason":"r"}`, fx.plain), true},
+		{"reply in another project's thread", "add_comment", fmt.Sprintf(`{"parent_id":%d,"body":"hi","reason":"r"}`, fx.bComment), true},
+		{"resolve another project's comment", "resolve_comment", fmt.Sprintf(`{"comment_id":%d,"reply":"done","reason":"r"}`, fx.bComment), true},
+		{"link a document to another project's target", "attach_document", fmt.Sprintf(`{"rel_path":"docs/other-project-link.md","kind":"doc","target_id":%d,"reason":"r"}`, fx.bTarget), true},
 	}
 }
 
@@ -299,11 +311,11 @@ func TestDev06_WriteOutsideTheBoundProjectIsRefused(t *testing.T) {
 	plainBefore, err := fx.d.GetTargetByID(int(fx.plain))
 	require.NoError(t, err)
 
-	for _, c := range outsideProjectCalls(fx) {
+	for _, c := range outsideProjectCalls(t, fx) {
 		_, err := proposeIn(t, reg, fx.a, c.tool, c.args)
 		var verr *ValidationError
 		require.ErrorAs(t, err, &verr, c.name)
-		if strings.Contains(verr.Msg, "is not in this project") {
+		if c.wantNotInProject {
 			assert.ErrorIs(t, err, db.ErrNotInProject, c.name)
 		}
 	}
