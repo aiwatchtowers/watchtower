@@ -6,6 +6,7 @@ import (
 	"math"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -37,19 +38,45 @@ var projectBriefCmd = &cobra.Command{
 	// hook before RunE could turn it into the one-line brief (the
 	// extract-pdf-text precedent). loadProjectBrief loads config itself.
 	PersistentPreRunE: func(*cobra.Command, []string) error { return nil },
-	RunE:              runProjectBrief,
+	// ArbitraryArgs + UnknownFlags: a hook invocation carrying an extra
+	// positional arg or a flag this version doesn't know must still exit 0
+	// with the one-line brief, never fail in cobra's own flag parser.
+	Args:               cobra.ArbitraryArgs,
+	FParseErrWhitelist: cobra.FParseErrWhitelist{UnknownFlags: true},
+	RunE:               runProjectBrief,
 }
 
-var projectBriefFlagProject int64
+// projectBriefFlagProject is a string, not an int64: an Int64Var flag makes
+// cobra's flag parser itself reject a non-numeric --project value before
+// RunE (or PersistentPreRunE) ever runs, exiting non-zero — exactly what this
+// command must never do. loadProjectBriefFlag turns it into an id (0 for
+// empty/invalid) so every bad value becomes the one-line brief instead.
+var projectBriefFlagProject string
 
 func init() {
-	projectBriefCmd.Flags().Int64Var(&projectBriefFlagProject, "project", 0, "project id")
+	projectBriefCmd.Flags().StringVar(&projectBriefFlagProject, "project", "", "project id")
 	projectCmd.AddCommand(projectBriefCmd)
 }
 
 func runProjectBrief(cmd *cobra.Command, _ []string) error {
-	fmt.Fprintln(cmd.OutOrStdout(), loadProjectBrief(projectBriefFlagProject))
+	fmt.Fprintln(cmd.OutOrStdout(), loadProjectBriefFlag(projectBriefFlagProject))
 	return nil
+}
+
+// loadProjectBriefFlag parses the raw --project flag value. Empty (missing,
+// or explicitly "") reads as "no --project id given" via loadProjectBrief's
+// own id<=0 branch; a non-empty value that isn't a positive integer gets its
+// own one-line reason so it isn't misreported as missing.
+func loadProjectBriefFlag(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return loadProjectBrief(0)
+	}
+	id, err := strconv.ParseInt(trimmed, 10, 64)
+	if err != nil || id <= 0 {
+		return briefUnavailable(0, fmt.Sprintf("is unavailable: invalid --project value %q", raw))
+	}
+	return loadProjectBrief(id)
 }
 
 func loadProjectBrief(id int64) string {

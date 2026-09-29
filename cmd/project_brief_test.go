@@ -149,8 +149,24 @@ func TestProjectBrief_UnreadableConfigPrintsOneLine(t *testing.T) {
 
 func TestProjectBrief_NoProjectFlagPrintsOneLine(t *testing.T) {
 	out, _, err := runProject(t, "brief")
+	require.NoError(t, err, "a missing --project must never fail cobra's own parsing")
+	assert.Equal(t, "Watchtower: project 0 is unavailable: no --project id given.\n", out)
+}
+
+func TestProjectBrief_EmptyProjectFlagPrintsOneLine(t *testing.T) {
+	out, _, err := runProject(t, "brief", "--project", "")
 	require.NoError(t, err)
 	assert.Equal(t, "Watchtower: project 0 is unavailable: no --project id given.\n", out)
+}
+
+// TestProjectBrief_NonNumericProjectFlagPrintsOneLine: --project is a string
+// flag precisely so a non-numeric value is rejected by loadProjectBriefFlag,
+// not by cobra's own flag parser (which would exit non-zero before RunE ever
+// ran, breaking the "always exit 0" contract of a SessionStart hook).
+func TestProjectBrief_NonNumericProjectFlagPrintsOneLine(t *testing.T) {
+	out, _, err := runProject(t, "brief", "--project", "abc")
+	require.NoError(t, err, "an unparseable --project value must never fail cobra's own parsing")
+	assert.Equal(t, "Watchtower: project 0 is unavailable: invalid --project value \"abc\".\n", out)
 }
 
 func TestProjectBrief_RendersBoardFromDB(t *testing.T) {
