@@ -55,6 +55,12 @@ struct TranscriptionConfig: Equatable {
     /// more aggressively. FluidAudio's own default (0.7) under-splits compressed
     /// meeting audio, merging distinct people into one cluster.
     var diarizationThreshold: Float = 0.6
+    /// Voice registry identification after diarization (name confident
+    /// clusters, queue the rest for labeling, self-train). Off = clusters
+    /// keep "Speaker N" and nothing is queued or learned.
+    var voiceRecognition: Bool = true
+    /// Notify when a saved recording queued voices to label.
+    var voiceNotifications: Bool = true
     /// Explicit engine model for factories that honor it — stamped by the
     /// dictation lane from its resolved `dictation.model` choice and consumed
     /// by `DictationCenter.dictationEngineFactory`. nil (the default, and
@@ -118,6 +124,12 @@ extension TranscriptionConfig {
         }
         if defaults.object(forKey: "transcription.diarization") != nil {
             config.diarization = defaults.bool(forKey: "transcription.diarization")
+        }
+        if defaults.object(forKey: "transcription.voiceRecognition") != nil {
+            config.voiceRecognition = defaults.bool(forKey: "transcription.voiceRecognition")
+        }
+        if defaults.object(forKey: "transcription.voiceNotifications") != nil {
+            config.voiceNotifications = defaults.bool(forKey: "transcription.voiceNotifications")
         }
         if defaults.object(forKey: "transcription.diarizationThreshold") != nil {
             let value = Float(defaults.double(forKey: "transcription.diarizationThreshold"))

@@ -19,6 +19,21 @@ package enum MeetingRecapQueries {
             .fetchOne(db)
     }
 
+    /// The recap row a recording's Recap tab renders: the durable
+    /// `transcript_id` link first (it survives the event's deletion), then
+    /// the event's row. Nil = the tab falls back to the transcript's own
+    /// `summary_json`. Go's `storeTranscriptRecap` (cmd/meeting_transcript.go)
+    /// writes to the same precedence — keep the two in step.
+    package static func fetchForRecording(
+        _ db: Database, transcriptID: Int64, eventID: String?
+    ) throws -> RecordingRecap? {
+        if let own = try fetch(db, transcriptID: transcriptID) {
+            return RecordingRecap(recap: own, ownedByRecording: true)
+        }
+        guard let eventID, let eventRecap = try fetch(db, eventID: eventID) else { return nil }
+        return RecordingRecap(recap: eventRecap, ownedByRecording: false)
+    }
+
     /// One recap by row id — how a Catch-Up recap resolves a `recaps` ref (the
     /// ref area the Go gather emits for `meeting_recaps`).
     package static func fetchByID(_ db: Database, id: Int) throws -> MeetingRecap? {

@@ -1054,7 +1054,9 @@ CREATE TABLE IF NOT EXISTS meeting_transcripts (
     speakers_json   TEXT,
     chapters_json   TEXT,
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-    updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    speaker_names_changed_at TEXT,
+    summary_updated_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_meeting_transcripts_event ON meeting_transcripts(event_id);
 
@@ -1089,18 +1091,78 @@ BEGIN
     WHERE NEW.transcript_text != '';
 END;
 
--- Voice prints: one row per known person's voice, learned from manual speaker
--- renames in the Desktop transcript view. person_key = attendee email (or a
--- normalized display name when no email). embedding = L2-normalized 256-dim
--- float32 centroid (little-endian BLOB); sample_count = clusters folded in.
+-- Voice registry (migration 00080, spec
+-- docs/superpowers/specs/2026-09-28-voice-registry-design.md): voice_prints
+-- is one row per known person, learned from manual speaker renames in the
+-- Desktop transcript view (person_key = attendee email, or a normalized
+-- display name when no email). Voices live as per-sample rows in
+-- voice_samples (nearest-sample matching, owner anchors, self-training,
+-- imports) rather than one centroid embedding per person. Prints are
+-- exported only by an explicit owner action as an encrypted file of
+-- embeddings (never automatically).
 CREATE TABLE IF NOT EXISTS voice_prints (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     person_key   TEXT NOT NULL UNIQUE,
     display_name TEXT NOT NULL,
-    embedding    BLOB NOT NULL,
-    sample_count INTEGER NOT NULL DEFAULT 1,
+    created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
+
+-- One row per imported voice-print file (an owner sharing their exported
+-- prints with a colleague). file_sha256 is the dedup key for a re-import.
+CREATE TABLE IF NOT EXISTS voice_imports (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    sender_name   TEXT NOT NULL,
+    sender_email  TEXT NOT NULL DEFAULT '',
+    file_sha256   TEXT NOT NULL UNIQUE,
+    people_count  INTEGER NOT NULL,
+    sample_count  INTEGER NOT NULL,
+    model_version TEXT NOT NULL,
+    imported_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+
+-- Per-sample voice embeddings (256-dim float32, little-endian BLOB): owner
+-- anchors (origin='owner', anchor=1, the only samples an owner directly
+-- confirmed), auto self-training samples pulled from diarized transcripts,
+-- and imported samples from a colleague's voice_imports file. A sample is
+-- matched nearest-neighbor, not centroid-averaged. anchor=1 is restricted to
+-- origin='owner' by the CHECK below.
+CREATE TABLE IF NOT EXISTS voice_samples (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    person_id     INTEGER NOT NULL REFERENCES voice_prints(id) ON DELETE CASCADE,
+    embedding     BLOB NOT NULL,
+    model_version TEXT NOT NULL,
+    origin        TEXT NOT NULL CHECK (origin IN ('owner', 'auto', 'imported')),
+    anchor        INTEGER NOT NULL DEFAULT 0 CHECK (anchor IN (0, 1)),
+    status        TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'pending', 'retired')),
+    transcript_id INTEGER REFERENCES meeting_transcripts(id) ON DELETE SET NULL,
+    cluster_label TEXT,
+    channel       TEXT NOT NULL DEFAULT 'unknown' CHECK (channel IN ('room', 'remote', 'unknown')),
+    score         REAL,
+    speech_sec    REAL NOT NULL DEFAULT 0,
+    import_id     INTEGER REFERENCES voice_imports(id) ON DELETE CASCADE,
+    created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    CHECK (anchor = 0 OR origin = 'owner')
+);
+CREATE INDEX IF NOT EXISTS idx_voice_samples_person_status ON voice_samples(person_id, status);
+CREATE INDEX IF NOT EXISTS idx_voice_samples_transcript ON voice_samples(transcript_id);
+
+-- Queue of speaker-cluster labeling tasks the owner should resolve (an
+-- unsure/unknown diarized cluster, an import awaiting confirmation, a
+-- conflict, or a relabel). At most one pending task per transcript+cluster.
+CREATE TABLE IF NOT EXISTS voice_label_queue (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    transcript_id       INTEGER NOT NULL REFERENCES meeting_transcripts(id) ON DELETE CASCADE,
+    cluster_label       TEXT NOT NULL,
+    reason              TEXT NOT NULL CHECK (reason IN ('unsure', 'unknown', 'import_confirm', 'conflict', 'relabel')),
+    suggested_person_id INTEGER REFERENCES voice_prints(id) ON DELETE SET NULL,
+    score               REAL,
+    status              TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'done', 'skipped')),
+    created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    resolved_at         TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_voice_label_queue_open ON voice_label_queue(transcript_id, cluster_label) WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_voice_label_queue_status ON voice_label_queue(status, created_at);
 
 -- Gmail messages (synced inbox items from Gmail). account_id + composite PK
 -- scope messages per Google account (see 00043); calendar_auth_state/

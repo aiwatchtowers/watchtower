@@ -912,17 +912,60 @@ extension TestDatabase {
         speakers_json   TEXT,
         chapters_json   TEXT,
         created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-        updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+        updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        speaker_names_changed_at TEXT,
+        summary_updated_at TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_meeting_transcripts_event ON meeting_transcripts(event_id);
     CREATE TABLE IF NOT EXISTS voice_prints (
         id           INTEGER PRIMARY KEY AUTOINCREMENT,
         person_key   TEXT NOT NULL UNIQUE,
         display_name TEXT NOT NULL,
-        embedding    BLOB NOT NULL,
-        sample_count INTEGER NOT NULL DEFAULT 1,
+        created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
         updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
     );
+    CREATE TABLE IF NOT EXISTS voice_imports (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        sender_name   TEXT NOT NULL,
+        sender_email  TEXT NOT NULL DEFAULT '',
+        file_sha256   TEXT NOT NULL UNIQUE,
+        people_count  INTEGER NOT NULL,
+        sample_count  INTEGER NOT NULL,
+        model_version TEXT NOT NULL,
+        imported_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    );
+    CREATE TABLE IF NOT EXISTS voice_samples (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        person_id     INTEGER NOT NULL REFERENCES voice_prints(id) ON DELETE CASCADE,
+        embedding     BLOB NOT NULL,
+        model_version TEXT NOT NULL,
+        origin        TEXT NOT NULL CHECK (origin IN ('owner', 'auto', 'imported')),
+        anchor        INTEGER NOT NULL DEFAULT 0 CHECK (anchor IN (0, 1)),
+        status        TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'pending', 'retired')),
+        transcript_id INTEGER REFERENCES meeting_transcripts(id) ON DELETE SET NULL,
+        cluster_label TEXT,
+        channel       TEXT NOT NULL DEFAULT 'unknown' CHECK (channel IN ('room', 'remote', 'unknown')),
+        score         REAL,
+        speech_sec    REAL NOT NULL DEFAULT 0,
+        import_id     INTEGER REFERENCES voice_imports(id) ON DELETE CASCADE,
+        created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        CHECK (anchor = 0 OR origin = 'owner')
+    );
+    CREATE INDEX IF NOT EXISTS idx_voice_samples_person_status ON voice_samples(person_id, status);
+    CREATE INDEX IF NOT EXISTS idx_voice_samples_transcript ON voice_samples(transcript_id);
+    CREATE TABLE IF NOT EXISTS voice_label_queue (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        transcript_id       INTEGER NOT NULL REFERENCES meeting_transcripts(id) ON DELETE CASCADE,
+        cluster_label       TEXT NOT NULL,
+        reason              TEXT NOT NULL CHECK (reason IN ('unsure', 'unknown', 'import_confirm', 'conflict', 'relabel')),
+        suggested_person_id INTEGER REFERENCES voice_prints(id) ON DELETE SET NULL,
+        score               REAL,
+        status              TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'done', 'skipped')),
+        created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        resolved_at         TEXT
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_voice_label_queue_open ON voice_label_queue(transcript_id, cluster_label) WHERE status = 'pending';
+    CREATE INDEX IF NOT EXISTS idx_voice_label_queue_status ON voice_label_queue(status, created_at);
     CREATE TABLE IF NOT EXISTS memory_nodes (
         id            TEXT PRIMARY KEY,
         type          TEXT NOT NULL CHECK (type IN ('entity','episode','rollup','belief')),

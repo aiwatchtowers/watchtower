@@ -207,6 +207,23 @@ final class NotificationService: Sendable {
         sendTranscriptNotification(title: "Transcription failed", body: reason, hashInput: reason)
     }
 
+    /// A saved recording queued voices for the owner to label. The
+    /// identifier is per transcript, so a re-save replaces rather than
+    /// stacks the push; `userInfo` routes a tap to that recording's queue.
+    func sendVoicesToLabelNotification(title: String, count: Int, transcriptID: Int64) {
+        let content = UNMutableNotificationContent()
+        content.title = count == 1 ? "1 voice to label" : "\(count) voices to label"
+        content.body = String(title.prefix(200))
+        content.sound = .default
+        content.userInfo = ["type": "voice_label", "transcriptID": transcriptID]
+        let request = UNNotificationRequest(
+            identifier: "voice-label-\(transcriptID)",
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(request)
+    }
+
     /// Pre-meeting reminder. With a conference link the push carries the
     /// Join / Join + Record action category; without one it is plain. The
     /// dedup key (event id + start time) makes the identifier stable, so a

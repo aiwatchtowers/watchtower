@@ -12,6 +12,7 @@ import GRDB
 /// `speakersJSON` is the per-cluster voice-embedding array keyed by rendered
 /// speaker label (nil when the diarizer produced no embeddings).
 /// `chaptersJSON` is the AI chapter breakdown (nil until generated).
+/// `speakerNamesChangedAt` is stamped by every speaker relabel.
 package struct MeetingTranscript: Codable, FetchableRecord, PersistableRecord {
     package static let databaseTableName = "meeting_transcripts"
 
@@ -29,6 +30,14 @@ package struct MeetingTranscript: Codable, FetchableRecord, PersistableRecord {
     package let chaptersJSON: String?
     package let createdAt: String
     package let updatedAt: String
+    /// Stamped by every speaker relabel (`relabelCluster`) — lets derived
+    /// artifacts (recap, notes) notice their speaker names are stale. nil
+    /// until the first relabel.
+    package let speakerNamesChangedAt: String?
+    /// When `summaryJSON` (the ad-hoc recap) was last generated — stamped by
+    /// Go's recap writer. nil for a recap older than the column. Unlike
+    /// `updatedAt`, a relabel never bumps it.
+    package let summaryUpdatedAt: String?
 
     package init(
         id: Int64? = nil,
@@ -44,7 +53,9 @@ package struct MeetingTranscript: Codable, FetchableRecord, PersistableRecord {
         speakersJSON: String?,
         chaptersJSON: String?,
         createdAt: String,
-        updatedAt: String
+        updatedAt: String,
+        speakerNamesChangedAt: String? = nil,
+        summaryUpdatedAt: String? = nil
     ) {
         self.id = id
         self.eventID = eventID
@@ -60,6 +71,40 @@ package struct MeetingTranscript: Codable, FetchableRecord, PersistableRecord {
         self.chaptersJSON = chaptersJSON
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.speakerNamesChangedAt = speakerNamesChangedAt
+        self.summaryUpdatedAt = summaryUpdatedAt
+    }
+
+    /// Whether speaker names changed (a Voices-window label, relabel or retro
+    /// pass) after the recap on screen was generated — the recap can then
+    /// quote a stale "Speaker N" (spec §4.1) — and the hint's Regenerate
+    /// (`transcript recap <id>`) can refresh it. `shownRecap` is the
+    /// `meeting_recaps` row the Recap tab renders (nil when it renders this
+    /// row's own `summaryJSON`, or nothing); the caller passes it only when
+    /// it decoded, so nothing is parsed here.
+    ///
+    /// - Another source's event recap (pasted, another recording's) → false:
+    ///   this recording's names never fed it, and Go's collision guard never
+    ///   overwrites it, so a Regenerate could not change what is shown.
+    /// - This recording's own row → compared with the recap's generation
+    ///   stamp: `summaryUpdatedAt` when the row also has a `summaryJSON` copy
+    ///   (Go refreshes both together; `linkToEvent` copies the summary with
+    ///   the LINK time as `updated_at`, so that stamp would hide a relabel
+    ///   made before linking), else the row's own `updated_at`.
+    /// - No recap at all → false (nothing to regenerate).
+    ///
+    /// Never compares against `updatedAt` — a relabel bumps it in the same
+    /// UPDATE that stamps `speakerNamesChangedAt`. A legacy summary with no
+    /// stamp predates every relabel. String compare on the shared ISO format.
+    package func recapPredatesSpeakerNames(shownRecap: RecordingRecap?) -> Bool {
+        guard let changedAt = speakerNamesChangedAt else { return false }
+        if let shownRecap {
+            guard shownRecap.ownedByRecording else { return false }
+            if summaryJSON == nil { return changedAt > shownRecap.recap.updatedAt }
+        } else if summaryJSON == nil {
+            return false
+        }
+        return changedAt > (summaryUpdatedAt ?? "")
     }
 
     /// Decodes `summaryJSON` (snake_case keys, same shape as a meeting recap).
@@ -107,6 +152,8 @@ package struct MeetingTranscript: Codable, FetchableRecord, PersistableRecord {
         case chaptersJSON = "chapters_json"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
+        case speakerNamesChangedAt = "speaker_names_changed_at"
+        case summaryUpdatedAt = "summary_updated_at"
     }
 
     package mutating func didInsert(_ inserted: InsertionSuccess) {
