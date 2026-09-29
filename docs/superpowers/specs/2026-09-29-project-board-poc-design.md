@@ -1,142 +1,196 @@
-# Project Board POC — Watchtower develops Watchtower (2026-09-29)
+# Projects POC — Watchtower develops Watchtower (2026-09-29)
 
-**Status:** design, owner-approved direction (plan approved 2026-09-29); this spec awaits owner review before the implementation plan.
-**Vision:** `2026-09-29-chat-projects-vision.md` — this POC covers block A partially (external Claude Code via MCP + integrate; *not* the CC engine inside the Watchtower chat), block D (the board), and a slice of block B (project documents in the index).
+**Status:** design, revision 2 (owner feedback 2026-09-29) — awaits owner review before the implementation plan.
+**Vision:** `2026-09-29-chat-projects-vision.md`. This POC is a **new feature, Projects** — separate from the AI Chat's v1 projects (`chat_projects`), which stay as they are.
 
 ## 1. Goal
 
-Dogfood: the owner develops Watchtower with terminal Claude Code (CC), and Watchtower is the project's durable home.
+The owner keeps executing in terminal Claude Code (CC). Watchtower gives the **wide overview**: every project's board, what agents are doing, what they are asking, which plans wait for review.
 
-- A **project** is bound to a folder (first: this repository).
-- The project has a **board** — targets with sub-targets — that outlives CC sessions and is visible and editable in the Desktop.
-- **Owner ↔ agent comments** on targets: the owner leaves a note while no agent runs; the next CC session sees it at start. Agents report questions, blockers and done-summaries the same way.
-- **Plan = board:** when a `writing-plans` plan is written, each task becomes a sub-target of the feature's target; the subagent-driven-development controller marks progress and reads comments per task.
+- A **project** is a folder (first: this repository) plus optional sources. The owner only creates/opens the folder; everything else is set up **through the project chat**.
+- The project has a **board** — targets with sub-targets — that outlives CC sessions.
+- **Plan = board:** when a `writing-plans` plan is written, its tasks become sub-targets of the feature target; the subagent-driven-development controller moves them and reports on them.
+- **Documents with inline comments:** specs and plans an agent writes are attached to the project and open in the Desktop like a Claude document — the owner selects text and comments; the agent reads open comments, revises the file, and resolves each comment with a reply.
+- **Comments on targets:** mainly so agents can ask the owner questions without blocking.
 
-**Success criterion (two weeks of use):** the owner opens the board instead of the md plan and answers agents in the Desktop rather than in the terminal. If not, the POC failed cheaply.
+**Success criterion (two weeks):** the owner reviews plans and specs in the Desktop document view instead of reading md in the terminal, and checks project state on the board rather than asking CC.
+
+**Later (not this POC):** the same for work projects with an issue tracker — "let's do XXX-123" → Watchtower decomposes it on the board and moves the tracker issue as work progresses.
 
 ## 2. Decisions (owner, 2026-09-29)
 
 | # | Decision |
 |---|---|
-| D1 | Index the project's **documents** (md/txt), not code. Project documents are isolated: a search outside the project never returns them. |
-| D2 | Project targets live only on the project board: excluded from the Targets tab, day plan, next-step, catch-up, memory mirrors, inbox overdue notify, target extract/dedup. The daily briefing gains a separate **Projects** section. |
-| D3 | `watchtower mcp --project N` is a new, writable MCP mode for external CC: writes to its own project's board and comments apply **directly** (no Approve), audited; nothing external. New contract DEV-06; DEV-01 and DEV-05 amended. |
-| D4 | Plan = board, via a project skill + a SessionStart hook installed into the folder. Superpowers skills are not modified. |
-| D5 | Onboarding: after the folder is picked, a Watchtower project chat reads the indexed documents and proposes project instructions and an initial board behind Approve cards. |
+| D1 | Projects is its own feature and entity (`projects` table, own sidebar tab), not an extension of `chat_projects`. |
+| D2 | Setup is chat-driven: the owner picks the folder; the project chat configures description, sources and the board via tools. |
+| D3 | Only **documents** (md/txt) of the folder are indexed, not code. Project documents are isolated: a search outside the project never returns them. |
+| D4 | Project targets live only on the project board — excluded from the Targets tab, day plan, next-step, catch-up, memory mirrors, inbox overdue notify, target extract/dedup. The daily briefing gets a separate **Projects** section. |
+| D5 | `watchtower mcp --project N` is a new writable MCP mode for external CC: writes to its own project apply directly (no Approve), audited; nothing external. New contract DEV-06; DEV-01 and DEV-05 amended. |
+| D6 | Plan = board via a project skill + a SessionStart hook installed into the folder. Superpowers skills are not modified. |
+| D7 | Deleting a project cascades: targets, comments, documents, index rows — and removes everything Watchtower installed in the folder. |
+| D8 | Plans/specs are attached documents with text-anchored comments. |
 
 ## 3. Data
 
-One goose migration (next free number), mirrored into `internal/db/schema.sql`, `TestAllTablesExist`, the schema golden and `WatchtowerDesktop/Tests/Support/TestDatabase+Schema.swift`.
+One goose migration, mirrored into `internal/db/schema.sql`, `TestAllTablesExist`, the schema golden, and `WatchtowerDesktop/Tests/Support/TestDatabase+Schema.swift`.
 
-- `chat_projects.folder_path TEXT NOT NULL DEFAULT ''` — absolute path; empty = a v1 folder-less project (unchanged behaviour).
-- `targets.project_id INTEGER REFERENCES chat_projects(id) ON DELETE SET NULL`, index `idx_targets_project`. Project targets are created with `level='custom'`, `custom_label='project'`, `period_start = period_end = ` creation day (the NOT NULL columns are satisfied; the board UI does not show them), `source_type='chat'`, `ownership='mine'`.
-  - Deleting a project turns its targets into ordinary targets (SET NULL) — acceptable for a POC, surfaced in the delete confirmation.
-- `target_comments`:
-  ```
+```sql
+CREATE TABLE projects (
   id INTEGER PRIMARY KEY,
-  target_id INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
-  author TEXT NOT NULL CHECK(author IN ('owner','agent')),
-  agent_label TEXT NOT NULL DEFAULT '',     -- e.g. "implementer T3"; '' for the owner
-  body TEXT NOT NULL,
+  name TEXT NOT NULL,
+  folder_path TEXT NOT NULL UNIQUE,          -- absolute
+  description TEXT NOT NULL DEFAULT '',      -- set through the project chat
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-  read_at TEXT NOT NULL DEFAULT ''          -- owner's read mark, agent comments only
-  ```
-  index on `(target_id, created_at)`. A table rather than the existing `targets.notes` JSON array, because concurrent agents appending to one JSON value would overwrite each other.
-  - **Owner comments new to the agent** = owner comments on a target newer than that target's latest agent comment. No per-agent read state.
-- `kb_documents.project_id INTEGER` (NULL for every existing source).
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+
+CREATE TABLE project_sources (
+  id INTEGER PRIMARY KEY,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK(kind IN ('slack_channel','jira_project','confluence_space','person','link')),
+  ref TEXT NOT NULL,
+  label TEXT NOT NULL DEFAULT '',
+  UNIQUE(project_id, kind, ref)
+);
+
+CREATE TABLE project_documents (
+  id INTEGER PRIMARY KEY,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  target_id INTEGER REFERENCES targets(id) ON DELETE SET NULL,
+  rel_path TEXT NOT NULL,                    -- relative to folder_path
+  kind TEXT NOT NULL DEFAULT 'doc' CHECK(kind IN ('spec','plan','doc')),
+  title TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  UNIQUE(project_id, rel_path)
+);
+
+CREATE TABLE project_comments (
+  id INTEGER PRIMARY KEY,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  target_id INTEGER REFERENCES targets(id) ON DELETE CASCADE,
+  document_id INTEGER REFERENCES project_documents(id) ON DELETE CASCADE,
+  parent_id INTEGER REFERENCES project_comments(id) ON DELETE CASCADE,  -- a reply
+  author TEXT NOT NULL CHECK(author IN ('owner','agent')),
+  agent_label TEXT NOT NULL DEFAULT '',      -- e.g. "implementer T3"
+  body TEXT NOT NULL,
+  anchor_quote TEXT NOT NULL DEFAULT '',     -- document comments: the selected text
+  anchor_prefix TEXT NOT NULL DEFAULT '',    -- up to 64 chars before / after, for re-anchoring
+  anchor_suffix TEXT NOT NULL DEFAULT '',
+  anchor_heading TEXT NOT NULL DEFAULT '',   -- nearest heading, shown to the agent
+  status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','resolved','outdated')),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  read_at TEXT NOT NULL DEFAULT '',          -- owner's read mark on agent comments
+  CHECK (target_id IS NOT NULL OR document_id IS NOT NULL OR parent_id IS NOT NULL)
+);
+```
+
+- `targets.project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE` + index. Project targets are created with `level='custom'`, `custom_label='project'`, `period_start = period_end =` creation day, `source_type='chat'`, `ownership='mine'`; the board UI does not show level/period.
+- `kb_documents.project_id INTEGER` (NULL for every existing source). Deleting a project deletes its `kb_documents` rows in the same transaction (the chunk/FTS triggers follow).
+- A comment's **status** is only meaningful on thread roots. `outdated` = the anchor no longer matches the file (§6.3). "New for the agent" = open owner roots, or owner replies newer than the thread's last agent reply — no per-agent read state.
 
 ## 4. Go
 
 ### 4.1 db layer
-- `db.Target.ProjectID sql.NullInt64` through `targetSelectCols`/`scanTarget`/`CreateTarget`/`UpdateTarget`. `TargetFilter.ProjectID *int64`: nil means **exclude** project targets — the default for every existing caller.
-- `project_id IS NULL` added to every non-board reader: `GetTargets` (default), `GetTargetsNeedingNextStep`, `GetTargetsForBriefing`, `GetTargetCounts`, `NotifyDueTargets`, `ListCatchupTargets`, `ListTargetsForMirror`, `internal/dayplan/gather.go` (raw SQL), `internal/db/channel_stats.go`, and the extract/dedup snapshots in `internal/targets/pipeline.go`. `internal/targets/nextstep.go`'s single-target path refuses a project target. `targets_promote.go` copies `project_id` to the promoted child.
-- New `internal/db/target_comments.go`: add, list by target, mark read, unread counts.
-- `GetProjectBoard(projectID)`: all project targets as a tree (by `parent_id`) with status, progress, and per target the count of owner comments new to the agent and of agent comments unread by the owner.
-- `CreateChatProject(name, folder)`, `GetChatProject(id)`, `ListChatProjects()`. Go becomes a second writer of `chat_projects` next to Swift `ChatProjectQueries.create` — a deliberate dual path, recorded in CLAUDE.md.
+- `db.Target.ProjectID sql.NullInt64` through `targetSelectCols`/`scanTarget`/`CreateTarget`/`UpdateTarget`. `TargetFilter.ProjectID *int64`: nil = **exclude** project targets, the default for every existing caller.
+- `project_id IS NULL` added to every non-board reader: `GetTargets` (default), `GetTargetsNeedingNextStep`, `GetTargetsForBriefing`, `GetTargetCounts`, `NotifyDueTargets`, `ListCatchupTargets`, `ListTargetsForMirror`, `internal/dayplan/gather.go` (raw SQL), `internal/db/channel_stats.go`, the extract/dedup snapshots in `internal/targets/pipeline.go`. `nextstep.go`'s single-target path refuses a project target. `targets_promote.go` copies `project_id`.
+- New `internal/db/projects.go`: project CRUD, sources, documents, comments (add / reply / resolve / mark outdated / list by target, document, or "new for the agent"), `GetProjectBoard(projectID)` (target tree + per target: open owner threads, unread agent comments, attached documents), `DeleteProject` (one transaction: the row — cascades — plus its `kb_documents`).
 
 ### 4.2 Registry and tools (`internal/tools/`, `cmd/actions_registry.go`)
 - `tools.Binding` gains `ProjectID int64` and `DirectApply bool`; new surface `"project"`.
-- **DirectApply:** `Registry.Propose` with `DirectApply` records the `agent_actions` row as approved and applies it inline — the audit trail stays. It refuses any `External` tool (AGENT-03 unchanged). It is deliberately *not* `execute` trust, since trust is keyed only by tool name and would leak into the Desktop chat.
-- **Scope rule:** every tool on the `project` surface that touches a target resolves it and fails unless `target.project_id == Binding.ProjectID`; created targets take `project_id` from the binding, never from an argument. A `parent_id` must belong to the same project.
-- Tools:
+- **DirectApply:** `Registry.Propose` with `DirectApply` records the `agent_actions` row approved and applies inline (audit kept). Refuses every `External` tool (AGENT-03 unchanged). Not `execute` trust — trust is keyed by tool name only and would leak into other chats.
+- **Scope rule:** every `project`-surface tool resolves the target/document/comment it touches and fails unless it belongs to `Binding.ProjectID`. New rows take `project_id` from the binding, never from an argument. `attach_document` paths must resolve inside `folder_path` (no `..`, no symlink escape) and point to an existing `.md`/`.txt` file.
+- Tools (all on surface `project`):
 
-  | Tool | Kind | Surfaces | Notes |
-  |---|---|---|---|
-  | `project_board` | read | project, main | tree + comment counters |
-  | `create_target` | write | main (existing), project | + optional `parent_id` |
-  | `create_targets` | write | project, main | array of `{text, intent, parent_ref?}` — one call imports a plan; `parent_ref` points at another item in the batch or at an existing id |
-  | `update_target` | write | project, main | status, progress, title, intent, sub_items |
-  | `add_target_comment` | write | project, main | `body`, `agent_label` (author is `agent` for tools, always) |
-  | `list_target_comments` | read | project, main | by target |
+  | Tool | Kind | What |
+  |---|---|---|
+  | `project_info` | read | name, folder, description, sources, counts |
+  | `project_board` | read | target tree + comment counters + attached documents |
+  | `update_project` | write | description |
+  | `add_project_source` / `remove_project_source` | write | kinds per §3 |
+  | `create_targets` | write | array of `{text, intent, parent_id? \| parent_ref?}` — a whole plan in one call |
+  | `update_target` | write | status, progress, title, intent, sub_items |
+  | `attach_document` | write | `rel_path`, `kind`, optional `target_id` |
+  | `list_comments` | read | by `target_id`, `document_id`, or `new_for_agent=true` (default) |
+  | `add_comment` | write | on a target, or reply to a comment; author is always `agent` |
+  | `resolve_comment` | write | `comment_id`, optional reply body |
 
-  On `main` these tools only operate when the conversation belongs to a project and stay behind Approve (the onboarding chat). `list_targets`, `get_target` and `search_knowledge` honour `Binding.ProjectID`; with 0 they behave exactly as today.
-- `TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces` is extended for the new surface and tools.
+  `list_targets`, `get_target`, `search_knowledge`, `get_knowledge_document` honour `Binding.ProjectID`; with 0 they behave exactly as today.
+- `TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces` extended for the new surface.
 
-### 4.3 MCP (`cmd/mcp.go`)
-- `watchtower mcp --project N`: DB stays writable; `WithRegistry(reg, Binding{Surface: "project", ProjectID: N, DirectApply: true})`. Fails at startup if project N does not exist or is archived. Mutually exclusive with `--chat`.
-- Plain `watchtower mcp` is untouched (`SetReadOnly`, DEV-01 guards unchanged).
-- `mcp --chat` resolves `ProjectID` from the conversation's `chat_conversations.project_id` (no new flag), so a Desktop project chat's search sees that project's documents.
+### 4.3 Surfaces that bind a project
+- **External CC:** `watchtower mcp --project N` — writable DB, `Binding{Surface:"project", ProjectID:N, DirectApply:true}`. Fails at startup if project N does not exist. Mutually exclusive with `--chat`. Plain `watchtower mcp` is untouched (`SetReadOnly`, DEV-01 guards unchanged).
+- **Project chat (Desktop):** a warm `ai session` with a new `--work-project N` flag (conversation `context_type='project'`, `context_id=N`). The session's MCP child runs `mcp --chat --surface project --work-project N` with `DirectApply:true` — local project writes by the owner's own assistant in the owner's own chat apply immediately and show as steps (the target-chat `execute` directive precedent); anything `External` stays behind Approve. The system prompt (`BuildSystemPrompt`) gets a project block: name, folder, description, sources, board summary, and the setup guidance ("the owner only picked a folder; read its documents and propose description, sources and a board; do it when the owner agrees").
 
 ### 4.4 CLI (`cmd/project.go`)
-- `watchtower project create --folder DIR [--name NAME]` (name defaults to the folder's base name; refuses a missing directory or a folder already bound to a project), `project list [--json]`, `project show N`, `project board N [--json]`.
-- `watchtower project brief --project N` — the SessionStart hook body, ≤ 4000 characters:
-  1. one line: project name + counts (open / in progress / blocked);
-  2. the open part of the tree (in-progress first, then todo; done omitted), one line per target with id;
-  3. owner comments new to the agent, newest first, with target id;
-  4. a two-line reminder of the board rules (see §5).
-
-  A missing project prints one line and exits 0 — a hook must never break a CC session start.
+- `watchtower project create --folder DIR [--name NAME]` (name defaults to the folder base name; refuses a missing directory or an already-bound folder), `list [--json]`, `show N`, `board N [--json]`, `delete N` (runs the folder cleanup of §5 first, then `DeleteProject`; a cleanup failure is reported and the delete still happens).
+- `watchtower project brief --project N` — the SessionStart hook body, ≤ 4000 chars: counts; the open part of the tree (in progress first, done omitted) with ids; comments new for the agent (target comments, then document comments with `anchor_heading` + quote), each with its id; two lines of board rules. A missing project prints one line and exits 0 — a hook must never break a CC session.
 
 ### 4.5 Index — project documents (`internal/kb/`)
-- New source `project_files`: for each non-archived project with a `folder_path`, walks the folder; includes `*.md`, `*.txt`; skips `.git`, `.build`, `node_modules`, `.claude/worktrees`, hidden directories, and files over 1 MB. Doc id `pf:<project_id>:<relpath>`, cursor = max mtime seen, sections split at markdown headings, `link` = `file://` path, `project_id` set on `kb_documents`. Reconciled every run (the set is small). Registered before Slack in `allSources()`.
-- `kb.Request.ProjectID`: 0 → `AND d.source <> 'project_files'`; N → project documents of N are included alongside everything else (soft scope). `project_files` is rejected as an explicit `sources` value. `GetDocument` applies the same rule, so an id from another project cannot be opened.
+- Source `project_files`: for each project, walks `folder_path`; includes `*.md`, `*.txt`; skips `.git`, `.build`, `node_modules`, `.claude/worktrees`, hidden directories, files over 1 MB. Id `pf:<project_id>:<rel_path>`, cursor = max mtime, sections at markdown headings, `link` = `file://` path, `kb_documents.project_id` set. Reconciled every run. Registered before Slack in `allSources()`.
+- `kb.Request.ProjectID`: 0 → `AND d.source <> 'project_files'`; N → that project's documents are included alongside everything else (soft scope). `project_files` is rejected as an explicit `sources` value; `GetDocument` applies the same rule.
 
 ### 4.6 Briefing
-- `gatherProjects()` in `internal/briefing/pipeline.go`: for each project with targets — in progress, done since the previous briefing day, blocked, agent comments unread by the owner. A new `=== PROJECTS ===` block in `briefing.daily` (v7 → v8), counted in `hasData`. A customized DB prompt with the old placeholder count must not break formatting — verify the `getPrompt` path and fall back to the default when the count mismatches.
+- `gatherProjects()` in `internal/briefing/pipeline.go`: per project — in progress, done since the previous briefing day, blocked, unread agent comments, documents with open owner comments. A `=== PROJECTS ===` block in `briefing.daily` (v7 → v8), counted in `hasData`. A customized DB prompt with the old placeholder count must not break formatting — verify the `getPrompt` path and fall back to the default on a count mismatch.
 
 ## 5. Integrate into the folder (`cmd/integrate.go`, `internal/devpack/`)
 
-`watchtower integrate claude-code --project N [--path DIR]` — DIR defaults to the project's `folder_path`. Everything is **local to the owner's machine and never committed**:
+`watchtower integrate claude-code --project N` (DIR = the project's folder). Local to the owner's machine, never committed:
 
-- **MCP:** `claude mcp add --scope local watchtower-project -- <bin> mcp --project N`, run with cwd = DIR (local scope is stored per path in the owner's `~/.claude.json`). If `claude` is absent, the command is printed, as today.
-- **Skill** `watchtower-project` → `DIR/.claude/skills/watchtower-project/SKILL.md`, with the existing `x-watchtower-pack` marker and `.watchtower-shipped` digest (never clobbers an edited copy, DEV-04); the path is appended to `DIR/.git/info/exclude` when DIR is a git work tree. The skill teaches:
-  - a new feature is agreed → create a feature target (`create_target`);
-  - a plan is written → `create_targets`, one sub-target per plan task, the plan path and task number in each intent;
-  - SDD controller: before dispatching a task → `update_target(in_progress)` and `list_target_comments`, owner comments go verbatim into the implementer brief; after the task passes review → `update_target(done)` + one `add_target_comment` summary (what changed, commit);
-  - blocked or needs an owner decision → a comment with the question, then continue with other work;
-  - comment discipline: only questions, blockers and done-summaries; never progress chatter.
-- **Hook:** a `SessionStart` entry in `DIR/.claude/settings.local.json` running `<bin> project brief --project N`. The file is read, merged and rewritten preserving every other key; the entry is recognised by its command, so `integrate remove --project N` deletes only it. `settings.local.json` is already git-ignored by Claude Code convention; the installer checks and adds it to `.git/info/exclude` if it is not ignored.
-- `integrate status --project N` reports MCP (via `claude mcp get`), skill and hook state. `integrate remove --project N` undoes all three.
+- **MCP:** `claude mcp add --scope local watchtower-project -- <bin> mcp --project N`, run with cwd = DIR. If `claude` is absent, the command is printed, as today.
+- **Skill** `watchtower-project` → `DIR/.claude/skills/watchtower-project/SKILL.md` with the `x-watchtower-pack` marker + `.watchtower-shipped` digest (DEV-04); appended to `DIR/.git/info/exclude` when DIR is a git work tree. It teaches:
+  - a feature is agreed → a feature target (`create_targets` with one item);
+  - a spec or plan file is written → `attach_document` (kind `spec`/`plan`, the feature target);
+  - a plan is written → `create_targets`, one sub-target per plan task, plan path + task number in each intent;
+  - before revising an attached document → `list_comments(document_id)`; after revising → `resolve_comment` each addressed comment with a one-line reply; leave unaddressed ones open;
+  - SDD controller: before dispatching a task → `update_target(in_progress)` + `list_comments(target_id)`, owner comments go verbatim into the implementer brief; after review passes → `update_target(done)` + one `add_comment` summary (what changed, commit);
+  - blocked or needs an owner decision → `add_comment` with the question, continue with other work;
+  - comment discipline: questions, blockers, done-summaries only.
+- **Hook:** a `SessionStart` entry in `DIR/.claude/settings.local.json` running `<bin> project brief --project N`, merged preserving every other key, recognised by its command. The installer ensures `settings.local.json` is ignored (adds it to `.git/info/exclude` if not).
+- `integrate status --project N` reports MCP (`claude mcp get`), skill, hook. `integrate remove --project N` undoes all three plus the exclude lines it added. Project delete (§4.4) calls the same removal.
+- The project chat can run the install with the owner's consent — `project create` from the Desktop offers "Connect Claude Code" as the chat's first proposal; the Desktop runs the CLI.
 
 ## 6. Desktop
 
-- **Projects:** "New project from folder…" (NSOpenPanel → `watchtower project create --folder`), a Folder row on the project page, and a **Connect Claude Code** button that runs `integrate claude-code --project N` and shows `integrate status`.
-- **Board** tab in `ProjectDetailView`: the target tree (status, progress, comment badges), selecting a target opens `TargetDetailView` plus a comments thread; the owner can add a comment (`author='owner'`, direct GRDB write, the targets dual-path precedent); opening a target marks its agent comments read. The project row in the chat sidebar shows the unread agent-comment count.
-- `TargetQueries.fetchAll`/`fetchCounts`/`fetchDistinctTags` and the sidebar badge exclude `project_id IS NOT NULL`; `Target.projectID` added.
-- **Onboarding:** after "New project from folder", once the project's documents are indexed (sync-now nudge, then the chat opens), a project chat opens seeded with "Organize this project: read the documents and propose instructions and an initial board." The assistant uses `search_knowledge` / `get_knowledge_document` and proposes via `create_targets` Approve cards; instructions are proposed as text for the owner to paste (no new tool).
+### 6.1 Projects tab
+- New sidebar tab **Projects**: list of projects (name, folder, open/in-progress counts, badge = unread agent comments + documents with new agent replies). "New project…" → NSOpenPanel (open an existing folder or create one) → `watchtower project create --folder` → the project opens on its chat.
+- Project page, three panes: **Chat** (the project chat, §4.3), **Board**, **Documents**. A small header: folder (reveal in Finder), Claude Code connection status + Connect/Disconnect, Delete (confirmation lists what is removed, including the folder cleanup).
+
+### 6.2 Board
+- Target tree with status, progress, comment and document badges. Selecting a target shows its detail (reuse `TargetDetailView` sections that make sense: title, intent, status, sub-items) plus its comment thread; the owner can comment and reply (direct GRDB write, the targets dual-path precedent). Viewing marks agent comments read.
+- `TargetQueries.fetchAll`/`fetchCounts`/`fetchDistinctTags` and the Targets sidebar badge exclude `project_id IS NOT NULL`; `Target.projectID` added.
+
+### 6.3 Documents with inline comments
+- List of attached documents (kind, title, linked target, open-comment count). Opening one shows the file rendered as markdown in a **selectable text view** (`NSTextView` wrapper; `SwiftUI.Text` selection cannot report a range). Select text → "Comment" → a margin thread anchored to the selection: `anchor_quote` = selection, `anchor_prefix`/`anchor_suffix` = 64 chars around it, `anchor_heading` = nearest preceding heading.
+- **Re-anchoring** on every load (the file is re-read from disk; it changes as the agent revises it): find the quote; if several matches, pick the one whose prefix/suffix match best; if none, the thread is shown in an "Outdated" list and its status set to `outdated` (owner can reopen with a fresh selection or resolve). Pure logic in WatchtowerCore (`CommentAnchor`), tested there.
+- Threads show agent replies and resolved state; the owner can resolve or reopen.
+- The file is never written by the Desktop — only the agent edits documents (in CC). The view refreshes on file change (a file-system watch on the open document).
+
+### 6.4 Onboarding
+- After "New project…", the chat opens with a seeded first turn: "Set up this project." The assistant reads the folder's documents (`search_knowledge` / `get_knowledge_document`, available once the first index pass ran — the Desktop nudges a sync and the chat waits for the `project_files` cursor) and proposes description, sources and an initial board; on the owner's "yes" it applies them through the §4.2 tools (direct, visible as steps). It offers "Connect Claude Code" as a button card.
 
 ## 7. Contracts
 
-- **DEV-06 (new, `docs/inventory/dev-surface.md`):** `watchtower mcp --project N` writes only the targets and target comments of project N, applies them directly with an `agent_actions` audit row, and never runs an `External` tool. Guards: `TestDev06_WriteToAnotherProjectsTargetIsRefused`, `TestDev06_ExternalToolRefusedUnderDirectApply`, `TestDev06_PlainMCPStaysReadOnly`.
-- **DEV-01 amendment:** "read-only forever" applies to `watchtower mcp` without `--project`; project mode is the separate DEV-06 surface. Existing guards unchanged.
-- **DEV-05 amendment:** the SessionStart hook installed by `integrate --project` is the explicit CLI opt-in the contract already requires; nothing is injected without that command.
-- **Targets:** a guard test pins that each reader in §4.1's exclusion list returns no project target.
-- Changelog entries in both inventory files, dated 2026-09-29, citing this spec.
+- **DEV-06 (new, `docs/inventory/dev-surface.md`):** a project-bound surface (`mcp --project N`, the project chat) writes only project N's rows (project, sources, targets, documents, comments), applies them directly with an `agent_actions` audit row, and never runs an `External` tool without Approve. Guards: `TestDev06_WriteOutsideTheBoundProjectIsRefused`, `TestDev06_ExternalToolRefusedUnderDirectApply`, `TestDev06_PlainMCPStaysReadOnly`, `TestDev06_AttachDocumentStaysInsideTheFolder`.
+- **DEV-01 amendment:** "read-only forever" applies to `watchtower mcp` without `--project`; project mode is the DEV-06 surface. Existing guards unchanged.
+- **DEV-05 amendment:** the SessionStart hook installed by `integrate --project` is the explicit CLI opt-in the contract already requires.
+- **New inventory file `docs/inventory/projects.md`:** PROJ-01 project targets never reach a non-board reader (guard over the §4.1 exclusion list); PROJ-02 project documents never reach a search outside the project; PROJ-03 delete leaves nothing — no project row, target, comment, document, index row, nor installed file/registration in the folder; PROJ-04 the Desktop never writes a project document.
+- Changelog entries dated 2026-09-29 citing this spec. CLAUDE.md feature note; `docs/app-guide.md` for the Projects tab.
 
 ## 8. Out of scope (POC)
 
-The CC engine inside the Watchtower chat, permission cards, artefact id dossiers, Google Drive, multi-agent claims/locks, Codex/Ollama specifics, code indexing, a Stop hook, cross-project boards.
+Issue-tracker automation (the "XXX-123" flow), the CC engine inside the Watchtower chat, permission cards, artefact-id dossiers, Google Drive, multi-agent claims/locks, code indexing, using `project_sources` for search boosting (stored and shown in prompts/brief only), Codex/Ollama specifics, migrating `chat_projects` into Projects.
 
 ## 9. Phasing
 
-1. Go core — migration, db, exclusions, comments, `project` CLI (§3, §4.1, §4.4).
-2. Registry DirectApply, tools, `mcp --project`, contracts (§4.2, §4.3, §7).
-3. Integrate (§5). **Dogfooding starts here**, with `watchtower project board` as the viewer.
-4. Desktop board, comments, exclusions (§6 without onboarding).
-5. Project documents in the index + scoped search (§4.5), then onboarding (§6).
-6. Briefing Projects section (§4.6).
+1. Go core — migration, `projects.go`, target exclusions, `project` CLI incl. `brief`/`delete`.
+2. Registry DirectApply + project tools + `mcp --project` + contracts.
+3. Integrate (skill, hook, local MCP, removal). **Dogfooding starts here** — board via `watchtower project board`, comments via CLI until phase 4.
+4. Desktop Projects tab: board, target comments, Target-tab exclusions.
+5. Desktop documents view with inline comments (+ `CommentAnchor` in WatchtowerCore).
+6. Project documents in the index + scoped search; project chat (`ai session --work-project`) + onboarding.
+7. Briefing Projects section.
 
 ## 10. Verification
 
-- Inner loop per task: the touched package (`go test ./internal/db`, `./internal/tools`, `./internal/mcp`, `./internal/kb`, `./internal/briefing`, `./internal/devpack`), `go test ./cmd -run 'TestBuildToolRegistry|TestProject|TestIntegrate|TestDev06'`, `make test-swift FILTER=…`, `make lint-diff`. Full gate once per phase and before the PR.
-- End to end: `project create --folder <repo>` → `integrate claude-code --project 1` → a fresh CC session in the repo shows the brief; `/mcp` lists `watchtower-project`; agreeing a feature and writing a plan fills the board; an owner comment added in the Desktop appears in the next session's brief; an SDD task flips in_progress → done with an agent summary comment. Project targets do not appear in the Targets tab, the day-plan input or next-step; `search_knowledge` from a normal chat returns no project document, from the project chat it does; `git status` in the repo is clean after `integrate`.
+- Inner loop per task: the touched package, `go test ./cmd -run 'TestBuildToolRegistry|TestProject|TestIntegrate|TestDev06'`, `make test-swift FILTER=…`, `make lint-diff`. Full gate once per phase and before the PR.
+- End to end on this repository: New project → the chat proposes description + board, applied on "yes" → Connect Claude Code → a fresh CC session shows the brief, `/mcp` lists `watchtower-project` → agreeing a feature and writing its spec + plan attaches both documents and fills the board → the owner comments a paragraph of the plan in the Desktop → the next CC session's brief lists it; CC revises the plan and resolves the comment with a reply; the Desktop shows the new text and the resolved thread → an SDD task goes in_progress → done with a summary comment → Delete project leaves `git status` clean, no `watchtower-project` in `claude mcp list`, no project rows. Project targets never show in the Targets tab, day-plan input or next-step; `search_knowledge` outside the project returns no project document.
