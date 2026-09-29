@@ -561,3 +561,21 @@ func statusToProgress(status string) float64 {
 		return 0.0
 	}
 }
+
+// SetTargetProgress stores an explicit progress (0..1) on one target and
+// recomputes its parent's. A target with children has its progress
+// re-derived from them on their next change; this is for leaves.
+func (db *DB) SetTargetProgress(id int, progress float64) error {
+	var parentID sql.NullInt64
+	if err := db.QueryRow(`SELECT parent_id FROM targets WHERE id = ?`, id).Scan(&parentID); err != nil {
+		return fmt.Errorf("loading target %d: %w", id, err)
+	}
+	if _, err := db.Exec(`UPDATE targets SET progress = ?,
+		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`, progress, id); err != nil {
+		return fmt.Errorf("setting target %d progress: %w", id, err)
+	}
+	if parentID.Valid {
+		return db.RecomputeParentProgress(parentID.Int64)
+	}
+	return nil
+}
