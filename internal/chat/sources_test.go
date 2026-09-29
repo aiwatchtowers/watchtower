@@ -158,6 +158,25 @@ func TestSource_OmitsEmptyOptionalFields(t *testing.T) {
 	assert.Equal(t, Source{Kind: "slack", Title: "#a · b", Ref: "r"}, legacy)
 }
 
+// WebSearch returns text with `Links: [...]` lines; every link becomes a
+// "web" chip under the Web group, and a result with no links falls back.
+func TestSummarizeToolResult_WebSearch(t *testing.T) {
+	raw := "Web search results for query: \"go 1.25 release\"\n\n" +
+		`Links: [{"title":"Go 1.25 Release Notes","url":"https://go.dev/doc/go1.25"},{"title":"No URL","url":""}]` + "\n\n" +
+		"Go 1.25 was released in August.\n" +
+		`Links: [{"title":"Blog","url":"https://go.dev/blog/go1.25"}] trailing`
+	summary, sources := SummarizeToolResult("WebSearch", raw)
+	assert.Equal(t, "2 web results: Go 1.25 Release Notes; Blog", summary)
+	assert.Equal(t, []Source{
+		{Kind: "web", Title: "Go 1.25 Release Notes", URL: "https://go.dev/doc/go1.25", Group: "Web"},
+		{Kind: "web", Title: "Blog", URL: "https://go.dev/blog/go1.25", Group: "Web"},
+	}, sources)
+
+	summary, sources = SummarizeToolResult("WebSearch", "Web search results for query: \"x\"\n\nNo links found.")
+	assert.Empty(t, sources)
+	assert.Contains(t, summary, "No links found.")
+}
+
 func TestSummarizeToolResult_DedupesSources(t *testing.T) {
 	_, sources := SummarizeToolResult("search_knowledge", `{"hits":[
 		{"ref":"a","source":"slack","title":"one","link":"https://x/1"},

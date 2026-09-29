@@ -928,3 +928,16 @@ func TestChatMCPConfig_MatchesClient(t *testing.T) {
 	assert.Contains(t, DisallowedTools, "Bash")
 	assert.Contains(t, DisallowedTools, "WebFetch")
 }
+
+// The warm main-chat session unhides WebSearch only; WebFetch (arbitrary URL
+// fetch, the exfiltration channel) stays hidden there, and the one-shot
+// chats keep both hidden.
+func TestSessionDisallowedTools_UnhidesOnlyWebSearch(t *testing.T) {
+	session := strings.Split(SessionDisallowedTools, ",")
+	oneShot := strings.Split(DisallowedTools, ",")
+	assert.NotContains(t, session, WebSearchTool)
+	assert.Contains(t, oneShot, WebSearchTool)
+	assert.Contains(t, session, "WebFetch")
+	assert.Contains(t, session, "Bash")
+	assert.ElementsMatch(t, append(session, WebSearchTool), oneShot)
+}

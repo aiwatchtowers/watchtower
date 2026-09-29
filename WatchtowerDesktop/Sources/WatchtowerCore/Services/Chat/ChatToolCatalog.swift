@@ -14,6 +14,7 @@ package enum ChatToolCatalog {
 
     private static let reads: [String: Entry] = [
         "search_knowledge": Entry(template: "Searched knowledge: {}", fallback: "Searched knowledge", keys: ["queries"]),
+        "WebSearch": Entry(template: "Searched the web: {}", fallback: "Searched the web", keys: ["query"]),
         "get_knowledge_document": Entry(template: nil, fallback: "Opened a document", keys: []),
         "list_messages": Entry(template: "Searched Slack: {}", fallback: "Searched Slack messages", keys: ["query", "person", "channel"]),
         "list_digests": Entry(template: nil, fallback: "Listed digests", keys: []),
@@ -69,7 +70,7 @@ package enum ChatToolCatalog {
             ("task_context", "ticket"), ("transcript", "waveform"), ("person", "person"), ("people", "person.2"),
             ("experts", "person.2"), ("memory", "brain"), ("digest", "doc.text"), ("briefing", "sun.max"),
             ("target", "target"), ("track", "arrow.triangle.branch"), ("events", "calendar"),
-            ("skill", "book"), ("idea", "lightbulb"), ("action", "checklist")
+            ("skill", "book"), ("idea", "lightbulb"), ("action", "checklist"), ("WebSearch", "globe")
         ]
         return rules.first { name.contains($0.0) }?.1 ?? "wrench.and.screwdriver"
     }

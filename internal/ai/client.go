@@ -305,8 +305,20 @@ func writeMCPConfigTempFile(config string) (string, error) {
 // resource readers that would bypass the Quick Connections allowlist) — an
 // unknown name is ignored by older CLIs. ToolSearch stays allowed: it loads
 // the deferred watchtower tool schemas.
-const DisallowedTools = "Edit,Write,NotebookEdit,TodoWrite,Task,TodoRead," +
-	"Bash,BashOutput,KillShell,WebSearch,WebFetch,Read,Grep,Glob,LS," +
+const DisallowedTools = sessionDisallowedTools + "," + WebSearchTool
+
+// SessionDisallowedTools is DisallowedTools minus WebSearch: the main chat's
+// warm `ai session` (Claude backend) may search the public web. WebFetch stays
+// hidden there too — fetching an arbitrary URL is the exfiltration channel a
+// prompt-injection payload in synced content would use, while a search query
+// only reaches the provider's own search backend.
+const SessionDisallowedTools = sessionDisallowedTools
+
+// WebSearchTool is Claude Code's built-in web search tool.
+const WebSearchTool = "WebSearch"
+
+const sessionDisallowedTools = "Edit,Write,NotebookEdit,TodoWrite,Task,TodoRead," +
+	"Bash,BashOutput,KillShell,WebFetch,Read,Grep,Glob,LS," +
 	"ExitPlanMode,SlashCommand,Skill," +
 	"CronCreate,CronDelete,CronList,RemoteTrigger,ScheduleWakeup,PushNotification,Workflow,Monitor," +
 	"EnterWorktree,ExitWorktree,ListAgents,SendMessage,TaskCreate,TaskGet,TaskList,TaskStop,TaskUpdate," +
