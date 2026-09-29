@@ -72,6 +72,12 @@
 
 ## D3. Speaker identity: voice prints + LLM hints + manual confirmation
 
+**Superseded 2026-09-28.** This slice's single-centroid `voice_prints` matching, the in-transcript
+manual-rename learning loop, and the `meeting.speaker_guess` LLM-suggestion prompt (Level 2 below) are
+replaced end to end by `docs/superpowers/specs/2026-09-28-voice-registry-design.md` (per-sample
+matching, the "Who spoke" Voices window, continuous self-training, import/export). This section is
+kept for history; do not implement against it.
+
 ### Data
 
 - **Migration:** new table `voice_prints`:

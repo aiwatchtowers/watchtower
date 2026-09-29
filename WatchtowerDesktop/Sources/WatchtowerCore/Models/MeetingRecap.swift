@@ -46,3 +46,21 @@ package struct MeetingRecap: Codable, FetchableRecord, PersistableRecord {
         case updatedAt = "updated_at"
     }
 }
+
+/// The `meeting_recaps` row a recording's Recap tab renders
+/// (`MeetingRecapQueries.fetchForRecording`), plus whose recap it is.
+package struct RecordingRecap {
+    package let recap: MeetingRecap
+    /// True when the row is linked to the recording by `transcript_id` — this
+    /// recording's own recap (written by Go's save/retry, or copied from its
+    /// `summary_json` by `linkToEvent`), which `transcript recap <id>`
+    /// refreshes in place. False = the event's recap from another source (a
+    /// pasted recap, another recording's), which Go's collision guard never
+    /// overwrites.
+    package let ownedByRecording: Bool
+
+    package init(recap: MeetingRecap, ownedByRecording: Bool) {
+        self.recap = recap
+        self.ownedByRecording = ownedByRecording
+    }
+}

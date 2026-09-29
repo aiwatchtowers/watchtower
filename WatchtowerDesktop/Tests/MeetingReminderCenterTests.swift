@@ -55,6 +55,7 @@ private final class ReminderFakeNotifier: MeetingReminderNotifying, @unchecked S
 private final class ReminderFakeTranscriptNotifier: MeetingTranscriptNotifying, @unchecked Sendable {
     func sendTranscriptReadyNotification(title: String) {}
     func sendTranscriptFailedNotification(reason: String) {}
+    func sendVoicesToLabelNotification(title: String, count: Int, transcriptID: Int64) {}
 }
 
 private struct ReminderTestError: Error {}

@@ -174,8 +174,9 @@ func TestMigration00076_DownUpKeepsMessages(t *testing.T) {
 	root := insertBranchMessage(t, d, conv, 0, "user", "keep me", "t1")
 	insertBranchMessage(t, d, conv, root, "assistant", "and me", "t1")
 
-	// DownTo 75, not Down: a later migration would otherwise be the one
-	// goose.Down rolls back, and 00076 would never run its Down here.
+	// DownTo(75), not a bare Down: a later migration (e.g. 00077) can move the
+	// tip past 00076, and a bare Down would roll back only the tip instead of
+	// the migration this test targets.
 	require.NoError(t, goose.DownTo(d.DB, "migrations", 75))
 	var n int
 	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM chat_messages`).Scan(&n))

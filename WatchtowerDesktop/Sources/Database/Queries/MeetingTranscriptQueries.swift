@@ -5,7 +5,7 @@ import WatchtowerCore
 /// Failures inside `MeetingTranscriptQueries` writes that must roll the
 /// caller's transaction back instead of degrading silently.
 enum MeetingTranscriptQueryError: Error {
-    /// `speakers_json` could not be re-encoded during a rename — writing the
+    /// `speakers_json` could not be re-encoded during a relabel — writing the
     /// old JSON would orphan the cluster's embedding under the old label.
     case speakerEncodeFailed
 }
@@ -128,33 +128,38 @@ enum MeetingTranscriptQueries {
             arguments: [updatedJSON, TranscriptSegments.render(utterances), id])
     }
 
-    /// Renames a speaker cluster (manual confirm/rename — the voice-print
-    /// learning loop, or a confirmed LLM suggestion): every utterance labeled
-    /// `from` (deleted ones included — they stay in the array) gets the new
-    /// display name, `segments_json` is rewritten together with the rebuilt
-    /// `transcript_text` in the caller's write transaction (the D1
-    /// `setUtteranceDeleted` transactional write), and the cluster's entry in
-    /// `speakers_json` is re-keyed to the new label so later renames still
-    /// resolve it. When the cluster carries a voice embedding, it is folded
-    /// into `voice_prints` (insert or incremental centroid — see
-    /// `VoicePrintQueries.upsert`); recordings without embeddings
-    /// (legacy/non-FluidAudio) update the transcript only. Returns `false`
-    /// without writing (so callers can surface a stale-state rename instead
-    /// of silently consuming a suggestion chip) when the row is missing, has
-    /// no segments, no utterance carries `from`, or the new name is
-    /// empty/unchanged/reserved («Я» or "Speaker N" —
-    /// `SpeakerNaming.isReserved`: renaming a stranger's cluster to a
-    /// reserved label would corrupt the owner's voice identity).
+    /// Relabels a speaker cluster (owner label, registry auto-label, retro
+    /// relabel, rollback): every utterance labeled `from` (deleted ones
+    /// included — they stay in the array) gets `to`, `segments_json` is
+    /// rewritten together with the rebuilt `transcript_text` in ONE UPDATE in
+    /// the caller's write transaction (the D1 `setUtteranceDeleted`
+    /// transactional write, preserving transcript_text =
+    /// render(segments where !deleted)), and the cluster's entry in
+    /// `speakers_json` is re-keyed to the new label so later relabels still
+    /// resolve it — its `originalLabel` is set to `from` on the first relabel
+    /// and `patch` applies the caller's registry fields (label source,
+    /// person, match). `speaker_names_changed_at` is stamped. Recordings
+    /// without embeddings (legacy/non-FluidAudio) update the transcript only.
+    /// Returns `false` without writing (so callers can surface a stale state)
+    /// when the row is missing, has no segments, no utterance carries
+    /// `from`, the new label is empty or «Я» (any case) — «Я» is the role
+    /// pass's alone, never assignable here — or the new label already belongs
+    /// to ANOTHER speaker of this transcript (`labelInUse`): merging two
+    /// clusters under one label would make every label-keyed registry
+    /// operation hit both, and break the one-label-per-cluster uniqueness
+    /// the Voices ids rely on. "Speaker N" IS a valid target: a rollback
+    /// restores it.
     @discardableResult
-    static func renameSpeaker(_ db: Database,
-                              id: Int64,
-                              from: String,
-                              to displayName: String,
-                              personKey: String) throws -> Bool {
-        let trimmedName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedName.isEmpty, trimmedName != from,
-              !SpeakerNaming.isReserved(trimmedName),
+    static func relabelCluster(_ db: Database,
+                               id: Int64,
+                               from: String,
+                               to newLabel: String,
+                               patch: (inout SpeakerEmbedding) -> Void = { _ in }) throws -> Bool {
+        let target = newLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !target.isEmpty,
+              !(SpeakerNaming.isReserved(target) && !SpeakerNaming.isUnnamed(target)),
               let transcript = try fetch(db, id: id),
+              !labelInUse(transcript, target, besides: from),
               let segmentsJSON = transcript.segmentsJSON,
               var utterances = TranscriptSegments.decode(segmentsJSON),
               utterances.contains(where: { $0.speaker == from }) else { return false }
@@ -163,21 +168,19 @@ enum MeetingTranscriptQueries {
             let u = utterances[index]
             utterances[index] = TranscriptUtterance(
                 idx: u.idx, startSec: u.startSec, endSec: u.endSec,
-                speaker: trimmedName, text: u.text, deleted: u.deleted)
+                speaker: target, text: u.text, deleted: u.deleted)
         }
         guard let updatedJSON = TranscriptSegments.encode(utterances) else { return false }
 
-        // Re-key the cluster's persisted embedding to the new label (and keep
-        // it for the voice-print upsert below). An encode failure aborts the
-        // whole rename (throw → transaction rollback) — falling back to the
-        // old JSON would keep the embedding under the old label, permanently
-        // orphaning it from the renamed cluster.
-        var clusterEmbedding: [Float]?
+        // An encode failure aborts the whole relabel (throw → transaction
+        // rollback) — falling back to the old JSON would keep the embedding
+        // under the old label, permanently orphaning it from the cluster.
         var speakersJSON: String? = transcript.speakersJSON
         if let json = transcript.speakersJSON, var speakers = SpeakerEmbeddings.decode(json) {
             for index in speakers.indices where speakers[index].speaker == from {
-                clusterEmbedding = speakers[index].embedding
-                speakers[index].speaker = trimmedName
+                if speakers[index].originalLabel == nil { speakers[index].originalLabel = from }
+                speakers[index].speaker = target
+                patch(&speakers[index])
             }
             guard let reencoded = SpeakerEmbeddings.encode(speakers) else {
                 throw MeetingTranscriptQueryError.speakerEncodeFailed
@@ -189,16 +192,21 @@ enum MeetingTranscriptQueries {
             sql: """
                 UPDATE meeting_transcripts
                 SET segments_json = ?, transcript_text = ?, speakers_json = ?,
+                    speaker_names_changed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
                     updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
                 WHERE id = ?
                 """,
             arguments: [updatedJSON, TranscriptSegments.render(utterances), speakersJSON, id])
-
-        if let clusterEmbedding {
-            try VoicePrintQueries.upsert(
-                db, personKey: personKey, displayName: trimmedName, embedding: clusterEmbedding)
-        }
         return true
+    }
+
+    /// True when `label` is already carried by a speaker of `transcript`
+    /// other than `from` (an utterance or a `speakers_json` cluster) — a
+    /// relabel `from` → `label` would merge two clusters under one label.
+    static func labelInUse(_ transcript: MeetingTranscript, _ label: String, besides from: String) -> Bool {
+        guard label != from else { return false }
+        return (transcript.utterances ?? []).contains { $0.speaker == label }
+            || (transcript.speakerEmbeddings ?? []).contains { $0.speaker == label }
     }
 
     /// Thrown by `convertActionItemToTarget`. Every case aborts the caller's

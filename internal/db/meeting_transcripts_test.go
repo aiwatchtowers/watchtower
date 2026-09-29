@@ -170,6 +170,15 @@ func TestSetMeetingTranscriptSummary(t *testing.T) {
 	if !got.SummaryJSON.Valid || got.SummaryJSON.String != payload {
 		t.Errorf("summary_json = %+v, want %q", got.SummaryJSON, payload)
 	}
+	// The recap's own generation stamp — the Desktop's "speaker names changed
+	// after the recap" hint compares against it, never against updated_at.
+	var stamped sql.NullString
+	if err := database.QueryRow(`SELECT summary_updated_at FROM meeting_transcripts WHERE id = ?`, id).Scan(&stamped); err != nil {
+		t.Fatalf("read summary_updated_at: %v", err)
+	}
+	if !stamped.Valid || stamped.String == "" {
+		t.Errorf("summary_updated_at = %+v, want a timestamp", stamped)
+	}
 }
 
 func TestSetMeetingTranscriptNotes(t *testing.T) {

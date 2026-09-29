@@ -247,9 +247,16 @@ jobs:
       - name: Architectural rules
         run: sentrux check .
 
-      # gate blocks any structural regression vs .sentrux/baseline.json.
+      # gate blocks any structural regression vs .sentrux/baseline.json,
+      # EXCEPT the raw god-file count: that count is driven by name-based
+      # call resolution (a file gaining/losing an unrelated `append`/`flush`
+      # method can move it by dozens with zero real structural change — see
+      # docs/backlog/2026-09-28-sentrux-god-file-count-is-driven-by-name-
+      # based-method-resolution.md) and scripts/sentrux-gate.sh's own header.
+      # Quality, coupling, cycles and complex-function regressions still
+      # block exactly as before.
       - name: Structural regression gate
-        run: sentrux gate .
+        run: scripts/sentrux-gate.sh
 
       # baseline.json holds ONE god-file count, so a source file crossing the
       # threshold is indistinguishable from a test file that grew with new

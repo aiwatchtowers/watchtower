@@ -32,7 +32,6 @@ const (
 	MeetingNotes               = "meeting.notes"
 	MeetingChapters            = "meeting.chapters"
 	MeetingFollowup            = "meeting.followup"
-	MeetingSpeakerGuess        = "meeting.speaker_guess"
 	DayPlanGenerate            = "day_plan.generate"
 	TargetsExtract             = "targets.extract"
 	TargetsLink                = "targets.link"

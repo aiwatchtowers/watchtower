@@ -16,7 +16,7 @@ const (
 // source→tier table for every Generator backend (Claude, Codex, Ollama).
 func TierForSource(source string) Tier {
 	switch source {
-	case SourceLight, "digest.period", "digest.channel_batch", "people.batch", "customtrack.compose", "customtrack.shortlist", "memory.extract_episodes", "memory.extract_episodes_batch", "memory.extract_email_episodes", "memory.render_channel_digest", "meeting.followup", "meeting.speaker_guess", "ideas.digest_email", "ideas.digest_jira", "dictation.clean", "reactioncmd.command",
+	case SourceLight, "digest.period", "digest.channel_batch", "people.batch", "customtrack.compose", "customtrack.shortlist", "memory.extract_episodes", "memory.extract_episodes_batch", "memory.extract_email_episodes", "memory.render_channel_digest", "meeting.followup", "ideas.digest_email", "ideas.digest_jira", "dictation.clean", "reactioncmd.command",
 		// chat.title: a ≤60-char title from one exchange — bounded, fixed-shape output
 		"chat.title",
 		// The feedback-comment interpreter: a short comment + a fixed rating

@@ -55,6 +55,12 @@ struct TranscriptionConfig: Equatable {
     /// more aggressively. FluidAudio's own default (0.7) under-splits compressed
     /// meeting audio, merging distinct people into one cluster.
     var diarizationThreshold: Float = 0.6
+    /// Voice registry identification after diarization (name confident
+    /// clusters, queue the rest for labeling, self-train). Off = clusters
+    /// keep "Speaker N" and nothing is queued or learned.
+    var voiceRecognition: Bool = true
+    /// Notify when a saved recording queued voices to label.
+    var voiceNotifications: Bool = true
     /// Explicit engine model for factories that honor it — stamped by the
     /// dictation lane from its resolved `dictation.model` choice and consumed
     /// by `DictationCenter.dictationEngineFactory`. nil (the default, and
@@ -110,14 +116,16 @@ extension TranscriptionConfig {
         if defaults.object(forKey: "transcription.margin") != nil {
             config.margin = Float(defaults.double(forKey: "transcription.margin"))
         }
-        if defaults.object(forKey: "transcription.contextPrompt") != nil {
-            config.contextPrompt = defaults.bool(forKey: "transcription.contextPrompt")
-        }
-        if defaults.object(forKey: "transcription.liveTranscription") != nil {
-            config.liveTranscription = defaults.bool(forKey: "transcription.liveTranscription")
-        }
-        if defaults.object(forKey: "transcription.diarization") != nil {
-            config.diarization = defaults.bool(forKey: "transcription.diarization")
+        // Boolean toggles: an absent key keeps the struct default.
+        let toggles: [(key: String, field: WritableKeyPath<TranscriptionConfig, Bool>)] = [
+            ("transcription.contextPrompt", \.contextPrompt),
+            ("transcription.liveTranscription", \.liveTranscription),
+            ("transcription.diarization", \.diarization),
+            ("transcription.voiceRecognition", \.voiceRecognition),
+            ("transcription.voiceNotifications", \.voiceNotifications)
+        ]
+        for toggle in toggles where defaults.object(forKey: toggle.key) != nil {
+            config[keyPath: toggle.field] = defaults.bool(forKey: toggle.key)
         }
         if defaults.object(forKey: "transcription.diarizationThreshold") != nil {
             let value = Float(defaults.double(forKey: "transcription.diarizationThreshold"))

@@ -21,6 +21,8 @@ struct MeetingsSettings: View {
     @AppStorage(MeetingRecorderCenter.preloadBeforeMeetingsKey) private var transcriptionPreload = true
     @AppStorage("transcription.diarizationThreshold") private var transcriptionDiarizationThreshold = 0.6
     @AppStorage("transcription.micAGC") private var transcriptionMicAGC = false
+    @AppStorage("transcription.voiceRecognition") private var voiceRecognition = true
+    @AppStorage("transcription.voiceNotifications") private var voiceNotifications = true
     @AppStorage(JoinMeetingAction.autoRecordKey) private var autoRecordOnJoin = true
     @AppStorage(DictationEngineChoice.defaultsKey) private var dictationModelRaw = ""
     @State private var showAdvancedTranscription = false
@@ -157,6 +159,14 @@ struct MeetingsSettings: View {
             }
             .help("Speaker clustering strictness (0.3–0.9). Lower = more distinct speakers. "
                 + "Try lowering when different people get merged into one Speaker N.")
+
+            Toggle("Voice recognition", isOn: $voiceRecognition)
+                .help("Match speakers against the people you've already named, and learn their voice from "
+                    + "confirmed labels, so recurring people are named automatically across recordings.")
+
+            Toggle("Notify about unknown voices", isOn: $voiceNotifications)
+                .disabled(!voiceRecognition)
+                .help("Get a notification when a recording has voices to label.")
         }
     }
 

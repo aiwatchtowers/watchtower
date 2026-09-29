@@ -12,10 +12,33 @@ final class TrayMenuViewTests: XCTestCase {
     // `TrayMenuContent` is the environment-free split that carries the actual
     // rendering (see RecordingIndicatorView/RecordingJobPill for the same
     // pattern), so it's what gets exercised here.
+
+    /// Every parameter defaulted to an inert value — a call only spells out
+    /// what that test cares about, keeping the growing parameter list from
+    /// forcing every call site onto one long line.
+    private static func content(
+        isRunning: Bool = true,
+        syncProgress: SyncProgress? = nil,
+        daemonError: String? = nil,
+        cliStoreError: String? = nil,
+        voicesPendingCount: Int = 0,
+        syncNowAction: @escaping () -> Void = {},
+        quickCaptureAction: @escaping () -> Void = {},
+        voicesAction: @escaping () -> Void = {},
+        reviewVoicesAction: @escaping () -> Void = {},
+        trainVoicesAction: @escaping () -> Void = {},
+        openAction: @escaping () -> Void = {},
+        settingsAction: @escaping () -> Void = {}
+    ) -> TrayMenuContent {
+        TrayMenuContent(
+            isRunning: isRunning, syncProgress: syncProgress, daemonError: daemonError, cliStoreError: cliStoreError,
+            voicesPendingCount: voicesPendingCount, syncNowAction: syncNowAction, quickCaptureAction: quickCaptureAction,
+            voicesAction: voicesAction, reviewVoicesAction: reviewVoicesAction, trainVoicesAction: trainVoicesAction,
+            openAction: openAction, settingsAction: settingsAction)
+    }
+
     func testMenuOffersOpenSettingsAndQuit() throws {
-        let view = TrayMenuContent(
-            isRunning: true, syncProgress: nil, daemonError: nil, cliStoreError: nil,
-            syncNowAction: {}, quickCaptureAction: {}, openAction: {}, settingsAction: {})
+        let view = Self.content()
         let openButton = try view.inspect().find(button: "Open Watchtower")
         let settingsButton = try view.inspect().find(button: "Settings…")
         let quitButton = try view.inspect().find(button: "Quit Watchtower")
@@ -29,9 +52,9 @@ final class TrayMenuViewTests: XCTestCase {
     /// `TrayMenuView` wires to `AppState.openQuickCapture`.
     func testNewVoiceIdeaFiresQuickCaptureAction() throws {
         var fired = false
-        let view = TrayMenuContent(
-            isRunning: true, syncProgress: nil, daemonError: nil, cliStoreError: nil,
-            syncNowAction: {}, quickCaptureAction: { fired = true }, openAction: {}, settingsAction: {})
+        // `quickCaptureAction` isn't `content`'s last parameter, so trailing-closure form would bind wrong.
+        // swiftlint:disable:next trailing_closure
+        let view = Self.content(quickCaptureAction: { fired = true })
         let button = try view.inspect().find(button: "New Voice Idea")
         try button.tap()
         XCTAssertTrue(fired)
@@ -75,17 +98,15 @@ final class TrayMenuViewTests: XCTestCase {
 
     func testSyncNowFiresActionAndNeedsARunningDaemon() throws {
         var fired = false
-        let view = TrayMenuContent(
-            isRunning: true, syncProgress: nil, daemonError: nil, cliStoreError: nil,
-            syncNowAction: { fired = true }, quickCaptureAction: {}, openAction: {}, settingsAction: {})
+        // `syncNowAction` isn't `content`'s last parameter, so trailing-closure form would bind wrong.
+        // swiftlint:disable:next trailing_closure
+        let view = Self.content(syncNowAction: { fired = true })
         try view.inspect().find(button: "Sync Now").tap()
         XCTAssertTrue(fired)
 
         // Without a daemon there is nothing to ask: the CLI signals a process
         // that isn't there.
-        let stopped = TrayMenuContent(
-            isRunning: false, syncProgress: nil, daemonError: nil, cliStoreError: nil,
-            syncNowAction: {}, quickCaptureAction: {}, openAction: {}, settingsAction: {})
+        let stopped = Self.content(isRunning: false)
         XCTAssertTrue(try stopped.inspect().find(button: "Sync Now").isDisabled())
     }
 
@@ -110,9 +131,7 @@ final class TrayMenuViewTests: XCTestCase {
     }
 
     func testNoErrorLinesWhenNothingFailed() throws {
-        let view = TrayMenuContent(
-            isRunning: true, syncProgress: nil, daemonError: nil, cliStoreError: nil,
-            syncNowAction: {}, quickCaptureAction: {}, openAction: {}, settingsAction: {})
+        let view = Self.content()
         XCTAssertThrowsError(try view.inspect().find { text, _ in text.hasPrefix("CLI store:") })
         XCTAssertThrowsError(try view.inspect().find { text, _ in text.hasPrefix("Daemon:") })
     }
@@ -120,18 +139,51 @@ final class TrayMenuViewTests: XCTestCase {
     /// The CLI store falling back to the bundle is the one thing the tray can
     /// say that no other always-available surface does.
     func testCLIStoreErrorIsRendered() throws {
-        let view = TrayMenuContent(
-            isRunning: false, syncProgress: nil, daemonError: nil, cliStoreError: "rename to /x failed: No such file",
-            syncNowAction: {}, quickCaptureAction: {}, openAction: {}, settingsAction: {})
+        let view = Self.content(isRunning: false, cliStoreError: "rename to /x failed: No such file")
         XCTAssertNoThrow(try view.inspect().find(text: "CLI store: rename to /x failed: No such file"))
     }
 
     /// A daemon that could not be started must not fail silently in the one
     /// surface that is always on screen.
     func testDaemonErrorIsRendered() throws {
-        let view = TrayMenuContent(
-            isRunning: false, syncProgress: nil, daemonError: "Failed to start daemon (exit code 1)", cliStoreError: nil,
-            syncNowAction: {}, quickCaptureAction: {}, openAction: {}, settingsAction: {})
+        let view = Self.content(isRunning: false, daemonError: "Failed to start daemon (exit code 1)")
         XCTAssertNoThrow(try view.inspect().find(text: "Daemon: Failed to start daemon (exit code 1)"))
+    }
+
+    // MARK: - Voices entry points
+
+    /// The queue button only earns its place when there's something to
+    /// label — an empty queue would just be one more permanent menu row.
+    func testVoicesToLabelButtonAppearsOnlyWithPendingCount() throws {
+        let withPending = Self.content(voicesPendingCount: 3)
+        XCTAssertNoThrow(try withPending.inspect().find(button: "Voices to label (3)"))
+
+        let empty = Self.content(voicesPendingCount: 0)
+        XCTAssertThrowsError(
+            try empty.inspect().find(ViewType.Button.self) { try $0.labelView().text().string().hasPrefix("Voices to label") })
+    }
+
+    /// Review and Train are always reachable, regardless of the queue.
+    func testReviewAndTrainVoicesAreAlwaysOffered() throws {
+        let view = Self.content()
+        XCTAssertNoThrow(try view.inspect().find(button: "Review voices"))
+        XCTAssertNoThrow(try view.inspect().find(button: "Train voices"))
+    }
+
+    func testVoicesButtonsFireTheirActions() throws {
+        var voices = false
+        var review = false
+        var train = false
+        let view = Self.content(
+            voicesPendingCount: 1,
+            voicesAction: { voices = true },
+            reviewVoicesAction: { review = true },
+            trainVoicesAction: { train = true })
+        try view.inspect().find(button: "Voices to label (1)").tap()
+        try view.inspect().find(button: "Review voices").tap()
+        try view.inspect().find(button: "Train voices").tap()
+        XCTAssertTrue(voices)
+        XCTAssertTrue(review)
+        XCTAssertTrue(train)
     }
 }

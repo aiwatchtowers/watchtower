@@ -856,6 +856,72 @@ func TestTranscriptSaveWithSpeakersPersistsColumn(t *testing.T) {
 	assert.Equal(t, []string{"Я", "Speaker 1"}, []string{speakers[0].Speaker, speakers[1].Speaker})
 }
 
+// aliceSegmentsFixtureJSON/aliceSegmentsFixtureText are the segments-save
+// fixtures for tests that need a speaker label the voice registry actually
+// enriches (segmentsFixtureJSON's "Я"/"Speaker 1" labels are fine for the
+// plain embedding-persistence tests above, but a registry-fields test wants
+// an ordinary named speaker).
+const aliceSegmentsFixtureJSON = `[
+	{"idx":0,"start_sec":0,"end_sec":3,"speaker":"Alice","text":"hello","deleted":false}
+]`
+
+const aliceSegmentsFixtureText = "[Alice] hello"
+
+// runTranscriptSaveWithSpeakers runs `transcript save` with a segments file
+// whose only utterance is spoken by "Alice" and the given --speakers-file
+// content, returning the decoded save envelope and the persisted row.
+func runTranscriptSaveWithSpeakers(t *testing.T, speakersJSON string) (transcriptEnvelope, *db.MeetingTranscript) {
+	t.Helper()
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	stubTranscriptGenerator(t, &transcriptMockGen{response: transcriptMockRecapJSON})
+
+	transcriptSaveFlagFile = writeTranscriptFile(t, aliceSegmentsFixtureText)
+	transcriptSaveFlagSegments = writeSegmentsFile(t, aliceSegmentsFixtureJSON)
+	transcriptSaveFlagSpeakers = writeSpeakersFile(t, speakersJSON)
+	transcriptSaveFlagTitle = "Registry fields"
+
+	var buf bytes.Buffer
+	transcriptSaveCmd.SetOut(&buf)
+	require.NoError(t, transcriptSaveCmd.RunE(transcriptSaveCmd, nil))
+
+	var env transcriptEnvelope
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &env))
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	tr, err := database.GetMeetingTranscript(env.TranscriptID)
+	require.NoError(t, err)
+	require.NotNil(t, tr)
+	return env, tr
+}
+
+// TestTranscriptSaveSpeakersKeepsRegistryFields pins the voice registry's
+// load-bearing invariant for `transcript save`: a kept speakers_json entry is
+// stored byte-for-byte, including fields the Go side never parses (the
+// Desktop voice-registry rename flow's original_label/label_source/
+// person_id/clips) — the old json.Marshal(kept) round-trip through
+// meeting.SpeakerEmbedding silently dropped every field it doesn't declare.
+func TestTranscriptSaveSpeakersKeepsRegistryFields(t *testing.T) {
+	// A segment speaker "Alice" plus one dropped entry forces the re-encode path.
+	speakers := `[{"speaker":"Alice","embedding":[0.1,0.2],"original_label":"Speaker 1","label_source":"auto","person_id":7,"clips":[{"start":1.5,"end":6}]},
+	              {"speaker":"Ghost","embedding":[0.3]}]`
+	env, row := runTranscriptSaveWithSpeakers(t, speakers)
+	if env.SpeakersOK {
+		t.Fatal("dropped entry must be reported")
+	}
+	for _, want := range []string{`"original_label":"Speaker 1"`, `"label_source":"auto"`, `"person_id":7`, `"clips":[{"start":1.5,"end":6}]`} {
+		if !strings.Contains(row.SpeakersJSON.String, want) {
+			t.Fatalf("speakers_json lost %s: %s", want, row.SpeakersJSON.String)
+		}
+	}
+	if strings.Contains(row.SpeakersJSON.String, "Ghost") {
+		t.Fatal("unmatched entry kept")
+	}
+}
+
 // One diarized cluster that won zero transcript utterances must drop ONLY its
 // own embedding — the rest of the payload persists so voice-print learning
 // stays available for the recording; the partial drop is surfaced through
@@ -995,95 +1061,6 @@ func TestTranscriptSaveUnreadableSpeakersFileStillPersistsTranscript(t *testing.
 	require.NotNil(t, tr)
 	assert.True(t, tr.SegmentsJSON.Valid)
 	assert.False(t, tr.SpeakersJSON.Valid)
-}
-
-func TestTranscriptSpeakerGuessEnvelope(t *testing.T) {
-	cleanup := setupWatchTestEnv(t)
-	defer cleanup()
-	resetTranscriptFlags(t)
-	stubTranscriptGenerator(t, &transcriptMockGen{response: `[
-		{"speaker":"Speaker 1","candidate":"Саша","confidence":0.9,"evidence":"introduces himself"},
-		{"speaker":"Speaker 9","candidate":"Ghost","confidence":0.9,"evidence":"unknown"}
-	]`})
-
-	database, err := openDBFromConfig()
-	require.NoError(t, err)
-	id, err := database.InsertMeetingTranscript(db.MeetingTranscript{
-		Title:          "Guess",
-		TranscriptText: segmentsFixtureText,
-		SegmentsJSON:   sql.NullString{String: segmentsFixtureJSON, Valid: true},
-	})
-	require.NoError(t, err)
-	database.Close()
-
-	var buf bytes.Buffer
-	transcriptSpeakerGuessCmd.SetOut(&buf)
-	require.NoError(t, transcriptSpeakerGuessCmd.RunE(transcriptSpeakerGuessCmd, []string{fmt.Sprint(id)}))
-
-	var env struct {
-		TranscriptID int64                  `json:"transcript_id"`
-		Suggestions  []meeting.SpeakerGuess `json:"suggestions"`
-	}
-	require.NoError(t, json.Unmarshal(buf.Bytes(), &env))
-	assert.Equal(t, id, env.TranscriptID)
-	require.Len(t, env.Suggestions, 1, "unknown speaker labels must be dropped")
-	assert.Equal(t, "Speaker 1", env.Suggestions[0].Speaker)
-	assert.Equal(t, "Саша", env.Suggestions[0].Candidate)
-
-	database, err = openDBFromConfig()
-	require.NoError(t, err)
-	defer database.Close()
-	run := findPipelineRun(t, database, "meeting_speaker_guess")
-	require.NotNil(t, run, "a meeting_speaker_guess pipeline run must be recorded")
-	assert.Equal(t, "done", run.Status)
-}
-
-func TestTranscriptSpeakerGuessWithoutSegmentsFails(t *testing.T) {
-	cleanup := setupWatchTestEnv(t)
-	defer cleanup()
-	resetTranscriptFlags(t)
-	stubTranscriptGenerator(t, &transcriptMockGen{response: `[]`})
-
-	database, err := openDBFromConfig()
-	require.NoError(t, err)
-	id, err := database.InsertMeetingTranscript(db.MeetingTranscript{
-		Title:          "Legacy",
-		TranscriptText: "plain text",
-	})
-	require.NoError(t, err)
-	database.Close()
-
-	err = transcriptSpeakerGuessCmd.RunE(transcriptSpeakerGuessCmd, []string{fmt.Sprint(id)})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no per-utterance segments")
-}
-
-func TestTranscriptSpeakerGuessAIFailureExitsNonZero(t *testing.T) {
-	cleanup := setupWatchTestEnv(t)
-	defer cleanup()
-	resetTranscriptFlags(t)
-	stubTranscriptGenerator(t, &transcriptMockGen{err: errors.New("boom")})
-
-	database, err := openDBFromConfig()
-	require.NoError(t, err)
-	id, err := database.InsertMeetingTranscript(db.MeetingTranscript{
-		Title:          "Guess",
-		TranscriptText: segmentsFixtureText,
-		SegmentsJSON:   sql.NullString{String: segmentsFixtureJSON, Valid: true},
-	})
-	require.NoError(t, err)
-	database.Close()
-
-	err = transcriptSpeakerGuessCmd.RunE(transcriptSpeakerGuessCmd, []string{fmt.Sprint(id)})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "boom")
-
-	database, err = openDBFromConfig()
-	require.NoError(t, err)
-	defer database.Close()
-	run := findPipelineRun(t, database, "meeting_speaker_guess")
-	require.NotNil(t, run)
-	assert.Equal(t, "error", run.Status)
 }
 
 func TestTranscriptSaveWithSegmentsAutoGeneratesChapters(t *testing.T) {
@@ -1578,4 +1555,150 @@ type chaptersEnvelope struct {
 	transcriptEnvelope
 	ChaptersOK    *bool   `json:"chapters_ok"`
 	ChaptersError *string `json:"chapters_error"`
+}
+
+// transcriptMockRecapJSONRegenerated is a second, distinguishable recap for
+// the regenerate tests below.
+const transcriptMockRecapJSONRegenerated = `{"summary":"regenerated","key_decisions":[],"action_items":[],"open_questions":[]}`
+
+// seedRecapEvent inserts a calendar + event the recap tests can link to.
+func seedRecapEvent(t *testing.T, database *db.DB, eventID string) {
+	t.Helper()
+	require.NoError(t, database.UpsertCalendar(0, db.CalendarCalendar{ID: "primary", Name: "Primary", IsPrimary: true, IsSelected: true}))
+	require.NoError(t, database.UpsertCalendarEvent(db.CalendarEvent{
+		ID: eventID, CalendarID: "primary", Title: "Sync",
+		StartTime: "2026-07-13T10:00:00Z", EndTime: "2026-07-13T10:30:00Z",
+	}))
+}
+
+// The recap-refresh hint (voice registry, spec §4.1) regenerates an
+// event-linked recording's recap through `transcript recap <id>`. The recap
+// its Recap tab shows is the event's meeting_recaps row that THIS recording's
+// save wrote (transcript_id = id) — so the retry must refresh that row in
+// place, bumping its updated_at, instead of hiding the new recap in
+// summary_json behind the collision guard.
+func TestTranscriptRecapRetryRefreshesTheRecordingsOwnEventRecap(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	gen := &transcriptMockGen{responses: []string{transcriptMockRecapJSON, transcriptMockRecapJSONRegenerated}}
+	stubTranscriptGenerator(t, gen)
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	seedRecapEvent(t, database, "evt-own")
+	database.Close()
+
+	transcriptSaveFlagFile = writeTranscriptFile(t, strings.Repeat("the team walked through the rollout plan in detail. ", 6))
+	transcriptSaveFlagEventID = "evt-own"
+	var saveOut bytes.Buffer
+	transcriptSaveCmd.SetOut(&saveOut)
+	require.NoError(t, transcriptSaveCmd.RunE(transcriptSaveCmd, nil))
+	var env transcriptEnvelope
+	require.NoError(t, json.Unmarshal(saveOut.Bytes(), &env))
+	require.True(t, env.RecapOK)
+
+	// A relabel rewrites the transcript text; backdate the recap so the
+	// refreshed updated_at is observable within one test second.
+	database, err = openDBFromConfig()
+	require.NoError(t, err)
+	_, err = database.Exec(`UPDATE meeting_transcripts SET transcript_text = 'relabeled text' WHERE id = ?`, env.TranscriptID)
+	require.NoError(t, err)
+	_, err = database.Exec(`UPDATE meeting_recaps SET updated_at = '2020-01-01T00:00:00Z' WHERE event_id = 'evt-own'`)
+	require.NoError(t, err)
+	database.Close()
+
+	var retryOut bytes.Buffer
+	transcriptRecapCmd.SetOut(&retryOut)
+	require.NoError(t, transcriptRecapCmd.RunE(transcriptRecapCmd, []string{fmt.Sprint(env.TranscriptID)}))
+
+	database, err = openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	recap, err := database.GetMeetingRecap("evt-own")
+	require.NoError(t, err)
+	require.NotNil(t, recap)
+	assert.Contains(t, recap.RecapJSON, `"summary":"regenerated"`, "the recording's own event recap is regenerated in place")
+	assert.Equal(t, "relabeled text", recap.SourceText)
+	assert.Greater(t, recap.UpdatedAt, "2020-01-01T00:00:00Z", "updated_at moves, so the hint's comparison clears")
+	require.True(t, recap.TranscriptID.Valid)
+	assert.Equal(t, env.TranscriptID, recap.TranscriptID.Int64, "the row stays linked to the recording")
+
+	tr, err := database.GetMeetingTranscript(env.TranscriptID)
+	require.NoError(t, err)
+	assert.False(t, tr.SummaryJSON.Valid, "no summary_json appears when the recording never had one")
+}
+
+// The collision guard still holds on the explicit retry: an event recap that
+// is NOT this recording's own (pasted, transcript_id NULL) is never
+// overwritten; the regenerated recap goes to summary_json.
+func TestTranscriptRecapRetryKeepsAForeignEventRecap(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	stubTranscriptGenerator(t, &transcriptMockGen{response: transcriptMockRecapJSONRegenerated})
+
+	const pastedJSON = `{"summary":"pasted","key_decisions":[],"action_items":[],"open_questions":[]}`
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	seedRecapEvent(t, database, "evt-pasted")
+	require.NoError(t, database.UpsertMeetingRecap("evt-pasted", "pasted notes", pastedJSON, 0))
+	id, err := database.InsertMeetingTranscript(db.MeetingTranscript{
+		EventID: sql.NullString{String: "evt-pasted", Valid: true}, Title: "t", TranscriptText: "body",
+	})
+	require.NoError(t, err)
+	database.Close()
+
+	var out bytes.Buffer
+	transcriptRecapCmd.SetOut(&out)
+	require.NoError(t, transcriptRecapCmd.RunE(transcriptRecapCmd, []string{fmt.Sprint(id)}))
+
+	database, err = openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	recap, err := database.GetMeetingRecap("evt-pasted")
+	require.NoError(t, err)
+	assert.Equal(t, pastedJSON, recap.RecapJSON, "a pasted event recap is never overwritten")
+	tr, err := database.GetMeetingTranscript(id)
+	require.NoError(t, err)
+	assert.Contains(t, tr.SummaryJSON.String, `"summary":"regenerated"`)
+}
+
+// An ad-hoc (or event-deleted) recording whose recap lives in a
+// meeting_recaps row linked only by transcript_id: the retry refreshes that
+// row, and also the recording's own summary_json copy (the one linkToEvent
+// copied from), so the two never diverge.
+func TestTranscriptRecapRetryRefreshesAnOrphanOwnRecapAndItsSummary(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+	resetTranscriptFlags(t)
+	stubTranscriptGenerator(t, &transcriptMockGen{response: transcriptMockRecapJSONRegenerated})
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	id, err := database.InsertMeetingTranscript(db.MeetingTranscript{
+		Title: "t", TranscriptText: "body",
+		SummaryJSON: sql.NullString{String: transcriptMockRecapJSON, Valid: true},
+	})
+	require.NoError(t, err)
+	_, err = database.Exec(`INSERT INTO meeting_recaps (event_id, transcript_id, source_text, recap_json, updated_at)
+		VALUES (NULL, ?, 'body', ?, '2020-01-01T00:00:00Z')`, id, transcriptMockRecapJSON)
+	require.NoError(t, err)
+	database.Close()
+
+	var out bytes.Buffer
+	transcriptRecapCmd.SetOut(&out)
+	require.NoError(t, transcriptRecapCmd.RunE(transcriptRecapCmd, []string{fmt.Sprint(id)}))
+
+	database, err = openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	recap, err := database.GetMeetingRecapByTranscript(id)
+	require.NoError(t, err)
+	require.NotNil(t, recap)
+	assert.Contains(t, recap.RecapJSON, `"summary":"regenerated"`)
+	assert.Greater(t, recap.UpdatedAt, "2020-01-01T00:00:00Z")
+	tr, err := database.GetMeetingTranscript(id)
+	require.NoError(t, err)
+	assert.Contains(t, tr.SummaryJSON.String, `"summary":"regenerated"`, "the summary copy is refreshed too")
 }

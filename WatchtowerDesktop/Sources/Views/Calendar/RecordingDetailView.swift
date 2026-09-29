@@ -35,7 +35,6 @@ struct RecordingDetailView: View {
     @Environment(AppState.self) private var appState
     @State private var transcript: MeetingTranscript?
     @State private var utterances: [TranscriptUtterance]?
-    @State private var attendees: [EventAttendee] = []
     @State private var linkedEvent: CalendarQueries.EventLink?
     @State private var recapContent: MeetingRecap.Content?
     /// True when `recapContent` came from the event's `meeting_recaps` row and
@@ -43,6 +42,10 @@ struct RecordingDetailView: View {
     /// another source) than this one — the Recap tab needs a provenance note
     /// so it doesn't read like AI hallucination.
     @State private var recapFromOtherSource = false
+    /// The `meeting_recaps` row on screen (only when it decoded — otherwise
+    /// the tab shows the transcript's own `summary_json`, stamped by
+    /// `summary_updated_at`) — feeds `showRecapRefreshHint`.
+    @State private var shownRecap: RecordingRecap?
     @State private var chapters: MeetingChapters?
     @State private var tab: RecordingDetailTab = .recap
     @State private var chatVM: MeetingChatViewModel?
@@ -174,18 +177,13 @@ struct RecordingDetailView: View {
                 transcriptText: transcript.transcriptText,
                 utterances: utterances,
                 scrollTarget: $transcriptScrollTarget,
-                attendees: attendees,
-                suggestions: appState.speakerGuessCenter.suggestions[transcriptID] ?? [],
-                isSuggesting: appState.speakerGuessCenter.generating.contains(transcriptID),
-                suggestError: appState.speakerGuessCenter.lastError[transcriptID],
-                suggestNotice: appState.speakerGuessCenter.lastNotice[transcriptID],
+                showRecapRefreshHint: showRecapRefreshHint,
                 onSetUtteranceDeleted: setUtteranceDeleted,
-                onSuggestNames: suggestSpeakerNames,
-                onRenameSpeaker: renameSpeaker
-            ) { speaker in
-                appState.speakerGuessCenter.consumeSuggestion(
-                    transcriptID: transcriptID, speaker: speaker)
-            }
+                onListenToSamples: { speaker in
+                    Task { await appState.voiceRegistryCenter.relabel(transcriptID: transcriptID, clusterLabel: speaker) }
+                },
+                onRegenerateRecap: retryRecap
+            )
         case .chat:
             if let chatVM {
                 RecordingChatTab(chatVM: chatVM)
@@ -265,10 +263,9 @@ struct RecordingDetailView: View {
     /// its event), decoded once here so `body` never touches heavy blobs.
     private struct LoadedDetail {
         var row: MeetingTranscript?
-        var recap: MeetingRecap?
+        var recap: RecordingRecap?
         var link: CalendarQueries.EventLink?
         var utterances: [TranscriptUtterance]?
-        var attendees: [EventAttendee]
         var chapters: MeetingChapters?
     }
 
@@ -278,31 +275,19 @@ struct RecordingDetailView: View {
             let loaded = try await Task.detached(priority: .userInitiated) { [transcriptID] in
                 try db.dbPool.read { conn -> LoadedDetail in
                     let row = try MeetingTranscriptQueries.fetch(conn, id: transcriptID)
-                    // Durable transcript_id link first: a recap relinked to this
-                    // recording survives its event's deletion (event_id → NULL on
-                    // both rows), so it still resolves here. Falls back to the
-                    // event_id lookup, then (below) the transcript's summary_json.
-                    var recap = try MeetingRecapQueries.fetch(conn, transcriptID: transcriptID)
+                    // Durable transcript_id link first (survives the event's
+                    // deletion), then the event_id lookup, then (below) the
+                    // transcript's summary_json.
+                    let recap = try MeetingRecapQueries.fetchForRecording(
+                        conn, transcriptID: transcriptID, eventID: row?.eventID)
                     var link: CalendarQueries.EventLink?
-                    var eventAttendees: [EventAttendee] = []
                     if let eventID = row?.eventID {
-                        if recap == nil {
-                            recap = try MeetingRecapQueries.fetch(conn, eventID: eventID)
-                        }
                         // Lightweight (title + start_time); nil when the event
                         // row is gone — the header degrades to a plain label.
                         link = try CalendarQueries.fetchEventLink(conn, id: eventID)
-                        // Attendee identities (incl. the organizer — same set
-                        // the voice-print scoping uses, so a rename mints an
-                        // email-keyed print for an organizer-not-guest too)
-                        // feed the rename picker (attendees first, free text
-                        // after); ad-hoc recordings have none.
-                        eventAttendees = try CalendarQueries.fetchEvent(conn, id: eventID)?
-                            .attendeesIncludingOrganizer ?? []
                     }
                     return LoadedDetail(row: row, recap: recap, link: link,
-                                        utterances: row?.utterances, attendees: eventAttendees,
-                                        chapters: row?.parsedChapters)
+                                        utterances: row?.utterances, chapters: row?.parsedChapters)
                 }
             }.value
             transcript = loaded.row
@@ -310,12 +295,12 @@ struct RecordingDetailView: View {
             // Segments and chapters decoded ONCE here (off-main, alongside
             // the fetch), never in body evaluations or row builders.
             utterances = loaded.utterances
-            attendees = loaded.attendees
             chapters = loaded.chapters
             // Event recap wins; ad-hoc (or collision-guarded) recap falls back
             // to the transcript's own summary_json. Decoded ONCE here, never
             // in row builders.
-            recapContent = loaded.recap?.parsed ?? loaded.row?.parsedSummary
+            let eventRecapContent = loaded.recap?.recap.parsed
+            recapContent = eventRecapContent ?? loaded.row?.parsedSummary
             // An exact source-text match means the event recap WAS generated
             // from this recording's own transcript; anything else (including
             // no event recap at all, or a recap row whose recap_json failed
@@ -333,8 +318,9 @@ struct RecordingDetailView: View {
             // keeps this only mildly over-cautious; a robust fix would need
             // the originating transcript id persisted on `meeting_recaps`
             // (out of scope here).
-            recapFromOtherSource = loaded.recap?.parsed != nil
-                && loaded.recap?.sourceText != loaded.row?.transcriptText
+            recapFromOtherSource = eventRecapContent != nil
+                && loaded.recap?.recap.sourceText != loaded.row?.transcriptText
+            shownRecap = eventRecapContent != nil ? loaded.recap : nil
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -368,46 +354,10 @@ struct RecordingDetailView: View {
         }
     }
 
-    /// "Suggest speaker names" (LLM content hints for unnamed clusters) —
-    /// runs through the app-wide SpeakerGuessCenter so the in-flight state
-    /// and the returned chips survive navigation.
-    private func suggestSpeakerNames() {
-        guard let service = notesService else {
-            errorMessage = "watchtower CLI not found"
-            return
-        }
-        appState.speakerGuessCenter.suggest(transcriptID: transcriptID, service: service)
-    }
-
-    /// Manual rename / confirmed suggestion: the transactional
-    /// `segments_json` + `transcript_text` + `speakers_json` rewrite plus the
-    /// voice-print upsert (one write transaction, see
-    /// `MeetingTranscriptQueries.renameSpeaker`), then a reload so every tab
-    /// sees the new labels.
-    private func renameSpeaker(from: String, to name: String) {
-        guard let db = appState.databaseManager else {
-            errorMessage = "Database not available"
-            return
-        }
-        do {
-            let personKey = SpeakerNaming.personKey(for: name, attendees: attendees)
-            let applied = try db.dbPool.write { conn in
-                try MeetingTranscriptQueries.renameSpeaker(
-                    conn, id: transcriptID, from: from, to: name, personKey: personKey)
-            }
-            // A stale-state rename (label already gone, reserved name, …)
-            // writes nothing — keep the suggestion chip and say so instead of
-            // silently consuming it.
-            guard applied else {
-                errorMessage = "Could not rename \(from) — the transcript may have changed"
-                return
-            }
-            appState.speakerGuessCenter.consumeSuggestion(transcriptID: transcriptID, speaker: from)
-            onChanged()
-            Task { await load() }
-        } catch {
-            errorMessage = error.localizedDescription
-        }
+    /// Whether speaker names changed after the recap on screen was generated
+    /// (`MeetingTranscript.recapPredatesSpeakerNames`).
+    private var showRecapRefreshHint: Bool {
+        transcript?.recapPredatesSpeakerNames(shownRecap: shownRecap) ?? false
     }
 
     private func openChat(_ transcript: MeetingTranscript) {

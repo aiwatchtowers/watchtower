@@ -143,7 +143,7 @@ final class NotificationRouteTests: XCTestCase {
     func testNoPushTypeArmsAnActionWhenForwarded() async {
         let pushTypes = [
             "decision", "track", "track_update", "task_overdue", "target_extract",
-            "daily_summary", "meeting_reminder", "meeting_stop_recording",
+            "daily_summary", "voice_label", "meeting_reminder", "meeting_stop_recording",
             "test", "briefing", "board_config_changed", "meeting_transcript"
         ]
         let actionIDs = [
@@ -238,6 +238,35 @@ final class NotificationRouteTests: XCTestCase {
         }
     }
 
+    /// A voice-label push opens the Voices window queue scoped to the transcript it
+    /// named — pure navigation (it loads/selects, it never labels anything by itself),
+    /// so unlike Join/Stop it is not downgraded on the forwarded path either.
+    func testVoiceLabelOpensTheQueueForItsTranscript() async {
+        for forwarded in [true, false] {
+            let appState = AppState()
+            await NotificationDelegate.route(
+                actionID: UNNotificationDefaultActionIdentifier,
+                userInfo: ["type": "voice_label", "transcriptID": Int64(5)],
+                appState: appState,
+                forwarded: forwarded
+            )
+            XCTAssertEqual(appState.voiceRegistryCenter.mode, .queue(transcriptID: 5), "forwarded: \(forwarded)")
+        }
+    }
+
+    /// A malformed/racy payload with no transcript id must not crash and must leave
+    /// the queue unscoped rather than guessing.
+    func testVoiceLabelWithoutTranscriptIDIsANoop() async {
+        let appState = AppState()
+        await NotificationDelegate.route(
+            actionID: UNNotificationDefaultActionIdentifier,
+            userInfo: ["type": "voice_label"],
+            appState: appState,
+            forwarded: false
+        )
+        XCTAssertEqual(appState.voiceRegistryCenter.mode, .queue(transcriptID: nil))
+    }
+
     /// An unknown or absent type is not an error — routing falls through and leaves the
     /// UI where the user left it.
     func testUnknownTypeLeavesNavigationAlone() async {
@@ -270,6 +299,7 @@ final class NotificationRouteTests: XCTestCase {
             ["type": "decision"],
             ["type": "track_update"],
             ["type": "daily_summary"],
+            ["type": "voice_label", "transcriptID": Int64(5)],
             ["type": "meeting_reminder"],
             ["type": "meeting_stop_recording"],
             [:]
@@ -297,9 +327,24 @@ final class NotificationRouteTests: XCTestCase {
     func testForwardedAllowlistMatchesWhatForwardedRoutingReads() {
         XCTAssertEqual(
             NotificationForwarding.routedKeys,
-            ["type", NotificationForwarding.digestIDKey, NotificationForwarding.ideaIDKey]
+            [
+                "type", NotificationForwarding.digestIDKey, NotificationForwarding.ideaIDKey,
+                NotificationForwarding.transcriptIDKey
+            ]
         )
         XCTAssertEqual(NotificationForwarding.digestIDKey, "digestId")
         XCTAssertEqual(NotificationForwarding.ideaIDKey, "ideaId")
+        XCTAssertEqual(NotificationForwarding.transcriptIDKey, "transcriptID")
+    }
+
+    /// The wire codec itself: a voice-label push's transcript id survives encode →
+    /// decode as the `Int64` the queue-scoping read expects, not a bare string.
+    func testTranscriptIDSurvivesTheWireCodec() throws {
+        let json = NotificationForwarding.encode(
+            actionID: UNNotificationDefaultActionIdentifier,
+            userInfo: ["type": "voice_label", "transcriptID": Int64(5)]
+        )
+        let response = try XCTUnwrap(json.flatMap(NotificationForwarding.decode))
+        XCTAssertEqual(response.userInfo["transcriptID"] as? Int64, 5)
     }
 }

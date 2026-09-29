@@ -122,6 +122,10 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
             appState?.selectedDestination = .targets
         case "daily_summary":
             appState?.selectedDestination = .digests
+        case "voice_label":
+            if let id = userInfo["transcriptID"] as? Int64 ?? (userInfo["transcriptID"] as? NSNumber)?.int64Value {
+                await appState?.voiceRegistryCenter.open(.queue(transcriptID: id))
+            }
         case "meeting_reminder":
             if forwarded {
                 // Say it out loud rather than degrading in silence — the same
@@ -314,6 +318,11 @@ struct WatchtowerApp: App {
                 NotificationDelegate.sharedAppState = appState
                 appState.initialize()
                 appState.openQuickCapture = { openWindow(id: QuickCaptureView.sceneID) }
+                appState.openVoicesWindow = { openWindow(id: VoicesWindowView.sceneID) }
+                appState.voiceRegistryCenter.openWindow = {
+                    ActivationPolicyDecision.becomeRegularAndActivate()
+                    appState.openVoicesWindow?()
+                }
             }
             .onOpenURL { url in
                 // Handle watchtower-auth:// callback — just bring app to front
@@ -390,6 +399,12 @@ struct WatchtowerApp: App {
         .windowResizability(.contentSize)
         .defaultPosition(.topTrailing)
 
+        Window("Voices", id: VoicesWindowView.sceneID) {
+            VoicesWindowView()
+                .environment(appState)
+        }
+        .defaultSize(width: 640, height: 720)
+
         Settings {
             SettingsView()
                 .environment(appState)
@@ -411,6 +426,11 @@ struct WatchtowerApp: App {
                 // with rootContent's own assignment.
                 .onAppear {
                     appState.openQuickCapture = { openWindow(id: QuickCaptureView.sceneID) }
+                    appState.openVoicesWindow = { openWindow(id: VoicesWindowView.sceneID) }
+                    appState.voiceRegistryCenter.openWindow = {
+                        ActivationPolicyDecision.becomeRegularAndActivate()
+                        appState.openVoicesWindow?()
+                    }
                 }
         }
     }
