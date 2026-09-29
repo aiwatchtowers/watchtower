@@ -26,6 +26,7 @@ import (
 //   - snooze_until — always cleared on the child
 //   - status     — "done" if the sub-item was already marked done, else "todo"
 //     (keeps parent progress stable across the promote)
+//   - project_id — parent.project_id (a promoted sub-item stays on its board)
 type PromoteOverrides struct {
 	Text        *string
 	Intent      *string
@@ -79,14 +80,15 @@ func (db *DB) PromoteSubItemToChild(parentID int64, idx int, overrides PromoteOv
 		parentDueDate     string
 		parentTags        string
 		parentSubItems    string
+		parentProjectID   sql.NullInt64
 	)
 	err = tx.QueryRow(`SELECT intent, level, custom_label, period_start, period_end,
-		priority, ownership, ball_on, due_date, tags, sub_items
+		priority, ownership, ball_on, due_date, tags, sub_items, project_id
 		FROM targets WHERE id = ?`, parentID).Scan(
 		&parentIntent, &parentLevel, &parentCustomLabel,
 		&parentPeriodStart, &parentPeriodEnd,
 		&parentPriority, &parentOwnership, &parentBallOn, &parentDueDate,
-		&parentTags, &parentSubItems,
+		&parentTags, &parentSubItems, &parentProjectID,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -170,13 +172,13 @@ func (db *DB) PromoteSubItemToChild(parentID int64, idx int, overrides PromoteOv
 	res, err := tx.Exec(`INSERT INTO targets
 		(text, intent, level, custom_label, period_start, period_end, parent_id,
 		 status, priority, ownership, ball_on, due_date, snooze_until, blocking,
-		 tags, sub_items, notes, progress, source_type, source_id, ai_level_confidence)
+		 tags, sub_items, notes, progress, source_type, source_id, ai_level_confidence, project_id)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '',
-		        ?, '[]', '[]', ?, 'promoted_subitem', ?, NULL)`,
+		        ?, '[]', '[]', ?, 'promoted_subitem', ?, NULL, ?)`,
 		childText, childIntent, childLevel, childCustomLabel,
 		childPeriodStart, childPeriodEnd, parentID,
 		childStatus, childPriority, childOwnership, parentBallOn, childDueDate,
-		childTags, childProgress, sourceID,
+		childTags, childProgress, sourceID, parentProjectID,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("inserting promoted child: %w", err)

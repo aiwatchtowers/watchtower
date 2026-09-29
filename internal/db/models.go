@@ -435,10 +435,11 @@ type Target struct {
 	AILevelConfidence   sql.NullFloat64
 	CreatedAt           string
 	UpdatedAt           string
-	NextStep            string // AI-suggested next action (JSON), "" when not yet generated
-	NextStepAt          string // when NextStep was generated; compared to UpdatedAt for staleness
-	NextStepAttempts    int    // attempts made since the last per-target budget reset (see 00068)
-	NextStepAttemptedAt string // UTC ISO8601 of the most recent attempt (success or failure), "" if never attempted
+	NextStep            string        // AI-suggested next action (JSON), "" when not yet generated
+	NextStepAt          string        // when NextStep was generated; compared to UpdatedAt for staleness
+	NextStepAttempts    int           // attempts made since the last per-target budget reset (see 00068)
+	NextStepAttemptedAt string        // UTC ISO8601 of the most recent attempt (success or failure), "" if never attempted
+	ProjectID           sql.NullInt64 // set = lives only on that project's board (migration 00081, PROJ-01)
 }
 
 // TargetNote represents a single note entry in a target's notes JSON array.
@@ -459,6 +460,9 @@ type TargetFilter struct {
 	Search      string
 	Limit       int
 	IncludeDone bool
+	// ProjectID scopes the query to one project board: 0 (every existing
+	// caller) excludes project targets, N returns only project N's (PROJ-01).
+	ProjectID int64
 }
 
 // TargetLink represents a typed link between two targets or to an external reference.

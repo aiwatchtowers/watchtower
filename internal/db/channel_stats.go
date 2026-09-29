@@ -147,7 +147,7 @@ func (db *DB) GetChannelValueSignals() (map[string]ChannelValueSignals, error) {
 			SELECT d.channel_id, COUNT(*) AS cnt
 			FROM targets t
 			JOIN digests d ON t.source_type = 'digest' AND t.source_id = CAST(d.id AS TEXT)
-			WHERE t.status IN ('todo','in_progress','blocked')
+			WHERE t.status IN ('todo','in_progress','blocked') AND t.project_id IS NULL
 			  AND d.channel_id != ''
 			GROUP BY d.channel_id
 		),
@@ -155,7 +155,7 @@ func (db *DB) GetChannelValueSignals() (map[string]ChannelValueSignals, error) {
 			SELECT i.channel_id, COUNT(*) AS cnt
 			FROM targets t
 			JOIN inbox_items i ON t.source_type = 'inbox' AND t.source_id = CAST(i.id AS TEXT)
-			WHERE t.status IN ('todo','in_progress','blocked')
+			WHERE t.status IN ('todo','in_progress','blocked') AND t.project_id IS NULL
 			GROUP BY i.channel_id
 		),
 		task_counts AS (

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -906,5 +907,35 @@ func TestBuildNextStepPrompt_AbsentChatTablesStillBuilds(t *testing.T) {
 func TestNextStepSystemPrompt_ForbidsRepeatingADoneStep(t *testing.T) {
 	if !strings.Contains(nextStepSystemPrompt, "never repeat a step that is done") {
 		t.Errorf("system prompt lost the already-carried-out rule:\n%s", nextStepSystemPrompt)
+	}
+}
+
+// TestProj01_NextStepSkipsProjectTarget: next-step never runs for a project
+// target — no AI call, no attempt recorded (PROJ-01).
+func TestProj01_NextStepSkipsProjectTarget(t *testing.T) {
+	gen := &mockGenerator{responses: []string{`{"title":"x","rationale":"y","urgency":"normal","actions":[]}`}}
+	p, d := makeTestPipeline(t, gen)
+	pid, err := d.CreateProject("acme", t.TempDir())
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	id, err := d.CreateProjectTarget(pid, sql.NullInt64{}, "board only", "")
+	if err != nil {
+		t.Fatalf("create project target: %v", err)
+	}
+
+	_, err = p.GenerateNextStep(context.Background(), int(id))
+	if !errors.Is(err, ErrProjectTarget) {
+		t.Fatalf("GenerateNextStep err = %v, want ErrProjectTarget", err)
+	}
+	if gen.calls() != 0 {
+		t.Fatalf("AI called %d times for a project target", gen.calls())
+	}
+	tg, err := d.GetTargetByID(int(id))
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if tg.NextStepAttempts != 0 || tg.NextStepAttemptedAt != "" {
+		t.Fatalf("attempt recorded for a project target: %+v", tg)
 	}
 }

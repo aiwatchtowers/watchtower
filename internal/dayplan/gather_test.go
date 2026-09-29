@@ -213,3 +213,21 @@ func TestGatherJira_NoJiraOrSlackIdentityGathersNothing(t *testing.T) {
 	got := testPipeline(d).gatherJira(db.Owner{ID: "google:me@x.com", Source: db.OwnerSourceGoogle, Email: "me@x.com"})
 	assert.Empty(t, got)
 }
+
+// TestProj01_DayPlanGatherExcludesProjectTargets: a project target never
+// reaches the day-plan input (PROJ-01, docs/inventory/projects.md).
+func TestProj01_DayPlanGatherExcludesProjectTargets(t *testing.T) {
+	d := gatherTestDB(t)
+	p := testPipeline(d)
+	_, err := d.CreateTarget(db.Target{Text: "personal", Status: "todo", Priority: "medium", Ownership: "mine", SourceType: "manual"})
+	require.NoError(t, err)
+	pid, err := d.CreateProject("acme", t.TempDir())
+	require.NoError(t, err)
+	_, err = d.CreateProjectTarget(pid, sql.NullInt64{}, "board only", "")
+	require.NoError(t, err)
+
+	got, err := p.gatherTargets()
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "personal", got[0].Text)
+}
