@@ -18,6 +18,8 @@ Detailed task steps live in per-phase files (same numbering):
 - `docs/superpowers/plans/2026-09-29-projects-poc/phase3-install.md` — Tasks 10–12
 - `docs/superpowers/plans/2026-09-29-projects-poc/phase4-desktop-terminal-docs.md` — Tasks 13–18
 - `docs/superpowers/plans/2026-09-29-projects-poc/phase5-board-briefing-docs.md` — Tasks 19–22
+- `docs/superpowers/plans/2026-09-29-projects-poc/phase6-chat-comments.md` — Tasks 23–26 (owner addition 2026-09-29: selection comments on chat artifacts + chat answers, batch send everywhere, project-doc comments → terminal)
+- `docs/superpowers/plans/2026-09-29-projects-poc/phase4-generic-edits.md` — binding edits to Phase 4 Tasks 16 (and Phase 5 Task 19) that make the comment components reusable by Phase 6
 
 Each phase file ends with an **Interface errata** section. Errata are binding and override the interface list below (e.g. `CreateProjectTargetsTx` is a batch call over `[]ProjectTargetInput`; `WithTx`/`ErrNotInProject` come from Task 2; `integrate status --project N --json` is `{project_id, folder, skill, skill_path, hook, mcp, claude_found}`).
 
