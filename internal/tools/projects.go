@@ -27,6 +27,7 @@ func ProjectTools() []*Tool {
 		NewProjectInfo(), NewProjectBoard(), NewUpdateProject(),
 		NewAddProjectSource(), NewRemoveProjectSource(),
 		NewCreateTargets(), NewUpdateTarget(),
+		NewAttachDocument(), NewListComments(), NewAddComment(), NewResolveComment(),
 	}
 }
 

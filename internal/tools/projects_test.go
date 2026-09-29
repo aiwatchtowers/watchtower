@@ -282,6 +282,11 @@ func outsideProjectCalls(fx projectFixture) []outsideProjectCall {
 		{"smuggle a project_id", "create_targets", fmt.Sprintf(`{"project_id":%d,"items":[{"text":"x"}],"reason":"r"}`, fx.b)},
 		{"smuggle a project_id into a source", "add_project_source", fmt.Sprintf(`{"project_id":%d,"kind":"link","ref":"x","reason":"r"}`, fx.b)},
 		{"remove another project's source", "remove_project_source", fmt.Sprintf(`{"source_id":%d,"reason":"r"}`, fx.bSource)},
+		{"comment on another project's target", "add_comment", fmt.Sprintf(`{"target_id":%d,"body":"hi","reason":"r"}`, fx.bTarget)},
+		{"comment on a non-project target", "add_comment", fmt.Sprintf(`{"target_id":%d,"body":"hi","reason":"r"}`, fx.plain)},
+		{"reply in another project's thread", "add_comment", fmt.Sprintf(`{"parent_id":%d,"body":"hi","reason":"r"}`, fx.bComment)},
+		{"resolve another project's comment", "resolve_comment", fmt.Sprintf(`{"comment_id":%d,"reply":"done","reason":"r"}`, fx.bComment)},
+		{"link a document to another project's target", "attach_document", fmt.Sprintf(`{"rel_path":"README.md","kind":"doc","target_id":%d,"reason":"r"}`, fx.bTarget)},
 	}
 }
 
