@@ -129,7 +129,7 @@ final class VoiceRegistryQueriesTests: XCTestCase {
             XCTAssertEqual(task.reason, .unknown, "the open task is kept, the duplicate ignored")
 
             // Once closed, the same cluster may be queued again.
-            try VoiceLabelQueueQueries.close(conn, id: try XCTUnwrap(task.id), status: .done)
+            try VoiceLabelQueueQueries.resolveTask(conn, id: try XCTUnwrap(task.id), status: .done)
             XCTAssertEqual(try VoiceLabelQueueQueries.pendingCount(conn), 0)
             try VoiceLabelQueueQueries.enqueue(conn, transcriptID: tid, clusterLabel: "Speaker 1", reason: .relabel,
                                                suggestedPersonID: nil, score: nil)

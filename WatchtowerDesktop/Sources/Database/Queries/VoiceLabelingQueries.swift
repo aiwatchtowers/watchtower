@@ -60,14 +60,14 @@ enum VoiceLabelingQueries {
                   $0.speaker == clusterLabel || $0.originalLabel == clusterLabel
               })
         else {
-            if let taskID { try VoiceLabelQueueQueries.close(db, id: taskID, status: .skipped) }
+            if let taskID { try VoiceLabelQueueQueries.resolveTask(db, id: taskID, status: .skipped) }
             return .stale
         }
 
         // The cluster this task was queued for has already been relabeled
         // (by another task, or a concurrent confirm) — never overwrite it.
         if cluster.speaker != clusterLabel {
-            if let taskID { try VoiceLabelQueueQueries.close(db, id: taskID, status: .done) }
+            if let taskID { try VoiceLabelQueueQueries.resolveTask(db, id: taskID, status: .done) }
             return .alreadyLabeled
         }
 
@@ -128,7 +128,7 @@ enum VoiceLabelingQueries {
 
         let task = try taskID.flatMap { try VoiceLabelTask.fetchOne(db, key: $0) }
         retired.formUnion(try settleImports(db, reason: task?.reason, cluster: cluster, personID: personID))
-        if let taskID = task?.id { try VoiceLabelQueueQueries.close(db, id: taskID, status: .done) }
+        if let taskID = task?.id { try VoiceLabelQueueQueries.resolveTask(db, id: taskID, status: .done) }
 
         _ = try revertOrphanedAutoLabels(db, removedSampleIDs: retired)
         return .labeled(personID: personID)
@@ -205,7 +205,7 @@ enum VoiceLabelingQueries {
         } else {
             try patchCluster(db, transcriptID: task.transcriptID, label: task.clusterLabel, markDismissed)
         }
-        try VoiceLabelQueueQueries.close(db, id: taskID, status: .done)
+        try VoiceLabelQueueQueries.resolveTask(db, id: taskID, status: .done)
     }
 
     /// Takes a wrong name off a named cluster: retires the samples it

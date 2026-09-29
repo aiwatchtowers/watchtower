@@ -32,8 +32,8 @@ final class MeetingRecorderVoiceRegistryTests: MeetingRecorderTestCase {
         var eventIDs: [String?] = []
         var written: VoiceIdentificationOutcome?
         var transcriptID: Int64?
-        func load(_ id: String?) { eventIDs.append(id) }
-        func write(_ id: Int64, _ outcome: VoiceIdentificationOutcome) { transcriptID = id; written = outcome }
+        func recordLoad(eventID: String?) { eventIDs.append(eventID) }
+        func recordWrite(transcriptID id: Int64, outcome: VoiceIdentificationOutcome) { transcriptID = id; written = outcome }
     }
 
     private enum Activity {
@@ -90,18 +90,18 @@ final class MeetingRecorderVoiceRegistryTests: MeetingRecorderTestCase {
         let box = Box()
         if loaderFails {
             center.registryLoader = { id in
-                await box.load(id)
+                await box.recordLoad(eventID: id)
                 return nil
             }
         } else if let registry {
             center.registryLoader = { id in
-                await box.load(id)
+                await box.recordLoad(eventID: id)
                 return registry
             }
         }
         if wireWriter {
             center.registryWriter = { id, outcome in
-                await box.write(id, outcome)
+                await box.recordWrite(transcriptID: id, outcome: outcome)
                 return outcome.tasks.count
             }
         }

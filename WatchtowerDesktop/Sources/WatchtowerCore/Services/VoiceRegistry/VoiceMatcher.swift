@@ -31,14 +31,14 @@ package enum VoiceMatcher {
 
         /// Scores compare at 3 decimals so float noise never fails an equality.
         package static func == (lhs: Self, rhs: Self) -> Bool {
-            func rounded(_ x: Float) -> Float { (x * 1000).rounded() }
+            func quantized(_ x: Float) -> Float { (x * 1000).rounded() }
             switch (lhs, rhs) {
             case let (.confident(p1, s1, x), .confident(p2, s2, y)):
-                return p1 == p2 && s1 == s2 && rounded(x) == rounded(y)
+                return p1 == p2 && s1 == s2 && quantized(x) == quantized(y)
             case let (.unsure(p1, x, q1), .unsure(p2, y, q2)):
-                return p1 == p2 && q1 == q2 && rounded(x) == rounded(y)
+                return p1 == p2 && q1 == q2 && quantized(x) == quantized(y)
             case let (.unknown(x), .unknown(y)):
-                return rounded(x) == rounded(y)
+                return quantized(x) == quantized(y)
             case (.tooShort, .tooShort):
                 return true
             default:

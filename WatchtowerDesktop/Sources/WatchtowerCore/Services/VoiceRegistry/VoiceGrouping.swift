@@ -80,7 +80,7 @@ package enum VoiceGrouping {
             guard let (i, j) = bestPair, bestScore >= mergeAt else { break }
             members[i] += members[j]
             alive[j] = false
-            links.merge(j, into: i, alive: alive)
+            links.mergeCluster(j, into: i, alive: alive)
         }
         return (0..<n).filter { alive[$0] }
             .map { members[$0].map { clusters[$0] } }
@@ -125,7 +125,7 @@ package enum VoiceGrouping {
             return sum[k] / Float(count[k])
         }
 
-        mutating func merge(_ j: Int, into i: Int, alive: [Bool]) {
+        mutating func mergeCluster(_ j: Int, into i: Int, alive: [Bool]) {
             for k in 0..<n where alive[k] && k != i {
                 sum[i * n + k] += sum[j * n + k]
                 sum[k * n + i] = sum[i * n + k]

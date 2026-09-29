@@ -33,7 +33,7 @@ enum VoiceLabelQueueQueries {
         try VoiceLabelTask.filter(Column("status") == VoiceLabelTaskStatus.pending.rawValue).fetchCount(db)
     }
 
-    static func close(_ db: Database, id: Int64, status: VoiceLabelTaskStatus) throws {
+    static func resolveTask(_ db: Database, id: Int64, status: VoiceLabelTaskStatus) throws {
         try db.execute(
             sql: """
                 UPDATE voice_label_queue
@@ -65,10 +65,10 @@ enum VoiceLabelQueueQueries {
             let speakers = speakersByTranscript[task.transcriptID] ?? []
             if let cluster = speakers.first(where: { $0.speaker == task.clusterLabel }) {
                 guard task.reason != .relabel, cluster.effectiveLabelSource != .none else { continue }
-                try close(db, id: taskID, status: .done)
+                try resolveTask(db, id: taskID, status: .done)
             } else {
                 let renamed = speakers.contains { $0.originalLabel == task.clusterLabel }
-                try close(db, id: taskID, status: renamed ? .done : .skipped)
+                try resolveTask(db, id: taskID, status: renamed ? .done : .skipped)
             }
             closed += 1
         }
@@ -91,7 +91,7 @@ enum VoiceLabelQueueQueries {
         for row in rows {
             let path: String? = row["audio_path"]
             if let path, !path.isEmpty, audioExists(path) { continue }
-            try close(db, id: row["id"], status: .skipped)
+            try resolveTask(db, id: row["id"], status: .skipped)
             skipped += 1
         }
         return skipped
