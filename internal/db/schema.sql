@@ -436,6 +436,13 @@ CREATE INDEX IF NOT EXISTS idx_targets_updated     ON targets(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_targets_due_unfired ON targets(due_date)
     WHERE notified_at = '' AND due_date != '';
 CREATE INDEX IF NOT EXISTS idx_targets_project     ON targets(project_id);
+-- Triggers targets_project_status_rollup_{ai,au,ad} (00085, PROJ-05): when a
+-- project target (project_id set) is inserted, deleted, or changes status /
+-- parent_id / project_id, its parent's status is re-derived from its direct
+-- children of the same project (all done|dismissed -> done; every open child
+-- blocked -> blocked; any in_progress or done -> in_progress; else todo; no
+-- children -> untouched), walking up the ancestors while a status changes.
+-- A parent's own update is never rolled up. Full bodies: the migration file.
 
 -- Links between targets or to external references
 CREATE TABLE IF NOT EXISTS target_links (
