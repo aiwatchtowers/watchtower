@@ -215,10 +215,18 @@ func TestProj02_DeleteProjectLeavesNoRows(t *testing.T) {
 	_, err = d.AddProjectSource(ProjectSource{ProjectID: pid, Kind: "link", Ref: "https://example.com"})
 	require.NoError(t, err)
 
+	_, err = d.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id)
+		VALUES (?, 'claude', 'New session', '/tmp/acme', 'uuid-1')`, pid)
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path)
+		VALUES (NULL, 'shell', 'Terminal', '/tmp/acme')`)
+	require.NoError(t, err)
+
 	require.NoError(t, d.DeleteProject(pid))
 
 	for _, q := range []string{
 		`SELECT COUNT(*) FROM projects WHERE id = ?`,
+		`SELECT COUNT(*) FROM terminal_sessions WHERE project_id = ?`,
 		`SELECT COUNT(*) FROM targets WHERE project_id = ?`,
 		`SELECT COUNT(*) FROM project_sources WHERE project_id = ?`,
 		`SELECT COUNT(*) FROM project_documents WHERE project_id = ?`,
@@ -230,6 +238,9 @@ func TestProj02_DeleteProjectLeavesNoRows(t *testing.T) {
 	}
 	_, err = d.GetTargetByID(int(keepTarget))
 	assert.NoError(t, err, "another project's board is untouched")
+	var standalone int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM terminal_sessions WHERE project_id IS NULL`).Scan(&standalone))
+	assert.Equal(t, 1, standalone, "a standalone terminal survives a project delete")
 	assert.ErrorIs(t, d.DeleteProject(pid), ErrProjectNotFound)
 }
 

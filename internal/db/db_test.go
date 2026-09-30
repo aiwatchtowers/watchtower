@@ -194,6 +194,7 @@ func TestAllTablesExist(t *testing.T) {
 		"chat_artifacts", "chat_projects", "chat_project_sources", "chat_fts", "chat_title_fts",
 		"chat_artifact_comments",
 		"projects", "project_sources", "project_documents", "project_comments",
+		"terminal_sessions",
 	}
 
 	for _, table := range expectedTables {

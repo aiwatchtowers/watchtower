@@ -353,6 +353,12 @@ CREATE INDEX idx_targets_status ON targets(status)
 index	idx_targets_updated
 CREATE INDEX idx_targets_updated ON targets(updated_at DESC)
 
+index	idx_terminal_sessions_project
+CREATE INDEX idx_terminal_sessions_project ON terminal_sessions(project_id, last_active_at)
+
+index	idx_terminal_sessions_target
+CREATE INDEX idx_terminal_sessions_target ON terminal_sessions(target_id)
+
 index	idx_track_events_track
 CREATE INDEX idx_track_events_track ON track_events(track_id, created_at DESC)
 
@@ -1867,6 +1873,23 @@ notified_at TEXT NOT NULL DEFAULT '',
 next_step TEXT NOT NULL DEFAULT '',
 next_step_at TEXT NOT NULL DEFAULT ''
 , next_step_attempts INTEGER NOT NULL DEFAULT 0, next_step_attempted_at TEXT NOT NULL DEFAULT '', project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE)
+
+table	terminal_sessions
+CREATE TABLE terminal_sessions (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+kind TEXT NOT NULL CHECK(kind IN ('claude','shell')),
+title TEXT NOT NULL,
+title_source TEXT NOT NULL DEFAULT 'auto' CHECK(title_source IN ('auto','ai','user')),
+target_id INTEGER REFERENCES targets(id) ON DELETE SET NULL,
+folder_path TEXT NOT NULL,
+claude_session_id TEXT,
+created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+last_active_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+closed_at TEXT,
+CHECK (title != '' AND folder_path != ''),
+CHECK (kind = 'shell' OR claude_session_id IS NOT NULL)
+)
 
 table	tool_trust
 CREATE TABLE tool_trust (
@@ -3541,6 +3564,19 @@ END
 27	next_step_attempts	INTEGER	notnull=1	dflt=0	pk=0
 28	next_step_attempted_at	TEXT	notnull=1	dflt=''	pk=0
 29	project_id	INTEGER	notnull=0	dflt=NULL	pk=0
+
+## terminal_sessions
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	project_id	INTEGER	notnull=0	dflt=NULL	pk=0
+2	kind	TEXT	notnull=1	dflt=NULL	pk=0
+3	title	TEXT	notnull=1	dflt=NULL	pk=0
+4	title_source	TEXT	notnull=1	dflt='auto'	pk=0
+5	target_id	INTEGER	notnull=0	dflt=NULL	pk=0
+6	folder_path	TEXT	notnull=1	dflt=NULL	pk=0
+7	claude_session_id	TEXT	notnull=0	dflt=NULL	pk=0
+8	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
+9	last_active_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
+10	closed_at	TEXT	notnull=0	dflt=NULL	pk=0
 
 ## tool_trust
 0	tool	TEXT	notnull=0	dflt=NULL	pk=1
