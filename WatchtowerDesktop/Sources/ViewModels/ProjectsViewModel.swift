@@ -141,6 +141,10 @@ final class ProjectsViewModel {
     private(set) var deletingProjectID: Int64?
     /// Why the last delete failed; the page shows it in an alert.
     var deleteError: String?
+    /// Why the last board-language change of a project failed; the page shows it.
+    var boardLanguageErrors: [Int64: String] = [:]
+    /// Projects a board-language change is running for; the menu is disabled meanwhile.
+    private(set) var settingBoardLanguage: Set<Int64> = []
 
     let dbPool: DatabasePool
     private let cli: ProjectCLI?
@@ -354,6 +358,27 @@ final class ProjectsViewModel {
             installNotes[projectID] = "Repair failed: \(error.localizedDescription)"
         }
         await refreshInstallStatus(projectID: projectID)
+    }
+
+    /// Runs `watchtower project update N --board-language=…`, then reloads so
+    /// the page shows the stored (normalized) value. A CLI failure — the
+    /// CLI's own validation included — keeps the old value and says why.
+    func setBoardLanguage(projectID: Int64, language: String) async {
+        guard !settingBoardLanguage.contains(projectID) else { return }
+        guard let cli else {
+            boardLanguageErrors[projectID] = "The watchtower CLI was not found."
+            return
+        }
+        settingBoardLanguage.insert(projectID)
+        defer { settingBoardLanguage.remove(projectID) }
+        boardLanguageErrors[projectID] = nil
+        do {
+            try await cli.setBoardLanguage(projectID: projectID, language: language)
+        } catch {
+            boardLanguageErrors[projectID] = "Could not change the board language: \(error.localizedDescription)"
+            return
+        }
+        await reload()
     }
 
     func loadDocuments() async {

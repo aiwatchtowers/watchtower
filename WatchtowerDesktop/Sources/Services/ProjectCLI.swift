@@ -210,6 +210,13 @@ struct ProjectCLI {
         return try JSONDecoder().decode(ProjectDocumentAttached.self, from: data)
     }
 
+    /// Sets the board language every session writes the board in; an empty
+    /// `language` follows the session language again. The CLI validates it.
+    /// `--flag=value` form, so an empty value is never read as a missing one.
+    func setBoardLanguage(projectID: Int64, language: String) async throws {
+        _ = try await runner.run(args: ["project", "update", String(projectID), "--board-language=\(language)"])
+    }
+
     /// Removes what was installed in the folder, then the project and every
     /// row it owns (Task 4 runs the removal first). Used by Task 20.
     func delete(projectID: Int64) async throws -> ProjectDeleted {

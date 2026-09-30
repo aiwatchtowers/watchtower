@@ -79,6 +79,16 @@ var projectAttachDocCmd = &cobra.Command{
 	RunE: runProjectAttachDoc,
 }
 
+var projectUpdateCmd = &cobra.Command{
+	Use:   "update <id>",
+	Short: "Change a project's settings (board language)",
+	Long: "--board-language sets the language every session writes the board's targets, intents\n" +
+		"and comments in — a name or tag such as Russian or pt-BR; \"\" follows the session\n" +
+		"language again (the default).",
+	Args: cobra.ExactArgs(1),
+	RunE: runProjectUpdate,
+}
+
 var projectDeleteCmd = &cobra.Command{
 	Use:   "delete <id>",
 	Short: "Delete a project, its board, documents and comments, and Watchtower's install in its folder",
@@ -95,6 +105,7 @@ var (
 	projectAttachFlagKind   string
 	projectAttachFlagTitle  string
 	projectAttachFlagTarget int64
+	projectUpdateFlagLang   string
 )
 
 // projectRemoveInstall undoes what `integrate claude-code --project N` put
@@ -110,10 +121,11 @@ func init() {
 	projectAttachDocCmd.Flags().StringVar(&projectAttachFlagKind, "kind", "doc", "spec | plan | doc")
 	projectAttachDocCmd.Flags().StringVar(&projectAttachFlagTitle, "title", "", "display title (default: the file name)")
 	projectAttachDocCmd.Flags().Int64Var(&projectAttachFlagTarget, "target", 0, "the project target the document belongs to")
-	for _, c := range []*cobra.Command{projectCreateCmd, projectListCmd, projectShowCmd, projectBoardCmd, projectImportDocsCmd, projectAttachDocCmd, projectDeleteCmd} {
+	projectUpdateCmd.Flags().StringVar(&projectUpdateFlagLang, "board-language", "", `board language, e.g. Russian or pt-BR; "" = follow the session language`)
+	for _, c := range []*cobra.Command{projectCreateCmd, projectListCmd, projectShowCmd, projectBoardCmd, projectImportDocsCmd, projectAttachDocCmd, projectUpdateCmd, projectDeleteCmd} {
 		c.Flags().BoolVar(&projectFlagJSON, "json", false, "output JSON")
 	}
-	projectCmd.AddCommand(projectCreateCmd, projectListCmd, projectShowCmd, projectBoardCmd, projectImportDocsCmd, projectAttachDocCmd, projectDeleteCmd)
+	projectCmd.AddCommand(projectCreateCmd, projectListCmd, projectShowCmd, projectBoardCmd, projectImportDocsCmd, projectAttachDocCmd, projectUpdateCmd, projectDeleteCmd)
 	rootCmd.AddCommand(projectCmd)
 }
 
@@ -122,8 +134,10 @@ type projectJSON struct {
 	Folder      string `json:"folder"`
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
-	CreatedAt   string `json:"created_at,omitempty"`
-	UpdatedAt   string `json:"updated_at,omitempty"`
+	// BoardLanguage: empty = follow the session language.
+	BoardLanguage string `json:"board_language"`
+	CreatedAt     string `json:"created_at,omitempty"`
+	UpdatedAt     string `json:"updated_at,omitempty"`
 }
 
 type projectSourceJSON struct {
@@ -166,7 +180,7 @@ type boardNodeJSON struct {
 
 func toProjectJSON(p db.Project) projectJSON {
 	return projectJSON{ID: p.ID, Folder: p.FolderPath, Name: p.Name, Description: p.Description,
-		CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt}
+		BoardLanguage: p.BoardLanguage, CreatedAt: p.CreatedAt, UpdatedAt: p.UpdatedAt}
 }
 
 func nullableID(n sql.NullInt64) *int64 {
@@ -460,6 +474,7 @@ func printProjectView(w io.Writer, v projectViewJSON) {
 	if v.Description != "" {
 		fmt.Fprintf(w, "Description: %s\n", v.Description)
 	}
+	fmt.Fprintln(w, tools.BoardLanguageLine(v.BoardLanguage))
 	fmt.Fprintf(w, "Targets: %d in progress, %d in review, %d blocked, %d todo, %d done\n",
 		v.Counts["in_progress"], v.Counts["in_review"], v.Counts["blocked"], v.Counts["todo"], v.Counts["done"])
 	for _, s := range v.Sources {
@@ -468,6 +483,33 @@ func printProjectView(w io.Writer, v projectViewJSON) {
 	for _, d := range v.Documents {
 		fmt.Fprintf(w, "Document #%d [%s] %s %s\n", d.ID, d.Kind, d.RelPath, d.Title)
 	}
+}
+
+func runProjectUpdate(cmd *cobra.Command, args []string) error {
+	id, err := parseProjectID(args[0])
+	if err != nil {
+		return err
+	}
+	if !cmd.Flags().Changed("board-language") {
+		return errors.New("nothing to update: pass --board-language (\"\" follows the session language)")
+	}
+	_, database, err := openJiraCmdDB()
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+	if _, err := database.SetProjectBoardLanguage(id, projectUpdateFlagLang); err != nil {
+		return err
+	}
+	p, err := database.GetProject(id)
+	if err != nil {
+		return err
+	}
+	if projectFlagJSON {
+		return writeJSON(cmd.OutOrStdout(), toProjectJSON(*p))
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Project #%d: %s\n", p.ID, tools.BoardLanguageLine(p.BoardLanguage))
+	return nil
 }
 
 func runProjectBoard(cmd *cobra.Command, args []string) error {

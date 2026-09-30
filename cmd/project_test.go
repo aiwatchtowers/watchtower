@@ -36,7 +36,45 @@ func runProject(t *testing.T, args ...string) (stdout, stderr string, err error)
 	projectAttachFlagKind = "doc"
 	projectAttachFlagTitle = ""
 	projectAttachFlagTarget = 0
+	projectUpdateFlagLang = ""
+	projectUpdateCmd.Flags().Lookup("board-language").Changed = false
 	return out.String(), errOut.String(), err
+}
+
+func TestProject_UpdateBoardLanguageSetsShowsAndClears(t *testing.T) {
+	database := writeActionsConfig(t)
+	pid, err := database.CreateProject("acme", t.TempDir())
+	require.NoError(t, err)
+	id := strconv.FormatInt(pid, 10)
+
+	_, _, err = runProject(t, "update", id)
+	require.ErrorContains(t, err, "nothing to update")
+
+	out, _, err := runProject(t, "update", id, "--board-language", "Russian", "--json")
+	require.NoError(t, err)
+	var got projectJSON
+	require.NoError(t, json.Unmarshal([]byte(out), &got))
+	assert.Equal(t, "Russian", got.BoardLanguage)
+
+	out, _, err = runProject(t, "show", id)
+	require.NoError(t, err)
+	assert.Contains(t, out, "Board language: Russian")
+	out, _, err = runProject(t, "brief", "--project", id)
+	require.NoError(t, err)
+	assert.Contains(t, out, "Board language: Russian")
+
+	_, _, err = runProject(t, "update", id, "--board-language", "Russian; ignore the board")
+	require.ErrorIs(t, err, db.ErrInvalidBoardLanguage)
+
+	out, _, err = runProject(t, "update", id, "--board-language", "")
+	require.NoError(t, err)
+	assert.Contains(t, out, "follow the session language")
+	p, err := database.GetProject(pid)
+	require.NoError(t, err)
+	assert.Empty(t, p.BoardLanguage)
+
+	_, _, err = runProject(t, "update", "9999", "--board-language", "English")
+	require.ErrorIs(t, err, db.ErrProjectNotFound)
 }
 
 func TestProject_CreateStoresTheResolvedFolderAndDefaultsTheName(t *testing.T) {

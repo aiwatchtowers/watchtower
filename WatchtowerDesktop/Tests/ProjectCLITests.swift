@@ -144,4 +144,15 @@ final class ProjectCLITests: XCTestCase {
             XCTAssertTrue(error.localizedDescription.contains("already bound"))
         }
     }
+
+    func testSetBoardLanguagePassesTheValueInOneArgvElementEvenWhenEmpty() async throws {
+        let runner = FakeCLIRunner()
+        let cli = ProjectCLI(runner: runner)
+        try await cli.setBoardLanguage(projectID: 7, language: "Brazilian Portuguese")
+        try await cli.setBoardLanguage(projectID: 7, language: "")
+        XCTAssertEqual(runner.invocations, [
+            ["project", "update", "7", "--board-language=Brazilian Portuguese"],
+            ["project", "update", "7", "--board-language="],
+        ])
+    }
 }

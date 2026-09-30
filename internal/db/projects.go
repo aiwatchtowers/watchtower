@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Project is a folder-bound project (Projects POC, migration 00081). Its
@@ -19,6 +21,9 @@ type Project struct {
 	Description string
 	CreatedAt   string
 	UpdatedAt   string
+	// BoardLanguage is the language the board is written in (00087); empty
+	// means follow the session language. Always NormalizeBoardLanguage'd.
+	BoardLanguage string
 }
 
 // ProjectSource is a source the project's docs name (a channel, a Jira
@@ -58,7 +63,7 @@ var (
 	projectDocumentKinds = map[string]bool{"spec": true, "plan": true, "doc": true}
 )
 
-const projectCols = `id, name, folder_path, description, created_at, updated_at`
+const projectCols = `id, name, folder_path, description, created_at, updated_at, board_language`
 
 // WithTx runs fn in one transaction, committing when it returns nil. fn must
 // use only the *sql.Tx it is given: the pool holds a single connection, so a
@@ -141,7 +146,7 @@ func (db *DB) CreateProject(name, folder string) (int64, error) {
 
 func scanProject(row interface{ Scan(...any) error }) (*Project, error) {
 	var p Project
-	if err := row.Scan(&p.ID, &p.Name, &p.FolderPath, &p.Description, &p.CreatedAt, &p.UpdatedAt); err != nil {
+	if err := row.Scan(&p.ID, &p.Name, &p.FolderPath, &p.Description, &p.CreatedAt, &p.UpdatedAt, &p.BoardLanguage); err != nil {
 		return nil, err
 	}
 	return &p, nil
@@ -185,6 +190,52 @@ func (db *DB) UpdateProjectDescription(id int64, description string) error {
 		return fmt.Errorf("updating project %d: %w", id, err)
 	}
 	return requireAffected(res, fmt.Errorf("project %d: %w", id, ErrProjectNotFound))
+}
+
+// Board language caps: a name ("Brazilian Portuguese") or a tag ("pt-BR"),
+// never a sentence.
+const (
+	maxBoardLanguageRunes = 40
+	maxBoardLanguageWords = 3
+)
+
+// ErrInvalidBoardLanguage is returned for a board language that is not a
+// short language name or tag.
+var ErrInvalidBoardLanguage = errors.New("board language must be a language name or tag such as Russian or pt-BR (letters, spaces and hyphens, at most 3 words and 40 characters)")
+
+// NormalizeBoardLanguage trims s and collapses its inner runs of spaces. Empty
+// (follow the session) is valid; anything else must be letters (any script),
+// spaces and hyphens — no newline or tab — at most maxBoardLanguageWords words
+// and maxBoardLanguageRunes runes: the value is echoed into every session's
+// brief, so it must stay a short name with no punctuation or line break.
+func NormalizeBoardLanguage(s string) (string, error) {
+	s = strings.TrimSpace(s)
+	for _, r := range s {
+		if !unicode.IsLetter(r) && !unicode.IsMark(r) && r != ' ' && r != '-' {
+			return "", ErrInvalidBoardLanguage
+		}
+	}
+	words := strings.Fields(s)
+	s = strings.Join(words, " ")
+	if len(words) > maxBoardLanguageWords || utf8.RuneCountInString(s) > maxBoardLanguageRunes {
+		return "", ErrInvalidBoardLanguage
+	}
+	return s, nil
+}
+
+// SetProjectBoardLanguage sets (or, with an empty value, clears) the project's board
+// language after NormalizeBoardLanguage; it returns the stored value.
+func (db *DB) SetProjectBoardLanguage(id int64, language string) (string, error) {
+	lang, err := NormalizeBoardLanguage(language)
+	if err != nil {
+		return "", err
+	}
+	res, err := db.Exec(`UPDATE projects SET board_language = ?,
+		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`, lang, id)
+	if err != nil {
+		return "", fmt.Errorf("updating project %d: %w", id, err)
+	}
+	return lang, requireAffected(res, fmt.Errorf("project %d: %w", id, ErrProjectNotFound))
 }
 
 // DeleteProject removes the project; the foreign keys cascade to its targets,

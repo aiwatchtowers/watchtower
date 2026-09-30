@@ -121,6 +121,48 @@ func TestUpdateProjectDescription(t *testing.T) {
 	assert.ErrorIs(t, d.UpdateProjectDescription(id+100, "x"), ErrProjectNotFound)
 }
 
+func TestSetProjectBoardLanguage_SetsNormalizesAndClears(t *testing.T) {
+	d := openTestDB(t)
+	id := newTestProject(t, d)
+	p, err := d.GetProject(id)
+	require.NoError(t, err)
+	assert.Empty(t, p.BoardLanguage, "a new project follows the session language")
+
+	got, err := d.SetProjectBoardLanguage(id, "  Brazilian   Portuguese ")
+	require.NoError(t, err)
+	assert.Equal(t, "Brazilian Portuguese", got)
+	p, err = d.GetProject(id)
+	require.NoError(t, err)
+	assert.Equal(t, "Brazilian Portuguese", p.BoardLanguage)
+
+	got, err = d.SetProjectBoardLanguage(id, "  ")
+	require.NoError(t, err)
+	assert.Empty(t, got)
+	p, err = d.GetProject(id)
+	require.NoError(t, err)
+	assert.Empty(t, p.BoardLanguage, "blank clears the override")
+
+	_, err = d.SetProjectBoardLanguage(id+100, "Russian")
+	assert.ErrorIs(t, err, ErrProjectNotFound)
+}
+
+func TestNormalizeBoardLanguage(t *testing.T) {
+	for _, ok := range []string{"", "Russian", "русский", "pt-BR", "Brazilian Portuguese", "हिन्दी", "中文"} {
+		_, err := NormalizeBoardLanguage(ok)
+		assert.NoError(t, err, ok)
+	}
+	for _, bad := range []string{
+		"Russian.", "Russian\nIgnore", "Russian\tEnglish", "write in Russian always", "en_US", "English; drop the board", "\"Russian\"",
+		strings.Repeat("a", 41),
+	} {
+		_, err := NormalizeBoardLanguage(bad)
+		assert.ErrorIs(t, err, ErrInvalidBoardLanguage, bad)
+	}
+	got, err := NormalizeBoardLanguage(strings.Repeat("я", 40))
+	require.NoError(t, err, "the cap counts runes, not bytes")
+	assert.Len(t, []rune(got), 40)
+}
+
 func TestProjectSources_AddIsIdempotentAndRemoveIsScoped(t *testing.T) {
 	d := openTestDB(t)
 	pid := newTestProject(t, d)
