@@ -78,7 +78,7 @@ final class ProjectsViewModelTests: XCTestCase {
         ])
         let vm = makeVM(runner)
         var announced: [Int64] = []
-        vm.onProjectCreated = { announced.append($0.id) }
+        vm.onProjectCreated = { project, installed in if installed { announced.append(project.id) } }
 
         await vm.createProject(folder: URL(fileURLWithPath: "/tmp/acme"), name: nil)
 
@@ -101,17 +101,22 @@ final class ProjectsViewModelTests: XCTestCase {
             .success(Data(#"{"skill":"missing","hook":false,"mcp":false}"#.utf8))
         ])
         let vm = makeVM(runner)
+        var announced: [(Int64, Bool)] = []
+        vm.onProjectCreated = { announced.append(($0.id, $1)) }
         await vm.createProject(folder: URL(fileURLWithPath: "/tmp/acme"), name: nil)
         XCTAssertEqual(vm.selectedProjectID, id)
         XCTAssertTrue(vm.errorMessage?.contains("Repair") == true)
+        XCTAssertTrue(vm.errorMessage?.contains("claude not found") == true, "the install error is shown")
         XCTAssertEqual(vm.installStatus[id]?.needsRepair, true)
+        XCTAssertEqual(announced.map(\.0), [id], "the baseline is still seeded")
+        XCTAssertEqual(announced.map(\.1), [false], "no first-run terminal after a failed install")
     }
 
     func testCreateFailureShowsTheCLIErrorAndAnnouncesNothing() async {
         let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "folder is already bound to a project"))
         let vm = makeVM(runner)
         var announced = false
-        vm.onProjectCreated = { _ in announced = true }
+        vm.onProjectCreated = { _, _ in announced = true }
         await vm.createProject(folder: URL(fileURLWithPath: "/tmp/acme"), name: nil)
         XCTAssertTrue(vm.errorMessage?.contains("already bound") == true)
         XCTAssertNil(vm.selectedProjectID)
@@ -161,6 +166,29 @@ final class ProjectsViewModelTests: XCTestCase {
         XCTAssertTrue(appState.projectsViewModel === vm, "the same AppState-owned VM, not a fresh one")
         XCTAssertEqual(vm.selectedProjectID, id)
         XCTAssertFalse(vm.isCreating)
+    }
+
+    /// AppState wiring: after a failed install the first-run terminal must
+    /// not start (setup would run without the skill/hook/MCP server).
+    func testFailedInstallStartsNoFirstRunTerminal() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("wt-create-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let id = try await pool.write { try TestDatabase.insertProject($0, name: "acme", folder: folder.path) }
+        let runner = ScriptedCLIRunner(results: [
+            .success(createdJSON(id)),
+            .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "claude not found")),
+            .success(Data(#"{"skill":"missing","hook":false,"mcp":false}"#.utf8))
+        ])
+        let appState = AppState()
+        appState.projectTerminalCenter.makeSession = { FakeTerminalSession() }
+        appState.initProjects(dbPool: pool, cliRunner: runner, notifier: RecordingProjectNotifier())
+        let vm = try XCTUnwrap(appState.projectsViewModel)
+
+        await vm.createProject(folder: folder, name: nil)
+
+        XCTAssertEqual(vm.selectedProjectID, id)
+        XCTAssertNil(appState.projectTerminalCenter.states[id], "no terminal after a failed install")
     }
 
     func testNavigateToProjectSetsThePendingRouteAndTheTab() {

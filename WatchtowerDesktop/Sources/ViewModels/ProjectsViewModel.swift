@@ -37,9 +37,11 @@ final class ProjectsViewModel {
     /// switches and tab changes with its watcher running.
     private(set) var documentViewModel: ProjectDocumentViewModel?
 
-    /// A project was created: Task 17 opens its terminal with the first-run
-    /// prompt, Task 18 seeds its notification baseline.
-    var onProjectCreated: ((Project) -> Void)?
+    /// A project was created: Task 18 seeds its notification baseline, and —
+    /// only when `installed` — Task 17 opens its terminal with the first-run
+    /// prompt (after a failed install the setup would run without the skill,
+    /// hook and MCP server it relies on).
+    var onProjectCreated: ((Project, _ installed: Bool) -> Void)?
     /// The owner changed something in a project (a comment, a status): the
     /// notification policy must not report it back (Task 18).
     var onOwnerWrite: ((Int64, ProjectSubject) -> Void)?
@@ -147,7 +149,8 @@ final class ProjectsViewModel {
     }
 
     /// New project… → `project create`, then the folder install. A failed
-    /// install keeps the project (it exists now) and points at Repair.
+    /// install keeps the project (it exists now), shows the install error,
+    /// points at Repair and reports `installed: false` to `onProjectCreated`.
     func createProject(folder: URL, name: String?) async {
         guard !isCreating else { return }
         guard let cli else {
@@ -165,9 +168,11 @@ final class ProjectsViewModel {
             errorMessage = "Could not create the project: \(error.localizedDescription)"
             return
         }
+        var installed = true
         do {
             try await cli.install(projectID: created.id)
         } catch {
+            installed = false
             errorMessage = "The project was created, but installing into the folder failed — use Repair. "
                 + error.localizedDescription
         }
@@ -176,7 +181,7 @@ final class ProjectsViewModel {
         pane = .terminal
         await refreshInstallStatus(projectID: created.id)
         if let project = selectedProject {
-            onProjectCreated?(project)
+            onProjectCreated?(project, installed)
         }
     }
 

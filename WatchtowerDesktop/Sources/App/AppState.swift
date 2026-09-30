@@ -936,9 +936,9 @@ final class AppState {
         let vm = ProjectsViewModel(dbPool: dbPool, cli: cliRunner.map { ProjectCLI(runner: $0) })
         vm.closeTerminal = { [weak self] id in await self?.projectTerminalCenter.close(projectID: id) }
         let notices = ProjectNotificationCenter(dbPool: dbPool, notifier: notifier)
-        vm.onProjectCreated = { [weak self, weak notices] project in
+        vm.onProjectCreated = { [weak self, weak notices] project, installed in
             notices?.seedBaseline(project: project)
-            self?.projectTerminalCenter.start(project: project, firstRun: true)
+            if installed { self?.projectTerminalCenter.start(project: project, firstRun: true) }
         }
         vm.onOwnerWrite = { [weak notices] projectID, subject in
             notices?.recordOwnerWrite(projectID: projectID, subject: subject)
