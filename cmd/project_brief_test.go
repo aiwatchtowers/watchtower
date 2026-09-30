@@ -91,8 +91,8 @@ func TestRenderProjectBrief_OpenTreeInProgressFirstDoneOmitted(t *testing.T) {
 // blocked work before todo whatever its priority, keeping priority order
 // within a status, so a long board's active part is never cut off.
 func TestRenderProjectBrief_ActiveWorkFirstWhateverItsPriority(t *testing.T) {
-	node := func(id int, status, priority string) db.BoardNode {
-		n := briefNode(id, status, fmt.Sprintf("task %d", id))
+	node := func(id int, status, priority string, children ...db.BoardNode) db.BoardNode {
+		n := briefNode(id, status, fmt.Sprintf("task %d", id), children...)
 		n.Target.Priority = priority
 		return n
 	}
@@ -106,6 +106,22 @@ func TestRenderProjectBrief_ActiveWorkFirstWhateverItsPriority(t *testing.T) {
 		order = append(order, i)
 	}
 	assert.IsIncreasing(t, order, "in progress (by priority), then blocked, then todo")
+
+	// A todo feature whose task is in progress ranks as in progress, and so
+	// does a done feature with an open task in progress.
+	board = []db.BoardNode{
+		node(1, "todo", "high"),
+		node(2, "todo", "low", node(3, "in_progress", "medium")),
+		node(4, "done", "low", node(5, "in_progress", "low")),
+	}
+	out = renderProjectBrief(board, briefProject(), nil, nil)
+	order = nil
+	for _, id := range []int{2, 3, 5, 1} {
+		i := strings.Index(out, fmt.Sprintf("#%d [", id))
+		require.NotEqual(t, -1, i, out)
+		order = append(order, i)
+	}
+	assert.IsIncreasing(t, order, "subtrees with work in progress come first")
 
 	long := strings.Repeat("Implement the next part of the plan ", 4)
 	var big []db.BoardNode

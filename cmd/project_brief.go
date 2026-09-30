@@ -34,9 +34,9 @@ var projectBriefCmd = &cobra.Command{
 	Short: "Print a project's brief for Claude Code (the SessionStart hook body)",
 	Long: "Prints at most 4000 characters: target counts, the open part of the board with\n" +
 		"ids, status and priority (in progress and blocked first, then by priority; done omitted),\n" +
-		"comments waiting for the agent, and the\n" +
-		"board rules. Always exits 0 — a hook must never break a session start, so any\n" +
-		"failure (project gone, folder moved, database unreadable) is one line.",
+		"comments waiting for the agent, and the board rules. Always exits 0 — a hook must\n" +
+		"never break a session start, so any failure (project gone, folder moved, database\n" +
+		"unreadable) is one line.",
 	// No root schema/config pre-run: a broken config would otherwise fail the
 	// hook before RunE could turn it into the one-line brief (the
 	// extract-pdf-text precedent). loadProjectBrief loads config itself.
@@ -208,24 +208,34 @@ func briefTargetLines(board []db.BoardNode) []string {
 	return lines
 }
 
-// briefLevel puts in-progress, then blocked work before todo, so the active
-// part of a long board survives the 4000-rune cut. The board sorts siblings
-// by priority first; within a status that priority order is kept.
+// briefLevel puts subtrees holding in-progress, then blocked work before the
+// rest, so the active part of a long board survives the 4000-rune cut. The
+// board sorts siblings by priority first; within a rank that order is kept.
 func briefLevel(level []db.BoardNode) []db.BoardNode {
-	rank := func(n db.BoardNode) int {
+	out := slices.Clone(level)
+	slices.SortStableFunc(out, func(a, b db.BoardNode) int { return cmp.Compare(briefRank(a), briefRank(b)) })
+	return out
+}
+
+// briefRank is the most active open status in n's subtree: 0 in_progress,
+// 1 blocked, 2 todo, 3 nothing open. A todo feature with a task in progress
+// ranks as in progress; a closed target counts only through its children.
+func briefRank(n db.BoardNode) int {
+	rank := 3
+	if !briefClosed(n.Target.Status) {
 		switch n.Target.Status {
 		case "in_progress":
-			return 0
+			rank = 0
 		case "blocked":
-			return 1
-		case "todo":
-			return 2
+			rank = 1
+		default:
+			rank = 2
 		}
-		return 3
 	}
-	out := slices.Clone(level)
-	slices.SortStableFunc(out, func(a, b db.BoardNode) int { return cmp.Compare(rank(a), rank(b)) })
-	return out
+	for _, c := range n.Children {
+		rank = min(rank, briefRank(c))
+	}
+	return rank
 }
 
 func briefTargetLine(n db.BoardNode, depth int) string {
