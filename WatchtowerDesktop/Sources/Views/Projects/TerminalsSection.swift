@@ -17,7 +17,7 @@ struct TerminalsSection: View {
             }
             // Shown on the terminal's own page when one is on screen.
             if vm.selectedStandalone == nil, let error = vm.standaloneSessionError {
-                Text(error).font(.caption).foregroundStyle(.red)
+                Text(error).font(.caption).foregroundStyle(.red).listRowSeparator(.hidden)
             }
         } header: {
             HStack {

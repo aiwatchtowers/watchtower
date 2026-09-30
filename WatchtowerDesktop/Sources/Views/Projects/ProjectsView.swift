@@ -111,11 +111,13 @@ struct ProjectsView: View {
 
     private var projectList: some View {
         VStack(spacing: 0) {
+            projectListHeader
             List(selection: listSelection) {
-                Section("Projects") {
+                Section {
                     ForEach(vm.summaries) { summary in
                         row(summary)
                             .tag(ProjectsPanelItem.project(summary.id))
+                            .listRowSeparator(.hidden)
                             // A click on the already-selected project (after
                             // Back) changes no selection: drill in anyway.
                             .simultaneousGesture(TapGesture().onEnded { vm.drill(into: summary.id) })
@@ -124,25 +126,30 @@ struct ProjectsView: View {
                 TerminalsSection(vm: vm, actions: sessionActions, chooseFolder: chooseTerminalFolder)
             }
             .panelListStyle()
-            Divider()
-            HStack {
-                Button {
-                    chooseFolder()
-                } label: {
-                    Label("New project…", systemImage: "plus")
-                }
-                .disabled(vm.isCreating)
-                if vm.isCreating { ProgressView().controlSize(.small) }
-                Spacer()
-            }
-            .padding(8)
             if let error = vm.errorMessage {
-                Text(error)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .padding([.horizontal, .bottom], 8)
+                Text(error).font(.caption).foregroundStyle(.red).padding(8)
             }
         }
+    }
+
+    /// The chat history's header shape ("Chats" + New Chat).
+    private var projectListHeader: some View {
+        HStack(spacing: 6) {
+            Text("Projects").font(.headline)
+            Spacer(minLength: 4)
+            if vm.isCreating { ProgressView().controlSize(.small) }
+            Button {
+                chooseFolder()
+            } label: {
+                Image(systemName: "plus")
+            }
+            .buttonStyle(.borderless)
+            .disabled(vm.isCreating)
+            .help("New project…")
+            .accessibilityLabel("New project…")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
     }
 
     private var listSelection: Binding<ProjectsPanelItem?> {
