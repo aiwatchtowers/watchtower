@@ -50,6 +50,32 @@ final class ProjectCLITests: XCTestCase {
         XCTAssertTrue(ProjectInstallStatus(skill: "unchanged", hook: false, mcp: true).needsRepair)
     }
 
+    func testSkillUpdatedNeedsRepairAndClaudeFoundDecodes() throws {
+        XCTAssertTrue(ProjectInstallStatus(skill: "updated", hook: true, mcp: true).needsRepair)
+        let json = Data(#"{"skill":"unchanged","hook":true,"mcp":false,"claude_found":false}"#.utf8)
+        let status = try JSONDecoder().decode(ProjectInstallStatus.self, from: json)
+        XCTAssertEqual(status, ProjectInstallStatus(skill: "unchanged", hook: true, mcp: false, claudeFound: false))
+        let legacy = try JSONDecoder().decode(
+            ProjectInstallStatus.self, from: Data(#"{"skill":"unchanged","hook":true,"mcp":true}"#.utf8)
+        )
+        XCTAssertTrue(legacy.claudeFound, "an older CLI without the key could check the registration")
+    }
+
+    /// Without `claude` the MCP registration is unknown and not repairable:
+    /// Repair must not loop on `mcp=false`, but still repairs the rest.
+    func testClaudeNotFoundDoesNotAskForRepairOfMCP() {
+        XCTAssertFalse(ProjectInstallStatus(skill: "unchanged", hook: true, mcp: false, claudeFound: false).needsRepair)
+        XCTAssertTrue(ProjectInstallStatus(skill: "unchanged", hook: false, mcp: false, claudeFound: false).needsRepair)
+        XCTAssertTrue(ProjectInstallStatus(skill: "missing", hook: true, mcp: false, claudeFound: false).needsRepair)
+    }
+
+    func testManualMCPCommandQuotesTheBinaryPath() {
+        XCTAssertEqual(
+            ProjectInstallStatus.manualMCPCommand(projectID: 7, cliPath: "/tmp/acme bin/it's/watchtower"),
+            #"claude mcp add --scope local watchtower-project -- '/tmp/acme bin/it'\''s/watchtower' mcp --project 7"#
+        )
+    }
+
     func testMalformedCreateOutputThrows() async {
         let runner = FakeCLIRunner(stdout: Data("created project 7".utf8))
         do {

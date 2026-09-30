@@ -25,15 +25,50 @@ struct ProjectDeleted: Decodable, Equatable {
 }
 
 /// `watchtower integrate status --project N --json` (Task 12). `skill` is a
-/// devpack state (`installed`, `updated`, `unchanged`, `drifted`, `missing`,
-/// `foreign`); a drifted or foreign skill is the owner's own content (PROJ-04)
-/// and counts as present.
+/// devpack status state: `unchanged` (current), `updated` (an older shipped
+/// version that an install would replace), `missing`, or `drifted`/`foreign`
+/// — the owner's own content (PROJ-04), which counts as present.
+/// `claude_found == false` means the `claude` CLI is not on PATH, so `mcp`
+/// could not be checked and a Repair could not register it either.
 struct ProjectInstallStatus: Decodable, Equatable {
     let skill: String
     let hook: Bool
     let mcp: Bool
+    let claudeFound: Bool
 
-    var needsRepair: Bool { skill == "missing" || !hook || !mcp }
+    enum CodingKeys: String, CodingKey {
+        case skill, hook, mcp
+        case claudeFound = "claude_found"
+    }
+
+    init(skill: String, hook: Bool, mcp: Bool, claudeFound: Bool = true) {
+        self.skill = skill
+        self.hook = hook
+        self.mcp = mcp
+        self.claudeFound = claudeFound
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        skill = try c.decode(String.self, forKey: .skill)
+        hook = try c.decode(Bool.self, forKey: .hook)
+        mcp = try c.decode(Bool.self, forKey: .mcp)
+        // An older CLI without the key could always check the registration.
+        claudeFound = try c.decodeIfPresent(Bool.self, forKey: .claudeFound) ?? true
+    }
+
+    /// Whether Repair can fix something. Without `claude` an unregistered
+    /// MCP server is not repairable from here — see `manualMCPCommand`.
+    var needsRepair: Bool {
+        skill == "missing" || skill == "updated" || !hook || (claudeFound && !mcp)
+    }
+
+    /// The command the owner runs in the project folder once Claude Code is
+    /// installed, mirroring what `integrate claude-code --project` registers.
+    static func manualMCPCommand(projectID: Int64, cliPath: String) -> String {
+        let quoted = "'" + cliPath.replacingOccurrences(of: "'", with: #"'\''"#) + "'"
+        return "claude mcp add --scope local watchtower-project -- \(quoted) mcp --project \(projectID)"
+    }
 }
 
 /// The Projects tab's CLI calls. Everything the Desktop does to the folder or

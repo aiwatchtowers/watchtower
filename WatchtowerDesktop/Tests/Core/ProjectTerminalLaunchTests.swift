@@ -24,4 +24,10 @@ final class ProjectTerminalLaunchTests: XCTestCase {
         XCTAssertEqual(ProjectTerminalLaunch.make(shell: "", folder: "/tmp", firstRun: false).executable, "/bin/zsh")
         XCTAssertEqual(ProjectTerminalLaunch.make(shell: "zsh", folder: "/tmp", firstRun: false).executable, "/bin/zsh")
     }
+
+    func testExitMessageNamesAMissingClaudeForCommandNotFound() {
+        XCTAssertTrue(ProjectTerminalLaunch.exitMessage(code: 127).contains("not found on your login-shell PATH"))
+        XCTAssertEqual(ProjectTerminalLaunch.exitMessage(code: 1), "Claude Code exited (code 1).")
+        XCTAssertEqual(ProjectTerminalLaunch.exitMessage(code: nil), "Claude Code exited.")
+    }
 }

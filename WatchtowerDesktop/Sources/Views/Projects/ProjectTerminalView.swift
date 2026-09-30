@@ -18,7 +18,7 @@ struct ProjectTerminalView: View {
                 host(center)
                 Divider()
                 HStack {
-                    Text(code.map { "Claude Code exited (code \($0))." } ?? "Claude Code exited.")
+                    Text(ProjectTerminalLaunch.exitMessage(code: code))
                         .font(.caption).foregroundStyle(.secondary)
                     Spacer()
                     Button("Restart") { center.start(project: project) }
