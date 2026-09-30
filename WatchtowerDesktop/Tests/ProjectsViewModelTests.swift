@@ -194,6 +194,27 @@ final class ProjectsViewModelTests: XCTestCase {
         XCTAssertEqual(vm.installStatus[1]?.needsRepair, false)
     }
 
+    /// Selecting the new project starts the page's own status read, racing
+    /// `createProject`'s: a later read that still needs repair keeps the note.
+    func testCreateTimeInstallNoteSurvivesTheNextStatusRead() async throws {
+        let id = try await pool.write { try TestDatabase.insertProject($0) }
+        let missing = Data(#"{"skill":"missing","hook":false,"mcp":false}"#.utf8)
+        let runner = ScriptedCLIRunner(results: [
+            .success(createdJSON(id)),
+            .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "claude not found")),
+            .success(missing),
+            .success(missing),
+            .success(Data(#"{"skill":"unchanged","hook":true,"mcp":true}"#.utf8))
+        ])
+        let vm = makeVM(runner)
+        await vm.createProject(folder: URL(fileURLWithPath: "/tmp/acme"), name: nil)
+        await vm.refreshInstallStatus(projectID: id)
+        XCTAssertTrue(vm.installErrors[id]?.contains("claude not found") == true, "the note still explains Repair")
+
+        await vm.refreshInstallStatus(projectID: id)
+        XCTAssertNil(vm.installErrors[id], "a healthy install clears it")
+    }
+
     /// A successful Repair of one project leaves the list-wide line (another
     /// operation's failure) alone.
     func testRepairSuccessLeavesTheListWideErrorAlone() async throws {

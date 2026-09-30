@@ -32,11 +32,18 @@ final class ProjectsViewModel {
     private(set) var repairing: Set<Int64> = []
     var errorMessage: String?
     private(set) var installStatus: [Int64: ProjectInstallStatus] = [:]
-    /// Why installing, reading or repairing a project's install last failed, per project:
-    /// the page shows only its own project's line and the next successful
-    /// status read clears it — never the shared `errorMessage`, where one
-    /// project's failure would outlive a switch to another.
-    private(set) var installErrors: [Int64: String] = [:]
+    /// Why installing or repairing a project's install failed. It explains
+    /// the Repair button, so it stays until a status read finds nothing to
+    /// repair — the page's own `.task` read races `createProject`'s and must
+    /// not wipe it.
+    private var installNotes: [Int64: String] = [:]
+    /// Why the last status read failed; the next successful read clears it.
+    private var statusReadErrors: [Int64: String] = [:]
+    /// The page's error line, per project — never the shared `errorMessage`,
+    /// where one project's failure would outlive a switch to another.
+    var installErrors: [Int64: String] {
+        installNotes.merging(statusReadErrors) { note, read in "\(note) \(read)" }
+    }
     private(set) var documents: [ProjectDocumentListItem] = []
     /// The open document. Kept here (not in the view) so it survives pane
     /// switches and tab changes with its watcher running.
@@ -204,20 +211,18 @@ final class ProjectsViewModel {
             errorMessage = "Could not create the project: \(error.localizedDescription)"
             return
         }
-        var installFailure: String?
+        var installed = true
         do {
             try await cli.install(projectID: created.id)
         } catch {
-            installFailure = "The project was created, but installing into the folder failed — use Repair. "
+            installed = false
+            installNotes[created.id] = "The project was created, but installing into the folder failed — use Repair. "
                 + error.localizedDescription
         }
         await reload()
         selectedProjectID = created.id
         pane = .terminal
         await refreshInstallStatus(projectID: created.id)
-        // Set after the status read, whose success would otherwise clear it.
-        if let installFailure { installErrors[created.id] = installFailure }
-        let installed = installFailure == nil
         if let project = selectedProject {
             onProjectCreated?(project, installed)
         }
@@ -233,13 +238,14 @@ final class ProjectsViewModel {
         do {
             let status = try await cli.status(projectID: projectID)
             installStatus[projectID] = status
-            installErrors[projectID] = nil
+            statusReadErrors[projectID] = nil
+            if !status.needsRepair { installNotes[projectID] = nil }
         } catch {
             // The process runner terminates the child on cancel, which can
             // surface as a non-zero exit rather than CancellationError.
             if error is CancellationError || Task.isCancelled { return }
             // The last known status stays, so its Repair button stays too.
-            installErrors[projectID] = "Could not read the install status: \(error.localizedDescription)"
+            statusReadErrors[projectID] = "Could not read the install status: \(error.localizedDescription)"
         }
     }
 
@@ -247,15 +253,13 @@ final class ProjectsViewModel {
         guard let cli, !repairing.contains(projectID) else { return }
         repairing.insert(projectID)
         defer { repairing.remove(projectID) }
-        var failure: String?
+        installNotes[projectID] = nil
         do {
             try await cli.install(projectID: projectID)
         } catch {
-            failure = "Repair failed: \(error.localizedDescription)"
+            installNotes[projectID] = "Repair failed: \(error.localizedDescription)"
         }
         await refreshInstallStatus(projectID: projectID)
-        // Set after the status read, whose success would otherwise clear it.
-        if let failure { installErrors[projectID] = failure }
     }
 
     func loadDocuments() async {
