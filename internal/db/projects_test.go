@@ -243,6 +243,8 @@ func TestProj02_DeleteProjectLeavesNoRows(t *testing.T) {
 func TestProj02_DeletedProjectDocumentAndCommentIDsAreNeverReused(t *testing.T) {
 	d := openTestDB(t)
 	pid := newTestProject(t, d)
+	sourceID, err := d.AddProjectSource(ProjectSource{ProjectID: pid, Kind: "link", Ref: "https://example.com"})
+	require.NoError(t, err)
 	docID, _, err := d.UpsertProjectDocument(ProjectDocument{ProjectID: pid, RelPath: "docs/spec.md", Kind: "spec"})
 	require.NoError(t, err)
 	target := insertProjectTargetRow(t, d, pid, "feature")
@@ -262,6 +264,11 @@ func TestProj02_DeletedProjectDocumentAndCommentIDsAreNeverReused(t *testing.T) 
 	newCommentID, err := d.AddProjectComment(ProjectComment{ProjectID: newPID, TargetID: nullID(newTarget), Author: "owner", Body: "why?"})
 	require.NoError(t, err)
 	assert.Greater(t, newCommentID, commentID, "a new comment must never reuse a deleted one's id")
+
+	// add_project_source/remove_project_source round-trip source_id too.
+	newSourceID, err := d.AddProjectSource(ProjectSource{ProjectID: newPID, Kind: "link", Ref: "https://example.com"})
+	require.NoError(t, err)
+	assert.Greater(t, newSourceID, sourceID, "a new source must never reuse a deleted one's id")
 }
 
 // A project folder is never the filesystem root, the home directory or an
