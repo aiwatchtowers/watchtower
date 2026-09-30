@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import CryptoKit
+import Security
 import WatchtowerCore
 
 /// Handles checking for updates via GitHub Releases API, downloading, and installing.
@@ -14,6 +15,9 @@ final class UpdateService {
         case downloading(progress: Double)
         case readyToInstall(appPath: URL)
         case installing
+        /// The bundle was replaced but the app did not quit (the quit was
+        /// cancelled or is stuck): a manual restart finishes the update.
+        case restartRequired
         case error(String)
     }
 
@@ -297,79 +301,238 @@ final class UpdateService {
 
     // MARK: - Install
 
-    func install(daemonManager: DaemonManager) async {
-        guard case .readyToInstall(let newAppPath) = state else { return }
+    /// How the install ended, before the relaunch. Split out of `install()` so
+    /// the failure mapping is pinned by tests without touching a real bundle.
+    enum InstallOutcome: Equatable {
+        case installed
+        case failed(String)
+    }
 
-        // Pin the replacement build's signature check to the Team ID of the
-        // app that's currently running. Without this, the helper script's
-        // `codesign --verify` only checks that *some* signature is valid —
-        // an ad-hoc or third-party signed .app (e.g. a compromised download)
-        // would pass just as well. Fail closed: if we can't determine our
-        // own Team ID (ad-hoc-signed build), refuse to install rather than
-        // falling back to a signature check with no identity pinning.
-        guard let teamID = Self.currentTeamIdentifier() else {
-            state = .error("Update aborted: could not determine the running app's Team ID (ad-hoc-signed build). "
-                + "Refusing to install an update that can't be verified against a known signer.")
-            return
+    /// The side-effecting steps of an install, injectable for tests. `live`
+    /// is the only production value.
+    struct InstallSteps {
+        /// Move the downloaded app next to the current one (same volume, so
+        /// the swap is a rename); returns the staged app's URL.
+        var stage: (_ newApp: URL, _ currentApp: URL) throws -> URL
+        /// Throws when the staged app's signature is invalid or not ours.
+        var verify: (_ app: URL, _ teamID: String) throws -> Void
+        var stopDaemon: () async -> Void
+        /// Atomically swap the staged app in for the current one.
+        var replace: (_ currentApp: URL, _ stagedApp: URL) throws -> Void
+        /// Best-effort removal of whatever is left of the staged app.
+        var discard: (_ stagedApp: URL) -> Void
+
+        static var live: InstallSteps {
+            InstallSteps(
+                stage: { try UpdateService.stageForReplacement(newApp: $0, currentApp: $1) },
+                verify: { try UpdateService.verifySignature(of: $0, teamID: $1) },
+                stopDaemon: { await DaemonManager.stopDaemonBounded() },
+                replace: { current, staged in
+                    _ = try FileManager.default.replaceItemAt(current, withItemAt: staged, backupItemName: nil, options: [])
+                },
+                // The staged app sits alone in its item-replacement directory.
+                discard: { try? FileManager.default.removeItem(at: $0.deletingLastPathComponent()) }
+            )
         }
+    }
 
-        state = .installing
-
-        // 1. Stop daemon
-        await daemonManager.stopDaemon()
-
-        // 2. Determine current app location
-        guard let currentAppPath = Self.currentAppBundlePath() else {
+    /// Replace the running app's bundle with the downloaded one, entirely
+    /// in-process. The old flow handed the swap to a `/bin/sh` script that ran
+    /// after Watchtower exited; macOS App Management then saw an unrelated
+    /// process modifying an app bundle, blocked it with a TCC prompt, and the
+    /// UI sat on "Installing…" forever. Done here, the modifier is Watchtower
+    /// itself — signed by the same Team ID as the bundle it replaces — which
+    /// App Management allows. Every failure lands in `.error` and leaves the
+    /// current app untouched.
+    func install() async {
+        guard case .readyToInstall(let newAppPath) = state else { return }
+        guard let currentApp = Self.currentAppBundleURL() else {
             state = .error("Cannot determine current app location")
             return
         }
 
-        // 3. Generate and run helper script
-        let script = Self.generateHelperScript(
-            currentAppPath: currentAppPath,
-            newAppPath: newAppPath.path,
-            pid: ProcessInfo.processInfo.processIdentifier,
-            teamID: teamID
+        state = .installing
+        let outcome = await Self.performInstall(
+            newApp: newAppPath,
+            currentApp: currentApp,
+            teamID: Self.currentTeamIdentifier(),
+            steps: .live
         )
-
-        let scriptPath = Self.cacheDir.appendingPathComponent("update.sh")
-        do {
-            try script.write(to: scriptPath, atomically: true, encoding: .utf8)
-            try FileManager.default.setAttributes(
-                [.posixPermissions: 0o755],
-                ofItemAtPath: scriptPath.path
-            )
-        } catch {
-            state = .error("Failed to write update script: \(error.localizedDescription)")
+        guard outcome == .installed else {
+            if case .failed(let message) = outcome { state = .error(message) }
             return
         }
+        try? FileManager.default.removeItem(at: Self.cacheDir)
+        await relaunch()
+    }
 
-        // 4. Launch helper script and exit
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = [scriptPath.path]
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        // Detach from parent process group so it survives our exit
-        process.qualityOfService = .userInitiated
-        do {
-            try process.run()
-        } catch {
-            state = .error("Failed to launch updater: \(error.localizedDescription)")
+    /// Relaunch into the freshly installed bundle: a detached waiter reopens
+    /// the app once this process has exited, then the app quits through the
+    /// normal quit path. The quit can be refused (the recording-in-progress
+    /// confirmation) — past `quitGrace` the bundle is already replaced, so the
+    /// UI says so instead of spinning on "Installing…".
+    func relaunch() async {
+        guard let currentApp = Self.currentAppBundleURL() else {
+            state = .restartRequired
             return
         }
+        do {
+            try Self.spawnRelaunchWaiter(pid: ProcessInfo.processInfo.processIdentifier, appPath: currentApp.path)
+        } catch {
+            NSLog("UpdateService: could not start the relaunch waiter: %@", error.localizedDescription)
+            state = .restartRequired
+            return
+        }
+        state = .installing
+        TrayAppDelegate.requestQuit()
+        try? await Task.sleep(for: Self.quitGrace)
+        // Still alive: the quit was cancelled or is still stuck.
+        state = .restartRequired
+    }
 
-        // 5. Quit the app — the helper script takes over
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            NSApplication.shared.terminate(nil)
+    /// How long `relaunch` waits for the app to actually quit before telling
+    /// the user to restart by hand. Covers the quit path's own bounded work
+    /// (chat sessions, terminals, the 12 s daemon stop).
+    nonisolated static let quitGrace: Duration = .seconds(30)
+
+    /// How long the relaunch waiter keeps waiting for this process to exit
+    /// (in 0.2 s ticks). Bounded so a quit the user cancelled does not
+    /// reopen the app out of the blue hours later.
+    nonisolated static let relaunchWaiterTicks = 600
+
+    /// The install sequence over injectable steps: pin the signer, stage,
+    /// verify, stop the daemon, swap. Nothing destructive happens before the
+    /// staged app has passed verification, and a failure at any step leaves
+    /// the current bundle as it was.
+    static func performInstall(
+        newApp: URL,
+        currentApp: URL,
+        teamID: String?,
+        steps: InstallSteps
+    ) async -> InstallOutcome {
+        // Pin the replacement's signature to the Team ID of the running app.
+        // Without it, verification only proves that *some* signature is valid
+        // — an ad-hoc or third-party signed download would pass too. Fail
+        // closed: no Team ID (ad-hoc-signed build) → refuse.
+        guard let teamID = validTeamIdentifier(teamID) else {
+            return .failed("Update aborted: could not determine the running app's Team ID (ad-hoc-signed build). "
+                + "Refusing to install an update that can't be verified against a known signer.")
+        }
+
+        let staged: URL
+        do {
+            staged = try steps.stage(newApp, currentApp)
+        } catch {
+            return .failed("Could not prepare the update: \(error.localizedDescription)")
+        }
+
+        do {
+            try steps.verify(staged, teamID)
+        } catch {
+            steps.discard(staged)
+            return .failed("Update aborted: \(error.localizedDescription)")
+        }
+
+        await steps.stopDaemon()
+
+        do {
+            try steps.replace(currentApp, staged)
+        } catch {
+            steps.discard(staged)
+            return .failed("Could not replace the app: \(error.localizedDescription)")
+        }
+        steps.discard(staged)
+        return .installed
+    }
+
+    /// Move the downloaded app into an item-replacement directory on the
+    /// current bundle's volume (so `replaceItemAt` is a same-volume swap) and
+    /// strip its download quarantine. Returns the staged app's URL.
+    nonisolated static func stageForReplacement(newApp: URL, currentApp: URL) throws -> URL {
+        let fm = FileManager.default
+        let dir = try fm.url(for: .itemReplacementDirectory, in: .userDomainMask,
+                             appropriateFor: currentApp, create: true)
+        let staged = dir.appendingPathComponent(currentApp.lastPathComponent, isDirectory: true)
+        do {
+            try fm.moveItem(at: newApp, to: staged)
+        } catch {
+            try? fm.removeItem(at: dir)
+            throw error
+        }
+        stripQuarantine(at: staged)
+        return staged
+    }
+
+    /// Recursively remove `com.apple.quarantine` (what the old script's
+    /// `xattr -dr` did). Best-effort: a file without the attribute is the
+    /// normal case, and a leftover attribute only costs a Gatekeeper check.
+    nonisolated static func stripQuarantine(at root: URL) {
+        let name = "com.apple.quarantine"
+        let remove: (URL) -> Void = { url in
+            _ = url.withUnsafeFileSystemRepresentation { path in
+                path.map { removexattr($0, name, XATTR_NOFOLLOW) }
+            }
+        }
+        remove(root)
+        guard let walker = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil) else { return }
+        for case let url as URL in walker { remove(url) }
+    }
+
+    /// Code-signing checks for the replacement bundle — the in-process
+    /// equivalent of `codesign --verify --deep --strict`.
+    nonisolated static let signatureValidationFlags = SecCSFlags(
+        rawValue: kSecCSCheckAllArchitectures | kSecCSStrictValidate | kSecCSCheckNestedCode
+    )
+
+    struct SignatureError: LocalizedError, Equatable {
+        let step: String
+        let status: OSStatus
+        var errorDescription: String? {
+            "code signature check failed (\(step), OSStatus \(status)) — invalid signature or a different signer"
         }
     }
 
-    // MARK: - Helper Script
+    /// Throws unless `app` carries a valid signature satisfying the Team-ID
+    /// designated requirement for `teamID`.
+    nonisolated static func verifySignature(of app: URL, teamID: String) throws {
+        var requirement: SecRequirement?
+        let reqStatus = SecRequirementCreateWithString(designatedRequirement(forTeamID: teamID) as CFString, [], &requirement)
+        guard reqStatus == errSecSuccess, let requirement else {
+            throw SignatureError(step: "requirement", status: reqStatus)
+        }
+        var staticCode: SecStaticCode?
+        let codeStatus = SecStaticCodeCreateWithPath(app as CFURL, [], &staticCode)
+        guard codeStatus == errSecSuccess, let staticCode else {
+            throw SignatureError(step: "read", status: codeStatus)
+        }
+        let status = SecStaticCodeCheckValidity(staticCode, signatureValidationFlags, requirement)
+        guard status == errSecSuccess else { throw SignatureError(step: "validate", status: status) }
+    }
+
+    /// Detached waiter that reopens the app once `pid` has exited. It only
+    /// runs `open` — it never touches files, so no App Management prompt.
+    nonisolated static func spawnRelaunchWaiter(pid: pid_t, appPath: String) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = relaunchWaiterArguments(pid: pid, appPath: appPath)
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+    }
+
+    /// `/bin/sh` arguments for the relaunch waiter: poll for `pid`'s exit (at
+    /// most `relaunchWaiterTicks` × 0.2 s), then `open` the app.
+    nonisolated static func relaunchWaiterArguments(pid: pid_t, appPath: String) -> [String] {
+        let script = "i=0; while kill -0 \(pid) 2>/dev/null; do "
+            + "i=$((i+1)); [ \"$i\" -ge \(relaunchWaiterTicks) ] && exit 0; sleep 0.2; done; "
+            + "/usr/bin/open \"\(shellEscape(appPath))\""
+        return ["-c", script]
+    }
 
     /// Escape a string for safe use inside double-quoted shell strings.
     /// Only the four characters special inside double quotes need escaping: " \ ` $
-    private static func shellEscape(_ s: String) -> String {
+    nonisolated static func shellEscape(_ s: String) -> String {
         var result = ""
         for ch in s {
             switch ch {
@@ -383,105 +546,34 @@ final class UpdateService {
         return result
     }
 
-    private static func generateHelperScript(currentAppPath: String, newAppPath: String, pid: pid_t, teamID: String) -> String {
-        // C1 fix: escape paths for safe shell interpolation
-        let escapedCurrent = shellEscape(currentAppPath)
-        let escapedNew = shellEscape(newAppPath)
-        let escapedCache = shellEscape(Self.cacheDir.path)
-        // Team ID is validated by parseTeamIdentifier (10 alphanumeric chars),
-        // so it's safe to embed directly without shellEscape.
-        let requirement = designatedRequirement(forTeamID: teamID)
-        return """
-        #!/bin/sh
-        # Watchtower auto-update helper script
-        # Wait for the app to exit
-        while kill -0 \(pid) 2>/dev/null; do
-            sleep 0.5
-        done
-
-        # Small extra delay to ensure file handles are released
-        sleep 1
-
-        # Verify codesign on the new app before replacing: signature must be
-        # valid AND signed by the same Team ID as the currently running app.
-        # A valid-but-unrelated (e.g. ad-hoc) signature is rejected.
-        if ! /usr/bin/codesign --verify --deep --strict -R='\(requirement)' "\(escapedNew)" 2>/dev/null; then
-            echo "ERROR: Code signature verification failed (invalid signature or Team ID mismatch). Aborting update." >&2
-            exit 1
-        fi
-
-        # Remove old app
-        rm -rf "\(escapedCurrent)"
-
-        # Move new app into place
-        mv "\(escapedNew)" "\(escapedCurrent)"
-
-        # Clear quarantine attribute (downloaded file)
-        xattr -dr com.apple.quarantine "\(escapedCurrent)" 2>/dev/null
-
-        # Relaunch
-        open "\(escapedCurrent)"
-
-        # Cleanup
-        rm -rf "\(escapedCache)"
-        """
-    }
-
     // MARK: - Helpers
 
-    private static func currentAppBundlePath() -> String? {
+    private static func currentAppBundleURL() -> URL? {
         // Bundle.main.bundleURL points to Watchtower.app/
         let bundleURL = Bundle.main.bundleURL
         guard bundleURL.pathExtension == "app" else { return nil }
-        return bundleURL.path
+        return bundleURL
     }
 
-    /// Extract the Team Identifier from `codesign -dv --verbose=4` output
-    /// (that command writes its report to stderr). Returns nil if there is
-    /// no team identifier — ad-hoc signed or unsigned builds report
-    /// `TeamIdentifier=not set`, and we treat that the same as absent.
-    nonisolated static func parseTeamIdentifier(from codesignOutput: String) -> String? {
-        for line in codesignOutput.split(whereSeparator: \.isNewline) {
-            guard line.hasPrefix("TeamIdentifier=") else { continue }
-            let value = line.dropFirst("TeamIdentifier=".count).trimmingCharacters(in: .whitespaces)
-            // Apple Team IDs are exactly 10 alphanumeric characters. Reject
-            // anything else (including "not set") so we never embed
-            // unexpected characters into a shell command downstream.
-            guard value.range(of: "^[A-Za-z0-9]{10}$", options: .regularExpression) != nil else { return nil }
-            return value
-        }
-        return nil
+    /// A Team ID usable in a designated requirement: exactly 10 alphanumeric
+    /// characters (Apple's format). Anything else — nil, empty, "not set",
+    /// stray quotes — is rejected, so no unexpected character ever reaches
+    /// the requirement string.
+    nonisolated static func validTeamIdentifier(_ value: String?) -> String? {
+        guard let value, value.range(of: "^[A-Za-z0-9]{10}$", options: .regularExpression) != nil else { return nil }
+        return value
     }
 
-    /// Build a codesign designated-requirement string pinning verification
-    /// to a specific Team ID.
+    /// Build a code-signing designated-requirement string pinning
+    /// verification to a specific Team ID.
     nonisolated static func designatedRequirement(forTeamID teamID: String) -> String {
         "anchor apple generic and certificate leaf[subject.OU] = \"\(teamID)\""
     }
 
-    /// Team ID of the currently running app bundle, read from its own code
+    /// Team ID of the running app, read in-process from its own code
     /// signature. Nil for ad-hoc-signed builds with no Team ID.
     private static func currentTeamIdentifier() -> String? {
-        guard let bundlePath = currentAppBundlePath() else { return nil }
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
-        process.arguments = ["-dv", "--verbose=4", bundlePath]
-        let stderrPipe = Pipe()
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = stderrPipe
-
-        do {
-            try process.run()
-        } catch {
-            return nil
-        }
-        let data = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0, let output = String(data: data, encoding: .utf8) else {
-            return nil
-        }
-        return parseTeamIdentifier(from: output)
+        CLIBinaryStore.runningTeamIdentifier()
     }
 
     private func fetchLatestRelease() async throws -> GitHubRelease {

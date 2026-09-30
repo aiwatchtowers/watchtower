@@ -103,7 +103,7 @@ package enum CLIBinaryStore {
     /// Team Identifier of the currently running code, read in-process from its
     /// own signature (no `codesign` subprocess — this sits on a hot path). Nil
     /// for ad-hoc/unsigned builds, which fail the signature gate safely.
-    nonisolated static func runningTeamIdentifier() -> String? {
+    package nonisolated static func runningTeamIdentifier() -> String? {
         var code: SecCode?
         guard SecCodeCopySelf([], &code) == errSecSuccess, let code else { return nil }
         var staticCode: SecStaticCode?

@@ -1,4 +1,5 @@
 import Foundation
+import Security
 import Testing
 @testable import WatchtowerDesktop
 
@@ -127,48 +128,20 @@ struct UpdateServicePureTests {
         #expect(req == "anchor apple generic and certificate leaf[subject.OU] = \"ABCDE12345\"")
     }
 
-    @Test("parseTeamIdentifier extracts a valid Team ID from codesign -dv output")
-    func parseTeamIdentifierValid() {
-        let output = """
-        Executable=/Applications/Watchtower.app/Contents/MacOS/Watchtower
-        Identifier=com.watchtower.desktop
-        Format=app bundle with Mach-O universal (x86_64 arm64)
-        CodeDirectory v=20500 size=1234 flags=0x10000(runtime) hashes=1+7 location=embedded
-        Signature size=4681
-        Authority=Apple Development: Someone (ABCDE12345)
-        Authority=Apple Worldwide Developer Relations Certification Authority
-        Authority=Apple Root CA
-        TeamIdentifier=ABCDE12345
-        Sealed Resources version=2 rules=13 files=42
-        Internal requirements count=1 size=180
-        """
-        #expect(UpdateService.parseTeamIdentifier(from: output) == "ABCDE12345")
+    @Test("validTeamIdentifier accepts exactly ten alphanumerics")
+    func validTeamIdentifierAccepts() {
+        #expect(UpdateService.validTeamIdentifier("ABCDE12345") == "ABCDE12345")
     }
 
-    @Test("parseTeamIdentifier returns nil when Team ID is not set (ad-hoc signature)")
-    func parseTeamIdentifierNotSet() {
-        let output = """
-        Executable=/Applications/Watchtower.app/Contents/MacOS/Watchtower
-        Identifier=com.watchtower.desktop
-        Format=app bundle with Mach-O universal (x86_64 arm64)
-        Signature=adhoc
-        TeamIdentifier=not set
-        """
-        #expect(UpdateService.parseTeamIdentifier(from: output) == nil)
-    }
-
-    @Test("parseTeamIdentifier returns nil when there is no TeamIdentifier line at all")
-    func parseTeamIdentifierMissing() {
-        let output = "Executable=/tmp/x\nIdentifier=com.example\n"
-        #expect(UpdateService.parseTeamIdentifier(from: output) == nil)
-    }
-
-    @Test("parseTeamIdentifier rejects malformed values instead of passing them through")
-    func parseTeamIdentifierMalformed() {
-        // Guards against embedding unexpected characters into a shell command.
-        #expect(UpdateService.parseTeamIdentifier(from: "TeamIdentifier=abc\n") == nil)
-        #expect(UpdateService.parseTeamIdentifier(from: "TeamIdentifier=ABCDE123456\n") == nil)
-        #expect(UpdateService.parseTeamIdentifier(from: "TeamIdentifier=ABCDE\"1234\n") == nil)
+    @Test("validTeamIdentifier rejects absent, unset and malformed values")
+    func validTeamIdentifierRejects() {
+        // Guards against embedding unexpected characters into the requirement.
+        #expect(UpdateService.validTeamIdentifier(nil) == nil)
+        #expect(UpdateService.validTeamIdentifier("") == nil)
+        #expect(UpdateService.validTeamIdentifier("not set") == nil)
+        #expect(UpdateService.validTeamIdentifier("abc") == nil)
+        #expect(UpdateService.validTeamIdentifier("ABCDE123456") == nil)
+        #expect(UpdateService.validTeamIdentifier("ABCDE\"1234") == nil)
     }
 }
 
@@ -292,5 +265,224 @@ struct UpdateChannelTests {
         }
         await svc.checkForUpdates()
         await MainActor.run { #expect(svc.state == .idle) }
+    }
+}
+
+/// Records the order of install steps; each step can be made to fail.
+@MainActor
+private final class InstallRecorder {
+    var calls: [String] = []
+    var failStage = false
+    var failVerify = false
+    var failReplace = false
+    var verifiedTeamID: String?
+
+    struct Boom: LocalizedError {
+        let what: String
+        var errorDescription: String? { "\(what) boom" }
+    }
+
+    var steps: UpdateService.InstallSteps {
+        UpdateService.InstallSteps(
+            stage: { [unowned self] _, _ in
+                calls.append("stage")
+                if failStage { throw Boom(what: "stage") }
+                return URL(fileURLWithPath: "/staged/Watchtower.app")
+            },
+            verify: { [unowned self] _, team in
+                calls.append("verify")
+                verifiedTeamID = team
+                if failVerify { throw Boom(what: "verify") }
+            },
+            stopDaemon: { [unowned self] in calls.append("stopDaemon") },
+            replace: { [unowned self] _, _ in
+                calls.append("replace")
+                if failReplace { throw Boom(what: "replace") }
+            },
+            discard: { [unowned self] _ in calls.append("discard") }
+        )
+    }
+}
+
+@Suite("UpdateService In-Process Install")
+@MainActor
+struct UpdateServiceInstallTests {
+    private let newApp = URL(fileURLWithPath: "/downloads/Watchtower.app")
+    private let currentApp = URL(fileURLWithPath: "/Applications/Watchtower.app")
+
+    private func run(_ rec: InstallRecorder, teamID: String? = "ABCDE12345") async -> UpdateService.InstallOutcome {
+        await UpdateService.performInstall(newApp: newApp, currentApp: currentApp, teamID: teamID, steps: rec.steps)
+    }
+
+    @Test("happy path: stage, verify against our Team ID, stop daemon, swap")
+    func happyPath() async {
+        let rec = InstallRecorder()
+        #expect(await run(rec) == .installed)
+        #expect(rec.calls == ["stage", "verify", "stopDaemon", "replace", "discard"])
+        #expect(rec.verifiedTeamID == "ABCDE12345")
+    }
+
+    @Test("no Team ID for the running app refuses before touching anything")
+    func noTeamIDFailsClosed() async {
+        let rec = InstallRecorder()
+        let outcome = await run(rec, teamID: nil)
+        guard case .failed(let message) = outcome else { Issue.record("expected failure"); return }
+        #expect(message.contains("Team ID"))
+        #expect(rec.calls.isEmpty)
+    }
+
+    @Test("malformed Team ID is treated as no Team ID")
+    func malformedTeamIDFailsClosed() async {
+        let rec = InstallRecorder()
+        #expect(await run(rec, teamID: "not set") != .installed)
+        #expect(rec.calls.isEmpty)
+    }
+
+    @Test("staging failure surfaces an error and stops nothing")
+    func stageFailure() async {
+        let rec = InstallRecorder()
+        rec.failStage = true
+        let outcome = await run(rec)
+        guard case .failed(let message) = outcome else { Issue.record("expected failure"); return }
+        #expect(message.contains("stage boom"))
+        #expect(rec.calls == ["stage"])
+    }
+
+    @Test("signature failure discards the staged app and never stops the daemon or swaps")
+    func verifyFailure() async {
+        let rec = InstallRecorder()
+        rec.failVerify = true
+        let outcome = await run(rec)
+        guard case .failed(let message) = outcome else { Issue.record("expected failure"); return }
+        #expect(message.contains("verify boom"))
+        #expect(rec.calls == ["stage", "verify", "discard"])
+    }
+
+    @Test("swap failure surfaces an error and discards the staged app")
+    func replaceFailure() async {
+        let rec = InstallRecorder()
+        rec.failReplace = true
+        let outcome = await run(rec)
+        guard case .failed(let message) = outcome else { Issue.record("expected failure"); return }
+        #expect(message.contains("replace boom"))
+        #expect(rec.calls == ["stage", "verify", "stopDaemon", "replace", "discard"])
+    }
+
+    @Test("install outside a ready state is a no-op")
+    func installRequiresReadyState() async {
+        let svc = UpdateService()
+        svc.state = .idle
+        await svc.install()
+        #expect(svc.state == .idle)
+    }
+}
+
+@Suite("UpdateService Install Mechanics")
+struct UpdateServiceInstallMechanicsTests {
+    private static let quarantine = "com.apple.quarantine"
+
+    private func makeTempDir() throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wt-update-test-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    private func makeApp(at url: URL, marker: String) throws {
+        let contents = url.appendingPathComponent("Contents", isDirectory: true)
+        try FileManager.default.createDirectory(at: contents, withIntermediateDirectories: true)
+        try Data(marker.utf8).write(to: contents.appendingPathComponent("marker"))
+    }
+
+    private func setQuarantine(_ url: URL) {
+        let value = Array("0081;00000000;Test;".utf8)
+        let status = url.withUnsafeFileSystemRepresentation { path in
+            setxattr(path!, Self.quarantine, value, value.count, 0, XATTR_NOFOLLOW)
+        }
+        #expect(status == 0)
+    }
+
+    private func hasQuarantine(_ url: URL) -> Bool {
+        url.withUnsafeFileSystemRepresentation { path in
+            getxattr(path!, Self.quarantine, nil, 0, 0, XATTR_NOFOLLOW) >= 0
+        }
+    }
+
+    @Test("stage + swap replaces the bundle in place and strips quarantine")
+    func stageAndSwap() throws {
+        let root = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let current = root.appendingPathComponent("installed/Watchtower.app", isDirectory: true)
+        let download = root.appendingPathComponent("download/Watchtower.app", isDirectory: true)
+        try makeApp(at: current, marker: "old")
+        try makeApp(at: download, marker: "new")
+        setQuarantine(download)
+        setQuarantine(download.appendingPathComponent("Contents/marker"))
+        #expect(hasQuarantine(download))
+
+        let staged = try UpdateService.stageForReplacement(newApp: download, currentApp: current)
+        #expect(!FileManager.default.fileExists(atPath: download.path))
+        #expect(!hasQuarantine(staged))
+        #expect(!hasQuarantine(staged.appendingPathComponent("Contents/marker")))
+
+        let steps = UpdateService.InstallSteps.live
+        try steps.replace(current, staged)
+        steps.discard(staged)
+
+        let marker = try String(contentsOf: current.appendingPathComponent("Contents/marker"), encoding: .utf8)
+        #expect(marker == "new")
+        #expect(!FileManager.default.fileExists(atPath: staged.deletingLastPathComponent().path))
+    }
+
+    @Test("an unsigned bundle fails signature verification")
+    func unsignedBundleFailsVerify() throws {
+        let root = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let app = root.appendingPathComponent("Watchtower.app", isDirectory: true)
+        try makeApp(at: app, marker: "x")
+        #expect(throws: UpdateService.SignatureError.self) {
+            try UpdateService.verifySignature(of: app, teamID: "ABCDE12345")
+        }
+    }
+
+    @Test("signature validation uses the strict, deep, all-architectures flags")
+    func validationFlags() {
+        let flags = UpdateService.signatureValidationFlags.rawValue
+        #expect(flags & kSecCSCheckAllArchitectures != 0)
+        #expect(flags & kSecCSStrictValidate != 0)
+        #expect(flags & kSecCSCheckNestedCode != 0)
+    }
+
+    @Test("relaunch waiter only waits and opens, with the path shell-escaped")
+    func waiterArguments() {
+        let args = UpdateService.relaunchWaiterArguments(pid: 4242, appPath: #"/Apps/We"ird $App`.app"#)
+        #expect(args.count == 2)
+        #expect(args[0] == "-c")
+        let script = args[1]
+        #expect(script.contains("kill -0 4242"))
+        #expect(script.contains("-ge \(UpdateService.relaunchWaiterTicks) ]"))
+        #expect(script.hasSuffix(#"/usr/bin/open "/Apps/We\"ird \$App\`.app""#))
+        // Never touches files: the waiter only waits and opens.
+        for forbidden in ["rm ", "mv ", "cp ", "xattr", "codesign"] {
+            #expect(!script.contains(forbidden))
+        }
+    }
+
+    @Test("relaunch waiter script is valid sh and reaches open once the pid is gone")
+    func waiterRunsToOpenOnDeadPid() throws {
+        // `open` swapped for `echo` so the test launches nothing; the pid never exists.
+        let args = UpdateService.relaunchWaiterArguments(pid: 0x7fff_fffe, appPath: "/nonexistent/X.app")
+        let script = args[1].replacingOccurrences(of: "/usr/bin/open", with: "echo")
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", script]
+        let out = Pipe()
+        process.standardOutput = out
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        #expect(process.terminationStatus == 0)
+        #expect(String(data: data, encoding: .utf8) == "/nonexistent/X.app\n")
     }
 }
