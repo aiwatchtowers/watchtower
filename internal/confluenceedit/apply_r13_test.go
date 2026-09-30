@@ -32,8 +32,8 @@ func TestEXT05_SectionRewriteRefusesAmbiguousPairing(t *testing.T) {
 	}
 }
 
-// A rich block may still be deleted when nothing in its gap could be its
-// edit: no new block of its kind shares the gap.
+// A rich block may still be deleted when nothing in the section could be
+// its edit: no changed block of its kind is anywhere in it (R14).
 func TestSectionRewriteDeletesARichBlockUnambiguously(t *testing.T) {
 	out, _ := applyOK(t, `<h2>S</h2><p style="text-align:center">Beta</p><p>Alpha</p>`, sectionEdit("S", "- item\n\nAlpha"))
 	assert.Equal(t, `<h2>S</h2><ul><li>item</li></ul><p>Alpha</p>`, out)

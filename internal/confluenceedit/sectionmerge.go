@@ -23,11 +23,12 @@ import (
 // kind — rendered from markdown, allowed only when that original is
 // faithfully representable (checkDerivable) — or new, and every original
 // block left over is deleted, which the text diff shows. Since the text
-// cannot say which original a changed block was edited from, every
-// unmatched original of a kind a new block in the same gap could derive
-// from must be derivable (checkCandidates, ruling R13). An original block
-// with no editable text (an empty spacing paragraph) is never deleted:
-// nothing in the text could have asked for that.
+// cannot say which original a changed block was edited from, a deleted
+// original that markdown cannot carry faithfully is allowed only when no
+// changed block of its kind is anywhere in the section (checkLossy, ruling
+// R14). An original block with no editable text (an empty spacing
+// paragraph) is never deleted: nothing in the text could have asked for
+// that.
 
 // sectionOp is one step of a section merge, in body order.
 type sectionOp struct {
@@ -93,7 +94,58 @@ func (a *applier) mergeSection(base, body []*block) ([]sectionOp, error) {
 		bi, ni = m[0]+1, m[1]+1
 	}
 	gap, err := a.mergeGap(base[bi:], body[ni:], baseText[bi:], bodyText[ni:], mv)
-	return append(ops, gap...), err
+	if err != nil {
+		return nil, err
+	}
+	ops = append(ops, gap...)
+	return ops, a.checkLossy(ops)
+}
+
+// checkLossy is ruling R14, the section-wide invariant. The merge leaves
+// every original block kept (matched or moved: its bytes are emitted),
+// derived (a changed block rendered from it, already checked by
+// checkDerivable) or deleted. Which original a changed block was edited
+// from cannot be known from the text, so an original markdown cannot carry
+// faithfully may be deleted only when no changed block (derived or new) of
+// its kind is anywhere in the section — otherwise the edit may be that
+// block's rewrite with its formatting silently dropped, however the blocks
+// were paired or reordered. A deletion with no such block is unambiguous,
+// and the diff shows it.
+func (a *applier) checkLossy(ops []sectionOp) error {
+	changed := map[blockKind]bool{}
+	moved := map[*block]bool{} // a moved block's old place is a deletion op too
+	for _, op := range ops {
+		if op.body != nil && op.body != op.orig {
+			changed[op.body.kind] = true
+		}
+		if op.moved {
+			moved[op.orig] = true
+		}
+	}
+	for _, op := range ops {
+		if op.orig == nil || op.body != nil || moved[op.orig] || !changed[op.orig.kind] {
+			continue
+		}
+		if err := a.lossy(op.orig, a.d.blockText(op.orig)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// lossy refuses, with the R11 message naming o, an original block markdown
+// cannot carry faithfully: its text reads back as other or several blocks,
+// or re-rendering it would lose markup, attributes or parameters. A marker
+// block (removed only as a reported marker) and a block with no editable
+// text (never deleted) are not lossy here.
+func (a *applier) lossy(o *block, text string) error {
+	if o.kind == blockMarker || text == "" {
+		return nil
+	}
+	if err := a.checkParsable(o, text); err != nil {
+		return err
+	}
+	return a.checkDerivable(o, text)
 }
 
 // mergeGap merges the unmatched original and new blocks between two
@@ -170,9 +222,6 @@ func (a *applier) pairGap(allOrig, body []*block, allText []string, mv moves) ([
 			}
 		}
 	}
-	if err := a.checkCandidates(orig, fresh, origText); err != nil {
-		return nil, err
-	}
 	p := 0
 	for _, n := range body {
 		if o := mv.to[n]; o != nil {
@@ -192,28 +241,6 @@ func (a *applier) pairGap(allOrig, body []*block, allText []string, mv moves) ([
 		p = j + 1
 	}
 	return append(ops, dropOrKeep(orig[p:], origText[p:])...), nil
-}
-
-// checkCandidates is ruling R13's pairing rule: which unmatched original a
-// changed block was edited from cannot be known from the text alone, so
-// every unmatched original of a kind some new block in the gap could
-// derive from must be derivable. Otherwise pairing the edit with the
-// "wrong" original would silently delete the rich one (and its formatting)
-// under a changed plain block. A rich original is deleted only when no new
-// block of its kind shares its gap — an unambiguous deletion.
-func (a *applier) checkCandidates(orig, body []*block, origText []string) error {
-	kinds := map[blockKind]bool{}
-	for _, n := range body {
-		kinds[n.kind] = true
-	}
-	for i, o := range orig {
-		if kinds[o.kind] && o.kind != blockMarker && origText[i] != "" {
-			if err := a.checkDerivable(o, origText[i]); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
 }
 
 // dropOrKeep deletes original blocks the new body left out — except one
