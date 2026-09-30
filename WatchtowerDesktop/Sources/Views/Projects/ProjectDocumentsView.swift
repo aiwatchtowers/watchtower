@@ -15,13 +15,17 @@ struct ProjectDocumentsView: View {
     /// file watcher fires) is detected before the stale selection is written.
     @State private var composeRenderVersion = 0
     @State private var delivery: ProjectTerminalCenter.PromptDelivery?
+    @State private var showThreads = true
 
     var body: some View {
         HSplitView {
             list.frame(minWidth: 200, idealWidth: 240, maxWidth: 320)
             if let docVM = vm.documentViewModel {
                 documentView(docVM).frame(minWidth: 360, maxWidth: .infinity)
-                threads(docVM).frame(minWidth: 240, idealWidth: 300, maxWidth: 420)
+                // No threads, or hidden by the owner: the text takes the width.
+                if showThreads, !docVM.threads.isEmpty {
+                    threads(docVM).frame(minWidth: 240, idealWidth: 300, maxWidth: 420)
+                }
             } else {
                 Text(vm.documents.isEmpty
                      ? "No documents yet. Claude Code attaches specs and plans here as it writes them."
@@ -81,15 +85,29 @@ struct ProjectDocumentsView: View {
                 }
                 .disabled(selection.length == 0 || docVM.rendered == nil)
                 .popover(isPresented: $composing) { composer(docVM) }
+                if !docVM.threads.isEmpty {
+                    Toggle(isOn: $showThreads) {
+                        Label("Threads (\(docVM.threads.count))", systemImage: "sidebar.right")
+                    }
+                    .toggleStyle(.button)
+                    .help(showThreads ? "Hide the comment threads" : "Show the comment threads")
+                }
             }
             .padding(8)
             Divider()
             if let rendered = docVM.rendered {
-                DocumentTextView(
-                    text: DocumentAttributedString.make(rendered, highlights: docVM.anchoredRanges, activeThreadID: activeThreadID),
-                    contentID: "\(docVM.document.id)#\(docVM.renderVersion)",
-                    selection: $selection
-                ) { activeThreadID = docVM.threadID(at: $0) ?? activeThreadID }
+                GeometryReader { geo in
+                    DocumentTextView(
+                        text: DocumentAttributedString.make(rendered, highlights: docVM.anchoredRanges, activeThreadID: activeThreadID),
+                        contentID: "\(docVM.document.id)#\(docVM.renderVersion)",
+                        selection: $selection,
+                        horizontalInset: ReadableColumn.horizontalInset(forWidth: geo.size.width)
+                    ) { location in
+                        guard let id = docVM.threadID(at: location) else { return }
+                        activeThreadID = id
+                        showThreads = true
+                    }
+                }
             } else {
                 Text(docVM.loadError ?? "Loading…")
                     .foregroundStyle(.secondary)
