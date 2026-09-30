@@ -157,7 +157,7 @@ the version is caught too) — else it fails with `conflict: the page was
 edited after the preview (now vN); nothing was written`, or, when the page is
 exactly one version on and its storage is this edit's once the `local-id`
 attributes Confluence stamps on save are stripped from start tags (never
-from text or CDATA) (its own earlier PUT
+from text, CDATA or HTML comments) (its own earlier PUT
 whose response was lost), `this edit is already saved (vN); nothing was
 written now`, or, one version on with any other storage, the hedged
 `conflict: the page is now vN (one version after your preview) — this edit
@@ -180,7 +180,15 @@ block: a deleted block markdown cannot carry faithfully refuses the edit
 while any changed block of its kind is anywhere in the section (ruling R14,
 one post-merge check over the whole section, superseding R13's per-gap
 rule). Such a block is deleted only when no changed block of its kind is
-in the section, and the diff shows it. Edits are capped at 20 per call, 60 000 runes per text
+in the section, and the diff shows it. Of two same-text blocks the one
+carrying attributes, parameters or layout is the one kept. Accepted v1
+limits, all on the refusing or visible side: swapping two multi-line
+paragraphs (each holding a double line break) within one gap is refused
+rather than reordered; deleting a paragraph whose text reads as markdown
+structure (`- x`, `# x`) is refused while any block of the section
+changes; moving a rich block between two sections through two
+`replace_section` edits re-renders it (the diff shows the deletion and
+the addition). Edits are capped at 20 per call, 60 000 runes per text
 field and 120 000 per call; a page whose editable text exceeds 60 000 runes
 is shown truncated and its hidden tail cannot be changed. Without the opt-in
 write scopes the tool refuses before any network call: `Confluence editing
@@ -228,8 +236,12 @@ mounted only in chat mode, never on the dev-mode MCP surface (DEV-01).
   same-text blocks edited, is refused with the block named. `FuzzSectionMerge`
   (`apply_section_fuzz_test.go`) extends it to arbitrary input: permuting a
   section's blocks, editing one and dropping one either is refused or keeps
-  the bytes of every block markdown cannot carry, unless that block is the
-  one dropped and no edited block of its kind remains.
+  the bytes of every block markdown cannot carry, unless no edited block
+  of its kind remains and that block is the one dropped — or a same-text,
+  same-kind twin of the dropped one that is either not rich itself (its
+  text merely reads as several blocks) or whose dropped twin is rich too
+  (attributes, parameters or layout: the text cannot tell two such twins
+  apart). A rich block is never excused for a plain twin's drop.
 - `TestEXT05_OnlyEditToolReachesPut`
   (`internal/tools/confluence_contracts_test.go`) — an AST scan of every
   non-test Go file of the module (scan floor 300 files) pins the production
@@ -247,6 +259,16 @@ every Confluence hit's `link` is the page or attachment URL.
 
 ## Changelog
 
+- 2026-09-30 (local-review round 4): of two same-text multi-line
+  paragraphs the one carrying attributes is kept — an in-place run is
+  reserved before a twin may move over it, and richness is judged by what
+  a re-render would lose, not by the text reading as several blocks.
+  `FuzzSectionMerge`'s twin exemption narrowed accordingly (tightened, not
+  weakened). The "already saved" comparison also keeps HTML comments
+  verbatim. Three accepted v1 limits documented (swap of two multi-line
+  paragraphs in one gap refused; deleting markdown-looking paragraph text
+  refused while the section changes; a rich block moved across sections
+  is re-rendered, visibly).
 - 2026-09-30 (local-review round 3, ruling R14): the section merge's
   lossy-deletion rule is section-wide — a deleted block markdown cannot
   carry faithfully refuses the edit while any changed block of its kind is

@@ -337,6 +337,23 @@ sections above are the original design and are not rewritten to match.
   Confluence). Guards: `TestEXT05_SectionRewriteKeepsUntouchedBlocksByteExact`
   and `FuzzApply`'s "own text plus one paragraph changes nothing else"
   property.
+- **Local review round 4 (R14 follow-ups):** of two same-text, same-kind
+  originals the rich one is kept, where "rich" means a re-render would
+  lose something (attributes, parameters, layout, a comment, formatting-
+  like text) — not that the text reads back as several blocks, which a
+  plain paragraph with two `<br/>`s does too. A multi-block original's
+  run of new blocks in its own gap is reserved before any cross-gap move
+  is paired, so a twin elsewhere never moves over it. The "already
+  saved" comparison keeps HTML comments verbatim like CDATA. Accepted v1
+  limits, all on the refusing or visible side: swapping two multi-line
+  paragraphs (each holding a double line break) within one gap is refused
+  rather than reordered; deleting a paragraph whose text reads as
+  markdown structure (`- x`, `# x`) is refused while any block of the
+  section changes; moving a rich block between two sections through two
+  `replace_section` edits re-renders it (the diff shows the deletion and
+  the addition). Guard: `TestSectionRewriteRichBrTwinStays`; the
+  `FuzzSectionMerge` twin exemption now excuses losing a rich block only
+  when the dropped twin is rich too.
 - **R14 (local review round 3, section-wide lossy deletion):** R13's
   per-gap candidate rule kept missing pairings across a match (a rich
   block moved and edited, duplicate texts, a `<br/>` paragraph split into
