@@ -939,15 +939,13 @@ final class AppState {
         cliRunner: (any CLIRunnerProtocol)? = ProcessCLIRunner.makeDefault(),
         notifier: ProjectNotifying = NotificationService.shared
     ) {
-        let vm = ProjectsViewModel(dbPool: dbPool, cli: cliRunner.map { ProjectCLI(runner: $0) })
+        let vm = ProjectsViewModel(
+            dbPool: dbPool, cli: cliRunner.map { ProjectCLI(runner: $0) }, terminalCenter: terminalCenter
+        )
         vm.closeTerminal = { [weak self] projectID in
             guard let center = self?.terminalCenter else { return }
             let ids = center.sessionIDs(ofProject: projectID)
             await center.closeAll { ids.contains($0) }
-        }
-        vm.startSession = { [weak self] session, fresh, prompt in
-            self?.terminalCenter.start(session, fresh: fresh, prompt: prompt)
-            self?.terminalCenter.focus(session.id)
         }
         let notices = ProjectNotificationCenter(dbPool: dbPool, notifier: notifier)
         vm.onProjectCreated = { [weak notices] project, _ in
@@ -965,6 +963,7 @@ final class AppState {
         projectNotificationCenter = notices
         // The first poll also loads the list (onPolled → reload).
         notices.start()
+        vm.startTitleRefresh()
     }
 
     func initGoogleAccounts(dbPool: DatabasePool) {

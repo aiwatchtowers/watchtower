@@ -68,6 +68,9 @@ final class TerminalCenter {
     @ObservationIgnored var shell: () -> String? = { ProcessInfo.processInfo.environment["SHELL"] }
     /// Whether Claude Code has a transcript for a session id. A seam for tests.
     @ObservationIgnored var transcriptExists: (String) -> Bool = { ClaudeTranscript.exists(sessionID: $0) }
+    /// Every process exit, after `states` records it (the VM's resume-failure
+    /// check). One subscriber.
+    @ObservationIgnored var onSessionExit: ((Int64, Int32?) -> Void)?
     @ObservationIgnored private let signaller: ProcessGroupSignaller
 
     // A closure literal used as a default *argument* value does not inherit
@@ -158,10 +161,12 @@ final class TerminalCenter {
     /// `shell` row runs the login shell alone. After an exit it relaunches in
     /// the same process view (scrollback kept). A missing folder or a stored
     /// id that is not a canonical UUID (it goes into a shell command)
-    /// launches nothing.
-    func start(_ session: TerminalSession, fresh: Bool, prompt: String? = nil) {
+    /// launches nothing. Returns the mode it launched, nil when it launched
+    /// nothing.
+    @discardableResult
+    func start(_ session: TerminalSession, fresh: Bool, prompt: String? = nil) -> TerminalLaunch.Mode? {
         let id = session.id
-        if states[id] == .running { return }
+        if states[id] == .running { return nil }
         // Recorded before the guards, so an unavailable session is still
         // found — and cleaned up — by its project.
         rows[id] = session
@@ -169,7 +174,7 @@ final class TerminalCenter {
         guard FileManager.default.fileExists(atPath: session.folderPath, isDirectory: &isDirectory),
               isDirectory.boolValue else {
             states[id] = .unavailable("The folder \(session.folderPath) no longer exists.")
-            return
+            return nil
         }
         let mode: TerminalLaunch.Mode
         switch session.kind {
@@ -178,7 +183,7 @@ final class TerminalCenter {
         case .claude:
             guard let uuid = session.claudeSessionID, TerminalLaunch.isValidSessionID(uuid) else {
                 states[id] = .unavailable("This session has no valid Claude Code session id.")
-                return
+                return nil
             }
             if fresh {
                 mode = .newClaude(uuid: uuid, prompt: prompt)
@@ -189,10 +194,12 @@ final class TerminalCenter {
         let process = processes[id] ?? makeProcess()
         process.onExit = { [weak self] code in
             self?.states[id] = .exited(code)
+            self?.onSessionExit?(id, code)
         }
         processes[id] = process
         states[id] = .running
         process.start(.make(shell: shell(), folder: session.folderPath, mode: mode))
+        return mode
     }
 
     func close(sessionID: Int64) async {

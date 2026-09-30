@@ -297,12 +297,20 @@ final class ProjectsViewModelTests: XCTestCase {
     /// A double click on Start Claude Code / Open terminal: two overlapping
     /// calls create one row and start one process.
     func testConcurrentOpenMostRecentSessionCreatesOneRow() async throws {
-        let id = try await pool.write { try TestDatabase.insertProject($0) }
-        let vm = makeVM()
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("wt-open-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let id = try await pool.write { try TestDatabase.insertProject($0, name: "acme", folder: folder.path) }
+        var processes: [FakeTerminalSession] = []
+        let center = TerminalCenter {
+            let process = FakeTerminalSession(pid: 0)
+            processes.append(process)
+            return process
+        }
+        let vm = ProjectsViewModel(dbPool: pool, cli: ProjectCLI(runner: FakeCLIRunner()), defaults: defaults,
+                                   terminalCenter: center)
         await vm.reload()
         let project = try XCTUnwrap(vm.summaries.first { $0.id == id }?.project)
-        var started: [Int64] = []
-        vm.startSession = { row, _, _ in started.append(row.id) }
 
         async let first: Void = vm.openMostRecentSession(project: project)
         async let second: Void = vm.openMostRecentSession(project: project)
@@ -310,10 +318,13 @@ final class ProjectsViewModelTests: XCTestCase {
 
         let rows = try await pool.read { try TerminalSessionQueries.fetchForProject($0, projectID: id) }
         XCTAssertEqual(rows.count, 1)
-        XCTAssertEqual(started, rows.map(\.id))
+        XCTAssertEqual(processes.flatMap(\.launches).count, 1)
 
         await vm.openMostRecentSession(project: project)
-        XCTAssertEqual(started, [rows[0].id, rows[0].id], "the next open reuses the row")
+        let after = try await pool.read { try TerminalSessionQueries.fetchForProject($0, projectID: id) }
+        XCTAssertEqual(after.map(\.id), rows.map(\.id), "the next open reuses the row")
+        XCTAssertEqual(processes.flatMap(\.launches).count, 1, "a running session is not relaunched")
+        XCTAssertEqual(center.focusOrder, [rows[0].id])
     }
 
     /// A created and installed project gets one "Project setup" claude row,

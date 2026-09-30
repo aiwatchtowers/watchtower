@@ -51,14 +51,41 @@ final class ProjectsViewModel {
 
     /// A project was created: Task 18 seeds its notification baseline.
     var onProjectCreated: ((Project, _ installed: Bool) -> Void)?
-    /// Starts (and focuses) a session's process. AppState wires it to
-    /// `TerminalCenter.start`; unwired = nothing launches.
-    var startSession: ((TerminalSession, _ fresh: Bool, _ prompt: String?) -> Void)?
+    /// The embedded terminals. AppState passes its own; nil (most tests) =
+    /// nothing launches.
+    let terminalCenter: TerminalCenter?
+    /// Runs `watchtower terminal title`; nil without a CLI. A seam for tests.
+    @ObservationIgnored var titleService: ((Int64) async throws -> TerminalTitleResult)?
+    @ObservationIgnored var now: () -> Date = Date.init
+
+    // Session state. Written only by ProjectsViewModel+Sessions.swift, which
+    // cannot reach a `private(set)` setter from its own file.
+
     /// Each project's `terminal_sessions` rows, most recently active first.
-    private(set) var terminalSessions: [Int64: [TerminalSession]] = [:]
-    /// Projects an `openMostRecentSession` is running for: a double click
-    /// must not create two rows and two processes.
-    private var openingSession: Set<Int64> = []
+    var terminalSessions: [Int64: [TerminalSession]] = [:]
+    /// Standalone terminals (`project_id` NULL), most recently active first.
+    var standaloneSessions: [TerminalSession] = []
+    /// The left panel's level 2: the project drilled into (nil = level 1).
+    var drilledProjectID: Int64?
+    /// Sessions whose `--resume` exited non-zero within
+    /// `resumeFailureWindow` of launch: the pane offers "Start fresh".
+    var resumeFailed: Set<Int64> = []
+    /// Why the last session action failed, per project — never the shared
+    /// `errorMessage` (one project's failure must not follow a switch).
+    var sessionErrors: [Int64: String] = [:]
+    var standaloneSessionError: String?
+    /// Layouts touched this run; the rest are read from `defaults`.
+    var layouts: [Int64: WorkspaceLayout] = [:]
+    /// Failed AI-title attempts per session id, this run only.
+    @ObservationIgnored var titleAttempts: [Int64: Int] = [:]
+    /// When each running resume launched, until its process exits.
+    @ObservationIgnored var resumeStarts: [Int64: Date] = [:]
+    /// Projects an `openMostRecentSession` is running for, and targets a
+    /// `workOn` is running for: a double click must not create two rows.
+    @ObservationIgnored var openingSession: Set<Int64> = []
+    @ObservationIgnored var workingOnTarget: Set<Int64> = []
+    @ObservationIgnored var titleTask: Task<Void, Never>?
+
     /// The owner changed something in a project (a comment, a status): the
     /// notification policy must not report it back (Task 18).
     var onOwnerWrite: ((Int64, ProjectSubject) -> Void)?
@@ -79,14 +106,25 @@ final class ProjectsViewModel {
 
     let dbPool: DatabasePool
     private let cli: ProjectCLI?
-    private let defaults: UserDefaults
+    let defaults: UserDefaults
     private var viewed: [String: String]
 
-    init(dbPool: DatabasePool, cli: ProjectCLI?, defaults: UserDefaults = .standard) {
+    init(
+        dbPool: DatabasePool,
+        cli: ProjectCLI?,
+        defaults: UserDefaults = .standard,
+        terminalCenter: TerminalCenter? = nil
+    ) {
         self.dbPool = dbPool
         self.cli = cli
         self.defaults = defaults
+        self.terminalCenter = terminalCenter
         viewed = defaults.dictionary(forKey: Self.viewedDocumentsKey) as? [String: String] ?? [:]
+        if let cli {
+            let service = TerminalTitleService(runner: cli.runner)
+            titleService = { try await service.title(sessionID: $0) }
+        }
+        terminalCenter?.onSessionExit = { [weak self] id, code in self?.sessionExited(id, code: code) }
     }
 
     var selectedProject: Project? {
@@ -123,7 +161,10 @@ final class ProjectsViewModel {
         }
         for id in Self.vanished(previous: previousIDs, current: summaries.map(\.id)) {
             await closeTerminal?(id)
+            terminalSessions[id] = nil
         }
+        if let selectedProjectID { await loadSessions(projectID: selectedProjectID) }
+        await loadSessions(projectID: nil)
     }
 
     /// Deletes a project (spec §6.1, Review Focus #5). Order matters: the
@@ -236,47 +277,6 @@ final class ProjectsViewModel {
         if installed {
             await startNewSession(project: project, title: TerminalSessionNaming.setupTitle,
                                   prompt: TerminalLaunch.firstRunPrompt)
-        }
-    }
-
-    func loadTerminalSessions(projectID: Int64) async {
-        do {
-            terminalSessions[projectID] = try await dbPool.read {
-                try TerminalSessionQueries.fetchForProject($0, projectID: projectID)
-            }
-        } catch {
-            errorMessage = "Could not load terminal sessions: \(error.localizedDescription)"
-        }
-    }
-
-    /// Creates a `claude` session row with a new Claude session id and starts
-    /// it fresh (`--session-id`).
-    func startNewSession(project: Project, title: String, prompt: String? = nil) async {
-        let new = TerminalSessionQueries.NewSession(
-            projectID: project.id, kind: .claude, title: title,
-            folderPath: project.folderPath, claudeSessionID: UUID().uuidString.lowercased()
-        )
-        let row: TerminalSession
-        do {
-            row = try await dbPool.write { try TerminalSessionQueries.create($0, new) }
-        } catch {
-            errorMessage = "Could not create a terminal session: \(error.localizedDescription)"
-            return
-        }
-        await loadTerminalSessions(projectID: project.id)
-        startSession?(row, true, prompt)
-    }
-
-    /// "Open terminal": resumes the project's most recently active open
-    /// session, or starts a new one when it has none.
-    func openMostRecentSession(project: Project) async {
-        guard openingSession.insert(project.id).inserted else { return }
-        defer { openingSession.remove(project.id) }
-        await loadTerminalSessions(projectID: project.id)
-        if let row = terminalSessions[project.id]?.first(where: { !$0.isClosed }) {
-            startSession?(row, false, nil)
-        } else {
-            await startNewSession(project: project, title: TerminalSessionNaming.provisional(now: Date()))
         }
     }
 

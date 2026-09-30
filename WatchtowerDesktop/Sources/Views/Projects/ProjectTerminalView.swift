@@ -36,7 +36,9 @@ struct ProjectTerminalView: View {
                     Text(TerminalLaunch.exitMessage(code: code))
                         .font(.caption).foregroundStyle(.secondary)
                     Spacer()
-                    Button("Restart") { if let session { appState.projectsViewModel?.startSession?(session, false, nil) } }
+                    Button("Restart") {
+                        if let session { Task { await appState.projectsViewModel?.open(session) } }
+                    }
                 }
                 .padding(8)
             case let .unavailable(message)?:
@@ -51,7 +53,7 @@ struct ProjectTerminalView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .task(id: project.id) { await appState.projectsViewModel?.loadTerminalSessions(projectID: project.id) }
+        .task(id: project.id) { await appState.projectsViewModel?.loadSessions(projectID: project.id) }
     }
 
     private func shownSession(_ center: TerminalCenter) -> TerminalSession? {
