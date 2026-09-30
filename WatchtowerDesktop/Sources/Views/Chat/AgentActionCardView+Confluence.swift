@@ -19,8 +19,12 @@ extension AgentActionCardView {
             let after: String
             /// "Removes: <labels>", nil when the change keeps every marker.
             let removesLine: String?
+            /// `diffText(before:after:)`, built once with the preview (never
+            /// in `body`).
+            let diff: AttributedString
         }
 
+        /// The page title, or "Confluence page" when the args carry none.
         let title: String
         /// Nil unless the pinned url is http(s) — never a clickable
         /// `javascript:`/`file:` link.
@@ -30,14 +34,25 @@ extension AgentActionCardView {
     }
 
     /// The pinned edit, or nil for another tool or args without `changes`.
+    /// Memoized per (row id, args JSON): the card's `body` re-evaluates with
+    /// the chat thread (every streamed token), and the args carry the whole
+    /// new page storage, so the parse and the word diffs run once per row
+    /// version, never per render (the "decode once, never in row builders"
+    /// rule).
     static func confluenceEdit(for action: AgentAction) -> ConfluenceEdit? {
-        guard action.tool == confluenceEditTool,
-              let rawChanges = action.args["changes"] as? [[String: Any]], !rawChanges.isEmpty else { return nil }
+        guard action.tool == confluenceEditTool else { return nil }
+        return ConfluenceEditMemo.shared.edit(for: action, build: buildConfluenceEdit)
+    }
+
+    private static func buildConfluenceEdit(_ action: AgentAction) -> ConfluenceEdit? {
+        ConfluenceEditMemo.shared.builds += 1
+        guard let rawChanges = action.args["changes"] as? [[String: Any]], !rawChanges.isEmpty else { return nil }
         let pageURL = action.argString("url").flatMap(URL.init(string:)).flatMap { url in
             url.scheme == "https" || url.scheme == "http" ? url : nil
         }
+        let title = action.argString("title") ?? ""
         return ConfluenceEdit(
-            title: action.argString("title") ?? "",
+            title: title.isEmpty ? "Confluence page" : title,
             pageURL: pageURL,
             baseVersion: action.argString("base_version") ?? "?",
             changes: rawChanges.map(confluenceChange)
@@ -56,18 +71,21 @@ extension AgentActionCardView {
         guard action.tool == confluenceEditTool else {
             return "Retrying re-sends the request — check Jira for a duplicate first."
         }
-        let version = action.argString("base_version") ?? "?"
+        let version = confluenceEdit(for: action)?.baseVersion ?? "?"
         return "Retrying writes only if the page is still at version \(version); if someone edited it since, ask for a new edit."
     }
 
     private static func confluenceChange(_ raw: [String: Any]) -> ConfluenceEdit.Change {
         let locator = raw["locator"] as? String ?? ""
         let removed = (raw["removed"] as? [String] ?? []).map(markerLabel)
+        let before = raw["before"] as? String ?? ""
+        let after = raw["after"] as? String ?? ""
         return ConfluenceEdit.Change(
             heading: raw["kind"] as? String == "replace_section" ? "Section: \(locator)" : locator,
-            before: raw["before"] as? String ?? "",
-            after: raw["after"] as? String ?? "",
-            removesLine: removed.isEmpty ? nil : "Removes: " + removed.joined(separator: ", ")
+            before: before,
+            after: after,
+            removesLine: removed.isEmpty ? nil : "Removes: " + removed.joined(separator: ", "),
+            diff: diffText(before: before, after: after)
         )
     }
 
@@ -85,8 +103,9 @@ extension AgentActionCardView {
     private static let unchangedKeep = 100
 
     /// Before → after as one styled text: removed words struck through in
-    /// red, added words in green, unchanged text plain (a long unchanged
-    /// stretch shortened around " … " — changed words are never cut).
+    /// red, added words underlined in green (colour is never the only cue),
+    /// unchanged text plain (a long unchanged stretch shortened around " … "
+    /// — changed words are never cut).
     static func diffText(before: String, after: String) -> AttributedString {
         var out = AttributedString()
         for segment in WordDiff.diff(before: before, after: after) {
@@ -100,6 +119,7 @@ extension AgentActionCardView {
                 out.append(part)
             case .added:
                 var part = AttributedString(segment.text)
+                part.swiftUI.underlineStyle = .single
                 part.swiftUI.foregroundColor = .green
                 out.append(part)
             }
@@ -128,7 +148,7 @@ struct ConfluenceEditChangesView: View {
                     Text(change.heading)
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
-                    Text(AgentActionCardView.diffText(before: change.before, after: change.after))
+                    Text(change.diff)
                         .font(.callout)
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
@@ -140,5 +160,39 @@ struct ConfluenceEditChangesView: View {
                 }
             }
         }
+    }
+}
+
+/// The parsed-and-diffed `edit_confluence_page` preview per (row id, args
+/// JSON). The args of a row never change after propose (Normalize pins them),
+/// so an entry is only ever replaced by a different row version; the key
+/// still carries the JSON so a changed row can never reuse a stale preview.
+/// Bounded: past `capacity` entries the memo starts over.
+@MainActor
+final class ConfluenceEditMemo {
+    static let shared = ConfluenceEditMemo()
+    static let capacity = 64
+
+    private struct Key: Hashable {
+        let id: Int64
+        let argsJSON: String
+    }
+
+    /// `.some(nil)` memoizes "args unreadable" too.
+    private var entries: [Key: AgentActionCardView.ConfluenceEdit?] = [:]
+    /// How many previews were actually built (counted by the builder
+    /// itself) — the test seam proving a re-render reuses the memo.
+    fileprivate(set) var builds = 0
+
+    func edit(
+        for action: AgentAction,
+        build: (AgentAction) -> AgentActionCardView.ConfluenceEdit?
+    ) -> AgentActionCardView.ConfluenceEdit? {
+        let key = Key(id: action.id, argsJSON: action.argsJSON)
+        if let cached = entries[key] { return cached }
+        if entries.count >= Self.capacity { entries.removeAll() }
+        let edit = build(action)
+        entries[key] = .some(edit)
+        return edit
     }
 }

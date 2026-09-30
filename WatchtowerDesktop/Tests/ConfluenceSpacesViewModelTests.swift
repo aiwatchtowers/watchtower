@@ -198,8 +198,11 @@ final class ConfluenceSpacesViewModelTests: XCTestCase {
 
         await vm.load()
 
-        // The load also reads `confluence access` first (the Allow editing tests).
-        XCTAssertTrue(cli.invocations.contains(["confluence", "spaces", "--account", String(acct), "--json"]))
+        // The load reads `confluence access` first (the Allow editing tests), then the spaces.
+        XCTAssertEqual(Array(cli.invocations.prefix(2)), [
+            ["confluence", "access", "--account", String(acct), "--json"],
+            ["confluence", "spaces", "--account", String(acct), "--json"]
+        ])
         XCTAssertFalse(vm.needsConsent)
         XCTAssertNil(vm.errorMessage)
         XCTAssertFalse(vm.isLoading)
