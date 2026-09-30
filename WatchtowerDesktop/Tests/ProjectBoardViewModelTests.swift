@@ -307,9 +307,12 @@ final class ProjectBoardViewModelTests: XCTestCase {
         var reported = 0
         vm.onOwnerWrite = { _, _ in reported += 1 }
         vm.load()
-        let historyRows = { try self.dbManager.dbPool.read { db in
-            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM target_status_history WHERE target_id = ?", arguments: [tid])
-        } }
+        let pool = dbManager.dbPool
+        let historyRows = {
+            try pool.read { db in
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM target_status_history WHERE target_id = ?", arguments: [tid])
+            }
+        }
         let before = try historyRows()
         XCTAssertFalse(vm.setStatus("in_progress", for: Int(tid)))
         XCTAssertEqual(try historyRows(), before, "no status write, so no history row")

@@ -19,10 +19,11 @@ struct ProjectBoardKanbanView: View {
                     ProjectBoardKanbanColumnView(
                         column: column,
                         selectedTargetID: selectedTargetID,
-                        onSelect: onSelect,
+                        onSelect: onSelect
+                    ) { id, status in
                         // Only this board's own cards move; see showsCard.
-                        onMove: { id, status in board.showsCard(id) && onMove(id, status) }
-                    )
+                        board.showsCard(id) && onMove(id, status)
+                    }
                 }
             }
             .padding(10)
@@ -98,7 +99,8 @@ private struct DropTarget: ViewModifier {
         if column.acceptsDrops {
             content.dropDestination(for: String.self) { items, _ in
                 // Every id is attempted; the drop succeeds if any moved.
-                items.compactMap(Int.init).reduce(false) { moved, id in onMove(id, column.status) || moved }
+                let moved = items.compactMap(Int.init).filter { onMove($0, column.status) }
+                return !moved.isEmpty
             } isTargeted: { isTargeted = $0 }
         } else {
             content
