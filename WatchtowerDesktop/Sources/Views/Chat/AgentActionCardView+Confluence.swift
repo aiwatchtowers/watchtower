@@ -31,10 +31,12 @@ extension AgentActionCardView {
         let pageURL: URL?
         let baseVersion: String
         let changes: [Change]
+        /// Caveats Normalize pinned (`notes`), e.g. user names unavailable.
+        let notes: [String]
     }
 
     /// The pinned edit, or nil for another tool or args without `changes`.
-    /// Memoized per (row id, args JSON): the card's `body` re-evaluates with
+    /// Memoized per row version (`ConfluenceEditMemo`): the card's `body` re-evaluates with
     /// the chat thread (every streamed token), and the args carry the whole
     /// new page storage, so the parse and the word diffs run once per row
     /// version, never per render (the "decode once, never in row builders"
@@ -55,8 +57,16 @@ extension AgentActionCardView {
             title: title.isEmpty ? "Confluence page" : title,
             pageURL: pageURL,
             baseVersion: action.argString("base_version") ?? "?",
-            changes: rawChanges.map(confluenceChange)
+            changes: rawChanges.map(confluenceChange),
+            notes: action.args["notes"] as? [String] ?? []
         )
+    }
+
+    /// Approve is offered only for a proposal whose diff the card can show:
+    /// approving an unreadable `edit_confluence_page` row would write a page
+    /// the owner never saw (F7). Every other tool is approvable as before.
+    static func canApprove(_ action: AgentAction) -> Bool {
+        action.tool != confluenceEditTool || confluenceEdit(for: action) != nil
     }
 
     /// The card's text line for the tool; nil for any other tool.
@@ -143,6 +153,11 @@ struct ConfluenceEditChangesView: View {
                 Link("Open “\(edit.title)” in Confluence ↗", destination: url)
                     .font(.callout)
             }
+            ForEach(edit.notes, id: \.self) { note in
+                Text(note)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
             ForEach(Array(edit.changes.enumerated()), id: \.offset) { _, change in
                 VStack(alignment: .leading, spacing: 2) {
                     Text(change.heading)
@@ -163,19 +178,38 @@ struct ConfluenceEditChangesView: View {
     }
 }
 
-/// The parsed-and-diffed `edit_confluence_page` preview per (row id, args
-/// JSON). The args of a row never change after propose (Normalize pins them),
-/// so an entry is only ever replaced by a different row version; the key
-/// still carries the JSON so a changed row can never reuse a stale preview.
-/// Bounded: past `capacity` entries the memo starts over.
+/// The parsed-and-diffed `edit_confluence_page` preview per row version. The
+/// args of a row never change after propose (Normalize pins them), so the key
+/// is cheap — never a hash of the whole up-to-4-MiB JSON: row id, created_at,
+/// status, the args' byte length and their first and last `sampleBytes`
+/// bytes. The head carries `base_hash` (the sha256 of the page the preview
+/// was computed from — Go writes the keys sorted), so a row of another
+/// workspace that happens to share an id and a length never reuses a stale
+/// preview. Bounded: past `capacity` entries the memo starts over.
 @MainActor
 final class ConfluenceEditMemo {
     static let shared = ConfluenceEditMemo()
     static let capacity = 64
 
+    static let sampleBytes = 256
+
     private struct Key: Hashable {
         let id: Int64
-        let argsJSON: String
+        let createdAt: String
+        let status: String
+        let argsBytes: Int
+        let head: [UInt8]
+        let tail: [UInt8]
+
+        init(_ action: AgentAction) {
+            let utf8 = action.argsJSON.utf8
+            id = action.id
+            createdAt = action.createdAt
+            status = action.status
+            argsBytes = utf8.count
+            head = Array(utf8.prefix(ConfluenceEditMemo.sampleBytes))
+            tail = Array(utf8.suffix(ConfluenceEditMemo.sampleBytes))
+        }
     }
 
     /// `.some(nil)` memoizes "args unreadable" too.
@@ -188,7 +222,7 @@ final class ConfluenceEditMemo {
         for action: AgentAction,
         build: (AgentAction) -> AgentActionCardView.ConfluenceEdit?
     ) -> AgentActionCardView.ConfluenceEdit? {
-        let key = Key(id: action.id, argsJSON: action.argsJSON)
+        let key = Key(action)
         if let cached = entries[key] { return cached }
         if entries.count >= Self.capacity { entries.removeAll() }
         let edit = build(action)

@@ -52,7 +52,16 @@ package struct AgentAction: FetchableRecord, Identifiable, Equatable, Sendable {
     /// whose CLI process died before the claim is retriable, not a dead end.
     package var canRetry: Bool { status == "failed" || status == "approved" }
 
-    package var args: [String: Any] { Self.object(argsJSON) }
+    /// Decodes `argsJSON` — which for `edit_confluence_page` holds the whole
+    /// new page storage (up to 4 MiB) — on every access: never call it from a
+    /// view's `body` path without a memo. `argsDecodes` counts the decodes
+    /// (the test seam proving a render does not re-decode).
+    package var args: [String: Any] {
+        Self.argsDecodes.increment()
+        return Self.object(argsJSON)
+    }
+
+    package static let argsDecodes = DecodeCounter()
     package var result: [String: Any] { Self.object(resultJSON) }
 
     package func argString(_ key: String) -> String? { Self.stringValue(args[key]) }
@@ -71,5 +80,25 @@ package struct AgentAction: FetchableRecord, Identifiable, Equatable, Sendable {
         case let a as [Any]: return a.compactMap { stringValue($0) }.joined(separator: ", ")
         default: return nil
         }
+    }
+}
+
+/// A thread-safe counter (a test seam for work a view must not repeat).
+package final class DecodeCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    package init() {}
+
+    package func increment() {
+        lock.lock()
+        value += 1
+        lock.unlock()
+    }
+
+    package var count: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
     }
 }

@@ -331,6 +331,17 @@ final class AgentActionCardViewTests: XCTestCase {
         XCTAssertEqual(changed.id, action.id, "same row id, different args")
         XCTAssertEqual(AgentActionCardView.confluenceEdit(for: changed)?.title, unique + " v2")
         XCTAssertEqual(memo.builds, start + 2, "different args never reuse a stale preview")
+
+        // Another workspace's row: same id, same args length, different page
+        // version — the cheap key still tells them apart.
+        let sameLength = changedArgs.replacingOccurrences(of: #""base_version":7"#, with: #""base_version":8"#)
+        XCTAssertEqual(sameLength.utf8.count, changedArgs.utf8.count)
+        let other = try row { db in
+            try TestDatabase.insertAgentAction(db, tool: "edit_confluence_page", external: true, argsJSON: sameLength)
+        }
+        XCTAssertEqual(other.id, action.id)
+        XCTAssertEqual(AgentActionCardView.confluenceEdit(for: other)?.baseVersion, "8")
+        XCTAssertEqual(memo.builds, start + 3, "same id and length, different content: rebuilt")
     }
 
     /// Args without a title name the page generically, never "Page:  · …".
@@ -391,6 +402,60 @@ final class AgentActionCardViewTests: XCTestCase {
                                        inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
         XCTAssertNoThrow(try view.inspect().find(text: "Saved as version 8"))
         XCTAssertEqual(try view.inspect().findAll(ViewType.Link.self).count, 1)
+    }
+
+    /// F2: once the preview is built, rendering the card and its summary
+    /// never decodes the args again — the edit_confluence_page branch is
+    /// decided on the tool name, not on a Jira `key` lookup that parsed the
+    /// whole (up to 4 MiB) args on every body evaluation.
+    func testConfluenceCardRendersWithoutReDecodingArgs() throws {
+        let unique = "Rollout plan \(UUID().uuidString)"
+        let args = Self.confluenceArgs.replacingOccurrences(of: "Rollout plan", with: unique)
+        let action = try row { db in
+            try TestDatabase.insertAgentAction(db, tool: "edit_confluence_page", external: true, argsJSON: args)
+        }
+        _ = AgentActionCardView.summaryLines(for: action) // builds the memoized preview
+        let start = AgentAction.argsDecodes.count
+        for _ in 0..<50 {
+            _ = AgentActionCardView.summaryLines(for: action)
+            _ = AgentActionCardView.canApprove(action)
+        }
+        let view = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
+        XCTAssertNoThrow(try view.inspect().find(button: "Approve"))
+        XCTAssertEqual(AgentAction.argsDecodes.count, start, "no args decode per render")
+    }
+
+    /// A caveat Normalize pinned (a failed user-name lookup) shows on the card.
+    func testConfluenceEditShowsPinnedNotes() throws {
+        let note = "User names unavailable — mentions show account ids"
+        let args = Self.confluenceArgs.replacingOccurrences(of: #""edits":[],"#, with: #""edits":[],"notes":["\#(note)"],"#)
+        let action = try row { db in
+            try TestDatabase.insertAgentAction(db, tool: "edit_confluence_page", external: true, argsJSON: args)
+        }
+        XCTAssertEqual(AgentActionCardView.confluenceEdit(for: action)?.notes, [note])
+        let view = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
+        XCTAssertNoThrow(try view.inspect().find(text: note))
+
+        let plain = try confluenceRow()
+        XCTAssertEqual(AgentActionCardView.confluenceEdit(for: plain)?.notes, [])
+    }
+
+    /// F7: an edit_confluence_page proposal the card cannot read offers no
+    /// Approve — approving would write a page the owner never saw — only
+    /// Reject. Other tools keep Approve.
+    func testUnreadableConfluenceEditOffersNoApprove() throws {
+        let action = try row { db in
+            try TestDatabase.insertAgentAction(db, tool: "edit_confluence_page", external: true,
+                                               argsJSON: #"{"new_storage":"<p>x</p>","base_version":7}"#)
+        }
+        XCTAssertFalse(AgentActionCardView.canApprove(action))
+        let view = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
+        XCTAssertThrowsError(try view.inspect().find(button: "Approve"))
+        XCTAssertNoThrow(try view.inspect().find(button: "Reject"))
+
+        XCTAssertTrue(AgentActionCardView.canApprove(try confluenceRow()))
+        let other = try row { db in try TestDatabase.insertAgentAction(db) }
+        XCTAssertTrue(AgentActionCardView.canApprove(other))
     }
 
     /// A page url that is not http(s) is never linked.
