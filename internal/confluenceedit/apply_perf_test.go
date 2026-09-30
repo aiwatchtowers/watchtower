@@ -28,9 +28,11 @@ func TestApplyAdversarialInlineStaysFast(t *testing.T) {
 		strings.Repeat("**_~~", n/5) + "x" + strings.Repeat("~~_**", n/5),
 	} {
 		src := "<p>zz " + textEscaper.Replace(pat) + "</p>"
-		if _, _, err := Apply(mustParse(t, src), []Edit{text("zz", "yy")}); err != nil {
-			t.Fatal(err)
-		}
+		// The R6 guard refuses most of these paragraphs, but it runs the
+		// same inline parser on the original text first, so the timing
+		// still covers it.
+		_, _, err := Apply(mustParse(t, src), []Edit{text("zz", "yy")})
+		checkEditError(t, err)
 		body := pat + "\n\n- " + pat + "\n\n| " + pat + " |"
 		if _, _, err := Apply(mustParse(t, "<h1>H</h1><p>q</p>"), []Edit{sectionEdit("H", body)}); err != nil {
 			t.Fatal(err)

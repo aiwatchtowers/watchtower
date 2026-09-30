@@ -47,10 +47,12 @@ func (a *applier) classify(text string, c classifyCtx) ([]mark, error) {
 
 func (a *applier) decide(tok string, k int, known bool, c classifyCtx) (bool, error) {
 	switch {
-	case known && (c.inSpan[k] || !c.present[k]):
+	case known && c.inSpan[k]:
 		return true, nil
 	case strings.Contains(c.literal, tok):
 		return false, nil // literal text already on the page
+	case known && !c.present[k]:
+		return true, nil // e.g. put back after an earlier edit removed it
 	case known:
 		return false, fmt.Errorf("duplicate marker %s: it already appears elsewhere on the page, and each marker can appear only once", tok)
 	}

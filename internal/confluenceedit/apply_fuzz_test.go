@@ -17,6 +17,9 @@ func FuzzApply(f *testing.F) {
 	}
 	f.Add(sectionsSrc, "m1", "[a](b) _c_ `d`", "Mid", "### Deep\n\n⟦2:emoticon smile⟧")
 	f.Add(`<p>a <!-- c --> b ⟦1:x⟧</p><h1>H</h1>`, "a", "b", "H", "x")
+	f.Add("<p>a <code>x\x005\x00y</code> b</p>", "b", "c", "", "")
+	f.Add("<p><ac:emoticon ac:name=\"s\"/> <code>x\x001\x00y</code> <code>`\x00</code> b</p><h2>H</h2>", "b", "c\x00\x01", "H", "`\x001\x00`")
+	f.Add(`<p>call __init__ and 2**10 vs 3**4 [1](2) here</p>`, "here", "[x](javascript:y)", "", "")
 	f.Fuzz(func(t *testing.T, src, old, repl, heading, body string) {
 		d, err := Parse(src)
 		if err != nil {

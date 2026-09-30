@@ -34,7 +34,7 @@ type mdParser struct {
 // markers of every inline unit (see classify). A marker may appear at most
 // once in the whole body, and a block marker only on a line of its own.
 func (a *applier) parseBody(body string, c classifyCtx) ([]*block, error) {
-	body = noNUL.Replace(strings.ReplaceAll(body, "\r\n", "\n"))
+	body = cleanModelText(strings.ReplaceAll(body, "\r\n", "\n"))
 	p := &mdParser{a: a, lines: strings.Split(body, "\n")}
 	for p.i < len(p.lines) {
 		p.block()

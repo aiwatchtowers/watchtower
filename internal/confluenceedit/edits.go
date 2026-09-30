@@ -28,7 +28,10 @@ func (a *applier) replaceText(old, repl string) (Change, error) {
 	if err := checkRewritable(u, repl); err != nil {
 		return Change{}, err
 	}
-	repl = noNUL.Replace(repl)
+	if !a.roundTrips(u) {
+		return Change{}, errors.New("this passage contains characters that read as formatting (e.g. `**`, `_`, `[..](..)`); edit it in Confluence or use replace_section")
+	}
+	repl = cleanModelText(repl)
 	before := u.text
 	after := before[:h.r.start] + repl + before[h.r.end:]
 	if after == before {
@@ -236,16 +239,31 @@ func headingMatches(text, key string, strict bool) bool {
 	return strings.EqualFold(matchKey(stripEmphasis.Replace(text)), stripEmphasis.Replace(key))
 }
 
+// headingNotFound points at the earlier replace_section when the heading
+// is in its new body or was one of the headings its region replaced.
 func (a *applier) headingNotFound(key string) error {
 	for _, bl := range a.d.blocks {
 		if bl.dead || bl.section == nil {
 			continue
 		}
-		for _, b := range bl.section.body {
-			if b.kind == blockHeading && headingMatches(unitText(b.unit), key, false) {
-				return fmt.Errorf("heading is inside the section replaced by edits[%d]; put this change into that edit's new_body", bl.section.index)
-			}
+		if a.sectionHasHeading(bl.section, key) {
+			return fmt.Errorf("heading is inside the section replaced by edits[%d]; put this change into that edit's new_body", bl.section.index)
 		}
 	}
 	return errors.New("heading not found; name a heading exactly as the page text shows it, without the leading #")
+}
+
+func (a *applier) sectionHasHeading(s *section, key string) bool {
+	for _, b := range s.body {
+		if b.kind == blockHeading && headingMatches(unitText(b.unit), key, false) {
+			return true
+		}
+	}
+	for _, b := range a.d.blocks {
+		if b.dead && b.kind == blockHeading && b.start >= s.region.start && b.end <= s.region.end &&
+			headingMatches(unitText(b.unit), key, false) {
+			return true
+		}
+	}
+	return false
 }

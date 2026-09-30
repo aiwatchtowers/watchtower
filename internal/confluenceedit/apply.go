@@ -84,6 +84,7 @@ func Apply(d *Doc, edits []Edit) (string, []Change, error) {
 		}
 		changes = append(changes, c)
 	}
+	a.dropRestored(changes)
 	out, err := a.render()
 	if err != nil {
 		return "", nil, err
@@ -91,19 +92,43 @@ func Apply(d *Doc, edits []Edit) (string, []Change, error) {
 	return out, changes, nil
 }
 
+// dropRestored filters every change's Removed against the final document:
+// a marker one edit deleted and a later edit put back was moved, not
+// removed.
+func (a *applier) dropRestored(changes []Change) {
+	final := a.present()
+	for i := range changes {
+		kept := make([]string, 0, len(changes[i].Removed))
+		for _, tok := range changes[i].Removed {
+			if !final[a.tokens[tok]] {
+				kept = append(kept, tok)
+			}
+		}
+		changes[i].Removed = kept
+	}
+}
+
 // applier holds the evolving state: a working clone of the Doc whose units
 // carry their current text and marks, and whose heading blocks carry the
 // section bodies written so far.
 type applier struct {
-	orig    *Doc
-	d       *Doc
-	index   int
-	tokens  map[string]int // marker token -> ordinal
-	isBlock map[int]bool   // markers that are whole blocks (tables, macros, ...)
+	orig     *Doc
+	d        *Doc
+	origOf   map[*unit]*unit // working-clone unit -> its original
+	faithful map[*unit]bool  // original unit -> passes the R6 skeleton guard
+	index    int
+	tokens   map[string]int // marker token -> ordinal
+	isBlock  map[int]bool   // markers that are whole blocks (tables, macros, ...)
 }
 
 func newApplier(d *Doc) *applier {
-	a := &applier{orig: d, d: d.clone(), tokens: map[string]int{}, isBlock: map[int]bool{}}
+	a := &applier{
+		orig: d, d: d.clone(), tokens: map[string]int{}, isBlock: map[int]bool{},
+		origOf: map[*unit]*unit{}, faithful: map[*unit]bool{},
+	}
+	for i, u := range a.d.units {
+		a.origOf[u] = d.units[i]
+	}
 	for _, m := range d.markers {
 		a.tokens[m.token()] = m.Ordinal
 	}
@@ -294,17 +319,13 @@ func locator(heading string) string {
 // sees them and refuses a conflict — returned as an *EditError, never the
 // Render panic.
 func (a *applier) render() (string, error) {
-	orig := make(map[*unit]*unit, len(a.d.units))
-	for i, u := range a.d.units {
-		orig[u] = a.orig.units[i]
-	}
 	var sections []*section
 	for _, bl := range a.d.blocks {
 		if bl.dead {
 			continue
 		}
 		for _, u := range bl.editUnits() {
-			if o := orig[u]; o != nil && unitChanged(o, u) {
+			if o := a.origOf[u]; o != nil && unitChanged(o, u) {
 				out := a.unitXHTML(u, u.links)
 				u.out = &out
 			}

@@ -212,13 +212,18 @@ func delimAt(s string, i int) string {
 	return ""
 }
 
-// hole emits a marker's original bytes.
+// hole emits a marker's original bytes. Holes are only ever written by
+// inlineXHTML (unit text never holds a NUL), but a malformed one is text —
+// its NULs as U+FFFD — never an index into the marker table.
 func (p *inlineParser) hole(s string, i int) (string, int) {
 	j := strings.IndexByte(s[i+1:], 0)
 	if j < 0 {
-		return "", len(s) // unreachable: holes are written in pairs
+		return "\uFFFD", i + 1
 	}
-	k, _ := strconv.Atoi(s[i+1 : i+1+j])
+	k, err := strconv.Atoi(s[i+1 : i+1+j])
+	if err != nil || k < 1 || k > len(p.a.orig.markers) {
+		return "\uFFFD" + textEscaper.Replace(s[i+1:i+1+j]) + "\uFFFD", i + j + 2
+	}
 	return p.a.orig.markers[k-1].Raw, i + j + 2
 }
 
@@ -335,6 +340,10 @@ func (p *inlineParser) link(f *frame, i int) (string, int, bool) {
 	href := s[mid+2 : end]
 	tag, ok := p.links[href]
 	if !ok {
+		if !safeHref(href) {
+			p.failedLink[f.base+mid] = true
+			return "", 0, false
+		}
 		tag = `<a href="` + attrEscaper.Replace(href) + `">`
 	}
 	return tag + p.parse(s[i+1:mid], f.depth+1, f.base+i+1) + "</a>", end + 1, true
@@ -356,6 +365,23 @@ func (f *frame) midAfter(i int) (int, bool) {
 	}
 	f.nextMid = i + 1 + rel
 	return f.nextMid, true
+}
+
+// safeHref admits the hrefs an edit may write as a new link: http, https,
+// mailto, and scheme-less (relative or "#fragment"). Anything else —
+// javascript:, data:, ... — stays literal text. A link the page already
+// had keeps its original tag whatever its scheme (see link).
+func safeHref(href string) bool {
+	t := strings.TrimSpace(href)
+	i := strings.IndexAny(t, ":/?#")
+	if i < 0 || t[i] != ':' {
+		return true
+	}
+	switch strings.ToLower(t[:i]) {
+	case "http", "https", "mailto":
+		return true
+	}
+	return false
 }
 
 // maxHref bounds the scan for an href's closing ")", so a line of

@@ -54,6 +54,31 @@ func normalize(s string) normText {
 	return n
 }
 
+// cleanModelText makes model-written text storable: invalid UTF-8 and
+// every rune XML 1.0 forbids (NUL and the other C0 controls except tab,
+// LF and CR, surrogates, U+FFFE/U+FFFF) become U+FFFD, so an edit can
+// never produce storage Confluence rejects.
+func cleanModelText(s string) string {
+	return strings.Map(func(r rune) rune {
+		if xmlChar(r) {
+			return r
+		}
+		return utf8.RuneError
+	}, strings.ToValidUTF8(s, "\uFFFD"))
+}
+
+func xmlChar(r rune) bool {
+	switch {
+	case r == '\t' || r == '\n' || r == '\r':
+		return true
+	case r < 0x20:
+		return false
+	case r >= 0xD800 && r <= 0xDFFF:
+		return false
+	}
+	return r != 0xFFFE && r != 0xFFFF && r <= unicode.MaxRune
+}
+
 // matchKey is the key old text is looked up by.
 func matchKey(s string) string {
 	return strings.TrimSpace(normalize(s).s)

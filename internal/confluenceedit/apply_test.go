@@ -249,7 +249,8 @@ func TestApplyEditsInsideAReplacedSection(t *testing.T) {
 	assert.Contains(t, ee.Msg, "inside the section replaced by edits[0]")
 
 	ee = applyErr(t, sectionsSrc, sectionEdit("Mid", "x"), sectionEdit("Deep", "y"))
-	assert.Contains(t, ee.Msg, "heading not found", "the nested heading died with the outer section")
+	assert.Equal(t, 1, ee.Index)
+	assert.Contains(t, ee.Msg, "inside the section replaced by edits[0]", "the nested heading died with the outer section (finding 7)")
 }
 
 // TestApplyTextEditThenEnclosingSection: a unit rewritten by an earlier

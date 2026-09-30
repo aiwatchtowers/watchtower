@@ -129,7 +129,7 @@ func (in *inliner) codeSpan(n *node) string {
 			return in.marker(n)
 		}
 	}
-	content := codeLines.Replace(plainText(n))
+	content := noNUL.Replace(codeLines.Replace(plainText(n)))
 	if content == "" {
 		return ""
 	}
