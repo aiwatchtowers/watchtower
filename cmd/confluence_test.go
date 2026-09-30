@@ -129,7 +129,7 @@ func runConfluence(t *testing.T, daemonPID int, args ...string) (string, error) 
 	rootCmd.SetArgs(append([]string{"confluence"}, args...))
 	err := rootCmd.Execute()
 	rootCmd.SetArgs(nil)
-	confluenceFlagAccount, confluenceSpacesJSON, confluenceStatusJSON, confluenceSyncForce = 0, false, false, false
+	confluenceFlagAccount, confluenceSpacesJSON, confluenceStatusJSON, confluenceSyncForce, confluenceAccessJSON = 0, false, false, false, false
 	confluenceCmd.PersistentFlags().VisitAll(func(f *pflag.Flag) { f.Changed = false })
 	for _, c := range confluenceCmd.Commands() {
 		c.Flags().VisitAll(func(f *pflag.Flag) { f.Changed = false })
@@ -795,4 +795,60 @@ func TestConfluenceSync_CancelReturnsCollectedFailures(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 	assert.Contains(t, err.Error(), "listing ENG failed", "the failures collected before the cancel are kept")
 	assert.NotContains(t, listed, "QA", "nothing runs after the cancel")
+}
+
+// `confluence access --json` reports the stored grant's Confluence read and
+// write scopes as two independent booleans (the Desktop's "Allow editing"
+// button keys on read && !write).
+func TestConfluenceAccess_ReportsReadAndWriteScopes(t *testing.T) {
+	cases := []struct {
+		name  string
+		scope string
+		want  string
+	}{
+		{"jira only", jira.JiraScopes, `{"read":false,"write":false}`},
+		{"read only", jira.OAuthScopes, `{"read":true,"write":false}`},
+		{"read and write", jira.OAuthScopes + " " + jira.ConfluenceWriteScopes, `{"read":true,"write":true}`},
+		{"write without read", jira.JiraScopes + " " + jira.ConfluenceWriteScopes, `{"read":false,"write":true}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			setupConfluenceEnv(t, tc.scope)
+			out, err := runConfluence(t, 0, "access", "--account", "1", "--json")
+			require.NoError(t, err)
+			assert.JSONEq(t, tc.want, out)
+		})
+	}
+}
+
+// No token file is simply "no access" (false/false), not an error.
+func TestConfluenceAccess_MissingTokenIsNoAccess(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.OAuthScopes+" "+jira.ConfluenceWriteScopes)
+	require.NoError(t, jira.NewTokenStore(env.cfg.WorkspaceDir(), 1).Delete())
+
+	out, err := runConfluence(t, 0, "access", "--account", "1", "--json")
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"read":false,"write":false}`, out)
+}
+
+// A corrupt token is an error naming the token, never a quiet false/false
+// (which would offer a re-consent that is not the fix).
+func TestConfluenceAccess_CorruptTokenIsAnError(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.OAuthScopes)
+	corruptJiraToken(t, env)
+
+	out, err := runConfluence(t, 0, "access", "--account", "1", "--json")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading jira account 1 token")
+	assert.NotContains(t, out, `"read"`)
+}
+
+// Without --json the same answer prints as two human lines; the account
+// resolves like every other confluence subcommand (the single enabled one).
+func TestConfluenceAccess_TextOutputDefaultAccount(t *testing.T) {
+	setupConfluenceEnv(t, jira.OAuthScopes)
+
+	out, err := runConfluence(t, 0, "access")
+	require.NoError(t, err)
+	assert.Equal(t, "Confluence read:  yes\nConfluence write: no\n", out)
 }
