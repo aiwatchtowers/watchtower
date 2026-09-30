@@ -27,16 +27,21 @@ final class ProjectsViewModelDeleteTests: XCTestCase {
     private final class DeletingCLIRunner: CLIRunnerProtocol, @unchecked Sendable {
         let pool: DatabasePool
         var fail = false
+        var removalError = ""
         private(set) var calls: [[String]] = []
         init(pool: DatabasePool) { self.pool = pool }
 
         func run(args: [String]) async throws -> Data {
             calls.append(args)
             if fail { throw CLIRunnerError.nonZeroExit(code: 1, stderr: "database is locked") }
-            if args.count == 3, args[0] == "project", args[1] == "delete", let id = Int64(args[2]) {
-                try await pool.write { try $0.execute(sql: "DELETE FROM projects WHERE id = ?", arguments: [id]) }
+            guard args.count == 4, args[0] == "project", args[1] == "delete", let id = Int64(args[2]) else {
+                return Data()
             }
-            return Data()
+            try await pool.write { try $0.execute(sql: "DELETE FROM projects WHERE id = ?", arguments: [id]) }
+            let envelope: [String: Any] = [
+                "id": id, "deleted": true, "removal_ok": removalError.isEmpty, "removal_error": removalError
+            ]
+            return try JSONSerialization.data(withJSONObject: envelope)
         }
     }
 
@@ -59,11 +64,29 @@ final class ProjectsViewModelDeleteTests: XCTestCase {
 
         XCTAssertTrue(ok)
         XCTAssertEqual(closedBeforeCLI, [id], "the terminal closes before `project delete` runs")
-        XCTAssertEqual(runner.calls, [["project", "delete", String(id)]])
+        XCTAssertEqual(runner.calls, [["project", "delete", String(id), "--json"]])
         XCTAssertTrue(vm.summaries.isEmpty)
         XCTAssertNil(vm.selectedProjectID)
         XCTAssertNil(vm.deleteError)
+        XCTAssertNil(vm.errorMessage)
         XCTAssertNil(vm.deletingProjectID)
+    }
+
+    /// The rows are gone but the folder cleanup failed: the project still
+    /// leaves the list, and a non-blocking warning names the removal error.
+    func testFolderCleanupFailureDeletesTheProjectAndWarns() async throws {
+        let id = try await pool.write { try TestDatabase.insertProject($0) }
+        let runner = DeletingCLIRunner(pool: pool)
+        runner.removalError = "permission denied: .claude/skills"
+        let vm = makeVM(runner)
+        await vm.reload()
+
+        let ok = await vm.deleteProject(id)
+
+        XCTAssertTrue(ok)
+        XCTAssertTrue(vm.summaries.isEmpty)
+        XCTAssertNil(vm.deleteError, "a cleanup failure is a warning, not a failed delete")
+        XCTAssertTrue(vm.errorMessage?.contains("permission denied: .claude/skills") ?? false)
     }
 
     func testCLIFailureKeepsTheProjectAndShowsTheError() async throws {
@@ -103,7 +126,7 @@ final class ProjectsViewModelDeleteTests: XCTestCase {
         _ = await first.value
 
         XCTAssertFalse(second)
-        XCTAssertEqual(runner.calls, [["project", "delete", String(a)]])
+        XCTAssertEqual(runner.calls, [["project", "delete", String(a), "--json"]])
     }
 
     func testReloadClosesTheTerminalOfAProjectDeletedFromOutside() async throws {

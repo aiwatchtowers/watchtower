@@ -8,6 +8,22 @@ struct ProjectCreated: Decodable, Equatable {
     let name: String
 }
 
+/// `watchtower project delete N --json` envelope. The project rows are gone
+/// whenever the command exits 0; `removalOK == false` means only the folder
+/// cleanup failed, and `removalError` says why.
+struct ProjectDeleted: Decodable, Equatable {
+    let id: Int64
+    let deleted: Bool
+    let removalOK: Bool
+    let removalError: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, deleted
+        case removalOK = "removal_ok"
+        case removalError = "removal_error"
+    }
+}
+
 /// `watchtower integrate status --project N --json` (Task 12). `skill` is a
 /// devpack state (`installed`, `updated`, `unchanged`, `drifted`, `missing`,
 /// `foreign`); a drifted or foreign skill is the owner's own content (PROJ-04)
@@ -47,7 +63,8 @@ struct ProjectCLI {
 
     /// Removes what was installed in the folder, then the project and every
     /// row it owns (Task 4 runs the removal first). Used by Task 20.
-    func delete(projectID: Int64) async throws {
-        _ = try await runner.run(args: ["project", "delete", String(projectID)])
+    func delete(projectID: Int64) async throws -> ProjectDeleted {
+        let data = try await runner.run(args: ["project", "delete", String(projectID), "--json"])
+        return try JSONDecoder().decode(ProjectDeleted.self, from: data)
     }
 }

@@ -105,8 +105,10 @@ final class ProjectsViewModel {
     /// terminal — and with it the Claude Code session writing through
     /// `mcp --project` — closes first, then `watchtower project delete N`
     /// removes the rows and the folder install, then the list reloads. A CLI
-    /// failure keeps the project listed and reports the CLI's error. A second
-    /// call while one runs is refused.
+    /// failure keeps the project listed and reports the CLI's error. A folder
+    /// cleanup failure (`removal_ok == false`) still deletes the project and
+    /// leaves a non-blocking warning in `errorMessage`. A second call while one
+    /// runs is refused.
     @discardableResult
     func deleteProject(_ id: Int64) async -> Bool {
         guard deletingProjectID == nil else { return false }
@@ -118,11 +120,15 @@ final class ProjectsViewModel {
         deleteError = nil
         defer { deletingProjectID = nil }
         await closeTerminal?(id)
+        let result: ProjectDeleted
         do {
-            try await cli.delete(projectID: id)
+            result = try await cli.delete(projectID: id)
         } catch {
             deleteError = "Could not delete the project: \(error.localizedDescription)"
             return false
+        }
+        if !result.removalOK {
+            errorMessage = "The project was deleted, but cleaning its folder failed: \(result.removalError)"
         }
         if selectedProjectID == id { selectedProjectID = nil }
         await reload()
