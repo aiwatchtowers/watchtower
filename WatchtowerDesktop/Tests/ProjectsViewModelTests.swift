@@ -105,8 +105,9 @@ final class ProjectsViewModelTests: XCTestCase {
         vm.onProjectCreated = { announced.append(($0.id, $1)) }
         await vm.createProject(folder: URL(fileURLWithPath: "/tmp/acme"), name: nil)
         XCTAssertEqual(vm.selectedProjectID, id)
-        XCTAssertTrue(vm.errorMessage?.contains("Repair") == true)
-        XCTAssertTrue(vm.errorMessage?.contains("claude not found") == true, "the install error is shown")
+        XCTAssertTrue(vm.installErrors[id]?.contains("Repair") == true)
+        XCTAssertTrue(vm.installErrors[id]?.contains("claude not found") == true, "the install error is shown")
+        XCTAssertNil(vm.errorMessage, "the note belongs to its project, not the list-wide line")
         XCTAssertEqual(vm.installStatus[id]?.needsRepair, true)
         XCTAssertEqual(announced.map(\.0), [id], "the baseline is still seeded")
         XCTAssertEqual(announced.map(\.1), [false], "no first-run terminal after a failed install")
@@ -133,6 +134,106 @@ final class ProjectsViewModelTests: XCTestCase {
             ["integrate", "status", "--project", String(id), "--json"]
         ])
         XCTAssertEqual(vm.installStatus[id]?.needsRepair, false)
+    }
+
+    /// Switching projects cancels the page's `.task(id:)` status read while
+    /// the CLI still runs: the cancellation is not an error, and the last
+    /// known status stays.
+    func testCancelledStatusReadKeepsTheStatusAndReportsNothing() async throws {
+        let runner = FakeCLIRunner(stdout: Data(#"{"skill":"unchanged","hook":true,"mcp":true}"#.utf8))
+        let vm = makeVM(runner)
+        await vm.refreshInstallStatus(projectID: 1)
+        XCTAssertNotNil(vm.installStatus[1])
+
+        runner.blockUntilCancelled = true
+        let read = Task { await vm.refreshInstallStatus(projectID: 1) }
+        read.cancel()
+        await read.value
+
+        XCTAssertEqual(vm.installStatus[1]?.needsRepair, false, "the previous status is kept")
+        XCTAssertNil(vm.installErrors[1])
+        XCTAssertNil(vm.errorMessage)
+    }
+
+    /// House rule: started → navigated away → result arrives. The process
+    /// runner terminates the child on cancel, so the read can fail with a
+    /// non-zero exit rather than CancellationError — still silent.
+    func testStatusReadThatFailsAfterTheOwnerSwitchedAwayIsSilent() async throws {
+        let held = HeldCLIRunner(error: CLIRunnerError.nonZeroExit(code: 15, stderr: ""))
+        let vm = makeVM(held)
+        vm.selectedProjectID = 1
+        let read = Task { await vm.refreshInstallStatus(projectID: 1) }
+        await awaitStarted(held)
+
+        vm.selectedProjectID = 2
+        read.cancel()
+        held.release()
+        await read.value
+
+        XCTAssertNil(vm.installErrors[1])
+        XCTAssertNil(vm.installErrors[2])
+        XCTAssertNil(vm.errorMessage, "nothing lands in the shared list-wide error line")
+    }
+
+    func testStatusReadFailureIsScopedToItsProjectAndClearedByTheNextRead() async throws {
+        let runner = ScriptedCLIRunner(results: [
+            .success(Data(#"{"skill":"missing","hook":false,"mcp":true}"#.utf8)),
+            .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "boom")),
+            .success(Data(#"{"skill":"unchanged","hook":true,"mcp":true}"#.utf8))
+        ])
+        let vm = makeVM(runner)
+        await vm.refreshInstallStatus(projectID: 1)
+        await vm.refreshInstallStatus(projectID: 1)
+        XCTAssertTrue(vm.installErrors[1]?.contains("boom") == true)
+        XCTAssertEqual(vm.installStatus[1]?.needsRepair, true, "the last known status (and its Repair) stays")
+        XCTAssertNil(vm.installErrors[2])
+        XCTAssertNil(vm.errorMessage)
+
+        await vm.refreshInstallStatus(projectID: 1)
+        XCTAssertNil(vm.installErrors[1])
+        XCTAssertEqual(vm.installStatus[1]?.needsRepair, false)
+    }
+
+    /// Selecting the new project starts the page's own status read, racing
+    /// `createProject`'s: a later read that still needs repair keeps the note.
+    func testCreateTimeInstallNoteSurvivesTheNextStatusRead() async throws {
+        let id = try await pool.write { try TestDatabase.insertProject($0) }
+        let missing = Data(#"{"skill":"missing","hook":false,"mcp":false}"#.utf8)
+        let runner = ScriptedCLIRunner(results: [
+            .success(createdJSON(id)),
+            .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "claude not found")),
+            .success(missing),
+            .success(missing),
+            .success(Data(#"{"skill":"unchanged","hook":true,"mcp":true}"#.utf8))
+        ])
+        let vm = makeVM(runner)
+        await vm.createProject(folder: URL(fileURLWithPath: "/tmp/acme"), name: nil)
+        await vm.refreshInstallStatus(projectID: id)
+        XCTAssertTrue(vm.installErrors[id]?.contains("claude not found") == true, "the note still explains Repair")
+
+        await vm.refreshInstallStatus(projectID: id)
+        XCTAssertNil(vm.installErrors[id], "a healthy install clears it")
+    }
+
+    /// A successful Repair of one project leaves the list-wide line (another
+    /// operation's failure) alone.
+    func testRepairSuccessLeavesTheListWideErrorAlone() async throws {
+        let runner = FakeCLIRunner(stdout: Data(#"{"skill":"unchanged","hook":true,"mcp":true}"#.utf8))
+        let vm = makeVM(runner)
+        vm.errorMessage = "Could not load projects"
+        await vm.repairInstall(projectID: 1)
+        XCTAssertEqual(vm.errorMessage, "Could not load projects")
+    }
+
+    func testRepairFailureStaysShownAfterTheStatusRefresh() async throws {
+        let runner = ScriptedCLIRunner(results: [
+            .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "claude not found")),
+            .success(Data(#"{"skill":"missing","hook":false,"mcp":false}"#.utf8))
+        ])
+        let vm = makeVM(runner)
+        await vm.repairInstall(projectID: 3)
+        XCTAssertTrue(vm.installErrors[3]?.contains("Repair failed") == true)
+        XCTAssertEqual(vm.installStatus[3]?.needsRepair, true)
     }
 
     func testRevealSelectsTheProjectAndPane() {

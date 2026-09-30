@@ -71,6 +71,9 @@ struct DocumentTextView: NSViewRepresentable {
     /// the selection (`DocumentSelectionCarry`).
     let contentID: String
     @Binding var selection: NSRange
+    /// Left/right text inset; a caller wanting a readable line length on a
+    /// wide pane passes `ReadableColumn.horizontalInset(forWidth:)`.
+    var horizontalInset: CGFloat = ReadableColumn.minInset
     let onClick: (Int) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
@@ -82,7 +85,7 @@ struct DocumentTextView: NSViewRepresentable {
         textView.isSelectable = true
         textView.isRichText = true
         textView.drawsBackground = false
-        textView.textContainerInset = NSSize(width: 20, height: 16)
+        textView.textContainerInset = NSSize(width: horizontalInset, height: 16)
         textView.delegate = context.coordinator
         context.coordinator.apply(text, contentID: contentID, to: textView)
         return scroll
@@ -91,6 +94,9 @@ struct DocumentTextView: NSViewRepresentable {
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         context.coordinator.parent = self
         guard let textView = scroll.documentView as? NSTextView else { return }
+        if textView.textContainerInset.width != horizontalInset {
+            textView.textContainerInset = NSSize(width: horizontalInset, height: 16)
+        }
         context.coordinator.apply(text, contentID: contentID, to: textView)
     }
 

@@ -64,6 +64,9 @@ struct ProjectPageView: View {
                 }
                 .buttonStyle(.link)
                 .help("Reveal in Finder")
+                if let installError = vm.installErrors[project.id] {
+                    Text(installError).font(.caption).foregroundStyle(.red).lineLimit(2)
+                }
             }
             Spacer()
             installBadge
@@ -131,6 +134,7 @@ struct ProjectPageView: View {
         switch vm.pane {
         case .terminal:
             ProjectTerminalView(project: project)
+                .id(project.id)
         case .board:
             ProjectBoardView(projectID: project.id)
                 .id(project.id)

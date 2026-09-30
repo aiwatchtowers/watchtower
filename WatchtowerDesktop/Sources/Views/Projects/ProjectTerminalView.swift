@@ -76,11 +76,31 @@ private struct TerminalHost: NSViewRepresentable {
 
     private func attach(to container: NSView) {
         let terminal = session.view
-        guard terminal.superview !== container else { return }
-        terminal.removeFromSuperview()
-        terminal.frame = container.bounds
-        terminal.autoresizingMask = [.width, .height]
-        container.addSubview(terminal)
+        guard TerminalHostAttachment.attach(terminal, to: container) else { return }
         DispatchQueue.main.async { terminal.window?.makeFirstResponder(terminal) }
+    }
+}
+
+/// How a host shows one session's view. SwiftUI reuses the same host when the
+/// page switches to another project, so the container can still hold the
+/// previous project's terminal: it must be the only subview afterwards, or
+/// switching back leaves the other project's terminal on top — on screen and
+/// taking the keystrokes.
+enum TerminalHostAttachment {
+    /// Makes `terminal` the container's only subview. Returns whether
+    /// anything changed (the caller then moves keyboard focus to it).
+    @MainActor
+    @discardableResult
+    static func attach(_ terminal: NSView, to container: NSView) -> Bool {
+        let others = container.subviews.filter { $0 !== terminal }
+        if terminal.superview === container, others.isEmpty { return false }
+        others.forEach { $0.removeFromSuperview() }
+        if terminal.superview !== container {
+            terminal.removeFromSuperview()
+            terminal.frame = container.bounds
+            terminal.autoresizingMask = [.width, .height]
+            container.addSubview(terminal)
+        }
+        return true
     }
 }
