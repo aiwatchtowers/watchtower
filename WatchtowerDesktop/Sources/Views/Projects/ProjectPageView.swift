@@ -112,12 +112,12 @@ struct ProjectPageView: View {
     /// and hand over the manual command instead of a Repair that always fails.
     private var claudeNotFoundLabel: some View {
         let command = ProjectInstallStatus.manualMCPCommand(
-            projectID: project.id, cliPath: Constants.findCLIPath() ?? "watchtower"
+            projectID: project.id, folder: project.folderPath, cliPath: Constants.findCLIPath() ?? "watchtower"
         )
         return Label("Claude Code CLI not found", systemImage: "exclamationmark.triangle")
             .foregroundStyle(.orange)
             .font(.caption)
-            .help("Install Claude Code, then run in the project folder:\n\(command)")
+            .help("Install Claude Code, then run:\n\(command)")
             .contextMenu {
                 Button("Copy MCP Command") {
                     NSPasteboard.general.clearContents()

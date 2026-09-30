@@ -430,3 +430,23 @@ func TestStatusProjectReportsEachPart(t *testing.T) {
 		t.Fatalf("without claude, status must report it rather than fail: %+v err=%v", st, err)
 	}
 }
+
+// TestProjectMCPCommand_MatchesTheDesktopFixture pins the text the Desktop's
+// ProjectInstallStatus.manualMCPCommand reproduces (ProjectCLITests
+// testManualMCPCommandMatchesTheGoTwin): change both sides together.
+func TestProjectMCPCommand_MatchesTheDesktopFixture(t *testing.T) {
+	cases := []struct {
+		o    ProjectInstallOptions
+		want string
+	}{
+		{ProjectInstallOptions{ProjectID: 7, Folder: "/tmp/acme project", Bin: "/tmp/acme bin/it's/watchtower"},
+			`cd '/tmp/acme project' && claude mcp add --scope local watchtower-project -- '/tmp/acme bin/it'\''s/watchtower' mcp --project 7`},
+		{ProjectInstallOptions{ProjectID: 3, Folder: "/tmp/acme", Bin: "/usr/local/bin/watchtower"},
+			`cd /tmp/acme && claude mcp add --scope local watchtower-project -- /usr/local/bin/watchtower mcp --project 3`},
+	}
+	for _, c := range cases {
+		if got := ProjectMCPCommand(c.o); got != c.want {
+			t.Errorf("ProjectMCPCommand(%+v):\n got %s\nwant %s", c.o, got, c.want)
+		}
+	}
+}

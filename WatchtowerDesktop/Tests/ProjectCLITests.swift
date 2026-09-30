@@ -69,10 +69,19 @@ final class ProjectCLITests: XCTestCase {
         XCTAssertTrue(ProjectInstallStatus(skill: "missing", hook: true, mcp: false, claudeFound: false).needsRepair)
     }
 
-    func testManualMCPCommandQuotesTheBinaryPath() {
+    /// Shared fixture with Go `TestProjectMCPCommand_MatchesTheDesktopFixture`
+    /// (`internal/devpack/project_test.go`): same inputs, same text.
+    func testManualMCPCommandMatchesTheGoTwin() {
         XCTAssertEqual(
-            ProjectInstallStatus.manualMCPCommand(projectID: 7, cliPath: "/tmp/acme bin/it's/watchtower"),
-            #"claude mcp add --scope local watchtower-project -- '/tmp/acme bin/it'\''s/watchtower' mcp --project 7"#
+            ProjectInstallStatus.manualMCPCommand(
+                projectID: 7, folder: "/tmp/acme project", cliPath: "/tmp/acme bin/it's/watchtower"
+            ),
+            #"cd '/tmp/acme project' && claude mcp add --scope local watchtower-project -- '/tmp/acme bin/it'\''s/watchtower' mcp --project 7"#
+        )
+        XCTAssertEqual(
+            ProjectInstallStatus.manualMCPCommand(projectID: 3, folder: "/tmp/acme", cliPath: "/usr/local/bin/watchtower"),
+            "cd /tmp/acme && claude mcp add --scope local watchtower-project -- /usr/local/bin/watchtower mcp --project 3",
+            "shell-safe paths stay bare, as Go leaves them"
         )
     }
 

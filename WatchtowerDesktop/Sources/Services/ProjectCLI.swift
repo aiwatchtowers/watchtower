@@ -63,11 +63,23 @@ struct ProjectInstallStatus: Decodable, Equatable {
         skill == "missing" || skill == "updated" || !hook || (claudeFound && !mcp)
     }
 
-    /// The command the owner runs in the project folder once Claude Code is
-    /// installed, mirroring what `integrate claude-code --project` registers.
-    static func manualMCPCommand(projectID: Int64, cliPath: String) -> String {
-        let quoted = "'" + cliPath.replacingOccurrences(of: "'", with: #"'\''"#) + "'"
-        return "claude mcp add --scope local watchtower-project -- \(quoted) mcp --project \(projectID)"
+    /// The command the owner runs once Claude Code is installed, mirroring
+    /// what `integrate claude-code --project` registers. It starts with
+    /// `cd <folder> &&` because a local-scope registration is keyed on the
+    /// working directory. Go twin: `devpack.ProjectMCPCommand`
+    /// (`internal/devpack/project.go`) — same text, pinned by one shared
+    /// fixture on both sides.
+    static func manualMCPCommand(projectID: Int64, folder: String, cliPath: String) -> String {
+        "cd \(shellQuote(folder)) && claude mcp add --scope local watchtower-project -- "
+            + "\(shellQuote(cliPath)) mcp --project \(projectID)"
+    }
+
+    /// Go `shellQuote`'s rule: bare when every character is shell-safe,
+    /// otherwise single-quoted with `'` escaped as `'\''`.
+    private static func shellQuote(_ s: String) -> String {
+        let safe = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/._-+:@%,=")
+        if !s.isEmpty, s.unicodeScalars.allSatisfy(safe.contains) { return s }
+        return "'" + s.replacingOccurrences(of: "'", with: #"'\''"#) + "'"
     }
 }
 
