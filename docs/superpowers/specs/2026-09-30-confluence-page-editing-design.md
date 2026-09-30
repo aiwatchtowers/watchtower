@@ -243,3 +243,60 @@ Confluence-editing paragraph:
    EXT-05, and the inventory.
 5. Desktop: the diff card, Allow editing, and the CLI access reporting.
 6. Docs: the CLAUDE.md note and the app-guide.
+
+## 10. Implementation deltas
+
+Rulings made while implementing this design (ledger:
+`.superpowers/sdd/2026-09-30-confluence-page-editing/progress.md`). Earlier
+sections above are the original design and are not rewritten to match.
+
+- **R1:** the T5 (Desktop) brief carries T4's exact args/result JSON keys, read
+  from T4's committed code rather than copied from this spec's prose — the
+  spec's §4 sketch and the actual tool JSON shapes can drift; T4's committed
+  code is the source of truth.
+- **R2:** `ac:link` page links stay markers — byte-exact space keys and
+  anchors, but the link's visible text is not editable inline (cost: can't
+  retitle a link from chat).
+- **R3:** mention markers are labelled `@accountId` inside `internal/confluenceedit`
+  itself; `get_confluence_page`/`edit_confluence_page` relabel them to
+  `@Display Name` for the model, from `ext_users`/`Users()`, best-effort
+  (cost: an unresolved mention still shows the model an id).
+- **R4:** the block model (§3) grew block byte spans, a container id, and a
+  region-replacement seam in `Render`, and `replace_section`'s region is
+  clamped to the heading's own container — kept in Task 2 (the model) rather
+  than pushed into Task 3 (edits), so Task 3 stays about applying edits and
+  converting markdown, not about document structure.
+- **R5:** stricter than R4 — a section region also stops before any nested
+  `ac:layout` directly inside the heading's own container, never swallowing
+  or splitting a layout (cost: body content after a layout is not part of the
+  preceding section).
+- **R6:** the formatting-skeleton guard — before a unit is rewritten, its
+  pre-edit text is round-tripped through the markdown→XHTML path and its
+  formatting skeleton compared against the unit's actual storage; a mismatch
+  refuses the edit rather than silently turning look-alike text (`__init__`,
+  `[1](2)`) into real formatting (cost: some edits are refused that a human
+  editor would consider safe).
+- **R7:** tightens R6 from a skeleton **count** (multiset) to an **ordered**
+  sequence — a count let a lost tag and a gained tag of the same kind cancel
+  out; the guard also moves NBSP/Unicode spaces outside emphasis delimiters
+  first, so a faithful `<strong>Label:&nbsp;</strong>` round-trip isn't
+  falsely refused.
+- **R8:** the Confluence-editing prompt rule lives in the actions contract
+  (`internal/chat/actions_contract.go` ↔ Swift `AgentToolsContract`, pinned by
+  shared fixtures) — the surfaces that actually mount the tools — not
+  duplicated into the `search_knowledge` prompt copies.
+- **R9:** a successful `edit_confluence_page` write does **not** trigger an
+  immediate `ext_documents` refresh — `internal/extsync` has no
+  single-document refresh path, only its normal per-source cycle. The edited
+  page is picked up on the daemon's next external-sync cycle, so a Confluence
+  edit made through chat lags `search_knowledge` by up to one cycle. §4's
+  "best-effort … reported as `warning`" re-fetch-into-`ext_documents` step was
+  not built; `executeConfluenceEdit`'s result carries only
+  `{page_id, title, url, version}`, no `warning` field.
+
+**PutJSON's one production caller** is `internal/tools/confluence_page_client.go`'s
+`PutPage` (called only by `confluence_page_edit.go`'s `executeConfluenceEdit`)
+— not `internal/confluenceedit`, which §3 might otherwise suggest: that
+package is a pure text model with no DB and no network access at all. See
+`docs/inventory/external-sources.md`'s EXT-01/EXT-05 for the guard that pins
+this.
