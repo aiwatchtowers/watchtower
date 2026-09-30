@@ -179,12 +179,15 @@ final class ProjectBoardViewModel {
     }
 
     /// The one status writer — the detail menu and a kanban drop alike. A
-    /// status equal to the current one (a drop into the card's own column)
-    /// writes nothing.
-    func setStatus(_ status: String, for id: Int) {
+    /// status equal to the current one (a drop into the card's own column),
+    /// a status the board does not offer, and a target not on this board
+    /// write nothing.
+    /// - Returns: whether a status was written (a failed write sets `errorMessage`).
+    @discardableResult
+    func setStatus(_ status: String, for id: Int) -> Bool {
         guard ProjectBoardCard.editableStatuses.contains(status),
               let current = ProjectBoardOutline.find(id, in: roots),
-              current.target.status != status else { return }
+              current.target.status != status else { return false }
         // The rollup (PROJ-05) may move the target's parents in the same
         // write; they are the owner's doing too, so they never notify.
         var rolledUp: [Int64] = []
@@ -194,7 +197,7 @@ final class ProjectBoardViewModel {
             let after = try ProjectQueries.ancestorStatuses(db, of: Int64(id))
             rolledUp = after.filter { before[$0.key] != $0.value }.map(\.key).sorted()
         }
-        write("change the status", target: id, alsoTouched: { rolledUp }, body)
+        return write("change the status", target: id, alsoTouched: { rolledUp }, body)
     }
 
     func setPriority(_ priority: String) {

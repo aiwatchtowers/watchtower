@@ -9,7 +9,8 @@ struct ProjectBoardKanbanView: View {
     let board: ProjectBoardKanban
     let selectedTargetID: Int?
     let onSelect: (Int) -> Void
-    let onMove: (_ targetID: Int, _ status: String) -> Void
+    /// Returns whether the status was written.
+    let onMove: (_ targetID: Int, _ status: String) -> Bool
 
     var body: some View {
         ScrollView(.horizontal) {
@@ -19,7 +20,8 @@ struct ProjectBoardKanbanView: View {
                         column: column,
                         selectedTargetID: selectedTargetID,
                         onSelect: onSelect,
-                        onMove: onMove
+                        // Only this board's own cards move; see showsCard.
+                        onMove: { id, status in board.showsCard(id) && onMove(id, status) }
                     )
                 }
             }
@@ -33,7 +35,7 @@ private struct ProjectBoardKanbanColumnView: View {
     let column: ProjectBoardKanban.Column
     let selectedTargetID: Int?
     let onSelect: (Int) -> Void
-    let onMove: (_ targetID: Int, _ status: String) -> Void
+    let onMove: (_ targetID: Int, _ status: String) -> Bool
 
     @State private var isTargeted = false
 
@@ -90,14 +92,13 @@ private struct ProjectBoardKanbanColumnView: View {
 private struct DropTarget: ViewModifier {
     let column: ProjectBoardKanban.Column
     @Binding var isTargeted: Bool
-    let onMove: (_ targetID: Int, _ status: String) -> Void
+    let onMove: (_ targetID: Int, _ status: String) -> Bool
 
     func body(content: Content) -> some View {
         if column.acceptsDrops {
             content.dropDestination(for: String.self) { items, _ in
-                let ids = items.compactMap(Int.init)
-                for id in ids { onMove(id, column.status) }
-                return !ids.isEmpty
+                // Every id is attempted; the drop succeeds if any moved.
+                items.compactMap(Int.init).reduce(false) { moved, id in onMove(id, column.status) || moved }
             } isTargeted: { isTargeted = $0 }
         } else {
             content

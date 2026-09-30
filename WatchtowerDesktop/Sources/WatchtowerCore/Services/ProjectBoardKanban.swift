@@ -75,6 +75,13 @@ package struct ProjectBoardKanban {
         self.filterRootID = applied
     }
 
+    /// Whether `id` is a card shown on this board. A drop accepts only these:
+    /// the drop payload is plain text, so a number dragged in from elsewhere
+    /// (or a parent's id) must never move a target.
+    package func showsCard(_ id: Int) -> Bool {
+        columns.contains { $0.cards.contains { $0.id == id } }
+    }
+
     private static func column(_ status: String, cards: [Card], showDone: Bool) -> Column {
         let title = status == otherStatus ? "Other" : ProjectBoardCard.statusLabel(status)
         guard status == "done" else {

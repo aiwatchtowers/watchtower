@@ -284,7 +284,7 @@ final class ProjectBoardViewModelTests: XCTestCase {
         vm.load()
         vm.select(Int(other))
         vm.onOwnerWrite = { _, subject in reported.append(subject) }
-        vm.setStatus("done", for: Int(leaf))
+        XCTAssertTrue(vm.setStatus("done", for: Int(leaf)))
 
         let stored = try dbManager.dbPool.read { db in
             (try TargetQueries.fetchByID(db, id: Int(leaf))?.status,
@@ -307,11 +307,37 @@ final class ProjectBoardViewModelTests: XCTestCase {
         var reported = 0
         vm.onOwnerWrite = { _, _ in reported += 1 }
         vm.load()
-        let before = try dbManager.dbPool.read { try TargetQueries.fetchByID($0, id: Int(tid))?.updatedAt }
-        vm.setStatus("in_progress", for: Int(tid))
+        let historyRows = { try self.dbManager.dbPool.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM target_status_history WHERE target_id = ?", arguments: [tid])
+        } }
+        let before = try historyRows()
+        XCTAssertFalse(vm.setStatus("in_progress", for: Int(tid)))
+        XCTAssertEqual(try historyRows(), before, "no status write, so no history row")
+        XCTAssertEqual(reported, 0)
 
-        let after = try dbManager.dbPool.read { try TargetQueries.fetchByID($0, id: Int(tid))?.updatedAt }
-        XCTAssertEqual(after, before)
+        // The menu path goes through the same writer: picking the current
+        // status is a no-op there too.
+        vm.select(Int(tid))
+        vm.setStatus("in_progress")
+        XCTAssertEqual(try historyRows(), before)
+        XCTAssertEqual(reported, 0)
+    }
+
+    func testSetStatusRefusesATargetOfAnotherProject() throws {
+        let (pid, foreign) = try dbManager.dbPool.write { db -> (Int64, Int64) in
+            let pid = try Self.insertProject(db)
+            _ = try Self.insertTarget(db, project: pid, text: "Mine")
+            let other = try Self.insertProject(db, name: "other")
+            return (pid, try Self.insertTarget(db, project: other, text: "Foreign"))
+        }
+        let vm = makeVM(project: pid)
+        var reported = 0
+        vm.onOwnerWrite = { _, _ in reported += 1 }
+        vm.load()
+        XCTAssertFalse(vm.setStatus("done", for: Int(foreign)))
+
+        let stored = try dbManager.dbPool.read { try TargetQueries.fetchByID($0, id: Int(foreign)) }
+        XCTAssertEqual(stored?.status, "todo")
         XCTAssertEqual(reported, 0)
     }
 

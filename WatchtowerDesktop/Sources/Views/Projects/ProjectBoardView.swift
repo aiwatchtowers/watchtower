@@ -52,9 +52,20 @@ struct ProjectBoardView: View {
     // MARK: - Board (list or kanban)
 
     private func board(_ vm: ProjectBoardViewModel) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            header(vm)
+        let kanban = vm.mode == .kanban ? vm.kanban : nil
+        return VStack(alignment: .leading, spacing: 0) {
+            header(vm, kanban: kanban)
                 .padding(8)
+            // Board-level, not in the detail pane: a kanban drop can fail for
+            // a card that is not the selected one (or with nothing selected).
+            if let error = vm.errorMessage {
+                Text(error)
+                    .font(.callout)
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
+                    .padding(.horizontal, 8)
+                    .padding(.bottom, 6)
+            }
             Divider()
             if vm.roots.isEmpty {
                 ContentUnavailableView(
@@ -63,9 +74,9 @@ struct ProjectBoardView: View {
                     description: Text("Claude Code creates the board through the watchtower-project tools.")
                 )
                 .frame(maxHeight: .infinity)
-            } else if vm.mode == .kanban {
+            } else if let kanban {
                 ProjectBoardKanbanView(
-                    board: vm.kanban,
+                    board: kanban,
                     selectedTargetID: vm.selectedTargetID,
                     onSelect: { vm.select($0) },
                     onMove: { vm.setStatus($1, for: $0) }
@@ -76,7 +87,7 @@ struct ProjectBoardView: View {
         }
     }
 
-    private func header(_ vm: ProjectBoardViewModel) -> some View {
+    private func header(_ vm: ProjectBoardViewModel, kanban: ProjectBoardKanban?) -> some View {
         HStack(spacing: 10) {
             Text("Board").font(.headline)
             Picker("View", selection: Binding(get: { vm.mode }, set: { vm.mode = $0 })) {
@@ -86,8 +97,8 @@ struct ProjectBoardView: View {
             .pickerStyle(.segmented)
             .labelsHidden()
             .fixedSize()
-            if vm.mode == .kanban {
-                kanbanFilterMenu(vm)
+            if let kanban {
+                kanbanFilterMenu(vm, kanban)
             }
             Spacer()
             Toggle("Show done", isOn: Binding(get: { vm.showDone }, set: { vm.showDone = $0 }))
@@ -96,8 +107,7 @@ struct ProjectBoardView: View {
         }
     }
 
-    private func kanbanFilterMenu(_ vm: ProjectBoardViewModel) -> some View {
-        let kanban = vm.kanban
+    private func kanbanFilterMenu(_ vm: ProjectBoardViewModel, _ kanban: ProjectBoardKanban) -> some View {
         let current = kanban.filterOptions.first { $0.id == kanban.filterRootID }
         return Menu {
             Toggle("All", isOn: Binding(
@@ -128,7 +138,7 @@ struct ProjectBoardView: View {
             ContentUnavailableView(
                 "Nothing open",
                 systemImage: "checkmark.circle",
-                description: Text("Every target is done. Turn on Show done to see them.")
+                description: Text("Every target is done or dismissed. Turn on Show done to see them.")
             )
             .frame(maxHeight: .infinity)
         } else {
@@ -156,9 +166,6 @@ struct ProjectBoardView: View {
         if let node = vm.selectedNode {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    if let error = vm.errorMessage {
-                        Text(error).font(.callout).foregroundStyle(.red)
-                    }
                     TextField("Title", text: $titleDraft)
                         .font(.title3.weight(.semibold))
                         .textFieldStyle(.plain)

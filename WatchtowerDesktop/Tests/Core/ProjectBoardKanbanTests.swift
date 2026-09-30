@@ -118,7 +118,17 @@ final class ProjectBoardKanbanTests: XCTestCase {
         let done = try XCTUnwrap(column(board, "done"))
         XCTAssertEqual(done.cards.map(\.id), Array((103...112).reversed()), "most recently updated first")
         XCTAssertEqual(done.hiddenCount, 2)
-        XCTAssertNil(column(board, "dismissed"))
+        XCTAssertEqual(board.columns.map(\.status), ["todo", "in_progress", "in_review", "blocked", "done"],
+                       "a dismissed leaf is hidden, never moved into Other")
+    }
+
+    func testDoneCapBoundary() throws {
+        let ten = try (0..<10).map { node(try target(101 + $0, status: "done")) }
+        XCTAssertEqual(column(ProjectBoardKanban(ten, filterRootID: nil, showDone: false), "done")?.hiddenCount, 0)
+        let eleven = ten + [node(try target(111, status: "done"))]
+        let done = column(ProjectBoardKanban(eleven, filterRootID: nil, showDone: false), "done")
+        XCTAssertEqual(done?.cards.count, 10)
+        XCTAssertEqual(done?.hiddenCount, 1)
     }
 
     func testShowDoneOnShowsEveryDoneCardAndTheDismissedColumn() throws {
@@ -141,6 +151,23 @@ final class ProjectBoardKanbanTests: XCTestCase {
         ]
         let board = ProjectBoardKanban(roots, filterRootID: nil, showDone: false)
         XCTAssertEqual(ids(board, "done"), [2, 1])
+    }
+
+    // MARK: - Drop acceptance
+
+    /// The drop payload is plain text: only a card shown on this board may move.
+    func testShowsCardOnlyForShownLeaves() throws {
+        var roots = [node(try target(1, "Plan"), [node(try target(2))])]
+        // 11 done leaves, 101 the oldest: it falls past the cap.
+        roots += try (0..<11).map { i in
+            node(try target(101 + i, status: "done", updatedAt: String(format: "2026-09-29T10:%02d:00Z", i)))
+        }
+        let board = ProjectBoardKanban(roots, filterRootID: nil, showDone: false)
+        XCTAssertTrue(board.showsCard(2))
+        XCTAssertTrue(board.showsCard(111))
+        XCTAssertFalse(board.showsCard(1), "a parent is never a card")
+        XCTAssertFalse(board.showsCard(999))
+        XCTAssertFalse(board.showsCard(101), "a done card past the cap is not on screen, so not droppable")
     }
 
     // MARK: - Other
