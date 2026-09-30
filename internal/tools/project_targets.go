@@ -260,7 +260,11 @@ func applyTargetText(d *db.DB, t *db.Target, a updateTargetArgs) error {
 	if intent != "" {
 		t.Intent = intent
 	}
-	if err := d.UpdateTarget(*t); err != nil {
+	// A targeted UPDATE (I4): db.UpdateTarget rewrites the whole row and
+	// re-derives progress from status for a leaf, which would silently
+	// reset a progress set earlier just because the agent renamed the
+	// target in the same call that leaves status alone.
+	if err := d.UpdateTargetText(t.ID, t.Text, t.Intent); err != nil {
 		return fmt.Errorf("updating target: %w", err)
 	}
 	return nil

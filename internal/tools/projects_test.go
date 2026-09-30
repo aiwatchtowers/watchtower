@@ -246,6 +246,27 @@ func TestUpdateTarget_ChangesStatusProgressAndText(t *testing.T) {
 	}
 }
 
+// I4 (docs/superpowers/sdd/2026-09-29-projects-poc/final-review.md): a
+// text/intent-only update must never reset a leaf's progress. Before the
+// fix, applyTargetText rewrote the whole row through db.UpdateTarget, which
+// re-derives progress from status on every call — a rename would have
+// silently dropped 0.4 back to statusToProgress("in_progress") == 0.5.
+func TestUpdateTarget_TextOnlyLeavesProgressAlone(t *testing.T) {
+	fx := newProjectFixture(t)
+	reg := projectRegistry(t, fx.d)
+	mustApply(t, reg, fx.a, "update_target", fmt.Sprintf(
+		`{"target_id":%d,"status":"in_progress","progress":0.4,"reason":"started"}`, fx.aTarget))
+
+	mustApply(t, reg, fx.a, "update_target", fmt.Sprintf(
+		`{"target_id":%d,"text":"Alpha feature, renamed","reason":"rename"}`, fx.aTarget))
+
+	got, err := fx.d.GetTargetByID(int(fx.aTarget))
+	require.NoError(t, err)
+	assert.Equal(t, "Alpha feature, renamed", got.Text)
+	assert.Equal(t, "in_progress", got.Status, "status is untouched by a text-only update")
+	assert.InDelta(t, 0.4, got.Progress, 1e-9, "a rename must not reset progress to the status default")
+}
+
 // list_targets/get_target follow the session: a project session sees only its
 // board, every other session never sees a project target (PROJ-01).
 func TestProj01_TargetReadsFollowTheSessionScope(t *testing.T) {

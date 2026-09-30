@@ -80,6 +80,23 @@ func (db *DB) CreateTarget(t Target) (int64, error) {
 	return id, nil
 }
 
+// UpdateTargetText updates only a target's text and intent, touching nothing
+// else — status, progress, tags and every other field are left exactly as
+// they were. Unlike UpdateTarget's full-row rewrite (which re-derives a
+// leaf's progress from its status on every call), this is safe for a caller
+// that only means to rename or reword a target: the project board's
+// update_target tool uses it so renaming an in-progress target never resets
+// the progress the owner or agent set earlier (I4, docs/inventory/projects.md).
+func (db *DB) UpdateTargetText(id int, text, intent string) error {
+	_, err := db.Exec(`UPDATE targets SET text = ?, intent = ?,
+		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`,
+		text, intent, id)
+	if err != nil {
+		return fmt.Errorf("updating target %d text: %w", id, err)
+	}
+	return nil
+}
+
 // UpdateTarget updates all mutable fields of an existing target.
 // It captures the old parent_id before the update, recomputes progress
 // (mirroring UpdateTargetStatus semantics for leaf targets), and propagates
