@@ -6,20 +6,18 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"watchtower/internal/config"
 )
 
 // ErrProjectFolderNotAllowed is returned for a folder a project must never be
 // bound to: the agent working it would roam the whole disk, the whole home
-// directory, or Watchtower's own data.
+// directory, or a protected directory (Watchtower's own data — the caller
+// knows where that lives; db stays a leaf and never imports config).
 var ErrProjectFolderNotAllowed = errors.New("folder cannot be a project")
 
-// checkProjectFolderAllowed refuses resolved when it is the filesystem root,
-// the home directory or an ancestor of it, or a Watchtower data/config
-// directory, anything inside one, or an ancestor of one — or contains a line
-// break (checkFolderLineBreaks).
-func checkProjectFolderAllowed(resolved string) error {
+// checkProjectFolderAllowed refuses resolved when it contains a line break
+// (checkFolderLineBreaks), is the filesystem root, the home directory or an
+// ancestor of it, or is equal to, inside, or an ancestor of a protected dir.
+func checkProjectFolderAllowed(resolved string, protected []string) error {
 	if err := checkFolderLineBreaks(resolved); err != nil {
 		return err
 	}
@@ -30,28 +28,16 @@ func checkProjectFolderAllowed(resolved string) error {
 	if err != nil {
 		return fmt.Errorf("checking folder %s: %w", resolved, err)
 	}
-	home = resolveIfExists(home)
-	if pathWithin(home, resolved) {
+	if pathWithin(resolveIfExists(home), resolved) {
 		return fmt.Errorf("%s is the home directory or contains it: %w", resolved, ErrProjectFolderNotAllowed)
 	}
-	for _, dir := range watchtowerDirs(home) {
+	for _, dir := range protected {
+		dir = resolveIfExists(dir)
 		if pathWithin(resolved, dir) || pathWithin(dir, resolved) {
 			return fmt.Errorf("%s overlaps Watchtower's own data at %s: %w", resolved, dir, ErrProjectFolderNotAllowed)
 		}
 	}
 	return nil
-}
-
-// watchtowerDirs lists the directories Watchtower keeps its own state in.
-func watchtowerDirs(home string) []string {
-	dirs := []string{
-		filepath.Join(home, ".config", "watchtower"),
-		filepath.Join(home, "Library", "Application Support", "Watchtower"),
-	}
-	if root, err := config.DataRoot(); err == nil {
-		dirs = append(dirs, resolveIfExists(root))
-	}
-	return dirs
 }
 
 func resolveIfExists(p string) string {

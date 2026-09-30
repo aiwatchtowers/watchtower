@@ -42,7 +42,7 @@ func TestResolveProjectFolder_ResolvesSymlinksSpacesAndUnicode(t *testing.T) {
 	want, err := filepath.EvalSymlinks(realDir)
 	require.NoError(t, err)
 
-	got, err := ResolveProjectFolder(link)
+	got, err := ResolveProjectFolder(link, nil)
 	require.NoError(t, err)
 	assert.Equal(t, want, got, "the symlink is resolved to the real folder")
 	assert.True(t, filepath.IsAbs(got))
@@ -50,15 +50,15 @@ func TestResolveProjectFolder_ResolvesSymlinksSpacesAndUnicode(t *testing.T) {
 
 func TestResolveProjectFolder_RefusesMissingAndNonDirectories(t *testing.T) {
 	base := t.TempDir()
-	_, err := ResolveProjectFolder(filepath.Join(base, "gone"))
+	_, err := ResolveProjectFolder(filepath.Join(base, "gone"), nil)
 	assert.Error(t, err, "a missing folder is refused")
 
 	file := filepath.Join(base, "README.md")
 	require.NoError(t, os.WriteFile(file, []byte("x"), 0o600))
-	_, err = ResolveProjectFolder(file)
+	_, err = ResolveProjectFolder(file, nil)
 	assert.ErrorContains(t, err, "not a directory")
 
-	_, err = ResolveProjectFolder("  ")
+	_, err = ResolveProjectFolder("  ", nil)
 	assert.Error(t, err, "an empty folder is refused")
 }
 
@@ -69,7 +69,7 @@ func TestResolveProjectFolder_RelativePathBecomesAbsolute(t *testing.T) {
 	want, err := filepath.EvalSymlinks(filepath.Join(base, "repo"))
 	require.NoError(t, err)
 
-	got, err := ResolveProjectFolder("repo")
+	got, err := ResolveProjectFolder("repo", nil)
 	require.NoError(t, err)
 	assert.Equal(t, want, got)
 }
@@ -285,6 +285,11 @@ func TestResolveProjectFolder_RefusesRootHomeAndWatchtowerDirs(t *testing.T) {
 		require.NoError(t, os.MkdirAll(dir, 0o755))
 	}
 	t.Setenv("HOME", home)
+	protected := []string{
+		filepath.Join(home, ".local", "share", "watchtower"),
+		filepath.Join(home, ".config", "watchtower"),
+		filepath.Join(home, "Library", "Application Support", "Watchtower"),
+	}
 
 	for _, dir := range []string{
 		"/",
@@ -296,11 +301,11 @@ func TestResolveProjectFolder_RefusesRootHomeAndWatchtowerDirs(t *testing.T) {
 		filepath.Join(home, ".config", "watchtower"),
 		filepath.Join(home, "Library", "Application Support", "Watchtower", "recordings"),
 	} {
-		_, err := ResolveProjectFolder(dir)
+		_, err := ResolveProjectFolder(dir, protected)
 		assert.ErrorIs(t, err, ErrProjectFolderNotAllowed, dir)
 	}
 
-	got, err := ResolveProjectFolder(filepath.Join(home, "code", "repo"))
+	got, err := ResolveProjectFolder(filepath.Join(home, "code", "repo"), protected)
 	require.NoError(t, err, "an ordinary folder under home is fine")
 	assert.True(t, strings.HasSuffix(got, filepath.Join("code", "repo")))
 }
@@ -329,7 +334,7 @@ func TestProjectFolder_RefusesLineBreaks(t *testing.T) {
 	for _, name := range []string{"evil\nline", "evil\rline"} {
 		dir := filepath.Join(base, name)
 		require.NoError(t, os.Mkdir(dir, 0o755))
-		_, err := ResolveProjectFolder(dir)
+		_, err := ResolveProjectFolder(dir, nil)
 		assert.ErrorIs(t, err, ErrProjectFolderNotAllowed, "%q", name)
 	}
 	d := openTestDB(t)

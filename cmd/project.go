@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -179,11 +180,26 @@ func parseProjectID(arg string) (int64, error) {
 	return id, nil
 }
 
+// projectProtectedDirs lists Watchtower's own state directories, which a
+// project folder may neither be, sit inside, nor contain: every workspace's
+// data, the default config directory and the Desktop's Application Support.
+func projectProtectedDirs() []string {
+	var dirs []string
+	if root, err := config.DataRoot(); err == nil {
+		dirs = append(dirs, root)
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		dirs = append(dirs, filepath.Join(home, ".config", "watchtower"),
+			filepath.Join(home, "Library", "Application Support", "Watchtower"))
+	}
+	return dirs
+}
+
 func runProjectCreate(cmd *cobra.Command, _ []string) error {
 	if projectCreateFlagFolder == "" {
 		return errors.New("--folder is required")
 	}
-	folder, err := db.ResolveProjectFolder(projectCreateFlagFolder)
+	folder, err := db.ResolveProjectFolder(projectCreateFlagFolder, projectProtectedDirs())
 	if err != nil {
 		return err
 	}

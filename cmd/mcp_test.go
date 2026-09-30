@@ -95,7 +95,7 @@ func TestDev06_PlainMCPStaysReadOnly(t *testing.T) {
 func TestMCPProjectMode_BindsTheProjectAndAppliesDirectly(t *testing.T) {
 	resetMCPFlags(t)
 	database := openMCPTestDB(t)
-	folder, err := db.ResolveProjectFolder(t.TempDir())
+	folder, err := db.ResolveProjectFolder(t.TempDir(), nil)
 	require.NoError(t, err)
 	pid, err := database.CreateProject("acme", folder)
 	require.NoError(t, err)

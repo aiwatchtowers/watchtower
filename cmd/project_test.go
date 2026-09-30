@@ -190,3 +190,20 @@ func TestProject_DeleteJSONReportsTheFolderCleanupOutcome(t *testing.T) {
 		})
 	}
 }
+
+// project create passes Watchtower's own directories to the folder check:
+// a folder inside the data root, the config dir or Application Support is
+// refused.
+func TestProject_CreateRefusesWatchtowerOwnDirs(t *testing.T) {
+	writeActionsConfig(t)
+	home := os.Getenv("HOME")
+	for _, dir := range []string{
+		filepath.Join(home, ".local", "share", "watchtower", "test"),
+		filepath.Join(home, ".config", "watchtower", "sub"),
+		filepath.Join(home, "Library", "Application Support", "Watchtower", "recordings"),
+	} {
+		require.NoError(t, os.MkdirAll(dir, 0o755))
+		_, _, err := runProject(t, "create", "--folder", dir)
+		assert.ErrorIs(t, err, db.ErrProjectFolderNotAllowed, dir)
+	}
+}

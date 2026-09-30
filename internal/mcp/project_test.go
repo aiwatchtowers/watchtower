@@ -28,7 +28,7 @@ func newProjectSession(t *testing.T, database *db.DB, projectID int64) *mcpsdk.C
 
 func seedMCPProject(t *testing.T, database *db.DB) int64 {
 	t.Helper()
-	folder, err := db.ResolveProjectFolder(t.TempDir())
+	folder, err := db.ResolveProjectFolder(t.TempDir(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestGetAction_ProjectSessionSeesOnlyItsRows(t *testing.T) {
 	}
 	// A row of a second project: same context_type, different context_id —
 	// only actionVisible's context_id clause keeps it out of project A's view.
-	otherFolder, err := db.ResolveProjectFolder(t.TempDir())
+	otherFolder, err := db.ResolveProjectFolder(t.TempDir(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

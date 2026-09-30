@@ -77,8 +77,9 @@ func (db *DB) WithTx(fn func(*sql.Tx) error) error {
 // ResolveProjectFolder turns dir into the absolute, symlink-resolved path of
 // an existing directory — the only form CreateProject stores, so two spellings
 // of one folder can never bind two projects. A folder a project must not own
-// (checkProjectFolderAllowed) fails with ErrProjectFolderNotAllowed.
-func ResolveProjectFolder(dir string) (string, error) {
+// — root, home or an ancestor, or overlapping one of the protected dirs the
+// caller passes (Watchtower's own data) — fails with ErrProjectFolderNotAllowed.
+func ResolveProjectFolder(dir string, protected []string) (string, error) {
 	if strings.TrimSpace(dir) == "" {
 		return "", errors.New("project folder is required")
 	}
@@ -97,7 +98,7 @@ func ResolveProjectFolder(dir string) (string, error) {
 	if !info.IsDir() {
 		return "", fmt.Errorf("%s is not a directory", resolved)
 	}
-	if err := checkProjectFolderAllowed(resolved); err != nil {
+	if err := checkProjectFolderAllowed(resolved, protected); err != nil {
 		return "", err
 	}
 	return resolved, nil

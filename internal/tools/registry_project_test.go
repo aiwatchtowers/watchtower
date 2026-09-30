@@ -16,7 +16,7 @@ import (
 // seedProject creates a project bound to a fresh temp folder and returns its id.
 func seedProject(t *testing.T, d *db.DB, name string) int64 {
 	t.Helper()
-	folder, err := db.ResolveProjectFolder(t.TempDir())
+	folder, err := db.ResolveProjectFolder(t.TempDir(), nil)
 	require.NoError(t, err)
 	id, err := d.CreateProject(name, folder)
 	require.NoError(t, err)
