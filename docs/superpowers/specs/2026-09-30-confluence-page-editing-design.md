@@ -188,7 +188,8 @@ Confluence-editing paragraph:
     followed by a **word-level diff** of Before → After (deleted words struck
     through in red, inserted words in green);
   - a "Removes: <labels>" line when `Removed` is non-empty;
-  - on conflict or failure, `result_json.error` is shown verbatim.
+  - on conflict or failure, the row's error (`AgentAction.error`, the
+    `agent_actions.error` column) is shown verbatim.
   The word diff is a pure Swift function in WatchtowerCore, a Myers or LCS
   diff over word tokens, and is unit-tested.
 - **Confluence section:** an **Allow editing** button, visible when read
@@ -293,6 +294,30 @@ sections above are the original design and are not rewritten to match.
   "best-effort … reported as `warning`" re-fetch-into-`ext_documents` step was
   not built; `executeConfluenceEdit`'s result carries only
   `{page_id, title, url, version}`, no `warning` field.
+
+- **R10:** **Allow editing** stays inside the Confluence section of Settings →
+  Connections → Jira, which is gated on feature `knowledge-connectors`. With
+  Confluence sync off the button is hidden, while `get_confluence_page` and
+  `edit_confluence_page` still work; the edit tool's refusal names
+  `watchtower jira login --account N --with-confluence-write`, the one path to
+  the write grant then (cost: one extra step for a sync-off user; v1 limit).
+- **§6 correction:** a failed or conflicting write is shown from the action
+  row's error column (`AgentAction.error`), not `result_json.error` — Execute
+  returns an error, which the registry stores in `agent_actions.error`, and
+  writes no result.
+- **Retry after a lost response (final review):** a page exactly one version
+  past the preview may be this edit's own first PUT whose response was lost,
+  so Execute (and a 409's re-read) then reports `conflict: the page is already
+  at vN — possibly this edit was saved; open the page to check. Nothing was
+  written now` instead of blaming someone else's edit. A revoked grant at PUT
+  time names `watchtower jira login --account N --with-confluence-write`.
+- **Tool args (final review):** `get_confluence_page` accepts `account_id` as
+  an alias of `account` (the name its result and `edit_confluence_page` use);
+  two different ids are a validation error.
+- **Attributed emphasis (final review):** a `strong`/`b`/`em`/`i`/`s`/`del`/
+  `strike`/`code` element carrying any attribute is a marker, not markdown, so
+  a rewrite elsewhere in its unit keeps it byte for byte (the R6/R7 skeleton
+  compares tag names only and would not notice a lost attribute).
 
 **PutJSON's one production caller** is `internal/tools/confluence_page_client.go`'s
 `PutPage` (called only by `confluence_page_edit.go`'s `executeConfluenceEdit`)

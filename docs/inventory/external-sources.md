@@ -152,7 +152,10 @@ it (now vN) — re-read with get_confluence_page"), applies the edits through
 card's changes into the stored args. At apply time `Execute` re-reads the
 page and writes only if its version still equals `base_version` — else it
 fails with `conflict: the page was edited after the preview (now vN);
-nothing was written` and issues no PUT — as one `PUT` of `base_version + 1`
+nothing was written` (or, when the page is exactly one version on — possibly
+this edit's own earlier PUT whose response was lost — `conflict: the page is
+already at vN — possibly this edit was saved; open the page to check.
+Nothing was written now`) and issues no PUT — as one `PUT` of `base_version + 1`
 with the message `Edited via Watchtower` (a 409 from Confluence is the same
 conflict). A rich element (a ⟦k:label⟧ marker) is removed only when the
 approved change lists it under `removed`; every untouched byte of the
