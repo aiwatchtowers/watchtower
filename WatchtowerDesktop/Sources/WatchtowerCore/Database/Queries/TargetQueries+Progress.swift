@@ -20,6 +20,7 @@ extension TargetQueries {
         switch status {
         case "done": return 1.0
         case "in_progress": return 0.5
+        case "in_review": return 0.8
         case "blocked": return 0.2
         default: return 0.0 // todo, snoozed, dismissed
         }

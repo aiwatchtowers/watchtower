@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -136,6 +137,7 @@ type boardNodeJSON struct {
 	Title          string                `json:"title"`
 	Intent         string                `json:"intent"`
 	Status         string                `json:"status"`
+	StatusSince    string                `json:"status_since"` // when it entered its status (UTC); "" = unknown
 	Priority       string                `json:"priority"`
 	Progress       float64               `json:"progress"`
 	NewForAgent    int                   `json:"new_for_agent"`
@@ -170,7 +172,7 @@ func toBoardJSON(nodes []db.BoardNode) []boardNodeJSON {
 	out := make([]boardNodeJSON, 0, len(nodes))
 	for _, n := range nodes {
 		out = append(out, boardNodeJSON{ID: n.Target.ID, Title: n.Target.Text, Intent: n.Target.Intent,
-			Status: n.Target.Status, Priority: n.Target.Priority, Progress: n.Target.Progress, NewForAgent: n.NewForAgent,
+			Status: n.Target.Status, StatusSince: n.StatusSince, Priority: n.Target.Priority, Progress: n.Target.Progress, NewForAgent: n.NewForAgent,
 			UnreadForOwner: n.UnreadForOwner, Documents: toDocumentsJSON(n.Documents), Children: toBoardJSON(n.Children)})
 	}
 	return out
@@ -393,8 +395,8 @@ func printProjectView(w io.Writer, v projectViewJSON) {
 	if v.Description != "" {
 		fmt.Fprintf(w, "Description: %s\n", v.Description)
 	}
-	fmt.Fprintf(w, "Targets: %d in progress, %d blocked, %d todo, %d done\n",
-		v.Counts["in_progress"], v.Counts["blocked"], v.Counts["todo"], v.Counts["done"])
+	fmt.Fprintf(w, "Targets: %d in progress, %d in review, %d blocked, %d todo, %d done\n",
+		v.Counts["in_progress"], v.Counts["in_review"], v.Counts["blocked"], v.Counts["todo"], v.Counts["done"])
 	for _, s := range v.Sources {
 		fmt.Fprintf(w, "Source #%d %s %s %s\n", s.ID, s.Kind, s.Ref, s.Label)
 	}
@@ -423,14 +425,44 @@ func runProjectBoard(cmd *cobra.Command, args []string) error {
 	if projectFlagJSON {
 		return writeJSON(cmd.OutOrStdout(), toBoardJSON(board))
 	}
-	printBoard(cmd.OutOrStdout(), board, 0)
+	printBoard(cmd.OutOrStdout(), board, 0, time.Now())
 	return nil
 }
 
-func printBoard(w io.Writer, nodes []db.BoardNode, depth int) {
+func printBoard(w io.Writer, nodes []db.BoardNode, depth int, now time.Time) {
 	for _, n := range nodes {
-		fmt.Fprintf(w, "%s#%d [%s, %s] %s\n", strings.Repeat("  ", depth), n.Target.ID, n.Target.Status, n.Target.Priority, n.Target.Text)
-		printBoard(w, n.Children, depth+1)
+		fmt.Fprintf(w, "%s#%d [%s, %s] %s\n", strings.Repeat("  ", depth), n.Target.ID,
+			statusWithAge(n, now), n.Target.Priority, n.Target.Text)
+		printBoard(w, n.Children, depth+1, now)
+	}
+}
+
+// statusWithAge renders a board target's status with how long it has held
+// it ("in_review 3h"), or the bare status when its history has no time.
+func statusWithAge(n db.BoardNode, now time.Time) string {
+	if age := statusAge(n.StatusSince, now); age != "" {
+		return n.Target.Status + " " + age
+	}
+	return n.Target.Status
+}
+
+// statusAge is the time elapsed since the given UTC ISO-8601 time in its largest whole
+// unit — "<1m", "12m", "5h", "3d" — or "" when since is empty or unparsable.
+func statusAge(since string, now time.Time) string {
+	at, err := time.Parse(time.RFC3339, since)
+	if err != nil {
+		return ""
+	}
+	d := now.Sub(at)
+	switch {
+	case d < time.Minute:
+		return "<1m"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d/time.Minute))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d/time.Hour))
+	default:
+		return fmt.Sprintf("%dd", int(d/(24*time.Hour)))
 	}
 }
 

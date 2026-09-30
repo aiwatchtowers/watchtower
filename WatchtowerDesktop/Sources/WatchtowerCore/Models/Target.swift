@@ -120,7 +120,7 @@ package struct Target: FetchableRecord, TableRecord, Codable, Identifiable, Equa
     package let periodStart: String     // YYYY-MM-DD
     package let periodEnd: String       // YYYY-MM-DD
     package let parentId: Int?
-    package let status: String          // "todo", "in_progress", "blocked", "done", "dismissed", "snoozed"
+    package let status: String          // "todo", "in_progress", "in_review" (project targets only), "blocked", "done", "dismissed", "snoozed"
     package let priority: String        // "high", "medium", "low"
     package let ownership: String       // "mine", "delegated", "watching"
     package let ballOn: String
@@ -209,7 +209,7 @@ package struct Target: FetchableRecord, TableRecord, Codable, Identifiable, Equa
     // MARK: - Status Predicates
 
     package var isActive: Bool {
-        ["todo", "in_progress", "blocked"].contains(status)
+        ["todo", "in_progress", "in_review", "blocked"].contains(status)
     }
 
     package var isOverdue: Bool {

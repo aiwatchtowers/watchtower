@@ -25,7 +25,9 @@ type ProjectTargetInput struct {
 // projectID inside tx and returns their ids. Every item gets the board
 // defaults: level custom, custom_label project, period = the UTC day of
 // creation, source chat, ownership mine, status todo, and priority medium
-// unless the item sets one. The first invalid item
+// unless the item sets one. Its one production caller is the agent's
+// create_targets tool, so the creation is recorded as the agent's
+// (status_actor, PROJ-06). The first invalid item
 // fails the call; the caller's transaction then rolls the whole batch back.
 func (db *DB) CreateProjectTargetsTx(tx *sql.Tx, projectID int64, items []ProjectTargetInput) ([]int64, error) {
 	if err := requireProject(tx, projectID); err != nil {
@@ -61,8 +63,8 @@ func insertProjectTarget(tx *sql.Tx, projectID int64, day string, it ProjectTarg
 	}
 	res, err := tx.Exec(`INSERT INTO targets
 		(text, intent, level, custom_label, period_start, period_end, parent_id,
-		 status, priority, ownership, source_type, project_id)
-		VALUES (?, ?, 'custom', 'project', ?, ?, ?, 'todo', ?, 'mine', 'chat', ?)`,
+		 status, priority, ownership, source_type, project_id, status_actor)
+		VALUES (?, ?, 'custom', 'project', ?, ?, ?, 'todo', ?, 'mine', 'chat', ?, 'agent')`,
 		title, strings.TrimSpace(it.Intent), day, day, parent, priority, projectID)
 	if err != nil {
 		return 0, fmt.Errorf("inserting project target: %w", err)

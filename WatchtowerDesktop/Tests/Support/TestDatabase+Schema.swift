@@ -770,7 +770,7 @@ extension TestDatabase {
         period_end          TEXT NOT NULL DEFAULT '',
         parent_id           INTEGER REFERENCES targets(id) ON DELETE SET NULL,
         status              TEXT NOT NULL DEFAULT 'todo'
-                            CHECK(status IN ('todo','in_progress','blocked','done','dismissed','snoozed')),
+                            CHECK(status IN ('todo','in_progress','in_review','blocked','done','dismissed','snoozed')),
         priority            TEXT NOT NULL DEFAULT 'medium'
                             CHECK(priority IN ('high','medium','low')),
         ownership           TEXT NOT NULL DEFAULT 'mine'
@@ -795,7 +795,10 @@ extension TestDatabase {
         next_step_at        TEXT NOT NULL DEFAULT '',
         next_step_attempts     INTEGER NOT NULL DEFAULT 0,
         next_step_attempted_at TEXT NOT NULL DEFAULT '',
-        project_id          INTEGER REFERENCES projects(id) ON DELETE CASCADE
+        project_id          INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+        status_actor        TEXT DEFAULT NULL
+                            CHECK(status_actor IS NULL OR status_actor IN ('agent','owner','system')),
+        CHECK(status != 'in_review' OR project_id IS NOT NULL)
     );
     CREATE INDEX IF NOT EXISTS idx_targets_level       ON targets(level);
     CREATE INDEX IF NOT EXISTS idx_targets_parent      ON targets(parent_id);
@@ -814,7 +817,7 @@ extension TestDatabase {
     WHEN NEW.parent_id IS NOT NULL AND NEW.project_id IS NOT NULL
     BEGIN
         UPDATE targets
-        SET status = r.st, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+        SET status = r.st, status_actor = 'system', updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
         FROM (
             WITH RECURSIVE chain(id, parent, st, pid, depth) AS (
                 SELECT NEW.id, NEW.parent_id, NEW.status, NEW.project_id, 0
@@ -825,7 +828,7 @@ extension TestDatabase {
                             WHEN SUM(k.s IN ('done','dismissed')) = COUNT(*)
                                 THEN CASE WHEN SUM(k.s = 'done') > 0 THEN 'done' ELSE 'dismissed' END
                             WHEN SUM(k.s = 'blocked') = COUNT(*) - SUM(k.s IN ('done','dismissed')) THEN 'blocked'
-                            WHEN SUM(k.s IN ('in_progress','done')) > 0 THEN 'in_progress'
+                            WHEN SUM(k.s IN ('in_progress','in_review','done')) > 0 THEN 'in_progress'
                             ELSE 'todo' END
                         FROM (SELECT CASE WHEN c.id = chain.id THEN chain.st ELSE c.status END AS s
                               FROM targets c
@@ -853,7 +856,7 @@ extension TestDatabase {
         -- The new parent's chain (the old one's too when the parent is unchanged:
         -- the child is counted there at its new status).
         UPDATE targets
-        SET status = r.st, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+        SET status = r.st, status_actor = 'system', updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
         FROM (
             WITH RECURSIVE chain(id, parent, st, pid, depth) AS (
                 SELECT NEW.id, NEW.parent_id, NEW.status, NEW.project_id, 0
@@ -865,7 +868,7 @@ extension TestDatabase {
                             WHEN SUM(k.s IN ('done','dismissed')) = COUNT(*)
                                 THEN CASE WHEN SUM(k.s = 'done') > 0 THEN 'done' ELSE 'dismissed' END
                             WHEN SUM(k.s = 'blocked') = COUNT(*) - SUM(k.s IN ('done','dismissed')) THEN 'blocked'
-                            WHEN SUM(k.s IN ('in_progress','done')) > 0 THEN 'in_progress'
+                            WHEN SUM(k.s IN ('in_progress','in_review','done')) > 0 THEN 'in_progress'
                             ELSE 'todo' END
                         FROM (SELECT CASE WHEN c.id = chain.id THEN chain.st ELSE c.status END AS s
                               FROM targets c
@@ -887,7 +890,7 @@ extension TestDatabase {
         -- project). Runs after the first walk, so a shared ancestor is
         -- recomputed from both changes.
         UPDATE targets
-        SET status = r.st, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+        SET status = r.st, status_actor = 'system', updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
         FROM (
             WITH RECURSIVE chain(id, parent, st, pid, depth) AS (
                 SELECT OLD.id, OLD.parent_id, NULL, OLD.project_id, 0
@@ -900,7 +903,7 @@ extension TestDatabase {
                             WHEN SUM(k.s IN ('done','dismissed')) = COUNT(*)
                                 THEN CASE WHEN SUM(k.s = 'done') > 0 THEN 'done' ELSE 'dismissed' END
                             WHEN SUM(k.s = 'blocked') = COUNT(*) - SUM(k.s IN ('done','dismissed')) THEN 'blocked'
-                            WHEN SUM(k.s IN ('in_progress','done')) > 0 THEN 'in_progress'
+                            WHEN SUM(k.s IN ('in_progress','in_review','done')) > 0 THEN 'in_progress'
                             ELSE 'todo' END
                         FROM (SELECT CASE WHEN c.id = chain.id AND chain.depth > 0 THEN chain.st ELSE c.status END AS s
                               FROM targets c
@@ -922,7 +925,7 @@ extension TestDatabase {
     WHEN OLD.parent_id IS NOT NULL AND OLD.project_id IS NOT NULL
     BEGIN
         UPDATE targets
-        SET status = r.st, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+        SET status = r.st, status_actor = 'system', updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
         FROM (
             WITH RECURSIVE chain(id, parent, st, pid, depth) AS (
                 SELECT OLD.id, OLD.parent_id, NULL, OLD.project_id, 0
@@ -933,7 +936,7 @@ extension TestDatabase {
                             WHEN SUM(k.s IN ('done','dismissed')) = COUNT(*)
                                 THEN CASE WHEN SUM(k.s = 'done') > 0 THEN 'done' ELSE 'dismissed' END
                             WHEN SUM(k.s = 'blocked') = COUNT(*) - SUM(k.s IN ('done','dismissed')) THEN 'blocked'
-                            WHEN SUM(k.s IN ('in_progress','done')) > 0 THEN 'in_progress'
+                            WHEN SUM(k.s IN ('in_progress','in_review','done')) > 0 THEN 'in_progress'
                             ELSE 'todo' END
                         FROM (SELECT CASE WHEN c.id = chain.id AND chain.depth > 0 THEN chain.st ELSE c.status END AS s
                               FROM targets c
@@ -950,6 +953,40 @@ extension TestDatabase {
             SELECT id, st FROM chain WHERE depth > 0 AND st IS NOT NULL
         ) AS r
         WHERE targets.id = r.id AND targets.status != r.st;
+    END;
+
+    -- Migration 00086 (PROJ-06): project target status history, written by
+    -- triggers; a copy of the Go migration's history triggers.
+    CREATE TABLE IF NOT EXISTS target_status_history (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        target_id   INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+        from_status TEXT,
+        to_status   TEXT NOT NULL,
+        changed_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+        actor       TEXT NOT NULL CHECK(actor IN ('agent','owner','system'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_target_status_history_target ON target_status_history(target_id, changed_at);
+    CREATE TRIGGER IF NOT EXISTS targets_status_history_ai AFTER INSERT ON targets
+    WHEN NEW.project_id IS NOT NULL
+    BEGIN
+        INSERT INTO target_status_history (target_id, from_status, to_status, changed_at, actor)
+        VALUES (NEW.id, NULL, NEW.status, strftime('%Y-%m-%dT%H:%M:%SZ','now'),
+                COALESCE(NEW.status_actor, 'owner'));
+        UPDATE targets SET status_actor = NULL WHERE id = NEW.id AND status_actor IS NOT NULL;
+    END;
+    CREATE TRIGGER IF NOT EXISTS targets_status_history_au AFTER UPDATE OF status ON targets
+    WHEN NEW.project_id IS NOT NULL AND OLD.status IS NOT NEW.status
+    BEGIN
+        INSERT INTO target_status_history (target_id, from_status, to_status, changed_at, actor)
+        VALUES (NEW.id, OLD.status, NEW.status, strftime('%Y-%m-%dT%H:%M:%SZ','now'),
+                COALESCE(NEW.status_actor, 'owner'));
+        UPDATE targets SET status_actor = NULL WHERE id = NEW.id AND status_actor IS NOT NULL;
+    END;
+    CREATE TRIGGER IF NOT EXISTS targets_status_actor_reset_au AFTER UPDATE OF status_actor ON targets
+    WHEN NEW.status_actor IS NOT NULL
+     AND NOT (NEW.project_id IS NOT NULL AND OLD.status IS NOT NEW.status)
+    BEGIN
+        UPDATE targets SET status_actor = NULL WHERE id = NEW.id;
     END;
 
     CREATE TABLE IF NOT EXISTS target_links (

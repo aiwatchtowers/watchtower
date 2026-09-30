@@ -87,6 +87,16 @@ func TestGatherProjects_ReportsActivityAndSkipsQuietProjects(t *testing.T) {
 	assert.True(t, pipe.shown.projects[busy])
 }
 
+func TestGatherProjects_ListsTargetsInReview(t *testing.T) {
+	d := testDB(t)
+	pid := seedProject(t, d, "acme")
+	seedProjectTarget(t, d, pid, 0, "Task 2: review me", "in_review", "2026-09-29T09:00:00Z")
+	pipe := New(d, testConfig(), &mockGenerator{}, log.New(io.Discard, "", 0))
+	ctx, has := pipe.gatherProjects(time.Now().Add(-24 * time.Hour))
+	require.True(t, has)
+	assert.Contains(t, ctx, "In review (1): Task 2: review me")
+}
+
 func TestGatherProjects_CapsItemsPerLine(t *testing.T) {
 	d := testDB(t)
 	pid := seedProject(t, d, "acme")

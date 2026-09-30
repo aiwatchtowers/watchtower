@@ -10,13 +10,17 @@ type BoardNode struct {
 	NewForAgent    int // comments the agent has not answered (newForAgentPredicate)
 	UnreadForOwner int // agent comments with an empty read_at
 	Documents      []ProjectDocument
+	// StatusSince is when the target entered its current status (its latest
+	// target_status_history row, UTC ISO-8601); "" when it has none.
+	StatusSince string
 }
 
 // boardSiblingOrder sorts siblings by priority (high, medium, low), then by
-// status (in_progress, blocked, todo, done, then dismissed/snoozed), then id.
+// status (in_progress, in_review, blocked, todo, done, then dismissed/snoozed),
+// then id.
 const boardSiblingOrder = `CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
-	CASE status WHEN 'in_progress' THEN 0 WHEN 'blocked' THEN 1
-	WHEN 'todo' THEN 2 WHEN 'done' THEN 3 ELSE 4 END, id`
+	CASE status WHEN 'in_progress' THEN 0 WHEN 'in_review' THEN 1 WHEN 'blocked' THEN 2
+	WHEN 'todo' THEN 3 WHEN 'done' THEN 4 ELSE 5 END, id`
 
 type boardCounts struct{ newForAgent, unreadForOwner int }
 
@@ -35,7 +39,11 @@ func (db *DB) GetProjectBoard(projectID int64) ([]BoardNode, error) {
 	if err != nil {
 		return nil, err
 	}
-	return assembleBoard(targets, counts, docs), nil
+	since, err := db.projectStatusSince(projectID)
+	if err != nil {
+		return nil, err
+	}
+	return assembleBoard(targets, counts, docs, since), nil
 }
 
 func (db *DB) listBoardTargets(projectID int64) ([]Target, error) {
@@ -84,14 +92,15 @@ type boardIndex struct {
 	counts   map[int64]boardCounts
 	docs     map[int64][]ProjectDocument
 	seen     map[int64]bool
+	since    map[int64]string
 }
 
-func assembleBoard(targets []Target, counts map[int64]boardCounts, docs []ProjectDocument) []BoardNode {
+func assembleBoard(targets []Target, counts map[int64]boardCounts, docs []ProjectDocument, since map[int64]string) []BoardNode {
 	onBoard := make(map[int64]bool, len(targets))
 	for _, t := range targets {
 		onBoard[int64(t.ID)] = true
 	}
-	ix := boardIndex{children: map[int64][]Target{}, counts: counts, docs: map[int64][]ProjectDocument{}, seen: map[int64]bool{}}
+	ix := boardIndex{children: map[int64][]Target{}, counts: counts, docs: map[int64][]ProjectDocument{}, seen: map[int64]bool{}, since: since}
 	for _, d := range docs {
 		if d.TargetID.Valid {
 			ix.docs[d.TargetID.Int64] = append(ix.docs[d.TargetID.Int64], d)
@@ -120,7 +129,7 @@ func (ix boardIndex) build(level []Target) []BoardNode {
 		ix.seen[id] = true
 		c := ix.counts[id]
 		nodes = append(nodes, BoardNode{Target: t, NewForAgent: c.newForAgent, UnreadForOwner: c.unreadForOwner,
-			Documents: ix.docs[id], Children: ix.build(ix.children[id])})
+			Documents: ix.docs[id], StatusSince: ix.since[id], Children: ix.build(ix.children[id])})
 	}
 	return nodes
 }

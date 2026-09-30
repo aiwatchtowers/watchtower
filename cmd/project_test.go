@@ -182,11 +182,12 @@ func TestProject_ListShowAndBoardJSON(t *testing.T) {
 	assert.Equal(t, 1, board[0].NewForAgent)
 	require.Len(t, board[0].Children, 1)
 	assert.Equal(t, "in_progress", board[0].Children[0].Status)
+	assert.NotEmpty(t, board[0].Children[0].StatusSince)
 	assert.Equal(t, "medium", board[0].Children[0].Priority)
 
 	out, _, err = runProject(t, "board", strconv.FormatInt(pid, 10))
 	require.NoError(t, err)
-	assert.Contains(t, out, "[in_progress, high] feature")
+	assert.Contains(t, out, "[in_progress <1m, high] feature", "status with its time in status (PROJ-06)")
 
 	_, _, err = runProject(t, "show", "999")
 	assert.ErrorIs(t, err, db.ErrProjectNotFound)

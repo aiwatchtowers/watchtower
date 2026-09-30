@@ -74,7 +74,7 @@ func TestGetTarget_NotFound(t *testing.T) {
 func TestListTargets_RejectsInvalidEnums(t *testing.T) {
 	reg := targetsRegistry(t, openDB(t))
 	cases := []struct{ field, value, wantAllowed string }{
-		{"status", "in-progress", "todo|in_progress|blocked|done|dismissed|snoozed"},
+		{"status", "in-progress", "todo|in_progress|in_review|blocked|done|dismissed|snoozed"},
 		{"priority", "urgent", "high|medium|low"},
 		{"level", "year", "quarter|month|week|day|custom"},
 		{"ownership", "theirs", "mine|delegated|watching"},

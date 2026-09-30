@@ -180,7 +180,7 @@ package enum DayPlanQueries {
         try db.execute(
             sql: """
                 UPDATE targets
-                SET status = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                SET status = ?, status_actor = 'owner', updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
                 WHERE id = ?
                 """,
             arguments: [taskStatus, taskId]

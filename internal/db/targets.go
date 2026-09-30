@@ -392,26 +392,30 @@ func (db *DB) GetTargets(f TargetFilter) ([]Target, error) {
 	return targets, rows.Err()
 }
 
-// UpdateTargetStatus changes the status of a target and recomputes parent progress.
+// UpdateTargetStatus changes the status of a target and recomputes parent
+// progress. The write claims no status actor, so a project target's history
+// records it as the owner (migration 00086).
 func (db *DB) UpdateTargetStatus(id int, newStatus string) error {
-	return updateTargetStatusOn(db, id, newStatus)
+	return updateTargetStatusOn(db, id, newStatus, "")
 }
 
-// UpdateTargetStatusTx is UpdateTargetStatus inside the caller's
-// transaction. Any error — a cascade failure included — is the caller's cue
-// to roll back; the "persisted" wording applies to the auto-commit form.
-func (db *DB) UpdateTargetStatusTx(tx *sql.Tx, id int, newStatus string) error {
-	return updateTargetStatusOn(tx, id, newStatus)
+// UpdateTargetStatusAsTx is UpdateTargetStatus inside the caller's
+// transaction, claiming actor (ActorAgent, ActorOwner, ActorSystem; "" =
+// none) for the project target's status history (PROJ-06). Any error — a
+// cascade failure included — is the caller's cue to roll back; the
+// "persisted" wording applies to the auto-commit form.
+func (db *DB) UpdateTargetStatusAsTx(tx *sql.Tx, id int, newStatus, actor string) error {
+	return updateTargetStatusOn(tx, id, newStatus, actor)
 }
 
-func updateTargetStatusOn(q targetsQuerier, id int, newStatus string) error {
+func updateTargetStatusOn(q targetsQuerier, id int, newStatus, actor string) error {
 	// Fetch parent_id before updating.
 	var parentID sql.NullInt64
 	_ = q.QueryRow(`SELECT parent_id FROM targets WHERE id = ?`, id).Scan(&parentID)
 
-	_, err := q.Exec(`UPDATE targets SET status = ?,
+	_, err := q.Exec(`UPDATE targets SET status = ?, status_actor = ?,
 		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
-		WHERE id = ?`, newStatus, id)
+		WHERE id = ?`, newStatus, nullableActor(actor), id)
 	if err != nil {
 		return fmt.Errorf("updating target %d status: %w", id, err)
 	}
@@ -479,10 +483,12 @@ func (db *DB) GetTargetCounts() (int, int, error) {
 	return active, overdue, err
 }
 
-// UnsnoozeExpiredTargets moves snoozed targets with expired snooze_until back to todo.
+// UnsnoozeExpiredTargets moves snoozed targets with expired snooze_until back
+// to todo. A daemon write, so a project target's history records it as the
+// system's (PROJ-06).
 func (db *DB) UnsnoozeExpiredTargets() (int, error) {
 	now := time.Now().UTC().Format("2006-01-02T15:04")
-	res, err := db.Exec(`UPDATE targets SET status = 'todo', snooze_until = '',
+	res, err := db.Exec(`UPDATE targets SET status = 'todo', snooze_until = '', status_actor = 'system',
 		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
 		WHERE status = 'snoozed' AND snooze_until != '' AND snooze_until <= ?`, now)
 	if err != nil {
@@ -620,6 +626,8 @@ func statusToProgress(status string) float64 {
 		return 1.0
 	case "in_progress":
 		return 0.5
+	case "in_review":
+		return 0.8
 	case "blocked":
 		return 0.2
 	default: // todo, snoozed, dismissed
