@@ -3,26 +3,52 @@ import WatchtowerCore
 
 /// `watchtower project create --json` envelope (Task 4). The folder's
 /// document import is best-effort: the project exists whenever the command
-/// exits 0, and `docsImportOK == false` says only the import failed.
+/// exits 0; `docsImportOK == false` says the import failed, and a successful
+/// one may still have skipped unreadable paths or files past its cap.
 struct ProjectCreated: Decodable, Equatable {
     let id: Int64
     let folder: String
     let name: String
     let docsImportOK: Bool
     let docsImportError: String
+    /// `"<rel_path>: <reason>"` per path the import could not read.
+    let unreadable: [String]
+    /// New documents past the per-run cap; the next `import-docs` takes them.
+    let skippedOverCap: Int
 
     enum CodingKeys: String, CodingKey {
         case id, folder, name
         case docsImportOK = "docs_import_ok"
         case docsImportError = "docs_import_error"
+        case docsImport = "docs_import"
     }
 
-    init(id: Int64, folder: String, name: String, docsImportOK: Bool = true, docsImportError: String = "") {
+    private struct DocsImport: Decodable {
+        let unreadable: [String]?
+        let skippedOverCap: [String]?
+
+        enum CodingKeys: String, CodingKey {
+            case unreadable
+            case skippedOverCap = "skipped_over_cap"
+        }
+    }
+
+    init(
+        id: Int64,
+        folder: String,
+        name: String,
+        docsImportOK: Bool = true,
+        docsImportError: String = "",
+        unreadable: [String] = [],
+        skippedOverCap: Int = 0
+    ) {
         self.id = id
         self.folder = folder
         self.name = name
         self.docsImportOK = docsImportOK
         self.docsImportError = docsImportError
+        self.unreadable = unreadable
+        self.skippedOverCap = skippedOverCap
     }
 
     init(from decoder: Decoder) throws {
@@ -33,6 +59,28 @@ struct ProjectCreated: Decodable, Equatable {
         // An older CLI without the keys imported nothing, so nothing failed.
         docsImportOK = try c.decodeIfPresent(Bool.self, forKey: .docsImportOK) ?? true
         docsImportError = try c.decodeIfPresent(String.self, forKey: .docsImportError) ?? ""
+        let report = try c.decodeIfPresent(DocsImport.self, forKey: .docsImport)
+        unreadable = report?.unreadable ?? []
+        skippedOverCap = report?.skippedOverCap?.count ?? 0
+    }
+
+    /// What the project page tells the owner about the import, or nil when
+    /// everything was attached. Each case ends with the command that retries.
+    var importNote: String? {
+        let retry = "watchtower project import-docs \(id)"
+        if !docsImportOK {
+            let reason = docsImportError.isEmpty ? "" : " (\(docsImportError))"
+            return "Importing the folder's documents failed\(reason) — retry with: \(retry)"
+        }
+        var parts: [String] = []
+        if let first = unreadable.first {
+            let more = unreadable.count > 1 ? " and \(unreadable.count - 1) more" : ""
+            parts.append("Could not read \(first)\(more) — fix it, then run: \(retry)")
+        }
+        if skippedOverCap > 0 {
+            parts.append("\(skippedOverCap) more document(s) past the import cap — run: \(retry)")
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: ". ")
     }
 }
 

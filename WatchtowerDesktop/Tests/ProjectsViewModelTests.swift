@@ -90,9 +90,10 @@ final class ProjectsViewModelTests: XCTestCase {
         ])
         let vm = makeVM(runner)
         await vm.createProject(folder: URL(fileURLWithPath: "/tmp/acme"), name: nil)
-        let note = try XCTUnwrap(vm.installErrors[id])
+        let note = try XCTUnwrap(vm.importNotes[id])
         XCTAssertTrue(note.contains("permission denied"))
         XCTAssertTrue(note.contains("watchtower project import-docs \(id)"))
+        XCTAssertNil(vm.installErrors[id], "its own line, apart from the install note")
         XCTAssertNil(vm.errorMessage, "the project exists; the note belongs to it")
     }
 

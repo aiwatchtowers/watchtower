@@ -16,6 +16,29 @@ final class ProjectCLITests: XCTestCase {
         let created = try await ProjectCLI(runner: FakeCLIRunner(stdout: Data(json.utf8))).create(folder: "/tmp/acme", name: nil)
         XCTAssertFalse(created.docsImportOK)
         XCTAssertEqual(created.docsImportError, "permission denied")
+        XCTAssertEqual(created.importNote,
+                       "Importing the folder's documents failed (permission denied) — retry with: watchtower project import-docs 7")
+    }
+
+    func testCreateDecodesSkippedPathsAndAnOlderEnvelopeMeansNothingFailed() throws {
+        let json = #"""
+            {"id":7,"folder":"/tmp/acme","name":"acme","docs_import_ok":true,"docs_import_error":"",
+             "docs_import":{"imported":["README.md"],"already_attached":[],"dry_run":false,
+             "skipped_over_cap":["docs/specs/a.md","docs/specs/b.md"],
+             "unreadable":["docs/private: permission denied","docs/x: no such file or directory"]}}
+            """#
+        let created = try JSONDecoder().decode(ProjectCreated.self, from: Data(json.utf8))
+        XCTAssertEqual(created.unreadable.count, 2)
+        XCTAssertEqual(created.skippedOverCap, 2)
+        XCTAssertEqual(created.importNote,
+                       "Could not read docs/private: permission denied and 1 more — fix it, then run: "
+                       + "watchtower project import-docs 7. 2 more document(s) past the import cap — run: "
+                       + "watchtower project import-docs 7")
+
+        let older = try JSONDecoder().decode(ProjectCreated.self, from: Data(#"{"id":1,"folder":"/tmp/a","name":"a"}"#.utf8))
+        XCTAssertTrue(older.docsImportOK)
+        XCTAssertEqual(older.docsImportError, "")
+        XCTAssertNil(older.importNote, "a CLI without the keys reports no failure")
     }
 
     func testCreateWithoutNameOmitsTheFlag() async throws {

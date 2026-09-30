@@ -39,14 +39,14 @@ final class ProjectsViewModel {
     private var installNotes: [Int64: String] = [:]
     /// Why the last status read failed; the next successful read clears it.
     private var statusReadErrors: [Int64: String] = [:]
-    /// Why importing the folder's documents at create failed. A status read
-    /// says nothing about it, so it stays for the session.
-    private var importNotes: [Int64: String] = [:]
+    /// What create's document import could not do (`ProjectCreated.importNote`),
+    /// per project. A status read says nothing about it, so it stays for the
+    /// session; a retry runs in the terminal, which the Desktop does not watch.
+    private(set) var importNotes: [Int64: String] = [:]
     /// The page's error line, per project — never the shared `errorMessage`,
     /// where one project's failure would outlive a switch to another.
     var installErrors: [Int64: String] {
         installNotes.merging(statusReadErrors) { note, read in "\(note) \(read)" }
-            .merging(importNotes) { line, imported in "\(line) \(imported)" }
     }
     private(set) var documents: [ProjectDocumentListItem] = []
     /// The open document. Kept here (not in the view) so it survives pane
@@ -215,10 +215,7 @@ final class ProjectsViewModel {
             errorMessage = "Could not create the project: \(error.localizedDescription)"
             return
         }
-        if !created.docsImportOK {
-            importNotes[created.id] = "Importing the folder's documents failed (\(created.docsImportError)) — "
-                + "retry with: watchtower project import-docs \(created.id)"
-        }
+        importNotes[created.id] = created.importNote
         var installed = true
         do {
             try await cli.install(projectID: created.id)
