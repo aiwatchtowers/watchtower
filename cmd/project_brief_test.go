@@ -17,7 +17,7 @@ import (
 )
 
 func briefNode(id int, status, title string, children ...db.BoardNode) db.BoardNode {
-	return db.BoardNode{Target: db.Target{ID: id, Status: status, Text: title}, Children: children}
+	return db.BoardNode{Target: db.Target{ID: id, Status: status, Priority: "medium", Text: title}, Children: children}
 }
 
 func briefProject() *db.Project {
@@ -81,9 +81,9 @@ func TestRenderProjectBrief_OpenTreeInProgressFirstDoneOmitted(t *testing.T) {
 	require.NotEqual(t, -1, active)
 	require.NotEqual(t, -1, later)
 	assert.Less(t, active, later, "in progress first")
-	assert.Contains(t, out, "\n  - #4 [todo 0%] open task", "children are indented under their parent")
+	assert.Contains(t, out, "\n  - #4 [todo, medium, 0%] open task", "children are indented under their parent")
 	assert.NotContains(t, out, "shipped feature", "done is omitted")
-	assert.Contains(t, out, "\n- #5 [todo 0%] leftover task", "an open child of a done target stays listed")
+	assert.Contains(t, out, "\n- #5 [todo, medium, 0%] leftover task", "an open child of a done target stays listed")
 	assert.Contains(t, out, "New comments for you: none.")
 }
 

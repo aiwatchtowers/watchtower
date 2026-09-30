@@ -43,3 +43,42 @@ wait for your approval"), but only the "Track this" card is rendered. Either
 the second proposal was never recorded, or the card list drops it.
 
 > Original note: «бага» (with screenshot)
+
+## Progress
+
+### 2026-09-30, Go half: render outside the tx, owner-click budget
+
+- **Long writer found by reading the code:** the knowledge index (`kb.Run`)
+  rendered each 200-document batch *inside* its write transaction — after
+  the batch's first write, every remaining render (Slack channel-days, mail
+  threads) ran under SQLite's write lock. The other suspects do their slow
+  work outside a transaction: `extsync` fetches, downloads and extracts
+  before its batch transaction opens, and the Desktop's approve path holds no
+  GRDB transaction while it runs the CLI. Fixed: `buildBatch` renders first,
+  `storeBatch` writes in the transaction (`TestRun_RendersOutsideTheWriteLock`).
+- **Owner-click budget:** `watchtower actions …` and the writable MCP modes
+  (`mcp --chat`, `mcp --project N`) now wait up to 30 s for a write lock
+  (`ownerWriteBusyTimeout`) instead of 5 s. AGENT-05 is unchanged: the
+  statement waits longer, it is never retried after it ran.
+- **Second symptom (two cards announced, one rendered):** not reproducible
+  without the live database. The most likely cause is the same lock: the
+  chat-mode MCP server records a proposal with an `INSERT` under the same
+  5 s budget, so the second proposal's insert could fail with SQLITE_BUSY and
+  the tool call return an error the model's prose ignored. The longer budget
+  on `mcp --chat` covers it. To confirm on the live install: count
+  `agent_actions` rows for that conversation's `turn_id`.
+- **Still open:** the Desktop half — show an approve failure on the card
+  itself with Retry, not only as the chat's bottom banner. (The deferred
+  read-then-write residual is closed by the `BEGIN IMMEDIATE` entry below.)
+
+### 2026-09-30, BEGIN IMMEDIATE
+
+- 2026-09-30: every Go write transaction opened through `db.Open` now begins `BEGIN IMMEDIATE`
+  (`_txlock=immediate`; the legacy `RunSchemaUpgrade` pre-flight handle is not covered). A DEFERRED read-then-write transaction failed at once with
+  `SQLITE_BUSY_SNAPSHOT` when another process committed in between — `busy_timeout`
+  never covered that upgrade; now it waits for the write lock up front. Pinned by
+  `internal/db/txlock_test.go`. Still open: the autocommit `TransitionAgentAction`
+  UPDATE in the screenshot is covered by `busy_timeout` only, so a writer holding the
+  lock longer than the timeout still fails it (the render-outside-the-tx and longer
+  owner-path timeout work addresses that), and the card-level error/Retry and the
+  missing second card remain.

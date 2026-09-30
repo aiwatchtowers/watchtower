@@ -12,9 +12,10 @@ type BoardNode struct {
 	Documents      []ProjectDocument
 }
 
-// boardStatusOrder sorts siblings: in_progress, blocked, todo, done, then
-// dismissed/snoozed; ties by id.
-const boardStatusOrder = `CASE status WHEN 'in_progress' THEN 0 WHEN 'blocked' THEN 1
+// boardSiblingOrder sorts siblings by priority (high, medium, low), then by
+// status (in_progress, blocked, todo, done, then dismissed/snoozed), then id.
+const boardSiblingOrder = `CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
+	CASE status WHEN 'in_progress' THEN 0 WHEN 'blocked' THEN 1
 	WHEN 'todo' THEN 2 WHEN 'done' THEN 3 ELSE 4 END, id`
 
 type boardCounts struct{ newForAgent, unreadForOwner int }
@@ -38,7 +39,7 @@ func (db *DB) GetProjectBoard(projectID int64) ([]BoardNode, error) {
 }
 
 func (db *DB) listBoardTargets(projectID int64) ([]Target, error) {
-	rows, err := db.Query(`SELECT `+targetSelectCols+` FROM targets WHERE project_id = ? ORDER BY `+boardStatusOrder, projectID)
+	rows, err := db.Query(`SELECT `+targetSelectCols+` FROM targets WHERE project_id = ? ORDER BY `+boardSiblingOrder, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("listing board targets: %w", err)
 	}
