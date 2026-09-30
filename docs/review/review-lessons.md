@@ -976,4 +976,14 @@ Entry format:
 - miss: none unique. The "0/0" chip (a guard mismatch between the bar and the counter) and the missing in_review icon came from the prosecutor alone. [6]
 - weak-dimension: 6. The lanes added a new status to the label and tint tables but not to the icon mapping. **Adding an enum value to one per-status table should trigger a grep of every sibling table (`statusIcon`/`statusColor`/`statusLabel`).**
 - rule-gap (candidate, dim 6, Swift): *a new status value taught to any `Target.status*` mapping must be taught to all of them, or share one source; a second copy of a palette with an added arm is the tell.*
+
+
+## 2026-09-30 — feature/project-status-rollup (PROJ-05: migration 00085 status-rollup triggers + one-time board recompute, Desktop board reports rolled-up ancestors as owner writes; panel: prosecutor (report relayed inline) + 3 specialists, codex lane DOWN — timed out ×2; judge re-ran db/briefing tests, -race on the rollup tests, and the filtered Swift board/rollup suites green; judge synthesis, post-fix round) — verdict: approve
+
+- contested (held, deferred to owner): F2. The briefing now lists a rolled-up parent next to the children that caused its status ("Blocked (2): parent; leaf"). The fix round did not decide this. It changed the briefing fixture, adding a `todo` child so the parent rolls up to `in_progress`, and so no test pins the duplication either way. **When a new derived value makes an existing reader's fixture fail, check whether the fixture was changed to encode the new semantics or only to avoid the new output. A sidestep leaves the reader's behaviour unpinned.** [7/8]
+- contested (needs-human): F5 plus the silent-failure UX #5. After the fix, the one-time seed protects a dismissed/snoozed parent, but the live triggers still revive one on its next child change. The two write paths now disagree on whether a dismissed parent is protected. That disagreement is the concrete question to put to the owner, not "all dismissed → done". [6]
+- false-positive: F10, rejected. The CASE is duplicated 6×, but SQLite triggers cannot share a function, and every copy is exercised by behaviour tests (ai, au new/old walk, ad, seed). [9]
+- miss: tests-analyzer alone showed that the au trigger's second (old-parent) walk could be deleted with every test still green. Fixed with the edge-case file. The fix also left one new constant out of step: `ProjectQueries.ancestorStatuses` caps at depth 64 while the triggers now cap at 256 (nit). [7]
+- weak-dimension: 7. Trigger-level business rules were first tested only through their happy path; the multi-walk branches needed a dedicated edges file.
+- rule-gap (candidate, dim 7): *a trigger with several independent walks or branches needs a test per branch that fails when that branch alone is deleted; a hand-copied test schema of the trigger needs a drift guard against the migration (the `TestProj05_SwiftTestSchemaMirrorsTheTriggers` shape).*
 - outcome: TBD

@@ -188,7 +188,10 @@ at a glance.
   of a parent loaded before a child changed (`db.UpdateTarget` with a stale
   struct) puts the old status back as if set explicitly; the next child
   change re-derives it. All children `dismissed` rolls the parent to `done`,
-  and a `snoozed` child counts as not started.
+  and a `snoozed` child counts as not started. The live rule also re-derives a
+  dismissed or snoozed parent on its next child change (leaving `snooze_until`
+  set; nothing snoozes a project target today) — whether a dismissed parent
+  should stay terminal is an open owner call.
 
 - **TCC attribution (owner decision 2026-09-30).** A project folder under a
   TCC-protected location (`~/Documents`, `~/Desktop`, `~/Downloads`, cloud

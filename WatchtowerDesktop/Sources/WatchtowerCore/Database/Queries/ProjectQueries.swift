@@ -234,7 +234,7 @@ package enum ProjectQueries {
                 SELECT p.id, up.depth + 1 FROM up
                 JOIN targets c ON c.id = up.id
                 JOIN targets p ON p.id = c.parent_id AND p.project_id = c.project_id
-                WHERE up.depth < 64
+                WHERE up.depth < 256  -- the triggers' own bound (migration 00085)
             )
             SELECT t.id, t.status FROM up JOIN targets t ON t.id = up.id
             """, arguments: [targetID])
