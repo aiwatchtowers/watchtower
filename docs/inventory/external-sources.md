@@ -188,7 +188,10 @@ rather than reordered; deleting a paragraph whose text reads as markdown
 structure (`- x`, `# x`) is refused while any block of the section
 changes; moving a rich block between two sections through two
 `replace_section` edits re-renders it (the diff shows the deletion and
-the addition). Edits are capped at 20 per call, 60 000 runes per text
+the addition); when a rich multi-line paragraph's text equals a run of
+plain paragraphs elsewhere in the section and no block changes, the plain
+run may be kept and the rich paragraph deleted (textually ambiguous; the
+deletion shows in the diff). Edits are capped at 20 per call, 60 000 runes per text
 field and 120 000 per call; a page whose editable text exceeds 60 000 runes
 is shown truncated and its hidden tail cannot be changed. Without the opt-in
 write scopes the tool refuses before any network call: `Confluence editing
