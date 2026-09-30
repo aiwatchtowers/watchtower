@@ -56,63 +56,110 @@ type moves struct {
 // mergeGap's to keep in place, and is reserved before any cross-gap move
 // is paired, so an in-place run always wins over a twin moving in.
 func findMoves(base, body []*block, baseText, bodyText []string, matched [][2]int) moves {
-	mv := moves{to: map[*block]*block{}, away: map[*block]bool{}, cont: map[*block]bool{}}
-	usedBase, usedBody := map[int]bool{}, map[int]bool{}
-	for _, m := range matched {
-		usedBase[m[0]], usedBody[m[1]] = true, true
+	f := &moveFinder{
+		base: base, body: body, baseText: baseText, bodyText: bodyText, matched: matched,
+		usedBase: map[int]bool{}, usedBody: map[int]bool{},
+		mv: moves{to: map[*block]*block{}, away: map[*block]bool{}, cont: map[*block]bool{}},
 	}
-	for j, t := range bodyText {
-		if usedBody[j] || t == "" {
+	for _, m := range matched {
+		f.usedBase[m[0]], f.usedBody[m[1]] = true, true
+	}
+	f.pairSameText()
+	// A run in the original's own gap is kept in place (mergeGap): reserve
+	// it first, so no same-text twin elsewhere moves over and takes it.
+	f.reserveInPlaceRuns()
+	f.pairRunMoves()
+	return f.mv
+}
+
+// moveFinder is findMoves' working state: which original (base) and body
+// indices the match or an earlier pairing already used, and the moves found.
+type moveFinder struct {
+	base, body         []*block
+	baseText, bodyText []string
+	matched            [][2]int
+	usedBase, usedBody map[int]bool
+	mv                 moves
+}
+
+// pairSameText pairs each body block the match left over with the first
+// unmatched original of the same non-empty text.
+func (f *moveFinder) pairSameText() {
+	for j, t := range f.bodyText {
+		if f.usedBody[j] || t == "" {
 			continue
 		}
-		for i, o := range base {
-			if !usedBase[i] && baseText[i] == t {
-				usedBase[i], usedBody[j] = true, true
-				mv.to[body[j]], mv.away[o] = o, true
+		for i, o := range f.base {
+			if !f.usedBase[i] && f.baseText[i] == t {
+				f.usedBase[i], f.usedBody[j] = true, true
+				f.mv.to[f.body[j]], f.mv.away[o] = o, true
 				break
 			}
 		}
 	}
-	gap := func(idx, side int) int {
-		n := 0
-		for _, m := range matched {
-			if m[side] < idx {
-				n++
-			}
-		}
-		return n
-	}
-	// A run in the original's own gap is kept in place (mergeGap): reserve
-	// it first, so no same-text twin elsewhere moves over and takes it.
-	for i := range base {
-		if usedBase[i] || !strings.Contains(baseText[i], "\n\n") {
+}
+
+// reserveInPlaceRuns marks, for each unused original whose text reads back
+// as several blocks, a run of free body blocks in its own gap joining to its
+// text as used: mergeGap keeps that run in place.
+func (f *moveFinder) reserveInPlaceRuns() {
+	for i := range f.base {
+		if !f.multiBlock(i) {
 			continue
 		}
-		if q, k := freeRun(bodyText, usedBody, baseText[i], func(q int) bool { return gap(q, 1) == gap(i, 0) }); k > 0 {
-			usedBase[i] = true
-			for x := q; x < q+k; x++ {
-				usedBody[x] = true
-			}
+		g := f.gap(i, 0)
+		if q, k := freeRun(f.bodyText, f.usedBody, f.baseText[i], func(q int) bool { return f.gap(q, 1) == g }); k > 0 {
+			f.usedBase[i] = true
+			f.useRun(q, k)
 		}
 	}
-	for i, o := range base {
-		if usedBase[i] || !strings.Contains(baseText[i], "\n\n") {
+}
+
+// pairRunMoves pairs each unused original whose text reads back as several
+// blocks with a run of free body blocks in another gap joining to its text:
+// the run's first block re-emits it, the rest emit nothing.
+func (f *moveFinder) pairRunMoves() {
+	for i, o := range f.base {
+		if !f.multiBlock(i) {
 			continue
 		}
-		q, k := freeRun(bodyText, usedBody, baseText[i], func(q int) bool { return gap(q, 1) != gap(i, 0) })
+		g := f.gap(i, 0)
+		q, k := freeRun(f.bodyText, f.usedBody, f.baseText[i], func(q int) bool { return f.gap(q, 1) != g })
 		if k == 0 {
 			continue
 		}
-		usedBase[i] = true
-		mv.to[body[q]], mv.away[o] = o, true
-		for x := q; x < q+k; x++ {
-			usedBody[x] = true
-			if x > q {
-				mv.cont[body[x]] = true
-			}
+		f.usedBase[i] = true
+		f.mv.to[f.body[q]], f.mv.away[o] = o, true
+		f.useRun(q, k)
+		for x := q + 1; x < q+k; x++ {
+			f.mv.cont[f.body[x]] = true
 		}
 	}
-	return mv
+}
+
+// multiBlock reports an unused original whose text reads back as several
+// blocks (a paragraph with two <br/>s).
+func (f *moveFinder) multiBlock(i int) bool {
+	return !f.usedBase[i] && strings.Contains(f.baseText[i], "\n\n")
+}
+
+// gap is the gap index idx sits in on one side (0: base, 1: body): the
+// number of matches before it.
+func (f *moveFinder) gap(idx, side int) int {
+	n := 0
+	for _, m := range f.matched {
+		if m[side] < idx {
+			n++
+		}
+	}
+	return n
+}
+
+// useRun marks body blocks q..q+k-1 as used.
+func (f *moveFinder) useRun(q, k int) {
+	for x := q; x < q+k; x++ {
+		f.usedBody[x] = true
+	}
 }
 
 // freeRun finds k >= 2 consecutive unused texts starting at an accepted q
@@ -198,12 +245,7 @@ func (a *applier) preferLossy(ops []sectionOp) []sectionOp {
 // original of the same text and kind that is not rich: kept original ->
 // the deleted one to keep instead.
 func (a *applier) lossySwaps(ops []sectionOp) map[*block]*block {
-	moved := map[*block]bool{}
-	for _, op := range ops {
-		if op.moved {
-			moved[op.orig] = true
-		}
-	}
+	moved := movedOrigs(ops)
 	swap := map[*block]*block{}
 	for _, del := range ops {
 		if del.orig == nil || del.body != nil || moved[del.orig] {
@@ -213,15 +255,35 @@ func (a *applier) lossySwaps(ops []sectionOp) map[*block]*block {
 		if !a.rich(del.orig, text) {
 			continue
 		}
-		for _, k := range ops {
-			if k.orig != nil && k.body == k.orig && swap[k.orig] == nil && k.orig.kind == del.orig.kind &&
-				a.d.blockText(k.orig) == text && !a.rich(k.orig, text) {
-				swap[k.orig] = del.orig
-				break
-			}
+		if k := a.plainTwin(ops, del.orig, text, swap); k != nil {
+			swap[k] = del.orig
 		}
 	}
 	return swap
+}
+
+// plainTwin is the first kept (or moved) original of o's kind and text that
+// is not rich and is not already paired in swap, or nil.
+func (a *applier) plainTwin(ops []sectionOp, o *block, text string, swap map[*block]*block) *block {
+	for _, k := range ops {
+		if k.orig != nil && k.body == k.orig && swap[k.orig] == nil && k.orig.kind == o.kind &&
+			a.d.blockText(k.orig) == text && !a.rich(k.orig, text) {
+			return k.orig
+		}
+	}
+	return nil
+}
+
+// movedOrigs is the set of originals the merge moved: each one's old place
+// is a deletion op too, which is not a real deletion.
+func movedOrigs(ops []sectionOp) map[*block]bool {
+	moved := map[*block]bool{}
+	for _, op := range ops {
+		if op.moved {
+			moved[op.orig] = true
+		}
+	}
+	return moved
 }
 
 // checkLossy is ruling R14, the section-wide invariant. The merge leaves
@@ -237,37 +299,40 @@ func (a *applier) lossySwaps(ops []sectionOp) map[*block]*block {
 // with no such block is unambiguous, and the diff shows it.
 func (a *applier) checkLossy(ops []sectionOp) error {
 	changed := map[blockKind]bool{}
-	moved := map[*block]bool{} // a moved block's old place is a deletion op too
 	for _, op := range ops {
 		if op.body != nil && op.body != op.orig {
 			changed[op.body.kind] = true
 		}
-		if op.moved {
-			moved[op.orig] = true
-		}
 	}
+	if len(changed) == 0 {
+		return nil
+	}
+	moved := movedOrigs(ops) // a moved block's old place is a deletion op too
 	for _, op := range ops {
-		if op.orig == nil || op.body != nil || moved[op.orig] || len(changed) == 0 {
+		if op.orig == nil || op.body != nil || moved[op.orig] {
 			continue
 		}
-		text := a.d.blockText(op.orig)
-		if !changed[op.orig.kind] {
-			// Its kind is not among the changed blocks — but a text that
-			// reads back as another kind (a paragraph "# x") may still be
-			// the changed block of that kind.
-			if op.orig.kind == blockMarker || text == "" {
-				continue
-			}
-			if err := a.checkParsable(op.orig, text); err != nil {
-				return err
-			}
-			continue
-		}
-		if err := a.lossy(op.orig, text); err != nil {
+		if err := a.checkDeleted(op.orig, changed); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// checkDeleted applies checkLossy's rule to one deleted original o, given
+// the kinds of the section's changed blocks.
+func (a *applier) checkDeleted(o *block, changed map[blockKind]bool) error {
+	text := a.d.blockText(o)
+	if changed[o.kind] {
+		return a.lossy(o, text)
+	}
+	// Its kind is not among the changed blocks — but a text that reads back
+	// as another kind (a paragraph "# x") may still be the changed block of
+	// that kind.
+	if o.kind == blockMarker || text == "" {
+		return nil
+	}
+	return a.checkParsable(o, text)
 }
 
 // lossy refuses, with the R11 message naming o, an original block markdown
@@ -347,22 +412,8 @@ func findRun(texts []string, t string) (q, k int) {
 // next unmatched original block of its kind, or adds it as new; the
 // originals left over (and those moved elsewhere) are deleted.
 func (a *applier) pairGap(allOrig, body []*block, allText []string, mv moves) ([]sectionOp, error) {
-	var ops []sectionOp
-	var orig, fresh []*block
-	var origText []string
-	for i, o := range allOrig {
-		if mv.away[o] {
-			ops = append(ops, sectionOp{orig: o})
-			continue
-		}
-		orig, origText = append(orig, o), append(origText, allText[i])
-	}
-	for _, n := range body {
-		if mv.to[n] == nil && !mv.cont[n] {
-			fresh = append(fresh, n)
-		}
-	}
-	if len(fresh) > 0 {
+	ops, orig, origText := splitMovedAway(allOrig, allText, mv)
+	if hasFresh(body, mv) {
 		for i, o := range orig {
 			if err := a.checkParsable(o, origText[i]); err != nil {
 				return nil, err
@@ -391,6 +442,30 @@ func (a *applier) pairGap(allOrig, body []*block, allText []string, mv moves) ([
 		p = j + 1
 	}
 	return append(ops, dropOrKeep(orig[p:], origText[p:])...), nil
+}
+
+// splitMovedAway deletes the gap's originals moved elsewhere (ops) and
+// returns the rest, with their texts, for pairing.
+func splitMovedAway(allOrig []*block, allText []string, mv moves) (ops []sectionOp, orig []*block, origText []string) {
+	for i, o := range allOrig {
+		if mv.away[o] {
+			ops = append(ops, sectionOp{orig: o})
+			continue
+		}
+		orig, origText = append(orig, o), append(origText, allText[i])
+	}
+	return ops, orig, origText
+}
+
+// hasFresh reports a body block that is neither a moved original nor
+// folded into a moved run: one the gap must derive or add.
+func hasFresh(body []*block, mv moves) bool {
+	for _, n := range body {
+		if mv.to[n] == nil && !mv.cont[n] {
+			return true
+		}
+	}
+	return false
 }
 
 // dropOrKeep deletes original blocks the new body left out — except one
