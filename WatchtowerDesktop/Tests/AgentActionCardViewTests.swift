@@ -414,8 +414,10 @@ final class AgentActionCardViewTests: XCTestCase {
         let action = try row { db in
             try TestDatabase.insertAgentAction(db, tool: "edit_confluence_page", external: true, argsJSON: args)
         }
+        let beforeBuild = AgentAction.argsDecodes.count
         _ = AgentActionCardView.summaryLines(for: action) // builds the memoized preview
         let start = AgentAction.argsDecodes.count
+        XCTAssertEqual(start - beforeBuild, 1, "building the preview decodes the args once")
         for _ in 0..<50 {
             _ = AgentActionCardView.summaryLines(for: action)
             _ = AgentActionCardView.canApprove(action)

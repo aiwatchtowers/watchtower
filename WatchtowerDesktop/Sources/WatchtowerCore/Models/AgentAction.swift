@@ -73,7 +73,9 @@ package struct AgentAction: FetchableRecord, Identifiable, Equatable, Sendable {
         return obj
     }
 
-    private static func stringValue(_ value: Any?) -> String? {
+    /// A decoded args/result value as display text (numbers and string
+    /// arrays included), for a caller holding an already-decoded `args`.
+    package static func stringValue(_ value: Any?) -> String? {
         switch value {
         case let s as String: return s
         case let n as NSNumber: return n.stringValue

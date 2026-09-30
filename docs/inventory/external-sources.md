@@ -194,6 +194,12 @@ mounted only in chat mode, never on the dev-mode MCP surface (DEV-01).
 - `TestEXT05_RichElementsSurviveUntouched`
   (`internal/confluenceedit`) — a no-op edit round-trips the storage byte for
   byte, macros and mentions included.
+- `TestEXT05_RichFixtureKeepsEveryRichElement`
+  (`internal/confluenceedit/doc_test.go`) — every rich element of the
+  realistic fixture `testdata/rich.xhtml` (a toc macro, a user mention, a
+  Jira macro, a status macro, an emoticon, an image with caption, a panel,
+  a table with layout and local-id, a date, an inline-comment marker) is
+  parsed as a marker whose raw bytes carry every attribute verbatim.
 - `TestEXT05_SectionRewriteKeepsUntouchedBlocksByteExact`
   (`internal/confluenceedit/apply_r11_test.go`) — a `replace_section` that
   changes one paragraph leaves every other block of the section byte-exact:

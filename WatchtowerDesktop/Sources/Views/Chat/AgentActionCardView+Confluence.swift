@@ -48,17 +48,18 @@ extension AgentActionCardView {
 
     private static func buildConfluenceEdit(_ action: AgentAction) -> ConfluenceEdit? {
         ConfluenceEditMemo.shared.builds += 1
-        guard let rawChanges = action.args["changes"] as? [[String: Any]], !rawChanges.isEmpty else { return nil }
-        let pageURL = action.argString("url").flatMap(URL.init(string:)).flatMap { url in
+        let args = action.args // one decode of the up-to-4-MiB args per build
+        guard let rawChanges = args["changes"] as? [[String: Any]], !rawChanges.isEmpty else { return nil }
+        let pageURL = AgentAction.stringValue(args["url"]).flatMap(URL.init(string:)).flatMap { url in
             url.scheme == "https" || url.scheme == "http" ? url : nil
         }
-        let title = action.argString("title") ?? ""
+        let title = AgentAction.stringValue(args["title"]) ?? ""
         return ConfluenceEdit(
             title: title.isEmpty ? "Confluence page" : title,
             pageURL: pageURL,
-            baseVersion: action.argString("base_version") ?? "?",
+            baseVersion: AgentAction.stringValue(args["base_version"]) ?? "?",
             changes: rawChanges.map(confluenceChange),
-            notes: action.args["notes"] as? [String] ?? []
+            notes: args["notes"] as? [String] ?? []
         )
     }
 
