@@ -327,6 +327,34 @@ final class ProjectsViewModelTests: XCTestCase {
         XCTAssertEqual(center.focusOrder, [rows[0].id])
     }
 
+    /// A failed list load says nothing about the project's sessions, so Open
+    /// terminal must not start a duplicate "New session" row from it.
+    func testOpenMostRecentSessionStartsNothingWhenTheLoadFails() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("wt-open-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let id = try await pool.write { try TestDatabase.insertProject($0, name: "acme", folder: folder.path) }
+        var processes: [FakeTerminalSession] = []
+        let center = TerminalCenter {
+            let process = FakeTerminalSession(pid: 0)
+            processes.append(process)
+            return process
+        }
+        let vm = ProjectsViewModel(dbPool: pool, cli: ProjectCLI(runner: FakeCLIRunner()), defaults: defaults,
+                                   terminalCenter: center)
+        await vm.reload()
+        let project = try XCTUnwrap(vm.summaries.first { $0.id == id }?.project)
+
+        try await pool.write { try $0.execute(sql: "ALTER TABLE terminal_sessions RENAME TO terminal_sessions_hidden") }
+        await vm.openMostRecentSession(project: project)
+        try await pool.write { try $0.execute(sql: "ALTER TABLE terminal_sessions_hidden RENAME TO terminal_sessions") }
+
+        let rows = try await pool.read { try TerminalSessionQueries.fetchForProject($0, projectID: id) }
+        XCTAssertTrue(rows.isEmpty)
+        XCTAssertTrue(processes.flatMap(\.launches).isEmpty)
+        XCTAssertNotNil(vm.sessionErrors[id])
+    }
+
     /// A created and installed project gets one "Project setup" claude row,
     /// started fresh with its own session id and the first-run prompt.
     func testInstalledProjectStartsTheSetupSessionFresh() async throws {

@@ -56,8 +56,10 @@ extension ProjectsViewModel {
         return parts.isEmpty ? nil : parts.joined(separator: " ")
     }
 
-    /// nil = the standalone sessions.
-    func loadSessions(projectID: Int64?) async {
+    /// nil = the standalone sessions. false = the load failed and its error
+    /// is in `sessionLoadErrors`; the cached list is then stale.
+    @discardableResult
+    func loadSessions(projectID: Int64?) async -> Bool {
         do {
             if let projectID {
                 terminalSessions[projectID] = try await dbPool.read {
@@ -67,8 +69,10 @@ extension ProjectsViewModel {
                 standaloneSessions = try await dbPool.read { try TerminalSessionQueries.fetchStandalone($0) }
             }
             sessionLoadErrors[projectID] = nil
+            return true
         } catch {
             sessionLoadErrors[projectID] = "Could not load terminal sessions: \(error.localizedDescription)"
+            return false
         }
     }
 
@@ -147,7 +151,9 @@ extension ProjectsViewModel {
     func openMostRecentSession(project: Project) async {
         guard openingSession.insert(project.id).inserted else { return }
         defer { openingSession.remove(project.id) }
-        await loadSessions(projectID: project.id)
+        // A failed load says nothing about the project's sessions: starting a
+        // new one would duplicate the session the owner meant to resume.
+        guard await loadSessions(projectID: project.id) else { return }
         if let row = terminalSessions[project.id]?.first(where: { !$0.isClosed }) {
             await open(row)
         } else {
@@ -317,7 +323,8 @@ extension ProjectsViewModel {
 
     // MARK: - Process exits
 
-    /// The center's exit hook: a resume that exits non-zero within
+    /// The center's exit hook: a relaunch of a stored id (a resume, or a
+    /// `--session-id` when no transcript was found) that exits non-zero within
     /// `resumeFailureWindow` of launch is a failed resume.
     func sessionExited(_ id: Int64, code: Int32?) {
         guard let started = resumeStarts.removeValue(forKey: id) else { return }
@@ -362,9 +369,15 @@ extension ProjectsViewModel {
         let previous = terminalCenter?.focusOrder.last
         if let center = terminalCenter {
             let mode = center.start(row, fresh: fresh, prompt: prompt)
-            if case .resumeClaude? = mode {
+            switch mode {
+            case .resumeClaude?, .newClaude? where !fresh:
+                // A relaunch of the stored id: a missed transcript makes it a
+                // `--session-id` of an id Claude Code already used, which it
+                // refuses at once — only Start fresh (a new id) gets out.
                 resumeStarts[row.id] = now()
-            } else if mode != nil {
+            case nil:
+                break
+            default:
                 resumeStarts[row.id] = nil
             }
             center.focus(row.id)

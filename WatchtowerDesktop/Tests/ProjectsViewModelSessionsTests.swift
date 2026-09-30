@@ -261,6 +261,25 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         XCTAssertEqual(launches.last?.args.last, "exec claude --session-id \(uuid)")
     }
 
+    /// A transcript the check missed makes the relaunch a `--session-id` of
+    /// the stored id, which Claude Code refuses at once: Start fresh too.
+    func testARelaunchWithoutATranscriptExitingAtOnceOffersStartFresh() async throws {
+        let p = try await projectWithFolder()
+        let uuid = UUID().uuidString.lowercased()
+        let row = try await insertSession(.init(
+            projectID: p, kind: .claude, title: "s", folderPath: acme, claudeSessionID: uuid
+        ))
+        transcripts = false
+        let vm = makeVM()
+
+        await vm.open(row)
+        XCTAssertEqual(launches.last?.args.last, "exec claude --session-id \(uuid)")
+        clock += 1
+        processes.last?.exit(1)
+
+        XCTAssertEqual(vm.resumeFailed, [row.id])
+    }
+
     func testAResumeEndingLaterOrCleanlyIsNotAFailure() async throws {
         let p = try await projectWithFolder()
         let row = try await insertSession(.init(
