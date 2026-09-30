@@ -46,8 +46,8 @@ the second proposal was never recorded, or the card list drops it.
 
 ## Progress
 
-- 2026-09-30: every Go transaction now begins `BEGIN IMMEDIATE` (`_txlock=immediate` in
-  `db.Open`). A DEFERRED read-then-write transaction failed at once with
+- 2026-09-30: every Go write transaction opened through `db.Open` now begins `BEGIN IMMEDIATE`
+  (`_txlock=immediate`; the legacy `RunSchemaUpgrade` pre-flight handle is not covered). A DEFERRED read-then-write transaction failed at once with
   `SQLITE_BUSY_SNAPSHOT` when another process committed in between — `busy_timeout`
   never covered that upgrade; now it waits for the write lock up front. Pinned by
   `internal/db/txlock_test.go`. Still open: the autocommit `TransitionAgentAction`

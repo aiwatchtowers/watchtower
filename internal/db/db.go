@@ -23,6 +23,14 @@ type DB struct {
 // pre-migrated clone and avoid running goose on every test call.
 var openMemoryHook func() (*DB, error)
 
+// immediateTxDSN makes every Begin/BeginTx that is not ReadOnly issue BEGIN
+// IMMEDIATE, so a write transaction waits for the write lock under
+// busy_timeout up front. A DEFERRED read-then-write transaction instead fails
+// at once with SQLITE_BUSY_SNAPSHOT when another process commits in between —
+// busy_timeout never covers that upgrade. The driver cuts the query off a
+// plain path before opening the file.
+const immediateTxDSN = "?_txlock=immediate"
+
 // Open creates directories if needed, opens the SQLite database, sets pragmas,
 // and runs migrations. Pass ":memory:" for an in-memory database.
 //
@@ -41,15 +49,7 @@ func Open(dbPath string) (*DB, error) {
 		}
 	}
 
-	// _txlock=immediate makes every Begin/BeginTx that is not explicitly
-	// ReadOnly issue BEGIN IMMEDIATE, taking the write lock up front (and
-	// waiting for it under busy_timeout). A DEFERRED transaction that reads
-	// and then writes pins a WAL snapshot; if another connection commits in
-	// between, its upgrade to a write lock fails at once with
-	// SQLITE_BUSY_SNAPSHOT — busy_timeout never applies to that upgrade.
-	// Autocommit statements are unaffected. The driver strips the query
-	// string from a plain path before opening the file.
-	sqlDB, err := sql.Open("sqlite", dbPath+"?_txlock=immediate")
+	sqlDB, err := sql.Open("sqlite", dbPath+immediateTxDSN)
 	if err != nil {
 		return nil, fmt.Errorf("opening database: %w", err)
 	}
