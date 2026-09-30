@@ -22,26 +22,36 @@ anywhere. Design:
 
 ## EXT-01 — read-only toward the source
 
-**Status:** Enforced
+**Status:** Enforced (narrowed 2026-09-30 — see below)
 
-**Observable:** No code path issues a non-GET request to Confluence. The
-only Confluence client is `*jira.ConfluenceAPI`, whose only exported
-methods are `GetJSON` and `Download` (each one GET). The fetcher reaches the network only through the
-`confluence.API` interface — exactly `GetJSON` and `Download` — and every
-path it requests is under `/wiki/`. Nothing in Watchtower can create, edit,
-comment on, or delete Confluence content.
+**Observable:** The *sync path* — the engine (`internal/extsync`) and the
+Confluence fetcher (`internal/confluence`) — is GET-only: every request they
+issue is a GET, and neither can even reach a write method. Writes exist only
+for the edit tool (`EXT-05`, `internal/confluenceedit`), which is `External`
+and runs only after Approve — see `docs/inventory/agent-actions.md`'s
+AGENT-03. `*jira.ConfluenceAPI` (the one Confluence client Watchtower has)
+now has one write method, `PutJSON` (method PUT only), alongside the
+existing `GetJSON`/`Download`; the fetcher's `confluence.API` seam does not
+include it, so nothing outside `internal/confluenceedit` can call it.
 
 **Guard (two halves, because the client's base-URL seam is unexported):**
 - `TestEXT01_ConfluenceAPIIsGETOnly` (`internal/jira/confluence_contracts_test.go`)
   — every exported `ConfluenceAPI` method is exercised against an
-  `httptest` server that fails the test on any non-GET, and a `reflect`
-  check pins the exported method set to exactly
-  {`Download`, `GetJSON`}, so a new method (a write, say)
-  fails the guard until it is exercised there too.
+  `httptest` server; a `reflect` check pins the exported method set to
+  exactly {`Download`, `GetJSON`, `PutJSON`}, so a new method fails the
+  guard until it is exercised here too. `GetJSON`/`Download` are asserted
+  GET-only, full stop; `PutJSON` is the one deliberate exception and is
+  pinned to issue exactly one PUT, on a separate server.
 - `TestEXT01_FetcherReachesOnlyTheGETAPI` (`internal/confluence/fetcher_test.go`)
-  — the `API` seam is pinned to {`Download`, `GetJSON`}, the `*Fetcher`
-  method set is pinned, every `Fetcher` method is exercised once through a
-  fake `API`, and every requested path is under `/wiki/`.
+  — the `API` seam is pinned to {`Download`, `GetJSON`} (no `PutJSON`), the
+  `*Fetcher` method set is pinned, every `Fetcher` method is exercised once
+  through a fake `API`, and every requested path is under `/wiki/`.
+- `TestEXT01_FetcherCannotReachPut` (`internal/confluence/fetcher_test.go`)
+  — re-pins the `confluence.API` seam to exactly {`Download`, `GetJSON`}
+  and runs `go list -deps watchtower/internal/extsync`, asserting it still
+  excludes `internal/jira` (where `PutJSON` lives) — the engine has no way
+  to construct a `*jira.ConfluenceAPI` at all, let alone call its write
+  method.
 
 ## EXT-02 — selection is honest
 
@@ -130,6 +140,18 @@ source: it is registered in the KB contract tests (`kbSourceTables` lists
 every Confluence hit's `link` is the page or attachment URL.
 
 ## Changelog
+
+- 2026-09-30 (Confluence page editing, task 1): EXT-01 narrowed, not
+  weakened — the sync engine and fetcher stay GET-only, but
+  `*jira.ConfluenceAPI` gained `PutJSON` (method PUT, JSON body) for the
+  upcoming edit tool (`EXT-05`, later task). Method pin widened to
+  {`Download`, `GetJSON`, `PutJSON`}; new guard
+  `TestEXT01_FetcherCannotReachPut` pins that the fetcher's `API` seam and
+  the extsync engine's dependency graph still cannot reach it. Also added:
+  `ConfluenceWriteScopes` (`write:page:confluence write:blogpost:confluence`,
+  opt-in via `jira login|add --with-confluence-write`, implies
+  `--with-confluence`) and `HasConfluenceWriteScopes`; a re-login keeps
+  granted write scopes the same way it already keeps read scopes.
 
 - 2026-09-27 (T13 docs pass): EXT-01..04 re-checked against the code —
   wording unchanged, no drift found. `EXPLAIN QUERY PLAN` guards added for

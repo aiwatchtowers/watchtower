@@ -565,6 +565,45 @@ func TestJiraReloginOptions_SelectedSpacesKeepConfluence(t *testing.T) {
 	assert.True(t, opts.WithConfluence)
 }
 
+// A re-login of an account whose grant already carries the Confluence
+// write scopes keeps requesting them without --with-confluence-write.
+func TestJiraReloginOptions_WriteScopedTokenKeepsWrite(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.OAuthScopes+" "+jira.ConfluenceWriteScopes)
+
+	opts, _, err := jiraReloginOptions(jiraLoginFlagsCmd(t), env.cfg.WorkspaceDir(), env.db, 1)
+	require.NoError(t, err)
+	assert.True(t, opts.WithConfluence)
+	assert.True(t, opts.WithConfluenceWrite)
+}
+
+// A re-login of an account whose grant carries only the read Confluence
+// scopes (no write) must not request the write scopes on its own — write
+// access is never auto-added.
+func TestJiraReloginOptions_ReadOnlyTokenDoesNotAddWrite(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.OAuthScopes)
+
+	opts, _, err := jiraReloginOptions(jiraLoginFlagsCmd(t), env.cfg.WorkspaceDir(), env.db, 1)
+	require.NoError(t, err)
+	assert.True(t, opts.WithConfluence)
+	assert.False(t, opts.WithConfluenceWrite)
+}
+
+// A corrupt token never auto-adds the write scopes either (no
+// ext_sources-equivalent fallback exists for write access), but it also
+// must not block the re-login — the warning is enough.
+func TestJiraReloginOptions_CorruptTokenNeverAddsWrite(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.OAuthScopes+" "+jira.ConfluenceWriteScopes)
+	corruptJiraToken(t, env)
+	cmd := jiraLoginFlagsCmd(t)
+	var warn bytes.Buffer
+	cmd.SetErr(&warn)
+
+	opts, _, err := jiraReloginOptions(cmd, env.cfg.WorkspaceDir(), env.db, 1)
+	require.NoError(t, err)
+	assert.False(t, opts.WithConfluenceWrite)
+	assert.Contains(t, warn.String(), "reading jira account 1 token")
+}
+
 // A Jira-only account stays Jira-only: no consent-screen change.
 func TestJiraReloginOptions_JiraOnlyStaysJiraOnly(t *testing.T) {
 	env := setupConfluenceEnv(t, jira.JiraScopes)

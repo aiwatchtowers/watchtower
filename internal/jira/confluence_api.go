@@ -110,16 +110,52 @@ func (a *ConfluenceAPI) GetJSON(ctx context.Context, path string, q url.Values, 
 		return newHTTPStatusError(resp)
 	}
 
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxSuccessBodyBytes+1))
+	return readJSONBody(resp, "GET "+path, out)
+}
+
+// PutJSON performs an authenticated PUT against path (relative to base()),
+// sending body (marshaled to JSON) as the request payload, and decodes the
+// JSON response body into out. A non-2xx response is returned as
+// *HTTPStatusError rather than decoded — the same shape GetJSON uses, so a
+// 409 version conflict on a page update surfaces as
+// HTTPStatusError{Status: 409} for the caller to turn into a conflict
+// message. The marshaled bytes are handed to doURL, which already rebuilds
+// a fresh reader from them on every retry attempt, so a 401-triggered
+// refresh resends the full body rather than an already-drained one.
+func (a *ConfluenceAPI) PutJSON(ctx context.Context, path string, body any, out any) error {
+	data, err := json.Marshal(body)
 	if err != nil {
-		return fmt.Errorf("reading GET %s: %w", path, err)
-	}
-	if int64(len(data)) > maxSuccessBodyBytes {
-		return fmt.Errorf("GET %s: %w", path, ErrTooLarge)
+		return fmt.Errorf("encoding PUT %s: %w", path, err)
 	}
 
+	resp, err := a.c.doURL(ctx, http.MethodPut, a.base()+path, data, jsonAccept)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return newHTTPStatusError(resp)
+	}
+
+	return readJSONBody(resp, "PUT "+path, out)
+}
+
+// readJSONBody reads and decodes a 2xx response body into out, capped at
+// maxSuccessBodyBytes — the OOM-only safety net GetJSON has always had,
+// shared with PutJSON so a decode failure or oversized body is handled
+// identically on write as on read. label identifies the request in error
+// messages (e.g. "GET /wiki/api/v2/spaces").
+func readJSONBody(resp *http.Response, label string, out any) error {
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxSuccessBodyBytes+1))
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", label, err)
+	}
+	if int64(len(data)) > maxSuccessBodyBytes {
+		return fmt.Errorf("%s: %w", label, ErrTooLarge)
+	}
 	if err := json.Unmarshal(data, out); err != nil {
-		return fmt.Errorf("decoding GET %s: %w", path, err)
+		return fmt.Errorf("decoding %s: %w", label, err)
 	}
 	return nil
 }
