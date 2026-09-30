@@ -205,4 +205,32 @@ final class ProjectTerminalCenterTests: XCTestCase {
         XCTAssertEqual(signals.filter { $0.1 == SIGHUP }.count, 2)
         XCTAssertTrue(center.states.isEmpty)
     }
+
+    // MARK: - Send comments (Task 26)
+
+    func testARunningSessionGetsOneLineAndOneEnter() throws {
+        let center = makeCenter()
+        let p = try project()
+        center.start(project: p)
+        let line = ProjectCommentPrompt.line(relPath: "docs/plan.md", documentID: 7, count: 3)
+        XCTAssertEqual(center.sendPrompt(line, projectID: p.id), .sent)
+        XCTAssertEqual(sessions[0].inputs, [ProjectCommentPrompt.terminalInput(line)])
+    }
+
+    func testAnExitedSessionReceivesNothing() throws {
+        let center = makeCenter()
+        let p = try project()
+        center.start(project: p)
+        sessions[0].exit(0)
+        XCTAssertEqual(center.sendPrompt("x", projectID: p.id), .noSession)
+        XCTAssertTrue(sessions[0].inputs.isEmpty)
+    }
+
+    func testNoSessionStartsNothing() throws {
+        let center = makeCenter()
+        let p = try project()
+        XCTAssertEqual(center.sendPrompt("x", projectID: p.id), .noSession)
+        XCTAssertTrue(sessions.isEmpty, "sending never starts a session")
+        XCTAssertNil(center.states[p.id])
+    }
 }

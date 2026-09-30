@@ -5,6 +5,7 @@ import WatchtowerCore
 /// in the middle as selectable text, its threads on the right.
 struct ProjectDocumentsView: View {
     @Bindable var vm: ProjectsViewModel
+    @Environment(AppState.self) private var appState
     @State private var selection = NSRange(location: 0, length: 0)
     @State private var activeThreadID: Int64?
     @State private var composing = false
@@ -13,6 +14,7 @@ struct ProjectDocumentsView: View {
     /// captured when the composer opens, so a reload while it's open (the
     /// file watcher fires) is detected before the stale selection is written.
     @State private var composeRenderVersion = 0
+    @State private var delivery: ProjectTerminalCenter.PromptDelivery?
 
     var body: some View {
         HSplitView {
@@ -33,6 +35,7 @@ struct ProjectDocumentsView: View {
             await openPending()
         }
         .onChange(of: vm.pendingDocumentID) { _, _ in Task { await openPending() } }
+        .onChange(of: vm.documentViewModel?.document.id) { _, _ in delivery = nil }
     }
 
     private var list: some View {
@@ -88,6 +91,13 @@ struct ProjectDocumentsView: View {
             if let error = docVM.errorMessage {
                 Text(error).font(.caption).foregroundStyle(.red).padding(6)
             }
+            Divider()
+            ProjectCommentsSendBar(
+                count: ProjectCommentPrompt.openOwnerCount(docVM.threads),
+                delivery: delivery,
+                onSend: { sendComments(docVM) },
+                onOpenTerminal: openTerminal
+            )
         }
     }
 
@@ -154,5 +164,19 @@ struct ProjectDocumentsView: View {
         guard let item = vm.documents.first(where: { $0.id == id }) else { return }
         vm.pendingDocumentID = nil
         await vm.openDocument(item.document)
+    }
+
+    private func sendComments(_ docVM: ProjectDocumentViewModel) {
+        let line = ProjectCommentPrompt.line(
+            relPath: docVM.document.relPath, documentID: docVM.document.id,
+            count: ProjectCommentPrompt.openOwnerCount(docVM.threads)
+        )
+        delivery = appState.projectTerminalCenter.sendPrompt(line, projectID: docVM.project.id)
+    }
+
+    private func openTerminal() {
+        if let project = vm.selectedProject { appState.projectTerminalCenter.start(project: project) }
+        vm.pane = .terminal
+        delivery = nil
     }
 }

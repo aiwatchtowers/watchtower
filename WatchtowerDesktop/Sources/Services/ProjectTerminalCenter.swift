@@ -72,6 +72,20 @@ final class ProjectTerminalCenter {
         sessions[projectID]
     }
 
+    enum PromptDelivery: Equatable {
+        case sent
+        /// Nothing running: the next session gets it from `project brief`.
+        case noSession
+    }
+
+    /// Types one prompt line + Enter into the project's running Claude Code
+    /// session. Never starts a session, never writes anything else.
+    func sendPrompt(_ line: String, projectID: Int64) -> PromptDelivery {
+        guard states[projectID] == .running, let session = sessions[projectID] else { return .noSession }
+        session.sendInput(ProjectCommentPrompt.terminalInput(line))
+        return .sent
+    }
+
     /// Starts `claude` in the project folder unless it is already running.
     /// After an exit it relaunches in the same session (scrollback kept).
     func start(project: Project, firstRun: Bool = false) {
