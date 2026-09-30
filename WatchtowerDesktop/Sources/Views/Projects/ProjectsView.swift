@@ -51,6 +51,7 @@ struct ProjectsView: View {
                     row(summary).tag(Optional(summary.id))
                 }
             }
+            .panelListStyle()
             Divider()
             HStack {
                 Button {

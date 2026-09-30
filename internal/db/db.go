@@ -24,6 +24,14 @@ type DB struct {
 // pre-migrated clone and avoid running goose on every test call.
 var openMemoryHook func() (*DB, error)
 
+// immediateTxDSN makes every Begin/BeginTx that is not ReadOnly issue BEGIN
+// IMMEDIATE, so a write transaction waits for the write lock under
+// busy_timeout up front. A DEFERRED read-then-write transaction instead fails
+// at once with SQLITE_BUSY_SNAPSHOT when another process commits in between —
+// busy_timeout never covers that upgrade. The driver cuts the query off a
+// plain path before opening the file.
+const immediateTxDSN = "?_txlock=immediate"
+
 // Open creates directories if needed, opens the SQLite database, sets pragmas,
 // and runs migrations. Pass ":memory:" for an in-memory database.
 //
@@ -42,7 +50,7 @@ func Open(dbPath string) (*DB, error) {
 		}
 	}
 
-	sqlDB, err := sql.Open("sqlite", dbPath)
+	sqlDB, err := sql.Open("sqlite", dbPath+immediateTxDSN)
 	if err != nil {
 		return nil, fmt.Errorf("opening database: %w", err)
 	}
@@ -130,6 +138,8 @@ func (db *DB) SetBusyTimeout(d time.Duration) error {
 // SetReadOnly flips the connection to SQLite query_only mode: any subsequent
 // write (INSERT/UPDATE/DELETE/DDL) fails while reads keep working. Used by
 // read-only consumers (the MCP server) after Open has run migrations.
+// Because Begin is immediate (see Open), Begin() itself fails on such a
+// handle; a transaction there must be opened with sql.TxOptions{ReadOnly: true}.
 func (db *DB) SetReadOnly() error {
 	if _, err := db.Exec("PRAGMA query_only=ON"); err != nil {
 		return fmt.Errorf("setting query_only: %w", err)

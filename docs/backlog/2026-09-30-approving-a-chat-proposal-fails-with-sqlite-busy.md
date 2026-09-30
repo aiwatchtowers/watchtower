@@ -44,7 +44,9 @@ the second proposal was never recorded, or the card list drops it.
 
 > Original note: «бага» (with screenshot)
 
-## Progress (2026-09-30, Go half)
+## Progress
+
+### 2026-09-30, Go half: render outside the tx, owner-click budget
 
 - **Long writer found by reading the code:** the knowledge index (`kb.Run`)
   rendered each 200-document batch *inside* its write transaction — after
@@ -66,8 +68,17 @@ the second proposal was never recorded, or the card list drops it.
   on `mcp --chat` covers it. To confirm on the live install: count
   `agent_actions` rows for that conversation's `turn_id`.
 - **Still open:** the Desktop half — show an approve failure on the card
-  itself with Retry, not only as the chat's bottom banner. A residual Go risk
-  is a deferred transaction that reads first and then writes (`db.WithTx`
-  inside a tool's `Execute`): under WAL it can get SQLITE_BUSY at once if
-  another writer committed after its first read, whatever the busy timeout.
-  `BEGIN IMMEDIATE` there would close it, but that is a wider change.
+  itself with Retry, not only as the chat's bottom banner. (The deferred
+  read-then-write residual is closed by the `BEGIN IMMEDIATE` entry below.)
+
+### 2026-09-30, BEGIN IMMEDIATE
+
+- 2026-09-30: every Go write transaction opened through `db.Open` now begins `BEGIN IMMEDIATE`
+  (`_txlock=immediate`; the legacy `RunSchemaUpgrade` pre-flight handle is not covered). A DEFERRED read-then-write transaction failed at once with
+  `SQLITE_BUSY_SNAPSHOT` when another process committed in between — `busy_timeout`
+  never covered that upgrade; now it waits for the write lock up front. Pinned by
+  `internal/db/txlock_test.go`. Still open: the autocommit `TransitionAgentAction`
+  UPDATE in the screenshot is covered by `busy_timeout` only, so a writer holding the
+  lock longer than the timeout still fails it (the render-outside-the-tx and longer
+  owner-path timeout work addresses that), and the card-level error/Retry and the
+  missing second card remain.

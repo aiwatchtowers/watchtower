@@ -44,3 +44,12 @@ styling fix with no pure logic to pin in a unit test; verified via
 `swift build --target WatchtowerDesktop` (clean) and `swiftlint lint` on the
 changed file (0 violations) — visual confirmation under a real wallpaper-tinted
 window is left to manual QA.
+
+Follow-up (2026-09-30): the Projects tab's list, board tree and documents
+list had the same cause — a `List` in an `HSplitView` column with
+`.listStyle(.sidebar)` or the automatic style, which resolves to the same
+source-list material there. The fix is now one shared modifier,
+`View.panelListStyle()` (`Views/Components/PanelListStyle.swift`), used by
+the chat history and all three Projects lists. `MemoryView`'s two lists
+still use `.listStyle(.sidebar)` inside an `HSplitView` and are the next
+candidates if the Memory tab shows the same tint.

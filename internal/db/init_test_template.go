@@ -46,7 +46,7 @@ type deserializer interface{ Deserialize([]byte) error }
 // migratedSnapshot migrates a throw-away in-memory DB and returns its
 // serialized image.
 func migratedSnapshot() ([]byte, error) {
-	sqlDB, err := sql.Open("sqlite", ":memory:")
+	sqlDB, err := sql.Open("sqlite", ":memory:"+immediateTxDSN)
 	if err != nil {
 		return nil, fmt.Errorf("opening template DB: %w", err)
 	}
@@ -85,7 +85,7 @@ func migratedSnapshot() ([]byte, error) {
 // snapshot is loaded into is the one every later query uses — an in-memory
 // database is private to its connection.
 func cloneFromSnapshot(snapshot []byte) (*DB, error) {
-	dst, err := sql.Open("sqlite", ":memory:")
+	dst, err := sql.Open("sqlite", ":memory:"+immediateTxDSN)
 	if err != nil {
 		return nil, fmt.Errorf("opening clone DB: %w", err)
 	}
