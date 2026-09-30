@@ -53,6 +53,7 @@ const (
 	ReactionCommand            = "reactioncmd.command"
 	CatchupCompose             = "catchup.compose"
 	ChatTitle                  = "chat.title"
+	TerminalTitle              = "terminal.title"
 )
 
 // Store loads, caches, and persists prompt templates.

@@ -218,7 +218,7 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
             hasBlockingWork: AppState.shared.meetingRecorderCenter.isBusy,
             confirmQuit: Self.confirmQuitDuringWork,
             closeChatSessions: { await AppState.shared.chatSessionPool?.closeAll() },
-            closeTerminals: { await AppState.shared.projectTerminalCenter.closeAll() },
+            closeTerminals: { await AppState.shared.terminalCenter.closeAll() },
             stopDaemon: { await DaemonManager.stopDaemonBounded() },
             reply: { ok in sender.reply(toApplicationShouldTerminate: ok) }
         )

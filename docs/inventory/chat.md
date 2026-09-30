@@ -128,7 +128,9 @@ recorded in its resumed history rather than passing it (or anything else)
 again on argv. The one-shot `watchtower chat title` call is covered too:
 its user message (the owner's first exchange) always travels on the
 claude/codex child's stdin, whatever its size (the generators' stdin-only
-mode). Extends QC-03's "secrets never on argv" to all chat content.
+mode), and so is `watchtower terminal title`, whose user message is the
+owner's typed messages from an embedded Claude Code session's transcript.
+Extends QC-03's "secrets never on argv" to all chat content.
 
 **Guard:** `TestChat04_ClaudeArgvCarriesNoContent`,
 `TestChat04_ClaudeSendsRealAttachmentAsContentBlock`,
@@ -137,6 +139,7 @@ mode). Extends QC-03's "secrets never on argv" to all chat content.
 `TestChat04_CodexSessionArgvCarriesNoContent`
 (`internal/codex/client_test.go`);
 `TestChat04_ChatTitleArgvCarriesNoContent` (`cmd/chat_test.go`);
+`TestChat04_TerminalTitleArgvCarriesNoContent` (`cmd/terminal_test.go`);
 `testChat04SessionArgvNeverCarriesContent`,
 `testChat04TurnContentTravelsOnlyOnStdin`
 (`WatchtowerDesktop/Tests/ChatSessionClientTests.swift`)

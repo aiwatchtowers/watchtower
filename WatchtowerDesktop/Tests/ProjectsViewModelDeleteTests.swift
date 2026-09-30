@@ -152,31 +152,46 @@ final class ProjectsViewModelDeleteTests: XCTestCase {
         XCTAssertEqual(ProjectsViewModel.vanished(previous: [], current: [1]), [])
     }
 
-    /// AppState wiring: initProjects hands the VM ProjectTerminalCenter.close,
-    /// so a delete really ends the project's terminal session.
+    /// AppState wiring: initProjects hands the VM `TerminalCenter.closeAll`
+    /// over the project's sessions, so a delete ends every terminal of that
+    /// project — and only those.
     func testInitProjectsWiresDeleteToTheTerminalCenter() async throws {
         let folder = FileManager.default.temporaryDirectory
             .appendingPathComponent("wt-delete-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
         let id = try await pool.write { try TestDatabase.insertProject($0, name: "acme", folder: folder.path) }
-        let fetched = try await pool.read { try ProjectQueries.fetch($0, id: id) }
-        let project = try XCTUnwrap(fetched)
+        let other = try await pool.write { try TestDatabase.insertProject($0, name: "other", folder: folder.path + "/x") }
+        func session(_ projectID: Int64) async throws -> TerminalSession {
+            try await pool.write { d in
+                try TerminalSessionQueries.create(d, .init(
+                    projectID: projectID, kind: .claude, title: "s",
+                    folderPath: folder.path, claudeSessionID: UUID().uuidString.lowercased()
+                ))
+            }
+        }
+        let a = try await session(id)
+        let b = try await session(id)
+        let kept = try await session(other)
 
         let appState = AppState()
         // pid 0: close() never signals a real process group.
-        let session = FakeTerminalSession(pid: 0)
-        appState.projectTerminalCenter.makeSession = { session }
+        var processes: [FakeTerminalSession] = []
+        appState.terminalCenter.makeProcess = {
+            let process = FakeTerminalSession(pid: 0)
+            processes.append(process)
+            return process
+        }
         appState.initProjects(dbPool: pool, cliRunner: DeletingCLIRunner(pool: pool), notifier: RecordingProjectNotifier())
         let vm = try XCTUnwrap(appState.projectsViewModel)
         await vm.reload()
-        appState.projectTerminalCenter.start(project: project)
-        XCTAssertNotNil(appState.projectTerminalCenter.states[id])
+        for s in [a, b, kept] { appState.terminalCenter.start(s, fresh: true) }
+        XCTAssertEqual(appState.terminalCenter.liveIDs, [a.id, b.id, kept.id])
 
         let ok = await vm.deleteProject(id)
 
         XCTAssertTrue(ok)
-        XCTAssertNil(appState.projectTerminalCenter.states[id])
-        XCTAssertTrue(session.detached)
+        XCTAssertEqual(appState.terminalCenter.liveIDs, [kept.id])
+        XCTAssertEqual(processes.map(\.detached), [true, true, false])
     }
 }

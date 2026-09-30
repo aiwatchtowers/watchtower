@@ -53,17 +53,58 @@ final class ProjectsViewModel {
     /// switches and tab changes with its watcher running.
     private(set) var documentViewModel: ProjectDocumentViewModel?
 
-    /// A project was created: Task 18 seeds its notification baseline, and —
-    /// only when `installed` — Task 17 opens its terminal with the first-run
-    /// prompt (after a failed install the setup would run without the skill,
-    /// hook and MCP server it relies on).
+    /// A project was created: Task 18 seeds its notification baseline.
     var onProjectCreated: ((Project, _ installed: Bool) -> Void)?
+    /// The embedded terminals. AppState passes its own; nil (most tests) =
+    /// nothing launches.
+    let terminalCenter: TerminalCenter?
+    /// Runs `watchtower terminal title`; nil without a CLI. A seam for tests.
+    @ObservationIgnored var titleService: ((Int64) async throws -> TerminalTitleResult)?
+    @ObservationIgnored var now: () -> Date = Date.init
+
+    // Session state. Written only by ProjectsViewModel+Sessions.swift, which
+    // cannot reach a `private(set)` setter from its own file.
+
+    /// Each project's `terminal_sessions` rows, most recently active first.
+    var terminalSessions: [Int64: [TerminalSession]] = [:]
+    /// Standalone terminals (`project_id` NULL), most recently active first.
+    var standaloneSessions: [TerminalSession] = []
+    /// The left panel's level 2: the project drilled into (nil = level 1).
+    var drilledProjectID: Int64?
+    /// Sessions whose `--resume` exited non-zero within
+    /// `resumeFailureWindow` of launch: the pane offers "Start fresh".
+    var resumeFailed: Set<Int64> = []
+    /// Why the last session action failed, keyed by project (nil =
+    /// standalone) — never the shared `errorMessage`, where one project's
+    /// failure would follow a switch. The next action on it clears it.
+    var sessionActionErrors: [Int64?: String] = [:]
+    /// Why the last list load failed; the next successful load clears it
+    /// (kept apart so a load after a failed action does not wipe that error).
+    var sessionLoadErrors: [Int64?: String] = [:]
+    /// Layouts touched this run; the rest are read from `defaults`.
+    var layouts: [Int64: WorkspaceLayout] = [:]
+    /// Failed AI-title attempts per session id, this run only.
+    @ObservationIgnored var titleAttempts: [Int64: Int] = [:]
+    /// Consecutive "no owner message yet" title answers per session; at
+    /// `maxNotYetTitledPolls` the poll leaves it until the owner switches back.
+    @ObservationIgnored var notYetTitledStreak: [Int64: Int] = [:]
+    /// When each running resume launched, until its process exits.
+    @ObservationIgnored var resumeStarts: [Int64: Date] = [:]
+    /// Projects an `openMostRecentSession` is running for, and targets a
+    /// `workOn` is running for: a double click must not create two rows.
+    @ObservationIgnored var openingSession: Set<Int64> = []
+    @ObservationIgnored var workingOnTarget: Set<Int64> = []
+    @ObservationIgnored var titleTask: Task<Void, Never>?
+    /// The title poll's wait. A seam for tests.
+    @ObservationIgnored var titleSleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+
     /// The owner changed something in a project (a comment, a status): the
     /// notification policy must not report it back (Task 18).
     var onOwnerWrite: ((Int64, ProjectSubject) -> Void)?
-    /// Closes a project's embedded terminal (SIGHUP → SIGKILL). AppState wires
-    /// it to ProjectTerminalCenter.close in initProjects; closing a project
-    /// with no terminal is a no-op, so calling it twice is harmless.
+    /// Closes every embedded terminal of a project (SIGHUP → SIGKILL).
+    /// AppState wires it to `TerminalCenter.closeAll(where:)` over the
+    /// project's sessions in initProjects; a project with none is a no-op,
+    /// so calling it twice is harmless.
     var closeTerminal: ((Int64) async -> Void)?
     /// Whether the Projects tab is what the owner is looking at (AppState:
     /// sidebar on Projects, main window visible). The poll marks agent
@@ -77,14 +118,25 @@ final class ProjectsViewModel {
 
     let dbPool: DatabasePool
     private let cli: ProjectCLI?
-    private let defaults: UserDefaults
+    let defaults: UserDefaults
     private var viewed: [String: String]
 
-    init(dbPool: DatabasePool, cli: ProjectCLI?, defaults: UserDefaults = .standard) {
+    init(
+        dbPool: DatabasePool,
+        cli: ProjectCLI?,
+        defaults: UserDefaults = .standard,
+        terminalCenter: TerminalCenter? = nil
+    ) {
         self.dbPool = dbPool
         self.cli = cli
         self.defaults = defaults
+        self.terminalCenter = terminalCenter
         viewed = defaults.dictionary(forKey: Self.viewedDocumentsKey) as? [String: String] ?? [:]
+        if let cli {
+            let service = TerminalTitleService(runner: cli.runner)
+            titleService = { try await service.title(sessionID: $0) }
+        }
+        terminalCenter?.onSessionExit = { [weak self] id, code in self?.sessionExited(id, code: code) }
     }
 
     var selectedProject: Project? {
@@ -121,7 +173,10 @@ final class ProjectsViewModel {
         }
         for id in Self.vanished(previous: previousIDs, current: summaries.map(\.id)) {
             await closeTerminal?(id)
+            terminalSessions[id] = nil
         }
+        if let selectedProjectID { await loadSessions(projectID: selectedProjectID) }
+        await loadSessions(projectID: nil)
     }
 
     /// Deletes a project (spec §6.1, Review Focus #5). Order matters: the
@@ -228,8 +283,13 @@ final class ProjectsViewModel {
         selectedProjectID = created.id
         pane = .terminal
         await refreshInstallStatus(projectID: created.id)
-        if let project = selectedProject {
-            onProjectCreated?(project, installed)
+        guard let project = selectedProject else { return }
+        onProjectCreated?(project, installed)
+        // After a failed install the setup would run without the skill, hook
+        // and MCP server it relies on, so no first-run session.
+        if installed {
+            await startNewSession(project: project, title: TerminalSessionNaming.setupTitle,
+                                  prompt: TerminalLaunch.firstRunPrompt)
         }
     }
 

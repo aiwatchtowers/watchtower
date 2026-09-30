@@ -45,6 +45,7 @@ var Defaults = map[string]string{
 	ReactionCommand:            defaultReactionCommand,
 	CatchupCompose:             defaultCatchupCompose,
 	ChatTitle:                  defaultChatTitle,
+	TerminalTitle:              defaultTerminalTitle,
 }
 
 // AllIDs returns prompt IDs in display order.
@@ -88,6 +89,7 @@ var AllIDs = []string{
 	ReactionCommand,
 	CatchupCompose,
 	ChatTitle,
+	TerminalTitle,
 }
 
 // DefaultVersions tracks the current version of each built-in prompt template.
@@ -133,6 +135,7 @@ var DefaultVersions = map[string]int{
 	ReactionCommand:            1, // v1: compose an agent-action's args from a reacted Slack message
 	CatchupCompose:             1, // v1: strong-tier absence-recap composer
 	ChatTitle:                  1, // v1: light-tier conversation title from the first exchange
+	TerminalTitle:              1, // v1: light-tier name for an embedded Claude Code session
 }
 
 // DefaultFor returns the hard-coded default template for a given key.
@@ -180,6 +183,7 @@ var Descriptions = map[string]string{
 	ReactionCommand:            "Reaction commands: compose an agent-action's arguments from the Slack message the owner reacted to",
 	CatchupCompose:             "Catch-Up: compose one absence recap from the window's digests, meetings, decisions and owner items (strong tier; code validates refs)",
 	ChatTitle:                  "AI Chat: name a conversation from its first exchange (light tier, at most 60 characters)",
+	TerminalTitle:              "Terminal: name an embedded Claude Code session from the owner's first messages (light tier, 3-6 words)",
 }
 
 const defaultDigestChannel = `You are analyzing Slack messages from channel #%s for the period %s to %s.
@@ -1444,6 +1448,14 @@ You name a conversation between the owner and their work assistant. Read the fir
 - name the subject, not the act ("Payments rollout risks", not "Question about payments");
 - no quotes, no trailing period, no markdown, no emoji;
 - reply with the title only, on one line.`
+
+// defaultTerminalTitle names an embedded Claude Code session
+// (`watchtower terminal title`, light tier). No language-directive slot: the
+// name follows the language the owner wrote in, not the digest language.
+const defaultTerminalTitle = `You name a terminal session from the owner's first messages to a coding agent.
+Reply with only the name: 3 to 6 words, no quotes, no trailing period, in the
+language the owner wrote in. Name the task, not the tool ("Fix login redirect",
+not "Claude session").`
 
 // DictationModeInstructions returns the destination-specific instruction block
 // and the JSON contract for one dictation cleanup mode.

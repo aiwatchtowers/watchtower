@@ -12,7 +12,7 @@ struct ProjectCommentsSendBar: View {
 
     let count: Int
     /// The last click's result; nil = not clicked yet.
-    let delivery: ProjectTerminalCenter.PromptDelivery?
+    let delivery: TerminalCenter.PromptDelivery?
     let onSend: () -> Void
     let onOpenTerminal: () -> Void
 
