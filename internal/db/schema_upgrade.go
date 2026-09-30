@@ -32,7 +32,12 @@ const legacySchemaTip = 73
 // Caller is responsible for invoking this once per startup before any
 // db.Open() call when config.DB.SchemaFormat < CurrentSchemaFormat.
 func RunSchemaUpgrade(dbPath string) error {
-	raw, err := sql.Open("sqlite", dbPath)
+	// Open's DSN shape plus its busy_timeout as a per-connection pragma:
+	// without the timeout the transition tx fails at once with SQLITE_BUSY
+	// whenever another process (the daemon, the Desktop) holds the write
+	// lock; BEGIN IMMEDIATE makes the tx take that lock before its re-check
+	// read, so the read sees what a concurrent upgrader committed.
+	raw, err := sql.Open("sqlite", sqliteDSN(dbPath, fmt.Sprintf("%s&_pragma=busy_timeout(%d)", immediateTxDSN, busyTimeoutMS)))
 	if err != nil {
 		return fmt.Errorf("opening db for schema upgrade: %w", err)
 	}
@@ -67,6 +72,18 @@ func RunSchemaUpgrade(dbPath string) error {
 		return fmt.Errorf("beginning transition tx: %w", err)
 	}
 	defer tx.Rollback()
+
+	// Re-check under the write lock: with busy_timeout a second process
+	// running this same transition waits for the first instead of failing,
+	// and must then find the table the first one created and stop here.
+	if err := tx.QueryRow(
+		`SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type='table' AND name='goose_db_version')`,
+	).Scan(&hasGoose); err != nil {
+		return fmt.Errorf("re-checking goose_db_version: %w", err)
+	}
+	if hasGoose == 1 {
+		return nil
+	}
 
 	if _, err := tx.Exec(`CREATE TABLE goose_db_version (
 		id          INTEGER PRIMARY KEY AUTOINCREMENT,
