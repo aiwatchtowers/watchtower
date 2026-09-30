@@ -63,18 +63,15 @@ struct ProjectBoardView: View {
                 )
                 .frame(maxHeight: .infinity)
             } else {
-                // Rows are buttons rather than List selection: the card draws
-                // its own selected/hover state, and the system selection
-                // highlight would paint over it.
-                List(vm.rows) { row in
-                    Button { vm.select(row.id) } label: {
-                        ProjectBoardCardView(
-                            row: row,
-                            isSelected: vm.selectedTargetID == row.id,
-                            isCollapsed: vm.collapsed.contains(row.id)
-                        ) { vm.toggle(row.id) }
-                    }
-                    .buttonStyle(.plain)
+                // List selection keeps arrow-key navigation; the card draws the
+                // selected look itself, keyed off the selection, over a clear
+                // row background.
+                List(vm.rows, selection: Binding(get: { vm.selectedTargetID }, set: { vm.select($0) })) { row in
+                    ProjectBoardCardView(
+                        row: row,
+                        isSelected: vm.selectedTargetID == row.id,
+                        isCollapsed: vm.collapsed.contains(row.id)
+                    ) { vm.toggle(row.id) }
                     .listRowSeparator(.hidden)
                     .listRowInsets(EdgeInsets(top: 3, leading: 8, bottom: 3, trailing: 8))
                     .listRowBackground(Color.clear)
