@@ -18,6 +18,12 @@ private final class ChatFollowTrackerBox {
     var tracker = ChatFollowTracker()
 }
 
+/// One assistant answer handed to `QuoteReplySheet`.
+private struct QuoteTarget: Identifiable {
+    let id: Int64
+    let text: String
+}
+
 /// The centered thread column (spec §3.1, max ~760 pt). Reads `liveTurn`
 /// identity only; its text is read by `LiveAssistantRow` alone.
 struct ChatThreadView: View {
@@ -31,6 +37,8 @@ struct ChatThreadView: View {
     /// `follow.tracker.following`.
     @State private var isFollowing = true
     @State private var follow = ChatFollowTrackerBox()
+    /// The answer being quoted ("Quote in reply"); nil = no sheet.
+    @State private var quoting: QuoteTarget?
     private static let bottomSentinelID = "chat-bottom-sentinel"
     private static let scrollSpace = "chat-thread-scroll"
 
@@ -103,6 +111,9 @@ struct ChatThreadView: View {
                     handleThreadChange(change, proxy: proxy)
                 }
             }
+        }
+        .sheet(item: $quoting) { target in
+            QuoteReplySheet(messageText: target.text) { chatVM.addQuote($0, comment: $1) }
         }
     }
 
@@ -210,7 +221,8 @@ struct ChatThreadView: View {
             submitEdit: { chatVM.edit(messageID: $0, newText: $1) },
             cancelEdit: { chatVM.editingMessageID = nil },
             openArtifact: { chatVM.openArtifact(key: $0) },
-            openSources: { chatVM.openSources(messageID: $0, sources: $1) }
+            openSources: { chatVM.openSources(messageID: $0, sources: $1) },
+            quote: { id, text in quoting = QuoteTarget(id: id, text: text) }
         )
     }
 

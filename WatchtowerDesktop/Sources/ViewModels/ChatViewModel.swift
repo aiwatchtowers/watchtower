@@ -61,6 +61,10 @@ final class ChatViewModel {
     /// delta — the live message is `liveTurn` (render isolation).
     private(set) var thread: [ChatThreadItem] = []
     var draft = ""
+    /// "Quote in reply" batches, per conversation: quotes wait here (with the
+    /// owner's comments) and go out together with the typed text as ONE owner
+    /// turn in `sendDraft` — never one by one (owner rule).
+    private(set) var quoteBatches: [Int64: [ChatQuoteDraft]] = [:]
     var errorMessage: String?
     private(set) var selectedProvider: AIProvider
     /// Model override; "" = the provider's resolved strong model (the CLI resolves it).
@@ -227,6 +231,7 @@ final class ChatViewModel {
     /// A conversation is being deleted: close its session; stop showing it
     /// (the landing takes its place).
     func forget(conversationID id: Int64) {
+        quoteBatches[id] = nil
         pool.close(conversationID: id)
         if id == landingDraftID { landingDraft = nil }
         guard id == conversationID else { return }
@@ -534,14 +539,41 @@ final class ChatViewModel {
 
     // MARK: - Turns
 
-    /// Sends the composer text + any pending attachments; clears both only
-    /// when the turn really started (a failed send keeps them for retry).
+    /// Sends the composer text + the pending quote batch + any pending
+    /// attachments as one owner turn; clears them only when the turn really
+    /// started (a failed send keeps them for retry).
     func sendDraft() {
         let attachments = composerAttachments.pending
-        if send(text: draft, attachments: attachments, mentions: composer.mentions, skill: composer.skill) {
+        let batchID = conversationID
+        let text = ChatQuoteReply.compose(quotes: pendingQuotes, typed: draft) ?? draft
+        if send(text: text, attachments: attachments, mentions: composer.mentions, skill: composer.skill) {
             draft = ""
             _ = composerAttachments.takeForSend()
+            if let batchID { quoteBatches[batchID] = nil }
         }
+    }
+
+    /// The current conversation's quote batch (empty on the landing).
+    var pendingQuotes: [ChatQuoteDraft] {
+        conversationID.flatMap { quoteBatches[$0] } ?? []
+    }
+
+    /// "Add to reply" in the quote sheet: one more quote in the batch.
+    /// Nothing is sent or stored until the owner sends the draft.
+    func addQuote(_ quote: String, comment: String) {
+        guard let id = conversationID, !quote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        quoteBatches[id, default: []].append(ChatQuoteDraft(quote: quote, comment: comment))
+    }
+
+    func updateQuoteComment(id quoteID: UUID, comment: String) {
+        guard let id = conversationID, let index = quoteBatches[id]?.firstIndex(where: { $0.id == quoteID }) else { return }
+        quoteBatches[id]?[index].comment = comment
+    }
+
+    func removeQuote(id quoteID: UUID) {
+        guard let id = conversationID else { return }
+        quoteBatches[id]?.removeAll { $0.id == quoteID }
+        if quoteBatches[id]?.isEmpty == true { quoteBatches[id] = nil }
     }
 
     func attachFiles(_ urls: [URL]) {

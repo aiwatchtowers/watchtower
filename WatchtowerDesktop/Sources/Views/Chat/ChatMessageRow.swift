@@ -14,6 +14,7 @@ struct ChatRowActions {
     var cancelEdit: () -> Void = {}
     var openArtifact: (String) -> Void = { _ in }
     var openSources: (Int64, [ChatSource]) -> Void = { _, _ in }
+    var quote: (Int64, String) -> Void = { _, _ in }
 }
 
 /// A finished message. `Equatable` on its data only + `.equatable()` at the
@@ -111,6 +112,9 @@ struct ChatMessageRow: View, Equatable {
                     .help("Edit")
                     .accessibilityLabel("Edit")
             } else if item.message.isAssistant {
+                Button { actions.quote(item.id, item.message.text) } label: { Image(systemName: "text.quote") }
+                    .help("Quote in reply")
+                    .accessibilityLabel("Quote in reply")
                 Button { actions.regenerate(item.id) } label: { Image(systemName: "arrow.clockwise") }
                     .help("Regenerate")
                     .accessibilityLabel("Regenerate")

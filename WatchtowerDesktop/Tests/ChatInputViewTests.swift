@@ -140,4 +140,16 @@ final class ChatInputViewTests: XCTestCase {
         }) != nil
         XCTAssertTrue(found, "with a target id and a center, the mic button must render")
     }
+
+    /// A pending quote batch is sendable content even with an empty field.
+    func testPendingContentEnablesSendWithEmptyText() throws {
+        var sent = 0
+        var stored = ""
+        let view = ChatInput(text: Binding(get: { stored }, set: { stored = $0 }), isStreaming: false,
+                             onSend: { sent += 1 }, hasPendingContent: true)
+        let button = try view.inspect().find(ViewType.Button.self)
+        XCTAssertFalse(try button.isDisabled())
+        try button.tap()
+        XCTAssertEqual(sent, 1)
+    }
 }
