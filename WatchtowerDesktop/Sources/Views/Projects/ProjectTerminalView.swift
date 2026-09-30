@@ -1,4 +1,5 @@
 import AppKit
+import SwiftTerm
 import SwiftUI
 import WatchtowerCore
 
@@ -87,21 +88,21 @@ struct ProjectTerminalView: View {
 private struct TerminalHost: NSViewRepresentable {
     let session: any TerminalSessionProcess
 
-    func makeNSView(context: Context) -> NSView {
-        let container = NSView()
+    func makeNSView(context: Context) -> TerminalContainerView {
+        let container = TerminalContainerView()
         attach(to: container)
         return container
     }
 
-    func updateNSView(_ container: NSView, context: Context) {
+    func updateNSView(_ container: TerminalContainerView, context: Context) {
         attach(to: container)
     }
 
-    static func dismantleNSView(_ container: NSView, coordinator: ()) {
+    static func dismantleNSView(_ container: TerminalContainerView, coordinator: ()) {
         container.subviews.forEach { $0.removeFromSuperview() }
     }
 
-    private func attach(to container: NSView) {
+    private func attach(to container: TerminalContainerView) {
         let terminal = session.view
         guard TerminalHostAttachment.attach(terminal, to: container) else { return }
         DispatchQueue.main.async { terminal.window?.makeFirstResponder(terminal) }
@@ -124,10 +125,40 @@ enum TerminalHostAttachment {
         others.forEach { $0.removeFromSuperview() }
         if terminal.superview !== container {
             terminal.removeFromSuperview()
-            terminal.frame = container.bounds
-            terminal.autoresizingMask = [.width, .height]
+            terminal.frame = contentFrame(in: container.bounds)
             container.addSubview(terminal)
         }
         return true
+    }
+
+    /// Terminal.app-like inner margin on every side. The terminal's own frame
+    /// is inset (not padded inside it), so SwiftTerm computes cols/rows from
+    /// the space it really has and the last column is never clipped.
+    static let margin: CGFloat = 10
+
+    static func contentFrame(in bounds: NSRect) -> NSRect {
+        NSRect(x: bounds.minX + margin, y: bounds.minY + margin,
+               width: max(0, bounds.width - 2 * margin), height: max(0, bounds.height - 2 * margin))
+    }
+}
+
+/// The host's container: keeps its terminal inset by `TerminalHostAttachment.margin`
+/// on every resize and paints the margin in the terminal's own background
+/// colour, so the padding reads as part of the terminal, not as a frame.
+final class TerminalContainerView: NSView {
+    override func resizeSubviews(withOldSize oldSize: NSSize) {
+        subviews.forEach { $0.frame = TerminalHostAttachment.contentFrame(in: bounds) }
+    }
+
+    override func didAddSubview(_ subview: NSView) {
+        super.didAddSubview(subview)
+        needsDisplay = true
+    }
+
+    /// Drawn (not a layer colour) so a dynamic colour follows light/dark.
+    override func draw(_ dirtyRect: NSRect) {
+        let terminal = subviews.first as? TerminalView
+        (terminal?.nativeBackgroundColor ?? .textBackgroundColor).setFill()
+        dirtyRect.fill()
     }
 }
