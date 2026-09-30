@@ -2,6 +2,7 @@ package projectdocs
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"watchtower/internal/db"
@@ -52,6 +53,13 @@ func Import(d *db.DB, p *db.Project, dryRun bool) (Report, error) {
 		return Report{}, fmt.Errorf("importing documents into project %d: %w", p.ID, err)
 	}
 	rep.Imported = append(rep.Imported, inserted...)
+	// A queued path the insert refused was attached meanwhile (or is a
+	// case-only twin of one): report it as such rather than drop it.
+	for _, t := range todo {
+		if !slices.Contains(inserted, t.RelPath) {
+			rep.AlreadyAttached = append(rep.AlreadyAttached, t.RelPath)
+		}
+	}
 	return rep, nil
 }
 

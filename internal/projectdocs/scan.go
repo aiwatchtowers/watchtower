@@ -11,7 +11,6 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strings"
 	"time"
 )
@@ -81,7 +80,10 @@ func scanDocsDir(folder string) ([]Candidate, error) {
 			return err
 		}
 		if e.IsDir() {
-			return skipDir(p, e)
+			if name := e.Name(); strings.HasPrefix(name, ".") || name == "node_modules" {
+				return fs.SkipDir
+			}
+			return nil
 		}
 		kind := docKind(p, e)
 		if kind == "" {
@@ -97,14 +99,6 @@ func scanDocsDir(folder string) ([]Candidate, error) {
 		return nil, fmt.Errorf("scanning %s: %w", root, err)
 	}
 	return out, nil
-}
-
-func skipDir(p string, e fs.DirEntry) error {
-	name := e.Name()
-	if p != "docs" && (strings.HasPrefix(name, ".") || name == "node_modules") {
-		return fs.SkipDir
-	}
-	return nil
 }
 
 // docKind is spec or plan for a regular .md/.txt file directly inside a
@@ -135,10 +129,10 @@ func candidate(e fs.DirEntry, rel, kind string) (Candidate, error) {
 }
 
 func sortNewestFirst(cs []Candidate) {
-	sort.SliceStable(cs, func(i, j int) bool {
-		if !cs[i].modTime.Equal(cs[j].modTime) {
-			return cs[i].modTime.After(cs[j].modTime)
+	slices.SortStableFunc(cs, func(a, b Candidate) int {
+		if c := b.modTime.Compare(a.modTime); c != 0 {
+			return c
 		}
-		return cs[i].RelPath < cs[j].RelPath
+		return strings.Compare(a.RelPath, b.RelPath)
 	})
 }
