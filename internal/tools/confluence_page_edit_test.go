@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"strings"
 	"testing"
@@ -234,8 +235,13 @@ func TestEditConfluencePage_ExecuteFailuresAreActionable(t *testing.T) {
 		return err
 	}
 
+	writeHint := "Confluence editing not granted — run: watchtower jira login --account " + strconv.FormatInt(accountID, 10) + " --with-confluence-write"
+	f.putErr = &jira.HTTPStatusError{Status: 403, Body: `{"message":"OAuth 2.0 token has insufficient scope"}`}
+	assert.Contains(t, run().Error(), writeHint, "a scope 403 is a grant problem")
 	f.putErr = &jira.HTTPStatusError{Status: 403, Body: `{"message":"not permitted"}`}
-	assert.Contains(t, run().Error(), "Confluence editing not granted — run: watchtower jira login --account "+strconv.FormatInt(accountID, 10)+" --with-confluence-write")
+	err403 := run().Error()
+	assert.Contains(t, err403, "you don't have permission to edit this page in Confluence", "a restriction 403 is not a re-login")
+	assert.NotContains(t, err403, "jira login")
 
 	f.putErr = nil
 	f.getErr = jira.ErrAuthRevoked
@@ -246,5 +252,54 @@ func TestEditConfluencePage_ExecuteFailuresAreActionable(t *testing.T) {
 
 	_, err = tool.Execute(context.Background(), d, Call{Args: editArgs(7, fridayToMonday)})
 	assert.EqualError(t, err, "the proposal carries no prepared edit; propose it again", "Execute never re-derives an un-normalized edit")
-	assert.Empty(t, f.puts[1:])
+	require.Len(t, f.puts, 2, "only the two 403 attempts reached PUT")
+}
+
+// Execute writes the storage pinned at propose time — what the owner
+// approved — and never recomputes it from the edits: a tampered stored
+// new_storage goes out verbatim.
+func TestEditConfluencePage_ExecuteWritesThePinnedStorageVerbatim(t *testing.T) {
+	d := openDB(t)
+	db.SeedTestJiraAccount(t, d)
+	f := newFakeConfluence()
+	tool := NewEditConfluencePage(confluenceFactory(f))
+	var args map[string]any
+	require.NoError(t, json.Unmarshal(normalized(t, tool, d, editArgs(7, fridayToMonday)), &args))
+	const pinned = `<p>Exactly what the owner approved.</p>`
+	args["new_storage"] = pinned
+	raw, err := json.Marshal(args)
+	require.NoError(t, err)
+	_, err = tool.Execute(context.Background(), d, Call{Args: raw})
+	require.NoError(t, err)
+	require.Len(t, f.puts, 1)
+	assert.Equal(t, pinned, f.puts[0].body.Body.Value)
+}
+
+func TestEditConfluencePage_ScopeHints(t *testing.T) {
+	d := openDB(t)
+	accountID := db.SeedTestJiraAccount(t, d)
+	f := newFakeConfluence()
+	f.noRead = true
+	id := strconv.FormatInt(accountID, 10)
+	err := NewEditConfluencePage(confluenceFactory(f)).Validate(context.Background(), d, editArgs(7, fridayToMonday))
+	assert.Equal(t, "Confluence editing not granted — run: watchtower jira login --account "+id+" --with-confluence-write", verr(t, err),
+		"no Confluence scopes at all: the edit asks for the write flag, which implies read")
+	_, err = NewGetConfluencePage(confluenceFactory(f)).Execute(context.Background(), d, Call{Args: json.RawMessage(`{"page":"98765"}`)})
+	assert.Equal(t, "Confluence access not granted — run: watchtower jira login --account "+id+" --with-confluence", verr(t, err))
+	assert.Zero(t, f.gets)
+}
+
+// A failed user-name lookup at propose time is named in the refusal of an
+// edit that used display-named markers.
+func TestEditConfluencePage_NameLookupFailureIsExplained(t *testing.T) {
+	d := openDB(t)
+	db.SeedTestJiraAccount(t, d)
+	f := newFakeConfluence()
+	f.usersErr = errors.New("user bulk: 500")
+	_, err := NewEditConfluencePage(confluenceFactory(f)).Normalize(context.Background(), d,
+		editArgs(7, `[{"kind":"replace_text","old":"Owner: ⟦1:@Ann Lee⟧ leads","new":"Owner: ⟦1:@Ann Lee⟧ runs"}]`))
+	msg := verr(t, err)
+	assert.Contains(t, msg, "couldn't resolve user names")
+	assert.Contains(t, msg, "user bulk: 500")
+	assert.Contains(t, msg, "re-read with get_confluence_page and keep the markers as shown")
 }

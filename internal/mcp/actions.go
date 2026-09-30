@@ -116,8 +116,55 @@ type actionView struct {
 	AppliedAt string          `json:"applied_at,omitempty"`
 }
 
+// maxViewStringBytes caps one string value of the args get_action echoes.
+// A write tool may pin bulky material into its stored args — the storage
+// XHTML edit_confluence_page will write (up to 4 MiB), a rewritten section
+// body in its changes — that the model needs only as "what was proposed",
+// never verbatim. The rule is generic (every tool, every string at any
+// depth) so a future tool cannot reopen the hole; the row itself is
+// untouched, only the model-facing view is shortened.
+const (
+	maxViewStringBytes = 2048
+	viewKeepRunes      = 500
+)
+
+// elideLargeStrings returns args with every string value over
+// maxViewStringBytes cut to its first viewKeepRunes runes plus a marker
+// naming its full size. Args that are not valid JSON pass through.
+func elideLargeStrings(args string) json.RawMessage {
+	var v any
+	if err := json.Unmarshal([]byte(args), &v); err != nil {
+		return json.RawMessage(args)
+	}
+	out, err := json.Marshal(elideValue(v))
+	if err != nil {
+		return json.RawMessage(args)
+	}
+	return out
+}
+
+func elideValue(v any) any {
+	switch x := v.(type) {
+	case string:
+		if len(x) <= maxViewStringBytes {
+			return x
+		}
+		r := []rune(x)
+		return fmt.Sprintf("%s… [elided: %d bytes]", string(r[:min(viewKeepRunes, len(r))]), len(x))
+	case []any:
+		for i := range x {
+			x[i] = elideValue(x[i])
+		}
+	case map[string]any:
+		for k := range x {
+			x[k] = elideValue(x[k])
+		}
+	}
+	return v
+}
+
 func newActionView(a db.AgentAction) actionView {
-	v := actionView{ID: a.ID, Tool: a.Tool, Status: a.Status, Args: json.RawMessage(a.ArgsJSON), Reason: a.Reason,
+	v := actionView{ID: a.ID, Tool: a.Tool, Status: a.Status, Args: elideLargeStrings(a.ArgsJSON), Reason: a.Reason,
 		Error: a.Error, CreatedAt: a.CreatedAt, DecidedAt: a.DecidedAt, AppliedAt: a.AppliedAt}
 	if a.ResultJSON != "" {
 		v.Result = json.RawMessage(a.ResultJSON)

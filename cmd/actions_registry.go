@@ -47,9 +47,10 @@ func jiraWriteClientFactory(cfg *config.Config) tools.JiraWriteClientFactory {
 
 // confluencePageClientFactory serves get_confluence_page and
 // edit_confluence_page: the account's Jira client (shared Atlassian grant)
-// plus a Confluence fetcher for comments and user names. A grant without
-// the Confluence read scopes is the model's cue to ask for re-consent; the
-// write scopes are reported to the tool, which refuses an edit without them.
+// plus a Confluence fetcher for comments and user names. The grant's read
+// and write scopes are reported to the tools, each of which refuses with
+// its own re-consent hint (the edit tool asks for --with-confluence-write,
+// which implies read).
 func confluencePageClientFactory(cfg *config.Config) tools.ConfluencePageClientFactory {
 	return func(account db.JiraAccount) (tools.ConfluencePageClient, error) {
 		client, err := jiraAccountClient(cfg, account)
@@ -60,13 +61,9 @@ func confluencePageClientFactory(cfg *config.Config) tools.ConfluencePageClientF
 		if err != nil {
 			return nil, fmt.Errorf("reading jira account #%d token: %w", account.ID, err)
 		}
-		if !jira.HasConfluenceScopes(tok) {
-			_, consent := confluenceHints(account.ID)
-			return nil, &tools.ValidationError{Msg: consent}
-		}
 		api := client.Confluence()
 		return tools.NewConfluencePageClient(api, confluence.NewFetcher(api, account.SiteURL), account.SiteURL,
-			jira.HasConfluenceWriteScopes(tok)), nil
+			jira.HasConfluenceScopes(tok), jira.HasConfluenceWriteScopes(tok)), nil
 	}
 }
 

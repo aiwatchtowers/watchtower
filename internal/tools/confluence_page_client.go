@@ -88,6 +88,10 @@ type ConfluencePageClient interface {
 	// Users maps account ids to display names; an id Confluence does not
 	// return is absent.
 	Users(ctx context.Context, ids []string) (map[string]string, error)
+	// HasReadScopes / HasWriteScopes report the account grant's Confluence
+	// read and (opt-in) write scopes; each tool turns a missing one into its
+	// own re-consent hint.
+	HasReadScopes() bool
 	HasWriteScopes() bool
 }
 
@@ -106,16 +110,20 @@ type confluencePageClient struct {
 	api      ConfluenceREST
 	comments ConfluenceCommentSource
 	siteURL  string
+	canRead  bool
 	canWrite bool
 }
 
 // NewConfluencePageClient builds the live client: api for the page itself
 // (GET, and the PUT of an approved edit), comments for the comment and
-// user listings. siteURL prefixes the page's web link.
-func NewConfluencePageClient(api ConfluenceREST, comments ConfluenceCommentSource, siteURL string, canWrite bool) ConfluencePageClient {
-	return &confluencePageClient{api: api, comments: comments, siteURL: strings.TrimRight(siteURL, "/"), canWrite: canWrite}
+// user listings. siteURL prefixes the page's web link; canRead/canWrite are
+// the grant's Confluence read and write scopes.
+func NewConfluencePageClient(api ConfluenceREST, comments ConfluenceCommentSource, siteURL string, canRead, canWrite bool) ConfluencePageClient {
+	return &confluencePageClient{api: api, comments: comments, siteURL: strings.TrimRight(siteURL, "/"),
+		canRead: canRead, canWrite: canWrite}
 }
 
+func (c *confluencePageClient) HasReadScopes() bool  { return c.canRead }
 func (c *confluencePageClient) HasWriteScopes() bool { return c.canWrite }
 
 func confluenceCollection(kind string) string {

@@ -162,7 +162,7 @@ func TestConfluencePageClient_GetFallsBackToBlogPostAndPutsItsCollection(t *test
 			`"body":{"storage":{"value":"<p>Hi</p>"}},"_links":{"webui":"/spaces/ENG/blog/2026/09/30/42/Weekly"}}`,
 		"/wiki/api/v2/spaces/7": `{"id":"7","key":"ENG"}`,
 	}, put: `{"id":"42","version":{"number":4}}`}
-	c := NewConfluencePageClient(rest, fakeCommentSource{}, "https://test.atlassian.net/", true)
+	c := NewConfluencePageClient(rest, fakeCommentSource{}, "https://test.atlassian.net/", true, true)
 
 	page, err := c.GetPage(context.Background(), "42")
 	require.NoError(t, err)
@@ -190,7 +190,7 @@ func TestConfluencePageClient_MapsCommentsAndUsers(t *testing.T) {
 			Resolved: true, Sections: []extsync.Section{{Text: "Why Friday?"}}, MentionedUserIDs: []string{"557058:other"}},
 		{Ref: extsync.ItemRef{ExtID: "6"}, ReplyTo: "5", CommentKind: "inline", Sections: []extsync.Section{{Text: "Moved."}}},
 	}}
-	c := NewConfluencePageClient(&fakeREST{}, src, "https://test.atlassian.net", false)
+	c := NewConfluencePageClient(&fakeREST{}, src, "https://test.atlassian.net", true, false)
 	got, err := c.Comments(context.Background(), "1")
 	require.NoError(t, err)
 	assert.Equal(t, []ConfluenceComment{

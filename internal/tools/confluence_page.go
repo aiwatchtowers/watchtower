@@ -11,6 +11,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"watchtower/internal/confluence"
 	"watchtower/internal/confluenceedit"
 	"watchtower/internal/db"
 	"watchtower/internal/jira"
@@ -105,6 +106,9 @@ func resolveConfluenceURL(d *db.DB, accountID int64, raw string) (confluenceTarg
 	}
 	if accountID > 0 {
 		account, err := ResolveJiraAccount(d, accountID)
+		if err == nil && !sameHost(account.SiteURL, u.Host) {
+			err = &ValidationError{Msg: fmt.Sprintf("%s is not Jira account #%d's site (%s); pass the matching account or omit it", u.Host, accountID, account.SiteURL)}
+		}
 		return confluenceTarget{account: account, pageID: id}, err
 	}
 	accounts, err := d.ListEnabledJiraAccounts()
@@ -112,11 +116,17 @@ func resolveConfluenceURL(d *db.DB, accountID int64, raw string) (confluenceTarg
 		return confluenceTarget{}, err
 	}
 	for _, a := range accounts {
-		if su, err := url.Parse(a.SiteURL); err == nil && strings.EqualFold(su.Host, u.Host) {
+		if sameHost(a.SiteURL, u.Host) {
 			return confluenceTarget{account: a, pageID: id}, nil
 		}
 	}
 	return confluenceTarget{}, &ValidationError{Msg: fmt.Sprintf("%s is not on a connected Atlassian site (see list_jira_projects)", u.Host)}
+}
+
+// sameHost reports whether siteURL's host is host.
+func sameHost(siteURL, host string) bool {
+	su, err := url.Parse(siteURL)
+	return err == nil && su.Host != "" && strings.EqualFold(su.Host, host)
 }
 
 // resolveConfluenceTitle finds a page by title through the knowledge index
@@ -184,7 +194,7 @@ func confluenceReadErr(err error, accountID int64, pageID string) error {
 	case errors.Is(err, jira.ErrAuthRevoked):
 		return &ValidationError{Msg: fmt.Sprintf("Atlassian sign-in expired — run: watchtower jira login --account %d --with-confluence", accountID)}
 	case st == 401 || (st == 403 && mentionsScope(err)):
-		return &ValidationError{Msg: fmt.Sprintf("Confluence access not granted — run: watchtower jira login --account %d --with-confluence", accountID)}
+		return &ValidationError{Msg: confluenceReadScopeHint(accountID)}
 	case st == 403:
 		return &ValidationError{Msg: fmt.Sprintf("Confluence page %s is restricted for Jira account #%d", pageID, accountID)}
 	}
@@ -196,6 +206,12 @@ func mentionsScope(err error) bool {
 	return errors.As(err, &he) && strings.Contains(strings.ToLower(he.Body), "scope")
 }
 
+// confluenceReadScopeHint is the re-consent hint for a grant without the
+// Confluence read scopes (the same text as cmd's confluenceHints).
+func confluenceReadScopeHint(accountID int64) string {
+	return fmt.Sprintf("Confluence access not granted — run: watchtower jira login --account %d --with-confluence", accountID)
+}
+
 // confluenceWriteScopeHint is the spec §2 message for a grant without the
 // write scopes.
 func confluenceWriteScopeHint(accountID int64) string {
@@ -205,7 +221,9 @@ func confluenceWriteScopeHint(accountID int64) string {
 // ---- editable text: truncation and mention labels (R3) ---------------------
 
 var (
-	confluenceMentionTokenRE = regexp.MustCompile(`@\[~([^\]]+)\]`)
+	// confluenceMentionTokenRE matches the "<MentionPrefix><accountId>]"
+	// token internal/confluence renders a user mention as in comment text.
+	confluenceMentionTokenRE = regexp.MustCompile(regexp.QuoteMeta(confluence.MentionPrefix) + `([^\]]+)\]`)
 	markerOrdinalRE          = regexp.MustCompile(`⟦\d+:`)
 )
 
@@ -390,6 +408,9 @@ func NewGetConfluencePage(factory ConfluencePageClientFactory) *Tool {
 			client, err := factory(target.account)
 			if err != nil {
 				return nil, err
+			}
+			if !client.HasReadScopes() {
+				return nil, &ValidationError{Msg: confluenceReadScopeHint(target.account.ID)}
 			}
 			return readConfluencePage(ctx, client, target.account.ID, target.pageID)
 		},

@@ -45,6 +45,7 @@ type fakeConfluence struct {
 	commentsErr error
 	usersErr    error
 	readOnly    bool
+	noRead      bool
 	puts        []fakePut
 	gets        int
 	// onGet runs after each GetPage lookup — the seam a test uses to change
@@ -103,7 +104,8 @@ func (f *fakeConfluence) Users(_ context.Context, ids []string) (map[string]stri
 	return out, nil
 }
 
-func (f *fakeConfluence) HasWriteScopes() bool { return !f.readOnly }
+func (f *fakeConfluence) HasReadScopes() bool  { return !f.noRead }
+func (f *fakeConfluence) HasWriteScopes() bool { return !f.readOnly && !f.noRead }
 
 func (f *fakeConfluence) setVersion(v int) {
 	p := f.pages[cfPageID]
@@ -252,6 +254,9 @@ func TestGetConfluencePage_ResolvesURLsAndTitles(t *testing.T) {
 
 	_, err = NewGetConfluencePage(confluenceFactory(f)).Execute(context.Background(), d, Call{Args: json.RawMessage(`{"page":"https://other.example.com/wiki/pages/1"}`)})
 	assert.Contains(t, verr(t, err), "not on a connected Atlassian site")
+	_, err = NewGetConfluencePage(confluenceFactory(f)).Execute(context.Background(), d,
+		Call{Args: json.RawMessage(`{"page":"https://other.example.com/wiki/spaces/X/pages/98765","account":1}`)})
+	assert.Contains(t, verr(t, err), "is not Jira account #1's site", "an explicit account never reads a foreign URL's id on its own site")
 	_, err = NewGetConfluencePage(confluenceFactory(f)).Execute(context.Background(), d, Call{Args: json.RawMessage(`{"page":"no such thing anywhere"}`)})
 	assert.Contains(t, verr(t, err), "no synced Confluence page matches")
 }

@@ -125,10 +125,17 @@ func openConfluenceEdit(d *db.DB, factory ConfluencePageClientFactory, raw json.
 	if err != nil {
 		return a, db.JiraAccount{}, nil, err
 	}
-	if !client.HasWriteScopes() {
+	if !canEdit(client) {
 		return a, db.JiraAccount{}, nil, &ValidationError{Msg: confluenceWriteScopeHint(account.ID)}
 	}
 	return a, account, client, nil
+}
+
+// canEdit reports whether the grant can read and write Confluence pages.
+// --with-confluence-write implies the read scopes, so a grant missing either
+// gets the write hint.
+func canEdit(client ConfluencePageClient) bool {
+	return client.HasReadScopes() && client.HasWriteScopes()
 }
 
 func validateConfluenceEditArgs(a editConfluencePageArgs) error {
@@ -217,11 +224,11 @@ func prepareConfluenceEdit(ctx context.Context, client ConfluencePageClient, acc
 	if err != nil {
 		return editConfluencePinned{}, err
 	}
-	names, _ := resolveNames(ctx, client, mentionIDs(doc.Markers()))
+	names, namesNote := resolveNames(ctx, client, mentionIDs(doc.Markers()))
 	labels := newMarkerLabels(doc.Markers(), names)
 	storage, changes, err := confluenceedit.Apply(doc, toEdits(a.Edits, labels))
 	if err != nil {
-		return editConfluencePinned{}, confluenceApplyErr(err, labels)
+		return editConfluencePinned{}, confluenceApplyErr(err, labels, namesNote)
 	}
 	if err := checkVisibleOnly(doc.Text(), storage); err != nil {
 		return editConfluencePinned{}, err
@@ -249,10 +256,16 @@ func toEdits(specs []confluenceEditSpec, labels markerLabels) []confluenceedit.E
 
 // confluenceApplyErr turns a refused edit into the model-facing message
 // (markers named as the model saw them).
-func confluenceApplyErr(err error, labels markerLabels) error {
+// namesNote is set when the user-name lookup failed: markers the model sent
+// with display names could then not be matched, and it must learn why.
+func confluenceApplyErr(err error, labels markerLabels, namesNote string) error {
 	var ee *confluenceedit.EditError
 	if errors.As(err, &ee) {
-		return &ValidationError{Msg: labels.toDisplay.Replace(ee.Error())}
+		msg := labels.toDisplay.Replace(ee.Error())
+		if namesNote != "" {
+			msg += " (couldn't resolve user names — " + namesNote + "; re-read with get_confluence_page and keep the markers as shown)"
+		}
+		return &ValidationError{Msg: msg}
 	}
 	return fmt.Errorf("applying the edits: %w", err)
 }
@@ -306,7 +319,7 @@ func executeConfluenceEdit(ctx context.Context, d *db.DB, factory ConfluencePage
 	if err != nil {
 		return nil, err
 	}
-	if !client.HasWriteScopes() {
+	if !canEdit(client) {
 		return nil, errors.New(confluenceWriteScopeHint(account.ID))
 	}
 	live, err := client.GetPage(ctx, p.PageID)
@@ -339,8 +352,15 @@ func confluencePutErr(ctx context.Context, client ConfluencePageClient, err erro
 			return confluenceConflict(live.Version)
 		}
 		return errors.New("conflict: the page was edited after the preview; nothing was written")
-	case 401, 403:
+	case 401:
 		return fmt.Errorf("%s (%w)", confluenceWriteScopeHint(accountID), err)
+	case 403:
+		// A 403 naming a scope is a grant problem; any other 403 is a page
+		// restriction, which a re-login cannot fix.
+		if mentionsScope(err) {
+			return fmt.Errorf("%s (%w)", confluenceWriteScopeHint(accountID), err)
+		}
+		return fmt.Errorf("you don't have permission to edit this page in Confluence (%w)", err)
 	}
 	return fmt.Errorf("updating Confluence page %s: %w", pageID, err)
 }

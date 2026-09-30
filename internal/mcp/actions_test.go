@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -282,5 +283,55 @@ func TestGetAction_ScopedToBindingConversation(t *testing.T) {
 	res, _ = same.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "get_action", Arguments: map[string]any{"id": id}})
 	if res.IsError {
 		t.Fatalf("a binding matching the row's conversation must see it: %s", textContent(t, res))
+	}
+}
+
+// get_action must not echo bulky pinned args verbatim: an
+// edit_confluence_page row carries up to 4 MiB of storage XHTML, which would
+// blow the chat context on "did my edit go through?". Every long string is
+// cut in the view; the stored row is unchanged.
+func TestGetAction_ElidesLargeArgStrings(t *testing.T) {
+	database := seedDB(t)
+	storage := "<p>" + strings.Repeat("ж", 100_000) + "</p>"
+	before := strings.Repeat("b", 3000)
+	args, err := json.Marshal(map[string]any{"page_id": "98765", "base_version": 7, "new_storage": storage,
+		"changes": []any{map[string]any{"kind": "replace_text", "before": before, "after": "short"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := database.InsertAgentAction(db.AgentAction{Tool: "edit_confluence_page", ArgsJSON: string(args), Reason: "r"})
+	cs := newChatSession(t, database, chatRegistry(t, database), tools.Binding{Surface: "main"})
+	res, _ := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "get_action", Arguments: map[string]any{"id": id}})
+	text := textContent(t, res)
+	if res.IsError || len(text) > 10_000 {
+		t.Fatalf("get_action returned %d bytes (error=%v)", len(text), res.IsError)
+	}
+	var view struct {
+		Args struct {
+			PageID      string `json:"page_id"`
+			NewStorage  string `json:"new_storage"`
+			BaseVersion int    `json:"base_version"`
+			Changes     []struct {
+				Before, After string
+			} `json:"changes"`
+		} `json:"args"`
+	}
+	if err := json.Unmarshal([]byte(text), &view); err != nil {
+		t.Fatal(err)
+	}
+	a := view.Args
+	if a.PageID != "98765" || a.BaseVersion != 7 || a.Changes[0].After != "short" {
+		t.Fatalf("small args must pass through unchanged: %+v", a)
+	}
+	wantTail := fmt.Sprintf("… [elided: %d bytes]", len(storage))
+	if !strings.HasSuffix(a.NewStorage, wantTail) || !strings.HasPrefix(a.NewStorage, "<p>жж") {
+		t.Fatalf("new_storage not elided: %.80q…", a.NewStorage)
+	}
+	if !strings.HasSuffix(a.Changes[0].Before, "… [elided: 3000 bytes]") {
+		t.Fatalf("a long change is capped too: %.80q", a.Changes[0].Before)
+	}
+	row, _ := database.GetAgentAction(id)
+	if row.ArgsJSON != string(args) {
+		t.Fatal("the stored row must stay untouched")
 	}
 }
