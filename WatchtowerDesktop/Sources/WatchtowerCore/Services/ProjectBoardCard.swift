@@ -5,8 +5,8 @@ import Foundation
 /// Dual path with Go's `boardSiblingOrder` (`internal/db/project_board.go`),
 /// which orders the board the agent sees through `watchtower mcp --project N`
 /// and `project board`: priority high, medium, then anything else; then status
-/// in_progress, blocked, todo, done, then anything else; then id. Change both
-/// sides together.
+/// in_progress, in_review, blocked, todo, done, then anything else; then id.
+/// Change both sides together.
 package enum ProjectBoardOrder {
     package static func priorityRank(_ priority: String) -> Int {
         switch priority {
@@ -19,10 +19,11 @@ package enum ProjectBoardOrder {
     package static func statusRank(_ status: String) -> Int {
         switch status {
         case "in_progress": 0
-        case "blocked": 1
-        case "todo": 2
-        case "done": 3
-        default: 4
+        case "in_review": 1
+        case "blocked": 2
+        case "todo": 3
+        case "done": 4
+        default: 5
         }
     }
 

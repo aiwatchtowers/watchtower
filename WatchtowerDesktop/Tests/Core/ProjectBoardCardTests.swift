@@ -50,8 +50,9 @@ final class ProjectBoardCardTests: XCTestCase {
     func testRanksMatchGoCaseArms() {
         XCTAssertEqual(["high", "medium", "low", "bogus"].map(ProjectBoardOrder.priorityRank), [0, 1, 2, 2])
         XCTAssertEqual(
-            ["in_progress", "blocked", "todo", "done", "dismissed", "snoozed"].map(ProjectBoardOrder.statusRank),
-            [0, 1, 2, 3, 4, 4]
+            ["in_progress", "in_review", "blocked", "todo", "done", "dismissed", "snoozed"]
+                .map(ProjectBoardOrder.statusRank),
+            [0, 1, 2, 3, 4, 5, 5]
         )
     }
 
