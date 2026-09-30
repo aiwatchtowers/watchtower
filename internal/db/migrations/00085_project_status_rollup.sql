@@ -43,7 +43,11 @@
 -- One-time recompute of existing boards, before the triggers exist: each
 -- project parent is re-derived from its current children, deepest first
 -- (a FOR EACH ROW trigger fires per inserted row, in the SELECT's order), so
--- every parent is computed from already-final children.
+-- every parent is computed from already-final children. It is a fix-up, not
+-- an edit: updated_at is left alone (a board's old parents must not show up
+-- as "done since the last briefing"), and a parent the owner dismissed or
+-- snoozed keeps that status — the live rule takes over on its next child
+-- change.
 CREATE TABLE project_status_rollup_seed (id INTEGER NOT NULL);
 
 -- +goose StatementBegin
@@ -57,9 +61,9 @@ BEGIN
                 WHEN SUM(c.status IN ('in_progress','done')) > 0 THEN 'in_progress'
                 ELSE 'todo' END
             FROM targets c
-            WHERE c.parent_id = targets.id AND c.project_id = targets.project_id),
-        updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+            WHERE c.parent_id = targets.id AND c.project_id = targets.project_id)
     WHERE id = NEW.id
+      AND status NOT IN ('dismissed','snoozed')
       AND status != (
             SELECT CASE
                 WHEN SUM(c.status IN ('done','dismissed')) = COUNT(*) THEN 'done'

@@ -24,26 +24,28 @@ func TestMigration00085_RecomputesExistingBoards(t *testing.T) {
 	}
 	// Root first, then deeper levels: a parent-first order would compute the
 	// root from its child's stale status, so this pins the deepest-first order.
-	ins(10, nil, 1, "todo")     // root: {20 -> done, 21 done} -> done
-	ins(20, 10, 1, "todo")      // mid: {30 done, 31 dismissed} -> done
-	ins(21, 10, 1, "done")      //
-	ins(30, 20, 1, "done")      //
-	ins(31, 20, 1, "dismissed") //
-	ins(40, nil, 1, "done")     // no children: untouched
-	ins(50, nil, nil, "todo")   // personal parent: untouched
-	ins(51, 50, nil, "done")    //
-	ins(60, nil, 1, "todo")     // {blocked, done} -> blocked
-	ins(61, 60, 1, "blocked")   //
-	ins(62, 60, 1, "done")      //
-	ins(70, nil, 1, "done")     // {todo, done} -> in_progress
-	ins(71, 70, 1, "todo")      //
-	ins(72, 70, 1, "done")      //
-	ins(80, nil, 1, "blocked")  // {todo, snoozed} -> todo
-	ins(81, 80, 1, "todo")      //
-	ins(82, 80, 1, "snoozed")   //
-	ins(90, nil, 1, "todo")     // {todo} + another project's done child -> todo, unwritten
-	ins(91, 90, 1, "todo")      //
-	ins(92, 90, 2, "done")      //
+	ins(10, nil, 1, "todo")      // root: {20 -> done, 21 done} -> done
+	ins(20, 10, 1, "todo")       // mid: {30 done, 31 dismissed} -> done
+	ins(21, 10, 1, "done")       //
+	ins(30, 20, 1, "done")       //
+	ins(31, 20, 1, "dismissed")  //
+	ins(40, nil, 1, "done")      // no children: untouched
+	ins(50, nil, nil, "todo")    // personal parent: untouched
+	ins(51, 50, nil, "done")     //
+	ins(60, nil, 1, "todo")      // {blocked, done} -> blocked
+	ins(61, 60, 1, "blocked")    //
+	ins(62, 60, 1, "done")       //
+	ins(70, nil, 1, "done")      // {todo, done} -> in_progress
+	ins(71, 70, 1, "todo")       //
+	ins(72, 70, 1, "done")       //
+	ins(80, nil, 1, "blocked")   // {todo, snoozed} -> todo
+	ins(81, 80, 1, "todo")       //
+	ins(82, 80, 1, "snoozed")    //
+	ins(95, nil, 1, "dismissed") // an owner-dismissed parent keeps its status
+	ins(96, 95, 1, "todo")       //
+	ins(90, nil, 1, "todo")      // {todo} + another project's done child -> todo, unwritten
+	ins(91, 90, 1, "todo")       //
+	ins(92, 90, 2, "done")       //
 
 	_, err = raw.Exec(`UPDATE targets SET updated_at = '2000-01-01T00:00:00Z'`)
 	require.NoError(t, err)
@@ -63,11 +65,11 @@ func TestMigration00085_RecomputesExistingBoards(t *testing.T) {
 	assert.Equal(t, "in_progress", status(70))
 	assert.Equal(t, "todo", status(80))
 	assert.Equal(t, "todo", status(90), "another project's child is not counted")
-	var updated string
-	require.NoError(t, raw.QueryRow(`SELECT updated_at FROM targets WHERE id = 90`).Scan(&updated))
-	assert.Equal(t, "2000-01-01T00:00:00Z", updated, "an already-correct parent is not written")
-
+	assert.Equal(t, "dismissed", status(95), "the recompute never revives a dismissed parent")
 	var n int
+	require.NoError(t, raw.QueryRow(`SELECT COUNT(*) FROM targets WHERE updated_at != '2000-01-01T00:00:00Z'`).Scan(&n))
+	assert.Zero(t, n, "the recompute is a fix-up: it never bumps updated_at")
+
 	require.NoError(t, raw.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'project_status_rollup_seed%'`).Scan(&n))
 	assert.Zero(t, n, "the seed helper is dropped")
 	require.NoError(t, raw.QueryRow(`SELECT COUNT(*) FROM sqlite_master

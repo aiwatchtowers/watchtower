@@ -153,7 +153,8 @@ read as a child nor written. The rule is migration `00085`'s triggers
 (`targets_project_status_rollup_{ai,au,ad}`), so every writer — the Go
 MCP/CLI and the Desktop's direct GRDB writes — gets it with no dual path, and
 it does not depend on `PRAGMA recursive_triggers`. The migration re-derives
-every existing board once, deepest parent first. The `watchtower-project`
+every existing board once, deepest parent first, without bumping
+`updated_at` and leaving a dismissed or snoozed parent as it is. The `watchtower-project`
 skill tells the agent never to set a parent's status.
 
 **Why locked:** Owner decision (board target #124). Before the rollup a
