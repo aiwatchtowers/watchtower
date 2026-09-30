@@ -31,10 +31,11 @@ type Candidate struct {
 // parent directory is named specs or plans anywhere under docs/ — the README
 // first, then newest first. Symlinks — files or directories — are never
 // followed or listed, so every rel_path is a regular file inside the folder;
-// hidden directories and node_modules are not walked. A path it cannot read
-// below the folder and docs/ themselves is skipped and returned in
-// unreadable; only an unreadable folder or docs/ fails the scan.
-func Scan(folder string) (found []Candidate, unreadable []string, err error) {
+// hidden directories and node_modules are not walked. A path below the
+// folder or docs/ that cannot be read is skipped and returned as
+// "<rel_path>: <reason>" in the second result; only an unreadable folder or
+// docs/ itself fails the scan.
+func Scan(folder string) ([]Candidate, []string, error) {
 	readme, unreadable, err := scanReadme(folder)
 	if err != nil {
 		return nil, nil, err
@@ -56,9 +57,9 @@ func scanReadme(folder string) ([]Candidate, []string, error) {
 		if !strings.EqualFold(e.Name(), "README.md") || !e.Type().IsRegular() {
 			continue
 		}
-		c, ok := candidate(e, e.Name(), "doc")
-		if !ok {
-			return nil, []string{e.Name()}, nil
+		c, err := candidate(e, e.Name(), "doc")
+		if err != nil {
+			return nil, []string{unreadableEntry(e.Name(), err)}, nil
 		}
 		return []Candidate{c}, nil, nil
 	}
@@ -83,8 +84,10 @@ func scanDocsDir(folder string) ([]Candidate, []string, error) {
 			if p == "docs" {
 				return err
 			}
-			// A directory WalkDir could not list: its contents are skipped.
-			unreadable = append(unreadable, p)
+			unreadable = append(unreadable, unreadableEntry(p, err))
+			if e != nil && e.IsDir() {
+				return fs.SkipDir // not even the entries listed before the failure
+			}
 			return nil
 		}
 		if e.IsDir() {
@@ -97,9 +100,9 @@ func scanDocsDir(folder string) ([]Candidate, []string, error) {
 		if kind == "" {
 			return nil
 		}
-		c, ok := candidate(e, p, kind)
-		if !ok {
-			unreadable = append(unreadable, p)
+		c, err := candidate(e, p, kind)
+		if err != nil {
+			unreadable = append(unreadable, unreadableEntry(p, err))
 			return nil
 		}
 		out = append(out, c)
@@ -129,15 +132,23 @@ func docKind(p string, e fs.DirEntry) string {
 	return ""
 }
 
-// candidate is false when the file's metadata cannot be read (it vanished
-// or is not readable): the caller reports rel as unreadable.
-func candidate(e fs.DirEntry, rel, kind string) (Candidate, bool) {
+func candidate(e fs.DirEntry, rel, kind string) (Candidate, error) {
 	info, err := e.Info()
 	if err != nil {
-		return Candidate{}, false
+		return Candidate{}, err
 	}
 	base := path.Base(rel)
-	return Candidate{RelPath: rel, Kind: kind, Title: strings.TrimSuffix(base, path.Ext(base)), modTime: info.ModTime()}, true
+	return Candidate{RelPath: rel, Kind: kind, Title: strings.TrimSuffix(base, path.Ext(base)), modTime: info.ModTime()}, nil
+}
+
+// unreadableEntry is "<rel>: <reason>", the reason without the path an
+// fs.PathError repeats ("permission denied", "no such file or directory").
+func unreadableEntry(rel string, err error) string {
+	var pe *fs.PathError
+	if errors.As(err, &pe) {
+		err = pe.Err
+	}
+	return rel + ": " + err.Error()
 }
 
 func sortNewestFirst(cs []Candidate) {

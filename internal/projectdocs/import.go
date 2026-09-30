@@ -14,7 +14,7 @@ type Report struct {
 	Imported        []string `json:"imported"`         // attached now (or, in a dry run, would be)
 	AlreadyAttached []string `json:"already_attached"` // found, left untouched
 	SkippedOverCap  []string `json:"skipped_over_cap"` // new, but past MaxImport this run: not attached
-	Unreadable      []string `json:"unreadable"`       // could not be read: skipped, the rest imported
+	Unreadable      []string `json:"unreadable"`       // "<rel_path>: <reason>", skipped; the rest imported
 	DryRun          bool     `json:"dry_run"`
 }
 

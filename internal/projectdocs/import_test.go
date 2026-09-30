@@ -181,7 +181,7 @@ func TestImport_UnreadablePathIsSkippedAndReported(t *testing.T) {
 	rep, err := Import(d, p, false)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"README.md", "docs/plans/p.md"}, rep.Imported)
-	assert.Equal(t, []string{"docs/private"}, rep.Unreadable)
+	assert.Equal(t, []string{"docs/private: permission denied"}, rep.Unreadable)
 
 	docs := filepath.Join(p.FolderPath, "docs")
 	require.NoError(t, os.Chmod(docs, 0))
