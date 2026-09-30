@@ -158,7 +158,7 @@ package enum ChatEntitySearch {
             db,
             sql: """
                 SELECT id, text, status FROM targets
-                WHERE status NOT IN ('done', 'dismissed') AND \(match.sql)
+                WHERE project_id IS NULL AND status NOT IN ('done', 'dismissed') AND \(match.sql)
                 ORDER BY updated_at DESC, id DESC
                 LIMIT ?
                 """,
