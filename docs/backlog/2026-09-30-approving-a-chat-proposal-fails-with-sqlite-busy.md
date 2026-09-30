@@ -1,7 +1,7 @@
 ---
 type: bug
 title: Approving a chat proposal fails with SQLITE_BUSY
-status: open
+status: done
 priority: high
 tags: [chat, agent-actions, sqlite, locking, daemon, desktop]
 context: docs/chat-projects-vision — backlog collection session, item 3 (owner screenshot of the main AI Chat)
@@ -82,3 +82,17 @@ the second proposal was never recorded, or the card list drops it.
   lock longer than the timeout still fails it (the render-outside-the-tx and longer
   owner-path timeout work addresses that), and the card-level error/Retry and the
   missing second card remain.
+
+### 2026-09-30, Desktop half: the error on the card
+
+- A failed Approve/Reject/Retry is kept per row (`AgentActionFeed.rowErrors`)
+  and rendered on that row's card (`AgentActionCardView.gestureError`) in the
+  main chat, the target chat and the Inbox action strip, instead of the chat's
+  bottom banner. On a row the failure left `pending` (the SQLITE_BUSY case)
+  Approve becomes **Retry**, which re-runs `watchtower actions approve`; a
+  `failed`/`approved` row keeps its Retry → `actions apply`. Both go through
+  the CLI, so AGENT-05's claim still decides whether anything executes. The
+  bottom banner keeps only feed-wide failures (a failed read).
+- Resolution: both symptoms are covered — the lock by the Go half above, the
+  card by this entry. The two-cards-one-rendered symptom stays attributed to
+  the same lock (unconfirmed on the live install).
