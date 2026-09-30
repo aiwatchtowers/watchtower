@@ -66,7 +66,9 @@ package enum TargetQueries {
         _ db: Database,
         filter: TargetFilter = TargetFilter()
     ) throws -> [Target] {
-        var conditions: [String] = []
+        // BEHAVIOR PROJ-01 — project targets live only on their board
+        // (ProjectQueries.board); no Targets-tab reader ever sees one.
+        var conditions: [String] = ["project_id IS NULL"]
         var args: [any DatabaseValueConvertible] = []
 
         if let level = filter.level {
@@ -160,14 +162,14 @@ package enum TargetQueries {
     package static func fetchCounts(_ db: Database) throws -> TargetCounts {
         let active = try Int.fetchOne(
             db,
-            sql: "SELECT COUNT(*) FROM targets WHERE status IN ('todo', 'in_progress', 'blocked')"
+            sql: "SELECT COUNT(*) FROM targets WHERE project_id IS NULL AND status IN ('todo', 'in_progress', 'blocked')"
         ) ?? 0
         let now = nowDatetimeString()
         let overdue = try Int.fetchOne(
             db,
             sql: """
                 SELECT COUNT(*) FROM targets
-                WHERE status IN ('todo', 'in_progress', 'blocked')
+                WHERE project_id IS NULL AND status IN ('todo', 'in_progress', 'blocked')
                 AND due_date != '' AND due_date < ?
                 """,
             arguments: [now]
@@ -177,7 +179,7 @@ package enum TargetQueries {
             db,
             sql: """
                 SELECT COUNT(*) FROM targets
-                WHERE status IN ('todo', 'in_progress', 'blocked')
+                WHERE project_id IS NULL AND status IN ('todo', 'in_progress', 'blocked')
                 AND due_date != '' AND due_date >= ? AND due_date < ?
                 """,
             arguments: [today, today + "T24:00"]
@@ -186,7 +188,7 @@ package enum TargetQueries {
             db,
             sql: """
                 SELECT COUNT(*) FROM targets
-                WHERE status IN ('todo', 'in_progress', 'blocked')
+                WHERE project_id IS NULL AND status IN ('todo', 'in_progress', 'blocked')
                 AND priority = 'high'
                 """
         ) ?? 0
@@ -449,7 +451,7 @@ package enum TargetQueries {
             db,
             sql: """
                 SELECT DISTINCT value FROM targets, json_each(targets.tags)
-                WHERE json_valid(targets.tags) AND value <> ''
+                WHERE targets.project_id IS NULL AND json_valid(targets.tags) AND value <> ''
                 ORDER BY value COLLATE NOCASE
                 """
         )

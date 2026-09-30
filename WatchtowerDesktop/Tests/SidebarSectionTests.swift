@@ -28,7 +28,7 @@ final class SidebarSectionTests: XCTestCase {
     }
 
     func testRootItems() {
-        XCTAssertEqual(SidebarDestination.rootItems, [.targets, .tracks])
+        XCTAssertEqual(SidebarDestination.rootItems, [.targets, .tracks, .projects])
     }
 
     func testChatIsTrailingMainItemNotTool() {

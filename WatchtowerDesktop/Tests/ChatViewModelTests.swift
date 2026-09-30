@@ -979,6 +979,161 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertTrue(vm.projects.isEmpty)
         XCTAssertNil(vm.currentConversation?.projectID)
     }
+
+    // MARK: - Artifact comments
+
+    /// A conversation with one stored `document` artifact ("plan"), its panel open.
+    private func conversationWithArtifact(_ vm: ChatViewModel, content: String) throws -> Int64 {
+        let convID = try XCTUnwrap(vm.newConversation())
+        try dbManager.dbPool.write { d in
+            let message = try TestDatabase.insertChatMessage(d, conversationID: convID, role: "assistant", text: "")
+            _ = try ChatArtifactQueries.saveVersion(
+                d, conversationID: convID, messageID: message,
+                draft: ArtifactDraft(key: "plan", kind: "document", title: "Plan", meta: [:], content: content,
+                                     isComplete: true),
+                edited: false)
+        }
+        vm.openArtifact(key: "plan")
+        return convID
+    }
+
+    private func addComment(_ vm: ChatViewModel, on needle: String, body: String) throws -> ArtifactCommentsModel {
+        let comments = try XCTUnwrap(vm.artifactPanel?.comments)
+        let text = try XCTUnwrap(comments.rendered?.text)
+        XCTAssertTrue(comments.add(body: body, selection: (text as NSString).range(of: needle)))
+        return comments
+    }
+
+    private func commentStatuses() throws -> [String] {
+        try dbManager.dbPool.read { try String.fetchAll($0, sql: "SELECT status FROM chat_artifact_comments ORDER BY id") }
+    }
+
+    /// CHAT-05 spirit: a comment never leaves the machine by itself — it
+    /// reaches the assistant only inside the owner's own message.
+    func testArtifactCommentsReachTheAssistantOnlyAsTheOwnersMessage() throws {
+        let vm = try makeViewModel()
+        _ = try conversationWithArtifact(vm, content: "# Plan\n\nShip on Friday.")
+        let comments = try addComment(vm, on: "Ship on Friday", body: "Thursday?")
+        XCTAssertTrue(try lastFake().turns.isEmpty, "adding a comment sends nothing")
+        let expected = try XCTUnwrap(comments.outgoing()).text
+
+        vm.sendArtifactComments()
+
+        XCTAssertEqual(try lastFake().turns.count, 1)
+        XCTAssertEqual(try lastStoredUserText(vm), expected)
+        XCTAssertEqual(comments.comments.map(\.status), [.sent])
+        XCTAssertNotNil(comments.comments.first?.sentAt)
+    }
+
+    func testAFailedSaveLeavesTheCommentsUnsent() throws {
+        let vm = try makeViewModel()
+        _ = try conversationWithArtifact(vm, content: "# Plan\n\nShip on Friday.")
+        _ = try addComment(vm, on: "Ship on Friday", body: "Thursday?")
+        try dbManager.dbPool.write { d in
+            try d.execute(sql: """
+                CREATE TRIGGER fail_user BEFORE INSERT ON chat_messages WHEN NEW.role = 'user'
+                BEGIN SELECT RAISE(ABORT, 'boom'); END
+                """)
+        }
+        vm.sendArtifactComments()
+        XCTAssertTrue(try lastFake().turns.isEmpty)
+        XCTAssertNotNil(vm.errorMessage)
+        XCTAssertEqual(try commentStatuses(), ["open"])
+    }
+
+    func testNothingIsSentWhileAnAnswerIsStreaming() throws {
+        let vm = try makeViewModel()
+        _ = try conversationWithArtifact(vm, content: "# Plan\n\nShip on Friday.")
+        XCTAssertTrue(vm.send(text: "q"))
+        _ = try addComment(vm, on: "Ship on Friday", body: "Thursday?")
+        vm.sendArtifactComments()
+        XCTAssertEqual(try lastFake().turns.count, 1, "only the first question went out")
+        XCTAssertEqual(try commentStatuses(), ["open"])
+    }
+
+    func testOnlyTheUnsentCommentsAreIncludedAndMarked() throws {
+        let vm = try makeViewModel()
+        _ = try conversationWithArtifact(vm, content: "# Plan\n\nKeep the retry budget small.\n\nShip on Friday.")
+        let comments = try addComment(vm, on: "Ship on Friday", body: "Thursday?")
+        let earlier = try XCTUnwrap(comments.comments.first?.id)
+        _ = try dbManager.dbPool.write { try ArtifactCommentQueries.markSent($0, ids: [earlier], at: Date(timeIntervalSince1970: 100)) }
+        comments.reload()
+        _ = try addComment(vm, on: "retry budget", body: "Why?")
+
+        vm.sendArtifactComments()
+
+        let stored = try XCTUnwrap(try lastStoredUserText(vm))
+        XCTAssertTrue(stored.contains("Why?"))
+        XCTAssertFalse(stored.contains("Thursday?"), "an already-sent comment is not sent again")
+        XCTAssertEqual(comments.comments.map(\.status), [.sent, .sent])
+        XCTAssertEqual(comments.comments.first?.sentAt, 100, "the earlier send keeps its sent_at")
+    }
+
+    // MARK: - Quote batch
+
+    private func userMessageCount() throws -> Int? {
+        try dbManager.dbPool.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM chat_messages WHERE role = 'user'") }
+    }
+
+    /// Owner rule: comments go to the LLM as one batch — a quote never sends
+    /// by itself, however many are added.
+    func testQuotesAccumulateAndNothingIsSentPerQuote() throws {
+        let vm = try makeViewModel()
+        _ = try XCTUnwrap(vm.newConversation())
+        vm.addQuote("retry budget", comment: "Why so small?")
+        vm.addQuote("Ship on Friday", comment: "")
+        vm.addQuote("   ", comment: "ignored")
+        XCTAssertEqual(vm.pendingQuotes.map(\.quote), ["retry budget", "Ship on Friday"])
+        XCTAssertTrue(try lastFake().turns.isEmpty)
+        XCTAssertEqual(try userMessageCount(), 0, "a quote is stored nowhere until the owner sends")
+        let second = try XCTUnwrap(vm.pendingQuotes.last?.id)
+        vm.updateQuoteComment(id: second, comment: "Thursday?")
+        vm.removeQuote(id: try XCTUnwrap(vm.pendingQuotes.first?.id))
+        XCTAssertEqual(vm.pendingQuotes.map(\.comment), ["Thursday?"])
+    }
+
+    func testSendDraftSendsEveryQuoteAndTheTypedTextAsOneTurn() throws {
+        let vm = try makeViewModel()
+        _ = try XCTUnwrap(vm.newConversation())
+        vm.addQuote("retry budget", comment: "Why so small?")
+        vm.addQuote("Ship on Friday", comment: "")
+        vm.draft = "And staging?"
+        let expected = ChatQuoteReply.compose(quotes: vm.pendingQuotes, typed: "And staging?")
+
+        vm.sendDraft()
+
+        XCTAssertEqual(try lastFake().turns.count, 1)
+        XCTAssertEqual(try lastStoredUserText(vm), expected)
+        XCTAssertTrue(vm.pendingQuotes.isEmpty)
+        XCTAssertEqual(vm.draft, "")
+    }
+
+    func testAFailedSendKeepsTheQuoteBatch() throws {
+        let vm = try makeViewModel()
+        _ = try XCTUnwrap(vm.newConversation())
+        vm.addQuote("retry budget", comment: "Why so small?")
+        try dbManager.dbPool.write { d in
+            try d.execute(sql: """
+                CREATE TRIGGER fail_user BEFORE INSERT ON chat_messages WHEN NEW.role = 'user'
+                BEGIN SELECT RAISE(ABORT, 'boom'); END
+                """)
+        }
+        vm.sendDraft()
+        XCTAssertTrue(try lastFake().turns.isEmpty)
+        XCTAssertEqual(vm.pendingQuotes.count, 1, "the owner's quotes survive a failed send")
+    }
+
+    func testQuoteBatchesAreKeptPerConversationAndDroppedWithIt() throws {
+        let vm = try makeViewModel()
+        let first = try XCTUnwrap(vm.newConversation())
+        vm.addQuote("retry budget", comment: "")
+        _ = try XCTUnwrap(vm.newConversation())
+        XCTAssertTrue(vm.pendingQuotes.isEmpty)
+        vm.select(conversationID: first)
+        XCTAssertEqual(vm.pendingQuotes.map(\.quote), ["retry budget"])
+        vm.forget(conversationID: first)
+        XCTAssertNil(vm.quoteBatches[first])
+    }
 }
 
 // MARK: - The Chat tab's landing

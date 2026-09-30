@@ -140,6 +140,9 @@ final class AppState {
     /// `wireMeetingRecorderLoaders` (same wiring moment as the registry
     /// loader/writer below, which need the same pool).
     let voiceRegistryCenter = VoiceRegistryCenter()
+    /// Embedded Claude Code terminals, one per project. No DB needed; closed
+    /// on quit by `QuitCoordinator` (via `TrayAppDelegate`).
+    let projectTerminalCenter = ProjectTerminalCenter()
 
     /// Diarizer models are prefetched only while speaker roles are on; a
     /// failure is fine — the post-pass retries the download and degrades to a
@@ -239,6 +242,14 @@ final class AppState {
     /// Dashboard action strip (pending agent-action proposals + due reminders)
     /// — persists across tab switches like its siblings above.
     private(set) var actionStripViewModel: ActionStripViewModel?
+
+    /// Projects tab (spec §6). Owned here so create/repair and the selection
+    /// survive navigation.
+    private(set) var projectsViewModel: ProjectsViewModel?
+    /// Owner notifications for project activity; polls every 30 s.
+    private(set) var projectNotificationCenter: ProjectNotificationCenter?
+    /// Set by `navigateToProject`; `ProjectsView` consumes and clears it.
+    var pendingProjectRoute: ProjectRoute?
 
     /// Whether legacy people analytics is enabled (analysis.legacy_mode in config).
     var analysisLegacyMode: Bool = false
@@ -369,6 +380,11 @@ final class AppState {
     func navigateToPerson(_ userID: String) {
         pendingPersonUserID = userID
         selectedDestination = .people
+    }
+
+    func navigateToProject(_ route: ProjectRoute) {
+        pendingProjectRoute = route
+        selectedDestination = .projects
     }
 
     private var isInitializing = false
@@ -763,6 +779,7 @@ final class AppState {
         initExternalConnections(dbPool: manager.dbPool)
         initReactionDictionary(dbPool: manager.dbPool)
         initActionStrip(dbPool: manager.dbPool)
+        initProjects(dbPool: manager.dbPool)
         startDigestWatcher(dbPool: manager.dbPool)
         startMeetingReminders(dbPool: manager.dbPool)
         startWarmEnginePolicy(dbPool: manager.dbPool)
@@ -907,6 +924,30 @@ final class AppState {
         let vm = ActionStripViewModel(dbPool: dbPool)
         vm.refresh()
         actionStripViewModel = vm
+    }
+
+    /// Not `private`: tests build the VM on a test pool (the
+    /// `initSecretaryProfile` precedent) to prove it survives navigation.
+    func initProjects(
+        dbPool: DatabasePool,
+        cliRunner: (any CLIRunnerProtocol)? = ProcessCLIRunner.makeDefault(),
+        notifier: ProjectNotifying = NotificationService.shared
+    ) {
+        let vm = ProjectsViewModel(dbPool: dbPool, cli: cliRunner.map { ProjectCLI(runner: $0) })
+        vm.closeTerminal = { [weak self] id in await self?.projectTerminalCenter.close(projectID: id) }
+        let notices = ProjectNotificationCenter(dbPool: dbPool, notifier: notifier)
+        vm.onProjectCreated = { [weak self, weak notices] project in
+            notices?.seedBaseline(project: project)
+            self?.projectTerminalCenter.start(project: project, firstRun: true)
+        }
+        vm.onOwnerWrite = { [weak notices] projectID, subject in
+            notices?.recordOwnerWrite(projectID: projectID, subject: subject)
+        }
+        notices.onPolled = { [weak vm] in await vm?.reload() }
+        projectsViewModel = vm
+        projectNotificationCenter = notices
+        // The first poll also loads the list (onPolled → reload).
+        notices.start()
     }
 
     func initGoogleAccounts(dbPool: DatabasePool) {

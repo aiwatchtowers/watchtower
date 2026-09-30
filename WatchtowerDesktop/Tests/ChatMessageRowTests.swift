@@ -56,4 +56,22 @@ final class ChatMessageRowTests: XCTestCase {
         XCTAssertEqual(a, b)
         XCTAssertNotEqual(a, ChatMessageRow(item: base, isLast: true, isEditing: false, actions: ChatRowActions()))
     }
+
+    func testAFinishedAnswerOffersQuoteInReplyWithItsText() throws {
+        var quoted: (Int64, String)?
+        let base = try item(role: "assistant", status: "complete")
+        let row = ChatMessageRow(item: base, isLast: true, isEditing: false,
+                                 actions: ChatRowActions { quoted = ($0, $1) })
+        try row.inspect().find(ViewType.Button.self) { try $0.accessibilityLabel().string() == "Quote in reply" }.tap()
+        XCTAssertEqual(quoted?.0, base.id)
+        XCTAssertEqual(quoted?.1, "body")
+    }
+
+    func testOwnerMessagesHaveNoQuoteButton() throws {
+        let row = ChatMessageRow(item: try item(role: "user", status: "complete"),
+                                 isLast: true, isEditing: false, actions: ChatRowActions())
+        XCTAssertThrowsError(try row.inspect().find(ViewType.Button.self) {
+            try $0.accessibilityLabel().string() == "Quote in reply"
+        })
+    }
 }

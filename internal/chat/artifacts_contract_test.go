@@ -42,3 +42,13 @@ func TestArtifactsContract_EmbedsTheSharedExamples(t *testing.T) {
 func TestArtifactsContract_StaysSmall(t *testing.T) {
 	assert.Less(t, len(ArtifactsContract()), 4500, "the contract is one block of a 40k-char prompt budget")
 }
+
+// TestArtifactsContract_CommentsAreAnsweredWithANewVersion: the owner's
+// "Send N comments" message is ordinary chat text; the contract tells the
+// model to answer it with a new version of the same key, which the Desktop
+// re-anchors the comments onto.
+func TestArtifactsContract_CommentsAreAnsweredWithANewVersion(t *testing.T) {
+	c := ArtifactsContract()
+	assert.Contains(t, c, "sends comments on an artifact")
+	assert.Contains(t, c, "new version of that artifact under the SAME key")
+}
