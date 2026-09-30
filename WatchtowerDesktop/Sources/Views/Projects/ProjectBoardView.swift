@@ -63,50 +63,22 @@ struct ProjectBoardView: View {
                 )
                 .frame(maxHeight: .infinity)
             } else {
+                // List selection keeps arrow-key navigation; the card draws the
+                // selected look itself, keyed off the selection, over a clear
+                // row background.
                 List(vm.rows, selection: Binding(get: { vm.selectedTargetID }, set: { vm.select($0) })) { row in
-                    rowView(vm, row)
+                    ProjectBoardCardView(
+                        row: row,
+                        isSelected: vm.selectedTargetID == row.id,
+                        isCollapsed: vm.collapsed.contains(row.id)
+                    ) { vm.toggle(row.id) }
+                    .listRowSeparator(.hidden)
+                    .listRowInsets(EdgeInsets(top: 3, leading: 8, bottom: 3, trailing: 8))
+                    .listRowBackground(Color.clear)
                 }
                 .panelListStyle()
             }
         }
-    }
-
-    private func rowView(_ vm: ProjectBoardViewModel, _ row: ProjectBoardRow) -> some View {
-        let t = row.node.target
-        return HStack(spacing: 6) {
-            if row.hasChildren {
-                Button { vm.toggle(row.id) } label: {
-                    Image(systemName: vm.collapsed.contains(row.id) ? "chevron.right" : "chevron.down")
-                        .font(.caption2)
-                }
-                .buttonStyle(.plain)
-            } else {
-                Color.clear.frame(width: 10)
-            }
-            Image(systemName: t.statusIcon).foregroundStyle(color(t.statusColor))
-            Text(t.text.components(separatedBy: "\n").first ?? t.text).lineLimit(1)
-            Spacer(minLength: 4)
-            if row.node.unreadForOwner > 0 {
-                badge("\(row.node.unreadForOwner)", systemImage: "bubble.left.fill", color: .blue)
-            }
-            if row.node.openComments > 0 {
-                badge("\(row.node.openComments)", systemImage: "text.bubble", color: .orange)
-            }
-            if !row.node.documents.isEmpty {
-                badge("\(row.node.documents.count)", systemImage: "doc.text", color: .secondary)
-            }
-            if t.progress > 0, t.progress < 1 {
-                Text("\(Int(t.progress * 100))%").font(.caption2).foregroundStyle(.secondary)
-            }
-        }
-        .padding(.leading, CGFloat(row.depth) * 14)
-    }
-
-    private func badge(_ text: String, systemImage: String, color: Color) -> some View {
-        Label(text, systemImage: systemImage)
-            .labelStyle(.titleAndIcon)
-            .font(.caption2)
-            .foregroundStyle(color)
     }
 
     // MARK: - Detail
@@ -123,18 +95,22 @@ struct ProjectBoardView: View {
                         .font(.title3.weight(.semibold))
                         .textFieldStyle(.plain)
                         .onSubmit { vm.rename(titleDraft) }
-                    Picker("Status", selection: Binding(
-                        get: { node.target.status },
-                        set: { vm.setStatus($0) }
-                    )) {
-                        ForEach(ProjectBoardViewModel.editableStatuses, id: \.self) { status in
-                            Text(statusName(status)).tag(status)
-                        }
+                    // Status and priority sit on their own row as compact
+                    // menus: a segmented picker here took the whole width and
+                    // squeezed the intent into a one-letter column.
+                    HStack(spacing: 8) {
+                        statusMenu(vm, node.target)
+                        priorityMenu(vm, node.target)
+                        Spacer(minLength: 0)
                     }
-                    .pickerStyle(.segmented)
                     ProgressView(value: node.target.progress)
                     if !node.target.intent.isEmpty {
-                        Text(node.target.intent).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+                        Text(node.target.intent)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     if !node.documents.isEmpty {
                         VStack(alignment: .leading, spacing: 4) {
@@ -164,6 +140,7 @@ struct ProjectBoardView: View {
                         .disabled(commentDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(16)
             }
             .onAppear { titleDraft = node.target.text }
@@ -175,25 +152,42 @@ struct ProjectBoardView: View {
         }
     }
 
-    private func statusName(_ status: String) -> String {
-        switch status {
-        case "todo": return "To Do"
-        case "in_progress": return "In Progress"
-        case "blocked": return "Blocked"
-        case "done": return "Done"
-        case "dismissed": return "Dismissed"
-        default: return status.capitalized
+    private func statusMenu(_ vm: ProjectBoardViewModel, _ target: Target) -> some View {
+        Menu {
+            ForEach(ProjectBoardCard.editableStatuses, id: \.self) { status in
+                Toggle(ProjectBoardCard.statusLabel(status), isOn: Binding(
+                    get: { target.status == status },
+                    set: { if $0 { vm.setStatus(status) } }
+                ))
+            }
+        } label: {
+            ProjectBoardChip(
+                text: ProjectBoardCard.statusLabel(target.status),
+                color: ProjectBoardColors.status(target.statusColor)
+            )
         }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Status")
     }
 
-    private func color(_ name: String) -> Color {
-        switch name {
-        case "blue": return .blue
-        case "red": return .red
-        case "green": return .green
-        case "gray": return .gray
-        case "purple": return .purple
-        default: return .secondary
+    private func priorityMenu(_ vm: ProjectBoardViewModel, _ target: Target) -> some View {
+        Menu {
+            ForEach(ProjectBoardCard.editablePriorities, id: \.self) { priority in
+                Toggle(priority.capitalized, isOn: Binding(
+                    get: { target.priority == priority },
+                    set: { if $0 { vm.setPriority(priority) } }
+                ))
+            }
+        } label: {
+            ProjectBoardChip(
+                text: target.priority.capitalized,
+                color: ProjectBoardColors.priority(target.priority),
+                dot: true
+            )
         }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Priority")
     }
 }
