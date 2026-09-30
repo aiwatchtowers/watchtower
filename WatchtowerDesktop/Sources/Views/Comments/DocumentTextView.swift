@@ -47,11 +47,29 @@ enum DocumentAttributedString {
     }
 }
 
+/// Which selection survives a text re-apply. A selection is a numeric range,
+/// so it is only meaningful on the exact text it was made on: carried across
+/// a re-style of the same content (a highlight change), dropped whenever the
+/// content identity changes — otherwise doc A's offsets would select, and
+/// anchor a comment to, text in doc B the owner never selected.
+enum DocumentSelectionCarry {
+    static let none = NSRange(location: 0, length: 0)
+
+    static func carried(_ selected: NSRange, sameContent: Bool, newLength: Int) -> NSRange {
+        guard sameContent, NSMaxRange(selected) <= newLength else { return none }
+        return selected
+    }
+}
+
 /// A read-only, selectable `NSTextView` (SwiftUI `Text` cannot report a
 /// selection range). Reports the selection, and a zero-length click's
 /// location so the pane can open the thread under it.
 struct DocumentTextView: NSViewRepresentable {
     let text: NSAttributedString
+    /// Identity of the rendered content (document + render version, artifact
+    /// + version). Equal ids promise identical plain text; a new id clears
+    /// the selection (`DocumentSelectionCarry`).
+    let contentID: String
     @Binding var selection: NSRange
     let onClick: (Int) -> Void
 
@@ -66,37 +84,45 @@ struct DocumentTextView: NSViewRepresentable {
         textView.drawsBackground = false
         textView.textContainerInset = NSSize(width: 20, height: 16)
         textView.delegate = context.coordinator
-        context.coordinator.apply(text, to: textView)
+        context.coordinator.apply(text, contentID: contentID, to: textView)
         return scroll
     }
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         context.coordinator.parent = self
         guard let textView = scroll.documentView as? NSTextView else { return }
-        context.coordinator.apply(text, to: textView)
+        context.coordinator.apply(text, contentID: contentID, to: textView)
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: DocumentTextView
         private var shown: NSAttributedString?
+        private var shownID: String?
         private var applying = false
 
         init(parent: DocumentTextView) {
             self.parent = parent
         }
 
-        /// Replaces the text only when it changed, keeping the selection and
-        /// scroll position (a highlight change re-renders the same text).
-        func apply(_ text: NSAttributedString, to textView: NSTextView) {
-            guard shown !== text else { return }
+        /// Replaces the text only when it changed. The same content (a
+        /// highlight change) keeps the selection and scroll position; new
+        /// content clears the selection — in the view and in the binding.
+        func apply(_ text: NSAttributedString, contentID: String, to textView: NSTextView) {
+            let sameContent = shownID == contentID
+            if sameContent, let shown, shown === text || shown.isEqual(to: text) { return }
             shown = text
+            shownID = contentID
             applying = true
             let selected = textView.selectedRange()
             let visible = textView.visibleRect
             textView.textStorage?.setAttributedString(text)
-            if NSMaxRange(selected) <= text.length { textView.setSelectedRange(selected) }
-            textView.scrollToVisible(visible)
+            let carried = DocumentSelectionCarry.carried(selected, sameContent: sameContent, newLength: text.length)
+            textView.setSelectedRange(carried)
+            if sameContent { textView.scrollToVisible(visible) } else { textView.scroll(.zero) }
             applying = false
+            if carried != selected {
+                DispatchQueue.main.async { [parent] in parent.selection = carried }
+            }
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {

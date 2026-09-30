@@ -35,7 +35,12 @@ struct ProjectDocumentsView: View {
             await vm.openPendingDocument()
         }
         .onChange(of: vm.pendingDocumentID) { _, _ in Task { await vm.openPendingDocument() } }
-        .onChange(of: vm.documentViewModel?.document.id) { _, _ in delivery = nil }
+        .onChange(of: vm.documentViewModel?.document.id) { _, _ in
+            delivery = nil
+            // A selection is offsets into one document's text: never carry it
+            // to another document (it would anchor text the owner never chose).
+            selection = DocumentSelectionCarry.none
+        }
     }
 
     private var list: some View {
@@ -81,6 +86,7 @@ struct ProjectDocumentsView: View {
             if let rendered = docVM.rendered {
                 DocumentTextView(
                     text: DocumentAttributedString.make(rendered, highlights: docVM.anchoredRanges, activeThreadID: activeThreadID),
+                    contentID: "\(docVM.document.id)#\(docVM.renderVersion)",
                     selection: $selection
                 ) { activeThreadID = docVM.threadID(at: $0) ?? activeThreadID }
             } else {

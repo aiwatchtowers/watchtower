@@ -10,8 +10,8 @@ import WatchtowerCore
 struct QuoteReplySheet: View {
     let onAdd: (_ quote: String, _ comment: String) -> Void
     private let rendered: RenderedDocument
-    /// Built once: `DocumentTextView` re-applies its text only when the
-    /// instance changes, so a stable one keeps the owner's selection.
+    /// Built once: a stable instance lets `DocumentTextView` skip re-applying
+    /// its text on every re-render, so the owner's selection is kept.
     private let attributed: NSAttributedString
     @Environment(\.dismiss) private var dismiss
     @State private var selection = NSRange(location: 0, length: 0)
@@ -29,7 +29,7 @@ struct QuoteReplySheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Select the part to quote").font(.headline)
-            DocumentTextView(text: attributed, selection: $selection) { _ in }
+            DocumentTextView(text: attributed, contentID: "quote", selection: $selection) { _ in }
                 .frame(minHeight: 240)
                 .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
             if let quote {
