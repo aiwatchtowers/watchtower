@@ -752,7 +752,11 @@ final class TargetChatViewModel {
               addressedID != target.id else { return target }
         let (addressed, parents) = try dbManager.dbPool.read { db -> (Target?, [Int: Int?]) in
             var parents: [Int: Int?] = [:]
-            for row in try Row.fetchAll(db, sql: "SELECT id, parent_id FROM targets") {
+            // PROJ-01: a personal target's tree can never include a project
+            // target (create_target/create_targets/promote all keep the two
+            // trees disjoint), but the exclusion costs nothing and keeps this
+            // reader consistent with every other targets query.
+            for row in try Row.fetchAll(db, sql: "SELECT id, parent_id FROM targets WHERE project_id IS NULL") {
                 let id: Int = row["id"]
                 parents[id] = row["parent_id"] as Int?
             }
@@ -977,8 +981,10 @@ final class TargetChatViewModel {
     /// assistant can address them with "target_id". Empty string when the task
     /// has neither a parent nor sub-tasks (the block is then omitted).
     nonisolated static func taskTreeBlock(target: Target, dbPool: DatabasePool) -> String {
+        // PROJ-01: same defensive exclusion as resolveActionTarget's query —
+        // this target chat only ever opens for a personal target.
         let all = (try? dbPool.read { db in
-            try Target.fetchAll(db, sql: "SELECT * FROM targets")
+            try Target.fetchAll(db, sql: "SELECT * FROM targets WHERE project_id IS NULL")
         }) ?? []
         let byID = Dictionary(all.map { ($0.id, $0) }) { first, _ in first }
         var childrenOf: [Int: [Target]] = [:]
