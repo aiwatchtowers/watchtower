@@ -630,6 +630,7 @@ struct BriefingDetailView: View {
             case "track": return ("checklist", "Track")
             case "digest": return ("newspaper", "Digest")
             case "people": return ("person.2", "Person")
+            case "project": return ("folder", "Project")
             default: return ("questionmark.circle", type)
             }
         }()
