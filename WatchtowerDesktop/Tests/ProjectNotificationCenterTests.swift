@@ -9,6 +9,18 @@ final class RecordingProjectNotifier: ProjectNotifying, @unchecked Sendable {
     func sendProjectNotice(_ notice: ProjectNotice) { sent.append(notice) }
 }
 
+/// Fails one named project's read and delegates every other one to the real
+/// reader, so a test can pin that one project's error never skips the rest
+/// of the poll (T18).
+struct FailingProjectActivityReader: ProjectActivityReading {
+    struct Boom: Error {}
+    let failingProjectID: Int64
+    func snapshot(_ db: Database, project: Project, afterAgentCommentID: Int64) throws -> ProjectNotificationPolicy.Snapshot {
+        if project.id == failingProjectID { throw Boom() }
+        return try DefaultProjectActivityReader().snapshot(db, project: project, afterAgentCommentID: afterAgentCommentID)
+    }
+}
+
 @MainActor
 final class ProjectNotificationCenterTests: XCTestCase {
     private var pool: DatabasePool!
@@ -33,8 +45,8 @@ final class ProjectNotificationCenterTests: XCTestCase {
         super.tearDown()
     }
 
-    private func makeCenter() -> ProjectNotificationCenter {
-        ProjectNotificationCenter(dbPool: pool, notifier: notifier, defaults: defaults)
+    private func makeCenter(activityReader: ProjectActivityReading = DefaultProjectActivityReader()) -> ProjectNotificationCenter {
+        ProjectNotificationCenter(dbPool: pool, notifier: notifier, activityReader: activityReader, defaults: defaults)
     }
 
     private func write(_ body: @escaping (Database) throws -> Void) async throws {
@@ -136,6 +148,26 @@ final class ProjectNotificationCenterTests: XCTestCase {
         center.onPolled = { reloaded += 1 }
         await center.poll()
         XCTAssertEqual(reloaded, 1)
+    }
+
+    // T18: one project's read failing must not skip the others' polls (nor
+    // abort the whole cycle's prune) — only that project stays unreported.
+    func testOneProjectsFailingReadDoesNotSkipTheOthers() async throws {
+        let (otherID, otherTarget) = try await pool.write { d in
+            let p = try TestDatabase.insertProject(d, name: "beta", folder: "/tmp/beta")
+            return (p, try TestDatabase.insertProjectTarget(d, projectID: p, text: "Other task"))
+        }
+        let center = makeCenter(activityReader: FailingProjectActivityReader(failingProjectID: projectID))
+        await center.poll() // baseline both, projectID's read fails every time
+
+        try await write { _ = try TestDatabase.insertProjectComment($0, projectID: self.projectID, targetID: self.targetID) }
+        try await write { _ = try TestDatabase.insertProjectComment($0, projectID: otherID, targetID: otherTarget) }
+        await center.poll()
+
+        XCTAssertEqual(notifier.sent.map(\.title), ["Agent asks on Other task"],
+                       "the healthy project is still reported despite the other one's read failing")
+        XCTAssertNotNil(defaults.data(forKey: ProjectNotificationCenter.snapshotKey(otherID)),
+                        "the healthy project's snapshot is still saved")
     }
 
     func testDeletedProjectSnapshotIsPruned() async throws {

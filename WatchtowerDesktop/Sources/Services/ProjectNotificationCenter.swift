@@ -11,6 +11,18 @@ protocol ProjectNotifying {
 
 extension NotificationService: ProjectNotifying {}
 
+/// One project's activity read, seamed so a test can fail a single project
+/// without corrupting the shared database for every other one.
+protocol ProjectActivityReading {
+    func snapshot(_ db: Database, project: Project, afterAgentCommentID: Int64) throws -> ProjectNotificationPolicy.Snapshot
+}
+
+struct DefaultProjectActivityReader: ProjectActivityReading {
+    func snapshot(_ db: Database, project: Project, afterAgentCommentID: Int64) throws -> ProjectNotificationPolicy.Snapshot {
+        try ProjectQueries.activitySnapshot(db, project: project, afterAgentCommentID: afterAgentCommentID)
+    }
+}
+
 /// Owner notifications for project activity (spec §6.5). A 30 s poll — the
 /// agent writes from another process (the project MCP server), so GRDB
 /// observation never fires. Per project it compares the persisted snapshot
@@ -32,11 +44,18 @@ final class ProjectNotificationCenter {
     @ObservationIgnored private var pollTask: Task<Void, Never>?
     private let dbPool: DatabasePool
     private let notifier: ProjectNotifying
+    private let activityReader: ProjectActivityReading
     private let defaults: UserDefaults
 
-    init(dbPool: DatabasePool, notifier: ProjectNotifying = NotificationService.shared, defaults: UserDefaults = .standard) {
+    init(
+        dbPool: DatabasePool,
+        notifier: ProjectNotifying = NotificationService.shared,
+        activityReader: ProjectActivityReading = DefaultProjectActivityReader(),
+        defaults: UserDefaults = .standard
+    ) {
         self.dbPool = dbPool
         self.notifier = notifier
+        self.activityReader = activityReader
         self.defaults = defaults
     }
 
@@ -73,15 +92,27 @@ final class ProjectNotificationCenter {
     }
 
     func poll() async {
+        let projects: [Project]
         do {
-            let projects = try await dbPool.read { try ProjectQueries.fetchAll($0) }
-            for project in projects {
-                try await poll(project)
-            }
-            prune(keeping: Set(projects.map(\.id)))
+            projects = try await dbPool.read { try ProjectQueries.fetchAll($0) }
         } catch {
+            // Nothing to iterate and nothing to prune against: bail before
+            // touching either.
             print("[ProjectNotifications] poll error: \(error.localizedDescription)")
+            await onPolled?()
+            return
         }
+        // One project's read failing (a race with its own delete, a
+        // transient I/O error) must not skip every other project's poll —
+        // T18: log and move on rather than aborting the whole cycle.
+        for project in projects {
+            do {
+                try await poll(project)
+            } catch {
+                print("[ProjectNotifications] poll error for project \(project.id): \(error.localizedDescription)")
+            }
+        }
+        prune(keeping: Set(projects.map(\.id)))
         await onPolled?()
     }
 
@@ -90,7 +121,7 @@ final class ProjectNotificationCenter {
         let touchedBefore = ownerTouched[project.id] ?? []
         let watermark = previous?.lastAgentCommentID ?? 0
         var current = try await dbPool.read {
-            try ProjectQueries.activitySnapshot($0, project: project, afterAgentCommentID: watermark)
+            try self.activityReader.snapshot($0, project: project, afterAgentCommentID: watermark)
         }
         // Writes recorded while the read ran stay pending for the next poll
         // too: their effect may or may not be in this snapshot.

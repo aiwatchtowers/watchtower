@@ -19,7 +19,7 @@ final class ProjectCommentPromptTests: XCTestCase {
 
     func testTerminalInputIsJustTheLineWithNoEnter() {
         let bytes = ProjectCommentPrompt.terminalInput("Address x\n\u{1B}y")
-        XCTAssertTrue(bytes.filter { $0 < 0x20 || $0 == 0x7F }.isEmpty, "no control byte, including CR, reaches the terminal")
+        XCTAssertFalse(bytes.contains { $0 < 0x20 || $0 == 0x7F }, "no control byte, including CR, reaches the terminal")
         XCTAssertEqual(String(bytes: bytes, encoding: .utf8), "Address xy")
     }
 
