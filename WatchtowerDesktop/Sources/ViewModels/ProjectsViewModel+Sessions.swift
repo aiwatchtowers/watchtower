@@ -40,6 +40,22 @@ extension ProjectsViewModel {
         }
     }
 
+    /// Per project; the standalone sessions' error is `standaloneSessionError`.
+    var sessionErrors: [Int64: String] {
+        var merged: [Int64: String] = [:]
+        for key in Set(sessionActionErrors.keys).union(sessionLoadErrors.keys) {
+            if let projectID = key, let message = sessionError(projectID: projectID) { merged[projectID] = message }
+        }
+        return merged
+    }
+
+    var standaloneSessionError: String? { sessionError(projectID: nil) }
+
+    private func sessionError(projectID: Int64?) -> String? {
+        let parts = [sessionActionErrors[projectID], sessionLoadErrors[projectID]].compactMap(\.self)
+        return parts.isEmpty ? nil : parts.joined(separator: " ")
+    }
+
     /// nil = the standalone sessions.
     func loadSessions(projectID: Int64?) async {
         do {
@@ -50,8 +66,9 @@ extension ProjectsViewModel {
             } else {
                 standaloneSessions = try await dbPool.read { try TerminalSessionQueries.fetchStandalone($0) }
             }
+            sessionLoadErrors[projectID] = nil
         } catch {
-            setSessionError("Could not load terminal sessions: \(error.localizedDescription)", projectID: projectID)
+            sessionLoadErrors[projectID] = "Could not load terminal sessions: \(error.localizedDescription)"
         }
     }
 
@@ -251,10 +268,12 @@ extension ProjectsViewModel {
     func startTitleRefresh() {
         titleTask?.cancel()
         titleTask = Task { [weak self] in
+            // Ends once the VM is gone: `self` is re-checked around each wait.
             while !Task.isCancelled {
-                try? await Task.sleep(for: Self.titleRefreshInterval)
-                if Task.isCancelled { return }
-                await self?.refreshTitles()
+                guard let sleep = self?.titleSleep else { return }
+                await sleep(Self.titleRefreshInterval)
+                guard let self, !Task.isCancelled else { return }
+                await refreshTitles()
             }
         }
     }
@@ -379,10 +398,6 @@ extension ProjectsViewModel {
     }
 
     private func setSessionError(_ message: String?, projectID: Int64?) {
-        if let projectID {
-            sessionErrors[projectID] = message
-        } else {
-            standaloneSessionError = message
-        }
+        sessionActionErrors[projectID] = message
     }
 }

@@ -70,10 +70,13 @@ final class ProjectsViewModel {
     /// Sessions whose `--resume` exited non-zero within
     /// `resumeFailureWindow` of launch: the pane offers "Start fresh".
     var resumeFailed: Set<Int64> = []
-    /// Why the last session action failed, per project — never the shared
-    /// `errorMessage` (one project's failure must not follow a switch).
-    var sessionErrors: [Int64: String] = [:]
-    var standaloneSessionError: String?
+    /// Why the last session action failed, keyed by project (nil =
+    /// standalone) — never the shared `errorMessage`, where one project's
+    /// failure would follow a switch. The next action on it clears it.
+    var sessionActionErrors: [Int64?: String] = [:]
+    /// Why the last list load failed; the next successful load clears it
+    /// (kept apart so a load after a failed action does not wipe that error).
+    var sessionLoadErrors: [Int64?: String] = [:]
     /// Layouts touched this run; the rest are read from `defaults`.
     var layouts: [Int64: WorkspaceLayout] = [:]
     /// Failed AI-title attempts per session id, this run only.
@@ -85,6 +88,8 @@ final class ProjectsViewModel {
     @ObservationIgnored var openingSession: Set<Int64> = []
     @ObservationIgnored var workingOnTarget: Set<Int64> = []
     @ObservationIgnored var titleTask: Task<Void, Never>?
+    /// The title poll's wait. A seam for tests.
+    @ObservationIgnored var titleSleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
 
     /// The owner changed something in a project (a comment, a status): the
     /// notification policy must not report it back (Task 18).

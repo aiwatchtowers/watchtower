@@ -21,6 +21,11 @@ private final class ProbedTerminalSession: TerminalSessionProcess {
 }
 
 @MainActor
+private final class Counter {
+    var value = 0
+}
+
+@MainActor
 final class ProjectsViewModelSessionsTests: XCTestCase {
     private var pool: DatabasePool!
     private var path: String!
@@ -317,6 +322,58 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         await vm.open(first)
         XCTAssertEqual(titleCalls.count, 2)
         XCTAssertNotEqual(titleCalls.last, first.id)
+    }
+
+    func testTheTitlePollEndsOnceTheVMIsGone() async throws {
+        var vm: ProjectsViewModel? = makeVM()
+        let waits = Counter()
+        vm?.titleSleep = { _ in
+            waits.value += 1
+            await Task.yield()
+        }
+        vm?.startTitleRefresh()
+        let task = try XCTUnwrap(vm?.titleTask)
+        while waits.value < 3 { await Task.yield() }
+        weak var released = vm
+        vm = nil
+        // A loop that never ends would hang the test: the watchdog cancels it.
+        let timedOut = Counter()
+        let watchdog = Task {
+            try await Task.sleep(for: .seconds(5))
+            timedOut.value = 1
+            task.cancel()
+        }
+
+        await task.value
+        watchdog.cancel()
+
+        XCTAssertNil(released)
+        XCTAssertEqual(timedOut.value, 0, "the loop ended on its own, not by the watchdog")
+    }
+
+    // MARK: - Errors
+
+    func testASuccessfulLoadClearsTheLoadErrorButKeepsAnActionError() async throws {
+        let p = try await projectWithFolder()
+        let loose = try await pool.write { d -> Int64 in
+            try d.execute(sql: "INSERT INTO targets (text) VALUES ('personal')")
+            return d.lastInsertedRowID
+        }
+        let vm = makeVM()
+        await vm.reload()
+        vm.selectedProjectID = p
+
+        try await pool.write { try $0.execute(sql: "ALTER TABLE terminal_sessions RENAME TO terminal_sessions_hidden") }
+        await vm.loadSessions(projectID: p)
+        XCTAssertNotNil(vm.sessionErrors[p])
+        try await pool.write { try $0.execute(sql: "ALTER TABLE terminal_sessions_hidden RENAME TO terminal_sessions") }
+        await vm.reload()
+        XCTAssertNil(vm.sessionErrors[p], "the poll's next good load clears it")
+
+        await vm.workOn(targetID: loose, targetText: "personal")
+        let actionError = try XCTUnwrap(vm.sessionErrors[p])
+        await vm.reload()
+        XCTAssertEqual(vm.sessionErrors[p], actionError, "a load does not wipe an action's error")
     }
 
     // MARK: - Navigation and layout
