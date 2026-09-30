@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -261,4 +262,55 @@ func TestProj02_DeletedProjectDocumentAndCommentIDsAreNeverReused(t *testing.T) 
 	newCommentID, err := d.AddProjectComment(ProjectComment{ProjectID: newPID, TargetID: nullID(newTarget), Author: "owner", Body: "why?"})
 	require.NoError(t, err)
 	assert.Greater(t, newCommentID, commentID, "a new comment must never reuse a deleted one's id")
+}
+
+// A project folder is never the filesystem root, the home directory or an
+// ancestor of it, nor Watchtower's own data directories or anything in them.
+func TestResolveProjectFolder_RefusesRootHomeAndWatchtowerDirs(t *testing.T) {
+	base := t.TempDir()
+	home := filepath.Join(base, "home")
+	for _, dir := range []string{
+		filepath.Join(home, "code", "repo"),
+		filepath.Join(home, ".local", "share", "watchtower", "acme"),
+		filepath.Join(home, ".config", "watchtower"),
+		filepath.Join(home, "Library", "Application Support", "Watchtower", "recordings"),
+	} {
+		require.NoError(t, os.MkdirAll(dir, 0o755))
+	}
+	t.Setenv("HOME", home)
+
+	for _, dir := range []string{
+		"/",
+		home,
+		base,
+		filepath.Join(home, ".local", "share", "watchtower"),
+		filepath.Join(home, ".local", "share", "watchtower", "acme"),
+		filepath.Join(home, ".local"),
+		filepath.Join(home, ".config", "watchtower"),
+		filepath.Join(home, "Library", "Application Support", "Watchtower", "recordings"),
+	} {
+		_, err := ResolveProjectFolder(dir)
+		assert.ErrorIs(t, err, ErrProjectFolderNotAllowed, dir)
+	}
+
+	got, err := ResolveProjectFolder(filepath.Join(home, "code", "repo"))
+	require.NoError(t, err, "an ordinary folder under home is fine")
+	assert.True(t, strings.HasSuffix(got, filepath.Join("code", "repo")))
+}
+
+// The protected-dir check folds case (APFS is case-insensitive) and matches
+// whole path components only.
+func TestPathWithin_FoldsCaseOnWholeComponents(t *testing.T) {
+	assert.True(t, pathWithin("/Users/a/Library/Application Support/watchtower/x", "/Users/a/LIBRARY/Application Support/Watchtower"))
+	assert.True(t, pathWithin("/Users/a", "/users/A"))
+	assert.False(t, pathWithin("/Users/a/.localize", "/Users/a/.local"))
+}
+
+// APFS is case-insensitive: another spelling of a bound folder is taken too.
+func TestCreateProject_FolderTakenIgnoresCase(t *testing.T) {
+	d := openTestDB(t)
+	_, err := d.CreateProject("acme", "/work/Acme")
+	require.NoError(t, err)
+	_, err = d.CreateProject("again", "/work/acme")
+	assert.ErrorIs(t, err, ErrProjectFolderTaken)
 }

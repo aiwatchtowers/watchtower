@@ -76,7 +76,8 @@ func (db *DB) WithTx(fn func(*sql.Tx) error) error {
 
 // ResolveProjectFolder turns dir into the absolute, symlink-resolved path of
 // an existing directory — the only form CreateProject stores, so two spellings
-// of one folder can never bind two projects.
+// of one folder can never bind two projects. A folder a project must not own
+// (checkProjectFolderAllowed) fails with ErrProjectFolderNotAllowed.
 func ResolveProjectFolder(dir string) (string, error) {
 	if strings.TrimSpace(dir) == "" {
 		return "", errors.New("project folder is required")
@@ -96,6 +97,9 @@ func ResolveProjectFolder(dir string) (string, error) {
 	if !info.IsDir() {
 		return "", fmt.Errorf("%s is not a directory", resolved)
 	}
+	if err := checkProjectFolderAllowed(resolved); err != nil {
+		return "", err
+	}
 	return resolved, nil
 }
 
@@ -109,6 +113,16 @@ func (db *DB) CreateProject(name, folder string) (int64, error) {
 	}
 	if !filepath.IsAbs(folder) {
 		return 0, fmt.Errorf("project folder %q must be an absolute, resolved path", folder)
+	}
+	// APFS is case-insensitive, so another spelling of a bound folder is the
+	// same folder; the UNIQUE index below compares bytes.
+	var taken int64
+	err := db.QueryRow(`SELECT id FROM projects WHERE folder_path = ? COLLATE NOCASE LIMIT 1`, folder).Scan(&taken)
+	if err == nil {
+		return 0, fmt.Errorf("%s: %w", folder, ErrProjectFolderTaken)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return 0, fmt.Errorf("checking folder %s: %w", folder, err)
 	}
 	res, err := db.Exec(`INSERT INTO projects (name, folder_path) VALUES (?, ?)`, name, folder)
 	if err != nil {
