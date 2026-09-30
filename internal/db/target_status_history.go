@@ -13,7 +13,7 @@ import (
 const (
 	ActorAgent  = "agent"  // the project MCP tools (watchtower mcp --project N)
 	ActorOwner  = "owner"  // the Desktop, the CLI
-	ActorSystem = "system" // the status rollup triggers (PROJ-05)
+	ActorSystem = "system" // the rollup triggers (PROJ-05), unsnooze, the Jira status sync
 )
 
 // MaxStatusHistory caps the history a reader returns for one target.

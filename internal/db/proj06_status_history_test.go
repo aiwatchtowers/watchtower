@@ -97,7 +97,7 @@ func TestProj06_EveryProjectStatusTransitionIsRecorded(t *testing.T) {
 
 // The rollup's delete and move paths claim 'system' too, and so do the
 // daemon's automated status writers (unsnooze).
-func TestProj06_RollupDeleteMoveAndUnsnoozeAreRecordedAsTheSystems(t *testing.T) {
+func TestProj06_RollupDeleteMoveAndUnsnoozeAreRecordedAsSystem(t *testing.T) {
 	d := openTestDB(t)
 	pid := newTestProject(t, d)
 	a := SeedTestProjectTarget(t, d, pid, sql.NullInt64{}, "feature a")
