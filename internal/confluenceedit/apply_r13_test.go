@@ -77,3 +77,10 @@ func TestSectionRewriteMovedBlockTakesLaterUnitEdit(t *testing.T) {
 	out, _ := applyOK(t, src, sectionEdit("S", "Plain\n\nCentred **b**"), text("Centred", "Middle"))
 	assert.Equal(t, `<h2>S</h2><p>Plain</p><p style="text-align:center">Middle <strong>b</strong></p>`, out)
 }
+
+// A new block inserted where a moved block used to start goes before the
+// deletion of that old place (both start at the same byte).
+func TestSectionRewriteInsertWhereAMovedBlockWas(t *testing.T) {
+	out, _ := applyOK(t, `<h2>S</h2><p style="text-align:center">A</p><p>B</p>`, sectionEdit("S", "X\n\nB\n\nA"))
+	assert.Equal(t, `<h2>S</h2><p>X</p><p>B</p><p style="text-align:center">A</p>`, out)
+}
