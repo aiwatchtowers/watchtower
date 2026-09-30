@@ -197,7 +197,8 @@ final class ProjectBoardViewModelTests: XCTestCase {
         vm.onOwnerWrite = { _, _ in reported += 1 }
         vm.load()
         vm.select(Int(tid))
-        vm.reply(to: 999_999, body: "orphan")   // no such root: ProjectQueries.reply throws
+        let replied = vm.reply(to: 999_999, body: "orphan")   // no such root: ProjectQueries.reply throws
+        XCTAssertFalse(replied, "a failed reply reports false so the thread keeps the owner's draft")
         XCTAssertEqual(reported, 0)
         XCTAssertNotNil(vm.errorMessage)
     }

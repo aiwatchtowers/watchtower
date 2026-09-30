@@ -9,11 +9,13 @@ import WatchtowerCore
 struct CommentThreadView: View {
     let thread: CommentThreadContent
     var isActive = false
-    var onReply: ((String) async -> Void)?
+    /// Returns whether the reply was saved; the draft is cleared only then.
+    var onReply: ((String) async -> Bool)?
     var onResolve: (() async -> Void)?
     var onReopen: (() async -> Void)?
     var onDelete: (() async -> Void)?
     @State private var draft = ""
+    @State private var sending = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -42,10 +44,14 @@ struct CommentThreadView: View {
                 if let onReply {
                     Button("Reply") {
                         let text = draft
-                        draft = ""
-                        Task { await onReply(text) }
+                        sending = true
+                        Task {
+                            let saved = await onReply(text)
+                            draft = Self.draftAfterReply(sent: text, current: draft, saved: saved)
+                            sending = false
+                        }
                     }
-                    .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(sending || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
                 Spacer()
                 if let onDelete { Button("Delete", role: .destructive) { Task { await onDelete() } } }
@@ -59,5 +65,12 @@ struct CommentThreadView: View {
             RoundedRectangle(cornerRadius: 6)
                 .fill(isActive ? Color.yellow.opacity(0.15) : Color(nsColor: .controlBackgroundColor))
         )
+    }
+
+    /// The draft after a reply attempt: kept on a failed write (so the owner's
+    /// text is never lost), cleared on success unless the owner already typed
+    /// something new while the write ran.
+    static func draftAfterReply(sent: String, current: String, saved: Bool) -> String {
+        saved && current == sent ? "" : current
     }
 }

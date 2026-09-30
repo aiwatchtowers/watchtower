@@ -215,6 +215,43 @@ final class ProjectDocumentViewModelTests: XCTestCase {
         XCTAssertEqual(vm.threads.map(\.id), [root])
     }
 
+    /// The reply path follows the `addComment` rule: a failed write reports
+    /// `false` and surfaces the error, so the thread keeps the owner's draft.
+    func testReplyReportsAFailedWriteAndKeepsTheDraft() async throws {
+        let vm = makeVM()
+        await vm.load()
+        await vm.addComment(body: "Why small?", selection: try selection("retry budget small", in: vm))
+        let root = try XCTUnwrap(vm.threads.first?.id)
+        var writes = 0
+        vm.onOwnerWrite = { _ in writes += 1 }
+        try await pool.write { d in
+            try d.execute(sql: """
+                CREATE TRIGGER fail_comment_insert BEFORE INSERT ON project_comments
+                BEGIN SELECT RAISE(ABORT, 'disk full'); END
+                """)
+        }
+
+        let replied = await vm.reply(to: root, body: "Also: which service?")
+        XCTAssertFalse(replied, "a failed write must not tell the thread to clear its draft")
+        XCTAssertNotNil(vm.errorMessage)
+        XCTAssertEqual(writes, 0, "the owner-write hook fires only after a committed write")
+        XCTAssertEqual(vm.threads.first?.replies.count, 0)
+        XCTAssertEqual(
+            CommentThreadView.draftAfterReply(sent: "Also: which service?", current: "Also: which service?", saved: replied),
+            "Also: which service?",
+            "the thread view keeps the draft when the reply was not saved"
+        )
+    }
+
+    func testReplyDraftClearsOnlyWhenSavedAndUnchanged() {
+        XCTAssertEqual(CommentThreadView.draftAfterReply(sent: "hi", current: "hi", saved: true), "")
+        XCTAssertEqual(CommentThreadView.draftAfterReply(sent: "hi", current: "hi", saved: false), "hi")
+        XCTAssertEqual(
+            CommentThreadView.draftAfterReply(sent: "hi", current: "hi, and more", saved: true), "hi, and more",
+            "text typed while the write ran is never wiped"
+        )
+    }
+
     func testReplyResolveReopenWriteAndReportEachTime() async throws {
         let vm = makeVM()
         await vm.load()
@@ -223,7 +260,8 @@ final class ProjectDocumentViewModelTests: XCTestCase {
         var writes = 0
         vm.onOwnerWrite = { _ in writes += 1 }
 
-        await vm.reply(to: root, body: "Also: which service?")
+        let replied = await vm.reply(to: root, body: "Also: which service?")
+        XCTAssertTrue(replied)
         await vm.resolve(root)
         XCTAssertEqual(try status(root), "resolved")
         await vm.reopen(root)

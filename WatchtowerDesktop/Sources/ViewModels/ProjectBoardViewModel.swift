@@ -178,10 +178,13 @@ final class ProjectBoardViewModel {
         }
     }
 
-    func reply(to rootID: Int64, body: String) {
+    /// - Returns: whether the reply was written, so the thread keeps the
+    ///   owner's draft on a failure (`errorMessage` says why).
+    @discardableResult
+    func reply(to rootID: Int64, body: String) -> Bool {
         let text = body.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-        write("reply") { db in _ = try ProjectQueries.reply(db, to: rootID, body: text) }
+        guard !text.isEmpty else { return false }
+        return write("reply") { db in _ = try ProjectQueries.reply(db, to: rootID, body: text) }
     }
 
     func setThreadStatus(rootID: Int64, status: String) {
@@ -190,7 +193,8 @@ final class ProjectBoardViewModel {
 
     /// Every owner write goes through here: the write, then the hook, then a
     /// reload. The hook fires only after the write succeeded.
-    private func write(_ what: String, _ body: (Database) throws -> Void) {
+    @discardableResult
+    private func write(_ what: String, _ body: (Database) throws -> Void) -> Bool {
         do {
             try dbPool.write { db in try body(db) }
             errorMessage = nil
@@ -198,8 +202,10 @@ final class ProjectBoardViewModel {
                 onOwnerWrite?(projectID, .target(Int64(id)))
             }
             load()
+            return true
         } catch {
             errorMessage = "Could not \(what): \(error.localizedDescription)"
+            return false
         }
     }
 }

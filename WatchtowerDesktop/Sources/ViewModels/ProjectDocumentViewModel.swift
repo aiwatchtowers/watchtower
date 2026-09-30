@@ -185,9 +185,12 @@ final class ProjectDocumentViewModel {
         return true
     }
 
-    func reply(to rootID: Int64, body: String) async {
-        guard !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        await ownerWrite { db in _ = try ProjectQueries.reply(db, to: rootID, body: body) }
+    /// - Returns: whether the reply was written; on `false` the composer keeps
+    ///   the owner's draft and `errorMessage` says why (the `addComment` rule).
+    @discardableResult
+    func reply(to rootID: Int64, body: String) async -> Bool {
+        guard !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        return await ownerWrite { db in _ = try ProjectQueries.reply(db, to: rootID, body: body) }
     }
 
     func resolve(_ rootID: Int64) async {
