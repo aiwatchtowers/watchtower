@@ -18,7 +18,7 @@ package enum ClaudeTranscript {
     package static func exists(
         sessionID: String,
         configDir: String = defaultConfigDir,
-        listDirectory: (String) -> [String] = { (try? FileManager.default.contentsOfDirectory(atPath: $0)) ?? [] },
+        listDirectory: (String) -> [String] = listLoggingFailures,
         fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
     ) -> Bool {
         guard TerminalLaunch.isValidSessionID(sessionID) else { return false }
@@ -26,6 +26,20 @@ package enum ClaudeTranscript {
         return listDirectory(projects).contains { dir in
             fileExists(((projects as NSString).appendingPathComponent(dir) as NSString)
                 .appendingPathComponent("\(sessionID).jsonl"))
+        }
+    }
+
+    /// A missing `projects/` folder is "no transcript yet"; any other read
+    /// failure reads the same way but is logged, so a false "not found"
+    /// (which turns a Restart into a failed relaunch) leaves a trace.
+    package static func listLoggingFailures(_ path: String) -> [String] {
+        do {
+            return try FileManager.default.contentsOfDirectory(atPath: path)
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            return []
+        } catch {
+            NSLog("ClaudeTranscript: cannot list %@: %@", path, error.localizedDescription)
+            return []
         }
     }
 }
