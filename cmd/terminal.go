@@ -123,7 +123,10 @@ func runTerminalTitle(cmd *cobra.Command, args []string) error {
 		return enc.Encode(terminalTitleResult{})
 	}
 
-	tmpl, _, _ := prompts.New(database, nil).Get(prompts.TerminalTitle)
+	tmpl, _, err := prompts.New(database, nil).Get(prompts.TerminalTitle)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "terminal title: using the default prompt: %v\n", err)
+	}
 	if tmpl == "" {
 		tmpl = prompts.Defaults[prompts.TerminalTitle]
 	}

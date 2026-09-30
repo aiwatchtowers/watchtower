@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -158,4 +159,45 @@ func TestTerminalClaudeDir_IgnoresClaudeConfigDir(t *testing.T) {
 	home, err := os.UserHomeDir()
 	require.NoError(t, err)
 	assert.Equal(t, filepath.Join(home, ".claude"), defaultTerminalClaudeDir())
+}
+
+// TestChat04_TerminalTitleArgvCarriesNoContent pins CHAT-04 for `terminal
+// title`: the production generator (terminalTitleGeneratorFactory) puts the
+// owner's typed messages on stdin, never on the child's argv. A fake
+// claude/codex binary records both; the real CLIs are never invoked.
+func TestChat04_TerminalTitleArgvCarriesNoContent(t *testing.T) {
+	const marker = "OWNER-SECRET-terminal-title-4b1e"
+	cases := []struct {
+		provider string
+		reply    string
+	}{
+		{"claude", `{"type":"result","result":"A title","is_error":false}`},
+		{"codex", `{"type":"item.completed","item":{"type":"agent_message","text":"A title"}}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.provider, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			dir := t.TempDir()
+			argvFile := filepath.Join(dir, "argv")
+			stdinFile := filepath.Join(dir, "stdin")
+			script := filepath.Join(dir, "fake-"+tc.provider)
+			body := "#!/bin/sh\nprintf '%s\\n' \"$@\" > '" + argvFile + "'\ncat > '" + stdinFile + "'\necho '" + tc.reply + "'\n"
+			require.NoError(t, os.WriteFile(script, []byte(body), 0o755))
+
+			cfg := &config.Config{ClaudePath: script, CodexPath: script}
+			cfg.AI.Provider = tc.provider
+			cfg.AI.ConfiguredProvider = tc.provider
+			gen := terminalTitleGeneratorFactory(cfg)
+			reply, _, _, err := gen.Generate(digest.WithSource(context.Background(), "terminal.title"), "system", marker, "")
+			require.NoError(t, err)
+			assert.Equal(t, "A title", reply)
+
+			argv, err := os.ReadFile(argvFile)
+			require.NoError(t, err)
+			stdin, err := os.ReadFile(stdinFile)
+			require.NoError(t, err)
+			assert.NotContains(t, string(argv), marker, "owner text must never reach argv")
+			assert.Contains(t, string(stdin), marker, "owner text must travel on stdin")
+		})
+	}
 }
