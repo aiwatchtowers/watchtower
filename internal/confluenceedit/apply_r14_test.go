@@ -118,3 +118,46 @@ func TestSectionRewriteMovedBrParagraphKeepsBytes(t *testing.T) {
 		assert.Equal(t, `<h2>S</h2><p>Plain</p>`+br+`<p>Tail edited</p>`, out)
 	}
 }
+
+// Defects FuzzSectionMerge found under R14, pinned: a deletion's trailing
+// whitespace and an insertion at the section's start never reach into a
+// bare text run's own leading space; a paragraph whose text reads as a
+// heading is not silently replaced by that heading; of two same-text
+// blocks the rich one is the one kept.
+func TestSectionMergeFuzzFindings(t *testing.T) {
+	for name, tc := range map[string]struct{ src, body, want, err string }{
+		"deletion stops at a bare run's leading space": {
+			src: "<h1>0</h1>0<p>0</p> 0<!>0", body: "0 zzedited\n\n00",
+			want: "<h1>0</h1><p>0 zzedited</p> 0<!>0",
+		},
+		"insertion before a bare run's leading space": {
+			src: "<h1>0</h1> 0<!>0<p>0</p>0", body: "new\n\n00\n\n0\n\n0",
+			want: "<h1>0</h1><p>new</p> 0<!>0<p>0</p>0",
+		},
+		"paragraph reading as a heading, moved": {
+			src: "<h2>0</h2> #<C>0", body: "⟦1:c 0⟧\n\n#",
+			err: "its text reads as different markdown structure",
+		},
+		"same text: the rich one stays, in place": {
+			src: "<h2>0</h2>0<p 0>0</p>1", body: "0\n\n1",
+			want: "<h2>0</h2><p 0>0</p>1",
+		},
+		"same text: the rich one stays, moved": {
+			src: "<h2>0</h2>0<p 0>0</p>1", body: "1\n\n0",
+			want: "<h2>0</h2>1<p 0>0</p>",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			d := mustParse(t, tc.src)
+			heading := unitText(d.blocks[0].unit)
+			out, _, err := Apply(d, []Edit{sectionEdit(heading, tc.body)})
+			if tc.err != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, out)
+		})
+	}
+}

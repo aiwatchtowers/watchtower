@@ -149,7 +149,66 @@ func (a *applier) mergeSection(base, body []*block) ([]sectionOp, error) {
 		return nil, err
 	}
 	ops = append(ops, gap...)
-	return ops, a.checkLossy(ops)
+	if err := a.checkLossy(ops); err != nil {
+		return nil, err
+	}
+	return a.preferLossy(ops), nil
+}
+
+// preferLossy runs after checkLossy allowed every deletion. When the merge
+// kept one of two originals of equal text and kind and deleted the other,
+// and only the deleted one is a block markdown cannot carry faithfully, it
+// keeps that one instead — its bytes re-emitted at the kept one's place (a
+// move), the other deleted. The text cannot say which of the two the new
+// body dropped; only this choice loses nothing.
+func (a *applier) preferLossy(ops []sectionOp) []sectionOp {
+	swap := a.lossySwaps(ops)
+	if len(swap) == 0 {
+		return ops
+	}
+	out := make([]sectionOp, 0, len(ops)+len(swap))
+	for _, op := range ops {
+		d := swap[op.orig]
+		switch {
+		case d == nil || op.body != op.orig:
+			out = append(out, op)
+		case op.moved: // the kept one's old place is already a deletion
+			out = append(out, sectionOp{orig: d, body: d, moved: true})
+		default:
+			out = append(out, sectionOp{orig: d, body: d, moved: true}, sectionOp{orig: op.orig})
+		}
+	}
+	return out
+}
+
+// lossySwaps pairs each deleted rich original with a kept (or moved)
+// faithful original of the same text and kind: kept original -> the
+// deleted one to keep instead.
+func (a *applier) lossySwaps(ops []sectionOp) map[*block]*block {
+	moved := map[*block]bool{}
+	for _, op := range ops {
+		if op.moved {
+			moved[op.orig] = true
+		}
+	}
+	swap := map[*block]*block{}
+	for _, del := range ops {
+		if del.orig == nil || del.body != nil || moved[del.orig] {
+			continue
+		}
+		text := a.d.blockText(del.orig)
+		if a.lossy(del.orig, text) == nil {
+			continue
+		}
+		for _, k := range ops {
+			if k.orig != nil && k.body == k.orig && swap[k.orig] == nil && k.orig.kind == del.orig.kind &&
+				a.d.blockText(k.orig) == text && a.lossy(k.orig, text) == nil {
+				swap[k.orig] = del.orig
+				break
+			}
+		}
+	}
+	return swap
 }
 
 // checkLossy is ruling R14, the section-wide invariant. The merge leaves
@@ -160,8 +219,9 @@ func (a *applier) mergeSection(base, body []*block) ([]sectionOp, error) {
 // faithfully may be deleted only when no changed block (derived or new) of
 // its kind is anywhere in the section — otherwise the edit may be that
 // block's rewrite with its formatting silently dropped, however the blocks
-// were paired or reordered. A deletion with no such block is unambiguous,
-// and the diff shows it.
+// were paired or reordered. An original whose text reads back as other or
+// several blocks counts every changed block as "of its kind". A deletion
+// with no such block is unambiguous, and the diff shows it.
 func (a *applier) checkLossy(ops []sectionOp) error {
 	changed := map[blockKind]bool{}
 	moved := map[*block]bool{} // a moved block's old place is a deletion op too
@@ -174,10 +234,23 @@ func (a *applier) checkLossy(ops []sectionOp) error {
 		}
 	}
 	for _, op := range ops {
-		if op.orig == nil || op.body != nil || moved[op.orig] || !changed[op.orig.kind] {
+		if op.orig == nil || op.body != nil || moved[op.orig] || len(changed) == 0 {
 			continue
 		}
-		if err := a.lossy(op.orig, a.d.blockText(op.orig)); err != nil {
+		text := a.d.blockText(op.orig)
+		if !changed[op.orig.kind] {
+			// Its kind is not among the changed blocks — but a text that
+			// reads back as another kind (a paragraph "# x") may still be
+			// the changed block of that kind.
+			if op.orig.kind == blockMarker || text == "" {
+				continue
+			}
+			if err := a.checkParsable(op.orig, text); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := a.lossy(op.orig, text); err != nil {
 			return err
 		}
 	}
@@ -394,6 +467,7 @@ func snippet(text string) string {
 func (a *applier) sectionOut(s *section) (string, error) {
 	src := a.d.src
 	anchor := s.region.start + len(src[s.region.start:s.region.end]) - len(strings.TrimLeft(src[s.region.start:s.region.end], " \t\r\n"))
+	anchor = a.nextStart(s.region.start, anchor) // never inside a first block's own leading space
 	var ps []splice
 	for _, op := range s.ops {
 		switch {
@@ -405,7 +479,7 @@ func (a *applier) sectionOut(s *section) (string, error) {
 			ps = append(ps, a.unitSplices(op.orig)...)
 			anchor = op.orig.end
 		case op.body == nil:
-			ps = append(ps, splice{span{op.orig.start, wsEnd(src, op.orig.end, s.region.end)}, ""})
+			ps = append(ps, splice{span{op.orig.start, wsEnd(src, op.orig.end, a.nextStart(op.orig.end, s.region.end))}, ""})
 		default:
 			ps = append(ps, splice{span{op.orig.start, op.orig.end}, a.blockXHTML(op.body, s.links)})
 			anchor = op.orig.end
@@ -456,6 +530,18 @@ func (a *applier) unitSplices(bl *block) []splice {
 		}
 	}
 	return ps
+}
+
+// nextStart is where the first original block at or after end starts, or
+// limit: a deletion's whitespace never reaches into the next block's bytes
+// (a bare inline run's own leading space).
+func (a *applier) nextStart(end, limit int) int {
+	for _, bl := range a.d.blocks {
+		if bl.start >= end && bl.start < limit {
+			limit = bl.start
+		}
+	}
+	return limit
 }
 
 // wsEnd extends a deleted block over the whitespace after it, so deleting
