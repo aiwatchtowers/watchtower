@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Migration number: next free after `00082` → `00083_terminal_sessions.sql`; mirror into `internal/db/schema.sql`, `TestAllTablesExist`, golden snapshot (`go test ./internal/db/ -run TestSchemaGolden -update`), and the Swift test mirror `WatchtowerDesktop/Tests/Support/TestDatabase.swift`.
+- Migration number: next free after `00083` → `00084_terminal_sessions.sql` (renumbered at merge: main took 00083 for `project_documents.origin`); mirror into `internal/db/schema.sql`, `TestAllTablesExist`, golden snapshot (`go test ./internal/db/ -run TestSchemaGolden -update`), and the Swift test mirror `WatchtowerDesktop/Tests/Support/TestDatabase.swift`.
 - Writers: Swift writes every `terminal_sessions` column; Go writes only `title` with `title_source='ai'`, never over `'user'`.
 - "Work on it" prompt is the fixed template `Work on target #<id> using the watchtower-project skill.` — one integer, nothing else from the owner or the agent reaches argv.
 - Standalone terminals (`project_id IS NULL`) get no project MCP, no hook, nothing written to project tables.
@@ -37,7 +37,7 @@
 **Depends on:** none
 
 **Files:**
-- Create: `internal/db/migrations/00083_terminal_sessions.sql`
+- Create: `internal/db/migrations/00084_terminal_sessions.sql`
 - Create: `internal/db/terminal_sessions.go`, `internal/db/terminal_sessions_test.go`
 - Modify: `internal/db/schema.sql`, the `TestAllTablesExist` list, golden snapshot, `internal/db/projects_test.go` (`TestProj02_DeleteProjectLeavesNoRows`)
 

@@ -1,7 +1,7 @@
 import Foundation
 import GRDB
 
-/// One `terminal_sessions` row (goose migration 00083): a named, resumable
+/// One `terminal_sessions` row (goose migration 00084): a named, resumable
 /// embedded terminal — a Claude Code session or a plain shell. `projectID`
 /// nil is a standalone terminal. The Desktop writes every column; Go writes
 /// only an AI-generated title (`watchtower terminal title`).
