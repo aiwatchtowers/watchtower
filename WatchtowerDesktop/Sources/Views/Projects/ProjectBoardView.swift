@@ -163,7 +163,7 @@ struct ProjectBoardView: View {
         } label: {
             ProjectBoardChip(
                 text: ProjectBoardCard.statusLabel(target.status),
-                color: ProjectBoardColors.status(ProjectBoardCard.statusTint(target.status))
+                color: ProjectBoardColors.status(target.statusColor)
             )
         }
         .menuStyle(.borderlessButton)

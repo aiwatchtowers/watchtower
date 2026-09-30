@@ -98,17 +98,4 @@ package struct ProjectBoardCard: Equatable {
         default: status
         }
     }
-
-    /// The chip colour name for a status — `Target.statusColor`'s palette plus
-    /// `in_review`; an unknown status is neutral.
-    package static func statusTint(_ status: String) -> String {
-        switch status {
-        case "in_progress": "blue"
-        case "in_review": "teal"
-        case "blocked": "red"
-        case "done": "green"
-        case "dismissed": "gray"
-        default: "secondary"
-        }
-    }
 }

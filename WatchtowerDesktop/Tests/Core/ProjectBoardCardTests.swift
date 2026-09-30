@@ -4,6 +4,11 @@ import WatchtowerTestSupport
 @testable import WatchtowerCore
 
 final class ProjectBoardCardTests: XCTestCase {
+    private var queue: DatabaseQueue!
+
+    override func setUpWithError() throws {
+        queue = try TestDatabase.create()
+    }
 
     // Real Target rows through the DB, so the fixture never drifts from
     // Target's own row decoding.
@@ -14,8 +19,7 @@ final class ProjectBoardCardTests: XCTestCase {
         priority: String = "medium",
         progress: Double = 0
     ) throws -> Target {
-        let queue = try TestDatabase.create()
-        return try queue.write { db in
+        try queue.write { db in
             try db.execute(
                 sql: """
                     INSERT INTO targets (id, text, level, custom_label, period_start, period_end,
@@ -47,7 +51,8 @@ final class ProjectBoardCardTests: XCTestCase {
         XCTAssertEqual(ProjectBoardOrder.sorted(targets.shuffled()).map(\.id), [3, 7, 2, 6, 5, 4, 1])
     }
 
-    func testRanksMatchGoCaseArms() {
+    // Go's boardSiblingOrder carries the same arms; keep the two in step.
+    func testRankTables() {
         XCTAssertEqual(["high", "medium", "low", "bogus"].map(ProjectBoardOrder.priorityRank), [0, 1, 2, 2])
         XCTAssertEqual(
             ["in_progress", "in_review", "blocked", "todo", "done", "dismissed", "snoozed"]
@@ -106,11 +111,25 @@ final class ProjectBoardCardTests: XCTestCase {
         XCTAssertEqual(ProjectBoardCard.statusLabel("waiting_on_vendor"), "waiting_on_vendor", "unknown = raw text")
     }
 
-    func testStatusTints() {
-        XCTAssertEqual(
-            ["todo", "in_progress", "in_review", "blocked", "done", "dismissed", "waiting_on_vendor"]
-                .map(ProjectBoardCard.statusTint),
-            ["secondary", "blue", "teal", "red", "green", "gray", "secondary"]
-        )
+    /// A real row with its status replaced: the targets CHECK does not admit
+    /// `in_review` (or an unknown value) yet, but a newer CLI may write one.
+    private func target(_ id: Int, rawStatus: String) throws -> Target {
+        _ = try target(id)
+        let row = try queue.read { db in
+            try XCTUnwrap(Row.fetchOne(db, sql: "SELECT * FROM targets WHERE id = ?", arguments: [id]))
+        }
+        var columns: [String: DatabaseValue] = [:]
+        for (name, value) in row { columns[name] = value }
+        columns["status"] = rawStatus.databaseValue
+        return Target(row: Row(columns))
+    }
+
+    func testStatusColoursIconsAndLabelsKnowInReview() throws {
+        let review = try target(1, rawStatus: "in_review")
+        XCTAssertEqual(review.statusColor, "teal")
+        XCTAssertEqual(review.statusIcon, "eye.circle")
+        let unknown = try target(2, rawStatus: "waiting_on_vendor")
+        XCTAssertEqual(unknown.statusColor, "secondary", "unknown status = neutral")
+        XCTAssertEqual(ProjectBoardCard.statusLabel(unknown.status), "waiting_on_vendor")
     }
 }
