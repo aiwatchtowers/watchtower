@@ -134,6 +134,44 @@ skill, would make every later `integrate` a risk to the owner's own setup.
 
 **Locked since:** 2026-09-29
 
+## PROJ-05 — a project parent's status never lags its children
+
+**Status:** Enforced (Go and Desktop — one implementation, in SQLite)
+
+**Observable:** When a project target (`project_id` set) is inserted,
+deleted, or changes `status`, `parent_id` or `project_id`, its parent's
+status is re-derived from the parent's direct children of the same project
+(closed = `done`|`dismissed`): all closed → `done`; every open child
+`blocked` → `blocked`; any child `in_progress` or `done` → `in_progress`;
+otherwise → `todo`; no children → untouched. The change walks up the ancestor
+chain and stops at the first ancestor whose status does not change. A status
+set on a parent itself stands until one of its children changes — the
+parent's own update is never rolled up, and an ancestor none of whose
+children changed keeps its status. `updated_at` moves only with a real
+status change. A non-project target, and a row of another project, is never
+read as a child nor written. The rule is migration `00085`'s triggers
+(`targets_project_status_rollup_{ai,au,ad}`), so every writer — the Go
+MCP/CLI and the Desktop's direct GRDB writes — gets it with no dual path, and
+it does not depend on `PRAGMA recursive_triggers`. The migration re-derives
+every existing board once, deepest parent first. The `watchtower-project`
+skill tells the agent never to set a parent's status.
+
+**Why locked:** Owner decision (board target #124). Before the rollup a
+parent kept whatever status someone last set — boards sat in `todo` while
+half their children were done — and keeping it right fell to the agent,
+which forgot. A parent status the owner cannot trust makes the board useless
+at a glance.
+
+**Test guards:**
+- `internal/db/proj05_status_rollup_test.go::TestProj05_ProjectParentStatusFollowsChildren`
+  (and the other `TestProj05_*` in that file: multi-level chain, override,
+  insert/delete/move, non-project and other-project rows, `updated_at`,
+  `recursive_triggers` on, project delete with a multi-level board)
+- `internal/db/project_status_rollup_migration_test.go::TestMigration00085_RecomputesExistingBoards`
+- `WatchtowerDesktop/Tests/Core/ProjectStatusRollupTests.swift::testGRDBChildStatusUpdateRollsTheChainUp`
+
+**Locked since:** 2026-09-30
+
 ## v1 limits and notes (accepted)
 
 - **TCC attribution (owner decision 2026-09-30).** A project folder under a
