@@ -179,3 +179,27 @@ func TestEditConfluencePage_AlreadySavedIgnoresLocalIDs(t *testing.T) {
 	assert.EqualError(t, err, "conflict: the page is now v8 (one version after your preview) — this edit may have been saved; re-read with get_confluence_page before retrying; nothing was written now")
 	assert.Empty(t, f.puts)
 }
+
+// F3: only a start tag's local-id attributes are Confluence's stamps. The
+// same text inside CDATA (a code block's body) or in page text is content:
+// two storages differing there are different pages, and at base+1 that is
+// the hedged conflict, never "already saved".
+func TestConfluenceConflict_LocalIDsOnlyInStartTags(t *testing.T) {
+	const hedged = "conflict: the page is now v8 (one version after your preview) — this edit may have been saved; re-read with get_confluence_page before retrying; nothing was written now"
+	const saved = "this edit is already saved (v8); nothing was written now"
+	code := func(id string) string {
+		return `<ac:structured-macro ac:name="code"><ac:plain-text-body><![CDATA[<p local-id="` + id + `">x</p>]]></ac:plain-text-body></ac:structured-macro>`
+	}
+	for name, tc := range map[string]struct{ ours, live, want string }{
+		"start-tag local-id differs":           {`<p>a</p>` + code("1"), `<p local-id="9">a</p>` + code("1"), saved},
+		"attribute value holding >":            {`<a href="x>y">a</a>`, `<a href="x>y" ac:local-id='2'>a</a>`, saved},
+		"CDATA local-id differs":               {`<p>a</p>` + code("1"), `<p>a</p>` + code("3"), hedged},
+		"page text local-id differs":           {`<p>set local-id="1" here</p>`, `<p>set local-id="3" here</p>`, hedged},
+		"unterminated CDATA compared verbatim": {`<p>a</p><![CDATA[ local-id="1"`, `<p>a</p><![CDATA[ local-id="3"`, hedged},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := confluenceConflict(ConfluencePage{Version: 8, Storage: tc.live}, editConfluencePinned{BaseVersion: 7, NewStorage: tc.ours})
+			assert.EqualError(t, err, tc.want)
+		})
+	}
+}

@@ -392,8 +392,38 @@ func confluenceConflict(live ConfluencePage, p editConfluencePinned) error {
 // on save — bare or namespaced (ac:local-id, ri:local-id).
 var localIDAttr = regexp.MustCompile(`\s(?:[a-z]+:)?local-id=(?:"[^"]*"|'[^']*')`)
 
+// startTag matches one start (or empty-element) tag, quoted attribute
+// values holding '>' included. Text '<' is always escaped outside CDATA,
+// so outside CDATA a '<' followed by a letter opens a tag.
+var startTag = regexp.MustCompile(`<[A-Za-z][^>"']*(?:(?:"[^"]*"|'[^']*')[^>"']*)*>`)
+
+// stripLocalIDs drops local-id attributes from start tags only: text and
+// CDATA sections (a code block's body) are compared verbatim, so a
+// difference there that merely looks like a local-id is still a difference.
 func stripLocalIDs(storage string) string {
-	return localIDAttr.ReplaceAllString(storage, "")
+	var b strings.Builder
+	for storage != "" {
+		i := strings.Index(storage, "<![CDATA[")
+		if i < 0 {
+			b.WriteString(stripTagLocalIDs(storage))
+			break
+		}
+		b.WriteString(stripTagLocalIDs(storage[:i]))
+		end := strings.Index(storage[i:], "]]>")
+		if end < 0 {
+			b.WriteString(storage[i:])
+			break
+		}
+		b.WriteString(storage[i : i+end+len("]]>")])
+		storage = storage[i+end+len("]]>"):]
+	}
+	return b.String()
+}
+
+func stripTagLocalIDs(s string) string {
+	return startTag.ReplaceAllStringFunc(s, func(tag string) string {
+		return localIDAttr.ReplaceAllString(tag, "")
+	})
 }
 
 // confluenceSignInExpired is the re-login hint for a revoked grant on the
