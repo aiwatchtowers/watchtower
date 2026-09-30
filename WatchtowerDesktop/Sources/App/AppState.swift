@@ -934,6 +934,7 @@ final class AppState {
         notifier: ProjectNotifying = NotificationService.shared
     ) {
         let vm = ProjectsViewModel(dbPool: dbPool, cli: cliRunner.map { ProjectCLI(runner: $0) })
+        vm.closeTerminal = { [weak self] id in await self?.projectTerminalCenter.close(projectID: id) }
         let notices = ProjectNotificationCenter(dbPool: dbPool, notifier: notifier)
         vm.onProjectCreated = { [weak self, weak notices] project in
             notices?.seedBaseline(project: project)

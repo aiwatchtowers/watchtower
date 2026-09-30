@@ -43,6 +43,14 @@ final class ProjectsViewModel {
     /// The owner changed something in a project (a comment, a status): the
     /// notification policy must not report it back (Task 18).
     var onOwnerWrite: ((Int64, ProjectSubject) -> Void)?
+    /// Closes a project's embedded terminal (SIGHUP → SIGKILL). AppState wires
+    /// it to ProjectTerminalCenter.close in initProjects; closing a project
+    /// with no terminal is a no-op, so calling it twice is harmless.
+    var closeTerminal: ((Int64) async -> Void)?
+    /// The project a delete is running for; the page disables Delete meanwhile.
+    private(set) var deletingProjectID: Int64?
+    /// Why the last delete failed; the page shows it in an alert.
+    var deleteError: String?
 
     let dbPool: DatabasePool
     private let cli: ProjectCLI?
@@ -79,13 +87,51 @@ final class ProjectsViewModel {
     }
 
     func reload() async {
+        let previousIDs = summaries.map(\.id)
         do {
             // A deleted project's documents fall out of `summaries`; their
             // stale `viewed` stamps are never read again, so none are pruned.
             summaries = try await dbPool.read { try ProjectQueries.summaries($0) }
         } catch {
             errorMessage = "Could not load projects: \(error.localizedDescription)"
+            return
         }
+        for id in Self.vanished(previous: previousIDs, current: summaries.map(\.id)) {
+            await closeTerminal?(id)
+        }
+    }
+
+    /// Deletes a project (spec §6.1, Review Focus #5). Order matters: the
+    /// terminal — and with it the Claude Code session writing through
+    /// `mcp --project` — closes first, then `watchtower project delete N`
+    /// removes the rows and the folder install, then the list reloads. A CLI
+    /// failure keeps the project listed and reports the CLI's error. A second
+    /// call while one runs is refused.
+    @discardableResult
+    func deleteProject(_ id: Int64) async -> Bool {
+        guard deletingProjectID == nil else { return false }
+        guard let cli else {
+            deleteError = "The watchtower CLI was not found."
+            return false
+        }
+        deletingProjectID = id
+        deleteError = nil
+        defer { deletingProjectID = nil }
+        await closeTerminal?(id)
+        do {
+            try await cli.delete(projectID: id)
+        } catch {
+            deleteError = "Could not delete the project: \(error.localizedDescription)"
+            return false
+        }
+        if selectedProjectID == id { selectedProjectID = nil }
+        await reload()
+        return true
+    }
+
+    nonisolated static func vanished(previous: [Int64], current: [Int64]) -> [Int64] {
+        let now = Set(current)
+        return previous.filter { !now.contains($0) }
     }
 
     func reveal(_ route: ProjectRoute) {
