@@ -42,12 +42,15 @@ const projectCommentCols = `c.id, c.project_id, c.target_id, c.document_id, c.pa
 	c.body, c.anchor_quote, c.anchor_prefix, c.anchor_suffix, c.anchor_heading, c.status, c.created_at, c.read_at`
 
 // newForAgentPredicate (over alias c): open owner roots, plus owner replies
-// newer than their thread's latest agent comment (the agent root counts).
+// in a still-open thread newer than its latest agent comment (the agent root
+// counts) — resolving a thread retires its unanswered replies too.
 // "Newer" compares ids — rowids grow monotonically, created_at ties within a
 // second. Replies always point at their root (AddProjectComment flattens).
 const newForAgentPredicate = `(c.author = 'owner' AND (
 	(c.parent_id IS NULL AND c.status = 'open')
-	OR (c.parent_id IS NOT NULL AND c.id > COALESCE((
+	OR (c.parent_id IS NOT NULL
+		AND EXISTS (SELECT 1 FROM project_comments r WHERE r.id = c.parent_id AND r.status = 'open')
+		AND c.id > COALESCE((
 		SELECT MAX(a.id) FROM project_comments a
 		WHERE a.author = 'agent' AND (a.id = c.parent_id OR a.parent_id = c.parent_id)), 0))))`
 

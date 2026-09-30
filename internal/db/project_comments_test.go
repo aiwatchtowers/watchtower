@@ -98,6 +98,9 @@ func TestListProjectComments_NewForAgent(t *testing.T) {
 	secondRoot := addComment(t, d, onTarget("owner", "E: another open root"))
 	addComment(t, d, reply(secondRoot, "owner", "E1: before the agent reply"))
 	addComment(t, d, reply(secondRoot, "agent", "E2: agent replies"))
+	closedThread := addComment(t, d, onTarget("owner", "F: owner root"))
+	addComment(t, d, reply(closedThread, "owner", "F1: owner adds more"))
+	require.NoError(t, d.SetProjectCommentStatus(closedThread, "resolved"))
 
 	got, err := d.ListProjectComments(ProjectCommentFilter{ProjectID: pid, NewForAgent: true})
 	require.NoError(t, err)
