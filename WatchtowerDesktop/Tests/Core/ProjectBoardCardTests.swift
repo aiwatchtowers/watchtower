@@ -51,7 +51,8 @@ final class ProjectBoardCardTests: XCTestCase {
         XCTAssertEqual(ProjectBoardOrder.sorted(targets.shuffled()).map(\.id), [3, 7, 2, 6, 5, 4, 1])
     }
 
-    // Go's boardSiblingOrder carries the same arms; keep the two in step.
+    // Go's boardSiblingOrder has the same arms except in_review, which it gains
+    // with the status itself; keep the two in step.
     func testRankTables() {
         XCTAssertEqual(["high", "medium", "low", "bogus"].map(ProjectBoardOrder.priorityRank), [0, 1, 2, 2])
         XCTAssertEqual(
@@ -74,10 +75,10 @@ final class ProjectBoardCardTests: XCTestCase {
         XCTAssertNil(card.leafProgress, "a parent shows its children, not its own progress")
     }
 
-    func testParentWithOnlyDismissedChildrenHasZeroTotal() throws {
+    func testParentWithOnlyDismissedChildrenShowsNoChildProgress() throws {
         let card = ProjectBoardCard(node(try target(1), [node(try target(2, status: "dismissed"))]))
-        XCTAssertEqual(card.children, .init(done: 0, total: 0))
-        XCTAssertEqual(card.children?.fraction, 0)
+        XCTAssertNil(card.children, "no 0/0 counter or empty bar")
+        XCTAssertNil(card.leafProgress)
     }
 
     func testLeafShowsOnlyPartialProgress() throws {

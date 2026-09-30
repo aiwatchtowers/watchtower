@@ -29,7 +29,7 @@ struct ProjectBoardCardView<Trailing: View>: View {
                     .strikethrough(card.isDone)
                     .foregroundStyle(card.isClosed ? .secondary : .primary)
                 chips(card)
-                if let children = card.children, children.total > 0 {
+                if let children = card.children {
                     ProgressView(value: children.fraction)
                         .progressViewStyle(.linear)
                         .controlSize(.small)
@@ -90,7 +90,7 @@ struct ProjectBoardCardView<Trailing: View>: View {
                 text: ProjectBoardCard.statusLabel(target.status),
                 color: ProjectBoardColors.status(target.statusColor)
             )
-            if let children = card.children, children.total > 0 {
+            if let children = card.children {
                 counter("\(children.done)/\(children.total)", systemImage: "checklist", help: "Sub-tasks done")
             }
             if let progress = card.leafProgress {

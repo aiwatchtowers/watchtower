@@ -5,8 +5,10 @@ import Foundation
 /// Dual path with Go's `boardSiblingOrder` (`internal/db/project_board.go`),
 /// which orders the board the agent sees through `watchtower mcp --project N`
 /// and `project board`: priority high, medium, then anything else; then status
-/// in_progress, in_review, blocked, todo, done, then anything else; then id.
-/// Change both sides together.
+/// in_progress, blocked, todo, done, then anything else; then id. `in_review`
+/// already ranks right after in_progress here; Go gains that arm together with
+/// the status itself (until then the targets CHECK keeps it out of the table,
+/// so both orders agree). Change both sides together.
 package enum ProjectBoardOrder {
     package static func priorityRank(_ priority: String) -> Int {
         switch priority {
@@ -44,18 +46,19 @@ package struct ProjectBoardCard: Equatable {
     package static let editableStatuses = ["todo", "in_progress", "blocked", "done", "dismissed"]
     package static let editablePriorities = ["high", "medium", "low"]
 
-    /// Closed children of a parent card over the children that still count
-    /// (a dismissed child is out of scope, not unfinished work).
+    /// Done children of a parent card over the children that still count (a
+    /// dismissed child is out of scope, not unfinished work). `total` is never 0.
     package struct ChildProgress: Equatable {
         package let done: Int
         package let total: Int
-        package var fraction: Double { total == 0 ? 0 : Double(done) / Double(total) }
+        package var fraction: Double { Double(done) / Double(total) }
     }
 
     package let title: String
     package let isClosed: Bool
     package let isDone: Bool
-    /// Set for a card with children; nil for a leaf.
+    /// Set for a card with children that still count; nil for a leaf and for a
+    /// parent whose children are all dismissed (no meaningless 0/0).
     package let children: ChildProgress?
     /// A leaf's own partial progress (strictly between 0 and 1), else nil.
     package let leafProgress: Double?
@@ -70,7 +73,7 @@ package struct ProjectBoardCard: Equatable {
             leafProgress = target.progress > 0 && target.progress < 1 ? target.progress : nil
         } else {
             let counted = node.children.filter { $0.target.status != "dismissed" }
-            children = ChildProgress(
+            children = counted.isEmpty ? nil : ChildProgress(
                 done: counted.filter { $0.target.status == "done" }.count,
                 total: counted.count
             )
