@@ -24,9 +24,12 @@ package enum TerminalSessionPolicy {
     }
 
     /// Sessions that still need an AI title attempt. Target-bound sessions are
-    /// named after the target.
+    /// named after the target, and the setup session keeps its name: both start
+    /// with a Watchtower prompt that the transcript records as a user message,
+    /// so titling them would name them after that prompt, not the owner.
     package static func needsTitle(_ s: TerminalSession, attempts: Int) -> Bool {
-        s.kind == .claude && s.titleSource == .auto && s.targetID == nil && attempts < maxTitleAttempts
+        s.kind == .claude && s.titleSource == .auto && s.targetID == nil
+            && s.title != TerminalSessionNaming.setupTitle && attempts < maxTitleAttempts
     }
 
     /// `lastActiveAt` is fixed-format ISO, so a string compare orders it; ties go to the higher id.

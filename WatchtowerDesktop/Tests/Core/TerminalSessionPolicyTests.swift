@@ -59,5 +59,8 @@ final class TerminalSessionPolicyTests: XCTestCase {
         XCTAssertFalse(TerminalSessionPolicy.needsTitle(make(1, source: .ai), attempts: 0))
         XCTAssertFalse(TerminalSessionPolicy.needsTitle(make(1, source: .user), attempts: 0))
         XCTAssertFalse(TerminalSessionPolicy.needsTitle(make(1, target: 3), attempts: 0))
+        var setup = make(1)
+        setup.title = TerminalSessionNaming.setupTitle
+        XCTAssertFalse(TerminalSessionPolicy.needsTitle(setup, attempts: 0))
     }
 }
