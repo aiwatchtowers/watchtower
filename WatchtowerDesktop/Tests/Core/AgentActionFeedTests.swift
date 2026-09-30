@@ -65,7 +65,7 @@ final class AgentActionFeedTests: XCTestCase {
         let runner = FakeCLIRunner(stdout: Data(json.utf8))
         let feed = AgentActionFeed(dbPool: pool, cliRunner: runner)
         await feed.approve(1)
-        XCTAssertEqual(feed.rowErrors[1], "issuetype: invalid", "the failure belongs on the row's card")
+        XCTAssertEqual(feed.rowErrors[1]?.message, "issuetype: invalid", "the failure belongs on the row's card")
         XCTAssertNil(feed.lastError, "a row's failure is not a feed-wide banner")
     }
 
@@ -91,7 +91,7 @@ final class AgentActionFeedTests: XCTestCase {
         let feed = AgentActionFeed(dbPool: pool, cliRunner: runner)
         await feed.approve(1)
         await feed.approve(2)
-        XCTAssertEqual(feed.rowErrors[1], "database is locked (5) (SQLITE_BUSY)")
+        XCTAssertEqual(feed.rowErrors[1], AgentActionFeed.RowError(verb: "approve", message: "database is locked (5) (SQLITE_BUSY)"))
         XCTAssertNotNil(feed.rowErrors[2])
 
         runner.shouldThrow = nil
@@ -102,6 +102,18 @@ final class AgentActionFeedTests: XCTestCase {
 
         feed.stop()
         XCTAssertTrue(feed.rowErrors.isEmpty, "stop() drops the previous conversation's errors")
+    }
+
+    /// The card keys its Retry on the failed verb: a failed Reject must be
+    /// recorded as a reject, never as something a Retry would approve.
+    func testFailedRejectIsRecordedAsReject() async throws {
+        let (pool, path) = try makePool()
+        defer { TestDatabase.cleanup(path: path) }
+        struct Boom: Error {}
+        let feed = AgentActionFeed(dbPool: pool, cliRunner: FakeCLIRunner(error: Boom()))
+        await feed.reject(1)
+        XCTAssertEqual(feed.rowErrors[1]?.verb, "reject")
+        XCTAssertEqual(feed.rowErrors[1]?.isApprove, false)
     }
 
     func testApproveAllPendingForTurn() async throws {
@@ -215,7 +227,7 @@ final class AgentActionFeedTests: XCTestCase {
 
         await feed.approveAllPending(forTurn: "t")
         XCTAssertEqual(runner.invocations.count, 2)
-        XCTAssertEqual(feed.rowErrors[1], "boom", "the failure must not be cleared by the next row's run")
+        XCTAssertEqual(feed.rowErrors[1]?.message, "boom", "the failure must not be cleared by the next row's run")
         XCTAssertNil(feed.rowErrors[2])
     }
 

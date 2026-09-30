@@ -21,13 +21,13 @@ package final class AgentActionFeed {
     package private(set) var rows: [AgentAction] = []
     package private(set) var inFlight: Set<Int64> = []
     /// Why the last Approve/Reject/Retry on a row failed, keyed by row id —
-    /// rendered on that row's card next to its Retry, so a failure is shown
-    /// where the owner clicked (an SQLITE_BUSY approve leaves the row
-    /// `pending`, with nothing on the row itself to say it failed). Cleared
-    /// when the row's next CLI call starts.
-    package private(set) var rowErrors: [Int64: String] = [:]
+    /// rendered on that row's card, so a failure shows where the owner
+    /// clicked (an SQLITE_BUSY approve leaves the row `pending`, with nothing
+    /// on the row itself to say it failed). Cleared when the row's next CLI
+    /// call starts.
+    package private(set) var rowErrors: [Int64: RowError] = [:]
     /// Failures that belong to no single row: the observation, a refresh, the
-    /// outcomes read, a missing CLI binary.
+    /// outcomes read.
     package var lastError: String?
 
     private let dbPool: DatabasePool
@@ -39,6 +39,20 @@ package final class AgentActionFeed {
     private var observationTask: Task<Void, Never>?
     private var pollTask: Task<Void, Never>?
     private var conversationID: Int64?
+
+    /// The verb is kept so the card retries what actually failed: a failed
+    /// Reject must never turn into a button that approves.
+    package struct RowError: Equatable, Sendable {
+        package let verb: String
+        package let message: String
+
+        package var isApprove: Bool { verb == "approve" }
+
+        package init(verb: String, message: String) {
+            self.verb = verb
+            self.message = message
+        }
+    }
 
     package init(dbPool: DatabasePool, cliRunner: CLIRunnerProtocol? = nil, pollInterval: Duration = .seconds(30)) {
         self.dbPool = dbPool
@@ -123,10 +137,7 @@ package final class AgentActionFeed {
         await run("reject", id: id)
     }
 
-    /// Re-runs `apply` — for a `failed`/`approved` row. A `pending` row whose
-    /// approve failed retries through `approve` instead (the card's Retry
-    /// calls it): both go through the CLI, so AGENT-05's claim still decides
-    /// whether anything executes.
+    /// Re-runs `apply` for a `failed`/`approved` row.
     package func retry(_ id: Int64) async {
         await run("apply", id: id)
     }
@@ -180,7 +191,7 @@ package final class AgentActionFeed {
         rowErrors[id] = nil
         lastError = nil
         guard let runner = cliRunner ?? ProcessCLIRunner.makeDefault() else {
-            rowErrors[id] = CLIRunnerError.binaryNotFound.localizedDescription
+            rowErrors[id] = RowError(verb: verb, message: CLIRunnerError.binaryNotFound.localizedDescription)
             return
         }
         inFlight.insert(id)
@@ -189,10 +200,10 @@ package final class AgentActionFeed {
             let data = try await runner.run(args: ["actions", verb, String(id), "--json"])
             if let env = try? JSONDecoder().decode(Envelope.self, from: data),
                let err = env.error, !err.isEmpty {
-                rowErrors[id] = err
+                rowErrors[id] = RowError(verb: verb, message: err)
             }
         } catch {
-            rowErrors[id] = error.localizedDescription
+            rowErrors[id] = RowError(verb: verb, message: error.localizedDescription)
         }
         // The CLI wrote on its own connection; the observation will never fire
         // for it (TargetWatchesViewModel.refreshEvents precedent).

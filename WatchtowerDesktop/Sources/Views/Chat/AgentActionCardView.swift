@@ -11,9 +11,10 @@ struct AgentActionCardView: View {
     let onReject: () -> Void
     let onRetry: () -> Void
     /// Why this card's last Approve/Reject/Retry failed (`AgentActionFeed.rowErrors`).
-    /// On a still-`pending` row — an approve that never reached the row, e.g.
-    /// SQLITE_BUSY — Approve becomes Retry, which re-runs the same approve.
-    var gestureError: String?
+    /// On a still-`pending` row whose APPROVE failed (e.g. SQLITE_BUSY, the
+    /// row never moved) Approve becomes Retry, re-running the same approve; a
+    /// failed Reject keeps its labels — Reject is its retry.
+    var gestureError: AgentActionFeed.RowError?
     /// Follows an applied action to what it produced. Nil (the chat surfaces)
     /// hides the in-app "Open" button; a web destination (a created Jira
     /// issue) still links, since opening a browser needs no navigation.
@@ -153,9 +154,8 @@ struct AgentActionCardView: View {
             if !action.error.isEmpty {
                 Text(action.error).font(.caption).foregroundStyle(.red)
             }
-            // A failed apply also lands in the row's own `error`: show it once.
-            if let gestureError, !gestureError.isEmpty, gestureError != action.error {
-                Label(gestureError, systemImage: "exclamationmark.triangle.fill")
+            if let shownGestureError {
+                Label(shownGestureError, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
                     .foregroundStyle(.red)
                     .textSelection(.enabled)
@@ -174,6 +174,16 @@ struct AgentActionCardView: View {
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.accentColor.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    /// The gesture's failure, unless the row itself already says it — a failed
+    /// apply lands in the row's `error` too, possibly wrapped by the CLI — or
+    /// the row has since been decided elsewhere (a terminal card needs no
+    /// retry, and a stale red line would contradict its status).
+    private var shownGestureError: String? {
+        guard let message = gestureError?.message, !message.isEmpty, !action.isTerminal else { return nil }
+        if !action.error.isEmpty, message.contains(action.error) || action.error.contains(message) { return nil }
+        return message
     }
 
     private var header: some View {
@@ -255,7 +265,7 @@ struct AgentActionCardView: View {
             } else {
                 if action.isPending {
                     if Self.canApprove(action) {
-                        Button(gestureError == nil ? "Approve" : "Retry", action: onApprove)
+                        Button(gestureError?.isApprove == true ? "Retry" : "Approve", action: onApprove)
                             .buttonStyle(.borderedProminent)
                     }
                     Button("Reject", action: onReject)

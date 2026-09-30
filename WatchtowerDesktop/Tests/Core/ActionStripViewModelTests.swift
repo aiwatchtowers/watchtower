@@ -108,7 +108,8 @@ final class ActionStripViewModelTests: XCTestCase {
         vm.refresh()
 
         await vm.approve(id)
-        XCTAssertEqual(vm.actionFeed.rowErrors[id], "boom", "a failed CLI call must surface on the row's card")
+        XCTAssertEqual(vm.actionFeed.rowErrors[id]?.message, "boom", "a failed CLI call must surface on the row's card")
+        XCTAssertNil(vm.lastError, "a row's failure is not the strip's banner")
 
         runner.shouldThrow = nil
         await vm.approve(id)
