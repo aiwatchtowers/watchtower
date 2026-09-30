@@ -3,11 +3,13 @@ import WatchtowerCore
 
 /// One target of the project board as a task card: status icon, title,
 /// priority/status chips, counters, and — for a parent — its children's
-/// progress and a collapse chevron. `trailing` is the card's action slot.
+/// progress and a collapse chevron. `trailing` is the card's action slot;
+/// `caption` is an extra line under the title (the kanban's parent chain).
 struct ProjectBoardCardView<Trailing: View>: View {
     let row: ProjectBoardRow
     let isSelected: Bool
     let isCollapsed: Bool
+    var caption: String?
     let onToggle: () -> Void
     @ViewBuilder let trailing: () -> Trailing
 
@@ -28,6 +30,14 @@ struct ProjectBoardCardView<Trailing: View>: View {
                     .lineLimit(2)
                     .strikethrough(card.isDone)
                     .foregroundStyle(card.isClosed ? .secondary : .primary)
+                if let caption {
+                    Text(caption)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .help(caption)
+                }
                 chips(card)
                 if let children = card.children {
                     ProgressView(value: children.fraction)
@@ -119,8 +129,16 @@ struct ProjectBoardCardView<Trailing: View>: View {
 }
 
 extension ProjectBoardCardView where Trailing == EmptyView {
-    init(row: ProjectBoardRow, isSelected: Bool, isCollapsed: Bool, onToggle: @escaping () -> Void) {
-        self.init(row: row, isSelected: isSelected, isCollapsed: isCollapsed, onToggle: onToggle) { EmptyView() }
+    init(
+        row: ProjectBoardRow,
+        isSelected: Bool,
+        isCollapsed: Bool,
+        caption: String? = nil,
+        onToggle: @escaping () -> Void
+    ) {
+        self.init(row: row, isSelected: isSelected, isCollapsed: isCollapsed, caption: caption, onToggle: onToggle) {
+            EmptyView()
+        }
     }
 }
 
