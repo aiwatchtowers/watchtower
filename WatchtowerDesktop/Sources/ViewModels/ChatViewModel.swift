@@ -485,9 +485,15 @@ final class ChatViewModel {
     /// "Send N comments" in the artifact panel: the unsent comments go out as
     /// one ordinary owner turn, and exactly those rows turn `sent` in the
     /// transaction that persists that message — a refused or failed send
-    /// leaves them unsent, a sent message never leaves them open.
+    /// leaves them unsent, a sent message never leaves them open. The button
+    /// is disabled while an answer streams; a click that races the stream's
+    /// start is refused out loud, never silently.
     func sendArtifactComments() {
         guard let comments = artifactPanel?.comments, let outgoing = comments.outgoing() else { return }
+        guard !isStreaming else {
+            errorMessage = "Wait for the current answer to finish, then send the comments."
+            return
+        }
         let ids = outgoing.ids
         let sentAt = Date()
         guard send(text: outgoing.text, alsoWrite: { db in
