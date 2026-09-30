@@ -156,6 +156,7 @@ final class ProjectDocumentViewModel {
     ///   file reloaded since the selection was made: the write is refused, the selection is
     ///   surely wrong on the new text, and the caller keeps its draft so the owner can re-select.
     /// - Returns: whether a comment was written, so a composer knows whether to close/clear.
+    ///   A failed write returns `false` (with `errorMessage` set) so the owner's draft survives.
     @discardableResult
     func addComment(body: String, selection: NSRange, renderVersion: Int? = nil) async -> Bool {
         if let renderVersion, renderVersion != self.renderVersion {
@@ -167,11 +168,12 @@ final class ProjectDocumentViewModel {
               !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
         let anchor = CommentAnchor.make(text: rendered.text, range: range, headings: rendered.headingOffsets)
         let (projectID, documentID) = (project.id, document.id)
-        await ownerWrite { db in
+        let wrote = await ownerWrite { db in
             _ = try ProjectQueries.addOwnerComment(
                 db, projectID: projectID, targetID: nil, documentID: documentID, anchor: anchor, body: body
             )
         }
+        guard wrote else { return false }
         anchoredRanges = anchoredRangesAfterAdd(rendered.text)
         return true
     }
@@ -189,15 +191,19 @@ final class ProjectDocumentViewModel {
         await ownerWrite { db in try ProjectQueries.setStatus(db, commentID: rootID, status: "open") }
     }
 
-    private func ownerWrite(_ write: @escaping @Sendable (Database) throws -> Void) async {
+    /// - Returns: whether the write committed; on failure `errorMessage` says why.
+    @discardableResult
+    private func ownerWrite(_ write: @escaping @Sendable (Database) throws -> Void) async -> Bool {
         do {
             try await dbPool.write(write)
-            errorMessage = nil
-            onOwnerWrite?(.document(document.id))
-            await reloadThreads()
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = "Could not save: \(error.localizedDescription)"
+            return false
         }
+        errorMessage = nil
+        onOwnerWrite?(.document(document.id))
+        await reloadThreads()
+        return true
     }
 
     private func anchoredRangesAfterAdd(_ text: String) -> [Int64: NSRange] {

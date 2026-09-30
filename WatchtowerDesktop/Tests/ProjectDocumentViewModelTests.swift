@@ -127,6 +127,27 @@ final class ProjectDocumentViewModelTests: XCTestCase {
         XCTAssertEqual(count, 0, "the owner's typed comment must not be persisted against the wrong text")
     }
 
+    /// A failed write must report `false` so the composer keeps the owner's
+    /// draft, and must surface the error instead of pretending it saved.
+    func testAddCommentReportsAFailedWriteAndKeepsTheDraft() async throws {
+        let vm = makeVM()
+        var writes: [ProjectSubject] = []
+        vm.onOwnerWrite = { writes.append($0) }
+        await vm.load()
+        try await pool.write { d in
+            try d.execute(sql: """
+                CREATE TRIGGER fail_comment_insert BEFORE INSERT ON project_comments
+                BEGIN SELECT RAISE(ABORT, 'disk full'); END
+                """)
+        }
+
+        let wrote = await vm.addComment(body: "Why small?", selection: try selection("retry budget small", in: vm))
+        XCTAssertFalse(wrote, "a failed write must not tell the composer to clear")
+        XCTAssertNotNil(vm.errorMessage)
+        XCTAssertTrue(writes.isEmpty, "the owner-write hook fires only after a committed write")
+        XCTAssertTrue(vm.threads.isEmpty)
+    }
+
     func testAddCommentWritesWhenTheCapturedVersionStillMatches() async throws {
         let vm = makeVM()
         await vm.load()
