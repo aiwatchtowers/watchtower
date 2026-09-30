@@ -19,7 +19,10 @@ import (
 // is either derived from the next unmatched original block of the same
 // kind — rendered from markdown, allowed only when that original is
 // faithfully representable (checkDerivable) — or new, and every original
-// block left over is deleted, which the text diff shows. An original block
+// block left over is deleted, which the text diff shows. Since the text
+// cannot say which original a changed block was edited from, every
+// unmatched original of a kind a new block in the same gap could derive
+// from must be derivable (checkCandidates, ruling R13). An original block
 // with no editable text (an empty spacing paragraph) is never deleted:
 // nothing in the text could have asked for that.
 
@@ -105,6 +108,9 @@ func (a *applier) pairGap(orig, body []*block, origText []string) ([]sectionOp, 
 			}
 		}
 	}
+	if err := a.checkCandidates(orig, body, origText); err != nil {
+		return nil, err
+	}
 	var ops []sectionOp
 	p := 0
 	for _, n := range body {
@@ -121,6 +127,28 @@ func (a *applier) pairGap(orig, body []*block, origText []string) ([]sectionOp, 
 		p = j + 1
 	}
 	return append(ops, dropOrKeep(orig[p:], origText[p:])...), nil
+}
+
+// checkCandidates is ruling R13's pairing rule: which unmatched original a
+// changed block was edited from cannot be known from the text alone, so
+// every unmatched original of a kind some new block in the gap could
+// derive from must be derivable. Otherwise pairing the edit with the
+// "wrong" original would silently delete the rich one (and its formatting)
+// under a changed plain block. A rich original is deleted only when no new
+// block of its kind shares its gap — an unambiguous deletion.
+func (a *applier) checkCandidates(orig, body []*block, origText []string) error {
+	kinds := map[blockKind]bool{}
+	for _, n := range body {
+		kinds[n.kind] = true
+	}
+	for i, o := range orig {
+		if kinds[o.kind] && o.kind != blockMarker && origText[i] != "" {
+			if err := a.checkDerivable(o, origText[i]); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // dropOrKeep deletes original blocks the new body left out — except one
