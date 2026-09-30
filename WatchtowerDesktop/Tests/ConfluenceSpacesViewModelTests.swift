@@ -14,6 +14,10 @@ private final class ScriptedConfluenceCLI: CLIRunnerProtocol, @unchecked Sendabl
     var spacesJSON = "[]"
     var spacesError: String?
     var selectError: String?
+    /// `confluence access --json`'s answer (default: read, not write), or
+    /// its failure.
+    var accessJSON = #"{"read":true,"write":false}"#
+    var accessError: String?
     private(set) var invocations: [[String]] = []
 
     private let lock = NSLock()
@@ -109,6 +113,9 @@ private final class ScriptedConfluenceCLI: CLIRunnerProtocol, @unchecked Sendabl
                 }
             }
             return Data()
+        case "access":
+            if let accessError { throw CLIRunnerError.nonZeroExit(code: 1, stderr: accessError) }
+            return Data(accessJSON.utf8)
         default:
             return Data()
         }
@@ -191,7 +198,8 @@ final class ConfluenceSpacesViewModelTests: XCTestCase {
 
         await vm.load()
 
-        XCTAssertEqual(cli.invocations.first, ["confluence", "spaces", "--account", String(acct), "--json"])
+        // The load also reads `confluence access` first (the Allow editing tests).
+        XCTAssertTrue(cli.invocations.contains(["confluence", "spaces", "--account", String(acct), "--json"]))
         XCTAssertFalse(vm.needsConsent)
         XCTAssertNil(vm.errorMessage)
         XCTAssertFalse(vm.isLoading)
@@ -714,5 +722,105 @@ final class ConfluenceSpacesViewModelTests: XCTestCase {
         XCTAssertEqual(vm.errorMessage, "listing Confluence spaces: HTTP 502")
         await vm.refreshStatuses()
         XCTAssertEqual(vm.errorMessage, "listing Confluence spaces: HTTP 502", "a CLI error survives a status poll")
+    }
+
+    // MARK: - Allow editing (spec 2026-09-30 §2, §6)
+
+    private func loadedVM(
+        accessJSON: String,
+        spacesError: String? = nil,
+        onAllowEditing: @escaping @MainActor (Int64) async -> String? = { _ in nil }
+    ) async throws -> (ConfluenceSpacesViewModel, ScriptedConfluenceCLI, Int64) {
+        let manager = try makeManager()
+        let pool = manager.dbPool
+        let acct = try await pool.write { db in try TestDatabase.insertJiraAccount(db) }
+        let cli = ScriptedConfluenceCLI(pool: pool)
+        cli.spacesJSON = Self.twoSpaces
+        cli.spacesError = spacesError
+        cli.accessJSON = accessJSON
+        let vm = ConfluenceSpacesViewModel(accountID: acct, dbPool: pool, runner: cli, onAllowEditing: onAllowEditing)
+        await vm.load()
+        return (vm, cli, acct)
+    }
+
+    /// Read without write: `canEdit` is false and "Allow editing" shows. The
+    /// access comes from `confluence access --account N --json`.
+    func testReadWithoutWriteShowsAllowEditing() async throws {
+        let (vm, cli, acct) = try await loadedVM(accessJSON: #"{"read":true,"write":false}"#)
+        XCTAssertTrue(cli.invocations.contains(["confluence", "access", "--account", String(acct), "--json"]))
+        XCTAssertTrue(vm.hasReadAccess)
+        XCTAssertFalse(vm.canEdit)
+        XCTAssertTrue(vm.showsAllowEditing)
+        XCTAssertNil(vm.errorMessage)
+    }
+
+    func testWriteGrantedHidesAllowEditing() async throws {
+        let (vm, _, _) = try await loadedVM(accessJSON: #"{"read":true,"write":true}"#)
+        XCTAssertTrue(vm.canEdit)
+        XCTAssertFalse(vm.showsAllowEditing)
+    }
+
+    /// No read access: the consent flow comes first, never "Allow editing".
+    func testNoReadAccessHidesAllowEditing() async throws {
+        let (vm, _, _) = try await loadedVM(accessJSON: #"{"read":false,"write":true}"#)
+        XCTAssertFalse(vm.showsAllowEditing)
+        let (consentVM, _, _) = try await loadedVM(accessJSON: #"{"read":true,"write":false}"#,
+                                                   spacesError: Self.consentMessage)
+        XCTAssertTrue(consentVM.needsConsent)
+        XCTAssertFalse(consentVM.showsAllowEditing, "never over the consent screen")
+    }
+
+    /// A failed access check (e.g. a corrupt token) hides the button and says
+    /// why — it is never read as "no write access" silently.
+    func testAccessFailureIsShownAndHidesAllowEditing() async throws {
+        let manager = try makeManager()
+        let pool = manager.dbPool
+        let acct = try await pool.write { db in try TestDatabase.insertJiraAccount(db) }
+        let cli = ScriptedConfluenceCLI(pool: pool)
+        cli.spacesJSON = Self.twoSpaces
+        cli.accessJSON = #"{"read":true,"write":true}"#
+        let vm = ConfluenceSpacesViewModel(accountID: acct, dbPool: pool, runner: cli)
+        await vm.load()
+        XCTAssertTrue(vm.canEdit)
+
+        cli.accessError = "log line\nreading jira account 1 token: invalid character 'n'"
+        await vm.load()
+
+        XCTAssertFalse(vm.canEdit)
+        XCTAssertFalse(vm.showsAllowEditing)
+        XCTAssertEqual(vm.errorMessage,
+                       "Couldn't check Confluence editing access: reading jira account 1 token: invalid character 'n'")
+        XCTAssertEqual(vm.spaces.count, 2, "the spaces still list")
+    }
+
+    /// "Allow editing" runs the injected write-scope login flow for this
+    /// account, then reloads — the re-read access hides the button.
+    func testAllowEditingRunsTheWriteLoginThenReloads() async throws {
+        var cliRef: ScriptedConfluenceCLI?
+        var called: [Int64] = []
+        let (vm, cli, acct) = try await loadedVM(accessJSON: #"{"read":true,"write":false}"#) { id in
+            called.append(id)
+            cliRef?.accessJSON = #"{"read":true,"write":true}"#
+            return nil
+        }
+        cliRef = cli
+        XCTAssertTrue(vm.showsAllowEditing)
+
+        await vm.allowEditingAsync()
+
+        XCTAssertEqual(called, [acct])
+        XCTAssertTrue(vm.canEdit)
+        XCTAssertFalse(vm.showsAllowEditing)
+        XCTAssertNil(vm.reconsentError)
+        XCTAssertFalse(vm.isReconsenting)
+    }
+
+    func testAllowEditingFailureIsMirrored() async throws {
+        let (vm, _, _) = try await loadedVM(accessJSON: #"{"read":true,"write":false}"#) { _ in
+            "Allowing Confluence editing failed (exit 1)"
+        }
+        await vm.allowEditingAsync()
+        XCTAssertEqual(vm.reconsentError, "Allowing Confluence editing failed (exit 1)")
+        XCTAssertTrue(vm.showsAllowEditing, "still not writable")
     }
 }

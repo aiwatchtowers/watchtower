@@ -39,7 +39,8 @@ struct AgentActionCardView: View {
             if let p = action.argString("priority"), !p.isEmpty { lines.append("Priority: \(p)") }
             return lines
         default:
-            return waveTwoSummaryLines(for: action) ?? jiraIssueWriteSummaryLines(for: action) ?? [action.argsJSON]
+            return waveTwoSummaryLines(for: action) ?? jiraIssueWriteSummaryLines(for: action)
+                ?? confluenceEditSummaryLines(for: action) ?? [action.argsJSON]
         }
     }
 
@@ -131,6 +132,9 @@ struct AgentActionCardView: View {
             ForEach(Self.summaryLines(for: action), id: \.self) { line in
                 Text(line).font(.callout).fixedSize(horizontal: false, vertical: true)
             }
+            if let edit = Self.confluenceEdit(for: action) {
+                ConfluenceEditChangesView(edit: edit)
+            }
             if !action.reason.isEmpty {
                 Text(action.reason).font(.caption).foregroundStyle(.secondary).italic()
             }
@@ -141,9 +145,10 @@ struct AgentActionCardView: View {
             }
             // Only a FAILED row can have left a half-finished external write:
             // Apply claims the row before it runs the tool, so an `approved`
-            // one provably never reached Jira.
+            // one provably never reached Jira. (A Confluence edit is version-
+            // checked, so its note says why a retry cannot double-write.)
             if action.status == "failed", action.external {
-                Text("Retrying re-sends the request — check Jira for a duplicate first.")
+                Text(Self.retryNote(for: action))
                     .font(.caption).foregroundStyle(.orange)
             }
             actions
@@ -168,7 +173,11 @@ struct AgentActionCardView: View {
 
     @ViewBuilder
     private var outcome: some View {
-        if action.status == "applied", let link = action.resultWebURL("url") {
+        if action.status == "applied", action.tool == Self.confluenceEditTool {
+            // The page is already linked above the diff; name the version
+            // the write produced instead of repeating the link.
+            Text("Saved as version \(action.resultString("version") ?? "?")").font(.callout)
+        } else if action.status == "applied", let link = action.resultWebURL("url") {
             // Generic: any tool that returns a url (+ optional label) links it —
             // label, then key, then the url itself (spec 2026-09-26 §8).
             // `resultWebURL` is the same http/https-only check

@@ -237,4 +237,124 @@ final class AgentActionCardViewTests: XCTestCase {
             XCTAssertThrowsError(try view.inspect().find(ViewType.Link.self), "\(url) must not render a Link")
         }
     }
+
+    // MARK: - edit_confluence_page (spec 2026-09-30 §6)
+
+    /// The stored args after Normalize (task 4's shape): `changes[]` is what
+    /// the card shows; `new_storage` is never rendered.
+    private static let confluenceArgs = #"""
+    {"account_id":1,"base_version":7,
+     "changes":[{"kind":"replace_text","locator":"text in Plan",
+                 "before":"Owner ⟦1:@Ann Lee⟧ ships on Friday.","after":"Ships on Monday.",
+                 "removed":["⟦1:@Ann Lee⟧"]},
+                {"kind":"replace_section","locator":"Risks",
+                 "before":"None known.","after":"Late vendor sign-off.","removed":[]}],
+     "edits":[],"kind":"page","new_storage":"<h2>Plan</h2><p>Ships on Monday.</p>",
+     "page_id":"98765","reason":"fix the rollout day","title":"Rollout plan",
+     "url":"https://example.atlassian.net/wiki/spaces/ENG/pages/98765/Rollout"}
+    """#
+
+    private func confluenceRow(status: String = "pending", resultJSON: String = "", error: String = "") throws -> AgentAction {
+        try row { db in
+            try TestDatabase.insertAgentAction(db, tool: "edit_confluence_page", external: true,
+                                               argsJSON: Self.confluenceArgs, status: status,
+                                               resultJSON: resultJSON, error: error)
+        }
+    }
+
+    func testConfluenceEditSummaryReadsThePinnedChanges() throws {
+        let action = try confluenceRow()
+        XCTAssertEqual(AgentActionCardView.title(for: action), "Edit a Confluence page")
+        XCTAssertEqual(AgentActionCardView.summaryLines(for: action), ["Page: Rollout plan · edits version 7"])
+
+        let edit = try XCTUnwrap(AgentActionCardView.confluenceEdit(for: action))
+        XCTAssertEqual(edit.pageURL, URL(string: "https://example.atlassian.net/wiki/spaces/ENG/pages/98765/Rollout"))
+        XCTAssertEqual(edit.changes.map(\.heading), ["text in Plan", "Section: Risks"])
+        XCTAssertEqual(edit.changes.map(\.before), ["Owner ⟦1:@Ann Lee⟧ ships on Friday.", "None known."])
+        XCTAssertEqual(edit.changes.map(\.after), ["Ships on Monday.", "Late vendor sign-off."])
+        XCTAssertEqual(edit.changes.map(\.removesLine), ["Removes: @Ann Lee", nil])
+    }
+
+    /// Deleted words struck through in red, inserted words in green, the
+    /// unchanged words plain.
+    func testConfluenceDiffStylesRemovedAndAddedWords() {
+        let text = AgentActionCardView.diffText(before: "Ships on Friday.", after: "Ships on Monday.")
+        let runs = text.runs.map { run in
+            (String(text[run.range].characters), run.swiftUI.strikethroughStyle != nil, run.swiftUI.foregroundColor)
+        }
+        XCTAssertEqual(runs.map(\.0), ["Ships on ", "Friday.", "Monday."])
+        XCTAssertEqual(runs.map(\.1), [false, true, false])
+        XCTAssertEqual(runs.map(\.2), [nil, .red, .green])
+    }
+
+    /// A long unchanged stretch is shortened around an ellipsis, so a
+    /// section-sized diff stays readable; the changed words are never cut.
+    func testConfluenceDiffShortensLongUnchangedText() {
+        let head = String(repeating: "word ", count: 200)
+        let text = AgentActionCardView.diffText(before: head + "old", after: head + "new")
+        let plain = String(text.characters)
+        XCTAssertTrue(plain.contains(" … "))
+        XCTAssertLessThan(plain.count, head.count)
+        XCTAssertTrue(plain.hasSuffix("oldnew"))
+    }
+
+    func testConfluenceEditCardRendersPageLinkLocatorsAndRemovals() throws {
+        let view = AgentActionCardView(action: try confluenceRow(), inFlight: false,
+                                       onApprove: {}, onReject: {}, onRetry: {})
+        let link = try view.inspect().find(ViewType.Link.self)
+        XCTAssertEqual(try link.url(), URL(string: "https://example.atlassian.net/wiki/spaces/ENG/pages/98765/Rollout"))
+        XCTAssertNoThrow(try view.inspect().find(text: "text in Plan"))
+        XCTAssertNoThrow(try view.inspect().find(text: "Section: Risks"))
+        XCTAssertNoThrow(try view.inspect().find(text: "Removes: @Ann Lee"))
+        XCTAssertNoThrow(try view.inspect().find(button: "Approve"))
+    }
+
+    /// A failed write shows its error verbatim (the row's `error` column —
+    /// the registry writes no result for a failed Execute), and the retry
+    /// note explains the version check instead of the Jira duplicate warning.
+    func testFailedConfluenceEditShowsTheErrorAndAVersionSafeRetryNote() throws {
+        let conflict = "conflict: the page was edited after the preview (now v8); nothing was written"
+        let view = AgentActionCardView(action: try confluenceRow(status: "failed", error: conflict),
+                                       inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
+        XCTAssertNoThrow(try view.inspect().find(text: conflict))
+        XCTAssertNoThrow(try view.inspect().find(button: "Retry"))
+        // swiftlint:disable:next trailing_closure
+        XCTAssertThrowsError(try view.inspect().find(textWhere: { text, _ in text.contains("check Jira") }))
+        XCTAssertNoThrow(try view.inspect().find(
+            text: "Retrying writes only if the page is still at version 7; if someone edited it since, ask for a new edit."
+        ))
+    }
+
+    /// Applied: the new version is named, and the page is linked once (the
+    /// generic result-url link would repeat the preview's page link).
+    func testAppliedConfluenceEditNamesTheNewVersionAndLinksOnce() throws {
+        let result = #"{"page_id":"98765","title":"Rollout plan","url":"https://example.atlassian.net/wiki/spaces/ENG/pages/98765/Rollout","version":8}"#
+        let view = AgentActionCardView(action: try confluenceRow(status: "applied", resultJSON: result),
+                                       inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
+        XCTAssertNoThrow(try view.inspect().find(text: "Saved as version 8"))
+        XCTAssertEqual(try view.inspect().findAll(ViewType.Link.self).count, 1)
+    }
+
+    /// Args the card cannot read (no changes array) fall back to the raw
+    /// JSON rather than an empty or invented preview.
+    func testUnreadableConfluenceArgsFallBackToRawJSON() throws {
+        let action = try row { db in
+            try TestDatabase.insertAgentAction(db, tool: "edit_confluence_page", external: true, argsJSON: #"{"page_id":"1"}"#)
+        }
+        XCTAssertNil(AgentActionCardView.confluenceEdit(for: action))
+        XCTAssertEqual(AgentActionCardView.summaryLines(for: action), [#"{"page_id":"1"}"#])
+    }
+
+    /// A page url that is not http(s) is never linked.
+    func testConfluenceEditWithNonWebPageURLHasNoLink() throws {
+        let args = Self.confluenceArgs.replacingOccurrences(
+            of: "https://example.atlassian.net/wiki/spaces/ENG/pages/98765/Rollout", with: "javascript:alert(1)"
+        )
+        let action = try row { db in
+            try TestDatabase.insertAgentAction(db, tool: "edit_confluence_page", external: true, argsJSON: args)
+        }
+        XCTAssertNil(try XCTUnwrap(AgentActionCardView.confluenceEdit(for: action)).pageURL)
+        let view = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
+        XCTAssertThrowsError(try view.inspect().find(ViewType.Link.self))
+    }
 }
