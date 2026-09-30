@@ -85,24 +85,9 @@ func runTerminalTitle(cmd *cobra.Command, args []string) error {
 	if err != nil || id <= 0 {
 		return fmt.Errorf("invalid terminal session id %q", args[0])
 	}
-	cfg, err := config.Load(flagConfig)
+	cfg, database, err := openTerminalTitleDB()
 	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
-	}
-	if flagWorkspace != "" {
-		cfg.ActiveWorkspace = flagWorkspace
-	}
-	applyProviderOverride(cfg)
-	if err := cfg.ValidateWorkspace(); err != nil {
 		return err
-	}
-	dbPath := terminalTitleFlagDBPath
-	if dbPath == "" {
-		dbPath = cfg.DBPath()
-	}
-	database, err := db.Open(dbPath)
-	if err != nil {
-		return fmt.Errorf("opening database: %w", err)
 	}
 	defer database.Close()
 
@@ -122,7 +107,45 @@ func runTerminalTitle(cmd *cobra.Command, args []string) error {
 	if owner == "" {
 		return enc.Encode(terminalTitleResult{})
 	}
+	title, err := generateTerminalTitle(cmd, cfg, database, owner)
+	if err != nil {
+		return err
+	}
+	written, err := database.SetTerminalSessionAITitle(id, title)
+	if err != nil {
+		return err
+	}
+	return enc.Encode(terminalTitleResult{Title: title, Written: written})
+}
 
+// openTerminalTitleDB loads the config and opens the workspace database (or
+// --db-path).
+func openTerminalTitleDB() (*config.Config, *db.DB, error) {
+	cfg, err := config.Load(flagConfig)
+	if err != nil {
+		return nil, nil, fmt.Errorf("loading config: %w", err)
+	}
+	if flagWorkspace != "" {
+		cfg.ActiveWorkspace = flagWorkspace
+	}
+	applyProviderOverride(cfg)
+	if err := cfg.ValidateWorkspace(); err != nil {
+		return nil, nil, err
+	}
+	dbPath := terminalTitleFlagDBPath
+	if dbPath == "" {
+		dbPath = cfg.DBPath()
+	}
+	database, err := db.Open(dbPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("opening database: %w", err)
+	}
+	return cfg, database, nil
+}
+
+// generateTerminalTitle asks the light-tier model for a title of the owner's
+// messages; an empty answer is an error.
+func generateTerminalTitle(cmd *cobra.Command, cfg *config.Config, database *db.DB, owner string) (string, error) {
 	tmpl, _, err := prompts.New(database, nil).Get(prompts.TerminalTitle)
 	if err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "terminal title: using the default prompt: %v\n", err)
@@ -136,17 +159,13 @@ func runTerminalTitle(cmd *cobra.Command, args []string) error {
 	}
 	reply, _, _, err := terminalTitleGeneratorFactory(cfg).Generate(digest.WithSource(ctx, "terminal.title"), tmpl, owner, "")
 	if err != nil {
-		return fmt.Errorf("generating the title: %w", err)
+		return "", fmt.Errorf("generating the title: %w", err)
 	}
 	title := cleanChatTitle(reply)
 	if title == "" {
-		return fmt.Errorf("the model returned an empty title")
+		return "", fmt.Errorf("the model returned an empty title")
 	}
-	written, err := database.SetTerminalSessionAITitle(id, title)
-	if err != nil {
-		return err
-	}
-	return enc.Encode(terminalTitleResult{Title: title, Written: written})
+	return title, nil
 }
 
 // terminalOwnerText reads the owner's typed messages from the session's
