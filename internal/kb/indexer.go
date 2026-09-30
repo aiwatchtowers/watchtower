@@ -197,28 +197,13 @@ func runSource(ctx context.Context, d *db.DB, src Source, now time.Time, overBud
 		}
 		for i := 0; i < len(keys); i += batchSize {
 			end := min(i+batchSize, len(keys))
-			last := end == len(keys)
-			docs, err := buildBatch(ctx, d, src, keys[i:end])
-			if err != nil {
+			finish := func(*sql.Tx) error { return nil }
+			if end == len(keys) {
+				finish = func(tx *sql.Tx) error { return saveCursor(ctx, tx, name, next, now) }
+			}
+			if err := indexBatch(ctx, d, src, keys[i:end], finish, st); err != nil {
 				return false, err
 			}
-			var written, deleted int
-			err = withTx(ctx, d, func(tx *sql.Tx) error {
-				var err error
-				if written, deleted, err = storeBatch(ctx, tx, keys[i:end], docs); err != nil {
-					return err
-				}
-				if last {
-					return saveCursor(ctx, tx, name, next, now)
-				}
-				return nil
-			})
-			if err != nil {
-				return false, err
-			}
-			// Counted only once the batch committed: a rolled-back batch reports nothing.
-			st.Written += written
-			st.Deleted += deleted
 		}
 		if done {
 			return true, nil
@@ -227,6 +212,30 @@ func runSource(ctx context.Context, d *db.DB, src Source, now time.Time, overBud
 			return false, nil
 		}
 	}
+}
+
+// indexBatch renders keys, then stores them and runs finish (the range's
+// cursor save on its last batch) in one write transaction.
+func indexBatch(ctx context.Context, d *db.DB, src Source, keys []string, finish func(*sql.Tx) error, st *Stats) error {
+	docs, err := buildBatch(ctx, d, src, keys)
+	if err != nil {
+		return err
+	}
+	var written, deleted int
+	err = withTx(ctx, d, func(tx *sql.Tx) error {
+		var err error
+		if written, deleted, err = storeBatch(ctx, tx, keys, docs); err != nil {
+			return err
+		}
+		return finish(tx)
+	})
+	if err != nil {
+		return err
+	}
+	// Counted only once the batch committed: a rolled-back batch reports nothing.
+	st.Written += written
+	st.Deleted += deleted
+	return nil
 }
 
 // buildBatch renders each key's document OUTSIDE any transaction. Rendering
