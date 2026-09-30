@@ -49,6 +49,11 @@ final class ProjectsViewModel {
     /// it to ProjectTerminalCenter.close in initProjects; closing a project
     /// with no terminal is a no-op, so calling it twice is harmless.
     var closeTerminal: ((Int64) async -> Void)?
+    /// Whether the Projects tab is what the owner is looking at (AppState:
+    /// sidebar on Projects, main window visible). The poll marks agent
+    /// replies read only then — an open-but-hidden document is not "seen".
+    /// Unwired = never on screen.
+    var isTabOnScreen: () -> Bool = { false }
     /// The project a delete is running for; the page disables Delete meanwhile.
     private(set) var deletingProjectID: Int64?
     /// Why the last delete failed; the page shows it in an alert.
@@ -141,12 +146,15 @@ final class ProjectsViewModel {
     /// comments from another process (DB only, no file change), so besides
     /// the list this also refreshes the documents pane and the open
     /// document's threads — neither re-renders the file, so an open composer
-    /// keeps its selection.
+    /// keeps its selection. An agent reply that arrived on the document the
+    /// owner has on screen is marked read, the way opening it does; the list
+    /// reloads last so its unread badge already reflects that.
     func refreshOnPoll() async {
+        if selectedProjectID != nil {
+            await loadDocuments()
+            await documentViewModel?.refreshThreads(markRead: pane == .documents && isTabOnScreen())
+        }
         await reload()
-        guard selectedProjectID != nil else { return }
-        await loadDocuments()
-        await documentViewModel?.refreshThreads()
     }
 
     /// Opens `pendingDocumentID` (a deep link). The list is reloaded first

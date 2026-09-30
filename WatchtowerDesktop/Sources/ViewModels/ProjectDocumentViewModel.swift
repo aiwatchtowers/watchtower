@@ -140,9 +140,12 @@ final class ProjectDocumentViewModel {
 
     /// Re-reads the threads (the agent's DB-only writes) and anchors any new
     /// open root, without re-rendering the file or bumping `renderVersion`.
-    func refreshThreads() async {
+    /// - Parameter markRead: the document is on screen, so new agent replies
+    ///   are marked read exactly as `load()` does.
+    func refreshThreads(markRead: Bool) async {
         await reloadThreads()
         if let rendered { anchoredRanges = anchoredRangesAfterAdd(rendered.text) }
+        if markRead { await markRepliesRead() }
     }
 
     private func reloadThreads() async {

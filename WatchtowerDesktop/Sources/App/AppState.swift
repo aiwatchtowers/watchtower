@@ -943,6 +943,10 @@ final class AppState {
         vm.onOwnerWrite = { [weak notices] projectID, subject in
             notices?.recordOwnerWrite(projectID: projectID, subject: subject)
         }
+        vm.isTabOnScreen = { [weak self] in
+            self?.selectedDestination == .projects
+                && NSApp.windows.contains { TrayAppDelegate.isMainWindow($0) && $0.isVisible && $0.occlusionState.contains(.visible) }
+        }
         notices.onPolled = { [weak vm] in await vm?.refreshOnPoll() }
         projectsViewModel = vm
         projectNotificationCenter = notices

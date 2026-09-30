@@ -279,6 +279,56 @@ final class ProjectsViewModelTests: XCTestCase {
         vm.closeDocument()
     }
 
+    /// An agent reply that lands while the document is on screen is marked
+    /// read by the poll, as opening it would; the same reply stays unread when
+    /// the document is open but not shown (another pane, another tab).
+    func testRefreshOnPollMarksAgentRepliesReadOnlyForTheDocumentOnScreen() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent("docs"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try "# Plan\n\nShip it.".write(to: folder.appendingPathComponent("docs/plan.md"), atomically: true, encoding: .utf8)
+        let (p, doc) = try await pool.write { d -> (Int64, Int64) in
+            let p = try TestDatabase.insertProject(d, folder: folder.path)
+            return (p, try TestDatabase.insertProjectDocument(d, projectID: p))
+        }
+        let root = try await pool.write { d in
+            try TestDatabase.insertProjectComment(d, projectID: p, author: "owner", documentID: doc, quote: "Ship it")
+        }
+        var onScreen = false
+        let vm = makeVM()
+        vm.isTabOnScreen = { onScreen }
+        await vm.reload()
+        vm.selectedProjectID = p
+        vm.pane = .documents
+        await vm.loadDocuments()
+        await vm.openDocument(try XCTUnwrap(vm.documents.first?.document))
+        func unread() throws -> Int {
+            try pool.read { d in
+                try Int.fetchOne(d, sql: "SELECT COUNT(*) FROM project_comments WHERE author = 'agent' AND read_at = ''") ?? -1
+            }
+        }
+        func reply(_ body: String) async throws {
+            try await pool.write { d in
+                _ = try TestDatabase.insertProjectComment(d, projectID: p, body: body, documentID: doc, parentID: root)
+            }
+        }
+
+        try await reply("Hidden tab")
+        await vm.refreshOnPoll()
+        XCTAssertEqual(try unread(), 1, "not on screen: the reply stays unread")
+
+        onScreen = true
+        vm.pane = .board
+        await vm.refreshOnPoll()
+        XCTAssertEqual(try unread(), 1, "another pane: the document is not on screen")
+
+        vm.pane = .documents
+        await vm.refreshOnPoll()
+        XCTAssertEqual(try unread(), 0, "on screen: marked read like the open path")
+        XCTAssertEqual(vm.summaries.first?.unreadAgentComments, 0, "the list reloads after marking")
+        vm.closeDocument()
+    }
+
     func testSwitchingProjectClosesTheOpenDocument() async throws {
         let (p1, p2) = try await pool.write { d -> (Int64, Int64) in
             let p1 = try TestDatabase.insertProject(d, name: "one", folder: "/tmp/one")
