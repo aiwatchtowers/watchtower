@@ -154,4 +154,24 @@ final class AgentActionQueriesTests: XCTestCase {
         }
         XCTAssertEqual(try dbq.read { try AgentActionQueries.awaitingOwnerCount($0) }, 2)
     }
+
+    /// STRIP-01: a project's direct-apply MCP audit rows (applied, or failed)
+    /// are not owner decisions — neither the strip nor the badge shows them.
+    func testStripAndBadgeExcludeProjectRows() throws {
+        let dbq = try TestDatabase.create()
+        try dbq.write { db in
+            _ = try TestDatabase.insertAgentAction(
+                db, contextType: "project", contextID: "7", turnID: "project-applied", status: "applied",
+                createdAt: "2026-09-04T13:00:00Z", decidedAt: "2026-09-04T13:00:05Z", appliedAt: "2026-09-04T13:00:05Z"
+            )
+            _ = try TestDatabase.insertAgentAction(
+                db, contextType: "project", contextID: "7", turnID: "project-failed", status: "failed",
+                createdAt: "2026-09-04T13:01:00Z"
+            )
+            _ = try TestDatabase.insertAgentAction(db, turnID: "normal-pending", status: "pending")
+        }
+        let rows = try dbq.read { try AgentActionQueries.fetchStrip($0, terminalSince: "2026-09-04T00:00:00Z") }
+        XCTAssertEqual(rows.map(\.turnID), ["normal-pending"])
+        XCTAssertEqual(try dbq.read { try AgentActionQueries.awaitingOwnerCount($0) }, 1)
+    }
 }
