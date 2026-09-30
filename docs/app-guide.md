@@ -19,6 +19,8 @@ A briefing contains five sections:
 
 **Coaching Corner** — Communication and process recommendations based on your interactions. Categories include communication, delegation, conflict, and process tips.
 
+**Projects** — when a project had activity since the previous briefing (a blocked target, unread agent comments, documents whose comments wait for the agent), the briefing can bring it into Needs Attention, labeled *Project*. Project activity alone is enough for a briefing to be generated.
+
 The list panel shows briefings by date with unread indicator (blue dot), attention count, and task count. Selecting a briefing marks it as read. Briefings are generated once per day after the configured hour (default: 8:00 AM, configurable in Settings via `briefing.hour`).
 
 With no briefings yet, the empty list offers **Generate Briefing**. If the run fails, the reason appears in red under the button instead of the click silently doing nothing. A run keeps going if you switch to another tab: coming back shows it still in progress (the button stays disabled, so a second click cannot start a parallel run) or shows its result or error.
@@ -176,7 +178,7 @@ Optional integration that syncs your Gmail Inbox so emails feed the same pipelin
 - `watchtower gmail status` — show connection status
 
 ### Tasks
-Personal action items — what you need to do, follow up on, or react to. Unlike Tracks (which are informational narratives about ongoing initiatives), Tasks are concrete, personal to-do items with ownership and deadlines.
+Personal action items — what you need to do, follow up on, or react to. Unlike Tracks (which are informational narratives about ongoing initiatives), Tasks are concrete, personal to-do items with ownership and deadlines. Targets of a Projects board are not listed here; they live on their project's board.
 
 **Creating targets** — "New target" opens a **composer**, not a form: one multiline text field with a permanent hint underneath ("Enter — brief the assistant · ⌘Enter — just create"). Write the task in your own words — as much or as little context as you have — and:
 
@@ -245,6 +247,23 @@ An **ask bar** sits at the bottom of the Details tab, below the scrolling conten
 
 **Daemon** — The background daemon automatically unsnoozes tasks whose snooze date has passed, moving them back to To Do.
 
+### Projects
+A project is a folder on your Mac — for example a code repository — that a coding agent (Claude Code) works in, with a **board** that outlives any one agent session. Watchtower keeps the overview: what is being worked on, what is blocked, which plans and specs are waiting for your review, and the questions the agent left for you. (This is separate from the AI Chat's own "Projects", which group chats.)
+
+**New project…** — choose or create a folder. Watchtower creates the project, sets the folder up for Claude Code (a `watchtower-project` skill, a session-start hook and a local MCP connection — all local to your Mac and excluded from git), and opens the project with its terminal running Claude Code, which reads the folder's README and docs, fills in the project description and sources, and proposes a first board. Nothing is created until you agree in the terminal. A folder inside Documents, Desktop, Downloads or a cloud-synced folder shows a warning first: macOS may ask you to allow Watchtower access to it.
+
+**Terminal** — Claude Code running in the project folder, the same as in your own terminal app: the same login, permissions and project memory. It keeps running while you use other tabs; **Restart** appears when it exits, and quitting Watchtower closes it. You can equally work from your own terminal — both see the same board.
+
+**Board** — the project's targets as a tree (a feature and its sub-targets; a written plan becomes one sub-target per task). Each row shows its status, progress and badges: a blue bubble for agent comments you have not read, an orange count of open comment threads, and a document icon for attached plans or specs. **Show done** reveals finished work (a finished feature with an open task under it always stays visible). Select a target to rename it, change its status, and read or answer its comment threads — agents use comments to ask you questions without stopping their work, and to post a short summary when a task is done. Opening a target marks its agent comments read.
+
+**Documents** — plans, specs and notes the agent attached. Open one to read it rendered; select text and **Comment** to leave a note on exactly that passage. The agent reads your open comments before revising the file, replies and resolves each one. When the file changes, your comments follow their text; a comment whose passage was rewritten away moves to **Outdated** instead of landing on the wrong paragraph. You can reply, resolve and reopen; Watchtower never edits the document itself. A document with open comments of yours gets **Send N comments to Claude**: while the terminal's session is running, it types one line naming the document and presses Enter, so the agent reads all of them through its own tools — nothing is written anywhere else, and the comments themselves never travel in that line. With no running session the bar instead tells you the next session picks them up from its brief, with a shortcut to open the terminal.
+
+**Notifications** — Watchtower tells you when an agent asks something on a target, when a document is ready for review, when all your comments on a document are answered, and when an agent finishes a target. Several at once in one project arrive as one summary. Clicking opens the Board or Documents pane. Settings → Notifications has the switch (on by default).
+
+**Delete…** — the confirmation lists what goes: the board's targets, the attached documents' entries and the comments, plus what Watchtower installed in the folder (the skill, the hook, the MCP connection and its git-exclude lines). The document files and everything else in the folder stay. The project's terminal is closed first. If the delete fails, the project stays and the reason is shown.
+
+Project targets appear only on their board — never in Tasks, the Day Plan, next steps or Catch Up. The daily briefing has its own mention of project activity.
+
 ### AI Chat
 The main assistant: ask about your work, keep long conversations organized, attach files, get documents back, and have it do things — every change to the outside world waits for your Approve.
 
@@ -261,6 +280,10 @@ The main assistant: ask about your work, keep long conversations organized, atta
 **Attachments** — paperclip, drag & drop, or paste an image. Images (PNG, JPEG, GIF, WebP) up to 5 MB, PDFs up to 32 MB, and text-like files (txt, md, csv, json, yaml, logs, source code) up to 256 KB; anything else is refused in the composer with the reason. Files are kept privately in the workspace folder and deleted with their chat.
 
 **Artifacts** — anything you'll copy, send or keep (a document, a table, an email or Slack draft, an event, code) opens in the artifact panel on the right instead of cluttering the chat. Each change is a new version you can switch between; you can edit it (your edit becomes a version too), copy it, or export it (.md / .csv / .txt). Drafts open ready in their app but are **never sent** by Watchtower: an email opens in Gmail compose, a Slack draft is copied and its channel or thread is opened, an event opens Google Calendar's new-event page.
+
+**Commenting on an artifact** — select a passage in the artifact panel and leave a comment; it stays a private draft until you click **Send N comments**, which sends every draft comment as one message to the assistant. The assistant answers with a new version of the same artifact, and each comment follows its passage there; a passage the new version drops instead marks the comment **Outdated** rather than attaching it to the wrong place. Nothing is sent one comment at a time.
+
+**Quote in reply** — on a finished answer, quote a passage to open it in a sheet, select the part you mean, and optionally add a note; it joins a batch shown above the composer. Quote as many passages as you like — nothing is sent until you send your own message, which carries every quote plus whatever you typed as one turn.
 
 **Projects** — group chats that share context. A project has instructions (given to the assistant in every chat of the project), files (text files are read in full; images and PDFs are shown to Claude at the start of each session), and pinned sources — Jira projects, Slack channels, targets, tracks and people — that tell it where to look first. Start a chat from the project page with "New chat in this project", or move an existing chat into a project. Changes to a project reach an open chat when it starts a fresh session (a new chat always has them). Deleting a project deletes its files and keeps its chats.
 
