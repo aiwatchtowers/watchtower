@@ -2037,7 +2037,7 @@ END;
 -- or a thread root (parent_id; replies are flat, parent_id = the root).
 -- author 'agent' comments are unread for the owner while read_at = ''.
 CREATE TABLE IF NOT EXISTS projects (
-    id          INTEGER PRIMARY KEY,
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
     name        TEXT NOT NULL,
     folder_path TEXT NOT NULL UNIQUE,
     description TEXT NOT NULL DEFAULT '',
@@ -2055,7 +2055,7 @@ CREATE TABLE IF NOT EXISTS project_sources (
 );
 
 CREATE TABLE IF NOT EXISTS project_documents (
-    id         INTEGER PRIMARY KEY,
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     target_id  INTEGER REFERENCES targets(id) ON DELETE SET NULL,
     rel_path   TEXT NOT NULL,
@@ -2068,7 +2068,7 @@ CREATE TABLE IF NOT EXISTS project_documents (
 CREATE INDEX IF NOT EXISTS idx_project_documents_target ON project_documents(target_id);
 
 CREATE TABLE IF NOT EXISTS project_comments (
-    id             INTEGER PRIMARY KEY,
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id     INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     target_id      INTEGER REFERENCES targets(id) ON DELETE CASCADE,
     document_id    INTEGER REFERENCES project_documents(id) ON DELETE CASCADE,

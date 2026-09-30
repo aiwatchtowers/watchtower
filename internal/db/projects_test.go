@@ -231,3 +231,34 @@ func TestProj02_DeleteProjectLeavesNoRows(t *testing.T) {
 	assert.NoError(t, err, "another project's board is untouched")
 	assert.ErrorIs(t, d.DeleteProject(pid), ErrProjectNotFound)
 }
+
+// I3 (docs/superpowers/sdd/2026-09-29-projects-poc/final-review.md): a plain
+// rowid PK hands out max(rowid)+1, so deleting the newest project and
+// creating another would reuse its id — silently rebinding the old folder's
+// hook, MCP registration ("watchtower mcp --project N") and any
+// "watchtower document <id>"/comment_id the agent still holds to the new
+// project's board. AUTOINCREMENT on projects/project_documents/
+// project_comments (migration 00081) must make that impossible.
+func TestProj02_DeletedProjectDocumentAndCommentIDsAreNeverReused(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestProject(t, d)
+	docID, _, err := d.UpsertProjectDocument(ProjectDocument{ProjectID: pid, RelPath: "docs/spec.md", Kind: "spec"})
+	require.NoError(t, err)
+	target := insertProjectTargetRow(t, d, pid, "feature")
+	commentID, err := d.AddProjectComment(ProjectComment{ProjectID: pid, TargetID: nullID(target), Author: "owner", Body: "why?"})
+	require.NoError(t, err)
+
+	require.NoError(t, d.DeleteProject(pid))
+
+	newPID := newTestProject(t, d)
+	assert.Greater(t, newPID, pid, "a new project must never reuse a deleted project's id")
+
+	newDocID, _, err := d.UpsertProjectDocument(ProjectDocument{ProjectID: newPID, RelPath: "docs/spec.md", Kind: "spec"})
+	require.NoError(t, err)
+	assert.Greater(t, newDocID, docID, "a new document must never reuse a deleted one's id")
+
+	newTarget := insertProjectTargetRow(t, d, newPID, "feature")
+	newCommentID, err := d.AddProjectComment(ProjectComment{ProjectID: newPID, TargetID: nullID(newTarget), Author: "owner", Body: "why?"})
+	require.NoError(t, err)
+	assert.Greater(t, newCommentID, commentID, "a new comment must never reuse a deleted one's id")
+}

@@ -1626,7 +1626,7 @@ created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 
 table	project_comments
 CREATE TABLE project_comments (
-id INTEGER PRIMARY KEY,
+id INTEGER PRIMARY KEY AUTOINCREMENT,
 project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
 target_id INTEGER REFERENCES targets(id) ON DELETE CASCADE,
 document_id INTEGER REFERENCES project_documents(id) ON DELETE CASCADE,
@@ -1646,7 +1646,7 @@ CHECK (target_id IS NOT NULL OR document_id IS NOT NULL OR parent_id IS NOT NULL
 
 table	project_documents
 CREATE TABLE project_documents (
-id INTEGER PRIMARY KEY,
+id INTEGER PRIMARY KEY AUTOINCREMENT,
 project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
 target_id INTEGER REFERENCES targets(id) ON DELETE SET NULL,
 rel_path TEXT NOT NULL,
@@ -1669,7 +1669,7 @@ UNIQUE(project_id, kind, ref)
 
 table	projects
 CREATE TABLE projects (
-id INTEGER PRIMARY KEY,
+id INTEGER PRIMARY KEY AUTOINCREMENT,
 name TEXT NOT NULL,
 folder_path TEXT NOT NULL UNIQUE, -- absolute, symlinks resolved
 description TEXT NOT NULL DEFAULT '',

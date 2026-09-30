@@ -4,8 +4,13 @@
 -- the owner<->agent comments on targets and documents. targets.project_id puts
 -- a target on exactly one project board; a project target never reaches a
 -- non-board reader (PROJ-01, docs/inventory/projects.md).
+-- AUTOINCREMENT on projects/project_documents/project_comments (I3): their
+-- ids are agent-facing (the "watchtower document <id>" prompt line, the
+-- `mcp --project N` session, tool args) and outlive a single session, so a
+-- plain rowid recycled after a delete would silently rebind a stale hook,
+-- MCP registration or prompt reference to whatever new row took the old id.
 CREATE TABLE projects (
-    id          INTEGER PRIMARY KEY,
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
     name        TEXT NOT NULL,
     folder_path TEXT NOT NULL UNIQUE,          -- absolute, symlinks resolved
     description TEXT NOT NULL DEFAULT '',
@@ -23,7 +28,7 @@ CREATE TABLE project_sources (
 );
 
 CREATE TABLE project_documents (
-    id         INTEGER PRIMARY KEY,
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     target_id  INTEGER REFERENCES targets(id) ON DELETE SET NULL,
     rel_path   TEXT NOT NULL,
@@ -36,7 +41,7 @@ CREATE TABLE project_documents (
 CREATE INDEX idx_project_documents_target ON project_documents(target_id);
 
 CREATE TABLE project_comments (
-    id             INTEGER PRIMARY KEY,
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id     INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     target_id      INTEGER REFERENCES targets(id) ON DELETE CASCADE,
     document_id    INTEGER REFERENCES project_documents(id) ON DELETE CASCADE,
