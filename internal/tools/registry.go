@@ -324,7 +324,7 @@ func (r *Registry) Propose(ctx context.Context, name string, args json.RawMessag
 // the bound project is alive, the direct-apply gate, the args checks, the
 // mandatory reason, then the tool's Scope. Any failure writes nothing.
 func (r *Registry) admitProposal(ctx context.Context, t *Tool, args json.RawMessage, b Binding) (json.RawMessage, error) {
-	if err := r.projectAlive(ctx, b); err != nil {
+	if err := r.ProjectAlive(ctx, b); err != nil {
 		return nil, err
 	}
 	if err := directApplyGate(t, b); err != nil {
@@ -408,10 +408,12 @@ func bindingOf(row *db.AgentAction) Binding {
 	return b
 }
 
-// projectAlive fails a project-bound call once its project is gone — the
+// ProjectAlive fails a project-bound call once its project is gone — the
 // first check of every call, read or write, project tool or not, so a
 // session outliving its project answers "project N no longer exists".
-func (r *Registry) projectAlive(ctx context.Context, b Binding) error {
+// Exported for the MCP adapter's get_action, which reads agent_actions
+// directly rather than through a registry tool.
+func (r *Registry) ProjectAlive(ctx context.Context, b Binding) error {
 	if b.ProjectID == 0 {
 		return nil
 	}
@@ -491,7 +493,7 @@ func (r *Registry) CallRead(ctx context.Context, name string, args json.RawMessa
 	if t.Access != AccessRead {
 		return nil, ErrNotReadable
 	}
-	if err := r.projectAlive(ctx, b); err != nil {
+	if err := r.ProjectAlive(ctx, b); err != nil {
 		return nil, err
 	}
 	// A parameterless call arrives as absent, empty, or literal null (an MCP
@@ -552,7 +554,7 @@ func (r *Registry) Apply(ctx context.Context, id int64) (*db.AgentAction, error)
 	call := Call{ActionID: id, Args: json.RawMessage(row.ArgsJSON), Binding: bindingOf(row)}
 	// Re-scope against the stored binding: a retried or late-applied project
 	// row must still belong to a live project and touch only its rows.
-	if err := r.projectAlive(ctx, call.Binding); err != nil {
+	if err := r.ProjectAlive(ctx, call.Binding); err != nil {
 		return r.recordFailure(id, from, err)
 	}
 	if err := t.scope(ctx, r.db, call.Args, call.Binding); err != nil {

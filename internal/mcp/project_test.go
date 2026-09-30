@@ -56,6 +56,7 @@ func TestProjectMode_DeletedProjectEveryToolAnswersNoLongerExists(t *testing.T) 
 		{Name: "list_digests", Arguments: map[string]any{}},
 		{Name: "create_targets", Arguments: map[string]any{"items": []any{map[string]any{"text": "x"}}, "reason": "r"}},
 		{Name: "update_project", Arguments: map[string]any{"description": "x", "reason": "r"}},
+		{Name: "get_action", Arguments: map[string]any{"id": 1}},
 	} {
 		res, err := cs.CallTool(context.Background(), &c)
 		if err != nil {
