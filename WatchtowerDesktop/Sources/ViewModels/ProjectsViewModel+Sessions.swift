@@ -12,6 +12,9 @@ extension ProjectsViewModel {
     /// A resume that fails exits almost at once; a later non-zero exit is
     /// the owner's own session ending.
     static let resumeFailureWindow: TimeInterval = 3
+    /// How many "no owner message yet" answers in a row the title poll takes
+    /// before it stops asking about a session the owner is not in.
+    static let maxNotYetTitledPolls = 5
 
     /// The selected project's sessions, most recently active first.
     var sessions: [TerminalSession] {
@@ -243,6 +246,7 @@ extension ProjectsViewModel {
         await terminalCenter?.close(sessionID: session.id)
         forgetProcessState(session.id)
         titleAttempts[session.id] = nil
+        notYetTitledStreak[session.id] = nil
         do {
             try await dbPool.write { try TerminalSessionQueries.delete($0, id: session.id) }
         } catch {
@@ -300,7 +304,8 @@ extension ProjectsViewModel {
     /// One title attempt for `sessionID` if `TerminalSessionPolicy.needsTitle`
     /// says so. Only a failed call counts as an attempt: `written: false`
     /// (no owner message yet) cost no AI call and must not use the budget up
-    /// before the owner has typed. A session with no transcript yet cannot
+    /// before the owner has typed; `maxNotYetTitledPolls` of those in a row
+    /// pause the poll for that session until the owner switches back to it. A session with no transcript yet cannot
     /// have one, so it spawns no CLI at all. Failures are logged, never shown.
     func refreshTitle(sessionID: Int64) async {
         guard let titleService else { return }
@@ -312,10 +317,14 @@ extension ProjectsViewModel {
             return
         }
         guard let row, TerminalSessionPolicy.needsTitle(row, attempts: titleAttempts[sessionID, default: 0]),
+              notYetTitledStreak[sessionID, default: 0] < Self.maxNotYetTitledPolls,
               let uuid = row.claudeSessionID, terminalCenter?.transcriptExists(uuid) ?? true else { return }
         do {
             if try await titleService(sessionID).written {
+                notYetTitledStreak[sessionID] = nil
                 await loadSessions(projectID: row.projectID)
+            } else {
+                notYetTitledStreak[sessionID, default: 0] += 1
             }
         } catch {
             titleAttempts[sessionID, default: 0] += 1
@@ -370,6 +379,7 @@ extension ProjectsViewModel {
     /// switched away from.
     private func activate(_ row: TerminalSession, fresh: Bool, prompt: String?) async {
         let previous = terminalCenter?.focusOrder.last
+        notYetTitledStreak[row.id] = nil // the owner is back in it: ask again
         if let center = terminalCenter {
             let mode = center.start(row, fresh: fresh, prompt: prompt)
             switch mode {

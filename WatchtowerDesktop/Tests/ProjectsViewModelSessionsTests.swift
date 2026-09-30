@@ -342,7 +342,14 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
 
         for _ in 0..<7 { await vm.refreshTitles() }
 
-        XCTAssertEqual(titleCalls.count, 7)
+        XCTAssertEqual(titleCalls.count, ProjectsViewModel.maxNotYetTitledPolls,
+                       "a session with no owner message yet is left alone after a streak")
+        let all = try await rows(p)
+        let row = try XCTUnwrap(all.first)
+        await vm.open(row)
+        await vm.refreshTitles()
+        XCTAssertEqual(titleCalls.count, ProjectsViewModel.maxNotYetTitledPolls + 1,
+                       "switching back to the session asks again")
     }
 
     func testASessionWithoutATranscriptSpawnsNoTitleCall() async throws {

@@ -81,6 +81,9 @@ final class ProjectsViewModel {
     var layouts: [Int64: WorkspaceLayout] = [:]
     /// Failed AI-title attempts per session id, this run only.
     @ObservationIgnored var titleAttempts: [Int64: Int] = [:]
+    /// Consecutive "no owner message yet" title answers per session; at
+    /// `maxNotYetTitledPolls` the poll leaves it until the owner switches back.
+    @ObservationIgnored var notYetTitledStreak: [Int64: Int] = [:]
     /// When each running resume launched, until its process exits.
     @ObservationIgnored var resumeStarts: [Int64: Date] = [:]
     /// Projects an `openMostRecentSession` is running for, and targets a
