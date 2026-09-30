@@ -198,16 +198,25 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) (*db.DayPlan, error
 	}
 
 	// Increment regenerate count when this is a regeneration (with feedback or
-	// forced). Bookkeeping only: the regenerated plan is already in place, so a
-	// failure is logged rather than reported as a failed run.
+	// forced). The same write records the owner's feedback in the history the
+	// next regeneration's prompt reads, so a failure is returned rather than
+	// logged: the regenerated plan is already in place, but the owner must
+	// learn that their feedback was not kept. Only owner-triggered runs reach
+	// this (the daemon neither forces nor passes feedback).
 	if opts.Feedback != "" || (existing != nil && opts.Force) {
-		if err := p.db.IncrementRegenerateCount(planID, opts.Feedback); err != nil && p.logger != nil {
-			p.logger.Printf("dayplan: increment regenerate count for plan %d: %v", planID, err)
+		if err := p.db.IncrementRegenerateCount(planID, opts.Feedback); err != nil {
+			return nil, fmt.Errorf("day plan for %s was regenerated, but recording the regeneration failed: %w", opts.Date, err)
 		}
 	}
 
-	// DetectConflicts is implemented in T11; stub here is a no-op.
-	_ = p.DetectConflicts(ctx, opts.UserID, opts.Date)
+	// Best-effort: has_conflicts is derived from the plan's items and the
+	// calendar, and the daemon's conflict phase recomputes it every cycle
+	// (runDayPlanConflictPhase), so a failed write here only delays the flag
+	// by one cycle — it must not fail a plan that is already fully written
+	// (TestRun_ConflictWriteFailureDoesNotFailThePlan).
+	if err := p.DetectConflicts(ctx, opts.UserID, opts.Date); err != nil && p.logger != nil {
+		p.logger.Printf("dayplan: detect conflicts for %s (the daemon retries): %v", opts.Date, err)
+	}
 
 	return p.db.GetDayPlanByID(planID)
 }

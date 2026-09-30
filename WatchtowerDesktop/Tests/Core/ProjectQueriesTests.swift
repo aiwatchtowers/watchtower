@@ -147,7 +147,10 @@ final class ProjectQueriesTests: XCTestCase {
             let done = try TestDatabase.insertProjectTarget(d, projectID: p, text: "Done root", status: "done")
             let todo = try TestDatabase.insertProjectTarget(d, projectID: p, text: "Todo root")
             let active = try TestDatabase.insertProjectTarget(d, projectID: p, text: "Active root", status: "in_progress")
-            let child = try TestDatabase.insertProjectTarget(d, projectID: p, text: "Task 1", parentID: active)
+            // In progress, so the rollup (PROJ-05) keeps its parent in progress.
+            let child = try TestDatabase.insertProjectTarget(
+                d, projectID: p, text: "Task 1", status: "in_progress", parentID: active
+            )
             _ = try TestDatabase.insertTarget(d, text: "Not a project target")
             _ = try TestDatabase.insertProjectComment(d, projectID: p, targetID: child)
             _ = try TestDatabase.insertProjectComment(d, projectID: p, author: "owner", targetID: child, status: "resolved")

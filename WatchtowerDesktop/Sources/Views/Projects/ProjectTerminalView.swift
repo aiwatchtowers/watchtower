@@ -119,21 +119,21 @@ private struct TerminalSessionPane<NotStarted: View>: View {
 private struct TerminalHost: NSViewRepresentable {
     let session: any TerminalSessionProcess
 
-    func makeNSView(context: Context) -> NSView {
-        let container = NSView()
+    func makeNSView(context: Context) -> TerminalContainerView {
+        let container = TerminalContainerView()
         attach(to: container)
         return container
     }
 
-    func updateNSView(_ container: NSView, context: Context) {
+    func updateNSView(_ container: TerminalContainerView, context: Context) {
         attach(to: container)
     }
 
-    static func dismantleNSView(_ container: NSView, coordinator: ()) {
+    static func dismantleNSView(_ container: TerminalContainerView, coordinator: ()) {
         container.subviews.forEach { $0.removeFromSuperview() }
     }
 
-    private func attach(to container: NSView) {
+    private func attach(to container: TerminalContainerView) {
         let terminal = session.view
         guard TerminalHostAttachment.attach(terminal, to: container) else { return }
         DispatchQueue.main.async { terminal.window?.makeFirstResponder(terminal) }
@@ -146,6 +146,20 @@ private struct TerminalHost: NSViewRepresentable {
 /// switching back leaves the other project's terminal on top — on screen and
 /// taking the keystrokes.
 enum TerminalHostAttachment {
+    /// Terminal.app-like inner margin on every side. The terminal's own frame
+    /// is inset (not padded inside it), so SwiftTerm computes cols/rows from
+    /// the space it really has and the last column is never clipped. What is
+    /// left over past the last whole cell (right, bottom) SwiftTerm paints in
+    /// the same background, so those edges read up to one cell wider.
+    static let margin: CGFloat = 10
+
+    /// `insetBy` would turn a container smaller than two margins into a null
+    /// rect; this clamps to an empty frame instead.
+    static func contentFrame(in bounds: NSRect) -> NSRect {
+        NSRect(x: bounds.minX + margin, y: bounds.minY + margin,
+               width: max(0, bounds.width - 2 * margin), height: max(0, bounds.height - 2 * margin))
+    }
+
     /// Makes `terminal` the container's only subview. Returns whether
     /// anything changed (the caller then moves keyboard focus to it).
     @MainActor
@@ -156,10 +170,51 @@ enum TerminalHostAttachment {
         others.forEach { $0.removeFromSuperview() }
         if terminal.superview !== container {
             terminal.removeFromSuperview()
-            terminal.frame = container.bounds
-            terminal.autoresizingMask = [.width, .height]
+            terminal.frame = contentFrame(in: container.bounds)
             container.addSubview(terminal)
         }
         return true
+    }
+}
+
+/// The host's container: keeps its terminal inset by `TerminalHostAttachment.margin`
+/// on every resize, and fills the margin with the terminal layer's own
+/// background — observed, so an OSC 11 colour change or reverse video
+/// (both repaint SwiftTerm's layer) recolours the margin with it, and the
+/// padding never reads as a differently coloured frame. (That is SwiftTerm's
+/// default CPU renderer; its opt-in Metal renderer clears the layer instead.)
+final class TerminalContainerView: NSView {
+    private weak var observedTerminal: NSView?
+    private var backgroundObservation: NSKeyValueObservation?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        wantsLayer = true
+    }
+
+    override func resizeSubviews(withOldSize oldSize: NSSize) {
+        subviews.forEach { $0.frame = TerminalHostAttachment.contentFrame(in: bounds) }
+    }
+
+    override func didAddSubview(_ subview: NSView) {
+        super.didAddSubview(subview)
+        observedTerminal = subview
+        backgroundObservation = subview.layer?.observe(\.backgroundColor, options: [.initial, .new]) { [weak self] terminalLayer, _ in
+            let color = terminalLayer.backgroundColor
+            MainActor.assumeIsolated { self?.layer?.backgroundColor = color }
+        }
+    }
+
+    override func willRemoveSubview(_ subview: NSView) {
+        super.willRemoveSubview(subview)
+        guard subview === observedTerminal else { return }
+        backgroundObservation = nil
+        observedTerminal = nil
+        layer?.backgroundColor = nil
     }
 }

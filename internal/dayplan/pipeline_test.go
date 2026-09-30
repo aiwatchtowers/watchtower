@@ -184,6 +184,55 @@ func TestRun_RegenerateWithFeedback_PreservesManual(t *testing.T) {
 	require.Contains(t, updated.FeedbackHistory, feedback, "feedback must appear in history")
 }
 
+// TestRun_RegenerateFeedbackWriteFailureIsReported pins that losing the
+// owner's feedback is not a log line: the regeneration bookkeeping write also
+// records the feedback the next regeneration reads, so its failure reaches
+// the caller instead of a success whose feedback silently vanished.
+func TestRun_RegenerateFeedbackWriteFailureIsReported(t *testing.T) {
+	d := gatherTestDB(t)
+	p := newTestPipeline(d, &mockGenerator{response: validResponse()})
+	today := time.Now().Format("2006-01-02")
+
+	planID, err := d.CreateDayPlan(&db.DayPlan{
+		UserID: "U1", PlanDate: today, Status: "active",
+		GeneratedAt: time.Now(), FeedbackHistory: "[]",
+	})
+	require.NoError(t, err)
+	_, err = d.Exec(`CREATE TRIGGER fail_regen BEFORE UPDATE OF regenerate_count ON day_plans
+		WHEN NEW.regenerate_count > OLD.regenerate_count
+		BEGIN SELECT RAISE(ABORT, 'injected regenerate write failure'); END`)
+	require.NoError(t, err)
+
+	plan, err := p.Run(context.Background(), RunOptions{UserID: "U1", Date: today, Feedback: "move the gym"})
+	require.Error(t, err, "a lost feedback write must reach the caller")
+	require.Contains(t, err.Error(), "injected regenerate write failure")
+	require.Nil(t, plan)
+
+	stored, err := d.GetDayPlanByID(planID)
+	require.NoError(t, err)
+	require.NotContains(t, stored.FeedbackHistory, "move the gym", "the feedback was indeed not recorded")
+}
+
+// TestRun_ConflictWriteFailureDoesNotFailThePlan pins the one deliberate
+// best-effort write in Run: has_conflicts is derived and recomputed by the
+// daemon every cycle, so a failed conflict write leaves the fully written
+// plan standing.
+func TestRun_ConflictWriteFailureDoesNotFailThePlan(t *testing.T) {
+	d := gatherTestDB(t)
+	p := newTestPipeline(d, &mockGenerator{response: validResponse()})
+	today := time.Now().Format("2006-01-02")
+	_, err := d.Exec(`CREATE TRIGGER fail_conflicts BEFORE UPDATE OF has_conflicts ON day_plans
+		BEGIN SELECT RAISE(ABORT, 'injected conflict write failure'); END`)
+	require.NoError(t, err)
+
+	plan, err := p.Run(context.Background(), RunOptions{UserID: "U1", Date: today})
+	require.NoError(t, err, "a failed conflict flag must not fail the plan")
+	require.NotNil(t, plan)
+	items, err := d.GetDayPlanItems(plan.ID)
+	require.NoError(t, err)
+	require.NotEmpty(t, items, "the plan's items are in place")
+}
+
 // TestRun_GracefulInvalidAIResponse checks that when mockGenerator returns
 // "not json at all", Run returns an error and NO plan row is created.
 func TestRun_GracefulInvalidAIResponse(t *testing.T) {

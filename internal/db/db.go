@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/pressly/goose/v3"
@@ -29,8 +31,26 @@ var openMemoryHook func() (*DB, error)
 // busy_timeout up front. A DEFERRED read-then-write transaction instead fails
 // at once with SQLITE_BUSY_SNAPSHOT when another process commits in between —
 // busy_timeout never covers that upgrade. The driver cuts the query off a
-// plain path before opening the file.
+// plain path before opening the file (see sqliteDSN).
 const immediateTxDSN = "?_txlock=immediate"
+
+// busyTimeoutMS is how long a connection waits for another process's write
+// lock before failing with SQLITE_BUSY — Open's default (SetBusyTimeout
+// raises it for owner-click paths) and RunSchemaUpgrade's.
+const busyTimeoutMS = 5000
+
+// sqliteDSN appends the driver query params (params, starting with "?") to
+// dbPath. The driver splits a DSN at its FIRST '?', so a plain path holding
+// one would open the file named by the part before it and drop every param
+// (the tx lock mode, pragmas) into a bogus query. Such a path goes in as a
+// file: URI with the '?' percent-encoded, which SQLite decodes back to the
+// real file name; every other path stays the plain path it always was.
+func sqliteDSN(dbPath, params string) string {
+	if !strings.Contains(dbPath, "?") {
+		return dbPath + params
+	}
+	return "file:" + (&url.URL{Path: dbPath}).EscapedPath() + params
+}
 
 // Open creates directories if needed, opens the SQLite database, sets pragmas,
 // and runs migrations. Pass ":memory:" for an in-memory database.
@@ -50,7 +70,7 @@ func Open(dbPath string) (*DB, error) {
 		}
 	}
 
-	sqlDB, err := sql.Open("sqlite", dbPath+immediateTxDSN)
+	sqlDB, err := sql.Open("sqlite", sqliteDSN(dbPath, immediateTxDSN))
 	if err != nil {
 		return nil, fmt.Errorf("opening database: %w", err)
 	}
@@ -103,7 +123,7 @@ func tightenDBFilePerms(dbPath string) {
 func (db *DB) setPragmas() error {
 	pragmas := []string{
 		"PRAGMA journal_mode=WAL",
-		"PRAGMA busy_timeout=5000",
+		fmt.Sprintf("PRAGMA busy_timeout=%d", busyTimeoutMS),
 		"PRAGMA foreign_keys=ON",
 		"PRAGMA synchronous=NORMAL",
 	}

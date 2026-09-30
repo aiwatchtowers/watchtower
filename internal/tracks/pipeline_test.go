@@ -734,12 +734,40 @@ func TestStoreTrackItems(t *testing.T) {
 	}
 
 	usage := &digest.Usage{InputTokens: 200, OutputTokens: 100, CostUSD: 0}
-	stored := pipe.storeTrackItems(items, "U1", "C1", "general", usage, 1, 1000, 2000)
+	stored, storeErr := pipe.storeTrackItems(items, "U1", "C1", "general", usage, 1, 1000, 2000)
+	require.NoError(t, storeErr)
 	assert.Equal(t, 2, stored)
 
 	tracks, err := database.GetAllActiveTracks()
 	require.NoError(t, err)
 	assert.Len(t, tracks, 2)
+}
+
+// A failed write is returned, never counted as stored, and does not stop the
+// items after it.
+func TestStoreTrackItems_WriteFailureIsReturned(t *testing.T) {
+	database := testDB(t)
+	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test"}))
+	_, acctErr := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U1"})
+	require.NoError(t, acctErr)
+	_, err := database.Exec(`CREATE TRIGGER fail_one_track BEFORE INSERT ON tracks
+		WHEN NEW.text = 'Lost track'
+		BEGIN SELECT RAISE(ABORT, 'injected track write failure'); END`)
+	require.NoError(t, err)
+	pipe := New(database, testConfig(), nil, log.Default())
+
+	stored, storeErr := pipe.storeTrackItems([]aiItem{
+		{Text: "Lost track", Context: "first", Priority: "high", Category: "task", Ownership: "mine"},
+		{Text: "Kept track", Context: "second", Priority: "high", Category: "bug_fix", Ownership: "mine"},
+	}, "U1", "C1", "general", nil, 1, 1000, 2000)
+	require.Error(t, storeErr)
+	assert.Contains(t, storeErr.Error(), "injected track write failure")
+	assert.Equal(t, 1, stored, "only the landed track counts")
+
+	tracks, err := database.GetAllActiveTracks()
+	require.NoError(t, err)
+	require.Len(t, tracks, 1)
+	assert.Equal(t, "Kept track", tracks[0].Text, "the item after the failure is still stored")
 }
 
 func TestPriorityOrder(t *testing.T) {
@@ -1081,7 +1109,8 @@ func TestTextSimilarityDedupInStoreTrackItems(t *testing.T) {
 		},
 	}
 
-	stored := pipe.storeTrackItems(items, "U1", "C1", "incidents", nil, 1, from, to)
+	stored, storeErr := pipe.storeTrackItems(items, "U1", "C1", "incidents", nil, 1, from, to)
+	require.NoError(t, storeErr)
 	assert.Equal(t, 1, stored)
 
 	// Should still be 1 track total (merged), not 2.
@@ -1248,11 +1277,12 @@ func TestAutoExtractionFoldsIntoCustomTrack(t *testing.T) {
 	allActive, _ := database.GetAllActiveTracks()
 	pipe.allActiveTracksRef = allActive
 
-	stored := pipe.storeTrackItems([]aiItem{{
+	stored, storeErr := pipe.storeTrackItems([]aiItem{{
 		Text: "Decide HashBank refund owner", Context: "who owns the hashbank refund",
 		Priority: "high", Ownership: "mine",
 		SourceRefs: json.RawMessage(`[{"ts":"1","author":"a","text":"x"}]`),
 	}}, "U1", "C1", "general", nil, 1, 0, 0)
+	require.NoError(t, storeErr)
 
 	// The auto item folded into the custom track → no new auto track created.
 	assert.Equal(t, 1, stored)

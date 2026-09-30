@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -1100,7 +1101,7 @@ func TestSyncInboxReactionsUsesOneOwnerListing(t *testing.T) {
 	orch.SetLogger(log.New(os.Stderr, "[test] ", 0))
 	require.NoError(t, orch.ensureWorkspace(context.Background()))
 
-	orch.syncInboxReactions(context.Background())
+	require.NoError(t, orch.syncInboxReactions(context.Background()))
 
 	assert.Equal(t, []string{"UOWNER"}, listUsers, "exactly one reactions.list call, under the owner's own id")
 
@@ -1117,6 +1118,56 @@ func TestSyncInboxReactionsUsesOneOwnerListing(t *testing.T) {
 	summaries, err = database.GetReactionsForMessages(watchtowerslack.Namespace(accountID, "C009"), []string{"1700000009.000000"})
 	require.NoError(t, err)
 	assert.Empty(t, summaries, "a non-pending message in the listing is not written — this phase serves the inbox only")
+}
+
+// TestSyncInboxReactionsWriteFailureFailsTheRun pins that a failed reaction
+// write is not a log line: auto-resolve reads exactly these rows, so a run
+// that lost them must not report a clean sync. The sync tail still finishes
+// (the cycle's messages did land) and returns the failure after it.
+func TestSyncInboxReactionsWriteFailureFailsTheRun(t *testing.T) {
+	database, err := db.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { database.Close() })
+
+	accountID, err := database.CreateSlackAccount(db.SlackAccount{})
+	require.NoError(t, err)
+	owner := watchtowerslack.Namespace(accountID, "UOWNER")
+	require.NoError(t, database.UpdateSlackAccountConnection(accountID, "T1", "one", "one", owner))
+	ch := watchtowerslack.Namespace(accountID, "C001")
+	_, err = database.CreateInboxItem(db.InboxItem{
+		ChannelID: ch, MessageTS: "1700000001.000000",
+		SenderUserID: watchtowerslack.Namespace(accountID, "U001"), TriggerType: "mention",
+	})
+	require.NoError(t, err)
+	_, err = database.Exec(`CREATE TRIGGER fail_reactions BEFORE INSERT ON reactions
+		BEGIN SELECT RAISE(ABORT, 'injected reaction write failure'); END`)
+	require.NoError(t, err)
+
+	mux := baseMux()
+	mux.HandleFunc("/reactions.list", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"ok": true,
+			"items": []map[string]any{reactionsListItem("C001", "1700000001.000000",
+				map[string]any{"name": "eyes", "count": 1, "users": []string{"UOWNER"}})},
+			"paging": map[string]any{"count": 100, "total": 1, "page": 1, "pages": 1},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	api := goslack.New("xoxp-test-token-1", goslack.OptionAPIURL(srv.URL+"/"))
+	orch := NewOrchestrator(database, watchtowerslack.NewClientWithAPIUnlimited(api), &config.Config{}, accountID)
+	orch.SetLogger(log.New(io.Discard, "", 0))
+	require.NoError(t, orch.ensureWorkspace(context.Background()))
+
+	err = orch.finishWithInboxReactions(context.Background())
+	require.Error(t, err, "a lost reaction write must fail the run")
+	assert.Contains(t, err.Error(), "injected reaction write failure")
+	assert.Equal(t, PhaseDone, orch.progress.Phase(), "finishSync still runs after a reaction failure")
+
+	replied, err := database.CheckUserReplied(owner, ch, "1700000001.000000", "")
+	require.NoError(t, err)
+	assert.False(t, replied, "nothing was written")
 }
 
 // TestSyncInboxReactionsScopedToOwnAccount reproduces the exact collision
@@ -1174,7 +1225,7 @@ func TestSyncInboxReactionsScopedToOwnAccount(t *testing.T) {
 	orch1.SetLogger(log.New(os.Stderr, "[test-1] ", 0))
 	require.NoError(t, orch1.ensureWorkspace(context.Background()))
 
-	orch1.syncInboxReactions(context.Background())
+	require.NoError(t, orch1.syncInboxReactions(context.Background()))
 
 	got, err := database.GetReactionsForMessages(watchtowerslack.Namespace(account1ID, "C001"), []string{"1700000001.000000", "1700000002.000000"})
 	require.NoError(t, err)
@@ -1388,7 +1439,7 @@ func TestSyncInboxReactionsDegenerateInputs(t *testing.T) {
 			orch.SetLogger(log.New(os.Stderr, "[test] ", 0))
 			require.NoError(t, orch.ensureWorkspace(context.Background()))
 
-			orch.syncInboxReactions(context.Background())
+			require.NoError(t, orch.syncInboxReactions(context.Background()))
 
 			assert.Equal(t, tc.wantCalls, listCalls.Load())
 			got, err := database.GetReactionsForMessages(ch, []string{"1700000001.000000"})

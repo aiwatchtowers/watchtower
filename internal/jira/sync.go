@@ -114,46 +114,9 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 			continue
 		}
 
-		syncState, _ := s.db.GetJiraSyncState(s.accountID, projectKey)
-		lastSyncedAt := ""
-		if syncState != nil {
-			lastSyncedAt = syncState.LastSyncedAt
-		}
-		jql := buildIncrementalJQL(projectKey, lastSyncedAt, time.Now().UTC())
-
-		n, changedKeys, err := s.syncWithJQL(ctx, jql, board.ID)
-		if err != nil {
-			if errors.Is(err, ErrAuthRevoked) {
-				// The account's grant is gone — every remaining project would
-				// fail the same way. Abort so the caller records it on the
-				// account row rather than swallowing it per project (the
-				// gmail/calendar precedent).
-				s.logger.Printf("auth revoked, aborting sync: %v", err)
-				return total, err
-			}
-			// Sync keeps going across projects and returns nil, so the daemon
-			// log is the ONLY place this failure would otherwise land. Record
-			// it on the project's own row, which `jira status` renders and the
-			// next successful pass clears.
-			s.recordProjectError("sync", projectKey, err)
-			continue
-		}
-
+		n, err := s.syncProject(ctx, board.ID, projectKey)
 		total += n
-		now := time.Now().UTC().Format(time.RFC3339)
-		issuesSynced := n
-		if syncState != nil {
-			issuesSynced += syncState.IssuesSynced
-		}
-		_ = s.db.UpdateJiraSyncState(s.accountID, projectKey, now, issuesSynced)
-		_ = s.db.UpdateJiraBoardIssueCount(s.accountID, board.ID)
-
-		if err := s.syncComments(ctx, changedKeys); err != nil {
-			// syncComments only ever returns a non-nil error for a revoked
-			// grant (everything else is logged internally and swallowed) —
-			// every remaining project would fail the same way, so it travels
-			// up like the issue/sprint/release paths above.
-			s.logger.Printf("auth revoked during comment sync, aborting sync: %v", err)
+		if err != nil {
 			return total, err
 		}
 	}
@@ -357,6 +320,76 @@ func (s *Syncer) recordProjectError(what, projectKey string, err error) {
 	}
 }
 
+// syncProject runs one project's incremental pass: issues, then the changed
+// issues' comments, then the watermark. It returns the number of issues
+// written; its error is non-nil only for a revoked grant (the caller aborts
+// the account) — any other failure is recorded on the project's own row and
+// leaves its watermark where it was.
+func (s *Syncer) syncProject(ctx context.Context, boardID int, projectKey string) (int, error) {
+	syncState, err := s.db.GetJiraSyncState(s.accountID, projectKey)
+	if err != nil {
+		// An unreadable watermark is not "never synced": treating it as one
+		// would silently re-scan the whole project and reset its running
+		// issue count. Skip the project this pass instead.
+		s.recordProjectError("sync state", projectKey, err)
+		return 0, nil
+	}
+	lastSyncedAt := ""
+	if syncState != nil {
+		lastSyncedAt = syncState.LastSyncedAt
+	}
+	jql := buildIncrementalJQL(projectKey, lastSyncedAt, time.Now().UTC())
+
+	n, changedKeys, err := s.syncWithJQL(ctx, jql, boardID)
+	if err != nil {
+		if errors.Is(err, ErrAuthRevoked) {
+			// The account's grant is gone — every remaining project would
+			// fail the same way. Abort so the caller records it on the
+			// account row rather than swallowing it per project (the
+			// gmail/calendar precedent).
+			s.logger.Printf("auth revoked, aborting sync: %v", err)
+			return 0, err
+		}
+		// Sync keeps going across projects and returns nil, so the daemon
+		// log is the ONLY place this failure would otherwise land. Record
+		// it on the project's own row, which `jira status` renders and the
+		// next successful pass clears.
+		s.recordProjectError("sync", projectKey, err)
+		return 0, nil
+	}
+
+	// Comments run BEFORE the watermark is stamped: they are fetched only for
+	// the issues this pass changed, so a watermark stamped past a failed
+	// comment write would never ask for those issues (and their comments)
+	// again until someone edits them.
+	if err := s.syncComments(ctx, changedKeys); err != nil {
+		if errors.Is(err, ErrAuthRevoked) {
+			s.logger.Printf("auth revoked during comment sync, aborting sync: %v", err)
+			return n, err
+		}
+		// A lost comment write is a project failure, like a lost issue
+		// batch: keep the watermark so the next pass re-fetches them.
+		s.recordProjectError("comment sync", projectKey, err)
+		return n, nil
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	issuesSynced := n
+	if syncState != nil {
+		issuesSynced += syncState.IssuesSynced
+	}
+	// A failed watermark write errs the safe way (the next pass re-fetches
+	// from the old watermark), but it must not be silent: it also leaves the
+	// project's last_error in place.
+	if err := s.db.UpdateJiraSyncState(s.accountID, projectKey, now, issuesSynced); err != nil {
+		s.logger.Printf("sync: stamping watermark for project %s (next pass re-fetches): %v", projectKey, err)
+	}
+	if err := s.db.UpdateJiraBoardIssueCount(s.accountID, boardID); err != nil {
+		s.logger.Printf("sync: updating issue count for board %d: %v", boardID, err)
+	}
+	return n, nil
+}
+
 // InitialLoad performs a full backlog sync without the updated filter.
 func (s *Syncer) InitialLoad(ctx context.Context) (int, error) {
 	total := 0
@@ -492,7 +525,9 @@ func (s *Syncer) syncWithJQL(ctx context.Context, jql string, boardID int) (int,
 // and skipped, except a revoked grant: every remaining key in this project
 // would fail identically, so it is returned for the caller to abort on (the
 // issue/sprint/release precedent). All DB writes happen after each issue's
-// page loop, one UpsertJiraComments call per issue.
+// page loop, one UpsertJiraComments call per issue. A failed write does not
+// stop the loop (the other issues' comments still land), but the first one
+// is returned at the end so the caller keeps the project's watermark.
 func (s *Syncer) syncComments(ctx context.Context, changedKeys []string) error {
 	if s.commentSyncLimit <= 0 || len(changedKeys) == 0 {
 		return nil
@@ -505,6 +540,7 @@ func (s *Syncer) syncComments(ctx context.Context, changedKeys []string) error {
 		s.logger.Printf("comment sync: capped to %d of %d changed issues, dropped %d oldest", s.commentSyncLimit, len(changedKeys), dropped)
 	}
 
+	var storeErr error // the first failed comment write
 	for _, key := range keys {
 		comments, err := s.client.GetIssueComments(ctx, key)
 		if err != nil {
@@ -533,9 +569,12 @@ func (s *Syncer) syncComments(ctx context.Context, changedKeys []string) error {
 		}
 		if err := s.db.UpsertJiraComments(dbComments); err != nil {
 			s.logger.Printf("comment sync: storing comments for %s: %v", key, err)
+			if storeErr == nil {
+				storeErr = fmt.Errorf("storing comments for %s: %w", key, err)
+			}
 		}
 	}
-	return nil
+	return storeErr
 }
 
 // prepareIssueBatch converts API issues to DB records without writing to the database.
