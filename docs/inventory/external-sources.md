@@ -148,18 +148,28 @@ so an empty or failed listing cannot pass.
 owner's Approve (AGENT-03). At propose time `Normalize` reads the live page,
 refuses a `base_version` that no longer matches ("page changed since you read
 it (now vN) — re-read with get_confluence_page"), applies the edits through
-`internal/confluenceedit` and pins the exact storage to write plus the
-card's changes into the stored args. At apply time `Execute` re-reads the
-page and writes only if its version still equals `base_version` — else it
-fails with `conflict: the page was edited after the preview (now vN);
-nothing was written` (or, when the page is exactly one version on — possibly
-this edit's own earlier PUT whose response was lost — `conflict: the page is
-already at vN — possibly this edit was saved; open the page to check.
-Nothing was written now`) and issues no PUT — as one `PUT` of `base_version + 1`
-with the message `Edited via Watchtower` (a 409 from Confluence is the same
-conflict). A rich element (a ⟦k:label⟧ marker) is removed only when the
-approved change lists it under `removed`; every untouched byte of the
-storage survives. Edits are capped at 20 per call, 60 000 runes per text
+`internal/confluenceedit` and pins the exact storage to write, the card's
+changes, and `base_hash` — the sha256 of the storage the preview was computed
+from (ruling R12) — into the stored args. At apply time `Execute` re-reads
+the page and writes only if its version still equals `base_version` AND the
+sha256 of its storage still equals `base_hash` (a change that did not bump
+the version is caught too) — else it fails with `conflict: the page was
+edited after the preview (now vN); nothing was written`, or, when the page is
+exactly one version on and its storage is exactly this edit's (its own
+earlier PUT whose response was lost), `this edit is already saved (vN);
+nothing was written now` — and issues no PUT — as one `PUT` of
+`base_version + 1` with the message `Edited via Watchtower` (a 409 from
+Confluence is re-read and reported the same way). A rich element (a
+⟦k:label⟧ marker) is removed only when the approved change lists it under
+`removed`. Every byte outside what an edit changes survives: a
+`replace_text` re-serialises only its unit's content span, and a
+`replace_section` (ruling R11) re-emits the original bytes of every block of
+the section whose text the new body keeps, re-rendering from markdown only a
+block the edit changed — and refusing, with a message naming the block, a
+change to a block whose formatting markdown cannot carry (attributes on a
+paragraph/heading/list/table, column widths, noformat, code-macro parameters
+other than the language, a multi-paragraph list item, formatting-like
+characters in its text). Edits are capped at 20 per call, 60 000 runes per text
 field and 120 000 per call; a page whose editable text exceeds 60 000 runes
 is shown truncated and its hidden tail cannot be changed. Without the opt-in
 write scopes the tool refuses before any network call: `Confluence editing
@@ -171,11 +181,21 @@ mounted only in chat mode, never on the dev-mode MCP surface (DEV-01).
 - `TestEXT05_WriteRequiresMatchingVersion`
   (`internal/tools/confluence_page_edit_test.go`) — a propose against a stale
   version is refused with no proposal; an approved proposal whose page moved
-  on fails with the conflict error and zero `PutPage` calls; a 409 on the
+  on — or whose storage no longer hashes to `base_hash` at the same version
+  — fails with the conflict error and zero `PutPage` calls; a 409 on the
   PUT reports the same conflict.
 - `TestEXT05_RichElementsSurviveUntouched`
   (`internal/confluenceedit`) — a no-op edit round-trips the storage byte for
   byte, macros and mentions included.
+- `TestEXT05_SectionRewriteKeepsUntouchedBlocksByteExact`
+  (`internal/confluenceedit/apply_r11_test.go`) — a `replace_section` that
+  changes one paragraph leaves every other block of the section byte-exact:
+  a centred paragraph, intraword emphasis, literal `2**10`, a wide table
+  with column widths, header-row and column-header tables, a multi-paragraph
+  list item, a code macro with a title, a noformat block, an attributed
+  heading and list. `FuzzApply` extends it to arbitrary input: a section
+  rewritten with its own text plus one appended paragraph changes nothing
+  but that paragraph.
 - `TestEXT05_OnlyEditToolReachesPut`
   (`internal/tools/confluence_contracts_test.go`) — an AST scan of every
   non-test Go file of the module (scan floor 300 files) pins the production
@@ -192,6 +212,15 @@ source: it is registered in the KB contract tests (`kbSourceTables` lists
 every Confluence hit's `link` is the page or attachment URL.
 
 ## Changelog
+
+- 2026-09-30 (local-review round 1, rulings R11/R12): EXT-05 now pins
+  `base_hash` (sha256 of the propose-time storage) and requires it to match
+  at apply time besides the version; "already saved" is told from someone
+  else's edit by storage equality at `base_version + 1` (the "possibly
+  saved" wording is gone). A `replace_section` keeps the original bytes of
+  every block the new body leaves unchanged and refuses to re-render a
+  changed block markdown cannot carry faithfully; new guard
+  `TestEXT05_SectionRewriteKeepsUntouchedBlocksByteExact`.
 
 - 2026-09-30 (Confluence page editing, task 4): EXT-05 added —
   `get_confluence_page` (live read + comments, chat mode only) and

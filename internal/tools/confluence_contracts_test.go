@@ -181,6 +181,17 @@ func TestConfluencePageClient_GetFallsBackToBlogPostAndPutsItsCollection(t *test
 	_, err = c.GetPage(context.Background(), "404")
 	assert.ErrorIs(t, err, errConfluencePageNotFound)
 	assert.True(t, c.HasWriteScopes())
+
+	// F9: GetPageBody skips the display-only space-key GET.
+	rest.calls = nil
+	bare, err := c.GetPageBody(context.Background(), "42")
+	require.NoError(t, err)
+	assert.Empty(t, bare.SpaceKey)
+	assert.Equal(t, 3, bare.Version)
+	for _, call := range rest.calls {
+		assert.NotContains(t, call.path, "/spaces/", "no space lookup")
+	}
+	assert.Len(t, rest.calls, 2, "the page collection, then the blog post one")
 }
 
 func TestConfluencePageClient_MapsCommentsAndUsers(t *testing.T) {

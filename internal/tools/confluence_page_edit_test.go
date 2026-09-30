@@ -2,6 +2,8 @@ package tools
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strconv"
@@ -189,6 +191,55 @@ func TestEXT05_WriteRequiresMatchingVersion(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "failed", row.Status)
 	assert.Equal(t, "conflict: the page was edited after the preview (now v9); nothing was written", row.Error)
+
+	// R12: the same version with different storage (a change that did not
+	// bump the version) is a conflict too — no PUT.
+	f.putErr, f.onGet = nil, nil
+	puts := len(f.puts)
+	p := f.pages[cfPageID]
+	p.Version, p.Storage = 7, p.Storage+"<p>added without a new version</p>"
+	f.pages[cfPageID] = p
+	row, err = reg.Apply(ctx, rc.ActionID)
+	require.NoError(t, err)
+	assert.Equal(t, "failed", row.Status)
+	assert.Equal(t, "conflict: the page was edited after the preview (now v7); nothing was written", row.Error)
+	assert.Len(t, f.puts, puts, "a storage-hash mismatch at the preview's version means no PUT")
+}
+
+// R12: Normalize pins the sha256 of the storage the preview was computed
+// from; a proposal without it is not executable.
+func TestEditConfluencePage_PinsBaseHash(t *testing.T) {
+	d := openDB(t)
+	db.SeedTestJiraAccount(t, d)
+	f := newFakeConfluence()
+	tool := NewEditConfluencePage(confluenceFactory(f))
+	args := normalized(t, tool, d, editArgs(7, fridayToMonday))
+	var p editConfluencePinned
+	require.NoError(t, json.Unmarshal(args, &p))
+	sum := sha256.Sum256([]byte(cfStorage))
+	assert.Equal(t, hex.EncodeToString(sum[:]), p.BaseHash)
+
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(args, &m))
+	delete(m, "base_hash")
+	stripped, err := json.Marshal(m)
+	require.NoError(t, err)
+	_, err = tool.Execute(context.Background(), d, Call{Args: stripped})
+	assert.EqualError(t, err, "the proposal carries no prepared edit; propose it again")
+	assert.Empty(t, f.puts)
+}
+
+// F9: the edit tool never makes the display-only space-key GET.
+func TestEditConfluencePage_ReadsPageBodyOnly(t *testing.T) {
+	d := openDB(t)
+	db.SeedTestJiraAccount(t, d)
+	f := newFakeConfluence()
+	tool := NewEditConfluencePage(confluenceFactory(f))
+	args := normalized(t, tool, d, editArgs(7, fridayToMonday))
+	_, err := tool.Execute(context.Background(), d, Call{Args: args})
+	require.NoError(t, err)
+	assert.Equal(t, 2, f.gets)
+	assert.Equal(t, f.gets, f.bodyGets, "propose and apply read through GetPageBody")
 }
 
 func TestEditConfluencePage_ExecutePutsTheApprovedStorage(t *testing.T) {
@@ -289,6 +340,26 @@ func TestEditConfluencePage_ScopeHints(t *testing.T) {
 	_, err = NewGetConfluencePage(confluenceFactory(f)).Execute(context.Background(), d, Call{Args: json.RawMessage(`{"page":"98765"}`)})
 	assert.Equal(t, "Confluence access not granted — run: watchtower jira login --account "+id+" --with-confluence", verr(t, err))
 	assert.Zero(t, f.gets)
+}
+
+// A failed user-name lookup that does not stop the edit is surfaced on the
+// card instead: the pinned args carry a note (the diff shows account ids).
+func TestEditConfluencePage_NameLookupFailureIsNotedOnSuccess(t *testing.T) {
+	d := openDB(t)
+	db.SeedTestJiraAccount(t, d)
+	f := newFakeConfluence()
+	f.usersErr = errors.New("user bulk: 500")
+	tool := NewEditConfluencePage(confluenceFactory(f))
+	args := normalized(t, tool, d, editArgs(7, fridayToMonday))
+	var p editConfluencePinned
+	require.NoError(t, json.Unmarshal(args, &p))
+	assert.Equal(t, []string{"User names unavailable — mentions show account ids"}, p.Notes)
+
+	f.usersErr = nil
+	args = normalized(t, tool, d, editArgs(7, fridayToMonday))
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(args, &m))
+	assert.NotContains(t, m, "notes", "no note when names resolve")
 }
 
 // A failed user-name lookup at propose time is named in the refusal of an

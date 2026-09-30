@@ -51,6 +51,7 @@ type fakeConfluence struct {
 	noRead      bool
 	puts        []fakePut
 	gets        int
+	bodyGets    int
 	// onGet runs after each GetPage lookup — the seam a test uses to change
 	// the live page between the steps of one call.
 	onGet func(n int)
@@ -77,6 +78,14 @@ func (f *fakeConfluence) GetPage(_ context.Context, id string) (ConfluencePage, 
 		return ConfluencePage{}, errConfluencePageNotFound
 	}
 	return p, nil
+}
+
+// GetPageBody counts as a GET like GetPage; bodyGets tells the two apart.
+func (f *fakeConfluence) GetPageBody(ctx context.Context, id string) (ConfluencePage, error) {
+	f.bodyGets++
+	p, err := f.GetPage(ctx, id)
+	p.SpaceKey = ""
+	return p, err
 }
 
 func (f *fakeConfluence) PutPage(_ context.Context, id, kind string, body ConfluencePutBody) (int, error) {

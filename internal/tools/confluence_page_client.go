@@ -81,6 +81,9 @@ type ConfluencePutVersionInfo struct {
 // connected account (tests inject a fake).
 type ConfluencePageClient interface {
 	GetPage(ctx context.Context, id string) (ConfluencePage, error)
+	// GetPageBody is GetPage without the display-only space key (one GET
+	// fewer): what the edit tool reads at propose and apply time.
+	GetPageBody(ctx context.Context, id string) (ConfluencePage, error)
 	// PutPage writes body as the page's next version and returns the new
 	// version number. Only edit_confluence_page's Execute calls it.
 	PutPage(ctx context.Context, id, kind string, body ConfluencePutBody) (int, error)
@@ -152,6 +155,15 @@ type confluenceV2Page struct {
 
 // GetPage fetches id as a page, then as a blog post.
 func (c *confluencePageClient) GetPage(ctx context.Context, id string) (ConfluencePage, error) {
+	return c.getPage(ctx, id, true)
+}
+
+// GetPageBody fetches id like GetPage, leaving SpaceKey empty.
+func (c *confluencePageClient) GetPageBody(ctx context.Context, id string) (ConfluencePage, error) {
+	return c.getPage(ctx, id, false)
+}
+
+func (c *confluencePageClient) getPage(ctx context.Context, id string, withSpace bool) (ConfluencePage, error) {
 	for _, kind := range []string{"page", "blogpost"} {
 		var p confluenceV2Page
 		err := c.api.GetJSON(ctx, confluenceV2+confluenceCollection(kind)+url.PathEscape(id),
@@ -162,8 +174,10 @@ func (c *confluencePageClient) GetPage(ctx context.Context, id string) (Confluen
 		if err != nil {
 			return ConfluencePage{}, err
 		}
-		page := ConfluencePage{ID: p.ID, Kind: kind, Title: p.Title, Version: p.Version.Number,
-			Storage: p.Body.Storage.Value, SpaceKey: c.spaceKey(ctx, p.SpaceID)}
+		page := ConfluencePage{ID: p.ID, Kind: kind, Title: p.Title, Version: p.Version.Number, Storage: p.Body.Storage.Value}
+		if withSpace {
+			page.SpaceKey = c.spaceKey(ctx, p.SpaceID)
+		}
 		if p.Links.WebUI != "" {
 			page.URL = c.siteURL + "/wiki" + p.Links.WebUI
 		}

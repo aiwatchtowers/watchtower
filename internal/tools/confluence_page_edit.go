@@ -2,6 +2,8 @@ package tools
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -53,14 +55,29 @@ type confluenceChangeView struct {
 // editConfluencePinned is what Normalize adds to the stored args and what
 // Execute reads back: the resolved page and the exact storage to write.
 type editConfluencePinned struct {
-	AccountID   int64                  `json:"account_id"`
-	PageID      string                 `json:"page_id"`
-	Kind        string                 `json:"kind"`
-	Title       string                 `json:"title"`
-	URL         string                 `json:"url"`
-	BaseVersion int                    `json:"base_version"`
-	NewStorage  string                 `json:"new_storage"`
-	Changes     []confluenceChangeView `json:"changes"`
+	AccountID   int64  `json:"account_id"`
+	PageID      string `json:"page_id"`
+	Kind        string `json:"kind"`
+	Title       string `json:"title"`
+	URL         string `json:"url"`
+	BaseVersion int    `json:"base_version"`
+	// BaseHash is the sha256 of the storage the preview was computed from
+	// (R12): Execute writes only while the live page still has exactly it.
+	BaseHash   string                 `json:"base_hash"`
+	NewStorage string                 `json:"new_storage"`
+	Changes    []confluenceChangeView `json:"changes"`
+	// Notes are caveats the approval card shows (e.g. user names missing).
+	Notes []string `json:"notes,omitempty"`
+}
+
+// confluenceNamesUnavailable is the card note for a failed user-name
+// lookup: the diff then shows mention markers by account id.
+const confluenceNamesUnavailable = "User names unavailable — mentions show account ids"
+
+// storageHash is the base_hash of a page's storage.
+func storageHash(storage string) string {
+	sum := sha256.Sum256([]byte(storage))
+	return hex.EncodeToString(sum[:])
 }
 
 // NewEditConfluencePage builds the edit_confluence_page write tool (EXT-05):
@@ -96,11 +113,15 @@ func NewEditConfluencePage(factory ConfluencePageClientFactory) *Tool {
 			if err != nil {
 				return nil, err
 			}
-			return mergeJSON(raw, map[string]any{
+			fields := map[string]any{
 				"account_id": pinned.AccountID, "page_id": pinned.PageID, "kind": pinned.Kind,
 				"title": pinned.Title, "url": pinned.URL, "base_version": pinned.BaseVersion,
-				"new_storage": pinned.NewStorage, "changes": pinned.Changes,
-			})
+				"base_hash": pinned.BaseHash, "new_storage": pinned.NewStorage, "changes": pinned.Changes,
+			}
+			if len(pinned.Notes) > 0 {
+				fields["notes"] = pinned.Notes
+			}
+			return mergeJSON(raw, fields)
 		},
 		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
 			return executeConfluenceEdit(ctx, d, factory, call.Args)
@@ -214,7 +235,7 @@ func confluenceEditShapeErr(i int, e confluenceEditSpec) error {
 // the edits and returns what Execute will write. Every refusal is a
 // *ValidationError the model can act on (spec §7).
 func prepareConfluenceEdit(ctx context.Context, client ConfluencePageClient, accountID int64, a editConfluencePageArgs) (editConfluencePinned, error) {
-	page, err := client.GetPage(ctx, a.PageID)
+	page, err := client.GetPageBody(ctx, a.PageID)
 	if err != nil {
 		return editConfluencePinned{}, confluenceEditReadErr(err, accountID, a.PageID)
 	}
@@ -234,8 +255,13 @@ func prepareConfluenceEdit(ctx context.Context, client ConfluencePageClient, acc
 	if err := checkVisibleOnly(doc.Text(), storage); err != nil {
 		return editConfluencePinned{}, err
 	}
-	return editConfluencePinned{AccountID: accountID, PageID: page.ID, Kind: page.Kind, Title: page.Title,
-		URL: page.URL, BaseVersion: page.Version, NewStorage: storage, Changes: changeViews(changes, labels)}, nil
+	pinned := editConfluencePinned{AccountID: accountID, PageID: page.ID, Kind: page.Kind, Title: page.Title,
+		URL: page.URL, BaseVersion: page.Version, BaseHash: storageHash(page.Storage), NewStorage: storage,
+		Changes: changeViews(changes, labels)}
+	if namesNote != "" {
+		pinned.Notes = []string{confluenceNamesUnavailable}
+	}
+	return pinned, nil
 }
 
 // toEdits maps the model's edits onto confluenceedit's, translating mention
@@ -309,7 +335,7 @@ func executeConfluenceEdit(ctx context.Context, d *db.DB, factory ConfluencePage
 	if err := json.Unmarshal(args, &p); err != nil {
 		return nil, fmt.Errorf("decoding edit_confluence_page args: %w", err)
 	}
-	if p.NewStorage == "" || p.BaseVersion < 1 || p.AccountID < 1 || !isNumericPageID(p.PageID) {
+	if p.NewStorage == "" || p.BaseVersion < 1 || p.AccountID < 1 || !isNumericPageID(p.PageID) || p.BaseHash == "" {
 		return nil, errors.New("the proposal carries no prepared edit; propose it again")
 	}
 	account, err := ResolveJiraAccount(d, p.AccountID)
@@ -323,12 +349,12 @@ func executeConfluenceEdit(ctx context.Context, d *db.DB, factory ConfluencePage
 	if !canEdit(client) {
 		return nil, errors.New(confluenceWriteScopeHint(account.ID))
 	}
-	live, err := client.GetPage(ctx, p.PageID)
+	live, err := client.GetPageBody(ctx, p.PageID)
 	if err != nil {
 		return nil, confluenceWriteFailed(d, account.ID, confluenceEditReadErr(err, account.ID, p.PageID), err)
 	}
-	if live.Version != p.BaseVersion {
-		return nil, confluenceConflict(live.Version, p.BaseVersion)
+	if live.Version != p.BaseVersion || storageHash(live.Storage) != p.BaseHash {
+		return nil, confluenceConflict(live, p)
 	}
 	body := ConfluencePutBody{ID: p.PageID, Status: "current", Title: p.Title,
 		Body:    ConfluencePutStorage{Representation: "storage", Value: p.NewStorage},
@@ -340,15 +366,17 @@ func executeConfluenceEdit(ctx context.Context, d *db.DB, factory ConfluencePage
 	return map[string]any{"page_id": p.PageID, "title": p.Title, "url": p.URL, "version": version}, nil
 }
 
-// confluenceConflict is the version-mismatch failure. A page exactly one
-// version past the preview may be this very edit: a first PUT that landed
-// but whose response was lost leaves the page at base+1, and a Retry must
-// not claim someone else edited it.
-func confluenceConflict(now, base int) error {
-	if now == base+1 {
-		return fmt.Errorf("conflict: the page is already at v%d — possibly this edit was saved; open the page to check. Nothing was written now", now)
+// confluenceConflict is the failure for a live page that is no longer the
+// one the preview was computed from (R12). A page one version past the
+// preview whose storage is exactly this edit's is this very edit — a first
+// PUT that landed but whose response was lost — and says so; anything else
+// (a newer version, or the same version with different storage) is
+// someone else's edit.
+func confluenceConflict(live ConfluencePage, p editConfluencePinned) error {
+	if live.Version == p.BaseVersion+1 && live.Storage == p.NewStorage {
+		return fmt.Errorf("this edit is already saved (v%d); nothing was written now", live.Version)
 	}
-	return fmt.Errorf("conflict: the page was edited after the preview (now v%d); nothing was written", now)
+	return fmt.Errorf("conflict: the page was edited after the preview (now v%d); nothing was written", live.Version)
 }
 
 // confluenceSignInExpired is the re-login hint for a revoked grant on the
@@ -380,8 +408,8 @@ func confluencePutErr(ctx context.Context, client ConfluencePageClient, err erro
 	pageID := p.PageID
 	switch httpStatus(err) {
 	case 409:
-		if live, gerr := client.GetPage(ctx, pageID); gerr == nil {
-			return confluenceConflict(live.Version, p.BaseVersion)
+		if live, gerr := client.GetPageBody(ctx, pageID); gerr == nil {
+			return confluenceConflict(live, p)
 		}
 		return errors.New("conflict: the page was edited after the preview; nothing was written")
 	case 401:
