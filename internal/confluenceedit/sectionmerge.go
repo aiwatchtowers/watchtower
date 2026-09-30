@@ -17,7 +17,8 @@ import (
 // original block whose text reads back as several blocks is kept when a
 // run of new blocks joins to it (see mergeGap). A new block whose text
 // equals an unmatched original's elsewhere in the section was moved: it
-// re-emits that original's bytes at its new place (findMoves, ruling R13).
+// re-emits that original's bytes at its new place (findMoves, ruling R13;
+// so does a run of new blocks joining to a multi-block original's text).
 // Otherwise each new block
 // is either derived from the next unmatched original block of the same
 // kind — rendered from markdown, allowed only when that original is
@@ -43,12 +44,18 @@ type sectionOp struct {
 type moves struct {
 	to   map[*block]*block // body block -> the original it re-emits
 	away map[*block]bool   // originals moved elsewhere
+	cont map[*block]bool   // body blocks after the first of a moved run
 }
 
 // findMoves pairs, in body order, each body block the match left over with
-// the first unmatched original of the same non-empty text.
+// the first unmatched original of the same non-empty text. Then each
+// original left over whose text reads back as several blocks (a paragraph
+// with two <br/>s) is paired with a run of consecutive leftover body
+// blocks joining to its text in another gap — the run's first block
+// re-emits it, the rest emit nothing. A run in the original's own gap is
+// mergeGap's to keep in place.
 func findMoves(base, body []*block, baseText, bodyText []string, matched [][2]int) moves {
-	mv := moves{to: map[*block]*block{}, away: map[*block]bool{}}
+	mv := moves{to: map[*block]*block{}, away: map[*block]bool{}, cont: map[*block]bool{}}
 	usedBase, usedBody := map[int]bool{}, map[int]bool{}
 	for _, m := range matched {
 		usedBase[m[0]], usedBody[m[1]] = true, true
@@ -59,13 +66,57 @@ func findMoves(base, body []*block, baseText, bodyText []string, matched [][2]in
 		}
 		for i, o := range base {
 			if !usedBase[i] && baseText[i] == t {
-				usedBase[i] = true
+				usedBase[i], usedBody[j] = true, true
 				mv.to[body[j]], mv.away[o] = o, true
 				break
 			}
 		}
 	}
+	gap := func(idx, side int) int {
+		n := 0
+		for _, m := range matched {
+			if m[side] < idx {
+				n++
+			}
+		}
+		return n
+	}
+	for i, o := range base {
+		if usedBase[i] || !strings.Contains(baseText[i], "\n\n") {
+			continue
+		}
+		q, k := freeRun(bodyText, usedBody, baseText[i], func(q int) bool { return gap(q, 1) != gap(i, 0) })
+		if k == 0 {
+			continue
+		}
+		usedBase[i] = true
+		mv.to[body[q]], mv.away[o] = o, true
+		for x := q; x < q+k; x++ {
+			usedBody[x] = true
+			if x > q {
+				mv.cont[body[x]] = true
+			}
+		}
+	}
 	return mv
+}
+
+// freeRun finds k >= 2 consecutive unused texts starting at an accepted q
+// that join to t.
+func freeRun(texts []string, used map[int]bool, t string, accept func(q int) bool) (q, k int) {
+	for q = range texts {
+		if used[q] || !accept(q) {
+			continue
+		}
+		joined := texts[q]
+		for k = 2; q+k <= len(texts) && !used[q+k-1] && len(joined) < len(t); k++ {
+			joined += "\n\n" + texts[q+k-1]
+			if joined == t {
+				return q, k
+			}
+		}
+	}
+	return 0, 0
 }
 
 // mergeSection matches body against the section's original blocks and
@@ -175,7 +226,7 @@ func (a *applier) mergeGap(orig, body []*block, origText, bodyText []string, mv 
 
 func anyMoved(body []*block, mv moves) bool {
 	for _, n := range body {
-		if mv.to[n] != nil {
+		if mv.to[n] != nil || mv.cont[n] {
 			return true
 		}
 	}
@@ -211,7 +262,7 @@ func (a *applier) pairGap(allOrig, body []*block, allText []string, mv moves) ([
 		orig, origText = append(orig, o), append(origText, allText[i])
 	}
 	for _, n := range body {
-		if mv.to[n] == nil {
+		if mv.to[n] == nil && !mv.cont[n] {
 			fresh = append(fresh, n)
 		}
 	}
@@ -224,6 +275,9 @@ func (a *applier) pairGap(allOrig, body []*block, allText []string, mv moves) ([
 	}
 	p := 0
 	for _, n := range body {
+		if mv.cont[n] {
+			continue // folded into the moved run's original
+		}
 		if o := mv.to[n]; o != nil {
 			ops = append(ops, sectionOp{orig: o, body: o, moved: true})
 			continue

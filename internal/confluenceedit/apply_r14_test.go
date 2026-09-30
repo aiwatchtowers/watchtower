@@ -105,16 +105,16 @@ func TestSectionRewriteR14AllowsFaithfulRewrites(t *testing.T) {
 	}
 }
 
-// A paragraph whose two <br/>s read back as two blocks, moved whole: either
-// refused or kept byte for byte — never re-rendered as two plain paragraphs.
-func TestSectionRewriteMovedBrParagraphNeverFlattens(t *testing.T) {
+// A paragraph whose two <br/>s read back as two blocks, moved whole, is a
+// move (findMoves' run pairing): it keeps its bytes at the new place and
+// is never re-rendered as two plain paragraphs — before or after a match.
+func TestSectionRewriteMovedBrParagraphKeepsBytes(t *testing.T) {
 	for _, br := range []string{r14BrRich, r14BrPlain} {
-		d := mustParse(t, `<h2>S</h2>`+br+`<p>Plain</p>`)
-		out, _, err := Apply(d, []Edit{sectionEdit("S", "Plain\n\na\n\nb")})
-		if err != nil {
-			assert.Contains(t, err.Error(), "cannot be rewritten without losing formatting")
-			continue
-		}
+		out, _ := applyOK(t, `<h2>S</h2>`+br+`<p>Plain</p>`, sectionEdit("S", "Plain\n\na\n\nb"))
 		assert.Equal(t, `<h2>S</h2><p>Plain</p>`+br, out)
+		out, _ = applyOK(t, `<h2>S</h2><p>Plain</p>`+br, sectionEdit("S", "a\n\nb\n\nPlain"))
+		assert.Equal(t, `<h2>S</h2>`+br+`<p>Plain</p>`, out)
+		out, _ = applyOK(t, `<h2>S</h2>`+br+`<p>Plain</p><p>Tail</p>`, sectionEdit("S", "Plain\n\na\n\nb\n\nTail edited"))
+		assert.Equal(t, `<h2>S</h2><p>Plain</p>`+br+`<p>Tail edited</p>`, out)
 	}
 }
