@@ -14,14 +14,20 @@ struct ProjectBoardView: View {
     var body: some View {
         Group {
             if let vm = viewModel {
+                // Both columns fill the height: an HSplitView pane sized to its
+                // content floats (the tree sank to the bottom under empty
+                // space and the "Select a target" placeholder was clipped).
                 HSplitView {
-                    tree(vm).frame(minWidth: 260, idealWidth: 320)
-                    detail(vm).frame(minWidth: 360)
+                    tree(vm)
+                        .frame(minWidth: 260, idealWidth: 320, maxHeight: .infinity, alignment: .top)
+                    detail(vm)
+                        .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
                 }
             } else {
                 ProgressView()
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
             if viewModel == nil, let pool = appState.databaseManager?.dbPool {
                 let vm = ProjectBoardViewModel(dbPool: pool, projectID: projectID)
@@ -55,6 +61,7 @@ struct ProjectBoardView: View {
                     systemImage: "square.stack.3d.up",
                     description: Text("Claude Code creates the board through the watchtower-project tools.")
                 )
+                .frame(maxHeight: .infinity)
             } else {
                 List(vm.rows, selection: Binding(get: { vm.selectedTargetID }, set: { vm.select($0) })) { row in
                     rowView(vm, row)
@@ -164,6 +171,7 @@ struct ProjectBoardView: View {
             .onChange(of: node.target.text) { titleDraft = node.target.text }
         } else {
             ContentUnavailableView("Select a target", systemImage: "square.stack.3d.up")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
