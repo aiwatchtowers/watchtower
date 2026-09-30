@@ -152,8 +152,7 @@ struct ProjectBoardView: View {
                         TextField("Comment or answer the agent…", text: $commentDraft, axis: .vertical)
                             .lineLimit(1...6)
                         Button("Comment") {
-                            vm.addComment(commentDraft)
-                            commentDraft = ""
+                            if vm.addComment(commentDraft) { commentDraft = "" }
                         }
                         .disabled(commentDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }

@@ -59,8 +59,12 @@ struct ArtifactCommentsView: View {
                 Spacer()
                 Button("Cancel") { composing = false }
                 Button("Comment") {
-                    if comments.add(body: draft, selection: selection) { draft = "" }
-                    composing = false
+                    // A failed save keeps the composer open with the draft,
+                    // next to the error — the project documents pane's rule.
+                    if comments.add(body: draft, selection: selection) {
+                        draft = ""
+                        composing = false
+                    }
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)

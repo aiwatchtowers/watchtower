@@ -138,12 +138,37 @@ final class ProjectBoardViewModelTests: XCTestCase {
         let vm = makeVM(project: pid)
         vm.load()
         vm.select(Int(tid))
-        vm.addComment("  Use the v2 endpoint  ")
+        XCTAssertTrue(vm.addComment("  Use the v2 endpoint  "))
 
         XCTAssertEqual(vm.threads.count, 1)
         XCTAssertEqual(vm.threads.first?.root.author, "owner")
         XCTAssertEqual(vm.threads.first?.root.body, "Use the v2 endpoint")
         XCTAssertEqual(vm.selectedNode?.openComments, 1)
+    }
+
+    /// A failed comment write reports `false` so the board composer keeps the
+    /// owner's draft, and surfaces the error.
+    func testAddCommentReportsAFailedWriteAndKeepsTheDraft() throws {
+        let (pid, tid) = try dbManager.dbPool.write { db -> (Int64, Int64) in
+            let pid = try Self.insertProject(db)
+            return (pid, try Self.insertTarget(db, project: pid, text: "Task"))
+        }
+        let vm = makeVM(project: pid)
+        var reported = 0
+        vm.onOwnerWrite = { _, _ in reported += 1 }
+        vm.load()
+        vm.select(Int(tid))
+        try dbManager.dbPool.write { db in
+            try db.execute(sql: """
+                CREATE TRIGGER fail_comment_insert BEFORE INSERT ON project_comments
+                BEGIN SELECT RAISE(ABORT, 'disk full'); END
+                """)
+        }
+
+        XCTAssertFalse(vm.addComment("Use the v2 endpoint"), "a failed write must not tell the composer to clear")
+        XCTAssertNotNil(vm.errorMessage)
+        XCTAssertEqual(reported, 0)
+        XCTAssertTrue(vm.threads.isEmpty)
     }
 
     func testReplyAndResolveAThread() throws {

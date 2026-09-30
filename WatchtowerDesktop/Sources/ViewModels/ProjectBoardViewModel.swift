@@ -167,11 +167,14 @@ final class ProjectBoardViewModel {
         write("rename the target") { db in try TargetQueries.updateText(db, id: id, text: title) }
     }
 
-    func addComment(_ body: String) {
+    /// - Returns: whether the comment was written, so the composer keeps the
+    ///   owner's draft on a failure (`errorMessage` says why).
+    @discardableResult
+    func addComment(_ body: String) -> Bool {
         let text = body.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let id = selectedTargetID, !text.isEmpty else { return }
+        guard let id = selectedTargetID, !text.isEmpty else { return false }
         let pid = projectID
-        write("add the comment") { db in
+        return write("add the comment") { db in
             _ = try ProjectQueries.addOwnerComment(
                 db, projectID: pid, targetID: Int64(id), documentID: nil, anchor: nil, body: text
             )
