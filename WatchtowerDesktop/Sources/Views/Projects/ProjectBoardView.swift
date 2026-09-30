@@ -66,7 +66,7 @@ struct ProjectBoardView: View {
                 List(vm.rows, selection: Binding(get: { vm.selectedTargetID }, set: { vm.select($0) })) { row in
                     rowView(vm, row)
                 }
-                .listStyle(.sidebar)
+                .panelListStyle()
             }
         }
     }

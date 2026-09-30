@@ -67,6 +67,7 @@ struct ProjectDocumentsView: View {
             }
             .tag(Optional(item.id))
         }
+        .panelListStyle()
     }
 
     private func documentView(_ docVM: ProjectDocumentViewModel) -> some View {
