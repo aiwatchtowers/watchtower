@@ -61,6 +61,20 @@ final class WorkspaceLayoutTests: XCTestCase {
         XCTAssertEqual(l.visiblePanes, [.board, .documents])
     }
 
+    func testShowSlottedPaneWhileExpandedRestoresSplit() {
+        var l = split()
+        l.toggleExpand(.session(1))
+        l.show(.board)
+        XCTAssertNil(l.expanded)
+        XCTAssertEqual(l.visiblePanes, [.board, .session(1)])
+    }
+
+    func testToggleExpandSinglePaneIsNoOp() {
+        var l = WorkspaceLayout.default
+        l.toggleExpand(.board)
+        XCTAssertEqual(l, .default)
+    }
+
     func testForgetSecondaryBecomesSingle() {
         var l = split()
         l.forgetSession(1, fallback: .board)
@@ -111,6 +125,18 @@ final class WorkspaceLayoutTests: XCTestCase {
         XCTAssertEqual(WorkspaceLayout.decode(try JSONEncoder().encode(l)).dividerFraction, 0.8)
         l.dividerFraction = -1
         XCTAssertEqual(WorkspaceLayout.decode(try JSONEncoder().encode(l)).dividerFraction, 0.2)
+    }
+
+    func testDecodeDropsSecondaryEqualToPrimary() throws {
+        let stored = WorkspaceLayout(primary: .board, secondary: .board, expanded: .board, dividerFraction: 0.5)
+        XCTAssertEqual(WorkspaceLayout.decode(try JSONEncoder().encode(stored)), .default)
+    }
+
+    func testDecodeDropsExpansionOutsideSlots() throws {
+        let stored = WorkspaceLayout(primary: .board, secondary: .session(1), expanded: .documents, dividerFraction: 0.5)
+        let decoded = WorkspaceLayout.decode(try JSONEncoder().encode(stored))
+        XCTAssertNil(decoded.expanded)
+        XCTAssertEqual(decoded.visiblePanes, [.board, .session(1)])
     }
 
     func testKey() {

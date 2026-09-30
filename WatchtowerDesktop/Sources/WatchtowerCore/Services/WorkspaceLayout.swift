@@ -42,7 +42,9 @@ package struct WorkspaceLayout: Codable, Equatable, Sendable {
         expanded = nil
     }
 
+    /// Only a split has something to expand; a single pane is a no-op.
     package mutating func toggleExpand(_ pane: WorkspacePane) {
+        guard isSplit else { return }
         if expanded == pane {
             expanded = nil
         } else if pane == primary || pane == secondary {
@@ -50,11 +52,12 @@ package struct WorkspaceLayout: Codable, Equatable, Sendable {
         }
     }
 
-    /// Panel click: a visible pane stays as is; otherwise it replaces the
-    /// primary (single) or the secondary (split). An expansion is dropped first.
+    /// Panel click: an expansion is dropped first; then a pane already in a
+    /// slot stays as is, otherwise it replaces the primary (single) or the
+    /// secondary (split). Both slots never hold the same pane.
     package mutating func show(_ pane: WorkspacePane) {
-        if visiblePanes.contains(pane) { return }
         expanded = nil
+        if pane == primary || pane == secondary { return }
         if isSplit {
             secondary = pane
         } else {
@@ -79,9 +82,15 @@ package struct WorkspaceLayout: Codable, Equatable, Sendable {
 
     package static func key(projectID: Int64) -> String { "projects.layout.\(projectID)" }
 
-    /// Bad or missing data → `.default`; the divider is clamped to its range.
+    /// Bad or missing data → `.default`; the divider is clamped to its range,
+    /// a secondary equal to the primary and an expansion naming neither slot
+    /// are dropped.
     package static func decode(_ data: Data?) -> Self {
         guard let data, var layout = try? JSONDecoder().decode(Self.self, from: data) else { return .default }
+        if layout.secondary == layout.primary { layout.secondary = nil }
+        if let expanded = layout.expanded, !layout.isSplit || (expanded != layout.primary && expanded != layout.secondary) {
+            layout.expanded = nil
+        }
         layout.dividerFraction = min(max(layout.dividerFraction, dividerRange.lowerBound), dividerRange.upperBound)
         return layout
     }
