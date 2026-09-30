@@ -48,8 +48,9 @@ older than the 48h tail (outside thread promotion) is caught only by
 channel name, recap event title) refreshes only on the parent row's own next
 change or a `kb reindex`, not on a rename of the joined row; every non-Slack
 source is one change-range, so the 60s cycle budget can be overshot by a
-whole source on its first backfill; and `Build` runs inside the batch's write
-transaction (the daemon's connection is held while a batch renders).
+whole source on its first backfill. (`Build` used to run inside the batch's
+write transaction; since 2026-09-30 a batch is rendered first and only its
+writes run in the transaction — `buildBatch`/`storeBatch`.)
 For the `confluence` source, a renamed user (a refreshed `ext_users` row)
 re-renders the documents that user authored or commented on — every one,
 paged 5000 (user, document) pairs per `Changed` call through a key-based
@@ -129,6 +130,8 @@ apply to them the same as every other read tool. This file does not restate
 DEV-01.
 
 ## Changelog
+
+- 2026-09-30: a batch's documents are rendered before its write transaction opens (`buildBatch`), and only the writes run inside it (`storeBatch`) — the render used to hold SQLite's write lock for up to a whole 200-document batch, long enough to fail an owner's Approve click in another process with SQLITE_BUSY (backlog `2026-09-30-approving-a-chat-proposal-fails-with-sqlite-busy.md`). Guard `TestRun_RendersOutsideTheWriteLock`. The "Build runs inside the write transaction" v1 limit is retired; KB-01..03 unchanged.
 
 - 2026-09-27 (T13 docs pass): KB-01's Confluence users-arm wording corrected
   — the missed writer is not bounded to "the same second"; `resolveUsers`

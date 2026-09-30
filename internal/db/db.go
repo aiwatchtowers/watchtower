@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/pressly/goose/v3"
 	_ "modernc.org/sqlite"
@@ -113,6 +114,17 @@ func (db *DB) migrate() error {
 		return fmt.Errorf("normalizing legacy chat tables: %w", err)
 	}
 	return goose.Up(db.DB, "migrations")
+}
+
+// SetBusyTimeout replaces Open's 5 s busy_timeout on the connection: how long
+// a write waits for another process's write lock before failing with
+// SQLITE_BUSY. The owner-click write paths (approving an action, recording a
+// chat proposal) raise it so a background daemon transaction cannot fail them.
+func (db *DB) SetBusyTimeout(d time.Duration) error {
+	if _, err := db.Exec(fmt.Sprintf("PRAGMA busy_timeout=%d", d.Milliseconds())); err != nil {
+		return fmt.Errorf("setting busy_timeout: %w", err)
+	}
+	return nil
 }
 
 // SetReadOnly flips the connection to SQLite query_only mode: any subsequent

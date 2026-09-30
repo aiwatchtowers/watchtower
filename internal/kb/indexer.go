@@ -198,10 +198,14 @@ func runSource(ctx context.Context, d *db.DB, src Source, now time.Time, overBud
 		for i := 0; i < len(keys); i += batchSize {
 			end := min(i+batchSize, len(keys))
 			last := end == len(keys)
+			docs, err := buildBatch(ctx, d, src, keys[i:end])
+			if err != nil {
+				return false, err
+			}
 			var written, deleted int
-			err := withTx(ctx, d, func(tx *sql.Tx) error {
+			err = withTx(ctx, d, func(tx *sql.Tx) error {
 				var err error
-				if written, deleted, err = indexBatch(ctx, tx, src, keys[i:end]); err != nil {
+				if written, deleted, err = storeBatch(ctx, tx, keys[i:end], docs); err != nil {
 					return err
 				}
 				if last {
@@ -225,14 +229,30 @@ func runSource(ctx context.Context, d *db.DB, src Source, now time.Time, overBud
 	}
 }
 
-// indexBatch builds and stores each key inside tx, returning how many
-// documents it wrote and deleted.
-func indexBatch(ctx context.Context, tx *sql.Tx, src Source, keys []string) (written, deleted int, err error) {
-	for _, key := range keys {
-		doc, err := src.Build(ctx, tx, key)
+// buildBatch renders each key's document OUTSIDE any transaction. Rendering
+// is the slow part (a Slack channel-day, a long mail thread); done inside the
+// write transaction it held SQLite's write lock for the whole batch, long
+// enough to fail another process's write with SQLITE_BUSY (an owner's
+// Approve click, backlog 2026-09-30). Build only reads, and a source row
+// changed after its render moves its change marker past this range's cursor,
+// so the next cycle re-renders it — the same guarantee the in-tx render had.
+func buildBatch(ctx context.Context, q Queryer, src Source, keys []string) ([]*Doc, error) {
+	docs := make([]*Doc, len(keys))
+	for i, key := range keys {
+		doc, err := src.Build(ctx, q, key)
 		if err != nil {
-			return 0, 0, fmt.Errorf("building %s: %w", key, err)
+			return nil, fmt.Errorf("building %s: %w", key, err)
 		}
+		docs[i] = doc
+	}
+	return docs, nil
+}
+
+// storeBatch writes (or, for a gone or blank document, deletes) each key's
+// rendered document inside tx, returning how many it wrote and deleted.
+func storeBatch(ctx context.Context, tx *sql.Tx, keys []string, docs []*Doc) (written, deleted int, err error) {
+	for i, key := range keys {
+		doc := docs[i]
 		if doc == nil || isBlank(doc) {
 			removed, err := deleteDoc(ctx, tx, key)
 			if err != nil {

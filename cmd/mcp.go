@@ -78,16 +78,21 @@ func mcpTurnBinding(chatMode bool, turn, turnFile string) (string, func() string
 // mcpModeOptions sets up project mode, chat mode (the write-tool registry) or
 // dev mode (the read-only fence) on the opened database.
 func mcpModeOptions(cfg *config.Config, database *db.DB, turn string, turnFunc func() string) ([]internalmcp.ServerOption, error) {
-	if mcpFlagProject != 0 {
-		return mcpProjectOptions(cfg, database, mcpFlagProject)
-	}
-	if !mcpFlagChat {
+	if mcpFlagProject == 0 && !mcpFlagChat {
 		// The MCP surface is read-only; enforce it at the connection level so even
 		// a buggy handler cannot write. Must run after Open (migrations need writes).
 		if err := database.SetReadOnly(); err != nil {
 			return nil, fmt.Errorf("enforcing read-only: %w", err)
 		}
 		return nil, nil
+	}
+	// Both writable modes record owner-facing rows (a proposal, a board
+	// write); give them the owner-click lock budget.
+	if err := database.SetBusyTimeout(ownerWriteBusyTimeout); err != nil {
+		return nil, err
+	}
+	if mcpFlagProject != 0 {
+		return mcpProjectOptions(cfg, database, mcpFlagProject)
 	}
 	// Chat mode: the connection stays writable ONLY so the registry can
 	// record proposals (agent_actions) — the tools themselves still never
