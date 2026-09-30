@@ -44,7 +44,7 @@ final class TargetStatusHistoryTests: XCTestCase {
 
             let summary = try XCTUnwrap(ProjectQueries.summaries(d).first)
             XCTAssertEqual(summary.openTargets, 2)
-            XCTAssertEqual(summary.inProgressTargets, 1)
+            XCTAssertEqual(summary.inProgressTargets, 0, "like the CLI, in progress excludes in_review")
         }
     }
 

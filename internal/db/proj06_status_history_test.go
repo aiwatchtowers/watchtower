@@ -95,6 +95,46 @@ func TestProj06_EveryProjectStatusTransitionIsRecorded(t *testing.T) {
 	assert.False(t, statusActor(t, d, parent).Valid)
 }
 
+// The rollup's delete and move paths claim 'system' too, and so do the
+// daemon's automated status writers (unsnooze).
+func TestProj06_RollupDeleteMoveAndUnsnoozeAreRecordedAsTheSystems(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestProject(t, d)
+	a := SeedTestProjectTarget(t, d, pid, sql.NullInt64{}, "feature a")
+	b := SeedTestProjectTarget(t, d, pid, sql.NullInt64{}, "feature b")
+	doneChild := insertBoardChild(t, d, pid, a, "done")
+	openChild := insertBoardChild(t, d, pid, a, "todo")
+	moved := insertBoardChild(t, d, pid, b, "done")
+	require.Equal(t, "done", targetStatus(t, d, b))
+
+	// Delete: a's only open child goes, so a rolls up to done.
+	_, err := d.Exec(`DELETE FROM targets WHERE id = ?`, openChild)
+	require.NoError(t, err)
+	require.Equal(t, "done", targetStatus(t, d, a))
+	// Move: a todo child joins b, so b rolls back from done.
+	_, err = d.Exec(`UPDATE targets SET parent_id = ?, status = 'todo' WHERE id = ?`, b, doneChild)
+	require.NoError(t, err)
+	_, err = d.Exec(`UPDATE targets SET parent_id = ? WHERE id = ?`, a, moved)
+	require.NoError(t, err)
+
+	for _, id := range []int64{a, b} {
+		rows := statusHistory(t, d, id)
+		require.Greater(t, len(rows), 1, "target %d rolled up", id)
+		for _, r := range rows[1:] {
+			assert.Equal(t, "system", r.actor, "target %d: %s -> %s", id, r.from, r.to)
+		}
+	}
+
+	snoozed := SeedTestProjectTarget(t, d, pid, sql.NullInt64{}, "snoozed")
+	_, err = d.Exec(`UPDATE targets SET status = 'snoozed', snooze_until = '2000-01-01T00:00' WHERE id = ?`, snoozed)
+	require.NoError(t, err)
+	n, err := d.UnsnoozeExpiredTargets()
+	require.NoError(t, err)
+	require.Equal(t, 1, n)
+	last := statusHistory(t, d, snoozed)
+	assert.Equal(t, [3]string{"snoozed", "todo", "system"}, transitions(last)[len(last)-1])
+}
+
 func TestProj06_NoStatusChangeRecordsNothingAndDropsTheClaim(t *testing.T) {
 	d := openTestDB(t)
 	pid := newTestProject(t, d)

@@ -45,6 +45,9 @@ func TestMigration00086_RebuildKeepsRowsChildrenIndexesAndRollup(t *testing.T) {
 
 	require.NoError(t, goose.UpTo(raw, "migrations", 86))
 
+	var fk int
+	require.NoError(t, raw.QueryRow(`PRAGMA foreign_keys`).Scan(&fk))
+	assert.Equal(t, 1, fk, "the migration turns foreign keys back on")
 	var n int
 	require.NoError(t, raw.QueryRow(`SELECT COUNT(*) FROM targets`).Scan(&n))
 	assert.Equal(t, 4, n)

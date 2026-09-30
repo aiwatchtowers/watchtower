@@ -46,7 +46,7 @@ package enum ProjectQueries {
         let rows = try Row.fetchAll(db, sql: """
             SELECT project_id,
                    SUM(status IN ('todo','in_progress','in_review','blocked')) AS open_count,
-                   SUM(status IN ('in_progress','in_review')) AS active_count
+                   SUM(status = 'in_progress') AS active_count
             FROM targets WHERE project_id IS NOT NULL GROUP BY project_id
             """)
         for row in rows {

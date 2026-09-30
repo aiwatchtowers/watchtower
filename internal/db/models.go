@@ -419,7 +419,7 @@ type Target struct {
 	PeriodStart         string        // YYYY-MM-DD
 	PeriodEnd           string        // YYYY-MM-DD
 	ParentID            sql.NullInt64 // references targets(id)
-	Status              string        // "todo", "in_progress", "blocked", "done", "dismissed", "snoozed"
+	Status              string        // "todo", "in_progress", "in_review" (project targets only), "blocked", "done", "dismissed", "snoozed"
 	Priority            string        // "high", "medium", "low"
 	Ownership           string        // "mine", "delegated", "watching"
 	BallOn              string

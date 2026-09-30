@@ -83,7 +83,10 @@ func (db *DB) projectStatusSince(projectID int64) (map[int64]string, error) {
 		}
 		out[id] = at
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading board status times: %w", err)
+	}
+	return out, nil
 }
 
 // nullableActor turns "" (no claim) into NULL for targets.status_actor.

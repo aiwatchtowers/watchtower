@@ -199,7 +199,7 @@ ISO-8601), actor}`, written by the triggers `targets_status_history_{ai,au}`,
 never by application code. `actor` is what the write claimed in
 `targets.status_actor` in the same statement — `agent` (the project MCP
 tools), `owner` (the Desktop's `TargetQueries`/`DayPlanQueries` status
-writers) or `system` (the rollup triggers) — and `owner` when nothing was
+writers) or `system` (the rollup triggers, the daemon's unsnooze, the Jira status sync) — and `owner` when nothing was
 claimed (every automated writer of a project target claims its actor, so an
 unclaimed write comes from an owner-facing surface such as the CLI). A claim
 never outlives its own write: the history trigger clears it, and
@@ -211,7 +211,8 @@ sees no extra churn. Existing project targets were seeded with one `system`
 row dated by their `updated_at`. Readers: `get_target` in a project session
 (`status_history`, newest 50, oldest first), `project_board`/`project
 board`/`project brief` (the time a target has held its status, from its
-latest row).
+latest row). A target that joins a project later has no history until its
+next status change (the board then shows its bare status).
 
 **Why locked:** Owner decision (board target #119): the owner wants to see
 where each piece of work is — including what is under review — and how long

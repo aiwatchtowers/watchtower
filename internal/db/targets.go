@@ -483,10 +483,12 @@ func (db *DB) GetTargetCounts() (int, int, error) {
 	return active, overdue, err
 }
 
-// UnsnoozeExpiredTargets moves snoozed targets with expired snooze_until back to todo.
+// UnsnoozeExpiredTargets moves snoozed targets with expired snooze_until back
+// to todo. A daemon write, so a project target's history records it as the
+// system's (PROJ-06).
 func (db *DB) UnsnoozeExpiredTargets() (int, error) {
 	now := time.Now().UTC().Format("2006-01-02T15:04")
-	res, err := db.Exec(`UPDATE targets SET status = 'todo', snooze_until = '',
+	res, err := db.Exec(`UPDATE targets SET status = 'todo', snooze_until = '', status_actor = 'system',
 		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
 		WHERE status = 'snoozed' AND snooze_until != '' AND snooze_until <= ?`, now)
 	if err != nil {
