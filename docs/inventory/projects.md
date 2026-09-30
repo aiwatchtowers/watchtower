@@ -143,7 +143,8 @@ deleted, or changes `status`, `parent_id` or `project_id`, its parent's
 status is re-derived from the parent's direct children of the same project
 (closed = `done`|`dismissed`): all closed with at least one `done` → `done`;
 all `dismissed` → `dismissed`; every open child
-`blocked` → `blocked`; any child `in_progress` or `done` → `in_progress`;
+`blocked` → `blocked`; any child `in_progress`, `in_review` or `done` →
+`in_progress` (`in_review` since `00086`);
 otherwise → `todo`; no children → untouched. The change walks up the ancestor
 chain and stops at the first ancestor whose status does not change, and
 below any `dismissed` ancestor — a dismissed parent is never re-derived, and
@@ -180,6 +181,51 @@ at a glance.
 - `WatchtowerDesktop/Tests/Core/ProjectStatusRollupTests.swift::testGRDBChildStatusUpdateRollsTheChainUp`
 - `WatchtowerDesktop/Tests/ProjectBoardViewModelTests.swift::testStatusWriteReportsTheParentsTheRollupMoved`
   (parents the rollup moved in an owner's write count as the owner's writes — no "done" notice)
+
+**Locked since:** 2026-09-30
+
+## PROJ-06 — every project target status transition is recorded with time and actor
+
+**Status:** Enforced (Go and Desktop — one implementation, in SQLite)
+
+**Observable:** A project target (`project_id` set) can be `in_review`
+between `in_progress` and `done`; a personal target never can (`CHECK(status
+!= 'in_review' OR project_id IS NOT NULL)`, migration `00086`). Every project
+target's creation and every change of its status — by any writer: the
+agent's `watchtower mcp --project N` tools, the CLI, the Desktop's direct
+GRDB writes, the PROJ-05 rollup — adds exactly one `target_status_history`
+row `{target_id, from_status (NULL at creation), to_status, changed_at (UTC
+ISO-8601), actor}`, written by the triggers `targets_status_history_{ai,au}`,
+never by application code. `actor` is what the write claimed in
+`targets.status_actor` in the same statement — `agent` (the project MCP
+tools), `owner` (the Desktop's `TargetQueries`/`DayPlanQueries` status
+writers) or `system` (the rollup triggers) — and `owner` when nothing was
+claimed (every automated writer of a project target claims its actor, so an
+unclaimed write comes from an owner-facing surface such as the CLI). A claim
+never outlives its own write: the history trigger clears it, and
+`targets_status_actor_reset_au` clears a claim that produced no row. A
+personal target gets no history rows; a status write that does not change
+the status adds none; the rows go with their target (`ON DELETE CASCADE`).
+None of these triggers touches `updated_at`, so the next-step attempt budget
+sees no extra churn. Existing project targets were seeded with one `system`
+row dated by their `updated_at`. Readers: `get_target` in a project session
+(`status_history`, newest 50, oldest first), `project_board`/`project
+board`/`project brief` (the time a target has held its status, from its
+latest row).
+
+**Why locked:** Owner decision (board target #119): the owner wants to see
+where each piece of work is — including what is under review — and how long
+each stage took. A history that one writer skips (a Desktop edit, a rollup)
+would silently misreport the time spent, so it lives in triggers with no
+dual path.
+
+**Test guards:**
+- `internal/db/proj06_status_history_test.go::TestProj06_EveryProjectStatusTransitionIsRecorded`
+  (and the other `TestProj06_*`: no-change writes, personal targets, the
+  `in_review` CHECK, the cascade, `recursive_triggers` on)
+- `internal/db/target_in_review_migration_test.go::TestMigration00086_RebuildKeepsRowsChildrenIndexesAndRollup`
+- `internal/tools/projects_test.go::TestUpdateTarget_InReviewIsRecordedAsTheAgentsAndShown`
+- `WatchtowerDesktop/Tests/Core/TargetStatusHistoryTests.swift::testDesktopStatusWritesAreRecordedAsTheOwners`
 
 **Locked since:** 2026-09-30
 
@@ -232,6 +278,8 @@ at a glance.
   (`ProjectCommentThread.hasUnansweredOwnerReply`).
 
 ## Changelog
+
+- 2026-09-30 (board target #119): **PROJ-06** added — project targets gain `in_review` and a trigger-written status history with time and actor (migration `00086`). **PROJ-05** amended with owner approval (the same request): an `in_review` child counts as started, like `in_progress`; the rollup's other rules are unchanged, and its writes are recorded as `system`. The migration rebuilds `targets` and recreates 00085's triggers.
 
 - 2026-09-30 (board items #104, #79): board targets carry a priority (`create_targets`/`update_target`; siblings sort by priority, then status, in `project_board`, `project board` and the brief). `project create` and the new `project import-docs <id>` mechanically attach the folder's README and `docs/**/{specs,plans}` files as `origin='import'` documents (`internal/projectdocs`, migration 00083) — read-only over the folder, so PROJ-03 is unchanged (no project code writes a document file). No contract semantics or guard tests changed.
 - 2026-09-30 (follow-up to #34): the Desktop badge, revised dot and "ready for review" notification skip `origin='import'` documents; the brief lists subtrees holding in-progress, then blocked targets first (priority order within a rank); an unreadable path below `docs/` is skipped and reported instead of failing the import, and the Desktop's project page shows a failed import, unreadable paths and files past the cap. No contract semantics or guard tests changed.
