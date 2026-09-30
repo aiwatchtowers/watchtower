@@ -324,8 +324,8 @@ func validateProjectDocument(d ProjectDocument) error {
 // rel_path) it bumps updated_at ("revised"), marks it origin 'agent' (an
 // imported document the agent revises is the agent's from then on) and
 // replaces kind/title/target only with the values d sets; created reports
-// whether a new row was inserted. Whether
-// rel_path stays inside the folder is the caller's check (Task 8).
+// whether a new row was inserted. Whether rel_path stays inside the folder is
+// the caller's check.
 func (db *DB) UpsertProjectDocument(d ProjectDocument) (id int64, created bool, err error) {
 	if err := validateProjectDocument(d); err != nil {
 		return 0, false, err
