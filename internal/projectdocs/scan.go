@@ -31,53 +31,61 @@ type Candidate struct {
 // parent directory is named specs or plans anywhere under docs/ — the README
 // first, then newest first. Symlinks — files or directories — are never
 // followed or listed, so every rel_path is a regular file inside the folder;
-// hidden directories and node_modules are not walked.
-func Scan(folder string) ([]Candidate, error) {
-	readme, err := scanReadme(folder)
+// hidden directories and node_modules are not walked. A path it cannot read
+// below the folder and docs/ themselves is skipped and returned in
+// unreadable; only an unreadable folder or docs/ fails the scan.
+func Scan(folder string) (found []Candidate, unreadable []string, err error) {
+	readme, unreadable, err := scanReadme(folder)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	docs, err := scanDocsDir(folder)
+	docs, skipped, err := scanDocsDir(folder)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	sortNewestFirst(docs)
-	return slices.Concat(readme, docs), nil
+	return slices.Concat(readme, docs), append(unreadable, skipped...), nil
 }
 
-func scanReadme(folder string) ([]Candidate, error) {
+func scanReadme(folder string) ([]Candidate, []string, error) {
 	entries, err := os.ReadDir(folder)
 	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", folder, err)
+		return nil, nil, fmt.Errorf("reading %s: %w", folder, err)
 	}
 	for _, e := range entries {
 		if !strings.EqualFold(e.Name(), "README.md") || !e.Type().IsRegular() {
 			continue
 		}
-		c, err := candidate(e, e.Name(), "doc")
-		if err != nil {
-			return nil, err
+		c, ok := candidate(e, e.Name(), "doc")
+		if !ok {
+			return nil, []string{e.Name()}, nil
 		}
-		return []Candidate{c}, nil
+		return []Candidate{c}, nil, nil
 	}
-	return nil, nil
+	return nil, nil, nil
 }
 
 // scanDocsDir walks folder/docs. A missing docs/, or a docs/ that is a
 // symlink or a file, yields nothing.
-func scanDocsDir(folder string) ([]Candidate, error) {
+func scanDocsDir(folder string) ([]Candidate, []string, error) {
 	root := filepath.Join(folder, "docs")
 	st, err := os.Lstat(root)
 	if errors.Is(err, fs.ErrNotExist) || (err == nil && !st.IsDir()) {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", root, err)
+		return nil, nil, fmt.Errorf("reading %s: %w", root, err)
 	}
 	var out []Candidate
+	var unreadable []string
 	err = fs.WalkDir(os.DirFS(folder), "docs", func(p string, e fs.DirEntry, err error) error {
 		if err != nil {
-			return err
+			if p == "docs" {
+				return err
+			}
+			// A directory WalkDir could not list: its contents are skipped.
+			unreadable = append(unreadable, p)
+			return nil
 		}
 		if e.IsDir() {
 			if name := e.Name(); strings.HasPrefix(name, ".") || name == "node_modules" {
@@ -89,16 +97,18 @@ func scanDocsDir(folder string) ([]Candidate, error) {
 		if kind == "" {
 			return nil
 		}
-		c, err := candidate(e, p, kind)
-		if err == nil {
-			out = append(out, c)
+		c, ok := candidate(e, p, kind)
+		if !ok {
+			unreadable = append(unreadable, p)
+			return nil
 		}
-		return err
+		out = append(out, c)
+		return nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("scanning %s: %w", root, err)
+		return nil, nil, fmt.Errorf("scanning %s: %w", root, err)
 	}
-	return out, nil
+	return out, unreadable, nil
 }
 
 // docKind is spec or plan for a regular .md/.txt file directly inside a
@@ -119,13 +129,15 @@ func docKind(p string, e fs.DirEntry) string {
 	return ""
 }
 
-func candidate(e fs.DirEntry, rel, kind string) (Candidate, error) {
+// candidate is false when the file's metadata cannot be read (it vanished
+// or is not readable): the caller reports rel as unreadable.
+func candidate(e fs.DirEntry, rel, kind string) (Candidate, bool) {
 	info, err := e.Info()
 	if err != nil {
-		return Candidate{}, fmt.Errorf("reading %s: %w", rel, err)
+		return Candidate{}, false
 	}
 	base := path.Base(rel)
-	return Candidate{RelPath: rel, Kind: kind, Title: strings.TrimSuffix(base, path.Ext(base)), modTime: info.ModTime()}, nil
+	return Candidate{RelPath: rel, Kind: kind, Title: strings.TrimSuffix(base, path.Ext(base)), modTime: info.ModTime()}, true
 }
 
 func sortNewestFirst(cs []Candidate) {

@@ -58,7 +58,7 @@ func TestScan_FindsReadmeSpecsAndPlansNewestFirst(t *testing.T) {
 	writeFile(t, f, "docs/node_modules/specs/vendored.md", 0) // node_modules
 	writeFile(t, f, "specs/outside-docs.md", 0)               // not under docs/
 
-	got, err := Scan(f)
+	got, _, err := Scan(f)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"README.md", "docs/plans/new-plan.txt", "docs/superpowers/specs/old-spec.md"}, relPaths(got))
 	assert.Equal(t, "doc", got[0].Kind)
@@ -78,13 +78,13 @@ func TestScan_IgnoresSymlinks(t *testing.T) {
 	require.NoError(t, os.Symlink(filepath.Join(outside, "note.md"), filepath.Join(p.FolderPath, "docs/specs/link.md")))
 	require.NoError(t, os.Symlink(outside, filepath.Join(p.FolderPath, "docs/ext")))
 
-	got, err := Scan(p.FolderPath)
+	got, _, err := Scan(p.FolderPath)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"docs/specs/real.md"}, relPaths(got))
 
 	linked := t.TempDir()
 	require.NoError(t, os.Symlink(outside, filepath.Join(linked, "docs")))
-	got, err = Scan(linked)
+	got, _, err = Scan(linked)
 	require.NoError(t, err)
 	assert.Empty(t, got, "a docs/ that is a symlink is not walked")
 }
@@ -165,4 +165,27 @@ func TestUpsertProjectDocument_ReattachOfImportBecomesAgent(t *testing.T) {
 	doc, err := d.GetProjectDocument(id)
 	require.NoError(t, err)
 	assert.Equal(t, "agent", doc.Origin)
+}
+
+// A path below docs/ that cannot be read is skipped and reported; the rest,
+// README included, is imported. Only an unreadable docs/ fails the import.
+func TestImport_UnreadablePathIsSkippedAndReported(t *testing.T) {
+	d, p := newProject(t)
+	writeFile(t, p.FolderPath, "README.md", 0)
+	writeFile(t, p.FolderPath, "docs/plans/p.md", 0)
+	writeFile(t, p.FolderPath, "docs/private/specs/s.md", 0)
+	locked := filepath.Join(p.FolderPath, "docs", "private")
+	require.NoError(t, os.Chmod(locked, 0))
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
+	rep, err := Import(d, p, false)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"README.md", "docs/plans/p.md"}, rep.Imported)
+	assert.Equal(t, []string{"docs/private"}, rep.Unreadable)
+
+	docs := filepath.Join(p.FolderPath, "docs")
+	require.NoError(t, os.Chmod(docs, 0))
+	t.Cleanup(func() { _ = os.Chmod(docs, 0o755) })
+	_, err = Import(d, p, false)
+	assert.Error(t, err, "an unreadable docs/ is not skipped")
 }
