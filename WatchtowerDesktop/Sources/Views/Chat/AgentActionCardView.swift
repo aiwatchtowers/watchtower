@@ -39,22 +39,25 @@ struct AgentActionCardView: View {
             if let p = action.argString("priority"), !p.isEmpty { lines.append("Priority: \(p)") }
             return lines
         default:
-            return waveTwoSummaryLines(for: action) ?? jiraIssueWriteSummaryLines(for: action) ?? [action.argsJSON]
+            // The Confluence edit first: its args carry the whole new page
+            // storage, and every other branch would decode them per render.
+            return confluenceEditSummaryLines(for: action) ?? waveTwoSummaryLines(for: action)
+                ?? jiraIssueWriteSummaryLines(for: action) ?? [action.argsJSON]
         }
     }
 
-    /// The four existing-issue Jira writes (spec 2026-09-26 §8); nil for any other tool.
+    /// The four existing-issue Jira writes (spec 2026-09-26 §8); nil for any
+    /// other tool — decided on the tool name alone, before any args decode.
     private static func jiraIssueWriteSummaryLines(for action: AgentAction) -> [String]? {
-        let key = action.argString("key") ?? "?"
         switch action.tool {
         case "add_jira_comment":
-            return ["Issue: \(key)", action.argString("body") ?? ""]
+            return ["Issue: \(issueKey(action))", action.argString("body") ?? ""]
         case "transition_jira_issue":
-            return ["Issue: \(key) → \(action.argString("status") ?? "?")"]
+            return ["Issue: \(issueKey(action)) → \(action.argString("status") ?? "?")"]
         case "assign_jira_issue":
-            return assignSummaryLines(for: action, key: key)
+            return assignSummaryLines(for: action, key: issueKey(action))
         case "update_jira_issue":
-            var lines = ["Issue: \(key)"]
+            var lines = ["Issue: \(issueKey(action))"]
             let fields: [(String, String)] = [("summary", "Summary"), ("priority", "Priority"),
                                               ("labels_add", "Add labels"), ("labels_remove", "Remove labels"),
                                               ("due_date", "Due")]
@@ -65,6 +68,10 @@ struct AgentActionCardView: View {
         default:
             return nil
         }
+    }
+
+    private static func issueKey(_ action: AgentAction) -> String {
+        action.argString("key") ?? "?"
     }
 
     /// Execute assigns the person pinned at propose time (`resolved_assignee_*`,
@@ -131,6 +138,9 @@ struct AgentActionCardView: View {
             ForEach(Self.summaryLines(for: action), id: \.self) { line in
                 Text(line).font(.callout).fixedSize(horizontal: false, vertical: true)
             }
+            if let edit = Self.confluenceEdit(for: action) {
+                ConfluenceEditChangesView(edit: edit)
+            }
             if !action.reason.isEmpty {
                 Text(action.reason).font(.caption).foregroundStyle(.secondary).italic()
             }
@@ -141,9 +151,10 @@ struct AgentActionCardView: View {
             }
             // Only a FAILED row can have left a half-finished external write:
             // Apply claims the row before it runs the tool, so an `approved`
-            // one provably never reached Jira.
+            // one provably never reached Jira. (A Confluence edit is version-
+            // checked, so its note says why a retry cannot double-write.)
             if action.status == "failed", action.external {
-                Text("Retrying re-sends the request — check Jira for a duplicate first.")
+                Text(Self.retryNote(for: action))
                     .font(.caption).foregroundStyle(.orange)
             }
             actions
@@ -168,7 +179,11 @@ struct AgentActionCardView: View {
 
     @ViewBuilder
     private var outcome: some View {
-        if action.status == "applied", let link = action.resultWebURL("url") {
+        if action.status == "applied", action.tool == Self.confluenceEditTool {
+            // The page is already linked above the diff; name the version
+            // the write produced instead of repeating the link.
+            Text("Saved as version \(action.resultString("version") ?? "?")").font(.callout)
+        } else if action.status == "applied", let link = action.resultWebURL("url") {
             // Generic: any tool that returns a url (+ optional label) links it —
             // label, then key, then the url itself (spec 2026-09-26 §8).
             // `resultWebURL` is the same http/https-only check
@@ -227,7 +242,9 @@ struct AgentActionCardView: View {
                 ProgressView().controlSize(.small)
             } else {
                 if action.isPending {
-                    Button("Approve", action: onApprove).buttonStyle(.borderedProminent)
+                    if Self.canApprove(action) {
+                        Button("Approve", action: onApprove).buttonStyle(.borderedProminent)
+                    }
                     Button("Reject", action: onReject)
                 } else if action.canRetry {
                     Button("Retry", action: onRetry)

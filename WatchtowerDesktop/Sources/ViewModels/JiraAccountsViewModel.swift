@@ -88,9 +88,13 @@ final class JiraAccountsViewModel {
     /// (the Confluence scopes, opt-in on the CLI side). The default Re-login
     /// omits the flag; the CLI itself keeps the Confluence scopes when the
     /// account already uses Confluence (`jiraReloginOptions`, cmd/jira.go).
-    static func loginArgs(accountID: Int, withConfluence: Bool = false) -> [String] {
+    /// `withConfluenceWrite` adds `--with-confluence-write` (the write scopes
+    /// for page editing; the CLI treats it as implying `--with-confluence`).
+    static func loginArgs(accountID: Int, withConfluence: Bool = false, withConfluenceWrite: Bool = false) -> [String] {
         var args = ["jira", "login", "--account", String(accountID), "--app-return"]
-        if withConfluence {
+        if withConfluenceWrite {
+            args.append("--with-confluence-write")
+        } else if withConfluence {
             args.append("--with-confluence")
         }
         return args
@@ -114,6 +118,16 @@ final class JiraAccountsViewModel {
         await runAuthFlow(
             args: Self.loginArgs(accountID: accountID, withConfluence: true),
             failurePrefix: "Granting Confluence access failed"
+        )
+    }
+
+    /// Settings → Jira → Confluence "Allow editing": the same re-consent flow
+    /// with `--with-confluence-write`, so the new grant also carries the
+    /// Confluence write scopes the assistant's page edits need.
+    func reloginWithConfluenceWrite(accountID: Int) async {
+        await runAuthFlow(
+            args: Self.loginArgs(accountID: accountID, withConfluenceWrite: true),
+            failurePrefix: "Allowing Confluence editing failed"
         )
     }
 

@@ -114,6 +114,18 @@ final class JiraAccountsViewModelTests: XCTestCase {
         XCTAssertFalse(JiraAccountsViewModel.loginArgs(accountID: 3).contains("--with-confluence"))
     }
 
+    /// "Allow editing" asks for the Confluence write scopes via
+    /// `--with-confluence-write` (which implies read on the CLI side); no
+    /// other re-login ever adds it.
+    func testLoginArgsWithConfluenceWrite() {
+        XCTAssertEqual(
+            JiraAccountsViewModel.loginArgs(accountID: 3, withConfluenceWrite: true),
+            ["jira", "login", "--account", "3", "--app-return", "--with-confluence-write"]
+        )
+        XCTAssertFalse(JiraAccountsViewModel.loginArgs(accountID: 3, withConfluence: true).contains("--with-confluence-write"))
+        XCTAssertFalse(JiraAccountsViewModel.loginArgs(accountID: 3).contains("--with-confluence-write"))
+    }
+
     // MARK: - setEnabledArgs (pure)
 
     func testSetEnabledArgsEnable() {

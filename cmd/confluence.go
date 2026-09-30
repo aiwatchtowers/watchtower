@@ -40,17 +40,20 @@ var confluenceSelectCmd = &cobra.Command{Use: "select KEY...", Short: "Select sp
 var confluenceUnselectCmd = &cobra.Command{Use: "unselect KEY...", Short: "Stop syncing spaces and drop their synced content", Args: cobra.MinimumNArgs(1), RunE: runConfluenceUnselect}
 var confluenceStatusCmd = &cobra.Command{Use: "status", Short: "Show every selected space's sync state", RunE: runConfluenceStatus}
 var confluenceSyncCmd = &cobra.Command{Use: "sync", Short: "Sync the account's selected spaces now", RunE: runConfluenceSync}
+var confluenceAccessCmd = &cobra.Command{Use: "access", Short: "Show whether the account's grant can read and edit Confluence", RunE: runConfluenceAccess}
 
 var (
 	confluenceFlagAccount int64
 	confluenceSpacesJSON  bool
 	confluenceStatusJSON  bool
 	confluenceSyncForce   bool
+	confluenceAccessJSON  bool
 )
 
 func init() {
 	rootCmd.AddCommand(confluenceCmd)
-	confluenceCmd.AddCommand(confluenceSpacesCmd, confluenceSelectCmd, confluenceUnselectCmd, confluenceStatusCmd, confluenceSyncCmd)
+	confluenceCmd.AddCommand(confluenceSpacesCmd, confluenceSelectCmd, confluenceUnselectCmd, confluenceStatusCmd, confluenceSyncCmd, confluenceAccessCmd)
+	confluenceAccessCmd.Flags().BoolVar(&confluenceAccessJSON, "json", false, `JSON output: {"read":bool,"write":bool}`)
 	confluenceCmd.PersistentFlags().Int64Var(&confluenceFlagAccount, "account", 0,
 		"Jira account id whose Atlassian site to use (default: the single enabled account)")
 	confluenceSpacesCmd.Flags().BoolVar(&confluenceSpacesJSON, "json", false, "JSON output")
@@ -85,14 +88,55 @@ func errConfluenceConsent(accountID int64) error {
 // read or parse failure is an error — a corrupt token must never read as
 // "consent missing" (a re-consent would not be the fix).
 func confluenceScopesOK(workspaceDir string, id int64) (bool, error) {
+	access, err := readConfluenceAccess(workspaceDir, id)
+	return access.Read, err
+}
+
+// confluenceAccess is the `confluence access --json` object: whether the
+// account's stored grant carries the Confluence read scopes and the write
+// scopes, independently. The Desktop's Confluence section shows "Allow
+// editing" when read is true and write is false.
+type confluenceAccess struct {
+	Read  bool `json:"read"`
+	Write bool `json:"write"`
+}
+
+// readConfluenceAccess loads account id's token once and reports both scope
+// sets. A missing token file is no access at all; any other read or parse
+// failure is an error (the confluenceScopesOK rule).
+func readConfluenceAccess(workspaceDir string, id int64) (confluenceAccess, error) {
 	tok, err := jira.NewTokenStore(workspaceDir, id).Load()
 	if errors.Is(err, fs.ErrNotExist) {
-		return false, nil
+		return confluenceAccess{}, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("reading jira account %d token: %w", id, err)
+		return confluenceAccess{}, fmt.Errorf("reading jira account %d token: %w", id, err)
 	}
-	return jira.HasConfluenceScopes(tok), nil
+	return confluenceAccess{Read: jira.HasConfluenceScopes(tok), Write: jira.HasConfluenceWriteScopes(tok)}, nil
+}
+
+// runConfluenceAccess reports the account's Confluence access from the
+// stored token alone — no network call, no fetcher.
+func runConfluenceAccess(cmd *cobra.Command, _ []string) error {
+	cfg, database, err := openJiraCmdDB()
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+	account, err := resolveJiraAccount(database, confluenceFlagAccount)
+	if err != nil {
+		return err
+	}
+	access, err := readConfluenceAccess(cfg.WorkspaceDir(), account.ID)
+	if err != nil {
+		return err
+	}
+	out := cmd.OutOrStdout()
+	if confluenceAccessJSON {
+		return json.NewEncoder(out).Encode(access)
+	}
+	_, err = fmt.Fprintf(out, "Confluence read:  %s\nConfluence write: %s\n", yesNo(access.Read), yesNo(access.Write))
+	return err
 }
 
 // confluenceSession is the resolved account plus a fetcher over its grant.
@@ -411,6 +455,13 @@ func dashIfEmpty(s string) string {
 		return "-"
 	}
 	return s
+}
+
+func yesNo(b bool) string {
+	if b {
+		return "yes"
+	}
+	return "no"
 }
 
 // checkConfluenceSyncAllowed refuses a manual sync while the daemon runs:

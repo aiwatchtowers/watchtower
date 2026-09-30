@@ -418,6 +418,28 @@ func TestLogin_ScopeReflectsWithConfluence(t *testing.T) {
 	for _, s := range strings.Fields(ConfluenceScopes) {
 		assert.Contains(t, scope, s, "WithConfluence must request every Confluence scope")
 	}
+	for _, s := range strings.Fields(ConfluenceWriteScopes) {
+		assert.NotContains(t, scope, s, "WithConfluence alone must not request the write scopes")
+	}
+}
+
+// TestLogin_ScopeReflectsWithConfluenceWrite pins the write-scope opt-in:
+// WithConfluenceWrite requests JiraScopes + ConfluenceScopes +
+// ConfluenceWriteScopes even when the caller only set WithConfluenceWrite
+// (never WithConfluence) — the "implies --with-confluence" rule, enforced
+// at the Login/scope-building boundary so any caller of LoginOptions gets
+// it, not just the CLI flag parser.
+func TestLogin_ScopeReflectsWithConfluenceWrite(t *testing.T) {
+	authorizeURL, _ := runLoginCapture(t, LoginOptions{WithConfluenceWrite: true})
+	parsed, err := url.Parse(authorizeURL)
+	require.NoError(t, err)
+	scope := strings.Fields(parsed.Query().Get("scope"))
+	for _, s := range strings.Fields(ConfluenceScopes) {
+		assert.Contains(t, scope, s, "WithConfluenceWrite must imply every Confluence read scope")
+	}
+	for _, s := range strings.Fields(ConfluenceWriteScopes) {
+		assert.Contains(t, scope, s, "WithConfluenceWrite must request every Confluence write scope")
+	}
 }
 
 // Sanity-check that exchangeCode marshals payloads in JSON (not form-encoded).

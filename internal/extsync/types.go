@@ -58,6 +58,7 @@ type Item struct {
 	CommentKind      string // "footer" | "inline" (comments only)
 	AnchorText       string
 	Resolved         bool
+	ReplyTo          string // comments: the ext id of the comment this one replies to ("" = top-level)
 	Download         string // attachments: API path for Download
 	MediaType        string
 	Size             int64

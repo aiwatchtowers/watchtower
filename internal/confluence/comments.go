@@ -28,7 +28,8 @@ var inlineResolutionStatuses = []string{"open", "reopened", "resolved", "danglin
 // inline comments with their replies at any depth, each as one section.
 // CommentKind is "footer" or "inline" (a reply keeps its thread's); a reply
 // to an inline comment inherits the thread's AnchorText and Resolved when it
-// carries none of its own. Ref.Version is the comment's version number, the
+// carries none of its own, and ReplyTo names the comment a reply answers
+// ("" for a top-level comment). Ref.Version is the comment's version number, the
 // same number Changed(KindComment) reports. A parent search no longer finds
 // (gone, or not a page/blog post) has no comments: nil, nil.
 // https://developer.atlassian.com/cloud/confluence/rest/v2/api-group-comment/
@@ -178,6 +179,7 @@ func (f *Fetcher) commentItem(loc, pageID string, c *v2Comment, parent *extsync.
 		MentionedUserIDs: users,
 	}
 	if parent != nil {
+		it.ReplyTo = parent.Ref.ExtID
 		if it.AnchorText == "" {
 			it.AnchorText = parent.AnchorText
 		}
