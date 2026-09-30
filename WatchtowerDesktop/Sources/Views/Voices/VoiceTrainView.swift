@@ -37,7 +37,8 @@ struct VoiceTrainView: View {
                             isActive: group.id == center.groups.first?.id,
                             registryChoices: center.registryChoices,
                             clips: center.trainClips,
-                            onPlay: { clip, audioPath in clipPlayer.play(url: URL(fileURLWithPath: audioPath), span: clip) },
+                            isPlaying: { clip, audioPath in clipPlayer.isPlaying(url: URL(fileURLWithPath: audioPath), span: clip) },
+                            onPlay: { clip, audioPath in clipPlayer.toggle(url: URL(fileURLWithPath: audioPath), span: clip) },
                             onConfirm: { person in Task { await center.confirmGroup(group, person: person) } },
                             onDismiss: { severalPeople in Task { await center.dismissGroup(group, severalPeople: severalPeople) } }
                         )
@@ -86,6 +87,8 @@ private struct TrainGroupCardView: View {
     let isActive: Bool
     let registryChoices: [PersonChoice]
     let clips: [String: VoiceRegistryCenter.TrainClip]
+    /// (span, audioPath) is the clip playing — drives its Stop.
+    let isPlaying: (ClipSpan, String) -> Bool
     let onPlay: (ClipSpan, String) -> Void
     let onConfirm: (PersonChoice) -> Void
     let onDismiss: (_ severalPeople: Bool) -> Void
@@ -99,6 +102,7 @@ private struct TrainGroupCardView: View {
         isActive: Bool,
         registryChoices: [PersonChoice],
         clips: [String: VoiceRegistryCenter.TrainClip],
+        isPlaying: @escaping (ClipSpan, String) -> Bool,
         onPlay: @escaping (ClipSpan, String) -> Void,
         onConfirm: @escaping (PersonChoice) -> Void,
         onDismiss: @escaping (_ severalPeople: Bool) -> Void
@@ -107,6 +111,7 @@ private struct TrainGroupCardView: View {
         self.isActive = isActive
         self.registryChoices = registryChoices
         self.clips = clips
+        self.isPlaying = isPlaying
         self.onPlay = onPlay
         self.onConfirm = onConfirm
         self.onDismiss = onDismiss
@@ -145,7 +150,8 @@ private struct TrainGroupCardView: View {
                     ForEach(Array(clip.clips.enumerated()), id: \.offset) { index, span in
                         VoiceClipRow(
                             clip: span, text: clip.clipTexts.indices.contains(index) ? clip.clipTexts[index] : "",
-                            isFirst: isActive && index == 0 && member.key == group.audioMembers.first?.key) {
+                            isFirst: isActive && index == 0 && member.key == group.audioMembers.first?.key,
+                            isPlaying: isPlaying(span, clip.audioPath)) {
                             onPlay(span, clip.audioPath)
                         }
                     }

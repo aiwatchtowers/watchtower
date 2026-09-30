@@ -23,6 +23,8 @@ typealias PersonChoice = VoiceRegistryCenter.PersonChoice
 struct VoiceCardView: View {
     let card: VoiceCard
     let isActive: Bool
+    /// Whether a clip of this card is the one playing (drives its Stop).
+    var isPlaying: (ClipSpan) -> Bool = { _ in false }
     let onPlay: (ClipSpan) -> Void
     let onConfirm: (PersonChoice) -> Void
     let onDismiss: (DismissKind) -> Void
@@ -34,12 +36,14 @@ struct VoiceCardView: View {
     init(
         card: VoiceCard,
         isActive: Bool = true,
+        isPlaying: @escaping (ClipSpan) -> Bool = { _ in false },
         onPlay: @escaping (ClipSpan) -> Void,
         onConfirm: @escaping (PersonChoice) -> Void,
         onDismiss: @escaping (DismissKind) -> Void
     ) {
         self.card = card
         self.isActive = isActive
+        self.isPlaying = isPlaying
         self.onPlay = onPlay
         self.onConfirm = onConfirm
         self.onDismiss = onDismiss
@@ -118,7 +122,7 @@ struct VoiceCardView: View {
     private func clipRow(_ clip: ClipSpan, index: Int) -> some View {
         VoiceClipRow(
             clip: clip, text: card.clipTexts.indices.contains(index) ? card.clipTexts[index] : "",
-            isFirst: isActive && index == 0) { onPlay(clip) }
+            isFirst: isActive && index == 0, isPlaying: isPlaying(clip)) { onPlay(clip) }
     }
 
     private var confirmDisabled: Bool {

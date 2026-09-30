@@ -22,7 +22,9 @@ package enum VoiceRegistryPolicy {
     /// Clusters with less clean speech never match (embedding too noisy).
     package static let minClusterSpeechSec: Double = 20
     package static let clipMinSec: Double = 4
-    package static let clipMaxSec: Double = 10
+    /// A clip is a quick "whose voice is this" sample, not a passage to sit
+    /// through.
+    package static let clipMaxSec: Double = 6
     package static let clipsPerCluster = 3
     package static let exportPerChannel = 5
     package static let importConflict: Float = 0.80

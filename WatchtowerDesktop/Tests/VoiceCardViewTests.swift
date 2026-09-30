@@ -80,6 +80,19 @@ final class VoiceCardViewTests: XCTestCase {
         XCTAssertEqual(played, [clips[1]])
     }
 
+    /// The button shows the clip's length (a start timecode read as a
+    /// duration), and the clip that is playing turns into its Stop.
+    func testClipButtonShowsLengthAndPlayingClipShowsStop() throws {
+        let clips = [ClipSpan(start: 520, end: 526), ClipSpan(start: 580, end: 584.6)]
+        let card = VoiceCard.fixture(reason: .unknown, clips: clips)
+        let view = VoiceCardView(
+            card: card, isPlaying: { $0 == clips[1] }, onPlay: { _ in }, onConfirm: { _ in }, onDismiss: { _ in })
+
+        XCTAssertNoThrow(try view.inspect().find(button: "▶ 6 s"))
+        XCTAssertNoThrow(try view.inspect().find(button: "■ Stop"))
+        XCTAssertNoThrow(try view.inspect().find(text: "at 8:40"))
+    }
+
     /// Confirm with the (pre-selected, suggestion-matched) candidate sends
     /// that exact candidate back — no "new person" fields involved.
     func testConfirmSendsTheSelectedCandidate() throws {

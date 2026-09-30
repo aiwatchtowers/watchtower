@@ -67,4 +67,49 @@ final class ClipPlayerTests: XCTestCase {
 
         XCTAssertNil(p.playingSpan)
     }
+
+    func testToggleStopsTheClipThatIsPlaying() {
+        let fake = FakeAudioPlayback(duration: 60)
+        let p = ClipPlayer { _ in fake }
+        let url = URL(fileURLWithPath: "/tmp/x.caf")
+        let span = ClipSpan(start: 10, end: 15)
+
+        p.toggle(url: url, span: span)
+        XCTAssertTrue(p.isPlaying(url: url, span: span))
+
+        p.toggle(url: url, span: span)
+        XCTAssertFalse(p.isPlaying(url: url, span: span))
+        XCTAssertFalse(fake.isPlaying)
+    }
+
+    func testToggleOnAnotherClipSwitchesToIt() {
+        let fake = FakeAudioPlayback(duration: 60)
+        let p = ClipPlayer { _ in fake }
+        let url = URL(fileURLWithPath: "/tmp/x.caf")
+
+        p.toggle(url: url, span: ClipSpan(start: 10, end: 15))
+        p.toggle(url: url, span: ClipSpan(start: 30, end: 35))
+
+        XCTAssertTrue(p.isPlaying(url: url, span: ClipSpan(start: 30, end: 35)))
+        XCTAssertFalse(p.isPlaying(url: url, span: ClipSpan(start: 10, end: 15)))
+        XCTAssertEqual(fake.currentTime, 30)
+        XCTAssertTrue(fake.isPlaying)
+    }
+
+    // The same span of a different recording is a different clip: toggling
+    // it switches playback instead of stopping.
+    func testSameSpanOfAnotherRecordingIsAnotherClip() {
+        let fake = FakeAudioPlayback(duration: 60)
+        let p = ClipPlayer { _ in fake }
+        let span = ClipSpan(start: 10, end: 15)
+        let a = URL(fileURLWithPath: "/tmp/a.caf")
+        let b = URL(fileURLWithPath: "/tmp/b.caf")
+
+        p.toggle(url: a, span: span)
+        p.toggle(url: b, span: span)
+
+        XCTAssertTrue(p.isPlaying(url: b, span: span))
+        XCTAssertFalse(p.isPlaying(url: a, span: span))
+        XCTAssertTrue(fake.isPlaying)
+    }
 }

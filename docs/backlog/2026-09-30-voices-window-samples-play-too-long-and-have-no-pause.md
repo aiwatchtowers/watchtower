@@ -1,7 +1,7 @@
 ---
 type: bug
 title: Voices window samples play too long and have no pause
-status: open
+status: done
 priority: med
 tags: [voice-registry, desktop, audio, ux, transcription]
 context: docs/chat-projects-vision — backlog collection session, item 6 (owner screenshot of the Voices → Queue tab)
@@ -38,3 +38,24 @@ Screenshot note: it also contains real colleague names/emails — do not copy
 them into fixtures.
 
 > Original note: «когда ты мне делал было пиздато то, что семплики были по несколько сек и было очень удобно. Ну я же ебал 9 мин слушать. Плюс плей/пауз должен быть. Щас тока плей» (with screenshot)
+
+**Fixed (fix/voices-followups):** (1) The playback itself was never long:
+the stored clips of a real recording are 5–10 s and `ClipPlayer` seeks and
+stops correctly on the AAC `.caf` (probed with `AVAudioPlayer` directly). The
+"9 minutes" was the button label — "▶ 9:40" is the clip's *start* in the
+meeting, which reads as a duration. The button now shows the clip's length
+("▶ 6 s") and the start moves to a separate "at 9:40" caption;
+`VoiceRegistryPolicy.clipMaxSec` drops 10 → 6 s. (2) `ClipPlayer` is
+`@Observable` with `toggle(url:span:)`/`isPlaying(url:span:)`: the playing
+clip's button turns into "■ Stop", clicking another clip switches to it —
+Queue, Train and Review alike. (3) The near-duplicates were the diarizer's
+10 s chunk slices of one long turn, each taken as its own "segment", and
+every clip showed the whole merged utterance. `ClusterFeatures` now joins
+same-speaker segments ≤ 0.5 s apart into speech runs, picks the longest runs
+whose starts lie ≥ 60 s apart (topping up from nearer runs when too few are),
+and lists them in time order; `ClipTranscript` (WatchtowerCore) shows only
+the words whose proportional position falls inside the clip, "…"-marked where
+the cut lands mid-utterance (utterances carry no word timestamps). Clip spans
+are computed at save time, so recordings saved before this keep their old
+spans (the new length label and clip text apply to them too). Still no clip
+files written.
