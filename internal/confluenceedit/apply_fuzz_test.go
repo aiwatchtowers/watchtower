@@ -101,11 +101,16 @@ func checkEditError(t *testing.T, err error) {
 
 func checkWithinOneUnit(t *testing.T, d *Doc, out string) {
 	t.Helper()
-	pre, suf := commonAffixes(d.src, out)
+	if out == d.src {
+		return // a whitespace-only edit the renderer trims away (deferred F8)
+	}
+	// Exact, not by common affixes: those are ambiguous when the new bytes
+	// start or end with a byte the neighbouring source shares.
 	for _, u := range d.units {
-		if u.start <= pre && len(d.src)-suf <= u.end {
+		head, tail := d.src[:u.start], d.src[u.end:]
+		if len(out) >= len(head)+len(tail) && strings.HasPrefix(out, head) && strings.HasSuffix(out, tail) {
 			return
 		}
 	}
-	t.Fatalf("diff [%d,%d) is not inside one unit\nsrc: %q\nout: %q", pre, len(d.src)-suf, d.src, out)
+	t.Fatalf("the change is not inside one unit\nsrc: %q\nout: %q", d.src, out)
 }
