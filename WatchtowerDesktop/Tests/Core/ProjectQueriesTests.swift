@@ -110,13 +110,14 @@ final class ProjectQueriesTests: XCTestCase {
             _ = try TestDatabase.insertTarget(d, text: "Not a project target")
             _ = try TestDatabase.insertProjectComment(d, projectID: p, targetID: child)
             _ = try TestDatabase.insertProjectComment(d, projectID: p, author: "owner", targetID: child, status: "resolved")
+            _ = try TestDatabase.insertProjectComment(d, projectID: p, author: "owner", body: "Why?", targetID: child)
             _ = try TestDatabase.insertProjectDocument(d, projectID: p, targetID: active)
 
             let board = try ProjectQueries.board(d, projectID: p)
             XCTAssertEqual(board.map(\.target.text), ["Active root", "Todo root", "Done root"])
             XCTAssertEqual(board[0].children.map(\.target.text), ["Task 1"])
             XCTAssertEqual(board[0].documents.count, 1)
-            XCTAssertEqual(board[0].children[0].openComments, 1)
+            XCTAssertEqual(board[0].children[0].openComments, 1, "open owner roots only — not the agent's open root")
             XCTAssertEqual(board[0].children[0].unreadForOwner, 1)
             XCTAssertEqual(Set(board.map { Int64($0.target.id) }), [done, todo, active])
         }

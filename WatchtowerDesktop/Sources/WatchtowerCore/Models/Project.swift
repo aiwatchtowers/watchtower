@@ -185,7 +185,8 @@ extension ProjectCommentThread {
 package struct ProjectBoardNode: Identifiable, Equatable {
     package let target: Target
     package let children: [Self]
-    /// Open root comments on this target.
+    /// Open owner threads (roots) on this target — the same count the
+    /// Documents list shows, and what the agent sees as waiting on it.
     package let openComments: Int
     /// Agent comments on this target the owner has not seen.
     package let unreadForOwner: Int
