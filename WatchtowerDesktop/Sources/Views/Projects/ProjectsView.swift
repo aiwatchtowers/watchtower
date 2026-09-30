@@ -2,26 +2,49 @@ import AppKit
 import SwiftUI
 import WatchtowerCore
 
-/// Projects tab: the project list on the left, the selected project's page on
-/// the right (spec §6.1).
+/// Projects tab: the collapsible two-level panel on the left (projects and
+/// standalone terminals, or one project's Board, Documents and sessions) and
+/// the selected project's page — or standalone terminal — on the right
+/// (spec 2026-09-30-project-workspace-sessions §3).
 struct ProjectsView: View {
     @Bindable var vm: ProjectsViewModel
     @Environment(AppState.self) private var appState
+    @AppStorage("projects.panelVisible") private var panelVisible = true
     @State private var pendingFolder: URL?
     @State private var sensitiveLocation: String?
+    @State private var renamingSession: TerminalSession?
+    @State private var deletingSession: TerminalSession?
 
     var body: some View {
-        HSplitView {
-            list
-                .frame(minWidth: 220, idealWidth: 260, maxWidth: 360)
+        HStack(spacing: 0) {
+            if panelVisible {
+                panel
+                    .frame(width: 260)
+                    .sessionActionDialogs(vm: vm, renaming: $renamingSession, deleting: $deletingSession)
+                Divider()
+            }
             Group {
-                if let project = vm.selectedProject {
+                if let standalone = vm.selectedStandalone {
+                    StandaloneTerminalView(session: standalone)
+                        .id(standalone.id)
+                } else if let project = vm.selectedProject {
                     ProjectPageView(vm: vm, project: project)
                 } else {
                     emptyState
                 }
             }
             .frame(minWidth: 480, maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .toolbar {
+            ToolbarItem(placement: .navigation) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) { panelVisible.toggle() }
+                } label: {
+                    Image(systemName: "sidebar.leading")
+                }
+                .help("Toggle Projects Panel")
+                .accessibilityLabel("Toggle Projects Panel")
+            }
         }
         .navigationTitle("Projects")
         .onAppear {
@@ -44,12 +67,36 @@ struct ProjectsView: View {
         }
     }
 
-    private var list: some View {
+    @ViewBuilder
+    private var panel: some View {
+        if let project = vm.drilledProject {
+            ProjectSessionsPanel(vm: vm, project: project, actions: sessionActions)
+        } else {
+            projectList
+        }
+    }
+
+    private var sessionActions: SessionRowActions {
+        SessionRowActions(
+            rename: { renamingSession = $0 },
+            close: { session in Task { await vm.close(session) } },
+            delete: { deletingSession = $0 }
+        )
+    }
+
+    private var projectList: some View {
         VStack(spacing: 0) {
-            List(selection: $vm.selectedProjectID) {
-                ForEach(vm.summaries) { summary in
-                    row(summary).tag(Optional(summary.id))
+            List(selection: listSelection) {
+                Section("Projects") {
+                    ForEach(vm.summaries) { summary in
+                        row(summary)
+                            .tag(ProjectsPanelItem.project(summary.id))
+                            // A click on the already-selected project (after
+                            // Back) changes no selection: drill in anyway.
+                            .simultaneousGesture(TapGesture().onEnded { vm.drill(into: summary.id) })
+                    }
                 }
+                TerminalsSection(vm: vm, actions: sessionActions)
             }
             .panelListStyle()
             Divider()
@@ -71,6 +118,27 @@ struct ProjectsView: View {
                     .padding([.horizontal, .bottom], 8)
             }
         }
+    }
+
+    private var listSelection: Binding<ProjectsPanelItem?> {
+        Binding(
+            get: {
+                if let id = vm.selectedStandaloneID { return .terminal(id) }
+                return vm.selectedProjectID.map(ProjectsPanelItem.project)
+            },
+            set: { item in
+                switch item {
+                case let .project(id)?:
+                    vm.drill(into: id)
+                case let .terminal(id)?:
+                    guard id != vm.selectedStandaloneID,
+                          let session = vm.standaloneSessions.first(where: { $0.id == id }) else { return }
+                    Task { await vm.selectStandalone(session) }
+                case nil:
+                    break
+                }
+            }
+        )
     }
 
     private func row(_ summary: ProjectSummary) -> some View {

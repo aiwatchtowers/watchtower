@@ -90,18 +90,23 @@ extension ProjectsViewModel {
         await startNewSession(project: project, title: TerminalSessionNaming.provisional(now: now()))
     }
 
-    /// A terminal outside any project, in `folder`. A shell is named
+    /// A terminal outside any project, in `folder`, put on screen (a
+    /// standalone terminal replaces the project page). A shell is named
     /// mechanically and never gets an AI title.
     func newStandalone(kind: TerminalSession.Kind, folder: URL) async {
         let title = switch kind {
         case .claude: TerminalSessionNaming.provisional(now: now())
         case .shell: TerminalSessionNaming.shell(shellPath: terminalCenter?.shell(), folder: folder.path)
         }
-        await createAndStart(
+        let row = await createAndStart(
             .init(projectID: nil, kind: kind, title: title, folderPath: folder.path,
                   claudeSessionID: kind == .claude ? Self.newClaudeSessionID() : nil),
             prompt: nil
         )
+        if let row {
+            selectedProjectID = nil
+            selectedStandaloneID = row.id
+        }
     }
 
     /// Creates a `claude` session row with a new Claude session id and starts
@@ -255,6 +260,7 @@ extension ProjectsViewModel {
             return
         }
         if let projectID = session.projectID { forgetInLayout(session.id, projectID: projectID) }
+        if selectedStandaloneID == session.id { selectedStandaloneID = nil }
         await loadSessions(projectID: session.projectID)
     }
 
@@ -362,16 +368,19 @@ extension ProjectsViewModel {
         return nil
     }
 
-    private func createAndStart(_ new: TerminalSessionQueries.NewSession, prompt: String?) async {
+    /// The created row, or nil when it could not be written.
+    @discardableResult
+    private func createAndStart(_ new: TerminalSessionQueries.NewSession, prompt: String?) async -> TerminalSession? {
         setSessionError(nil, projectID: new.projectID)
         let row: TerminalSession
         do {
             row = try await dbPool.write { try TerminalSessionQueries.create($0, new) }
         } catch {
             setSessionError("Could not create a terminal session: \(error.localizedDescription)", projectID: new.projectID)
-            return
+            return nil
         }
         await activate(row, fresh: true, prompt: prompt)
+        return row
     }
 
     /// Starts (unless running) and focuses `row`, refreshes its list, shows

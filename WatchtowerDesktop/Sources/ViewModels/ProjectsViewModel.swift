@@ -22,6 +22,14 @@ final class ProjectsViewModel {
                 closeDocument()
                 documents = []
             }
+            // One thing is on screen: a project, or a standalone terminal.
+            // Selecting a project also drills the panel into it.
+            if let selectedProjectID {
+                selectedStandaloneID = nil
+                drilledProjectID = selectedProjectID
+            } else if drilledProjectID == oldValue {
+                drilledProjectID = nil
+            }
         }
     }
     var pane: ProjectPane = .terminal
@@ -71,6 +79,9 @@ final class ProjectsViewModel {
     var standaloneSessions: [TerminalSession] = []
     /// The left panel's level 2: the project drilled into (nil = level 1).
     var drilledProjectID: Int64?
+    /// The standalone terminal on screen; mutually exclusive with
+    /// `selectedProjectID` (setting a project clears it).
+    var selectedStandaloneID: Int64?
     /// Sessions whose `--resume` exited non-zero within
     /// `resumeFailureWindow` of launch: the pane offers "Start fresh".
     var resumeFailed: Set<Int64> = []
