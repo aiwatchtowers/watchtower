@@ -152,7 +152,8 @@ struct ProjectsView: View {
                 return vm.selectedProjectID.map(ProjectsPanelItem.project)
             },
             set: { item in
-                // A terminal row opens on its own click (`SessionRowActions.open`).
+                // A terminal row opens on its own click (`SessionRowActions.open`);
+                // arrow keys only move the highlight (VoiceOver has the row's action).
                 if case let .project(id)? = item { vm.drill(into: id) }
             }
         )
