@@ -132,7 +132,31 @@ skill, would make every later `integrate` a risk to the owner's own setup.
 
 **Locked since:** 2026-09-29
 
+## v1 limits and notes (accepted)
+
+- **TCC attribution (owner decision 2026-09-30).** A project folder under a
+  TCC-protected location (`~/Documents`, `~/Desktop`, `~/Downloads`, cloud
+  drives under `~/Library/CloudStorage`) can make macOS show a privacy prompt
+  attributed to Watchtower, because the Desktop reads the documents and
+  launches `claude` from its own process. Accepted for the POC — the Desktop
+  warns at create; the real fix (read and launch outside the app process) is a
+  follow-up before any non-dogfood use.
+- **Full read tool set in a project session.** `watchtower mcp --project N`
+  mounts every read tool plain `watchtower mcp` does, and
+  `get_today_briefing` includes the PROJECTS block of every project. DEV-06's
+  scoping is a guardrail on Watchtower's own tools only — the agent runs as the
+  owner with a shell, so Claude Code's own permission prompt is the real
+  boundary.
+- **Audit rows outlive their project.** `agent_actions` rows with
+  `context_type='project'` are kept after a project delete as audit history
+  and are never shown on the Inbox action strip.
+- **Re-anchor hides an owner root.** A Desktop re-anchor that marks an owner
+  root `outdated` removes it from the agent's new-for-agent channels
+  (`list_comments`, the brief, the board counts); the owner has to reopen or
+  re-post it.
+
 ## Changelog
 
+- 2026-09-30 (fix wave 2 of PR #30): "v1 limits and notes" section added — TCC attribution accepted for the POC (owner decision), a project session's full read tool set with DEV-06 as a Watchtower-tools guardrail only, project audit rows kept after a delete and never on the action strip, and a re-anchored `outdated` owner root leaving the agent's new-for-agent channels. No contract semantics or guard tests changed.
 - 2026-09-29 (Phase 5 of the Projects POC, spec `docs/superpowers/specs/2026-09-29-project-board-poc-design.md`): **PROJ-01** gains its Desktop guards — `testProj01_FetchAllNeverReturnsAProjectTarget`, `testProj01_FetchAllTagFilterNeverReturnsAProjectTarget`, `testProj01_FetchCountsIgnoreProjectTargets`, `testProj01_DueTodayIgnoresProjectTargets`, `testProj01_DistinctTagsNeverListAProjectTargetsTag`, `testProj01_MentionPickerNeverOffersAProjectTarget` (`Tests/Core/ProjectTargetExclusionTests.swift`) and `testProj01_TargetsBadgeIgnoresProjectTargets` (`Tests/SidebarCountsViewModelTests.swift`); the Observable now lists the Swift readers (`TargetQueries.fetchAll/fetchCounts/fetchDistinctTags`, `ChatEntitySearch.targets`). **PROJ-02** is strengthened on the Desktop side: "Wipe LLM data" (`DatabaseManager.wipeLLMData`) no longer deletes project targets, which are `source_type='chat'` (guard `testWipeLLMDataPreservesProjectTargets`) — only a project delete removes a board; the Desktop delete (`ProjectsViewModel.deleteProject`) closes the project's terminal before running `watchtower project delete`, keeps the project listed on a CLI failure, and closes the terminal of a project deleted from outside (`ProjectsViewModelDeleteTests`). The daily briefing reads project boards through `gatherProjects` into its own PROJECTS block (`briefing.daily` v8) — a board reader by design, not a PROJ-01 leak: project targets still never enter the briefing's YOUR TARGETS input (`GetTargetsForBriefing`) nor `target_id`. This also completes the folder-removal half of **PROJ-02** (Task 12) and **PROJ-04** (Tasks 11–12); both now hold the `Enforced` status recorded above in full — the creation entry below's "pending"/"Planned" phrasing described only that day's state.
 - 2026-09-29: file created with PROJ-01..04 by the Projects POC (spec `docs/superpowers/specs/2026-09-29-project-board-poc-design.md` §7, plan `docs/superpowers/plans/2026-09-29-projects-poc.md`). PROJ-01 Enforced on the Go side (Task 3's reader exclusions + the registry's session-scoped `list_targets`/`get_target`, Task 7); PROJ-02 Enforced for the database (Task 4) with the folder half pending Task 12; PROJ-03 Planned (Task 16); PROJ-04 Planned (Tasks 11–12). The write path into these tables from Claude Code is contract DEV-06 in `dev-surface.md`.
