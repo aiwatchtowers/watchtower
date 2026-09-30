@@ -809,3 +809,32 @@ func TestParseTagsFlag(t *testing.T) {
 	assert.Equal(t, `["a","b"]`, parseTagsFlag("a, b"))
 	assert.Equal(t, `["a"]`, parseTagsFlag("a,, ,"))
 }
+
+// A personal target can never take a project target as its parent, through
+// create or link --parent alike (the db layer's same-board rule).
+func TestRunTargets_ParentOnAnotherBoardIsRefused(t *testing.T) {
+	cleanup := setupTargetsTestEnv(t)
+	defer cleanup()
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	pid, err := database.CreateProject("acme", t.TempDir())
+	require.NoError(t, err)
+	projectTarget, err := database.CreateTarget(db.Target{Text: "project parent", Level: "day",
+		PeriodStart: "2026-04-23", PeriodEnd: "2026-04-23", Status: "todo", Priority: "medium",
+		Ownership: "mine", SourceType: "manual", ProjectID: sql.NullInt64{Int64: pid, Valid: true}})
+	require.NoError(t, err)
+	database.Close()
+	personal := createTestTarget(t, "Personal", "medium", "todo")
+
+	targetsFlagText, targetsFlagPriority, targetsFlagOwnership = "Child", "medium", "mine"
+	targetsFlagSourceType, targetsFlagLevel = "manual", "day"
+	targetsFlagParent = int(projectTarget)
+	t.Cleanup(func() { targetsFlagParent = 0 })
+	targetsCreateCmd.SetOut(new(bytes.Buffer))
+	assert.ErrorIs(t, targetsCreateCmd.RunE(targetsCreateCmd, nil), db.ErrParentOtherBoard)
+
+	targetsFlagLinkParent, targetsFlagLinkTo, targetsFlagLinkRelation, targetsFlagLinkExternal = int(projectTarget), 0, "", ""
+	t.Cleanup(func() { targetsFlagLinkParent = 0 })
+	targetsLinkCmd.SetOut(new(bytes.Buffer))
+	assert.ErrorIs(t, targetsLinkCmd.RunE(targetsLinkCmd, []string{strconv.FormatInt(personal, 10)}), db.ErrParentOtherBoard)
+}

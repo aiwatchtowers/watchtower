@@ -50,6 +50,10 @@ func (db *DB) CreateTarget(t Target) (int64, error) {
 		t.PeriodEnd = t.PeriodStart
 	}
 
+	if err := checkParentBoard(db, t.ParentID, t.ProjectID); err != nil {
+		return 0, err
+	}
+
 	// Derive initial progress from status (no children yet).
 	progress := statusToProgress(t.Status)
 
@@ -102,6 +106,13 @@ func (db *DB) UpdateTargetText(id int, text, intent string) error {
 // (mirroring UpdateTargetStatus semantics for leaf targets), and propagates
 // progress to both old and new parents when parent_id changes.
 func (db *DB) UpdateTarget(t Target) error {
+	if err := checkParentBoard(db, t.ParentID, t.ProjectID); err != nil {
+		return err
+	}
+	if err := checkChildrenBoard(db, int64(t.ID), t.ProjectID); err != nil {
+		return err
+	}
+
 	// Capture old parent before mutating.
 	var oldParentID sql.NullInt64
 	_ = db.QueryRow(`SELECT parent_id FROM targets WHERE id = ?`, t.ID).Scan(&oldParentID)
