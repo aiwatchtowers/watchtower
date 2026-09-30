@@ -44,6 +44,8 @@ final class ProjectDeleteSummaryTests: XCTestCase {
         XCTAssertTrue(s.message.contains("SessionStart hook"))
         XCTAssertTrue(s.message.contains("MCP registration"))
         XCTAssertTrue(s.message.contains(".git/info/exclude"))
+        XCTAssertTrue(s.message.contains("A skill you edited is kept"), "an edited skill is the owner's (PROJ-04)")
+        XCTAssertTrue(s.message.contains("exclude line whose file still exists"))
         XCTAssertTrue(s.message.contains("/tmp/acme"))
         XCTAssertTrue(s.message.contains("files themselves stay"), "attached documents are never deleted from disk")
         XCTAssertTrue(s.message.contains("terminal"), "the owner is told the running session is closed")
