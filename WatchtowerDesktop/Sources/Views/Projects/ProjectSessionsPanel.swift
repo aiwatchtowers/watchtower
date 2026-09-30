@@ -53,7 +53,8 @@ struct ProjectSessionsPanel: View {
 
     /// Board and Documents select through the List; a session row opens on
     /// its own click (`SessionRowActions.open`), which also reaches the row
-    /// already highlighted but not running.
+    /// already highlighted but not running. Arrow keys therefore move the
+    /// highlight without starting a session (VoiceOver has the row's action).
     private var selection: Binding<WorkspacePane?> {
         Binding(
             get: { vm.panelSelection },

@@ -63,27 +63,37 @@ extension ProjectsViewModel {
     /// is in `sessionLoadErrors`; the cached list is then stale.
     @discardableResult
     func loadSessions(projectID: Int64?) async -> Bool {
+        guard let projectID else { return await loadStandaloneSessions() }
         do {
-            if let projectID {
-                terminalSessions[projectID] = try await dbPool.read {
-                    try TerminalSessionQueries.fetchForProject($0, projectID: projectID)
-                }
-            } else {
-                standaloneLoads += 1
-                let load = standaloneLoads
-                let rows = try await dbPool.read { try TerminalSessionQueries.fetchStandalone($0) }
-                // An older read finishing last must not undo a newer one
-                // (nor unselect a terminal created in between).
-                guard load == standaloneLoads else { return true }
-                standaloneSessions = rows
-                if let id = selectedStandaloneID, !standaloneSessions.contains(where: { $0.id == id }) {
-                    selectedStandaloneID = nil
-                }
+            terminalSessions[projectID] = try await dbPool.read {
+                try TerminalSessionQueries.fetchForProject($0, projectID: projectID)
             }
             sessionLoadErrors[projectID] = nil
             return true
         } catch {
             sessionLoadErrors[projectID] = "Could not load terminal sessions: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    /// Only the latest read is applied, success or failure: an older one
+    /// finishing last must not undo a newer list, unselect a terminal
+    /// created in between, or show an error over a fresh list.
+    private func loadStandaloneSessions() async -> Bool {
+        standaloneLoads += 1
+        let load = standaloneLoads
+        do {
+            let rows = try await dbPool.read { try TerminalSessionQueries.fetchStandalone($0) }
+            guard load == standaloneLoads else { return true }
+            standaloneSessions = rows
+            if let id = selectedStandaloneID, !rows.contains(where: { $0.id == id }) {
+                selectedStandaloneID = nil
+            }
+            sessionLoadErrors[nil] = nil
+            return true
+        } catch {
+            guard load == standaloneLoads else { return true }
+            sessionLoadErrors[nil] = "Could not load terminal sessions: \(error.localizedDescription)"
             return false
         }
     }
