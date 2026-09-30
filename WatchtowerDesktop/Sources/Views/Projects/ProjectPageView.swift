@@ -134,6 +134,7 @@ struct ProjectPageView: View {
         switch vm.pane {
         case .terminal:
             ProjectTerminalView(project: project)
+                .id(project.id)
         case .board:
             ProjectBoardView(projectID: project.id)
                 .id(project.id)
