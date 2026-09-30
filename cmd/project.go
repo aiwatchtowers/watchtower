@@ -308,6 +308,12 @@ func printImportReport(w io.Writer, rep projectdocs.Report) {
 			fmt.Fprintf(w, "  - %s\n", rel)
 		}
 	}
+	if n := len(rep.Unreadable); n > 0 {
+		fmt.Fprintf(w, "Skipped %d path(s) that could not be read:\n", n)
+		for _, rel := range rep.Unreadable {
+			fmt.Fprintf(w, "  ! %s\n", rel)
+		}
+	}
 }
 
 func runProjectList(cmd *cobra.Command, _ []string) error {

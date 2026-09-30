@@ -39,6 +39,10 @@ final class ProjectsViewModel {
     private var installNotes: [Int64: String] = [:]
     /// Why the last status read failed; the next successful read clears it.
     private var statusReadErrors: [Int64: String] = [:]
+    /// What create's document import could not do (`ProjectCreated.importNote`),
+    /// per project. A status read says nothing about it, so it stays for the
+    /// session; a retry runs in the terminal, which the Desktop does not watch.
+    private(set) var importNotes: [Int64: String] = [:]
     /// The page's error line, per project — never the shared `errorMessage`,
     /// where one project's failure would outlive a switch to another.
     var installErrors: [Int64: String] {
@@ -149,7 +153,7 @@ final class ProjectsViewModel {
     }
 
     func isRevised(_ document: ProjectDocument) -> Bool {
-        viewed[String(document.id)] != document.updatedAt
+        !document.isImported && viewed[String(document.id)] != document.updatedAt
     }
 
     func markDocumentViewed(_ document: ProjectDocument) {
@@ -266,6 +270,7 @@ final class ProjectsViewModel {
             errorMessage = "Could not create the project: \(error.localizedDescription)"
             return
         }
+        importNotes[created.id] = created.importNote
         var installed = true
         do {
             try await cli.install(projectID: created.id)

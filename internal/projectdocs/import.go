@@ -14,6 +14,7 @@ type Report struct {
 	Imported        []string `json:"imported"`         // attached now (or, in a dry run, would be)
 	AlreadyAttached []string `json:"already_attached"` // found, left untouched
 	SkippedOverCap  []string `json:"skipped_over_cap"` // new, but past MaxImport this run: not attached
+	Unreadable      []string `json:"unreadable"`       // "<rel_path>: <reason>", skipped; the rest imported
 	DryRun          bool     `json:"dry_run"`
 }
 
@@ -22,7 +23,7 @@ type Report struct {
 // idempotent: an attached rel_path is never touched, so running it again
 // (e.g. a re-run of setup) only adds what is new. A dry run writes nothing.
 func Import(d *db.DB, p *db.Project, dryRun bool) (Report, error) {
-	found, err := Scan(p.FolderPath)
+	found, unreadable, err := Scan(p.FolderPath)
 	if err != nil {
 		return Report{}, err
 	}
@@ -30,7 +31,8 @@ func Import(d *db.DB, p *db.Project, dryRun bool) (Report, error) {
 	if err != nil {
 		return Report{}, err
 	}
-	rep := Report{Imported: []string{}, AlreadyAttached: []string{}, SkippedOverCap: []string{}, DryRun: dryRun}
+	rep := Report{Imported: []string{}, AlreadyAttached: []string{}, SkippedOverCap: []string{},
+		Unreadable: append([]string{}, unreadable...), DryRun: dryRun}
 	var todo []db.ProjectDocument
 	for _, c := range found {
 		switch {

@@ -137,4 +137,30 @@ final class ProjectNotificationPolicyTests: XCTestCase {
         XCTAssertTrue(current.persisted.ownerTouched.isEmpty)
         XCTAssertEqual(current.persisted.lastAgentCommentID, 3)
     }
+
+    // MARK: imported documents (migration 00083)
+
+    func testImportedDocumentIsNeverReadyForReviewButItsCommentsStillAnswer() {
+        let imported = Policy.DocumentState(title: "README", updatedAt: "t1", openOwnerComments: 1, imported: true)
+        XCTAssertTrue(Policy.decide(previous: snapshot(), current: snapshot(documents: [1: imported])).isEmpty,
+                      "an import is not a document written for review")
+
+        let answered = Policy.DocumentState(title: "README", updatedAt: "t1", openOwnerComments: 0, imported: true)
+        let notices = Policy.decide(previous: snapshot(documents: [1: imported]), current: snapshot(documents: [1: answered]))
+        XCTAssertEqual(notices.map(\.kind), [.commentsAnswered])
+
+        let reattached = doc("README", "t2", open: 1)
+        XCTAssertEqual(Policy.decide(previous: snapshot(documents: [1: imported]), current: snapshot(documents: [1: reattached]))
+            .map(\.kind), [.documentReady], "an agent re-attach is a revision")
+    }
+
+    func testSnapshotPersistedBeforeTheImportedKeyDecodes() throws {
+        let json = #"{"title":"Spec","updatedAt":"t1","openOwnerComments":2}"#
+        let state = try JSONDecoder().decode(Policy.DocumentState.self, from: Data(json.utf8))
+        XCTAssertEqual(state, doc("Spec", "t1", open: 2))
+        let roundTrip = try JSONDecoder().decode(
+            Policy.DocumentState.self, from: JSONEncoder().encode(Policy.DocumentState(
+                title: "R", updatedAt: "t", openOwnerComments: 0, imported: true)))
+        XCTAssertTrue(roundTrip.imported)
+    }
 }

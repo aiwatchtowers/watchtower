@@ -114,6 +114,23 @@ final class ProjectBoardViewModelTests: XCTestCase {
         XCTAssertEqual(stored?.status, "todo")
     }
 
+    func testSetPriorityWritesTheSelectedTargetAndRejectsOthers() throws {
+        let (pid, tid) = try dbManager.dbPool.write { db -> (Int64, Int64) in
+            let pid = try Self.insertProject(db)
+            return (pid, try Self.insertTarget(db, project: pid, text: "Task"))
+        }
+        let vm = makeVM(project: pid)
+        vm.load()
+        vm.select(Int(tid))
+        vm.setPriority("high")
+        XCTAssertEqual(vm.selectedNode?.target.priority, "high")
+        vm.setPriority("urgent")
+
+        let stored = try dbManager.dbPool.read { try TargetQueries.fetchByID($0, id: Int(tid)) }
+        XCTAssertEqual(stored?.priority, "high")
+        XCTAssertNil(vm.errorMessage)
+    }
+
     func testRenameTrimsAndIgnoresBlank() throws {
         let (pid, tid) = try dbManager.dbPool.write { db -> (Int64, Int64) in
             let pid = try Self.insertProject(db)

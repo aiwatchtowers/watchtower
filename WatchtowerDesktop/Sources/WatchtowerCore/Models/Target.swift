@@ -275,6 +275,7 @@ package struct Target: FetchableRecord, TableRecord, Codable, Identifiable, Equa
         switch status {
         case "todo":       return "circle"
         case "in_progress": return "circle.dotted.circle"
+        case "in_review":  return "eye.circle"
         case "blocked":    return "exclamationmark.circle"
         case "done":       return "checkmark.circle.fill"
         case "dismissed":  return "xmark.circle"
@@ -287,6 +288,7 @@ package struct Target: FetchableRecord, TableRecord, Codable, Identifiable, Equa
         switch status {
         case "todo":       return "secondary"
         case "in_progress": return "blue"
+        case "in_review":  return "teal"
         case "blocked":    return "red"
         case "done":       return "green"
         case "dismissed":  return "gray"

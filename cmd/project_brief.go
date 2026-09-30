@@ -1,10 +1,12 @@
 package cmd
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"math"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -31,9 +33,10 @@ var projectBriefCmd = &cobra.Command{
 	Use:   "brief",
 	Short: "Print a project's brief for Claude Code (the SessionStart hook body)",
 	Long: "Prints at most 4000 characters: target counts, the open part of the board with\n" +
-		"ids, status and priority (board order, done omitted), comments waiting for the agent, and the\n" +
-		"board rules. Always exits 0 — a hook must never break a session start, so any\n" +
-		"failure (project gone, folder moved, database unreadable) is one line.",
+		"ids, status and priority (in progress and blocked first, then by priority; done omitted),\n" +
+		"comments waiting for the agent, and the board rules. Always exits 0 — a hook must\n" +
+		"never break a session start, so any failure (project gone, folder moved, database\n" +
+		"unreadable) is one line.",
 	// No root schema/config pre-run: a broken config would otherwise fail the
 	// hook before RunE could turn it into the one-line brief (the
 	// extract-pdf-text precedent). loadProjectBrief loads config itself.
@@ -185,13 +188,14 @@ func fitBriefSection(title string, lines []string, limit int, what string) strin
 
 func briefClosed(status string) bool { return status == "done" || status == "dismissed" }
 
-// briefTargetLines lists the open targets depth-first in board order. A
-// closed target is omitted; its open children stay, at its depth.
+// briefTargetLines lists the open targets depth-first, each level in
+// briefLevel order. A closed target is omitted; its open children stay, at
+// its depth.
 func briefTargetLines(board []db.BoardNode) []string {
 	var lines []string
 	var walk func([]db.BoardNode, int)
 	walk = func(level []db.BoardNode, depth int) {
-		for _, n := range level {
+		for _, n := range briefLevel(level) {
 			if briefClosed(n.Target.Status) {
 				walk(n.Children, depth)
 				continue
@@ -202,6 +206,36 @@ func briefTargetLines(board []db.BoardNode) []string {
 	}
 	walk(board, 0)
 	return lines
+}
+
+// briefLevel puts subtrees holding in-progress, then blocked work before the
+// rest, so the active part of a long board survives the 4000-rune cut. The
+// board sorts siblings by priority first; within a rank that order is kept.
+func briefLevel(level []db.BoardNode) []db.BoardNode {
+	out := slices.Clone(level)
+	slices.SortStableFunc(out, func(a, b db.BoardNode) int { return cmp.Compare(briefRank(a), briefRank(b)) })
+	return out
+}
+
+// briefRank is the most active open status in n's subtree: 0 in_progress,
+// 1 blocked, 2 todo, 3 nothing open. A todo feature with a task in progress
+// ranks as in progress; a closed target counts only through its children.
+func briefRank(n db.BoardNode) int {
+	rank := 3
+	if !briefClosed(n.Target.Status) {
+		switch n.Target.Status {
+		case "in_progress":
+			rank = 0
+		case "blocked":
+			rank = 1
+		default:
+			rank = 2
+		}
+	}
+	for _, c := range n.Children {
+		rank = min(rank, briefRank(c))
+	}
+	return rank
 }
 
 func briefTargetLine(n db.BoardNode, depth int) string {
