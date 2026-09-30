@@ -176,6 +176,7 @@ type boardNodeView struct {
 	Status         string          `json:"status"`
 	Priority       string          `json:"priority"`
 	Progress       float64         `json:"progress"`
+	StatusSince    string          `json:"status_since,omitempty"` // when it entered its current status (UTC)
 	NewForAgent    int             `json:"comments_new_for_agent,omitempty"`
 	UnreadForOwner int             `json:"comments_unread_for_owner,omitempty"`
 	Documents      []documentView  `json:"documents,omitempty"`
@@ -193,7 +194,7 @@ type projectBoardView struct {
 func NewProjectBoard() *Tool {
 	return &Tool{
 		Name: "project_board",
-		Description: "The project board: the target tree (ids, status, priority, progress, comment counters, " +
+		Description: "The project board: the target tree (ids, status and since when, priority, progress, comment counters, " +
 			"linked documents; siblings sorted by priority, then status) and every attached document. " +
 			"Read it before changing the board.",
 		InputSchema: mustSchema[emptyArgs]("project_board"),
@@ -223,7 +224,7 @@ func boardViews(nodes []db.BoardNode) []boardNodeView {
 		out = append(out, boardNodeView{
 			ID: n.Target.ID, Text: n.Target.Text, Intent: n.Target.Intent,
 			Status: n.Target.Status, Priority: n.Target.Priority, Progress: n.Target.Progress,
-			NewForAgent: n.NewForAgent, UnreadForOwner: n.UnreadForOwner,
+			StatusSince: n.StatusSince, NewForAgent: n.NewForAgent, UnreadForOwner: n.UnreadForOwner,
 			Documents: documentViews(n.Documents), Children: boardViews(n.Children),
 		})
 	}

@@ -77,14 +77,24 @@ func TestGatherProjects_ReportsActivityAndSkipsQuietProjects(t *testing.T) {
 	require.True(t, has)
 	assert.Contains(t, ctx, "[project_id=")
 	assert.Contains(t, ctx, "acme")
-	assert.Contains(t, ctx, "In progress (1): Payments feature")
-	assert.Contains(t, ctx, "Blocked (1): Task 3: wire the API")
+	// The feature's only open child is blocked, so it rolls up to blocked (PROJ-05).
+	assert.Contains(t, ctx, "Blocked (2): Payments feature; Task 3: wire the API")
 	assert.Contains(t, ctx, "Done since the last briefing (1): Task 1: schema")
 	assert.NotContains(t, ctx, "Task 0: spike", "done before the window")
 	assert.Contains(t, ctx, "Unread agent comments: 1")
 	assert.Contains(t, ctx, "Documents with open owner comments (1): Payments plan")
 	assert.NotContains(t, ctx, "quiet", "a project with no activity is omitted")
 	assert.True(t, pipe.shown.projects[busy])
+}
+
+func TestGatherProjects_ListsTargetsInReview(t *testing.T) {
+	d := testDB(t)
+	pid := seedProject(t, d, "acme")
+	seedProjectTarget(t, d, pid, 0, "Task 2: review me", "in_review", "2026-09-29T09:00:00Z")
+	pipe := New(d, testConfig(), &mockGenerator{}, log.New(io.Discard, "", 0))
+	ctx, has := pipe.gatherProjects(time.Now().Add(-24 * time.Hour))
+	require.True(t, has)
+	assert.Contains(t, ctx, "In review (1): Task 2: review me")
 }
 
 func TestGatherProjects_CapsItemsPerLine(t *testing.T) {

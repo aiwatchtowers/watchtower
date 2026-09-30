@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
@@ -56,7 +57,7 @@ func TestRenderProjectBrief_LargeBoardStaysWithinBudget(t *testing.T) {
 	p.Name = strings.Repeat("very long name ", 500)
 	p.FolderPath = "/tmp/" + strings.Repeat("deep/", 500)
 
-	out := renderProjectBrief(board, p, comments, docs)
+	out := renderProjectBrief(board, p, comments, docs, time.Now())
 
 	assert.LessOrEqual(t, utf8.RuneCountInString(out), briefMaxChars)
 	assert.True(t, utf8.ValidString(out))
@@ -67,15 +68,42 @@ func TestRenderProjectBrief_LargeBoardStaysWithinBudget(t *testing.T) {
 	}
 }
 
+// PROJ-06 surface: an in_review target is open, counted, and shows how long
+// it has held its status.
+func TestRenderProjectBrief_InReviewShowsTimeInStatus(t *testing.T) {
+	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	review := briefNode(8, "in_review", "reviewed task")
+	review.StatusSince = "2026-09-30T09:00:00Z"
+	out := renderProjectBrief([]db.BoardNode{review}, briefProject(), nil, nil, now)
+
+	assert.Contains(t, out, "Targets: 0 in progress, 1 in review, 0 blocked, 0 todo, 0 done.")
+	assert.Contains(t, out, "- #8 [in_review 3h, medium, 0%] reviewed task")
+	assert.Contains(t, out, "in_review when its review starts")
+}
+
+func TestStatusAge(t *testing.T) {
+	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	for since, want := range map[string]string{
+		"":                     "",
+		"not a time":           "",
+		"2026-09-30T11:59:30Z": "<1m",
+		"2026-09-30T11:48:00Z": "12m",
+		"2026-09-30T07:00:00Z": "5h",
+		"2026-09-27T11:00:00Z": "3d",
+	} {
+		assert.Equal(t, want, statusAge(since, now), since)
+	}
+}
+
 func TestRenderProjectBrief_OpenTreeInProgressFirstDoneOmitted(t *testing.T) {
 	board := []db.BoardNode{
 		briefNode(3, "in_progress", "active feature", briefNode(4, "todo", "open task")),
 		briefNode(1, "todo", "later feature"),
 		briefNode(2, "done", "shipped feature", briefNode(5, "todo", "leftover task")),
 	}
-	out := renderProjectBrief(board, briefProject(), nil, nil)
+	out := renderProjectBrief(board, briefProject(), nil, nil, time.Now())
 
-	assert.Contains(t, out, "Targets: 1 in progress, 0 blocked, 3 todo, 1 done.")
+	assert.Contains(t, out, "Targets: 1 in progress, 0 in review, 0 blocked, 3 todo, 1 done.")
 	active := strings.Index(out, "#3 [in_progress")
 	later := strings.Index(out, "#1 [todo")
 	require.NotEqual(t, -1, active)
@@ -143,7 +171,7 @@ func TestRenderProjectBrief_CommentsTargetsFirstThenDocumentsWithHeadingAndQuote
 			AnchorHeading: "Task 3", AnchorQuote: "one big step"},
 		{ID: 22, TargetID: sql.NullInt64{Int64: 3, Valid: true}, Author: "owner", Body: "Use the new API"},
 	}
-	out := renderProjectBrief(board, briefProject(), comments, docs)
+	out := renderProjectBrief(board, briefProject(), comments, docs, time.Now())
 
 	onTarget := strings.Index(out, `comment #22 on target #3 "active feature": Use the new API`)
 	onDoc := strings.Index(out, `comment #21 on document #9 docs/plan.md § Task 3 on "one big step": Split task 3`)
@@ -155,7 +183,7 @@ func TestRenderProjectBrief_CommentsTargetsFirstThenDocumentsWithHeadingAndQuote
 func TestRenderProjectBrief_EmptyProjectAsksForSetup(t *testing.T) {
 	p := briefProject()
 	p.Description = ""
-	out := renderProjectBrief(nil, p, nil, nil)
+	out := renderProjectBrief(nil, p, nil, nil, time.Now())
 	assert.Contains(t, out, "Setup pending")
 	assert.Contains(t, out, "Open targets: none.")
 }

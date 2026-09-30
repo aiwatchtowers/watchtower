@@ -435,3 +435,28 @@ func TestUpdateTarget_FailureMidUpdateRollsBack(t *testing.T) {
 	assert.Equal(t, "Alpha feature", got.Text, "the rename rolled back")
 	assert.Equal(t, "todo", got.Status, "the status change rolled back")
 }
+
+// PROJ-06 through the agent's tools: update_target accepts in_review and is
+// recorded as the agent's, get_target carries the status history, and the
+// board says since when each target holds its status.
+func TestUpdateTarget_InReviewIsRecordedAsTheAgentsAndShown(t *testing.T) {
+	fx := newProjectFixture(t)
+	reg := projectRegistry(t, fx.d)
+	mustApply(t, reg, fx.a, "update_target", fmt.Sprintf(`{"target_id":%d,"status":"in_progress","reason":"started"}`, fx.aTarget))
+	mustApply(t, reg, fx.a, "update_target", fmt.Sprintf(`{"target_id":%d,"status":"in_review","reason":"review started"}`, fx.aTarget))
+
+	got := callReadIn(t, reg, fx.a, "get_target", fmt.Sprintf(`{"id":%d}`, fx.aTarget))
+	assert.Contains(t, got, `"Status":"in_review"`)
+	assert.Contains(t, got, `"status_history":[{"id":`)
+	assert.Contains(t, got, `"from_status":"in_progress","to_status":"in_review","changed_at":"`)
+	assert.Contains(t, got, `"actor":"agent"`)
+	assert.NotContains(t, got, `"actor":"owner"`, "every write here was the agent's")
+
+	board := callReadIn(t, reg, fx.a, "project_board", `{}`)
+	assert.Contains(t, board, `"status":"in_review","priority":"medium","progress":0.8,"status_since":"`)
+
+	plain, err := reg.CallRead(context.Background(), "get_target", json.RawMessage(fmt.Sprintf(`{"id":%d}`, fx.plain)), Binding{})
+	require.NoError(t, err)
+	_, isTarget := plain.(*db.Target)
+	assert.True(t, isTarget, "a non-project session's get_target keeps its old shape")
+}

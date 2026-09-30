@@ -167,7 +167,7 @@ func targetInputs(items []newTargetItem) []db.ProjectTargetInput {
 
 type updateTargetArgs struct {
 	TargetID int64    `json:"target_id" jsonschema:"the project target to change"`
-	Status   string   `json:"status,omitempty" jsonschema:"todo | in_progress | blocked | done | dismissed"`
+	Status   string   `json:"status,omitempty" jsonschema:"todo | in_progress | in_review | blocked | done | dismissed"`
 	Progress *float64 `json:"progress,omitempty" jsonschema:"0.0 to 1.0; set after status (a status change resets a leaf's progress)"`
 	Text     string   `json:"text,omitempty" jsonschema:"new title, at most 200 characters"`
 	Intent   string   `json:"intent,omitempty" jsonschema:"new intent"`
@@ -180,8 +180,8 @@ type updateTargetArgs struct {
 func NewUpdateTarget() *Tool {
 	return &Tool{
 		Name: "update_target",
-		Description: "Change a target on this project's board: status (todo, in_progress, blocked, done, " +
-			"dismissed), progress (0..1), title, intent or priority (high, medium, low). Applied immediately.",
+		Description: "Change a target on this project's board: status (todo, in_progress, in_review, blocked, done, " +
+			"dismissed; in_review while the work is being reviewed), progress (0..1), title, intent or priority (high, medium, low). Applied immediately.",
 		InputSchema: mustSchema[updateTargetArgs]("update_target"),
 		Access:      AccessWrite,
 		Surfaces:    projectSurfaces,
@@ -230,7 +230,7 @@ func validateTargetUpdate(a updateTargetArgs) error {
 	if err := validateEnum("priority", a.Priority, db.TargetPriorities...); err != nil {
 		return err
 	}
-	return validateEnum("status", a.Status, "todo", "in_progress", "blocked", "done", "dismissed")
+	return validateEnum("status", a.Status, "todo", "in_progress", "in_review", "blocked", "done", "dismissed")
 }
 
 // applyTargetUpdate writes title/intent and priority, then status, then progress — status
@@ -251,7 +251,7 @@ func applyTargetUpdate(d *db.DB, projectID int64, a updateTargetArgs) error {
 			}
 		}
 		if a.Status != "" && a.Status != t.Status {
-			if err := d.UpdateTargetStatusTx(tx, t.ID, a.Status); err != nil {
+			if err := d.UpdateTargetStatusAsTx(tx, t.ID, a.Status, db.ActorAgent); err != nil {
 				return fmt.Errorf("updating status: %w", err)
 			}
 		}

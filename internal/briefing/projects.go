@@ -22,13 +22,13 @@ const (
 
 // projectActivity is one project's slice of the briefing. Mechanical, no AI.
 type projectActivity struct {
-	inProgress, blocked, doneSince []string
-	unreadAgent                    int
-	docsAwaiting                   []string
+	inProgress, inReview, blocked, doneSince []string
+	unreadAgent                              int
+	docsAwaiting                             []string
 }
 
 func (a projectActivity) empty() bool {
-	return len(a.inProgress) == 0 && len(a.blocked) == 0 && len(a.doneSince) == 0 &&
+	return len(a.inProgress) == 0 && len(a.inReview) == 0 && len(a.blocked) == 0 && len(a.doneSince) == 0 &&
 		a.unreadAgent == 0 && len(a.docsAwaiting) == 0
 }
 
@@ -92,6 +92,8 @@ func (a *projectActivity) addTargets(nodes []db.BoardNode, sinceTS string) {
 		switch {
 		case n.Target.Status == "in_progress":
 			a.inProgress = append(a.inProgress, title)
+		case n.Target.Status == "in_review":
+			a.inReview = append(a.inReview, title)
 		case n.Target.Status == "blocked":
 			a.blocked = append(a.blocked, title)
 		case n.Target.Status == "done" && n.Target.UpdatedAt >= sinceTS:
@@ -122,6 +124,7 @@ func renderProjectActivity(pr db.Project, a projectActivity) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "--- [project_id=%d] %s (%s) ---\n", pr.ID, pr.Name, pr.FolderPath)
 	writeProjectLine(&sb, "In progress", a.inProgress)
+	writeProjectLine(&sb, "In review", a.inReview)
 	writeProjectLine(&sb, "Blocked", a.blocked)
 	writeProjectLine(&sb, "Done since the last briefing", a.doneSince)
 	if a.unreadAgent > 0 {

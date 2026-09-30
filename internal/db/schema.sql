@@ -399,7 +399,7 @@ CREATE TABLE IF NOT EXISTS targets (
     period_end          TEXT NOT NULL,
     parent_id           INTEGER REFERENCES targets(id) ON DELETE SET NULL,
     status              TEXT NOT NULL DEFAULT 'todo'
-                        CHECK(status IN ('todo','in_progress','blocked','done','dismissed','snoozed')),
+                        CHECK(status IN ('todo','in_progress','in_review','blocked','done','dismissed','snoozed')),
     priority            TEXT NOT NULL DEFAULT 'medium'
                         CHECK(priority IN ('high','medium','low')),
     ownership           TEXT NOT NULL DEFAULT 'mine'
@@ -423,7 +423,10 @@ CREATE TABLE IF NOT EXISTS targets (
     next_step_at        TEXT NOT NULL DEFAULT '',  -- when next_step was generated; compared to updated_at for staleness
     next_step_attempts     INTEGER NOT NULL DEFAULT 0,  -- attempts made since the last budget reset (see 00068)
     next_step_attempted_at TEXT NOT NULL DEFAULT '',   -- UTC ISO8601 of the most recent attempt (success or failure)
-    project_id          INTEGER REFERENCES projects(id) ON DELETE CASCADE  -- set = lives only on that project's board (00081)
+    project_id          INTEGER REFERENCES projects(id) ON DELETE CASCADE, -- set = lives only on that project's board (00081)
+    status_actor        TEXT DEFAULT NULL  -- who makes this status write: agent|owner|system; cleared by the history trigger (00086)
+                        CHECK(status_actor IS NULL OR status_actor IN ('agent','owner','system')),
+    CHECK(status != 'in_review' OR project_id IS NOT NULL)  -- in_review exists only on a project board (00086)
 );
 CREATE INDEX IF NOT EXISTS idx_targets_level       ON targets(level);
 CREATE INDEX IF NOT EXISTS idx_targets_parent      ON targets(parent_id);
@@ -444,6 +447,23 @@ CREATE INDEX IF NOT EXISTS idx_targets_project     ON targets(project_id);
 -- -> in_progress; else todo; no children -> untouched), walking up the
 -- ancestors while a status changes and never re-deriving a dismissed one.
 -- A parent's own update is never rolled up. Full bodies: the migration file.
+-- (00086: an in_review child counts as started like in_progress; a rollup
+-- write sets status_actor = 'system'.)
+
+-- Status history of project targets (00086, PROJ-06): one row per status
+-- transition and one at creation (from_status NULL), written by the triggers
+-- targets_status_history_{ai,au} for project targets only; actor copies
+-- targets.status_actor (unset = 'owner'). Existing project targets were
+-- seeded with one 'system' row dated by their updated_at.
+CREATE TABLE IF NOT EXISTS target_status_history (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    target_id   INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+    from_status TEXT,
+    to_status   TEXT NOT NULL,
+    changed_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),  -- UTC ISO-8601
+    actor       TEXT NOT NULL CHECK(actor IN ('agent','owner','system'))
+);
+CREATE INDEX IF NOT EXISTS idx_target_status_history_target ON target_status_history(target_id, changed_at);
 
 -- Links between targets or to external references
 CREATE TABLE IF NOT EXISTS target_links (

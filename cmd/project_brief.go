@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/spf13/cobra"
@@ -25,7 +26,7 @@ const (
 )
 
 var briefRules = []string{
-	"Board rules: set a target in_progress (update_target) before you work on it and done after; ask the owner with add_comment instead of stopping.",
+	"Board rules: set a target in_progress (update_target) before you work on it, in_review when its review starts and done once the review passes; ask the owner with add_comment instead of stopping.",
 	"Before revising an attached document call list_comments(document_id); resolve each comment you addressed (resolve_comment), then attach_document again.",
 }
 
@@ -121,7 +122,7 @@ func briefFromDB(database *db.DB, p *db.Project) string {
 	for _, d := range docs {
 		byID[d.ID] = d
 	}
-	return renderProjectBrief(board, p, comments, byID)
+	return renderProjectBrief(board, p, comments, byID, time.Now())
 }
 
 // briefUnavailable is the one-line brief for every failure.
@@ -131,7 +132,7 @@ func briefUnavailable(id int64, reason string) string {
 
 // renderProjectBrief is the hook body: header, the open tree, the comments new
 // for the agent, the rules — at most briefMaxChars runes. Pure.
-func renderProjectBrief(board []db.BoardNode, p *db.Project, comments []db.ProjectComment, docs map[int64]db.ProjectDocument) string {
+func renderProjectBrief(board []db.BoardNode, p *db.Project, comments []db.ProjectComment, docs map[int64]db.ProjectDocument, now time.Time) string {
 	head := briefHeader(p, board, len(comments))
 	rules := strings.Join(briefRules, "\n")
 	budget := briefMaxChars - utf8.RuneCountInString(head) - utf8.RuneCountInString(rules) - 3 // three joining newlines
@@ -140,7 +141,7 @@ func renderProjectBrief(board []db.BoardNode, p *db.Project, comments []db.Proje
 	if len(commentLines) > 0 {
 		treeBudget = budget / 2
 	}
-	tree := fitBriefSection("Open targets:", briefTargetLines(board), treeBudget, "targets (project_board)")
+	tree := fitBriefSection("Open targets:", briefTargetLines(board, now), treeBudget, "targets (project_board)")
 	section := fitBriefSection("New comments for you:", commentLines, budget-utf8.RuneCountInString(tree), "comments (list_comments)")
 	return strings.Join([]string{head, tree, section, rules}, "\n")
 }
@@ -149,8 +150,8 @@ func briefHeader(p *db.Project, board []db.BoardNode, newComments int) string {
 	c := countBoardStatuses(board)
 	lines := []string{
 		briefClip(fmt.Sprintf("Watchtower project #%d %q — %s", p.ID, p.Name, p.FolderPath), briefLineChars),
-		fmt.Sprintf("Targets: %d in progress, %d blocked, %d todo, %d done. New comments for you: %d.",
-			c["in_progress"], c["blocked"], c["todo"], c["done"], newComments),
+		fmt.Sprintf("Targets: %d in progress, %d in review, %d blocked, %d todo, %d done. New comments for you: %d.",
+			c["in_progress"], c["in_review"], c["blocked"], c["todo"], c["done"], newComments),
 	}
 	if strings.TrimSpace(p.Description) == "" {
 		lines = append(lines, "Setup pending: run the watchtower-project skill's setup (project_info, update_project, first board).")
@@ -191,7 +192,7 @@ func briefClosed(status string) bool { return status == "done" || status == "dis
 // briefTargetLines lists the open targets depth-first, each level in
 // briefLevel order. A closed target is omitted; its open children stay, at
 // its depth.
-func briefTargetLines(board []db.BoardNode) []string {
+func briefTargetLines(board []db.BoardNode, now time.Time) []string {
 	var lines []string
 	var walk func([]db.BoardNode, int)
 	walk = func(level []db.BoardNode, depth int) {
@@ -200,7 +201,7 @@ func briefTargetLines(board []db.BoardNode) []string {
 				walk(n.Children, depth)
 				continue
 			}
-			lines = append(lines, briefTargetLine(n, depth))
+			lines = append(lines, briefTargetLine(n, depth, now))
 			walk(n.Children, depth+1)
 		}
 	}
@@ -218,18 +219,20 @@ func briefLevel(level []db.BoardNode) []db.BoardNode {
 }
 
 // briefRank is the most active open status in n's subtree: 0 in_progress,
-// 1 blocked, 2 todo, 3 nothing open. A todo feature with a task in progress
+// 1 in_review, 2 blocked, 3 todo, 4 nothing open. A todo feature with a task in progress
 // ranks as in progress; a closed target counts only through its children.
 func briefRank(n db.BoardNode) int {
-	rank := 3
+	rank := 4
 	if !briefClosed(n.Target.Status) {
 		switch n.Target.Status {
 		case "in_progress":
 			rank = 0
-		case "blocked":
+		case "in_review":
 			rank = 1
-		default:
+		case "blocked":
 			rank = 2
+		default:
+			rank = 3
 		}
 	}
 	for _, c := range n.Children {
@@ -238,10 +241,10 @@ func briefRank(n db.BoardNode) int {
 	return rank
 }
 
-func briefTargetLine(n db.BoardNode, depth int) string {
+func briefTargetLine(n db.BoardNode, depth int, now time.Time) string {
 	indent := strings.Repeat("  ", min(depth, 4))
 	t := n.Target
-	line := fmt.Sprintf("- #%d [%s, %s, %d%%] %s", t.ID, t.Status, t.Priority, int(math.Round(t.Progress*100)), t.Text)
+	line := fmt.Sprintf("- #%d [%s, %s, %d%%] %s", t.ID, statusWithAge(n, now), t.Priority, int(math.Round(t.Progress*100)), t.Text)
 	if n.NewForAgent > 0 {
 		line += fmt.Sprintf(" (%d new comments)", n.NewForAgent)
 	}
