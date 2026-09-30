@@ -832,7 +832,7 @@ extension TestDatabase {
                     g.project_id, chain.depth + 1
                 FROM chain
                 JOIN targets g ON g.id = chain.parent AND g.project_id = chain.pid
-                WHERE chain.depth < 64
+                WHERE chain.depth < 256
                   AND (chain.depth = 0
                        OR (chain.st IS NOT NULL
                            AND chain.st != (SELECT s.status FROM targets s WHERE s.id = chain.id)))
@@ -870,7 +870,7 @@ extension TestDatabase {
                     g.project_id, chain.depth + 1
                 FROM chain
                 JOIN targets g ON g.id = chain.parent AND g.project_id = chain.pid
-                WHERE chain.depth < 64
+                WHERE chain.depth < 256
                   AND (chain.depth = 0
                        OR (chain.st IS NOT NULL
                            AND chain.st != (SELECT s.status FROM targets s WHERE s.id = chain.id)))
@@ -903,7 +903,7 @@ extension TestDatabase {
                     g.project_id, chain.depth + 1
                 FROM chain
                 JOIN targets g ON g.id = chain.parent AND g.project_id = chain.pid
-                WHERE chain.depth < 64
+                WHERE chain.depth < 256
                   AND (chain.depth = 0
                        OR (chain.st IS NOT NULL
                            AND chain.st != (SELECT s.status FROM targets s WHERE s.id = chain.id)))
@@ -934,7 +934,7 @@ extension TestDatabase {
                     g.project_id, chain.depth + 1
                 FROM chain
                 JOIN targets g ON g.id = chain.parent AND g.project_id = chain.pid
-                WHERE chain.depth < 64
+                WHERE chain.depth < 256
                   AND (chain.depth = 0
                        OR (chain.st IS NOT NULL
                            AND chain.st != (SELECT s.status FROM targets s WHERE s.id = chain.id)))

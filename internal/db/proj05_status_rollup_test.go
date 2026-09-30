@@ -273,6 +273,9 @@ func TestProj05_SameResultWithRecursiveTriggersOn(t *testing.T) {
 	d := openTestDB(t)
 	_, err := d.Exec(`PRAGMA recursive_triggers = ON`)
 	require.NoError(t, err)
+	var on int
+	require.NoError(t, d.QueryRow(`PRAGMA recursive_triggers`).Scan(&on))
+	require.Equal(t, 1, on, "the pragma is on for the connection the writes use")
 	pid := newTestProject(t, d)
 	root := insertProjectTargetRow(t, d, pid, "plan")
 	mid := insertBoardChild(t, d, pid, root, "todo")

@@ -167,12 +167,27 @@ at a glance.
   (and the other `TestProj05_*` in that file: multi-level chain, override,
   insert/delete/move, non-project and other-project rows, `updated_at`,
   `recursive_triggers` on, project delete with a multi-level board)
+- `internal/db/proj05_status_rollup_edges_test.go` — moves out of a parent that keeps children,
+  a shared ancestor, a child leaving/joining the project, multi-row updates, deletes, a
+  100-level chain, and `TestProj05_SwiftTestSchemaMirrorsTheTriggers` (the Swift test
+  schema's copy of the triggers equals the migration's)
 - `internal/db/project_status_rollup_migration_test.go::TestMigration00085_RecomputesExistingBoards`
 - `WatchtowerDesktop/Tests/Core/ProjectStatusRollupTests.swift::testGRDBChildStatusUpdateRollsTheChainUp`
+- `WatchtowerDesktop/Tests/ProjectBoardViewModelTests.swift::testStatusWriteReportsTheParentsTheRollupMoved`
+  (parents the rollup moved in an owner's write count as the owner's writes — no "done" notice)
 
 **Locked since:** 2026-09-30
 
 ## v1 limits and notes (accepted)
+
+- **Status rollup bounds (PROJ-05).** The ancestor walk stops after 256
+  levels, and a `parent_id` cycle (no writer creates one, nothing forbids
+  it) is skipped by the one-time recompute and, when a member changes, ends
+  with its members sharing whatever status the walk reached. A full-row write
+  of a parent loaded before a child changed (`db.UpdateTarget` with a stale
+  struct) puts the old status back as if set explicitly; the next child
+  change re-derives it. All children `dismissed` rolls the parent to `done`,
+  and a `snoozed` child counts as not started.
 
 - **TCC attribution (owner decision 2026-09-30).** A project folder under a
   TCC-protected location (`~/Documents`, `~/Desktop`, `~/Downloads`, cloud

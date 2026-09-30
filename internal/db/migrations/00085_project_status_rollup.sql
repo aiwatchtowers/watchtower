@@ -32,6 +32,10 @@
 -- r.st), so the rollup never makes a parent look freshly edited to the
 -- next-step attempt budget.
 --
+-- Bounds: the walk stops after 256 ancestors, so a parent_id cycle (which no
+-- writer creates, but nothing forbids) cannot loop; its members then share
+-- whatever status the walk reached.
+--
 -- Scope: only project targets (project_id IS NOT NULL), and only within the
 -- child's own project — a non-project target or another project's row is
 -- never read as a child nor written (PROJ-01).
@@ -67,7 +71,8 @@ BEGIN
 END;
 -- +goose StatementEnd
 
--- depth = distance from the board root; a cycle is cut at 64 levels.
+-- depth = distance from the board root. A parent_id cycle has no root, so
+-- the recompute skips it (the live triggers still roll it on its next change).
 INSERT INTO project_status_rollup_seed (id)
 WITH RECURSIVE tree(id, depth) AS (
     SELECT t.id, 0 FROM targets t
@@ -80,7 +85,7 @@ WITH RECURSIVE tree(id, depth) AS (
     FROM tree
     JOIN targets p ON p.id = tree.id
     JOIN targets c ON c.parent_id = p.id AND c.project_id = p.project_id
-    WHERE tree.depth < 64
+    WHERE tree.depth < 256
 )
 SELECT tree.id FROM tree
 WHERE EXISTS (SELECT 1 FROM targets c JOIN targets p ON p.id = tree.id
@@ -121,7 +126,7 @@ BEGIN
                 g.project_id, chain.depth + 1
             FROM chain
             JOIN targets g ON g.id = chain.parent AND g.project_id = chain.pid
-            WHERE chain.depth < 64
+            WHERE chain.depth < 256
               AND (chain.depth = 0
                    OR (chain.st IS NOT NULL
                        AND chain.st != (SELECT s.status FROM targets s WHERE s.id = chain.id)))
@@ -162,7 +167,7 @@ BEGIN
                 g.project_id, chain.depth + 1
             FROM chain
             JOIN targets g ON g.id = chain.parent AND g.project_id = chain.pid
-            WHERE chain.depth < 64
+            WHERE chain.depth < 256
               AND (chain.depth = 0
                    OR (chain.st IS NOT NULL
                        AND chain.st != (SELECT s.status FROM targets s WHERE s.id = chain.id)))
@@ -195,7 +200,7 @@ BEGIN
                 g.project_id, chain.depth + 1
             FROM chain
             JOIN targets g ON g.id = chain.parent AND g.project_id = chain.pid
-            WHERE chain.depth < 64
+            WHERE chain.depth < 256
               AND (chain.depth = 0
                    OR (chain.st IS NOT NULL
                        AND chain.st != (SELECT s.status FROM targets s WHERE s.id = chain.id)))
@@ -229,7 +234,7 @@ BEGIN
                 g.project_id, chain.depth + 1
             FROM chain
             JOIN targets g ON g.id = chain.parent AND g.project_id = chain.pid
-            WHERE chain.depth < 64
+            WHERE chain.depth < 256
               AND (chain.depth = 0
                    OR (chain.st IS NOT NULL
                        AND chain.st != (SELECT s.status FROM targets s WHERE s.id = chain.id)))
@@ -241,6 +246,8 @@ END;
 -- +goose StatementEnd
 
 -- +goose Down
+-- The one-time recompute of existing boards is not undone: the statuses it
+-- set are valid statuses, and the earlier ones are recorded nowhere.
 DROP TRIGGER IF EXISTS targets_project_status_rollup_ad;
 DROP TRIGGER IF EXISTS targets_project_status_rollup_au;
 DROP TRIGGER IF EXISTS targets_project_status_rollup_ai;
