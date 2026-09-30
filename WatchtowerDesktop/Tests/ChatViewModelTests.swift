@@ -1049,6 +1049,7 @@ final class ChatViewModelTests: XCTestCase {
         vm.sendArtifactComments()
         XCTAssertEqual(try lastFake().turns.count, 1, "only the first question went out")
         XCTAssertEqual(try commentStatuses(), ["open"])
+        XCTAssertNotNil(vm.errorMessage, "a refused send says why instead of doing nothing")
     }
 
     func testOnlyTheUnsentCommentsAreIncludedAndMarked() throws {

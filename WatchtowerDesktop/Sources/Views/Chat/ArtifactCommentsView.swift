@@ -27,6 +27,7 @@ struct ArtifactCommentsView: View {
                 .padding(8)
                 DocumentTextView(
                     text: DocumentAttributedString.make(rendered, highlights: comments.ranges, activeThreadID: activeID),
+                    contentID: contentID,
                     selection: $selection
                 ) { activeID = comments.threadID(at: $0) ?? activeID }
                 .frame(minHeight: 180)
@@ -41,6 +42,13 @@ struct ArtifactCommentsView: View {
                 Text(error).font(.caption).foregroundStyle(.red).padding(6)
             }
         }
+        // A selection belongs to one artifact version; never let it anchor a
+        // comment on another artifact or a newer version.
+        .onChange(of: contentID) { _, _ in selection = DocumentSelectionCarry.none }
+    }
+
+    private var contentID: String {
+        "\(comments.conversationID)/\(comments.key)/\(comments.artifact?.version ?? -1)"
     }
 
     private var composer: some View {

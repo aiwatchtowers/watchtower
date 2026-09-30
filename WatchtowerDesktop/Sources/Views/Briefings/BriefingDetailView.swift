@@ -586,6 +586,12 @@ struct BriefingDetailView: View {
             } else {
                 appState.selectedDestination = .people
             }
+        case "project":
+            if let id, let projectID = Int64(id) {
+                appState.navigateToProject(ProjectRoute(projectID: projectID, pane: .board))
+            } else {
+                appState.selectedDestination = .projects
+            }
         default:
             break
         }

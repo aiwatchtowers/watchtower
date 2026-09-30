@@ -90,17 +90,40 @@ struct ProjectPageView: View {
 
     @ViewBuilder
     private var installBadge: some View {
-        if let status = vm.installStatus[project.id], status.needsRepair {
-            Button {
-                Task { await vm.repairInstall(projectID: project.id) }
-            } label: {
-                Label("Repair install", systemImage: "wrench.and.screwdriver")
+        if let status = vm.installStatus[project.id] {
+            HStack(spacing: 8) {
+                if !status.claudeFound && !status.mcp { claudeNotFoundLabel }
+                if status.needsRepair {
+                    Button {
+                        Task { await vm.repairInstall(projectID: project.id) }
+                    } label: {
+                        Label("Repair install", systemImage: "wrench.and.screwdriver")
+                    }
+                    .disabled(vm.repairing.contains(project.id))
+                    .help("Skill \(status.skill) · hook \(status.hook ? "on" : "missing") · MCP \(status.mcp ? "on" : "missing")")
+                } else if status.claudeFound || status.mcp {
+                    Label("Installed", systemImage: "checkmark.seal").foregroundStyle(.secondary).font(.caption)
+                }
             }
-            .disabled(vm.repairing.contains(project.id))
-            .help("Skill \(status.skill) · hook \(status.hook ? "on" : "missing") · MCP \(status.mcp ? "on" : "missing")")
-        } else if vm.installStatus[project.id] != nil {
-            Label("Installed", systemImage: "checkmark.seal").foregroundStyle(.secondary).font(.caption)
         }
+    }
+
+    /// Repair cannot register the MCP server without `claude`; name the gap
+    /// and hand over the manual command instead of a Repair that always fails.
+    private var claudeNotFoundLabel: some View {
+        let command = ProjectInstallStatus.manualMCPCommand(
+            projectID: project.id, cliPath: Constants.findCLIPath() ?? "watchtower"
+        )
+        return Label("Claude Code CLI not found", systemImage: "exclamationmark.triangle")
+            .foregroundStyle(.orange)
+            .font(.caption)
+            .help("Install Claude Code, then run in the project folder:\n\(command)")
+            .contextMenu {
+                Button("Copy MCP Command") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(command, forType: .string)
+                }
+            }
     }
 
     @ViewBuilder

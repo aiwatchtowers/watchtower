@@ -13,12 +13,23 @@ struct ProjectTerminalView: View {
         VStack(spacing: 0) {
             switch center.states[project.id] {
             case .running?:
+                if center.clipboardHints.contains(project.id) {
+                    HStack {
+                        Label(ProjectCommentsSendBar.copiedNote, systemImage: "doc.on.clipboard")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Dismiss") { center.dismissClipboardHint(projectID: project.id) }
+                            .controlSize(.small)
+                    }
+                    .padding(8)
+                    Divider()
+                }
                 host(center)
             case let .exited(code)?:
                 host(center)
                 Divider()
                 HStack {
-                    Text(code.map { "Claude Code exited (code \($0))." } ?? "Claude Code exited.")
+                    Text(ProjectTerminalLaunch.exitMessage(code: code))
                         .font(.caption).foregroundStyle(.secondary)
                     Spacer()
                     Button("Restart") { center.start(project: project) }

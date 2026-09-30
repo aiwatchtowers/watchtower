@@ -108,11 +108,14 @@ extension TargetQueries {
 
     /// Moves a target under `parentID` and recomputes both the old and the
     /// new parent chains (Go `UpdateTarget`'s reparent half, which also
-    /// re-derives a leaf's own progress from its status).
+    /// re-derives a leaf's own progress from its status). Refuses a parent on
+    /// another board (`checkParentBoard`) before writing anything.
     package static func updateParent(_ db: Database, id: Int, parentID newParentID: Int) throws {
-        guard let status = try String.fetchOne(
-            db, sql: "SELECT status FROM targets WHERE id = ?", arguments: [id]
+        guard let row = try Row.fetchOne(
+            db, sql: "SELECT status, project_id FROM targets WHERE id = ?", arguments: [id]
         ) else { return }
+        let status: String = row["status"]
+        try checkParentBoard(db, parentID: newParentID, childProjectID: row["project_id"])
         let oldParentID = try parentID(db, of: id)
 
         try db.execute(

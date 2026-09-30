@@ -42,8 +42,9 @@ package struct ProjectDeleteSummary: Equatable {
 
         In \(folder) it removes what it installed: the watchtower-project skill, \
         the SessionStart hook in .claude/settings.local.json, the watchtower-project \
-        MCP registration, and the .git/info/exclude lines it added. Nothing else \
-        in the folder is touched.
+        MCP registration, and the .git/info/exclude lines it added. A skill you \
+        edited is kept, and so is an exclude line whose file still exists. Nothing \
+        else in the folder is touched.
 
         The project's terminal session is closed first.
         """

@@ -244,7 +244,7 @@ package enum ProjectQueries {
         var unread: [Int64: Int] = [:]
         let rows = try Row.fetchAll(db, sql: """
             SELECT target_id,
-                   SUM(parent_id IS NULL AND status = 'open') AS open_count,
+                   SUM(parent_id IS NULL AND status = 'open' AND author = 'owner') AS open_count,
                    SUM(author = 'agent' AND read_at = '') AS unread_count
             FROM project_comments WHERE project_id = ? AND target_id IS NOT NULL
             GROUP BY target_id

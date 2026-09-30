@@ -14,9 +14,12 @@ protocol ProjectTerminalSession: AnyObject {
     func start(_ launch: ProjectTerminalLaunch)
     /// Drops the session's view from any host once the process is gone.
     func detach()
-    /// Writes bytes to the session as if typed (the owner's "Send N
-    /// comments to Claude"). Main thread only.
+    /// Writes bytes to the session (the owner's "Send N comments to
+    /// Claude", as a bracketed paste). Main thread only.
     func sendInput(_ bytes: [UInt8])
+    /// Whether the program in the terminal enabled bracketed paste (DECSET
+    /// 2004), so a paste arrives as text rather than as keystrokes.
+    var bracketedPasteMode: Bool { get }
 }
 
 /// Process-group signalling seam, so tests never signal a real process.
@@ -49,6 +52,9 @@ final class ProjectTerminalCenter {
     static let pollStep: Duration = .milliseconds(100)
 
     private(set) var states: [Int64: State] = [:]
+    /// Projects whose last prompt went to the clipboard: the Terminal pane
+    /// shows the ⌘V hint until the owner dismisses it or the next delivery.
+    private(set) var clipboardHints: Set<Int64> = []
     @ObservationIgnored private var sessions: [Int64: any ProjectTerminalSession] = [:]
     @ObservationIgnored var makeSession: () -> any ProjectTerminalSession
     @ObservationIgnored var shell: () -> String? = { ProcessInfo.processInfo.environment["SHELL"] }
@@ -73,17 +79,41 @@ final class ProjectTerminalCenter {
     }
 
     enum PromptDelivery: Equatable {
+        /// Pasted into Claude Code's input; the owner presses Return.
         case sent
+        /// Bracketed paste was off: the line is on the clipboard instead.
+        case copied
         /// Nothing running: the next session gets it from `project brief`.
         case noSession
     }
 
-    /// Types one prompt line + Enter into the project's running Claude Code
-    /// session. Never starts a session, never writes anything else.
+    /// Writes the owner's clipboard (the `.copied` delivery). A seam for tests.
+    @ObservationIgnored var copyToClipboard: (String) -> Void = { text in
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    /// Hands one prompt line to the project's running Claude Code session,
+    /// NEVER followed by Enter and never as keystrokes: a bracketed paste when
+    /// the session enabled that mode, otherwise the clipboard (the owner
+    /// pastes with ⌘V). Typed digits or an Enter could answer a pending Claude
+    /// Code permission prompt the owner has not seen. Never starts a session.
     func sendPrompt(_ line: String, projectID: Int64) -> PromptDelivery {
         guard states[projectID] == .running, let session = sessions[projectID] else { return .noSession }
-        session.sendInput(ProjectCommentPrompt.terminalInput(line))
-        return .sent
+        switch ProjectCommentPrompt.terminalPayload(line, bracketedPaste: session.bracketedPasteMode) {
+        case let .paste(bytes):
+            clipboardHints.remove(projectID)
+            session.sendInput(bytes)
+            return .sent
+        case let .clipboard(text):
+            copyToClipboard(text)
+            clipboardHints.insert(projectID)
+            return .copied
+        }
+    }
+
+    func dismissClipboardHint(projectID: Int64) {
+        clipboardHints.remove(projectID)
     }
 
     /// Starts `claude` in the project folder unless it is already running.
@@ -124,6 +154,7 @@ final class ProjectTerminalCenter {
         session.onExit = nil
         session.detach()
         states[projectID] = nil
+        clipboardHints.remove(projectID)
     }
 
     /// Quit path: every terminal at once, so the wait is one grace, not N.
@@ -175,11 +206,13 @@ final class SwiftTermSession: NSObject, ProjectTerminalSession, LocalProcessTerm
         terminal.removeFromSuperview()
     }
 
-    /// SwiftTerm's own keystroke path (`TerminalView.send(data:)` →
+    /// SwiftTerm's own input path (`TerminalView.send(data:)` →
     /// `LocalProcess.send`), on the main actor as it requires.
     func sendInput(_ bytes: [UInt8]) {
         terminal.send(data: bytes[...])
     }
+
+    var bracketedPasteMode: Bool { terminal.getTerminal().bracketedPasteMode }
 
     nonisolated func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
     nonisolated func setTerminalTitle(source: LocalProcessTerminalView, title: String) {}

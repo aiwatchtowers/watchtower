@@ -17,4 +17,18 @@ package struct ProjectTerminalLaunch: Equatable, Sendable {
         let command = firstRun ? "exec claude '\(firstRunPrompt)'" : "exec claude"
         return Self(executable: executable, args: ["-l", "-c", command], currentDirectory: folder)
     }
+
+    /// The terminal pane's line after the session ends. 127 is the shell's
+    /// "command not found": `exec claude` found no `claude` on the login
+    /// shell's PATH, which a bare exit code would not tell the owner.
+    package static func exitMessage(code: Int32?) -> String {
+        switch code {
+        case 127?:
+            "Claude Code was not found on your login-shell PATH. Install it, or add it to PATH, then Restart."
+        case let code?:
+            "Claude Code exited (code \(code))."
+        case nil:
+            "Claude Code exited."
+        }
+    }
 }

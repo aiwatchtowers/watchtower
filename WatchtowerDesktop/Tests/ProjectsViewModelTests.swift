@@ -78,7 +78,7 @@ final class ProjectsViewModelTests: XCTestCase {
         ])
         let vm = makeVM(runner)
         var announced: [Int64] = []
-        vm.onProjectCreated = { announced.append($0.id) }
+        vm.onProjectCreated = { project, installed in if installed { announced.append(project.id) } }
 
         await vm.createProject(folder: URL(fileURLWithPath: "/tmp/acme"), name: nil)
 
@@ -101,17 +101,22 @@ final class ProjectsViewModelTests: XCTestCase {
             .success(Data(#"{"skill":"missing","hook":false,"mcp":false}"#.utf8))
         ])
         let vm = makeVM(runner)
+        var announced: [(Int64, Bool)] = []
+        vm.onProjectCreated = { announced.append(($0.id, $1)) }
         await vm.createProject(folder: URL(fileURLWithPath: "/tmp/acme"), name: nil)
         XCTAssertEqual(vm.selectedProjectID, id)
         XCTAssertTrue(vm.errorMessage?.contains("Repair") == true)
+        XCTAssertTrue(vm.errorMessage?.contains("claude not found") == true, "the install error is shown")
         XCTAssertEqual(vm.installStatus[id]?.needsRepair, true)
+        XCTAssertEqual(announced.map(\.0), [id], "the baseline is still seeded")
+        XCTAssertEqual(announced.map(\.1), [false], "no first-run terminal after a failed install")
     }
 
     func testCreateFailureShowsTheCLIErrorAndAnnouncesNothing() async {
         let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "folder is already bound to a project"))
         let vm = makeVM(runner)
         var announced = false
-        vm.onProjectCreated = { _ in announced = true }
+        vm.onProjectCreated = { _, _ in announced = true }
         await vm.createProject(folder: URL(fileURLWithPath: "/tmp/acme"), name: nil)
         XCTAssertTrue(vm.errorMessage?.contains("already bound") == true)
         XCTAssertNil(vm.selectedProjectID)
@@ -163,6 +168,29 @@ final class ProjectsViewModelTests: XCTestCase {
         XCTAssertFalse(vm.isCreating)
     }
 
+    /// AppState wiring: after a failed install the first-run terminal must
+    /// not start (setup would run without the skill/hook/MCP server).
+    func testFailedInstallStartsNoFirstRunTerminal() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("wt-create-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let id = try await pool.write { try TestDatabase.insertProject($0, name: "acme", folder: folder.path) }
+        let runner = ScriptedCLIRunner(results: [
+            .success(createdJSON(id)),
+            .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "claude not found")),
+            .success(Data(#"{"skill":"missing","hook":false,"mcp":false}"#.utf8))
+        ])
+        let appState = AppState()
+        appState.projectTerminalCenter.makeSession = { FakeTerminalSession() }
+        appState.initProjects(dbPool: pool, cliRunner: runner, notifier: RecordingProjectNotifier())
+        let vm = try XCTUnwrap(appState.projectsViewModel)
+
+        await vm.createProject(folder: folder, name: nil)
+
+        XCTAssertEqual(vm.selectedProjectID, id)
+        XCTAssertNil(appState.projectTerminalCenter.states[id], "no terminal after a failed install")
+    }
+
     func testNavigateToProjectSetsThePendingRouteAndTheTab() {
         let appState = AppState()
         appState.navigateToProject(ProjectRoute(projectID: 2, pane: .board))
@@ -193,6 +221,61 @@ final class ProjectsViewModelTests: XCTestCase {
         vm.pane = .documents
         XCTAssertTrue(vm.documentViewModel === opened)
         XCTAssertEqual(opened.rendered?.text, "Plan\n\n")
+        vm.closeDocument()
+    }
+
+    /// A deep link to a document the agent attached after the list loaded
+    /// must still open: the list reloads whenever the id is not in it.
+    func testOpenPendingReloadsWhenTheDocumentIsNotListedYet() async throws {
+        let p = try await pool.write { d -> Int64 in
+            let p = try TestDatabase.insertProject(d, name: "one", folder: "/tmp/one")
+            _ = try TestDatabase.insertProjectDocument(d, projectID: p, relPath: "docs/a.md")
+            return p
+        }
+        let vm = makeVM()
+        await vm.reload()
+        vm.selectedProjectID = p
+        await vm.loadDocuments()
+        XCTAssertEqual(vm.documents.count, 1)
+        let added = try await pool.write { try TestDatabase.insertProjectDocument($0, projectID: p, relPath: "docs/b.md") }
+
+        vm.pendingDocumentID = added
+        await vm.openPendingDocument()
+
+        XCTAssertEqual(vm.documentViewModel?.document.id, added)
+        XCTAssertNil(vm.pendingDocumentID)
+        vm.closeDocument()
+    }
+
+    /// The agent writes documents and comments DB-only: the poll refreshes
+    /// the list and the open document's threads without re-rendering it.
+    func testRefreshOnPollPicksUpAgentDBWrites() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent("docs"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try "# Plan\n\nShip it.".write(to: folder.appendingPathComponent("docs/plan.md"), atomically: true, encoding: .utf8)
+        let (p, doc) = try await pool.write { d -> (Int64, Int64) in
+            let p = try TestDatabase.insertProject(d, folder: folder.path)
+            return (p, try TestDatabase.insertProjectDocument(d, projectID: p))
+        }
+        let vm = makeVM()
+        await vm.reload()
+        vm.selectedProjectID = p
+        await vm.loadDocuments()
+        await vm.openDocument(try XCTUnwrap(vm.documents.first?.document))
+        let docVM = try XCTUnwrap(vm.documentViewModel)
+        let version = docVM.renderVersion
+        try await pool.write { d in
+            _ = try TestDatabase.insertProjectDocument(d, projectID: p, relPath: "docs/spec.md")
+            _ = try TestDatabase.insertProjectComment(d, projectID: p, body: "Which date?", documentID: doc, quote: "Ship it")
+        }
+
+        await vm.refreshOnPoll()
+
+        XCTAssertEqual(vm.documents.count, 2)
+        XCTAssertEqual(docVM.threads.count, 1)
+        XCTAssertNotNil(docVM.anchoredRanges[try XCTUnwrap(docVM.threads.first?.id)])
+        XCTAssertEqual(docVM.renderVersion, version, "an open composer's selection stays valid")
         vm.closeDocument()
     }
 

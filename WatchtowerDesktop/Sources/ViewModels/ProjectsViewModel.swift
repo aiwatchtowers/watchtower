@@ -37,9 +37,11 @@ final class ProjectsViewModel {
     /// switches and tab changes with its watcher running.
     private(set) var documentViewModel: ProjectDocumentViewModel?
 
-    /// A project was created: Task 17 opens its terminal with the first-run
-    /// prompt, Task 18 seeds its notification baseline.
-    var onProjectCreated: ((Project) -> Void)?
+    /// A project was created: Task 18 seeds its notification baseline, and —
+    /// only when `installed` — Task 17 opens its terminal with the first-run
+    /// prompt (after a failed install the setup would run without the skill,
+    /// hook and MCP server it relies on).
+    var onProjectCreated: ((Project, _ installed: Bool) -> Void)?
     /// The owner changed something in a project (a comment, a status): the
     /// notification policy must not report it back (Task 18).
     var onOwnerWrite: ((Int64, ProjectSubject) -> Void)?
@@ -105,8 +107,10 @@ final class ProjectsViewModel {
     /// terminal — and with it the Claude Code session writing through
     /// `mcp --project` — closes first, then `watchtower project delete N`
     /// removes the rows and the folder install, then the list reloads. A CLI
-    /// failure keeps the project listed and reports the CLI's error. A second
-    /// call while one runs is refused.
+    /// failure keeps the project listed and reports the CLI's error. A folder
+    /// cleanup failure (`removal_ok == false`) still deletes the project and
+    /// leaves a non-blocking warning in `errorMessage`. A second call while one
+    /// runs is refused.
     @discardableResult
     func deleteProject(_ id: Int64) async -> Bool {
         guard deletingProjectID == nil else { return false }
@@ -118,15 +122,42 @@ final class ProjectsViewModel {
         deleteError = nil
         defer { deletingProjectID = nil }
         await closeTerminal?(id)
+        let result: ProjectDeleted
         do {
-            try await cli.delete(projectID: id)
+            result = try await cli.delete(projectID: id)
         } catch {
             deleteError = "Could not delete the project: \(error.localizedDescription)"
             return false
         }
+        if !result.removalOK {
+            errorMessage = "The project was deleted, but cleaning its folder failed: \(result.removalError)"
+        }
         if selectedProjectID == id { selectedProjectID = nil }
         await reload()
         return true
+    }
+
+    /// The notification center's 30 s poll. The agent writes documents and
+    /// comments from another process (DB only, no file change), so besides
+    /// the list this also refreshes the documents pane and the open
+    /// document's threads — neither re-renders the file, so an open composer
+    /// keeps its selection.
+    func refreshOnPoll() async {
+        await reload()
+        guard selectedProjectID != nil else { return }
+        await loadDocuments()
+        await documentViewModel?.refreshThreads()
+    }
+
+    /// Opens `pendingDocumentID` (a deep link). The list is reloaded first
+    /// whenever the id is not in it — a notification for a document the
+    /// agent just attached must open even when others are already listed.
+    func openPendingDocument() async {
+        guard let id = pendingDocumentID else { return }
+        if !documents.contains(where: { $0.id == id }) { await loadDocuments() }
+        guard let item = documents.first(where: { $0.id == id }) else { return }
+        pendingDocumentID = nil
+        await openDocument(item.document)
     }
 
     nonisolated static func vanished(previous: [Int64], current: [Int64]) -> [Int64] {
@@ -141,7 +172,8 @@ final class ProjectsViewModel {
     }
 
     /// New project… → `project create`, then the folder install. A failed
-    /// install keeps the project (it exists now) and points at Repair.
+    /// install keeps the project (it exists now), shows the install error,
+    /// points at Repair and reports `installed: false` to `onProjectCreated`.
     func createProject(folder: URL, name: String?) async {
         guard !isCreating else { return }
         guard let cli else {
@@ -159,9 +191,11 @@ final class ProjectsViewModel {
             errorMessage = "Could not create the project: \(error.localizedDescription)"
             return
         }
+        var installed = true
         do {
             try await cli.install(projectID: created.id)
         } catch {
+            installed = false
             errorMessage = "The project was created, but installing into the folder failed — use Repair. "
                 + error.localizedDescription
         }
@@ -170,7 +204,7 @@ final class ProjectsViewModel {
         pane = .terminal
         await refreshInstallStatus(projectID: created.id)
         if let project = selectedProject {
-            onProjectCreated?(project)
+            onProjectCreated?(project, installed)
         }
     }
 
