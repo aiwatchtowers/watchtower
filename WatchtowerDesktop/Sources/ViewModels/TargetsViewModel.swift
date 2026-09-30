@@ -178,10 +178,7 @@ final class TargetsViewModel {
     func updateOwnership(_ target: Target, to ownership: String) {
         do {
             try dbManager.dbPool.write { db in
-                try db.execute(
-                    sql: "UPDATE targets SET ownership = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?",
-                    arguments: [ownership, target.id]
-                )
+                try TargetQueries.updateOwnership(db, id: target.id, ownership: ownership)
             }
             load()
         } catch {
@@ -192,9 +189,8 @@ final class TargetsViewModel {
     func updateBlocking(_ target: Target, to blocking: String) {
         do {
             try dbManager.dbPool.write { db in
-                try db.execute(
-                    sql: "UPDATE targets SET blocking = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?",
-                    arguments: [blocking.trimmingCharacters(in: .whitespacesAndNewlines), target.id]
+                try TargetQueries.updateBlocking(
+                    db, id: target.id, blocking: blocking.trimmingCharacters(in: .whitespacesAndNewlines)
                 )
             }
             load()
@@ -206,9 +202,8 @@ final class TargetsViewModel {
     func updateBallOn(_ target: Target, to ballOn: String) {
         do {
             try dbManager.dbPool.write { db in
-                try db.execute(
-                    sql: "UPDATE targets SET ball_on = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?",
-                    arguments: [ballOn.trimmingCharacters(in: .whitespacesAndNewlines), target.id]
+                try TargetQueries.updateBallOn(
+                    db, id: target.id, ballOn: ballOn.trimmingCharacters(in: .whitespacesAndNewlines)
                 )
             }
             load()
@@ -299,14 +294,9 @@ final class TargetsViewModel {
     }
 
     private func saveNotes(_ target: Target, notes: [TargetNote]) {
-        guard let data = try? JSONEncoder().encode(notes),
-              let json = String(data: data, encoding: .utf8) else { return }
         do {
             try dbManager.dbPool.write { db in
-                try db.execute(
-                    sql: "UPDATE targets SET notes = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?",
-                    arguments: [json, target.id]
-                )
+                try TargetQueries.updateNotes(db, id: target.id, notes: notes)
             }
             load()
         } catch {
