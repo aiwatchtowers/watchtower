@@ -22,6 +22,13 @@ import (
 // replace it so no test ever execs the real claude.
 var projectCommandRunner devpack.CommandRunner = execCommandRunner
 
+// projectExecutable resolves the watchtower binary path recorded in the
+// project's hook and MCP registration. A seam (not a bare os.Executable
+// call) because looksLikeOurHook (I2) keys on the binary's basename being
+// "watchtower" — the real binary always is, but a test binary (e.g.
+// "cmd.test") is not, so tests substitute a fixed watchtower-named path.
+var projectExecutable = os.Executable
+
 // execCommandRunner runs name in dir. "claude" is resolved through
 // claude.FindBinary because the Desktop runs this with a GUI-app PATH. A
 // non-zero exit is wrapped in devpack.ErrCommandExit; a missing binary
@@ -42,7 +49,7 @@ func execCommandRunner(ctx context.Context, dir, name string, args ...string) ([
 }
 
 func projectInstallOptions(p *db.Project) (devpack.ProjectInstallOptions, error) {
-	bin, err := os.Executable()
+	bin, err := projectExecutable()
 	if err != nil {
 		return devpack.ProjectInstallOptions{}, fmt.Errorf("determining the watchtower binary path: %w", err)
 	}

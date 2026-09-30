@@ -10,6 +10,7 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -26,12 +27,14 @@ func settingsLocalPath(dir string) string {
 	return filepath.Join(dir, ".claude", "settings.local.json")
 }
 
-// InstallSessionStartHook adds one SessionStart command hook running command
-// to dir's .claude/settings.local.json. Our entry is recognised by its exact
-// command string anywhere under hooks.SessionStart, so a second install is a
-// no-op. Every other key, event and hook is preserved; the group omits a
-// matcher so it fires on startup, resume, clear and compact alike.
-func InstallSessionStartHook(dir, command string) (bool, error) {
+// InstallSessionStartHook adds or repairs one SessionStart command hook for
+// projectID, running command, in dir's .claude/settings.local.json. An
+// existing entry is recognised by looksLikeOurHook — a stale entry from a
+// different watchtower binary path is updated in place (a bin change is an
+// update, not a second entry: I2/PROJ-04), and an exact match is a no-op.
+// Every other key, event and hook is preserved; the group omits a matcher so
+// it fires on startup, resume, clear and compact alike.
+func InstallSessionStartHook(dir, command string, projectID int64) (bool, error) {
 	file := settingsLocalPath(dir)
 	settings, mode, _, err := readSettings(file)
 	if err != nil {
@@ -41,24 +44,21 @@ func InstallSessionStartHook(dir, command string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if hasCommand(groups, command) {
+	updated, changed := upsertOurHook(groups, projectID, command)
+	if !changed {
 		return false, nil
 	}
-	ours := map[string]any{"hooks": []any{map[string]any{
-		"type":    "command",
-		"command": command,
-		"timeout": sessionStartHookTimeoutSec,
-	}}}
-	hooks["SessionStart"] = append(groups, ours)
+	hooks["SessionStart"] = updated
 	settings["hooks"] = hooks
 	return true, writeSettings(file, settings, mode)
 }
 
-// RemoveSessionStartHook removes every hook object running exactly command.
-// A group left with no hooks is dropped, then an empty SessionStart, an
+// RemoveSessionStartHook removes every hook object recognised as ours for
+// projectID (looksLikeOurHook), regardless of which watchtower binary wrote
+// it. A group left with no hooks is dropped, then an empty SessionStart, an
 // empty hooks object, and — when nothing at all is left — the file itself.
 // Anything else in the file stays.
-func RemoveSessionStartHook(dir, command string) (bool, error) {
+func RemoveSessionStartHook(dir string, projectID int64) (bool, error) {
 	file := settingsLocalPath(dir)
 	settings, mode, existed, err := readSettings(file)
 	if err != nil || !existed {
@@ -68,7 +68,7 @@ func RemoveSessionStartHook(dir, command string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	kept, changed := withoutCommand(groups, command)
+	kept, changed := withoutOurHook(groups, projectID)
 	if !changed {
 		return false, nil
 	}
@@ -82,9 +82,10 @@ func RemoveSessionStartHook(dir, command string) (bool, error) {
 	return true, writeSettings(file, settings, mode)
 }
 
-// HasSessionStartHook reports whether a hook running exactly command is
-// installed in dir's .claude/settings.local.json.
-func HasSessionStartHook(dir, command string) (bool, error) {
+// HasSessionStartHook reports whether a hook recognised as ours for
+// projectID (looksLikeOurHook) is installed in dir's
+// .claude/settings.local.json.
+func HasSessionStartHook(dir string, projectID int64) (bool, error) {
 	file := settingsLocalPath(dir)
 	settings, _, existed, err := readSettings(file)
 	if err != nil || !existed {
@@ -94,7 +95,7 @@ func HasSessionStartHook(dir, command string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return hasCommand(groups, command), nil
+	return hasOurHook(groups, projectID), nil
 }
 
 // readSettings decodes file as one JSON object. A missing or whitespace-only
@@ -164,28 +165,127 @@ func groupHooks(g any) (map[string]any, []any, bool) {
 	return m, hs, ok
 }
 
-func isOurHook(h any, command string) bool {
-	m, ok := h.(map[string]any)
-	return ok && m["command"] == command
+// looksLikeOurHook reports whether cmd is our SessionStart hook command for
+// projectID, recognised independent of which watchtower binary wrote it
+// (I2/PROJ-04): a stale entry installed from the CLI-store path and a fresh
+// one installed from PATH must both be recognised as ours, or an install
+// from a second binary duplicates the hook and a delete orphans the first
+// entry. After stripping an optional single-quoted binary token
+// (ProjectHookCommand's only quoting style — see unquoteShellSingle), the
+// command must end in exactly " project brief --project <projectID>", and
+// the binary's basename must be "watchtower".
+func looksLikeOurHook(cmd string, projectID int64) bool {
+	suffix := " project brief --project " + strconv.FormatInt(projectID, 10)
+	bin, ok := strings.CutSuffix(cmd, suffix)
+	if !ok || bin == "" {
+		return false
+	}
+	return filepath.Base(unquoteShellSingle(bin)) == "watchtower"
 }
 
-func hasCommand(groups []any, command string) bool {
+// unquoteShellSingle reverses shellQuote's single-quoting ('a b' -> a b,
+// '\” unescaped back to '). A token shellQuote left bare, because it held
+// no unsafe character, is returned unchanged.
+func unquoteShellSingle(s string) string {
+	if len(s) < 2 || s[0] != '\'' || s[len(s)-1] != '\'' {
+		return s
+	}
+	return strings.ReplaceAll(s[1:len(s)-1], `'\''`, "'")
+}
+
+func isOurHook(h any, projectID int64) bool {
+	m, ok := h.(map[string]any)
+	if !ok {
+		return false
+	}
+	cmd, ok := m["command"].(string)
+	return ok && looksLikeOurHook(cmd, projectID)
+}
+
+func hasOurHook(groups []any, projectID int64) bool {
 	for _, g := range groups {
 		_, hs, ok := groupHooks(g)
 		if !ok {
 			continue
 		}
-		if slices.ContainsFunc(hs, func(h any) bool { return isOurHook(h, command) }) {
+		if slices.ContainsFunc(hs, func(h any) bool { return isOurHook(h, projectID) }) {
 			return true
 		}
 	}
 	return false
 }
 
-// withoutCommand filters our hook objects out of every group. A group that
-// still holds an owner hook survives (copied, so the input is untouched);
-// a group that held only ours is dropped.
-func withoutCommand(groups []any, command string) ([]any, bool) {
+// upsertOurHook returns groups with our hook for projectID set to command.
+// The first entry recognised by isOurHook is kept and, if its command
+// differs, updated in place; any further one (there should never be more
+// than one, but a hand-edited file could hold a leftover) is dropped as a
+// duplicate. Absent any match, a new group is appended. changed is false
+// only when exactly one matching entry already ran command.
+func upsertOurHook(groups []any, projectID int64, command string) ([]any, bool) {
+	found := false
+	changed := false
+	out := make([]any, 0, len(groups))
+	for _, g := range groups {
+		m, hs, ok := groupHooks(g)
+		if !ok {
+			out = append(out, g)
+			continue
+		}
+		rest := make([]any, 0, len(hs))
+		groupChanged := false
+		for _, h := range hs {
+			if !isOurHook(h, projectID) {
+				rest = append(rest, h)
+				continue
+			}
+			if found {
+				groupChanged = true // a duplicate stale entry: drop it
+				continue
+			}
+			found = true
+			hm, _ := h.(map[string]any)
+			if cur, _ := hm["command"].(string); cur == command {
+				rest = append(rest, h)
+				continue
+			}
+			groupChanged = true
+			cp := make(map[string]any, len(hm))
+			for k, v := range hm {
+				cp[k] = v
+			}
+			cp["command"] = command
+			rest = append(rest, cp)
+		}
+		if !groupChanged {
+			out = append(out, g)
+			continue
+		}
+		changed = true
+		if len(rest) == 0 {
+			continue
+		}
+		cp := make(map[string]any, len(m))
+		for k, v := range m {
+			cp[k] = v
+		}
+		cp["hooks"] = rest
+		out = append(out, cp)
+	}
+	if !found {
+		out = append(out, map[string]any{"hooks": []any{map[string]any{
+			"type":    "command",
+			"command": command,
+			"timeout": sessionStartHookTimeoutSec,
+		}}})
+		changed = true
+	}
+	return out, changed
+}
+
+// withoutOurHook filters our hook objects (isOurHook, by projectID) out of
+// every group. A group that still holds an owner hook survives (copied, so
+// the input is untouched); a group that held only ours is dropped.
+func withoutOurHook(groups []any, projectID int64) ([]any, bool) {
 	kept := make([]any, 0, len(groups))
 	changed := false
 	for _, g := range groups {
@@ -194,7 +294,7 @@ func withoutCommand(groups []any, command string) ([]any, bool) {
 			kept = append(kept, g)
 			continue
 		}
-		rest := slices.DeleteFunc(slices.Clone(hs), func(h any) bool { return isOurHook(h, command) })
+		rest := slices.DeleteFunc(slices.Clone(hs), func(h any) bool { return isOurHook(h, projectID) })
 		if len(rest) == len(hs) {
 			kept = append(kept, g)
 			continue

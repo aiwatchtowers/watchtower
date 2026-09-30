@@ -170,7 +170,7 @@ func TestInstallProjectInstallsSkillHookExcludeAndMCP(t *testing.T) {
 	if !rep.HookChanged {
 		t.Fatalf("the hook must be reported as added")
 	}
-	if ok, err := HasSessionStartHook(folder, ProjectHookCommand(o.Bin, 7)); err != nil || !ok {
+	if ok, err := HasSessionStartHook(folder, 7); err != nil || !ok {
 		t.Fatalf("hook not installed: ok=%v err=%v", ok, err)
 	}
 	if len(rep.Excluded) != 2 {

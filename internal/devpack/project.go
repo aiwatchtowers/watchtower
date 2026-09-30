@@ -138,7 +138,7 @@ func InstallProject(ctx context.Context, o ProjectInstallOptions) (ProjectInstal
 	if rep.Skill, err = installSkill(o.skillsDir(), projectSkill()); err != nil {
 		errs = append(errs, err)
 	}
-	if rep.HookChanged, err = InstallSessionStartHook(o.Folder, o.hookCommand()); err != nil {
+	if rep.HookChanged, err = InstallSessionStartHook(o.Folder, o.hookCommand(), o.ProjectID); err != nil {
 		errs = append(errs, err)
 	}
 	if rep.MCPRegistered, err = registerProjectMCP(ctx, o); err != nil {
@@ -159,7 +159,7 @@ func RemoveProject(ctx context.Context, o ProjectInstallOptions) error {
 		return folderGone(o)
 	}
 	var errs []error
-	if _, err := RemoveSessionStartHook(o.Folder, o.hookCommand()); err != nil {
+	if _, err := RemoveSessionStartHook(o.Folder, o.ProjectID); err != nil {
 		errs = append(errs, err)
 	}
 	if _, err := removeSkill(o.skillsDir(), projectSkill()); err != nil {
@@ -191,7 +191,7 @@ func StatusProject(ctx context.Context, o ProjectInstallOptions) (ProjectStatus,
 	if ps.Skill, err = statusSkill(o.skillsDir(), projectSkill()); err != nil {
 		errs = append(errs, err)
 	}
-	if ps.Hook, err = HasSessionStartHook(o.Folder, o.hookCommand()); err != nil {
+	if ps.Hook, err = HasSessionStartHook(o.Folder, o.ProjectID); err != nil {
 		errs = append(errs, err)
 	}
 	ps.MCP, err = projectMCPRegistered(ctx, o)

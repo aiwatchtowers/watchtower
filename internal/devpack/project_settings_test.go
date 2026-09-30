@@ -74,7 +74,7 @@ func countCommand(groups []any, command string) int {
 
 func TestInstallSessionStartHookCreatesTheSettingsFile(t *testing.T) {
 	dir := t.TempDir()
-	changed, err := InstallSessionStartHook(dir, testHookCmd)
+	changed, err := InstallSessionStartHook(dir, testHookCmd, 7)
 	if err != nil || !changed {
 		t.Fatalf("install on a fresh folder: changed=%v err=%v", changed, err)
 	}
@@ -109,7 +109,7 @@ func TestProj04_InstallKeepsOwnerSettingsKeysAndHooks(t *testing.T) {
 }`
 	writeTestFile(t, settingsFile(dir), owner)
 
-	changed, err := InstallSessionStartHook(dir, testHookCmd)
+	changed, err := InstallSessionStartHook(dir, testHookCmd, 7)
 	if err != nil || !changed {
 		t.Fatalf("install: changed=%v err=%v", changed, err)
 	}
@@ -146,12 +146,12 @@ func TestProj04_InstallKeepsOwnerSettingsKeysAndHooks(t *testing.T) {
 
 func TestInstallSessionStartHookTwiceKeepsOneEntry(t *testing.T) {
 	dir := t.TempDir()
-	if _, err := InstallSessionStartHook(dir, testHookCmd); err != nil {
+	if _, err := InstallSessionStartHook(dir, testHookCmd, 7); err != nil {
 		t.Fatalf("first install: %v", err)
 	}
 	before := readTestFile(t, settingsFile(dir))
 
-	changed, err := InstallSessionStartHook(dir, testHookCmd)
+	changed, err := InstallSessionStartHook(dir, testHookCmd, 7)
 	if err != nil {
 		t.Fatalf("second install: %v", err)
 	}
@@ -179,13 +179,13 @@ func TestProj04_MalformedSettingsLeftByteIdentical(t *testing.T) {
 			dir := t.TempDir()
 			writeTestFile(t, settingsFile(dir), content)
 
-			if _, err := InstallSessionStartHook(dir, testHookCmd); !errors.Is(err, ErrMalformedSettings) {
+			if _, err := InstallSessionStartHook(dir, testHookCmd, 7); !errors.Is(err, ErrMalformedSettings) {
 				t.Fatalf("install: expected ErrMalformedSettings, got %v", err)
 			}
-			if _, err := RemoveSessionStartHook(dir, testHookCmd); !errors.Is(err, ErrMalformedSettings) {
+			if _, err := RemoveSessionStartHook(dir, 7); !errors.Is(err, ErrMalformedSettings) {
 				t.Fatalf("remove: expected ErrMalformedSettings, got %v", err)
 			}
-			if _, err := HasSessionStartHook(dir, testHookCmd); !errors.Is(err, ErrMalformedSettings) {
+			if _, err := HasSessionStartHook(dir, 7); !errors.Is(err, ErrMalformedSettings) {
 				t.Fatalf("has: expected ErrMalformedSettings, got %v", err)
 			}
 			if got := readTestFile(t, settingsFile(dir)); got != content {
@@ -212,7 +212,7 @@ func TestProj04_RemoveDeletesOnlyOurHook(t *testing.T) {
   }
 }`)
 
-	changed, err := RemoveSessionStartHook(dir, testHookCmd)
+	changed, err := RemoveSessionStartHook(dir, 7)
 	if err != nil || !changed {
 		t.Fatalf("remove: changed=%v err=%v", changed, err)
 	}
@@ -231,7 +231,7 @@ func TestProj04_RemoveDeletesOnlyOurHook(t *testing.T) {
 		t.Fatalf("a group still holding an owner hook must survive, got %d groups", len(groups))
 	}
 
-	again, err := RemoveSessionStartHook(dir, testHookCmd)
+	again, err := RemoveSessionStartHook(dir, 7)
 	if err != nil || again {
 		t.Fatalf("a second remove must be a no-op: changed=%v err=%v", again, err)
 	}
@@ -239,10 +239,10 @@ func TestProj04_RemoveDeletesOnlyOurHook(t *testing.T) {
 
 func TestRemoveSessionStartHookDeletesAFileItLeavesEmpty(t *testing.T) {
 	dir := t.TempDir()
-	if _, err := InstallSessionStartHook(dir, testHookCmd); err != nil {
+	if _, err := InstallSessionStartHook(dir, testHookCmd, 7); err != nil {
 		t.Fatalf("install: %v", err)
 	}
-	if changed, err := RemoveSessionStartHook(dir, testHookCmd); err != nil || !changed {
+	if changed, err := RemoveSessionStartHook(dir, 7); err != nil || !changed {
 		t.Fatalf("remove: changed=%v err=%v", changed, err)
 	}
 	if _, err := os.Stat(settingsFile(dir)); !os.IsNotExist(err) {
@@ -252,7 +252,7 @@ func TestRemoveSessionStartHookDeletesAFileItLeavesEmpty(t *testing.T) {
 
 func TestRemoveSessionStartHookWithoutAFileIsANoop(t *testing.T) {
 	dir := t.TempDir()
-	changed, err := RemoveSessionStartHook(dir, testHookCmd)
+	changed, err := RemoveSessionStartHook(dir, 7)
 	if err != nil || changed {
 		t.Fatalf("remove with no file: changed=%v err=%v", changed, err)
 	}
@@ -269,7 +269,7 @@ func TestProj04_InstallAndRemovePreserveTheSettingsFileMode(t *testing.T) {
 		t.Fatalf("chmod: %v", err)
 	}
 
-	if _, err := InstallSessionStartHook(dir, testHookCmd); err != nil {
+	if _, err := InstallSessionStartHook(dir, testHookCmd, 7); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 	info, err := os.Stat(file)
@@ -280,7 +280,7 @@ func TestProj04_InstallAndRemovePreserveTheSettingsFileMode(t *testing.T) {
 		t.Fatalf("install must preserve the file mode, got %v", info.Mode().Perm())
 	}
 
-	if _, err := RemoveSessionStartHook(dir, testHookCmd); err != nil {
+	if _, err := RemoveSessionStartHook(dir, 7); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
 	info2, err := os.Stat(file)
@@ -307,7 +307,7 @@ func TestProj04_InstallAndRemoveThroughASymlinkKeepTheLink(t *testing.T) {
 		t.Fatalf("symlink: %v", err)
 	}
 
-	changed, err := InstallSessionStartHook(dir, testHookCmd)
+	changed, err := InstallSessionStartHook(dir, testHookCmd, 7)
 	if err != nil || !changed {
 		t.Fatalf("install: changed=%v err=%v", changed, err)
 	}
@@ -320,7 +320,7 @@ func TestProj04_InstallAndRemoveThroughASymlinkKeepTheLink(t *testing.T) {
 		t.Fatalf("the symlink target must hold both the owner's key and our hook:\n%s", targetContent)
 	}
 
-	if _, err := RemoveSessionStartHook(dir, testHookCmd); err != nil {
+	if _, err := RemoveSessionStartHook(dir, 7); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
 	info2, err := os.Lstat(link)
@@ -346,7 +346,7 @@ func TestProj04_InstallThroughADanglingSymlinkErrorsWithoutTouchingIt(t *testing
 		t.Fatalf("symlink: %v", err)
 	}
 
-	if _, err := InstallSessionStartHook(dir, testHookCmd); err == nil {
+	if _, err := InstallSessionStartHook(dir, testHookCmd, 7); err == nil {
 		t.Fatalf("expected an error installing through a dangling symlink")
 	}
 	info, err := os.Lstat(link)
@@ -360,17 +360,57 @@ func TestProj04_InstallThroughADanglingSymlinkErrorsWithoutTouchingIt(t *testing
 
 func TestHasSessionStartHook(t *testing.T) {
 	dir := t.TempDir()
-	if ok, err := HasSessionStartHook(dir, testHookCmd); err != nil || ok {
+	if ok, err := HasSessionStartHook(dir, 7); err != nil || ok {
 		t.Fatalf("before install: ok=%v err=%v", ok, err)
 	}
-	if _, err := InstallSessionStartHook(dir, testHookCmd); err != nil {
+	if _, err := InstallSessionStartHook(dir, testHookCmd, 7); err != nil {
 		t.Fatalf("install: %v", err)
 	}
-	if ok, err := HasSessionStartHook(dir, testHookCmd); err != nil || !ok {
+	if ok, err := HasSessionStartHook(dir, 7); err != nil || !ok {
 		t.Fatalf("after install: ok=%v err=%v", ok, err)
 	}
-	if ok, _ := HasSessionStartHook(dir, testHookCmd+" --other"); ok {
-		t.Fatalf("recognition must be by the exact command string")
+	if ok, _ := HasSessionStartHook(dir, 8); ok {
+		t.Fatalf("recognition must be scoped to the project id")
+	}
+}
+
+// I2: recognition survives a change of which watchtower binary wrote the
+// hook — the owner's terminal (bin on PATH) and the Desktop's CLI store
+// (a different absolute path) must both be recognised as our hook for the
+// same project, so an install from the second binary updates the first
+// entry in place instead of adding a second one, and a remove from either
+// binary takes it out.
+func TestProj04_HookRecognitionSurvivesADifferentWatchtowerBinary(t *testing.T) {
+	dir := t.TempDir()
+	binA := ProjectHookCommand("/usr/local/bin/watchtower", 7)
+	binB := ProjectHookCommand("/Users/owner/Library/Application Support/Watchtower/bin/watchtower", 7)
+	if binA == binB {
+		t.Fatalf("fixture bug: the two commands must differ")
+	}
+
+	if _, err := InstallSessionStartHook(dir, binA, 7); err != nil {
+		t.Fatalf("install with bin A: %v", err)
+	}
+	changed, err := InstallSessionStartHook(dir, binB, 7)
+	if err != nil {
+		t.Fatalf("install with bin B: %v", err)
+	}
+	if !changed {
+		t.Fatalf("a different binary path must be treated as an update, not a no-op")
+	}
+	groups := sessionStartGroups(t, decodeSettings(t, dir))
+	if n := countCommand(groups, binA) + countCommand(groups, binB); n != 1 || countCommand(groups, binB) != 1 {
+		t.Fatalf("expected exactly one entry, running bin B, got %#v", groups)
+	}
+
+	if ok, err := HasSessionStartHook(dir, 7); err != nil || !ok {
+		t.Fatalf("has, after the bin change: ok=%v err=%v", ok, err)
+	}
+	if _, err := RemoveSessionStartHook(dir, 7); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if ok, err := HasSessionStartHook(dir, 7); err != nil || ok {
+		t.Fatalf("remove must take out the entry regardless of which bin wrote it: ok=%v err=%v", ok, err)
 	}
 }
 

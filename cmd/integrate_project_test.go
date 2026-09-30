@@ -60,6 +60,11 @@ func testProject(t *testing.T) *db.Project {
 	if err := os.MkdirAll(filepath.Join(dir, ".git", "info"), 0o755); err != nil {
 		t.Fatalf("mkdir .git: %v", err)
 	}
+	// The test binary is not named "watchtower" (looksLikeOurHook, I2), so
+	// hook recognition would never see its own entry as installed.
+	prev := projectExecutable
+	projectExecutable = func() (string, error) { return "/usr/local/bin/watchtower", nil }
+	t.Cleanup(func() { projectExecutable = prev })
 	return &db.Project{ID: 7, Name: "acme", FolderPath: dir}
 }
 
