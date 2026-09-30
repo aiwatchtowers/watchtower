@@ -10,6 +10,10 @@ struct AgentActionCardView: View {
     let onApprove: () -> Void
     let onReject: () -> Void
     let onRetry: () -> Void
+    /// Why this card's last Approve/Reject/Retry failed (`AgentActionFeed.rowErrors`).
+    /// On a still-`pending` row — an approve that never reached the row, e.g.
+    /// SQLITE_BUSY — Approve becomes Retry, which re-runs the same approve.
+    var gestureError: String?
     /// Follows an applied action to what it produced. Nil (the chat surfaces)
     /// hides the in-app "Open" button; a web destination (a created Jira
     /// issue) still links, since opening a browser needs no navigation.
@@ -149,6 +153,14 @@ struct AgentActionCardView: View {
             if !action.error.isEmpty {
                 Text(action.error).font(.caption).foregroundStyle(.red)
             }
+            // A failed apply also lands in the row's own `error`: show it once.
+            if let gestureError, !gestureError.isEmpty, gestureError != action.error {
+                Label(gestureError, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
+                    .accessibilityIdentifier("agentAction.gestureError")
+            }
             // Only a FAILED row can have left a half-finished external write:
             // Apply claims the row before it runs the tool, so an `approved`
             // one provably never reached Jira. (A Confluence edit is version-
@@ -243,7 +255,8 @@ struct AgentActionCardView: View {
             } else {
                 if action.isPending {
                     if Self.canApprove(action) {
-                        Button("Approve", action: onApprove).buttonStyle(.borderedProminent)
+                        Button(gestureError == nil ? "Approve" : "Retry", action: onApprove)
+                            .buttonStyle(.borderedProminent)
                     }
                     Button("Reject", action: onReject)
                 } else if action.canRetry {

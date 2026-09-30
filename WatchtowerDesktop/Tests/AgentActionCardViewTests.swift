@@ -67,6 +67,38 @@ final class AgentActionCardViewTests: XCTestCase {
         XCTAssertNoThrow(try view.inspect().find(textWhere: { text, _ in text.contains("check Jira") }))
     }
 
+    /// Backlog 2026-09-30: an approve that failed before reaching the row
+    /// (SQLITE_BUSY) leaves it `pending`; the card says why and turns Approve
+    /// into a Retry that re-runs the same approve.
+    func testPendingCardWithGestureErrorShowsItAndRetriesApprove() throws {
+        let action = try row { db in try TestDatabase.insertAgentAction(db) }
+        var approved = 0
+        var retried = 0
+        let view = AgentActionCardView(action: action, inFlight: false,
+                                       onApprove: { approved += 1 }, onReject: {}, onRetry: { retried += 1 },
+                                       gestureError: "database is locked (5) (SQLITE_BUSY)")
+        // swiftlint:disable:next trailing_closure
+        XCTAssertNoThrow(try view.inspect().find(textWhere: { text, _ in text.contains("SQLITE_BUSY") }))
+        XCTAssertThrowsError(try view.inspect().find(button: "Approve"))
+        XCTAssertNoThrow(try view.inspect().find(button: "Reject"))
+        try view.inspect().find(button: "Retry").tap()
+        XCTAssertEqual(approved, 1, "a pending row's Retry re-runs approve")
+        XCTAssertEqual(retried, 0, "never apply: the row was never approved")
+    }
+
+    /// A failed apply writes the same message to the row's own `error`; the
+    /// card shows it once, not twice.
+    func testGestureErrorEqualToRowErrorRendersOnce() throws {
+        let action = try row { db in
+            try TestDatabase.insertAgentAction(db, tool: "create_jira_issue", external: true, status: "failed", error: "boom")
+        }
+        let view = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
+                                       gestureError: "boom")
+        // swiftlint:disable:next trailing_closure
+        XCTAssertEqual(try view.inspect().findAll(ViewType.Text.self, where: { try $0.string() == "boom" }).count, 1)
+        XCTAssertNoThrow(try view.inspect().find(button: "Retry"))
+    }
+
     /// A claimed row is mid-execution in another process — the card may only
     /// report it, never offer a second decision on it.
     func testExecutingCardShowsNoButtons() throws {

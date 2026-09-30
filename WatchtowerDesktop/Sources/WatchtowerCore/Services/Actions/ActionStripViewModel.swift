@@ -92,9 +92,10 @@ package final class ActionStripViewModel {
         adoptFeedError()
     }
 
-    /// `actionFeed` tracks its own `lastError` (envelope errors, process
-    /// failures); a bare "call it and move on" would swallow that from
-    /// anything observing only the strip's own `lastError`. Runs AFTER
+    /// A failed Approve/Reject/Retry lands in `actionFeed.rowErrors` and shows
+    /// on that row's card; `actionFeed.lastError` keeps what belongs to no row
+    /// (a failed read), and a bare "call it and move on" would swallow that
+    /// from anything observing only the strip's own `lastError`. Runs AFTER
     /// `refresh()`, which clears `lastError` on entry — otherwise refresh's
     /// own reset would immediately wipe the error this just adopted. Synced
     /// unconditionally when `refresh()` itself succeeded (not just when
