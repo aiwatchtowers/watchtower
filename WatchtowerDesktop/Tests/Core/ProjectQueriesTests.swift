@@ -54,6 +54,47 @@ final class ProjectQueriesTests: XCTestCase {
         }
     }
 
+    /// An owner reply under a resolved or outdated root reopens it (Go twin:
+    /// `AddProjectCommentTx`), so the thread counts as open again — the same
+    /// open-root rule the agent's new-for-agent channel reads.
+    func testOwnerReplyReopensAResolvedOrOutdatedThread() throws {
+        try db.write { d in
+            let p = try TestDatabase.insertProject(d)
+            let t = try TestDatabase.insertProjectTarget(d, projectID: p, text: "Feature")
+            let doc = try TestDatabase.insertProjectDocument(d, projectID: p)
+            let resolved = try TestDatabase.insertProjectComment(
+                d, projectID: p, author: "owner", targetID: t, status: "resolved"
+            )
+            let agentReply = try TestDatabase.insertProjectComment(
+                d, projectID: p, body: "Done.", targetID: t, parentID: resolved, readAt: "2026-09-30T09:00:00Z"
+            )
+            let outdated = try TestDatabase.insertProjectComment(
+                d, projectID: p, author: "owner", documentID: doc, status: "outdated", quote: "gone"
+            )
+            let untouched = try TestDatabase.insertProjectComment(
+                d, projectID: p, author: "owner", targetID: t, status: "resolved"
+            )
+            _ = try TestDatabase.insertProjectComment(d, projectID: p, targetID: t, parentID: untouched)
+
+            _ = try ProjectQueries.reply(d, to: resolved, body: "One more thing")
+            _ = try ProjectQueries.reply(d, to: outdated, body: "Still relevant")
+
+            func row(_ id: Int64) throws -> ProjectComment {
+                try XCTUnwrap(ProjectComment.fetchOne(d, sql: "SELECT * FROM project_comments WHERE id = ?", arguments: [id]))
+            }
+            XCTAssertEqual(try row(resolved).status, "open")
+            XCTAssertEqual(try row(outdated).status, "open")
+            XCTAssertEqual(try row(untouched).status, "resolved", "a thread nobody replied to keeps its status")
+            let agent = try row(agentReply)
+            XCTAssertEqual(agent.author, "agent")
+            XCTAssertEqual(agent.readAt, "2026-09-30T09:00:00Z", "the agent's rows are not rewritten")
+            let board = try ProjectQueries.board(d, projectID: p)
+            XCTAssertEqual(board.first?.openComments, 1, "the reopened target thread counts as open again")
+            let docs = try ProjectQueries.documentListItems(d, projectID: p)
+            XCTAssertEqual(docs.first?.openComments, 1, "the reopened document thread counts as open again")
+        }
+    }
+
     func testOwnerCommentRejectsEmptyBodyNoSubjectAndForeignDocument() throws {
         try db.write { d in
             let p = try TestDatabase.insertProject(d)

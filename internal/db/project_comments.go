@@ -83,6 +83,10 @@ func (db *DB) AddProjectComment(c ProjectComment) (int64, error) {
 }
 
 // AddProjectCommentTx is AddProjectComment inside the caller's transaction.
+// An owner reply to a resolved or outdated thread reopens its root in the
+// same transaction — newForAgentPredicate reads only open threads, so the
+// reply would otherwise never reach the agent. An agent reply never reopens.
+// Swift twin: ProjectQueries.reply.
 func (db *DB) AddProjectCommentTx(tx *sql.Tx, c ProjectComment) (int64, error) {
 	if c.Author != "owner" && c.Author != "agent" {
 		return 0, fmt.Errorf("invalid comment author %q", c.Author)
@@ -94,7 +98,17 @@ func (db *DB) AddProjectCommentTx(tx *sql.Tx, c ProjectComment) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return insertProjectComment(tx, placed)
+	id, err := insertProjectComment(tx, placed)
+	if err != nil {
+		return 0, err
+	}
+	if placed.Author == "owner" && placed.ParentID.Valid {
+		if _, err := tx.Exec(`UPDATE project_comments SET status = 'open' WHERE id = ? AND status != 'open'`,
+			placed.ParentID.Int64); err != nil {
+			return 0, fmt.Errorf("reopening thread %d: %w", placed.ParentID.Int64, err)
+		}
+	}
+	return id, nil
 }
 
 func placeProjectComment(q targetsQuerier, c ProjectComment) (ProjectComment, error) {

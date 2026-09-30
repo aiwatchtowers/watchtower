@@ -152,7 +152,12 @@ package enum ProjectQueries {
     }
 
     /// An owner reply. It inherits the root's project, target and document —
-    /// the same rule as Go `AddProjectComment`.
+    /// the same rule as Go `AddProjectComment`. A reply to a `resolved` or
+    /// `outdated` thread reopens its root in the same write: the agent's
+    /// new-for-agent channels (`list_comments`, the brief, the board counts)
+    /// read only open threads, so a reply left under a closed root would never
+    /// reach the agent. Go twin: `AddProjectCommentTx` (owner replies only —
+    /// an agent reply never reopens).
     @discardableResult
     package static func reply(_ db: Database, to rootID: Int64, body: String) throws -> Int64 {
         let text = body.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -167,7 +172,11 @@ package enum ProjectQueries {
                 """,
             arguments: [root.projectID, root.targetID, root.documentID, root.id, text]
         )
-        return db.lastInsertedRowID
+        let replyID = db.lastInsertedRowID
+        if !root.isOpen {
+            try db.execute(sql: "UPDATE project_comments SET status = 'open' WHERE id = ?", arguments: [root.id])
+        }
+        return replyID
     }
 
     package static func setStatus(_ db: Database, commentID: Int64, status: String) throws {

@@ -111,6 +111,42 @@ func TestListProjectComments_NewForAgent(t *testing.T) {
 	assert.Len(t, onDoc, 3, "the document filter returns the whole thread")
 }
 
+// TestAddProjectComment_OwnerReplyReopensAClosedThread: an owner reply under
+// a resolved or outdated root reopens it, so the reply reaches the agent's
+// new-for-agent channel; an agent reply leaves the status alone.
+func TestAddProjectComment_OwnerReplyReopensAClosedThread(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestProject(t, d)
+	tid := insertProjectTargetRow(t, d, pid, "feature")
+	root := func(status string) int64 {
+		id := addComment(t, d, ProjectComment{ProjectID: pid, TargetID: nullID(tid), Author: "owner", Body: status})
+		require.NoError(t, d.SetProjectCommentStatus(id, status))
+		return id
+	}
+	reply := func(root int64, author string) int64 {
+		return addComment(t, d, ProjectComment{ProjectID: pid, ParentID: nullID(root), Author: author, Body: "more"})
+	}
+	status := func(id int64) string {
+		c, err := d.GetProjectComment(id)
+		require.NoError(t, err)
+		return c.Status
+	}
+
+	resolved, outdated := root("resolved"), root("outdated")
+	agentOnly := root("resolved")
+	resolvedReply := reply(resolved, "owner")
+	outdatedReply := reply(outdated, "owner")
+	reply(agentOnly, "agent")
+
+	assert.Equal(t, "open", status(resolved), "an owner reply reopens a resolved thread")
+	assert.Equal(t, "open", status(outdated), "an owner reply reopens an outdated thread")
+	assert.Equal(t, "resolved", status(agentOnly), "an agent reply never reopens")
+
+	got, err := d.ListProjectComments(ProjectCommentFilter{ProjectID: pid, NewForAgent: true})
+	require.NoError(t, err)
+	assert.Equal(t, []int64{resolved, outdated, resolvedReply, outdatedReply}, commentIDs(got))
+}
+
 func TestSetProjectCommentStatus_RootsOnly(t *testing.T) {
 	d := openTestDB(t)
 	pid := newTestProject(t, d)
