@@ -32,9 +32,9 @@ struct ProjectDocumentsView: View {
         }
         .task(id: vm.selectedProjectID) {
             await vm.loadDocuments()
-            await openPending()
+            await vm.openPendingDocument()
         }
-        .onChange(of: vm.pendingDocumentID) { _, _ in Task { await openPending() } }
+        .onChange(of: vm.pendingDocumentID) { _, _ in Task { await vm.openPendingDocument() } }
         .onChange(of: vm.documentViewModel?.document.id) { _, _ in delivery = nil }
     }
 
@@ -156,14 +156,6 @@ struct ProjectDocumentsView: View {
             onReopen: thread.root.isOpen ? nil : { await docVM.reopen(thread.id) }
         )
         .onTapGesture { activeThreadID = thread.id }
-    }
-
-    private func openPending() async {
-        guard let id = vm.pendingDocumentID else { return }
-        if vm.documents.isEmpty { await vm.loadDocuments() }
-        guard let item = vm.documents.first(where: { $0.id == id }) else { return }
-        vm.pendingDocumentID = nil
-        await vm.openDocument(item.document)
     }
 
     private func sendComments(_ docVM: ProjectDocumentViewModel) {

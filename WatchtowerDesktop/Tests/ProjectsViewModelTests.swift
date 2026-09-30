@@ -224,6 +224,61 @@ final class ProjectsViewModelTests: XCTestCase {
         vm.closeDocument()
     }
 
+    /// A deep link to a document the agent attached after the list loaded
+    /// must still open: the list reloads whenever the id is not in it.
+    func testOpenPendingReloadsWhenTheDocumentIsNotListedYet() async throws {
+        let p = try await pool.write { d -> Int64 in
+            let p = try TestDatabase.insertProject(d, name: "one", folder: "/tmp/one")
+            _ = try TestDatabase.insertProjectDocument(d, projectID: p, relPath: "docs/a.md")
+            return p
+        }
+        let vm = makeVM()
+        await vm.reload()
+        vm.selectedProjectID = p
+        await vm.loadDocuments()
+        XCTAssertEqual(vm.documents.count, 1)
+        let added = try await pool.write { try TestDatabase.insertProjectDocument($0, projectID: p, relPath: "docs/b.md") }
+
+        vm.pendingDocumentID = added
+        await vm.openPendingDocument()
+
+        XCTAssertEqual(vm.documentViewModel?.document.id, added)
+        XCTAssertNil(vm.pendingDocumentID)
+        vm.closeDocument()
+    }
+
+    /// The agent writes documents and comments DB-only: the poll refreshes
+    /// the list and the open document's threads without re-rendering it.
+    func testRefreshOnPollPicksUpAgentDBWrites() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent("docs"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        try "# Plan\n\nShip it.".write(to: folder.appendingPathComponent("docs/plan.md"), atomically: true, encoding: .utf8)
+        let (p, doc) = try await pool.write { d -> (Int64, Int64) in
+            let p = try TestDatabase.insertProject(d, folder: folder.path)
+            return (p, try TestDatabase.insertProjectDocument(d, projectID: p))
+        }
+        let vm = makeVM()
+        await vm.reload()
+        vm.selectedProjectID = p
+        await vm.loadDocuments()
+        await vm.openDocument(try XCTUnwrap(vm.documents.first?.document))
+        let docVM = try XCTUnwrap(vm.documentViewModel)
+        let version = docVM.renderVersion
+        try await pool.write { d in
+            _ = try TestDatabase.insertProjectDocument(d, projectID: p, relPath: "docs/spec.md")
+            _ = try TestDatabase.insertProjectComment(d, projectID: p, body: "Which date?", documentID: doc, quote: "Ship it")
+        }
+
+        await vm.refreshOnPoll()
+
+        XCTAssertEqual(vm.documents.count, 2)
+        XCTAssertEqual(docVM.threads.count, 1)
+        XCTAssertNotNil(docVM.anchoredRanges[try XCTUnwrap(docVM.threads.first?.id)])
+        XCTAssertEqual(docVM.renderVersion, version, "an open composer's selection stays valid")
+        vm.closeDocument()
+    }
+
     func testSwitchingProjectClosesTheOpenDocument() async throws {
         let (p1, p2) = try await pool.write { d -> (Int64, Int64) in
             let p1 = try TestDatabase.insertProject(d, name: "one", folder: "/tmp/one")

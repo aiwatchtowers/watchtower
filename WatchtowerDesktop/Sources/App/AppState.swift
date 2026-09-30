@@ -943,7 +943,7 @@ final class AppState {
         vm.onOwnerWrite = { [weak notices] projectID, subject in
             notices?.recordOwnerWrite(projectID: projectID, subject: subject)
         }
-        notices.onPolled = { [weak vm] in await vm?.reload() }
+        notices.onPolled = { [weak vm] in await vm?.refreshOnPoll() }
         projectsViewModel = vm
         projectNotificationCenter = notices
         // The first poll also loads the list (onPolled → reload).

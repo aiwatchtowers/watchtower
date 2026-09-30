@@ -137,6 +137,29 @@ final class ProjectsViewModel {
         return true
     }
 
+    /// The notification center's 30 s poll. The agent writes documents and
+    /// comments from another process (DB only, no file change), so besides
+    /// the list this also refreshes the documents pane and the open
+    /// document's threads — neither re-renders the file, so an open composer
+    /// keeps its selection.
+    func refreshOnPoll() async {
+        await reload()
+        guard selectedProjectID != nil else { return }
+        await loadDocuments()
+        await documentViewModel?.refreshThreads()
+    }
+
+    /// Opens `pendingDocumentID` (a deep link). The list is reloaded first
+    /// whenever the id is not in it — a notification for a document the
+    /// agent just attached must open even when others are already listed.
+    func openPendingDocument() async {
+        guard let id = pendingDocumentID else { return }
+        if !documents.contains(where: { $0.id == id }) { await loadDocuments() }
+        guard let item = documents.first(where: { $0.id == id }) else { return }
+        pendingDocumentID = nil
+        await openDocument(item.document)
+    }
+
     nonisolated static func vanished(previous: [Int64], current: [Int64]) -> [Int64] {
         let now = Set(current)
         return previous.filter { !now.contains($0) }
