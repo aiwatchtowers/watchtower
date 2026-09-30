@@ -275,6 +275,19 @@ final class AgentActionCardViewTests: XCTestCase {
         XCTAssertEqual(edit.changes.map(\.removesLine), ["Removes: @Ann Lee", nil])
     }
 
+    /// Args the card cannot read (no changes array) show one short line —
+    /// never an empty or invented preview, and never the raw JSON (which
+    /// carries the whole new page storage, up to 4 MiB) in a Text.
+    func testUnreadableConfluenceEditShowsAShortLine() throws {
+        let storage = String(repeating: "<p>x</p>", count: 1000)
+        let action = try row { db in
+            try TestDatabase.insertAgentAction(db, tool: "edit_confluence_page", external: true,
+                                               argsJSON: #"{"new_storage":"\#(storage)","base_version":7}"#)
+        }
+        XCTAssertNil(AgentActionCardView.confluenceEdit(for: action))
+        XCTAssertEqual(AgentActionCardView.summaryLines(for: action), ["Unreadable Confluence edit proposal"])
+    }
+
     /// Deleted words struck through in red, inserted words in green, the
     /// unchanged words plain.
     func testConfluenceDiffStylesRemovedAndAddedWords() {
@@ -378,16 +391,6 @@ final class AgentActionCardViewTests: XCTestCase {
                                        inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
         XCTAssertNoThrow(try view.inspect().find(text: "Saved as version 8"))
         XCTAssertEqual(try view.inspect().findAll(ViewType.Link.self).count, 1)
-    }
-
-    /// Args the card cannot read (no changes array) fall back to the raw
-    /// JSON rather than an empty or invented preview.
-    func testUnreadableConfluenceArgsFallBackToRawJSON() throws {
-        let action = try row { db in
-            try TestDatabase.insertAgentAction(db, tool: "edit_confluence_page", external: true, argsJSON: #"{"page_id":"1"}"#)
-        }
-        XCTAssertNil(AgentActionCardView.confluenceEdit(for: action))
-        XCTAssertEqual(AgentActionCardView.summaryLines(for: action), [#"{"page_id":"1"}"#])
     }
 
     /// A page url that is not http(s) is never linked.

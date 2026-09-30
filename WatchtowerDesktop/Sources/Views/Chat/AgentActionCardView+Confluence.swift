@@ -62,7 +62,7 @@ extension AgentActionCardView {
     /// The card's text line for the tool; nil for any other tool.
     static func confluenceEditSummaryLines(for action: AgentAction) -> [String]? {
         guard action.tool == confluenceEditTool else { return nil }
-        guard let edit = confluenceEdit(for: action) else { return [action.argsJSON] }
+        guard let edit = confluenceEdit(for: action) else { return ["Unreadable Confluence edit proposal"] }
         return ["Page: \(edit.title) · edits version \(edit.baseVersion)"]
     }
 
