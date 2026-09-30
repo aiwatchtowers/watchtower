@@ -62,20 +62,10 @@ struct ProjectPageView: View {
         case .terminal:
             ProjectTerminalView(project: project)
         case .board:
-            ProjectPanePlaceholder(title: "Board")
+            ProjectBoardView(projectID: project.id)
+                .id(project.id)
         case .documents:
             ProjectDocumentsView(vm: vm)
         }
-    }
-}
-
-/// A pane that is not built yet in this phase. Task 19 replaces Board.
-struct ProjectPanePlaceholder: View {
-    let title: String
-
-    var body: some View {
-        Text("\(title) — coming next")
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
