@@ -107,7 +107,7 @@ func registerRegistry(s *mcpsdk.Server, database *db.DB, reg *tools.Registry, bi
 // someone else's chat.
 func actionVisible(row db.AgentAction, binding tools.Binding) bool {
 	if binding.ProjectID != 0 {
-		return row.ContextType == "project" && row.ContextID == strconv.FormatInt(binding.ProjectID, 10)
+		return row.ContextType == tools.ProjectContextType && row.ContextID == strconv.FormatInt(binding.ProjectID, 10)
 	}
 	return binding.ConversationID == 0 || row.ConversationID == binding.ConversationID
 }

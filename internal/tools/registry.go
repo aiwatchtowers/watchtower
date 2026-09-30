@@ -381,7 +381,7 @@ func (r *Registry) resolveTrust(t *Tool, b Binding) (Trust, error) {
 func newProposalRow(t *Tool, args json.RawMessage, trust Trust, b Binding) db.AgentAction {
 	ctxType, ctxID := b.ContextType, b.ContextID
 	if b.ProjectID != 0 {
-		ctxType, ctxID = projectContextType, strconv.FormatInt(b.ProjectID, 10)
+		ctxType, ctxID = ProjectContextType, strconv.FormatInt(b.ProjectID, 10)
 	}
 	row := db.AgentAction{
 		Tool: t.Name, External: t.External, ArgsJSON: string(args), Reason: reasonOf(args),
@@ -401,7 +401,7 @@ func bindingOf(row *db.AgentAction) Binding {
 		Surface: row.Surface, ConversationID: row.ConversationID,
 		ContextType: row.ContextType, ContextID: row.ContextID, TurnID: row.TurnID,
 	}
-	if row.ContextType == projectContextType {
+	if row.ContextType == ProjectContextType {
 		// A malformed id leaves ProjectID 0, which every project tool refuses.
 		b.ProjectID, _ = strconv.ParseInt(row.ContextID, 10, 64)
 	}

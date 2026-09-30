@@ -8,9 +8,11 @@ import (
 	"watchtower/internal/db"
 )
 
-// projectContextType is the agent_actions.context_type of a project-bound
+// ProjectContextType is the agent_actions.context_type of a project-bound
 // proposal; context_id then holds the project id (newProposalRow/bindingOf).
-const projectContextType = "project"
+// Exported so a reader outside this package (internal/mcp's actionVisible)
+// need not hardcode the literal.
+const ProjectContextType = "project"
 
 // projectOf loads the project the binding is bound to. A binding with no
 // project, or a project deleted while the session runs, is a model-facing
