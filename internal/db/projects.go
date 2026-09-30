@@ -114,6 +114,9 @@ func (db *DB) CreateProject(name, folder string) (int64, error) {
 	if !filepath.IsAbs(folder) {
 		return 0, fmt.Errorf("project folder %q must be an absolute, resolved path", folder)
 	}
+	if err := checkFolderLineBreaks(folder); err != nil {
+		return 0, err
+	}
 	// APFS is case-insensitive, so another spelling of a bound folder is the
 	// same folder; the UNIQUE index below compares bytes.
 	var taken int64

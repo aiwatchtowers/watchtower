@@ -321,3 +321,20 @@ func TestCreateProject_FolderTakenIgnoresCase(t *testing.T) {
 	_, err = d.CreateProject("again", "/work/acme")
 	assert.ErrorIs(t, err, ErrProjectFolderTaken)
 }
+
+// A folder path is later written verbatim into .git/info/exclude lines, so a
+// line break in it is refused at both entry points.
+func TestProjectFolder_RefusesLineBreaks(t *testing.T) {
+	base := t.TempDir()
+	for _, name := range []string{"evil\nline", "evil\rline"} {
+		dir := filepath.Join(base, name)
+		require.NoError(t, os.Mkdir(dir, 0o755))
+		_, err := ResolveProjectFolder(dir)
+		assert.ErrorIs(t, err, ErrProjectFolderNotAllowed, "%q", name)
+	}
+	d := openTestDB(t)
+	_, err := d.CreateProject("acme", "/work/evil\nline")
+	assert.ErrorIs(t, err, ErrProjectFolderNotAllowed)
+	_, err = d.CreateProject("acme", "/work/evil\rline")
+	assert.ErrorIs(t, err, ErrProjectFolderNotAllowed)
+}

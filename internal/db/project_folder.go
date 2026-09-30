@@ -17,8 +17,12 @@ var ErrProjectFolderNotAllowed = errors.New("folder cannot be a project")
 
 // checkProjectFolderAllowed refuses resolved when it is the filesystem root,
 // the home directory or an ancestor of it, or a Watchtower data/config
-// directory, anything inside one, or an ancestor of one.
+// directory, anything inside one, or an ancestor of one — or contains a line
+// break (checkFolderLineBreaks).
 func checkProjectFolderAllowed(resolved string) error {
+	if err := checkFolderLineBreaks(resolved); err != nil {
+		return err
+	}
 	if resolved == string(filepath.Separator) {
 		return fmt.Errorf("%s is the filesystem root: %w", resolved, ErrProjectFolderNotAllowed)
 	}
@@ -62,4 +66,14 @@ func resolveIfExists(p string) string {
 func pathWithin(child, parent string) bool {
 	c, p := strings.ToLower(filepath.Clean(child)), strings.ToLower(filepath.Clean(parent))
 	return c == p || strings.HasPrefix(c, strings.TrimSuffix(p, string(filepath.Separator))+string(filepath.Separator))
+}
+
+// checkFolderLineBreaks refuses a folder path holding \n or \r: the path is
+// written verbatim into .git/info/exclude lines by the project install, where
+// a line break would smuggle in an extra pattern.
+func checkFolderLineBreaks(folder string) error {
+	if strings.ContainsAny(folder, "\n\r") {
+		return fmt.Errorf("%q contains a line break: %w", folder, ErrProjectFolderNotAllowed)
+	}
+	return nil
 }
