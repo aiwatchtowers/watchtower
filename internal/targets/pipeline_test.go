@@ -583,9 +583,7 @@ func TestProj01_ExtractSnapshotExcludesProjectTargets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	if _, err := d.CreateProjectTarget(pid, sql.NullInt64{}, "project-target-hidden", ""); err != nil {
-		t.Fatalf("create project target: %v", err)
-	}
+	db.SeedTestProjectTarget(t, d, pid, sql.NullInt64{}, "project-target-hidden")
 
 	if _, err := p.Extract(context.Background(), ExtractRequest{RawText: "ship the thing"}); err != nil {
 		t.Fatalf("Extract: %v", err)

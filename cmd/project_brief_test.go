@@ -173,8 +173,7 @@ func TestProjectBrief_RendersBoardFromDB(t *testing.T) {
 	database := writeActionsConfig(t)
 	pid, err := database.CreateProject("acme", t.TempDir())
 	require.NoError(t, err)
-	tid, err := database.CreateProjectTarget(pid, sql.NullInt64{}, "Ship the board", "")
-	require.NoError(t, err)
+	tid := db.SeedTestProjectTarget(t, database, pid, sql.NullInt64{}, "Ship the board")
 	require.NoError(t, database.UpdateTargetStatus(int(tid), "in_progress"))
 	cid, err := database.AddProjectComment(db.ProjectComment{ProjectID: pid, TargetID: sql.NullInt64{Int64: tid, Valid: true},
 		Author: "owner", Body: "Keep it small"})

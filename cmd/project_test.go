@@ -130,8 +130,7 @@ func TestProject_DeleteStillDeletesWhenInstallRemovalFails(t *testing.T) {
 	database := writeActionsConfig(t)
 	pid, err := database.CreateProject("acme", t.TempDir())
 	require.NoError(t, err)
-	_, err = database.CreateProjectTarget(pid, sql.NullInt64{}, "board item", "")
-	require.NoError(t, err)
+	db.SeedTestProjectTarget(t, database, pid, sql.NullInt64{}, "board item")
 
 	var removed *db.Project
 	orig := projectRemoveInstall

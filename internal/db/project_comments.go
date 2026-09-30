@@ -225,16 +225,3 @@ func setProjectCommentStatusOn(q targetsQuerier, id int64, status string) error 
 	}
 	return requireAffected(res, fmt.Errorf("comment %d is not a thread root or does not exist", id))
 }
-
-// MarkProjectCommentsRead stamps read_at on the project's unread agent
-// comments, narrowed to one target and/or document when those ids are set.
-func (db *DB) MarkProjectCommentsRead(projectID, targetID, documentID int64) error {
-	_, err := db.Exec(`UPDATE project_comments SET read_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
-		WHERE project_id = ? AND author = 'agent' AND read_at = ''
-		  AND (? = 0 OR target_id = ?) AND (? = 0 OR document_id = ?)`,
-		projectID, targetID, targetID, documentID, documentID)
-	if err != nil {
-		return fmt.Errorf("marking comments read: %w", err)
-	}
-	return nil
-}

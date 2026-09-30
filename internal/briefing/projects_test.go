@@ -29,9 +29,8 @@ func seedProjectTarget(t *testing.T, d *db.DB, projectID int64, parent int64, ti
 	if parent != 0 {
 		p = sql.NullInt64{Int64: parent, Valid: true}
 	}
-	id, err := d.CreateProjectTarget(projectID, p, title, "")
-	require.NoError(t, err)
-	_, err = d.Exec(`UPDATE targets SET status = ?, updated_at = ? WHERE id = ?`, status, updatedAt, id)
+	id := db.SeedTestProjectTarget(t, d, projectID, p, title)
+	_, err := d.Exec(`UPDATE targets SET status = ?, updated_at = ? WHERE id = ?`, status, updatedAt, id)
 	require.NoError(t, err)
 	return id
 }

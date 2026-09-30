@@ -34,8 +34,7 @@ func TestProj01_ProjectTargetsNeverReachNonBoardReaders(t *testing.T) {
 		SourceType: "digest", SourceID: source, DueDate: due})
 	require.NoError(t, err)
 	pid := newTestProject(t, d)
-	onBoard, err := d.CreateProjectTarget(pid, sql.NullInt64{}, "board only", "")
-	require.NoError(t, err)
+	onBoard := SeedTestProjectTarget(t, d, pid, sql.NullInt64{}, "board only")
 	// Defense in depth: the predicate, not the project defaults, keeps it out.
 	_, err = d.Exec(`UPDATE targets SET source_type = 'digest', source_id = ?, due_date = ?, priority = 'high' WHERE id = ?`,
 		source, due, onBoard)

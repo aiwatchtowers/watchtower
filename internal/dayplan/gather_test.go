@@ -223,8 +223,7 @@ func TestProj01_DayPlanGatherExcludesProjectTargets(t *testing.T) {
 	require.NoError(t, err)
 	pid, err := d.CreateProject("acme", t.TempDir())
 	require.NoError(t, err)
-	_, err = d.CreateProjectTarget(pid, sql.NullInt64{}, "board only", "")
-	require.NoError(t, err)
+	db.SeedTestProjectTarget(t, d, pid, sql.NullInt64{}, "board only")
 
 	got, err := p.gatherTargets()
 	require.NoError(t, err)

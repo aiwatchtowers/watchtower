@@ -27,10 +27,8 @@ func newProjectFixture(t *testing.T) projectFixture {
 	d := openDB(t)
 	fx := projectFixture{d: d, a: seedProject(t, d, "alpha"), b: seedProject(t, d, "beta")}
 	var err error
-	fx.aTarget, err = d.CreateProjectTarget(fx.a, sql.NullInt64{}, "Alpha feature", "")
-	require.NoError(t, err)
-	fx.bTarget, err = d.CreateProjectTarget(fx.b, sql.NullInt64{}, "Beta feature", "")
-	require.NoError(t, err)
+	fx.aTarget = db.SeedTestProjectTarget(t, d, fx.a, sql.NullInt64{}, "Alpha feature")
+	fx.bTarget = db.SeedTestProjectTarget(t, d, fx.b, sql.NullInt64{}, "Beta feature")
 	fx.plain, err = d.CreateTarget(db.Target{Text: "Personal task", Level: "day", Status: "todo",
 		Priority: "medium", Ownership: "mine", SourceType: "manual"})
 	require.NoError(t, err)

@@ -9,12 +9,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestCreateProjectTarget_UsesTheBoardDefaults(t *testing.T) {
+func TestCreateProjectTargetsTx_UsesTheBoardDefaults(t *testing.T) {
 	d := openTestDB(t)
 	pid := newTestProject(t, d)
 	before := time.Now().UTC().Format("2006-01-02")
-	id, err := d.CreateProjectTarget(pid, sql.NullInt64{}, "  Ship the board  ", "why it matters")
-	require.NoError(t, err)
+	var ids []int64
+	require.NoError(t, d.WithTx(func(tx *sql.Tx) error {
+		var err error
+		ids, err = d.CreateProjectTargetsTx(tx, pid, []ProjectTargetInput{{Title: "  Ship the board  ", Intent: "why it matters"}})
+		return err
+	}))
+	id := ids[0]
 	after := time.Now().UTC().Format("2006-01-02")
 
 	tg, err := d.GetTargetByID(int(id))
@@ -77,8 +82,7 @@ func TestCreateProjectTargetsTx_BatchIsAllOrNothing(t *testing.T) {
 func TestCreateProjectTargetsTx_RefusesParentsOutsideTheProject(t *testing.T) {
 	d := openTestDB(t)
 	pid := newTestProject(t, d)
-	foreign, err := d.CreateProjectTarget(newTestProject(t, d), sql.NullInt64{}, "other board", "")
-	require.NoError(t, err)
+	foreign := SeedTestProjectTarget(t, d, newTestProject(t, d), sql.NullInt64{}, "other board")
 	personal, err := d.CreateTarget(Target{Text: "personal", Status: "todo", Priority: "medium", Ownership: "mine", SourceType: "manual"})
 	require.NoError(t, err)
 
@@ -94,7 +98,10 @@ func TestCreateProjectTargetsTx_RefusesParentsOutsideTheProject(t *testing.T) {
 	assert.ErrorContains(t, create(ProjectTargetInput{Title: "a"}, ProjectTargetInput{Title: "b", BatchParent: 1, ParentID: nullID(foreign)}),
 		"mutually exclusive")
 
-	_, err = d.CreateProjectTarget(pid+100, sql.NullInt64{}, "x", "")
+	err = d.WithTx(func(tx *sql.Tx) error {
+		_, err := d.CreateProjectTargetsTx(tx, pid+100, []ProjectTargetInput{{Title: "x"}})
+		return err
+	})
 	assert.ErrorIs(t, err, ErrProjectNotFound)
 }
 
@@ -122,10 +129,8 @@ func TestGetTargets_ProjectScope(t *testing.T) {
 	other := newTestProject(t, d)
 	_, err := d.CreateTarget(Target{Text: "personal", Status: "todo", Priority: "medium", Ownership: "mine", SourceType: "manual"})
 	require.NoError(t, err)
-	mine, err := d.CreateProjectTarget(pid, sql.NullInt64{}, "on my board", "")
-	require.NoError(t, err)
-	_, err = d.CreateProjectTarget(other, sql.NullInt64{}, "on another board", "")
-	require.NoError(t, err)
+	mine := SeedTestProjectTarget(t, d, pid, sql.NullInt64{}, "on my board")
+	SeedTestProjectTarget(t, d, other, sql.NullInt64{}, "on another board")
 
 	personal, err := d.GetTargets(TargetFilter{})
 	require.NoError(t, err)
@@ -141,9 +146,8 @@ func TestGetTargets_ProjectScope(t *testing.T) {
 func TestPromoteSubItemToChild_CopiesProjectID(t *testing.T) {
 	d := openTestDB(t)
 	pid := newTestProject(t, d)
-	parent, err := d.CreateProjectTarget(pid, sql.NullInt64{}, "feature", "")
-	require.NoError(t, err)
-	_, err = d.Exec(`UPDATE targets SET sub_items = '[{"text":"write the test","done":false}]' WHERE id = ?`, parent)
+	parent := SeedTestProjectTarget(t, d, pid, sql.NullInt64{}, "feature")
+	_, err := d.Exec(`UPDATE targets SET sub_items = '[{"text":"write the test","done":false}]' WHERE id = ?`, parent)
 	require.NoError(t, err)
 
 	child, err := d.PromoteSubItemToChild(parent, 0, PromoteOverrides{})

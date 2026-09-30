@@ -25,9 +25,8 @@ func TestGetProjectBoard_TreeOrderCountsAndDocuments(t *testing.T) {
 	require.NoError(t, d.UpdateTargetStatus(int(ids[1]), "done"))
 	require.NoError(t, d.UpdateTargetStatus(int(ids[2]), "in_progress"))
 
-	_, err := d.CreateProjectTarget(newTestProject(t, d), sql.NullInt64{}, "another board", "")
-	require.NoError(t, err)
-	_, err = d.CreateTarget(Target{Text: "personal", Status: "todo", Priority: "medium", Ownership: "mine", SourceType: "manual"})
+	SeedTestProjectTarget(t, d, newTestProject(t, d), sql.NullInt64{}, "another board")
+	_, err := d.CreateTarget(Target{Text: "personal", Status: "todo", Priority: "medium", Ownership: "mine", SourceType: "manual"})
 	require.NoError(t, err)
 
 	active := nullID(ids[2])

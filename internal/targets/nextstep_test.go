@@ -919,10 +919,7 @@ func TestProj01_NextStepSkipsProjectTarget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	id, err := d.CreateProjectTarget(pid, sql.NullInt64{}, "board only", "")
-	if err != nil {
-		t.Fatalf("create project target: %v", err)
-	}
+	id := db.SeedTestProjectTarget(t, d, pid, sql.NullInt64{}, "board only")
 
 	_, err = p.GenerateNextStep(context.Background(), int(id))
 	if !errors.Is(err, ErrProjectTarget) {

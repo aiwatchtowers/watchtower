@@ -124,27 +124,6 @@ func TestSetProjectCommentStatus_RootsOnly(t *testing.T) {
 	assert.Error(t, d.SetProjectCommentStatus(root, "closed"), "unknown status")
 }
 
-func TestMarkProjectCommentsRead_OnlyAgentCommentsOfTheScope(t *testing.T) {
-	d := openTestDB(t)
-	pid := newTestProject(t, d)
-	t1 := insertProjectTargetRow(t, d, pid, "one")
-	t2 := insertProjectTargetRow(t, d, pid, "two")
-	agentOnT1 := addComment(t, d, ProjectComment{ProjectID: pid, TargetID: nullID(t1), Author: "agent", Body: "a"})
-	agentOnT2 := addComment(t, d, ProjectComment{ProjectID: pid, TargetID: nullID(t2), Author: "agent", Body: "b"})
-	ownerOnT1 := addComment(t, d, ProjectComment{ProjectID: pid, TargetID: nullID(t1), Author: "owner", Body: "c"})
-
-	require.NoError(t, d.MarkProjectCommentsRead(pid, t1, 0))
-
-	read := func(id int64) string {
-		c, err := d.GetProjectComment(id)
-		require.NoError(t, err)
-		return c.ReadAt
-	}
-	assert.NotEmpty(t, read(agentOnT1))
-	assert.Empty(t, read(agentOnT2), "another target's comments stay unread")
-	assert.Empty(t, read(ownerOnT1), "owner comments are never marked")
-}
-
 func TestGetProjectCommentAndDocument_MissingIsNilNil(t *testing.T) {
 	d := openTestDB(t)
 	c, err := d.GetProjectComment(999)

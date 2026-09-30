@@ -19,21 +19,6 @@ type ProjectTargetInput struct {
 	BatchParent int
 }
 
-// CreateProjectTarget creates one target on project projectID's board.
-func (db *DB) CreateProjectTarget(projectID int64, parentID sql.NullInt64, title, intent string) (int64, error) {
-	var ids []int64
-	err := db.WithTx(func(tx *sql.Tx) error {
-		var err error
-		ids, err = db.CreateProjectTargetsTx(tx, projectID,
-			[]ProjectTargetInput{{Title: title, Intent: intent, ParentID: parentID}})
-		return err
-	})
-	if err != nil {
-		return 0, err
-	}
-	return ids[0], nil
-}
-
 // CreateProjectTargetsTx inserts items, in order, as targets of project
 // projectID inside tx and returns their ids. Every item gets the board
 // defaults: level custom, custom_label project, period = the UTC day of
