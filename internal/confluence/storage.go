@@ -171,24 +171,49 @@ const (
 // including its internal whitespace — survives byte-for-byte.
 func escapeCDATASections(xhtml string) string {
 	var b strings.Builder
+	SplitCDATA(xhtml, func(raw, body string, isCDATA bool) {
+		if isCDATA {
+			b.WriteString(stdhtml.EscapeString(body))
+			return
+		}
+		b.WriteString(raw)
+	})
+	return b.String()
+}
+
+// SplitCDATA is the single place that finds CDATA sections in storage
+// XHTML: it calls fn for each consecutive piece of xhtml, in order, with
+// isCDATA telling a "<![CDATA[...]]>" section apart from the markup around
+// it. raw is the piece's exact bytes (concatenating every raw reproduces
+// xhtml byte for byte); body is the CDATA content without its delimiters
+// (equal to raw for a non-CDATA piece). Empty non-CDATA pieces are skipped.
+// An unterminated section (malformed input) runs to the end of xhtml, with
+// no closing delimiter to strip. escapeCDATASections (the converter) and
+// internal/confluenceedit (the byte-exact editor, which must tokenize the
+// markup around a section without ever handing the section itself to the
+// HTML5 tokenizer) both build on it, so the rule lives here once.
+func SplitCDATA(xhtml string, fn func(raw, body string, isCDATA bool)) {
 	rest := xhtml
-	for {
+	for rest != "" {
 		i := strings.Index(rest, cdataStart)
 		if i < 0 {
-			b.WriteString(rest)
-			return b.String()
+			fn(rest, rest, false)
+			return
 		}
-		b.WriteString(rest[:i])
+		if i > 0 {
+			fn(rest[:i], rest[:i], false)
+		}
 		body := rest[i+len(cdataStart):]
 		j := strings.Index(body, cdataEnd)
 		if j < 0 {
-			// Unterminated CDATA (malformed input): escape the remainder
-			// verbatim and stop, rather than looping forever.
-			b.WriteString(stdhtml.EscapeString(body))
-			return b.String()
+			// Unterminated CDATA: the remainder is the section's body, and
+			// the loop stops rather than scanning forever.
+			fn(rest[i:], body, true)
+			return
 		}
-		b.WriteString(stdhtml.EscapeString(body[:j]))
-		rest = body[j+len(cdataEnd):]
+		end := i + len(cdataStart) + j + len(cdataEnd)
+		fn(rest[i:end], body[:j], true)
+		rest = rest[end:]
 	}
 }
 
