@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"strings"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -130,10 +132,14 @@ const (
 
 // elideLargeStrings returns args with every string value over
 // maxViewStringBytes cut to its first viewKeepRunes runes plus a marker
-// naming its full size. Args that are not valid JSON pass through.
+// naming its full size. Numbers keep their exact text (UseNumber: no
+// float64 round trip turning an id into 1.2345e+19). Args that are not one
+// valid JSON value pass through.
 func elideLargeStrings(args string) json.RawMessage {
+	dec := json.NewDecoder(strings.NewReader(args))
+	dec.UseNumber()
 	var v any
-	if err := json.Unmarshal([]byte(args), &v); err != nil {
+	if err := dec.Decode(&v); err != nil || dec.Decode(new(any)) != io.EOF {
 		return json.RawMessage(args)
 	}
 	out, err := json.Marshal(elideValue(v))

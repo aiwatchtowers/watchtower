@@ -287,6 +287,24 @@ func TestGetAction_ScopedToBindingConversation(t *testing.T) {
 }
 
 // get_action must not echo bulky pinned args verbatim: an
+// F10: eliding strings never touches a number's text — a large integer id
+// and a decimal with a trailing zero come back byte-exact — and input that
+// is not exactly one JSON value passes through untouched.
+func TestElideLargeStringsKeepsNumbersExact(t *testing.T) {
+	big := strings.Repeat("x", maxViewStringBytes+1)
+	got := string(elideLargeStrings(`{"id":12345678901234567890,"ratio":1.50,"neg":-0.000100,"s":"` + big + `"}`))
+	for _, want := range []string{`"id":12345678901234567890`, `"ratio":1.50`, `"neg":-0.000100`, "[elided: "} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("%q missing from %.200s", want, got)
+		}
+	}
+	for _, raw := range []string{`{"a":1} {"b":2}`, `not json`, `{"a":`} {
+		if got := string(elideLargeStrings(raw)); got != raw {
+			t.Fatalf("%q must pass through, got %q", raw, got)
+		}
+	}
+}
+
 // edit_confluence_page row carries up to 4 MiB of storage XHTML, which would
 // blow the chat context on "did my edit go through?". Every long string is
 // cut in the view; the stored row is unchanged.
