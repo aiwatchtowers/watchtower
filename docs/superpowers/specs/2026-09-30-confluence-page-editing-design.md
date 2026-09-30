@@ -348,7 +348,12 @@ sections above are the original design and are not rewritten to match.
   deleting a plain paragraph and changing an aligned one side by side is
   refused rather than re-paired so the aligned one is silently deleted. A
   rich block is still deleted when no new block of its kind shares its gap.
-  Guards: `apply_r13_test.go`.
+  Guards: `apply_r13_test.go`. Also in round 2: at `base_version + 1` the
+  "already saved" comparison ignores the `local-id`/`ac:local-id`
+  attributes Confluence stamps on save, and any other storage there is a
+  hedged conflict ("this edit may have been saved; re-read with
+  get_confluence_page before retrying") — superseding R12's plain wording
+  for that one case.
 - **R12 (local review, write precondition):** `Normalize` pins `base_hash`,
   the sha256 of the storage the preview was computed from; `Execute` writes
   only while the live page has the same version AND the same storage hash (a

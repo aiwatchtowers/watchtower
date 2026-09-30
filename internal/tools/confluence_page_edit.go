@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"unicode/utf8"
 
@@ -370,15 +371,29 @@ func executeConfluenceEdit(ctx context.Context, d *db.DB, factory ConfluencePage
 
 // confluenceConflict is the failure for a live page that is no longer the
 // one the preview was computed from (R12). A page one version past the
-// preview whose storage is exactly this edit's is this very edit — a first
-// PUT that landed but whose response was lost — and says so; anything else
-// (a newer version, or the same version with different storage) is
-// someone else's edit.
+// preview whose storage is this edit's — up to the local-id attributes
+// Confluence stamps on new elements when it saves — is this very edit (a
+// first PUT that landed but whose response was lost) and says so. Any
+// other page one version past the preview may still be this edit, stamped
+// in a way we cannot tell apart, so that conflict is hedged; a newer
+// version, or the same version with different storage, is someone else's
+// edit.
 func confluenceConflict(live ConfluencePage, p editConfluencePinned) error {
-	if live.Version == p.BaseVersion+1 && live.Storage == p.NewStorage {
-		return fmt.Errorf("this edit is already saved (v%d); nothing was written now", live.Version)
+	if live.Version == p.BaseVersion+1 {
+		if stripLocalIDs(live.Storage) == stripLocalIDs(p.NewStorage) {
+			return fmt.Errorf("this edit is already saved (v%d); nothing was written now", live.Version)
+		}
+		return fmt.Errorf("conflict: the page is now v%d (one version after your preview) — this edit may have been saved; re-read with get_confluence_page before retrying; nothing was written now", live.Version)
 	}
 	return fmt.Errorf("conflict: the page was edited after the preview (now v%d); nothing was written", live.Version)
+}
+
+// localIDAttr matches the local-id / ac:local-id attributes Confluence
+// adds to elements on save.
+var localIDAttr = regexp.MustCompile(`\s(?:ac:)?local-id=(?:"[^"]*"|'[^']*')`)
+
+func stripLocalIDs(storage string) string {
+	return localIDAttr.ReplaceAllString(storage, "")
 }
 
 // confluenceSignInExpired is the re-login hint for a revoked grant on the

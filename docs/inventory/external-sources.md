@@ -155,8 +155,12 @@ the page and writes only if its version still equals `base_version` AND the
 sha256 of its storage still equals `base_hash` (a change that did not bump
 the version is caught too) — else it fails with `conflict: the page was
 edited after the preview (now vN); nothing was written`, or, when the page is
-exactly one version on and its storage is exactly this edit's (its own
-earlier PUT whose response was lost), `this edit is already saved (vN);
+exactly one version on and its storage is this edit's once the `local-id`
+attributes Confluence stamps on save are stripped (its own earlier PUT
+whose response was lost), `this edit is already saved (vN); nothing was
+written now`, or, one version on with any other storage, the hedged
+`conflict: the page is now vN (one version after your preview) — this edit
+may have been saved; re-read with get_confluence_page before retrying;
 nothing was written now` — and issues no PUT — as one `PUT` of
 `base_version + 1` with the message `Edited via Watchtower` (a 409 from
 Confluence is re-read and reported the same way). A rich element (a
