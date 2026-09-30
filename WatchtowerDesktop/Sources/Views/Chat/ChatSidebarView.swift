@@ -33,6 +33,7 @@ struct ChatSidebarView: View {
                             Text(conv.displayTitle)
                                 .lineLimit(1)
                                 .tag(conv.id)
+                                .listRowSeparator(.hidden)
                                 .contextMenu { menu(conv) }
                         }
                     }
@@ -75,6 +76,7 @@ struct ChatSidebarView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .listRowSeparator(.hidden)
                 .listRowBackground(chatVM.openProjectID == project.id ? Color.accentColor.opacity(0.15) : nil)
             }
         } header: {

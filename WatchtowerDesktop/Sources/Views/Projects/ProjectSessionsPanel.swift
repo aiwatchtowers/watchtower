@@ -2,30 +2,22 @@ import SwiftUI
 import WatchtowerCore
 
 /// The left panel's level 2 (spec 2026-09-30-project-workspace-sessions §3):
-/// Back, the project's name, Board and Documents, then its sessions and
-/// "New session".
+/// one header row (Back, the project's name, New session), then Board and
+/// Documents and the project's sessions — shaped like the chat history
+/// (`ChatSidebarView`).
 struct ProjectSessionsPanel: View {
     @Bindable var vm: ProjectsViewModel
     let project: Project
     let actions: SessionRowActions
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Button {
-                vm.drilledProjectID = nil
-            } label: {
-                Label("Projects", systemImage: "chevron.backward")
-            }
-            .buttonStyle(.borderless)
-            .padding([.horizontal, .top], 8)
-            Text(project.name)
-                .font(.headline)
-                .lineLimit(1)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
+        VStack(spacing: 0) {
+            header
             List(selection: selection) {
-                Label("Board", systemImage: "square.grid.3x2").tag(WorkspacePane.board)
-                Label("Documents", systemImage: "doc.text").tag(WorkspacePane.documents)
+                Section {
+                    PanelRowLabel("Board", systemImage: "square.grid.2x2").tag(WorkspacePane.board)
+                    PanelRowLabel("Documents", systemImage: "doc.text").tag(WorkspacePane.documents)
+                }
                 Section("Sessions") {
                     ForEach(vm.drilledSessions) { session in
                         TerminalSessionRow(session: session, isLive: vm.isLive(session), actions: actions)
@@ -35,20 +27,39 @@ struct ProjectSessionsPanel: View {
             }
             .panelListStyle()
             if let error = vm.sessionErrors[project.id] {
-                Text(error)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .padding(.horizontal, 8)
+                Text(error).font(.caption).foregroundStyle(.red).padding(8)
             }
-            Divider()
+        }
+        .task(id: project.id) { await vm.loadSessions(projectID: project.id) }
+    }
+
+    /// The chat history's header shape ("Chats" + New Chat) with Back in front.
+    private var header: some View {
+        HStack(spacing: 6) {
+            Button {
+                vm.drilledProjectID = nil
+            } label: {
+                Image(systemName: "chevron.backward")
+            }
+            .buttonStyle(.borderless)
+            .help("Back to Projects")
+            .accessibilityLabel("Back to Projects")
+            Text(project.name)
+                .font(.headline)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: 4)
             Button {
                 Task { await vm.newPanelSession() }
             } label: {
-                Label("New session", systemImage: "plus")
+                Image(systemName: "plus")
             }
-            .padding(8)
+            .buttonStyle(.borderless)
+            .help("New session")
+            .accessibilityLabel("New session")
         }
-        .task(id: project.id) { await vm.loadSessions(projectID: project.id) }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
     }
 
     /// Board and Documents select through the List; a session row opens on
@@ -91,6 +102,7 @@ struct TerminalSessionRow: View {
                 Image(systemName: isLive ? "circle.fill" : "circle")
                     .font(.system(size: 7))
                     .foregroundStyle(isLive ? Color.green : Color.secondary)
+                    .frame(width: PanelRowLabel.iconWidth)
                     .accessibilityLabel(isLive ? "Running" : "Not running")
                 VStack(alignment: .leading, spacing: 1) {
                     Text(session.title).lineLimit(1).truncationMode(.tail)
@@ -118,6 +130,7 @@ struct TerminalSessionRow: View {
             }
         }
         .foregroundStyle(session.isClosed ? .secondary : .primary)
+        .listRowSeparator(.hidden)
         .onHover { hovering = $0 }
         .help(session.isClosed ? "Closed — click to reopen" : isLive ? session.title : "Not running — click to start")
         .contextMenu {
@@ -126,6 +139,31 @@ struct TerminalSessionRow: View {
             Divider()
             Button("Delete…", role: .destructive) { actions.delete(session) }
         }
+    }
+}
+
+/// A Board/Documents row: a small secondary icon in a fixed column, so the
+/// text lines up with the session rows' text below it.
+struct PanelRowLabel: View {
+    static let iconWidth: CGFloat = 16
+    let title: String
+    let systemImage: String
+
+    init(_ title: String, systemImage: String) {
+        self.title = title
+        self.systemImage = systemImage
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: systemImage)
+                .imageScale(.small)
+                .foregroundStyle(.secondary)
+                .frame(width: Self.iconWidth)
+                .accessibilityHidden(true)
+            Text(title).lineLimit(1)
+        }
+        .listRowSeparator(.hidden)
     }
 }
 
