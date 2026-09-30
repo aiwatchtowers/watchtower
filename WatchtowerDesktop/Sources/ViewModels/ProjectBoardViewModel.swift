@@ -162,6 +162,12 @@ final class ProjectBoardViewModel {
         }
     }
 
+    /// The board's error banner is dismissed by the owner: a poll reload
+    /// does not clear it, so a failed drop's message stays until read.
+    func dismissError() {
+        errorMessage = nil
+    }
+
     func toggle(_ targetID: Int) {
         if collapsed.contains(targetID) {
             collapsed.remove(targetID)

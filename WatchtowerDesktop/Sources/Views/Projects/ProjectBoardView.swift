@@ -59,12 +59,19 @@ struct ProjectBoardView: View {
             // Board-level, not in the detail pane: a kanban drop can fail for
             // a card that is not the selected one (or with nothing selected).
             if let error = vm.errorMessage {
-                Text(error)
-                    .font(.callout)
-                    .foregroundStyle(.red)
-                    .textSelection(.enabled)
-                    .padding(.horizontal, 8)
-                    .padding(.bottom, 6)
+                HStack(alignment: .top) {
+                    Text(error)
+                        .font(.callout)
+                        .foregroundStyle(.red)
+                        .textSelection(.enabled)
+                    Spacer(minLength: 4)
+                    Button { vm.dismissError() } label: { Image(systemName: "xmark") }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                        .help("Dismiss")
+                }
+                .padding(.horizontal, 8)
+                .padding(.bottom, 6)
             }
             Divider()
             if vm.roots.isEmpty {
