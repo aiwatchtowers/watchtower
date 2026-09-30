@@ -140,6 +140,9 @@ final class AppState {
     /// `wireMeetingRecorderLoaders` (same wiring moment as the registry
     /// loader/writer below, which need the same pool).
     let voiceRegistryCenter = VoiceRegistryCenter()
+    /// Embedded Claude Code terminals, one per project. No DB needed; closed
+    /// on quit by `QuitCoordinator` (via `TrayAppDelegate`).
+    let projectTerminalCenter = ProjectTerminalCenter()
 
     /// Diarizer models are prefetched only while speaker roles are on; a
     /// failure is fine — the post-pass retries the download and degrades to a
@@ -928,6 +931,9 @@ final class AppState {
         cliRunner: (any CLIRunnerProtocol)? = ProcessCLIRunner.makeDefault()
     ) {
         let vm = ProjectsViewModel(dbPool: dbPool, cli: cliRunner.map { ProjectCLI(runner: $0) })
+        vm.onProjectCreated = { [weak self] project in
+            self?.projectTerminalCenter.start(project: project, firstRun: true)
+        }
         projectsViewModel = vm
         Task { await vm.reload() }
     }

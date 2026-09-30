@@ -70,6 +70,23 @@ final class QuitCoordinatorTests: XCTestCase {
         XCTAssertFalse(closed)
     }
 
+    /// Every embedded project terminal is closed on quit — after the chat
+    /// sessions, before the daemon stop — so no `claude` outlives the app.
+    func testQuitClosesTerminalsBeforeStoppingTheDaemon() async {
+        var order: [String] = []
+        let replied = expectation(description: "replied")
+        let reply = QuitCoordinator.shouldTerminate(
+            hasBlockingWork: false,
+            confirmQuit: { true },
+            closeChatSessions: { order.append("chat") },
+            closeTerminals: { order.append("terminals") },
+            stopDaemon: { order.append("daemon") },
+            reply: { ok in XCTAssertTrue(ok); replied.fulfill() })
+        XCTAssertEqual(reply, .terminateLater)
+        await fulfillment(of: [replied], timeout: 5)
+        XCTAssertEqual(order, ["chat", "terminals", "daemon"])
+    }
+
 }
 
 /// The quit gate widened from "capturing" to `MeetingRecorderCenter.isBusy`:

@@ -144,6 +144,7 @@ final class ProjectsViewModelTests: XCTestCase {
         let id = try await pool.write { try TestDatabase.insertProject($0) }
         let held = HeldCLIRunner(stdout: createdJSON(id))
         let appState = AppState()
+        appState.projectTerminalCenter.makeSession = { FakeTerminalSession() }
         appState.initProjects(dbPool: pool, cliRunner: held)
         let vm = try XCTUnwrap(appState.projectsViewModel)
         appState.selectedDestination = .projects

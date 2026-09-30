@@ -60,7 +60,7 @@ struct ProjectPageView: View {
     private var paneContent: some View {
         switch vm.pane {
         case .terminal:
-            ProjectPanePlaceholder(title: "Terminal")
+            ProjectTerminalView(project: project)
         case .board:
             ProjectPanePlaceholder(title: "Board")
         case .documents:
@@ -69,8 +69,7 @@ struct ProjectPageView: View {
     }
 }
 
-/// A pane that is not built yet in this phase. Task 17 replaces Terminal,
-/// Task 19 Board.
+/// A pane that is not built yet in this phase. Task 19 replaces Board.
 struct ProjectPanePlaceholder: View {
     let title: String
 
