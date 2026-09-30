@@ -32,7 +32,14 @@ var terminalTitleGeneratorFactory = func(cfg *config.Config) digest.Generator {
 
 // terminalClaudeDir is the seam tests point at a temp dir: Claude Code's
 // config directory, under which transcripts live in projects/*/<id>.jsonl.
-var terminalClaudeDir = func() string {
+var terminalClaudeDir = defaultTerminalClaudeDir
+
+// defaultTerminalClaudeDir is always `~/.claude`, never `CLAUDE_CONFIG_DIR`:
+// the same rule as the Desktop's `ClaudeTranscript.defaultConfigDir` (a dual
+// path: move both at once). An env override could point Watchtower at a
+// TCC-protected folder, and the app's environment need not match the login
+// shell the embedded claude runs in.
+func defaultTerminalClaudeDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""

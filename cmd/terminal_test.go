@@ -151,3 +151,11 @@ func TestTerminalTitle_UnknownClaudeDirIsAnError(t *testing.T) {
 	require.Error(t, err)
 	assert.Zero(t, gen.calls)
 }
+
+// Both sides read transcripts from ~/.claude only (ClaudeTranscript.defaultConfigDir).
+func TestTerminalClaudeDir_IgnoresClaudeConfigDir(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", "/tmp/acme-claude")
+	home, err := os.UserHomeDir()
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(home, ".claude"), defaultTerminalClaudeDir())
+}

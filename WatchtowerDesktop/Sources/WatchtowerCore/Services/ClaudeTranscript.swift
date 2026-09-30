@@ -5,10 +5,12 @@ import Foundation
 /// only once the session is used; a session the owner never typed into, or
 /// whose first start failed, has none, and `--resume` would refuse it forever.
 package enum ClaudeTranscript {
-    /// `~/.claude`, or `CLAUDE_CONFIG_DIR` when the owner set one.
+    /// Always `~/.claude`, never `CLAUDE_CONFIG_DIR` — the same rule as Go
+    /// `defaultTerminalClaudeDir` (cmd/terminal.go), a dual path. An env
+    /// override could point the app at a TCC-protected folder, and the app's
+    /// environment need not match the login shell the embedded claude runs in.
     package static var defaultConfigDir: String {
-        ProcessInfo.processInfo.environment["CLAUDE_CONFIG_DIR"].flatMap { $0.isEmpty ? nil : $0 }
-            ?? (NSHomeDirectory() as NSString).appendingPathComponent(".claude")
+        (NSHomeDirectory() as NSString).appendingPathComponent(".claude")
     }
 
     /// Looks in every project directory under `<configDir>/projects`. An
