@@ -70,6 +70,9 @@ extension ProjectsViewModel {
                 }
             } else {
                 standaloneSessions = try await dbPool.read { try TerminalSessionQueries.fetchStandalone($0) }
+                if let id = selectedStandaloneID, !standaloneSessions.contains(where: { $0.id == id }) {
+                    selectedStandaloneID = nil
+                }
             }
             sessionLoadErrors[projectID] = nil
             return true
@@ -103,10 +106,7 @@ extension ProjectsViewModel {
                   claudeSessionID: kind == .claude ? Self.newClaudeSessionID() : nil),
             prompt: nil
         )
-        if let row {
-            selectedProjectID = nil
-            selectedStandaloneID = row.id
-        }
+        if let row { showStandalone(row.id) }
     }
 
     /// Creates a `claude` session row with a new Claude session id and starts
@@ -266,6 +266,7 @@ extension ProjectsViewModel {
 
     /// An empty name is refused (the title stays as it was).
     func rename(_ session: TerminalSession, to title: String) async {
+        setSessionError(nil, projectID: session.projectID)
         do {
             try await dbPool.write { try TerminalSessionQueries.rename($0, id: session.id, title: title) }
         } catch TerminalSessionQueryError.emptyTitle {
@@ -405,6 +406,7 @@ extension ProjectsViewModel {
             center.focus(row.id)
         }
         if let projectID = row.projectID {
+            shownSessionIDs[projectID] = row.id
             var updated = layout(projectID: projectID)
             updated.show(.session(row.id))
             setLayout(updated, projectID: projectID)

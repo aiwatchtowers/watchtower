@@ -2,12 +2,6 @@ import AppKit
 import SwiftUI
 import WatchtowerCore
 
-/// A level-1 row of the Projects panel: a project, or a standalone terminal.
-enum ProjectsPanelItem: Hashable {
-    case project(Int64)
-    case terminal(Int64)
-}
-
 /// Level 1's "Terminals" section: standalone sessions (outside any project)
 /// and the "New terminal" menu.
 struct TerminalsSection: View {
@@ -20,8 +14,8 @@ struct TerminalsSection: View {
                 TerminalSessionRow(session: session, isLive: vm.isLive(session), actions: actions)
                     .tag(ProjectsPanelItem.terminal(session.id))
             }
-            // Shown on the terminal's own page when one is selected.
-            if vm.selectedStandaloneID == nil, let error = vm.standaloneSessionError {
+            // Shown on the terminal's own page when one is on screen.
+            if vm.selectedStandalone == nil, let error = vm.standaloneSessionError {
                 Text(error).font(.caption).foregroundStyle(.red)
             }
         } header: {
@@ -36,14 +30,16 @@ struct TerminalsSection: View {
 
 private struct NewTerminalMenu: View {
     let vm: ProjectsViewModel
+    @State private var pending: (kind: TerminalSession.Kind, folder: URL)?
+    @State private var sensitiveLocation: String?
 
     var body: some View {
         Menu {
             Button("Claude Code in Home") { start(.claude, folder: home) }
-            Button("Claude Code in Folder…") { if let folder = chooseFolder() { start(.claude, folder: folder) } }
+            Button("Claude Code in Folder…") { chooseFolder(for: .claude) }
             Divider()
             Button("Shell in Home") { start(.shell, folder: home) }
-            Button("Shell in Folder…") { if let folder = chooseFolder() { start(.shell, folder: folder) } }
+            Button("Shell in Folder…") { chooseFolder(for: .shell) }
         } label: {
             Image(systemName: "plus")
         }
@@ -52,21 +48,43 @@ private struct NewTerminalMenu: View {
         .fixedSize()
         .help("New terminal")
         .accessibilityLabel("New terminal")
+        .alert(
+            "Folder in \(sensitiveLocation ?? "")",
+            isPresented: Binding(get: { sensitiveLocation != nil }, set: { if !$0 { sensitiveLocation = nil } })
+        ) {
+            Button("Open anyway") {
+                if let pending { start(pending.kind, folder: pending.folder) }
+                pending = nil
+            }
+            Button("Choose another folder", role: .cancel) { pending = nil }
+        } message: {
+            Text(
+                "The embedded terminal runs as part of Watchtower, so macOS may ask whether Watchtower can access "
+                    + "\(sensitiveLocation ?? "this folder"). A folder outside Documents, Desktop, Downloads and "
+                    + "cloud storage avoids that prompt."
+            )
+        }
     }
 
-    private var home: URL { FileManager.default.homeDirectoryForCurrentUser }
+    private var home: URL { FileManager.default.homeDirectoryForCurrentUser.resolvingSymlinksInPath() }
 
     private func start(_ kind: TerminalSession.Kind, folder: URL) {
         Task { await vm.newStandalone(kind: kind, folder: folder) }
     }
 
-    private func chooseFolder() -> URL? {
+    /// Warns before a folder macOS guards (the New project flow's rule).
+    private func chooseFolder(for kind: TerminalSession.Kind) {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
         panel.prompt = "Open Terminal"
-        guard panel.runModal() == .OK else { return nil }
-        return panel.url?.resolvingSymlinksInPath()
+        guard panel.runModal() == .OK, let folder = panel.url?.resolvingSymlinksInPath() else { return }
+        if let location = ProjectFolderPolicy.tccSensitiveLocation(path: folder.path, home: home.path) {
+            pending = (kind, folder)
+            sensitiveLocation = location
+        } else {
+            start(kind, folder: folder)
+        }
     }
 }

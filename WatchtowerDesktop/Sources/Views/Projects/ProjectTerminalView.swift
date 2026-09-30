@@ -2,10 +2,9 @@ import AppKit
 import SwiftUI
 import WatchtowerCore
 
-/// Terminal pane (spec §6.2). Shows the project's active session from
-/// `AppState.terminalCenter` — the last focused live one, else its most
-/// recently active open row — and never owns the process itself. The
-/// sessions panel picks which one by opening (and so focusing) it.
+/// Terminal pane (spec §6.2). Shows `ProjectsViewModel.shownSession` — the
+/// session the panel last opened, else the last focused live one — from
+/// `AppState.terminalCenter`, and never owns the process itself.
 struct ProjectTerminalView: View {
     let project: Project
     @Environment(AppState.self) private var appState
@@ -24,8 +23,7 @@ struct ProjectTerminalView: View {
     }
 
     private var shownSession: TerminalSession? {
-        appState.terminalCenter.activeSession(projectID: project.id)
-            ?? appState.projectsViewModel?.terminalSessions[project.id]?.first { !$0.isClosed }
+        appState.projectsViewModel?.shownSession(projectID: project.id)
     }
 }
 

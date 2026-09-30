@@ -27,7 +27,7 @@ final class ProjectsViewModel {
             if let selectedProjectID {
                 selectedStandaloneID = nil
                 drilledProjectID = selectedProjectID
-            } else if drilledProjectID == oldValue {
+            } else {
                 drilledProjectID = nil
             }
         }
@@ -78,7 +78,12 @@ final class ProjectsViewModel {
     /// Standalone terminals (`project_id` NULL), most recently active first.
     var standaloneSessions: [TerminalSession] = []
     /// The left panel's level 2: the project drilled into (nil = level 1).
+    /// Always nil or `selectedProjectID`: selecting a project drills into
+    /// it, Back sets it to nil.
     var drilledProjectID: Int64?
+    /// Per project, the session last opened: its terminal pane keeps showing
+    /// it (exit bar included) until it is closed.
+    var shownSessionIDs: [Int64: Int64] = [:]
     /// The standalone terminal on screen; mutually exclusive with
     /// `selectedProjectID` (setting a project clears it).
     var selectedStandaloneID: Int64?
@@ -185,6 +190,9 @@ final class ProjectsViewModel {
         for id in Self.vanished(previous: previousIDs, current: summaries.map(\.id)) {
             await closeTerminal?(id)
             terminalSessions[id] = nil
+            shownSessionIDs[id] = nil
+            // Deleted elsewhere (CLI): never leave its id selected.
+            if selectedProjectID == id { selectedProjectID = nil }
         }
         if let selectedProjectID { await loadSessions(projectID: selectedProjectID) }
         await loadSessions(projectID: nil)

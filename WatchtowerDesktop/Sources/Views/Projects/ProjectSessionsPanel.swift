@@ -51,20 +51,24 @@ struct ProjectSessionsPanel: View {
         .task(id: project.id) { await vm.loadSessions(projectID: project.id) }
     }
 
+    /// Board and Documents select through the List; a session row opens on
+    /// its own click (`SessionRowActions.open`), which also reaches the row
+    /// already highlighted but not running.
     private var selection: Binding<WorkspacePane?> {
         Binding(
             get: { vm.panelSelection },
             set: { item in
-                guard let item, item != vm.panelSelection else { return }
+                guard let item, item == .board || item == .documents, item != vm.panelSelection else { return }
                 Task { await vm.showFromPanel(item) }
             }
         )
     }
 }
 
-/// What a session row's Rename…, Close and Delete… do; the panel owns the
-/// sheet and the confirmation (`sessionActionDialogs`).
+/// What a session row's click, Rename…, Close and Delete… do; the page owns
+/// the sheet and the confirmation (`sessionActionDialogs`).
 struct SessionRowActions {
+    let open: (TerminalSession) -> Void
     let rename: (TerminalSession) -> Void
     let close: (TerminalSession) -> Void
     let delete: (TerminalSession) -> Void
@@ -80,17 +84,23 @@ struct TerminalSessionRow: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Image(systemName: isLive ? "circle.fill" : "circle")
-                .font(.system(size: 7))
-                .foregroundStyle(isLive ? Color.green : Color.secondary)
-                .accessibilityLabel(isLive ? "Running" : "Not running")
-            VStack(alignment: .leading, spacing: 1) {
-                Text(session.title).lineLimit(1).truncationMode(.tail)
-                if let targetID = session.targetID {
-                    Text("#\(targetID)").font(.caption2).foregroundStyle(.secondary)
+            // The click target excludes the close button: a close must not
+            // also reopen the session.
+            HStack(spacing: 6) {
+                Image(systemName: isLive ? "circle.fill" : "circle")
+                    .font(.system(size: 7))
+                    .foregroundStyle(isLive ? Color.green : Color.secondary)
+                    .accessibilityLabel(isLive ? "Running" : "Not running")
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(session.title).lineLimit(1).truncationMode(.tail)
+                    if let targetID = session.targetID {
+                        Text("#\(targetID)").font(.caption2).foregroundStyle(.secondary)
+                    }
                 }
+                Spacer(minLength: 0)
             }
-            Spacer(minLength: 0)
+            .contentShape(Rectangle())
+            .simultaneousGesture(TapGesture().onEnded { actions.open(session) })
             if isLive && hovering {
                 Button {
                     actions.close(session)
@@ -104,9 +114,8 @@ struct TerminalSessionRow: View {
             }
         }
         .foregroundStyle(session.isClosed ? .secondary : .primary)
-        .contentShape(Rectangle())
         .onHover { hovering = $0 }
-        .help(session.isClosed ? "Closed — click to reopen" : session.title)
+        .help(session.isClosed ? "Closed — click to reopen" : isLive ? session.title : "Not running — click to start")
         .contextMenu {
             Button("Rename…") { actions.rename(session) }
             Button("Close") { actions.close(session) }.disabled(!isLive)

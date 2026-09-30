@@ -6,6 +6,12 @@ import WatchtowerCore
 /// standalone terminals, or one project's Board, Documents and sessions) and
 /// the selected project's page — or standalone terminal — on the right
 /// (spec 2026-09-30-project-workspace-sessions §3).
+/// A level-1 row of the Projects panel: a project, or a standalone terminal.
+enum ProjectsPanelItem: Hashable {
+    case project(Int64)
+    case terminal(Int64)
+}
+
 struct ProjectsView: View {
     @Bindable var vm: ProjectsViewModel
     @Environment(AppState.self) private var appState
@@ -18,9 +24,7 @@ struct ProjectsView: View {
     var body: some View {
         HStack(spacing: 0) {
             if panelVisible {
-                panel
-                    .frame(width: 260)
-                    .sessionActionDialogs(vm: vm, renaming: $renamingSession, deleting: $deletingSession)
+                panel.frame(width: 260)
                 Divider()
             }
             Group {
@@ -35,6 +39,7 @@ struct ProjectsView: View {
             }
             .frame(minWidth: 480, maxWidth: .infinity, maxHeight: .infinity)
         }
+        .sessionActionDialogs(vm: vm, renaming: $renamingSession, deleting: $deletingSession)
         .toolbar {
             ToolbarItem(placement: .navigation) {
                 Button {
@@ -78,6 +83,15 @@ struct ProjectsView: View {
 
     private var sessionActions: SessionRowActions {
         SessionRowActions(
+            open: { session in
+                Task {
+                    if session.projectID == nil {
+                        await vm.selectStandalone(session)
+                    } else {
+                        await vm.showFromPanel(.session(session.id))
+                    }
+                }
+            },
             rename: { renamingSession = $0 },
             close: { session in Task { await vm.close(session) } },
             delete: { deletingSession = $0 }
@@ -127,16 +141,8 @@ struct ProjectsView: View {
                 return vm.selectedProjectID.map(ProjectsPanelItem.project)
             },
             set: { item in
-                switch item {
-                case let .project(id)?:
-                    vm.drill(into: id)
-                case let .terminal(id)?:
-                    guard id != vm.selectedStandaloneID,
-                          let session = vm.standaloneSessions.first(where: { $0.id == id }) else { return }
-                    Task { await vm.selectStandalone(session) }
-                case nil:
-                    break
-                }
+                // A terminal row opens on its own click (`SessionRowActions.open`).
+                if case let .project(id)? = item { vm.drill(into: id) }
             }
         )
     }
@@ -167,6 +173,7 @@ struct ProjectsView: View {
             }
         }
         .padding(.vertical, 2)
+        .contentShape(Rectangle())
     }
 
     private var emptyState: some View {

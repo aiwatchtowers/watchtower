@@ -503,7 +503,7 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         XCTAssertEqual(relaunched.layout.visiblePanes, [.board, .documents])
     }
 
-    // MARK: - Left panel (Task 8)
+    // MARK: - Left panel
 
     func testSelectingAProjectDrillsInAndBackKeepsTheSelection() async throws {
         let p = try await projectWithFolder()
@@ -611,5 +611,78 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         await vm.delete(shell)
         XCTAssertNil(vm.selectedStandaloneID, "a deleted terminal leaves the page")
         XCTAssertTrue(vm.standaloneSessions.isEmpty)
+    }
+
+    /// A session opened from the panel stays on screen when it exits (its
+    /// exit bar offers Restart / Start fresh), even with another one live.
+    func testAnOpenedSessionThatExitsStaysShownOverAnotherLiveOne() async throws {
+        let p = try await projectWithFolder()
+        let live = try await insertSession(.init(
+            projectID: p, kind: .claude, title: "live", folderPath: acme, claudeSessionID: UUID().uuidString.lowercased()
+        ))
+        let failing = try await insertSession(.init(
+            projectID: p, kind: .claude, title: "failing", folderPath: acme, claudeSessionID: UUID().uuidString.lowercased()
+        ))
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: p)
+
+        await vm.showFromPanel(.session(live.id))
+        await vm.showFromPanel(.session(failing.id))
+        processes.last?.exit(1)
+
+        XCTAssertEqual(center.liveIDs, [live.id])
+        XCTAssertEqual(vm.shownSession(projectID: p)?.id, failing.id)
+        XCTAssertEqual(vm.panelSelection, .session(failing.id))
+        XCTAssertEqual(vm.resumeFailed, [failing.id])
+    }
+
+    func testShowingAMissingSessionReportsIt() async throws {
+        let p = try await projectWithFolder()
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: p)
+
+        await vm.showFromPanel(.session(999))
+
+        XCTAssertEqual(vm.sessionErrors[p], "That session no longer exists.")
+        XCTAssertTrue(launches.isEmpty)
+    }
+
+    func testARevealDrillsInAndReplacesAStandaloneTerminal() async throws {
+        let p = try await projectWithFolder()
+        let vm = makeVM()
+        await vm.reload()
+        await vm.newStandalone(kind: .shell, folder: folder)
+        XCTAssertNotNil(vm.selectedStandaloneID)
+
+        vm.reveal(ProjectRoute(projectID: p, pane: .board))
+
+        XCTAssertNil(vm.selectedStandaloneID)
+        XCTAssertEqual(vm.drilledProjectID, p)
+    }
+
+    func testAProjectDeletedElsewhereLeavesTheSelectionAndThePanel() async throws {
+        let p = try await projectWithFolder()
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: p)
+
+        try await pool.write { try $0.execute(sql: "DELETE FROM projects WHERE id = ?", arguments: [p]) }
+        await vm.reload()
+
+        XCTAssertNil(vm.selectedProjectID)
+        XCTAssertNil(vm.drilledProjectID)
+    }
+
+    func testAStandaloneDeletedElsewhereLeavesThePage() async throws {
+        let vm = makeVM()
+        await vm.newStandalone(kind: .shell, folder: folder)
+        let shell = try XCTUnwrap(vm.selectedStandalone)
+
+        try await pool.write { try TerminalSessionQueries.delete($0, id: shell.id) }
+        await vm.loadSessions(projectID: nil)
+
+        XCTAssertNil(vm.selectedStandaloneID)
     }
 }
