@@ -328,6 +328,14 @@ func scopeComment(ctx context.Context, d *db.DB, b Binding, targetID, parentID i
 }
 
 func addAgentComment(d *db.DB, projectID, targetID, parentID int64, body string) (int64, error) {
+	id, err := d.AddProjectComment(agentComment(projectID, targetID, parentID, body))
+	if err != nil {
+		return 0, fmt.Errorf("adding comment: %w", err)
+	}
+	return id, nil
+}
+
+func agentComment(projectID, targetID, parentID int64, body string) db.ProjectComment {
 	c := db.ProjectComment{ProjectID: projectID, Author: "agent", AgentLabel: projectAgentLabel, Body: strings.TrimSpace(body)}
 	if targetID != 0 {
 		c.TargetID = sql.NullInt64{Int64: targetID, Valid: true}
@@ -335,11 +343,7 @@ func addAgentComment(d *db.DB, projectID, targetID, parentID int64, body string)
 	if parentID != 0 {
 		c.ParentID = sql.NullInt64{Int64: parentID, Valid: true}
 	}
-	id, err := d.AddProjectComment(c)
-	if err != nil {
-		return 0, fmt.Errorf("adding comment: %w", err)
-	}
-	return id, nil
+	return c
 }
 
 // ---- resolve_comment ---------------------------------------------------
@@ -400,19 +404,25 @@ func scopeResolve(ctx context.Context, d *db.DB, b Binding, commentID int64) err
 	return nil
 }
 
-// resolveComment posts the optional reply first, then resolves the root, so
-// a failure never leaves a thread marked resolved without its answer.
+// resolveComment posts the optional reply and resolves the root in one
+// transaction: a failure leaves neither, so a Retry cannot duplicate the reply.
 func resolveComment(d *db.DB, projectID int64, a resolveCommentArgs) (any, error) {
 	out := map[string]any{"comment_id": a.CommentID}
-	if strings.TrimSpace(a.Reply) != "" {
-		id, err := addAgentComment(d, projectID, 0, a.CommentID, a.Reply)
-		if err != nil {
-			return nil, err
+	err := d.WithTx(func(tx *sql.Tx) error {
+		if strings.TrimSpace(a.Reply) != "" {
+			id, err := d.AddProjectCommentTx(tx, agentComment(projectID, 0, a.CommentID, a.Reply))
+			if err != nil {
+				return fmt.Errorf("adding comment: %w", err)
+			}
+			out["reply_id"] = id
 		}
-		out["reply_id"] = id
-	}
-	if err := d.SetProjectCommentStatus(a.CommentID, "resolved"); err != nil {
-		return nil, fmt.Errorf("resolving comment %d: %w", a.CommentID, err)
+		if err := d.SetProjectCommentStatusTx(tx, a.CommentID, "resolved"); err != nil {
+			return fmt.Errorf("resolving comment %d: %w", a.CommentID, err)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return out, nil
 }

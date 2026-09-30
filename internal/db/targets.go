@@ -92,7 +92,16 @@ func (db *DB) CreateTarget(t Target) (int64, error) {
 // update_target tool uses it so renaming an in-progress target never resets
 // the progress the owner or agent set earlier (I4, docs/inventory/projects.md).
 func (db *DB) UpdateTargetText(id int, text, intent string) error {
-	_, err := db.Exec(`UPDATE targets SET text = ?, intent = ?,
+	return updateTargetTextOn(db, id, text, intent)
+}
+
+// UpdateTargetTextTx is UpdateTargetText inside the caller's transaction.
+func (db *DB) UpdateTargetTextTx(tx *sql.Tx, id int, text, intent string) error {
+	return updateTargetTextOn(tx, id, text, intent)
+}
+
+func updateTargetTextOn(q targetsQuerier, id int, text, intent string) error {
+	_, err := q.Exec(`UPDATE targets SET text = ?, intent = ?,
 		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`,
 		text, intent, id)
 	if err != nil {
@@ -368,11 +377,22 @@ func (db *DB) GetTargets(f TargetFilter) ([]Target, error) {
 
 // UpdateTargetStatus changes the status of a target and recomputes parent progress.
 func (db *DB) UpdateTargetStatus(id int, newStatus string) error {
+	return updateTargetStatusOn(db, id, newStatus)
+}
+
+// UpdateTargetStatusTx is UpdateTargetStatus inside the caller's
+// transaction. Any error — a cascade failure included — is the caller's cue
+// to roll back; the "persisted" wording applies to the auto-commit form.
+func (db *DB) UpdateTargetStatusTx(tx *sql.Tx, id int, newStatus string) error {
+	return updateTargetStatusOn(tx, id, newStatus)
+}
+
+func updateTargetStatusOn(q targetsQuerier, id int, newStatus string) error {
 	// Fetch parent_id before updating.
 	var parentID sql.NullInt64
-	_ = db.QueryRow(`SELECT parent_id FROM targets WHERE id = ?`, id).Scan(&parentID)
+	_ = q.QueryRow(`SELECT parent_id FROM targets WHERE id = ?`, id).Scan(&parentID)
 
-	_, err := db.Exec(`UPDATE targets SET status = ?,
+	_, err := q.Exec(`UPDATE targets SET status = ?,
 		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
 		WHERE id = ?`, newStatus, id)
 	if err != nil {
@@ -381,7 +401,7 @@ func (db *DB) UpdateTargetStatus(id int, newStatus string) error {
 
 	// Recompute own progress from status (leaf target with no children).
 	progress := statusToProgress(newStatus)
-	_, _ = db.Exec(`UPDATE targets SET progress = ? WHERE id = ? AND
+	_, _ = q.Exec(`UPDATE targets SET progress = ? WHERE id = ? AND
 		NOT EXISTS (SELECT 1 FROM targets c WHERE c.parent_id = targets.id AND c.status != 'dismissed')`,
 		progress, id)
 
@@ -393,7 +413,7 @@ func (db *DB) UpdateTargetStatus(id int, newStatus string) error {
 	// reported to the caller rather than rolling anything back.
 	var cascadeErr error
 	if newStatus == "done" || newStatus == "dismissed" {
-		if _, err := db.Exec(`UPDATE inbox_items
+		if _, err := q.Exec(`UPDATE inbox_items
 			SET status = 'resolved',
 			    resolved_reason = 'target_closed',
 			    updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
@@ -406,7 +426,7 @@ func (db *DB) UpdateTargetStatus(id int, newStatus string) error {
 	// caller (joined with any cascade error) — the status change persisted,
 	// so the error only signals that the parent's progress is now stale.
 	if parentID.Valid {
-		if rerr := db.RecomputeParentProgress(parentID.Int64); rerr != nil {
+		if rerr := recomputeParentProgressOn(q, parentID.Int64); rerr != nil {
 			cascadeErr = errors.Join(cascadeErr, fmt.Errorf(
 				"recomputing parent %d progress for target %d (status change persisted): %w",
 				parentID.Int64, id, rerr))
@@ -594,16 +614,25 @@ func statusToProgress(status string) float64 {
 // recomputes its parent's. A target with children has its progress
 // re-derived from them on their next change; this is for leaves.
 func (db *DB) SetTargetProgress(id int, progress float64) error {
+	return setTargetProgressOn(db, id, progress)
+}
+
+// SetTargetProgressTx is SetTargetProgress inside the caller's transaction.
+func (db *DB) SetTargetProgressTx(tx *sql.Tx, id int, progress float64) error {
+	return setTargetProgressOn(tx, id, progress)
+}
+
+func setTargetProgressOn(q targetsQuerier, id int, progress float64) error {
 	var parentID sql.NullInt64
-	if err := db.QueryRow(`SELECT parent_id FROM targets WHERE id = ?`, id).Scan(&parentID); err != nil {
+	if err := q.QueryRow(`SELECT parent_id FROM targets WHERE id = ?`, id).Scan(&parentID); err != nil {
 		return fmt.Errorf("loading target %d: %w", id, err)
 	}
-	if _, err := db.Exec(`UPDATE targets SET progress = ?,
+	if _, err := q.Exec(`UPDATE targets SET progress = ?,
 		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`, progress, id); err != nil {
 		return fmt.Errorf("setting target %d progress: %w", id, err)
 	}
 	if parentID.Valid {
-		return db.RecomputeParentProgress(parentID.Int64)
+		return recomputeParentProgressOn(q, parentID.Int64)
 	}
 	return nil
 }

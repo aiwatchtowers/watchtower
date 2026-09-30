@@ -227,29 +227,32 @@ func validateTargetUpdate(a updateTargetArgs) error {
 }
 
 // applyTargetUpdate writes title/intent, then status, then progress — status
-// first because a status change re-derives a leaf's progress.
+// first because a status change re-derives a leaf's progress — in one
+// transaction, so a failure part-way leaves the target untouched.
 func applyTargetUpdate(d *db.DB, projectID int64, a updateTargetArgs) error {
 	t, err := targetInProject(d, projectID, a.TargetID)
 	if err != nil {
 		return err
 	}
-	if err := applyTargetText(d, t, a); err != nil {
-		return err
-	}
-	if a.Status != "" && a.Status != t.Status {
-		if err := d.UpdateTargetStatus(t.ID, a.Status); err != nil {
-			return fmt.Errorf("updating status: %w", err)
+	return d.WithTx(func(tx *sql.Tx) error {
+		if err := applyTargetText(d, tx, t, a); err != nil {
+			return err
 		}
-	}
-	if a.Progress != nil {
-		if err := d.SetTargetProgress(t.ID, *a.Progress); err != nil {
-			return fmt.Errorf("updating progress: %w", err)
+		if a.Status != "" && a.Status != t.Status {
+			if err := d.UpdateTargetStatusTx(tx, t.ID, a.Status); err != nil {
+				return fmt.Errorf("updating status: %w", err)
+			}
 		}
-	}
-	return nil
+		if a.Progress != nil {
+			if err := d.SetTargetProgressTx(tx, t.ID, *a.Progress); err != nil {
+				return fmt.Errorf("updating progress: %w", err)
+			}
+		}
+		return nil
+	})
 }
 
-func applyTargetText(d *db.DB, t *db.Target, a updateTargetArgs) error {
+func applyTargetText(d *db.DB, tx *sql.Tx, t *db.Target, a updateTargetArgs) error {
 	text, intent := strings.TrimSpace(a.Text), strings.TrimSpace(a.Intent)
 	if text == "" && intent == "" {
 		return nil
@@ -264,7 +267,7 @@ func applyTargetText(d *db.DB, t *db.Target, a updateTargetArgs) error {
 	// re-derives progress from status for a leaf, which would silently
 	// reset a progress set earlier just because the agent renamed the
 	// target in the same call that leaves status alone.
-	if err := d.UpdateTargetText(t.ID, t.Text, t.Intent); err != nil {
+	if err := d.UpdateTargetTextTx(tx, t.ID, t.Text, t.Intent); err != nil {
 		return fmt.Errorf("updating target: %w", err)
 	}
 	return nil

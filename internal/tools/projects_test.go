@@ -381,3 +381,22 @@ func queryStrings(t *testing.T, d *db.DB, q string, args ...any) []string {
 	require.NoError(t, rows.Err())
 	return out
 }
+
+// update_target's text, status and progress writes are one transaction: a
+// failure on the last step leaves the target exactly as it was.
+func TestUpdateTarget_FailureMidUpdateRollsBack(t *testing.T) {
+	fx := newProjectFixture(t)
+	reg := projectRegistry(t, fx.d)
+	_, err := fx.d.Exec(`CREATE TRIGGER fail_progress BEFORE UPDATE OF progress ON targets
+		WHEN NEW.progress = 0.37 BEGIN SELECT RAISE(ABORT, 'boom'); END`)
+	require.NoError(t, err)
+
+	rc, err := proposeIn(t, reg, fx.a, "update_target", fmt.Sprintf(
+		`{"target_id":%d,"status":"in_progress","progress":0.37,"text":"Renamed","reason":"r"}`, fx.aTarget))
+	require.NoError(t, err)
+	assert.Equal(t, "failed", rc.Status)
+	got, err := fx.d.GetTargetByID(int(fx.aTarget))
+	require.NoError(t, err)
+	assert.Equal(t, "Alpha feature", got.Text, "the rename rolled back")
+	assert.Equal(t, "todo", got.Status, "the status change rolled back")
+}

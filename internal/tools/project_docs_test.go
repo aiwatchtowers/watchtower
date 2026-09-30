@@ -155,3 +155,35 @@ func TestListComments_RefusesAnotherProjectsDocument(t *testing.T) {
 }
 
 func nullInt(v int64) sql.NullInt64 { return sql.NullInt64{Int64: v, Valid: true} }
+
+// resolve_comment's reply and status change are one transaction: a failure
+// resolving the root leaves no reply behind, so a Retry cannot duplicate it.
+func TestResolveComment_FailedResolveLeavesNoReply(t *testing.T) {
+	fx := newProjectFixture(t)
+	reg := projectRegistry(t, fx.d)
+	root, err := fx.d.AddProjectComment(db.ProjectComment{ProjectID: fx.a,
+		TargetID: nullInt(fx.aTarget), Author: "owner", Body: "fix it"})
+	require.NoError(t, err)
+	_, err = fx.d.Exec(`CREATE TRIGGER fail_resolve BEFORE UPDATE OF status ON project_comments
+		WHEN NEW.status = 'resolved' BEGIN SELECT RAISE(ABORT, 'boom'); END`)
+	require.NoError(t, err)
+
+	rc, err := proposeIn(t, reg, fx.a, "resolve_comment", fmt.Sprintf(`{"comment_id":%d,"reply":"Fixed.","reason":"r"}`, root))
+	require.NoError(t, err)
+	assert.Equal(t, "failed", rc.Status)
+	replies := func() int {
+		var n int
+		require.NoError(t, fx.d.QueryRow(`SELECT count(*) FROM project_comments WHERE parent_id = ?`, root).Scan(&n))
+		return n
+	}
+	assert.Zero(t, replies(), "no reply survives the failed resolve")
+
+	_, err = fx.d.Exec(`DROP TRIGGER fail_resolve`)
+	require.NoError(t, err)
+	_, err = reg.Apply(context.Background(), rc.ActionID)
+	require.NoError(t, err)
+	assert.Equal(t, 1, replies(), "the retry posts the reply exactly once")
+	c, err := fx.d.GetProjectComment(root)
+	require.NoError(t, err)
+	assert.Equal(t, "resolved", c.Status)
+}

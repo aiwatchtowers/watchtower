@@ -70,25 +70,31 @@ func scanProjectComment(row interface{ Scan(...any) error }) (*ProjectComment, e
 // target or a document of the same project. Every reference is checked
 // against c.ProjectID (ErrNotInProject).
 func (db *DB) AddProjectComment(c ProjectComment) (int64, error) {
-	if c.Author != "owner" && c.Author != "agent" {
-		return 0, fmt.Errorf("invalid comment author %q", c.Author)
-	}
-	if strings.TrimSpace(c.Body) == "" {
-		return 0, errors.New("comment body is required")
-	}
 	var id int64
 	err := db.WithTx(func(tx *sql.Tx) error {
-		placed, err := placeProjectComment(tx, c)
-		if err != nil {
-			return err
-		}
-		id, err = insertProjectComment(tx, placed)
+		var err error
+		id, err = db.AddProjectCommentTx(tx, c)
 		return err
 	})
 	if err != nil {
 		return 0, err
 	}
 	return id, nil
+}
+
+// AddProjectCommentTx is AddProjectComment inside the caller's transaction.
+func (db *DB) AddProjectCommentTx(tx *sql.Tx, c ProjectComment) (int64, error) {
+	if c.Author != "owner" && c.Author != "agent" {
+		return 0, fmt.Errorf("invalid comment author %q", c.Author)
+	}
+	if strings.TrimSpace(c.Body) == "" {
+		return 0, errors.New("comment body is required")
+	}
+	placed, err := placeProjectComment(tx, c)
+	if err != nil {
+		return 0, err
+	}
+	return insertProjectComment(tx, placed)
 }
 
 func placeProjectComment(q targetsQuerier, c ProjectComment) (ProjectComment, error) {
@@ -197,10 +203,20 @@ func projectCommentWhere(f ProjectCommentFilter) (string, []any) {
 
 // SetProjectCommentStatus sets a thread root's status (open to reopen).
 func (db *DB) SetProjectCommentStatus(id int64, status string) error {
+	return setProjectCommentStatusOn(db, id, status)
+}
+
+// SetProjectCommentStatusTx is SetProjectCommentStatus inside the caller's
+// transaction.
+func (db *DB) SetProjectCommentStatusTx(tx *sql.Tx, id int64, status string) error {
+	return setProjectCommentStatusOn(tx, id, status)
+}
+
+func setProjectCommentStatusOn(q targetsQuerier, id int64, status string) error {
 	if !projectCommentStatuses[status] {
 		return fmt.Errorf("invalid comment status %q", status)
 	}
-	res, err := db.Exec(`UPDATE project_comments SET status = ? WHERE id = ? AND parent_id IS NULL`, status, id)
+	res, err := q.Exec(`UPDATE project_comments SET status = ? WHERE id = ? AND parent_id IS NULL`, status, id)
 	if err != nil {
 		return fmt.Errorf("setting comment %d status: %w", id, err)
 	}
