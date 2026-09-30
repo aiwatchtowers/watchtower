@@ -61,7 +61,7 @@ var projectImportDocsCmd = &cobra.Command{
 	Long: "Mechanical, no AI: attaches README.md at the folder root and every .md/.txt file\n" +
 		"directly inside a specs or plans directory under docs/ (symlinks never followed),\n" +
 		"at most 50 new ones per run, README first then newest. Additive and idempotent: an\n" +
-		"already attached path is never touched. Imported documents do not count as revised.",
+		"already attached path is never touched.",
 	Args: cobra.ExactArgs(1),
 	RunE: runProjectImportDocs,
 }
@@ -235,12 +235,16 @@ func runProjectCreate(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	rep, ierr := projectdocs.Import(database, &db.Project{ID: id, Name: name, FolderPath: folder}, false)
+	if ierr != nil {
+		// On stderr in JSON mode too: a caller that decodes only the project
+		// fields still leaves the warning in its log.
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: importing the folder's documents failed: %v (retry: watchtower project import-docs %d)\n", ierr, id)
+	}
 	if projectFlagJSON {
 		return writeJSON(cmd.OutOrStdout(), newProjectCreateJSON(projectJSON{ID: id, Folder: folder, Name: name}, rep, ierr))
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Created project %d %q at %s\n", id, name, folder)
 	if ierr != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warning: importing the folder's documents failed: %v (retry: watchtower project import-docs %d)\n", ierr, id)
 		return nil
 	}
 	printImportReport(cmd.OutOrStdout(), rep)

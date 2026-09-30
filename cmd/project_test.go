@@ -97,6 +97,28 @@ func TestProject_CreateImportsFolderDocsAndImportDocsIsAdditive(t *testing.T) {
 	assert.Len(t, docs, 3)
 }
 
+// A failed import leaves the project created (exit 0), reports the failure in
+// the JSON envelope and warns on stderr too, so a caller decoding only the
+// project fields still logs it.
+func TestProject_CreateJSONReportsAFailedImportOnStderr(t *testing.T) {
+	writeActionsConfig(t)
+	folder := t.TempDir()
+	locked := filepath.Join(folder, "docs", "specs")
+	require.NoError(t, os.MkdirAll(locked, 0o755))
+	require.NoError(t, os.Chmod(locked, 0))
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
+	out, errOut, err := runProject(t, "create", "--folder", folder, "--json")
+	require.NoError(t, err)
+	var created projectCreateJSON
+	require.NoError(t, json.Unmarshal([]byte(out), &created))
+	assert.Positive(t, created.ID)
+	assert.False(t, created.DocsImportOK)
+	assert.NotEmpty(t, created.DocsImportError)
+	assert.Contains(t, errOut, "warning: importing the folder's documents failed")
+	assert.Contains(t, errOut, "watchtower project import-docs "+strconv.FormatInt(created.ID, 10))
+}
+
 func TestProject_CreateRefusesMissingAndAlreadyBoundFolders(t *testing.T) {
 	writeActionsConfig(t)
 	_, _, err := runProject(t, "create", "--folder", filepath.Join(t.TempDir(), "gone"))
