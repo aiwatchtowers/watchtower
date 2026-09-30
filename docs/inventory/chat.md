@@ -160,13 +160,24 @@ or `ChatSessionPool` — a source scan, not just a behavioral test. Every
 external write anywhere in the chat instead goes through the tool
 registry's Propose → Approve path (AGENT-01..06 unchanged).
 
+The same scan covers the artifact-comment files (`ArtifactCommentsModel`,
+`ArtifactCommentMessage`, `ArtifactCommentReanchor`, `ArtifactCommentText`,
+`ArtifactCommentQueries`, `ArtifactCommentsView`, the shared `CommentBatchComposer`), and no scanned file may
+reference `.send(`, `sendDraft` or `startTurn`: an artifact comment reaches
+the assistant only inside the owner's own chat message, sent by the chat
+(`ChatViewModel.sendArtifactComments`) when the owner presses
+**Send N comments**.
+
 **Guard:** `testChat05ArtifactActionsOnlyOpenOrCopy`
 (`WatchtowerDesktop/Tests/Core/ArtifactActionsTests.swift`);
 `testChat05ArtifactSurfacesNeverWrite`
 (`WatchtowerDesktop/Tests/Core/ArtifactChat05ScanTests.swift`);
 `TestChat05_ContractSaysArtifactsNeverSend`
-(`internal/chat/artifacts_contract_test.go`)
+(`internal/chat/artifacts_contract_test.go`);
+`testArtifactCommentsReachTheAssistantOnlyAsTheOwnersMessage`
+(`WatchtowerDesktop/Tests/ChatViewModelTests.swift`);
 
 ## Changelog
 
 - 2026-09-26: initial contracts CHAT-01..05 (spec `docs/superpowers/specs/2026-09-26-chat-redesign-design.md` §9).
+- 2026-09-30: CHAT-05 extended to artifact comments (projects POC phase 6, migration 00082): the source scan covers the comment files and forbids send entry points on the artifact side; comments leave the machine only as the owner's own message. Strengthening only — no guard relaxed.

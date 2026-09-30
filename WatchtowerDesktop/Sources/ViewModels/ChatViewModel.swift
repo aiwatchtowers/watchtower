@@ -477,6 +477,20 @@ final class ChatViewModel {
         artifactPanel = nil
     }
 
+    /// "Send N comments" in the artifact panel: the unsent comments go out as
+    /// one ordinary owner turn, and exactly those rows turn `sent` in the
+    /// transaction that persists that message — a refused or failed send
+    /// leaves them unsent, a sent message never leaves them open.
+    func sendArtifactComments() {
+        guard let comments = artifactPanel?.comments, let outgoing = comments.outgoing() else { return }
+        let ids = outgoing.ids
+        let sentAt = Date()
+        guard send(text: outgoing.text, alsoWrite: { db in
+            try ArtifactCommentQueries.markSent(db, ids: ids, at: sentAt)
+        }) else { return }
+        comments.reload()
+    }
+
     // MARK: - Inspector
 
     /// The panel the inspector shows, or nil when it is closed.
@@ -547,7 +561,11 @@ final class ChatViewModel {
     /// pending mentions/skill once the turn actually starts.
     @discardableResult
     func send(
-        text: String, attachments: [ChatAttachment] = [], mentions: [MentionCandidate] = [], skill: String? = nil
+        text: String,
+        attachments: [ChatAttachment] = [],
+        mentions: [MentionCandidate] = [],
+        skill: String? = nil,
+        alsoWrite: ((Database) throws -> Void)? = nil
     ) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let live = MentionTokenizer.liveMentions(text: text, mentions: mentions)
@@ -562,7 +580,7 @@ final class ChatViewModel {
         let outcomes = actionFeed.outcomesBlock(after: thread.last { $0.message.isUser }?.message.createdDate)
         let started = startTurn(TurnPlan(conversationID: id, historyTipID: thread.last?.message.id, userText: turnText,
                                          reuseUserMessageID: nil, attachments: attachments, outcomes: outcomes,
-                                         forceReplay: false, titleText: trimmed))
+                                         forceReplay: false, titleText: trimmed, alsoWrite: alsoWrite))
         if started, fromLanding {
             // The landing's first turn: its draft is a real chat now.
             landingDraft = nil
@@ -709,6 +727,10 @@ final class ChatViewModel {
         /// The prefix-title source: the owner's own words, without the
         /// skill/REFERENCED lines the stored text carries. nil = `userText`.
         var titleText: String?
+        /// Extra rows written in the SAME transaction as the owner message
+        /// (CHAT-01) — e.g. artifact comments turning `sent`. New messages
+        /// only; regenerate/edit never set it.
+        var alsoWrite: ((Database) throws -> Void)?
     }
 
     private struct PersistedTurn {
@@ -772,6 +794,7 @@ final class ChatViewModel {
                 // persists the owner's message — never a separate write.
                 try ChatAttachmentQueries.link(db, attachmentIDs: plan.attachments.map(\.id), messageID: userID)
                 try ChatConversationQueries.setPrefixTitle(db, id: plan.conversationID, text: plan.titleText ?? plan.userText)
+                try plan.alsoWrite?(db)
             }
             try ChatConversationQueries.setProviderModel(db, id: plan.conversationID, provider: config.provider, model: config.model)
             let assistant = try ChatTreeQueries.insertAssistant(db, conversationID: plan.conversationID, parentID: userID,
