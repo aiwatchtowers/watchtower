@@ -126,6 +126,7 @@ func TestSectionRewriteMovedBrParagraphKeepsBytes(t *testing.T) {
 // twin gives way to a deleted rich one (lossySwaps judges richness by
 // attributes, not by the text reading as several blocks).
 func TestSectionRewriteRichBrTwinStays(t *testing.T) {
+	const r14BrRight = `<p style="text-align:right">a<br/><br/>b</p>`
 	for name, tc := range map[string]struct{ src, body, want string }{
 		"rich first, body keeps the first place": {
 			src:  `<h2>S</h2>` + r14BrRich + `<p>X</p>` + r14BrPlain,
@@ -144,6 +145,11 @@ func TestSectionRewriteRichBrTwinStays(t *testing.T) {
 		},
 		"rich second, body keeps the first place": {
 			src:  `<h2>S</h2>` + r14BrPlain + `<p>X</p>` + r14BrRich,
+			body: "a\n\nb\n\nX",
+			want: `<h2>S</h2>` + r14BrRich + `<p>X</p>`,
+		},
+		"both rich: the in-place one stays, no twin moves over it": {
+			src:  `<h2>S</h2>` + r14BrRich + `<p>X</p>` + r14BrRight,
 			body: "a\n\nb\n\nX",
 			want: `<h2>S</h2>` + r14BrRich + `<p>X</p>`,
 		},
