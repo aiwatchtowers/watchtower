@@ -157,12 +157,13 @@ final class ProjectBoardViewModel {
         // The rollup (PROJ-05) may move the target's parents in the same
         // write; they are the owner's doing too, so they never notify.
         var rolledUp: [Int64] = []
-        write("change the status", alsoTouched: { rolledUp }) { db in
+        let body: (Database) throws -> Void = { db in
             let before = try ProjectQueries.ancestorStatuses(db, of: Int64(id))
             try TargetQueries.updateStatus(db, id: id, status: status)
             let after = try ProjectQueries.ancestorStatuses(db, of: Int64(id))
             rolledUp = after.filter { before[$0.key] != $0.value }.map(\.key).sorted()
         }
+        write("change the status", alsoTouched: { rolledUp }, body)
     }
 
     func setPriority(_ priority: String) {
