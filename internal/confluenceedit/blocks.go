@@ -13,18 +13,24 @@ func Parse(storage string) (*Doc, error) {
 	if err != nil {
 		return nil, err
 	}
-	b := &builder{src: storage}
+	b := &builder{src: storage, containers: []container{{parent: -1, content: span{0, len(storage)}}}}
 	b.topLevel(root.children)
-	return &Doc{src: storage, blocks: b.blocks, units: b.units, markers: b.markers}, nil
+	return &Doc{
+		src: storage, blocks: b.blocks, containers: b.containers, units: b.units,
+		markers: b.markers, markerSpans: b.markerSpans,
+	}, nil
 }
 
 // builder classifies the tree into blocks, editable units and markers, all
 // in document order (so marker ordinals and unit spans come out sorted).
 type builder struct {
-	src     string
-	blocks  []*block
-	units   []*unit
-	markers []Marker
+	src         string
+	blocks      []*block
+	containers  []container
+	cur         int // the container blocks are being added to
+	units       []*unit
+	markers     []Marker
+	markerSpans []span
 }
 
 // checkpoint/rollback let a structure (a list, a table) be tried as
@@ -39,6 +45,7 @@ func (b *builder) checkpoint() checkpoint {
 func (b *builder) rollback(c checkpoint) {
 	b.units = b.units[:c.units]
 	b.markers = b.markers[:c.markers]
+	b.markerSpans = b.markerSpans[:c.markers]
 }
 
 // transparentContainers are Confluence layout wrappers: their tags stay as
@@ -116,7 +123,7 @@ func (b *builder) topLevel(nodes []*node) {
 		b.paragraphRun(run)
 		run = nil
 		if transparentContainers[n.name] {
-			b.topLevel(n.children)
+			b.enterContainer(n)
 			continue
 		}
 		b.blockFor(n)
@@ -124,19 +131,40 @@ func (b *builder) topLevel(nodes []*node) {
 	b.paragraphRun(run)
 }
 
+// enterContainer classifies a layout element's children as blocks of a new
+// container, so a section can be kept from crossing the element's bounds.
+func (b *builder) enterContainer(n *node) {
+	id := len(b.containers)
+	b.containers = append(b.containers, container{
+		parent: b.cur, elemStart: n.start, content: span{n.innerStart, n.innerEnd},
+	})
+	prev := b.cur
+	b.cur = id
+	b.topLevel(n.children)
+	b.cur = prev
+}
+
+// addBlock appends bl covering sp in the current container.
+func (b *builder) addBlock(bl *block, sp span) {
+	bl.span = sp
+	bl.container = b.cur
+	b.blocks = append(b.blocks, bl)
+}
+
 // paragraphRun turns a block-level run of inline content into a paragraph.
 func (b *builder) paragraphRun(run []*node) {
 	if u := b.runUnit(run, ctxPara); u != nil {
-		b.blocks = append(b.blocks, &block{kind: blockParagraph, unit: u})
+		b.addBlock(&block{kind: blockParagraph, unit: u}, span{u.start, u.end})
 	}
 }
 
 func (b *builder) blockFor(n *node) {
+	sp := span{n.start, n.end}
 	switch {
 	case headingLevel(n.name) > 0:
-		b.blocks = append(b.blocks, &block{kind: blockHeading, level: headingLevel(n.name), unit: b.elementUnit(n, ctxHeading)})
+		b.addBlock(&block{kind: blockHeading, level: headingLevel(n.name), unit: b.elementUnit(n, ctxHeading)}, sp)
 	case n.name == "p":
-		b.blocks = append(b.blocks, &block{kind: blockParagraph, unit: b.elementUnit(n, ctxPara)})
+		b.addBlock(&block{kind: blockParagraph, unit: b.elementUnit(n, ctxPara)}, sp)
 	case isList(n):
 		b.listBlock(n)
 	case n.name == "table":
@@ -149,13 +177,14 @@ func (b *builder) blockFor(n *node) {
 }
 
 func (b *builder) markerBlock(n *node) {
-	b.blocks = append(b.blocks, &block{kind: blockMarker, marker: b.addMarker(n)})
+	b.addBlock(&block{kind: blockMarker, marker: b.addMarker(n)}, span{n.start, n.end})
 }
 
 // addMarker records n as the next marker and returns its ordinal.
 func (b *builder) addMarker(n *node) int {
 	k := len(b.markers) + 1
 	b.markers = append(b.markers, Marker{Ordinal: k, Label: labelFor(n), Raw: b.src[n.start:n.end]})
+	b.markerSpans = append(b.markerSpans, span{n.start, n.end})
 	return k
 }
 
@@ -209,7 +238,7 @@ func isCodeMacro(n *node) bool {
 func (b *builder) codeBlock(n *node) {
 	body := n.firstChild("ac:plain-text-body")
 	u := b.addUnit(&unit{kind: unitCode, start: body.innerStart, end: body.innerEnd, text: plainText(body)})
-	b.blocks = append(b.blocks, &block{kind: blockCode, lang: strings.TrimSpace(param(n, "language")), unit: u})
+	b.addBlock(&block{kind: blockCode, lang: strings.TrimSpace(param(n, "language")), unit: u}, span{n.start, n.end})
 }
 
 // plainText concatenates n's direct text and CDATA children.
@@ -229,7 +258,7 @@ func (b *builder) listBlock(n *node) {
 	cp := b.checkpoint()
 	var items []listItem
 	if b.collectList(n, 0, &items) {
-		b.blocks = append(b.blocks, &block{kind: blockList, items: items})
+		b.addBlock(&block{kind: blockList, items: items}, span{n.start, n.end})
 		return
 	}
 	b.rollback(cp)
@@ -237,7 +266,7 @@ func (b *builder) listBlock(n *node) {
 }
 
 func (b *builder) collectList(list *node, depth int, items *[]listItem) bool {
-	num := 0
+	num := listStart(list) - 1
 	for _, ch := range list.children {
 		if isBlank(ch) {
 			continue
@@ -255,6 +284,18 @@ func (b *builder) collectList(list *node, depth int, items *[]listItem) bool {
 		}
 	}
 	return true
+}
+
+// listStart is a list's first number: an <ol>'s start attribute when that
+// is a valid integer, else 1.
+func listStart(list *node) int {
+	if list.name != "ol" {
+		return 1
+	}
+	if n, err := strconv.Atoi(strings.TrimSpace(list.attr("start"))); err == nil {
+		return n
+	}
+	return 1
 }
 
 // collectItem flattens one <li>: its own text (an inline run and/or <p>
@@ -329,7 +370,7 @@ func (b *builder) tableBlock(n *node) {
 	cp := b.checkpoint()
 	var rows [][]*unit
 	if b.collectRows(n, &rows) && rectangular(rows) {
-		b.blocks = append(b.blocks, &block{kind: blockTable, rows: rows})
+		b.addBlock(&block{kind: blockTable, rows: rows}, span{n.start, n.end})
 		return
 	}
 	b.rollback(cp)

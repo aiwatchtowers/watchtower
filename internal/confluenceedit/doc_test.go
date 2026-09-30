@@ -57,8 +57,10 @@ func TestEXT05_RichElementsSurviveUntouched(t *testing.T) {
 			}
 			assert.Equal(t, src, d.Render(), "identity rewrite of every unit must be byte-identical")
 
-			for _, m := range d.Markers() {
-				assert.Contains(t, src, m.Raw, "marker %d raw must be source bytes", m.Ordinal)
+			require.Len(t, d.markerSpans, len(d.markers))
+			for i, m := range d.Markers() {
+				sp := d.markerSpans[i]
+				assert.Equal(t, src[sp.start:sp.end], m.Raw, "marker %d raw must be its exact source span", m.Ordinal)
 			}
 		})
 	}
@@ -426,18 +428,81 @@ func FuzzRoundTrip(f *testing.F) {
 		if got := d.Render(); got != src {
 			t.Fatalf("round trip: got %q want %q", got, src)
 		}
-		_ = d.Text()
-		for _, m := range d.Markers() {
-			if strings.Contains(m.Label, markerClose) || !strings.Contains(src, m.Raw) {
-				t.Fatalf("bad marker %+v", m)
-			}
-		}
-		prev := 0
-		for _, u := range d.units {
-			if u.start < prev || u.end < u.start || u.end > len(src) {
-				t.Fatalf("unit span [%d,%d) out of order after %d", u.start, u.end, prev)
-			}
-			prev = u.end
-		}
+		checkFuzzMarkers(t, d)
+		checkFuzzSpans(t, d)
 	})
+}
+
+// checkFuzzMarkers: every marker's Raw is its exact recorded source span,
+// marker spans are sorted and never overlap (a nested marker would be an
+// orphan: its token inside another marker's Raw), labels are clean, and
+// each token appears exactly once in Text() — unless the page's own text
+// or attributes contain a marker bracket, which could legitimately repeat
+// a token.
+func checkFuzzMarkers(t *testing.T, d *Doc) {
+	t.Helper()
+	text := d.Text()
+	literal := srcHasMarkerBracket(d.src)
+	prev := 0
+	for i, m := range d.markers {
+		sp := d.markerSpans[i]
+		if sp.start < prev || d.src[sp.start:sp.end] != m.Raw {
+			t.Fatalf("marker %d span [%d,%d) bad or overlapping (prev end %d)", m.Ordinal, sp.start, sp.end, prev)
+		}
+		prev = sp.end
+		if strings.Contains(m.Label, markerClose) || strings.Contains(m.Label, markerOpen) {
+			t.Fatalf("bad label %q", m.Label)
+		}
+		if !literal && strings.Count(text, m.token()) != 1 {
+			t.Fatalf("marker %d token appears %d times in %q", m.Ordinal, strings.Count(text, m.token()), text)
+		}
+	}
+}
+
+// checkFuzzSpans: unit spans are sorted and non-overlapping, block spans
+// too, and every block lies inside its container's content.
+func checkFuzzSpans(t *testing.T, d *Doc) {
+	t.Helper()
+	prev := 0
+	for _, u := range d.units {
+		if u.start < prev || u.end < u.start || u.end > len(d.src) {
+			t.Fatalf("unit span [%d,%d) out of order after %d", u.start, u.end, prev)
+		}
+		prev = u.end
+	}
+	prev = 0
+	for _, bl := range d.blocks {
+		c := d.containers[bl.container].content
+		if bl.start < prev || bl.end < bl.start || bl.start < c.start || bl.end > c.end {
+			t.Fatalf("block span [%d,%d) bad (prev %d, container %+v)", bl.start, bl.end, prev, c)
+		}
+		prev = bl.end
+	}
+}
+
+// srcHasMarkerBracket reports whether any decoded text or attribute value
+// of src carries a marker bracket.
+func srcHasMarkerBracket(src string) bool {
+	root, err := parseTree(src)
+	if err != nil {
+		return true
+	}
+	var walk func(n *node) bool
+	walk = func(n *node) bool {
+		if strings.ContainsAny(n.text, markerOpen+markerClose) {
+			return true
+		}
+		for _, a := range n.attrs {
+			if strings.ContainsAny(a.Val, markerOpen+markerClose) {
+				return true
+			}
+		}
+		for _, ch := range n.children {
+			if walk(ch) {
+				return true
+			}
+		}
+		return false
+	}
+	return walk(root)
 }

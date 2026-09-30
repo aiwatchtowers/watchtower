@@ -49,10 +49,32 @@ func (m Marker) token() string {
 
 // Doc is a parsed storage document.
 type Doc struct {
-	src     string
-	blocks  []*block // top-level blocks in document order (layouts flattened)
-	units   []*unit  // every editable unit, sorted by span, non-overlapping
-	markers []Marker // ordinal k at index k-1
+	src         string
+	blocks      []*block    // top-level blocks in document order (layouts flattened)
+	containers  []container // container 0 is the page body; the rest are layout elements
+	units       []*unit     // every editable unit, sorted by span, non-overlapping
+	markers     []Marker    // ordinal k at index k-1
+	markerSpans []span      // markerSpans[k-1] is where marker k's Raw sits in src
+	splices     []splice    // whole-region rewrites (the replace-region seam)
+}
+
+// span is a [start,end) byte range of the source.
+type span struct{ start, end int }
+
+// container is a region blocks live in: the page body (id 0) or the content
+// of one layout element (ac:layout, ac:layout-section, ac:layout-cell).
+// Containers are numbered in document order; a section never leaves its
+// heading's container.
+type container struct {
+	parent    int // -1 for the page body
+	elemStart int // where the layout element's start tag begins (0 for the body)
+	content   span
+}
+
+// splice replaces src[start:end] with out in Render.
+type splice struct {
+	span
+	out string
 }
 
 // Markers returns a copy of the document's markers in ordinal order.
@@ -74,13 +96,15 @@ const (
 // block is one top-level unit of layout in the editable text. Which fields
 // are set depends on kind.
 type block struct {
-	kind   blockKind
-	level  int        // blockHeading: 1..6
-	lang   string     // blockCode: the language parameter, may be ""
-	unit   *unit      // blockParagraph, blockHeading, blockCode
-	items  []listItem // blockList, flattened in document order
-	rows   [][]*unit  // blockTable; a nil cell is an empty self-closed cell
-	marker int        // blockMarker: the ordinal
+	kind      blockKind
+	span                 // the block's whole source bytes (a heading: its full element)
+	container int        // index into Doc.containers
+	level     int        // blockHeading: 1..6
+	lang      string     // blockCode: the language parameter, may be ""
+	unit      *unit      // blockParagraph, blockHeading, blockCode
+	items     []listItem // blockList, flattened in document order
+	rows      [][]*unit  // blockTable; a nil cell is an empty self-closed cell
+	marker    int        // blockMarker: the ordinal
 }
 
 // listItem is one <li>, flattened with its nesting depth.

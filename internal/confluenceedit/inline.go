@@ -1,6 +1,7 @@
 package confluenceedit
 
 import (
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -19,14 +20,15 @@ const (
 type inliner struct {
 	b     *builder
 	ctx   inlineCtx
-	plain bool // false once a cell needed a marker or a line break
+	plain bool     // false once a cell needed a marker or a line break
+	codes []string // rendered code spans, stood in for by codeHole(i) until finalize
 }
 
 // inlineText renders nodes as a unit's editable text and reports whether
 // the content was plain (no marker, no line break).
 func (b *builder) inlineText(nodes []*node, ctx inlineCtx) (string, bool) {
 	in := &inliner{b: b, ctx: ctx, plain: true}
-	return finalizeInline(in.nodes(nodes)), in.plain
+	return in.finalize(in.nodes(nodes)), in.plain
 }
 
 func (in *inliner) nodes(ns []*node) string {
@@ -40,8 +42,15 @@ func (in *inliner) nodes(ns []*node) string {
 // asciiSpace turns every ASCII whitespace byte of source text into a plain
 // space (collapsed later), leaving NBSP and other Unicode spaces alone:
 // in XHTML a newline in character data is just a space, while "\n" in the
-// editable text is reserved for a real <br/>.
-var asciiSpace = strings.NewReplacer("\n", " ", "\r", " ", "\t", " ", "\f", " ")
+// editable text is reserved for a real <br/>. A NUL (which XML forbids in a
+// document anyway) becomes U+FFFD, so NUL can delimit code-span holes.
+var asciiSpace = strings.NewReplacer("\n", " ", "\r", " ", "\t", " ", "\f", " ", "\x00", "\uFFFD")
+
+// noNUL keeps NUL out of every other string that reaches the inline text.
+var noNUL = strings.NewReplacer("\x00", "\uFFFD")
+
+// codeHoleRe finds the stand-ins codeSpan leaves for finalize to fill.
+var codeHoleRe = regexp.MustCompile("\x00([0-9]+)\x00")
 
 func (in *inliner) node(n *node) string {
 	switch n.typ {
@@ -102,35 +111,58 @@ func (in *inliner) wrap(n *node, delim string) string {
 
 // codeSpan renders <code> with only text inside as a code span, fenced
 // with more backticks than the content holds; anything richer is a marker.
+// The content's spaces and tabs are kept verbatim (only line terminators
+// become spaces, since "\n" in the editable text means <br/>): the span is
+// parked as a hole and filled after finalize has collapsed the rest of the
+// line, so rewriting another word of the paragraph never touches it.
 func (in *inliner) codeSpan(n *node) string {
 	for _, ch := range n.children {
 		if ch.typ == nodeElement {
 			return in.marker(n)
 		}
 	}
-	content := asciiSpace.Replace(plainText(n))
+	content := codeLines.Replace(plainText(n))
 	if content == "" {
 		return ""
 	}
+	in.codes = append(in.codes, fenceCode(content))
+	return "\x00" + strconv.Itoa(len(in.codes)-1) + "\x00"
+}
+
+// codeLines maps line terminators inside a code span to spaces.
+var codeLines = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ", "\f", " ")
+
+// fenceCode wraps content in more backticks than it holds, padding with one
+// space each side where CommonMark would otherwise strip or misread one
+// (content starting/ending with a backtick, or with a space at both ends).
+func fenceCode(content string) string {
 	fence := "`"
 	for strings.Contains(content, fence) {
 		fence += "`"
 	}
-	if strings.HasPrefix(content, "`") || strings.HasSuffix(content, "`") {
+	bothSpaces := strings.HasPrefix(content, " ") && strings.HasSuffix(content, " ") && strings.Trim(content, " ") != ""
+	if bothSpaces || strings.HasPrefix(content, "`") || strings.HasSuffix(content, "`") {
 		content = " " + content + " "
 	}
 	return fence + content + fence
 }
 
 // link renders <a href> as [text](href); an anchor without href, or a link
-// with no visible text, is a marker.
+// with no visible text, is a marker. The href is checked BEFORE the
+// children are walked: a marker's Raw covers its whole element, so a
+// marker minted for a child first would be orphaned inside it (its token
+// never shown). Empty text means the children minted no marker (a token
+// is never empty), so that fallback is safe after the walk.
 func (in *inliner) link(n *node) string {
 	href := n.attr("href")
-	text := strings.TrimSpace(in.nodes(n.children))
-	if href == "" || text == "" {
+	if href == "" {
 		return in.marker(n)
 	}
-	return "[" + text + "](" + href + ")"
+	text := strings.TrimSpace(in.nodes(n.children))
+	if text == "" {
+		return in.marker(n)
+	}
+	return "[" + text + "](" + noNUL.Replace(href) + ")"
 }
 
 func (in *inliner) lineBreak(n *node) string {
@@ -140,15 +172,23 @@ func (in *inliner) lineBreak(n *node) string {
 	return in.marker(n)
 }
 
-// finalizeInline collapses runs of spaces and trims every line: the
-// editable text's only newlines are line breaks. Only ASCII spaces
-// collapse — an NBSP is content the owner typed and stays as is.
-func finalizeInline(s string) string {
+// finalize collapses runs of spaces and trims every line (the editable
+// text's only newlines are line breaks), then fills the code-span holes
+// with their verbatim spans. Only ASCII spaces collapse — an NBSP is
+// content the owner typed and stays as is.
+func (in *inliner) finalize(s string) string {
 	lines := strings.Split(s, "\n")
 	for i, l := range lines {
 		lines[i] = collapseSpaces(l)
 	}
-	return strings.Trim(strings.Join(lines, "\n"), "\n")
+	s = strings.Trim(strings.Join(lines, "\n"), "\n")
+	if len(in.codes) == 0 {
+		return s
+	}
+	return codeHoleRe.ReplaceAllStringFunc(s, func(h string) string {
+		i, _ := strconv.Atoi(h[1 : len(h)-1])
+		return in.codes[i]
+	})
 }
 
 func collapseSpaces(s string) string {
@@ -326,7 +366,11 @@ func tableShape(n *node) (rows, cols int) {
 // one line, collapsed spaces, at most maxLabelRunes runes. An empty label
 // falls back to the element's name.
 func sanitizeLabel(label, fallback string) string {
-	label = strings.NewReplacer(markerOpen, " ", markerClose, " ").Replace(label)
+	// Valid UTF-8 first: the unit text a marker token is embedded in is
+	// rebuilt rune by rune (invalid bytes become U+FFFD), so a label with
+	// a raw invalid byte would never match its own token in Text().
+	label = strings.ToValidUTF8(label, "�")
+	label = strings.NewReplacer(markerOpen, " ", markerClose, " ", "\x00", " ").Replace(label)
 	label = strings.Join(strings.Fields(label), " ")
 	if label == "" {
 		label = strings.TrimPrefix(fallback, "ac:")
