@@ -259,10 +259,14 @@ package enum TargetQueries {
 
     // MARK: - Update
 
+    /// Every Desktop status write claims the owner (`status_actor`, migration
+    /// 00086): a project target's status history records it as the owner's
+    /// (PROJ-06); the history trigger clears the claim again.
     package static func updateStatus(_ db: Database, id: Int, status: String) throws {
         try db.execute(
             sql: """
-                UPDATE targets SET status = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                UPDATE targets SET status = ?, status_actor = 'owner',
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
                 WHERE id = ?
                 """,
             arguments: [status, id]
@@ -466,7 +470,7 @@ package enum TargetQueries {
         let dateStr = fmt.string(from: until)
         try db.execute(
             sql: """
-                UPDATE targets SET status = 'snoozed', snooze_until = ?,
+                UPDATE targets SET status = 'snoozed', snooze_until = ?, status_actor = 'owner',
                     updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
                 WHERE id = ?
                 """,

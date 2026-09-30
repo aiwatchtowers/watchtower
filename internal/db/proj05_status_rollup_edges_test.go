@@ -202,22 +202,26 @@ func TestProj05_PersonalParentOfAProjectChildIsNeverWritten(t *testing.T) {
 	assert.Equal(t, "todo", targetStatus(t, d, personal))
 }
 
-// The Swift test schema carries a copy of the three triggers so Desktop
-// tests exercise the shipped rule; this keeps the copy from drifting.
+// The Swift test schema carries a copy of the targets triggers so Desktop
+// tests exercise the shipped rule; this keeps the copy from drifting. The
+// shipped bodies are those of migration 00086, which recreated 00085's
+// rollup triggers (in_review, status_actor) and added the PROJ-06 history
+// triggers.
 func TestProj05_SwiftTestSchemaMirrorsTheTriggers(t *testing.T) {
-	mig, err := os.ReadFile(filepath.Join("migrations", "00085_project_status_rollup.sql"))
+	raw, err := os.ReadFile(filepath.Join("migrations", "00086_target_in_review_status.sql"))
 	require.NoError(t, err)
+	mig := []byte(strings.SplitN(string(raw), "-- +goose Down", 2)[0])
 	swift, err := os.ReadFile(filepath.Join("..", "..", "WatchtowerDesktop", "Tests", "Support", "TestDatabase+Schema.swift"))
 	require.NoError(t, err)
-	re := regexp.MustCompile(`(?s)CREATE TRIGGER (targets_project_status_rollup_\w+).*?\n\s*END;`)
+	re := regexp.MustCompile(`(?s)CREATE TRIGGER (targets_(?:project_status_rollup|status_history|status_actor_reset)_\w+).*?\n\s*END;`)
 	norm := func(s string) string { return strings.Join(strings.Fields(s), " ") }
 	want := re.FindAllStringSubmatch(string(mig), -1)
-	require.Len(t, want, 3)
+	require.Len(t, want, 6)
 	got := map[string]string{}
 	for _, m := range re.FindAllStringSubmatch(strings.ReplaceAll(string(swift), "CREATE TRIGGER IF NOT EXISTS ", "CREATE TRIGGER "), -1) {
 		got[m[1]] = norm(m[0])
 	}
 	for _, m := range want {
-		assert.Equal(t, norm(m[0]), got[m[1]], "Swift mirror of %s drifted from migration 00085", m[1])
+		assert.Equal(t, norm(m[0]), got[m[1]], "Swift mirror of %s drifted from migration 00086", m[1])
 	}
 }

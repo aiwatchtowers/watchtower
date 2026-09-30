@@ -5,10 +5,8 @@ import Foundation
 /// Dual path with Go's `boardSiblingOrder` (`internal/db/project_board.go`),
 /// which orders the board the agent sees through `watchtower mcp --project N`
 /// and `project board`: priority high, medium, then anything else; then status
-/// in_progress, blocked, todo, done, then anything else; then id. `in_review`
-/// already ranks right after in_progress here; Go gains that arm together with
-/// the status itself (until then the targets CHECK keeps it out of the table,
-/// so both orders agree). Change both sides together.
+/// in_progress, in_review, blocked, todo, done, then anything else; then id.
+/// Change both sides together.
 package enum ProjectBoardOrder {
     package static func priorityRank(_ priority: String) -> Int {
         switch priority {
@@ -43,7 +41,7 @@ package enum ProjectBoardOrder {
 package struct ProjectBoardCard: Equatable {
     /// Statuses the owner can set from the board. `snoozed` is a Targets-tab
     /// concept (snooze_until) with no meaning on a project board.
-    package static let editableStatuses = ["todo", "in_progress", "blocked", "done", "dismissed"]
+    package static let editableStatuses = ["todo", "in_progress", "in_review", "blocked", "done", "dismissed"]
     package static let editablePriorities = ["high", "medium", "low"]
 
     /// Done children of a parent card over the children that still count (a
