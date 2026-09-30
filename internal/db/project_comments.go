@@ -151,9 +151,12 @@ func insertProjectComment(tx *sql.Tx, c ProjectComment) (int64, error) {
 	return res.LastInsertId()
 }
 
-// GetProjectComment returns comment id (a wrapped sql.ErrNoRows when absent).
+// GetProjectComment returns comment id, or (nil, nil) when absent.
 func (db *DB) GetProjectComment(id int64) (*ProjectComment, error) {
 	c, err := scanProjectComment(db.QueryRow(`SELECT `+projectCommentCols+` FROM project_comments c WHERE c.id = ?`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, fmt.Errorf("getting comment %d: %w", id, err)
 	}

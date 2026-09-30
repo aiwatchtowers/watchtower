@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -54,7 +53,7 @@ func documentInProject(d *db.DB, projectID, documentID int64) (*db.ProjectDocume
 		return nil, notHere
 	}
 	doc, err := d.GetProjectDocument(documentID)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err != nil {
 		return nil, fmt.Errorf("loading document %d: %w", documentID, err)
 	}
 	if doc == nil || doc.ProjectID != projectID {
@@ -70,7 +69,7 @@ func commentInProject(d *db.DB, projectID, commentID int64) (*db.ProjectComment,
 		return nil, notHere
 	}
 	c, err := d.GetProjectComment(commentID)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	if err != nil {
 		return nil, fmt.Errorf("loading comment %d: %w", commentID, err)
 	}
 	if c == nil || c.ProjectID != projectID {

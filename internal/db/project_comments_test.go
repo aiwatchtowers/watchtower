@@ -144,3 +144,13 @@ func TestMarkProjectCommentsRead_OnlyAgentCommentsOfTheScope(t *testing.T) {
 	assert.Empty(t, read(agentOnT2), "another target's comments stay unread")
 	assert.Empty(t, read(ownerOnT1), "owner comments are never marked")
 }
+
+func TestGetProjectCommentAndDocument_MissingIsNilNil(t *testing.T) {
+	d := openTestDB(t)
+	c, err := d.GetProjectComment(999)
+	require.NoError(t, err)
+	assert.Nil(t, c)
+	doc, err := d.GetProjectDocument(999)
+	require.NoError(t, err)
+	assert.Nil(t, doc)
+}

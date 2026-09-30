@@ -359,9 +359,12 @@ func reviseProjectDocument(tx *sql.Tx, id int64, d ProjectDocument) error {
 	return nil
 }
 
-// GetProjectDocument returns document id (a wrapped sql.ErrNoRows when absent).
+// GetProjectDocument returns document id, or (nil, nil) when absent.
 func (db *DB) GetProjectDocument(id int64) (*ProjectDocument, error) {
 	d, err := scanProjectDocument(db.QueryRow(`SELECT `+projectDocumentCols+` FROM project_documents WHERE id = ?`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, fmt.Errorf("getting document %d: %w", id, err)
 	}

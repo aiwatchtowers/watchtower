@@ -144,14 +144,24 @@ func TestComments_AgentThreadLifecycle(t *testing.T) {
 	}
 }
 
+// Another project's document and a missing one answer the same line — no
+// existence oracle.
 func TestListComments_RefusesAnotherProjectsDocument(t *testing.T) {
 	fx := newProjectFixture(t)
 	reg := projectRegistry(t, fx.d)
-	_, err := reg.CallRead(context.Background(), "list_comments",
-		json.RawMessage(fmt.Sprintf(`{"document_id":%d}`, fx.bDocument)), directBinding(fx.a))
-	var verr *ValidationError
-	require.ErrorAs(t, err, &verr)
-	assert.Contains(t, verr.Msg, "not in this project")
+	for _, id := range []int64{fx.bDocument, 999} {
+		_, err := reg.CallRead(context.Background(), "list_comments",
+			json.RawMessage(fmt.Sprintf(`{"document_id":%d}`, id)), directBinding(fx.a))
+		var verr *ValidationError
+		require.ErrorAs(t, err, &verr)
+		assert.Equal(t, fmt.Sprintf("document %d is not in this project", id), verr.Msg)
+	}
+	for _, id := range []int64{fx.bComment, 999} {
+		_, err := proposeIn(t, reg, fx.a, "resolve_comment", fmt.Sprintf(`{"comment_id":%d,"reason":"r"}`, id))
+		var verr *ValidationError
+		require.ErrorAs(t, err, &verr)
+		assert.Equal(t, fmt.Sprintf("comment %d is not in this project", id), verr.Msg)
+	}
 }
 
 func nullInt(v int64) sql.NullInt64 { return sql.NullInt64{Int64: v, Valid: true} }
