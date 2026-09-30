@@ -882,7 +882,8 @@ final class AppState {
     /// first call; tests pass fakes.
     /// "Grant Confluence access" runs the Jira account's own login flow with
     /// `--with-confluence` on `jiraAccountsViewModel`, so its in-flight state
-    /// and errors land where every other Jira re-login's do.
+    /// and errors land where every other Jira re-login's do; "Allow editing"
+    /// does the same with `--with-confluence-write`.
     @discardableResult
     func confluenceSpacesViewModel(
         forJiraAccount accountID: Int64,
@@ -898,6 +899,11 @@ final class AppState {
             onReconsent: { [weak self] id in
                 guard let jira = self?.jiraAccountsViewModel else { return "Jira accounts are not loaded yet." }
                 await jira.reloginWithConfluence(accountID: Int(id))
+                return jira.error
+            },
+            onAllowEditing: { [weak self] id in
+                guard let jira = self?.jiraAccountsViewModel else { return "Jira accounts are not loaded yet." }
+                await jira.reloginWithConfluenceWrite(accountID: Int(id))
                 return jira.error
             },
             // Best-effort, the tray's Sync Now: a failure only means the

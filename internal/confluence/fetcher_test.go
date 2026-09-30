@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -427,6 +428,10 @@ func TestCommentsIncludesRepliesAtAnyDepth(t *testing.T) {
 	assert.Equal(t, "inline", reply.CommentKind)
 	assert.Equal(t, "before the freeze", reply.AnchorText, "a reply inherits its thread's anchor")
 	assert.True(t, reply.Resolved, "a reply inherits its thread's resolution")
+	assert.Empty(t, byID["100"].ReplyTo, "a top-level comment replies to nothing")
+	assert.Equal(t, "100", byID["101"].ReplyTo)
+	assert.Equal(t, "101", byID["102"].ReplyTo, "a reply names its direct parent, not the thread root")
+	assert.Equal(t, "200", reply.ReplyTo)
 }
 
 // The engine contract: every comment Changed(KindComment) lists for a page
@@ -909,4 +914,40 @@ func TestFetchUnsupportedKind(t *testing.T) {
 	f := NewFetcher(newFakeAPI(t), testSite)
 	_, err := f.Fetch(context.Background(), engSpace, extsync.ItemRef{Kind: extsync.KindComment, ExtID: "100"})
 	assert.Error(t, err, "comments come from Comments(), never Fetch")
+}
+
+// TestEXT01_FetcherCannotReachPut — EXT-01, narrowed: *jira.ConfluenceAPI
+// gained a write method (PutJSON, EXT-05's edit-tool path), but the sync
+// engine and this fetcher must never be able to reach it. Two checks:
+//  1. The confluence.API seam the fetcher depends on has no PUT-capable
+//     method at all — its method set is pinned to exactly
+//     {Download, GetJSON}, so a future addition to *jira.ConfluenceAPI
+//     (like PutJSON itself) does not leak into this interface by accident;
+//     it would have to be added here deliberately, which is exactly the
+//     review point EXT-01 wants.
+//  2. On the real build graph, the generic sync engine (internal/extsync)
+//     still does not depend on internal/jira at all — not even indirectly
+//     through some other path — so it has no way to construct a
+//     *jira.ConfluenceAPI to call PutJSON on in the first place. This is
+//     the same check internal/extsync's own
+//     TestEXT04_EngineImportsNoLinkOrAIPackages makes; it is repeated here,
+//     scoped to this task's contract, so EXT-01's guard does not silently
+//     depend on EXT-04 staying green for unrelated reasons.
+func TestEXT01_FetcherCannotReachPut(t *testing.T) {
+	apiType := reflect.TypeOf((*API)(nil)).Elem()
+	var names []string
+	for i := 0; i < apiType.NumMethod(); i++ {
+		names = append(names, apiType.Method(i).Name)
+	}
+	require.Equal(t, []string{"Download", "GetJSON"}, names,
+		"the fetcher's API seam must stay GET-only even though *jira.ConfluenceAPI now has PutJSON")
+
+	out, err := exec.Command("go", "list", "-deps", "watchtower/internal/extsync").Output()
+	require.NoError(t, err)
+	deps := strings.Fields(string(out))
+	require.Contains(t, deps, "watchtower/internal/db", "scan floor: the dependency list must actually be read")
+	for _, dep := range deps {
+		assert.False(t, dep == "watchtower/internal/jira" || strings.HasPrefix(dep, "watchtower/internal/jira/"),
+			"internal/extsync must not depend on internal/jira (which is where PutJSON lives)")
+	}
 }

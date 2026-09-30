@@ -1,0 +1,121 @@
+package confluenceedit
+
+import (
+	"errors"
+	"os"
+	"strings"
+	"testing"
+)
+
+// FuzzApply: Apply never panics (carry (e)), every refusal is an
+// *EditError, and a successful replace_text changes bytes only inside the
+// span of one editable unit — every other byte of the page survives.
+func FuzzApply(f *testing.F) {
+	rich, err := os.ReadFile("testdata/rich.xhtml")
+	if err == nil {
+		f.Add(string(rich), "on budget", "under **budget**", "Scope", "- a\n  - b\n\n| x |\n| --- |\n| y |")
+		f.Add(string(rich), "Ann Lee", "⟦2:x⟧", "Release plan", "```\n]]>\n```\n\n⟦7:table 2x2⟧")
+	}
+	f.Add(sectionsSrc, "m1", "[a](b) _c_ `d`", "Mid", "### Deep\n\n⟦2:emoticon smile⟧")
+	f.Add(`<p>a <!-- c --> b ⟦1:x⟧</p><h1>H</h1>`, "a", "b", "H", "x")
+	f.Add("<p>a <code>x\x005\x00y</code> b</p>", "b", "c", "", "")
+	f.Add("<p><ac:emoticon ac:name=\"s\"/> <code>x\x001\x00y</code> <code>`\x00</code> b</p><h2>H</h2>", "b", "c\x00\x01", "H", "`\x001\x00`")
+	f.Add(`<p>call __init__ and 2**10 vs 3**4 [1](2) here</p>`, "here", "[x](javascript:y)", "", "")
+	for _, src := range judgeCases {
+		f.Add(src, "edit me", "edited", "S", "x")
+	}
+	f.Fuzz(func(t *testing.T, src, old, repl, heading, body string) {
+		d, err := Parse(src)
+		if err != nil {
+			return
+		}
+		out, _, err := Apply(d, []Edit{text(old, repl)})
+		checkEditError(t, err)
+		if err == nil {
+			checkWithinOneUnit(t, d, out)
+		}
+		_, _, err = Apply(d, []Edit{text(old, repl), sectionEdit(heading, body), text(repl, old), sectionEdit(heading, repl)})
+		checkEditError(t, err)
+		checkSectionRewriteKeepsBlocks(t, d)
+		if d.Render() != src {
+			t.Fatal("Apply modified its Doc")
+		}
+	})
+}
+
+// fuzzMarker is the paragraph checkSectionRewriteKeepsBlocks appends; it
+// cannot occur in a page's own storage by accident in a fuzz run that
+// matters.
+const fuzzMarker = "zzfuzzappended"
+
+// checkSectionRewriteKeepsBlocks (R11, F3): replacing a section with its
+// own editable text is a no-op edit (refused as one), and the same text
+// plus one appended paragraph re-emits every existing block of the
+// section — and every byte between them — exactly: the only change to the
+// storage is the new <p>. A section whose no-op rewrite is refused for any
+// reason other than "edit changes nothing" (an ambiguous heading, a nested
+// layout, ...) is skipped; once the no-op is refused as a no-op, refusing
+// the append is a failure.
+func checkSectionRewriteKeepsBlocks(t *testing.T, d *Doc) {
+	t.Helper()
+	if strings.Contains(d.src, fuzzMarker) {
+		return
+	}
+	a := newApplier(d)
+	for i, bl := range a.d.blocks {
+		if bl.kind != blockHeading || unitText(bl.unit) == "" {
+			continue
+		}
+		region, err := a.d.sectionRegion(i)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := a.blocksText(a.regionBlocks(bl, region))
+		if cleanModelText(body) != body {
+			return // page text Apply would make storable: echoing it back is a change
+		}
+		heading := unitText(bl.unit)
+		_, _, err = Apply(d, []Edit{sectionEdit(heading, body)})
+		if err == nil {
+			t.Fatalf("a no-op section rewrite succeeded: %q", heading)
+		}
+		checkEditError(t, err)
+		if !strings.Contains(err.Error(), "edit changes nothing") {
+			return // the no-op itself is refused for another reason: nothing to append to
+		}
+		out, _, err := Apply(d, []Edit{sectionEdit(heading, strings.TrimSuffix(body+"\n\n"+fuzzMarker, "\n\n"))})
+		if err != nil {
+			t.Fatalf("appending one paragraph to section %q was refused: %v\nsrc: %q", heading, err, d.src)
+		}
+		p := "<p>" + fuzzMarker + "</p>"
+		k := strings.Index(out, p)
+		if k < 0 || out[:k]+out[k+len(p):] != d.src {
+			t.Fatalf("section rewrite changed more than the appended paragraph\nsrc: %q\nout: %q", d.src, out)
+		}
+		return // one heading per input keeps the fuzz fast
+	}
+}
+
+func checkEditError(t *testing.T, err error) {
+	t.Helper()
+	var ee *EditError
+	if err != nil && !errors.As(err, &ee) {
+		t.Fatalf("error is not an *EditError: %v", err)
+	}
+}
+
+func checkWithinOneUnit(t *testing.T, d *Doc, out string) {
+	t.Helper()
+	if out == d.src {
+		return // a whitespace-only edit the renderer trims away (deferred F8)
+	}
+	// Exact, not by common affixes: those are ambiguous when the new bytes
+	// start or end with a byte the neighbouring source shares.
+	for _, u := range d.units {
+		head, tail := d.src[:u.start], d.src[u.end:]
+		if len(out) >= len(head)+len(tail) && strings.HasPrefix(out, head) && strings.HasSuffix(out, tail) {
+			return
+		}
+	}
+	t.Fatalf("the change is not inside one unit\nsrc: %q\nout: %q", d.src, out)
+}

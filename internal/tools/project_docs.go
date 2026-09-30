@@ -186,7 +186,7 @@ type listCommentsArgs struct {
 	NewForAgent *bool `json:"new_for_agent,omitempty" jsonschema:"only what is new for you (open owner comments, unanswered owner replies); default true when no id is given"`
 }
 
-type commentView struct {
+type projectCommentView struct {
 	ID         int64  `json:"id"`
 	TargetID   int64  `json:"target_id,omitempty"`
 	DocumentID int64  `json:"document_id,omitempty"`
@@ -251,10 +251,10 @@ func commentFilter(ctx context.Context, d *db.DB, b Binding, a listCommentsArgs)
 	return f, nil
 }
 
-func commentViews(comments []db.ProjectComment) []commentView {
-	out := make([]commentView, 0, len(comments))
+func commentViews(comments []db.ProjectComment) []projectCommentView {
+	out := make([]projectCommentView, 0, len(comments))
 	for _, c := range comments {
-		out = append(out, commentView{
+		out = append(out, projectCommentView{
 			ID: c.ID, TargetID: c.TargetID.Int64, DocumentID: c.DocumentID.Int64, ParentID: c.ParentID.Int64,
 			Author: c.Author, Body: c.Body, Status: c.Status,
 			Quote: c.AnchorQuote, Heading: c.AnchorHeading, CreatedAt: c.CreatedAt,

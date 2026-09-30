@@ -1,0 +1,3 @@
+"CDATA edge cases"
+"<![CDATA[if a < b && c > d {\n    y := 1\n}\nx >= 10\n// pipeline: a -> b -> c\n// end]] not a cdata close\n<div class=\"a\">x</div>]]>"
+"See <ac:link><ri:page ri:content-title=\"Old\"/><ac:plain-text-link-body><![CDATA[a < b -> c >= d]]></ac:plain-text-link-body></ac:link> for details."
