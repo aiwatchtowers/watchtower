@@ -134,7 +134,70 @@ skill, would make every later `integrate` a risk to the owner's own setup.
 
 **Locked since:** 2026-09-29
 
+## PROJ-05 — a project parent's status never lags its children
+
+**Status:** Enforced (Go and Desktop — one implementation, in SQLite)
+
+**Observable:** When a project target (`project_id` set) is inserted,
+deleted, or changes `status`, `parent_id` or `project_id`, its parent's
+status is re-derived from the parent's direct children of the same project
+(closed = `done`|`dismissed`): all closed with at least one `done` → `done`;
+all `dismissed` → `dismissed`; every open child
+`blocked` → `blocked`; any child `in_progress` or `done` → `in_progress`;
+otherwise → `todo`; no children → untouched. The change walks up the ancestor
+chain and stops at the first ancestor whose status does not change, and
+below any `dismissed` ancestor — a dismissed parent is never re-derived, and
+nothing above it moves because of that change. A status
+set on a parent itself stands until one of its children changes — the
+parent's own update is never rolled up, and an ancestor none of whose
+children changed keeps its status. `updated_at` moves only with a real
+status change. A non-project target, and a row of another project, is never
+read as a child nor written. The rule is migration `00085`'s triggers
+(`targets_project_status_rollup_{ai,au,ad}`), so every writer — the Go
+MCP/CLI and the Desktop's direct GRDB writes — gets it with no dual path, and
+it does not depend on `PRAGMA recursive_triggers`. The migration re-derives
+every existing board once, deepest parent first, without bumping
+`updated_at` and leaving a dismissed or snoozed parent as it is. The `watchtower-project`
+skill tells the agent never to set a parent's status. A change the rollup
+makes is recorded in the status history (#119) with actor `system`.
+
+**Why locked:** Owner decision (board target #124). Before the rollup a
+parent kept whatever status someone last set — boards sat in `todo` while
+half their children were done — and keeping it right fell to the agent,
+which forgot. A parent status the owner cannot trust makes the board useless
+at a glance.
+
+**Test guards:**
+- `internal/db/proj05_status_rollup_test.go::TestProj05_ProjectParentStatusFollowsChildren`
+  (and the other `TestProj05_*` in that file: multi-level chain, override,
+  insert/delete/move, non-project and other-project rows, `updated_at`,
+  `recursive_triggers` on, project delete with a multi-level board)
+- `internal/db/proj05_status_rollup_edges_test.go` — moves out of a parent that keeps children,
+  a shared ancestor, a child leaving/joining the project, multi-row updates, deletes, a
+  100-level chain, and `TestProj05_SwiftTestSchemaMirrorsTheTriggers` (the Swift test
+  schema's copy of the triggers equals the migration's)
+- `internal/db/project_status_rollup_migration_test.go::TestMigration00085_RecomputesExistingBoards`
+- `WatchtowerDesktop/Tests/Core/ProjectStatusRollupTests.swift::testGRDBChildStatusUpdateRollsTheChainUp`
+- `WatchtowerDesktop/Tests/ProjectBoardViewModelTests.swift::testStatusWriteReportsTheParentsTheRollupMoved`
+  (parents the rollup moved in an owner's write count as the owner's writes — no "done" notice)
+
+**Locked since:** 2026-09-30
+
 ## v1 limits and notes (accepted)
+
+- **Status rollup bounds (PROJ-05).** The ancestor walk stops after 256
+  levels, and a `parent_id` cycle (no writer creates one, nothing forbids
+  it) is skipped by the one-time recompute and, when a member changes, ends
+  with its members sharing whatever status the walk reached. A full-row write
+  of a parent loaded before a child changed (`db.UpdateTarget` with a stale
+  struct) puts the old status back as if set explicitly; the next child
+  change re-derives it. A `snoozed` child counts as not started, and the live
+  rule re-derives a snoozed parent (leaving `snooze_until` set; nothing
+  snoozes a project target today). A parent the rollup dismissed (all its
+  children dismissed) stays dismissed even if a child is reopened later —
+  dismissed is terminal for the rollup (owner decision 2026-09-30); set it
+  back by hand. A parent status the rollup replaces gets no board marker;
+  #119's status history records rollup changes with actor `system`.
 
 - **TCC attribution (owner decision 2026-09-30).** A project folder under a
   TCC-protected location (`~/Documents`, `~/Desktop`, `~/Downloads`, cloud

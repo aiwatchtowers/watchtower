@@ -167,8 +167,9 @@ func TestProject_ListShowAndBoardJSON(t *testing.T) {
 	assert.Equal(t, "acme", view.Name)
 	require.Len(t, view.Sources, 1)
 	assert.Equal(t, "https://example.com", view.Sources[0].Ref)
-	assert.Equal(t, 1, view.Counts["todo"])
-	assert.Equal(t, 1, view.Counts["in_progress"])
+	// The started task rolls its parent up to in_progress too (PROJ-05).
+	assert.Equal(t, 0, view.Counts["todo"])
+	assert.Equal(t, 2, view.Counts["in_progress"])
 
 	out, _, err = runProject(t, "board", strconv.FormatInt(pid, 10), "--json")
 	require.NoError(t, err)
@@ -177,6 +178,7 @@ func TestProject_ListShowAndBoardJSON(t *testing.T) {
 	require.Len(t, board, 1)
 	assert.Equal(t, "feature", board[0].Title)
 	assert.Equal(t, "high", board[0].Priority)
+	assert.Equal(t, "in_progress", board[0].Status, "the parent follows its started task")
 	assert.Equal(t, 1, board[0].NewForAgent)
 	require.Len(t, board[0].Children, 1)
 	assert.Equal(t, "in_progress", board[0].Children[0].Status)
@@ -184,7 +186,7 @@ func TestProject_ListShowAndBoardJSON(t *testing.T) {
 
 	out, _, err = runProject(t, "board", strconv.FormatInt(pid, 10))
 	require.NoError(t, err)
-	assert.Contains(t, out, "[todo, high] feature")
+	assert.Contains(t, out, "[in_progress, high] feature")
 
 	_, _, err = runProject(t, "show", "999")
 	assert.ErrorIs(t, err, db.ErrProjectNotFound)

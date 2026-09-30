@@ -220,6 +220,31 @@ package enum ProjectQueries {
 
     // MARK: - Board
 
+    /// The status of every ancestor of `targetID` on its own project's
+    /// board, keyed by id. Read before and after an owner's status write, it
+    /// tells which parents migration 00085's rollup (PROJ-05) moved as part
+    /// of that write.
+    package static func ancestorStatuses(_ db: Database, of targetID: Int64) throws -> [Int64: String] {
+        let rows = try Row.fetchAll(db, sql: """
+            WITH RECURSIVE up(id, depth) AS (
+                SELECT p.id, 1 FROM targets c
+                JOIN targets p ON p.id = c.parent_id AND p.project_id = c.project_id
+                WHERE c.id = ?
+                UNION ALL
+                SELECT p.id, up.depth + 1 FROM up
+                JOIN targets c ON c.id = up.id
+                JOIN targets p ON p.id = c.parent_id AND p.project_id = c.project_id
+                WHERE up.depth < 256  -- the triggers' own bound (migration 00085)
+            )
+            SELECT t.id, t.status FROM up JOIN targets t ON t.id = up.id
+            """, arguments: [targetID])
+        var out: [Int64: String] = [:]
+        for row in rows {
+            out[row["id"]] = row["status"]
+        }
+        return out
+    }
+
     /// The project's target tree: roots (and orphans whose parent is outside
     /// the project) in `ProjectBoardOrder` (priority, then status, then id —
     /// Go's `boardSiblingOrder`). Children use the same order.

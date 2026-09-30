@@ -808,6 +808,149 @@ extension TestDatabase {
     CREATE INDEX IF NOT EXISTS idx_targets_due_unfired ON targets(due_date)
         WHERE notified_at = '' AND due_date != '';
     CREATE INDEX IF NOT EXISTS idx_targets_project     ON targets(project_id);
+    -- Migration 00085 (PROJ-05): project parent status rollup — copied verbatim
+    -- from internal/db/migrations/00085_project_status_rollup.sql.
+    CREATE TRIGGER IF NOT EXISTS targets_project_status_rollup_ai AFTER INSERT ON targets
+    WHEN NEW.parent_id IS NOT NULL AND NEW.project_id IS NOT NULL
+    BEGIN
+        UPDATE targets
+        SET status = r.st, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+        FROM (
+            WITH RECURSIVE chain(id, parent, st, pid, depth) AS (
+                SELECT NEW.id, NEW.parent_id, NEW.status, NEW.project_id, 0
+                UNION ALL
+                SELECT g.id, g.parent_id, (
+                        SELECT CASE
+                            WHEN COUNT(*) = 0 THEN NULL
+                            WHEN SUM(k.s IN ('done','dismissed')) = COUNT(*)
+                                THEN CASE WHEN SUM(k.s = 'done') > 0 THEN 'done' ELSE 'dismissed' END
+                            WHEN SUM(k.s = 'blocked') = COUNT(*) - SUM(k.s IN ('done','dismissed')) THEN 'blocked'
+                            WHEN SUM(k.s IN ('in_progress','done')) > 0 THEN 'in_progress'
+                            ELSE 'todo' END
+                        FROM (SELECT CASE WHEN c.id = chain.id THEN chain.st ELSE c.status END AS s
+                              FROM targets c
+                              WHERE c.parent_id = g.id AND c.project_id = g.project_id) AS k),
+                    g.project_id, chain.depth + 1
+                FROM chain
+                JOIN targets g ON g.id = chain.parent AND g.project_id = chain.pid
+                    AND g.status != 'dismissed'
+                WHERE chain.depth < 256
+                  AND (chain.depth = 0
+                       OR (chain.st IS NOT NULL
+                           AND chain.st != (SELECT s.status FROM targets s WHERE s.id = chain.id)))
+            )
+            SELECT id, st FROM chain WHERE depth > 0 AND st IS NOT NULL
+        ) AS r
+        WHERE targets.id = r.id AND targets.status != r.st;
+    END;
+    CREATE TRIGGER IF NOT EXISTS targets_project_status_rollup_au
+    AFTER UPDATE OF status, parent_id, project_id ON targets
+    WHEN (NEW.project_id IS NOT NULL OR OLD.project_id IS NOT NULL)
+     AND (OLD.status IS NOT NEW.status
+          OR OLD.parent_id IS NOT NEW.parent_id
+          OR OLD.project_id IS NOT NEW.project_id)
+    BEGIN
+        -- The new parent's chain (the old one's too when the parent is unchanged:
+        -- the child is counted there at its new status).
+        UPDATE targets
+        SET status = r.st, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+        FROM (
+            WITH RECURSIVE chain(id, parent, st, pid, depth) AS (
+                SELECT NEW.id, NEW.parent_id, NEW.status, NEW.project_id, 0
+                WHERE NEW.parent_id IS NOT NULL AND NEW.project_id IS NOT NULL
+                UNION ALL
+                SELECT g.id, g.parent_id, (
+                        SELECT CASE
+                            WHEN COUNT(*) = 0 THEN NULL
+                            WHEN SUM(k.s IN ('done','dismissed')) = COUNT(*)
+                                THEN CASE WHEN SUM(k.s = 'done') > 0 THEN 'done' ELSE 'dismissed' END
+                            WHEN SUM(k.s = 'blocked') = COUNT(*) - SUM(k.s IN ('done','dismissed')) THEN 'blocked'
+                            WHEN SUM(k.s IN ('in_progress','done')) > 0 THEN 'in_progress'
+                            ELSE 'todo' END
+                        FROM (SELECT CASE WHEN c.id = chain.id THEN chain.st ELSE c.status END AS s
+                              FROM targets c
+                              WHERE c.parent_id = g.id AND c.project_id = g.project_id) AS k),
+                    g.project_id, chain.depth + 1
+                FROM chain
+                JOIN targets g ON g.id = chain.parent AND g.project_id = chain.pid
+                    AND g.status != 'dismissed'
+                WHERE chain.depth < 256
+                  AND (chain.depth = 0
+                       OR (chain.st IS NOT NULL
+                           AND chain.st != (SELECT s.status FROM targets s WHERE s.id = chain.id)))
+            )
+            SELECT id, st FROM chain WHERE depth > 0 AND st IS NOT NULL
+        ) AS r
+        WHERE targets.id = r.id AND targets.status != r.st;
+
+        -- The old parent's chain, when the child left it (moved or left the
+        -- project). Runs after the first walk, so a shared ancestor is
+        -- recomputed from both changes.
+        UPDATE targets
+        SET status = r.st, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+        FROM (
+            WITH RECURSIVE chain(id, parent, st, pid, depth) AS (
+                SELECT OLD.id, OLD.parent_id, NULL, OLD.project_id, 0
+                WHERE OLD.parent_id IS NOT NULL AND OLD.project_id IS NOT NULL
+                  AND (OLD.parent_id IS NOT NEW.parent_id OR OLD.project_id IS NOT NEW.project_id)
+                UNION ALL
+                SELECT g.id, g.parent_id, (
+                        SELECT CASE
+                            WHEN COUNT(*) = 0 THEN NULL
+                            WHEN SUM(k.s IN ('done','dismissed')) = COUNT(*)
+                                THEN CASE WHEN SUM(k.s = 'done') > 0 THEN 'done' ELSE 'dismissed' END
+                            WHEN SUM(k.s = 'blocked') = COUNT(*) - SUM(k.s IN ('done','dismissed')) THEN 'blocked'
+                            WHEN SUM(k.s IN ('in_progress','done')) > 0 THEN 'in_progress'
+                            ELSE 'todo' END
+                        FROM (SELECT CASE WHEN c.id = chain.id AND chain.depth > 0 THEN chain.st ELSE c.status END AS s
+                              FROM targets c
+                              WHERE c.parent_id = g.id AND c.project_id = g.project_id) AS k),
+                    g.project_id, chain.depth + 1
+                FROM chain
+                JOIN targets g ON g.id = chain.parent AND g.project_id = chain.pid
+                    AND g.status != 'dismissed'
+                WHERE chain.depth < 256
+                  AND (chain.depth = 0
+                       OR (chain.st IS NOT NULL
+                           AND chain.st != (SELECT s.status FROM targets s WHERE s.id = chain.id)))
+            )
+            SELECT id, st FROM chain WHERE depth > 0 AND st IS NOT NULL
+        ) AS r
+        WHERE targets.id = r.id AND targets.status != r.st;
+    END;
+    CREATE TRIGGER IF NOT EXISTS targets_project_status_rollup_ad AFTER DELETE ON targets
+    WHEN OLD.parent_id IS NOT NULL AND OLD.project_id IS NOT NULL
+    BEGIN
+        UPDATE targets
+        SET status = r.st, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+        FROM (
+            WITH RECURSIVE chain(id, parent, st, pid, depth) AS (
+                SELECT OLD.id, OLD.parent_id, NULL, OLD.project_id, 0
+                UNION ALL
+                SELECT g.id, g.parent_id, (
+                        SELECT CASE
+                            WHEN COUNT(*) = 0 THEN NULL
+                            WHEN SUM(k.s IN ('done','dismissed')) = COUNT(*)
+                                THEN CASE WHEN SUM(k.s = 'done') > 0 THEN 'done' ELSE 'dismissed' END
+                            WHEN SUM(k.s = 'blocked') = COUNT(*) - SUM(k.s IN ('done','dismissed')) THEN 'blocked'
+                            WHEN SUM(k.s IN ('in_progress','done')) > 0 THEN 'in_progress'
+                            ELSE 'todo' END
+                        FROM (SELECT CASE WHEN c.id = chain.id AND chain.depth > 0 THEN chain.st ELSE c.status END AS s
+                              FROM targets c
+                              WHERE c.parent_id = g.id AND c.project_id = g.project_id) AS k),
+                    g.project_id, chain.depth + 1
+                FROM chain
+                JOIN targets g ON g.id = chain.parent AND g.project_id = chain.pid
+                    AND g.status != 'dismissed'
+                WHERE chain.depth < 256
+                  AND (chain.depth = 0
+                       OR (chain.st IS NOT NULL
+                           AND chain.st != (SELECT s.status FROM targets s WHERE s.id = chain.id)))
+            )
+            SELECT id, st FROM chain WHERE depth > 0 AND st IS NOT NULL
+        ) AS r
+        WHERE targets.id = r.id AND targets.status != r.st;
+    END;
 
     CREATE TABLE IF NOT EXISTS target_links (
         id                  INTEGER PRIMARY KEY AUTOINCREMENT,
