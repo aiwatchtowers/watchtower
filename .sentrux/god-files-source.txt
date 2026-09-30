@@ -1,4 +1,5 @@
 WatchtowerDesktop/Sources/App/Navigation.swift
+WatchtowerDesktop/Sources/ViewModels/ProjectsViewModel+Sessions.swift
 WatchtowerDesktop/Sources/Views/Calendar/CalendarEventsView.swift
 WatchtowerDesktop/Sources/Views/Calendar/RecordingDetailView.swift
 WatchtowerDesktop/Sources/Views/Digests/DigestListView.swift
