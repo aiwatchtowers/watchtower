@@ -32,7 +32,10 @@ const legacySchemaTip = 73
 // Caller is responsible for invoking this once per startup before any
 // db.Open() call when config.DB.SchemaFormat < CurrentSchemaFormat.
 func RunSchemaUpgrade(dbPath string) error {
-	raw, err := sql.Open("sqlite", dbPath)
+	// Open's busy_timeout, as a per-connection DSN pragma: without it the
+	// transition tx fails at once with SQLITE_BUSY whenever another process
+	// (the daemon, the Desktop) holds the write lock, instead of waiting.
+	raw, err := sql.Open("sqlite", sqliteDSN(dbPath, fmt.Sprintf("?_pragma=busy_timeout(%d)", busyTimeoutMS)))
 	if err != nil {
 		return fmt.Errorf("opening db for schema upgrade: %w", err)
 	}
