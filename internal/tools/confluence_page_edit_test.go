@@ -167,11 +167,13 @@ func TestEXT05_WriteRequiresMatchingVersion(t *testing.T) {
 	ok, err := d.TransitionAgentAction(rc.ActionID, []string{"pending"}, "approved", "", "")
 	require.NoError(t, err)
 	require.True(t, ok)
-	f.setVersion(8)
+	// Two versions on: v8 alone could be this edit's own lost-response
+	// write (TestEditConfluencePage_RetryAfterLostResponse).
+	f.setVersion(9)
 	row, err := reg.Apply(ctx, rc.ActionID)
 	require.NoError(t, err)
 	assert.Equal(t, "failed", row.Status)
-	assert.Equal(t, "conflict: the page was edited after the preview (now v8); nothing was written", row.Error)
+	assert.Equal(t, "conflict: the page was edited after the preview (now v9); nothing was written", row.Error)
 	assert.Empty(t, f.puts, "a live-version mismatch at apply time means no PUT")
 
 	// The page moves on between Execute's re-check and its PUT: Confluence's

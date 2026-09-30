@@ -37,11 +37,14 @@ type fakePut struct {
 // fakeConfluence is a ConfluencePageClient over in-memory pages. PutPage
 // records the call and bumps the stored page's version like Confluence.
 type fakeConfluence struct {
-	pages       map[string]ConfluencePage
-	comments    []ConfluenceComment
-	users       map[string]string
-	getErr      error
-	putErr      error
+	pages    map[string]ConfluencePage
+	comments []ConfluenceComment
+	users    map[string]string
+	getErr   error
+	putErr   error
+	// putLands makes a failing PutPage still write the page first — a PUT
+	// that landed but whose response was lost.
+	putLands    bool
 	commentsErr error
 	usersErr    error
 	readOnly    bool
@@ -78,12 +81,15 @@ func (f *fakeConfluence) GetPage(_ context.Context, id string) (ConfluencePage, 
 
 func (f *fakeConfluence) PutPage(_ context.Context, id, kind string, body ConfluencePutBody) (int, error) {
 	f.puts = append(f.puts, fakePut{id: id, kind: kind, body: body})
-	if f.putErr != nil {
+	if f.putErr != nil && !f.putLands {
 		return 0, f.putErr
 	}
 	p := f.pages[id]
 	p.Version, p.Storage = body.Version.Number, body.Body.Value
 	f.pages[id] = p
+	if f.putErr != nil {
+		return 0, f.putErr
+	}
 	return p.Version, nil
 }
 

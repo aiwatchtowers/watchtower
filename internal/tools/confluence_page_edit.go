@@ -10,6 +10,7 @@ import (
 
 	"watchtower/internal/confluenceedit"
 	"watchtower/internal/db"
+	"watchtower/internal/extsync"
 	"watchtower/internal/jira"
 )
 
@@ -215,7 +216,7 @@ func confluenceEditShapeErr(i int, e confluenceEditSpec) error {
 func prepareConfluenceEdit(ctx context.Context, client ConfluencePageClient, accountID int64, a editConfluencePageArgs) (editConfluencePinned, error) {
 	page, err := client.GetPage(ctx, a.PageID)
 	if err != nil {
-		return editConfluencePinned{}, confluenceReadErr(err, accountID, a.PageID)
+		return editConfluencePinned{}, confluenceEditReadErr(err, accountID, a.PageID)
 	}
 	if page.Version != a.BaseVersion {
 		return editConfluencePinned{}, &ValidationError{Msg: fmt.Sprintf("page changed since you read it (now v%d) — re-read with get_confluence_page", page.Version)}
@@ -324,32 +325,63 @@ func executeConfluenceEdit(ctx context.Context, d *db.DB, factory ConfluencePage
 	}
 	live, err := client.GetPage(ctx, p.PageID)
 	if err != nil {
-		return nil, confluenceWriteFailed(d, account.ID, confluenceReadErr(err, account.ID, p.PageID), err)
+		return nil, confluenceWriteFailed(d, account.ID, confluenceEditReadErr(err, account.ID, p.PageID), err)
 	}
 	if live.Version != p.BaseVersion {
-		return nil, confluenceConflict(live.Version)
+		return nil, confluenceConflict(live.Version, p.BaseVersion)
 	}
 	body := ConfluencePutBody{ID: p.PageID, Status: "current", Title: p.Title,
 		Body:    ConfluencePutStorage{Representation: "storage", Value: p.NewStorage},
 		Version: ConfluencePutVersionInfo{Number: p.BaseVersion + 1, Message: confluenceEditMessage}}
 	version, err := client.PutPage(ctx, p.PageID, p.Kind, body)
 	if err != nil {
-		return nil, confluenceWriteFailed(d, account.ID, confluencePutErr(ctx, client, err, account.ID, p.PageID), err)
+		return nil, confluenceWriteFailed(d, account.ID, confluencePutErr(ctx, client, err, account.ID, p), err)
 	}
 	return map[string]any{"page_id": p.PageID, "title": p.Title, "url": p.URL, "version": version}, nil
 }
 
-func confluenceConflict(now int) error {
+// confluenceConflict is the version-mismatch failure. A page exactly one
+// version past the preview may be this very edit: a first PUT that landed
+// but whose response was lost leaves the page at base+1, and a Retry must
+// not claim someone else edited it.
+func confluenceConflict(now, base int) error {
+	if now == base+1 {
+		return fmt.Errorf("conflict: the page is already at v%d — possibly this edit was saved; open the page to check. Nothing was written now", now)
+	}
 	return fmt.Errorf("conflict: the page was edited after the preview (now v%d); nothing was written", now)
 }
 
+// confluenceSignInExpired is the re-login hint for a revoked grant on the
+// edit path: the write scopes must come back with it.
+func confluenceSignInExpired(accountID int64) string {
+	return fmt.Sprintf("Atlassian sign-in expired — run: watchtower jira login --account %d --with-confluence-write", accountID)
+}
+
+func isAuthRevoked(err error) bool {
+	return errors.Is(err, jira.ErrAuthRevoked) || errors.Is(err, extsync.ErrAuthRevoked)
+}
+
+// confluenceEditReadErr maps a failed page read of the edit tool: like
+// confluenceReadErr, except that a revoked grant names the write re-login
+// (a plain --with-confluence one would drop the write scopes).
+func confluenceEditReadErr(err error, accountID int64, pageID string) error {
+	if isAuthRevoked(err) {
+		return &ValidationError{Msg: confluenceSignInExpired(accountID)}
+	}
+	return confluenceReadErr(err, accountID, pageID)
+}
+
 // confluencePutErr maps a failed PUT (spec §7): 409 is a conflict, 403 a
-// missing write scope.
-func confluencePutErr(ctx context.Context, client ConfluencePageClient, err error, accountID int64, pageID string) error {
+// missing write scope, a revoked grant the write re-login.
+func confluencePutErr(ctx context.Context, client ConfluencePageClient, err error, accountID int64, p editConfluencePinned) error {
+	if isAuthRevoked(err) {
+		return fmt.Errorf("%s (%w)", confluenceSignInExpired(accountID), err)
+	}
+	pageID := p.PageID
 	switch httpStatus(err) {
 	case 409:
 		if live, gerr := client.GetPage(ctx, pageID); gerr == nil {
-			return confluenceConflict(live.Version)
+			return confluenceConflict(live.Version, p.BaseVersion)
 		}
 		return errors.New("conflict: the page was edited after the preview; nothing was written")
 	case 401:
