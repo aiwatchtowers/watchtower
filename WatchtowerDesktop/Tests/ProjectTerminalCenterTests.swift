@@ -13,6 +13,7 @@ final class FakeTerminalSession: ProjectTerminalSession {
     private(set) var launches: [ProjectTerminalLaunch] = []
     private(set) var detached = false
     private(set) var inputs: [[UInt8]] = []
+    var bracketedPasteMode = true
 
     init(pid: pid_t = 4242) {
         self.pid = pid
@@ -208,14 +209,36 @@ final class ProjectTerminalCenterTests: XCTestCase {
 
     // MARK: - Send comments (Task 26)
 
-    func testARunningSessionGetsOneLineWithNoEnter() throws {
+    func testARunningSessionGetsOneBracketedPasteWithNoEnter() throws {
         let center = makeCenter()
         let p = try project()
         center.start(project: p)
         let line = ProjectCommentPrompt.line(relPath: "docs/plan.md", documentID: 7, count: 3)
         XCTAssertEqual(center.sendPrompt(line, projectID: p.id), .sent)
-        XCTAssertEqual(sessions[0].inputs, [ProjectCommentPrompt.terminalInput(line)])
+        XCTAssertEqual(sessions[0].inputs, [
+            [0x1B, 0x5B, 0x32, 0x30, 0x30, 0x7E] + Array(line.utf8) + [0x1B, 0x5B, 0x32, 0x30, 0x31, 0x7E]
+        ])
         XCTAssertFalse(sessions[0].inputs[0].contains(0x0D), "the owner presses Return; Watchtower never does")
+        XCTAssertFalse(center.clipboardHints.contains(p.id))
+    }
+
+    /// Without bracketed paste nothing is typed — keystrokes could answer a
+    /// pending permission prompt — the line goes to the clipboard instead.
+    func testWithoutBracketedPasteTheLineIsCopiedNotTyped() throws {
+        let center = makeCenter()
+        var copied: [String] = []
+        center.copyToClipboard = { copied.append($0) }
+        let p = try project()
+        center.start(project: p)
+        sessions[0].bracketedPasteMode = false
+
+        XCTAssertEqual(center.sendPrompt("Address it", projectID: p.id), .copied)
+        XCTAssertTrue(sessions[0].inputs.isEmpty, "no keystrokes reach the terminal")
+        XCTAssertEqual(copied, ["Address it"])
+        XCTAssertTrue(center.clipboardHints.contains(p.id))
+
+        center.dismissClipboardHint(projectID: p.id)
+        XCTAssertFalse(center.clipboardHints.contains(p.id))
     }
 
     func testAnExitedSessionReceivesNothing() throws {

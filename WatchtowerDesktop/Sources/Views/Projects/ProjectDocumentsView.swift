@@ -173,10 +173,10 @@ struct ProjectDocumentsView: View {
         )
         let result = appState.projectTerminalCenter.sendPrompt(line, projectID: docVM.project.id)
         delivery = result
-        // The line is typed, not submitted (I1): switch to the Terminal pane
-        // so the owner sees it land in Claude's input and presses Return
-        // themselves, instead of leaving it silently queued off-screen.
-        if result == .sent { vm.pane = .terminal }
+        // The line is pasted or copied, never submitted (I1): switch to the
+        // Terminal pane so the owner sees it land (or pastes it) and presses
+        // Return themselves, instead of leaving it silently queued off-screen.
+        if result != .noSession { vm.pane = .terminal }
     }
 
     private func openTerminal() {

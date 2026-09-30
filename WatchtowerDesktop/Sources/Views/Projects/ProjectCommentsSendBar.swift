@@ -1,10 +1,12 @@
 import SwiftUI
 import WatchtowerCore
 
-/// Under an open project document: "Send N comments to Claude" types one
-/// prompt line into the project's running Claude Code session; with none
+/// Under an open project document: "Send N comments to Claude" pastes one
+/// prompt line into the project's running Claude Code session (or copies it
+/// when the session has no bracketed paste); with none
 /// running it explains the brief and offers the terminal.
 struct ProjectCommentsSendBar: View {
+    static let copiedNote = "Prompt copied — press ⌘V in the terminal"
     static let noSessionNote =
         "No Claude Code session is running for this project. The next session you start gets these comments in its brief."
 
@@ -19,7 +21,10 @@ struct ProjectCommentsSendBar: View {
             HStack(spacing: 8) {
                 switch delivery {
                 case .sent:
-                    Label("Typed into Claude — press Return to send", systemImage: "checkmark")
+                    Label("Pasted into Claude — press Return to send", systemImage: "checkmark")
+                        .font(.caption).foregroundStyle(.secondary)
+                case .copied:
+                    Label(Self.copiedNote, systemImage: "doc.on.clipboard")
                         .font(.caption).foregroundStyle(.secondary)
                 case .noSession:
                     Text(Self.noSessionNote).font(.caption).foregroundStyle(.secondary)

@@ -20,6 +20,11 @@ final class ProjectCommentsSendBarTests: XCTestCase {
         XCTAssertEqual(opened, 1)
     }
 
+    func testCopiedTellsTheOwnerToPaste() throws {
+        let bar = ProjectCommentsSendBar(count: 1, delivery: .copied, onSend: {}, onOpenTerminal: {})
+        XCTAssertNoThrow(try bar.inspect().find(text: ProjectCommentsSendBar.copiedNote))
+    }
+
     func testNothingOpenHidesTheButton() throws {
         let bar = ProjectCommentsSendBar(count: 0, delivery: nil, onSend: {}, onOpenTerminal: {})
         XCTAssertThrowsError(try bar.inspect().find(ViewType.Button.self))
