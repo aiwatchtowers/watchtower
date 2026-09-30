@@ -157,3 +157,37 @@ func TestProject_DeleteStillDeletesWhenInstallRemovalFails(t *testing.T) {
 	_, _, err = runProject(t, "delete", strconv.FormatInt(pid, 10))
 	assert.ErrorIs(t, err, db.ErrProjectNotFound)
 }
+
+// TestProject_DeleteJSONReportsTheFolderCleanupOutcome: --json carries the
+// cleanup outcome the stderr warning alone hid from the Desktop.
+func TestProject_DeleteJSONReportsTheFolderCleanupOutcome(t *testing.T) {
+	database := writeActionsConfig(t)
+	orig := projectRemoveInstall
+	t.Cleanup(func() { projectRemoveInstall = orig })
+
+	for _, tc := range []struct {
+		name      string
+		removeErr error
+		wantOK    bool
+		wantError string
+	}{
+		{name: "ok", wantOK: true},
+		{name: "removal fails", removeErr: errors.New("folder is read-only"), wantError: "folder is read-only"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pid, err := database.CreateProject("acme", t.TempDir())
+			require.NoError(t, err)
+			projectRemoveInstall = func(context.Context, *config.Config, *db.Project) error { return tc.removeErr }
+
+			out, _, err := runProject(t, "delete", strconv.FormatInt(pid, 10), "--json")
+			require.NoError(t, err)
+			var got map[string]any
+			require.NoError(t, json.Unmarshal([]byte(out), &got), "stdout is exactly one JSON object: %q", out)
+			assert.Equal(t, map[string]any{
+				"id": float64(pid), "deleted": true, "removal_ok": tc.wantOK, "removal_error": tc.wantError,
+			}, got)
+			_, err = database.GetProject(pid)
+			assert.ErrorIs(t, err, db.ErrProjectNotFound)
+		})
+	}
+}

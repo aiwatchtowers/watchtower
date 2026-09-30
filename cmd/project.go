@@ -73,7 +73,7 @@ var projectRemoveInstall = func(context.Context, *config.Config, *db.Project) er
 func init() {
 	projectCreateCmd.Flags().StringVar(&projectCreateFlagFolder, "folder", "", "project folder (required; symlinks are resolved)")
 	projectCreateCmd.Flags().StringVar(&projectCreateFlagName, "name", "", "project name (default: the folder's base name)")
-	for _, c := range []*cobra.Command{projectCreateCmd, projectListCmd, projectShowCmd, projectBoardCmd} {
+	for _, c := range []*cobra.Command{projectCreateCmd, projectListCmd, projectShowCmd, projectBoardCmd, projectDeleteCmd} {
 		c.Flags().BoolVar(&projectFlagJSON, "json", false, "output JSON")
 	}
 	projectCmd.AddCommand(projectCreateCmd, projectListCmd, projectShowCmd, projectBoardCmd, projectDeleteCmd)
@@ -338,13 +338,30 @@ func runProjectDelete(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if rerr := projectRemoveInstall(cmd.Context(), cfg, p); rerr != nil {
+	rerr := projectRemoveInstall(cmd.Context(), cfg, p)
+	if rerr != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: removing Watchtower's install from %s failed: %v (the project is deleted anyway)\n",
 			p.FolderPath, rerr)
 	}
 	if err := database.DeleteProject(id); err != nil {
 		return err
 	}
+	if projectFlagJSON {
+		out := projectDeleteJSON{ID: id, Deleted: true, RemovalOK: rerr == nil}
+		if rerr != nil {
+			out.RemovalError = rerr.Error()
+		}
+		return writeJSON(cmd.OutOrStdout(), out)
+	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Deleted project %d %q.\n", id, p.Name)
 	return nil
+}
+
+// projectDeleteJSON is `project delete --json`'s envelope; the Desktop
+// decodes these exact keys to surface a failed folder cleanup.
+type projectDeleteJSON struct {
+	ID           int64  `json:"id"`
+	Deleted      bool   `json:"deleted"`
+	RemovalOK    bool   `json:"removal_ok"`
+	RemovalError string `json:"removal_error"`
 }
