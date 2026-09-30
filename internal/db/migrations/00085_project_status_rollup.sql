@@ -6,7 +6,8 @@
 --
 -- Rule, over a parent's direct children (closed = done|dismissed):
 --   no children                         -> untouched
---   all closed                          -> done
+--   all closed, at least one done       -> done
+--   all dismissed                       -> dismissed
 --   every non-closed child blocked      -> blocked
 --   any child in_progress or done       -> in_progress
 --   otherwise                           -> todo
@@ -16,7 +17,9 @@
 -- status set explicitly on a parent stands until one of its children moves.
 -- It then walks up the ancestor chain and stops at the first ancestor whose
 -- status does not change: an ancestor none of whose children changed keeps
--- its own (possibly explicit) status.
+-- its own (possibly explicit) status. A dismissed ancestor is never
+-- re-derived (owner decision): the walk stops below it, so neither it nor
+-- anything above it moves because of that change.
 --
 -- Recursion: SQLite's recursive_triggers pragma is OFF by default, so the
 -- rollup's own UPDATE of an ancestor does not re-fire these triggers. The
@@ -56,7 +59,8 @@ BEGIN
     UPDATE targets
     SET status = (
             SELECT CASE
-                WHEN SUM(c.status IN ('done','dismissed')) = COUNT(*) THEN 'done'
+                WHEN SUM(c.status IN ('done','dismissed')) = COUNT(*)
+                    THEN CASE WHEN SUM(c.status = 'done') > 0 THEN 'done' ELSE 'dismissed' END
                 WHEN SUM(c.status = 'blocked') = COUNT(*) - SUM(c.status IN ('done','dismissed')) THEN 'blocked'
                 WHEN SUM(c.status IN ('in_progress','done')) > 0 THEN 'in_progress'
                 ELSE 'todo' END
@@ -66,7 +70,8 @@ BEGIN
       AND status NOT IN ('dismissed','snoozed')
       AND status != (
             SELECT CASE
-                WHEN SUM(c.status IN ('done','dismissed')) = COUNT(*) THEN 'done'
+                WHEN SUM(c.status IN ('done','dismissed')) = COUNT(*)
+                    THEN CASE WHEN SUM(c.status = 'done') > 0 THEN 'done' ELSE 'dismissed' END
                 WHEN SUM(c.status = 'blocked') = COUNT(*) - SUM(c.status IN ('done','dismissed')) THEN 'blocked'
                 WHEN SUM(c.status IN ('in_progress','done')) > 0 THEN 'in_progress'
                 ELSE 'todo' END
@@ -120,7 +125,8 @@ BEGIN
             SELECT g.id, g.parent_id, (
                     SELECT CASE
                         WHEN COUNT(*) = 0 THEN NULL
-                        WHEN SUM(k.s IN ('done','dismissed')) = COUNT(*) THEN 'done'
+                        WHEN SUM(k.s IN ('done','dismissed')) = COUNT(*)
+                            THEN CASE WHEN SUM(k.s = 'done') > 0 THEN 'done' ELSE 'dismissed' END
                         WHEN SUM(k.s = 'blocked') = COUNT(*) - SUM(k.s IN ('done','dismissed')) THEN 'blocked'
                         WHEN SUM(k.s IN ('in_progress','done')) > 0 THEN 'in_progress'
                         ELSE 'todo' END
@@ -130,6 +136,7 @@ BEGIN
                 g.project_id, chain.depth + 1
             FROM chain
             JOIN targets g ON g.id = chain.parent AND g.project_id = chain.pid
+                AND g.status != 'dismissed'
             WHERE chain.depth < 256
               AND (chain.depth = 0
                    OR (chain.st IS NOT NULL
@@ -161,7 +168,8 @@ BEGIN
             SELECT g.id, g.parent_id, (
                     SELECT CASE
                         WHEN COUNT(*) = 0 THEN NULL
-                        WHEN SUM(k.s IN ('done','dismissed')) = COUNT(*) THEN 'done'
+                        WHEN SUM(k.s IN ('done','dismissed')) = COUNT(*)
+                            THEN CASE WHEN SUM(k.s = 'done') > 0 THEN 'done' ELSE 'dismissed' END
                         WHEN SUM(k.s = 'blocked') = COUNT(*) - SUM(k.s IN ('done','dismissed')) THEN 'blocked'
                         WHEN SUM(k.s IN ('in_progress','done')) > 0 THEN 'in_progress'
                         ELSE 'todo' END
@@ -171,6 +179,7 @@ BEGIN
                 g.project_id, chain.depth + 1
             FROM chain
             JOIN targets g ON g.id = chain.parent AND g.project_id = chain.pid
+                AND g.status != 'dismissed'
             WHERE chain.depth < 256
               AND (chain.depth = 0
                    OR (chain.st IS NOT NULL
@@ -194,7 +203,8 @@ BEGIN
             SELECT g.id, g.parent_id, (
                     SELECT CASE
                         WHEN COUNT(*) = 0 THEN NULL
-                        WHEN SUM(k.s IN ('done','dismissed')) = COUNT(*) THEN 'done'
+                        WHEN SUM(k.s IN ('done','dismissed')) = COUNT(*)
+                            THEN CASE WHEN SUM(k.s = 'done') > 0 THEN 'done' ELSE 'dismissed' END
                         WHEN SUM(k.s = 'blocked') = COUNT(*) - SUM(k.s IN ('done','dismissed')) THEN 'blocked'
                         WHEN SUM(k.s IN ('in_progress','done')) > 0 THEN 'in_progress'
                         ELSE 'todo' END
@@ -204,6 +214,7 @@ BEGIN
                 g.project_id, chain.depth + 1
             FROM chain
             JOIN targets g ON g.id = chain.parent AND g.project_id = chain.pid
+                AND g.status != 'dismissed'
             WHERE chain.depth < 256
               AND (chain.depth = 0
                    OR (chain.st IS NOT NULL
@@ -228,7 +239,8 @@ BEGIN
             SELECT g.id, g.parent_id, (
                     SELECT CASE
                         WHEN COUNT(*) = 0 THEN NULL
-                        WHEN SUM(k.s IN ('done','dismissed')) = COUNT(*) THEN 'done'
+                        WHEN SUM(k.s IN ('done','dismissed')) = COUNT(*)
+                            THEN CASE WHEN SUM(k.s = 'done') > 0 THEN 'done' ELSE 'dismissed' END
                         WHEN SUM(k.s = 'blocked') = COUNT(*) - SUM(k.s IN ('done','dismissed')) THEN 'blocked'
                         WHEN SUM(k.s IN ('in_progress','done')) > 0 THEN 'in_progress'
                         ELSE 'todo' END
@@ -238,6 +250,7 @@ BEGIN
                 g.project_id, chain.depth + 1
             FROM chain
             JOIN targets g ON g.id = chain.parent AND g.project_id = chain.pid
+                AND g.status != 'dismissed'
             WHERE chain.depth < 256
               AND (chain.depth = 0
                    OR (chain.st IS NOT NULL

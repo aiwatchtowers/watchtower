@@ -49,7 +49,7 @@ func TestProj05_ProjectParentStatusFollowsChildren(t *testing.T) {
 		{"one done, not all closed", []string{"todo", "done"}, "in_progress"},
 		{"all done", []string{"done", "done"}, "done"},
 		{"done and dismissed", []string{"done", "dismissed"}, "done"},
-		{"all dismissed", []string{"dismissed", "dismissed"}, "done"},
+		{"all dismissed", []string{"dismissed", "dismissed"}, "dismissed"},
 		{"every open child blocked", []string{"blocked", "done", "blocked"}, "blocked"},
 		{"one blocked, one todo", []string{"blocked", "todo"}, "todo"},
 		{"one blocked, one in progress", []string{"blocked", "in_progress"}, "in_progress"},

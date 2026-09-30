@@ -121,6 +121,51 @@ func TestProj05_DeletingAMiddleParentReRollsTheGrandparent(t *testing.T) {
 	assert.Equal(t, "done", targetStatus(t, d, root))
 }
 
+// Owner decision 2026-09-30: a dismissed parent is terminal for the rollup —
+// neither it nor anything above it moves because of a change below it.
+func TestProj05_DismissedAncestorIsNeverReDerived(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestProject(t, d)
+	root := insertProjectTargetRow(t, d, pid, "plan")
+	mid := insertBoardChild(t, d, pid, root, "todo")
+	leaf := insertBoardChild(t, d, pid, mid, "todo")
+	insertBoardChild(t, d, pid, root, "todo")
+	setStatusRaw(t, d, mid, "dismissed")
+	require.Equal(t, "todo", targetStatus(t, d, root), "{dismissed, todo} -> todo")
+	_, err := d.Exec(`UPDATE targets SET updated_at = '2000-01-01T00:00:00Z' WHERE id IN (?, ?)`, root, mid)
+	require.NoError(t, err)
+
+	setStatusRaw(t, d, leaf, "in_progress")
+	assert.Equal(t, "dismissed", targetStatus(t, d, mid), "a dismissed parent is not re-derived")
+	assert.Equal(t, "todo", targetStatus(t, d, root), "nothing above a dismissed parent moves")
+	var n int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM targets
+		WHERE id IN (?, ?) AND updated_at = '2000-01-01T00:00:00Z'`, root, mid).Scan(&n))
+	assert.Equal(t, 2, n, "neither row is written")
+
+	// Inserting another child under it: still untouched.
+	insertBoardChild(t, d, pid, mid, "done")
+	assert.Equal(t, "dismissed", targetStatus(t, d, mid))
+}
+
+func TestProj05_AllChildrenDismissedDismissesTheParentAndItRollsOn(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestProject(t, d)
+	root := insertProjectTargetRow(t, d, pid, "plan")
+	parent := insertBoardChild(t, d, pid, root, "todo")
+	a := insertBoardChild(t, d, pid, parent, "todo")
+	insertBoardChild(t, d, pid, root, "done")
+	require.Equal(t, "in_progress", targetStatus(t, d, root))
+
+	setStatusRaw(t, d, a, "dismissed")
+	assert.Equal(t, "dismissed", targetStatus(t, d, parent), "abandoned work is dismissed, not done")
+	assert.Equal(t, "done", targetStatus(t, d, root), "{dismissed, done} -> done")
+
+	setStatusRaw(t, d, a, "todo")
+	assert.Equal(t, "dismissed", targetStatus(t, d, parent),
+		"once dismissed, the parent is terminal for the rollup (set it back by hand)")
+}
+
 func TestProj05_HundredLevelChainRollsUpToTheRoot(t *testing.T) {
 	d := openTestDB(t)
 	pid := newTestProject(t, d)

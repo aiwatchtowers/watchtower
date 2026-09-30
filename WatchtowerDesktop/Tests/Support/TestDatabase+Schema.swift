@@ -822,7 +822,8 @@ extension TestDatabase {
                 SELECT g.id, g.parent_id, (
                         SELECT CASE
                             WHEN COUNT(*) = 0 THEN NULL
-                            WHEN SUM(k.s IN ('done','dismissed')) = COUNT(*) THEN 'done'
+                            WHEN SUM(k.s IN ('done','dismissed')) = COUNT(*)
+                                THEN CASE WHEN SUM(k.s = 'done') > 0 THEN 'done' ELSE 'dismissed' END
                             WHEN SUM(k.s = 'blocked') = COUNT(*) - SUM(k.s IN ('done','dismissed')) THEN 'blocked'
                             WHEN SUM(k.s IN ('in_progress','done')) > 0 THEN 'in_progress'
                             ELSE 'todo' END
@@ -832,6 +833,7 @@ extension TestDatabase {
                     g.project_id, chain.depth + 1
                 FROM chain
                 JOIN targets g ON g.id = chain.parent AND g.project_id = chain.pid
+                    AND g.status != 'dismissed'
                 WHERE chain.depth < 256
                   AND (chain.depth = 0
                        OR (chain.st IS NOT NULL
@@ -860,7 +862,8 @@ extension TestDatabase {
                 SELECT g.id, g.parent_id, (
                         SELECT CASE
                             WHEN COUNT(*) = 0 THEN NULL
-                            WHEN SUM(k.s IN ('done','dismissed')) = COUNT(*) THEN 'done'
+                            WHEN SUM(k.s IN ('done','dismissed')) = COUNT(*)
+                                THEN CASE WHEN SUM(k.s = 'done') > 0 THEN 'done' ELSE 'dismissed' END
                             WHEN SUM(k.s = 'blocked') = COUNT(*) - SUM(k.s IN ('done','dismissed')) THEN 'blocked'
                             WHEN SUM(k.s IN ('in_progress','done')) > 0 THEN 'in_progress'
                             ELSE 'todo' END
@@ -870,6 +873,7 @@ extension TestDatabase {
                     g.project_id, chain.depth + 1
                 FROM chain
                 JOIN targets g ON g.id = chain.parent AND g.project_id = chain.pid
+                    AND g.status != 'dismissed'
                 WHERE chain.depth < 256
                   AND (chain.depth = 0
                        OR (chain.st IS NOT NULL
@@ -893,7 +897,8 @@ extension TestDatabase {
                 SELECT g.id, g.parent_id, (
                         SELECT CASE
                             WHEN COUNT(*) = 0 THEN NULL
-                            WHEN SUM(k.s IN ('done','dismissed')) = COUNT(*) THEN 'done'
+                            WHEN SUM(k.s IN ('done','dismissed')) = COUNT(*)
+                                THEN CASE WHEN SUM(k.s = 'done') > 0 THEN 'done' ELSE 'dismissed' END
                             WHEN SUM(k.s = 'blocked') = COUNT(*) - SUM(k.s IN ('done','dismissed')) THEN 'blocked'
                             WHEN SUM(k.s IN ('in_progress','done')) > 0 THEN 'in_progress'
                             ELSE 'todo' END
@@ -903,6 +908,7 @@ extension TestDatabase {
                     g.project_id, chain.depth + 1
                 FROM chain
                 JOIN targets g ON g.id = chain.parent AND g.project_id = chain.pid
+                    AND g.status != 'dismissed'
                 WHERE chain.depth < 256
                   AND (chain.depth = 0
                        OR (chain.st IS NOT NULL
@@ -924,7 +930,8 @@ extension TestDatabase {
                 SELECT g.id, g.parent_id, (
                         SELECT CASE
                             WHEN COUNT(*) = 0 THEN NULL
-                            WHEN SUM(k.s IN ('done','dismissed')) = COUNT(*) THEN 'done'
+                            WHEN SUM(k.s IN ('done','dismissed')) = COUNT(*)
+                                THEN CASE WHEN SUM(k.s = 'done') > 0 THEN 'done' ELSE 'dismissed' END
                             WHEN SUM(k.s = 'blocked') = COUNT(*) - SUM(k.s IN ('done','dismissed')) THEN 'blocked'
                             WHEN SUM(k.s IN ('in_progress','done')) > 0 THEN 'in_progress'
                             ELSE 'todo' END
@@ -934,6 +941,7 @@ extension TestDatabase {
                     g.project_id, chain.depth + 1
                 FROM chain
                 JOIN targets g ON g.id = chain.parent AND g.project_id = chain.pid
+                    AND g.status != 'dismissed'
                 WHERE chain.depth < 256
                   AND (chain.depth = 0
                        OR (chain.st IS NOT NULL

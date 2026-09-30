@@ -141,10 +141,13 @@ skill, would make every later `integrate` a risk to the owner's own setup.
 **Observable:** When a project target (`project_id` set) is inserted,
 deleted, or changes `status`, `parent_id` or `project_id`, its parent's
 status is re-derived from the parent's direct children of the same project
-(closed = `done`|`dismissed`): all closed → `done`; every open child
+(closed = `done`|`dismissed`): all closed with at least one `done` → `done`;
+all `dismissed` → `dismissed`; every open child
 `blocked` → `blocked`; any child `in_progress` or `done` → `in_progress`;
 otherwise → `todo`; no children → untouched. The change walks up the ancestor
-chain and stops at the first ancestor whose status does not change. A status
+chain and stops at the first ancestor whose status does not change, and
+below any `dismissed` ancestor — a dismissed parent is never re-derived, and
+nothing above it moves because of that change. A status
 set on a parent itself stands until one of its children changes — the
 parent's own update is never rolled up, and an ancestor none of whose
 children changed keeps its status. `updated_at` moves only with a real
@@ -155,7 +158,8 @@ MCP/CLI and the Desktop's direct GRDB writes — gets it with no dual path, and
 it does not depend on `PRAGMA recursive_triggers`. The migration re-derives
 every existing board once, deepest parent first, without bumping
 `updated_at` and leaving a dismissed or snoozed parent as it is. The `watchtower-project`
-skill tells the agent never to set a parent's status.
+skill tells the agent never to set a parent's status. A change the rollup
+makes is recorded in the status history (#119) with actor `system`.
 
 **Why locked:** Owner decision (board target #124). Before the rollup a
 parent kept whatever status someone last set — boards sat in `todo` while
@@ -187,11 +191,13 @@ at a glance.
   with its members sharing whatever status the walk reached. A full-row write
   of a parent loaded before a child changed (`db.UpdateTarget` with a stale
   struct) puts the old status back as if set explicitly; the next child
-  change re-derives it. All children `dismissed` rolls the parent to `done`,
-  and a `snoozed` child counts as not started. The live rule also re-derives a
-  dismissed or snoozed parent on its next child change (leaving `snooze_until`
-  set; nothing snoozes a project target today) — whether a dismissed parent
-  should stay terminal is an open owner call.
+  change re-derives it. A `snoozed` child counts as not started, and the live
+  rule re-derives a snoozed parent (leaving `snooze_until` set; nothing
+  snoozes a project target today). A parent the rollup dismissed (all its
+  children dismissed) stays dismissed even if a child is reopened later —
+  dismissed is terminal for the rollup (owner decision 2026-09-30); set it
+  back by hand. A parent status the rollup replaces gets no board marker;
+  #119's status history records rollup changes with actor `system`.
 
 - **TCC attribution (owner decision 2026-09-30).** A project folder under a
   TCC-protected location (`~/Documents`, `~/Desktop`, `~/Downloads`, cloud
