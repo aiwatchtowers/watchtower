@@ -115,7 +115,8 @@ struct ProjectPageView: View {
             projectID: project.id, cliPath: Constants.findCLIPath() ?? "watchtower"
         )
         return Label("Claude Code CLI not found", systemImage: "exclamationmark.triangle")
-            .foregroundStyle(.orange).font(.caption)
+            .foregroundStyle(.orange)
+            .font(.caption)
             .help("Install Claude Code, then run in the project folder:\n\(command)")
             .contextMenu {
                 Button("Copy MCP Command") {
