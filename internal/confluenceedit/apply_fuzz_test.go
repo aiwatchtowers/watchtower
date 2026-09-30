@@ -52,7 +52,9 @@ const fuzzMarker = "zzfuzzappended"
 // own editable text is a no-op edit (refused as one), and the same text
 // plus one appended paragraph re-emits every existing block of the
 // section — and every byte between them — exactly: the only change to the
-// storage is the new <p>.
+// storage is the new <p>. A section its heading cannot address (the no-op
+// is refused for another reason, e.g. an ambiguous heading) is skipped;
+// once it can be addressed, refusing the append is a failure.
 func checkSectionRewriteKeepsBlocks(t *testing.T, d *Doc) {
 	t.Helper()
 	if strings.Contains(d.src, fuzzMarker) {
@@ -77,10 +79,12 @@ func checkSectionRewriteKeepsBlocks(t *testing.T, d *Doc) {
 			t.Fatalf("a no-op section rewrite succeeded: %q", heading)
 		}
 		checkEditError(t, err)
+		if !strings.Contains(err.Error(), "edit changes nothing") {
+			return // the section cannot be addressed at all (an ambiguous heading, ...)
+		}
 		out, _, err := Apply(d, []Edit{sectionEdit(heading, strings.TrimSuffix(body+"\n\n"+fuzzMarker, "\n\n"))})
-		checkEditError(t, err)
 		if err != nil {
-			return
+			t.Fatalf("appending one paragraph to section %q was refused: %v\nsrc: %q", heading, err, d.src)
 		}
 		p := "<p>" + fuzzMarker + "</p>"
 		k := strings.Index(out, p)
