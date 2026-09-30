@@ -69,6 +69,33 @@ final class ProjectsViewModelTests: XCTestCase {
         XCTAssertEqual(relaunched.summaries.first?.id, p)
     }
 
+    func testImportedDocumentNeverLightsTheBadge() async throws {
+        let doc = try await pool.write { d -> Int64 in
+            let p = try TestDatabase.insertProject(d)
+            return try TestDatabase.insertProjectDocument(d, projectID: p, origin: "import")
+        }
+        let vm = makeVM()
+        await vm.reload()
+        XCTAssertEqual(vm.badgeCount, 0, "a never-opened imported document is not revised")
+        let fetched = try await pool.read { try ProjectQueries.document($0, id: doc) }
+        XCTAssertFalse(vm.isRevised(try XCTUnwrap(fetched)))
+    }
+
+    func testCreateShowsAFailedDocumentImportWithTheRetryCommand() async throws {
+        let id = try await pool.write { try TestDatabase.insertProject($0) }
+        let runner = ScriptedCLIRunner(results: [
+            .success(Data(#"{"id":\#(id),"folder":"/tmp/acme","name":"acme","docs_import_ok":false,"docs_import_error":"permission denied"}"#.utf8)),
+            .success(Data("installed".utf8)),
+            .success(Data(#"{"skill":"unchanged","hook":true,"mcp":true}"#.utf8))
+        ])
+        let vm = makeVM(runner)
+        await vm.createProject(folder: URL(fileURLWithPath: "/tmp/acme"), name: nil)
+        let note = try XCTUnwrap(vm.installErrors[id])
+        XCTAssertTrue(note.contains("permission denied"))
+        XCTAssertTrue(note.contains("watchtower project import-docs \(id)"))
+        XCTAssertNil(vm.errorMessage, "the project exists; the note belongs to it")
+    }
+
     func testCreateRunsCreateThenInstallSelectsTheProjectAndAnnouncesIt() async throws {
         let id = try await pool.write { try TestDatabase.insertProject($0) }
         let runner = ScriptedCLIRunner(results: [

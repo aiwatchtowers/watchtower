@@ -1,11 +1,39 @@
 import Foundation
 import WatchtowerCore
 
-/// `watchtower project create --json` envelope (Task 4).
+/// `watchtower project create --json` envelope (Task 4). The folder's
+/// document import is best-effort: the project exists whenever the command
+/// exits 0, and `docsImportOK == false` says only the import failed.
 struct ProjectCreated: Decodable, Equatable {
     let id: Int64
     let folder: String
     let name: String
+    let docsImportOK: Bool
+    let docsImportError: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, folder, name
+        case docsImportOK = "docs_import_ok"
+        case docsImportError = "docs_import_error"
+    }
+
+    init(id: Int64, folder: String, name: String, docsImportOK: Bool = true, docsImportError: String = "") {
+        self.id = id
+        self.folder = folder
+        self.name = name
+        self.docsImportOK = docsImportOK
+        self.docsImportError = docsImportError
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(Int64.self, forKey: .id)
+        folder = try c.decode(String.self, forKey: .folder)
+        name = try c.decode(String.self, forKey: .name)
+        // An older CLI without the keys imported nothing, so nothing failed.
+        docsImportOK = try c.decodeIfPresent(Bool.self, forKey: .docsImportOK) ?? true
+        docsImportError = try c.decodeIfPresent(String.self, forKey: .docsImportError) ?? ""
+    }
 }
 
 /// `watchtower project delete N --json` envelope. The project rows are gone

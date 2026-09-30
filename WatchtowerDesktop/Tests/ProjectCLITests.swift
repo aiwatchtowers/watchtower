@@ -11,6 +11,13 @@ final class ProjectCLITests: XCTestCase {
         XCTAssertEqual(runner.invocations, [["project", "create", "--folder", "/tmp/acme dir", "--json", "--name", "Acme"]])
     }
 
+    func testCreateDecodesAFailedDocumentImport() async throws {
+        let json = #"{"id":7,"folder":"/tmp/acme","name":"acme","docs_import_ok":false,"docs_import_error":"permission denied"}"#
+        let created = try await ProjectCLI(runner: FakeCLIRunner(stdout: Data(json.utf8))).create(folder: "/tmp/acme", name: nil)
+        XCTAssertFalse(created.docsImportOK)
+        XCTAssertEqual(created.docsImportError, "permission denied")
+    }
+
     func testCreateWithoutNameOmitsTheFlag() async throws {
         let runner = FakeCLIRunner(stdout: Data(#"{"id":1,"folder":"/tmp/a","name":"a"}"#.utf8))
         _ = try await ProjectCLI(runner: runner).create(folder: "/tmp/a", name: nil)
