@@ -135,6 +135,72 @@ final class ProjectsViewModelTests: XCTestCase {
         XCTAssertEqual(vm.installStatus[id]?.needsRepair, false)
     }
 
+    /// Switching projects cancels the page's `.task(id:)` status read while
+    /// the CLI still runs: the cancellation is not an error, and the last
+    /// known status stays.
+    func testCancelledStatusReadKeepsTheStatusAndReportsNothing() async throws {
+        let runner = FakeCLIRunner(stdout: Data(#"{"skill":"unchanged","hook":true,"mcp":true}"#.utf8))
+        let vm = makeVM(runner)
+        await vm.refreshInstallStatus(projectID: 1)
+        XCTAssertNotNil(vm.installStatus[1])
+
+        runner.blockUntilCancelled = true
+        let read = Task { await vm.refreshInstallStatus(projectID: 1) }
+        read.cancel()
+        await read.value
+
+        XCTAssertEqual(vm.installStatus[1]?.needsRepair, false, "the previous status is kept")
+        XCTAssertNil(vm.installErrors[1])
+        XCTAssertNil(vm.errorMessage)
+    }
+
+    /// House rule: started → navigated away → result arrives. The process
+    /// runner terminates the child on cancel, so the read can fail with a
+    /// non-zero exit rather than CancellationError — still silent.
+    func testStatusReadThatFailsAfterTheOwnerSwitchedAwayIsSilent() async throws {
+        let held = HeldCLIRunner(error: CLIRunnerError.nonZeroExit(code: 15, stderr: ""))
+        let vm = makeVM(held)
+        vm.selectedProjectID = 1
+        let read = Task { await vm.refreshInstallStatus(projectID: 1) }
+        await awaitStarted(held)
+
+        vm.selectedProjectID = 2
+        read.cancel()
+        held.release()
+        await read.value
+
+        XCTAssertNil(vm.installErrors[1])
+        XCTAssertNil(vm.installErrors[2])
+        XCTAssertNil(vm.errorMessage, "nothing lands in the shared list-wide error line")
+    }
+
+    func testStatusReadFailureIsScopedToItsProjectAndClearedByTheNextRead() async throws {
+        let runner = ScriptedCLIRunner(results: [
+            .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "boom")),
+            .success(Data(#"{"skill":"unchanged","hook":true,"mcp":true}"#.utf8))
+        ])
+        let vm = makeVM(runner)
+        await vm.refreshInstallStatus(projectID: 1)
+        XCTAssertTrue(vm.installErrors[1]?.contains("boom") == true)
+        XCTAssertNil(vm.installErrors[2])
+        XCTAssertNil(vm.errorMessage)
+
+        await vm.refreshInstallStatus(projectID: 1)
+        XCTAssertNil(vm.installErrors[1])
+        XCTAssertNotNil(vm.installStatus[1])
+    }
+
+    func testRepairFailureStaysShownAfterTheStatusRefresh() async throws {
+        let runner = ScriptedCLIRunner(results: [
+            .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "claude not found")),
+            .success(Data(#"{"skill":"missing","hook":false,"mcp":false}"#.utf8))
+        ])
+        let vm = makeVM(runner)
+        await vm.repairInstall(projectID: 3)
+        XCTAssertTrue(vm.installErrors[3]?.contains("Repair failed") == true)
+        XCTAssertEqual(vm.installStatus[3]?.needsRepair, true)
+    }
+
     func testRevealSelectsTheProjectAndPane() {
         let vm = makeVM()
         vm.reveal(ProjectRoute(projectID: 4, pane: .documents, subjectID: 9))

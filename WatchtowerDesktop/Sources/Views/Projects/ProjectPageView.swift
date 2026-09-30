@@ -64,6 +64,9 @@ struct ProjectPageView: View {
                 }
                 .buttonStyle(.link)
                 .help("Reveal in Finder")
+                if let installError = vm.installErrors[project.id] {
+                    Text(installError).font(.caption).foregroundStyle(.red).lineLimit(2)
+                }
             }
             Spacer()
             installBadge

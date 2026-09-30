@@ -32,6 +32,11 @@ final class ProjectsViewModel {
     private(set) var repairing: Set<Int64> = []
     var errorMessage: String?
     private(set) var installStatus: [Int64: ProjectInstallStatus] = [:]
+    /// Why reading or repairing a project's install last failed, per project:
+    /// the page shows only its own project's line and the next successful
+    /// status read clears it — never the shared `errorMessage`, where one
+    /// project's failure would outlive a switch to another.
+    private(set) var installErrors: [Int64: String] = [:]
     private(set) var documents: [ProjectDocumentListItem] = []
     /// The open document. Kept here (not in the view) so it survives pane
     /// switches and tab changes with its watcher running.
@@ -216,13 +221,23 @@ final class ProjectsViewModel {
         }
     }
 
+    /// Reads `integrate status` for one project. The page runs this in
+    /// `.task(id: project.id)`, so switching projects while the CLI is still
+    /// running (it takes seconds) cancels it: a cancelled read is not a
+    /// failure — it keeps the last known status and reports nothing. A result
+    /// is keyed by its own project id, so it never lands on another project.
     func refreshInstallStatus(projectID: Int64) async {
         guard let cli else { return }
         do {
-            installStatus[projectID] = try await cli.status(projectID: projectID)
+            let status = try await cli.status(projectID: projectID)
+            installStatus[projectID] = status
+            installErrors[projectID] = nil
         } catch {
+            // The process runner terminates the child on cancel, which can
+            // surface as a non-zero exit rather than CancellationError.
+            if error is CancellationError || Task.isCancelled { return }
             installStatus[projectID] = nil
-            errorMessage = "Could not read the install status: \(error.localizedDescription)"
+            installErrors[projectID] = "Could not read the install status: \(error.localizedDescription)"
         }
     }
 
@@ -230,13 +245,17 @@ final class ProjectsViewModel {
         guard let cli, !repairing.contains(projectID) else { return }
         repairing.insert(projectID)
         defer { repairing.remove(projectID) }
+        var failure: String?
         do {
             try await cli.install(projectID: projectID)
+            // Clears a create-time "installing failed — use Repair" note.
             errorMessage = nil
         } catch {
-            errorMessage = "Repair failed: \(error.localizedDescription)"
+            failure = "Repair failed: \(error.localizedDescription)"
         }
         await refreshInstallStatus(projectID: projectID)
+        // Set after the status read, whose success would otherwise clear it.
+        if let failure { installErrors[projectID] = failure }
     }
 
     func loadDocuments() async {
