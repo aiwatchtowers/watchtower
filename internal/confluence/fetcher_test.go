@@ -428,6 +428,10 @@ func TestCommentsIncludesRepliesAtAnyDepth(t *testing.T) {
 	assert.Equal(t, "inline", reply.CommentKind)
 	assert.Equal(t, "before the freeze", reply.AnchorText, "a reply inherits its thread's anchor")
 	assert.True(t, reply.Resolved, "a reply inherits its thread's resolution")
+	assert.Empty(t, byID["100"].ReplyTo, "a top-level comment replies to nothing")
+	assert.Equal(t, "100", byID["101"].ReplyTo)
+	assert.Equal(t, "101", byID["102"].ReplyTo, "a reply names its direct parent, not the thread root")
+	assert.Equal(t, "200", reply.ReplyTo)
 }
 
 // The engine contract: every comment Changed(KindComment) lists for a page

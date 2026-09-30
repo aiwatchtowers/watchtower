@@ -64,11 +64,29 @@ func TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces(t *testing.T) {
 		assert.True(t, tool.External, "%s leaves the machine (AGENT-03)", w)
 	}
 
+	// Confluence page editing (EXT-05): both tools on main + target; the
+	// write is External (AGENT-03); the live read is chat-mode only — it is
+	// not in tools.ReadTools(), which dev-mode MCP mounts (DEV-01).
+	for _, w := range []string{"get_confluence_page", "edit_confluence_page"} {
+		assert.True(t, main[w], "%s missing on main", w)
+		assert.True(t, target[w], "%s missing on target", w)
+	}
+	edit, ok := reg.Get("edit_confluence_page")
+	require.True(t, ok)
+	assert.Equal(t, tools.AccessWrite, edit.Access)
+	assert.True(t, edit.External, "a Confluence write leaves the machine (AGENT-03)")
+	get, ok := reg.Get("get_confluence_page")
+	require.True(t, ok)
+	assert.Equal(t, tools.AccessRead, get.Access)
+	for _, rt := range tools.ReadTools() {
+		assert.NotEqual(t, "get_confluence_page", rt.Name, "dev-mode MCP never mounts a live network read (DEV-01)")
+	}
+
 	reaction := names("reaction")
 	for _, w := range reactionTools {
 		assert.True(t, reaction[w], "%s missing on the reaction surface", w)
 	}
-	for _, w := range jiraWrites {
+	for _, w := range append(jiraWrites, "get_confluence_page", "edit_confluence_page") {
 		assert.False(t, reaction[w], "%s has no reacted message to act on", w)
 	}
 }

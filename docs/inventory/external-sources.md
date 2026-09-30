@@ -17,7 +17,8 @@ anywhere. Design:
 **Module:** `internal/extsync/`, `internal/extract/`, `internal/confluence/`,
 `internal/jira/confluence_api.go`, `internal/db/ext_sources.go`,
 `internal/kb/source_ext.go`, `internal/daemon/daemon.go`
-(`phaseExternalSync`), `cmd/confluence.go`
+(`phaseExternalSync`), `cmd/confluence.go`, `internal/tools/confluence_page*.go`
+(EXT-05)
 **Last full audit:** 2026-09-26
 
 ## EXT-01 — read-only toward the source
@@ -27,12 +28,17 @@ anywhere. Design:
 **Observable:** The *sync path* — the engine (`internal/extsync`) and the
 Confluence fetcher (`internal/confluence`) — is GET-only: every request they
 issue is a GET, and neither can even reach a write method. Writes exist only
-for the edit tool (`EXT-05`, `internal/confluenceedit`), which is `External`
-and runs only after Approve — see `docs/inventory/agent-actions.md`'s
-AGENT-03. `*jira.ConfluenceAPI` (the one Confluence client Watchtower has)
-now has one write method, `PutJSON` (method PUT only), alongside the
-existing `GetJSON`/`Download`; the fetcher's `confluence.API` seam does not
-include it, so nothing outside `internal/confluenceedit` can call it.
+for the edit tool `edit_confluence_page` (`EXT-05`), which is `External` and
+runs only after Approve — see `docs/inventory/agent-actions.md`'s AGENT-03.
+`*jira.ConfluenceAPI` (the one Confluence client Watchtower has) now has one
+write method, `PutJSON` (method PUT only), alongside the existing
+`GetJSON`/`Download`; the fetcher's `confluence.API` seam does not include
+it. Its one production caller is the page client in
+`internal/tools/confluence_page_client.go` (`PutPage`), which
+`cmd/actions_registry.go`'s `confluencePageClientFactory` builds over the
+account's `*jira.Client`; `PutPage` in turn is called only by the edit
+tool's `Execute` (pinned by EXT-05's `TestEXT05_OnlyEditToolReachesPut`).
+`internal/confluenceedit` is a pure text model with no network access.
 
 **Guard (two halves, because the client's base-URL seam is unexported):**
 - `TestEXT01_ConfluenceAPIIsGETOnly` (`internal/jira/confluence_contracts_test.go`)
@@ -132,6 +138,49 @@ watchtower/internal/extsync` and asserts none of the packages above (or
 their subpackages) appears; a scan floor requires `internal/db` in the list
 so an empty or failed listing cannot pass.
 
+## EXT-05 — Confluence writes are approved, versioned and bounded
+
+**Status:** Enforced (2026-09-30)
+
+**Observable:** The only Confluence write path is the chat tool
+`edit_confluence_page` (`internal/tools/confluence_page_edit.go`), registered
+`External` on the main and target surfaces, so it never runs without the
+owner's Approve (AGENT-03). At propose time `Normalize` reads the live page,
+refuses a `base_version` that no longer matches ("page changed since you read
+it (now vN) — re-read with get_confluence_page"), applies the edits through
+`internal/confluenceedit` and pins the exact storage to write plus the
+card's changes into the stored args. At apply time `Execute` re-reads the
+page and writes only if its version still equals `base_version` — else it
+fails with `conflict: the page was edited after the preview (now vN);
+nothing was written` and issues no PUT — as one `PUT` of `base_version + 1`
+with the message `Edited via Watchtower` (a 409 from Confluence is the same
+conflict). A rich element (a ⟦k:label⟧ marker) is removed only when the
+approved change lists it under `removed`; every untouched byte of the
+storage survives. Edits are capped at 20 per call, 60 000 runes per text
+field and 120 000 per call; a page whose editable text exceeds 60 000 runes
+is shown truncated and its hidden tail cannot be changed. Without the opt-in
+write scopes the tool refuses before any network call: `Confluence editing
+not granted — run: watchtower jira login --account N --with-confluence-write`.
+The companion read `get_confluence_page` is a live network read, so it is
+mounted only in chat mode, never on the dev-mode MCP surface (DEV-01).
+
+**Guards:**
+- `TestEXT05_WriteRequiresMatchingVersion`
+  (`internal/tools/confluence_page_edit_test.go`) — a propose against a stale
+  version is refused with no proposal; an approved proposal whose page moved
+  on fails with the conflict error and zero `PutPage` calls; a 409 on the
+  PUT reports the same conflict.
+- `TestEXT05_RichElementsSurviveUntouched`
+  (`internal/confluenceedit`) — a no-op edit round-trips the storage byte for
+  byte, macros and mentions included.
+- `TestEXT05_OnlyEditToolReachesPut`
+  (`internal/tools/confluence_contracts_test.go`) — an AST scan of every
+  non-test Go file of the module (scan floor 300 files) pins the production
+  callers of `PutJSON` to exactly `confluence_page_client.go:PutPage` and of
+  `PutPage` to exactly `confluence_page_edit.go:executeConfluenceEdit`, and
+  `go list -deps` shows neither `internal/extsync` nor `internal/confluence`
+  can import `internal/tools`.
+
 ## Knowledge-search contracts
 
 KB-01..03 (`docs/inventory/knowledge-search.md`) extend to the `confluence`
@@ -140,6 +189,15 @@ source: it is registered in the KB contract tests (`kbSourceTables` lists
 every Confluence hit's `link` is the page or attachment URL.
 
 ## Changelog
+
+- 2026-09-30 (Confluence page editing, task 4): EXT-05 added —
+  `get_confluence_page` (live read + comments, chat mode only) and
+  `edit_confluence_page` (External, versioned write) in `internal/tools`,
+  wired in `cmd/actions_registry.go`. EXT-01's text now names the real
+  `PutJSON` caller (the page client in `internal/tools`, built by the cmd
+  factory) instead of `internal/confluenceedit`. `extsync.Item` gained
+  `ReplyTo` (set by the fetcher's `Comments` for a reply) so the read tool
+  can nest comment threads; the engine ignores it.
 
 - 2026-09-30 (Confluence page editing, task 1): EXT-01 narrowed, not
   weakened — the sync engine and fetcher stay GET-only, but
