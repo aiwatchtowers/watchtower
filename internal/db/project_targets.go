@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
@@ -51,7 +52,7 @@ func insertProjectTarget(tx *sql.Tx, projectID int64, day string, it ProjectTarg
 	if priority == "" {
 		priority = "medium"
 	}
-	if !targetPriorities[priority] {
+	if !slices.Contains(TargetPriorities, priority) {
 		return 0, fmt.Errorf("invalid priority %q", it.Priority)
 	}
 	parent, err := resolveProjectParent(tx, projectID, it, created)

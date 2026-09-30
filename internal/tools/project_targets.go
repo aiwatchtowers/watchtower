@@ -104,7 +104,7 @@ func validateTargetItem(i int, it newTargetItem, earlier map[string]bool) error 
 	case it.ParentKey != "" && !earlier[it.ParentKey]:
 		return &ValidationError{Msg: fmt.Sprintf("items[%d].parent_key %q names no earlier item", i, it.ParentKey)}
 	}
-	return validateEnum(fmt.Sprintf("items[%d].priority", i), it.Priority, targetPriorities...)
+	return validateEnum(fmt.Sprintf("items[%d].priority", i), it.Priority, db.TargetPriorities...)
 }
 
 // scopeTargetItems checks every parent_id belongs to the bound project.
@@ -227,14 +227,11 @@ func validateTargetUpdate(a updateTargetArgs) error {
 	if len([]rune(strings.TrimSpace(a.Text))) > 200 {
 		return &ValidationError{Msg: "text must be at most 200 characters"}
 	}
-	if err := validateEnum("priority", a.Priority, targetPriorities...); err != nil {
+	if err := validateEnum("priority", a.Priority, db.TargetPriorities...); err != nil {
 		return err
 	}
 	return validateEnum("status", a.Status, "todo", "in_progress", "blocked", "done", "dismissed")
 }
-
-// targetPriorities mirrors the targets.priority CHECK.
-var targetPriorities = []string{"high", "medium", "low"}
 
 // applyTargetUpdate writes title/intent and priority, then status, then progress — status
 // first because a status change re-derives a leaf's progress — in one
