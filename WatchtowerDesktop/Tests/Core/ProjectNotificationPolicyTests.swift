@@ -149,7 +149,7 @@ final class ProjectNotificationPolicyTests: XCTestCase {
         let notices = Policy.decide(previous: snapshot(documents: [1: imported]), current: snapshot(documents: [1: answered]))
         XCTAssertEqual(notices.map(\.kind), [.commentsAnswered])
 
-        let reattached = doc("README", "t2")
+        let reattached = doc("README", "t2", open: 1)
         XCTAssertEqual(Policy.decide(previous: snapshot(documents: [1: imported]), current: snapshot(documents: [1: reattached]))
             .map(\.kind), [.documentReady], "an agent re-attach is a revision")
     }
