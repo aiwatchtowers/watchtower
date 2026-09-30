@@ -52,6 +52,9 @@ func TestGatherProjects_ReportsActivityAndSkipsQuietProjects(t *testing.T) {
 	seedProjectTarget(t, d, busy, feature, "Task 3: wire the API", "blocked", "2026-09-29T09:00:00Z")
 	seedProjectTarget(t, d, busy, feature, "Task 1: schema", "done", "2026-09-29T07:00:00Z")
 	seedProjectTarget(t, d, busy, feature, "Task 0: spike", "done", "2026-09-20T07:00:00Z")
+	// Not every open task is blocked, so the feature rolls up to in_progress
+	// (PROJ-05) rather than blocked.
+	seedProjectTarget(t, d, busy, feature, "Task 2: handlers", "todo", "2026-09-20T07:00:00Z")
 	seedProjectTarget(t, d, quiet, 0, "Idle idea", "todo", "2026-09-01T00:00:00Z")
 
 	_, err := d.AddProjectComment(db.ProjectComment{
