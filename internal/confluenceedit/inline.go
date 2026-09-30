@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // inlineCtx is where a unit's inline content sits; it decides what a line
@@ -103,17 +104,19 @@ func (in *inliner) marker(n *node) string {
 	return "\x00m" + strconv.Itoa(in.b.addMarker(n)) + "\x00"
 }
 
-// wrap renders emphasis. Whitespace at the edges of the content moves
-// outside the delimiters ("a<b> x </b>" → "a **x** "), and empty emphasis
-// renders as nothing.
+// wrap renders emphasis. Whitespace at the edges of the content — NBSP and
+// every other Unicode space included, as in the editor's common
+// "<strong>Label:&nbsp;</strong>value" — moves outside the delimiters
+// ("a<b> x </b>" → "a **x** "), where a markdown delimiter can still open
+// and close; empty emphasis renders as nothing.
 func (in *inliner) wrap(n *node, delim string) string {
 	s := in.nodes(n.children)
-	core := strings.Trim(s, " \n")
+	core := strings.TrimFunc(s, unicode.IsSpace)
 	if core == "" {
 		return s
 	}
-	lead := s[:len(s)-len(strings.TrimLeft(s, " \n"))]
-	trail := s[len(strings.TrimRight(s, " \n")):]
+	lead := s[:len(s)-len(strings.TrimLeftFunc(s, unicode.IsSpace))]
+	trail := s[len(strings.TrimRightFunc(s, unicode.IsSpace)):]
 	return lead + delim + core + delim + trail
 }
 
