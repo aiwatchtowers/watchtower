@@ -66,8 +66,9 @@ var (
 )
 
 // projectRemoveInstall undoes what `integrate claude-code --project N` put
-// into the project's folder. A no-op until the install lands (Task 12 wires
-// devpack.RemoveProject); a package var so tests can observe and fail it.
+// into the project's folder. integrate.go's init points it at
+// removeProjectInstall (devpack.RemoveProject); a package var so tests can
+// observe and fail it.
 var projectRemoveInstall = func(context.Context, *config.Config, *db.Project) error { return nil }
 
 func init() {
