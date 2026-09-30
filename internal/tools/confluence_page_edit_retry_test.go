@@ -191,11 +191,15 @@ func TestConfluenceConflict_LocalIDsOnlyInStartTags(t *testing.T) {
 		return `<ac:structured-macro ac:name="code"><ac:plain-text-body><![CDATA[<p local-id="` + id + `">x</p>]]></ac:plain-text-body></ac:structured-macro>`
 	}
 	for name, tc := range map[string]struct{ ours, live, want string }{
-		"start-tag local-id differs":           {`<p>a</p>` + code("1"), `<p local-id="9">a</p>` + code("1"), saved},
-		"attribute value holding >":            {`<a href="x>y">a</a>`, `<a href="x>y" ac:local-id='2'>a</a>`, saved},
-		"CDATA local-id differs":               {`<p>a</p>` + code("1"), `<p>a</p>` + code("3"), hedged},
-		"page text local-id differs":           {`<p>set local-id="1" here</p>`, `<p>set local-id="3" here</p>`, hedged},
-		"unterminated CDATA compared verbatim": {`<p>a</p><![CDATA[ local-id="1"`, `<p>a</p><![CDATA[ local-id="3"`, hedged},
+		"start-tag local-id differs":             {`<p>a</p>` + code("1"), `<p local-id="9">a</p>` + code("1"), saved},
+		"attribute value holding >":              {`<a href="x>y">a</a>`, `<a href="x>y" ac:local-id='2'>a</a>`, saved},
+		"CDATA local-id differs":                 {`<p>a</p>` + code("1"), `<p>a</p>` + code("3"), hedged},
+		"page text local-id differs":             {`<p>set local-id="1" here</p>`, `<p>set local-id="3" here</p>`, hedged},
+		"unterminated CDATA compared verbatim":   {`<p>a</p><![CDATA[ local-id="1"`, `<p>a</p><![CDATA[ local-id="3"`, hedged},
+		"comment local-id differs":               {`<p>a</p><!-- <p local-id="1"> -->`, `<p>a</p><!-- <p local-id="3"> -->`, hedged},
+		"start tag after a comment stripped":     {`<!-- x --><p>a</p>`, `<!-- x --><p local-id="9">a</p>`, saved},
+		"comment opener inside CDATA":            {`<![CDATA[<!--]]><p>a</p>`, `<![CDATA[<!--]]><p local-id="9">a</p>`, saved},
+		"unterminated comment compared verbatim": {`<p>a</p><!-- <p local-id="1">`, `<p>a</p><!-- <p local-id="3">`, hedged},
 	} {
 		t.Run(name, func(t *testing.T) {
 			err := confluenceConflict(ConfluencePage{Version: 8, Storage: tc.live}, editConfluencePinned{BaseVersion: 7, NewStorage: tc.ours})

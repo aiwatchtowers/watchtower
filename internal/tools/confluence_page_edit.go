@@ -397,27 +397,44 @@ var localIDAttr = regexp.MustCompile(`\s(?:[a-z]+:)?local-id=(?:"[^"]*"|'[^']*')
 // so outside CDATA a '<' followed by a letter opens a tag.
 var startTag = regexp.MustCompile(`<[A-Za-z][^>"']*(?:(?:"[^"]*"|'[^']*')[^>"']*)*>`)
 
-// stripLocalIDs drops local-id attributes from start tags only: text and
-// CDATA sections (a code block's body) are compared verbatim, so a
-// difference there that merely looks like a local-id is still a difference.
+// verbatimSections are the storage constructs whose content is never markup
+// — CDATA (a code block's body) and HTML comments — as {open, close}.
+var verbatimSections = [][2]string{{"<![CDATA[", "]]>"}, {"<!--", "-->"}}
+
+// stripLocalIDs drops local-id attributes from start tags only: text, CDATA
+// sections and HTML comments are compared verbatim, so a difference there
+// that merely looks like a local-id is still a difference. An unterminated
+// section runs to the end.
 func stripLocalIDs(storage string) string {
 	var b strings.Builder
 	for storage != "" {
-		i := strings.Index(storage, "<![CDATA[")
+		i, closer := nextVerbatim(storage)
 		if i < 0 {
 			b.WriteString(stripTagLocalIDs(storage))
 			break
 		}
 		b.WriteString(stripTagLocalIDs(storage[:i]))
-		end := strings.Index(storage[i:], "]]>")
+		end := strings.Index(storage[i:], closer)
 		if end < 0 {
 			b.WriteString(storage[i:])
 			break
 		}
-		b.WriteString(storage[i : i+end+len("]]>")])
-		storage = storage[i+end+len("]]>"):]
+		b.WriteString(storage[i : i+end+len(closer)])
+		storage = storage[i+end+len(closer):]
 	}
 	return b.String()
+}
+
+// nextVerbatim is the offset of the first verbatim section in s and its
+// terminator, or -1.
+func nextVerbatim(s string) (at int, closer string) {
+	at = -1
+	for _, v := range verbatimSections {
+		if i := strings.Index(s, v[0]); i >= 0 && (at < 0 || i < at) {
+			at, closer = i, v[1]
+		}
+	}
+	return at, closer
 }
 
 func stripTagLocalIDs(s string) string {
