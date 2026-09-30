@@ -69,7 +69,13 @@ extension ProjectsViewModel {
                     try TerminalSessionQueries.fetchForProject($0, projectID: projectID)
                 }
             } else {
-                standaloneSessions = try await dbPool.read { try TerminalSessionQueries.fetchStandalone($0) }
+                standaloneLoads += 1
+                let load = standaloneLoads
+                let rows = try await dbPool.read { try TerminalSessionQueries.fetchStandalone($0) }
+                // An older read finishing last must not undo a newer one
+                // (nor unselect a terminal created in between).
+                guard load == standaloneLoads else { return true }
+                standaloneSessions = rows
                 if let id = selectedStandaloneID, !standaloneSessions.contains(where: { $0.id == id }) {
                     selectedStandaloneID = nil
                 }

@@ -85,6 +85,13 @@ extension ProjectsViewModel {
         await newSession(projectID: projectID)
     }
 
+    /// Puts `sessionID` in the project's terminal pane — e.g. the session a
+    /// Send comments line was just pasted into, so the owner sees it land.
+    func showTerminal(sessionID: Int64, projectID: Int64) {
+        shownSessionIDs[projectID] = sessionID
+        pane = .terminal
+    }
+
     /// A standalone terminal takes the whole page, single pane (spec §3).
     func selectStandalone(_ session: TerminalSession) async {
         showStandalone(session.id)

@@ -111,6 +111,8 @@ final class ProjectsViewModel {
     @ObservationIgnored var openingSession: Set<Int64> = []
     @ObservationIgnored var workingOnTarget: Set<Int64> = []
     @ObservationIgnored var titleTask: Task<Void, Never>?
+    /// Standalone list reads started; only the latest one is applied.
+    @ObservationIgnored var standaloneLoads = 0
     /// The title poll's wait. A seam for tests.
     @ObservationIgnored var titleSleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
 

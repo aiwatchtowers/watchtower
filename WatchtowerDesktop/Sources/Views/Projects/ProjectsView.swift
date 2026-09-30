@@ -12,11 +12,17 @@ enum ProjectsPanelItem: Hashable {
     case terminal(Int64)
 }
 
+/// A folder the owner picked, held while the TCC warning is on screen.
+private enum PendingFolder {
+    case project(URL)
+    case terminal(TerminalSession.Kind, URL)
+}
+
 struct ProjectsView: View {
     @Bindable var vm: ProjectsViewModel
     @Environment(AppState.self) private var appState
     @AppStorage("projects.panelVisible") private var panelVisible = true
-    @State private var pendingFolder: URL?
+    @State private var pendingFolder: PendingFolder?
     @State private var sensitiveLocation: String?
     @State private var renamingSession: TerminalSession?
     @State private var deletingSession: TerminalSession?
@@ -61,15 +67,20 @@ struct ProjectsView: View {
             "Folder in \(sensitiveLocation ?? "")",
             isPresented: Binding(get: { sensitiveLocation != nil }, set: { if !$0 { sensitiveLocation = nil } })
         ) {
-            Button("Create anyway") { createPending() }
+            Button(isTerminalPending ? "Open anyway" : "Create anyway") { startPending() }
             Button("Choose another folder", role: .cancel) { pendingFolder = nil }
         } message: {
             Text(
-                "Claude Code in the embedded terminal runs as part of Watchtower, so macOS may ask whether "
+                "The embedded terminal runs as part of Watchtower, so macOS may ask whether "
                     + "Watchtower can access \(sensitiveLocation ?? "this folder"). A folder outside Documents, "
                     + "Desktop, Downloads and cloud storage avoids that prompt."
             )
         }
+    }
+
+    private var isTerminalPending: Bool {
+        if case .terminal? = pendingFolder { return true }
+        return false
     }
 
     @ViewBuilder
@@ -110,7 +121,7 @@ struct ProjectsView: View {
                             .simultaneousGesture(TapGesture().onEnded { vm.drill(into: summary.id) })
                     }
                 }
-                TerminalsSection(vm: vm, actions: sessionActions)
+                TerminalsSection(vm: vm, actions: sessionActions, chooseFolder: chooseTerminalFolder)
             }
             .panelListStyle()
             Divider()
@@ -185,27 +196,47 @@ struct ProjectsView: View {
     }
 
     private func chooseFolder() {
+        guard let url = runFolderPanel(prompt: "Create Project", canCreate: true) else { return }
+        confirmLocation(of: .project(url), path: url.path)
+    }
+
+    /// New terminal → "… in Folder…": the same TCC warning as a project.
+    private func chooseTerminalFolder(_ kind: TerminalSession.Kind) {
+        guard let url = runFolderPanel(prompt: "Open Terminal", canCreate: false) else { return }
+        confirmLocation(of: .terminal(kind, url), path: url.path)
+    }
+
+    private func runFolderPanel(prompt: String, canCreate: Bool) -> URL? {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
-        panel.canCreateDirectories = true
+        panel.canCreateDirectories = canCreate
         panel.allowsMultipleSelection = false
-        panel.prompt = "Create Project"
-        guard panel.runModal() == .OK, let url = panel.url?.resolvingSymlinksInPath() else { return }
-        pendingFolder = url
+        panel.prompt = prompt
+        guard panel.runModal() == .OK else { return nil }
+        return panel.url?.resolvingSymlinksInPath()
+    }
+
+    private func confirmLocation(of pending: PendingFolder, path: String) {
+        pendingFolder = pending
         let home = FileManager.default.homeDirectoryForCurrentUser.resolvingSymlinksInPath().path
-        if let location = ProjectFolderPolicy.tccSensitiveLocation(path: url.path, home: home) {
+        if let location = ProjectFolderPolicy.tccSensitiveLocation(path: path, home: home) {
             sensitiveLocation = location
         } else {
-            createPending()
+            startPending()
         }
     }
 
-    private func createPending() {
-        guard let folder = pendingFolder else { return }
+    private func startPending() {
+        guard let pending = pendingFolder else { return }
         pendingFolder = nil
         sensitiveLocation = nil
-        Task { await vm.createProject(folder: folder, name: nil) }
+        switch pending {
+        case let .project(folder):
+            Task { await vm.createProject(folder: folder, name: nil) }
+        case let .terminal(kind, folder):
+            Task { await vm.newStandalone(kind: kind, folder: folder) }
+        }
     }
 
     private func consumeRoute() {

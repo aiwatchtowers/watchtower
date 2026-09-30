@@ -101,6 +101,9 @@ struct TerminalSessionRow: View {
             }
             .contentShape(Rectangle())
             .simultaneousGesture(TapGesture().onEnded { actions.open(session) })
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction { actions.open(session) }
             if isLive && hovering {
                 Button {
                     actions.close(session)

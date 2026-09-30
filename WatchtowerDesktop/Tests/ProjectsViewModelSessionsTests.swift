@@ -635,6 +635,12 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         XCTAssertEqual(vm.shownSession(projectID: p)?.id, failing.id)
         XCTAssertEqual(vm.panelSelection, .session(failing.id))
         XCTAssertEqual(vm.resumeFailed, [failing.id])
+
+        // Send comments pastes into the live one and puts it on screen.
+        vm.pane = .documents
+        vm.showTerminal(sessionID: live.id, projectID: p)
+        XCTAssertEqual(vm.pane, .terminal)
+        XCTAssertEqual(vm.panelSelection, .session(live.id))
     }
 
     func testShowingAMissingSessionReportsIt() async throws {
