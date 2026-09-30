@@ -29,7 +29,7 @@ struct ProjectTerminalView: View {
                 host(center)
                 Divider()
                 HStack {
-                    Text(ProjectTerminalLaunch.exitMessage(code: code))
+                    Text(TerminalLaunch.exitMessage(code: code))
                         .font(.caption).foregroundStyle(.secondary)
                     Spacer()
                     Button("Restart") { center.start(project: project) }

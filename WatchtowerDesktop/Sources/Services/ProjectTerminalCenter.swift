@@ -11,7 +11,7 @@ protocol ProjectTerminalSession: AnyObject {
     /// The shell's pid, which `exec claude` keeps; 0 before start.
     var pid: pid_t { get }
     var onExit: ((Int32?) -> Void)? { get set }
-    func start(_ launch: ProjectTerminalLaunch)
+    func start(_ launch: TerminalLaunch)
     /// Drops the session's view from any host once the process is gone.
     func detach()
     /// Writes bytes to the session (the owner's "Send N comments to
@@ -133,7 +133,10 @@ final class ProjectTerminalCenter {
         }
         sessions[projectID] = session
         states[projectID] = .running
-        session.start(.make(shell: shell(), folder: project.folderPath, firstRun: firstRun))
+        // Temporary: Task 6 rewrites the center around persisted sessions.
+        let uuid = UUID().uuidString.lowercased()
+        session.start(.make(shell: shell(), folder: project.folderPath,
+                            mode: .newClaude(uuid: uuid, prompt: firstRun ? TerminalLaunch.firstRunPrompt : nil)))
     }
 
     func close(projectID: Int64) async {
@@ -190,7 +193,7 @@ final class SwiftTermSession: NSObject, ProjectTerminalSession, LocalProcessTerm
     var view: NSView { terminal }
     var pid: pid_t { terminal.process?.shellPid ?? 0 }
 
-    func start(_ launch: ProjectTerminalLaunch) {
+    func start(_ launch: TerminalLaunch) {
         var environment = Terminal.getEnvironmentVariables(termName: "xterm-256color")
         environment.append("SHELL=\(launch.executable)")
         terminal.startProcess(

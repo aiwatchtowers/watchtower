@@ -10,7 +10,7 @@ final class FakeTerminalSession: ProjectTerminalSession {
     let view = NSView()
     var pid: pid_t
     var onExit: ((Int32?) -> Void)?
-    private(set) var launches: [ProjectTerminalLaunch] = []
+    private(set) var launches: [TerminalLaunch] = []
     private(set) var detached = false
     private(set) var inputs: [[UInt8]] = []
     var bracketedPasteMode = true
@@ -19,7 +19,7 @@ final class FakeTerminalSession: ProjectTerminalSession {
         self.pid = pid
     }
 
-    func start(_ launch: ProjectTerminalLaunch) { launches.append(launch) }
+    func start(_ launch: TerminalLaunch) { launches.append(launch) }
     func detach() { detached = true }
     func sendInput(_ bytes: [UInt8]) { inputs.append(bytes) }
     func exit(_ code: Int32?) { onExit?(code) }
@@ -84,7 +84,12 @@ final class ProjectTerminalCenterTests: XCTestCase {
         let p = try project()
         center.start(project: p, firstRun: true)
         XCTAssertEqual(center.states[p.id], .running)
-        XCTAssertEqual(sessions.first?.launches, [ProjectTerminalLaunch.make(shell: "/bin/zsh", folder: folder.path, firstRun: true)])
+        let launch = try XCTUnwrap(sessions.first?.launches.first)
+        XCTAssertEqual(sessions.first?.launches.count, 1)
+        XCTAssertEqual(launch.executable, "/bin/zsh")
+        XCTAssertEqual(launch.currentDirectory, folder.path)
+        XCTAssertTrue(launch.args.last?.hasPrefix("exec claude --session-id ") == true)
+        XCTAssertTrue(launch.args.last?.hasSuffix("'\(TerminalLaunch.firstRunPrompt)'") == true)
     }
 
     func testStartWhileRunningIsANoOp() throws {
@@ -134,7 +139,9 @@ final class ProjectTerminalCenterTests: XCTestCase {
         XCTAssertEqual(center.states[p.id], .exited(0))
         center.start(project: p)
         XCTAssertEqual(sessions.count, 1)
-        XCTAssertEqual(sessions[0].launches.last?.args, ["-l", "-c", "exec claude"])
+        let relaunch = try XCTUnwrap(sessions[0].launches.last?.args.last)
+        XCTAssertTrue(relaunch.hasPrefix("exec claude --session-id "))
+        XCTAssertFalse(relaunch.contains("'"))
         XCTAssertEqual(center.states[p.id], .running)
     }
 
