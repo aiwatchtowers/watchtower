@@ -341,6 +341,21 @@ func uniqueNonEmpty(ids []string) []string {
 type getConfluencePageArgs struct {
 	Page    string `json:"page" jsonschema:"the page id, a Confluence page URL, or its exact title (a title is looked up among synced spaces)"`
 	Account int64  `json:"account,omitempty" jsonschema:"connected Jira account id; needed only when several Atlassian sites are connected"`
+	// AccountID is an alias of Account under the name the result and
+	// edit_confluence_page use, so a model echoing account_id is not refused.
+	AccountID int64 `json:"account_id,omitempty" jsonschema:"alias of account (the name the result and edit_confluence_page use); pass one or the other"`
+}
+
+// account is the requested Jira account: account or its alias account_id;
+// both set to different ids is a ValidationError.
+func (a getConfluencePageArgs) account() (int64, error) {
+	if a.Account != 0 && a.AccountID != 0 && a.Account != a.AccountID {
+		return 0, &ValidationError{Msg: fmt.Sprintf("account (%d) and account_id (%d) name different accounts; pass one of them", a.Account, a.AccountID)}
+	}
+	if a.Account != 0 {
+		return a.Account, nil
+	}
+	return a.AccountID, nil
 }
 
 // confluencePageView is get_confluence_page's result.
@@ -388,7 +403,8 @@ func NewGetConfluencePage(factory ConfluencePageClientFactory) *Tool {
 		Description: "Read one Confluence page LIVE (current version) with all its comments: the editable text, " +
 			"its version, and every footer and inline comment with replies. page is the page id, a Confluence " +
 			"page URL, or an exact title (an ambiguous title returns candidates). Rich elements show as ⟦k:label⟧ " +
-			"markers. Read a page with this tool before editing it with edit_confluence_page.",
+			"markers. Read a page with this tool before editing it with edit_confluence_page. account (alias account_id) " +
+			"picks the Jira account when several Atlassian sites are connected.",
 		InputSchema: mustSchema[getConfluencePageArgs]("get_confluence_page"),
 		Access:      AccessRead,
 		Surfaces:    []string{"main", "target"},
@@ -397,7 +413,11 @@ func NewGetConfluencePage(factory ConfluencePageClientFactory) *Tool {
 			if err := decodeStrict(call.Args, &a); err != nil {
 				return nil, err
 			}
-			target, err := resolveConfluencePage(ctx, d, a.Account, a.Page)
+			accountID, err := a.account()
+			if err != nil {
+				return nil, err
+			}
+			target, err := resolveConfluencePage(ctx, d, accountID, a.Page)
 			if err != nil {
 				return nil, err
 			}
