@@ -126,7 +126,7 @@ func TestRenderProjectBrief_ActiveWorkFirstWhateverItsPriority(t *testing.T) {
 	}
 	// Board order (priority, then status): #4, #1, #2, #3.
 	board := []db.BoardNode{node(4, "in_progress", "high"), node(1, "todo", "high"), node(2, "in_progress", "medium"), node(3, "blocked", "low")}
-	out := renderProjectBrief(board, briefProject(), nil, nil)
+	out := renderProjectBrief(board, briefProject(), nil, nil, time.Now())
 	var order []int
 	for _, id := range []int{4, 2, 3, 1} {
 		i := strings.Index(out, fmt.Sprintf("#%d [", id))
@@ -142,7 +142,7 @@ func TestRenderProjectBrief_ActiveWorkFirstWhateverItsPriority(t *testing.T) {
 		node(2, "todo", "low", node(3, "in_progress", "medium")),
 		node(4, "done", "low", node(5, "in_progress", "low")),
 	}
-	out = renderProjectBrief(board, briefProject(), nil, nil)
+	out = renderProjectBrief(board, briefProject(), nil, nil, time.Now())
 	order = nil
 	for _, id := range []int{2, 3, 5, 1} {
 		i := strings.Index(out, fmt.Sprintf("#%d [", id))
@@ -158,7 +158,7 @@ func TestRenderProjectBrief_ActiveWorkFirstWhateverItsPriority(t *testing.T) {
 		big[len(big)-1].Target.Text = long
 	}
 	big = append(big, node(99, "in_progress", "low"))
-	out = renderProjectBrief(big, briefProject(), nil, nil)
+	out = renderProjectBrief(big, briefProject(), nil, nil, time.Now())
 	assert.Contains(t, out, "more targets (project_board)", "the board is cut")
 	assert.Contains(t, out, "#99 [in_progress, low", "the active low-priority task survives the cut")
 }

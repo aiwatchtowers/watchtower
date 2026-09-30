@@ -77,8 +77,8 @@ func TestGatherProjects_ReportsActivityAndSkipsQuietProjects(t *testing.T) {
 	require.True(t, has)
 	assert.Contains(t, ctx, "[project_id=")
 	assert.Contains(t, ctx, "acme")
-	// The feature's only open child is blocked, so it rolls up to blocked (PROJ-05).
-	assert.Contains(t, ctx, "Blocked (2): Payments feature; Task 3: wire the API")
+	assert.Contains(t, ctx, "In progress (1): Payments feature")
+	assert.Contains(t, ctx, "Blocked (1): Task 3: wire the API")
 	assert.Contains(t, ctx, "Done since the last briefing (1): Task 1: schema")
 	assert.NotContains(t, ctx, "Task 0: spike", "done before the window")
 	assert.Contains(t, ctx, "Unread agent comments: 1")
