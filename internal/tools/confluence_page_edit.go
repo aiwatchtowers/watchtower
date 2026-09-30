@@ -71,6 +71,13 @@ type editConfluencePinned struct {
 	Notes []string `json:"notes,omitempty"`
 }
 
+// prepared reports pinned args carrying everything Execute needs: the
+// storage to write, the base version and hash it was computed from, the
+// account and a numeric page id.
+func (p editConfluencePinned) prepared() bool {
+	return p.NewStorage != "" && p.BaseVersion >= 1 && p.AccountID >= 1 && isNumericPageID(p.PageID) && p.BaseHash != ""
+}
+
 // confluenceNamesUnavailable is the card note for a failed user-name
 // lookup: the diff then shows mention markers by account id.
 const confluenceNamesUnavailable = "User names unavailable — mentions show account ids"
@@ -338,7 +345,7 @@ func executeConfluenceEdit(ctx context.Context, d *db.DB, factory ConfluencePage
 	if err := json.Unmarshal(args, &p); err != nil {
 		return nil, fmt.Errorf("decoding edit_confluence_page args: %w", err)
 	}
-	if p.NewStorage == "" || p.BaseVersion < 1 || p.AccountID < 1 || !isNumericPageID(p.PageID) || p.BaseHash == "" {
+	if !p.prepared() {
 		return nil, errors.New("the proposal carries no prepared edit; propose it again")
 	}
 	account, err := ResolveJiraAccount(d, p.AccountID)
