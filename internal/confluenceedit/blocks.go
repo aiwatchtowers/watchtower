@@ -206,8 +206,7 @@ func (b *builder) elementUnitPlain(n *node, ctx inlineCtx) (*unit, bool) {
 	if n.selfClosing {
 		return nil, true
 	}
-	text, plain := b.inlineText(n.children, ctx)
-	return b.addUnit(&unit{kind: unitInline, start: n.innerStart, end: n.innerEnd, text: text}), plain
+	return b.inlineUnit(n.children, ctx, span{n.innerStart, n.innerEnd})
 }
 
 // runUnit makes a run of inline siblings one unit spanning them, blank
@@ -217,8 +216,8 @@ func (b *builder) runUnit(run []*node, ctx inlineCtx) *unit {
 	if len(run) == 0 {
 		return nil
 	}
-	text, _ := b.inlineText(run, ctx)
-	return b.addUnit(&unit{kind: unitInline, start: run[0].start, end: run[len(run)-1].end, text: text})
+	u, _ := b.inlineUnit(run, ctx, span{run[0].start, run[len(run)-1].end})
+	return u
 }
 
 // isCodeMacro reports a code/noformat macro with a plain-text body to edit.
@@ -237,8 +236,22 @@ func isCodeMacro(n *node) bool {
 // unit; the macro's tag and parameters stay untouched bytes.
 func (b *builder) codeBlock(n *node) {
 	body := n.firstChild("ac:plain-text-body")
-	u := b.addUnit(&unit{kind: unitCode, start: body.innerStart, end: body.innerEnd, text: plainText(body)})
+	u := b.addUnit(&unit{
+		kind: unitCode, start: body.innerStart, end: body.innerEnd, text: plainText(body),
+		other: !onlyText(body),
+	})
 	b.addBlock(&block{kind: blockCode, lang: strings.TrimSpace(param(n, "language")), unit: u}, span{n.start, n.end})
+}
+
+// onlyText reports whether n's children are all text or CDATA, i.e. its
+// content is exactly what plainText returns.
+func onlyText(n *node) bool {
+	for _, ch := range n.children {
+		if ch.typ != nodeText && ch.typ != nodeCDATA {
+			return false
+		}
+	}
+	return true
 }
 
 // plainText concatenates n's direct text and CDATA children.

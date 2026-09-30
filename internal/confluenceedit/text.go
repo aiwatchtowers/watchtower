@@ -52,12 +52,23 @@ func unitText(u *unit) string {
 	return u.text
 }
 
+// longestRun is the length of the longest run of c in s.
+func longestRun(s string, c byte) int {
+	best, cur := 0, 0
+	for i := 0; i < len(s); i++ {
+		if s[i] == c {
+			cur++
+			best = max(best, cur)
+		} else {
+			cur = 0
+		}
+	}
+	return best
+}
+
 // codeFence fences body with more backticks than any run inside it.
 func codeFence(lang, body string) string {
-	fence := "```"
-	for strings.Contains(body, fence) {
-		fence += "`"
-	}
+	fence := strings.Repeat("`", max(3, longestRun(body, '`')+1))
 	return fence + lang + "\n" + body + "\n" + fence
 }
 

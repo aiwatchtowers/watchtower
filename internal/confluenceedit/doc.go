@@ -58,6 +58,13 @@ type Doc struct {
 	splices     []splice    // whole-region rewrites (the replace-region seam)
 }
 
+// mark is one real marker inside a unit's text: the token for marker k
+// starts at byte offset at.
+type mark struct {
+	at int
+	k  int
+}
+
 // span is a [start,end) byte range of the source.
 type span struct{ start, end int }
 
@@ -105,6 +112,12 @@ type block struct {
 	items     []listItem // blockList, flattened in document order
 	rows      [][]*unit  // blockTable; a nil cell is an empty self-closed cell
 	marker    int        // blockMarker: the ordinal
+
+	// Edit state (Task 3), only ever set on Apply's working clone or on
+	// blocks Apply builds from markdown.
+	dead    bool     // inside a region a replace_section rewrote
+	section *section // blockHeading: its body, rewritten by a replace_section
+	header  bool     // a markdown table: the first row is a header row
 }
 
 // listItem is one <li>, flattened with its nesting depth.
@@ -126,8 +139,19 @@ const (
 // attributes included) keeps its bytes.
 type unit struct {
 	kind       unitKind
+	ctx        inlineCtx
 	start, end int
 	text       string // the editable text of the span
+
+	// marks are the real markers inside text, by byte offset. A token-shaped
+	// string in text that is not in marks is literal page text.
+	marks []mark
+	// other: the span holds a comment, stray end tag or other inert token
+	// that a rewrite from text would drop, so the unit is not rewritable.
+	other bool
+	// links maps each link href in text to its original start tag, so a
+	// rewrite keeps the link's other attributes.
+	links map[string]string
 
 	// out is the seam for edits (Task 3): when non-nil, Render emits *out in
 	// place of src[start:end]. Parse never sets it.

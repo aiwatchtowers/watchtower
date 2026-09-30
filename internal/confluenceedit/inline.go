@@ -20,15 +20,22 @@ const (
 type inliner struct {
 	b     *builder
 	ctx   inlineCtx
-	plain bool     // false once a cell needed a marker or a line break
-	codes []string // rendered code spans, stood in for by codeHole(i) until finalize
+	plain bool              // false once a cell needed a marker or a line break
+	other bool              // true once the content held a comment or stray tag
+	codes []string          // rendered code spans, stood in for by holes until finalize
+	links map[string]string // href -> the link's original start tag
 }
 
-// inlineText renders nodes as a unit's editable text and reports whether
-// the content was plain (no marker, no line break).
-func (b *builder) inlineText(nodes []*node, ctx inlineCtx) (string, bool) {
+// inlineUnit renders nodes as the editable text of a unit spanning sp and
+// reports whether the content was plain (no marker, no line break).
+func (b *builder) inlineUnit(nodes []*node, ctx inlineCtx, sp span) (*unit, bool) {
 	in := &inliner{b: b, ctx: ctx, plain: true}
-	return in.finalize(in.nodes(nodes)), in.plain
+	text, marks := in.finalize(in.nodes(nodes))
+	u := &unit{
+		kind: unitInline, ctx: ctx, start: sp.start, end: sp.end, text: text,
+		marks: marks, other: in.other, links: in.links,
+	}
+	return b.addUnit(u), in.plain
 }
 
 func (in *inliner) nodes(ns []*node) string {
@@ -49,14 +56,16 @@ var asciiSpace = strings.NewReplacer("\n", " ", "\r", " ", "\t", " ", "\f", " ",
 // noNUL keeps NUL out of every other string that reaches the inline text.
 var noNUL = strings.NewReplacer("\x00", "\uFFFD")
 
-// codeHoleRe finds the stand-ins codeSpan leaves for finalize to fill.
-var codeHoleRe = regexp.MustCompile("\x00([0-9]+)\x00")
+// holeRe finds the stand-ins codeSpan ("c") and marker ("m") leave for
+// finalize to fill.
+var holeRe = regexp.MustCompile("\x00([cm])([0-9]+)\x00")
 
 func (in *inliner) node(n *node) string {
 	switch n.typ {
 	case nodeText, nodeCDATA:
 		return asciiSpace.Replace(n.text)
 	case nodeOther:
+		in.other = true
 		return ""
 	default:
 		return in.element(n)
@@ -91,8 +100,7 @@ func (in *inliner) marker(n *node) string {
 	if in.ctx == ctxCell {
 		in.plain = false
 	}
-	k := in.b.addMarker(n)
-	return in.b.markers[k-1].token()
+	return "\x00m" + strconv.Itoa(in.b.addMarker(n)) + "\x00"
 }
 
 // wrap renders emphasis. Whitespace at the edges of the content moves
@@ -126,7 +134,7 @@ func (in *inliner) codeSpan(n *node) string {
 		return ""
 	}
 	in.codes = append(in.codes, fenceCode(content))
-	return "\x00" + strconv.Itoa(len(in.codes)-1) + "\x00"
+	return "\x00c" + strconv.Itoa(len(in.codes)-1) + "\x00"
 }
 
 // codeLines maps line terminators inside a code span to spaces.
@@ -136,10 +144,7 @@ var codeLines = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ", "\f", " "
 // space each side where CommonMark would otherwise strip or misread one
 // (content starting/ending with a backtick, or with a space at both ends).
 func fenceCode(content string) string {
-	fence := "`"
-	for strings.Contains(content, fence) {
-		fence += "`"
-	}
+	fence := strings.Repeat("`", longestRun(content, '`')+1)
 	bothSpaces := strings.HasPrefix(content, " ") && strings.HasSuffix(content, " ") && strings.Trim(content, " ") != ""
 	if bothSpaces || strings.HasPrefix(content, "`") || strings.HasSuffix(content, "`") {
 		content = " " + content + " "
@@ -162,7 +167,14 @@ func (in *inliner) link(n *node) string {
 	if text == "" {
 		return in.marker(n)
 	}
-	return "[" + text + "](" + noNUL.Replace(href) + ")"
+	href = noNUL.Replace(href)
+	if _, seen := in.links[href]; !seen {
+		if in.links == nil {
+			in.links = map[string]string{}
+		}
+		in.links[href] = in.b.src[n.start:n.innerStart]
+	}
+	return "[" + text + "](" + href + ")"
 }
 
 func (in *inliner) lineBreak(n *node) string {
@@ -173,22 +185,39 @@ func (in *inliner) lineBreak(n *node) string {
 }
 
 // finalize collapses runs of spaces and trims every line (the editable
-// text's only newlines are line breaks), then fills the code-span holes
-// with their verbatim spans. Only ASCII spaces collapse — an NBSP is
-// content the owner typed and stays as is.
-func (in *inliner) finalize(s string) string {
+// text's only newlines are line breaks), then fills the holes: code spans
+// with their verbatim spans, markers with their tokens (recording where
+// each real marker sits). Only ASCII spaces collapse — an NBSP is content
+// the owner typed and stays as is.
+func (in *inliner) finalize(s string) (string, []mark) {
 	lines := strings.Split(s, "\n")
 	for i, l := range lines {
 		lines[i] = collapseSpaces(l)
 	}
-	s = strings.Trim(strings.Join(lines, "\n"), "\n")
-	if len(in.codes) == 0 {
-		return s
+	return in.fillHoles(strings.Trim(strings.Join(lines, "\n"), "\n"))
+}
+
+func (in *inliner) fillHoles(s string) (string, []mark) {
+	locs := holeRe.FindAllStringSubmatchIndex(s, -1)
+	if len(locs) == 0 {
+		return s, nil
 	}
-	return codeHoleRe.ReplaceAllStringFunc(s, func(h string) string {
-		i, _ := strconv.Atoi(h[1 : len(h)-1])
-		return in.codes[i]
-	})
+	var sb strings.Builder
+	var marks []mark
+	prev := 0
+	for _, l := range locs {
+		sb.WriteString(s[prev:l[0]])
+		i, _ := strconv.Atoi(s[l[4]:l[5]])
+		if s[l[2]] == 'c' {
+			sb.WriteString(in.codes[i])
+		} else {
+			marks = append(marks, mark{at: sb.Len(), k: i})
+			sb.WriteString(in.b.markers[i-1].token())
+		}
+		prev = l[1]
+	}
+	sb.WriteString(s[prev:])
+	return sb.String(), marks
 }
 
 func collapseSpaces(s string) string {
