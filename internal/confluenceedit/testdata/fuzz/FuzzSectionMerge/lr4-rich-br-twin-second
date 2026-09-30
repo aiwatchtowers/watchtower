@@ -1,0 +1,8 @@
+go test fuzz v1
+string("<h2>S</h2><p>a<br/><br/>b</p><p>X</p><p style=\"text-align:center\">a<br/><br/>b</p>")
+byte('\x00')
+byte('\x01')
+byte('\x00')
+byte('\x00')
+byte('\x00')
+byte('\x01')

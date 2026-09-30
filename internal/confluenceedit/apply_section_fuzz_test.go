@@ -112,11 +112,16 @@ func checkSectionMerge(t *testing.T, d *Doc, head, mode, x, y, edit, drop int) {
 }
 
 // dropsAs reports that dropping block d may delete block o instead: o is d,
-// or both are rich blocks of one kind with the same text — the new body
-// cannot say which of the two it dropped, so losing either is the drop.
-// (A plain block of o's text is not enough: then the rich one must stay.)
+// or o is a same-kind same-text twin of d and losing it loses nothing d's
+// loss would not — o is not rich (a plain paragraph whose text merely reads
+// as several blocks), or both are rich (the new body cannot say which of
+// the two it dropped). A rich o lost while d is not rich is never excused:
+// then the rich one must stay.
 func dropsAs(a *applier, d *block, dText string, o *block, oText string) bool {
-	return d == o || d.kind == o.kind && dText == oText && a.lossy(d, dText) != nil
+	if d == o {
+		return true
+	}
+	return d.kind == o.kind && dText == oText && (!a.rich(o, oText) || a.rich(d, dText))
 }
 
 // permute is 0..n-1 rotated by one, with two positions swapped, or

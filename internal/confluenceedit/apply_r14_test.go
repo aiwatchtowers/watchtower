@@ -119,6 +119,42 @@ func TestSectionRewriteMovedBrParagraphKeepsBytes(t *testing.T) {
 	}
 }
 
+// Of two paragraphs with the same text reading as several blocks (two
+// <br/>s each), one centred and one plain, dropping one of them keeps the
+// centred one's bytes wherever the body puts the text: an in-place run is
+// reserved before a twin may move over it (findMoves), and a kept plain
+// twin gives way to a deleted rich one (lossySwaps judges richness by
+// attributes, not by the text reading as several blocks).
+func TestSectionRewriteRichBrTwinStays(t *testing.T) {
+	for name, tc := range map[string]struct{ src, body, want string }{
+		"rich first, body keeps the first place": {
+			src:  `<h2>S</h2>` + r14BrRich + `<p>X</p>` + r14BrPlain,
+			body: "a\n\nb\n\nX",
+			want: `<h2>S</h2>` + r14BrRich + `<p>X</p>`,
+		},
+		"rich second, body keeps the second place": {
+			src:  `<h2>S</h2>` + r14BrPlain + `<p>X</p>` + r14BrRich,
+			body: "X\n\na\n\nb",
+			want: `<h2>S</h2><p>X</p>` + r14BrRich,
+		},
+		"rich first, body keeps the second place": {
+			src:  `<h2>S</h2>` + r14BrRich + `<p>X</p>` + r14BrPlain,
+			body: "X\n\na\n\nb",
+			want: `<h2>S</h2><p>X</p>` + r14BrRich,
+		},
+		"rich second, body keeps the first place": {
+			src:  `<h2>S</h2>` + r14BrPlain + `<p>X</p>` + r14BrRich,
+			body: "a\n\nb\n\nX",
+			want: `<h2>S</h2>` + r14BrRich + `<p>X</p>`,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, _ := applyOK(t, tc.src, sectionEdit("S", tc.body))
+			assert.Equal(t, tc.want, out)
+		})
+	}
+}
+
 // Defects FuzzSectionMerge found under R14, pinned: a deletion's trailing
 // whitespace and an insertion at the section's start never reach into a
 // bare text run's own leading space; a paragraph whose text reads as a

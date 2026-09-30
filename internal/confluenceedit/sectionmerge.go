@@ -53,7 +53,8 @@ type moves struct {
 // with two <br/>s) is paired with a run of consecutive leftover body
 // blocks joining to its text in another gap — the run's first block
 // re-emits it, the rest emit nothing. A run in the original's own gap is
-// mergeGap's to keep in place.
+// mergeGap's to keep in place, and is reserved before any cross-gap move
+// is paired, so an in-place run always wins over a twin moving in.
 func findMoves(base, body []*block, baseText, bodyText []string, matched [][2]int) moves {
 	mv := moves{to: map[*block]*block{}, away: map[*block]bool{}, cont: map[*block]bool{}}
 	usedBase, usedBody := map[int]bool{}, map[int]bool{}
@@ -80,6 +81,19 @@ func findMoves(base, body []*block, baseText, bodyText []string, matched [][2]in
 			}
 		}
 		return n
+	}
+	// A run in the original's own gap is kept in place (mergeGap): reserve
+	// it first, so no same-text twin elsewhere moves over and takes it.
+	for i := range base {
+		if usedBase[i] || !strings.Contains(baseText[i], "\n\n") {
+			continue
+		}
+		if q, k := freeRun(bodyText, usedBody, baseText[i], func(q int) bool { return gap(q, 1) == gap(i, 0) }); k > 0 {
+			usedBase[i] = true
+			for x := q; x < q+k; x++ {
+				usedBody[x] = true
+			}
+		}
 	}
 	for i, o := range base {
 		if usedBase[i] || !strings.Contains(baseText[i], "\n\n") {
@@ -157,8 +171,7 @@ func (a *applier) mergeSection(base, body []*block) ([]sectionOp, error) {
 
 // preferLossy runs after checkLossy allowed every deletion. When the merge
 // kept one of two originals of equal text and kind and deleted the other,
-// and only the deleted one is a block markdown cannot carry faithfully, it
-// keeps that one instead — its bytes re-emitted at the kept one's place (a
+// and only the deleted one is rich (see rich), it keeps that one instead — its bytes re-emitted at the kept one's place (a
 // move), the other deleted. The text cannot say which of the two the new
 // body dropped; only this choice loses nothing.
 func (a *applier) preferLossy(ops []sectionOp) []sectionOp {
@@ -182,8 +195,8 @@ func (a *applier) preferLossy(ops []sectionOp) []sectionOp {
 }
 
 // lossySwaps pairs each deleted rich original with a kept (or moved)
-// faithful original of the same text and kind: kept original -> the
-// deleted one to keep instead.
+// original of the same text and kind that is not rich: kept original ->
+// the deleted one to keep instead.
 func (a *applier) lossySwaps(ops []sectionOp) map[*block]*block {
 	moved := map[*block]bool{}
 	for _, op := range ops {
@@ -197,12 +210,12 @@ func (a *applier) lossySwaps(ops []sectionOp) map[*block]*block {
 			continue
 		}
 		text := a.d.blockText(del.orig)
-		if a.lossy(del.orig, text) == nil {
+		if !a.rich(del.orig, text) {
 			continue
 		}
 		for _, k := range ops {
 			if k.orig != nil && k.body == k.orig && swap[k.orig] == nil && k.orig.kind == del.orig.kind &&
-				a.d.blockText(k.orig) == text && a.lossy(k.orig, text) == nil {
+				a.d.blockText(k.orig) == text && !a.rich(k.orig, text) {
 				swap[k.orig] = del.orig
 				break
 			}
@@ -270,6 +283,16 @@ func (a *applier) lossy(o *block, text string) error {
 		return err
 	}
 	return a.checkDerivable(o, text)
+}
+
+// rich reports an original block whose bytes carry more than its editable
+// text: attributes, parameters or layout (unfaithful), an HTML comment or
+// stray tag, or characters a re-render would read as formatting. Of two
+// blocks with the same text only a rich one has anything to lose; a text
+// that merely reads back as several blocks (a plain paragraph with two
+// <br/>s) does not make a block rich.
+func (a *applier) rich(o *block, text string) bool {
+	return o.kind != blockMarker && text != "" && a.checkDerivable(o, text) != nil
 }
 
 // mergeGap merges the unmatched original and new blocks between two
