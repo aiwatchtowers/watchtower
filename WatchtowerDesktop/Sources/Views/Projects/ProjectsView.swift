@@ -2,26 +2,60 @@ import AppKit
 import SwiftUI
 import WatchtowerCore
 
-/// Projects tab: the project list on the left, the selected project's page on
-/// the right (spec §6.1).
+/// Projects tab: the collapsible two-level panel on the left (projects and
+/// standalone terminals, or one project's Board, Documents and sessions) and
+/// the selected project's page — or standalone terminal — on the right
+/// (spec 2026-09-30-project-workspace-sessions §3).
+/// A level-1 row of the Projects panel: a project, or a standalone terminal.
+enum ProjectsPanelItem: Hashable {
+    case project(Int64)
+    case terminal(Int64)
+}
+
+/// A folder the owner picked, held while the TCC warning is on screen.
+private enum PendingFolder {
+    case project(URL)
+    case terminal(TerminalSession.Kind, URL)
+}
+
 struct ProjectsView: View {
     @Bindable var vm: ProjectsViewModel
     @Environment(AppState.self) private var appState
-    @State private var pendingFolder: URL?
+    @AppStorage("projects.panelVisible") private var panelVisible = true
+    @State private var pendingFolder: PendingFolder?
     @State private var sensitiveLocation: String?
+    @State private var renamingSession: TerminalSession?
+    @State private var deletingSession: TerminalSession?
 
     var body: some View {
-        HSplitView {
-            list
-                .frame(minWidth: 220, idealWidth: 260, maxWidth: 360)
+        HStack(spacing: 0) {
+            if panelVisible {
+                panel.frame(width: 260)
+                Divider()
+            }
             Group {
-                if let project = vm.selectedProject {
+                if let standalone = vm.selectedStandalone {
+                    StandaloneTerminalView(session: standalone)
+                        .id(standalone.id)
+                } else if let project = vm.selectedProject {
                     ProjectPageView(vm: vm, project: project)
                 } else {
                     emptyState
                 }
             }
             .frame(minWidth: 480, maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .sessionActionDialogs(vm: vm, renaming: $renamingSession, deleting: $deletingSession)
+        .toolbar {
+            ToolbarItem(placement: .navigation) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) { panelVisible.toggle() }
+                } label: {
+                    Image(systemName: "sidebar.leading")
+                }
+                .help("Toggle Projects Panel")
+                .accessibilityLabel("Toggle Projects Panel")
+            }
         }
         .navigationTitle("Projects")
         .onAppear {
@@ -33,23 +67,61 @@ struct ProjectsView: View {
             "Folder in \(sensitiveLocation ?? "")",
             isPresented: Binding(get: { sensitiveLocation != nil }, set: { if !$0 { sensitiveLocation = nil } })
         ) {
-            Button("Create anyway") { createPending() }
+            Button(isTerminalPending ? "Open anyway" : "Create anyway") { startPending() }
             Button("Choose another folder", role: .cancel) { pendingFolder = nil }
         } message: {
             Text(
-                "Claude Code in the embedded terminal runs as part of Watchtower, so macOS may ask whether "
+                "The embedded terminal runs as part of Watchtower, so macOS may ask whether "
                     + "Watchtower can access \(sensitiveLocation ?? "this folder"). A folder outside Documents, "
                     + "Desktop, Downloads and cloud storage avoids that prompt."
             )
         }
     }
 
-    private var list: some View {
-        VStack(spacing: 0) {
-            List(selection: $vm.selectedProjectID) {
-                ForEach(vm.summaries) { summary in
-                    row(summary).tag(Optional(summary.id))
+    private var isTerminalPending: Bool {
+        if case .terminal? = pendingFolder { return true }
+        return false
+    }
+
+    @ViewBuilder
+    private var panel: some View {
+        if let project = vm.drilledProject {
+            ProjectSessionsPanel(vm: vm, project: project, actions: sessionActions)
+        } else {
+            projectList
+        }
+    }
+
+    private var sessionActions: SessionRowActions {
+        SessionRowActions(
+            open: { session in
+                Task {
+                    if session.projectID == nil {
+                        await vm.selectStandalone(session)
+                    } else {
+                        await vm.showFromPanel(.session(session.id))
+                    }
                 }
+            },
+            rename: { renamingSession = $0 },
+            close: { session in Task { await vm.close(session) } },
+            delete: { deletingSession = $0 }
+        )
+    }
+
+    private var projectList: some View {
+        VStack(spacing: 0) {
+            List(selection: listSelection) {
+                Section("Projects") {
+                    ForEach(vm.summaries) { summary in
+                        row(summary)
+                            .tag(ProjectsPanelItem.project(summary.id))
+                            // A click on the already-selected project (after
+                            // Back) changes no selection: drill in anyway.
+                            .simultaneousGesture(TapGesture().onEnded { vm.drill(into: summary.id) })
+                    }
+                }
+                TerminalsSection(vm: vm, actions: sessionActions, chooseFolder: chooseTerminalFolder)
             }
             .panelListStyle()
             Divider()
@@ -71,6 +143,20 @@ struct ProjectsView: View {
                     .padding([.horizontal, .bottom], 8)
             }
         }
+    }
+
+    private var listSelection: Binding<ProjectsPanelItem?> {
+        Binding(
+            get: {
+                if let id = vm.selectedStandaloneID { return .terminal(id) }
+                return vm.selectedProjectID.map(ProjectsPanelItem.project)
+            },
+            set: { item in
+                // A terminal row opens on its own click (`SessionRowActions.open`);
+                // arrow keys only move the highlight (VoiceOver has the row's action).
+                if case let .project(id)? = item { vm.drill(into: id) }
+            }
+        )
     }
 
     private func row(_ summary: ProjectSummary) -> some View {
@@ -99,6 +185,7 @@ struct ProjectsView: View {
             }
         }
         .padding(.vertical, 2)
+        .contentShape(Rectangle())
     }
 
     private var emptyState: some View {
@@ -110,27 +197,47 @@ struct ProjectsView: View {
     }
 
     private func chooseFolder() {
+        guard let url = runFolderPanel(prompt: "Create Project", canCreate: true) else { return }
+        confirmLocation(of: .project(url), path: url.path)
+    }
+
+    /// New terminal → "… in Folder…": the same TCC warning as a project.
+    private func chooseTerminalFolder(_ kind: TerminalSession.Kind) {
+        guard let url = runFolderPanel(prompt: "Open Terminal", canCreate: false) else { return }
+        confirmLocation(of: .terminal(kind, url), path: url.path)
+    }
+
+    private func runFolderPanel(prompt: String, canCreate: Bool) -> URL? {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
-        panel.canCreateDirectories = true
+        panel.canCreateDirectories = canCreate
         panel.allowsMultipleSelection = false
-        panel.prompt = "Create Project"
-        guard panel.runModal() == .OK, let url = panel.url?.resolvingSymlinksInPath() else { return }
-        pendingFolder = url
+        panel.prompt = prompt
+        guard panel.runModal() == .OK else { return nil }
+        return panel.url?.resolvingSymlinksInPath()
+    }
+
+    private func confirmLocation(of pending: PendingFolder, path: String) {
+        pendingFolder = pending
         let home = FileManager.default.homeDirectoryForCurrentUser.resolvingSymlinksInPath().path
-        if let location = ProjectFolderPolicy.tccSensitiveLocation(path: url.path, home: home) {
+        if let location = ProjectFolderPolicy.tccSensitiveLocation(path: path, home: home) {
             sensitiveLocation = location
         } else {
-            createPending()
+            startPending()
         }
     }
 
-    private func createPending() {
-        guard let folder = pendingFolder else { return }
+    private func startPending() {
+        guard let pending = pendingFolder else { return }
         pendingFolder = nil
         sensitiveLocation = nil
-        Task { await vm.createProject(folder: folder, name: nil) }
+        switch pending {
+        case let .project(folder):
+            Task { await vm.createProject(folder: folder, name: nil) }
+        case let .terminal(kind, folder):
+            Task { await vm.newStandalone(kind: kind, folder: folder) }
+        }
     }
 
     private func consumeRoute() {

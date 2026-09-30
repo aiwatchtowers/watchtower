@@ -502,4 +502,193 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         relaunched.selectedProjectID = a
         XCTAssertEqual(relaunched.layout.visiblePanes, [.board, .documents])
     }
+
+    // MARK: - Left panel
+
+    func testSelectingAProjectDrillsInAndBackKeepsTheSelection() async throws {
+        let p = try await projectWithFolder()
+        let vm = makeVM()
+        await vm.reload()
+
+        vm.drill(into: p)
+        XCTAssertEqual(vm.drilledProjectID, p)
+        XCTAssertEqual(vm.drilledProject?.id, p)
+        XCTAssertTrue(launches.isEmpty, "drilling in starts nothing")
+
+        vm.drilledProjectID = nil
+        XCTAssertEqual(vm.selectedProjectID, p, "Back leaves the project on screen")
+        vm.drill(into: p)
+        XCTAssertEqual(vm.drilledProjectID, p, "clicking the selected project again drills back in")
+    }
+
+    func testPanelBoardAndDocumentsSetThePaneAndTheLayout() async throws {
+        let p = try await projectWithFolder()
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: p)
+
+        await vm.showFromPanel(.documents)
+        XCTAssertEqual(vm.pane, .documents)
+        XCTAssertEqual(vm.layout.primary, .documents)
+        XCTAssertEqual(vm.panelSelection, .documents)
+
+        await vm.showFromPanel(.board)
+        XCTAssertEqual(vm.pane, .board)
+        XCTAssertEqual(vm.panelSelection, .board)
+    }
+
+    func testPanelSessionClickShowsItAndCloseKeepsTheRowAndMovesToTheOtherLiveSession() async throws {
+        let p = try await projectWithFolder()
+        let first = try await insertSession(.init(
+            projectID: p, kind: .claude, title: "first", folderPath: acme, claudeSessionID: UUID().uuidString.lowercased()
+        ))
+        let second = try await insertSession(.init(
+            projectID: p, kind: .claude, title: "second", folderPath: acme, claudeSessionID: UUID().uuidString.lowercased()
+        ))
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: p)
+        vm.pane = .board
+
+        await vm.showFromPanel(.session(first.id))
+        await vm.showFromPanel(.session(second.id))
+        XCTAssertEqual(vm.pane, .terminal)
+        XCTAssertEqual(vm.panelSelection, .session(second.id))
+        XCTAssertEqual(center.liveIDs, [first.id, second.id], "switching keeps the other process running")
+
+        await vm.close(second)
+
+        let closed = try XCTUnwrap(vm.drilledSessions.first { $0.id == second.id }, "a closed session stays listed")
+        XCTAssertTrue(closed.isClosed)
+        XCTAssertFalse(vm.isLive(closed))
+        XCTAssertEqual(vm.panelSelection, .session(first.id), "the pane falls back to the other live session")
+
+        await vm.showFromPanel(.session(second.id))
+        let reopened = try XCTUnwrap(vm.drilledSessions.first { $0.id == second.id })
+        XCTAssertFalse(reopened.isClosed, "clicking a closed session reopens it")
+        XCTAssertTrue(vm.isLive(reopened))
+        XCTAssertEqual(vm.panelSelection, .session(second.id))
+    }
+
+    func testNewPanelSessionStartsOneInTheDrilledProjectAndShowsTheTerminal() async throws {
+        let p = try await projectWithFolder()
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: p)
+        vm.pane = .documents
+
+        await vm.newPanelSession()
+
+        let row = try XCTUnwrap(vm.drilledSessions.first)
+        XCTAssertEqual(vm.pane, .terminal)
+        XCTAssertEqual(vm.panelSelection, .session(row.id))
+        XCTAssertEqual(launches.count, 1)
+    }
+
+    func testStandaloneAndProjectSelectionExcludeEachOther() async throws {
+        let p = try await projectWithFolder()
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: p)
+        vm.drilledProjectID = nil
+
+        await vm.newStandalone(kind: .shell, folder: folder)
+        let shell = try XCTUnwrap(vm.standaloneSessions.first)
+        XCTAssertEqual(vm.selectedStandalone?.id, shell.id, "a new terminal goes on screen")
+        XCTAssertNil(vm.selectedProjectID)
+
+        vm.drill(into: p)
+        XCTAssertNil(vm.selectedStandalone)
+
+        await vm.close(shell)
+        await vm.selectStandalone(shell)
+        XCTAssertNil(vm.selectedProjectID)
+        XCTAssertNil(vm.drilledProjectID)
+        XCTAssertEqual(vm.selectedStandalone?.id, shell.id)
+        XCTAssertEqual(vm.selectedStandalone?.isClosed, false, "selecting a closed terminal reopens it")
+        XCTAssertTrue(vm.isLive(shell))
+
+        await vm.delete(shell)
+        XCTAssertNil(vm.selectedStandaloneID, "a deleted terminal leaves the page")
+        XCTAssertTrue(vm.standaloneSessions.isEmpty)
+    }
+
+    /// A session opened from the panel stays on screen when it exits (its
+    /// exit bar offers Restart / Start fresh), even with another one live.
+    func testAnOpenedSessionThatExitsStaysShownOverAnotherLiveOne() async throws {
+        let p = try await projectWithFolder()
+        let live = try await insertSession(.init(
+            projectID: p, kind: .claude, title: "live", folderPath: acme, claudeSessionID: UUID().uuidString.lowercased()
+        ))
+        let failing = try await insertSession(.init(
+            projectID: p, kind: .claude, title: "failing", folderPath: acme, claudeSessionID: UUID().uuidString.lowercased()
+        ))
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: p)
+
+        await vm.showFromPanel(.session(live.id))
+        await vm.showFromPanel(.session(failing.id))
+        processes.last?.exit(1)
+
+        XCTAssertEqual(center.liveIDs, [live.id])
+        XCTAssertEqual(vm.shownSession(projectID: p)?.id, failing.id)
+        XCTAssertEqual(vm.panelSelection, .session(failing.id))
+        XCTAssertEqual(vm.resumeFailed, [failing.id])
+
+        // Send comments pastes into the live one and puts it on screen.
+        vm.pane = .documents
+        vm.showTerminal(sessionID: live.id, projectID: p)
+        XCTAssertEqual(vm.pane, .terminal)
+        XCTAssertEqual(vm.panelSelection, .session(live.id))
+    }
+
+    func testShowingAMissingSessionReportsIt() async throws {
+        let p = try await projectWithFolder()
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: p)
+
+        await vm.showFromPanel(.session(999))
+
+        XCTAssertEqual(vm.sessionErrors[p], "That session no longer exists.")
+        XCTAssertTrue(launches.isEmpty)
+    }
+
+    func testARevealDrillsInAndReplacesAStandaloneTerminal() async throws {
+        let p = try await projectWithFolder()
+        let vm = makeVM()
+        await vm.reload()
+        await vm.newStandalone(kind: .shell, folder: folder)
+        XCTAssertNotNil(vm.selectedStandaloneID)
+
+        vm.reveal(ProjectRoute(projectID: p, pane: .board))
+
+        XCTAssertNil(vm.selectedStandaloneID)
+        XCTAssertEqual(vm.drilledProjectID, p)
+    }
+
+    func testAProjectDeletedElsewhereLeavesTheSelectionAndThePanel() async throws {
+        let p = try await projectWithFolder()
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: p)
+
+        try await pool.write { try $0.execute(sql: "DELETE FROM projects WHERE id = ?", arguments: [p]) }
+        await vm.reload()
+
+        XCTAssertNil(vm.selectedProjectID)
+        XCTAssertNil(vm.drilledProjectID)
+    }
+
+    func testAStandaloneDeletedElsewhereLeavesThePage() async throws {
+        let vm = makeVM()
+        await vm.newStandalone(kind: .shell, folder: folder)
+        let shell = try XCTUnwrap(vm.selectedStandalone)
+
+        try await pool.write { try TerminalSessionQueries.delete($0, id: shell.id) }
+        await vm.loadSessions(projectID: nil)
+
+        XCTAssertNil(vm.selectedStandaloneID)
+    }
 }

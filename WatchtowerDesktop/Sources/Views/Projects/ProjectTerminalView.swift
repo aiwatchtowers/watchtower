@@ -2,21 +2,65 @@ import AppKit
 import SwiftUI
 import WatchtowerCore
 
-/// Terminal pane (spec §6.2). Shows the project's active session from
-/// `AppState.terminalCenter` — the last focused live one, else its most
-/// recently active open row — and never owns the process itself. Interim
-/// until the sessions panel (Task 9) lets the owner pick one.
+/// Terminal pane (spec §6.2). Shows `ProjectsViewModel.shownSession` — the
+/// session the panel last opened, else the last focused live one — from
+/// `AppState.terminalCenter`, and never owns the process itself.
 struct ProjectTerminalView: View {
     let project: Project
     @Environment(AppState.self) private var appState
 
     var body: some View {
+        let vm = appState.projectsViewModel
+        TerminalSessionPane(session: shownSession, error: vm?.sessionErrors[project.id]) {
+            VStack(spacing: 8) {
+                Text("Run Claude Code in \(project.folderPath).").foregroundStyle(.secondary)
+                Button("Start Claude Code") {
+                    Task { await vm?.openMostRecentSession(project: project) }
+                }
+            }
+        }
+        .task(id: project.id) { await vm?.loadSessions(projectID: project.id) }
+    }
+
+    private var shownSession: TerminalSession? {
+        appState.projectsViewModel?.shownSession(projectID: project.id)
+    }
+}
+
+/// A standalone terminal (no project): always the whole page, single pane.
+struct StandaloneTerminalView: View {
+    let session: TerminalSession
+    @Environment(AppState.self) private var appState
+
+    var body: some View {
+        let vm = appState.projectsViewModel
+        TerminalSessionPane(session: session, error: vm?.standaloneSessionError) {
+            VStack(spacing: 8) {
+                Text(session.isClosed ? "\(session.title) is closed." : "\(session.title) is not running.")
+                    .foregroundStyle(.secondary)
+                Button(session.isClosed ? "Reopen" : "Start") {
+                    Task { await vm?.open(session) }
+                }
+            }
+        }
+    }
+}
+
+/// One session's terminal with its state around it: the error line, the
+/// clipboard hint, the exit bar (Restart / Start fresh), or `notStarted`
+/// when the center runs nothing for it.
+private struct TerminalSessionPane<NotStarted: View>: View {
+    let session: TerminalSession?
+    let error: String?
+    @ViewBuilder let notStarted: () -> NotStarted
+    @Environment(AppState.self) private var appState
+
+    var body: some View {
         let center = appState.terminalCenter
-        let session = shownSession(center)
         let state = session.flatMap { center.states[$0.id] }
         let vm = appState.projectsViewModel
         VStack(spacing: 0) {
-            if let error = vm?.sessionErrors[project.id] {
+            if let error {
                 Text(error)
                     .font(.caption)
                     .foregroundStyle(.red)
@@ -37,9 +81,9 @@ struct ProjectTerminalView: View {
                     .padding(8)
                     Divider()
                 }
-                host(center, session)
+                host(center)
             case let .exited(code)?:
-                host(center, session)
+                host(center)
                 Divider()
                 HStack {
                     Text(TerminalLaunch.exitMessage(code: code))
@@ -57,25 +101,13 @@ struct ProjectTerminalView: View {
             case let .unavailable(message)?:
                 Text(message).foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
             case nil:
-                VStack(spacing: 8) {
-                    Text("Run Claude Code in \(project.folderPath).").foregroundStyle(.secondary)
-                    Button("Start Claude Code") {
-                        Task { await vm?.openMostRecentSession(project: project) }
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                notStarted().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .task(id: project.id) { await vm?.loadSessions(projectID: project.id) }
-    }
-
-    private func shownSession(_ center: TerminalCenter) -> TerminalSession? {
-        center.activeSession(projectID: project.id)
-            ?? appState.projectsViewModel?.terminalSessions[project.id]?.first { !$0.isClosed }
     }
 
     @ViewBuilder
-    private func host(_ center: TerminalCenter, _ session: TerminalSession?) -> some View {
+    private func host(_ center: TerminalCenter) -> some View {
         if let session, let process = center.process(for: session.id) {
             TerminalHost(session: process)
         }

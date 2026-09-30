@@ -63,18 +63,37 @@ extension ProjectsViewModel {
     /// is in `sessionLoadErrors`; the cached list is then stale.
     @discardableResult
     func loadSessions(projectID: Int64?) async -> Bool {
+        guard let projectID else { return await loadStandaloneSessions() }
         do {
-            if let projectID {
-                terminalSessions[projectID] = try await dbPool.read {
-                    try TerminalSessionQueries.fetchForProject($0, projectID: projectID)
-                }
-            } else {
-                standaloneSessions = try await dbPool.read { try TerminalSessionQueries.fetchStandalone($0) }
+            terminalSessions[projectID] = try await dbPool.read {
+                try TerminalSessionQueries.fetchForProject($0, projectID: projectID)
             }
             sessionLoadErrors[projectID] = nil
             return true
         } catch {
             sessionLoadErrors[projectID] = "Could not load terminal sessions: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    /// Only the latest read is applied, success or failure: an older one
+    /// finishing last must not undo a newer list, unselect a terminal
+    /// created in between, or show an error over a fresh list.
+    private func loadStandaloneSessions() async -> Bool {
+        standaloneLoads += 1
+        let load = standaloneLoads
+        do {
+            let rows = try await dbPool.read { try TerminalSessionQueries.fetchStandalone($0) }
+            guard load == standaloneLoads else { return true }
+            standaloneSessions = rows
+            if let id = selectedStandaloneID, !rows.contains(where: { $0.id == id }) {
+                selectedStandaloneID = nil
+            }
+            sessionLoadErrors[nil] = nil
+            return true
+        } catch {
+            guard load == standaloneLoads else { return true }
+            sessionLoadErrors[nil] = "Could not load terminal sessions: \(error.localizedDescription)"
             return false
         }
     }
@@ -90,18 +109,20 @@ extension ProjectsViewModel {
         await startNewSession(project: project, title: TerminalSessionNaming.provisional(now: now()))
     }
 
-    /// A terminal outside any project, in `folder`. A shell is named
+    /// A terminal outside any project, in `folder`, put on screen (a
+    /// standalone terminal replaces the project page). A shell is named
     /// mechanically and never gets an AI title.
     func newStandalone(kind: TerminalSession.Kind, folder: URL) async {
         let title = switch kind {
         case .claude: TerminalSessionNaming.provisional(now: now())
         case .shell: TerminalSessionNaming.shell(shellPath: terminalCenter?.shell(), folder: folder.path)
         }
-        await createAndStart(
+        let row = await createAndStart(
             .init(projectID: nil, kind: kind, title: title, folderPath: folder.path,
                   claudeSessionID: kind == .claude ? Self.newClaudeSessionID() : nil),
             prompt: nil
         )
+        if let row { showStandalone(row.id) }
     }
 
     /// Creates a `claude` session row with a new Claude session id and starts
@@ -255,11 +276,13 @@ extension ProjectsViewModel {
             return
         }
         if let projectID = session.projectID { forgetInLayout(session.id, projectID: projectID) }
+        if selectedStandaloneID == session.id { selectedStandaloneID = nil }
         await loadSessions(projectID: session.projectID)
     }
 
     /// An empty name is refused (the title stays as it was).
     func rename(_ session: TerminalSession, to title: String) async {
+        setSessionError(nil, projectID: session.projectID)
         do {
             try await dbPool.write { try TerminalSessionQueries.rename($0, id: session.id, title: title) }
         } catch TerminalSessionQueryError.emptyTitle {
@@ -362,16 +385,19 @@ extension ProjectsViewModel {
         return nil
     }
 
-    private func createAndStart(_ new: TerminalSessionQueries.NewSession, prompt: String?) async {
+    /// The created row, or nil when it could not be written.
+    @discardableResult
+    private func createAndStart(_ new: TerminalSessionQueries.NewSession, prompt: String?) async -> TerminalSession? {
         setSessionError(nil, projectID: new.projectID)
         let row: TerminalSession
         do {
             row = try await dbPool.write { try TerminalSessionQueries.create($0, new) }
         } catch {
             setSessionError("Could not create a terminal session: \(error.localizedDescription)", projectID: new.projectID)
-            return
+            return nil
         }
         await activate(row, fresh: true, prompt: prompt)
+        return row
     }
 
     /// Starts (unless running) and focuses `row`, refreshes its list, shows
@@ -396,6 +422,7 @@ extension ProjectsViewModel {
             center.focus(row.id)
         }
         if let projectID = row.projectID {
+            shownSessionIDs[projectID] = row.id
             var updated = layout(projectID: projectID)
             updated.show(.session(row.id))
             setLayout(updated, projectID: projectID)

@@ -22,6 +22,14 @@ final class ProjectsViewModel {
                 closeDocument()
                 documents = []
             }
+            // One thing is on screen: a project, or a standalone terminal.
+            // Selecting a project also drills the panel into it.
+            if let selectedProjectID {
+                selectedStandaloneID = nil
+                drilledProjectID = selectedProjectID
+            } else {
+                drilledProjectID = nil
+            }
         }
     }
     var pane: ProjectPane = .terminal
@@ -70,7 +78,15 @@ final class ProjectsViewModel {
     /// Standalone terminals (`project_id` NULL), most recently active first.
     var standaloneSessions: [TerminalSession] = []
     /// The left panel's level 2: the project drilled into (nil = level 1).
+    /// Always nil or `selectedProjectID`: selecting a project drills into
+    /// it, Back sets it to nil.
     var drilledProjectID: Int64?
+    /// Per project, the session last opened: its terminal pane keeps showing
+    /// it (exit bar included) until it is closed.
+    var shownSessionIDs: [Int64: Int64] = [:]
+    /// The standalone terminal on screen; mutually exclusive with
+    /// `selectedProjectID` (setting a project clears it).
+    var selectedStandaloneID: Int64?
     /// Sessions whose `--resume` exited non-zero within
     /// `resumeFailureWindow` of launch: the pane offers "Start fresh".
     var resumeFailed: Set<Int64> = []
@@ -95,6 +111,8 @@ final class ProjectsViewModel {
     @ObservationIgnored var openingSession: Set<Int64> = []
     @ObservationIgnored var workingOnTarget: Set<Int64> = []
     @ObservationIgnored var titleTask: Task<Void, Never>?
+    /// Standalone list reads started; only the latest one is applied.
+    @ObservationIgnored var standaloneLoads = 0
     /// The title poll's wait. A seam for tests.
     @ObservationIgnored var titleSleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
 
@@ -174,6 +192,9 @@ final class ProjectsViewModel {
         for id in Self.vanished(previous: previousIDs, current: summaries.map(\.id)) {
             await closeTerminal?(id)
             terminalSessions[id] = nil
+            shownSessionIDs[id] = nil
+            // Deleted elsewhere (CLI): never leave its id selected.
+            if selectedProjectID == id { selectedProjectID = nil }
         }
         if let selectedProjectID { await loadSessions(projectID: selectedProjectID) }
         await loadSessions(projectID: nil)
