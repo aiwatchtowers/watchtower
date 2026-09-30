@@ -47,7 +47,7 @@ var projectShowCmd = &cobra.Command{
 
 var projectBoardCmd = &cobra.Command{
 	Use:   "board <id>",
-	Short: "Print a project's target tree with comment and document counters",
+	Short: "Print a project's target tree (status, priority; siblings by priority) with comment and document counters",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runProjectBoard,
 }
@@ -119,6 +119,7 @@ type boardNodeJSON struct {
 	Title          string                `json:"title"`
 	Intent         string                `json:"intent"`
 	Status         string                `json:"status"`
+	Priority       string                `json:"priority"`
 	Progress       float64               `json:"progress"`
 	NewForAgent    int                   `json:"new_for_agent"`
 	UnreadForOwner int                   `json:"unread_for_owner"`
@@ -152,7 +153,7 @@ func toBoardJSON(nodes []db.BoardNode) []boardNodeJSON {
 	out := make([]boardNodeJSON, 0, len(nodes))
 	for _, n := range nodes {
 		out = append(out, boardNodeJSON{ID: n.Target.ID, Title: n.Target.Text, Intent: n.Target.Intent,
-			Status: n.Target.Status, Progress: n.Target.Progress, NewForAgent: n.NewForAgent,
+			Status: n.Target.Status, Priority: n.Target.Priority, Progress: n.Target.Progress, NewForAgent: n.NewForAgent,
 			UnreadForOwner: n.UnreadForOwner, Documents: toDocumentsJSON(n.Documents), Children: toBoardJSON(n.Children)})
 	}
 	return out
@@ -336,7 +337,7 @@ func runProjectBoard(cmd *cobra.Command, args []string) error {
 
 func printBoard(w io.Writer, nodes []db.BoardNode, depth int) {
 	for _, n := range nodes {
-		fmt.Fprintf(w, "%s#%d [%s] %s\n", strings.Repeat("  ", depth), n.Target.ID, n.Target.Status, n.Target.Text)
+		fmt.Fprintf(w, "%s#%d [%s, %s] %s\n", strings.Repeat("  ", depth), n.Target.ID, n.Target.Status, n.Target.Priority, n.Target.Text)
 		printBoard(w, n.Children, depth+1)
 	}
 }

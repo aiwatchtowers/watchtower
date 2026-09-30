@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -242,6 +243,42 @@ func TestUpdateTarget_ChangesStatusProgressAndText(t *testing.T) {
 		var verr *ValidationError
 		require.ErrorAs(t, err, &verr, args)
 	}
+}
+
+// #104: create_targets takes an optional per-item priority, update_target
+// changes it without touching progress, and project_board reports it with
+// siblings sorted by priority.
+func TestProjectTargets_PriorityOnCreateUpdateAndBoard(t *testing.T) {
+	fx := newProjectFixture(t)
+	reg := projectRegistry(t, fx.d)
+	out := mustApply(t, reg, fx.a, "create_targets",
+		`{"items":[{"text":"Low one","priority":"low"},{"text":"High one","priority":"high"},{"text":"Plain one"}],"reason":"plan"}`)
+	created := out["created"].([]any)
+	id := func(i int) int { return int(created[i].(map[string]any)["target_id"].(float64)) }
+	for i, want := range []string{"low", "high", "medium"} {
+		got, err := fx.d.GetTargetByID(id(i))
+		require.NoError(t, err)
+		assert.Equal(t, want, got.Priority, "item %d", i)
+	}
+
+	mustApply(t, reg, fx.a, "update_target", fmt.Sprintf(
+		`{"target_id":%d,"status":"in_progress","progress":0.3,"reason":"started"}`, id(0)))
+	mustApply(t, reg, fx.a, "update_target", fmt.Sprintf(`{"target_id":%d,"priority":"high","reason":"urgent now"}`, id(0)))
+	got, err := fx.d.GetTargetByID(id(0))
+	require.NoError(t, err)
+	assert.Equal(t, "high", got.Priority)
+	assert.InDelta(t, 0.3, got.Progress, 1e-9, "a priority change leaves progress alone")
+
+	board := callReadIn(t, reg, fx.a, "project_board", `{}`)
+	assert.Contains(t, board, `"priority":"high"`)
+	assert.Less(t, strings.Index(board, "Low one"), strings.Index(board, "Alpha feature"),
+		"a high-priority root sorts before the medium fixture target")
+
+	var verr *ValidationError
+	_, err = proposeIn(t, reg, fx.a, "create_targets", `{"items":[{"text":"X","priority":"urgent"}],"reason":"r"}`)
+	require.ErrorAs(t, err, &verr)
+	_, err = proposeIn(t, reg, fx.a, "update_target", fmt.Sprintf(`{"target_id":%d,"priority":"urgent","reason":"r"}`, id(0)))
+	require.ErrorAs(t, err, &verr)
 }
 
 // I4 (docs/superpowers/sdd/2026-09-29-projects-poc/final-review.md): a

@@ -16,6 +16,7 @@ type newTargetItem struct {
 	Key       string `json:"key,omitempty" jsonschema:"a short handle for this item, unique in the call, so a later item can name it as parent_key"`
 	Text      string `json:"text" jsonschema:"the target title, imperative, at most 200 characters"`
 	Intent    string `json:"intent,omitempty" jsonschema:"why it matters / what done means; for a plan task, the plan path and task number"`
+	Priority  string `json:"priority,omitempty" jsonschema:"high | medium | low; default medium"`
 	ParentID  int64  `json:"parent_id,omitempty" jsonschema:"an existing target of this project to nest under"`
 	ParentKey string `json:"parent_key,omitempty" jsonschema:"the key of an EARLIER item in this call to nest under"`
 }
@@ -38,7 +39,8 @@ func NewCreateTargets() *Tool {
 		Name: "create_targets",
 		Description: "Create targets on this project's board in one all-or-nothing call — e.g. a feature " +
 			"target plus one sub-target per plan task. Nest with parent_id (an existing target of this " +
-			"project) or parent_key (the key of an earlier item in the same call). Applied immediately.",
+			"project) or parent_key (the key of an earlier item in the same call). Optional priority " +
+			"high | medium | low (default medium). Applied immediately.",
 		InputSchema: mustSchema[createTargetsArgs]("create_targets"),
 		Access:      AccessWrite,
 		Surfaces:    projectSurfaces,
@@ -102,7 +104,7 @@ func validateTargetItem(i int, it newTargetItem, earlier map[string]bool) error 
 	case it.ParentKey != "" && !earlier[it.ParentKey]:
 		return &ValidationError{Msg: fmt.Sprintf("items[%d].parent_key %q names no earlier item", i, it.ParentKey)}
 	}
-	return nil
+	return validateEnum(fmt.Sprintf("items[%d].priority", i), it.Priority, targetPriorities...)
 }
 
 // scopeTargetItems checks every parent_id belongs to the bound project.
@@ -147,7 +149,7 @@ func targetInputs(items []newTargetItem) []db.ProjectTargetInput {
 	position := map[string]int{} // key -> 1-based batch position
 	inputs := make([]db.ProjectTargetInput, 0, len(items))
 	for i, it := range items {
-		in := db.ProjectTargetInput{Title: strings.TrimSpace(it.Text), Intent: strings.TrimSpace(it.Intent)}
+		in := db.ProjectTargetInput{Title: strings.TrimSpace(it.Text), Intent: strings.TrimSpace(it.Intent), Priority: it.Priority}
 		if it.ParentKey != "" {
 			in.BatchParent = position[it.ParentKey]
 		} else if it.ParentID != 0 {
@@ -169,16 +171,17 @@ type updateTargetArgs struct {
 	Progress *float64 `json:"progress,omitempty" jsonschema:"0.0 to 1.0; set after status (a status change resets a leaf's progress)"`
 	Text     string   `json:"text,omitempty" jsonschema:"new title, at most 200 characters"`
 	Intent   string   `json:"intent,omitempty" jsonschema:"new intent"`
+	Priority string   `json:"priority,omitempty" jsonschema:"high | medium | low"`
 	Reason   string   `json:"reason" jsonschema:"one sentence: why, e.g. 'task 3 passed review'"`
 }
 
-// NewUpdateTarget changes one project target's status, progress, title or
-// intent.
+// NewUpdateTarget changes one project target's status, progress, title,
+// intent or priority.
 func NewUpdateTarget() *Tool {
 	return &Tool{
 		Name: "update_target",
 		Description: "Change a target on this project's board: status (todo, in_progress, blocked, done, " +
-			"dismissed), progress (0..1), title or intent. Applied immediately.",
+			"dismissed), progress (0..1), title, intent or priority (high, medium, low). Applied immediately.",
 		InputSchema: mustSchema[updateTargetArgs]("update_target"),
 		Access:      AccessWrite,
 		Surfaces:    projectSurfaces,
@@ -214,8 +217,9 @@ func NewUpdateTarget() *Tool {
 }
 
 func validateTargetUpdate(a updateTargetArgs) error {
-	if a.Status == "" && a.Progress == nil && strings.TrimSpace(a.Text) == "" && strings.TrimSpace(a.Intent) == "" {
-		return &ValidationError{Msg: "give at least one of status, progress, text, intent"}
+	if a.Status == "" && a.Progress == nil && a.Priority == "" &&
+		strings.TrimSpace(a.Text) == "" && strings.TrimSpace(a.Intent) == "" {
+		return &ValidationError{Msg: "give at least one of status, progress, text, intent, priority"}
 	}
 	if a.Progress != nil && (*a.Progress < 0 || *a.Progress > 1) {
 		return &ValidationError{Msg: "progress must be between 0 and 1"}
@@ -223,10 +227,16 @@ func validateTargetUpdate(a updateTargetArgs) error {
 	if len([]rune(strings.TrimSpace(a.Text))) > 200 {
 		return &ValidationError{Msg: "text must be at most 200 characters"}
 	}
+	if err := validateEnum("priority", a.Priority, targetPriorities...); err != nil {
+		return err
+	}
 	return validateEnum("status", a.Status, "todo", "in_progress", "blocked", "done", "dismissed")
 }
 
-// applyTargetUpdate writes title/intent, then status, then progress — status
+// targetPriorities mirrors the targets.priority CHECK.
+var targetPriorities = []string{"high", "medium", "low"}
+
+// applyTargetUpdate writes title/intent and priority, then status, then progress — status
 // first because a status change re-derives a leaf's progress — in one
 // transaction, so a failure part-way leaves the target untouched.
 func applyTargetUpdate(d *db.DB, projectID int64, a updateTargetArgs) error {
@@ -237,6 +247,11 @@ func applyTargetUpdate(d *db.DB, projectID int64, a updateTargetArgs) error {
 	return d.WithTx(func(tx *sql.Tx) error {
 		if err := applyTargetText(d, tx, t, a); err != nil {
 			return err
+		}
+		if a.Priority != "" && a.Priority != t.Priority {
+			if err := d.UpdateTargetPriorityTx(tx, t.ID, a.Priority); err != nil {
+				return fmt.Errorf("updating priority: %w", err)
+			}
 		}
 		if a.Status != "" && a.Status != t.Status {
 			if err := d.UpdateTargetStatusTx(tx, t.ID, a.Status); err != nil {

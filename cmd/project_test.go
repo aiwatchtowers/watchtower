@@ -81,7 +81,7 @@ func TestProject_ListShowAndBoardJSON(t *testing.T) {
 	require.NoError(t, database.WithTx(func(tx *sql.Tx) error {
 		var err error
 		ids, err = database.CreateProjectTargetsTx(tx, pid, []db.ProjectTargetInput{
-			{Title: "feature"}, {Title: "task 1", BatchParent: 1},
+			{Title: "feature", Priority: "high"}, {Title: "task 1", BatchParent: 1},
 		})
 		return err
 	}))
@@ -114,9 +114,15 @@ func TestProject_ListShowAndBoardJSON(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(out), &board))
 	require.Len(t, board, 1)
 	assert.Equal(t, "feature", board[0].Title)
+	assert.Equal(t, "high", board[0].Priority)
 	assert.Equal(t, 1, board[0].NewForAgent)
 	require.Len(t, board[0].Children, 1)
 	assert.Equal(t, "in_progress", board[0].Children[0].Status)
+	assert.Equal(t, "medium", board[0].Children[0].Priority)
+
+	out, _, err = runProject(t, "board", strconv.FormatInt(pid, 10))
+	require.NoError(t, err)
+	assert.Contains(t, out, "[todo, high] feature")
 
 	_, _, err = runProject(t, "show", "999")
 	assert.ErrorIs(t, err, db.ErrProjectNotFound)

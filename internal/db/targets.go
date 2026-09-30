@@ -100,6 +100,22 @@ func (db *DB) UpdateTargetTextTx(tx *sql.Tx, id int, text, intent string) error 
 	return updateTargetTextOn(tx, id, text, intent)
 }
 
+// UpdateTargetPriorityTx sets only a target's priority (high, medium, low)
+// inside the caller's transaction, leaving every other field alone.
+func (db *DB) UpdateTargetPriorityTx(tx *sql.Tx, id int, priority string) error {
+	if !targetPriorities[priority] {
+		return fmt.Errorf("invalid target priority %q", priority)
+	}
+	if _, err := tx.Exec(`UPDATE targets SET priority = ?,
+		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`, priority, id); err != nil {
+		return fmt.Errorf("updating target %d priority: %w", id, err)
+	}
+	return nil
+}
+
+// targetPriorities mirrors the targets.priority CHECK.
+var targetPriorities = map[string]bool{"high": true, "medium": true, "low": true}
+
 func updateTargetTextOn(q targetsQuerier, id int, text, intent string) error {
 	_, err := q.Exec(`UPDATE targets SET text = ?, intent = ?,
 		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`,

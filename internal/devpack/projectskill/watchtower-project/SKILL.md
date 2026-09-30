@@ -15,11 +15,11 @@ At session start a hook prints the project brief: counts, the open part of the b
 ## Tools
 
 - `project_info` — name, folder, description, sources, counts.
-- `project_board` — the target tree with ids and statuses, comment counters, attached documents.
+- `project_board` — the target tree with ids, statuses and priorities (siblings sorted by priority, then status), comment counters, attached documents.
 - `update_project` — set the project description.
 - `add_project_source` / `remove_project_source` — a source of kind `slack_channel`, `jira_project`, `confluence_space`, `person` or `link`.
-- `create_targets` — many targets in one call, all or nothing. Each item is `{key?, text, intent?, parent_id? | parent_key?}`: `parent_id` points at an existing target, `parent_key` at another item's `key` in the same call.
-- `update_target` — status (`todo`, `in_progress`, `blocked`, `done`, `dismissed`), progress, title, intent.
+- `create_targets` — many targets in one call, all or nothing. Each item is `{key?, text, intent?, priority?, parent_id? | parent_key?}`: `parent_id` points at an existing target, `parent_key` at another item's `key` in the same call; `priority` is `high`, `medium` (the default) or `low`.
+- `update_target` — status (`todo`, `in_progress`, `blocked`, `done`, `dismissed`), progress, title, intent, priority (`high`, `medium`, `low`).
 - `attach_document` — `rel_path` (relative to this folder, a `.md` or `.txt` file), `kind` (`spec`, `plan` or `doc`), optional `title` and `target_id`. Attaching a path that is already attached marks it revised.
 - `list_comments` — by `target_id`, by `document_id`, or, by default, everything new for you.
 - `add_comment` — on a target (`target_id`), or a reply to a comment (`parent_id`).
@@ -33,12 +33,14 @@ Run this when the owner asks you to set the project up — the first-run prompt 
 2. Read what the folder says about itself: the README, CLAUDE.md or AGENTS.md, and the index of `docs/` if there is one. Skim; do not read the whole tree.
 3. Call `update_project` with a description of two to four sentences: what this is, who it is for, and where it stands now.
 4. Call `add_project_source` for each source the docs **clearly name**: a Slack channel, a Jira project key, a Confluence space, a person who owns part of the work, a key link (repository, design document, dashboard). Never guess a source from a vague mention — list the ones you are unsure of for the owner instead.
-5. Propose a first board in the terminal: three to seven top-level targets for the work that is actually open (from TODOs, open issues the docs name, a roadmap), each with at most a few sub-targets, as a short indented list. Ask the owner whether to create it.
+5. Propose a first board in the terminal: three to seven top-level targets for the work that is actually open (from TODOs, open issues the docs name, a roadmap), each with at most a few sub-targets and a priority (`high` for what should come first, `low` for what can wait, `medium` otherwise), as a short indented list. Ask the owner whether to create it.
 6. Only after the owner agrees — and with their edits — call `create_targets` once with the whole tree. Then show the owner the board with the ids you got back.
 
 During setup, create no targets, attach no documents and add no comments before the owner has answered step 5.
 
 ## Features, specs and plans
+
+Priorities are the owner's ordering of the work: work on the highest-priority open target first, and change a priority only when the owner asks or agrees (`update_target` with `priority`).
 
 - **A feature is agreed** with the owner → `create_targets` with one target for it: text = the feature's name, intent = one or two sentences on what done means. If a target on the board already covers it, use that one instead.
 - **A spec or plan file is written** → `attach_document` with its path, `kind` `spec` or `plan`, and the feature's `target_id`. The owner reviews it in the app.

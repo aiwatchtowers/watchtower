@@ -31,7 +31,7 @@ var projectBriefCmd = &cobra.Command{
 	Use:   "brief",
 	Short: "Print a project's brief for Claude Code (the SessionStart hook body)",
 	Long: "Prints at most 4000 characters: target counts, the open part of the board with\n" +
-		"ids (in progress first, done omitted), comments waiting for the agent, and the\n" +
+		"ids, status and priority (board order, done omitted), comments waiting for the agent, and the\n" +
 		"board rules. Always exits 0 — a hook must never break a session start, so any\n" +
 		"failure (project gone, folder moved, database unreadable) is one line.",
 	// No root schema/config pre-run: a broken config would otherwise fail the
@@ -207,7 +207,7 @@ func briefTargetLines(board []db.BoardNode) []string {
 func briefTargetLine(n db.BoardNode, depth int) string {
 	indent := strings.Repeat("  ", min(depth, 4))
 	t := n.Target
-	line := fmt.Sprintf("- #%d [%s %d%%] %s", t.ID, t.Status, int(math.Round(t.Progress*100)), t.Text)
+	line := fmt.Sprintf("- #%d [%s, %s, %d%%] %s", t.ID, t.Status, t.Priority, int(math.Round(t.Progress*100)), t.Text)
 	if n.NewForAgent > 0 {
 		line += fmt.Sprintf(" (%d new comments)", n.NewForAgent)
 	}
