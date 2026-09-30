@@ -19,6 +19,8 @@ func TierForSource(source string) Tier {
 	case SourceLight, "digest.period", "digest.channel_batch", "people.batch", "customtrack.compose", "customtrack.shortlist", "memory.extract_episodes", "memory.extract_episodes_batch", "memory.extract_email_episodes", "memory.render_channel_digest", "meeting.followup", "ideas.digest_email", "ideas.digest_jira", "dictation.clean", "reactioncmd.command",
 		// chat.title: a ≤60-char title from one exchange — bounded, fixed-shape output
 		"chat.title",
+		// terminal.title: a 3-6 word session name — same bounded shape
+		"terminal.title",
 		// The feedback-comment interpreter: a short comment + a fixed rating
 		// turned into a bounded {rule_type, scope_key, weight, reason} list —
 		// same shape/size class as ideas.digest_email/ideas.digest_jira above,
