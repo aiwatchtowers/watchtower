@@ -938,3 +938,15 @@ Entry format:
 - weak-dimension: 7 — `SlackAuthService` is tested on its query, but its interaction with the pane's other mutators (remove/enable/add) and the Disconnect→logout target selection has no test. Same "helper pinned, call-site glue not" shape as the last four arcs.
 - rule-gap (candidate, dim 6/1): *a derived status on a view (`isConnected`) that sibling controls in the same pane can change must be derived from the observed source (the accounts VM) or refreshed after every mutation. A `.task`-only refresh next to mutating buttons is the tell.*
 - outcome: TBD
+
+## 2026-09-30 — feature/projects-poc / PR #30 (Projects POC: `projects`/project targets/documents/comments, `mcp --project N` DirectApply registry binding, folder install, Desktop Projects tab + embedded terminal, ~38k diff lines; panel: prosecutor + 3 specialists, codex lane DOWN — local codex-cli too old for the account's model; judge ran build/vet/tests on tools/mcp/devpack/briefing/sync/db green; judge synthesis, round 1) — verdict: changes-needed
+
+- contested (held blocker, analyzer 8): the `get_action` project-scope test seeds its "other" row as a plain `surface=main` row, so the `ContextID == projectID` clause of `actionVisible` is never exercised — dropping it keeps the suite green. **A scope test must seed the neighbour that differs ONLY in the scoped key (a second project's row), not a row that fails an earlier clause.** [7]
+- contested (held major, prosecutor-only): F1 — a DirectApply surface that still records `agent_actions` rows for audit feeds every cross-surface reader of that table (Inbox strip, badge). **A new writer into a shared audit table must be checked against every existing reader's population, not just its own `get_action`.** [8]
+- false-positive (dismissed): analyzer's "Swift board() recurses forever on a parent cycle" — the builder descends only from roots, and a cycle can never contain a root. **Before grading an unbounded-recursion claim, check whether the walk's entry set can reach the cycle at all.** [7]
+- false-positive (dismissed): code-reviewer's date bomb on a hardcoded `time.Date` passed as `now` to a pure function — a fixed input with derived expectations cannot rot; only a comparison against the real clock can. [7]
+- needs-human: F3 — the §9 TCC P0 rule has no POC exception, but spec §6.2 accepts the prompt for protected folders with only a creation-time warning (a symptom-level mitigation). Routed to the owner rather than blocked.
+- miss: the owner-text loss in `ProjectDocumentViewModel.addComment` (returns true after a failed write, and the caller clears the draft) came from silent-failure-hunter alone. [9]
+- weak-dimension: 7, "the guard test passes on a clause it does not exercise" — the analyzer caught it, the prosecutor did not.
+- rule-gap (candidate, dim 8): *a new surface writing rows into `agent_actions` (or any table with an owner-facing cross-surface reader) must state, in the same change, whether those readers see the new rows, and add a guard test either way.*
+- outcome: TBD
