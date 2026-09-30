@@ -103,7 +103,7 @@ func TestProject_CreateImportsFolderDocsAndImportDocsIsAdditive(t *testing.T) {
 func TestProject_CreateJSONReportsAFailedImportOnStderr(t *testing.T) {
 	writeActionsConfig(t)
 	folder := t.TempDir()
-	locked := filepath.Join(folder, "docs", "specs")
+	locked := filepath.Join(folder, "docs") // an unreadable docs/ itself fails the import
 	require.NoError(t, os.MkdirAll(locked, 0o755))
 	require.NoError(t, os.Chmod(locked, 0))
 	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })

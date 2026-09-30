@@ -265,4 +265,27 @@ final class ProjectQueriesTests: XCTestCase {
             XCTAssertTrue(snap.ownerTouched.isEmpty)
         }
     }
+
+    /// Migration 00083: an imported document is not "revised" — it leaves the
+    /// badge stamps and is marked imported in the notification snapshot. An
+    /// agent re-attach (origin agent, new updated_at) makes it count again.
+    func testImportedDocumentsStayOffTheBadgeUntilTheAgentReattachesThem() throws {
+        try db.write { d in
+            let p = try TestDatabase.insertProject(d)
+            let doc = try TestDatabase.insertProjectDocument(d, projectID: p, title: "Spec", origin: "import")
+            let project = try XCTUnwrap(ProjectQueries.fetch(d, id: p))
+
+            XCTAssertEqual(try ProjectQueries.summaries(d).first?.documentStamps, [:])
+            XCTAssertEqual(try ProjectQueries.document(d, id: doc)?.isImported, true)
+            let before = try ProjectQueries.activitySnapshot(d, project: project, afterAgentCommentID: 0)
+            XCTAssertEqual(before.documents[doc]?.imported, true)
+
+            try d.execute(sql: """
+                UPDATE project_documents SET origin = 'agent', updated_at = '2026-09-29T13:00:00Z' WHERE id = ?
+                """, arguments: [doc])
+            XCTAssertEqual(try ProjectQueries.summaries(d).first?.documentStamps, [doc: "2026-09-29T13:00:00Z"])
+            let after = try ProjectQueries.activitySnapshot(d, project: project, afterAgentCommentID: 0)
+            XCTAssertEqual(after.documents[doc]?.imported, false)
+        }
+    }
 }

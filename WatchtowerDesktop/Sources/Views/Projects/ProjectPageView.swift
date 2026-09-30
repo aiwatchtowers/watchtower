@@ -67,6 +67,10 @@ struct ProjectPageView: View {
                 if let installError = vm.installErrors[project.id] {
                     Text(installError).font(.caption).foregroundStyle(.red).lineLimit(2)
                 }
+                if let importNote = vm.importNotes[project.id] {
+                    // Selectable: it ends with the command that retries.
+                    Text(importNote).font(.caption).foregroundStyle(.orange).lineLimit(3).textSelection(.enabled)
+                }
             }
             Spacer()
             installBadge

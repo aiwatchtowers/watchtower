@@ -45,14 +45,15 @@ extension TestDatabase {
         kind: String = "plan",
         title: String = "",
         targetID: Int64? = nil,
-        updatedAt: String = "2026-09-29T10:00:00Z"
+        updatedAt: String = "2026-09-29T10:00:00Z",
+        origin: String = "agent"
     ) throws -> Int64 {
         try db.execute(
             sql: """
-                INSERT INTO project_documents (project_id, target_id, rel_path, kind, title, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO project_documents (project_id, target_id, rel_path, kind, title, updated_at, origin)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-            arguments: [projectID, targetID, relPath, kind, title, updatedAt]
+            arguments: [projectID, targetID, relPath, kind, title, updatedAt, origin]
         )
         return db.lastInsertedRowID
     }
