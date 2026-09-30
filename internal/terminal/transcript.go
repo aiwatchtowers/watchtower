@@ -28,6 +28,9 @@ func FindTranscript(claudeDir, sessionID string) (string, error) {
 	if !uuidRe.MatchString(sessionID) {
 		return "", fmt.Errorf("not a session id: %q", sessionID)
 	}
+	if claudeDir == "" {
+		return "", errors.New("claude config dir unknown")
+	}
 	root, err := filepath.EvalSymlinks(filepath.Join(claudeDir, "projects"))
 	if errors.Is(err, fs.ErrNotExist) {
 		return "", fmt.Errorf("%w %s", ErrNoTranscript, sessionID)
@@ -54,30 +57,73 @@ type transcriptLine struct {
 	} `json:"message"`
 }
 
+// maxTranscriptLine bounds one transcript line read into memory; a longer one
+// (a base64 image inside a tool result) is skipped, never an error.
+var maxTranscriptLine = 8 * 1024 * 1024
+
 // OwnerMessages returns the owner's typed text, oldest first, joined by
 // newlines and capped at capChars runes: meta lines, slash-command echoes,
 // tool results and assistant text are left out.
 func OwnerMessages(r io.Reader, capChars int) (string, error) {
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	br := bufio.NewReaderSize(r, 64*1024)
 	var parts []string
 	total := 0
-	for sc.Scan() && total < capChars {
-		var l transcriptLine
-		if json.Unmarshal(sc.Bytes(), &l) != nil || l.Type != "user" || l.IsMeta || l.Message.Role != "user" {
-			continue
+	for total < capChars {
+		line, err := readLine(br, maxTranscriptLine)
+		if err != nil && err != io.EOF {
+			return "", fmt.Errorf("reading transcript: %w", err)
 		}
-		text := strings.TrimSpace(ownerText(l.Message.Content))
-		if text == "" || strings.HasPrefix(text, "<") {
-			continue
+		if line != nil {
+			if text := ownerLineText(line); text != "" {
+				parts = append(parts, text)
+				total += utf8.RuneCountInString(text) + 1
+			}
 		}
-		parts = append(parts, text)
-		total += utf8.RuneCountInString(text) + 1
-	}
-	if err := sc.Err(); err != nil {
-		return "", fmt.Errorf("reading transcript: %w", err)
+		if err == io.EOF {
+			break
+		}
 	}
 	return truncateRunes(strings.Join(parts, "\n"), capChars), nil
+}
+
+// readLine returns the next line, or nil when it is longer than limit (the
+// rest of it is consumed). err is io.EOF with the final line, if any.
+func readLine(br *bufio.Reader, limit int) ([]byte, error) {
+	var buf []byte
+	tooLong := false
+	for {
+		chunk, isPrefix, err := br.ReadLine()
+		if err != nil {
+			if tooLong || len(buf) == 0 {
+				return nil, err
+			}
+			return buf, err
+		}
+		if !tooLong {
+			buf = append(buf, chunk...)
+			if len(buf) > limit {
+				tooLong, buf = true, nil
+			}
+		}
+		if !isPrefix {
+			if tooLong {
+				return nil, nil
+			}
+			return buf, nil
+		}
+	}
+}
+
+func ownerLineText(line []byte) string {
+	var l transcriptLine
+	if json.Unmarshal(line, &l) != nil || l.Type != "user" || l.IsMeta || l.Message.Role != "user" {
+		return ""
+	}
+	text := strings.TrimSpace(ownerText(l.Message.Content))
+	if strings.HasPrefix(text, "<") {
+		return ""
+	}
+	return text
 }
 
 func ownerText(raw json.RawMessage) string {

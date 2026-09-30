@@ -1,6 +1,7 @@
 package terminal
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -72,5 +73,38 @@ func TestFindTranscript_FindsRegularFile(t *testing.T) {
 	}
 	if _, err := FindTranscript(dir, id); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestOwnerMessages_SkipsOversizedLine(t *testing.T) {
+	old := maxTranscriptLine
+	maxTranscriptLine = 200
+	t.Cleanup(func() { maxTranscriptLine = old })
+	in := strings.Join([]string{
+		`{"type":"user","message":{"role":"user","content":"first"}}`,
+		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"` + strings.Repeat("A", 100000) + `"}]}}`,
+		`{"type":"user","message":{"role":"user","content":"last"}}`,
+	}, "\n")
+	got, err := OwnerMessages(strings.NewReader(in), 2000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "first\nlast" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestFindTranscript_EmptyClaudeDirIsAnErrorNotCwd(t *testing.T) {
+	id := "3f2a1b4c-0000-4000-8000-000000000003"
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if err := os.MkdirAll(filepath.Join(dir, "projects", "x"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "projects", "x", id+".jsonl"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := FindTranscript("", id); err == nil || errors.Is(err, ErrNoTranscript) {
+		t.Fatalf("want a hard error, got %v", err)
 	}
 }

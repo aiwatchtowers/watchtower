@@ -139,3 +139,15 @@ func TestTerminalTitle_UnknownIDFails(t *testing.T) {
 	_, err := runTerminalTitleCmd(t, 9999)
 	require.Error(t, err)
 }
+
+func TestTerminalTitle_UnknownClaudeDirIsAnError(t *testing.T) {
+	defer setupWatchTestEnv(t)()
+	gen := &chatTitleMockGen{reply: "x"}
+	stubTerminalTitleGenerator(t, gen)
+	id := seedTerminalSession(t, "auto", "claude", terminalOwnerLine)
+	terminalClaudeDir = func() string { return "" }
+
+	_, err := runTerminalTitleCmd(t, id)
+	require.Error(t, err)
+	assert.Zero(t, gen.calls)
+}
