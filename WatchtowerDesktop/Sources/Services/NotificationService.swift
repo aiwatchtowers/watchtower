@@ -136,6 +136,23 @@ final class NotificationService: Sendable {
         UNUserNotificationCenter.current().add(request)
     }
 
+    /// One push per update version (`UpdateService.noteAvailable` keeps the
+    /// memo); clicking it opens Settings → System.
+    func sendUpdateAvailableNotification(version: String) {
+        let content = UNMutableNotificationContent()
+        content.title = "Watchtower update available"
+        content.body = "Version \(version) is ready to download in Settings → System."
+        content.sound = .default
+        content.userInfo = ["type": "update"]
+
+        let request = UNNotificationRequest(
+            identifier: "update-\(fnv1aHash(version))",
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(request)
+    }
+
     func sendBoardConfigChangedNotification(boardName: String) {
         let content = UNMutableNotificationContent()
         content.title = "Board configuration changed"

@@ -116,12 +116,8 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
             } else {
                 appState?.selectedDestination = .digests
             }
-        case "track", "track_update":
-            appState?.selectedDestination = .tracks
-        case "task_overdue", "target_extract":
-            appState?.selectedDestination = .targets
-        case "daily_summary":
-            appState?.selectedDestination = .digests
+        case "track", "track_update", "task_overdue", "target_extract", "daily_summary", "update":
+            routeNavigation(userInfo["type"] as? String, appState: appState)
         case "voice_label":
             if let id = userInfo["transcriptID"] as? Int64 ?? (userInfo["transcriptID"] as? NSNumber)?.int64Value {
                 await appState?.voiceRegistryCenter.open(.queue(transcriptID: id))
@@ -161,6 +157,27 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
                 // drop an explicit Stop-recording intent silently.
                 print("[MeetingReminder] stop-recording action dropped: appState unavailable")
             }
+        default:
+            break
+        }
+    }
+
+    /// Pushes whose click only moves the UI — no `forwarded` gate needed.
+    /// Split out of `route` to keep its complexity in bounds.
+    @MainActor
+    static func routeNavigation(_ type: String?, appState: AppState?) {
+        switch type {
+        case "track", "track_update":
+            appState?.selectedDestination = .tracks
+        case "task_overdue", "target_extract":
+            appState?.selectedDestination = .targets
+        case "daily_summary":
+            appState?.selectedDestination = .digests
+        case "update":
+            // An update push opens Settings → System, where it installs.
+            ActivationPolicyDecision.becomeRegularAndActivate()
+            appState?.settingsTab = .system
+            appState?.openSettingsWindow?()
         default:
             break
         }
@@ -259,6 +276,7 @@ struct WatchtowerApp: App {
     /// tray button — so the global hotkey's plain C callback (no SwiftUI
     /// environment of its own) has something to call through `AppState`.
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
     private let notificationDelegate: NotificationDelegate
     private let isDuplicate: Bool
 
@@ -344,6 +362,7 @@ struct WatchtowerApp: App {
                 appState.initialize()
                 appState.openQuickCapture = { openWindow(id: QuickCaptureView.sceneID) }
                 appState.openVoicesWindow = { openWindow(id: VoicesWindowView.sceneID) }
+                appState.openSettingsWindow = { openSettings() }
                 appState.voiceRegistryCenter.openWindow = {
                     ActivationPolicyDecision.becomeRegularAndActivate()
                     appState.openVoicesWindow?()
@@ -452,6 +471,7 @@ struct WatchtowerApp: App {
                 .onAppear {
                     appState.openQuickCapture = { openWindow(id: QuickCaptureView.sceneID) }
                     appState.openVoicesWindow = { openWindow(id: VoicesWindowView.sceneID) }
+                    appState.openSettingsWindow = { openSettings() }
                     appState.voiceRegistryCenter.openWindow = {
                         ActivationPolicyDecision.becomeRegularAndActivate()
                         appState.openVoicesWindow?()

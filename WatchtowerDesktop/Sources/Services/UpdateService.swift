@@ -85,7 +85,6 @@ final class UpdateService {
     }
 
     private static let repo = "aiwatchtowers/watchtower"
-    private static let lastCheckKey = "lastUpdateCheckDate"
 
     /// Build flavor stamped into Info.plist by build-app.sh (WTBuildFlavor;
     /// absent on default builds). A flavored build carries a different baked-in
@@ -154,7 +153,7 @@ final class UpdateService {
             let current = Constants.appVersion
             guard Self.isNewer(release.tagName, than: current) else {
                 state = .idle
-                UserDefaults.standard.set(Date(), forKey: Self.lastCheckKey)
+                availableVersion = nil
                 return
             }
 
@@ -174,7 +173,7 @@ final class UpdateService {
                 notes: release.body ?? "",
                 downloadURL: url
             )
-            UserDefaults.standard.set(Date(), forKey: Self.lastCheckKey)
+            noteAvailable(version: release.tagName)
         } catch {
             state = .error(error.localizedDescription)
         }
@@ -197,7 +196,7 @@ final class UpdateService {
 
             guard Self.isNewer(manifest.version, than: Constants.appVersion) else {
                 state = .idle
-                UserDefaults.standard.set(Date(), forKey: Self.lastCheckKey)
+                availableVersion = nil
                 return
             }
 
@@ -210,7 +209,7 @@ final class UpdateService {
                 notes: manifest.notes ?? "",
                 downloadURL: downloadURL
             )
-            UserDefaults.standard.set(Date(), forKey: Self.lastCheckKey)
+            noteAvailable(version: manifest.version)
         } catch {
             state = .error(error.localizedDescription)
         }
@@ -232,13 +231,74 @@ final class UpdateService {
         return data
     }
 
-    /// Check if 24 hours have passed since last check, and if so, check for updates.
-    func checkIfNeeded() async {
-        if let last = UserDefaults.standard.object(forKey: Self.lastCheckKey) as? Date,
-           Date().timeIntervalSince(last) < 86400 {
-            return
+    // MARK: - Periodic Checks
+
+    /// How often a running app re-checks its channel. The app lives in the
+    /// tray for weeks (login item), so a launch-only check never announces
+    /// anything. 6 h, not hourly: the public channel hits the unauthenticated
+    /// GitHub API (60 requests/hour per IP, shared behind an office NAT).
+    nonisolated static let checkInterval: Duration = .seconds(6 * 60 * 60)
+
+    private static let lastAnnouncedVersionKey = "lastAnnouncedUpdateVersion"
+
+    /// Where the announced-version memo lives. Instance property so tests can
+    /// inject an isolated suite.
+    var defaults: UserDefaults = .standard
+
+    /// Posts the one "update available" notification for a version.
+    /// Instance property so tests can record instead of posting.
+    var announce: (String) -> Void = { NotificationService.shared.sendUpdateAvailableNotification(version: $0) }
+
+    /// Version of the update the last check found; nil when none. Survives
+    /// `.downloading`/`.readyToInstall`, which carry no version of their own.
+    private(set) var availableVersion: String?
+
+    private var periodicTask: Task<Void, Never>?
+
+    var isPeriodicCheckRunning: Bool { periodicTask != nil }
+
+    /// Check now (every launch — no throttle), then every `checkInterval`
+    /// while the app runs. Idempotent. A build without an update channel
+    /// starts nothing at all.
+    func startPeriodicChecks(
+        sleep: @escaping (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+    ) {
+        guard updatesSupported, periodicTask == nil else { return }
+        periodicTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                if Self.shouldAutoCheck(state: self.state) {
+                    await self.checkForUpdates()
+                }
+                do { try await sleep(Self.checkInterval) } catch { return }
+            }
         }
-        await checkForUpdates()
+    }
+
+    /// Whether a background check may run now. Never while a check, download
+    /// or install is in flight (the check would overwrite that state), and
+    /// not once an update was found: re-checking would only risk replacing a
+    /// good `.available` with a transient network error.
+    nonisolated static func shouldAutoCheck(state: UpdateState) -> Bool {
+        switch state {
+        case .idle, .error: true
+        case .checking, .available, .downloading, .readyToInstall, .installing, .restartRequired: false
+        }
+    }
+
+    /// One notification per version, ever: the memo outlives relaunches so a
+    /// check every launch does not repeat the same push.
+    nonisolated static func shouldAnnounce(version: String, lastAnnounced: String?) -> Bool {
+        version != lastAnnounced
+    }
+
+    /// Record a found update and announce it once per version.
+    func noteAvailable(version: String) {
+        availableVersion = version
+        let last = defaults.string(forKey: Self.lastAnnouncedVersionKey)
+        guard Self.shouldAnnounce(version: version, lastAnnounced: last) else { return }
+        defaults.set(version, forKey: Self.lastAnnouncedVersionKey)
+        announce(version)
     }
 
     // MARK: - Download
@@ -322,8 +382,8 @@ final class UpdateService {
         /// Best-effort removal of whatever is left of the staged app.
         var discard: (_ stagedApp: URL) -> Void
 
-        static var live: InstallSteps {
-            InstallSteps(
+        static var live: Self {
+            Self(
                 stage: { try UpdateService.stageForReplacement(newApp: $0, currentApp: $1) },
                 verify: { try UpdateService.verifySignature(of: $0, teamID: $1) },
                 stopDaemon: { await DaemonManager.stopDaemonBounded() },

@@ -284,22 +284,22 @@ private final class InstallRecorder {
 
     var steps: UpdateService.InstallSteps {
         UpdateService.InstallSteps(
-            stage: { [unowned self] _, _ in
-                calls.append("stage")
-                if failStage { throw Boom(what: "stage") }
+            stage: { _, _ in
+                self.calls.append("stage")
+                if self.failStage { throw Boom(what: "stage") }
                 return URL(fileURLWithPath: "/staged/Watchtower.app")
             },
-            verify: { [unowned self] _, team in
-                calls.append("verify")
-                verifiedTeamID = team
-                if failVerify { throw Boom(what: "verify") }
+            verify: { _, team in
+                self.calls.append("verify")
+                self.verifiedTeamID = team
+                if self.failVerify { throw Boom(what: "verify") }
             },
-            stopDaemon: { [unowned self] in calls.append("stopDaemon") },
-            replace: { [unowned self] _, _ in
-                calls.append("replace")
-                if failReplace { throw Boom(what: "replace") }
+            stopDaemon: { self.calls.append("stopDaemon") },
+            replace: { _, _ in
+                self.calls.append("replace")
+                if self.failReplace { throw Boom(what: "replace") }
             },
-            discard: { [unowned self] _ in calls.append("discard") }
+            discard: { _ in self.calls.append("discard") }
         )
     }
 }
@@ -397,14 +397,14 @@ struct UpdateServiceInstallMechanicsTests {
     private func setQuarantine(_ url: URL) {
         let value = Array("0081;00000000;Test;".utf8)
         let status = url.withUnsafeFileSystemRepresentation { path in
-            setxattr(path!, Self.quarantine, value, value.count, 0, XATTR_NOFOLLOW)
+            path.map { setxattr($0, Self.quarantine, value, value.count, 0, XATTR_NOFOLLOW) } ?? -1
         }
         #expect(status == 0)
     }
 
     private func hasQuarantine(_ url: URL) -> Bool {
         url.withUnsafeFileSystemRepresentation { path in
-            getxattr(path!, Self.quarantine, nil, 0, 0, XATTR_NOFOLLOW) >= 0
+            path.map { getxattr($0, Self.quarantine, nil, 0, 0, XATTR_NOFOLLOW) >= 0 } ?? false
         }
     }
 
@@ -484,5 +484,94 @@ struct UpdateServiceInstallMechanicsTests {
         process.waitUntilExit()
         #expect(process.terminationStatus == 0)
         #expect(String(data: data, encoding: .utf8) == "/nonexistent/X.app\n")
+    }
+}
+
+@Suite("UpdateService Periodic Checks")
+@MainActor
+struct UpdateServicePeriodicTests {
+    private func isolatedDefaults() -> UserDefaults {
+        let name = "wt-update-tests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: name) ?? .standard
+        defaults.removePersistentDomain(forName: name)
+        return defaults
+    }
+
+    @Test("check interval is six hours")
+    func interval() {
+        #expect(UpdateService.checkInterval == .seconds(6 * 60 * 60))
+    }
+
+    @Test("background checks never clobber an in-flight or found update")
+    func autoCheckDecision() {
+        let url = URL(string: "https://example.com/x.zip")!
+        #expect(UpdateService.shouldAutoCheck(state: .idle))
+        #expect(UpdateService.shouldAutoCheck(state: .error("offline")))
+        #expect(!UpdateService.shouldAutoCheck(state: .checking))
+        #expect(!UpdateService.shouldAutoCheck(state: .available(version: "1", notes: "", downloadURL: url)))
+        #expect(!UpdateService.shouldAutoCheck(state: .downloading(progress: 0.5)))
+        #expect(!UpdateService.shouldAutoCheck(state: .readyToInstall(appPath: URL(fileURLWithPath: "/tmp/x"))))
+        #expect(!UpdateService.shouldAutoCheck(state: .installing))
+        #expect(!UpdateService.shouldAutoCheck(state: .restartRequired))
+    }
+
+    @Test("a build without an update channel starts no loop")
+    func disabledChannelIsSilent() {
+        let svc = UpdateService()
+        svc.buildFlavor = "dev"
+        var slept = false
+        svc.startPeriodicChecks { _ in slept = true }
+        #expect(!svc.isPeriodicCheckRunning)
+        #expect(!slept)
+    }
+
+    @Test("the loop re-arms on the interval and skips the check while busy")
+    func loopSleepsOnInterval() async {
+        let svc = UpdateService()
+        svc.buildFlavor = ""
+        // Busy state: the loop must not start a (network) check.
+        svc.state = .downloading(progress: 0.3)
+        var sleeps: [Duration] = []
+        await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+            svc.startPeriodicChecks { duration in
+                sleeps.append(duration)
+                if sleeps.count == 2 {
+                    done.resume()
+                    throw CancellationError()
+                }
+            }
+        }
+        #expect(sleeps == [UpdateService.checkInterval, UpdateService.checkInterval])
+        #expect(svc.state == .downloading(progress: 0.3))
+        #expect(svc.isPeriodicCheckRunning)
+    }
+
+    @Test("an update is announced once per version, across service instances")
+    func announceOncePerVersion() {
+        let defaults = isolatedDefaults()
+        var announced: [String] = []
+
+        let first = UpdateService()
+        first.defaults = defaults
+        first.announce = { announced.append($0) }
+        first.noteAvailable(version: "v1.1.0")
+        first.noteAvailable(version: "v1.1.0")
+        #expect(first.availableVersion == "v1.1.0")
+
+        // A relaunch (new instance, same defaults) finds the same version again.
+        let relaunched = UpdateService()
+        relaunched.defaults = defaults
+        relaunched.announce = { announced.append($0) }
+        relaunched.noteAvailable(version: "v1.1.0")
+        relaunched.noteAvailable(version: "v1.2.0")
+
+        #expect(announced == ["v1.1.0", "v1.2.0"])
+    }
+
+    @Test("shouldAnnounce compares against the last announced version")
+    func shouldAnnounceDecision() {
+        #expect(UpdateService.shouldAnnounce(version: "v1.0.0", lastAnnounced: nil))
+        #expect(UpdateService.shouldAnnounce(version: "v1.0.1", lastAnnounced: "v1.0.0"))
+        #expect(!UpdateService.shouldAnnounce(version: "v1.0.0", lastAnnounced: "v1.0.0"))
     }
 }

@@ -115,6 +115,11 @@ final class AppState {
     /// window itself is Task 12; this call just exposes the hook.
     var openVoicesWindow: (() -> Void)?
 
+    /// Opens the Settings window (the `openQuickCapture` shape) for callers
+    /// with no SwiftUI environment — the update notification's click handler.
+    /// Set by the scene once `@Environment(\.openSettings)` is available.
+    var openSettingsWindow: (() -> Void)?
+
     /// App-wide, single-slot registry for meeting-recording audio playback, so
     /// only one recording's audio plays at a time regardless of how many
     /// transcript rows are expanded across the app.
@@ -626,8 +631,9 @@ final class AppState {
                 isLoading = false
             }
         }
-        // Check for updates in background (once per 24h)
-        Task { await updateService.checkIfNeeded() }
+        // Check for updates now and every UpdateService.checkInterval while
+        // running (a no-op for builds without an update channel).
+        updateService.startPeriodicChecks()
         // No DB dependency, so this does not wait on the DB-open Task above
         // (Settings → Features may be reached before that Task resolves).
         // Every successful service load (launch, post-apply, failure-path
