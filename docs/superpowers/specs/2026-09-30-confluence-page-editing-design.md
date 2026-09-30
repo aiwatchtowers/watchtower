@@ -337,6 +337,28 @@ sections above are the original design and are not rewritten to match.
   Confluence). Guards: `TestEXT05_SectionRewriteKeepsUntouchedBlocksByteExact`
   and `FuzzApply`'s "own text plus one paragraph changes nothing else"
   property.
+- **R14 (local review round 3, section-wide lossy deletion):** R13's
+  per-gap candidate rule kept missing pairings across a match (a rich
+  block moved and edited, duplicate texts, a `<br/>` paragraph split into
+  edited blocks). It is replaced by one post-merge check over the whole
+  section: every original is kept (matched or moved), derived (checked by
+  the representability test) or deleted, and a deleted original markdown
+  cannot carry faithfully (the same test, including text that reads back
+  as several or other blocks) refuses the edit with the R11 message while
+  any changed block — derived or new — of its kind is anywhere in the
+  section; for an original whose text reads as another kind, any changed
+  block counts. A deletion with no such block stays allowed (the diff
+  shows it). Two refinements: a run of new blocks elsewhere in the section
+  joining to a multi-block original's text is a move (bytes kept), and of
+  two same-text, same-kind originals the merge keeps the rich one when it
+  would otherwise delete it. This is stricter than a literal reading that
+  exempts changed blocks derived from a faithful original: a changed block
+  of the rich block's kind may be its edit whichever original the merge
+  derived it from, and R13's guard (delete plain, edit aligned) relies on
+  that. Guards: `TestEXT05_SectionRewriteNeverDropsRichBlockSilently`,
+  property `FuzzSectionMerge`. Also in round 3: the "already saved"
+  comparison strips `local-id` attributes from start tags only, never
+  from text or CDATA.
 - **R13 (local review round 2, section merge):** the R11 merge must never
   lose formatting through pairing or reordering. A new block whose text
   equals an unmatched original's anywhere in the section was moved, not

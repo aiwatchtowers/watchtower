@@ -156,7 +156,8 @@ sha256 of its storage still equals `base_hash` (a change that did not bump
 the version is caught too) — else it fails with `conflict: the page was
 edited after the preview (now vN); nothing was written`, or, when the page is
 exactly one version on and its storage is this edit's once the `local-id`
-attributes Confluence stamps on save are stripped (its own earlier PUT
+attributes Confluence stamps on save are stripped from start tags (never
+from text or CDATA) (its own earlier PUT
 whose response was lost), `this edit is already saved (vN); nothing was
 written now`, or, one version on with any other storage, the hedged
 `conflict: the page is now vN (one version after your preview) — this edit
@@ -175,8 +176,11 @@ change to a block whose formatting markdown cannot carry (attributes on a
 paragraph/heading/list/table, column widths, noformat, code-macro parameters
 other than the language, a multi-paragraph list item, formatting-like
 characters in its text), or a change that could have been made to such a
-block (it is unmatched in the same gap as a changed block of its kind,
-R13). Edits are capped at 20 per call, 60 000 runes per text
+block: a deleted block markdown cannot carry faithfully refuses the edit
+while any changed block of its kind is anywhere in the section (ruling R14,
+one post-merge check over the whole section, superseding R13's per-gap
+rule). Such a block is deleted only when no changed block of its kind is
+in the section, and the diff shows it. Edits are capped at 20 per call, 60 000 runes per text
 field and 120 000 per call; a page whose editable text exceeds 60 000 runes
 is shown truncated and its hidden tail cannot be changed. Without the opt-in
 write scopes the tool refuses before any network call: `Confluence editing
@@ -216,6 +220,16 @@ mounted only in chat mode, never on the dev-mode MCP surface (DEV-01).
   macro, a wide table); deleting a plain paragraph while changing an
   aligned one in the same gap is refused, never re-paired so the aligned
   one is silently deleted.
+- `TestEXT05_SectionRewriteNeverDropsRichBlockSilently`
+  (`internal/confluenceedit/apply_r14_test.go`, ruling R14) — a rich block
+  (aligned paragraph, titled code macro, wide table, a paragraph whose
+  `<br/>`s read as several blocks) moved and edited, deleted while a
+  same-kind block elsewhere in the section changes, or one of two
+  same-text blocks edited, is refused with the block named. `FuzzSectionMerge`
+  (`apply_section_fuzz_test.go`) extends it to arbitrary input: permuting a
+  section's blocks, editing one and dropping one either is refused or keeps
+  the bytes of every block markdown cannot carry, unless that block is the
+  one dropped and no edited block of its kind remains.
 - `TestEXT05_OnlyEditToolReachesPut`
   (`internal/tools/confluence_contracts_test.go`) — an AST scan of every
   non-test Go file of the module (scan floor 300 files) pins the production
@@ -233,6 +247,15 @@ every Confluence hit's `link` is the page or attachment URL.
 
 ## Changelog
 
+- 2026-09-30 (local-review round 3, ruling R14): the section merge's
+  lossy-deletion rule is section-wide — a deleted block markdown cannot
+  carry faithfully refuses the edit while any changed block of its kind is
+  anywhere in the section (R13's per-gap check missed a rich block moved
+  and edited across a match). A moved multi-block paragraph keeps its
+  bytes; of two same-text blocks the rich one is kept. The "already saved"
+  comparison strips `local-id` from start tags only. Guard
+  `TestEXT05_SectionRewriteNeverDropsRichBlockSilently` and property
+  `FuzzSectionMerge` added; none weakened.
 - 2026-09-30 (local-review round 2, ruling R13): a `replace_section`
   block the new body only moves re-emits its original bytes, and a gap that
   deletes or changes several blocks of one kind refuses when any of them is
