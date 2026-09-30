@@ -246,6 +246,8 @@ final class AppState {
     /// Projects tab (spec §6). Owned here so create/repair and the selection
     /// survive navigation.
     private(set) var projectsViewModel: ProjectsViewModel?
+    /// Owner notifications for project activity; polls every 30 s.
+    private(set) var projectNotificationCenter: ProjectNotificationCenter?
     /// Set by `navigateToProject`; `ProjectsView` consumes and clears it.
     var pendingProjectRoute: ProjectRoute?
 
@@ -928,14 +930,23 @@ final class AppState {
     /// `initSecretaryProfile` precedent) to prove it survives navigation.
     func initProjects(
         dbPool: DatabasePool,
-        cliRunner: (any CLIRunnerProtocol)? = ProcessCLIRunner.makeDefault()
+        cliRunner: (any CLIRunnerProtocol)? = ProcessCLIRunner.makeDefault(),
+        notifier: ProjectNotifying = NotificationService.shared
     ) {
         let vm = ProjectsViewModel(dbPool: dbPool, cli: cliRunner.map { ProjectCLI(runner: $0) })
-        vm.onProjectCreated = { [weak self] project in
+        let notices = ProjectNotificationCenter(dbPool: dbPool, notifier: notifier)
+        vm.onProjectCreated = { [weak self, weak notices] project in
+            notices?.seedBaseline(project: project)
             self?.projectTerminalCenter.start(project: project, firstRun: true)
         }
+        vm.onOwnerWrite = { [weak notices] projectID, subject in
+            notices?.recordOwnerWrite(projectID: projectID, subject: subject)
+        }
+        notices.onPolled = { [weak vm] in await vm?.reload() }
         projectsViewModel = vm
-        Task { await vm.reload() }
+        projectNotificationCenter = notices
+        // The first poll also loads the list (onPolled → reload).
+        notices.start()
     }
 
     func initGoogleAccounts(dbPool: DatabasePool) {

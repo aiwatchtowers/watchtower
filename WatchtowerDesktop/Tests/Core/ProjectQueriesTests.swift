@@ -178,4 +178,27 @@ final class ProjectQueriesTests: XCTestCase {
             XCTAssertEqual(items[1].openComments, 0)
         }
     }
+
+    func testActivitySnapshotCollectsAgentQuestionsDocumentsAndTargets() throws {
+        try db.write { d in
+            let p = try TestDatabase.insertProject(d)
+            let t = try TestDatabase.insertProjectTarget(d, projectID: p, text: "Task 1", status: "in_progress")
+            let old = try TestDatabase.insertProjectComment(d, projectID: p, body: "old?", targetID: t)
+            let owner = try TestDatabase.insertProjectComment(d, projectID: p, author: "owner", body: "mine", targetID: t)
+            let reply = try TestDatabase.insertProjectComment(d, projectID: p, body: "a reply", targetID: t, parentID: owner)
+            let fresh = try TestDatabase.insertProjectComment(d, projectID: p, body: "new?", targetID: t)
+            let doc = try TestDatabase.insertProjectDocument(d, projectID: p, title: "Plan", updatedAt: "2026-09-29T12:00:00Z")
+            _ = try TestDatabase.insertProjectComment(d, projectID: p, author: "owner", documentID: doc, quote: "x")
+            let project = try XCTUnwrap(ProjectQueries.fetch(d, id: p))
+
+            let snap = try ProjectQueries.activitySnapshot(d, project: project, afterAgentCommentID: old)
+            XCTAssertEqual(snap.projectName, "acme")
+            XCTAssertEqual(snap.questions.map(\.id), [fresh], "agent roots past the watermark; not owner comments, not replies (\(reply))")
+            XCTAssertEqual(snap.questions.first?.targetTitle, "Task 1")
+            XCTAssertEqual(snap.lastAgentCommentID, fresh)
+            XCTAssertEqual(snap.documents[doc], .init(title: "Plan", updatedAt: "2026-09-29T12:00:00Z", openOwnerComments: 1))
+            XCTAssertEqual(snap.targets[t], .init(title: "Task 1", status: "in_progress"))
+            XCTAssertTrue(snap.ownerTouched.isEmpty)
+        }
+    }
 }

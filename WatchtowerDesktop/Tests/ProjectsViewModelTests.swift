@@ -145,7 +145,7 @@ final class ProjectsViewModelTests: XCTestCase {
         let held = HeldCLIRunner(stdout: createdJSON(id))
         let appState = AppState()
         appState.projectTerminalCenter.makeSession = { FakeTerminalSession() }
-        appState.initProjects(dbPool: pool, cliRunner: held)
+        appState.initProjects(dbPool: pool, cliRunner: held, notifier: RecordingProjectNotifier())
         let vm = try XCTUnwrap(appState.projectsViewModel)
         appState.selectedDestination = .projects
 

@@ -224,6 +224,25 @@ final class NotificationService: Sendable {
         UNUserNotificationCenter.current().add(request)
     }
 
+    /// Project activity (spec §6.5). The identifier comes from the policy and
+    /// is stable per event, so a re-post replaces rather than stacks; the
+    /// payload deep-links to the project pane (`NotificationDelegate.route`).
+    func sendProjectNotice(_ notice: ProjectNotice) {
+        let content = UNMutableNotificationContent()
+        content.title = notice.title
+        content.body = String(notice.body.prefix(200))
+        content.sound = .default
+        var info: [String: Any] = [
+            "type": "project",
+            "projectId": notice.route.projectID,
+            "pane": notice.route.pane.rawValue
+        ]
+        if let subject = notice.route.subjectID { info["subjectId"] = subject }
+        content.userInfo = info
+        let request = UNNotificationRequest(identifier: notice.identifier, content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(request)
+    }
+
     /// Pre-meeting reminder. With a conference link the push carries the
     /// Join / Join + Record action category; without one it is plain. The
     /// dedup key (event id + start time) makes the identifier stable, so a
