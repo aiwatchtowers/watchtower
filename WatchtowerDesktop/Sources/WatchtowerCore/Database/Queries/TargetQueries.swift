@@ -223,6 +223,8 @@ package enum TargetQueries {
         aiLevelConfidence: Double? = nil,
         secondaryLinks: [TargetPrefillLink] = []
     ) throws -> Int {
+        // Desktop-created targets are personal (project_id NULL).
+        try checkParentBoard(db, parentID: parentId, childProjectID: nil)
         try db.execute(sql: """
             INSERT INTO targets (text, intent, level, custom_label, period_start, period_end,
                 parent_id, status, priority, ownership, ball_on, due_date, snooze_until,
