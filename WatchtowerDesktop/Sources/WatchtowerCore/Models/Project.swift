@@ -148,6 +148,14 @@ package struct ProjectCommentThread: Identifiable, Equatable, Sendable {
 
     package var id: Int64 { root.id }
 
+    /// An owner reply newer than the thread's latest agent comment (the agent
+    /// root counts) — the reply half of Go's `newForAgentPredicate`
+    /// (`internal/db/project_comments.go`). Ids, not timestamps, order them.
+    package var hasUnansweredOwnerReply: Bool {
+        let lastAgent = ([root] + replies).filter(\.isAgent).map(\.id).max() ?? 0
+        return replies.contains { !$0.isAgent && $0.id > lastAgent }
+    }
+
     /// Groups a flat, creation-ordered comment list (as `ProjectQueries.comments`
     /// returns it) into threads. A reply whose root is not in the list is dropped.
     package static func group(_ comments: [ProjectComment]) -> [Self] {

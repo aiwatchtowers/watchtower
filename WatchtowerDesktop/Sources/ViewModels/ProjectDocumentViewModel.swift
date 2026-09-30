@@ -95,6 +95,10 @@ final class ProjectDocumentViewModel {
     }
 
     /// Locates every anchored open/resolved root; returns the open ones lost.
+    /// A lost root with an unanswered owner reply stays open: marking it
+    /// `outdated` would drop that reply from the agent's new-for-agent
+    /// channels again right after `ProjectQueries.reply` reopened it. The
+    /// agent answering (or resolving) is what lets it go `outdated` later.
     private func reanchor(on text: String) -> [Int64] {
         var ranges: [Int64: NSRange] = [:]
         var lost: [Int64] = []
@@ -102,7 +106,7 @@ final class ProjectDocumentViewModel {
             guard let anchor = thread.root.anchor else { continue }
             if let found = anchor.locate(in: text) {
                 ranges[thread.id] = NSRange(found, in: text)
-            } else if thread.root.isOpen {
+            } else if thread.root.isOpen && !thread.hasUnansweredOwnerReply {
                 lost.append(thread.id)
             }
         }

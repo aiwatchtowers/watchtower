@@ -200,6 +200,28 @@ final class ProjectQueriesTests: XCTestCase {
         }
     }
 
+    /// The reply half of Go's `newForAgentPredicate`: an owner reply newer
+    /// than the thread's latest agent comment (the agent root counts).
+    func testHasUnansweredOwnerReplyComparesAgainstTheLatestAgentComment() throws {
+        try db.write { d in
+            let p = try TestDatabase.insertProject(d)
+            let doc = try TestDatabase.insertProjectDocument(d, projectID: p)
+            let owner = try TestDatabase.insertProjectComment(d, projectID: p, author: "owner", documentID: doc)
+            let agentRoot = try TestDatabase.insertProjectComment(d, projectID: p, documentID: doc)
+            func thread(_ id: Int64) throws -> ProjectCommentThread {
+                try XCTUnwrap(ProjectCommentThread.group(ProjectQueries.comments(d, documentID: doc)).first { $0.id == id })
+            }
+            XCTAssertFalse(try thread(owner).hasUnansweredOwnerReply, "a bare owner root has no reply")
+            _ = try TestDatabase.insertProjectComment(d, projectID: p, author: "owner", documentID: doc, parentID: owner)
+            XCTAssertTrue(try thread(owner).hasUnansweredOwnerReply)
+            _ = try TestDatabase.insertProjectComment(d, projectID: p, documentID: doc, parentID: owner)
+            XCTAssertFalse(try thread(owner).hasUnansweredOwnerReply, "answered by the agent")
+            XCTAssertFalse(try thread(agentRoot).hasUnansweredOwnerReply)
+            _ = try TestDatabase.insertProjectComment(d, projectID: p, author: "owner", documentID: doc, parentID: agentRoot)
+            XCTAssertTrue(try thread(agentRoot).hasUnansweredOwnerReply, "an owner answer to an agent root")
+        }
+    }
+
     func testDocumentListItemsCarryTheLinkedTargetAndOpenOwnerThreads() throws {
         try db.write { d in
             let p = try TestDatabase.insertProject(d)

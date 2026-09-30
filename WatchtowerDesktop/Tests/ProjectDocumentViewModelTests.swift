@@ -178,6 +178,40 @@ final class ProjectDocumentViewModelTests: XCTestCase {
         XCTAssertEqual(writes, [.document(document.id)], "the Desktop's own write — never reported as an agent answer")
     }
 
+    /// An owner reply that reopened an `outdated` root must survive the next
+    /// load: the quote is still gone, but the reply is unanswered, so the
+    /// re-anchor leaves the root open for the agent. Once the agent answers,
+    /// the next load marks it `outdated` as usual.
+    func testLostThreadWithAnUnansweredOwnerReplyStaysOpen() async throws {
+        let vm = makeVM()
+        await vm.load()
+        await vm.addComment(body: "Why small?", selection: try selection("retry budget small", in: vm))
+        let root = try XCTUnwrap(vm.threads.first?.id)
+        try plan.replacingOccurrences(of: "Keep the retry budget small so a flaky service cannot stall the sync.", with: "Rewritten.")
+            .write(to: fileURL, atomically: true, encoding: .utf8)
+        await vm.load()
+        XCTAssertEqual(try status(root), "outdated")
+
+        let replied = await vm.reply(to: root, body: "Still relevant — where did it go?")
+        XCTAssertTrue(replied)
+        XCTAssertEqual(try status(root), "open")
+        await vm.load()
+        XCTAssertEqual(try status(root), "open", "an unanswered owner reply keeps the lost root open")
+        XCTAssertTrue(vm.outdatedThreads.isEmpty)
+        let projectID = project.id
+        let docs = try await pool.read { try ProjectQueries.documentListItems($0, projectID: projectID) }
+        XCTAssertEqual(docs.first?.openComments, 1, "the Swift open counter includes it")
+
+        let documentID = document.id
+        try await pool.write { d in
+            _ = try TestDatabase.insertProjectComment(
+                d, projectID: projectID, body: "Moved to Task 2.", documentID: documentID, parentID: root
+            )
+        }
+        await vm.load()
+        XCTAssertEqual(try status(root), "outdated", "answered by the agent: the lost root goes outdated normally")
+    }
+
     func testReflowedParagraphKeepsTheThreadOpen() async throws {
         let vm = makeVM()
         await vm.load()
