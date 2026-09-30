@@ -93,8 +93,10 @@ func NewEditConfluencePage(factory ConfluencePageClientFactory) *Tool {
 			"exactly once, within one paragraph, list item, table cell or heading) or replace_section {heading, " +
 			"new_body} to rewrite the body of the section under a heading; prefer replace_text for small edits. " +
 			"Keep every ⟦k:label⟧ marker you do not mean to delete, verbatim — a marker left out is deleted, and " +
-			"markers can never be invented. replace_section also drops any HTML comments inside the replaced " +
-			"section. At most 20 edits per call. The owner approves a diff before anything is written; if the page " +
+			"markers can never be invented. replace_section keeps every block you leave unchanged exactly as it " +
+			"is; changing a block whose formatting markdown cannot carry (alignment, table layout, a code block's " +
+			"title, ...) is refused — keep that block unchanged and leave that change to the owner in Confluence. " +
+			"A block you delete takes any HTML comment inside it along. At most 20 edits per call. The owner approves a diff before anything is written; if the page " +
 			"changed since you read it, re-read it and propose again.",
 		InputSchema: mustWriteSchema[editConfluencePageArgs]("edit_confluence_page"),
 		Access:      AccessWrite,

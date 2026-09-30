@@ -155,7 +155,8 @@ func TestConfluencePageTools_Shape(t *testing.T) {
 	for _, req := range []string{"page_id", "base_version", "edits", "reason"} {
 		assert.Contains(t, edit.InputSchema.Required, req)
 	}
-	assert.Contains(t, edit.Description, "drops any HTML comments", "carry (f): the tool docs name replace_section's comment loss")
+	assert.Contains(t, edit.Description, "replace_section keeps every block you leave unchanged", "R11: the tool docs name what a section rewrite keeps")
+	assert.Contains(t, edit.Description, "takes any HTML comment inside it along", "carry (f): the tool docs name the comment loss of a deleted block")
 	require.NoError(t, reg.Register(get))
 	require.NoError(t, reg.Register(edit))
 	assert.ErrorIs(t, reg.SetTrust("edit_confluence_page", TrustExecute), ErrExternalExecute)

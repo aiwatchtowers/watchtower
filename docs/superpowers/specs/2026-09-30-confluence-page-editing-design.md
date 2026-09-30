@@ -305,12 +305,10 @@ sections above are the original design and are not rewritten to match.
   row's error column (`AgentAction.error`), not `result_json.error` — Execute
   returns an error, which the registry stores in `agent_actions.error`, and
   writes no result.
-- **Retry after a lost response (final review):** a page exactly one version
-  past the preview may be this edit's own first PUT whose response was lost,
-  so Execute (and a 409's re-read) then reports `conflict: the page is already
-  at vN — possibly this edit was saved; open the page to check. Nothing was
-  written now` instead of blaming someone else's edit. A revoked grant at PUT
-  time names `watchtower jira login --account N --with-confluence-write`.
+- **Retry after a lost response (final review, superseded by R12):** a
+  revoked grant at PUT time names
+  `watchtower jira login --account N --with-confluence-write`. The "possibly
+  this edit was saved" wording that shipped with it is gone — see R12.
 - **Tool args (final review):** `get_confluence_page` accepts `account_id` as
   an alias of `account` (the name its result and `edit_confluence_page` use);
   two different ids are a validation error.
@@ -318,6 +316,41 @@ sections above are the original design and are not rewritten to match.
   `strike`/`code` element carrying any attribute is a marker, not markdown, so
   a rewrite elsewhere in its unit keeps it byte for byte (the R6/R7 skeleton
   compares tag names only and would not notice a lost attribute).
+
+- **R11 (local review, section rewrites):** a `replace_section` used to
+  re-render every block of the section from markdown, silently dropping what
+  the editable text cannot show (paragraph alignment, intraword emphasis,
+  table layout and column widths, code titles, noformat, multi-paragraph
+  list items) — none of it visible in the approved diff. Now the new body is
+  matched in order against the section's original blocks by editable text;
+  a matched block re-emits its original bytes; a changed block is derived
+  from the next unmatched original of its kind and re-rendered only when
+  that original passes the R6/R7 skeleton guard and is representable in
+  markdown (no attributes on p/li/table/heading, no column widths, not
+  noformat, no code-macro parameter but the language, no multi-paragraph
+  list item), else the edit is refused naming the block. Headerless and
+  column-header tables are one block marker in `Text()` instead of a pipe
+  table with a fake header row. The R6 refusal no longer suggests
+  `replace_section` as a bypass ("edit that passage in Confluence"). A
+  section enclosing one an earlier edit of the same call replaced is refused
+  (cost: some section rewrites are refused; the owner edits those blocks in
+  Confluence). Guards: `TestEXT05_SectionRewriteKeepsUntouchedBlocksByteExact`
+  and `FuzzApply`'s "own text plus one paragraph changes nothing else"
+  property.
+- **R12 (local review, write precondition):** `Normalize` pins `base_hash`,
+  the sha256 of the storage the preview was computed from; `Execute` writes
+  only while the live page has the same version AND the same storage hash (a
+  change that did not bump the version is a conflict too, no PUT). At
+  `base_version + 1` the live storage decides: equal to this edit's
+  `new_storage` is `this edit is already saved (vN); nothing was written now`
+  (a Retry after a lost PUT response), anything else the plain `conflict: the
+  page was edited after the preview (now vN); nothing was written` — so a
+  second proposal made off the same read as an applied one is no longer
+  told "possibly this edit was saved" (cost: none).
+- **Local review, smaller items:** `notes` in the pinned args surface a
+  failed user-name lookup on the card; the card offers no Approve for a
+  proposal it cannot read; the edit tool skips the display-only space-key
+  GET (`GetPageBody`); `get_action`'s arg elision keeps numbers' exact text.
 
 **PutJSON's one production caller** is `internal/tools/confluence_page_client.go`'s
 `PutPage` (called only by `confluence_page_edit.go`'s `executeConfluenceEdit`)
