@@ -73,7 +73,15 @@ func (in *inliner) node(n *node) string {
 	}
 }
 
+// element renders one inline element. Emphasis and code are rewritable
+// markdown only when bare: a tag carrying any attribute (a style colour, a
+// class, a data- attribute) would lose it once the text is re-rendered, and
+// the skeleton guard compares tag names only, so such a tag is a marker —
+// kept byte for byte, like an attributed <span>.
 func (in *inliner) element(n *node) string {
+	if len(n.attrs) > 0 && formattingTags[n.name] {
+		return in.marker(n)
+	}
 	switch n.name {
 	case "strong", "b":
 		return in.wrap(n, "**")
@@ -93,6 +101,12 @@ func (in *inliner) element(n *node) string {
 		}
 	}
 	return in.marker(n)
+}
+
+// formattingTags are the elements rendered as markdown emphasis or code.
+var formattingTags = map[string]bool{
+	"strong": true, "b": true, "em": true, "i": true,
+	"s": true, "del": true, "strike": true, "code": true,
 }
 
 // marker renders n as its ⟦k:label⟧ token. In a cell that makes the table
