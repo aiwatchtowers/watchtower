@@ -446,7 +446,7 @@ func statusWithAge(n db.BoardNode, now time.Time) string {
 	return n.Target.Status
 }
 
-// statusAge is the time since since (UTC ISO-8601) in its largest whole
+// statusAge is the time elapsed since the given UTC ISO-8601 time in its largest whole
 // unit — "<1m", "12m", "5h", "3d" — or "" when since is empty or unparsable.
 func statusAge(since string, now time.Time) string {
 	at, err := time.Parse(time.RFC3339, since)

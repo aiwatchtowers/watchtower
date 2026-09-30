@@ -58,13 +58,14 @@ func TestMigration00086_RebuildKeepsRowsChildrenIndexesAndRollup(t *testing.T) {
 	rows, err := raw.Query(`SELECT target_id, COALESCE(from_status,'-'), to_status, changed_at, actor
 		FROM target_status_history ORDER BY id`)
 	require.NoError(t, err)
+	defer rows.Close()
 	var seeded [][5]string
 	for rows.Next() {
 		var r [5]string
 		require.NoError(t, rows.Scan(&r[0], &r[1], &r[2], &r[3], &r[4]))
 		seeded = append(seeded, r)
 	}
-	require.NoError(t, rows.Close())
+	require.NoError(t, rows.Err())
 	assert.Equal(t, [][5]string{
 		{"10", "-", "todo", "2026-09-01T10:00:00Z", "system"},
 		{"11", "-", "todo", "2026-09-02T10:00:00Z", "system"},
