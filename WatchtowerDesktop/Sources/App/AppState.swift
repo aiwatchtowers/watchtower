@@ -142,7 +142,7 @@ final class AppState {
     let voiceRegistryCenter = VoiceRegistryCenter()
     /// Embedded Claude Code terminals, one per project. No DB needed; closed
     /// on quit by `QuitCoordinator` (via `TrayAppDelegate`).
-    let projectTerminalCenter = ProjectTerminalCenter()
+    let terminalCenter = TerminalCenter()
 
     /// Diarizer models are prefetched only while speaker roles are on; a
     /// failure is fine — the post-pass retries the download and degrades to a
@@ -940,11 +940,18 @@ final class AppState {
         notifier: ProjectNotifying = NotificationService.shared
     ) {
         let vm = ProjectsViewModel(dbPool: dbPool, cli: cliRunner.map { ProjectCLI(runner: $0) })
-        vm.closeTerminal = { [weak self] id in await self?.projectTerminalCenter.close(projectID: id) }
+        vm.closeTerminal = { [weak self] projectID in
+            guard let center = self?.terminalCenter else { return }
+            let ids = center.sessionIDs(ofProject: projectID)
+            await center.closeAll { ids.contains($0) }
+        }
+        vm.startSession = { [weak self] session, fresh, prompt in
+            self?.terminalCenter.start(session, fresh: fresh, prompt: prompt)
+            self?.terminalCenter.focus(session.id)
+        }
         let notices = ProjectNotificationCenter(dbPool: dbPool, notifier: notifier)
-        vm.onProjectCreated = { [weak self, weak notices] project, installed in
+        vm.onProjectCreated = { [weak notices] project, _ in
             notices?.seedBaseline(project: project)
-            if installed { self?.projectTerminalCenter.start(project: project, firstRun: true) }
         }
         vm.onOwnerWrite = { [weak notices] projectID, subject in
             notices?.recordOwnerWrite(projectID: projectID, subject: subject)

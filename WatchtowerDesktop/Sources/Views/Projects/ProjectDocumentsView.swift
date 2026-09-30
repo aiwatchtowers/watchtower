@@ -14,7 +14,7 @@ struct ProjectDocumentsView: View {
     /// captured when the composer opens, so a reload while it's open (the
     /// file watcher fires) is detected before the stale selection is written.
     @State private var composeRenderVersion = 0
-    @State private var delivery: ProjectTerminalCenter.PromptDelivery?
+    @State private var delivery: TerminalCenter.PromptDelivery?
     @State private var showThreads = true
 
     var body: some View {
@@ -188,7 +188,9 @@ struct ProjectDocumentsView: View {
             relPath: docVM.document.relPath, documentID: docVM.document.id,
             count: ProjectCommentPrompt.openOwnerCount(docVM.threads)
         )
-        let result = appState.projectTerminalCenter.sendPrompt(line, projectID: docVM.project.id)
+        let center = appState.terminalCenter
+        let result = center.activeSession(projectID: docVM.project.id)
+            .map { center.sendPrompt(line, sessionID: $0.id) } ?? .noSession
         delivery = result
         // The line is pasted or copied, never submitted (I1): switch to the
         // Terminal pane so the owner sees it land (or pastes it) and presses
@@ -197,7 +199,7 @@ struct ProjectDocumentsView: View {
     }
 
     private func openTerminal() {
-        if let project = vm.selectedProject { appState.projectTerminalCenter.start(project: project) }
+        if let project = vm.selectedProject { Task { await vm.openMostRecentSession(project: project) } }
         vm.pane = .terminal
         delivery = nil
     }

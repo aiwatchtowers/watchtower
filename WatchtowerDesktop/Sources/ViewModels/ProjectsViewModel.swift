@@ -49,17 +49,20 @@ final class ProjectsViewModel {
     /// switches and tab changes with its watcher running.
     private(set) var documentViewModel: ProjectDocumentViewModel?
 
-    /// A project was created: Task 18 seeds its notification baseline, and —
-    /// only when `installed` — Task 17 opens its terminal with the first-run
-    /// prompt (after a failed install the setup would run without the skill,
-    /// hook and MCP server it relies on).
+    /// A project was created: Task 18 seeds its notification baseline.
     var onProjectCreated: ((Project, _ installed: Bool) -> Void)?
+    /// Starts (and focuses) a session's process. AppState wires it to
+    /// `TerminalCenter.start`; unwired = nothing launches.
+    var startSession: ((TerminalSession, _ fresh: Bool, _ prompt: String?) -> Void)?
+    /// Each project's `terminal_sessions` rows, most recently active first.
+    private(set) var terminalSessions: [Int64: [TerminalSession]] = [:]
     /// The owner changed something in a project (a comment, a status): the
     /// notification policy must not report it back (Task 18).
     var onOwnerWrite: ((Int64, ProjectSubject) -> Void)?
-    /// Closes a project's embedded terminal (SIGHUP → SIGKILL). AppState wires
-    /// it to ProjectTerminalCenter.close in initProjects; closing a project
-    /// with no terminal is a no-op, so calling it twice is harmless.
+    /// Closes every embedded terminal of a project (SIGHUP → SIGKILL).
+    /// AppState wires it to `TerminalCenter.closeAll(where:)` over the
+    /// project's sessions in initProjects; a project with none is a no-op,
+    /// so calling it twice is harmless.
     var closeTerminal: ((Int64) async -> Void)?
     /// Whether the Projects tab is what the owner is looking at (AppState:
     /// sidebar on Projects, main window visible). The poll marks agent
@@ -223,8 +226,52 @@ final class ProjectsViewModel {
         selectedProjectID = created.id
         pane = .terminal
         await refreshInstallStatus(projectID: created.id)
-        if let project = selectedProject {
-            onProjectCreated?(project, installed)
+        guard let project = selectedProject else { return }
+        onProjectCreated?(project, installed)
+        // After a failed install the setup would run without the skill, hook
+        // and MCP server it relies on, so no first-run session.
+        if installed {
+            await startNewSession(project: project, title: TerminalSessionNaming.setupTitle,
+                                  prompt: TerminalLaunch.firstRunPrompt)
+        }
+    }
+
+    func loadTerminalSessions(projectID: Int64) async {
+        do {
+            terminalSessions[projectID] = try await dbPool.read {
+                try TerminalSessionQueries.fetchForProject($0, projectID: projectID)
+            }
+        } catch {
+            errorMessage = "Could not load terminal sessions: \(error.localizedDescription)"
+        }
+    }
+
+    /// Creates a `claude` session row with a new Claude session id and starts
+    /// it fresh (`--session-id`).
+    func startNewSession(project: Project, title: String, prompt: String? = nil) async {
+        let new = TerminalSessionQueries.NewSession(
+            projectID: project.id, kind: .claude, title: title,
+            folderPath: project.folderPath, claudeSessionID: UUID().uuidString.lowercased()
+        )
+        let row: TerminalSession
+        do {
+            row = try await dbPool.write { try TerminalSessionQueries.create($0, new) }
+        } catch {
+            errorMessage = "Could not create a terminal session: \(error.localizedDescription)"
+            return
+        }
+        await loadTerminalSessions(projectID: project.id)
+        startSession?(row, true, prompt)
+    }
+
+    /// "Open terminal": resumes the project's most recently active open
+    /// session, or starts a new one when it has none.
+    func openMostRecentSession(project: Project) async {
+        await loadTerminalSessions(projectID: project.id)
+        if let row = terminalSessions[project.id]?.first(where: { !$0.isClosed }) {
+            startSession?(row, false, nil)
+        } else {
+            await startNewSession(project: project, title: TerminalSessionNaming.provisional(now: Date()))
         }
     }
 

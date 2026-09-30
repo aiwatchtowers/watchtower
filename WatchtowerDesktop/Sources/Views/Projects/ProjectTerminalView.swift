@@ -2,37 +2,41 @@ import AppKit
 import SwiftUI
 import WatchtowerCore
 
-/// Terminal pane (spec §6.2). Shows the project's session from
-/// `AppState.projectTerminalCenter`; never owns the process itself.
+/// Terminal pane (spec §6.2). Shows the project's active session from
+/// `AppState.terminalCenter` — the last focused live one, else its most
+/// recently active open row — and never owns the process itself. Interim
+/// until the sessions panel (Task 9) lets the owner pick one.
 struct ProjectTerminalView: View {
     let project: Project
     @Environment(AppState.self) private var appState
 
     var body: some View {
-        let center = appState.projectTerminalCenter
+        let center = appState.terminalCenter
+        let session = shownSession(center)
+        let state = session.flatMap { center.states[$0.id] }
         VStack(spacing: 0) {
-            switch center.states[project.id] {
+            switch state {
             case .running?:
-                if center.clipboardHints.contains(project.id) {
+                if let session, center.clipboardHints.contains(session.id) {
                     HStack {
                         Label(ProjectCommentsSendBar.copiedNote, systemImage: "doc.on.clipboard")
                             .font(.caption).foregroundStyle(.secondary)
                         Spacer()
-                        Button("Dismiss") { center.dismissClipboardHint(projectID: project.id) }
+                        Button("Dismiss") { center.dismissClipboardHint(sessionID: session.id) }
                             .controlSize(.small)
                     }
                     .padding(8)
                     Divider()
                 }
-                host(center)
+                host(center, session)
             case let .exited(code)?:
-                host(center)
+                host(center, session)
                 Divider()
                 HStack {
                     Text(TerminalLaunch.exitMessage(code: code))
                         .font(.caption).foregroundStyle(.secondary)
                     Spacer()
-                    Button("Restart") { center.start(project: project) }
+                    Button("Restart") { if let session { appState.projectsViewModel?.startSession?(session, false, nil) } }
                 }
                 .padding(8)
             case let .unavailable(message)?:
@@ -40,17 +44,25 @@ struct ProjectTerminalView: View {
             case nil:
                 VStack(spacing: 8) {
                     Text("Run Claude Code in \(project.folderPath).").foregroundStyle(.secondary)
-                    Button("Start Claude Code") { center.start(project: project) }
+                    Button("Start Claude Code") {
+                        Task { await appState.projectsViewModel?.openMostRecentSession(project: project) }
+                    }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+        .task(id: project.id) { await appState.projectsViewModel?.loadTerminalSessions(projectID: project.id) }
+    }
+
+    private func shownSession(_ center: TerminalCenter) -> TerminalSession? {
+        center.activeSession(projectID: project.id)
+            ?? appState.projectsViewModel?.terminalSessions[project.id]?.first { !$0.isClosed }
     }
 
     @ViewBuilder
-    private func host(_ center: ProjectTerminalCenter) -> some View {
-        if let session = center.session(for: project.id) {
-            TerminalHost(session: session)
+    private func host(_ center: TerminalCenter, _ session: TerminalSession?) -> some View {
+        if let session, let process = center.process(for: session.id) {
+            TerminalHost(session: process)
         }
     }
 }
@@ -58,7 +70,7 @@ struct ProjectTerminalView: View {
 /// Hosts a session's NSView. Dismantling the host only removes the view from
 /// the hierarchy — the center keeps it (and the process) alive.
 private struct TerminalHost: NSViewRepresentable {
-    let session: any ProjectTerminalSession
+    let session: any TerminalSessionProcess
 
     func makeNSView(context: Context) -> NSView {
         let container = NSView()

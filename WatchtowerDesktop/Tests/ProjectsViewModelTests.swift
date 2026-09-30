@@ -250,7 +250,7 @@ final class ProjectsViewModelTests: XCTestCase {
         let id = try await pool.write { try TestDatabase.insertProject($0) }
         let held = HeldCLIRunner(stdout: createdJSON(id))
         let appState = AppState()
-        appState.projectTerminalCenter.makeSession = { FakeTerminalSession() }
+        appState.terminalCenter.makeProcess = { FakeTerminalSession() }
         appState.initProjects(dbPool: pool, cliRunner: held, notifier: RecordingProjectNotifier())
         let vm = try XCTUnwrap(appState.projectsViewModel)
         appState.selectedDestination = .projects
@@ -282,14 +282,51 @@ final class ProjectsViewModelTests: XCTestCase {
             .success(Data(#"{"skill":"missing","hook":false,"mcp":false}"#.utf8))
         ])
         let appState = AppState()
-        appState.projectTerminalCenter.makeSession = { FakeTerminalSession() }
+        appState.terminalCenter.makeProcess = { FakeTerminalSession() }
         appState.initProjects(dbPool: pool, cliRunner: runner, notifier: RecordingProjectNotifier())
         let vm = try XCTUnwrap(appState.projectsViewModel)
 
         await vm.createProject(folder: folder, name: nil)
 
         XCTAssertEqual(vm.selectedProjectID, id)
-        XCTAssertNil(appState.projectTerminalCenter.states[id], "no terminal after a failed install")
+        XCTAssertTrue(appState.terminalCenter.states.isEmpty, "no terminal after a failed install")
+        let rows = try await pool.read { try TerminalSessionQueries.fetchForProject($0, projectID: id) }
+        XCTAssertTrue(rows.isEmpty, "no setup session row after a failed install")
+    }
+
+    /// A created and installed project gets one "Project setup" claude row,
+    /// started fresh with its own session id and the first-run prompt.
+    func testInstalledProjectStartsTheSetupSessionFresh() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("wt-create-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let id = try await pool.write { try TestDatabase.insertProject($0, name: "acme", folder: folder.path) }
+        let runner = ScriptedCLIRunner(results: [
+            .success(createdJSON(id)),
+            .success(Data()),
+            .success(Data(#"{"skill":"installed","hook":true,"mcp":true}"#.utf8))
+        ])
+        let appState = AppState()
+        let process = FakeTerminalSession(pid: 0)
+        appState.terminalCenter.makeProcess = { process }
+        appState.terminalCenter.shell = { "/bin/zsh" }
+        appState.initProjects(dbPool: pool, cliRunner: runner, notifier: RecordingProjectNotifier())
+        let vm = try XCTUnwrap(appState.projectsViewModel)
+
+        await vm.createProject(folder: folder, name: nil)
+
+        let rows = try await pool.read { try TerminalSessionQueries.fetchForProject($0, projectID: id) }
+        let row = try XCTUnwrap(rows.first)
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(row.kind, .claude)
+        XCTAssertEqual(row.title, TerminalSessionNaming.setupTitle)
+        let uuid = try XCTUnwrap(row.claudeSessionID)
+        XCTAssertTrue(TerminalLaunch.isValidSessionID(uuid))
+        XCTAssertEqual(appState.terminalCenter.states[row.id], .running)
+        XCTAssertEqual(appState.terminalCenter.focusOrder, [row.id])
+        XCTAssertEqual(process.launches.last?.args.last,
+                       "exec claude --session-id \(uuid) '\(TerminalLaunch.firstRunPrompt)'")
+        XCTAssertEqual(vm.terminalSessions[id]?.map(\.id), [row.id])
     }
 
     func testNavigateToProjectSetsThePendingRouteAndTheTab() {
