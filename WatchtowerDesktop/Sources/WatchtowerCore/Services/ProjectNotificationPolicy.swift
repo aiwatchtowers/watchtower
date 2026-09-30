@@ -41,11 +41,27 @@ package enum ProjectNotificationPolicy {
         package let title: String
         package let updatedAt: String
         package let openOwnerComments: Int
+        /// Found by the setup scan (`origin = 'import'`): never "ready for review".
+        package let imported: Bool
 
-        package init(title: String, updatedAt: String, openOwnerComments: Int) {
+        package init(title: String, updatedAt: String, openOwnerComments: Int, imported: Bool = false) {
             self.title = title
             self.updatedAt = updatedAt
             self.openOwnerComments = openOwnerComments
+            self.imported = imported
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case title, updatedAt, openOwnerComments, imported
+        }
+
+        package init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            title = try c.decode(String.self, forKey: .title)
+            updatedAt = try c.decode(String.self, forKey: .updatedAt)
+            openOwnerComments = try c.decode(Int.self, forKey: .openOwnerComments)
+            // A snapshot persisted before the key existed held no imports.
+            imported = try c.decodeIfPresent(Bool.self, forKey: .imported) ?? false
         }
     }
 
@@ -126,7 +142,7 @@ package enum ProjectNotificationPolicy {
 
     private static func readyDocuments(_ previous: Snapshot, _ current: Snapshot) -> [ProjectNotice] {
         current.documents.sorted { $0.key < $1.key }.compactMap { id, doc in
-            guard previous.documents[id]?.updatedAt != doc.updatedAt else { return nil }
+            guard !doc.imported, previous.documents[id]?.updatedAt != doc.updatedAt else { return nil }
             return notice(.documentReady, current,
                           title: "\(doc.title) ready for review", body: current.projectName,
                           route: ProjectRoute(projectID: current.projectID, pane: .documents, subjectID: id),

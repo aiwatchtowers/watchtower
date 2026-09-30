@@ -97,7 +97,7 @@ final class ProjectsViewModel {
     }
 
     func isRevised(_ document: ProjectDocument) -> Bool {
-        viewed[String(document.id)] != document.updatedAt
+        !document.isImported && viewed[String(document.id)] != document.updatedAt
     }
 
     func markDocumentViewed(_ document: ProjectDocument) {

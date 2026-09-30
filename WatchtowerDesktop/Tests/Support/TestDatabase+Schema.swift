@@ -1389,6 +1389,7 @@ extension TestDatabase {
         title      TEXT NOT NULL DEFAULT '',
         created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
         updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+        origin     TEXT NOT NULL DEFAULT 'agent' CHECK(origin IN ('agent','import','owner')),
         UNIQUE(project_id, rel_path)
     );
     CREATE INDEX IF NOT EXISTS idx_project_documents_target ON project_documents(target_id);

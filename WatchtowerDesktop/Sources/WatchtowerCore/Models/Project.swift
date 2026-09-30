@@ -71,6 +71,10 @@ package struct ProjectDocument: FetchableRecord, Identifiable, Equatable, Hashab
     package let title: String
     package let createdAt: String
     package let updatedAt: String   // bumped by every re-attach ("revised")
+    /// agent | import | owner (migration 00083). An `import` row was found by
+    /// the setup scan, not written for review, so it is never "revised"; an
+    /// agent re-attach turns it into `agent`.
+    package let origin: String
 
     package init(row: Row) {
         id = row["id"]
@@ -81,7 +85,10 @@ package struct ProjectDocument: FetchableRecord, Identifiable, Equatable, Hashab
         title = row["title"] ?? ""
         createdAt = row["created_at"] ?? ""
         updatedAt = row["updated_at"] ?? ""
+        origin = row["origin"] ?? "agent"
     }
+
+    package var isImported: Bool { origin == "import" }
 
     package var displayTitle: String {
         title.isEmpty ? (relPath as NSString).lastPathComponent : title
@@ -219,7 +226,8 @@ package struct ProjectSummary: Identifiable, Equatable, Sendable {
     package let openTargets: Int
     package let inProgressTargets: Int
     package let unreadAgentComments: Int
-    /// Document id → `updated_at`, for "revised since last viewed".
+    /// Document id → `updated_at`, for "revised since last viewed". Imported
+    /// documents are left out: nothing asked the owner to review them.
     package let documentStamps: [Int64: String]
 
     package var id: Int64 { project.id }
