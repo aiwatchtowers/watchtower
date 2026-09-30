@@ -105,8 +105,9 @@ final class ProjectsViewModelTests: XCTestCase {
         vm.onProjectCreated = { announced.append(($0.id, $1)) }
         await vm.createProject(folder: URL(fileURLWithPath: "/tmp/acme"), name: nil)
         XCTAssertEqual(vm.selectedProjectID, id)
-        XCTAssertTrue(vm.errorMessage?.contains("Repair") == true)
-        XCTAssertTrue(vm.errorMessage?.contains("claude not found") == true, "the install error is shown")
+        XCTAssertTrue(vm.installErrors[id]?.contains("Repair") == true)
+        XCTAssertTrue(vm.installErrors[id]?.contains("claude not found") == true, "the install error is shown")
+        XCTAssertNil(vm.errorMessage, "the note belongs to its project, not the list-wide line")
         XCTAssertEqual(vm.installStatus[id]?.needsRepair, true)
         XCTAssertEqual(announced.map(\.0), [id], "the baseline is still seeded")
         XCTAssertEqual(announced.map(\.1), [false], "no first-run terminal after a failed install")
@@ -176,18 +177,31 @@ final class ProjectsViewModelTests: XCTestCase {
 
     func testStatusReadFailureIsScopedToItsProjectAndClearedByTheNextRead() async throws {
         let runner = ScriptedCLIRunner(results: [
+            .success(Data(#"{"skill":"missing","hook":false,"mcp":true}"#.utf8)),
             .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "boom")),
             .success(Data(#"{"skill":"unchanged","hook":true,"mcp":true}"#.utf8))
         ])
         let vm = makeVM(runner)
         await vm.refreshInstallStatus(projectID: 1)
+        await vm.refreshInstallStatus(projectID: 1)
         XCTAssertTrue(vm.installErrors[1]?.contains("boom") == true)
+        XCTAssertEqual(vm.installStatus[1]?.needsRepair, true, "the last known status (and its Repair) stays")
         XCTAssertNil(vm.installErrors[2])
         XCTAssertNil(vm.errorMessage)
 
         await vm.refreshInstallStatus(projectID: 1)
         XCTAssertNil(vm.installErrors[1])
-        XCTAssertNotNil(vm.installStatus[1])
+        XCTAssertEqual(vm.installStatus[1]?.needsRepair, false)
+    }
+
+    /// A successful Repair of one project leaves the list-wide line (another
+    /// operation's failure) alone.
+    func testRepairSuccessLeavesTheListWideErrorAlone() async throws {
+        let runner = FakeCLIRunner(stdout: Data(#"{"skill":"unchanged","hook":true,"mcp":true}"#.utf8))
+        let vm = makeVM(runner)
+        vm.errorMessage = "Could not load projects"
+        await vm.repairInstall(projectID: 1)
+        XCTAssertEqual(vm.errorMessage, "Could not load projects")
     }
 
     func testRepairFailureStaysShownAfterTheStatusRefresh() async throws {

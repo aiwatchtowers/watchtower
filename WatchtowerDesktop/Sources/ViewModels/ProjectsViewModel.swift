@@ -32,7 +32,7 @@ final class ProjectsViewModel {
     private(set) var repairing: Set<Int64> = []
     var errorMessage: String?
     private(set) var installStatus: [Int64: ProjectInstallStatus] = [:]
-    /// Why reading or repairing a project's install last failed, per project:
+    /// Why installing, reading or repairing a project's install last failed, per project:
     /// the page shows only its own project's line and the next successful
     /// status read clears it — never the shared `errorMessage`, where one
     /// project's failure would outlive a switch to another.
@@ -204,18 +204,20 @@ final class ProjectsViewModel {
             errorMessage = "Could not create the project: \(error.localizedDescription)"
             return
         }
-        var installed = true
+        var installFailure: String?
         do {
             try await cli.install(projectID: created.id)
         } catch {
-            installed = false
-            errorMessage = "The project was created, but installing into the folder failed — use Repair. "
+            installFailure = "The project was created, but installing into the folder failed — use Repair. "
                 + error.localizedDescription
         }
         await reload()
         selectedProjectID = created.id
         pane = .terminal
         await refreshInstallStatus(projectID: created.id)
+        // Set after the status read, whose success would otherwise clear it.
+        if let installFailure { installErrors[created.id] = installFailure }
+        let installed = installFailure == nil
         if let project = selectedProject {
             onProjectCreated?(project, installed)
         }
@@ -236,7 +238,7 @@ final class ProjectsViewModel {
             // The process runner terminates the child on cancel, which can
             // surface as a non-zero exit rather than CancellationError.
             if error is CancellationError || Task.isCancelled { return }
-            installStatus[projectID] = nil
+            // The last known status stays, so its Repair button stays too.
             installErrors[projectID] = "Could not read the install status: \(error.localizedDescription)"
         }
     }
@@ -248,8 +250,6 @@ final class ProjectsViewModel {
         var failure: String?
         do {
             try await cli.install(projectID: projectID)
-            // Clears a create-time "installing failed — use Repair" note.
-            errorMessage = nil
         } catch {
             failure = "Repair failed: \(error.localizedDescription)"
         }

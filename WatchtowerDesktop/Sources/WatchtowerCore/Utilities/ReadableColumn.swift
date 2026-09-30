@@ -9,11 +9,7 @@ package enum ReadableColumn {
     package static let minInset: CGFloat = 20
 
     /// The horizontal text inset for a pane `width` points wide.
-    package static func horizontalInset(
-        forWidth width: CGFloat,
-        maxLineWidth: CGFloat = maxLineWidth,
-        minInset: CGFloat = minInset
-    ) -> CGFloat {
+    package static func horizontalInset(forWidth width: CGFloat) -> CGFloat {
         max(minInset, ((width - maxLineWidth) / 2).rounded(.down))
     }
 }
