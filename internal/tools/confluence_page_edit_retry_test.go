@@ -163,6 +163,7 @@ func TestEditConfluencePage_AlreadySavedIgnoresLocalIDs(t *testing.T) {
 
 	stamped := strings.Replace(pinned.NewStorage, "<p>", `<p local-id="a1b2">`, 1)
 	stamped = strings.Replace(stamped, "<h2>", `<h2 ac:local-id='c3'>`, 1)
+	stamped = strings.Replace(stamped, `ri:account-id=`, `ri:local-id="u1" ri:account-id=`, 1)
 	require.NotEqual(t, pinned.NewStorage, stamped, "fixture stamps a local-id")
 	p := f.pages[cfPageID]
 	p.Version, p.Storage = 8, stamped

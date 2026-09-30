@@ -388,9 +388,9 @@ func confluenceConflict(live ConfluencePage, p editConfluencePinned) error {
 	return fmt.Errorf("conflict: the page was edited after the preview (now v%d); nothing was written", live.Version)
 }
 
-// localIDAttr matches the local-id / ac:local-id attributes Confluence
-// adds to elements on save.
-var localIDAttr = regexp.MustCompile(`\s(?:ac:)?local-id=(?:"[^"]*"|'[^']*')`)
+// localIDAttr matches the local-id attributes Confluence adds to elements
+// on save — bare or namespaced (ac:local-id, ri:local-id).
+var localIDAttr = regexp.MustCompile(`\s(?:[a-z]+:)?local-id=(?:"[^"]*"|'[^']*')`)
 
 func stripLocalIDs(storage string) string {
 	return localIDAttr.ReplaceAllString(storage, "")
