@@ -17,11 +17,10 @@ final class ProjectCommentPromptTests: XCTestCase {
         XCTAssertTrue(line.contains("docs/a rm -rf x  [2J .md"))
     }
 
-    func testTerminalInputIsTheLineThenExactlyOneEnter() {
+    func testTerminalInputIsJustTheLineWithNoEnter() {
         let bytes = ProjectCommentPrompt.terminalInput("Address x\n\u{1B}y")
-        XCTAssertEqual(bytes.last, 0x0D)
-        XCTAssertEqual(bytes.filter { $0 < 0x20 || $0 == 0x7F }, [0x0D], "no other control byte reaches the terminal")
-        XCTAssertEqual(String(bytes: bytes.dropLast(), encoding: .utf8), "Address xy")
+        XCTAssertTrue(bytes.filter { $0 < 0x20 || $0 == 0x7F }.isEmpty, "no control byte, including CR, reaches the terminal")
+        XCTAssertEqual(String(bytes: bytes, encoding: .utf8), "Address xy")
     }
 
     func testOpenOwnerCountIgnoresResolvedAndAgentThreads() throws {

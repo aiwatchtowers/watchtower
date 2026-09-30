@@ -20,12 +20,16 @@ package enum ProjectCommentPrompt {
         return "Address \(what) on \(path) (watchtower document \(documentID)) using the watchtower-project skill."
     }
 
-    /// Bytes for the terminal: the line with any control scalar dropped, then
-    /// one carriage return — Enter in Claude Code's raw-mode prompt.
+    /// Bytes for the terminal: the line with any control scalar dropped, and
+    /// nothing else — no trailing Enter. The line lands in Claude Code's
+    /// input so the owner can see it, but only the owner's own keypress
+    /// submits it: an auto-submitted Enter could confirm whatever the TUI
+    /// happens to be showing (a permission dialog's highlighted default, a
+    /// half-typed prompt) without the owner ever seeing it.
     package static func terminalInput(_ line: String) -> [UInt8] {
         var clean = String.UnicodeScalarView()
         clean.append(contentsOf: line.unicodeScalars.filter { !isControl($0) })
-        return Array(String(clean).utf8) + [0x0D]
+        return Array(String(clean).utf8)
     }
 
     private static func isControl(_ scalar: Unicode.Scalar) -> Bool {

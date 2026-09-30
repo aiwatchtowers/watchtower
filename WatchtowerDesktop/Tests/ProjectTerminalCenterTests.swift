@@ -208,13 +208,14 @@ final class ProjectTerminalCenterTests: XCTestCase {
 
     // MARK: - Send comments (Task 26)
 
-    func testARunningSessionGetsOneLineAndOneEnter() throws {
+    func testARunningSessionGetsOneLineWithNoEnter() throws {
         let center = makeCenter()
         let p = try project()
         center.start(project: p)
         let line = ProjectCommentPrompt.line(relPath: "docs/plan.md", documentID: 7, count: 3)
         XCTAssertEqual(center.sendPrompt(line, projectID: p.id), .sent)
         XCTAssertEqual(sessions[0].inputs, [ProjectCommentPrompt.terminalInput(line)])
+        XCTAssertFalse(sessions[0].inputs[0].contains(0x0D), "the owner presses Return; Watchtower never does")
     }
 
     func testAnExitedSessionReceivesNothing() throws {

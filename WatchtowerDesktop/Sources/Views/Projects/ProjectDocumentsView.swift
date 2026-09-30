@@ -171,7 +171,12 @@ struct ProjectDocumentsView: View {
             relPath: docVM.document.relPath, documentID: docVM.document.id,
             count: ProjectCommentPrompt.openOwnerCount(docVM.threads)
         )
-        delivery = appState.projectTerminalCenter.sendPrompt(line, projectID: docVM.project.id)
+        let result = appState.projectTerminalCenter.sendPrompt(line, projectID: docVM.project.id)
+        delivery = result
+        // The line is typed, not submitted (I1): switch to the Terminal pane
+        // so the owner sees it land in Claude's input and presses Return
+        // themselves, instead of leaving it silently queued off-screen.
+        if result == .sent { vm.pane = .terminal }
     }
 
     private func openTerminal() {

@@ -19,7 +19,8 @@ struct ProjectCommentsSendBar: View {
             HStack(spacing: 8) {
                 switch delivery {
                 case .sent:
-                    Label("Sent to Claude Code", systemImage: "checkmark").font(.caption).foregroundStyle(.secondary)
+                    Label("Typed into Claude — press Return to send", systemImage: "checkmark")
+                        .font(.caption).foregroundStyle(.secondary)
                 case .noSession:
                     Text(Self.noSessionNote).font(.caption).foregroundStyle(.secondary)
                     Button("Open terminal", action: onOpenTerminal)
