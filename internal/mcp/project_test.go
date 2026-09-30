@@ -78,8 +78,24 @@ func TestProjectMode_DeletedProjectEveryToolAnswersNoLongerExists(t *testing.T) 
 func TestGetAction_ProjectSessionSeesOnlyItsRows(t *testing.T) {
 	database := seedDB(t)
 	pid := seedMCPProject(t, database)
-	other, err := database.InsertAgentAction(db.AgentAction{Tool: "create_target", ArgsJSON: `{}`, Reason: "r",
+	mainRow, err := database.InsertAgentAction(db.AgentAction{Tool: "create_target", ArgsJSON: `{}`, Reason: "r",
 		Surface: "main", ConversationID: 0, Status: "pending", TrustAtCreate: "ask"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A row of a second project: same context_type, different context_id —
+	// only actionVisible's context_id clause keeps it out of project A's view.
+	otherFolder, err := db.ResolveProjectFolder(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherPID, err := database.CreateProject("other", otherFolder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherProjectRow, err := database.InsertAgentAction(db.AgentAction{Tool: "create_targets", ArgsJSON: `{}`, Reason: "r",
+		Surface: "project", ContextType: tools.ProjectContextType, ContextID: strconv.FormatInt(otherPID, 10),
+		Status: "pending", TrustAtCreate: "execute"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +114,7 @@ func TestGetAction_ProjectSessionSeesOnlyItsRows(t *testing.T) {
 		t.Fatalf("want applied, got %+v", rc)
 	}
 
-	for id, visible := range map[int64]bool{rc.ActionID: true, other: false} {
+	for id, visible := range map[int64]bool{rc.ActionID: true, mainRow: false, otherProjectRow: false} {
 		res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "get_action", Arguments: map[string]any{"id": id}})
 		if err != nil {
 			t.Fatal(err)
