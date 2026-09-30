@@ -287,6 +287,8 @@ Schema changes use **goose** migrations — numbered SQL files in `internal/db/m
 
 When adding a table/column/CHECK, also mirror it into `internal/db/schema.sql` (embedded and injected into the AI prompt), add new tables to `TestAllTablesExist`, and regenerate the snapshot (`go test ./internal/db/ -run TestSchemaGolden -update`). SQLite has no `ALTER TABLE ... ADD CONSTRAINT`, so expanding an enum CHECK (`feedback.entity_type`, `targets.source_type`, `inbox_items.trigger_type`) requires the table-recreation dance — see `internal/db/migrations/00002`/`00003`.
 
+**Transactions start `BEGIN IMMEDIATE`** (`db.Open` sets the driver's `_txlock=immediate`): a write transaction takes the write lock up front and waits for it under `busy_timeout`, instead of failing mid-transaction with `SQLITE_BUSY_SNAPSHOT` (517) when another process commits between its first read and first write (WAL never applies `busy_timeout` to that upgrade). A transaction that only reads should use `BeginTx(ctx, &sql.TxOptions{ReadOnly: true})` (stays deferred, never blocks a writer) — on a `query_only` handle (`SetReadOnly`, dev-mode MCP) plain `Begin()` is refused outright.
+
 The repeatable dev flows (migration, new AI prompt, new pipeline end-to-end, new Desktop tab) are documented as project skills in `.claude/skills/` (`add-migration`, `add-ai-prompt`, `add-pipeline`, `add-desktop-feature`). Use them; they encode the load-bearing steps and gotchas.
 
 ---

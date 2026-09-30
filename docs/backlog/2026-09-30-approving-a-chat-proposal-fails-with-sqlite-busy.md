@@ -43,3 +43,15 @@ wait for your approval"), but only the "Track this" card is rendered. Either
 the second proposal was never recorded, or the card list drops it.
 
 > Original note: «бага» (with screenshot)
+
+## Progress
+
+- 2026-09-30: every Go transaction now begins `BEGIN IMMEDIATE` (`_txlock=immediate` in
+  `db.Open`). A DEFERRED read-then-write transaction failed at once with
+  `SQLITE_BUSY_SNAPSHOT` when another process committed in between — `busy_timeout`
+  never covered that upgrade; now it waits for the write lock up front. Pinned by
+  `internal/db/txlock_test.go`. Still open: the autocommit `TransitionAgentAction`
+  UPDATE in the screenshot is covered by `busy_timeout` only, so a writer holding the
+  lock longer than the timeout still fails it (the render-outside-the-tx and longer
+  owner-path timeout work addresses that), and the card-level error/Retry and the
+  missing second card remain.

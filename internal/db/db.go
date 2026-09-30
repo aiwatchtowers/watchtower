@@ -41,7 +41,15 @@ func Open(dbPath string) (*DB, error) {
 		}
 	}
 
-	sqlDB, err := sql.Open("sqlite", dbPath)
+	// _txlock=immediate makes every Begin/BeginTx that is not explicitly
+	// ReadOnly issue BEGIN IMMEDIATE, taking the write lock up front (and
+	// waiting for it under busy_timeout). A DEFERRED transaction that reads
+	// and then writes pins a WAL snapshot; if another connection commits in
+	// between, its upgrade to a write lock fails at once with
+	// SQLITE_BUSY_SNAPSHOT — busy_timeout never applies to that upgrade.
+	// Autocommit statements are unaffected. The driver strips the query
+	// string from a plain path before opening the file.
+	sqlDB, err := sql.Open("sqlite", dbPath+"?_txlock=immediate")
 	if err != nil {
 		return nil, fmt.Errorf("opening database: %w", err)
 	}
@@ -118,6 +126,8 @@ func (db *DB) migrate() error {
 // SetReadOnly flips the connection to SQLite query_only mode: any subsequent
 // write (INSERT/UPDATE/DELETE/DDL) fails while reads keep working. Used by
 // read-only consumers (the MCP server) after Open has run migrations.
+// Because Begin is immediate (see Open), Begin() itself fails on such a
+// handle; a transaction there must be opened with sql.TxOptions{ReadOnly: true}.
 func (db *DB) SetReadOnly() error {
 	if _, err := db.Exec("PRAGMA query_only=ON"); err != nil {
 		return fmt.Errorf("setting query_only: %w", err)
