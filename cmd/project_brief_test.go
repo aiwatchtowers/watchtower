@@ -87,6 +87,38 @@ func TestRenderProjectBrief_OpenTreeInProgressFirstDoneOmitted(t *testing.T) {
 	assert.Contains(t, out, "New comments for you: none.")
 }
 
+// The board sorts siblings by priority first; the brief puts in-progress and
+// blocked work before todo whatever its priority, keeping priority order
+// within a status, so a long board's active part is never cut off.
+func TestRenderProjectBrief_ActiveWorkFirstWhateverItsPriority(t *testing.T) {
+	node := func(id int, status, priority string) db.BoardNode {
+		n := briefNode(id, status, fmt.Sprintf("task %d", id))
+		n.Target.Priority = priority
+		return n
+	}
+	// Board order (priority, then status): #4, #1, #2, #3.
+	board := []db.BoardNode{node(4, "in_progress", "high"), node(1, "todo", "high"), node(2, "in_progress", "medium"), node(3, "blocked", "low")}
+	out := renderProjectBrief(board, briefProject(), nil, nil)
+	var order []int
+	for _, id := range []int{4, 2, 3, 1} {
+		i := strings.Index(out, fmt.Sprintf("#%d [", id))
+		require.NotEqual(t, -1, i, out)
+		order = append(order, i)
+	}
+	assert.IsIncreasing(t, order, "in progress (by priority), then blocked, then todo")
+
+	long := strings.Repeat("Implement the next part of the plan ", 4)
+	var big []db.BoardNode
+	for id := 1; id <= 60; id++ {
+		big = append(big, node(id, "todo", "high"))
+		big[len(big)-1].Target.Text = long
+	}
+	big = append(big, node(99, "in_progress", "low"))
+	out = renderProjectBrief(big, briefProject(), nil, nil)
+	assert.Contains(t, out, "more targets (project_board)", "the board is cut")
+	assert.Contains(t, out, "#99 [in_progress, low", "the active low-priority task survives the cut")
+}
+
 func TestRenderProjectBrief_CommentsTargetsFirstThenDocumentsWithHeadingAndQuote(t *testing.T) {
 	board := []db.BoardNode{briefNode(3, "in_progress", "active feature")}
 	docs := map[int64]db.ProjectDocument{9: {ID: 9, RelPath: "docs/plan.md"}}

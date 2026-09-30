@@ -1,10 +1,12 @@
 package cmd
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"math"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -31,7 +33,8 @@ var projectBriefCmd = &cobra.Command{
 	Use:   "brief",
 	Short: "Print a project's brief for Claude Code (the SessionStart hook body)",
 	Long: "Prints at most 4000 characters: target counts, the open part of the board with\n" +
-		"ids, status and priority (board order, done omitted), comments waiting for the agent, and the\n" +
+		"ids, status and priority (in progress and blocked first, then by priority; done omitted),\n" +
+		"comments waiting for the agent, and the\n" +
 		"board rules. Always exits 0 — a hook must never break a session start, so any\n" +
 		"failure (project gone, folder moved, database unreadable) is one line.",
 	// No root schema/config pre-run: a broken config would otherwise fail the
@@ -185,13 +188,14 @@ func fitBriefSection(title string, lines []string, limit int, what string) strin
 
 func briefClosed(status string) bool { return status == "done" || status == "dismissed" }
 
-// briefTargetLines lists the open targets depth-first in board order. A
-// closed target is omitted; its open children stay, at its depth.
+// briefTargetLines lists the open targets depth-first, each level in
+// briefLevel order. A closed target is omitted; its open children stay, at
+// its depth.
 func briefTargetLines(board []db.BoardNode) []string {
 	var lines []string
 	var walk func([]db.BoardNode, int)
 	walk = func(level []db.BoardNode, depth int) {
-		for _, n := range level {
+		for _, n := range briefLevel(level) {
 			if briefClosed(n.Target.Status) {
 				walk(n.Children, depth)
 				continue
@@ -202,6 +206,26 @@ func briefTargetLines(board []db.BoardNode) []string {
 	}
 	walk(board, 0)
 	return lines
+}
+
+// briefLevel puts in-progress, then blocked work before todo, so the active
+// part of a long board survives the 4000-rune cut. The board sorts siblings
+// by priority first; within a status that priority order is kept.
+func briefLevel(level []db.BoardNode) []db.BoardNode {
+	rank := func(n db.BoardNode) int {
+		switch n.Target.Status {
+		case "in_progress":
+			return 0
+		case "blocked":
+			return 1
+		case "todo":
+			return 2
+		}
+		return 3
+	}
+	out := slices.Clone(level)
+	slices.SortStableFunc(out, func(a, b db.BoardNode) int { return cmp.Compare(rank(a), rank(b)) })
+	return out
 }
 
 func briefTargetLine(n db.BoardNode, depth int) string {
