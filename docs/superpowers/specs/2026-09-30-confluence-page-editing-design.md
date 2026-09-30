@@ -337,6 +337,18 @@ sections above are the original design and are not rewritten to match.
   Confluence). Guards: `TestEXT05_SectionRewriteKeepsUntouchedBlocksByteExact`
   and `FuzzApply`'s "own text plus one paragraph changes nothing else"
   property.
+- **R13 (local review round 2, section merge):** the R11 merge must never
+  lose formatting through pairing or reordering. A new block whose text
+  equals an unmatched original's anywhere in the section was moved, not
+  changed: it re-emits that original's bytes at its new place (a reorder
+  keeps a code title, a table layout, a paragraph's alignment). Since the
+  text cannot say which original a changed block was edited from, every
+  unmatched original of a kind a new block in the same gap could derive
+  from must itself be derivable, else the edit is refused naming it —
+  deleting a plain paragraph and changing an aligned one side by side is
+  refused rather than re-paired so the aligned one is silently deleted. A
+  rich block is still deleted when no new block of its kind shares its gap.
+  Guards: `apply_r13_test.go`.
 - **R12 (local review, write precondition):** `Normalize` pins `base_hash`,
   the sha256 of the storage the preview was computed from; `Execute` writes
   only while the live page has the same version AND the same storage hash (a

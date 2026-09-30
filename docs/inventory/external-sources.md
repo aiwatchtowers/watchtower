@@ -164,12 +164,15 @@ Confluence is re-read and reported the same way). A rich element (a
 `removed`. Every byte outside what an edit changes survives: a
 `replace_text` re-serialises only its unit's content span, and a
 `replace_section` (ruling R11) re-emits the original bytes of every block of
-the section whose text the new body keeps, re-rendering from markdown only a
-block the edit changed — and refusing, with a message naming the block, a
+the section whose text the new body keeps — also when the body only moves
+it within the section (R13) — re-rendering from markdown only a block the
+edit changed — and refusing, with a message naming the block, a
 change to a block whose formatting markdown cannot carry (attributes on a
 paragraph/heading/list/table, column widths, noformat, code-macro parameters
 other than the language, a multi-paragraph list item, formatting-like
-characters in its text). Edits are capped at 20 per call, 60 000 runes per text
+characters in its text), or a change that could have been made to such a
+block (it is unmatched in the same gap as a changed block of its kind,
+R13). Edits are capped at 20 per call, 60 000 runes per text
 field and 120 000 per call; a page whose editable text exceeds 60 000 runes
 is shown truncated and its hidden tail cannot be changed. Without the opt-in
 write scopes the tool refuses before any network call: `Confluence editing
@@ -196,6 +199,13 @@ mounted only in chat mode, never on the dev-mode MCP surface (DEV-01).
   heading and list. `FuzzApply` extends it to arbitrary input: a section
   rewritten with its own text plus one appended paragraph changes nothing
   but that paragraph.
+- `TestEXT05_SectionRewriteMoveKeepsBytes` and
+  `TestEXT05_SectionRewriteRefusesAmbiguousPairing`
+  (`internal/confluenceedit/apply_r13_test.go`, ruling R13) — a block the
+  new body only moves keeps its bytes (an aligned paragraph, a titled code
+  macro, a wide table); deleting a plain paragraph while changing an
+  aligned one in the same gap is refused, never re-paired so the aligned
+  one is silently deleted.
 - `TestEXT05_OnlyEditToolReachesPut`
   (`internal/tools/confluence_contracts_test.go`) — an AST scan of every
   non-test Go file of the module (scan floor 300 files) pins the production
@@ -213,6 +223,12 @@ every Confluence hit's `link` is the page or attachment URL.
 
 ## Changelog
 
+- 2026-09-30 (local-review round 2, ruling R13): a `replace_section`
+  block the new body only moves re-emits its original bytes, and a gap that
+  deletes or changes several blocks of one kind refuses when any of them is
+  not derivable (no silent re-pairing that deletes the rich one). Guards
+  `TestEXT05_SectionRewriteMoveKeepsBytes` and
+  `TestEXT05_SectionRewriteRefusesAmbiguousPairing` added.
 - 2026-09-30 (local-review round 1, rulings R11/R12): EXT-05 now pins
   `base_hash` (sha256 of the propose-time storage) and requires it to match
   at apply time besides the version; "already saved" is told from someone

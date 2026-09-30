@@ -15,7 +15,10 @@ import (
 // bytes, so formatting the editable text cannot express (a centred
 // paragraph, a table's layout, a code macro's title, ...) survives. An
 // original block whose text reads back as several blocks is kept when a
-// run of new blocks joins to it (see mergeGap). Otherwise each new block
+// run of new blocks joins to it (see mergeGap). A new block whose text
+// equals an unmatched original's elsewhere in the section was moved: it
+// re-emits that original's bytes at its new place (findMoves, ruling R13).
+// Otherwise each new block
 // is either derived from the next unmatched original block of the same
 // kind — rendered from markdown, allowed only when that original is
 // faithfully representable (checkDerivable) — or new, and every original
@@ -28,8 +31,40 @@ import (
 
 // sectionOp is one step of a section merge, in body order.
 type sectionOp struct {
-	orig *block // the original block kept, replaced or deleted (nil: new)
-	body *block // the body block (orig itself when kept; nil: deleted)
+	orig  *block // the original block kept, replaced or deleted (nil: new)
+	body  *block // the body block (orig itself when kept; nil: deleted)
+	moved bool   // orig is kept but moved here (its old place is deleted)
+}
+
+// moves pairs a new block with an unmatched original of exactly its text
+// elsewhere in the section: the block was moved, not changed, so it keeps
+// its original bytes (ruling R13).
+type moves struct {
+	to   map[*block]*block // body block -> the original it re-emits
+	away map[*block]bool   // originals moved elsewhere
+}
+
+// findMoves pairs, in body order, each body block the match left over with
+// the first unmatched original of the same non-empty text.
+func findMoves(base, body []*block, baseText, bodyText []string, matched [][2]int) moves {
+	mv := moves{to: map[*block]*block{}, away: map[*block]bool{}}
+	usedBase, usedBody := map[int]bool{}, map[int]bool{}
+	for _, m := range matched {
+		usedBase[m[0]], usedBody[m[1]] = true, true
+	}
+	for j, t := range bodyText {
+		if usedBody[j] || t == "" {
+			continue
+		}
+		for i, o := range base {
+			if !usedBase[i] && baseText[i] == t {
+				usedBase[i] = true
+				mv.to[body[j]], mv.away[o] = o, true
+				break
+			}
+		}
+	}
+	return mv
 }
 
 // mergeSection matches body against the section's original blocks and
@@ -46,8 +81,10 @@ func (a *applier) mergeSection(base, body []*block) ([]sectionOp, error) {
 	}
 	var ops []sectionOp
 	bi, ni := 0, 0
-	for _, m := range matchBlocks(baseText, bodyText) {
-		gap, err := a.mergeGap(base[bi:m[0]], body[ni:m[1]], baseText[bi:m[0]], bodyText[ni:m[1]])
+	matched := matchBlocks(baseText, bodyText)
+	mv := findMoves(base, body, baseText, bodyText, matched)
+	for _, m := range matched {
+		gap, err := a.mergeGap(base[bi:m[0]], body[ni:m[1]], baseText[bi:m[0]], bodyText[ni:m[1]], mv)
 		if err != nil {
 			return nil, err
 		}
@@ -55,7 +92,7 @@ func (a *applier) mergeSection(base, body []*block) ([]sectionOp, error) {
 		ops = append(ops, sectionOp{orig: base[m[0]], body: base[m[0]]})
 		bi, ni = m[0]+1, m[1]+1
 	}
-	gap, err := a.mergeGap(base[bi:], body[ni:], baseText[bi:], bodyText[ni:])
+	gap, err := a.mergeGap(base[bi:], body[ni:], baseText[bi:], bodyText[ni:], mv)
 	return append(ops, gap...), err
 }
 
@@ -64,24 +101,33 @@ func (a *applier) mergeSection(base, body []*block) ([]sectionOp, error) {
 // paragraph with a blank line from two <br/>s) is kept when a run of new
 // blocks joins to exactly its text, splitting the gap around it. Only a
 // text holding a blank line can read back as several blocks.
-func (a *applier) mergeGap(orig, body []*block, origText, bodyText []string) ([]sectionOp, error) {
+func (a *applier) mergeGap(orig, body []*block, origText, bodyText []string, mv moves) ([]sectionOp, error) {
 	for i, t := range origText {
-		if !strings.Contains(t, "\n\n") {
+		if !strings.Contains(t, "\n\n") || mv.away[orig[i]] {
 			continue
 		}
-		if q, k := findRun(bodyText, t); k > 0 {
-			left, err := a.mergeGap(orig[:i], body[:q], origText[:i], bodyText[:q])
+		if q, k := findRun(bodyText, t); k > 0 && !anyMoved(body[q:q+k], mv) {
+			left, err := a.mergeGap(orig[:i], body[:q], origText[:i], bodyText[:q], mv)
 			if err != nil {
 				return nil, err
 			}
-			right, err := a.mergeGap(orig[i+1:], body[q+k:], origText[i+1:], bodyText[q+k:])
+			right, err := a.mergeGap(orig[i+1:], body[q+k:], origText[i+1:], bodyText[q+k:], mv)
 			if err != nil {
 				return nil, err
 			}
 			return append(append(left, sectionOp{orig: orig[i], body: orig[i]}), right...), nil
 		}
 	}
-	return a.pairGap(orig, body, origText)
+	return a.pairGap(orig, body, origText, mv)
+}
+
+func anyMoved(body []*block, mv moves) bool {
+	for _, n := range body {
+		if mv.to[n] != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // findRun finds k >= 2 consecutive texts starting at q that join to t.
@@ -98,22 +144,41 @@ func findRun(texts []string, t string) (q, k int) {
 	return 0, 0
 }
 
-// pairGap derives each new block from the next unmatched original block
-// of its kind, or adds it as new; the originals left over are deleted.
-func (a *applier) pairGap(orig, body []*block, origText []string) ([]sectionOp, error) {
-	if len(body) > 0 {
+// pairGap re-emits each moved block, derives each other new block from the
+// next unmatched original block of its kind, or adds it as new; the
+// originals left over (and those moved elsewhere) are deleted.
+func (a *applier) pairGap(allOrig, body []*block, allText []string, mv moves) ([]sectionOp, error) {
+	var ops []sectionOp
+	var orig, fresh []*block
+	var origText []string
+	for i, o := range allOrig {
+		if mv.away[o] {
+			ops = append(ops, sectionOp{orig: o})
+			continue
+		}
+		orig, origText = append(orig, o), append(origText, allText[i])
+	}
+	for _, n := range body {
+		if mv.to[n] == nil {
+			fresh = append(fresh, n)
+		}
+	}
+	if len(fresh) > 0 {
 		for i, o := range orig {
 			if err := a.checkParsable(o, origText[i]); err != nil {
 				return nil, err
 			}
 		}
 	}
-	if err := a.checkCandidates(orig, body, origText); err != nil {
+	if err := a.checkCandidates(orig, fresh, origText); err != nil {
 		return nil, err
 	}
-	var ops []sectionOp
 	p := 0
 	for _, n := range body {
+		if o := mv.to[n]; o != nil {
+			ops = append(ops, sectionOp{orig: o, body: o, moved: true})
+			continue
+		}
 		j := nextDerivable(orig, origText, p, n.kind)
 		if j < 0 {
 			ops = append(ops, sectionOp{body: n})
@@ -251,6 +316,8 @@ func (a *applier) sectionOut(s *section) (string, error) {
 	var ps []splice
 	for _, op := range s.ops {
 		switch {
+		case op.moved:
+			ps = append(ps, splice{span{anchor, anchor}, a.keptBytes(op.orig)})
 		case op.orig == nil:
 			ps = append(ps, splice{span{anchor, anchor}, a.blockXHTML(op.body, s.links)})
 		case op.body == op.orig:
@@ -263,7 +330,13 @@ func (a *applier) sectionOut(s *section) (string, error) {
 			anchor = op.orig.end
 		}
 	}
-	sort.SliceStable(ps, func(i, j int) bool { return ps[i].start < ps[j].start })
+	// An insertion goes before whatever else starts at its anchor.
+	sort.SliceStable(ps, func(i, j int) bool {
+		if ps[i].start != ps[j].start {
+			return ps[i].start < ps[j].start
+		}
+		return ps[i].start == ps[i].end && ps[j].start != ps[j].end
+	})
 	var b strings.Builder
 	cur := s.region.start
 	for _, p := range ps {
@@ -276,6 +349,21 @@ func (a *applier) sectionOut(s *section) (string, error) {
 	}
 	b.WriteString(src[cur:s.region.end])
 	return b.String(), nil
+}
+
+// keptBytes is a moved block's original bytes, with its units a later edit
+// changed rewritten in place.
+func (a *applier) keptBytes(bl *block) string {
+	src := a.d.src
+	var b strings.Builder
+	cur := bl.start
+	for _, p := range a.unitSplices(bl) {
+		b.WriteString(src[cur:p.start])
+		b.WriteString(p.out)
+		cur = p.end
+	}
+	b.WriteString(src[cur:bl.end])
+	return b.String()
 }
 
 // unitSplices rewrites a kept block's units that a later edit changed.
