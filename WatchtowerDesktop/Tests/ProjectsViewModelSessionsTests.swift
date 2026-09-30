@@ -103,6 +103,23 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
 
     // MARK: - Work on it
 
+    /// A double click on Work on it: two overlapping calls both see no
+    /// session yet; the in-flight guard keeps it to one row and one launch.
+    func testConcurrentWorkOnCreatesOneRow() async throws {
+        let p = try await projectWithFolder()
+        let target = try await pool.write { try TestDatabase.insertProjectTarget($0, projectID: p, text: "Ship it") }
+        let vm = makeVM()
+        await vm.reload()
+
+        async let first: Void = vm.workOn(targetID: target, targetText: "Ship it")
+        async let second: Void = vm.workOn(targetID: target, targetText: "Ship it")
+        _ = await (first, second)
+
+        let all = try await rows(p).filter { $0.targetID == target }
+        XCTAssertEqual(all.count, 1)
+        XCTAssertEqual(launches.count, 1)
+    }
+
     func testWorkOnTwiceCreatesOneRowAndTheSecondCallFocusesIt() async throws {
         let p = try await projectWithFolder()
         let target = try await pool.write { try TestDatabase.insertProjectTarget($0, projectID: p, text: "Ship it") }
@@ -328,6 +345,32 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         XCTAssertEqual(titleCalls.count, 7)
     }
 
+    func testASessionWithoutATranscriptSpawnsNoTitleCall() async throws {
+        let p = try await projectWithFolder()
+        let vm = makeVM()
+        transcripts = false
+        await vm.newSession(projectID: p)
+        titleCalls = []
+
+        await vm.refreshTitles()
+
+        XCTAssertTrue(titleCalls.isEmpty)
+    }
+
+    func testClaudeNotFoundIsNotAFailedResume() async throws {
+        let p = try await projectWithFolder()
+        let row = try await insertSession(.init(
+            projectID: p, kind: .claude, title: "s", folderPath: acme, claudeSessionID: UUID().uuidString.lowercased()
+        ))
+        let vm = makeVM()
+
+        await vm.open(row)
+        clock += 1
+        processes.last?.exit(127)
+
+        XCTAssertTrue(vm.resumeFailed.isEmpty)
+    }
+
     func testSwitchingAwayTitlesTheSessionLeft() async throws {
         let p = try await projectWithFolder()
         let vm = makeVM()
@@ -371,6 +414,21 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
     }
 
     // MARK: - Errors
+
+    /// Spec §6: no process for a row that was not written.
+    func testAFailedCreateStartsNoProcess() async throws {
+        let p = try await projectWithFolder()
+        let vm = makeVM()
+        await vm.reload()
+
+        try await pool.write { try $0.execute(sql: "ALTER TABLE terminal_sessions RENAME TO terminal_sessions_hidden") }
+        await vm.newSession(projectID: p)
+        try await pool.write { try $0.execute(sql: "ALTER TABLE terminal_sessions_hidden RENAME TO terminal_sessions") }
+
+        XCTAssertTrue(launches.isEmpty)
+        XCTAssertTrue(center.liveIDs.isEmpty)
+        XCTAssertNotNil(vm.sessionErrors[p])
+    }
 
     func testASuccessfulLoadClearsTheLoadErrorButKeepsAnActionError() async throws {
         let p = try await projectWithFolder()

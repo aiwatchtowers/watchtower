@@ -300,7 +300,8 @@ extension ProjectsViewModel {
     /// One title attempt for `sessionID` if `TerminalSessionPolicy.needsTitle`
     /// says so. Only a failed call counts as an attempt: `written: false`
     /// (no owner message yet) cost no AI call and must not use the budget up
-    /// before the owner has typed. Failures are logged, never shown.
+    /// before the owner has typed. A session with no transcript yet cannot
+    /// have one, so it spawns no CLI at all. Failures are logged, never shown.
     func refreshTitle(sessionID: Int64) async {
         guard let titleService else { return }
         let row: TerminalSession?
@@ -310,7 +311,8 @@ extension ProjectsViewModel {
             NSLog("ProjectsViewModel: could not read session %lld for its title: %@", sessionID, error.localizedDescription)
             return
         }
-        guard let row, TerminalSessionPolicy.needsTitle(row, attempts: titleAttempts[sessionID, default: 0]) else { return }
+        guard let row, TerminalSessionPolicy.needsTitle(row, attempts: titleAttempts[sessionID, default: 0]),
+              let uuid = row.claudeSessionID, terminalCenter?.transcriptExists(uuid) ?? true else { return }
         do {
             if try await titleService(sessionID).written {
                 await loadSessions(projectID: row.projectID)
@@ -325,10 +327,11 @@ extension ProjectsViewModel {
 
     /// The center's exit hook: a relaunch of a stored id (a resume, or a
     /// `--session-id` when no transcript was found) that exits non-zero within
-    /// `resumeFailureWindow` of launch is a failed resume.
+    /// `resumeFailureWindow` of launch is a failed resume. 127 is not: Claude
+    /// Code was not found, and Start fresh would fail the same way.
     func sessionExited(_ id: Int64, code: Int32?) {
         guard let started = resumeStarts.removeValue(forKey: id) else { return }
-        if let code, code != 0, now().timeIntervalSince(started) < Self.resumeFailureWindow {
+        if let code, code != 0, code != 127, now().timeIntervalSince(started) < Self.resumeFailureWindow {
             resumeFailed.insert(id)
         }
     }
