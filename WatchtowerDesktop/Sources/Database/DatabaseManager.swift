@@ -111,10 +111,13 @@ final class DatabaseManager: Sendable {
             // Briefings
             try db.execute(sql: "DELETE FROM briefings")
 
-            // Targets: only AI-sourced ones — user-created (manual/jira/slack/promoted_subitem) are preserved
+            // Targets: only AI-sourced ones — user-created (manual/jira/slack/promoted_subitem)
+            // are preserved, and so is every project board (PROJ-02: only a project
+            // delete removes its targets; their comments would cascade with them).
             try db.execute(sql: """
                 DELETE FROM targets
                 WHERE source_type IN ('extract','track','digest','briefing','chat','inbox')
+                  AND project_id IS NULL
                 """)
             try db.execute(sql: "DELETE FROM inbox_items")
             try db.execute(sql: "UPDATE workspace SET inbox_last_processed_ts = 0")

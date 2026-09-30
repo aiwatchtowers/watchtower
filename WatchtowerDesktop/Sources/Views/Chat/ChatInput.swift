@@ -31,6 +31,10 @@ struct ChatInput: View {
     /// `consumed == false` falls through to the normal handling (Enter
     /// sends, Esc stops).
     var onPickerKey: ((ComposerPickerKey, String, Int) -> ComposerKeyResult)?
+    /// Content outside the text field that is also sent (the main chat's
+    /// quote batch): enables Send with an empty field. Defaults to none, so
+    /// every other call site is unchanged.
+    var hasPendingContent = false
     @Environment(\.dictationCenter) private var dictationCenter
 
     var body: some View {
@@ -51,7 +55,8 @@ struct ChatInput: View {
             onPasteImage: onPasteImage,
             onRemoveAttachment: onRemoveAttachment,
             onCursorChange: onCursorChange,
-            onPickerKey: onPickerKey
+            onPickerKey: onPickerKey,
+            hasPendingContent: hasPendingContent
         )
     }
 }
@@ -78,6 +83,7 @@ struct ChatInputContent: View {
     var onRemoveAttachment: ((Int64) -> Void)?
     var onCursorChange: ((String, Int) -> Void)?
     var onPickerKey: ((ComposerPickerKey, String, Int) -> ComposerKeyResult)?
+    var hasPendingContent = false
     @State private var inputHeight: CGFloat = 22
 
     var body: some View {
@@ -192,9 +198,9 @@ struct ChatInputContent: View {
         }
     }
 
-    /// A message may carry only attachments (no text).
+    /// A message may carry only attachments, or only pending quotes (no text).
     private var canSend: Bool {
-        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty
+        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty || hasPendingContent
     }
 
     private var buttonActive: Bool {

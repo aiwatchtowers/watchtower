@@ -45,7 +45,7 @@ func TestSearchKnowledge_FindsIndexedJiraIssue(t *testing.T) {
 
 func TestSearchKnowledge_EmptyQueriesIsValidationError(t *testing.T) {
 	reg := knowledgeRegistry(t, openDB(t))
-	_, err := reg.CallRead(context.Background(), "search_knowledge", json.RawMessage(`{"queries":[]}`))
+	_, err := reg.CallRead(context.Background(), "search_knowledge", json.RawMessage(`{"queries":[]}`), Binding{})
 	var verr *ValidationError
 	require.ErrorAs(t, err, &verr, "the model must see a message, not a bare error")
 	assert.NotEmpty(t, verr.Msg)
@@ -53,7 +53,7 @@ func TestSearchKnowledge_EmptyQueriesIsValidationError(t *testing.T) {
 
 func TestSearchKnowledge_BadFromDateIsValidationError(t *testing.T) {
 	reg := knowledgeRegistry(t, openDB(t))
-	_, err := reg.CallRead(context.Background(), "search_knowledge", json.RawMessage(`{"queries":["x"],"from":"26-09-2026"}`))
+	_, err := reg.CallRead(context.Background(), "search_knowledge", json.RawMessage(`{"queries":["x"],"from":"26-09-2026"}`), Binding{})
 	var verr *ValidationError
 	require.ErrorAs(t, err, &verr)
 	assert.Contains(t, verr.Msg, "from")
@@ -69,7 +69,7 @@ func TestGetKnowledgeDocument_ReturnsTextForAHit(t *testing.T) {
 
 func TestGetKnowledgeDocument_UnknownRefIsValidationError(t *testing.T) {
 	reg := knowledgeRegistry(t, openDB(t))
-	_, err := reg.CallRead(context.Background(), "get_knowledge_document", json.RawMessage(`{"ref":"nope"}`))
+	_, err := reg.CallRead(context.Background(), "get_knowledge_document", json.RawMessage(`{"ref":"nope"}`), Binding{})
 	var verr *ValidationError
 	require.ErrorAs(t, err, &verr)
 	assert.Contains(t, verr.Msg, "no document")
@@ -78,7 +78,7 @@ func TestGetKnowledgeDocument_UnknownRefIsValidationError(t *testing.T) {
 func TestSearchKnowledge_FromAfterToIsValidationError(t *testing.T) {
 	reg := knowledgeRegistry(t, openDB(t))
 	_, err := reg.CallRead(context.Background(), "search_knowledge",
-		json.RawMessage(`{"queries":["x"],"from":"2026-09-26","to":"2026-09-20"}`))
+		json.RawMessage(`{"queries":["x"],"from":"2026-09-26","to":"2026-09-20"}`), Binding{})
 	var verr *ValidationError
 	require.ErrorAs(t, err, &verr)
 	assert.Contains(t, verr.Msg, "before")
@@ -98,7 +98,7 @@ func TestGetKnowledgeDocument_FromChunk(t *testing.T) {
 	got := callReadString(t, reg, "get_knowledge_document", `{"ref":"jira:1:PROJ-123","from_chunk":0}`)
 	assert.Contains(t, got, `"from_chunk":0`)
 	assert.Contains(t, got, `"chunk_count":1`)
-	_, err := reg.CallRead(context.Background(), "get_knowledge_document", json.RawMessage(`{"ref":"jira:1:PROJ-123","from_chunk":5}`))
+	_, err := reg.CallRead(context.Background(), "get_knowledge_document", json.RawMessage(`{"ref":"jira:1:PROJ-123","from_chunk":5}`), Binding{})
 	var verr *ValidationError
 	require.ErrorAs(t, err, &verr, "an out-of-range chunk is the model's mistake, not a tool failure")
 	assert.Contains(t, verr.Msg, "from_chunk")

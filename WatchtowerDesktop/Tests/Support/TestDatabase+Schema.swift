@@ -794,7 +794,8 @@ extension TestDatabase {
         next_step           TEXT NOT NULL DEFAULT '',
         next_step_at        TEXT NOT NULL DEFAULT '',
         next_step_attempts     INTEGER NOT NULL DEFAULT 0,
-        next_step_attempted_at TEXT NOT NULL DEFAULT ''
+        next_step_attempted_at TEXT NOT NULL DEFAULT '',
+        project_id          INTEGER REFERENCES projects(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_targets_level       ON targets(level);
     CREATE INDEX IF NOT EXISTS idx_targets_parent      ON targets(parent_id);
@@ -806,6 +807,7 @@ extension TestDatabase {
     CREATE INDEX IF NOT EXISTS idx_targets_updated     ON targets(updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_targets_due_unfired ON targets(due_date)
         WHERE notified_at = '' AND due_date != '';
+    CREATE INDEX IF NOT EXISTS idx_targets_project     ON targets(project_id);
 
     CREATE TABLE IF NOT EXISTS target_links (
         id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1304,6 +1306,24 @@ extension TestDatabase {
         UNIQUE(conversation_id, artifact_key, version)
     );
 
+    CREATE TABLE IF NOT EXISTS chat_artifact_comments (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        conversation_id  INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+        artifact_key     TEXT NOT NULL,
+        artifact_version INTEGER NOT NULL,
+        body             TEXT NOT NULL,
+        anchor_quote     TEXT NOT NULL,
+        anchor_prefix    TEXT NOT NULL DEFAULT '',
+        anchor_suffix    TEXT NOT NULL DEFAULT '',
+        anchor_heading   TEXT NOT NULL DEFAULT '',
+        status           TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','sent','resolved','outdated')),
+        created_at       REAL NOT NULL,
+        sent_at          REAL,
+        CHECK (anchor_quote != '' AND body != ''),
+        CHECK (status != 'sent' OR sent_at IS NOT NULL)
+    );
+    CREATE INDEX IF NOT EXISTS idx_chat_artifact_comments_key ON chat_artifact_comments(conversation_id, artifact_key);
+
     CREATE TABLE IF NOT EXISTS chat_project_sources (
         id         INTEGER PRIMARY KEY AUTOINCREMENT,
         project_id INTEGER NOT NULL REFERENCES chat_projects(id) ON DELETE CASCADE,
@@ -1341,5 +1361,59 @@ extension TestDatabase {
         INSERT INTO chat_title_fts(chat_title_fts, rowid, title) VALUES ('delete', old.id, old.title);
         INSERT INTO chat_title_fts(rowid, title) VALUES (new.id, new.title);
     END;
+
+    CREATE TABLE IF NOT EXISTS projects (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        name        TEXT NOT NULL,
+        folder_path TEXT NOT NULL UNIQUE,
+        description TEXT NOT NULL DEFAULT '',
+        created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+        updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS project_sources (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        kind       TEXT NOT NULL CHECK(kind IN ('slack_channel','jira_project','confluence_space','person','link')),
+        ref        TEXT NOT NULL,
+        label      TEXT NOT NULL DEFAULT '',
+        UNIQUE(project_id, kind, ref)
+    );
+
+    CREATE TABLE IF NOT EXISTS project_documents (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        target_id  INTEGER REFERENCES targets(id) ON DELETE SET NULL,
+        rel_path   TEXT NOT NULL,
+        kind       TEXT NOT NULL DEFAULT 'doc' CHECK(kind IN ('spec','plan','doc')),
+        title      TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+        updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+        UNIQUE(project_id, rel_path)
+    );
+    CREATE INDEX IF NOT EXISTS idx_project_documents_target ON project_documents(target_id);
+
+    CREATE TABLE IF NOT EXISTS project_comments (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id     INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        target_id      INTEGER REFERENCES targets(id) ON DELETE CASCADE,
+        document_id    INTEGER REFERENCES project_documents(id) ON DELETE CASCADE,
+        parent_id      INTEGER REFERENCES project_comments(id) ON DELETE CASCADE,
+        author         TEXT NOT NULL CHECK(author IN ('owner','agent')),
+        agent_label    TEXT NOT NULL DEFAULT '',
+        body           TEXT NOT NULL,
+        anchor_quote   TEXT NOT NULL DEFAULT '',
+        anchor_prefix  TEXT NOT NULL DEFAULT '',
+        anchor_suffix  TEXT NOT NULL DEFAULT '',
+        anchor_heading TEXT NOT NULL DEFAULT '',
+        status         TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','resolved','outdated')),
+        created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+        read_at        TEXT NOT NULL DEFAULT '',
+        CHECK (target_id IS NOT NULL OR document_id IS NOT NULL OR parent_id IS NOT NULL)
+    );
+    CREATE INDEX IF NOT EXISTS idx_project_comments_project  ON project_comments(project_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_project_comments_target   ON project_comments(target_id);
+    CREATE INDEX IF NOT EXISTS idx_project_comments_document ON project_comments(document_id);
+    CREATE INDEX IF NOT EXISTS idx_project_comments_parent   ON project_comments(parent_id);
     """
 }

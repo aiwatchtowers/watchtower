@@ -5,9 +5,14 @@ struct ArtifactPanelView: View {
     @Bindable var model: ArtifactPanelModel
     let gmailConnected: Bool
     let slackLinks: SlackLinkResolver?
+    /// No answer is streaming (the chat refuses a second turn anyway).
+    let canSendComments: Bool
+    /// "Send N comments" — the chat sends them as the owner's message.
+    let onSendComments: () -> Void
     var onClose: () -> Void
 
     @State private var notice: String?
+    @State private var commenting = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -35,6 +40,15 @@ struct ArtifactPanelView: View {
                 Text("edited").font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
+            if !model.versions.isEmpty {
+                Button { commenting.toggle() } label: {
+                    Label(commentsLabel, systemImage: commenting ? "text.bubble.fill" : "text.bubble")
+                }
+                .buttonStyle(.borderless)
+                .disabled(!model.canComment && !commenting)
+                .help(commenting ? "Back to the artifact" : "Comment on passages of this artifact")
+                .accessibilityLabel("Comments")
+            }
             if model.versions.count > 1 {
                 Picker("Version", selection: $model.selectedVersion) {
                     Text("Latest").tag(Int?.none)
@@ -53,9 +67,16 @@ struct ArtifactPanelView: View {
         .padding(10)
     }
 
+    private var commentsLabel: String {
+        let unsent = model.comments.unsent.count
+        return unsent == 0 ? "Comments" : "Comments (\(unsent))"
+    }
+
     @ViewBuilder
     private var content: some View {
-        if model.isEditing {
+        if commenting, model.canComment {
+            ArtifactCommentsView(comments: model.comments, canSend: canSendComments, onSend: onSendComments)
+        } else if model.isEditing {
             TextEditor(text: $model.editText)
                 .font(.system(.body, design: .monospaced))
                 .padding(6)

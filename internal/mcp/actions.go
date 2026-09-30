@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -45,7 +46,7 @@ func registerRegistry(s *mcpsdk.Server, database *db.DB, reg *tools.Registry, bi
 				Description: tool.Description,
 				InputSchema: tool.InputSchema,
 			}, func(ctx context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
-				data, err := reg.CallRead(ctx, tool.Name, req.Params.Arguments)
+				data, err := reg.CallRead(ctx, tool.Name, req.Params.Arguments, binding)
 				if err != nil {
 					var verr *tools.ValidationError
 					if errors.As(err, &verr) {
@@ -88,20 +89,32 @@ func registerRegistry(s *mcpsdk.Server, database *db.DB, reg *tools.Registry, bi
 		Description: "Look up one proposed action by id: its status (pending, approved, rejected, applied, " +
 			"failed), result and error. Use it when the owner asks what happened to a proposal.",
 	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, args getActionArgs) (*mcpsdk.CallToolResult, any, error) {
+		if err := reg.ProjectAlive(ctx, binding); err != nil {
+			return errResult(err.Error()), nil, nil
+		}
 		row, err := database.GetAgentAction(args.ID)
 		if err != nil {
 			return errResult("getting action: " + err.Error()), nil, nil
 		}
-		// A binding with no conversation (conversation_id 0: a CLI-only
-		// install, spec §12, or a dev/test session with none bound) sees every
-		// row; otherwise a row from a different conversation answers the same
-		// not-found error as a missing row, so the model cannot learn that an
-		// id it invented belongs to someone else's chat.
-		if row == nil || (binding.ConversationID != 0 && row.ConversationID != binding.ConversationID) {
+		if row == nil || !actionVisible(*row, binding) {
 			return errResult(fmt.Sprintf("no action #%d", args.ID)), nil, nil
 		}
 		return jsonResult(newActionView(*row))
 	})
+}
+
+// actionVisible decides whether get_action may show row to this session. A
+// project session sees only its own project's rows. A binding with no
+// conversation (conversation_id 0: a CLI-only install, spec §12, or a
+// dev/test session with none bound) sees every other row; otherwise a row
+// from a different conversation answers the same not-found error as a
+// missing row, so the model cannot learn that an id it invented belongs to
+// someone else's chat.
+func actionVisible(row db.AgentAction, binding tools.Binding) bool {
+	if binding.ProjectID != 0 {
+		return row.ContextType == tools.ProjectContextType && row.ContextID == strconv.FormatInt(binding.ProjectID, 10)
+	}
+	return binding.ConversationID == 0 || row.ConversationID == binding.ConversationID
 }
 
 // actionView is the model-facing shape of an agent_actions row.

@@ -37,7 +37,8 @@ func (db *DB) NotifyDueTargets(now time.Time) (int, error) {
 			WHERE due_date != ''
 			  AND due_date <= ?
 			  AND notified_at = ''
-			  AND status IN ('todo','in_progress','blocked')`, cutoff)
+			  AND status IN ('todo','in_progress','blocked')
+			  AND project_id IS NULL`, cutoff)
 		if err != nil {
 			return fmt.Errorf("scanning due targets: %w", err)
 		}

@@ -29,7 +29,7 @@ func seedPersonCard(t *testing.T, d *db.DB, id, name, realName, summary string) 
 }
 
 func TestGetPerson_NotFound(t *testing.T) {
-	_, err := peopleRegistry(t, openDB(t)).CallRead(context.Background(), "get_person", json.RawMessage(`{"query":"U_NOBODY"}`))
+	_, err := peopleRegistry(t, openDB(t)).CallRead(context.Background(), "get_person", json.RawMessage(`{"query":"U_NOBODY"}`), Binding{})
 	require.Error(t, err)
 }
 
@@ -48,7 +48,7 @@ func TestGetPerson_AmbiguousName(t *testing.T) {
 	seedPersonCard(t, d, "1:U101", "alice.a", "Alice Anderson", "card U101")
 	seedPersonCard(t, d, "1:U102", "alice.b", "Alice Brown", "card U102")
 
-	_, err := peopleRegistry(t, d).CallRead(context.Background(), "get_person", json.RawMessage(`{"query":"alice"}`))
+	_, err := peopleRegistry(t, d).CallRead(context.Background(), "get_person", json.RawMessage(`{"query":"alice"}`), Binding{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "U101")
 	assert.Contains(t, err.Error(), "U102")
@@ -62,14 +62,14 @@ func TestListTracks_FiltersAndRejectsBadEnum(t *testing.T) {
 	got := callReadString(t, peopleRegistry(t, d), "list_tracks", `{"priority":"high"}`)
 	assert.Contains(t, got, "Launch readiness")
 
-	_, err = peopleRegistry(t, d).CallRead(context.Background(), "list_tracks", json.RawMessage(`{"priority":"urgent"}`))
+	_, err = peopleRegistry(t, d).CallRead(context.Background(), "list_tracks", json.RawMessage(`{"priority":"urgent"}`), Binding{})
 	var verr *ValidationError
 	require.ErrorAs(t, err, &verr)
 	assert.Contains(t, verr.Msg, "high|medium|low")
 }
 
 func TestGetTrack_NotFound(t *testing.T) {
-	_, err := peopleRegistry(t, openDB(t)).CallRead(context.Background(), "get_track", json.RawMessage(`{"id":999}`))
+	_, err := peopleRegistry(t, openDB(t)).CallRead(context.Background(), "get_track", json.RawMessage(`{"id":999}`), Binding{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no track with id 999")
 	assert.NotContains(t, err.Error(), "sql: no rows")

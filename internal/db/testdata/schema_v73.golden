@@ -32,6 +32,9 @@ CREATE INDEX idx_channels_name ON channels(name)
 index	idx_channels_type
 CREATE INDEX idx_channels_type ON channels(type)
 
+index	idx_chat_artifact_comments_key
+CREATE INDEX idx_chat_artifact_comments_key ON chat_artifact_comments(conversation_id, artifact_key)
+
 index	idx_chat_attachments_conversation
 CREATE INDEX idx_chat_attachments_conversation ON chat_attachments(conversation_id)
 
@@ -268,6 +271,21 @@ CREATE INDEX idx_pipeline_runs_started ON pipeline_runs(started_at DESC)
 index	idx_pipeline_steps_run
 CREATE INDEX idx_pipeline_steps_run ON pipeline_steps(run_id)
 
+index	idx_project_comments_document
+CREATE INDEX idx_project_comments_document ON project_comments(document_id)
+
+index	idx_project_comments_parent
+CREATE INDEX idx_project_comments_parent ON project_comments(parent_id)
+
+index	idx_project_comments_project
+CREATE INDEX idx_project_comments_project ON project_comments(project_id, created_at)
+
+index	idx_project_comments_target
+CREATE INDEX idx_project_comments_target ON project_comments(target_id)
+
+index	idx_project_documents_target
+CREATE INDEX idx_project_documents_target ON project_documents(target_id)
+
 index	idx_prompt_history_prompt
 CREATE INDEX idx_prompt_history_prompt ON prompt_history(prompt_id)
 
@@ -322,6 +340,9 @@ CREATE INDEX idx_targets_period ON targets(period_start, period_end)
 
 index	idx_targets_priority
 CREATE INDEX idx_targets_priority ON targets(priority)
+
+index	idx_targets_project
+CREATE INDEX idx_targets_project ON targets(project_id)
 
 index	idx_targets_source
 CREATE INDEX idx_targets_source ON targets(source_type, source_id)
@@ -529,6 +550,24 @@ num_members INTEGER NOT NULL DEFAULT 0,
 last_read TEXT NOT NULL DEFAULT '', -- Slack conversations.mark cursor (message ts)
 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 , digest_considered_ts INTEGER)
+
+table	chat_artifact_comments
+CREATE TABLE chat_artifact_comments (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+artifact_key TEXT NOT NULL,
+artifact_version INTEGER NOT NULL,
+body TEXT NOT NULL,
+anchor_quote TEXT NOT NULL,
+anchor_prefix TEXT NOT NULL DEFAULT '',
+anchor_suffix TEXT NOT NULL DEFAULT '',
+anchor_heading TEXT NOT NULL DEFAULT '',
+status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','sent','resolved','outdated')),
+created_at REAL NOT NULL,
+sent_at REAL,
+CHECK (anchor_quote != '' AND body != ''),
+CHECK (status != 'sent' OR sent_at IS NOT NULL)
+)
 
 table	chat_artifacts
 CREATE TABLE chat_artifacts (
@@ -1585,6 +1624,59 @@ duration_seconds REAL NOT NULL DEFAULT 0,
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 )
 
+table	project_comments
+CREATE TABLE project_comments (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+target_id INTEGER REFERENCES targets(id) ON DELETE CASCADE,
+document_id INTEGER REFERENCES project_documents(id) ON DELETE CASCADE,
+parent_id INTEGER REFERENCES project_comments(id) ON DELETE CASCADE,
+author TEXT NOT NULL CHECK(author IN ('owner','agent')),
+agent_label TEXT NOT NULL DEFAULT '',
+body TEXT NOT NULL,
+anchor_quote TEXT NOT NULL DEFAULT '',
+anchor_prefix TEXT NOT NULL DEFAULT '',
+anchor_suffix TEXT NOT NULL DEFAULT '',
+anchor_heading TEXT NOT NULL DEFAULT '',
+status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','resolved','outdated')),
+created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+read_at TEXT NOT NULL DEFAULT '',
+CHECK (target_id IS NOT NULL OR document_id IS NOT NULL OR parent_id IS NOT NULL)
+)
+
+table	project_documents
+CREATE TABLE project_documents (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+target_id INTEGER REFERENCES targets(id) ON DELETE SET NULL,
+rel_path TEXT NOT NULL,
+kind TEXT NOT NULL DEFAULT 'doc' CHECK(kind IN ('spec','plan','doc')),
+title TEXT NOT NULL DEFAULT '',
+created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')), -- re-attach bumps it ("revised")
+UNIQUE(project_id, rel_path)
+)
+
+table	project_sources
+CREATE TABLE project_sources (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+kind TEXT NOT NULL CHECK(kind IN ('slack_channel','jira_project','confluence_space','person','link')),
+ref TEXT NOT NULL,
+label TEXT NOT NULL DEFAULT '',
+UNIQUE(project_id, kind, ref)
+)
+
+table	projects
+CREATE TABLE projects (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+name TEXT NOT NULL,
+folder_path TEXT NOT NULL UNIQUE, -- absolute, symlinks resolved
+description TEXT NOT NULL DEFAULT '',
+created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+)
+
 table	prompt_history
 CREATE TABLE prompt_history (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1774,7 +1866,7 @@ updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
 notified_at TEXT NOT NULL DEFAULT '',
 next_step TEXT NOT NULL DEFAULT '',
 next_step_at TEXT NOT NULL DEFAULT ''
-, next_step_attempts INTEGER NOT NULL DEFAULT 0, next_step_attempted_at TEXT NOT NULL DEFAULT '')
+, next_step_attempts INTEGER NOT NULL DEFAULT 0, next_step_attempted_at TEXT NOT NULL DEFAULT '', project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE)
 
 table	tool_trust
 CREATE TABLE tool_trust (
@@ -2288,6 +2380,20 @@ END
 9	last_read	TEXT	notnull=1	dflt=''	pk=0
 10	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
 11	digest_considered_ts	INTEGER	notnull=0	dflt=NULL	pk=0
+
+## chat_artifact_comments
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	conversation_id	INTEGER	notnull=1	dflt=NULL	pk=0
+2	artifact_key	TEXT	notnull=1	dflt=NULL	pk=0
+3	artifact_version	INTEGER	notnull=1	dflt=NULL	pk=0
+4	body	TEXT	notnull=1	dflt=NULL	pk=0
+5	anchor_quote	TEXT	notnull=1	dflt=NULL	pk=0
+6	anchor_prefix	TEXT	notnull=1	dflt=''	pk=0
+7	anchor_suffix	TEXT	notnull=1	dflt=''	pk=0
+8	anchor_heading	TEXT	notnull=1	dflt=''	pk=0
+9	status	TEXT	notnull=1	dflt='open'	pk=0
+10	created_at	REAL	notnull=1	dflt=NULL	pk=0
+11	sent_at	REAL	notnull=0	dflt=NULL	pk=0
 
 ## chat_artifacts
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
@@ -3237,6 +3343,48 @@ END
 14	duration_seconds	REAL	notnull=1	dflt=0	pk=0
 15	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
 
+## project_comments
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	project_id	INTEGER	notnull=1	dflt=NULL	pk=0
+2	target_id	INTEGER	notnull=0	dflt=NULL	pk=0
+3	document_id	INTEGER	notnull=0	dflt=NULL	pk=0
+4	parent_id	INTEGER	notnull=0	dflt=NULL	pk=0
+5	author	TEXT	notnull=1	dflt=NULL	pk=0
+6	agent_label	TEXT	notnull=1	dflt=''	pk=0
+7	body	TEXT	notnull=1	dflt=NULL	pk=0
+8	anchor_quote	TEXT	notnull=1	dflt=''	pk=0
+9	anchor_prefix	TEXT	notnull=1	dflt=''	pk=0
+10	anchor_suffix	TEXT	notnull=1	dflt=''	pk=0
+11	anchor_heading	TEXT	notnull=1	dflt=''	pk=0
+12	status	TEXT	notnull=1	dflt='open'	pk=0
+13	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
+14	read_at	TEXT	notnull=1	dflt=''	pk=0
+
+## project_documents
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	project_id	INTEGER	notnull=1	dflt=NULL	pk=0
+2	target_id	INTEGER	notnull=0	dflt=NULL	pk=0
+3	rel_path	TEXT	notnull=1	dflt=NULL	pk=0
+4	kind	TEXT	notnull=1	dflt='doc'	pk=0
+5	title	TEXT	notnull=1	dflt=''	pk=0
+6	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
+7	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
+
+## project_sources
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	project_id	INTEGER	notnull=1	dflt=NULL	pk=0
+2	kind	TEXT	notnull=1	dflt=NULL	pk=0
+3	ref	TEXT	notnull=1	dflt=NULL	pk=0
+4	label	TEXT	notnull=1	dflt=''	pk=0
+
+## projects
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	name	TEXT	notnull=1	dflt=NULL	pk=0
+2	folder_path	TEXT	notnull=1	dflt=NULL	pk=0
+3	description	TEXT	notnull=1	dflt=''	pk=0
+4	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
+5	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
+
 ## prompt_history
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
 1	prompt_id	TEXT	notnull=1	dflt=NULL	pk=0
@@ -3392,6 +3540,7 @@ END
 26	next_step_at	TEXT	notnull=1	dflt=''	pk=0
 27	next_step_attempts	INTEGER	notnull=1	dflt=0	pk=0
 28	next_step_attempted_at	TEXT	notnull=1	dflt=''	pk=0
+29	project_id	INTEGER	notnull=0	dflt=NULL	pk=0
 
 ## tool_trust
 0	tool	TEXT	notnull=0	dflt=NULL	pk=1

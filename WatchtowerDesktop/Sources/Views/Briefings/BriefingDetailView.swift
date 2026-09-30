@@ -586,6 +586,12 @@ struct BriefingDetailView: View {
             } else {
                 appState.selectedDestination = .people
             }
+        case "project":
+            if let id, let projectID = Int64(id) {
+                appState.navigateToProject(ProjectRoute(projectID: projectID, pane: .board))
+            } else {
+                appState.selectedDestination = .projects
+            }
         default:
             break
         }
@@ -630,6 +636,7 @@ struct BriefingDetailView: View {
             case "track": return ("checklist", "Track")
             case "digest": return ("newspaper", "Digest")
             case "people": return ("person.2", "Person")
+            case "project": return ("folder", "Project")
             default: return ("questionmark.circle", type)
             }
         }()

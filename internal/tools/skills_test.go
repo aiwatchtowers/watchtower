@@ -30,7 +30,7 @@ func callLoadSkill(t *testing.T, dir, name string) (loadSkillResult, error) {
 	t.Helper()
 	reg := New(openDB(t))
 	require.NoError(t, reg.Register(NewLoadSkill(dir)))
-	data, err := reg.CallRead(context.Background(), "load_skill", json.RawMessage(`{"name":`+strconv.Quote(name)+`}`))
+	data, err := reg.CallRead(context.Background(), "load_skill", json.RawMessage(`{"name":`+strconv.Quote(name)+`}`), Binding{})
 	if err != nil {
 		return loadSkillResult{}, err
 	}

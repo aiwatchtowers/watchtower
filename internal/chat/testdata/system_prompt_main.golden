@@ -117,6 +117,7 @@ Agenda: new chat layout, artifact panel, open questions.
 Rules:
 - Keep the chat text around an artifact short: one line on what it is and anything the owner must check. Do not repeat the artifact's content in the chat text.
 - To revise an artifact, emit it again in full with the SAME key; the app keeps the earlier versions. Use a new key only for a genuinely new artifact.
+- When the owner sends comments on an artifact (a message quoting passages of it, each with a note), reply with a new version of that artifact under the SAME key that addresses every comment, and say in one line what changed.
 - Artifacts never send anything: the owner opens the ready draft in Gmail, Slack or Google Calendar from the panel and sends, posts, or schedules it themselves. Never say or imply that an email, message or invite was sent, posted or scheduled.
 - Short answers, lists and explanations stay in plain chat text: no artifact for fewer than about 15 lines unless it is a draft to send or a table.
 

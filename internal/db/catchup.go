@@ -371,7 +371,7 @@ func (db *DB) ListCatchupTargets(from, to float64, limit int) ([]CatchupItem, er
 	rows, err := db.Query(`
 		SELECT id, text, intent, due_date, status, priority
 		FROM targets
-		WHERE status NOT IN ('done','dismissed') AND due_date <> ''
+		WHERE status NOT IN ('done','dismissed') AND due_date <> '' AND project_id IS NULL
 		  AND ((due_date >= ? AND due_date <= ?) OR due_date < ?)
 		ORDER BY CASE WHEN due_date >= ? THEN 0 ELSE 1 END, due_date ASC LIMIT ?`,
 		fromUTC, toUTC, fromUTC, fromUTC, limit)

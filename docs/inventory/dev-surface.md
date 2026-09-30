@@ -4,25 +4,37 @@
 > Modifying or weakening the protecting test requires explicit approval
 > from @Vadym.
 >
-> AI assistant: when working in `internal/mcp/` or the registry's read tools
-> (`internal/tools/taskcontext.go`, `experts.go`), `internal/devpack/`, or
-> `cmd/integrate.go`, read this file first. Any proposed change that would
-> break a guard test or remove a contract must be raised as a question
-> before touching code.
+> AI assistant: when working in `internal/mcp/`, the registry's read tools
+> (`internal/tools/taskcontext.go`, `experts.go`), the project tools
+> (`internal/tools/projects.go`, `project_targets.go`, `project_docs.go`,
+> `project_scope.go`) or the registry's `DirectApply` path, `internal/devpack/`,
+> `cmd/mcp.go`, or `cmd/integrate.go`, read this file first. Any proposed change
+> that would break a guard test or remove a contract must be raised as a
+> question before touching code.
 
 The MCP tools, skill pack, and installer that make Watchtower addressable
 from a developer's coding agent. Design:
 `docs/superpowers/specs/2026-08-09-dev-knowledge-base-design.md`.
 
 **Module:** `internal/mcp/` (`get_task_context`, `find_experts`) +
-`internal/devpack/` + `cmd/integrate.go`
+`internal/devpack/` + `cmd/integrate.go` + `cmd/mcp.go` (`--project`, DEV-06) +
+`internal/tools/{projects,project_targets,project_docs,project_scope}.go`
 **Last full audit:** 2026-08-09
 
 ## DEV-01 — read-only forever
 
 **Status:** Enforced
 
-**Observable:** Every tool on this surface is a read. The real enforcement is
+**Scope (amended 2026-09-29, spec `docs/superpowers/specs/2026-09-29-project-board-poc-design.md` D5):**
+"read-only forever" is a promise about `watchtower mcp` **without**
+`--project` — the server plain `integrate claude-code` registers for any
+coding agent. `watchtower mcp --project N` is the one writable mode of this
+surface and has its own contract, DEV-06; `--chat` is governed by
+AGENT-01/02/06 (`agent-actions.md`). Plain `watchtower mcp` still mounts no
+project tool, no write tool and no `get_action`, and still runs under
+`query_only` (`TestDev06_PlainMCPStaysReadOnly`).
+
+**Observable:** Every tool on the plain `watchtower mcp` surface is a read. The real enforcement is
 connection-level: `cmd/mcp.go` calls `database.SetReadOnly()` before serving,
 which flips the connection to `PRAGMA query_only=ON` (`internal/db/db.go`'s
 `SetReadOnly`) — any write a handler attempted would fail at the SQLite
@@ -101,6 +113,7 @@ a way for an external agent session to mutate the product's data.
 - `internal/db/db_test.go::TestSetReadOnlyBlocksWrites`
 - `internal/mcp/server_test.go::TestAllToolsAreReadOnly` (naming lint only)
 - `internal/mcp/server_test.go::TestNoToolMutatesDatabase` (the real guard)
+- `cmd/mcp_test.go::TestDev06_PlainMCPStaysReadOnly` (the `cmd` wiring: no `--chat`/`--project` → `query_only` on, no write/project tool, no `get_action`)
 
 **Locked since:** 2026-08-09
 
@@ -206,6 +219,18 @@ interrupt the exact flow this feature exists to protect. Adding one requires
 an explicit, CLI-controlled opt-in and an owner decision, not an
 implementation detail slipped into a handler.
 
+**Amended 2026-09-29 (spec `docs/superpowers/specs/2026-09-29-project-board-poc-design.md` D5/D6):**
+the one hook on this surface is the `SessionStart` hook
+`watchtower integrate claude-code --project N` installs into that project
+folder's `.claude/settings.local.json`, running
+`watchtower project brief --project N`. It is the explicit, CLI-controlled
+opt-in this contract requires: only that command installs it (typed by the
+owner, or run by the Desktop's New-project flow the owner starts);
+`integrate remove --project N` and `watchtower project delete N` remove it;
+plain `integrate claude-code` never installs one; and it runs only when the
+owner's own Claude Code session starts in that folder. There is still no
+daemon phase for this surface, and the brief only reads.
+
 **Test guards:** no dedicated guard test (the absence of a push mechanism is
 not independently unit-testable); enforced by the lack of any
 `internal/daemon` phase registration for this feature — checkable with
@@ -214,8 +239,75 @@ match) — and by code review against this contract.
 
 **Locked since:** 2026-08-09
 
+## DEV-06 — the project-bound mode writes only its own project
+
+**Status:** Enforced
+
+**Observable:** `watchtower mcp --project N` (`cmd/mcp.go`'s
+`mcpProjectOptions`; registered in the project folder as the local
+`watchtower-project` server by `watchtower integrate claude-code --project N`)
+is the one writable mode of this surface. It refuses to start when project N
+does not exist or together with `--chat`, keeps the connection writable, and
+mounts the registry (`buildToolRegistry`) on the `project` surface with
+`tools.Binding{Surface: "project", ProjectID: N, DirectApply: true}`: the
+eleven project tools (`internal/tools/projects.go`, `project_targets.go`,
+`project_docs.go`) plus every surface-less read tool and `get_action`; no
+other write tool is visible there. Three rules keep it narrow:
+
+1. **Only project N's rows.** Every project write resolves what it touches —
+   target, parent, source, document, comment — and its `Tool.Scope` refuses
+   anything outside `Binding.ProjectID` ("… is not in this project") before
+   any row, data or audit, is written; new rows take `project_id` from the
+   binding only (a `project_id` argument is an unknown field and refused).
+   `attach_document` accepts only an existing `.md`/`.txt` regular file that
+   resolves, after symlinks, inside the project's `folder_path`
+   (`resolveInsideFolder`: `../`, absolute paths, and symlinked files or
+   directories pointing out are refused). `list_targets`/`get_target` see only
+   project N's targets; `get_action` shows only project N's rows
+   (`actionVisible`).
+2. **Applied directly, audited.** Under `DirectApply`, `Registry.Propose`
+   inserts the call's `agent_actions` row `approved` with
+   `trust_at_create='execute'` and `context_type='project'`/`context_id=N`,
+   then applies it inline through the ordinary `Apply` claim (AGENT-05) — for
+   that call only: `tool_trust` is neither read nor written. `Apply` rebuilds
+   the binding from the row (`bindingOf`) and re-runs `Scope`, so a retried
+   row (`watchtower actions apply`) is re-scoped too.
+3. **Never External.** `DirectApply` refuses an `External` tool outright (a
+   ValidationError, no row) and any tool whose `Surfaces` does not name
+   `project` explicitly — a surface-less tool cannot inherit direct apply
+   (`directApplyGate`).
+
+Once project N is deleted, every tool on a still-connected session — project
+tool or not, read or write, `get_action` included — answers `project N no
+longer exists` and writes nothing (`Registry.ProjectAlive`, the first check of
+every call).
+
+DEV-06's scoping is a guardrail on Watchtower's own tools only: the agent runs
+as the owner with a shell, so Claude Code's own permission prompt is the real
+boundary. A project session also mounts the full read tool set plain
+`watchtower mcp` does (`projects.md`, "v1 limits and notes").
+
+**Why locked:** This is the only place an external coding agent writes into
+Watchtower without a per-call owner click. It is acceptable because the blast
+radius is one project the owner created and bound to the very folder the agent
+works in. A tool that wrote outside it, a non-project write tool visible on
+this surface, or an External call would turn a folder-scoped board into an
+unreviewed write path into the owner's whole app — or off the machine.
+
+**Test guards:**
+- `internal/tools/projects_test.go::TestDev06_WriteOutsideTheBoundProjectIsRefused` (every write aimed at another project's target/source/comment, a non-project target, or smuggling a `project_id` is refused; the other project's rows are byte-identical; no audit row)
+- `internal/tools/registry_project_test.go::TestDev06_ExternalToolRefusedUnderDirectApply`
+- `internal/tools/project_docs_test.go::TestDev06_AttachDocumentStaysInsideTheFolder` (`../`, nested `../`, absolute path, symlinked file, symlinked directory, missing file, wrong extension, directory, the folder itself)
+- `cmd/mcp_test.go::TestDev06_PlainMCPStaysReadOnly` (the boundary with DEV-01)
+- supporting: `TestDirectApply_AppliesInlineWithAuditRow`, `TestDirectApply_RefusesToolNotOnTheSurface`, `TestScope_RunsInProposeAndAgainInApply`, `TestProjectBinding_DeletedProjectAnswersNoLongerExists` (`internal/tools`); `TestProjectMode_DeletedProjectEveryToolAnswersNoLongerExists`, `TestGetAction_ProjectSessionSeesOnlyItsRows` (`internal/mcp`); `TestMCPProjectMode_BindsTheProjectAndAppliesDirectly`, `TestMCPProjectMode_RefusesMissingProjectAndChat`, and the project-surface block of `TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces` (exact tool set, none External) (`cmd`).
+
+**Locked since:** 2026-09-29
+
 ## Changelog
 
+- 2026-09-30 (fix wave 2 of PR #30): DEV-06's Observable now says `get_action` answers `project N no longer exists` after a delete too (it skipped the liveness check before; `Registry.ProjectAlive` is exported for it), and states that DEV-06 is a guardrail on Watchtower's tools only — Claude Code's permission prompt is the real boundary. `TestGetAction_ProjectSessionSeesOnlyItsRows` now also pins the `context_id` clause with a second project's row. No guard relaxed.
+- 2026-09-29: the Projects POC's install lands on the DEV-04 installer rules unchanged — the `watchtower-project` skill carries the `x-watchtower-pack` marker and `.watchtower-shipped` digest and is embedded separately (`//go:embed projectskill/*/SKILL.md`), so plain `integrate claude-code` never installs it; `integrate remove --project N` deletes only marker-carrying files, our own `SessionStart` entry and the exclude lines it added. No DEV-01..05 semantics beyond Task 9's DEV-01/DEV-05 amendments and the new DEV-06 changed.
+- 2026-09-29 (Projects POC, spec `docs/superpowers/specs/2026-09-29-project-board-poc-design.md` §4.2/§4.3/§7, owner decision D5): **DEV-06 added** (Enforced) — `watchtower mcp --project N`, this surface's one writable mode: eleven project tools on the `project` registry surface, applied directly under `tools.Binding.DirectApply` with an `agent_actions` audit row, scoped to project N, never an `External` tool. **DEV-01 amended**: "read-only forever" is scoped to `watchtower mcp` without `--project`; no DEV-01 guard changed, and `TestDev06_PlainMCPStaysReadOnly` joins its guard list. **DEV-05 amended**: the `SessionStart` hook installed by `integrate claude-code --project N` is the explicit CLI opt-in the contract requires (the installer itself lands in Phase 3). `Registry.CallRead` now takes the caller's `Binding` (dev mode passes the zero value, so its reads are unchanged), and `get_target` answers "no target with id N" for a project target outside that project's session (PROJ-01, `projects.md`).
 - 2026-09-14: **inbox demolition** (spec `docs/superpowers/specs/2026-09-14-inbox-demolition-design.md`) — the pack is now **three skills, not four**. `list_situations`/`get_situation` (`internal/tools/situations.go`) are deleted along with the situations pipeline, and the `watchtower-whats-changed` skill, which was built entirely on those two tools, is removed from `internal/devpack/skills/` rather than left pointing at a table frozen on 2026-09-06 (audit finding L4). DEV-01's `TestNoToolMutatesDatabase` call list and DEV-02's Observable/grep drop the two tools; DEV-05's skill list drops the skill. **No contract semantics changed and no guard relaxed** — the installer needs no special handling for a shipped file that leaves the pack (DEV-04: `integrate status` reports it, `integrate remove` deletes only marker-carrying files), and the pack-install guards in `internal/devpack/install_test.go` are untouched. A "what changed" skill over Catch-Up would need Catch-Up exposed as a read tool first — a follow-up, not this spec.
 - 2026-09-07: read-tool migration slice 2b — the dependency-carrying read tools
   (`memory_map`/`memory_open`/`memory_recall`, `load_skill`) moved from the last

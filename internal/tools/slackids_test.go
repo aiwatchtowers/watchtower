@@ -106,7 +106,7 @@ func TestListMessages_ChannelRawAndNamespacedID(t *testing.T) {
 func TestListMessages_UnknownChannelIDErrors(t *testing.T) {
 	d := openDB(t)
 	seedAccountSlack(t, d, seedSlackAccounts(t, d, 1)[0], "x")
-	_, err := messagesRegistry(t, d).CallRead(context.Background(), "list_messages", json.RawMessage(`{"channel":"CNOPE0001"}`))
+	_, err := messagesRegistry(t, d).CallRead(context.Background(), "list_messages", json.RawMessage(`{"channel":"CNOPE0001"}`), Binding{})
 	var verr *ValidationError
 	require.ErrorAs(t, err, &verr)
 	assert.Contains(t, verr.Msg, "no channel matches")
@@ -153,7 +153,7 @@ func TestGetPerson_RawIDAcrossTwoAccountsIsAmbiguous(t *testing.T) {
 	seedPersonCard(t, d, slack.Namespace(accts[1], rawAlice), "alice", "Alice Smith", "second card")
 	reg := peopleRegistry(t, d)
 
-	_, err := reg.CallRead(context.Background(), "get_person", json.RawMessage(`{"query":"`+rawAlice+`"}`))
+	_, err := reg.CallRead(context.Background(), "get_person", json.RawMessage(`{"query":"`+rawAlice+`"}`), Binding{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), slack.Namespace(accts[0], rawAlice))
 	assert.Contains(t, err.Error(), slack.Namespace(accts[1], rawAlice))

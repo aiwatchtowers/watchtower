@@ -13,7 +13,7 @@ const targetSelectCols = `id, text, intent, level, custom_label, period_start, p
 	parent_id, status, priority, ownership,
 	ball_on, due_date, snooze_until, blocking, tags, sub_items, notes,
 	progress, source_type, source_id, ai_level_confidence, created_at, updated_at,
-	next_step, next_step_at, next_step_attempts, next_step_attempted_at`
+	next_step, next_step_at, next_step_attempts, next_step_attempted_at, project_id`
 
 func scanTarget(row interface{ Scan(...any) error }) (*Target, error) {
 	var t Target
@@ -22,7 +22,7 @@ func scanTarget(row interface{ Scan(...any) error }) (*Target, error) {
 		&t.ParentID, &t.Status, &t.Priority, &t.Ownership,
 		&t.BallOn, &t.DueDate, &t.SnoozeUntil, &t.Blocking, &t.Tags, &t.SubItems, &t.Notes,
 		&t.Progress, &t.SourceType, &t.SourceID, &t.AILevelConfidence, &t.CreatedAt, &t.UpdatedAt,
-		&t.NextStep, &t.NextStepAt, &t.NextStepAttempts, &t.NextStepAttemptedAt,
+		&t.NextStep, &t.NextStepAt, &t.NextStepAttempts, &t.NextStepAttemptedAt, &t.ProjectID,
 	); err != nil {
 		return nil, err
 	}
@@ -50,17 +50,21 @@ func (db *DB) CreateTarget(t Target) (int64, error) {
 		t.PeriodEnd = t.PeriodStart
 	}
 
+	if err := checkParentBoard(db, t.ParentID, t.ProjectID); err != nil {
+		return 0, err
+	}
+
 	// Derive initial progress from status (no children yet).
 	progress := statusToProgress(t.Status)
 
 	res, err := db.Exec(`INSERT INTO targets
 		(text, intent, level, custom_label, period_start, period_end, parent_id,
 		 status, priority, ownership, ball_on, due_date, snooze_until, blocking,
-		 tags, sub_items, notes, progress, source_type, source_id, ai_level_confidence)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 tags, sub_items, notes, progress, source_type, source_id, ai_level_confidence, project_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.Text, t.Intent, t.Level, t.CustomLabel, t.PeriodStart, t.PeriodEnd, t.ParentID,
 		t.Status, t.Priority, t.Ownership, t.BallOn, t.DueDate, t.SnoozeUntil, t.Blocking,
-		t.Tags, t.SubItems, t.Notes, progress, t.SourceType, t.SourceID, t.AILevelConfidence,
+		t.Tags, t.SubItems, t.Notes, progress, t.SourceType, t.SourceID, t.AILevelConfidence, t.ProjectID,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("inserting target: %w", err)
@@ -80,11 +84,44 @@ func (db *DB) CreateTarget(t Target) (int64, error) {
 	return id, nil
 }
 
+// UpdateTargetText updates only a target's text and intent, touching nothing
+// else — status, progress, tags and every other field are left exactly as
+// they were. Unlike UpdateTarget's full-row rewrite (which re-derives a
+// leaf's progress from its status on every call), this is safe for a caller
+// that only means to rename or reword a target: the project board's
+// update_target tool uses it so renaming an in-progress target never resets
+// the progress the owner or agent set earlier (I4, docs/inventory/projects.md).
+func (db *DB) UpdateTargetText(id int, text, intent string) error {
+	return updateTargetTextOn(db, id, text, intent)
+}
+
+// UpdateTargetTextTx is UpdateTargetText inside the caller's transaction.
+func (db *DB) UpdateTargetTextTx(tx *sql.Tx, id int, text, intent string) error {
+	return updateTargetTextOn(tx, id, text, intent)
+}
+
+func updateTargetTextOn(q targetsQuerier, id int, text, intent string) error {
+	_, err := q.Exec(`UPDATE targets SET text = ?, intent = ?,
+		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`,
+		text, intent, id)
+	if err != nil {
+		return fmt.Errorf("updating target %d text: %w", id, err)
+	}
+	return nil
+}
+
 // UpdateTarget updates all mutable fields of an existing target.
 // It captures the old parent_id before the update, recomputes progress
 // (mirroring UpdateTargetStatus semantics for leaf targets), and propagates
 // progress to both old and new parents when parent_id changes.
 func (db *DB) UpdateTarget(t Target) error {
+	if err := checkParentBoard(db, t.ParentID, t.ProjectID); err != nil {
+		return err
+	}
+	if err := checkChildrenBoard(db, int64(t.ID), t.ProjectID); err != nil {
+		return err
+	}
+
 	// Capture old parent before mutating.
 	var oldParentID sql.NullInt64
 	_ = db.QueryRow(`SELECT parent_id FROM targets WHERE id = ?`, t.ID).Scan(&oldParentID)
@@ -96,13 +133,13 @@ func (db *DB) UpdateTarget(t Target) error {
 		text = ?, intent = ?, level = ?, custom_label = ?, period_start = ?, period_end = ?,
 		parent_id = ?, status = ?, priority = ?, ownership = ?,
 		ball_on = ?, due_date = ?, snooze_until = ?, blocking = ?,
-		tags = ?, sub_items = ?, notes = ?, source_type = ?, source_id = ?,
+		tags = ?, sub_items = ?, notes = ?, source_type = ?, source_id = ?, project_id = ?,
 		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
 		WHERE id = ?`,
 		t.Text, t.Intent, t.Level, t.CustomLabel, t.PeriodStart, t.PeriodEnd,
 		t.ParentID, t.Status, t.Priority, t.Ownership,
 		t.BallOn, t.DueDate, t.SnoozeUntil, t.Blocking,
-		t.Tags, t.SubItems, t.Notes, t.SourceType, t.SourceID,
+		t.Tags, t.SubItems, t.Notes, t.SourceType, t.SourceID, t.ProjectID,
 		t.ID,
 	)
 	if err != nil {
@@ -217,6 +254,7 @@ const nextStepAttemptBudget = 3
 func (db *DB) GetTargetsNeedingNextStep(limit int) ([]Target, error) {
 	query := fmt.Sprintf(`SELECT `+targetSelectCols+` FROM targets
 		WHERE status IN ('todo','in_progress','blocked')
+		  AND project_id IS NULL
 		  AND (next_step_at = '' OR next_step_at < updated_at)
 		  AND (
 		    next_step_attempted_at < updated_at
@@ -247,6 +285,15 @@ func (db *DB) GetTargetsNeedingNextStep(limit int) ([]Target, error) {
 	return targets, rows.Err()
 }
 
+// projectScope is the PROJ-01 clause of GetTargets: 0 keeps project targets
+// out, N selects only project N's board (docs/inventory/projects.md).
+func projectScope(projectID int64) (string, []any) {
+	if projectID > 0 {
+		return "project_id = ?", []any{projectID}
+	}
+	return "project_id IS NULL", nil
+}
+
 // GetTargets returns targets matching the filter.
 func (db *DB) GetTargets(f TargetFilter) ([]Target, error) {
 	query := `SELECT ` + targetSelectCols + ` FROM targets`
@@ -260,6 +307,9 @@ func (db *DB) GetTargets(f TargetFilter) ([]Target, error) {
 	if !f.IncludeDone && f.Status == "" {
 		conditions = append(conditions, "status NOT IN ('done','dismissed')")
 	}
+	scope, scopeArgs := projectScope(f.ProjectID)
+	conditions = append(conditions, scope)
+	args = append(args, scopeArgs...)
 	if f.Status != "" {
 		conditions = append(conditions, "status = ?")
 		args = append(args, f.Status)
@@ -327,11 +377,22 @@ func (db *DB) GetTargets(f TargetFilter) ([]Target, error) {
 
 // UpdateTargetStatus changes the status of a target and recomputes parent progress.
 func (db *DB) UpdateTargetStatus(id int, newStatus string) error {
+	return updateTargetStatusOn(db, id, newStatus)
+}
+
+// UpdateTargetStatusTx is UpdateTargetStatus inside the caller's
+// transaction. Any error — a cascade failure included — is the caller's cue
+// to roll back; the "persisted" wording applies to the auto-commit form.
+func (db *DB) UpdateTargetStatusTx(tx *sql.Tx, id int, newStatus string) error {
+	return updateTargetStatusOn(tx, id, newStatus)
+}
+
+func updateTargetStatusOn(q targetsQuerier, id int, newStatus string) error {
 	// Fetch parent_id before updating.
 	var parentID sql.NullInt64
-	_ = db.QueryRow(`SELECT parent_id FROM targets WHERE id = ?`, id).Scan(&parentID)
+	_ = q.QueryRow(`SELECT parent_id FROM targets WHERE id = ?`, id).Scan(&parentID)
 
-	_, err := db.Exec(`UPDATE targets SET status = ?,
+	_, err := q.Exec(`UPDATE targets SET status = ?,
 		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
 		WHERE id = ?`, newStatus, id)
 	if err != nil {
@@ -340,7 +401,7 @@ func (db *DB) UpdateTargetStatus(id int, newStatus string) error {
 
 	// Recompute own progress from status (leaf target with no children).
 	progress := statusToProgress(newStatus)
-	_, _ = db.Exec(`UPDATE targets SET progress = ? WHERE id = ? AND
+	_, _ = q.Exec(`UPDATE targets SET progress = ? WHERE id = ? AND
 		NOT EXISTS (SELECT 1 FROM targets c WHERE c.parent_id = targets.id AND c.status != 'dismissed')`,
 		progress, id)
 
@@ -352,7 +413,7 @@ func (db *DB) UpdateTargetStatus(id int, newStatus string) error {
 	// reported to the caller rather than rolling anything back.
 	var cascadeErr error
 	if newStatus == "done" || newStatus == "dismissed" {
-		if _, err := db.Exec(`UPDATE inbox_items
+		if _, err := q.Exec(`UPDATE inbox_items
 			SET status = 'resolved',
 			    resolved_reason = 'target_closed',
 			    updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
@@ -365,7 +426,7 @@ func (db *DB) UpdateTargetStatus(id int, newStatus string) error {
 	// caller (joined with any cascade error) — the status change persisted,
 	// so the error only signals that the parent's progress is now stale.
 	if parentID.Valid {
-		if rerr := db.RecomputeParentProgress(parentID.Int64); rerr != nil {
+		if rerr := recomputeParentProgressOn(q, parentID.Int64); rerr != nil {
 			cascadeErr = errors.Join(cascadeErr, fmt.Errorf(
 				"recomputing parent %d progress for target %d (status change persisted): %w",
 				parentID.Int64, id, rerr))
@@ -397,7 +458,7 @@ func (db *DB) GetTargetCounts() (int, int, error) {
 	err := db.QueryRow(`SELECT
 		COUNT(*),
 		COALESCE(SUM(CASE WHEN due_date != '' AND due_date < ? THEN 1 ELSE 0 END), 0)
-		FROM targets WHERE status NOT IN ('done','dismissed')`, now).Scan(&active, &overdue)
+		FROM targets WHERE status NOT IN ('done','dismissed') AND project_id IS NULL`, now).Scan(&active, &overdue)
 	return active, overdue, err
 }
 
@@ -417,7 +478,7 @@ func (db *DB) UnsnoozeExpiredTargets() (int, error) {
 // GetTargetsForBriefing returns active targets relevant for the daily briefing.
 func (db *DB) GetTargetsForBriefing() ([]Target, error) {
 	rows, err := db.Query(`SELECT ` + targetSelectCols + ` FROM targets
-		WHERE status IN ('todo','in_progress','blocked')
+		WHERE status IN ('todo','in_progress','blocked') AND project_id IS NULL
 		ORDER BY
 			CASE level WHEN 'quarter' THEN 0 WHEN 'month' THEN 1 WHEN 'week' THEN 2 WHEN 'day' THEN 3 ELSE 4 END,
 			CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 END,
@@ -547,4 +608,31 @@ func statusToProgress(status string) float64 {
 	default: // todo, snoozed, dismissed
 		return 0.0
 	}
+}
+
+// SetTargetProgress stores an explicit progress (0..1) on one target and
+// recomputes its parent's. A target with children has its progress
+// re-derived from them on their next change; this is for leaves.
+func (db *DB) SetTargetProgress(id int, progress float64) error {
+	return setTargetProgressOn(db, id, progress)
+}
+
+// SetTargetProgressTx is SetTargetProgress inside the caller's transaction.
+func (db *DB) SetTargetProgressTx(tx *sql.Tx, id int, progress float64) error {
+	return setTargetProgressOn(tx, id, progress)
+}
+
+func setTargetProgressOn(q targetsQuerier, id int, progress float64) error {
+	var parentID sql.NullInt64
+	if err := q.QueryRow(`SELECT parent_id FROM targets WHERE id = ?`, id).Scan(&parentID); err != nil {
+		return fmt.Errorf("loading target %d: %w", id, err)
+	}
+	if _, err := q.Exec(`UPDATE targets SET progress = ?,
+		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`, progress, id); err != nil {
+		return fmt.Errorf("setting target %d progress: %w", id, err)
+	}
+	if parentID.Valid {
+		return recomputeParentProgressOn(q, parentID.Int64)
+	}
+	return nil
 }

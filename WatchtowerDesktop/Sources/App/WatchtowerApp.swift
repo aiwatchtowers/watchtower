@@ -92,9 +92,9 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
     /// action-bearing branch, before dispatch — `handleMeetingReminderAction` takes no
     /// `forwarded` flag of its own — so widening the wire payload cannot re-open it.
     ///
-    /// The keys the FORWARDED branches read (`type`, `digestId`, `ideaId`) must stay in
-    /// sync with `NotificationForwarding.routedKeys`, the allowlist of what crosses the
-    /// boundary.
+    /// The keys the FORWARDED branches read (`type`, `digestId`, `ideaId`, `transcriptID`,
+    /// `projectId`, `pane`, `subjectId`) must stay in sync with
+    /// `NotificationForwarding.routedKeys`, the allowlist of what crosses the boundary.
     /// The self-received branches legitimately read more (`eventId`, `conferenceUrl`):
     /// those keys are absent by design from the forwarded payload and must stay so.
     /// `openURL` is an injectable seam threaded through to the meeting handler (the
@@ -126,6 +126,8 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
             if let id = userInfo["transcriptID"] as? Int64 ?? (userInfo["transcriptID"] as? NSNumber)?.int64Value {
                 await appState?.voiceRegistryCenter.open(.queue(transcriptID: id))
             }
+        case "project":
+            routeProject(userInfo, appState: appState)
         case "meeting_reminder":
             if forwarded {
                 // Say it out loud rather than degrading in silence — the same
@@ -162,6 +164,29 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
         default:
             break
         }
+    }
+
+    /// The project deep link of a push (`NotificationService.sendProjectNotice`).
+    /// Ids arrive as Int64 when self-received and restored by
+    /// `ForwardedNotificationResponse.userInfo` when forwarded; an NSNumber is
+    /// accepted too (the `voice_label` precedent). Pure navigation either way,
+    /// so it needs no `forwarded` gate of its own.
+    @MainActor
+    static func routeProject(_ userInfo: [AnyHashable: Any], appState: AppState?) {
+        if let route = projectRoute(userInfo) {
+            appState?.navigateToProject(route)
+        } else {
+            appState?.selectedDestination = .projects
+        }
+    }
+
+    static func projectRoute(_ userInfo: [AnyHashable: Any]) -> ProjectRoute? {
+        func int64(_ key: String) -> Int64? {
+            userInfo[key] as? Int64 ?? (userInfo[key] as? NSNumber)?.int64Value
+        }
+        guard let projectID = int64("projectId") else { return nil }
+        let pane = (userInfo["pane"] as? String).flatMap(ProjectPane.init(rawValue:)) ?? .board
+        return ProjectRoute(projectID: projectID, pane: pane, subjectID: int64("subjectId"))
     }
 
     /// Pre-meeting push actions: Join / Join + Record route through the shared

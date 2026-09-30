@@ -1,14 +1,17 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
 
+	"watchtower/internal/db"
 	"watchtower/internal/devpack"
 )
 
@@ -44,6 +47,8 @@ var (
 	integratePath       string
 	integrateSkillsOnly bool
 	integrateMCPOnly    bool
+	integrateProjectID  int64
+	integrateJSON       bool
 )
 
 func init() {
@@ -64,6 +69,17 @@ func init() {
 		c.Flags().BoolVar(&integrateMCPOnly, "mcp-only", false,
 			"only touch the MCP registration; never touch the skill pack")
 	}
+
+	for _, c := range []*cobra.Command{integrateClaudeCodeCmd, integrateStatusCmd, integrateRemoveCmd} {
+		c.Flags().Int64Var(&integrateProjectID, "project", 0,
+			"act on a Watchtower project's folder (skill, SessionStart hook, local MCP) instead of the global pack")
+	}
+	integrateStatusCmd.Flags().BoolVar(&integrateJSON, "json", false, "with --project: print the status as JSON")
+
+	// `project delete` removes what the install put in the folder (PROJ-02).
+	// A package var's initializer runs before any init(), so this replaces
+	// cmd/project.go's no-op default.
+	projectRemoveInstall = removeProjectInstall
 }
 
 // resolveSkillsDir turns --scope/--path into one directory. An explicit path
@@ -92,6 +108,9 @@ func resolveSkillsDir(scope, explicit string) (string, error) {
 }
 
 func runIntegrateClaudeCode(cmd *cobra.Command, args []string) error {
+	if integrateProjectID != 0 {
+		return runIntegrateForProject(cmd, runProjectInstall)
+	}
 	scope, err := resolveMCPScope(integrateScope, integratePath, integrateSkillsOnly, integrateMCPOnly)
 	if err != nil {
 		return err
@@ -116,6 +135,11 @@ func runIntegrateClaudeCode(cmd *cobra.Command, args []string) error {
 }
 
 func runIntegrateStatus(cmd *cobra.Command, args []string) error {
+	if integrateProjectID != 0 {
+		return runIntegrateForProject(cmd, func(ctx context.Context, w io.Writer, p *db.Project) error {
+			return runProjectStatus(ctx, w, p, integrateJSON)
+		})
+	}
 	dir, err := resolveSkillsDir(integrateScope, integratePath)
 	if err != nil {
 		return err
@@ -135,6 +159,9 @@ func runIntegrateStatus(cmd *cobra.Command, args []string) error {
 }
 
 func runIntegrateRemove(cmd *cobra.Command, args []string) error {
+	if integrateProjectID != 0 {
+		return runIntegrateForProject(cmd, runProjectRemove)
+	}
 	scope, err := resolveMCPScope(integrateScope, integratePath, integrateSkillsOnly, integrateMCPOnly)
 	if err != nil {
 		return err
@@ -241,17 +268,20 @@ func printMCPSkipReason(skillsOnly bool, dir, defaultDir, verb string) {
 
 func printSkillStatuses(results []devpack.SkillStatus) {
 	for _, r := range results {
-		note := ""
-		switch r.State {
-		case devpack.StateDrifted:
-			note = "  (left alone — differs from what we ship)"
-		case devpack.StateForeign:
-			note = "  (not ours — left alone)"
-		default:
-			// Installed/Updated/Unchanged/Missing/Removed carry no extra
-			// annotation — the state name in the column already says it.
-		}
-		fmt.Printf("  %-26s %s%s\n", r.Name, r.State, note)
+		fmt.Printf("  %-26s %s%s\n", r.Name, r.State, skillStateNote(r.State))
+	}
+}
+
+func skillStateNote(state devpack.State) string {
+	switch state {
+	case devpack.StateDrifted:
+		return "  (left alone — differs from what we ship)"
+	case devpack.StateForeign:
+		return "  (not ours — left alone)"
+	default:
+		// Installed/Updated/Unchanged/Missing/Removed carry no extra
+		// annotation — the state name in the column already says it.
+		return ""
 	}
 }
 

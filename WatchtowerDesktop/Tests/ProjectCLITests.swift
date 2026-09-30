@@ -1,0 +1,105 @@
+import XCTest
+@testable import WatchtowerDesktop
+import WatchtowerCore
+import WatchtowerTestSupport
+
+final class ProjectCLITests: XCTestCase {
+    func testCreatePassesFolderNameAndJSONAndDecodesTheEnvelope() async throws {
+        let runner = FakeCLIRunner(stdout: Data(#"{"id":7,"folder":"/tmp/acme","name":"acme"}"#.utf8))
+        let created = try await ProjectCLI(runner: runner).create(folder: "/tmp/acme dir", name: "Acme")
+        XCTAssertEqual(created, ProjectCreated(id: 7, folder: "/tmp/acme", name: "acme"))
+        XCTAssertEqual(runner.invocations, [["project", "create", "--folder", "/tmp/acme dir", "--json", "--name", "Acme"]])
+    }
+
+    func testCreateWithoutNameOmitsTheFlag() async throws {
+        let runner = FakeCLIRunner(stdout: Data(#"{"id":1,"folder":"/tmp/a","name":"a"}"#.utf8))
+        _ = try await ProjectCLI(runner: runner).create(folder: "/tmp/a", name: nil)
+        XCTAssertEqual(runner.invocations, [["project", "create", "--folder", "/tmp/a", "--json"]])
+    }
+
+    func testInstallStatusAndDeleteArguments() async throws {
+        let runner = FakeCLIRunner(stdout: Data(#"{"skill":"unchanged","hook":true,"mcp":false}"#.utf8))
+        let cli = ProjectCLI(runner: runner)
+        try await cli.install(projectID: 3)
+        let status = try await cli.status(projectID: 3)
+        XCTAssertEqual(runner.invocations, [
+            ["integrate", "claude-code", "--project", "3"],
+            ["integrate", "status", "--project", "3", "--json"]
+        ])
+        XCTAssertEqual(status, ProjectInstallStatus(skill: "unchanged", hook: true, mcp: false))
+        XCTAssertTrue(status.needsRepair)
+    }
+
+    func testDeletePassesJSONAndDecodesBothEnvelopeShapes() async throws {
+        let clean = FakeCLIRunner(stdout: Data(#"{"id":3,"deleted":true,"removal_ok":true,"removal_error":""}"#.utf8))
+        let ok = try await ProjectCLI(runner: clean).delete(projectID: 3)
+        XCTAssertEqual(clean.invocations, [["project", "delete", "3", "--json"]])
+        XCTAssertEqual(ok, ProjectDeleted(id: 3, deleted: true, removalOK: true, removalError: ""))
+
+        let partial = FakeCLIRunner(
+            stdout: Data(#"{"id":3,"deleted":true,"removal_ok":false,"removal_error":"hook: permission denied"}"#.utf8)
+        )
+        let warned = try await ProjectCLI(runner: partial).delete(projectID: 3)
+        XCTAssertEqual(warned, ProjectDeleted(id: 3, deleted: true, removalOK: false, removalError: "hook: permission denied"))
+    }
+
+    func testNeedsRepairOnlyWhenSomethingIsMissing() {
+        XCTAssertFalse(ProjectInstallStatus(skill: "unchanged", hook: true, mcp: true).needsRepair)
+        XCTAssertFalse(ProjectInstallStatus(skill: "drifted", hook: true, mcp: true).needsRepair)
+        XCTAssertTrue(ProjectInstallStatus(skill: "missing", hook: true, mcp: true).needsRepair)
+        XCTAssertTrue(ProjectInstallStatus(skill: "unchanged", hook: false, mcp: true).needsRepair)
+    }
+
+    func testSkillUpdatedNeedsRepairAndClaudeFoundDecodes() throws {
+        XCTAssertTrue(ProjectInstallStatus(skill: "updated", hook: true, mcp: true).needsRepair)
+        let json = Data(#"{"skill":"unchanged","hook":true,"mcp":false,"claude_found":false}"#.utf8)
+        let status = try JSONDecoder().decode(ProjectInstallStatus.self, from: json)
+        XCTAssertEqual(status, ProjectInstallStatus(skill: "unchanged", hook: true, mcp: false, claudeFound: false))
+        let legacy = try JSONDecoder().decode(
+            ProjectInstallStatus.self, from: Data(#"{"skill":"unchanged","hook":true,"mcp":true}"#.utf8)
+        )
+        XCTAssertTrue(legacy.claudeFound, "an older CLI without the key could check the registration")
+    }
+
+    /// Without `claude` the MCP registration is unknown and not repairable:
+    /// Repair must not loop on `mcp=false`, but still repairs the rest.
+    func testClaudeNotFoundDoesNotAskForRepairOfMCP() {
+        XCTAssertFalse(ProjectInstallStatus(skill: "unchanged", hook: true, mcp: false, claudeFound: false).needsRepair)
+        XCTAssertTrue(ProjectInstallStatus(skill: "unchanged", hook: false, mcp: false, claudeFound: false).needsRepair)
+        XCTAssertTrue(ProjectInstallStatus(skill: "missing", hook: true, mcp: false, claudeFound: false).needsRepair)
+    }
+
+    /// Shared fixture with Go `TestProjectMCPCommand_MatchesTheDesktopFixture`
+    /// (`internal/devpack/project_test.go`): same inputs, same text.
+    func testManualMCPCommandMatchesTheGoTwin() {
+        XCTAssertEqual(
+            ProjectInstallStatus.manualMCPCommand(
+                projectID: 7, folder: "/tmp/acme project", cliPath: "/tmp/acme bin/it's/watchtower"
+            ),
+            #"cd '/tmp/acme project' && claude mcp add --scope local watchtower-project -- '/tmp/acme bin/it'\''s/watchtower' mcp --project 7"#
+        )
+        XCTAssertEqual(
+            ProjectInstallStatus.manualMCPCommand(projectID: 3, folder: "/tmp/acme", cliPath: "/usr/local/bin/watchtower"),
+            "cd /tmp/acme && claude mcp add --scope local watchtower-project -- /usr/local/bin/watchtower mcp --project 3",
+            "shell-safe paths stay bare, as Go leaves them"
+        )
+    }
+
+    func testMalformedCreateOutputThrows() async {
+        let runner = FakeCLIRunner(stdout: Data("created project 7".utf8))
+        do {
+            _ = try await ProjectCLI(runner: runner).create(folder: "/tmp/a", name: nil)
+            XCTFail("expected a decode error")
+        } catch {}
+    }
+
+    func testRunnerErrorPropagates() async {
+        let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "folder is already bound to a project"))
+        do {
+            try await ProjectCLI(runner: runner).install(projectID: 1)
+            XCTFail("expected an error")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("already bound"))
+        }
+    }
+}

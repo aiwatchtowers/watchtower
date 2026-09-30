@@ -244,6 +244,14 @@ struct MainNavigationView: View {
             TargetsListView()
         case .tracks:
             TracksListView()
+        case .projects:
+            if let vm = appState.projectsViewModel {
+                ProjectsView(vm: vm)
+            } else {
+                Text("Projects unavailable")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         case .digests:
             DigestListView()
         case .people:

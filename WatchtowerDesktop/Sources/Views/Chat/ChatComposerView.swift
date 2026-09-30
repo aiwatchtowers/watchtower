@@ -26,6 +26,13 @@ struct ChatComposerView: View {
                     }
                 }
             }
+            if !chatVM.pendingQuotes.isEmpty {
+                QuoteBatchView(
+                    quotes: chatVM.pendingQuotes,
+                    onEditComment: { chatVM.updateQuoteComment(id: $0, comment: $1) },
+                    onRemove: { chatVM.removeQuote(id: $0) }
+                )
+            }
             ComposerChipsRow(
                 mentions: chatVM.composer.mentions,
                 skill: chatVM.composer.skill,
@@ -52,7 +59,8 @@ struct ChatComposerView: View {
                         lastCursor = cursor
                         chatVM.composer.update(text: text, cursor: cursor)
                     },
-                    onPickerKey: { key, text, cursor in chatVM.composer.handle(key, text: text, cursor: cursor) }
+                    onPickerKey: { key, text, cursor in chatVM.composer.handle(key, text: text, cursor: cursor) },
+                    hasPendingContent: !chatVM.pendingQuotes.isEmpty
                 )
                 modelPill.padding(.horizontal, 16).padding(.bottom, 6)
             }

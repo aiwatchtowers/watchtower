@@ -20,6 +20,29 @@ final class ChannelStatsTests: XCTestCase {
         }
     }
 
+    // MARK: - ChannelStatsQueries.fetchValueSignals
+
+    /// PROJ-01 twin of Go `GetChannelValueSignals`: a project target sourced
+    /// from a channel's digest never counts toward that channel's tasks.
+    func testValueSignalsIgnoreProjectTargets() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try TestDatabase.insertChannel(db, id: "C001", name: "general", numMembers: 10)
+            try TestDatabase.insertDigest(db, channelID: "C001")
+            let digestID = db.lastInsertedRowID
+            try db.execute(sql: "INSERT INTO projects (name, folder_path) VALUES ('acme', '/tmp/acme')")
+            let projectID = db.lastInsertedRowID
+            for project in [nil, projectID] as [Int64?] {
+                try db.execute(sql: """
+                    INSERT INTO targets (text, level, period_start, period_end, status, source_type, source_id, project_id)
+                    VALUES ('Follow up', 'day', '2026-09-30', '2026-09-30', 'todo', 'digest', ?, ?)
+                    """, arguments: [String(digestID), project])
+            }
+        }
+        let signals = try db.read { try ChannelStatsQueries.fetchValueSignals($0) }
+        XCTAssertEqual(signals["C001"]?.taskCount, 1)
+    }
+
     // MARK: - ChannelStatsQueries.fetchAll
 
     func testFetchAllReturnsChannelStats() throws {
