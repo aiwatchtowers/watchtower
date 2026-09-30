@@ -94,6 +94,51 @@ func TestRunSchemaUpgrade_WaitsForAnotherWriter(t *testing.T) {
 	<-released
 }
 
+// Now that a second upgrader waits for the first instead of failing with
+// SQLITE_BUSY, it must find the table the first one created and do nothing —
+// not fail startup on "table goose_db_version already exists".
+func TestRunSchemaUpgrade_ConcurrentUpgradersBothSucceed(t *testing.T) {
+	path := newLegacyDB(t, legacySchemaTip)
+
+	holder, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open holder: %v", err)
+	}
+	defer holder.Close()
+	tx, err := holder.Begin()
+	if err != nil {
+		t.Fatalf("begin holder: %v", err)
+	}
+	if _, err := tx.Exec(`CREATE TABLE lock_holder (x INTEGER)`); err != nil {
+		t.Fatalf("take write lock: %v", err)
+	}
+
+	errs := make(chan error, 2)
+	for range 2 {
+		go func() { errs <- RunSchemaUpgrade(path) }()
+	}
+	time.Sleep(200 * time.Millisecond) // both upgraders are now past their first check, waiting
+	_ = tx.Rollback()
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatalf("a concurrent upgrader must not fail: %v", err)
+		}
+	}
+
+	d, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	var rows int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM goose_db_version`).Scan(&rows); err != nil {
+		t.Fatalf("goose_db_version: %v", err)
+	}
+	if rows != 2 {
+		t.Fatalf("exactly one baseline (2 rows) must be written, got %d", rows)
+	}
+}
+
 // The transition opens the same file Open will, even through a '?' path.
 func TestRunSchemaUpgrade_PathWithQuestionMark(t *testing.T) {
 	src := newLegacyDB(t, legacySchemaTip)

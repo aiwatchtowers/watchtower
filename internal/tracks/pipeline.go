@@ -296,7 +296,16 @@ func (p *Pipeline) RunForWindow(ctx context.Context, owner db.Owner, from, to fl
 
 	stored, res, err := p.extractFromDigests(ctx, owner, fresh, retry, from, to)
 	if err == nil || res.aborted != nil || res.failed > 0 {
-		p.settleRetryDigests(retryIDs, res)
+		if serr := p.settleRetryDigests(retryIDs, res); serr != nil {
+			p.logger.Printf("tracks: warning: could not record failed batches for retry: %v", serr)
+			if err == nil && res.failed > 0 {
+				// A partial success advances the watermark past its failed
+				// batches' digests on the promise that the retry set owes
+				// them; with that write lost they would be skipped for good.
+				// Fail the run so the watermark stays put instead.
+				return stored, fmt.Errorf("recording %d failed batch(es) for retry: %w", res.failed, serr)
+			}
+		}
 	}
 	return stored, err
 }
@@ -341,7 +350,7 @@ func (p *Pipeline) splitRetryDigests(digests []db.Digest) (fresh, retry []db.Dig
 // anyway): it adds nothing new to the set and charges an owed digest at most
 // once per UTC day, so each UTC day an outage touches costs an owed digest one
 // attempt, while a digest that fails even on its own still gives up.
-func (p *Pipeline) settleRetryDigests(retryIDs map[int]bool, res trackBatchResult) {
+func (p *Pipeline) settleRetryDigests(retryIDs map[int]bool, res trackBatchResult) error {
 	var charged, chargedDaily []int
 	if res.succeeded > 0 {
 		charged = res.failedDigests
@@ -373,12 +382,12 @@ func (p *Pipeline) settleRetryDigests(retryIDs map[int]bool, res trackBatchResul
 	day := p.now().UTC().Format("2006-01-02")
 	gaveUp, err := p.db.SettleTrackRetryDigests(done, charged, chargedDaily, day, maxBatchRetryAttempts)
 	if err != nil {
-		p.logger.Printf("tracks: warning: could not record failed batches for retry: %v", err)
-		return
+		return err
 	}
 	if gaveUp > 0 {
 		p.logger.Printf("tracks: giving up on %d digest(s) after %d failed batch attempts", gaveUp, maxBatchRetryAttempts)
 	}
+	return nil
 }
 
 // extractFromDigests runs relevance filtering and the AI batches over the
@@ -912,7 +921,7 @@ func (p *Pipeline) storeTrackItems(items []aiItem, userID, channelID, channelNam
 			// owed (retry set) instead of being settled as processed.
 			p.logger.Printf("tracks: #%s — %v", channelName, err)
 			if writeErr == nil {
-				writeErr = err
+				writeErr = fmt.Errorf("#%s: %w", channelName, err)
 			}
 			continue
 		}
@@ -953,7 +962,7 @@ func (p *Pipeline) persistTrack(userID string, item aiItem, track db.Track, fp [
 	// tracks — update the match instead of creating a duplicate.
 	if id, how := p.findMergeTarget(userID, item, fp); id > 0 {
 		if _, err := p.db.UpdateTrackFromExtraction(id, track); err != nil {
-			return fmt.Errorf("updating %s-matched track #%d: %w", how, id, err)
+			return fmt.Errorf("updating track #%d (matched via %s): %w", id, how, err)
 		}
 		p.logger.Printf("tracks: merged into existing track #%d via %s: %.80s", id, how, item.Text)
 		return nil

@@ -326,7 +326,14 @@ func (s *Syncer) recordProjectError(what, projectKey string, err error) {
 // the account) — any other failure is recorded on the project's own row and
 // leaves its watermark where it was.
 func (s *Syncer) syncProject(ctx context.Context, boardID int, projectKey string) (int, error) {
-	syncState, _ := s.db.GetJiraSyncState(s.accountID, projectKey)
+	syncState, err := s.db.GetJiraSyncState(s.accountID, projectKey)
+	if err != nil {
+		// An unreadable watermark is not "never synced": treating it as one
+		// would silently re-scan the whole project and reset its running
+		// issue count. Skip the project this pass instead.
+		s.recordProjectError("sync state", projectKey, err)
+		return 0, nil
+	}
 	lastSyncedAt := ""
 	if syncState != nil {
 		lastSyncedAt = syncState.LastSyncedAt
@@ -371,8 +378,15 @@ func (s *Syncer) syncProject(ctx context.Context, boardID int, projectKey string
 	if syncState != nil {
 		issuesSynced += syncState.IssuesSynced
 	}
-	_ = s.db.UpdateJiraSyncState(s.accountID, projectKey, now, issuesSynced)
-	_ = s.db.UpdateJiraBoardIssueCount(s.accountID, boardID)
+	// A failed watermark write errs the safe way (the next pass re-fetches
+	// from the old watermark), but it must not be silent: it also leaves the
+	// project's last_error in place.
+	if err := s.db.UpdateJiraSyncState(s.accountID, projectKey, now, issuesSynced); err != nil {
+		s.logger.Printf("sync: stamping watermark for project %s (next pass re-fetches): %v", projectKey, err)
+	}
+	if err := s.db.UpdateJiraBoardIssueCount(s.accountID, boardID); err != nil {
+		s.logger.Printf("sync: updating issue count for board %d: %v", boardID, err)
+	}
 	return n, nil
 }
 

@@ -285,6 +285,31 @@ func TestRunForWindow_PartialFailureReoffersFailedBatchDigests(t *testing.T) {
 	assert.Equal(t, 0, retryDigestCount(t, database), "a succeeded retry leaves the set")
 }
 
+// A partial success advances the watermark on the promise that the retry set
+// owes the failed batch's digests. When that retry-set write fails, the run
+// must fail too, or those digests are skipped for good.
+func TestRunForWindow_RetrySetWriteFailureFailsPartialRun(t *testing.T) {
+	database := testDB(t)
+	response := seedTrackWindow(t, database, 16)
+	owner, err := database.ResolveOwner()
+	require.NoError(t, err)
+	_, err = database.Exec(`CREATE TRIGGER fail_retry BEFORE INSERT ON track_retry_digests
+		BEGIN SELECT RAISE(ABORT, 'injected retry write failure'); END`)
+	require.NoError(t, err)
+	now := time.Now()
+	from, to := float64(now.Add(-3*time.Hour).Unix()), float64(now.Unix())
+
+	gen := &failingGenerator{failFirst: 1, response: response}
+	cfg := testConfig()
+	cfg.AI.Workers = 1
+	pipe := New(database, cfg, gen, log.Default())
+
+	_, err = pipe.RunForWindow(context.Background(), owner, from, to)
+	require.Error(t, err, "a partial run whose failed digests could not be owed is not a success")
+	assert.Contains(t, err.Error(), "injected retry write failure")
+	require.Equal(t, 2, gen.calls, "one batch failed, one succeeded")
+}
+
 // channelFailingGenerator fails every batch whose prompt names the channel
 // failID and answers the rest with response.
 type channelFailingGenerator struct {
