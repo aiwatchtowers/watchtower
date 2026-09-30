@@ -166,6 +166,7 @@ type documentView struct {
 	Title    string `json:"title,omitempty"`
 	TargetID int64  `json:"target_id,omitempty"`
 	Updated  string `json:"updated_at"`
+	Origin   string `json:"origin"` // agent | import (found by the setup scan) | owner
 }
 
 type boardNodeView struct {
@@ -173,6 +174,7 @@ type boardNodeView struct {
 	Text           string          `json:"text"`
 	Intent         string          `json:"intent,omitempty"`
 	Status         string          `json:"status"`
+	Priority       string          `json:"priority"`
 	Progress       float64         `json:"progress"`
 	NewForAgent    int             `json:"comments_new_for_agent,omitempty"`
 	UnreadForOwner int             `json:"comments_unread_for_owner,omitempty"`
@@ -191,8 +193,9 @@ type projectBoardView struct {
 func NewProjectBoard() *Tool {
 	return &Tool{
 		Name: "project_board",
-		Description: "The project board: the target tree (ids, status, progress, comment counters, linked " +
-			"documents) and every attached document. Read it before changing the board.",
+		Description: "The project board: the target tree (ids, status, priority, progress, comment counters, " +
+			"linked documents; siblings sorted by priority, then status) and every attached document. " +
+			"Read it before changing the board.",
 		InputSchema: mustSchema[emptyArgs]("project_board"),
 		Access:      AccessRead,
 		Surfaces:    projectSurfaces,
@@ -219,7 +222,7 @@ func boardViews(nodes []db.BoardNode) []boardNodeView {
 	for _, n := range nodes {
 		out = append(out, boardNodeView{
 			ID: n.Target.ID, Text: n.Target.Text, Intent: n.Target.Intent,
-			Status: n.Target.Status, Progress: n.Target.Progress,
+			Status: n.Target.Status, Priority: n.Target.Priority, Progress: n.Target.Progress,
 			NewForAgent: n.NewForAgent, UnreadForOwner: n.UnreadForOwner,
 			Documents: documentViews(n.Documents), Children: boardViews(n.Children),
 		})
@@ -232,7 +235,7 @@ func documentViews(docs []db.ProjectDocument) []documentView {
 	for _, doc := range docs {
 		out = append(out, documentView{
 			ID: doc.ID, RelPath: doc.RelPath, Kind: doc.Kind, Title: doc.Title,
-			TargetID: doc.TargetID.Int64, Updated: doc.UpdatedAt,
+			TargetID: doc.TargetID.Int64, Updated: doc.UpdatedAt, Origin: doc.Origin,
 		})
 	}
 	return out

@@ -56,3 +56,57 @@ func TestGetProjectBoard_TreeOrderCountsAndDocuments(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, empty)
 }
+
+// #104: siblings sort by priority first (high, medium, low), then by the
+// status order, then id; an item without a priority defaults to medium.
+func TestGetProjectBoard_SiblingsSortByPriorityThenStatus(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestProject(t, d)
+	var ids []int64
+	require.NoError(t, d.WithTx(func(tx *sql.Tx) error {
+		var err error
+		ids, err = d.CreateProjectTargetsTx(tx, pid, []ProjectTargetInput{
+			{Title: "low todo", Priority: "low"},
+			{Title: "medium todo"},
+			{Title: "high todo", Priority: "high"},
+			{Title: "medium active", Priority: "medium"},
+			{Title: "low child", Priority: "low", BatchParent: 3},
+			{Title: "high child", Priority: "high", BatchParent: 3},
+		})
+		return err
+	}))
+	require.NoError(t, d.UpdateTargetStatus(int(ids[3]), "in_progress"))
+
+	board, err := d.GetProjectBoard(pid)
+	require.NoError(t, err)
+	var titles []string
+	for _, n := range board {
+		titles = append(titles, n.Target.Text)
+	}
+	assert.Equal(t, []string{"high todo", "medium active", "medium todo", "low todo"}, titles)
+	assert.Equal(t, "medium", board[2].Target.Priority, "an item without a priority is medium")
+	require.Len(t, board[0].Children, 2)
+	assert.Equal(t, "high child", board[0].Children[0].Target.Text)
+}
+
+func TestCreateProjectTargets_InvalidPriorityFailsTheBatch(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestProject(t, d)
+	err := d.WithTx(func(tx *sql.Tx) error {
+		_, err := d.CreateProjectTargetsTx(tx, pid, []ProjectTargetInput{{Title: "x", Priority: "urgent"}})
+		return err
+	})
+	require.ErrorContains(t, err, "invalid priority")
+}
+
+func TestUpdateTargetPriorityTx_SetsOnlyPriority(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestProject(t, d)
+	id := SeedTestProjectTarget(t, d, pid, sql.NullInt64{}, "feature")
+	require.NoError(t, d.WithTx(func(tx *sql.Tx) error { return d.UpdateTargetPriorityTx(tx, int(id), "high") }))
+	got, err := d.GetTargetByID(int(id))
+	require.NoError(t, err)
+	assert.Equal(t, "high", got.Priority)
+	assert.Equal(t, "feature", got.Text)
+	require.Error(t, d.WithTx(func(tx *sql.Tx) error { return d.UpdateTargetPriorityTx(tx, int(id), "urgent") }))
+}

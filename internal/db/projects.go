@@ -42,6 +42,7 @@ type ProjectDocument struct {
 	Title     string
 	CreatedAt string
 	UpdatedAt string // bumped by every re-attach ("revised")
+	Origin    string // agent | import | owner (migration 00083)
 }
 
 var (
@@ -299,11 +300,11 @@ func (db *DB) ListProjectSources(projectID int64) ([]ProjectSource, error) {
 	return out, rows.Err()
 }
 
-const projectDocumentCols = `id, project_id, target_id, rel_path, kind, title, created_at, updated_at`
+const projectDocumentCols = `id, project_id, target_id, rel_path, kind, title, created_at, updated_at, origin`
 
 func scanProjectDocument(row interface{ Scan(...any) error }) (*ProjectDocument, error) {
 	var d ProjectDocument
-	if err := row.Scan(&d.ID, &d.ProjectID, &d.TargetID, &d.RelPath, &d.Kind, &d.Title, &d.CreatedAt, &d.UpdatedAt); err != nil {
+	if err := row.Scan(&d.ID, &d.ProjectID, &d.TargetID, &d.RelPath, &d.Kind, &d.Title, &d.CreatedAt, &d.UpdatedAt, &d.Origin); err != nil {
 		return nil, err
 	}
 	return &d, nil
@@ -319,10 +320,12 @@ func validateProjectDocument(d ProjectDocument) error {
 	return nil
 }
 
-// UpsertProjectDocument attaches d. On an existing (project, rel_path) it
-// bumps updated_at ("revised") and replaces kind/title/target only with the
-// values d sets; created reports whether a new row was inserted. Whether
-// rel_path stays inside the folder is the caller's check (Task 8).
+// UpsertProjectDocument attaches d as the agent's. On an existing (project,
+// rel_path) it bumps updated_at ("revised"), marks it origin 'agent' (an
+// imported document the agent revises is the agent's from then on) and
+// replaces kind/title/target only with the values d sets; created reports
+// whether a new row was inserted. Whether rel_path stays inside the folder is
+// the caller's check.
 func (db *DB) UpsertProjectDocument(d ProjectDocument) (id int64, created bool, err error) {
 	if err := validateProjectDocument(d); err != nil {
 		return 0, false, err
@@ -369,6 +372,7 @@ func reviseProjectDocument(tx *sql.Tx, id int64, d ProjectDocument) error {
 		kind = CASE WHEN ? = '' THEN kind ELSE ? END,
 		title = CASE WHEN ? = '' THEN title ELSE ? END,
 		target_id = COALESCE(?, target_id),
+		origin = 'agent',
 		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
 		WHERE id = ?`, d.Kind, d.Kind, d.Title, d.Title, d.TargetID, id)
 	if err != nil {
@@ -405,4 +409,51 @@ func (db *DB) ListProjectDocuments(projectID int64) ([]ProjectDocument, error) {
 		out = append(out, *d)
 	}
 	return out, rows.Err()
+}
+
+// ImportProjectDocuments attaches docs as origin 'import' in one transaction,
+// skipping every rel_path the project already has — an attached document,
+// whatever its origin, is never touched. It returns the rel_paths inserted.
+func (db *DB) ImportProjectDocuments(projectID int64, docs []ProjectDocument) ([]string, error) {
+	var inserted []string
+	err := db.WithTx(func(tx *sql.Tx) error {
+		if err := requireProject(tx, projectID); err != nil {
+			return err
+		}
+		for _, d := range docs {
+			ok, err := importProjectDocument(tx, projectID, d)
+			if err != nil {
+				return err
+			}
+			if ok {
+				inserted = append(inserted, d.RelPath)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return inserted, nil
+}
+
+// importProjectDocument inserts d unless the project already has its
+// rel_path — compared ignoring case, since APFS is case-insensitive and the
+// agent may have attached another spelling of the same file.
+func importProjectDocument(tx *sql.Tx, projectID int64, d ProjectDocument) (bool, error) {
+	if err := validateProjectDocument(d); err != nil {
+		return false, err
+	}
+	res, err := tx.Exec(`INSERT INTO project_documents (project_id, rel_path, kind, title, origin)
+		SELECT ?, ?, ?, ?, 'import' WHERE NOT EXISTS (SELECT 1 FROM project_documents
+			WHERE project_id = ? AND rel_path = ? COLLATE NOCASE)`,
+		projectID, d.RelPath, d.Kind, d.Title, projectID, d.RelPath)
+	if err != nil {
+		return false, fmt.Errorf("importing document %q: %w", d.RelPath, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("importing document %q: %w", d.RelPath, err)
+	}
+	return n > 0, nil
 }

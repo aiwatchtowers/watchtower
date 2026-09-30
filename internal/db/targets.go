@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"time"
 )
@@ -99,6 +100,22 @@ func (db *DB) UpdateTargetText(id int, text, intent string) error {
 func (db *DB) UpdateTargetTextTx(tx *sql.Tx, id int, text, intent string) error {
 	return updateTargetTextOn(tx, id, text, intent)
 }
+
+// UpdateTargetPriorityTx sets only a target's priority (high, medium, low)
+// inside the caller's transaction, leaving every other field alone.
+func (db *DB) UpdateTargetPriorityTx(tx *sql.Tx, id int, priority string) error {
+	if !slices.Contains(TargetPriorities, priority) {
+		return fmt.Errorf("invalid target priority %q", priority)
+	}
+	if _, err := tx.Exec(`UPDATE targets SET priority = ?,
+		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`, priority, id); err != nil {
+		return fmt.Errorf("updating target %d priority: %w", id, err)
+	}
+	return nil
+}
+
+// TargetPriorities mirrors the targets.priority CHECK.
+var TargetPriorities = []string{"high", "medium", "low"}
 
 func updateTargetTextOn(q targetsQuerier, id int, text, intent string) error {
 	_, err := q.Exec(`UPDATE targets SET text = ?, intent = ?,

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
@@ -15,6 +16,7 @@ import (
 type ProjectTargetInput struct {
 	Title       string
 	Intent      string
+	Priority    string // high | medium | low; "" = medium
 	ParentID    sql.NullInt64
 	BatchParent int
 }
@@ -22,7 +24,8 @@ type ProjectTargetInput struct {
 // CreateProjectTargetsTx inserts items, in order, as targets of project
 // projectID inside tx and returns their ids. Every item gets the board
 // defaults: level custom, custom_label project, period = the UTC day of
-// creation, source chat, ownership mine, status todo. The first invalid item
+// creation, source chat, ownership mine, status todo, and priority medium
+// unless the item sets one. The first invalid item
 // fails the call; the caller's transaction then rolls the whole batch back.
 func (db *DB) CreateProjectTargetsTx(tx *sql.Tx, projectID int64, items []ProjectTargetInput) ([]int64, error) {
 	if err := requireProject(tx, projectID); err != nil {
@@ -45,15 +48,22 @@ func insertProjectTarget(tx *sql.Tx, projectID int64, day string, it ProjectTarg
 	if title == "" {
 		return 0, errors.New("empty title")
 	}
+	priority := it.Priority
+	if priority == "" {
+		priority = "medium"
+	}
+	if !slices.Contains(TargetPriorities, priority) {
+		return 0, fmt.Errorf("invalid priority %q", it.Priority)
+	}
 	parent, err := resolveProjectParent(tx, projectID, it, created)
 	if err != nil {
 		return 0, err
 	}
 	res, err := tx.Exec(`INSERT INTO targets
 		(text, intent, level, custom_label, period_start, period_end, parent_id,
-		 status, ownership, source_type, project_id)
-		VALUES (?, ?, 'custom', 'project', ?, ?, ?, 'todo', 'mine', 'chat', ?)`,
-		title, strings.TrimSpace(it.Intent), day, day, parent, projectID)
+		 status, priority, ownership, source_type, project_id)
+		VALUES (?, ?, 'custom', 'project', ?, ?, ?, 'todo', ?, 'mine', 'chat', ?)`,
+		title, strings.TrimSpace(it.Intent), day, day, parent, priority, projectID)
 	if err != nil {
 		return 0, fmt.Errorf("inserting project target: %w", err)
 	}

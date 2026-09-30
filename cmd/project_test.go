@@ -32,6 +32,7 @@ func runProject(t *testing.T, args ...string) (stdout, stderr string, err error)
 	projectCreateFlagFolder = ""
 	projectCreateFlagName = ""
 	projectBriefFlagProject = ""
+	projectImportFlagDryRun = false
 	return out.String(), errOut.String(), err
 }
 
@@ -55,6 +56,67 @@ func TestProject_CreateStoresTheResolvedFolderAndDefaultsTheName(t *testing.T) {
 
 	out, _, err = runProject(t, "create", "--folder", realDir, "--name", "Acme", "--json")
 	assert.ErrorIs(t, err, db.ErrProjectFolderTaken, "the real path of an already-bound symlink is taken: %s", out)
+}
+
+// #79: create attaches the folder's README/specs/plans as imported
+// documents; import-docs re-runs additively and its dry run writes nothing.
+func TestProject_CreateImportsFolderDocsAndImportDocsIsAdditive(t *testing.T) {
+	database := writeActionsConfig(t)
+	folder := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(folder, "README.md"), []byte("# acme"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(folder, "docs", "specs"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(folder, "docs", "specs", "x.md"), []byte("# x"), 0o644))
+
+	out, _, err := runProject(t, "create", "--folder", folder, "--json")
+	require.NoError(t, err)
+	var created projectCreateJSON
+	require.NoError(t, json.Unmarshal([]byte(out), &created))
+	assert.True(t, created.DocsImportOK)
+	require.NotNil(t, created.DocsImport)
+	assert.ElementsMatch(t, []string{"README.md", "docs/specs/x.md"}, created.DocsImport.Imported)
+	docs, err := database.ListProjectDocuments(created.ID)
+	require.NoError(t, err)
+	require.Len(t, docs, 2)
+	assert.Equal(t, "import", docs[0].Origin)
+
+	require.NoError(t, os.MkdirAll(filepath.Join(folder, "docs", "plans"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(folder, "docs", "plans", "y.md"), []byte("# y"), 0o644))
+	id := strconv.FormatInt(created.ID, 10)
+	out, _, err = runProject(t, "import-docs", id, "--dry-run")
+	require.NoError(t, err)
+	assert.Contains(t, out, "Would import 1 document(s); 2 already attached.")
+	docs, err = database.ListProjectDocuments(created.ID)
+	require.NoError(t, err)
+	assert.Len(t, docs, 2, "a dry run writes nothing")
+
+	out, _, err = runProject(t, "import-docs", id, "--json")
+	require.NoError(t, err)
+	assert.Contains(t, out, "docs/plans/y.md")
+	docs, err = database.ListProjectDocuments(created.ID)
+	require.NoError(t, err)
+	assert.Len(t, docs, 3)
+}
+
+// A failed import leaves the project created (exit 0), reports the failure in
+// the JSON envelope and warns on stderr too, so a caller decoding only the
+// project fields still logs it.
+func TestProject_CreateJSONReportsAFailedImportOnStderr(t *testing.T) {
+	writeActionsConfig(t)
+	folder := t.TempDir()
+	locked := filepath.Join(folder, "docs", "specs")
+	require.NoError(t, os.MkdirAll(locked, 0o755))
+	require.NoError(t, os.Chmod(locked, 0))
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
+	out, errOut, err := runProject(t, "create", "--folder", folder, "--json")
+	require.NoError(t, err)
+	var created projectCreateJSON
+	require.NoError(t, json.Unmarshal([]byte(out), &created))
+	assert.Positive(t, created.ID)
+	assert.False(t, created.DocsImportOK)
+	assert.NotEmpty(t, created.DocsImportError)
+	assert.Contains(t, errOut, "warning: importing the folder's documents failed")
+	assert.Contains(t, errOut, "watchtower project import-docs "+strconv.FormatInt(created.ID, 10))
 }
 
 func TestProject_CreateRefusesMissingAndAlreadyBoundFolders(t *testing.T) {
@@ -81,7 +143,7 @@ func TestProject_ListShowAndBoardJSON(t *testing.T) {
 	require.NoError(t, database.WithTx(func(tx *sql.Tx) error {
 		var err error
 		ids, err = database.CreateProjectTargetsTx(tx, pid, []db.ProjectTargetInput{
-			{Title: "feature"}, {Title: "task 1", BatchParent: 1},
+			{Title: "feature", Priority: "high"}, {Title: "task 1", BatchParent: 1},
 		})
 		return err
 	}))
@@ -114,9 +176,15 @@ func TestProject_ListShowAndBoardJSON(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(out), &board))
 	require.Len(t, board, 1)
 	assert.Equal(t, "feature", board[0].Title)
+	assert.Equal(t, "high", board[0].Priority)
 	assert.Equal(t, 1, board[0].NewForAgent)
 	require.Len(t, board[0].Children, 1)
 	assert.Equal(t, "in_progress", board[0].Children[0].Status)
+	assert.Equal(t, "medium", board[0].Children[0].Priority)
+
+	out, _, err = runProject(t, "board", strconv.FormatInt(pid, 10))
+	require.NoError(t, err)
+	assert.Contains(t, out, "[todo, high] feature")
 
 	_, _, err = runProject(t, "show", "999")
 	assert.ErrorIs(t, err, db.ErrProjectNotFound)
