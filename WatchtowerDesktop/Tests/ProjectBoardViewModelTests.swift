@@ -245,6 +245,28 @@ final class ProjectBoardViewModelTests: XCTestCase {
         XCTAssertNotNil(vm.errorMessage)
     }
 
+    /// PROJ-05: closing the last open child also closes its parents in the
+    /// same write (migration 00085). Those parents are the owner's doing, so
+    /// the hook names them too and no "target done" notice fires for them.
+    func testStatusWriteReportsTheParentsTheRollupMoved() throws {
+        let (pid, root, mid, leaf) = try dbManager.dbPool.write { db -> (Int64, Int64, Int64, Int64) in
+            let pid = try Self.insertProject(db)
+            let root = try Self.insertTarget(db, project: pid, text: "Plan")
+            let mid = try Self.insertTarget(db, project: pid, text: "Feature", parent: root)
+            let leaf = try Self.insertTarget(db, project: pid, text: "Task", parent: mid)
+            return (pid, root, mid, leaf)
+        }
+        let vm = makeVM(project: pid)
+        var reported: [ProjectSubject] = []
+        vm.onOwnerWrite = { _, subject in reported.append(subject) }
+        vm.load()
+        vm.select(Int(leaf))
+        vm.setStatus("done")
+
+        XCTAssertEqual(mid, root + 1, "fixture: the parents are reported in id order")
+        XCTAssertEqual(reported, [.target(leaf), .target(root), .target(mid)])
+    }
+
     // MARK: - Mark read
 
     func testSelectingATargetMarksItsAgentCommentsRead() throws {

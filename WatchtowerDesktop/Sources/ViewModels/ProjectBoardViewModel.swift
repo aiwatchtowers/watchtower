@@ -154,7 +154,15 @@ final class ProjectBoardViewModel {
 
     func setStatus(_ status: String) {
         guard let id = selectedTargetID, ProjectBoardCard.editableStatuses.contains(status) else { return }
-        write("change the status") { db in try TargetQueries.updateStatus(db, id: id, status: status) }
+        // The rollup (PROJ-05) may move the target's parents in the same
+        // write; they are the owner's doing too, so they never notify.
+        var rolledUp: [Int64] = []
+        write("change the status", alsoTouched: { rolledUp }) { db in
+            let before = try ProjectQueries.ancestorStatuses(db, of: Int64(id))
+            try TargetQueries.updateStatus(db, id: id, status: status)
+            let after = try ProjectQueries.ancestorStatuses(db, of: Int64(id))
+            rolledUp = after.filter { before[$0.key] != $0.value }.map(\.key).sorted()
+        }
     }
 
     func setPriority(_ priority: String) {
@@ -196,14 +204,22 @@ final class ProjectBoardViewModel {
     }
 
     /// Every owner write goes through here: the write, then the hook, then a
-    /// reload. The hook fires only after the write succeeded.
+    /// reload. The hook fires only after the write succeeded — for the
+    /// selected target and for every target `alsoTouched` names.
     @discardableResult
-    private func write(_ what: String, _ body: (Database) throws -> Void) -> Bool {
+    private func write(
+        _ what: String,
+        alsoTouched: () -> [Int64] = { [] },
+        _ body: (Database) throws -> Void
+    ) -> Bool {
         do {
             try dbPool.write { db in try body(db) }
             errorMessage = nil
             if let id = selectedTargetID {
                 onOwnerWrite?(projectID, .target(Int64(id)))
+            }
+            for id in alsoTouched() {
+                onOwnerWrite?(projectID, .target(id))
             }
             load()
             return true
