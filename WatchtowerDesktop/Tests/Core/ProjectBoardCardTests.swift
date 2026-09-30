@@ -101,5 +101,15 @@ final class ProjectBoardCardTests: XCTestCase {
             ProjectBoardCard.editableStatuses.map(ProjectBoardCard.statusLabel),
             ["To Do", "In Progress", "Blocked", "Done", "Dismissed"]
         )
+        XCTAssertEqual(ProjectBoardCard.statusLabel("in_review"), "In Review")
+        XCTAssertEqual(ProjectBoardCard.statusLabel("waiting_on_vendor"), "waiting_on_vendor", "unknown = raw text")
+    }
+
+    func testStatusTints() {
+        XCTAssertEqual(
+            ["todo", "in_progress", "in_review", "blocked", "done", "dismissed", "waiting_on_vendor"]
+                .map(ProjectBoardCard.statusTint),
+            ["secondary", "blue", "teal", "red", "green", "gray", "secondary"]
+        )
     }
 }

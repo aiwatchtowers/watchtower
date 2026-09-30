@@ -84,14 +84,30 @@ package struct ProjectBoardCard: Equatable {
             .trimmingCharacters(in: .whitespaces) ?? ""
     }
 
+    /// The chip text for a status. An unknown status (a newer CLI wrote a
+    /// value this build does not know) shows as its raw text.
     package static func statusLabel(_ status: String) -> String {
         switch status {
         case "todo": "To Do"
         case "in_progress": "In Progress"
+        case "in_review": "In Review"
         case "blocked": "Blocked"
         case "done": "Done"
         case "dismissed": "Dismissed"
-        default: status.capitalized
+        default: status
+        }
+    }
+
+    /// The chip colour name for a status — `Target.statusColor`'s palette plus
+    /// `in_review`; an unknown status is neutral.
+    package static func statusTint(_ status: String) -> String {
+        switch status {
+        case "in_progress": "blue"
+        case "in_review": "teal"
+        case "blocked": "red"
+        case "done": "green"
+        case "dismissed": "gray"
+        default: "secondary"
         }
     }
 }

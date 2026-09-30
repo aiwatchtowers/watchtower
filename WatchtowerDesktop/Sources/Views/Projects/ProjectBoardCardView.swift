@@ -21,7 +21,7 @@ struct ProjectBoardCardView<Trailing: View>: View {
         HStack(alignment: .top, spacing: 8) {
             chevron
             Image(systemName: target.statusIcon)
-                .foregroundStyle(ProjectBoardColors.status(target.statusColor))
+                .foregroundStyle(ProjectBoardColors.status(ProjectBoardCard.statusTint(target.status)))
             VStack(alignment: .leading, spacing: 5) {
                 Text(card.title.isEmpty ? "Untitled" : card.title)
                     .font(row.hasChildren ? .callout.weight(.semibold) : .callout)
@@ -88,7 +88,7 @@ struct ProjectBoardCardView<Trailing: View>: View {
             )
             ProjectBoardChip(
                 text: ProjectBoardCard.statusLabel(target.status),
-                color: ProjectBoardColors.status(target.statusColor)
+                color: ProjectBoardColors.status(ProjectBoardCard.statusTint(target.status))
             )
             if let children = card.children {
                 counter("\(children.done)/\(children.total)", systemImage: "checklist", help: "Sub-tasks done")
@@ -147,14 +147,14 @@ struct ProjectBoardChip: View {
 
 /// The Targets tab's colours for status and priority.
 enum ProjectBoardColors {
-    /// Maps `Target.statusColor`'s name to a colour.
+    /// Maps `ProjectBoardCard.statusTint`'s name to a colour.
     static func status(_ name: String) -> Color {
         switch name {
         case "blue": .blue
+        case "teal": .teal
         case "red": .red
         case "green": .green
         case "gray": .gray
-        case "purple": .purple
         default: .secondary
         }
     }
