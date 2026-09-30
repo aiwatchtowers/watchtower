@@ -15,6 +15,7 @@ import (
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/projectdocs"
 )
 
 var projectCmd = &cobra.Command{
@@ -28,8 +29,10 @@ var projectCmd = &cobra.Command{
 var projectCreateCmd = &cobra.Command{
 	Use:   "create",
 	Short: "Create a project bound to a folder",
-	Long:  "Binds --folder (symlinks resolved) to a new project. Refuses a missing directory\nor a folder already bound to a project. The name defaults to the folder's base name.",
-	RunE:  runProjectCreate,
+	Long: "Binds --folder (symlinks resolved) to a new project. Refuses a missing directory\nor a folder already bound to a project. The name defaults to the folder's base name.\n" +
+		"Then attaches the folder's README.md and its docs/**/specs and docs/**/plans files to\n" +
+		"Documents (see `project import-docs`); an import failure is reported, the project stays.",
+	RunE: runProjectCreate,
 }
 
 var projectListCmd = &cobra.Command{
@@ -52,6 +55,17 @@ var projectBoardCmd = &cobra.Command{
 	RunE:  runProjectBoard,
 }
 
+var projectImportDocsCmd = &cobra.Command{
+	Use:   "import-docs <id>",
+	Short: "Attach the folder's README, specs and plans to the project's Documents",
+	Long: "Mechanical, no AI: attaches README.md at the folder root and every .md/.txt file\n" +
+		"directly inside a specs or plans directory under docs/ (symlinks never followed),\n" +
+		"at most 50 new ones per run, README first then newest. Additive and idempotent: an\n" +
+		"already attached path is never touched. Imported documents do not count as revised.",
+	Args: cobra.ExactArgs(1),
+	RunE: runProjectImportDocs,
+}
+
 var projectDeleteCmd = &cobra.Command{
 	Use:   "delete <id>",
 	Short: "Delete a project, its board, documents and comments, and Watchtower's install in its folder",
@@ -64,6 +78,7 @@ var (
 	projectFlagJSON         bool
 	projectCreateFlagFolder string
 	projectCreateFlagName   string
+	projectImportFlagDryRun bool
 )
 
 // projectRemoveInstall undoes what `integrate claude-code --project N` put
@@ -75,10 +90,11 @@ var projectRemoveInstall = func(context.Context, *config.Config, *db.Project) er
 func init() {
 	projectCreateCmd.Flags().StringVar(&projectCreateFlagFolder, "folder", "", "project folder (required; symlinks are resolved)")
 	projectCreateCmd.Flags().StringVar(&projectCreateFlagName, "name", "", "project name (default: the folder's base name)")
-	for _, c := range []*cobra.Command{projectCreateCmd, projectListCmd, projectShowCmd, projectBoardCmd, projectDeleteCmd} {
+	projectImportDocsCmd.Flags().BoolVar(&projectImportFlagDryRun, "dry-run", false, "list what would be attached, write nothing")
+	for _, c := range []*cobra.Command{projectCreateCmd, projectListCmd, projectShowCmd, projectBoardCmd, projectImportDocsCmd, projectDeleteCmd} {
 		c.Flags().BoolVar(&projectFlagJSON, "json", false, "output JSON")
 	}
-	projectCmd.AddCommand(projectCreateCmd, projectListCmd, projectShowCmd, projectBoardCmd, projectDeleteCmd)
+	projectCmd.AddCommand(projectCreateCmd, projectListCmd, projectShowCmd, projectBoardCmd, projectImportDocsCmd, projectDeleteCmd)
 	rootCmd.AddCommand(projectCmd)
 }
 
@@ -105,6 +121,7 @@ type projectDocumentJSON struct {
 	Kind      string `json:"kind"`
 	Title     string `json:"title"`
 	UpdatedAt string `json:"updated_at"`
+	Origin    string `json:"origin"` // agent | import | owner
 }
 
 type projectViewJSON struct {
@@ -144,7 +161,7 @@ func toDocumentsJSON(docs []db.ProjectDocument) []projectDocumentJSON {
 	out := make([]projectDocumentJSON, 0, len(docs))
 	for _, d := range docs {
 		out = append(out, projectDocumentJSON{ID: d.ID, TargetID: nullableID(d.TargetID), RelPath: d.RelPath,
-			Kind: d.Kind, Title: d.Title, UpdatedAt: d.UpdatedAt})
+			Kind: d.Kind, Title: d.Title, UpdatedAt: d.UpdatedAt, Origin: d.Origin})
 	}
 	return out
 }
@@ -217,11 +234,76 @@ func runProjectCreate(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	rep, ierr := projectdocs.Import(database, &db.Project{ID: id, Name: name, FolderPath: folder}, false)
 	if projectFlagJSON {
-		return writeJSON(cmd.OutOrStdout(), projectJSON{ID: id, Folder: folder, Name: name})
+		return writeJSON(cmd.OutOrStdout(), newProjectCreateJSON(projectJSON{ID: id, Folder: folder, Name: name}, rep, ierr))
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Created project %d %q at %s\n", id, name, folder)
+	if ierr != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: importing the folder's documents failed: %v (retry: watchtower project import-docs %d)\n", ierr, id)
+		return nil
+	}
+	printImportReport(cmd.OutOrStdout(), rep)
 	return nil
+}
+
+// projectCreateJSON is `project create --json`'s envelope. The document
+// import is best-effort, so it has its own ok/error fields (the recap_ok
+// precedent): the project exists either way.
+type projectCreateJSON struct {
+	projectJSON
+	DocsImportOK    bool                `json:"docs_import_ok"`
+	DocsImportError string              `json:"docs_import_error"`
+	DocsImport      *projectdocs.Report `json:"docs_import,omitempty"`
+}
+
+func newProjectCreateJSON(p projectJSON, rep projectdocs.Report, err error) projectCreateJSON {
+	if err != nil {
+		return projectCreateJSON{projectJSON: p, DocsImportError: err.Error()}
+	}
+	return projectCreateJSON{projectJSON: p, DocsImportOK: true, DocsImport: &rep}
+}
+
+func runProjectImportDocs(cmd *cobra.Command, args []string) error {
+	id, err := parseProjectID(args[0])
+	if err != nil {
+		return err
+	}
+	_, database, err := openJiraCmdDB()
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+	p, err := database.GetProject(id)
+	if err != nil {
+		return err
+	}
+	rep, err := projectdocs.Import(database, p, projectImportFlagDryRun)
+	if err != nil {
+		return err
+	}
+	if projectFlagJSON {
+		return writeJSON(cmd.OutOrStdout(), rep)
+	}
+	printImportReport(cmd.OutOrStdout(), rep)
+	return nil
+}
+
+func printImportReport(w io.Writer, rep projectdocs.Report) {
+	verb := "Imported"
+	if rep.DryRun {
+		verb = "Would import"
+	}
+	fmt.Fprintf(w, "%s %d document(s); %d already attached.\n", verb, len(rep.Imported), len(rep.AlreadyAttached))
+	for _, rel := range rep.Imported {
+		fmt.Fprintf(w, "  + %s\n", rel)
+	}
+	if n := len(rep.SkippedOverCap); n > 0 {
+		fmt.Fprintf(w, "Skipped %d over the %d-document cap (run import-docs again to add them):\n", n, projectdocs.MaxImport)
+		for _, rel := range rep.SkippedOverCap {
+			fmt.Fprintf(w, "  - %s\n", rel)
+		}
+	}
 }
 
 func runProjectList(cmd *cobra.Command, _ []string) error {

@@ -166,6 +166,7 @@ type documentView struct {
 	Title    string `json:"title,omitempty"`
 	TargetID int64  `json:"target_id,omitempty"`
 	Updated  string `json:"updated_at"`
+	Origin   string `json:"origin"` // agent | import (found by the setup scan) | owner
 }
 
 type boardNodeView struct {
@@ -234,7 +235,7 @@ func documentViews(docs []db.ProjectDocument) []documentView {
 	for _, doc := range docs {
 		out = append(out, documentView{
 			ID: doc.ID, RelPath: doc.RelPath, Kind: doc.Kind, Title: doc.Title,
-			TargetID: doc.TargetID.Int64, Updated: doc.UpdatedAt,
+			TargetID: doc.TargetID.Int64, Updated: doc.UpdatedAt, Origin: doc.Origin,
 		})
 	}
 	return out

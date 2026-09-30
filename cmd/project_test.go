@@ -32,6 +32,7 @@ func runProject(t *testing.T, args ...string) (stdout, stderr string, err error)
 	projectCreateFlagFolder = ""
 	projectCreateFlagName = ""
 	projectBriefFlagProject = ""
+	projectImportFlagDryRun = false
 	return out.String(), errOut.String(), err
 }
 
@@ -55,6 +56,45 @@ func TestProject_CreateStoresTheResolvedFolderAndDefaultsTheName(t *testing.T) {
 
 	out, _, err = runProject(t, "create", "--folder", realDir, "--name", "Acme", "--json")
 	assert.ErrorIs(t, err, db.ErrProjectFolderTaken, "the real path of an already-bound symlink is taken: %s", out)
+}
+
+// #79: create attaches the folder's README/specs/plans as imported
+// documents; import-docs re-runs additively and its dry run writes nothing.
+func TestProject_CreateImportsFolderDocsAndImportDocsIsAdditive(t *testing.T) {
+	database := writeActionsConfig(t)
+	folder := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(folder, "README.md"), []byte("# acme"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(folder, "docs", "specs"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(folder, "docs", "specs", "x.md"), []byte("# x"), 0o644))
+
+	out, _, err := runProject(t, "create", "--folder", folder, "--json")
+	require.NoError(t, err)
+	var created projectCreateJSON
+	require.NoError(t, json.Unmarshal([]byte(out), &created))
+	assert.True(t, created.DocsImportOK)
+	require.NotNil(t, created.DocsImport)
+	assert.ElementsMatch(t, []string{"README.md", "docs/specs/x.md"}, created.DocsImport.Imported)
+	docs, err := database.ListProjectDocuments(created.ID)
+	require.NoError(t, err)
+	require.Len(t, docs, 2)
+	assert.Equal(t, "import", docs[0].Origin)
+
+	require.NoError(t, os.MkdirAll(filepath.Join(folder, "docs", "plans"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(folder, "docs", "plans", "y.md"), []byte("# y"), 0o644))
+	id := strconv.FormatInt(created.ID, 10)
+	out, _, err = runProject(t, "import-docs", id, "--dry-run")
+	require.NoError(t, err)
+	assert.Contains(t, out, "Would import 1 document(s); 2 already attached.")
+	docs, err = database.ListProjectDocuments(created.ID)
+	require.NoError(t, err)
+	assert.Len(t, docs, 2, "a dry run writes nothing")
+
+	out, _, err = runProject(t, "import-docs", id, "--json")
+	require.NoError(t, err)
+	assert.Contains(t, out, "docs/plans/y.md")
+	docs, err = database.ListProjectDocuments(created.ID)
+	require.NoError(t, err)
+	assert.Len(t, docs, 3)
 }
 
 func TestProject_CreateRefusesMissingAndAlreadyBoundFolders(t *testing.T) {
