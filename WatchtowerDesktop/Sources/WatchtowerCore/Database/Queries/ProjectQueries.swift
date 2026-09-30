@@ -221,8 +221,8 @@ package enum ProjectQueries {
     // MARK: - Board
 
     /// The project's target tree: roots (and orphans whose parent is outside
-    /// the project) in status order in_progress, blocked, todo, done, others;
-    /// then id. Children use the same order.
+    /// the project) in `ProjectBoardOrder` (priority, then status, then id —
+    /// Go's `boardSiblingOrder`). Children use the same order.
     package static func board(_ db: Database, projectID: Int64) throws -> [ProjectBoardNode] {
         let targets = try Target.fetchAll(
             db, sql: "SELECT * FROM targets WHERE project_id = ?", arguments: [projectID]
@@ -239,13 +239,13 @@ package enum ProjectQueries {
             let key = Int64(target.id)
             return ProjectBoardNode(
                 target: target,
-                children: sorted(byParent[target.id] ?? []).map(node),
+                children: ProjectBoardOrder.sorted(byParent[target.id] ?? []).map(node),
                 openComments: counters.open[key] ?? 0,
                 unreadForOwner: counters.unread[key] ?? 0,
                 documents: docs[key] ?? []
             )
         }
-        return sorted(byParent[0] ?? []).map(node)
+        return ProjectBoardOrder.sorted(byParent[0] ?? []).map(node)
     }
 
     private static func boardCounters(_ db: Database, projectID: Int64) throws -> (open: [Int64: Int], unread: [Int64: Int]) {
@@ -263,23 +263,6 @@ package enum ProjectQueries {
             unread[row["target_id"]] = row["unread_count"]
         }
         return (open, unread)
-    }
-
-    private static func sorted(_ targets: [Target]) -> [Target] {
-        targets.sorted { lhs, rhs in
-            let (lo, ro) = (statusRank(lhs.status), statusRank(rhs.status))
-            return lo == ro ? lhs.id < rhs.id : lo < ro
-        }
-    }
-
-    private static func statusRank(_ status: String) -> Int {
-        switch status {
-        case "in_progress": 0
-        case "blocked": 1
-        case "todo": 2
-        case "done": 3
-        default: 4
-        }
     }
 
     private static func requireInProject(_ db: Database, projectID: Int64, table: String, id: Int64?) throws {

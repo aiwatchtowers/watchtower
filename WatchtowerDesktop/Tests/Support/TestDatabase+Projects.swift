@@ -24,15 +24,16 @@ extension TestDatabase {
         projectID: Int64,
         text: String = "Feature",
         status: String = "todo",
-        parentID: Int64? = nil
+        parentID: Int64? = nil,
+        priority: String = "medium"
     ) throws -> Int64 {
         try db.execute(
             sql: """
                 INSERT INTO targets (text, level, custom_label, period_start, period_end,
-                    parent_id, status, ownership, source_type, project_id)
-                VALUES (?, 'custom', 'project', '2026-09-29', '2026-09-29', ?, ?, 'mine', 'chat', ?)
+                    parent_id, status, priority, ownership, source_type, project_id)
+                VALUES (?, 'custom', 'project', '2026-09-29', '2026-09-29', ?, ?, ?, 'mine', 'chat', ?)
                 """,
-            arguments: [text, parentID, status, projectID]
+            arguments: [text, parentID, status, priority, projectID]
         )
         return db.lastInsertedRowID
     }

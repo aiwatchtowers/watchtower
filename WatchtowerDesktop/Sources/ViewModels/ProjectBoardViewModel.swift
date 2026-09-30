@@ -11,10 +11,6 @@ import WatchtowerCore
 @MainActor
 @Observable
 final class ProjectBoardViewModel {
-    /// Statuses the owner can set from the board. `snoozed` is a Targets-tab
-    /// concept (snooze_until) with no meaning on a project board.
-    static let editableStatuses = ["todo", "in_progress", "blocked", "done", "dismissed"]
-
     let projectID: Int64
     private(set) var roots: [ProjectBoardNode] = []
     var collapsed: Set<Int> = []
@@ -157,8 +153,13 @@ final class ProjectBoardViewModel {
     // MARK: - Edits
 
     func setStatus(_ status: String) {
-        guard let id = selectedTargetID, Self.editableStatuses.contains(status) else { return }
+        guard let id = selectedTargetID, ProjectBoardCard.editableStatuses.contains(status) else { return }
         write("change the status") { db in try TargetQueries.updateStatus(db, id: id, status: status) }
+    }
+
+    func setPriority(_ priority: String) {
+        guard let id = selectedTargetID, ProjectBoardCard.editablePriorities.contains(priority) else { return }
+        write("change the priority") { db in try TargetQueries.updatePriority(db, id: id, priority: priority) }
     }
 
     func rename(_ text: String) {

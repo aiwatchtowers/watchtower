@@ -164,6 +164,21 @@ final class ProjectQueriesTests: XCTestCase {
         }
     }
 
+    func testBoardOrdersSiblingsByPriorityBeforeStatus() throws {
+        try db.write { d in
+            let p = try TestDatabase.insertProject(d)
+            _ = try TestDatabase.insertProjectTarget(d, projectID: p, text: "Low active", status: "in_progress", priority: "low")
+            _ = try TestDatabase.insertProjectTarget(d, projectID: p, text: "High todo", priority: "high")
+            let parent = try TestDatabase.insertProjectTarget(d, projectID: p, text: "Medium blocked", status: "blocked")
+            _ = try TestDatabase.insertProjectTarget(d, projectID: p, text: "Child low", parentID: parent, priority: "low")
+            _ = try TestDatabase.insertProjectTarget(d, projectID: p, text: "Child high done", status: "done", parentID: parent, priority: "high")
+
+            let board = try ProjectQueries.board(d, projectID: p)
+            XCTAssertEqual(board.map(\.target.text), ["High todo", "Medium blocked", "Low active"])
+            XCTAssertEqual(board[1].children.map(\.target.text), ["Child high done", "Child low"])
+        }
+    }
+
     func testSummariesCountOpenAndInProgressTargetsAndStampDocuments() throws {
         try db.write { d in
             let p = try TestDatabase.insertProject(d)
