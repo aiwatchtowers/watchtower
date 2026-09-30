@@ -66,6 +66,8 @@ final class TerminalCenter {
     @ObservationIgnored private var rows: [Int64: TerminalSession] = [:]
     @ObservationIgnored var makeProcess: () -> any TerminalSessionProcess
     @ObservationIgnored var shell: () -> String? = { ProcessInfo.processInfo.environment["SHELL"] }
+    /// Whether Claude Code has a transcript for a session id. A seam for tests.
+    @ObservationIgnored var transcriptExists: (String) -> Bool = { ClaudeTranscript.exists(sessionID: $0) }
     @ObservationIgnored private let signaller: ProcessGroupSignaller
 
     // A closure literal used as a default *argument* value does not inherit
@@ -147,15 +149,22 @@ final class TerminalCenter {
     }
 
     /// Starts the row's process unless it is running. A `claude` row resumes
-    /// its stored Claude session (`--resume`); `fresh: true` — the row's first
-    /// start, or Start fresh after the caller stored a new id — launches it
-    /// with `--session-id` and the optional fixed `prompt`. A `shell` row runs
-    /// the login shell alone. After an exit it relaunches in the same process
-    /// view (scrollback kept). A missing folder or a stored id that is not a
-    /// canonical UUID (it goes into a shell command) launches nothing.
+    /// its stored Claude session (`--resume`) when Claude Code has a
+    /// transcript for it; without one (the owner never typed, or the first
+    /// start failed) `--resume` would be refused on every Restart, so it
+    /// starts the same id anew (`--session-id`, no prompt). `fresh: true` —
+    /// the row's first start, or Start fresh after the caller stored a new id
+    /// — always uses `--session-id` with the optional fixed `prompt`. A
+    /// `shell` row runs the login shell alone. After an exit it relaunches in
+    /// the same process view (scrollback kept). A missing folder or a stored
+    /// id that is not a canonical UUID (it goes into a shell command)
+    /// launches nothing.
     func start(_ session: TerminalSession, fresh: Bool, prompt: String? = nil) {
         let id = session.id
         if states[id] == .running { return }
+        // Recorded before the guards, so an unavailable session is still
+        // found — and cleaned up — by its project.
+        rows[id] = session
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: session.folderPath, isDirectory: &isDirectory),
               isDirectory.boolValue else {
@@ -171,14 +180,17 @@ final class TerminalCenter {
                 states[id] = .unavailable("This session has no valid Claude Code session id.")
                 return
             }
-            mode = fresh ? .newClaude(uuid: uuid, prompt: prompt) : .resumeClaude(uuid: uuid)
+            if fresh {
+                mode = .newClaude(uuid: uuid, prompt: prompt)
+            } else {
+                mode = transcriptExists(uuid) ? .resumeClaude(uuid: uuid) : .newClaude(uuid: uuid, prompt: nil)
+            }
         }
         let process = processes[id] ?? makeProcess()
         process.onExit = { [weak self] code in
             self?.states[id] = .exited(code)
         }
         processes[id] = process
-        rows[id] = session
         states[id] = .running
         process.start(.make(shell: shell(), folder: session.folderPath, mode: mode))
     }

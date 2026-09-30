@@ -294,6 +294,28 @@ final class ProjectsViewModelTests: XCTestCase {
         XCTAssertTrue(rows.isEmpty, "no setup session row after a failed install")
     }
 
+    /// A double click on Start Claude Code / Open terminal: two overlapping
+    /// calls create one row and start one process.
+    func testConcurrentOpenMostRecentSessionCreatesOneRow() async throws {
+        let id = try await pool.write { try TestDatabase.insertProject($0) }
+        let vm = makeVM()
+        await vm.reload()
+        let project = try XCTUnwrap(vm.summaries.first { $0.id == id }?.project)
+        var started: [Int64] = []
+        vm.startSession = { row, _, _ in started.append(row.id) }
+
+        async let first: Void = vm.openMostRecentSession(project: project)
+        async let second: Void = vm.openMostRecentSession(project: project)
+        _ = await (first, second)
+
+        let rows = try await pool.read { try TerminalSessionQueries.fetchForProject($0, projectID: id) }
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(started, rows.map(\.id))
+
+        await vm.openMostRecentSession(project: project)
+        XCTAssertEqual(started, [rows[0].id, rows[0].id], "the next open reuses the row")
+    }
+
     /// A created and installed project gets one "Project setup" claude row,
     /// started fresh with its own session id and the first-run prompt.
     func testInstalledProjectStartsTheSetupSessionFresh() async throws {

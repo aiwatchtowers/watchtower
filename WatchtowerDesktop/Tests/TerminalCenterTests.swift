@@ -35,6 +35,8 @@ final class TerminalCenterTests: XCTestCase {
     private var alive = true
     private var exitOnHangup = true
     private var nextPid: pid_t = 4242
+    /// Session ids Claude Code has a transcript for.
+    private var transcripts: Set<String> = []
 
     override func setUpWithError() throws {
         folder = FileManager.default.temporaryDirectory.appendingPathComponent("wt term \(UUID().uuidString)", isDirectory: true)
@@ -46,6 +48,7 @@ final class TerminalCenterTests: XCTestCase {
         alive = true
         exitOnHangup = true
         nextPid = 4242
+        transcripts = []
     }
 
     override func tearDown() {
@@ -100,6 +103,7 @@ final class TerminalCenterTests: XCTestCase {
             )
         )
         center.shell = { "/bin/zsh" }
+        center.transcriptExists = { [weak self] in self?.transcripts.contains($0) ?? false }
         return center
     }
 
@@ -120,10 +124,54 @@ final class TerminalCenterTests: XCTestCase {
     func testNonFreshStartResumesTheStoredSession() throws {
         let center = makeCenter()
         let s = try row()
+        transcripts = [try XCTUnwrap(s.claudeSessionID)]
         center.start(s, fresh: false)
         let args = try XCTUnwrap(sessions.first?.launches.first?.args)
         XCTAssertEqual(args.last, "exec claude --resume \(try XCTUnwrap(s.claudeSessionID))")
         XCTAssertFalse(args.joined(separator: " ").contains("--session-id"))
+    }
+
+    /// No transcript (never typed into, or the first start failed): --resume
+    /// would be refused on every Restart, so the same id starts anew.
+    func testNonFreshStartWithoutATranscriptStartsTheSameIDAnew() throws {
+        let center = makeCenter()
+        let s = try row()
+        center.start(s, fresh: false, prompt: TerminalLaunch.firstRunPrompt)
+        XCTAssertEqual(sessions.first?.launches.first?.args.last,
+                       "exec claude --session-id \(try XCTUnwrap(s.claudeSessionID))")
+    }
+
+    func testInvalidSessionIDIsUnavailableEvenWithATranscriptLookup() throws {
+        let center = makeCenter()
+        var asked = false
+        center.transcriptExists = { _ in asked = true; return true }
+        let s = try row()
+        try queue.write { d in
+            try d.execute(sql: "UPDATE terminal_sessions SET claude_session_id = ? WHERE id = ?",
+                          arguments: ["NOT-A-UUID", s.id])
+        }
+        let tampered = try XCTUnwrap(queue.read { try TerminalSessionQueries.fetch($0, id: s.id) })
+        center.start(tampered, fresh: false)
+        guard case .unavailable = center.states[s.id] else { return XCTFail("expected unavailable") }
+        XCTAssertFalse(asked)
+        XCTAssertTrue(sessions.isEmpty)
+    }
+
+    /// An unavailable session still belongs to its project, so project
+    /// delete clears it.
+    func testUnavailableSessionIsClosedWithItsProject() async throws {
+        let center = makeCenter()
+        let missing = try row(folder: "/tmp/does-not-exist-\(UUID().uuidString)")
+        center.start(missing, fresh: true)
+        center.focus(missing.id)
+        XCTAssertEqual(center.sessionIDs(ofProject: 1), [missing.id])
+
+        let ids = center.sessionIDs(ofProject: 1)
+        await center.closeAll { ids.contains($0) }
+
+        XCTAssertTrue(center.states.isEmpty)
+        XCTAssertTrue(center.focusOrder.isEmpty)
+        XCTAssertTrue(center.sessionIDs(ofProject: 1).isEmpty)
     }
 
     func testShellRowLaunchesTheLoginShellAlone() throws {
@@ -195,6 +243,7 @@ final class TerminalCenterTests: XCTestCase {
         let center = makeCenter()
         let s = try row()
         center.start(s, fresh: true, prompt: TerminalLaunch.firstRunPrompt)
+        transcripts = [try XCTUnwrap(s.claudeSessionID)]
         sessions[0].exit(0)
         XCTAssertEqual(center.states[s.id], .exited(0))
         XCTAssertTrue(center.liveIDs.isEmpty)

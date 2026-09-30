@@ -56,6 +56,9 @@ final class ProjectsViewModel {
     var startSession: ((TerminalSession, _ fresh: Bool, _ prompt: String?) -> Void)?
     /// Each project's `terminal_sessions` rows, most recently active first.
     private(set) var terminalSessions: [Int64: [TerminalSession]] = [:]
+    /// Projects an `openMostRecentSession` is running for: a double click
+    /// must not create two rows and two processes.
+    private var openingSession: Set<Int64> = []
     /// The owner changed something in a project (a comment, a status): the
     /// notification policy must not report it back (Task 18).
     var onOwnerWrite: ((Int64, ProjectSubject) -> Void)?
@@ -267,6 +270,8 @@ final class ProjectsViewModel {
     /// "Open terminal": resumes the project's most recently active open
     /// session, or starts a new one when it has none.
     func openMostRecentSession(project: Project) async {
+        guard openingSession.insert(project.id).inserted else { return }
+        defer { openingSession.remove(project.id) }
         await loadTerminalSessions(projectID: project.id)
         if let row = terminalSessions[project.id]?.first(where: { !$0.isClosed }) {
             startSession?(row, false, nil)
