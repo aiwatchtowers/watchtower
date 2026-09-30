@@ -25,7 +25,7 @@ a `SessionStart` hook. Design:
 
 ## PROJ-01 — project targets never reach a non-board reader
 
-**Status:** Enforced (Go); the Desktop half lands with Task 20
+**Status:** Enforced (Go and Desktop; the Desktop half landed with Task 20)
 
 **Observable:** A target with `project_id` set lives only on its project's
 board. Every non-board Go reader filters `project_id IS NULL`: `GetTargets` by
@@ -86,7 +86,7 @@ must be able to undo the whole feature for a folder in one step.
 
 ## PROJ-03 — the Desktop never writes a project document
 
-**Status:** Planned (the Desktop document view lands with Task 16)
+**Status:** Enforced
 
 **Observable:** The Desktop reads an attached document (`project_documents.rel_path`
 under the project folder) to render it and re-anchor its comments, and writes
@@ -100,8 +100,9 @@ re-attached elsewhere. No project tool writes a file either:
 the terminal and the Desktop view — would race and lose either the agent's or
 the owner's edits; comments are the owner's channel into the document.
 
-**Test guards:** the Desktop guards (`testProj03_…`) land with Task 16. Go
-side, by review: `grep -nE "os\.(WriteFile|Create|OpenFile|Rename|Remove)" internal/tools/project_docs.go`
+**Test guards:**
+- `WatchtowerDesktop/Tests/ProjectDocumentViewModelTests.swift::testProj03DesktopNeverWritesTheDocument`
+- Go side, by review: `grep -nE "os\.(WriteFile|Create|OpenFile|Rename|Remove)" internal/tools/project_docs.go`
 (expected: no match).
 
 **Locked since:** 2026-09-29
