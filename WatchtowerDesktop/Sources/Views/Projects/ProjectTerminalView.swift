@@ -14,7 +14,16 @@ struct ProjectTerminalView: View {
         let center = appState.terminalCenter
         let session = shownSession(center)
         let state = session.flatMap { center.states[$0.id] }
+        let vm = appState.projectsViewModel
         VStack(spacing: 0) {
+            if let error = vm?.sessionErrors[project.id] {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+                Divider()
+            }
             switch state {
             case .running?:
                 if let session, center.clipboardHints.contains(session.id) {
@@ -36,8 +45,12 @@ struct ProjectTerminalView: View {
                     Text(TerminalLaunch.exitMessage(code: code))
                         .font(.caption).foregroundStyle(.secondary)
                     Spacer()
+                    // A failed resume fails again on Restart: only a new id gets out.
+                    if let session, vm?.resumeFailed.contains(session.id) == true {
+                        Button("Start fresh") { Task { await vm?.startFresh(session) } }
+                    }
                     Button("Restart") {
-                        if let session { Task { await appState.projectsViewModel?.open(session) } }
+                        if let session { Task { await vm?.open(session) } }
                     }
                 }
                 .padding(8)
@@ -47,13 +60,13 @@ struct ProjectTerminalView: View {
                 VStack(spacing: 8) {
                     Text("Run Claude Code in \(project.folderPath).").foregroundStyle(.secondary)
                     Button("Start Claude Code") {
-                        Task { await appState.projectsViewModel?.openMostRecentSession(project: project) }
+                        Task { await vm?.openMostRecentSession(project: project) }
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .task(id: project.id) { await appState.projectsViewModel?.loadSessions(projectID: project.id) }
+        .task(id: project.id) { await vm?.loadSessions(projectID: project.id) }
     }
 
     private func shownSession(_ center: TerminalCenter) -> TerminalSession? {
