@@ -804,9 +804,10 @@ type digestEntry struct {
 }
 
 // storeTrackItems validates and persists AI-extracted track items into the database.
-// Returns the number of tracks successfully stored/updated.
+// Returns the number of tracks successfully stored/updated and the first
+// failed write, if any (the remaining items are still stored).
 func (p *Pipeline) storeTrackItems(items []aiItem, userID, channelID, channelName string,
-	usage *digest.Usage, promptVersion int, from, to float64) int {
+	usage *digest.Usage, promptVersion int, from, to float64) (int, error) {
 	// Divide token cost across items.
 	var inputTokens, outputTokens int
 	model := "auto"
@@ -825,6 +826,7 @@ func (p *Pipeline) storeTrackItems(items []aiItem, userID, channelID, channelNam
 	}
 
 	stored := 0
+	var writeErr error
 	for _, item := range items {
 		priority := item.Priority
 		if priority != "high" && priority != "medium" && priority != "low" {
@@ -904,82 +906,109 @@ func (p *Pipeline) storeTrackItems(items []aiItem, userID, channelID, channelNam
 			PromptVersion:    promptVersion,
 		}
 
-		// If AI identified this as an update to an existing track, update it.
-		if item.ExistingID != nil && *item.ExistingID > 0 {
-			if owner, err := p.db.GetTrackAssignee(*item.ExistingID); err != nil || owner != userID {
-				p.logger.Printf("tracks: ignoring existing_id %d (owner mismatch or not found)", *item.ExistingID)
-				item.ExistingID = nil
-			}
-		}
-		if item.ExistingID != nil && *item.ExistingID > 0 {
-			if _, err := p.db.UpdateTrackFromExtraction(*item.ExistingID, track); err != nil {
-				p.logger.Printf("tracks: error updating track #%d: %v", *item.ExistingID, err)
-			} else {
-				stored++
+		if err := p.persistTrack(userID, item, track, fp); err != nil {
+			// Keep storing the other items, but report the loss: a batch
+			// with a failed write is a failed batch, so its digests stay
+			// owed (retry set) instead of being settled as processed.
+			p.logger.Printf("tracks: #%s — %v", channelName, err)
+			if writeErr == nil {
+				writeErr = err
 			}
 			continue
 		}
-
-		// Custom tracks take priority: fold matching auto content into them
-		// without overwriting their user-authored narrative/instruction.
-		if custID := p.matchCustomTrack(userID, fp, item.Text, item.Context); custID > 0 {
-			if err := p.db.FoldSourceRefsIntoTrack(custID, sourceRefs, channelIDsJSON, itemDigestIDs); err != nil {
-				p.logger.Printf("tracks: warning: fold into custom track #%d failed: %v", custID, err)
-			} else {
-				p.logger.Printf("tracks: folded auto content into custom track #%d: %.80s", custID, item.Text)
-				stored++
-			}
-			continue
-		}
-
-		// Dedup: fingerprint match against existing tracks.
-		if len(fp) > 0 {
-			if matches, err := p.db.FindTracksByFingerprint(userID, fp); err == nil && len(matches) > 0 {
-				// Update the first matching track instead of creating duplicate.
-				if _, err := p.db.UpdateTrackFromExtraction(matches[0].ID, track); err != nil {
-					p.logger.Printf("tracks: warning: failed to update fingerprint-matched track %d: %v", matches[0].ID, err)
-				} else {
-					p.logger.Printf("tracks: merged into existing track #%d via fingerprint %v", matches[0].ID, fp)
-					stored++
-				}
-				continue
-			}
-		}
-
-		// Dedup: text similarity match against existing tracks.
-		if similarID, score := p.findSimilarTrack(userID, item.Text, item.Context); similarID > 0 {
-			if _, err := p.db.UpdateTrackFromExtraction(similarID, track); err != nil {
-				p.logger.Printf("tracks: warning: failed to update text-similar track %d: %v", similarID, err)
-			} else {
-				p.logger.Printf("tracks: merged into existing track #%d via text similarity (%.2f): %.80s",
-					similarID, score, item.Text)
-				stored++
-			}
-			continue
-		}
-
-		trackID, err := p.db.UpsertTrack(track)
-		if err != nil {
-			p.logger.Printf("tracks: error storing track: %v", err)
-			continue
-		}
-
-		// Detect Jira keys in the stored track.
-		if p.jiraKeyDetector != nil {
-			if n, err := p.jiraKeyDetector.ProcessTrack(int(trackID), track.Text, track.SourceRefs, track.ChannelIDs); err != nil {
-				p.logger.Printf("tracks: jira key detection error for track %d: %v", trackID, err)
-			} else if n > 0 {
-				p.logger.Printf("tracks: detected %d Jira key(s) in track %d", n, trackID)
-			}
-		}
-
 		stored++
 	}
 
 	if stored > 0 {
 		p.logger.Printf("tracks: #%s → %d tracks", channelName, stored)
 	}
-	return stored
+	return stored, writeErr
+}
+
+// persistTrack routes one validated item to its write: an update of the
+// existing track the model named, a fold into a matching custom track, a
+// merge into a fingerprint- or text-similar track, or a new row. A failed
+// write is returned rather than logged, so the caller never counts a lost
+// track as stored.
+func (p *Pipeline) persistTrack(userID string, item aiItem, track db.Track, fp []string) error {
+	// If AI identified this as an update to an existing track, update it.
+	if id := p.ownedExistingID(userID, item.ExistingID); id > 0 {
+		if _, err := p.db.UpdateTrackFromExtraction(id, track); err != nil {
+			return fmt.Errorf("updating track #%d: %w", id, err)
+		}
+		return nil
+	}
+
+	// Custom tracks take priority: fold matching auto content into them
+	// without overwriting their user-authored narrative/instruction.
+	if custID := p.matchCustomTrack(userID, fp, item.Text, item.Context); custID > 0 {
+		if err := p.db.FoldSourceRefsIntoTrack(custID, track.SourceRefs, track.ChannelIDs, track.RelatedDigestIDs); err != nil {
+			return fmt.Errorf("folding into custom track #%d: %w", custID, err)
+		}
+		p.logger.Printf("tracks: folded auto content into custom track #%d: %.80s", custID, item.Text)
+		return nil
+	}
+
+	// Dedup: fingerprint match, then text similarity, against existing
+	// tracks — update the match instead of creating a duplicate.
+	if id, how := p.findMergeTarget(userID, item, fp); id > 0 {
+		if _, err := p.db.UpdateTrackFromExtraction(id, track); err != nil {
+			return fmt.Errorf("updating %s-matched track #%d: %w", how, id, err)
+		}
+		p.logger.Printf("tracks: merged into existing track #%d via %s: %.80s", id, how, item.Text)
+		return nil
+	}
+
+	trackID, err := p.db.UpsertTrack(track)
+	if err != nil {
+		return fmt.Errorf("storing track: %w", err)
+	}
+	p.detectTrackJiraKeys(trackID, track)
+	return nil
+}
+
+// ownedExistingID returns the model-named existing track id when that track
+// belongs to userID, else 0 (a missing or foreign id is ignored, never
+// overwritten).
+func (p *Pipeline) ownedExistingID(userID string, existingID *int) int {
+	if existingID == nil || *existingID <= 0 {
+		return 0
+	}
+	if owner, err := p.db.GetTrackAssignee(*existingID); err != nil || owner != userID {
+		p.logger.Printf("tracks: ignoring existing_id %d (owner mismatch or not found)", *existingID)
+		return 0
+	}
+	return *existingID
+}
+
+// findMergeTarget finds an existing track an item duplicates: by fingerprint
+// first, then by text similarity. It returns the track id and how it matched.
+func (p *Pipeline) findMergeTarget(userID string, item aiItem, fp []string) (int, string) {
+	if len(fp) > 0 {
+		if matches, err := p.db.FindTracksByFingerprint(userID, fp); err == nil && len(matches) > 0 {
+			return matches[0].ID, fmt.Sprintf("fingerprint %v", fp)
+		}
+	}
+	if similarID, score := p.findSimilarTrack(userID, item.Text, item.Context); similarID > 0 {
+		return similarID, fmt.Sprintf("text similarity (%.2f)", score)
+	}
+	return 0, ""
+}
+
+// detectTrackJiraKeys links the Jira keys a newly stored track mentions.
+// Best-effort, like the sync's Jira-key hook: the links are derived hints over
+// a track that is already stored, so a detection failure is logged and never
+// fails the batch (which would re-run the AI extraction over an enrichment).
+func (p *Pipeline) detectTrackJiraKeys(trackID int64, track db.Track) {
+	if p.jiraKeyDetector == nil {
+		return
+	}
+	n, err := p.jiraKeyDetector.ProcessTrack(int(trackID), track.Text, track.SourceRefs, track.ChannelIDs)
+	if err != nil {
+		p.logger.Printf("tracks: jira key detection error for track %d: %v", trackID, err)
+	} else if n > 0 {
+		p.logger.Printf("tracks: detected %d Jira key(s) in track %d", n, trackID)
+	}
 }
 
 // --- batch tracks extraction ---
@@ -1154,6 +1183,7 @@ func (p *Pipeline) generateBatchTracks(ctx context.Context, entries []digestEntr
 
 	resolve := newBatchChannelResolver(entries)
 	totalStored, rejected := 0, 0
+	var writeErr error // the first failed track write, across channels
 	for _, cr := range results {
 		channelID, ok := resolve(cr.ChannelID)
 		if !ok {
@@ -1164,13 +1194,21 @@ func (p *Pipeline) generateBatchTracks(ctx context.Context, entries []digestEntr
 			continue
 		}
 		chName := p.channelName(channelID)
-		stored := p.storeTrackItems(cr.Items, userID, channelID, chName, usage, promptVersion, from, to)
+		stored, err := p.storeTrackItems(cr.Items, userID, channelID, chName, usage, promptVersion, from, to)
 		totalStored += stored
+		if err != nil && writeErr == nil {
+			writeErr = err
+		}
 	}
 	if rejected > 0 {
 		p.logger.Printf("tracks: batch dropped %d result(s) with a channel_id not in the batch", rejected)
 	}
-
+	if writeErr != nil {
+		// A lost write fails the batch: runTrackBatches then keeps its
+		// digests owed (retry set) and, if no batch succeeded, the window is
+		// not stamped done — the partial failure is not a clean run.
+		return totalStored, fmt.Errorf("storing batch tracks: %w", writeErr)
+	}
 	return totalStored, nil
 }
 

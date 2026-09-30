@@ -139,6 +139,29 @@ func TestRunForWindow_AllBatchesFailedReturnsError(t *testing.T) {
 	assert.Empty(t, tracks)
 }
 
+// A batch whose track write failed is a failed batch, not a stored one: the
+// model answered, but nothing it said landed, so the window must not be
+// stamped done (the watermark would skip its digests forever).
+func TestRunForWindow_TrackWriteFailureFailsTheBatch(t *testing.T) {
+	database := testDB(t)
+	response := seedTrackWindow(t, database, 1)
+	_, err := database.Exec(`CREATE TRIGGER fail_tracks BEFORE INSERT ON tracks
+		BEGIN SELECT RAISE(ABORT, 'injected track write failure'); END`)
+	require.NoError(t, err)
+
+	gen := &failingGenerator{response: response}
+	cfg := testConfig()
+	cfg.AI.Workers = 1
+	pipe := New(database, cfg, gen, log.Default())
+
+	created, _, err := pipe.Run(context.Background())
+	require.Error(t, err, "a lost track write must not be a clean run")
+	assert.Contains(t, err.Error(), "all 1 track batch(es) failed")
+	assert.Contains(t, err.Error(), "injected track write failure")
+	assert.Equal(t, 0, created)
+	assert.Equal(t, 1, gen.calls, "the model did answer")
+}
+
 // Partial success stays a success: one failed batch out of two must not freeze
 // the watermark, because the surviving batch's digests were processed.
 func TestRunForWindow_PartialBatchFailureStaysSuccess(t *testing.T) {
