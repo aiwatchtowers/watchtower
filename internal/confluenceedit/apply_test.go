@@ -154,51 +154,57 @@ func TestApplyMarkerMovesWithinTheReplacedText(t *testing.T) {
 	assert.Empty(t, changes[0].Removed)
 }
 
-// TestApplySectionReplaceWithTableListCodeAndMarker replaces the Scope
-// section of rich.xhtml: its body runs to the layout (R5), carrying two
-// lists, two tables, an image, a code block and a panel. The new body keeps
-// one block marker, drops two, and writes a paragraph, a nested list, a
-// pipe table and fenced code holding "]]>".
+// TestApplySectionReplaceWithTableListCodeAndMarker replaces a section
+// holding a paragraph, a list, a plain header-row table, an image, a code
+// block and a panel. The new body keeps the image, drops the panel, and
+// changes every other block: each changed block is derived from the
+// original of its kind and re-rendered (R11 allows it: none carries
+// formatting markdown cannot hold), and a new list lands after the one it
+// follows.
 func TestApplySectionReplaceWithTableListCodeAndMarker(t *testing.T) {
-	src := readFixture(t, "testdata/rich.xhtml")
+	src := `<h1>T</h1><h2>Scope</h2><p>Old intro.</p><ul><li>x</li></ul>` +
+		`<table><tbody><tr><th>A</th><th>B</th></tr><tr><td>1</td><td>2</td></tr></tbody></table>` +
+		`<ac:image><ri:attachment ri:filename="d.png"/></ac:image>` +
+		`<ac:structured-macro ac:name="code"><ac:parameter ac:name="language">go</ac:parameter><ac:plain-text-body><![CDATA[x]]></ac:plain-text-body></ac:structured-macro>` +
+		`<ac:structured-macro ac:name="panel"><ac:rich-text-body><p>p</p></ac:rich-text-body></ac:structured-macro><h2>Next</h2>`
 	d := mustParse(t, src)
 	ms := d.Markers()
+	require.Len(t, ms, 2)
 	body := "Intro with [the docs](https://example.com/docs?a=1&b=2).\n\n" +
 		"- one\n  - two\n1. first\n\n" +
 		"| A | B |\n| --- | --- |\n| x & y | z |\n\n" +
-		ms[6].token() + "\n\n" +
+		ms[0].token() + "\n\n" +
 		"```go\nfmt.Println(\"]]>\")\n```"
 	out, changes, err := Apply(d, []Edit{sectionEdit("## Scope", body)})
 	require.NoError(t, err)
-
-	i := headingIndex(t, d, "Scope")
-	region, err := d.sectionRegion(i)
-	require.NoError(t, err)
-	assert.True(t, strings.HasPrefix(out, src[:region.start]), "everything before the section body is untouched")
-	assert.True(t, strings.HasSuffix(out, src[region.end:]), "everything after it (the layout) is untouched")
-	assert.True(t, strings.HasPrefix(src[region.end:], "<ac:layout>"))
-
-	newBody := out[region.start : len(out)-len(src[region.end:])]
-	assert.Equal(t, "\n"+
+	assert.Equal(t, `<h1>T</h1><h2>Scope</h2>`+
 		`<p>Intro with <a href="https://example.com/docs?a=1&amp;b=2">the docs</a>.</p>`+
 		`<ul><li>one<ul><li>two</li></ul></li></ul><ol><li>first</li></ol>`+
 		`<table><tbody><tr><th>A</th><th>B</th></tr><tr><td>x &amp; y</td><td>z</td></tr></tbody></table>`+
-		ms[6].Raw+
+		ms[0].Raw+
 		`<ac:structured-macro ac:name="code" ac:schema-version="1"><ac:parameter ac:name="language">go</ac:parameter><ac:plain-text-body><![CDATA[fmt.Println("]]]]><![CDATA[>")]]></ac:plain-text-body></ac:structured-macro>`+
-		"\n", newBody)
+		`<h2>Next</h2>`, out)
 
 	require.Len(t, changes, 1)
 	c := changes[0]
 	assert.Equal(t, KindReplaceSection, c.Kind)
 	assert.Equal(t, "Scope", c.Locator)
-	assert.Equal(t, []string{ms[7].token(), ms[8].token()}, c.Removed)
-	assert.Contains(t, c.Before, "- Backend ~~draft~~ API")
-	assert.Contains(t, c.Before, ms[8].token())
-	assert.Equal(t, "Intro with [the docs](https://example.com/docs?a=1&b=2).\n\n- one\n  - two\n\n1. first\n\n| A | B |\n| --- | --- |\n| x & y | z |\n\n"+ms[6].token()+"\n\n```go\nfmt.Println(\"]]>\")\n```", c.After)
+	assert.Equal(t, []string{ms[1].token()}, c.Removed)
+	assert.Equal(t, "Intro with [the docs](https://example.com/docs?a=1&b=2).\n\n- one\n  - two\n\n1. first\n\n| A | B |\n| --- | --- |\n| x & y | z |\n\n"+ms[0].token()+"\n\n```go\nfmt.Println(\"]]>\")\n```", c.After)
+	assert.Contains(t, mustParse(t, out).Text(), "```go\nfmt.Println(\"]]>\")\n```\n\n## Next")
+}
 
-	re := mustParse(t, out)
-	assert.Contains(t, re.Text(), "## Scope\n\nIntro with [the docs](https://example.com/docs?a=1&b=2).\n\n- one\n  - two\n\n1. first\n\n| A | B |\n| --- | --- |\n| x & y | z |\n\n⟦")
-	assert.Contains(t, re.Text(), "```go\nfmt.Println(\"]]>\")\n```\n\n### Риски")
+// TestApplySectionRefusesChangingARichTable: rich.xhtml's Scope section
+// holds a Confluence table with column widths; a body that changes that
+// table (a new table where it stood) is refused, naming the table (R11).
+func TestApplySectionRefusesChangingARichTable(t *testing.T) {
+	src := readFixture(t, "testdata/rich.xhtml")
+	body := "- Backend ~~draft~~ API\n  - Nested with [a link](https://example.com/a)\n- Desktop\n\n" +
+		"1. First\n2. Second\n   continued\n\n| **Area** | Owner |\n| --- | --- |\n| Sync | Bob |\n| Синхронизация |  |"
+	ee := applyErr(t, src, sectionEdit("Scope", body))
+	assert.Contains(t, ee.Msg, `the section's table "| **Area** | Owner |"`)
+	assert.Contains(t, ee.Msg, "column widths")
+	assert.NotContains(t, ee.Msg, "use replace_section")
 }
 
 func TestApplySectionLastSectionAndNestedHeading(t *testing.T) {
@@ -207,14 +213,15 @@ func TestApplySectionLastSectionAndNestedHeading(t *testing.T) {
 	assert.Equal(t, "n", changes[0].Before)
 
 	out, changes = applyOK(t, sectionsSrc, sectionEdit("Mid", "### Deeper\n\nbody"))
-	assert.Contains(t, out, "<h2>Mid</h2>\n<h3>Deeper</h3><p>body</p>\n<h2>Next</h2>")
+	assert.Contains(t, out, "<h2>Mid</h2>\n<h3>Deeper</h3>\n<p>body</p>\n<h2>Next</h2>",
+		"changed blocks replace their originals in place; deleted ones take their trailing newline")
 	assert.Equal(t, []string{"⟦1:table 1x1⟧", "⟦2:emoticon smile⟧"}, changes[0].Removed,
 		"the nested h3's opaque table and the emoticon go with the section")
 }
 
 func TestApplyEmptySectionBody(t *testing.T) {
 	out, changes := applyOK(t, sectionsSrc, sectionEdit("Next", ""))
-	assert.Equal(t, strings.TrimSuffix(sectionsSrc, "<p>n</p>\n")+"\n", out)
+	assert.Equal(t, strings.TrimSuffix(sectionsSrc, "<p>n</p>\n"), out)
 	assert.Equal(t, "", changes[0].After)
 }
 
@@ -241,7 +248,7 @@ func TestApplyLaterEditWhoseTargetWasRemovedFails(t *testing.T) {
 
 func TestApplyEditsInsideAReplacedSection(t *testing.T) {
 	out, changes := applyOK(t, sectionsSrc, sectionEdit("Mid", "one two\n\n### Sub\n\nthree"), text("two", "2"))
-	assert.Contains(t, out, "<h2>Mid</h2>\n<p>one 2</p><h3>Sub</h3><p>three</p>\n<h2>Next</h2>")
+	assert.Contains(t, out, "<h2>Mid</h2>\n<p>one 2</p>\n<h3>Sub</h3>\n<p>three</p>\n<h2>Next</h2>")
 	assert.Equal(t, "text in Mid", changes[1].Locator)
 
 	ee := applyErr(t, sectionsSrc, sectionEdit("Mid", "### Sub\n\nx"), sectionEdit("Sub", "y"))
@@ -255,16 +262,18 @@ func TestApplyEditsInsideAReplacedSection(t *testing.T) {
 
 // TestApplyTextEditThenEnclosingSection: a unit rewritten by an earlier
 // edit and then swallowed by a replace_section must not be rewritten
-// inside the spliced region (carry (e)) — the section wins, no panic.
+// inside the spliced region (carry (e)) — the section wins, no panic. A
+// section enclosing a section an earlier edit replaced is refused (R11:
+// the merge works on original bytes, which the inner rewrite claimed).
 func TestApplyTextEditThenEnclosingSection(t *testing.T) {
 	out, _ := applyOK(t, sectionsSrc, text("m1", "M1"), text("Deep", "Deeper"), sectionEdit("Mid", "new"))
 	assert.Equal(t, strings.Replace(sectionsSrc, sectionsSrc[strings.Index(sectionsSrc, "\n<p>m1"):strings.Index(sectionsSrc, "<h2>Next")], "\n<p>new</p>\n", 1), out)
 
-	out, changes := applyOK(t, sectionsSrc, sectionEdit("Deep", "d2"), sectionEdit("Mid", "all new"))
-	assert.Contains(t, out, "<h2>Mid</h2>\n<p>all new</p>\n<h2>Next</h2>")
-	assert.Contains(t, changes[1].Before, "### Deep\n\nd2", "the outer section's before shows the nested rewrite")
+	ee := applyErr(t, sectionsSrc, sectionEdit("Deep", "d2"), sectionEdit("Mid", "all new"))
+	assert.Equal(t, 1, ee.Index)
+	assert.Contains(t, ee.Msg, "contains the section replaced by edits[0]; put both changes into one replace_section")
 
-	out, changes = applyOK(t, sectionsSrc, sectionEdit("Next", "v1"), sectionEdit("Next", "v2"))
+	out, changes := applyOK(t, sectionsSrc, sectionEdit("Next", "v1"), sectionEdit("Next", "v2"))
 	assert.Contains(t, out, "<h2>Next</h2>\n<p>v2</p>\n")
 	assert.Equal(t, "v1", changes[1].Before)
 
@@ -369,7 +378,7 @@ func TestApplyInlineMarkdownInNewText(t *testing.T) {
 // depth starts a new list.
 func TestApplyMarkdownListNesting(t *testing.T) {
 	out, _ := applyOK(t, sectionsSrc, sectionEdit("Next", "1. a\n  1. b\n     more\n2. c\n   - d\n- e"))
-	assert.Contains(t, out, `<h2>Next</h2>`+"\n"+`<ol><li>a<ol><li>b<br/>more</li></ol></li><li>c<ul><li>d</li></ul></li></ol><ul><li>e</li></ul>`+"\n")
+	assert.True(t, strings.HasSuffix(out, `<h2>Next</h2>`+"\n"+`<ol><li>a<ol><li>b<br/>more</li></ol></li><li>c<ul><li>d</li></ul></li></ol><ul><li>e</li></ul>`), out)
 
 	out, _ = applyOK(t, sectionsSrc, sectionEdit("Next", "3. x\n4. y"))
 	assert.Contains(t, out, `<ol start="3"><li>x</li><li>y</li></ol>`)

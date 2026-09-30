@@ -31,7 +31,7 @@ func TestApplyOrderedSkeletonKeepsOrdinaryParagraphsEditable(t *testing.T) {
 		"snake case":               `<p>foo_bar_baz here</p>`,
 		"power and intraword star": `<p>2 * 3 ** 4 and a**b here</p>`,
 		"bold in heading":          `<h2>A <strong>b</strong> here</h2>`,
-		"bold in table cell":       `<table><tbody><tr><td><p><strong>b</strong> here</p></td></tr></tbody></table>`,
+		"bold in table cell":       `<table><tbody><tr><th>H</th></tr><tr><td><p><strong>b</strong> here</p></td></tr></tbody></table>`,
 		"bold in nested list item": `<ul><li>x<ul><li><strong>b</strong> here</li></ul></li></ul>`,
 		"nested emphasis":          `<p><strong>a <em>b</em> c</strong> <s>d</s> here</p>`,
 		"multi-line inline code":   "<p><code>make\napp</code> here</p>",

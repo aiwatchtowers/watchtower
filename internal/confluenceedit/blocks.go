@@ -378,16 +378,50 @@ func (it *itemWalker) addPara(u *unit) {
 }
 
 // tableBlock renders a plain table (every cell plain inline text, no
-// spans, rectangular) as a pipe table, or falls back to one opaque marker.
+// spans, rectangular, one header row of <th> over rows of <td>) as a pipe
+// table, or falls back to one opaque marker. A pipe table always has a
+// header row, so a headerless or column-header table has no faithful pipe
+// form — shown as a table, it would gain a header row the page lacks.
 func (b *builder) tableBlock(n *node) {
 	cp := b.checkpoint()
 	var rows [][]*unit
-	if b.collectRows(n, &rows) && rectangular(rows) {
+	if headerRowShape(n) && b.collectRows(n, &rows) && rectangular(rows) {
 		b.addBlock(&block{kind: blockTable, rows: rows}, span{n.start, n.end})
 		return
 	}
 	b.rollback(cp)
 	b.markerBlock(n)
+}
+
+// headerRowShape reports a table whose first row is all <th> and every
+// other row all <td>.
+func headerRowShape(table *node) bool {
+	for i, tr := range tableRows(table, nil) {
+		want := "td"
+		if i == 0 {
+			want = "th"
+		}
+		for _, cell := range tr.children {
+			if cell.typ == nodeElement && cell.name != want {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// tableRows lists a table's <tr> elements in order, through thead/tbody/
+// tfoot.
+func tableRows(n *node, acc []*node) []*node {
+	for _, ch := range n.children {
+		switch {
+		case ch.isElement("tr"):
+			acc = append(acc, ch)
+		case ch.isElement("thead"), ch.isElement("tbody"), ch.isElement("tfoot"):
+			acc = tableRows(ch, acc)
+		}
+	}
+	return acc
 }
 
 func rectangular(rows [][]*unit) bool {

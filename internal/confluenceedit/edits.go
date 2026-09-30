@@ -29,7 +29,7 @@ func (a *applier) replaceText(old, repl string) (Change, error) {
 		return Change{}, err
 	}
 	if !a.roundTrips(u) {
-		return Change{}, errors.New("this passage contains characters that read as formatting (e.g. `**`, `_`, `[..](..)`); edit it in Confluence or use replace_section")
+		return Change{}, errors.New("this passage contains characters that read as formatting (e.g. `**`, `_`, `[..](..)`); edit that passage in Confluence")
 	}
 	repl = cleanModelText(repl)
 	before := u.text
@@ -159,6 +159,9 @@ func (a *applier) replaceSection(heading, body string) (Change, error) {
 	if err != nil {
 		return Change{}, err
 	}
+	if err := a.checkNotNesting(region); err != nil {
+		return Change{}, err
+	}
 	content := a.regionBlocks(hb, region)
 	before := a.blocksText(content)
 	had := blockMarks(content)
@@ -170,13 +173,51 @@ func (a *applier) replaceSection(heading, body string) (Change, error) {
 	if after == before {
 		return Change{}, errors.New("edit changes nothing: new body equals the section's current body")
 	}
+	ops, err := a.mergeSection(a.baseBlocks(region), newBody)
+	if err != nil {
+		return Change{}, err
+	}
 	links := blocksLinks(content)
 	a.kill(region)
-	hb.section = &section{region: region, body: newBody, index: a.index, links: links}
+	hb.section = &section{region: region, body: opsBody(ops), ops: ops, index: a.index, links: links}
 	return Change{
 		Kind: KindReplaceSection, Locator: unitText(hb.unit), Before: before, After: after,
-		Removed: a.removedTokens(had, blockMarks(newBody)),
+		Removed: a.removedTokens(had, blockMarks(hb.section.body)),
 	}, nil
+}
+
+// baseBlocks are the ORIGINAL blocks of a section region (dead or alive,
+// with their current unit text): what a new body is merged against, since
+// only they have bytes to keep.
+func (a *applier) baseBlocks(region span) []*block {
+	var out []*block
+	for _, bl := range a.d.blocks {
+		if bl.start >= region.start && bl.end <= region.end {
+			out = append(out, bl)
+		}
+	}
+	return out
+}
+
+// checkNotNesting refuses a section that encloses a section an earlier
+// edit replaced: the two rewrites would claim the same bytes.
+func (a *applier) checkNotNesting(region span) error {
+	for _, bl := range a.d.blocks {
+		if !bl.dead && bl.section != nil && bl.start >= region.start && bl.end <= region.end {
+			return fmt.Errorf("this section contains the section replaced by edits[%d]; put both changes into one replace_section", bl.section.index)
+		}
+	}
+	return nil
+}
+
+func opsBody(ops []sectionOp) []*block {
+	var out []*block
+	for _, op := range ops {
+		if op.body != nil {
+			out = append(out, op.body)
+		}
+	}
+	return out
 }
 
 // regionBlocks is a section's current body: the body an earlier

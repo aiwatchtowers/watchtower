@@ -50,12 +50,14 @@ func (e *EditError) Error() string {
 }
 
 // section is the new body a replace_section put under a heading: it
-// replaces the heading's section region, whose original blocks are dead.
+// replaces the heading's section region, whose original blocks are dead
+// (a kept one lives on in body, see mergeSection).
 type section struct {
 	region span
-	body   []*block
-	index  int               // the edit that wrote it (for render errors)
-	links  map[string]string // link tags of the replaced content, reused by href
+	body   []*block    // the evolving body: kept original blocks and new ones
+	ops    []sectionOp // how body maps onto the region's original blocks
+	index  int         // the edit that wrote it (for render errors)
+	links  map[string]string
 }
 
 // Apply runs edits in order against the evolving document — each edit sees
@@ -335,7 +337,11 @@ func (a *applier) render() (string, error) {
 		}
 	}
 	for _, s := range sections {
-		if err := a.d.replaceRegion(s.region, a.sectionXHTML(s)); err != nil {
+		out, err := a.sectionOut(s)
+		if err == nil {
+			err = a.d.replaceRegion(s.region, out)
+		}
+		if err != nil {
 			return "", &EditError{Index: s.index, Msg: "internal conflict writing the section: " + err.Error()}
 		}
 	}
@@ -352,24 +358,6 @@ func unitChanged(o, u *unit) bool {
 		}
 	}
 	return false
-}
-
-// sectionXHTML is a section body's storage, keeping the region's leading
-// and trailing whitespace so the bytes around it read as before.
-func (a *applier) sectionXHTML(s *section) string {
-	src := a.d.src[s.region.start:s.region.end]
-	lead := src[:len(src)-len(strings.TrimLeft(src, " \t\r\n"))]
-	trail := ""
-	if len(lead) < len(src) {
-		trail = src[len(strings.TrimRight(src, " \t\r\n")):]
-	}
-	var b strings.Builder
-	b.WriteString(lead)
-	for _, bl := range s.body {
-		b.WriteString(a.blockXHTML(bl, s.links))
-	}
-	b.WriteString(trail)
-	return b.String()
 }
 
 var errEmpty = errors.New("empty edit")

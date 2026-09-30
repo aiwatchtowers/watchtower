@@ -45,7 +45,8 @@ func TestApplyRefusesPassageThatReadsAsFormatting(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			ee := applyErr(t, src, text("here", "there"))
 			assert.Contains(t, ee.Msg, "characters that read as formatting")
-			assert.Contains(t, ee.Msg, "replace_section")
+			assert.Contains(t, ee.Msg, "edit that passage in Confluence")
+			assert.NotContains(t, ee.Msg, "replace_section", "never steer to a section rewrite as a bypass (R11)")
 		})
 	}
 }

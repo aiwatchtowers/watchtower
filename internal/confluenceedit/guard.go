@@ -11,7 +11,8 @@ import (
 // text that merely looks like markdown ("__init__", "2**10 vs 3**4",
 // "[1](2)") would silently turn into formatting in the untouched part of
 // the unit, and an intraword <em> would go flat — changes the approval
-// card's text diff cannot show. So before a unit is rewritten, its
+// card's text diff cannot show. So before a unit is rewritten (by a
+// replace_text, or as part of a block a replace_section changes), its
 // ORIGINAL editable text is round-tripped through the same markdown→XHTML
 // path, and the formatting skeleton of the result must equal the skeleton
 // of the unit's actual storage.

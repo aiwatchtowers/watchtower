@@ -3,6 +3,7 @@ package confluenceedit
 import (
 	"errors"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -20,6 +21,9 @@ func FuzzApply(f *testing.F) {
 	f.Add("<p>a <code>x\x005\x00y</code> b</p>", "b", "c", "", "")
 	f.Add("<p><ac:emoticon ac:name=\"s\"/> <code>x\x001\x00y</code> <code>`\x00</code> b</p><h2>H</h2>", "b", "c\x00\x01", "H", "`\x001\x00`")
 	f.Add(`<p>call __init__ and 2**10 vs 3**4 [1](2) here</p>`, "here", "[x](javascript:y)", "", "")
+	for _, src := range judgeCases {
+		f.Add(src, "edit me", "edited", "S", "x")
+	}
 	f.Fuzz(func(t *testing.T, src, old, repl, heading, body string) {
 		d, err := Parse(src)
 		if err != nil {
@@ -32,10 +36,59 @@ func FuzzApply(f *testing.F) {
 		}
 		_, _, err = Apply(d, []Edit{text(old, repl), sectionEdit(heading, body), text(repl, old), sectionEdit(heading, repl)})
 		checkEditError(t, err)
+		checkSectionRewriteKeepsBlocks(t, d)
 		if d.Render() != src {
 			t.Fatal("Apply modified its Doc")
 		}
 	})
+}
+
+// fuzzMarker is the paragraph checkSectionRewriteKeepsBlocks appends; it
+// cannot occur in a page's own storage by accident in a fuzz run that
+// matters.
+const fuzzMarker = "zzfuzzappended"
+
+// checkSectionRewriteKeepsBlocks (R11, F3): replacing a section with its
+// own editable text is a no-op edit (refused as one), and the same text
+// plus one appended paragraph re-emits every existing block of the
+// section — and every byte between them — exactly: the only change to the
+// storage is the new <p>.
+func checkSectionRewriteKeepsBlocks(t *testing.T, d *Doc) {
+	t.Helper()
+	if strings.Contains(d.src, fuzzMarker) {
+		return
+	}
+	a := newApplier(d)
+	for i, bl := range a.d.blocks {
+		if bl.kind != blockHeading || unitText(bl.unit) == "" {
+			continue
+		}
+		region, err := a.d.sectionRegion(i)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body := a.blocksText(a.regionBlocks(bl, region))
+		if cleanModelText(body) != body {
+			return // page text Apply would make storable: echoing it back is a change
+		}
+		heading := unitText(bl.unit)
+		_, _, err = Apply(d, []Edit{sectionEdit(heading, body)})
+		if err == nil {
+			t.Fatalf("a no-op section rewrite succeeded: %q", heading)
+		}
+		checkEditError(t, err)
+		out, _, err := Apply(d, []Edit{sectionEdit(heading, strings.TrimSuffix(body+"\n\n"+fuzzMarker, "\n\n"))})
+		checkEditError(t, err)
+		if err != nil {
+			return
+		}
+		p := "<p>" + fuzzMarker + "</p>"
+		k := strings.Index(out, p)
+		if k < 0 || out[:k]+out[k+len(p):] != d.src {
+			t.Fatalf("section rewrite changed more than the appended paragraph\nsrc: %q\nout: %q", d.src, out)
+		}
+		return // one heading per input keeps the fuzz fast
+	}
 }
 
 func checkEditError(t *testing.T, err error) {
