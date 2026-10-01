@@ -271,12 +271,7 @@ func applyOAuthCredentials(
 
 	changed, err := mcpoauth.EnsureFresh(context.Background(), secret.OAuth, externalMCPNow())
 	if err != nil {
-		status := "error"
-		if errors.Is(err, mcpoauth.ErrInvalidGrant) || errors.Is(err, mcpoauth.ErrNoRefreshToken) ||
-			errors.Is(err, mcpoauth.ErrClientRejected) {
-			status = "revoked"
-		}
-		return fail(status, "token refresh failed", err)
+		return fail(refreshFailureStatus(err), "token refresh failed", err)
 	}
 
 	headers := make(map[string]string, len(secret.Headers)+1)
@@ -296,16 +291,36 @@ func applyOAuthCredentials(
 
 	server.Headers = headers
 	server.Env = secret.Env
-	// Re-read the status: c is the pre-lock snapshot, and a parallel launch
-	// may have recorded an error while this one waited for the lock.
-	if cur, err := database.GetExternalConnection(c.ID); err != nil {
-		log.Printf("external connection %d (%s): reading status: %v", c.ID, c.Name, err)
-	} else if cur.Status != "ok" {
-		if serr := database.SetExternalConnectionStatus(c.ID, "ok", ""); serr != nil {
-			log.Printf("external connection %d (%s): recording ok status: %v", c.ID, c.Name, serr)
-		}
-	}
+	markConnectionOK(database, c)
 	return true
+}
+
+// refreshFailureStatus maps an EnsureFresh error to the row status QC-04
+// records: "revoked" when only a new sign-in fixes it, "error" when the next
+// launch may simply succeed (network, 5xx).
+func refreshFailureStatus(err error) string {
+	if errors.Is(err, mcpoauth.ErrInvalidGrant) || errors.Is(err, mcpoauth.ErrNoRefreshToken) ||
+		errors.Is(err, mcpoauth.ErrClientRejected) {
+		return "revoked"
+	}
+	return "error"
+}
+
+// markConnectionOK flips a usable connection's row back to ok. It re-reads
+// the status rather than trusting c, the pre-lock snapshot: a parallel launch
+// may have recorded an error while this one waited for the lock.
+func markConnectionOK(database *db.DB, c db.ExternalConnection) {
+	cur, err := database.GetExternalConnection(c.ID)
+	if err != nil {
+		log.Printf("external connection %d (%s): reading status: %v", c.ID, c.Name, err)
+		return
+	}
+	if cur.Status == "ok" {
+		return
+	}
+	if err := database.SetExternalConnectionStatus(c.ID, "ok", ""); err != nil {
+		log.Printf("external connection %d (%s): recording ok status: %v", c.ID, c.Name, err)
+	}
 }
 
 // applyProviderOverride applies the --provider CLI flag to the config.
