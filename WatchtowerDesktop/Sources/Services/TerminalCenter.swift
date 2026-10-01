@@ -245,6 +245,64 @@ final class TerminalCenter {
     }
 }
 
+/// The embedded terminal's colours, harmonised with the app's dark system
+/// palette. Pinned to dark whatever the app appearance: Claude Code runs in
+/// the terminal with its dark theme and emits truecolor text a light
+/// background would make unreadable.
+enum TerminalPalette {
+    /// The app's window background as the dark appearance resolves it, in
+    /// concrete sRGB (SwiftTerm would capture a dynamic colour once anyway).
+    /// Reverse video draws its text in it and OSC 11 reports it.
+    static let windowBackground: NSColor = {
+        var resolved = srgb(0x1E1E1E)
+        NSAppearance(named: .darkAqua)?.performAsCurrentDrawingAppearance {
+            if let color = NSColor.windowBackgroundColor.usingColorSpace(.sRGB) { resolved = color }
+        }
+        return resolved
+    }()
+
+    /// Under a dark appearance the default background is fully transparent:
+    /// the window's own backdrop shows through, so the terminal pixel-matches
+    /// the header above it — the window renders that backdrop lighter than
+    /// the resolved `windowBackgroundColor`, so no opaque colour would match.
+    /// Under a light appearance it is the opaque dark window background.
+    static func background(for appearance: NSAppearance) -> NSColor {
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            ? windowBackground.withAlphaComponent(0) : windowBackground
+    }
+
+    static let foreground = srgb(0xE5E5EA)
+    static let caret = srgb(0x0A84FF)
+    static let selectionBackground = srgb(0x0A84FF, alpha: 0.35)
+    static let selectionForeground = srgb(0xFFFFFF)
+
+    /// The 16 ANSI colours (black, red, green, yellow, blue, magenta, cyan,
+    /// white, then the bright row): Apple's dark system colours, as hex
+    /// because `NSColor.system*` resolves to different values across macOS
+    /// releases. Blue is #409cff in both rows: #0a84ff misses 4.5:1 contrast
+    /// on the window backdrop.
+    static let ansi: [SwiftTerm.Color] = [
+        0x1C1C1E, 0xFF453A, 0x30D158, 0xFFD60A, 0x409CFF, 0xBF5AF2, 0x64D2FF, 0xD1D1D6,
+        0x8E8E93, 0xFF6961, 0x5DE07F, 0xFFE066, 0x409CFF, 0xDA8FFF, 0x8AE0FF, 0xFFFFFF
+    ].map { (rgb: UInt32) in
+        SwiftTerm.Color(red8: UInt16(rgb >> 16 & 0xFF), green8: UInt16(rgb >> 8 & 0xFF), blue8: UInt16(rgb & 0xFF))
+    }
+
+    private static func srgb(_ rgb: UInt32, alpha: CGFloat = 1) -> NSColor {
+        NSColor(srgbRed: CGFloat(rgb >> 16 & 0xFF) / 255, green: CGFloat(rgb >> 8 & 0xFF) / 255,
+                blue: CGFloat(rgb & 0xFF) / 255, alpha: alpha)
+    }
+}
+
+/// Re-picks the default background when the effective appearance changes;
+/// the setter repaints the layer the host's margin mirrors.
+private final class PalettedTerminalView: LocalProcessTerminalView {
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        nativeBackgroundColor = TerminalPalette.background(for: effectiveAppearance)
+    }
+}
+
 /// The real session: a SwiftTerm `LocalProcessTerminalView` running the
 /// launch in a pty. Keystrokes, copy/paste and resize are SwiftTerm's own
 /// (no Accessibility, no event monitors — no TCC prompt).
@@ -254,10 +312,18 @@ final class SwiftTermSession: NSObject, TerminalSessionProcess, LocalProcessTerm
     var onExit: ((Int32?) -> Void)?
 
     override init() {
-        terminal = LocalProcessTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 500))
+        terminal = PalettedTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 500))
         super.init()
         terminal.processDelegate = self
         terminal.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        // Before the view is hosted: the background setter repaints the layer
+        // the host's margin mirrors.
+        terminal.installColors(TerminalPalette.ansi)
+        terminal.nativeBackgroundColor = TerminalPalette.background(for: terminal.effectiveAppearance)
+        terminal.nativeForegroundColor = TerminalPalette.foreground
+        terminal.caretColor = TerminalPalette.caret
+        terminal.selectedTextBackgroundColor = TerminalPalette.selectionBackground
+        terminal.selectedTextForegroundColor = TerminalPalette.selectionForeground
     }
 
     var view: NSView { terminal }
