@@ -101,195 +101,19 @@ enum ImapSettingsParser {
     }
 }
 
-// MARK: - EmailSetupChatViewModel
+// MARK: - EmailSetupPrompt
 
-/// Drives the embedded "Setup Assistant" chat next to the IMAP form in the
-/// Add Email Account sheet — one of the last hand-rolled streaming chats not
-/// yet on `EmbeddedChatEngine` (it moves in #176). EPHEMERAL: a setup wizard
-/// chat is throwaway, so nothing is persisted to `chat_conversations`/`chat_messages` — only the CLI
-/// `sessionID` is kept for turn-to-turn continuity within one sheet
-/// presentation.
-///
-/// PRIVACY BOUNDARY: the assistant has NO access to the password field — not
-/// read, not write, never in any prompt. Enforced structurally: `send()` takes
-/// an `ImapFormSnapshot` (no password slot) and `ImapSettingsPatch` (no
-/// password slot) is the only write-back channel.
-@MainActor
-@Observable
-final class EmailSetupChatViewModel {
-    var messages: [ChatMessage] = []
-    var isStreaming = false
-    var inputText = ""
-    var errorMessage: String?
-
-    /// Invoked on the main actor when a completed turn carries a settings
-    /// block; the owning view writes the patch into its @State form fields.
-    var onApplySettings: ((ImapSettingsPatch) -> Void)?
-
-    private var sessionID: String?
-    private let aiService: any AIServiceProtocol
-    private var streamTask: Task<Void, Never>?
-
-    init(aiService: (any AIServiceProtocol)? = nil) {
-        self.aiService = aiService ?? WatchtowerAIService()
-    }
-
-    /// Local greeting shown when the panel opens — no AI call.
+/// The email setup assistant's text: greeting, form-state block and
+/// system prompt.
+enum EmailSetupPrompt {
     static let greeting = "Hi! I can set up your mailbox for you. "
         + "Where is your email hosted — Gmail, Yahoo, iCloud, Yandex, a company address…? "
         + "Just tell me and I'll fill in the settings."
 
-    func seedGreetingIfNeeded() {
-        guard messages.isEmpty else { return }
-        messages.append(ChatMessage(
-            id: UUID(), role: .assistant, text: Self.greeting, timestamp: Date(), isStreaming: false
-        ))
-    }
-
-    // MARK: - Sending
-
-    func send(snapshot: ImapFormSnapshot) {
-        let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !isStreaming else { return }
-        inputText = ""
-        sendUserMessage(text, snapshot: snapshot)
-    }
-
-    /// Feeds a failed "Test and Connect" error into the chat as a visible user
-    /// turn so the assistant can explain it in plain words.
-    func sendConnectionError(_ error: String, snapshot: ImapFormSnapshot) {
-        guard !isStreaming else { return }
-        sendUserMessage(
-            "\"Test and Connect\" failed with this error:\n\(error)\n\nWhat should I do?",
-            snapshot: snapshot
-        )
-    }
-
-    private func sendUserMessage(_ text: String, snapshot: ImapFormSnapshot) {
-        streamTask?.cancel()
-        messages.append(ChatMessage(
-            id: UUID(), role: .user, text: text, timestamp: Date(), isStreaming: false
-        ))
-        messages.append(ChatMessage(
-            id: UUID(), role: .assistant, text: "", timestamp: Date(), isStreaming: true
-        ))
-
-        isStreaming = true
-        let currentSessionID = sessionID
-
-        streamTask = Task { [weak self] in
-            await self?.executeStream(
-                text: text, snapshot: snapshot, currentSessionID: currentSessionID
-            )
-        }
-    }
-
-    // MARK: - Stream execution
-
-    private func executeStream(
-        text: String,
-        snapshot: ImapFormSnapshot,
-        currentSessionID: String?
-    ) async {
-        let systemPrompt: String? = currentSessionID == nil ? Self.systemPrompt : nil
-        // The form changes between turns (the user types, patches land), so
-        // EVERY turn carries a fresh snapshot — which also keeps a resumed
-        // session (system prompt dropped by CLI --resume) fully in context.
-        let effectivePrompt = "\(Self.formStateBlock(snapshot))\n\n\(text)"
-
-        var fullText = ""
-        var streamFailed = false
-        do {
-            let stream = aiService.stream(
-                prompt: effectivePrompt,
-                systemPrompt: systemPrompt,
-                sessionID: currentSessionID,
-                dbPath: nil,
-                model: nil  // nil = the provider's resolved strong-tier model
-            )
-            var sawTurnComplete = false
-            for try await event in stream {
-                switch event.foldingErrorIntoText {
-                case .text(let chunk):
-                    if sawTurnComplete {
-                        fullText = chunk
-                        sawTurnComplete = false
-                    } else {
-                        fullText += chunk
-                    }
-                    updateLastMessage(fullText)
-                case .turnComplete(let text):
-                    fullText = text
-                    sawTurnComplete = true
-                    updateLastMessage(fullText)
-                case .reset:
-                    fullText = ""
-                    sawTurnComplete = false
-                    updateLastMessage("")
-                case .sessionID(let sid):
-                    sessionID = sid
-                case .done:
-                    break
-                case .error:
-                    break  // folded into .text above
-                }
-            }
-        } catch {
-            streamFailed = true
-            if !Task.isCancelled {
-                errorMessage = error.localizedDescription
-            }
-        }
-
-        // On a failed/cancelled stream, do NOT parse settings out of partial,
-        // possibly-truncated output — a half-formed patch could misfill the form.
-        if streamFailed {
-            finishStream()
-            return
-        }
-
-        let parsed = ImapSettingsParser.parse(fullText)
-        let displayText = parsed.text.isEmpty && parsed.patch != nil
-            ? "(filled in the settings on the left)"
-            : parsed.text
-        updateLastMessage(displayText)
-        if let patch = parsed.patch {
-            onApplySettings?(patch)
-        }
-
-        finishStream()
-    }
-
-    func cancelStream() {
-        streamTask?.cancel()
-        streamTask = nil
-        isStreaming = false
-        if let idx = messages.indices.last, messages[idx].isStreaming {
-            messages[idx].isStreaming = false
-        }
-    }
-
-    // MARK: - State helpers
-
-    private func updateLastMessage(_ text: String) {
-        if let idx = messages.indices.last {
-            messages[idx].text = text
-        }
-    }
-
-    private func finishStream() {
-        for idx in messages.indices where messages[idx].isStreaming {
-            messages[idx].isStreaming = false
-        }
-        isStreaming = false
-    }
-
-    // MARK: - Prompt building
-
     /// Renders the form snapshot for the prompt. PRIVACY: the password is
     /// represented ONLY as "filled"/"empty" — the snapshot type cannot carry
     /// the value, so this function cannot leak it.
-    nonisolated static func formStateBlock(_ snapshot: ImapFormSnapshot) -> String {
+    static func formStateBlock(_ snapshot: ImapFormSnapshot) -> String {
         func show(_ value: String) -> String {
             value.isEmpty ? "(empty)" : value
         }
@@ -309,7 +133,7 @@ final class EmailSetupChatViewModel {
         return lines.joined(separator: "\n")
     }
 
-    nonisolated static let systemPrompt = """
+    static let systemPrompt = """
     You are a friendly email-setup assistant embedded in the Watchtower app, right next to an IMAP account form. \
     The user sees a form with fields: Host, Port, Security (SSL / STARTTLS / None), Username, Password, Folder, Label. \
     Your job is to fill the form FOR the user — they should never need to know what IMAP is.
@@ -354,4 +178,29 @@ final class EmailSetupChatViewModel {
     AUTHENTICATIONFAILED with Gmail/Yahoo/iCloud usually means the normal account password was used \
     instead of an app password.
     """
+}
+
+// MARK: - EmailSetupChatViewModel
+
+/// The email setup assistant next to the connect form (see
+/// `SetupAssistantChat` for the privacy boundary).
+typealias EmailSetupChatViewModel = SetupAssistantChat<ImapFormSnapshot, ImapSettingsPatch>
+
+extension SetupAssistantChat where Snapshot == ImapFormSnapshot, Patch == ImapSettingsPatch {
+    convenience init(aiService: (any AIServiceProtocol)? = nil, gate: EmbeddedStreamGate? = nil) {
+        self.init(
+            contextID: "email",
+            greeting: EmailSetupPrompt.greeting,
+            systemPrompt: EmailSetupPrompt.systemPrompt,
+            filledPlaceholder: "(filled in the settings on the left)",
+            formStateBlock: EmailSetupPrompt.formStateBlock,
+            parse: ImapSettingsParser.parse,
+            aiService: aiService,
+            gate: gate
+        )
+    }
+
+    static var greeting: String { EmailSetupPrompt.greeting }
+    static var systemPrompt: String { EmailSetupPrompt.systemPrompt }
+    static func formStateBlock(_ snapshot: ImapFormSnapshot) -> String { EmailSetupPrompt.formStateBlock(snapshot) }
 }
