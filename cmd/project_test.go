@@ -11,11 +11,13 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/kb"
 )
 
 // runProject executes the real "project" command tree via rootCmd (the
@@ -326,4 +328,86 @@ func TestProject_CreateRefusesWatchtowerOwnDirs(t *testing.T) {
 		_, _, err := runProject(t, "create", "--folder", dir)
 		assert.ErrorIs(t, err, db.ErrProjectFolderNotAllowed, dir)
 	}
+}
+
+// PROJ-08: the daemon's knowledge phase never reads a folder under
+// ~/Documents and the like, so the owner's own attach paths — create's
+// import, import-docs and attach-doc (the Desktop's "Add Document") — index
+// the project's documents themselves, and the documents are searchable from
+// the project's session at once. A dry run and knowledge search off index
+// nothing.
+func TestProj08_OwnerAttachPathsIndexTheDocumentsAtOnce(t *testing.T) {
+	database := writeActionsConfig(t)
+	folder := filepath.Join(os.Getenv("HOME"), "Documents", "acme")
+	require.NoError(t, os.MkdirAll(filepath.Join(folder, "docs", "plans"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(folder, "README.md"), []byte("# acme\nzebrafinch\n"), 0o644))
+
+	search := func(pid int64, word string) int {
+		t.Helper()
+		res, err := kb.Search(context.Background(), database, kb.Request{Queries: []string{word}, ProjectID: pid})
+		require.NoError(t, err)
+		return len(res.Hits)
+	}
+
+	out, _, err := runProject(t, "create", "--folder", folder, "--json")
+	require.NoError(t, err)
+	var created projectCreateJSON
+	require.NoError(t, json.Unmarshal([]byte(out), &created))
+	pid := created.ID
+	id := strconv.FormatInt(pid, 10)
+	assert.True(t, created.IndexOK, created.IndexError)
+	assert.Equal(t, 1, search(pid, "zebrafinch"), "create: the imported README is searchable at once")
+	assert.Zero(t, search(0, "zebrafinch"), "and only from the project's own session")
+
+	require.NoError(t, os.WriteFile(filepath.Join(folder, "docs", "plans", "p.md"), []byte("# plan\nquokka\n"), 0o644))
+	_, _, err = runProject(t, "import-docs", id, "--dry-run")
+	require.NoError(t, err)
+	assert.Zero(t, search(pid, "quokka"), "a dry run indexes nothing")
+	_, _, err = runProject(t, "import-docs", id)
+	require.NoError(t, err)
+	assert.Equal(t, 1, search(pid, "quokka"), "import-docs: the new plan is searchable at once")
+
+	require.NoError(t, os.WriteFile(filepath.Join(folder, "note.md"), []byte("# note\nnarwhal\n"), 0o644))
+	out, _, err = runProject(t, "attach-doc", id, "note.md", "--json")
+	require.NoError(t, err)
+	var attached projectAttachDocJSON
+	require.NoError(t, json.Unmarshal([]byte(out), &attached))
+	assert.True(t, attached.IndexOK, attached.IndexError)
+	assert.Equal(t, 1, search(pid, "narwhal"), "attach-doc: the owner's document is searchable at once")
+
+	// Knowledge search off: the same paths write no index entry (FEAT-01).
+	require.NoError(t, os.WriteFile(flagConfig, []byte("active_workspace: test\nknowledge:\n  enabled: false\n"), 0o600))
+	other := filepath.Join(os.Getenv("HOME"), "Documents", "other")
+	require.NoError(t, os.MkdirAll(other, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(other, "README.md"), []byte("# other\nokapi\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(other, "n.md"), []byte("# n\nokapi\n"), 0o644))
+	out, _, err = runProject(t, "create", "--folder", other, "--json")
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal([]byte(out), &created))
+	assert.True(t, created.IndexSkipped)
+	_, _, err = runProject(t, "attach-doc", strconv.FormatInt(created.ID, 10), "n.md")
+	require.NoError(t, err)
+	var n int
+	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM kb_documents WHERE source = ?`, kb.ProjectDocSource).Scan(&n))
+	assert.Equal(t, 3, n, "only the first project's three documents are indexed")
+}
+
+// PROJ-08: an index failure never fails the attach: it is a stderr warning
+// naming the retry, and the outcome the JSON envelopes carry.
+func TestProj08_IndexFailureIsAWarningNotAnError(t *testing.T) {
+	database := writeActionsConfig(t)
+	pid, err := database.CreateProject("acme", t.TempDir())
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var errOut bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetContext(ctx)
+	cmd.SetErr(&errOut)
+
+	got := indexProjectDocs(cmd, true, database, pid)
+	assert.False(t, got.IndexOK)
+	assert.NotEmpty(t, got.IndexError)
+	assert.Contains(t, errOut.String(), "warning: indexing the project's documents for search failed")
+	assert.Contains(t, errOut.String(), "watchtower project resync "+strconv.FormatInt(pid, 10))
 }
