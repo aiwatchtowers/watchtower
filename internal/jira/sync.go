@@ -568,8 +568,8 @@ func (s *Syncer) syncComments(ctx context.Context, changedKeys []string) error {
 				Author:          c.Author.DisplayName,
 				AuthorAccountID: c.Author.AccountID,
 				BodyText:        extractDescriptionText(c.Body),
-				CreatedAt:       c.Created,
-				UpdatedAt:       c.Updated,
+				CreatedAt:       s.normalizeTime(key, "comment created", c.Created),
+				UpdatedAt:       s.normalizeTime(key, "comment updated", c.Updated),
 			})
 		}
 		if err := s.db.UpsertJiraComments(dbComments); err != nil {
@@ -677,7 +677,7 @@ func (s *Syncer) convertIssue(ctx context.Context, issue Issue, boardID int) (db
 
 	resolvedAt := ""
 	if f.Resolved != nil {
-		resolvedAt = *f.Resolved
+		resolvedAt = s.normalizeTime(issue.Key, "resolutiondate", *f.Resolved)
 	}
 
 	rawJSON, _ := json.Marshal(issue)
@@ -738,10 +738,7 @@ func (s *Syncer) convertIssue(ctx context.Context, issue Issue, boardID int) (db
 
 	statusCatChanged := ""
 	if f.StatusCategoryChanged != nil {
-		var ok bool
-		if statusCatChanged, ok = NormalizeTimestamp(*f.StatusCategoryChanged); !ok {
-			s.logger.Printf("sync: %s: unparseable statuscategorychangedate %q, stored verbatim", issue.Key, statusCatChanged)
-		}
+		statusCatChanged = s.normalizeTime(issue.Key, "statuscategorychangedate", *f.StatusCategoryChanged)
 	}
 
 	dbIssue := db.JiraIssue{
@@ -775,8 +772,8 @@ func (s *Syncer) convertIssue(ctx context.Context, issue Issue, boardID int) (db
 		Labels:                  string(labelsJSON),
 		Components:              string(componentsJSON),
 		FixVersions:             string(fixVersionsJSON),
-		CreatedAt:               f.Created,
-		UpdatedAt:               f.Updated,
+		CreatedAt:               s.normalizeTime(issue.Key, "created", f.Created),
+		UpdatedAt:               s.normalizeTime(issue.Key, "updated", f.Updated),
 		ResolvedAt:              resolvedAt,
 		RawJSON:                 string(rawJSON),
 		CustomFieldsJSON:        customFieldsJSON,
@@ -830,10 +827,17 @@ func (s *Syncer) ensureUserMap(u *User) {
 // guards against a server that never reports isLast.
 const maxSprintPages = 40
 
+// closedSprintRefresh is how stale a board's closed-sprint rows may get
+// before the sprint sync re-reads the closed listing without another reason.
+const closedSprintRefresh = 24 * time.Hour
+
 // SyncSprints syncs active and closed sprints for all selected boards.
-// Every page is read: the Agile endpoint returns closed sprints oldest first,
-// so on a long-lived board the sprint that just ended is on the last page,
-// and stopping at page one would leave its row 'active' forever.
+// The active listing is read every pass. The closed listing is read only
+// when needClosedSprints says so: the Agile endpoint returns closed sprints
+// oldest first with no reverse order, so every read pages through the
+// board's whole history. When it is read, every page is: on a long-lived
+// board the sprint that just ended is on the last page, and stopping at page
+// one would leave its row 'active' forever.
 // A per-board fetch failure is logged and skipped (sprints already fetched
 // for that board and state are still stored), except a revoked grant: every
 // remaining board would fail the same way, so it is returned for the caller
@@ -845,19 +849,70 @@ func (s *Syncer) SyncSprints(ctx context.Context) error {
 	}
 
 	for _, board := range boards {
-		for _, state := range []string{"active", "closed"} {
-			sprints, err := s.fetchBoardSprints(ctx, board.ID, state)
-			s.storeSprints(board.ID, sprints)
-			if err != nil {
-				if errors.Is(err, ErrAuthRevoked) {
-					return err
-				}
-				s.logger.Printf("failed to fetch %s sprints for board %d: %v", state, board.ID, err)
-			}
+		active, err := s.syncBoardSprints(ctx, board.ID, "active")
+		if err != nil {
+			return err
+		}
+		if !s.needClosedSprints(board.ID, active) {
+			continue
+		}
+		if _, err := s.syncBoardSprints(ctx, board.ID, "closed"); err != nil {
+			return err
 		}
 	}
 
 	return nil
+}
+
+// syncBoardSprints fetches and stores one board's sprints in state and
+// returns what it read. Only a revoked grant is returned; any other failure
+// is logged, keeping the sprints read before it.
+func (s *Syncer) syncBoardSprints(ctx context.Context, boardID int, state string) ([]Sprint, error) {
+	sprints, err := s.fetchBoardSprints(ctx, boardID, state)
+	syncedAt := time.Now().UTC().Format(time.RFC3339)
+	if err != nil {
+		// A broken read stores what it got without a sync time: the closed
+		// rows' newest synced_at is how needClosedSprints tells when the
+		// closed listing was last read in full.
+		syncedAt = ""
+	}
+	s.storeSprints(boardID, sprints, syncedAt)
+	if err != nil {
+		if errors.Is(err, ErrAuthRevoked) {
+			return nil, err
+		}
+		s.logger.Printf("failed to fetch %s sprints for board %d: %v", state, boardID, err)
+	}
+	return sprints, nil
+}
+
+// needClosedSprints reports whether this pass must read the board's closed
+// sprints: a sprint stored as active is no longer in the active listing (it
+// just closed), or the closed listing was last read in full over
+// closedSprintRefresh ago or never — which also covers a sprint that started and closed while
+// the daemon was off. A failed lookup reads them, the safe side.
+func (s *Syncer) needClosedSprints(boardID int, active []Sprint) bool {
+	stored, err := s.db.GetJiraActiveSprints(s.accountID, boardID)
+	if err != nil {
+		s.logger.Printf("board %d: reading stored active sprints: %v", boardID, err)
+		return true
+	}
+	listed := make(map[int]bool, len(active))
+	for _, sp := range active {
+		listed[sp.ID] = true
+	}
+	for _, sp := range stored {
+		if !listed[sp.ID] {
+			return true
+		}
+	}
+	latest, err := s.db.LatestJiraClosedSprintSync(s.accountID, boardID)
+	if err != nil {
+		s.logger.Printf("board %d: %v", boardID, err)
+		return true
+	}
+	last, err := time.Parse(time.RFC3339, latest)
+	return err != nil || time.Since(last) > closedSprintRefresh
 }
 
 // fetchBoardSprints pages through /rest/agile/1.0/board/{id}/sprint for one
@@ -887,9 +942,9 @@ func (s *Syncer) fetchBoardSprints(ctx context.Context, boardID int, state strin
 	return all, nil
 }
 
-// storeSprints upserts fetched sprints; a failed row is logged and skipped.
-func (s *Syncer) storeSprints(boardID int, sprints []Sprint) {
-	now := time.Now().UTC().Format(time.RFC3339)
+// storeSprints upserts fetched sprints with syncedAt; a failed row is logged
+// and skipped.
+func (s *Syncer) storeSprints(boardID int, sprints []Sprint, syncedAt string) {
 	for _, sprint := range sprints {
 		dbSprint := db.JiraSprint{
 			AccountID:    s.accountID,
@@ -901,7 +956,7 @@ func (s *Syncer) storeSprints(boardID int, sprints []Sprint) {
 			StartDate:    sprint.StartDate,
 			EndDate:      sprint.EndDate,
 			CompleteDate: sprint.CompleteDate,
-			SyncedAt:     now,
+			SyncedAt:     syncedAt,
 		}
 		if err := s.db.UpsertJiraSprint(dbSprint); err != nil {
 			s.logger.Printf("failed to upsert sprint %d: %v", sprint.ID, err)
@@ -990,17 +1045,32 @@ func (s *Syncer) getFieldMap(boardID int) []db.JiraBoardFieldMap {
 }
 
 // NormalizeTimestamp rewrites a Jira timestamp ("2006-01-02T15:04:05.000-0700",
-// any or no fraction) as RFC3339 UTC: SQLite's julianday() rejects a "+hhmm"
-// offset, and the stale query compares the column against an RFC3339 UTC
-// cutoff as a string. A value in neither shape is kept verbatim rather than
-// dropped, and ok is false so the caller can say so.
+// any or no fraction) in the stored UTC form (db.FormatJiraTime): SQLite's
+// julianday() rejects a "+hhmm" offset, and every reader compares the Jira
+// timestamp columns against bounds as strings — a value in the Jira profile's
+// own offset (which moves with DST) would sort by wall time, not by instant.
+// A value in neither shape is kept verbatim rather than dropped, and ok is
+// false so the caller can say so.
 func NormalizeTimestamp(s string) (normalized string, ok bool) {
 	for _, layout := range []string{"2006-01-02T15:04:05.999999999-0700", time.RFC3339} {
 		if t, err := time.Parse(layout, s); err == nil {
-			return t.UTC().Format(time.RFC3339), true
+			return db.FormatJiraTime(t), true
 		}
 	}
 	return s, false
+}
+
+// normalizeTime is NormalizeTimestamp for one field of issue key, logging a
+// value it has to store verbatim. An absent value stays "".
+func (s *Syncer) normalizeTime(key, field, v string) string {
+	if v == "" {
+		return ""
+	}
+	out, ok := NormalizeTimestamp(v)
+	if !ok {
+		s.logger.Printf("sync: %s: unparseable %s %q, stored verbatim", key, field, v)
+	}
+	return out
 }
 
 // extractDisplayValue gets a human-readable value from a Jira field value.

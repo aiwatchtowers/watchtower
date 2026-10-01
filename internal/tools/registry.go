@@ -72,11 +72,15 @@ func (b Binding) turnID() string {
 }
 
 // Call is what Execute receives: the recorded row id (0 for RunDirect), the
-// raw arguments and the binding.
+// raw arguments and the binding. Retry is set when Apply runs a row that
+// had failed before: a failed External write may still have landed (a
+// timeout after the request was sent), so such a tool checks for its own
+// earlier write before sending it again.
 type Call struct {
 	ActionID int64
 	Args     json.RawMessage
 	Binding  Binding
+	Retry    bool
 }
 
 // Tool is one registry entry.
@@ -551,7 +555,7 @@ func (r *Registry) Apply(ctx context.Context, id int64) (*db.AgentAction, error)
 	if !ok {
 		return r.finishTransition(id, from, "failed", "", "unknown tool "+row.Tool)
 	}
-	call := Call{ActionID: id, Args: json.RawMessage(row.ArgsJSON), Binding: bindingOf(row)}
+	call := Call{ActionID: id, Args: json.RawMessage(row.ArgsJSON), Binding: bindingOf(row), Retry: row.Status == "failed"}
 	// Re-scope against the stored binding: a retried or late-applied project
 	// row must still belong to a live project and touch only its rows.
 	if err := r.ProjectAlive(ctx, call.Binding); err != nil {

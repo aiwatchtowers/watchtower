@@ -19,6 +19,7 @@ import (
 type JiraIssueClient interface {
 	CreateIssue(ctx context.Context, req jira.CreateIssueRequest) (jira.CreatedIssue, error)
 	GetIssue(ctx context.Context, key string) (jira.Issue, error)
+	SearchIssues(ctx context.Context, jql string, maxResults int, nextPageToken string) (*jira.SearchResult, error)
 }
 
 // JiraClientFactory builds a client for one connected account.
@@ -68,6 +69,36 @@ func ResolveJiraAccount(d *db.DB, id int64) (db.JiraAccount, error) {
 	}
 }
 
+// pinAccount resolves account_id right now and bakes the choice into the
+// persisted args: an omitted id means "the single enabled account", and
+// without the pin Execute would re-resolve it hours later — failing for good
+// once a second site is connected, or writing to a different site than the
+// owner approved (the pinSite rule for issue-key tools).
+func pinAccount(d *db.DB, raw json.RawMessage, accountID int64) (json.RawMessage, error) {
+	account, err := ResolveJiraAccount(d, accountID)
+	if err != nil {
+		return nil, err
+	}
+	return mergeJSON(raw, map[string]any{"account_id": account.ID})
+}
+
+// syncedProjectAccount resolves the account and checks projectKey is synced
+// on it.
+func syncedProjectAccount(d *db.DB, accountID int64, projectKey string) (db.JiraAccount, error) {
+	account, err := ResolveJiraAccount(d, accountID)
+	if err != nil {
+		return db.JiraAccount{}, err
+	}
+	ok, err := projectSynced(d, account.ID, projectKey)
+	if err != nil {
+		return db.JiraAccount{}, err
+	}
+	if !ok {
+		return db.JiraAccount{}, &ValidationError{Msg: fmt.Sprintf("project %s is not synced for this account; call list_jira_projects", projectKey)}
+	}
+	return account, nil
+}
+
 func projectSynced(d *db.DB, accountID int64, projectKey string) (bool, error) {
 	states, err := d.GetJiraSyncStates()
 	if err != nil {
@@ -101,12 +132,16 @@ func issueRow(accountID int64, issue jira.Issue) db.JiraIssue {
 	}
 	resolvedAt := ""
 	if f.Resolved != nil {
-		resolvedAt = *f.Resolved
+		resolvedAt, _ = jira.NormalizeTimestamp(*f.Resolved)
 	}
 	statusCategoryChangedAt := ""
 	if f.StatusCategoryChanged != nil {
 		statusCategoryChangedAt, _ = jira.NormalizeTimestamp(*f.StatusCategoryChanged)
 	}
+	// The same UTC form the syncer stores, so the mirrored row
+	// compares and sorts with the synced ones.
+	createdAt, _ := jira.NormalizeTimestamp(f.Created)
+	updatedAt, _ := jira.NormalizeTimestamp(f.Updated)
 	raw, _ := json.Marshal(issue)
 	return db.JiraIssue{
 		AccountID: accountID, Key: issue.Key, ID: issue.ID, ProjectKey: projectKey,
@@ -118,7 +153,7 @@ func issueRow(accountID int64, issue jira.Issue) db.JiraIssue {
 		IssueType: f.IssueType.Name, Status: f.Status.Name, StatusCategory: jira.NormalizeStatusCategory(f.Status.StatusCategory.Key),
 		StatusCategoryChangedAt: statusCategoryChangedAt, Priority: priority,
 		Labels: string(labels), Components: "[]", FixVersions: "[]",
-		CreatedAt: f.Created, UpdatedAt: f.Updated, ResolvedAt: resolvedAt, RawJSON: string(raw), SyncedAt: now,
+		CreatedAt: createdAt, UpdatedAt: updatedAt, ResolvedAt: resolvedAt, RawJSON: string(raw), SyncedAt: now,
 	}
 }
 
@@ -136,6 +171,49 @@ func mirrorCreatedIssue(ctx context.Context, d *db.DB, client JiraIssueClient, a
 		return "created, but the local mirror was not updated: " + err.Error()
 	}
 	return ""
+}
+
+// landedIssueSearchLimit bounds the retry lookup: the owner's issues in one
+// project since the proposal was recorded, newest first.
+const landedIssueSearchLimit = 100
+
+// findLandedIssue returns the key of an issue an earlier, failed attempt of
+// action actionID created after all, "" when there is none: an issue the
+// owner reported in req's project since the proposal was recorded, with the
+// same summary and issue type. A failed lookup is an error — the caller must
+// not re-send the request when it cannot tell whether the first one landed.
+func findLandedIssue(ctx context.Context, d *db.DB, client JiraIssueClient, actionID int64, req jira.CreateIssueRequest) (string, error) {
+	row, err := d.GetAgentAction(actionID)
+	if err != nil {
+		return "", err
+	}
+	if row == nil {
+		return "", fmt.Errorf("action #%d not found", actionID)
+	}
+	proposed, err := time.Parse(time.RFC3339, row.CreatedAt)
+	if err != nil {
+		return "", fmt.Errorf("action #%d: parsing created_at %q: %w", actionID, row.CreatedAt, err)
+	}
+	// A relative window ("-90m") is free of the Jira profile's time zone,
+	// which an absolute JQL date would be read in; the two extra minutes
+	// cover the truncation and clock skew.
+	minutes := int(time.Since(proposed).Minutes()) + 2
+	jql := fmt.Sprintf(`project = "%s" AND reporter = currentUser() AND created >= -%dm ORDER BY created DESC`, req.ProjectKey, minutes)
+	res, err := client.SearchIssues(ctx, jql, landedIssueSearchLimit, "")
+	if err != nil {
+		return "", fmt.Errorf("checking whether the failed attempt created the issue: %w", err)
+	}
+	for _, issue := range res.Issues {
+		if issue.Fields.Summary == req.Summary && strings.EqualFold(issue.Fields.IssueType.Name, req.IssueType) {
+			return issue.Key, nil
+		}
+	}
+	if len(res.Issues) >= landedIssueSearchLimit || (!res.IsLast && res.NextPageToken != "") {
+		// The window holds more than one page: no match on this one does not
+		// prove the first attempt did not land.
+		return "", fmt.Errorf("cannot tell whether the failed attempt created the issue: %s has more issues since the proposal than one search page", req.ProjectKey)
+	}
+	return "", nil
 }
 
 // NewCreateJiraIssue builds the create_jira_issue write tool — the first
@@ -169,25 +247,24 @@ func NewCreateJiraIssue(factory JiraClientFactory) *Tool {
 			case len([]rune(a.Summary)) > 255:
 				return &ValidationError{Msg: "summary must be at most 255 characters"}
 			}
-			account, err := ResolveJiraAccount(d, a.AccountID)
-			if err != nil {
-				return err
+			_, err := syncedProjectAccount(d, a.AccountID, a.ProjectKey)
+			return err
+		},
+		Normalize: func(_ context.Context, d *db.DB, raw json.RawMessage) (json.RawMessage, error) {
+			var a createJiraIssueArgs
+			if err := decodeStrict(raw, &a); err != nil {
+				return nil, err
 			}
-			ok, err := projectSynced(d, account.ID, a.ProjectKey)
-			if err != nil {
-				return err
-			}
-			if !ok {
-				return &ValidationError{Msg: fmt.Sprintf("project %s is not synced for this account; call list_jira_projects", a.ProjectKey)}
-			}
-			return nil
+			return pinAccount(d, raw, a.AccountID)
 		},
 		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
 			var a createJiraIssueArgs
 			if err := json.Unmarshal(call.Args, &a); err != nil {
 				return nil, fmt.Errorf("decoding create_jira_issue args: %w", err)
 			}
-			account, err := ResolveJiraAccount(d, a.AccountID)
+			// The account was pinned at propose time; the project is checked
+			// again because it may have stopped syncing since.
+			account, err := syncedProjectAccount(d, a.AccountID, a.ProjectKey)
 			if err != nil {
 				return nil, err
 			}
@@ -195,22 +272,37 @@ func NewCreateJiraIssue(factory JiraClientFactory) *Tool {
 			if err != nil {
 				return nil, err
 			}
-			created, err := client.CreateIssue(ctx, jira.CreateIssueRequest{
+			req := jira.CreateIssueRequest{
 				ProjectKey: strings.ToUpper(strings.TrimSpace(a.ProjectKey)), IssueType: strings.TrimSpace(a.IssueType),
 				Summary: strings.TrimSpace(a.Summary), Description: a.Description, Labels: a.Labels, Priority: a.Priority,
-			})
-			if err != nil {
-				// The package has no logger, so a failed side-write rides the
-				// error it accompanies rather than vanishing (§9 swallowed
-				// error): the owner must know the account was NOT marked.
-				if dbErr := recordRevokedGrant(d, account.ID, err); dbErr != nil {
-					return nil, fmt.Errorf("%w (and recording the revoked state failed: %v)", err, dbErr)
-				}
-				return nil, err
 			}
-			url := strings.TrimRight(account.SiteURL, "/") + "/browse/" + created.Key
-			result := map[string]any{"key": created.Key, "url": url}
-			if warning := mirrorCreatedIssue(ctx, d, client, account.ID, created.Key); warning != "" {
+			key, reused := "", false
+			if call.Retry {
+				// The failed attempt may have created the issue anyway (a
+				// timeout or a broken response after Jira stored it): look
+				// for it before sending the request a second time.
+				if key, err = findLandedIssue(ctx, d, client, call.ActionID, req); err != nil {
+					return nil, jiraWriteFailed(d, account.ID, err)
+				}
+				reused = key != ""
+			}
+			if key == "" {
+				created, err := client.CreateIssue(ctx, req)
+				if err != nil {
+					// The package has no logger, so a failed side-write rides
+					// the error it accompanies rather than vanishing (§9
+					// swallowed error): the owner must know the account was
+					// NOT marked.
+					return nil, jiraWriteFailed(d, account.ID, err)
+				}
+				key = created.Key
+			}
+			result := map[string]any{"key": key, "url": browseURL(account, key)}
+			if reused {
+				// Say which path ran: the issue is the earlier attempt's.
+				result["reused"] = true
+			}
+			if warning := mirrorCreatedIssue(ctx, d, client, account.ID, key); warning != "" {
 				result["warning"] = warning
 			}
 			return result, nil

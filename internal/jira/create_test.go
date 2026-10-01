@@ -170,3 +170,36 @@ func TestADFDocument_ParagraphsAndText(t *testing.T) {
 			"content": []interface{}{map[string]interface{}{"type": "text", "text": "second para"}}}},
 	}))
 }
+
+// A 201 whose body is cut short, unreadable or keyless means the issue exists
+// but its key was lost: the error says so instead of passing for a plain
+// failure or an empty key.
+func TestCreateIssue_CreatedButKeyLost(t *testing.T) {
+	for name, write := range map[string]func(w http.ResponseWriter){
+		"truncated body": func(w http.ResponseWriter) {
+			w.Header().Set("Content-Length", "200")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"id":"10001","key":`))
+		},
+		"not json": func(w http.ResponseWriter) {
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`<html>`))
+		},
+		"no key": func(w http.ResponseWriter) {
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"id":"10001"}`))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { write(w) }))
+			defer srv.Close()
+
+			_, err := makeTestClient(t, srv.URL).CreateIssue(context.Background(), CreateIssueRequest{
+				ProjectKey: "ABC", IssueType: "Task", Summary: "Fix login",
+			})
+			require.ErrorIs(t, err, errCreatedKeyUnknown)
+			var apiErr *APIError
+			assert.False(t, errors.As(err, &apiErr), "not a Jira refusal")
+		})
+	}
+}

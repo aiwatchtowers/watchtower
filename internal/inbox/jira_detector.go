@@ -42,10 +42,10 @@ func detectJira(_ context.Context, database *db.DB, owner db.Owner, own *ownJira
 		return 0, nil
 	}
 	// Both comparisons below are plain SQL string compares against columns
-	// holding Jira Cloud's own dotted-millisecond format, so the bound has to
-	// be rendered the same way — an RFC3339 bound sorts above every Jira
-	// timestamp in the same second and hides it (see db.FormatJiraTime).
-	sinceISO := db.FormatJiraTime(sinceTS.UTC())
+	// stored in db.FormatJiraTime's fixed-width UTC form, so the bound has to
+	// be rendered the same way — a bound in another shape (an offset, no
+	// fraction) does not sort by instant against them.
+	sinceISO := db.FormatJiraTime(sinceTS)
 
 	// A failed identity read would turn both signals' comment checks off
 	// silently, so it fails the detector instead (INBOX-09).

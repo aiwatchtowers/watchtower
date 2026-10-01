@@ -115,6 +115,13 @@ func NewConnectJiraBoard(factory JiraConnectFactory) *Tool {
 			}
 			return nil
 		},
+		Normalize: func(_ context.Context, d *db.DB, raw json.RawMessage) (json.RawMessage, error) {
+			var a connectJiraBoardArgs
+			if err := decodeStrict(raw, &a); err != nil {
+				return nil, err
+			}
+			return pinAccount(d, raw, a.AccountID)
+		},
 		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
 			return connectJiraBoard(ctx, d, factory, call)
 		},

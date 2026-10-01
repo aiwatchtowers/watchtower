@@ -564,11 +564,11 @@ func newPipelineForTest(t *testing.T, d *db.DB, userID, email string) *Pipeline 
 // about a distinct display name, and it's the account id that a [~mention]
 // and autoResolveJira's identity match actually key off.
 //
-// created_at/updated_at are written in Jira Cloud's own dotted-millisecond
-// format (db.FormatJiraTime), exactly as the real comment sync writes them —
-// the detector's window bound is a plain SQL string compare against this
-// column, so a fixture in bare RFC3339 would compare differently from
-// production and hide a real format mismatch.
+// created_at/updated_at are written in the stored UTC form (db.FormatJiraTime),
+// exactly as the real comment sync writes them — the detector's window bound
+// is a plain SQL string compare against this column, so a fixture in another
+// format would compare differently from production and hide a real format
+// mismatch.
 func seedJiraComment(t *testing.T, d *db.DB, issueKey, authorAccountID, body string, createdAt time.Time) {
 	t.Helper()
 	var accounts int

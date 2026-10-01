@@ -346,6 +346,19 @@ func (db *DB) UpsertJiraSprint(sprint JiraSprint) error {
 	return nil
 }
 
+// LatestJiraClosedSprintSync returns the newest synced_at among the board's
+// closed sprints ("" when none is stored): when the sprint sync last read the
+// closed listing.
+func (db *DB) LatestJiraClosedSprintSync(accountID int64, boardID int) (string, error) {
+	var latest string
+	err := db.QueryRow(`SELECT COALESCE(MAX(synced_at), '') FROM jira_sprints
+		WHERE account_id = ? AND board_id = ? AND state = 'closed'`, accountID, boardID).Scan(&latest)
+	if err != nil {
+		return "", fmt.Errorf("reading closed sprint sync time for board %d: %w", boardID, err)
+	}
+	return latest, nil
+}
+
 // GetJiraActiveSprints returns active sprints for a given board.
 func (db *DB) GetJiraActiveSprints(accountID int64, boardID int) ([]JiraSprint, error) {
 	rows, err := db.Query(`SELECT account_id, id, board_id, name, state, goal, start_date, end_date, complete_date, synced_at
@@ -632,51 +645,6 @@ func (db *DB) OldestFailingJiraProjectSync(accountID int64) (string, error) {
 		return "", fmt.Errorf("reading failing jira project syncs for account %d: %w", accountID, err)
 	}
 	return oldest.String, nil
-}
-
-// JiraIssueOffsetsSince returns the distinct UTC offsets (seconds east) that
-// the account's live jira_issues.updated_at values past sinceISO carry. The
-// column keeps Jira's own offset ("…000-0400"; older RFC3339 rows end in "Z"
-// or "+03:00"), so a caller building a string bound needs them. Only the
-// distinct suffixes are read — everything after the seconds field, i.e. the
-// optional fraction plus the offset — never every row. Unparseable suffixes
-// are skipped.
-func (db *DB) JiraIssueOffsetsSince(accountID int64, sinceISO string) ([]int, error) {
-	rows, err := db.Query(`SELECT DISTINCT substr(updated_at, 20) FROM jira_issues
-		WHERE account_id = ? AND is_deleted = 0 AND updated_at > ?`, accountID, sinceISO)
-	if err != nil {
-		return nil, fmt.Errorf("listing jira issue offsets: %w", err)
-	}
-	defer rows.Close()
-	seen := map[int]bool{}
-	var out []int
-	for rows.Next() {
-		var suffix string
-		if err := rows.Scan(&suffix); err != nil {
-			return nil, fmt.Errorf("scanning jira issue offset: %w", err)
-		}
-		off, ok := parseJiraOffsetSuffix(suffix)
-		if ok && !seen[off] {
-			seen[off] = true
-			out = append(out, off)
-		}
-	}
-	return out, rows.Err()
-}
-
-// parseJiraOffsetSuffix parses what follows "YYYY-MM-DDTHH:MM:SS" in an
-// updated_at: an optional ".fff" fraction, then "Z", "±hhmm" or "±hh:mm".
-func parseJiraOffsetSuffix(suffix string) (int, bool) {
-	if i := strings.IndexAny(suffix, "Z+-"); i >= 0 {
-		suffix = suffix[i:]
-	}
-	for _, layout := range []string{"Z0700", "Z07:00"} {
-		if t, err := time.Parse(layout, suffix); err == nil {
-			_, off := t.Zone()
-			return off, true
-		}
-	}
-	return 0, false
 }
 
 // GetJiraSyncStates returns all Jira sync states across every account.

@@ -1323,15 +1323,3 @@ func TestGetJiraIssues(t *testing.T) {
 	require.NoError(t, err, "GetJiraIssues status")
 	assert.Len(t, byStatus, 2)
 }
-
-func TestParseJiraOffsetSuffix(t *testing.T) {
-	for suffix, want := range map[string]int{
-		".000-0400": -4 * 3600, ".123+0530": 5*3600 + 1800, "Z": 0, "+03:00": 3 * 3600, ".000+0000": 0, ".5Z": 0,
-	} {
-		got, ok := parseJiraOffsetSuffix(suffix)
-		assert.True(t, ok, suffix)
-		assert.Equal(t, want, got, suffix)
-	}
-	_, ok := parseJiraOffsetSuffix("garbage")
-	assert.False(t, ok)
-}
