@@ -49,6 +49,8 @@ struct ProjectDocumentsView: View {
             // A selection is offsets into one document's text: never carry it
             // to another document (it would anchor text the owner never chose).
             selection = DocumentSelectionCarry.none
+            // Nor the half-typed composer text written for the other document.
+            composerText = ""
         }
     }
 

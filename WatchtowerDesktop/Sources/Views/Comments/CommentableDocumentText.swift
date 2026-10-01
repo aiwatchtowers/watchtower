@@ -19,7 +19,8 @@ struct CommentableDocumentText: View {
     @Binding var composerText: String
     var horizontalInset: CGFloat = ReadableColumn.minInset
     /// Saves a comment on `range`; returns whether it was saved (the composer
-    /// then closes and clears). On false the host shows why.
+    /// then closes and clears). On false the composer stays open with the
+    /// text and a generic note; the host's own error line says why.
     let onComment: (_ body: String, _ range: NSRange) async -> Bool
     let onClick: (Int) -> Void
 
