@@ -9,7 +9,7 @@ import Foundation
 /// whitespace-collapsed match (reflow), then — only for a quote taken from
 /// an older rendering of the same text — the legacy separators read as
 /// whitespace and the stored context required to match too (see
-/// `legacyQuote`); several candidates are ranked by how
+/// `legacy(_:csv:)`); several candidates are ranked by how
 /// much of the stored prefix/suffix still surrounds them; no candidate — or
 /// several with none of the original context — is nil. Never fuzzy.
 package struct CommentAnchor: Equatable, Sendable {
