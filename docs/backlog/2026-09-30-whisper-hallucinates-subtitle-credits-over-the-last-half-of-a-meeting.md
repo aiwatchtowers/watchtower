@@ -57,29 +57,35 @@ captured, so Whisper was decoding near-silence and filling it with subtitle
 boilerplate. That also explains the `[Я]` attribution, since only the mic
 carried signal.
 
-- `WhisperHallucinationFilter` (WatchtowerCore, pure) runs on every WhisperKit
-  segment inside `WhisperKitEngine.decode` (`[TranscribedSegment].withoutHallucinations()`).
-  The live and batch paths therefore get the same output, and the
-  `StreamingTranscriber` equivalence pins are untouched. It removes:
-  - the subtitle-credit forms («Субтитры сделал/создавал …», «Спасибо за
-    субтитры …», «Редактор субтитров … Корректор …», "Subtitles by …");
-  - the ellipsis form of «Продолжение следует…» and its uk/en equivalents,
-    anywhere in a segment;
-  - whole-sentence sign-offs («Спасибо за просмотр», «Дякую за перегляд»,
-    "Thanks for watching" …);
-  - runs of 3 or more identical sentences, collapsed to one.
+- `WhisperHallucinationFilter` (WatchtowerCore, pure) runs on every
+  WhisperKit segment inside `WhisperKitEngine.decode`. The live and batch
+  paths therefore get the same output, and the `StreamingTranscriber`
+  equivalence pins are untouched. It removes:
+  - credit lines, but only in their credit shape. That means a whole
+    sentence («Субтитры сделал …», «Спасибо за субтитры …»), or mid-segment
+    when the credit carries a Latin-script nickname (DimaTorzok) or a known
+    tail (Amara.org, the «Редактор … Корректор …» pair). "We need subtitles by
+    Friday" stays.
+  - the ellipsis form of «Продолжение следует…» (and its uk/en forms)
+    anywhere in the segment.
+  - a few whole-sentence sign-offs («Спасибо за просмотр», "Thanks for
+    watching" …).
 
-  A segment left with no letters is dropped, so an all-credit window reads as
-  silence.
+  Runs of 4 or more identical sentences collapse to one. Kept text stays byte
+  for byte; sentences split only at terminal punctuation followed by
+  whitespace, so "3.5" and "example.com" survive. A segment with no letters
+  left is dropped, so an all-credit window reads as silence. The engine logs
+  how many segments and characters the filter removed, as counts only.
 - Checked offline against the five most recent real transcripts. Every
   credit and continuation loop is gone (35 + 10 + 9 occurrences in the
-  reported meeting). No other words were removed apart from one collapsed
-  "Ну, да." ×4 loop.
-- Default on, with no toggle: the filter only removes text, and only these
-  fixed forms. It needs no audio validation. The decoding thresholds were left
-  unchanged, since tuning them would need real-audio validation.
+  reported meeting). The only other change was one collapsed «Ну, да.» ×4
+  loop.
+- The filter is on by default with no toggle, because it only removes these
+  fixed forms. The decoding thresholds were left alone, since tuning them
+  would need real-audio validation.
 
-**Not fixed here (follow-up):** why the system-audio tap went silent
-mid-meeting. Likely an output-device switch or the call app changing
-process. The capture neither reports this nor recovers from it. Existing
-transcripts are not rewritten.
+**Not fixed here:** the system-audio tap going silent mid-meeting. It is
+tracked, open and high priority, in
+`docs/backlog/2026-10-01-system-audio-tap-dropout-is-silent.md`. With this
+filter in place, that dropout no longer shows up as garbage text, so it
+needs its own signal. Existing transcripts are not rewritten.

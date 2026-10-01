@@ -34,12 +34,36 @@ final class WhisperHallucinationFilterTests: XCTestCase {
         XCTAssertEqual(clean(text), text)
         XCTAssertEqual(clean("Thanks for watching the demo with us, any questions?"),
                        "Thanks for watching the demo with us, any questions?")
+        for speech in [
+            "We need subtitles by Friday, okay?",
+            "We need subtitles by the end of the week.",
+            "Субтитры делал Петя, а озвучку я.",
+            "Спасибо за субтитры к видео, Петя, очень помогли.",
+            "Редактор субтитров сломался, надо чинить.",
+            "Нам нужен редактор субтитров для проекта."
+        ] {
+            XCTAssertEqual(clean(speech), speech)
+        }
     }
 
-    // A decoding loop repeats one sentence over and over; three or more in a
-    // row collapse to one. Two in a row is ordinary speech ("Да. Да.").
+    // A removal elsewhere in the segment must not touch the text it keeps:
+    // decimals, domains and versions survive byte for byte.
+    func testRemovalKeepsDecimalsAndDomainsIntact() {
+        XCTAssertEqual(clean("Цена 3.5 доллара. Продолжение следует..."), "Цена 3.5 доллара.")
+        XCTAssertEqual(clean("Смотри example.com, там всё. Thanks for watching!"), "Смотри example.com, там всё.")
+    }
+
+    // Degenerate: a multi-line segment splits into sentences across the
+    // line break instead of losing a line.
+    func testMultilineSegmentKeepsEveryLine() {
+        XCTAssertEqual(clean("Первая строка\nвторая строка. Продолжение следует..."), "Первая строка вторая строка.")
+    }
+
+    // A decoding loop repeats one sentence over and over; four or more in a
+    // row collapse to one. Up to three is ordinary speech ("Нет. Нет. Нет.").
     func testCollapsesARepeatedSentenceLoop() {
         XCTAssertEqual(clean("Спасибо. Спасибо. Спасибо. Спасибо."), "Спасибо.")
+        XCTAssertEqual(clean("Нет. Нет. Нет. Так не пойдёт."), "Нет. Нет. Нет. Так не пойдёт.")
         XCTAssertEqual(clean("Да. Да. Хорошо."), "Да. Да. Хорошо.")
     }
 

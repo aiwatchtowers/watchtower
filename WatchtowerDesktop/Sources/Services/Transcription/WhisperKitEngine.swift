@@ -108,6 +108,14 @@ final class WhisperKitEngine: WhisperWindowEngine, @unchecked Sendable {
                 )
             }
         }
-        return segments.withoutHallucinations()
+        let cleaned = segments.withoutHallucinations()
+        if cleaned != segments {
+            // Counts only, never text — enough to tell "the filter ate it"
+            // from "the model never heard it" when a transcript looks thin.
+            NSLog("WhisperKitEngine: hallucination filter removed %d of %d segment(s), %d chars",
+                  segments.count - cleaned.count, segments.count,
+                  segments.map(\.text.count).reduce(0, +) - cleaned.map(\.text.count).reduce(0, +))
+        }
+        return cleaned
     }
 }
