@@ -25,7 +25,7 @@ If a finding fits neither question, drop it — that is the other reviewers' ter
 
 1. Read the diff against `BASE_BRANCH` (default `main`). Identify the changed files.
 2. **Load the rules.** Read `docs/review/review-rules.md` sections §1 Architecture style,
-   §3 Code style, §4 Solution efficiency, §5 Codebase fit. Cross-check `CLAUDE.md` and the
+   §3 Code style, §4 Solution efficiency, §5 Codebase fit. Cross-check `CLAUDE.md` (and the `docs/features/` note it indexes) and the
    relevant `docs/inventory/` contract for any module the change touches. Read
    `docs/review/review-lessons.md` for known false-positives — prune anything matching.
 3. **Compare against neighbours.** For each new file / significant block, read the nearest
