@@ -38,6 +38,10 @@ final class ProjectsViewModel {
     var pendingDocumentID: Int64?
     private(set) var isCreating = false
     private(set) var repairing: Set<Int64> = []
+    private(set) var resyncing: Set<Int64> = []
+    /// The last Re-run setup result per project, until the owner dismisses it.
+    private(set) var resyncResults: [Int64: ProjectResynced] = [:]
+    private(set) var resyncErrors: [Int64: String] = [:]
     var errorMessage: String?
     private(set) var installStatus: [Int64: ProjectInstallStatus] = [:]
     /// Why installing or repairing a project's install failed. It explains
@@ -413,6 +417,36 @@ final class ProjectsViewModel {
             installNotes[projectID] = "Repair failed: \(error.localizedDescription)"
         }
         await refreshInstallStatus(projectID: projectID)
+    }
+
+    /// Re-run setup (#91): `project resync` attaches the folder's new
+    /// documents and re-installs missing or outdated integration pieces, then
+    /// the page reloads what it may have changed. Additive only — it never
+    /// creates targets; the result's suggestions say what to ask the agent.
+    func resync(projectID: Int64) async {
+        guard !resyncing.contains(projectID) else { return }
+        guard let cli else {
+            resyncErrors[projectID] = "The watchtower CLI was not found."
+            return
+        }
+        resyncing.insert(projectID)
+        defer { resyncing.remove(projectID) }
+        resyncErrors[projectID] = nil
+        resyncResults[projectID] = nil
+        do {
+            resyncResults[projectID] = try await cli.resync(projectID: projectID)
+        } catch {
+            resyncErrors[projectID] = "Re-run setup failed: \(error.localizedDescription)"
+            return
+        }
+        await reload()
+        if selectedProjectID == projectID { await loadDocuments() }
+        await refreshInstallStatus(projectID: projectID)
+    }
+
+    func dismissResync(projectID: Int64) {
+        resyncResults[projectID] = nil
+        resyncErrors[projectID] = nil
     }
 
     /// Runs `watchtower project update N --board-language=…`, then reloads so

@@ -149,6 +149,129 @@ struct ProjectDocumentAttached: Decodable, Equatable {
     }
 }
 
+/// `watchtower project resync --project N --json` (#91): what Re-run setup
+/// added. The command is additive — it never deletes or changes targets,
+/// comments, documents, sources or the description, and never creates
+/// targets; `suggestions` are what the owner may take to the agent. It exits
+/// 0 once the project is found; `docsOK`/`integrationOK` say which step
+/// failed (the `project create --json` precedent).
+struct ProjectResynced: Decodable, Equatable {
+    let docsOK: Bool
+    let docsError: String
+    let imported: [String]
+    let skippedOverCap: Int
+    let unreadable: [String]
+    let integrationOK: Bool
+    let integrationError: String
+    /// A devpack state: installed, updated, unchanged, drifted or foreign.
+    let skill: String
+    let hooksAdded: Bool
+    let mcpRegistered: Bool
+    let mcpCommand: String
+    let suggestions: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case docsOK = "docs_ok"
+        case docsError = "docs_error"
+        case docs
+        case integrationOK = "integration_ok"
+        case integrationError = "integration_error"
+        case skill
+        case hooksAdded = "hooks_added"
+        case mcpRegistered = "mcp_registered"
+        case mcpCommand = "mcp_command"
+        case suggestions
+    }
+
+    private struct Docs: Decodable {
+        let imported: [String]?
+        let unreadable: [String]?
+        let skippedOverCap: [String]?
+
+        enum CodingKeys: String, CodingKey {
+            case imported, unreadable
+            case skippedOverCap = "skipped_over_cap"
+        }
+    }
+
+    init(
+        docsOK: Bool = true,
+        docsError: String = "",
+        imported: [String] = [],
+        skippedOverCap: Int = 0,
+        unreadable: [String] = [],
+        integrationOK: Bool = true,
+        integrationError: String = "",
+        skill: String = "unchanged",
+        hooksAdded: Bool = false,
+        mcpRegistered: Bool = true,
+        mcpCommand: String = "",
+        suggestions: [String] = []
+    ) {
+        self.docsOK = docsOK
+        self.docsError = docsError
+        self.imported = imported
+        self.skippedOverCap = skippedOverCap
+        self.unreadable = unreadable
+        self.integrationOK = integrationOK
+        self.integrationError = integrationError
+        self.skill = skill
+        self.hooksAdded = hooksAdded
+        self.mcpRegistered = mcpRegistered
+        self.mcpCommand = mcpCommand
+        self.suggestions = suggestions
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        docsOK = try c.decode(Bool.self, forKey: .docsOK)
+        docsError = try c.decode(String.self, forKey: .docsError)
+        let docs = try c.decodeIfPresent(Docs.self, forKey: .docs)
+        imported = docs?.imported ?? []
+        unreadable = docs?.unreadable ?? []
+        skippedOverCap = docs?.skippedOverCap?.count ?? 0
+        integrationOK = try c.decode(Bool.self, forKey: .integrationOK)
+        integrationError = try c.decode(String.self, forKey: .integrationError)
+        skill = try c.decode(String.self, forKey: .skill)
+        hooksAdded = try c.decode(Bool.self, forKey: .hooksAdded)
+        mcpRegistered = try c.decode(Bool.self, forKey: .mcpRegistered)
+        mcpCommand = try c.decode(String.self, forKey: .mcpCommand)
+        suggestions = try c.decode([String].self, forKey: .suggestions)
+    }
+
+    /// Whether a step failed; the page shows the summary in the error colour.
+    var failed: Bool { !docsOK || !integrationOK }
+
+    /// What the project page shows: what was added, what failed, then the
+    /// suggestions. Never empty.
+    var summaryLines: [String] {
+        var lines: [String] = []
+        if docsOK {
+            if !imported.isEmpty { lines.append("Attached \(imported.count) new document(s): \(imported.joined(separator: ", "))") }
+            if skippedOverCap > 0 { lines.append("\(skippedOverCap) more document(s) past the import cap — run Re-run setup again") }
+            if let first = unreadable.first {
+                let more = unreadable.count > 1 ? " and \(unreadable.count - 1) more" : ""
+                lines.append("Could not read \(first)\(more)")
+            }
+        } else {
+            lines.append("Attaching documents failed: \(docsError)")
+        }
+        switch skill {
+        case "installed": lines.append("Installed the watchtower-project skill")
+        case "updated": lines.append("Updated the watchtower-project skill")
+        case "drifted", "foreign": lines.append("Your own copy of the watchtower-project skill was left as it is")
+        default: break
+        }
+        if hooksAdded { lines.append("Added the session hooks") }
+        if !mcpRegistered && !mcpCommand.isEmpty {
+            lines.append("The MCP server is not registered — run: \(mcpCommand)")
+        }
+        if !integrationOK { lines.append("Installing into the folder failed: \(integrationError)") }
+        if lines.isEmpty { lines.append("Everything was already up to date.") }
+        return lines + suggestions.map { "Next: \($0)" }
+    }
+}
+
 /// `watchtower integrate status --project N --json` (Task 12). `skill` is a
 /// devpack status state: `unchanged` (current), `updated` (an older shipped
 /// version that an install would replace), `missing`, or `drifted`/`foreign`
@@ -264,6 +387,13 @@ struct ProjectCLI {
     /// `--flag=value` form, so an empty value is never read as a missing one.
     func setBoardLanguage(projectID: Int64, language: String) async throws {
         _ = try await runner.run(args: ["project", "update", String(projectID), "--board-language=\(language)"])
+    }
+
+    /// Re-run setup (#91): attaches new documents and re-installs missing or
+    /// outdated integration pieces — additive only, never creates targets.
+    func resync(projectID: Int64) async throws -> ProjectResynced {
+        let data = try await runner.run(args: ["project", "resync", "--project", String(projectID), "--json"])
+        return try JSONDecoder().decode(ProjectResynced.self, from: data)
     }
 
     /// Removes what was installed in the folder, then the project and every

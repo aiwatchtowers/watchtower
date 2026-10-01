@@ -15,6 +15,10 @@ struct ProjectPageView: View {
         VStack(spacing: 0) {
             header
             Divider()
+            if vm.resyncResults[project.id] != nil || vm.resyncErrors[project.id] != nil {
+                resyncSummary
+                Divider()
+            }
             // Session actions start from any pane (a pane picker, Open
             // terminal): their errors show here, once, whatever is on screen.
             if let error = vm.sessionErrors[project.id] {
@@ -85,6 +89,13 @@ struct ProjectPageView: View {
             }
             Spacer()
             installBadge
+            Button {
+                Task { await vm.resync(projectID: project.id) }
+            } label: {
+                Label("Re-run Setup", systemImage: "arrow.triangle.2.circlepath")
+            }
+            .disabled(vm.resyncing.contains(project.id))
+            .help("Attach new documents and re-install what is missing. Never changes the board, comments or sources.")
             Button(role: .destructive) {
                 guard let pool = appState.databaseManager?.dbPool else { return }
                 do {
@@ -100,6 +111,31 @@ struct ProjectPageView: View {
             splitToggle
         }
         .padding(10)
+    }
+
+    /// What the last Re-run setup did, with its suggestions; selectable,
+    /// since a line may end with a command to run.
+    private var resyncSummary: some View {
+        let result = vm.resyncResults[project.id]
+        let lines = vm.resyncErrors[project.id].map { [$0] } ?? result?.summaryLines ?? []
+        let failed = vm.resyncErrors[project.id] != nil || result?.failed == true
+        return HStack(alignment: .top, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                    Text(line).font(.caption).foregroundStyle(failed ? .red : .secondary)
+                }
+            }
+            .textSelection(.enabled)
+            Spacer()
+            Button {
+                vm.dismissResync(projectID: project.id)
+            } label: {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.borderless)
+            .help("Dismiss")
+        }
+        .padding(8)
     }
 
     @ViewBuilder
