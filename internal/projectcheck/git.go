@@ -104,7 +104,10 @@ func newGitState(ctx context.Context, o Options) *gitState {
 			g.bases = append(g.bases, sha)
 		}
 	}
-	if ctx.Err() == nil && len(g.bases) == 0 {
+	if ctx.Err() != nil {
+		return g
+	}
+	if len(g.bases) == 0 {
 		g.notes = append(g.notes, fmt.Sprintf("default branch %s could not be resolved locally or on origin (renamed? run `git remote set-head origin -a`); branch checks skipped", g.defaultName))
 	}
 	return g

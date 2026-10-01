@@ -124,7 +124,11 @@ func removeHook(dir string, spec hookSpec, projectID int64) (bool, error) {
 	pruneEmpty(settings, hooks, spec.event, kept)
 	// A symlinked file (dotfiles-managed) is never removed: that would drop
 	// the link and leave our hook in its target. Its target gets {} instead.
-	if len(settings) == 0 && !isSymlink(file) {
+	target, err := resolveSymlink(file)
+	if err != nil {
+		return false, err
+	}
+	if len(settings) == 0 && target == file {
 		if err := os.Remove(file); err != nil {
 			return false, fmt.Errorf("removing %s: %w", file, err)
 		}
@@ -398,11 +402,6 @@ func pruneEmpty(settings, hooks map[string]any, event string, kept []any) {
 	} else {
 		settings["hooks"] = hooks
 	}
-}
-
-func isSymlink(file string) bool {
-	info, err := os.Lstat(file)
-	return err == nil && info.Mode()&os.ModeSymlink != 0
 }
 
 // writeSettings replaces file atomically, keeping its mode. Keys come out

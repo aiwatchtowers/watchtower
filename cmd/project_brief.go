@@ -253,18 +253,26 @@ func renderProjectBrief(board []db.BoardNode, p *db.Project, comments []db.Proje
 }
 
 // briefDriftSection renders the drift findings within limit runes; "" when
-// the check found nothing and ran to the end.
+// the check ran to the end and found nothing. A check cut short, or a
+// repository whose branch checks could not run (no default branch
+// resolves), says so, so it never reads as a clean board.
 func briefDriftSection(drift projectcheck.Report, limit int) string {
-	const incomplete = "the drift check ran out of time, so only part of the board was checked"
+	caveat := ""
+	switch {
+	case drift.Incomplete:
+		caveat = "the drift check ran out of time, so only part of the board was checked"
+	case drift.Git && drift.Base == "":
+		caveat = "branch checks did not run: " + strings.Join(drift.Notes, "; ")
+	}
 	if len(drift.Findings) == 0 {
-		if drift.Incomplete {
-			return "Board drift: none found, but " + incomplete + "."
+		if caveat == "" {
+			return ""
 		}
-		return ""
+		return briefClip("Board drift: none found, but "+caveat+".", min(limit, briefLineChars))
 	}
 	title := "Board drift — fix it with update_target:"
-	if drift.Incomplete {
-		title = "Board drift (" + incomplete + ") — fix it with update_target:"
+	if caveat != "" {
+		title = briefClip("Board drift ("+caveat+")", briefLineChars) + " — fix it with update_target:"
 	}
 	lines := make([]string, 0, len(drift.Findings))
 	for _, f := range drift.Findings {

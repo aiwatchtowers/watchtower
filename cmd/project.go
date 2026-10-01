@@ -271,9 +271,9 @@ func runProjectCreate(cmd *cobra.Command, _ []string) error {
 		// fields still leaves the warning in its log.
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: importing the folder's documents failed: %v (retry: watchtower project import-docs %d)\n", ierr, id)
 	}
-	indexProjectDocs(cmd, cfg, database, id)
+	idx := indexProjectDocs(cmd, cfg.Knowledge.Enabled, database, id)
 	if projectFlagJSON {
-		return writeJSON(cmd.OutOrStdout(), newProjectCreateJSON(projectJSON{ID: id, Folder: folder, Name: name}, rep, ierr))
+		return writeJSON(cmd.OutOrStdout(), newProjectCreateJSON(projectJSON{ID: id, Folder: folder, Name: name}, rep, ierr, idx))
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Created project %d %q at %s\n", id, name, folder)
 	if ierr != nil {
@@ -285,19 +285,20 @@ func runProjectCreate(cmd *cobra.Command, _ []string) error {
 
 // projectCreateJSON is `project create --json`'s envelope. The document
 // import is best-effort, so it has its own ok/error fields (the recap_ok
-// precedent): the project exists either way.
+// precedent): the project exists either way. So is the search index.
 type projectCreateJSON struct {
 	projectJSON
 	DocsImportOK    bool                `json:"docs_import_ok"`
 	DocsImportError string              `json:"docs_import_error"`
 	DocsImport      *projectdocs.Report `json:"docs_import,omitempty"`
+	projectIndexJSON
 }
 
-func newProjectCreateJSON(p projectJSON, rep projectdocs.Report, err error) projectCreateJSON {
+func newProjectCreateJSON(p projectJSON, rep projectdocs.Report, err error, idx projectIndexJSON) projectCreateJSON {
 	if err != nil {
-		return projectCreateJSON{projectJSON: p, DocsImportError: err.Error()}
+		return projectCreateJSON{projectJSON: p, DocsImportError: err.Error(), projectIndexJSON: idx}
 	}
-	return projectCreateJSON{projectJSON: p, DocsImportOK: true, DocsImport: &rep}
+	return projectCreateJSON{projectJSON: p, DocsImportOK: true, DocsImport: &rep, projectIndexJSON: idx}
 }
 
 func runProjectImportDocs(cmd *cobra.Command, args []string) error {
@@ -319,7 +320,7 @@ func runProjectImportDocs(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if !projectImportFlagDryRun {
-		indexProjectDocs(cmd, cfg, database, id)
+		indexProjectDocs(cmd, cfg.Knowledge.Enabled, database, id)
 	}
 	if projectFlagJSON {
 		return writeJSON(cmd.OutOrStdout(), rep)
@@ -333,6 +334,7 @@ type projectAttachDocJSON struct {
 	DocumentID int64  `json:"document_id"`
 	RelPath    string `json:"rel_path"`
 	Created    bool   `json:"created"`
+	projectIndexJSON
 }
 
 func runProjectAttachDoc(cmd *cobra.Command, args []string) error {
@@ -364,9 +366,9 @@ func runProjectAttachDoc(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	indexProjectDocs(cmd, cfg, database, id)
+	idx := indexProjectDocs(cmd, cfg.Knowledge.Enabled, database, id)
 	if projectFlagJSON {
-		return writeJSON(cmd.OutOrStdout(), projectAttachDocJSON{DocumentID: docID, RelPath: rel, Created: created})
+		return writeJSON(cmd.OutOrStdout(), projectAttachDocJSON{DocumentID: docID, RelPath: rel, Created: created, projectIndexJSON: idx})
 	}
 	if created {
 		fmt.Fprintf(cmd.OutOrStdout(), "Attached %s as document %d\n", rel, docID)
@@ -381,11 +383,13 @@ func runProjectAttachDoc(cmd *cobra.Command, args []string) error {
 // project's sessions at once. The daemon's knowledge phase never reads a
 // folder under ~/Documents, ~/Desktop and the like, so for such a project
 // this explicit trigger is the only one (the `project resync` precedent).
-// Best-effort: the documents are attached, so a failure is a stderr warning
-// (in JSON mode too), never an error. Skipped when knowledge search is off.
-func indexProjectDocs(cmd *cobra.Command, cfg *config.Config, database *db.DB, id int64) {
-	if !cfg.Knowledge.Enabled {
-		return
+// Best-effort: the documents are attached, so a failure is never an error —
+// it is a stderr warning (in JSON mode too) and the returned outcome, which
+// create and attach-doc put in their JSON (resync's index_* fields).
+// Skipped when knowledge search is off.
+func indexProjectDocs(cmd *cobra.Command, knowledgeEnabled bool, database *db.DB, id int64) projectIndexJSON {
+	if !knowledgeEnabled {
+		return projectIndexJSON{IndexOK: true, IndexSkipped: true}
 	}
 	ctx := cmd.Context()
 	if ctx == nil {
@@ -393,7 +397,17 @@ func indexProjectDocs(cmd *cobra.Command, cfg *config.Config, database *db.DB, i
 	}
 	if _, _, err := kb.IndexProjectDocs(ctx, database, id); err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: indexing the project's documents for search failed: %v (retry: watchtower project resync %d)\n", err, id)
+		return projectIndexJSON{IndexError: err.Error()}
 	}
+	return projectIndexJSON{IndexOK: true}
+}
+
+// projectIndexJSON is the search-index outcome in `create --json` and
+// `attach-doc --json`, named as in `project resync --json`.
+type projectIndexJSON struct {
+	IndexOK      bool   `json:"index_ok"`
+	IndexError   string `json:"index_error"`
+	IndexSkipped bool   `json:"index_skipped"`
 }
 
 func printImportReport(w io.Writer, rep projectdocs.Report) {

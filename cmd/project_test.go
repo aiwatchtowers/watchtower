@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -354,6 +355,7 @@ func TestProj08_OwnerAttachPathsIndexTheDocumentsAtOnce(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(out), &created))
 	pid := created.ID
 	id := strconv.FormatInt(pid, 10)
+	assert.True(t, created.IndexOK, created.IndexError)
 	assert.Equal(t, 1, search(pid, "zebrafinch"), "create: the imported README is searchable at once")
 	assert.Zero(t, search(0, "zebrafinch"), "and only from the project's own session")
 
@@ -366,8 +368,11 @@ func TestProj08_OwnerAttachPathsIndexTheDocumentsAtOnce(t *testing.T) {
 	assert.Equal(t, 1, search(pid, "quokka"), "import-docs: the new plan is searchable at once")
 
 	require.NoError(t, os.WriteFile(filepath.Join(folder, "note.md"), []byte("# note\nnarwhal\n"), 0o644))
-	_, _, err = runProject(t, "attach-doc", id, "note.md")
+	out, _, err = runProject(t, "attach-doc", id, "note.md", "--json")
 	require.NoError(t, err)
+	var attached projectAttachDocJSON
+	require.NoError(t, json.Unmarshal([]byte(out), &attached))
+	assert.True(t, attached.IndexOK, attached.IndexError)
 	assert.Equal(t, 1, search(pid, "narwhal"), "attach-doc: the owner's document is searchable at once")
 
 	// Knowledge search off: the same paths write no index entry (FEAT-01).
@@ -379,9 +384,30 @@ func TestProj08_OwnerAttachPathsIndexTheDocumentsAtOnce(t *testing.T) {
 	out, _, err = runProject(t, "create", "--folder", other, "--json")
 	require.NoError(t, err)
 	require.NoError(t, json.Unmarshal([]byte(out), &created))
+	assert.True(t, created.IndexSkipped)
 	_, _, err = runProject(t, "attach-doc", strconv.FormatInt(created.ID, 10), "n.md")
 	require.NoError(t, err)
 	var n int
 	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM kb_documents WHERE source = ?`, kb.ProjectDocSource).Scan(&n))
 	assert.Equal(t, 3, n, "only the first project's three documents are indexed")
+}
+
+// PROJ-08: an index failure never fails the attach: it is a stderr warning
+// naming the retry, and the outcome the JSON envelopes carry.
+func TestProj08_IndexFailureIsAWarningNotAnError(t *testing.T) {
+	database := writeActionsConfig(t)
+	pid, err := database.CreateProject("acme", t.TempDir())
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var errOut bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetContext(ctx)
+	cmd.SetErr(&errOut)
+
+	got := indexProjectDocs(cmd, true, database, pid)
+	assert.False(t, got.IndexOK)
+	assert.NotEmpty(t, got.IndexError)
+	assert.Contains(t, errOut.String(), "warning: indexing the project's documents for search failed")
+	assert.Contains(t, errOut.String(), "watchtower project resync "+strconv.FormatInt(pid, 10))
 }

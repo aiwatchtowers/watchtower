@@ -284,11 +284,12 @@ func TestRenderProjectBrief_ManyDriftFindingsStayWithinBudget(t *testing.T) {
 	assert.Contains(t, out, "#1 [in_progress")
 }
 
-// A drift check cut short by its budget says so, with or without findings:
-// a partial check never reads as a clean board (PROJ-07).
-func TestRenderProjectBrief_IncompleteDriftCheckSaysSo(t *testing.T) {
+// A drift check cut short by its budget, or whose branch checks could not
+// run, says so, with or without findings: a partial check never reads as a
+// clean board (PROJ-07).
+func TestProj07_BriefSaysWhenTheDriftCheckWasPartial(t *testing.T) {
 	board := []db.BoardNode{briefNode(1, "in_progress", "active")}
-	out := renderProjectBrief(board, briefProject(), nil, nil, projectcheck.Report{Findings: []projectcheck.Finding{}, Incomplete: true}, nil, time.Now())
+	out := renderProjectBrief(board, briefProject(), nil, nil, projectcheck.Report{Incomplete: true}, nil, time.Now())
 	assert.Contains(t, out, "Board drift: none found, but the drift check ran out of time")
 
 	drift := projectcheck.Report{Incomplete: true, Findings: []projectcheck.Finding{{TargetID: 1, Title: "active", Status: "in_progress",
@@ -297,8 +298,14 @@ func TestRenderProjectBrief_IncompleteDriftCheckSaysSo(t *testing.T) {
 	assert.Contains(t, out, "Board drift (the drift check ran out of time, so only part of the board was checked)")
 	assert.Contains(t, out, "branch x is merged into main")
 
-	out = renderProjectBrief(board, briefProject(), nil, nil, projectcheck.Report{Findings: []projectcheck.Finding{}}, nil, time.Now())
+	out = renderProjectBrief(board, briefProject(), nil, nil, projectcheck.Report{Git: true, Base: "main"}, nil, time.Now())
 	assert.NotContains(t, out, "Board drift", "a complete check with nothing found adds no section")
+	out = renderProjectBrief(board, briefProject(), nil, nil, projectcheck.Report{}, nil, time.Now())
+	assert.NotContains(t, out, "Board drift", "not a git repository: nothing to say")
+
+	skipped := projectcheck.Report{Git: true, Notes: []string{"default branch master could not be resolved locally or on origin; branch checks skipped"}}
+	out = renderProjectBrief(board, briefProject(), nil, nil, skipped, nil, time.Now())
+	assert.Contains(t, out, "Board drift: none found, but branch checks did not run: default branch master could not be resolved")
 }
 
 func briefRecentHits(n int) *briefRecent {

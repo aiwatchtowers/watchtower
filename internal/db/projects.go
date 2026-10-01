@@ -345,13 +345,13 @@ func validateProjectDocument(d ProjectDocument) error {
 }
 
 // UpsertProjectDocument attaches d as the agent's. On an existing (project,
-// rel_path) — compared ignoring case, the import and owner-attach rule (APFS
-// is case-insensitive, so another spelling is the same file), keeping the
-// stored spelling — it bumps updated_at ("revised"), marks it origin 'agent' (an
+// rel_path) it bumps updated_at ("revised"), marks it origin 'agent' (an
 // imported document the agent revises is the agent's from then on) and
 // replaces kind/title/target only with the values d sets; created reports
-// whether a new row was inserted. Whether rel_path stays inside the folder is
-// the caller's check.
+// whether a new row was inserted. rel_path is compared ignoring case, as the
+// import and the owner attach do (APFS: another spelling is the same file),
+// and the stored spelling is kept. Whether rel_path stays inside the folder
+// is the caller's check.
 func (db *DB) UpsertProjectDocument(d ProjectDocument) (id int64, created bool, err error) {
 	if err := validateProjectDocument(d); err != nil {
 		return 0, false, err
