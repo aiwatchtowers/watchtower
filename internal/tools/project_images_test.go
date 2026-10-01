@@ -2,6 +2,7 @@ package tools
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -112,12 +113,9 @@ func TestCreateTargets_ARefusedImageFailsTheWholeCallBeforeAnyCopy(t *testing.T)
 	for i := 0; i <= maxImagesPerCall; i++ {
 		eleven = append(eleven, fmt.Sprintf("%q", good))
 	}
-	for _, args := range []string{
-		fmt.Sprintf(`{"items":[{"text":"A","images":[%s]}],"reason":"r"}`, strings.Join(eleven, ",")),
-	} {
-		_, err = proposeIn(t, reg, fx.a, "create_targets", args)
-		require.ErrorAs(t, err, &verr, "more than maxImagesPerCall paths are refused")
-	}
+	_, err = proposeIn(t, reg, fx.a, "create_targets",
+		fmt.Sprintf(`{"items":[{"text":"A","images":[%s]}],"reason":"r"}`, strings.Join(eleven, ",")))
+	require.ErrorAs(t, err, &verr, "more than maxImagesPerCall paths are refused")
 	_, err = proposeIn(t, reg, fx.a, "update_target", fmt.Sprintf(`{"target_id":%d,"add_images":[%s],"reason":"r"}`,
 		fx.aTarget, strings.Join(eleven, ",")))
 	require.ErrorAs(t, err, &verr, "more than maxImagesPerCall add_images are refused")
@@ -145,6 +143,44 @@ func TestCreateTargets_AFailedWriteRemovesOnlyTheCopiesItCreated(t *testing.T) {
 	assert.Equal(t, 1, countProjectTargets(t, fx.d, fx.a), "the target rolled back")
 	assert.Equal(t, []string{filepath.Base(sharedCopy)}, storedFiles(t, store, fx.a),
 		"the fresh copy is gone, the shared one another target carries stays")
+
+	// A copy the call merely reused — here one no row names yet, as when
+	// another session stored it and has not committed — is never discarded.
+	pending, err := store.Ingest(fx.a, fakeImage(t, "pending.png", "p"))
+	require.NoError(t, err)
+	_, err = fx.d.Exec(`DROP TRIGGER fail_image; CREATE TRIGGER fail_image BEFORE INSERT ON project_target_images
+		BEGIN SELECT RAISE(ABORT, 'boom'); END`)
+	require.NoError(t, err)
+	rc, err = proposeIn(t, reg, fx.a, "create_targets", fmt.Sprintf(
+		`{"items":[{"text":"New","images":[%q]}],"reason":"r"}`, fakeImage(t, "same.png", "p")))
+	require.NoError(t, err)
+	assert.Equal(t, "failed", rc.Status)
+	_, err = os.Stat(pending.Path)
+	assert.NoError(t, err, "a reused copy is not the failed call's to remove")
+}
+
+// A cleanup that fails after a failed write is reported in the error, which
+// keeps its kind — a leftover copy is never silent.
+func TestIngestedImagesUndo_ReportsAFailedCleanupKeepingTheErrorKind(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the read-only directory this test relies on")
+	}
+	fx := newProjectFixture(t)
+	store := projectfiles.New(t.TempDir())
+	in, err := ingestImages(fx.d, store, fx.a, []string{fakeImage(t, "x.png", "x")})
+	require.NoError(t, err)
+	require.NoError(t, os.Chmod(store.Dir(fx.a), 0o500))
+	t.Cleanup(func() { _ = os.Chmod(store.Dir(fx.a), 0o700) })
+
+	err = in.undo(fx.d, fx.a, &ValidationError{Msg: "too many", Err: db.ErrTooManyImages})
+	var verr *ValidationError
+	require.ErrorAs(t, err, &verr)
+	assert.ErrorIs(t, err, db.ErrTooManyImages)
+	assert.Contains(t, verr.Msg, "too many; also, copied image files could not all be removed")
+
+	err = in.undo(fx.d, fx.a, fmt.Errorf("boom"))
+	assert.False(t, errors.As(err, &verr))
+	assert.Contains(t, err.Error(), "boom; also, copied image files could not all be removed")
 }
 
 func TestUpdateTarget_AddsAndRemovesImagesKeepingSharedCopies(t *testing.T) {

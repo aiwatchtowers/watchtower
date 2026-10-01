@@ -94,6 +94,19 @@ func TestIngest_RefusesWhatIsNotASmallImageFile(t *testing.T) {
 	assert.True(t, os.IsNotExist(err), "a refused file creates nothing")
 }
 
+func TestIngest_APermissionDenialNamesTheCauseAndTheWayOut(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a 0000 file")
+	}
+	src := writeSource(t, "locked.png", pngMagic+"x")
+	require.NoError(t, os.Chmod(src, 0))
+	_, err := New(t.TempDir()).Ingest(1, src)
+	var rej *RejectError
+	require.ErrorAs(t, err, &rej)
+	assert.Contains(t, rej.Reason, "permission denied")
+	assert.Contains(t, rej.Reason, "copy the file somewhere else")
+}
+
 func TestDiscard_RemovesOnlyUnreferencedCopiesInsideTheStore(t *testing.T) {
 	ws := t.TempDir()
 	s := New(ws)

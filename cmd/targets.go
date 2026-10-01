@@ -741,6 +741,8 @@ func runTargetsDelete(cmd *cobra.Command, args []string) error {
 
 	if targetsFlagDeleteJSON {
 		payload := map[string]any{"id": id, "removed": true}
+		// Only a project target has stored images; a reader treats absent
+		// files_* keys as clean (the ProjectDeleted precedent).
 		if target.ProjectID.Valid {
 			payload["files_ok"] = ferr == nil
 			payload["files_error"] = ""

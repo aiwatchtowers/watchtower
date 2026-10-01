@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -87,10 +88,16 @@ func TestProj02_TargetDeleteDiscardsItsUnsharedImages(t *testing.T) {
 	shared := attachTestImage(t, database, store, pid, doomed, "shared")
 	require.Equal(t, shared, attachTestImage(t, database, store, pid, sibling, "shared"), "one copy per content")
 
-	rootCmd.SetArgs([]string{"targets", "delete", strconv.FormatInt(doomed, 10)})
+	var out bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetArgs([]string{"targets", "delete", strconv.FormatInt(doomed, 10), "--json"})
 	err = rootCmd.Execute()
 	rootCmd.SetArgs(nil)
+	targetsFlagDeleteJSON = false
 	require.NoError(t, err)
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(out.Bytes(), &got), "stdout is one JSON object: %q", out.String())
+	assert.Equal(t, map[string]any{"id": float64(doomed), "removed": true, "files_ok": true, "files_error": ""}, got)
 
 	_, err = os.Stat(own)
 	assert.True(t, os.IsNotExist(err), "PROJ-02: the deleted target's own image survived (err=%v)", err)
@@ -102,6 +109,9 @@ func TestProj02_TargetDeleteDiscardsItsUnsharedImages(t *testing.T) {
 // stored copies is reported in files_ok/files_error and never undoes the
 // delete.
 func TestProject_DeleteJSONReportsAFailedImageCleanup(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the read-only directory this test relies on")
+	}
 	database := writeActionsConfig(t)
 	orig := projectRemoveInstall
 	projectRemoveInstall = func(context.Context, *config.Config, *db.Project) error { return nil }

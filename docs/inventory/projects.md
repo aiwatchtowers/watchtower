@@ -278,9 +278,10 @@ dual path.
   reachable from an image path rather than only the project folder. A denied
   read is refused with the OS cause and a hint to copy the file elsewhere.
   Open owner call. (b) *Concurrent sessions:* a failed write discards only
-  the copies it created, but a detach in one session can remove a copy that
-  another session has just reused for the same content and not yet committed
-  (no multi-agent locking); that row then names a missing file, which the
+  the copies it created, but a detach in one session — or a failed write
+  whose fresh copy another session reused for the same content in the
+  meantime — can remove a copy the other session has not yet committed a row
+  for (no multi-agent locking); that row then names a missing file, which the
   Desktop shows as "Missing". (c) Stored paths are absolute: after the data
   directory moves, cleanup leaves the old copies behind (it never touches a
   path outside the current store). (d) A session still connected during
