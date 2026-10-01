@@ -52,7 +52,7 @@ Priorities are the owner's ordering of the work: work on the highest-priority op
 Every spec, plan and design you write goes through the owner's review in Watchtower. Here `in_review` means the owner is reviewing a document — not the code review of a plan task (see "Running a plan").
 
 1. **Pick the review target** — a target without sub-targets that will get none while the review runs, so its status is yours to set:
-   - a spec or design for a feature whose target has no sub-targets → that feature target;
+   - a spec or design for a feature whose target has no sub-targets, and whose plan you will not write before the owner approves it → that feature target;
    - a plan → first create its task sub-targets (as in "A plan is written"), then one more sub-target under the feature for the review: text = the board-language word for "Review" followed by the document title (e.g. `Review: <title>`);
    - any document whose target already has sub-targets → such a review sub-target as well.
 2. **Attach it and mark the review:** `attach_document` with its path, `kind` `spec` (a design is a spec) or `plan`, and the review target's `target_id`; then `update_target` that target to `in_review`. The owner's Documents pane marks the document **In review** and notifies them that it awaits their review.
