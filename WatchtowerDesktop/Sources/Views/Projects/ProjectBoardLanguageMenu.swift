@@ -64,13 +64,17 @@ struct ProjectBoardLanguageMenu: View {
             HStack {
                 Spacer()
                 Button("Cancel", role: .cancel) { editingCustom = false }
-                Button("Save", action: saveCustom).keyboardShortcut(.defaultAction)
+                // Empty would silently mean "follow the session" — that has its own item.
+                Button("Save", action: saveCustom).keyboardShortcut(.defaultAction).disabled(customIsEmpty)
             }
         }
         .padding(12)
     }
 
+    private var customIsEmpty: Bool { customText.trimmingCharacters(in: .whitespaces).isEmpty }
+
     private func saveCustom() {
+        guard !customIsEmpty else { return }
         editingCustom = false
         set(customText)
     }

@@ -182,16 +182,6 @@ func (db *DB) ListProjects() ([]Project, error) {
 	return out, rows.Err()
 }
 
-// UpdateProjectDescription replaces the project's description.
-func (db *DB) UpdateProjectDescription(id int64, description string) error {
-	res, err := db.Exec(`UPDATE projects SET description = ?,
-		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`, description, id)
-	if err != nil {
-		return fmt.Errorf("updating project %d: %w", id, err)
-	}
-	return requireAffected(res, fmt.Errorf("project %d: %w", id, ErrProjectNotFound))
-}
-
 // Board language caps: a name ("Brazilian Portuguese") or a tag ("pt-BR"),
 // never a sentence.
 const (
@@ -205,37 +195,53 @@ var ErrInvalidBoardLanguage = errors.New("board language must be a language name
 
 // NormalizeBoardLanguage trims s and collapses its inner runs of spaces. Empty
 // (follow the session) is valid; anything else must be letters (any script),
-// spaces and hyphens — no newline or tab — at most maxBoardLanguageWords words
+// spaces and hyphens with at least one letter — no newline or tab — at most maxBoardLanguageWords words
 // and maxBoardLanguageRunes runes: the value is echoed into every session's
 // brief, so it must stay a short name with no punctuation or line break.
 func NormalizeBoardLanguage(s string) (string, error) {
 	s = strings.TrimSpace(s)
 	for _, r := range s {
 		if !unicode.IsLetter(r) && !unicode.IsMark(r) && r != ' ' && r != '-' {
-			return "", ErrInvalidBoardLanguage
+			return "", fmt.Errorf("%q: %w", s, ErrInvalidBoardLanguage)
 		}
 	}
 	words := strings.Fields(s)
-	s = strings.Join(words, " ")
-	if len(words) > maxBoardLanguageWords || utf8.RuneCountInString(s) > maxBoardLanguageRunes {
-		return "", ErrInvalidBoardLanguage
+	norm := strings.Join(words, " ")
+	if len(words) > maxBoardLanguageWords || utf8.RuneCountInString(norm) > maxBoardLanguageRunes ||
+		(norm != "" && !strings.ContainsFunc(norm, unicode.IsLetter)) {
+		return "", fmt.Errorf("%q: %w", s, ErrInvalidBoardLanguage)
 	}
-	return s, nil
+	return norm, nil
 }
 
-// SetProjectBoardLanguage sets (or, with an empty value, clears) the project's board
-// language after NormalizeBoardLanguage; it returns the stored value.
-func (db *DB) SetProjectBoardLanguage(id int64, language string) (string, error) {
-	lang, err := NormalizeBoardLanguage(language)
-	if err != nil {
-		return "", err
+// ProjectUpdate is a partial project change: a nil field is left as it is.
+type ProjectUpdate struct {
+	Description   *string // trimmed
+	BoardLanguage *string // NormalizeBoardLanguage'd; empty follows the session
+}
+
+// UpdateProject applies u in one statement, so a change of both fields is
+// all or nothing. A board language NormalizeBoardLanguage refuses writes
+// nothing.
+func (db *DB) UpdateProject(id int64, u ProjectUpdate) error {
+	var desc, lang any // nil = keep (COALESCE)
+	if u.Description != nil {
+		desc = strings.TrimSpace(*u.Description)
 	}
-	res, err := db.Exec(`UPDATE projects SET board_language = ?,
-		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`, lang, id)
-	if err != nil {
-		return "", fmt.Errorf("updating project %d: %w", id, err)
+	if u.BoardLanguage != nil {
+		l, err := NormalizeBoardLanguage(*u.BoardLanguage)
+		if err != nil {
+			return err
+		}
+		lang = l
 	}
-	return lang, requireAffected(res, fmt.Errorf("project %d: %w", id, ErrProjectNotFound))
+	res, err := db.Exec(`UPDATE projects SET description = COALESCE(?, description),
+		board_language = COALESCE(?, board_language),
+		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`, desc, lang, id)
+	if err != nil {
+		return fmt.Errorf("updating project %d: %w", id, err)
+	}
+	return requireAffected(res, fmt.Errorf("project %d: %w", id, ErrProjectNotFound))
 }
 
 // DeleteProject removes the project; the foreign keys cascade to its targets,

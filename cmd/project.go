@@ -498,7 +498,7 @@ func runProjectUpdate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	defer database.Close()
-	if _, err := database.SetProjectBoardLanguage(id, projectUpdateFlagLang); err != nil {
+	if err := database.UpdateProject(id, db.ProjectUpdate{BoardLanguage: &projectUpdateFlagLang}); err != nil {
 		return err
 	}
 	p, err := database.GetProject(id)

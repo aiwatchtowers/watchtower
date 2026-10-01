@@ -149,7 +149,8 @@ func TestTerminalTitle_FollowsTheProjectBoardLanguage(t *testing.T) {
 	defer d.Close()
 	pid, err := d.CreateProject("acme", t.TempDir())
 	require.NoError(t, err)
-	_, err = d.SetProjectBoardLanguage(pid, "Russian")
+	lang := "Russian"
+	err = d.UpdateProject(pid, db.ProjectUpdate{BoardLanguage: &lang})
 	require.NoError(t, err)
 	_, err = d.Exec(`UPDATE terminal_sessions SET project_id = ?, title_source = 'auto' WHERE id = ?`, pid, id)
 	require.NoError(t, err)

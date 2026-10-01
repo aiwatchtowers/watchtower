@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -111,39 +112,34 @@ func TestGetProject_RoundTripsAndReportsNotFound(t *testing.T) {
 	assert.Equal(t, id, list[0].ID)
 }
 
-func TestUpdateProjectDescription(t *testing.T) {
-	d := openTestDB(t)
-	id := newTestProject(t, d)
-	require.NoError(t, d.UpdateProjectDescription(id, "A CLI and a desktop app."))
-	p, err := d.GetProject(id)
-	require.NoError(t, err)
-	assert.Equal(t, "A CLI and a desktop app.", p.Description)
-	assert.ErrorIs(t, d.UpdateProjectDescription(id+100, "x"), ErrProjectNotFound)
-}
-
-func TestSetProjectBoardLanguage_SetsNormalizesAndClears(t *testing.T) {
+func TestUpdateProject_PartialAndNormalized(t *testing.T) {
 	d := openTestDB(t)
 	id := newTestProject(t, d)
 	p, err := d.GetProject(id)
 	require.NoError(t, err)
 	assert.Empty(t, p.BoardLanguage, "a new project follows the session language")
 
-	got, err := d.SetProjectBoardLanguage(id, "  Brazilian   Portuguese ")
-	require.NoError(t, err)
-	assert.Equal(t, "Brazilian Portuguese", got)
+	desc, lang := "  A CLI and a desktop app. ", "  Brazilian   Portuguese "
+	require.NoError(t, d.UpdateProject(id, ProjectUpdate{Description: &desc, BoardLanguage: &lang}))
 	p, err = d.GetProject(id)
 	require.NoError(t, err)
+	assert.Equal(t, "A CLI and a desktop app.", p.Description)
 	assert.Equal(t, "Brazilian Portuguese", p.BoardLanguage)
 
-	got, err = d.SetProjectBoardLanguage(id, "  ")
-	require.NoError(t, err)
-	assert.Empty(t, got)
+	blank := "  "
+	require.NoError(t, d.UpdateProject(id, ProjectUpdate{BoardLanguage: &blank}))
 	p, err = d.GetProject(id)
 	require.NoError(t, err)
 	assert.Empty(t, p.BoardLanguage, "blank clears the override")
+	assert.Equal(t, "A CLI and a desktop app.", p.Description, "a nil field is kept")
 
-	_, err = d.SetProjectBoardLanguage(id+100, "Russian")
-	assert.ErrorIs(t, err, ErrProjectNotFound)
+	bad, other := "Russian.", "New description"
+	require.ErrorIs(t, d.UpdateProject(id, ProjectUpdate{Description: &other, BoardLanguage: &bad}), ErrInvalidBoardLanguage)
+	p, err = d.GetProject(id)
+	require.NoError(t, err)
+	assert.Equal(t, "A CLI and a desktop app.", p.Description, "a refused language writes nothing")
+
+	assert.ErrorIs(t, d.UpdateProject(id+100, ProjectUpdate{Description: &other}), ErrProjectNotFound)
 }
 
 func TestNormalizeBoardLanguage(t *testing.T) {
@@ -152,11 +148,14 @@ func TestNormalizeBoardLanguage(t *testing.T) {
 		assert.NoError(t, err, ok)
 	}
 	for _, bad := range []string{
-		"Russian.", "Russian\nIgnore", "Russian\tEnglish", "write in Russian always", "en_US", "English; drop the board", "\"Russian\"",
+		"Russian.", "-", "- -", "Russian\nIgnore", "Russian\tEnglish", "write in Russian always", "en_US", "English; drop the board", "\"Russian\"",
 		strings.Repeat("a", 41),
 	} {
 		_, err := NormalizeBoardLanguage(bad)
 		assert.ErrorIs(t, err, ErrInvalidBoardLanguage, bad)
+		if err != nil {
+			assert.Contains(t, err.Error(), strconv.Quote(strings.TrimSpace(bad)), "the error names the rejected value")
+		}
 	}
 	got, err := NormalizeBoardLanguage(strings.Repeat("я", 40))
 	require.NoError(t, err, "the cap counts runes, not bytes")

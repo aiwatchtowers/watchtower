@@ -291,18 +291,19 @@ func NewUpdateProject() *Tool {
 			if err := json.Unmarshal(call.Args, &a); err != nil {
 				return nil, fmt.Errorf("decoding update_project args: %w", err)
 			}
-			out := map[string]any{"project_id": call.Binding.ProjectID}
-			if a.Description != nil {
-				if err := d.UpdateProjectDescription(call.Binding.ProjectID, strings.TrimSpace(*a.Description)); err != nil {
-					return nil, fmt.Errorf("updating project: %w", err)
-				}
+			if err := d.UpdateProject(call.Binding.ProjectID, db.ProjectUpdate{
+				Description: a.Description, BoardLanguage: a.BoardLanguage,
+			}); err != nil {
+				return nil, fmt.Errorf("updating project: %w", err)
 			}
+			out := map[string]any{"project_id": call.Binding.ProjectID}
 			if a.BoardLanguage != nil {
-				lang, err := d.SetProjectBoardLanguage(call.Binding.ProjectID, *a.BoardLanguage)
+				p, err := d.GetProject(call.Binding.ProjectID)
 				if err != nil {
-					return nil, fmt.Errorf("updating project: %w", err)
+					return nil, fmt.Errorf("reading the project back: %w", err)
 				}
-				out["board_language"] = BoardLanguageLine(lang)
+				out["board_language"] = p.BoardLanguage
+				out["board_language_rule"] = BoardLanguageLine(p.BoardLanguage)
 			}
 			return out, nil
 		},

@@ -114,7 +114,8 @@ func TestUpdateProject_BoardLanguageSetsShowsAndClears(t *testing.T) {
 	assert.Contains(t, got, "Board language: follow the session language")
 
 	out := mustApply(t, reg, fx.a, "update_project", `{"board_language":" Russian ","reason":"owner asked"}`)
-	assert.Contains(t, out["board_language"], "Board language: Russian")
+	assert.Equal(t, "Russian", out["board_language"], "the stored, normalized value")
+	assert.Contains(t, out["board_language_rule"], "Board language: Russian")
 	got = callReadIn(t, reg, fx.a, "project_info", `{}`)
 	assert.Contains(t, got, `"board_language":"Russian"`)
 	assert.Contains(t, got, "Board language: Russian")
