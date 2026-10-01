@@ -34,7 +34,7 @@ final class MeetingChatMemoryPromptTests: XCTestCase {
 
     func testAdHocRecordingWithNoEventYieldsEmptySubjects() throws {
         let transcript = try makeTranscript(eventID: nil)
-        let subjects = MeetingChatViewModel.meetingMemorySubjects(transcript: transcript, dbPool: dbManager.dbPool)
+        let subjects = MeetingChatSurface.meetingMemorySubjects(transcript: transcript, dbPool: dbManager.dbPool)
         XCTAssertTrue(subjects.isEmpty)
     }
 
@@ -47,7 +47,7 @@ final class MeetingChatMemoryPromptTests: XCTestCase {
             try TestDatabase.insertCalendarEvent(db, id: "evt_1", attendees: attendeesJSON)
         }
         let transcript = try makeTranscript(eventID: "evt_1")
-        let subjects = Set(MeetingChatViewModel.meetingMemorySubjects(transcript: transcript, dbPool: dbManager.dbPool))
+        let subjects = Set(MeetingChatSurface.meetingMemorySubjects(transcript: transcript, dbPool: dbManager.dbPool))
         XCTAssertEqual(subjects, Set(["U1", "alice@example.com", "bob@example.com"]),
                        "an attendee with no resolved Slack id still contributes its email")
     }
@@ -66,7 +66,7 @@ final class MeetingChatMemoryPromptTests: XCTestCase {
         try dbManager.dbPool.write { db in
             try db.execute(sql: "DELETE FROM calendar_events WHERE id = ?", arguments: ["evt_1"])
         }
-        let subjects = MeetingChatViewModel.meetingMemorySubjects(transcript: transcript, dbPool: dbManager.dbPool)
+        let subjects = MeetingChatSurface.meetingMemorySubjects(transcript: transcript, dbPool: dbManager.dbPool)
         XCTAssertTrue(subjects.isEmpty)
     }
 
@@ -78,7 +78,7 @@ final class MeetingChatMemoryPromptTests: XCTestCase {
             try TestDatabase.insertMemoryAlias(db, alias: "U1", nodeID: "ent_alice")
         }
         let transcript = try makeTranscript(eventID: "evt_1")
-        let prompt = MeetingChatViewModel.buildSystemPrompt(
+        let prompt = MeetingChatSurface.buildSystemPrompt(
             transcript: transcript, recapContent: nil, dbPool: dbManager.dbPool,
             memoryChatEnabled: true, memoryVaultDir: nil)
         XCTAssertTrue(prompt.contains("=== MEMORY ("))
@@ -87,7 +87,7 @@ final class MeetingChatMemoryPromptTests: XCTestCase {
 
     func testMemoryBlockAbsentWhenFlagOff() throws {
         let transcript = try makeTranscript(eventID: nil)
-        let prompt = MeetingChatViewModel.buildSystemPrompt(
+        let prompt = MeetingChatSurface.buildSystemPrompt(
             transcript: transcript, recapContent: nil, dbPool: dbManager.dbPool,
             memoryChatEnabled: false, memoryVaultDir: nil)
         XCTAssertFalse(prompt.contains("=== MEMORY ("))

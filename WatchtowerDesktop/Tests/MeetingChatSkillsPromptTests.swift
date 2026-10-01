@@ -36,7 +36,7 @@ final class MeetingChatSkillsPromptTests: XCTestCase {
         let transcript = try makeTranscript()
         let dir = try SkillsPromptFixtures.makePair(self)
 
-        let prompt = MeetingChatViewModel.buildSystemPrompt(
+        let prompt = MeetingChatSurface.buildSystemPrompt(
             transcript: transcript, recapContent: nil, dbPool: dbManager.dbPool,
             memoryChatEnabled: false, memoryVaultDir: nil, skillsDir: dir)
 
@@ -50,10 +50,10 @@ final class MeetingChatSkillsPromptTests: XCTestCase {
         let transcript = try makeTranscript()
         let empty = try SkillsPromptFixtures.makeEmptyDir(self)
 
-        let withEmptyDir = MeetingChatViewModel.buildSystemPrompt(
+        let withEmptyDir = MeetingChatSurface.buildSystemPrompt(
             transcript: transcript, recapContent: nil, dbPool: dbManager.dbPool,
             memoryChatEnabled: false, memoryVaultDir: nil, skillsDir: empty)
-        let withNoDir = MeetingChatViewModel.buildSystemPrompt(
+        let withNoDir = MeetingChatSurface.buildSystemPrompt(
             transcript: transcript, recapContent: nil, dbPool: dbManager.dbPool,
             memoryChatEnabled: false, memoryVaultDir: nil, skillsDir: nil)
 

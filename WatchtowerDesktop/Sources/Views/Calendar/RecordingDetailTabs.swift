@@ -727,107 +727,15 @@ struct RecordingTranscriptTab: View {
 
 // MARK: - Chat tab
 
-/// Assistant chat about this meeting. The ChatInput is docked BELOW the
-/// ScrollView (the nested-NSScrollView collapse house gotcha).
+/// Assistant chat about this meeting, on the shared embedded chat component
+/// (the composer sits below the feed, outside its scroll).
 struct RecordingChatTab: View {
-    @Bindable var chatVM: MeetingChatViewModel
+    let engine: EmbeddedChatEngine
+    let transcriptID: Int64
 
     var body: some View {
-        VStack(spacing: 0) {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 10) {
-                    if chatVM.messages.isEmpty {
-                        Text("Ask about this meeting — what was decided, who said what, or draft a follow-up.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .center)
-                            .padding(.vertical, 8)
-                    }
-                    ForEach(chatVM.messages) { msg in
-                        bubble(msg)
-                    }
-                }
-                .padding(12)
-            }
-
-            Divider()
-
-            if let err = chatVM.errorMessage {
-                Label(err, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 12)
-                    .padding(.top, 4)
-            }
-            ChatInput(
-                text: $chatVM.inputText,
-                isStreaming: chatVM.isStreaming,
-                onSend: { chatVM.send() },
-                onStop: { chatVM.cancelStream() },
-                placeholder: "Ask about this meeting…",
-                dictationTargetID: "chat.meeting.\(chatVM.transcriptID)"
-            )
-        }
-        .clearsRecordingIndicator()
-    }
-
-    @ViewBuilder
-    private func bubble(_ msg: ChatMessage) -> some View {
-        switch msg.role {
-        case .user:
-            HStack {
-                Spacer(minLength: 40)
-                Text(msg.text)
-                    .font(.subheadline)
-                    .textSelection(.enabled)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(Color.accentColor.opacity(0.18), in: RoundedRectangle(cornerRadius: 14))
-            }
-        case .assistant:
-            HStack(alignment: .top, spacing: 8) {
-                Image(systemName: "sparkle")
-                    .font(.caption2)
-                    .foregroundStyle(Color.accentColor)
-                    .padding(.top, 9)
-                VStack(alignment: .trailing, spacing: 4) {
-                    Group {
-                        if msg.text.isEmpty && msg.isStreaming {
-                            HStack(spacing: 6) {
-                                ProgressView().controlSize(.mini)
-                                Text("Thinking…").foregroundStyle(.secondary)
-                            }
-                            .font(.subheadline)
-                        } else {
-                            MarkdownView(text: msg.text)
-                                .font(.subheadline)
-                                .textSelection(.enabled)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    if !msg.isStreaming && !msg.text.isEmpty {
-                        Button {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(msg.text, forType: .string)
-                        } label: {
-                            Label("Copy", systemImage: "doc.on.doc")
-                                .font(.caption2)
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.secondary)
-                        .help("Copy message")
-                    }
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(Color(.textBackgroundColor).opacity(0.6), in: RoundedRectangle(cornerRadius: 14))
-            }
-        case .system:
-            Text(msg.text)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .center)
-        }
+        EmbeddedChatView(engine: engine, placeholder: "Ask about this meeting…",
+                         dictationTargetID: "chat.meeting.\(transcriptID)")
+            .clearsRecordingIndicator()
     }
 }
