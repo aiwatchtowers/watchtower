@@ -1345,27 +1345,29 @@ func (db *DB) JiraIssueExists(key string) (bool, error) {
 	return true, nil
 }
 
-// jiraUpdatedLayout is Jira Cloud's updated_at format ("+0100" offset — no
-// colon, so SQLite's strftime cannot parse it; all time math happens in Go).
+// jiraUpdatedLayout is Jira Cloud's wire format ("+0100" offset — no colon,
+// so SQLite's julianday/strftime reject it). The sync and the tools mirror
+// store RFC3339 UTC since migration 00091; ParseJiraTime still accepts the
+// wire format for a value that could not be normalized.
 const jiraUpdatedLayout = "2006-01-02T15:04:05.000-0700"
 
-// FormatJiraTime renders t the way Jira Cloud writes jira_issues.updated_at
-// and jira_comments.created_at. Anything compared against those columns with
-// SQL's plain string ordering MUST be formatted this way: bare RFC3339 puts a
-// 'Z' (0x5A) where Jira puts '.' (0x2E), so an RFC3339 bound sorts ABOVE every
-// Jira timestamp in the same second and silently excludes it.
+// FormatJiraTime renders t the way the Jira timestamp columns store it
+// (jira_issues.created_at/updated_at/resolved_at, jira_comments.created_at/
+// updated_at): RFC3339 UTC, whole seconds. Anything compared against those
+// columns with SQL's plain string ordering MUST be formatted this way.
 func FormatJiraTime(t time.Time) string {
-	return t.Format(jiraUpdatedLayout)
+	return t.UTC().Format(time.RFC3339)
 }
 
-// ParseJiraTime parses a jira_issues timestamp, RFC3339 fallback. ok=false for
-// an unparseable value — the caller skips the row (the Gmail internal_date
-// defensive-skip precedent; the sync guarantees the format).
+// ParseJiraTime parses a Jira timestamp column value (RFC3339, or Jira's wire
+// format for a value the write path could not normalize). ok=false for an
+// unparseable value — the caller skips the row (the Gmail internal_date
+// defensive-skip precedent).
 func ParseJiraTime(s string) (int64, bool) {
-	if t, err := time.Parse(jiraUpdatedLayout, s); err == nil {
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
 		return t.Unix(), true
 	}
-	if t, err := time.Parse(time.RFC3339, s); err == nil {
+	if t, err := time.Parse(jiraUpdatedLayout, s); err == nil {
 		return t.Unix(), true
 	}
 	return 0, false
@@ -1388,9 +1390,8 @@ type JiraExtractIssue struct {
 // ListJiraIssuesForExtract returns non-deleted issues whose PARSED updated_at
 // is strictly above sinceUnix, ascending by UpdatedUnix, capped at limit —
 // draining the boundary second so a same-second tie is never split (the
-// Slack/Gmail boundary-drain precedent). updated_at carries a "+0100"-style
-// offset SQLite cannot compare reliably, so rows are filtered/sorted in Go
-// after ParseJiraTime (an unparseable value skips the row). The table is
+// Slack/Gmail boundary-drain precedent). Rows are filtered/sorted in Go after
+// ParseJiraTime (an unparseable value skips the row). The table is
 // small (low thousands), a full scan per run is fine — the whole filtered set
 // is already in memory before the cap, so the drain is a plain Go slice
 // extension, no second query needed (unlike the Slack/Gmail two-query drain).

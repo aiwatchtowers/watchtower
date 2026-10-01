@@ -15,11 +15,6 @@ import (
 	"watchtower/internal/db"
 )
 
-// jiraTimeLayoutForTest is Jira Cloud's timestamp layout, spelled out
-// independently of the production db.FormatJiraTime so an assertion about the
-// stored format still fails if production drifts.
-const jiraTimeLayoutForTest = "2006-01-02T15:04:05.000-0700"
-
 // seedJiraAccount inserts an enabled jira_accounts row and returns its id.
 func seedJiraAccount(t *testing.T, database *db.DB) int64 {
 	t.Helper()
@@ -170,11 +165,11 @@ func TestRunJiraDigests_FloorEmpty_InitializesAndSkips(t *testing.T) {
 	newFloor, err := d.IdeasJiraFloor(acctID)
 	require.NoError(t, err)
 	require.NotEmpty(t, newFloor)
-	// The floor is formatted in Jira's own dotted-millisecond layout
-	// (db.FormatJiraTime), not bare RFC3339 — round-1 review Finding 1. The
-	// layout is spelled out here rather than reusing the production helper, so
-	// the assertion would still catch the production side silently changing.
-	parsed, perr := time.Parse(jiraTimeLayoutForTest, newFloor)
+	// The floor is formatted the way jira_issues.updated_at is stored
+	// (db.FormatJiraTime: RFC3339 UTC, migration 00091). The layout is spelled
+	// out here rather than reusing the production helper, so the assertion
+	// would still catch the production side silently changing.
+	parsed, perr := time.Parse("2006-01-02T15:04:05Z", newFloor)
 	require.NoError(t, perr)
 	assert.WithinDuration(t, before, parsed, 2*time.Minute, "floor should initialize near now (minus the backoff), got %s", newFloor)
 
@@ -185,9 +180,9 @@ func TestRunJiraDigests_FloorEmpty_InitializesAndSkips(t *testing.T) {
 
 // TestRunJiraDigests_FloorInit_SameSecondIssueNotExcluded proves round-1
 // review Finding 1 is fixed: an issue updated within a couple of seconds of
-// the init instant — rendered in Jira's own dotted-millisecond format, which
-// used to lexically sort BELOW a bare RFC3339 "...Z" floor — is not silently
-// excluded from the very next real pass.
+// the init instant (when floor and column were in different formats, such an
+// issue sorted lexically BELOW the floor) is not silently excluded from the
+// very next real pass.
 func TestRunJiraDigests_FloorInit_SameSecondIssueNotExcluded(t *testing.T) {
 	d := newTestDB(t)
 	acctID := seedJiraAccount(t, d)
@@ -201,9 +196,7 @@ func TestRunJiraDigests_FloorInit_SameSecondIssueNotExcluded(t *testing.T) {
 	require.NoError(t, p.runJiraDigests(context.Background(), time.Time{}))
 	require.Zero(t, initGen.calls)
 
-	// An issue updated an instant after initialization, in Jira's raw
-	// dotted-millisecond format — the exact shape that used to compare as
-	// lexically "before" a bare RFC3339 floor and get silently dropped.
+	// An issue updated an instant after initialization, in the stored format.
 	updatedAt := db.FormatJiraTime(time.Now().UTC().Add(time.Second))
 	seedJiraIssueIdeas(t, d, acctID, "WT-1", "WT", "Same-second issue", "Open", "new", "desc", updatedAt)
 

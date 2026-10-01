@@ -568,8 +568,8 @@ func (s *Syncer) syncComments(ctx context.Context, changedKeys []string) error {
 				Author:          c.Author.DisplayName,
 				AuthorAccountID: c.Author.AccountID,
 				BodyText:        extractDescriptionText(c.Body),
-				CreatedAt:       c.Created,
-				UpdatedAt:       c.Updated,
+				CreatedAt:       s.normalizeTime(key, "comment created", c.Created),
+				UpdatedAt:       s.normalizeTime(key, "comment updated", c.Updated),
 			})
 		}
 		if err := s.db.UpsertJiraComments(dbComments); err != nil {
@@ -677,7 +677,7 @@ func (s *Syncer) convertIssue(ctx context.Context, issue Issue, boardID int) (db
 
 	resolvedAt := ""
 	if f.Resolved != nil {
-		resolvedAt = *f.Resolved
+		resolvedAt = s.normalizeTime(issue.Key, "resolutiondate", *f.Resolved)
 	}
 
 	rawJSON, _ := json.Marshal(issue)
@@ -738,10 +738,7 @@ func (s *Syncer) convertIssue(ctx context.Context, issue Issue, boardID int) (db
 
 	statusCatChanged := ""
 	if f.StatusCategoryChanged != nil {
-		var ok bool
-		if statusCatChanged, ok = NormalizeTimestamp(*f.StatusCategoryChanged); !ok {
-			s.logger.Printf("sync: %s: unparseable statuscategorychangedate %q, stored verbatim", issue.Key, statusCatChanged)
-		}
+		statusCatChanged = s.normalizeTime(issue.Key, "statuscategorychangedate", *f.StatusCategoryChanged)
 	}
 
 	dbIssue := db.JiraIssue{
@@ -775,8 +772,8 @@ func (s *Syncer) convertIssue(ctx context.Context, issue Issue, boardID int) (db
 		Labels:                  string(labelsJSON),
 		Components:              string(componentsJSON),
 		FixVersions:             string(fixVersionsJSON),
-		CreatedAt:               f.Created,
-		UpdatedAt:               f.Updated,
+		CreatedAt:               s.normalizeTime(issue.Key, "created", f.Created),
+		UpdatedAt:               s.normalizeTime(issue.Key, "updated", f.Updated),
 		ResolvedAt:              resolvedAt,
 		RawJSON:                 string(rawJSON),
 		CustomFieldsJSON:        customFieldsJSON,
@@ -990,17 +987,32 @@ func (s *Syncer) getFieldMap(boardID int) []db.JiraBoardFieldMap {
 }
 
 // NormalizeTimestamp rewrites a Jira timestamp ("2006-01-02T15:04:05.000-0700",
-// any or no fraction) as RFC3339 UTC: SQLite's julianday() rejects a "+hhmm"
-// offset, and the stale query compares the column against an RFC3339 UTC
-// cutoff as a string. A value in neither shape is kept verbatim rather than
-// dropped, and ok is false so the caller can say so.
+// any or no fraction) as RFC3339 UTC (db.FormatJiraTime): SQLite's julianday()
+// rejects a "+hhmm" offset, and every reader compares the Jira timestamp
+// columns against RFC3339 UTC bounds as strings — a value in the Jira profile's
+// own offset (which moves with DST) would sort by wall time, not by instant.
+// A value in neither shape is kept verbatim rather than dropped, and ok is
+// false so the caller can say so.
 func NormalizeTimestamp(s string) (normalized string, ok bool) {
 	for _, layout := range []string{"2006-01-02T15:04:05.999999999-0700", time.RFC3339} {
 		if t, err := time.Parse(layout, s); err == nil {
-			return t.UTC().Format(time.RFC3339), true
+			return db.FormatJiraTime(t), true
 		}
 	}
 	return s, false
+}
+
+// normalizeTime is NormalizeTimestamp for one field of issue key, logging a
+// value it has to store verbatim. An absent value stays "".
+func (s *Syncer) normalizeTime(key, field, v string) string {
+	if v == "" {
+		return ""
+	}
+	out, ok := NormalizeTimestamp(v)
+	if !ok {
+		s.logger.Printf("sync: %s: unparseable %s %q, stored verbatim", key, field, v)
+	}
+	return out
 }
 
 // extractDisplayValue gets a human-readable value from a Jira field value.

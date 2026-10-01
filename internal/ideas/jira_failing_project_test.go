@@ -217,14 +217,6 @@ func TestIdeas01_JiraBackfillBoundIsOffsetSafe(t *testing.T) {
 	assert.Contains(t, mined, `"ref":"WT-2"`)
 }
 
-func TestJiraIssueBoundISO_PicksOffsetByDirection(t *testing.T) {
-	at := time.Now().UTC().Truncate(time.Second)
-	offs := []int{-4 * 3600, 5*3600 + 1800, 0}
-	assert.Equal(t, db.FormatJiraTime(at.In(time.FixedZone("", -4*3600))), jiraIssueBoundISO(at, offs, true))
-	assert.Equal(t, db.FormatJiraTime(at.In(time.FixedZone("", 5*3600+1800))), jiraIssueBoundISO(at, offs, false))
-	assert.Equal(t, db.FormatJiraTime(at), jiraIssueBoundISO(at, nil, true), "no candidates → UTC")
-}
-
 // A project past the cap logs "no longer holding the floor" once a day, not
 // every pass.
 func TestIdeas01_JiraAbandonedProjectLoggedOncePerDay(t *testing.T) {

@@ -101,12 +101,16 @@ func issueRow(accountID int64, issue jira.Issue) db.JiraIssue {
 	}
 	resolvedAt := ""
 	if f.Resolved != nil {
-		resolvedAt = *f.Resolved
+		resolvedAt, _ = jira.NormalizeTimestamp(*f.Resolved)
 	}
 	statusCategoryChangedAt := ""
 	if f.StatusCategoryChanged != nil {
 		statusCategoryChangedAt, _ = jira.NormalizeTimestamp(*f.StatusCategoryChanged)
 	}
+	// The same RFC3339 UTC form the syncer stores, so the mirrored row
+	// compares and sorts with the synced ones.
+	createdAt, _ := jira.NormalizeTimestamp(f.Created)
+	updatedAt, _ := jira.NormalizeTimestamp(f.Updated)
 	raw, _ := json.Marshal(issue)
 	return db.JiraIssue{
 		AccountID: accountID, Key: issue.Key, ID: issue.ID, ProjectKey: projectKey,
@@ -118,7 +122,7 @@ func issueRow(accountID int64, issue jira.Issue) db.JiraIssue {
 		IssueType: f.IssueType.Name, Status: f.Status.Name, StatusCategory: jira.NormalizeStatusCategory(f.Status.StatusCategory.Key),
 		StatusCategoryChangedAt: statusCategoryChangedAt, Priority: priority,
 		Labels: string(labels), Components: "[]", FixVersions: "[]",
-		CreatedAt: f.Created, UpdatedAt: f.Updated, ResolvedAt: resolvedAt, RawJSON: string(raw), SyncedAt: now,
+		CreatedAt: createdAt, UpdatedAt: updatedAt, ResolvedAt: resolvedAt, RawJSON: string(raw), SyncedAt: now,
 	}
 }
 

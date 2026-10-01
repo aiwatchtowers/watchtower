@@ -260,7 +260,7 @@ func TestTransitionJiraIssue_ExecuteMovesByStatusOrTransitionName(t *testing.T) 
 	done, err := d.GetJiraIssue(accountID, "ABC-7")
 	require.NoError(t, err)
 	assert.Equal(t, "done", done.StatusCategory)
-	assert.Equal(t, "2026-09-27T12:00:00.000+0000", done.ResolvedAt)
+	assert.Equal(t, "2026-09-27T12:00:00Z", done.ResolvedAt, "stored RFC3339 UTC, like the syncer")
 
 	_, err = tool.Execute(context.Background(), d, Call{Args: json.RawMessage(`{"key":"ABC-7","status":"start work","reason":"r"}`)})
 	require.NoError(t, err)

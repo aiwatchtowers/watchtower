@@ -718,14 +718,11 @@ func (p *Pipeline) autoResolveJira(_ context.Context, jiraOwn *ownJiraComments) 
 		candidates = append(candidates, c)
 	}
 
-	// The two timestamps being compared come from different writers in
-	// different formats: jira_comments.created_at is Jira Cloud's own dotted
-	// -millisecond shape ("...T10:00:00.000+0000"), inbox_items.created_at is
-	// RFC3339 ("...T10:00:00Z"). A SQL string compare between them is
-	// meaningless — '.' (0x2E) sorts below 'Z' (0x5A), so a comment would
-	// have to be a whole second newer to register at all, and one in the same
-	// second never would. Both sides are parsed in Go instead
-	// (db.ParseJiraTime accepts either format).
+	// The two timestamps being compared come from different writers:
+	// jira_comments.created_at (RFC3339 UTC since migration 00091, Jira Cloud's
+	// dotted-millisecond shape before it) and inbox_items.created_at. Both
+	// sides are parsed in Go (db.ParseJiraTime accepts either format) rather
+	// than string-compared.
 	keys := make([]string, len(candidates))
 	for i, c := range candidates {
 		keys[i] = c.issueKey

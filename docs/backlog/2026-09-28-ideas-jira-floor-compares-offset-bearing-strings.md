@@ -1,7 +1,7 @@
 ---
 type: bug
 title: "Ideas Jira floor compares offset-bearing updated_at strings, so a DST or profile time-zone change can bury issues"
-status: open
+status: done
 priority: low
 tags: [ideas, watermark, IDEA-01, jira, timezone]
 context: PR review of fix/bl-window-timing (backlog lane 6), verify round
@@ -27,3 +27,5 @@ Fix options:
 - or Go-side filtering by parsed instant, with the floor stored as a UTC instant. This needs the boundary drain reworked, because its tie logic is string-based today.
 
 Memory's `runJiraIngest` watermark likely has the same shape.
+
+**Resolution (2026-10-01, branch fix/jira-backlog-wave):** the Jira timestamp columns are stored RFC3339 UTC (sync + tools mirror normalize on write, migration 00091 rewrote existing rows and the floor itself), so the floor compare is an instant compare.
