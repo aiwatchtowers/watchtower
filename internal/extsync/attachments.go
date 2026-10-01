@@ -149,7 +149,7 @@ func (e *Engine) applyAttachments(ctx context.Context, p pass, refs []ItemRef, i
 	}
 	st := Stats{}
 	err = e.withTx(ctx, func(q Queryer) error {
-		if err := writeAttachmentItems(ctx, q, p.src.ID, refs, items, results, e.opts.Now(), &st); err != nil {
+		if err := writeAttachmentItems(ctx, q, p.src.ID, refs, items, results, p.revisit, e.opts.Now(), &st); err != nil {
 			return err
 		}
 		if err := writeExtractions(ctx, q, p, items, results); err != nil {
@@ -172,15 +172,20 @@ func (e *Engine) applyAttachments(ctx context.Context, p pass, refs []ItemRef, i
 // degraded outcome for a row already stored leaves that row's content
 // alone — its text, and the version that text belongs to — so search keeps
 // the last good text while the retry is pending. The revisit re-fetches
-// such a row by id, so it still gets the new version.
-func writeAttachmentItems(ctx context.Context, q Queryer, sourceID int64, refs []ItemRef, items []*Item, results []extraction, now time.Time, st *Stats) error {
+// such a row by id, so it still gets the new version. The try that spends
+// the last attempt (a revisit at maxExtractAttempts-1) on a new version
+// writes that version with whatever it got instead: no retry is left, and
+// the old text belongs to a version that no longer exists, so the partial
+// text of an ocr_pending result (or none, for a failure) replaces it. A
+// try of the stored version itself never overwrites its text.
+func writeAttachmentItems(ctx context.Context, q Queryer, sourceID int64, refs []ItemRef, items []*Item, results []extraction, revisit bool, now time.Time, st *Stats) error {
 	var ids []string
 	for i, it := range items {
 		if it != nil && results[i].degraded() {
 			ids = append(ids, it.Ref.ExtID)
 		}
 	}
-	stored, err := localVersions(ctx, q, sourceID, ids)
+	stored, err := storedAttempts(ctx, q, sourceID, ids)
 	if err != nil {
 		return err
 	}
@@ -188,13 +193,54 @@ func writeAttachmentItems(ctx context.Context, q Queryer, sourceID int64, refs [
 	var witems []*Item
 	for i, it := range items {
 		if it != nil && results[i].degraded() {
-			if _, ok := stored[it.Ref.ExtID]; ok {
+			if a, ok := stored[it.Ref.ExtID]; ok && !a.lastTry(it.Ref.Version, revisit) {
 				continue
 			}
 		}
 		wrefs, witems = append(wrefs, refs[i]), append(witems, it)
 	}
 	return writeItems(ctx, q, sourceID, wrefs, witems, now, st)
+}
+
+// storedAttempt is a stored attachment row's version and attempt count.
+type storedAttempt struct{ version, attempts int }
+
+// lastTry reports whether a degraded try of version spends the row's last
+// attempt on a version other than the stored one. Only a revisit counts on
+// from the stored attempts; a delta try of a newly listed version starts
+// at 1.
+func (a storedAttempt) lastTry(version int, revisit bool) bool {
+	return revisit && version != a.version && a.attempts+1 >= maxExtractAttempts
+}
+
+// storedAttempts reads the version and attempt count of the attachments
+// already stored under sourceID, in one query.
+func storedAttempts(ctx context.Context, q Queryer, sourceID int64, ids []string) (map[string]storedAttempt, error) {
+	out := make(map[string]storedAttempt, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	args := make([]any, 0, len(ids)+1)
+	args = append(args, sourceID)
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	rows, err := q.QueryContext(ctx, `SELECT ext_id, version, extract_attempts FROM ext_documents
+		WHERE source_id = ? AND ext_id IN (`+placeholders+`)`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("extsync: reading attachment attempts: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var a storedAttempt
+		if err := rows.Scan(&id, &a.version, &a.attempts); err != nil {
+			return nil, fmt.Errorf("extsync: scanning attachment attempts: %w", err)
+		}
+		out[id] = a
+	}
+	return out, rows.Err()
 }
 
 // writeExtractions records each written attachment's extraction status. A

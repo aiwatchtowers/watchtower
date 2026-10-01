@@ -239,7 +239,10 @@ func TestTransientFailureOnNewVersionKeepsOldText(t *testing.T) {
 // version that keeps failing is re-listed by every pass's cursor overlap,
 // yet it gets exactly 3 tries — the stream does not re-process a row whose
 // pending version it already tried — and nothing is downloaded after the
-// third, however many runs follow. The old text stays throughout.
+// third, however many runs follow. The old text stays while retries
+// remain; the third try, with none left, moves the row to the new version
+// (no text: the download failed) rather than serving the obsolete one
+// forever.
 func TestDegradedNewVersionCappedAcrossRuns(t *testing.T) {
 	x := newFakeExtractor()
 	d, src, f, e := newAttachmentEngine(t, x)
@@ -260,8 +263,65 @@ func TestDegradedNewVersionCappedAcrossRuns(t *testing.T) {
 	assert.Equal(t, 1+3, f.downloadCount("a1"), "no download after the third try")
 	row, _ := loadAttachment(t, d, src.ID, "a1")
 	assert.Equal(t, "failed", row.status)
-	assert.Equal(t, 1, row.version)
-	assert.Equal(t, []Section{{Text: "text of one.txt"}}, row.sections)
+	assert.Equal(t, 2, row.version, "the exhausted try moved the row to the version that exists")
+	assert.Empty(t, row.sections, "the obsolete text is gone")
+	assert.NotContains(t, loadMeta(t, d, src.ID, "a1"), "pending_version")
+}
+
+// The exhausted try of a new version whose OCR keeps failing stores that
+// version's partial text (its text layer and the batches that did run) in
+// place of the previous version's text, and stays settled: neither the
+// stream nor the revisit touches it again.
+func TestOCRPendingExhaustedNewVersionStoresPartialText(t *testing.T) {
+	x := newOCRExtractor(true)
+	d, src, f, e := newAttachmentEngine(t, x)
+	f.addAttachment("a1", "p1", 1, t0, "scan.png", "image/png", []byte("img"), -1)
+	_, err := e.Run(context.Background())
+	require.NoError(t, err)
+
+	f.mutate("a1", 2, t0.Add(time.Hour))
+	f.find("a1").item.Title = "scan-v2.png"
+	x.set(true, "scan-v2.png", "ocr_pending")
+	for want := 1; want <= 2; want++ {
+		_, err = e.Run(context.Background())
+		require.NoError(t, err)
+		row, _ := loadAttachment(t, d, src.ID, "a1")
+		require.Equal(t, 1, row.version, "try %d: retries remain, the old text stays", want)
+		require.Equal(t, []Section{{Text: "text of scan.png"}}, row.sections)
+	}
+	_, err = e.Run(context.Background())
+	require.NoError(t, err)
+	row, _ := loadAttachment(t, d, src.ID, "a1")
+	assert.Equal(t, 2, row.version)
+	assert.Equal(t, "ocr_pending", row.status)
+	assert.Equal(t, []Section{{Text: "partial scan-v2.png"}}, row.sections)
+	assert.Equal(t, 3, extractAttempts(t, d, src.ID, "a1"))
+
+	for range 2 {
+		_, err = e.Run(context.Background())
+		require.NoError(t, err)
+	}
+	assert.Equal(t, 1+3, f.downloadCount("a1"), "settled: never downloaded again")
+}
+
+// A degraded last try of the version already stored keeps that version's
+// text: it is not obsolete.
+func TestDegradedLastTryOfStoredVersionKeepsText(t *testing.T) {
+	x := newOCRExtractor(true)
+	x.set(true, "scan.png", "ocr_pending", "ocr_pending")
+	d, src, f, e := newAttachmentEngine(t, x)
+	f.addAttachment("a1", "p1", 1, t0, "scan.png", "image/png", []byte("img"), -1)
+	_, err := e.Run(context.Background())
+	require.NoError(t, err)
+	_, err = e.Run(context.Background())
+	require.NoError(t, err)
+	f.downloadErr["a1"] = errors.New("request timed out")
+	_, err = e.Run(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 3, extractAttempts(t, d, src.ID, "a1"))
+	row, _ := loadAttachment(t, d, src.ID, "a1")
+	assert.Equal(t, "failed", row.status)
+	assert.Equal(t, []Section{{Text: "partial scan.png"}}, row.sections, "the stored version's text stays")
 }
 
 // TestDegradedCappedRowTakesALaterVersion: after the cap, a newer version
