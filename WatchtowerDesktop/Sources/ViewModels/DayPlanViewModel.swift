@@ -110,40 +110,35 @@ final class DayPlanViewModel {
     // MARK: - Item Actions
 
     func markDone(_ item: DayPlanItem) async {
-        do {
-            try await dbPool.write { db in
-                try DayPlanQueries.markItemDone(
-                    db,
-                    itemId: item.id,
-                    cascadeToTask: item.sourceType == .task
-                )
-            }
-            await reload()
-        } catch {
-            await reportItemWriteFailure(error)
-        }
+        await setItemStatus(item, done: true)
     }
 
     func markPending(_ item: DayPlanItem) async {
-        do {
-            try await dbPool.write { db in
-                try DayPlanQueries.markItemPending(
-                    db,
-                    itemId: item.id,
-                    cascadeToTask: item.sourceType == .task
-                )
-            }
-            await reload()
-        } catch {
-            await reportItemWriteFailure(error)
-        }
+        await setItemStatus(item, done: false)
     }
 
-    /// An item replaced by a regenerated plan, or its task deleted elsewhere,
-    /// reloads the plan first so the stale row goes; then the reason shows.
-    private func reportItemWriteFailure(_ error: Error) async {
-        if error is RowNotFoundError || error is TargetNotFoundError { await reload() }
-        generationError = error.localizedDescription
+    /// Marks the item and cascades to its task. A task deleted elsewhere
+    /// fails the cascade (and rolls the whole write back); the item itself is
+    /// then marked alone, so it never gets stuck for the rest of the day, and
+    /// the message says the task is gone. An item a regenerated plan replaced
+    /// reloads the plan before its message shows.
+    private func setItemStatus(_ item: DayPlanItem, done: Bool) async {
+        let mark = done ? DayPlanQueries.markItemDone : DayPlanQueries.markItemPending
+        let id = item.id
+        do {
+            do {
+                let cascade = item.sourceType == .task
+                try await dbPool.write { db in try mark(db, id, cascade) }
+                await reload()
+            } catch let gone as TargetNotFoundError {
+                try await dbPool.write { db in try mark(db, id, false) }
+                await reload()
+                generationError = "Updated the plan item only: \(gone.localizedDescription)"
+            }
+        } catch {
+            if error is RowNotFoundError { await reload() }
+            generationError = error.localizedDescription
+        }
     }
 
     func delete(_ item: DayPlanItem) async {

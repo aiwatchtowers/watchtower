@@ -106,6 +106,8 @@ final class DayPlanQueriesTests: XCTestCase {
             try String.fetchOne(db, sql: "SELECT status FROM day_plan_items WHERE id = ?", arguments: [itemId])
         }
         XCTAssertEqual(itemStatus, "pending", "the item's own change rolled back with the failed cascade")
+        // Without the cascade the item is still markable (the view model's fallback).
+        try db.write { db in try DayPlanQueries.markItemDone(db, itemId: itemId, cascadeToTask: false) }
     }
 
     func testMarkingADeletedItem_ThrowsNotFound() throws {
