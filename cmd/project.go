@@ -17,8 +17,8 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/projectdocs"
-	"watchtower/internal/tools"
 	"watchtower/internal/projectfiles"
+	"watchtower/internal/tools"
 )
 
 var projectCmd = &cobra.Command{
