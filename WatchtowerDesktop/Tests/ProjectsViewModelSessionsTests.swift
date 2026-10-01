@@ -887,6 +887,26 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
                        "the layout is persisted")
     }
 
+    /// The header's session menu in a single pane: another session replaces
+    /// the terminal on screen, "New session" starts one there.
+    func testHeaderSessionMenuSwitchesTheSinglePaneSession() async throws {
+        let p = try await projectWithFolder()
+        let one = try await liveSession(p, "one")
+        let two = try await liveSession(p, "two")
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: p)
+        await vm.showFromPanel(sessionID: one.id)
+        XCTAssertEqual(vm.layout.visiblePanes, [.session(one.id)])
+
+        await vm.showInPane(vm.layout.terminalSlot, item: .session(two.id), projectID: p)
+        XCTAssertEqual(vm.layout.visiblePanes, [.session(two.id)])
+
+        await vm.newSession(inPane: vm.layout.terminalSlot, projectID: p)
+        let fresh = try XCTUnwrap(vm.sessions.first { $0.id != one.id && $0.id != two.id })
+        XCTAssertEqual(vm.layout.visiblePanes, [.session(fresh.id)])
+    }
+
     func testHeaderTerminalButtonStartsASessionWhenTheProjectHasNone() async throws {
         let p = try await projectWithFolder()
         let fetched = try await pool.read { try ProjectQueries.fetch($0, id: p) }

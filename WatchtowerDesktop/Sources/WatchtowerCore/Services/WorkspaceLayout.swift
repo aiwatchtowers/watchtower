@@ -139,6 +139,13 @@ package struct WorkspaceLayout: Codable, Equatable, Sendable {
         reveal(pane, keeping: sessionIDs.first.map { .session($0) } ?? primary)
     }
 
+    /// The pane the header's session menu puts a session into: the terminal
+    /// on screen, else the last pane on screen — the one the Terminal button
+    /// replaces too (it keeps the first).
+    package var terminalSlot: WorkspacePane {
+        visiblePanes.first(where: WorkspaceView.terminal.matches) ?? visiblePanes.last ?? primary
+    }
+
     /// A header view button turned off: in a split on screen, the pane it
     /// names closes and the other stays alone. One pane on screen (single
     /// or expanded) is never removed.

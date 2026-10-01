@@ -252,9 +252,35 @@ struct ProjectPageView: View {
                 }
                 .toggleStyle(.button)
                 .help(view.help)
+                if view == .terminal { sessionMenu(slot: layout.terminalSlot) }
             }
         }
         .controlSize(.small)
+    }
+
+    /// The Terminal button's dropdown: which session the terminal pane shows,
+    /// or a new one — the split panes' picker actions, so a single pane can
+    /// switch sessions with the side panel hidden. A chevron, no extra row.
+    private func sessionMenu(slot: WorkspacePane) -> some View {
+        Menu {
+            ForEach(vm.orderedSessions(projectID: project.id)) { session in
+                Button(session.isClosed ? "\(session.title) (closed)" : session.title) {
+                    Task { await vm.showInPane(slot, item: .session(session.id), projectID: project.id) }
+                }
+                .disabled(slot == .session(session.id))
+            }
+            Divider()
+            Button("New session") {
+                Task { await vm.newSession(inPane: slot, projectID: project.id) }
+            }
+        } label: {
+            Image(systemName: "chevron.down")
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Show another session in the terminal pane, or start a new one")
+        .accessibilityLabel("Sessions")
     }
 
     private var splitToggle: some View {
