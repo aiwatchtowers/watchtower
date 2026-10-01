@@ -234,6 +234,14 @@ final class ProjectDetailViewModelTests: XCTestCase {
         XCTAssertFalse(saved)
         XCTAssertNotNil(vm.errorMessage)
         XCTAssertTrue(promptChanges.isEmpty)
+        let again = await vm.flush()
+        XCTAssertFalse(again, "a second try still has the unsaved draft to write")
+
+        try await pool.write { try $0.execute(sql: "DROP TRIGGER fail_project_update") }
+        let retried = await vm.flush()
+        XCTAssertTrue(retried)
+        XCTAssertEqual(try storedInstructions(), "New text", "the draft was kept, not dropped")
+        XCTAssertEqual(promptChanges, [projectID])
     }
 
     func testFlushWithNothingPendingWritesNothing() async throws {

@@ -100,8 +100,13 @@ final class ChatSessionPool {
     /// turn first, then is replaced on the next request or policy tick;
     /// every other one closes now — a pending one too, since its argv
     /// already carries the old `--resume` (its held turn stays `partial`).
+    ///
+    /// They all leave the queue first: closing one re-runs admission, which
+    /// must not launch another stale one still waiting behind it.
     func retireSessions(projectID: Int64) {
-        for (id, client) in clients where client.config.projectID == projectID {
+        let stale = clients.filter { $0.value.config.projectID == projectID }
+        queue.removeAll { stale[$0] != nil }
+        for (id, client) in stale {
             client.retireAfterTurn()
             if !client.isBusy || client.isPending { close(conversationID: id) }
         }

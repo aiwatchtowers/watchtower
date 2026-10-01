@@ -80,13 +80,13 @@ final class ProjectDetailViewModel {
         }
     }
 
-    /// Writes a pending instructions draft now (the page is going away, or
-    /// a new chat is about to read them). False when that write failed —
+    /// Writes the instructions draft now if it differs from what is stored
+    /// (the page is going away, or a new chat is about to read them) — also
+    /// after an earlier save failed. False when the write fails,
     /// `errorMessage` then says why.
     @discardableResult
     func flush() async -> Bool {
-        guard let task = pendingSave else { return true }
-        task.cancel()
+        pendingSave?.cancel()
         pendingSave = nil
         return saveInstructions()
     }

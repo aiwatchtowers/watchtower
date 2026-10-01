@@ -14,24 +14,24 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// first drops projectBlocks' over-cap names.
-func first(blocks []json.RawMessage, _ []string) []json.RawMessage { return blocks }
+// first drops projectBlocks' note.
+func first(blocks []json.RawMessage, _ string) []json.RawMessage { return blocks }
 
 func TestClaudeBackend_ProjectBlocksOnlyWhilePending(t *testing.T) {
 	att, marker := projectFixture(t)
 	b := &claudeBackend{opts: ClaudeOptions{ProjectAttachments: []Attachment{att}}}
 	b.projectPending = initialProjectPending(b.opts)
 
-	blocks := first(b.projectBlocks(MaxTurnAttachmentEncodedBytes))
+	blocks := first(b.projectBlocks(0))
 	require.Len(t, blocks, 1)
 	assert.Contains(t, string(blocks[0]), marker)
 	// Not cleared until a turn carrying it ended with turn_done.
-	require.Len(t, first(b.projectBlocks(MaxTurnAttachmentEncodedBytes)), 1, "an unsent first turn still carries the project file")
+	require.Len(t, first(b.projectBlocks(0)), 1, "an unsent first turn still carries the project file")
 	b.projectSent()
-	assert.Empty(t, first(b.projectBlocks(MaxTurnAttachmentEncodedBytes)), "later turns carry no project files")
+	assert.Empty(t, first(b.projectBlocks(0)), "later turns carry no project files")
 	// A replay / session_lost restart is a fresh provider session again.
 	b.markFreshSession()
-	assert.Len(t, first(b.projectBlocks(MaxTurnAttachmentEncodedBytes)), 1, "after a fresh restart the project file is re-attached")
+	assert.Len(t, first(b.projectBlocks(0)), 1, "after a fresh restart the project file is re-attached")
 }
 
 // A project file that is gone or no longer valid at turn time is skipped
@@ -47,17 +47,17 @@ func TestClaudeBackend_ProjectBlocksSkipMissingAndInvalid(t *testing.T) {
 		att,
 	}}}
 	b.markFreshSession()
-	blocks, overCap := b.projectBlocks(MaxTurnAttachmentEncodedBytes)
+	blocks, note := b.projectBlocks(0)
 	require.Len(t, blocks, 1)
-	assert.Empty(t, overCap, "a missing or invalid file is not a cap overflow")
+	assert.Empty(t, note, "a missing or invalid file is not a cap overflow")
 	assert.Contains(t, string(blocks[0]), marker)
 	assert.Contains(t, warn.String(), "gone.pdf")
 	assert.Contains(t, warn.String(), "notreally.png")
 }
 
 // Project files only get what the per-message encoded cap leaves after the
-// owner's own files: one that no longer fits is skipped with a warning, and
-// a smaller one after it still goes.
+// owner's own files: one that no longer fits is skipped with a warning and
+// named in the turn's note, and a smaller one after it still goes.
 func TestClaudeBackend_ProjectBlocksFitTheMessageCap(t *testing.T) {
 	att, marker := projectFixture(t)
 	big := filepath.Join(t.TempDir(), "big.png")
@@ -71,18 +71,34 @@ func TestClaudeBackend_ProjectBlocksFitTheMessageCap(t *testing.T) {
 	pdfSize := int64(base64.StdEncoding.EncodedLen(len(fixturePDF)))
 	require.Greater(t, int64(base64.StdEncoding.EncodedLen(len(bigData))), pdfSize, "the PNG must be the bigger file")
 
-	blocks, overCap := b.projectBlocks(pdfSize)
+	blocks, note := b.projectBlocks(MaxTurnAttachmentEncodedBytes - pdfSize)
 	require.Len(t, blocks, 1)
-	assert.Equal(t, []string{"big.png"}, overCap, "only a file over the cap is reported for the turn's note")
 	assert.Contains(t, string(blocks[0]), marker, "the file that fits still goes")
+	assert.Contains(t, note, "big.png")
+	assert.NotContains(t, note, "spec.pdf")
 	assert.Contains(t, warn.String(), "big.png")
 	assert.Contains(t, warn.String(), "MB one message carries")
 
 	warn.Reset()
-	blocks, overCap = b.projectBlocks(0)
+	blocks, note = b.projectBlocks(MaxTurnAttachmentEncodedBytes)
 	assert.Empty(t, blocks, "nothing fits once the owner's files used the whole cap")
-	assert.Equal(t, []string{"big.png", "spec.pdf"}, overCap)
+	assert.Contains(t, note, "big.png, spec.pdf")
 	assert.Contains(t, warn.String(), "spec.pdf")
+}
+
+// A project file over the cap on its own is already listed as not attached
+// by the prompt: the turn adds no note blaming the owner's files.
+func TestClaudeBackend_FileOverTheCapAloneGetsNoTurnNote(t *testing.T) {
+	huge := filepath.Join(t.TempDir(), "huge.pdf")
+	require.NoError(t, os.WriteFile(huge, append([]byte("%PDF-1.4\n"), make([]byte, 23<<20)...), 0o600))
+	var warn bytes.Buffer
+	b := &claudeBackend{opts: ClaudeOptions{Warn: &warn,
+		ProjectAttachments: []Attachment{{Path: huge, Mime: "application/pdf", Name: "huge.pdf"}}}}
+	b.markFreshSession()
+	blocks, note := b.projectBlocks(0)
+	assert.Empty(t, blocks)
+	assert.Empty(t, note)
+	assert.Contains(t, warn.String(), "huge.pdf")
 }
 
 func TestClaudeBackend_ResumedSessionDoesNotReattachProjectFiles(t *testing.T) {
@@ -321,9 +337,37 @@ func TestClaudeBackend_ProjectFilesGivenUpAfterTwoFailedTurns(t *testing.T) {
 	require.Len(t, lines, 4)
 	assert.Contains(t, lines[0], marker)
 	assert.Contains(t, lines[1], marker, "one retry after a failed turn")
-	assert.NotContains(t, lines[2], marker, "then the files no longer fail the turns")
-	assert.NotContains(t, lines[3], marker, "not even on a fresh (replayed) session")
-	assert.Contains(t, warn.String(), "given up")
+	for _, line := range lines[2:] {
+		assert.NotContains(t, line, marker, "then the files no longer fail the turns, fresh sessions included")
+		assert.Contains(t, line, "Project files not attached in this session", "and the model is told")
+		assert.Contains(t, line, "spec.pdf")
+	}
+	assert.Contains(t, warn.String(), "given up after 2 failed turns: spec.pdf")
+}
+
+// A rate limit (or any failure the files cannot cause) never counts toward
+// giving them up: after two of them the files still ride the next session.
+func TestClaudeBackend_TransientFailuresNeverGiveUpProjectFiles(t *testing.T) {
+	opts, f := fakeClaude(t, "error_always")
+	opts.Env = append(opts.Env, "FAKE_ERROR=overloaded_error (529)")
+	att, marker := projectFixture(t)
+	var warn bytes.Buffer
+	opts.Warn = &warn
+	opts.ProjectAttachments = []Attachment{att}
+	h := startSession(t, NewClaudeBackend(opts), nil)
+	h.next(EventSessionReady)
+	for i, id := range []string{"t1", "t2", "t3"} {
+		h.send(Command{Type: CommandTurn, TurnID: id, Text: "q", Replay: i > 0})
+		assert.Equal(t, CodeRateLimit, h.next(EventError).Code)
+	}
+	require.NoError(t, h.finish())
+
+	lines := stdinLines(t, f.stdin)
+	require.Len(t, lines, 3)
+	for _, line := range lines {
+		assert.Contains(t, line, marker)
+	}
+	assert.NotContains(t, warn.String(), "given up")
 }
 
 // A fresh session killed after a cancel already holds the files (its turn

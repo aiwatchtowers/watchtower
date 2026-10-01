@@ -132,11 +132,13 @@ type claudeBackend struct {
 	// by Start and the (single-flight) Turn goroutine.
 	projectPending bool
 	// projectFailures counts the turns carrying the project files that
-	// ended in an error since they last reached a session; at
-	// maxProjectFailures they are given up for this backend's life — no
-	// fresh session (the app replays after every failed turn) re-attaches
-	// them — so a file the provider refuses cannot fail every turn.
+	// failed in a way the files may have caused, since they last reached a
+	// session; at maxProjectFailures projectGivenUp is set for this
+	// backend's life: no fresh session (the app replays after every failed
+	// turn) attaches them again — each one's first turn says so instead —
+	// so a file the provider refuses cannot fail every turn.
 	projectFailures int
+	projectGivenUp  bool
 }
 
 // maxProjectFailures is how many failed turns may carry the project files.
@@ -236,7 +238,7 @@ func initialProjectPending(opts ClaudeOptions) bool {
 // --resume after Start (the replay restart, the session_lost retry, a respawn
 // of a child that died before reporting a session id).
 func (b *claudeBackend) markFreshSession() {
-	b.projectPending = len(b.opts.ProjectAttachments) > 0 && b.projectFailures < maxProjectFailures
+	b.projectPending = len(b.opts.ProjectAttachments) > 0
 }
 
 // projectSent clears the pending flag once the files reached the session —
@@ -250,22 +252,40 @@ func (b *claudeBackend) projectSent() {
 // settleProject decides, after a turn that carried the project files,
 // whether the session now holds them: a completed turn, or one killed after
 // the owner's cancel (it was streaming, so its message is in the session the
-// respawn resumes). A turn that failed keeps them pending once more — the
-// provider may have rejected the whole request — and the second failure gives
-// them up, named on Warn, so a refused file cannot fail every turn. A crash
-// keeps them too (a respawn without a session id re-marks them anyway).
+// respawn resumes). A turn that failed in a way the files may have caused
+// (projectFileFailure) keeps them pending once more — the provider may have
+// rejected the whole request — and the second such failure gives them up.
+// Any other failure (rate limit, auth, a crash) keeps them pending without
+// counting: the app replays after it, and the fresh session carries them.
 func (b *claudeBackend) settleProject(out outcome) {
 	switch {
 	case out.kind == outcomeDone && !out.failed:
 		b.projectSent()
 	case out.kind == outcomeExited && b.wasCancelled():
 		b.projectSent()
-	case out.kind == outcomeDone && out.failed:
-		if b.projectFailures++; b.projectFailures >= maxProjectFailures {
-			fmt.Fprintf(b.warn(), "chat project files given up after %d failed turns\n", b.projectFailures)
-			b.projectPending = false
+	case out.kind == outcomeDone && projectFileFailure(out.code):
+		if b.projectFailures++; b.projectFailures >= maxProjectFailures && !b.projectGivenUp {
+			b.projectGivenUp = true
+			fmt.Fprintf(b.warn(), "chat project files given up after %d failed turns: %s\n",
+				b.projectFailures, strings.Join(b.projectNames(), ", "))
 		}
 	}
+}
+
+// projectFileFailure reports whether a failed turn's code is one a bad
+// project file can produce: the provider refusing the request surfaces as
+// internal (or attachment_unsupported); a rate limit, an auth or a start
+// failure, a lost session or an interrupt says nothing about the files.
+func projectFileFailure(code string) bool {
+	return code == CodeInternal || code == CodeAttachmentUnsupported
+}
+
+func (b *claudeBackend) projectNames() []string {
+	names := make([]string, len(b.opts.ProjectAttachments))
+	for i, a := range b.opts.ProjectAttachments {
+		names[i] = a.Name
+	}
+	return names
 }
 
 func (b *claudeBackend) wasCancelled() bool {
@@ -277,21 +297,39 @@ func (b *claudeBackend) wasCancelled() bool {
 // projectBlocks is the project files' content blocks for this turn: nil
 // unless it opens a fresh provider session. Each file is read now; one that
 // is gone or no longer valid (removed on the project page after the session
-// started), or that no longer fits in budget — what the per-message encoded
-// cap leaves after the owner's own files — is skipped and named on Warn: a
+// started), or that does not fit in what the per-message encoded cap leaves
+// after the owner's own files (ownSize), is skipped and named on Warn: a
 // project file never fails the turn, unlike the owner's own attachments.
-// The names of the files skipped for the cap are returned too: the prompt
-// counted them as attached, so the turn must say they are not.
-func (b *claudeBackend) projectBlocks(budget int64) (blocks []json.RawMessage, overCap []string) {
+//
+// note tells the model about the files the prompt lists as attached but
+// this turn does not carry: those squeezed out by the owner's files (the
+// prompt fits them against the whole cap, in the same order), or all of them
+// once given up.
+func (b *claudeBackend) projectBlocks(ownSize int64) (blocks []json.RawMessage, note string) {
 	if !b.projectPending {
-		return nil, nil
+		return nil, ""
 	}
+	if b.projectGivenUp {
+		return nil, fmt.Sprintf("[Project files not attached in this session (a message carrying them failed "+
+			"twice): %s]\n\n", strings.Join(b.projectNames(), ", "))
+	}
+	budget, promptBudget := MaxTurnAttachmentEncodedBytes-ownSize, MaxTurnAttachmentEncodedBytes
+	var squeezed []string
 	blocks = make([]json.RawMessage, 0, len(b.opts.ProjectAttachments))
 	for _, a := range b.opts.ProjectAttachments {
 		l, err := loadAttachment(a, false)
-		if err == nil && l.encodedSize() > budget {
-			overCap = append(overCap, a.Name)
-			err = fmt.Errorf("over the %d MB one message carries", MaxTurnAttachmentEncodedBytes>>20)
+		if err == nil {
+			size := l.encodedSize()
+			listed := size <= promptBudget
+			if listed {
+				promptBudget -= size
+			}
+			if size > budget {
+				if listed {
+					squeezed = append(squeezed, a.Name)
+				}
+				err = fmt.Errorf("over the %d MB one message carries", MaxTurnAttachmentEncodedBytes>>20)
+			}
 		}
 		var blk json.RawMessage
 		if err == nil {
@@ -304,7 +342,11 @@ func (b *claudeBackend) projectBlocks(budget int64) (blocks []json.RawMessage, o
 		budget -= l.encodedSize()
 		blocks = append(blocks, blk)
 	}
-	return blocks, overCap
+	if len(squeezed) > 0 {
+		note = fmt.Sprintf("[Project files not attached to this message (over the %d MB one message carries, "+
+			"next to the owner's own files): %s]\n\n", MaxTurnAttachmentEncodedBytes>>20, strings.Join(squeezed, ", "))
+	}
+	return blocks, note
 }
 
 // userLine builds the turn's stdin line. A rejected attachment
@@ -318,18 +360,8 @@ func (b *claudeBackend) userLine(text string, atts []Attachment) ([]byte, error)
 	if err != nil {
 		return nil, err
 	}
-	lead, overCap := b.projectBlocks(MaxTurnAttachmentEncodedBytes - ownSize)
-	return claudeUserLine(append(lead, own...), overCapNote(overCap)+text)
-}
-
-// overCapNote tells the model which project files the prompt lists as
-// attached did not fit next to the owner's own files in this message.
-func overCapNote(names []string) string {
-	if len(names) == 0 {
-		return ""
-	}
-	return fmt.Sprintf("[Project files not attached to this message (over the %d MB one message carries, "+
-		"next to the owner's own files): %s]\n\n", MaxTurnAttachmentEncodedBytes>>20, strings.Join(names, ", "))
+	lead, note := b.projectBlocks(ownSize)
+	return claudeUserLine(append(lead, own...), note+text)
 }
 
 func (b *claudeBackend) warn() io.Writer {
@@ -451,7 +483,8 @@ const (
 type outcome struct {
 	kind   outcomeKind
 	msg    string
-	failed bool // outcomeDone whose terminal event was an error
+	failed bool   // outcomeDone whose terminal event was an error
+	code   string // that error's code
 }
 
 // Turn sends one owner message to the warm process and relays its events.
@@ -557,7 +590,7 @@ func (b *claudeBackend) await(ctx context.Context, p *claudeProc, emit func(Even
 		}
 		emit(e)
 		if isTerminal(e) {
-			return outcome{kind: outcomeDone, failed: e.Type == EventError}, true
+			return outcome{kind: outcomeDone, failed: e.Type == EventError, code: e.Code}, true
 		}
 		return outcome{}, false
 	}

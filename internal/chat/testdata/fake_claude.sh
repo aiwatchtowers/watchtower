@@ -9,6 +9,7 @@
 #   noread (never reads stdin, so a large turn blocks the writer)
 #   error_once (the first user message ever ends in an error result)
 #   error_always (every user message ends in an error result)
+# The error results carry $FAKE_ERROR (default "request too large").
 # With $FAKE_INIT_SID set, every user message is first answered by a
 # system/init line carrying that session id (as the real CLI does).
 # Appends argv (one arg per line, runs separated by "--") to $FAKE_ARGV and
@@ -83,7 +84,7 @@ while IFS= read -r line; do
           if first_time; then exit 3; fi ;;
         error_once|error_always)
           if [ "$FAKE_MODE" = error_always ] || first_time; then
-            printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"session_id":"sess-fake","usage":{"input_tokens":0,"output_tokens":0},"errors":["request too large"]}'
+            printf '{"type":"result","subtype":"error_during_execution","is_error":true,"session_id":"sess-fake","usage":{"input_tokens":0,"output_tokens":0},"errors":["%s"]}\n' "${FAKE_ERROR:-request too large}"
             continue
           fi ;;
         slow|ignore_interrupt)

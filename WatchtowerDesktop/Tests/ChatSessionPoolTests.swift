@@ -172,12 +172,19 @@ final class ChatSessionPoolTests: XCTestCase {
         queued.startTurn(turn("t4", row: try assistantRow()))
         XCTAssertTrue(queued.isPending)
 
+        let second = ChatSessionConfig(conversationID: 5, provider: "claude", model: nil,
+                                       resumeSessionID: "sess-old-5", projectID: 7)
+        let queuedBehind = pool.session(for: 5, config: second)
+        queuedBehind.startTurn(turn("t5", row: try assistantRow()))
+
         pool.retireSessions(projectID: 7)
         XCTAssertNil(pool.client(for: 4))
+        XCTAssertNil(pool.client(for: 5), "every stale queued session goes, not only the first")
         XCTAssertFalse(queued.isBusy, "the held turn ends as partial")
+        XCTAssertFalse(queuedBehind.isBusy)
         fakes[0].emit(.turnDone(turnID: "t1", status: .complete, sessionID: nil))
         pool.tick()
-        XCTAssertEqual(fakes.count, 3, "the stale queued session never launches")
+        XCTAssertEqual(fakes.count, 3, "no stale queued session ever launches")
     }
 
     /// Retiring a BUSY session (close or config change) finishes its turn,
