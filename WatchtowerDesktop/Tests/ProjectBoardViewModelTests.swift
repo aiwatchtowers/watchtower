@@ -461,6 +461,17 @@ final class ProjectBoardViewModelTests: XCTestCase {
         XCTAssertTrue(vm.refreshIfChanged(), "an attach from the agent's process changes the fingerprint")
         XCTAssertEqual(vm.selectedImages.map(\.fileName), ["shot.png"])
 
+        let second = try foreign.write { db in
+            try TestDatabase.insertProjectTargetImage(db, projectID: pid, targetID: tid, fileName: "later.png", sha256: "l")
+        }
+        XCTAssertTrue(vm.refreshIfChanged())
+        // Detaching the OLDER image keeps MAX(id); the count still moves.
+        try foreign.write { db in
+            try db.execute(sql: "DELETE FROM project_target_images WHERE target_id = ? AND id != ?", arguments: [tid, second])
+        }
+        XCTAssertTrue(vm.refreshIfChanged(), "a detach from the agent's process changes the fingerprint")
+        XCTAssertEqual(vm.selectedImages.map(\.fileName), ["later.png"])
+
         vm.select(Int(other))
         XCTAssertEqual(vm.selectedImages.map(\.targetID), [other])
         vm.select(nil)

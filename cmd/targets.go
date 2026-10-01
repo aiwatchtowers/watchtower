@@ -721,23 +721,33 @@ func runTargetsDelete(cmd *cobra.Command, args []string) error {
 	}
 	images, err := database.ListProjectTargetImages(int64(id))
 	if err != nil {
-		return fmt.Errorf("looking up target #%d: %w", id, err)
+		return fmt.Errorf("listing target #%d's images: %w", id, err)
 	}
 
 	if err := database.DeleteTarget(id); err != nil {
 		return fmt.Errorf("deleting target #%d: %w", id, err)
 	}
+	// The image rows went with the target (ON DELETE CASCADE); their stored
+	// copies go unless another target of the project names them (PROJ-02).
+	// A failure leaves only unreferenced files — reported, never undoing
+	// the delete.
+	var ferr error
 	if target.ProjectID.Valid {
-		// The image rows went with the target (ON DELETE CASCADE); their
-		// stored copies go unless another target of the project names them
-		// (PROJ-02). A failure leaves only unreferenced files — reported.
-		if err := discardTargetImages(cfg, database, target.ProjectID.Int64, images); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "warning: removing target #%d's stored images failed: %v\n", id, err)
+		ferr = discardTargetImages(cfg, database, target.ProjectID.Int64, images)
+		if ferr != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: removing target #%d's stored images failed: %v\n", id, ferr)
 		}
 	}
 
 	if targetsFlagDeleteJSON {
 		payload := map[string]any{"id": id, "removed": true}
+		if target.ProjectID.Valid {
+			payload["files_ok"] = ferr == nil
+			payload["files_error"] = ""
+			if ferr != nil {
+				payload["files_error"] = ferr.Error()
+			}
+		}
 		enc := json.NewEncoder(cmd.OutOrStdout())
 		if err := enc.Encode(payload); err != nil {
 			return fmt.Errorf("encoding JSON: %w", err)

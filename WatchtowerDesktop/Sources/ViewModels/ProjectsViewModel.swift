@@ -243,8 +243,8 @@ final class ProjectsViewModel {
             deleteError = "Could not delete the project: \(error.localizedDescription)"
             return false
         }
-        if !result.removalOK {
-            errorMessage = "The project was deleted, but cleaning its folder failed: \(result.removalError)"
+        if let warning = result.cleanupWarning {
+            errorMessage = warning
         }
         if selectedProjectID == id { selectedProjectID = nil }
         await reload()

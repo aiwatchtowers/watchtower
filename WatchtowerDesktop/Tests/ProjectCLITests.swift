@@ -71,6 +71,20 @@ final class ProjectCLITests: XCTestCase {
         )
         let warned = try await ProjectCLI(runner: partial).delete(projectID: 3)
         XCTAssertEqual(warned, ProjectDeleted(id: 3, deleted: true, removalOK: false, removalError: "hook: permission denied"))
+
+        let images = FakeCLIRunner(stdout: Data(
+            #"{"id":3,"deleted":true,"removal_ok":true,"removal_error":"","files_ok":false,"files_error":"permission denied"}"#.utf8
+        ))
+        let imageWarned = try await ProjectCLI(runner: images).delete(projectID: 3)
+        XCTAssertFalse(imageWarned.filesOK)
+        XCTAssertEqual(imageWarned.filesError, "permission denied")
+        XCTAssertEqual(imageWarned.cleanupWarning, "The project was deleted, but removing its stored images failed: permission denied")
+        XCTAssertTrue(ok.filesOK, "an envelope without files_* keys decodes as clean")
+        XCTAssertNil(ok.cleanupWarning)
+        XCTAssertEqual(
+            ProjectDeleted(id: 3, deleted: true, removalOK: false, removalError: "a", filesOK: false, filesError: "b").cleanupWarning,
+            "The project was deleted, but cleaning its folder failed: a; removing its stored images failed: b"
+        )
     }
 
     func testAttachDocumentEndsFlagsBeforeThePathAndDecodesTheEnvelope() async throws {

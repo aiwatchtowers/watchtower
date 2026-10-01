@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -95,4 +96,33 @@ func TestProj02_TargetDeleteDiscardsItsUnsharedImages(t *testing.T) {
 	assert.True(t, os.IsNotExist(err), "PROJ-02: the deleted target's own image survived (err=%v)", err)
 	_, err = os.Stat(shared)
 	assert.NoError(t, err, "an image another target still carries stays")
+}
+
+// TestProject_DeleteJSONReportsAFailedImageCleanup: a failed removal of the
+// stored copies is reported in files_ok/files_error and never undoes the
+// delete.
+func TestProject_DeleteJSONReportsAFailedImageCleanup(t *testing.T) {
+	database := writeActionsConfig(t)
+	orig := projectRemoveInstall
+	projectRemoveInstall = func(context.Context, *config.Config, *db.Project) error { return nil }
+	t.Cleanup(func() { projectRemoveInstall = orig })
+	store := testImageStore(t)
+	pid, err := database.CreateProject("acme", t.TempDir())
+	require.NoError(t, err)
+	target := db.SeedTestProjectTarget(t, database, pid, sql.NullInt64{}, "with a screenshot")
+	attachTestImage(t, database, store, pid, target, "a")
+	// A read-only project directory makes removing its file fail.
+	require.NoError(t, os.Chmod(store.Dir(pid), 0o500))
+	t.Cleanup(func() { _ = os.Chmod(store.Dir(pid), 0o700) })
+
+	out, errOut, err := runProject(t, "delete", strconv.FormatInt(pid, 10), "--json")
+	require.NoError(t, err)
+	var got map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out), &got), "stdout is one JSON object: %q", out)
+	assert.Equal(t, true, got["deleted"])
+	assert.Equal(t, false, got["files_ok"])
+	assert.NotEmpty(t, got["files_error"])
+	assert.Contains(t, errOut, "stored images failed")
+	_, err = database.GetProject(pid)
+	assert.ErrorIs(t, err, db.ErrProjectNotFound, "the delete stands")
 }

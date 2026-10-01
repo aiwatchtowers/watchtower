@@ -89,7 +89,8 @@ func TestCreateTargets_AttachesImagesAndGetTargetListsThem(t *testing.T) {
 	assert.Empty(t, targetImages(t, reg, fx.a, created[1]))
 }
 
-func TestCreateTargets_ARefusedImageFailsTheWholeCallAndLeavesNoFile(t *testing.T) {
+// A file Validate refuses fails the call before anything is copied in.
+func TestCreateTargets_ARefusedImageFailsTheWholeCallBeforeAnyCopy(t *testing.T) {
 	fx := newProjectFixture(t)
 	reg, store := imageRegistry(t, fx.d)
 	good := fakeImage(t, "good.png", "g")
@@ -102,10 +103,48 @@ func TestCreateTargets_ARefusedImageFailsTheWholeCallAndLeavesNoFile(t *testing.
 	require.ErrorAs(t, err, &verr)
 	assert.Contains(t, verr.Msg, "not a PNG, JPEG, GIF or WebP image")
 	assert.Equal(t, 1, countProjectTargets(t, fx.d, fx.a), "no target was created")
-	assert.Empty(t, storedFiles(t, store, fx.a), "the good image's copy was removed again")
+	assert.Empty(t, storedFiles(t, store, fx.a), "Validate refused the call before any copy was made")
 
 	_, err = proposeIn(t, reg, fx.a, "create_targets", `{"items":[{"text":"A","images":["relative.png"]}],"reason":"r"}`)
 	require.ErrorAs(t, err, &verr, "a relative path is refused before any file is read")
+
+	var eleven []string
+	for i := 0; i <= maxImagesPerCall; i++ {
+		eleven = append(eleven, fmt.Sprintf("%q", good))
+	}
+	for _, args := range []string{
+		fmt.Sprintf(`{"items":[{"text":"A","images":[%s]}],"reason":"r"}`, strings.Join(eleven, ",")),
+	} {
+		_, err = proposeIn(t, reg, fx.a, "create_targets", args)
+		require.ErrorAs(t, err, &verr, "more than maxImagesPerCall paths are refused")
+	}
+	_, err = proposeIn(t, reg, fx.a, "update_target", fmt.Sprintf(`{"target_id":%d,"add_images":[%s],"reason":"r"}`,
+		fx.aTarget, strings.Join(eleven, ",")))
+	require.ErrorAs(t, err, &verr, "more than maxImagesPerCall add_images are refused")
+	assert.Empty(t, storedFiles(t, store, fx.a))
+}
+
+// A write that fails after the images were copied in removes the copies it
+// created, and never a copy it reused that another target still carries.
+func TestCreateTargets_AFailedWriteRemovesOnlyTheCopiesItCreated(t *testing.T) {
+	fx := newProjectFixture(t)
+	reg, store := imageRegistry(t, fx.d)
+	shared := fakeImage(t, "shared.png", "s")
+	mustApply(t, reg, fx.a, "update_target", fmt.Sprintf(`{"target_id":%d,"add_images":[%q],"reason":"r"}`, fx.aTarget, shared))
+	sharedCopy := targetImages(t, reg, fx.a, fx.aTarget)[0].Path
+	fresh := fakeImage(t, "fresh.png", "f")
+	_, err := fx.d.Exec(`CREATE TRIGGER fail_image BEFORE INSERT ON project_target_images
+		WHEN NEW.file_name = 'fresh.png' BEGIN SELECT RAISE(ABORT, 'boom'); END`)
+	require.NoError(t, err)
+
+	rc, err := proposeIn(t, reg, fx.a, "create_targets", fmt.Sprintf(
+		`{"items":[{"text":"New","images":[%q,%q]}],"reason":"r"}`, shared, fresh))
+	require.NoError(t, err)
+	assert.Equal(t, "failed", rc.Status)
+	assert.Contains(t, rc.Error, "boom")
+	assert.Equal(t, 1, countProjectTargets(t, fx.d, fx.a), "the target rolled back")
+	assert.Equal(t, []string{filepath.Base(sharedCopy)}, storedFiles(t, store, fx.a),
+		"the fresh copy is gone, the shared one another target carries stays")
 }
 
 func TestUpdateTarget_AddsAndRemovesImagesKeepingSharedCopies(t *testing.T) {
@@ -152,9 +191,9 @@ func TestUpdateTarget_ImageCapFailsTheWholeUpdate(t *testing.T) {
 
 	rc, err := proposeIn(t, reg, fx.a, "update_target", fmt.Sprintf(`{"target_id":%d,"text":"Renamed","add_images":[%q],"reason":"r"}`,
 		fx.aTarget, fakeImage(t, "extra.png", "extra")))
-	if err == nil {
-		assert.Equal(t, "failed", rc.Status)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, "failed", rc.Status)
+	assert.Contains(t, rc.Error, "at most 20 images")
 	got, gerr := fx.d.GetTargetByID(int(fx.aTarget))
 	require.NoError(t, gerr)
 	assert.Equal(t, "Alpha feature", got.Text, "the rename rolled back with the refused attach")

@@ -48,6 +48,10 @@ type Image struct {
 	Size     int64
 	SHA256   string
 	Path     string // absolute path of the stored copy
+	// Created is true when this Ingest wrote the copy, false when it reused
+	// one already there — which another row may name, so a caller undoing a
+	// failed write discards only the copies it created.
+	Created bool
 }
 
 // Store roots every project's image directory.
@@ -83,10 +87,11 @@ func (s Store) Ingest(projectID int64, src string) (Image, error) {
 		return Image{}, err
 	}
 	dst := filepath.Join(dir, sha+ext)
-	if err := writeOnce(dst, data); err != nil {
+	created, err := writeOnce(dst, data)
+	if err != nil {
 		return Image{}, err
 	}
-	return Image{FileName: filepath.Base(src), MIME: mime, Size: int64(len(data)), SHA256: sha, Path: dst}, nil
+	return Image{FileName: filepath.Base(src), MIME: mime, Size: int64(len(data)), SHA256: sha, Path: dst, Created: created}, nil
 }
 
 // Check runs Ingest's checks on src without storing anything, so a caller
@@ -114,18 +119,26 @@ func readRegular(src string) ([]byte, error) {
 	if !filepath.IsAbs(src) {
 		return nil, &RejectError{Path: src, Reason: "path must be absolute"}
 	}
-	f, err := os.OpenFile(src, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	// O_NONBLOCK: opening a FIFO for reading would otherwise wait for a
+	// writer forever; it changes nothing for a regular file.
+	f, err := os.OpenFile(src, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	switch {
 	case errors.Is(err, syscall.ELOOP):
 		return nil, &RejectError{Path: src, Reason: "is a symlink; give the file itself"}
 	case errors.Is(err, os.ErrNotExist):
 		return nil, &RejectError{Path: src, Reason: "no such file"}
+	case errors.Is(err, os.ErrPermission):
+		return nil, &RejectError{Path: src, Reason: fmt.Sprintf("cannot be read (%v); macOS may be blocking access "+
+			"to its folder — ask the owner to copy the file somewhere else", errors.Unwrap(err))}
 	case err != nil:
-		return nil, &RejectError{Path: src, Reason: "cannot be read"}
+		return nil, &RejectError{Path: src, Reason: fmt.Sprintf("cannot be read (%v)", errors.Unwrap(err))}
 	}
 	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
-	if err != nil || !info.Mode().IsRegular() {
+	if err != nil {
+		return nil, &RejectError{Path: src, Reason: fmt.Sprintf("cannot be inspected (%v)", err)}
+	}
+	if !info.Mode().IsRegular() {
 		return nil, &RejectError{Path: src, Reason: "is not a regular file"}
 	}
 	if info.Size() > MaxImageBytes {
@@ -133,7 +146,7 @@ func readRegular(src string) ([]byte, error) {
 	}
 	data, err := io.ReadAll(io.LimitReader(f, MaxImageBytes+1))
 	if err != nil {
-		return nil, &RejectError{Path: src, Reason: "cannot be read"}
+		return nil, &RejectError{Path: src, Reason: fmt.Sprintf("cannot be read (%v)", err)}
 	}
 	if int64(len(data)) > MaxImageBytes {
 		return nil, &RejectError{Path: src, Reason: fmt.Sprintf("is larger than %d MB", MaxImageBytes>>20)}
@@ -161,14 +174,14 @@ func (s Store) ensureDir(projectID int64) (string, error) {
 
 // writeOnce writes data to dst through a temp file and a rename, unless dst
 // already holds a regular file of that size — the name is the content's
-// hash, so such a file is the same image.
-func writeOnce(dst string, data []byte) error {
+// hash, so such a file is the same image. created reports whether it wrote.
+func writeOnce(dst string, data []byte) (created bool, err error) {
 	if info, err := os.Lstat(dst); err == nil && info.Mode().IsRegular() && info.Size() == int64(len(data)) {
-		return nil
+		return false, nil
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(dst), ".incoming-*") // 0600
 	if err != nil {
-		return fmt.Errorf("storing image: %w", err)
+		return false, fmt.Errorf("storing image: %w", err)
 	}
 	name := tmp.Name()
 	_, werr := tmp.Write(data)
@@ -180,10 +193,10 @@ func writeOnce(dst string, data []byte) error {
 		werr = os.Rename(name, dst)
 	}
 	if werr != nil {
-		_ = os.Remove(name)
-		return fmt.Errorf("storing image: %w", werr)
+		_ = os.Remove(name) // best effort: the write's own error is what failed
+		return false, fmt.Errorf("storing image: %w", werr)
 	}
-	return nil
+	return true, nil
 }
 
 // Discard removes each of paths that keep does not name — the stored copies

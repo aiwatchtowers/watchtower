@@ -28,6 +28,7 @@ final class ProjectsViewModelDeleteTests: XCTestCase {
         let pool: DatabasePool
         var fail = false
         var removalError = ""
+        var filesError = ""
         private(set) var calls: [[String]] = []
         init(pool: DatabasePool) { self.pool = pool }
 
@@ -39,7 +40,8 @@ final class ProjectsViewModelDeleteTests: XCTestCase {
             }
             try await pool.write { try $0.execute(sql: "DELETE FROM projects WHERE id = ?", arguments: [id]) }
             let envelope: [String: Any] = [
-                "id": id, "deleted": true, "removal_ok": removalError.isEmpty, "removal_error": removalError
+                "id": id, "deleted": true, "removal_ok": removalError.isEmpty, "removal_error": removalError,
+                "files_ok": filesError.isEmpty, "files_error": filesError
             ]
             return try JSONSerialization.data(withJSONObject: envelope)
         }
@@ -87,6 +89,23 @@ final class ProjectsViewModelDeleteTests: XCTestCase {
         XCTAssertTrue(vm.summaries.isEmpty)
         XCTAssertNil(vm.deleteError, "a cleanup failure is a warning, not a failed delete")
         XCTAssertTrue(vm.errorMessage?.contains("permission denied: .claude/skills") ?? false)
+    }
+
+    /// The stored image copies could not all be removed: the delete stands
+    /// and the owner is told (PROJ-02 — never a silent leftover).
+    func testImageCleanupFailureDeletesTheProjectAndWarns() async throws {
+        let id = try await pool.write { try TestDatabase.insertProject($0) }
+        let runner = DeletingCLIRunner(pool: pool)
+        runner.filesError = "permission denied: project_files/1"
+        let vm = makeVM(runner)
+        await vm.reload()
+
+        let ok = await vm.deleteProject(id)
+
+        XCTAssertTrue(ok)
+        XCTAssertTrue(vm.summaries.isEmpty)
+        XCTAssertNil(vm.deleteError)
+        XCTAssertTrue(vm.errorMessage?.contains("stored images failed: permission denied: project_files/1") ?? false)
     }
 
     func testCLIFailureKeepsTheProjectAndShowsTheError() async throws {

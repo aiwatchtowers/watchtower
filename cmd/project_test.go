@@ -341,7 +341,7 @@ func TestProject_DeleteJSONReportsTheFolderCleanupOutcome(t *testing.T) {
 			require.NoError(t, json.Unmarshal([]byte(out), &got), "stdout is exactly one JSON object: %q", out)
 			assert.Equal(t, map[string]any{
 				"id": float64(pid), "deleted": true, "removal_ok": tc.wantOK, "removal_error": tc.wantError,
-				"files_ok": true,
+				"files_ok": true, "files_error": "",
 			}, got)
 			_, err = database.GetProject(pid)
 			assert.ErrorIs(t, err, db.ErrProjectNotFound)

@@ -6,9 +6,10 @@
 -- folder, never committed); `path` is that copy's absolute path. One file per
 -- project and content, shared by every row naming it; a row is per target and
 -- content, so attaching the same image to one target twice is a no-op. The
--- rows go with their project or target (PROJ-02); the files are removed by
--- `project delete` and swept after any other target delete. Board-only: no
--- non-board reader touches this table (PROJ-01).
+-- rows go with their project or target (PROJ-02); `project delete` removes the
+-- project's file directory, and a target delete or a detach discards the
+-- copies no remaining row names. Board-only: no non-board reader touches this
+-- table (PROJ-01).
 CREATE TABLE project_target_images (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,

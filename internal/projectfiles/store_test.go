@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -41,9 +42,11 @@ func TestIngest_StoresAPrivateContentNamedCopyOnce(t *testing.T) {
 		assert.Equal(t, os.FileMode(0o700), info.Mode().Perm(), dir)
 	}
 
+	assert.True(t, img.Created)
 	again, err := s.Ingest(7, writeSource(t, "copy.png", pngMagic+"pixels"))
 	require.NoError(t, err)
 	assert.Equal(t, img.Path, again.Path, "the same content is stored once per project")
+	assert.False(t, again.Created, "a reused copy is not this call's to discard")
 	entries, err := os.ReadDir(s.Dir(7))
 	require.NoError(t, err)
 	assert.Len(t, entries, 1, "no temp file is left behind")
@@ -69,6 +72,8 @@ func TestIngest_RefusesWhatIsNotASmallImageFile(t *testing.T) {
 	link := filepath.Join(dir, "link.png")
 	require.NoError(t, os.Symlink(target, link))
 	big := writeSource(t, "big.png", pngMagic+strings.Repeat("x", int(MaxImageBytes)))
+	fifo := filepath.Join(dir, "pipe.png")
+	require.NoError(t, syscall.Mkfifo(fifo, 0o600))
 
 	for name, src := range map[string]string{
 		"relative":          "shot.png",
@@ -79,6 +84,7 @@ func TestIngest_RefusesWhatIsNotASmallImageFile(t *testing.T) {
 		"svg":               writeSource(t, "a.svg", `<svg xmlns="http://www.w3.org/2000/svg"></svg>`),
 		"empty":             writeSource(t, "empty.png", ""),
 		"over the cap":      big,
+		"fifo (never hangs)": fifo,
 	} {
 		_, err := s.Ingest(1, src)
 		var rej *RejectError

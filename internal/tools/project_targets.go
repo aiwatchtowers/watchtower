@@ -161,12 +161,11 @@ func insertTargetItems(d *db.DB, store projectfiles.Store, projectID int64, item
 		return nil
 	})
 	if err != nil {
-		_ = images.discardUnreferenced(d, projectID) // the write's error is the one to report
 		var verr *ValidationError
-		if errors.As(err, &verr) {
-			return nil, err
+		if !errors.As(err, &verr) {
+			err = fmt.Errorf("creating targets: %w", err)
 		}
-		return nil, fmt.Errorf("creating targets: %w", err)
+		return nil, images.undo(d, projectID, err)
 	}
 	created := make([]createdTarget, 0, len(ids))
 	for i, id := range ids {
@@ -300,12 +299,11 @@ func applyTargetUpdate(d *db.DB, store projectfiles.Store, projectID int64, a up
 		return images.attach(tx, projectID, int64(t.ID), a.AddImages)
 	})
 	if err != nil {
-		_ = images.discardUnreferenced(d, projectID) // the write's error is the one to report
-		return nil, err
+		return nil, images.undo(d, projectID, err)
 	}
 	out := map[string]any{"target_id": a.TargetID}
 	// The write is committed; a copy left behind is reported, never undone.
-	if err := images.discardUnreferenced(d, projectID, detached...); err != nil {
+	if err := discardUnreferenced(d, store, projectID, detached); err != nil {
 		out["cleanup_warning"] = "detached image files could not all be removed: " + err.Error()
 	}
 	return out, nil

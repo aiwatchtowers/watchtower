@@ -31,21 +31,25 @@ struct ProjectTargetImagesSection: View {
 /// One thumbnail, decoded off the main actor.
 private struct ProjectImageThumbnail: View {
     let image: ProjectTargetImage
-    @State private var thumbnail: CGImage?
-    @State private var loaded = false
+    @State private var load: ProjectImageLoad?
 
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: 6).fill(.quaternary)
-            if let thumbnail {
+            switch load {
+            case .image(let thumbnail):
                 Image(decorative: thumbnail, scale: 2)
                     .resizable()
                     .scaledToFill()
-            } else if loaded {
+            case .missing:
                 Label("Missing", systemImage: "photo.badge.exclamationmark")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            } else {
+            case .undecodable:
+                Label("Can't show", systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            case nil:
                 ProgressView().controlSize(.small)
             }
         }
@@ -54,10 +58,9 @@ private struct ProjectImageThumbnail: View {
         .contentShape(Rectangle())
         .task(id: image.path) {
             let url = image.fileURL
-            thumbnail = await Task.detached(priority: .utility) {
-                ProjectImageLoader.thumbnail(at: url, maxPixel: 448)
+            load = await Task.detached(priority: .utility) {
+                ProjectImageLoader.load(at: url, maxPixel: 448)
             }.value
-            loaded = true
         }
     }
 }
@@ -66,8 +69,7 @@ private struct ProjectImageThumbnail: View {
 private struct ProjectImageViewer: View {
     let image: ProjectTargetImage
     @Environment(\.dismiss) private var dismiss
-    @State private var full: CGImage?
-    @State private var loaded = false
+    @State private var load: ProjectImageLoad?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -77,24 +79,31 @@ private struct ProjectImageViewer: View {
                 Button("Show in Finder") {
                     NSWorkspace.shared.activateFileViewerSelecting([image.fileURL])
                 }
-                .disabled(full == nil)
+                .disabled(load == nil || isMissing)
                 Button("Close") { dismiss() }
                     .keyboardShortcut(.cancelAction)
             }
             .padding(12)
             Divider()
             Group {
-                if let full {
+                switch load {
+                case .image(let full):
                     ScrollView([.horizontal, .vertical]) {
                         Image(decorative: full, scale: 1)
                     }
-                } else if loaded {
+                case .missing:
                     ContentUnavailableView(
                         "Image not found",
                         systemImage: "photo.badge.exclamationmark",
                         description: Text("Watchtower's copy of this image is missing.")
                     )
-                } else {
+                case .undecodable:
+                    ContentUnavailableView(
+                        "Can't show this image",
+                        systemImage: "exclamationmark.triangle",
+                        description: Text("The file is there but could not be decoded. Show in Finder opens it.")
+                    )
+                case nil:
                     ProgressView()
                 }
             }
@@ -103,10 +112,14 @@ private struct ProjectImageViewer: View {
         .frame(minWidth: 480, idealWidth: 900, minHeight: 360, idealHeight: 680)
         .task(id: image.path) {
             let url = image.fileURL
-            full = await Task.detached(priority: .userInitiated) {
-                ProjectImageLoader.fullImage(at: url)
+            load = await Task.detached(priority: .userInitiated) {
+                ProjectImageLoader.load(at: url, maxPixel: ProjectImageLoader.viewerMaxPixel)
             }.value
-            loaded = true
         }
+    }
+
+    private var isMissing: Bool {
+        if case .missing = load { return true }
+        return false
     }
 }

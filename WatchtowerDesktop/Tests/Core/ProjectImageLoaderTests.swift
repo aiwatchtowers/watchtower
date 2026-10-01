@@ -22,22 +22,25 @@ final class ProjectImageLoaderTests: XCTestCase {
         return url
     }
 
-    func testThumbnailIsDownscaledAndFullImageKeepsItsSize() throws {
+    func testLoadDownscalesAndNeverEnlarges() throws {
         let url = try writePNG(width: 400, height: 200)
-        let thumb = try XCTUnwrap(ProjectImageLoader.thumbnail(at: url, maxPixel: 100))
+        let thumb = try XCTUnwrap(ProjectImageLoader.load(at: url, maxPixel: 100).image)
         XCTAssertEqual(max(thumb.width, thumb.height), 100)
-        let full = try XCTUnwrap(ProjectImageLoader.fullImage(at: url))
+        let full = try XCTUnwrap(ProjectImageLoader.load(at: url, maxPixel: ProjectImageLoader.viewerMaxPixel).image)
         XCTAssertEqual(full.width, 400)
         XCTAssertEqual(full.height, 200)
     }
 
-    func testMissingOrUndecodableFileYieldsNil() throws {
+    func testMissingAndUndecodableAreDifferentStates() throws {
         let missing = FileManager.default.temporaryDirectory.appendingPathComponent("no-such-\(UUID().uuidString).png")
-        XCTAssertNil(ProjectImageLoader.thumbnail(at: missing, maxPixel: 100))
-        XCTAssertNil(ProjectImageLoader.fullImage(at: missing))
+        guard case .missing = ProjectImageLoader.load(at: missing, maxPixel: 100) else {
+            return XCTFail("a file that is not there is missing")
+        }
         let text = FileManager.default.temporaryDirectory.appendingPathComponent("text-\(UUID().uuidString).png")
         try Data("not an image".utf8).write(to: text)
         addTeardownBlock { try? FileManager.default.removeItem(at: text) }
-        XCTAssertNil(ProjectImageLoader.thumbnail(at: text, maxPixel: 100))
+        guard case .undecodable = ProjectImageLoader.load(at: text, maxPixel: 100) else {
+            return XCTFail("a file that is there but not an image is undecodable, not missing")
+        }
     }
 }

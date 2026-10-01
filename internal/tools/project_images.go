@@ -49,14 +49,11 @@ func ingestImages(d *db.DB, store projectfiles.Store, projectID int64, paths []s
 		}
 		img, err := store.Ingest(projectID, p)
 		if err != nil {
-			// A copy this call made goes unless a row names it; the refusal
-			// is what the model needs to see, a cleanup failure is not.
-			_ = in.discardUnreferenced(d, projectID)
 			var rej *projectfiles.RejectError
 			if errors.As(err, &rej) {
-				return nil, &ValidationError{Msg: rej.Error()}
+				err = &ValidationError{Msg: rej.Error()}
 			}
-			return nil, err
+			return nil, in.undo(d, projectID, err)
 		}
 		in.byPath[p] = img
 	}
@@ -82,15 +79,33 @@ func (in *ingestedImages) attach(tx *sql.Tx, projectID, targetID int64, paths []
 	return nil
 }
 
-// discardUnreferenced removes the copies this call made (plus extra paths,
-// e.g. images it detached) that no row of the project names — after a
-// failed write, or after a detach. A cleanup failure is returned for the
-// caller to report, never to undo a committed write.
-func (in *ingestedImages) discardUnreferenced(d *db.DB, projectID int64, extra ...string) error {
-	paths := append([]string{}, extra...)
+// undo removes, after the write failed with writeErr, the copies this call
+// created that no row names — never a copy it merely reused, which another
+// session may be attaching right now. It returns the error to report:
+// writeErr, its message extended (and its kind kept) when the cleanup failed
+// too, so a leftover copy is never silent.
+func (in *ingestedImages) undo(d *db.DB, projectID int64, writeErr error) error {
+	var created []string
 	for _, img := range in.byPath {
-		paths = append(paths, img.Path)
+		if img.Created {
+			created = append(created, img.Path)
+		}
 	}
+	cerr := discardUnreferenced(d, in.store, projectID, created)
+	if cerr == nil {
+		return writeErr
+	}
+	note := "; also, copied image files could not all be removed: " + cerr.Error()
+	var verr *ValidationError
+	if errors.As(writeErr, &verr) {
+		return &ValidationError{Msg: verr.Msg + note, Err: verr.Err}
+	}
+	return fmt.Errorf("%w%s", writeErr, note)
+}
+
+// discardUnreferenced removes those of paths that no row of the project
+// names — the copies of detached images, or of a failed write.
+func discardUnreferenced(d *db.DB, store projectfiles.Store, projectID int64, paths []string) error {
 	if len(paths) == 0 {
 		return nil
 	}
@@ -98,5 +113,5 @@ func (in *ingestedImages) discardUnreferenced(d *db.DB, projectID int64, extra .
 	if err != nil {
 		return err
 	}
-	return in.store.Discard(paths, keep)
+	return store.Discard(paths, keep)
 }

@@ -270,6 +270,21 @@ dual path.
   scoping is a guardrail on Watchtower's own tools only — the agent runs as the
   owner with a shell, so Claude Code's own permission prompt is the real
   boundary.
+- **Target images (board target #117).** (a) *TCC:* the agent may name an
+  image anywhere on disk; when its Claude Code session runs in the Desktop's
+  embedded terminal, reading a file under `~/Desktop`, `~/Documents` or
+  `~/Downloads` (where macOS saves screenshots) is attributed to Watchtower
+  and may show a privacy prompt — the same class as the TCC note above, now
+  reachable from an image path rather than only the project folder. A denied
+  read is refused with the OS cause and a hint to copy the file elsewhere.
+  Open owner call. (b) *Concurrent sessions:* a failed write discards only
+  the copies it created, but a detach in one session can remove a copy that
+  another session has just reused for the same content and not yet committed
+  (no multi-agent locking); that row then names a missing file, which the
+  Desktop shows as "Missing". (c) Stored paths are absolute: after the data
+  directory moves, cleanup leaves the old copies behind (it never touches a
+  path outside the current store). (d) A session still connected during
+  `project delete` can re-create an empty `project_files/<id>/`.
 - **Audit rows outlive their project.** `agent_actions` rows with
   `context_type='project'` are kept after a project delete as audit history
   and are never shown on the Inbox action strip.
@@ -293,10 +308,14 @@ dual path.
 
 ## Changelog
 
+<<<<<<< HEAD
 - 2026-10-01 (board target #122): board language — `projects.board_language` (migration `00087`; empty = follow the session language, else a language name or tag validated by `db.NormalizeBoardLanguage`: letters of any script, spaces and hyphens with at least one letter, at most 3 words / 40 runes), set by `watchtower project update <id> --board-language`, the Desktop project page (through that command) and the project-session `update_project` (`board_language`; `description` becomes optional, one of the two is required). The brief and `project_info` carry one `Board language:` line (`tools.BoardLanguageLine`) and the `watchtower-project` skill's Board language section tells every session to write targets, intents and comments in it (code identifiers, paths and plan references unchanged). `terminal title` appends the override to its prompt at run time; imported document titles are the files' own and are not translated. No contract semantics or guard tests changed.
 
 - 2026-10-01 (board item #80): the Desktop Documents pane's **Add Document…** attaches a `.md`/`.txt` file inside the folder as `origin='owner'` through the new `watchtower project attach-doc <id> <path> [--kind --title --target --json]` (the same folder/symlink/extension checks as `attach_document`, shared via `tools.ResolveProjectDocumentPath`; an already attached path — compared ignoring case — is left untouched). The Desktop process itself still writes only `project_comments` rows: the document row is the CLI's write, and no one writes the file (PROJ-03 unchanged); the badge, revised dot and "ready for review" notification now count `origin='agent'` documents only. No contract semantics or guard tests changed.
 - 2026-10-01 (board target #117): project targets carry image attachments — `project_target_images` (migration `00087`), files copied by `create_targets` (`images`) / `update_target` (`add_images`, `remove_image_ids`) into `<workspace>/project_files/<project_id>/<sha256>.<ext>` (0700/0600, PNG/JPEG/GIF/WebP sniffed by content, ≤ 5 MB, ≤ 20 per target, one copy per content per project), listed by `get_target` and shown read-only in the Desktop board's detail pane. **PROJ-02** strengthened: a project delete also removes the stored copies, a target delete the ones nothing else names (new guards in `cmd/project_images_test.go`; `TestProj02_DeleteProjectLeavesNoRows` also counts image rows). **PROJ-03**'s "no project tool writes a file" clarified to "in the project folder" — the image copies land in Watchtower's workspace, the document guarantee is unchanged. PROJ-01: the table has no non-board reader.
+=======
+- 2026-10-01 (board target #117): project targets carry image attachments — `project_target_images` (migration `00087`), files copied by `create_targets` (`images`) / `update_target` (`add_images`, `remove_image_ids`) into `<workspace>/project_files/<project_id>/<sha256>.<ext>` (0700/0600, PNG/JPEG/GIF/WebP sniffed by content, ≤ 5 MB, ≤ 20 per target, one copy per content per project), listed by `get_target` and shown read-only in the Desktop board's detail pane. **PROJ-02** strengthened: a project delete also removes the stored copies, a target delete the ones nothing else names (new guards in `cmd/project_images_test.go`; `TestProj02_DeleteProjectLeavesNoRows` also counts image rows). **PROJ-03**'s "no project tool writes a file" narrowed to "in the project folder" — the image copies land in Watchtower's workspace, the document guarantee is unchanged; **pending owner confirmation** of the wording. PROJ-01: the table has no non-board reader.
+>>>>>>> 6395a6f (fix(projects): target-image review round 1)
 
 - 2026-09-30 (board target #119): **PROJ-06** added — project targets gain `in_review` and a trigger-written status history with time and actor (migration `00086`). **PROJ-05** amended with owner approval (the same request): an `in_review` child counts as started, like `in_progress`; the rollup's other rules are unchanged, and its writes are recorded as `system`. The migration rebuilds `targets` and recreates 00085's triggers.
 

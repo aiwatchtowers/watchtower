@@ -635,12 +635,12 @@ func discardTargetImages(cfg *config.Config, database *db.DB, projectID int64, i
 }
 
 // projectDeleteJSON is `project delete --json`'s envelope; the Desktop
-// decodes these exact keys to surface a failed folder cleanup.
+// decodes these exact keys (ProjectCLI.ProjectDeleted) to surface a failed folder or image cleanup.
 type projectDeleteJSON struct {
 	ID           int64  `json:"id"`
 	Deleted      bool   `json:"deleted"`
 	RemovalOK    bool   `json:"removal_ok"`
 	RemovalError string `json:"removal_error"`
 	FilesOK      bool   `json:"files_ok"` // the target images' stored copies were removed
-	FilesError   string `json:"files_error,omitempty"`
+	FilesError   string `json:"files_error"`
 }
