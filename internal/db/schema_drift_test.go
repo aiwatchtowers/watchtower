@@ -23,7 +23,7 @@ func TestSchemaDrift_FreshDatabaseHasNoMissingTables(t *testing.T) {
 	assert.Contains(t, tables, "external_connections")
 	assert.Contains(t, tables, "messages_fts", "virtual tables are declared too")
 
-	missing, err := d.MissingTables()
+	missing, err := d.missingTables()
 	require.NoError(t, err)
 	assert.Empty(t, missing)
 }
@@ -60,7 +60,7 @@ func burnedVersionDB(t *testing.T, table string) (*DB, string) {
 func TestSchemaDrift_BurnedVersionDetectedAndRepaired(t *testing.T) {
 	d, path := burnedVersionDB(t, "external_connections")
 
-	missing, err := d.MissingTables()
+	missing, err := d.missingTables()
 	require.NoError(t, err)
 	require.Len(t, missing, 1)
 	assert.Equal(t, "external_connections", missing[0].Name)

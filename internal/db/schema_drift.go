@@ -52,9 +52,9 @@ func schemaTables() []string {
 	return declaredTables
 }
 
-// MissingTables returns the tables schema.sql declares that the database
+// missingTables returns the tables schema.sql declares that the database
 // does not have, each with the migration that should have created it.
-func (db *DB) MissingTables() ([]MissingTable, error) {
+func (db *DB) missingTables() ([]MissingTable, error) {
 	rows, err := db.Query(`SELECT name FROM sqlite_master WHERE type = 'table'`)
 	if err != nil {
 		return nil, fmt.Errorf("listing tables: %w", err)
@@ -138,7 +138,7 @@ func migrationUp(file string) (string, error) {
 	return up, nil
 }
 
-// idempotentPrefixes are the only statement shapes RepairMissingTables
+// idempotentPrefixes are the only statement shapes repairMissingTables
 // replays: re-running such a migration on a database that already has part
 // of it cannot change or duplicate anything.
 var idempotentPrefixes = []string{
@@ -154,7 +154,10 @@ var whitespaceRe = regexp.MustCompile(`\s+`)
 
 // idempotentStatements splits a migration's Up section into statements and
 // returns them when every one is idempotent, or nil when any is not (an
-// ALTER, a table rebuild, a trigger body, a data rewrite).
+// ALTER, a table rebuild, a trigger body, a data rewrite). The split is
+// naive about ';' and '--' inside string literals; a statement it cuts
+// apart fails the prefix check or the replay, never runs half-applied
+// (the replay is one transaction).
 func idempotentStatements(up string) []string {
 	if strings.Contains(up, "+goose StatementBegin") {
 		return nil
@@ -181,13 +184,13 @@ func idempotentStatements(up string) []string {
 	return stmts
 }
 
-// RepairMissingTables re-applies, in one transaction, the migrations that
+// repairMissingTables re-applies, in one transaction, the migrations that
 // create a missing table when that migration's Up is made only of idempotent
 // statements (CREATE ... IF NOT EXISTS, INSERT OR IGNORE) — the shape of every
 // incident so far. It returns the tables still missing afterwards: those whose
 // migration is not idempotent, or that no migration creates by name.
-func (db *DB) RepairMissingTables() (repaired, remaining []MissingTable, err error) {
-	missing, err := db.MissingTables()
+func (db *DB) repairMissingTables() (repaired, remaining []MissingTable, err error) {
+	missing, err := db.missingTables()
 	if err != nil || len(missing) == 0 {
 		return nil, nil, err
 	}
@@ -229,7 +232,7 @@ func (db *DB) RepairMissingTables() (repaired, remaining []MissingTable, err err
 		}
 	}
 
-	remaining, err = db.MissingTables()
+	remaining, err = db.missingTables()
 	if err != nil {
 		return nil, nil, err
 	}
@@ -261,10 +264,10 @@ func (e *SchemaDriftError) Error() string {
 		strings.Join(names, ", "))
 }
 
-// CheckSchemaDrift repairs what RepairMissingTables can and returns a
+// CheckSchemaDrift repairs what repairMissingTables can and returns a
 // *SchemaDriftError naming the tables still missing, or nil.
 func (db *DB) CheckSchemaDrift() error {
-	repaired, remaining, err := db.RepairMissingTables()
+	repaired, remaining, err := db.repairMissingTables()
 	if err != nil {
 		return fmt.Errorf("checking schema drift: %w", err)
 	}
