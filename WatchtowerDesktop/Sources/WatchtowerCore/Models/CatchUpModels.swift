@@ -313,8 +313,19 @@ package struct CatchUpRecap: FetchableRecord, Identifiable, Equatable {
     /// `created_at` is Go's `%Y-%m-%dT%H:%M:%SZ`; an unparseable stamp is never
     /// stale, so a malformed row keeps its real status rather than inventing one.
     private static func isStale(createdAt: String, now: Date) -> Bool {
-        guard let created = ISO8601DateFormatter().date(from: createdAt) else { return false }
-        return now.timeIntervalSince(created) > staleBuildingAfter
+        guard let due = staleAt(createdAt: createdAt) else { return false }
+        return now > due
+    }
+
+    private static func staleAt(createdAt: String) -> Date? {
+        ISO8601DateFormatter().date(from: createdAt)?.addingTimeInterval(staleBuildingAfter)
+    }
+
+    /// When this `building` row starts reading as failed — nil for any other
+    /// status or an unparseable stamp. Nothing writes the row at that moment,
+    /// so a reader that wants the flip has to re-read it then.
+    package var staleAt: Date? {
+        isBuilding ? Self.staleAt(createdAt: createdAt) : nil
     }
 
     // MARK: - Status predicates

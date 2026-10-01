@@ -156,6 +156,15 @@ final class CatchUpModelsTests: XCTestCase {
         }
     }
 
+    func testStaleAtIsSetOnlyForBuildingRowsWithAParseableStamp() throws {
+        let now = Self.fixedNow
+        let created = Self.stamp.string(from: now)
+        let building = CatchUpRecap(row: recapRow(status: "building", createdAt: created), now: now)
+        XCTAssertEqual(try XCTUnwrap(building.staleAt).timeIntervalSince(now), CatchUpRecap.staleBuildingAfter)
+        XCTAssertNil(CatchUpRecap(row: recapRow(status: "ready", createdAt: created), now: now).staleAt)
+        XCTAssertNil(CatchUpRecap(row: recapRow(status: "building", createdAt: "not a date"), now: now).staleAt)
+    }
+
     func testStaleBuildingKeepsAnErrorAlreadyOnTheRow() {
         let now = Self.fixedNow
         let created = Self.stamp.string(from: now.addingTimeInterval(-3_600))
