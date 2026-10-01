@@ -10,17 +10,47 @@ import "strings"
 // a fenced block tagged with its language; inline **bold**, _italic_,
 // ~~strike~~, `code`, [text](href), and "\n" for a line break inside a
 // paragraph. Everything else is a ⟦k:label⟧ marker. Empty blocks (an empty
-// paragraph Confluence uses as spacing) are omitted.
+// paragraph Confluence uses as spacing) are omitted. Where a layout
+// element starts or ends between two blocks, a LayoutBoundary line stands
+// between them: a section never reaches past one (R4/R5), so the text must
+// show where it stops.
 //
 // Text is not escaped: a literal "*" or "_" in the page is shown as is.
 func (d *Doc) Text() string {
 	parts := make([]string, 0, len(d.blocks))
+	var prev *block
 	for _, bl := range d.blocks {
-		if s := d.blockText(bl); s != "" {
-			parts = append(parts, s)
+		s := d.blockText(bl)
+		if s == "" {
+			continue
 		}
+		if prev != nil && d.layoutBetween(prev, bl) {
+			parts = append(parts, LayoutBoundary)
+		}
+		parts = append(parts, s)
+		prev = bl
 	}
 	return strings.Join(parts, "\n\n")
+}
+
+// LayoutBoundary is the line Text shows where a page layout (a column or a
+// row of one) starts or ends. It is not content: an edit's new text cannot
+// carry it, and no section reaches past it.
+const LayoutBoundary = markerOpen + "layout boundary" + markerClose
+
+// layoutBetween reports whether a layout element starts or ends between
+// blocks a and b (a before b): they sit in different containers, or a
+// layout element (an empty one included) starts between them.
+func (d *Doc) layoutBetween(a, b *block) bool {
+	if a.container != b.container {
+		return true
+	}
+	for _, c := range d.containers[1:] {
+		if c.elemStart >= a.end && c.elemStart < b.start {
+			return true
+		}
+	}
+	return false
 }
 
 func (d *Doc) blockText(bl *block) string {

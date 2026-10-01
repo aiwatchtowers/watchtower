@@ -95,7 +95,8 @@ func installHook(dir string, spec hookSpec, command string, projectID int64) (bo
 // RemoveSessionStartHook removes every hook object recognised as ours for
 // projectID (looksLikeOurHook), regardless of which watchtower binary wrote
 // it. A group left with no hooks is dropped, then an empty SessionStart, an
-// empty hooks object, and — when nothing at all is left — the file itself.
+// empty hooks object, and — when nothing at all is left — the file itself
+// (a symlinked file keeps its link, its target emptied to {}).
 // Anything else in the file stays.
 func RemoveSessionStartHook(dir string, projectID int64) (bool, error) {
 	return removeHook(dir, sessionStartSpec, projectID)
@@ -121,7 +122,13 @@ func removeHook(dir string, spec hookSpec, projectID int64) (bool, error) {
 		return false, nil
 	}
 	pruneEmpty(settings, hooks, spec.event, kept)
-	if len(settings) == 0 {
+	// A symlinked file (dotfiles-managed) is never removed: that would drop
+	// the link and leave our hook in its target. Its target gets {} instead.
+	target, err := resolveSymlink(file)
+	if err != nil {
+		return false, err
+	}
+	if len(settings) == 0 && target == file {
 		if err := os.Remove(file); err != nil {
 			return false, fmt.Errorf("removing %s: %w", file, err)
 		}

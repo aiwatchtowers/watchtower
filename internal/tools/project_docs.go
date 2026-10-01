@@ -225,6 +225,14 @@ func attachDocument(ctx context.Context, d *db.DB, b Binding, a attachDocumentAr
 	if err != nil {
 		return nil, fmt.Errorf("attaching %s: %w", rel, err)
 	}
+	if !created {
+		// A re-attach may spell the path in another case: report the stored
+		// spelling, as the owner's attach-doc does. Cosmetic, so a failed
+		// read keeps the caller's spelling rather than failing a done attach.
+		if doc, err := d.GetProjectDocument(id); err == nil && doc != nil {
+			rel = doc.RelPath
+		}
+	}
 	return map[string]any{"document_id": id, "rel_path": rel, "created": created}, nil
 }
 

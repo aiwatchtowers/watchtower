@@ -175,6 +175,42 @@ func TestUpsertProjectDocument_CreatesThenRevises(t *testing.T) {
 	assert.Len(t, list, 1)
 }
 
+// The agent re-attaching an imported document under another letter case
+// revises it (APFS: the same file), keeping the stored spelling, rather than
+// adding a second row; among rows differing only in case (attached before the
+// lookup ignored case) the exact spelling wins.
+func TestUpsertProjectDocument_MatchesRelPathIgnoringCase(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestProject(t, d)
+	inserted, err := d.ImportProjectDocuments(pid, []ProjectDocument{{RelPath: "docs/Specs/Plan.md", Kind: "plan", Title: "Plan"}})
+	require.NoError(t, err)
+	require.Len(t, inserted, 1)
+	docs, err := d.ListProjectDocuments(pid)
+	require.NoError(t, err)
+	imported := docs[0].ID
+
+	id, created, err := d.UpsertProjectDocument(ProjectDocument{ProjectID: pid, RelPath: "docs/specs/plan.md"})
+	require.NoError(t, err)
+	assert.False(t, created, "another spelling of an attached file is a revision")
+	assert.Equal(t, imported, id)
+	doc, err := d.GetProjectDocument(id)
+	require.NoError(t, err)
+	assert.Equal(t, "docs/Specs/Plan.md", doc.RelPath, "the stored spelling stays")
+	assert.Equal(t, "agent", doc.Origin)
+
+	_, err = d.Exec(`INSERT INTO project_documents (project_id, rel_path, kind, title, origin) VALUES (?, 'docs/specs/plan.md', 'doc', 'dup', 'agent')`, pid)
+	require.NoError(t, err)
+	var dup int64
+	require.NoError(t, d.QueryRow(`SELECT id FROM project_documents WHERE rel_path = 'docs/specs/plan.md'`).Scan(&dup))
+	id, created, err = d.UpsertProjectDocument(ProjectDocument{ProjectID: pid, RelPath: "docs/specs/plan.md"})
+	require.NoError(t, err)
+	assert.False(t, created)
+	assert.Equal(t, dup, id, "the exact spelling wins over a case-only match")
+	docs, err = d.ListProjectDocuments(pid)
+	require.NoError(t, err)
+	assert.Len(t, docs, 2)
+}
+
 func TestUpsertProjectDocument_RefusesBadInput(t *testing.T) {
 	d := openTestDB(t)
 	pid := newTestProject(t, d)
