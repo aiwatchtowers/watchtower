@@ -94,17 +94,16 @@ final class ChatSessionPool {
     }
 
     /// A chat project's instructions, sources or files changed (or it was
-    /// deleted): its sessions run on the old prompt. Idle ones close now; a
-    /// busy one finishes its turn first, then is replaced on the next
-    /// request or policy tick. The stored session ids were already cleared
-    /// with the write (`ChatProjectQueries.dropSessions`).
+    /// deleted): its sessions run on the old prompt, and none may record its
+    /// session id again (the write just cleared the stored ones — a late
+    /// `session_ready` would put one back). A launched busy one finishes its
+    /// turn first, then is replaced on the next request or policy tick;
+    /// every other one closes now — a pending one too, since its argv
+    /// already carries the old `--resume` (its held turn stays `partial`).
     func retireSessions(projectID: Int64) {
         for (id, client) in clients where client.config.projectID == projectID {
-            if client.isBusy {
-                client.retireAfterTurn()
-            } else {
-                close(conversationID: id)
-            }
+            client.retireAfterTurn()
+            if !client.isBusy || client.isPending { close(conversationID: id) }
         }
     }
 

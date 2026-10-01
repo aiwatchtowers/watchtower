@@ -128,10 +128,11 @@ struct ProjectDetailView: View {
     }
 
     /// The pending instructions save lands first: the new chat's session
-    /// prewarms right away and reads the instructions at spawn.
+    /// prewarms right away and reads the instructions at spawn. A failed
+    /// save keeps the owner here, with the banner saying why.
     private func newChat() {
         Task {
-            await vm.flush()
+            guard await vm.flush() else { return }
             onNewChat(vm.projectID)
         }
     }

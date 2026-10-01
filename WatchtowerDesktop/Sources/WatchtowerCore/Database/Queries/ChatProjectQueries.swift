@@ -7,7 +7,8 @@ import GRDB
 /// builds the prompt and the first-turn attachments.
 ///
 /// Every write that changes what that prompt or those attachments hold
-/// (instructions, sources, files, delete) also drops the project's stored
+/// (instructions, sources, files, delete — a rename, cosmetic, does not)
+/// also drops the project's stored
 /// Claude sessions in the same transaction (`dropSessions`), as
 /// `ChatConversationQueries.setProject` does on a move: a `--resume`d
 /// session keeps the prompt it was started with, so it would never see the

@@ -87,7 +87,7 @@ final class ProjectDetailViewModelTests: XCTestCase {
         vm.removeSource(try XCTUnwrap(vm.sources.first))
         XCTAssertEqual(promptChanges.count, 3)
 
-        vm.addFiles([URL(fileURLWithPath: NSTemporaryDirectory() + "absent_\(UUID().uuidString).pdf")])
+        vm.addFiles([URL(fileURLWithPath: NSTemporaryDirectory() + "imported_\(UUID().uuidString).pdf")])
         XCTAssertEqual(promptChanges.count, 4)
         vm.removeFile(try XCTUnwrap(vm.files.first))
         XCTAssertEqual(promptChanges.count, 5)
@@ -203,6 +203,37 @@ final class ProjectDetailViewModelTests: XCTestCase {
         await vm.flush()
         let stored = try storedInstructions()
         XCTAssertEqual(stored, "Still typing")
+    }
+
+    /// Typing and undoing back to the stored text saves nothing, so no
+    /// chat's session is retired for an unchanged prompt.
+    func testUnchangedInstructionsAreNotSavedNorReported() async throws {
+        let vm = makeVM(debounce: .seconds(60))
+        vm.load()
+        vm.instructionsEdited("x")
+        vm.instructionsEdited("")
+        let saved = await vm.flush()
+        XCTAssertTrue(saved)
+        XCTAssertTrue(promptChanges.isEmpty)
+    }
+
+    /// "New chat in this project" waits on this result: a failed save must
+    /// say so (and not report a prompt change), so no chat starts on the
+    /// old instructions.
+    func testFlushReportsAFailedSave() async throws {
+        let vm = makeVM(debounce: .seconds(60))
+        vm.load()
+        try await pool.write { d in
+            try d.execute(sql: """
+                CREATE TRIGGER fail_project_update BEFORE UPDATE ON chat_projects
+                BEGIN SELECT RAISE(ABORT, 'locked'); END
+                """)
+        }
+        vm.instructionsEdited("New text")
+        let saved = await vm.flush()
+        XCTAssertFalse(saved)
+        XCTAssertNotNil(vm.errorMessage)
+        XCTAssertTrue(promptChanges.isEmpty)
     }
 
     func testFlushWithNothingPendingWritesNothing() async throws {

@@ -28,6 +28,9 @@ final class ProjectDetailViewModel {
     /// empty placeholders, so editing is off: a save would overwrite the
     /// stored instructions with whatever was typed over the blank.
     private(set) var draftsLoaded = false
+    /// The instructions as last read or written: a save of the same text is
+    /// skipped (it would retire every chat's session for nothing).
+    private var savedInstructions = ""
 
     private let dbPool: DatabasePool
     private let debounce: Duration
@@ -58,6 +61,7 @@ final class ProjectDetailViewModel {
         guard refresh(), let project else { return }
         nameDraft = project.name
         instructionsDraft = project.instructions
+        savedInstructions = project.instructions
         draftsLoaded = true
         errorMessage = nil
     }
@@ -76,12 +80,15 @@ final class ProjectDetailViewModel {
         }
     }
 
-    /// Writes a pending instructions draft now (the page is going away).
-    func flush() async {
-        guard let task = pendingSave else { return }
+    /// Writes a pending instructions draft now (the page is going away, or
+    /// a new chat is about to read them). False when that write failed —
+    /// `errorMessage` then says why.
+    @discardableResult
+    func flush() async -> Bool {
+        guard let task = pendingSave else { return true }
         task.cancel()
         pendingSave = nil
-        saveInstructions()
+        return saveInstructions()
     }
 
     func rename(_ name: String) {
@@ -171,19 +178,27 @@ final class ProjectDetailViewModel {
         }
     }
 
-    private func saveInstructions() {
-        guard draftsLoaded else { return }
+    @discardableResult
+    private func saveInstructions() -> Bool {
+        guard draftsLoaded else { return true }
         let text = instructionsDraft
+        guard text != savedInstructions else {
+            pendingSave = nil
+            return true
+        }
         let id = projectID
         do {
             try dbPool.write { try ChatProjectQueries.updateInstructions($0, id: id, instructions: text) }
             pendingSave = nil
+            savedInstructions = text
             onPromptChanged(id)
+            return true
         } catch {
             // flush() runs as the page goes away, where the banner is gone
             // too: keep a trace as well.
             NSLog("ProjectDetailViewModel: could not save instructions: %@", error.localizedDescription)
             errorMessage = "Could not save instructions: \(error.localizedDescription)"
+            return false
         }
     }
 

@@ -1021,6 +1021,33 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertFalse(try lastFake().arguments.contains("--resume"))
     }
 
+    /// Deleting the project detaches its chats; the shown one's warm
+    /// session (spawned with the project prompt) is not reused or resumed.
+    func testProjectDeleteRespawnsTheDetachedChatWithoutResume() async throws {
+        let vm = try makeViewModel()
+        let projectID = try XCTUnwrap(vm.createProject(name: "P"))
+        vm.newConversation(projectID: projectID)
+        vm.send(text: "q1")
+        let first = try lastFake()
+        first.emit(.turnDone(turnID: "turn-1", status: .complete, sessionID: "sess-1"))
+        let done = await waitForCondition { !vm.isStreaming && vm.currentConversation?.sessionID == "sess-1" }
+        XCTAssertTrue(done)
+
+        _ = try await dbManager.dbPool.write { try ChatProjectQueries.delete($0, id: projectID) }
+        vm.projectDeleted(projectID)
+        XCTAssertNil(vm.currentConversation?.sessionID)
+        let closed = await waitForCondition { first.terminated }
+        XCTAssertTrue(closed, "the warm process with the deleted project's prompt goes")
+
+        vm.send(text: "q2")
+        let launched = await waitForCondition { self.fakes.count == 2 && self.fakes[1].turns.count == 1 }
+        XCTAssertTrue(launched)
+        let second = try lastFake()
+        XCTAssertFalse(second.arguments.contains("--resume"))
+        XCTAssertFalse(second.arguments.contains("--project-id"))
+        XCTAssertEqual(second.turns.last?.replay, true)
+    }
+
     func testProjectDeletedClosesThePageAndDetachesTheShownChat() throws {
         let vm = try makeViewModel()
         let projectID = try XCTUnwrap(vm.createProject(name: "P"))
