@@ -11,6 +11,10 @@ struct ProjectCommentsSendBar: View {
     static let noSessionNote =
         "No Claude Code session is running for this project. The next session you start gets these comments in its brief."
 
+    static func unsendableNote(_ drafts: Int) -> String {
+        (drafts == 1 ? "1 draft" : "\(drafts) drafts") + " can't be sent — see Drafts."
+    }
+
     static func draftsNote(_ drafts: Int) -> String {
         (drafts == 1 ? "1 draft" : "\(drafts) drafts") + " — Claude sees them only when you send."
     }
@@ -18,6 +22,10 @@ struct ProjectCommentsSendBar: View {
     let count: Int
     /// How many of `count` are unsent drafts.
     var drafts = 0
+    /// Drafts Send leaves behind (passage gone, or empty).
+    var unsendableDrafts = 0
+    /// The drafts are being written: Send is disabled meanwhile.
+    var sending = false
     /// The last click's result; nil = not clicked yet.
     let delivery: TerminalCenter.PromptDelivery?
     let onSend: () -> Void
@@ -41,8 +49,12 @@ struct ProjectCommentsSendBar: View {
                         Text(Self.draftsNote(drafts)).font(.caption).foregroundStyle(.secondary)
                     }
                 }
+                if unsendableDrafts > 0 {
+                    Text(Self.unsendableNote(unsendableDrafts)).font(.caption).foregroundStyle(.orange)
+                }
                 Spacer()
                 Button(CommentBatchComposer.sendButtonTitle(count: count) + " to Claude", action: onSend)
+                    .disabled(sending)
                     .help("Save your drafts and ask Claude Code to address every open comment on this document")
             }
             .padding(8)

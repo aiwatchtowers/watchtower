@@ -8,6 +8,9 @@ struct ProjectDocumentsView: View {
     @Environment(AppState.self) private var appState
     @State private var selection = NSRange(location: 0, length: 0)
     @State private var activeThreadID: Int64?
+    /// The selection composer's typed text, kept here so a document that
+    /// briefly fails to read (the text view goes away) does not drop it.
+    @State private var composerText = ""
     @State private var delivery: TerminalCenter.PromptDelivery?
     @State private var showThreads = true
     @State private var addingDocument = false
@@ -37,6 +40,10 @@ struct ProjectDocumentsView: View {
             if let project = vm.selectedProject { AddProjectDocumentSheet(vm: vm, project: project) }
         }
         .onChange(of: vm.pendingDocumentID) { _, _ in Task { await vm.openPendingDocument() } }
+        // New drafts after a send: the old "pasted" note no longer covers them.
+        .onChange(of: vm.documentViewModel?.sendableDraftCount) { _, count in
+            if (count ?? 0) > 0 { delivery = nil }
+        }
         .onChange(of: vm.documentViewModel?.document.id) { _, _ in
             delivery = nil
             // A selection is offsets into one document's text: never carry it
@@ -121,6 +128,7 @@ struct ProjectDocumentsView: View {
                         ),
                         contentID: "\(docVM.document.id)#\(docVM.renderVersion)",
                         selection: $selection,
+                        composerText: $composerText,
                         horizontalInset: ReadableColumn.horizontalInset(forWidth: geo.size.width),
                         onComment: { body, range in
                             guard docVM.addDraft(body: body, selection: range) else { return false }
@@ -146,6 +154,8 @@ struct ProjectDocumentsView: View {
             ProjectCommentsSendBar(
                 count: ProjectCommentPrompt.openOwnerCount(docVM.threads) + docVM.sendableDraftCount,
                 drafts: docVM.sendableDraftCount,
+                unsendableDrafts: docVM.unsendableDraftCount,
+                sending: docVM.isSending,
                 delivery: delivery,
                 onSend: { Task { await sendComments(docVM) } },
                 onOpenTerminal: openTerminal
@@ -166,6 +176,7 @@ struct ProjectDocumentsView: View {
                         ProjectCommentDraftRow(
                             draft: draft,
                             located: docVM.draftRanges[draft.id] != nil,
+                            sending: docVM.isSending,
                             onEdit: { docVM.updateDraft(draft.id, body: $0) },
                             onDelete: { docVM.deleteDraft(draft.id) }
                         )
@@ -202,10 +213,13 @@ struct ProjectDocumentsView: View {
     /// Saves the drafts first (all or none); a failed save types nothing and
     /// leaves the drafts and the reason on screen.
     private func sendComments(_ docVM: ProjectDocumentViewModel) async {
-        guard await docVM.sendDrafts() else { return }
+        delivery = nil
+        let before = ProjectCommentPrompt.openOwnerCount(docVM.threads)
+        guard let written = await docVM.sendDrafts() else { return }
+        // A failed reload after the commit leaves `threads` stale: never count fewer than were open plus sent.
+        let count = max(ProjectCommentPrompt.openOwnerCount(docVM.threads), before + written)
         let line = ProjectCommentPrompt.line(
-            relPath: docVM.document.relPath, documentID: docVM.document.id,
-            count: ProjectCommentPrompt.openOwnerCount(docVM.threads)
+            relPath: docVM.document.relPath, documentID: docVM.document.id, count: count
         )
         let center = appState.terminalCenter
         let target = center.activeSession(projectID: docVM.project.id)
@@ -231,6 +245,7 @@ struct ProjectDocumentsView: View {
 private struct ProjectCommentDraftRow: View {
     let draft: ProjectCommentDraft
     let located: Bool
+    let sending: Bool
     let onEdit: (String) -> Void
     let onDelete: () -> Void
 
@@ -245,8 +260,8 @@ private struct ProjectCommentDraftRow: View {
                 .textFieldStyle(.roundedBorder)
                 .lineLimit(1...6)
             HStack {
-                if !located {
-                    Text("Its passage changed — select the text again, or delete it.")
+                if let note {
+                    Text(note)
                         .font(.caption2)
                         .foregroundStyle(.orange)
                 }
@@ -258,5 +273,14 @@ private struct ProjectCommentDraftRow: View {
         }
         .padding(8)
         .background(Color.blue.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+        // A send in flight writes this text: an edit now would be lost.
+        .disabled(sending)
+    }
+
+    /// Why Send leaves this draft behind, if it does.
+    private var note: String? {
+        if !located { return "Its passage changed — select the text again, or delete it. Not sent." }
+        if draft.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "Empty — not sent." }
+        return nil
     }
 }

@@ -23,3 +23,15 @@ package enum SelectionCommentPlacement {
         return CGPoint(x: x, y: y)
     }
 }
+
+/// Whether a selection composer may save. It remembers the content id it
+/// opened on: a re-render since then means its selection offsets point into
+/// text that is gone, so saving is refused and the typed text kept. Pure.
+package enum SelectionCommentCheck {
+    package static let staleMessage = "The text changed — select the passage again."
+
+    /// The refusal to show, or nil when the comment may be saved.
+    package static func refusal(openedOn: String, current: String) -> String? {
+        openedOn == current ? nil : staleMessage
+    }
+}

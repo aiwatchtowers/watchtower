@@ -60,17 +60,21 @@ final class ProjectDocumentViewModel {
 
     /// The owner's unsent comments on this document, in text order (drafts
     /// whose passage is gone last).
+    /// (`sorted` is stable: equal locations keep the order they were written.)
     var drafts: [ProjectCommentDraft] {
-        let written = draftStore.drafts(for: document.id)
-        let order = Dictionary(uniqueKeysWithValues: written.enumerated().map { ($1.id, $0) })
-        return written.sorted { lhs, rhs in
-            (draftRanges[lhs.id]?.location ?? .max, order[lhs.id] ?? 0)
-                < (draftRanges[rhs.id]?.location ?? .max, order[rhs.id] ?? 0)
+        draftStore.drafts(for: document.id).sorted {
+            (draftRanges[$0.id]?.location ?? .max) < (draftRanges[$1.id]?.location ?? .max)
         }
     }
 
+    /// A send is writing the drafts; the pane disables Send and the drafts.
+    private(set) var isSending = false
+
     /// Drafts "Send N comments" delivers: still on the text, with a body.
     var sendableDraftCount: Int { readyDrafts.count }
+
+    /// Drafts a send leaves behind: their passage is gone or their text is empty.
+    var unsendableDraftCount: Int { draftStore.drafts(for: document.id).count - readyDrafts.count }
 
     private var readyDrafts: [ProjectCommentDraft] {
         draftStore.drafts(for: document.id).filter {
@@ -224,12 +228,16 @@ final class ProjectDocumentViewModel {
 
     /// Writes every draft still on the text as an owner comment, all in one
     /// transaction, then drops them. A failure writes none and keeps them all.
-    /// A draft emptied by an edit is skipped (kept). Returns whether the
-    /// write committed (true with nothing to send).
+    /// A draft emptied by an edit is skipped (kept). Returns how many were
+    /// written (0 with nothing to send), or nil when the write failed or a
+    /// send is already running — a second click must not write them twice.
     @discardableResult
-    func sendDrafts() async -> Bool {
+    func sendDrafts() async -> Int? {
+        guard !isSending else { return nil }
         let ready = readyDrafts
-        guard !ready.isEmpty else { return true }
+        guard !ready.isEmpty else { return 0 }
+        isSending = true
+        defer { isSending = false }
         let (projectID, documentID) = (project.id, document.id)
         let wrote = await ownerWrite { db in
             for draft in ready {
@@ -238,11 +246,11 @@ final class ProjectDocumentViewModel {
                 )
             }
         }
-        guard wrote else { return false }
+        guard wrote else { return nil }
         draftStore.remove(Set(ready.map(\.id)), documentID: documentID)
         for draft in ready { draftRanges[draft.id] = nil }
         if let rendered { anchoredRanges = anchoredRangesAfterAdd(rendered.text) }
-        return true
+        return ready.count
     }
 
     // MARK: - Owner actions

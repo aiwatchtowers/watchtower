@@ -152,7 +152,7 @@ final class ProjectDocumentViewModelTests: XCTestCase {
         XCTAssertTrue(writes.isEmpty)
 
         let sent = await vm.sendDrafts()
-        XCTAssertTrue(sent)
+        XCTAssertEqual(sent, 2)
         let after = try await commentCount()
         XCTAssertEqual(after, 2)
         XCTAssertEqual(vm.openThreads.map(\.root.anchorQuote), ["retry budget small", "migration tests"])
@@ -160,6 +160,21 @@ final class ProjectDocumentViewModelTests: XCTestCase {
         XCTAssertTrue(vm.drafts.isEmpty)
         XCTAssertTrue(store.byDocument.isEmpty)
         XCTAssertEqual(writes, [.document(document.id)], "one owner write for the whole batch")
+    }
+
+    /// Two clicks on Send while the first write runs write the batch once.
+    func testOverlappingSendsWriteTheDraftsOnce() async throws {
+        let vm = makeVM()
+        await vm.load()
+        vm.addDraft(body: "Why small?", selection: try selection("retry budget small", in: vm))
+        vm.addDraft(body: "Which tests?", selection: try selection("migration tests", in: vm))
+        async let first = vm.sendDrafts()
+        async let second = vm.sendDrafts()
+        let results = await [first, second]
+        XCTAssertEqual(results.compactMap { $0 }.reduce(0, +), 2)
+        let count = try await commentCount()
+        XCTAssertEqual(count, 2)
+        XCTAssertFalse(vm.isSending)
     }
 
     /// House rule: drafts survive navigation — the store outlives the
@@ -189,8 +204,9 @@ final class ProjectDocumentViewModelTests: XCTestCase {
 
         XCTAssertEqual(vm.drafts.map(\.body), ["Which tests?", "Why small?"], "the lost draft sorts last")
         XCTAssertEqual(vm.sendableDraftCount, 1)
+        XCTAssertEqual(vm.unsendableDraftCount, 1)
         let sent = await vm.sendDrafts()
-        XCTAssertTrue(sent)
+        XCTAssertEqual(sent, 1)
         let after = try await commentCount()
         XCTAssertEqual(after, 1)
         XCTAssertEqual(vm.drafts.map(\.body), ["Why small?"], "kept for the owner to delete or redo")
@@ -385,6 +401,7 @@ private extension ProjectDocumentViewModel {
     /// An owner comment the way the pane writes one: a draft, then the send.
     @discardableResult
     func addComment(body: String, selection: NSRange) async -> Bool {
-        addDraft(body: body, selection: selection) ? await sendDrafts() : false
+        guard addDraft(body: body, selection: selection) else { return false }
+        return await sendDrafts() != nil
     }
 }

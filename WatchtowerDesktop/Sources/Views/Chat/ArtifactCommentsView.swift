@@ -11,19 +11,21 @@ struct ArtifactCommentsView: View {
     let onSend: () -> Void
     @State private var selection = NSRange(location: 0, length: 0)
     @State private var activeID: Int64?
+    @State private var composerText = ""
 
     var body: some View {
         VStack(spacing: 0) {
             if let rendered = comments.rendered {
-                HStack {
-                    Text("Select text to comment on it.").font(.caption).foregroundStyle(.secondary)
-                    Spacer()
-                }
-                .padding(8)
+                Text("Select text to comment on it.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
                 CommentableDocumentText(
                     text: DocumentAttributedString.make(rendered, highlights: comments.ranges, activeThreadID: activeID),
                     contentID: contentID,
                     selection: $selection,
+                    composerText: $composerText,
                     onComment: { body, range in comments.add(body: body, selection: range) },
                     onClick: { activeID = comments.threadID(at: $0) ?? activeID }
                 )

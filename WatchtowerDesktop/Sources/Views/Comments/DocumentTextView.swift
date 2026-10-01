@@ -166,22 +166,23 @@ struct DocumentTextView: NSViewRepresentable {
 
         // MARK: - Comment affordance
 
+        private weak var observedTextView: NSTextView?
+
         /// Scrolling and resizing move the selection on screen.
         func observeGeometry(of scroll: NSScrollView) {
             guard let textView = scroll.documentView as? NSTextView else { return }
+            observedTextView = textView
             scroll.contentView.postsBoundsChangedNotifications = true
             textView.postsFrameChangedNotifications = true
             let center = NotificationCenter.default
-            for (name, object) in [(NSView.boundsDidChangeNotification, scroll.contentView as NSView),
-                                   (NSView.frameDidChangeNotification, textView as NSView)] {
-                center.addObserver(self, selector: #selector(geometryDidChange(_:)), name: name, object: object)
-            }
+            center.addObserver(self, selector: #selector(geometryDidChange),
+                               name: NSView.boundsDidChangeNotification, object: scroll.contentView)
+            center.addObserver(self, selector: #selector(geometryDidChange),
+                               name: NSView.frameDidChangeNotification, object: textView)
         }
 
-        @objc private func geometryDidChange(_ notification: Notification) {
-            let view = notification.object as? NSView
-            let textView = (view as? NSTextView) ?? (view as? NSClipView)?.documentView as? NSTextView
-            if let textView { reportSelectionRect(textView) }
+        @objc private func geometryDidChange() {
+            if let observedTextView { reportSelectionRect(observedTextView) }
         }
 
         private func reportSelectionRect(_ textView: NSTextView) {

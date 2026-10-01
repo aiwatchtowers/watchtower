@@ -31,3 +31,13 @@ final class SelectionCommentPlacementTests: XCTestCase {
         XCTAssertNil(SelectionCommentPlacement.origin(selection: .null, container: container, button: button))
     }
 }
+
+final class SelectionCommentCheckTests: XCTestCase {
+    /// The guard the removed VM `renderVersion` refusal used to pin: a
+    /// composer opened on an older render never saves its stale selection.
+    func testRefusesOnlyWhenTheTextWasReRenderedSinceTheComposerOpened() {
+        XCTAssertNil(SelectionCommentCheck.refusal(openedOn: "7#2", current: "7#2"))
+        XCTAssertEqual(SelectionCommentCheck.refusal(openedOn: "7#2", current: "7#3"), SelectionCommentCheck.staleMessage)
+        XCTAssertNotNil(SelectionCommentCheck.refusal(openedOn: "7#2", current: "8#1"), "another document")
+    }
+}

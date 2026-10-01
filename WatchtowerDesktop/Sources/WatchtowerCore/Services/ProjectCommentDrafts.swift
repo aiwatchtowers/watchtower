@@ -25,6 +25,9 @@ package final class ProjectCommentDrafts {
 
     package nonisolated init() {}
 
+    /// Every unsent draft, on any document.
+    package var count: Int { byDocument.values.reduce(0) { $0 + $1.count } }
+
     package func drafts(for documentID: Int64) -> [ProjectCommentDraft] {
         byDocument[documentID] ?? []
     }
