@@ -131,6 +131,8 @@ DEV-01.
 
 ## Changelog
 
+- 2026-10-01 (board target #90): `kb.Request.Scope`/`ScopeOnly` and `kb.Recent` — a project session's `search_knowledge` boosts (or, with `project_scope: only`, restricts to) the documents of the project's Slack channels, Jira projects and Confluence spaces, via one SQL predicate over `anchor_json` (`Scope.predicate`); the boost is a second, scope-restricted retrieval per query fused in at the same weights, and `Hit.in_scope` marks such hits. Outside a project session nothing changes. KB-01..03 unchanged (in-scope hits open and anchor like any other).
+
 - 2026-09-30: a batch's documents are rendered before its write transaction opens (`buildBatch`), and only the writes run inside it (`storeBatch`) — the render used to hold SQLite's write lock for up to a whole 200-document batch, long enough to fail an owner's Approve click in another process with SQLITE_BUSY (backlog `2026-09-30-approving-a-chat-proposal-fails-with-sqlite-busy.md`). Guard `TestRun_RendersOutsideTheWriteLock`. The "Build runs inside the write transaction" v1 limit is retired; KB-01..03 unchanged.
 
 - 2026-09-27 (T13 docs pass): KB-01's Confluence users-arm wording corrected
