@@ -54,7 +54,11 @@ package struct ChatTurnStore: Sendable {
     /// session error: its code and its own message are both kept.
     @discardableResult
     package func finalizeTurn(
-        conversationID: Int64, messageID: Int64, text: String, status: String, usage: ChatUsage?,
+        conversationID: Int64,
+        messageID: Int64,
+        text: String,
+        status: String,
+        usage: ChatUsage?,
         error: ChatSessionError?
     ) throws -> [ChatArtifact] {
         try dbPool.write { db in

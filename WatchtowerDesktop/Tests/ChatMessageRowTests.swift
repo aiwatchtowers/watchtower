@@ -9,7 +9,11 @@ import WatchtowerTestSupport
 @MainActor
 final class ChatMessageRowTests: XCTestCase {
     private func item(
-        role: String, status: String, errorCode: String? = nil, errorMessage: String? = nil, provider: String? = nil,
+        role: String,
+        status: String,
+        errorCode: String? = nil,
+        errorMessage: String? = nil,
+        provider: String? = nil,
         siblings: Int = 1
     ) throws -> ChatThreadItem {
         let db = try TestDatabase.create()

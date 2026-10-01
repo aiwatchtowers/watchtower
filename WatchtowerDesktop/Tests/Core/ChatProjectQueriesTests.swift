@@ -198,7 +198,7 @@ final class ChatProjectQueriesTests: XCTestCase {
             ("remove file", { d, pid in
                 let fileID = try self.insertProjectFile(d, projectID: pid, path: "/tmp/x.pdf")
                 _ = try ChatProjectQueries.removeFile(d, id: fileID)
-            }),
+            })
         ]
         for (name, write) in writes {
             try db.write { d in
