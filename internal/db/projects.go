@@ -191,7 +191,7 @@ const (
 
 // ErrInvalidBoardLanguage is returned for a board language that is not a
 // short language name or tag.
-var ErrInvalidBoardLanguage = errors.New("board language must be a language name or tag such as Russian or pt-BR (letters, spaces and hyphens, at most 3 words and 40 characters)")
+var ErrInvalidBoardLanguage = errors.New("board language must be a language name or tag such as Russian or pt-BR (letters, spaces and hyphens with at least one letter, at most 3 words and 40 characters)")
 
 // NormalizeBoardLanguage trims s and collapses its inner runs of spaces. Empty
 // (follow the session) is valid; anything else must be letters (any script),
