@@ -23,9 +23,10 @@ package enum WhisperHallucinationFilter {
         #"(?-i:С)(?:убтитры|убтитри)\s+(?:сделал|сделала|создавал|создавала|делал|делала|подготовил|подготовила|подогнал"#
             // Only Whisper's capitalised credit form, and only when nothing
             // continues the clause after the nickname (end of text or a
-            // capitalised run-on sentence): "Субтитры делал DeepL, качество
+            // run-on sentence with a non-Latin capital, so "Google
+            // Translate" stays one name): "Субтитры делал DeepL, качество
             // так себе" and "…что субтитры делал Whisper." are speech.
-            + #"|зробив|створив|підготував)\s+\p{Latin}[\p{Latin}\d_.-]*+[.!?…]*+(?=\s*(?:(?-i:\p{Lu})|$))"#,
+            + #"|зробив|створив|підготував)\s+\p{Latin}[\p{Latin}\d_.-]*+[.!?…]*+(?=\s*(?:(?-i:(?!\p{Latin})\p{Lu})|$))"#,
         #"редактор субтитров\s+\S+\s+корректор\s+\S+[.!?…]*"#,
         #"subtitles by(?:\s+the)?\s+amara\.org(?:\s+community)?[.!?…]*"#,
         // The ellipsis form is the hallucination; spoken "продолжение
