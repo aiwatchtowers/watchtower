@@ -1,33 +1,63 @@
 import SwiftUI
-import AppKit
 import WatchtowerCore
+
+// MARK: - IdeaDiscussState
+
+/// What a pane holds for its Discuss section: whether it is open, and the
+/// idea's conversation once resolved (on the first expand). The chat itself
+/// lives in `AppState.embeddedChatCenter`, so collapsing the section or
+/// leaving the pane never stops a reply.
+struct IdeaDiscussState {
+    var isExpanded = false
+    var conversationID: Int64?
+
+    /// The idea's engine while the section is open.
+    @MainActor
+    func engine(
+        idea: Idea,
+        mentions: [IdeaMention],
+        dbManager: DatabaseManager,
+        center: EmbeddedChatCenter
+    ) -> EmbeddedChatEngine? {
+        guard isExpanded, let conversationID else { return nil }
+        return center.engine(for: IdeaChatSurface.spec(idea: idea, mentions: mentions,
+                                                       conversationID: conversationID, dbPool: dbManager.dbPool))
+    }
+}
 
 // MARK: - IdeaDiscussSection
 
 /// Collapsed-by-default "Discuss with assistant" chat at the bottom of the
-/// idea detail pane's SCROLL content: header + message bubbles only. The
-/// input field is docked by the owning `IdeaDetailPane` below the scroll
-/// (`IdeaDiscussInputBar`) — `ChatInput` wraps a nested NSScrollView that
-/// collapses inside a SwiftUI ScrollView, so it must live outside it (same
-/// placement as `TargetDetailView`'s chat section). Expansion state and the chat VM
-/// belong to the pane for the same reason; the section stays inert while
-/// collapsed (one cheap message-count read).
+/// idea (or decision) detail pane's SCROLL content: header + the chat's rows.
+/// The composer is docked by the owning pane below the scroll
+/// (`EmbeddedChatComposer`) — the input wraps a nested NSScrollView that
+/// collapses inside a SwiftUI ScrollView, so it must live outside it. The
+/// section stays inert while collapsed (one cheap message-count read).
 struct IdeaDiscussSection: View {
     let idea: Idea
     let mentions: [IdeaMention]
     let dbManager: DatabaseManager
-    @Binding var isExpanded: Bool
-    @Binding var chatVM: IdeaChatViewModel?
+    let center: EmbeddedChatCenter
+    @Binding var state: IdeaDiscussState
 
     @State private var persistedCount = 0
+    @State private var loadError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Divider().padding(.vertical, 2)
             header
-            if isExpanded, let chatVM {
-                IdeaDiscussMessages(chatVM: chatVM)
-                    .padding(.top, 6)
+            if let loadError {
+                Label(loadError, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+            if let engine = state.engine(idea: idea, mentions: mentions, dbManager: dbManager, center: center) {
+                LazyVStack(alignment: .leading, spacing: ChatDensity.compact.rowSpacing) {
+                    EmbeddedChatRows(engine: engine)
+                }
+                .padding(.top, 6)
+                .embeddedChatVisibility(engine.spec.key, in: center)
             }
         }
         .onAppear(perform: loadPersistedCount)
@@ -44,7 +74,7 @@ struct IdeaDiscussSection: View {
                 Text("Discuss with assistant")
                     .font(.subheadline)
                     .fontWeight(.medium)
-                if persistedCount > 0 && !isExpanded {
+                if persistedCount > 0 && !state.isExpanded {
                     Text("\(persistedCount)")
                         .font(.caption2)
                         .fontWeight(.semibold)
@@ -54,7 +84,7 @@ struct IdeaDiscussSection: View {
                         .background(Color.accentColor, in: Capsule())
                 }
                 Spacer()
-                Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                Image(systemName: state.isExpanded ? "chevron.up" : "chevron.down")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }
@@ -64,132 +94,34 @@ struct IdeaDiscussSection: View {
         .buttonStyle(.plain)
     }
 
+    /// Collapsing only hides the chat — a reply in flight keeps streaming.
     private func toggleDiscuss() {
-        if isExpanded {
-            chatVM?.cancelStream()
-            isExpanded = false
+        if state.isExpanded {
+            state.isExpanded = false
             loadPersistedCount()
             return
         }
-        if chatVM == nil {
-            chatVM = IdeaChatViewModel(idea: idea, mentions: mentions, dbManager: dbManager)
+        if state.conversationID == nil {
+            do {
+                state.conversationID = try IdeaChatSurface.conversationID(for: idea, dbPool: dbManager.dbPool)
+                loadError = nil
+            } catch {
+                loadError = "Couldn't open the discussion: \(error.localizedDescription)"
+                return
+            }
         }
-        isExpanded = true
+        state.isExpanded = true
     }
 
     private func loadPersistedCount() {
         let ideaID = idea.id
-        persistedCount = (try? dbManager.dbPool.read { db in
-            try IdeaChatViewModel.persistedMessageCount(db, ideaID: ideaID)
-        }) ?? 0
-    }
-}
-
-// MARK: - Message list (inside the pane's scroll)
-
-private struct IdeaDiscussMessages: View {
-    let chatVM: IdeaChatViewModel
-
-    var body: some View {
-        LazyVStack(alignment: .leading, spacing: 10) {
-            if chatVM.messages.isEmpty {
-                Text("Ask me about this idea — I can pull related messages, people, and other ideas.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.vertical, 8)
+        do {
+            persistedCount = try dbManager.dbPool.read { db in
+                try IdeaChatSurface.persistedMessageCount(db, ideaID: ideaID)
             }
-            ForEach(chatVM.messages) { msg in
-                bubble(msg)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func bubble(_ msg: ChatMessage) -> some View {
-        switch msg.role {
-        case .user:
-            HStack {
-                Spacer(minLength: 40)
-                Text(msg.text)
-                    .font(.subheadline)
-                    .textSelection(.enabled)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(Color.accentColor.opacity(0.18), in: RoundedRectangle(cornerRadius: 14))
-            }
-        case .assistant:
-            HStack(alignment: .top, spacing: 8) {
-                Image(systemName: "sparkle")
-                    .font(.caption2)
-                    .foregroundStyle(Color.accentColor)
-                    .padding(.top, 9)
-                VStack(alignment: .trailing, spacing: 4) {
-                    Group {
-                        if msg.text.isEmpty && msg.isStreaming {
-                            HStack(spacing: 6) {
-                                ProgressView().controlSize(.mini)
-                                Text("Thinking…").foregroundStyle(.secondary)
-                            }
-                            .font(.subheadline)
-                        } else {
-                            MarkdownView(text: msg.text)
-                                .font(.subheadline)
-                                .textSelection(.enabled)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    if !msg.isStreaming && !msg.text.isEmpty {
-                        Button {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(msg.text, forType: .string)
-                        } label: {
-                            Label("Copy", systemImage: "doc.on.doc")
-                                .font(.caption2)
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.secondary)
-                        .help("Copy")
-                    }
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(Color(.textBackgroundColor).opacity(0.6), in: RoundedRectangle(cornerRadius: 14))
-            }
-        case .system:
-            Text(msg.text)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .center)
-        }
-    }
-}
-
-// MARK: - Docked input bar (outside the pane's scroll)
-
-/// The Discuss chat's input row, rendered by `IdeaDetailPane` between the
-/// scroll content and the action bar while Discuss is expanded.
-struct IdeaDiscussInputBar: View {
-    @Bindable var chatVM: IdeaChatViewModel
-
-    var body: some View {
-        VStack(spacing: 4) {
-            if let err = chatVM.errorMessage {
-                Label(err, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 12)
-                    .padding(.top, 4)
-            }
-            ChatInput(
-                text: $chatVM.inputText,
-                isStreaming: chatVM.isStreaming,
-                onSend: { chatVM.send() },
-                onStop: { chatVM.cancelStream() },
-                placeholder: "Ask about this idea…",
-                dictationTargetID: "chat.idea.\(chatVM.ideaID)"
-            )
+        } catch {
+            // A badge only: the count stays as it was, the failure is logged.
+            NSLog("IdeaDiscussSection: message count for idea %d failed: %@", ideaID, String(describing: error))
         }
     }
 }
