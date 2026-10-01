@@ -18,16 +18,16 @@ func TestClaudeBackend_ProjectBlocksOnlyWhilePending(t *testing.T) {
 	b := &claudeBackend{opts: ClaudeOptions{ProjectAttachments: []Attachment{att}}}
 	b.projectPending = initialProjectPending(b.opts)
 
-	first := b.projectBlocks()
+	first := b.projectBlocks(MaxTurnAttachmentEncodedBytes)
 	require.Len(t, first, 1)
 	assert.Contains(t, string(first[0]), marker)
-	// Not cleared until the turn was actually written to the child.
-	require.Len(t, b.projectBlocks(), 1, "an unsent first turn still carries the project file")
+	// Not cleared until a turn carrying it ended with turn_done.
+	require.Len(t, b.projectBlocks(MaxTurnAttachmentEncodedBytes), 1, "an unsent first turn still carries the project file")
 	b.projectSent()
-	assert.Empty(t, b.projectBlocks(), "later turns carry no project files")
+	assert.Empty(t, b.projectBlocks(MaxTurnAttachmentEncodedBytes), "later turns carry no project files")
 	// A replay / session_lost restart is a fresh provider session again.
 	b.markFreshSession()
-	assert.Len(t, b.projectBlocks(), 1, "after a fresh restart the project file is re-attached")
+	assert.Len(t, b.projectBlocks(MaxTurnAttachmentEncodedBytes), 1, "after a fresh restart the project file is re-attached")
 }
 
 // A project file that is gone or no longer valid at turn time is skipped
@@ -43,11 +43,38 @@ func TestClaudeBackend_ProjectBlocksSkipMissingAndInvalid(t *testing.T) {
 		att,
 	}}}
 	b.markFreshSession()
-	blocks := b.projectBlocks()
+	blocks := b.projectBlocks(MaxTurnAttachmentEncodedBytes)
 	require.Len(t, blocks, 1)
 	assert.Contains(t, string(blocks[0]), marker)
 	assert.Contains(t, warn.String(), "gone.pdf")
 	assert.Contains(t, warn.String(), "notreally.png")
+}
+
+// Project files only get what the per-message encoded cap leaves after the
+// owner's own files: one that no longer fits is skipped with a warning, and
+// a smaller one after it still goes.
+func TestClaudeBackend_ProjectBlocksFitTheMessageCap(t *testing.T) {
+	att, marker := projectFixture(t)
+	big := filepath.Join(t.TempDir(), "big.png")
+	bigData := append(append([]byte{}, fixturePNG...), make([]byte, 64)...)
+	require.NoError(t, os.WriteFile(big, bigData, 0o600))
+	var warn bytes.Buffer
+	b := &claudeBackend{opts: ClaudeOptions{Warn: &warn, ProjectAttachments: []Attachment{
+		{Path: big, Mime: "image/png", Name: "big.png"}, att,
+	}}}
+	b.markFreshSession()
+	pdfSize := int64(base64.StdEncoding.EncodedLen(len(fixturePDF)))
+	require.Greater(t, int64(base64.StdEncoding.EncodedLen(len(bigData))), pdfSize, "the PNG must be the bigger file")
+
+	blocks := b.projectBlocks(pdfSize)
+	require.Len(t, blocks, 1)
+	assert.Contains(t, string(blocks[0]), marker, "the file that fits still goes")
+	assert.Contains(t, warn.String(), "big.png")
+	assert.Contains(t, warn.String(), "MB one message carries")
+
+	warn.Reset()
+	assert.Empty(t, b.projectBlocks(0), "nothing fits once the owner's files used the whole cap")
+	assert.Contains(t, warn.String(), "spec.pdf")
 }
 
 func TestClaudeBackend_ResumedSessionDoesNotReattachProjectFiles(t *testing.T) {
@@ -238,4 +265,29 @@ func TestClaudeBackend_ProjectFileRemovedAfterStartNeverFailsTheTurn(t *testing.
 	assert.NotContains(t, lines[1], keepMarker, "the next turn carries no project files")
 	assert.Contains(t, warn.String(), "diagram.png")
 	assert.Equal(t, 1, strings.Count(warn.String(), "skipped"), "the skipped file is not retried")
+}
+
+// A turn that ends in an error may never have reached the model (the
+// provider can reject the whole request): the next turn carries the project
+// files again instead of dropping them for the rest of the session.
+func TestClaudeBackend_FailedTurnKeepsProjectFilesPending(t *testing.T) {
+	opts, f := fakeClaude(t, "error_once")
+	att, marker := projectFixture(t)
+	opts.ProjectAttachments = []Attachment{att}
+	h := startSession(t, NewClaudeBackend(opts), nil)
+	h.next(EventSessionReady)
+
+	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "first"})
+	h.next(EventError)
+	h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "retry"})
+	assert.Equal(t, StatusComplete, h.next(EventTurnDone).Status)
+	h.send(Command{Type: CommandTurn, TurnID: "t3", Text: "third"})
+	assert.Equal(t, StatusComplete, h.next(EventTurnDone).Status)
+	require.NoError(t, h.finish())
+
+	lines := stdinLines(t, f.stdin)
+	require.Len(t, lines, 3)
+	assert.Contains(t, lines[0], marker)
+	assert.Contains(t, lines[1], marker, "the retry after the failed turn still carries the project file")
+	assert.NotContains(t, lines[2], marker, "once a turn completed, the files are in the session")
 }

@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -337,20 +338,39 @@ func writeProjectTextFiles(b *strings.Builder, files []db.ChatProjectFile) {
 	}
 }
 
-// writeProjectBinaryFiles names the binaries: attached on the Claude backend,
-// unavailable on any other provider.
+// writeProjectBinaryFiles names the binaries: attached on the Claude backend
+// as far as they fit in one message's encoded cap (the backend's
+// projectBlocks fits them in the same order), unavailable on any other
+// provider.
 func writeProjectBinaryFiles(b *strings.Builder, files []db.ChatProjectFile, provider string) {
 	if len(files) == 0 {
 		return
 	}
-	names := make([]string, len(files))
-	for i, f := range files {
-		names[i] = f.Name
-	}
-	if provider == "" || provider == "claude" {
-		b.WriteString("Attached to the first message of each session: " + strings.Join(names, ", ") + "\n")
-	} else {
+	if provider != "" && provider != "claude" {
+		names := make([]string, len(files))
+		for i, f := range files {
+			names[i] = f.Name
+		}
 		b.WriteString("Not available in this session (images and PDFs need the Claude provider): " +
 			strings.Join(names, ", ") + "\n")
+		return
+	}
+	var attached, tooLarge []string
+	budget := MaxTurnAttachmentEncodedBytes
+	for _, f := range files {
+		size := int64(base64.StdEncoding.EncodedLen(int(f.Size)))
+		if size > budget {
+			tooLarge = append(tooLarge, f.Name)
+			continue
+		}
+		budget -= size
+		attached = append(attached, f.Name)
+	}
+	if len(attached) > 0 {
+		b.WriteString("Attached to the first message of each session: " + strings.Join(attached, ", ") + "\n")
+	}
+	if len(tooLarge) > 0 {
+		fmt.Fprintf(b, "Not attached (together over the %d MB one message carries): %s\n",
+			MaxTurnAttachmentEncodedBytes>>20, strings.Join(tooLarge, ", "))
 	}
 }

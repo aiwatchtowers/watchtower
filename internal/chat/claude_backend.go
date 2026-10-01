@@ -127,8 +127,8 @@ type claudeBackend struct {
 	closed    bool   // Close ran: nothing may spawn again
 	inFlight  bool   // this turn's message reached the child (reset when Turn returns)
 
-	// projectPending is true until the first turn of the current fresh
-	// provider session carrying the project files is written. Touched only
+	// projectPending is true until a turn of the current fresh provider
+	// session carrying the project files ends with turn_done. Touched only
 	// by Start and the (single-flight) Turn goroutine.
 	projectPending bool
 }
@@ -230,38 +230,40 @@ func (b *claudeBackend) markFreshSession() {
 	b.projectPending = len(b.opts.ProjectAttachments) > 0
 }
 
-// projectSent clears the pending flag once the first turn of the fresh
-// session has been written to the child's stdin — with whatever project
-// files were still loadable, so a skipped file is never retried.
+// projectSent clears the pending flag once the turn that carried the
+// project files ended with turn_done — with whatever files were still
+// loadable, so a skipped file is never retried. A turn that failed keeps the
+// flag: the provider may have rejected the whole request, files included.
 func (b *claudeBackend) projectSent() { b.projectPending = false }
 
 // projectBlocks is the project files' content blocks for this turn: nil
 // unless it opens a fresh provider session. Each file is read now; one that
 // is gone or no longer valid (removed on the project page after the session
-// started) is skipped and named on Warn — a project file never fails the
-// turn, unlike the owner's own attachments.
-func (b *claudeBackend) projectBlocks() []json.RawMessage {
+// started), or that no longer fits in budget — what the per-message encoded
+// cap leaves after the owner's own files — is skipped and named on Warn: a
+// project file never fails the turn, unlike the owner's own attachments.
+func (b *claudeBackend) projectBlocks(budget int64) []json.RawMessage {
 	if !b.projectPending {
 		return nil
 	}
 	out := make([]json.RawMessage, 0, len(b.opts.ProjectAttachments))
 	for _, a := range b.opts.ProjectAttachments {
-		blk, err := projectFileBlock(a)
+		l, err := loadAttachment(a, false)
+		if err == nil && l.encodedSize() > budget {
+			err = fmt.Errorf("over the %d MB one message carries", MaxTurnAttachmentEncodedBytes>>20)
+		}
+		var blk json.RawMessage
+		if err == nil {
+			blk, err = l.block()
+		}
 		if err != nil {
 			fmt.Fprintf(b.warn(), "chat project file %q skipped: %v\n", a.Name, err)
 			continue
 		}
+		budget -= l.encodedSize()
 		out = append(out, blk)
 	}
 	return out
-}
-
-func projectFileBlock(a Attachment) (json.RawMessage, error) {
-	l, err := loadAttachment(a, false)
-	if err != nil {
-		return nil, err
-	}
-	return l.block()
 }
 
 func (b *claudeBackend) warn() io.Writer {
@@ -381,8 +383,9 @@ const (
 )
 
 type outcome struct {
-	kind outcomeKind
-	msg  string
+	kind   outcomeKind
+	msg    string
+	failed bool // outcomeDone whose terminal event was an error
 }
 
 // Turn sends one owner message to the warm process and relays its events.
@@ -443,13 +446,19 @@ func (b *claudeBackend) attemptTurn(ctx context.Context, c Command, fresh bool, 
 	// A rejected attachment (*AttachmentError) returns here, before
 	// anything reaches the child's stdin (CHAT-04): the session maps it
 	// to attachment_unsupported via fallbackTerminal. Project files are
-	// lenient (projectBlocks); only the owner's own fail the turn.
-	withProject := b.projectPending
-	line, err := claudeUserMessageLineWith(b.projectBlocks(), text, c.Attachments)
+	// lenient (projectBlocks) and only get what the owner's files leave
+	// of the per-message cap; only the owner's own fail the turn.
+	own, ownSize, err := buildContentBlocks(c.Attachments)
 	if err != nil {
 		return outcome{}, err
 	}
-	p, sent, err := b.send(ctx, line, withProject)
+	withProject := b.projectPending
+	files := append(b.projectBlocks(MaxTurnAttachmentEncodedBytes-ownSize), own...)
+	line, err := claudeUserLine(files, text)
+	if err != nil {
+		return outcome{}, err
+	}
+	p, sent, err := b.send(ctx, line)
 	var rejected *resumeRejectedError
 	if errors.As(err, &rejected) {
 		return outcome{kind: outcomeLost, msg: rejected.msg}, nil
@@ -461,7 +470,11 @@ func (b *claudeBackend) attemptTurn(ctx context.Context, c Command, fresh bool, 
 		emit(Event{Type: EventTurnDone, TurnID: c.TurnID, Status: StatusInterrupted, SessionID: b.sessionToResume()})
 		return outcome{kind: outcomeDone}, nil
 	}
-	return b.await(ctx, p, emit), nil
+	out := b.await(ctx, p, emit)
+	if withProject && out.kind == outcomeDone && !out.failed {
+		b.projectSent()
+	}
+	return out, nil
 }
 
 // exitedTerminal is the terminal event of a turn whose child exited without a
@@ -488,7 +501,7 @@ func (b *claudeBackend) await(ctx context.Context, p *claudeProc, emit func(Even
 		}
 		emit(e)
 		if isTerminal(e) {
-			return outcome{kind: outcomeDone}, true
+			return outcome{kind: outcomeDone, failed: e.Type == EventError}, true
 		}
 		return outcome{}, false
 	}
@@ -536,19 +549,13 @@ func exitOutcome(p *claudeProc, handle func(Event) (outcome, bool)) outcome {
 // writeMu) or stops it being sent, and no child is spawned after Close. The
 // write itself runs outside b.mu — it can block on a child that stopped
 // reading, and Cancel and Close must still get through to kill it.
-//
-// withProject says the line opens the fresh session: a successful write
-// clears the pending flag (a failed one keeps it for the next fresh child).
-func (b *claudeBackend) send(ctx context.Context, line []byte, withProject bool) (*claudeProc, bool, error) {
+func (b *claudeBackend) send(ctx context.Context, line []byte) (*claudeProc, bool, error) {
 	p, err := b.claimForSend(ctx)
 	if p == nil || err != nil {
 		return nil, false, err
 	}
 	_, werr := p.stdin.Write(line)
 	p.writeMu.Unlock()
-	if werr == nil && withProject {
-		b.projectSent()
-	}
 	if werr != nil {
 		b.mu.Lock()
 		closed := b.closed

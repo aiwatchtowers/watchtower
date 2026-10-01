@@ -7,6 +7,7 @@
 #   stubborn (ignores SIGTERM and stdin EOF) · grandchild (leaves a child behind)
 #   internal_tool (runs Claude's ToolSearch before a watchtower tool)
 #   noread (never reads stdin, so a large turn blocks the writer)
+#   error_once (the first user message ever ends in an error result)
 # With $FAKE_INIT_SID set, every user message is first answered by a
 # system/init line carrying that session id (as the real CLI does).
 # Appends argv (one arg per line, runs separated by "--") to $FAKE_ARGV and
@@ -79,6 +80,11 @@ while IFS= read -r line; do
       case "$FAKE_MODE" in
         crash_once)
           if first_time; then exit 3; fi ;;
+        error_once)
+          if first_time; then
+            printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"session_id":"sess-fake","usage":{"input_tokens":0,"output_tokens":0},"errors":["request too large"]}'
+            continue
+          fi ;;
         slow|ignore_interrupt)
           if first_time; then
             printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}}'
