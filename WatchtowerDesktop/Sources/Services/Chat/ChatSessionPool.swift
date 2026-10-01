@@ -93,6 +93,21 @@ final class ChatSessionPool {
         if let client = clients.removeValue(forKey: conversationID) { retire(client) }
     }
 
+    /// A chat project's instructions, sources or files changed (or it was
+    /// deleted): its sessions run on the old prompt. Idle ones close now; a
+    /// busy one finishes its turn first, then is replaced on the next
+    /// request or policy tick. The stored session ids were already cleared
+    /// with the write (`ChatProjectQueries.dropSessions`).
+    func retireSessions(projectID: Int64) {
+        for (id, client) in clients where client.config.projectID == projectID {
+            if client.isBusy {
+                client.retireAfterTurn()
+            } else {
+                close(conversationID: id)
+            }
+        }
+    }
+
     /// App quit: every session gets `close`, then one SIGTERM after the
     /// grace, then SIGKILL if it still lives; retirements already in flight
     /// are awaited too. Returns once every process is gone.

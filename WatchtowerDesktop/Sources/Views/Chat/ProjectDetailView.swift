@@ -23,13 +23,15 @@ struct ProjectDetailView: View {
         onNewChat: @escaping (Int64) -> Void,
         onOpenChat: @escaping (Int64) -> Void,
         onRenamed: @escaping () -> Void,
-        onDeleted: @escaping (Int64) -> Void
+        onDeleted: @escaping (Int64) -> Void,
+        onPromptChanged: @escaping (Int64) -> Void
     ) {
         _vm = State(initialValue: ProjectDetailViewModel(
             projectID: projectID,
             dbPool: dbPool,
             attachmentsRoot: attachmentsRoot,
-            importFile: ProjectDetailViewModel.storeImporter(dbPool: dbPool, rootDir: attachmentsRoot)
+            importFile: ProjectDetailViewModel.storeImporter(dbPool: dbPool, rootDir: attachmentsRoot),
+            onPromptChanged: onPromptChanged
         ))
         self.dbPool = dbPool
         self.onNewChat = onNewChat

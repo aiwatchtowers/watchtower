@@ -102,6 +102,32 @@ final class ChatSessionPoolTests: XCTestCase {
         XCTAssertLessThanOrEqual(maxAlive, ChatSessionPolicy.maxLive)
     }
 
+    /// A chat project's prompt changed: its idle sessions close at once, a
+    /// busy one finishes its turn first and is then no longer reused.
+    func testRetireSessionsOfAProjectClosesIdleAndRetiresBusyAfterItsTurn() async throws {
+        func projectConfig(_ id: Int64, _ project: Int64?) -> ChatSessionConfig {
+            ChatSessionConfig(conversationID: id, provider: "claude", model: nil, projectID: project)
+        }
+        let idle = pool.session(for: 1, config: projectConfig(1, 7))
+        let busy = pool.session(for: 2, config: projectConfig(2, 7))
+        let other = pool.session(for: 3, config: projectConfig(3, nil))
+        busy.startTurn(turn("t2", row: try assistantRow()))
+
+        pool.retireSessions(projectID: 7)
+        XCTAssertNil(pool.client(for: 1))
+        XCTAssertFalse(idle.isAlive)
+        XCTAssertTrue(busy.isBusy, "a running turn is never cut")
+        XCTAssertTrue(busy.isAlive)
+        XCTAssertTrue(other.isAlive)
+
+        fakes[1].emit(.turnDone(turnID: "t2", status: .complete, sessionID: nil))
+        let ended = await waitForCondition { !busy.isBusy }
+        XCTAssertTrue(ended)
+        XCTAssertFalse(busy.isAlive, "the stale session is replaced on the next request")
+        XCTAssertFalse(pool.session(for: 2, config: projectConfig(2, 7)) === busy)
+        XCTAssertTrue(other.isAlive)
+    }
+
     /// Retiring a BUSY session (close or config change) finishes its turn,
     /// which re-runs admission synchronously: the queued fourth must still
     /// wait for the retired process to exit — never 4 live processes.

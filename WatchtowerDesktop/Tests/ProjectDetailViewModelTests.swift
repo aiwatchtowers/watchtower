@@ -10,11 +10,14 @@ final class ProjectDetailViewModelTests: XCTestCase {
     private var path: String!
     private var projectID: Int64 = 0
     private var importedURLs: [URL] = []
+    /// Project ids reported through `onPromptChanged`.
+    private var promptChanges: [Int64] = []
 
     override func setUpWithError() throws {
         (pool, path) = try TestDatabase.createPool()
         projectID = try pool.write { try ChatProjectQueries.create($0, name: "Payments").id }
         importedURLs = []
+        promptChanges = []
     }
 
     override func tearDown() {
@@ -23,7 +26,7 @@ final class ProjectDetailViewModelTests: XCTestCase {
     }
 
     private func makeVM(debounce: Duration = .zero) -> ProjectDetailViewModel {
-        ProjectDetailViewModel(projectID: projectID, dbPool: pool, debounce: debounce) { [weak self] url, pid in
+        ProjectDetailViewModel(projectID: projectID, dbPool: pool, debounce: debounce, importFile: { [weak self] url, pid in
             guard let self else { throw CancellationError() }
             self.importedURLs.append(url)
             return try self.pool.write { d in
@@ -36,7 +39,7 @@ final class ProjectDetailViewModelTests: XCTestCase {
                 )
                 return try XCTUnwrap(ChatProjectQueries.files(d, projectID: pid).last)
             }
-        }
+        }, onPromptChanged: { [weak self] in self?.promptChanges.append($0) })
     }
 
     private func storedInstructions() throws -> String? {
@@ -66,6 +69,29 @@ final class ProjectDetailViewModelTests: XCTestCase {
         await vm.pendingSave?.value
         let stored = try storedInstructions()
         XCTAssertEqual(stored, "Second", "only the latest draft is written")
+    }
+
+    /// Every committed change to what the prompt holds is reported, so the
+    /// chat retires the project's warm sessions; a no-op write is not.
+    func testPromptChangingEditsAreReported() async throws {
+        let vm = makeVM()
+        vm.load()
+        vm.instructionsEdited("Be brief.")
+        await vm.pendingSave?.value
+        XCTAssertEqual(promptChanges, [projectID])
+
+        let hit = ChatEntityHit(kind: .channel, ref: "1:C1", label: "#payments", detail: "")
+        vm.addSource(hit)
+        vm.addSource(hit)
+        XCTAssertEqual(promptChanges.count, 2, "a duplicate source changes nothing")
+        vm.removeSource(try XCTUnwrap(vm.sources.first))
+        XCTAssertEqual(promptChanges.count, 3)
+
+        vm.addFiles([URL(fileURLWithPath: NSTemporaryDirectory() + "absent_\(UUID().uuidString).pdf")])
+        XCTAssertEqual(promptChanges.count, 4)
+        vm.removeFile(try XCTUnwrap(vm.files.first))
+        XCTAssertEqual(promptChanges.count, 5)
+        XCTAssertEqual(Set(promptChanges), [projectID])
     }
 
     /// Leaving the page before the debounce fires must not lose the edit.

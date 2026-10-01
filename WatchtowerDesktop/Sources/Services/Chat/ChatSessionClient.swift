@@ -83,6 +83,8 @@ final class ChatSessionClient {
     @ObservationIgnored private var shutdownRequested = false
     @ObservationIgnored private var sigtermSent = false
     @ObservationIgnored private var hasRunTurn = false
+    /// Set by `retireAfterTurn`: the running turn is this session's last.
+    @ObservationIgnored private var retiresAfterTurn = false
     /// The turn whose `turn` command was actually written to the process.
     @ObservationIgnored private var sentTurnID: String?
 
@@ -225,6 +227,15 @@ final class ChatSessionClient {
         }
     }
 
+    /// The prompt this session was spawned with is stale (its chat project
+    /// changed) but a turn is running: let it finish, record no session id,
+    /// then stop counting as alive so the pool replaces it (CHAT-03 — a
+    /// running turn is never cut).
+    func retireAfterTurn() {
+        retiresAfterTurn = true
+        driver.stopRecordingSession()
+    }
+
     /// Ends the client without a process to shut down (never launched, or
     /// already exited): a held or running turn keeps its text as `partial`.
     func abandon() {
@@ -328,6 +339,7 @@ final class ChatSessionClient {
         } else {
             continuousLeafID = turn.turnID == sentTurnID ? turn.messageID : nil
         }
+        if retiresAfterTurn { isAlive = false }
         touch()
         onTurnFinished?(conversationID)
     }

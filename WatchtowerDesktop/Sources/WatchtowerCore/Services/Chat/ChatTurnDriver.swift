@@ -26,6 +26,8 @@ package final class ChatTurnDriver {
     @ObservationIgnored private let store: ChatTurnStore
     @ObservationIgnored private let clock: () -> Date
     @ObservationIgnored private var lastFlush = Date.distantPast
+    /// False once the session's prompt is stale (`stopRecordingSession`).
+    @ObservationIgnored private var recordsSession = true
 
     package init(
         conversationID: Int64,
@@ -82,6 +84,13 @@ package final class ChatTurnDriver {
         lastSessionError = error
     }
 
+    /// The project prompt this session was spawned with changed: its session
+    /// id must never be stored again (the project write just cleared it), or
+    /// a later turn would `--resume` the stale prompt.
+    package func stopRecordingSession() {
+        recordsSession = false
+    }
+
     /// Stop watchdog, process death, eviction, app quit: whatever was
     /// streamed stays, as `partial` (CHAT-01).
     package func finishRunningAsPartial() {
@@ -96,7 +105,7 @@ package final class ChatTurnDriver {
     }
 
     private func recordSession(_ sid: String?) {
-        guard let sid, !sid.isEmpty, sid != sessionID else { return }
+        guard recordsSession, let sid, !sid.isEmpty, sid != sessionID else { return }
         sessionID = sid
         do {
             try store.saveSessionID(conversationID: conversationID, sessionID: sid, projectID: projectID)
