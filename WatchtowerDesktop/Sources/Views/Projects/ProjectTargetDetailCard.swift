@@ -247,6 +247,14 @@ struct ProjectTargetDetailCard: View {
                 .textFieldStyle(.plain)
                 .lineLimit(1...6)
                 .onSubmit(send)
+                // ⌘↩ sends only while this field has focus: a window-wide
+                // shortcut would also fire from a terminal in the other
+                // split pane and post a stale draft.
+                .onKeyPress(.return, phases: .down) { press in
+                    guard press.modifiers.contains(.command) else { return .ignored }
+                    send()
+                    return .handled
+                }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
                 .background(RoundedRectangle(cornerRadius: 16).fill(Color(nsColor: .textBackgroundColor)))
@@ -260,7 +268,6 @@ struct ProjectTargetDetailCard: View {
                     .foregroundStyle(canSend ? Color.accentColor : Color(nsColor: .tertiaryLabelColor))
             }
             .buttonStyle(.borderless)
-            .keyboardShortcut(.return, modifiers: .command)
             .disabled(!canSend)
             .help("Comment (⌘↩)")
             .accessibilityLabel("Comment")
