@@ -6,7 +6,10 @@ import Foundation
 /// file; `locate` returning nil means the thread is outdated.
 ///
 /// Rules (index Review Focus #4): exact matches first, then a
-/// whitespace-collapsed match (reflow); several candidates are ranked by how
+/// whitespace-collapsed match (reflow), then — only for a quote taken from
+/// an older rendering of the same text — the legacy separators read as
+/// whitespace and the stored context required to match too (see
+/// `legacy(_:csv:)`); several candidates are ranked by how
 /// much of the stored prefix/suffix still surrounds them; no candidate — or
 /// several with none of the original context — is nil. Never fuzzy.
 package struct CommentAnchor: Equatable, Sendable {
@@ -42,23 +45,50 @@ package struct CommentAnchor: Equatable, Sendable {
         )
     }
 
-    package func locate(in text: String) -> Range<String.Index>? {
+    /// - Parameter csv: the anchor was made on a `table` artifact, whose
+    ///   anchor text used to be its raw CSV.
+    package func locate(in text: String, csv: Bool = false) -> Range<String.Index>? {
         let needle = Array(Self.collapsed(quote).trimmingCharacters(in: .whitespacesAndNewlines))
         guard !needle.isEmpty else { return nil }
         let exact = Self.exactOccurrences(of: quote, in: text)
         let candidates = exact.isEmpty ? Self.collapsedOccurrences(of: needle, in: text) : exact
-        return pick(candidates, in: text)
+        if !candidates.isEmpty { return pick(candidates, in: text) }
+        guard let legacy = Self.legacy(quote, csv: csv) else { return nil }
+        let legacyNeedle = Array(Self.collapsed(legacy).trimmingCharacters(in: .whitespacesAndNewlines))
+        guard !legacyNeedle.isEmpty else { return nil }
+        let migrated = Self(quote: legacy, prefix: Self.legacy(prefix, csv: csv) ?? prefix,
+                            suffix: Self.legacy(suffix, csv: csv) ?? suffix, heading: heading)
+        return migrated.pick(Self.collapsedOccurrences(of: legacyNeedle, in: text), in: text, requireContext: true)
+    }
+
+    /// `value` as today's rendering would show it, when it was taken from an
+    /// older one (#181): table cells used to be joined with " | " (now one
+    /// line each), a rule was "———" (now a blank line), and a `table`
+    /// artifact's anchor text was its raw CSV. Nil when nothing changes.
+    private static func legacy(_ value: String, csv: Bool) -> String? {
+        var legacy = value.replacingOccurrences(of: "———", with: " ").replacingOccurrences(of: " | ", with: "\n")
+        if csv { legacy = legacy.replacingOccurrences(of: ",", with: "\n") }
+        return legacy == value ? nil : legacy
     }
 
     // MARK: - Ranking
 
-    private func pick(_ candidates: [Range<String.Index>], in text: String) -> Range<String.Index>? {
-        guard candidates.count > 1 else { return candidates.first }
-        let storedPrefix = Array(Self.collapsed(prefix))
-        let storedSuffix = Array(Self.collapsed(suffix))
+    /// `requireContext`: even a single candidate must still have some of the
+    /// stored prefix/suffix around it — real characters, not just the space
+    /// every line ends with (the legacy tier's guard against landing on
+    /// look-alike text elsewhere).
+    private func pick(
+        _ candidates: [Range<String.Index>],
+        in text: String,
+        requireContext: Bool = false
+    ) -> Range<String.Index>? {
+        guard candidates.count > 1 || requireContext else { return candidates.first }
+        let edge = { (value: String) in requireContext ? value.trimmingCharacters(in: .whitespacesAndNewlines) : value }
+        let storedPrefix = Array(edge(Self.collapsed(prefix)))
+        let storedSuffix = Array(edge(Self.collapsed(suffix)))
         let scored = candidates.map { candidate -> (Range<String.Index>, Int) in
-            let before = Array(Self.collapsed(String(text[..<candidate.lowerBound].suffix(Self.contextLength * 2))))
-            let after = Array(Self.collapsed(String(text[candidate.upperBound...].prefix(Self.contextLength * 2))))
+            let before = Array(edge(Self.collapsed(String(text[..<candidate.lowerBound].suffix(Self.contextLength * 2)))))
+            let after = Array(edge(Self.collapsed(String(text[candidate.upperBound...].prefix(Self.contextLength * 2)))))
             let score = Self.commonSuffixLength(before, storedPrefix) + Self.commonPrefixLength(after, storedSuffix)
             return (candidate, score)
         }

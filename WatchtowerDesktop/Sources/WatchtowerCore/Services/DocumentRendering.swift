@@ -9,6 +9,36 @@ package enum DocumentStyle: Equatable, Sendable {
     case codeBlock
     case quote
     case link(String)
+    /// One list item, from its marker through its last nested line;
+    /// `marker` is the UTF-16 length of its indent + marker ("    • "), which
+    /// the item's wrapped lines hang under.
+    case listItem(marker: Int)
+    /// One table cell's paragraph(s), its newline included.
+    case tableCell(DocumentTableCell)
+    /// A thematic break: a one-character paragraph drawn as a line.
+    case rule
+    /// A highlighted token inside a code block (`CodeHighlighter`).
+    case codeToken(CodeToken.Kind)
+}
+
+/// Where a `.tableCell` run sits: which table of the document, its row
+/// (0 = header row) and column, and the table's column count.
+package struct DocumentTableCell: Equatable, Sendable {
+    package let table: Int
+    package let row: Int
+    package let column: Int
+    package let columns: Int
+    package let alignment: MarkdownAlignment
+
+    package var header: Bool { row == 0 }
+
+    package init(table: Int, row: Int, column: Int, columns: Int, alignment: MarkdownAlignment) {
+        self.table = table
+        self.row = row
+        self.column = column
+        self.columns = columns
+        self.alignment = alignment
+    }
 }
 
 /// A styled span of `RenderedDocument.text`, in UTF-16 units (`NSRange`).
@@ -59,7 +89,28 @@ package enum DocumentRendering {
         for block in MarkdownDocument.parse(markdown) {
             render(block, into: &out, depth: 0)
         }
-        return RenderedDocument(text: out.text, headings: out.headings, runs: out.runs)
+        return out.document
+    }
+
+    /// A `table` artifact's CSV rows (the first is the header) as a table.
+    /// Only the empty records a trailing newline leaves at the end are
+    /// dropped; an empty record inside the data stays an empty row.
+    package static func renderTable(rows: [[String]]) -> RenderedDocument {
+        var rows = rows
+        while let last = rows.last, last.allSatisfy(\.isEmpty) { rows.removeLast() }
+        var out = Builder()
+        if let header = rows.first {
+            let cells = { (row: [String]) in row.map { [MarkdownInline.text($0)] } }
+            render(MarkdownTable(header: cells(header), rows: rows.dropFirst().map(cells), alignments: []), into: &out)
+        }
+        return out.document
+    }
+
+    /// A `code` artifact: one code block, highlighted for `language`.
+    package static func renderCode(_ code: String, language: String?) -> RenderedDocument {
+        var out = Builder()
+        appendCode(code, language: language, into: &out)
+        return out.document
     }
 
     private static func render(_ block: MarkdownBlock, into out: inout Builder, depth: Int) {
@@ -69,8 +120,8 @@ package enum DocumentRendering {
             out.styled(.heading(level)) { render(inlines, into: &$0) }
         case let .paragraph(inlines):
             render(inlines, into: &out)
-        case let .code(_, code):
-            out.styled(.codeBlock) { $0.append(code) }
+        case let .code(language, code):
+            appendCode(code, language: language, into: &out)
         case let .list(list):
             render(list, into: &out, depth: depth)
         case let .quote(children):
@@ -80,9 +131,21 @@ package enum DocumentRendering {
         case let .table(table):
             render(table, into: &out)
         case .rule:
-            out.append("———")
+            out.styled(.rule) { $0.append("\u{00A0}") }
         }
         out.endBlock()
+    }
+
+    private static func appendCode(_ code: String, language: String?, into out: inout Builder) {
+        out.styled(.codeBlock) { out in
+            for token in CodeHighlighter.tokens(code, language: language) {
+                if token.kind == .plain {
+                    out.append(token.text)
+                } else {
+                    out.styled(.codeToken(token.kind)) { $0.append(token.text) }
+                }
+            }
+        }
     }
 
     private static func render(_ list: MarkdownList, into out: inout Builder, depth: Int) {
@@ -93,25 +156,42 @@ package enum DocumentRendering {
             case .unchecked: "☐ "
             case .none: list.ordered ? "\(list.start + index). " : "• "
             }
-            out.append(indent + marker)
-            for (position, block) in item.blocks.enumerated() {
-                if position > 0 { out.newlineIfNeeded() }
-                switch block {
-                case let .paragraph(inlines): render(inlines, into: &out)
-                case let .list(nested): render(nested, into: &out, depth: depth + 1)
-                default: render(block, into: &out, depth: depth + 1)
+            let prefix = indent + marker
+            out.styled(.listItem(marker: prefix.utf16.count)) { out in
+                out.append(prefix)
+                for (position, block) in item.blocks.enumerated() {
+                    if position > 0 { out.newlineIfNeeded() }
+                    switch block {
+                    case let .paragraph(inlines): render(inlines, into: &out)
+                    case let .list(nested): render(nested, into: &out, depth: depth + 1)
+                    default: render(block, into: &out, depth: depth + 1)
+                    }
                 }
+                out.newlineIfNeeded()
             }
-            out.newlineIfNeeded()
         }
     }
 
+    /// Every cell is its own paragraph (a short row is padded with empty
+    /// ones), so the app can lay the cells out as a real table; a blank
+    /// line outside the table follows it.
     private static func render(_ table: MarkdownTable, into out: inout Builder) {
         let rows = [table.header] + table.rows
-        for (index, row) in rows.enumerated() {
-            if index > 0 { out.append("\n") }
-            out.append(row.map(plain).joined(separator: " | "))
+        let columns = rows.map(\.count).max() ?? 0
+        let id = out.nextTableID
+        out.nextTableID += 1
+        out.newlineIfNeeded()
+        for (rowIndex, row) in rows.enumerated() {
+            for column in 0..<columns {
+                let alignment = column < table.alignments.count ? table.alignments[column] : .leading
+                let cell = DocumentTableCell(table: id, row: rowIndex, column: column, columns: columns, alignment: alignment)
+                out.styled(.tableCell(cell)) { out in
+                    if column < row.count { render(row[column], into: &out) }
+                    out.append("\n")
+                }
+            }
         }
+        out.append("\n")
     }
 
     private static func render(_ inlines: [MarkdownInline], into out: inout Builder) {
@@ -141,6 +221,11 @@ package enum DocumentRendering {
         var length = 0
         var headings: [DocumentHeading] = []
         var runs: [DocumentStyleRun] = []
+        var nextTableID = 0
+
+        var document: RenderedDocument {
+            RenderedDocument(text: text, headings: headings, runs: runs)
+        }
 
         mutating func append(_ value: String) {
             text += value

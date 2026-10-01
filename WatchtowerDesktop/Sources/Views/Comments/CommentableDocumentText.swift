@@ -64,8 +64,11 @@ struct CommentableDocumentText: View {
         if let origin = composing ? buttonOrigin ?? live ?? .zero : live {
             Button(action: openComposer) {
                 Label("Comment", systemImage: "text.bubble")
+                    .font(.callout)
+                    .lineLimit(1)
+                    .frame(width: Self.buttonSize.width, height: Self.buttonSize.height)
             }
-            .controlSize(.small)
+            .buttonStyle(FloatingCommentButtonStyle())
             .help("Comment on the selection")
             .popover(isPresented: $composing, arrowEdge: .trailing) { composer }
             // Padding, not offset: the popover anchors on the layout frame.
@@ -88,25 +91,33 @@ struct CommentableDocumentText: View {
     private var composer: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Comment on the selection").font(.headline)
-            TextEditor(text: $composerText).frame(width: 300, height: 90)
+            CommentTextEditor(text: $composerText, placeholder: "Write a comment", focusOnAppear: true,
+                              minHeight: 90, maxHeight: 220, onSubmit: save)
+                .frame(width: 320)
             if let composeError {
                 Text(composeError).font(.caption).foregroundStyle(.red)
             }
             HStack {
+                Text("⌘↩ or ⌃↩ to comment").font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button("Cancel") {
                     composerText = ""
                     composing = false
                 }
                 Button("Comment", action: save)
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(saving || composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!canSave)
             }
         }
         .padding(12)
     }
 
+    private var canSave: Bool {
+        !saving && !composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     private func save() {
+        guard canSave else { return }
         if let refusal = SelectionCommentCheck.refusal(openedOn: composeContentID, current: contentID) {
             composeError = refusal
             return
@@ -123,5 +134,21 @@ struct CommentableDocumentText: View {
             }
             saving = false
         }
+    }
+}
+
+/// The floating Comment button (#165): an opaque, shadowed chip — the default
+/// translucent bezel let the document's text show through it.
+private struct FloatingCommentButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(Color.primary)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color(nsColor: configuration.isPressed ? .controlColor : .windowBackgroundColor))
+            )
+            .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1))
+            .shadow(color: .black.opacity(0.25), radius: 3, y: 1)
+            .contentShape(RoundedRectangle(cornerRadius: 6))
     }
 }

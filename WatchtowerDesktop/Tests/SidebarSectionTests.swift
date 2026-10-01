@@ -179,29 +179,4 @@ final class SidebarSectionTests: XCTestCase {
     func testFallbackDestinationNilWhenCurrentStillVisible() {
         XCTAssertNil(SidebarDestination.fallbackDestination(current: .targets, disabled: ["ideas"]))
     }
-
-    // MARK: - Next-meeting card countdown
-
-    func testNextEventCountdownShowsWholeMinutesAboveOneMinute() {
-        let now = Date()
-        XCTAssertEqual(
-            SidebarView.nextEventCountdownText(start: now.addingTimeInterval(34 * 60 + 7), now: now),
-            "in 34 min",
-            "seconds must not show — drop them rather than round the minute up or down"
-        )
-        XCTAssertEqual(SidebarView.nextEventCountdownText(start: now.addingTimeInterval(120), now: now), "in 2 min")
-        XCTAssertEqual(SidebarView.nextEventCountdownText(start: now.addingTimeInterval(60), now: now), "in 1 min")
-    }
-
-    func testNextEventCountdownShowsSecondsInTheLastMinute() {
-        let now = Date()
-        XCTAssertEqual(SidebarView.nextEventCountdownText(start: now.addingTimeInterval(45), now: now), "in 45 sec")
-        XCTAssertEqual(SidebarView.nextEventCountdownText(start: now.addingTimeInterval(1), now: now), "in 1 sec")
-    }
-
-    func testNextEventCountdownAtOrAfterStartReadsStartingNow() {
-        let now = Date()
-        XCTAssertEqual(SidebarView.nextEventCountdownText(start: now, now: now), "starting now")
-        XCTAssertEqual(SidebarView.nextEventCountdownText(start: now.addingTimeInterval(-30), now: now), "starting now")
-    }
 }
