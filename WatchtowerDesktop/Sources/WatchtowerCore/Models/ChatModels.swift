@@ -18,6 +18,9 @@ package struct ChatMessageRecord: FetchableRecord, Decodable, Identifiable, Equa
     package let tokensIn: Int?
     package let tokensOut: Int?
     package let errorCode: String?
+    /// The session's own error text for an `error` row (migration 00091);
+    /// nil on rows written before it, or when the session gave none.
+    package let errorMessage: String?
 
     enum CodingKeys: String, CodingKey {
         case id, role, text, status, provider, model
@@ -28,6 +31,7 @@ package struct ChatMessageRecord: FetchableRecord, Decodable, Identifiable, Equa
         case tokensIn = "tokens_in"
         case tokensOut = "tokens_out"
         case errorCode = "error_code"
+        case errorMessage = "error_message"
     }
 
     package init(from decoder: Decoder) throws {
@@ -45,6 +49,7 @@ package struct ChatMessageRecord: FetchableRecord, Decodable, Identifiable, Equa
         tokensIn = try c.decodeIfPresent(Int.self, forKey: .tokensIn)
         tokensOut = try c.decodeIfPresent(Int.self, forKey: .tokensOut)
         errorCode = try c.decodeIfPresent(String.self, forKey: .errorCode)
+        errorMessage = try c.decodeIfPresent(String.self, forKey: .errorMessage)
     }
 
     package var createdDate: Date { Date(timeIntervalSince1970: createdAt) }

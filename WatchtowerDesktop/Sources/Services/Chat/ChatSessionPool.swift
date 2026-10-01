@@ -93,6 +93,25 @@ final class ChatSessionPool {
         if let client = clients.removeValue(forKey: conversationID) { retire(client) }
     }
 
+    /// A chat project's instructions, sources or files changed (or it was
+    /// deleted): its sessions run on the old prompt, and none may record its
+    /// session id again (the write just cleared the stored ones — a late
+    /// `session_ready` would put one back). A launched busy one finishes its
+    /// turn first, then is replaced on the next request or policy tick;
+    /// every other one closes now — a pending one too, since its argv
+    /// already carries the old `--resume` (its held turn stays `partial`).
+    ///
+    /// They all leave the queue first: closing one re-runs admission, which
+    /// must not launch another stale one still waiting behind it.
+    func retireSessions(projectID: Int64) {
+        let stale = clients.filter { $0.value.config.projectID == projectID }
+        queue.removeAll { stale[$0] != nil }
+        for (id, client) in stale {
+            client.retireAfterTurn()
+            if !client.isBusy || client.isPending { close(conversationID: id) }
+        }
+    }
+
     /// App quit: every session gets `close`, then one SIGTERM after the
     /// grace, then SIGKILL if it still lives; retirements already in flight
     /// are awaited too. Returns once every process is gone.

@@ -50,7 +50,7 @@ package final class ArtifactCommentsModel {
     /// Called on every panel reload — open, a finished turn, the owner's edit.
     package func sync(latest: ChatArtifact?) {
         artifact = latest
-        let text = latest.map { ArtifactCommentText.render(kind: $0.kind, content: $0.content) }
+        let text = latest.map { ArtifactCommentText.render(kind: $0.kind, content: $0.content, language: $0.meta["language"]) }
         rendered = text
         do {
             var loaded = try db.read { try ArtifactCommentQueries.comments($0, conversationID: conversationID, key: key) }
@@ -60,7 +60,8 @@ package final class ArtifactCommentsModel {
                 errorMessage = nil
                 return
             }
-            let plan = ArtifactCommentReanchor.plan(loaded, text: text.text, version: latest.version)
+            let plan = ArtifactCommentReanchor.plan(loaded, text: text.text, version: latest.version,
+                                                    csv: latest.kind == "table")
             if !plan.isNoOp {
                 loaded = try db.write { db in
                     try ArtifactCommentQueries.apply(db, plan: plan, version: latest.version)
@@ -87,7 +88,10 @@ package final class ArtifactCommentsModel {
     package func add(body: String, selection: NSRange) -> Bool {
         guard let artifact, let rendered, selection.length > 0,
               let range = Range(selection, in: rendered.text),
-              !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+              !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            errorMessage = "Could not save the comment: select the passage again."
+            return false
+        }
         let anchor = CommentAnchor.make(text: rendered.text, range: range, headings: rendered.headingOffsets)
         do {
             _ = try db.write {

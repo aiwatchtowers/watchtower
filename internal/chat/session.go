@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 )
 
 // maxCommandBytes bounds one stdin command line (a long pasted message).
@@ -34,6 +35,8 @@ type Session struct {
 	Provider string // reported in session_ready
 	Model    string // reported in session_ready
 	TurnFile string // when set, the running turn id is written here before each turn (spec §1.2)
+	// Now stamps each turn's turnTimeLine; nil = time.Now (tests pin it).
+	Now func() time.Time
 
 	b Backend
 	w *EventWriter
@@ -217,6 +220,7 @@ func (s *Session) runTurn(ctx context.Context, c Command, st *turnState) {
 		return
 	}
 
+	c.Text = turnTimeLine(s.now()) + c.Text
 	err := s.b.Turn(ctx, c, emit)
 	if terminal {
 		return
@@ -241,6 +245,13 @@ func fallbackTerminal(ctx context.Context, turnID string, err error) Event {
 		code, retry := ClassifyClaudeError(err.Error())
 		return errorEvent(turnID, code, err.Error(), retry)
 	}
+}
+
+func (s *Session) now() time.Time {
+	if s.Now != nil {
+		return s.Now()
+	}
+	return time.Now()
 }
 
 func (s *Session) cancel() {

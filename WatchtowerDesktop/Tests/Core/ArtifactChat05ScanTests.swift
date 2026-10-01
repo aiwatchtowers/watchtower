@@ -36,7 +36,10 @@ final class ArtifactChat05ScanTests: XCTestCase {
             // The selection-comment affordance the artifact panel shares with
             // project documents (#84).
             "Views/Comments/CommentableDocumentText.swift",
-            "Views/Comments/DocumentTextView.swift"
+            "Views/Comments/DocumentTextView.swift",
+            // Split out of / added beside them by #178–#181.
+            "Views/Comments/DocumentAttributedString.swift",
+            "Views/Comments/CommentTextEditor.swift"
         ]
         let forbidden = ["Process(", "CLIRunner", "URLSession", "findCLIPath", "WatchtowerAIService", "ChatSessionPool",
                          ".send(", "sendDraft", "startTurn"]
