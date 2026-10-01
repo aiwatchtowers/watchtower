@@ -60,6 +60,68 @@ final class DayPlanQueriesTests: XCTestCase {
         XCTAssertEqual(taskStatus, "done")
     }
 
+    // MARK: - cascade goes through TargetQueries.updateStatus
+
+    private func seedTaskItem(_ db: DatabaseQueue) throws -> Int64 {
+        try db.write { db in
+            try db.execute(sql: """
+                INSERT INTO targets (id, text, intent, status, priority, ownership, tags, sub_items, created_at, updated_at)
+                VALUES (42, 'T', '', 'todo', 'medium', 'mine', '[]', '[]', datetime('now'), datetime('now'))
+                """)
+            let planId = try TestDatabase.insertDayPlan(db, userID: "U1", planDate: "2026-04-23")
+            return try TestDatabase.insertDayPlanItem(db, dayPlanID: planId, kind: "backlog",
+                                                      sourceType: "task", sourceID: "42", title: "T")
+        }
+    }
+
+    /// INBOX-02: closing a task from the day plan resolves its `target_due`
+    /// inbox item, like any other Desktop "Done".
+    func testCascadeDone_ResolvesTheTasksDueInboxItem() throws {
+        let db = try TestDatabase.create()
+        let itemId = try seedTaskItem(db)
+        try db.write { db in
+            try db.execute(sql: """
+                INSERT INTO inbox_items (channel_id, message_ts, sender_user_id, trigger_type, target_id, status)
+                VALUES ('', '1.0', '', 'target_due', 42, 'pending')
+                """)
+            try DayPlanQueries.markItemDone(db, itemId: itemId, cascadeToTask: true)
+        }
+
+        let inboxStatus = try db.read { db in
+            try String.fetchOne(db, sql: "SELECT status FROM inbox_items WHERE target_id = 42")
+        }
+        XCTAssertEqual(inboxStatus, "resolved")
+    }
+
+    func testCascadeToADeletedTask_Throws_AndLeavesTheItemPending() throws {
+        let db = try TestDatabase.create()
+        let itemId = try seedTaskItem(db)
+        try db.write { db in try db.execute(sql: "DELETE FROM targets WHERE id = 42") }
+
+        XCTAssertThrowsError(try db.write { db in
+            try DayPlanQueries.markItemDone(db, itemId: itemId, cascadeToTask: true)
+        }) { XCTAssertEqual($0 as? TargetNotFoundError, TargetNotFoundError(id: 42)) }
+
+        let itemStatus = try db.read { db in
+            try String.fetchOne(db, sql: "SELECT status FROM day_plan_items WHERE id = ?", arguments: [itemId])
+        }
+        XCTAssertEqual(itemStatus, "pending", "the item's own change rolled back with the failed cascade")
+        // Without the cascade the item is still markable (the view model's fallback).
+        try db.write { db in try DayPlanQueries.markItemDone(db, itemId: itemId, cascadeToTask: false) }
+    }
+
+    func testMarkingADeletedItem_ThrowsNotFound() throws {
+        let db = try TestDatabase.create()
+        let itemId = try seedTaskItem(db)
+        try db.write { db in try db.execute(sql: "DELETE FROM day_plan_items WHERE id = ?", arguments: [itemId]) }
+
+        for mark in [DayPlanQueries.markItemDone, DayPlanQueries.markItemPending] {
+            XCTAssertThrowsError(try db.write { try mark($0, itemId, false) }) {
+                XCTAssertEqual($0 as? RowNotFoundError, RowNotFoundError(kind: "day plan item", id: itemId))
+            }
+        }
+    }
+
     // MARK: - cascade markItemPending resets task to 'todo'
 
     func testCascadeMarkItemPendingResetsTaskToTodo() throws {
