@@ -6,9 +6,11 @@ import XCTest
 import WatchtowerCore
 import WatchtowerTestSupport
 
-/// The Projects tab reads as one surface with its side panel: the title row,
-/// the project page header and the Board render in the panel list's colour,
-/// not the darker detail backdrop `MainNavigationView` puts behind every tab.
+/// The Projects workspace reads as AI Chat's conversation does: the title
+/// row, the project page header and the Board render in the detail backdrop
+/// `MainNavigationView` puts behind every tab, the side panel in its own
+/// colour, and the session on screen is a tab that runs on into the
+/// workspace across the panel's edge line.
 /// (The terminal's transparency under dark is `TerminalPaletteTests`'.)
 @MainActor
 final class ProjectsBackgroundRenderTests: XCTestCase {
@@ -29,7 +31,7 @@ final class ProjectsBackgroundRenderTests: XCTestCase {
 
     private static let size = NSSize(width: 900, height: 500)
 
-    func testProjectPagePaintsThePanelColourOverTheDetailBackdrop() async throws {
+    func testProjectPagePaintsTheDetailBackdropBesideThePanelColour() async throws {
         let projectID = try await manager.dbPool.write { db -> Int64 in
             let id = try TestDatabase.insertProject(db)
             _ = try TestDatabase.insertProjectTarget(db, projectID: id)
@@ -47,15 +49,71 @@ final class ProjectsBackgroundRenderTests: XCTestCase {
         for name in [NSAppearance.Name.darkAqua, .aqua] {
             let appearance = try XCTUnwrap(NSAppearance(named: name))
             let panel = try pixel(render(List { EmptyView() }.panelListStyle(), appearance), x: 450, y: 250)
+            let detail = try pixel(render(Color.clear.detailBackground(), appearance), x: 450, y: 250)
             XCTAssertEqual(panel.alpha, 255, "an empty capture would compare equal to another one")
-            // A sentinel stands in for the detail backdrop, so any spot the
-            // tab leaves unpainted shows.
+            XCTAssertEqual(detail.alpha, 255, "an empty capture would compare equal to another one")
+            // A sentinel stands in for the window behind the tab, so any spot
+            // the tab leaves unpainted shows.
             let page = try render(ProjectsView(vm: vm).environment(appState).background(Color.red), appearance)
             // Near both edges of the page and its middle (the Board), right
             // of the panel whether the panel is shown or not.
             for (x, y) in [(880, 15), (880, 55), (880, 480), (700, 300)] {
-                XCTAssertEqual(try pixel(page, x: x, y: y), panel, "\(name) at (\(x), \(y))")
+                XCTAssertEqual(try pixel(page, x: x, y: y), detail, "\(name) workspace at (\(x), \(y))")
             }
+            // The panel's empty space below its list.
+            XCTAssertEqual(try pixel(page, x: 100, y: 400), panel, "\(name) panel")
+        }
+    }
+
+    /// The session on screen is a tab of the workspace: at its row the
+    /// panel's edge line is covered by the workspace backdrop; at another
+    /// row and below the list the line stays.
+    func testSelectedSessionTabCoversThePanelEdgeLine() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("acme-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let projectID = try await manager.dbPool.write { db in
+            try TestDatabase.insertProject(db, name: "acme", folder: folder.path)
+        }
+        var sessions: [TerminalSession] = []
+        for title in ["first", "second", "third"] {
+            let row = try await manager.dbPool.write { db in
+                try TerminalSessionQueries.create(db, .init(
+                    projectID: projectID, kind: .claude, title: title, folderPath: folder.path,
+                    claudeSessionID: UUID().uuidString.lowercased()
+                ))
+            }
+            sessions.append(row)
+        }
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        let vm = ProjectsViewModel(dbPool: manager.dbPool, cli: ProjectCLI(runner: FakeCLIRunner()), defaults: defaults)
+        await vm.reload()
+        vm.drill(into: projectID)
+        _ = await vm.loadSessions(projectID: projectID)
+        // The middle row of three (the newest is listed first), not running:
+        // its pane shows Resume and starts nothing.
+        let selected = sessions[1]
+        var layout = vm.layout
+        layout.show(.session(selected.id))
+        vm.layout = layout
+        XCTAssertEqual(vm.drilledSessions.map(\.id), sessions.reversed().map(\.id))
+        XCTAssertEqual(vm.panelSelection, .session(selected.id))
+        let appState = AppState()
+        appState.databaseManager = manager
+
+        for name in [NSAppearance.Name.darkAqua, .aqua] {
+            let appearance = try XCTUnwrap(NSAppearance(named: name))
+            let detail = try pixel(render(Color.clear.detailBackground(), appearance), x: 450, y: 250)
+            let page = try render(ProjectsView(vm: vm).environment(appState), appearance)
+            // The panel's last column, where its edge line runs; the rows sit
+            // under the header and the SESSIONS label, about 26pt apart.
+            let edge = Int(PanelResizeHandle.defaultWidth) - 1
+            let line = try pixel(page, x: edge, y: 400)
+            XCTAssertNotEqual(line, detail, "\(name): the edge line shows below the list")
+            XCTAssertEqual(try pixel(page, x: edge, y: 90), detail, "\(name): the selected tab covers the line")
+            XCTAssertEqual(try pixel(page, x: edge, y: 64), line, "\(name): another row keeps the line")
+            // Through the resize strip into the page, the same colour.
+            XCTAssertEqual(try pixel(page, x: edge + 4, y: 90), detail, "\(name): the strip beside the tab")
         }
     }
 
@@ -83,6 +141,9 @@ final class ProjectsBackgroundRenderTests: XCTestCase {
             colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
         ))
         let context = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: bitmap))
+        // Top-left origin, as `pixel(_:x:y:)` and the view's own coordinates.
+        context.cgContext.translateBy(x: 0, y: Self.size.height)
+        context.cgContext.scaleBy(x: 1, y: -1)
         try XCTUnwrap(host.layer).render(in: context.cgContext)
         return bitmap
     }

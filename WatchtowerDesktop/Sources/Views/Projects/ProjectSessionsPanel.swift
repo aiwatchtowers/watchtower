@@ -2,8 +2,10 @@ import SwiftUI
 import WatchtowerCore
 
 /// The left panel's level 2 (spec 2026-09-30-project-workspace-sessions §3):
-/// one header row (Back, the project's name, New session), then the
-/// project's sessions — shaped like the chat history (`ChatSidebarView`).
+/// one header row (Back, the project's name, New session), a SESSIONS label
+/// in the app sidebar's style, then the project's sessions. The session on
+/// screen is a tab of the workspace: filled with its backdrop, it runs on
+/// into the page beside it (`SessionTab`, `panelSurface()`).
 /// Board and Documents are picked in a pane's own header (`WorkspacePaneView`).
 struct ProjectSessionsPanel: View {
     @Bindable var vm: ProjectsViewModel
@@ -12,18 +14,27 @@ struct ProjectSessionsPanel: View {
 
     var body: some View {
         let sessions = vm.drilledSessions
-        VStack(spacing: 0) {
+        VStack(alignment: .leading, spacing: 0) {
             header
-            List(selection: selection) {
-                Section("Sessions") {
-                    ForEach(sessions) { session in
-                        TerminalSessionRow(session: session, isLive: vm.isLive(session), actions: actions)
-                            .tag(WorkspacePane.session(session.id))
-                    }
-                    .onMove { vm.moveSessions(sessions, projectID: project.id, from: $0, to: $1) }
+            Text("SESSIONS")
+                .sidebarSectionLabel()
+                .padding(.horizontal, 12)
+                .padding(.top, 4)
+                .padding(.bottom, 2)
+                .accessibilityAddTraits(.isHeader)
+            // No List selection: its highlight would draw over the tab. The
+            // tab follows `vm.panelSelection` (the session on screen) and a
+            // row opens on its own click (`SessionRowActions.open`), which
+            // also reaches the row already highlighted but not running
+            // (VoiceOver has the row's action).
+            List {
+                ForEach(sessions) { session in
+                    TerminalSessionRow(session: session, isLive: vm.isLive(session), actions: actions)
+                        .modifier(SessionTab(isSelected: vm.panelSelection == .session(session.id)))
                 }
+                .onMove { vm.moveSessions(sessions, projectID: project.id, from: $0, to: $1) }
             }
-            .panelListStyle()
+            .clearPlainList()
         }
         .task(id: project.id) { await vm.loadSessions(projectID: project.id) }
     }
@@ -56,13 +67,46 @@ struct ProjectSessionsPanel: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
     }
+}
 
-    /// The highlight always shows the session on screen; the List's own
-    /// selection changes are ignored. A row opens on its own click
-    /// (`SessionRowActions.open`), which also reaches the row already
-    /// highlighted but not running (VoiceOver has the row's action).
-    private var selection: Binding<WorkspacePane?> {
-        Binding(get: { vm.panelSelection }, set: { _ in })
+/// A session row of `ProjectSessionsPanel` as a tab: inset from the panel's
+/// leading edge by the plain List's own 8pt margin and running to its
+/// trailing edge, rounded on the leading corners only. The session on screen
+/// is filled with the workspace's backdrop, which covers the panel's edge
+/// line at that row (`panelSurface()`) so the tab merges into the page;
+/// other rows have no fill but a faint one under the pointer.
+struct SessionTab: ViewModifier {
+    static let cornerRadius: CGFloat = 7
+    /// The plain List keeps a margin of its own (8pt) past the row's
+    /// trailing inset; the fill overshoots it and the list's clip ends it
+    /// exactly at the panel's edge, whatever that margin is.
+    static let trailingOverhang: CGFloat = 16
+
+    let isSelected: Bool
+    @State private var isHovering = false
+
+    func body(content: Content) -> some View {
+        content
+            .padding(.vertical, 4)
+            .padding(.horizontal, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background {
+                UnevenRoundedRectangle(
+                    topLeadingRadius: Self.cornerRadius, bottomLeadingRadius: Self.cornerRadius,
+                    style: .continuous
+                )
+                .fill(fill)
+                .padding(.trailing, -Self.trailingOverhang)
+            }
+            .onHover { isHovering = $0 }
+            .listRowInsets(EdgeInsets(top: 1, leading: 0, bottom: 1, trailing: 0))
+            .listRowBackground(Color.clear)
+            .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    private var fill: Color {
+        if isSelected { return Color(nsColor: .detailBackground) }
+        return isHovering ? Color.primary.opacity(0.05) : .clear
     }
 }
 
