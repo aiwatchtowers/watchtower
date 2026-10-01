@@ -265,6 +265,14 @@ package final class EmbeddedChatEngine {
         }
     }
 
+    /// The chat's context is gone (a deleted task): decisions waiting for a
+    /// later turn will never be sent, so they stop holding the engine.
+    package func discardFollowUps(reason: String) {
+        guard !queuedFollowUps.isEmpty else { return }
+        log("dropping \(queuedFollowUps.count) follow-up(s): \(reason)")
+        queuedFollowUps.removeAll()
+    }
+
     /// The surface asked for its engine again (see `spec`).
     package func update(spec newSpec: ChatSurfaceSpec) {
         guard newSpec.key == spec.key else { return }

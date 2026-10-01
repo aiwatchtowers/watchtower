@@ -95,11 +95,13 @@ struct TargetsListView: View {
             presenting: pendingDeleteTarget
         ) { target in
             Button("Delete", role: .destructive) {
-                if selectedItemID == target.id { selectedItemID = nil }
-                viewModel?.deleteTarget(target)
-                // A brief still waiting for the deleted target must never run.
-                appState.targetBriefCenter.drop(targetID: target.id)
                 pendingDeleteTarget = nil
+                // A failed delete keeps the task, its chat and its briefs.
+                guard viewModel?.deleteTarget(target) == true else { return }
+                if selectedItemID == target.id { selectedItemID = nil }
+                // Its chat stops with it, and a brief still waiting for it never runs.
+                appState.targetAssistantCenter.drop(targetID: target.id)
+                appState.targetBriefCenter.drop(targetID: target.id)
             }
             Button("Cancel", role: .cancel) {
                 pendingDeleteTarget = nil

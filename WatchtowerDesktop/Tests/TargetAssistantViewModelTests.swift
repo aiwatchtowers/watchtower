@@ -538,4 +538,32 @@ final class TargetAssistantViewModelTests: XCTestCase {
         XCTAssertFalse(chat.isStreaming, "after a failure the follow-up waits for Retry or the next message")
         XCTAssertTrue(assistant.isAnyWorking)
     }
+
+    /// A task deleted after a failed turn frees the follow-ups it held, so
+    /// its container is no longer pinned.
+    func testADeletedTaskReleasesTheFollowUpsItHeld() async throws {
+        let (manager, path) = try makeManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager)
+        struct Boom: Error {}
+        let assistant = makeContainer(manager, target: target, aiService: MockClaudeService(error: Boom()))
+        let chat = try XCTUnwrap(assistant.activeChat)
+        chat.inputText = "go"
+        chat.send()
+        try await waitForStreamEnd(chat)
+        let card = TargetActionCard(messageID: UUID(),
+                                    action: ProposedAction(type: .addSubItem, reason: "r", text: "step"),
+                                    state: .pending)
+        chat.actionCards = [card]
+        chat.approve(card)
+        XCTAssertTrue(assistant.isAnyWorking)
+
+        try await manager.dbPool.write { db in try db.execute(sql: "DELETE FROM targets WHERE id = ?", arguments: [target.id]) }
+        chat.inputText = "still there?"
+        chat.send()  // refused: the task is gone
+        chat.engine.retry()  // refused too
+        XCTAssertTrue(chat.targetGone)
+        XCTAssertFalse(chat.hasPendingWork)
+        XCTAssertFalse(assistant.isAnyWorking)
+    }
 }

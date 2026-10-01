@@ -149,11 +149,10 @@ final class TargetChatViewModel {
     var messages: [ChatMessage] {
         engine.messages.map { item in
             let live = engine.liveTurn.flatMap { $0.messageID == item.id ? $0 : nil }
-            var message = item.message.toChatMessage()
-            message = ChatMessage(id: UUID(chatRowID: item.id), role: message.role,
-                                  text: live?.fullText ?? message.text, timestamp: message.timestamp,
-                                  isStreaming: live != nil, turnID: message.turnID)
-            return message
+            let row = item.message.toChatMessage()
+            return ChatMessage(id: UUID(chatRowID: item.id), role: row.role,
+                               text: live?.fullText ?? row.text, timestamp: row.timestamp,
+                               isStreaming: live != nil, turnID: row.turnID)
         }
     }
 
@@ -262,11 +261,18 @@ final class TargetChatViewModel {
                 guard let self else { return Self.closedChat("follow-up", false) }
                 // No AI turn is started about a task that no longer exists.
                 self.reloadTarget()
+                self.releaseHeldFollowUps()
                 return !self.targetGone
             },
             emptyHint: "Ask it to dig through Slack, draft a reply, or update the task — it proposes changes "
                 + "and you approve them."
         )
+    }
+
+    /// Decisions held for a later turn can never reach a deleted task; left
+    /// queued they would pin this tab's container for good.
+    private func releaseHeldFollowUps() {
+        if targetGone { engine.discardFollowUps(reason: "the task was deleted") }
     }
 
     private static func closedChat<T>(_ what: String, _ fallback: T) -> T {
@@ -286,7 +292,10 @@ final class TargetChatViewModel {
         // both are re-checked against the live list at apply time.
         reloadTarget()
         // Keeps the typed text: nothing was sent.
-        guard !targetGone else { return false }
+        guard !targetGone else {
+            releaseHeldFollowUps()
+            return false
+        }
         onUserMessage?(text)
         return true
     }
@@ -337,6 +346,7 @@ final class TargetChatViewModel {
         }
         actionFeed.refresh()
         reloadTarget()
+        releaseHeldFollowUps()
         viewModel.load()
         onTargetActivity?()
     }
