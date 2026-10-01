@@ -84,3 +84,24 @@ func TestSectionRepeatOfTextUnderTheNextHeadingIsAllowed(t *testing.T) {
 	out, _ := applyOK(t, src, sectionEdit("Goals", "g1\n\no"))
 	assert.Contains(t, out, `<h2>Goals</h2><p>g1</p><p>o</p></ac:layout-cell>`)
 }
+
+// An empty heading (an Enter left in heading style) is omitted from Text,
+// so it must not end a section either: the region is what the text shows.
+func TestSectionRunsOverAnEmptyHeading(t *testing.T) {
+	for _, empty := range []string{`<h2></h2>`, `<h2/>`, `<h1> </h1>`} {
+		t.Run(empty, func(t *testing.T) {
+			src := `<h2>Plan</h2><p>one</p>` + empty + `<p>two</p><h2>Next</h2><p>n</p>`
+			d := mustParse(t, src)
+			assert.Equal(t, "## Plan\n\none\n\ntwo\n\n## Next\n\nn", d.Text())
+			assert.Equal(t, `<p>one</p>`+empty+`<p>two</p>`, region(t, d, "Plan"))
+
+			out, changes := applyOK(t, src, sectionEdit("Plan", "one changed\n\ntwo"))
+			assert.Equal(t, `<h2>Plan</h2><p>one changed</p>`+empty+`<p>two</p><h2>Next</h2><p>n</p>`, out,
+				"the empty heading keeps its place and bytes; nothing is duplicated")
+			assert.Equal(t, "one\n\ntwo", changes[0].Before)
+
+			out, _ = applyOK(t, src, sectionEdit("Plan", "one\n\ntwo changed"))
+			assert.Equal(t, `<h2>Plan</h2><p>one</p>`+empty+`<p>two changed</p><h2>Next</h2><p>n</p>`, out)
+		})
+	}
+}

@@ -8,7 +8,8 @@ var errNotHeading = errors.New("confluenceedit: block is not a heading")
 // heading at d.blocks[i]: from the byte after the heading's end tag to the
 // first of
 //   - the start of the next heading block in the SAME container with a
-//     level <= the heading's (a deeper heading belongs to the section),
+//     level <= the heading's (a deeper heading belongs to the section; an
+//     empty heading, which Text omits, is an ordinary block of it),
 //   - the start of the next layout element nested directly in that
 //     container (a section never swallows or splits a layout: replacing it
 //     would delete the layout's structure, which no edit is shown to do),
@@ -25,7 +26,7 @@ func (d *Doc) sectionRegion(i int) (span, error) {
 	}
 	end := d.containers[h.container].content.end
 	for _, bl := range d.blocks[i+1:] {
-		if bl.container == h.container && bl.kind == blockHeading && bl.level <= h.level {
+		if bl.container == h.container && bl.kind == blockHeading && bl.level <= h.level && unitText(bl.unit) != "" {
 			end = min(end, bl.start)
 			break
 		}
