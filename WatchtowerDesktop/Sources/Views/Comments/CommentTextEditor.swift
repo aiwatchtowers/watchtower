@@ -92,11 +92,14 @@ private struct CommentNSTextEditor: NSViewRepresentable {
         if textView.string != text {
             // Through the undoable path: a plain `string =` leaves typing undo
             // steps pointing into the text that was just replaced.
+            // The delegate stays out of it: this runs inside a SwiftUI update.
             let all = NSRange(location: 0, length: (textView.string as NSString).length)
+            context.coordinator.applyingExternalText = true
             if textView.shouldChangeText(in: all, replacementString: text) {
                 textView.replaceCharacters(in: all, with: text)
                 textView.didChangeText()
             }
+            context.coordinator.applyingExternalText = false
             textView.breakUndoCoalescing()
             DispatchQueue.main.async { context.coordinator.measure(textView) }
         }
@@ -108,20 +111,26 @@ private struct CommentNSTextEditor: NSViewRepresentable {
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: CommentNSTextEditor
+        var applyingExternalText = false
+        private var measuredWidth: CGFloat?
 
         init(parent: CommentNSTextEditor) {
             self.parent = parent
         }
 
         func textDidChange(_ notification: Notification) {
-            guard let textView = notification.object as? NSTextView else { return }
-            if parent.text != textView.string { parent.text = textView.string }
+            guard !applyingExternalText, let textView = notification.object as? NSTextView else { return }
+            parent.text = textView.string
             measure(textView)
         }
 
+        /// A new width re-wraps the text. It arrives mid-layout, so the
+        /// height is written on the next turn; height-only changes (typing)
+        /// are already measured by `textDidChange`.
         @objc func frameDidChange(_ notification: Notification) {
-            guard let textView = notification.object as? NSTextView else { return }
-            measure(textView)
+            guard let textView = notification.object as? NSTextView, textView.frame.width != measuredWidth else { return }
+            measuredWidth = textView.frame.width
+            DispatchQueue.main.async { [weak self] in self?.measure(textView) }
         }
 
         func measure(_ textView: NSTextView) {

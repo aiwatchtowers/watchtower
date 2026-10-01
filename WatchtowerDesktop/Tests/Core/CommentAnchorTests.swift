@@ -170,8 +170,8 @@ final class CommentAnchorTests: XCTestCase {
     // MARK: legacy renderings (#181)
 
     /// Comments made before tables and rules got their own layout keep
-    /// their place: the old " | " cell joins, raw CSV commas and "———" rule
-    /// read as the whitespace the new rendering puts there.
+    /// their place: the old " | " cell joins, a table artifact's raw CSV and
+    /// the "———" rule read as the line breaks the new rendering puts there.
     func testQuotesFromTheOldTableAndRuleRenderingStillLocate() throws {
         let markdown = "| Name | Owner |\n|---|---|\n| retry | ops |\n\n---\n\nAfter the rule."
         let old = "Name | Owner\nretry | ops\n\n———\n\nAfter the rule.\n\n"
@@ -183,11 +183,15 @@ final class CommentAnchorTests: XCTestCase {
 
         let csv = try anchor("retry,ops", in: "Name,Owner\nretry,ops")
         let table = DocumentRendering.renderTable(rows: [["Name", "Owner"], ["retry", "ops"]]).text
-        XCTAssertEqual(csv.locate(in: table).map { String(table[$0]) }, "retry\nops")
+        XCTAssertEqual(csv.locate(in: table, csv: true).map { String(table[$0]) }, "retry\nops")
+        XCTAssertNil(csv.locate(in: table), "only a table artifact's anchor was CSV")
     }
 
-    func testProseCommasAreNotTreatedAsSeparators() throws {
-        let made = try anchor("Alice, Bob agreed", in: "Then Alice, Bob agreed.")
-        XCTAssertNil(made.locate(in: "Then Alice Bob agreed."), "an edited sentence is outdated, not re-attached")
+    /// PROJ-03: a quote that is gone never lands on look-alike text elsewhere.
+    func testTheLegacyTierNeedsTheOriginalContext() throws {
+        let made = try anchor("x | y", in: "Name | Owner\nx | y\n\nMore text here.")
+        XCTAssertNil(made.locate(in: "A different document.\n\nx\ny\n\nUnrelated ending."))
+        let prose = try anchor("alice,bob", in: "Ping alice,bob today.")
+        XCTAssertNil(prose.locate(in: "Ping someone today. Then alice\nbob."), "commas are CSV only in a table artifact")
     }
 }

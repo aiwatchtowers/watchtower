@@ -60,7 +60,8 @@ package final class ArtifactCommentsModel {
                 errorMessage = nil
                 return
             }
-            let plan = ArtifactCommentReanchor.plan(loaded, text: text.text, version: latest.version)
+            let plan = ArtifactCommentReanchor.plan(loaded, text: text.text, version: latest.version,
+                                                    csv: latest.kind == "table")
             if !plan.isNoOp {
                 loaded = try db.write { db in
                     try ArtifactCommentQueries.apply(db, plan: plan, version: latest.version)

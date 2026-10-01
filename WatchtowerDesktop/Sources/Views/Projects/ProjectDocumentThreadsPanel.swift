@@ -46,7 +46,12 @@ struct ProjectDocumentThreadsPanel: View {
                 guard let id else { return }
                 // A resolved thread keeps its highlight; its row is folded away.
                 if docVM.resolvedThreads.contains(where: { $0.id == id }) { showResolved = true }
-                DispatchQueue.main.async { withAnimation { proxy.scrollTo(id, anchor: .top) } }
+                // Two turns: the first lets a just-opened list or unfolded
+                // group build its rows. No anchor: a row already in view
+                // (one the owner just tapped) does not move.
+                DispatchQueue.main.async {
+                    DispatchQueue.main.async { withAnimation { proxy.scrollTo(id) } }
+                }
             }
         }
     }
