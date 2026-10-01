@@ -892,12 +892,12 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         }
 
         let older = Task { await vm.loadSessions(projectID: p) }
-        while gates.count < 1 { await Task.yield() }
+        try await yieldUntil { gates.count >= 1 }
         var placed = vm.layout(projectID: p)
         placed.show(.session(row.id))
         vm.setLayout(placed, projectID: p)
         let newer = Task { await vm.loadSessions(projectID: p) }
-        while gates.count < 2 { await Task.yield() }
+        try await yieldUntil { gates.count >= 2 }
 
         gates[1].resume()
         let newerApplied = await newer.value
@@ -925,12 +925,12 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         }
 
         let older = Task { await vm.loadSessions(projectID: p) }
-        while gates.count < 1 { await Task.yield() }
+        try await yieldUntil { gates.count >= 1 }
         var placed = vm.layout(projectID: p)
         placed.show(.session(row.id))
         vm.setLayout(placed, projectID: p)
         let newer = Task { await vm.loadSessions(projectID: p) }
-        while gates.count < 2 { await Task.yield() }
+        try await yieldUntil { gates.count >= 2 }
 
         gates[0].resume()
         let olderApplied = await older.value
@@ -941,5 +941,17 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         gates[1].resume()
         _ = await newer.value
         XCTAssertEqual(vm.terminalSessions[p]?.map(\.id), [row.id])
+    }
+
+    /// Bounded: a regression that never reaches the gate fails, not hangs.
+    private func yieldUntil(_ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
+        let deadline = Date().addingTimeInterval(5)
+        while !condition() {
+            guard Date() < deadline else {
+                XCTFail("condition not met within 5 s", file: file, line: line)
+                throw CancellationError()
+            }
+            await Task.yield()
+        }
     }
 }
