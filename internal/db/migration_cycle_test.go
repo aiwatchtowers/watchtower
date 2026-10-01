@@ -1,7 +1,6 @@
 package db
 
 import (
-	"database/sql"
 	"path/filepath"
 	"regexp"
 	"testing"
@@ -60,36 +59,23 @@ func normalizeRenamedTables(dump string) string {
 	return renamedTableHeader.ReplaceAllString(dump, "CREATE TABLE $1")
 }
 
-// openAfterMigrationCycle migrates a new file database up to version, rolls
-// that one migration back (DownTo version-1; versions may have gaps), then
+// openAfterMigrationCycle migrates a new database up to version, rolls that
+// one migration back (DownTo version-1; versions may have gaps), then
 // migrates up to the latest version and returns the database. Pinning the
 // cycle to its own version keeps a DownUpCycle test exercising its
 // migration's Down once later migrations land — a plain goose.Down only ever
 // rolls back the newest one. It costs one full migrate, the same as Open.
 func openAfterMigrationCycle(t *testing.T, version int64) *DB {
 	t.Helper()
-	sqlDB, err := sql.Open("sqlite", sqliteDSN(filepath.Join(t.TempDir(), "cycle.db"), immediateTxDSN))
-	if err != nil {
-		t.Fatalf("opening database: %v", err)
-	}
-	sqlDB.SetMaxOpenConns(1)
-	d := &DB{DB: sqlDB}
-	t.Cleanup(func() { _ = d.Close() })
-
-	if err := d.setPragmas(); err != nil {
-		t.Fatalf("setting pragmas: %v", err)
-	}
-	if err := goose.UpTo(d.DB, "migrations", version); err != nil {
-		t.Fatalf("goose up to %d: %v", version, err)
-	}
-	if err := goose.DownTo(d.DB, "migrations", version-1); err != nil {
+	raw := openRawDBAtVersion(t, version)
+	if err := goose.DownTo(raw, "migrations", version-1); err != nil {
 		t.Fatalf("goose down to %d: %v", version-1, err)
 	}
-	if v, err := goose.GetDBVersion(d.DB); err != nil || v >= version {
+	if v, err := goose.GetDBVersion(raw); err != nil || v >= version {
 		t.Fatalf("goose version after down = %d (err %v), want below %d", v, err, version)
 	}
-	if err := goose.Up(d.DB, "migrations"); err != nil {
+	if err := goose.Up(raw, "migrations"); err != nil {
 		t.Fatalf("goose up after down: %v", err)
 	}
-	return d
+	return &DB{DB: raw}
 }

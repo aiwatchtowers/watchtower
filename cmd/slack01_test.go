@@ -18,7 +18,7 @@ import (
 // table name.
 func tableRowCounts(t *testing.T, database *db.DB) map[string]int {
 	t.Helper()
-	rows, err := database.Query(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
+	rows, err := database.Query(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
 	require.NoError(t, err)
 	defer rows.Close()
 	var names []string
@@ -124,7 +124,9 @@ func TestSlack01_RemoveUnknownAccountChangesNothing(t *testing.T) {
 
 	cmd := &cobra.Command{}
 	cmd.SetOut(&bytes.Buffer{})
-	require.Error(t, runSlackRemove(cmd, []string{"7"}))
+	err = runSlackRemove(cmd, []string{"7"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "getting slack account 7")
 	assert.True(t, token.Exists(), "a failed remove must not delete a token file")
 }
 

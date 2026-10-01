@@ -51,7 +51,8 @@ func TestDbMigrate_RequiresConfig(t *testing.T) {
 
 // TestDbMigrate_FailsOnUnrepairableSchemaDrift: a table missing under a
 // recorded goose version whose migration cannot be replayed safely makes
-// `db migrate` exit non-zero, naming the table and its migration.
+// `db migrate` exit non-zero, naming the table and its migration, after the
+// prompt templates were still seeded.
 func TestDbMigrate_FailsOnUnrepairableSchemaDrift(t *testing.T) {
 	cleanup := setupWatchTestEnv(t)
 	defer cleanup()
@@ -70,4 +71,11 @@ func TestDbMigrate_FailsOnUnrepairableSchemaDrift(t *testing.T) {
 	var drift *db.SchemaDriftError
 	require.ErrorAs(t, err, &drift)
 	assert.Contains(t, err.Error(), "google_accounts (00043_google_accounts.sql)")
+
+	database, err = db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	defer database.Close()
+	var prompts int
+	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM prompts`).Scan(&prompts))
+	assert.Positive(t, prompts, "prompt seeding must still run on a drifted database")
 }
