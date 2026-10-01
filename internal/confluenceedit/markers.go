@@ -1,6 +1,7 @@
 package confluenceedit
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -62,7 +63,7 @@ func (a *applier) decide(tok string, k int, known bool, c classifyCtx) (bool, er
 
 func (a *applier) unknownMarker(tok string) error {
 	if tok == LayoutBoundary {
-		return errBoundaryInText
+		return errors.New(LayoutBoundary + " marks the edge of a page layout, not text: a section ends at the first one after its heading; leave it, and the text past it, out of new_body (change that text with replace_text or under its own heading)")
 	}
 	if k := tokenOrdinal(tok); k >= 1 && k <= len(a.orig.markers) {
 		return fmt.Errorf("unknown marker %s; copy marker tokens exactly, e.g. %s", tok, a.orig.markers[k-1].token())

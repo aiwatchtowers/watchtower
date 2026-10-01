@@ -251,8 +251,8 @@ func prepareConfluenceEdit(ctx context.Context, client ConfluencePageClient, acc
 	if err != nil {
 		return editConfluencePinned{}, confluenceEditReadErr(err, accountID, a.PageID)
 	}
-	if page.archived() {
-		return editConfluencePinned{}, &ValidationError{Msg: confluenceArchivedRefusal(page.ID)}
+	if !page.editable() {
+		return editConfluencePinned{}, &ValidationError{Msg: confluenceNotEditable(page)}
 	}
 	if page.Version != a.BaseVersion {
 		return editConfluencePinned{}, &ValidationError{Msg: fmt.Sprintf("page changed since you read it (now v%d) — re-read with get_confluence_page", page.Version)}
@@ -368,11 +368,11 @@ func executeConfluenceEdit(ctx context.Context, d *db.DB, factory ConfluencePage
 	if err != nil {
 		return nil, confluenceWriteFailed(d, account.ID, confluenceEditReadErr(err, account.ID, p.PageID), err)
 	}
-	if live.archived() {
-		return nil, errors.New(confluenceArchivedRefusal(p.PageID) + "; nothing was written")
-	}
 	if live.Version != p.BaseVersion || storageHash(live.Storage) != p.BaseHash {
 		return confluenceEditOutcome(p, confluenceConflict(live, p))
+	}
+	if !live.editable() {
+		return nil, errors.New(confluenceNotEditable(live) + "; nothing was written")
 	}
 	body := ConfluencePutBody{ID: p.PageID, Status: "current", Title: p.Title,
 		Body:    ConfluencePutStorage{Representation: "storage", Value: p.NewStorage},
@@ -410,15 +410,15 @@ func (e *confluenceAlreadySaved) Error() string {
 	return fmt.Sprintf("this edit is already saved (v%d); nothing was written now", e.version)
 }
 
-// confluenceArchivedRefusal refuses to edit an archived page (see
-// ConfluencePage.archived).
-func confluenceArchivedRefusal(pageID string) string {
-	return fmt.Sprintf("Confluence page %s is archived; restore it in Confluence before editing it", pageID)
+// confluenceNotEditable refuses to edit a page that is not current (see
+// ConfluencePage.editable).
+func confluenceNotEditable(page ConfluencePage) string {
+	return fmt.Sprintf("Confluence page %s is %s, not current; only a current page can be edited (restore it in Confluence first)", page.ID, page.Status)
 }
 
 // confluenceConflict is the failure for a live page that is no longer the
 // one the preview was computed from (R12). A page one version past the
-// preview whose storage is this edit's — up to the local-id attributes
+// preview whose title and storage are this edit's — up to the local-id attributes
 // Confluence stamps on new elements when it saves — is this very edit (a
 // first PUT that landed but whose response was lost) and says so. Any
 // other page one version past the preview may still be this edit, stamped
@@ -427,7 +427,7 @@ func confluenceArchivedRefusal(pageID string) string {
 // edit.
 func confluenceConflict(live ConfluencePage, p editConfluencePinned) error {
 	if live.Version == p.BaseVersion+1 {
-		if stripLocalIDs(live.Storage) == stripLocalIDs(p.NewStorage) {
+		if live.Title == p.Title && stripLocalIDs(live.Storage) == stripLocalIDs(p.NewStorage) {
 			return &confluenceAlreadySaved{version: live.Version}
 		}
 		return fmt.Errorf("conflict: the page is now v%d (one version after your preview) — this edit may have been saved; re-read with get_confluence_page before retrying; nothing was written now", live.Version)
@@ -519,10 +519,11 @@ func confluencePutErr(ctx context.Context, client ConfluencePageClient, err erro
 	pageID := p.PageID
 	switch httpStatus(err) {
 	case 409:
-		if live, gerr := client.GetPageBody(ctx, pageID); gerr == nil {
+		live, gerr := client.GetPageBody(ctx, pageID)
+		if gerr == nil {
 			return confluenceConflict(live, p)
 		}
-		return errors.New("conflict: the page was edited after the preview; nothing was written")
+		return fmt.Errorf("conflict: Confluence refused v%d — the page was edited after the preview, or this edit may already be saved; re-read with get_confluence_page before retrying (re-reading the page failed: %v); nothing was written now", p.BaseVersion+1, gerr)
 	case 401:
 		return fmt.Errorf("%s (%w)", confluenceWriteScopeHint(accountID), err)
 	case 403:

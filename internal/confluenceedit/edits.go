@@ -6,11 +6,7 @@ import (
 	"strings"
 )
 
-var (
-	errSpansBlocks = errors.New("old text spans more than one block, or quotes list/table/heading syntax; replace text within one paragraph, list item, table cell, heading or code block (or use replace_section)")
-	// errBoundaryInText refuses a LayoutBoundary in an edit's new text.
-	errBoundaryInText = errors.New(LayoutBoundary + " marks the edge of a page layout, not text: a section ends at the first one after its heading; leave it, and the text past it, out of new_body (change that text with replace_text or under its own heading)")
-)
+var errSpansBlocks = errors.New("old text spans more than one block, or quotes list/table/heading syntax; replace text within one paragraph, list item, table cell, heading or code block (or use replace_section)")
 
 // hit is one occurrence of old text: range r of slot s's text.
 type hit struct {
@@ -209,23 +205,34 @@ func (a *applier) replaceSection(heading, body string) (Change, error) {
 // higher level: the text past a layout edge, which reads as more of the
 // section to a model that overlooks the LayoutBoundary line. Writing it
 // would copy that block into the section while the original stays where it
-// is. A text the section itself also holds is the section's own.
+// is. A text the section itself also holds is the section's own. Texts
+// compare by matchKey; the past blocks include the body an earlier edit in
+// the same call wrote there. Only a repeat is caught: an edited copy of
+// that text reads as a new block (the diff shows it as an addition), so
+// the LayoutBoundary line in the text remains the first guard.
 func (a *applier) checkNoSpill(hi int, region span, content, body []*block) error {
 	own := map[string]bool{}
 	for _, bl := range content {
-		own[a.d.blockText(bl)] = true
+		own[matchKey(a.d.blockText(bl))] = true
 	}
 	past := map[string]bool{}
-	for _, bl := range expand(a.d.blocks[hi+1:]) {
-		if bl.kind == blockHeading && unitText(bl.unit) != "" && bl.level <= a.d.blocks[hi].level && bl.start >= region.end {
+	for _, bl := range a.d.blocks[hi+1:] {
+		if bl.start < region.end || bl.dead {
+			continue
+		}
+		if endsSection(bl, a.d.blocks[hi].level) {
 			break
 		}
-		if bl.start >= region.end {
-			past[a.d.blockText(bl)] = true
+		past[matchKey(a.d.blockText(bl))] = true
+		if bl.section != nil {
+			for _, b := range bl.section.body {
+				past[matchKey(a.d.blockText(b))] = true
+			}
 		}
 	}
 	for _, bl := range body {
-		if t := a.d.blockText(bl); t != "" && past[t] && !own[t] {
+		t := a.d.blockText(bl)
+		if k := matchKey(t); k != "" && past[k] && !own[k] {
 			return fmt.Errorf("new_body repeats %s, which is not in this section: the section ends at the %s line after its heading; leave that text out of new_body (change it with replace_text or under its own heading)", snippet(t), LayoutBoundary)
 		}
 	}

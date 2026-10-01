@@ -42,10 +42,14 @@ type ConfluencePage struct {
 	Storage  string
 }
 
-// archived reports whether the page is archived. edit_confluence_page
-// never writes one: its PUT carries status "current", which would restore
-// the page as a side effect nobody approved.
+// archived reports whether the page is archived.
 func (p ConfluencePage) archived() bool { return p.Status == "archived" }
+
+// editable reports whether edit_confluence_page may write the page: only a
+// current one (or one whose status the API left out). Its PUT carries
+// status "current", so writing an archived (or any other) page would
+// restore or publish it as a side effect nobody approved.
+func (p ConfluencePage) editable() bool { return p.Status == "" || p.Status == "current" }
 
 // ConfluenceComment is one footer or inline comment of a page; ReplyTo is
 // the id of the comment it answers ("" = top-level).
@@ -163,7 +167,8 @@ type confluenceV2Page struct {
 // GetPage fetches id as a page, then as a blog post. An archived page is
 // fetched too (status=current,archived, as the sync fetcher asks): without
 // an explicit status only current pages are returned, and a page search
-// finds would read as "not found".
+// finds would read as "not found". Blog posts cannot be archived, so their
+// GET carries no status.
 func (c *confluencePageClient) GetPage(ctx context.Context, id string) (ConfluencePage, error) {
 	return c.getPage(ctx, id, true)
 }

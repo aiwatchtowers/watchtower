@@ -4,6 +4,13 @@ import "errors"
 
 var errNotHeading = errors.New("confluenceedit: block is not a heading")
 
+// endsSection reports whether bl, following a heading of the given level,
+// ends that heading's section: a heading of the same or a higher level. An
+// empty heading, which Text omits, is an ordinary block of the section.
+func endsSection(bl *block, level int) bool {
+	return bl.kind == blockHeading && bl.level <= level && unitText(bl.unit) != ""
+}
+
 // sectionRegion is the byte region a section rewrite replaces for the
 // heading at d.blocks[i]: from the byte after the heading's end tag to the
 // first of
@@ -26,7 +33,7 @@ func (d *Doc) sectionRegion(i int) (span, error) {
 	}
 	end := d.containers[h.container].content.end
 	for _, bl := range d.blocks[i+1:] {
-		if bl.container == h.container && bl.kind == blockHeading && bl.level <= h.level && unitText(bl.unit) != "" {
+		if bl.container == h.container && endsSection(bl, h.level) {
 			end = min(end, bl.start)
 			break
 		}

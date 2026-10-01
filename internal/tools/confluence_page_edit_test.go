@@ -377,10 +377,12 @@ func TestEditConfluencePage_NameLookupFailureIsExplained(t *testing.T) {
 	assert.Contains(t, msg, "re-read with get_confluence_page and keep the markers as shown")
 }
 
-// An archived page is never edited: the PUT carries status "current",
-// which would restore it. Refused at propose time, and at apply time when
-// the page was archived after the preview — with no PUT.
-func TestEditConfluencePage_RefusesAnArchivedPage(t *testing.T) {
+// TestEXT05_ArchivedPageNeverWritten: an archived page is never edited —
+// the PUT carries status "current", which would restore it. Refused at
+// propose time, and at apply time when the page was archived after the
+// preview — with no PUT. Only a Retry finding this very edit already saved
+// (it landed before the page was archived) reports the save.
+func TestEXT05_ArchivedPageNeverWritten(t *testing.T) {
 	d := openDB(t)
 	db.SeedTestJiraAccount(t, d)
 	f := newFakeConfluence()
@@ -391,12 +393,21 @@ func TestEditConfluencePage_RefusesAnArchivedPage(t *testing.T) {
 	p.Status = "archived"
 	f.pages[cfPageID] = p
 	_, err := tool.Execute(context.Background(), d, Call{Args: args})
-	assert.EqualError(t, err, "Confluence page 98765 is archived; restore it in Confluence before editing it; nothing was written")
+	assert.EqualError(t, err, "Confluence page 98765 is archived, not current; only a current page can be edited (restore it in Confluence first); nothing was written")
 	assert.Empty(t, f.puts)
 
 	_, err = tool.Normalize(context.Background(), d, editArgs(7, fridayToMonday))
 	var ve *ValidationError
 	require.ErrorAs(t, err, &ve)
-	assert.Equal(t, "Confluence page 98765 is archived; restore it in Confluence before editing it", ve.Msg)
+	assert.Equal(t, "Confluence page 98765 is archived, not current; only a current page can be edited (restore it in Confluence first)", ve.Msg)
+	assert.Empty(t, f.puts)
+
+	var pinned editConfluencePinned
+	require.NoError(t, json.Unmarshal(args, &pinned))
+	p.Version, p.Storage = 8, pinned.NewStorage
+	f.pages[cfPageID] = p
+	out, err := tool.Execute(context.Background(), d, Call{Args: args})
+	require.NoError(t, err, "the edit landed before the page was archived")
+	assert.Equal(t, 8, out.(map[string]any)["version"])
 	assert.Empty(t, f.puts)
 }

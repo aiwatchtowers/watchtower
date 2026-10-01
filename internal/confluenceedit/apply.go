@@ -244,8 +244,8 @@ func (a *applier) slots() []slot {
 	var out []slot
 	heading := ""
 	for _, bl := range expand(a.d.blocks) {
-		if bl.kind == blockHeading {
-			heading = unitText(bl.unit)
+		if t := unitText(bl.unit); bl.kind == blockHeading && t != "" {
+			heading = t // an empty heading ends no section (endsSection)
 		}
 		for _, u := range bl.editUnits() {
 			out = append(out, slot{u: u, heading: heading})

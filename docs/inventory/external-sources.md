@@ -256,6 +256,12 @@ mounted only in chat mode, never on the dev-mode MCP surface (DEV-01).
   carries the line itself) is refused, and one that does not leaves that
   text exactly once, in its own place — never a second copy inside the
   section.
+- `TestEXT05_ArchivedPageNeverWritten`
+  (`internal/tools/confluence_page_edit_test.go`) — an archived page is
+  refused at propose time and, with zero `PutPage` calls, at apply time;
+  only a Retry finding this very edit saved before the archiving reports
+  the save. `TestEditConfluencePage_RetryAfterLostResponse` pins that a
+  Retry finding the edit already saved issues no second PUT.
 - `TestEXT05_OnlyEditToolReachesPut`
   (`internal/tools/confluence_contracts_test.go`) — an AST scan of every
   non-test Go file of the module (scan floor 300 files) pins the production
@@ -273,17 +279,18 @@ every Confluence hit's `link` is the page or attachment URL.
 
 ## Changelog
 
-- 2026-10-01 (release audit fix lane, L1): a Retry that finds this very
-  edit already saved (base+1, storage equal up to `local-id`s) is now a
+- 2026-10-01 (release audit, lost-response Retry): a Retry that finds this very
+  edit already saved (base+1, same title, storage equal up to `local-id`s) is now a
   success result carrying the "already saved" note instead of a failed
   action; still no PUT. The write rule (version AND hash must match, else
   no PUT) is unchanged.
-- 2026-10-01 (release audit fix lane): `get_confluence_page` reads an
-  archived page (`status=current,archived`, as the sync fetcher asks), and
-  EXT-05 gains "an archived page is never written" (its PUT's
-  `status:"current"` would restore it), pinned by
-  `TestEditConfluencePage_RefusesAnArchivedPage`. Tightened, not weakened.
-- 2026-10-01 (release audit fix lane, H3): `Doc.Text()` marks every layout
+- 2026-10-01 (release audit, archived pages): `get_confluence_page` reads
+  an archived page (status current and archived, as the sync fetcher
+  asks), and EXT-05 gains "an archived page is never written" (its PUT's
+  `status:"current"` would restore it; only a current page is edited),
+  pinned by the new guard `TestEXT05_ArchivedPageNeverWritten`.
+  Tightened, not weakened.
+- 2026-10-01 (release audit, section past a layout edge): `Doc.Text()` marks every layout
   edge between two blocks with a `⟦layout boundary⟧` line (a section never
   crosses one, R4/R5), and a `replace_section` whose new body repeats a
   block lying past its region's end before the next same-or-higher heading

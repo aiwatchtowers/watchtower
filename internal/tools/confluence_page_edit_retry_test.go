@@ -108,6 +108,24 @@ func TestEditConfluencePage_Put409AtNextVersion(t *testing.T) {
 	executesAlreadySaved(t, tool, d, args)
 }
 
+// A 409 whose re-read fails cannot tell someone else's edit from this one
+// landing: the conflict is hedged and names the read failure.
+func TestEditConfluencePage_Put409WithFailedReRead(t *testing.T) {
+	d := openDB(t)
+	db.SeedTestJiraAccount(t, d)
+	f := newFakeConfluence()
+	tool := NewEditConfluencePage(confluenceFactory(f))
+	args := normalized(t, tool, d, editArgs(7, fridayToMonday))
+	f.putErr = &jira.HTTPStatusError{Status: 409, Body: `{"message":"Version must be incremented"}`}
+	f.onGet = func(int) {
+		if len(f.puts) > 0 {
+			f.getErr = errors.New("read: 503")
+		}
+	}
+	_, err := tool.Execute(context.Background(), d, Call{Args: args})
+	assert.EqualError(t, err, "conflict: Confluence refused v8 — the page was edited after the preview, or this edit may already be saved; re-read with get_confluence_page before retrying (re-reading the page failed: read: 503); nothing was written now")
+}
+
 // F5: two edits proposed off the same read; once the first is applied, the
 // second finds the page at base+1 — someone else's version as far as it is
 // concerned — and gets the hedged conflict, not "already saved".

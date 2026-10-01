@@ -19,14 +19,13 @@ const (
 
 // inliner renders one unit's inline content as markdown with markers.
 type inliner struct {
-	b     *builder
-	ctx   inlineCtx
-	plain bool              // false once a cell needed a marker or a line break
-	other bool              // true once the content held a comment or stray tag
-	codes []string          // rendered code spans, stood in for by holes until finalize
-	links map[string]string // href -> the link's original start tag
-	// clashes: hrefs whose links carry different start tags (unit.clashes)
-	clashes map[string]bool
+	b       *builder
+	ctx     inlineCtx
+	plain   bool              // false once a cell needed a marker or a line break
+	other   bool              // true once the content held a comment or stray tag
+	codes   []string          // rendered code spans, stood in for by holes until finalize
+	links   map[string]string // href -> the link's original start tag
+	clashes map[string]bool   // hrefs whose links carry different start tags
 }
 
 // inlineUnit renders nodes as the editable text of a unit spanning sp and
@@ -188,13 +187,12 @@ func (in *inliner) link(n *node) string {
 	}
 	href = noNUL.Replace(href)
 	tag := in.b.src[n.start:n.innerStart]
-	switch first, seen := in.links[href]; {
-	case !seen:
+	if first, seen := in.links[href]; !seen {
 		if in.links == nil {
 			in.links = map[string]string{}
 		}
 		in.links[href] = tag
-	case first != tag:
+	} else if first != tag {
 		if in.clashes == nil {
 			in.clashes = map[string]bool{}
 		}

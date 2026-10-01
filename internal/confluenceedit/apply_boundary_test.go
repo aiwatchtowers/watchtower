@@ -61,12 +61,24 @@ func TestEXT05_SectionNeverWritesPastALayoutBoundary(t *testing.T) {
 			ee = applyErr(t, tc.src, text("g1", "g1 "+LayoutBoundary))
 			assert.Contains(t, ee.Error(), LayoutBoundary+" marks the edge of a page layout")
 
+			ee = applyErr(t, tc.src, sectionEdit("Goals", "g1 changed\n\ng2 "))
+			assert.Contains(t, ee.Error(), `"g2"`, "the repeat is compared like old text, whitespace-insensitive")
+
 			out, changes := applyOK(t, tc.src, sectionEdit("Goals", "g1 changed"))
 			assert.Equal(t, tc.rewritten, out)
 			assert.Equal(t, 1, strings.Count(out, "<p>g2</p>"))
 			assert.Equal(t, "g1", changes[0].Before, "the diff shows the section's real body")
 		})
 	}
+}
+
+// A block past the edge that an earlier edit of the same call wrote is
+// past the edge too: repeating it is the same spill.
+func TestSectionSpillCaughtAfterAnEarlierRewritePastTheEdge(t *testing.T) {
+	src := `<ac:layout><ac:layout-section ac:type="two_equal"><ac:layout-cell><h2>Goals</h2><p>g1</p></ac:layout-cell>` +
+		`<ac:layout-cell><h3>Sub</h3><p>s</p></ac:layout-cell></ac:layout-section></ac:layout>`
+	ee := applyErr(t, src, sectionEdit("Sub", "s2 new para"), sectionEdit("Goals", "g1\n\ns2 new para"))
+	assert.Contains(t, ee.Error(), `new_body repeats "s2 new para"`)
 }
 
 // Text past the edge that the section ALSO holds is the section's own: the
@@ -99,6 +111,9 @@ func TestSectionRunsOverAnEmptyHeading(t *testing.T) {
 			assert.Equal(t, `<h2>Plan</h2><p>one changed</p>`+empty+`<p>two</p><h2>Next</h2><p>n</p>`, out,
 				"the empty heading keeps its place and bytes; nothing is duplicated")
 			assert.Equal(t, "one\n\ntwo", changes[0].Before)
+
+			_, changes = applyOK(t, src, text("two", "2"))
+			assert.Equal(t, locator("Plan"), changes[0].Locator, "text after an empty heading is still in its section")
 
 			out, _ = applyOK(t, src, sectionEdit("Plan", "one\n\ntwo changed"))
 			assert.Equal(t, `<h2>Plan</h2><p>one</p>`+empty+`<p>two changed</p><h2>Next</h2><p>n</p>`, out)
