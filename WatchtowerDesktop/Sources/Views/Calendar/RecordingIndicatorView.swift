@@ -167,6 +167,13 @@ struct RecordingIndicatorView: View {
             .foregroundStyle(.secondary)
         MicLevelBars(level: center.captureLevels.system, barCount: 3)
             .help("System audio level")
+        if center.callAudioSilentSince != nil {
+            Label("No call audio", systemImage: "exclamationmark.triangle.fill")
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .help("Nothing has come from the call for over two minutes. If people are still talking, "
+                    + "the call's audio is not being recorded — check that the call plays through this Mac's output device.")
+        }
     }
 
     private func recordingCapsule(_ center: MeetingRecorderCenter, startedAt: Date) -> some View {

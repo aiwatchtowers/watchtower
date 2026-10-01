@@ -55,6 +55,9 @@ struct RecordingDetailView: View {
     @State private var errorMessage: String?
     @State private var transcriptScrollTarget: Int?
     @State private var followup: FollowupState?
+    /// `CallAudioGapNote` for this recording, read off-main from its
+    /// activity sidecar in `load()`.
+    @State private var callAudioNote: String?
 
     /// One in-flight follow-up draft request (sheet-scoped, ephemeral by
     /// design — the draft is never persisted; dismissing the sheet discards
@@ -93,6 +96,13 @@ struct RecordingDetailView: View {
                         .foregroundStyle(.red)
                         .padding(.horizontal, 12)
                 }
+                if let callAudioNote {
+                    Label(callAudioNote, systemImage: "speaker.slash")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .padding(.horizontal, 12)
+                        .padding(.bottom, 4)
+                }
 
                 tabContent(transcript)
             } else if let error = errorMessage {
@@ -112,6 +122,7 @@ struct RecordingDetailView: View {
             chapters = nil
             transcriptScrollTarget = nil
             followup = nil
+            callAudioNote = nil
             await load()
         }
         .sheet(isPresented: Binding(
@@ -292,6 +303,8 @@ struct RecordingDetailView: View {
             }.value
             transcript = loaded.row
             linkedEvent = loaded.link
+            let audioPath = loaded.row?.audioPath
+            callAudioNote = await Task.detached(priority: .utility) { CallAudioGapNote.load(audioPath: audioPath) }.value
             // Segments and chapters decoded ONCE here (off-main, alongside
             // the fetch), never in body evaluations or row builders.
             utterances = loaded.utterances

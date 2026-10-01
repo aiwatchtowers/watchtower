@@ -1,7 +1,7 @@
 ---
 type: bug
 title: System-audio tap can go silent mid-recording without any signal
-status: open
+status: done
 priority: high
 tags: [transcription, meeting-recorder, audio-capture, desktop]
 context: found while fixing docs/backlog/2026-09-30-whisper-hallucinates-subtitle-credits-over-the-last-half-of-a-meeting.md
@@ -38,3 +38,41 @@ Wanted:
 - **Fail with a clear reason.** When a whole recording yields no speech
   because of this, the failure message should say so, instead of a bare
   "No speech recognized".
+
+**Fixed (fix/system-audio-dropout) — detection and warning; recovery still open.**
+`CallAudioWatch` (WatchtowerCore, pure, incremental) watches the system channel
+in ~100 ms RMS steps. A *gap* is a stretch of at least 2 minutes below
+`1e-4` RMS that starts right after the call was being heard: at least 30 s of
+call audio in the preceding 5 minutes. It ends when at least 5 s of call audio
+comes back within a 10 s window, so a notification blip does not end it.
+
+The same detector drives three surfaces:
+- **Live.** `MeetingRecorderCenter` feeds it the existing level stream and
+  publishes `callAudioSilentSince`. The recording pill shows "No call audio"
+  in orange with an explanatory tooltip. It clears when call audio returns
+  and on stop.
+- **After the fact.** The recording detail reads the `rec_X.activity` sidecar
+  off-main and shows "No call audio from 15:29 to the end — the transcript
+  there holds only your microphone". One or two gaps are listed; more are
+  summarized.
+- **No-speech failure.** A recording that yields no text now fails with
+  "No speech recognized — no call audio was captured at all …" or
+  "… call audio stopped at mm:ss and never came back …", instead of a bare
+  "No speech recognized".
+
+None of this ever fails a save. The message stays the bare one when there
+is no sidecar.
+
+**Calibration.** I replayed the detector over 33 real sidecars, offline and
+not committed:
+- The reported recording flags from 15:29 to the end.
+- Room-only recordings, with no call or only system sounds, are not
+  flagged.
+- A few long quiet stretches inside real calls are flagged too. This is
+  inherent: a dead tap and a silent call both write zeros. That is why the
+  wording states a fact ("no call audio") and never a diagnosis.
+
+**Still open:** re-attaching the tap on a default-output-device change, so a
+dropout recovers on its own. This needs CoreAudio work in
+`SystemAudioRecorder` and real-hardware validation.
+
