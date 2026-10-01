@@ -107,7 +107,7 @@ func buildToolRegistry(cfg *config.Config, database *db.DB) *tools.Registry {
 	)
 	// The project tools (surface "project" only): mounted by `mcp --project N`,
 	// which applies them directly under Binding.DirectApply (DEV-06).
-	regTools = append(regTools, tools.ProjectTools(projectfiles.New(cfg.WorkspaceDir()))...)
+	regTools = append(regTools, tools.ProjectTools(projectfiles.New(cfg.WorkspaceDir()), cfg.Knowledge.Enabled)...)
 	// Every migrated read tool. Chat mode dispatches these through the registry's
 	// read branch; the runtime-B loop calls them in-process. Dev-mode MCP mounts
 	// the same list via tools.NewReadRegistry.

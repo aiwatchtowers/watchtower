@@ -95,7 +95,7 @@ func TestKB01_IncrementalEqualsRebuild(t *testing.T) {
 	// file's mtime moves.
 	var folder string
 	require.NoError(t, d.QueryRow(`SELECT folder_path FROM projects WHERE id = ?`, fixtureProjectID).Scan(&folder))
-	write(t, folder, "README.md", "Readme revised: квартальный план.\n")
+	writeProjectFile(t, folder, "README.md", "Readme revised: квартальный план.\n")
 	revised := time.Now().Add(2 * time.Hour)
 	require.NoError(t, os.Chtimes(filepath.Join(folder, "README.md"), revised, revised))
 	_, err := Run(ctx, d, Options{Now: testNow().Add(time.Hour)}) // pass 2, same UTC day

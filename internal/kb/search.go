@@ -131,6 +131,11 @@ func Search(ctx context.Context, d *db.DB, req Request) (Result, error) {
 	return Result{Hits: f.hits(now, limit), IndexNote: note}, nil
 }
 
+// projectDocVisible is the SQL condition (over kb_documents aliased d) that
+// hides every project document but those of the project bound to its one
+// argument; projectID 0 hides them all (PROJ-08).
+const projectDocVisible = `(d.source <> '` + ProjectDocSource + `' OR json_extract(d.anchor_json, '$.project_id') = ?)`
+
 // validate checks req and returns the effective limit.
 func validate(req *Request) (int, error) {
 	if len(req.Queries) == 0 || len(req.Queries) > MaxQueries {

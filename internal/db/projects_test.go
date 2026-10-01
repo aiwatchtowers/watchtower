@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -318,6 +319,17 @@ func TestProj02_DeleteProjectLeavesNoRows(t *testing.T) {
 	_, err = d.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id)
 		VALUES (?, 'claude', 'New session', '/tmp/acme', 'uuid-1')`, pid)
 	require.NoError(t, err)
+	// The documents' search index entries (PROJ-08), this project's and another's.
+	for _, doc := range []struct {
+		id  string
+		pid int64
+	}{{"project_doc:1", pid}, {"project_doc:2", keep}} {
+		_, err = d.Exec(`INSERT INTO kb_documents (id, source, title, anchor_json) VALUES (?, 'project_doc', 'spec', ?)`,
+			doc.id, fmt.Sprintf(`{"project_id":"%d"}`, doc.pid))
+		require.NoError(t, err)
+		_, err = d.Exec(`INSERT INTO kb_chunks (doc_id, idx, body) VALUES (?, 0, 'spec text')`, doc.id)
+		require.NoError(t, err)
+	}
 	_, err = d.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path)
 		VALUES (NULL, 'shell', 'Terminal', '/tmp/acme')`)
 	require.NoError(t, err)
@@ -337,6 +349,17 @@ func TestProj02_DeleteProjectLeavesNoRows(t *testing.T) {
 		require.NoError(t, d.QueryRow(q, pid).Scan(&n))
 		assert.Zero(t, n, q)
 	}
+	for _, q := range []string{
+		`SELECT COUNT(*) FROM kb_documents WHERE id = 'project_doc:1'`,
+		`SELECT COUNT(*) FROM kb_chunks WHERE doc_id = 'project_doc:1'`,
+	} {
+		var n int
+		require.NoError(t, d.QueryRow(q).Scan(&n))
+		assert.Zero(t, n, q)
+	}
+	var kept int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM kb_chunks WHERE doc_id = 'project_doc:2'`).Scan(&kept))
+	assert.Equal(t, 1, kept, "another project's index entries are untouched")
 	_, err = d.GetTargetByID(int(keepTarget))
 	assert.NoError(t, err, "another project's board is untouched")
 	var standalone int

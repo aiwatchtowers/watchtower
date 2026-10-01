@@ -21,7 +21,9 @@ var projectResyncCmd = &cobra.Command{
 	Long: "Additive only: attaches the folder's documents that are not attached yet (the\n" +
 		"`import-docs` rules) and re-installs the Claude Code integration — skill, hooks,\n" +
 		"exclude lines where missing or out of date, and a fresh MCP registration (the\n" +
-		"`integrate claude-code --project` rules: a skill you edited is left alone).\n" +
+		"`integrate claude-code --project` rules: a skill you edited is left alone), then\n" +
+		"re-indexes the attached documents for search from this project's sessions\n" +
+		"(skipped when knowledge search is off).\n" +
 		"Never deletes or changes targets, their statuses, comments, attached documents,\n" +
 		"sources or the description, and never creates targets: it prints suggestions for\n" +
 		"you to take to the agent instead.\n" +
@@ -58,7 +60,7 @@ type projectResyncJSON struct {
 	// this project's sessions only). IndexSkipped: knowledge search is off.
 	IndexOK      bool   `json:"index_ok"`
 	IndexError   string `json:"index_error"`
-	Indexed      int    `json:"indexed"` // documents (re)written to the index
+	Indexed      int    `json:"indexed"` // this project's index entries written or removed
 	IndexSkipped bool   `json:"index_skipped"`
 
 	Suggestions      []string `json:"suggestions"`
@@ -98,7 +100,8 @@ func runProjectResync(cmd *cobra.Command, args []string) error {
 	return stepErr
 }
 
-// resyncProject runs both steps and collects the suggestions; the error
+// resyncProject runs the import, the folder install and the search re-index,
+// and collects the suggestions; the error
 // joins every failure (each also recorded in the result).
 func resyncProject(ctx context.Context, database *db.DB, p *db.Project, knowledgeEnabled bool) (projectResyncJSON, error) {
 	res := projectResyncJSON{ID: p.ID, Excluded: []string{}}
@@ -122,11 +125,11 @@ func resyncProject(ctx context.Context, database *db.DB, p *db.Project, knowledg
 	// rather than after the daemon's next knowledge cycle.
 	if !knowledgeEnabled {
 		res.IndexOK, res.IndexSkipped = true, true
-	} else if st, err := kb.Run(ctx, database, kb.Options{Sources: []string{kb.ProjectDocSource}}); err != nil {
+	} else if _, changed, err := kb.IndexProjectDocs(ctx, database, p.ID); err != nil {
 		res.IndexError = err.Error()
 		errs = append(errs, fmt.Errorf("indexing documents for search: %w", err))
 	} else {
-		res.IndexOK, res.Indexed = true, st.Written
+		res.IndexOK, res.Indexed = true, changed
 	}
 
 	suggestions, err := resyncSuggestions(database, p, res.Docs)
@@ -202,7 +205,7 @@ func printResyncReport(w io.Writer, p *db.Project, res projectResyncJSON) {
 	case res.IndexOK:
 		fmt.Fprintf(w, "Search index: %d document(s) (re)indexed, searchable from this project's sessions\n", res.Indexed)
 	default:
-		fmt.Fprintf(w, "Search index: FAILED — %s\n", res.IndexError)
+		fmt.Fprintf(w, "Search index: FAILED — %s (retry: watchtower project resync %d)\n", res.IndexError, p.ID)
 	}
 	fmt.Fprintln(w, "Claude Code integration:")
 	if res.install.MCPCommand != "" { // set once the installer got past its folder checks

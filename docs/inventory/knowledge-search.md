@@ -26,7 +26,9 @@ posts/attachments with their comments — see
 `kb_sources`) are an index, never a source of truth — nothing reads them to
 make a decision other than search, and the indexer never writes a source
 table (`internal/kb`'s adapters read only through the `Queryer` they are
-given). A from-scratch `kb reindex` produces byte-identical
+given — except `project_doc`, which also reads the attached files, read-only
+and inside the project folder; for it the rebuild equivalence holds over an
+unchanged folder). A from-scratch `kb reindex` produces byte-identical
 `kb_documents`/`kb_chunks` content to incremental indexing over the same
 data, across writes, in-place Slack edits/deletes inside the 48h tail rescan,
 thread promotion (a top-level message older than the tail gaining its first
@@ -131,7 +133,7 @@ DEV-01.
 
 ## Changelog
 
-- 2026-10-01 (board target #89): a twelfth source, `project_doc` (attached project documents read from the project folder, `internal/kb/source_project.go`), visible only to its own project's session — `Request.ProjectID`/`DocOptions.ProjectID`, contract PROJ-08 in `projects.md`. The guards only grow: KB-01's `kbSourceTables` gains `projects`/`project_documents` and its incremental pass revises a project document on disk (an mtime-only change); KB-03's fixture covers the new source, searched and opened as the fixture project's session (`ProjectID` changes nothing for the other sources). KB-01's "adapters read only through the Queryer" now has one exception: this source also reads the attached files (read-only, inside the folder).
+- 2026-10-01 (board target #89): a twelfth source, `project_doc` (attached project documents read from the project folder, `internal/kb/source_project.go`), visible only to its own project's session — `Request.ProjectID`/`DocOptions.ProjectID`, contract PROJ-08 in `projects.md`. The guards only grow: KB-01's `kbSourceTables` gains `projects`/`project_documents` and its incremental pass revises a project document on disk (an mtime-only change); KB-03's fixture covers the new source, searched and opened as the fixture project's session (`ProjectID` changes nothing for the other sources). KB-01's Observable now names the one exception to "adapters read only through the Queryer": this source also reads the attached files (read-only, inside the folder; the daemon skips folders macOS guards — `kb.IndexProjectDocs` is the explicit per-project trigger). `projects`'s delete also removes the project's entries (PROJ-02).
 
 - 2026-10-01 (board target #90): `kb.Request.Scope`/`ScopeOnly` and `kb.Recent` — a project session's `search_knowledge` boosts (or, with `project_scope: only`, restricts to) the documents of the project's Slack channels, Jira projects and Confluence spaces, via one SQL predicate over `anchor_json` (`Scope.predicate`); the boost is a second, scope-restricted retrieval per query fused in at the same weights, and `Hit.in_scope` marks such hits. Outside a project session nothing changes. KB-01..03 unchanged (in-scope hits open and anchor like any other).
 

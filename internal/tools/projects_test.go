@@ -53,7 +53,7 @@ func newProjectFixture(t *testing.T) projectFixture {
 func projectRegistry(t *testing.T, d *db.DB) *Registry {
 	t.Helper()
 	reg := New(d)
-	for _, tool := range append(ProjectTools(projectfiles.New(t.TempDir())), NewListTargets(), NewGetTarget()) {
+	for _, tool := range append(ProjectTools(projectfiles.New(t.TempDir()), true), NewListTargets(), NewGetTarget()) {
 		require.NoError(t, reg.Register(tool))
 	}
 	return reg
@@ -91,7 +91,7 @@ func countActions(t *testing.T, d *db.DB) int {
 }
 
 func TestProjectTools_AllOnProjectSurfaceNeverExternal(t *testing.T) {
-	for _, tool := range ProjectTools(projectfiles.Store{}) {
+	for _, tool := range ProjectTools(projectfiles.Store{}, false) {
 		assert.Equal(t, []string{"project"}, tool.Surfaces, tool.Name)
 		assert.False(t, tool.External, "%s must stay on this machine (DEV-06)", tool.Name)
 		if tool.Access == AccessWrite {

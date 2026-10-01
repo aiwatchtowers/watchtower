@@ -50,7 +50,11 @@ func NewSearchKnowledge() *Tool {
 				return nil, &ValidationError{Msg: "invalid arguments"}
 			}
 			// A project session sees its own attached documents; every other
-			// caller (ProjectID 0) none of them (PROJ-08).
+			// caller (ProjectID 0) none of them (PROJ-08) — and is told so
+			// rather than handed an empty result that reads as "no match".
+			if call.Binding.ProjectID == 0 && slices.Contains(a.Sources, kb.ProjectDocSource) {
+				return nil, &ValidationError{Msg: "project_doc is searchable only from that project's own session (watchtower mcp --project N)"}
+			}
 			req := kb.Request{Queries: a.Queries, Sources: a.Sources, Limit: a.Limit, ProjectID: call.Binding.ProjectID}
 			var err error
 			if req.From, err = parseDay(a.From, false); err != nil {

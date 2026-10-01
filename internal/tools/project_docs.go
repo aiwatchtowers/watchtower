@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"watchtower/internal/db"
+	"watchtower/internal/kb"
 )
 
 // projectAgentLabel is the agent_label every agent comment carries.
@@ -139,7 +140,10 @@ type attachDocumentArgs struct {
 
 // NewAttachDocument attaches (or re-attaches, marking it revised) a file in
 // the project folder so the owner can review and comment on it.
-func NewAttachDocument() *Tool {
+// NewAttachDocument builds attach_document; with indexDocs a successful
+// attach also re-indexes the project's documents (kb.IndexProjectDocs), so
+// a revision is searchable from the project's sessions at once.
+func NewAttachDocument(indexDocs bool) *Tool {
 	return &Tool{
 		Name: "attach_document",
 		Description: "Attach a spec, plan or doc (a .md/.txt file inside the project folder) so the owner can " +
@@ -171,7 +175,15 @@ func NewAttachDocument() *Tool {
 			if err := json.Unmarshal(call.Args, &a); err != nil {
 				return nil, fmt.Errorf("decoding attach_document args: %w", err)
 			}
-			return attachDocument(ctx, d, call.Binding, a)
+			out, err := attachDocument(ctx, d, call.Binding, a)
+			if err != nil || !indexDocs {
+				return out, err
+			}
+			// Best-effort: the attach itself is done and must not read as failed.
+			if _, _, ierr := kb.IndexProjectDocs(ctx, d, call.Binding.ProjectID); ierr != nil {
+				out["index_warning"] = "the document is attached, but indexing it for search failed: " + ierr.Error()
+			}
+			return out, nil
 		},
 	}
 }
@@ -198,7 +210,7 @@ func resolveAttachment(ctx context.Context, d *db.DB, b Binding, a attachDocumen
 	return filepath.ToSlash(rel), target, nil
 }
 
-func attachDocument(ctx context.Context, d *db.DB, b Binding, a attachDocumentArgs) (any, error) {
+func attachDocument(ctx context.Context, d *db.DB, b Binding, a attachDocumentArgs) (map[string]any, error) {
 	rel, target, err := resolveAttachment(ctx, d, b, a)
 	if err != nil {
 		return nil, err
