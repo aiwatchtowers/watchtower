@@ -41,12 +41,15 @@ package enum NewProjectFolder {
         return home
     }
 
-    /// `url` with its parent symlink-resolved: the folder itself may not exist
-    /// yet, so resolving the whole path would leave a symlinked parent (and so
-    /// the TCC-location check) unresolved.
+    /// `url` symlink-resolved for the TCC-location check and the project path.
+    /// The parent is resolved on its own, since the folder itself may not exist
+    /// yet; the leaf is resolved too when it exists, so a name that is already
+    /// a symlink (`~/Projects/acme` → `~/Documents/acme`) is checked where it
+    /// really points.
     package static func resolved(_ url: URL) -> URL {
         let parent = url.deletingLastPathComponent().resolvingSymlinksInPath()
-        return parent.appendingPathComponent(url.lastPathComponent, isDirectory: true)
+        let candidate = parent.appendingPathComponent(url.lastPathComponent, isDirectory: true)
+        return candidate.resolvingSymlinksInPath()
     }
 
     /// Read-only: what `prepare` will do with `url`, or why it must not.

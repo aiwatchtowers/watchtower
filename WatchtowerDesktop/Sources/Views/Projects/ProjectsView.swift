@@ -260,9 +260,9 @@ struct ProjectsView: View {
         return panel.url?.resolvingSymlinksInPath()
     }
 
-    /// The entered name is the folder's and the project's. NSSavePanel asks
-    /// to "replace" an existing name; nothing is replaced — an empty folder
-    /// is reused and any other is refused by `NewProjectFolder`.
+    /// The entered name is the folder's and the project's. Whatever the panel
+    /// says about an existing name, nothing is ever replaced: an empty folder
+    /// is reused and anything else is refused by `NewProjectFolder`.
     private func runNewProjectPanel() -> URL? {
         let panel = NSSavePanel()
         panel.title = "New Project"

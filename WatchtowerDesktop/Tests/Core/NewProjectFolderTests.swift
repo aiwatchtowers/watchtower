@@ -92,4 +92,18 @@ final class NewProjectFolderTests: XCTestCase {
         let resolved = NewProjectFolder.resolved(link.appendingPathComponent("acme"))
         XCTAssertEqual(resolved.path, real.resolvingSymlinksInPath().appendingPathComponent("acme").path)
     }
+
+    func testResolvedFollowsASymlinkedLeaf() throws {
+        // ~/Projects/acme -> ~/Documents/acme: the TCC check must see Documents.
+        let documents = root.appendingPathComponent("Documents/acme", isDirectory: true)
+        try fm.createDirectory(at: documents, withIntermediateDirectories: true)
+        let leaf = root.appendingPathComponent("acme")
+        try fm.createSymbolicLink(at: leaf, withDestinationURL: documents)
+
+        let resolved = NewProjectFolder.resolved(leaf)
+        XCTAssertEqual(resolved.path, documents.resolvingSymlinksInPath().path)
+        XCTAssertEqual(try NewProjectFolder.check(resolved), .reuseEmpty)
+        let home = root.resolvingSymlinksInPath().path
+        XCTAssertEqual(ProjectFolderPolicy.tccSensitiveLocation(path: resolved.path, home: home), "~/Documents")
+    }
 }
