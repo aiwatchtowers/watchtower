@@ -52,6 +52,35 @@ package struct ChatMessageRecord: FetchableRecord, Decodable, Identifiable, Equa
         errorMessage = try c.decodeIfPresent(String.self, forKey: .errorMessage)
     }
 
+    /// A row that never came from the database — the embedded chats' memory
+    /// store (onboarding, setup assistants).
+    package init(
+        id: Int64,
+        conversationID: Int64,
+        role: String,
+        text: String,
+        createdAt: Double,
+        turnID: String = "",
+        status: String = "complete",
+        errorCode: String? = nil,
+        errorMessage: String? = nil
+    ) {
+        self.id = id
+        self.conversationID = conversationID
+        parentID = nil
+        self.role = role
+        self.text = text
+        self.createdAt = createdAt
+        self.turnID = turnID
+        self.status = status
+        provider = nil
+        model = nil
+        tokensIn = nil
+        tokensOut = nil
+        self.errorCode = errorCode
+        self.errorMessage = errorMessage
+    }
+
     package var createdDate: Date { Date(timeIntervalSince1970: createdAt) }
     package var isUser: Bool { role == "user" }
     package var isAssistant: Bool { role == "assistant" }

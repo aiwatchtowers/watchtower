@@ -132,4 +132,29 @@ final class WatchtowerAIServiceTests: XCTestCase {
         _ = service.parseLine(#"{"type":"text","text":"Here is the answer."}"#, accumulatedText: &acc)
         XCTAssertEqual(acc, "Here is the answer.")
     }
+
+    // MARK: - parseLine error line
+
+    /// `ai query` reports a provider failure as a v1 `error` line and exits 0:
+    /// it surfaces as `.error` with the provider's own text, never as reply text.
+    func testParseLineErrorEmitsErrorEvent() {
+        let service = WatchtowerAIService()
+        var acc = "partial answer"
+
+        let ev = service.parseLine(#"{"type":"error","error":"claude: not logged in"}"#, accumulatedText: &acc)
+        guard case .error(let message) = ev else {
+            return XCTFail("expected .error, got \(String(describing: ev))")
+        }
+        XCTAssertEqual(message, "claude: not logged in")
+        XCTAssertEqual(acc, "partial answer", "the error line never touches the turn's text")
+    }
+
+    /// Chats not yet on the embedded engine keep rendering `[Error] …` text.
+    func testFoldingErrorIntoTextKeepsTheLegacyRendering() {
+        guard case .text(let text) = StreamEvent.error("boom").foldingErrorIntoText else {
+            return XCTFail("expected .text")
+        }
+        XCTAssertEqual(text, "[Error] boom")
+        guard case .reset = StreamEvent.reset.foldingErrorIntoText else { return XCTFail("expected .reset") }
+    }
 }

@@ -1,0 +1,34 @@
+# Embedded assistant chats — shared component (2026-10-01)
+
+Spec: `docs/superpowers/specs/2026-10-01-shared-chat-component-design.md`. Plan: `docs/superpowers/plans/2026-10-01-shared-chat-component.md`. Board: #168.
+
+Every assistant chat outside the main AI Chat (target, track, idea/decision, meeting, onboarding, calendar/email setup) runs on one engine and one view built from the main chat's pieces. The backend is unchanged: one `watchtower ai query` per turn through `WatchtowerAIService.stream`. The warm `ai session` v2 protocol and `ChatSessionPool` remain main-chat only.
+
+**Migration status:** the infrastructure and the main chat's move onto `ChatFeedView`/`ChatComposerBar` landed with #170. The surfaces move in #172–#174 (track, idea/decision, meeting), #171 (target) and #175–#177 (onboarding, setup, cleanup). Until a surface moves, it keeps its own view model.
+
+## Pieces
+
+| Piece | Where | Role |
+|---|---|---|
+| `ChatSurfaceSpec` | `WatchtowerCore/Services/Chat/Embedded/` | A value that describes one chat: key, persistence (`.database` / `.memory`), **explicit** `toolAccess` (`.draftOnly` or `.actions(surface:)`, AGENT-04), system prompt (first turn only), per-turn prompt, `postTurn`, empty hint, starter prompts. |
+| `EmbeddedChatStore` | same | Database store (the existing `chat_messages` columns, no migration) or memory store (negative synthetic ids). Every write throws. |
+| `EmbeddedStreamReducer` / `AIStreamText` | same | The single fold of `.text` / `.turnComplete` / `.reset` / `.sessionID` / `.error`. |
+| `EmbeddedChatEngine` | same | Owns the stream loop. Writes the owner row and the reply's `partial` placeholder before the process starts. Streams into a `LiveTurn` (render isolation). Flushes the text at most once per second. Ends each turn exactly once as `complete` (then `postTurn`), `partial` (Stop or quit) or `error` (with the real text and an error code). Also handles follow-ups, hidden prompts, local rows and Retry. |
+| `EmbeddedStreamGate` | same | At most 3 embedded turns run at once. Later ones queue FIFO. A queued owner text is mirrored to `UserDefaults` and comes back as a draft after a restart. |
+| `EmbeddedChatCenter` | same, instance at `AppState.embeddedChatCenter` | Holds one engine per key. A 60 s sweep releases engines that are idle and have been hidden for 5 min. `dropContext` (on delete) stops quietly. `release` (sheet or window closed). `finishAllAsPartial` runs on quit. |
+| `ChatFeedView`, `ChatComposerBar` | `Views/Chat/` | Extracted from the main chat (follow-scroll feed, composer with a status line and an accessory slot). The main chat renders through them too. |
+| `EmbeddedChatView` / `EmbeddedChatRows` / `EmbeddedChatComposer` | `Views/Chat/Embedded/` | `ChatMessageRow` with `ChatRowActions.embedded` (Copy, plus Retry on the last failed reply) and `LiveAssistantRow`. Slots: `accessory(for:)` and `footer`. `density` is `.regular` or `.compact`. Use the rows/composer split when the chat sits inside its pane's scroll. |
+
+## Contracts
+
+- A draft-only surface never sends a `toolMode`. Only the target spec uses `.actions("target")`, and only when the provider is not ollama.
+- `postTurn` runs only for a completed turn. A stopped or failed reply is never parsed (no half-streamed directive is ever applied).
+- Owner text is on disk before a turn is sent. If that write fails, nothing is sent and the text goes back to the composer.
+- Errors: the error card (`ChatErrorPresentation`) shows a hint by kind (`EmbeddedChatErrorClassifier`) over the provider's own text. The `ai query` v1 `error` line now arrives as `StreamEvent.error`. Chats not yet migrated fold it back into `[Error] …` text (`foldingErrorIntoText`).
+- Stop terminates `ai query`. SIGTERM → `notifyShutdownContext` → SIGINT to the provider child (SIGKILL after 5 s).
+- CHAT-04 (content off argv) still covers only the main chat. Embedded chats keep `ai query` with the prompt on argv, as before.
+
+## Limits
+
+- The target's action cards are still memory-only.
+- `TargetBriefCenter` runs count against the 3-turn limit.
