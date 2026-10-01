@@ -60,6 +60,9 @@ func checkRewritable(u *unit, repl string) error {
 	if u.other {
 		return errors.New("this text holds markup the editor cannot keep (an HTML comment or stray tag); edit it in Confluence instead")
 	}
+	if href := firstClash(u.text, u.clashes); href != "" {
+		return linkClashErr(href)
+	}
 	if u.kind == unitInline && u.ctx != ctxPara && strings.Contains(repl, "\n") {
 		return errors.New("a heading or table cell cannot hold a line break; keep new text on one line")
 	}
@@ -189,7 +192,10 @@ func (a *applier) replaceSection(heading, body string) (Change, error) {
 	if err != nil {
 		return Change{}, err
 	}
-	links := blocksLinks(content)
+	links, clashes := blocksLinks(content)
+	if err := checkClashes(ops, clashes); err != nil {
+		return Change{}, err
+	}
 	a.kill(region)
 	hb.section = &section{region: region, body: opsBody(ops), ops: ops, index: a.index, links: links}
 	return Change{
@@ -221,6 +227,27 @@ func (a *applier) checkNoSpill(hi int, region span, content, body []*block) erro
 	for _, bl := range body {
 		if t := a.d.blockText(bl); t != "" && past[t] && !own[t] {
 			return fmt.Errorf("new_body repeats %s, which is not in this section: the section ends at the %s line after its heading; leave that text out of new_body (change it with replace_text or under its own heading)", snippet(t), LayoutBoundary)
+		}
+	}
+	return nil
+}
+
+// checkClashes refuses a section rewrite that re-renders a block linking to
+// an address whose links in the section carry different start tags: the
+// rendered link would take the first one's tag. Kept and moved blocks keep
+// their bytes and are fine.
+func checkClashes(ops []sectionOp, clashes map[string]bool) error {
+	if len(clashes) == 0 {
+		return nil
+	}
+	for _, op := range ops {
+		if op.body == nil || op.body == op.orig {
+			continue
+		}
+		for _, u := range op.body.editUnits() {
+			if href := firstClash(u.text, clashes); href != "" {
+				return linkClashErr(href)
+			}
 		}
 	}
 	return nil

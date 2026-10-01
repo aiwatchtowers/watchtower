@@ -25,6 +25,8 @@ type inliner struct {
 	other bool              // true once the content held a comment or stray tag
 	codes []string          // rendered code spans, stood in for by holes until finalize
 	links map[string]string // href -> the link's original start tag
+	// clashes: hrefs whose links carry different start tags (unit.clashes)
+	clashes map[string]bool
 }
 
 // inlineUnit renders nodes as the editable text of a unit spanning sp and
@@ -34,7 +36,7 @@ func (b *builder) inlineUnit(nodes []*node, ctx inlineCtx, sp span) (*unit, bool
 	text, marks := in.finalize(in.nodes(nodes))
 	u := &unit{
 		kind: unitInline, ctx: ctx, start: sp.start, end: sp.end, text: text,
-		marks: marks, other: in.other, links: in.links,
+		marks: marks, other: in.other, links: in.links, clashes: in.clashes,
 	}
 	return b.addUnit(u), in.plain
 }
@@ -185,11 +187,18 @@ func (in *inliner) link(n *node) string {
 		return in.marker(n)
 	}
 	href = noNUL.Replace(href)
-	if _, seen := in.links[href]; !seen {
+	tag := in.b.src[n.start:n.innerStart]
+	switch first, seen := in.links[href]; {
+	case !seen:
 		if in.links == nil {
 			in.links = map[string]string{}
 		}
-		in.links[href] = in.b.src[n.start:n.innerStart]
+		in.links[href] = tag
+	case first != tag:
+		if in.clashes == nil {
+			in.clashes = map[string]bool{}
+		}
+		in.clashes[href] = true
 	}
 	return "[" + text + "](" + href + ")"
 }

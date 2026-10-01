@@ -3,6 +3,7 @@ package confluenceedit
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -99,17 +100,45 @@ func blocksLiteral(bs []*block, markers []Marker) string {
 	return strings.Join(parts, "\x00")
 }
 
-// blocksLinks merges the original link tags of bs's units.
-func blocksLinks(bs []*block) map[string]string {
-	out := map[string]string{}
+// blocksLinks merges the original link tags of bs's units, and lists the
+// hrefs whose links carry different start tags (see unit.clashes).
+func blocksLinks(bs []*block) (map[string]string, map[string]bool) {
+	out, clashes := map[string]string{}, map[string]bool{}
 	for _, bl := range bs {
 		for _, u := range bl.editUnits() {
+			for href := range u.clashes {
+				clashes[href] = true
+			}
 			for href, tag := range u.links {
-				if _, ok := out[href]; !ok {
+				if first, ok := out[href]; !ok {
 					out[href] = tag
+				} else if first != tag {
+					clashes[href] = true
 				}
 			}
 		}
 	}
-	return out
+	return out, clashes
+}
+
+// linkClashErr refuses a rewrite of text linking to href, one of the
+// addresses whose links carry different start tags.
+func linkClashErr(href string) error {
+	return fmt.Errorf("this passage has two links to %s with different link settings (e.g. one shown as a card); a rewrite cannot keep them apart — keep it unchanged, or edit it in Confluence", href)
+}
+
+// firstClash is the first href of clashes (sorted, for a stable message)
+// that text links to, or "".
+func firstClash(text string, clashes map[string]bool) string {
+	hrefs := make([]string, 0, len(clashes))
+	for href := range clashes {
+		hrefs = append(hrefs, href)
+	}
+	sort.Strings(hrefs)
+	for _, href := range hrefs {
+		if strings.Contains(text, "]("+href+")") {
+			return href
+		}
+	}
+	return ""
 }
