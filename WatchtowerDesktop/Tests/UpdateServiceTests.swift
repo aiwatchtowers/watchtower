@@ -445,6 +445,37 @@ struct UpdateServiceInstallMechanicsTests {
         }
     }
 
+    /// The Team-ID pin is the security core of the verify: a bundle with a
+    /// perfectly valid signature from a different signer must be refused at
+    /// the requirement check. Calculator.app ships on every macOS, Apple-signed
+    /// with no Team ID, so it can never satisfy our leaf-OU requirement.
+    @Test("a validly signed bundle from another signer fails the Team-ID pin")
+    func foreignSignerFailsTeamPin() {
+        let calculator = URL(fileURLWithPath: "/System/Applications/Calculator.app")
+        do {
+            try UpdateService.verifySignature(of: calculator, teamID: "ABCDE12345")
+            Issue.record("a foreign signer passed the Team-ID pin")
+        } catch let error as UpdateService.SignatureError {
+            #expect(error.step == "validate")
+        } catch {
+            Issue.record("unexpected error \(error)")
+        }
+    }
+
+    /// Control for the test above: the same bundle passes the same strict
+    /// validation under a requirement it does satisfy, so the failure above is
+    /// the pin, not the flags or a broken read.
+    @Test("the same bundle passes strict validation under a requirement it satisfies")
+    func strictValidationPassesForMatchingRequirement() throws {
+        let calculator = URL(fileURLWithPath: "/System/Applications/Calculator.app")
+        var staticCode: SecStaticCode?
+        #expect(SecStaticCodeCreateWithPath(calculator as CFURL, [], &staticCode) == errSecSuccess)
+        var requirement: SecRequirement?
+        #expect(SecRequirementCreateWithString("anchor apple" as CFString, [], &requirement) == errSecSuccess)
+        let code = try #require(staticCode)
+        #expect(SecStaticCodeCheckValidity(code, UpdateService.signatureValidationFlags, requirement) == errSecSuccess)
+    }
+
     @Test("signature validation uses the strict, deep, all-architectures flags")
     func validationFlags() {
         let flags = UpdateService.signatureValidationFlags.rawValue
