@@ -76,14 +76,14 @@ func TestIngest_RefusesWhatIsNotASmallImageFile(t *testing.T) {
 	require.NoError(t, syscall.Mkfifo(fifo, 0o600))
 
 	for name, src := range map[string]string{
-		"relative":          "shot.png",
-		"missing":           filepath.Join(dir, "missing.png"),
-		"symlink":           link,
-		"directory":         dir,
-		"text named as png": writeSource(t, "fake.png", "just text"),
-		"svg":               writeSource(t, "a.svg", `<svg xmlns="http://www.w3.org/2000/svg"></svg>`),
-		"empty":             writeSource(t, "empty.png", ""),
-		"over the cap":      big,
+		"relative":           "shot.png",
+		"missing":            filepath.Join(dir, "missing.png"),
+		"symlink":            link,
+		"directory":          dir,
+		"text named as png":  writeSource(t, "fake.png", "just text"),
+		"svg":                writeSource(t, "a.svg", `<svg xmlns="http://www.w3.org/2000/svg"></svg>`),
+		"empty":              writeSource(t, "empty.png", ""),
+		"over the cap":       big,
 		"fifo (never hangs)": fifo,
 	} {
 		_, err := s.Ingest(1, src)
