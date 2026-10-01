@@ -1078,7 +1078,7 @@ final class TargetChatViewModel {
     /// `tracks.linked_target_id = target.id` (unfiltered by origin/dismissed —
     /// unlike TrackQueries.fetchByLinkedTarget, which is scoped to custom
     /// watches for a different UI feature), each contributing the same
-    /// channels/participants/scalars TrackChatViewModel.trackMemorySubjects
+    /// channels/participants/scalars TrackChatPrompt.trackMemorySubjects
     /// extracts, unioned, plus the target's own "target:<id>" mirror alias
     /// (mirroring Go's targetSubjects prepend). A bare target with no linked
     /// track yields just its own mirror alias.
@@ -1089,7 +1089,7 @@ final class TargetChatViewModel {
             try Track.fetchAll(db, sql: "SELECT * FROM tracks WHERE linked_target_id = ?", arguments: [target.id])
         }) ?? []
         for track in linkedTracks {
-            for subject in TrackChatViewModel.trackMemorySubjects(track: track) where subject != "track:\(track.id)" {
+            for subject in TrackChatPrompt.trackMemorySubjects(track: track) where subject != "track:\(track.id)" {
                 subjects.insert(subject)
             }
         }
@@ -1113,7 +1113,7 @@ final class TargetChatViewModel {
 
         // memoryChatEnabled/memoryVaultDir default to the config-derived values
         // in production; tests inject them explicitly — same pattern as
-        // TrackChatViewModel/MeetingChatViewModel.
+        // TrackChatPrompt/MeetingChatSurface.
         let memoryBlock = memoryChatEnabled
             ? renderMemorySection(
                 hotMap: hotMap(vaultDir: memoryVaultDir),
