@@ -159,7 +159,7 @@ type boardRefreshAttempt struct {
 // maxDailyBoardRefreshAttempts caps how many times CheckAndRefreshProfiles
 // retries AnalyzeBoard for one board's current config hash on one UTC
 // calendar day — the day-plan/briefing/next-step "3 attempts/day" shape
-// (CLAUDE.md "Strong-tier cost fixes"). Without it, a board whose config
+// (docs/features/strong-tier-cost-fixes.md). Without it, a board whose config
 // hash changed and whose analysis kept failing (LLM error, or "LLM returned
 // empty workflow") retried the LLM call every phaseJiraSync pass (every
 // jira.sync_interval_mins, default 15 min) forever: ProfileGeneratedAt is
@@ -217,7 +217,7 @@ func (a *BoardAnalyzer) clockNow() time.Time {
 // refreshBudgetSpent reports whether board's retry budget for today's failed
 // attempts at hash is exhausted. A hash change (the board's config changed
 // again since the failing attempts) or a new UTC calendar day resets the
-// budget — the same "edited since" escape hatch CLAUDE.md documents for the
+// budget — the same "edited since" escape hatch docs/features/strong-tier-cost-fixes.md documents for the
 // next-step generator's per-target attempt budget.
 func (a *BoardAnalyzer) refreshBudgetSpent(boardID int, hash string) bool {
 	a.refreshAttemptsMu.Lock()

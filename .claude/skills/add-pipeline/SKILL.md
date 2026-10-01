@@ -18,7 +18,7 @@ A feature like digest / tracks / inbox / catchup is built in layers in a fixed o
 
 3. **AI calls** inside the pipeline → **[[add-ai-prompt]]** (prompt registration, `digest.WithSource` tagging, model tier, both-provider correctness).
 
-4. **Daemon wiring** (`internal/daemon/daemon.go`): add a field to `Daemon`, a `SetXPipeline(p *X.Pipeline)` setter, and invoke it from the right phase in `Run` (phase order is documented in CLAUDE.md / the `phaseXxx` methods — slot it by its dependencies: after digests if it consumes them, etc.).
+4. **Daemon wiring** (`internal/daemon/daemon.go`): add a field to `Daemon`, a `SetXPipeline(p *X.Pipeline)` setter, and invoke it from the right phase in `Run` (phase order is documented in the `docs/features/` notes / the `phaseXxx` methods — slot it by its dependencies: after digests if it consumes them, etc.).
 
 5. **Daemon init** (`cmd/sync.go`): build the pipeline behind its config flag and register it — `if cfg.X.Enabled { d.SetXPipeline(x.New(database, cfg, gen, logger)) }` — reusing the shared `gen, cleanup := cliPooledGenerator(cfg, logger)`.
 
