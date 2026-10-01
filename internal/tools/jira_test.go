@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -207,4 +208,74 @@ func TestResolveJiraAccount_LookupFailureIsNotAValidationError(t *testing.T) {
 	assert.False(t, errors.As(err, &verr), "a broken lookup must not be reported as a missing account")
 	assert.NotContains(t, err.Error(), "no Jira account")
 	assert.Contains(t, err.Error(), "looking up Jira account")
+}
+
+// The account an omitted account_id resolves to at propose time is pinned
+// into the stored args: a second site connected before the owner approves
+// neither fails the apply ("several Jira sites") nor redirects the write, and
+// a pinned site disabled in between fails it instead of filing elsewhere.
+func TestCreateJiraIssue_ProposePinsTheAccount(t *testing.T) {
+	d := openDB(t)
+	a1 := seedJira(t, d)
+	var used []int64
+	fake := &fakeJira{key: "ABC-7"}
+	reg := New(d)
+	require.NoError(t, reg.Register(NewCreateJiraIssue(func(a db.JiraAccount) (JiraIssueClient, error) {
+		used = append(used, a.ID)
+		return fake, nil
+	})))
+	propose := func() int64 {
+		t.Helper()
+		rc, err := reg.Propose(context.Background(), "create_jira_issue",
+			json.RawMessage(`{"project_key":"ABC","issue_type":"Task","summary":"s","reason":"r"}`), Binding{Surface: "main"})
+		require.NoError(t, err)
+		require.Equal(t, "pending", rc.Status)
+		return rc.ActionID
+	}
+	first, second := propose(), propose()
+	row, err := d.GetAgentAction(first)
+	require.NoError(t, err)
+	assert.JSONEq(t, fmt.Sprintf(`{"account_id":%d,"project_key":"ABC","issue_type":"Task","summary":"s","reason":"r"}`, a1), row.ArgsJSON)
+
+	// A second site with the same project key is connected before approval.
+	a2 := seedJiraAccountWithProject(t, d, "c2", "ABC")
+	approve(t, d, first)
+	applied, err := reg.Apply(context.Background(), first)
+	require.NoError(t, err)
+	assert.Equal(t, "applied", applied.Status)
+	assert.Equal(t, []int64{a1}, used, "the write goes to the site the owner approved")
+
+	// The pinned site is disabled: the apply fails rather than landing on a2.
+	require.NoError(t, d.SetJiraAccountEnabled(a1, false))
+	approve(t, d, second)
+	failed, err := reg.Apply(context.Background(), second)
+	require.NoError(t, err)
+	assert.Equal(t, "failed", failed.Status)
+	assert.Contains(t, failed.Error, "not enabled")
+	assert.NotContains(t, used, a2)
+}
+
+// Execute checks the project again: a pinned account whose project stopped
+// syncing between propose and apply is refused, not written.
+func TestCreateJiraIssue_ExecuteRechecksTheProject(t *testing.T) {
+	d := openDB(t)
+	a1 := seedJira(t, d)
+	fake := &fakeJira{key: "ABC-7"}
+	tool := NewCreateJiraIssue(func(db.JiraAccount) (JiraIssueClient, error) { return fake, nil })
+	_, err := d.Exec(`DELETE FROM jira_sync_state WHERE account_id = ?`, a1)
+	require.NoError(t, err)
+	_, err = tool.Execute(context.Background(), d, Call{Args: json.RawMessage(
+		fmt.Sprintf(`{"account_id":%d,"project_key":"ABC","issue_type":"Task","summary":"s","reason":"r"}`, a1))})
+	var verr *ValidationError
+	require.ErrorAs(t, err, &verr)
+	assert.Empty(t, fake.created)
+}
+
+func seedJiraAccountWithProject(t *testing.T, d *db.DB, cloudID, projectKey string) int64 {
+	t.Helper()
+	id, err := d.CreateJiraAccount(db.JiraAccount{CloudID: cloudID, SiteURL: "https://" + cloudID + ".atlassian.net"})
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO jira_sync_state (account_id, project_key, last_synced_at, issues_synced) VALUES (?, ?, '', 0)`, id, projectKey)
+	require.NoError(t, err)
+	return id
 }

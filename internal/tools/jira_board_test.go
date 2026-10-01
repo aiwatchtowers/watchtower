@@ -318,3 +318,29 @@ func TestConnectJiraBoard_ReconnectPassesPersistedRowToProfiler(t *testing.T) {
 	require.Len(t, sel, 1)
 	assert.Equal(t, 10, sel[0].ID)
 }
+
+// connect_jira_board pins the account an omitted account_id resolves to at
+// propose time, like create_jira_issue: a second site connected before the
+// owner approves does not turn the apply into "several Jira sites".
+func TestConnectJiraBoard_ProposePinsTheAccount(t *testing.T) {
+	d := openDB(t)
+	a1 := seedJira(t, d)
+	var used []int64
+	reg := New(d)
+	require.NoError(t, reg.Register(NewConnectJiraBoard(func(a db.JiraAccount) (JiraConnect, error) {
+		used = append(used, a.ID)
+		return JiraConnect{Client: &fakeBoardClient{boards: []jira.Board{boardFixture(7, "ABC", "ABC board")}}}, nil
+	})))
+	rc, err := reg.Propose(context.Background(), "connect_jira_board",
+		json.RawMessage(`{"project_key":"ABC","reason":"r"}`), Binding{Surface: "main"})
+	require.NoError(t, err)
+	require.Equal(t, "pending", rc.Status)
+
+	_, err = d.CreateJiraAccount(db.JiraAccount{CloudID: "c2", SiteURL: "https://two.atlassian.net"})
+	require.NoError(t, err)
+	approve(t, d, rc.ActionID)
+	row, err := reg.Apply(context.Background(), rc.ActionID)
+	require.NoError(t, err)
+	assert.Equal(t, "applied", row.Status, row.Error)
+	assert.Equal(t, []int64{a1}, used)
+}

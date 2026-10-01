@@ -68,6 +68,36 @@ func ResolveJiraAccount(d *db.DB, id int64) (db.JiraAccount, error) {
 	}
 }
 
+// pinAccount resolves account_id right now and bakes the choice into the
+// persisted args: an omitted id means "the single enabled account", and
+// without the pin Execute would re-resolve it hours later — failing for good
+// once a second site is connected, or writing to a different site than the
+// owner approved (the pinSite rule for issue-key tools).
+func pinAccount(d *db.DB, raw json.RawMessage, accountID int64) (json.RawMessage, error) {
+	account, err := ResolveJiraAccount(d, accountID)
+	if err != nil {
+		return nil, err
+	}
+	return mergeJSON(raw, map[string]any{"account_id": account.ID})
+}
+
+// syncedProjectAccount resolves the account and checks projectKey is synced
+// on it.
+func syncedProjectAccount(d *db.DB, accountID int64, projectKey string) (db.JiraAccount, error) {
+	account, err := ResolveJiraAccount(d, accountID)
+	if err != nil {
+		return db.JiraAccount{}, err
+	}
+	ok, err := projectSynced(d, account.ID, projectKey)
+	if err != nil {
+		return db.JiraAccount{}, err
+	}
+	if !ok {
+		return db.JiraAccount{}, &ValidationError{Msg: fmt.Sprintf("project %s is not synced for this account; call list_jira_projects", projectKey)}
+	}
+	return account, nil
+}
+
 func projectSynced(d *db.DB, accountID int64, projectKey string) (bool, error) {
 	states, err := d.GetJiraSyncStates()
 	if err != nil {
@@ -173,25 +203,24 @@ func NewCreateJiraIssue(factory JiraClientFactory) *Tool {
 			case len([]rune(a.Summary)) > 255:
 				return &ValidationError{Msg: "summary must be at most 255 characters"}
 			}
-			account, err := ResolveJiraAccount(d, a.AccountID)
-			if err != nil {
-				return err
+			_, err := syncedProjectAccount(d, a.AccountID, a.ProjectKey)
+			return err
+		},
+		Normalize: func(_ context.Context, d *db.DB, raw json.RawMessage) (json.RawMessage, error) {
+			var a createJiraIssueArgs
+			if err := decodeStrict(raw, &a); err != nil {
+				return nil, err
 			}
-			ok, err := projectSynced(d, account.ID, a.ProjectKey)
-			if err != nil {
-				return err
-			}
-			if !ok {
-				return &ValidationError{Msg: fmt.Sprintf("project %s is not synced for this account; call list_jira_projects", a.ProjectKey)}
-			}
-			return nil
+			return pinAccount(d, raw, a.AccountID)
 		},
 		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
 			var a createJiraIssueArgs
 			if err := json.Unmarshal(call.Args, &a); err != nil {
 				return nil, fmt.Errorf("decoding create_jira_issue args: %w", err)
 			}
-			account, err := ResolveJiraAccount(d, a.AccountID)
+			// The account was pinned at propose time; the project is checked
+			// again because it may have stopped syncing since.
+			account, err := syncedProjectAccount(d, a.AccountID, a.ProjectKey)
 			if err != nil {
 				return nil, err
 			}
