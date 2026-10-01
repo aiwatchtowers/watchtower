@@ -15,6 +15,8 @@ final class UpdateService {
         case downloading(progress: Double)
         case readyToInstall(appPath: URL)
         case installing
+        /// The new bundle is in place; the app is quitting to reopen it.
+        case restarting
         /// The bundle was replaced but the app did not quit (the quit was
         /// cancelled or is stuck): a manual restart finishes the update.
         case restartRequired
@@ -332,7 +334,7 @@ final class UpdateService {
     nonisolated static func shouldAutoCheck(state: UpdateState) -> Bool {
         switch state {
         case .idle, .error, .available: true
-        case .checking, .downloading, .readyToInstall, .installing, .restartRequired: false
+        case .checking, .downloading, .readyToInstall, .installing, .restarting, .restartRequired: false
         }
     }
 
@@ -423,8 +425,8 @@ final class UpdateService {
     /// The side-effecting steps of an install, injectable for tests. `live`
     /// is the only production value. Sendable: they run off the main actor.
     struct InstallSteps: Sendable {
-        /// Whether the folder holding the current app can be written to.
-        var canWrite: @Sendable (_ folder: URL) -> Bool
+        /// Whether a path can be written to (the app's folder and the app).
+        var canWrite: @Sendable (_ url: URL) -> Bool
         /// Move the downloaded app next to the current one (same volume, so
         /// the swap is a rename); returns the staged app's URL.
         var stage: @Sendable (_ newApp: URL, _ currentApp: URL) throws -> URL
@@ -435,6 +437,9 @@ final class UpdateService {
         var replace: @Sendable (_ currentApp: URL, _ stagedApp: URL) throws -> Void
         /// Best-effort removal of whatever is left of the staged app.
         var discard: @Sendable (_ stagedApp: URL) -> Void
+        /// Re-reads the recorder's busy flag right before the swap: a
+        /// capture started during the (slow) verify must still win.
+        var isBusy: @Sendable () -> Bool
 
         static var live: Self {
             Self(
@@ -445,7 +450,8 @@ final class UpdateService {
                     _ = try FileManager.default.replaceItemAt(current, withItemAt: staged, backupItemName: nil, options: [])
                 },
                 // The staged app sits alone in its item-replacement directory.
-                discard: { try? FileManager.default.removeItem(at: $0.deletingLastPathComponent()) }
+                discard: { try? FileManager.default.removeItem(at: $0.deletingLastPathComponent()) },
+                isBusy: { UpdateService.recorderIsBusyFromAnyThread() }
             )
         }
     }
@@ -465,8 +471,9 @@ final class UpdateService {
         // dialog can no longer cancel the update, and the still-running old
         // app would spawn the new bundle's CLI.
         guard !isBusy() else {
+            // Stay ready: the Settings caption already says what to finish,
+            // and the install can be retried as soon as it is done.
             NSLog("UpdateService: install refused: a recording or transcription is busy")
-            state = .error(Self.busyMessage)
             return
         }
         guard let currentApp = currentAppURL() else {
@@ -516,7 +523,7 @@ final class UpdateService {
             state = .restartRequired
             return
         }
-        state = .installing
+        state = .restarting
         relaunchSteps.requestQuit()
         await relaunchSteps.sleep(Self.quitGrace)
         // Still alive: the quit was cancelled or is still stuck.
@@ -558,6 +565,22 @@ final class UpdateService {
 
     nonisolated static let busyMessage =
         "Finish the recording or transcription in progress, then install the update."
+
+    nonisolated static let lateBusyMessage =
+        "A recording started while the update was being prepared, so it was not installed. "
+        + "Finish the recording, then download the update again."
+
+    /// The recorder's busy flag, readable from the detached install task.
+    /// The main actor is only awaiting that task (suspended, not blocked),
+    /// so a synchronous hop is safe.
+    nonisolated static func recorderIsBusyFromAnyThread() -> Bool {
+        if Thread.isMainThread {
+            return MainActor.assumeIsolated { AppState.shared.meetingRecorderCenter.isBusy }
+        }
+        return DispatchQueue.main.sync {
+            MainActor.assumeIsolated { AppState.shared.meetingRecorderCenter.isBusy }
+        }
+    }
 
     /// True while a meeting capture or transcription job is running. Installs
     /// wait for it. Instance property so tests can inject it.
@@ -611,7 +634,9 @@ final class UpdateService {
         }
 
         let folder = currentApp.deletingLastPathComponent()
-        guard steps.canWrite(folder) else {
+        // The folder for the swap's rename, and the bundle itself: rename(2)
+        // moving a directory also needs write access to it (its "..").
+        guard steps.canWrite(folder), steps.canWrite(currentApp) else {
             return .failed("Watchtower can't replace itself in “\(folder.path)” (no write permission). "
                 + "Move Watchtower to a folder you can write to, or install the update manually from the DMG.")
         }
@@ -628,6 +653,12 @@ final class UpdateService {
         } catch {
             steps.discard(staged)
             return .failed("Update aborted: \(error.localizedDescription)")
+        }
+
+        // Synchronous re-check, no await: verify and replace stay adjacent.
+        guard !steps.isBusy() else {
+            steps.discard(staged)
+            return .failed(lateBusyMessage)
         }
 
         do {

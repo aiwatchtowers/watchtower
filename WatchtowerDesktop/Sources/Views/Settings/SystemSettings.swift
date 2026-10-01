@@ -367,6 +367,14 @@ struct SystemSettings: View {
                         .foregroundStyle(.secondary)
                 }
 
+            case .restarting:
+                HStack {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Restarting Watchtower...")
+                        .foregroundStyle(.secondary)
+                }
+
             case .restartRequired:
                 HStack {
                     Label("Update installed — restart Watchtower to finish", systemImage: "checkmark.circle.fill")

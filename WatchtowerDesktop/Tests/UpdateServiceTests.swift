@@ -278,6 +278,10 @@ private final class InstallRecorder: @unchecked Sendable {
     var failVerify = false
     var failReplace = false
     var writable = true
+    /// Only the app bundle itself is unwritable (its folder is fine).
+    var appUnwritable = false
+    /// The recorder turns busy during the install (after the first gate).
+    var busyBeforeSwap = false
 
     var calls: [String] { lock.withLock { recorded } }
     var verifiedRequirement: String? { lock.withLock { recordedRequirement } }
@@ -296,8 +300,9 @@ private final class InstallRecorder: @unchecked Sendable {
 
     var steps: UpdateService.InstallSteps {
         UpdateService.InstallSteps(
-            canWrite: { _ in
+            canWrite: { url in
                 self.record("canWrite")
+                if url.pathExtension == "app" && self.appUnwritable { return false }
                 return self.writable
             },
             stage: { _, _ in
@@ -313,7 +318,11 @@ private final class InstallRecorder: @unchecked Sendable {
                 self.record("replace")
                 if self.failReplace { throw Boom(what: "replace") }
             },
-            discard: { _ in self.record("discard") }
+            discard: { _ in self.record("discard") },
+            isBusy: {
+                self.record("isBusy")
+                return self.busyBeforeSwap
+            }
         )
     }
 }
@@ -337,9 +346,10 @@ struct UpdateServiceInstallTests {
     func happyPathOrder() async {
         let rec = InstallRecorder()
         #expect(run(rec) == .installed)
-        // verify -> replace back to back: no step (and no daemon stop) may sit
-        // between the check and the use of the staged bundle.
-        #expect(rec.calls == ["canWrite", "stage", "verify", "replace", "discard"])
+        // verify -> replace back to back: only the synchronous busy re-check
+        // (no await, no daemon stop) sits between the check and the use of
+        // the staged bundle.
+        #expect(rec.calls == ["canWrite", "canWrite", "stage", "verify", "isBusy", "replace", "discard"])
         #expect(rec.verifiedRequirement
             == #"anchor apple generic and certificate leaf[subject.OU] = "ABCDE12345" and identifier "com.example.app""#)
     }
@@ -382,6 +392,25 @@ struct UpdateServiceInstallTests {
         #expect(rec.calls == ["canWrite"])
     }
 
+    @Test("an unwritable app bundle in a writable folder is refused before anything is staged")
+    func unwritableBundle() async {
+        let rec = InstallRecorder()
+        rec.appUnwritable = true
+        let outcome = run(rec)
+        guard case .failed(let message) = outcome else { Issue.record("expected failure"); return }
+        #expect(message.contains("DMG"))
+        #expect(rec.calls == ["canWrite", "canWrite"])
+    }
+
+    @Test("a recording that starts during the verify still wins: the swap never happens")
+    func busyAfterVerifyNeverSwaps() async {
+        let rec = InstallRecorder()
+        rec.busyBeforeSwap = true
+        let outcome = run(rec)
+        #expect(outcome == .failed(UpdateService.lateBusyMessage))
+        #expect(rec.calls == ["canWrite", "canWrite", "stage", "verify", "isBusy", "discard"])
+    }
+
     @Test("staging failure surfaces an error and stops nothing")
     func stageFailure() async {
         let rec = InstallRecorder()
@@ -389,7 +418,7 @@ struct UpdateServiceInstallTests {
         let outcome = run(rec)
         guard case .failed(let message) = outcome else { Issue.record("expected failure"); return }
         #expect(message.contains("stage boom"))
-        #expect(rec.calls == ["canWrite", "stage"])
+        #expect(rec.calls == ["canWrite", "canWrite", "stage"])
     }
 
     @Test("signature failure discards the staged app and never swaps")
@@ -399,7 +428,7 @@ struct UpdateServiceInstallTests {
         let outcome = run(rec)
         guard case .failed(let message) = outcome else { Issue.record("expected failure"); return }
         #expect(message.contains("verify boom"))
-        #expect(rec.calls == ["canWrite", "stage", "verify", "discard"])
+        #expect(rec.calls == ["canWrite", "canWrite", "stage", "verify", "discard"])
     }
 
     @Test("swap failure surfaces an error and discards the staged app")
@@ -409,7 +438,7 @@ struct UpdateServiceInstallTests {
         let outcome = run(rec)
         guard case .failed(let message) = outcome else { Issue.record("expected failure"); return }
         #expect(message.contains("replace boom"))
-        #expect(rec.calls == ["canWrite", "stage", "verify", "replace", "discard"])
+        #expect(rec.calls == ["canWrite", "canWrite", "stage", "verify", "isBusy", "replace", "discard"])
     }
 
     @Test("install refuses while a recording or transcription is busy, before any step")
@@ -419,8 +448,10 @@ struct UpdateServiceInstallTests {
         svc.isBusy = { true }
         svc.installSteps = rec.steps
         svc.state = .readyToInstall(appPath: URL(fileURLWithPath: "/downloads/Watchtower.app"))
+        let ready = svc.state
         await svc.install()
-        #expect(svc.state == .error(UpdateService.busyMessage))
+        // Stays installable: the Settings caption explains the wait.
+        #expect(svc.state == ready)
         #expect(rec.calls.isEmpty)
     }
 
@@ -661,7 +692,15 @@ struct UpdateServiceRelaunchTests {
     func quitNotHappeningEndsInRestartRequired() async {
         let rec = RelaunchRecorder()
         let svc = service(rec, appURL: appURL)
+        var stateDuringGrace: UpdateService.UpdateState?
+        let recordSleep = svc.relaunchSteps.sleep
+        svc.relaunchSteps.sleep = { duration in
+            stateDuringGrace = svc.state
+            await recordSleep(duration)
+        }
         await svc.relaunch()
+        // "Restart Now" must not claim to be installing while it waits.
+        #expect(stateDuringGrace == .restarting)
         #expect(rec.spawned.count == 1)
         #expect(rec.spawned.first?.pid == ProcessInfo.processInfo.processIdentifier)
         #expect(rec.spawned.first?.path == appURL.path)
@@ -697,7 +736,7 @@ struct UpdateServiceRelaunchTests {
             return
         }
         #expect(message.contains("verify boom"))
-        #expect(install.calls == ["canWrite", "stage", "verify", "discard"])
+        #expect(install.calls == ["canWrite", "canWrite", "stage", "verify", "discard"])
         #expect(relaunch.spawned.isEmpty && relaunch.quits == 0)
     }
 
@@ -757,6 +796,7 @@ struct UpdateServicePeriodicTests {
         #expect(!UpdateService.shouldAutoCheck(state: .downloading(progress: 0.5)))
         #expect(!UpdateService.shouldAutoCheck(state: .readyToInstall(appPath: URL(fileURLWithPath: "/tmp/x"))))
         #expect(!UpdateService.shouldAutoCheck(state: .installing))
+        #expect(!UpdateService.shouldAutoCheck(state: .restarting))
         #expect(!UpdateService.shouldAutoCheck(state: .restartRequired))
     }
 

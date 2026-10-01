@@ -184,9 +184,6 @@ final class NotificationRouteTests: XCTestCase {
 
     // MARK: - Dispatch table
 
-    /// A decision push carries an idea id (decisions are ledger-sourced, not tied to a
-    /// single digest — see DigestWatcher) and opens the Decisions segment on that entry;
-    /// without one it can only land on the Digests tab.
     /// An update push opens Settings on the System tab (where the update
     /// installs), self-received or forwarded alike: it is pure navigation.
     func testUpdatePushOpensSettingsOnSystem() async {
@@ -206,6 +203,9 @@ final class NotificationRouteTests: XCTestCase {
         }
     }
 
+    /// A decision push carries an idea id (decisions are ledger-sourced, not tied to a
+    /// single digest — see DigestWatcher) and opens the Decisions segment on that entry;
+    /// without one it can only land on the Digests tab.
     func testDecisionRoutesToLedgerEntry() async {
         let withID = AppState()
         await NotificationDelegate.route(
