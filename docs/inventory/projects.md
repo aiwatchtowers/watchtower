@@ -62,7 +62,9 @@ calls on it.
 Watchtower added) — a removal failure is reported and the delete still
 happens — then deletes the project row, which removes every project target,
 source, document entry, comment, target-image row and terminal session row
-in the same transaction (`db.DeleteProject`, `ON DELETE CASCADE` from `projects`), and then removes
+in the same transaction (`db.DeleteProject`, `ON DELETE CASCADE` from `projects`)
+together with its documents' search index entries (`kb_documents`/`kb_chunks`
+of source `project_doc` for that project, PROJ-08), and then removes
 the project's stored image copies (`<workspace>/project_files/<id>/`,
 `projectfiles.Store.RemoveProject`; a failure is reported as `files_ok:
 false` and never undoes the delete). Deleting one project target
@@ -312,6 +314,56 @@ timeout would be worse than none.
 
 **Locked since:** 2026-10-01
 
+## PROJ-08 — a project's documents are searchable only from its own sessions
+
+**Status:** Enforced
+
+**Observable:** Attached project documents (`project_documents`, read from
+the project folder) are indexed into the knowledge index as source
+`project_doc` (`internal/kb/source_project.go`; anchor `project_id`,
+`document_id`, `rel_path`; sections split at `#`–`###` headings, the heading
+as `chunk_anchor`). They are visible only to a search or an open made in
+that project's own session — `watchtower mcp --project N`, whose
+`tools.Binding.ProjectID` is N. `kb.Search` (`Request.ProjectID`),
+`kb.GetDocument` (`DocOptions.ProjectID`) and `kb.Recent` apply one SQL
+condition (`projectDocVisible`, `internal/kb/search.go`) on every call, so
+the default — ProjectID 0, i.e. the main AI Chat, every Discuss chat, `kb
+search`, the Confluence title lookup, `get_task_context` and any other
+caller — sees no project document at all; `search_knowledge` asked for
+`sources: ["project_doc"]` outside a project session is refused (not an
+empty result), and another project's session sees only its own. An open of
+a hidden document reads as "not found", the same as a missing one. Deleting
+the project deletes its index entries in the same transaction (PROJ-02).
+
+Indexing is mechanical (no AI, KB-02): the daemon's knowledge phase
+re-renders a document whose file's mtime differs from the indexed one (any
+direction) or whose file is gone, hash-gated; it never reads a folder under
+`~/Documents`, `~/Desktop`, `~/Downloads`, `~/Library/CloudStorage`,
+`~/Library/Mobile Documents` or `/Volumes` (case-insensitive; a background
+read there could raise a macOS privacy prompt attributed to Watchtower, and
+a dead network mount could block it), and it never follows a symlink out of
+a project folder (`resolveInside` refuses each step before touching it).
+Those projects are indexed only by an explicit trigger —
+`kb.IndexProjectDocs`, run by `project resync`, by `kb reindex` (owner-
+started; it re-indexes every project so a rebuild loses nothing) and, when
+`knowledge.enabled` is on, by the agent's `attach_document`. A
+file that is gone, not a regular file (never opened blocking), or no longer
+resolves inside the folder (symlinks followed inside it only) is indexed by its title only,
+its anchor's `unreadable` saying why; a file over 2 MiB is indexed up to
+that, its anchor's `truncated` saying so.
+
+**Why locked:** Owner decision (board target #89): project documents are
+working material of one project and its coding agent; they must not leak
+into the owner's general assistant or another project — the PROJ-01 spirit
+applied to search.
+
+**Test guards:**
+- `internal/kb/source_project_test.go::TestProj08_ProjectDocsOnlyInTheirOwnProjectSession`
+- `internal/tools/project_knowledge_test.go::TestProj08_KnowledgeToolsShowProjectDocsOnlyToTheirProject`
+- `internal/db/projects_test.go::TestProj02_DeleteProjectLeavesNoRows` (the index entries go with the project)
+
+**Locked since:** 2026-10-01
+
 ## v1 limits and notes (accepted)
 
 - **Status rollup bounds (PROJ-05).** The ancestor walk stops after 256
@@ -380,6 +432,8 @@ timeout would be worse than none.
 - **Board language is advisory.** It is an instruction to the agent (brief, `project_info`, skill), never enforced on a write: a target written in another language is accepted, and nothing already on the board is translated when the setting changes. The mechanical document import keeps each file's own title.
 
 ## Changelog
+
+- 2026-10-01 (board target #89): **PROJ-08** added — attached project documents are indexed into kb (`project_doc`) and searchable only from their own project's session. `project resync` re-indexes the project right after its import (`index_ok`/`index_error`/`indexed`/`index_skipped`, skipped when `knowledge.enabled` is off) and the Desktop's Re-run Setup summary says so; `attach_document` re-indexes too. **PROJ-02 amended (strengthened):** `db.DeleteProject` also deletes the project's index entries in its transaction, and `TestProj02_DeleteProjectLeavesNoRows` asserts it (plus that another project's entries stay).
 
 - 2026-10-01 (board item #81): the Desktop Documents pane groups its list by kind (Specs, Plans, Docs, Imported — `ProjectDocumentGrouping`, pure), filters it by a title/path search, marks open comments and "changed since last viewed", and offers a Contents menu built from the open document's headings. Read-only UI over existing rows; no contract semantics or guard tests changed.
 - 2026-10-01 (board target #91): `watchtower project resync <id>` and the Desktop's **Re-run Setup** re-run the document import and the folder install additively — PROJ-04's never-overwrite rule and the PROJ-03 "Desktop never writes a document" rule hold unchanged (the CLI writes import rows only; the files are never written); nothing is deleted, so PROJ-02 is unaffected. Pinned by `TestProjectResync_IsAdditive` (every project row byte-identical apart from the new document). No contract semantics or guard tests changed.

@@ -3,6 +3,8 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -166,4 +168,74 @@ func TestSearchKnowledge_ProjectScopeErrors(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "PROJ-1", res.Hits[0].Anchor["key"])
 	assert.Contains(t, res.ScopeNote, "slack_channel #no-such-channel")
+}
+
+// PROJ-08 at the tool layer: search_knowledge and get_knowledge_document
+// show a project's attached documents only in that project's session — the
+// main and Discuss chats (no ProjectID) and another project see nothing.
+func TestProj08_KnowledgeToolsShowProjectDocsOnlyToTheirProject(t *testing.T) {
+	d := openDB(t)
+	folder := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(folder, "plan.md"), []byte("# Plan\nКанареечный выкат\n"), 0o600))
+	p := seedProject(t, d, "alpha")
+	_, err := d.Exec(`UPDATE projects SET folder_path = ? WHERE id = ?`, folder, p)
+	require.NoError(t, err)
+	other := seedProject(t, d, "beta")
+	_, _, err = d.UpsertProjectDocument(db.ProjectDocument{ProjectID: p, RelPath: "plan.md", Kind: "plan", Title: "Plan"})
+	require.NoError(t, err)
+	_, err = kb.Run(context.Background(), d, kb.Options{})
+	require.NoError(t, err)
+	reg := knowledgeRegistry(t, d)
+
+	own, err := searchIn(t, reg, p, `{"queries":["канареечн*"]}`)
+	require.NoError(t, err)
+	require.Len(t, own.Hits, 1)
+	assert.Equal(t, "project_doc", own.Hits[0].Source)
+	ref := own.Hits[0].Ref
+	_, err = reg.CallRead(context.Background(), "get_knowledge_document", json.RawMessage(`{"ref":"`+ref+`"}`), Binding{ProjectID: p})
+	require.NoError(t, err)
+
+	for _, b := range []Binding{{}, {Surface: "main", ConversationID: 3}, {ContextType: "target", ContextID: "9"}, {ProjectID: other}} {
+		out, err := reg.CallRead(context.Background(), "search_knowledge", json.RawMessage(`{"queries":["канареечн*"]}`), b)
+		require.NoError(t, err)
+		assert.Empty(t, out.(kb.Result).Hits, "binding %+v", b)
+		_, err = reg.CallRead(context.Background(), "get_knowledge_document", json.RawMessage(`{"ref":"`+ref+`"}`), b)
+		var ve *ValidationError
+		require.ErrorAs(t, err, &ve, "binding %+v", b)
+		assert.Contains(t, ve.Msg, "no document with that ref", "indistinguishable from a missing one")
+	}
+}
+
+// attach_document re-indexes the project's documents (when knowledge search
+// is on), so an attached or revised document is searchable from the
+// project's session at once — protected folder or not.
+func TestAttachDocument_IndexesForTheProjectsSearch(t *testing.T) {
+	d := openDB(t)
+	reg := projectRegistry(t, d) // knowledge search on
+	require.NoError(t, reg.Register(NewSearchKnowledge()))
+	p := seedProject(t, d, "alpha")
+	proj, err := d.GetProject(p)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(proj.FolderPath, "plan.md"), []byte("# Plan\nКанареечный выкат\n"), 0o600))
+
+	out := mustApply(t, reg, p, "attach_document", `{"rel_path":"plan.md","kind":"plan","reason":"r"}`)
+	assert.NotContains(t, out, "index_warning")
+	res, err := searchIn(t, reg, p, `{"queries":["канареечн*"]}`)
+	require.NoError(t, err)
+	require.Len(t, res.Hits, 1)
+
+	require.NoError(t, os.WriteFile(filepath.Join(proj.FolderPath, "plan.md"), []byte("# Plan\nСиний выкат\n"), 0o600))
+	mustApply(t, reg, p, "attach_document", `{"rel_path":"plan.md","kind":"plan","reason":"revised"}`)
+	res, err = searchIn(t, reg, p, `{"queries":["синий"]}`)
+	require.NoError(t, err)
+	assert.Len(t, res.Hits, 1, "the revision is searchable at once")
+}
+
+func TestSearchKnowledge_ProjectDocSourceOutsideAProjectSessionIsRefused(t *testing.T) {
+	d := openDB(t)
+	reg := knowledgeRegistry(t, d)
+	_, err := reg.CallRead(context.Background(), "search_knowledge", json.RawMessage(`{"queries":["x"],"sources":["project_doc"]}`), Binding{})
+	var ve *ValidationError
+	require.ErrorAs(t, err, &ve)
+	assert.Contains(t, ve.Msg, "only from that project's own session")
 }

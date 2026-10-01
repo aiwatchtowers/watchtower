@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -50,6 +51,10 @@ type Request struct {
 	// is dropped. ScopeOnly instead restricts every list to the scope.
 	Scope     Scope
 	ScopeOnly bool
+
+	// ProjectID is the project session searching, 0 for every other caller:
+	// project documents are visible only to their own project (PROJ-08).
+	ProjectID int64
 }
 
 // Hit is one matching document. Chunk is the index of its best-matching
@@ -125,6 +130,11 @@ func Search(ctx context.Context, d *db.DB, req Request) (Result, error) {
 	}
 	return Result{Hits: f.hits(now, limit), IndexNote: note}, nil
 }
+
+// projectDocVisible is the SQL condition (over kb_documents aliased d) that
+// hides every project document but those of the project bound to its one
+// argument; projectID 0 hides them all (PROJ-08).
+const projectDocVisible = `(d.source <> '` + ProjectDocSource + `' OR json_extract(d.anchor_json, '$.project_id') = ?)`
 
 // validate checks req and returns the effective limit.
 func validate(req *Request) (int, error) {
@@ -209,6 +219,8 @@ func retrieve(ctx context.Context, d *db.DB, match string, req Request, scoped b
 		FROM kb_fts JOIN kb_chunks c ON c.id = kb_fts.rowid JOIN kb_documents d ON d.id = c.doc_id
 		WHERE kb_fts MATCH ?`)
 	args = append(args, match)
+	sb.WriteString(` AND ` + projectDocVisible)
+	args = append(args, strconv.FormatInt(req.ProjectID, 10))
 	if scoped { // Search never asks for it with an empty scope
 		sb.WriteString(` AND ` + scopePred)
 		args = append(args, scopeArgs...)
@@ -377,6 +389,9 @@ type DocView struct {
 type DocOptions struct {
 	FromChunk int // first chunk to include (a Hit's Chunk); 0 = the start
 	MaxChars  int // rune cap; <= 0 means DefaultDocChars, capped at MaxDocChars
+	// ProjectID is the project session opening, 0 for every other caller:
+	// another project's document reads as not found (PROJ-08).
+	ProjectID int64
 }
 
 // ErrNotFound is returned by GetDocument for an unknown ref.
@@ -393,7 +408,8 @@ func GetDocument(ctx context.Context, d *db.DB, ref string, opts DocOptions) (Do
 	maxChars = min(maxChars, MaxDocChars)
 	v := DocView{Ref: ref, FromChunk: opts.FromChunk}
 	var anchorJS string
-	err := d.QueryRowContext(ctx, `SELECT source, title, doc_time, link, anchor_json, chunk_count FROM kb_documents WHERE id = ?`, ref).
+	err := d.QueryRowContext(ctx, `SELECT d.source, d.title, d.doc_time, d.link, d.anchor_json, d.chunk_count
+		FROM kb_documents d WHERE d.id = ? AND `+projectDocVisible, ref, strconv.FormatInt(opts.ProjectID, 10)).
 		Scan(&v.Source, &v.Title, &v.When, &v.Link, &anchorJS, &v.ChunkCount)
 	if errors.Is(err, sql.ErrNoRows) {
 		return DocView{}, fmt.Errorf("%w: %s", ErrNotFound, ref)

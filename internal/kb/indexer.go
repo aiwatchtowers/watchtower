@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -117,7 +118,38 @@ func (r runner) reindex(ctx context.Context, d *db.DB, names []string, now time.
 	if err != nil {
 		return Stats{}, err
 	}
-	return r.run(ctx, d, Options{Sources: names, Now: now})
+	st, err := r.run(ctx, d, Options{Sources: names, Now: now})
+	for _, src := range sources {
+		if src.Name() == ProjectDocSource {
+			// The daemon path skips guarded folders; a rebuild the owner
+			// started indexes every project, so it loses nothing an
+			// explicit trigger had indexed — even when another source failed.
+			n, perr := indexAllProjectDocs(ctx, d)
+			st.Written += n
+			err = errors.Join(err, perr)
+		}
+	}
+	return st, err
+}
+
+func indexAllProjectDocs(ctx context.Context, d *db.DB) (int, error) {
+	ids, err := queryStrings(ctx, d, `SELECT id FROM projects ORDER BY id`)
+	if err != nil {
+		return 0, fmt.Errorf("kb: listing projects: %w", err)
+	}
+	total := 0
+	for _, id := range ids {
+		pid, err := strconv.ParseInt(id, 10, 64)
+		if err != nil {
+			return total, fmt.Errorf("kb: project id %q: %w", id, err)
+		}
+		_, n, err := IndexProjectDocs(ctx, d, pid)
+		total += n
+		if err != nil {
+			return total, err
+		}
+	}
+	return total, nil
 }
 
 // selectSources builds fresh source instances (so per-run caches such as

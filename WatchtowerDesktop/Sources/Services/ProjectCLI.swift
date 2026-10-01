@@ -181,6 +181,12 @@ struct ProjectResynced: Decodable, Equatable {
     let mcpCommand: String
     let suggestions: [String]
     let suggestionsError: String
+    /// The project documents' search index (#89). A CLI older than it sends
+    /// none of these keys: nothing was indexed, nothing failed.
+    let indexOK: Bool
+    let indexError: String
+    let indexed: Int
+    let indexSkipped: Bool
 
     enum CodingKeys: String, CodingKey {
         case docsOK = "docs_ok"
@@ -193,6 +199,10 @@ struct ProjectResynced: Decodable, Equatable {
         case mcpRegistered = "mcp_registered"
         case mcpCommand = "mcp_command"
         case suggestionsError = "suggestions_error"
+        case indexOK = "index_ok"
+        case indexError = "index_error"
+        case indexed
+        case indexSkipped = "index_skipped"
     }
 
     init(from decoder: Decoder) throws {
@@ -212,12 +222,16 @@ struct ProjectResynced: Decodable, Equatable {
         mcpCommand = try c.decode(String.self, forKey: .mcpCommand)
         suggestions = try c.decode([String].self, forKey: .suggestions)
         suggestionsError = try c.decode(String.self, forKey: .suggestionsError)
+        indexOK = try c.decodeIfPresent(Bool.self, forKey: .indexOK) ?? true
+        indexError = try c.decodeIfPresent(String.self, forKey: .indexError) ?? ""
+        indexed = try c.decodeIfPresent(Int.self, forKey: .indexed) ?? 0
+        indexSkipped = try c.decodeIfPresent(Bool.self, forKey: .indexSkipped) ?? false
     }
 
     /// What the project page shows: what was added, what failed, then the
     /// suggestions. Never empty.
     var summaryLines: [Line] {
-        var lines = documentLines + integrationLines
+        var lines = documentLines + indexLines + integrationLines
         if lines.isEmpty { lines.append(Line(text: "Everything was already up to date.", problem: false)) }
         lines += suggestions.map { Line(text: "Next: \($0)", problem: false) }
         if !suggestionsError.isEmpty {
@@ -240,6 +254,15 @@ struct ProjectResynced: Decodable, Equatable {
             lines.append(Line(text: "Could not read \(first)\(more)", problem: true))
         }
         return lines
+    }
+
+    private var indexLines: [Line] {
+        if !indexOK { return [Line(text: "Indexing the documents for search failed: \(indexError)", problem: true)] }
+        if indexSkipped { return [Line(text: "Documents not indexed for search: knowledge search is off", problem: false)] }
+        if indexed > 0 {
+            return [Line(text: "Indexed \(indexed) document(s) for search in this project's sessions", problem: false)]
+        }
+        return []
     }
 
     private var integrationLines: [Line] {

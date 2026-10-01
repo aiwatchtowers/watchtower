@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -245,14 +246,35 @@ func (db *DB) UpdateProject(id int64, u ProjectUpdate) error {
 }
 
 // DeleteProject removes the project; the foreign keys cascade to its targets,
-// sources, documents and comments inside the same statement, so the delete is
-// all-or-nothing (PROJ-02). The folder install is removed by the caller.
+// sources, documents and comments, and its documents' search index entries
+// (kb source project_doc, PROJ-08) go in the same transaction, so the delete
+// is all-or-nothing (PROJ-02). The folder install is removed by the caller.
 func (db *DB) DeleteProject(id int64) error {
-	res, err := db.Exec(`DELETE FROM projects WHERE id = ?`, id)
-	if err != nil {
-		return fmt.Errorf("deleting project %d: %w", id, err)
+	return db.WithTx(func(tx *sql.Tx) error {
+		res, err := tx.Exec(`DELETE FROM projects WHERE id = ?`, id)
+		if err != nil {
+			return fmt.Errorf("deleting project %d: %w", id, err)
+		}
+		if err := requireAffected(res, fmt.Errorf("project %d: %w", id, ErrProjectNotFound)); err != nil {
+			return err
+		}
+		return deleteProjectDocIndex(tx, id)
+	})
+}
+
+// deleteProjectDocIndex drops a project's documents from the knowledge index
+// (kb_chunks first: the FTS triggers hang off it).
+func deleteProjectDocIndex(tx *sql.Tx, projectID int64) error {
+	const docs = `SELECT id FROM kb_documents WHERE source = 'project_doc'
+		AND json_extract(anchor_json, '$.project_id') = ?`
+	pid := strconv.FormatInt(projectID, 10)
+	if _, err := tx.Exec(`DELETE FROM kb_chunks WHERE doc_id IN (`+docs+`)`, pid); err != nil {
+		return fmt.Errorf("deleting project %d search index: %w", projectID, err)
 	}
-	return requireAffected(res, fmt.Errorf("project %d: %w", id, ErrProjectNotFound))
+	if _, err := tx.Exec(`DELETE FROM kb_documents WHERE id IN (`+docs+`)`, pid); err != nil {
+		return fmt.Errorf("deleting project %d search index: %w", projectID, err)
+	}
+	return nil
 }
 
 func requireAffected(res sql.Result, notFound error) error {

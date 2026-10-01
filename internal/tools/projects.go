@@ -24,12 +24,14 @@ const maxBatchTargets = 100
 // ProjectTools returns every project tool (surface "project"), in the order
 // buildToolRegistry registers them. files stores the images attached to
 // targets.
-func ProjectTools(files projectfiles.Store) []*Tool {
+// indexDocs says whether attach_document also re-indexes the project's
+// documents for its search (knowledge.enabled, PROJ-08).
+func ProjectTools(files projectfiles.Store, indexDocs bool) []*Tool {
 	return []*Tool{
 		NewProjectInfo(), NewProjectBoard(), NewUpdateProject(),
 		NewAddProjectSource(), NewRemoveProjectSource(),
 		NewCreateTargets(files), NewUpdateTarget(files),
-		NewAttachDocument(), NewListComments(), NewAddComment(), NewResolveComment(),
+		NewAttachDocument(indexDocs), NewListComments(), NewAddComment(), NewResolveComment(),
 	}
 }
 

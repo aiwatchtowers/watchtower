@@ -19,7 +19,7 @@ import (
 func newProjectSession(t *testing.T, database *db.DB, projectID int64) *mcpsdk.ClientSession {
 	t.Helper()
 	reg := tools.New(database)
-	for _, tool := range append(tools.ProjectTools(projectfiles.New(t.TempDir())), tools.ReadTools()...) {
+	for _, tool := range append(tools.ProjectTools(projectfiles.New(t.TempDir()), false), tools.ReadTools()...) {
 		if err := reg.Register(tool); err != nil {
 			t.Fatal(err)
 		}
