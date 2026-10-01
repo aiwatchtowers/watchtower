@@ -2,9 +2,9 @@ import SwiftUI
 import WatchtowerCore
 
 /// The left panel's level 2 (spec 2026-09-30-project-workspace-sessions §3):
-/// one header row (Back, the project's name, New session), then Board and
-/// Documents and the project's sessions — shaped like the chat history
-/// (`ChatSidebarView`).
+/// one header row (Back, the project's name, New session), then the
+/// project's sessions — shaped like the chat history (`ChatSidebarView`).
+/// Board and Documents are picked in a pane's own header (`WorkspacePaneView`).
 struct ProjectSessionsPanel: View {
     @Bindable var vm: ProjectsViewModel
     let project: Project
@@ -15,10 +15,6 @@ struct ProjectSessionsPanel: View {
         VStack(spacing: 0) {
             header
             List(selection: selection) {
-                Section {
-                    PanelRowLabel("Board", systemImage: "square.grid.2x2").tag(WorkspacePane.board)
-                    PanelRowLabel("Documents", systemImage: "doc.text").tag(WorkspacePane.documents)
-                }
                 Section("Sessions") {
                     ForEach(sessions) { session in
                         TerminalSessionRow(session: session, isLive: vm.isLive(session), actions: actions)
@@ -61,18 +57,12 @@ struct ProjectSessionsPanel: View {
         .padding(.vertical, 8)
     }
 
-    /// Board and Documents select through the List; a session row opens on
-    /// its own click (`SessionRowActions.open`), which also reaches the row
-    /// already highlighted but not running. Arrow keys therefore move the
-    /// highlight without starting a session (VoiceOver has the row's action).
+    /// The highlight always shows the session on screen; the List's own
+    /// selection changes are ignored. A row opens on its own click
+    /// (`SessionRowActions.open`), which also reaches the row already
+    /// highlighted but not running (VoiceOver has the row's action).
     private var selection: Binding<WorkspacePane?> {
-        Binding(
-            get: { vm.panelSelection },
-            set: { item in
-                guard let item, item == .board || item == .documents, item != vm.panelSelection else { return }
-                Task { await vm.showFromPanel(item) }
-            }
-        )
+        Binding(get: { vm.panelSelection }, set: { _ in })
     }
 }
 
@@ -101,7 +91,7 @@ struct TerminalSessionRow: View {
                 Image(systemName: isLive ? "circle.fill" : "circle")
                     .font(.system(size: 7))
                     .foregroundStyle(isLive ? Color.green : Color.secondary)
-                    .frame(width: PanelRowLabel.iconWidth)
+                    .frame(width: 16)
                     .accessibilityLabel(isLive ? "Running" : "Not running")
                 VStack(alignment: .leading, spacing: 1) {
                     Text(session.title).lineLimit(1).truncationMode(.tail)
@@ -138,31 +128,6 @@ struct TerminalSessionRow: View {
             Divider()
             Button("Delete…", role: .destructive) { actions.delete(session) }
         }
-    }
-}
-
-/// A Board/Documents row: a small secondary icon in a fixed column, so the
-/// text lines up with the session rows' text below it.
-struct PanelRowLabel: View {
-    static let iconWidth: CGFloat = 16
-    let title: String
-    let systemImage: String
-
-    init(_ title: String, systemImage: String) {
-        self.title = title
-        self.systemImage = systemImage
-    }
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: systemImage)
-                .imageScale(.small)
-                .foregroundStyle(.secondary)
-                .frame(width: Self.iconWidth)
-                .accessibilityHidden(true)
-            Text(title).lineLimit(1)
-        }
-        .listRowSeparator(.hidden)
     }
 }
 

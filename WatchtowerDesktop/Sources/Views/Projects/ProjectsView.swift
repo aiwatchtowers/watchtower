@@ -2,10 +2,6 @@ import AppKit
 import SwiftUI
 import WatchtowerCore
 
-/// Projects tab: the collapsible two-level panel on the left (projects and
-/// standalone terminals, or one project's Board, Documents and sessions) and
-/// the selected project's page — or standalone terminal — on the right
-/// (spec 2026-09-30-project-workspace-sessions §3).
 /// A level-1 row of the Projects panel: a project, or a standalone terminal.
 enum ProjectsPanelItem: Hashable {
     case project(Int64)
@@ -18,10 +14,16 @@ private enum PendingFolder {
     case terminal(TerminalSession.Kind, URL)
 }
 
+/// Projects tab: the collapsible, resizable two-level panel on the left
+/// (projects and standalone terminals, or one project's sessions) and the
+/// selected project's page — or standalone terminal — on the right
+/// (spec 2026-09-30-project-workspace-sessions §3).
 struct ProjectsView: View {
     @Bindable var vm: ProjectsViewModel
     @Environment(AppState.self) private var appState
     @AppStorage("projects.panelVisible") private var panelVisible = true
+    @AppStorage("projects.panelWidth") private var panelWidth = PanelResizeHandle.defaultWidth
+    @State private var dragPanelWidth: Double?
     @State private var pendingFolder: PendingFolder?
     @State private var sensitiveLocation: String?
     @State private var renamingSession: TerminalSession?
@@ -30,8 +32,8 @@ struct ProjectsView: View {
     var body: some View {
         HStack(spacing: 0) {
             if panelVisible {
-                panel.frame(width: 260)
-                Divider()
+                panel.frame(width: dragPanelWidth ?? PanelResizeHandle.clamp(panelWidth))
+                PanelResizeHandle(width: $panelWidth, liveWidth: $dragPanelWidth)
             }
             Group {
                 if let standalone = vm.selectedStandalone {
@@ -57,7 +59,6 @@ struct ProjectsView: View {
                 .accessibilityLabel("Toggle Projects Panel")
             }
         }
-        .navigationTitle("Projects")
         .onAppear {
             consumeRoute()
             Task { await vm.reload() }
@@ -99,7 +100,7 @@ struct ProjectsView: View {
                     if session.projectID == nil {
                         await vm.selectStandalone(session)
                     } else {
-                        await vm.showFromPanel(.session(session.id))
+                        await vm.showFromPanel(sessionID: session.id)
                     }
                 }
             },

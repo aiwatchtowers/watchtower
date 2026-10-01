@@ -589,18 +589,22 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         XCTAssertEqual(vm.drilledProjectID, p, "clicking the selected project again drills back in")
     }
 
-    func testPanelBoardAndDocumentsSetThePaneAndTheLayout() async throws {
+    /// A split of a session and the board highlights the session, whichever
+    /// slot holds it.
+    func testPanelHighlightsTheVisibleSessionInASplit() async throws {
         let p = try await projectWithFolder()
+        let row = try await liveSession(p, "one")
         let vm = makeVM()
         await vm.reload()
         vm.drill(into: p)
-
-        await vm.showFromPanel(.documents)
-        XCTAssertEqual(vm.layout.primary, .documents)
-        XCTAssertEqual(vm.panelSelection, .documents)
-
-        await vm.showFromPanel(.board)
-        XCTAssertEqual(vm.panelSelection, .board)
+        await vm.showFromPanel(sessionID: row.id)
+        vm.layout.split(with: .board)
+        XCTAssertEqual(vm.panelSelection, .session(row.id))
+        vm.toggleExpand(.board, projectID: p)
+        XCTAssertNil(vm.panelSelection, "the expanded board hides the session")
+        vm.layout.unsplit()
+        vm.layout.show(.documents)
+        XCTAssertNil(vm.panelSelection, "the panel lists sessions only")
     }
 
     func testPanelSessionClickShowsItAndCloseKeepsTheRowAndMovesToTheOtherLiveSession() async throws {
@@ -616,8 +620,8 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         vm.drill(into: p)
         vm.layout.show(.board)
 
-        await vm.showFromPanel(.session(first.id))
-        await vm.showFromPanel(.session(second.id))
+        await vm.showFromPanel(sessionID: first.id)
+        await vm.showFromPanel(sessionID: second.id)
         XCTAssertEqual(vm.panelSelection, .session(second.id))
         XCTAssertEqual(center.liveIDs, [first.id, second.id], "switching keeps the other process running")
 
@@ -628,7 +632,7 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         XCTAssertFalse(vm.isLive(closed))
         XCTAssertEqual(vm.panelSelection, .session(first.id), "the pane falls back to the other live session")
 
-        await vm.showFromPanel(.session(second.id))
+        await vm.showFromPanel(sessionID: second.id)
         let reopened = try XCTUnwrap(vm.drilledSessions.first { $0.id == second.id })
         XCTAssertFalse(reopened.isClosed, "clicking a closed session reopens it")
         XCTAssertTrue(vm.isLive(reopened))
@@ -691,8 +695,8 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         await vm.reload()
         vm.drill(into: p)
 
-        await vm.showFromPanel(.session(live.id))
-        await vm.showFromPanel(.session(failing.id))
+        await vm.showFromPanel(sessionID: live.id)
+        await vm.showFromPanel(sessionID: failing.id)
         processes.last?.exit(1)
 
         XCTAssertEqual(center.liveIDs, [live.id])
@@ -712,7 +716,7 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         await vm.reload()
         vm.drill(into: p)
 
-        await vm.showFromPanel(.session(999))
+        await vm.showFromPanel(sessionID: 999)
 
         XCTAssertEqual(vm.sessionErrors[p], "That session no longer exists.")
         XCTAssertTrue(launches.isEmpty)
@@ -776,7 +780,7 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         vm.toggleSplit(projectID: p)
         XCTAssertEqual(vm.layout.visiblePanes, [.board])
 
-        await vm.showFromPanel(.session(row.id))
+        await vm.showFromPanel(sessionID: row.id)
         vm.layout.show(.board)
         XCTAssertEqual(launches.count, 1)
         vm.toggleSplit(projectID: p)
@@ -798,7 +802,7 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         let vm = makeVM()
         await vm.reload()
         vm.drill(into: p)
-        await vm.showFromPanel(.session(row.id))
+        await vm.showFromPanel(sessionID: row.id)
         vm.layout.split(with: .documents)
         let before = vm.layout
 
@@ -855,7 +859,7 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         let vm = makeVM()
         await vm.reload()
         vm.drill(into: p)
-        await vm.showFromPanel(.session(row.id))
+        await vm.showFromPanel(sessionID: row.id)
         vm.layout.split(with: .board)
         vm.toggleExpand(.session(row.id), projectID: p)
 
@@ -906,7 +910,7 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         let vm = makeVM()
         await vm.reload()
         vm.drill(into: p)
-        await vm.showFromPanel(.session(row.id))
+        await vm.showFromPanel(sessionID: row.id)
         vm.layout.split(with: .board)
         vm.toggleExpand(.session(row.id), projectID: p)
         processes.last?.exit(1)
@@ -1026,7 +1030,7 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         XCTAssertEqual(vm.drilledSessions.map(\.id), [second.id, first.id])
 
         clock = clock.addingTimeInterval(60)
-        await vm.showFromPanel(.session(first.id))
+        await vm.showFromPanel(sessionID: first.id)
         XCTAssertEqual(vm.drilledSessions.map(\.id), [second.id, first.id], "opening does not raise it")
 
         vm.moveSessions(vm.drilledSessions, projectID: p, from: [1], to: 0)
