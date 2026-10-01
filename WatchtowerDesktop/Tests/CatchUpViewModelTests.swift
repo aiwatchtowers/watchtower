@@ -88,6 +88,35 @@ final class CatchUpViewModelTests: XCTestCase {
         XCTAssertEqual(vm.selected?.id, newest, "the newest recap is selected by default")
     }
 
+    /// A run that dies while the app is open leaves a `building` row nobody
+    /// writes again; the VM must re-read it once it passes the threshold.
+    func testBuildingRowFlipsToFailedOnceItGoesStaleWithoutAWrite() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let pool = manager.dbPool
+
+        let created = ISO8601DateFormatter().string(
+            from: Date().addingTimeInterval(-CatchUpRecap.staleBuildingAfter + 1))
+        try await pool.write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO catchup_recaps (period_from, period_to, status, created_at)
+                    VALUES (1000, 2000, 'building', ?)
+                    """,
+                arguments: [created]
+            )
+        }
+
+        let vm = CatchUpViewModel(dbPool: pool)
+        vm.startObserving()
+        await waitFor { vm.recaps.count == 1 }
+        XCTAssertEqual(vm.selected?.isBuilding, true, "still inside the threshold on first load")
+
+        await waitFor({ vm.selected?.isFailed == true }, timeout: 6)
+        XCTAssertEqual(vm.selected?.isFailed, true, "re-read past the threshold, no DB write needed")
+        XCTAssertEqual(vm.selected?.error, CatchUpRecap.staleBuildingError)
+    }
+
     // MARK: - CLI failure classification
 
     /// `catchup run` exits 0 for a recap that composed and FAILED, reporting it
