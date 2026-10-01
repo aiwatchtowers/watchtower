@@ -209,9 +209,9 @@ func findLandedIssue(ctx context.Context, d *db.DB, client JiraIssueClient, acti
 		}
 	}
 	if len(res.Issues) >= landedIssueSearchLimit || (!res.IsLast && res.NextPageToken != "") {
-		// The window holds more issues than one page: no match on it does
-		// not prove the first attempt did not land.
-		return "", fmt.Errorf("cannot tell whether the failed attempt created the issue: over %d issues in %s since the proposal", landedIssueSearchLimit, req.ProjectKey)
+		// The window holds more than one page: no match on this one does not
+		// prove the first attempt did not land.
+		return "", fmt.Errorf("cannot tell whether the failed attempt created the issue: %s has more issues since the proposal than one search page", req.ProjectKey)
 	}
 	return "", nil
 }

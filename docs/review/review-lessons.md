@@ -1043,3 +1043,13 @@ Entry format:
 - weak-dimension: none notable. On a removal diff the useful work is the grep sweep plus "which assertions lost their precondition".
 - rule-gap (candidate, dim 5): *a removed feature also needs a sweep of dated design specs that code comments cite by section, plus a legacy note on any column kept for compatibility in `schema.sql`, which the AI prompt reads.*
 - outcome: TBD
+
+## 2026-10-01 — fix/jira-backlog-wave (Jira timestamps stored UTC via migration 00091, propose-time account pinning, retry-safe `create_jira_issue`, closed-sprint read gate; panel: prosecutor + 3 specialists, codex lane DOWN — usage limit, prosecutor ran the verify round; judge re-ran db/jira/tools/inbox/ideas/guide tests green on HEAD 87861b86; judge synthesis after round 2) — verdict: approve
+
+- contested (held, 3 lanes, fixed round 1): normalising timestamps to whole seconds turned millisecond-ordered columns into tie-prone ones. The inbox detector was moved to `>=`, but the ideas floor stayed strict `>` and the inbox UNIQUE(channel_id, message_ts) began to collide across triggers. The fix kept the precision (`.000Z` fixed width). **A change to a stored timestamp's format or resolution is a §6 watermark change for every reader. Enumerate every `>`/`>=`/UNIQUE on the column and check them at the new resolution, not only the reader the change was aimed at.** [6/8]
+- contested (held minor, verify round): after a storage-format change, the last string bounds still rendered with a local `time.Now().Format(RFC3339)` (epic progress, project map) shifted their windows by the local offset. **Grep every Go-side bound against the rewritten columns for a renderer other than the canonical formatter.** [8]
+- false-positive: none dismissed. L3 (detector comment query swallows errors) was overtaken by main (#89 closed it). The judge's merge-tree check against fresh origin/main found only a doc conflict (inbox-pulse.md).
+- miss: no lane checked the branch against CURRENT origin/main. Main had moved four PRs past the merge base, and one of them rewrote the same detector file. Only the judge's `git merge-tree` caught it. [8]
+- weak-dimension: 7. Two IDEA-01 guards went offset-blind through a shared helper (`FormatJiraTime` gained `.UTC()`) without one line of the test changing. Only test-analyzer and prosecutor flagged it.
+- rule-gap (candidate, dim 7): *when a production helper used to build guard-test fixtures changes semantics, re-read every `Test<Module>NN_` that calls it. A guard can go vacuous with no test diff at all.* Candidate (process): *the judge runs `git merge-tree --write-tree HEAD origin/main` after a fresh fetch, and reports conflicts plus auto-merged files the branch also touches.*
+- outcome: TBD
