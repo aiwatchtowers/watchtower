@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -145,10 +146,49 @@ func (f *fakeBackend) Close() error {
 	return nil
 }
 
+// ownerText strips the session's TurnTimeLine off a turn's text.
+func ownerText(text string) string {
+	if !strings.HasPrefix(text, "[Current time: ") {
+		return text
+	}
+	_, rest, _ := strings.Cut(text, "]\n\n")
+	return rest
+}
+
 func echoTurn(_ context.Context, c Command, emit func(Event)) error {
-	emit(Event{Type: EventTextDelta, Text: "echo: " + c.Text})
+	emit(Event{Type: EventTextDelta, Text: "echo: " + ownerText(c.Text)})
 	emit(Event{Type: EventTurnDone, Status: StatusComplete})
 	return nil
+}
+
+// A resumed session's system prompt holds the time it was first spawned
+// (--resume never re-sends it): every turn's text must carry the time now.
+func TestSession_EveryTurnCarriesTheCurrentTime(t *testing.T) {
+	var got []string
+	var mu sync.Mutex
+	fb := &fakeBackend{turn: func(_ context.Context, c Command, emit func(Event)) error {
+		mu.Lock()
+		got = append(got, c.Text)
+		mu.Unlock()
+		emit(Event{Type: EventTurnDone, Status: StatusComplete})
+		return nil
+	}}
+	clock := time.Now().Add(72 * time.Hour)
+	h := startSession(t, fb, func(s *Session) { s.Now = func() time.Time { return clock } })
+	h.next(EventSessionReady)
+	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "what did Ann say yesterday?"})
+	h.next(EventTurnDone)
+	clock = clock.Add(26 * time.Hour)
+	h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "and today?"})
+	h.next(EventTurnDone)
+	require.NoError(t, h.finish())
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, got, 2)
+	assert.Equal(t, TurnTimeLine(clock.Add(-26*time.Hour))+"what did Ann say yesterday?", got[0])
+	assert.Equal(t, TurnTimeLine(clock)+"and today?", got[1], "the second turn carries its own time, not the first one's")
+	assert.Contains(t, got[1], clock.Format("2006-01-02"))
 }
 
 func TestSession_ReadyTurnClose(t *testing.T) {
@@ -288,7 +328,7 @@ func TestSession_TurnRightAfterTurnDoneIsAccepted(t *testing.T) {
 		mu.Unlock()
 		defer func() { mu.Lock(); inTurn--; mu.Unlock() }()
 		assert.False(t, overlap, "two Backend.Turn calls overlapped")
-		emit(Event{Type: EventTextDelta, Text: "echo: " + c.Text})
+		emit(Event{Type: EventTextDelta, Text: "echo: " + ownerText(c.Text)})
 		emit(Event{Type: EventTurnDone, Status: StatusComplete})
 		time.Sleep(100 * time.Millisecond) // still returning after the terminal event
 		return nil

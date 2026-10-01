@@ -45,6 +45,19 @@ const responseStyle = `=== RESPONSE STYLE ===
 - Use markdown (headings, lists, tables) when it helps; put anything the owner will copy, send or keep in an artifact.
 - Highlight decisions, owners, deadlines and open questions.`
 
+// formatCurrentTime renders now as the prompt and every turn's time line
+// show it: the local time with its zone, then UTC.
+func formatCurrentTime(now time.Time) string {
+	return fmt.Sprintf("%s (%s)", now.Format("Monday, 2006-01-02 15:04 MST"), now.UTC().Format("15:04 UTC"))
+}
+
+// TurnTimeLine opens every owner turn's text on the wire (never the stored
+// message): a session spawned or resumed days ago otherwise only knows the
+// time in its system prompt, which `--resume` never re-sends (CHAT-04).
+func TurnTimeLine(now time.Time) string {
+	return "[Current time: " + formatCurrentTime(now) + "]\n\n"
+}
+
 func identityBlock(d *db.DB, cfg *config.Config, now time.Time) (string, error) {
 	owner, err := d.ResolveOwner()
 	if err != nil {
@@ -54,7 +67,8 @@ func identityBlock(d *db.DB, cfg *config.Config, now time.Time) (string, error) 
 	b.WriteString("You are Watchtower, the owner's work assistant. You answer from the owner's own synced sources — " +
 		"Slack, mail, Jira, calendar, meeting transcripts and Watchtower's digests, decisions, targets and memory — " +
 		"and you show where each fact came from.\n\n")
-	fmt.Fprintf(&b, "Current time: %s (%s)\n", now.Format("Monday, 2006-01-02 15:04 MST"), now.UTC().Format("15:04 UTC"))
+	fmt.Fprintf(&b, "Current time: %s when this session started. Each owner message begins with a newer "+
+		"%q line: always use the latest one.\n", formatCurrentTime(now), "[Current time: …]")
 	name := oneLine(owner.DisplayName, maxFieldRunes)
 	email := oneLine(owner.Email, maxFieldRunes)
 	id := oneLine(owner.ID, maxFieldRunes)
