@@ -57,29 +57,28 @@ struct WorkspacePaneView: View {
         }
     }
 
+    /// Shown only in a split (`body`).
     private var header: some View {
         HStack(spacing: 6) {
             picker
             Spacer(minLength: 4)
-            if isSplit {
+            Button {
+                vm.toggleExpand(pane, projectID: project.id)
+            } label: {
+                Image(systemName: isExpanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+            }
+            .buttonStyle(.borderless)
+            .help(isExpanded ? "Back to the split" : "Expand this pane")
+            .accessibilityLabel(isExpanded ? "Back to the split" : "Expand this pane")
+            if !isExpanded {
                 Button {
-                    vm.toggleExpand(pane, projectID: project.id)
+                    vm.closePane(pane, projectID: project.id)
                 } label: {
-                    Image(systemName: isExpanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                    Image(systemName: "xmark")
                 }
                 .buttonStyle(.borderless)
-                .help(isExpanded ? "Back to the split" : "Expand this pane")
-                .accessibilityLabel(isExpanded ? "Back to the split" : "Expand this pane")
-                if !isExpanded {
-                    Button {
-                        vm.closePane(pane, projectID: project.id)
-                    } label: {
-                        Image(systemName: "xmark")
-                    }
-                    .buttonStyle(.borderless)
-                    .help("Close this pane")
-                    .accessibilityLabel("Close this pane")
-                }
+                .help("Close this pane")
+                .accessibilityLabel("Close this pane")
             }
         }
         .font(.caption)
