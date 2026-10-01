@@ -158,17 +158,22 @@ struct ProjectDocumentAttached: Decodable, Equatable {
 struct ProjectInstallStatus: Decodable, Equatable {
     let skill: String
     let hook: Bool
+    /// The Stop hook running the board drift check (PROJ-07). A project
+    /// installed before it existed lacks it until a Repair.
+    let stopHook: Bool
     let mcp: Bool
     let claudeFound: Bool
 
     enum CodingKeys: String, CodingKey {
         case skill, hook, mcp
+        case stopHook = "stop_hook"
         case claudeFound = "claude_found"
     }
 
-    init(skill: String, hook: Bool, mcp: Bool, claudeFound: Bool = true) {
+    init(skill: String, hook: Bool, stopHook: Bool = true, mcp: Bool, claudeFound: Bool = true) {
         self.skill = skill
         self.hook = hook
+        self.stopHook = stopHook
         self.mcp = mcp
         self.claudeFound = claudeFound
     }
@@ -177,6 +182,8 @@ struct ProjectInstallStatus: Decodable, Equatable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         skill = try c.decode(String.self, forKey: .skill)
         hook = try c.decode(Bool.self, forKey: .hook)
+        // An older CLI has no Stop hook to install: nothing to repair.
+        stopHook = try c.decodeIfPresent(Bool.self, forKey: .stopHook) ?? true
         mcp = try c.decode(Bool.self, forKey: .mcp)
         // An older CLI without the key could always check the registration.
         claudeFound = try c.decodeIfPresent(Bool.self, forKey: .claudeFound) ?? true
@@ -185,7 +192,7 @@ struct ProjectInstallStatus: Decodable, Equatable {
     /// Whether Repair can fix something. Without `claude` an unregistered
     /// MCP server is not repairable from here — see `manualMCPCommand`.
     var needsRepair: Bool {
-        skill == "missing" || skill == "updated" || !hook || (claudeFound && !mcp)
+        skill == "missing" || skill == "updated" || !hook || !stopHook || (claudeFound && !mcp)
     }
 
     /// The command the owner runs once Claude Code is installed, mirroring
@@ -222,7 +229,7 @@ struct ProjectCLI {
         return try JSONDecoder().decode(ProjectCreated.self, from: data)
     }
 
-    /// Installs the skill, SessionStart hook and local MCP registration into
+    /// Installs the skill, SessionStart and Stop hooks and local MCP registration into
     /// the project folder. Idempotent — also the Repair action.
     func install(projectID: Int64) async throws {
         _ = try await runner.run(args: ["integrate", "claude-code", "--project", String(projectID)])
@@ -243,6 +250,13 @@ struct ProjectCLI {
         args += ["--", String(projectID), path]
         let data = try await runner.run(args: args)
         return try JSONDecoder().decode(ProjectDocumentAttached.self, from: data)
+    }
+
+    /// The board drift check (PROJ-07), offline — no gh call, so it stays
+    /// cheap enough to run whenever the board changes.
+    func checkDrift(projectID: Int64) async throws -> ProjectDriftReport {
+        let data = try await runner.run(args: ["project", "check", "--project", String(projectID), "--json", "--no-network"])
+        return try JSONDecoder().decode(ProjectDriftReport.self, from: data)
     }
 
     /// Sets the board language every session writes the board in; an empty

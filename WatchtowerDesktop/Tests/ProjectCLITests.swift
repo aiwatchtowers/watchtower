@@ -60,6 +60,27 @@ final class ProjectCLITests: XCTestCase {
         XCTAssertTrue(status.needsRepair)
     }
 
+    /// PROJ-07: a project installed before the Stop hook existed is offered
+    /// Repair; an older CLI without the key has nothing to install.
+    func testMissingStopHookNeedsRepair() throws {
+        let missing = try JSONDecoder().decode(ProjectInstallStatus.self, from: Data(
+            #"{"skill":"unchanged","hook":true,"stop_hook":false,"mcp":true}"#.utf8))
+        XCTAssertFalse(missing.stopHook)
+        XCTAssertTrue(missing.needsRepair)
+        let older = try JSONDecoder().decode(ProjectInstallStatus.self, from: Data(
+            #"{"skill":"unchanged","hook":true,"mcp":true}"#.utf8))
+        XCTAssertTrue(older.stopHook)
+        XCTAssertFalse(older.needsRepair)
+    }
+
+    func testCheckDriftRunsOfflineAndDecodesTheReport() async throws {
+        let runner = FakeCLIRunner(stdout: Data(#"{"project_id":4,"git":true,"base":"main","findings":[]}"#.utf8))
+        let report = try await ProjectCLI(runner: runner).checkDrift(projectID: 4)
+        XCTAssertEqual(runner.invocations, [["project", "check", "--project", "4", "--json", "--no-network"]])
+        XCTAssertEqual(report.projectID, 4)
+        XCTAssertTrue(report.findings.isEmpty)
+    }
+
     func testDeletePassesJSONAndDecodesBothEnvelopeShapes() async throws {
         let clean = FakeCLIRunner(stdout: Data(#"{"id":3,"deleted":true,"removal_ok":true,"removal_error":""}"#.utf8))
         let ok = try await ProjectCLI(runner: clean).delete(projectID: 3)

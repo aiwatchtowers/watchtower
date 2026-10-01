@@ -51,6 +51,11 @@ final class ProjectBoardViewModel {
     /// owner's own change (e.g. a target the owner marked done).
     var onOwnerWrite: ((Int64, ProjectSubject) -> Void)?
 
+    /// Called after the poll reloads a board another process changed — the
+    /// view asks for a fresh drift check then (`ProjectsViewModel.refreshDrift`,
+    /// throttled there).
+    var onBoardChanged: (() -> Void)?
+
     private let dbPool: DatabasePool
     private let preferences: ProjectBoardPreferences
     private var fingerprint = ""
@@ -101,6 +106,7 @@ final class ProjectBoardViewModel {
         guard let current = try? dbPool.read({ try Self.fingerprint($0, projectID: pid) }),
               current != fingerprint else { return false }
         load()
+        onBoardChanged?()
         return true
     }
 
