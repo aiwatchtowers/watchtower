@@ -166,7 +166,7 @@ func TestRunJiraDigests_FloorEmpty_InitializesAndSkips(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, newFloor)
 	// The floor is formatted the way jira_issues.updated_at is stored
-	// (db.FormatJiraTime, migration 00091). The layout is spelled
+	// (db.FormatJiraTime, migration 00092). The layout is spelled
 	// out here rather than reusing the production helper, so the assertion
 	// would still catch the production side silently changing.
 	parsed, perr := time.Parse("2006-01-02T15:04:05.000Z", newFloor)

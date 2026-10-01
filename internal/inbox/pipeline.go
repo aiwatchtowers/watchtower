@@ -723,7 +723,7 @@ func (p *Pipeline) autoResolveJira(_ context.Context, jiraOwn *ownJiraComments) 
 
 	// The two timestamps being compared come from different writers:
 	// jira_comments.created_at (db.FormatJiraTime's UTC form since migration
-	// 00091, Jira's "+hhmm" wire shape before it) and inbox_items.created_at
+	// 00092, Jira's "+hhmm" wire shape before it) and inbox_items.created_at
 	// (RFC3339, whole seconds). Both
 	// sides are parsed in Go (db.ParseJiraTime accepts either format) rather
 	// than string-compared.

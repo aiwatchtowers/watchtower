@@ -14,13 +14,13 @@ func jiraWire(t time.Time, zone *time.Location) string {
 	return t.In(zone).Format("2006-01-02T15:04:05.000-0700")
 }
 
-// TestMigration00091_RewritesJiraTimestampsToUTC: every Jira timestamp column
+// TestMigration00092_RewritesJiraTimestampsToUTC: every Jira timestamp column
 // and every copy of one (ideas floor, jira inbox items) is rewritten to the
 // stored UTC form (FormatJiraTime), the Jira stream digests' periods to
 // RFC3339 whole seconds; values already in that form, values without a zone,
 // unparseable values and non-Jira rows are left alone.
-func TestMigration00091_RewritesJiraTimestampsToUTC(t *testing.T) {
-	raw := rawDBAt(t, 90)
+func TestMigration00092_RewritesJiraTimestampsToUTC(t *testing.T) {
+	raw := rawDBAt(t, 91)
 	now := time.Now().UTC().Truncate(time.Second)
 	msk := time.FixedZone("", 3*3600)
 	cet := time.FixedZone("", 2*3600)

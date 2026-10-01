@@ -241,7 +241,7 @@ func newestComments(comments []db.JiraComment) []db.JiraComment {
 // row shares one format (GB4). An unparseable input (should not happen for a
 // value this pipeline itself produced) is stored verbatim rather than
 // blocking the whole pass — the worst case is one wrong coverage/window skip
-// for that single row, not a dropped digest. Migration 00091 rewrote the
+// for that single row, not a dropped digest. Migration 00092 rewrote the
 // rows written before this normalization.
 func normalizeJiraStreamPeriod(raw string) string {
 	unix, ok := db.ParseJiraTime(raw)

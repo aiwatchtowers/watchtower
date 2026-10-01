@@ -1347,7 +1347,7 @@ func (db *DB) JiraIssueExists(key string) (bool, error) {
 
 // jiraUpdatedLayout is Jira Cloud's wire format ("+0100" offset — no colon,
 // so SQLite's julianday/strftime reject it). The sync and the tools mirror
-// store jiraStoredLayout since migration 00091; ParseJiraTime still accepts
+// store jiraStoredLayout since migration 00092; ParseJiraTime still accepts
 // the wire format for a value that could not be normalized.
 const jiraUpdatedLayout = "2006-01-02T15:04:05.000-0700"
 

@@ -136,7 +136,7 @@ func TestIdeas01_JiraFailingProjectExemptions(t *testing.T) {
 
 // jiraStored is what the sync stores for a Jira timestamp Jira returned in
 // loc's offset: the wire value ("…000-0400") through jira.NormalizeTimestamp.
-// Since migration 00091 the offset safety of these guards comes from that
+// Since migration 00092 the offset safety of these guards comes from that
 // normalization, so the fixtures take the same path instead of writing an
 // offset-bearing value no writer stores any more.
 func jiraStored(t *testing.T, tm time.Time, loc *time.Location) string {
