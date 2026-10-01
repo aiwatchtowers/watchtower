@@ -159,9 +159,11 @@ final class ChatSessionPoolTests: XCTestCase {
         XCTAssertLessThanOrEqual(maxAlive, ChatSessionPolicy.maxLive)
     }
 
-    /// A queued session's argv already carries the old `--resume`: it is
-    /// closed, never launched, and its held turn keeps its row.
-    func testRetireSessionsClosesAPendingSessionWithAHeldTurn() async throws {
+    /// A queued session's argv already carries the old `--resume`: it never
+    /// launches. Its held turn never reached a provider, so it is re-sent on
+    /// a fresh session with the new prompt (owner decision 2026-10-01), not
+    /// left "Stopped".
+    func testRetireSessionsResendsAPendingSessionsHeldTurnFresh() async throws {
         for id: Int64 in 1...3 {
             pool.session(for: id, config: config(id)).startTurn(turn("t\(id)", row: try assistantRow()))
             clock.advance(1)
@@ -169,15 +171,53 @@ final class ChatSessionPoolTests: XCTestCase {
         let stale = ChatSessionConfig(conversationID: 4, provider: "claude", model: nil,
                                       resumeSessionID: "sess-old", projectID: 7)
         let queued = pool.session(for: 4, config: stale)
-        queued.startTurn(turn("t4", row: try assistantRow()))
+        let row = try assistantRow()
+        queued.startTurn(turn("t4", row: row))
         XCTAssertTrue(queued.isPending)
 
         pool.retireSessions(projectID: 7)
-        XCTAssertNil(pool.client(for: 4))
-        XCTAssertFalse(queued.isBusy, "the held turn ends as partial")
+        let replacement = try XCTUnwrap(pool.client(for: 4))
+        XCTAssertFalse(replacement === queued)
+        XCTAssertFalse(queued.isAlive)
+        XCTAssertTrue(replacement.isBusy, "the held turn is still running, on the replacement")
+        XCTAssertNil(replacement.config.resumeSessionID)
+        XCTAssertEqual(replacement.config.projectID, 7)
+        let status = try await dbPool.read { try String.fetchOne($0, sql: "SELECT status FROM chat_messages WHERE id = ?", arguments: [row]) }
+        XCTAssertEqual(status, "partial", "the row is untouched until the turn runs")
+
         fakes[0].emit(.turnDone(turnID: "t1", status: .complete, sessionID: nil))
-        pool.tick()
-        XCTAssertEqual(fakes.count, 3, "the stale queued session never launches")
+        let launched = await waitForCondition { self.fakes.count == 4 && !replacement.isPending }
+        XCTAssertTrue(launched)
+        let fake = fakes[3]
+        XCTAssertNil(fake.argument(after: "--resume"), "never the old session")
+        XCTAssertEqual(fake.argument(after: "--project-id"), "7")
+        XCTAssertEqual(fake.turns.map(\.turnID), ["t4"])
+        XCTAssertEqual(fake.turns.first?.replay, true, "the fresh session replays the history")
+        XCTAssertLessThanOrEqual(maxAlive, ChatSessionPolicy.maxLive)
+    }
+
+    /// A deleted project's queued turn is re-sent outside any project.
+    func testRetireSessionsOfADeletedProjectResendsWithoutTheProject() async throws {
+        let stale = ChatSessionConfig(conversationID: 4, provider: "claude", model: nil,
+                                      resumeSessionID: "sess-old", projectID: 7)
+        let launchedFirst = pool.session(for: 4, config: stale)
+        var changed = stale
+        changed.model = "other-model"
+        // Pending behind its predecessor's retirement, holding its turn.
+        let queued = pool.session(for: 4, config: changed)
+        queued.startTurn(turn("t4", row: try assistantRow()))
+        XCTAssertTrue(queued.isPending)
+        XCTAssertFalse(launchedFirst.isAlive)
+
+        pool.retireSessions(projectID: 7, deleted: true)
+        let replacement = try XCTUnwrap(pool.client(for: 4))
+        XCTAssertNil(replacement.config.projectID)
+        XCTAssertNil(replacement.config.resumeSessionID)
+        let launched = await waitForCondition { self.fakes.count == 2 && !replacement.isPending }
+        XCTAssertTrue(launched)
+        XCTAssertNil(fakes[1].argument(after: "--project-id"))
+        XCTAssertNil(fakes[1].argument(after: "--resume"))
+        XCTAssertEqual(fakes[1].turns.map(\.turnID), ["t4"])
     }
 
     /// Closing one stale queued session re-runs admission: a second one
@@ -200,9 +240,12 @@ final class ChatSessionPoolTests: XCTestCase {
         XCTAssertTrue(behind.isPending)
 
         pool.retireSessions(projectID: 7)
-        XCTAssertNil(pool.client(for: 4))
-        XCTAssertNil(pool.client(for: 5))
-        XCTAssertEqual(fakes.count, 1, "the stale session queued behind is never launched")
+        XCTAssertFalse(pool.client(for: 4) === blocked)
+        XCTAssertFalse(pool.client(for: 5) === behind)
+        for fake in fakes.dropFirst() {
+            XCTAssertNil(fake.argument(after: "--resume"), "no stale session is ever launched")
+            XCTAssertEqual(fake.turns.first?.replay, true)
+        }
     }
 
     /// Retiring a BUSY session (close or config change) finishes its turn,

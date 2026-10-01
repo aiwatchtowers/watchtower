@@ -99,16 +99,30 @@ final class ChatSessionPool {
     /// `session_ready` would put one back). A launched busy one finishes its
     /// turn first, then is replaced on the next request or policy tick;
     /// every other one closes now — a pending one too, since its argv
-    /// already carries the old `--resume` (its held turn stays `partial`).
+    /// already carries the old `--resume`. A turn a pending one held never
+    /// reached a provider: it is re-sent on a fresh session (no `--resume`,
+    /// replaying the history) with the new prompt — out of the project when
+    /// it was deleted (owner decision 2026-10-01: never left "Stopped").
     ///
     /// They all leave the queue first: closing one re-runs admission, which
     /// must not launch another stale one still waiting behind it.
-    func retireSessions(projectID: Int64) {
+    func retireSessions(projectID: Int64, deleted: Bool = false) {
         let stale = clients.filter { $0.value.config.projectID == projectID }
         queue.removeAll { stale[$0] != nil }
         for (id, client) in stale {
             client.retireAfterTurn()
-            if !client.isBusy || client.isPending { close(conversationID: id) }
+            guard !client.isBusy || client.isPending else { continue }
+            let held = client.surrenderHeldTurn()
+            close(conversationID: id)
+            guard let held else { continue }
+            var fresh = client.config
+            fresh.resumeSessionID = nil
+            if deleted { fresh.projectID = nil }
+            let command = held.command
+            let replayed = ChatTurnCommand(turnID: command.turnID, text: command.text,
+                                           attachments: command.attachments, replay: true)
+            session(for: id, config: fresh)
+                .startTurn(ChatTurnRequest(command: replayed, assistantMessageID: held.assistantMessageID))
         }
     }
 

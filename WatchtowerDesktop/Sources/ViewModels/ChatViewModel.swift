@@ -408,7 +408,7 @@ final class ChatViewModel {
     /// Called by the project page after it deleted its project: its chats
     /// are detached (`ON DELETE SET NULL`), so the shown one reloads too.
     func projectDeleted(_ id: Int64) {
-        pool.retireSessions(projectID: id)
+        pool.retireSessions(projectID: id, deleted: true)
         reloadProjects()
         if openProjectID == id {
             showLanding()
