@@ -322,7 +322,7 @@ struct CreateTargetSheet: View {
 
 // MARK: - Composer text input
 // Enter = brief the assistant, ⌘Enter = just create, Shift+Enter = newline
-// (the ChatInput/ExpandingTextInput key-handling shape, fixed-height variant).
+// (the ChatComposerField/ExpandingTextInput key-handling shape, fixed-height variant).
 
 private struct ComposerTextInput: NSViewRepresentable {
     @Binding var text: String

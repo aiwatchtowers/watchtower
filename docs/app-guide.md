@@ -302,6 +302,16 @@ The main assistant: ask about your work, keep long conversations organized, atta
 
 **Quote in reply** — on a finished answer, quote a passage to open it in a sheet, select the part you mean, and optionally add a note; it joins a batch shown above the composer. Quote as many passages as you like — nothing is sent until you send your own message, which carries every quote plus whatever you typed as one turn.
 
+**Assistant chats elsewhere in the app** look and behave like this one: the target's Discuss tab, the track chat, an idea's or decision's Discuss section, a recording's Chat tab, the onboarding interview, and the Setup Assistant in Settings → Add account (calendar or email). Each one works the same way:
+- Replies stream in, and **Stop** keeps what was written so far.
+- Every message has **Copy**.
+- A failed reply shows what went wrong (with a sign-in hint when the provider is logged out) and a **Retry** button.
+- An empty chat suggests a few starter questions.
+
+These chats have no attachments, @-mentions, branches or edits. Those stay in the AI Chat.
+
+A reply keeps going when you leave the screen or collapse the section; come back and it is there. At most three of these replies run at once. A fourth waits, marked **Queued**. Stop takes it back into the input, and a queued message you never sent comes back as a draft after a restart.
+
 **Projects** — group chats that share context. A project has instructions (given to the assistant in every chat of the project), files (text files are read in full; images and PDFs are shown to Claude at the start of each session, as far as they fit in one message — 30 MB together with the files you attach yourself), and pinned sources — Jira projects, Slack channels, targets, tracks and people — that tell it where to look first. Start a chat from the project page with "New chat in this project", or move an existing chat into a project. Changes to a project's instructions, sources or files reach every chat in it on that chat's next message (a reply still being written finishes first). Deleting a project deletes its files and keeps its chats.
 
 **@-mentions and / skills** — type `@` to point at a person, Slack channel, Jira issue, target or track from your synced data (↑/↓ and Enter to pick, Esc to close); the pick appears as a chip and the assistant knows exactly which one you meant. Type `/` at the start of a message to pick one of your enabled skills; the assistant loads it before answering.

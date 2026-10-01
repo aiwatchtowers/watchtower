@@ -45,16 +45,22 @@ struct SetupAssistantPanel<Snapshot, Patch>: View {
 }
 
 extension SetupAssistantPanel where Snapshot == CalendarFormSnapshot, Patch == CalendarSettingsPatch {
-    init(chatVM: CalendarSetupChatViewModel, makeSnapshot: @escaping () -> CalendarFormSnapshot,
-         onClose: @escaping () -> Void) {
+    init(
+        chatVM: CalendarSetupChatViewModel,
+        makeSnapshot: @escaping () -> CalendarFormSnapshot,
+        onClose: @escaping () -> Void
+    ) {
         self.init(chatVM: chatVM, makeSnapshot: makeSnapshot, placeholder: "e.g. \"my calendar is on iCloud\"",
                   dictationTargetID: "chat.setup.calendar", onClose: onClose)
     }
 }
 
 extension SetupAssistantPanel where Snapshot == ImapFormSnapshot, Patch == ImapSettingsPatch {
-    init(chatVM: EmailSetupChatViewModel, makeSnapshot: @escaping () -> ImapFormSnapshot,
-         onClose: @escaping () -> Void) {
+    init(
+        chatVM: EmailSetupChatViewModel,
+        makeSnapshot: @escaping () -> ImapFormSnapshot,
+        onClose: @escaping () -> Void
+    ) {
         self.init(chatVM: chatVM, makeSnapshot: makeSnapshot, placeholder: "e.g. \"my mail is on Yahoo\"",
                   dictationTargetID: "chat.setup.email", onClose: onClose)
     }

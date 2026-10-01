@@ -18,9 +18,9 @@ final class ChatInputAttachmentTests: XCTestCase {
         onSend: @escaping () -> Void = {},
         onAttach: (([URL]) -> Void)? = { _ in },
         onRemove: ((Int64) -> Void)? = { _ in }
-    ) -> ChatInputContent {
+    ) -> ChatComposerFieldContent {
         var stored = text
-        return ChatInputContent(
+        return ChatComposerFieldContent(
             text: Binding(get: { stored }, set: { stored = $0 }),
             isStreaming: false, onSend: onSend, onStop: nil,
             placeholder: "Ask…", dictationTargetID: nil, dictationCenter: nil,

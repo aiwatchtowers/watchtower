@@ -15,9 +15,9 @@ final class ChatInputViewTests: XCTestCase {
         onStop: (() -> Void)? = nil,
         placeholder: String = "Ask about your workspace...",
         dictationTargetID: String? = nil
-    ) -> ChatInput {
+    ) -> ChatComposerField {
         var stored = text
-        return ChatInput(
+        return ChatComposerField(
             text: Binding(get: { stored }, set: { stored = $0 }),
             isStreaming: isStreaming,
             onSend: onSend,
@@ -27,7 +27,7 @@ final class ChatInputViewTests: XCTestCase {
         )
     }
 
-    private func hasMicButton(_ view: ChatInput) throws -> Bool {
+    private func hasMicButton(_ view: ChatComposerField) throws -> Bool {
         (try? view.inspect().find(ViewType.Image.self) { try $0.actualImage().name() == "mic.fill" }) != nil
     }
 
@@ -101,7 +101,7 @@ final class ChatInputViewTests: XCTestCase {
 
     /// dictationTargetID set but no DictationCenter in the environment (the
     /// test-harness default) → still no mic button — DictationButton itself
-    /// renders nothing without a center, but ChatInput's own guard should
+    /// renders nothing without a center, but ChatComposerField's own guard should
     /// already keep it out of the hierarchy.
     func testNoMicButtonWhenDictationCenterAbsentFromEnvironment() throws {
         let view = makeView(dictationTargetID: "chat.workspace")
@@ -110,7 +110,7 @@ final class ChatInputViewTests: XCTestCase {
 
     /// The positive control for the two guards above: targetID set AND a
     /// DictationCenter present → the mic button IS in the hierarchy. Driven
-    /// through `ChatInputContent` (the plain view `ChatInput` renders) with
+    /// through `ChatComposerFieldContent` (the plain view `ChatComposerField` renders) with
     /// an explicit center — ViewInspector cannot inject custom `@Environment`
     /// values (the `TrayMenuContent` precedent).
     func testMicButtonShownWhenTargetIDSetAndCenterPresent() throws {
@@ -126,7 +126,7 @@ final class ChatInputViewTests: XCTestCase {
             engineIdleTTL: .seconds(900)
         )
         var stored = ""
-        let view = ChatInputContent(
+        let view = ChatComposerFieldContent(
             text: Binding(get: { stored }, set: { stored = $0 }),
             isStreaming: false,
             onSend: {},
@@ -145,8 +145,8 @@ final class ChatInputViewTests: XCTestCase {
     func testPendingContentEnablesSendWithEmptyText() throws {
         var sent = 0
         var stored = ""
-        let view = ChatInput(text: Binding(get: { stored }, set: { stored = $0 }), isStreaming: false,
-                             onSend: { sent += 1 }, hasPendingContent: true)
+        let view = ChatComposerField(text: Binding(get: { stored }, set: { stored = $0 }), isStreaming: false,
+                                     onSend: { sent += 1 }, hasPendingContent: true)
         let button = try view.inspect().find(ViewType.Button.self)
         XCTAssertFalse(try button.isDisabled())
         try button.tap()

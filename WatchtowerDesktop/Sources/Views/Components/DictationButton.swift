@@ -50,7 +50,7 @@ struct DictationButton: View {
     var onTitle: ((String) -> Void)?     // idea mode: cleaned title, fired only when non-nil
     var isDisabled: Bool = false         // parent-supplied extra gate (e.g. notes isGenerating)
     /// Explicit center for hosts that already resolved the environment value
-    /// themselves (`ChatInputContent`, tests) — ViewInspector cannot inject
+    /// themselves (`ChatComposerFieldContent`, tests) — ViewInspector cannot inject
     /// custom `@Environment` values, hence the parameter. nil → the
     /// environment center, as before.
     var center: DictationCenter?

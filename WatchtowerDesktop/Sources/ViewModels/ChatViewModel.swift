@@ -618,7 +618,7 @@ final class ChatViewModel {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let live = MentionTokenizer.liveMentions(text: text, mentions: mentions)
         let turnText = ChatTurnComposer.compose(text: text, skill: skill, mentions: live)
-        // A message may carry only attachments (no text) — the ChatInput canSend twin.
+        // A message may carry only attachments (no text) — the ChatComposerField canSend twin.
         guard !turnText.isEmpty || !attachments.isEmpty, !isStreaming else { return false }
         let fromLanding = isOnLanding
         guard let id = conversationIDCreatingIfNeeded() else { return false }
