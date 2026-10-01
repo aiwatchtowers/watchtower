@@ -1,7 +1,7 @@
 ---
 type: bug
 title: "Thread-reply / reaction-request detector errors are swallowed and the watermark still advances"
-status: open
+status: done
 priority: med
 tags: [inbox, watermark, INBOX-09, swallowed-error, review-2026-09-26]
 context: main-branch backlog review 2026-09-26 at 8cf68dcf — track bugs (Go AI pipelines/tools)
@@ -14,3 +14,5 @@ created: 2026-09-26
 In `detectSlackTriggers`, a failure of `FindMentions` or `FindDMs` is returned. A failure of `FindThreadRepliesToUser` or `FindReactionRequests` (for example SQLITE_BUSY) is only logged, and the function returns `nil`. `detectAll` therefore sees a clean pass, `decideWatermark` advances, and thread replies to the owner in that window are lost for good. INBOX-09 states that "any detector pass fails" freezes the cursor. `collectJiraCommentCandidates` also turns a query error into "no candidates", and the Jira `CreateInboxItem` errors are dropped. Fix: return (or join) these errors so the watermark gate sees them.
 
 > Original note: «а давай проведем ревью нашего репоза на ветке мейн с целью наполнения беклога. Наши треки - покрытие тестами, баги существующие и потенциальные, архитектурные проблемы, анализ использования и бессмысленный функционал»
+
+**Resolution (2026-10-01):** fixed on `fix/inbox-pipeline-watermarks` — thread-reply/reaction query errors, the Jira comment-mention read and failed inbox item inserts (Slack and Jira) are now returned and freeze the watermark (INBOX-09 guards added).

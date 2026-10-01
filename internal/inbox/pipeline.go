@@ -429,25 +429,33 @@ func (p *Pipeline) detectSlackTriggers(ctx context.Context, accountID int64, cur
 		return 0, fmt.Errorf("finding DMs: %w", err)
 	}
 
+	// A thread-reply or reaction query failure no longer aborts the account:
+	// the candidates that were found still become items, and the error is
+	// returned alongside them so the caller freezes the watermark (INBOX-09)
+	// and the failed detector's window is re-scanned next cycle.
+	var errs []error
 	threadReplies, err := p.db.FindThreadRepliesToUser(accountID, currentUserID, lastTS)
 	if err != nil {
-		p.logger.Printf("inbox: error finding thread replies: %v", err)
+		errs = append(errs, fmt.Errorf("finding thread replies: %w", err))
 	}
 
 	reactions, err := p.db.FindReactionRequests(accountID, currentUserID, lastTS)
 	if err != nil {
-		p.logger.Printf("inbox: error finding reaction requests: %v", err)
+		errs = append(errs, fmt.Errorf("finding reaction requests: %w", err))
 	}
 
 	candidates := append(mentions, dms...)
 	candidates = append(candidates, threadReplies...)
 	candidates = append(candidates, reactions...)
 
-	created := p.createItemsFromCandidates(candidates, currentUserID, false)
+	created, err := p.createItemsFromCandidates(candidates, currentUserID, false)
+	if err != nil {
+		errs = append(errs, err)
+	}
 
 	p.logger.Printf("inbox: slack account %d detected %d mentions, %d DMs, %d thread replies, %d reactions → %d created",
 		accountID, len(mentions), len(dms), len(threadReplies), len(reactions), created)
-	return created, nil
+	return created, errors.Join(errs...)
 }
 
 // createItemsFromCandidates groups candidates by (channel, thread) — keeping
@@ -480,7 +488,11 @@ func (p *Pipeline) detectSlackTriggers(ctx context.Context, accountID int64, cur
 // so the returned count matches exactly what a real run would create, but
 // both writes that mutate inbox_items (the existing-thread fold, and
 // CreateInboxItem for a new item) are skipped.
-func (p *Pipeline) createItemsFromCandidates(candidates []db.InboxCandidate, currentUserID string, dryRun bool) int {
+//
+// A failed write does not stop the remaining groups; every failure is joined
+// into the returned error (a UNIQUE conflict is an already-surfaced message,
+// not a failure) so the caller's watermark gate sees it (INBOX-09).
+func (p *Pipeline) createItemsFromCandidates(candidates []db.InboxCandidate, currentUserID string, dryRun bool) (int, error) {
 	type threadKey struct{ channelID, threadTS string }
 	type threadGroup struct {
 		latest  db.InboxCandidate
@@ -502,6 +514,7 @@ func (p *Pipeline) createItemsFromCandidates(candidates []db.InboxCandidate, cur
 	}
 
 	created := 0
+	var errs []error
 	for _, grp := range threadGroups {
 		c := grp.latest
 		snippet := enrichSnippet(c.Text, p.db)
@@ -532,10 +545,10 @@ func (p *Pipeline) createItemsFromCandidates(candidates []db.InboxCandidate, cur
 				continue
 			}
 			if err := p.db.UpdateInboxItemSnippet(existingID, c.MessageTS, c.SenderUserID, snippet, itemCtx, c.Text, c.Permalink); err != nil {
-				p.logger.Printf("inbox: error updating thread item %d: %v", existingID, err)
+				errs = append(errs, fmt.Errorf("updating thread item %d: %w", existingID, err))
 			}
 			if err := p.db.MergeWaitingUserIDs(existingID, senderList); err != nil {
-				p.logger.Printf("inbox: error merging waiting users for item %d: %v", existingID, err)
+				errs = append(errs, fmt.Errorf("merging waiting users for item %d: %w", existingID, err))
 			}
 			continue
 		}
@@ -561,12 +574,12 @@ func (p *Pipeline) createItemsFromCandidates(candidates []db.InboxCandidate, cur
 			if strings.Contains(err.Error(), "UNIQUE") {
 				continue
 			}
-			p.logger.Printf("inbox: error creating item: %v", err)
+			errs = append(errs, fmt.Errorf("creating item for %s/%s: %w", c.ChannelID, c.MessageTS, err))
 			continue
 		}
 		created++
 	}
-	return created
+	return created, errors.Join(errs...)
 }
 
 // loadContext loads thread or channel context for an inbox item.

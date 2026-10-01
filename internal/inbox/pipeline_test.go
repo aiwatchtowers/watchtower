@@ -1004,3 +1004,107 @@ func TestInbox09_OwnJiraCommentReadErrorFreezesWatermark(t *testing.T) {
 	assert.Equal(t, frozen, ts)
 	assert.Empty(t, queryInboxByTrigger(t, d, "jira_assigned"), "nothing is minted past a failed read")
 }
+
+// TestInbox09_ReactionDetectorErrorFreezesWatermark: a failed reaction-request
+// query is a detector error like a failed mention query — Run returns it and
+// the watermark stays put, so the window is re-scanned. The account's
+// mention, found by a query that succeeded, is still surfaced.
+func TestInbox09_ReactionDetectorErrorFreezesWatermark(t *testing.T) {
+	// BEHAVIOR INBOX-09 — see docs/inventory/inbox-pulse.md
+	// Do not weaken or remove without explicit owner approval.
+	d := newTestDB(t)
+	seedWorkspaceAndUser(t, d, "1:U_ME1")
+	const frozen = 1000.0
+	require.NoError(t, d.SetInboxLastProcessedTS(frozen))
+	insertChannel(t, d, "1:C1", "public")
+	insertMessage(t, d, "1:C1", recentTS(30), "1:U_OTHER", "Hey <@U_ME1> review please")
+	// Only FindReactionRequests reads reactions.
+	_, err := d.Exec(`DROP TABLE reactions`)
+	require.NoError(t, err)
+
+	p := New(d, testConfig(), nil, log.Default())
+	_, _, err = p.Run(context.Background())
+	require.Error(t, err, "a reaction-detector failure must be surfaced, not logged and dropped")
+	assert.Contains(t, err.Error(), "finding reaction requests")
+
+	ts, err := d.GetInboxLastProcessedTS()
+	require.NoError(t, err)
+	assert.Equal(t, frozen, ts, "a reaction-detector failure must freeze the watermark")
+	assert.Len(t, queryInboxByTrigger(t, d, "mention"), 1, "the mention found by a healthy query is still surfaced")
+}
+
+// TestInbox09_SlackItemWriteErrorFreezesWatermark: a failed inbox_items
+// insert for a Slack candidate (other than a UNIQUE conflict) is a detector
+// error — the candidate was never surfaced, so the window must be re-scanned.
+func TestInbox09_SlackItemWriteErrorFreezesWatermark(t *testing.T) {
+	// BEHAVIOR INBOX-09 — see docs/inventory/inbox-pulse.md
+	// Do not weaken or remove without explicit owner approval.
+	d := newTestDB(t)
+	seedWorkspaceAndUser(t, d, "1:U_ME1")
+	const frozen = 1000.0
+	require.NoError(t, d.SetInboxLastProcessedTS(frozen))
+	insertChannel(t, d, "1:C1", "public")
+	insertMessage(t, d, "1:C1", recentTS(30), "1:U_OTHER", "Hey <@U_ME1> review please")
+	_, err := d.Exec(`CREATE TRIGGER fail_mention BEFORE INSERT ON inbox_items
+		WHEN NEW.trigger_type = 'mention' BEGIN SELECT RAISE(ABORT, 'disk I/O error'); END`)
+	require.NoError(t, err)
+
+	p := New(d, testConfig(), nil, log.Default())
+	_, _, err = p.Run(context.Background())
+	require.Error(t, err)
+
+	ts, err := d.GetInboxLastProcessedTS()
+	require.NoError(t, err)
+	assert.Equal(t, frozen, ts, "an unsurfaced candidate must freeze the watermark")
+}
+
+// TestInbox09_JiraCommentMentionReadErrorFreezesWatermark: a failed
+// jira_comments mention read is a detector error, never "no mentions".
+func TestInbox09_JiraCommentMentionReadErrorFreezesWatermark(t *testing.T) {
+	// BEHAVIOR INBOX-09 — see docs/inventory/inbox-pulse.md
+	// Do not weaken or remove without explicit owner approval.
+	d := newTestDB(t)
+	p := newPipelineForTest(t, d, "U_ME", "me@x.com")
+	p.SetOwner(db.Owner{ID: "U_ME", SlackUserID: "U_ME", Email: "me@x.com", JiraAccountID: "acc-me"})
+	const frozen = 1000.0
+	require.NoError(t, d.SetInboxLastProcessedTS(frozen))
+	// The owner's own-comment read (author_account_id) still works; only the
+	// mention scan (body_text) fails.
+	_, err := d.Exec(`ALTER TABLE jira_comments RENAME COLUMN body_text TO body_gone`)
+	require.NoError(t, err)
+
+	_, _, err = p.Run(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "jira_comments")
+	ts, err := d.GetInboxLastProcessedTS()
+	require.NoError(t, err)
+	assert.Equal(t, frozen, ts)
+}
+
+// TestInbox09_JiraItemWriteErrorFreezesWatermark: a failed insert of a Jira
+// item is returned, not dropped — for both Jira signals.
+func TestInbox09_JiraItemWriteErrorFreezesWatermark(t *testing.T) {
+	// BEHAVIOR INBOX-09 — see docs/inventory/inbox-pulse.md
+	// Do not weaken or remove without explicit owner approval.
+	for _, trigger := range []string{"jira_assigned", "jira_comment_mention"} {
+		t.Run(trigger, func(t *testing.T) {
+			d := newTestDB(t)
+			p := newPipelineForTest(t, d, "U_ME", "me@x.com")
+			p.SetOwner(db.Owner{ID: "U_ME", SlackUserID: "U_ME", Email: "me@x.com", JiraAccountID: "acc-me"})
+			seedJiraIssue(t, d, "WT-40", "acc-me", time.Now().Add(-1*time.Hour))
+			seedJiraComment(t, d, "WT-40", "acc-bob", "hey [~acc-me] please look", time.Now().Add(-30*time.Minute))
+			const frozen = 1000.0
+			require.NoError(t, d.SetInboxLastProcessedTS(frozen))
+			_, err := d.Exec(`CREATE TRIGGER fail_jira BEFORE INSERT ON inbox_items
+				WHEN NEW.trigger_type = '` + trigger + `' BEGIN SELECT RAISE(ABORT, 'disk I/O error'); END`)
+			require.NoError(t, err)
+
+			_, _, err = p.Run(context.Background())
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), trigger)
+			ts, err := d.GetInboxLastProcessedTS()
+			require.NoError(t, err)
+			assert.Equal(t, frozen, ts)
+		})
+	}
+}
