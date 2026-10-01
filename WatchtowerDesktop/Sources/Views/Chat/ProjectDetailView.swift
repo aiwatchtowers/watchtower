@@ -23,13 +23,15 @@ struct ProjectDetailView: View {
         onNewChat: @escaping (Int64) -> Void,
         onOpenChat: @escaping (Int64) -> Void,
         onRenamed: @escaping () -> Void,
-        onDeleted: @escaping (Int64) -> Void
+        onDeleted: @escaping (Int64) -> Void,
+        onPromptChanged: @escaping (Int64) -> Void
     ) {
         _vm = State(initialValue: ProjectDetailViewModel(
             projectID: projectID,
             dbPool: dbPool,
             attachmentsRoot: attachmentsRoot,
-            importFile: ProjectDetailViewModel.storeImporter(dbPool: dbPool, rootDir: attachmentsRoot)
+            importFile: ProjectDetailViewModel.storeImporter(dbPool: dbPool, rootDir: attachmentsRoot),
+            onPromptChanged: onPromptChanged
         ))
         self.dbPool = dbPool
         self.onNewChat = onNewChat
@@ -95,7 +97,7 @@ struct ProjectDetailView: View {
                 }
 
                 section("Chats", caption: nil) {
-                    Button("New chat in this project") { onNewChat(vm.projectID) }
+                    Button("New chat in this project") { newChat() }
                     ForEach(vm.chats) { chat in
                         Button(chat.displayTitle) { onOpenChat(chat.id) }
                             .buttonStyle(.link)
@@ -122,6 +124,16 @@ struct ProjectDetailView: View {
             }
         } message: {
             Text("Its chats are kept and move out of the project.")
+        }
+    }
+
+    /// The pending instructions save lands first: the new chat's session
+    /// prewarms right away and reads the instructions at spawn. A failed
+    /// save keeps the owner here, with the banner saying why.
+    private func newChat() {
+        Task {
+            guard await vm.flush() else { return }
+            onNewChat(vm.projectID)
         }
     }
 

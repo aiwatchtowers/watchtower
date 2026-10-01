@@ -61,7 +61,8 @@ private struct ChatSplitView: View {
                             onNewChat: createNewChat(inProject:),
                             onOpenChat: { historyVM.selectedConversationID = $0 },
                             onRenamed: { chatVM.reloadProjects() },
-                            onDeleted: { chatVM.projectDeleted($0) }
+                            onDeleted: { chatVM.projectDeleted($0) },
+                            onPromptChanged: { chatVM.projectPromptChanged($0) }
                         )
                         .id(projectID)
                     } else if chatVM.isOnLanding {

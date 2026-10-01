@@ -102,6 +102,109 @@ final class ChatSessionPoolTests: XCTestCase {
         XCTAssertLessThanOrEqual(maxAlive, ChatSessionPolicy.maxLive)
     }
 
+    /// Stopping the held turn of a queued session ends that session: a freed
+    /// slot launches nothing for it, and the next request gets a new one.
+    func testStoppingAHeldTurnNeverLaunchesTheQueuedSession() async throws {
+        for id: Int64 in 1...3 {
+            pool.session(for: id, config: config(id)).startTurn(turn("t\(id)", row: try assistantRow()))
+            clock.advance(1)
+        }
+        let fourth = pool.session(for: 4, config: config(4))
+        let row = try assistantRow()
+        fourth.startTurn(turn("t4", row: row))
+        fourth.cancel()
+        XCTAssertFalse(fourth.isBusy)
+        XCTAssertFalse(fourth.isAlive)
+        let status = try await dbPool.read { try String.fetchOne($0, sql: "SELECT status FROM chat_messages WHERE id = ?", arguments: [row]) }
+        XCTAssertEqual(status, "partial", "the stopped turn keeps its row (CHAT-01)")
+
+        fakes[1].emit(.turnDone(turnID: "t2", status: .complete, sessionID: nil))
+        pool.tick()
+        XCTAssertFalse(fourth.isPending, "admission dropped it rather than launching it")
+        XCTAssertEqual(fakes.count, 3, "no process for a session whose only turn was stopped")
+
+        let again = pool.session(for: 4, config: config(4))
+        XCTAssertTrue(again.isAlive)
+        XCTAssertFalse(again === fourth)
+    }
+
+    /// A chat project's prompt changed: its idle sessions close at once, a
+    /// busy one finishes its turn first and is then no longer reused.
+    func testRetireSessionsOfAProjectClosesIdleAndRetiresBusyAfterItsTurn() async throws {
+        func projectConfig(_ id: Int64, _ project: Int64?) -> ChatSessionConfig {
+            ChatSessionConfig(conversationID: id, provider: "claude", model: nil, projectID: project)
+        }
+        let idle = pool.session(for: 1, config: projectConfig(1, 7))
+        let busy = pool.session(for: 2, config: projectConfig(2, 7))
+        let other = pool.session(for: 3, config: projectConfig(3, nil))
+        busy.startTurn(turn("t2", row: try assistantRow()))
+
+        pool.retireSessions(projectID: 7)
+        XCTAssertNil(pool.client(for: 1))
+        XCTAssertFalse(idle.isAlive)
+        XCTAssertTrue(busy.isBusy, "a running turn is never cut")
+        XCTAssertTrue(busy.isAlive)
+        XCTAssertTrue(other.isAlive)
+
+        fakes[1].emit(.turnDone(turnID: "t2", status: .complete, sessionID: "sess-late"))
+        let ended = await waitForCondition { !busy.isBusy }
+        XCTAssertTrue(ended)
+        XCTAssertNil(busy.driver.sessionID, "the stale session's id is never recorded")
+        XCTAssertFalse(busy.isAlive, "the stale session is replaced on the next request")
+        pool.tick()
+        let reaped = await waitForCondition { self.fakes[1].terminated }
+        XCTAssertTrue(reaped, "the policy tick closes the stale process")
+        XCTAssertFalse(pool.session(for: 2, config: projectConfig(2, 7)) === busy)
+        XCTAssertTrue(other.isAlive)
+        XCTAssertLessThanOrEqual(maxAlive, ChatSessionPolicy.maxLive)
+    }
+
+    /// A queued session's argv already carries the old `--resume`: it is
+    /// closed, never launched, and its held turn keeps its row.
+    func testRetireSessionsClosesAPendingSessionWithAHeldTurn() async throws {
+        for id: Int64 in 1...3 {
+            pool.session(for: id, config: config(id)).startTurn(turn("t\(id)", row: try assistantRow()))
+            clock.advance(1)
+        }
+        let stale = ChatSessionConfig(conversationID: 4, provider: "claude", model: nil,
+                                      resumeSessionID: "sess-old", projectID: 7)
+        let queued = pool.session(for: 4, config: stale)
+        queued.startTurn(turn("t4", row: try assistantRow()))
+        XCTAssertTrue(queued.isPending)
+
+        pool.retireSessions(projectID: 7)
+        XCTAssertNil(pool.client(for: 4))
+        XCTAssertFalse(queued.isBusy, "the held turn ends as partial")
+        fakes[0].emit(.turnDone(turnID: "t1", status: .complete, sessionID: nil))
+        pool.tick()
+        XCTAssertEqual(fakes.count, 3, "the stale queued session never launches")
+    }
+
+    /// Closing one stale queued session re-runs admission: a second one
+    /// queued behind it (with its own old `--resume`) must already be out of
+    /// the queue, or it launches into the slot that just opened.
+    func testRetireSessionsNeverLaunchesAStaleSessionQueuedBehindAnother() throws {
+        let launched = ChatSessionConfig(conversationID: 4, provider: "claude", model: nil,
+                                         resumeSessionID: "sess-4", projectID: 7)
+        _ = pool.session(for: 4, config: launched)
+        var changed = launched
+        changed.model = "other-model"
+        // Waits for the first process's retirement, which cannot finish while
+        // this test never yields; everything behind it waits in the queue.
+        let blocked = pool.session(for: 4, config: changed)
+        blocked.startTurn(turn("t4", row: try assistantRow()))
+        let behind = pool.session(for: 5, config: ChatSessionConfig(conversationID: 5, provider: "claude", model: nil,
+                                                                    resumeSessionID: "sess-5", projectID: 7))
+        behind.startTurn(turn("t5", row: try assistantRow()))
+        XCTAssertTrue(blocked.isPending)
+        XCTAssertTrue(behind.isPending)
+
+        pool.retireSessions(projectID: 7)
+        XCTAssertNil(pool.client(for: 4))
+        XCTAssertNil(pool.client(for: 5))
+        XCTAssertEqual(fakes.count, 1, "the stale session queued behind is never launched")
+    }
+
     /// Retiring a BUSY session (close or config change) finishes its turn,
     /// which re-runs admission synchronously: the queued fourth must still
     /// wait for the retired process to exit — never 4 live processes.

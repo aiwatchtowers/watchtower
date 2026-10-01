@@ -75,7 +75,8 @@ final class ChatTreeQueriesTests: XCTestCase {
         try db.write { d in
             let conv = try TestDatabase.insertChatConversation(d)
             let asst = try ChatTreeQueries.insertAssistant(d, conversationID: conv, parentID: nil, turnID: "t", provider: "claude", model: "")
-            try ChatTreeQueries.updateAssistant(d, id: asst.id, text: "hi", status: "error", tokensIn: 3, tokensOut: 4, errorCode: "rate_limit")
+            try ChatTreeQueries.updateAssistant(d, id: asst.id, text: "hi", status: "error", tokensIn: 3, tokensOut: 4,
+                                                errorCode: "rate_limit", errorMessage: "429 from the API")
             try ChatTreeQueries.setModel(d, messageID: asst.id, model: "model-b")
             let row = try XCTUnwrap(ChatMessageRecord.fetchOne(d, sql: "SELECT * FROM chat_messages WHERE id = ?", arguments: [asst.id]))
             XCTAssertEqual(row.text, "hi")
@@ -83,6 +84,7 @@ final class ChatTreeQueriesTests: XCTestCase {
             XCTAssertEqual(row.tokensIn, 3)
             XCTAssertEqual(row.tokensOut, 4)
             XCTAssertEqual(row.errorCode, "rate_limit")
+            XCTAssertEqual(row.errorMessage, "429 from the API")
             XCTAssertEqual(row.model, "model-b")
         }
     }
