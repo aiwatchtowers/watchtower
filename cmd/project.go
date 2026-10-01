@@ -173,6 +173,8 @@ type boardNodeJSON struct {
 	StatusSince    string                `json:"status_since"` // when it entered its status (UTC); "" = unknown
 	Priority       string                `json:"priority"`
 	Progress       float64               `json:"progress"`
+	Branch         string                `json:"branch"` // the git branch carrying the work; "" = none
+	PR             string                `json:"pr"`     // the pull request, a number or URL; "" = none
 	NewForAgent    int                   `json:"new_for_agent"`
 	UnreadForOwner int                   `json:"unread_for_owner"`
 	Documents      []projectDocumentJSON `json:"documents"`
@@ -205,7 +207,8 @@ func toBoardJSON(nodes []db.BoardNode) []boardNodeJSON {
 	out := make([]boardNodeJSON, 0, len(nodes))
 	for _, n := range nodes {
 		out = append(out, boardNodeJSON{ID: n.Target.ID, Title: n.Target.Text, Intent: n.Target.Intent,
-			Status: n.Target.Status, StatusSince: n.StatusSince, Priority: n.Target.Priority, Progress: n.Target.Progress, NewForAgent: n.NewForAgent,
+			Status: n.Target.Status, StatusSince: n.StatusSince, Priority: n.Target.Priority, Progress: n.Target.Progress,
+			Branch: n.Target.Branch, PR: n.Target.PR, NewForAgent: n.NewForAgent,
 			UnreadForOwner: n.UnreadForOwner, Documents: toDocumentsJSON(n.Documents), Children: toBoardJSON(n.Children)})
 	}
 	return out
@@ -539,10 +542,26 @@ func runProjectBoard(cmd *cobra.Command, args []string) error {
 
 func printBoard(w io.Writer, nodes []db.BoardNode, depth int, now time.Time) {
 	for _, n := range nodes {
-		fmt.Fprintf(w, "%s#%d [%s, %s] %s\n", strings.Repeat("  ", depth), n.Target.ID,
-			statusWithAge(n, now), n.Target.Priority, n.Target.Text)
+		fmt.Fprintf(w, "%s#%d [%s, %s] %s%s\n", strings.Repeat("  ", depth), n.Target.ID,
+			statusWithAge(n, now), n.Target.Priority, n.Target.Text, gitLinks(n.Target))
 		printBoard(w, n.Children, depth+1, now)
 	}
+}
+
+// gitLinks renders a project target's branch and pull request, if any, as
+// " (branch x, PR #12)".
+func gitLinks(t db.Target) string {
+	var parts []string
+	if t.Branch != "" {
+		parts = append(parts, "branch "+t.Branch)
+	}
+	if t.PR != "" {
+		parts = append(parts, "PR "+t.PR)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " (" + strings.Join(parts, ", ") + ")"
 }
 
 // statusWithAge renders a board target's status with how long it has held

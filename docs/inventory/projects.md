@@ -13,14 +13,14 @@
 
 A project is a folder with a board of targets, attached documents and
 owner↔agent comments, worked on by Claude Code through
-`watchtower mcp --project N` (DEV-06 in `dev-surface.md`), a project skill and
-a `SessionStart` hook. Design:
+`watchtower mcp --project N` (DEV-06 in `dev-surface.md`), a project skill,
+a `SessionStart` hook (the brief) and a `Stop` hook (the board drift check, PROJ-07). Design:
 `docs/superpowers/specs/2026-09-29-project-board-poc-design.md`.
 
 **Module:** `internal/db/{projects,project_comments,project_board}.go` +
 `internal/tools/{projects,project_targets,project_docs,project_images,project_scope}.go` +
 `internal/db/project_images.go` + `internal/projectfiles/` +
-`cmd/{project,project_brief}.go` + `internal/devpack/{project,project_settings}.go` + `internal/projectdocs/` +
+`cmd/{project,project_brief,project_check}.go` + `internal/devpack/{project,project_settings}.go` + `internal/projectdocs/` + `internal/projectcheck/` +
 `WatchtowerDesktop/Sources/Views/Projects/`
 **Last full audit:** 2026-09-29
 
@@ -57,7 +57,7 @@ calls on it.
 
 **Observable:** `watchtower project delete N` first runs the folder removal
 (`projectRemoveInstall`, wired to `devpack.RemoveProject`: the
-`watchtower-project` skill, our `SessionStart` hook entry, the local
+`watchtower-project` skill, our `SessionStart` and `Stop` hook entries, the local
 `watchtower-project` MCP registration and the `.git/info/exclude` lines
 Watchtower added) — a removal failure is reported and the delete still
 happens — then deletes the project row, which removes every project target,
@@ -90,6 +90,7 @@ must be able to undo the whole feature for a folder in one step.
 - `internal/devpack/project_test.go::TestProj02_RemoveProjectLeavesGitStatusClean`
 - `internal/devpack/project_test.go::TestProj02_RemoveProjectKeepsOwnerSettingsButDropsOurHook`
 - `cmd/integrate_project_test.go::TestProj02_ProjectDeleteRunsTheFolderRemoval`
+- `cmd/project_check_test.go::TestProj02_ProjectDeleteLeavesNoHookOfTheProject` (neither hook of the deleted project survives in `settings.local.json`; the owner's own `Stop` hook and keys do)
 
 **Locked since:** 2026-09-29
 
@@ -126,10 +127,12 @@ the owner's edits; comments are the owner's channel into the document.
 
 **Observable:** `watchtower integrate claude-code --project N` merges into
 `DIR/.claude/settings.local.json` preserving every key and every hook the
-owner has, adding exactly one `SessionStart` entry recognised by its exact
-command string (installing twice leaves one); a malformed settings file is
-left byte-identical and reported; `integrate remove --project N` deletes only
-that entry. The `watchtower-project` skill follows DEV-04: a copy the owner
+owner has, adding exactly one `SessionStart` entry and one `Stop` entry
+(PROJ-07), each recognised by its command suffix after a `watchtower` binary
+(installing twice leaves one of each); a malformed settings file — `hooks`,
+`hooks.SessionStart` or `hooks.Stop` of the wrong type — is left
+byte-identical and reported once; `integrate remove --project N` deletes only
+those entries. The `watchtower-project` skill follows DEV-04: a copy the owner
 edited (differs from both what we ship and its `.watchtower-shipped` digest)
 is never overwritten or deleted.
 
@@ -142,6 +145,8 @@ skill, would make every later `integrate` a risk to the owner's own setup.
 - `internal/devpack/project_settings_test.go::TestProj04_MalformedSettingsLeftByteIdentical`
 - `internal/devpack/project_settings_test.go::TestProj04_RemoveDeletesOnlyOurHook`
 - `internal/devpack/project_test.go::TestProj04_EditedProjectSkillIsNeverClobbered`
+- `internal/devpack/project_stop_hook_test.go::TestProj04_StopHookKeepsOwnerStopHooksAndRemovesOnlyOurs`
+- `internal/devpack/project_stop_hook_test.go::TestProj04_MalformedStopLeavesTheFileByteIdentical`
 
 **Locked since:** 2026-09-29
 
@@ -241,6 +246,65 @@ dual path.
 
 **Locked since:** 2026-09-30
 
+## PROJ-07 — board drift is surfaced, and the Stop hook never traps a turn
+
+**Status:** Enforced (Go)
+
+**Observable:** A project target may carry a git `branch` and a pull request
+`pr` (migration `00089`; set by `create_targets`/`update_target`; one token,
+never starting with `-`; a branch is the plain local name — no `origin/` or
+`refs/` prefix, no revision syntax). `watchtower project check --project N
+[--json] [--stale-days D] [--no-network]` (`internal/projectcheck`,
+mechanical, no AI) reads the board and the project folder's git state and
+never writes — no DB row, no ref, no object, only read-only git subcommands,
+and no git process at all outside a repository. Kinds:
+- `merged_but_open` — an open target's branch is in `origin/<default>` or
+  `<default>`: a merge commit; a fast-forward (a local branch counts only if
+  its reflog shows its tip committed on the branch, so a branch just cut,
+  rebased or reset — even onto merged work — is not "merged"; a merge commit
+  counts for a local branch only once a commit was ever made on it); every commit already there by patch id
+  (`git cherry`: a rebase merge); or its whole diff matching one commit the
+  default branch gained since the fork (a squash, newest 200). With gh, a
+  merged PR. A parent's fix points at its sub-targets (PROJ-05).
+- `done_but_unmerged` — a target done in the last 14 days whose branch has
+  commits the default branch lacks (or whose PR is open), unless an open
+  target still carries the same branch or PR (a finished plan task of
+  unfinished work).
+- `branch_missing` — an in-progress/in-review target's branch is found
+  neither locally nor on origin.
+- `pr_closed_unmerged` (gh only), and `stale` — an in-progress leaf with no
+  status change, edit or branch commit for D days (default 3).
+
+A git call that fails (anything but "no such ref") gives no finding, and a
+check cut short by its deadline reports `incomplete` and never a finding from
+a cut-short target. The `Stop` hook (`project check --project N
+--stop-hook`, installed next to the `SessionStart` hook) reads Claude Code's
+input, runs offline (no gh) with an 8 s budget for its git work (the
+database open is never cut off by that budget — it may be applying a
+migration; only Claude Code's own 15 s hook timeout bounds it), and prints
+`{"decision":"block","reason":…}` listing only the certain kinds —
+`merged_but_open`, `branch_missing`, `pr_closed_unmerged`; never `stale` or
+the offline guess `done_but_unmerged` — and only when `stop_hook_active` is
+false, so it blocks at most once per stop and a turn can never loop on it. It
+always exits 0, a panic included; stdout stays empty on every failure, and a
+real failure (bad id, no config, a missing folder, time ran out) is one
+stderr line, while a deleted project's leftover hook says nothing at all.
+`project brief` shows every finding (offline, 4 s budget).
+
+**Why locked:** Owner request (board target #131). The agent finished and
+merged work but never moved its targets, so a board that looks alive lied
+about what was done; the product, not the agent's memory, must catch that.
+A hook that could loop a turn, fail a turn, or cry drift on a guess or a
+timeout would be worse than none.
+
+**Test guards:**
+- `cmd/project_check_test.go::TestProj07_StopHookBlocksOnceWithTheDrift`
+- `cmd/project_check_test.go::TestProj07_StopHookIsSilentWithoutGitDrift`
+- `cmd/project_check_test.go::TestProj07_StopHookFailuresAreSilent`
+- `internal/projectcheck/check_test.go` — `TestProj07_GitRules`, `TestProj07_SharedBranchAndParents`, `TestProj07_GitErrorsAreNeverFindings`, `TestProj07_NoGitCallOutsideARepository`, `TestProj07_ReadsNothingButGit`, `TestProj07_DeadlineReportsIncompleteNeverFalseFindings`, `TestProj07_MidWalkDeadlineKeepsEarlierFindingsOnly`
+
+**Locked since:** 2026-10-01
+
 ## v1 limits and notes (accepted)
 
 - **Status rollup bounds (PROJ-05).** The ancestor walk stops after 256
@@ -309,13 +373,11 @@ dual path.
 
 ## Changelog
 
-<<<<<<< HEAD
 - 2026-10-01 (board target #122): board language — `projects.board_language` (migration `00087`; empty = follow the session language, else a language name or tag validated by `db.NormalizeBoardLanguage`: letters of any script, spaces and hyphens with at least one letter, at most 3 words / 40 runes), set by `watchtower project update <id> --board-language`, the Desktop project page (through that command) and the project-session `update_project` (`board_language`; `description` becomes optional, one of the two is required). The brief and `project_info` carry one `Board language:` line (`tools.BoardLanguageLine`) and the `watchtower-project` skill's Board language section tells every session to write targets, intents and comments in it (code identifiers, paths and plan references unchanged). `terminal title` appends the override to its prompt at run time; imported document titles are the files' own and are not translated. No contract semantics or guard tests changed.
 
 - 2026-10-01 (board item #80): the Desktop Documents pane's **Add Document…** attaches a `.md`/`.txt` file inside the folder as `origin='owner'` through the new `watchtower project attach-doc <id> <path> [--kind --title --target --json]` (the same folder/symlink/extension checks as `attach_document`, shared via `tools.ResolveProjectDocumentPath`; an already attached path — compared ignoring case — is left untouched). The Desktop process itself still writes only `project_comments` rows: the document row is the CLI's write, and no one writes the file (PROJ-03 unchanged); the badge, revised dot and "ready for review" notification now count `origin='agent'` documents only. No contract semantics or guard tests changed.
-=======
 - 2026-10-01 (board target #117): project targets carry image attachments — `project_target_images` (migration `00088`), files copied by `create_targets` (`images`) / `update_target` (`add_images`, `remove_image_ids`) into `<workspace>/project_files/<project_id>/<sha256>.<ext>` (0700/0600, PNG/JPEG/GIF/WebP sniffed by content, ≤ 5 MB, ≤ 20 per target, one copy per content per project), listed by `get_target` and shown read-only in the Desktop board's detail pane. **PROJ-02** strengthened: a project delete also removes the stored copies, a target delete the ones nothing else names (new guards in `cmd/project_images_test.go`; `TestProj02_DeleteProjectLeavesNoRows` also counts image rows). **PROJ-03**'s "no project tool writes a file" narrowed to "in the project folder" — the image copies land in Watchtower's workspace, the document guarantee is unchanged; **pending owner confirmation** of the wording. PROJ-01: the table has no non-board reader.
->>>>>>> 6395a6f (fix(projects): target-image review round 1)
+- 2026-10-01 (board target #131): **PROJ-07** added — project targets carry `branch`/`pr` (migration `00089`), `watchtower project check` finds board drift, a `Stop` hook installed by `integrate claude-code --project N` hands certain git drift back to the agent once per stop, and the brief shows it. **PROJ-02** and **PROJ-04** widened, not weakened: the install owns one `Stop` entry next to the `SessionStart` one under the same rules, and delete/remove take both away (new guards listed above). A project installed before this change gets the `Stop` hook when `integrate claude-code --project N` runs again. Known limits: the check never fetches, so `origin/<default>` is only as fresh as the last `git fetch` (a merge made on GitHub shows once fetched — hence `done_but_unmerged` is advisory); a squash older than 200 commits after the fork, or one whose diff changed in conflict resolution, is not recognised; a local branch created at an already-merged tip by `git checkout -b x origin/x` has no commit in its reflog and is not called merged; a commit-less branch that exists only on origin, pushed from a `--no-ff`-merged feature's tip, reads as merged; `git cherry` is skipped once the default branch gained more than 200 commits since the fork.
 
 - 2026-09-30 (board target #119): **PROJ-06** added — project targets gain `in_review` and a trigger-written status history with time and actor (migration `00086`). **PROJ-05** amended with owner approval (the same request): an `in_review` child counts as started, like `in_progress`; the rollup's other rules are unchanged, and its writes are recorded as `system`. The migration rebuilds `targets` and recreates 00085's triggers.
 

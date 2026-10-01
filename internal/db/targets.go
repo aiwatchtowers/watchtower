@@ -14,7 +14,7 @@ const targetSelectCols = `id, text, intent, level, custom_label, period_start, p
 	parent_id, status, priority, ownership,
 	ball_on, due_date, snooze_until, blocking, tags, sub_items, notes,
 	progress, source_type, source_id, ai_level_confidence, created_at, updated_at,
-	next_step, next_step_at, next_step_attempts, next_step_attempted_at, project_id`
+	next_step, next_step_at, next_step_attempts, next_step_attempted_at, project_id, branch, pr`
 
 func scanTarget(row interface{ Scan(...any) error }) (*Target, error) {
 	var t Target
@@ -24,6 +24,7 @@ func scanTarget(row interface{ Scan(...any) error }) (*Target, error) {
 		&t.BallOn, &t.DueDate, &t.SnoozeUntil, &t.Blocking, &t.Tags, &t.SubItems, &t.Notes,
 		&t.Progress, &t.SourceType, &t.SourceID, &t.AILevelConfidence, &t.CreatedAt, &t.UpdatedAt,
 		&t.NextStep, &t.NextStepAt, &t.NextStepAttempts, &t.NextStepAttemptedAt, &t.ProjectID,
+		&t.Branch, &t.PR,
 	); err != nil {
 		return nil, err
 	}
@@ -99,6 +100,23 @@ func (db *DB) UpdateTargetText(id int, text, intent string) error {
 // UpdateTargetTextTx is UpdateTargetText inside the caller's transaction.
 func (db *DB) UpdateTargetTextTx(tx *sql.Tx, id int, text, intent string) error {
 	return updateTargetTextOn(tx, id, text, intent)
+}
+
+// UpdateTargetGitLinksTx sets a project target's branch and/or pull request
+// (board drift, PROJ-07) inside the caller's transaction; a nil pointer
+// leaves that field alone, "" clears it.
+func (db *DB) UpdateTargetGitLinksTx(tx *sql.Tx, id int, branch, pr *string) error {
+	if branch == nil && pr == nil {
+		return nil
+	}
+	// A re-set to the same values writes nothing: updated_at is the drift
+	// check's movement clock, which a no-op must not reset.
+	if _, err := tx.Exec(`UPDATE targets SET branch = COALESCE(?1, branch), pr = COALESCE(?2, pr),
+		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+		WHERE id = ?3 AND (branch != COALESCE(?1, branch) OR pr != COALESCE(?2, pr))`, branch, pr, id); err != nil {
+		return fmt.Errorf("updating target %d git links: %w", id, err)
+	}
+	return nil
 }
 
 // UpdateTargetPriorityTx sets only a target's priority (high, medium, low)

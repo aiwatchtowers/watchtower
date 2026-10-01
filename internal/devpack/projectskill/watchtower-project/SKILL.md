@@ -18,8 +18,8 @@ At session start a hook prints the project brief: counts, the open part of the b
 - `project_board` — the target tree with ids, statuses and priorities (siblings sorted by priority, then status), comment counters, attached documents.
 - `update_project` — set the project description and/or its board language (see Board language).
 - `add_project_source` / `remove_project_source` — a source of kind `slack_channel`, `jira_project`, `confluence_space`, `person` or `link`.
-- `create_targets` — many targets in one call, all or nothing. Each item is `{key?, text, intent?, priority?, parent_id? | parent_key?, images?}`: `parent_id` points at an existing target, `parent_key` at another item's `key` in the same call; `priority` is `high`, `medium` (the default) or `low`; `images` are absolute paths of image files to attach (see Images).
-- `update_target` — status (`todo`, `in_progress`, `in_review`, `blocked`, `done`, `dismissed`), progress, title, intent, priority (`high`, `medium`, `low`); `add_images` (absolute paths) and `remove_image_ids` attach and detach images. Set a status only on a target without sub-targets: a parent's status follows its children by itself (see Rules).
+- `create_targets` — many targets in one call, all or nothing. Each item is `{key?, text, intent?, priority?, branch?, pr?, parent_id? | parent_key?, images?}`: `parent_id` points at an existing target, `parent_key` at another item's `key` in the same call; `priority` is `high`, `medium` (the default) or `low`; `branch`/`pr` link the git work (see "Keeping the board in step with git"); `images` are absolute paths of image files to attach (see Images).
+- `update_target` — status (`todo`, `in_progress`, `in_review`, `blocked`, `done`, `dismissed`), progress, title, intent, priority (`high`, `medium`, `low`), `branch` and `pr` (`""` clears one); `add_images` (absolute paths) and `remove_image_ids` attach and detach images. Set a status only on a target without sub-targets: a parent's status follows its children by itself (see Rules).
 - `get_target` — one target with its status history and its images (each with the `path` of Watchtower's copy — read it to look at the image).
 - `attach_document` — `rel_path` (relative to this folder, a `.md` or `.txt` file), `kind` (`spec`, `plan` or `doc`), optional `title` and `target_id`. Attaching a path that is already attached — imported ones included — marks it revised and tells the owner it is ready for review, so do that only after you actually revised it.
 - `list_comments` — by `target_id`, by `document_id`, or, by default, everything new for you.
@@ -67,6 +67,17 @@ When you are the controller executing a plan whose tasks are on the board:
 ## Images
 
 When a target comes from a message in which the owner shared an image — a screenshot of the bug, a mockup, a diagram — attach that image to the target (`images` in `create_targets`, or `add_images` on an existing target), so the context travels with it. Pass the file's absolute path: a file the owner dragged in or named, or the path Claude Code shows for a pasted image. If the image was pasted and you have no file path for it, say so in the terminal and ask the owner for the file, rather than describing the image in the intent. PNG, JPEG, GIF and WebP up to 5 MB each; Watchtower keeps its own copy, so the original may be moved or deleted afterwards. Detach an image (`remove_image_ids`) only when the owner asks or it clearly belongs to another target.
+
+## Keeping the board in step with git
+
+The board must never lag the work. Watchtower checks it against git: at the end of every turn a Stop hook compares the targets' branches with the default branch, and when they disagree it hands you the list before you may finish; the session brief shows the same drift (`watchtower project check --project <id>` prints it on demand). The check never fetches: after merging on GitHub, `git fetch` so it sees the merge.
+
+- **When you start work on a target**, set its `branch` with `update_target` (the plain local branch name, e.g. `feature/x` — no `origin/`) in the same call that sets it `in_progress`; once a pull request exists, set `pr` (its number or URL). A plan task done on the feature branch carries that branch too.
+- **After a merge**, walk the pull request's targets: every target whose work landed goes to `done`. Do not leave merged work `in_progress` or `in_review`.
+- **A target only partly done** when its branch merges: split it — `create_targets` under it one sub-target for what landed and one for what remains, set the landed one `done` and the remaining one `todo` (or `in_progress`); the parent then follows its children by itself. Move the branch to the remaining sub-target if work continues there, and clear it (`branch: ""`) from the landed one only if it would otherwise read as unmerged.
+- **When the hook reports drift**, fix the board with `update_target` / `create_targets` as the finding says, then finish. For a parent target, fix its sub-targets — its status follows them. If a target is deliberately kept open although its branch merged (a follow-up on the same branch name, say), clear its `branch` — never leave the drift standing.
+- **`done_but_unmerged`** (a done target whose branch is not in the default branch, and no open target still carries that branch) does not stop your turn: `git fetch` if it was merged on GitHub; otherwise merge it, or move the target back to `in_review` until it is merged.
+- **A `stale` finding** (in progress, nothing moved for days) is not a git conflict and does not stop your turn: move the target on if it is finished, or set it `blocked` with an `add_comment` saying what it waits on.
 
 ## Blocked, or an owner decision is needed
 

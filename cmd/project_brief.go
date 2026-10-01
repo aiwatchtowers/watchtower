@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"cmp"
+	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -16,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/db"
+	"watchtower/internal/projectcheck"
 	"watchtower/internal/tools"
 )
 
@@ -24,11 +26,15 @@ const (
 	// it to every session's context, whatever the board holds.
 	briefMaxChars  = 4000
 	briefLineChars = 240
+	// briefDriftBudget bounds the brief's offline board drift check (git
+	// only, PROJ-07), so a slow repository never stalls a session start.
+	briefDriftBudget = 4 * time.Second
 )
 
 var briefRules = []string{
 	"Board rules: set a target in_progress (update_target) before you work on it, in_review when its review starts and done once the review passes; ask the owner with add_comment instead of stopping.",
 	"Before revising an attached document call list_comments(document_id); resolve each comment you addressed (resolve_comment), then attach_document again.",
+	"Link work to git: set branch (and pr) on a target when you start it; after a merge, walk that PR's targets on (done, or split off what remains).",
 }
 
 var projectBriefCmd = &cobra.Command{
@@ -123,7 +129,10 @@ func briefFromDB(database *db.DB, p *db.Project) string {
 	for _, d := range docs {
 		byID[d.ID] = d
 	}
-	return renderProjectBrief(board, p, comments, byID, time.Now())
+	ctx, cancel := context.WithTimeout(context.Background(), briefDriftBudget)
+	defer cancel()
+	drift := projectcheck.Check(ctx, p.ID, board, projectcheck.Options{Folder: p.FolderPath}).Findings
+	return renderProjectBrief(board, p, comments, byID, drift, time.Now())
 }
 
 // briefUnavailable is the one-line brief for every failure.
@@ -131,12 +140,22 @@ func briefUnavailable(id int64, reason string) string {
 	return briefClip(fmt.Sprintf("Watchtower: project %d %s.", id, reason), briefLineChars)
 }
 
-// renderProjectBrief is the hook body: header, the open tree, the comments new
-// for the agent, the rules — at most briefMaxChars runes. Pure.
-func renderProjectBrief(board []db.BoardNode, p *db.Project, comments []db.ProjectComment, docs map[int64]db.ProjectDocument, now time.Time) string {
+// renderProjectBrief is the hook body: header, the board drift (when any),
+// the open tree, the comments new for the agent, the rules — at most
+// briefMaxChars runes. Pure.
+func renderProjectBrief(board []db.BoardNode, p *db.Project, comments []db.ProjectComment, docs map[int64]db.ProjectDocument, drift []projectcheck.Finding, now time.Time) string {
 	head := briefHeader(p, board, len(comments))
 	rules := strings.Join(briefRules, "\n")
 	budget := briefMaxChars - utf8.RuneCountInString(head) - utf8.RuneCountInString(rules) - 3 // three joining newlines
+	if len(drift) > 0 {
+		lines := make([]string, 0, len(drift))
+		for _, f := range drift {
+			lines = append(lines, "- "+briefClip(f.Line(), briefLineChars))
+		}
+		section := fitBriefSection("Board drift — fix it with update_target:", lines, budget/4, "drift findings (watchtower project check)")
+		head += "\n" + section
+		budget -= utf8.RuneCountInString(section) + 1
+	}
 	commentLines := briefCommentLines(comments, docs, boardTitles(board))
 	treeBudget := budget
 	if len(commentLines) > 0 {

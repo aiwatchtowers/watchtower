@@ -77,7 +77,8 @@ type ProjectInstallReport struct {
 // ProjectStatus is what is installed in a project folder right now.
 type ProjectStatus struct {
 	Skill       SkillStatus
-	Hook        bool
+	Hook        bool // the SessionStart hook (the brief)
+	StopHook    bool // the Stop hook (the board drift check, PROJ-07)
 	MCP         bool
 	ClaudeFound bool
 }
@@ -100,11 +101,15 @@ func projectSkill() Skill {
 	return Skill{Name: name, Content: string(body), SHA256: hex.EncodeToString(sum[:])}
 }
 
-// ProjectHookCommand is the SessionStart hook's command line. Claude Code
-// runs it through a shell, so a binary path with spaces (the CLI store sits
-// under "Application Support") is single-quoted.
+// ProjectHookCommand is the SessionStart hook's command line (the brief).
 func ProjectHookCommand(bin string, projectID int64) string {
-	return shellQuote(bin) + " project brief --project " + strconv.FormatInt(projectID, 10)
+	return sessionStartSpec.command(bin, projectID)
+}
+
+// ProjectStopHookCommand is the Stop hook's command line (the board drift
+// check, PROJ-07).
+func ProjectStopHookCommand(bin string, projectID int64) string {
+	return stopSpec.command(bin, projectID)
 }
 
 // ProjectMCPCommand is the registration the owner can run by hand when the
@@ -120,7 +125,7 @@ func ProjectMCPCommand(o ProjectInstallOptions) string {
 
 // InstallProject makes the folder ready for Claude Code: exclude lines
 // first (so nothing we write ever shows in git status), then the skill, the
-// SessionStart hook and the local MCP registration. Every step runs even
+// SessionStart and Stop hooks and the local MCP registration. Every step runs even
 // when an earlier one failed; the failures come back joined.
 func InstallProject(ctx context.Context, o ProjectInstallOptions) (ProjectInstallReport, error) {
 	if err := o.validate(); err != nil {
@@ -138,7 +143,7 @@ func InstallProject(ctx context.Context, o ProjectInstallOptions) (ProjectInstal
 	if rep.Skill, err = installSkill(o.skillsDir(), projectSkill()); err != nil {
 		errs = append(errs, err)
 	}
-	if rep.HookChanged, err = InstallSessionStartHook(o.Folder, o.hookCommand(), o.ProjectID); err != nil {
+	if rep.HookChanged, err = installProjectHooks(o); err != nil {
 		errs = append(errs, err)
 	}
 	if rep.MCPRegistered, err = registerProjectMCP(ctx, o); err != nil {
@@ -147,7 +152,7 @@ func InstallProject(ctx context.Context, o ProjectInstallOptions) (ProjectInstal
 	return rep, errors.Join(errs...)
 }
 
-// RemoveProject undoes InstallProject (PROJ-02): our hook, our un-edited
+// RemoveProject undoes InstallProject (PROJ-02): our two hooks, our un-edited
 // skill, the MCP registration, and the exclude line of every path that is
 // gone. What the owner owns stays (PROJ-04): an edited skill, other
 // settings — and the exclude line keeping a surviving file git-invisible.
@@ -159,7 +164,11 @@ func RemoveProject(ctx context.Context, o ProjectInstallOptions) error {
 		return folderGone(o)
 	}
 	var errs []error
-	if _, err := RemoveSessionStartHook(o.Folder, o.ProjectID); err != nil {
+	_, startErr := RemoveSessionStartHook(o.Folder, o.ProjectID)
+	if startErr != nil {
+		errs = append(errs, startErr)
+	}
+	if _, err := RemoveStopHook(o.Folder, o.ProjectID); err != nil && !bothMalformed(startErr, err) {
 		errs = append(errs, err)
 	}
 	if _, err := removeSkill(o.skillsDir(), projectSkill()); err != nil {
@@ -191,7 +200,11 @@ func StatusProject(ctx context.Context, o ProjectInstallOptions) (ProjectStatus,
 	if ps.Skill, err = statusSkill(o.skillsDir(), projectSkill()); err != nil {
 		errs = append(errs, err)
 	}
-	if ps.Hook, err = HasSessionStartHook(o.Folder, o.ProjectID); err != nil {
+	var startErr error
+	if ps.Hook, startErr = HasSessionStartHook(o.Folder, o.ProjectID); startErr != nil {
+		errs = append(errs, startErr)
+	}
+	if ps.StopHook, err = HasStopHook(o.Folder, o.ProjectID); err != nil && !bothMalformed(startErr, err) {
 		errs = append(errs, err)
 	}
 	ps.MCP, err = projectMCPRegistered(ctx, o)
@@ -222,8 +235,23 @@ func (o ProjectInstallOptions) skillsDir() string {
 	return filepath.Join(o.Folder, ".claude", "skills")
 }
 
-func (o ProjectInstallOptions) hookCommand() string {
-	return ProjectHookCommand(o.Bin, o.ProjectID)
+// bothMalformed: the second hook step hit the same malformed settings file
+// the first one already reported (eventGroupsOf refuses the whole file for
+// either event), so its error would only repeat it.
+func bothMalformed(first, second error) bool {
+	return errors.Is(first, ErrMalformedSettings) && errors.Is(second, ErrMalformedSettings)
+}
+
+// installProjectHooks installs the SessionStart and Stop hooks; changed is
+// true when either was added or repaired. A malformed settings file is
+// reported once, by the first install, and the second is not attempted.
+func installProjectHooks(o ProjectInstallOptions) (bool, error) {
+	started, err := InstallSessionStartHook(o.Folder, ProjectHookCommand(o.Bin, o.ProjectID), o.ProjectID)
+	if errors.Is(err, ErrMalformedSettings) {
+		return false, err
+	}
+	stopped, stopErr := InstallStopHook(o.Folder, ProjectStopHookCommand(o.Bin, o.ProjectID), o.ProjectID)
+	return started || stopped, errors.Join(err, stopErr)
 }
 
 func (o ProjectInstallOptions) mcpAddArgs() []string {

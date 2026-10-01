@@ -173,6 +173,10 @@ func printProjectLeftovers(w io.Writer, st devpack.ProjectStatus) {
 		fmt.Fprintln(w, "  still present: SessionStart hook")
 		left = true
 	}
+	if st.StopHook {
+		fmt.Fprintln(w, "  still present: Stop hook")
+		left = true
+	}
 	if st.MCP {
 		fmt.Fprintf(w, "  still registered: %s\n", devpack.ProjectMCPServerName)
 		left = true
@@ -190,6 +194,7 @@ type projectStatusJSON struct {
 	Skill       string `json:"skill"`
 	SkillPath   string `json:"skill_path"`
 	Hook        bool   `json:"hook"`
+	StopHook    bool   `json:"stop_hook"`
 	MCP         bool   `json:"mcp"`
 	ClaudeFound bool   `json:"claude_found"`
 }
@@ -209,12 +214,13 @@ func runProjectStatus(ctx context.Context, w io.Writer, p *db.Project, asJSON bo
 		return enc.Encode(projectStatusJSON{
 			ProjectID: p.ID, Folder: p.FolderPath,
 			Skill: string(st.Skill.State), SkillPath: st.Skill.Path,
-			Hook: st.Hook, MCP: st.MCP, ClaudeFound: st.ClaudeFound,
+			Hook: st.Hook, StopHook: st.StopHook, MCP: st.MCP, ClaudeFound: st.ClaudeFound,
 		})
 	}
 	fmt.Fprintf(w, "Project %d (%s):\n", p.ID, p.FolderPath)
 	fmt.Fprintf(w, "  skill    %s%s\n", st.Skill.State, skillStateNote(st.Skill.State))
 	fmt.Fprintf(w, "  hook     %v\n", st.Hook)
+	fmt.Fprintf(w, "  stop     %v\n", st.StopHook)
 	switch {
 	case !st.ClaudeFound:
 		fmt.Fprintln(w, "  mcp      unknown — claude CLI not found")

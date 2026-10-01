@@ -426,6 +426,8 @@ CREATE TABLE IF NOT EXISTS targets (
     project_id          INTEGER REFERENCES projects(id) ON DELETE CASCADE, -- set = lives only on that project's board (00081)
     status_actor        TEXT DEFAULT NULL  -- who makes this status write: agent|owner|system; cleared by the history trigger (00086)
                         CHECK(status_actor IS NULL OR status_actor IN ('agent','owner','system')),
+    branch              TEXT NOT NULL DEFAULT '',  -- project targets: the git branch carrying the work (00089)
+    pr                  TEXT NOT NULL DEFAULT '',  -- project targets: the pull request, a number or URL (00089)
     CHECK(status != 'in_review' OR project_id IS NOT NULL)  -- in_review exists only on a project board (00086)
 );
 CREATE INDEX IF NOT EXISTS idx_targets_level       ON targets(level);

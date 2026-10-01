@@ -15,13 +15,42 @@ import (
 )
 
 // ErrMalformedSettings means .claude/settings.local.json exists but is not
-// a JSON object whose hooks / hooks.SessionStart have the documented types.
+// a JSON object whose hooks / hooks.SessionStart / hooks.Stop have the
+// documented types.
 // The file is then never written (PROJ-04): the owner fixes it, not us.
 var ErrMalformedSettings = errors.New("malformed .claude/settings.local.json")
 
-// sessionStartHookTimeoutSec bounds the brief so a stuck DB can never stall
-// a Claude Code session start (`project brief` itself always exits 0).
-const sessionStartHookTimeoutSec = 10
+// hookSpec is one Claude Code hook event the project install owns an entry
+// in: the event name, the command suffix that recognises our entry for a
+// project (after the watchtower binary), and the entry's timeout.
+type hookSpec struct {
+	event      string
+	subcommand string // e.g. "project brief --project"; the project id follows
+	flags      string // appended after the id, e.g. " --stop-hook"
+	timeoutSec int
+}
+
+var (
+	// sessionStartSpec: the brief. The timeout bounds it so a stuck DB can
+	// never stall a Claude Code session start (`project brief` itself always
+	// exits 0).
+	sessionStartSpec = hookSpec{event: "SessionStart", subcommand: "project brief --project", timeoutSec: 10}
+	// stopSpec: the board drift check at the end of every agent turn
+	// (PROJ-07). `project check --stop-hook` bounds its own git work well
+	// under this timeout and always exits 0.
+	stopSpec = hookSpec{event: "Stop", subcommand: "project check --project", flags: " --stop-hook", timeoutSec: 15}
+)
+
+// command is the hook's command line for bin and projectID. Claude Code
+// runs it through a shell, so a binary path with spaces (the CLI store sits
+// under "Application Support") is single-quoted.
+func (h hookSpec) command(bin string, projectID int64) string {
+	return shellQuote(bin) + h.suffix(projectID)
+}
+
+func (h hookSpec) suffix(projectID int64) string {
+	return " " + h.subcommand + " " + strconv.FormatInt(projectID, 10) + h.flags
+}
 
 func settingsLocalPath(dir string) string {
 	return filepath.Join(dir, ".claude", "settings.local.json")
@@ -35,20 +64,30 @@ func settingsLocalPath(dir string) string {
 // Every other key, event and hook is preserved; the group omits a matcher so
 // it fires on startup, resume, clear and compact alike.
 func InstallSessionStartHook(dir, command string, projectID int64) (bool, error) {
+	return installHook(dir, sessionStartSpec, command, projectID)
+}
+
+// InstallStopHook is InstallSessionStartHook for the Stop hook that runs the
+// board drift check (PROJ-07), under the same PROJ-04 rules.
+func InstallStopHook(dir, command string, projectID int64) (bool, error) {
+	return installHook(dir, stopSpec, command, projectID)
+}
+
+func installHook(dir string, spec hookSpec, command string, projectID int64) (bool, error) {
 	file := settingsLocalPath(dir)
 	settings, mode, _, err := readSettings(file)
 	if err != nil {
 		return false, err
 	}
-	hooks, groups, err := sessionStartOf(settings, file)
+	hooks, groups, err := eventGroupsOf(settings, file, spec.event)
 	if err != nil {
 		return false, err
 	}
-	updated, changed := upsertOurHook(groups, projectID, command)
+	updated, changed := upsertOurHook(groups, spec, projectID, command)
 	if !changed {
 		return false, nil
 	}
-	hooks["SessionStart"] = updated
+	hooks[spec.event] = updated
 	settings["hooks"] = hooks
 	return true, writeSettings(file, settings, mode)
 }
@@ -59,20 +98,29 @@ func InstallSessionStartHook(dir, command string, projectID int64) (bool, error)
 // empty hooks object, and — when nothing at all is left — the file itself.
 // Anything else in the file stays.
 func RemoveSessionStartHook(dir string, projectID int64) (bool, error) {
+	return removeHook(dir, sessionStartSpec, projectID)
+}
+
+// RemoveStopHook is RemoveSessionStartHook for the Stop hook (PROJ-02/04).
+func RemoveStopHook(dir string, projectID int64) (bool, error) {
+	return removeHook(dir, stopSpec, projectID)
+}
+
+func removeHook(dir string, spec hookSpec, projectID int64) (bool, error) {
 	file := settingsLocalPath(dir)
 	settings, mode, existed, err := readSettings(file)
 	if err != nil || !existed {
 		return false, err
 	}
-	hooks, groups, err := sessionStartOf(settings, file)
+	hooks, groups, err := eventGroupsOf(settings, file, spec.event)
 	if err != nil {
 		return false, err
 	}
-	kept, changed := withoutOurHook(groups, projectID)
+	kept, changed := withoutOurHook(groups, spec, projectID)
 	if !changed {
 		return false, nil
 	}
-	pruneEmpty(settings, hooks, kept)
+	pruneEmpty(settings, hooks, spec.event, kept)
 	if len(settings) == 0 {
 		if err := os.Remove(file); err != nil {
 			return false, fmt.Errorf("removing %s: %w", file, err)
@@ -86,16 +134,25 @@ func RemoveSessionStartHook(dir string, projectID int64) (bool, error) {
 // projectID (looksLikeOurHook) is installed in dir's
 // .claude/settings.local.json.
 func HasSessionStartHook(dir string, projectID int64) (bool, error) {
+	return hasHook(dir, sessionStartSpec, projectID)
+}
+
+// HasStopHook is HasSessionStartHook for the Stop hook.
+func HasStopHook(dir string, projectID int64) (bool, error) {
+	return hasHook(dir, stopSpec, projectID)
+}
+
+func hasHook(dir string, spec hookSpec, projectID int64) (bool, error) {
 	file := settingsLocalPath(dir)
 	settings, _, existed, err := readSettings(file)
 	if err != nil || !existed {
 		return false, err
 	}
-	_, groups, err := sessionStartOf(settings, file)
+	_, groups, err := eventGroupsOf(settings, file, spec.event)
 	if err != nil {
 		return false, err
 	}
-	return hasOurHook(groups, projectID), nil
+	return hasOurHook(groups, spec, projectID), nil
 }
 
 // readSettings decodes file as one JSON object. A missing or whitespace-only
@@ -132,9 +189,21 @@ func readSettings(file string) (map[string]any, os.FileMode, bool, error) {
 	return obj, info.Mode().Perm(), true, nil
 }
 
-// sessionStartOf returns the hooks object (a fresh one when absent, not yet
-// attached) and its SessionStart groups, refusing a shape it does not know.
-func sessionStartOf(settings map[string]any, file string) (map[string]any, []any, error) {
+// eventGroupsOf returns the hooks object (a fresh one when absent, not yet
+// attached) and its groups for event, refusing a shape it does not know. The
+// whole file counts as malformed when any event we own an entry in has the
+// wrong shape, so a file one install step refuses is refused — and left
+// byte-identical — by every step (PROJ-04).
+func eventGroupsOf(settings map[string]any, file, event string) (map[string]any, []any, error) {
+	for _, spec := range []hookSpec{sessionStartSpec, stopSpec} {
+		if _, _, err := rawEventGroups(settings, file, spec.event); err != nil {
+			return nil, nil, err
+		}
+	}
+	return rawEventGroups(settings, file, event)
+}
+
+func rawEventGroups(settings map[string]any, file, event string) (map[string]any, []any, error) {
 	hooks := map[string]any{}
 	if raw, ok := settings["hooks"]; ok {
 		m, isObj := raw.(map[string]any)
@@ -143,18 +212,18 @@ func sessionStartOf(settings map[string]any, file string) (map[string]any, []any
 		}
 		hooks = m
 	}
-	raw, ok := hooks["SessionStart"]
+	raw, ok := hooks[event]
 	if !ok {
 		return hooks, nil, nil
 	}
 	groups, isArr := raw.([]any)
 	if !isArr {
-		return nil, nil, fmt.Errorf("%w: %s: \"hooks.SessionStart\" is not an array", ErrMalformedSettings, file)
+		return nil, nil, fmt.Errorf("%w: %s: \"hooks.%s\" is not an array", ErrMalformedSettings, file, event)
 	}
 	return hooks, groups, nil
 }
 
-// groupHooks unpacks one SessionStart group; ok is false for any group whose
+// groupHooks unpacks one hook group; ok is false for any group whose
 // shape is not {"hooks": [...]} — such a group is never ours and is kept.
 func groupHooks(g any) (map[string]any, []any, bool) {
 	m, ok := g.(map[string]any)
@@ -165,18 +234,18 @@ func groupHooks(g any) (map[string]any, []any, bool) {
 	return m, hs, ok
 }
 
-// looksLikeOurHook reports whether cmd is our SessionStart hook command for
+// looksLikeOurHook reports whether cmd is spec's hook command for
 // projectID, recognised independent of which watchtower binary wrote it
 // (I2/PROJ-04): a stale entry installed from the CLI-store path and a fresh
 // one installed from PATH must both be recognised as ours, or an install
 // from a second binary duplicates the hook and a delete orphans the first
 // entry. After stripping an optional single-quoted binary token
-// (ProjectHookCommand's only quoting style — see unquoteShellSingle), the
-// command must end in exactly " project brief --project <projectID>", and
-// the binary's basename must be "watchtower".
-func looksLikeOurHook(cmd string, projectID int64) bool {
-	suffix := " project brief --project " + strconv.FormatInt(projectID, 10)
-	bin, ok := strings.CutSuffix(cmd, suffix)
+// (hookSpec.command's only quoting style — see unquoteShellSingle), the
+// command must end in exactly spec's suffix — e.g.
+// " project brief --project <projectID>" — and the binary's basename must
+// be "watchtower".
+func looksLikeOurHook(cmd string, spec hookSpec, projectID int64) bool {
+	bin, ok := strings.CutSuffix(cmd, spec.suffix(projectID))
 	if !ok || bin == "" {
 		return false
 	}
@@ -193,22 +262,22 @@ func unquoteShellSingle(s string) string {
 	return strings.ReplaceAll(s[1:len(s)-1], `'\''`, "'")
 }
 
-func isOurHook(h any, projectID int64) bool {
+func isOurHook(h any, spec hookSpec, projectID int64) bool {
 	m, ok := h.(map[string]any)
 	if !ok {
 		return false
 	}
 	cmd, ok := m["command"].(string)
-	return ok && looksLikeOurHook(cmd, projectID)
+	return ok && looksLikeOurHook(cmd, spec, projectID)
 }
 
-func hasOurHook(groups []any, projectID int64) bool {
+func hasOurHook(groups []any, spec hookSpec, projectID int64) bool {
 	for _, g := range groups {
 		_, hs, ok := groupHooks(g)
 		if !ok {
 			continue
 		}
-		if slices.ContainsFunc(hs, func(h any) bool { return isOurHook(h, projectID) }) {
+		if slices.ContainsFunc(hs, func(h any) bool { return isOurHook(h, spec, projectID) }) {
 			return true
 		}
 	}
@@ -221,7 +290,7 @@ func hasOurHook(groups []any, projectID int64) bool {
 // than one, but a hand-edited file could hold a leftover) is dropped as a
 // duplicate. Absent any match, a new group is appended. changed is false
 // only when exactly one matching entry already ran command.
-func upsertOurHook(groups []any, projectID int64, command string) ([]any, bool) {
+func upsertOurHook(groups []any, spec hookSpec, projectID int64, command string) ([]any, bool) {
 	found := false
 	changed := false
 	out := make([]any, 0, len(groups))
@@ -234,7 +303,7 @@ func upsertOurHook(groups []any, projectID int64, command string) ([]any, bool) 
 		rest := make([]any, 0, len(hs))
 		groupChanged := false
 		for _, h := range hs {
-			if !isOurHook(h, projectID) {
+			if !isOurHook(h, spec, projectID) {
 				rest = append(rest, h)
 				continue
 			}
@@ -275,7 +344,7 @@ func upsertOurHook(groups []any, projectID int64, command string) ([]any, bool) 
 		out = append(out, map[string]any{"hooks": []any{map[string]any{
 			"type":    "command",
 			"command": command,
-			"timeout": sessionStartHookTimeoutSec,
+			"timeout": spec.timeoutSec,
 		}}})
 		changed = true
 	}
@@ -285,7 +354,7 @@ func upsertOurHook(groups []any, projectID int64, command string) ([]any, bool) 
 // withoutOurHook filters our hook objects (isOurHook, by projectID) out of
 // every group. A group that still holds an owner hook survives (copied, so
 // the input is untouched); a group that held only ours is dropped.
-func withoutOurHook(groups []any, projectID int64) ([]any, bool) {
+func withoutOurHook(groups []any, spec hookSpec, projectID int64) ([]any, bool) {
 	kept := make([]any, 0, len(groups))
 	changed := false
 	for _, g := range groups {
@@ -294,7 +363,7 @@ func withoutOurHook(groups []any, projectID int64) ([]any, bool) {
 			kept = append(kept, g)
 			continue
 		}
-		rest := slices.DeleteFunc(slices.Clone(hs), func(h any) bool { return isOurHook(h, projectID) })
+		rest := slices.DeleteFunc(slices.Clone(hs), func(h any) bool { return isOurHook(h, spec, projectID) })
 		if len(rest) == len(hs) {
 			kept = append(kept, g)
 			continue
@@ -313,13 +382,13 @@ func withoutOurHook(groups []any, projectID int64) ([]any, bool) {
 	return kept, changed
 }
 
-// pruneEmpty writes kept back as hooks.SessionStart, dropping each level
-// that became empty.
-func pruneEmpty(settings, hooks map[string]any, kept []any) {
+// pruneEmpty writes kept back as hooks.<event>, dropping each level that
+// became empty.
+func pruneEmpty(settings, hooks map[string]any, event string, kept []any) {
 	if len(kept) == 0 {
-		delete(hooks, "SessionStart")
+		delete(hooks, event)
 	} else {
-		hooks["SessionStart"] = kept
+		hooks[event] = kept
 	}
 	if len(hooks) == 0 {
 		delete(settings, "hooks")
