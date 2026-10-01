@@ -193,7 +193,7 @@ final class ProjectsViewModelTests: XCTestCase {
             ["project", "create"], ["integrate", "claude-code"], ["integrate", "status"]
         ])
         XCTAssertEqual(vm.selectedProjectID, id)
-        XCTAssertEqual(vm.pane, .terminal)
+        guard case .session = vm.layout.primary else { return XCTFail("the setup session goes on screen") }
         XCTAssertEqual(announced, [id])
         XCTAssertNil(vm.errorMessage)
         XCTAssertEqual(vm.installStatus[id]?.needsRepair, false)
@@ -347,7 +347,7 @@ final class ProjectsViewModelTests: XCTestCase {
         let vm = makeVM()
         vm.reveal(ProjectRoute(projectID: 4, pane: .documents, subjectID: 9))
         XCTAssertEqual(vm.selectedProjectID, 4)
-        XCTAssertEqual(vm.pane, .documents)
+        XCTAssertEqual(vm.layout.visiblePanes, [.documents])
     }
 
     /// House rule: an async operation started from a screen survives leaving
@@ -523,8 +523,8 @@ final class ProjectsViewModelTests: XCTestCase {
         await vm.openDocument(doc)
         let opened = try XCTUnwrap(vm.documentViewModel)
         XCTAssertFalse(vm.isRevised(doc))
-        vm.pane = .terminal
-        vm.pane = .documents
+        vm.layout.show(.board)
+        vm.layout.show(.documents)
         XCTAssertTrue(vm.documentViewModel === opened)
         XCTAssertEqual(opened.rendered?.text, "Plan\n\n")
         vm.closeDocument()
@@ -605,7 +605,7 @@ final class ProjectsViewModelTests: XCTestCase {
         vm.isTabOnScreen = { onScreen }
         await vm.reload()
         vm.selectedProjectID = p
-        vm.pane = .documents
+        vm.layout.show(.documents)
         await vm.loadDocuments()
         await vm.openDocument(try XCTUnwrap(vm.documents.first?.document))
         func unread() throws -> Int {
@@ -624,11 +624,11 @@ final class ProjectsViewModelTests: XCTestCase {
         XCTAssertEqual(try unread(), 1, "not on screen: the reply stays unread")
 
         onScreen = true
-        vm.pane = .board
+        vm.layout.show(.board)
         await vm.refreshOnPoll()
         XCTAssertEqual(try unread(), 1, "another pane: the document is not on screen")
 
-        vm.pane = .documents
+        vm.layout.show(.documents)
         await vm.refreshOnPoll()
         XCTAssertEqual(try unread(), 0, "on screen: marked read like the open path")
         XCTAssertEqual(vm.summaries.first?.unreadAgentComments, 0, "the list reloads after marking")

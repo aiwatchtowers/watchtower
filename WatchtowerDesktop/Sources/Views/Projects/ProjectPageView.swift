@@ -2,8 +2,8 @@ import AppKit
 import SwiftUI
 import WatchtowerCore
 
-/// One project: header (folder, install status, Repair) and the Terminal |
-/// Board | Documents panes (spec §6.1).
+/// One project: header (folder, install status, Repair, Split) over its
+/// workspace — one pane or a split (spec 2026-09-30-project-workspace-sessions §3).
 struct ProjectPageView: View {
     @Bindable var vm: ProjectsViewModel
     let project: Project
@@ -15,7 +15,17 @@ struct ProjectPageView: View {
         VStack(spacing: 0) {
             header
             Divider()
-            paneContent
+            // Session actions start from any pane (a pane picker, Open
+            // terminal): their errors show here, once, whatever is on screen.
+            if let error = vm.sessionErrors[project.id] {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+                Divider()
+            }
+            WorkspaceAreaView(vm: vm, project: project)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .task(id: project.id) { await vm.refreshInstallStatus(projectID: project.id) }
@@ -87,11 +97,7 @@ struct ProjectPageView: View {
                 Label("Delete…", systemImage: "trash")
             }
             .disabled(vm.deletingProjectID != nil)
-            Picker("", selection: $vm.pane) {
-                ForEach(ProjectPane.allCases, id: \.self) { Text($0.title).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .frame(width: 280)
+            splitToggle
         }
         .padding(10)
     }
@@ -134,17 +140,13 @@ struct ProjectPageView: View {
             }
     }
 
-    @ViewBuilder
-    private var paneContent: some View {
-        switch vm.pane {
-        case .terminal:
-            ProjectTerminalView(project: project)
-                .id(project.id)
-        case .board:
-            ProjectBoardView(projectID: project.id)
-                .id(project.id)
-        case .documents:
-            ProjectDocumentsView(vm: vm)
+    private var splitToggle: some View {
+        let isSplit = vm.layout(projectID: project.id).isSplit
+        return Button {
+            vm.toggleSplit(projectID: project.id)
+        } label: {
+            Label(isSplit ? "Single Pane" : "Split", systemImage: isSplit ? "rectangle" : "rectangle.split.2x1")
         }
+        .help(isSplit ? "Show one pane" : "Show two panes side by side")
     }
 }

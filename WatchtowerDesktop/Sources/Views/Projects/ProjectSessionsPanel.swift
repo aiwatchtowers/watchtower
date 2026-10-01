@@ -26,9 +26,6 @@ struct ProjectSessionsPanel: View {
                 }
             }
             .panelListStyle()
-            if let error = vm.sessionErrors[project.id] {
-                Text(error).font(.caption).foregroundStyle(.red).padding(8)
-            }
         }
         .task(id: project.id) { await vm.loadSessions(projectID: project.id) }
     }

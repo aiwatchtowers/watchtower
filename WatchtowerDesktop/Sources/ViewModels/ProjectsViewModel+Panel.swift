@@ -23,27 +23,18 @@ extension ProjectsViewModel {
         terminalCenter?.liveIDs.contains(session.id) ?? false
     }
 
-    /// The session the project's terminal pane shows: the one last opened
-    /// while it is open (so a session that exited keeps its exit bar on
-    /// screen), else the most recently focused live one, else the most
-    /// recently active open row.
-    func shownSession(projectID: Int64) -> TerminalSession? {
-        let rows = terminalSessions[projectID] ?? []
-        if let id = shownSessionIDs[projectID], let row = rows.first(where: { $0.id == id && !$0.isClosed }) {
-            return row
-        }
-        return terminalCenter?.activeSession(projectID: projectID) ?? rows.first { !$0.isClosed }
+    /// A session pane's row; nil once the row is gone (the next load drops
+    /// it from the layout).
+    func session(_ id: Int64, projectID: Int64) -> TerminalSession? {
+        terminalSessions[projectID]?.first { $0.id == id }
     }
 
-    /// What level 2 highlights: the pane on screen, and for the terminal
-    /// pane the session it shows.
+    /// What level 2 highlights: the expanded pane, else the pane the last
+    /// panel click filled (the secondary of a split), else the only one.
     var panelSelection: WorkspacePane? {
         guard let drilledProjectID else { return nil }
-        switch pane {
-        case .board: return .board
-        case .documents: return .documents
-        case .terminal: return shownSession(projectID: drilledProjectID).map { .session($0.id) }
-        }
+        let layout = layout(projectID: drilledProjectID)
+        return layout.expanded ?? layout.secondary ?? layout.primary
     }
 
     /// A level-1 project click: selects it, which drills into it (the
@@ -57,17 +48,13 @@ extension ProjectsViewModel {
     func showFromPanel(_ item: WorkspacePane) async {
         guard let projectID = drilledProjectID else { return }
         switch item {
-        case .board:
-            showInLayout(.board, projectID: projectID)
-            pane = .board
-        case .documents:
-            showInLayout(.documents, projectID: projectID)
-            pane = .documents
+        case .board, .documents:
+            showInLayout(item, projectID: projectID)
         case let .session(id):
-            pane = .terminal
             // The list may not be loaded yet (the panel loads it on appear).
+            // A failed load already reports itself; the row is not "gone".
             if terminalSessions[projectID]?.contains(where: { $0.id == id }) != true {
-                await loadSessions(projectID: projectID)
+                guard await loadSessions(projectID: projectID) else { return }
             }
             guard let session = terminalSessions[projectID]?.first(where: { $0.id == id }) else {
                 sessionActionErrors[projectID] = "That session no longer exists."
@@ -78,18 +65,82 @@ extension ProjectsViewModel {
     }
 
     /// Level 2's "New session": a fresh `claude` session of the drilled
-    /// project, shown in the terminal pane.
+    /// project, put on screen like a panel click.
     func newPanelSession() async {
         guard let projectID = drilledProjectID else { return }
-        pane = .terminal
         await newSession(projectID: projectID)
     }
 
-    /// Puts `sessionID` in the project's terminal pane — e.g. the session a
-    /// Send comments line was just pasted into, so the owner sees it land.
+    /// Puts `sessionID` on screen the way `Placement.keeping(.documents)`
+    /// does — the session a Send comments line was just pasted into, so the
+    /// owner sees it land: beside the document in a split (already visible →
+    /// nothing moves), in its place in a single pane.
     func showTerminal(sessionID: Int64, projectID: Int64) {
-        shownSessionIDs[projectID] = sessionID
-        pane = .terminal
+        var updated = layout(projectID: projectID)
+        updated.reveal(.session(sessionID), keeping: .documents)
+        setLayout(updated, projectID: projectID)
+    }
+
+    // MARK: - Main area (single / split / expand)
+
+    /// The page's Split toggle. A split's second pane is Board when the
+    /// first is a session, else the active live session, else whichever of
+    /// Board and Documents is not already shown. Nothing starts.
+    func toggleSplit(projectID: Int64) {
+        var updated = layout(projectID: projectID)
+        if updated.isSplit {
+            updated.unsplit()
+        } else if case .session = updated.primary {
+            updated.split(with: .board)
+        } else if let id = activeSessionID(projectID: projectID) {
+            updated.split(with: .session(id))
+        } else {
+            updated.split(with: updated.primary == .board ? .documents : .board)
+        }
+        setLayout(updated, projectID: projectID)
+    }
+
+    /// A pane's own picker: `slot` shows `item` instead. A session is opened
+    /// there (reopened if closed, resumed if not running).
+    func showInPane(_ slot: WorkspacePane, item: WorkspacePane, projectID: Int64) async {
+        guard case let .session(id) = item else {
+            var updated = layout(projectID: projectID)
+            updated.replace(slot, with: item)
+            setLayout(updated, projectID: projectID)
+            return
+        }
+        if session(id, projectID: projectID) == nil {
+            guard await loadSessions(projectID: projectID) else { return }
+        }
+        guard let row = session(id, projectID: projectID) else {
+            sessionActionErrors[projectID] = "That session no longer exists."
+            return
+        }
+        await open(row, placement: .replacing(slot))
+    }
+
+    /// A pane picker's "New session": starts one in that pane.
+    func newSession(inPane slot: WorkspacePane, projectID: Int64) async {
+        await newSession(projectID: projectID, placement: .replacing(slot))
+    }
+
+    func toggleExpand(_ pane: WorkspacePane, projectID: Int64) {
+        var updated = layout(projectID: projectID)
+        updated.toggleExpand(pane)
+        setLayout(updated, projectID: projectID)
+    }
+
+    func closePane(_ pane: WorkspacePane, projectID: Int64) {
+        var updated = layout(projectID: projectID)
+        updated.remove(pane)
+        setLayout(updated, projectID: projectID)
+    }
+
+    /// The divider's position, saved when a drag ends.
+    func setDividerFraction(_ fraction: Double, projectID: Int64) {
+        var updated = layout(projectID: projectID)
+        updated.setDividerFraction(fraction)
+        setLayout(updated, projectID: projectID)
     }
 
     /// A standalone terminal takes the whole page, single pane (spec §3).

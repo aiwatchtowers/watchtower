@@ -221,16 +221,17 @@ struct ProjectDocumentsView: View {
         let target = center.activeSession(projectID: docVM.project.id)
         let result = target.map { center.sendPrompt(line, sessionID: $0.id) } ?? .noSession
         delivery = result
-        // The line is pasted or copied, never submitted (I1): show that
-        // session in the Terminal pane so the owner sees it land (or pastes
-        // it) and presses Return themselves, instead of leaving it silently
-        // queued off-screen.
+        // The line is pasted or copied, never submitted (I1): put that
+        // session on screen — beside the document in a split, where nothing
+        // moves if it is already shown — so the owner sees it land (or
+        // pastes it) and presses Return themselves.
         if result != .noSession, let target { vm.showTerminal(sessionID: target.id, projectID: docVM.project.id) }
     }
 
     private func openTerminal() {
-        if let project = vm.selectedProject { Task { await vm.openMostRecentSession(project: project) } }
-        vm.pane = .terminal
+        if let project = vm.selectedProject {
+            Task { await vm.openMostRecentSession(project: project, placement: .keeping(.documents)) }
+        }
         delivery = nil
     }
 }

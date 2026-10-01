@@ -65,6 +65,65 @@ package struct WorkspaceLayout: Codable, Equatable, Sendable {
         }
     }
 
+    /// A pane's own picker: `slot` shows `pane` instead. A pane already in
+    /// the other slot swaps places with it; an expansion follows its slot.
+    /// Returns false when `slot` is in neither slot (nothing changes).
+    @discardableResult
+    package mutating func replace(_ slot: WorkspacePane, with pane: WorkspacePane) -> Bool {
+        guard slot != pane else { return primary == slot || secondary == slot }
+        let wasExpanded = expanded == slot
+        if primary == slot {
+            if secondary == pane { secondary = slot }
+            primary = pane
+        } else if secondary == slot {
+            if primary == pane { primary = slot }
+            secondary = pane
+        } else {
+            return false
+        }
+        if wasExpanded { expanded = pane }
+        return true
+    }
+
+    /// A split pane's close button: the other pane stays, alone. A single
+    /// pane cannot be removed.
+    package mutating func remove(_ pane: WorkspacePane) {
+        guard isSplit else { return }
+        if secondary == pane {
+            unsplit()
+        } else if primary == pane, let next = secondary {
+            primary = next
+            unsplit()
+        }
+    }
+
+    /// Send comments: puts `pane` on screen without hiding `kept` (the pane
+    /// the owner sent from). Visible already → nothing moves; a split
+    /// replaces the other pane; a single pane switches to it.
+    package mutating func reveal(_ pane: WorkspacePane, keeping kept: WorkspacePane) {
+        if visiblePanes.contains(pane) { return }
+        if pane == primary || pane == secondary {
+            expanded = nil
+        } else if isSplit {
+            expanded = nil
+            replace(primary == kept ? secondary ?? primary : primary, with: pane)
+        } else {
+            primary = pane
+        }
+    }
+
+    package mutating func setDividerFraction(_ fraction: Double) {
+        dividerFraction = min(max(fraction, Self.dividerRange.lowerBound), Self.dividerRange.upperBound)
+    }
+
+    /// The sessions in either slot, primary first.
+    package var sessionIDs: [Int64] {
+        [primary, secondary].compactMap { pane in
+            if case let .session(id)? = pane { return id }
+            return nil
+        }
+    }
+
     /// A deleted session never stays in the layout.
     package mutating func forgetSession(_ id: Int64, fallback: WorkspacePane) {
         let gone = WorkspacePane.session(id)
@@ -91,7 +150,7 @@ package struct WorkspaceLayout: Codable, Equatable, Sendable {
         if let expanded = layout.expanded, !layout.isSplit || (expanded != layout.primary && expanded != layout.secondary) {
             layout.expanded = nil
         }
-        layout.dividerFraction = min(max(layout.dividerFraction, dividerRange.lowerBound), dividerRange.upperBound)
+        layout.setDividerFraction(layout.dividerFraction)
         return layout
     }
 }

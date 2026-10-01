@@ -33,7 +33,6 @@ final class ProjectsViewModel {
             }
         }
     }
-    var pane: ProjectPane = .terminal
     /// The document the documents pane should open next (a deep link); the
     /// pane consumes and clears it.
     var pendingDocumentID: Int64?
@@ -89,9 +88,6 @@ final class ProjectsViewModel {
     /// Always nil or `selectedProjectID`: selecting a project drills into
     /// it, Back sets it to nil.
     var drilledProjectID: Int64?
-    /// Per project, the session last opened: its terminal pane keeps showing
-    /// it (exit bar included) until it is closed.
-    var shownSessionIDs: [Int64: Int64] = [:]
     /// The standalone terminal on screen; mutually exclusive with
     /// `selectedProjectID` (setting a project clears it).
     var selectedStandaloneID: Int64?
@@ -121,6 +117,16 @@ final class ProjectsViewModel {
     @ObservationIgnored var titleTask: Task<Void, Never>?
     /// Standalone list reads started; only the latest one is applied.
     @ObservationIgnored var standaloneLoads = 0
+    /// Per project, session list reads started and the newest one applied.
+    struct SessionLoads {
+        var started = 0
+        var applied = 0
+    }
+    @ObservationIgnored var projectLoads: [Int64: SessionLoads] = [:]
+    /// Reads a project's sessions. A seam for tests (overlapping reads).
+    @ObservationIgnored lazy var readProjectSessions: (Int64) async throws -> [TerminalSession] = { [dbPool] projectID in
+        try await dbPool.read { try TerminalSessionQueries.fetchForProject($0, projectID: projectID) }
+    }
     /// The title poll's wait. A seam for tests.
     @ObservationIgnored var titleSleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
 
@@ -204,7 +210,6 @@ final class ProjectsViewModel {
         for id in Self.vanished(previous: previousIDs, current: summaries.map(\.id)) {
             await closeTerminal?(id)
             terminalSessions[id] = nil
-            shownSessionIDs[id] = nil
             // Deleted elsewhere (CLI): never leave its id selected.
             if selectedProjectID == id { selectedProjectID = nil }
         }
@@ -256,7 +261,7 @@ final class ProjectsViewModel {
     func refreshOnPoll() async {
         if selectedProjectID != nil {
             await loadDocuments()
-            await documentViewModel?.refreshThreads(markRead: pane == .documents && isTabOnScreen())
+            await documentViewModel?.refreshThreads(markRead: layout.visiblePanes.contains(.documents) && isTabOnScreen())
         }
         await reload()
     }
@@ -277,10 +282,30 @@ final class ProjectsViewModel {
         return previous.filter { !now.contains($0) }
     }
 
+    /// A deep link puts its pane on screen the way a panel click does.
     func reveal(_ route: ProjectRoute) {
         selectedProjectID = route.projectID
-        pane = route.pane
+        switch route.pane {
+        case .board: layout.show(.board)
+        case .documents: layout.show(.documents)
+        case .terminal:
+            let projectID = route.projectID
+            Task { await revealTerminal(projectID: projectID) }
+        }
         pendingDocumentID = route.pane == .documents ? route.subjectID : nil
+    }
+
+    /// The live session, else the most recent open one (its pane offers
+    /// Resume) — read first, since a project just selected has no list yet.
+    func revealTerminal(projectID: Int64) async {
+        if terminalSessions[projectID] == nil {
+            guard await loadSessions(projectID: projectID) else { return }
+        }
+        let id = activeSessionID(projectID: projectID) ?? terminalSessions[projectID]?.first { !$0.isClosed }?.id
+        guard let id else { return }
+        var updated = layout(projectID: projectID)
+        updated.show(.session(id))
+        setLayout(updated, projectID: projectID)
     }
 
     /// New project… → `project create`, then the folder install. A failed
@@ -314,7 +339,6 @@ final class ProjectsViewModel {
         }
         await reload()
         selectedProjectID = created.id
-        pane = .terminal
         await refreshInstallStatus(projectID: created.id)
         guard let project = selectedProject else { return }
         onProjectCreated?(project, installed)
