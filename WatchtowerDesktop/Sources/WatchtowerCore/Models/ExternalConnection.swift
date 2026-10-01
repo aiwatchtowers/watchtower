@@ -22,4 +22,10 @@ package struct ExternalConnection: FetchableRecord, Identifiable, Equatable {
     }
 
     package var isOK: Bool { status == "ok" }
+
+    /// Only a new sign-in fixes it (QC-04: invalid_grant, no refresh token, a
+    /// rejected client). Any other non-ok status ("error": a network blip, a
+    /// 5xx, the tool list) is retried by the next chat or fixed elsewhere, so
+    /// the card offers "Sign in again" for this state alone.
+    package var needsSignIn: Bool { status == "revoked" }
 }

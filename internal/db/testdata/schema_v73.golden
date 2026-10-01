@@ -927,6 +927,15 @@ fetched_at TEXT NOT NULL DEFAULT '',
 PRIMARY KEY (provider, ext_user_id)
 )
 
+table	external_connection_tools
+CREATE TABLE external_connection_tools (
+connection_id INTEGER PRIMARY KEY REFERENCES external_connections(id) ON DELETE CASCADE,
+tools_json TEXT NOT NULL DEFAULT '',
+listed_at TEXT NOT NULL DEFAULT '',
+allow_json TEXT,
+list_failed_at TEXT NOT NULL DEFAULT ''
+)
+
 table	external_connections
 CREATE TABLE external_connections (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2945,6 +2954,13 @@ END
 2	display_name	TEXT	notnull=1	dflt=''	pk=0
 3	email	TEXT	notnull=1	dflt=''	pk=0
 4	fetched_at	TEXT	notnull=1	dflt=''	pk=0
+
+## external_connection_tools
+0	connection_id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	tools_json	TEXT	notnull=1	dflt=''	pk=0
+2	listed_at	TEXT	notnull=1	dflt=''	pk=0
+3	allow_json	TEXT	notnull=0	dflt=NULL	pk=0
+4	list_failed_at	TEXT	notnull=1	dflt=''	pk=0
 
 ## external_connections
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1

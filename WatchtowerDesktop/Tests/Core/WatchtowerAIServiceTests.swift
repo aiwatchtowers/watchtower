@@ -92,7 +92,46 @@ final class WatchtowerAIServiceTests: XCTestCase {
             toolMode: nil
         )
 
-        XCTAssertEqual(args, ["ai", "query", "--system-prompt", "S", "--provider", "codex", "--", "-v looks wrong"])
+        XCTAssertEqual(args, ["ai", "query", "--system-prompt-stdin", "--provider", "codex", "--", "-v looks wrong"])
+    }
+
+    /// The system prompt carries the chat's private context: it travels on
+    /// stdin, never as an argv value.
+    func testSystemPromptNeverOnArgv() {
+        let secret = "PRIVATE-CONTEXT-7c1e"
+        let args = WatchtowerAIService.buildArgs(
+            prompt: "hi", systemPrompt: secret, sessionID: nil, dbPath: nil, model: nil, provider: nil, toolMode: nil
+        )
+        XCTAssertFalse(args.contains { $0.contains(secret) })
+        XCTAssertFalse(args.contains("--system-prompt"))
+        XCTAssertTrue(args.contains("--system-prompt-stdin"))
+        XCTAssertEqual(WatchtowerAIService.stdinPayload(systemPrompt: secret), Data(secret.utf8))
+    }
+
+    /// The payload reaches the reader and the pipe is closed (the CLI's
+    /// io.ReadAll would otherwise wait forever).
+    func testFeedStdinWritesPayloadAndCloses() {
+        let pipe = Pipe()
+        WatchtowerAIService.feedStdin(pipe, payload: Data("system prompt".utf8))
+        let read = pipe.fileHandleForReading.readDataToEndOfFile()
+        XCTAssertEqual(String(data: read, encoding: .utf8), "system prompt")
+    }
+
+    /// A CLI that exited before reading must not take the app down: the
+    /// write fails with EPIPE (no SIGPIPE) and is dropped.
+    func testFeedStdinSurvivesAClosedReader() {
+        let pipe = Pipe()
+        try? pipe.fileHandleForReading.close()
+        WatchtowerAIService.feedStdin(pipe, payload: Data(repeating: 0x61, count: 1 << 20))
+    }
+
+    func testNoSystemPromptMeansNoStdinFlagOrPayload() {
+        let args = WatchtowerAIService.buildArgs(
+            prompt: "hi", systemPrompt: "", sessionID: nil, dbPath: nil, model: nil, provider: nil, toolMode: nil
+        )
+        XCTAssertFalse(args.contains("--system-prompt-stdin"))
+        XCTAssertNil(WatchtowerAIService.stdinPayload(systemPrompt: ""))
+        XCTAssertNil(WatchtowerAIService.stdinPayload(systemPrompt: nil))
     }
 
     /// AGENT-04: no toolMode → no --tools flag, ever. And the retired

@@ -6,12 +6,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/ai"
 	"watchtower/internal/chat"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
@@ -186,4 +188,20 @@ func TestNewSessionBackend_OllamaWithoutAModelIsRefused(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, b)
 	assert.Contains(t, err.Error(), "Ollama model")
+}
+
+// TestClaudeSessionOptions_QC02PerToolAllowlist: the warm session — the main
+// chat — grants external tools one by one exactly like the one-shot client,
+// never a whole server, and hides the denied ones.
+func TestClaudeSessionOptions_QC02PerToolAllowlist(t *testing.T) {
+	ext := []ai.ExternalMCPServer{{Name: "acme", Kind: "http", URL: "https://example.com/mcp",
+		AllowTools: []string{"getIssue"}, DenyTools: []string{"createIssue"}}}
+	opts := claudeSessionOptions(sessionWiring{cfg: &config.Config{}, dbPath: "/tmp/wt.db",
+		conv: &db.ChatConversation{}}, ext)
+
+	assert.Equal(t, "mcp__watchtower,mcp__acme__getIssue,"+ai.WebSearchTool, opts.AllowedTools)
+	assert.Equal(t, ai.SessionDisallowedTools+",mcp__acme__createIssue", opts.DisallowedTools)
+	for _, tok := range strings.Split(opts.AllowedTools, ",") {
+		assert.NotEqual(t, "mcp__acme", tok, "the whole server must never be granted")
+	}
 }

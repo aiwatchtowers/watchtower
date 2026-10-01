@@ -58,4 +58,14 @@ final class ExternalConnectionTests: XCTestCase {
         XCTAssertEqual(connection.status, "ok")
         XCTAssertTrue(connection.isOK)
     }
+
+    // MARK: - needsSignIn ("Sign in again" only for revoked)
+
+    func testNeedsSignIn_OnlyForRevoked() {
+        XCTAssertTrue(makeConnection(status: "revoked", error: "invalid_grant").needsSignIn)
+        XCTAssertFalse(makeConnection(status: "error", error: "token endpoint returned 503").needsSignIn,
+                       "a transient failure is retried by the next chat, not fixed by signing in")
+        XCTAssertFalse(makeConnection(status: "error", error: "tools: none of its tools is known read-only").needsSignIn)
+        XCTAssertFalse(makeConnection(status: "ok").needsSignIn)
+    }
 }

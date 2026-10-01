@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"path/filepath"
 	"time"
@@ -187,31 +188,135 @@ func loadExternalMCPServers(cfg *config.Config, dbPath string) []ai.ExternalMCPS
 
 	var servers []ai.ExternalMCPServer
 	for _, c := range conns {
-		server := ai.ExternalMCPServer{
-			Name:    c.Name,
-			Kind:    c.Kind,
-			Command: c.Command,
-			Args:    c.Args,
-			URL:     c.URL,
+		if server, ok := mountConnection(cfg, database, c); ok {
+			servers = append(servers, server)
 		}
-		store := externalmcp.NewSecretStore(cfg.WorkspaceDir(), c.ID)
-		secret, err := store.Load()
-		if err != nil {
-			log.Printf("external MCP: loading secret for connection %d (%s): %v", c.ID, c.Name, err)
-			continue
-		}
-		if secret != nil && secret.OAuth != nil {
-			if !applyOAuthCredentials(database, store, &server, c) {
-				continue
-			}
-		} else if secret != nil {
-			server.Env = secret.Env
-			server.Headers = secret.Headers
-		}
-		servers = append(servers, server)
 	}
 	return servers
 }
+
+// toolsListRetryAfter is how long a chat launch waits before listing a
+// never-listed connection's tools again after a failure, so a dead server
+// does not cost every launch a listing timeout.
+const toolsListRetryAfter = time.Hour
+
+// mountConnection resolves c's credentials and QC-02 tool policy for one
+// chat launch. false means the connection is not mounted: the reason is
+// logged and, unless it is a credential problem applyOAuthCredentials already
+// recorded, written to the row ("error") so Settings shows it.
+func mountConnection(cfg *config.Config, database *db.DB, c db.ExternalConnection) (ai.ExternalMCPServer, bool) {
+	server, ok := connectionServer(cfg, database, c)
+	if !ok {
+		return server, false
+	}
+	if !c.ToolsListed && c.AllowTools == nil {
+		// Never listed (added before QC-02's allowlist, or the listing at
+		// enable time failed): list once now and cache it. No list mounts
+		// nothing from this server — fail closed.
+		if recentlyFailed(c.ToolsListFailedAt) {
+			return server, connectionUnmounted(database, c, fmt.Sprintf(
+				"listing its tools failed at %s; none is available to the chat until a listing succeeds (retried after an hour, or now with `watchtower connections tools %d --refresh`)",
+				c.ToolsListFailedAt, c.ID))
+		}
+		if err := refreshConnectionTools(database, &c, server, launchToolsListTimeout); err != nil {
+			return server, connectionUnmounted(database, c, fmt.Sprintf(
+				"listing its tools failed (%v); none is available to the chat — `watchtower connections tools %d --refresh`", err, c.ID))
+		}
+	}
+	server.AllowTools, server.DenyTools = externalmcp.ResolveTools(c)
+	if len(server.AllowTools) == 0 {
+		return server, connectionUnmounted(database, c, fmt.Sprintf(
+			"none of its tools is known read-only, so none is available to the chat — `watchtower connections tools %d` to review", c.ID))
+	}
+	markConnectionOK(database, c)
+	return server, true
+}
+
+// recentlyFailed reports whether failedAt (RFC 3339, ” = never) lies within
+// toolsListRetryAfter.
+func recentlyFailed(failedAt string) bool {
+	at, err := time.Parse(time.RFC3339, failedAt)
+	return err == nil && time.Since(at) < toolsListRetryAfter
+}
+
+// toolsReasonPrefix marks a row error written by connectionUnmounted, so a
+// later tool-policy change knows the error is its own to clear.
+const toolsReasonPrefix = "tools: "
+
+// connectionUnmounted logs why c is not mounted and records it on the row as
+// status="error"; it always returns false (the mountConnection result).
+func connectionUnmounted(database *db.DB, c db.ExternalConnection, reason string) bool {
+	log.Printf("external connection %d (%s): %s", c.ID, c.Name, reason)
+	if err := database.SetExternalConnectionStatus(c.ID, "error", toolsReasonPrefix+reason); err != nil {
+		log.Printf("external connection %d (%s): recording error status: %v", c.ID, c.Name, err)
+	}
+	return false
+}
+
+// connectionServer builds c's ai.ExternalMCPServer with its credentials: the
+// secret's static env/headers, or a verified/refreshed OAuth bearer (QC-04).
+// false means "skip this one", already logged (and recorded where it is the
+// grant's fault).
+func connectionServer(cfg *config.Config, database *db.DB, c db.ExternalConnection) (ai.ExternalMCPServer, bool) {
+	server := ai.ExternalMCPServer{
+		Name:    c.Name,
+		Kind:    c.Kind,
+		Command: c.Command,
+		Args:    c.Args,
+		URL:     c.URL,
+	}
+	store := externalmcp.NewSecretStore(cfg.WorkspaceDir(), c.ID)
+	secret, err := store.Load()
+	if err != nil {
+		log.Printf("external MCP: loading secret for connection %d (%s): %v", c.ID, c.Name, err)
+		return server, false
+	}
+	if secret != nil && secret.OAuth != nil {
+		if !applyOAuthCredentials(database, store, &server, c) {
+			return server, false
+		}
+	} else if secret != nil {
+		server.Env = secret.Env
+		server.Headers = secret.Headers
+	}
+	return server, true
+}
+
+// toolsListTimeout bounds one tools/list exchange (connect, list, stop) the
+// owner asked for (enable, sign-in, `connections tools --refresh`);
+// launchToolsListTimeout is the tighter bound a chat launch waits.
+const (
+	toolsListTimeout       = 30 * time.Second
+	launchToolsListTimeout = 10 * time.Second
+)
+
+// refreshConnectionTools lists server's tools, caches them on c's row and
+// updates c in place (QC-02). A failure is recorded on the row
+// (list_failed_at) for the launch-time back-off.
+func refreshConnectionTools(database *db.DB, c *db.ExternalConnection, server ai.ExternalMCPServer, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	tools, err := listServerTools(ctx, externalmcp.ServerSpec{
+		Kind: server.Kind, Command: server.Command, Args: server.Args, URL: server.URL,
+		Env: server.Env, Headers: server.Headers,
+	})
+	if err != nil {
+		if ferr := database.SetExternalConnectionListFailed(c.ID, time.Now().UTC().Format(time.RFC3339)); ferr != nil {
+			log.Printf("external connection %d (%s): recording failed listing: %v", c.ID, c.Name, ferr)
+		}
+		return err
+	}
+	listedAt := time.Now().UTC().Format(time.RFC3339)
+	if err := database.SetExternalConnectionTools(c.ID, tools, listedAt); err != nil {
+		return err
+	}
+	c.Tools, c.ToolsListed, c.ToolsListedAt = tools, true, listedAt
+	return nil
+}
+
+// listServerTools is externalmcp.ListTools; a var so tests can stub the
+// network/subprocess exchange.
+var listServerTools = externalmcp.ListTools
 
 // oauthLockWait bounds how long a chat launch (or `connections oauth`)
 // waits for another process to finish with a connection's grant: one
@@ -291,7 +396,6 @@ func applyOAuthCredentials(
 
 	server.Headers = headers
 	server.Env = secret.Env
-	markConnectionOK(database, c)
 	return true
 }
 
@@ -306,19 +410,14 @@ func refreshFailureStatus(err error) string {
 	return "error"
 }
 
-// markConnectionOK flips a usable connection's row back to ok. It re-reads
-// the status rather than trusting c, the pre-lock snapshot: a parallel launch
-// may have recorded an error while this one waited for the lock.
+// markConnectionOK flips a mounted connection's row back to ok — only while
+// the row still holds the status this launch read at its start (c), so a
+// newer "revoked"/"error" a parallel launch recorded meanwhile stands.
 func markConnectionOK(database *db.DB, c db.ExternalConnection) {
-	cur, err := database.GetExternalConnection(c.ID)
-	if err != nil {
-		log.Printf("external connection %d (%s): reading status: %v", c.ID, c.Name, err)
+	if c.Status == "ok" {
 		return
 	}
-	if cur.Status == "ok" {
-		return
-	}
-	if err := database.SetExternalConnectionStatus(c.ID, "ok", ""); err != nil {
+	if _, err := database.MarkExternalConnectionOKIf(c.ID, c.Status, c.Error); err != nil {
 		log.Printf("external connection %d (%s): recording ok status: %v", c.ID, c.Name, err)
 	}
 }

@@ -222,23 +222,29 @@ func newSessionBackend(w sessionWiring) (chat.Backend, error) {
 		loop := agentloop.NewClient(w.model, w.cfg.AI.OllamaURL, buildToolRegistry(w.cfg, w.database), binding)
 		return chat.NewTurnBackend(loop, w.database, w.conv.ID, chat.WithSystemPrompt(w.prompt)), nil
 	default:
-		ext := loadExternalMCPServers(w.cfg, w.dbPath)
-		return chat.NewClaudeBackend(chat.ClaudeOptions{
-			Binary:          claude.FindBinary(w.cfg.ClaudePath),
-			Model:           w.model,
-			ResumeSessionID: aiSessionFlagResume,
-			SystemPrompt:    w.prompt,
-			MCPConfig:       ai.ChatMCPConfig(w.dbPath, w.mcpArgs, ext),
-			AllowedTools:    ai.AllowedTools(ext) + "," + ai.WebSearchTool,
-			DisallowedTools: ai.SessionDisallowedTools,
-			// Claude only: codex/ollama would reject an image/PDF as
-			// attachment_unsupported; their prompt still lists the files.
-			ProjectAttachments: chat.ProjectAttachments(w.project, w.warn),
-			Warn:               w.warn,
-			Replay: func(turnID string) (string, error) {
-				return chat.ReplayFromDB(w.database, w.conv.ID, turnID)
-			},
-		}), nil
+		return chat.NewClaudeBackend(claudeSessionOptions(w, loadExternalMCPServers(w.cfg, w.dbPath))), nil
+	}
+}
+
+// claudeSessionOptions is the warm claude session's wiring for the external
+// servers ext: the same per-tool QC-02 allowlist as the one-shot client (plus
+// web search), and every external tool QC-02 denies hidden outright.
+func claudeSessionOptions(w sessionWiring, ext []ai.ExternalMCPServer) chat.ClaudeOptions {
+	return chat.ClaudeOptions{
+		Binary:          claude.FindBinary(w.cfg.ClaudePath),
+		Model:           w.model,
+		ResumeSessionID: aiSessionFlagResume,
+		SystemPrompt:    w.prompt,
+		MCPConfig:       ai.ChatMCPConfig(w.dbPath, w.mcpArgs, ext),
+		AllowedTools:    ai.AllowedTools(ext) + "," + ai.WebSearchTool,
+		DisallowedTools: ai.WithExternalDisallowed(ai.SessionDisallowedTools, ext),
+		// Claude only: codex/ollama would reject an image/PDF as
+		// attachment_unsupported; their prompt still lists the files.
+		ProjectAttachments: chat.ProjectAttachments(w.project, w.warn),
+		Warn:               w.warn,
+		Replay: func(turnID string) (string, error) {
+			return chat.ReplayFromDB(w.database, w.conv.ID, turnID)
+		},
 	}
 }
 

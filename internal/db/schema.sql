@@ -1767,6 +1767,17 @@ CREATE TABLE IF NOT EXISTS external_connections (
     created_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
 
+-- QC-02 per-tool allowlist (migration 00094): a Quick Connection's cached
+-- tools/list ('' = never listed: no tool allowed) and the owner's explicit
+-- allow list of tool names (NULL = only tools known to be read-only).
+CREATE TABLE IF NOT EXISTS external_connection_tools (
+    connection_id INTEGER PRIMARY KEY REFERENCES external_connections(id) ON DELETE CASCADE,
+    tools_json    TEXT NOT NULL DEFAULT '',
+    listed_at     TEXT NOT NULL DEFAULT '',
+    allow_json    TEXT,
+    list_failed_at TEXT NOT NULL DEFAULT ''
+);
+
 -- Reminders (migration 00065): the owner's ":later:" reaction parks a message
 -- to resurface in the inbox action strip at remind_at.
 CREATE TABLE IF NOT EXISTS reminders (
