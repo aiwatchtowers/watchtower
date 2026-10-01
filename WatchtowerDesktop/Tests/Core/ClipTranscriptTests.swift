@@ -2,8 +2,9 @@ import XCTest
 @testable import WatchtowerCore
 
 final class ClipTranscriptTests: XCTestCase {
-    private func utterance(_ idx: Int, _ start: Double, _ end: Double, _ speaker: String, _ text: String,
-                           deleted: Bool = false) -> TranscriptUtterance {
+    private func utterance(
+        _ idx: Int, _ start: Double, _ end: Double, _ speaker: String, _ text: String, deleted: Bool = false
+    ) -> TranscriptUtterance {
         TranscriptUtterance(idx: idx, startSec: start, endSec: end, speaker: speaker, text: text, deleted: deleted)
     }
 
@@ -28,7 +29,7 @@ final class ClipTranscriptTests: XCTestCase {
             utterances: [
                 utterance(0, 0, 3, "B", "not mine"),
                 utterance(1, 3, 5, "A", "gone", deleted: true),
-                utterance(2, 5, 8, "A", "mine"),
+                utterance(2, 5, 8, "A", "mine")
             ])
         XCTAssertEqual(text, "mine")
     }

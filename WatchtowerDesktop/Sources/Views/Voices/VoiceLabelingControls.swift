@@ -26,7 +26,7 @@ struct VoiceClipRow: View {
     /// common case of "hear the one sample and decide".
     let isFirst: Bool
     /// This clip is the one playing: the button becomes its Stop.
-    var isPlaying = false
+    let isPlaying: Bool
     /// Toggles playback of this clip (`ClipPlayer.toggle`).
     let onPlay: () -> Void
 
@@ -51,7 +51,24 @@ struct VoiceClipRow: View {
     }
 
     static func buttonTitle(_ clip: ClipSpan, isPlaying: Bool) -> String {
-        isPlaying ? "■ Stop" : "▶ \(Int(max(1, (clip.end - clip.start).rounded()))) s"
+        isPlaying ? "■ Stop" : "▶ \(max(1, Int((clip.end - clip.start).rounded()))) s"
+    }
+}
+
+/// Shows a `ClipPlayer` failure under a Voices screen, so a clip that
+/// cannot play never looks like a button that did nothing.
+struct ClipPlayerErrorInset: ViewModifier {
+    let player: ClipPlayer
+
+    func body(content: Content) -> some View {
+        content.safeAreaInset(edge: .bottom) {
+            if let message = player.errorMessage {
+                Label(message, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .padding(8)
+            }
+        }
     }
 }
 

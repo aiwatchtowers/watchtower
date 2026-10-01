@@ -17,6 +17,9 @@ final class ClipPlayer {
     /// The recording `playingSpan` belongs to — two cards can hold the same
     /// span of different recordings.
     private(set) var playingURL: URL?
+    /// Why the last clip could not play (the recording is gone, unreadable,
+    /// or the output refused to start) — cleared by the next play or stop.
+    private(set) var errorMessage: String?
 
     init(playerFactory: @escaping (URL) throws -> AudioPlayback = { try AVAudioPlayer(contentsOf: $0) }) {
         self.playerFactory = playerFactory
@@ -37,12 +40,22 @@ final class ClipPlayer {
     }
 
     /// Seeks to `span.start` and plays until `span.end`, then stops on its
-    /// own (`tick`). A load/play failure leaves nothing playing.
+    /// own (`tick`). A load/play failure leaves nothing playing and is
+    /// reported through `errorMessage`.
     func play(url: URL, span: ClipSpan) {
         stop()
-        guard let p = try? playerFactory(url) else { return }
+        let p: AudioPlayback
+        do {
+            p = try playerFactory(url)
+        } catch {
+            fail("Can't play this clip: \(error.localizedDescription)", url: url)
+            return
+        }
         p.currentTime = span.start
-        guard p.play() else { return }
+        guard p.play() else {
+            fail("Can't play this clip: audio output did not start", url: url)
+            return
+        }
         player = p
         playingSpan = span
         playingURL = url
@@ -67,5 +80,11 @@ final class ClipPlayer {
         player = nil
         playingSpan = nil
         playingURL = nil
+        errorMessage = nil
+    }
+
+    private func fail(_ message: String, url: URL) {
+        NSLog("ClipPlayer: %@ (%@)", message, url.lastPathComponent)
+        errorMessage = message
     }
 }

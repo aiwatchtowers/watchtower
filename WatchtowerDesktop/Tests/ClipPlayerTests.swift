@@ -42,6 +42,22 @@ final class ClipPlayerTests: XCTestCase {
         p.play(url: URL(fileURLWithPath: "/tmp/x.caf"), span: ClipSpan(start: 0, end: 5))
 
         XCTAssertNil(p.playingSpan)
+        XCTAssertNotNil(p.errorMessage, "a clip that cannot play must say so, not look like a dead button")
+    }
+
+    func testRefusedPlaybackIsReportedAndClearedByTheNextPlay() {
+        let refusing = RefusingPlayback()
+        var player: AudioPlayback = refusing
+        let p = ClipPlayer { _ in player }
+
+        p.play(url: URL(fileURLWithPath: "/tmp/x.caf"), span: ClipSpan(start: 0, end: 5))
+        XCTAssertNil(p.playingSpan)
+        XCTAssertNotNil(p.errorMessage)
+
+        player = FakeAudioPlayback(duration: 60)
+        p.play(url: URL(fileURLWithPath: "/tmp/x.caf"), span: ClipSpan(start: 0, end: 5))
+        XCTAssertNil(p.errorMessage)
+        XCTAssertEqual(p.playingSpan, ClipSpan(start: 0, end: 5))
     }
 
     func testStopClearsPlayingSpan() {
@@ -112,4 +128,14 @@ final class ClipPlayerTests: XCTestCase {
         XCTAssertFalse(p.isPlaying(url: a, span: span))
         XCTAssertTrue(fake.isPlaying)
     }
+}
+
+/// An output that refuses to start — `play()` returns false.
+private final class RefusingPlayback: AudioPlayback {
+    var currentTime: TimeInterval = 0
+    var duration: TimeInterval = 60
+    var isPlaying: Bool { false }
+    func play() -> Bool { false }
+    func pause() {}
+    func stop() {}
 }

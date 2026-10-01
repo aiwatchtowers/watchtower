@@ -24,7 +24,7 @@ struct VoiceCardView: View {
     let card: VoiceCard
     let isActive: Bool
     /// Whether a clip of this card is the one playing (drives its Stop).
-    var isPlaying: (ClipSpan) -> Bool = { _ in false }
+    let isPlaying: (ClipSpan) -> Bool
     let onPlay: (ClipSpan) -> Void
     let onConfirm: (PersonChoice) -> Void
     let onDismiss: (DismissKind) -> Void

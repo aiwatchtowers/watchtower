@@ -46,6 +46,7 @@ struct VoiceTrainView: View {
                 }
                 .padding(12)
             }
+            .modifier(ClipPlayerErrorInset(player: clipPlayer))
         }
     }
 

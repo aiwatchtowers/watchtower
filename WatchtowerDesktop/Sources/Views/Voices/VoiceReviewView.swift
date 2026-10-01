@@ -67,6 +67,7 @@ struct VoiceReviewView: View {
                 }
             }
         }
+        .modifier(ClipPlayerErrorInset(player: clipPlayer))
         .confirmationDialog(
             "Delete \(personPendingDelete?.displayName ?? "this person")?",
             isPresented: Binding(get: { personPendingDelete != nil }, set: { if !$0 { personPendingDelete = nil } }),

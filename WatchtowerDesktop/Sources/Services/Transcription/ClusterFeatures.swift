@@ -43,30 +43,30 @@ struct ClusterFeatures: Equatable {
             .map { (start: $0.start + edgeTrimSec, end: $0.end - edgeTrimSec) }
             .filter { $0.end - $0.start >= VoiceRegistryPolicy.clipMinSec }
             .sorted { ($0.end - $0.start, $1.start) > ($1.end - $1.start, $0.start) }
-        var picked: [(start: Double, end: Double)] = []
-        for run in eligible where picked.count < VoiceRegistryPolicy.clipsPerCluster
-            && picked.allSatisfy({ abs($0.start - run.start) >= clipSpreadSec }) {
-            picked.append(run)
+        var picked: [Int] = []
+        for index in eligible.indices where picked.count < VoiceRegistryPolicy.clipsPerCluster {
+            let farApart = picked.allSatisfy { abs(eligible[$0].start - eligible[index].start) >= clipSpreadSec }
+            if farApart { picked.append(index) }
         }
-        for run in eligible where picked.count < VoiceRegistryPolicy.clipsPerCluster
-            && !picked.contains(where: { $0.start == run.start }) {
-            picked.append(run)
+        for index in eligible.indices where picked.count < VoiceRegistryPolicy.clipsPerCluster && !picked.contains(index) {
+            picked.append(index)
         }
         return picked
+            .map { eligible[$0] }
             .sorted { $0.start < $1.start }
             .map { ClipSpan(start: $0.start, end: min($0.end, $0.start + VoiceRegistryPolicy.clipMaxSec)) }
     }
 
     private static func runs(_ segments: [SpeakerSegment]) -> [(start: Double, end: Double)] {
-        var runs: [(start: Double, end: Double)] = []
+        var merged: [(start: Double, end: Double)] = []
         for segment in segments.sorted(by: { $0.startSec < $1.startSec }) {
-            if let last = runs.last, segment.startSec - last.end <= runJoinGapSec {
-                runs[runs.count - 1].end = max(last.end, segment.endSec)
+            if let last = merged.last, segment.startSec - last.end <= runJoinGapSec {
+                merged[merged.count - 1].end = max(last.end, segment.endSec)
             } else {
-                runs.append((segment.startSec, segment.endSec))
+                merged.append((segment.startSec, segment.endSec))
             }
         }
-        return runs
+        return merged
     }
 
     /// Same per-bin dominance test as `RoleAssigner` (factor 2): mic-dominant
