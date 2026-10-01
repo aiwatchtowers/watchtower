@@ -34,7 +34,9 @@ struct ProjectsView: View {
     var body: some View {
         HStack(spacing: 0) {
             if panelVisible {
-                panel.frame(width: dragPanelWidth ?? PanelResizeHandle.clamp(panelWidth))
+                panel
+                    .frame(width: dragPanelWidth ?? PanelResizeHandle.clamp(panelWidth))
+                    .panelSurface()
                 PanelResizeHandle(width: $panelWidth, liveWidth: $dragPanelWidth)
             }
             VStack(spacing: 0) {
@@ -54,9 +56,10 @@ struct ProjectsView: View {
             }
             .frame(minWidth: 480, maxWidth: .infinity, maxHeight: .infinity)
         }
-        // One colour with the panel's list (and the app sidebar): the page
-        // header, the terminal (transparent under dark), Board and Documents.
-        .panelBackground()
+        // The workspace — title row, page header, the terminal (transparent
+        // under dark), Board and Documents — on the detail backdrop, as AI
+        // Chat's conversation is; the panel paints its own lighter surface.
+        .detailBackground()
         .sessionActionDialogs(vm: vm, renaming: $renamingSession, deleting: $deletingSession)
         .onAppear {
             consumeRoute()
@@ -144,7 +147,7 @@ struct ProjectsView: View {
                 }
                 TerminalsSection(vm: vm, actions: sessionActions, chooseFolder: chooseTerminalFolder)
             }
-            .panelListStyle()
+            .clearPlainList()
             if let error = vm.errorMessage {
                 Text(error).font(.caption).foregroundStyle(.red).padding(8)
             }

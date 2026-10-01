@@ -137,7 +137,8 @@ func findBlockedIssues(d *db.DB) ([]db.JiraIssue, error) {
 // findStaleIssues returns in_progress issues that haven't changed status in >7 days,
 // excluding keys already in the blockedKeys set.
 func findStaleIssues(d *db.DB, now time.Time, blockedKeys map[string]bool) ([]db.JiraIssue, error) {
-	cutoff := now.AddDate(0, 0, -7).Format(time.RFC3339)
+	// UTC, like the stored values: the query compares the strings.
+	cutoff := now.UTC().AddDate(0, 0, -7).Format(time.RFC3339)
 
 	allStale, err := d.GetStaleJiraIssues(cutoff)
 	if err != nil {

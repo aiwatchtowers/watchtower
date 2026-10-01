@@ -77,7 +77,7 @@ struct ProjectDocumentsList: View {
                 }
             }
         }
-        .panelListStyle()
+        .workspaceListStyle()
     }
 
     private func expandedBinding(_ group: ProjectDocumentGrouping.Group) -> Binding<Bool> {

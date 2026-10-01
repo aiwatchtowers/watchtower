@@ -1,8 +1,10 @@
 import AppKit
 import SwiftUI
 
-/// The Projects panel's right edge (board target #144): a divider the owner
-/// drags to resize the panel, within `widthRange`. `liveWidth` follows the
+/// The Projects panel's right edge (board target #144): a strip the owner
+/// drags to resize the panel, within `widthRange`. It draws nothing — the
+/// edge line is the panel's own (`panelSurface()`), so the selected session
+/// row can cover it — and shows the workspace's backdrop behind it. `liveWidth` follows the
 /// drag; `width` (an `@AppStorage` value, so it survives a relaunch) is
 /// written once, when the drag ends.
 struct PanelResizeHandle: View {
@@ -19,7 +21,7 @@ struct PanelResizeHandle: View {
     }
 
     var body: some View {
-        Divider()
+        Color.clear
             .frame(width: 7)
             .contentShape(Rectangle())
             .onHover { inside in

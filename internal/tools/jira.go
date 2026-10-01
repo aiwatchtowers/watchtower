@@ -103,6 +103,10 @@ func issueRow(accountID int64, issue jira.Issue) db.JiraIssue {
 	if f.Resolved != nil {
 		resolvedAt = *f.Resolved
 	}
+	statusCategoryChangedAt := ""
+	if f.StatusCategoryChanged != nil {
+		statusCategoryChangedAt, _ = jira.NormalizeTimestamp(*f.StatusCategoryChanged)
+	}
 	raw, _ := json.Marshal(issue)
 	return db.JiraIssue{
 		AccountID: accountID, Key: issue.Key, ID: issue.ID, ProjectKey: projectKey,
@@ -112,7 +116,8 @@ func issueRow(accountID int64, issue jira.Issue) db.JiraIssue {
 		// Jira key — every reader that filters on status_category (briefing,
 		// dashboards, memory) compares against the normalized form.
 		IssueType: f.IssueType.Name, Status: f.Status.Name, StatusCategory: jira.NormalizeStatusCategory(f.Status.StatusCategory.Key),
-		Priority: priority, Labels: string(labels), Components: "[]", FixVersions: "[]",
+		StatusCategoryChangedAt: statusCategoryChangedAt, Priority: priority,
+		Labels: string(labels), Components: "[]", FixVersions: "[]",
 		CreatedAt: f.Created, UpdatedAt: f.Updated, ResolvedAt: resolvedAt, RawJSON: string(raw), SyncedAt: now,
 	}
 }

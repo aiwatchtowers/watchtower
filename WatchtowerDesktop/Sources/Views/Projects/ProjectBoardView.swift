@@ -190,7 +190,7 @@ struct ProjectBoardView: View {
                 .listRowInsets(EdgeInsets(top: 3, leading: 8, bottom: 3, trailing: 8))
                 .listRowBackground(Color.clear)
             }
-            .panelListStyle()
+            .workspaceListStyle()
         }
     }
 

@@ -132,7 +132,7 @@ struct MainNavigationView: View {
 
                     detailView
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .background(Color(nsColor: .controlBackgroundColor))
+                        .detailBackground()
                 }
             }
 

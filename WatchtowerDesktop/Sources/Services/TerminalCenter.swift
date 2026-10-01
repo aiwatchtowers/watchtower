@@ -252,24 +252,26 @@ final class TerminalCenter {
 /// the terminal with its dark theme and emits truecolor text a light
 /// background would make unreadable.
 enum TerminalPalette {
-    /// The app's window background as the dark appearance resolves it, in
-    /// concrete sRGB (SwiftTerm would capture a dynamic colour once anyway);
-    /// #1e1e1e, the macOS 14+ value, only if that resolution fails. The
-    /// terminal's default background: OSC 11 reports it, and per-cell
-    /// reverse video and the text under the block cursor draw in it.
-    static let windowBackground: NSColor = {
+    /// The Projects workspace's backdrop (`NSColor.detailBackground`) as the
+    /// dark appearance resolves it, in concrete sRGB (SwiftTerm would capture
+    /// a dynamic colour once anyway); #1e1e1e, the macOS 14+ value, only if
+    /// that resolution fails. The terminal's default background: OSC 11
+    /// reports it, and per-cell reverse video and the text under the block
+    /// cursor draw in it.
+    static let background: NSColor = {
         var resolved = srgb(0x1E1E1E)
         NSAppearance(named: .darkAqua)?.performAsCurrentDrawingAppearance {
-            if let color = NSColor.windowBackgroundColor.usingColorSpace(.sRGB) { resolved = color }
+            if let color = NSColor.detailBackground.usingColorSpace(.sRGB) { resolved = color }
         }
         return resolved
     }()
 
     /// Under a dark appearance the default background is fully transparent:
-    /// the Projects tab's `panelBackground()` shows through, so the terminal
-    /// is one surface with the header above it and the panel beside it,
-    /// whatever colour the running SDK resolves that background to.
-    /// Under a light appearance it is the opaque dark window background.
+    /// the Projects workspace's `detailBackground()` shows through, so the
+    /// terminal is one surface with the page header above it and the
+    /// selected session tab beside it, whatever colour the running SDK
+    /// resolves that backdrop to. Under a light appearance it is the opaque
+    /// dark `background`, a dark block in the light workspace.
     ///
     /// Known SwiftTerm limits at opacity 0 (its internal code reads the raw
     /// background): whole-screen reverse video (DECSCNM, a visual bell) draws
@@ -287,7 +289,7 @@ enum TerminalPalette {
     /// white, then the bright row): Apple's dark system colours, as hex
     /// because `NSColor.system*` resolves to different values across macOS
     /// releases. Blue is #409cff in both rows: #0a84ff misses 4.5:1 contrast
-    /// on the window backdrop.
+    /// on the workspace backdrop.
     static let ansi: [SwiftTerm.Color] = [
         0x1C1C1E, 0xFF453A, 0x30D158, 0xFFD60A, 0x409CFF, 0xBF5AF2, 0x64D2FF, 0xD1D1D6,
         0x8E8E93, 0xFF6961, 0x5DE07F, 0xFFE066, 0x409CFF, 0xDA8FFF, 0x8AE0FF, 0xFFFFFF
@@ -315,7 +317,7 @@ final class PalettedTerminalView: LocalProcessTerminalView {
         caretColor = TerminalPalette.caret
         // Explicit and opaque: by default the character under the block
         // cursor draws in the (possibly transparent) default background.
-        caretTextColor = TerminalPalette.windowBackground
+        caretTextColor = TerminalPalette.background
         selectedTextBackgroundColor = TerminalPalette.selectionBackground
         selectedTextForegroundColor = TerminalPalette.selectionForeground
         applyBackground()
@@ -335,7 +337,7 @@ final class PalettedTerminalView: LocalProcessTerminalView {
     /// draws its text in the default background, invisible at opacity 0.
     override func didAddSubview(_ subview: NSView) {
         super.didAddSubview(subview)
-        (subview as? NSTextField)?.textColor = TerminalPalette.windowBackground
+        (subview as? NSTextField)?.textColor = TerminalPalette.background
     }
 
     /// Through `backgroundOpacity`, not a bare `nativeBackgroundColor`: its
@@ -344,7 +346,7 @@ final class PalettedTerminalView: LocalProcessTerminalView {
     /// layer the host's margin mirrors — an appearance change re-applies the
     /// palette background over any OSC 11 colour the program set.
     private func applyBackground() {
-        nativeBackgroundColor = TerminalPalette.windowBackground
+        nativeBackgroundColor = TerminalPalette.background
         backgroundOpacity = TerminalPalette.backgroundOpacity(for: effectiveAppearance)
     }
 }
