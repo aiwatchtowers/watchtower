@@ -1,7 +1,7 @@
 ---
 type: bug
 title: Detect migrations silently skipped by a burned goose version
-status: open
+status: done
 priority: med
 tags: [db, migrations, goose, schema-drift, dev-db]
 context: main (after PR #3, Confluence connector) — `confluence select` failed on the owner's dev DB
@@ -44,3 +44,5 @@ Proposal:
   If auto-repair is built, the same database is also repaired.
 
 > Original note: «так а у других кастомеров как?» → «да» (to adding a startup schema-drift check to the backlog)
+
+Resolution: `db.Open` now compares the tables `schema.sql` declares against `sqlite_master` after every migrate (`internal/db/schema_drift.go`). A missing table whose creating migration is made only of idempotent statements (`CREATE ... IF NOT EXISTS`, `INSERT OR IGNORE`, the shape of both incidents) is re-applied and logged; any other missing table is logged as an error naming its migration, and `watchtower db migrate` exits non-zero with the same message. No Desktop banner.

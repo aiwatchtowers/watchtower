@@ -23,6 +23,10 @@ var dbMigrateCmd = &cobra.Command{
 		}
 		defer database.Close()
 
+		if err := database.CheckSchemaDrift(); err != nil {
+			return err
+		}
+
 		// Seed any new prompt templates added since last run
 		store := prompts.New(database, nil)
 		if err := store.Seed(); err != nil {
