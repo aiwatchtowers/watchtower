@@ -34,3 +34,56 @@ final class DocumentAttributedStringTests: XCTestCase {
         XCTAssertNil(out.attribute(.backgroundColor, at: 2, effectiveRange: nil), "an out-of-bounds draft is ignored")
     }
 }
+
+/// #181: the comment view lays markdown out like the read view.
+final class DocumentAttributedStringLayoutTests: XCTestCase {
+    private func paragraphStyle(_ out: NSAttributedString, at text: String) -> NSParagraphStyle? {
+        let location = (out.string as NSString).range(of: text).location
+        return out.attribute(.paragraphStyle, at: location, effectiveRange: nil) as? NSParagraphStyle
+    }
+
+    func testTableCellsShareOneTextTable() throws {
+        let out = DocumentAttributedString.make(
+            DocumentRendering.render("| Name | Owner |\n|---|---|\n| retry | ops |"), highlights: [:], activeThreadID: nil
+        )
+        let blocks = try ["Name", "Owner", "retry", "ops"].map { word in
+            try XCTUnwrap(paragraphStyle(out, at: word)?.textBlocks.last as? NSTextTableBlock, word)
+        }
+        XCTAssertEqual(blocks.map(\.startingRow), [0, 0, 1, 1])
+        XCTAssertEqual(blocks.map(\.startingColumn), [0, 1, 0, 1])
+        XCTAssertTrue(blocks.allSatisfy { $0.table === blocks[0].table })
+        XCTAssertEqual(blocks[0].table.numberOfColumns, 2)
+        let header = out.attribute(.font, at: 0, effectiveRange: nil) as? NSFont
+        XCTAssertTrue(header?.fontDescriptor.symbolicTraits.contains(.bold) ?? false, "the header row is bold")
+    }
+
+    func testListItemsHangUnderTheirMarker() throws {
+        let out = DocumentAttributedString.make(
+            DocumentRendering.render("- a long item\n  - nested"), highlights: [:], activeThreadID: nil
+        )
+        let outer = try XCTUnwrap(paragraphStyle(out, at: "a long item"))
+        let nested = try XCTUnwrap(paragraphStyle(out, at: "nested"))
+        XCTAssertEqual(outer.firstLineHeadIndent, 0)
+        XCTAssertGreaterThan(outer.headIndent, 0, "wrapped lines start under the text, not under the bullet")
+        XCTAssertGreaterThan(nested.headIndent, outer.headIndent)
+    }
+
+    func testCodeBlocksAndQuotesAreBoxes() throws {
+        let out = DocumentAttributedString.make(
+            DocumentRendering.render("```\nlet x = 1\n```\n\n> quoted\n\n---"), highlights: [:], activeThreadID: nil
+        )
+        XCTAssertNotNil(paragraphStyle(out, at: "let x")?.textBlocks.first)
+        XCTAssertNotNil(paragraphStyle(out, at: "quoted")?.textBlocks.first)
+        XCTAssertNotNil(paragraphStyle(out, at: "\u{00A0}")?.textBlocks.first, "a rule is a bordered block")
+        XCTAssertEqual(out.attribute(.foregroundColor, at: (out.string as NSString).range(of: "quoted").location,
+                                     effectiveRange: nil) as? NSColor, .secondaryLabelColor)
+    }
+
+    func testBoldInsideAHeadingKeepsTheHeadingSize() {
+        let doc = DocumentRendering.render("# The **big** plan")
+        let out = DocumentAttributedString.make(doc, highlights: [:], activeThreadID: nil)
+        let font = out.attribute(.font, at: (doc.text as NSString).range(of: "big").location, effectiveRange: nil) as? NSFont
+        XCTAssertEqual(font?.pointSize, 22)
+        XCTAssertTrue(font?.fontDescriptor.symbolicTraits.contains(.bold) ?? false)
+    }
+}

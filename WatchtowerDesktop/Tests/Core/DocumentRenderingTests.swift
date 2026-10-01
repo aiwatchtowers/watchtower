@@ -47,4 +47,63 @@ final class DocumentRenderingTests: XCTestCase {
         XCTAssertEqual(anchor.heading, "Task 1")
         XCTAssertEqual(anchor.locate(in: DocumentRendering.render(markdown).text), range)
     }
+
+    // MARK: - #181: the comment view renders like the read view
+
+    func testTableCellsAreOneParagraphEachWithoutPipes() {
+        let doc = DocumentRendering.render("Before.\n\n| Name | Owner |\n|:--|--:|\n| retry | *ops* |\n| budget |\n\nAfter.")
+        XCTAssertFalse(doc.text.contains("|"), "a table never shows its markdown pipes")
+        XCTAssertEqual(doc.text, "Before.\n\nName\nOwner\nretry\nops\nbudget\n\n\nAfter.\n\n")
+        let cells = doc.runs.compactMap { run -> (String, DocumentTableCell)? in
+            guard case let .tableCell(cell) = run.style else { return nil }
+            return ((doc.text as NSString).substring(with: NSRange(location: run.location, length: run.length)), cell)
+        }
+        XCTAssertEqual(cells.map(\.0), ["Name\n", "Owner\n", "retry\n", "ops\n", "budget\n", "\n"],
+                       "every cell, a short row's missing one included, is its own paragraph")
+        XCTAssertEqual(cells.map { [$0.1.row, $0.1.column] }, [[0, 0], [0, 1], [1, 0], [1, 1], [2, 0], [2, 1]])
+        XCTAssertEqual(cells.map(\.1.header), [true, true, false, false, false, false])
+        XCTAssertEqual(Set(cells.map(\.1.columns)), [2])
+        XCTAssertEqual(Set(cells.map(\.1.table)), [0])
+        XCTAssertEqual(cells[1].1.alignment, .trailing)
+        let ops = (doc.text as NSString).range(of: "ops")
+        XCTAssertTrue(doc.runs.contains(DocumentStyleRun(location: ops.location, length: ops.length, style: .emphasis)))
+    }
+
+    func testSeparateTablesGetSeparateIdentities() {
+        let doc = DocumentRendering.render("| A |\n|---|\n| 1 |\n\n| B |\n|---|\n| 2 |")
+        let tables = Set(doc.runs.compactMap { run -> Int? in
+            if case let .tableCell(cell) = run.style { return cell.table }
+            return nil
+        })
+        XCTAssertEqual(tables, [0, 1])
+    }
+
+    func testCSVRowsRenderAsATable() {
+        let doc = DocumentRendering.renderTable(rows: [["Name", "Owner"], ["retry", "ops"], ["solo"]])
+        XCTAssertEqual(doc.text, "Name\nOwner\nretry\nops\nsolo\n\n\n")
+        let cells = doc.runs.compactMap { run -> DocumentTableCell? in
+            if case let .tableCell(cell) = run.style { return cell }
+            return nil
+        }
+        XCTAssertEqual(cells.map(\.header), [true, true, false, false, false, false])
+        XCTAssertEqual(DocumentRendering.renderTable(rows: []).text, "")
+    }
+
+    func testListItemsCarryTheirMarkerLengthForAHangingIndent() {
+        let doc = DocumentRendering.render("- one\n  - nested\n- [x] two")
+        let items = doc.runs.compactMap { run -> (String, Int)? in
+            guard case let .listItem(marker) = run.style else { return nil }
+            let text = (doc.text as NSString).substring(with: NSRange(location: run.location, length: run.length))
+            return (text, marker)
+        }
+        XCTAssertEqual(items.map(\.1).sorted(), ["• ".utf16.count, "☑ ".utf16.count, "    • ".utf16.count].sorted())
+        XCTAssertTrue(items.contains { $0.0.hasPrefix("    • nested") && $0.1 == "    • ".utf16.count })
+        XCTAssertTrue(items.contains { $0.0.hasPrefix("• one") }, "the outer item spans its nested list too")
+    }
+
+    func testARuleIsALineNotDashes() {
+        let doc = DocumentRendering.render("Above.\n\n---\n\nBelow.")
+        XCTAssertFalse(doc.text.contains("—"))
+        XCTAssertTrue(doc.runs.contains { $0.style == .rule })
+    }
 }

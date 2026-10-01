@@ -243,26 +243,11 @@ struct ProjectTargetDetailCard: View {
     /// The chat composer's idiom: a rounded field and a round send button.
     private var composer: some View {
         HStack(alignment: .bottom, spacing: 8) {
-            TextField("Comment or answer the agent…", text: $commentDraft, axis: .vertical)
-                .textFieldStyle(.plain)
-                .lineLimit(1...6)
-                // Plain Return is left to the field (a new line); only ⌘↩
-                // or the button sends. ⌘↩ is handled here so it sends only
-                // while this field has focus: a window-wide shortcut would
-                // also fire from a terminal in the other split pane and
-                // post a stale draft.
-                .onKeyPress(.return, phases: .down) { press in
-                    guard press.modifiers.contains(.command) else { return .ignored }
-                    send()
-                    return .handled
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(RoundedRectangle(cornerRadius: 16).fill(Color(nsColor: .textBackgroundColor)))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 16)
-                        .strokeBorder(Color(nsColor: .separatorColor).opacity(0.6), lineWidth: 0.5)
-                )
+            // Return is a new line; ⌘↩ or ⌃↩ sends, and only while this
+            // field has focus: a window-wide shortcut would also fire from a
+            // terminal in the other split pane and post a stale draft.
+            CommentTextEditor(text: $commentDraft, placeholder: "Comment or answer the agent…",
+                              minHeight: 34, maxHeight: 140, cornerRadius: 16, onSubmit: send)
             Button(action: send) {
                 Image(systemName: "arrow.up.circle.fill")
                     .font(.system(size: 24))
@@ -270,7 +255,7 @@ struct ProjectTargetDetailCard: View {
             }
             .buttonStyle(.borderless)
             .disabled(!canSend)
-            .help("Comment (⌘↩)")
+            .help("Comment (⌘↩ or ⌃↩)")
             .accessibilityLabel("Comment")
             .padding(.bottom, 3)
         }

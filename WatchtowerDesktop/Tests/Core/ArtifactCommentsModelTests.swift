@@ -197,10 +197,13 @@ final class ArtifactCommentsModelTests: XCTestCase {
         XCTAssertNil(model.ranges[draft])
     }
 
-    func testNonDocumentKindsAnchorOnTheirRawContent() throws {
+    /// A table anchors on its cells as the panel shows them (#181: the
+    /// panel reads and comments on one rendering); a draft message on its
+    /// raw text.
+    func testNonDocumentKindsAnchorOnTheTextThePanelShows() throws {
         try store("a,b\nretry,small", message: 0, kind: "table")
         let model = makePanel().comments
-        XCTAssertEqual(model.rendered?.text, "a,b\nretry,small")
+        XCTAssertEqual(model.rendered?.text, "a\nb\nretry\nsmall\n\n")
         XCTAssertTrue(model.add(body: "Rename", selection: try range("retry", in: model)))
     }
 

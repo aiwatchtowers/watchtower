@@ -8,6 +8,16 @@ struct ProjectDocumentThreadsPanel: View {
     @Binding var activeThreadID: Int64?
 
     var body: some View {
+        ScrollViewReader { proxy in
+            threads
+                // A click on a highlight in the text brings its thread into view.
+                .onChange(of: activeThreadID) { _, id in
+                    if let id { withAnimation { proxy.scrollTo(id, anchor: .top) } }
+                }
+        }
+    }
+
+    private var threads: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
                 if !docVM.drafts.isEmpty {
@@ -47,6 +57,7 @@ struct ProjectDocumentThreadsPanel: View {
             onResolve: thread.root.isOpen ? { await docVM.resolve(thread.id) } : nil,
             onReopen: thread.root.isOpen ? nil : { await docVM.reopen(thread.id) }
         )
+        .id(thread.id)
         .onTapGesture { activeThreadID = thread.id }
     }
 }
