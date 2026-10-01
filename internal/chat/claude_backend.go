@@ -272,10 +272,11 @@ func (b *claudeBackend) projectSent() {
 // whether the session now holds them: a completed turn, or one killed after
 // the owner's cancel (it was streaming, so its message is in the session the
 // respawn resumes). A turn that failed in a way the files may have caused
-// (projectFileFailure) keeps them pending once more — the provider may have
-// rejected the whole request — and the second such failure gives them up.
-// Any other failure (rate limit, auth, a crash) keeps them pending without
-// counting: the app replays after it, and the fresh session carries them.
+// (projectFileFailure) — an error result, or the CLI crashing on the turn
+// (owner decision 2026-10-01: a crash counts too) — keeps them pending once
+// more, and the second such failure gives them up. Any other failure (rate
+// limit, auth, an outage) keeps them pending without counting: the app
+// replays after it, and the fresh session carries them.
 func (b *claudeBackend) settleProject(out outcome) {
 	switch {
 	case out.kind == outcomeDone && !out.failed:
@@ -283,11 +284,19 @@ func (b *claudeBackend) settleProject(out outcome) {
 	case out.kind == outcomeExited && b.wasCancelled():
 		b.projectSent()
 	case out.kind == outcomeDone && out.failed && projectFileFailure(out.code, out.msg):
-		if b.projectFailures++; b.projectFailures >= maxProjectFailures && !b.projectGivenUp {
-			b.projectGivenUp = true
-			fmt.Fprintf(b.warn(), "chat project files given up after %d failed turns: %s\n",
-				b.projectFailures, strings.Join(b.projectNames(), ", "))
+		b.countProjectFailure()
+	case out.kind == outcomeExited:
+		if code, _ := ClassifyClaudeError(out.msg); projectFileFailure(code, out.msg) {
+			b.countProjectFailure()
 		}
+	}
+}
+
+func (b *claudeBackend) countProjectFailure() {
+	if b.projectFailures++; b.projectFailures >= maxProjectFailures && !b.projectGivenUp {
+		b.projectGivenUp = true
+		fmt.Fprintf(b.warn(), "chat project files given up after %d failed turns: %s\n",
+			b.projectFailures, strings.Join(b.projectNames(), ", "))
 	}
 }
 

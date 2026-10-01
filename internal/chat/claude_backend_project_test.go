@@ -438,3 +438,30 @@ func TestClaudeBackend_OwnerFilesLeaveNoRoomForAProjectFile(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(string(line), `"type":"document"`))
 	assert.NotContains(t, string(line), "not attached")
 }
+
+// Owner decision 2026-10-01: a CLI that crashes on a turn carrying the
+// project files counts as a failed turn too — after two, the files are given
+// up (named to the model), so a file the CLI cannot handle never crash-loops
+// every replay.
+func TestClaudeBackend_CrashesOnProjectFilesGiveThemUpAfterTwo(t *testing.T) {
+	opts, f := fakeClaude(t, "crash_always")
+	att, marker := projectFixture(t)
+	var warn bytes.Buffer
+	opts.Warn = &warn
+	opts.ProjectAttachments = []Attachment{att}
+	h := startSession(t, NewClaudeBackend(opts), nil)
+	h.next(EventSessionReady)
+	for i, id := range []string{"t1", "t2", "t3"} {
+		h.send(Command{Type: CommandTurn, TurnID: id, Text: "q", Replay: i > 0})
+		h.next(EventError)
+	}
+	require.NoError(t, h.finish())
+
+	lines := stdinLines(t, f.stdin)
+	require.Len(t, lines, 3)
+	assert.Contains(t, lines[0], marker)
+	assert.Contains(t, lines[1], marker, "one retry after a crash")
+	assert.NotContains(t, lines[2], marker, "then the files no longer crash the turns")
+	assert.Contains(t, lines[2], "Project files not attached in this session")
+	assert.Contains(t, warn.String(), "given up after 2 failed turns: spec.pdf")
+}
