@@ -41,12 +41,18 @@ struct ProjectBoardView: View {
                 vm.onOwnerWrite = { [weak projects = appState.projectsViewModel] project, subject in
                     projects?.onOwnerWrite?(project, subject)
                 }
+                vm.onPollTick = { [weak projects = appState.projectsViewModel, projectID] in
+                    Task { await projects?.refreshDrift(projectID: projectID) }
+                }
                 vm.load()
                 viewModel = vm
             }
             viewModel?.startPolling()
         }
         .onDisappear { viewModel?.stopPolling() }
+        .task(id: projectID) {
+            await appState.projectsViewModel?.refreshDrift(projectID: projectID, force: true)
+        }
     }
 
     // MARK: - Board (list or kanban)
@@ -56,6 +62,16 @@ struct ProjectBoardView: View {
         return VStack(alignment: .leading, spacing: 0) {
             header(vm, kanban: kanban)
                 .padding(8)
+            if let projects = appState.projectsViewModel {
+                ProjectDriftBanner(
+                    report: projects.drift[projectID],
+                    error: projects.driftErrors[projectID],
+                    onSelect: { vm.select($0) },
+                    onRefresh: { Task { await projects.refreshDrift(projectID: projectID, force: true) } }
+                )
+                .padding(.horizontal, 8)
+                .padding(.bottom, 6)
+            }
             // Board-level, not in the detail pane: a kanban drop can fail for
             // a card that is not the selected one (or with nothing selected).
             if let error = vm.errorMessage {

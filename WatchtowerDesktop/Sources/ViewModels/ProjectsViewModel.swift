@@ -153,6 +153,15 @@ final class ProjectsViewModel {
     var boardLanguageErrors: [Int64: String] = [:]
     /// Projects a board-language change is running for; the menu is disabled meanwhile.
     private(set) var settingBoardLanguage: Set<Int64> = []
+    /// The last board drift check per project (PROJ-07, `project check`).
+    /// Kept here, not on the board pane, so a result survives navigation.
+    private(set) var drift: [Int64: ProjectDriftReport] = [:]
+    /// Why the last drift check of a project failed; the next success clears it.
+    private(set) var driftErrors: [Int64: String] = [:]
+    private var driftCheckedAt: [Int64: Date] = [:]
+    private var checkingDrift: Set<Int64> = []
+    /// How often the open Board pane re-runs the check (git work in the folder).
+    static let driftMinInterval: TimeInterval = 30
 
     let dbPool: DatabasePool
     private let cli: ProjectCLI?
@@ -370,6 +379,26 @@ final class ProjectsViewModel {
             if error is CancellationError || Task.isCancelled { return }
             // The last known status stays, so its Repair button stays too.
             statusReadErrors[projectID] = "Could not read the install status: \(error.localizedDescription)"
+        }
+    }
+
+    /// Runs the offline drift check for a project. The open Board pane's poll
+    /// asks for it on every tick and gets one at most every `driftMinInterval`
+    /// (`force` = the owner's Refresh or the pane appearing); one check per
+    /// project runs at a time, and a result is keyed by its own project id.
+    func refreshDrift(projectID: Int64, force: Bool = false, now: Date = Date()) async {
+        guard let cli, !checkingDrift.contains(projectID) else { return }
+        if !force, let last = driftCheckedAt[projectID], now.timeIntervalSince(last) < Self.driftMinInterval { return }
+        checkingDrift.insert(projectID)
+        defer { checkingDrift.remove(projectID) }
+        driftCheckedAt[projectID] = now
+        do {
+            drift[projectID] = try await cli.checkDrift(projectID: projectID)
+            driftErrors[projectID] = nil
+        } catch {
+            if error is CancellationError || Task.isCancelled { return }
+            // The last known result stays on screen beside the error.
+            driftErrors[projectID] = "Could not check the board against git: \(error.localizedDescription)"
         }
     }
 

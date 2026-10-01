@@ -51,6 +51,12 @@ final class ProjectBoardViewModel {
     /// owner's own change (e.g. a target the owner marked done).
     var onOwnerWrite: ((Int64, ProjectSubject) -> Void)?
 
+    /// Called on every poll tick while the pane is on screen: the view asks
+    /// for a drift check (`ProjectsViewModel.refreshDrift`, throttled there),
+    /// so a git change — a merge, a fetch — that never touches the board
+    /// shows too.
+    var onPollTick: (() -> Void)?
+
     private let dbPool: DatabasePool
     private let preferences: ProjectBoardPreferences
     private var fingerprint = ""
@@ -111,6 +117,7 @@ final class ProjectBoardViewModel {
                 try? await Task.sleep(for: interval)
                 guard !Task.isCancelled, let self else { return }
                 self.refreshIfChanged()
+                self.onPollTick?()
             }
         }
     }

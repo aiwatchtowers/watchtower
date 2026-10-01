@@ -114,12 +114,17 @@ struct ProjectPageView: View {
                         Label("Repair install", systemImage: "wrench.and.screwdriver")
                     }
                     .disabled(vm.repairing.contains(project.id))
-                    .help("Skill \(status.skill) · hook \(status.hook ? "on" : "missing") · MCP \(status.mcp ? "on" : "missing")")
+                    .help(repairHelp(status))
                 } else if status.claudeFound || status.mcp {
                     Label("Installed", systemImage: "checkmark.seal").foregroundStyle(.secondary).font(.caption)
                 }
             }
         }
+    }
+
+    private func repairHelp(_ status: ProjectInstallStatus) -> String {
+        "Skill \(status.skill) · hook \(status.hook ? "on" : "missing") · "
+            + "drift hook \(status.stopHook ? "on" : "missing") · MCP \(status.mcp ? "on" : "missing")"
     }
 
     /// Repair cannot register the MCP server without `claude`; name the gap

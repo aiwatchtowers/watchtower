@@ -248,7 +248,7 @@ dual path.
 
 ## PROJ-07 — board drift is surfaced, and the Stop hook never traps a turn
 
-**Status:** Enforced (Go)
+**Status:** Enforced (Go; the Desktop shows the same check)
 
 **Observable:** A project target may carry a git `branch` and a pull request
 `pr` (migration `00089`; set by `create_targets`/`update_target`; one token,
@@ -289,7 +289,13 @@ false, so it blocks at most once per stop and a turn can never loop on it. It
 always exits 0, a panic included; stdout stays empty on every failure, and a
 real failure (bad id, no config, a missing folder, time ran out) is one
 stderr line, while a deleted project's leftover hook says nothing at all.
-`project brief` shows every finding (offline, 4 s budget).
+`project brief` shows every finding (offline, 4 s budget), and so does the
+Desktop board: `ProjectsViewModel.refreshDrift` runs `project check --json
+--no-network` when the Board pane appears, on the owner's Refresh, and every
+30 s while the pane polls, and `ProjectDriftBanner` lists the findings (a
+failed or partial check is shown as such, never as "in step") — the Desktop decodes, never
+re-derives them (`ProjectDriftReport`). `integrate status --json` reports
+`stop_hook`, and a project without it is offered Repair.
 
 **Why locked:** Owner request (board target #131). The agent finished and
 merged work but never moved its targets, so a board that looks alive lied
@@ -301,6 +307,7 @@ timeout would be worse than none.
 - `cmd/project_check_test.go::TestProj07_StopHookBlocksOnceWithTheDrift`
 - `cmd/project_check_test.go::TestProj07_StopHookIsSilentWithoutGitDrift`
 - `cmd/project_check_test.go::TestProj07_StopHookFailuresAreSilent`
+- `WatchtowerDesktop/Tests/ProjectsViewModelDriftTests.swift`, `WatchtowerDesktop/Tests/Core/ProjectDriftReportTests.swift`, `WatchtowerDesktop/Tests/ProjectCLITests.swift::testMissingStopHookNeedsRepair`
 - `internal/projectcheck/check_test.go` — `TestProj07_GitRules`, `TestProj07_SharedBranchAndParents`, `TestProj07_GitErrorsAreNeverFindings`, `TestProj07_NoGitCallOutsideARepository`, `TestProj07_ReadsNothingButGit`, `TestProj07_DeadlineReportsIncompleteNeverFalseFindings`, `TestProj07_MidWalkDeadlineKeepsEarlierFindingsOnly`
 
 **Locked since:** 2026-10-01
@@ -379,6 +386,7 @@ timeout would be worse than none.
 
 - 2026-10-01 (board item #84): document comments are drafted at the selection (a floating Comment button or the context menu) and kept as in-memory drafts until **Send N comments to Claude**, which writes them as ordinary owner `project_comments` rows in one transaction before typing the unchanged one-line prompt (never submitted, control scalars removed). No draft state reaches the DB, so the agent's channels (`list_comments`, the brief, the board counters) are unchanged; PROJ-03 unchanged. No contract semantics or guard tests changed.
 
+- 2026-10-01 (board target #131, Desktop half): the Board pane shows the PROJ-07 drift (`ProjectDriftBanner`, `ProjectsViewModel.refreshDrift` over `project check --json --no-network`), and `ProjectInstallStatus` decodes `stop_hook` so a project without the Stop hook is offered Repair. PROJ-07's Status and guards updated; no contract semantics changed.
 - 2026-10-01 (board target #122): board language — `projects.board_language` (migration `00087`; empty = follow the session language, else a language name or tag validated by `db.NormalizeBoardLanguage`: letters of any script, spaces and hyphens with at least one letter, at most 3 words / 40 runes), set by `watchtower project update <id> --board-language`, the Desktop project page (through that command) and the project-session `update_project` (`board_language`; `description` becomes optional, one of the two is required). The brief and `project_info` carry one `Board language:` line (`tools.BoardLanguageLine`) and the `watchtower-project` skill's Board language section tells every session to write targets, intents and comments in it (code identifiers, paths and plan references unchanged). `terminal title` appends the override to its prompt at run time; imported document titles are the files' own and are not translated. No contract semantics or guard tests changed.
 
 - 2026-10-01 (board item #80): the Desktop Documents pane's **Add Document…** attaches a `.md`/`.txt` file inside the folder as `origin='owner'` through the new `watchtower project attach-doc <id> <path> [--kind --title --target --json]` (the same folder/symlink/extension checks as `attach_document`, shared via `tools.ResolveProjectDocumentPath`; an already attached path — compared ignoring case — is left untouched). The Desktop process itself still writes only `project_comments` rows: the document row is the CLI's write, and no one writes the file (PROJ-03 unchanged); the badge, revised dot and "ready for review" notification now count `origin='agent'` documents only. No contract semantics or guard tests changed.

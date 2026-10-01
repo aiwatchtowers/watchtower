@@ -70,7 +70,7 @@ When a target comes from a message in which the owner shared an image — a scre
 
 ## Keeping the board in step with git
 
-The board must never lag the work. Watchtower checks it against git: at the end of every turn a Stop hook compares the targets' branches with the default branch, and when they disagree it hands you the list before you may finish; the session brief shows the same drift (`watchtower project check --project <id>` prints it on demand). The check never fetches: after merging on GitHub, `git fetch` so it sees the merge.
+The board must never lag the work. Watchtower checks it against git: at the end of every turn a Stop hook compares the targets' branches with the default branch, and when they disagree it hands you the list before you may finish; the session brief and the owner's board in the Watchtower app show the same drift (`watchtower project check --project <id>` prints it on demand). The check never fetches: after merging on GitHub, `git fetch` so it sees the merge.
 
 - **When you start work on a target**, set its `branch` with `update_target` (the plain local branch name, e.g. `feature/x` — no `origin/`) in the same call that sets it `in_progress`; once a pull request exists, set `pr` (its number or URL). A plan task done on the feature branch carries that branch too.
 - **After a merge**, walk the pull request's targets: every target whose work landed goes to `done`. Do not leave merged work `in_progress` or `in_review`.
