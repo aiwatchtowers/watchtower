@@ -23,6 +23,7 @@ struct ProjectSessionsPanel: View {
                         TerminalSessionRow(session: session, isLive: vm.isLive(session), actions: actions)
                             .tag(WorkspacePane.session(session.id))
                     }
+                    .onMove { vm.moveSessions(projectID: project.id, from: $0, to: $1) }
                 }
             }
             .panelListStyle()

@@ -11,10 +11,11 @@ struct TerminalsSection: View {
 
     var body: some View {
         Section {
-            ForEach(vm.standaloneSessions) { session in
+            ForEach(vm.orderedSessions(projectID: nil)) { session in
                 TerminalSessionRow(session: session, isLive: vm.isLive(session), actions: actions)
                     .tag(ProjectsPanelItem.terminal(session.id))
             }
+            .onMove { vm.moveSessions(projectID: nil, from: $0, to: $1) }
             // Shown on the terminal's own page when one is on screen.
             if vm.selectedStandalone == nil, let error = vm.standaloneSessionError {
                 Text(error).font(.caption).foregroundStyle(.red).listRowSeparator(.hidden)

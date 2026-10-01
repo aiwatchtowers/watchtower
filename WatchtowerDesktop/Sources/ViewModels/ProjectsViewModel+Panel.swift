@@ -10,9 +10,30 @@ extension ProjectsViewModel {
         summaries.first { $0.id == drilledProjectID }?.project
     }
 
-    /// Level 2's sessions, most recently active first.
+    /// Level 2's sessions in the panel's order (`TerminalSessionOrder`).
     var drilledSessions: [TerminalSession] {
-        drilledProjectID.flatMap { terminalSessions[$0] } ?? []
+        drilledProjectID.map { orderedSessions(projectID: $0) } ?? []
+    }
+
+    /// A session list in the panel's order: stable while the owner switches
+    /// sessions — opening one never moves it — and changed only by a drag.
+    /// `projectID` nil = the standalone terminals.
+    func orderedSessions(projectID: Int64?) -> [TerminalSession] {
+        let rows = projectID.map { terminalSessions[$0] ?? [] } ?? standaloneSessions
+        return TerminalSessionOrder.apply(rows, saved: sessionOrder(projectID: projectID))
+    }
+
+    /// A drag in a session list; the new order is saved for that list.
+    func moveSessions(projectID: Int64?, from source: IndexSet, to destination: Int) {
+        let order = TerminalSessionOrder.move(orderedSessions(projectID: projectID), from: source, to: destination)
+        sessionOrders[projectID] = order
+        defaults.set(order.map(NSNumber.init(value:)), forKey: TerminalSessionOrder.key(projectID: projectID))
+    }
+
+    private func sessionOrder(projectID: Int64?) -> [Int64] {
+        if let cached = sessionOrders[projectID] { return cached }
+        let stored = defaults.array(forKey: TerminalSessionOrder.key(projectID: projectID)) as? [NSNumber] ?? []
+        return stored.map(\.int64Value)
     }
 
     var selectedStandalone: TerminalSession? {
