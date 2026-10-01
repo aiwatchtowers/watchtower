@@ -129,13 +129,21 @@ func (t *ClaudeTranslator) SessionID() string {
 // Feed translates one stdout line. A blank line yields nothing; a line that
 // is not JSON is an error the caller may log and skip.
 func (t *ClaudeTranslator) Feed(line []byte) ([]Event, error) {
+	evs, _, err := t.feed(line)
+	return evs, err
+}
+
+// feed is Feed that also returns the session id the line itself carries
+// ("" when it carries none) — the backend learns a fresh child's id from its
+// first line, long before the turn's result reports it.
+func (t *ClaudeTranslator) feed(line []byte) ([]Event, string, error) {
 	line = bytes.TrimSpace(line)
 	if len(line) == 0 {
-		return nil, nil
+		return nil, "", nil
 	}
 	var l claudeLine
 	if err := json.Unmarshal(line, &l); err != nil {
-		return nil, fmt.Errorf("decoding claude stream line: %w", err)
+		return nil, "", fmt.Errorf("decoding claude stream line: %w", err)
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -145,15 +153,15 @@ func (t *ClaudeTranslator) Feed(line []byte) ([]Event, error) {
 	switch l.Type {
 	case "stream_event":
 		if l.Event == nil || (l.ParentToolUseID != nil && *l.ParentToolUseID != "") {
-			return nil, nil
+			return nil, l.SessionID, nil
 		}
-		return t.streamEvent(l.Event), nil
+		return t.streamEvent(l.Event), l.SessionID, nil
 	case "user":
-		return t.toolResults(l.Message), nil
+		return t.toolResults(l.Message), l.SessionID, nil
 	case "result":
-		return t.result(l), nil
+		return t.result(l), l.SessionID, nil
 	}
-	return nil, nil
+	return nil, l.SessionID, nil
 }
 
 func (t *ClaudeTranslator) streamEvent(ev *claudeStreamEv) []Event {

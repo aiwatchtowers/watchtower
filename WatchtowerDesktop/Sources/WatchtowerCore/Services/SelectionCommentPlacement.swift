@@ -1,8 +1,11 @@
 import CoreGraphics
 
 /// Where the floating "Comment" button sits next to a text selection
-/// (Google Docs style): level with the selection's first line, just past its
-/// trailing edge, kept inside the visible text area. Pure.
+/// (Google Docs style), never on the selected text (#165): just past the
+/// selection's trailing edge level with its first line when that fits, else
+/// above the selection, else below it, flush with its trailing edge; only a
+/// selection filling the whole view leaves it overlapping, at the top right.
+/// Always inside the visible text area. Pure.
 package enum SelectionCommentPlacement {
     package static let gap: CGFloat = 6
 
@@ -18,9 +21,16 @@ package enum SelectionCommentPlacement {
               selection.intersects(CGRect(origin: .zero, size: container)) else { return nil }
         let maxX = max(0, container.width - button.width - gap)
         let maxY = max(0, container.height - button.height)
-        let x = min(max(selection.maxX + gap, 0), maxX)
-        let y = min(max(selection.minY, 0), maxY)
-        return CGPoint(x: x, y: y)
+        let clampedY = min(max(selection.minY, 0), maxY)
+        if selection.maxX + gap <= maxX {
+            return CGPoint(x: max(selection.maxX + gap, 0), y: clampedY)
+        }
+        let trailingX = min(max(selection.maxX - button.width, 0), maxX)
+        let above = selection.minY - gap - button.height
+        if above >= 0 { return CGPoint(x: trailingX, y: above) }
+        let below = selection.maxY + gap
+        if below <= maxY { return CGPoint(x: trailingX, y: below) }
+        return CGPoint(x: maxX, y: clampedY)
     }
 }
 

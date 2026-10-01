@@ -36,22 +36,13 @@ struct CommentThreadView: View {
                 Text(note).font(.caption2).foregroundStyle(.secondary)
             }
             if onReply != nil {
-                TextField("Reply", text: $draft, axis: .vertical)
-                    .textFieldStyle(.roundedBorder)
-                    .lineLimit(1...4)
+                CommentTextEditor(text: $draft, placeholder: "Reply", maxHeight: 100, onSubmit: reply)
             }
             HStack {
-                if let onReply {
-                    Button("Reply") {
-                        let text = draft
-                        sending = true
-                        Task {
-                            let saved = await onReply(text)
-                            draft = Self.draftAfterReply(sent: text, current: draft, saved: saved)
-                            sending = false
-                        }
-                    }
-                    .disabled(sending || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                if onReply != nil {
+                    Button("Reply", action: reply)
+                        .disabled(!canReply)
+                        .help("Reply (⌘↩ or ⌃↩)")
                 }
                 Spacer()
                 if let onDelete { Button("Delete", role: .destructive) { Task { await onDelete() } } }
@@ -65,6 +56,21 @@ struct CommentThreadView: View {
             RoundedRectangle(cornerRadius: 6)
                 .fill(isActive ? Color.yellow.opacity(0.15) : Color(nsColor: .controlBackgroundColor))
         )
+    }
+
+    private var canReply: Bool {
+        !sending && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func reply() {
+        guard let onReply, canReply else { return }
+        let text = draft
+        sending = true
+        Task {
+            let saved = await onReply(text)
+            draft = Self.draftAfterReply(sent: text, current: draft, saved: saved)
+            sending = false
+        }
     }
 
     /// The draft after a reply attempt: kept on a failed write (so the owner's

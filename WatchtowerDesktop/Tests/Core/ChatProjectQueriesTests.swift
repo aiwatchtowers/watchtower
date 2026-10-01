@@ -165,4 +165,73 @@ final class ChatProjectQueriesTests: XCTestCase {
             XCTAssertEqual(try Int.fetchOne(d, sql: "SELECT COUNT(*) FROM chat_project_sources"), 0)
         }
     }
+
+    // MARK: - Stored sessions (a `--resume` keeps the prompt it was started with)
+
+    /// A conversation in `projectID` and one outside it, both with a stored
+    /// Claude session.
+    private func chatsWithSessions(_ d: Database, projectID: Int64) throws -> (inside: Int64, outside: Int64) {
+        let inside = try insertConversation(d, title: "in", projectID: projectID)
+        let outside = try insertConversation(d, title: "out", projectID: nil)
+        try d.execute(sql: "UPDATE chat_conversations SET session_id = 'sess-' || id")
+        return (inside, outside)
+    }
+
+    private func sessionID(_ d: Database, _ id: Int64) throws -> String? {
+        try String.fetchOne(d, sql: "SELECT session_id FROM chat_conversations WHERE id = ?", arguments: [id])
+    }
+
+    /// Every write that changes the project's prompt or files drops the
+    /// stored session of the project's chats — and only theirs.
+    func testPromptChangingWritesDropTheProjectsStoredSessions() throws {
+        let writes: [(String, (Database, Int64) throws -> Void)] = [
+            ("instructions", { d, pid in try ChatProjectQueries.updateInstructions(d, id: pid, instructions: "new") }),
+            ("add source", { d, pid in
+                try ChatProjectQueries.addSource(d, projectID: pid, kind: .jiraProject, ref: "PAY", label: "Payments")
+            }),
+            ("remove source", { d, pid in
+                try ChatProjectQueries.addSource(d, projectID: pid, kind: .jiraProject, ref: "OPS", label: "Ops")
+                try d.execute(sql: "UPDATE chat_conversations SET session_id = 'sess-' || id")
+                let sourceID = try XCTUnwrap(ChatProjectQueries.sources(d, projectID: pid).first?.id)
+                try ChatProjectQueries.removeSource(d, id: sourceID)
+            }),
+            ("remove file", { d, pid in
+                let fileID = try self.insertProjectFile(d, projectID: pid, path: "/tmp/x.pdf")
+                _ = try ChatProjectQueries.removeFile(d, id: fileID)
+            })
+        ]
+        for (name, write) in writes {
+            try db.write { d in
+                let project = try ChatProjectQueries.create(d, name: name)
+                let chats = try chatsWithSessions(d, projectID: project.id)
+                try write(d, project.id)
+                XCTAssertNil(try sessionID(d, chats.inside), name)
+                XCTAssertEqual(try sessionID(d, chats.outside), "sess-\(chats.outside)", name)
+            }
+        }
+    }
+
+    func testDuplicateSourceAndRenameKeepTheStoredSessions() throws {
+        try db.write { d in
+            let project = try ChatProjectQueries.create(d, name: "P")
+            try ChatProjectQueries.addSource(d, projectID: project.id, kind: .jiraProject, ref: "PAY", label: "Payments")
+            let chats = try chatsWithSessions(d, projectID: project.id)
+            XCTAssertFalse(try ChatProjectQueries.addSource(d, projectID: project.id, kind: .jiraProject,
+                                                            ref: "PAY", label: "Payments"))
+            try ChatProjectQueries.rename(d, id: project.id, name: "Q")
+            XCTAssertEqual(try sessionID(d, chats.inside), "sess-\(chats.inside)")
+        }
+    }
+
+    /// The chats survive the delete detached, and none of them may resume a
+    /// session that still carries the deleted project's prompt.
+    func testDeleteDropsTheDetachedChatsStoredSessions() throws {
+        try db.write { d in
+            let project = try ChatProjectQueries.create(d, name: "P")
+            let chats = try chatsWithSessions(d, projectID: project.id)
+            _ = try ChatProjectQueries.delete(d, id: project.id)
+            XCTAssertNil(try sessionID(d, chats.inside))
+            XCTAssertEqual(try sessionID(d, chats.outside), "sess-\(chats.outside)")
+        }
+    }
 }

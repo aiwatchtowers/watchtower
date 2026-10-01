@@ -88,11 +88,9 @@ struct ProjectDocumentsView: View {
                         composerText: $composerText,
                         horizontalInset: ReadableColumn.horizontalInset(forWidth: geo.size.width),
                         scrollTarget: scrollTarget,
-                        onComment: { body, range in
-                            guard docVM.addDraft(body: body, selection: range) else { return false }
-                            showThreads = true
-                            return true
-                        },
+                        // The owner's show/hide choice survives a new draft:
+                        // its highlight and the Threads count show it landed.
+                        onComment: { body, range in docVM.addDraft(body: body, selection: range) },
                         onClick: { location in
                             guard let id = docVM.threadID(at: location) else { return }
                             activeThreadID = id

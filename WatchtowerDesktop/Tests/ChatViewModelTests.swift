@@ -968,6 +968,86 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertNil(stored?.sessionID, "the old-project session id is not recorded")
     }
 
+    /// Editing a project's instructions reaches its existing chats: the
+    /// stored session is dropped and the warm process retired, so the next
+    /// turn spawns fresh (new prompt) without `--resume` and replays.
+    func testProjectInstructionsEditRespawnsTheChatWithoutResume() async throws {
+        let vm = try makeViewModel()
+        let projectID = try XCTUnwrap(vm.createProject(name: "P"))
+        vm.newConversation(projectID: projectID)
+        vm.send(text: "q1")
+        let first = try lastFake()
+        first.emit(.textDelta(turnID: "turn-1", text: "a1"))
+        first.emit(.turnDone(turnID: "turn-1", status: .complete, sessionID: "sess-1"))
+        let done = await waitForCondition { !vm.isStreaming && vm.currentConversation?.sessionID == "sess-1" }
+        XCTAssertTrue(done)
+
+        try await dbManager.dbPool.write { try ChatProjectQueries.updateInstructions($0, id: projectID, instructions: "Use bullets.") }
+        vm.projectPromptChanged(projectID)
+        XCTAssertNil(vm.currentConversation?.sessionID, "the session carries the old instructions")
+
+        vm.send(text: "q2")
+        let launched = await waitForCondition { self.fakes.count == 2 && self.fakes[1].turns.count == 1 }
+        XCTAssertTrue(launched, "the warm process with the old prompt is not reused")
+        let second = try lastFake()
+        XCTAssertFalse(second.arguments.contains("--resume"))
+        XCTAssertEqual(second.turns.last?.replay, true, "the fresh session replays the history")
+    }
+
+    /// An edit while a turn streams never cuts it, but its session id is not
+    /// recorded at `turn_done` and the process is not reused afterwards.
+    func testProjectEditDuringAStreamingTurnIgnoresTheLateSessionID() async throws {
+        let vm = try makeViewModel()
+        let projectID = try XCTUnwrap(vm.createProject(name: "P"))
+        let convID = try XCTUnwrap(vm.newConversation(projectID: projectID))
+        vm.send(text: "q1")
+        let first = try lastFake()
+        first.emit(.textDelta(turnID: "turn-1", text: "a1"))
+        _ = await waitForCondition { vm.liveTurn?.fullText == "a1" }
+
+        try await dbManager.dbPool.write { try ChatProjectQueries.updateInstructions($0, id: projectID, instructions: "New.") }
+        vm.projectPromptChanged(projectID)
+        XCTAssertTrue(vm.isStreaming, "a running turn is never cut")
+        XCTAssertFalse(first.terminated)
+        first.emit(.turnDone(turnID: "turn-1", status: .complete, sessionID: "sess-late"))
+        let done = await waitForCondition { !vm.isStreaming && vm.thread.last?.message.status == "complete" }
+        XCTAssertTrue(done)
+        let stored = try await dbManager.dbPool.read { d in try ChatConversationQueries.fetchByID(d, id: convID) }
+        XCTAssertNil(stored?.sessionID, "the stale session id is not recorded")
+
+        vm.send(text: "q2")
+        let launched = await waitForCondition { self.fakes.count == 2 && self.fakes[1].turns.count == 1 }
+        XCTAssertTrue(launched, "the session with the old prompt is replaced after its turn")
+        XCTAssertFalse(try lastFake().arguments.contains("--resume"))
+    }
+
+    /// Deleting the project detaches its chats; the shown one's warm
+    /// session (spawned with the project prompt) is not reused or resumed.
+    func testProjectDeleteRespawnsTheDetachedChatWithoutResume() async throws {
+        let vm = try makeViewModel()
+        let projectID = try XCTUnwrap(vm.createProject(name: "P"))
+        vm.newConversation(projectID: projectID)
+        vm.send(text: "q1")
+        let first = try lastFake()
+        first.emit(.turnDone(turnID: "turn-1", status: .complete, sessionID: "sess-1"))
+        let done = await waitForCondition { !vm.isStreaming && vm.currentConversation?.sessionID == "sess-1" }
+        XCTAssertTrue(done)
+
+        _ = try await dbManager.dbPool.write { try ChatProjectQueries.delete($0, id: projectID) }
+        vm.projectDeleted(projectID)
+        XCTAssertNil(vm.currentConversation?.sessionID)
+        let closed = await waitForCondition { first.terminated }
+        XCTAssertTrue(closed, "the warm process with the deleted project's prompt goes")
+
+        vm.send(text: "q2")
+        let launched = await waitForCondition { self.fakes.count == 2 && self.fakes[1].turns.count == 1 }
+        XCTAssertTrue(launched)
+        let second = try lastFake()
+        XCTAssertFalse(second.arguments.contains("--resume"))
+        XCTAssertFalse(second.arguments.contains("--project-id"))
+        XCTAssertEqual(second.turns.last?.replay, true)
+    }
+
     func testProjectDeletedClosesThePageAndDetachesTheShownChat() throws {
         let vm = try makeViewModel()
         let projectID = try XCTUnwrap(vm.createProject(name: "P"))

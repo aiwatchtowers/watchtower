@@ -2,61 +2,6 @@ import AppKit
 import SwiftUI
 import WatchtowerCore
 
-/// Rendered text → `NSAttributedString`: fonts per style run, then a
-/// yellow background on every anchored thread (stronger on the active one)
-/// and a blue one on every unsent draft comment.
-enum DocumentAttributedString {
-    static let bodyFont = NSFont.systemFont(ofSize: 14)
-    static let highlight = NSColor.systemYellow.withAlphaComponent(0.25)
-    static let activeHighlight = NSColor.systemYellow.withAlphaComponent(0.55)
-    static let draftHighlight = NSColor.systemBlue.withAlphaComponent(0.2)
-
-    static func make(
-        _ doc: RenderedDocument,
-        highlights: [Int64: NSRange],
-        activeThreadID: Int64?,
-        drafts: [NSRange] = []
-    ) -> NSAttributedString {
-        let out = NSMutableAttributedString(
-            string: doc.text,
-            attributes: [.font: bodyFont, .foregroundColor: NSColor.labelColor]
-        )
-        let length = out.length
-        for run in doc.runs where run.location + run.length <= length {
-            out.addAttributes(attributes(for: run.style), range: NSRange(location: run.location, length: run.length))
-        }
-        for (id, range) in highlights where NSMaxRange(range) <= length {
-            out.addAttribute(.backgroundColor, value: id == activeThreadID ? activeHighlight : highlight, range: range)
-        }
-        for range in drafts where NSMaxRange(range) <= length {
-            out.addAttribute(.backgroundColor, value: draftHighlight, range: range)
-        }
-        return out
-    }
-
-    static func attributes(for style: DocumentStyle) -> [NSAttributedString.Key: Any] {
-        switch style {
-        case let .heading(level):
-            [.font: NSFont.systemFont(ofSize: level == 1 ? 22 : level == 2 ? 18 : 15, weight: .semibold)]
-        case .strong:
-            [.font: NSFont.boldSystemFont(ofSize: 14)]
-        case .emphasis:
-            [.font: NSFontManager.shared.convert(bodyFont, toHaveTrait: .italicFontMask)]
-        case .strikethrough:
-            [.strikethroughStyle: NSUnderlineStyle.single.rawValue]
-        case .code, .codeBlock:
-            [.font: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular),
-             .backgroundColor: NSColor.quaternaryLabelColor]
-        case .quote:
-            [.foregroundColor: NSColor.secondaryLabelColor]
-        case .link:
-            // Styled only: a click selects text for commenting, it never opens
-            // a URL from a document the agent wrote.
-            [.foregroundColor: NSColor.linkColor, .underlineStyle: NSUnderlineStyle.single.rawValue]
-        }
-    }
-}
-
 /// Which selection survives a text re-apply. A selection is a numeric range,
 /// so it is only meaningful on the exact text it was made on: carried across
 /// a re-style of the same content (a highlight change), dropped whenever the
@@ -105,13 +50,8 @@ struct DocumentTextView: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
     func makeNSView(context: Context) -> NSScrollView {
-        let scroll = NSTextView.scrollableTextView()
+        let scroll = Self.makeScrollView(horizontalInset: horizontalInset)
         guard let textView = scroll.documentView as? NSTextView else { return scroll }
-        textView.isEditable = false
-        textView.isSelectable = true
-        textView.isRichText = true
-        textView.drawsBackground = false
-        textView.textContainerInset = NSSize(width: horizontalInset, height: 16)
         textView.delegate = context.coordinator
         context.coordinator.apply(text, contentID: contentID, to: textView)
         context.coordinator.observeGeometry(of: scroll)
@@ -120,14 +60,39 @@ struct DocumentTextView: NSViewRepresentable {
         return scroll
     }
 
+    /// The read-only text view in its scroll view, on TextKit 1 from the
+    /// start: `NSTextTable` (rendered tables) needs it, and the selection
+    /// geometry reads `layoutManager` — on a TextKit 2 view that first read
+    /// switches it to TextKit 1 mid-session and lays the whole text out
+    /// again, so the owner's first selection could move the text (#179).
+    static func makeScrollView(horizontalInset: CGFloat) -> NSScrollView {
+        let scroll = NSTextView.scrollableTextView()
+        guard let textView = scroll.documentView as? NSTextView else { return scroll }
+        _ = textView.layoutManager // opts this view into TextKit 1 while it is still empty
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.isRichText = true
+        textView.drawsBackground = false
+        textView.textContainerInset = NSSize(width: horizontalInset, height: 16)
+        return scroll
+    }
+
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         context.coordinator.parent = self
         guard let textView = scroll.documentView as? NSTextView else { return }
-        if textView.textContainerInset.width != horizontalInset {
-            textView.textContainerInset = NSSize(width: horizontalInset, height: 16)
-        }
+        Self.setInset(horizontalInset, on: textView)
         context.coordinator.apply(text, contentID: contentID, to: textView)
         context.coordinator.scroll(textView, to: scrollTarget)
+    }
+
+    /// A new inset re-wraps every line: the line the owner reads stays at
+    /// the top. (A width change needs no help — NSTextView keeps its top
+    /// line itself.)
+    static func setInset(_ inset: CGFloat, on textView: NSTextView) {
+        guard textView.textContainerInset.width != inset else { return }
+        let anchor = ReadingAnchor.top(of: textView)
+        textView.textContainerInset = NSSize(width: inset, height: 16)
+        anchor?.restore(in: textView)
     }
 
     static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
@@ -144,21 +109,23 @@ struct DocumentTextView: NSViewRepresentable {
             self.parent = parent
         }
 
-        /// Replaces the text only when it changed. The same content (a
-        /// highlight change) keeps the selection and scroll position; new
+        /// Replaces the text only when it changed. The same characters (a
+        /// highlight change, a new comment, a re-read of an unchanged file)
+        /// keep the reading position; new characters start at the top. New
         /// content clears the selection — in the view and in the binding.
         func apply(_ text: NSAttributedString, contentID: String, to textView: NSTextView) {
             let sameContent = shownID == contentID
             if sameContent, let shown, shown === text || shown.isEqual(to: text) { return }
+            let sameText = shown?.string == text.string
             shown = text
             shownID = contentID
             applying = true
             let selected = textView.selectedRange()
-            let visible = textView.visibleRect
+            let anchor = sameText ? ReadingAnchor.top(of: textView) : nil
             textView.textStorage?.setAttributedString(text)
             let carried = DocumentSelectionCarry.carried(selected, sameContent: sameContent, newLength: text.length)
             textView.setSelectedRange(carried)
-            if sameContent { textView.scrollToVisible(visible) } else { textView.scroll(.zero) }
+            if let anchor { anchor.restore(in: textView) } else if !sameText { textView.scroll(.zero) }
             applying = false
             if carried != selected {
                 DispatchQueue.main.async { [parent] in parent.selection = carried }
@@ -243,5 +210,29 @@ struct DocumentTextView: NSViewRepresentable {
         @objc private func requestComment() {
             parent.onCommentRequest?()
         }
+    }
+}
+
+/// A reading position that survives re-wrapping: the character at the top
+/// of the visible area and how far into its line the view was scrolled.
+struct ReadingAnchor {
+    let character: Int
+    let offset: CGFloat
+
+    static func top(of textView: NSTextView) -> Self? {
+        guard textView.textStorage?.length ?? 0 > 0,
+              let layout = textView.layoutManager, let container = textView.textContainer else { return nil }
+        let top = textView.visibleRect.minY - textView.textContainerOrigin.y
+        let glyph = layout.glyphIndex(for: NSPoint(x: 0, y: max(top, 0)), in: container)
+        let line = layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        return Self(character: layout.characterIndexForGlyph(at: glyph), offset: top - line.minY)
+    }
+
+    func restore(in textView: NSTextView) {
+        guard character < textView.textStorage?.length ?? 0,
+              let layout = textView.layoutManager, let container = textView.textContainer else { return }
+        layout.ensureLayout(for: container)
+        let line = layout.lineFragmentRect(forGlyphAt: layout.glyphIndexForCharacter(at: character), effectiveRange: nil)
+        textView.scroll(NSPoint(x: 0, y: max(line.minY + offset + textView.textContainerOrigin.y, 0)))
     }
 }

@@ -26,6 +26,8 @@ package final class ChatTurnDriver {
     @ObservationIgnored private let store: ChatTurnStore
     @ObservationIgnored private let clock: () -> Date
     @ObservationIgnored private var lastFlush = Date.distantPast
+    /// False once the session's prompt is stale (`stopRecordingSession`).
+    @ObservationIgnored private var recordsSession = true
 
     package init(
         conversationID: Int64,
@@ -82,6 +84,13 @@ package final class ChatTurnDriver {
         lastSessionError = error
     }
 
+    /// The project prompt this session was spawned with changed: its session
+    /// id must never be stored again (the project write just cleared it), or
+    /// a later turn would `--resume` the stale prompt.
+    package func stopRecordingSession() {
+        recordsSession = false
+    }
+
     /// Stop watchdog, process death, eviction, app quit: whatever was
     /// streamed stays, as `partial` (CHAT-01).
     package func finishRunningAsPartial() {
@@ -96,7 +105,7 @@ package final class ChatTurnDriver {
     }
 
     private func recordSession(_ sid: String?) {
-        guard let sid, !sid.isEmpty, sid != sessionID else { return }
+        guard recordsSession, let sid, !sid.isEmpty, sid != sessionID else { return }
         sessionID = sid
         do {
             try store.saveSessionID(conversationID: conversationID, sessionID: sid, projectID: projectID)
@@ -157,11 +166,11 @@ package final class ChatTurnDriver {
         turn.finish(phase, at: clock())
         switch phase {
         case .complete:
-            finalizePersist(turn, status: "complete", errorCode: nil)
-        case let .failed(error):
-            finalizePersist(turn, status: "error", errorCode: error.code.rawValue)
+            finalizePersist(turn, status: "complete", failure: nil)
+        case let .failed(failure):
+            finalizePersist(turn, status: "error", failure: failure)
         case .interrupted, .running:
-            finalizePersist(turn, status: "partial", errorCode: nil)
+            finalizePersist(turn, status: "partial", failure: nil)
         }
         liveTurn = nil
         onTurnFinished?(turn)
@@ -172,11 +181,11 @@ package final class ChatTurnDriver {
     /// finalizeTurn`) — a crash or write failure can never leave one without
     /// the other. An errored turn writes no artifacts (the store skips the
     /// parse for `status == "error"`).
-    private func finalizePersist(_ turn: LiveTurn, status: String, errorCode: String?) {
+    private func finalizePersist(_ turn: LiveTurn, status: String, failure: ChatSessionError?) {
         lastFlush = clock()
         do {
             try store.finalizeTurn(conversationID: conversationID, messageID: turn.messageID, text: turn.fullText,
-                                   status: status, usage: turn.usage, errorCode: errorCode)
+                                   status: status, usage: turn.usage, error: failure)
         } catch {
             turn.persistError = "Couldn't finalize the reply: \(error.localizedDescription)"
         }

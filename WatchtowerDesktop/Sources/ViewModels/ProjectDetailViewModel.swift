@@ -8,9 +8,10 @@ import WatchtowerCore
 /// and its only async state is a pending instructions save, which `flush()`
 /// writes on disappear — so the VM can be view-local.
 ///
-/// Edits reach the assistant when a conversation starts a fresh provider
-/// session (a new chat, or an existing one after its warm session ends): the
-/// project block and first-turn files are read by `ai session` at spawn.
+/// Edits reach the assistant on each chat's next turn: the project block and
+/// first-turn files are read by `ai session` at spawn, so every write that
+/// changes them drops the chats' stored sessions (`ChatProjectQueries`) and
+/// reports `onPromptChanged`, whose owner retires the warm processes.
 @MainActor
 @Observable
 final class ProjectDetailViewModel {
@@ -27,25 +28,32 @@ final class ProjectDetailViewModel {
     /// empty placeholders, so editing is off: a save would overwrite the
     /// stored instructions with whatever was typed over the blank.
     private(set) var draftsLoaded = false
+    /// The instructions as last read or written: a save of the same text is
+    /// skipped (it would retire every chat's session for nothing).
+    private var savedInstructions = ""
 
     private let dbPool: DatabasePool
     private let debounce: Duration
     private let importFile: (URL, Int64) throws -> ChatAttachment
     /// `chat_files` root: a deleted project's (now empty) directory goes too.
     private let attachmentsRoot: URL?
+    /// After a committed write that changes the project's prompt.
+    private let onPromptChanged: (Int64) -> Void
 
     init(
         projectID: Int64,
         dbPool: DatabasePool,
         debounce: Duration = .milliseconds(500),
         attachmentsRoot: URL? = nil,
-        importFile: @escaping (URL, Int64) throws -> ChatAttachment
+        importFile: @escaping (URL, Int64) throws -> ChatAttachment,
+        onPromptChanged: @escaping (Int64) -> Void = { _ in }
     ) {
         self.projectID = projectID
         self.dbPool = dbPool
         self.debounce = debounce
         self.importFile = importFile
         self.attachmentsRoot = attachmentsRoot
+        self.onPromptChanged = onPromptChanged
     }
 
     /// Reads everything and resets both drafts from the stored row.
@@ -53,6 +61,7 @@ final class ProjectDetailViewModel {
         guard refresh(), let project else { return }
         nameDraft = project.name
         instructionsDraft = project.instructions
+        savedInstructions = project.instructions
         draftsLoaded = true
         errorMessage = nil
     }
@@ -71,12 +80,15 @@ final class ProjectDetailViewModel {
         }
     }
 
-    /// Writes a pending instructions draft now (the page is going away).
-    func flush() async {
-        guard let task = pendingSave else { return }
-        task.cancel()
+    /// Writes the instructions draft now if it differs from what is stored
+    /// (the page is going away, or a new chat is about to read them) — also
+    /// after an earlier save failed. False when the write fails,
+    /// `errorMessage` then says why.
+    @discardableResult
+    func flush() async -> Bool {
+        pendingSave?.cancel()
         pendingSave = nil
-        saveInstructions()
+        return saveInstructions()
     }
 
     func rename(_ name: String) {
@@ -86,13 +98,17 @@ final class ProjectDetailViewModel {
 
     func addSource(_ hit: ChatEntityHit) {
         guard let kind = ChatProjectSource.Kind(entity: hit.kind) else { return }
+        var added = false
         write { db, id in
-            try ChatProjectQueries.addSource(db, projectID: id, kind: kind, ref: hit.ref, label: hit.label)
+            added = try ChatProjectQueries.addSource(db, projectID: id, kind: kind, ref: hit.ref, label: hit.label)
         }
+        if added { onPromptChanged(projectID) }
     }
 
     func removeSource(_ source: ChatProjectSource) {
-        write { db, _ in try ChatProjectQueries.removeSource(db, id: source.id) }
+        if write({ db, _ in try ChatProjectQueries.removeSource(db, id: source.id) }) {
+            onPromptChanged(projectID)
+        }
     }
 
     func addFiles(_ urls: [URL]) {
@@ -104,6 +120,7 @@ final class ProjectDetailViewModel {
                 failures.append("\(url.lastPathComponent): \(error.localizedDescription)")
             }
         }
+        if failures.count < urls.count { onPromptChanged(projectID) }
         guard refresh() else { return }
         errorMessage = failures.isEmpty ? nil : failures.joined(separator: "\n")
     }
@@ -111,6 +128,7 @@ final class ProjectDetailViewModel {
     func removeFile(_ file: ChatAttachment) {
         do {
             let path = try dbPool.write { try ChatProjectQueries.removeFile($0, id: file.id) }
+            onPromptChanged(projectID)
             if let path { Self.removeFromDisk([path]) }
             if refresh() { errorMessage = nil }
         } catch {
@@ -130,6 +148,9 @@ final class ProjectDetailViewModel {
             if let attachmentsRoot {
                 ChatAttachmentStore.removeFiles(for: .project(id), rootDir: attachmentsRoot)
             }
+            // Nothing is left to save into: the page's closing flush must not
+            // write an unsaved draft to the deleted row.
+            draftsLoaded = false
             return true
         } catch {
             errorMessage = "Could not delete the project: \(error.localizedDescription)"
@@ -160,28 +181,41 @@ final class ProjectDetailViewModel {
         }
     }
 
-    private func saveInstructions() {
-        guard draftsLoaded else { return }
+    @discardableResult
+    private func saveInstructions() -> Bool {
+        guard draftsLoaded else { return true }
         let text = instructionsDraft
+        guard text != savedInstructions else {
+            pendingSave = nil
+            return true
+        }
         let id = projectID
         do {
             try dbPool.write { try ChatProjectQueries.updateInstructions($0, id: id, instructions: text) }
             pendingSave = nil
+            savedInstructions = text
+            onPromptChanged(id)
+            return true
         } catch {
             // flush() runs as the page goes away, where the banner is gone
             // too: keep a trace as well.
             NSLog("ProjectDetailViewModel: could not save instructions: %@", error.localizedDescription)
             errorMessage = "Could not save instructions: \(error.localizedDescription)"
+            return false
         }
     }
 
-    private func write(_ body: (Database, Int64) throws -> Void) {
+    /// Returns whether the write committed.
+    @discardableResult
+    private func write(_ body: (Database, Int64) throws -> Void) -> Bool {
         let id = projectID
         do {
             try dbPool.write { try body($0, id) }
             if refresh() { errorMessage = nil }
+            return true
         } catch {
             errorMessage = error.localizedDescription
+            return false
         }
     }
 
