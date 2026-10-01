@@ -264,9 +264,9 @@ enum TerminalPalette {
     }()
 
     /// Under a dark appearance the default background is fully transparent:
-    /// the window's own backdrop shows through, so the terminal pixel-matches
-    /// the header above it — the window renders that backdrop lighter than
-    /// the resolved `windowBackgroundColor`, so no opaque colour would match.
+    /// the Projects tab's `panelBackground()` shows through, so the terminal
+    /// is one surface with the header above it and the panel beside it,
+    /// whatever colour the running SDK resolves that background to.
     /// Under a light appearance it is the opaque dark window background.
     ///
     /// Known SwiftTerm limits at opacity 0 (its internal code reads the raw
