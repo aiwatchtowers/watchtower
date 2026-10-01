@@ -97,12 +97,13 @@ final class ChatTurnDriverTests: XCTestCase {
         XCTAssertEqual(try row().status, "partial")
     }
 
-    func testErrorMarksTheRowWithItsCode() throws {
+    func testErrorMarksTheRowWithItsCodeAndMessage() throws {
         let driver = makeDriver()
         driver.begin(messageID: messageID, turnID: "t")
         driver.apply(.error(ChatSessionError(turnID: "t", code: .rateLimit, message: "slow", retryable: true)))
         XCTAssertEqual(try row().status, "error")
         XCTAssertEqual(try row().errorCode, "rate_limit")
+        XCTAssertEqual(try row().errorMessage, "slow", "the session's own text is kept for the card")
         XCTAssertNil(driver.liveTurn)
     }
 

@@ -652,7 +652,7 @@ text TEXT NOT NULL,
 created_at REAL NOT NULL,
 turn_id TEXT NOT NULL DEFAULT ''
 , status TEXT NOT NULL DEFAULT 'complete'
-CHECK(status IN ('complete','partial','error')), provider TEXT, model TEXT, tokens_in INTEGER, tokens_out INTEGER, parent_id INTEGER REFERENCES chat_messages(id) ON DELETE CASCADE, error_code TEXT)
+CHECK(status IN ('complete','partial','error')), provider TEXT, model TEXT, tokens_in INTEGER, tokens_out INTEGER, parent_id INTEGER REFERENCES chat_messages(id) ON DELETE CASCADE, error_code TEXT, error_message TEXT)
 
 table	chat_project_sources
 CREATE TABLE chat_project_sources (
@@ -2704,6 +2704,7 @@ END
 10	tokens_out	INTEGER	notnull=0	dflt=NULL	pk=0
 11	parent_id	INTEGER	notnull=0	dflt=NULL	pk=0
 12	error_code	TEXT	notnull=0	dflt=NULL	pk=0
+13	error_message	TEXT	notnull=0	dflt=NULL	pk=0
 
 ## chat_project_sources
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1

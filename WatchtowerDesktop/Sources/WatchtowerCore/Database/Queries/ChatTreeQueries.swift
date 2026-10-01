@@ -66,12 +66,16 @@ package enum ChatTreeQueries {
                                   model: model.isEmpty ? nil : model))
     }
 
+    /// `errorMessage` is the session's own text for a failed turn, shown
+    /// under the generic phrase of `errorCode`.
     package static func updateAssistant(
-        _ db: Database, id: Int64, text: String, status: String, tokensIn: Int?, tokensOut: Int?, errorCode: String?
+        _ db: Database, id: Int64, text: String, status: String, tokensIn: Int?, tokensOut: Int?,
+        errorCode: String?, errorMessage: String?
     ) throws {
         try db.execute(sql: """
-            UPDATE chat_messages SET text = ?, status = ?, tokens_in = ?, tokens_out = ?, error_code = ? WHERE id = ?
-            """, arguments: [text, status, tokensIn, tokensOut, errorCode, id])
+            UPDATE chat_messages SET text = ?, status = ?, tokens_in = ?, tokens_out = ?, error_code = ?, error_message = ?
+            WHERE id = ?
+            """, arguments: [text, status, tokensIn, tokensOut, errorCode, errorMessage, id])
     }
 
     package static func setModel(_ db: Database, messageID: Int64, model: String) throws {

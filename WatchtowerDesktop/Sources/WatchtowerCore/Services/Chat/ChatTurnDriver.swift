@@ -157,11 +157,11 @@ package final class ChatTurnDriver {
         turn.finish(phase, at: clock())
         switch phase {
         case .complete:
-            finalizePersist(turn, status: "complete", errorCode: nil)
+            finalizePersist(turn, status: "complete", error: nil)
         case let .failed(error):
-            finalizePersist(turn, status: "error", errorCode: error.code.rawValue)
+            finalizePersist(turn, status: "error", error: error)
         case .interrupted, .running:
-            finalizePersist(turn, status: "partial", errorCode: nil)
+            finalizePersist(turn, status: "partial", error: nil)
         }
         liveTurn = nil
         onTurnFinished?(turn)
@@ -172,11 +172,11 @@ package final class ChatTurnDriver {
     /// finalizeTurn`) — a crash or write failure can never leave one without
     /// the other. An errored turn writes no artifacts (the store skips the
     /// parse for `status == "error"`).
-    private func finalizePersist(_ turn: LiveTurn, status: String, errorCode: String?) {
+    private func finalizePersist(_ turn: LiveTurn, status: String, error: ChatSessionError?) {
         lastFlush = clock()
         do {
             try store.finalizeTurn(conversationID: conversationID, messageID: turn.messageID, text: turn.fullText,
-                                   status: status, usage: turn.usage, errorCode: errorCode)
+                                   status: status, usage: turn.usage, error: error)
         } catch {
             turn.persistError = "Couldn't finalize the reply: \(error.localizedDescription)"
         }

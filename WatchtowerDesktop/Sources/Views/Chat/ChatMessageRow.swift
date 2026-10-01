@@ -62,7 +62,13 @@ struct ChatMessageRow: View, Equatable {
         case "error":
             HStack(spacing: 8) {
                 Image(systemName: "exclamationmark.triangle").foregroundStyle(.red)
-                Text(ChatErrorPresentation.message(for: item.message.errorCode)).font(.callout)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(ChatErrorPresentation.message(for: item.message.errorCode, provider: item.message.provider))
+                        .font(.callout)
+                    if let detail = ChatErrorPresentation.detail(item.message.errorMessage) {
+                        Text(detail).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                    }
+                }
                 Spacer()
                 if ChatErrorPresentation.isRetryable(item.message.errorCode) {
                     Button("Retry") { actions.retry(item.id) }

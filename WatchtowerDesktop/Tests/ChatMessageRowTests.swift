@@ -8,12 +8,16 @@ import WatchtowerTestSupport
 
 @MainActor
 final class ChatMessageRowTests: XCTestCase {
-    private func item(role: String, status: String, errorCode: String? = nil, siblings: Int = 1) throws -> ChatThreadItem {
+    private func item(
+        role: String, status: String, errorCode: String? = nil, errorMessage: String? = nil, provider: String? = nil,
+        siblings: Int = 1
+    ) throws -> ChatThreadItem {
         let db = try TestDatabase.create()
         let message = try db.write { d -> ChatMessageRecord in
             let conv = try TestDatabase.insertChatConversation(d)
             let id = try TestDatabase.insertChatMessage(d, conversationID: conv, role: role, text: "body", status: status)
-            try d.execute(sql: "UPDATE chat_messages SET error_code = ? WHERE id = ?", arguments: [errorCode, id])
+            try d.execute(sql: "UPDATE chat_messages SET error_code = ?, error_message = ?, provider = ? WHERE id = ?",
+                          arguments: [errorCode, errorMessage, provider, id])
             return try XCTUnwrap(ChatMessageRecord.fetchOne(d, sql: "SELECT * FROM chat_messages WHERE id = ?", arguments: [id]))
         }
         return ChatThreadItem(message: message, steps: [], siblingIndex: 1, siblingCount: siblings)
@@ -30,6 +34,24 @@ final class ChatMessageRowTests: XCTestCase {
                                  isLast: true, isEditing: false, actions: ChatRowActions())
         XCTAssertThrowsError(try row.inspect().find(text: "Retry"))
         XCTAssertNoThrow(try row.inspect().find(text: ChatErrorPresentation.message(for: "auth")))
+    }
+
+    /// The card keeps the session's own reason under the generic phrase —
+    /// the one fix ("pick one in Settings → AI") is otherwise never shown.
+    func testErrorCardShowsTheSessionMessage() throws {
+        let reason = "no Ollama model is configured: pick one in Settings → AI"
+        let row = ChatMessageRow(item: try item(role: "assistant", status: "error", errorCode: "provider_unavailable",
+                                                errorMessage: reason, provider: "ollama"),
+                                 isLast: true, isEditing: false, actions: ChatRowActions())
+        XCTAssertNoThrow(try row.inspect().find(text: ChatErrorPresentation.message(for: "provider_unavailable")))
+        XCTAssertNoThrow(try row.inspect().find(text: reason))
+    }
+
+    func testCodexAuthErrorNeverSaysClaudeLogin() throws {
+        let row = ChatMessageRow(item: try item(role: "assistant", status: "error", errorCode: "auth", provider: "codex"),
+                                 isLast: true, isEditing: false, actions: ChatRowActions())
+        XCTAssertNoThrow(try row.inspect().find(text: ChatErrorPresentation.message(for: "auth", provider: "codex")))
+        XCTAssertThrowsError(try row.inspect().find(text: ChatErrorPresentation.message(for: "auth")))
     }
 
     func testStoppedLastMessageOffersContinue() throws {
