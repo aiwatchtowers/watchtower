@@ -307,7 +307,7 @@ timeout would be worse than none.
 - `cmd/project_check_test.go::TestProj07_StopHookBlocksOnceWithTheDrift`
 - `cmd/project_check_test.go::TestProj07_StopHookIsSilentWithoutGitDrift`
 - `cmd/project_check_test.go::TestProj07_StopHookFailuresAreSilent`
-- `WatchtowerDesktop/Tests/ProjectsViewModelDriftTests.swift`, `Tests/Core/ProjectDriftReportTests.swift`, `Tests/ProjectCLITests.swift::testMissingStopHookNeedsRepair`
+- `WatchtowerDesktop/Tests/ProjectsViewModelDriftTests.swift`, `WatchtowerDesktop/Tests/Core/ProjectDriftReportTests.swift`, `WatchtowerDesktop/Tests/ProjectCLITests.swift::testMissingStopHookNeedsRepair`
 - `internal/projectcheck/check_test.go` — `TestProj07_GitRules`, `TestProj07_SharedBranchAndParents`, `TestProj07_GitErrorsAreNeverFindings`, `TestProj07_NoGitCallOutsideARepository`, `TestProj07_ReadsNothingButGit`, `TestProj07_DeadlineReportsIncompleteNeverFalseFindings`, `TestProj07_MidWalkDeadlineKeepsEarlierFindingsOnly`
 
 **Locked since:** 2026-10-01
