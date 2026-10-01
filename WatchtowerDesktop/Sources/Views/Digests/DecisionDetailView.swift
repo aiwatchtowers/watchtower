@@ -7,9 +7,9 @@ import WatchtowerCore
 /// per-idea Discuss chat (spec B3: "Discuss chat stays available, same
 /// context_type='idea'") — decisions are no longer reachable via the Ideas
 /// tab (Task 8 narrowed it to ideas/notes), so this pane is the only place
-/// left to discuss one. Mounts the existing `IdeaDiscussSection`/
-/// `IdeaChatViewModel` the same way `IdeaDetailPane` does, rather than
-/// forking a decision-specific chat VM.
+/// left to discuss one. Mounts the existing `IdeaDiscussSection` (the
+/// `IdeaChatSurface` chat) the same way `IdeaDetailPane` does, rather than
+/// forking a decision-specific chat.
 struct DecisionDetailView: View {
     let idea: Idea
     let viewModel: DigestViewModel
@@ -25,8 +25,7 @@ struct DecisionDetailView: View {
     // Discuss chat state — the IdeaDetailPane precedent: not hoisted further
     // since this view is already `.id(idea.id)`'d at its call site
     // (DigestListView), so this @State resets per decision selection change.
-    @State private var discussExpanded = false
-    @State private var discussVM: IdeaChatViewModel?
+    @State private var discuss = IdeaDiscussState()
 
     init(idea: Idea, viewModel: DigestViewModel, onClose: (() -> Void)? = nil) {
         self.idea = idea
@@ -48,9 +47,12 @@ struct DecisionDetailView: View {
                 .padding()
             }
 
-            if discussExpanded, let discussVM {
+            if let db = appState.databaseManager,
+               let engine = discuss.engine(idea: idea, mentions: mentions, dbManager: db,
+                                           center: appState.embeddedChatCenter) {
                 Divider()
-                IdeaDiscussInputBar(chatVM: discussVM)
+                EmbeddedChatComposer(engine: engine, placeholder: "Ask about this decision…",
+                                     dictationTargetID: "chat.idea.\(idea.id)", density: .compact)
             }
 
             Divider()
@@ -234,8 +236,8 @@ struct DecisionDetailView: View {
                 idea: idea,
                 mentions: mentions,
                 dbManager: dbManager,
-                isExpanded: $discussExpanded,
-                chatVM: $discussVM
+                center: appState.embeddedChatCenter,
+                state: $discuss
             )
         }
     }

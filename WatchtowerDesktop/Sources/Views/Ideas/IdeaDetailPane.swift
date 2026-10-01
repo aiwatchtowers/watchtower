@@ -41,8 +41,7 @@ struct IdeaDetailPane: View {
     // Discuss chat state lives here (not hoisted like the situation pane's)
     // because IdeasView already applies `.id(idea.id)` at this pane's call
     // site, so this @State already resets per idea selection change.
-    @State private var discussExpanded = false
-    @State private var discussVM: IdeaChatViewModel?
+    @State private var discuss = IdeaDiscussState()
 
     init(
         idea: Idea,
@@ -89,9 +88,12 @@ struct IdeaDetailPane: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            if discussExpanded, let discussVM {
+            if let db = appState.databaseManager,
+               let engine = discuss.engine(idea: idea, mentions: mentions, dbManager: db,
+                                           center: appState.embeddedChatCenter) {
                 Divider()
-                IdeaDiscussInputBar(chatVM: discussVM)
+                EmbeddedChatComposer(engine: engine, placeholder: "Ask about this idea…",
+                                     dictationTargetID: "chat.idea.\(idea.id)", density: .compact)
             }
 
             Divider()
@@ -356,8 +358,8 @@ struct IdeaDetailPane: View {
                 idea: idea,
                 mentions: mentions,
                 dbManager: dbManager,
-                isExpanded: $discussExpanded,
-                chatVM: $discussVM
+                center: appState.embeddedChatCenter,
+                state: $discuss
             )
         }
     }

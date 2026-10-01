@@ -74,8 +74,9 @@ package final class EmbeddedChatCenter {
         }
     }
 
-    /// The target/track/idea was deleted: its engines stop without a word
-    /// (their rows went with the conversation).
+    /// The target/track/idea/recording was deleted: its engines stop without
+    /// a word. Writes into a conversation deleted with it fail as "not found",
+    /// which a quiet shutdown only logs.
     package func dropContext(type: String, id: String) {
         for key in engines.keys where key.contextType == type && key.contextID == id {
             remove(key, quietly: true)

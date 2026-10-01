@@ -112,4 +112,18 @@ final class EmbeddedChatStoreTests: XCTestCase {
         try store.finalize(messageID: done.assistantID, text: "a", status: "complete", errorCode: nil, errorMessage: nil)
         XCTAssertGreaterThan(try XCTUnwrap(updatedAt()), 1)
     }
+
+    func testConversationIDReusesTheContextsConversation() throws {
+        let created = try DatabaseEmbeddedChatStore.conversationID(
+            dbPool: pool, contextType: "meeting", contextID: "7", title: "Meeting: weekly")
+        let again = try DatabaseEmbeddedChatStore.conversationID(
+            dbPool: pool, contextType: "meeting", contextID: "7", title: "Meeting: renamed")
+        XCTAssertEqual(created, again)
+        let conv = try pool.read { db in try ChatConversationQueries.fetchByID(db, id: created) }
+        XCTAssertEqual(conv?.title, "Meeting: weekly")
+        XCTAssertEqual(conv?.contextID, "7")
+        let other = try DatabaseEmbeddedChatStore.conversationID(
+            dbPool: pool, contextType: "meeting", contextID: "8", title: "Meeting: other")
+        XCTAssertNotEqual(other, created)
+    }
 }
