@@ -205,139 +205,32 @@ struct ProjectBoardView: View {
                 .onTapGesture { vm.select(nil) }
                 .accessibilityAddTraits(.isButton)
                 .accessibilityLabel("Close target details")
-            detail(vm, node)
-                .frame(maxWidth: 620, maxHeight: .infinity)
-                .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12)
-                        .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5)
-                )
-                .shadow(color: .black.opacity(0.25), radius: 18, y: 6)
-                // The card takes keyboard focus when it opens, so Esc reaches
-                // it even when a kanban click left nothing focused.
-                .focusable()
-                .focusEffectDisabled()
-                .focused($cardFocused)
-                .onKeyPress(.escape) {
-                    vm.select(nil)
-                    return .handled
-                }
-                .onAppear { cardFocused = true }
-                .padding(20)
-        }
-    }
-
-    private func detail(_ vm: ProjectBoardViewModel, _ node: ProjectBoardNode) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .top, spacing: 8) {
-                TextField("Title", text: $titleDraft, axis: .vertical)
-                    .font(.title3.weight(.semibold))
-                    .textFieldStyle(.plain)
-                    .onSubmit { vm.rename(titleDraft) }
-                Button { vm.select(nil) } label: { Image(systemName: "xmark") }
-                    .buttonStyle(.borderless)
-                    .help("Close")
-                    .accessibilityLabel("Close")
-            }
-            .padding(16)
-            Divider()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    // Status and priority sit on their own row as compact
-                    // menus: a segmented picker here took the whole width and
-                    // squeezed the intent into a one-letter column.
-                    HStack(spacing: 8) {
-                        statusMenu(vm, node.target)
-                        priorityMenu(vm, node.target)
-                        Spacer(minLength: 0)
-                        WorkOnTargetButton(target: node.target, compact: false, isVisible: true)
-                    }
-                    ProgressView(value: node.target.progress)
-                    if !node.target.intent.isEmpty {
-                        Text(node.target.intent)
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    if !node.documents.isEmpty {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Documents").font(.headline)
-                            ForEach(node.documents, id: \.id) { doc in
-                                Label(doc.title.isEmpty ? doc.relPath : doc.title, systemImage: "doc.text")
-                                    .font(.callout)
-                            }
-                        }
-                    }
-                    if !vm.selectedImages.isEmpty {
-                        ProjectTargetImagesSection(images: vm.selectedImages)
-                    }
-                    Divider()
-                    Text("Comments").font(.headline)
-                    ForEach(vm.threads) { thread in
-                        CommentThreadView(
-                            thread: thread.content,
-                            onReply: { vm.reply(to: thread.id, body: $0) },
-                            onResolve: thread.root.isOpen ? { vm.setThreadStatus(rootID: thread.id, status: "resolved") } : nil,
-                            onReopen: thread.root.isOpen ? nil : { vm.setThreadStatus(rootID: thread.id, status: "open") }
-                        )
-                    }
-                    HStack(alignment: .bottom) {
-                        TextField("Comment or answer the agent…", text: $commentDraft, axis: .vertical)
-                            .lineLimit(1...6)
-                        Button("Comment") {
-                            if vm.addComment(commentDraft) { commentDraft = "" }
-                        }
-                        .disabled(commentDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(16)
-            }
-        }
-        .onAppear { titleDraft = node.target.text }
-        .onChange(of: node.target.id) { titleDraft = node.target.text }
-        .onChange(of: node.target.text) { titleDraft = node.target.text }
-    }
-
-    private func statusMenu(_ vm: ProjectBoardViewModel, _ target: Target) -> some View {
-        Menu {
-            ForEach(ProjectBoardCard.editableStatuses, id: \.self) { status in
-                Toggle(ProjectBoardCard.statusLabel(status), isOn: Binding(
-                    get: { target.status == status },
-                    set: { if $0 { vm.setStatus(status) } }
-                ))
-            }
-        } label: {
-            ProjectBoardChip(
-                text: ProjectBoardCard.statusLabel(target.status),
-                color: ProjectBoardColors.status(target.statusColor)
+            ProjectTargetDetailCard(
+                vm: vm,
+                node: node,
+                findings: appState.projectsViewModel?.drift[projectID]?.findings.filter { $0.targetID == node.id } ?? [],
+                titleDraft: $titleDraft,
+                commentDraft: $commentDraft
+            ) { vm.select(nil) }
+            .frame(maxWidth: 620)
+            .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5)
             )
-        }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-        .help("Status")
-    }
-
-    private func priorityMenu(_ vm: ProjectBoardViewModel, _ target: Target) -> some View {
-        Menu {
-            ForEach(ProjectBoardCard.editablePriorities, id: \.self) { priority in
-                Toggle(priority.capitalized, isOn: Binding(
-                    get: { target.priority == priority },
-                    set: { if $0 { vm.setPriority(priority) } }
-                ))
+            .shadow(color: .black.opacity(0.25), radius: 18, y: 6)
+            // The card takes keyboard focus when it opens, so Esc reaches
+            // it even when a kanban click left nothing focused.
+            .focusable()
+            .focusEffectDisabled()
+            .focused($cardFocused)
+            .onKeyPress(.escape) {
+                vm.select(nil)
+                return .handled
             }
-        } label: {
-            ProjectBoardChip(
-                text: target.priority.capitalized,
-                color: ProjectBoardColors.priority(target.priority),
-                dot: true
-            )
+            .onAppear { cardFocused = true }
+            .padding(20)
         }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-        .help("Priority")
     }
 }

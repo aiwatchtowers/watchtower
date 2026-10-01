@@ -10,8 +10,8 @@ struct ProjectTargetImagesSection: View {
     @State private var shown: ProjectTargetImage?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Images").font(.headline)
+        VStack(alignment: .leading, spacing: 8) {
+            ProjectDetailSectionHeader(title: "Images", systemImage: "photo", count: images.count)
             LazyVGrid(
                 columns: [GridItem(.adaptive(minimum: 96, maximum: 140), spacing: 8)],
                 alignment: .leading,
