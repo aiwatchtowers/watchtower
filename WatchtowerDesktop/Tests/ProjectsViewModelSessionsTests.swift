@@ -742,6 +742,30 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         XCTAssertTrue(launches.isEmpty)
     }
 
+    /// `touch` is unchecked: the fetch in the same write is what reports a
+    /// row deleted elsewhere, for Open and Start fresh alike — no process
+    /// starts and the pane leaves the layout.
+    func testOpeningASessionDeletedElsewhereReportsItAndStartsNothing() async throws {
+        let p = try await projectWithFolder()
+        let row = try await liveSession(p, "gone")
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: p)
+        vm.layout.show(.session(row.id))
+        _ = try await pool.write { try TerminalSessionQueries.delete($0, id: row.id) }
+
+        await vm.open(row)
+        XCTAssertEqual(vm.sessionErrors[p], "Could not open the session: Terminal session \(row.id) no longer exists.")
+        XCTAssertFalse(vm.layout.sessionIDs.contains(row.id))
+
+        vm.layout.show(.session(row.id))
+        await vm.startFresh(row)
+        XCTAssertEqual(vm.sessionErrors[p],
+                       "Could not start the session fresh: Terminal session \(row.id) no longer exists.")
+        XCTAssertFalse(vm.layout.sessionIDs.contains(row.id))
+        XCTAssertTrue(launches.isEmpty)
+    }
+
     func testARevealDrillsInAndReplacesAStandaloneTerminal() async throws {
         let p = try await projectWithFolder()
         let vm = makeVM()
