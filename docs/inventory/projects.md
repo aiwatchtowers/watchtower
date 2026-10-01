@@ -346,7 +346,10 @@ a project folder (`resolveInside` refuses each step before touching it).
 Those projects are indexed only by an explicit trigger —
 `kb.IndexProjectDocs`, run by `project resync`, by `kb reindex` (owner-
 started; it re-indexes every project so a rebuild loses nothing) and, when
-`knowledge.enabled` is on, by the agent's `attach_document`. A
+`knowledge.enabled` is on, by the agent's `attach_document` and by the
+owner's `project create`, `project import-docs` (not a dry run) and
+`project attach-doc` (the Desktop's Add Document) — best-effort: a failure
+there is a stderr warning, the attach stands. A
 file that is gone, not a regular file (never opened blocking), or no longer
 resolves inside the folder (symlinks followed inside it only) is indexed by its title only,
 its anchor's `unreadable` saying why; a file over 2 MiB is indexed up to
@@ -361,6 +364,7 @@ applied to search.
 - `internal/kb/source_project_test.go::TestProj08_ProjectDocsOnlyInTheirOwnProjectSession`
 - `internal/tools/project_knowledge_test.go::TestProj08_KnowledgeToolsShowProjectDocsOnlyToTheirProject`
 - `internal/db/projects_test.go::TestProj02_DeleteProjectLeavesNoRows` (the index entries go with the project)
+- `cmd/project_test.go::TestProj08_OwnerAttachPathsIndexTheDocumentsAtOnce`
 
 **Locked since:** 2026-10-01
 
@@ -433,6 +437,7 @@ applied to search.
 
 ## Changelog
 
+- 2026-10-01 (board target #192, release audit): **PROJ-08 strengthened** — `project create`, `import-docs` and `attach-doc` now index the project's documents themselves (best-effort, when `knowledge.enabled` is on), so a project in a folder the daemon never reads (~/Documents, ~/Desktop, …) has its owner-attached and imported documents searchable at once; new guard `TestProj08_OwnerAttachPathsIndexTheDocumentsAtOnce`.
 - 2026-10-01 (board item #153): the per-project board-language override (#122) is retired — the board always follows the session language. `watchtower project update`, `update_project`'s `board_language` (an unknown field again; `description` is required again), the Desktop menu and the `terminal title` override are removed; `tools.BoardLanguageLine` is a constant. The `projects.board_language` column (00087) stays, unread. No contract semantics or guard tests changed.
 - 2026-10-01 (board item #105): specs, plans and designs are review documents in the project's Documents pane (not chat artifacts). The `watchtower-project` skill requires attaching every one the agent writes and setting its review target `in_review` (the feature target for a spec on a feature without sub-targets, else a `Review: <title>` sub-target — always for a plan) until the owner approves. The Desktop marks an agent document whose target is `in_review` **In review** (`ProjectDocumentListItem.awaitingReview`) and the existing "ready for review" notification also fires when such a target enters review, titled "awaits your review" and keyed by the revision so attaching and marking never notify twice; an owner's own move to `in_review` (the latest `target_status_history` row is theirs) is not announced back, and a snapshot persisted before this change reads as "review unknown" so an upgrade never re-announces a running review. Known limit: the marker keys on the target's status, so an agent document on a leaf target put `in_review` for a code review is marked too — the skill routes plan and sub-targeted reviews through a dedicated review sub-target to keep that rare. No schema change; no contract semantics or guard tests changed.
 - 2026-10-01 (board target #89): **PROJ-08** added — attached project documents are indexed into kb (`project_doc`) and searchable only from their own project's session. `project resync` re-indexes the project right after its import (`index_ok`/`index_error`/`indexed`/`index_skipped`, skipped when `knowledge.enabled` is off) and the Desktop's Re-run Setup summary says so; `attach_document` re-indexes too. **PROJ-02 amended (strengthened):** `db.DeleteProject` also deletes the project's index entries in its transaction, and `TestProj02_DeleteProjectLeavesNoRows` asserts it (plus that another project's entries stay).

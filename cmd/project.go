@@ -16,6 +16,7 @@ import (
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/kb"
 	"watchtower/internal/projectdocs"
 	"watchtower/internal/projectfiles"
 	"watchtower/internal/tools"
@@ -34,7 +35,9 @@ var projectCreateCmd = &cobra.Command{
 	Short: "Create a project bound to a folder",
 	Long: "Binds --folder (symlinks resolved) to a new project. Refuses a missing directory\nor a folder already bound to a project. The name defaults to the folder's base name.\n" +
 		"Then attaches the folder's README.md and its docs/**/specs and docs/**/plans files to\n" +
-		"Documents (see `project import-docs`); an import failure is reported, the project stays.",
+		"Documents (see `project import-docs`); an import failure is reported, the project stays.\n" +
+		"The attached documents are then indexed for search from the project's sessions\n" +
+		"(skipped when knowledge search is off; a failure is a warning).",
 	RunE: runProjectCreate,
 }
 
@@ -64,7 +67,9 @@ var projectImportDocsCmd = &cobra.Command{
 	Long: "Mechanical, no AI: attaches README.md at the folder root and every .md/.txt file\n" +
 		"directly inside a specs or plans directory under docs/ (symlinks never followed),\n" +
 		"at most 50 new ones per run, README first then newest. Additive and idempotent: an\n" +
-		"already attached path is never touched.",
+		"already attached path is never touched. Then re-indexes the attached documents for\n" +
+		"search from the project's sessions (not on a dry run; skipped when knowledge search\n" +
+		"is off; a failure is a warning).",
 	Args: cobra.ExactArgs(1),
 	RunE: runProjectImportDocs,
 }
@@ -75,7 +80,9 @@ var projectAttachDocCmd = &cobra.Command{
 	Long: "The owner's counterpart of the agent's attach_document, with the same checks: the\n" +
 		"path (absolute, or relative to the folder) must resolve — symlinks followed — to a\n" +
 		"regular .md/.txt file inside the project folder. An already attached path is left\n" +
-		"untouched and reported (created=false). Writes only the document row, never the file.",
+		"untouched and reported (created=false). Writes the document row and re-indexes the\n" +
+		"project's documents for search (skipped when knowledge search is off; a failure is a\n" +
+		"warning), never the file.",
 	Args: cobra.ExactArgs(2),
 	RunE: runProjectAttachDoc,
 }
@@ -249,7 +256,7 @@ func runProjectCreate(cmd *cobra.Command, _ []string) error {
 	if strings.TrimSpace(name) == "" {
 		name = filepath.Base(folder)
 	}
-	_, database, err := openJiraCmdDB()
+	cfg, database, err := openJiraCmdDB()
 	if err != nil {
 		return err
 	}
@@ -264,6 +271,7 @@ func runProjectCreate(cmd *cobra.Command, _ []string) error {
 		// fields still leaves the warning in its log.
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: importing the folder's documents failed: %v (retry: watchtower project import-docs %d)\n", ierr, id)
 	}
+	indexProjectDocs(cmd, cfg, database, id)
 	if projectFlagJSON {
 		return writeJSON(cmd.OutOrStdout(), newProjectCreateJSON(projectJSON{ID: id, Folder: folder, Name: name}, rep, ierr))
 	}
@@ -297,7 +305,7 @@ func runProjectImportDocs(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	_, database, err := openJiraCmdDB()
+	cfg, database, err := openJiraCmdDB()
 	if err != nil {
 		return err
 	}
@@ -309,6 +317,9 @@ func runProjectImportDocs(cmd *cobra.Command, args []string) error {
 	rep, err := projectdocs.Import(database, p, projectImportFlagDryRun)
 	if err != nil {
 		return err
+	}
+	if !projectImportFlagDryRun {
+		indexProjectDocs(cmd, cfg, database, id)
 	}
 	if projectFlagJSON {
 		return writeJSON(cmd.OutOrStdout(), rep)
@@ -329,7 +340,7 @@ func runProjectAttachDoc(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	_, database, err := openJiraCmdDB()
+	cfg, database, err := openJiraCmdDB()
 	if err != nil {
 		return err
 	}
@@ -353,6 +364,7 @@ func runProjectAttachDoc(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	indexProjectDocs(cmd, cfg, database, id)
 	if projectFlagJSON {
 		return writeJSON(cmd.OutOrStdout(), projectAttachDocJSON{DocumentID: docID, RelPath: rel, Created: created})
 	}
@@ -362,6 +374,26 @@ func runProjectAttachDoc(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(cmd.OutOrStdout(), "%s is already attached (document %d)\n", rel, docID)
 	}
 	return nil
+}
+
+// indexProjectDocs re-indexes the project's documents for search (PROJ-08)
+// after an owner-side attach or import, so they are searchable from the
+// project's sessions at once. The daemon's knowledge phase never reads a
+// folder under ~/Documents, ~/Desktop and the like, so for such a project
+// this explicit trigger is the only one (the `project resync` precedent).
+// Best-effort: the documents are attached, so a failure is a stderr warning
+// (in JSON mode too), never an error. Skipped when knowledge search is off.
+func indexProjectDocs(cmd *cobra.Command, cfg *config.Config, database *db.DB, id int64) {
+	if !cfg.Knowledge.Enabled {
+		return
+	}
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, _, err := kb.IndexProjectDocs(ctx, database, id); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: indexing the project's documents for search failed: %v (retry: watchtower project resync %d)\n", err, id)
+	}
 }
 
 func printImportReport(w io.Writer, rep projectdocs.Report) {
