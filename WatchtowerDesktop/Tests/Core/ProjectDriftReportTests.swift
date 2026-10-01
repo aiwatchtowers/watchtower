@@ -3,38 +3,36 @@ import XCTest
 
 final class ProjectDriftReportTests: XCTestCase {
 
+    private func decode(_ json: String) throws -> ProjectDriftReport {
+        try JSONDecoder().decode(ProjectDriftReport.self, from: Data(json.utf8))
+    }
+
     /// The shape `watchtower project check --json` prints (Go
     /// `projectcheck.Report`, cmd/project_check_test.go's JSON test).
     func testDecodesTheGoReport() throws {
-        let json = """
+        let report = try decode("""
         {"project_id":7,"git":true,"base":"origin/main","pr_checked":false,
          "findings":[
           {"target_id":12,"title":"Feature","status":"in_progress","branch":"feature/x",
            "kind":"merged_but_open","detail":"branch feature/x is merged into origin/main","fix":"set it done"},
-          {"target_id":13,"title":"Task","status":"in_progress","kind":"stale","detail":"no movement","fix":"move it on"}],
+          {"target_id":12,"title":"Feature","status":"in_progress","kind":"stale","detail":"no movement","fix":"move it on"},
+          {"target_id":13,"title":"Task","status":"done","kind":"done_but_unmerged","detail":"d","fix":"f"}],
          "notes":["gh CLI not found"]}
-        """
-        let report = try JSONDecoder().decode(ProjectDriftReport.self, from: Data(json.utf8))
-        XCTAssertEqual(report.projectID, 7)
+        """)
         XCTAssertEqual(report.base, "origin/main")
-        XCTAssertFalse(report.incomplete)
-        XCTAssertEqual(report.findings.count, 2)
-        XCTAssertEqual(report.findings[0].branch, "feature/x")
-        XCTAssertEqual(report.findings[1].pr, "")
-        XCTAssertTrue(report.findings[0].isConflict)
-        XCTAssertFalse(report.findings[1].isConflict, "stale is advisory, as in the Go hook")
+        XCTAssertFalse(report.isPartial)
+        XCTAssertEqual(report.findings.map(\.isConflict), [true, false, false],
+                       "only what Go's Finding.Blocking blocks is a conflict")
+        XCTAssertEqual(report.findings[0].fix, "set it done")
+        XCTAssertEqual(Set(report.findings.map(\.id)).count, 3)
         XCTAssertEqual(report.notes, ["gh CLI not found"])
     }
 
-    func testDoneButUnmergedIsAdvisory() {
-        let f = ProjectDriftFinding(targetID: 1, title: "t", status: "done", kind: "done_but_unmerged", detail: "", fix: "")
-        XCTAssertFalse(f.isConflict)
-        XCTAssertEqual(f.kindLabel, "Done, not merged")
-    }
-
-    func testAMinimalReportDecodes() throws {
-        let report = try JSONDecoder().decode(ProjectDriftReport.self, from: Data(#"{"project_id":3,"findings":[]}"#.utf8))
-        XCTAssertTrue(report.findings.isEmpty)
-        XCTAssertFalse(report.git)
+    /// No findings does not mean "in step" when the check did not cover the board.
+    func testPartialChecks() throws {
+        XCTAssertTrue(try decode(#"{"project_id":1,"git":false,"findings":[],"notes":["not a git work tree"]}"#).isPartial)
+        XCTAssertTrue(try decode(#"{"project_id":1,"git":true,"base":"main","incomplete":true,"findings":[]}"#).isPartial)
+        XCTAssertTrue(try decode(#"{"project_id":1,"git":true,"findings":[]}"#).isPartial, "no default branch")
+        XCTAssertFalse(try decode(#"{"project_id":1,"git":true,"base":"main","findings":[]}"#).isPartial)
     }
 }

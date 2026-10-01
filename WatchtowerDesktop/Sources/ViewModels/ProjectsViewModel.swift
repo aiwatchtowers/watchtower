@@ -160,7 +160,7 @@ final class ProjectsViewModel {
     private(set) var driftErrors: [Int64: String] = [:]
     private var driftCheckedAt: [Int64: Date] = [:]
     private var checkingDrift: Set<Int64> = []
-    /// How often a board change may re-run the check (git work in the folder).
+    /// How often the open Board pane re-runs the check (git work in the folder).
     static let driftMinInterval: TimeInterval = 30
 
     let dbPool: DatabasePool
@@ -382,10 +382,10 @@ final class ProjectsViewModel {
         }
     }
 
-    /// Runs the offline drift check for a project. A board change asks for it
-    /// at most every `driftMinInterval` (`force` = the owner's Refresh or the
-    /// pane appearing); one check per project runs at a time, and a result is
-    /// keyed by its own project id.
+    /// Runs the offline drift check for a project. The open Board pane's poll
+    /// asks for it on every tick and gets one at most every `driftMinInterval`
+    /// (`force` = the owner's Refresh or the pane appearing); one check per
+    /// project runs at a time, and a result is keyed by its own project id.
     func refreshDrift(projectID: Int64, force: Bool = false, now: Date = Date()) async {
         guard let cli, !checkingDrift.contains(projectID) else { return }
         if !force, let last = driftCheckedAt[projectID], now.timeIntervalSince(last) < Self.driftMinInterval { return }

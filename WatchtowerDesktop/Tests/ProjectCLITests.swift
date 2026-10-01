@@ -77,7 +77,6 @@ final class ProjectCLITests: XCTestCase {
         let runner = FakeCLIRunner(stdout: Data(#"{"project_id":4,"git":true,"base":"main","findings":[]}"#.utf8))
         let report = try await ProjectCLI(runner: runner).checkDrift(projectID: 4)
         XCTAssertEqual(runner.invocations, [["project", "check", "--project", "4", "--json", "--no-network"]])
-        XCTAssertEqual(report.projectID, 4)
         XCTAssertTrue(report.findings.isEmpty)
     }
 

@@ -291,9 +291,9 @@ real failure (bad id, no config, a missing folder, time ran out) is one
 stderr line, while a deleted project's leftover hook says nothing at all.
 `project brief` shows every finding (offline, 4 s budget), and so does the
 Desktop board: `ProjectsViewModel.refreshDrift` runs `project check --json
---no-network` when the Board pane appears, on the owner's Refresh, and after
-a board change from another process (at most every 30 s), and
-`ProjectDriftBanner` lists the findings — the Desktop decodes, never
+--no-network` when the Board pane appears, on the owner's Refresh, and every
+30 s while the pane polls, and `ProjectDriftBanner` lists the findings (a
+failed or partial check is shown as such, never as "in step") — the Desktop decodes, never
 re-derives them (`ProjectDriftReport`). `integrate status --json` reports
 `stop_hook`, and a project without it is offered Repair.
 

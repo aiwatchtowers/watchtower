@@ -41,7 +41,7 @@ struct ProjectBoardView: View {
                 vm.onOwnerWrite = { [weak projects = appState.projectsViewModel] project, subject in
                     projects?.onOwnerWrite?(project, subject)
                 }
-                vm.onBoardChanged = { [weak projects = appState.projectsViewModel, projectID] in
+                vm.onPollTick = { [weak projects = appState.projectsViewModel, projectID] in
                     Task { await projects?.refreshDrift(projectID: projectID) }
                 }
                 vm.load()

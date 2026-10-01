@@ -229,8 +229,8 @@ struct ProjectCLI {
         return try JSONDecoder().decode(ProjectCreated.self, from: data)
     }
 
-    /// Installs the skill, SessionStart and Stop hooks and local MCP registration into
-    /// the project folder. Idempotent — also the Repair action.
+    /// Installs the skill, the SessionStart and Stop hooks and the local MCP
+    /// registration into the project folder. Idempotent — also the Repair action.
     func install(projectID: Int64) async throws {
         _ = try await runner.run(args: ["integrate", "claude-code", "--project", String(projectID)])
     }

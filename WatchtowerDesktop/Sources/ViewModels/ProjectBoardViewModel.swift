@@ -51,10 +51,11 @@ final class ProjectBoardViewModel {
     /// owner's own change (e.g. a target the owner marked done).
     var onOwnerWrite: ((Int64, ProjectSubject) -> Void)?
 
-    /// Called after the poll reloads a board another process changed — the
-    /// view asks for a fresh drift check then (`ProjectsViewModel.refreshDrift`,
-    /// throttled there).
-    var onBoardChanged: (() -> Void)?
+    /// Called on every poll tick while the pane is on screen: the view asks
+    /// for a drift check (`ProjectsViewModel.refreshDrift`, throttled there),
+    /// so a git change — a merge, a fetch — that never touches the board
+    /// shows too.
+    var onPollTick: (() -> Void)?
 
     private let dbPool: DatabasePool
     private let preferences: ProjectBoardPreferences
@@ -106,7 +107,6 @@ final class ProjectBoardViewModel {
         guard let current = try? dbPool.read({ try Self.fingerprint($0, projectID: pid) }),
               current != fingerprint else { return false }
         load()
-        onBoardChanged?()
         return true
     }
 
@@ -117,6 +117,7 @@ final class ProjectBoardViewModel {
                 try? await Task.sleep(for: interval)
                 guard !Task.isCancelled, let self else { return }
                 self.refreshIfChanged()
+                self.onPollTick?()
             }
         }
     }
