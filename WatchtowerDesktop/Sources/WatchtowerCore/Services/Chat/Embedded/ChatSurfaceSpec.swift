@@ -125,12 +125,17 @@ package struct ChatSurfaceSpec {
     /// Sent only while the conversation has no provider session yet.
     package let systemPrompt: @MainActor () -> String
     package let turnPrompt: @MainActor (ChatTurnInput) -> String
-    /// Runs once, only for a turn that completed (never a stopped or failed one).
+    /// Runs once, only for a turn that streamed to its end (never a stopped
+    /// or failed one). A result with no text to show still fails the turn.
     package let postTurn: @MainActor (ChatPostTurnInput) -> ChatPostTurnResult
     /// Runs before an owner turn is accepted (composer, starter prompt or
     /// `send`); false refuses it and the text stays in the composer — the
     /// target chat re-reads its task here and refuses once it is deleted.
     package let willSend: @MainActor (String) -> Bool
+    /// Asked before a turn the owner did not type starts (queued follow-ups,
+    /// Retry); false drops the follow-ups and refuses the retry — the target
+    /// chat stops once its task is deleted.
+    package let mayContinue: @MainActor () -> Bool
     package let emptyHint: String
     package let starterPrompts: [ChatStarterPrompt]
 
@@ -142,6 +147,7 @@ package struct ChatSurfaceSpec {
         turnPrompt: @escaping @MainActor (ChatTurnInput) -> String = { $0.text },
         postTurn: @escaping @MainActor (ChatPostTurnInput) -> ChatPostTurnResult = ChatPostTurnResult.identity,
         willSend: @escaping @MainActor (String) -> Bool = { _ in true },
+        mayContinue: @escaping @MainActor () -> Bool = { true },
         emptyHint: String,
         starterPrompts: [ChatStarterPrompt] = []
     ) {
@@ -152,6 +158,7 @@ package struct ChatSurfaceSpec {
         self.turnPrompt = turnPrompt
         self.postTurn = postTurn
         self.willSend = willSend
+        self.mayContinue = mayContinue
         self.emptyHint = emptyHint
         self.starterPrompts = starterPrompts
     }

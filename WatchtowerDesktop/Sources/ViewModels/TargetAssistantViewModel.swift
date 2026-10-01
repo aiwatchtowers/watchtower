@@ -139,7 +139,7 @@ final class TargetAssistantViewModel {
     /// Whether ANY of this target's tabs is mid-turn. The center refuses to
     /// evict a container while this is true.
     var isAnyWorking: Bool {
-        chats.values.contains { $0.isStreaming }
+        chats.values.contains { $0.hasPendingWork }
     }
 
     /// Opens a fresh tab and makes it active. Titled "New chat" until its first

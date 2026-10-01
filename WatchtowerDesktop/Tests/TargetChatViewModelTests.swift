@@ -1309,22 +1309,124 @@ final class TargetChatViewModelTests: XCTestCase {
         other.cancelStream()
     }
 
-    /// A deleted task refuses the owner's send before anything is written.
-    func testADeletedTaskKeepsTheTextAndSendsNothing() throws {
+    /// A decision taken mid-turn on a task deleted before the turn ends
+    /// starts no turn about it (the old `flushQueuedFollowUps` guard).
+    func testAFollowUpQueuedBeforeTheTaskIsDeletedNeverRuns() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
         let vm = TargetsViewModel(dbManager: manager)
-        let mock = MockClaudeService()
+        let mock = MockClaudeService(events: [.sessionID("s1"), .text("reply")], thenAwaitsRelease: true)
         let chat = try makeChat(target: target, vm: vm, manager: manager, aiService: mock)
-        try manager.dbPool.write { db in try db.execute(sql: "DELETE FROM targets WHERE id = ?", arguments: [target.id]) }
+        let card = TargetActionCard(messageID: UUID(),
+                                    action: ProposedAction(type: .addSubItem, reason: "r", text: "step"),
+                                    state: .pending)
+        chat.actionCards = [card]
 
-        chat.inputText = "close it"
+        chat.inputText = "go"
         chat.send()
+        chat.approve(card)
+        try await manager.dbPool.write { db in try db.execute(sql: "DELETE FROM targets WHERE id = ?", arguments: [target.id]) }
+        mock.release()
+        try await waitForStreamEnd(chat)
 
-        XCTAssertEqual(chat.inputText, "close it")
-        XCTAssertTrue(mock.prompts.isEmpty)
+        XCTAssertEqual(mock.prompts.count, 1, "no AI turn about a task that no longer exists")
         XCTAssertTrue(chat.targetGone)
-        XCTAssertNotNil(chat.errorMessage)
+    }
+
+    /// The cards a real turn surfaces name the reply row the tab renders them
+    /// under.
+    func testCardsFromATurnAttachToItsReplyRow() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        let reply = """
+        Here is a step.
+        ```watchtower-action
+        { "type": "add_sub_item", "text": "write the note", "reason": "r" }
+        ```
+        """
+        let chat = try makeChat(target: target, vm: vm, manager: manager,
+                                aiService: MockClaudeService(events: [.text(reply), .done]))
+        chat.inputText = "plan it"
+        chat.send()
+        try await waitForStreamEnd(chat)
+
+        let replyRow = try XCTUnwrap(chat.engine.messages.last { $0.message.isAssistant })
+        XCTAssertEqual(chat.actionCards.map(\.messageID), [UUID(chatRowID: replyRow.id)])
+        XCTAssertEqual(replyRow.message.text, "Here is a step.")
+    }
+
+    /// TGT-BRIEF-01/03: a run that fails after streaming an execute-mode
+    /// block applies nothing and surfaces no card.
+    func testAFailedRunNeverAppliesTheBlockItStreamed() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        let block = """
+        ```watchtower-action
+        { "type": "update_status", "status": "done", "mode": "execute", "reason": "owner instructed" }
+        ```
+        """
+        let chat = try makeChat(target: target, vm: vm, manager: manager,
+                                aiService: MockClaudeService(events: [.text(block)], thenError: StubStreamError()))
+        chat.inputText = "mark it done"
+        chat.send()
+        try await waitForStreamEnd(chat)
+
+        XCTAssertEqual(try XCTUnwrap(fetchTargetRow(manager, id: target.id)).status, "todo")
+        XCTAssertTrue(chat.actionCards.isEmpty)
+        XCTAssertEqual(chat.engine.messages.last?.message.status, "error")
+    }
+
+    /// A reply that is only a malformed block keeps its warning (TGT-BRIEF-03:
+    /// surfaced as an error and skipped) and is a completed turn.
+    func testAReplyOfOnlyAMalformedBlockKeepsItsWarning() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        let reply = """
+        ```watchtower-action
+        { "type": "update_status", "mode": "execute", "reason": "owner instructed" }
+        ```
+        """
+        let chat = try makeChat(target: target, vm: vm, manager: manager,
+                                aiService: MockClaudeService(events: [.text(reply), .done]))
+        chat.inputText = "mark it done"
+        chat.send()
+        try await waitForStreamEnd(chat)
+
+        let persisted = try fetchPersistedMessages(manager, targetID: target.id)
+        XCTAssertEqual(persisted.first { $0.role == "assistant" }?.text, "(invalid action proposal)")
+        XCTAssertEqual(persisted.first { $0.role == "assistant" }?.status, "complete")
+        XCTAssertTrue(persisted.contains { $0.role == "system" && $0.text.contains("Invalid action proposal") })
+        XCTAssertNil(chat.errorMessage)
+    }
+
+    /// A turn whose only output was registry proposals (written by the MCP
+    /// subprocess) is a completed turn that points at them — not an error.
+    func testARegistryOnlyReplyCompletesAndPointsAtItsProposals() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        let mock = MockClaudeService(events: [], thenAwaitsRelease: true)
+        let chat = try makeChat(target: target, vm: vm, manager: manager, aiService: mock)
+        let convID = try XCTUnwrap(fetchConversationID(manager, targetID: target.id))
+        chat.inputText = "file a ticket"
+        chat.send()
+        let turnID = try XCTUnwrap(chat.messages.last?.turnID)
+        let otherPool = try DatabasePool(path: path)
+        try TestDatabase.insertAgentActionSync(otherPool, conversationID: convID, turnID: turnID)
+        mock.release()
+        try await waitForStreamEnd(chat)
+
+        let reply = try XCTUnwrap(chat.engine.messages.last { $0.message.isAssistant }?.message)
+        XCTAssertEqual(reply.status, "complete")
+        XCTAssertEqual(reply.text, "(proposed 1 change(s) below)")
+        XCTAssertNil(chat.errorMessage)
     }
 }

@@ -764,3 +764,28 @@ final class EmbeddedChatEngineWillSendTests: XCTestCase {
         XCTAssertEqual(engine.messages.last?.message.status, "error")
     }
 }
+
+@MainActor
+final class EmbeddedChatEngineSurfaceHookTests: XCTestCase {
+    private func spec(mayContinue: @escaping @MainActor () -> Bool) -> ChatSurfaceSpec {
+        ChatSurfaceSpec(key: EmbeddedChatKey(contextType: "target", contextID: "1", conversationID: nil),
+                        persistence: .memory, toolAccess: .draftOnly, systemPrompt: { "S" },
+                        mayContinue: mayContinue, emptyHint: "")
+    }
+
+    func testFollowUpsStopOnceTheSurfaceSaysItsContextIsGone() async {
+        let ai = ScriptedAIService()
+        var alive = true
+        let engine = EmbeddedChatEngine(spec: spec { alive }, store: MemoryEmbeddedChatStore(), aiService: ai,
+                                        gate: EmbeddedStreamGate())
+        engine.send("q")
+        engine.sendFollowUp(prompt: "Action applied.")
+        alive = false
+        ai.emit(.text("ok"))
+        ai.finish()
+        let done = await waitForCondition { !engine.isStreaming }
+        XCTAssertTrue(done)
+        XCTAssertEqual(ai.calls.count, 1, "no turn about a context that is gone")
+        XCTAssertFalse(engine.hasPendingWork)
+    }
+}

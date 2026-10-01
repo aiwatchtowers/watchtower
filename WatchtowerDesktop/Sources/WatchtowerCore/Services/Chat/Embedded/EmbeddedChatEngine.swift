@@ -38,6 +38,9 @@ package final class EmbeddedChatEngine {
         case completed(messageID: Int64, result: ChatPostTurnResult)
         case stopped(messageID: Int64)
         case failed(messageID: Int64, message: String)
+        /// The turn never started: its rows could not be written (the text
+        /// went back to the composer).
+        case notStarted(message: String)
     }
 
     /// Replaced by `EmbeddedChatCenter.engine(for:)` whenever a surface asks
@@ -224,7 +227,7 @@ package final class EmbeddedChatEngine {
     /// Reruns the failed latest turn under a new reply row, with every
     /// follow-up waiting since; the owner row is never written twice.
     package func retry() {
-        guard canRetry, !isBusy, let last = lastRequest else { return }
+        guard canRetry, !isBusy, let last = lastRequest, spec.mayContinue() else { return }
         let request = TurnRequest(ownerText: nil, basePrompt: last.basePrompt, carriedFollowUps: takeFollowUps(),
                                   previousOwnerMessageAt: last.previousOwnerMessageAt)
         guard !request.promptText.isEmpty else { return }
@@ -325,6 +328,7 @@ package final class EmbeddedChatEngine {
             }
             queuedFollowUps.insert(contentsOf: request.carriedFollowUps, at: 0)
             report(error, prefix: "Couldn't send")
+            onTurnFinished?(.notStarted(message: "Couldn't send: \(error.localizedDescription)"))
             return
         }
         if request.ownerText != nil { draftMirror?.clear(for: spec.key) }
@@ -466,6 +470,8 @@ package final class EmbeddedChatEngine {
             if bannerError == nil { bannerError = earlierBanner }
             // Not delivered: the follow-ups wait for Retry or the next owner turn.
             queuedFollowUps.insert(contentsOf: current.request.carriedFollowUps, at: 0)
+        case .notStarted:
+            break  // never produced by a turn that ran
         }
         onTurnFinished?(outcome)
     }
@@ -545,9 +551,15 @@ package final class EmbeddedChatEngine {
         return queuedFollowUps
     }
 
-    /// Queued follow-ups go out together as one turn.
+    /// Queued follow-ups go out together as one turn — unless the surface
+    /// says its context is gone (then they are dropped, with a log line).
     private func startFollowUps() {
         guard !queuedFollowUps.isEmpty, !isBusy else { return }
+        guard spec.mayContinue() else {
+            log("dropping \(queuedFollowUps.count) follow-up(s): the chat's context is gone")
+            queuedFollowUps.removeAll()
+            return
+        }
         let prompts = takeFollowUps()
         start(TurnRequest(ownerText: nil, basePrompt: nil, carriedFollowUps: prompts, previousOwnerMessageAt: nil))
     }

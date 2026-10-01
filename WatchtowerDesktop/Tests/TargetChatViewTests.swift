@@ -84,7 +84,10 @@ final class TargetChatViewTests: XCTestCase {
                              state: .pending)
         }
         let item = try XCTUnwrap(chat.engine.messages.first { $0.id == replyID })
-        return (chat, item, { TestDatabase.cleanup(path: path) })
+        return (chat, item, {
+            chat.stop()
+            TestDatabase.cleanup(path: path)
+        })
     }
 
     func testTwoPendingCardsUnderAReplyOfferApproveAll() throws {
@@ -112,5 +115,33 @@ final class TargetChatViewTests: XCTestCase {
         XCTAssertThrowsError(try TargetChatProposals(chatVM: chat, item: item).inspect().find(ViewType.Button.self) {
             try $0.accessibilityIdentifier() == "chat.approveAll"
         })
+    }
+
+    /// Registry proposals of a turn render under its reply only, never a
+    /// second time under the owner's row of the same turn.
+    func testRegistryProposalsRenderOnceUnderTheReply() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let id = try manager.dbPool.write { db in
+            try TargetQueries.create(db, text: "ship feature", intent: "x",
+                                     periodStart: "2026-06-01", periodEnd: "2026-06-30")
+        }
+        let target = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: id) })
+        let conv = try manager.dbPool.write { db in
+            try ChatConversationQueries.create(db, title: "Task", contextType: "target", contextID: String(id)).id
+        }
+        try manager.dbPool.write { db in
+            _ = try ChatMessageQueries.beginEmbeddedTurn(db, conversationID: conv, ownerText: "file it", turnID: "t9",
+                                                         provider: nil, now: Date().timeIntervalSince1970)
+        }
+        try TestDatabase.insertAgentActionSync(manager.dbPool, conversationID: conv, turnID: "t9")
+        let chat = TargetChatViewModel(target: target, viewModel: TargetsViewModel(dbManager: manager),
+                                       dbManager: manager, conversationID: conv, aiService: MockClaudeService())
+        defer { chat.stop() }
+        chat.actionFeed.refresh()
+        let owner = try XCTUnwrap(chat.engine.messages.first { $0.message.isUser })
+        let reply = try XCTUnwrap(chat.engine.messages.first { $0.message.isAssistant })
+        XCTAssertEqual(try TargetChatProposals(chatVM: chat, item: owner).inspect().findAll(AgentActionCardView.self).count, 0)
+        XCTAssertEqual(try TargetChatProposals(chatVM: chat, item: reply).inspect().findAll(AgentActionCardView.self).count, 1)
     }
 }

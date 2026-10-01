@@ -186,13 +186,20 @@ struct TargetChatPane: View {
                     Text("Proposals from an interrupted turn")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    ForEach(orphans) { action in agentActionCard(action) }
+                    // Bounded: a long list must not squeeze the feed out.
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(orphans) { action in agentActionCard(action) }
+                        }
+                    }
+                    .frame(maxHeight: 220)
                 }
                 if let err = chatVM.actionFeed.lastError {
                     Text(err).font(.caption).foregroundStyle(.red)
                 }
-                if chatVM.targetGone, let message = chatVM.errorMessage {
-                    Label(message, systemImage: "exclamationmark.triangle")
+                if chatVM.targetGone {
+                    Label("This task no longer exists — it may have been deleted.",
+                          systemImage: "exclamationmark.triangle")
                         .font(.caption)
                         .foregroundStyle(.red)
                 }
@@ -238,7 +245,9 @@ struct TargetChatProposals: View {
             batchApproveRow(for: messageID, cards: cards)
             ForEach(cards) { card in actionCardView(card) }
         }
-        if !item.message.turnID.isEmpty {
+        // Registry proposals sit under the reply only — the owner's row of
+        // the same turn carries the same turn id.
+        if item.message.isAssistant, !item.message.turnID.isEmpty {
             agentActionCards(forTurn: item.message.turnID)
         }
     }

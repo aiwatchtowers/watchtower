@@ -149,19 +149,20 @@ final class TargetChatViewModel {
     var messages: [ChatMessage] {
         engine.messages.map { item in
             let live = engine.liveTurn.flatMap { $0.messageID == item.id ? $0 : nil }
-            return ChatMessage(
-                id: UUID(chatRowID: item.id),
-                role: ChatMessage.Role(record: item.message),
-                text: live?.fullText ?? item.message.text,
-                timestamp: item.message.createdDate,
-                isStreaming: live != nil,
-                turnID: item.message.turnID.isEmpty ? nil : item.message.turnID
-            )
+            var message = item.message.toChatMessage()
+            message = ChatMessage(id: UUID(chatRowID: item.id), role: message.role,
+                                  text: live?.fullText ?? message.text, timestamp: message.timestamp,
+                                  isStreaming: live != nil, turnID: message.turnID)
+            return message
         }
     }
 
     /// Busy streaming or waiting for a slot: either way, a turn is under way.
     var isStreaming: Bool { engine.isBusy }
+
+    /// A turn under way, or decisions waiting to reach the assistant — the
+    /// container is never evicted while this holds.
+    var hasPendingWork: Bool { engine.hasPendingWork }
 
     /// The composer's text (the engine's draft — it survives navigation).
     var inputText: String {
@@ -244,16 +245,33 @@ final class TargetChatViewModel {
             // The target chat is an action surface (AGENT-04): a tool mode is
             // sent only while the provider reaches the MCP server.
             toolAccess: tools ? .actions(surface: "target") : .draftOnly,
+            // The closures reach this controller weakly: the engine lives in the
+            // app-wide center. Every path that lets the controller go releases
+            // the engine too, so a missing controller is only ever logged.
             systemPrompt: { [weak self] in
-                guard let self else { return "" }
+                guard let self else { return Self.closedChat("system prompt", "") }
                 return Self.buildSystemPrompt(target: self.target, dbPool: dbPool, toolsAvailable: tools)
             },
-            turnPrompt: { [weak self] input in self?.turnPrompt(input) ?? input.text },
-            postTurn: { [weak self] input in self?.surfaceActions(input) ?? .identity(input) },
-            willSend: { [weak self] text in self?.willSend(text) ?? false },
+            turnPrompt: { [weak self] input in self?.turnPrompt(input) ?? Self.closedChat("turn prompt", input.text) },
+            postTurn: { [weak self] input in
+                self?.surfaceActions(input) ?? Self.closedChat("reply", ChatPostTurnResult(
+                    displayText: input.reply, failure: "This chat was closed before its reply could be read."))
+            },
+            willSend: { [weak self] text in self?.willSend(text) ?? Self.closedChat("send", false) },
+            mayContinue: { [weak self] in
+                guard let self else { return Self.closedChat("follow-up", false) }
+                // No AI turn is started about a task that no longer exists.
+                self.reloadTarget()
+                return !self.targetGone
+            },
             emptyHint: "Ask it to dig through Slack, draft a reply, or update the task — it proposes changes "
                 + "and you approve them."
         )
+    }
+
+    private static func closedChat<T>(_ what: String, _ fallback: T) -> T {
+        NSLog("TargetChat: %@ asked of a chat whose controller is gone", what)
+        return fallback
     }
 
     /// Before an owner turn: re-read the task (its checklist may have changed
@@ -311,7 +329,12 @@ final class TargetChatViewModel {
     /// ValueObservation cannot see — the turn boundary is where they have to
     /// appear. The host re-reads the task.
     private func turnFinished(_ outcome: EmbeddedChatEngine.TurnOutcome) {
-        if case .failed(_, let message) = outcome { errorMessage = message }
+        switch outcome {
+        case .failed(_, let message), .notStarted(let message):
+            errorMessage = message
+        case .completed, .stopped:
+            break
+        }
         actionFeed.refresh()
         reloadTarget()
         viewModel.load()
@@ -357,9 +380,21 @@ final class TargetChatViewModel {
         let parsed = TargetActionParser.parse(input.reply)
         // When the AI emits only an action block, visible prose is empty; show a
         // placeholder so the turn isn't blank and gets persisted into the transcript.
-        let displayText = parsed.text.isEmpty && !parsed.actions.isEmpty
-            ? "(proposed \(parsed.actions.count) action(s))"
-            : parsed.text
+        let displayText: String
+        if !parsed.text.isEmpty {
+            displayText = parsed.text
+        } else if !parsed.actions.isEmpty {
+            displayText = "(proposed \(parsed.actions.count) action(s))"
+        } else if !parsed.errors.isEmpty {
+            // Only malformed blocks: the warnings below say why.
+            displayText = "(invalid action proposal)"
+        } else {
+            // Only registry tool calls (their proposals were written by the
+            // chat-mode subprocess): name them, or this is an empty reply.
+            actionFeed.refresh()
+            let proposed = actionFeed.cards(forTurn: input.turnID).count
+            displayText = proposed > 0 ? "(proposed \(proposed) change(s) below)" : ""
+        }
 
         let assistantMessageID = UUID(chatRowID: input.messageID)
         var appliedSummaries: [String] = []
@@ -981,21 +1016,13 @@ final class TargetChatViewModel {
 }
 
 extension UUID {
-    /// A stable id for a persisted chat row — what a `TargetActionCard`
-    /// carries to name the reply that proposed it.
+    /// A stable id for a chat row (persisted or memory) — what a
+    /// `TargetActionCard` carries to name the reply that proposed it.
     init(chatRowID: Int64) {
-        let hex = String(UInt64(bitPattern: chatRowID), radix: 16)
-        let padded = String(repeating: "0", count: max(0, 12 - hex.count)) + hex
-        self = UUID(uuidString: "00000000-0000-4000-8000-\(padded.suffix(12))") ?? UUID()
-    }
-}
-
-extension ChatMessage.Role {
-    init(record: ChatMessageRecord) {
-        switch record.role {
-        case "user": self = .user
-        case "assistant": self = .assistant
-        default: self = .system
-        }
+        let value = UInt64(bitPattern: chatRowID)
+        func byte(_ index: Int) -> UInt8 { UInt8(truncatingIfNeeded: value >> (8 * (7 - index))) }
+        // All eight bytes of the id, around the version (4) and variant bits.
+        self.init(uuid: (0, 0, 0, 0, byte(0), byte(1), 0x40, 0, 0x80, 0,
+                         byte(2), byte(3), byte(4), byte(5), byte(6), byte(7)))
     }
 }
