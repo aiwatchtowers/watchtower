@@ -275,11 +275,12 @@ func TestDegradedNewVersionCappedAcrossRuns(t *testing.T) {
 func TestOCRPendingExhaustedNewVersionStoresPartialText(t *testing.T) {
 	x := newOCRExtractor(true)
 	d, src, f, e := newAttachmentEngine(t, x)
-	f.addAttachment("a1", "p1", 1, t0, "scan.png", "image/png", []byte("img"), -1)
+	base := time.Now().UTC().Truncate(time.Second).Add(-time.Hour)
+	f.addAttachment("a1", "p1", 1, base, "scan.png", "image/png", []byte("img"), -1)
 	_, err := e.Run(context.Background())
 	require.NoError(t, err)
 
-	f.mutate("a1", 2, t0.Add(time.Hour))
+	f.mutate("a1", 2, base.Add(time.Hour))
 	f.find("a1").item.Title = "scan-v2.png"
 	x.set(true, "scan-v2.png", "ocr_pending")
 	for want := 1; want <= 2; want++ {
@@ -310,7 +311,8 @@ func TestDegradedLastTryOfStoredVersionKeepsText(t *testing.T) {
 	x := newOCRExtractor(true)
 	x.set(true, "scan.png", "ocr_pending", "ocr_pending")
 	d, src, f, e := newAttachmentEngine(t, x)
-	f.addAttachment("a1", "p1", 1, t0, "scan.png", "image/png", []byte("img"), -1)
+	base := time.Now().UTC().Truncate(time.Second).Add(-time.Hour)
+	f.addAttachment("a1", "p1", 1, base, "scan.png", "image/png", []byte("img"), -1)
 	_, err := e.Run(context.Background())
 	require.NoError(t, err)
 	_, err = e.Run(context.Background())

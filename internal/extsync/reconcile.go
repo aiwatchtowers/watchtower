@@ -65,13 +65,12 @@ func (e *Engine) runReconcile(ctx context.Context, p pass) error {
 // comments the provider no longer enumerates — trashed, moved to another
 // container, or no longer visible to the account, which is the whole
 // permission model — except the children guardChildren keeps (a listing
-// that looks degraded), then fetches what it enumerates but the store lacks
-// or holds at another version (see recoverListed), and stamps
-// last_reconcile_at once both are done. Every enumeration, comments
-// included, completes before anything is deleted, so a failed listing
-// deletes nothing. A recovery the budget cuts leaves the reconcile
-// unstamped, so the next cycle resumes it; the version gate makes the refs
-// it already wrote free.
+// that looks degraded), and stamps last_reconcile_at in the same
+// transaction. Every enumeration, comments included, completes before
+// anything is deleted, so a failed listing deletes nothing. It then fetches
+// what the listing holds but the store lacks (see recoverListed); a
+// recovery the budget cuts keeps its listing in memory and resumes on the
+// next cycles (resumeRecovery) without enumerating again.
 func (e *Engine) reconcile(ctx context.Context, p pass) error {
 	c, err := e.refreshContainer(ctx, p)
 	if err != nil {
@@ -95,38 +94,50 @@ func (e *Engine) reconcile(ctx context.Context, p pass) error {
 		deleted = n
 		// After the documents: a deleted document's comments are gone
 		// already, so only the surviving parents are stamped and relinked.
-		return e.reconcileComments(ctx, q, p.src, l.comments, kept.comments)
+		if err := e.reconcileComments(ctx, q, p.src, l.comments, kept.comments); err != nil {
+			return err
+		}
+		if _, err := q.ExecContext(ctx, `UPDATE ext_sources SET last_reconcile_at = ? WHERE id = ?`,
+			formatTime(e.opts.Now()), p.src.ID); err != nil {
+			return fmt.Errorf("extsync: stamping reconcile: %w", err)
+		}
+		return nil
 	})
 	if err != nil {
 		return err
 	}
 	p.st.Deleted += deleted
+	return e.resumeRecovery(ctx, p, l)
+}
+
+// resumeRecovery runs recoverListed over l and keeps l for the next cycle
+// while the budget cuts it. A restart drops a kept listing: the next daily
+// reconcile lists everything again.
+func (e *Engine) resumeRecovery(ctx context.Context, p pass, l reconcileListing) error {
+	delete(e.pendingRecovery, p.src.ID)
 	done, err := e.recoverListed(ctx, p, l)
-	if err != nil || !done {
-		return err
+	if err == nil && !done {
+		e.pendingRecovery[p.src.ID] = l
 	}
-	if _, err := e.db.ExecContext(ctx, `UPDATE ext_sources SET last_reconcile_at = ? WHERE id = ?`,
-		formatTime(e.opts.Now()), p.src.ID); err != nil {
-		return fmt.Errorf("extsync: stamping reconcile: %w", err)
-	}
-	return nil
+	return err
 }
 
 // enumerateReconcile drains every reconcile enumeration: pages and blog
 // posts, attachments, then comments.
 func enumerateReconcile(ctx context.Context, p pass) (reconcileListing, error) {
-	var l reconcileListing
-	for _, step := range []struct {
-		kind ItemKind
-		into *map[string]ItemRef
-	}{{KindPage, &l.pages}, {KindAttachment, &l.attachments}, {KindComment, &l.comments}} {
-		refs, err := enumerateAll(ctx, p.f, p.c, step.kind)
-		if err != nil {
-			return reconcileListing{}, err
-		}
-		*step.into = refs
+	pages, err := enumerateAll(ctx, p.f, p.c, KindPage)
+	if err != nil {
+		return reconcileListing{}, err
 	}
-	return l, nil
+	attachments, err := enumerateAll(ctx, p.f, p.c, KindAttachment)
+	if err != nil {
+		return reconcileListing{}, err
+	}
+	comments, err := enumerateAll(ctx, p.f, p.c, KindComment)
+	if err != nil {
+		return reconcileListing{}, err
+	}
+	return reconcileListing{pages: pages, attachments: attachments, comments: comments}, nil
 }
 
 // reconcileDocs deletes the documents absent from the listing, except the
@@ -152,10 +163,9 @@ func (e *Engine) reconcileDocs(ctx context.Context, q Queryer, src db.ExtSource,
 }
 
 // reconcileComments deletes the stored comments absent from remote, except
-// those in keep. A
-// comment deletion does not bump its page's version, and the comments
-// stream only lists what changed, so without this a deleted comment would
-// stay searchable forever. Each parent that lost a comment is stamped
+// those in keep. A comment deletion does not bump its page's version, and
+// the comments stream only lists what changed, so without this a deleted
+// comment would stay searchable forever. Each parent that lost a comment is stamped
 // children_changed_at (the KB re-renders it) and relinked.
 func (e *Engine) reconcileComments(ctx context.Context, q Queryer, src db.ExtSource, remote map[string]ItemRef, keep map[string]bool) error {
 	local, err := localComments(ctx, q, src.ID)

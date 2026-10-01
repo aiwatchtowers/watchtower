@@ -31,21 +31,16 @@ type keptChildren struct{ attachments, comments map[string]bool }
 // came back empty or lacks more than half of them, the absence is not
 // trusted: up to reconcileVerifyCap of them are checked one by one (an
 // attachment by Fetch, a comment by its parent's Comments), only those
-// confirmed gone are deleted, and the rest — present, or not checked this
-// time — are kept for a later reconcile. The verified sample rotates by
-// day, so a large legitimate deletion still drains.
+// confirmed gone are deleted, and the rest — present, not checked this
+// time, or whose check failed for itself — are kept for a later reconcile.
+// The verified sample rotates by day, so a large legitimate deletion still
+// drains.
 func (e *Engine) guardChildren(ctx context.Context, p pass, l reconcileListing) (keptChildren, error) {
 	attachments, err := localAttachments(ctx, e.db, p.src.ID)
 	if err != nil {
 		return keptChildren{}, err
 	}
-	keepA, err := e.guardKind(ctx, p, KindAttachment, attachments, l.attachments, l.pages, func(c storedChild) (bool, error) {
-		it, err := p.f.Fetch(ctx, p.c, ItemRef{Kind: KindAttachment, ExtID: c.id, ParentID: c.parent})
-		if err != nil {
-			return false, fmt.Errorf("extsync: verifying attachment %s: %w", c.id, err)
-		}
-		return it == nil, nil
-	})
+	keepA, err := e.guardAttachments(ctx, p, attachments, l)
 	if err != nil {
 		return keptChildren{}, err
 	}
@@ -53,20 +48,44 @@ func (e *Engine) guardChildren(ctx context.Context, p pass, l reconcileListing) 
 	if err != nil {
 		return keptChildren{}, err
 	}
-	stored := make([]storedChild, len(comments))
-	for i, c := range comments {
-		stored[i] = storedChild{id: c.id, parent: c.page}
-	}
-	keepC, err := e.guardComments(ctx, p, stored, l)
+	keepC, err := e.guardComments(ctx, p, comments, l)
 	if err != nil {
 		return keptChildren{}, err
 	}
 	return keptChildren{attachments: keepA, comments: keepC}, nil
 }
 
-// guardComments is guardKind for comments, verified a parent at a time:
-// one Comments call confirms or refutes every absent comment of a parent.
-func (e *Engine) guardComments(ctx context.Context, p pass, stored []storedChild, l reconcileListing) (map[string]bool, error) {
+// guardAttachments returns the absent stored attachments to keep (nil =
+// the listing is trusted), verifying a sample of them by Fetch.
+func (e *Engine) guardAttachments(ctx context.Context, p pass, stored []storedChild, l reconcileListing) (map[string]bool, error) {
+	cands, suspect := absentChildren(stored, l.attachments, l.pages)
+	if !suspect {
+		return nil, nil
+	}
+	gone := map[string]bool{}
+	for _, c := range verifySample(cands, e.opts.Now()) {
+		it, err := p.f.Fetch(ctx, p.c, ItemRef{Kind: KindAttachment, ExtID: c.id, ParentID: c.parent})
+		if err != nil {
+			if verr := e.verifyFailure(ctx, p, "attachment "+c.id, err); verr != nil {
+				return nil, verr
+			}
+			continue
+		}
+		if it == nil {
+			gone[c.id] = true
+		}
+	}
+	return e.keepUnconfirmed(p, KindAttachment, cands, len(stored), gone), nil
+}
+
+// guardComments is guardAttachments for comments, verified a parent at a
+// time: one Comments call confirms or refutes every absent comment of a
+// parent.
+func (e *Engine) guardComments(ctx context.Context, p pass, comments []storedComment, l reconcileListing) (map[string]bool, error) {
+	stored := make([]storedChild, len(comments))
+	for i, c := range comments {
+		stored[i] = storedChild{id: c.id, parent: c.page}
+	}
 	cands, suspect := absentChildren(stored, l.comments, l.pages)
 	if !suspect {
 		return nil, nil
@@ -84,7 +103,10 @@ func (e *Engine) guardComments(ctx context.Context, p pass, stored []storedChild
 	for _, parent := range verifySample(parents, e.opts.Now()) {
 		set, err := p.f.Comments(ctx, p.c, parent)
 		if err != nil {
-			return nil, fmt.Errorf("extsync: verifying the comments of %s: %w", parent, err)
+			if verr := e.verifyFailure(ctx, p, "the comments of "+parent, err); verr != nil {
+				return nil, verr
+			}
+			continue
 		}
 		present := map[string]bool{}
 		for i := range set {
@@ -99,28 +121,16 @@ func (e *Engine) guardComments(ctx context.Context, p pass, stored []storedChild
 	return e.keepUnconfirmed(p, KindComment, cands, len(stored), gone), nil
 }
 
-// guardKind returns the absent stored children of one kind to keep (nil =
-// the listing is trusted), checking a sample of them with gone.
-func (e *Engine) guardKind(ctx context.Context, p pass, kind ItemKind, stored []storedChild, listed, parents map[string]ItemRef,
-	gone func(storedChild) (bool, error)) (map[string]bool, error) {
-	cands, suspect := absentChildren(stored, listed, parents)
-	if !suspect {
-		return nil, nil
+// verifyFailure classifies a failed verification call: auth, consent and a
+// cancelled ctx abort the reconcile; anything else is logged and leaves
+// what it was checking unconfirmed (kept), so one failing item cannot
+// block the reconcile's deletions.
+func (e *Engine) verifyFailure(ctx context.Context, p pass, what string, err error) error {
+	if ctx.Err() != nil || isExpected(err) {
+		return fmt.Errorf("extsync: verifying %s: %w", what, err)
 	}
-	confirmed := map[string]bool{}
-	for _, c := range verifySample(cands, e.opts.Now()) {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		ok, err := gone(c)
-		if err != nil {
-			return nil, err
-		}
-		if ok {
-			confirmed[c.id] = true
-		}
-	}
-	return e.keepUnconfirmed(p, kind, cands, len(stored), confirmed), nil
+	e.opts.Logger.Printf("source %d: verifying %s failed (kept): %v", p.src.ID, what, err)
+	return nil
 }
 
 // keepUnconfirmed returns the candidates not confirmed gone, and logs the
@@ -205,28 +215,34 @@ func localAttachments(ctx context.Context, q Queryer, sourceID int64) ([]storedC
 // enumerates: a provider may let a container's key change (Confluence
 // space keys can be renamed) while its listings are addressed by key. A
 // container the account no longer sees keeps its stored identity — the
-// page listing then decides what goes.
+// page listing then decides what goes. A renamed key that cannot be
+// stored (another selected source already holds it) is still used for
+// this reconcile.
 func (e *Engine) refreshContainer(ctx context.Context, p pass) (Container, error) {
 	if p.c.ExtID == "" {
 		return p.c, nil
 	}
 	cs, err := p.f.Containers(ctx)
 	if err != nil {
-		return p.c, fmt.Errorf("extsync: listing containers: %w", err)
+		return Container{}, fmt.Errorf("extsync: listing containers: %w", err)
 	}
-	for _, c := range cs {
-		if c.ExtID != p.c.ExtID || (c.Key == p.c.Key && c.Name == p.c.Name) {
-			continue
-		}
-		if c.Key == "" {
-			return p.c, nil
-		}
-		if _, err := e.db.ExecContext(ctx, `UPDATE ext_sources SET container_key = ?, container_name = ? WHERE id = ?`,
-			c.Key, c.Name, p.src.ID); err != nil {
-			return p.c, fmt.Errorf("extsync: storing the renamed container %s: %w", c.ExtID, err)
-		}
-		e.opts.Logger.Printf("source %d: container %s is now %q (%s), was %q", p.src.ID, c.ExtID, c.Key, c.Name, p.c.Key)
+	i := slices.IndexFunc(cs, func(c Container) bool { return c.ExtID == p.c.ExtID })
+	switch {
+	case i < 0:
+		e.opts.Logger.Printf("source %d: container %s is not among the account's containers; keeping key %q", p.src.ID, p.c.ExtID, p.c.Key)
+		return p.c, nil
+	case cs[i].Key == "":
+		e.opts.Logger.Printf("source %d: container %s is listed without a key; keeping key %q", p.src.ID, p.c.ExtID, p.c.Key)
+		return p.c, nil
+	case cs[i].Key == p.c.Key && cs[i].Name == p.c.Name:
+		return p.c, nil
+	}
+	c := cs[i]
+	if _, err := e.db.ExecContext(ctx, `UPDATE ext_sources SET container_key = ?, container_name = ? WHERE id = ?`,
+		c.Key, c.Name, p.src.ID); err != nil {
+		e.opts.Logger.Printf("source %d: storing container %s as %q: %v; using it for this reconcile only", p.src.ID, c.ExtID, c.Key, err)
 		return c, nil
 	}
-	return p.c, nil
+	e.opts.Logger.Printf("source %d: container %s is now %q (%s), was %q", p.src.ID, c.ExtID, c.Key, c.Name, p.c.Key)
+	return c, nil
 }

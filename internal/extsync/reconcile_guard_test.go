@@ -2,6 +2,7 @@ package extsync
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -41,6 +42,34 @@ func TestReconcileEmptyChildListingDeletesOnlyConfirmedGone(t *testing.T) {
 	assert.Equal(t, []string{"c0", "c1", "c2"}, commentTexts(t, d, src.ID, "p1"))
 	assert.Equal(t, 1, st.Deleted)
 	assert.NotEmpty(t, loadSource(t, d).LastReconcileAt, "a guarded reconcile still completes")
+}
+
+// A verification that fails for itself keeps what it was checking and
+// does not block the reconcile's other deletions.
+func TestReconcileGuardVerificationFailureKeeps(t *testing.T) {
+	d, src := newSourceDB(t)
+	f := newFake()
+	now := time.Now().UTC().Truncate(time.Second).Add(-30 * 24 * time.Hour)
+	old := now.Add(-time.Hour)
+	f.addPage("p1", 1, old)
+	f.addPage("p2", 1, old)
+	for i := range 2 {
+		f.addAttachment(fmt.Sprintf("a%d", i), "p1", 1, old, fmt.Sprintf("n%d.txt", i), "text/plain", []byte("x"), -1)
+	}
+	e := New(d, Options{Now: func() time.Time { return now }, Extractor: newFakeExtractor()})
+	e.SetFetcher(src.JiraAccountID, f)
+	_, err := e.Run(context.Background())
+	require.NoError(t, err)
+
+	f.removeFromAll("a0")
+	f.removeFromAll("a1")
+	f.markGone("a1", 1, old)
+	f.fetchErr["a0"] = errors.New("502: bad gateway")
+	f.removeFromAll("p2")
+	now = now.Add(24 * time.Hour)
+	_, err = e.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"a0", "p1"}, docIDs(t, d, src.ID), "a0 kept unverified, a1 and p2 deleted")
 }
 
 // A listing that lacks only a minority of the stored children is trusted:

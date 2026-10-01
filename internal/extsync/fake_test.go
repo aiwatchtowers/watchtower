@@ -53,6 +53,7 @@ type fakeFetcher struct {
 	readErr      map[string]error    // a Read of the body fails with it after the bytes
 	downloads    map[string]int      // Download calls by id
 	onFetch      func()              // called on every Fetch
+	fetchErr     map[string]error    // Fetch of this id fails with it
 	containers   []Container         // Containers' answer (nil = the one ENG space)
 	allKeys      []string            // the container key of every All call
 }
@@ -161,7 +162,7 @@ func (f *fakeFetcher) changedCalls() []changedCall {
 func newFake() *fakeFetcher {
 	return &fakeFetcher{docs: map[ItemKind][]fakeDoc{}, pageSize: 2, fetches: map[string]int{},
 		allCalls: map[ItemKind]int{}, hidden: map[string]bool{}, blobs: map[string][]byte{},
-		downloadErr: map[string]error{}, readErr: map[string]error{}, downloads: map[string]int{}}
+		downloadErr: map[string]error{}, readErr: map[string]error{}, downloads: map[string]int{}, fetchErr: map[string]error{}}
 }
 
 func (f *fakeFetcher) add(kind ItemKind, id string, version int, modified time.Time) {
@@ -318,6 +319,9 @@ func (f *fakeFetcher) Fetch(_ context.Context, _ Container, ref ItemRef) (*Item,
 	f.fetches[ref.ExtID]++
 	if f.onFetch != nil {
 		f.onFetch()
+	}
+	if err := f.fetchErr[ref.ExtID]; err != nil {
+		return nil, err
 	}
 	d := f.find(ref.ExtID)
 	if d == nil || d.item == nil {

@@ -13,94 +13,116 @@ import (
 var recoverBatchSize = 20
 
 // recoverListed fetches what the reconcile listing holds but the store
-// lacks or holds at another version, through the same paths as the delta
-// streams, without touching their state. The streams only see an item
-// again when it is modified, so without this an item that comes back
+// lacks, or holds at an older version, through the same paths as the
+// delta streams, without touching their state. The streams only see an
+// item again when it is modified, so without this an item that comes back
 // unmodified — a view restriction lifted, a page restored from the trash
 // or moved into the space — would stay out of search until someone edits
 // it. In order: pages and blog posts (each with its comment set), then
-// attachments (the pending-version gate applies, see
-// staleAttachmentRefs), then the comment sets of stored parents whose
-// listed comments are missing or at another version.
+// attachments, then the comment sets of stored parents whose listed
+// comments are missing or newer.
+//
+// Only a newer listed version counts: a listing may come from a lagging
+// search index, and an older listed version would otherwise be re-fetched
+// (an attachment re-downloaded and re-extracted) on every reconcile.
 //
 // Chunks of recoverBatchSize, the budget checked before each except the
-// first, so every reconcile makes progress even when the enumeration alone
-// spent the budget. done is false when the budget cut it (Incomplete is
+// very first, so a reconcile whose enumeration spent the budget still
+// progresses. A chunk that fails is retried ref by ref, and a ref that
+// still fails for itself (anything but auth/consent or a cancelled ctx) is
+// logged and left to the next reconcile, so one unfetchable item cannot
+// hold back the rest. done is false when the budget cut it (Incomplete is
 // set).
 func (e *Engine) recoverListed(ctx context.Context, p pass, l reconcileListing) (done bool, err error) {
 	local, err := localDocVersions(ctx, e.db, p.src.ID)
 	if err != nil {
 		return false, err
 	}
-	r := recovery{p: p}
-	pages := listedStale(l.pages, local, false)
-	if !r.chunks(len(pages), func(start, end int) (int, error) {
-		return end - start, e.applyPages(ctx, p, pages[start:end], noTx)
-	}) {
-		return false, r.err
+	ran := false
+	refID := func(r ItemRef) string { return r.ExtID }
+	pages := listedNewer(l.pages, local)
+	done, err = recoverEach(ctx, e, p, &ran, pages, refID, func(refs []ItemRef) (int, error) {
+		return len(refs), e.applyPages(ctx, p, refs, func(Queryer) error { return nil })
+	})
+	if err != nil || !done {
+		return false, err
 	}
-	attachments := listedStale(l.attachments, local, true)
-	if !r.chunks(len(attachments), func(start, end int) (int, error) {
-		return e.applyAttachments(ctx, p, attachments[start:end], func(Queryer, int) error { return nil })
-	}) {
-		return false, r.err
+	attachments := listedNewer(l.attachments, local)
+	done, err = recoverEach(ctx, e, p, &ran, attachments, refID, func(refs []ItemRef) (int, error) {
+		return e.applyAttachments(ctx, p, refs, func(Queryer, int) error { return nil })
+	})
+	if err != nil || !done {
+		return false, err
 	}
 	parents, err := listedCommentParents(ctx, e.db, p.src.ID, l.comments)
 	if err != nil {
 		return false, err
 	}
-	if !r.chunks(len(parents), func(start, end int) (int, error) {
-		return end - start, e.applyCommentSets(ctx, p, parents[start:end], noTx)
-	}) {
-		return false, r.err
+	return recoverEach(ctx, e, p, &ran, parents, func(id string) string { return id }, func(ids []string) (int, error) {
+		return len(ids), e.applyCommentSets(ctx, p, ids, func(Queryer) error { return nil })
+	})
+}
+
+// recoverEach runs apply over items in chunks of recoverBatchSize (see
+// recoverListed); apply returns how many of its chunk it processed. *ran
+// records that a chunk ran, so only the very first one of a reconcile
+// ignores the budget.
+func recoverEach[T any](ctx context.Context, e *Engine, p pass, ran *bool, items []T, id func(T) string,
+	apply func([]T) (int, error)) (bool, error) {
+	for start := 0; start < len(items); start += recoverBatchSize {
+		if *ran && p.budget != nil && p.budget.over() {
+			p.st.Incomplete = true
+			return false, nil
+		}
+		*ran = true
+		chunk := items[start:min(start+recoverBatchSize, len(items))]
+		done, err := apply(chunk)
+		if err != nil {
+			if ctx.Err() != nil || isExpected(err) {
+				return false, err
+			}
+			done, err = recoverOneByOne(ctx, e, p, chunk, id, apply)
+			if err != nil {
+				return false, err
+			}
+		}
+		if done < len(chunk) {
+			p.st.Incomplete = true
+			return false, nil
+		}
 	}
 	return true, nil
 }
 
-// noTx is an inTx hook that adds nothing to the transaction.
-func noTx(Queryer) error { return nil }
-
-// recovery runs recoverListed's chunks under one budget; ran records that
-// a chunk ran, so only the very first one ignores the budget.
-type recovery struct {
-	p   pass
-	ran bool
-	err error
-}
-
-// chunks runs apply over [0, n) in chunks of recoverBatchSize; apply
-// returns how many of its chunk it processed. It reports whether all n
-// were processed; on false, r.err holds the error, or Incomplete is set.
-func (r *recovery) chunks(n int, apply func(start, end int) (int, error)) bool {
-	for start := 0; start < n; start += recoverBatchSize {
-		if r.ran && r.p.budget != nil && r.p.budget.over() {
-			r.p.st.Incomplete = true
-			return false
-		}
-		r.ran = true
-		end := min(start+recoverBatchSize, n)
-		done, err := apply(start, end)
-		if err != nil {
-			r.err = err
-			return false
-		}
-		if done < end-start {
-			r.p.st.Incomplete = true
-			return false
+// recoverOneByOne retries a failed chunk an item at a time, logging and
+// skipping the items that fail for themselves.
+func recoverOneByOne[T any](ctx context.Context, e *Engine, p pass, chunk []T, id func(T) string,
+	apply func([]T) (int, error)) (int, error) {
+	for i, it := range chunk {
+		done, err := apply(chunk[i : i+1])
+		switch {
+		case err != nil && (ctx.Err() != nil || isExpected(err)):
+			return 0, err
+		case err != nil:
+			e.opts.Logger.Printf("source %d: reconcile could not recover %s (left to the next reconcile): %v", p.src.ID, id(it), err)
+		case done == 0:
+			return i, nil
 		}
 	}
-	return true
+	return len(chunk), nil
 }
 
-// listedStale returns the listed refs the store lacks or holds at another
-// version, sorted by ext id. With pending, a listed version equal to the
-// stored pending one is not stale either: its retries belong to
-// revisitAttachments.
-func listedStale(listed map[string]ItemRef, local map[string]attachmentVersion, pending bool) []ItemRef {
+// docVersion is a stored document's version and the version its pending
+// retry tried (pending 0 = none, see pendingVersionKey).
+type docVersion struct{ stored, pending int }
+
+// listedNewer returns, sorted by ext id, the listed refs the store lacks or
+// holds at an older version than listed — older than both the stored and
+// the pending version, whose retries belong to revisitAttachments.
+func listedNewer(listed map[string]ItemRef, local map[string]docVersion) []ItemRef {
 	var out []ItemRef
 	for id, r := range listed {
-		v, ok := local[id]
-		if ok && (v.stored == r.Version || (pending && v.pending == r.Version)) {
+		if v, ok := local[id]; ok && r.Version <= max(v.stored, v.pending) {
 			continue
 		}
 		out = append(out, r)
@@ -110,19 +132,19 @@ func listedStale(listed map[string]ItemRef, local map[string]attachmentVersion, 
 }
 
 // localDocVersions reads the stored and pending versions of every document
-// of sourceID in one query (pending 0 = none). A listing can hold far more
-// ids than one IN clause takes, so the diff is made in memory.
-func localDocVersions(ctx context.Context, q Queryer, sourceID int64) (map[string]attachmentVersion, error) {
+// of sourceID in one query. A listing can hold far more ids than one IN
+// clause takes, so the diff is made in memory.
+func localDocVersions(ctx context.Context, q Queryer, sourceID int64) (map[string]docVersion, error) {
 	rows, err := q.QueryContext(ctx, `SELECT ext_id, version, COALESCE(json_extract(meta_json, ?), '')
 		FROM ext_documents WHERE source_id = ?`, "$."+pendingVersionKey, sourceID)
 	if err != nil {
 		return nil, fmt.Errorf("extsync: reading local document versions: %w", err)
 	}
 	defer rows.Close()
-	out := map[string]attachmentVersion{}
+	out := map[string]docVersion{}
 	for rows.Next() {
 		var id, pending string
-		var v attachmentVersion
+		var v docVersion
 		if err := rows.Scan(&id, &v.stored, &pending); err != nil {
 			return nil, fmt.Errorf("extsync: scanning local document version: %w", err)
 		}
@@ -136,7 +158,7 @@ func localDocVersions(ctx context.Context, q Queryer, sourceID int64) (map[strin
 }
 
 // listedCommentParents returns, sorted, the stored pages and blog posts
-// with a listed comment the store lacks or holds at another version. It
+// with a listed comment the store lacks or holds at an older version. It
 // reads the store after the page recovery, so a parent recovered with its
 // comment set is not reloaded again.
 func listedCommentParents(ctx context.Context, q Queryer, sourceID int64, listed map[string]ItemRef) ([]string, error) {
@@ -157,7 +179,7 @@ func listedCommentParents(ctx context.Context, q Queryer, sourceID int64, listed
 		parents[id] = false
 	}
 	for id, r := range listed {
-		if v, ok := versions[id]; ok && v == r.Version {
+		if v, ok := versions[id]; ok && r.Version <= v {
 			continue
 		}
 		if _, ok := parents[r.ParentID]; ok {

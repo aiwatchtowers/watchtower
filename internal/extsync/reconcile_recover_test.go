@@ -2,6 +2,7 @@ package extsync
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -116,8 +117,9 @@ func TestReconcileReloadsCommentSetOfMissingComment(t *testing.T) {
 	assert.Equal(t, 1, f.fetchCount("p1"))
 }
 
-// A recovery the budget cuts leaves the reconcile unstamped; the next
-// cycle resumes it without re-fetching what was written, then stamps it.
+// A recovery the budget cuts keeps its listing and resumes on the next
+// cycles without enumerating again; the reconcile itself is stamped with
+// its deletions.
 func TestReconcileRecoveryResumesAfterBudgetCut(t *testing.T) {
 	d, src := newSourceDB(t)
 	f := newFake()
@@ -143,37 +145,91 @@ func TestReconcileRecoveryResumesAfterBudgetCut(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, st.Incomplete)
 	assert.Equal(t, []string{"p1"}, docIDs(t, d, src.ID), "the first chunk runs even past the budget")
-	assert.Empty(t, loadSource(t, d).LastReconcileAt, "a cut recovery is not a reconcile")
+	assert.Equal(t, formatTime(start), loadSource(t, d).LastReconcileAt, "the deletions and the stamp commit together")
+	enumerated, _ := f.counts()
 
 	for range 3 {
 		_, err = e.Run(context.Background())
 		require.NoError(t, err)
 	}
 	assert.Equal(t, ids, docIDs(t, d, src.ID))
-	assert.Equal(t, formatTime(clock.Now()), loadSource(t, d).LastReconcileAt)
+	all, _ := f.counts()
+	assert.Equal(t, enumerated, all, "the resumed recovery does not enumerate again")
 	for _, id := range ids {
 		assert.Equal(t, 1, f.fetchCount(id), "%s fetched once", id)
 	}
+	assert.Empty(t, e.pendingRecovery, "a finished recovery is dropped")
 }
 
-// listedStale honours the pending version for attachments only.
-func TestListedStale(t *testing.T) {
+// A listed item whose Fetch keeps failing for itself is logged and left to
+// the next reconcile; the rest of its chunk is recovered and the reconcile
+// succeeds.
+func TestReconcileRecoverySkipsAnItemThatFails(t *testing.T) {
+	d, src := newSourceDB(t)
+	f := newFake()
+	start := time.Now().UTC().Truncate(time.Second).Add(-30 * 24 * time.Hour)
+	for _, id := range []string{"p1", "p2", "p3"} {
+		f.addPage(id, 1, start.Add(-48*time.Hour))
+	}
+	_, err := d.Exec(`UPDATE ext_sources SET page_cursor = ?, comment_cursor = ?, attachment_cursor = ? WHERE id = ?`,
+		formatTime(start), formatTime(start), formatTime(start), src.ID)
+	require.NoError(t, err)
+	f.fetchErr["p2"] = errors.New("500: internal error")
+	e := New(d, Options{Now: func() time.Time { return start }})
+	e.SetFetcher(src.JiraAccountID, f)
+	_, err = e.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"p1", "p3"}, docIDs(t, d, src.ID))
+	assert.Equal(t, "ok", sourceStatus(t, d, src.ID))
+
+	// An auth failure still aborts.
+	delete(f.fetchErr, "p2")
+	f.fetchErr["p2"] = ErrAuthRevoked
+	_, err = e.Run(context.Background()) // same day: no reconcile, nothing pending
+	require.NoError(t, err)
+	_, err = d.Exec(`UPDATE ext_sources SET last_reconcile_at = '' WHERE id = ?`, src.ID)
+	require.NoError(t, err)
+	_, err = e.Run(context.Background())
+	require.NoError(t, err, "Run records the expected states rather than returning them")
+	assert.Equal(t, "revoked", sourceStatus(t, d, src.ID), "an auth failure in the recovery still stops the source")
+}
+
+// A listing that lags behind the store (an older listed version) does not
+// make the reconcile fetch the item again.
+func TestReconcileIgnoresAnOlderListedVersion(t *testing.T) {
+	d, src := newSourceDB(t)
+	f := newFake()
+	now := time.Now().UTC().Truncate(time.Second).Add(-30 * 24 * time.Hour)
+	f.addPage("p1", 3, now.Add(-time.Hour))
+	e := New(d, Options{Now: func() time.Time { return now }})
+	e.SetFetcher(src.JiraAccountID, f)
+	_, err := e.Run(context.Background())
+	require.NoError(t, err)
+
+	f.mutate("p1", 2, now.Add(-2*time.Hour))
+	now = now.Add(24 * time.Hour)
+	_, err = e.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, f.fetchCount("p1"))
+}
+
+// listedNewer picks the refs missing locally or listed at a version newer
+// than both the stored and the pending one: a lagging listing's older
+// version is never re-fetched.
+func TestListedNewer(t *testing.T) {
 	listed := map[string]ItemRef{
 		"same":    {ExtID: "same", Version: 2},
-		"other":   {ExtID: "other", Version: 3},
+		"newer":   {ExtID: "newer", Version: 3},
+		"older":   {ExtID: "older", Version: 1},
 		"pending": {ExtID: "pending", Version: 4},
 		"missing": {ExtID: "missing", Version: 1},
 	}
-	local := map[string]attachmentVersion{
-		"same": {stored: 2}, "other": {stored: 2}, "pending": {stored: 3, pending: 4},
+	local := map[string]docVersion{
+		"same": {stored: 2}, "newer": {stored: 2}, "older": {stored: 2}, "pending": {stored: 3, pending: 4},
 	}
-	ids := func(refs []ItemRef) []string {
-		var out []string
-		for _, r := range refs {
-			out = append(out, r.ExtID)
-		}
-		return out
+	var ids []string
+	for _, r := range listedNewer(listed, local) {
+		ids = append(ids, r.ExtID)
 	}
-	assert.Equal(t, []string{"missing", "other", "pending"}, ids(listedStale(listed, local, false)))
-	assert.Equal(t, []string{"missing", "other"}, ids(listedStale(listed, local, true)))
+	assert.Equal(t, []string{"missing", "newer"}, ids)
 }

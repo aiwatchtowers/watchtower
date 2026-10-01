@@ -15,4 +15,4 @@ created: 2026-09-27
 
 > Original note: «так там два больших фичи влилось. Пройдись еще разок, дополнии беклог и давай его начинать закрывать»
 
-Fixed in fix/extsync-reconcile-attachments: the reconcile now fetches every listed ref the store lacks or holds at another version through the stream paths (`recoverListed`, `internal/extsync/reconcile_recover.go`), budget-chunked and resumed by the next cycle when cut; pinned by `TestReconcileRefetchesAnItemThatComesBack` and siblings.
+Fixed in fix/extsync-reconcile-attachments: the reconcile now fetches every listed ref the store lacks or holds at an older version through the stream paths (`recoverListed`, `internal/extsync/reconcile_recover.go`), budget-chunked, resumed from memory by the next cycles when cut, one unfetchable item skipped and logged; pinned by `TestReconcileRefetchesAnItemThatComesBack` and siblings.
