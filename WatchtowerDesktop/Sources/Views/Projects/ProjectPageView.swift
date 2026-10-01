@@ -77,7 +77,6 @@ struct ProjectPageView: View {
                 }
                 .buttonStyle(.link)
                 .help("Reveal in Finder")
-                ProjectBoardLanguageMenu(vm: vm, project: project)
                 if let installError = vm.installErrors[project.id] {
                     Text(installError).font(.caption).foregroundStyle(.red).lineLimit(2)
                 }

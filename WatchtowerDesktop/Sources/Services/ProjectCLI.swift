@@ -399,13 +399,6 @@ struct ProjectCLI {
         return try JSONDecoder().decode(ProjectDriftReport.self, from: data)
     }
 
-    /// Sets the board language every session writes the board in; an empty
-    /// `language` follows the session language again. The CLI validates it.
-    /// `--flag=value` form, so an empty value is never read as a missing one.
-    func setBoardLanguage(projectID: Int64, language: String) async throws {
-        _ = try await runner.run(args: ["project", "update", String(projectID), "--board-language=\(language)"])
-    }
-
     /// Re-run setup (#91): attaches new documents and re-installs missing or
     /// outdated integration pieces — additive only, never creates targets.
     func resync(projectID: Int64) async throws -> ProjectResynced {

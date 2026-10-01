@@ -98,9 +98,7 @@ type projectInfoView struct {
 	Name        string `json:"name"`
 	Folder      string `json:"folder"`
 	Description string `json:"description"`
-	// BoardLanguage is the stored value (empty = follow the session);
-	// BoardLanguageRule is the sentence the agent follows.
-	BoardLanguage     string         `json:"board_language"`
+	// BoardLanguageRule is the sentence the agent follows (BoardLanguageLine).
 	BoardLanguageRule string         `json:"board_language_rule"`
 	Sources           []sourceView   `json:"sources"`
 	Targets           map[string]int `json:"targets_by_status"`
@@ -148,9 +146,8 @@ func buildProjectInfo(d *db.DB, p *db.Project) (*projectInfoView, error) {
 	}
 	v := &projectInfoView{
 		ID: p.ID, Name: p.Name, Folder: p.FolderPath, Description: p.Description,
-		BoardLanguage: p.BoardLanguage, BoardLanguageRule: BoardLanguageLine(p.BoardLanguage),
-		Sources: make([]sourceView, 0, len(sources)), Targets: map[string]int{},
-		Documents: len(docs), NewComments: len(fresh),
+		BoardLanguageRule: BoardLanguageLine, Sources: make([]sourceView, 0, len(sources)),
+		Targets: map[string]int{}, Documents: len(docs), NewComments: len(fresh),
 	}
 	for _, s := range sources {
 		v.Sources = append(v.Sources, sourceView{ID: s.ID, Kind: s.Kind, Ref: s.Ref, Label: s.Label})
@@ -256,18 +253,15 @@ func documentViews(docs []db.ProjectDocument) []documentView {
 // ---- update_project ----------------------------------------------------
 
 type updateProjectArgs struct {
-	Description   *string `json:"description,omitempty" jsonschema:"what the project is, a few sentences; replaces the current description"`
-	BoardLanguage *string `json:"board_language,omitempty" jsonschema:"the language the board is written in, a name or tag such as Russian or pt-BR; empty follows the session language. Set it only when the owner asks"`
-	Reason        string  `json:"reason" jsonschema:"one sentence: why you make this change"`
+	Description string `json:"description" jsonschema:"what the project is, a few sentences; replaces the current description"`
+	Reason      string `json:"reason" jsonschema:"one sentence: why you make this change"`
 }
 
-// NewUpdateProject sets the bound project's description and/or board language.
+// NewUpdateProject sets the bound project's description.
 func NewUpdateProject() *Tool {
 	return &Tool{
-		Name: "update_project",
-		Description: "Set this project's description (what it is, a few sentences) and/or its board language " +
-			"(the language targets, intents and comments are written in; empty = follow the session language). " +
-			"Applied immediately.",
+		Name:        "update_project",
+		Description: "Set this project's description (what it is, a few sentences). Applied immediately.",
 		InputSchema: mustSchema[updateProjectArgs]("update_project"),
 		Access:      AccessWrite,
 		Surfaces:    projectSurfaces,
@@ -276,20 +270,8 @@ func NewUpdateProject() *Tool {
 			if err := decodeStrict(raw, &a); err != nil {
 				return err
 			}
-			if a.Description == nil && a.BoardLanguage == nil {
-				return &ValidationError{Msg: "give description, board_language or both"}
-			}
-			if a.Description != nil {
-				if _, err := requireText("description", *a.Description, 4000); err != nil {
-					return err
-				}
-			}
-			if a.BoardLanguage != nil {
-				if _, err := db.NormalizeBoardLanguage(*a.BoardLanguage); err != nil {
-					return &ValidationError{Msg: err.Error(), Err: err}
-				}
-			}
-			return nil
+			_, err := requireText("description", a.Description, 4000)
+			return err
 		},
 		Scope: projectScope,
 		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
@@ -297,33 +279,19 @@ func NewUpdateProject() *Tool {
 			if err := json.Unmarshal(call.Args, &a); err != nil {
 				return nil, fmt.Errorf("decoding update_project args: %w", err)
 			}
-			if err := d.UpdateProject(call.Binding.ProjectID, db.ProjectUpdate{
-				Description: a.Description, BoardLanguage: a.BoardLanguage,
-			}); err != nil {
+			if err := d.UpdateProjectDescription(call.Binding.ProjectID, a.Description); err != nil {
 				return nil, fmt.Errorf("updating project: %w", err)
 			}
-			out := map[string]any{"project_id": call.Binding.ProjectID}
-			if a.BoardLanguage != nil {
-				p, err := d.GetProject(call.Binding.ProjectID)
-				if err != nil {
-					return nil, fmt.Errorf("reading the project back: %w", err)
-				}
-				out["board_language"] = p.BoardLanguage
-				out["board_language_rule"] = BoardLanguageLine(p.BoardLanguage)
-			}
-			return out, nil
+			return map[string]any{"project_id": call.Binding.ProjectID}, nil
 		},
 	}
 }
 
 // BoardLanguageLine is the one line every session reads (project brief,
-// project_info) to know which language the board is written in.
-func BoardLanguageLine(lang string) string {
-	if lang == "" {
-		return "Board language: follow the session language (write targets, intents and comments in the language the owner uses with you)."
-	}
-	return "Board language: " + lang + " (write targets, intents and comments in " + lang + ", whatever language the session uses)."
-}
+// project_info) to know which language the board is written in: always the
+// session's (board item #153 retired the per-project override; the
+// projects.board_language column is no longer read).
+const BoardLanguageLine = "Board language: follow the session language (write targets, intents and comments in the language the owner uses with you)."
 
 // ---- add_project_source / remove_project_source -------------------------
 

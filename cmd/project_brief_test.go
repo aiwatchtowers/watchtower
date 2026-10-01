@@ -19,6 +19,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/kb"
 	"watchtower/internal/projectcheck"
+	"watchtower/internal/tools"
 )
 
 func briefNode(id int, status, title string, children ...db.BoardNode) db.BoardNode {
@@ -58,7 +59,6 @@ func TestRenderProjectBrief_LargeBoardStaysWithinBudget(t *testing.T) {
 		comments = append(comments, c)
 	}
 	p := briefProject()
-	p.BoardLanguage = strings.Repeat("я", 40)
 	p.Name = strings.Repeat("very long name ", 500)
 	p.FolderPath = "/tmp/" + strings.Repeat("deep/", 500)
 
@@ -68,7 +68,7 @@ func TestRenderProjectBrief_LargeBoardStaysWithinBudget(t *testing.T) {
 	assert.True(t, utf8.ValidString(out))
 	assert.Contains(t, out, "more targets (project_board)")
 	assert.Contains(t, out, "more comments (list_comments)")
-	assert.Contains(t, out, "Board language: "+p.BoardLanguage, "the language line survives a full board")
+	assert.Contains(t, out, tools.BoardLanguageLine, "the language line survives a full board")
 	for _, rule := range briefRules {
 		assert.Contains(t, out, rule)
 	}
@@ -193,14 +193,6 @@ func TestRenderProjectBrief_EmptyProjectAsksForSetup(t *testing.T) {
 	assert.Contains(t, out, "Setup pending")
 	assert.Contains(t, out, "Open targets: none.")
 	assert.Contains(t, out, "Board language: follow the session language")
-}
-
-func TestRenderProjectBrief_NamesTheBoardLanguageOverride(t *testing.T) {
-	p := briefProject()
-	p.BoardLanguage = "Russian"
-	out := renderProjectBrief(nil, p, nil, nil, nil, nil, time.Now())
-	assert.Contains(t, out, "Board language: Russian")
-	assert.NotContains(t, out, "follow the session language")
 }
 
 func TestProjectBrief_DeletedProjectPrintsOneLineAndExitsZero(t *testing.T) {

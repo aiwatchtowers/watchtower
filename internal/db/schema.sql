@@ -2073,7 +2073,7 @@ CREATE TABLE IF NOT EXISTS projects (
     description TEXT NOT NULL DEFAULT '',
     created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-    board_language TEXT NOT NULL DEFAULT '' -- '' = follow the session language (00087)
+    board_language TEXT NOT NULL DEFAULT '' -- unused: the board always follows the session language (00087, retired by board item #153)
 );
 
 CREATE TABLE IF NOT EXISTS project_sources (
