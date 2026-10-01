@@ -189,10 +189,13 @@ tray without a main window.
 
 - Meeting, date and the reason ("not recognized" / "looks like X, 0.66" / "looks like X, 0.87, but X was
   not invited" / "from <sender>'s file: is this X?" / "two sources disagree").
-- 2–3 clips (4–10 s) with the transcript text of those spans, played straight from the `.caf` range —
-  no clip files are written.
-- Person picker: this meeting's invited attendees not yet in the registry, then registry people, then
-  "new person…" (name + optional email). The suggestion is preselected.
+- 2–3 clips (4–6 s, from different speech runs spread across the meeting) with the words spoken in each,
+  played straight from the `.caf` range — no clip files are written.
+- Person picker, in titled groups: "In this meeting" (the owner as "Me", then invited attendees not yet in
+  the registry, then invited registry people), "Similar voices" (other registry people whose nearest
+  active sample scores ≥ `unsureFloor`, closest first), "Other known voices" (the rest), then
+  "new person…" (name + optional email). The suggestion is preselected. While a pick can be confirmed the
+  card says it is not saved until Confirm.
 - Actions: **Confirm**, **Don't know** (stays `Speaker N`, task closed for good), **Several people**
   (mixed cluster: no label, never used for learning), **Skip** (stays queued).
 - Keys: space = play, 1–9 = pick, Enter = confirm. Target: 3–5 s per card.

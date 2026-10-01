@@ -55,6 +55,17 @@ struct VoiceClipRow: View {
     }
 }
 
+/// "Picking a name is not a save" — under a Queue or Train card's picker
+/// while its pick can be confirmed. Without it the owner could name every
+/// card, close the window and lose all of it.
+struct VoiceUnsavedHint: View {
+    var body: some View {
+        Label("Not saved until you press Confirm", systemImage: "exclamationmark.circle")
+            .font(.caption)
+            .foregroundStyle(.orange)
+    }
+}
+
 /// Shows a `ClipPlayer` failure under a Voices screen, so a clip that
 /// cannot play never looks like a button that did nothing.
 struct ClipPlayerErrorInset: ViewModifier {
@@ -83,7 +94,8 @@ struct VoicePersonPicker: View {
     /// an optional, so ViewInspector's `selectedValue` resolves it directly.
     static let newPersonChoice = PersonChoice(personKey: "", displayName: "New person…", inRegistry: false)
 
-    let candidates: [PersonChoice]
+    /// Shown as titled sections; a group with an empty title is a plain list.
+    let groups: [CandidateGroup]
     @Binding var selection: PersonChoice
     @Binding var newName: String
     @Binding var newEmail: String
@@ -91,8 +103,12 @@ struct VoicePersonPicker: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Picker("Who is this?", selection: $selection) {
-                ForEach(candidates, id: \.self) { candidate in
-                    Text(candidate.displayName).tag(candidate)
+                ForEach(groups, id: \.title) { group in
+                    if group.title.isEmpty {
+                        rows(group.choices)
+                    } else {
+                        Section(group.title) { rows(group.choices) }
+                    }
                 }
                 Text("New person…").tag(Self.newPersonChoice)
             }
@@ -109,6 +125,16 @@ struct VoicePersonPicker: View {
                 }
             }
         }
+    }
+
+    private func rows(_ choices: [PersonChoice]) -> some View {
+        ForEach(choices, id: \.self) { candidate in
+            Text(Self.title(candidate)).tag(candidate)
+        }
+    }
+
+    private static func title(_ candidate: PersonChoice) -> String {
+        candidate.isOwner ? "Me (\(candidate.displayName))" : candidate.displayName
     }
 
     /// The candidate to confirm: the selected row as-is, or a freshly-typed

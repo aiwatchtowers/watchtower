@@ -7,6 +7,7 @@ import WatchtowerCore
 /// live top-level.
 typealias VoiceCard = VoiceRegistryCenter.VoiceCard
 typealias PersonChoice = VoiceRegistryCenter.PersonChoice
+typealias CandidateGroup = VoiceRegistryCenter.CandidateGroup
 
 /// One Voices-queue card: header (meeting · date · why the owner is needed,
 /// spec §3.1's five reasons), a clip button + transcript snippet per playable
@@ -67,7 +68,8 @@ struct VoiceCardView: View {
             ForEach(Array(card.clips.enumerated()), id: \.offset) { index, clip in
                 clipRow(clip, index: index)
             }
-            VoicePersonPicker(candidates: card.candidates, selection: $selectedCandidate, newName: $newName, newEmail: $newEmail)
+            VoicePersonPicker(groups: card.candidateGroups, selection: $selectedCandidate, newName: $newName, newEmail: $newEmail)
+            if !confirmDisabled { VoiceUnsavedHint() }
             actions
         }
         .padding(12)

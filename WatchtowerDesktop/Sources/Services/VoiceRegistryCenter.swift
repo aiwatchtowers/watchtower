@@ -48,6 +48,16 @@ final class VoiceRegistryCenter {
         let personKey: String
         let displayName: String
         let inRegistry: Bool
+        /// The machine's owner (a registry person keyed by a connected
+        /// Google account's email) — the picker shows them as "Me".
+        var isOwner = false
+    }
+
+    /// One titled block of a card's person picker (spec §3.1 order, split
+    /// so the owner can see WHY a name is offered).
+    struct CandidateGroup: Equatable {
+        let title: String
+        let choices: [PersonChoice]
     }
 
     /// One pending labeling task, joined with its transcript and candidates —
@@ -68,7 +78,11 @@ final class VoiceRegistryCenter {
         /// never a re-transcribe.
         let clipTexts: [String]
         let audioPath: String
-        let candidates: [PersonChoice]
+        /// Non-empty groups only, in display order.
+        let candidateGroups: [CandidateGroup]
+
+        /// Every choice in display order — what the 1–9 keys index.
+        var candidates: [PersonChoice] { candidateGroups.flatMap(\.choices) }
     }
 
     /// One Review-screen spot check (spec §3.2): an `auto`-labeled cluster
@@ -569,7 +583,7 @@ final class VoiceRegistryCenter {
     /// The owner's connected Google emails — the set import/export use to
     /// recognize (and skip, on import) the owner's own identity (invariant 2).
     nonisolated private static func ownerEmails(_ db: Database) throws -> Set<String> {
-        Set(try GoogleAccountQueries.fetchAll(db).map { $0.email.lowercased() }.filter { !$0.isEmpty })
+        Set(try GoogleAccountQueries.fetchAll(db).map { normalizedKey($0.email) }.filter { !$0.isEmpty })
     }
 
     // MARK: - Queue loading
@@ -593,6 +607,8 @@ final class VoiceRegistryCenter {
         let tasks = try VoiceLabelQueueQueries.pending(db, transcriptID: transcriptID)
         guard !tasks.isEmpty else { return [] }
         let people = try VoicePrintQueries.fetchAll(db)
+        let ownerEmails = try Self.ownerEmails(db)
+        let activeSamples = try VoiceSampleQueries.fetchUsable(db).filter { $0.status == .active }
 
         var cards: [VoiceCard] = []
         for task in tasks {
@@ -612,9 +628,14 @@ final class VoiceRegistryCenter {
             }
 
             var attendees: [EventAttendee] = []
+            var invitedIDs: Set<Int64> = []
             if let eventID = transcript.eventID, let event = try CalendarQueries.fetchEvent(db, id: eventID) {
                 attendees = event.attendeesIncludingOrganizer
+                invitedIDs = try VoicePrintQueries.personIDs(db, matching: attendees)
             }
+            let scores = Dictionary(
+                VoiceMatcher.nearest(embedding: cluster.embedding, samples: activeSamples).map { ($0.personID, $0.score) },
+                uniquingKeysWith: max)
 
             cards.append(VoiceCard(
                 id: taskID,
@@ -628,7 +649,8 @@ final class VoiceRegistryCenter {
                 clips: clips,
                 clipTexts: clipTexts,
                 audioPath: audioPath,
-                candidates: candidateChoices(attendees: attendees, people: people)))
+                candidateGroups: candidateGroups(
+                    attendees: attendees, people: people, invitedIDs: invitedIDs, scores: scores, ownerEmails: ownerEmails)))
         }
         return cards
     }
@@ -705,8 +727,12 @@ final class VoiceRegistryCenter {
         let quality = TrainQuality(
             namedMinutes: ownerMinutes + autoMinutes, ownerMinutes: ownerMinutes, autoMinutes: autoMinutes,
             precision: accuracy.precision, recall: accuracy.recall, people: people.count, singleChannelPeople: singleChannelPeople)
+        let ownerEmails = try Self.ownerEmails(db)
         let registryChoices = people
-            .map { PersonChoice(personKey: $0.personKey, displayName: $0.displayName, inRegistry: true) }
+            .map {
+                PersonChoice(personKey: $0.personKey, displayName: $0.displayName, inRegistry: true,
+                             isOwner: VoicePrintQueries.isOwner($0, ownerEmails: ownerEmails))
+            }
             .sorted(by: byDisplayName)
         return (trainGroups, quality, scan.clipsByKey, registryChoices)
     }
@@ -831,14 +857,25 @@ final class VoiceRegistryCenter {
         return best
     }
 
-    /// Spec §3.1 candidate order: this meeting's invited attendees the
-    /// registry doesn't already know FIRST (matched by email or display
-    /// name, case/whitespace insensitive), then registry people — each
-    /// group sorted by display name on its own, never merged into one
-    /// alphabetical list, so a just-met attendee always outranks an
-    /// unrelated but alphabetically-earlier registry person. (The picker's
-    /// trailing "new person…" affordance is UI-only, not represented here.)
-    nonisolated private static func candidateChoices(attendees: [EventAttendee], people: [VoicePrint]) -> [PersonChoice] {
+    /// Spec §3.1 candidate order, in three titled groups so a name is never
+    /// offered without a reason:
+    /// 1. "In this meeting": the owner, then this meeting's invited
+    ///    attendees — the ones the registry doesn't know yet first (sorted),
+    ///    then the invited registry people (sorted). Never merged into one
+    ///    alphabetical list, so a just-met attendee outranks an
+    ///    alphabetically-earlier registry person.
+    /// 2. "Similar voices": other registry people whose nearest ACTIVE
+    ///    sample scores at least `unsureFloor` against this cluster, closest
+    ///    first.
+    /// 3. "Other known voices": the rest of the registry, sorted.
+    /// (The picker's trailing "new person…" affordance is UI-only.)
+    nonisolated private static func candidateGroups(
+        attendees: [EventAttendee],
+        people: [VoicePrint],
+        invitedIDs: Set<Int64>,
+        scores: [Int64: Float],
+        ownerEmails: Set<String>
+    ) -> [CandidateGroup] {
         let registryKeys = Set(people.flatMap { [normalizedKey($0.personKey), normalizedKey($0.displayName)] })
         var seen = Set<String>()
         var invitedNotInRegistry: [PersonChoice] = []
@@ -849,15 +886,37 @@ final class VoiceRegistryCenter {
             let key = normalizedKey(email.isEmpty ? name : email)
             guard !registryKeys.contains(key), name.isEmpty || !registryKeys.contains(normalizedKey(name)) else { continue }
             guard seen.insert(key).inserted else { continue }
-            invitedNotInRegistry.append(PersonChoice(personKey: key, displayName: name.isEmpty ? email : name, inRegistry: false))
+            invitedNotInRegistry.append(PersonChoice(personKey: key, displayName: name.isEmpty ? email : name, inRegistry: false,
+                                                     isOwner: ownerEmails.contains(key)))
         }
-        invitedNotInRegistry.sort(by: byDisplayName)
+        // The owner first ("Me"), then attendees by name.
+        invitedNotInRegistry.sort { $0.isOwner != $1.isOwner ? $0.isOwner : byDisplayName($0, $1) }
 
-        let registryChoices = people
-            .map { PersonChoice(personKey: $0.personKey, displayName: $0.displayName, inRegistry: true) }
-            .sorted(by: byDisplayName)
+        let registry = people.compactMap { person in person.id.map { (id: $0, person: person) } }
+        func choices(_ rows: [(id: Int64, person: VoicePrint)], isOwner: Bool = false) -> [PersonChoice] {
+            rows.map {
+                PersonChoice(personKey: $0.person.personKey, displayName: $0.person.displayName, inRegistry: true, isOwner: isOwner)
+            }
+        }
+        let owners = registry.filter { VoicePrintQueries.isOwner($0.person, ownerEmails: ownerEmails) }
+        let ownerIDs = Set(owners.map(\.id))
+        let others = registry.filter { !ownerIDs.contains($0.id) }
+        let invited = others.filter { invitedIDs.contains($0.id) }
+        let similar = others
+            .compactMap { row in scores[row.id].map { (row: row, score: $0) } }
+            .filter { !invitedIDs.contains($0.row.id) && $0.score >= VoiceRegistryPolicy.unsureFloor }
+            .sorted { $0.score > $1.score }
+            .map(\.row)
+        let shown = Set((invited + similar).map(\.id))
+        let rest = others.filter { !shown.contains($0.id) }
 
-        return invitedNotInRegistry + registryChoices
+        return [
+            CandidateGroup(title: "In this meeting",
+                           choices: choices(owners, isOwner: true).sorted(by: byDisplayName) + invitedNotInRegistry
+                               + choices(invited).sorted(by: byDisplayName)),
+            CandidateGroup(title: "Similar voices", choices: choices(similar)),
+            CandidateGroup(title: "Other known voices", choices: choices(rest).sorted(by: byDisplayName))
+        ].filter { !$0.choices.isEmpty }
     }
 
     nonisolated private static func byDisplayName(_ a: PersonChoice, _ b: PersonChoice) -> Bool {

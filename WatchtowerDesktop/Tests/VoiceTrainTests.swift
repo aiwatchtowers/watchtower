@@ -384,6 +384,24 @@ final class VoiceTrainTests: XCTestCase {
         XCTAssertTrue(center.groups.isEmpty)
     }
 
+    /// The owner reads as "Me" in Train's picker too, never as a colleague.
+    func testRegistryChoicesFlagTheOwner() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        try await pool.write { db in
+            _ = try TestDatabase.insertGoogleAccount(db, email: "Me@Example.com ")
+            _ = try VoicePrintQueries.findOrCreate(db, personKey: "me@example.com", displayName: "Owner")
+            _ = try VoicePrintQueries.findOrCreate(db, personKey: "kim@example.com", displayName: "Kim")
+        }
+        let center = VoiceRegistryCenter()
+        center.attach(dbPool: pool)
+
+        await center.loadTrain()
+
+        XCTAssertEqual(center.registryChoices.map(\.displayName), ["Kim", "Owner"])
+        XCTAssertEqual(center.registryChoices.map(\.isOwner), [false, true])
+    }
+
     // MARK: - degenerate
 
     /// A center that was never attach()ed must no-op cleanly (the

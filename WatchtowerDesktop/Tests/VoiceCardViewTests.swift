@@ -93,6 +93,29 @@ final class VoiceCardViewTests: XCTestCase {
         XCTAssertNoThrow(try view.inspect().find(text: "at 8:40"))
     }
 
+    /// Picking a name is not a save: while Confirm is possible the card
+    /// says so; with nothing confirmable (an empty "New person…") it doesn't.
+    func testUnsavedHintShowsOnlyWhileConfirmIsPossible() throws {
+        let suggested = VoiceCard.fixture(
+            reason: .unsure, suggestion: VoicePrint(id: 1, personKey: "alice@example.com", displayName: "Alice"),
+            score: 0.6, clips: [])
+        let blank = VoiceCard.fixture(reason: .unknown, clips: [])
+
+        XCTAssertNoThrow(try VoiceCardView(card: suggested, onPlay: { _ in }, onConfirm: { _ in }, onDismiss: { _ in })
+            .inspect().find(text: "Not saved until you press Confirm"))
+        XCTAssertThrowsError(try VoiceCardView(card: blank, onPlay: { _ in }, onConfirm: { _ in }, onDismiss: { _ in })
+            .inspect().find(text: "Not saved until you press Confirm"))
+    }
+
+    /// The owner's own registry row reads as "Me", never as a colleague.
+    func testOwnerCandidateReadsAsMe() throws {
+        let owner = PersonChoice(personKey: "me@example.com", displayName: "Owner", inRegistry: true, isOwner: true)
+        let card = VoiceCard.fixture(reason: .unknown, clips: [], candidates: [owner])
+        let view = VoiceCardView(card: card, onPlay: { _ in }, onConfirm: { _ in }, onDismiss: { _ in })
+        XCTAssertNoThrow(try view.inspect().find(text: "Me (Owner)"))
+        XCTAssertNoThrow(try view.inspect().find(text: "In this meeting"))
+    }
+
     /// Confirm with the (pre-selected, suggestion-matched) candidate sends
     /// that exact candidate back — no "new person" fields involved.
     func testConfirmSendsTheSelectedCandidate() throws {
@@ -171,6 +194,6 @@ extension VoiceCard {
             id: id, transcriptID: transcriptID, meetingTitle: meetingTitle, date: date,
             clusterLabel: clusterLabel, reason: reason, suggestion: suggestion, score: score,
             clips: clips, clipTexts: clips.map { _ in "" }, audioPath: audioPath,
-            candidates: resolvedCandidates)
+            candidateGroups: resolvedCandidates.isEmpty ? [] : [CandidateGroup(title: "In this meeting", choices: resolvedCandidates)])
     }
 }
