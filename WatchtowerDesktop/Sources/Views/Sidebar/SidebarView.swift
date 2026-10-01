@@ -89,8 +89,7 @@ struct SidebarView: View {
             // Tools section
             VStack(alignment: .leading, spacing: 2) {
                 Text("TOOLS")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.tertiary)
+                    .sidebarSectionLabel()
                     .padding(.horizontal, 12)
                     .padding(.bottom, 2)
 
@@ -382,8 +381,7 @@ struct SidebarView: View {
                         .foregroundStyle(.tertiary)
                         .frame(width: 12)
                     Text(section.title)
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.tertiary)
+                        .sidebarSectionLabel()
                     Spacer()
                     let badge = sectionBadgeCount(section)
                     if collapsed, badge > 0 {
@@ -433,4 +431,13 @@ struct SidebarView: View {
         }
     }
 
+}
+
+extension Text {
+    /// The sidebar's section labels (FOCUS, EXECUTION, TOOLS), also used by
+    /// the Projects panel's SESSIONS label so the two never drift.
+    func sidebarSectionLabel() -> some View {
+        font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(.tertiary)
+    }
 }
