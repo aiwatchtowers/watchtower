@@ -230,7 +230,7 @@ func newSessionBackend(w sessionWiring) (chat.Backend, error) {
 			SystemPrompt:    w.prompt,
 			MCPConfig:       ai.ChatMCPConfig(w.dbPath, w.mcpArgs, ext),
 			AllowedTools:    ai.AllowedTools(ext) + "," + ai.WebSearchTool,
-			DisallowedTools: ai.SessionDisallowedTools,
+			DisallowedTools: ai.WithExternalDisallowed(ai.SessionDisallowedTools, ext),
 			// Claude only: codex/ollama would reject an image/PDF as
 			// attachment_unsupported; their prompt still lists the files.
 			ProjectAttachments: chat.ProjectAttachments(w.project, w.warn),

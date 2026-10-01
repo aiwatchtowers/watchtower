@@ -187,31 +187,84 @@ func loadExternalMCPServers(cfg *config.Config, dbPath string) []ai.ExternalMCPS
 
 	var servers []ai.ExternalMCPServer
 	for _, c := range conns {
-		server := ai.ExternalMCPServer{
-			Name:    c.Name,
-			Kind:    c.Kind,
-			Command: c.Command,
-			Args:    c.Args,
-			URL:     c.URL,
-		}
-		store := externalmcp.NewSecretStore(cfg.WorkspaceDir(), c.ID)
-		secret, err := store.Load()
-		if err != nil {
-			log.Printf("external MCP: loading secret for connection %d (%s): %v", c.ID, c.Name, err)
+		server, ok := connectionServer(cfg, database, c)
+		if !ok {
 			continue
 		}
-		if secret != nil && secret.OAuth != nil {
-			if !applyOAuthCredentials(database, store, &server, c) {
+		if !c.ToolsListed && c.AllowTools == nil {
+			// Never listed (added before QC-02's allowlist, or the listing at
+			// enable time failed): list once now and cache it. A failure
+			// mounts nothing from this server — fail closed.
+			if err := refreshConnectionTools(database, &c, server); err != nil {
+				log.Printf("external connection %d (%s): listing tools failed, none allowed: %v", c.ID, c.Name, err)
 				continue
 			}
-		} else if secret != nil {
-			server.Env = secret.Env
-			server.Headers = secret.Headers
+		}
+		server.AllowTools, server.DenyTools = externalmcp.ResolveTools(c)
+		if len(server.AllowTools) == 0 {
+			log.Printf("external connection %d (%s): no tool allowed (none known read-only; `watchtower connections tools %d` to review), not mounted", c.ID, c.Name, c.ID)
+			continue
 		}
 		servers = append(servers, server)
 	}
 	return servers
 }
+
+// connectionServer builds c's ai.ExternalMCPServer with its credentials: the
+// secret's static env/headers, or a verified/refreshed OAuth bearer (QC-04).
+// false means "skip this one", already logged (and recorded where it is the
+// grant's fault).
+func connectionServer(cfg *config.Config, database *db.DB, c db.ExternalConnection) (ai.ExternalMCPServer, bool) {
+	server := ai.ExternalMCPServer{
+		Name:    c.Name,
+		Kind:    c.Kind,
+		Command: c.Command,
+		Args:    c.Args,
+		URL:     c.URL,
+	}
+	store := externalmcp.NewSecretStore(cfg.WorkspaceDir(), c.ID)
+	secret, err := store.Load()
+	if err != nil {
+		log.Printf("external MCP: loading secret for connection %d (%s): %v", c.ID, c.Name, err)
+		return server, false
+	}
+	if secret != nil && secret.OAuth != nil {
+		if !applyOAuthCredentials(database, store, &server, c) {
+			return server, false
+		}
+	} else if secret != nil {
+		server.Env = secret.Env
+		server.Headers = secret.Headers
+	}
+	return server, true
+}
+
+// toolsListTimeout bounds one tools/list exchange (connect, list, stop).
+var toolsListTimeout = 30 * time.Second
+
+// refreshConnectionTools lists server's tools, caches them on c's row and
+// updates c in place (QC-02).
+func refreshConnectionTools(database *db.DB, c *db.ExternalConnection, server ai.ExternalMCPServer) error {
+	ctx, cancel := context.WithTimeout(context.Background(), toolsListTimeout)
+	defer cancel()
+	tools, err := listServerTools(ctx, externalmcp.ServerSpec{
+		Kind: server.Kind, Command: server.Command, Args: server.Args, URL: server.URL,
+		Env: server.Env, Headers: server.Headers,
+	})
+	if err != nil {
+		return err
+	}
+	listedAt := time.Now().UTC().Format(time.RFC3339)
+	if err := database.SetExternalConnectionTools(c.ID, tools, listedAt); err != nil {
+		return err
+	}
+	c.Tools, c.ToolsListed, c.ToolsListedAt = tools, true, listedAt
+	return nil
+}
+
+// listServerTools is externalmcp.ListTools; a var so tests can stub the
+// network/subprocess exchange.
+var listServerTools = externalmcp.ListTools
 
 // oauthLockWait bounds how long a chat launch (or `connections oauth`)
 // waits for another process to finish with a connection's grant: one
