@@ -7,7 +7,17 @@ package enum StreamEvent {
                               // text shown so far (pre-tool preamble) and rebuild
                               // the visible answer from the deltas that follow
     case sessionID(String)
+    case error(String)        // the provider's own error text (`ai query` v1
+                              // `error` line, which exits 0)
     case done
+
+    /// The pre-`.error` fold: an error line as visible `[Error] …` text. Kept
+    /// for the chats not yet on `EmbeddedChatEngine`, so they render exactly
+    /// what they did before the case existed.
+    package var foldingErrorIntoText: Self {
+        if case .error(let message) = self { return .text("[Error] \(message)") }
+        return self
+    }
 }
 
 package protocol AIServiceProtocol: Sendable {

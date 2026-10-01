@@ -260,8 +260,7 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
             }
         case "error":
             if let errMsg = json["error"] as? String {
-                // Emit as text so the UI can display it
-                return .text("[Error] \(errMsg)")
+                return .error(errMsg)
             }
         case "done":
             // Handled after the stream loop (turnComplete + done)

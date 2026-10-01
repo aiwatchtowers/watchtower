@@ -292,7 +292,7 @@ final class OnboardingChatViewModel {
             )
             var sawTurnComplete = false
             for try await event in stream {
-                switch event {
+                switch event.foldingErrorIntoText {
                 case .text(let chunk):
                     if let idx = messages.indices.last {
                         if sawTurnComplete {
@@ -316,6 +316,8 @@ final class OnboardingChatViewModel {
                     self.sessionID = sid
                 case .done:
                     break
+                case .error:
+                    break  // folded into .text above
                 }
             }
         } catch {
@@ -443,13 +445,13 @@ final class OnboardingChatViewModel {
                 dbPath: nil
             )
             for try await event in stream {
-                switch event {
+                switch event.foldingErrorIntoText {
                 case .text(let chunk): contextText += chunk
                 case .turnComplete(let text): contextText = text
                 // A tool call (e.g. Codex's built-in command_execution) drops the
                 // pre-tool preamble so it never glues onto the generated context.
                 case .reset: contextText = ""
-                case .sessionID, .done: break
+                case .sessionID, .error, .done: break
                 }
             }
         } catch {
@@ -697,13 +699,13 @@ final class OnboardingChatViewModel {
                 dbPath: nil
             )
             for try await event in stream {
-                switch event {
+                switch event.foldingErrorIntoText {
                 case .text(let chunk): text += chunk
                 case .turnComplete(let full): text = full
                 // A tool call (e.g. Codex's built-in command_execution) drops the
                 // pre-tool preamble so it never corrupts the extracted JSON.
                 case .reset: text = ""
-                case .sessionID, .done: break
+                case .sessionID, .error, .done: break
                 }
             }
         } catch {

@@ -87,6 +87,13 @@ final class AppState {
     /// is never evicted while one of its tabs is working.
     let targetAssistantCenter = TargetAssistantCenter()
 
+    /// App-wide home of the embedded assistant chats' engines (track, idea,
+    /// meeting, …), so a reply keeps streaming after its screen closes or its
+    /// section collapses; at most three such turns run at once.
+    @ObservationIgnored private let embeddedChats = EmbeddedChatEngineFactory()
+    @ObservationIgnored private var embeddedChatSweep: Timer?
+    var embeddedChatCenter: EmbeddedChatCenter { embeddedChats.center }
+
     /// App-wide, single-slot registry for the creation-time "brief the
     /// secretary" chat run, so the send + streaming + execute-mode auto-apply
     /// survive the composer sheet being dismissed and any navigation away.
@@ -541,6 +548,29 @@ final class AppState {
                                      invited: invited, ownerPersonIDs: owners)
     }
 
+    /// Once per process: initialize() re-runs on every retry
+    /// (reinitializeAfterOnboarding), which must not stack observers.
+    private func installLifecycleHooks() {
+        if terminateObserver == nil {
+            terminateObserver = NotificationCenter.default.addObserver(
+                forName: NSApplication.willTerminateNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    // A reply streaming in an embedded chat keeps what it has, as `partial`.
+                    self?.embeddedChatCenter.finishAllAsPartial()
+                }
+                self?.backgroundTaskManager.terminateProcessesSync()
+            }
+        }
+        if embeddedChatSweep == nil {
+            embeddedChatSweep = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.embeddedChatCenter.sweep() }
+            }
+        }
+    }
+
     func initialize() {
         guard !isInitializing else { return }
         isInitializing = true
@@ -554,17 +584,7 @@ final class AppState {
         meetingRecorderCenter.captureWillStart = { [dictationCenter] in dictationCenter.meetingCaptureWillStart() }
         meetingRecorderCenter.dictationEngineResident = { [dictationCenter] in dictationCenter.hasResidentEngine }
         dictationCenter.engineReleased = { [meetingRecorderCenter] in meetingRecorderCenter.dictationEngineDidRelease() }
-        // Once per process: initialize() re-runs on every retry
-        // (reinitializeAfterOnboarding), which must not stack observers.
-        if terminateObserver == nil {
-            terminateObserver = NotificationCenter.default.addObserver(
-                forName: NSApplication.willTerminateNotification,
-                object: nil,
-                queue: .main
-            ) { [weak self] _ in
-                self?.backgroundTaskManager.terminateProcessesSync()
-            }
-        }
+        installLifecycleHooks()
         Task {
             await syncCLIBinaryStore()
             // Only now resolve the CLI path and start polling: before the sync
@@ -579,6 +599,7 @@ final class AppState {
                     return try DatabaseManager(path: dbPath)
                 }.value
                 databaseManager = manager
+                embeddedChats.dbPool = manager.dbPool
                 errorMessage = nil
                 ambiguousWorkspaces = []
                 // Before the splash hides, so Day Plan / Briefings never flash

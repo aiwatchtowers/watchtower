@@ -1,19 +1,5 @@
 import SwiftUI
-
-struct ChatStarterPrompt: Identifiable {
-    let title: String
-    let text: String
-    /// "Summarize PROJ-…" needs the owner's issue key: it fills the composer instead.
-    let sendsImmediately: Bool
-    var id: String { title }
-
-    static let all = [
-        Self(title: "What mattered yesterday?", text: "What mattered yesterday?", sendsImmediately: true),
-        Self(title: "Prep me for today's meetings", text: "Prep me for today's meetings", sendsImmediately: true),
-        Self(title: "What's waiting on me?", text: "What's waiting on me?", sendsImmediately: true),
-        Self(title: "Summarize PROJ-…", text: "Summarize ", sendsImmediately: false)
-    ]
-}
+import WatchtowerCore
 
 /// Spec §3.6: greeting + four work prompts. Replaces the Welcome chat.
 struct ChatEmptyState: View {

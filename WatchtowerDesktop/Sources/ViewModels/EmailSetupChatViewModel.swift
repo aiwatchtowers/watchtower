@@ -210,7 +210,7 @@ final class EmailSetupChatViewModel {
             )
             var sawTurnComplete = false
             for try await event in stream {
-                switch event {
+                switch event.foldingErrorIntoText {
                 case .text(let chunk):
                     if sawTurnComplete {
                         fullText = chunk
@@ -231,6 +231,8 @@ final class EmailSetupChatViewModel {
                     sessionID = sid
                 case .done:
                     break
+                case .error:
+                    break  // folded into .text above
                 }
             }
         } catch {

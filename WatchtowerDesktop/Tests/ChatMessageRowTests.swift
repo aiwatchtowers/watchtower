@@ -100,4 +100,44 @@ final class ChatMessageRowTests: XCTestCase {
             try $0.accessibilityLabel().string() == "Quote in reply"
         })
     }
+
+    // MARK: - Embedded chats (Copy + Retry only)
+
+    func testEmbeddedRowOffersCopyOnly() throws {
+        let actions = ChatRowActions.embedded(copy: { _ in }, retry: nil)
+        let reply = ChatMessageRow(item: try item(role: "assistant", status: "complete", siblings: 2),
+                                   isLast: true, isEditing: false, actions: actions)
+        XCTAssertNoThrow(try reply.inspect().find(ViewType.Button.self) {
+            try $0.accessibilityLabel().string() == "Copy message"
+        })
+        for label in ["Quote in reply", "Regenerate", "Previous version", "Next version"] {
+            XCTAssertThrowsError(try reply.inspect().find(ViewType.Button.self) {
+                try $0.accessibilityLabel().string() == label
+            }, label)
+        }
+        let owner = ChatMessageRow(item: try item(role: "user", status: "complete"),
+                                   isLast: true, isEditing: false, actions: actions)
+        XCTAssertThrowsError(try owner.inspect().find(ViewType.Button.self) {
+            try $0.accessibilityLabel().string() == "Edit"
+        })
+    }
+
+    func testEmbeddedErrorRowShowsRetryOnlyWhenGivenOne() throws {
+        let failed = try item(role: "assistant", status: "error", errorCode: "rate_limit")
+        var retried: Int64?
+        let withRetry = ChatMessageRow(item: failed, isLast: true, isEditing: false,
+                                       actions: .embedded(copy: { _ in }, retry: { retried = $0 }))
+        try withRetry.inspect().find(button: "Retry").tap()
+        XCTAssertEqual(retried, failed.id)
+        let without = ChatMessageRow(item: failed, isLast: false, isEditing: false,
+                                     actions: .embedded(copy: { _ in }, retry: nil))
+        XCTAssertThrowsError(try without.inspect().find(text: "Retry"))
+    }
+
+    func testEmbeddedStoppedRowHasNoContinue() throws {
+        let row = ChatMessageRow(item: try item(role: "assistant", status: "partial"), isLast: true, isEditing: false,
+                                 actions: .embedded(copy: { _ in }, retry: nil))
+        XCTAssertNoThrow(try row.inspect().find(text: "Stopped"))
+        XCTAssertThrowsError(try row.inspect().find(text: "Continue"))
+    }
 }

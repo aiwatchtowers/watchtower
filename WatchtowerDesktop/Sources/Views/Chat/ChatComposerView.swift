@@ -39,29 +39,28 @@ struct ChatComposerView: View {
                 onRemoveMention: { chatVM.composer.removeMention($0) },
                 onRemoveSkill: { chatVM.composer.clearSkill() }
             )
-            VStack(alignment: .leading, spacing: 2) {
-                ChatInput(
-                    text: $chatVM.draft,
-                    isStreaming: chatVM.isStreaming,
-                    onSend: { chatVM.sendDraft() },
-                    onStop: { chatVM.stop() },
-                    placeholder: "Ask about your work…",
-                    dictationTargetID: "chat.workspace",
-                    maxHeight: maxHeight,
-                    onEscape: { chatVM.stop() },
-                    onArrowUpWhenEmpty: { chatVM.beginEditingLast() },
-                    attachments: chatVM.composerAttachments.pending,
-                    attachmentError: chatVM.composerAttachments.errorMessage,
-                    onAttachFiles: { chatVM.attachFiles($0) },
-                    onPasteImage: { chatVM.attachPastedImage($0) },
-                    onRemoveAttachment: { chatVM.composerAttachments.remove(id: $0) },
-                    onCursorChange: { text, cursor in
-                        lastCursor = cursor
-                        chatVM.composer.update(text: text, cursor: cursor)
-                    },
-                    onPickerKey: { key, text, cursor in chatVM.composer.handle(key, text: text, cursor: cursor) },
-                    hasPendingContent: !chatVM.pendingQuotes.isEmpty
-                )
+            ChatComposerBar(input: ChatInput(
+                text: $chatVM.draft,
+                isStreaming: chatVM.isStreaming,
+                onSend: { chatVM.sendDraft() },
+                onStop: { chatVM.stop() },
+                placeholder: "Ask about your work…",
+                dictationTargetID: "chat.workspace",
+                maxHeight: maxHeight,
+                onEscape: { chatVM.stop() },
+                onArrowUpWhenEmpty: { chatVM.beginEditingLast() },
+                attachments: chatVM.composerAttachments.pending,
+                attachmentError: chatVM.composerAttachments.errorMessage,
+                onAttachFiles: { chatVM.attachFiles($0) },
+                onPasteImage: { chatVM.attachPastedImage($0) },
+                onRemoveAttachment: { chatVM.composerAttachments.remove(id: $0) },
+                onCursorChange: { text, cursor in
+                    lastCursor = cursor
+                    chatVM.composer.update(text: text, cursor: cursor)
+                },
+                onPickerKey: { key, text, cursor in chatVM.composer.handle(key, text: text, cursor: cursor) },
+                hasPendingContent: !chatVM.pendingQuotes.isEmpty
+            )) {
                 modelPill.padding(.horizontal, 16).padding(.bottom, 6)
             }
         }
