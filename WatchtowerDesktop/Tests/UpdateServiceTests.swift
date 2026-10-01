@@ -531,8 +531,9 @@ struct UpdateServiceInstallMechanicsTests {
         let script = args[1]
         #expect(script.contains("kill -0 4242"))
         #expect(script.contains("-ge \(UpdateService.relaunchWaiterTicks) ]"))
-        #expect(script.hasSuffix(#"/usr/bin/open "/Apps/We\"ird \$App\`.app""#))
-        // Never touches files: the waiter only waits and opens.
+        #expect(script.contains(#"/usr/bin/open "/Apps/We\"ird \$App\`.app" || /usr/bin/logger -t watchtower-update"#))
+        #expect(script.contains("/usr/bin/logger -t watchtower-update \"relaunch waiter gave up"))
+        // Never touches files: the waiter only waits, opens and logs.
         for forbidden in ["rm ", "mv ", "cp ", "xattr", "codesign"] {
             #expect(!script.contains(forbidden))
         }
@@ -554,6 +555,142 @@ struct UpdateServiceInstallMechanicsTests {
         process.waitUntilExit()
         #expect(process.terminationStatus == 0)
         #expect(String(data: data, encoding: .utf8) == "/nonexistent/X.app\n")
+    }
+
+    @Test("a failed open is logged, not swallowed")
+    func waiterLogsFailedOpen() throws {
+        // `open` swapped for `false` (always fails), `logger` for `echo` so the
+        // log line lands on stdout.
+        let args = UpdateService.relaunchWaiterArguments(pid: 0x7fff_fffe, appPath: "/nonexistent/X.app")
+        let script = args[1]
+            .replacingOccurrences(of: "/usr/bin/open", with: "false")
+            .replacingOccurrences(of: "/usr/bin/logger", with: "echo")
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", script]
+        let out = Pipe()
+        process.standardOutput = out
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        #expect(String(data: data, encoding: .utf8) == "-t watchtower-update relaunch failed: open exited 1\n")
+    }
+}
+
+/// Records the relaunch's side effects.
+@MainActor
+private final class RelaunchRecorder {
+    var spawned: [(pid: pid_t, path: String)] = []
+    var quits = 0
+    var sleeps: [Duration] = []
+    var failSpawn = false
+
+    var steps: UpdateService.RelaunchSteps {
+        UpdateService.RelaunchSteps(
+            spawn: { pid, path in
+                self.spawned.append((pid, path))
+                if self.failSpawn { throw InstallRecorder.Boom(what: "spawn") }
+            },
+            requestQuit: { self.quits += 1 },
+            sleep: { self.sleeps.append($0) }
+        )
+    }
+}
+
+@Suite("UpdateService Relaunch")
+@MainActor
+struct UpdateServiceRelaunchTests {
+    private let appURL = URL(fileURLWithPath: "/Applications/Watchtower.app")
+
+    private func service(_ rec: RelaunchRecorder, appURL: URL?) -> UpdateService {
+        let svc = UpdateService()
+        svc.relaunchSteps = rec.steps
+        svc.currentAppURL = { appURL }
+        return svc
+    }
+
+    @Test("a waiter that cannot start never quits the app")
+    func spawnFailureNeverQuits() async {
+        let rec = RelaunchRecorder()
+        rec.failSpawn = true
+        let svc = service(rec, appURL: appURL)
+        await svc.relaunch()
+        #expect(svc.state == .restartRequired)
+        #expect(rec.quits == 0)
+        #expect(rec.sleeps.isEmpty)
+    }
+
+    @Test("a quit that does not happen ends in restartRequired after the grace")
+    func quitNotHappeningEndsInRestartRequired() async {
+        let rec = RelaunchRecorder()
+        let svc = service(rec, appURL: appURL)
+        await svc.relaunch()
+        #expect(rec.spawned.count == 1)
+        #expect(rec.spawned.first?.pid == ProcessInfo.processInfo.processIdentifier)
+        #expect(rec.spawned.first?.path == appURL.path)
+        #expect(rec.quits == 1)
+        #expect(rec.sleeps == [UpdateService.quitGrace])
+        #expect(svc.state == .restartRequired)
+    }
+
+    @Test("no app bundle: restartRequired, nothing spawned or quit")
+    func noBundle() async {
+        let rec = RelaunchRecorder()
+        let svc = service(rec, appURL: nil)
+        await svc.relaunch()
+        #expect(svc.state == .restartRequired)
+        #expect(rec.spawned.isEmpty)
+        #expect(rec.quits == 0)
+    }
+
+    @Test("install maps a real step failure onto .error and never relaunches")
+    func installFailureMapsToError() async {
+        let install = InstallRecorder()
+        install.failVerify = true
+        let relaunch = RelaunchRecorder()
+        let svc = service(relaunch, appURL: appURL)
+        svc.isBusy = { false }
+        svc.teamIdentifier = { "ABCDE12345" }
+        svc.installSteps = install.steps
+        svc.state = .readyToInstall(appPath: URL(fileURLWithPath: "/downloads/Watchtower.app"))
+        await svc.install()
+        guard case .error(let message) = svc.state else {
+            Issue.record("expected .error, got \(svc.state)")
+            return
+        }
+        #expect(message.contains("verify boom"))
+        #expect(install.calls == ["canWrite", "stage", "verify", "discard"])
+        #expect(relaunch.spawned.isEmpty && relaunch.quits == 0)
+    }
+
+    @Test("install without a Team ID fails closed through the real mapping")
+    func installWithoutTeamID() async {
+        let install = InstallRecorder()
+        let svc = service(RelaunchRecorder(), appURL: appURL)
+        svc.isBusy = { false }
+        svc.teamIdentifier = { nil }
+        svc.installSteps = install.steps
+        svc.state = .readyToInstall(appPath: URL(fileURLWithPath: "/downloads/Watchtower.app"))
+        await svc.install()
+        guard case .error(let message) = svc.state else {
+            Issue.record("expected .error, got \(svc.state)")
+            return
+        }
+        #expect(message.contains("Team ID"))
+        #expect(install.calls.isEmpty)
+    }
+
+    @Test("install outside an app bundle reports it and touches nothing")
+    func installWithoutBundle() async {
+        let install = InstallRecorder()
+        let svc = service(RelaunchRecorder(), appURL: nil)
+        svc.isBusy = { false }
+        svc.installSteps = install.steps
+        svc.state = .readyToInstall(appPath: URL(fileURLWithPath: "/downloads/Watchtower.app"))
+        await svc.install()
+        #expect(svc.state == .error("Cannot determine current app location"))
+        #expect(install.calls.isEmpty)
     }
 }
 

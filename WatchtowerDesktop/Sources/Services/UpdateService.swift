@@ -415,7 +415,7 @@ final class UpdateService {
             state = .error(Self.busyMessage)
             return
         }
-        guard let currentApp = Self.currentAppBundleURL() else {
+        guard let currentApp = currentAppURL() else {
             state = .error("Cannot determine current app location")
             return
         }
@@ -424,7 +424,7 @@ final class UpdateService {
         // Staging, the deep signature check (it hashes the whole bundle) and
         // the swap are file-system work: run them off the main actor so the
         // "Installing…" spinner keeps spinning.
-        let teamID = Self.currentTeamIdentifier()
+        let teamID = teamIdentifier()
         let steps = installSteps
         let outcome = await Task.detached(priority: .userInitiated) {
             Self.performInstall(newApp: newAppPath, currentApp: currentApp, teamID: teamID, steps: steps)
@@ -443,23 +443,54 @@ final class UpdateService {
     /// confirmation) — past `quitGrace` the bundle is already replaced, so the
     /// UI says so instead of spinning on "Installing…".
     func relaunch() async {
-        guard let currentApp = Self.currentAppBundleURL() else {
+        guard let currentApp = currentAppURL() else {
+            NSLog("UpdateService: no app bundle to relaunch; a manual restart finishes the update")
             state = .restartRequired
             return
         }
         do {
-            try Self.spawnRelaunchWaiter(pid: ProcessInfo.processInfo.processIdentifier, appPath: currentApp.path)
+            try relaunchSteps.spawn(ProcessInfo.processInfo.processIdentifier, currentApp.path)
         } catch {
+            // Never quit without a waiter: the app would close and not come back.
             NSLog("UpdateService: could not start the relaunch waiter: %@", error.localizedDescription)
             state = .restartRequired
             return
         }
         state = .installing
-        TrayAppDelegate.requestQuit()
-        try? await Task.sleep(for: Self.quitGrace)
+        relaunchSteps.requestQuit()
+        await relaunchSteps.sleep(Self.quitGrace)
         // Still alive: the quit was cancelled or is still stuck.
+        NSLog("UpdateService: app did not quit within %ld s of the update; a manual restart finishes it",
+              Int(Self.quitGrace.components.seconds))
         state = .restartRequired
     }
+
+    /// The relaunch's side effects, injectable for tests.
+    @MainActor
+    struct RelaunchSteps {
+        /// Start the detached waiter that reopens the app after `pid` exits.
+        var spawn: (_ pid: pid_t, _ appPath: String) throws -> Void
+        /// Quit through the app's normal quit path.
+        var requestQuit: () -> Void
+        /// Wait up to `quitGrace` for the quit to take effect.
+        var sleep: (Duration) async -> Void
+
+        static var live: Self {
+            Self(
+                spawn: { try UpdateService.spawnRelaunchWaiter(pid: $0, appPath: $1) },
+                requestQuit: { TrayAppDelegate.requestQuit() },
+                sleep: { try? await Task.sleep(for: $0) }
+            )
+        }
+    }
+
+    var relaunchSteps: RelaunchSteps = .live
+
+    /// The running app's bundle; nil outside a `.app` (e.g. `swift test`).
+    var currentAppURL: () -> URL? = { UpdateService.currentAppBundleURL() }
+
+    /// The running app's Team ID, read from its own signature.
+    var teamIdentifier: () -> String? = { UpdateService.currentTeamIdentifier() }
 
     nonisolated static let busyMessage =
         "Finish the recording or transcription in progress, then install the update."
@@ -615,13 +646,20 @@ final class UpdateService {
     }
 
     /// `/bin/sh` arguments for the relaunch waiter: poll for `pid`'s exit (at
-    /// most `relaunchWaiterTicks` × 0.2 s), then `open` the app.
+    /// most `relaunchWaiterTicks` × 0.2 s), then `open` the app. The app has
+    /// exited by the time anything goes wrong here, so a timeout or a failed
+    /// `open` goes to the system log (`log show --predicate 'senderImagePath
+    /// ENDSWITH "logger"'`, tag `watchtower-update`) instead of /dev/null.
     nonisolated static func relaunchWaiterArguments(pid: pid_t, appPath: String) -> [String] {
+        let log = "/usr/bin/logger -t \(relaunchLogTag)"
         let script = "i=0; while kill -0 \(pid) 2>/dev/null; do "
-            + "i=$((i+1)); [ \"$i\" -ge \(relaunchWaiterTicks) ] && exit 0; sleep 0.2; done; "
-            + "/usr/bin/open \"\(shellEscape(appPath))\""
+            + "i=$((i+1)); if [ \"$i\" -ge \(relaunchWaiterTicks) ]; then "
+            + "\(log) \"relaunch waiter gave up: the app did not quit\"; exit 0; fi; sleep 0.2; done; "
+            + "/usr/bin/open \"\(shellEscape(appPath))\" || \(log) \"relaunch failed: open exited $?\""
         return ["-c", script]
     }
+
+    nonisolated static let relaunchLogTag = "watchtower-update"
 
     /// Escape a string for safe use inside double-quoted shell strings.
     /// Only the four characters special inside double quotes need escaping: " \ ` $
