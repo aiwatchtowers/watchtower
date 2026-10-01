@@ -255,45 +255,32 @@ func (l loadedAttachment) block() (json.RawMessage, error) {
 // *AttachmentError, and so does the file that takes the set's encoded total
 // past MaxTurnAttachmentEncodedBytes.
 func BuildContentBlocks(atts []Attachment) ([]json.RawMessage, error) {
+	blocks, _, err := buildContentBlocks(atts)
+	return blocks, err
+}
+
+// buildContentBlocks is BuildContentBlocks that also returns the set's
+// encoded total, so project files can be fitted into what the cap leaves.
+func buildContentBlocks(atts []Attachment) ([]json.RawMessage, int64, error) {
 	blocks := make([]json.RawMessage, 0, len(atts))
 	var total int64
 	for _, a := range atts {
 		l, err := loadAttachment(a, false)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		if total += l.encodedSize(); total > MaxTurnAttachmentEncodedBytes {
-			return nil, &AttachmentError{Name: l.name, Reason: fmt.Sprintf(
+			return nil, 0, &AttachmentError{Name: l.name, Reason: fmt.Sprintf(
 				"the message's files come to %d MB encoded; one message carries at most %d MB — send fewer or smaller files",
 				(total+(1<<20)-1)>>20, MaxTurnAttachmentEncodedBytes>>20)}
 		}
 		b, err := l.block()
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		blocks = append(blocks, b)
 	}
-	return blocks, nil
-}
-
-// claudeUserContent: attachments first (the API's recommended order), then the
-// text; an all-whitespace text is omitted (an empty text block is rejected).
-// lead are already-built blocks placed before the attachments (the project
-// files of a fresh session's first turn).
-func claudeUserContent(lead []json.RawMessage, text string, atts []Attachment) ([]json.RawMessage, error) {
-	own, err := BuildContentBlocks(atts)
-	if err != nil {
-		return nil, err
-	}
-	blocks := append(append(make([]json.RawMessage, 0, len(lead)+len(own)+1), lead...), own...)
-	if strings.TrimSpace(text) != "" {
-		b, err := json.Marshal(attTextBlock{Type: "text", Text: text})
-		if err != nil {
-			return nil, fmt.Errorf("encoding user text: %w", err)
-		}
-		blocks = append(blocks, b)
-	}
-	return blocks, nil
+	return blocks, total, nil
 }
 
 type claudeUserEnvelopeMessage struct {
@@ -309,15 +296,25 @@ type claudeUserEnvelope struct {
 // claudeUserMessageLine renders one stream-json stdin line (with trailing
 // newline) for a user turn.
 func claudeUserMessageLine(text string, atts []Attachment) ([]byte, error) {
-	return claudeUserMessageLineWith(nil, text, atts)
-}
-
-// claudeUserMessageLineWith is claudeUserMessageLine with lead blocks first.
-// The only place the Claude backend builds a user line.
-func claudeUserMessageLineWith(lead []json.RawMessage, text string, atts []Attachment) ([]byte, error) {
-	content, err := claudeUserContent(lead, text, atts)
+	blocks, err := BuildContentBlocks(atts)
 	if err != nil {
 		return nil, err
+	}
+	return claudeUserLine(blocks, text)
+}
+
+// claudeUserLine renders the line from already-built file blocks: the files
+// first (the API's recommended order), then the text; an all-whitespace text
+// is omitted (an empty text block is rejected). The only place the Claude
+// backend builds a user line.
+func claudeUserLine(blocks []json.RawMessage, text string) ([]byte, error) {
+	content := append(make([]json.RawMessage, 0, len(blocks)+1), blocks...)
+	if strings.TrimSpace(text) != "" {
+		b, err := json.Marshal(attTextBlock{Type: "text", Text: text})
+		if err != nil {
+			return nil, fmt.Errorf("encoding user text: %w", err)
+		}
+		content = append(content, b)
 	}
 	line, err := json.Marshal(claudeUserEnvelope{Type: "user", Message: claudeUserEnvelopeMessage{Role: "user", Content: content}})
 	if err != nil {

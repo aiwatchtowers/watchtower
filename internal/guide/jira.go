@@ -3,6 +3,7 @@ package guide
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
@@ -62,8 +63,11 @@ func gatherJiraDelivery(database *db.DB, cfg *config.Config, userSlackID, from, 
 	if err == nil && len(accomplishments) > 0 {
 		b.WriteString("\nRecent accomplishments:\n")
 		for _, issue := range accomplishments {
+			// resolved_at is stored in UTC; the owner's day is the local one.
 			resolvedDate := issue.ResolvedAt
-			if len(resolvedDate) > 10 {
+			if unix, ok := db.ParseJiraTime(resolvedDate); ok {
+				resolvedDate = time.Unix(unix, 0).Format("2006-01-02")
+			} else if len(resolvedDate) > 10 {
 				resolvedDate = resolvedDate[:10]
 			}
 			fmt.Fprintf(&b, "- Resolved %s %q (%s)\n", issue.Key, issue.Summary, resolvedDate)

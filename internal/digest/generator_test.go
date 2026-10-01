@@ -21,7 +21,7 @@ func containsPair(args []string, flag, value string) bool {
 }
 
 func TestGenerateArgsSmallMessageInline(t *testing.T) {
-	args, stdin := generateArgs("m", "sys", "hello", false)
+	args, stdin := generateArgs("m", "sys", "", "hello", false)
 	if stdin != "" {
 		t.Errorf("stdin = %q, want empty for small message", stdin)
 	}
@@ -38,7 +38,7 @@ func TestGenerateArgsSmallMessageInline(t *testing.T) {
 
 func TestGenerateArgsLargeMessageViaStdin(t *testing.T) {
 	big := strings.Repeat("x", StdinThreshold+1)
-	args, stdin := generateArgs("m", "sys", big, false)
+	args, stdin := generateArgs("m", "sys", "", big, false)
 	if stdin != big {
 		t.Errorf("stdin length = %d, want the full message (%d bytes)", len(stdin), len(big))
 	}
@@ -257,7 +257,7 @@ func TestClaudeGeneratorUnparseableStdoutIsDescribedNotEchoed(t *testing.T) {
 
 func TestGenerateArgsThresholdBoundary(t *testing.T) {
 	exact := strings.Repeat("x", StdinThreshold)
-	args, stdin := generateArgs("m", "sys", exact, false)
+	args, stdin := generateArgs("m", "sys", "", exact, false)
 	if stdin != "" {
 		t.Errorf("stdin = %d bytes, want empty: exactly StdinThreshold stays inline", len(stdin))
 	}
@@ -311,5 +311,57 @@ echo "{\"type\":\"result\",\"result\":\"model:$model\",\"is_error\":false}"
 				t.Errorf("Generate = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestGenerateArgsSystemPromptFile(t *testing.T) {
+	args, _ := generateArgs("m", "sys", "/tmp/p.txt", "hello", false)
+	if !containsPair(args, "--system-prompt-file", "/tmp/p.txt") {
+		t.Errorf("args = %v, want --system-prompt-file /tmp/p.txt", args)
+	}
+	for _, a := range args {
+		if a == "--system-prompt" || a == "sys" {
+			t.Errorf("args = %v: the prompt must not also travel inline", args)
+		}
+	}
+}
+
+// TestClaudeGeneratorLargeSystemPromptViaFile: a system prompt above
+// StdinThreshold (briefing, target extract) reaches the CLI through a
+// --system-prompt-file, never argv, and the file is removed after the call.
+func TestClaudeGeneratorLargeSystemPromptViaFile(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	const marker = "SYSPROMPT-MARKER-claude-5b1e"
+	script := filepath.Join(t.TempDir(), "fake-claude")
+	scriptBody := `#!/bin/sh
+case "$*" in *` + marker + `*) echo '{"type":"result","result":"on-argv","is_error":false}'; exit 0 ;; esac
+file=""
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--system-prompt-file" ]; then file="$2"; fi
+  shift
+done
+if [ -n "$file" ] && grep -q ` + marker + ` "$file"; then
+  echo '{"type":"result","result":"'"$file"'","is_error":false}'
+else
+  echo '{"type":"result","result":"marker-missing","is_error":false}'
+fi
+`
+	if err := os.WriteFile(script, []byte(scriptBody), 0o755); err != nil {
+		t.Fatalf("writing fake claude binary: %v", err)
+	}
+
+	gen := NewClaudeGenerator("test-model-light", "test-model", script)
+	sys := strings.Repeat("x", StdinThreshold) + marker
+
+	got, _, _, err := gen.Generate(context.Background(), sys, "hello", "")
+	if err != nil {
+		t.Fatalf("Generate error: %v", err)
+	}
+	if got == "on-argv" || got == "marker-missing" {
+		t.Fatalf("result = %q — the system prompt did not reach the CLI through the file", got)
+	}
+	if _, statErr := os.Stat(got); !os.IsNotExist(statErr) {
+		t.Errorf("system prompt file %q must be removed after Generate, stat err = %v", got, statErr)
 	}
 }

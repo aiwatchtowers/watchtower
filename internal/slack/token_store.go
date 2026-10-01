@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"watchtower/internal/fsutil"
 )
 
 type Token struct {
@@ -47,7 +49,7 @@ func (s *TokenStore) Save(t *Token) error {
 	if err != nil {
 		return fmt.Errorf("marshaling slack token: %w", err)
 	}
-	return os.WriteFile(s.path, data, 0o600)
+	return fsutil.WriteFileAtomic(s.path, data, 0o600)
 }
 
 func (s *TokenStore) Delete() error {

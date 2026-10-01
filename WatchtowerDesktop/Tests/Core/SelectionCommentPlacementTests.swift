@@ -13,14 +13,33 @@ final class SelectionCommentPlacementTests: XCTestCase {
     }
 
     func testStaysInsideTheVisibleArea() {
-        let wide = SelectionCommentPlacement.origin(
-            selection: CGRect(x: 20, y: 380, width: 560, height: 40), container: container, button: button
-        )
-        XCTAssertEqual(wide, CGPoint(x: 514, y: 376), "clamped to the right edge and the bottom")
         let cutAtTop = SelectionCommentPlacement.origin(
             selection: CGRect(x: 20, y: -30, width: 100, height: 60), container: container, button: button
         )
-        XCTAssertEqual(cutAtTop?.y, 0, "a selection scrolled half off the top keeps the button on screen")
+        XCTAssertEqual(cutAtTop, CGPoint(x: 126, y: 0), "a selection scrolled half off the top keeps the button on screen")
+    }
+
+    /// #165: a selection running to the right edge (several full lines) left
+    /// no room beside it, and the clamped button landed on the selected text.
+    func testAWideSelectionPutsTheButtonAboveItNotOnIt() throws {
+        let selection = CGRect(x: 20, y: 120, width: 560, height: 60)
+        let origin = try XCTUnwrap(SelectionCommentPlacement.origin(selection: selection, container: container, button: button))
+        XCTAssertEqual(origin, CGPoint(x: 500, y: 90), "above, flush with the selection's trailing edge")
+        XCTAssertFalse(CGRect(origin: origin, size: button).intersects(selection))
+    }
+
+    func testBelowWhenThereIsNoRoomAbove() throws {
+        let selection = CGRect(x: 20, y: 10, width: 560, height: 40)
+        let origin = try XCTUnwrap(SelectionCommentPlacement.origin(selection: selection, container: container, button: button))
+        XCTAssertEqual(origin, CGPoint(x: 500, y: 56))
+        XCTAssertFalse(CGRect(origin: origin, size: button).intersects(selection))
+    }
+
+    func testASelectionFillingTheViewStillGetsAButtonInside() throws {
+        let origin = try XCTUnwrap(SelectionCommentPlacement.origin(
+            selection: CGRect(x: 0, y: -100, width: 600, height: 700), container: container, button: button
+        ))
+        XCTAssertTrue(CGRect(origin: .zero, size: container).contains(CGRect(origin: origin, size: button)))
     }
 
     func testNoButtonWithoutAVisibleSelection() {

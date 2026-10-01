@@ -5,6 +5,14 @@ import GRDB
 /// `chat_project_sources` and project-owned `chat_attachments` rows; Go only
 /// reads them (`db.GetChatProjectContext`) when `ai session --project-id`
 /// builds the prompt and the first-turn attachments.
+///
+/// Every write that changes what that prompt or those attachments hold
+/// (instructions, sources, files, delete — a rename, cosmetic, does not)
+/// also drops the project's stored
+/// Claude sessions in the same transaction (`dropSessions`), as
+/// `ChatConversationQueries.setProject` does on a move: a `--resume`d
+/// session keeps the prompt it was started with, so it would never see the
+/// edit. The caller retires the warm processes (`ChatSessionPool`).
 package enum ChatProjectQueries {
     package static let defaultName = "New project"
 
@@ -54,6 +62,7 @@ package enum ChatProjectQueries {
             arguments: [instructions, Date().timeIntervalSince1970, id]
         )
         try db.requireUpdated("chat project", id: id)
+        try dropSessions(db, projectID: id)
     }
 
     package static func archive(_ db: Database, id: Int64) throws {
@@ -73,6 +82,8 @@ package enum ChatProjectQueries {
             db, sql: "SELECT DISTINCT path FROM chat_attachments WHERE project_id = ? ORDER BY path",
             arguments: [id]
         )
+        // Before the delete: its chats are detached by ON DELETE SET NULL.
+        try dropSessions(db, projectID: id)
         try db.execute(sql: "DELETE FROM chat_projects WHERE id = ?", arguments: [id])
         return paths
     }
@@ -103,11 +114,16 @@ package enum ChatProjectQueries {
         )
         guard db.changesCount > 0 else { return false }
         try touch(db, id: projectID)
+        try dropSessions(db, projectID: projectID)
         return true
     }
 
     package static func removeSource(_ db: Database, id: Int64) throws {
+        guard let projectID = try Int64.fetchOne(
+            db, sql: "SELECT project_id FROM chat_project_sources WHERE id = ?", arguments: [id]
+        ) else { return }
         try db.execute(sql: "DELETE FROM chat_project_sources WHERE id = ?", arguments: [id])
+        try dropSessions(db, projectID: projectID)
     }
 
     package static func files(_ db: Database, projectID: Int64) throws -> [ChatAttachment] {
@@ -123,11 +139,13 @@ package enum ChatProjectQueries {
     /// attachment is never touched here) or when another row still points at
     /// the same stored file (`ChatAttachmentStore` reuses a file by sha256).
     package static func removeFile(_ db: Database, id: Int64) throws -> String? {
-        guard let path = try String.fetchOne(
-            db, sql: "SELECT path FROM chat_attachments WHERE id = ? AND project_id IS NOT NULL",
+        guard let row = try Row.fetchOne(
+            db, sql: "SELECT path, project_id FROM chat_attachments WHERE id = ? AND project_id IS NOT NULL",
             arguments: [id]
         ) else { return nil }
+        let path: String = row["path"]
         try ChatAttachmentQueries.delete(db, id: id)
+        try dropSessions(db, projectID: row["project_id"])
         return try ChatAttachmentQueries.referenceCount(db, path: path) == 0 ? path : nil
     }
 
@@ -141,6 +159,13 @@ package enum ChatProjectQueries {
                 """,
             arguments: [projectID]
         )
+    }
+
+    /// Forgets the stored Claude session of every chat in the project, so
+    /// each one's next turn starts fresh with the current prompt and replays.
+    package static func dropSessions(_ db: Database, projectID: Int64) throws {
+        try db.execute(sql: "UPDATE chat_conversations SET session_id = NULL WHERE project_id = ?",
+                       arguments: [projectID])
     }
 
     private static func touch(_ db: Database, id: Int64) throws {

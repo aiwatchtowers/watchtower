@@ -1,7 +1,7 @@
 ---
 type: chore
 title: "Jira sprint sync re-reads the whole closed-sprint history every cycle"
-status: open
+status: done
 priority: low
 tags: [jira, api-budget, review-2026-09-27]
 context: judge note on fix/backlog-wave1 (sprint pagination)
@@ -18,3 +18,5 @@ start there (re-reading the final page), or only page closed sprints when a stor
 missing from the active listing.
 
 > Original note: «так там два больших фичи влилось. Пройдись еще разок, дополнии беклог и давай его начинать закрывать»
+
+**Resolution (2026-10-01, branch fix/jira-backlog-wave):** the closed listing is read only when a stored active sprint left the active listing, or the board's closed rows were last synced over 24 h ago or never (`needClosedSprints`); the active listing is still read every pass. Known limits, both falling back to the old read-every-pass behaviour: a sprint stored as active that was deleted in Jira keeps triggering the closed read, and a sprint shared by two selected boards has one `jira_sprints` row (keyed by account and sprint id) whose `board_id` the boards overwrite in turn, so the gate sees "no closed rows" for one of them.

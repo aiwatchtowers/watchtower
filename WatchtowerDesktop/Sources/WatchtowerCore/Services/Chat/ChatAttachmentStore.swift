@@ -70,8 +70,12 @@ package final class ChatAttachmentStore {
         let path = try reused ?? writeFile(data: data, ext: kind.fileExtension(fallbackName: name), owner: owner)
         do {
             return try db.write { db in
-                try ChatAttachmentQueries.insert(db, owner: owner, name: name, mime: kind.mime,
-                                                 size: Int64(data.count), path: path, sha256: sha)
+                let row = try ChatAttachmentQueries.insert(db, owner: owner, name: name, mime: kind.mime,
+                                                           size: Int64(data.count), path: path, sha256: sha)
+                if case let .project(projectID) = owner {
+                    try ChatProjectQueries.dropSessions(db, projectID: projectID)
+                }
+                return row
             }
         } catch {
             if reused == nil { try? FileManager.default.removeItem(atPath: path) }

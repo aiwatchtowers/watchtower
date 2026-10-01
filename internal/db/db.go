@@ -94,6 +94,12 @@ func Open(dbPath string) (*DB, error) {
 		return nil, fmt.Errorf("running migrations: %w", err)
 	}
 
+	// Logged, not returned: a database missing one feature's table must still
+	// open for everything else. `watchtower db migrate` returns the error.
+	if err := db.CheckSchemaDrift(); err != nil {
+		slog.Error("database schema drift", "error", err)
+	}
+
 	if dbPath != ":memory:" {
 		tightenDBFilePerms(dbPath)
 	}

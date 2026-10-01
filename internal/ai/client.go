@@ -17,6 +17,7 @@ import (
 
 	"watchtower/internal/claude"
 	"watchtower/internal/digest"
+	"watchtower/internal/fsutil"
 )
 
 // Usage holds token metrics from an AI call.
@@ -136,6 +137,12 @@ type Client struct {
 	// written to this 0600 temp file instead of argv, and the caller (Query/
 	// QuerySync) removes it once the subprocess has been reaped.
 	mcpConfigTempPath string
+	// systemPromptTempPath is set by buildArgs when the system prompt is
+	// larger than digest.StdinThreshold: it then travels as a 0600
+	// --system-prompt-file instead of argv, and Query/QuerySync remove the
+	// file once the subprocess has been reaped (the mcpConfigTempPath
+	// lifecycle).
+	systemPromptTempPath string
 }
 
 // SetMCPArgs appends extra flags to the MCP server command (chat mode).
@@ -184,7 +191,8 @@ func promptFlagAndStdin(userMessage string) (flagArgs []string, stdin string) {
 // promptFlagAndStdin). When sessionID is non-empty, --resume is used instead
 // of --system-prompt (the system prompt is already baked into the existing
 // session).
-func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID string) ([]string, string) {
+func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID string) ([]string, string, error) {
+	c.systemPromptTempPath = "" // set again below only if this call writes one
 	promptArgs, stdin := promptFlagAndStdin(userMessage)
 	// slices.Concat always allocates a fresh backing array, so the append
 	// calls below can never alias (and corrupt) promptFlagAndStdin's slice —
@@ -256,9 +264,32 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 	if sessionID != "" {
 		args = append(args, "--resume", sessionID)
 	} else {
-		args = append(args, "--system-prompt", systemPrompt)
+		promptArgs, err := c.systemPromptArgs(systemPrompt)
+		if err != nil {
+			return nil, "", err
+		}
+		args = append(args, promptArgs...)
 	}
-	return args, stdin
+	return args, stdin, nil
+}
+
+// systemPromptArgs passes the system prompt inline when it is small and as a
+// 0600 --system-prompt-file when it exceeds digest.StdinThreshold: pipelines
+// that put their whole data payload in the system prompt (briefing, target
+// extract) would otherwise hit ARG_MAX ("argument list too long") and leave
+// that payload readable in `ps` for the process lifetime. A failed file write
+// fails the call rather than falling back to argv (the digest.ClaudeGenerator
+// policy).
+func (c *Client) systemPromptArgs(systemPrompt string) ([]string, error) {
+	if len(systemPrompt) <= digest.StdinThreshold {
+		return []string{"--system-prompt", systemPrompt}, nil
+	}
+	path, err := fsutil.WritePrivateTemp("wt-system-prompt-*.txt", systemPrompt)
+	if err != nil {
+		return nil, fmt.Errorf("writing system prompt file: %w", err)
+	}
+	c.systemPromptTempPath = path
+	return []string{"--system-prompt-file", path}, nil
 }
 
 // hasSecret reports whether any external server carries a non-empty Env or
@@ -276,26 +307,7 @@ func (c *Client) hasSecret() bool {
 // writeMCPConfigTempFile writes the mcp-config JSON to a 0600 temp file and
 // returns its path. Called only when hasSecret() is true.
 func writeMCPConfigTempFile(config string) (string, error) {
-	f, err := os.CreateTemp("", "wt-mcp-*.json")
-	if err != nil {
-		return "", err
-	}
-	path := f.Name()
-	if err := f.Chmod(0o600); err != nil {
-		f.Close()
-		os.Remove(path)
-		return "", err
-	}
-	if _, err := f.WriteString(config); err != nil {
-		f.Close()
-		os.Remove(path)
-		return "", err
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(path)
-		return "", err
-	}
-	return path, nil
+	return fsutil.WritePrivateTemp("wt-mcp-*.json", config)
 }
 
 // DisallowedTools hides every built-in Claude Code tool from the chat model
@@ -421,7 +433,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID
 		defer close(errCh)
 		defer close(sidCh)
 
-		args, promptStdin := c.buildArgs(systemPrompt, userMessage, "stream-json", sessionID)
+		args, promptStdin, buildErr := c.buildArgs(systemPrompt, userMessage, "stream-json", sessionID)
 		// buildArgs may have written the mcp-config to a 0600 temp file
 		// (secret present) and recorded its path — clean it up once this
 		// goroutine returns. Every path below reaches its return only after
@@ -430,6 +442,13 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID
 		// could still be reading it.
 		if c.mcpConfigTempPath != "" {
 			defer os.Remove(c.mcpConfigTempPath)
+		}
+		if c.systemPromptTempPath != "" {
+			defer os.Remove(c.systemPromptTempPath)
+		}
+		if buildErr != nil {
+			errCh <- buildErr
+			return
 		}
 		cmd := exec.CommandContext(ctx, c.claudeCmd, args...)
 		if promptStdin != "" {
@@ -552,13 +571,19 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID
 // the full response text and token usage. Pass a non-empty sessionID to resume
 // an existing session.
 func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, sessionID string) (string, *Usage, error) {
-	args, promptStdin := c.buildArgs(systemPrompt, userMessage, "json", sessionID)
+	args, promptStdin, buildErr := c.buildArgs(systemPrompt, userMessage, "json", sessionID)
 	// buildArgs may have written the mcp-config to a 0600 temp file (secret
 	// present) and recorded its path — clean it up on every return path.
 	// cmd.Output() below blocks until the subprocess exits, so by the time
 	// this defer runs the subprocess can no longer be reading the file.
 	if c.mcpConfigTempPath != "" {
 		defer os.Remove(c.mcpConfigTempPath)
+	}
+	if c.systemPromptTempPath != "" {
+		defer os.Remove(c.systemPromptTempPath)
+	}
+	if buildErr != nil {
+		return "", nil, buildErr
 	}
 	cmd := exec.CommandContext(ctx, c.claudeCmd, args...)
 	if promptStdin != "" {

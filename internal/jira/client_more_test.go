@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -394,4 +395,112 @@ func TestClient_GetAccessToken_PreservesRefreshTokenOnEmptyResponse(t *testing.T
 	loaded, err := store.Load()
 	require.NoError(t, err)
 	assert.Equal(t, "keep-me", loaded.RefreshToken, "client must preserve refresh_token when missing in response")
+}
+
+// TestClient_GetAccessToken_CrossProcessRefreshOnce: two Clients on the same
+// token file stand in for the daemon and a concurrent CLI — separate
+// in-process mutexes, one shared file. Atlassian rotates the refresh token, so
+// only the first refresh may reach the token endpoint; the second must wait on
+// the file lock and pick up the already-refreshed token instead of failing
+// with invalid_grant.
+func TestClient_GetAccessToken_CrossProcessRefreshOnce(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, NewTokenStore(dir, 1).Save(&OAuthToken{
+		AccessToken:  "old",
+		RefreshToken: "rt",
+		Expiry:       time.Now().Add(-time.Hour).UTC().Format(time.RFC3339),
+	}))
+
+	var calls atomic.Int32
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) > 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"invalid_grant"}`))
+			return
+		}
+		time.Sleep(100 * time.Millisecond) // widen the race window
+		_, _ = w.Write([]byte(`{"access_token":"new","refresh_token":"rt2","expires_in":3600}`))
+	}))
+	defer tokenSrv.Close()
+
+	newClient := func() *Client {
+		return &Client{
+			oauthCfg:   JiraOAuthConfig{ClientID: "c", ClientSecret: "s"},
+			tokenStore: NewTokenStore(dir, 1),
+			httpClient: &http.Client{Timeout: 3 * time.Second},
+			logger:     log.New(io.Discard, "", 0),
+			tokenURL:   tokenSrv.URL,
+		}
+	}
+	clients := []*Client{newClient(), newClient()}
+
+	var wg sync.WaitGroup
+	tokens := make([]string, len(clients))
+	errs := make([]error, len(clients))
+	for i, c := range clients {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			tokens[i], errs[i] = c.getAccessToken(context.Background())
+		}()
+	}
+	wg.Wait()
+
+	for i := range clients {
+		require.NoError(t, errs[i], "client %d", i)
+		assert.Equal(t, "new", tokens[i], "client %d", i)
+	}
+	assert.Equal(t, int32(1), calls.Load(), "the token endpoint must be hit once across both clients")
+}
+
+// TestClient_RefreshIfCurrent_CrossProcessRefreshOnce: the 401 path. Two
+// Clients (daemon + CLI) on one token file both got a 401 for the same stale
+// access token; only one may refresh — the other sees the rotated token
+// under the file lock and returns without calling the token endpoint.
+func TestClient_RefreshIfCurrent_CrossProcessRefreshOnce(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, NewTokenStore(dir, 1).Save(&OAuthToken{
+		AccessToken:  "stale",
+		RefreshToken: "rt",
+		Expiry:       time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+	}))
+
+	var calls atomic.Int32
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) > 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"invalid_grant"}`))
+			return
+		}
+		time.Sleep(100 * time.Millisecond) // widen the race window
+		_, _ = w.Write([]byte(`{"access_token":"new","refresh_token":"rt2","expires_in":3600}`))
+	}))
+	defer tokenSrv.Close()
+
+	newClient := func() *Client {
+		return &Client{
+			oauthCfg:   JiraOAuthConfig{ClientID: "c", ClientSecret: "s"},
+			tokenStore: NewTokenStore(dir, 1),
+			httpClient: &http.Client{Timeout: 3 * time.Second},
+			logger:     log.New(io.Discard, "", 0),
+			tokenURL:   tokenSrv.URL,
+		}
+	}
+	clients := []*Client{newClient(), newClient()}
+
+	var wg sync.WaitGroup
+	errs := make([]error, len(clients))
+	for i, c := range clients {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs[i] = c.refreshIfCurrent(context.Background(), "stale")
+		}()
+	}
+	wg.Wait()
+
+	for i := range clients {
+		require.NoError(t, errs[i], "client %d", i)
+	}
+	assert.Equal(t, int32(1), calls.Load(), "the token endpoint must be hit once across both clients")
 }

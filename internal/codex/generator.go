@@ -96,12 +96,22 @@ func (g *CodexGenerator) Generate(ctx context.Context, systemPrompt, userMessage
 	return result, digestUsage, "", nil
 }
 
-// buildArgs builds the `codex exec` CLI args; when userMessage exceeds
-// digest.StdinThreshold (or stdinOnly is set) the final positional arg is "-" (codex reads the
-// prompt from stdin) and the message is returned as stdin content instead,
-// to stay clear of ARG_MAX on very large inputs (e.g. meeting transcripts).
-func buildArgs(model, systemPrompt, userMessage string, stdinOnly bool) ([]string, string) {
-	args := []string{
+// execArgs is the common `codex exec` prefix every Watchtower call starts
+// with. Beyond the read-only sandbox it switches off codex's local and
+// account-connected tools: sandbox_mode=read-only still lets the model run
+// shell commands that read anywhere on disk, and the prompts carry untrusted
+// Slack/Gmail/Jira text, so an injected "list ~/Documents" (or a curious
+// model) would trigger a macOS TCC prompt attributed to Watchtower or pull
+// local files into stored output. This is the codex twin of the claude
+// side's `--tools ""` (batch) and DisallowedTools (chat). shell_tool also
+// gates unified exec; view_image reads local files; computer_use and the
+// browser_use pair drive the screen and a browser (their own TCC prompts);
+// apps/plugins would expose the owner's ChatGPT connectors — an
+// exfiltration channel for an injected prompt. Not covered here: MCP servers
+// and web search configured in the owner's own ~/.codex/config.toml. An
+// unknown features.* key is ignored by older codex builds.
+func execArgs(model string) []string {
+	return []string{
 		"exec",
 		"--model", model,
 		"--json",
@@ -109,6 +119,28 @@ func buildArgs(model, systemPrompt, userMessage string, stdinOnly bool) ([]strin
 		"--skip-git-repo-check",
 		"-c", "approval_policy=never",
 		"-c", "sandbox_mode=read-only",
+		"-c", "features.shell_tool=false",
+		"-c", "features.unified_exec=false",
+		"-c", "features.view_image=false",
+		"-c", "features.computer_use=false",
+		"-c", "features.browser_use=false",
+		"-c", "features.browser_use_external=false",
+		"-c", "features.apps=false",
+		"-c", "features.plugins=false",
+	}
+}
+
+// buildArgs builds the `codex exec` CLI args; when userMessage exceeds
+// digest.StdinThreshold (or stdinOnly is set) the final positional arg is "-" (codex reads the
+// prompt from stdin) and the message is returned as stdin content instead,
+// to stay clear of ARG_MAX on very large inputs (e.g. meeting transcripts).
+// A system prompt above the same threshold cannot ride -c
+// developer_instructions (codex has no file form of it), so the whole turn
+// moves to stdin as codexStdinContent — the CHAT-04 stdin-only layout.
+func buildArgs(model, systemPrompt, userMessage string, stdinOnly bool) ([]string, string) {
+	args := execArgs(model)
+	if len(systemPrompt) > digest.StdinThreshold {
+		return append(args, "-"), codexStdinContent(systemPrompt, userMessage)
 	}
 	if systemPrompt != "" {
 		args = append(args, "-c", fmt.Sprintf("developer_instructions=%s", systemPrompt))

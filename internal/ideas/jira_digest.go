@@ -17,7 +17,7 @@ const jiraIssuesPerAccountLimit = 300
 const jiraExcerptBytes = 500
 
 // jiraFloorInitBackoff biases the init floor a few seconds into the past, on
-// top of db.FormatJiraTime matching Jira's own format, so an issue updated
+// top of db.FormatJiraTime matching the stored format, so an issue updated
 // within a couple of seconds of initialization is never lost even accounting
 // for clock skew between this process and whatever wrote the issue's
 // updated_at.
@@ -233,18 +233,16 @@ func newestComments(comments []db.JiraComment) []db.JiraComment {
 	return comments[len(comments)-maxCommentsPerIssue:]
 }
 
-// normalizeJiraStreamPeriod converts a Jira-format timestamp (raw
-// updated_at, which can carry any offset the API returned, e.g. "+0300") to
-// RFC3339 UTC for storage in stream_digests.period_from/period_to — the
-// email pre-digest pass already writes RFC3339 UTC there, and
+// normalizeJiraStreamPeriod converts a Jira timestamp (an updated_at, parsed
+// in either stored shape) to RFC3339 UTC in whole seconds for storage in
+// stream_digests.period_from/period_to — the email pre-digest pass already writes RFC3339 UTC there, and
 // ListStreamDigestsAfter/HasStreamDigestCovering compare both sources'
 // periods with plain string ordering, which is only offset-safe when every
 // row shares one format (GB4). An unparseable input (should not happen for a
 // value this pipeline itself produced) is stored verbatim rather than
 // blocking the whole pass — the worst case is one wrong coverage/window skip
-// for that single row, not a dropped digest. Pre-existing rows written before
-// this normalization may still carry a raw Jira offset; see
-// docs/inventory/ideas.md.
+// for that single row, not a dropped digest. Migration 00092 rewrote the
+// rows written before this normalization.
 func normalizeJiraStreamPeriod(raw string) string {
 	unix, ok := db.ParseJiraTime(raw)
 	if !ok {
@@ -368,49 +366,19 @@ func (p *Pipeline) logAbandonedProjectOnce(accountID int64, lagging string, now 
 	p.logf("ideas: jira account %d: a selected project has failed to sync since %s (over %s) — no longer holding the ideas floor for it", accountID, lagging, jiraLaggingProjectMaxAge)
 }
 
-// jiraIssueBoundISO renders the pass's upper bound for the plain string
-// compare against jira_issues.updated_at. Those keep whatever offset Jira
-// returned (the profile time zone, which also moves with DST), so one
-// rendering cannot be exact for every row. Given the offsets the candidate
-// rows actually carry: strict=true renders t in the most NEGATIVE of them, so
-// every row that sorts at or below the bound is at or before t (the failing-
-// project clamp must never let a later issue through); strict=false renders it
-// in the most POSITIVE, so every row at or before t sorts at or below the bound
-// (a backfill window must never miss an issue inside it). With no candidates
-// the rendering does not matter.
-func jiraIssueBoundISO(t time.Time, offsets []int, strict bool) string {
-	if len(offsets) == 0 {
-		return db.FormatJiraTime(t.UTC())
-	}
-	pick := offsets[0]
-	for _, o := range offsets[1:] {
-		if (strict && o < pick) || (!strict && o > pick) {
-			pick = o
-		}
-	}
-	return db.FormatJiraTime(t.In(time.FixedZone("", pick)))
-}
-
 // passBeforeISO combines the pass's optional backfill bound and the
 // failing-project clamp into one string upper bound ("" = unbounded).
-func (p *Pipeline) passBeforeISO(accountID int64, floor string, bound time.Time) (string, error) {
+func (p *Pipeline) passBeforeISO(accountID int64, bound time.Time) (string, error) {
 	clamp, clamped, err := p.failingJiraProjectClamp(accountID, time.Now())
-	if err != nil {
-		return "", err
-	}
-	if bound.IsZero() && !clamped {
-		return "", nil
-	}
-	offsets, err := p.db.JiraIssueOffsetsSince(accountID, floor)
 	if err != nil {
 		return "", err
 	}
 	var before string
 	if !bound.IsZero() {
-		before = jiraIssueBoundISO(bound, offsets, false)
+		before = db.FormatJiraTime(bound)
 	}
 	if clamped {
-		c := jiraIssueBoundISO(clamp, offsets, true)
+		c := db.FormatJiraTime(clamp)
 		if before == "" || c < before {
 			p.logf("ideas: jira account %d: a selected project is failing to sync — mining only up to %s", accountID, c)
 			before = c
@@ -471,7 +439,7 @@ func (p *Pipeline) runJiraDigestAccount(ctx context.Context, acct db.JiraAccount
 		return p.initJiraFloor(acct)
 	}
 
-	beforeISO, err := p.passBeforeISO(acct.ID, floor, bound)
+	beforeISO, err := p.passBeforeISO(acct.ID, bound)
 	if err != nil {
 		return err
 	}

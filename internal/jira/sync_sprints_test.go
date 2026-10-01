@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -147,4 +148,116 @@ func TestSyncSprints_MidPaginationFailureKeepsEarlierPages(t *testing.T) {
 	require.NoError(t, quietSyncer(t, database, srv.URL).SyncSprints(context.Background()))
 	assert.Equal(t, "closed", sprintState(t, database, 1), "page 1 is stored despite the page-2 failure")
 	assert.Equal(t, "closed", sprintState(t, database, 2))
+}
+
+// TestSyncSprints_ClosedListingOnlyWhenNeeded: the closed listing pages
+// through a board's whole history, so it is read only when a stored active
+// sprint left the active listing, or the closed rows are stale or missing.
+func TestSyncSprints_ClosedListingOnlyWhenNeeded(t *testing.T) {
+	fresh := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)
+	stale := time.Now().UTC().Add(-closedSprintRefresh - time.Hour).Format(time.RFC3339)
+	cases := []struct {
+		name         string
+		storedActive int // 0 = none
+		closedSynced string
+		wantClosed   bool
+	}{
+		{"active sprint still running, closed rows fresh", 6, fresh, false},
+		{"stored active sprint left the active listing", 5, fresh, true},
+		{"closed rows stale", 6, stale, true},
+		{"no closed rows yet", 6, "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			database := revokedSyncerDB(t)
+			seedSprintBoard(t, database)
+			if tc.storedActive != 0 {
+				require.NoError(t, database.UpsertJiraSprint(db.JiraSprint{
+					AccountID: 1, ID: tc.storedActive, BoardID: 1, Name: "S", State: "active", SyncedAt: fresh,
+				}))
+			}
+			if tc.closedSynced != "" {
+				require.NoError(t, database.UpsertJiraSprint(db.JiraSprint{
+					AccountID: 1, ID: 1, BoardID: 1, Name: "Sprint 1", State: "closed", SyncedAt: tc.closedSynced,
+				}))
+			}
+			calls := map[string]*atomic.Int32{"active": {}, "closed": {}}
+			srv := sprintPageServer(t, map[string][]Sprint{
+				"active": {{ID: 6, Name: "Sprint 6", State: "active"}},
+				"closed": {{ID: 1, Name: "Sprint 1", State: "closed"}, {ID: 5, Name: "Sprint 5", State: "closed"}},
+			}, 50, calls)
+
+			require.NoError(t, quietSyncer(t, database, srv.URL).SyncSprints(context.Background()))
+
+			assert.Equal(t, int32(1), calls["active"].Load())
+			if tc.wantClosed {
+				assert.Equal(t, int32(1), calls["closed"].Load())
+				assert.Equal(t, "closed", sprintState(t, database, 5))
+			} else {
+				assert.Zero(t, calls["closed"].Load(), "the closed history is not re-read")
+			}
+		})
+	}
+}
+
+// Through the real writer: the first pass reads the closed history once, the
+// next one skips it, and a pass after the running sprint closed reads it
+// again and marks it closed.
+func TestSyncSprints_ClosedListingRoundTrip(t *testing.T) {
+	database := revokedSyncerDB(t)
+	seedSprintBoard(t, database)
+	byState := map[string][]Sprint{
+		"active": {{ID: 6, Name: "Sprint 6", State: "active"}},
+		"closed": {{ID: 5, Name: "Sprint 5", State: "closed"}},
+	}
+	calls := map[string]*atomic.Int32{"active": {}, "closed": {}}
+	srv := sprintPageServer(t, byState, 50, calls)
+	syncer := quietSyncer(t, database, srv.URL)
+
+	require.NoError(t, syncer.SyncSprints(context.Background()))
+	require.NoError(t, syncer.SyncSprints(context.Background()))
+	assert.Equal(t, int32(1), calls["closed"].Load(), "the second pass does not re-read the closed history")
+
+	byState["active"] = nil
+	byState["closed"] = append(byState["closed"], Sprint{ID: 6, Name: "Sprint 6", State: "closed"})
+	require.NoError(t, syncer.SyncSprints(context.Background()))
+	assert.Equal(t, int32(2), calls["closed"].Load())
+	assert.Equal(t, "closed", sprintState(t, database, 6))
+}
+
+// A closed read that broke part-way does not count as a full read: the next
+// pass reads the closed listing again.
+func TestSyncSprints_BrokenClosedReadIsRetried(t *testing.T) {
+	database := revokedSyncerDB(t)
+	seedSprintBoard(t, database)
+	var closedCalls atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rest/agile/1.0/board/1/sprint", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("state") != "closed" {
+			_ = json.NewEncoder(w).Encode(SprintList{IsLast: true})
+			return
+		}
+		n := closedCalls.Add(1)
+		if startAt, _ := strconv.Atoi(r.URL.Query().Get("startAt")); startAt > 0 && n == 2 {
+			http.Error(w, "bad gateway", http.StatusBadGateway)
+			return
+		}
+		startAt, _ := strconv.Atoi(r.URL.Query().Get("startAt"))
+		all := []Sprint{{ID: 1, Name: "Sprint 1", State: "closed"}, {ID: 2, Name: "Sprint 2", State: "closed"}}
+		page := SprintList{StartAt: startAt, MaxResults: 1, IsLast: startAt+1 >= len(all)}
+		if startAt < len(all) {
+			page.Values = all[startAt : startAt+1]
+		}
+		_ = json.NewEncoder(w).Encode(page)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	syncer := quietSyncer(t, database, srv.URL)
+
+	require.NoError(t, syncer.SyncSprints(context.Background())) // page 2 fails
+	require.NoError(t, syncer.SyncSprints(context.Background())) // reads both pages
+	assert.Equal(t, int32(4), closedCalls.Load(), "the broken read is not taken for a full one")
+	assert.Equal(t, "closed", sprintState(t, database, 2))
+	require.NoError(t, syncer.SyncSprints(context.Background()))
+	assert.Equal(t, int32(4), closedCalls.Load(), "a full read closes the gate")
 }

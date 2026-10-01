@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -45,6 +46,19 @@ const responseStyle = `=== RESPONSE STYLE ===
 - Use markdown (headings, lists, tables) when it helps; put anything the owner will copy, send or keep in an artifact.
 - Highlight decisions, owners, deadlines and open questions.`
 
+// formatCurrentTime renders now as the prompt and every turn's time line
+// show it: the local time with its zone, then UTC.
+func formatCurrentTime(now time.Time) string {
+	return fmt.Sprintf("%s (%s)", now.Format("Monday, 2006-01-02 15:04 MST"), now.UTC().Format("15:04 UTC"))
+}
+
+// turnTimeLine opens every owner turn's text on the wire (never the stored
+// message): a session spawned or resumed days ago otherwise only knows the
+// time in its system prompt, which `--resume` never re-sends (CHAT-04).
+func turnTimeLine(now time.Time) string {
+	return "[Current time: " + formatCurrentTime(now) + "]\n\n"
+}
+
 func identityBlock(d *db.DB, cfg *config.Config, now time.Time) (string, error) {
 	owner, err := d.ResolveOwner()
 	if err != nil {
@@ -54,7 +68,8 @@ func identityBlock(d *db.DB, cfg *config.Config, now time.Time) (string, error) 
 	b.WriteString("You are Watchtower, the owner's work assistant. You answer from the owner's own synced sources — " +
 		"Slack, mail, Jira, calendar, meeting transcripts and Watchtower's digests, decisions, targets and memory — " +
 		"and you show where each fact came from.\n\n")
-	fmt.Fprintf(&b, "Current time: %s (%s)\n", now.Format("Monday, 2006-01-02 15:04 MST"), now.UTC().Format("15:04 UTC"))
+	fmt.Fprintf(&b, "Current time: %s when this session started. Each owner message begins with a newer "+
+		"%q line: always use the latest one.\n", formatCurrentTime(now), "[Current time: …]")
 	name := oneLine(owner.DisplayName, maxFieldRunes)
 	email := oneLine(owner.Email, maxFieldRunes)
 	id := oneLine(owner.ID, maxFieldRunes)
@@ -323,20 +338,40 @@ func writeProjectTextFiles(b *strings.Builder, files []db.ChatProjectFile) {
 	}
 }
 
-// writeProjectBinaryFiles names the binaries: attached on the Claude backend,
+// writeProjectBinaryFiles names the binaries: attached on the Claude backend
+// as far as they fit in one message's encoded cap on their own (the
+// backend's projectBlocks fits them in the same order, but after the owner's
+// own files — a turn whose files leave less room says so in its text),
 // unavailable on any other provider.
 func writeProjectBinaryFiles(b *strings.Builder, files []db.ChatProjectFile, provider string) {
 	if len(files) == 0 {
 		return
 	}
-	names := make([]string, len(files))
-	for i, f := range files {
-		names[i] = f.Name
-	}
-	if provider == "" || provider == "claude" {
-		b.WriteString("Attached to the first message of each session: " + strings.Join(names, ", ") + "\n")
-	} else {
+	if provider != "" && provider != "claude" {
+		names := make([]string, len(files))
+		for i, f := range files {
+			names[i] = f.Name
+		}
 		b.WriteString("Not available in this session (images and PDFs need the Claude provider): " +
 			strings.Join(names, ", ") + "\n")
+		return
+	}
+	var attached, tooLarge []string
+	budget := MaxTurnAttachmentEncodedBytes
+	for _, f := range files {
+		size := int64(base64.StdEncoding.EncodedLen(int(f.Size)))
+		if size > budget {
+			tooLarge = append(tooLarge, f.Name)
+			continue
+		}
+		budget -= size
+		attached = append(attached, f.Name)
+	}
+	if len(attached) > 0 {
+		b.WriteString("Attached to the first message of each session: " + strings.Join(attached, ", ") + "\n")
+	}
+	if len(tooLarge) > 0 {
+		fmt.Fprintf(b, "Not attached (together over the %d MB one message carries): %s\n",
+			MaxTurnAttachmentEncodedBytes>>20, strings.Join(tooLarge, ", "))
 	}
 }

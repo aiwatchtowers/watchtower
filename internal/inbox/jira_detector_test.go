@@ -11,9 +11,9 @@ import (
 )
 
 // seedJiraIssue inserts a jira_issues row assigned to the given account ID.
-// updated is used as both updated_at and synced_at, in Jira Cloud's own
-// dotted-millisecond format (db.FormatJiraTime) exactly as the real sync
-// writes it — the detector's window bound is a plain SQL string compare
+// updated is used as both updated_at and synced_at, in the stored UTC form
+// (db.FormatJiraTime) exactly as the real sync writes it — the detector's
+// window bound is a plain SQL string compare
 // against updated_at, so a differently-formatted fixture would not exercise
 // the production comparison.
 func seedJiraIssue(t *testing.T, d *db.DB, key, assigneeAccountID string, updated time.Time) {

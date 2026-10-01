@@ -652,7 +652,7 @@ text TEXT NOT NULL,
 created_at REAL NOT NULL,
 turn_id TEXT NOT NULL DEFAULT ''
 , status TEXT NOT NULL DEFAULT 'complete'
-CHECK(status IN ('complete','partial','error')), provider TEXT, model TEXT, tokens_in INTEGER, tokens_out INTEGER, parent_id INTEGER REFERENCES chat_messages(id) ON DELETE CASCADE, error_code TEXT)
+CHECK(status IN ('complete','partial','error')), provider TEXT, model TEXT, tokens_in INTEGER, tokens_out INTEGER, parent_id INTEGER REFERENCES chat_messages(id) ON DELETE CASCADE, error_code TEXT, error_message TEXT)
 
 table	chat_project_sources
 CREATE TABLE chat_project_sources (
@@ -1415,6 +1415,7 @@ first_ts TEXT NOT NULL,
 last_ts TEXT NOT NULL,
 last_ts_unix REAL NOT NULL,
 failures INTEGER NOT NULL DEFAULT 0,
+solo_failures INTEGER NOT NULL DEFAULT 0,
 last_error TEXT NOT NULL DEFAULT '',
 quarantined_at TEXT NOT NULL DEFAULT '',
 updated_at TEXT NOT NULL DEFAULT '',
@@ -2717,6 +2718,7 @@ END
 10	tokens_out	INTEGER	notnull=0	dflt=NULL	pk=0
 11	parent_id	INTEGER	notnull=0	dflt=NULL	pk=0
 12	error_code	TEXT	notnull=0	dflt=NULL	pk=0
+13	error_message	TEXT	notnull=0	dflt=NULL	pk=0
 
 ## chat_project_sources
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
@@ -3385,9 +3387,10 @@ END
 2	last_ts	TEXT	notnull=1	dflt=NULL	pk=0
 3	last_ts_unix	REAL	notnull=1	dflt=NULL	pk=0
 4	failures	INTEGER	notnull=1	dflt=0	pk=0
-5	last_error	TEXT	notnull=1	dflt=''	pk=0
-6	quarantined_at	TEXT	notnull=1	dflt=''	pk=0
-7	updated_at	TEXT	notnull=1	dflt=''	pk=0
+5	solo_failures	INTEGER	notnull=1	dflt=0	pk=0
+6	last_error	TEXT	notnull=1	dflt=''	pk=0
+7	quarantined_at	TEXT	notnull=1	dflt=''	pk=0
+8	updated_at	TEXT	notnull=1	dflt=''	pk=0
 
 ## memory_focus_matches
 0	node_id	TEXT	notnull=0	dflt=NULL	pk=1

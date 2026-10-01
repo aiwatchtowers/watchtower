@@ -3,12 +3,10 @@ package db
 import (
 	"database/sql"
 	"errors"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -1502,19 +1500,7 @@ func TestListOwnerChatTurnsAbsentTables(t *testing.T) {
 // a down; up cycle is clean — Up's ADD COLUMN would otherwise fail on the
 // leftovers.
 func TestMemoryMigrationDownUpCycle(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "cycle.db")
-	d, err := Open(path)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer d.Close()
-
-	if err := goose.Down(d.DB, "migrations"); err != nil {
-		t.Fatalf("goose down: %v", err)
-	}
-	if err := goose.Up(d.DB, "migrations"); err != nil {
-		t.Fatalf("goose up after down: %v", err)
-	}
+	d := openAfterMigrationCycle(t, 17)
 
 	// The re-added columns are usable (exactly once — a duplicate would have
 	// failed the Up above).

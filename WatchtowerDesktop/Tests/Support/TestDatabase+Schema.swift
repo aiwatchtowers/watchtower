@@ -1435,7 +1435,8 @@ extension TestDatabase {
         tokens_in       INTEGER,
         tokens_out      INTEGER,
         parent_id       INTEGER REFERENCES chat_messages(id) ON DELETE CASCADE,
-        error_code      TEXT
+        error_code      TEXT,
+        error_message   TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation ON chat_messages(conversation_id);
     CREATE INDEX IF NOT EXISTS idx_chat_messages_parent ON chat_messages(parent_id);
