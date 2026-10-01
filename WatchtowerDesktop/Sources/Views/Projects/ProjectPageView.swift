@@ -84,6 +84,7 @@ struct ProjectPageView: View {
                 installStatusIcons
                 if vm.isInstalling(projectID: project.id) { ProgressView().controlSize(.mini) }
                 Spacer(minLength: 8)
+                viewButtons
                 splitToggle
                 moreMenu
             }
@@ -230,6 +231,32 @@ struct ProjectPageView: View {
         .accessibilityLabel("Claude Code CLI not found")
     }
 
+    /// Terminal / Board / Documents: on = on screen. Turning one on shows it
+    /// (beside the terminal in a split); turning it off closes that pane of
+    /// a split. Split then puts two side by side.
+    private var viewButtons: some View {
+        let layout = vm.layout(projectID: project.id)
+        return HStack(spacing: 2) {
+            ForEach(WorkspaceView.allCases, id: \.self) { view in
+                Toggle(isOn: Binding(
+                    get: { layout.isShowing(view) },
+                    set: { on in
+                        if on {
+                            Task { await vm.showView(view, project: project) }
+                        } else {
+                            vm.hideView(view, projectID: project.id)
+                        }
+                    }
+                )) {
+                    Label(view.title, systemImage: view.icon)
+                }
+                .toggleStyle(.button)
+                .help(view.help)
+            }
+        }
+        .controlSize(.small)
+    }
+
     private var splitToggle: some View {
         let isSplit = vm.layout(projectID: project.id).isSplit
         return Button {
@@ -240,5 +267,31 @@ struct ProjectPageView: View {
         .buttonStyle(.borderless)
         .help(isSplit ? "Show one pane" : "Split: show two panes side by side")
         .accessibilityLabel(isSplit ? "Single Pane" : "Split")
+    }
+}
+
+private extension WorkspaceView {
+    var title: String {
+        switch self {
+        case .terminal: "Terminal"
+        case .board: "Board"
+        case .documents: "Documents"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .terminal: "terminal"
+        case .board: "square.grid.2x2"
+        case .documents: "doc.text"
+        }
+    }
+
+    var help: String {
+        switch self {
+        case .terminal: "Show the terminal (in a split, beside the other pane)"
+        case .board: "Show the Board (in a split, beside the terminal)"
+        case .documents: "Show the Documents (in a split, beside the terminal)"
+        }
     }
 }

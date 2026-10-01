@@ -229,4 +229,54 @@ final class WorkspaceLayoutTests: XCTestCase {
         XCTAssertEqual(l.sessionIDs, [4, 2])
         XCTAssertEqual(WorkspaceLayout.default.sessionIDs, [])
     }
+
+    // MARK: - Header view buttons
+
+    func testIsShowingFollowsTheVisiblePanes() {
+        var l = split()
+        XCTAssertTrue(l.isShowing(.board))
+        XCTAssertTrue(l.isShowing(.terminal))
+        XCTAssertFalse(l.isShowing(.documents))
+        l.toggleExpand(.session(1))
+        XCTAssertFalse(l.isShowing(.board), "an expansion hides the other pane")
+    }
+
+    func testShowProjectViewNeverHidesTheTerminal() {
+        var l = WorkspaceLayout(primary: .session(1), secondary: .board, expanded: nil, dividerFraction: 0.5)
+        l.showProjectView(.documents)
+        XCTAssertEqual(l.visiblePanes, [.session(1), .documents])
+
+        l.toggleExpand(.documents)
+        l.showProjectView(.board)
+        XCTAssertEqual(l.visiblePanes, [.session(1), .board], "the expansion ends; the session stays")
+
+        var single = WorkspaceLayout(primary: .session(1), secondary: nil, expanded: nil, dividerFraction: 0.5)
+        single.showProjectView(.board)
+        XCTAssertEqual(single.visiblePanes, [.board], "a single pane switches")
+    }
+
+    func testShowProjectViewInASplitWithoutASession() {
+        var l = WorkspaceLayout(primary: .board, secondary: .documents, expanded: .documents, dividerFraction: 0.5)
+        l.showProjectView(.board)
+        XCTAssertEqual(l.visiblePanes, [.board, .documents], "a pane in a slot comes back; the expansion ends")
+    }
+
+    func testHideClosesOnlyAPaneOfAVisibleSplit() {
+        var l = split()
+        l.hide(.board)
+        XCTAssertEqual(l.visiblePanes, [.session(1)])
+        XCTAssertFalse(l.isSplit)
+
+        l.hide(.terminal)
+        XCTAssertEqual(l.visiblePanes, [.session(1)], "the only pane stays")
+
+        var expanded = split()
+        expanded.toggleExpand(.board)
+        expanded.hide(.board)
+        XCTAssertEqual(expanded.visiblePanes, [.board], "an expanded pane stays")
+
+        var other = split()
+        other.hide(.documents)
+        XCTAssertEqual(other, split(), "a view not on screen changes nothing")
+    }
 }
