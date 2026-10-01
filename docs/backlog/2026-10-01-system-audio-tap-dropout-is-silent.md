@@ -39,7 +39,7 @@ Wanted:
   because of this, the failure message should say so, instead of a bare
   "No speech recognized".
 
-**Fixed (fix/system-audio-dropout) — detection and warning; recovery still open.**
+**Fixed (fix/system-audio-dropout) — detection and warning.**
 `CallAudioWatch` (WatchtowerCore, pure, incremental) watches the system channel
 in ~100 ms RMS steps. A *gap* is a stretch of at least 2 minutes below
 `1e-4` RMS that starts right after the call was being heard: at least 30 s of
@@ -81,7 +81,8 @@ not committed:
 - The note disappears once retention sweeps the audio, because the sidecar
   is swept with it.
 
-**Still open:** re-attaching the tap on a default-output-device change, so a
-dropout recovers on its own. This needs CoreAudio work in
-`SystemAudioRecorder` and real-hardware validation.
+**Split out:** recovering from a dropout on its own (re-attaching the tap on
+an output-device change) is tracked, still open, in
+`docs/backlog/2026-10-01-re-attach-system-audio-tap-on-output-device-change.md`.
+This item covers detection and the warning only.
 

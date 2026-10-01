@@ -13,6 +13,9 @@ protocol MeetingTranscriptNotifying {
     /// (see `callAudioSilentSince`) — the owner is usually in the call app,
     /// not looking at Watchtower, so the pill alone would go unseen.
     func sendCallAudioSilentNotification()
+    /// Takes that notification back once the call audio returns or the
+    /// capture ends, so a stale warning never lingers in Notification Center.
+    func withdrawCallAudioSilentNotification()
 }
 
 /// The "check your output device" hint every call-audio surface ends on.
@@ -938,18 +941,26 @@ final class MeetingRecorderCenter {
                 guard let self, self.levelsGeneration == generation else { return }
                 self.captureLevels = levels
                 callAudio.add(system: levels.system)
-                let silentSince = callAudio.openGap?.startSec
-                // Written only on change: this runs at ~10 Hz and every
-                // write would re-render the observing pill.
-                if self.callAudioSilentSince != silentSince {
-                    if self.callAudioSilentSince == nil { self.notifier.sendCallAudioSilentNotification() }
-                    self.callAudioSilentSince = silentSince
-                }
+                self.setCallAudioSilentSince(callAudio.openGap?.startSec)
             }
             guard !Task.isCancelled, let self, self.levelsGeneration == generation else { return }
             self.captureLevels = .init(mic: 0, system: 0)
-            self.callAudioSilentSince = nil
+            self.setCallAudioSilentSince(nil)
         }
+    }
+
+    /// The one writer of `callAudioSilentSince`. Written only on change (the
+    /// level loop runs at ~10 Hz and every write would re-render the pill);
+    /// a gap opening sends the notification, a gap closing — or the capture
+    /// ending mid-gap — withdraws it.
+    private func setCallAudioSilentSince(_ value: Double?) {
+        guard callAudioSilentSince != value else { return }
+        if callAudioSilentSince == nil {
+            notifier.sendCallAudioSilentNotification()
+        } else if value == nil {
+            notifier.withdrawCallAudioSilentNotification()
+        }
+        callAudioSilentSince = value
     }
 
     /// Ends the level feed for a capture that is over: every path that clears
@@ -961,7 +972,7 @@ final class MeetingRecorderCenter {
         levelsTask?.cancel()
         levelsTask = nil
         captureLevels = .init(mic: 0, system: 0)
-        callAudioSilentSince = nil
+        setCallAudioSilentSince(nil)
     }
 
     /// Loads the transcriber and, when it supports live (`makeLiveSession`

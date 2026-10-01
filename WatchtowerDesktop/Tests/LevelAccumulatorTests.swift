@@ -115,11 +115,13 @@ extension MeetingRecorderCenterTests {
 
         for _ in 0..<100 { recorder.emitLevels(call) }
         await waitUntil("the call coming back clears it") { center.callAudioSilentSince == nil }
+        XCTAssertEqual(notifier.callAudioWithdrawnCount, 1, "the stale push is taken back when the call returns")
 
         for _ in 0..<1300 { recorder.emitLevels(dead) }
         await waitUntil("flagged again") { center.callAudioSilentSince != nil }
         XCTAssertEqual(notifier.callAudioSilentCount, 2)
         await center.stopAndProcess(config: singleWindowConfig())
         await waitUntil("stop clears it") { center.callAudioSilentSince == nil }
+        XCTAssertEqual(notifier.callAudioWithdrawnCount, 2, "stopping mid-gap takes the push back too")
     }
 }
