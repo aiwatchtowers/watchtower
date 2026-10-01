@@ -44,7 +44,10 @@ final class WhisperHallucinationFilterTests: XCTestCase {
             "Редактор субтитров сломался, надо чинить.",
             "Нам нужен редактор субтитров для проекта.",
             "Субтитры делал DeepL, качество так себе.",
-            "Субтитры сделал ChatGPT и всё поехало."
+            "Субтитры сделал ChatGPT и всё поехало.",
+            "Я говорил, что субтитры делал Whisper.",
+            "В прошлый раз субтитры сделал ChatGPT.",
+            "А субтитры делал DeepL"
         ] {
             XCTAssertEqual(clean(speech), speech)
         }

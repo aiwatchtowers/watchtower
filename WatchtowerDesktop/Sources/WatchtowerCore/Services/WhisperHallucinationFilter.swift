@@ -19,11 +19,12 @@ package enum WhisperHallucinationFilter {
     private static let inlinePatterns: [NSRegularExpression] = [
         // The credit Whisper writes most often, runs into real speech of
         // any case on real recordings — removed wherever it appears.
-        #"(?:субтитры|субтитри)\s+\p{L}+\s+dimatorzok[.!?…]*"#,
-        #"(?:субтитры|субтитри)\s+(?:сделал|сделала|создавал|создавала|делал|делала|подготовил|подготовила|подогнал"#
-            // Only when nothing continues the clause after the nickname
-            // (end of text or a capitalised run-on sentence): "Субтитры
-            // делал DeepL, качество так себе" is speech about a tool.
+        #"(?:субтитры|субтитри)\s+\p{L}+\s+dimatorzok\b[.!?…]*"#,
+        #"(?-i:С)(?:убтитры|убтитри)\s+(?:сделал|сделала|создавал|создавала|делал|делала|подготовил|подготовила|подогнал"#
+            // Only Whisper's capitalised credit form, and only when nothing
+            // continues the clause after the nickname (end of text or a
+            // capitalised run-on sentence): "Субтитры делал DeepL, качество
+            // так себе" and "…что субтитры делал Whisper." are speech.
             + #"|зробив|створив|підготував)\s+\p{Latin}[\p{Latin}\d_.-]*+[.!?…]*+(?=\s*(?:(?-i:\p{Lu})|$))"#,
         #"редактор субтитров\s+\S+\s+корректор\s+\S+[.!?…]*"#,
         #"subtitles by(?:\s+the)?\s+amara\.org(?:\s+community)?[.!?…]*"#,
