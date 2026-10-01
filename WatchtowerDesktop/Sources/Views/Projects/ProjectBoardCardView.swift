@@ -3,15 +3,16 @@ import WatchtowerCore
 
 /// One target of the project board as a task card: status icon, title,
 /// priority/status chips, counters, and — for a parent — its children's
-/// progress and a collapse chevron. `trailing` is the card's action slot;
-/// `caption` is an extra line under the title (the kanban's parent chain).
+/// progress and a collapse chevron. `trailing` is the card's action slot,
+/// told whether the pointer is over the card; `caption` is an extra line
+/// under the title (the kanban's parent chain).
 struct ProjectBoardCardView<Trailing: View>: View {
     let row: ProjectBoardRow
     let isSelected: Bool
     let isCollapsed: Bool
     var caption: String?
     let onToggle: () -> Void
-    @ViewBuilder let trailing: () -> Trailing
+    @ViewBuilder let trailing: (_ hovering: Bool) -> Trailing
 
     @State private var hovering = false
 
@@ -47,7 +48,7 @@ struct ProjectBoardCardView<Trailing: View>: View {
                 }
             }
             Spacer(minLength: 4)
-            trailing()
+            trailing(hovering)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
@@ -136,7 +137,7 @@ extension ProjectBoardCardView where Trailing == EmptyView {
         caption: String? = nil,
         onToggle: @escaping () -> Void
     ) {
-        self.init(row: row, isSelected: isSelected, isCollapsed: isCollapsed, caption: caption, onToggle: onToggle) {
+        self.init(row: row, isSelected: isSelected, isCollapsed: isCollapsed, caption: caption, onToggle: onToggle) { _ in
             EmptyView()
         }
     }

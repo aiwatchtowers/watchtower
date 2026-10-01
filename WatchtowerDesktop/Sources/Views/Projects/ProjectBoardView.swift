@@ -156,8 +156,13 @@ struct ProjectBoardView: View {
                 ProjectBoardCardView(
                     row: row,
                     isSelected: vm.selectedTargetID == row.id,
-                    isCollapsed: vm.collapsed.contains(row.id)
-                ) { vm.toggle(row.id) }
+                    isCollapsed: vm.collapsed.contains(row.id),
+                    onToggle: { vm.toggle(row.id) },
+                    trailing: { hovering in
+                        WorkOnTargetButton(target: row.node.target, compact: true,
+                                           isVisible: hovering || vm.selectedTargetID == row.id)
+                    }
+                )
                 .listRowSeparator(.hidden)
                 .listRowInsets(EdgeInsets(top: 3, leading: 8, bottom: 3, trailing: 8))
                 .listRowBackground(Color.clear)
@@ -184,6 +189,7 @@ struct ProjectBoardView: View {
                         statusMenu(vm, node.target)
                         priorityMenu(vm, node.target)
                         Spacer(minLength: 0)
+                        WorkOnTargetButton(target: node.target, compact: false, isVisible: true)
                     }
                     ProgressView(value: node.target.progress)
                     if !node.target.intent.isEmpty {
