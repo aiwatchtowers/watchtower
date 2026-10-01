@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"watchtower/internal/db"
+	"watchtower/internal/projectfiles"
 )
 
 // projectSurface is the registry surface of `watchtower mcp --project N`.
@@ -21,12 +22,13 @@ var projectSurfaces = []string{projectSurface}
 const maxBatchTargets = 100
 
 // ProjectTools returns every project tool (surface "project"), in the order
-// buildToolRegistry registers them.
-func ProjectTools() []*Tool {
+// buildToolRegistry registers them. files stores the images attached to
+// targets.
+func ProjectTools(files projectfiles.Store) []*Tool {
 	return []*Tool{
 		NewProjectInfo(), NewProjectBoard(), NewUpdateProject(),
 		NewAddProjectSource(), NewRemoveProjectSource(),
-		NewCreateTargets(), NewUpdateTarget(),
+		NewCreateTargets(files), NewUpdateTarget(files),
 		NewAttachDocument(), NewListComments(), NewAddComment(), NewResolveComment(),
 	}
 }

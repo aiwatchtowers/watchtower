@@ -106,6 +106,32 @@ package struct ProjectDocument: FetchableRecord, Identifiable, Equatable, Hashab
     }
 }
 
+/// A `project_target_images` row (migration 00088): an image the agent
+/// attached to a board target. `path` is Watchtower's own 0600 copy under
+/// `<workspace>/project_files/<project_id>/`, written only by the Go project
+/// tools; the Desktop only reads it.
+package struct ProjectTargetImage: FetchableRecord, Identifiable, Equatable, Hashable, Sendable {
+    package let id: Int64
+    package let targetID: Int64
+    package let fileName: String
+    package let mime: String
+    package let size: Int64
+    package let path: String
+    package let createdAt: String
+
+    package init(row: Row) {
+        id = row["id"]
+        targetID = row["target_id"]
+        fileName = row["file_name"] ?? ""
+        mime = row["mime"] ?? ""
+        size = row["size"] ?? 0
+        path = row["path"] ?? ""
+        createdAt = row["created_at"] ?? ""
+    }
+
+    package var fileURL: URL { URL(fileURLWithPath: path) }
+}
+
 /// A `project_comments` row — a thread root (on a target or a document) or a
 /// reply. Status is meaningful on roots only.
 package struct ProjectComment: FetchableRecord, Identifiable, Equatable, Hashable, Sendable {

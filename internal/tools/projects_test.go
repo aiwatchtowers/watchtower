@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/db"
+	"watchtower/internal/projectfiles"
 )
 
 // projectFixture is two projects side by side plus a plain (non-project)
@@ -21,6 +22,7 @@ type projectFixture struct {
 	a, b                         int64 // project ids; sessions are bound to a
 	aTarget, bTarget, plain      int64
 	bSource, bComment, bDocument int64
+	bImage                       int64
 }
 
 func newProjectFixture(t *testing.T) projectFixture {
@@ -40,13 +42,18 @@ func newProjectFixture(t *testing.T) projectFixture {
 	require.NoError(t, err)
 	fx.bDocument, _, err = d.UpsertProjectDocument(db.ProjectDocument{ProjectID: fx.b, RelPath: "docs/beta.md", Kind: "doc"})
 	require.NoError(t, err)
+	require.NoError(t, d.WithTx(func(tx *sql.Tx) error {
+		fx.bImage, err = db.AddProjectTargetImageTx(tx, db.ProjectTargetImage{ProjectID: fx.b, TargetID: fx.bTarget,
+			FileName: "beta.png", MIME: "image/png", Size: 3, SHA256: "beta", Path: "/store/2/beta.png"})
+		return err
+	}))
 	return fx
 }
 
 func projectRegistry(t *testing.T, d *db.DB) *Registry {
 	t.Helper()
 	reg := New(d)
-	for _, tool := range append(ProjectTools(), NewListTargets(), NewGetTarget()) {
+	for _, tool := range append(ProjectTools(projectfiles.New(t.TempDir())), NewListTargets(), NewGetTarget()) {
 		require.NoError(t, reg.Register(tool))
 	}
 	return reg
@@ -84,7 +91,7 @@ func countActions(t *testing.T, d *db.DB) int {
 }
 
 func TestProjectTools_AllOnProjectSurfaceNeverExternal(t *testing.T) {
-	for _, tool := range ProjectTools() {
+	for _, tool := range ProjectTools(projectfiles.Store{}) {
 		assert.Equal(t, []string{"project"}, tool.Surfaces, tool.Name)
 		assert.False(t, tool.External, "%s must stay on this machine (DEV-06)", tool.Name)
 		if tool.Access == AccessWrite {
@@ -399,6 +406,8 @@ func outsideProjectCalls(t *testing.T, fx projectFixture) []outsideProjectCall {
 		{"comment on a non-project target", "add_comment", fmt.Sprintf(`{"target_id":%d,"body":"hi","reason":"r"}`, fx.plain), true},
 		{"reply in another project's thread", "add_comment", fmt.Sprintf(`{"parent_id":%d,"body":"hi","reason":"r"}`, fx.bComment), true},
 		{"resolve another project's comment", "resolve_comment", fmt.Sprintf(`{"comment_id":%d,"reply":"done","reason":"r"}`, fx.bComment), true},
+		{"attach an image to another project's target", "update_target", fmt.Sprintf(`{"target_id":%d,"add_images":[%q],"reason":"r"}`, fx.bTarget, fakeImage(t, "x.png", "x")), true},
+		{"detach another project's image", "update_target", fmt.Sprintf(`{"target_id":%d,"remove_image_ids":[%d],"reason":"r"}`, fx.aTarget, fx.bImage), true},
 		{"link a document to another project's target", "attach_document", fmt.Sprintf(`{"rel_path":"docs/other-project-link.md","kind":"doc","target_id":%d,"reason":"r"}`, fx.bTarget), true},
 	}
 }
@@ -439,6 +448,7 @@ func snapshotProject(t *testing.T, d *db.DB, projectID int64) []string {
 		`SELECT id || '|' || text || '|' || status || '|' || progress || '|' || updated_at FROM targets WHERE project_id = ? ORDER BY id`,
 		`SELECT id || '|' || rel_path || '|' || updated_at FROM project_documents WHERE project_id = ? ORDER BY id`,
 		`SELECT id || '|' || status || '|' || body FROM project_comments WHERE project_id = ? ORDER BY id`,
+		`SELECT id || '|' || target_id || '|' || path FROM project_target_images WHERE project_id = ? ORDER BY id`,
 	}
 	var out []string
 	for _, q := range queries {

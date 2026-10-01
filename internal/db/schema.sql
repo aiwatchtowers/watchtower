@@ -2097,6 +2097,22 @@ CREATE TABLE IF NOT EXISTS project_documents (
 );
 CREATE INDEX IF NOT EXISTS idx_project_documents_target ON project_documents(target_id);
 
+-- Images attached to project targets (00088); path = absolute 0600 copy under
+-- <workspace>/project_files/<project_id>/. Board-only (PROJ-01).
+CREATE TABLE IF NOT EXISTS project_target_images (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    target_id  INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+    file_name  TEXT NOT NULL,
+    mime       TEXT NOT NULL CHECK(mime IN ('image/png','image/jpeg','image/gif','image/webp')),
+    size       INTEGER NOT NULL,
+    sha256     TEXT NOT NULL,
+    path       TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    UNIQUE(target_id, sha256)
+);
+CREATE INDEX IF NOT EXISTS idx_project_target_images_project ON project_target_images(project_id);
+
 CREATE TABLE IF NOT EXISTS project_comments (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id     INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,

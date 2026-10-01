@@ -38,7 +38,8 @@ package struct ProjectDeleteSummary: Equatable {
         """
         Watchtower removes the board: \(Self.plural(targets, "target")), \
         \(Self.plural(documents, "document")) and \(Self.plural(comments, "comment")). \
-        The document files themselves stay in the folder.
+        The document files themselves stay in the folder; Watchtower's own \
+        copies of images attached to targets are deleted.
 
         In \(folder) it removes what it installed: the watchtower-project skill, \
         the SessionStart hook in .claude/settings.local.json, the watchtower-project \

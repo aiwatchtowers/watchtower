@@ -39,6 +39,25 @@ extension TestDatabase {
     }
 
     @discardableResult
+    package static func insertProjectTargetImage(
+        _ db: Database,
+        projectID: Int64,
+        targetID: Int64,
+        fileName: String = "shot.png",
+        sha256: String = "abc",
+        path: String = "/tmp/project_files/1/abc.png"
+    ) throws -> Int64 {
+        try db.execute(
+            sql: """
+                INSERT INTO project_target_images (project_id, target_id, file_name, mime, size, sha256, path)
+                VALUES (?, ?, ?, 'image/png', 3, ?, ?)
+                """,
+            arguments: [projectID, targetID, fileName, sha256, path]
+        )
+        return db.lastInsertedRowID
+    }
+
+    @discardableResult
     package static func insertProjectDocument(
         _ db: Database,
         projectID: Int64,

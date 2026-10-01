@@ -9,6 +9,7 @@ import (
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"watchtower/internal/db"
+	"watchtower/internal/projectfiles"
 	"watchtower/internal/tools"
 )
 
@@ -18,7 +19,7 @@ import (
 func newProjectSession(t *testing.T, database *db.DB, projectID int64) *mcpsdk.ClientSession {
 	t.Helper()
 	reg := tools.New(database)
-	for _, tool := range append(tools.ProjectTools(), tools.ReadTools()...) {
+	for _, tool := range append(tools.ProjectTools(projectfiles.New(t.TempDir())), tools.ReadTools()...) {
 		if err := reg.Register(tool); err != nil {
 			t.Fatal(err)
 		}
