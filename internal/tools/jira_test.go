@@ -29,12 +29,16 @@ type fakeJira struct {
 	searched  []string
 	found     []jira.Issue
 	searchErr error
+	morePages bool // the search reports a next page
 }
 
 func (f *fakeJira) SearchIssues(_ context.Context, jql string, _ int, _ string) (*jira.SearchResult, error) {
 	f.searched = append(f.searched, jql)
 	if f.searchErr != nil {
 		return nil, f.searchErr
+	}
+	if f.morePages {
+		return &jira.SearchResult{Issues: f.found, NextPageToken: "next"}, nil
 	}
 	return &jira.SearchResult{Issues: f.found, IsLast: true}, nil
 }
@@ -381,6 +385,13 @@ func TestCreateJiraIssue_RetryFullSearchPageDoesNotResend(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "failed", row.Status)
 	assert.Contains(t, row.Error, "cannot tell whether the failed attempt created the issue")
+	assert.Len(t, fake.created, 1)
+
+	// A short page that still has a next one proves nothing either.
+	fake.found, fake.morePages = fake.found[:3], true
+	row, err = reg.Apply(context.Background(), id)
+	require.NoError(t, err)
+	assert.Equal(t, "failed", row.Status)
 	assert.Len(t, fake.created, 1)
 }
 

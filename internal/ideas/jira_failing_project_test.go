@@ -134,11 +134,6 @@ func TestIdeas01_JiraFailingProjectExemptions(t *testing.T) {
 	}
 }
 
-// jira_issues.updated_at keeps Jira's own offset and the bound is compared as
-// a string, so a clamp rendered in UTC would let a -0400 issue that happened
-// AFTER the failing project's last sync through (and move the floor past the
-// failing project's backlog). The clamp must hold every offset the data
-// carries: here -0400 and +0530.
 // jiraStored is what the sync stores for a Jira timestamp Jira returned in
 // loc's offset: the wire value ("…000-0400") through jira.NormalizeTimestamp.
 // Since migration 00091 the offset safety of these guards comes from that
@@ -151,6 +146,11 @@ func jiraStored(t *testing.T, tm time.Time, loc *time.Location) string {
 	return v
 }
 
+// Jira returns timestamps in the Jira profile's offset and the bound is
+// compared as a string, so a clamp that did not hold every offset Jira
+// returned would let a -0400 issue that happened AFTER the failing project's
+// last sync through (and move the floor past the failing project's backlog).
+// Here the data carries -0400 and +0530.
 func TestIdeas01_JiraFailingProjectClampIsOffsetSafe(t *testing.T) {
 	d := newTestDB(t)
 	now := time.Now().UTC().Truncate(time.Second)
