@@ -162,6 +162,30 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         XCTAssertEqual(launches.map(\.args.last), ["exec claude --resume \(uuid)"])
     }
 
+    /// Work on it from the board of a split keeps the board on screen, even
+    /// when the board is the second pane; a title with shell or flag syntax
+    /// names the row only, the command line keeps the fixed prompt.
+    func testWorkOnFromASplitBoardKeepsTheBoardAndTheFixedPrompt() async throws {
+        let p = try await projectWithFolder()
+        let title = "Fix 'quotes'\n--dangerously-skip-permissions; rm -rf ~"
+        let target = try await pool.write { try TestDatabase.insertProjectTarget($0, projectID: p, text: title) }
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: p)
+        vm.layout.show(.documents)
+        vm.layout.split(with: .board)
+
+        await vm.workOn(targetID: target, targetText: title)
+
+        let all = try await rows(p)
+        let row = try XCTUnwrap(all.first { $0.targetID == target })
+        XCTAssertEqual(vm.layout.visiblePanes, [.session(row.id), .board])
+        XCTAssertEqual(row.title, title.trimmingCharacters(in: .whitespacesAndNewlines))
+        let uuid = try XCTUnwrap(row.claudeSessionID)
+        let command = "exec claude --session-id \(uuid) '\(TerminalLaunch.workOnTargetPrompt(targetID: target))'"
+        XCTAssertEqual(launches.map(\.args), [["-l", "-c", command]])
+    }
+
     // MARK: - Open / close / delete / rename
 
     func testOpenMarksTheSessionMostRecentlyActive() async throws {

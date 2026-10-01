@@ -1,6 +1,7 @@
 # Project workspace — sessions, split layout, "Work on it", standalone terminals
 
 **Date:** 2026-09-30
+**Status:** Implemented (2026-10-01; Tasks 1–12 of `docs/superpowers/plans/2026-09-30-project-workspace-sessions.md`). The bottom shell console (#120) was dismissed by the owner.
 **Board targets:** #77 (several sessions per project), #87 ("Work on it"), #86 (split layout), #73 (collapsible panel), #103 (standalone terminal)
 **Builds on:** `docs/superpowers/specs/2026-09-29-project-board-poc-design.md` (Projects POC)
 

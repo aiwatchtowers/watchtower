@@ -36,22 +36,57 @@ struct ProjectSessionView: View {
     }
 }
 
-/// A standalone terminal (no project): always the whole page, single pane.
+/// A standalone terminal (no project, spec §3): always the whole page,
+/// single pane, under a slim header — its title and folder, Rename, Close
+/// and Delete. No install badge, board or documents: nothing of a project.
 struct StandaloneTerminalView: View {
     let session: TerminalSession
+    /// The panel's row actions: Rename and Delete open the page's own sheet
+    /// and confirmation (`sessionActionDialogs`).
+    let actions: SessionRowActions
     @Environment(AppState.self) private var appState
 
     var body: some View {
         let vm = appState.projectsViewModel
-        TerminalSessionPane(session: session, error: vm?.standaloneSessionError) {
-            VStack(spacing: 8) {
-                Text(session.isClosed ? "\(session.title) is closed." : "\(session.title) is not running.")
-                    .foregroundStyle(.secondary)
-                Button(session.isClosed ? "Reopen" : "Start") {
-                    Task { await vm?.open(session) }
+        VStack(spacing: 0) {
+            header(isLive: vm?.isLive(session) ?? false)
+            Divider()
+            TerminalSessionPane(session: session, error: vm?.standaloneSessionError) {
+                VStack(spacing: 8) {
+                    Text(session.isClosed ? "\(session.title) is closed." : "\(session.title) is not running.")
+                        .foregroundStyle(.secondary)
+                    Button(session.isClosed ? "Reopen" : "Start") {
+                        Task { await vm?.open(session) }
+                    }
                 }
             }
         }
+    }
+
+    private func header(isLive: Bool) -> some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(session.title).font(.headline).lineLimit(1)
+                Button {
+                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: session.folderPath)])
+                } label: {
+                    Text(session.folderPath).font(.caption).lineLimit(1).truncationMode(.middle)
+                }
+                .buttonStyle(.link)
+                .help("Reveal in Finder")
+            }
+            Spacer()
+            Button("Rename…") { actions.rename(session) }
+            Button("Close") { actions.close(session) }
+                .disabled(!isLive)
+                .help("Stop the terminal; it stays listed and can be reopened")
+            Button(role: .destructive) {
+                actions.delete(session)
+            } label: {
+                Label("Delete…", systemImage: "trash")
+            }
+        }
+        .padding(10)
     }
 }
 

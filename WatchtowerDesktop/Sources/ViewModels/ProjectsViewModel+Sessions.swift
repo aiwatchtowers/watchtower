@@ -169,8 +169,9 @@ extension ProjectsViewModel {
 
     /// "Work on it" (spec §4): the target's most recently active session
     /// (resumed, reopened if closed), else a new one named after the target
-    /// and started with the fixed work-on prompt.
-    func workOn(targetID: Int64, targetText: String) async {
+    /// and started with the fixed work-on prompt. It goes on screen without
+    /// hiding the board it was started from (beside it in a split).
+    func workOn(targetID: Int64, targetText: String, placement: Placement = .keeping(.board)) async {
         guard workingOnTarget.insert(targetID).inserted else { return }
         defer { workingOnTarget.remove(targetID) }
         let found: (project: Project, rows: [TerminalSession])?
@@ -190,7 +191,7 @@ extension ProjectsViewModel {
             return
         }
         if let existing = TerminalSessionPolicy.sessionForTarget(targetID, in: found.rows) {
-            await open(existing)
+            await open(existing, placement: placement)
             return
         }
         let text = targetText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -198,7 +199,8 @@ extension ProjectsViewModel {
             .init(projectID: found.project.id, kind: .claude, title: text.isEmpty ? "Target #\(targetID)" : text,
                   targetID: targetID, folderPath: found.project.folderPath,
                   claudeSessionID: Self.newClaudeSessionID()),
-            prompt: TerminalLaunch.workOnTargetPrompt(targetID: targetID)
+            prompt: TerminalLaunch.workOnTargetPrompt(targetID: targetID),
+            placement: placement
         )
     }
 

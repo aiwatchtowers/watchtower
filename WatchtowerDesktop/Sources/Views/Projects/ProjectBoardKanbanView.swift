@@ -58,8 +58,13 @@ private struct ProjectBoardKanbanColumnView: View {
                             row: card.row,
                             isSelected: selectedTargetID == card.id,
                             isCollapsed: false,
-                            caption: card.breadcrumb.isEmpty ? nil : card.breadcrumb
-                        ) {}
+                            caption: card.breadcrumb.isEmpty ? nil : card.breadcrumb,
+                            onToggle: {},
+                            trailing: { hovering in
+                                WorkOnTargetButton(target: card.row.node.target, compact: true,
+                                                   isVisible: hovering || selectedTargetID == card.id)
+                            }
+                        )
                         .onTapGesture { onSelect(card.id) }
                         .draggable(String(card.id))
                     }

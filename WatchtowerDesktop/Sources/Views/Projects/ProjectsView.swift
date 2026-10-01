@@ -35,7 +35,7 @@ struct ProjectsView: View {
             }
             Group {
                 if let standalone = vm.selectedStandalone {
-                    StandaloneTerminalView(session: standalone)
+                    StandaloneTerminalView(session: standalone, actions: sessionActions)
                         .id(standalone.id)
                 } else if let project = vm.selectedProject {
                     ProjectPageView(vm: vm, project: project)
