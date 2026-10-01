@@ -20,6 +20,7 @@ func tableRowCounts(t *testing.T, database *db.DB) map[string]int {
 	t.Helper()
 	rows, err := database.Query(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
 	require.NoError(t, err)
+	defer rows.Close()
 	var names []string
 	for rows.Next() {
 		var name string
@@ -27,7 +28,6 @@ func tableRowCounts(t *testing.T, database *db.DB) map[string]int {
 		names = append(names, name)
 	}
 	require.NoError(t, rows.Err())
-	require.NoError(t, rows.Close())
 
 	counts := make(map[string]int, len(names))
 	for _, name := range names {
