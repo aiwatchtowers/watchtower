@@ -64,6 +64,10 @@ final class TerminalSessionQueriesTests: XCTestCase {
                            arguments: [row.id])
             XCTAssertEqual(try TerminalSessionQueries.fetch(db, id: row.id)?.id, row.id)
             XCTAssertEqual(try TerminalSessionQueries.fetchForProject(db, projectID: project).map(\.id), [row.id])
+            let loose = try TerminalSessionQueries.create(db, claude(nil))
+            try db.execute(sql: "UPDATE terminal_sessions SET closed_at = '2026-09-30T12:00:00Z' WHERE id = ?",
+                           arguments: [loose.id])
+            XCTAssertEqual(try TerminalSessionQueries.fetchStandalone(db).map(\.id), [loose.id])
         }
     }
 

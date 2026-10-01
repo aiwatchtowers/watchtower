@@ -676,11 +676,29 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         XCTAssertNil(vm.selectedProjectID)
         XCTAssertNil(vm.drilledProjectID)
         XCTAssertEqual(vm.selectedStandalone?.id, shell.id)
-        XCTAssertTrue(vm.isLive(shell))
 
         await vm.delete(shell)
         XCTAssertNil(vm.selectedStandaloneID, "a deleted terminal leaves the page")
         XCTAssertTrue(vm.standaloneSessions.isEmpty)
+    }
+
+    /// A standalone terminal closed by an older build is listed and, once
+    /// selected, starts like any terminal that is not running.
+    func testSelectingALegacyClosedStandaloneTerminalStartsIt() async throws {
+        let shell = try await insertSession(
+            .init(projectID: nil, kind: .shell, title: "zsh", folderPath: folder.path), legacyClosed: true
+        )
+        let vm = makeVM()
+        await vm.reload()
+        await vm.loadSessions(projectID: nil)
+        XCTAssertEqual(vm.standaloneSessions.map(\.id), [shell.id], "a legacy closed terminal is listed")
+        XCTAssertFalse(vm.isLive(shell))
+
+        await vm.selectStandalone(shell)
+
+        XCTAssertEqual(vm.selectedStandalone?.id, shell.id)
+        XCTAssertTrue(vm.isLive(shell))
+        XCTAssertEqual(launches.count, 1)
     }
 
     /// A session opened from the panel stays on screen when it exits (its
