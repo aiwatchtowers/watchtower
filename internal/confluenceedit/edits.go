@@ -6,6 +6,8 @@ import (
 	"strings"
 )
 
+var errSpansBlocks = errors.New("old text spans more than one block, or quotes list/table/heading syntax; replace text within one paragraph, list item, table cell, heading or code block (or use replace_section)")
+
 // hit is one occurrence of old text: range r of slot s's text.
 type hit struct {
 	s slot
@@ -19,6 +21,9 @@ func (a *applier) replaceText(old, repl string) (Change, error) {
 	key := matchKey(old)
 	if key == "" {
 		return Change{}, fmt.Errorf("%w: old text is empty; quote the text to replace", errEmpty)
+	}
+	if strings.Contains(old, LayoutBoundary) {
+		return Change{}, errSpansBlocks
 	}
 	h, err := a.findOne(key, old)
 	if err != nil {
@@ -50,6 +55,9 @@ func (a *applier) replaceText(old, repl string) (Change, error) {
 func checkRewritable(u *unit, repl string) error {
 	if u.other {
 		return errors.New("this text holds markup the editor cannot keep (an HTML comment or stray tag); edit it in Confluence instead")
+	}
+	if href := firstClash(u.text, u.clashes); href != "" {
+		return linkClashErr(href)
 	}
 	if u.kind == unitInline && u.ctx != ctxPara && strings.Contains(repl, "\n") {
 		return errors.New("a heading or table cell cannot hold a line break; keep new text on one line")
@@ -87,7 +95,7 @@ func (a *applier) notFound(old string) error {
 	}
 	flat := matchKey(strings.Join(parts, " "))
 	if k := matchKey(stripStructure(old)); k != "" && strings.Contains(flat, k) {
-		return errors.New("old text spans more than one block, or quotes list/table/heading syntax; replace text within one paragraph, list item, table cell, heading or code block (or use replace_section)")
+		return errSpansBlocks
 	}
 	return errors.New("old text not found; quote it exactly as the page text shows it (whitespace may differ)")
 }
@@ -173,17 +181,81 @@ func (a *applier) replaceSection(heading, body string) (Change, error) {
 	if after == before {
 		return Change{}, errors.New("edit changes nothing: new body equals the section's current body")
 	}
+	if err := a.checkNoSpill(i, region, content, newBody); err != nil {
+		return Change{}, err
+	}
 	ops, err := a.mergeSection(a.baseBlocks(region), newBody)
 	if err != nil {
 		return Change{}, err
 	}
-	links := blocksLinks(content)
+	links, clashes := blocksLinks(content)
+	if err := checkClashes(ops, clashes); err != nil {
+		return Change{}, err
+	}
 	a.kill(region)
 	hb.section = &section{region: region, body: opsBody(ops), ops: ops, index: a.index, links: links}
 	return Change{
 		Kind: KindReplaceSection, Locator: unitText(hb.unit), Before: before, After: after,
 		Removed: a.removedTokens(had, blockMarks(hb.section.body)),
 	}, nil
+}
+
+// checkNoSpill refuses a new body that repeats a block lying past the end
+// of the section's region but before the next heading of the same or a
+// higher level: the text past a layout edge, which reads as more of the
+// section to a model that overlooks the LayoutBoundary line. Writing it
+// would copy that block into the section while the original stays where it
+// is. A text the section itself also holds is the section's own. Texts
+// compare by matchKey; the past blocks include the body an earlier edit in
+// the same call wrote there. Only a repeat is caught: an edited copy of
+// that text reads as a new block (the diff shows it as an addition), so
+// the LayoutBoundary line in the text remains the first guard.
+func (a *applier) checkNoSpill(hi int, region span, content, body []*block) error {
+	own := map[string]bool{}
+	for _, bl := range content {
+		own[matchKey(a.d.blockText(bl))] = true
+	}
+	past := map[string]bool{}
+scan:
+	for _, bl := range a.d.blocks[hi+1:] {
+		if bl.start < region.end || bl.dead {
+			continue
+		}
+		for _, b := range expand([]*block{bl}) {
+			if endsSection(b, a.d.blocks[hi].level) {
+				break scan
+			}
+			past[matchKey(a.d.blockText(b))] = true
+		}
+	}
+	for _, bl := range body {
+		t := a.d.blockText(bl)
+		if k := matchKey(t); k != "" && past[k] && !own[k] {
+			return fmt.Errorf("new_body repeats %s, which is not in this section: the section ends at the %s line after its heading; leave that text out of new_body (change it with replace_text or under its own heading)", snippet(t), LayoutBoundary)
+		}
+	}
+	return nil
+}
+
+// checkClashes refuses a section rewrite that re-renders a block linking to
+// an address whose links in the section carry different start tags: the
+// rendered link would take the first one's tag. Kept and moved blocks keep
+// their bytes and are fine.
+func checkClashes(ops []sectionOp, clashes map[string]bool) error {
+	if len(clashes) == 0 {
+		return nil
+	}
+	for _, op := range ops {
+		if op.body == nil || op.body == op.orig {
+			continue
+		}
+		for _, u := range op.body.editUnits() {
+			if href := firstClash(u.text, clashes); href != "" {
+				return linkClashErr(href)
+			}
+		}
+	}
+	return nil
 }
 
 // baseBlocks are the ORIGINAL blocks of a section region (dead or alive,
