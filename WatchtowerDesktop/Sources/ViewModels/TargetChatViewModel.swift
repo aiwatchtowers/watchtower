@@ -146,15 +146,7 @@ final class TargetChatViewModel {
     let toolsAvailable: Bool
 
     /// The rows as the tab renders them (and as tests read them).
-    var messages: [ChatMessage] {
-        engine.messages.map { item in
-            let live = engine.liveTurn.flatMap { $0.messageID == item.id ? $0 : nil }
-            let row = item.message.toChatMessage()
-            return ChatMessage(id: UUID(chatRowID: item.id), role: row.role,
-                               text: live?.fullText ?? row.text, timestamp: row.timestamp,
-                               isStreaming: live != nil, turnID: row.turnID)
-        }
-    }
+    var messages: [ChatMessage] { engine.chatMessages }
 
     /// Busy streaming or waiting for a slot: either way, a turn is under way.
     var isStreaming: Bool { engine.isBusy }

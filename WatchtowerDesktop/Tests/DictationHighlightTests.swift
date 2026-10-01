@@ -47,7 +47,7 @@ final class DictationHighlightTests: XCTestCase {
     }
 
     func test_nilActiveTarget_emptyTargetSentinel_isNone() {
-        // The ChatInput nil-target sentinel (`dictationTargetID ?? ""`) must
+        // The ChatComposerField nil-target sentinel (`dictationTargetID ?? ""`) must
         // never light up: "" never matches a real activeTargetID, and a nil
         // activeTargetID matches nothing.
         XCTAssertEqual(

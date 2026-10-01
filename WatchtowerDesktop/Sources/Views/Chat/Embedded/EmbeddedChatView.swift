@@ -131,7 +131,7 @@ struct EmbeddedChatComposer: View {
         ChatComposerBar(
             status: status,
             onCancelQueued: { engine.cancelQueued() },
-            input: ChatInput(
+            input: ChatComposerField(
                 text: $engine.draft,
                 isStreaming: engine.isBusy,
                 onSend: { engine.sendDraft() },

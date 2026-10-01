@@ -241,7 +241,7 @@ final class RecordingIndicatorViewTests: XCTestCase {
     }
 
     /// The inset is opt-in on the bottom-most content of main-window screens
-    /// only — never inside the shared `ChatInput` (which also serves sheets,
+    /// only — never inside the shared `ChatComposerField` (which also serves sheets,
     /// onboarding and setup assistants). Exact per-file counts of code
     /// (non-comment) occurrences, so a second opt-in inside a listed file
     /// fails too.
@@ -254,8 +254,8 @@ final class RecordingIndicatorViewTests: XCTestCase {
         var counts: [String: Int] = [:]
         for case let url as URL in enumerator where url.pathExtension == "swift" {
             let text = try String(contentsOf: url, encoding: .utf8)
-            if url.lastPathComponent == "ChatInput.swift" {
-                XCTAssertFalse(text.contains("recordingIndicatorInset"), "ChatInput must not reserve the pill inset")
+            if url.lastPathComponent == "ChatComposerField.swift" {
+                XCTAssertFalse(text.contains("recordingIndicatorInset"), "ChatComposerField must not reserve the pill inset")
             }
             guard !url.path.hasSuffix("RecordingIndicatorInset.swift") else { continue }
             let uses = Self.codeLines(text).reduce(0) { total, line in

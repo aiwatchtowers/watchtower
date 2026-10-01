@@ -4,7 +4,13 @@ Spec: `docs/superpowers/specs/2026-10-01-shared-chat-component-design.md`. Plan:
 
 Every assistant chat outside the main AI Chat (target, track, idea/decision, meeting, onboarding, calendar/email setup) runs on one engine and one view built from the main chat's pieces. The backend is unchanged: one `watchtower ai query` per turn through `WatchtowerAIService.stream`. The warm `ai session` v2 protocol and `ChatSessionPool` remain main-chat only.
 
-**Migration status:** the infrastructure and the main chat's move onto `ChatFeedView`/`ChatComposerBar` landed with #170; track, idea/decision and meeting (#172–#174) run on it as `TrackChatSurface`/`IdeaChatSurface`/`MeetingChatSurface` (`Sources/Services/ChatSurfaces/`: spec, conversation, prompt). Target (#171) runs on it too: `TargetChatViewModel` is now the task controller around the tab's engine (cards, Approve/Approve all/Reject, execute-mode auto-apply, tree scope, `AgentActionFeed`), its spec is `.actions("target")` while tools are available, `willSend` re-reads the task and refuses once it is deleted, and the container hands each tab its engine from the center (held shown while the tab lives). Onboarding/setup (#175–#177) follow; until a surface moves, it keeps its own view model.
+**Migration status:** complete. The infrastructure and the main chat's move onto `ChatFeedView`/`ChatComposerBar` landed with #170. Then:
+- track, idea/decision and meeting (#172–#174) as `TrackChatSurface`/`IdeaChatSurface`/`MeetingChatSurface` in `Sources/Services/ChatSurfaces/`;
+- target (#171), with `TargetChatViewModel` as the task controller around its tab's engine;
+- onboarding (#175), with `OnboardingChatViewModel` on a memory engine;
+- calendar/email setup (#176) as `SetupAssistantChat<Snapshot, Patch>` with one `SetupAssistantPanel`.
+
+`MessageBubble` is deleted, and the old `ChatInput` is now `ChatComposerField`, the field inside `ChatComposerBar` and the only text input of every chat (#177).
 
 ## Pieces
 
@@ -32,3 +38,4 @@ Every assistant chat outside the main AI Chat (target, track, idea/decision, mee
 
 - The target's action cards are still memory-only.
 - `TargetBriefCenter` runs count against the 3-turn limit.
+- Onboarding and the setup assistants own their (memory) engines directly: the window or sheet is their lifetime. They share the app's turn gate (`appState.embeddedChatCenter.gate`), and have no draft mirror, so nothing of theirs survives a restart.

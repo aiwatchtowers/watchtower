@@ -102,10 +102,10 @@ final class EmailSetupChatViewModelTests: XCTestCase {
     /// The privacy boundary is structural: `ImapFormSnapshot` has no password
     /// slot, so the prompt can only ever carry the filled/empty marker.
     func testFormStateBlockCarriesOnlyPasswordFilledMarker() {
-        let filled = EmailSetupChatViewModel.formStateBlock(makeSnapshot(host: "imap.gmail.com", hasPassword: true))
+        let filled = EmailSetupPrompt.formStateBlock(makeSnapshot(host: "imap.gmail.com", hasPassword: true))
         XCTAssertTrue(filled.contains("Password field: filled"))
 
-        let empty = EmailSetupChatViewModel.formStateBlock(makeSnapshot(hasPassword: false))
+        let empty = EmailSetupPrompt.formStateBlock(makeSnapshot(hasPassword: false))
         XCTAssertTrue(empty.contains("Password field: empty"))
     }
 
@@ -117,7 +117,8 @@ final class EmailSetupChatViewModelTests: XCTestCase {
         let vm = EmailSetupChatViewModel(aiService: mock)
 
         vm.inputText = "у меня джимейл"
-        vm.send(snapshot: makeSnapshot(host: "imap.gmail.com", hasPassword: true))
+        vm.snapshotProvider = { self.makeSnapshot(host: "imap.gmail.com", hasPassword: true) }
+        vm.send()
         try await waitUntil { !vm.isStreaming }
 
         let prompt = try XCTUnwrap(mock.prompts.first)
@@ -129,8 +130,8 @@ final class EmailSetupChatViewModelTests: XCTestCase {
     }
 
     func testSystemPromptNeverContainsAPasswordSlot() {
-        XCTAssertTrue(EmailSetupChatViewModel.systemPrompt.contains("NEVER ask for, accept, or repeat"))
-        XCTAssertFalse(EmailSetupChatViewModel.systemPrompt.contains(#""password":"#),
+        XCTAssertTrue(EmailSetupPrompt.systemPrompt.contains("NEVER ask for, accept, or repeat"))
+        XCTAssertFalse(EmailSetupPrompt.systemPrompt.contains(#""password":"#),
                        "the settings-block example must not teach a password key")
     }
 
@@ -145,7 +146,8 @@ final class EmailSetupChatViewModelTests: XCTestCase {
         vm.onApplySettings = { applied = $0 }
 
         vm.inputText = "gmail"
-        vm.send(snapshot: makeSnapshot())
+        vm.snapshotProvider = { self.makeSnapshot() }
+        vm.send()
         try await waitUntil { !vm.isStreaming }
 
         XCTAssertEqual(applied, ImapSettingsPatch(
@@ -163,7 +165,8 @@ final class EmailSetupChatViewModelTests: XCTestCase {
         vm.onApplySettings = { applied = $0 }
 
         vm.inputText = "zoho"
-        vm.send(snapshot: makeSnapshot())
+        vm.snapshotProvider = { self.makeSnapshot() }
+        vm.send()
         try await waitUntil { !vm.isStreaming }
 
         XCTAssertEqual(applied?.host, "imap.zoho.com")
@@ -177,7 +180,8 @@ final class EmailSetupChatViewModelTests: XCTestCase {
         vm.onApplySettings = { applied = $0 }
 
         vm.inputText = "gmail"
-        vm.send(snapshot: makeSnapshot())
+        vm.snapshotProvider = { self.makeSnapshot() }
+        vm.send()
         try await waitUntil { !vm.isStreaming }
 
         XCTAssertNil(applied)
@@ -202,10 +206,11 @@ final class EmailSetupChatViewModelTests: XCTestCase {
         let mock = MockClaudeService(events: [.text("Use an app password."), .done])
         let vm = EmailSetupChatViewModel(aiService: mock)
 
-        vm.sendConnectionError(
-            "AUTHENTICATIONFAILED invalid credentials",
-            snapshot: makeSnapshot(host: "imap.gmail.com", hasPassword: true, lastConnectionError: "AUTHENTICATIONFAILED invalid credentials")
-        )
+        vm.snapshotProvider = {
+            self.makeSnapshot(host: "imap.gmail.com", hasPassword: true,
+                              lastConnectionError: "AUTHENTICATIONFAILED invalid credentials")
+        }
+        vm.sendConnectionError("AUTHENTICATIONFAILED invalid credentials")
         try await waitUntil { !vm.isStreaming }
 
         XCTAssertEqual(vm.messages.first?.role, .user)

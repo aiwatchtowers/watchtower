@@ -9,12 +9,12 @@ enum ChatComposerStatus: Equatable {
 }
 
 /// The composer every chat shares: an optional status line, the input field
-/// (`ChatInput`: Enter sends, Shift+Enter newline, Esc stops, dictation) and
+/// (`ChatComposerField`: Enter sends, Shift+Enter newline, Esc stops, dictation) and
 /// an optional accessory row under it (the main chat's provider/model pill).
 struct ChatComposerBar<Accessory: View>: View {
     var status: ChatComposerStatus?
     var onCancelQueued: () -> Void = {}
-    let input: ChatInput
+    let input: ChatComposerField
     @ViewBuilder var accessory: () -> Accessory
 
     var body: some View {
@@ -54,7 +54,7 @@ struct ChatComposerBar<Accessory: View>: View {
 }
 
 extension ChatComposerBar where Accessory == EmptyView {
-    init(status: ChatComposerStatus? = nil, onCancelQueued: @escaping () -> Void = {}, input: ChatInput) {
+    init(status: ChatComposerStatus? = nil, onCancelQueued: @escaping () -> Void = {}, input: ChatComposerField) {
         self.init(status: status, onCancelQueued: onCancelQueued, input: input) { EmptyView() }
     }
 }

@@ -77,11 +77,9 @@ struct AddCalendarAccountView: View {
             if showAssistant, let chatVM = setupChatVM {
                 Divider()
                     .padding(.leading, 16)
-                CalendarSetupAssistantPanel(
-                    chatVM: chatVM,
-                    makeSnapshot: { formSnapshot() },
-                    onClose: { withAnimation(.easeInOut(duration: 0.2)) { showAssistant = false } }
-                )
+                SetupAssistantPanel(chatVM: chatVM, placeholder: "e.g. \"my calendar is on iCloud\"", dictationTargetID: "chat.setup.calendar") {
+                    withAnimation(.easeInOut(duration: 0.2)) { showAssistant = false }
+                }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
@@ -289,8 +287,10 @@ struct AddCalendarAccountView: View {
 
     private func openAssistant() {
         if setupChatVM == nil {
-            let vm = CalendarSetupChatViewModel()
+            let vm = CalendarSetupChatViewModel(gate: appState.embeddedChatCenter.gate)
             vm.onApplySettings = { patch in applyAssistantSettings(patch) }
+            // Snapshot only — never the credential fields' values.
+            vm.snapshotProvider = { formSnapshot() }
             setupChatVM = vm
         }
         setupChatVM?.seedGreetingIfNeeded()
@@ -317,7 +317,7 @@ struct AddCalendarAccountView: View {
 
     private func askAssistantAboutError(_ error: String) {
         openAssistant()
-        setupChatVM?.sendConnectionError(error, snapshot: formSnapshot())
+        setupChatVM?.sendConnectionError(error)
     }
 
     private func connectCalDAV() {
@@ -344,7 +344,7 @@ struct AddCalendarAccountView: View {
                 // it can explain the error in plain words (snapshot only —
                 // never the password value).
                 if showAssistant, let err = caldavError, let chatVM = setupChatVM {
-                    chatVM.sendConnectionError(err, snapshot: formSnapshot())
+                    chatVM.sendConnectionError(err)
                 }
             }
         }
@@ -366,7 +366,7 @@ struct AddCalendarAccountView: View {
                 // Snapshot only — the secret feed URL itself never reaches
                 // the assistant, just the fact that the field is filled.
                 if showAssistant, let err = icsError, let chatVM = setupChatVM {
-                    chatVM.sendConnectionError(err, snapshot: formSnapshot())
+                    chatVM.sendConnectionError(err)
                 }
             }
         }

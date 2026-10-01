@@ -1,8 +1,11 @@
 import SwiftUI
+import WatchtowerCore
 
-/// Chat view for the onboarding flow — AI learns about the user.
-/// Role questions appear as chat bubbles with quick-reply buttons,
-/// then transitions to free-form LLM conversation.
+/// Chat view for the onboarding flow — AI learns about the user, on the
+/// shared embedded chat component. Role questions appear as chat bubbles
+/// with quick-reply buttons (the composer is hidden meanwhile), then the
+/// free-form interview; Continue appears once the assistant is ready, and
+/// "Skip interview" is always reachable.
 struct OnboardingChatView: View {
     @Bindable var viewModel: OnboardingChatViewModel
     let onComplete: () -> Void
@@ -11,8 +14,14 @@ struct OnboardingChatView: View {
     var body: some View {
         VStack(spacing: 0) {
             chatHeader
-            chatScrollArea
-            chatBottomSection
+            EmbeddedChatView(
+                engine: viewModel.engine,
+                placeholder: viewModel.loc("placeholder"),
+                showsComposer: viewModel.quickReplies.isEmpty,
+                accessory: { _ in EmptyView() },
+                footer: { footer }
+            )
+            skipButton
         }
         .task {
             viewModel.startQuestionnaire()
@@ -39,93 +48,41 @@ struct OnboardingChatView: View {
         .padding(.horizontal, 40)
     }
 
-    private var chatScrollArea: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 12) {
-                    ForEach(viewModel.messages) { msg in
-                        MessageBubble(message: msg)
-                            .id(msg.id)
+    /// Above the composer: the questionnaire's quick replies, or Continue
+    /// once the interview has what it needs.
+    @ViewBuilder
+    private var footer: some View {
+        if !viewModel.quickReplies.isEmpty {
+            HStack(spacing: 8) {
+                ForEach(viewModel.quickReplies) { reply in
+                    Button(reply.label) {
+                        reply.action()
                     }
-
-                    if !viewModel.quickReplies.isEmpty {
-                        HStack(spacing: 8) {
-                            ForEach(viewModel.quickReplies) { reply in
-                                Button(reply.label) {
-                                    reply.action()
-                                }
-                                .buttonStyle(.bordered)
-                                .controlSize(.regular)
-                            }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.leading, 12)
-                        .id("quick-replies")
-                    }
-
-                    if let error = viewModel.errorMessage {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(error)
-                                .font(.callout)
-                                .foregroundStyle(.red)
-                            Button("Try again") {
-                                viewModel.retryAfterError()
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                        }
-                        .padding(8)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
-                    }
-
-                    Spacer()
-                        .id("bottom")
-                }
-                .padding()
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .onChange(of: viewModel.messages.count) {
-                withAnimation {
-                    proxy.scrollTo("bottom", anchor: .bottom)
+                    .buttonStyle(.bordered)
+                    .controlSize(.regular)
                 }
             }
-            .onChange(of: viewModel.quickReplies.isEmpty) {
-                if !viewModel.quickReplies.isEmpty {
-                    withAnimation {
-                        proxy.scrollTo("quick-replies", anchor: .bottom)
-                    }
-                }
-            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 8)
+        } else if viewModel.chatReady {
+            continueButton
         }
     }
 
-    @ViewBuilder
-    private var chatBottomSection: some View {
-        VStack(spacing: 0) {
-            if viewModel.quickReplies.isEmpty {
-                if viewModel.chatReady {
-                    continueButton
-                }
-
-                ChatInput(text: $viewModel.inputText, isStreaming: viewModel.isStreaming) {
-                    viewModel.send()
-                }
-            }
-
-            // Escape hatch: always reachable, including during the quick-reply
-            // questionnaire and while streaming — the interview must never be
-            // a dead end when the AI provider is missing or broken.
-            Button("Skip interview") {
-                viewModel.skipChat()
-                onSkip()
-            }
-            .buttonStyle(.plain)
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .padding(.top, 8)
-            .padding(.bottom, 4)
+    // Escape hatch: always reachable, including during the quick-reply
+    // questionnaire and while streaming — the interview must never be a
+    // dead end when the AI provider is missing or broken.
+    private var skipButton: some View {
+        Button("Skip interview") {
+            viewModel.skipChat()
+            onSkip()
         }
+        .buttonStyle(.plain)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .padding(.top, 8)
+        .padding(.bottom, 4)
     }
 
     private var continueButton: some View {

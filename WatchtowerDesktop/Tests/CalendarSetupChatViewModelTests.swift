@@ -94,13 +94,13 @@ final class CalendarSetupChatViewModelTests: XCTestCase {
     /// password slot and no feed-URL slot, so the prompt can only ever carry
     /// the filled/empty markers.
     func testFormStateBlockCarriesOnlyCredentialFilledMarkers() {
-        let filled = CalendarSetupChatViewModel.formStateBlock(
+        let filled = CalendarSetupPrompt.formStateBlock(
             makeSnapshot(caldavURL: "https://caldav.icloud.com", hasPassword: true, hasFeedURL: true)
         )
         XCTAssertTrue(filled.contains("Password field: filled"))
         XCTAssertTrue(filled.contains("ICS feed URL field: filled"))
 
-        let empty = CalendarSetupChatViewModel.formStateBlock(makeSnapshot())
+        let empty = CalendarSetupPrompt.formStateBlock(makeSnapshot())
         XCTAssertTrue(empty.contains("Password field: empty"))
         XCTAssertTrue(empty.contains("ICS feed URL field: empty"))
     }
@@ -115,9 +115,10 @@ final class CalendarSetupChatViewModelTests: XCTestCase {
         let vm = CalendarSetupChatViewModel(aiService: mock)
 
         vm.inputText = "у меня айклауд"
-        vm.send(snapshot: makeSnapshot(
-            caldavURL: "https://caldav.icloud.com", hasPassword: true, hasFeedURL: true
-        ))
+        vm.snapshotProvider = {
+            self.makeSnapshot(caldavURL: "https://caldav.icloud.com", hasPassword: true, hasFeedURL: true)
+        }
+        vm.send()
         try await waitUntil { !vm.isStreaming }
 
         let prompt = try XCTUnwrap(mock.prompts.first)
@@ -131,7 +132,7 @@ final class CalendarSetupChatViewModelTests: XCTestCase {
     }
 
     func testSystemPromptNeverTeachesACredentialKey() {
-        let prompt = CalendarSetupChatViewModel.systemPrompt
+        let prompt = CalendarSetupPrompt.systemPrompt
         XCTAssertTrue(prompt.contains("NEVER ask for, accept, or repeat"))
         XCTAssertFalse(prompt.contains(#""password":"#),
                        "the settings-block example must not teach a password key")
@@ -150,7 +151,8 @@ final class CalendarSetupChatViewModelTests: XCTestCase {
         vm.onApplySettings = { applied = $0 }
 
         vm.inputText = "icloud"
-        vm.send(snapshot: makeSnapshot())
+        vm.snapshotProvider = { self.makeSnapshot() }
+        vm.send()
         try await waitUntil { !vm.isStreaming }
 
         XCTAssertEqual(applied, CalendarSettingsPatch(
@@ -170,7 +172,8 @@ final class CalendarSetupChatViewModelTests: XCTestCase {
         vm.onApplySettings = { applied = $0 }
 
         vm.inputText = "fastmail"
-        vm.send(snapshot: makeSnapshot())
+        vm.snapshotProvider = { self.makeSnapshot() }
+        vm.send()
         try await waitUntil { !vm.isStreaming }
 
         XCTAssertEqual(applied?.url, "https://caldav.fastmail.com")
@@ -184,7 +187,8 @@ final class CalendarSetupChatViewModelTests: XCTestCase {
         vm.onApplySettings = { applied = $0 }
 
         vm.inputText = "icloud"
-        vm.send(snapshot: makeSnapshot())
+        vm.snapshotProvider = { self.makeSnapshot() }
+        vm.send()
         try await waitUntil { !vm.isStreaming }
 
         XCTAssertNil(applied)
@@ -209,13 +213,11 @@ final class CalendarSetupChatViewModelTests: XCTestCase {
         let mock = MockClaudeService(events: [.text("Use an app-specific password."), .done])
         let vm = CalendarSetupChatViewModel(aiService: mock)
 
-        vm.sendConnectionError(
-            "401 Unauthorized",
-            snapshot: makeSnapshot(
-                caldavURL: "https://caldav.icloud.com", hasPassword: true,
-                lastConnectionError: "401 Unauthorized"
-            )
-        )
+        vm.snapshotProvider = {
+            self.makeSnapshot(caldavURL: "https://caldav.icloud.com", hasPassword: true,
+                              lastConnectionError: "401 Unauthorized")
+        }
+        vm.sendConnectionError("401 Unauthorized")
         try await waitUntil { !vm.isStreaming }
 
         XCTAssertEqual(vm.messages.first?.role, .user)
@@ -232,5 +234,48 @@ final class CalendarSetupChatViewModelTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(10))
         }
         XCTAssertTrue(cond(), "condition not met within 2s")
+    }
+
+    // MARK: - Unreadable or empty replies
+
+    func testParserReportsWhetherABlockWasThere() {
+        XCTAssertTrue(CalendarSettingsParser.parse("Try this.\n" + block("{not json at all")).blockFound)
+        XCTAssertFalse(CalendarSettingsParser.parse("Which calendar do you use?").blockFound)
+    }
+
+    func testAnUnreadableBlockAloneSaysTheFormWasNotFilled() async throws {
+        let vm = CalendarSetupChatViewModel(aiService: MockClaudeService(events: [.text(block("{oops")), .done]))
+        var applied: CalendarSettingsPatch?
+        vm.onApplySettings = { applied = $0 }
+        vm.snapshotProvider = { self.makeSnapshot() }
+        vm.inputText = "icloud"
+        vm.send()
+        try await waitUntil { !vm.isStreaming }
+        XCTAssertNil(applied)
+        XCTAssertEqual(vm.messages.last?.text, "(Couldn't apply the suggested settings — fill them in on the left.)")
+        XCTAssertEqual(vm.engine.messages.last?.message.status, "complete")
+    }
+
+    func testAnUnreadableBlockNextToProseAddsTheNotice() async throws {
+        let reply = "I've filled in the server URL.\n" + block("{oops")
+        let vm = CalendarSetupChatViewModel(aiService: MockClaudeService(events: [.text(reply), .done]))
+        vm.snapshotProvider = { self.makeSnapshot() }
+        vm.inputText = "icloud"
+        vm.send()
+        try await waitUntil { !vm.isStreaming }
+        XCTAssertEqual(vm.messages.map(\.role), [.user, .assistant, .system])
+        XCTAssertEqual(vm.messages[1].text, "I've filled in the server URL.")
+        XCTAssertEqual(vm.messages[2].text, "Couldn't apply the suggested settings — fill them in on the left.")
+    }
+
+    func testAnEmptyReplyIsAFailureThatCanBeRetried() async throws {
+        let vm = CalendarSetupChatViewModel(aiService: MockClaudeService(events: [.done]))
+        vm.snapshotProvider = { self.makeSnapshot() }
+        vm.inputText = "icloud"
+        vm.send()
+        try await waitUntil { !vm.isStreaming }
+        XCTAssertEqual(vm.engine.messages.last?.message.status, "error")
+        XCTAssertTrue(vm.engine.canRetry)
+        XCTAssertNotNil(vm.errorMessage)
     }
 }
