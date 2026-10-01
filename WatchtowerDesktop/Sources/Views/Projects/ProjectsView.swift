@@ -11,6 +11,8 @@ enum ProjectsPanelItem: Hashable {
 /// A folder the owner picked, held while the TCC warning is on screen.
 private enum PendingFolder {
     case project(URL)
+    /// New Project…: not on disk yet (or empty) until the warning is passed.
+    case newProject(URL)
     case terminal(TerminalSession.Kind, URL)
 }
 
@@ -153,12 +155,15 @@ struct ProjectsView: View {
             Text("Projects").font(.headline)
             Spacer(minLength: 4)
             if vm.isCreating { ProgressView().controlSize(.small) }
-            Button {
-                chooseFolder()
+            Menu {
+                Button("New Project…") { chooseNewProjectFolder() }
+                Button("Add Existing Folder…") { chooseExistingFolder() }
             } label: {
                 Image(systemName: "plus")
             }
-            .buttonStyle(.borderless)
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
             .disabled(vm.isCreating)
             .help("New project…")
             .accessibilityLabel("New project…")
@@ -218,8 +223,23 @@ struct ProjectsView: View {
         }
     }
 
-    private func chooseFolder() {
-        guard let url = runFolderPanel(prompt: "Create Project", canCreate: true) else { return }
+    /// New Project… → name a folder that is created for it. Only checked
+    /// here; it is created once the TCC warning (if any) is passed, so
+    /// "Choose another folder" leaves no empty folder behind.
+    private func chooseNewProjectFolder() {
+        guard let url = runNewProjectPanel() else { return }
+        do {
+            _ = try NewProjectFolder.check(url)
+        } catch {
+            vm.errorMessage = error.localizedDescription
+            return
+        }
+        confirmLocation(of: .newProject(url), path: url.path)
+    }
+
+    /// Add Existing Folder… → a folder already on disk becomes the project.
+    private func chooseExistingFolder() {
+        guard let url = runFolderPanel(prompt: "Add Folder", canCreate: true) else { return }
         confirmLocation(of: .project(url), path: url.path)
     }
 
@@ -240,6 +260,21 @@ struct ProjectsView: View {
         return panel.url?.resolvingSymlinksInPath()
     }
 
+    /// The entered name is the folder's and the project's. NSSavePanel asks
+    /// to "replace" an existing name; nothing is replaced — an empty folder
+    /// is reused and any other is refused by `NewProjectFolder`.
+    private func runNewProjectPanel() -> URL? {
+        let panel = NSSavePanel()
+        panel.title = "New Project"
+        panel.nameFieldLabel = "Project name:"
+        panel.prompt = "Create"
+        panel.canCreateDirectories = true
+        panel.showsTagField = false
+        panel.directoryURL = NewProjectFolder.defaultParent(home: FileManager.default.homeDirectoryForCurrentUser)
+        guard panel.runModal() == .OK, let url = panel.url else { return nil }
+        return NewProjectFolder.resolved(url)
+    }
+
     private func confirmLocation(of pending: PendingFolder, path: String) {
         pendingFolder = pending
         let home = FileManager.default.homeDirectoryForCurrentUser.resolvingSymlinksInPath().path
@@ -257,6 +292,14 @@ struct ProjectsView: View {
         switch pending {
         case let .project(folder):
             Task { await vm.createProject(folder: folder, name: nil) }
+        case let .newProject(folder):
+            do {
+                try NewProjectFolder.prepare(folder)
+            } catch {
+                vm.errorMessage = error.localizedDescription
+                return
+            }
+            Task { await vm.createProject(folder: folder, name: folder.lastPathComponent) }
         case let .terminal(kind, folder):
             Task { await vm.newStandalone(kind: kind, folder: folder) }
         }
