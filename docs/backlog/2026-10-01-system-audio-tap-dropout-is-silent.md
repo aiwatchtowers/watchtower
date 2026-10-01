@@ -64,7 +64,7 @@ The same detector drives three surfaces:
 None of this ever fails a save. The message stays the bare one when there
 is no sidecar.
 
-**Calibration.** I replayed the detector over 33 real sidecars, offline and
+**Calibration.** The detector was replayed over 33 real sidecars, offline and
 not committed:
 - The reported recording flags from 15:29 to the end.
 - Room-only recordings, with no call or only system sounds, are not
