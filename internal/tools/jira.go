@@ -105,7 +105,7 @@ func issueRow(accountID int64, issue jira.Issue) db.JiraIssue {
 	}
 	statusCategoryChangedAt := ""
 	if f.StatusCategoryChanged != nil {
-		statusCategoryChangedAt = jira.NormalizeTimestamp(*f.StatusCategoryChanged)
+		statusCategoryChangedAt, _ = jira.NormalizeTimestamp(*f.StatusCategoryChanged)
 	}
 	raw, _ := json.Marshal(issue)
 	return db.JiraIssue{

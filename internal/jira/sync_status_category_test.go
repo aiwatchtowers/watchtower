@@ -23,10 +23,7 @@ import (
 // reader (julianday() in the Desktop stale query, the RFC3339 string cutoff
 // in GetStaleJiraIssues, the Go day counters) can parse.
 func TestSync_StoresStatusCategoryChangedAt(t *testing.T) {
-	database, err := db.Open(":memory:")
-	require.NoError(t, err)
-	t.Cleanup(func() { database.Close() })
-	db.SeedTestJiraAccount(t, database)
+	database := openTestDB(t)
 	require.NoError(t, database.UpsertJiraBoard(db.JiraBoard{
 		AccountID: 1, ID: 42, Name: "Test Board", ProjectKey: "TEST", BoardType: "scrum", IsSelected: true,
 	}))
@@ -63,7 +60,7 @@ func TestSync_StoresStatusCategoryChangedAt(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	syncer := NewSyncer(makeTestClient(t, srv.URL), database, nil, []int{42}, 1)
-	_, err = syncer.Sync(context.Background())
+	_, err := syncer.Sync(context.Background())
 	require.NoError(t, err)
 
 	got, _ := fieldsRequested.Load().(string)
@@ -85,18 +82,43 @@ func TestSync_StoresStatusCategoryChangedAt(t *testing.T) {
 
 func TestNormalizeTimestamp(t *testing.T) {
 	ts := time.Now().Truncate(time.Second)
+	want := ts.UTC().Format(time.RFC3339)
+	west, east := time.FixedZone("", -5*3600), time.FixedZone("", 2*3600)
 	cases := []struct {
 		name, in, want string
+		ok             bool
 	}{
-		{"empty", "", ""},
-		{"jira offset", ts.In(time.FixedZone("", -5*3600)).Format("2006-01-02T15:04:05.000-0700"), ts.UTC().Format(time.RFC3339)},
-		{"rfc3339", ts.In(time.FixedZone("", 2*3600)).Format(time.RFC3339), ts.UTC().Format(time.RFC3339)},
+		{"jira offset", ts.In(west).Format("2006-01-02T15:04:05.000-0700"), want, true},
+		{"jira offset, no fraction", ts.In(west).Format("2006-01-02T15:04:05-0700"), want, true},
+		{"jira offset, long fraction", ts.Add(123456 * time.Microsecond).In(east).Format("2006-01-02T15:04:05.000000-0700"), want, true},
+		{"rfc3339", ts.In(east).Format(time.RFC3339), want, true},
 		// An unknown shape is kept verbatim rather than dropped.
-		{"unparseable", "yesterday", "yesterday"},
+		{"empty", "", "", false},
+		{"unparseable", "2024-01-15 10:30", "2024-01-15 10:30", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, NormalizeTimestamp(tc.in))
+			got, ok := NormalizeTimestamp(tc.in)
+			assert.Equal(t, tc.want, got)
+			assert.Equal(t, tc.ok, ok)
 		})
 	}
+}
+
+// TestFindStaleIssues_CutoffIsUTC: the stale query compares the column's
+// RFC3339 UTC strings against the cutoff, so a cutoff rendered in a local
+// zone east of UTC would call an issue stale hours before its 7 days are up.
+func TestFindStaleIssues_CutoffIsUTC(t *testing.T) {
+	database := openTestDB(t)
+	now := time.Now().In(time.FixedZone("", 14*3600))
+	changed := now.AddDate(0, 0, -7).Add(2 * time.Hour).UTC().Format(time.RFC3339)
+	require.NoError(t, database.UpsertJiraIssue(db.JiraIssue{
+		AccountID: 1, Key: "TEST-1", ProjectKey: "TEST", Summary: "s", Status: "In Progress",
+		StatusCategory: "in_progress", StatusCategoryChangedAt: changed,
+		Labels: "[]", Components: "[]", FixVersions: "[]", CreatedAt: changed, UpdatedAt: changed, SyncedAt: changed,
+	}))
+
+	stale, err := findStaleIssues(database, now, nil)
+	require.NoError(t, err)
+	assert.Empty(t, stale, "2 hours inside the 7-day window is not stale in any local zone")
 }

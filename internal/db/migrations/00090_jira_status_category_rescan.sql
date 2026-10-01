@@ -6,8 +6,10 @@
 -- watermark), which re-fetches every issue with the field and re-upserts it.
 -- Only projects that still hold a live issue without the value are reset, so
 -- re-running the statement once the scan has landed touches nothing. No row
--- is deleted; issues_synced and last_error are left as they are.
-UPDATE jira_sync_state SET last_synced_at = ''
+-- is deleted and last_error is left alone. issues_synced restarts at 0: the
+-- syncer adds each pass's count to it, so without the reset the full scan
+-- would roughly double it; after the scan it holds the project's issue count.
+UPDATE jira_sync_state SET last_synced_at = '', issues_synced = 0
 WHERE last_synced_at != ''
   AND EXISTS (
     SELECT 1 FROM jira_issues i

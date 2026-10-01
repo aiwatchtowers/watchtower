@@ -50,10 +50,11 @@ func TestMigration00090_ResetsWatermarksForMissingStatusCategoryDate(t *testing.
 	}
 	got, n, lastErr := state("MISS")
 	assert.Empty(t, got, "a project with a live issue missing the date is re-scanned in full")
-	assert.Equal(t, 42, n, "issues_synced is left alone")
+	assert.Zero(t, n, "issues_synced restarts so the full scan does not double it")
 	assert.Equal(t, "boom", lastErr, "last_error is left alone")
-	got, _, _ = state("FULL")
+	got, n, _ = state("FULL")
 	assert.Equal(t, watermark, got)
+	assert.Equal(t, 42, n, "an untouched project keeps its count")
 	got, _, _ = state("GONE")
 	assert.Equal(t, watermark, got, "a deleted issue never comes back from the search, so it does not force a scan")
 }

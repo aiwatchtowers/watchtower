@@ -271,7 +271,8 @@ func TestTransitionJiraIssue_ExecuteMovesByStatusOrTransitionName(t *testing.T) 
 	assert.Equal(t, "In Progress", row.Status, "mirror refreshed from the fetched issue")
 	assert.Equal(t, "in_progress", row.StatusCategory, "normalized, not the raw Jira key")
 	assert.Empty(t, row.ResolvedAt, "reopening clears a stale resolved_at")
-	assert.Equal(t, jira.NormalizeTimestamp(fake.categoryChangedAt), row.StatusCategoryChangedAt,
+	wantChanged, _ := jira.NormalizeTimestamp(fake.categoryChangedAt)
+	assert.Equal(t, wantChanged, row.StatusCategoryChangedAt,
 		"a category move refreshes status_category_changed_at, normalized like the syncer's")
 	assert.NotEmpty(t, row.StatusCategoryChangedAt)
 }

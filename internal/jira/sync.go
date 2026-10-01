@@ -337,6 +337,11 @@ func (s *Syncer) syncProject(ctx context.Context, boardID int, projectKey string
 	lastSyncedAt := ""
 	if syncState != nil {
 		lastSyncedAt = syncState.LastSyncedAt
+		if lastSyncedAt == "" {
+			// A known project without a watermark: its first pass after a
+			// failing scan, or a backfill a migration asked for (00090).
+			s.logger.Printf("sync: project %s has no watermark, running a full scan", projectKey)
+		}
 	}
 	jql := buildIncrementalJQL(projectKey, lastSyncedAt, time.Now().UTC())
 
@@ -733,7 +738,10 @@ func (s *Syncer) convertIssue(ctx context.Context, issue Issue, boardID int) (db
 
 	statusCatChanged := ""
 	if f.StatusCategoryChanged != nil {
-		statusCatChanged = NormalizeTimestamp(*f.StatusCategoryChanged)
+		var ok bool
+		if statusCatChanged, ok = NormalizeTimestamp(*f.StatusCategoryChanged); !ok {
+			s.logger.Printf("sync: %s: unparseable statuscategorychangedate %q, stored verbatim", issue.Key, statusCatChanged)
+		}
 	}
 
 	dbIssue := db.JiraIssue{
@@ -981,17 +989,18 @@ func (s *Syncer) getFieldMap(boardID int) []db.JiraBoardFieldMap {
 	return mappings
 }
 
-// NormalizeTimestamp rewrites a Jira timestamp ("2006-01-02T15:04:05.000-0700")
-// as RFC3339 UTC: SQLite's julianday() rejects a "+hhmm" offset, and the stale
-// query compares the column against an RFC3339 UTC cutoff as a string. A value
-// in neither shape is kept verbatim rather than dropped.
-func NormalizeTimestamp(s string) string {
-	for _, layout := range []string{"2006-01-02T15:04:05.000-0700", time.RFC3339} {
+// NormalizeTimestamp rewrites a Jira timestamp ("2006-01-02T15:04:05.000-0700",
+// any or no fraction) as RFC3339 UTC: SQLite's julianday() rejects a "+hhmm"
+// offset, and the stale query compares the column against an RFC3339 UTC
+// cutoff as a string. A value in neither shape is kept verbatim rather than
+// dropped, and ok is false so the caller can say so.
+func NormalizeTimestamp(s string) (normalized string, ok bool) {
+	for _, layout := range []string{"2006-01-02T15:04:05.999999999-0700", time.RFC3339} {
 		if t, err := time.Parse(layout, s); err == nil {
-			return t.UTC().Format(time.RFC3339)
+			return t.UTC().Format(time.RFC3339), true
 		}
 	}
-	return s
+	return s, false
 }
 
 // extractDisplayValue gets a human-readable value from a Jira field value.
