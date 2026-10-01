@@ -273,19 +273,19 @@ struct UpdateChannelTests {
 private final class InstallRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var recorded: [String] = []
-    private var recordedTeamID: String?
+    private var recordedRequirement: String?
     var failStage = false
     var failVerify = false
     var failReplace = false
     var writable = true
 
     var calls: [String] { lock.withLock { recorded } }
-    var verifiedTeamID: String? { lock.withLock { recordedTeamID } }
+    var verifiedRequirement: String? { lock.withLock { recordedRequirement } }
 
-    private func record(_ call: String, teamID: String? = nil) {
+    private func record(_ call: String, requirement: String? = nil) {
         lock.withLock {
             recorded.append(call)
-            if let teamID { recordedTeamID = teamID }
+            if let requirement { recordedRequirement = requirement }
         }
     }
 
@@ -305,8 +305,8 @@ private final class InstallRecorder: @unchecked Sendable {
                 if self.failStage { throw Boom(what: "stage") }
                 return URL(fileURLWithPath: "/staged/Watchtower.app")
             },
-            verify: { _, team in
-                self.record("verify", teamID: team)
+            verify: { _, requirement in
+                self.record("verify", requirement: requirement)
                 if self.failVerify { throw Boom(what: "verify") }
             },
             replace: { _, _ in
@@ -324,18 +324,35 @@ struct UpdateServiceInstallTests {
     private let newApp = URL(fileURLWithPath: "/downloads/Watchtower.app")
     private let currentApp = URL(fileURLWithPath: "/Applications/Watchtower.app")
 
-    private func run(_ rec: InstallRecorder, teamID: String? = "ABCDE12345") -> UpdateService.InstallOutcome {
-        UpdateService.performInstall(newApp: newApp, currentApp: currentApp, teamID: teamID, steps: rec.steps)
+    private func run(
+        _ rec: InstallRecorder,
+        teamID: String? = "ABCDE12345",
+        bundleIdentifier: String? = "com.example.app"
+    ) -> UpdateService.InstallOutcome {
+        UpdateService.performInstall(newApp: newApp, currentApp: currentApp, teamID: teamID,
+                                     bundleIdentifier: bundleIdentifier, steps: rec.steps)
     }
 
-    @Test("happy path: writability, stage, verify against our Team ID, then swap with nothing in between")
+    @Test("happy path: writability, stage, verify against our Team ID and identifier, then swap with nothing in between")
     func happyPathOrder() async {
         let rec = InstallRecorder()
         #expect(run(rec) == .installed)
         // verify -> replace back to back: no step (and no daemon stop) may sit
         // between the check and the use of the staged bundle.
         #expect(rec.calls == ["canWrite", "stage", "verify", "replace", "discard"])
-        #expect(rec.verifiedTeamID == "ABCDE12345")
+        #expect(rec.verifiedRequirement
+            == #"anchor apple generic and certificate leaf[subject.OU] = "ABCDE12345" and identifier "com.example.app""#)
+    }
+
+    @Test("no bundle identifier for the running app refuses before touching anything")
+    func noBundleIdentifierFailsClosed() async {
+        for bundleIdentifier in [nil, "", #"com.example"evil"#] {
+            let rec = InstallRecorder()
+            let outcome = run(rec, bundleIdentifier: bundleIdentifier)
+            guard case .failed(let message) = outcome else { Issue.record("expected failure"); return }
+            #expect(message.contains("bundle identifier"))
+            #expect(rec.calls.isEmpty)
+        }
     }
 
     @Test("no Team ID for the running app refuses before touching anything")
@@ -480,7 +497,7 @@ struct UpdateServiceInstallMechanicsTests {
         let app = root.appendingPathComponent("Watchtower.app", isDirectory: true)
         try makeApp(at: app, marker: "x")
         #expect(throws: UpdateService.SignatureError.self) {
-            try UpdateService.verifySignature(of: app, teamID: "ABCDE12345")
+            try UpdateService.verifySignature(of: app, requirement: UpdateService.designatedRequirement(forTeamID: "ABCDE12345"))
         }
     }
 
@@ -492,7 +509,9 @@ struct UpdateServiceInstallMechanicsTests {
     func foreignSignerFailsTeamPin() {
         let calculator = URL(fileURLWithPath: "/System/Applications/Calculator.app")
         do {
-            try UpdateService.verifySignature(of: calculator, teamID: "ABCDE12345")
+            // Identifier matches, so only the Team-ID pin can fail.
+            let requirement = UpdateService.updateRequirement(teamID: "ABCDE12345", bundleIdentifier: "com.apple.calculator")
+            try UpdateService.verifySignature(of: calculator, requirement: requirement ?? "")
             Issue.record("a foreign signer passed the Team-ID pin")
         } catch let error as UpdateService.SignatureError {
             #expect(error.step == "validate")
@@ -513,6 +532,23 @@ struct UpdateServiceInstallMechanicsTests {
         #expect(SecRequirementCreateWithString("anchor apple" as CFString, [], &requirement) == errSecSuccess)
         let code = try #require(staticCode)
         #expect(SecStaticCodeCheckValidity(code, UpdateService.signatureValidationFlags, requirement) == errSecSuccess)
+    }
+
+    @Test("the update requirement adds this app's identifier to the Team-ID pin")
+    func updateRequirementShape() {
+        #expect(UpdateService.updateRequirement(teamID: "ABCDE12345", bundleIdentifier: "com.example.app")
+            == #"anchor apple generic and certificate leaf[subject.OU] = "ABCDE12345" and identifier "com.example.app""#)
+        #expect(UpdateService.updateRequirement(teamID: "ABCDE12345", bundleIdentifier: nil) == nil)
+        #expect(UpdateService.updateRequirement(teamID: "ABCDE12345", bundleIdentifier: "") == nil)
+        #expect(UpdateService.updateRequirement(teamID: "ABCDE12345", bundleIdentifier: #"a" or "b"#) == nil)
+    }
+
+    @Test("a signature error explains itself and points at a manual install")
+    func signatureErrorMessage() {
+        let message = UpdateService.SignatureError(step: "validate", status: errSecCSReqFailed).localizedDescription
+        #expect(message.contains("validate"))
+        #expect(message.contains("DMG"))
+        #expect(!message.contains("OSStatus"))  // the system's own description is used when it has one
     }
 
     @Test("signature validation uses the strict, deep, all-architectures flags")
@@ -652,6 +688,7 @@ struct UpdateServiceRelaunchTests {
         let svc = service(relaunch, appURL: appURL)
         svc.isBusy = { false }
         svc.teamIdentifier = { "ABCDE12345" }
+        svc.bundleIdentifier = { "com.example.app" }
         svc.installSteps = install.steps
         svc.state = .readyToInstall(appPath: URL(fileURLWithPath: "/downloads/Watchtower.app"))
         await svc.install()
@@ -697,11 +734,12 @@ struct UpdateServiceRelaunchTests {
 @Suite("UpdateService Periodic Checks")
 @MainActor
 struct UpdateServicePeriodicTests {
-    private func isolatedDefaults() -> UserDefaults {
+    /// A fresh UserDefaults suite; the caller removes it with the returned name.
+    private func isolatedDefaults() throws -> (UserDefaults, String) {
         let name = "wt-update-tests-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: name) ?? .standard
+        let defaults = try #require(UserDefaults(suiteName: name))
         defaults.removePersistentDomain(forName: name)
-        return defaults
+        return (defaults, name)
     }
 
     @Test("check interval is six hours")
@@ -748,8 +786,9 @@ struct UpdateServicePeriodicTests {
     }
 
     @Test("the loop's first pass checks at once and surfaces a found update")
-    func loopChecksImmediately() async {
-        let defaults = isolatedDefaults()
+    func loopChecksImmediately() async throws {
+        let (defaults, suite) = try isolatedDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
         let svc = UpdateService()
         svc.buildFlavor = ""
         svc.defaults = defaults
@@ -781,8 +820,9 @@ struct UpdateServicePeriodicTests {
     }
 
     @Test("an update is announced once per version, across service instances")
-    func announceOncePerVersion() async {
-        let defaults = isolatedDefaults()
+    func announceOncePerVersion() async throws {
+        let (defaults, suite) = try isolatedDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
         var announced: [String] = []
 
         let first = UpdateService()
@@ -809,8 +849,9 @@ struct UpdateServicePeriodicTests {
     }
 
     @Test("a push the system refused is not memoed, so the next check retries it")
-    func refusedPushIsRetried() async {
-        let defaults = isolatedDefaults()
+    func refusedPushIsRetried() async throws {
+        let (defaults, suite) = try isolatedDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
         var attempts: [String] = []
         let svc = UpdateService()
         svc.defaults = defaults
@@ -834,15 +875,25 @@ struct UpdateServicePeriodicTests {
 
 @Suite("UpdateService Check Results")
 @MainActor
-struct UpdateServiceCheckResultTests {
+final class UpdateServiceCheckResultTests {
     private let oldURL = URL(fileURLWithPath: "/tmp/old.zip")
     private let newURL = URL(fileURLWithPath: "/tmp/new.zip")
+    /// One isolated announce memo per test, removed when the test ends.
+    private let suiteName = "wt-update-check-tests-\(UUID().uuidString)"
+    private let defaults: UserDefaults
 
-    /// A service with an isolated announce memo and a recorder for pushes.
+    init() throws {
+        defaults = try #require(UserDefaults(suiteName: suiteName))
+    }
+
+    deinit {
+        defaults.removePersistentDomain(forName: suiteName)
+    }
+
+    /// A service with the isolated announce memo and a recorder for pushes.
     private func service(announced: @escaping (String) -> Void) -> UpdateService {
         let svc = UpdateService()
-        let name = "wt-update-check-tests-\(UUID().uuidString)"
-        if let defaults = UserDefaults(suiteName: name) { svc.defaults = defaults }
+        svc.defaults = defaults
         svc.announce = {
             announced($0)
             return true
@@ -855,7 +906,7 @@ struct UpdateServiceCheckResultTests {
         var announced: [String] = []
         let svc = service { announced.append($0) }
         await svc.applyCheckResult(.found(version: "v2.0.0", notes: "n", downloadURL: newURL, gated: nil),
-                             previous: .idle, background: true)
+                                   previous: .idle, background: true)
         #expect(svc.state == .available(version: "v2.0.0", notes: "n", downloadURL: newURL))
         #expect(svc.availableVersion == "v2.0.0")
         #expect(announced == ["v2.0.0"])
@@ -865,7 +916,7 @@ struct UpdateServiceCheckResultTests {
     func upToDateClears() async {
         let svc = service { _ in }
         await svc.applyCheckResult(.found(version: "v2.0.0", notes: "", downloadURL: newURL, gated: nil),
-                             previous: .idle, background: false)
+                                   previous: .idle, background: false)
         await svc.applyCheckResult(.upToDate, previous: .idle, background: false)
         #expect(svc.state == .idle)
         #expect(svc.availableVersion == nil)
@@ -878,15 +929,15 @@ struct UpdateServiceCheckResultTests {
         let offered = UpdateService.UpdateState.available(version: "v2.0.0", notes: "", downloadURL: oldURL)
 
         await svc.applyCheckResult(.found(version: "v2.0.0", notes: "", downloadURL: newURL, gated: nil),
-                             previous: offered, background: true)
+                                   previous: offered, background: true)
         #expect(svc.state == offered)
 
         await svc.applyCheckResult(.found(version: "v1.9.0", notes: "", downloadURL: newURL, gated: nil),
-                             previous: offered, background: true)
+                                   previous: offered, background: true)
         #expect(svc.state == offered)
 
         await svc.applyCheckResult(.found(version: "v2.1.0", notes: "", downloadURL: newURL, gated: nil),
-                             previous: offered, background: true)
+                                   previous: offered, background: true)
         #expect(svc.state == .available(version: "v2.1.0", notes: "", downloadURL: newURL))
         #expect(announced == ["v2.1.0"])
     }

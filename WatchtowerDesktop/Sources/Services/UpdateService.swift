@@ -428,8 +428,9 @@ final class UpdateService {
         /// Move the downloaded app next to the current one (same volume, so
         /// the swap is a rename); returns the staged app's URL.
         var stage: @Sendable (_ newApp: URL, _ currentApp: URL) throws -> URL
-        /// Throws when the staged app's signature is invalid or not ours.
-        var verify: @Sendable (_ app: URL, _ teamID: String) throws -> Void
+        /// Throws when the staged app's signature does not satisfy the code
+        /// requirement (`updateRequirement`).
+        var verify: @Sendable (_ app: URL, _ requirement: String) throws -> Void
         /// Atomically swap the staged app in for the current one.
         var replace: @Sendable (_ currentApp: URL, _ stagedApp: URL) throws -> Void
         /// Best-effort removal of whatever is left of the staged app.
@@ -439,7 +440,7 @@ final class UpdateService {
             Self(
                 canWrite: { FileManager.default.isWritableFile(atPath: $0.path) },
                 stage: { try UpdateService.stageForReplacement(newApp: $0, currentApp: $1) },
-                verify: { try UpdateService.verifySignature(of: $0, teamID: $1) },
+                verify: { try UpdateService.verifySignature(of: $0, requirement: $1) },
                 replace: { current, staged in
                     _ = try FileManager.default.replaceItemAt(current, withItemAt: staged, backupItemName: nil, options: [])
                 },
@@ -479,9 +480,11 @@ final class UpdateService {
         // the swap are file-system work: run them off the main actor so the
         // "Installing…" spinner keeps spinning.
         let teamID = teamIdentifier()
+        let bundleID = bundleIdentifier()
         let steps = installSteps
         let outcome = await Task.detached(priority: .userInitiated) {
-            Self.performInstall(newApp: newAppPath, currentApp: currentApp, teamID: teamID, steps: steps)
+            Self.performInstall(newApp: newAppPath, currentApp: currentApp, teamID: teamID,
+                                bundleIdentifier: bundleID, steps: steps)
         }.value
         guard outcome == .installed else {
             if case .failed(let message) = outcome {
@@ -549,6 +552,10 @@ final class UpdateService {
     /// The running app's Team ID, read from its own signature.
     var teamIdentifier: () -> String? = { UpdateService.currentTeamIdentifier() }
 
+    /// The running app's bundle identifier; the replacement must carry the
+    /// same one (each build flavor matches itself).
+    var bundleIdentifier: () -> String? = { Bundle.main.bundleIdentifier }
+
     nonisolated static let busyMessage =
         "Finish the recording or transcription in progress, then install the update."
 
@@ -585,6 +592,7 @@ final class UpdateService {
         newApp: URL,
         currentApp: URL,
         teamID: String?,
+        bundleIdentifier: String?,
         steps: InstallSteps
     ) -> InstallOutcome {
         // Pin the replacement's signature to the Team ID of the running app.
@@ -594,6 +602,12 @@ final class UpdateService {
         guard let teamID = validTeamIdentifier(teamID) else {
             return .failed("Update aborted: could not determine the running app's Team ID (ad-hoc-signed build). "
                 + "Refusing to install an update that can't be verified against a known signer.")
+        }
+        // ...and to this app's own identity, so another app from the same
+        // team can never be installed in its place. Fail closed likewise.
+        guard let requirement = updateRequirement(teamID: teamID, bundleIdentifier: bundleIdentifier) else {
+            return .failed("Update aborted: could not determine the running app's bundle identifier. "
+                + "Refusing to install an update that can't be matched to this app.")
         }
 
         let folder = currentApp.deletingLastPathComponent()
@@ -610,7 +624,7 @@ final class UpdateService {
         }
 
         do {
-            try steps.verify(staged, teamID)
+            try steps.verify(staged, requirement)
         } catch {
             steps.discard(staged)
             return .failed("Update aborted: \(error.localizedDescription)")
@@ -650,12 +664,20 @@ final class UpdateService {
     nonisolated static func stripQuarantine(at root: URL) {
         let name = "com.apple.quarantine"
         let remove: (URL) -> Void = { url in
-            _ = url.withUnsafeFileSystemRepresentation { path in
-                path.map { removexattr($0, name, XATTR_NOFOLLOW) }
+            let failure: Int32? = url.withUnsafeFileSystemRepresentation { path in
+                guard let path else { return nil }
+                return removexattr(path, name, XATTR_NOFOLLOW) == 0 ? nil : errno
+            }
+            // ENOATTR (no quarantine on this file) is the normal case.
+            if let failure, failure != ENOATTR {
+                NSLog("UpdateService: could not clear quarantine on %@: %s", url.path, strerror(failure))
             }
         }
         remove(root)
-        guard let walker = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil) else { return }
+        guard let walker = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil) else {
+            NSLog("UpdateService: could not walk %@ to clear quarantine", root.path)
+            return
+        }
         for case let url as URL in walker { remove(url) }
     }
 
@@ -669,15 +691,18 @@ final class UpdateService {
         let step: String
         let status: OSStatus
         var errorDescription: String? {
-            "code signature check failed (\(step), OSStatus \(status)) — invalid signature or a different signer"
+            let detail = (SecCopyErrorMessageString(status, nil) as String?) ?? "OSStatus \(status)"
+            return "the downloaded app's code signature check failed (\(step): \(detail)) — "
+                + "it is damaged or from a different signer. Download the update again, "
+                + "or install it manually from the DMG."
         }
     }
 
-    /// Throws unless `app` carries a valid signature satisfying the Team-ID
-    /// designated requirement for `teamID`.
-    nonisolated static func verifySignature(of app: URL, teamID: String) throws {
+    /// Throws unless `app` carries a valid signature satisfying `requirement`
+    /// (a code-requirement string, see `updateRequirement`).
+    nonisolated static func verifySignature(of app: URL, requirement requirementText: String) throws {
         var requirement: SecRequirement?
-        let reqStatus = SecRequirementCreateWithString(designatedRequirement(forTeamID: teamID) as CFString, [], &requirement)
+        let reqStatus = SecRequirementCreateWithString(requirementText as CFString, [], &requirement)
         guard reqStatus == errSecSuccess, let requirement else {
             throw SignatureError(step: "requirement", status: reqStatus)
         }
@@ -756,6 +781,15 @@ final class UpdateService {
     /// verification to a specific Team ID.
     nonisolated static func designatedRequirement(forTeamID teamID: String) -> String {
         "anchor apple generic and certificate leaf[subject.OU] = \"\(teamID)\""
+    }
+
+    /// The requirement an update must satisfy: our Team ID AND our own bundle
+    /// identifier. Nil (refuse) when the identifier is missing or carries a
+    /// character that does not belong in a requirement string.
+    nonisolated static func updateRequirement(teamID: String, bundleIdentifier: String?) -> String? {
+        guard let bundleIdentifier,
+              bundleIdentifier.range(of: "^[A-Za-z0-9.-]+$", options: .regularExpression) != nil else { return nil }
+        return designatedRequirement(forTeamID: teamID) + " and identifier \"\(bundleIdentifier)\""
     }
 
     /// Team ID of the running app, read in-process from its own code
