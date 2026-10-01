@@ -585,12 +585,6 @@ func TestClaudeBackend_ResumeRejectedBeforeTheTurnOnALiveChildRetriesFresh(t *te
 		require.True(t, time.Now().Before(deadline), "the child reports the rejected --resume")
 		time.Sleep(10 * time.Millisecond)
 	}
-	select {
-	case <-p.exited:
-		t.Skip("the child exited before the turn: the other path, covered elsewhere")
-	default:
-	}
-
 	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "hello"})
 	assert.Equal(t, "turn 1", h.next(EventTextDelta).Text)
 	assert.Equal(t, StatusComplete, h.next(EventTurnDone).Status)
@@ -600,6 +594,33 @@ func TestClaudeBackend_ResumeRejectedBeforeTheTurnOnALiveChildRetriesFresh(t *te
 	}
 	runs := argvRuns(t, f.argv)
 	assert.False(t, contains(runs[len(runs)-1], "--resume"))
+}
+
+// The two halves of that fix, each pinned on its own. A live resumed child
+// that already reported the rejection is never written to: the turn goes
+// straight to the fresh retry.
+func TestClaudeBackend_LiveChildWithReportedRejectionIsNotReused(t *testing.T) {
+	p := &claudeProc{resumed: true, exited: make(chan struct{})}
+	p.lostMsg.Store("No conversation found with session ID: gone")
+	b := &claudeBackend{proc: p, resume: "gone"}
+	_, err := b.ensureProcLocked()
+	var rejected *resumeRejectedError
+	require.ErrorAs(t, err, &rejected)
+	assert.Contains(t, rejected.msg, "No conversation found")
+}
+
+// And a child whose rejection event was drained before the turn was sent
+// (claimForSend drains stale events) still exits as session lost, never as
+// a plain exit.
+func TestClaudeBackend_ExitAfterADrainedRejectionIsSessionLost(t *testing.T) {
+	p := &claudeProc{resumed: true, events: make(chan Event, 1),
+		outDone: make(chan struct{}), errDone: make(chan struct{}), stderr: &boundedBuffer{limit: 1 << 10}}
+	close(p.outDone)
+	close(p.errDone)
+	p.lostMsg.Store("No conversation found with session ID: gone")
+	p.gotResult.Store(true)
+	out := exitOutcome(p, func(Event) (outcome, bool) { return outcome{}, false })
+	assert.Equal(t, outcomeLost, out.kind)
 }
 
 // ToolSearch never surfaces as a step through the whole backend either, and

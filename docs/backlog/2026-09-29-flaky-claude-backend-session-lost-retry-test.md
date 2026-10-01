@@ -43,5 +43,7 @@ before the fix. The sibling flake
 had the exited-child twin: `rejectedResume` gave the reader only 500 ms to
 reach the rejection line, so under load it respawned the doomed `--resume`.
 It now waits up to `exitedOutputWait` (5 s, after the sweep, so it ends at
-EOF), and the reader stores the rejection before marking the result.
+EOF; skipped when the result already settled it), `exitOutcome` does the
+same, and the reader stores the rejection before marking the result. That
+half is a timing fix: no test pins it (a 500 ms bound passes locally too).
 

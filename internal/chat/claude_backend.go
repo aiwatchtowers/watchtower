@@ -69,12 +69,13 @@ type claudeProc struct {
 	lostMsg   atomic.Value // string: the session_lost error the child reported on stdout
 }
 
-// exitedOutputWait bounds how long rejectedResume waits for an exited
-// child's stdout to be fully read. It runs after sweep, so no grandchild
-// still holds the pipe: the wait ends at EOF, normally at once — the bound
-// is only a backstop. It must be generous: under load the reader can lag the
-// exit by far more than half a second, and judging the exit before the
-// reader saw the rejection respawns the same doomed --resume.
+// exitedOutputWait bounds how long an exited child's stdout may take to be
+// fully read before the exit is judged (rejectedResume, exitOutcome). Both
+// wait after a sweep, so no grandchild still holds the pipe: the wait ends at
+// EOF, normally at once — the bound is only a backstop. It must be generous:
+// under load the reader can lag the exit by far more than half a second, and
+// judging the exit before the reader saw a --resume rejection turns the
+// fresh retry into a respawn of the same doomed --resume, or an error.
 const exitedOutputWait = 5 * time.Second
 
 // rejectedResume returns the --resume rejection an exited child died of
@@ -84,12 +85,20 @@ func (p *claudeProc) rejectedResume() string {
 	if !p.resumed {
 		return ""
 	}
-	waitClosed(p.outDone, exitedOutputWait)
-	if m, _ := p.lostMsg.Load().(string); m != "" {
-		return m
-	}
-	if p.gotResult.Load() {
-		return ""
+	// The reader records a rejection before the result that carries it, so
+	// a result already seen settles the answer without waiting (this runs
+	// under b.mu).
+	for waited := false; ; waited = true {
+		if m, _ := p.lostMsg.Load().(string); m != "" {
+			return m
+		}
+		if p.gotResult.Load() {
+			return ""
+		}
+		if waited {
+			break
+		}
+		waitClosed(p.outDone, exitedOutputWait)
 	}
 	waitClosed(p.errDone, 500*time.Millisecond)
 	msg := strings.TrimSpace(p.stderr.String())
@@ -634,7 +643,8 @@ func (b *claudeBackend) await(ctx context.Context, p *claudeProc, emit func(Even
 // child printed before it died, then reads stderr — a --resume rejected
 // before any result is outcomeLost.
 func exitOutcome(p *claudeProc, handle func(Event) (outcome, bool)) outcome {
-	waitClosed(p.outDone, 500*time.Millisecond)
+	sweep(p) // nothing left in the group may hold stdout open
+	waitClosed(p.outDone, exitedOutputWait)
 	if o, done := drainPending(p.events, handle); done {
 		return o
 	}
@@ -875,7 +885,13 @@ func killGroup(p *claudeProc) { _ = syscall.Kill(-p.pgid, syscall.SIGKILL) }
 
 // sweep terminates what is left of the child's process group (the MCP
 // servers claude spawned) once claude itself is gone.
-func sweep(p *claudeProc) { _ = syscall.Kill(-p.pgid, syscall.SIGTERM) }
+// A pgid that is not a real group (a test's constructed proc) is never
+// signalled: kill(0) or kill(1) would hit the caller's group or init.
+func sweep(p *claudeProc) {
+	if p.pgid > 1 {
+		_ = syscall.Kill(-p.pgid, syscall.SIGTERM)
+	}
+}
 
 func waitClosed(ch <-chan struct{}, d time.Duration) bool {
 	select {
