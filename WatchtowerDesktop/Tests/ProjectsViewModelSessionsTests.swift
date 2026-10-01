@@ -853,6 +853,76 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         XCTAssertTrue(vm.isLive(try XCTUnwrap(vm.sessions.first { $0.id == closed.id })), "replacing a pane keeps its process")
     }
 
+    /// The page header's buttons: Board / Documents swap the pane beside the
+    /// terminal; Terminal brings back a session already in a slot, or resumes
+    /// the most recent open one next to the view on screen.
+    func testHeaderViewButtonsKeepTheTerminalAndPickASession() async throws {
+        let p = try await projectWithFolder()
+        let fetched = try await pool.read { try ProjectQueries.fetch($0, id: p) }
+        let project = try XCTUnwrap(fetched)
+        let row = try await liveSession(p, "one")
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: p)
+        XCTAssertEqual(vm.layout.visiblePanes, [.board])
+
+        await vm.showView(.terminal, project: project)
+        XCTAssertEqual(vm.layout.visiblePanes, [.session(row.id)], "a single pane switches to the most recent session")
+        XCTAssertEqual(launches.count, 1, "it resumes")
+
+        vm.toggleSplit(projectID: p)
+        await vm.showView(.documents, project: project)
+        XCTAssertEqual(vm.layout.visiblePanes, [.session(row.id), .documents])
+        await vm.showView(.board, project: project)
+        XCTAssertEqual(vm.layout.visiblePanes, [.session(row.id), .board])
+
+        vm.toggleExpand(.board, projectID: p)
+        await vm.showView(.terminal, project: project)
+        XCTAssertEqual(vm.layout.visiblePanes, [.session(row.id), .board], "the session in the split comes back")
+        XCTAssertEqual(launches.count, 1, "nothing starts again")
+
+        vm.hideView(.board, projectID: p)
+        XCTAssertEqual(vm.layout.visiblePanes, [.session(row.id)])
+        XCTAssertEqual(vm.layout(projectID: p), WorkspaceLayout.decode(defaults.data(forKey: WorkspaceLayout.key(projectID: p))),
+                       "the layout is persisted")
+    }
+
+    /// The header's session menu in a single pane: another session replaces
+    /// the terminal on screen, "New session" starts one there.
+    func testHeaderSessionMenuSwitchesTheSinglePaneSession() async throws {
+        let p = try await projectWithFolder()
+        let one = try await liveSession(p, "one")
+        let two = try await liveSession(p, "two")
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: p)
+        await vm.showFromPanel(sessionID: one.id)
+        XCTAssertEqual(vm.layout.visiblePanes, [.session(one.id)])
+
+        await vm.showInPane(vm.layout.terminalSlot, item: .session(two.id), projectID: p)
+        XCTAssertEqual(vm.layout.visiblePanes, [.session(two.id)])
+
+        await vm.newSession(inPane: vm.layout.terminalSlot, projectID: p)
+        let fresh = try XCTUnwrap(vm.sessions.first { $0.id != one.id && $0.id != two.id })
+        XCTAssertEqual(vm.layout.visiblePanes, [.session(fresh.id)])
+    }
+
+    func testHeaderTerminalButtonStartsASessionWhenTheProjectHasNone() async throws {
+        let p = try await projectWithFolder()
+        let fetched = try await pool.read { try ProjectQueries.fetch($0, id: p) }
+        let project = try XCTUnwrap(fetched)
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: p)
+        vm.layout.split(with: .documents)
+
+        await vm.showView(.terminal, project: project)
+
+        let row = try XCTUnwrap(vm.sessions.first)
+        XCTAssertEqual(vm.layout.visiblePanes, [.board, .session(row.id)], "it keeps the first view, replaces the second")
+        XCTAssertEqual(launches.count, 1)
+    }
+
     func testClosingASplitSessionLeavesTheOtherPane() async throws {
         let p = try await projectWithFolder()
         let row = try await liveSession(p, "one")

@@ -274,7 +274,7 @@ func briefHeader(p *db.Project, board []db.BoardNode, newComments int) string {
 		briefClip(fmt.Sprintf("Watchtower project #%d %q — %s", p.ID, p.Name, p.FolderPath), briefLineChars),
 		fmt.Sprintf("Targets: %d in progress, %d in review, %d blocked, %d todo, %d done. New comments for you: %d.",
 			c["in_progress"], c["in_review"], c["blocked"], c["todo"], c["done"], newComments),
-		tools.BoardLanguageLine(p.BoardLanguage),
+		tools.BoardLanguageLine,
 	}
 	if strings.TrimSpace(p.Description) == "" {
 		lines = append(lines, "Setup pending: run the watchtower-project skill's setup (project_info, update_project, first board).")

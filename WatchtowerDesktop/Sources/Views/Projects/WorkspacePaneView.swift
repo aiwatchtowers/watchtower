@@ -28,8 +28,10 @@ struct WorkspaceAreaView: View {
     }
 }
 
-/// One pane: a slim header (the pane's own picker; in a split also expand
-/// and close) over Board, Documents or a session's terminal.
+/// One pane: Board, Documents or a session's terminal. In a split it has a
+/// slim header (its own picker, expand and close); a single pane has none —
+/// the page header's view buttons and the panel's session list cover it, so
+/// the terminal gets the height.
 struct WorkspacePaneView: View {
     @Bindable var vm: ProjectsViewModel
     let project: Project
@@ -43,8 +45,10 @@ struct WorkspacePaneView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            header
-            Divider()
+            if isSplit {
+                header
+                Divider()
+            }
             if isHidden, case .session = pane {
                 Color.clear
             } else {
@@ -53,33 +57,34 @@ struct WorkspacePaneView: View {
         }
     }
 
+    /// Shown only in a split (`body`).
     private var header: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             picker
             Spacer(minLength: 4)
-            if isSplit {
+            Button {
+                vm.toggleExpand(pane, projectID: project.id)
+            } label: {
+                Image(systemName: isExpanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+            }
+            .buttonStyle(.borderless)
+            .help(isExpanded ? "Back to the split" : "Expand this pane")
+            .accessibilityLabel(isExpanded ? "Back to the split" : "Expand this pane")
+            if !isExpanded {
                 Button {
-                    vm.toggleExpand(pane, projectID: project.id)
+                    vm.closePane(pane, projectID: project.id)
                 } label: {
-                    Image(systemName: isExpanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                    Image(systemName: "xmark")
                 }
                 .buttonStyle(.borderless)
-                .help(isExpanded ? "Back to the split" : "Expand this pane")
-                .accessibilityLabel(isExpanded ? "Back to the split" : "Expand this pane")
-                if !isExpanded {
-                    Button {
-                        vm.closePane(pane, projectID: project.id)
-                    } label: {
-                        Image(systemName: "xmark")
-                    }
-                    .buttonStyle(.borderless)
-                    .help("Close this pane")
-                    .accessibilityLabel("Close this pane")
-                }
+                .help("Close this pane")
+                .accessibilityLabel("Close this pane")
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 4)
+        .font(.caption)
+        .controlSize(.small)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 2)
     }
 
     private var picker: some View {
@@ -99,7 +104,7 @@ struct WorkspacePaneView: View {
                 }
             }
         } label: {
-            Label(title, systemImage: icon).font(.callout)
+            Label(title, systemImage: icon).font(.subheadline)
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
@@ -111,20 +116,11 @@ struct WorkspacePaneView: View {
     }
 
     private var title: String {
-        switch pane {
-        case .board: "Board"
-        case .documents: "Documents"
-        case let .session(id): vm.session(id, projectID: project.id)?.title ?? "Session"
-        }
+        if case let .session(id) = pane { return vm.session(id, projectID: project.id)?.title ?? "Session" }
+        return WorkspaceView(pane).title
     }
 
-    private var icon: String {
-        switch pane {
-        case .board: "square.grid.2x2"
-        case .documents: "doc.text"
-        case .session: "terminal"
-        }
-    }
+    private var icon: String { WorkspaceView(pane).icon }
 
     @ViewBuilder
     private var content: some View {
@@ -230,5 +226,25 @@ struct WorkspaceSplitView<Pane: View>: View {
         guard cursorPushed else { return }
         NSCursor.pop()
         cursorPushed = false
+    }
+}
+
+/// The names and symbols of what a pane shows — the page header's view
+/// buttons and the split panes' pickers.
+extension WorkspaceView {
+    var title: String {
+        switch self {
+        case .terminal: "Terminal"
+        case .board: "Board"
+        case .documents: "Documents"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .terminal: "terminal"
+        case .board: "square.grid.2x2"
+        case .documents: "doc.text"
+        }
     }
 }

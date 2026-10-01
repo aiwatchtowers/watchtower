@@ -96,8 +96,7 @@ func TestProjectResync_IsAdditive(t *testing.T) {
 
 	// An existing project: an owner-edited description, a source, a board
 	// with statuses, a comment and an attached document.
-	desc := "Owner's own words."
-	require.NoError(t, database.UpdateProject(pid, db.ProjectUpdate{Description: &desc}))
+	require.NoError(t, database.UpdateProjectDescription(pid, "Owner's own words."))
 	_, err = database.AddProjectSource(db.ProjectSource{ProjectID: pid, Kind: "jira_project", Ref: "ACME"})
 	require.NoError(t, err)
 	tid := db.SeedTestProjectTarget(t, database, pid, sql.NullInt64{}, "Ship it")
