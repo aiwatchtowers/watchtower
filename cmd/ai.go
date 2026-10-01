@@ -88,6 +88,7 @@ func init() {
 	aiQueryCmd.Flags().StringVar(&aiFlagSystemPrompt, "system-prompt", "", "system prompt")
 	aiQueryCmd.Flags().BoolVar(&aiFlagSystemPromptStdin, "system-prompt-stdin", false,
 		"read the system prompt from stdin (keeps it off argv: visible in ps, bounded by ARG_MAX)")
+	aiQueryCmd.MarkFlagsMutuallyExclusive("system-prompt", "system-prompt-stdin")
 	aiQueryCmd.Flags().StringVar(&aiFlagDBPath, "db-path", "", "SQLite database path for MCP (overrides default)")
 	aiQueryCmd.Flags().StringVar(&aiFlagTools, "tools", "", "tool mode: chat = mount the assistant's write tools as proposals")
 	aiQueryCmd.Flags().StringVar(&aiFlagSurface, "surface", "main", "chat surface for --tools chat: main|target")
@@ -108,15 +109,17 @@ func querySystemPrompt(stdin io.Reader) (string, error) {
 	if !aiFlagSystemPromptStdin {
 		return aiFlagSystemPrompt, nil
 	}
-	if aiFlagSystemPrompt != "" {
-		return "", errors.New("--system-prompt and --system-prompt-stdin are mutually exclusive")
-	}
 	data, err := io.ReadAll(io.LimitReader(stdin, maxStdinSystemPrompt+1))
 	if err != nil {
 		return "", fmt.Errorf("reading the system prompt from stdin: %w", err)
 	}
 	if len(data) > maxStdinSystemPrompt {
 		return "", fmt.Errorf("system prompt on stdin exceeds %d bytes", maxStdinSystemPrompt)
+	}
+	if len(data) == 0 {
+		// The flag is passed only with a prompt to send: empty stdin means
+		// the delivery failed, and a chat without its prompt must not run.
+		return "", errors.New("--system-prompt-stdin: stdin was empty")
 	}
 	return string(data), nil
 }
@@ -127,8 +130,9 @@ func runAIQuery(_ *cobra.Command, args []string) error {
 	if aiFlagEvents != "v1" && aiFlagEvents != "v2" {
 		return emitError(enc, fmt.Sprintf("--events must be v1 or v2, got %q", aiFlagEvents))
 	}
-	// First, so a writer feeding a large prompt on stdin never waits on the
-	// config/DB work below.
+	// Before the config/DB work below, so a writer feeding a large prompt on
+	// stdin is not kept waiting (the Desktop tolerates a CLI that exits
+	// before reading — see WatchtowerAIService.feedStdin).
 	systemPrompt, err := querySystemPrompt(os.Stdin)
 	if err != nil {
 		return emitError(enc, err.Error())

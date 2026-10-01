@@ -138,6 +138,20 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         return Data(systemPrompt.utf8)
     }
 
+    /// Writes `payload` to the CLI's stdin pipe and closes it. The write end
+    /// ignores SIGPIPE, so a CLI that exits before reading (a cancelled chat,
+    /// a refused flag, an early config error) makes the write fail with EPIPE
+    /// instead of killing the app; that failure is dropped on purpose — the
+    /// CLI's own exit status and stderr already report the run.
+    package static func feedStdin(_ pipe: Pipe, payload: Data?) {
+        let handle = pipe.fileHandleForWriting
+        _ = fcntl(handle.fileDescriptor, F_SETNOSIGPIPE, 1)
+        if let payload {
+            try? handle.write(contentsOf: payload)
+        }
+        try? handle.close()
+    }
+
     // swiftlint:disable:next function_parameter_count
     private func run(
         prompt: String,
@@ -179,13 +193,8 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         try process.run()
 
         // Written off the caller's actor: a prompt larger than the pipe buffer
-        // blocks until the CLI reads it, which it does first thing.
-        Task.detached {
-            if let stdinPrompt {
-                stdin.fileHandleForWriting.write(stdinPrompt)
-            }
-            try? stdin.fileHandleForWriting.close()
-        }
+        // blocks until the CLI reads it, which it does first thing in RunE.
+        Task.detached { Self.feedStdin(stdin, payload: stdinPrompt) }
 
         let stderrTask = Task.detached { () -> String in
             let data = stderr.fileHandleForReading.readDataToEndOfFile()

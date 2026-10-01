@@ -108,6 +108,23 @@ final class WatchtowerAIServiceTests: XCTestCase {
         XCTAssertEqual(WatchtowerAIService.stdinPayload(systemPrompt: secret), Data(secret.utf8))
     }
 
+    /// The payload reaches the reader and the pipe is closed (the CLI's
+    /// io.ReadAll would otherwise wait forever).
+    func testFeedStdinWritesPayloadAndCloses() {
+        let pipe = Pipe()
+        WatchtowerAIService.feedStdin(pipe, payload: Data("system prompt".utf8))
+        let read = pipe.fileHandleForReading.readDataToEndOfFile()
+        XCTAssertEqual(String(data: read, encoding: .utf8), "system prompt")
+    }
+
+    /// A CLI that exited before reading must not take the app down: the
+    /// write fails with EPIPE (no SIGPIPE) and is dropped.
+    func testFeedStdinSurvivesAClosedReader() {
+        let pipe = Pipe()
+        try? pipe.fileHandleForReading.close()
+        WatchtowerAIService.feedStdin(pipe, payload: Data(repeating: 0x61, count: 1 << 20))
+    }
+
     func testNoSystemPromptMeansNoStdinFlagOrPayload() {
         let args = WatchtowerAIService.buildArgs(
             prompt: "hi", systemPrompt: "", sessionID: nil, dbPath: nil, model: nil, provider: nil, toolMode: nil

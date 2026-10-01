@@ -57,7 +57,7 @@ func TestAIQueryCmd_FlagsBeforeSeparatorReachRunEVerbatim(t *testing.T) {
 	origRunE := aiQueryCmd.RunE
 	t.Cleanup(func() { aiQueryCmd.RunE = origRunE })
 	t.Cleanup(func() {
-		aiFlagSystemPrompt = ""
+		resetSystemPromptFlags(t)
 		rootCmd.SetArgs(nil)
 	})
 
@@ -167,15 +167,43 @@ func TestQuerySystemPrompt_Stdin(t *testing.T) {
 		t.Fatalf("stdin prompt = %q, %v", got, err)
 	}
 
-	aiFlagSystemPrompt = "both"
-	if _, err := querySystemPrompt(strings.NewReader("x")); err == nil {
-		t.Fatal("--system-prompt with --system-prompt-stdin must be refused")
+	if _, err := querySystemPrompt(strings.NewReader("")); err == nil {
+		t.Fatal("an empty stdin with --system-prompt-stdin must fail, not run without the prompt")
+	}
+
+	atCap := strings.Repeat("x", maxStdinSystemPrompt)
+	if got, err := querySystemPrompt(strings.NewReader(atCap)); err != nil || len(got) != maxStdinSystemPrompt {
+		t.Fatalf("a prompt of exactly the cap: len %d, err %v", len(got), err)
+	}
+	if _, err := querySystemPrompt(strings.NewReader(atCap + "x")); err == nil {
+		t.Fatal("a prompt over the cap must be refused")
+	}
+}
+
+func TestAIQueryCmd_SystemPromptFlagsMutuallyExclusive(t *testing.T) {
+	resetSystemPromptFlags(t)
+	t.Cleanup(func() { resetSystemPromptFlags(t) })
+	origFlagConfig := flagConfig
+	flagConfig = filepath.Join(t.TempDir(), "does-not-exist.yaml")
+	t.Cleanup(func() { flagConfig = origFlagConfig })
+	origRunE := aiQueryCmd.RunE
+	t.Cleanup(func() {
+		aiQueryCmd.RunE = origRunE
+		aiFlagSystemPrompt, aiFlagSystemPromptStdin = "", false
+		rootCmd.SetArgs(nil)
+	})
+	aiQueryCmd.RunE = func(*cobra.Command, []string) error { return nil }
+	rootCmd.SetArgs([]string{"ai", "query", "--system-prompt", "", "--system-prompt-stdin", "--", "hi"})
+	if err := rootCmd.Execute(); err == nil {
+		t.Fatal("--system-prompt with --system-prompt-stdin must be refused, even with an empty value")
 	}
 }
 
 // TestAIQueryCmd_SystemPromptStdinFlagParses: the flag reaches RunE when the
 // Desktop places it ahead of the "--" separator.
 func TestAIQueryCmd_SystemPromptStdinFlagParses(t *testing.T) {
+	resetSystemPromptFlags(t)
+	t.Cleanup(func() { resetSystemPromptFlags(t) })
 	origFlagConfig := flagConfig
 	flagConfig = filepath.Join(t.TempDir(), "does-not-exist.yaml")
 	t.Cleanup(func() { flagConfig = origFlagConfig })
@@ -196,5 +224,16 @@ func TestAIQueryCmd_SystemPromptStdinFlagParses(t *testing.T) {
 	}
 	if !got {
 		t.Fatal("--system-prompt-stdin did not reach RunE")
+	}
+}
+
+// resetSystemPromptFlags clears both system-prompt flags, values and pflag
+// "changed" state alike: aiQueryCmd is a package singleton, and the
+// mutual-exclusion check reads "changed" left over from an earlier test.
+func resetSystemPromptFlags(t *testing.T) {
+	t.Helper()
+	aiFlagSystemPrompt, aiFlagSystemPromptStdin = "", false
+	for _, name := range []string{"system-prompt", "system-prompt-stdin"} {
+		aiQueryCmd.Flags().Lookup(name).Changed = false
 	}
 }
