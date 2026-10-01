@@ -65,7 +65,7 @@ final class TargetQueriesMissingEndpointTests: XCTestCase {
         }) { XCTAssertEqual($0 as? TargetNotFoundError, TargetNotFoundError(id: gone)) }
         // Deleted source of an external-ref link (no target endpoint at all).
         XCTAssertThrowsError(try queue.write {
-            try TargetQueries.insertLink(
+            try TargetQueries.createLink(
                 $0, sourceID: gone, targetID: nil, externalRef: "jira:ACME-1", relation: "related", createdBy: "ai"
             )
         }) { XCTAssertEqual($0 as? TargetNotFoundError, TargetNotFoundError(id: gone)) }
@@ -73,15 +73,15 @@ final class TargetQueriesMissingEndpointTests: XCTestCase {
         XCTAssertEqual(try queue.read { try self.count($0, "target_links") }, 0)
     }
 
-    func testInsertLink_BetweenLiveTargets_Writes() throws {
+    func testCreateLink_ToATargetAndToAnExternalRef_Writes() throws {
         let queue = try TestDatabase.create()
         let (source, other) = try queue.write { db -> (Int, Int) in
             (try self.createTarget(db, text: "source"), try self.createTarget(db, text: "other"))
         }
 
         try queue.write { db in
-            try TargetQueries.insertLink(db, sourceID: source, targetID: other, relation: "blocks", createdBy: "ai")
-            try TargetQueries.insertLink(
+            try TargetQueries.createLink(db, sourceID: source, targetID: other, relation: "blocks", createdBy: "ai")
+            try TargetQueries.createLink(
                 db, sourceID: source, targetID: nil, externalRef: "jira:ACME-1", relation: "related", createdBy: "ai"
             )
         }

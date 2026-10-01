@@ -172,31 +172,35 @@ struct ExtractPreviewSheet: View {
         do {
             try db.dbPool.write { dbConn in
                 for item in toCreate {
-                    let today = dateFormatter.string(from: Date())
-                    let start = item.periodStart.isEmpty ? today : item.periodStart
-                    let end = item.periodEnd.isEmpty ? today : item.periodEnd
-                    let subItemsJSON = Self.encodeSubItems(item.subItems)
-                    let newID = try TargetQueries.create(
-                        dbConn,
-                        text: item.text,
-                        intent: item.intent,
-                        level: item.level,
-                        customLabel: item.customLabel,
-                        periodStart: start,
-                        periodEnd: end,
-                        parentId: item.parentId,
-                        priority: item.priority,
-                        subItems: subItemsJSON,
-                        sourceType: "extract",
-                        aiLevelConfidence: item.levelConfidence
-                    )
-                    for link in item.secondaryLinks {
-                        if link.targetId != nil || !link.externalRef.isEmpty {
-                            try TargetQueries.insertLink(
-                                dbConn, sourceID: newID, targetID: link.targetId,
-                                externalRef: link.externalRef, relation: link.relation, createdBy: "ai"
-                            )
+                    do {
+                        let today = dateFormatter.string(from: Date())
+                        let start = item.periodStart.isEmpty ? today : item.periodStart
+                        let end = item.periodEnd.isEmpty ? today : item.periodEnd
+                        let subItemsJSON = Self.encodeSubItems(item.subItems)
+                        let newID = try TargetQueries.create(
+                            dbConn,
+                            text: item.text,
+                            intent: item.intent,
+                            level: item.level,
+                            customLabel: item.customLabel,
+                            periodStart: start,
+                            periodEnd: end,
+                            parentId: item.parentId,
+                            priority: item.priority,
+                            subItems: subItemsJSON,
+                            sourceType: "extract",
+                            aiLevelConfidence: item.levelConfidence
+                        )
+                        for link in item.secondaryLinks {
+                            if link.targetId != nil || !link.externalRef.isEmpty {
+                                try TargetQueries.createLink(
+                                    dbConn, sourceID: newID, targetID: link.targetId,
+                                    externalRef: link.externalRef, relation: link.relation, createdBy: "ai"
+                                )
+                            }
                         }
+                    } catch {
+                        throw ExtractCreateError(itemText: item.text, underlying: error)
                     }
                 }
             }
@@ -218,6 +222,18 @@ struct ExtractPreviewSheet: View {
             return json
         }
         return "[]"
+    }
+}
+
+/// Names the proposed item a failed batch stopped at: its parent or a link
+/// target may have been deleted since extraction, and the rolled-back batch
+/// created nothing.
+private struct ExtractCreateError: LocalizedError {
+    let itemText: String
+    let underlying: Error
+
+    var errorDescription: String? {
+        "\"\(itemText)\": \(underlying.localizedDescription). Nothing was created."
     }
 }
 

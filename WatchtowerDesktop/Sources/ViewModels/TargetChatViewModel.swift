@@ -614,6 +614,7 @@ final class TargetChatViewModel {
     private func applyAction(_ action: ProposedAction, cardIndex idx: Int) -> Result<String, Error> {
         reloadTarget()
         do {
+            try requireLiveTarget()
             let applyTarget = try resolveActionTarget(action)
             var summary = try TargetActionExecutor.apply(action, target: applyTarget, viewModel: viewModel)
             if applyTarget.id != target.id { summary += " [in task #\(applyTarget.id)]" }
@@ -649,6 +650,7 @@ final class TargetChatViewModel {
         for cardID in pendingIDs {
             guard let idx = actionCards.firstIndex(where: { $0.id == cardID }) else { continue }
             do {
+                try requireLiveTarget()
                 let applyTarget = try resolveActionTarget(actionCards[idx].action)
                 var summary = try TargetActionExecutor.apply(
                     actionCards[idx].action, target: applyTarget, viewModel: viewModel
@@ -785,6 +787,13 @@ final class TargetChatViewModel {
             )
         }
         return addressed
+    }
+
+    /// Fails a decision on a deleted task with the real reason — an action
+    /// addressing a sub-task would otherwise fail the tree-scope check instead
+    /// (the delete detaches its children), naming the wrong cause.
+    private func requireLiveTarget() throws {
+        if targetGone { throw TargetNotFoundError(id: target.id) }
     }
 
     private func reloadTarget() {

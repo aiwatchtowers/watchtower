@@ -89,6 +89,9 @@ final class TargetsViewModelMissingTargetTests: XCTestCase {
                 subItems: #"[{"text":"a","done":true}]"#
             )
         }
+        let child = try manager.dbPool.write { db in
+            try TargetQueries.create(db, text: "sub-task", periodStart: "2026-09-01", periodEnd: "2026-09-30", parentId: live)
+        }
         let target = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: live) })
         let mock = MockClaudeService()
         let conversationID = try manager.dbPool.write { db -> Int64 in
@@ -107,10 +110,20 @@ final class TargetsViewModelMissingTargetTests: XCTestCase {
             action: ProposedAction(type: .toggleSubItem, reason: "r", index: 0, match: "a", done: true),
             state: .pending
         )
-        chat.actionCards = [card]
+        // Addresses the (now detached) sub-task: must fail for the same reason,
+        // not as "not in this task's tree".
+        let childCard = TargetActionCard(
+            messageID: UUID(),
+            action: ProposedAction(type: .updateStatus, reason: "r", status: "done", targetId: child),
+            state: .pending
+        )
+        chat.actionCards = [card, childCard]
         chat.approve(card)
+        chat.approve(childCard)
 
-        XCTAssertEqual(chat.actionCards.first?.state, .failed(TargetNotFoundError(id: live).localizedDescription))
+        let gone = TargetActionCard.State.failed(TargetNotFoundError(id: live).localizedDescription)
+        XCTAssertEqual(chat.actionCards.map(\.state), [gone, gone])
+        XCTAssertEqual(try manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: child)?.status }, "todo")
         XCTAssertTrue(chat.targetGone)
         XCTAssertEqual(chat.errorMessage, "This task no longer exists — it may have been deleted.")
         XCTAssertFalse(chat.isStreaming, "no follow-up turn about a deleted task")

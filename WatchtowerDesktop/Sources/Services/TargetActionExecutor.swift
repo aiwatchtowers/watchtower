@@ -32,9 +32,7 @@ enum TargetActionExecutor {
         // short-circuits below ("sub-item already done", "already has that
         // label") would answer from it and report a success that never
         // touched the database.
-        try requireTargetExists(
-            target.id, viewModel: viewModel, missing: TargetNotFoundError(id: target.id).localizedDescription
-        )
+        guard try targetExists(target.id, viewModel: viewModel) else { throw TargetNotFoundError(id: target.id) }
         switch action.type {
         case .updateStatus, .updateNotes, .updateProgress, .addSubItem, .createChildTarget, .linkTarget:
             return try applyCore(action, target: target, viewModel: viewModel)
@@ -106,28 +104,29 @@ enum TargetActionExecutor {
     ) throws -> String {
         guard let targetID = action.targetId else { throw TargetActionError.writeFailed("missing target_id") }
         guard targetID != target.id else { throw TargetActionError.writeFailed("cannot link a task to itself") }
-        try requireTargetExists(targetID, viewModel: viewModel, missing: "target #\(targetID) does not exist")
+        // Checked here although `createLink` checks both endpoints too: the AI
+        // may invent the id, and "does not exist" is the honest message for it.
+        guard try targetExists(targetID, viewModel: viewModel) else {
+            throw TargetActionError.writeFailed("target #\(targetID) does not exist")
+        }
         guard let relation = action.relation else { throw TargetActionError.writeFailed("missing relation") }
         viewModel.createLink(from: target.id, to: targetID, relation: relation)
         try checkWrite(viewModel)
         return "linked to target #\(targetID) (\(relation))"
     }
 
-    /// Verifies a target row exists before writing: the acted-on target (a
-    /// stale snapshot of a deleted row) and a link's other end (the AI may
-    /// hallucinate its id). Throws `missing` when it does not; a failed READ
-    /// is reported as such — not conflated with "does not exist".
+    /// Whether a target row exists — the acted-on target (a stale snapshot of
+    /// a deleted row) or a link's other end (the AI may hallucinate its id).
+    /// A failed READ throws as such — not conflated with "does not exist".
     @MainActor
-    private static func requireTargetExists(_ id: Int, viewModel: TargetsViewModel, missing: String) throws {
-        let row: Target?
+    private static func targetExists(_ id: Int, viewModel: TargetsViewModel) throws -> Bool {
         do {
-            row = try viewModel.fetchByID(id)
+            return try viewModel.fetchByID(id) != nil
         } catch {
             throw TargetActionError.writeFailed(
                 "could not verify target #\(id): \(error.localizedDescription)"
             )
         }
-        guard row != nil else { throw TargetActionError.writeFailed(missing) }
     }
 
     @MainActor
