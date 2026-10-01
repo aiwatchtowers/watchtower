@@ -251,8 +251,10 @@ final class TerminalCenter {
 /// background would make unreadable.
 enum TerminalPalette {
     /// The app's window background as the dark appearance resolves it, in
-    /// concrete sRGB (SwiftTerm would capture a dynamic colour once anyway).
-    /// Reverse video draws its text in it and OSC 11 reports it.
+    /// concrete sRGB (SwiftTerm would capture a dynamic colour once anyway);
+    /// #1e1e1e, the macOS 14+ value, only if that resolution fails. The
+    /// terminal's default background: OSC 11 reports it, and per-cell
+    /// reverse video and the text under the block cursor draw in it.
     static let windowBackground: NSColor = {
         var resolved = srgb(0x1E1E1E)
         NSAppearance(named: .darkAqua)?.performAsCurrentDrawingAppearance {
@@ -266,9 +268,12 @@ enum TerminalPalette {
     /// the header above it — the window renders that backdrop lighter than
     /// the resolved `windowBackgroundColor`, so no opaque colour would match.
     /// Under a light appearance it is the opaque dark window background.
-    static func background(for appearance: NSAppearance) -> NSColor {
-        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-            ? windowBackground.withAlphaComponent(0) : windowBackground
+    ///
+    /// Known SwiftTerm limits at opacity 0 (its internal code reads the raw
+    /// background): whole-screen reverse video (DECSCNM, a visual bell) draws
+    /// default text invisible, and IME marked text gets no backing.
+    static func backgroundOpacity(for appearance: NSAppearance) -> CGFloat {
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? 0 : 1
     }
 
     static let foreground = srgb(0xE5E5EA)
@@ -285,21 +290,60 @@ enum TerminalPalette {
         0x1C1C1E, 0xFF453A, 0x30D158, 0xFFD60A, 0x409CFF, 0xBF5AF2, 0x64D2FF, 0xD1D1D6,
         0x8E8E93, 0xFF6961, 0x5DE07F, 0xFFE066, 0x409CFF, 0xDA8FFF, 0x8AE0FF, 0xFFFFFF
     ].map { (rgb: UInt32) in
-        SwiftTerm.Color(red8: UInt16(rgb >> 16 & 0xFF), green8: UInt16(rgb >> 8 & 0xFF), blue8: UInt16(rgb & 0xFF))
+        let (red, green, blue) = channels(rgb)
+        return SwiftTerm.Color(red8: red, green8: green, blue8: blue)
     }
 
     private static func srgb(_ rgb: UInt32, alpha: CGFloat = 1) -> NSColor {
-        NSColor(srgbRed: CGFloat(rgb >> 16 & 0xFF) / 255, green: CGFloat(rgb >> 8 & 0xFF) / 255,
-                blue: CGFloat(rgb & 0xFF) / 255, alpha: alpha)
+        let (red, green, blue) = channels(rgb)
+        return NSColor(srgbRed: CGFloat(red) / 255, green: CGFloat(green) / 255, blue: CGFloat(blue) / 255, alpha: alpha)
+    }
+
+    private static func channels(_ rgb: UInt32) -> (UInt16, UInt16, UInt16) {
+        (UInt16(rgb >> 16 & 0xFF), UInt16(rgb >> 8 & 0xFF), UInt16(rgb & 0xFF))
     }
 }
 
-/// Re-picks the default background when the effective appearance changes;
-/// the setter repaints the layer the host's margin mirrors.
-private final class PalettedTerminalView: LocalProcessTerminalView {
+/// A terminal view in `TerminalPalette`'s colours.
+final class PalettedTerminalView: LocalProcessTerminalView {
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        installColors(TerminalPalette.ansi)
+        nativeForegroundColor = TerminalPalette.foreground
+        caretColor = TerminalPalette.caret
+        // Explicit and opaque: by default the character under the block
+        // cursor draws in the (possibly transparent) default background.
+        caretTextColor = TerminalPalette.windowBackground
+        selectedTextBackgroundColor = TerminalPalette.selectionBackground
+        selectedTextForegroundColor = TerminalPalette.selectionForeground
+        applyBackground()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not used")
+    }
+
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
-        nativeBackgroundColor = TerminalPalette.background(for: effectiveAppearance)
+        applyBackground()
+    }
+
+    /// SwiftTerm's ⌘-hover link preview is the one text field it adds; it
+    /// draws its text in the default background, invisible at opacity 0.
+    override func didAddSubview(_ subview: NSView) {
+        super.didAddSubview(subview)
+        (subview as? NSTextField)?.textColor = TerminalPalette.windowBackground
+    }
+
+    /// Through `backgroundOpacity`, not a bare `nativeBackgroundColor`: its
+    /// setter also flushes SwiftTerm's colour cache, so text already drawn
+    /// does not keep the previous background. Either setter repaints the
+    /// layer the host's margin mirrors — an appearance change re-applies the
+    /// palette background over any OSC 11 colour the program set.
+    private func applyBackground() {
+        nativeBackgroundColor = TerminalPalette.windowBackground
+        backgroundOpacity = TerminalPalette.backgroundOpacity(for: effectiveAppearance)
     }
 }
 
@@ -308,7 +352,7 @@ private final class PalettedTerminalView: LocalProcessTerminalView {
 /// (no Accessibility, no event monitors — no TCC prompt).
 @MainActor
 final class SwiftTermSession: NSObject, TerminalSessionProcess, LocalProcessTerminalViewDelegate {
-    private let terminal: LocalProcessTerminalView
+    private let terminal: PalettedTerminalView
     var onExit: ((Int32?) -> Void)?
 
     override init() {
@@ -316,14 +360,6 @@ final class SwiftTermSession: NSObject, TerminalSessionProcess, LocalProcessTerm
         super.init()
         terminal.processDelegate = self
         terminal.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-        // Before the view is hosted: the background setter repaints the layer
-        // the host's margin mirrors.
-        terminal.installColors(TerminalPalette.ansi)
-        terminal.nativeBackgroundColor = TerminalPalette.background(for: terminal.effectiveAppearance)
-        terminal.nativeForegroundColor = TerminalPalette.foreground
-        terminal.caretColor = TerminalPalette.caret
-        terminal.selectedTextBackgroundColor = TerminalPalette.selectionBackground
-        terminal.selectedTextForegroundColor = TerminalPalette.selectionForeground
     }
 
     var view: NSView { terminal }
