@@ -89,17 +89,89 @@ func (projectDocSource) Changed(ctx context.Context, q Queryer, cursor string, _
 		if privacyProtected(folder) {
 			continue
 		}
-		fi, err := os.Stat(filepath.Join(folder, rel))
+		fi, err := statInside(folder, rel)
 		switch {
 		case errors.Is(err, fs.ErrNotExist):
 			keys = append(keys, projectDocKey(id)) // gone: re-rendered as its title
 		case err != nil:
-			// Unreadable for now: keep the indexed text.
+			// Unreadable or leading out of the folder: keep the indexed text,
+			// and never follow it (it could point into a guarded location).
 		case float64(fi.ModTime().Unix()) != indexed:
 			keys = append(keys, projectDocKey(id))
 		}
 	}
 	return keys, cursor, true, rs.Err()
+}
+
+// statInside stats folder/rel after resolveInside.
+func statInside(folder, rel string) (fs.FileInfo, error) {
+	realFolder, err := filepath.EvalSymlinks(folder)
+	if err != nil {
+		return nil, err
+	}
+	path, err := resolveInside(realFolder, rel)
+	if err != nil {
+		return nil, err
+	}
+	return os.Stat(path)
+}
+
+// resolveInside resolves rel inside realFolder, following symlinks one
+// path component at a time and refusing — before touching it — any step
+// that would leave the folder. Unlike filepath.EvalSymlinks it never
+// stats a path outside the folder, so a link into a location macOS guards
+// cannot make the indexer touch it.
+func resolveInside(realFolder, rel string) (string, error) {
+	parts := strings.Split(filepath.ToSlash(rel), "/")
+	cur, hops := realFolder, 0
+	for len(parts) > 0 {
+		part := parts[0]
+		parts = parts[1:]
+		if part == "" || part == "." {
+			continue
+		}
+		next := filepath.Join(cur, part)
+		if !strictlyInside(realFolder, next) {
+			return "", errDocOutside
+		}
+		fi, err := os.Lstat(next)
+		if err != nil {
+			return "", err
+		}
+		if fi.Mode()&fs.ModeSymlink == 0 {
+			cur = next
+			continue
+		}
+		if hops++; hops > 40 {
+			return "", errors.New("too many symbolic links")
+		}
+		target, err := os.Readlink(next)
+		if err != nil {
+			return "", err
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(cur, target)
+		}
+		if target = filepath.Clean(target); !strictlyInside(realFolder, target) {
+			return "", errDocOutside
+		}
+		// Resolve the target's own components from the folder again: one of
+		// them may be a link too.
+		relTarget, err := filepath.Rel(realFolder, target)
+		if err != nil {
+			return "", errDocOutside
+		}
+		parts = append(strings.Split(filepath.ToSlash(relTarget), "/"), parts...)
+		cur = realFolder
+	}
+	if cur == realFolder {
+		return "", errDocNotRegular
+	}
+	return cur, nil
+}
+
+func strictlyInside(root, path string) bool {
+	return strings.HasPrefix(path, root+string(filepath.Separator))
 }
 
 func (projectDocSource) Keys(ctx context.Context, q Queryer) ([]string, error) {
@@ -140,7 +212,7 @@ func renderProjectDoc(key string, r projectDocRow) *Doc {
 			"rel_path":    r.relPath,
 		},
 	}
-	f, err := readProjectDoc(r.folder, path)
+	f, err := readProjectDoc(r.folder, r.relPath)
 	if err != nil {
 		// Indexed by the title the row still carries; the anchor says why
 		// the text is missing, so an open does not read as an empty file.
@@ -168,23 +240,21 @@ var (
 )
 
 // readProjectDoc reads a regular file that still resolves (symlinks
-// followed) inside folder, capped at projectDocMaxBytes and cut to valid
-// UTF-8. The type is checked before the open, and the open never blocks, so
-// a named pipe put in a document's place cannot stall the indexer.
-func readProjectDoc(folder, path string) (projectDocFile, error) {
+// followed, resolveInside) inside folder, capped at projectDocMaxBytes and
+// cut to valid UTF-8. The type is checked before the open, and the open
+// never blocks, so a named pipe put in a document's place cannot stall the
+// indexer.
+func readProjectDoc(folder, rel string) (projectDocFile, error) {
 	realFolder, err := filepath.EvalSymlinks(folder)
 	if err != nil {
 		return projectDocFile{}, fmt.Errorf("project folder: %w", err)
 	}
-	realPath, err := filepath.EvalSymlinks(path)
+	realPath, err := resolveInside(realFolder, rel)
 	if errors.Is(err, fs.ErrNotExist) {
 		return projectDocFile{}, errDocMissing
 	}
 	if err != nil {
 		return projectDocFile{}, err
-	}
-	if !strings.HasPrefix(realPath, realFolder+string(filepath.Separator)) {
-		return projectDocFile{}, errDocOutside
 	}
 	if fi, err := os.Stat(realPath); err != nil || !fi.Mode().IsRegular() {
 		return projectDocFile{}, errDocNotRegular
@@ -214,20 +284,36 @@ func readProjectDoc(folder, path string) (projectDocFile, error) {
 }
 
 // privacyProtected reports whether folder sits where macOS asks the user
-// before an app reads it (the locations the Desktop's New-project flow
-// warns about).
+// before an app reads it — the home locations the Desktop's New-project flow
+// warns about, and any other volume (removable and network volumes are
+// guarded too, and a dead network mount can block a stat for minutes).
+// Paths compare case-insensitively, as on the default APFS volume.
 func privacyProtected(folder string) bool {
+	if hasPathPrefix(folder, "/Volumes") {
+		return true
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return true // cannot tell: never risk a background prompt
 	}
-	for _, rel := range []string{"Documents", "Desktop", "Downloads", "Library/CloudStorage", "Library/Mobile Documents"} {
-		root := filepath.Join(home, rel)
-		if folder == root || strings.HasPrefix(folder, root+string(filepath.Separator)) {
-			return true
+	homes := []string{home}
+	if resolved, err := filepath.EvalSymlinks(home); err == nil && resolved != home {
+		homes = append(homes, resolved)
+	}
+	for _, h := range homes {
+		for _, rel := range []string{"Documents", "Desktop", "Downloads", "Library/CloudStorage", "Library/Mobile Documents"} {
+			if hasPathPrefix(folder, filepath.Join(h, rel)) {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+// hasPathPrefix reports whether path is root or below it, ignoring case.
+func hasPathPrefix(path, root string) bool {
+	return strings.EqualFold(path, root) ||
+		(len(path) > len(root) && path[len(root)] == filepath.Separator && strings.EqualFold(path[:len(root)], root))
 }
 
 // IndexProjectDocs re-renders every attached document of one project now,

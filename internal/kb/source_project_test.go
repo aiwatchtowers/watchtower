@@ -193,6 +193,69 @@ func TestProjectDoc_DaemonSkipsProtectedFoldersExplicitIndexDoesNot(t *testing.T
 	assert.Contains(t, indexedText(t, d, "project_doc:3"), "beta", "another project's entries are untouched")
 }
 
+// A document symlinked into a guarded location is refused before the
+// target is touched: the target's directory here cannot even be searched,
+// so following the link would fail differently.
+func TestProjectDoc_SymlinkOutOfTheFolderIsNeverFollowed(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	guarded := filepath.Join(home, "Documents")
+	writeProjectFile(t, guarded, "x.md", "private")
+	require.NoError(t, os.Chmod(guarded, 0o000))
+	t.Cleanup(func() { _ = os.Chmod(guarded, 0o755) })
+	folder := t.TempDir()
+	realFolder, err := filepath.EvalSymlinks(folder)
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Join(folder, "docs"), 0o755))
+	require.NoError(t, os.Symlink(filepath.Join(guarded, "x.md"), filepath.Join(folder, "docs", "x.md")))
+	require.NoError(t, os.Symlink(guarded, filepath.Join(folder, "linked")))
+	require.NoError(t, os.Symlink("../docs/inner.md", filepath.Join(folder, "docs", "rel.md")))
+	writeProjectFile(t, folder, "docs/inner.md", "inside")
+
+	for _, rel := range []string{"docs/x.md", "linked/x.md", "../outside.md"} {
+		_, err := resolveInside(realFolder, rel)
+		assert.ErrorIs(t, err, errDocOutside, rel)
+	}
+	got, err := resolveInside(realFolder, "docs/rel.md")
+	require.NoError(t, err, "a link that stays inside is followed")
+	assert.Equal(t, filepath.Join(realFolder, "docs", "inner.md"), got)
+}
+
+func TestPrivacyProtected(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	for folder, want := range map[string]bool{
+		filepath.Join(home, "Documents", "acme"):                 true,
+		filepath.Join(home, "documents", "acme"):                 true, // APFS ignores case
+		filepath.Join(home, "Library", "CloudStorage", "x", "y"): true,
+		filepath.Join(home, "Library", "Mobile Documents", "a"):  true,
+		"/Volumes/USB/acme":                     true,
+		filepath.Join(home, "Code", "acme"):     false,
+		filepath.Join(home, "DocumentsArchive"): false,
+	} {
+		assert.Equal(t, want, privacyProtected(folder), folder)
+	}
+}
+
+// kb reindex (owner-started) loses nothing an explicit trigger indexed in a
+// guarded folder the daemon skips.
+func TestReindex_KeepsProtectedProjectDocs(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	d := db.OpenTestDB(t)
+	folder := filepath.Join(home, "Documents", "acme")
+	writeProjectFile(t, folder, "plan.md", "# Plan\nКанареечный выкат\n")
+	exec(t, d, `INSERT INTO projects (id, name, folder_path) VALUES (1, 'acme', ?)`, folder)
+	exec(t, d, `INSERT INTO project_documents (id, project_id, rel_path, kind) VALUES (1, 1, 'plan.md', 'plan')`)
+	_, _, err := IndexProjectDocs(ctx, d, 1)
+	require.NoError(t, err)
+
+	_, err = Reindex(ctx, d, []string{ProjectDocSource}, time.Now())
+	require.NoError(t, err)
+	assert.Contains(t, indexedText(t, d, "project_doc:1"), "Канареечный")
+}
+
 // TestProj08_ProjectDocsOnlyInTheirOwnProjectSession: project documents
 // never reach a search or an open that is not their own project's session —
 // not the main chat, the Discuss chats, the CLI or another project.

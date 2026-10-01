@@ -338,13 +338,17 @@ the project deletes its index entries in the same transaction (PROJ-02).
 Indexing is mechanical (no AI, KB-02): the daemon's knowledge phase
 re-renders a document whose file's mtime differs from the indexed one (any
 direction) or whose file is gone, hash-gated; it never reads a folder under
-`~/Documents`, `~/Desktop`, `~/Downloads`, `~/Library/CloudStorage` or
-`~/Library/Mobile Documents` (a background read there could raise a macOS
-privacy prompt attributed to Watchtower). Those projects are indexed only
-by an explicit trigger — `kb.IndexProjectDocs`, run by `project resync`
-and, when `knowledge.enabled` is on, by the agent's `attach_document`. A
+`~/Documents`, `~/Desktop`, `~/Downloads`, `~/Library/CloudStorage`,
+`~/Library/Mobile Documents` or `/Volumes` (case-insensitive; a background
+read there could raise a macOS privacy prompt attributed to Watchtower, and
+a dead network mount could block it), and it never follows a symlink out of
+a project folder (`resolveInside` refuses each step before touching it).
+Those projects are indexed only by an explicit trigger —
+`kb.IndexProjectDocs`, run by `project resync`, by `kb reindex` (owner-
+started; it re-indexes every project so a rebuild loses nothing) and, when
+`knowledge.enabled` is on, by the agent's `attach_document`. A
 file that is gone, not a regular file (never opened blocking), or no longer
-resolves inside the folder (symlinks followed) is indexed by its title only,
+resolves inside the folder (symlinks followed inside it only) is indexed by its title only,
 its anchor's `unreadable` saying why; a file over 2 MiB is indexed up to
 that, its anchor's `truncated` saying so.
 
