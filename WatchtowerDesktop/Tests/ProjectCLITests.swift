@@ -73,6 +73,18 @@ final class ProjectCLITests: XCTestCase {
         XCTAssertEqual(warned, ProjectDeleted(id: 3, deleted: true, removalOK: false, removalError: "hook: permission denied"))
     }
 
+    func testAttachDocumentEndsFlagsBeforeThePathAndDecodesTheEnvelope() async throws {
+        let runner = FakeCLIRunner(stdout: Data(#"{"document_id":9,"rel_path":"docs/-x.md","created":true}"#.utf8))
+        let cli = ProjectCLI(runner: runner)
+        let attached = try await cli.attachDocument(projectID: 3, path: "/tmp/acme/docs/-x.md", kind: "spec", targetID: 5)
+        XCTAssertEqual(attached, ProjectDocumentAttached(documentID: 9, relPath: "docs/-x.md", created: true))
+        _ = try await cli.attachDocument(projectID: 3, path: "/tmp/acme/a.md", kind: "doc", targetID: nil)
+        XCTAssertEqual(runner.invocations, [
+            ["project", "attach-doc", "--kind", "spec", "--json", "--target", "5", "--", "3", "/tmp/acme/docs/-x.md"],
+            ["project", "attach-doc", "--kind", "doc", "--json", "--", "3", "/tmp/acme/a.md"]
+        ])
+    }
+
     func testNeedsRepairOnlyWhenSomethingIsMissing() {
         XCTAssertFalse(ProjectInstallStatus(skill: "unchanged", hook: true, mcp: true).needsRepair)
         XCTAssertFalse(ProjectInstallStatus(skill: "drifted", hook: true, mcp: true).needsRepair)

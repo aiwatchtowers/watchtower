@@ -81,6 +81,62 @@ final class ProjectsViewModelTests: XCTestCase {
         XCTAssertFalse(vm.isRevised(try XCTUnwrap(fetched)))
     }
 
+    /// #80: "Add document…" goes through `project attach-doc` (the CLI writes
+    /// the row) and opens the attached document; the owner's own write is
+    /// reported so it is never announced back.
+    func testAttachDocumentRunsTheCLIAndOpensTheDocument() async throws {
+        let (p, doc) = try await pool.write { d -> (Int64, Int64) in
+            let p = try TestDatabase.insertProject(d)
+            // The row `project attach-doc` wrote.
+            return (p, try TestDatabase.insertProjectDocument(d, projectID: p, relPath: "notes/x.md", origin: "owner"))
+        }
+        let runner = FakeCLIRunner(stdout: Data(#"{"document_id":\#(doc),"rel_path":"notes/x.md","created":true}"#.utf8))
+        let vm = makeVM(runner)
+        var ownerWrites: [ProjectSubject] = []
+        vm.onOwnerWrite = { _, subject in ownerWrites.append(subject) }
+        await vm.reload()
+        vm.selectedProjectID = p
+
+        let ok = await vm.attachDocument(fileURL: URL(fileURLWithPath: "/tmp/acme/notes/x.md"), kind: "spec", targetID: nil)
+        XCTAssertTrue(ok)
+        XCTAssertEqual(runner.invocations, [["project", "attach-doc", "--kind", "spec", "--json", "--", "\(p)", "/tmp/acme/notes/x.md"]])
+        XCTAssertEqual(vm.documentViewModel?.document.id, doc)
+        XCTAssertEqual(ownerWrites, [.document(doc)])
+        XCTAssertNil(vm.attachError)
+        XCTAssertFalse(vm.isAttachingDocument)
+        XCTAssertEqual(vm.badgeCount, 0, "the owner's own document is never revised")
+    }
+
+    func testAttachDocumentRefusedByTheCLIKeepsTheReason() async throws {
+        let p = try await pool.write { try TestDatabase.insertProject($0) }
+        let runner = FakeCLIRunner()
+        runner.shouldThrow = CLIRunnerError.nonZeroExit(code: 1, stderr: "Error: /etc/x.md resolves outside the project folder")
+        let vm = makeVM(runner)
+        await vm.reload()
+        vm.selectedProjectID = p
+
+        let ok = await vm.attachDocument(fileURL: URL(fileURLWithPath: "/etc/x.md"), kind: "doc", targetID: 4)
+        XCTAssertFalse(ok)
+        XCTAssertTrue(vm.attachError?.contains("resolves outside the project folder") ?? false)
+        XCTAssertNil(vm.documentViewModel)
+        XCTAssertFalse(vm.isAttachingDocument)
+    }
+
+    func testTargetChoicesFollowTheBoardWithDepth() async throws {
+        let p = try await pool.write { d -> Int64 in
+            let p = try TestDatabase.insertProject(d)
+            let feature = try TestDatabase.insertProjectTarget(d, projectID: p, text: "Feature")
+            try TestDatabase.insertProjectTarget(d, projectID: p, text: "Task", parentID: feature)
+            return p
+        }
+        let vm = makeVM()
+        await vm.reload()
+        vm.selectedProjectID = p
+        let rows = await vm.targetChoices()
+        XCTAssertEqual(rows.map(\.node.target.text), ["Feature", "Task"])
+        XCTAssertEqual(rows.map(\.depth), [0, 1])
+    }
+
     func testCreateShowsAFailedDocumentImportWithTheRetryCommand() async throws {
         let id = try await pool.write { try TestDatabase.insertProject($0) }
         let runner = ScriptedCLIRunner(results: [

@@ -57,6 +57,10 @@ final class ProjectsViewModel {
         installNotes.merging(statusReadErrors) { note, read in "\(note) \(read)" }
     }
     private(set) var documents: [ProjectDocumentListItem] = []
+    /// An "Add document…" attach is running (#80); the sheet disables Attach.
+    private(set) var isAttachingDocument = false
+    /// Why the last attach failed (the CLI's refusal); the sheet shows it.
+    var attachError: String?
     /// The open document. Kept here (not in the view) so it survives pane
     /// switches and tab changes with its watcher running.
     private(set) var documentViewModel: ProjectDocumentViewModel?
@@ -171,7 +175,7 @@ final class ProjectsViewModel {
     }
 
     func isRevised(_ document: ProjectDocument) -> Bool {
-        !document.isImported && viewed[String(document.id)] != document.updatedAt
+        document.isAgentAttached && viewed[String(document.id)] != document.updatedAt
     }
 
     func markDocumentViewed(_ document: ProjectDocument) {
@@ -354,6 +358,47 @@ final class ProjectsViewModel {
             documents = try await dbPool.read { try ProjectQueries.documentListItems($0, projectID: projectID) }
         } catch {
             errorMessage = "Could not load documents: \(error.localizedDescription)"
+        }
+    }
+
+    /// "Add document…" (#80): `project attach-doc` writes the owner's row —
+    /// the CLI checks the file is a .md/.txt inside the folder, symlinks
+    /// resolved — and the pane opens it. The file itself is never written
+    /// (PROJ-03). Returns whether it attached; on false `attachError` says why.
+    func attachDocument(fileURL: URL, kind: String, targetID: Int64?) async -> Bool {
+        guard let project = selectedProject, !isAttachingDocument else { return false }
+        guard let cli else {
+            attachError = "The watchtower CLI was not found."
+            return false
+        }
+        isAttachingDocument = true
+        attachError = nil
+        defer { isAttachingDocument = false }
+        let attached: ProjectDocumentAttached
+        do {
+            attached = try await cli.attachDocument(projectID: project.id, path: fileURL.path, kind: kind, targetID: targetID)
+        } catch {
+            attachError = "Could not attach the document: \(error.localizedDescription)"
+            return false
+        }
+        onOwnerWrite?(project.id, .document(attached.documentID))
+        await loadDocuments()
+        // Still on this project: open it (also for an already attached path).
+        if let item = documents.first(where: { $0.id == attached.documentID }) {
+            await openDocument(item.document)
+        }
+        return true
+    }
+
+    /// The target picker's choices for "Add document…", in board order.
+    func targetChoices() async -> [ProjectBoardRow] {
+        guard let projectID = selectedProjectID else { return [] }
+        do {
+            let board = try await dbPool.read { try ProjectQueries.board($0, projectID: projectID) }
+            return ProjectBoardOutline.rows(board, collapsed: [], showDone: true)
+        } catch {
+            attachError = "Could not load the board's targets: \(error.localizedDescription)"
+            return []
         }
     }
 

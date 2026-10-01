@@ -33,6 +33,9 @@ func runProject(t *testing.T, args ...string) (stdout, stderr string, err error)
 	projectCreateFlagName = ""
 	projectBriefFlagProject = ""
 	projectImportFlagDryRun = false
+	projectAttachFlagKind = "doc"
+	projectAttachFlagTitle = ""
+	projectAttachFlagTarget = 0
 	return out.String(), errOut.String(), err
 }
 
@@ -95,6 +98,51 @@ func TestProject_CreateImportsFolderDocsAndImportDocsIsAdditive(t *testing.T) {
 	docs, err = database.ListProjectDocuments(created.ID)
 	require.NoError(t, err)
 	assert.Len(t, docs, 3)
+}
+
+// #80: the Desktop's "Add document…" attaches a picked file as the owner's,
+// by absolute path, through the same folder checks as attach_document.
+func TestProject_AttachDocAttachesOwnerDocumentsInsideTheFolderOnly(t *testing.T) {
+	database := writeActionsConfig(t)
+	folder := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(folder, "notes"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(folder, "notes", "idea.md"), []byte("# idea"), 0o644))
+	outside := filepath.Join(t.TempDir(), "secret.md")
+	require.NoError(t, os.WriteFile(outside, []byte("secret"), 0o644))
+	out, _, err := runProject(t, "create", "--folder", folder, "--json")
+	require.NoError(t, err)
+	var created projectCreateJSON
+	require.NoError(t, json.Unmarshal([]byte(out), &created))
+	id := strconv.FormatInt(created.ID, 10)
+	resolved, err := filepath.EvalSymlinks(folder)
+	require.NoError(t, err)
+
+	// The Desktop's argv shape: flags first, then `--`, then id and path.
+	out, _, err = runProject(t, "attach-doc", "--kind", "spec", "--json", "--", id, filepath.Join(resolved, "notes", "idea.md"))
+	require.NoError(t, err)
+	var got projectAttachDocJSON
+	require.NoError(t, json.Unmarshal([]byte(out), &got))
+	assert.True(t, got.Created)
+	assert.Equal(t, "notes/idea.md", got.RelPath)
+	doc, err := database.GetProjectDocument(got.DocumentID)
+	require.NoError(t, err)
+	assert.Equal(t, "owner", doc.Origin)
+	assert.Equal(t, "spec", doc.Kind)
+	assert.Equal(t, "idea", doc.Title, "the title defaults to the file name")
+
+	out, _, err = runProject(t, "attach-doc", id, "notes/idea.md")
+	require.NoError(t, err)
+	assert.Contains(t, out, "already attached")
+
+	_, _, err = runProject(t, "attach-doc", id, outside)
+	assert.ErrorContains(t, err, "outside the project folder")
+	_, _, err = runProject(t, "attach-doc", id, "notes/idea.md", "--kind", "memo")
+	assert.Error(t, err, "unknown kind")
+	_, _, err = runProject(t, "attach-doc", id, "notes/idea.md", "--target", "999")
+	assert.ErrorIs(t, err, db.ErrNotInProject)
+	docs, err := database.ListProjectDocuments(created.ID)
+	require.NoError(t, err)
+	assert.Len(t, docs, 1)
 }
 
 // A failed import leaves the project created (exit 0), reports the failure in

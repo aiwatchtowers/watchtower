@@ -284,26 +284,30 @@ final class ProjectQueriesTests: XCTestCase {
         }
     }
 
-    /// Migration 00083: an imported document is not "revised" — it leaves the
-    /// badge stamps and is marked imported in the notification snapshot. An
-    /// agent re-attach (origin agent, new updated_at) makes it count again.
-    func testImportedDocumentsStayOffTheBadgeUntilTheAgentReattachesThem() throws {
-        try db.write { d in
-            let p = try TestDatabase.insertProject(d)
-            let doc = try TestDatabase.insertProjectDocument(d, projectID: p, title: "Spec", origin: "import")
-            let project = try XCTUnwrap(ProjectQueries.fetch(d, id: p))
+    /// Migration 00083 / #80: an imported or owner-attached document is not
+    /// "revised" — it leaves the badge stamps and is marked non-agent in the
+    /// notification snapshot. An agent re-attach (origin agent, new
+    /// updated_at) makes it count again.
+    func testNonAgentDocumentsStayOffTheBadgeUntilTheAgentReattachesThem() throws {
+        for origin in ["import", "owner"] {
+            try db.write { d in
+                let p = try TestDatabase.insertProject(d, folder: "/tmp/acme-\(origin)")
+                let doc = try TestDatabase.insertProjectDocument(d, projectID: p, title: "Spec", origin: origin)
+                let project = try XCTUnwrap(ProjectQueries.fetch(d, id: p))
+                let stamps = { try ProjectQueries.summaries(d).first { $0.id == p }?.documentStamps }
 
-            XCTAssertEqual(try ProjectQueries.summaries(d).first?.documentStamps, [:])
-            XCTAssertEqual(try ProjectQueries.document(d, id: doc)?.isImported, true)
-            let before = try ProjectQueries.activitySnapshot(d, project: project, afterAgentCommentID: 0)
-            XCTAssertEqual(before.documents[doc]?.imported, true)
+                XCTAssertEqual(try stamps(), [:], origin)
+                XCTAssertEqual(try ProjectQueries.document(d, id: doc)?.isAgentAttached, false, origin)
+                let before = try ProjectQueries.activitySnapshot(d, project: project, afterAgentCommentID: 0)
+                XCTAssertEqual(before.documents[doc]?.imported, true, origin)
 
-            try d.execute(sql: """
-                UPDATE project_documents SET origin = 'agent', updated_at = '2026-09-29T13:00:00Z' WHERE id = ?
-                """, arguments: [doc])
-            XCTAssertEqual(try ProjectQueries.summaries(d).first?.documentStamps, [doc: "2026-09-29T13:00:00Z"])
-            let after = try ProjectQueries.activitySnapshot(d, project: project, afterAgentCommentID: 0)
-            XCTAssertEqual(after.documents[doc]?.imported, false)
+                try d.execute(sql: """
+                    UPDATE project_documents SET origin = 'agent', updated_at = '2026-09-29T13:00:00Z' WHERE id = ?
+                    """, arguments: [doc])
+                XCTAssertEqual(try stamps(), [doc: "2026-09-29T13:00:00Z"], origin)
+                let after = try ProjectQueries.activitySnapshot(d, project: project, afterAgentCommentID: 0)
+                XCTAssertEqual(after.documents[doc]?.imported, false, origin)
+            }
         }
     }
 }

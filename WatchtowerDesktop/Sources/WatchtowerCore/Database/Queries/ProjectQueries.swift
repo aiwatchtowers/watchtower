@@ -54,7 +54,7 @@ package enum ProjectQueries {
             active[row["project_id"]] = row["active_count"]
         }
         var stamps: [Int64: [Int64: String]] = [:]
-        for row in try Row.fetchAll(db, sql: "SELECT id, project_id, updated_at FROM project_documents WHERE origin != 'import'") {
+        for row in try Row.fetchAll(db, sql: "SELECT id, project_id, updated_at FROM project_documents WHERE origin = 'agent'") {
             stamps[row["project_id"], default: [:]][row["id"]] = row["updated_at"]
         }
         return projects.map { project in
