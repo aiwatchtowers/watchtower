@@ -1767,7 +1767,7 @@ CREATE TABLE IF NOT EXISTS external_connections (
     created_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
 
--- QC-02 per-tool allowlist (migration 00093): a Quick Connection's cached
+-- QC-02 per-tool allowlist (migration 00094): a Quick Connection's cached
 -- tools/list ('' = never listed: no tool allowed) and the owner's explicit
 -- allow list of tool names (NULL = only tools known to be read-only).
 CREATE TABLE IF NOT EXISTS external_connection_tools (

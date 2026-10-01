@@ -21,7 +21,7 @@ type ExternalConnection struct {
 	Error     string
 	CreatedAt string
 	// Tools is the cached tools/list (external_connection_tools, migration
-	// 00093); ToolsListed is false
+	// 00094); ToolsListed is false
 	// until a list was taken, in which case the chat allows none of the
 	// server's tools (QC-02, fail closed).
 	Tools         []ExternalTool
