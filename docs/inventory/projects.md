@@ -18,7 +18,8 @@ a `SessionStart` hook. Design:
 `docs/superpowers/specs/2026-09-29-project-board-poc-design.md`.
 
 **Module:** `internal/db/{projects,project_comments,project_board}.go` +
-`internal/tools/{projects,project_targets,project_docs,project_scope}.go` +
+`internal/tools/{projects,project_targets,project_docs,project_images,project_scope}.go` +
+`internal/db/project_images.go` + `internal/projectfiles/` +
 `cmd/{project,project_brief}.go` + `internal/devpack/{project,project_settings}.go` + `internal/projectdocs/` +
 `WatchtowerDesktop/Sources/Views/Projects/`
 **Last full audit:** 2026-09-29
@@ -60,8 +61,14 @@ calls on it.
 `watchtower-project` MCP registration and the `.git/info/exclude` lines
 Watchtower added) — a removal failure is reported and the delete still
 happens — then deletes the project row, which removes every project target,
-source, document entry and comment in the same transaction
-(`db.DeleteProject`, `ON DELETE CASCADE` from `projects`). A Claude Code
+source, document entry, comment and target-image row in the same transaction
+(`db.DeleteProject`, `ON DELETE CASCADE` from `projects`), and then removes
+the project's stored image copies (`<workspace>/project_files/<id>/`,
+`projectfiles.Store.RemoveProject`; a failure is reported as `files_ok:
+false` and never undoes the delete). Deleting one project target
+(`watchtower targets delete`) removes the stored copies no other target of
+the project still names; `update_target`'s `remove_image_ids` does the same
+for a detached image. A Claude Code
 session still connected answers `project N no longer exists` on every tool
 (DEV-06). The document files themselves are the owner's and stay in the
 folder. An exclude line is removed only when its path is gone — a skill the
@@ -75,6 +82,8 @@ must be able to undo the whole feature for a folder in one step.
 
 **Test guards:**
 - `internal/db/projects_test.go::TestProj02_DeleteProjectLeavesNoRows`
+- `cmd/project_images_test.go::TestProj02_ProjectDeleteRemovesStoredTargetImages`
+- `cmd/project_images_test.go::TestProj02_TargetDeleteDiscardsItsUnsharedImages`
 - `internal/tools/registry_project_test.go::TestProjectBinding_DeletedProjectAnswersNoLongerExists`
 - `internal/mcp/project_test.go::TestProjectMode_DeletedProjectEveryToolAnswersNoLongerExists`
 - `internal/devpack/project_test.go::TestProj02_RemoveProjectLeavesNothingInstalled`
@@ -95,8 +104,10 @@ never the file. Only the agent edits a document; the Desktop watches the file
 and re-anchors, and a comment whose quote is gone becomes `outdated`, never
 re-attached elsewhere — except that a thread with an owner reply newer than
 its latest agent comment stays `open` until the agent answers, so an
-unanswered owner reply is never hidden from the agent by a re-anchor. No project tool writes a file either:
-`attach_document` only resolves and stats it.
+unanswered owner reply is never hidden from the agent by a re-anchor. No project tool writes a file in the
+project folder either: `attach_document` only resolves and stats it, and a
+target image is copied *out* of wherever it is into Watchtower's own
+workspace directory (`project_files/`), never into the folder.
 
 **Why locked:** Owner decision D8. Two writers on one file — Claude Code in
 the terminal and the Desktop view — would race and lose either the agent's or
@@ -285,6 +296,8 @@ dual path.
 - 2026-10-01 (board target #122): board language — `projects.board_language` (migration `00087`; empty = follow the session language, else a language name or tag validated by `db.NormalizeBoardLanguage`: letters of any script, spaces and hyphens with at least one letter, at most 3 words / 40 runes), set by `watchtower project update <id> --board-language`, the Desktop project page (through that command) and the project-session `update_project` (`board_language`; `description` becomes optional, one of the two is required). The brief and `project_info` carry one `Board language:` line (`tools.BoardLanguageLine`) and the `watchtower-project` skill's Board language section tells every session to write targets, intents and comments in it (code identifiers, paths and plan references unchanged). `terminal title` appends the override to its prompt at run time; imported document titles are the files' own and are not translated. No contract semantics or guard tests changed.
 
 - 2026-10-01 (board item #80): the Desktop Documents pane's **Add Document…** attaches a `.md`/`.txt` file inside the folder as `origin='owner'` through the new `watchtower project attach-doc <id> <path> [--kind --title --target --json]` (the same folder/symlink/extension checks as `attach_document`, shared via `tools.ResolveProjectDocumentPath`; an already attached path — compared ignoring case — is left untouched). The Desktop process itself still writes only `project_comments` rows: the document row is the CLI's write, and no one writes the file (PROJ-03 unchanged); the badge, revised dot and "ready for review" notification now count `origin='agent'` documents only. No contract semantics or guard tests changed.
+- 2026-10-01 (board target #117): project targets carry image attachments — `project_target_images` (migration `00087`), files copied by `create_targets` (`images`) / `update_target` (`add_images`, `remove_image_ids`) into `<workspace>/project_files/<project_id>/<sha256>.<ext>` (0700/0600, PNG/JPEG/GIF/WebP sniffed by content, ≤ 5 MB, ≤ 20 per target, one copy per content per project), listed by `get_target` and shown read-only in the Desktop board's detail pane. **PROJ-02** strengthened: a project delete also removes the stored copies, a target delete the ones nothing else names (new guards in `cmd/project_images_test.go`; `TestProj02_DeleteProjectLeavesNoRows` also counts image rows). **PROJ-03**'s "no project tool writes a file" clarified to "in the project folder" — the image copies land in Watchtower's workspace, the document guarantee is unchanged. PROJ-01: the table has no non-board reader.
+
 - 2026-09-30 (board target #119): **PROJ-06** added — project targets gain `in_review` and a trigger-written status history with time and actor (migration `00086`). **PROJ-05** amended with owner approval (the same request): an `in_review` child counts as started, like `in_progress`; the rollup's other rules are unchanged, and its writes are recorded as `system`. The migration rebuilds `targets` and recreates 00085's triggers.
 
 - 2026-09-30 (board items #104, #79): board targets carry a priority (`create_targets`/`update_target`; siblings sort by priority, then status, in `project_board`, `project board` and the brief). `project create` and the new `project import-docs <id>` mechanically attach the folder's README and `docs/**/{specs,plans}` files as `origin='import'` documents (`internal/projectdocs`, migration 00083) — read-only over the folder, so PROJ-03 is unchanged (no project code writes a document file). No contract semantics or guard tests changed.

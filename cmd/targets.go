@@ -706,21 +706,34 @@ func runTargetsDelete(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid target ID %q: must be a positive integer", args[0])
 	}
 
-	database, err := openDBFromConfig()
+	cfg, database, err := openJiraCmdDB()
 	if err != nil {
 		return err
 	}
 	defer database.Close()
 
-	if _, err := database.GetTargetByID(id); err != nil {
+	target, err := database.GetTargetByID(id)
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("target #%d not found", id)
 		}
 		return fmt.Errorf("looking up target #%d: %w", id, err)
 	}
+	images, err := database.ListProjectTargetImages(int64(id))
+	if err != nil {
+		return fmt.Errorf("looking up target #%d: %w", id, err)
+	}
 
 	if err := database.DeleteTarget(id); err != nil {
 		return fmt.Errorf("deleting target #%d: %w", id, err)
+	}
+	if target.ProjectID.Valid {
+		// The image rows went with the target (ON DELETE CASCADE); their
+		// stored copies go unless another target of the project names them
+		// (PROJ-02). A failure leaves only unreferenced files — reported.
+		if err := discardTargetImages(cfg, database, target.ProjectID.Int64, images); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: removing target #%d's stored images failed: %v\n", id, err)
+		}
 	}
 
 	if targetsFlagDeleteJSON {

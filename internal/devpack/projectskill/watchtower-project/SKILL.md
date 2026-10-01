@@ -18,8 +18,9 @@ At session start a hook prints the project brief: counts, the open part of the b
 - `project_board` — the target tree with ids, statuses and priorities (siblings sorted by priority, then status), comment counters, attached documents.
 - `update_project` — set the project description and/or its board language (see Board language).
 - `add_project_source` / `remove_project_source` — a source of kind `slack_channel`, `jira_project`, `confluence_space`, `person` or `link`.
-- `create_targets` — many targets in one call, all or nothing. Each item is `{key?, text, intent?, priority?, parent_id? | parent_key?}`: `parent_id` points at an existing target, `parent_key` at another item's `key` in the same call; `priority` is `high`, `medium` (the default) or `low`.
-- `update_target` — status (`todo`, `in_progress`, `in_review`, `blocked`, `done`, `dismissed`), progress, title, intent, priority (`high`, `medium`, `low`). Set a status only on a target without sub-targets: a parent's status follows its children by itself (see Rules).
+- `create_targets` — many targets in one call, all or nothing. Each item is `{key?, text, intent?, priority?, parent_id? | parent_key?, images?}`: `parent_id` points at an existing target, `parent_key` at another item's `key` in the same call; `priority` is `high`, `medium` (the default) or `low`; `images` are absolute paths of image files to attach (see Images).
+- `update_target` — status (`todo`, `in_progress`, `in_review`, `blocked`, `done`, `dismissed`), progress, title, intent, priority (`high`, `medium`, `low`); `add_images` (absolute paths) and `remove_image_ids` attach and detach images. Set a status only on a target without sub-targets: a parent's status follows its children by itself (see Rules).
+- `get_target` — one target with its status history and its images (each with the `path` of Watchtower's copy — read it to look at the image).
 - `attach_document` — `rel_path` (relative to this folder, a `.md` or `.txt` file), `kind` (`spec`, `plan` or `doc`), optional `title` and `target_id`. Attaching a path that is already attached — imported ones included — marks it revised and tells the owner it is ready for review, so do that only after you actually revised it.
 - `list_comments` — by `target_id`, by `document_id`, or, by default, everything new for you.
 - `add_comment` — on a target (`target_id`), or a reply to a comment (`parent_id`).
@@ -62,6 +63,10 @@ When you are the controller executing a plan whose tasks are on the board:
 - **After the task's review passes:** `update_target` to `done` (status alone moves a leaf target's progress to 1.0), then one `add_comment` on the sub-target: a summary of one to three lines — what landed, the commit, anything the owner should know.
 - A task the review sends back goes back to `in_progress`; post no interim comments.
 - Never set the feature target's status yourself: it moves to `in_progress` with its first started sub-target and to `done` when every sub-target is done or dismissed (at least one done).
+
+## Images
+
+When a target comes from a message in which the owner shared an image — a screenshot of the bug, a mockup, a diagram — attach that image to the target (`images` in `create_targets`, or `add_images` on an existing target), so the context travels with it. Pass the file's absolute path: a file the owner dragged in or named, or the path Claude Code shows for a pasted image. If the image was pasted and you have no file path for it, say so in the terminal and ask the owner for the file, rather than describing the image in the intent. PNG, JPEG, GIF and WebP up to 5 MB each; Watchtower keeps its own copy, so the original may be moved or deleted afterwards. Detach an image (`remove_image_ids`) only when the owner asks or it clearly belongs to another target.
 
 ## Blocked, or an owner decision is needed
 

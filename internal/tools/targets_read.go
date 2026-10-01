@@ -65,10 +65,11 @@ func NewListTargets() *Tool {
 }
 
 // projectTargetView is get_target's answer in a project session: the target
-// plus its newest status changes, oldest first.
+// plus its newest status changes, oldest first, and its attached images.
 type projectTargetView struct {
 	*db.Target
 	StatusHistory []db.TargetStatusChange `json:"status_history"`
+	Images        []db.ProjectTargetImage `json:"images"`
 }
 
 // NewGetTarget fetches one target by id, including sub-items, notes, and metadata.
@@ -76,7 +77,8 @@ func NewGetTarget() *Tool {
 	return &Tool{
 		Name: "get_target",
 		Description: "Get a single target by id, including sub-items, notes, and metadata; a project " +
-			"target also carries its status_history (newest 50 changes, oldest first).",
+			"target also carries its status_history (newest 50 changes, oldest first) and its attached images " +
+			"(id, file_name, mime, size, path of Watchtower's stored copy — read that path to look at one).",
 		InputSchema: mustSchema[getTargetArgs]("get_target"),
 		Access:      AccessRead,
 		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
@@ -105,7 +107,11 @@ func NewGetTarget() *Tool {
 			if err != nil {
 				return nil, err
 			}
-			return projectTargetView{Target: target, StatusHistory: history}, nil
+			images, err := d.ListProjectTargetImages(int64(target.ID))
+			if err != nil {
+				return nil, err
+			}
+			return projectTargetView{Target: target, StatusHistory: history, Images: images}, nil
 		},
 	}
 }

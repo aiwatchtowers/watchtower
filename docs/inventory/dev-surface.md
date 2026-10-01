@@ -18,7 +18,7 @@ from a developer's coding agent. Design:
 
 **Module:** `internal/mcp/` (`get_task_context`, `find_experts`) +
 `internal/devpack/` + `cmd/integrate.go` + `cmd/mcp.go` (`--project`, DEV-06) +
-`internal/tools/{projects,project_targets,project_docs,project_scope}.go`
+`internal/tools/{projects,project_targets,project_docs,project_images,project_scope}.go`
 **Last full audit:** 2026-08-09
 
 ## DEV-01 — read-only forever
@@ -262,7 +262,12 @@ other write tool is visible there. Three rules keep it narrow:
    `attach_document` accepts only an existing `.md`/`.txt` regular file that
    resolves, after symlinks, inside the project's `folder_path`
    (`resolveInsideFolder`: `../`, absolute paths, and symlinked files or
-   directories pointing out are refused). `list_targets`/`get_target` see only
+   directories pointing out are refused). Target images (`create_targets`'
+   `images`, `update_target`'s `add_images`) attach only to project N's
+   targets and `remove_image_ids` detaches only the target's own images
+   (`scopeImageIDs`); the source file is read, never modified, and its copy
+   lands only in project N's own `<workspace>/project_files/N/`.
+   `list_targets`/`get_target` see only
    project N's targets; `get_action` shows only project N's rows
    (`actionVisible`).
 2. **Applied directly, audited.** Under `DirectApply`, `Registry.Propose`

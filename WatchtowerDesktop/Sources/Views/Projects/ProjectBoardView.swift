@@ -203,6 +203,9 @@ struct ProjectBoardView: View {
                             }
                         }
                     }
+                    if !vm.selectedImages.isEmpty {
+                        ProjectTargetImagesSection(images: vm.selectedImages)
+                    }
                     Divider()
                     Text("Comments").font(.headline)
                     ForEach(vm.threads) { thread in

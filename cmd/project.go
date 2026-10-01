@@ -18,6 +18,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/projectdocs"
 	"watchtower/internal/tools"
+	"watchtower/internal/projectfiles"
 )
 
 var projectCmd = &cobra.Command{
@@ -595,15 +596,42 @@ func runProjectDelete(cmd *cobra.Command, args []string) error {
 	if err := database.DeleteProject(id); err != nil {
 		return err
 	}
+	// The rows are gone; the target images' stored copies go next (PROJ-02).
+	// A failure leaves only files no row names — reported, never undoing the
+	// delete.
+	ferr := projectfiles.New(cfg.WorkspaceDir()).RemoveProject(id)
+	if ferr != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: removing the project's stored images failed: %v (the project is deleted anyway)\n", ferr)
+	}
 	if projectFlagJSON {
-		out := projectDeleteJSON{ID: id, Deleted: true, RemovalOK: rerr == nil}
+		out := projectDeleteJSON{ID: id, Deleted: true, RemovalOK: rerr == nil, FilesOK: ferr == nil}
 		if rerr != nil {
 			out.RemovalError = rerr.Error()
+		}
+		if ferr != nil {
+			out.FilesError = ferr.Error()
 		}
 		return writeJSON(cmd.OutOrStdout(), out)
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Deleted project %d %q.\n", id, p.Name)
 	return nil
+}
+
+// discardTargetImages removes the stored copies of images (rows of a target
+// already deleted) that no remaining row of project projectID names.
+func discardTargetImages(cfg *config.Config, database *db.DB, projectID int64, images []db.ProjectTargetImage) error {
+	if len(images) == 0 {
+		return nil
+	}
+	keep, err := database.ProjectImagePaths(projectID)
+	if err != nil {
+		return err
+	}
+	paths := make([]string, 0, len(images))
+	for _, img := range images {
+		paths = append(paths, img.Path)
+	}
+	return projectfiles.New(cfg.WorkspaceDir()).Discard(paths, keep)
 }
 
 // projectDeleteJSON is `project delete --json`'s envelope; the Desktop
@@ -613,4 +641,6 @@ type projectDeleteJSON struct {
 	Deleted      bool   `json:"deleted"`
 	RemovalOK    bool   `json:"removal_ok"`
 	RemovalError string `json:"removal_error"`
+	FilesOK      bool   `json:"files_ok"` // the target images' stored copies were removed
+	FilesError   string `json:"files_error,omitempty"`
 }

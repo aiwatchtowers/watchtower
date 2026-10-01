@@ -309,6 +309,11 @@ func TestProj02_DeleteProjectLeavesNoRows(t *testing.T) {
 	require.NoError(t, err)
 	_, err = d.AddProjectSource(ProjectSource{ProjectID: pid, Kind: "link", Ref: "https://example.com"})
 	require.NoError(t, err)
+	require.NoError(t, d.WithTx(func(tx *sql.Tx) error {
+		_, err := AddProjectTargetImageTx(tx, ProjectTargetImage{ProjectID: pid, TargetID: parent,
+			FileName: "shot.png", MIME: "image/png", Size: 3, SHA256: "abc", Path: "/tmp/abc.png"})
+		return err
+	}))
 
 	_, err = d.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id)
 		VALUES (?, 'claude', 'New session', '/tmp/acme', 'uuid-1')`, pid)
@@ -326,6 +331,7 @@ func TestProj02_DeleteProjectLeavesNoRows(t *testing.T) {
 		`SELECT COUNT(*) FROM project_sources WHERE project_id = ?`,
 		`SELECT COUNT(*) FROM project_documents WHERE project_id = ?`,
 		`SELECT COUNT(*) FROM project_comments WHERE project_id = ?`,
+		`SELECT COUNT(*) FROM project_target_images WHERE project_id = ?`,
 	} {
 		var n int
 		require.NoError(t, d.QueryRow(q, pid).Scan(&n))

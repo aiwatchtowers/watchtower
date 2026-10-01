@@ -34,6 +34,22 @@ final class ProjectQueriesTests: XCTestCase {
         }
     }
 
+    func testImagesAreTheTargetsOwnOldestFirst() throws {
+        try db.write { d in
+            let p = try TestDatabase.insertProject(d)
+            let target = try TestDatabase.insertProjectTarget(d, projectID: p)
+            let other = try TestDatabase.insertProjectTarget(d, projectID: p, text: "Other")
+            try TestDatabase.insertProjectTargetImage(d, projectID: p, targetID: target, fileName: "first.png", sha256: "a")
+            try TestDatabase.insertProjectTargetImage(d, projectID: p, targetID: target, fileName: "second.png", sha256: "b")
+            try TestDatabase.insertProjectTargetImage(d, projectID: p, targetID: other, sha256: "c")
+            let images = try ProjectQueries.images(d, targetID: target)
+            XCTAssertEqual(images.map(\.fileName), ["first.png", "second.png"])
+            XCTAssertEqual(images[0].fileURL.path, "/tmp/project_files/1/abc.png")
+            try d.execute(sql: "DELETE FROM targets WHERE id = ?", arguments: [target])
+            XCTAssertEqual(try ProjectQueries.images(d, targetID: target), [], "the rows go with their target")
+        }
+    }
+
     func testOwnerCommentCarriesTheAnchorAndReplyInheritsTheRootSubject() throws {
         try db.write { d in
             let p = try TestDatabase.insertProject(d)

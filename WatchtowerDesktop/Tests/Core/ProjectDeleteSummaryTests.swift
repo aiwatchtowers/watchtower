@@ -48,6 +48,7 @@ final class ProjectDeleteSummaryTests: XCTestCase {
         XCTAssertTrue(s.message.contains("exclude line whose file still exists"))
         XCTAssertTrue(s.message.contains("/tmp/acme"))
         XCTAssertTrue(s.message.contains("files themselves stay"), "attached documents are never deleted from disk")
+        XCTAssertTrue(s.message.contains("copies of images attached to targets are deleted"))
         XCTAssertTrue(s.message.contains("terminal"), "the owner is told the running session is closed")
     }
 }

@@ -440,4 +440,30 @@ final class ProjectBoardViewModelTests: XCTestCase {
         XCTAssertEqual(vm.rows.first?.node.target.status, "done")
         XCTAssertEqual(vm.rows.first?.node.unreadForOwner, 1)
     }
+
+    func testSelectedTargetsImagesLoadAndAnAgentAttachIsPickedUp() throws {
+        let (pid, tid, other) = try dbManager.dbPool.write { db -> (Int64, Int64, Int64) in
+            let pid = try Self.insertProject(db)
+            let tid = try Self.insertTarget(db, project: pid, text: "Bug")
+            let other = try Self.insertTarget(db, project: pid, text: "Other")
+            try TestDatabase.insertProjectTargetImage(db, projectID: pid, targetID: other, sha256: "o")
+            return (pid, tid, other)
+        }
+        let vm = makeVM(project: pid)
+        vm.load()
+        vm.select(Int(tid))
+        XCTAssertEqual(vm.selectedImages, [], "another target's image never shows")
+
+        let foreign = try DatabasePool(path: dbPath)
+        try foreign.write { db in
+            try TestDatabase.insertProjectTargetImage(db, projectID: pid, targetID: tid, fileName: "shot.png", sha256: "s")
+        }
+        XCTAssertTrue(vm.refreshIfChanged(), "an attach from the agent's process changes the fingerprint")
+        XCTAssertEqual(vm.selectedImages.map(\.fileName), ["shot.png"])
+
+        vm.select(Int(other))
+        XCTAssertEqual(vm.selectedImages.map(\.targetID), [other])
+        vm.select(nil)
+        XCTAssertEqual(vm.selectedImages, [])
+    }
 }

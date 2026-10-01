@@ -17,6 +17,8 @@ final class ProjectBoardViewModel {
     var showDone = false
     private(set) var selectedTargetID: Int?
     private(set) var selectedComments: [ProjectComment] = []
+    /// The selected target's images (board target #117), read-only here.
+    private(set) var selectedImages: [ProjectTargetImage] = []
     private(set) var errorMessage: String?
 
     /// List or Kanban, remembered per project.
@@ -69,19 +71,22 @@ final class ProjectBoardViewModel {
         do {
             let pid = projectID
             let selected = selectedTargetID
-            let (board, comments, stamp) = try dbPool.read { db in
+            let (board, comments, images, stamp) = try dbPool.read { db in
                 (
                     try ProjectQueries.board(db, projectID: pid),
                     try selected.map { try ProjectQueries.comments(db, targetID: Int64($0)) } ?? [],
+                    try selected.map { try ProjectQueries.images(db, targetID: Int64($0)) } ?? [],
                     try Self.fingerprint(db, projectID: pid)
                 )
             }
             roots = board
             selectedComments = comments
+            selectedImages = images
             fingerprint = stamp
             if let selected, ProjectBoardOutline.find(selected, in: board) == nil {
                 selectedTargetID = nil
                 selectedComments = []
+                selectedImages = []
             }
         } catch {
             errorMessage = "Could not load the board: \(error.localizedDescription)"
@@ -138,7 +143,14 @@ final class ProjectBoardViewModel {
             sql: "SELECT COUNT(*), MAX(updated_at) FROM project_documents WHERE project_id = ?",
             arguments: [projectID]
         )
-        return [targets, comments, docs].map { $0?.description ?? "" }.joined(separator: "|")
+        // Rows are only inserted and deleted, never updated: count + max id
+        // changes with every attach and detach.
+        let images = try Row.fetchOne(
+            db,
+            sql: "SELECT COUNT(*), MAX(id) FROM project_target_images WHERE project_id = ?",
+            arguments: [projectID]
+        )
+        return [targets, comments, docs, images].map { $0?.description ?? "" }.joined(separator: "|")
     }
 
     // MARK: - Selection

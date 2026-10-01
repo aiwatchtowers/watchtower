@@ -8,7 +8,7 @@ final class ProjectSchemaMirrorTests: XCTestCase {
     func testMirrorHasProjectTablesAndTargetsProjectID() throws {
         let queue = try TestDatabase.create()
         try queue.read { db in
-            for table in ["projects", "project_sources", "project_documents", "project_comments"] {
+            for table in ["projects", "project_sources", "project_documents", "project_comments", "project_target_images"] {
                 XCTAssertTrue(try db.tableExists(table), "missing \(table)")
             }
             let columns = try db.columns(in: "targets").map(\.name)

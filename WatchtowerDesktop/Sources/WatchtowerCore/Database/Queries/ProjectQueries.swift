@@ -104,6 +104,17 @@ package enum ProjectQueries {
         }
     }
 
+    // MARK: - Target images
+
+    /// The images attached to a board target, oldest first.
+    package static func images(_ db: Database, targetID: Int64) throws -> [ProjectTargetImage] {
+        try ProjectTargetImage.fetchAll(
+            db,
+            sql: "SELECT * FROM project_target_images WHERE target_id = ? ORDER BY id",
+            arguments: [targetID]
+        )
+    }
+
     // MARK: - Comments
 
     package static func comments(_ db: Database, documentID: Int64) throws -> [ProjectComment] {
