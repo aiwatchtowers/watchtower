@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -49,6 +50,7 @@ func commitFile(t *testing.T, dir, name, content, msg string) {
 //	merged   — merged into main with a merge commit
 //	stacked  — cut from merged's tip after that merge, no commits of its own
 //	squash   — its diff squashed into one commit on main
+//	nearsquash — squashed into main after main changed a line near its hunks
 //	rebase   — two commits re-applied onto main as new commits (a rebase merge)
 //	rebasedmerged — one commit, rebased onto main, then merged with a merge commit
 //	synced       — one commit, main merged into it, then merged with a merge commit
@@ -109,6 +111,28 @@ func newRepo(t *testing.T) string {
 	gitRun(t, dir, "reset", "-q", "--hard", "HEAD~1")
 	gitRun(t, dir, "checkout", "-q", "main")
 
+	// main changes line 12 between the fork and the squash: no conflict,
+	// but the squash's diff context differs from the branch's own.
+	lines := make([]string, 30)
+	for i := range lines {
+		lines[i] = strconv.Itoa(i + 1)
+	}
+	nfile := func(edit map[int]string) string {
+		out := slices.Clone(lines)
+		for i, v := range edit {
+			out[i-1] = v
+		}
+		return strings.Join(out, "\n") + "\n"
+	}
+	commitFile(t, dir, "n.txt", nfile(nil), "n")
+	gitRun(t, dir, "checkout", "-q", "-b", "nearsquash")
+	commitFile(t, dir, "n.txt", nfile(map[int]string{15: "fifteen"}), "n15")
+	commitFile(t, dir, "n.txt", nfile(map[int]string{15: "fifteen", 16: "sixteen"}), "n16")
+	gitRun(t, dir, "checkout", "-q", "main")
+	commitFile(t, dir, "n.txt", nfile(map[int]string{12: "twelve"}), "n12")
+	gitRun(t, dir, "merge", "-q", "--squash", "nearsquash")
+	gitRun(t, dir, "commit", "-q", "-m", "squash n")
+
 	gitRun(t, dir, "checkout", "-q", "-b", "open")
 	commitFile(t, dir, "c.txt", "c\n", "c")
 	gitRun(t, dir, "checkout", "-q", "main")
@@ -160,6 +184,7 @@ func TestProj07_GitRules(t *testing.T) {
 		node(19, "in_progress", "resetback", time.Hour),
 		node(20, "in_progress", "rebasedmerged", time.Hour),
 		node(21, "in_progress", "synced", time.Hour),
+		node(22, "in_progress", "nearsquash", time.Hour),
 	}
 	r := Check(context.Background(), 1, board, Options{Folder: dir, Now: testNow})
 	if !r.Git || r.Base != "main" {
@@ -174,6 +199,7 @@ func TestProj07_GitRules(t *testing.T) {
 		15: {KindMergedOpen},
 		20: {KindMergedOpen},
 		21: {KindMergedOpen},
+		22: {KindMergedOpen},
 	}
 	got := kinds(r)
 	if len(got) != len(want) {
@@ -191,6 +217,12 @@ func TestProj07_GitRules(t *testing.T) {
 		if f.Blocking() == (f.Kind == KindDoneUnmerged) {
 			t.Fatalf("only done_but_unmerged (an offline guess) is advisory, got %+v blocking=%v", f, f.Blocking())
 		}
+	}
+	// Alone on its branch (no open target sharing it), a done target whose
+	// branch was squashed next to a main change is merged work, not drift.
+	r = Check(context.Background(), 1, []db.BoardNode{node(1, "done", "nearsquash", time.Hour)}, Options{Folder: dir, Now: testNow})
+	if len(r.Findings) != 0 {
+		t.Fatalf("a squash-merged done target is not drift, got %+v", r.Findings)
 	}
 }
 
@@ -450,5 +482,24 @@ func TestProj07_DeadlineReportsIncompleteNeverFalseFindings(t *testing.T) {
 		Options{Folder: dir, Now: testNow})
 	if !r.Incomplete || len(r.Findings) != 0 {
 		t.Fatalf("a cancelled check must be incomplete with no findings, got %+v", r)
+	}
+}
+
+// origin/HEAD naming a default branch that no longer resolves (renamed on
+// the remote, the old ref pruned) skips the branch checks and says why, so
+// "branch checks did not run" never comes with no notes.
+func TestProj07_UnresolvableDefaultBranchIsANote(t *testing.T) {
+	gitEnv(t)
+	dir := t.TempDir()
+	gitRun(t, dir, "init", "-q", "-b", "trunk")
+	commitFile(t, dir, "README.md", "hello\n", "init")
+	gitRun(t, dir, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/master")
+
+	r := Check(context.Background(), 1, []db.BoardNode{node(1, "in_progress", "feature", time.Hour)}, Options{Folder: dir, Now: testNow})
+	if !r.Git || len(r.Findings) != 0 {
+		t.Fatalf("git=%v findings=%+v", r.Git, r.Findings)
+	}
+	if !slices.ContainsFunc(r.Notes, func(n string) bool { return strings.Contains(n, "default branch master could not be resolved") }) {
+		t.Fatalf("notes must say why the branch checks were skipped: %v", r.Notes)
 	}
 }

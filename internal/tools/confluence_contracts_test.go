@@ -194,6 +194,22 @@ func TestConfluencePageClient_GetFallsBackToBlogPostAndPutsItsCollection(t *test
 	assert.Len(t, rest.calls, 2, "the page collection, then the blog post one")
 }
 
+// The page GET asks for archived pages too, as the sync fetcher does:
+// without an explicit status only current pages are returned, so an
+// archived page the knowledge index holds would read as "not found".
+func TestConfluencePageClient_ReadsArchivedPages(t *testing.T) {
+	rest := &fakeREST{get: map[string]string{
+		"/wiki/api/v2/pages/43": `{"id":"43","status":"archived","title":"Old plan","version":{"number":9},` +
+			`"body":{"storage":{"value":"<p>Old</p>"}}}`,
+	}}
+	c := NewConfluencePageClient(rest, fakeCommentSource{}, "https://test.atlassian.net", true, true)
+	page, err := c.GetPageBody(context.Background(), "43")
+	require.NoError(t, err)
+	assert.Equal(t, ConfluencePage{ID: "43", Kind: "page", Status: "archived", Title: "Old plan", Version: 9, Storage: "<p>Old</p>"}, page)
+	require.Len(t, rest.calls, 1)
+	assert.Equal(t, []string{"current", "archived"}, rest.calls[0].q["status"])
+}
+
 func TestConfluencePageClient_MapsCommentsAndUsers(t *testing.T) {
 	when := time.Date(2026, 9, 30, 9, 0, 0, 0, time.UTC)
 	src := fakeCommentSource{items: []extsync.Item{

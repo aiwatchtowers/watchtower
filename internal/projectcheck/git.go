@@ -104,6 +104,12 @@ func newGitState(ctx context.Context, o Options) *gitState {
 			g.bases = append(g.bases, sha)
 		}
 	}
+	if ctx.Err() != nil {
+		return g
+	}
+	if len(g.bases) == 0 {
+		g.notes = append(g.notes, fmt.Sprintf("default branch %s could not be resolved locally or on origin (renamed? run `git remote set-head origin -a`); branch checks skipped", g.defaultName))
+	}
 	return g
 }
 
@@ -375,7 +381,10 @@ func (g *gitState) squashMerged(ctx context.Context, sha, base string) verdict {
 		return unknown
 	}
 	fork := strings.TrimSpace(mb)
-	diff, _, err := g.git(ctx, "diff", "--no-color", "--no-ext-diff", fork, sha)
+	// -U0 on both sides: patch-id hashes context lines, so a line main
+	// changed next to the branch's hunks would make an otherwise identical
+	// squash differ.
+	diff, _, err := g.git(ctx, "diff", "--no-color", "--no-ext-diff", "-U0", fork, sha)
 	if err != nil {
 		return unknown
 	}
@@ -386,7 +395,7 @@ func (g *gitState) squashMerged(ctx context.Context, sha, base string) verdict {
 	if !ok || len(want) != 1 {
 		return unknown
 	}
-	log, _, err := g.git(ctx, "log", "-p", "--no-merges", "--no-color", "--no-ext-diff",
+	log, _, err := g.git(ctx, "log", "-p", "-U0", "--no-merges", "--no-color", "--no-ext-diff",
 		"--max-count="+strconv.Itoa(squashWindow), fork+".."+base)
 	if err != nil {
 		return unknown

@@ -55,6 +55,26 @@ func TestAttachDocument_AttachesAndReattaches(t *testing.T) {
 	assert.Equal(t, 1, countProjectDocuments(t, fx.d, fx.a))
 }
 
+// On a case-insensitive volume (APFS) another spelling is the same file: the
+// re-attach revises the attached document and reports its stored spelling.
+func TestAttachDocument_ReattachUnderAnotherCaseRevisesTheSameDocument(t *testing.T) {
+	fx := newProjectFixture(t)
+	reg := projectRegistry(t, fx.d)
+	writeProjectFile(t, fx.d, fx.a, "docs/Plans/X-Plan.md", "# Plan\n")
+	p, err := fx.d.GetProject(fx.a)
+	require.NoError(t, err)
+	if _, err := os.Stat(filepath.Join(p.FolderPath, "docs/plans/x-plan.md")); err != nil {
+		t.Skip("case-sensitive file system")
+	}
+
+	out := mustApply(t, reg, fx.a, "attach_document", `{"rel_path":"docs/Plans/X-Plan.md","kind":"plan","reason":"plan"}`)
+	require.Equal(t, true, out["created"])
+	out = mustApply(t, reg, fx.a, "attach_document", `{"rel_path":"docs/plans/x-plan.md","kind":"plan","reason":"revised"}`)
+	assert.Equal(t, false, out["created"], "another spelling of the attached file is a revision")
+	assert.Equal(t, "docs/Plans/X-Plan.md", out["rel_path"], "the stored spelling is reported")
+	assert.Equal(t, 1, countProjectDocuments(t, fx.d, fx.a))
+}
+
 // DEV-06 / Review Focus #1: attach_document never reaches a file outside the
 // project folder — not by `../`, an absolute path, a symlinked file or a
 // symlinked directory — and only an existing .md/.txt regular file attaches.

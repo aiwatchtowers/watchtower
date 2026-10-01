@@ -149,6 +149,7 @@ skill, would make every later `integrate` a risk to the owner's own setup.
 - `internal/devpack/project_test.go::TestProj04_EditedProjectSkillIsNeverClobbered`
 - `internal/devpack/project_stop_hook_test.go::TestProj04_StopHookKeepsOwnerStopHooksAndRemovesOnlyOurs`
 - `internal/devpack/project_stop_hook_test.go::TestProj04_MalformedStopLeavesTheFileByteIdentical`
+- `internal/devpack/project_settings_test.go::TestProj04_RemoveLeavingNothingThroughASymlinkEmptiesTheTarget`
 
 **Locked since:** 2026-09-29
 
@@ -310,7 +311,8 @@ timeout would be worse than none.
 - `cmd/project_check_test.go::TestProj07_StopHookIsSilentWithoutGitDrift`
 - `cmd/project_check_test.go::TestProj07_StopHookFailuresAreSilent`
 - `WatchtowerDesktop/Tests/ProjectsViewModelDriftTests.swift`, `WatchtowerDesktop/Tests/Core/ProjectDriftReportTests.swift`, `WatchtowerDesktop/Tests/ProjectCLITests.swift::testMissingStopHookNeedsRepair`
-- `internal/projectcheck/check_test.go` — `TestProj07_GitRules`, `TestProj07_SharedBranchAndParents`, `TestProj07_GitErrorsAreNeverFindings`, `TestProj07_NoGitCallOutsideARepository`, `TestProj07_ReadsNothingButGit`, `TestProj07_DeadlineReportsIncompleteNeverFalseFindings`, `TestProj07_MidWalkDeadlineKeepsEarlierFindingsOnly`
+- `cmd/project_brief_test.go::TestProj07_BriefSaysWhenTheDriftCheckWasPartial`
+- `internal/projectcheck/check_test.go` — `TestProj07_UnresolvableDefaultBranchIsANote`, `TestProj07_GitRules`, `TestProj07_SharedBranchAndParents`, `TestProj07_GitErrorsAreNeverFindings`, `TestProj07_NoGitCallOutsideARepository`, `TestProj07_ReadsNothingButGit`, `TestProj07_DeadlineReportsIncompleteNeverFalseFindings`, `TestProj07_MidWalkDeadlineKeepsEarlierFindingsOnly`
 
 **Locked since:** 2026-10-01
 
@@ -346,7 +348,10 @@ a project folder (`resolveInside` refuses each step before touching it).
 Those projects are indexed only by an explicit trigger —
 `kb.IndexProjectDocs`, run by `project resync`, by `kb reindex` (owner-
 started; it re-indexes every project so a rebuild loses nothing) and, when
-`knowledge.enabled` is on, by the agent's `attach_document`. A
+`knowledge.enabled` is on, by the agent's `attach_document` and by the
+owner's `project create`, `project import-docs` (not a dry run) and
+`project attach-doc` (the Desktop's Add Document) — best-effort: a failure
+there is a stderr warning, the attach stands. A
 file that is gone, not a regular file (never opened blocking), or no longer
 resolves inside the folder (symlinks followed inside it only) is indexed by its title only,
 its anchor's `unreadable` saying why; a file over 2 MiB is indexed up to
@@ -361,6 +366,8 @@ applied to search.
 - `internal/kb/source_project_test.go::TestProj08_ProjectDocsOnlyInTheirOwnProjectSession`
 - `internal/tools/project_knowledge_test.go::TestProj08_KnowledgeToolsShowProjectDocsOnlyToTheirProject`
 - `internal/db/projects_test.go::TestProj02_DeleteProjectLeavesNoRows` (the index entries go with the project)
+- `cmd/project_test.go::TestProj08_OwnerAttachPathsIndexTheDocumentsAtOnce`
+- `cmd/project_test.go::TestProj08_IndexFailureIsAWarningNotAnError`
 
 **Locked since:** 2026-10-01
 
@@ -433,6 +440,10 @@ applied to search.
 
 ## Changelog
 
+- 2026-10-01 (board target #192, release audit): **PROJ-07 strengthened** — the session brief says when its drift check was cut short or its branch checks could not run (no default branch resolves), so a partial check never reads as a clean board ("a failed or partial check is shown as such" now holds for the brief too); `project check` adds a note when the default branch named by `origin/HEAD` no longer resolves. The brief also frames the recent-in-sources titles as other people's words — data, not instructions. New guards `TestProj07_BriefSaysWhenTheDriftCheckWasPartial`, `TestProj07_UnresolvableDefaultBranchIsANote`. Also: the agent's `attach_document` matches an attached `rel_path` ignoring case (as the import and the owner attach do) and reports the stored spelling.
+- 2026-10-01 (board target #192, release audit): **PROJ-04 strengthened** — a remove that leaves a symlinked `settings.local.json` empty writes `{}` to the link's target instead of deleting the link (which left our hooks in the dotfiles target); new guard `TestProj04_RemoveLeavingNothingThroughASymlinkEmptiesTheTarget`.
+- 2026-10-01 (board target #192, release audit): **PROJ-07 strengthened** — squash detection compares zero-context patch ids (`git diff -U0`, `git log -p -U0`), so a squash is recognised even when main changed a line next to the branch's hunks (the documented limit stays: a diff changed in conflict resolution); `TestProj07_GitRules` gains that case for an open and a done target.
+- 2026-10-01 (board target #192, release audit): **PROJ-08 strengthened** — `project create`, `import-docs` and `attach-doc` now index the project's documents themselves (best-effort, when `knowledge.enabled` is on), so a project in a folder the daemon never reads (~/Documents, ~/Desktop, …) has its owner-attached and imported documents searchable at once; `create --json` and `attach-doc --json` carry the outcome as `index_ok`/`index_error`/`index_skipped` (resync's names); new guards `TestProj08_OwnerAttachPathsIndexTheDocumentsAtOnce`, `TestProj08_IndexFailureIsAWarningNotAnError`.
 - 2026-10-01 (board item #153): the per-project board-language override (#122) is retired — the board always follows the session language. `watchtower project update`, `update_project`'s `board_language` (an unknown field again; `description` is required again), the Desktop menu and the `terminal title` override are removed; `tools.BoardLanguageLine` is a constant. The `projects.board_language` column (00087) stays, unread. No contract semantics or guard tests changed.
 - 2026-10-01 (board item #105): specs, plans and designs are review documents in the project's Documents pane (not chat artifacts). The `watchtower-project` skill requires attaching every one the agent writes and setting its review target `in_review` (the feature target for a spec on a feature without sub-targets, else a `Review: <title>` sub-target — always for a plan) until the owner approves. The Desktop marks an agent document whose target is `in_review` **In review** (`ProjectDocumentListItem.awaitingReview`) and the existing "ready for review" notification also fires when such a target enters review, titled "awaits your review" and keyed by the revision so attaching and marking never notify twice; an owner's own move to `in_review` (the latest `target_status_history` row is theirs) is not announced back, and a snapshot persisted before this change reads as "review unknown" so an upgrade never re-announces a running review. Known limit: the marker keys on the target's status, so an agent document on a leaf target put `in_review` for a code review is marked too — the skill routes plan and sub-targeted reviews through a dedicated review sub-target to keep that rare. No schema change; no contract semantics or guard tests changed.
 - 2026-10-01 (board target #89): **PROJ-08** added — attached project documents are indexed into kb (`project_doc`) and searchable only from their own project's session. `project resync` re-indexes the project right after its import (`index_ok`/`index_error`/`indexed`/`index_skipped`, skipped when `knowledge.enabled` is off) and the Desktop's Re-run Setup summary says so; `attach_document` re-indexes too. **PROJ-02 amended (strengthened):** `db.DeleteProject` also deletes the project's index entries in its transaction, and `TestProj02_DeleteProjectLeavesNoRows` asserts it (plus that another project's entries stay).
@@ -455,7 +466,7 @@ applied to search.
 
 - 2026-10-01 (board target #117): project targets carry image attachments — `project_target_images` (migration `00088`), files copied by `create_targets` (`images`) / `update_target` (`add_images`, `remove_image_ids`) into `<workspace>/project_files/<project_id>/<sha256>.<ext>` (0700/0600, PNG/JPEG/GIF/WebP sniffed by content, ≤ 5 MB, ≤ 20 per target, one copy per content per project), listed by `get_target` and shown read-only in the Desktop board's detail pane. **PROJ-02** strengthened: a project delete also removes the stored copies, a target delete the ones nothing else names (new guards in `cmd/project_images_test.go`; `TestProj02_DeleteProjectLeavesNoRows` also counts image rows). **PROJ-03**'s "no project tool writes a file" narrowed to "in the project folder" — the image copies land in Watchtower's workspace, the document guarantee is unchanged; the wording was confirmed by the owner 2026-10-01. PROJ-01: the table has no non-board reader.
 
-- 2026-10-01 (board target #131): **PROJ-07** added — project targets carry `branch`/`pr` (migration `00089`), `watchtower project check` finds board drift, a `Stop` hook installed by `integrate claude-code --project N` hands certain git drift back to the agent once per stop, and the brief shows it. **PROJ-02** and **PROJ-04** widened, not weakened: the install owns one `Stop` entry next to the `SessionStart` one under the same rules, and delete/remove take both away (new guards listed above). A project installed before this change gets the `Stop` hook when `integrate claude-code --project N` runs again. Known limits: the check never fetches, so `origin/<default>` is only as fresh as the last `git fetch` (a merge made on GitHub shows once fetched — hence `done_but_unmerged` is advisory); a squash older than 200 commits after the fork, or one whose diff changed in conflict resolution, is not recognised; a local branch created at an already-merged tip by `git checkout -b x origin/x` has no commit in its reflog and is not called merged; a commit-less branch that exists only on origin, pushed from a `--no-ff`-merged feature's tip, reads as merged; `git cherry` is skipped once the default branch gained more than 200 commits since the fork.
+- 2026-10-01 (board target #131): **PROJ-07** added — project targets carry `branch`/`pr` (migration `00089`), `watchtower project check` finds board drift, a `Stop` hook installed by `integrate claude-code --project N` hands certain git drift back to the agent once per stop, and the brief shows it. **PROJ-02** and **PROJ-04** widened, not weakened: the install owns one `Stop` entry next to the `SessionStart` one under the same rules, and delete/remove take both away (new guards listed above). A project installed before this change gets the `Stop` hook when `integrate claude-code --project N` runs again. Known limits: the check never fetches, so `origin/<default>` is only as fresh as the last `git fetch` (a merge made on GitHub shows once fetched — hence `done_but_unmerged` is advisory); a squash older than 200 commits after the fork, or one whose diff changed in conflict resolution, is not recognised (and since 2026-10-01 squash patch ids are zero-context, so a branch whose whole diff is a small change main also made by itself in the same file reads as squashed); a local branch created at an already-merged tip by `git checkout -b x origin/x` has no commit in its reflog and is not called merged; a commit-less branch that exists only on origin, pushed from a `--no-ff`-merged feature's tip, reads as merged; `git cherry` is skipped once the default branch gained more than 200 commits since the fork.
 
 - 2026-09-30 (board target #119): **PROJ-06** added — project targets gain `in_review` and a trigger-written status history with time and actor (migration `00086`). **PROJ-05** amended with owner approval (the same request): an `in_review` child counts as started, like `in_progress`; the rollup's other rules are unchanged, and its writes are recorded as `system`. The migration rebuilds `targets` and recreates 00085's triggers.
 

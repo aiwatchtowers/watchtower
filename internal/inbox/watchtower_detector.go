@@ -49,7 +49,7 @@ func DetectWatchtowerInternal(_ context.Context, database *db.DB, sinceTS time.T
 		var briefingID int64
 		var date string
 		if err := rows.Scan(&briefingID, &date); err != nil {
-			continue
+			return 0, fmt.Errorf("watchtower detector scan briefings: %w", err)
 		}
 		briefings = append(briefings, pendingBriefing{
 			msgTS: fmt.Sprintf("briefing:%d", briefingID),
@@ -79,9 +79,13 @@ func DetectWatchtowerInternal(_ context.Context, database *db.DB, sinceTS time.T
 			CreatedAt:    now,
 			UpdatedAt:    now,
 		}
-		if _, err := database.CreateInboxItem(item); err == nil {
-			created++
+		if _, err := database.CreateInboxItem(item); err != nil {
+			if isUniqueConflict(err) {
+				continue
+			}
+			return created, fmt.Errorf("watchtower detector create briefing item: %w", err)
 		}
+		created++
 	}
 	return created, nil
 }
