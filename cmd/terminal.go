@@ -107,7 +107,7 @@ func runTerminalTitle(cmd *cobra.Command, args []string) error {
 	if owner == "" {
 		return enc.Encode(terminalTitleResult{})
 	}
-	title, err := generateTerminalTitle(cmd, cfg, database, owner)
+	title, err := generateTerminalTitle(cmd, cfg, database, owner, terminalBoardLanguage(cmd, database, sess))
 	if err != nil {
 		return err
 	}
@@ -143,15 +143,36 @@ func openTerminalTitleDB() (*config.Config, *db.DB, error) {
 	return cfg, database, nil
 }
 
+// terminalBoardLanguage is the board language of the session's project (empty for
+// a standalone session or a project that follows the session language). The
+// title is cosmetic, so a failed lookup is reported and the title falls back
+// to the owner's language.
+func terminalBoardLanguage(cmd *cobra.Command, database *db.DB, sess *db.TerminalSession) string {
+	if !sess.ProjectID.Valid {
+		return ""
+	}
+	p, err := database.GetProject(sess.ProjectID.Int64)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "terminal title: reading the project's board language: %v\n", err)
+		return ""
+	}
+	return p.BoardLanguage
+}
+
 // generateTerminalTitle asks the light-tier model for a title of the owner's
-// messages; an empty answer is an error.
-func generateTerminalTitle(cmd *cobra.Command, cfg *config.Config, database *db.DB, owner string) (string, error) {
+// messages; an empty answer is an error. A project's board language overrides
+// the prompt's "in the language the owner wrote in" (board item #122), appended
+// at run time so an owner-customized prompt keeps working.
+func generateTerminalTitle(cmd *cobra.Command, cfg *config.Config, database *db.DB, owner, boardLanguage string) (string, error) {
 	tmpl, _, err := prompts.New(database, nil).Get(prompts.TerminalTitle)
 	if err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "terminal title: using the default prompt: %v\n", err)
 	}
 	if tmpl == "" {
 		tmpl = prompts.Defaults[prompts.TerminalTitle]
+	}
+	if boardLanguage != "" {
+		tmpl += "\nWrite the name in " + boardLanguage + ", whatever language the owner wrote in."
 	}
 	ctx := cmd.Context()
 	if ctx == nil { // RunE invoked directly (tests)

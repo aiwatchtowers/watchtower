@@ -47,6 +47,9 @@ package struct Project: FetchableRecord, Identifiable, Equatable, Hashable, Send
     package let description: String
     package let createdAt: String
     package let updatedAt: String
+    /// The language the board is written in (migration 00087); empty =
+    /// follow the session language. Set through `watchtower project update`.
+    package let boardLanguage: String
 
     package init(row: Row) {
         id = row["id"]
@@ -55,6 +58,7 @@ package struct Project: FetchableRecord, Identifiable, Equatable, Hashable, Send
         description = row["description"] ?? ""
         createdAt = row["created_at"] ?? ""
         updatedAt = row["updated_at"] ?? ""
+        boardLanguage = row["board_language"] ?? ""
     }
 
     package var folderURL: URL { URL(fileURLWithPath: folderPath, isDirectory: true) }

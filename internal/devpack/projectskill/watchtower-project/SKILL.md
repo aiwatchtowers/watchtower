@@ -16,7 +16,7 @@ At session start a hook prints the project brief: counts, the open part of the b
 
 - `project_info` — name, folder, description, sources, counts.
 - `project_board` — the target tree with ids, statuses and priorities (siblings sorted by priority, then status), comment counters, attached documents.
-- `update_project` — set the project description.
+- `update_project` — set the project description and/or its board language (see Board language).
 - `add_project_source` / `remove_project_source` — a source of kind `slack_channel`, `jira_project`, `confluence_space`, `person` or `link`.
 - `create_targets` — many targets in one call, all or nothing. Each item is `{key?, text, intent?, priority?, parent_id? | parent_key?}`: `parent_id` points at an existing target, `parent_key` at another item's `key` in the same call; `priority` is `high`, `medium` (the default) or `low`.
 - `update_target` — status (`todo`, `in_progress`, `in_review`, `blocked`, `done`, `dismissed`), progress, title, intent, priority (`high`, `medium`, `low`). Set a status only on a target without sub-targets: a parent's status follows its children by itself (see Rules).
@@ -76,6 +76,15 @@ Comments are what the owner gets notified about. Post only three kinds:
 - a **done summary**.
 
 No progress chatter, no "starting now", no restating the plan. One comment per event.
+
+## Board language
+
+Everything you write on the board — target texts, intents, comments and replies, the done summary — is in the **board language**. The brief and `project_info` state it on a `Board language:` line:
+
+- `Board language: follow the session language` (the default) — write in the language the owner uses with you in this session, not the language of the repository, its docs or its code. If the owner writes to you in Russian, the targets and comments are in Russian even when every file in the folder is in English.
+- `Board language: <language>` — the owner fixed it for this project: write in that language whatever language the session uses, so every session keeps the board the same way.
+
+Code identifiers, file paths, commands, issue keys and plan references (`docs/plans/feature-x.md — Task 3`) stay exactly as they are in any language. Do not translate or rewrite what is already on the board. Change the setting (`update_project` with `board_language`, an empty value to follow the session again) only when the owner asks.
 
 ## Rules
 
