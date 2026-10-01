@@ -152,7 +152,7 @@ final class ProjectCLITests: XCTestCase {
         try await cli.setBoardLanguage(projectID: 7, language: "")
         XCTAssertEqual(runner.invocations, [
             ["project", "update", "7", "--board-language=Brazilian Portuguese"],
-            ["project", "update", "7", "--board-language="],
+            ["project", "update", "7", "--board-language="]
         ])
     }
 }
