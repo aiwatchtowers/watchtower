@@ -105,6 +105,9 @@ final class ProjectsViewModel {
     var sessionLoadErrors: [Int64?: String] = [:]
     /// Layouts touched this run; the rest are read from `defaults`.
     var layouts: [Int64: WorkspaceLayout] = [:]
+    /// The panel's dragged session orders touched this run (key nil = the
+    /// standalone terminals); the rest are read from `defaults`.
+    var sessionOrders: [Int64?: [Int64]] = [:]
     /// Failed AI-title attempts per session id, this run only.
     @ObservationIgnored var titleAttempts: [Int64: Int] = [:]
     /// Consecutive "no owner message yet" title answers per session; at

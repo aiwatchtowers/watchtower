@@ -11,6 +11,7 @@ struct ProjectSessionsPanel: View {
     let actions: SessionRowActions
 
     var body: some View {
+        let sessions = vm.drilledSessions
         VStack(spacing: 0) {
             header
             List(selection: selection) {
@@ -19,10 +20,11 @@ struct ProjectSessionsPanel: View {
                     PanelRowLabel("Documents", systemImage: "doc.text").tag(WorkspacePane.documents)
                 }
                 Section("Sessions") {
-                    ForEach(vm.drilledSessions) { session in
+                    ForEach(sessions) { session in
                         TerminalSessionRow(session: session, isLive: vm.isLive(session), actions: actions)
                             .tag(WorkspacePane.session(session.id))
                     }
+                    .onMove { vm.moveSessions(sessions, projectID: project.id, from: $0, to: $1) }
                 }
             }
             .panelListStyle()

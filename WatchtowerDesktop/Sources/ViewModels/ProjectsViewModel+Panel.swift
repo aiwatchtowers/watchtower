@@ -10,9 +10,39 @@ extension ProjectsViewModel {
         summaries.first { $0.id == drilledProjectID }?.project
     }
 
-    /// Level 2's sessions, most recently active first.
+    /// Level 2's sessions in the panel's order (`TerminalSessionOrder`).
     var drilledSessions: [TerminalSession] {
-        drilledProjectID.flatMap { terminalSessions[$0] } ?? []
+        drilledProjectID.map { orderedSessions(projectID: $0) } ?? []
+    }
+
+    /// A session list in the panel's order: stable while the owner switches
+    /// sessions — opening one never moves it — and changed only by a drag.
+    /// `projectID` nil = the standalone terminals.
+    func orderedSessions(projectID: Int64?) -> [TerminalSession] {
+        let rows = projectID.map { terminalSessions[$0] ?? [] } ?? standaloneSessions
+        return TerminalSessionOrder.apply(rows, saved: sessionOrder(projectID: projectID))
+    }
+
+    /// A drag in a session list; the new order is saved for that list.
+    /// `displayed` is the list the drag's offsets index — the one the view
+    /// rendered, not a re-read that a reload may have changed meanwhile.
+    func moveSessions(_ displayed: [TerminalSession], projectID: Int64?, from source: IndexSet, to destination: Int) {
+        let order = TerminalSessionOrder.move(displayed, from: source, to: destination)
+        sessionOrders[projectID] = order
+        defaults.set(order.map(NSNumber.init(value:)), forKey: TerminalSessionOrder.key(projectID: projectID))
+    }
+
+    /// Cached once dragged: UserDefaults is not observed, the cache is what
+    /// re-renders the list after a drag.
+    private func sessionOrder(projectID: Int64?) -> [Int64] {
+        if let cached = sessionOrders[projectID] { return cached }
+        let key = TerminalSessionOrder.key(projectID: projectID)
+        guard let raw = defaults.array(forKey: key) else { return [] }
+        let ids = raw.compactMap { ($0 as? NSNumber)?.int64Value }
+        if ids.count != raw.count {
+            NSLog("ProjectsViewModel: ignored %d unreadable entries in %@", raw.count - ids.count, key)
+        }
+        return ids
     }
 
     var selectedStandalone: TerminalSession? {

@@ -1011,6 +1011,56 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         XCTAssertEqual(vm.terminalSessions[p]?.map(\.id), [row.id])
     }
 
+    // MARK: - Panel order (#143)
+
+    /// Opening a session never moves it; a drag does, and the order outlives
+    /// a relaunch; a session created later appears on top once.
+    func testPanelOrderIsStableAndChangesOnlyByDrag() async throws {
+        let p = try await projectWithFolder()
+        let first = try await liveSession(p, "first")
+        let second = try await liveSession(p, "second")
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: p)
+        await vm.loadSessions(projectID: p)
+        XCTAssertEqual(vm.drilledSessions.map(\.id), [second.id, first.id])
+
+        clock = clock.addingTimeInterval(60)
+        await vm.showFromPanel(.session(first.id))
+        XCTAssertEqual(vm.drilledSessions.map(\.id), [second.id, first.id], "opening does not raise it")
+
+        vm.moveSessions(vm.drilledSessions, projectID: p, from: [1], to: 0)
+        XCTAssertEqual(vm.drilledSessions.map(\.id), [first.id, second.id])
+
+        let third = try await liveSession(p, "third")
+        let relaunched = makeVM()
+        await relaunched.reload()
+        relaunched.drill(into: p)
+        await relaunched.loadSessions(projectID: p)
+        XCTAssertEqual(relaunched.drilledSessions.map(\.id), [third.id, first.id, second.id])
+    }
+
+    func testStandaloneAndProjectOrdersAreSavedApart() async throws {
+        let p = try await projectWithFolder()
+        let a = try await liveSession(p, "a")
+        let b = try await liveSession(p, "b")
+        let vm = makeVM()
+        await vm.newStandalone(kind: .shell, folder: folder)
+        await vm.newStandalone(kind: .shell, folder: folder)
+        await vm.loadSessions(projectID: p)
+        let shown = vm.orderedSessions(projectID: nil).map(\.id)
+        XCTAssertEqual(shown.count, 2)
+
+        vm.moveSessions(vm.orderedSessions(projectID: nil), projectID: nil, from: [0], to: 2)
+        XCTAssertEqual(vm.orderedSessions(projectID: p).map(\.id), [b.id, a.id], "the project list is untouched")
+
+        let relaunched = makeVM()
+        await relaunched.reload()
+        await relaunched.loadSessions(projectID: p)
+        XCTAssertEqual(relaunched.orderedSessions(projectID: nil).map(\.id), shown.reversed())
+        XCTAssertEqual(relaunched.orderedSessions(projectID: p).map(\.id), [b.id, a.id])
+    }
+
     /// Bounded: a regression that never reaches the gate fails, not hangs.
     private func yieldUntil(_ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
         let deadline = Date().addingTimeInterval(5)
