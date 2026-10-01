@@ -90,7 +90,6 @@ final class TargetWatchesViewModel {
     /// in the shared center so the indicator survives navigation.
     func scanWatch(_ watch: Track, since: Date?, label: String) async {
         scanCenter.begin(watch.id)
-        errorMessage = nil
         var note: String?
         defer { scanCenter.finish(watch.id, note: note) }
         do {
@@ -123,6 +122,9 @@ final class TargetWatchesViewModel {
     /// Scans every enabled watch of the target (concurrently is unnecessary —
     /// each is a slow subprocess; run them in sequence to keep it simple).
     func scanAll() async {
+        // Once for the batch: a later watch's success must not wipe an
+        // earlier watch's failure.
+        errorMessage = nil
         for w in watches where w.enabled {
             await scanWatch(w, since: nil, label: "all history")
         }
