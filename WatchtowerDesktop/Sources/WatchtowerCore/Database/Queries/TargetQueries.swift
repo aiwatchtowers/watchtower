@@ -568,24 +568,38 @@ package enum TargetQueries {
 
     // MARK: - Links
 
-    /// Create a typed link between two existing targets. INSERT OR IGNORE respects
-    /// the UNIQUE(source, target, external_ref, relation) constraint, so re-proposing
-    /// an existing link is a no-op rather than an error.
+    /// Create a typed link from `sourceID` to another target and/or an
+    /// external ref (the `target_links` CHECK wants at least one). INSERT OR
+    /// IGNORE respects the UNIQUE(source, target, external_ref, relation)
+    /// constraint, so re-proposing an existing link is a no-op rather than an
+    /// error — but it never covers the foreign key, so a vanished endpoint is
+    /// checked first and throws `TargetNotFoundError` naming it instead of a
+    /// bare "FOREIGN KEY constraint failed".
     package static func createLink(
         _ db: Database,
         sourceID: Int,
-        targetID: Int,
+        targetID: Int?,
+        externalRef: String = "",
         relation: String,
         createdBy: String = "user"
     ) throws {
+        try requireExists(db, id: sourceID)
+        if let targetID { try requireExists(db, id: targetID) }
         try db.execute(
             sql: """
                 INSERT OR IGNORE INTO target_links
                   (source_target_id, target_target_id, external_ref, relation, created_by)
-                VALUES (?, ?, '', ?, ?)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-            arguments: [sourceID, targetID, relation, createdBy]
+            arguments: [sourceID, targetID, externalRef, relation, createdBy]
         )
+    }
+
+    private static func requireExists(_ db: Database, id: Int) throws {
+        let exists = try Bool.fetchOne(
+            db, sql: "SELECT EXISTS(SELECT 1 FROM targets WHERE id = ?)", arguments: [id]
+        ) ?? false
+        guard exists else { throw TargetNotFoundError(id: id) }
     }
 
     package static func fetchLinks(

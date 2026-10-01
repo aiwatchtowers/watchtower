@@ -89,6 +89,12 @@ final class TargetChatViewModel {
     var inputText = ""
     var errorMessage: String?
 
+    /// The task was deleted (elsewhere — the CLI, the agent, another window)
+    /// after this chat loaded it. Terminal, as in the CustomTrack/TargetWatches
+    /// VMs: no new turn is sent, and every decision fails at the executor,
+    /// which re-checks the row instead of trusting `target`'s snapshot.
+    private(set) var targetGone = false
+
     /// Stable identity for a dictation targetID — the target is always
     /// persisted by the time this VM exists.
     var targetID: Int { target.id }
@@ -236,6 +242,8 @@ final class TargetChatViewModel {
         // is not cosmetic: the model addresses sub-items by index + text, and
         // both are re-checked against the live list at apply time.
         reloadTarget()
+        // Keeps the typed text: nothing was sent.
+        guard !targetGone else { return }
 
         streamTask?.cancel()
         inputText = ""
@@ -274,6 +282,9 @@ final class TargetChatViewModel {
     /// queued instead of being dropped, and goes out at the next flush point.
     private func sendFollowUp(_ text: String) {
         appendSystemMessage(text)
+        // The decision's outcome stays in the transcript; no AI turn is
+        // started about a task that no longer exists.
+        guard !targetGone else { return }
         guard !isStreaming else {
             queuedFollowUps.append(text)
             return
@@ -298,6 +309,10 @@ final class TargetChatViewModel {
     /// The system messages were already appended when the decisions were taken.
     private func flushQueuedFollowUps() {
         guard !queuedFollowUps.isEmpty, !isStreaming else { return }
+        guard !targetGone else {
+            queuedFollowUps.removeAll()
+            return
+        }
         let prompt = queuedFollowUps.joined(separator: "\n")
         queuedFollowUps.removeAll()
         let turnID = UUID().uuidString
@@ -599,6 +614,7 @@ final class TargetChatViewModel {
     private func applyAction(_ action: ProposedAction, cardIndex idx: Int) -> Result<String, Error> {
         reloadTarget()
         do {
+            try requireLiveTarget()
             let applyTarget = try resolveActionTarget(action)
             var summary = try TargetActionExecutor.apply(action, target: applyTarget, viewModel: viewModel)
             if applyTarget.id != target.id { summary += " [in task #\(applyTarget.id)]" }
@@ -634,6 +650,7 @@ final class TargetChatViewModel {
         for cardID in pendingIDs {
             guard let idx = actionCards.firstIndex(where: { $0.id == cardID }) else { continue }
             do {
+                try requireLiveTarget()
                 let applyTarget = try resolveActionTarget(actionCards[idx].action)
                 var summary = try TargetActionExecutor.apply(
                     actionCards[idx].action, target: applyTarget, viewModel: viewModel
@@ -772,13 +789,23 @@ final class TargetChatViewModel {
         return addressed
     }
 
+    /// Fails a decision on a deleted task with the real reason — an action
+    /// addressing a sub-task would otherwise fail the tree-scope check instead
+    /// (the delete detaches its children), naming the wrong cause.
+    private func requireLiveTarget() throws {
+        if targetGone { throw TargetNotFoundError(id: target.id) }
+    }
+
     private func reloadTarget() {
         do {
-            if let updated = try dbManager.dbPool.read({ db in
+            guard let updated = try dbManager.dbPool.read({ db in
                 try TargetQueries.fetchByID(db, id: target.id)
-            }) {
-                target = updated
+            }) else {
+                targetGone = true
+                errorMessage = "This task no longer exists — it may have been deleted."
+                return
             }
+            target = updated
         } catch {
             print("TargetChat: reloadTarget failed: \(error)")
         }
