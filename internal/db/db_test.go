@@ -579,19 +579,7 @@ func TestMigration00019ClearsBeliefContentHash(t *testing.T) {
 // ALTER-added columns and the dispute-flags table (precedent: 00017/00018's
 // Down), so a down;up cycle is clean.
 func TestMemorySurfacesMigrationDownUpCycle(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "surfaces-cycle.db")
-	d, err := Open(path)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer d.Close()
-
-	if err := goose.Down(d.DB, "migrations"); err != nil {
-		t.Fatalf("goose down: %v", err)
-	}
-	if err := goose.Up(d.DB, "migrations"); err != nil {
-		t.Fatalf("goose up after down: %v", err)
-	}
+	d := openAfterMigrationCycle(t, 19)
 
 	if _, err := d.Exec(`UPDATE workspace SET memory_chat_turn_floor = 0`); err != nil {
 		t.Errorf("memory_chat_turn_floor missing after cycle: %v", err)
@@ -663,19 +651,7 @@ func TestMigration00042MemoryPhase5Slice1(t *testing.T) {
 // ALTER-added columns and the memory_engagement table (precedent: 00017-19's
 // Down), so a down;up cycle is clean.
 func TestMemoryPhase5Slice1MigrationDownUpCycle(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "phase5-slice1-cycle.db")
-	d, err := Open(path)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer d.Close()
-
-	if err := goose.Down(d.DB, "migrations"); err != nil {
-		t.Fatalf("goose down: %v", err)
-	}
-	if err := goose.Up(d.DB, "migrations"); err != nil {
-		t.Fatalf("goose up after down: %v", err)
-	}
+	d := openAfterMigrationCycle(t, 42)
 
 	if _, err := d.Exec(`UPDATE workspace SET memory_last_interaction_id = 0`); err != nil {
 		t.Errorf("workspace columns missing after cycle: %v", err)
@@ -725,19 +701,7 @@ func TestMigration00033MemoryPhase5Slice2(t *testing.T) {
 // ALTER-added column (precedent: 00017-19, 00042's Down), so a down;up cycle is
 // clean.
 func TestMemoryPhase5Slice2MigrationDownUpCycle(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "phase5-slice2-cycle.db")
-	d, err := Open(path)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer d.Close()
-
-	if err := goose.Down(d.DB, "migrations"); err != nil {
-		t.Fatalf("goose down: %v", err)
-	}
-	if err := goose.Up(d.DB, "migrations"); err != nil {
-		t.Fatalf("goose up after down: %v", err)
-	}
+	d := openAfterMigrationCycle(t, 33)
 
 	if _, err := d.Exec(`UPDATE workspace SET memory_calendar_last_extracted_ts = 0`); err != nil {
 		t.Errorf("memory_calendar_last_extracted_ts missing after cycle: %v", err)
@@ -858,19 +822,7 @@ func TestMigration00034MemoryDigestCompare(t *testing.T) {
 // additive CREATE TABLEs (precedent: 00017-19, 00042/00033's Down), so a down;up cycle is
 // clean.
 func TestMemoryPhase5Slice3MigrationDownUpCycle(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "phase5-slice3-cycle.db")
-	d, err := Open(path)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer d.Close()
-
-	if err := goose.Down(d.DB, "migrations"); err != nil {
-		t.Fatalf("goose down: %v", err)
-	}
-	if err := goose.Up(d.DB, "migrations"); err != nil {
-		t.Fatalf("goose up after down: %v", err)
-	}
+	d := openAfterMigrationCycle(t, 34)
 
 	assertTableExists(t, d, "memory_provenance")
 	assertTableExists(t, d, "memory_digest_shadow")

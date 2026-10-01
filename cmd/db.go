@@ -29,6 +29,12 @@ var dbMigrateCmd = &cobra.Command{
 			return fmt.Errorf("seeding prompt templates: %w", err)
 		}
 
+		// After seeding: a table missing from one feature must not hold back
+		// the prompts every other feature reads.
+		if err := database.CheckSchemaDrift(); err != nil {
+			return fmt.Errorf("db migrate: %w", err)
+		}
+
 		fmt.Println("Database migrations applied successfully.")
 		return nil
 	},

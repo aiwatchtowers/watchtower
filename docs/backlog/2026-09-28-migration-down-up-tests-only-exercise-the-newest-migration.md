@@ -1,7 +1,7 @@
 ---
 type: chore
 title: Migration down/up tests only exercise the newest migration
-status: open
+status: done
 priority: low
 tags: [db, migrations, goose, test-coverage]
 context: review of PR #14 (fix/bl-partial-failure-sweep), which had to switch TestMigration00076_DownUpKeepsMessages to goose.DownTo(75)
@@ -21,3 +21,5 @@ Fix: pin each test to its own version with `goose.DownTo(<N-1>)` followed by
 migration number so new migrations follow the right pattern by default.
 
 > Original note: surfaced by the PR #14 code review (not an owner note).
+
+Resolution: the five plain-`goose.Down` tests now go through `openAfterMigrationCycle(t, N)` (`internal/db/migration_cycle_test.go`: up to N, down past N, up to latest), and `TestMigrationsDownAllUpAllRoundTrip` runs every Down once in a single down-all/up-all pass and compares the schema to a fresh migrate; it found and fixed `00014`'s Down failing on tables `00070` had already dropped.
