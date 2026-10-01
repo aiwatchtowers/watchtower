@@ -484,3 +484,22 @@ func TestProj07_DeadlineReportsIncompleteNeverFalseFindings(t *testing.T) {
 		t.Fatalf("a cancelled check must be incomplete with no findings, got %+v", r)
 	}
 }
+
+// origin/HEAD naming a default branch that no longer resolves (renamed on
+// the remote, the old ref pruned) skips the branch checks and says why, so
+// "branch checks did not run" never comes with no notes.
+func TestProj07_UnresolvableDefaultBranchIsANote(t *testing.T) {
+	gitEnv(t)
+	dir := t.TempDir()
+	gitRun(t, dir, "init", "-q", "-b", "trunk")
+	commitFile(t, dir, "README.md", "hello\n", "init")
+	gitRun(t, dir, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/master")
+
+	r := Check(context.Background(), 1, []db.BoardNode{node(1, "in_progress", "feature", time.Hour)}, Options{Folder: dir, Now: testNow})
+	if !r.Git || len(r.Findings) != 0 {
+		t.Fatalf("git=%v findings=%+v", r.Git, r.Findings)
+	}
+	if !slices.ContainsFunc(r.Notes, func(n string) bool { return strings.Contains(n, "default branch master could not be resolved") }) {
+		t.Fatalf("notes must say why the branch checks were skipped: %v", r.Notes)
+	}
+}
