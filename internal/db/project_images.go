@@ -13,7 +13,7 @@ const MaxTargetImages = 20
 var ErrTooManyImages = fmt.Errorf("a target carries at most %d images", MaxTargetImages)
 
 // ProjectTargetImage is an image attached to a project target (migration
-// 00087). Path is the absolute stored copy under
+// 00088). Path is the absolute stored copy under
 // <workspace>/project_files/<project_id>/ (internal/projectfiles); several
 // rows of one project may share it (same content on several targets).
 type ProjectTargetImage struct {

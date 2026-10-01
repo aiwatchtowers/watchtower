@@ -2097,7 +2097,7 @@ CREATE TABLE IF NOT EXISTS project_documents (
 );
 CREATE INDEX IF NOT EXISTS idx_project_documents_target ON project_documents(target_id);
 
--- Images attached to project targets (00087); path = absolute 0600 copy under
+-- Images attached to project targets (00088); path = absolute 0600 copy under
 -- <workspace>/project_files/<project_id>/. Board-only (PROJ-01).
 CREATE TABLE IF NOT EXISTS project_target_images (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,

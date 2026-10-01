@@ -106,7 +106,7 @@ package struct ProjectDocument: FetchableRecord, Identifiable, Equatable, Hashab
     }
 }
 
-/// A `project_target_images` row (migration 00087): an image the agent
+/// A `project_target_images` row (migration 00088): an image the agent
 /// attached to a board target. `path` is Watchtower's own 0600 copy under
 /// `<workspace>/project_files/<project_id>/`, written only by the Go project
 /// tools; the Desktop only reads it.
