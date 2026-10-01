@@ -1330,9 +1330,14 @@ func (p *Pipeline) persistOneBatchResult(entry *batchEntry, r BatchChannelResult
 // RunDailyRollup generates a cross-channel daily digest from today's channel digests.
 // M12 fix: use UTC for consistent timezone-independent digest deduplication.
 func (p *Pipeline) RunDailyRollup(ctx context.Context) error {
-	now := time.Now().UTC()
-	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-	return p.runDailyRollupForDate(ctx, dayStart)
+	return p.runDailyRollupForDate(ctx, utcDayStart(time.Now()))
+}
+
+// utcDayStart is the UTC midnight opening t's UTC calendar day — the daily
+// rollup's window is a UTC day whatever the host's local zone.
+func utcDayStart(t time.Time) time.Time {
+	u := t.UTC()
+	return time.Date(u.Year(), u.Month(), u.Day(), 0, 0, 0, 0, time.UTC)
 }
 
 // dailyRollupNeeded reports whether the daily rollup for [fromUnix, toUnix]

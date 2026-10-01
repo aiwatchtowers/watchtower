@@ -50,3 +50,31 @@ func TestRunDailyRollup_IncludesDigestsStartingBeforeMidnight(t *testing.T) {
 	require.Len(t, daily, 1)
 	assert.Equal(t, u(dayStart), daily[0].PeriodFrom, "the rollup itself still covers exactly the day")
 }
+
+// The daily rollup's window is the UTC day, whatever the host's zone: an
+// instant just after UTC midnight belongs to the new UTC day even where the
+// local date is still the previous one (west of UTC) or already the next one
+// (east of UTC), and the last instant before it to the old one.
+func TestUTCDayStart_IndependentOfLocalZone(t *testing.T) {
+	saved := time.Local
+	t.Cleanup(func() { time.Local = saved })
+
+	day := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	for _, offsetHours := range []int{-12, -7, 0, 2, 5, 14} {
+		time.Local = time.FixedZone("test", offsetHours*3600)
+		for _, tc := range []struct {
+			instant time.Time
+			want    time.Time
+		}{
+			{day.Add(30 * time.Second), day},
+			{day.Add(36 * time.Minute), day},
+			{day.Add(24*time.Hour - time.Second), day},
+			{day.Add(-time.Second), day.AddDate(0, 0, -1)},
+		} {
+			got := utcDayStart(tc.instant.In(time.Local))
+			assert.True(t, got.Equal(tc.want), "offset %+dh, instant %s: got %s, want %s",
+				offsetHours, tc.instant.Format(time.RFC3339), got.Format(time.RFC3339), tc.want.Format(time.RFC3339))
+			assert.Equal(t, time.UTC, got.Location(), "offset %+dh: the window must be anchored in UTC", offsetHours)
+		}
+	}
+}
