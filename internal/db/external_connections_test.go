@@ -1,6 +1,11 @@
 package db
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
 
 func TestExternalConnections_CRUD(t *testing.T) {
 	d := openTestDB(t)
@@ -72,71 +77,59 @@ func TestSetExternalConnectionStatus(t *testing.T) {
 
 // TestExternalConnectionTools_CacheAndAllowList: the QC-02 tool row starts
 // absent (never listed, default policy), the tool cache and the owner's allow
-// list are set independently, nil clears the allow list back to NULL, and
-// removing the connection removes the row.
+// list are set independently, nil clears the allow list back to NULL, and an
+// empty listing is still a listing.
 func TestExternalConnectionTools_CacheAndAllowList(t *testing.T) {
 	d := openTestDB(t)
 	id, err := d.InsertExternalConnection(ExternalConnection{Name: "acme", Kind: "http", URL: "https://x", Enabled: true})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	get := func() ExternalConnection {
 		t.Helper()
 		c, err := d.GetExternalConnection(id)
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 		return c
 	}
 
-	if c := get(); c.ToolsListed || c.Tools != nil || c.AllowTools != nil {
-		t.Fatalf("fresh connection: listed=%v tools=%v allow=%v, want never listed and no allow list", c.ToolsListed, c.Tools, c.AllowTools)
-	}
+	c := get()
+	assert.False(t, c.ToolsListed)
+	assert.Nil(t, c.Tools)
+	assert.Nil(t, c.AllowTools, "no row = default policy")
 
-	if err := d.SetExternalConnectionAllowTools(id, []string{"createIssue"}); err != nil {
-		t.Fatal(err)
-	}
-	if c := get(); c.ToolsListed || len(c.AllowTools) != 1 || c.AllowTools[0] != "createIssue" {
-		t.Fatalf("allow list only: listed=%v allow=%v", c.ToolsListed, c.AllowTools)
-	}
+	require.NoError(t, d.SetExternalConnectionAllowTools(id, []string{"createIssue"}))
+	c = get()
+	assert.False(t, c.ToolsListed, "an allow list alone is not a listing")
+	assert.Equal(t, []string{"createIssue"}, c.AllowTools)
 
 	tools := []ExternalTool{{Name: "getIssue"}, {Name: "summarize", Annotated: true, ReadOnlyHint: true}}
-	if err := d.SetExternalConnectionTools(id, tools, "2026-01-02T03:04:05Z"); err != nil {
-		t.Fatal(err)
-	}
-	c := get()
-	if !c.ToolsListed || c.ToolsListedAt != "2026-01-02T03:04:05Z" || len(c.Tools) != 2 || c.Tools[1] != tools[1] {
-		t.Fatalf("after caching: %+v", c)
-	}
-	if len(c.AllowTools) != 1 {
-		t.Fatalf("caching tools must keep the allow list, got %v", c.AllowTools)
-	}
+	require.NoError(t, d.SetExternalConnectionTools(id, tools, "2026-01-02T03:04:05Z"))
+	c = get()
+	assert.True(t, c.ToolsListed)
+	assert.Equal(t, "2026-01-02T03:04:05Z", c.ToolsListedAt)
+	assert.Equal(t, tools, c.Tools)
+	assert.Equal(t, []string{"createIssue"}, c.AllowTools, "caching tools keeps the allow list")
 
-	if err := d.SetExternalConnectionAllowTools(id, nil); err != nil {
-		t.Fatal(err)
-	}
-	if c := get(); c.AllowTools != nil || !c.ToolsListed {
-		t.Fatalf("after clearing: allow=%v listed=%v", c.AllowTools, c.ToolsListed)
-	}
+	require.NoError(t, d.SetExternalConnectionAllowTools(id, nil))
+	c = get()
+	assert.Nil(t, c.AllowTools)
+	assert.True(t, c.ToolsListed, "clearing the allow list keeps the cache")
 
-	if err := d.SetExternalConnectionTools(id, nil, "2026-01-02T03:04:06Z"); err != nil {
-		t.Fatal(err)
-	}
-	if c := get(); !c.ToolsListed || len(c.Tools) != 0 {
-		t.Fatalf("an empty listing is still a listing: listed=%v tools=%v", c.ToolsListed, c.Tools)
-	}
+	require.NoError(t, d.SetExternalConnectionTools(id, nil, "2026-01-02T03:04:06Z"))
+	c = get()
+	assert.True(t, c.ToolsListed, "an empty listing is still a listing")
+	assert.Empty(t, c.Tools)
+}
 
-	if err := d.RemoveExternalConnection(id); err != nil {
-		t.Fatal(err)
-	}
+// TestExternalConnectionTools_GoWithTheConnection: removing a connection
+// removes its tool row, and caching tools for an unknown id fails.
+func TestExternalConnectionTools_GoWithTheConnection(t *testing.T) {
+	d := openTestDB(t)
+	id, err := d.InsertExternalConnection(ExternalConnection{Name: "acme", Kind: "http", URL: "https://x"})
+	require.NoError(t, err)
+	require.NoError(t, d.SetExternalConnectionTools(id, []ExternalTool{{Name: "getIssue"}}, "x"))
+
+	require.NoError(t, d.RemoveExternalConnection(id))
 	var n int
-	if err := d.QueryRow(`SELECT COUNT(*) FROM external_connection_tools`).Scan(&n); err != nil {
-		t.Fatal(err)
-	}
-	if n != 0 {
-		t.Fatalf("tool row must go with its connection, %d left", n)
-	}
-	if err := d.SetExternalConnectionTools(id, tools, "x"); err == nil {
-		t.Fatal("caching tools for a removed connection must fail")
-	}
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM external_connection_tools`).Scan(&n))
+	assert.Zero(t, n, "the tool row must go with its connection")
+	assert.Error(t, d.SetExternalConnectionTools(id, nil, "x"), "caching tools for a removed connection must fail")
 }
