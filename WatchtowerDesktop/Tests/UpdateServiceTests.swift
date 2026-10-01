@@ -709,48 +709,72 @@ struct UpdateServicePeriodicTests {
         #expect(UpdateService.checkInterval == .seconds(6 * 60 * 60))
     }
 
-    @Test("background checks never clobber an in-flight or found update")
+    @Test("background checks run when idle, failed or offering an update, never mid-flight")
     func autoCheckDecision() {
-        let url = URL(string: "https://example.com/x.zip")!
+        let url = URL(fileURLWithPath: "/tmp/x.zip")
         #expect(UpdateService.shouldAutoCheck(state: .idle))
         #expect(UpdateService.shouldAutoCheck(state: .error("offline")))
+        #expect(UpdateService.shouldAutoCheck(state: .available(version: "1", notes: "", downloadURL: url)))
         #expect(!UpdateService.shouldAutoCheck(state: .checking))
-        #expect(!UpdateService.shouldAutoCheck(state: .available(version: "1", notes: "", downloadURL: url)))
         #expect(!UpdateService.shouldAutoCheck(state: .downloading(progress: 0.5)))
         #expect(!UpdateService.shouldAutoCheck(state: .readyToInstall(appPath: URL(fileURLWithPath: "/tmp/x"))))
         #expect(!UpdateService.shouldAutoCheck(state: .installing))
         #expect(!UpdateService.shouldAutoCheck(state: .restartRequired))
     }
 
-    @Test("a build without an update channel starts no loop")
-    func disabledChannelIsSilent() {
-        let svc = UpdateService()
-        svc.buildFlavor = "dev"
-        var slept = false
-        svc.startPeriodicChecks { _ in slept = true }
-        #expect(!svc.isPeriodicCheckRunning)
-        #expect(!slept)
-    }
-
-    @Test("the loop re-arms on the interval and skips the check while busy")
+    @Test("the loop skips the check while busy, re-arms on the interval, and clears itself on exit")
     func loopSleepsOnInterval() async {
         let svc = UpdateService()
         svc.buildFlavor = ""
-        // Busy state: the loop must not start a (network) check.
+        var fetches = 0
+        svc.fetchCheck = {
+            fetches += 1
+            return .upToDate
+        }
+        // Busy state: the loop must not start a check.
         svc.state = .downloading(progress: 0.3)
         var sleeps: [Duration] = []
-        await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
-            svc.startPeriodicChecks { duration in
-                sleeps.append(duration)
-                if sleeps.count == 2 {
-                    done.resume()
-                    throw CancellationError()
-                }
-            }
+        svc.startPeriodicChecks { duration in
+            sleeps.append(duration)
+            if sleeps.count == 2 { throw CancellationError() }
         }
+        let loop = svc.periodicTask
+        #expect(loop != nil)
+        await loop?.value
         #expect(sleeps == [UpdateService.checkInterval, UpdateService.checkInterval])
+        #expect(fetches == 0)
         #expect(svc.state == .downloading(progress: 0.3))
-        #expect(svc.isPeriodicCheckRunning)
+        #expect(!svc.isPeriodicCheckRunning)
+    }
+
+    @Test("the loop's first pass checks at once and surfaces a found update")
+    func loopChecksImmediately() async {
+        let defaults = isolatedDefaults()
+        let svc = UpdateService()
+        svc.buildFlavor = ""
+        svc.defaults = defaults
+        var announced: [String] = []
+        svc.announce = { announced.append($0) }
+        let url = URL(fileURLWithPath: "/tmp/new.zip")
+        svc.fetchCheck = { .found(version: "v99.0.0", notes: "n", downloadURL: url, gated: nil) }
+        svc.startPeriodicChecks { _ in throw CancellationError() }
+        await svc.periodicTask?.value
+        #expect(svc.state == .available(version: "v99.0.0", notes: "n", downloadURL: url))
+        #expect(svc.availableVersion == "v99.0.0")
+        #expect(announced == ["v99.0.0"])
+    }
+
+    @Test("a result arriving after the user moved on is dropped")
+    func lateResultIsDropped() async {
+        let svc = UpdateService()
+        svc.buildFlavor = ""
+        let url = URL(fileURLWithPath: "/tmp/new.zip")
+        svc.fetchCheck = {
+            svc.state = .downloading(progress: 0.1)
+            return .found(version: "v99.0.0", notes: "", downloadURL: url, gated: nil)
+        }
+        await svc.checkForUpdates()
+        #expect(svc.state == .downloading(progress: 0.1))
     }
 
     @Test("an update is announced once per version, across service instances")
@@ -780,5 +804,83 @@ struct UpdateServicePeriodicTests {
         #expect(UpdateService.shouldAnnounce(version: "v1.0.0", lastAnnounced: nil))
         #expect(UpdateService.shouldAnnounce(version: "v1.0.1", lastAnnounced: "v1.0.0"))
         #expect(!UpdateService.shouldAnnounce(version: "v1.0.0", lastAnnounced: "v1.0.0"))
+    }
+}
+
+@Suite("UpdateService Check Results")
+@MainActor
+struct UpdateServiceCheckResultTests {
+    private let oldURL = URL(fileURLWithPath: "/tmp/old.zip")
+    private let newURL = URL(fileURLWithPath: "/tmp/new.zip")
+
+    /// A service with an isolated announce memo and a recorder for pushes.
+    private func service(announced: @escaping (String) -> Void) -> UpdateService {
+        let svc = UpdateService()
+        let name = "wt-update-check-tests-\(UUID().uuidString)"
+        if let defaults = UserDefaults(suiteName: name) { svc.defaults = defaults }
+        svc.announce = announced
+        return svc
+    }
+
+    @Test("a found version goes on offer and is noted (tray version + announcement)")
+    func foundFromIdle() {
+        var announced: [String] = []
+        let svc = service { announced.append($0) }
+        svc.applyCheckResult(.found(version: "v2.0.0", notes: "n", downloadURL: newURL, gated: nil),
+                             previous: .idle, background: true)
+        #expect(svc.state == .available(version: "v2.0.0", notes: "n", downloadURL: newURL))
+        #expect(svc.availableVersion == "v2.0.0")
+        #expect(announced == ["v2.0.0"])
+    }
+
+    @Test("up to date clears the known version")
+    func upToDateClears() {
+        let svc = service { _ in }
+        svc.applyCheckResult(.found(version: "v2.0.0", notes: "", downloadURL: newURL, gated: nil),
+                             previous: .idle, background: false)
+        svc.applyCheckResult(.upToDate, previous: .idle, background: false)
+        #expect(svc.state == .idle)
+        #expect(svc.availableVersion == nil)
+    }
+
+    @Test("an offer is replaced only by a strictly newer version")
+    func offerReplacedOnlyByNewer() {
+        var announced: [String] = []
+        let svc = service { announced.append($0) }
+        let offered = UpdateService.UpdateState.available(version: "v2.0.0", notes: "", downloadURL: oldURL)
+
+        svc.applyCheckResult(.found(version: "v2.0.0", notes: "", downloadURL: newURL, gated: nil),
+                             previous: offered, background: true)
+        #expect(svc.state == offered)
+
+        svc.applyCheckResult(.found(version: "v1.9.0", notes: "", downloadURL: newURL, gated: nil),
+                             previous: offered, background: true)
+        #expect(svc.state == offered)
+
+        svc.applyCheckResult(.found(version: "v2.1.0", notes: "", downloadURL: newURL, gated: nil),
+                             previous: offered, background: true)
+        #expect(svc.state == .available(version: "v2.1.0", notes: "", downloadURL: newURL))
+        #expect(announced == ["v2.1.0"])
+    }
+
+    @Test("a failure or 'up to date' never hides an offer")
+    func offerSurvivesFailure() {
+        let svc = service { _ in }
+        let offered = UpdateService.UpdateState.available(version: "v2.0.0", notes: "", downloadURL: oldURL)
+        svc.applyCheckResult(.failed("offline"), previous: offered, background: true)
+        #expect(svc.state == offered)
+        svc.applyCheckResult(.failed("offline"), previous: offered, background: false)
+        #expect(svc.state == offered)
+        svc.applyCheckResult(.upToDate, previous: offered, background: true)
+        #expect(svc.state == offered)
+    }
+
+    @Test("an unattended failure stays idle; a manual one shows the error")
+    func failureVisibility() {
+        let svc = service { _ in }
+        svc.applyCheckResult(.failed("offline"), previous: .idle, background: true)
+        #expect(svc.state == .idle)
+        svc.applyCheckResult(.failed("offline"), previous: .idle, background: false)
+        #expect(svc.state == .error("offline"))
     }
 }

@@ -118,7 +118,7 @@ final class UpdateService {
 
     /// Set when the current `.available` state came from the gated channel;
     /// carries what the download step needs (headers + expected checksum).
-    private struct GatedDownloadContext {
+    struct GatedDownloadContext: Equatable {
         let sha256: String
         let clientID: String
         let clientSecret: String
@@ -134,84 +134,127 @@ final class UpdateService {
 
     // MARK: - Check for Updates
 
-    func checkForUpdates() async {
-        gatedDownload = nil
-        switch channel {
-        case .disabled:
+    /// What one check of the channel found, before it touches any state.
+    enum CheckResult: Equatable {
+        case upToDate
+        case found(version: String, notes: String, downloadURL: URL, gated: GatedDownloadContext?)
+        case failed(String)
+    }
+
+    /// Fetches what the channel offers. Nil = the real network fetch; tests
+    /// inject a canned result.
+    var fetchCheck: (() async -> CheckResult)?
+
+    /// Check the channel. `background` marks the unattended periodic check:
+    /// its failures are logged but leave Settings idle instead of red (a
+    /// manual "Check for Updates" still shows the error), and it keeps an
+    /// already-found update visible while it runs.
+    func checkForUpdates(background: Bool = false) async {
+        guard channel != .disabled else {
             state = .idle
-        case .publicGitHub:
-            await checkPublic()
-        case let .gated(feedURL, clientID, clientSecret):
-            await checkGated(feedURL: feedURL, clientID: clientID, clientSecret: clientSecret)
+            return
+        }
+        let previous = state
+        if case .available = previous, background {
+            // Keep offering the known update while the re-check runs.
+        } else {
+            state = .checking
+        }
+        let inFlight = state
+        let result: CheckResult
+        if let fetchCheck {
+            result = await fetchCheck()
+        } else {
+            result = await fetchFromChannel()
+        }
+        // The user moved on meanwhile (e.g. started the download): a late
+        // result must not overwrite that.
+        guard state == inFlight else { return }
+        applyCheckResult(result, previous: previous, background: background)
+    }
+
+    /// Fold a check result into the state. An update already on offer is only
+    /// replaced by a strictly newer one, and never by an error or an
+    /// "up to date" — a transient failure must not hide a found update.
+    func applyCheckResult(_ result: CheckResult, previous: UpdateState, background: Bool) {
+        switch result {
+        case .upToDate:
+            if case .available = previous {
+                state = previous
+                return
+            }
+            state = .idle
+            availableVersion = nil
+        case let .found(version, notes, downloadURL, gated):
+            if case .available(let known, _, _) = previous, !Self.isNewer(version, than: known) {
+                state = previous
+                return
+            }
+            gatedDownload = gated
+            state = .available(version: version, notes: notes, downloadURL: downloadURL)
+            noteAvailable(version: version)
+        case .failed(let message):
+            NSLog("UpdateService: %@ update check failed: %@", background ? "background" : "manual", message)
+            if case .available = previous {
+                state = previous
+                return
+            }
+            state = background ? .idle : .error(message)
         }
     }
 
-    private func checkPublic() async {
-        state = .checking
+    private func fetchFromChannel() async -> CheckResult {
+        switch channel {
+        case .disabled:
+            return .upToDate
+        case .publicGitHub:
+            return await fetchPublic()
+        case let .gated(feedURL, clientID, clientSecret):
+            return await fetchGated(feedURL: feedURL, clientID: clientID, clientSecret: clientSecret)
+        }
+    }
+
+    private func fetchPublic() async -> CheckResult {
         do {
             let release = try await fetchLatestRelease()
-            let current = Constants.appVersion
-            guard Self.isNewer(release.tagName, than: current) else {
-                state = .idle
-                availableVersion = nil
-                return
-            }
+            guard Self.isNewer(release.tagName, than: Constants.appVersion) else { return .upToDate }
 
             let expected = Self.expectedPublicAssetName(forTag: release.tagName)
             guard let asset = release.assets.first(where: { $0.name == expected }) else {
-                state = .error("No asset named \(expected) in release \(release.tagName)")
-                return
+                return .failed("No asset named \(expected) in release \(release.tagName)")
             }
-
             guard let url = URL(string: asset.browserDownloadURL) else {
-                state = .error("Invalid download URL")
-                return
+                return .failed("Invalid download URL")
             }
-
-            state = .available(
-                version: release.tagName,
-                notes: release.body ?? "",
-                downloadURL: url
-            )
-            noteAvailable(version: release.tagName)
+            return .found(version: release.tagName, notes: release.body ?? "", downloadURL: url, gated: nil)
         } catch {
-            state = .error(error.localizedDescription)
+            return .failed(error.localizedDescription)
         }
     }
 
-    private func checkGated(feedURL: URL, clientID: String, clientSecret: String) async {
-        state = .checking
+    private func fetchGated(feedURL: URL, clientID: String, clientSecret: String) async -> CheckResult {
         do {
             let manifestURL = feedURL.appendingPathComponent("dl/manifest/\(buildFlavor).json")
             let data = try await gatedGET(manifestURL, clientID: clientID, clientSecret: clientSecret)
             guard let manifest = try? JSONDecoder().decode(GatedManifest.self, from: data) else {
-                state = .error("Update manifest is malformed")
-                return
+                return .failed("Update manifest is malformed")
             }
-
             guard Self.zipKeyMatchesFlavor(manifest.zipKey, flavor: buildFlavor) else {
-                state = .error("Update manifest points at a different build flavor (\(manifest.zipKey))")
-                return
+                return .failed("Update manifest points at a different build flavor (\(manifest.zipKey))")
             }
+            guard Self.isNewer(manifest.version, than: Constants.appVersion) else { return .upToDate }
 
-            guard Self.isNewer(manifest.version, than: Constants.appVersion) else {
-                state = .idle
-                availableVersion = nil
-                return
-            }
-
-            let downloadURL = feedURL.appendingPathComponent("dl/\(manifest.zipKey)")
-            gatedDownload = GatedDownloadContext(
+            let context = GatedDownloadContext(
                 sha256: manifest.sha256, clientID: clientID, clientSecret: clientSecret
             )
-            state = .available(
+            return .found(
                 version: manifest.version,
                 notes: manifest.notes ?? "",
-                downloadURL: downloadURL
+                downloadURL: feedURL.appendingPathComponent("dl/\(manifest.zipKey)"),
+                gated: context
             )
-            noteAvailable(version: manifest.version)
         } catch {
-            state = .error(error.localizedDescription)
+            return .failed(error.localizedDescription)
         }
     }
 
@@ -253,7 +296,9 @@ final class UpdateService {
     /// `.downloading`/`.readyToInstall`, which carry no version of their own.
     private(set) var availableVersion: String?
 
-    private var periodicTask: Task<Void, Never>?
+    /// The periodic-check loop; nil once it has ended. Readable so tests can
+    /// await it.
+    private(set) var periodicTask: Task<Void, Never>?
 
     var isPeriodicCheckRunning: Bool { periodicTask != nil }
 
@@ -266,23 +311,27 @@ final class UpdateService {
         guard updatesSupported, periodicTask == nil else { return }
         periodicTask = Task { [weak self] in
             while !Task.isCancelled {
-                guard let self else { return }
-                if Self.shouldAutoCheck(state: self.state) {
-                    await self.checkForUpdates()
-                }
-                do { try await sleep(Self.checkInterval) } catch { return }
+                // `self?` per call: no strong reference is held across the sleep.
+                await self?.runBackgroundCheck()
+                do { try await sleep(Self.checkInterval) } catch { break }
             }
+            self?.periodicTask = nil
         }
     }
 
+    private func runBackgroundCheck() async {
+        guard Self.shouldAutoCheck(state: state) else { return }
+        await checkForUpdates(background: true)
+    }
+
     /// Whether a background check may run now. Never while a check, download
-    /// or install is in flight (the check would overwrite that state), and
-    /// not once an update was found: re-checking would only risk replacing a
-    /// good `.available` with a transient network error.
+    /// or install is in flight (the check would overwrite that state). It
+    /// does run while an update is on offer, so a newer release replaces a
+    /// stale one (`applyCheckResult` keeps the offer on anything else).
     nonisolated static func shouldAutoCheck(state: UpdateState) -> Bool {
         switch state {
-        case .idle, .error: true
-        case .checking, .available, .downloading, .readyToInstall, .installing, .restartRequired: false
+        case .idle, .error, .available: true
+        case .checking, .downloading, .readyToInstall, .installing, .restartRequired: false
         }
     }
 
@@ -412,10 +461,12 @@ final class UpdateService {
         // dialog can no longer cancel the update, and the still-running old
         // app would spawn the new bundle's CLI.
         guard !isBusy() else {
+            NSLog("UpdateService: install refused: a recording or transcription is busy")
             state = .error(Self.busyMessage)
             return
         }
         guard let currentApp = currentAppURL() else {
+            NSLog("UpdateService: install refused: not running from an app bundle")
             state = .error("Cannot determine current app location")
             return
         }
@@ -430,7 +481,10 @@ final class UpdateService {
             Self.performInstall(newApp: newAppPath, currentApp: currentApp, teamID: teamID, steps: steps)
         }.value
         guard outcome == .installed else {
-            if case .failed(let message) = outcome { state = .error(message) }
+            if case .failed(let message) = outcome {
+                NSLog("UpdateService: install failed: %@", message)
+                state = .error(message)
+            }
             return
         }
         try? FileManager.default.removeItem(at: Self.cacheDir)
