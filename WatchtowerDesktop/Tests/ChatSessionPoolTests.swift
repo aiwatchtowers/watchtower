@@ -172,19 +172,37 @@ final class ChatSessionPoolTests: XCTestCase {
         queued.startTurn(turn("t4", row: try assistantRow()))
         XCTAssertTrue(queued.isPending)
 
-        let second = ChatSessionConfig(conversationID: 5, provider: "claude", model: nil,
-                                       resumeSessionID: "sess-old-5", projectID: 7)
-        let queuedBehind = pool.session(for: 5, config: second)
-        queuedBehind.startTurn(turn("t5", row: try assistantRow()))
+        pool.retireSessions(projectID: 7)
+        XCTAssertNil(pool.client(for: 4))
+        XCTAssertFalse(queued.isBusy, "the held turn ends as partial")
+        fakes[0].emit(.turnDone(turnID: "t1", status: .complete, sessionID: nil))
+        pool.tick()
+        XCTAssertEqual(fakes.count, 3, "the stale queued session never launches")
+    }
+
+    /// Closing one stale queued session re-runs admission: a second one
+    /// queued behind it (with its own old `--resume`) must already be out of
+    /// the queue, or it launches into the slot that just opened.
+    func testRetireSessionsNeverLaunchesAStaleSessionQueuedBehindAnother() throws {
+        let launched = ChatSessionConfig(conversationID: 4, provider: "claude", model: nil,
+                                         resumeSessionID: "sess-4", projectID: 7)
+        _ = pool.session(for: 4, config: launched)
+        var changed = launched
+        changed.model = "other-model"
+        // Waits for the first process's retirement, which cannot finish while
+        // this test never yields; everything behind it waits in the queue.
+        let blocked = pool.session(for: 4, config: changed)
+        blocked.startTurn(turn("t4", row: try assistantRow()))
+        let behind = pool.session(for: 5, config: ChatSessionConfig(conversationID: 5, provider: "claude", model: nil,
+                                                                    resumeSessionID: "sess-5", projectID: 7))
+        behind.startTurn(turn("t5", row: try assistantRow()))
+        XCTAssertTrue(blocked.isPending)
+        XCTAssertTrue(behind.isPending)
 
         pool.retireSessions(projectID: 7)
         XCTAssertNil(pool.client(for: 4))
-        XCTAssertNil(pool.client(for: 5), "every stale queued session goes, not only the first")
-        XCTAssertFalse(queued.isBusy, "the held turn ends as partial")
-        XCTAssertFalse(queuedBehind.isBusy)
-        fakes[0].emit(.turnDone(turnID: "t1", status: .complete, sessionID: nil))
-        pool.tick()
-        XCTAssertEqual(fakes.count, 3, "no stale queued session ever launches")
+        XCTAssertNil(pool.client(for: 5))
+        XCTAssertEqual(fakes.count, 1, "the stale session queued behind is never launched")
     }
 
     /// Retiring a BUSY session (close or config change) finishes its turn,

@@ -148,6 +148,9 @@ final class ProjectDetailViewModel {
             if let attachmentsRoot {
                 ChatAttachmentStore.removeFiles(for: .project(id), rootDir: attachmentsRoot)
             }
+            // Nothing is left to save into: the page's closing flush must not
+            // write an unsaved draft to the deleted row.
+            draftsLoaded = false
             return true
         } catch {
             errorMessage = "Could not delete the project: \(error.localizedDescription)"

@@ -244,6 +244,19 @@ final class ProjectDetailViewModelTests: XCTestCase {
         XCTAssertEqual(promptChanges, [projectID])
     }
 
+    /// Deleting with an unsaved draft: the closing flush has no row to
+    /// write into and reports no failure.
+    func testFlushAfterDeleteWritesNothing() async throws {
+        let vm = makeVM(debounce: .seconds(60))
+        vm.load()
+        vm.instructionsEdited("typed just before delete")
+        XCTAssertTrue(vm.deleteProject())
+        let saved = await vm.flush()
+        XCTAssertTrue(saved)
+        XCTAssertNil(vm.errorMessage)
+        XCTAssertTrue(promptChanges.isEmpty)
+    }
+
     func testFlushWithNothingPendingWritesNothing() async throws {
         let pid = projectID
         try await pool.write { try ChatProjectQueries.updateInstructions($0, id: pid, instructions: "Kept") }

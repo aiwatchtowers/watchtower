@@ -345,11 +345,21 @@ func TestClaudeBackend_ProjectFilesGivenUpAfterTwoFailedTurns(t *testing.T) {
 	assert.Contains(t, warn.String(), "given up after 2 failed turns: spec.pdf")
 }
 
-// A rate limit (or any failure the files cannot cause) never counts toward
-// giving them up: after two of them the files still ride the next session.
+// A rate limit or a provider outage (or any failure the files cannot
+// cause) never counts toward giving them up: after them the files still
+// ride the next session.
 func TestClaudeBackend_TransientFailuresNeverGiveUpProjectFiles(t *testing.T) {
+	for _, tc := range []struct{ name, err, code string }{
+		{"overloaded", "overloaded_error (529)", CodeRateLimit},
+		{"server error", "API Error: 500 Internal server error", CodeInternal},
+	} {
+		t.Run(tc.name, func(t *testing.T) { transientFailuresKeepProjectFiles(t, tc.err, tc.code) })
+	}
+}
+
+func transientFailuresKeepProjectFiles(t *testing.T, errText, code string) {
 	opts, f := fakeClaude(t, "error_always")
-	opts.Env = append(opts.Env, "FAKE_ERROR=overloaded_error (529)")
+	opts.Env = append(opts.Env, "FAKE_ERROR="+errText)
 	att, marker := projectFixture(t)
 	var warn bytes.Buffer
 	opts.Warn = &warn
@@ -358,7 +368,7 @@ func TestClaudeBackend_TransientFailuresNeverGiveUpProjectFiles(t *testing.T) {
 	h.next(EventSessionReady)
 	for i, id := range []string{"t1", "t2", "t3"} {
 		h.send(Command{Type: CommandTurn, TurnID: id, Text: "q", Replay: i > 0})
-		assert.Equal(t, CodeRateLimit, h.next(EventError).Code)
+		assert.Equal(t, code, h.next(EventError).Code)
 	}
 	require.NoError(t, h.finish())
 

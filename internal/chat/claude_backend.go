@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -263,7 +264,7 @@ func (b *claudeBackend) settleProject(out outcome) {
 		b.projectSent()
 	case out.kind == outcomeExited && b.wasCancelled():
 		b.projectSent()
-	case out.kind == outcomeDone && projectFileFailure(out.code):
+	case out.kind == outcomeDone && out.failed && projectFileFailure(out.code, out.msg):
 		if b.projectFailures++; b.projectFailures >= maxProjectFailures && !b.projectGivenUp {
 			b.projectGivenUp = true
 			fmt.Fprintf(b.warn(), "chat project files given up after %d failed turns: %s\n",
@@ -272,13 +273,23 @@ func (b *claudeBackend) settleProject(out outcome) {
 	}
 }
 
-// projectFileFailure reports whether a failed turn's code is one a bad
-// project file can produce: the provider refusing the request surfaces as
-// internal (or attachment_unsupported); a rate limit, an auth or a start
-// failure, a lost session or an interrupt says nothing about the files.
-func projectFileFailure(code string) bool {
-	return code == CodeInternal || code == CodeAttachmentUnsupported
+// projectFileFailure reports whether a failed turn may have been caused by
+// a bad project file. Only an internal error can be (the provider refusing
+// the request lands there), and only when it is not a provider outage —
+// internal is also ClassifyClaudeError's catch-all for a 5xx or a dropped
+// connection. A rate limit, an auth or a start failure, a lost session or
+// an interrupt says nothing about the files.
+func projectFileFailure(code, msg string) bool {
+	if code != CodeInternal {
+		return false
+	}
+	m := strings.ToLower(msg)
+	return !serverErrorRe.MatchString(m) && !containsAny(m, "internal server error", "api_error",
+		"connection", "timed out", "timeout", "temporarily unavailable")
 }
+
+// serverErrorRe finds an HTTP 5xx status in an error message.
+var serverErrorRe = regexp.MustCompile(`\b5\d\d\b`)
 
 func (b *claudeBackend) projectNames() []string {
 	names := make([]string, len(b.opts.ProjectAttachments))
@@ -302,9 +313,10 @@ func (b *claudeBackend) wasCancelled() bool {
 // project file never fails the turn, unlike the owner's own attachments.
 //
 // note tells the model about the files the prompt lists as attached but
-// this turn does not carry: those squeezed out by the owner's files (the
-// prompt fits them against the whole cap, in the same order), or all of them
-// once given up.
+// this turn does not carry: those squeezed out by the owner's files, or all
+// of them once given up. "Listed" re-runs the prompt's fit against the whole
+// cap in the same order — approximately: the prompt sizes from the DB and
+// also counts a file missing on disk, which this loop cannot.
 func (b *claudeBackend) projectBlocks(ownSize int64) (blocks []json.RawMessage, note string) {
 	if !b.projectPending {
 		return nil, ""
@@ -484,7 +496,7 @@ type outcome struct {
 	kind   outcomeKind
 	msg    string
 	failed bool   // outcomeDone whose terminal event was an error
-	code   string // that error's code
+	code   string // that error's code (msg holds its message)
 }
 
 // Turn sends one owner message to the warm process and relays its events.
@@ -590,7 +602,7 @@ func (b *claudeBackend) await(ctx context.Context, p *claudeProc, emit func(Even
 		}
 		emit(e)
 		if isTerminal(e) {
-			return outcome{kind: outcomeDone, failed: e.Type == EventError, code: e.Code}, true
+			return outcome{kind: outcomeDone, failed: e.Type == EventError, code: e.Code, msg: e.Message}, true
 		}
 		return outcome{}, false
 	}
