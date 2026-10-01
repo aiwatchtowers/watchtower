@@ -33,7 +33,6 @@ final class ProjectsViewModel {
             }
         }
     }
-    var pane: ProjectPane = .terminal
     /// The document the documents pane should open next (a deep link); the
     /// pane consumes and clears it.
     var pendingDocumentID: Int64?
@@ -89,9 +88,6 @@ final class ProjectsViewModel {
     /// Always nil or `selectedProjectID`: selecting a project drills into
     /// it, Back sets it to nil.
     var drilledProjectID: Int64?
-    /// Per project, the session last opened: its terminal pane keeps showing
-    /// it (exit bar included) until it is closed.
-    var shownSessionIDs: [Int64: Int64] = [:]
     /// The standalone terminal on screen; mutually exclusive with
     /// `selectedProjectID` (setting a project clears it).
     var selectedStandaloneID: Int64?
@@ -200,7 +196,6 @@ final class ProjectsViewModel {
         for id in Self.vanished(previous: previousIDs, current: summaries.map(\.id)) {
             await closeTerminal?(id)
             terminalSessions[id] = nil
-            shownSessionIDs[id] = nil
             // Deleted elsewhere (CLI): never leave its id selected.
             if selectedProjectID == id { selectedProjectID = nil }
         }
@@ -252,7 +247,7 @@ final class ProjectsViewModel {
     func refreshOnPoll() async {
         if selectedProjectID != nil {
             await loadDocuments()
-            await documentViewModel?.refreshThreads(markRead: pane == .documents && isTabOnScreen())
+            await documentViewModel?.refreshThreads(markRead: layout.visiblePanes.contains(.documents) && isTabOnScreen())
         }
         await reload()
     }
@@ -273,9 +268,15 @@ final class ProjectsViewModel {
         return previous.filter { !now.contains($0) }
     }
 
+    /// A deep link puts its pane on screen the way a panel click does.
     func reveal(_ route: ProjectRoute) {
         selectedProjectID = route.projectID
-        pane = route.pane
+        switch route.pane {
+        case .board: layout.show(.board)
+        case .documents: layout.show(.documents)
+        case .terminal:
+            if let id = activeSessionID(projectID: route.projectID) { layout.show(.session(id)) }
+        }
         pendingDocumentID = route.pane == .documents ? route.subjectID : nil
     }
 
@@ -310,7 +311,6 @@ final class ProjectsViewModel {
         }
         await reload()
         selectedProjectID = created.id
-        pane = .terminal
         await refreshInstallStatus(projectID: created.id)
         guard let project = selectedProject else { return }
         onProjectCreated?(project, installed)

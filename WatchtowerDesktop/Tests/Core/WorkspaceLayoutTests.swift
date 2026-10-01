@@ -142,4 +142,90 @@ final class WorkspaceLayoutTests: XCTestCase {
     func testKey() {
         XCTAssertEqual(WorkspaceLayout.key(projectID: 12), "projects.layout.12")
     }
+
+    // MARK: - Pane pickers, close, Send comments, divider
+
+    func testReplaceSwapsWhenThePaneIsInTheOtherSlot() {
+        var l = split()
+        l.replace(.board, with: .session(1))
+        XCTAssertEqual(l.primary, .session(1))
+        XCTAssertEqual(l.secondary, .board)
+    }
+
+    func testReplaceFillsTheSlotAndKeepsTheExpansionOnIt() {
+        var l = split()
+        l.toggleExpand(.session(1))
+        l.replace(.session(1), with: .documents)
+        XCTAssertEqual(l.secondary, .documents)
+        XCTAssertEqual(l.expanded, .documents)
+    }
+
+    func testReplaceOfAPaneNotInASlotIsNoOp() {
+        var l = split()
+        let before = l
+        l.replace(.documents, with: .session(9))
+        XCTAssertEqual(l, before)
+    }
+
+    func testRemoveInSplitKeepsTheOtherPane() {
+        var l = split()
+        l.remove(.board)
+        XCTAssertEqual(l.primary, .session(1))
+        XCTAssertFalse(l.isSplit)
+        var m = split()
+        m.toggleExpand(.board)
+        m.remove(.session(1))
+        XCTAssertEqual(m.visiblePanes, [.board])
+        XCTAssertNil(m.expanded)
+    }
+
+    func testRemoveTheOnlyPaneIsNoOp() {
+        var l = WorkspaceLayout.default
+        l.remove(.board)
+        XCTAssertEqual(l, .default)
+    }
+
+    func testRevealVisiblePaneChangesNothing() {
+        var l = split()
+        let before = l
+        l.reveal(.session(1), keeping: .board)
+        XCTAssertEqual(l, before)
+    }
+
+    func testRevealInSplitReplacesThePaneThatIsNotKept() {
+        var l = WorkspaceLayout.default
+        l.split(with: .documents)
+        l.reveal(.session(3), keeping: .documents)
+        XCTAssertEqual(l.visiblePanes, [.session(3), .documents])
+        var m = WorkspaceLayout(primary: .documents, secondary: .board, expanded: nil, dividerFraction: 0.5)
+        m.reveal(.session(3), keeping: .documents)
+        XCTAssertEqual(m.visiblePanes, [.documents, .session(3)])
+    }
+
+    func testRevealWhileTheKeptPaneIsExpandedShowsBoth() {
+        var l = WorkspaceLayout(primary: .session(3), secondary: .documents, expanded: .documents, dividerFraction: 0.5)
+        l.reveal(.session(3), keeping: .documents)
+        XCTAssertNil(l.expanded)
+        XCTAssertEqual(l.visiblePanes, [.session(3), .documents])
+    }
+
+    func testRevealInSinglePaneSwitchesToIt() {
+        var l = WorkspaceLayout(primary: .documents, secondary: nil, expanded: nil, dividerFraction: 0.5)
+        l.reveal(.session(3), keeping: .documents)
+        XCTAssertEqual(l.visiblePanes, [.session(3)])
+    }
+
+    func testDividerFractionIsClamped() {
+        var l = split()
+        l.setDividerFraction(0.05)
+        XCTAssertEqual(l.dividerFraction, 0.2)
+        l.setDividerFraction(0.65)
+        XCTAssertEqual(l.dividerFraction, 0.65)
+    }
+
+    func testSessionIDs() {
+        let l = WorkspaceLayout(primary: .session(4), secondary: .session(2), expanded: nil, dividerFraction: 0.5)
+        XCTAssertEqual(l.sessionIDs, [4, 2])
+        XCTAssertEqual(WorkspaceLayout.default.sessionIDs, [])
+    }
 }

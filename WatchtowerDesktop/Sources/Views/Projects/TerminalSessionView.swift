@@ -2,28 +2,30 @@ import AppKit
 import SwiftUI
 import WatchtowerCore
 
-/// Terminal pane (spec §6.2). Shows `ProjectsViewModel.shownSession` — the
-/// session the panel last opened, else the last focused live one — from
-/// `AppState.terminalCenter`, and never owns the process itself.
-struct ProjectTerminalView: View {
-    let project: Project
+/// A session pane of a project page (spec §3): one `terminal_sessions` row
+/// from `AppState.terminalCenter`, which owns the process — this view never
+/// does. Not running (an app restart) or closed → a button that resumes it.
+struct ProjectSessionView: View {
+    let projectID: Int64
+    let sessionID: Int64
     @Environment(AppState.self) private var appState
 
     var body: some View {
         let vm = appState.projectsViewModel
-        TerminalSessionPane(session: shownSession, error: vm?.sessionErrors[project.id]) {
+        let session = vm?.session(sessionID, projectID: projectID)
+        TerminalSessionPane(session: session, error: vm?.sessionErrors[projectID]) {
             VStack(spacing: 8) {
-                Text("Run Claude Code in \(project.folderPath).").foregroundStyle(.secondary)
-                Button("Start Claude Code") {
-                    Task { await vm?.openMostRecentSession(project: project) }
+                if let session {
+                    Text(session.isClosed ? "\(session.title) is closed." : "\(session.title) is not running.")
+                        .foregroundStyle(.secondary)
+                    Button(session.isClosed ? "Reopen" : session.kind == .claude ? "Resume" : "Start") {
+                        Task { await vm?.open(session) }
+                    }
+                } else {
+                    ProgressView().controlSize(.small)
                 }
             }
         }
-        .task(id: project.id) { await vm?.loadSessions(projectID: project.id) }
-    }
-
-    private var shownSession: TerminalSession? {
-        appState.projectsViewModel?.shownSession(projectID: project.id)
     }
 }
 

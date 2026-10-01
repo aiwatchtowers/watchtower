@@ -528,12 +528,10 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         vm.drill(into: p)
 
         await vm.showFromPanel(.documents)
-        XCTAssertEqual(vm.pane, .documents)
         XCTAssertEqual(vm.layout.primary, .documents)
         XCTAssertEqual(vm.panelSelection, .documents)
 
         await vm.showFromPanel(.board)
-        XCTAssertEqual(vm.pane, .board)
         XCTAssertEqual(vm.panelSelection, .board)
     }
 
@@ -548,11 +546,10 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         let vm = makeVM()
         await vm.reload()
         vm.drill(into: p)
-        vm.pane = .board
+        vm.layout.show(.board)
 
         await vm.showFromPanel(.session(first.id))
         await vm.showFromPanel(.session(second.id))
-        XCTAssertEqual(vm.pane, .terminal)
         XCTAssertEqual(vm.panelSelection, .session(second.id))
         XCTAssertEqual(center.liveIDs, [first.id, second.id], "switching keeps the other process running")
 
@@ -575,12 +572,11 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         let vm = makeVM()
         await vm.reload()
         vm.drill(into: p)
-        vm.pane = .documents
+        vm.layout.show(.documents)
 
         await vm.newPanelSession()
 
         let row = try XCTUnwrap(vm.drilledSessions.first)
-        XCTAssertEqual(vm.pane, .terminal)
         XCTAssertEqual(vm.panelSelection, .session(row.id))
         XCTAssertEqual(launches.count, 1)
     }
@@ -632,14 +628,13 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         processes.last?.exit(1)
 
         XCTAssertEqual(center.liveIDs, [live.id])
-        XCTAssertEqual(vm.shownSession(projectID: p)?.id, failing.id)
+        XCTAssertEqual(vm.layout.primary, .session(failing.id), "the exited session keeps its pane")
         XCTAssertEqual(vm.panelSelection, .session(failing.id))
         XCTAssertEqual(vm.resumeFailed, [failing.id])
 
         // Send comments pastes into the live one and puts it on screen.
-        vm.pane = .documents
+        vm.layout.show(.documents)
         vm.showTerminal(sessionID: live.id, projectID: p)
-        XCTAssertEqual(vm.pane, .terminal)
         XCTAssertEqual(vm.panelSelection, .session(live.id))
     }
 
@@ -690,5 +685,149 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         await vm.loadSessions(projectID: nil)
 
         XCTAssertNil(vm.selectedStandaloneID)
+    }
+
+    // MARK: - Main area (split / expand)
+
+    private func liveSession(_ p: Int64, _ title: String) async throws -> TerminalSession {
+        let row = try await insertSession(.init(
+            projectID: p, kind: .claude, title: title, folderPath: acme, claudeSessionID: UUID().uuidString.lowercased()
+        ))
+        return row
+    }
+
+    func testSplitPicksTheSecondPaneAndStartsNothing() async throws {
+        let p = try await projectWithFolder()
+        let row = try await liveSession(p, "one")
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: p)
+
+        vm.toggleSplit(projectID: p)
+        XCTAssertEqual(vm.layout.visiblePanes, [.board, .documents], "no live session: the other project view")
+        vm.toggleSplit(projectID: p)
+        XCTAssertEqual(vm.layout.visiblePanes, [.board])
+
+        await vm.showFromPanel(.session(row.id))
+        vm.layout.show(.board)
+        XCTAssertEqual(launches.count, 1)
+        vm.toggleSplit(projectID: p)
+        XCTAssertEqual(vm.layout.visiblePanes, [.board, .session(row.id)], "the live session joins the board")
+
+        vm.layout.unsplit()
+        vm.layout.show(.session(row.id))
+        vm.toggleSplit(projectID: p)
+        XCTAssertEqual(vm.layout.visiblePanes, [.session(row.id), .board])
+        XCTAssertEqual(launches.count, 1, "splitting launches nothing")
+    }
+
+    /// Send comments in a split: the session already beside the document
+    /// stays where it is; a split without it replaces the other pane, never
+    /// the document.
+    func testSendCommentsInASplitNeverHidesTheDocument() async throws {
+        let p = try await projectWithFolder()
+        let row = try await liveSession(p, "one")
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: p)
+        await vm.showFromPanel(.session(row.id))
+        vm.layout.split(with: .documents)
+        let before = vm.layout
+
+        vm.showTerminal(sessionID: row.id, projectID: p)
+        XCTAssertEqual(vm.layout, before, "already visible: no pane switch")
+
+        vm.layout.replace(.session(row.id), with: .board)
+        vm.showTerminal(sessionID: row.id, projectID: p)
+        XCTAssertEqual(vm.layout.visiblePanes, [.session(row.id), .documents])
+    }
+
+    func testOpenTerminalFromADocumentKeepsItInTheSplit() async throws {
+        let p = try await projectWithFolder()
+        let fetched = try await pool.read { try ProjectQueries.fetch($0, id: p) }
+        let project = try XCTUnwrap(fetched)
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: p)
+        vm.layout.split(with: .documents)
+
+        await vm.openMostRecentSession(project: project, placement: .keeping(.documents))
+
+        let row = try XCTUnwrap(vm.sessions.first)
+        XCTAssertEqual(vm.layout.visiblePanes, [.session(row.id), .documents])
+    }
+
+    func testPanePickerOpensASessionInThatPane() async throws {
+        let p = try await projectWithFolder()
+        let closed = try await insertSession(.init(
+            projectID: p, kind: .claude, title: "old", folderPath: acme, claudeSessionID: UUID().uuidString.lowercased()
+        ), closed: true)
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: p)
+        vm.layout.split(with: .documents)
+
+        await vm.showInPane(.board, item: .session(closed.id), projectID: p)
+        XCTAssertEqual(vm.layout.visiblePanes, [.session(closed.id), .documents], "the picked pane, not the secondary")
+        XCTAssertTrue(vm.isLive(try XCTUnwrap(vm.sessions.first { $0.id == closed.id })), "a closed session reopens")
+        XCTAssertTrue(launches.last?.args.last?.contains("--resume") == true)
+
+        await vm.showInPane(.documents, item: .board, projectID: p)
+        XCTAssertEqual(vm.layout.visiblePanes, [.session(closed.id), .board])
+
+        await vm.newSession(inPane: .session(closed.id), projectID: p)
+        let fresh = try XCTUnwrap(vm.sessions.first { $0.id != closed.id })
+        XCTAssertEqual(vm.layout.visiblePanes, [.session(fresh.id), .board])
+        XCTAssertTrue(vm.isLive(try XCTUnwrap(vm.sessions.first { $0.id == closed.id })), "replacing a pane keeps its process")
+    }
+
+    func testClosingASplitSessionLeavesTheOtherPane() async throws {
+        let p = try await projectWithFolder()
+        let row = try await liveSession(p, "one")
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: p)
+        await vm.showFromPanel(.session(row.id))
+        vm.layout.split(with: .board)
+        vm.toggleExpand(.session(row.id), projectID: p)
+
+        await vm.close(row)
+
+        XCTAssertEqual(vm.layout.visiblePanes, [.board])
+        XCTAssertFalse(vm.layout.isSplit)
+    }
+
+    func testExpandDividerAndClosePanePersist() async throws {
+        let p = try await projectWithFolder()
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: p)
+        vm.toggleSplit(projectID: p)
+
+        vm.toggleExpand(.documents, projectID: p)
+        vm.setDividerFraction(0.95, projectID: p)
+        let relaunched = makeVM()
+        relaunched.selectedProjectID = p
+        XCTAssertEqual(relaunched.layout.visiblePanes, [.documents])
+        XCTAssertEqual(relaunched.layout.dividerFraction, 0.8)
+
+        vm.toggleExpand(.documents, projectID: p)
+        vm.closePane(.board, projectID: p)
+        XCTAssertEqual(vm.layout.visiblePanes, [.documents])
+    }
+
+    /// A layout saved in an earlier run can name a session that is gone:
+    /// the first list load drops it instead of showing an empty pane.
+    func testALoadDropsASessionTheLayoutStillNames() async throws {
+        let p = try await projectWithFolder()
+        var stale = WorkspaceLayout.default
+        stale.show(.session(999))
+        stale.split(with: .documents)
+        defaults.set(try JSONEncoder().encode(stale), forKey: WorkspaceLayout.key(projectID: p))
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: p)
+        await vm.loadSessions(projectID: p)
+        XCTAssertEqual(vm.layout.visiblePanes, [.documents])
     }
 }
