@@ -22,6 +22,7 @@ final class ProjectsViewModel {
                 closeDocument()
                 documents = []
                 attachNotice = nil
+                documentQuery = ""
             }
             // One thing is on screen: a project, or a standalone terminal.
             // Selecting a project also drills the panel into it.
@@ -61,6 +62,35 @@ final class ProjectsViewModel {
         installNotes.merging(statusReadErrors) { note, read in "\(note) \(read)" }
     }
     private(set) var documents: [ProjectDocumentListItem] = []
+    /// The Documents list's title search (#81); cleared on a project switch.
+    var documentQuery = ""
+    /// Collapsed groups of the Documents list, per project; kept for the session.
+    private(set) var collapsedDocumentGroups: [Int64: Set<ProjectDocumentGrouping.Group>] = [:]
+
+    var documentSections: [ProjectDocumentGrouping.Section] {
+        ProjectDocumentGrouping.sections(documents, query: documentQuery)
+    }
+
+    func isDocumentGroupCollapsed(_ group: ProjectDocumentGrouping.Group) -> Bool {
+        selectedProjectID.map { collapsedDocumentGroups[$0, default: []].contains(group) } ?? false
+    }
+
+    func setDocumentGroup(_ group: ProjectDocumentGrouping.Group, collapsed: Bool) {
+        guard let selectedProjectID else { return }
+        if collapsed {
+            collapsedDocumentGroups[selectedProjectID, default: []].insert(group)
+        } else {
+            collapsedDocumentGroups[selectedProjectID]?.remove(group)
+        }
+    }
+
+    /// An opened document is always findable in the list: a search that
+    /// hides it is cleared and its group unfolded (a deep link or an attach
+    /// may open one the list currently hides).
+    private func revealInList(_ document: ProjectDocument) {
+        if !ProjectDocumentGrouping.matches(document, query: documentQuery) { documentQuery = "" }
+        setDocumentGroup(ProjectDocumentGrouping.Group.of(document), collapsed: false)
+    }
     /// An "Add document…" attach is running (#80); the sheet disables Attach.
     private(set) var isAttachingDocument = false
     /// Why the last attach failed (the CLI's refusal); the sheet shows it.
@@ -540,6 +570,7 @@ final class ProjectsViewModel {
     func openDocument(_ document: ProjectDocument) async {
         guard let project = selectedProject, project.id == document.projectID else { return }
         attachNotice = nil
+        revealInList(document)
         if documentViewModel?.document.id != document.id {
             closeDocument()
             let docVM = ProjectDocumentViewModel(dbPool: dbPool, project: project, document: document, drafts: commentDrafts)

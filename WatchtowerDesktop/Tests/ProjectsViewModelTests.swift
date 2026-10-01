@@ -160,6 +160,41 @@ final class ProjectsViewModelTests: XCTestCase {
         XCTAssertEqual(rows.map(\.depth), [0, 1])
     }
 
+    /// #81: the list groups by kind and filters by title; the search belongs
+    /// to one project and is cleared on a switch.
+    func testDocumentSectionsFollowTheSearchAndASwitchClearsIt() async throws {
+        let p = try await pool.write { d -> Int64 in
+            let p = try TestDatabase.insertProject(d)
+            try TestDatabase.insertProjectDocument(d, projectID: p, relPath: "docs/specs/sync.md", kind: "spec", title: "Sync")
+            try TestDatabase.insertProjectDocument(d, projectID: p, relPath: "docs/plans/auth.md", kind: "plan", title: "Auth")
+            try TestDatabase.insertProjectDocument(d, projectID: p, relPath: "README.md", kind: "doc", origin: "import")
+            return p
+        }
+        let vm = makeVM()
+        await vm.reload()
+        vm.selectedProjectID = p
+        await vm.loadDocuments()
+        XCTAssertEqual(vm.documentSections.map(\.group), [.specs, .plans, .imported])
+
+        vm.documentQuery = "auth"
+        XCTAssertEqual(vm.documentSections.map(\.group), [.plans])
+
+        // Opening a document the list hides (a deep link, an attach) reveals it.
+        vm.setDocumentGroup(.specs, collapsed: true)
+        let spec = try XCTUnwrap(vm.documents.first { $0.document.kind == "spec" })
+        await vm.openDocument(spec.document)
+        XCTAssertEqual(vm.documentQuery, "", "the search that hid it is cleared")
+        XCTAssertFalse(vm.isDocumentGroupCollapsed(.specs), "its group is unfolded")
+
+        vm.setDocumentGroup(.plans, collapsed: true)
+        vm.documentQuery = "auth"
+        vm.selectedProjectID = nil
+        XCTAssertEqual(vm.documentQuery, "")
+        XCTAssertFalse(vm.isDocumentGroupCollapsed(.plans), "folding is per project")
+        vm.selectedProjectID = p
+        XCTAssertTrue(vm.isDocumentGroupCollapsed(.plans), "and kept for the session")
+    }
+
     func testCreateShowsAFailedDocumentImportWithTheRetryCommand() async throws {
         let id = try await pool.write { try TestDatabase.insertProject($0) }
         let runner = ScriptedCLIRunner(results: [

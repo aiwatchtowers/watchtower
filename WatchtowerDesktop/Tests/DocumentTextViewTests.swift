@@ -51,4 +51,28 @@ final class DocumentTextViewTests: XCTestCase {
         coordinator.apply(highlighted, contentID: "1#1", to: textView)
         XCTAssertEqual(textView.selectedRange(), NSRange(location: 7, length: 4))
     }
+
+    /// #81: a table-of-contents pick scrolls the heading to the top, once per pick.
+    func testScrollTargetJumpsToTheOffsetOncePerRequest() throws {
+        let view = DocumentTextView(text: NSAttributedString(string: ""), contentID: "",
+                                    selection: .constant(NSRange(location: 0, length: 0))) { _ in }
+        let scroll = NSTextView.scrollableTextView()
+        scroll.frame = NSRect(x: 0, y: 0, width: 300, height: 120)
+        let textView = try XCTUnwrap(scroll.documentView as? NSTextView)
+        let coordinator = view.makeCoordinator()
+        let body = (1...200).map { "Line \($0)" }.joined(separator: "\n") + "\n## Target\n"
+        coordinator.apply(NSAttributedString(string: body), contentID: "1#1", to: textView)
+        textView.layoutManager?.ensureLayout(for: try XCTUnwrap(textView.textContainer))
+
+        let target = DocumentScrollTarget(offset: (body as NSString).range(of: "## Target").location)
+        coordinator.scroll(textView, to: target)
+        let jumped = scroll.contentView.bounds.minY
+        XCTAssertGreaterThan(jumped, 1000, "the heading near the end is brought into view")
+
+        scroll.contentView.scroll(to: .zero)
+        coordinator.scroll(textView, to: target)
+        XCTAssertEqual(scroll.contentView.bounds.minY, 0, "the same request does not scroll again")
+        coordinator.scroll(textView, to: DocumentScrollTarget(offset: target.offset))
+        XCTAssertEqual(scroll.contentView.bounds.minY, jumped, accuracy: 1, "a new pick of the same heading does")
+    }
 }

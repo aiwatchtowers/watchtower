@@ -14,15 +14,18 @@ struct ProjectDocumentsView: View {
     @State private var delivery: TerminalCenter.PromptDelivery?
     @State private var showThreads = true
     @State private var addingDocument = false
+    /// The last table-of-contents jump in the open document.
+    @State private var scrollTarget: DocumentScrollTarget?
 
     var body: some View {
         HSplitView {
-            list.frame(minWidth: 200, idealWidth: 240, maxWidth: 320)
+            ProjectDocumentsList(vm: vm) { addingDocument = true }
+                .frame(minWidth: 200, idealWidth: 240, maxWidth: 320)
             if let docVM = vm.documentViewModel {
                 documentView(docVM).frame(minWidth: 360, maxWidth: .infinity)
                 // No threads or drafts, or hidden by the owner: the text takes the width.
                 if showThreads, hasThreadsPanel(docVM) {
-                    threads(docVM).frame(minWidth: 240, idealWidth: 300, maxWidth: 420)
+                    ProjectDocumentThreadsPanel(docVM: docVM, activeThreadID: $activeThreadID).frame(minWidth: 240, idealWidth: 300, maxWidth: 420)
                 }
             } else {
                 Text(vm.documents.isEmpty
@@ -51,59 +54,8 @@ struct ProjectDocumentsView: View {
             selection = DocumentSelectionCarry.none
             // Nor the half-typed composer text written for the other document.
             composerText = ""
+            scrollTarget = nil
         }
-    }
-
-    private var list: some View {
-        VStack(spacing: 0) {
-            documentList
-            Divider()
-            HStack {
-                Button {
-                    addingDocument = true
-                } label: {
-                    Label("Add Document…", systemImage: "plus")
-                }
-                .buttonStyle(.borderless)
-                .help("Attach a .md or .txt file from the project folder")
-                Spacer()
-            }
-            .padding(8)
-            if let notice = vm.attachNotice {
-                Text(notice)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding([.horizontal, .bottom], 8)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-
-    private var documentList: some View {
-        List(vm.documents, selection: Binding(
-            get: { vm.documentViewModel?.document.id },
-            set: { id in
-                guard let item = vm.documents.first(where: { $0.id == id }) else { return }
-                Task { await vm.openDocument(item.document) }
-            }
-        )) { item in
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(item.document.displayTitle)
-                    Text([item.document.kind, item.targetTitle].compactMap { $0 }.joined(separator: " · "))
-                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                }
-                Spacer()
-                if vm.isRevised(item.document) {
-                    Circle().fill(Color.blue).frame(width: 6, height: 6).help("Revised since you last opened it")
-                }
-                if item.openComments > 0 {
-                    Text("\(item.openComments)").font(.caption2).foregroundStyle(.secondary)
-                }
-            }
-            .tag(Optional(item.id))
-        }
-        .panelListStyle()
     }
 
     private func documentView(_ docVM: ProjectDocumentViewModel) -> some View {
@@ -111,6 +63,9 @@ struct ProjectDocumentsView: View {
             HStack {
                 Text(docVM.document.relPath).font(.caption).foregroundStyle(.secondary)
                 Spacer()
+                if let rendered = docVM.rendered {
+                    DocumentContentsMenu(headings: rendered.headings) { scrollTarget = DocumentScrollTarget(offset: $0) }
+                }
                 if hasThreadsPanel(docVM) {
                     Toggle(isOn: $showThreads) {
                         Label("Threads (\(docVM.threads.count + docVM.drafts.count))", systemImage: "sidebar.right")
@@ -132,6 +87,7 @@ struct ProjectDocumentsView: View {
                         selection: $selection,
                         composerText: $composerText,
                         horizontalInset: ReadableColumn.horizontalInset(forWidth: geo.size.width),
+                        scrollTarget: scrollTarget,
                         onComment: { body, range in
                             guard docVM.addDraft(body: body, selection: range) else { return false }
                             showThreads = true
@@ -169,49 +125,6 @@ struct ProjectDocumentsView: View {
         !docVM.threads.isEmpty || !docVM.drafts.isEmpty
     }
 
-    private func threads(_ docVM: ProjectDocumentViewModel) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 10) {
-                if !docVM.drafts.isEmpty {
-                    Text("Drafts — not sent yet").font(.caption).fontWeight(.semibold).foregroundStyle(.secondary)
-                    ForEach(docVM.drafts) { draft in
-                        ProjectCommentDraftRow(
-                            draft: draft,
-                            located: docVM.draftRanges[draft.id] != nil,
-                            sending: docVM.isSending,
-                            onEdit: { docVM.updateDraft(draft.id, body: $0) },
-                            onDelete: { docVM.deleteDraft(draft.id) }
-                        )
-                    }
-                    Divider()
-                }
-                ForEach(docVM.openThreads) { thread($0, docVM) }
-                if !docVM.resolvedThreads.isEmpty {
-                    DisclosureGroup("Resolved (\(docVM.resolvedThreads.count))") {
-                        ForEach(docVM.resolvedThreads) { thread($0, docVM) }
-                    }
-                }
-                if !docVM.outdatedThreads.isEmpty {
-                    DisclosureGroup("Outdated (\(docVM.outdatedThreads.count))") {
-                        ForEach(docVM.outdatedThreads) { thread($0, docVM) }
-                    }
-                }
-            }
-            .padding(10)
-        }
-    }
-
-    private func thread(_ thread: ProjectCommentThread, _ docVM: ProjectDocumentViewModel) -> some View {
-        CommentThreadView(
-            thread: thread.content,
-            isActive: thread.id == activeThreadID,
-            onReply: { await docVM.reply(to: thread.id, body: $0) },
-            onResolve: thread.root.isOpen ? { await docVM.resolve(thread.id) } : nil,
-            onReopen: thread.root.isOpen ? nil : { await docVM.reopen(thread.id) }
-        )
-        .onTapGesture { activeThreadID = thread.id }
-    }
-
     /// Saves the drafts first (all or none); a failed save types nothing and
     /// leaves the drafts and the reason on screen.
     private func sendComments(_ docVM: ProjectDocumentViewModel) async {
@@ -239,50 +152,5 @@ struct ProjectDocumentsView: View {
             Task { await vm.openMostRecentSession(project: project, placement: .keeping(.documents)) }
         }
         delivery = nil
-    }
-}
-
-/// One unsent draft in the threads panel: its passage, its editable text and
-/// Delete. A draft whose passage left the document is kept but not sent.
-private struct ProjectCommentDraftRow: View {
-    let draft: ProjectCommentDraft
-    let located: Bool
-    let sending: Bool
-    let onEdit: (String) -> Void
-    let onDelete: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("\u{201C}\(draft.anchor.quote)\u{201D}")
-                .font(.caption)
-                .italic()
-                .foregroundStyle(.secondary)
-                .lineLimit(3)
-            TextField("Comment", text: Binding(get: { draft.body }, set: onEdit), axis: .vertical)
-                .textFieldStyle(.roundedBorder)
-                .lineLimit(1...6)
-            HStack {
-                if let note {
-                    Text(note)
-                        .font(.caption2)
-                        .foregroundStyle(.orange)
-                }
-                Spacer()
-                Button("Delete", role: .destructive, action: onDelete)
-                    .buttonStyle(.borderless)
-                    .controlSize(.small)
-            }
-        }
-        .padding(8)
-        .background(Color.blue.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
-        // A send in flight writes this text: an edit now would be lost.
-        .disabled(sending)
-    }
-
-    /// Why Send leaves this draft behind, if it does.
-    private var note: String? {
-        if !located { return "Its passage changed — select the text again, or delete it. Not sent." }
-        if draft.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "Empty — not sent." }
-        return nil
     }
 }

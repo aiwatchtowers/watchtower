@@ -71,6 +71,13 @@ enum DocumentSelectionCarry {
     }
 }
 
+/// A request to scroll the text so `offset` (UTF-16) sits at the top — a
+/// table-of-contents jump. A new `id` asks again for the same offset.
+struct DocumentScrollTarget: Equatable {
+    let offset: Int
+    let id = UUID()
+}
+
 /// A read-only, selectable `NSTextView` (SwiftUI `Text` cannot report a
 /// selection range). Reports the selection, and a zero-length click's
 /// location so the pane can open the thread under it. With `onCommentRequest`
@@ -91,6 +98,8 @@ struct DocumentTextView: NSViewRepresentable {
     var selectionRect: Binding<CGRect?> = .constant(nil)
     /// "Comment…" in the context menu of a non-empty selection.
     var onCommentRequest: (() -> Void)?
+    /// Scrolls once per new target, after the text is applied.
+    var scrollTarget: DocumentScrollTarget?
     let onClick: (Int) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
@@ -106,6 +115,8 @@ struct DocumentTextView: NSViewRepresentable {
         textView.delegate = context.coordinator
         context.coordinator.apply(text, contentID: contentID, to: textView)
         context.coordinator.observeGeometry(of: scroll)
+        // A rebuilt view must not replay a jump made in its predecessor.
+        context.coordinator.scrolledTargetID = scrollTarget?.id
         return scroll
     }
 
@@ -116,6 +127,7 @@ struct DocumentTextView: NSViewRepresentable {
             textView.textContainerInset = NSSize(width: horizontalInset, height: 16)
         }
         context.coordinator.apply(text, contentID: contentID, to: textView)
+        context.coordinator.scroll(textView, to: scrollTarget)
     }
 
     static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
@@ -167,6 +179,19 @@ struct DocumentTextView: NSViewRepresentable {
         // MARK: - Comment affordance
 
         private weak var observedTextView: NSTextView?
+        var scrolledTargetID: UUID?
+
+        /// Puts the target's line at the top of the visible area, once.
+        func scroll(_ textView: NSTextView, to target: DocumentScrollTarget?) {
+            let length = textView.string.utf16.count
+            guard let target, target.id != scrolledTargetID, length > 0,
+                  let layout = textView.layoutManager, let container = textView.textContainer else { return }
+            scrolledTargetID = target.id
+            let char = NSRange(location: min(max(target.offset, 0), length - 1), length: 1)
+            let glyphs = layout.glyphRange(forCharacterRange: char, actualCharacterRange: nil)
+            let line = layout.boundingRect(forGlyphRange: glyphs, in: container)
+            textView.scroll(NSPoint(x: 0, y: max(line.minY + textView.textContainerOrigin.y - 8, 0)))
+        }
 
         /// Scrolling and resizing move the selection on screen.
         func observeGeometry(of scroll: NSScrollView) {
