@@ -333,6 +333,40 @@ func TestProj04_InstallAndRemoveThroughASymlinkKeepTheLink(t *testing.T) {
 	}
 }
 
+// A symlinked settings file left with nothing but our hooks keeps its link:
+// removing the link would leave the hooks in its (dotfiles) target, firing in
+// every folder linking it. The target is emptied to {} instead.
+func TestProj04_RemoveLeavingNothingThroughASymlinkEmptiesTheTarget(t *testing.T) {
+	dir := t.TempDir()
+	realSettings := filepath.Join(t.TempDir(), "real-settings.json")
+	writeTestFile(t, realSettings, `{}`)
+	link := settingsFile(dir)
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Symlink(realSettings, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	if _, err := InstallSessionStartHook(dir, testHookCmd, 7); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if _, err := InstallStopHook(dir, ProjectStopHookCommand("/tmp/acme bin/watchtower", 7), 7); err != nil {
+		t.Fatalf("install stop: %v", err)
+	}
+
+	for _, remove := range []func(string, int64) (bool, error){RemoveSessionStartHook, RemoveStopHook} {
+		if changed, err := remove(dir, 7); err != nil || !changed {
+			t.Fatalf("remove: changed=%v err=%v", changed, err)
+		}
+	}
+	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the settings symlink must survive a remove that leaves nothing, err=%v", err)
+	}
+	if got := strings.TrimSpace(readTestFile(t, realSettings)); got != "{}" {
+		t.Fatalf("the linked target must be emptied of our hooks, got %s", got)
+	}
+}
+
 // A dangling symlink can never be safely written through: resolution fails
 // before any write, so the link is left exactly as it was.
 func TestProj04_InstallThroughADanglingSymlinkErrorsWithoutTouchingIt(t *testing.T) {

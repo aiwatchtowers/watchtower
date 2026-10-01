@@ -149,6 +149,7 @@ skill, would make every later `integrate` a risk to the owner's own setup.
 - `internal/devpack/project_test.go::TestProj04_EditedProjectSkillIsNeverClobbered`
 - `internal/devpack/project_stop_hook_test.go::TestProj04_StopHookKeepsOwnerStopHooksAndRemovesOnlyOurs`
 - `internal/devpack/project_stop_hook_test.go::TestProj04_MalformedStopLeavesTheFileByteIdentical`
+- `internal/devpack/project_settings_test.go::TestProj04_RemoveLeavingNothingThroughASymlinkEmptiesTheTarget`
 
 **Locked since:** 2026-09-29
 
@@ -437,6 +438,7 @@ applied to search.
 
 ## Changelog
 
+- 2026-10-01 (board target #192, release audit): **PROJ-04 strengthened** — a remove that leaves a symlinked `settings.local.json` empty writes `{}` to the link's target instead of deleting the link (which left our hooks in the dotfiles target); new guard `TestProj04_RemoveLeavingNothingThroughASymlinkEmptiesTheTarget`.
 - 2026-10-01 (board target #192, release audit): **PROJ-07 strengthened** — squash detection compares zero-context patch ids (`git diff -U0`, `git log -p -U0`), so a squash is recognised even when main changed a line next to the branch's hunks (the documented limit stays: a diff changed in conflict resolution); `TestProj07_GitRules` gains that case for an open and a done target.
 - 2026-10-01 (board target #192, release audit): **PROJ-08 strengthened** — `project create`, `import-docs` and `attach-doc` now index the project's documents themselves (best-effort, when `knowledge.enabled` is on), so a project in a folder the daemon never reads (~/Documents, ~/Desktop, …) has its owner-attached and imported documents searchable at once; new guard `TestProj08_OwnerAttachPathsIndexTheDocumentsAtOnce`.
 - 2026-10-01 (board item #153): the per-project board-language override (#122) is retired — the board always follows the session language. `watchtower project update`, `update_project`'s `board_language` (an unknown field again; `description` is required again), the Desktop menu and the `terminal title` override are removed; `tools.BoardLanguageLine` is a constant. The `projects.board_language` column (00087) stays, unread. No contract semantics or guard tests changed.
