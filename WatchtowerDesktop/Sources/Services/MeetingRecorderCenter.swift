@@ -941,7 +941,6 @@ final class MeetingRecorderCenter {
                 guard let self, self.levelsGeneration == generation else { return }
                 self.captureLevels = levels
                 callAudio.add(system: levels.system)
-                let silentSince = callAudio.openGap?.startSec
                 self.setCallAudioSilentSince(callAudio.openGap?.startSec)
             }
             guard !Task.isCancelled, let self, self.levelsGeneration == generation else { return }
