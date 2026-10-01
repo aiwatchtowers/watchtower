@@ -128,7 +128,9 @@ recorded in its resumed history rather than passing it (or anything else)
 again on argv. The one-shot `watchtower chat title` call is covered too:
 its user message (the owner's first exchange) always travels on the
 claude/codex child's stdin, whatever its size (the generators' stdin-only
-mode). Extends QC-03's "secrets never on argv" to all chat content.
+mode), and so is `watchtower terminal title`, whose user message is the
+owner's typed messages from an embedded Claude Code session's transcript.
+Extends QC-03's "secrets never on argv" to all chat content.
 
 **Guard:** `TestChat04_ClaudeArgvCarriesNoContent`,
 `TestChat04_ClaudeSendsRealAttachmentAsContentBlock`,
@@ -137,6 +139,7 @@ mode). Extends QC-03's "secrets never on argv" to all chat content.
 `TestChat04_CodexSessionArgvCarriesNoContent`
 (`internal/codex/client_test.go`);
 `TestChat04_ChatTitleArgvCarriesNoContent` (`cmd/chat_test.go`);
+`TestChat04_TerminalTitleArgvCarriesNoContent` (`cmd/terminal_test.go`);
 `testChat04SessionArgvNeverCarriesContent`,
 `testChat04TurnContentTravelsOnlyOnStdin`
 (`WatchtowerDesktop/Tests/ChatSessionClientTests.swift`)
@@ -160,13 +163,27 @@ or `ChatSessionPool` — a source scan, not just a behavioral test. Every
 external write anywhere in the chat instead goes through the tool
 registry's Propose → Approve path (AGENT-01..06 unchanged).
 
+The same scan covers the artifact-comment files (`ArtifactCommentsModel`,
+`ArtifactCommentMessage`, `ArtifactCommentReanchor`, `ArtifactCommentText`,
+`ArtifactCommentQueries`, `ArtifactCommentsView`, the shared `CommentBatchComposer`), and no scanned file may
+reference `.send(`, `sendDraft` or `startTurn`: an artifact comment reaches
+the assistant only inside the owner's own chat message, sent by the chat
+(`ChatViewModel.sendArtifactComments`) when the owner presses
+**Send N comments**.
+
 **Guard:** `testChat05ArtifactActionsOnlyOpenOrCopy`
 (`WatchtowerDesktop/Tests/Core/ArtifactActionsTests.swift`);
 `testChat05ArtifactSurfacesNeverWrite`
 (`WatchtowerDesktop/Tests/Core/ArtifactChat05ScanTests.swift`);
 `TestChat05_ContractSaysArtifactsNeverSend`
-(`internal/chat/artifacts_contract_test.go`)
+(`internal/chat/artifacts_contract_test.go`);
+`testArtifactCommentsReachTheAssistantOnlyAsTheOwnersMessage`
+(`WatchtowerDesktop/Tests/ChatViewModelTests.swift`);
 
 ## Changelog
 
+- 2026-10-01 (board items #178–#181): the artifact panel reads and comments on one rendering of the latest version (`ArtifactCommentsView` over `DocumentTextView`; a `table` artifact now anchors on its cells rather than raw CSV), and comment fields share `Views/Comments/CommentTextEditor.swift`; `DocumentAttributedString` moved to its own file. **CHAT-05** strengthened, not changed: `ArtifactChat05ScanTests` also scans `DocumentAttributedString.swift` and `CommentTextEditor.swift`. Adding a comment still sends nothing.
+- 2026-10-01 (board item #84): the artifact panel's header Comment button is replaced by the selection-comment affordance it now shares with project documents (`Views/Comments/CommentableDocumentText.swift` over `DocumentTextView.swift`: a floating Comment button at the selection, "Comment…" in the context menu). **CHAT-05** strengthened, not changed: `ArtifactChat05ScanTests` also scans those two files. Adding a comment still sends nothing.
+- 2026-09-29 (Projects POC Phase 6, spec `docs/superpowers/specs/2026-09-29-project-board-poc-design.md` §6.3): **CHAT-05**'s Observable extends to owner comments on chat artifacts (`chat_artifact_comments`, migration `00082`, Swift-only writer — Go neither reads nor writes it) and to the chat quote-reply batch. Both stay private/pending state until the owner's own send: **Send N comments** composes the unsent artifact comments into one ordinary owner message (`ArtifactCommentMessage`, built on the shared `CommentBatchComposer` batch rule — comments never reach the assistant one by one), and **Quote in reply** accumulates quoted passages into a per-conversation batch that rides along with the owner's own next turn (`ChatQuoteReply`, the same composer). The source scan (`ArtifactChat05ScanTests`) is extended to these new files and now also forbids any `.send(`/`sendDraft`/`startTurn` reference on the artifact side. `ArtifactsContract` gains one line asking the assistant to answer comments with a new version of the same artifact key. No CHAT-01..04 guard changed.
 - 2026-09-26: initial contracts CHAT-01..05 (spec `docs/superpowers/specs/2026-09-26-chat-redesign-design.md` §9).
+- 2026-09-30: CHAT-05 extended to artifact comments (projects POC phase 6, migration 00082): the source scan covers the comment files and forbids send entry points on the artifact side; comments leave the machine only as the owner's own message. Strengthening only — no guard relaxed.

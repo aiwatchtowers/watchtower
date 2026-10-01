@@ -346,6 +346,19 @@ func (db *DB) UpsertJiraSprint(sprint JiraSprint) error {
 	return nil
 }
 
+// LatestJiraClosedSprintSync returns the newest synced_at among the board's
+// closed sprints ("" when none is stored): when the sprint sync last read the
+// closed listing.
+func (db *DB) LatestJiraClosedSprintSync(accountID int64, boardID int) (string, error) {
+	var latest string
+	err := db.QueryRow(`SELECT COALESCE(MAX(synced_at), '') FROM jira_sprints
+		WHERE account_id = ? AND board_id = ? AND state = 'closed'`, accountID, boardID).Scan(&latest)
+	if err != nil {
+		return "", fmt.Errorf("reading closed sprint sync time for board %d: %w", boardID, err)
+	}
+	return latest, nil
+}
+
 // GetJiraActiveSprints returns active sprints for a given board.
 func (db *DB) GetJiraActiveSprints(accountID int64, boardID int) ([]JiraSprint, error) {
 	rows, err := db.Query(`SELECT account_id, id, board_id, name, state, goal, start_date, end_date, complete_date, synced_at
@@ -614,6 +627,24 @@ func (db *DB) GetJiraSyncState(accountID int64, projectKey string) (*JiraSyncSta
 		return nil, fmt.Errorf("scanning jira sync state %s: %w", projectKey, err)
 	}
 	return &s, nil
+}
+
+// OldestFailingJiraProjectSync returns the oldest last_synced_at (RFC3339)
+// among the account's selected-board projects whose latest sync attempt failed
+// (last_error is cleared by the next success) but which have synced at least
+// once, or "" when no such project exists. Downstream cursors over the
+// account's issues must not pass it: the failing project's changes since then
+// have not reached jira_issues yet.
+func (db *DB) OldestFailingJiraProjectSync(accountID int64) (string, error) {
+	var oldest sql.NullString
+	err := db.QueryRow(`SELECT MIN(s.last_synced_at) FROM jira_sync_state s
+		WHERE s.account_id = ? AND s.last_error != '' AND s.last_synced_at != ''
+		  AND s.project_key IN (SELECT project_key FROM jira_boards WHERE account_id = ? AND is_selected = 1)`,
+		accountID, accountID).Scan(&oldest)
+	if err != nil {
+		return "", fmt.Errorf("reading failing jira project syncs for account %d: %w", accountID, err)
+	}
+	return oldest.String, nil
 }
 
 // GetJiraSyncStates returns all Jira sync states across every account.

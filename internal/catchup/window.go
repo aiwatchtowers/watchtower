@@ -6,7 +6,8 @@ import (
 	"time"
 )
 
-// maxWindowDays bounds a recap window; a longer one is rejected, not clamped.
+// maxWindowDays bounds a recap window. An explicit (custom) window longer than
+// this is rejected; the auto window is clamped to it instead (see ResolveWindow).
 const maxWindowDays = 31
 
 // ErrWindow is returned (wrapped) for every invalid WindowSpec.
@@ -23,6 +24,9 @@ type WindowSpec struct {
 type Window struct {
 	From, To time.Time
 	Source   string
+	// Truncated is set when an auto window's start was pulled forward to the
+	// maxWindowDays cap because the last acknowledged recap is older than that.
+	Truncated bool
 }
 
 // ResolveWindow turns a spec into a concrete window. Auto: from the last
@@ -30,7 +34,12 @@ type Window struct {
 // to now. Presets use now's location for day boundaries. No resolved window
 // ever ends after now: a custom --to past now is clamped to it, a custom --from
 // past now is an error, and an acknowledged period_to past now falls back to the
-// 24h default instead of freezing the auto window.
+// 24h default instead of freezing the auto window. An acknowledged period_to
+// older than maxWindowDays is clamped to now-maxWindowDays (Truncated=true) —
+// a long absence is exactly what the auto window is for, so it must not turn
+// into a permanent "longer than 31 days" error.
+// The auto branch is mirrored by the Desktop's pre-build caption (Swift
+// CatchUpAutoWindow in WatchtowerCore/Models/CatchUpModels.swift) — change both.
 func ResolveWindow(spec WindowSpec, now time.Time, lastAckTo float64) (Window, error) {
 	custom := !spec.From.IsZero() || !spec.To.IsZero()
 	if spec.Preset != "" && custom {
@@ -85,6 +94,9 @@ func ResolveWindow(spec WindowSpec, now time.Time, lastAckTo float64) (Window, e
 			if ack := time.Unix(int64(lastAckTo), 0).In(now.Location()); ack.Before(now) {
 				w.From = ack
 			}
+		}
+		if limit := now.Add(-maxWindowDays * 24 * time.Hour); w.From.Before(limit) {
+			w.From, w.Truncated = limit, true
 		}
 	}
 	if !w.From.Before(w.To) {

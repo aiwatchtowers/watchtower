@@ -13,9 +13,11 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"watchtower/internal/claude"
 	"watchtower/internal/digest"
+	"watchtower/internal/fsutil"
 )
 
 // Usage holds token metrics from an AI call.
@@ -36,6 +38,7 @@ type cliUsage struct {
 // cliResponse is the JSON structure returned by `claude --output-format json`.
 type cliResponse struct {
 	Type       string   `json:"type"`
+	Subtype    string   `json:"subtype"`
 	Result     string   `json:"result"`
 	CostUSD    float64  `json:"total_cost_usd"`
 	DurationMS int      `json:"duration_ms"`
@@ -76,6 +79,32 @@ func parseCLIOutput(output []byte) (*cliResponse, error) {
 	return nil, fmt.Errorf("unexpected claude CLI output format: %s", claude.DescribeOutput(trimmed))
 }
 
+// envelopeMessage returns the CLI's own diagnostic message for a failed run,
+// bounded and rune-safe — the digest generator's errorEnvelopeMessage
+// precedent (internal/digest/generator.go), reused here so a failed chat
+// query surfaces the CLI's own reason (e.g. "Invalid API key · Please run
+// /login") instead of a bare exit code. The cap keeps a subtype=error_max_turns
+// envelope (whose "result" carries the model's own partial output rather than
+// a short diagnostic) from writing an unbounded amount of that content into
+// logs or the UI.
+func envelopeMessage(result string) string {
+	msg := strings.TrimSpace(result)
+	if msg == "" {
+		return "no message in the CLI result envelope"
+	}
+	const maxEnvelopeMessage = 4096
+	if len(msg) <= maxEnvelopeMessage {
+		return msg
+	}
+	// Back off to a rune boundary: this text is model output and routinely
+	// Cyrillic, so a byte cut lands mid-rune and writes a broken one into logs.
+	cut := maxEnvelopeMessage
+	for cut > 0 && !utf8.RuneStart(msg[cut]) {
+		cut--
+	}
+	return msg[:cut] + fmt.Sprintf("… (%d bytes truncated)", len(msg)-cut)
+}
+
 // ExternalMCPServer is a plain DTO describing an owner-added external MCP
 // server to merge into the chat config and tool allowlist. It mirrors the
 // shape of db.ExternalConnection without importing internal/db, keeping
@@ -108,6 +137,12 @@ type Client struct {
 	// written to this 0600 temp file instead of argv, and the caller (Query/
 	// QuerySync) removes it once the subprocess has been reaped.
 	mcpConfigTempPath string
+	// systemPromptTempPath is set by buildArgs when the system prompt is
+	// larger than digest.StdinThreshold: it then travels as a 0600
+	// --system-prompt-file instead of argv, and Query/QuerySync remove the
+	// file once the subprocess has been reaped (the mcpConfigTempPath
+	// lifecycle).
+	systemPromptTempPath string
 }
 
 // SetMCPArgs appends extra flags to the MCP server command (chat mode).
@@ -156,7 +191,8 @@ func promptFlagAndStdin(userMessage string) (flagArgs []string, stdin string) {
 // promptFlagAndStdin). When sessionID is non-empty, --resume is used instead
 // of --system-prompt (the system prompt is already baked into the existing
 // session).
-func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID string) ([]string, string) {
+func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID string) ([]string, string, error) {
+	c.systemPromptTempPath = "" // set again below only if this call writes one
 	promptArgs, stdin := promptFlagAndStdin(userMessage)
 	// slices.Concat always allocates a fresh backing array, so the append
 	// calls below can never alias (and corrupt) promptFlagAndStdin's slice —
@@ -228,9 +264,32 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 	if sessionID != "" {
 		args = append(args, "--resume", sessionID)
 	} else {
-		args = append(args, "--system-prompt", systemPrompt)
+		promptArgs, err := c.systemPromptArgs(systemPrompt)
+		if err != nil {
+			return nil, "", err
+		}
+		args = append(args, promptArgs...)
 	}
-	return args, stdin
+	return args, stdin, nil
+}
+
+// systemPromptArgs passes the system prompt inline when it is small and as a
+// 0600 --system-prompt-file when it exceeds digest.StdinThreshold: pipelines
+// that put their whole data payload in the system prompt (briefing, target
+// extract) would otherwise hit ARG_MAX ("argument list too long") and leave
+// that payload readable in `ps` for the process lifetime. A failed file write
+// fails the call rather than falling back to argv (the digest.ClaudeGenerator
+// policy).
+func (c *Client) systemPromptArgs(systemPrompt string) ([]string, error) {
+	if len(systemPrompt) <= digest.StdinThreshold {
+		return []string{"--system-prompt", systemPrompt}, nil
+	}
+	path, err := fsutil.WritePrivateTemp("wt-system-prompt-*.txt", systemPrompt)
+	if err != nil {
+		return nil, fmt.Errorf("writing system prompt file: %w", err)
+	}
+	c.systemPromptTempPath = path
+	return []string{"--system-prompt-file", path}, nil
 }
 
 // hasSecret reports whether any external server carries a non-empty Env or
@@ -248,26 +307,7 @@ func (c *Client) hasSecret() bool {
 // writeMCPConfigTempFile writes the mcp-config JSON to a 0600 temp file and
 // returns its path. Called only when hasSecret() is true.
 func writeMCPConfigTempFile(config string) (string, error) {
-	f, err := os.CreateTemp("", "wt-mcp-*.json")
-	if err != nil {
-		return "", err
-	}
-	path := f.Name()
-	if err := f.Chmod(0o600); err != nil {
-		f.Close()
-		os.Remove(path)
-		return "", err
-	}
-	if _, err := f.WriteString(config); err != nil {
-		f.Close()
-		os.Remove(path)
-		return "", err
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(path)
-		return "", err
-	}
-	return path, nil
+	return fsutil.WritePrivateTemp("wt-mcp-*.json", config)
 }
 
 // DisallowedTools hides every built-in Claude Code tool from the chat model
@@ -277,8 +317,20 @@ func writeMCPConfigTempFile(config string) (string, error) {
 // resource readers that would bypass the Quick Connections allowlist) — an
 // unknown name is ignored by older CLIs. ToolSearch stays allowed: it loads
 // the deferred watchtower tool schemas.
-const DisallowedTools = "Edit,Write,NotebookEdit,TodoWrite,Task,TodoRead," +
-	"Bash,BashOutput,KillShell,WebSearch,WebFetch,Read,Grep,Glob,LS," +
+const DisallowedTools = sessionDisallowedTools + "," + WebSearchTool
+
+// SessionDisallowedTools is DisallowedTools minus WebSearch: the main chat's
+// warm `ai session` (Claude backend) may search the public web. WebFetch stays
+// hidden there too — fetching an arbitrary URL is the exfiltration channel a
+// prompt-injection payload in synced content would use, while a search query
+// only reaches the provider's own search backend.
+const SessionDisallowedTools = sessionDisallowedTools
+
+// WebSearchTool is Claude Code's built-in web search tool.
+const WebSearchTool = "WebSearch"
+
+const sessionDisallowedTools = "Edit,Write,NotebookEdit,TodoWrite,Task,TodoRead," +
+	"Bash,BashOutput,KillShell,WebFetch,Read,Grep,Glob,LS," +
 	"ExitPlanMode,SlashCommand,Skill," +
 	"CronCreate,CronDelete,CronList,RemoteTrigger,ScheduleWakeup,PushNotification,Workflow,Monitor," +
 	"EnterWorktree,ExitWorktree,ListAgents,SendMessage,TaskCreate,TaskGet,TaskList,TaskStop,TaskUpdate," +
@@ -381,7 +433,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID
 		defer close(errCh)
 		defer close(sidCh)
 
-		args, promptStdin := c.buildArgs(systemPrompt, userMessage, "stream-json", sessionID)
+		args, promptStdin, buildErr := c.buildArgs(systemPrompt, userMessage, "stream-json", sessionID)
 		// buildArgs may have written the mcp-config to a 0600 temp file
 		// (secret present) and recorded its path — clean it up once this
 		// goroutine returns. Every path below reaches its return only after
@@ -390,6 +442,13 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID
 		// could still be reading it.
 		if c.mcpConfigTempPath != "" {
 			defer os.Remove(c.mcpConfigTempPath)
+		}
+		if c.systemPromptTempPath != "" {
+			defer os.Remove(c.systemPromptTempPath)
+		}
+		if buildErr != nil {
+			errCh <- buildErr
+			return
 		}
 		cmd := exec.CommandContext(ctx, c.claudeCmd, args...)
 		if promptStdin != "" {
@@ -427,6 +486,14 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID
 		// Allow up to 1MB lines for large context responses
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
+		// lastResult remembers the most recent "result" event's is_error/result
+		// fields — the CLI's own diagnostic (e.g. "Invalid API key · Please run
+		// /login") for an API/usage failure, which otherwise arrives on stdout
+		// as an ordinary envelope (classifyError only ever sees stderr, which
+		// is empty in this case; see internal/digest/generator.go's
+		// errorEnvelopeMessage for the same pattern on the batch path).
+		var lastResult *streamEvent
+
 		for scanner.Scan() {
 			line := scanner.Text()
 			if line == "" {
@@ -438,9 +505,12 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID
 				continue
 			}
 
-			// Capture session ID from result event
-			if event.Type == "result" && event.SessionID != "" {
-				sidCh <- event.SessionID
+			if event.Type == "result" {
+				captured := event
+				lastResult = &captured
+				if event.SessionID != "" {
+					sidCh <- event.SessionID
+				}
 			}
 
 			// A tool call interrupts the turn: signal a boundary so the consumer
@@ -478,8 +548,19 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID
 			return
 		}
 
-		if err := cmd.Wait(); err != nil {
-			errCh <- classifyError(err, stderrBuf.String())
+		waitErr := cmd.Wait()
+
+		// The CLI can flag is_error in its own envelope regardless of exit
+		// code (a failure surfaced this way, or one that exits 0 anyway) —
+		// its own message is always more actionable than a bare exit code or
+		// empty stderr, so it takes priority over classifyError below.
+		if lastResult != nil && lastResult.IsError {
+			errCh <- fmt.Errorf("claude returned error (subtype=%s): %s", lastResult.Subtype, envelopeMessage(lastResult.Result))
+			return
+		}
+
+		if waitErr != nil {
+			errCh <- classifyError(waitErr, stderrBuf.String())
 		}
 	}()
 
@@ -490,13 +571,19 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID
 // the full response text and token usage. Pass a non-empty sessionID to resume
 // an existing session.
 func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, sessionID string) (string, *Usage, error) {
-	args, promptStdin := c.buildArgs(systemPrompt, userMessage, "json", sessionID)
+	args, promptStdin, buildErr := c.buildArgs(systemPrompt, userMessage, "json", sessionID)
 	// buildArgs may have written the mcp-config to a 0600 temp file (secret
 	// present) and recorded its path — clean it up on every return path.
 	// cmd.Output() below blocks until the subprocess exits, so by the time
 	// this defer runs the subprocess can no longer be reading the file.
 	if c.mcpConfigTempPath != "" {
 		defer os.Remove(c.mcpConfigTempPath)
+	}
+	if c.systemPromptTempPath != "" {
+		defer os.Remove(c.systemPromptTempPath)
+	}
+	if buildErr != nil {
+		return "", nil, buildErr
 	}
 	cmd := exec.CommandContext(ctx, c.claudeCmd, args...)
 	if promptStdin != "" {
@@ -517,6 +604,18 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, sessi
 
 	output, err := cmd.Output()
 	if err != nil {
+		// The CLI reports an API or usage failure as an ordinary result
+		// envelope on stdout and exits 1, with the actionable reason (e.g.
+		// "Invalid API key · Please run /login") behind kilobytes of usage
+		// telemetry — and with stderr empty. Parse it first so that message
+		// survives instead of a bare "exit code 1" (the digest generator's
+		// errorEnvelopeMessage precedent, internal/digest/generator.go).
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			if resp, perr := parseCLIOutput(output); perr == nil && resp.IsError {
+				return "", nil, fmt.Errorf("claude CLI failed (exit %d, subtype=%s): %s",
+					exitErr.ExitCode(), resp.Subtype, envelopeMessage(resp.Result))
+			}
+		}
 		return "", nil, classifyError(err, stderrBuf.String())
 	}
 
@@ -527,7 +626,7 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, sessi
 	}
 
 	if resp.IsError {
-		return "", nil, fmt.Errorf("claude returned error: %s", resp.Result)
+		return "", nil, fmt.Errorf("claude returned error (subtype=%s): %s", resp.Subtype, envelopeMessage(resp.Result))
 	}
 
 	totalAPI := resp.Usage.InputTokens + resp.Usage.CacheReadInputTokens + resp.Usage.CacheCreationInputTokens
@@ -547,6 +646,7 @@ type streamEvent struct {
 	SessionID string         `json:"session_id"`
 	Message   *streamMessage `json:"message"`
 	Result    string         `json:"result"`
+	IsError   bool           `json:"is_error"`
 }
 
 type streamMessage struct {

@@ -114,7 +114,12 @@ final class BriefingViewModel {
     /// Runs `watchtower briefing generate`. A non-zero exit — e.g. the CLI's
     /// "no owner identity" refusal (OWNER-02) — lands its stderr in
     /// `generateError` (via `CLIRunnerError`) instead of vanishing.
+    ///
+    /// A no-op while a run is already in flight: this VM lives on AppState
+    /// (so the flag survives a tab switch), and a second click must not
+    /// start a parallel strong-tier `briefing generate` racing the first.
     func generateBriefing() async {
+        guard !isGenerating else { return }
         guard let cli else {
             generateError = "watchtower binary not found"
             return

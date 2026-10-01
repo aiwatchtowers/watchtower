@@ -32,7 +32,6 @@ const (
 	MeetingNotes               = "meeting.notes"
 	MeetingChapters            = "meeting.chapters"
 	MeetingFollowup            = "meeting.followup"
-	MeetingSpeakerGuess        = "meeting.speaker_guess"
 	DayPlanGenerate            = "day_plan.generate"
 	TargetsExtract             = "targets.extract"
 	TargetsLink                = "targets.link"
@@ -54,6 +53,7 @@ const (
 	ReactionCommand            = "reactioncmd.command"
 	CatchupCompose             = "catchup.compose"
 	ChatTitle                  = "chat.title"
+	TerminalTitle              = "terminal.title"
 )
 
 // Store loads, caches, and persists prompt templates.

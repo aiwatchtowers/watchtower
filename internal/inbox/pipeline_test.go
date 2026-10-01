@@ -564,11 +564,11 @@ func newPipelineForTest(t *testing.T, d *db.DB, userID, email string) *Pipeline 
 // about a distinct display name, and it's the account id that a [~mention]
 // and autoResolveJira's identity match actually key off.
 //
-// created_at/updated_at are written in Jira Cloud's own dotted-millisecond
-// format (db.FormatJiraTime), exactly as the real comment sync writes them —
-// the detector's window bound is a plain SQL string compare against this
-// column, so a fixture in bare RFC3339 would compare differently from
-// production and hide a real format mismatch.
+// created_at/updated_at are written in the stored UTC form (db.FormatJiraTime),
+// exactly as the real comment sync writes them — the detector's window bound
+// is a plain SQL string compare against this column, so a fixture in another
+// format would compare differently from production and hide a real format
+// mismatch.
 func seedJiraComment(t *testing.T, d *db.DB, issueKey, authorAccountID, body string, createdAt time.Time) {
 	t.Helper()
 	var accounts int
@@ -839,4 +839,296 @@ func TestInbox09_UnresolvedSlackAccountSkippedDoesNotFreezeWatermark(t *testing.
 // until a real test mechanism is found.
 func TestInbox09Gap_SlackAccountGenuineErrorSiblingIsolation(t *testing.T) {
 	t.Skip("no mechanism found to make one Slack account's detector query fail while a sibling's succeeds against the same shared tables — see the doc comment above for what was tried; reported as a documented limitation, not silently treated as covered")
+}
+
+// TestAutoResolveJira_CommentEditIsNotAnAnswer pins that auto-resolve keys on
+// a comment's CREATION only: editing an own comment that predates the item
+// does not resolve it (the edit counts only toward the detector's own-bump
+// suppression).
+func TestAutoResolveJira_CommentEditIsNotAnAnswer(t *testing.T) {
+	d := newTestDB(t)
+	p := newPipelineForTest(t, d, "alice", "alice@x.com")
+	p.SetOwner(db.Owner{ID: "alice", SlackUserID: "alice", Email: "alice@x.com", JiraAccountID: "acc-alice"})
+	seedJiraComment(t, d, "WT-20", "acc-alice", "old note", time.Now().Add(-2*time.Hour))
+	mustCreateInboxItem(t, d, db.InboxItem{ChannelID: "WT-20", MessageTS: "x", SenderUserID: "WT-20",
+		TriggerType: "jira_assigned", ItemClass: "actionable", Status: "pending", Priority: "medium"})
+	_, err := d.Exec(`UPDATE jira_comments SET updated_at = ? WHERE issue_key = 'WT-20'`,
+		db.FormatJiraTime(time.Now().Add(5*time.Second).UTC()))
+	require.NoError(t, err)
+
+	assert.Equal(t, 0, p.autoResolveJira(context.Background(), newOwnJiraComments(d, p.owner)))
+}
+
+// rescheduleForTest syncs evt-tc twice through the production upsert: first
+// at start, then moved by a day (or to movedStart when non-zero) with the
+// owner's RSVP set to rsvpAfterMove on that same pass. Returns the event's
+// new start.
+func rescheduleForTest(t *testing.T, d *db.DB, rsvpBefore, rsvpAfterMove string, movedStart time.Time) time.Time {
+	t.Helper()
+	att := func(rsvp string) string {
+		return `[{"email":"alice@x.com","response_status":"` + rsvp + `"}]`
+	}
+	start := time.Now().Add(3 * time.Hour)
+	syncCalendarEvent(t, d, "evt-tc", att(rsvpBefore), start, start.Add(time.Hour),
+		time.Now().Add(-3*time.Hour), time.Now().Add(-2*time.Hour))
+	moved := start.Add(24 * time.Hour)
+	if !movedStart.IsZero() {
+		moved = movedStart
+	}
+	syncCalendarEvent(t, d, "evt-tc", att(rsvpAfterMove), moved, moved.Add(time.Hour),
+		time.Now().Add(-30*time.Minute), time.Now().Add(-10*time.Minute))
+	return moved
+}
+
+func timeChangeStatus(t *testing.T, d *db.DB) (string, string) {
+	t.Helper()
+	got := queryInboxByTrigger(t, d, "calendar_time_change")
+	require.Len(t, got, 1, "the reschedule is detected")
+	return got[0].Status, got[0].ResolvedReason
+}
+
+// TestInbox02_CalendarTimeChangeKeptRSVPStaysPending: owner decision
+// 2026-09-29 — an RSVP the owner gave BEFORE the reschedule does not answer
+// it. The provider keeping "accepted" across the move leaves the item pending.
+func TestInbox02_CalendarTimeChangeKeptRSVPStaysPending(t *testing.T) {
+	// BEHAVIOR INBOX-02 — see docs/inventory/inbox-pulse.md
+	// Do not weaken or remove without explicit owner approval.
+	d := newTestDB(t)
+	rescheduleForTest(t, d, "accepted", "accepted", time.Time{})
+	p := newPipelineForTest(t, d, "alice", "alice@x.com")
+	_, _, err := p.Run(context.Background())
+	require.NoError(t, err)
+	status, _ := timeChangeStatus(t, d)
+	assert.Equal(t, "pending", status)
+}
+
+// TestInbox02_CalendarTimeChangeResolvesOnRSVPAfterMove: the provider keeps
+// the owner's "accepted" across the move (the item stays pending); the owner
+// then changes their answer — a later sync sees the change after the
+// reschedule and the item resolves.
+func TestInbox02_CalendarTimeChangeResolvesOnRSVPAfterMove(t *testing.T) {
+	// BEHAVIOR INBOX-02 — see docs/inventory/inbox-pulse.md
+	// Do not weaken or remove without explicit owner approval.
+	d := newTestDB(t)
+	moved := rescheduleForTest(t, d, "accepted", "accepted", time.Time{})
+	p := newPipelineForTest(t, d, "alice", "alice@x.com")
+	_, _, err := p.Run(context.Background())
+	require.NoError(t, err)
+	status, _ := timeChangeStatus(t, d)
+	require.Equal(t, "pending", status, "an RSVP kept from before the move is not an answer")
+
+	syncCalendarEvent(t, d, "evt-tc", `[{"email":"alice@x.com","response_status":"tentative"}]`,
+		moved, moved.Add(time.Hour), time.Now(), time.Now())
+	_, _, err = p.Run(context.Background())
+	require.NoError(t, err)
+	status, reason := timeChangeStatus(t, d)
+	assert.Equal(t, "resolved", status)
+	assert.Equal(t, "User responded after the reschedule", reason)
+}
+
+// TestCalendarReschedule_ProviderResetSurfacesAsInvite: when the provider
+// resets the owner's RSVP to needsAction with the move, the invite case
+// (checked first) surfaces it as a calendar_invite, which resolves as soon as
+// the owner answers — no calendar_time_change item is minted.
+func TestCalendarReschedule_ProviderResetSurfacesAsInvite(t *testing.T) {
+	d := newTestDB(t)
+	moved := rescheduleForTest(t, d, "accepted", "needsAction", time.Time{})
+	p := newPipelineForTest(t, d, "alice", "alice@x.com")
+	_, _, err := p.Run(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, queryInboxByTrigger(t, d, "calendar_time_change"))
+	invites := queryInboxByTrigger(t, d, "calendar_invite")
+	require.Len(t, invites, 1)
+	require.Equal(t, "pending", invites[0].Status)
+
+	syncCalendarEvent(t, d, "evt-tc", `[{"email":"alice@x.com","response_status":"accepted"}]`,
+		moved, moved.Add(time.Hour), time.Now(), time.Now())
+	_, _, err = p.Run(context.Background())
+	require.NoError(t, err)
+	var status string
+	require.NoError(t, d.QueryRow(`SELECT status FROM inbox_items WHERE id = ?`, invites[0].ID).Scan(&status))
+	assert.Equal(t, "resolved", status)
+}
+
+// TestInbox02_CalendarTimeChangeResolvesOnAnswerWithTheMove: an RSVP change
+// to an answer first seen on the same sync pass as the move counts as an
+// answer to the moved meeting — the sync cannot order the two, so it resolves.
+func TestInbox02_CalendarTimeChangeResolvesOnAnswerWithTheMove(t *testing.T) {
+	// BEHAVIOR INBOX-02 — see docs/inventory/inbox-pulse.md
+	// Do not weaken or remove without explicit owner approval.
+	d := newTestDB(t)
+	rescheduleForTest(t, d, "declined", "accepted", time.Time{})
+	p := newPipelineForTest(t, d, "alice", "alice@x.com")
+	_, _, err := p.Run(context.Background())
+	require.NoError(t, err)
+	status, _ := timeChangeStatus(t, d)
+	assert.Equal(t, "resolved", status)
+}
+
+// TestInbox02_CalendarTimeChangeResolvesOnceEnded: unanswered, the item
+// stays pending only until the event has ended.
+func TestInbox02_CalendarTimeChangeResolvesOnceEnded(t *testing.T) {
+	// BEHAVIOR INBOX-02 — see docs/inventory/inbox-pulse.md
+	// Do not weaken or remove without explicit owner approval.
+	d := newTestDB(t)
+	rescheduleForTest(t, d, "accepted", "accepted", time.Now().Add(-3*time.Hour))
+	p := newPipelineForTest(t, d, "alice", "alice@x.com")
+	_, _, err := p.Run(context.Background())
+	require.NoError(t, err)
+	status, reason := timeChangeStatus(t, d)
+	assert.Equal(t, "resolved", status)
+	assert.Equal(t, "Event has ended", reason)
+}
+
+// TestInbox09_OwnJiraCommentReadErrorFreezesWatermark: the jira_assigned
+// detector's own-comment read failing is a detector error — Run returns it
+// and the watermark stays where it was.
+func TestInbox09_OwnJiraCommentReadErrorFreezesWatermark(t *testing.T) {
+	// BEHAVIOR INBOX-09 — see docs/inventory/inbox-pulse.md
+	// Do not weaken or remove without explicit owner approval.
+	d := newTestDB(t)
+	p := newPipelineForTest(t, d, "U_ME", "me@x.com")
+	p.SetOwner(db.Owner{ID: "U_ME", SlackUserID: "U_ME", Email: "me@x.com", JiraAccountID: "acc-me"})
+	seedJiraIssue(t, d, "WT-30", "acc-me", time.Now().Add(-1*time.Hour))
+	const frozen = 1000.0
+	require.NoError(t, d.SetInboxLastProcessedTS(frozen))
+	// jira_comments still exists (so the owner's identity resolves), but the
+	// own-comment read itself fails.
+	_, err := d.Exec(`ALTER TABLE jira_comments RENAME COLUMN author_account_id TO author_gone`)
+	require.NoError(t, err)
+
+	_, _, err = p.Run(context.Background())
+	require.Error(t, err)
+	ts, err := d.GetInboxLastProcessedTS()
+	require.NoError(t, err)
+	assert.Equal(t, frozen, ts)
+	assert.Empty(t, queryInboxByTrigger(t, d, "jira_assigned"), "nothing is minted past a failed read")
+}
+
+// TestInbox09_ReactionDetectorErrorFreezesWatermark: a failed reaction-request
+// query is a detector error like a failed mention query — Run returns it and
+// the watermark stays put, so the window is re-scanned. The account's
+// mention, found by a query that succeeded, is still surfaced.
+func TestInbox09_ReactionDetectorErrorFreezesWatermark(t *testing.T) {
+	// BEHAVIOR INBOX-09 — see docs/inventory/inbox-pulse.md
+	// Do not weaken or remove without explicit owner approval.
+	d := newTestDB(t)
+	seedWorkspaceAndUser(t, d, "1:U_ME1")
+	const frozen = 1000.0
+	require.NoError(t, d.SetInboxLastProcessedTS(frozen))
+	insertChannel(t, d, "1:C1", "public")
+	insertMessage(t, d, "1:C1", recentTS(30), "1:U_OTHER", "Hey <@U_ME1> review please")
+	// Only FindReactionRequests reads reactions.
+	_, err := d.Exec(`DROP TABLE reactions`)
+	require.NoError(t, err)
+
+	p := New(d, testConfig(), nil, log.Default())
+	_, _, err = p.Run(context.Background())
+	require.Error(t, err, "a reaction-detector failure must be surfaced, not logged and dropped")
+	assert.Contains(t, err.Error(), "finding reaction requests")
+
+	ts, err := d.GetInboxLastProcessedTS()
+	require.NoError(t, err)
+	assert.Equal(t, frozen, ts, "a reaction-detector failure must freeze the watermark")
+	assert.Len(t, queryInboxByTrigger(t, d, "mention"), 1, "the mention found by a healthy query is still surfaced")
+}
+
+// TestInbox09_SlackItemWriteErrorFreezesWatermark: a failed inbox_items
+// insert for a Slack candidate (other than a UNIQUE conflict) is a detector
+// error — the candidate was never surfaced, so the window must be re-scanned.
+func TestInbox09_SlackItemWriteErrorFreezesWatermark(t *testing.T) {
+	// BEHAVIOR INBOX-09 — see docs/inventory/inbox-pulse.md
+	// Do not weaken or remove without explicit owner approval.
+	d := newTestDB(t)
+	seedWorkspaceAndUser(t, d, "1:U_ME1")
+	const frozen = 1000.0
+	require.NoError(t, d.SetInboxLastProcessedTS(frozen))
+	insertChannel(t, d, "1:C1", "public")
+	insertMessage(t, d, "1:C1", recentTS(30), "1:U_OTHER", "Hey <@U_ME1> review please")
+	_, err := d.Exec(`CREATE TRIGGER fail_mention BEFORE INSERT ON inbox_items
+		WHEN NEW.trigger_type = 'mention' BEGIN SELECT RAISE(ABORT, 'disk I/O error'); END`)
+	require.NoError(t, err)
+
+	p := New(d, testConfig(), nil, log.Default())
+	_, _, err = p.Run(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "creating item")
+
+	ts, err := d.GetInboxLastProcessedTS()
+	require.NoError(t, err)
+	assert.Equal(t, frozen, ts, "an unsurfaced candidate must freeze the watermark")
+}
+
+// TestInbox09_JiraCommentMentionReadErrorFreezesWatermark: a failed
+// jira_comments mention read is a detector error, never "no mentions".
+func TestInbox09_JiraCommentMentionReadErrorFreezesWatermark(t *testing.T) {
+	// BEHAVIOR INBOX-09 — see docs/inventory/inbox-pulse.md
+	// Do not weaken or remove without explicit owner approval.
+	d := newTestDB(t)
+	p := newPipelineForTest(t, d, "U_ME", "me@x.com")
+	p.SetOwner(db.Owner{ID: "U_ME", SlackUserID: "U_ME", Email: "me@x.com", JiraAccountID: "acc-me"})
+	const frozen = 1000.0
+	require.NoError(t, d.SetInboxLastProcessedTS(frozen))
+	// The owner's own-comment read (author_account_id) still works; only the
+	// mention scan (body_text) fails.
+	_, err := d.Exec(`ALTER TABLE jira_comments RENAME COLUMN body_text TO body_gone`)
+	require.NoError(t, err)
+
+	_, _, err = p.Run(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "jira_comments")
+	ts, err := d.GetInboxLastProcessedTS()
+	require.NoError(t, err)
+	assert.Equal(t, frozen, ts)
+}
+
+// TestInbox09_JiraItemWriteErrorFreezesWatermark: a failed insert of a Jira
+// item is returned, not dropped — for both Jira signals — and does not stop
+// the other signal from surfacing its item.
+func TestInbox09_JiraItemWriteErrorFreezesWatermark(t *testing.T) {
+	// BEHAVIOR INBOX-09 — see docs/inventory/inbox-pulse.md
+	// Do not weaken or remove without explicit owner approval.
+	for trigger, other := range map[string]string{"jira_assigned": "jira_comment_mention", "jira_comment_mention": "jira_assigned"} {
+		t.Run(trigger, func(t *testing.T) {
+			d := newTestDB(t)
+			p := newPipelineForTest(t, d, "U_ME", "me@x.com")
+			p.SetOwner(db.Owner{ID: "U_ME", SlackUserID: "U_ME", Email: "me@x.com", JiraAccountID: "acc-me"})
+			seedJiraIssue(t, d, "WT-40", "acc-me", time.Now().Add(-1*time.Hour))
+			seedJiraComment(t, d, "WT-40", "acc-bob", "hey [~acc-me] please look", time.Now().Add(-30*time.Minute))
+			const frozen = 1000.0
+			require.NoError(t, d.SetInboxLastProcessedTS(frozen))
+			_, err := d.Exec(`CREATE TRIGGER fail_jira BEFORE INSERT ON inbox_items
+				WHEN NEW.trigger_type = '` + trigger + `' BEGIN SELECT RAISE(ABORT, 'disk I/O error'); END`)
+			require.NoError(t, err)
+
+			_, _, err = p.Run(context.Background())
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), trigger)
+			ts, err := d.GetInboxLastProcessedTS()
+			require.NoError(t, err)
+			assert.Equal(t, frozen, ts)
+			assert.Len(t, queryInboxByTrigger(t, d, other), 1, "the other Jira signal still surfaces")
+		})
+	}
+}
+
+// TestInbox09_JiraIdentityReadErrorFreezesWatermark: a failed read of the
+// owner's Atlassian ids is a detector error — never read as "the owner has
+// no Jira identity", which would skip comment-mention detection silently.
+func TestInbox09_JiraIdentityReadErrorFreezesWatermark(t *testing.T) {
+	// BEHAVIOR INBOX-09 — see docs/inventory/inbox-pulse.md
+	// Do not weaken or remove without explicit owner approval.
+	d := newTestDB(t)
+	p := newPipelineForTest(t, d, "U_ME", "me@x.com")
+	const frozen = 1000.0
+	require.NoError(t, d.SetInboxLastProcessedTS(frozen))
+	_, err := d.Exec(`DROP TABLE jira_user_map`)
+	require.NoError(t, err)
+
+	_, _, err = p.Run(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "jira_user_map")
+	ts, err := d.GetInboxLastProcessedTS()
+	require.NoError(t, err)
+	assert.Equal(t, frozen, ts)
 }

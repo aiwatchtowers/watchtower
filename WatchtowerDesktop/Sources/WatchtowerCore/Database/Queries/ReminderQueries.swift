@@ -17,6 +17,8 @@ package enum ReminderQueries {
 
     /// Marks a reminder done — Swift-owned, no daemon contention (the
     /// `inbox_feedback` dual-path precedent). Mirrors Go's `MarkReminderDone`.
+    /// Best-effort, unchecked: a reminder deleted meanwhile is as finished as
+    /// a done one.
     package static func markDone(_ db: Database, id: Int64) throws {
         try db.execute(sql: """
             UPDATE reminders SET status='done', done_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id=?
@@ -27,5 +29,6 @@ package enum ReminderQueries {
     /// Mirrors Go's `SnoozeReminder`.
     package static func snooze(_ db: Database, id: Int64, until: String) throws {
         try db.execute(sql: "UPDATE reminders SET remind_at=?, status='pending' WHERE id=?", arguments: [until, id])
+        try db.requireUpdated("reminder", id: id)
     }
 }

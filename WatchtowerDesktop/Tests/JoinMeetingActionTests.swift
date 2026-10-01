@@ -531,4 +531,7 @@ final class JoinMeetingActionTests: XCTestCase {
 private final class JoinFakeNotifier: MeetingTranscriptNotifying, @unchecked Sendable {
     func sendTranscriptReadyNotification(title: String) {}
     func sendTranscriptFailedNotification(reason: String) {}
+    func sendVoicesToLabelNotification(title: String, count: Int, transcriptID: Int64) {}
+    func sendCallAudioSilentNotification() {}
+    func withdrawCallAudioSilentNotification() {}
 }

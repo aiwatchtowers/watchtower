@@ -27,5 +27,5 @@ CREATE TABLE feed_state (
 INSERT INTO feed_state (id, bootstrap_cutoff) VALUES (1, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
 
 -- +goose Down
-DROP TABLE feed_state;
-DROP TABLE feed_items;
+DROP TABLE IF EXISTS feed_state;
+DROP TABLE IF EXISTS feed_items;

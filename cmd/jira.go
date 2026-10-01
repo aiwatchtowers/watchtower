@@ -1,9 +1,12 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"os"
 	"strconv"
@@ -286,11 +289,13 @@ func init() {
 	jiraLoginCmd.Flags().Bool("app-return", false, "redirect the browser back to the Watchtower app when done")
 	jiraLoginCmd.Flags().String("site", "", "select Jira site by URL (e.g. https://mysite.atlassian.net)")
 	jiraLoginCmd.Flags().Bool("with-confluence", false, "also request Confluence scopes (requires the Confluence API enabled on this OAuth app)")
+	jiraLoginCmd.Flags().Bool("with-confluence-write", false, "also request Confluence write scopes, so the assistant can edit pages (implies --with-confluence; requires the Confluence API with its write scopes enabled on this OAuth app in its Atlassian developer console, or the login fails)")
 	jiraAddCmd.Flags().Bool("no-open", false, "don't open the browser automatically")
 	jiraAddCmd.Flags().Bool("app-return", false, "redirect the browser back to the Watchtower app when done")
 	jiraAddCmd.Flags().String("site", "", "select Jira site by URL (e.g. https://mysite.atlassian.net)")
 	jiraAddCmd.Flags().String("label", "", "display name for this site")
 	jiraAddCmd.Flags().Bool("with-confluence", false, "also request Confluence scopes (requires the Confluence API enabled on this OAuth app)")
+	jiraAddCmd.Flags().Bool("with-confluence-write", false, "also request Confluence write scopes, so the assistant can edit pages (implies --with-confluence; requires the Confluence API with its write scopes enabled on this OAuth app in its Atlassian developer console, or the login fails)")
 	jiraFeaturesCmd.Flags().Bool("json", false, "output as JSON (for Swift integration)")
 	jiraBoardsAnalyzeCmd.Flags().Bool("force", false, "re-analyze even if config hash unchanged")
 	jiraBoardsAnalyzeCmd.Flags().Bool("auto", false, "auto re-analyze boards with changed config (respects 24h cooldown)")
@@ -485,9 +490,11 @@ func connectJiraAccount(cmd *cobra.Command, cfg *config.Config, database *db.DB,
 		return jira.CloudResource{}, fmt.Errorf("recording site: %w", err)
 	}
 	store := jira.NewTokenStore(cfg.WorkspaceDir(), accountID)
-	if err := store.Save(token); err != nil {
+	// Under the token lock, so a daemon refresh of the previous grant that is
+	// in flight cannot write it back over this new one.
+	if err := saveJiraTokenLocked(cmd.Context(), store, token); err != nil {
 		rollback()
-		return jira.CloudResource{}, fmt.Errorf("saving token: %w", err)
+		return jira.CloudResource{}, err
 	}
 	// Best effort: a /myself failure (e.g. a scope or a flaky network) must
 	// never fail the connect itself — recordJiraOwner warns and the identity
@@ -505,11 +512,23 @@ func connectJiraAccount(cmd *cobra.Command, cfg *config.Config, database *db.DB,
 // an Atlassian OAuth app that hasn't enabled the Confluence API in its
 // developer console rejects the wider scope set outright, so requesting it
 // unconditionally would break every login/add for such an app.
+// --with-confluence-write implies --with-confluence: setting only the write
+// flag must still widen WithConfluence, since jiraReloginOptions decides
+// whether to keep read scopes by checking opts.WithConfluence alone.
 func jiraLoginOptionsFromFlags(cmd *cobra.Command) jira.LoginOptions {
 	noOpen, _ := cmd.Flags().GetBool("no-open")
 	appReturn, _ := cmd.Flags().GetBool("app-return")
 	withConfluence, _ := cmd.Flags().GetBool("with-confluence")
-	return jira.LoginOptions{SkipBrowserOpen: noOpen, AppReturn: appReturn, WithConfluence: withConfluence}
+	withConfluenceWrite, _ := cmd.Flags().GetBool("with-confluence-write")
+	if withConfluenceWrite {
+		withConfluence = true
+	}
+	return jira.LoginOptions{
+		SkipBrowserOpen:     noOpen,
+		AppReturn:           appReturn,
+		WithConfluence:      withConfluence,
+		WithConfluenceWrite: withConfluenceWrite,
+	}
 }
 
 // jiraReloginOptions is jiraLoginOptionsFromFlags for a re-consent of an
@@ -522,20 +541,29 @@ func jiraLoginOptionsFromFlags(cmd *cobra.Command) jira.LoginOptions {
 // Only a failed selected-spaces lookup fails the login: an unreadable token
 // is warned about and decided from the selected spaces alone (see
 // accountUsesConfluence), so a corrupt token never blocks re-login.
+//
+// The write scopes get the same carry-over, checked independently:
+// without --with-confluence-write, a re-login still requests the write
+// scopes when the stored token already has them (accountUsesConfluenceWrite).
+// Unlike the read scopes, there is no ext_sources-equivalent fallback for
+// write access, so a token-read error there never auto-adds write — see
+// accountUsesConfluenceWrite's own doc comment.
 func jiraReloginOptions(cmd *cobra.Command, workspaceDir string, database *db.DB, accountID int64) (opts jira.LoginOptions, kept bool, err error) {
 	opts = jiraLoginOptionsFromFlags(cmd)
-	if opts.WithConfluence {
-		return opts, false, nil
+	if !opts.WithConfluence {
+		uses, uerr := accountUsesConfluence(workspaceDir, database, accountID, cmd.ErrOrStderr())
+		if uerr != nil {
+			return opts, false, fmt.Errorf("checking whether jira account %d uses Confluence: %w", accountID, uerr)
+		}
+		if uses {
+			opts.WithConfluence = true
+			kept = true
+		}
 	}
-	uses, err := accountUsesConfluence(workspaceDir, database, accountID, cmd.ErrOrStderr())
-	if err != nil {
-		return opts, false, fmt.Errorf("checking whether jira account %d uses Confluence: %w", accountID, err)
+	if !opts.WithConfluenceWrite && accountUsesConfluenceWrite(workspaceDir, accountID, cmd.ErrOrStderr()) {
+		opts.WithConfluenceWrite = true
 	}
-	if !uses {
-		return opts, false, nil
-	}
-	opts.WithConfluence = true
-	return opts, true, nil
+	return opts, kept, nil
 }
 
 // accountUsesConfluence reports whether a Jira account's grant carries the
@@ -557,6 +585,26 @@ func accountUsesConfluence(workspaceDir string, database *db.DB, accountID int64
 		return false, fmt.Errorf("listing selected Confluence spaces: %w", err)
 	}
 	return len(srcs) > 0, nil
+}
+
+// accountUsesConfluenceWrite reports whether a Jira account's stored grant
+// already carries the Confluence write scopes, so jiraReloginOptions can
+// keep them across a re-login without repeating --with-confluence-write.
+// Unlike accountUsesConfluence, there is no ext_sources-equivalent signal
+// for write access — selected spaces say nothing about whether write scopes
+// were ever granted — so a token-read error here never auto-adds write: it
+// only warns (when the error is not simply "no token file yet") and answers
+// false, the same "missing file is not granted" rule confluenceScopesOK
+// uses, just without a selected-spaces fallback on top.
+func accountUsesConfluenceWrite(workspaceDir string, accountID int64, warn io.Writer) bool {
+	tok, err := jira.NewTokenStore(workspaceDir, accountID).Load()
+	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			fmt.Fprintf(warn, "Warning: reading jira account %d token: %v; not requesting Confluence write scopes\n", accountID, err)
+		}
+		return false
+	}
+	return jira.HasConfluenceWriteScopes(tok)
 }
 
 // enableJiraPhase flips the global jira.enabled daemon-phase switch on in
@@ -1953,4 +2001,20 @@ func ownerJiraFeaturesRole(database *db.DB, fallback string) string {
 		return profile.Role
 	}
 	return fallback
+}
+
+// saveJiraTokenLocked saves a freshly consented token under the account's
+// cross-process token lock (jira.TokenStore.Lock).
+func saveJiraTokenLocked(ctx context.Context, store *jira.TokenStore, token *jira.OAuthToken) error {
+	lockCtx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+	unlock, err := store.Lock(lockCtx)
+	if err != nil {
+		return fmt.Errorf("saving token: %w", err)
+	}
+	defer unlock()
+	if err := store.Save(token); err != nil {
+		return fmt.Errorf("saving token: %w", err)
+	}
+	return nil
 }

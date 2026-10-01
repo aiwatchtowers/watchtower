@@ -116,19 +116,19 @@ func (x *Extractor) Extract(ctx context.Context, mediaType, name string, r io.Re
 			secs, status, err = nil, StatusFailed, nil
 		}
 	}()
-	secs, status, err = x.dispatch(ctx, detect(mediaType, name), name, r)
+	secs, status, err = x.dispatch(ctx, detect(mediaType, name), mediaType, name, r)
 	if err != nil || status == StatusFailed || status == StatusTooLarge || status == StatusSkippedType {
 		return nil, status, err
 	}
 	return capSections(secs, MaxTextRunes), status, nil
 }
 
-func (x *Extractor) dispatch(ctx context.Context, k kind, name string, r io.Reader) ([]extsync.Section, string, error) {
+func (x *Extractor) dispatch(ctx context.Context, k kind, mediaType, name string, r io.Reader) ([]extsync.Section, string, error) {
 	switch k {
 	case kindText:
 		return plainText(r)
 	case kindHTML:
-		return htmlText(r)
+		return htmlText(mediaType, r)
 	case kindDocx, kindXlsx, kindPptx:
 		return x.spooled(ctx, name, r, func(path string) ([]extsync.Section, string, error) {
 			return ooxmlText(k, path, x.logf)

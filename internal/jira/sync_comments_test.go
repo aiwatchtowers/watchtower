@@ -164,6 +164,74 @@ func TestSyncer_Sync_CommentFetchErrorLogsAndContinues(t *testing.T) {
 	assert.Equal(t, 1, n)
 }
 
+// TestSyncer_Sync_CommentStoreFailureKeepsProjectWatermark pins that a failed
+// comment DB write is a project failure, not a log line: comments are fetched
+// only for the issues a pass changed, so a watermark stamped past the lost
+// write would never ask for them again. The failing issue's siblings still
+// get their comments, the project records the error, and Sync stays nil (the
+// per-project contract).
+func TestSyncer_Sync_CommentStoreFailureKeepsProjectWatermark(t *testing.T) {
+	database := syncerDBWithBoard(t, "PROJ")
+	const watermark = "2026-01-01T00:00:00Z"
+	require.NoError(t, database.UpdateJiraSyncState(1, "PROJ", watermark, 5))
+	_, err := database.Exec(`CREATE TRIGGER fail_comments BEFORE INSERT ON jira_comments
+		WHEN NEW.issue_key = 'PROJ-1'
+		BEGIN SELECT RAISE(ABORT, 'injected comment write failure'); END`)
+	require.NoError(t, err)
+	srv, _ := commentsMux(t, []Issue{makeIssue("PROJ-1"), makeIssue("PROJ-2")}, map[string]string{
+		"PROJ-1": "lost",
+		"PROJ-2": "kept",
+	})
+
+	s := quietSyncer(t, database, srv.URL)
+	s.SetCommentSyncLimit(10)
+
+	n, err := s.Sync(context.Background())
+	require.NoError(t, err, "a per-project failure stays a nil return")
+	assert.Equal(t, 2, n, "both issues were written")
+
+	state, err := database.GetJiraSyncState(1, "PROJ")
+	require.NoError(t, err)
+	require.NotNil(t, state, "the failed project must get an error row")
+	assert.Equal(t, watermark, state.LastSyncedAt, "a lost comment write must not advance the watermark")
+	assert.Equal(t, 5, state.IssuesSynced)
+	assert.Contains(t, state.LastError, "injected comment write failure")
+
+	got, err := database.ListJiraCommentsSince(1, []string{"PROJ-2"}, "2020-01-01T00:00:00Z")
+	require.NoError(t, err)
+	require.Len(t, got, 1, "a sibling issue's comments still land")
+}
+
+// An unreadable project watermark is not "never synced": reading it as one
+// would silently re-scan the whole project and overwrite its running issue
+// count. The project is skipped this pass and the failure recorded.
+func TestSyncer_Sync_UnreadableSyncStateSkipsProject(t *testing.T) {
+	database := syncerDBWithBoard(t, "PROJ")
+	_, err := database.Exec(`INSERT INTO jira_sync_state (account_id, project_key, last_synced_at, issues_synced)
+		VALUES (1, 'PROJ', '2026-01-01T00:00:00Z', 'not-a-number')`)
+	require.NoError(t, err)
+	var searches atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/rest/api/3/search/jql", func(w http.ResponseWriter, _ *http.Request) {
+		searches.Add(1)
+		_, _ = w.Write([]byte(`{"issues":[],"isLast":true}`))
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"values":[]}`))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	n, err := quietSyncer(t, database, srv.URL).Sync(context.Background())
+	require.NoError(t, err, "a per-project failure stays a nil return")
+	assert.Equal(t, 0, n)
+	assert.Zero(t, searches.Load(), "no JQL scan runs on an unreadable watermark")
+
+	var lastErr string
+	require.NoError(t, database.QueryRow(`SELECT last_error FROM jira_sync_state WHERE project_key = 'PROJ'`).Scan(&lastErr))
+	assert.Contains(t, lastErr, "jira sync state")
+}
+
 // TestSyncer_Sync_CommentFetchAuthRevokedAborts pins the ErrAuthRevoked
 // exception to the log-and-continue rule: a revoked grant during comment
 // sync must abort Sync and propagate, the same as the issue/sprint/release

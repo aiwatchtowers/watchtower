@@ -1,0 +1,8 @@
+go test fuzz v1
+string("<h2>0</h2>0<p 0>0</p>1")
+byte('\x18')
+byte('\n')
+byte('^')
+byte('\x02')
+byte('l')
+byte('\x01')

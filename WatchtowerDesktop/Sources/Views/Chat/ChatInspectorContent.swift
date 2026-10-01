@@ -26,9 +26,12 @@ struct ChatInspectorContent: View {
         switch chatVM.inspectorMode {
         case .artifacts:
             if let panel = chatVM.artifactPanel {
-                ArtifactPanelView(model: panel, gmailConnected: chatVM.gmailConnected, slackLinks: chatVM.slackLinks) {
-                    chatVM.closeArtifactPanel()
-                }
+                ArtifactPanelView(
+                    model: panel, gmailConnected: chatVM.gmailConnected, slackLinks: chatVM.slackLinks,
+                    canSendComments: !chatVM.isStreaming,
+                    onSendComments: { chatVM.sendArtifactComments() },
+                    onClose: { chatVM.closeArtifactPanel() }
+                )
             }
         case .sources:
             if let selection = chatVM.sourcesPanel {

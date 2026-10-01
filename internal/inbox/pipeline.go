@@ -284,14 +284,17 @@ func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
 	// failure freezes the watermark below so no window is skipped).
 	p.progress(1, totalSteps, "detecting")
 	stepStart := time.Now()
-	createdSlack, createdJira, createdCalendar, createdGmail, createdImap, createdWatchtower, detectErr := p.detectAll(ctx, owner, lastTS, sinceTime)
+	// The owner's Jira identity and own comments are read once per cycle and
+	// shared by the Jira detector and Jira auto-resolve.
+	jiraOwn := newOwnJiraComments(p.db, owner)
+	createdSlack, createdJira, createdCalendar, createdGmail, createdImap, createdWatchtower, detectErr := p.detectAll(ctx, owner, jiraOwn, lastTS, sinceTime)
 	created := createdSlack + createdJira + createdCalendar + createdGmail + createdImap + createdWatchtower
 	p.LastStepDurationSeconds = time.Since(stepStart).Seconds()
 
 	// Phase 2: Auto-resolve — rule-based resolution for all source types (INBOX-02).
 	p.progress(2, totalSteps, "auto-resolving")
 	stepStart = time.Now()
-	resolved := p.autoResolveByRules(ctx, owner)
+	resolved := p.autoResolveByRules(ctx, owner, jiraOwn)
 	p.LastStepDurationSeconds = time.Since(stepStart).Seconds()
 
 	// Phase 3: Auto-archive expired/stale items and unsnooze expired snoozes.
@@ -327,45 +330,29 @@ func (p *Pipeline) advanceWatermark(ts, lastTS float64) {
 
 // detectAll runs the per-source detectors and returns counts.
 // The returned error is non-nil if any detector failed; callers use it to gate
-// the watermark advance so a failed pass does not skip its message window.
-func (p *Pipeline) detectAll(ctx context.Context, owner db.Owner, lastTS float64, sinceTime time.Time) (slack, jira, cal, gmail, imapCount, wt int, err error) {
+// the watermark advance so a failed pass does not skip its message window. A
+// failing detector's count still counts the items it did create.
+func (p *Pipeline) detectAll(ctx context.Context, owner db.Owner, jiraOwn *ownJiraComments, lastTS float64, sinceTime time.Time) (slack, jira, cal, gmail, imapCount, wt int, err error) {
 	var errs []error
-	if n, e := p.detectSlackAccounts(ctx, lastTS); e != nil {
-		p.logger.Printf("inbox: slack detect error: %v", e)
-		errs = append(errs, fmt.Errorf("slack: %w", e))
-	} else {
-		slack = n
+	record := func(source string, e error) {
+		if e != nil {
+			p.logger.Printf("inbox: %s detect error: %v", source, e)
+			errs = append(errs, fmt.Errorf("%s: %w", source, e))
+		}
 	}
-	if n, e := DetectJira(ctx, p.db, owner, sinceTime); e != nil {
-		p.logger.Printf("inbox: jira detect error: %v", e)
-		errs = append(errs, fmt.Errorf("jira: %w", e))
-	} else {
-		jira = n
-	}
-	if n, e := DetectCalendar(ctx, p.db, owner.Email, sinceTime); e != nil {
-		p.logger.Printf("inbox: calendar detect error: %v", e)
-		errs = append(errs, fmt.Errorf("calendar: %w", e))
-	} else {
-		cal = n
-	}
-	if n, e := DetectGmailAccounts(ctx, p.db, sinceTime); e != nil {
-		p.logger.Printf("inbox: gmail detect error: %v", e)
-		errs = append(errs, fmt.Errorf("gmail: %w", e))
-	} else {
-		gmail = n
-	}
-	if n, e := DetectImapAccounts(ctx, p.db, sinceTime); e != nil {
-		p.logger.Printf("inbox: imap detect error: %v", e)
-		errs = append(errs, fmt.Errorf("imap: %w", e))
-	} else {
-		imapCount = n
-	}
-	if n, e := DetectWatchtowerInternal(ctx, p.db, sinceTime); e != nil {
-		p.logger.Printf("inbox: watchtower detect error: %v", e)
-		errs = append(errs, fmt.Errorf("watchtower: %w", e))
-	} else {
-		wt = n
-	}
+	var e error
+	slack, e = p.detectSlackAccounts(ctx, lastTS)
+	record("slack", e)
+	jira, e = detectJira(ctx, p.db, owner, jiraOwn, sinceTime)
+	record("jira", e)
+	cal, e = DetectCalendar(ctx, p.db, owner.Email, sinceTime)
+	record("calendar", e)
+	gmail, e = DetectGmailAccounts(ctx, p.db, sinceTime)
+	record("gmail", e)
+	imapCount, e = DetectImapAccounts(ctx, p.db, sinceTime)
+	record("imap", e)
+	wt, e = DetectWatchtowerInternal(ctx, p.db, sinceTime)
+	record("watchtower", e)
 	return slack, jira, cal, gmail, imapCount, wt, errors.Join(errs...)
 }
 
@@ -426,25 +413,32 @@ func (p *Pipeline) detectSlackTriggers(ctx context.Context, accountID int64, cur
 		return 0, fmt.Errorf("finding DMs: %w", err)
 	}
 
+	// Mentions/DMs fail the account outright; thread-reply and reaction
+	// failures are collected so the candidates already found still become
+	// items, and the joined error freezes the watermark (INBOX-09).
+	var errs []error
 	threadReplies, err := p.db.FindThreadRepliesToUser(accountID, currentUserID, lastTS)
 	if err != nil {
-		p.logger.Printf("inbox: error finding thread replies: %v", err)
+		errs = append(errs, fmt.Errorf("finding thread replies: %w", err))
 	}
 
 	reactions, err := p.db.FindReactionRequests(accountID, currentUserID, lastTS)
 	if err != nil {
-		p.logger.Printf("inbox: error finding reaction requests: %v", err)
+		errs = append(errs, fmt.Errorf("finding reaction requests: %w", err))
 	}
 
 	candidates := append(mentions, dms...)
 	candidates = append(candidates, threadReplies...)
 	candidates = append(candidates, reactions...)
 
-	created := p.createItemsFromCandidates(candidates, currentUserID, false)
+	created, err := p.createItemsFromCandidates(candidates, currentUserID, false)
+	if err != nil {
+		errs = append(errs, err)
+	}
 
 	p.logger.Printf("inbox: slack account %d detected %d mentions, %d DMs, %d thread replies, %d reactions → %d created",
 		accountID, len(mentions), len(dms), len(threadReplies), len(reactions), created)
-	return created, nil
+	return created, errors.Join(errs...)
 }
 
 // createItemsFromCandidates groups candidates by (channel, thread) — keeping
@@ -477,7 +471,11 @@ func (p *Pipeline) detectSlackTriggers(ctx context.Context, accountID int64, cur
 // so the returned count matches exactly what a real run would create, but
 // both writes that mutate inbox_items (the existing-thread fold, and
 // CreateInboxItem for a new item) are skipped.
-func (p *Pipeline) createItemsFromCandidates(candidates []db.InboxCandidate, currentUserID string, dryRun bool) int {
+//
+// A failed write does not stop the remaining groups; every failure is joined
+// into the returned error (a UNIQUE conflict is an already-surfaced message,
+// not a failure) so the caller's watermark gate sees it (INBOX-09).
+func (p *Pipeline) createItemsFromCandidates(candidates []db.InboxCandidate, currentUserID string, dryRun bool) (int, error) {
 	type threadKey struct{ channelID, threadTS string }
 	type threadGroup struct {
 		latest  db.InboxCandidate
@@ -499,6 +497,7 @@ func (p *Pipeline) createItemsFromCandidates(candidates []db.InboxCandidate, cur
 	}
 
 	created := 0
+	var errs []error
 	for _, grp := range threadGroups {
 		c := grp.latest
 		snippet := enrichSnippet(c.Text, p.db)
@@ -529,10 +528,10 @@ func (p *Pipeline) createItemsFromCandidates(candidates []db.InboxCandidate, cur
 				continue
 			}
 			if err := p.db.UpdateInboxItemSnippet(existingID, c.MessageTS, c.SenderUserID, snippet, itemCtx, c.Text, c.Permalink); err != nil {
-				p.logger.Printf("inbox: error updating thread item %d: %v", existingID, err)
+				errs = append(errs, fmt.Errorf("updating thread item %d: %w", existingID, err))
 			}
 			if err := p.db.MergeWaitingUserIDs(existingID, senderList); err != nil {
-				p.logger.Printf("inbox: error merging waiting users for item %d: %v", existingID, err)
+				errs = append(errs, fmt.Errorf("merging waiting users for item %d: %w", existingID, err))
 			}
 			continue
 		}
@@ -555,15 +554,22 @@ func (p *Pipeline) createItemsFromCandidates(candidates []db.InboxCandidate, cur
 			WaitingUserIDs: waitingJSON,
 		})
 		if err != nil {
-			if strings.Contains(err.Error(), "UNIQUE") {
+			if isUniqueConflict(err) {
 				continue
 			}
-			p.logger.Printf("inbox: error creating item: %v", err)
+			errs = append(errs, fmt.Errorf("creating item for %s/%s: %w", c.ChannelID, c.MessageTS, err))
 			continue
 		}
 		created++
 	}
-	return created
+	return created, errors.Join(errs...)
+}
+
+// isUniqueConflict reports whether an inbox_items insert failed on
+// UNIQUE(channel_id, message_ts) — the message is already surfaced, which is
+// a skip, not a failure.
+func isUniqueConflict(err error) bool {
+	return strings.Contains(err.Error(), "UNIQUE")
 }
 
 // loadContext loads thread or channel context for an inbox item.
@@ -593,16 +599,11 @@ func (p *Pipeline) loadContext(channelID, messageTS, threadTS string) string {
 		if line == "" {
 			continue
 		}
-		if len(line) > 200 {
-			line = line[:200] + "..."
-		}
+		line = truncateRunes(line, 200)
 		sb.WriteString(fmt.Sprintf("[%s] %s\n", name, line))
 	}
 	result := strings.TrimSpace(sb.String())
-	if len(result) > 2000 {
-		result = result[:2000] + "..."
-	}
-	return result
+	return truncateRunes(result, 2000)
 }
 
 // progress is a helper that calls OnProgress if set.
@@ -614,10 +615,10 @@ func (p *Pipeline) progress(done, total int, status string) {
 
 // autoResolveByRules runs all rule-based auto-resolve checks across Slack,
 // Jira, and Calendar sources. Returns the total number of items resolved.
-func (p *Pipeline) autoResolveByRules(ctx context.Context, owner db.Owner) int {
+func (p *Pipeline) autoResolveByRules(ctx context.Context, owner db.Owner, jiraOwn *ownJiraComments) int {
 	resolved := 0
 	resolved += p.autoResolveSlack(ctx)
-	resolved += p.autoResolveJira(ctx, owner)
+	resolved += p.autoResolveJira(ctx, jiraOwn)
 	resolved += p.autoResolveCalendar(ctx, owner.Email)
 	return resolved
 }
@@ -689,13 +690,11 @@ func (p *Pipeline) autoResolveSlack(ctx context.Context) int {
 // autoResolveJira resolves pending jira_comment_mention and jira_assigned items
 // when the owner has authored a comment on the issue after the item was created.
 // If the jira_comments table does not exist, or the owner has no known
-// Atlassian account id (ownerAtlassianIDs), this method is a no-op.
-func (p *Pipeline) autoResolveJira(_ context.Context, owner db.Owner) int {
-	if !jiraCommentsTableExists(p.db) {
-		return 0
-	}
-	atlassianIDs := ownerAtlassianIDs(p.db, owner)
-	if len(atlassianIDs) == 0 {
+// Atlassian account id (ownerAtlassianIDs), this method is a no-op. Only a
+// comment's creation counts here — an edit of an older comment is not an
+// answer to an item that arrived after it.
+func (p *Pipeline) autoResolveJira(_ context.Context, jiraOwn *ownJiraComments) int {
+	if len(jiraOwn.ids) == 0 {
 		return 0
 	}
 
@@ -722,15 +721,20 @@ func (p *Pipeline) autoResolveJira(_ context.Context, owner db.Owner) int {
 		candidates = append(candidates, c)
 	}
 
-	// The two timestamps being compared come from different writers in
-	// different formats: jira_comments.created_at is Jira Cloud's own dotted
-	// -millisecond shape ("...T10:00:00.000+0000"), inbox_items.created_at is
-	// RFC3339 ("...T10:00:00Z"). A SQL string compare between them is
-	// meaningless — '.' (0x2E) sorts below 'Z' (0x5A), so a comment would
-	// have to be a whole second newer to register at all, and one in the same
-	// second never would. Both sides are parsed in Go instead
-	// (db.ParseJiraTime accepts either format).
-	latestByIssue := p.latestOwnJiraCommentPerIssue(atlassianIDs)
+	// The two timestamps being compared come from different writers:
+	// jira_comments.created_at (db.FormatJiraTime's UTC form since migration
+	// 00092, Jira's "+hhmm" wire shape before it) and inbox_items.created_at
+	// (RFC3339, whole seconds). Both
+	// sides are parsed in Go (db.ParseJiraTime accepts either format) rather
+	// than string-compared.
+	keys := make([]string, len(candidates))
+	for i, c := range candidates {
+		keys[i] = c.issueKey
+	}
+	latestByIssue, err := jiraOwn.latestFor(keys)
+	if err != nil {
+		p.logger.Printf("inbox: autoResolveJira: %v", err)
+	}
 
 	resolved := 0
 	for _, c := range candidates {
@@ -738,7 +742,7 @@ func (p *Pipeline) autoResolveJira(_ context.Context, owner db.Owner) int {
 		if !ok {
 			continue
 		}
-		if commentTS, found := latestByIssue[c.issueKey]; !found || commentTS < itemTS {
+		if own, found := latestByIssue[c.issueKey]; !found || own.created < itemTS {
 			continue
 		}
 		if _, err := p.db.Exec(`UPDATE inbox_items SET status='resolved', resolved_reason='User commented on issue', updated_at=? WHERE id=?`,
@@ -751,68 +755,36 @@ func (p *Pipeline) autoResolveJira(_ context.Context, owner db.Owner) int {
 	return resolved
 }
 
-// latestOwnJiraCommentPerIssue returns, per issue key, the unix time of the
-// newest comment authored by any of the given Atlassian account ids. One
-// fully-drained query up front, so the caller's loop issues no reads at all
-// (the MaxOpenConns(1) SQLite deadlock rule). An unparseable timestamp is
-// skipped, matching ParseJiraTime's defensive-skip contract.
-func (p *Pipeline) latestOwnJiraCommentPerIssue(atlassianIDs []string) map[string]int64 {
-	placeholders := make([]string, len(atlassianIDs))
-	args := make([]any, len(atlassianIDs))
-	for i, id := range atlassianIDs {
-		placeholders[i] = "?"
-		args[i] = id
-	}
-
-	rows, err := p.db.Query(fmt.Sprintf(`SELECT issue_key, created_at FROM jira_comments
-		WHERE author_account_id IN (%s)`, strings.Join(placeholders, ",")), args...)
-	if err != nil {
-		p.logger.Printf("inbox: autoResolveJira: comment query: %v", err)
-		return nil
-	}
-	defer rows.Close()
-
-	latest := map[string]int64{}
-	for rows.Next() {
-		var issueKey, createdAt string
-		if err := rows.Scan(&issueKey, &createdAt); err != nil {
-			p.logger.Printf("inbox: autoResolveJira: comment scan: %v", err)
-			return latest
-		}
-		ts, ok := db.ParseJiraTime(createdAt)
-		if !ok {
-			continue
-		}
-		if cur, seen := latest[issueKey]; !seen || ts > cur {
-			latest[issueKey] = ts
-		}
-	}
-	return latest
-}
-
-// autoResolveCalendar resolves pending calendar_invite and calendar_time_change
-// items when the owner's RSVP status is no longer 'needsAction'.
+// autoResolveCalendar resolves pending calendar items the owner has dealt
+// with (INBOX-02):
+//   - calendar_invite: the owner's RSVP is no longer 'needsAction'.
+//   - calendar_time_change (owner decision 2026-09-29): the owner's RSVP was
+//     given AFTER the reschedule — the sync saw it change (rsvp_changed) at or
+//     after the item's reschedule stamp (its message_ts, time_changed_at) and
+//     it is now an answer. An RSVP left as it was before the move does not
+//     count, whether the provider kept it or reset it to needsAction; an
+//     answer and a move first seen in the same pass count as an answer (the
+//     sync cannot order them). With no fresh answer the item stays pending
+//     until the event has ended — an all-day event at UTC midnight of its
+//     exclusive end date, as in the invite guard. A vanished event row leaves
+//     the item pending until ArchiveStaleActionable archives it.
 func (p *Pipeline) autoResolveCalendar(_ context.Context, ownerEmail string) int {
 	if ownerEmail == "" {
 		return 0
 	}
 
 	// Drain cursor before any secondary queries (SQLite single-connection deadlock).
-	rows, err := p.db.Query(`SELECT id, channel_id FROM inbox_items
+	rows, err := p.db.Query(`SELECT id, channel_id, trigger_type, message_ts FROM inbox_items
 		WHERE trigger_type IN ('calendar_invite','calendar_time_change') AND status='pending'`)
 	if err != nil {
 		p.logger.Printf("inbox: autoResolveCalendar: query: %v", err)
 		return 0
 	}
 	defer rows.Close()
-	type candidate struct {
-		id      int64
-		eventID string
-	}
-	var candidates []candidate
+	var candidates []calendarResolveCandidate
 	for rows.Next() {
-		var c candidate
-		if err := rows.Scan(&c.id, &c.eventID); err != nil {
+		var c calendarResolveCandidate
+		if err := rows.Scan(&c.id, &c.eventID, &c.trigger, &c.itemTS); err != nil {
 			p.logger.Printf("inbox: autoResolveCalendar: scan: %v", err)
 			return 0
 		}
@@ -820,22 +792,62 @@ func (p *Pipeline) autoResolveCalendar(_ context.Context, ownerEmail string) int
 	}
 
 	resolved := 0
+	now := time.Now()
 	for _, c := range candidates {
-		var att string
-		p.db.QueryRow(`SELECT attendees FROM calendar_events WHERE id=?`, c.eventID).Scan(&att) //nolint:errcheck
-		var list []calAttendee
-		_ = json.Unmarshal([]byte(att), &list)
-		for _, a := range list {
-			if strings.EqualFold(a.Email, ownerEmail) && a.RSVPStatus != "needsAction" && a.RSVPStatus != "" {
-				if _, err := p.db.Exec(`UPDATE inbox_items SET status='resolved', resolved_reason='User responded to invite', updated_at=? WHERE id=?`,
-					time.Now().UTC().Format(time.RFC3339), c.id); err != nil {
-					p.logger.Printf("inbox: autoResolveCalendar: update item %d: %v", c.id, err)
-				} else {
-					resolved++
-				}
-				break
-			}
+		var att, rsvpChanged, endTime string
+		// A missing event row reads as empty: nothing answers, nothing ended.
+		row := p.db.QueryRow(`SELECT attendees, rsvp_changed, end_time FROM calendar_events WHERE id=?`, c.eventID)
+		row.Scan(&att, &rsvpChanged, &endTime) //nolint:errcheck
+		reason := calendarResolveReason(c, ownerRSVP(att, ownerEmail), db.CalendarRSVPChangedAt(rsvpChanged, ownerEmail), endTime, now)
+		if reason == "" {
+			continue
 		}
+		if _, err := p.db.Exec(`UPDATE inbox_items SET status='resolved', resolved_reason=?, updated_at=? WHERE id=?`,
+			reason, time.Now().UTC().Format(time.RFC3339), c.id); err != nil {
+			p.logger.Printf("inbox: autoResolveCalendar: update item %d: %v", c.id, err)
+			continue
+		}
+		resolved++
 	}
 	return resolved
+}
+
+// calendarResolveCandidate is one pending calendar inbox item.
+type calendarResolveCandidate struct {
+	id               int64
+	eventID, trigger string
+	itemTS           string // message_ts: the reschedule stamp for a time change
+}
+
+// ownerRSVP returns the owner's response_status in an attendees JSON list,
+// "" when the owner is not on it (or the list does not parse).
+func ownerRSVP(attendees, ownerEmail string) string {
+	var list []calAttendee
+	_ = json.Unmarshal([]byte(attendees), &list)
+	for _, a := range list {
+		if strings.EqualFold(a.Email, ownerEmail) {
+			return a.RSVPStatus
+		}
+	}
+	return ""
+}
+
+// calendarResolveReason decides whether a pending calendar item is resolved
+// and why ("" = keep it pending). rsvpChangedAt is when the sync last saw the
+// owner's RSVP change on the event ("" = never).
+func calendarResolveReason(c calendarResolveCandidate, rsvp, rsvpChangedAt, endTime string, now time.Time) string {
+	answered := rsvp != "" && rsvp != "needsAction"
+	if c.trigger != "calendar_time_change" {
+		if answered {
+			return "User responded to invite"
+		}
+		return ""
+	}
+	if answered && rsvpChangedAt != "" && rsvpChangedAt >= c.itemTS {
+		return "User responded after the reschedule"
+	}
+	if end, err := time.Parse(time.RFC3339, endTime); err == nil && end.Before(now) {
+		return "Event has ended"
+	}
+	return ""
 }

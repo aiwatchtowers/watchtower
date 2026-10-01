@@ -99,14 +99,15 @@ func (p *Pipeline) appendNodeOpenLoops(vault *memory.Vault, n db.MemoryNodeRow, 
 	return lines
 }
 
-// gatherTargets returns active targets (todo, in_progress, blocked), ordered by priority.
+// gatherTargets returns active targets (todo, in_progress, blocked), ordered
+// by priority. Project targets never reach the day plan (PROJ-01).
 func (p *Pipeline) gatherTargets() ([]db.Target, error) {
 	rows, err := p.db.Query(`SELECT id, text, intent, level, custom_label, period_start, period_end,
 		parent_id, status, priority, ownership,
 		ball_on, due_date, snooze_until, blocking, tags, sub_items, notes,
 		progress, source_type, source_id, ai_level_confidence, created_at, updated_at
 		FROM targets
-		WHERE status IN ('todo', 'in_progress', 'blocked')
+		WHERE status IN ('todo', 'in_progress', 'blocked') AND project_id IS NULL
 		ORDER BY
 			CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 END,
 			CASE WHEN due_date = '' THEN 1 ELSE 0 END,
@@ -133,9 +134,10 @@ func (p *Pipeline) gatherTargets() ([]db.Target, error) {
 	return targets, rows.Err()
 }
 
-// gatherCalendarEvents returns all calendar events occurring on the given date (YYYY-MM-DD).
+// gatherCalendarEvents returns all calendar events occurring on the given
+// local date (YYYY-MM-DD) — every caller derives it from the local clock.
 func (p *Pipeline) gatherCalendarEvents(date string) ([]db.CalendarEvent, error) {
-	events, err := p.db.GetCalendarEventsForDate(date)
+	events, err := p.db.GetCalendarEventsForDate(date, time.Local)
 	if err != nil {
 		return nil, fmt.Errorf("querying calendar events for %s: %w", date, err)
 	}

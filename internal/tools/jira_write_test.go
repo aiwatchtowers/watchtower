@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -29,6 +30,9 @@ type fakeJiraWriter struct {
 	// with the matched transition's To.StatusCategory.
 	statusCategoryKey string
 	resolvedAt        string
+	// categoryChangedAt is Jira's statuscategorychangedate, which a
+	// transition across categories moves.
+	categoryChangedAt string
 	assigneeID        string
 	assignee          string
 	comments          []string
@@ -68,10 +72,14 @@ func (f *fakeJiraWriter) GetIssue(_ context.Context, key string) (jira.Issue, er
 	if f.resolvedAt != "" {
 		resolutionDate = `"` + f.resolvedAt + `"`
 	}
+	categoryChanged := `null`
+	if f.categoryChangedAt != "" {
+		categoryChanged = `"` + f.categoryChangedAt + `"`
+	}
 	var issue jira.Issue
 	err := json.Unmarshal([]byte(`{"id":"1","key":"`+key+`","fields":{"summary":"Fix login","issuetype":{"name":"Task"},`+
 		`"status":{"name":"`+status+`","statusCategory":{"key":"`+category+`"}},"priority":{"name":"High"},`+
-		`"labels":["backend"],"duedate":"2026-10-01","assignee":`+assignee+`,"resolutiondate":`+resolutionDate+`,`+
+		`"labels":["backend"],"duedate":"2026-10-01","assignee":`+assignee+`,"resolutiondate":`+resolutionDate+`,"statuscategorychangedate":`+categoryChanged+`,`+
 		`"created":"2026-09-04T10:00:00.000+0000","updated":"2026-09-26T10:00:00.000+0000"}}`), &issue)
 	return issue, err
 }
@@ -92,6 +100,9 @@ func (f *fakeJiraWriter) TransitionIssue(_ context.Context, _, id string) error 
 	f.moved = append(f.moved, id)
 	for _, t := range f.transitions {
 		if t.ID == id {
+			if t.To.StatusCategory.Key != f.statusCategoryKey {
+				f.categoryChangedAt = time.Now().Format("2006-01-02T15:04:05.000-0700")
+			}
 			f.status, f.statusCategoryKey = t.To.Name, t.To.StatusCategory.Key
 			f.resolvedAt = ""
 			if f.statusCategoryKey == "done" {
@@ -126,7 +137,8 @@ func seedIssueRow(t *testing.T, d *db.DB, accountID int64, key string) {
 	t.Helper()
 	require.NoError(t, d.UpsertJiraIssue(db.JiraIssue{AccountID: accountID, Key: key, ID: "1", ProjectKey: "ABC",
 		Summary: "Old", Status: "To Do", Labels: "[]", Components: "[]", FixVersions: "[]",
-		BoardID: 7, SprintName: "Sprint 12", EpicKey: "ABC-1", ReporterDisplayName: "Rita"}))
+		BoardID: 7, SprintName: "Sprint 12", EpicKey: "ABC-1", ReporterDisplayName: "Rita",
+		StatusCategoryChangedAt: time.Now().AddDate(0, 0, -30).UTC().Format(time.RFC3339)}))
 }
 
 func twoTransitions() []jira.Transition {
@@ -248,7 +260,7 @@ func TestTransitionJiraIssue_ExecuteMovesByStatusOrTransitionName(t *testing.T) 
 	done, err := d.GetJiraIssue(accountID, "ABC-7")
 	require.NoError(t, err)
 	assert.Equal(t, "done", done.StatusCategory)
-	assert.Equal(t, "2026-09-27T12:00:00.000+0000", done.ResolvedAt)
+	assert.Equal(t, "2026-09-27T12:00:00.000Z", done.ResolvedAt, "stored in UTC, like the syncer")
 
 	_, err = tool.Execute(context.Background(), d, Call{Args: json.RawMessage(`{"key":"ABC-7","status":"start work","reason":"r"}`)})
 	require.NoError(t, err)
@@ -259,6 +271,10 @@ func TestTransitionJiraIssue_ExecuteMovesByStatusOrTransitionName(t *testing.T) 
 	assert.Equal(t, "In Progress", row.Status, "mirror refreshed from the fetched issue")
 	assert.Equal(t, "in_progress", row.StatusCategory, "normalized, not the raw Jira key")
 	assert.Empty(t, row.ResolvedAt, "reopening clears a stale resolved_at")
+	wantChanged, _ := jira.NormalizeTimestamp(fake.categoryChangedAt)
+	assert.Equal(t, wantChanged, row.StatusCategoryChangedAt,
+		"a category move refreshes status_category_changed_at, normalized like the syncer's")
+	assert.NotEmpty(t, row.StatusCategoryChangedAt)
 }
 
 func TestTransitionJiraIssue_ExecuteFailsWhenStatusNoLongerReachable(t *testing.T) {

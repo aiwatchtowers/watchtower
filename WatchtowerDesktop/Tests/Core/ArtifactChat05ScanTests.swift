@@ -23,9 +23,26 @@ final class ArtifactChat05ScanTests: XCTestCase {
             "Views/Chat/ArtifactCardView.swift",
             "Views/Chat/ArtifactActionPerformer.swift",
             "Views/Chat/ChatMessageRow.swift",
-            "Views/Chat/ChatInspectorContent.swift"
+            "Views/Chat/ChatInspectorContent.swift",
+            // Artifact comments (projects POC phase 6): comments reach the
+            // assistant only as the owner's own message, sent by the chat.
+            "WatchtowerCore/Services/Chat/ArtifactCommentsModel.swift",
+            "WatchtowerCore/Services/Chat/ArtifactCommentMessage.swift",
+            "WatchtowerCore/Services/Chat/ArtifactCommentReanchor.swift",
+            "WatchtowerCore/Services/Chat/ArtifactCommentText.swift",
+            "WatchtowerCore/Services/Chat/CommentBatchComposer.swift",
+            "WatchtowerCore/Database/Queries/ArtifactCommentQueries.swift",
+            "Views/Chat/ArtifactCommentsView.swift",
+            // The selection-comment affordance the artifact panel shares with
+            // project documents (#84).
+            "Views/Comments/CommentableDocumentText.swift",
+            "Views/Comments/DocumentTextView.swift",
+            // Split out of / added beside them by #178–#181.
+            "Views/Comments/DocumentAttributedString.swift",
+            "Views/Comments/CommentTextEditor.swift"
         ]
-        let forbidden = ["Process(", "CLIRunner", "URLSession", "findCLIPath", "WatchtowerAIService", "ChatSessionPool"]
+        let forbidden = ["Process(", "CLIRunner", "URLSession", "findCLIPath", "WatchtowerAIService", "ChatSessionPool",
+                         ".send(", "sendDraft", "startTurn"]
         for file in files {
             let text = try String(contentsOf: sources.appendingPathComponent(file), encoding: .utf8)
             for token in forbidden {

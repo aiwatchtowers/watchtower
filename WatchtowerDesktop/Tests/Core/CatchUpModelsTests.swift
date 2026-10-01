@@ -54,6 +54,41 @@ final class CatchUpModelsTests: XCTestCase {
         XCTAssertEqual(line, "Slack to 17:40 · Jira/Gmail to 14:00 · 1 meeting")
     }
 
+    func testCoverageSummaryLineFlagsTruncatedWindow() throws {
+        let raw = #"{"slack_to":1000,"topup":"skipped","window_truncated":true}"#
+        let cov = try JSONDecoder().decode(CatchUpCoverage.self, from: Data(raw.utf8))
+        XCTAssertTrue(cov.windowTruncated)
+        XCTAssertEqual(cov.summaryLine { _ in "17:40" }, "Slack to 17:40 · window capped at 31 days")
+    }
+
+    // MARK: - Auto window (mirror of Go catchup.ResolveWindow's auto branch)
+
+    func testAutoWindowStartMirrorsGoResolveWindow() {
+        let now = Date()
+        typealias Win = CatchUpAutoWindow
+        XCTAssertEqual(Win.start(lastAcknowledgedTo: nil, now: now), .last24Hours)
+        XCTAssertEqual(Win.start(lastAcknowledgedTo: now.addingTimeInterval(3600), now: now), .last24Hours,
+                       "a future ack falls back to 24h, as in Go")
+        XCTAssertEqual(Win.start(lastAcknowledgedTo: now, now: now), .last24Hours)
+
+        let recent = now.addingTimeInterval(-3 * 24 * 3600)
+        XCTAssertEqual(Win.start(lastAcknowledgedTo: recent, now: now), .since(recent))
+
+        let atCap = now.addingTimeInterval(-31 * 24 * 3600)
+        XCTAssertEqual(Win.start(lastAcknowledgedTo: atCap, now: now), .since(atCap), "exactly at the cap is not truncated")
+
+        let ancient = now.addingTimeInterval(-45 * 24 * 3600)
+        XCTAssertEqual(Win.start(lastAcknowledgedTo: ancient, now: now), .capped(atCap))
+    }
+
+    func testAutoWindowCaption() {
+        let date = Date()
+        let fmt: (Date) -> String = { _ in "Sep 3, 14:00" }
+        XCTAssertEqual(CatchUpAutoWindow.caption(.last24Hours, format: fmt), "since 24 hours ago")
+        XCTAssertEqual(CatchUpAutoWindow.caption(.since(date), format: fmt), "since Sep 3, 14:00")
+        XCTAssertEqual(CatchUpAutoWindow.caption(.capped(date), format: fmt), "since Sep 3, 14:00 (capped at 31 days)")
+    }
+
     func testCoverageDecodesTolerantly() throws {
         let cov = try JSONDecoder().decode(CatchUpCoverage.self, from: Data("{}".utf8))
         XCTAssertEqual(cov, CatchUpCoverage())

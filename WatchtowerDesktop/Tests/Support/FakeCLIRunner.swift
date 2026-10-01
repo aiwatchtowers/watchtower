@@ -7,7 +7,9 @@ import WatchtowerCore
 /// `@unchecked Sendable`: `run(args:)` is a nonisolated protocol requirement
 /// invoked off whatever executor happens to run it, while `blockUntilCancelled`
 /// is armed from the test's MainActor context beforehand — `lock` is what
-/// actually protects the mutable cancellation-gate state below; the
+/// actually protects the recorded invocations and the mutable
+/// cancellation-gate state below (a test's `waitUntil` polls `invocations`
+/// from the main actor while `run` appends from another executor); the
 /// plain-`var` config flags are set once before any concurrent access starts.
 package final class FakeCLIRunner: CLIRunnerProtocol, @unchecked Sendable {
     private let stdoutData: Data
@@ -27,9 +29,16 @@ package final class FakeCLIRunner: CLIRunnerProtocol, @unchecked Sendable {
     /// can be tested against "cancelled AND the runner still handed back
     /// data" rather than only "cancelled AND the runner threw".
     package var returnDataOnCancelInsteadOfThrowing = false
-    package private(set) var invocations: [[String]] = []
+    /// Every call's arguments, in order. A locked snapshot — safe to read
+    /// while `run` is still being called concurrently.
+    package var invocations: [[String]] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedInvocations
+    }
 
     private let lock = NSLock()
+    private var recordedInvocations: [[String]] = []
     private var cancelWaiter: CheckedContinuation<Void, Never>?
     private var cancelled = false
 
@@ -39,7 +48,7 @@ package final class FakeCLIRunner: CLIRunnerProtocol, @unchecked Sendable {
     }
 
     package func run(args: [String]) async throws -> Data {
-        invocations.append(args)
+        record(args)
         if blockUntilCancelled {
             await waitForCancellation()
             if !returnDataOnCancelInsteadOfThrowing {
@@ -48,6 +57,12 @@ package final class FakeCLIRunner: CLIRunnerProtocol, @unchecked Sendable {
         }
         if let shouldThrow { throw shouldThrow }
         return stdoutData
+    }
+
+    private func record(_ args: [String]) {
+        lock.lock()
+        recordedInvocations.append(args)
+        lock.unlock()
     }
 
     /// Suspends until this instance is told a cancellation happened (via the

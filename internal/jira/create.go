@@ -3,6 +3,7 @@ package jira
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -113,16 +114,27 @@ func (c *Client) CreateIssue(ctx context.Context, req CreateIssueRequest) (Creat
 		return CreatedIssue{}, err
 	}
 	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, readErr := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
 		return CreatedIssue{}, &APIError{Status: resp.StatusCode, Message: jiraErrorMessage(respBody)}
 	}
+	// Past this point Jira answered "created": the issue exists, only its key
+	// was lost, and the error says so.
+	if readErr != nil {
+		return CreatedIssue{}, fmt.Errorf("%w: reading the response: %v", errCreatedKeyUnknown, readErr)
+	}
 	var created CreatedIssue
 	if err := json.Unmarshal(respBody, &created); err != nil {
-		return CreatedIssue{}, fmt.Errorf("decoding create issue response: %w", err)
+		return CreatedIssue{}, fmt.Errorf("%w: decoding the response: %v", errCreatedKeyUnknown, err)
+	}
+	if created.Key == "" {
+		return CreatedIssue{}, fmt.Errorf("%w: the response has no key", errCreatedKeyUnknown)
 	}
 	return created, nil
 }
+
+// errCreatedKeyUnknown is a create Jira acknowledged whose key was lost.
+var errCreatedKeyUnknown = errors.New("jira reported the issue as created but its key could not be read; a retry finds it instead of creating a duplicate")
 
 // GetIssue fetches one issue with the same field set the search sync uses.
 func (c *Client) GetIssue(ctx context.Context, key string) (Issue, error) {

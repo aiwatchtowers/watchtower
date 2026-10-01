@@ -55,3 +55,17 @@ func TestAuthURLScopes_WithConfluenceIncludesAll(t *testing.T) {
 func TestConfluenceScopes_IncludesUsersBulkClassicScope(t *testing.T) {
 	assert.Contains(t, strings.Fields(ConfluenceScopes), "read:confluence-user")
 }
+
+// TestHasConfluenceWriteScopes mirrors TestHasConfluenceScopes for the
+// write scopes: a token carrying only the read Confluence scopes (or none)
+// does not have write access, and a token carrying ConfluenceWriteScopes
+// (order-insensitive, extra scopes fine) does.
+func TestHasConfluenceWriteScopes(t *testing.T) {
+	assert.False(t, HasConfluenceWriteScopes(&OAuthToken{Scope: JiraScopes}))
+	assert.False(t, HasConfluenceWriteScopes(&OAuthToken{Scope: JiraScopes + " " + ConfluenceScopes}))
+	assert.True(t, HasConfluenceWriteScopes(&OAuthToken{Scope: JiraScopes + " " + ConfluenceScopes + " " + ConfluenceWriteScopes}))
+	fields := strings.Fields(ConfluenceWriteScopes)
+	sort.Sort(sort.Reverse(sort.StringSlice(fields)))
+	assert.True(t, HasConfluenceWriteScopes(&OAuthToken{Scope: "x " + strings.Join(fields, " ")}))
+	assert.False(t, HasConfluenceWriteScopes(nil))
+}

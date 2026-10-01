@@ -1,7 +1,9 @@
 package db
 
 import (
+	"database/sql"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -191,6 +193,92 @@ func TestGoogleAccount_DeleteGoogleAccount_ScopedToOwnCalendars(t *testing.T) {
 	assert.Error(t, err)
 	_, err = d.GetGoogleAccount(id2)
 	assert.NoError(t, err)
+}
+
+// TestGoogleAccount_DeleteGoogleAccount_SparesRecordedEvents pins that
+// `google remove` never unlinks a recording or recap from its event: an event
+// a meeting_transcripts or meeting_recaps row references survives (the
+// DeleteStaleCalendarEvents guard, owner decision 14), and so does the
+// calendar row holding it — detached from the deleted account (account_id
+// NULL, is_selected 0) since the account row itself goes. Everything else of
+// the account is deleted as before, and another account is untouched.
+func TestGoogleAccount_DeleteGoogleAccount_SparesRecordedEvents(t *testing.T) {
+	d := openTestDB(t)
+
+	idA, err := d.CreateGoogleAccount(GoogleAccount{Email: "a@example.com", Label: "A"})
+	require.NoError(t, err)
+	idB, err := d.CreateGoogleAccount(GoogleAccount{Email: "b@example.com", Label: "B"})
+	require.NoError(t, err)
+
+	start := time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339)
+	end := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)
+	for _, c := range []struct {
+		account int64
+		id      string
+	}{{idA, "a-plain"}, {idA, "a-recorded"}, {idB, "b-primary"}} {
+		require.NoError(t, d.UpsertCalendar(c.account, CalendarCalendar{ID: c.id, Name: c.id, IsSelected: true, SyncedAt: start}))
+	}
+	for id, cal := range map[string]string{
+		"evt-plain":    "a-plain",
+		"evt-recorded": "a-recorded",
+		"evt-recapped": "a-recorded",
+		"evt-unlinked": "a-recorded",
+		"evt-b":        "b-primary",
+	} {
+		require.NoError(t, d.UpsertCalendarEvent(CalendarEvent{ID: id, CalendarID: cal, Title: id, StartTime: start, EndTime: end}))
+	}
+	tid, err := d.InsertMeetingTranscript(MeetingTranscript{
+		EventID: sql.NullString{String: "evt-recorded", Valid: true}, Title: "T", TranscriptText: "hello",
+	})
+	require.NoError(t, err)
+	require.NoError(t, d.UpsertMeetingRecap("evt-recapped", "source", "{}", 0))
+	// An ad-hoc recording (NULL event_id) must not poison the guard.
+	_, err = d.InsertMeetingTranscript(MeetingTranscript{Title: "Ad-hoc", TranscriptText: "hello"})
+	require.NoError(t, err)
+
+	require.NoError(t, d.DeleteGoogleAccount(idA))
+
+	for id, want := range map[string]bool{
+		"evt-plain":    false,
+		"evt-unlinked": false,
+		"evt-recorded": true,
+		"evt-recapped": true,
+		"evt-b":        true,
+	} {
+		got, err := d.GetCalendarEventByID(id)
+		require.NoError(t, err)
+		assert.Equalf(t, want, got != nil, "event %s survives = %v", id, want)
+	}
+
+	var eventID sql.NullString
+	require.NoError(t, d.QueryRow(`SELECT event_id FROM meeting_transcripts WHERE id = ?`, tid).Scan(&eventID))
+	assert.Equal(t, "evt-recorded", eventID.String, "the recording keeps its event link")
+	var recapEvent sql.NullString
+	require.NoError(t, d.QueryRow(`SELECT event_id FROM meeting_recaps WHERE source_text = 'source'`).Scan(&recapEvent))
+	assert.Equal(t, "evt-recapped", recapEvent.String, "the recap keeps its event link")
+
+	type calRow struct {
+		account  sql.NullInt64
+		selected bool
+	}
+	rows, err := d.Query(`SELECT id, account_id, is_selected FROM calendar_calendars`)
+	require.NoError(t, err)
+	defer rows.Close()
+	got := map[string]calRow{}
+	for rows.Next() {
+		var id string
+		var r calRow
+		require.NoError(t, rows.Scan(&id, &r.account, &r.selected))
+		got[id] = r
+	}
+	require.NoError(t, rows.Err())
+	assert.Equal(t, map[string]calRow{
+		"a-recorded": {account: sql.NullInt64{}, selected: false},
+		"b-primary":  {account: sql.NullInt64{Int64: idB, Valid: true}, selected: true},
+	}, got, "a-plain is deleted; a-recorded is kept but detached; B is untouched")
+
+	_, err = d.GetGoogleAccount(idA)
+	assert.Error(t, err, "the account row itself is deleted")
 }
 
 func TestGoogleAccount_DeleteGoogleAccount_MissingIsNoop(t *testing.T) {

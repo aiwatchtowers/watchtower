@@ -67,6 +67,63 @@ final class AgentActionCardViewTests: XCTestCase {
         XCTAssertNoThrow(try view.inspect().find(textWhere: { text, _ in text.contains("check Jira") }))
     }
 
+    /// Backlog 2026-09-30: an approve that failed before reaching the row
+    /// (SQLITE_BUSY) leaves it `pending`; the card says why and turns Approve
+    /// into a Retry that re-runs the same approve.
+    func testPendingCardWithGestureErrorShowsItAndRetriesApprove() throws {
+        let action = try row { db in try TestDatabase.insertAgentAction(db) }
+        var approved = 0
+        var retried = 0
+        let view = AgentActionCardView(action: action, inFlight: false,
+                                       onApprove: { approved += 1 }, onReject: {}, onRetry: { retried += 1 },
+                                       gestureError: .init(verb: "approve", message: "database is locked (5) (SQLITE_BUSY)"))
+        // swiftlint:disable:next trailing_closure
+        XCTAssertNoThrow(try view.inspect().find(textWhere: { text, _ in text.contains("SQLITE_BUSY") }))
+        XCTAssertThrowsError(try view.inspect().find(button: "Approve"))
+        XCTAssertNoThrow(try view.inspect().find(button: "Reject"))
+        try view.inspect().find(button: "Retry").tap()
+        XCTAssertEqual(approved, 1, "a pending row's Retry re-runs approve")
+        XCTAssertEqual(retried, 0, "never apply: the row was never approved")
+    }
+
+    /// A failed Reject leaves the row `pending` too, but the prominent button
+    /// must stay "Approve": a "Retry" there would approve what the owner
+    /// just tried to refuse.
+    func testFailedRejectKeepsApproveLabel() throws {
+        let action = try row { db in try TestDatabase.insertAgentAction(db) }
+        let view = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
+                                       gestureError: .init(verb: "reject", message: "SQLITE_BUSY"))
+        XCTAssertNoThrow(try view.inspect().find(button: "Approve"))
+        XCTAssertNoThrow(try view.inspect().find(button: "Reject"))
+        XCTAssertThrowsError(try view.inspect().find(button: "Retry"))
+        XCTAssertNoThrow(try view.inspect().find(text: "SQLITE_BUSY"))
+    }
+
+    /// A failed apply writes the message to the row's own `error` too — the
+    /// CLI may wrap it (`recording failure "…": …`); the card shows it once.
+    func testGestureErrorRepeatingTheRowErrorRendersOnce() throws {
+        let action = try row { db in
+            try TestDatabase.insertAgentAction(db, tool: "create_jira_issue", external: true, status: "failed", error: "boom")
+        }
+        for message in ["boom", #"recording failure "boom": disk full"#] {
+            let view = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
+                                           gestureError: .init(verb: "approve", message: message))
+            // swiftlint:disable:next trailing_closure
+            let hits = try view.inspect().findAll(ViewType.Text.self, where: { try $0.string().contains("boom") })
+            XCTAssertEqual(hits.count, 1, message)
+            XCTAssertNoThrow(try view.inspect().find(button: "Retry"))
+        }
+    }
+
+    /// A row decided elsewhere after the failure (the strip, another window)
+    /// drops the stale red line rather than contradict its status.
+    func testTerminalRowHidesAStaleGestureError() throws {
+        let action = try row { db in try TestDatabase.insertAgentAction(db, status: "applied") }
+        let view = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
+                                       gestureError: .init(verb: "approve", message: "SQLITE_BUSY"))
+        XCTAssertThrowsError(try view.inspect().find(text: "SQLITE_BUSY"))
+    }
+
     /// A claimed row is mid-execution in another process — the card may only
     /// report it, never offer a second decision on it.
     func testExecutingCardShowsNoButtons() throws {

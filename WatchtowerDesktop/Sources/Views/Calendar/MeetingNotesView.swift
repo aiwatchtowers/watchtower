@@ -436,6 +436,8 @@ struct MeetingNotesView: View {
             }
             loadNotes()
         } catch {
+            // A note deleted elsewhere leaves the list instead of failing again.
+            if error is RowNotFoundError { loadNotes() }
             errorMessage = error.localizedDescription
         }
     }
@@ -476,6 +478,7 @@ struct MeetingNotesView: View {
             _ = taskID
             loadNotes()
         } catch {
+            if error is RowNotFoundError { loadNotes() }
             errorMessage = error.localizedDescription
         }
         creatingTaskForID = nil

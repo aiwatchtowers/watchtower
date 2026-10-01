@@ -48,6 +48,9 @@ type IssueFields struct {
 	Parent      *ParentRef   `json:"parent"`
 	Resolved    *string      `json:"resolutiondate"`
 	FixVersions []FixVersion `json:"fixVersions"`
+	// StatusCategoryChanged is when the issue last moved between status
+	// categories (To Do / In Progress / Done), not between statuses.
+	StatusCategoryChanged *string `json:"statuscategorychangedate"`
 }
 
 // IssueType represents the type of a Jira issue.

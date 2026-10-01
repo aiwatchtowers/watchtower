@@ -129,6 +129,15 @@ struct CalendarConnectionDetail: View {
                     .foregroundStyle(.secondary)
             }
         }
+        // Outside the branches: toggling the last calendar the sync dropped
+        // empties the list, and the reason must still show.
+        if let error = appState.calendarViewModel?.calendarSelectionError {
+            Section {
+                Label(error, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
     }
 
     @ViewBuilder

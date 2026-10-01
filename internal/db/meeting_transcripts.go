@@ -128,11 +128,18 @@ func (db *DB) ListMeetingTranscripts(f MeetingTranscriptFilter) ([]MeetingTransc
 }
 
 // SetMeetingTranscriptSummary stores the recap JSON for an ad-hoc transcript
-// and bumps updated_at.
+// and bumps updated_at plus summary_updated_at — the recap's own generation
+// stamp, which the Desktop compares with speaker_names_changed_at to offer a
+// recap regeneration (updated_at can't: a speaker relabel bumps it too).
 func (db *DB) SetMeetingTranscriptSummary(id int64, summaryJSON string) error {
-	_, err := db.Exec(`
+	return setMeetingTranscriptSummary(db, id, summaryJSON)
+}
+
+func setMeetingTranscriptSummary(q recapExecer, id int64, summaryJSON string) error {
+	_, err := q.Exec(`
 		UPDATE meeting_transcripts
-		SET summary_json = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+		SET summary_json = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+		    summary_updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
 		WHERE id = ?
 	`, summaryJSON, id)
 	if err != nil {

@@ -190,6 +190,7 @@ struct ActionStripActionsView: View {
                                     onApprove: { Task { await vm.approve(action.id) } },
                                     onReject: { Task { await vm.reject(action.id) } },
                                     onRetry: { Task { await vm.retry(action.id) } },
+                                    gestureError: vm.actionFeed.rowErrors[action.id],
                                     onOpen: onOpen
                                 )
                             }

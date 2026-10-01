@@ -23,10 +23,12 @@ type chatTitleMockGen struct {
 	calls   int
 	source  string
 	lastMsg string
+	system  string
 }
 
-func (m *chatTitleMockGen) Generate(ctx context.Context, _, user, _ string) (string, *digest.Usage, string, error) {
+func (m *chatTitleMockGen) Generate(ctx context.Context, system, user, _ string) (string, *digest.Usage, string, error) {
 	m.calls++
+	m.system = system
 	m.source, _ = digest.SourceFromContext(ctx)
 	m.lastMsg = user
 	return m.reply, &digest.Usage{}, "", nil

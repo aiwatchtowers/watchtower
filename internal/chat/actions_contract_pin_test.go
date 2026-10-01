@@ -26,7 +26,7 @@ func TestActionsContract_MatchesSharedFixtures(t *testing.T) {
 func TestActionsContract_ListsEveryWriteToolOfTheSurface(t *testing.T) {
 	main := ActionsContract("main")
 	for _, tool := range []string{"create_target", "create_jira_issue", "connect_jira_board", "add_jira_comment",
-		"transition_jira_issue", "assign_jira_issue", "update_jira_issue", "create_track", "create_idea", "remind_me"} {
+		"transition_jira_issue", "assign_jira_issue", "update_jira_issue", "edit_confluence_page", "create_track", "create_idea", "remind_me"} {
 		assert.Contains(t, main, "- "+tool+" — ", tool)
 	}
 	target := ActionsContract("target")
@@ -34,4 +34,14 @@ func TestActionsContract_ListsEveryWriteToolOfTheSurface(t *testing.T) {
 		assert.NotContains(t, target, "- "+tool+" — ", "%s is not offered on the target surface", tool)
 	}
 	assert.Contains(t, target, "watchtower-action")
+	// Confluence page editing (spec 2026-09-30 §5): both surfaces carry the
+	// write tool and the read-first / markers / base_version rule.
+	for _, block := range []string{main, target} {
+		assert.Contains(t, block, "- edit_confluence_page — ")
+		assert.Contains(t, block, "read it with get_confluence_page first")
+		assert.Contains(t, block, "pass its version as base_version")
+		assert.Contains(t, block, "Prefer replace_text for a small edit")
+		assert.Contains(t, block, "Keep every ⟦…⟧ marker you do not mean to delete, verbatim")
+		assert.Contains(t, block, `After a "page changed" error, read the page again`)
+	}
 }

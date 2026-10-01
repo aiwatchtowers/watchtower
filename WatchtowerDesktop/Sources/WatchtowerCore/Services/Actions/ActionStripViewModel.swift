@@ -70,6 +70,9 @@ package final class ActionStripViewModel {
             try dbPool.write { try ReminderQueries.snooze($0, id: id, until: until) }
             refresh()
         } catch {
+            // A reminder deleted elsewhere leaves the strip; `refresh` clears
+            // `lastError`, so the reason is set after it.
+            if error is RowNotFoundError { refresh() }
             lastError = error.localizedDescription
         }
     }
@@ -92,9 +95,10 @@ package final class ActionStripViewModel {
         adoptFeedError()
     }
 
-    /// `actionFeed` tracks its own `lastError` (envelope errors, process
-    /// failures); a bare "call it and move on" would swallow that from
-    /// anything observing only the strip's own `lastError`. Runs AFTER
+    /// `actionFeed.lastError` carries only feed-wide failures (a row's own
+    /// failure lives in `rowErrors`, on its card); a bare "call it and move
+    /// on" would swallow that from anything observing only the strip's own
+    /// `lastError`. Runs AFTER
     /// `refresh()`, which clears `lastError` on entry — otherwise refresh's
     /// own reset would immediately wipe the error this just adopted. Synced
     /// unconditionally when `refresh()` itself succeeded (not just when

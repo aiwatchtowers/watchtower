@@ -130,6 +130,30 @@ final class DayPlanViewModelTests: XCTestCase {
         XCTAssertNil(vm.generationError)
     }
 
+    // MARK: - markDone with the task deleted elsewhere
+
+    /// The cascade fails on the deleted task, but the item itself must still
+    /// be markable — otherwise it stays stuck until the plan is regenerated.
+    func testMarkDone_WithTheTaskDeletedElsewhere_MarksTheItemAndSaysSo() async throws {
+        let planId = try await pool.write { db in
+            try TestDatabase.insertDayPlan(db, userID: "U1", planDate: "2026-04-23")
+        }
+        try await pool.write { db in
+            try TestDatabase.insertDayPlanItem(db, dayPlanID: planId, kind: "backlog",
+                                               sourceType: "task", sourceID: "42", title: "T")
+        }
+        await vm.loadFor(date: "2026-04-23")
+        let item = try XCTUnwrap(vm.items.first)
+
+        await vm.markDone(item)
+
+        XCTAssertEqual(vm.items.first?.status, .done)
+        XCTAssertEqual(
+            vm.generationError,
+            "Updated the plan item only: \(TargetNotFoundError(id: 42).localizedDescription)"
+        )
+    }
+
     // MARK: - markPending resets task to 'todo'
 
     func testCascadeMarkPending() async throws {

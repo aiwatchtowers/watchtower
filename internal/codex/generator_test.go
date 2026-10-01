@@ -204,3 +204,79 @@ echo "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\"
 		})
 	}
 }
+
+// TestCodexArgs_LocalToolsDisabled pins the codex twin of the claude side's
+// `--tools ""`: every `codex exec` Watchtower starts — batch generator, plain
+// client, stdin-only chat client — switches off the shell and the other
+// local tools, since read-only sandboxing still lets a shell read anywhere on
+// disk (TCC prompts, local files pulled into stored output).
+func TestCodexArgs_LocalToolsDisabled(t *testing.T) {
+	genArgs, _ := buildArgs("gpt-5.4", "sys", "hello", false)
+	plain := NewClient("gpt-5.4", "", "codex")
+	clientArgs, _ := plain.buildArgs("sys", "hello", "/tmp/wd")
+	stdinOnly := NewClient("gpt-5.4", "", "codex")
+	stdinOnly.SetStdinOnly(true)
+	stdinOnlyArgs, _ := stdinOnly.buildArgs("sys", "hello", "/tmp/wd")
+
+	for name, args := range map[string][]string{
+		"generator":         genArgs,
+		"client":            clientArgs,
+		"client stdin-only": stdinOnlyArgs,
+	} {
+		for _, flag := range []string{
+			"features.shell_tool=false",
+			"features.unified_exec=false",
+			"features.view_image=false",
+			"features.computer_use=false",
+			"features.browser_use=false",
+			"features.browser_use_external=false",
+			"features.apps=false",
+			"features.plugins=false",
+		} {
+			found := false
+			for i := 0; i < len(args)-1; i++ {
+				if args[i] == "-c" && args[i+1] == flag {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("%s args %v: want -c %s", name, args, flag)
+			}
+		}
+	}
+}
+
+// TestCodexArgs_LargeSystemPromptMovesTurnToStdin: a system prompt above
+// digest.StdinThreshold cannot ride -c developer_instructions (ARG_MAX, `ps`),
+// so the generator and the plain client move the whole turn to stdin.
+func TestCodexArgs_LargeSystemPromptMovesTurnToStdin(t *testing.T) {
+	big := strings.Repeat("s", digest.StdinThreshold+1)
+	genArgs, genStdin := buildArgs("gpt-5.4", big, "hello", false)
+	clientArgs, clientStdin := NewClient("gpt-5.4", "", "codex").buildArgs(big, "hello", "")
+
+	for name, got := range map[string]struct {
+		args  []string
+		stdin string
+	}{
+		"generator": {genArgs, genStdin},
+		"client":    {clientArgs, clientStdin},
+	} {
+		for _, a := range got.args {
+			if strings.Contains(a, big) {
+				t.Errorf("%s: argv carries the system prompt", name)
+			}
+		}
+		if got.args[len(got.args)-1] != "-" {
+			t.Errorf("%s: last arg = %q, want \"-\"", name, got.args[len(got.args)-1])
+		}
+		if got.stdin != codexStdinContent(big, "hello") {
+			t.Errorf("%s: stdin is not the delimited system+user turn", name)
+		}
+	}
+
+	exact := strings.Repeat("s", digest.StdinThreshold)
+	args, stdin := buildArgs("gpt-5.4", exact, "hello", false)
+	if stdin != "" || args[len(args)-1] != "hello" {
+		t.Errorf("an exactly-threshold system prompt must keep today's argv layout, got last arg %q, stdin %d bytes", args[len(args)-1], len(stdin))
+	}
+}

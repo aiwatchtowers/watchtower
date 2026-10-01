@@ -633,6 +633,11 @@ func TestRunDailyRollup_RegeneratesAndResetsReadAtOnNewChannelDigest(t *testing.
 // below deliberately puts the newest-by-created_at digest SECOND in
 // period_to order, so a "just take [0]" implementation disagrees with the
 // correct max-over-all-digests one.
+//
+// The day is fixed and every period is a fixed offset from its UTC midnight,
+// never derived from the wall clock: anchoring digestB at "now - 1h" pushed
+// it out of the day's window during the first UTC hour of every day, leaving
+// one channel digest and no rollup at all.
 func TestRunDailyRollup_UsesNewestChannelDigestNotOrderPosition(t *testing.T) {
 	database := testDB(t)
 	cfg := testConfig()
@@ -640,22 +645,20 @@ func TestRunDailyRollup_UsesNewestChannelDigestNotOrderPosition(t *testing.T) {
 	seedChannel(t, database, "C1", "frontend")
 	seedChannel(t, database, "C2", "backend")
 
-	now := time.Now().UTC()
-	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	dayStart := time.Date(2026, 3, 10, 0, 0, 0, 0, time.UTC)
 	fromUnix := float64(dayStart.Unix())
-	toUnix := float64(now.Unix())
 
 	// digestA ranks FIRST in GetDigests' period_to DESC ordering (its
 	// period_to is the day's latest), digestB ranks second.
 	digestAID, err := database.UpsertDigest(db.Digest{
 		ChannelID: "C1", Type: "channel",
-		PeriodFrom: fromUnix, PeriodTo: toUnix,
+		PeriodFrom: fromUnix, PeriodTo: float64(dayStart.Add(2 * time.Hour).Unix()),
 		Summary: "Frontend team fixed CSS bugs", MessageCount: 15, Model: "haiku",
 	})
 	require.NoError(t, err)
 	digestBID, err := database.UpsertDigest(db.Digest{
 		ChannelID: "C2", Type: "channel",
-		PeriodFrom: fromUnix, PeriodTo: toUnix - 3600,
+		PeriodFrom: fromUnix, PeriodTo: float64(dayStart.Add(1 * time.Hour).Unix()),
 		Summary: "Backend team deployed API v2", MessageCount: 20, Model: "haiku",
 	})
 	require.NoError(t, err)
@@ -663,7 +666,7 @@ func TestRunDailyRollup_UsesNewestChannelDigestNotOrderPosition(t *testing.T) {
 	gen := &mockGenerator{response: `{"summary":"first rollup","topics":[]}`}
 	p := New(database, cfg, gen, testLogger())
 
-	require.NoError(t, p.RunDailyRollup(context.Background()))
+	require.NoError(t, p.runDailyRollupForDate(context.Background(), dayStart))
 	require.Equal(t, 1, gen.calls)
 
 	digests, err := database.GetDigests(db.DigestFilter{Type: "daily"})
@@ -683,7 +686,7 @@ func TestRunDailyRollup_UsesNewestChannelDigestNotOrderPosition(t *testing.T) {
 	require.NoError(t, err)
 
 	gen.response = `{"summary":"second rollup","topics":[]}`
-	require.NoError(t, p.RunDailyRollup(context.Background()))
+	require.NoError(t, p.runDailyRollupForDate(context.Background(), dayStart))
 	assert.Equal(t, 2, gen.calls, "digestB's created_at (2030, ranked second by period_to) must still be seen as newer than the daily row (2020) even though digestA (2010, ranked first) is not")
 }
 

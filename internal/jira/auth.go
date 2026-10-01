@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"watchtower/internal/auth"
+	"watchtower/internal/fsutil"
 )
 
 const (
@@ -101,43 +102,37 @@ func (s *TokenStore) Load() (*OAuthToken, error) {
 	return &token, nil
 }
 
-// Save writes the token to disk atomically: a 0600 temp file in the same
-// directory, renamed over the old one. Readers that do not hold the
-// client's lock (the Confluence scopes check loads the file directly) must
-// never see a half-written token mid-refresh.
+// Save writes the token to disk atomically (fsutil.WriteFileAtomic: a 0600
+// temp file in the same directory, synced and renamed over the old one).
+// Readers that do not hold the client's lock (the Confluence scopes check
+// loads the file directly) must never see a half-written token mid-refresh.
 func (s *TokenStore) Save(token *OAuthToken) error {
-	dir := filepath.Dir(s.path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
 		return fmt.Errorf("creating token directory: %w", err)
 	}
 	data, err := json.MarshalIndent(token, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling token: %w", err)
 	}
-	tmp, err := os.CreateTemp(dir, filepath.Base(s.path)+".tmp-*") // created 0600
-	if err != nil {
-		return fmt.Errorf("creating token temp file: %w", err)
-	}
-	if err := writeAndRename(tmp, data, s.path); err != nil {
-		_ = os.Remove(tmp.Name())
-		return err
+	if err := fsutil.WriteFileAtomic(s.path, data, 0o600); err != nil {
+		return fmt.Errorf("saving token: %w", err)
 	}
 	return nil
 }
 
-// writeAndRename writes data to tmp, closes it and renames it to path.
-func writeAndRename(tmp *os.File, data []byte, path string) error {
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("writing token: %w", err)
+// Lock takes the cross-process lock that serializes this account's
+// load→refresh→save (fsutil.LockFile on a sibling .lock file): Atlassian
+// rotates the refresh token on every refresh, so two processes refreshing
+// the same token make the loser's invalid_grant read as a revoked account.
+func (s *TokenStore) Lock(ctx context.Context) (func(), error) {
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
+		return nil, fmt.Errorf("creating token directory: %w", err)
 	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("writing token: %w", err)
+	unlock, err := fsutil.LockFile(ctx, s.path+".lock")
+	if err != nil {
+		return nil, fmt.Errorf("locking jira token: %w", err)
 	}
-	if err := os.Rename(tmp.Name(), path); err != nil {
-		return fmt.Errorf("saving token: %w", err)
-	}
-	return nil
+	return unlock, nil
 }
 
 // Delete removes the token file.
@@ -380,6 +375,13 @@ type LoginOptions struct {
 	// the wider scope set outright, so requesting it unconditionally would
 	// break every `jira login`/`jira add` for such an app.
 	WithConfluence bool
+	// WithConfluenceWrite additionally requests ConfluenceWriteScopes,
+	// implying WithConfluence (enforced in Login's scope-building below, so
+	// any caller of LoginOptions gets the implication, not just the CLI flag
+	// parser). Opt-in via `jira login|add --with-confluence-write`: editing
+	// Confluence pages is a stronger grant than the read-only sync, so it is
+	// never requested unless asked for.
+	WithConfluenceWrite bool
 }
 
 // Login performs the Jira OAuth2 (3LO) flow via a local HTTP callback server.
@@ -405,8 +407,11 @@ func Login(ctx context.Context, cfg JiraOAuthConfig, out io.Writer, opts ...Logi
 	}
 
 	scope := JiraScopes
-	if opt.WithConfluence {
+	if opt.WithConfluence || opt.WithConfluenceWrite {
 		scope = OAuthScopes
+	}
+	if opt.WithConfluenceWrite {
+		scope += " " + ConfluenceWriteScopes
 	}
 	authorizeURL := buildAuthURL(cfg, redirectURI, state, scope)
 

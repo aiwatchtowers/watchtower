@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -35,7 +36,7 @@ func TestNewClient_DefaultClaudeCmd(t *testing.T) {
 
 func TestBuildArgs(t *testing.T) {
 	c := NewClient("claude-sonnet-4-6", "", "")
-	args, stdin := c.buildArgs("system prompt", "user message", "text", "")
+	args, stdin, _ := c.buildArgs("system prompt", "user message", "text", "")
 	assert.Empty(t, stdin)
 
 	assert.Contains(t, args, "-p")
@@ -120,7 +121,7 @@ func flagValue(t *testing.T, args []string, flag string) string {
 
 func TestBuildArgs_WithDBPath(t *testing.T) {
 	c := NewClient("claude-sonnet-4-6", "/tmp/test.db", "")
-	args, _ := c.buildArgs("system prompt", "user message", "text", "")
+	args, _, _ := c.buildArgs("system prompt", "user message", "text", "")
 
 	assert.Contains(t, args, "--mcp-config")
 	// The MCP server is the watchtower binary itself running `mcp --db-path`,
@@ -145,14 +146,14 @@ func TestBuildArgs_WithDBPath(t *testing.T) {
 
 func TestBuildArgs_WithoutDBPath(t *testing.T) {
 	c := NewClient("claude-sonnet-4-6", "", "")
-	args, _ := c.buildArgs("system prompt", "user message", "text", "")
+	args, _, _ := c.buildArgs("system prompt", "user message", "text", "")
 
 	assert.NotContains(t, args, "--mcp-config")
 }
 
 func TestBuildArgs_WithSessionID(t *testing.T) {
 	c := NewClient("claude-sonnet-4-6", "", "")
-	args, _ := c.buildArgs("system prompt", "user message", "stream-json", "session-123")
+	args, _, _ := c.buildArgs("system prompt", "user message", "stream-json", "session-123")
 
 	assert.Contains(t, args, "--resume")
 	assert.Contains(t, args, "session-123")
@@ -167,7 +168,7 @@ func TestBuildArgs_WithSessionID(t *testing.T) {
 func TestBuildArgs_LeadingDashPromptGoesToStdin(t *testing.T) {
 	c := NewClient("claude-sonnet-4-6", "", "")
 	msg := "-v looks wrong"
-	args, stdin := c.buildArgs("sys", msg, "text", "")
+	args, stdin, _ := c.buildArgs("sys", msg, "text", "")
 	if stdin != msg {
 		t.Fatalf("stdin = %q, want the leading-dash message", stdin)
 	}
@@ -198,14 +199,14 @@ func TestBuildArgs_StdinThresholdBoundary(t *testing.T) {
 	c := NewClient("claude-sonnet-4-6", "", "")
 
 	exact := strings.Repeat("x", digest.StdinThreshold)
-	args, stdin := c.buildArgs("sys", exact, "text", "")
+	args, stdin, _ := c.buildArgs("sys", exact, "text", "")
 	if stdin != "" {
 		t.Errorf("stdin = %d bytes, want empty: exactly StdinThreshold stays inline", len(stdin))
 	}
 	assertFlagValue(t, args, "-p", exact)
 
 	over := exact + "x"
-	args2, stdin2 := c.buildArgs("sys", over, "text", "")
+	args2, stdin2, _ := c.buildArgs("sys", over, "text", "")
 	if stdin2 != over {
 		t.Errorf("stdin length = %d, want the full over-threshold message", len(stdin2))
 	}
@@ -314,6 +315,55 @@ func TestQuerySync_ExitError(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "claude CLI failed")
 	assert.Contains(t, err.Error(), "something went wrong")
+}
+
+// TestQuerySync_ExitErrorSurfacesEnvelopeMessage pins that a failed run whose
+// stderr is empty (the CLI reports an API/usage failure as an ordinary result
+// envelope on stdout and exits 1) surfaces the envelope's own actionable
+// message instead of a bare "claude CLI failed with exit code 1" — the
+// digest generator's already-reviewed precedent (internal/digest/generator.go).
+func TestQuerySync_ExitErrorSurfacesEnvelopeMessage(t *testing.T) {
+	mockPath := writeMockClaude(t, `printf '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Invalid API key. Please run /login"}'; exit 1`)
+
+	c := NewClient("test-model", "", "")
+	c.claudeCmd = mockPath
+
+	_, _, err := c.QuerySync(context.Background(), "system", "hello", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Invalid API key")
+	assert.Contains(t, err.Error(), "Please run /login")
+	assert.Contains(t, err.Error(), "error_during_execution")
+}
+
+// TestQuerySync_ExitErrorFallsBackWhenOutputUnparsable is the degenerate
+// counterpart: a non-zero exit whose stdout is not a result envelope at all
+// (empty, or garbage) must still fall back to the ordinary stderr-based
+// classifyError path rather than panicking or losing the exit code.
+func TestQuerySync_ExitErrorFallsBackWhenOutputUnparsable(t *testing.T) {
+	mockPath := writeMockClaude(t, `echo "network unreachable" >&2; exit 1`)
+
+	c := NewClient("test-model", "", "")
+	c.claudeCmd = mockPath
+
+	_, _, err := c.QuerySync(context.Background(), "system", "hello", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "claude CLI failed")
+	assert.Contains(t, err.Error(), "network unreachable")
+}
+
+// TestQuerySync_CleanExitIsErrorSurfacesEnvelopeMessage pins the exit-0 case:
+// the CLI can flag is_error in the envelope while still exiting 0, and that
+// message must reach the caller with the same subtype/truncation handling.
+func TestQuerySync_CleanExitIsErrorSurfacesEnvelopeMessage(t *testing.T) {
+	mockPath := writeMockClaude(t, `printf '{"type":"result","subtype":"error_max_turns","is_error":true,"result":"ran out of turns"}'`)
+
+	c := NewClient("test-model", "", "")
+	c.claudeCmd = mockPath
+
+	_, _, err := c.QuerySync(context.Background(), "system", "hello", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ran out of turns")
+	assert.Contains(t, err.Error(), "error_max_turns")
 }
 
 func TestQuerySync_ContextCancellation(t *testing.T) {
@@ -435,6 +485,75 @@ func TestQuery_StreamingError(t *testing.T) {
 	err := <-errCh
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "claude CLI failed")
+}
+
+// TestQuery_StreamingExitErrorSurfacesEnvelopeMessage is Query's streaming
+// sibling of TestQuerySync_ExitErrorSurfacesEnvelopeMessage: a "result" event
+// with is_error:true reaches stdout before a non-zero exit with empty
+// stderr, and that message must reach errCh instead of a bare exit code.
+func TestQuery_StreamingExitErrorSurfacesEnvelopeMessage(t *testing.T) {
+	script := `
+printf '{"type":"assistant","message":{"content":[{"type":"text","text":"partial"}]}}\n'
+printf '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Invalid API key. Please run /login"}\n'
+exit 1
+`
+	mockPath := writeMockClaude(t, script)
+
+	c := NewClient("test-model", "", "")
+	c.claudeCmd = mockPath
+
+	textCh, errCh, _ := c.Query(context.Background(), "system", "hello", "")
+	for range textCh {
+	}
+
+	err := <-errCh
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Invalid API key")
+	assert.Contains(t, err.Error(), "Please run /login")
+	assert.Contains(t, err.Error(), "error_during_execution")
+}
+
+// TestQuery_StreamingCleanExitIsErrorSurfacesEnvelopeMessage pins the exit-0
+// counterpart: the CLI can flag is_error in the result event while the
+// process still exits 0, and Query must still surface it as an error rather
+// than a silent success with an empty answer.
+func TestQuery_StreamingCleanExitIsErrorSurfacesEnvelopeMessage(t *testing.T) {
+	script := `
+printf '{"type":"result","subtype":"error_max_turns","is_error":true,"result":"ran out of turns"}\n'
+`
+	mockPath := writeMockClaude(t, script)
+
+	c := NewClient("test-model", "", "")
+	c.claudeCmd = mockPath
+
+	textCh, errCh, _ := c.Query(context.Background(), "system", "hello", "")
+	for range textCh {
+	}
+
+	err := <-errCh
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ran out of turns")
+	assert.Contains(t, err.Error(), "error_max_turns")
+}
+
+// TestQuery_StreamingExitErrorFallsBackWhenNoResultEvent is the degenerate
+// clean-exit counterpart on the streaming path: a non-zero exit with no
+// "result" event at all (e.g. the process died before emitting one) must
+// still fall back to the ordinary stderr-based classifyError path.
+func TestQuery_StreamingExitErrorFallsBackWhenNoResultEvent(t *testing.T) {
+	mockPath := writeMockClaude(t, `echo "error occurred" >&2; exit 1`)
+
+	c := NewClient("test-model", "", "")
+	c.claudeCmd = mockPath
+
+	textCh, errCh, _ := c.Query(context.Background(), "system", "hello", "")
+	for range textCh {
+	}
+
+	err := <-errCh
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "claude CLI failed")
+	assert.Contains(t, err.Error(), "error occurred")
 }
 
 func TestQuery_ContextCancellation(t *testing.T) {
@@ -601,6 +720,26 @@ func TestParseCLIOutput_UnparsableOutputIsNotEchoed(t *testing.T) {
 	assert.Contains(t, err.Error(), "sha256:")
 }
 
+func TestEnvelopeMessage_EmptyResultGetsPlaceholder(t *testing.T) {
+	assert.Equal(t, "no message in the CLI result envelope", envelopeMessage("   "))
+}
+
+func TestEnvelopeMessage_ShortResultPassesThrough(t *testing.T) {
+	assert.Equal(t, "Invalid API key", envelopeMessage("  Invalid API key  "))
+}
+
+// TestEnvelopeMessage_TruncatesAtRuneBoundary pins that an oversized envelope
+// message (subtype=error_max_turns can carry the model's own partial output,
+// routinely multi-byte Cyrillic) is capped rather than logged/surfaced in
+// full, and that the cut never lands mid-rune.
+func TestEnvelopeMessage_TruncatesAtRuneBoundary(t *testing.T) {
+	long := strings.Repeat("привет ", 1000) // well past the 4096-byte cap, all multi-byte runes
+	got := envelopeMessage(long)
+	assert.Less(t, len(got), len(long))
+	assert.Contains(t, got, "truncated")
+	assert.True(t, utf8.ValidString(got), "truncated message must not cut a rune in half")
+}
+
 func TestBuildMCPConfig_IncludesExtraArgs(t *testing.T) {
 	c := NewClient("sonnet", "/tmp/w.db", "")
 	c.SetMCPArgs([]string{"--chat", "--surface", "main", "--conversation", "12", "--turn", "abc"})
@@ -685,7 +824,7 @@ func TestBuildMCPConfig_HTTPServerShape(t *testing.T) {
 		t.Fatalf("command = %v, want nil (no stdio keys on an http entry)", acme.Command)
 	}
 
-	args, _ := c.buildArgs("sys", "hi", "json", "")
+	args, _, _ := c.buildArgs("sys", "hi", "json", "")
 	assertFlagValue(t, args, "--allowedTools", "mcp__watchtower,mcp__acme")
 }
 
@@ -720,7 +859,7 @@ func TestBuildMCPConfig_HTTPServerOmitsEmptyHeaders(t *testing.T) {
 func TestBuildArgs_ExternalServersExtendAllowlist(t *testing.T) {
 	c := NewClient("sonnet", "/tmp/w.db", "")
 	c.SetExternalMCPServers([]ExternalMCPServer{{Name: "trello", Kind: "stdio", Command: "npx"}})
-	args, _ := c.buildArgs("sys", "hi", "json", "")
+	args, _, _ := c.buildArgs("sys", "hi", "json", "")
 	assertFlagValue(t, args, "--allowedTools", "mcp__watchtower,mcp__trello")
 }
 
@@ -735,7 +874,7 @@ func TestBuildMCPConfig_ZeroExternalUnchanged(t *testing.T) {
 
 func TestBuildArgs_NoAllowedToolsFlagLeak(t *testing.T) {
 	c := NewClient("sonnet", "/tmp/w.db", "")
-	args, _ := c.buildArgs("sys", "hi", "stream-json", "")
+	args, _, _ := c.buildArgs("sys", "hi", "stream-json", "")
 	for _, a := range args {
 		if a == "--allowed-tools" {
 			t.Fatalf("legacy flag leaked into claude args")
@@ -748,7 +887,7 @@ func TestMCPConfigDelivery_SecretGoesToFileNotArgv(t *testing.T) {
 	c.SetExternalMCPServers([]ExternalMCPServer{{
 		Name: "trello", Kind: "stdio", Command: "npx", Env: map[string]string{"TOKEN": "secret123"},
 	}})
-	args, _ := c.buildArgs("sys", "hi", "json", "")
+	args, _, _ := c.buildArgs("sys", "hi", "json", "")
 	val := flagValue(t, args, "--mcp-config") // helper: returns the token after the flag
 	t.Cleanup(func() { _ = os.Remove(val) })  // buildArgs writes a real 0600 temp file; normally removed by Query/QuerySync after cmd.Wait()
 	if strings.Contains(strings.Join(args, " "), "secret123") {
@@ -766,7 +905,7 @@ func TestMCPConfigDelivery_SecretGoesToFileNotArgv(t *testing.T) {
 
 func TestMCPConfigDelivery_NoSecretStaysInline(t *testing.T) {
 	c := NewClient("sonnet", "/tmp/w.db", "")
-	args, _ := c.buildArgs("sys", "hi", "json", "")
+	args, _, _ := c.buildArgs("sys", "hi", "json", "")
 	val := flagValue(t, args, "--mcp-config")
 	if !strings.HasPrefix(strings.TrimSpace(val), "{") {
 		t.Fatalf("expected inline JSON, got %q", val)
@@ -788,4 +927,126 @@ func TestChatMCPConfig_MatchesClient(t *testing.T) {
 	assert.Equal(t, "mcp__watchtower,mcp__confluence", AllowedTools(ext))
 	assert.Contains(t, DisallowedTools, "Bash")
 	assert.Contains(t, DisallowedTools, "WebFetch")
+}
+
+// The warm main-chat session unhides WebSearch only; WebFetch (arbitrary URL
+// fetch, the exfiltration channel) stays hidden there, and the one-shot
+// chats keep both hidden.
+func TestSessionDisallowedTools_UnhidesOnlyWebSearch(t *testing.T) {
+	session := strings.Split(SessionDisallowedTools, ",")
+	oneShot := strings.Split(DisallowedTools, ",")
+	assert.NotContains(t, session, WebSearchTool)
+	assert.Contains(t, oneShot, WebSearchTool)
+	assert.Contains(t, session, "WebFetch")
+	assert.Contains(t, session, "Bash")
+	assert.ElementsMatch(t, append(session, WebSearchTool), oneShot)
+}
+
+// TestBuildArgs_LargeSystemPromptGoesToFile: a system prompt above
+// digest.StdinThreshold (the briefing / target-extract payloads) travels as a
+// 0600 --system-prompt-file, never on argv (ARG_MAX, `ps`); a small one stays
+// inline.
+func TestBuildArgs_LargeSystemPromptGoesToFile(t *testing.T) {
+	c := NewClient("m", "", "")
+	big := strings.Repeat("s", digest.StdinThreshold+1)
+	args, _, err := c.buildArgs(big, "hi", "json", "")
+	require.NoError(t, err)
+	promptPath := c.systemPromptTempPath
+	t.Cleanup(func() { os.Remove(promptPath) })
+
+	assert.NotContains(t, args, "--system-prompt")
+	assert.NotContains(t, args, big)
+	assertFlagValue(t, args, "--system-prompt-file", promptPath)
+	info, err := os.Stat(promptPath)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	data, err := os.ReadFile(promptPath)
+	require.NoError(t, err)
+	assert.Equal(t, big, string(data))
+
+	exact := strings.Repeat("s", digest.StdinThreshold)
+	args, _, _ = c.buildArgs(exact, "hi", "json", "")
+	assertFlagValue(t, args, "--system-prompt", exact)
+	assert.Empty(t, c.systemPromptTempPath, "a small prompt must not leave a stale temp path behind")
+}
+
+// TestQuerySync_LargeSystemPromptReachesCLIAndFileIsRemoved wires the file
+// path end to end: the mock CLI reads the prompt from --system-prompt-file,
+// and the file is gone once QuerySync returns.
+func TestQuerySync_LargeSystemPromptReachesCLIAndFileIsRemoved(t *testing.T) {
+	const marker = "SYSPROMPT-MARKER-ai-03"
+	mockPath := writeMockClaude(t, `file=""
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--system-prompt-file" ]; then file="$2"; fi
+  shift
+done
+if [ -n "$file" ] && grep -q `+marker+` "$file"; then
+  printf '{"type":"result","result":"got:`+marker+`"}'
+else
+  printf '{"type":"result","result":"marker-missing"}'
+fi
+`)
+	c := NewClient("test-model", "", "")
+	c.claudeCmd = mockPath
+
+	sys := strings.Repeat("x", digest.StdinThreshold) + marker
+	result, _, err := c.QuerySync(context.Background(), sys, "hello", "")
+	require.NoError(t, err)
+	assert.Equal(t, "got:"+marker, result)
+	require.NotEmpty(t, c.systemPromptTempPath)
+	_, statErr := os.Stat(c.systemPromptTempPath)
+	assert.True(t, os.IsNotExist(statErr), "system prompt temp file must be removed after the call, stat err = %v", statErr)
+}
+
+// TestQuery_LargeSystemPromptFileIsRemoved is the streaming sibling: Query
+// hands the prompt over as a file and removes it once the stream ends.
+func TestQuery_LargeSystemPromptFileIsRemoved(t *testing.T) {
+	const marker = "SYSPROMPT-MARKER-ai-04"
+	mockPath := writeMockClaude(t, `file=""
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--system-prompt-file" ]; then file="$2"; fi
+  shift
+done
+if [ -n "$file" ] && grep -q `+marker+` "$file"; then
+  printf '{"type":"assistant","message":{"content":[{"type":"text","text":"got:`+marker+`"}]}}\n'
+else
+  printf '{"type":"assistant","message":{"content":[{"type":"text","text":"marker-missing"}]}}\n'
+fi
+`)
+	c := NewClient("test-model", "", "")
+	c.claudeCmd = mockPath
+
+	sys := strings.Repeat("x", digest.StdinThreshold) + marker
+	textCh, errCh, sidCh := c.Query(context.Background(), sys, "hello", "")
+	var got strings.Builder
+	for chunk := range textCh {
+		got.WriteString(chunk.Text)
+	}
+	for err := range errCh {
+		require.NoError(t, err)
+	}
+	for range sidCh {
+	}
+	assert.Equal(t, "got:"+marker, got.String())
+	require.NotEmpty(t, c.systemPromptTempPath)
+	_, statErr := os.Stat(c.systemPromptTempPath)
+	assert.True(t, os.IsNotExist(statErr), "system prompt temp file must be removed after the stream, stat err = %v", statErr)
+}
+
+// TestQuerySync_SystemPromptFileWriteFailureFailsTheCall: when the temp file
+// cannot be written the call fails instead of putting the oversized prompt
+// back on argv; the CLI is never started.
+func TestQuerySync_SystemPromptFileWriteFailureFailsTheCall(t *testing.T) {
+	ran := filepath.Join(t.TempDir(), "ran")
+	mockPath := writeMockClaude(t, `touch `+ran+`
+printf '{"type":"result","result":"ok"}'`)
+	c := NewClient("test-model", "", "")
+	c.claudeCmd = mockPath
+	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "missing"))
+
+	_, _, err := c.QuerySync(context.Background(), strings.Repeat("x", digest.StdinThreshold+1), "hello", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "writing system prompt file")
+	_, statErr := os.Stat(ran)
+	assert.True(t, os.IsNotExist(statErr), "the CLI must not run without its system prompt")
 }

@@ -641,3 +641,19 @@ func TestRevoke_RedirectToAttackerHost_RefusedAndNeverDialed(t *testing.T) {
 		t.Errorf("attacker server received %d requests, want 0", got)
 	}
 }
+
+// TestRefresh_ClientRejectedSentinel: invalid_client / unauthorized_client
+// mean the registration behind the grant is gone — a sign-in-again state,
+// reported as ErrClientRejected so callers do not treat it as transient.
+func TestRefresh_ClientRejectedSentinel(t *testing.T) {
+	for _, code := range []string{"invalid_client", "unauthorized_client"} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			writeTokenError(w, http.StatusUnauthorized, code, "client unknown")
+		}))
+		_, err := Refresh(context.Background(), srv.URL+"/token", "client", "", "rt", "")
+		srv.Close()
+		if !errors.Is(err, ErrClientRejected) {
+			t.Errorf("%s: err = %v, want ErrClientRejected", code, err)
+		}
+	}
+}

@@ -58,9 +58,11 @@ test-cover:
 	./scripts/coverage-gate.sh
 
 # Inner-loop Swift tests: make test-swift FILTER=SomeTestClass runs only that
-# class; without FILTER the full suite runs as before.
+# class (a regex alternation works too: FILTER='ClassA|ClassB' — the recipe
+# single-quotes it so the | never reaches the shell); without FILTER the full
+# suite runs as before.
 test-swift:
-	cd WatchtowerDesktop && swift test $(if $(FILTER),--filter $(FILTER),)
+	cd WatchtowerDesktop && swift test $(if $(FILTER),--filter '$(FILTER)',)
 
 # Shell-level tests for build-app.sh. Each extracts a marked block from the
 # script and runs it against stubbed binaries — no real build, no codesign.
@@ -101,14 +103,16 @@ clean:
 
 # Architectural rules + structural regression via sentrux.
 # `make quality` runs both: check (rules in .sentrux/rules.toml) and gate
-# (regression vs .sentrux/baseline.json). `make sentrux-baseline` refreshes
-# the baseline after intentional structural changes.
+# (regression vs .sentrux/baseline.json, via scripts/sentrux-gate.sh — see
+# that script's header for why it doesn't block on the raw god-file count).
+# `make sentrux-baseline` refreshes the baseline after intentional structural
+# changes.
 SENTRUX ?= $(shell command -v sentrux 2>/dev/null || echo /opt/homebrew/bin/sentrux)
 sentrux-check:
 	$(SENTRUX) check .
 
 sentrux-gate:
-	$(SENTRUX) gate .
+	scripts/sentrux-gate.sh
 
 sentrux-baseline:
 	$(SENTRUX) gate --save .

@@ -27,6 +27,7 @@ func seedAll(t *testing.T, d *db.DB) {
 	seedStreamDigest(t, d)
 	seedIdea(t, d)
 	seedConfluence(t, d)
+	seedProjectDocs(t, d)
 	_, err := Run(context.Background(), d, Options{Now: testNow()})
 	require.NoError(t, err)
 }

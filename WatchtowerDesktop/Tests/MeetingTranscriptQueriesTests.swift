@@ -429,7 +429,7 @@ final class MeetingTranscriptQueriesTests: XCTestCase {
         }
     }
 
-    // MARK: - renameSpeaker (speaker identity)
+    // MARK: - relabelCluster (speaker identity)
 
     private var speakersFixture: [SpeakerEmbedding] {
         [
@@ -448,12 +448,11 @@ final class MeetingTranscriptQueriesTests: XCTestCase {
             speakersJSON: speakersJSON)
     }
 
-    func test_renameSpeakerRewritesSegmentsTextAndSpeakers() throws {
+    func test_relabelClusterRewritesSegmentsTextAndSpeakers() throws {
         let db = try TestDatabase.create()
         try db.write { db in
             try self.insertSegmentedTranscriptWithSpeakers(db)
-            try MeetingTranscriptQueries.renameSpeaker(
-                db, id: 1, from: "Speaker 1", to: "Саша", personKey: "sasha@corp.com")
+            XCTAssertTrue(try MeetingTranscriptQueries.relabelCluster(db, id: 1, from: "Speaker 1", to: "Саша"))
         }
         try db.read { db in
             let tr = try XCTUnwrap(MeetingTranscriptQueries.fetch(db, id: 1))
@@ -461,26 +460,112 @@ final class MeetingTranscriptQueriesTests: XCTestCase {
                            "transcript_text must be rebuilt with the new label")
             let utterances = try XCTUnwrap(tr.utterances)
             XCTAssertEqual(utterances.map(\.speaker), ["Я", "Саша", "Я"])
-            // The invariant survives the rename.
+            // The invariant survives the relabel.
             XCTAssertEqual(tr.transcriptText, TranscriptSegments.render(utterances))
-            // speakers_json is re-keyed so later renames still resolve.
+            // speakers_json is re-keyed so later relabels still resolve, and
+            // the first relabel remembers the original label.
             let speakers = try XCTUnwrap(tr.speakerEmbeddings)
             XCTAssertEqual(speakers.map(\.speaker).sorted(), ["Саша", "Я"].sorted())
-            // The voice print was learned.
-            let voicePrint = try XCTUnwrap(VoicePrintQueries.fetch(db, personKey: "sasha@corp.com"))
-            XCTAssertEqual(voicePrint.displayName, "Саша")
-            XCTAssertEqual(voicePrint.sampleCount, 1)
-            XCTAssertEqual(voicePrint.embeddingVector, [1, 0])
+            XCTAssertEqual(speakers.first { $0.speaker == "Саша" }?.originalLabel, "Speaker 1")
+            XCTAssertNotNil(tr.speakerNamesChangedAt)
+            XCTAssertEqual(try VoiceSample.fetchCount(db), 0, "a relabel alone never learns a voice")
         }
     }
 
-    func test_renameSpeakerRenamesDeletedUtterancesToo() throws {
+    /// The recap-refresh hint on the REAL row a relabel writes: the relabel
+    /// stamps `speaker_names_changed_at` and `updated_at` in one UPDATE, so
+    /// the hint must compare against the recap's own generation stamp — this
+    /// pins that the relabel turns it on and a later recap turns it off.
+    func test_relabelMakesRecapHintAppearUntilTheRecapIsRegenerated() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try self.insertSegmentedTranscriptWithSpeakers(db)
+            try db.execute(sql: """
+                UPDATE meeting_transcripts
+                SET summary_json = '{"summary":"s"}', summary_updated_at = '2020-01-01T00:00:00Z'
+                WHERE id = 1
+                """)
+        }
+        let before = try XCTUnwrap(try db.read { try MeetingTranscriptQueries.fetch($0, id: 1) })
+        XCTAssertFalse(before.recapPredatesSpeakerNames(shownRecap: nil), "no relabel yet")
+
+        try db.write { db in
+            XCTAssertTrue(try MeetingTranscriptQueries.relabelCluster(db, id: 1, from: "Speaker 1", to: "Саша"))
+        }
+        let relabeled = try XCTUnwrap(try db.read { try MeetingTranscriptQueries.fetch($0, id: 1) })
+        XCTAssertEqual(relabeled.updatedAt, relabeled.speakerNamesChangedAt, "the relabel bumps both in one UPDATE")
+        XCTAssertTrue(relabeled.recapPredatesSpeakerNames(shownRecap: nil), "ad-hoc recap is now stale")
+
+        // Go's recap writer stamps summary_updated_at on regeneration.
+        try db.write { db in
+            try db.execute(sql: "UPDATE meeting_transcripts SET summary_updated_at = '2999-01-01T00:00:00Z' WHERE id = 1")
+        }
+        let regenerated = try XCTUnwrap(try db.read { try MeetingTranscriptQueries.fetch($0, id: 1) })
+        XCTAssertFalse(regenerated.recapPredatesSpeakerNames(shownRecap: nil))
+    }
+
+    /// N7: `linkToEvent` copies the summary into `meeting_recaps` with the
+    /// LINK time as `updated_at`. A relabel made before the link must still
+    /// show the hint — the copy is compared by the summary's own generation
+    /// stamp — and Go's regenerate (row + summary copy refreshed together)
+    /// clears it.
+    func test_relabelBeforeLinkToEventStillHintsUntilRegenerated() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try TestDatabase.insertCalendarEvent(db, id: "evt-1")
+            try self.insertSegmentedTranscriptWithSpeakers(db)
+            try db.execute(sql: """
+                UPDATE meeting_transcripts
+                SET summary_json = '{"summary":"s","key_decisions":[],"action_items":[],"open_questions":[]}',
+                    summary_updated_at = '2020-01-01T00:00:00Z'
+                WHERE id = 1
+                """)
+            XCTAssertTrue(try MeetingTranscriptQueries.relabelCluster(db, id: 1, from: "Speaker 1", to: "Саша"))
+            try MeetingTranscriptQueries.linkToEvent(db, id: 1, eventID: "evt-1")
+        }
+        func hint() throws -> Bool {
+            try db.read { db in
+                let row = try XCTUnwrap(MeetingTranscriptQueries.fetch(db, id: 1))
+                let shown = try MeetingRecapQueries.fetchForRecording(db, transcriptID: 1, eventID: row.eventID)
+                XCTAssertEqual(shown?.ownedByRecording, true, "the copied row is this recording's own")
+                return row.recapPredatesSpeakerNames(shownRecap: shown)
+            }
+        }
+        XCTAssertTrue(try hint(), "the copied recap still predates the relabel")
+
+        // What Go's storeTranscriptRecap writes on `transcript recap 1`.
+        try db.write { db in
+            try db.execute(sql: "UPDATE meeting_recaps SET updated_at = '2999-01-01T00:00:00Z' WHERE transcript_id = 1")
+            try db.execute(sql: "UPDATE meeting_transcripts SET summary_updated_at = '2999-01-01T00:00:00Z' WHERE id = 1")
+        }
+        XCTAssertFalse(try hint())
+    }
+
+    /// Two clusters are never merged under one label: a target another
+    /// speaker of the transcript already carries is refused, nothing written.
+    func test_relabelClusterRefusesALabelAnotherSpeakerCarries() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try self.insertSegmentedTranscriptWithSpeakers(db)
+            XCTAssertTrue(try MeetingTranscriptQueries.relabelCluster(db, id: 1, from: "Speaker 1", to: "Саша"))
+            XCTAssertFalse(try MeetingTranscriptQueries.relabelCluster(db, id: 1, from: "Я", to: "Саша"),
+                           "«Я»'s cluster must not merge into Саша's")
+            // Renaming a cluster onto itself stays allowed (a re-confirm).
+            XCTAssertTrue(try MeetingTranscriptQueries.relabelCluster(db, id: 1, from: "Саша", to: "Саша"))
+        }
+        try db.read { db in
+            let tr = try XCTUnwrap(MeetingTranscriptQueries.fetch(db, id: 1))
+            XCTAssertEqual(try XCTUnwrap(tr.utterances).map(\.speaker), ["Я", "Саша", "Я"])
+            XCTAssertEqual(Set(try XCTUnwrap(tr.speakerEmbeddings).map(\.speaker)), ["Саша", "Я"])
+        }
+    }
+
+    func test_relabelClusterRenamesDeletedUtterancesToo() throws {
         let db = try TestDatabase.create()
         try db.write { db in
             try self.insertSegmentedTranscriptWithSpeakers(db)
             try MeetingTranscriptQueries.setUtteranceDeleted(db, id: 1, idx: 1, deleted: true)
-            try MeetingTranscriptQueries.renameSpeaker(
-                db, id: 1, from: "Speaker 1", to: "Саша", personKey: "sasha@corp.com")
+            try MeetingTranscriptQueries.relabelCluster(db, id: 1, from: "Speaker 1", to: "Саша")
         }
         try db.read { db in
             let tr = try XCTUnwrap(MeetingTranscriptQueries.fetch(db, id: 1))
@@ -493,113 +578,84 @@ final class MeetingTranscriptQueriesTests: XCTestCase {
         }
     }
 
-    func test_renameSpeakerSecondRecordingUpdatesCentroid() throws {
-        let db = try TestDatabase.create()
-        try db.write { db in
-            try self.insertSegmentedTranscriptWithSpeakers(db, id: 1)
-            try self.insertSegmentedTranscriptWithSpeakers(db, id: 2)
-            try MeetingTranscriptQueries.renameSpeaker(
-                db, id: 1, from: "Speaker 1", to: "Саша", personKey: "sasha@corp.com")
-            try MeetingTranscriptQueries.renameSpeaker(
-                db, id: 2, from: "Speaker 1", to: "Саша", personKey: "sasha@corp.com")
-        }
-        try db.read { db in
-            let voicePrint = try XCTUnwrap(VoicePrintQueries.fetch(db, personKey: "sasha@corp.com"))
-            XCTAssertEqual(voicePrint.sampleCount, 2, "sample_count is monotonic")
-            // Both samples were [1, 0] → the centroid stays [1, 0], normalized.
-            XCTAssertEqual(voicePrint.embeddingVector[0], 1.0, accuracy: 1e-5)
-            XCTAssertEqual(voicePrint.embeddingVector[1], 0.0, accuracy: 1e-5)
-        }
-    }
-
-    func test_renameSpeakerWithoutEmbeddingsUpdatesTranscriptOnly() throws {
+    func test_relabelClusterWithoutEmbeddingsUpdatesTranscriptOnly() throws {
         let db = try TestDatabase.create()
         try db.write { db in
             // No speakers_json (legacy / non-FluidAudio diarizer).
             try self.insertSegmentedTranscript(db)
-            try MeetingTranscriptQueries.renameSpeaker(
-                db, id: 1, from: "Speaker 1", to: "Саша", personKey: "sasha@corp.com")
+            try MeetingTranscriptQueries.relabelCluster(db, id: 1, from: "Speaker 1", to: "Саша")
         }
         try db.read { db in
             let tr = try XCTUnwrap(MeetingTranscriptQueries.fetch(db, id: 1))
             XCTAssertEqual(tr.transcriptText, "[Я] привет\n[Саша] ответ\n[Я] итог")
-            XCTAssertNil(try VoicePrintQueries.fetch(db, personKey: "sasha@corp.com"),
-                         "no embedding → no voice print learned")
+            XCTAssertNil(tr.speakersJSON)
         }
     }
 
-    func test_renameSpeakerNoOpsOnUnknownLabelLegacyRowAndEmptyName() throws {
+    func test_relabelClusterNoOpsOnUnknownLabelMissingRowAndEmptyName() throws {
         let db = try TestDatabase.create()
         try db.write { db in
             try self.insertSegmentedTranscriptWithSpeakers(db)
             let before = try XCTUnwrap(MeetingTranscriptQueries.fetch(db, id: 1))
 
-            // Unknown label.
-            try MeetingTranscriptQueries.renameSpeaker(
-                db, id: 1, from: "Speaker 9", to: "Ghost", personKey: "ghost")
-            // Empty / whitespace name.
-            try MeetingTranscriptQueries.renameSpeaker(
-                db, id: 1, from: "Speaker 1", to: "   ", personKey: "blank")
-            // Unchanged name.
-            try MeetingTranscriptQueries.renameSpeaker(
-                db, id: 1, from: "Speaker 1", to: "Speaker 1", personKey: "same")
-            // Missing row.
-            try MeetingTranscriptQueries.renameSpeaker(
-                db, id: 999, from: "Speaker 1", to: "Саша", personKey: "sasha")
+            XCTAssertFalse(try MeetingTranscriptQueries.relabelCluster(db, id: 1, from: "Speaker 9", to: "Ghost"))
+            XCTAssertFalse(try MeetingTranscriptQueries.relabelCluster(db, id: 1, from: "Speaker 1", to: "   "))
+            XCTAssertFalse(try MeetingTranscriptQueries.relabelCluster(db, id: 999, from: "Speaker 1", to: "Саша"))
 
             let after = try XCTUnwrap(MeetingTranscriptQueries.fetch(db, id: 1))
             XCTAssertEqual(after.transcriptText, before.transcriptText)
             XCTAssertEqual(after.segmentsJSON, before.segmentsJSON)
             XCTAssertEqual(after.speakersJSON, before.speakersJSON)
-            XCTAssertEqual(try VoicePrint.fetchCount(db), 0, "no-ops must not learn voice prints")
+            XCTAssertNil(after.speakerNamesChangedAt, "a refused relabel must not stamp a change")
         }
     }
 
-    /// A rename to a reserved label — «Я» in any case, or the "Speaker N"
-    /// pattern — must be rejected wholesale: applying it would merge a
-    /// stranger's cluster into the owner's identity and mint a voice print
-    /// (person_key "я") that voice-matches that stranger to «Я» in every
-    /// future recording.
-    func test_renameSpeakerRejectsReservedLabels() throws {
+    /// «Я» (any case) is the role pass's alone — a relabel to it would merge
+    /// a stranger's cluster into the owner's identity. "Speaker N" stays a
+    /// valid target: rollback restores it.
+    func test_relabelClusterRejectsOwnerLabelButAllowsSpeakerN() throws {
         let db = try TestDatabase.create()
         try db.write { db in
             try self.insertSegmentedTranscriptWithSpeakers(db)
             let before = try XCTUnwrap(MeetingTranscriptQueries.fetch(db, id: 1))
 
-            for reserved in ["Я", "я", " Я ", "Speaker 5"] {
-                let applied = try MeetingTranscriptQueries.renameSpeaker(
-                    db, id: 1, from: "Speaker 1", to: reserved, personKey: reserved.lowercased())
-                XCTAssertFalse(applied, "rename to reserved label \(reserved) must be refused")
+            for reserved in ["Я", "я", " Я "] {
+                let applied = try MeetingTranscriptQueries.relabelCluster(db, id: 1, from: "Speaker 1", to: reserved)
+                XCTAssertFalse(applied, "relabel to «Я» (\(reserved)) must be refused")
             }
-
             let after = try XCTUnwrap(MeetingTranscriptQueries.fetch(db, id: 1))
             XCTAssertEqual(after.transcriptText, before.transcriptText)
             XCTAssertEqual(after.segmentsJSON, before.segmentsJSON)
             XCTAssertEqual(after.speakersJSON, before.speakersJSON)
-            XCTAssertEqual(try VoicePrint.fetchCount(db), 0,
-                           "a refused rename must never learn a voice print")
+
+            XCTAssertTrue(try MeetingTranscriptQueries.relabelCluster(db, id: 1, from: "Speaker 1", to: "Саша"))
+            XCTAssertTrue(try MeetingTranscriptQueries.relabelCluster(db, id: 1, from: "Саша", to: "Speaker 1") {
+                $0.labelSource = VoiceLabelSource.none
+            }, "a rollback to Speaker N must apply")
+            let rolledBack = try XCTUnwrap(MeetingTranscriptQueries.fetch(db, id: 1))
+            XCTAssertEqual(rolledBack.transcriptText, before.transcriptText)
+            let cluster = try XCTUnwrap(rolledBack.speakerEmbeddings?.first { $0.speaker == "Speaker 1" })
+            XCTAssertEqual(cluster.originalLabel, "Speaker 1", "the first relabel's original label is kept")
+            XCTAssertEqual(cluster.labelSource, VoiceLabelSource.none)
         }
     }
 
-    func test_renameSpeakerReturnsTrueOnlyWhenApplied() throws {
+    func test_relabelClusterReturnsTrueOnlyWhenApplied() throws {
         let db = try TestDatabase.create()
         try db.write { db in
             try self.insertSegmentedTranscriptWithSpeakers(db)
-            XCTAssertTrue(try MeetingTranscriptQueries.renameSpeaker(
-                db, id: 1, from: "Speaker 1", to: "Саша", personKey: "sasha@corp.com"))
-            // The label is gone now — a stale second rename reports false so
+            XCTAssertTrue(try MeetingTranscriptQueries.relabelCluster(db, id: 1, from: "Speaker 1", to: "Саша"))
+            // The label is gone now — a stale second relabel reports false so
             // the UI can keep the suggestion chip and explain.
-            XCTAssertFalse(try MeetingTranscriptQueries.renameSpeaker(
-                db, id: 1, from: "Speaker 1", to: "Петя", personKey: "petya"))
+            XCTAssertFalse(try MeetingTranscriptQueries.relabelCluster(db, id: 1, from: "Speaker 1", to: "Петя"))
         }
     }
 
-    /// Renaming a cluster INTO an existing label (over-split repair: the
-    /// diarizer split one person into two clusters) merges the utterances
-    /// under one label; both embeddings stay in speakers_json under that
-    /// label, and the renamed cluster's embedding is folded into the voice
-    /// print (one sample per confirmed rename).
-    func test_renameSpeakerIntoExistingLabelMergesClusters() throws {
+    /// Relabeling a cluster INTO an existing label is refused: two
+    /// `speakers_json` entries under one label would make every label-keyed
+    /// registry operation (rollback, relabel, patch) hit both clusters. This
+    /// used to merge them (the pre-registry over-split repair).
+    func test_relabelClusterIntoExistingLabelIsRefused() throws {
         let db = try TestDatabase.create()
         try db.write { db in
             let utterances = [
@@ -617,67 +673,16 @@ final class MeetingTranscriptQueriesTests: XCTestCase {
                 transcriptText: TranscriptSegments.render(utterances),
                 segmentsJSON: json, speakersJSON: speakersJSON)
 
-            XCTAssertTrue(try MeetingTranscriptQueries.renameSpeaker(
-                db, id: 1, from: "Speaker 2", to: "Саша", personKey: "sasha@corp.com"))
+            XCTAssertFalse(try MeetingTranscriptQueries.relabelCluster(db, id: 1, from: "Speaker 2", to: "Саша") {
+                $0.labelSource = .owner
+            })
 
             let tr = try XCTUnwrap(MeetingTranscriptQueries.fetch(db, id: 1))
-            let merged = try XCTUnwrap(tr.utterances)
-            XCTAssertEqual(merged.map(\.speaker), ["Саша", "Саша", "Саша"],
-                           "the renamed cluster merges into the existing label")
-            // Both cluster embeddings survive under the shared label — the
-            // merge repairs an over-split, it must not discard voice data.
+            XCTAssertEqual(try XCTUnwrap(tr.utterances).map(\.speaker), ["Саша", "Speaker 2", "Саша"], "nothing written")
             let speakers = try XCTUnwrap(tr.speakerEmbeddings)
-            XCTAssertEqual(speakers.map(\.speaker), ["Саша", "Саша"])
-            // Only the RENAMED cluster's embedding was learned (one sample):
-            // the pre-existing "Саша" cluster was never confirmed by this
-            // action.
-            let voicePrint = try XCTUnwrap(VoicePrintQueries.fetch(db, personKey: "sasha@corp.com"))
-            XCTAssertEqual(voicePrint.sampleCount, 1)
-            XCTAssertEqual(voicePrint.embeddingVector[0], 0, accuracy: 1e-5)
-            XCTAssertEqual(voicePrint.embeddingVector[1], 1, accuracy: 1e-5)
-        }
-    }
-
-    /// A later rename of the same person to a corrected spelling refreshes
-    /// the stored display_name on the existing person_key row.
-    func test_voicePrintUpsertRefreshesDisplayName() throws {
-        let db = try TestDatabase.create()
-        try db.write { db in
-            try self.insertSegmentedTranscriptWithSpeakers(db, id: 1)
-            try self.insertSegmentedTranscriptWithSpeakers(db, id: 2)
-            try MeetingTranscriptQueries.renameSpeaker(
-                db, id: 1, from: "Speaker 1", to: "Саша", personKey: "sasha@corp.com")
-            try MeetingTranscriptQueries.renameSpeaker(
-                db, id: 2, from: "Speaker 1", to: "Александр", personKey: "sasha@corp.com")
-
-            let voicePrint = try XCTUnwrap(VoicePrintQueries.fetch(db, personKey: "sasha@corp.com"))
-            XCTAssertEqual(voicePrint.displayName, "Александр",
-                           "the latest confirmed spelling wins")
-            XCTAssertEqual(voicePrint.sampleCount, 2)
-        }
-    }
-
-    func test_voicePrintUpsertSkipsDegenerateEmbedding() throws {
-        let db = try TestDatabase.create()
-        try db.write { db in
-            // Zero-vector embedding: rename applies, print is NOT learned.
-            let utterances = self.utterancesFixture
-            let json = try XCTUnwrap(TranscriptSegments.encode(utterances))
-            let speakersJSON = try XCTUnwrap(SpeakerEmbeddings.encode(
-                [SpeakerEmbedding(speaker: "Speaker 1", embedding: [0, 0])]))
-            try TestDatabase.insertMeetingTranscript(
-                db, id: 1, title: "Zero",
-                transcriptText: TranscriptSegments.render(utterances),
-                segmentsJSON: json, speakersJSON: speakersJSON)
-
-            try MeetingTranscriptQueries.renameSpeaker(
-                db, id: 1, from: "Speaker 1", to: "Саша", personKey: "sasha@corp.com")
-
-            let tr = try XCTUnwrap(MeetingTranscriptQueries.fetch(db, id: 1))
-            XCTAssertEqual(tr.transcriptText, "[Я] привет\n[Саша] ответ\n[Я] итог",
-                           "the rename itself must still apply")
-            XCTAssertNil(try VoicePrintQueries.fetch(db, personKey: "sasha@corp.com"),
-                         "a zero-vector embedding must never become a voice print")
+            XCTAssertEqual(speakers.map(\.speaker), ["Саша", "Speaker 2"])
+            XCTAssertEqual(speakers.map(\.labelSource), [nil, nil])
+            XCTAssertNil(tr.speakerNamesChangedAt)
         }
     }
 }

@@ -2,6 +2,8 @@ package targets
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -22,6 +24,10 @@ type Pipeline struct {
 	lang        string // workspace response language (digest.language); "" falls back to the prompts default
 	logger      *log.Logger
 	promptStore *prompts.Store
+
+	// ancestorParent overrides the DB lookup LinkExisting's cycle check uses
+	// for ancestors outside the snapshot; nil = dbParent. Tests inject errors.
+	ancestorParent parentLookup
 }
 
 // New creates a new Pipeline. lang is the workspace response language
@@ -168,7 +174,35 @@ func (p *Pipeline) LinkExisting(ctx context.Context, targetID int64) (*LinkResul
 		return nil, fmt.Errorf("AI link call: %w", err)
 	}
 
-	return parseLinkResponse(raw, snapshot)
+	lookup := p.ancestorParent
+	if lookup == nil {
+		lookup = p.dbParent
+	}
+	forbidden, walkErr := forbiddenParentIDs(targetID, snapshot, lookup)
+	result, err := parseLinkResponse(raw, snapshot, targetID, forbidden)
+	if err != nil {
+		return nil, err
+	}
+	if walkErr != nil {
+		// Fail closed: without a complete ancestor walk no parent is provably
+		// cycle-free, so this suggestion proposes none.
+		p.logger.Printf("targets/pipeline: link cycle check for target %d failed, dropping proposed parent: %v", targetID, walkErr)
+		result.ParentID = sql.NullInt64{}
+	}
+	return result, nil
+}
+
+// dbParent reads a target's parent from the DB for the link cycle check. A
+// missing target ends the chain; any other read error is returned.
+func (p *Pipeline) dbParent(id int64) (int64, bool, error) {
+	t, err := p.db.GetTargetByID(int(id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return t.ParentID.Int64, t.ParentID.Valid, nil
 }
 
 // CreateFromExtraction batch-inserts proposed targets (after user confirmation)

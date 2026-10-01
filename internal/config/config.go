@@ -159,7 +159,7 @@ type PeopleConfig struct {
 type CalendarConfig struct {
 	Enabled           bool     `mapstructure:"enabled"`            // enable calendar sync (default: false)
 	SelectedCalendars []string `mapstructure:"selected_calendars"` // specific calendar IDs to sync
-	SyncDaysAhead     int      `mapstructure:"sync_days_ahead"`    // days ahead to fetch (default: 2)
+	SyncDaysAhead     int      `mapstructure:"sync_days_ahead"`    // days ahead to fetch (default: DefaultCalendarSyncDaysAhead)
 	HistoryDays       int      `mapstructure:"history_days"`       // days of past events to keep synced (default: 14, floor 1)
 }
 

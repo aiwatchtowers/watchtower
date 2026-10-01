@@ -164,17 +164,15 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 	p.loadCaches()
 	p.logger.Printf("people: loadCaches took %s", time.Since(t0).Round(time.Millisecond))
 
+	var covered map[string]bool
 	if !p.ForceRegenerate {
 		t1 := time.Now()
-		existing, err := p.db.GetPeopleCardsForWindow(from, to)
+		var err error
+		covered, err = p.coveredUsers(from, to)
 		if err != nil {
-			return 0, fmt.Errorf("checking existing people cards: %w", err)
+			return 0, err
 		}
-		p.logger.Printf("people: GetPeopleCardsForWindow took %s (%d existing)", time.Since(t1).Round(time.Millisecond), len(existing))
-		if len(existing) > 0 {
-			p.logger.Printf("people: window already has %d cards, skipping", len(existing))
-			return 0, nil
-		}
+		p.logger.Printf("people: GetPeopleCardsForWindow took %s (%d users already covered)", time.Since(t1).Round(time.Millisecond), len(covered))
 	}
 
 	p.progress(0, 0, "Computing user statistics...")
@@ -189,6 +187,18 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 		p.progress(0, 0, "No active users with enough messages")
 		p.logger.Println("people: no active users with enough messages")
 		return 0, nil
+	}
+	// todo is who still needs a card; team norms stay computed over the whole
+	// active population (allStats), or a resumed window would compare its
+	// remaining users against themselves.
+	todo := allStats
+	if len(covered) > 0 {
+		todo = withoutCovered(allStats, covered)
+		if len(todo) == 0 {
+			p.logger.Printf("people: window already has AI cards for all %d users, skipping", len(covered))
+			return 0, nil
+		}
+		p.logger.Printf("people: %d user(s) still need a card for this window", len(todo))
 	}
 
 	// Load all situations for v2 pipeline
@@ -214,12 +224,12 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 	p.logger.Printf("people: team norms: %d users, %.0f avg msgs, %d users with situations",
 		teamNorms.TotalUsers, teamNorms.AvgMessages, len(allSituations))
 
-	totalUsers := len(allStats)
+	totalUsers := len(todo)
 
 	// Classify users into full-data (individual AI) and batch (low-data, batched AI).
 	var fullDataUsers []db.UserStats
 	var batchEntries []batchUserEntry
-	for _, stats := range allStats {
+	for _, stats := range todo {
 		userSits := allSituations[stats.UserID]
 		sitCount := 0
 		for _, cs := range userSits {
@@ -244,6 +254,10 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 		totalUsers, len(batchEntries), DefaultBatchUsers, len(fullDataUsers), DefaultFullBatchUsers)
 
 	var completed atomic.Int32
+	// aiCards counts cards the AI actually produced, aiFailures the users whose
+	// card fell back (batch error, user missing from the reply, store error) —
+	// so a run in which the AI produced nothing is not reported as a success.
+	var aiCards, aiFailures int
 
 	// Phase 1: Batch processing for low-data users (fast, cheap).
 	if len(batchEntries) > 0 {
@@ -259,6 +273,7 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 			if err != nil {
 				// Fallback: create insufficient_data cards for the whole batch.
 				p.logger.Printf("people: batch error, falling back to insufficient_data: %v", err)
+				aiFailures += len(batch)
 				for _, entry := range batch {
 					if ferr := p.createInsufficientCard(entry.stats, from, to); ferr != nil {
 						p.logger.Printf("people: fallback card error for %s: %v", entry.stats.UserID, ferr)
@@ -269,11 +284,7 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 				continue
 			}
 
-			// Index batch results by user_id for lookup.
-			resultMap := make(map[string]*BatchCardResult, len(results))
-			for i := range results {
-				resultMap[results[i].UserID] = &results[i]
-			}
+			lookup := newBatchResultLookup(batch, results)
 
 			// Distribute tokens evenly across batch users for progress reporting.
 			inTokPer, outTokPer, costPer := 0, 0, 0.0
@@ -283,16 +294,18 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 			}
 
 			for _, entry := range batch {
-				result, ok := resultMap[entry.stats.UserID]
+				result, ok := lookup(entry.stats.UserID)
 				if !ok {
 					// AI didn't return this user — fallback to insufficient_data.
+					aiFailures++
 					if ferr := p.createInsufficientCard(entry.stats, from, to); ferr != nil {
 						p.logger.Printf("people: batch missing user %s, fallback error: %v", entry.stats.UserID, ferr)
 					}
+				} else if serr := p.storeBatchCard(entry.stats, result, from, to, pv, inTokPer, outTokPer, costPer); serr != nil {
+					aiFailures++
+					p.logger.Printf("people: store batch card error for %s: %v", entry.stats.UserID, serr)
 				} else {
-					if serr := p.storeBatchCard(entry.stats, result, from, to, pv, inTokPer, outTokPer, costPer); serr != nil {
-						p.logger.Printf("people: store batch card error for %s: %v", entry.stats.UserID, serr)
-					}
+					aiCards++
 				}
 
 				// Synthetic per-user progress callback.
@@ -342,7 +355,10 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 				p.logger.Printf("people: full-data batch error, falling back to individual: %v", err)
 				for _, entry := range batch {
 					if ferr := p.processUser(ctx, entry.stats, from, to, entry.situations, teamNorms); ferr != nil {
+						aiFailures++
 						p.logger.Printf("people: individual fallback error for %s: %v", entry.stats.UserID, ferr)
+					} else {
+						aiCards++
 					}
 					newVal := int(completed.Add(1))
 					p.progress(newVal, totalUsers, fmt.Sprintf("@%s done (fallback)", p.userName(entry.stats.UserID)))
@@ -350,10 +366,7 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 				continue
 			}
 
-			resultMap := make(map[string]*BatchCardResult, len(results))
-			for i := range results {
-				resultMap[results[i].UserID] = &results[i]
-			}
+			lookup := newBatchResultLookup(batch, results)
 
 			inTokPer, outTokPer, costPer := 0, 0, 0.0
 			if usage != nil && len(batch) > 0 {
@@ -362,16 +375,20 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 			}
 
 			for _, entry := range batch {
-				result, ok := resultMap[entry.stats.UserID]
+				result, ok := lookup(entry.stats.UserID)
 				if !ok {
 					// AI didn't return this user — fallback to individual.
 					if ferr := p.processUser(ctx, entry.stats, from, to, entry.situations, teamNorms); ferr != nil {
+						aiFailures++
 						p.logger.Printf("people: batch missing user %s, fallback error: %v", entry.stats.UserID, ferr)
+					} else {
+						aiCards++
 					}
+				} else if serr := p.storeBatchCard(entry.stats, result, from, to, pv, inTokPer, outTokPer, costPer); serr != nil {
+					aiFailures++
+					p.logger.Printf("people: store batch card error for %s: %v", entry.stats.UserID, serr)
 				} else {
-					if serr := p.storeBatchCard(entry.stats, result, from, to, pv, inTokPer, outTokPer, costPer); serr != nil {
-						p.logger.Printf("people: store batch card error for %s: %v", entry.stats.UserID, serr)
-					}
+					aiCards++
 				}
 
 				p.LastStepMessageCount = entry.stats.MessageCount
@@ -388,8 +405,17 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 	}
 
 	total := int(completed.Load())
+	// A shutdown leaves the window unfinished: report it, so the daemon does
+	// not stamp the window as done (the next run picks up the users still
+	// without a card). Not an AI failure.
+	if err := ctx.Err(); err != nil {
+		return total, fmt.Errorf("people cards interrupted after %d of %d user(s): %w", total, totalUsers, err)
+	}
+	if aiCards == 0 && aiFailures > 0 {
+		return total, fmt.Errorf("no people card produced by AI: all %d user(s) fell back", aiFailures)
+	}
 	p.progress(total, totalUsers, fmt.Sprintf("Complete: %d people cards generated", total))
-	p.logger.Printf("people: completed %d user cards", total)
+	p.logger.Printf("people: completed %d user cards (%d from AI, %d fell back)", total, aiCards, aiFailures)
 
 	if total > 0 {
 		p.progress(total, totalUsers, "Generating team summary...")
@@ -399,6 +425,35 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 	}
 
 	return total, nil
+}
+
+// coveredUsers returns the users that already have an AI-produced card for the
+// window. An insufficient_data card is only ever written as a fallback (the
+// AI call failed or skipped the user), so it does not count as coverage and
+// its user is processed again.
+func (p *Pipeline) coveredUsers(from, to float64) (map[string]bool, error) {
+	existing, err := p.db.GetPeopleCardsForWindow(from, to)
+	if err != nil {
+		return nil, fmt.Errorf("checking existing people cards: %w", err)
+	}
+	covered := make(map[string]bool, len(existing))
+	for _, c := range existing {
+		if c.Status != "insufficient_data" {
+			covered[c.UserID] = true
+		}
+	}
+	return covered, nil
+}
+
+// withoutCovered drops the users that already have an AI card for the window.
+func withoutCovered(stats []db.UserStats, covered map[string]bool) []db.UserStats {
+	out := stats[:0:0]
+	for _, s := range stats {
+		if !covered[s.UserID] {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // MinSituations is the minimum number of situations required for a full AI-powered card.
@@ -640,6 +695,36 @@ func (p *Pipeline) generateBatchCards(ctx context.Context, entries []batchUserEn
 		return nil, usage, pv, fmt.Errorf("parsing batch result: %w", err)
 	}
 	return results, usage, pv, nil
+}
+
+// newBatchResultLookup returns a lookup from a batch user's stored
+// (namespaced) id to the AI result for that user. The prompt shows
+// namespaced ids but the prompt's JSON example a bare one, so the model may
+// echo either: an exact match wins, then a result carrying the user's raw
+// id — unless two users in the batch share that raw id (two accounts), where
+// the raw form is ambiguous and never guessed at (the digest pipeline's
+// batchEntryLookup rule). A user with no match falls back like before.
+func newBatchResultLookup(batch []batchUserEntry, results []BatchCardResult) func(string) (*BatchCardResult, bool) {
+	exact := make(map[string]*BatchCardResult, len(results))
+	for i := range results {
+		exact[results[i].UserID] = &results[i]
+	}
+	rawOwners := make(map[string]int, len(batch))
+	for _, entry := range batch {
+		_, rawID, _ := watchtowerslack.SplitAccountID(entry.stats.UserID)
+		rawOwners[rawID]++
+	}
+	return func(userID string) (*BatchCardResult, bool) {
+		if r, ok := exact[userID]; ok {
+			return r, true
+		}
+		_, rawID, _ := watchtowerslack.SplitAccountID(userID)
+		if rawID == userID || rawOwners[rawID] != 1 {
+			return nil, false
+		}
+		r, ok := exact[rawID]
+		return r, ok
+	}
 }
 
 // groupUsersIntoBatches splits users into batches of at most maxUsers each.

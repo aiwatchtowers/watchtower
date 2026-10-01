@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -42,6 +43,18 @@ type Request struct {
 	From, To time.Time // optional; To is exclusive; both set requires From < To
 	Limit    int       // 0 = DefaultLimit, capped at MaxLimit
 	Now      time.Time // zero = time.Now(); drives recency and the index note
+
+	// Scope, when not empty, ranks its documents first: every query runs a
+	// second time restricted to the scope and that list is fused in too, so
+	// an in-scope chunk earns a second contribution (and one outside the
+	// global top candidates still gets retrieved). Nothing outside the scope
+	// is dropped. ScopeOnly instead restricts every list to the scope.
+	Scope     Scope
+	ScopeOnly bool
+
+	// ProjectID is the project session searching, 0 for every other caller:
+	// project documents are visible only to their own project (PROJ-08).
+	ProjectID int64
 }
 
 // Hit is one matching document. Chunk is the index of its best-matching
@@ -59,13 +72,17 @@ type Hit struct {
 	Chunk       int               `json:"chunk"`
 	ChunkAnchor string            `json:"chunk_anchor,omitempty"`
 	Snippets    []string          `json:"snippets"`
+	InScope     bool              `json:"in_scope,omitempty"` // in Request.Scope
 	score       float64
 }
 
 // Result is a search answer; IndexNote explains a partial or stale index.
+// ScopeNote is the caller's to fill: what it could not turn into the
+// request's Scope (Search never sets it).
 type Result struct {
 	Hits      []Hit  `json:"hits"`
 	IndexNote string `json:"index_note,omitempty"`
+	ScopeNote string `json:"scope_note,omitempty"`
 }
 
 // RequestError reports an invalid Request (the caller's fault, not the index's).
@@ -88,23 +105,23 @@ func Search(ctx context.Context, d *db.DB, req Request) (Result, error) {
 	if now.IsZero() {
 		now = time.Now()
 	}
+	if req.ScopeOnly && req.Scope.Empty() {
+		return Result{Hits: []Hit{}}, nil
+	}
+	boost := !req.Scope.Empty() && !req.ScopeOnly
 	f := newFusion()
 	for _, q := range req.Queries {
 		and, or := BuildMatch(q)
 		if and == "" {
 			continue
 		}
-		list, err := retrieve(ctx, d, and, req)
-		if err != nil {
+		if err := f.addQuery(ctx, d, and, or, req, req.ScopeOnly); err != nil {
 			return Result{}, err
 		}
-		f.add(list, andWeight)
-		if len(list) < candidates && or != and {
-			orList, err := retrieve(ctx, d, or, req)
-			if err != nil {
+		if boost {
+			if err := f.addQuery(ctx, d, and, or, req, true); err != nil {
 				return Result{}, err
 			}
-			f.add(orList, orWeight)
 		}
 	}
 	note, err := indexNote(ctx, d, now)
@@ -113,6 +130,11 @@ func Search(ctx context.Context, d *db.DB, req Request) (Result, error) {
 	}
 	return Result{Hits: f.hits(now, limit), IndexNote: note}, nil
 }
+
+// projectDocVisible is the SQL condition (over kb_documents aliased d) that
+// hides every project document but those of the project bound to its one
+// argument; projectID 0 hides them all (PROJ-08).
+const projectDocVisible = `(d.source <> '` + ProjectDocSource + `' OR json_extract(d.anchor_json, '$.project_id') = ?)`
 
 // validate checks req and returns the effective limit.
 func validate(req *Request) (int, error) {
@@ -157,17 +179,52 @@ type candidate struct {
 	docUnix     float64
 	link        string
 	anchor      map[string]string
+	inScope     bool
+}
+
+// addQuery folds one query in: its AND list, plus the OR fallback when the
+// AND list is sparse. scoped restricts both lists to req.Scope.
+func (f *fusion) addQuery(ctx context.Context, d *db.DB, and, or string, req Request, scoped bool) error {
+	list, err := retrieve(ctx, d, and, req, scoped)
+	if err != nil {
+		return err
+	}
+	f.add(list, andWeight)
+	if len(list) < candidates && or != and {
+		orList, err := retrieve(ctx, d, or, req, scoped)
+		if err != nil {
+			return err
+		}
+		f.add(orList, orWeight)
+	}
+	return nil
 }
 
 // retrieve returns up to `candidates` chunks matching match, best bm25 first
 // (ties by chunk id, so fusion is deterministic), honouring the source and
-// time filters. All rows are read before returning (single connection).
-func retrieve(ctx context.Context, d *db.DB, match string, req Request) ([]candidate, error) {
+// time filters, and only req.Scope's documents when scoped. Each candidate
+// says whether it is in req.Scope. All rows are read before returning
+// (single connection).
+func retrieve(ctx context.Context, d *db.DB, match string, req Request, scoped bool) ([]candidate, error) {
+	inScope, args := "0", []any{}
+	var scopePred string
+	var scopeArgs []any
+	if !req.Scope.Empty() {
+		scopePred, scopeArgs = req.Scope.predicate()
+		inScope = "CASE WHEN " + scopePred + " THEN 1 ELSE 0 END"
+		args = append(args, scopeArgs...)
+	}
 	var sb strings.Builder
-	sb.WriteString(`SELECT c.id, c.idx, c.anchor, c.doc_id, snippet(kb_fts, 1, '', '', '…', 40), d.source, d.title, d.doc_time, d.doc_time_unix, d.link, d.anchor_json
+	sb.WriteString(`SELECT c.id, c.idx, c.anchor, c.doc_id, snippet(kb_fts, 1, '', '', '…', 40), d.source, d.title, d.doc_time, d.doc_time_unix, d.link, d.anchor_json, ` + inScope + `
 		FROM kb_fts JOIN kb_chunks c ON c.id = kb_fts.rowid JOIN kb_documents d ON d.id = c.doc_id
 		WHERE kb_fts MATCH ?`)
-	args := []any{match}
+	args = append(args, match)
+	sb.WriteString(` AND ` + projectDocVisible)
+	args = append(args, strconv.FormatInt(req.ProjectID, 10))
+	if scoped { // Search never asks for it with an empty scope
+		sb.WriteString(` AND ` + scopePred)
+		args = append(args, scopeArgs...)
+	}
 	if len(req.Sources) > 0 {
 		sb.WriteString(` AND d.source IN (?` + strings.Repeat(`, ?`, len(req.Sources)-1) + `)`)
 		for _, s := range req.Sources {
@@ -196,7 +253,7 @@ func retrieve(ctx context.Context, d *db.DB, match string, req Request) ([]candi
 	for rows.Next() {
 		var c candidate
 		var anchorJS string
-		if err := rows.Scan(&c.chunkID, &c.chunkIdx, &c.chunkAnchor, &c.docID, &c.snippet, &c.source, &c.title, &c.docTime, &c.docUnix, &c.link, &anchorJS); err != nil {
+		if err := rows.Scan(&c.chunkID, &c.chunkIdx, &c.chunkAnchor, &c.docID, &c.snippet, &c.source, &c.title, &c.docTime, &c.docUnix, &c.link, &anchorJS, &c.inScope); err != nil {
 			return nil, fmt.Errorf("kb: search %q: %w", match, err)
 		}
 		if c.anchor, err = parseAnchor(anchorJS); err != nil {
@@ -261,7 +318,8 @@ func (f *fusion) hits(now time.Time, limit int) []Hit {
 		h := Hit{
 			Ref: best.docID, Source: best.source, Title: best.title, When: best.docTime, Link: best.link,
 			Anchor: best.anchor, Chunk: best.chunkIdx, ChunkAnchor: best.chunkAnchor, Snippets: []string{},
-			score: best.score * recencyFactor(best.docUnix, now),
+			InScope: best.inScope,
+			score:   best.score * recencyFactor(best.docUnix, now),
 		}
 		for _, c := range chunks {
 			if len(h.Snippets) == snippetsMax {
@@ -331,6 +389,9 @@ type DocView struct {
 type DocOptions struct {
 	FromChunk int // first chunk to include (a Hit's Chunk); 0 = the start
 	MaxChars  int // rune cap; <= 0 means DefaultDocChars, capped at MaxDocChars
+	// ProjectID is the project session opening, 0 for every other caller:
+	// another project's document reads as not found (PROJ-08).
+	ProjectID int64
 }
 
 // ErrNotFound is returned by GetDocument for an unknown ref.
@@ -347,7 +408,8 @@ func GetDocument(ctx context.Context, d *db.DB, ref string, opts DocOptions) (Do
 	maxChars = min(maxChars, MaxDocChars)
 	v := DocView{Ref: ref, FromChunk: opts.FromChunk}
 	var anchorJS string
-	err := d.QueryRowContext(ctx, `SELECT source, title, doc_time, link, anchor_json, chunk_count FROM kb_documents WHERE id = ?`, ref).
+	err := d.QueryRowContext(ctx, `SELECT d.source, d.title, d.doc_time, d.link, d.anchor_json, d.chunk_count
+		FROM kb_documents d WHERE d.id = ? AND `+projectDocVisible, ref, strconv.FormatInt(opts.ProjectID, 10)).
 		Scan(&v.Source, &v.Title, &v.When, &v.Link, &anchorJS, &v.ChunkCount)
 	if errors.Is(err, sql.ErrNoRows) {
 		return DocView{}, fmt.Errorf("%w: %s", ErrNotFound, ref)

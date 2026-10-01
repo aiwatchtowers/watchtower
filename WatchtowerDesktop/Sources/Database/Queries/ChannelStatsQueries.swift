@@ -129,9 +129,9 @@ enum ChannelStatsQueries {
             }
 
             // Leave: userMsgs==0 OR lastUserActivity 30+ days ago
-            // AND not favorite, not watched, not DM, is member
+            // AND not favorite, not watched, not already muted, not DM, is member
             // Blocked by pending inbox, active tasks, active tracks, or >=3 decisions
-            if !s.isFavorite && !s.isWatched
+            if !s.isFavorite && !s.isWatched && !s.isMutedForLLM
                 && s.type != "dm" && s.type != "group_dm" && s.isMember {
                 if s.userMessages == 0
                     || (s.lastUserActivity > 0 && s.lastUserActivity < thirtyDaysAgo) {
@@ -183,6 +183,7 @@ enum ChannelStatsQueries {
 
     /// Fetch value signals (decisions, tracks, tasks, inbox) per channel.
     /// Mirrors Go `GetChannelValueSignals` — only channels with non-zero signals are returned.
+    /// Project targets (`project_id` set) live only on their board (PROJ-01) and never count.
     static func fetchValueSignals(_ db: Database) throws -> [String: ChannelValueSignals] {
         let cutoff = Date().timeIntervalSince1970 - 30 * 86400
         let sql = """
@@ -205,7 +206,7 @@ enum ChannelStatsQueries {
                 SELECT d.channel_id, COUNT(*) AS cnt
                 FROM targets t
                 JOIN digests d ON t.source_type = 'digest' AND t.source_id = CAST(d.id AS TEXT)
-                WHERE t.status IN ('todo','in_progress','blocked')
+                WHERE t.status IN ('todo','in_progress','blocked') AND t.project_id IS NULL
                   AND d.channel_id != ''
                 GROUP BY d.channel_id
             ),
@@ -213,7 +214,7 @@ enum ChannelStatsQueries {
                 SELECT i.channel_id, COUNT(*) AS cnt
                 FROM targets t
                 JOIN inbox_items i ON t.source_type = 'inbox' AND t.source_id = CAST(i.id AS TEXT)
-                WHERE t.status IN ('todo','in_progress','blocked')
+                WHERE t.status IN ('todo','in_progress','blocked') AND t.project_id IS NULL
                 GROUP BY i.channel_id
             ),
             task_counts AS (
@@ -252,7 +253,7 @@ enum ChannelStatsQueries {
                     SELECT d.channel_id, COUNT(*) AS cnt
                     FROM targets t
                     JOIN digests d ON t.source_type = 'digest' AND t.source_id = CAST(d.id AS TEXT)
-                    WHERE t.status IN ('todo','in_progress','blocked')
+                    WHERE t.status IN ('todo','in_progress','blocked') AND t.project_id IS NULL
                       AND d.channel_id != ''
                     GROUP BY d.channel_id
                 ),
@@ -260,7 +261,7 @@ enum ChannelStatsQueries {
                     SELECT i.channel_id, COUNT(*) AS cnt
                     FROM targets t
                     JOIN inbox_items i ON t.source_type = 'inbox' AND t.source_id = CAST(i.id AS TEXT)
-                    WHERE t.status IN ('todo','in_progress','blocked')
+                    WHERE t.status IN ('todo','in_progress','blocked') AND t.project_id IS NULL
                     GROUP BY i.channel_id
                 ),
                 task_counts AS (

@@ -2,6 +2,7 @@ package jira
 
 import (
 	"testing"
+	"time"
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
@@ -220,6 +221,53 @@ func TestKeyDetector_ResetCache(t *testing.T) {
 
 	result := d.DetectKeys("NEW-42")
 	assert.Equal(t, []string{"NEW-42"}, result)
+}
+
+// A project connected (or synced for the first time) after the cache first
+// populated must not stay invisible for the rest of a weeks-long daemon
+// lifetime — the TTL forces a reload without ResetCache ever being called.
+func TestKeyDetector_KnownKeysRefreshOnTTLExpiry(t *testing.T) {
+	database := openTestDB(t)
+	seedProjectKey(t, database, "PROJ")
+	d := NewKeyDetector(database)
+
+	clock := time.Now()
+	d.now = func() time.Time { return clock }
+
+	// First call memoizes a non-empty key set stamped at clock.
+	require.Equal(t, []string{"PROJ-1"}, d.DetectKeys("PROJ-1"))
+
+	seedProjectKey(t, database, "NEW")
+
+	// Still within the TTL — the stale-but-fresh-enough cached set is served,
+	// so NEW is not yet known.
+	clock = clock.Add(knownProjectKeysTTL - time.Minute)
+	assert.Nil(t, d.DetectKeys("NEW-42"), "within the TTL, no reload happens")
+
+	// Past the TTL — a reload happens without any ResetCache call.
+	clock = clock.Add(2 * time.Minute)
+	assert.Equal(t, []string{"NEW-42"}, d.DetectKeys("NEW-42"), "past the TTL, the set reloads on its own")
+}
+
+// A transient DB error on a TTL-triggered reload must not throw away a
+// perfectly good, merely stale, key set — that would turn a passing hiccup
+// into "detects nothing" for every message until the next lucky reload.
+func TestKeyDetector_TTLReloadFailureKeepsServingStaleSet(t *testing.T) {
+	database := openTestDB(t)
+	seedProjectKey(t, database, "PROJ")
+	d := NewKeyDetector(database)
+
+	clock := time.Now()
+	d.now = func() time.Time { return clock }
+
+	require.Equal(t, []string{"PROJ-1"}, d.DetectKeys("PROJ-1"), "populates the cache")
+
+	clock = clock.Add(knownProjectKeysTTL + time.Minute)
+	_, err := database.Exec(`DROP TABLE jira_issues`)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"PROJ-1"}, d.DetectKeys("PROJ-1"),
+		"a failed TTL reload must keep serving the last known-good set, not detect nothing")
 }
 
 func TestExtractProjectKey(t *testing.T) {

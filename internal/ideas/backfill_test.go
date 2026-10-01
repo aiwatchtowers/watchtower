@@ -757,3 +757,53 @@ func TestBackfillLock_HeartbeatKeepsLockFresh(t *testing.T) {
 
 	assert.True(t, BackfillLockFresh(dir), "a heartbeated lock stays fresh")
 }
+
+// The other half of the restore rule (IDEA-01): when the pre-backfill Jira
+// floor is LATER than what the backfill reached inside its window, the restore
+// keeps the saved floor — mining a mid-history window must never pull the
+// daemon's cursor back and make it re-mine [to, saved].
+func TestBackfill_JiraSavedFloorLaterThanReached_SavedWins(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspace(t, d)
+
+	now := time.Now()
+	from := now.Add(-72 * time.Hour)
+	to := now.Add(-24 * time.Hour)
+
+	jiraAcct := seedJiraAccount(t, d)
+	savedJiraFloor := db.FormatJiraTime(now.Add(-time.Hour))
+	setIdeasJiraFloorRaw(t, d, jiraAcct, savedJiraFloor)
+	issueUpdated := db.FormatJiraTime(from.Add(2 * time.Hour))
+	seedJiraIssueIdeas(t, d, jiraAcct, "WT-1", "WT", "Add caching layer", "Open", "new",
+		"We should add a caching layer.", issueUpdated)
+
+	gen := &fakeGen{reply: func(user string) (string, error) {
+		if strings.Contains(user, "WT-1") && !strings.Contains(user, "=== REGISTRY ===") {
+			return `{"topics":[{"title":"t","summary":"s","ideas":[{"text":"add caching layer","author":"Ann","ref":"WT-1"}],"decisions":[]}]}`, nil
+		}
+		return `{"ops":[]}`, nil
+	}}
+	p := New(d, testCfg(), gen, testLogger())
+
+	_, err := p.Backfill(context.Background(), from, to, nil)
+	require.NoError(t, err)
+
+	digests, err := d.ListStreamDigestsAfter(0, "")
+	require.NoError(t, err)
+	require.NotEmpty(t, digests, "the window's issue was mined")
+
+	jiraFloor, err := d.IdeasJiraFloor(jiraAcct)
+	require.NoError(t, err)
+	assert.Equal(t, savedJiraFloor, jiraFloor, "a saved floor later than the reached one is what the restore keeps")
+}
+
+func TestMaxJiraFloor(t *testing.T) {
+	older := db.FormatJiraTime(time.Now().Add(-2 * time.Hour))
+	newer := db.FormatJiraTime(time.Now().Add(-time.Hour))
+	assert.Equal(t, newer, maxJiraFloor(newer, older), "saved later than reached → saved")
+	assert.Equal(t, newer, maxJiraFloor(older, newer), "reached later than saved → reached")
+	assert.Equal(t, newer, maxJiraFloor(newer, newer))
+	assert.Equal(t, newer, maxJiraFloor("", newer), "an uninitialized saved floor loses to a reached one")
+	assert.Equal(t, older, maxJiraFloor(older, ""), "an unreached account keeps its saved floor")
+	assert.Equal(t, "", maxJiraFloor("", ""))
+}

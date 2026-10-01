@@ -4,7 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"regexp"
+	"strconv"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -21,6 +25,22 @@ type fakeJira struct {
 	// returns — the seam a test needs to break a table the executor writes
 	// AFTER the Jira call has already left the machine.
 	onCreate func()
+	// searched records each JQL query; found/searchErr answer it.
+	searched  []string
+	found     []jira.Issue
+	searchErr error
+	morePages bool // the search reports a next page
+}
+
+func (f *fakeJira) SearchIssues(_ context.Context, jql string, _ int, _ string) (*jira.SearchResult, error) {
+	f.searched = append(f.searched, jql)
+	if f.searchErr != nil {
+		return nil, f.searchErr
+	}
+	if f.morePages {
+		return &jira.SearchResult{Issues: f.found, NextPageToken: "next"}, nil
+	}
+	return &jira.SearchResult{Issues: f.found, IsLast: true}, nil
 }
 
 func (f *fakeJira) CreateIssue(_ context.Context, req jira.CreateIssueRequest) (jira.CreatedIssue, error) {
@@ -36,7 +56,7 @@ func (f *fakeJira) CreateIssue(_ context.Context, req jira.CreateIssueRequest) (
 
 func (f *fakeJira) GetIssue(_ context.Context, key string) (jira.Issue, error) {
 	var issue jira.Issue
-	_ = json.Unmarshal([]byte(`{"id":"1","key":"`+key+`","fields":{"summary":"Fix login","issuetype":{"name":"Task"},"status":{"name":"To Do","statusCategory":{"key":"new","name":"To Do"}},"priority":{"name":"High"},"labels":["backend"],"created":"2026-09-04T10:00:00.000+0000","updated":"2026-09-04T10:00:00.000+0000","description":{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"body"}]}]}}}`), &issue)
+	_ = json.Unmarshal([]byte(`{"id":"1","key":"`+key+`","fields":{"summary":"Fix login","issuetype":{"name":"Task"},"status":{"name":"To Do","statusCategory":{"key":"new","name":"To Do"}},"priority":{"name":"High"},"labels":["backend"],"created":"2026-09-04T10:00:00.000+0000","updated":"2026-09-04T13:30:00.000+0300","description":{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"body"}]}]}}}`), &issue)
 	return issue, nil
 }
 
@@ -101,6 +121,8 @@ func TestCreateJiraIssue_ExecuteCreatesFetchesAndStores(t *testing.T) {
 	assert.Equal(t, "To Do", row.Status)
 	assert.Equal(t, "body", row.DescriptionText)
 	assert.Equal(t, `["backend"]`, row.Labels)
+	assert.Equal(t, "2026-09-04T10:00:00.000Z", row.CreatedAt, "the mirror stores timestamps the way the syncer does")
+	assert.Equal(t, "2026-09-04T10:30:00.000Z", row.UpdatedAt)
 }
 
 func TestCreateJiraIssue_AuthRevokedMarksAccount(t *testing.T) {
@@ -207,4 +229,199 @@ func TestResolveJiraAccount_LookupFailureIsNotAValidationError(t *testing.T) {
 	assert.False(t, errors.As(err, &verr), "a broken lookup must not be reported as a missing account")
 	assert.NotContains(t, err.Error(), "no Jira account")
 	assert.Contains(t, err.Error(), "looking up Jira account")
+}
+
+// The account an omitted account_id resolves to at propose time is pinned
+// into the stored args: a second site connected before the owner approves
+// neither fails the apply ("several Jira sites") nor redirects the write, and
+// a pinned site disabled in between fails it instead of filing elsewhere.
+func TestCreateJiraIssue_ProposePinsTheAccount(t *testing.T) {
+	d := openDB(t)
+	a1 := seedJira(t, d)
+	var used []int64
+	fake := &fakeJira{key: "ABC-7"}
+	reg := New(d)
+	require.NoError(t, reg.Register(NewCreateJiraIssue(func(a db.JiraAccount) (JiraIssueClient, error) {
+		used = append(used, a.ID)
+		return fake, nil
+	})))
+	propose := func() int64 {
+		t.Helper()
+		rc, err := reg.Propose(context.Background(), "create_jira_issue",
+			json.RawMessage(`{"project_key":"ABC","issue_type":"Task","summary":"s","reason":"r"}`), Binding{Surface: "main"})
+		require.NoError(t, err)
+		require.Equal(t, "pending", rc.Status)
+		return rc.ActionID
+	}
+	first, second := propose(), propose()
+	row, err := d.GetAgentAction(first)
+	require.NoError(t, err)
+	assert.JSONEq(t, fmt.Sprintf(`{"account_id":%d,"project_key":"ABC","issue_type":"Task","summary":"s","reason":"r"}`, a1), row.ArgsJSON)
+
+	// A second site with the same project key is connected before approval.
+	a2 := seedJiraAccountWithProject(t, d, "c2", "ABC")
+	approve(t, d, first)
+	applied, err := reg.Apply(context.Background(), first)
+	require.NoError(t, err)
+	assert.Equal(t, "applied", applied.Status)
+	assert.Equal(t, []int64{a1}, used, "the write goes to the site the owner approved")
+
+	// The pinned site is disabled: the apply fails rather than landing on a2.
+	require.NoError(t, d.SetJiraAccountEnabled(a1, false))
+	approve(t, d, second)
+	failed, err := reg.Apply(context.Background(), second)
+	require.NoError(t, err)
+	assert.Equal(t, "failed", failed.Status)
+	assert.Contains(t, failed.Error, "not enabled")
+	assert.NotContains(t, used, a2)
+}
+
+// Execute checks the project again: a pinned account whose project stopped
+// syncing between propose and apply is refused, not written.
+func TestCreateJiraIssue_ExecuteRechecksTheProject(t *testing.T) {
+	d := openDB(t)
+	a1 := seedJira(t, d)
+	fake := &fakeJira{key: "ABC-7"}
+	tool := NewCreateJiraIssue(func(db.JiraAccount) (JiraIssueClient, error) { return fake, nil })
+	_, err := d.Exec(`DELETE FROM jira_sync_state WHERE account_id = ?`, a1)
+	require.NoError(t, err)
+	_, err = tool.Execute(context.Background(), d, Call{Args: json.RawMessage(
+		fmt.Sprintf(`{"account_id":%d,"project_key":"ABC","issue_type":"Task","summary":"s","reason":"r"}`, a1))})
+	var verr *ValidationError
+	require.ErrorAs(t, err, &verr)
+	assert.Empty(t, fake.created)
+}
+
+func seedJiraAccountWithProject(t *testing.T, d *db.DB, cloudID, projectKey string) int64 {
+	t.Helper()
+	id, err := d.CreateJiraAccount(db.JiraAccount{CloudID: cloudID, SiteURL: "https://" + cloudID + ".atlassian.net"})
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO jira_sync_state (account_id, project_key, last_synced_at, issues_synced) VALUES (?, ?, '', 0)`, id, projectKey)
+	require.NoError(t, err)
+	return id
+}
+
+// landedIssue is an issue a failed create attempt may have left in Jira.
+func landedIssue(key, summary, issueType string) jira.Issue {
+	var issue jira.Issue
+	issue.Key = key
+	issue.Fields.Summary = summary
+	issue.Fields.IssueType.Name = issueType
+	return issue
+}
+
+// proposeFailedCreate records an approved create_jira_issue and applies it
+// once against a failing Jira, leaving the row failed.
+func proposeFailedCreate(t *testing.T, d *db.DB, fake *fakeJira) (*Registry, int64) {
+	t.Helper()
+	reg := New(d)
+	require.NoError(t, reg.Register(NewCreateJiraIssue(func(db.JiraAccount) (JiraIssueClient, error) { return fake, nil })))
+	rc, err := reg.Propose(context.Background(), "create_jira_issue",
+		json.RawMessage(`{"project_key":"ABC","issue_type":"Task","summary":"Fix login","reason":"r"}`), Binding{Surface: "main"})
+	require.NoError(t, err)
+	approve(t, d, rc.ActionID)
+	fake.createErr = errors.New("context deadline exceeded")
+	row, err := reg.Apply(context.Background(), rc.ActionID)
+	require.NoError(t, err)
+	require.Equal(t, "failed", row.Status)
+	assert.Empty(t, fake.searched, "a first attempt does not search")
+	fake.createErr = nil
+	return reg, rc.ActionID
+}
+
+// A retry of a failed create whose request actually landed finds that issue
+// and reports it instead of filing a duplicate.
+func TestCreateJiraIssue_RetryFindsTheIssueTheFailedAttemptCreated(t *testing.T) {
+	d := openDB(t)
+	seedJira(t, d)
+	fake := &fakeJira{key: "ABC-9"}
+	reg, id := proposeFailedCreate(t, d, fake)
+	fake.found = []jira.Issue{landedIssue("ABC-5", "Other work", "Task"), landedIssue("ABC-7", "Fix login", "task")}
+
+	row, err := reg.Apply(context.Background(), id)
+	require.NoError(t, err)
+	require.Equal(t, "applied", row.Status, row.Error)
+	assert.Len(t, fake.created, 1, "the request is not sent a second time")
+	assert.Contains(t, row.ResultJSON, `"key":"ABC-7"`)
+	assert.Contains(t, row.ResultJSON, `"reused":true`, "the result says the issue is the earlier attempt's")
+	require.Len(t, fake.searched, 1)
+	assert.Contains(t, fake.searched[0], `project = "ABC" AND reporter = currentUser() AND created >= -`)
+}
+
+// The lookup window reaches back to the proposal, however long ago the
+// owner approved it.
+func TestCreateJiraIssue_RetryWindowStartsAtTheProposal(t *testing.T) {
+	d := openDB(t)
+	seedJira(t, d)
+	fake := &fakeJira{key: "ABC-9"}
+	reg, id := proposeFailedCreate(t, d, fake)
+	_, err := d.Exec(`UPDATE agent_actions SET created_at = ? WHERE id = ?`,
+		time.Now().UTC().Add(-3*time.Hour).Format(time.RFC3339), id)
+	require.NoError(t, err)
+
+	_, err = reg.Apply(context.Background(), id)
+	require.NoError(t, err)
+	require.Len(t, fake.searched, 1)
+	m := regexp.MustCompile(`created >= -(\d+)m`).FindStringSubmatch(fake.searched[0])
+	require.Len(t, m, 2, fake.searched[0])
+	minutes, err := strconv.Atoi(m[1])
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, minutes, 180)
+	assert.LessOrEqual(t, minutes, 185)
+}
+
+// A full page without a match cannot prove the first attempt did not land,
+// so the retry fails instead of risking a duplicate.
+func TestCreateJiraIssue_RetryFullSearchPageDoesNotResend(t *testing.T) {
+	d := openDB(t)
+	seedJira(t, d)
+	fake := &fakeJira{key: "ABC-9"}
+	reg, id := proposeFailedCreate(t, d, fake)
+	for i := range landedIssueSearchLimit {
+		fake.found = append(fake.found, landedIssue(fmt.Sprintf("ABC-%d", 100+i), "Other work", "Task"))
+	}
+
+	row, err := reg.Apply(context.Background(), id)
+	require.NoError(t, err)
+	assert.Equal(t, "failed", row.Status)
+	assert.Contains(t, row.Error, "cannot tell whether the failed attempt created the issue")
+	assert.Len(t, fake.created, 1)
+
+	// A short page that still has a next one proves nothing either.
+	fake.found, fake.morePages = fake.found[:3], true
+	row, err = reg.Apply(context.Background(), id)
+	require.NoError(t, err)
+	assert.Equal(t, "failed", row.Status)
+	assert.Len(t, fake.created, 1)
+}
+
+// With nothing landed, the retry creates the issue as usual.
+func TestCreateJiraIssue_RetryCreatesWhenNothingLanded(t *testing.T) {
+	d := openDB(t)
+	seedJira(t, d)
+	fake := &fakeJira{key: "ABC-9"}
+	reg, id := proposeFailedCreate(t, d, fake)
+	fake.found = []jira.Issue{landedIssue("ABC-5", "Fix login", "Bug")}
+
+	row, err := reg.Apply(context.Background(), id)
+	require.NoError(t, err)
+	require.Equal(t, "applied", row.Status, row.Error)
+	assert.Len(t, fake.created, 2)
+	assert.Contains(t, row.ResultJSON, `"key":"ABC-9"`)
+}
+
+// A retry that cannot tell whether the first attempt landed does not send
+// the request again.
+func TestCreateJiraIssue_RetryLookupFailureDoesNotResend(t *testing.T) {
+	d := openDB(t)
+	seedJira(t, d)
+	fake := &fakeJira{key: "ABC-9"}
+	reg, id := proposeFailedCreate(t, d, fake)
+	fake.searchErr = errors.New("503")
+
+	row, err := reg.Apply(context.Background(), id)
+	require.NoError(t, err)
+	assert.Equal(t, "failed", row.Status)
+	assert.Contains(t, row.Error, "checking whether the failed attempt created the issue")
+	assert.Len(t, fake.created, 1)
 }

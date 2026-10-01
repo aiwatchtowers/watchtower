@@ -1,0 +1,47 @@
+⟦1:macro toc⟧
+
+# Release plan
+
+Owner: ⟦2:@557058:00000000-0000-0000-0000-000000000001⟧, tracked in ⟦3:jira PROJ-123⟧.
+
+We ship **on time** and _on budget_, see [the docs](https://example.com/docs?a=1&b=2) and `make app`. Статус: ⟦4:status ON TRACK⟧ ⟦5:emoticon tick⟧
+
+Reviewed ⟦6:commented last week⟧ by the team.
+Second line.
+
+## Scope
+
+- Backend ~~draft~~ API
+  - Nested with [a link](https://example.com/a)
+- Desktop
+
+1. First
+2. Second
+   continued
+
+| **Area** | Owner |
+| --- | --- |
+| Sync | Ann Lee |
+| Синхронизация |  |
+
+⟦7:table 2x2⟧
+
+⟦8:image diagram.png⟧
+
+```go
+if a > b && c < d {
+	return "]]>"
+}
+```
+
+⟦9:macro panel⟧
+
+⟦layout boundary⟧
+
+### Риски
+
+Текст «в кавычках» и неразрывный пробел.
+
+⟦layout boundary⟧
+
+Right column ⟦10:date 2026-10-01⟧ date.

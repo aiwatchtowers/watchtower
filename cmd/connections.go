@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -459,8 +460,18 @@ func runConnectionsOAuth(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("oauth sign-in: %w", err)
 	}
 
+	// Under the secret's lock, so a chat launch mid-refresh of the old grant
+	// cannot write it back over this new one (see applyOAuthCredentials).
+	lockCtx, cancel := context.WithTimeout(cmd.Context(), oauthLockWait)
+	defer cancel()
+	unlock, err := store.Lock(lockCtx)
+	if err != nil {
+		return fmt.Errorf("saving the new sign-in (run it again): %w", err)
+	}
 	secret.OAuth = grant
-	if err := store.Save(secret); err != nil {
+	err = store.Save(secret)
+	unlock()
+	if err != nil {
 		return fmt.Errorf("saving secret: %w", err)
 	}
 	if err := database.SetExternalConnectionEnabled(id, true); err != nil {

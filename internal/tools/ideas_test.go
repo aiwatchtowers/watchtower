@@ -48,7 +48,7 @@ func TestListIdeas_FiltersByKind(t *testing.T) {
 }
 
 func TestListIdeas_RejectsInvalidKind(t *testing.T) {
-	_, err := ideasRegistry(t, openDB(t)).CallRead(context.Background(), "list_ideas", json.RawMessage(`{"kind":"bogus"}`))
+	_, err := ideasRegistry(t, openDB(t)).CallRead(context.Background(), "list_ideas", json.RawMessage(`{"kind":"bogus"}`), Binding{})
 	var verr *ValidationError
 	require.ErrorAs(t, err, &verr)
 	assert.Contains(t, verr.Msg, "bogus")
@@ -65,7 +65,7 @@ func TestGetIdea_IncludesMentions(t *testing.T) {
 }
 
 func TestGetIdea_NotFound(t *testing.T) {
-	_, err := ideasRegistry(t, openDB(t)).CallRead(context.Background(), "get_idea", json.RawMessage(`{"id":999999}`))
+	_, err := ideasRegistry(t, openDB(t)).CallRead(context.Background(), "get_idea", json.RawMessage(`{"id":999999}`), Binding{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
 }

@@ -67,6 +67,16 @@ final class AgentToolsContractTests: XCTestCase {
         XCTAssertEqual(AgentToolsContract.promptBlock(surface: .target), try Self.goFixture("target"))
     }
 
+    func testBothBlocksTeachConfluenceEditing() {
+        for surface in [AgentSurface.main, .target] {
+            let block = AgentToolsContract.promptBlock(surface: surface)
+            XCTAssertTrue(block.contains("- edit_confluence_page — "), "\(surface)")
+            XCTAssertTrue(block.contains("read it with get_confluence_page first"), "\(surface)")
+            XCTAssertTrue(block.contains("pass its version as base_version"), "\(surface)")
+            XCTAssertTrue(block.contains("Keep every ⟦…⟧ marker you do not mean to delete, verbatim"), "\(surface)")
+        }
+    }
+
     func testTargetBlockOffersTheJiraIssueWrites() {
         let block = AgentToolsContract.promptBlock(surface: .target)
         for tool in ["add_jira_comment", "transition_jira_issue", "assign_jira_issue", "update_jira_issue"] {

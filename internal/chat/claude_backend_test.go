@@ -214,6 +214,49 @@ func TestClaudeBackend_CancelKillsAfterGraceAndNextTurnResumes(t *testing.T) {
 	assert.True(t, contains(runs[1], "--resume"), "the respawn resumes the session")
 }
 
+// A fresh (replayed) session killed after a cancel must not lose the
+// conversation: the next turn — sent without replay, since the app counts
+// the stopped turn as seen — resumes the session the killed child reported
+// on its init line, and the interrupted turn_done carries that id.
+func TestClaudeBackend_CancelKillOnFreshSessionResumesItsOwnSession(t *testing.T) {
+	opts, f := fakeClaude(t, "ignore_interrupt")
+	opts.Env = append(opts.Env, "FAKE_INIT_SID=sess-new")
+	opts.Replay = func(string) (string, error) { return "=== CONVERSATION SO FAR ===\n=== END ===\n\n", nil }
+	h := startSession(t, NewClaudeBackend(opts), nil)
+	h.next(EventSessionReady)
+
+	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "long", Replay: true})
+	h.next(EventTextDelta)
+	h.send(Command{Type: CommandCancel})
+	done := h.next(EventTurnDone)
+	assert.Equal(t, StatusInterrupted, done.Status)
+	assert.Equal(t, "sess-new", done.SessionID, "the app records the fresh session it can resume")
+
+	h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "next"})
+	h.next(EventTurnDone)
+	require.NoError(t, h.finish())
+
+	runs := argvRuns(t, f.argv)
+	last := runs[len(runs)-1]
+	idx := indexOf(last, "--resume")
+	require.GreaterOrEqual(t, idx, 0, "the respawn after the kill resumes, never a blank session")
+	assert.Equal(t, "sess-new", last[idx+1])
+}
+
+// A replaced child's late line must not overwrite the session the next
+// spawn resumes: only the live child's id counts.
+func TestClaudeBackend_NoteSessionIDIgnoresAReplacedChild(t *testing.T) {
+	b := &claudeBackend{}
+	old, live := &claudeProc{}, &claudeProc{}
+	b.proc = live
+	b.noteSessionID(old, "sess-old")
+	assert.Empty(t, b.resume)
+	b.noteSessionID(live, "sess-live")
+	assert.Equal(t, "sess-live", b.resume)
+	b.noteSessionID(old, "sess-old")
+	assert.Equal(t, "sess-live", b.resume)
+}
+
 func TestClaudeBackend_CrashThenNextTurnRespawnsWithResume(t *testing.T) {
 	opts, f := fakeClaude(t, "crash_once")
 	opts.ResumeSessionID = "sess-0"
@@ -518,6 +561,66 @@ func TestClaudeBackend_SessionLostFromResultErrorsRetriesWithReplay(t *testing.T
 	}
 	runs := argvRuns(t, f.argv)
 	assert.False(t, contains(runs[len(runs)-1], "--resume"))
+}
+
+// The CI flake behind SessionLostFromResultErrorsRetriesWithReplay, made
+// deterministic: the warm --resume child reports the rejection BEFORE the
+// owner's turn and is still alive when the turn is written. Sending drains
+// the child's buffered events, so the session_lost error is gone by then; the
+// recorded rejection (lostMsg) must still turn the exit into the fresh
+// retry, not an internal error.
+func TestClaudeBackend_ResumeRejectedBeforeTheTurnOnALiveChildRetriesFresh(t *testing.T) {
+	opts, f := fakeClaude(t, "lost_result_linger")
+	opts.ResumeSessionID = "gone"
+	opts.Replay = func(string) (string, error) { return "=== CONVERSATION SO FAR ===\n=== END ===\n\n", nil }
+	be := NewClaudeBackend(opts).(*claudeBackend)
+	h := startSession(t, be, nil)
+	h.next(EventSessionReady)
+	be.mu.Lock()
+	p := be.proc
+	be.mu.Unlock()
+	require.NotNil(t, p)
+	deadline := time.Now().Add(10 * time.Second)
+	for m, _ := p.lostMsg.Load().(string); m == ""; m, _ = p.lostMsg.Load().(string) {
+		require.True(t, time.Now().Before(deadline), "the child reports the rejected --resume")
+		time.Sleep(10 * time.Millisecond)
+	}
+	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "hello"})
+	assert.Equal(t, "turn 1", h.next(EventTextDelta).Text)
+	assert.Equal(t, StatusComplete, h.next(EventTurnDone).Status)
+	require.NoError(t, h.finish())
+	for e := range h.events {
+		assert.NotEqual(t, EventError, e.Type, "session_lost is recovered silently")
+	}
+	runs := argvRuns(t, f.argv)
+	assert.False(t, contains(runs[len(runs)-1], "--resume"))
+}
+
+// The two halves of that fix, each pinned on its own. A live resumed child
+// that already reported the rejection is never written to: the turn goes
+// straight to the fresh retry.
+func TestClaudeBackend_LiveChildWithReportedRejectionIsNotReused(t *testing.T) {
+	p := &claudeProc{resumed: true, exited: make(chan struct{})}
+	p.lostMsg.Store("No conversation found with session ID: gone")
+	b := &claudeBackend{proc: p, resume: "gone"}
+	_, err := b.ensureProcLocked()
+	var rejected *resumeRejectedError
+	require.ErrorAs(t, err, &rejected)
+	assert.Contains(t, rejected.msg, "No conversation found")
+}
+
+// And a child whose rejection event was drained before the turn was sent
+// (claimForSend drains stale events) still exits as session lost, never as
+// a plain exit.
+func TestClaudeBackend_ExitAfterADrainedRejectionIsSessionLost(t *testing.T) {
+	p := &claudeProc{resumed: true, events: make(chan Event, 1),
+		outDone: make(chan struct{}), errDone: make(chan struct{}), stderr: &boundedBuffer{limit: 1 << 10}}
+	close(p.outDone)
+	close(p.errDone)
+	p.lostMsg.Store("No conversation found with session ID: gone")
+	p.gotResult.Store(true)
+	out := exitOutcome(p, func(Event) (outcome, bool) { return outcome{}, false })
+	assert.Equal(t, outcomeLost, out.kind)
 }
 
 // ToolSearch never surfaces as a step through the whole backend either, and

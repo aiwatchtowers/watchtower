@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"watchtower/internal/claude"
+	"watchtower/internal/fsutil"
 )
 
 // ClaudeOptions configures the warm Claude backend.
@@ -68,19 +70,36 @@ type claudeProc struct {
 	lostMsg   atomic.Value // string: the session_lost error the child reported on stdout
 }
 
+// exitedOutputWait bounds how long an exited child's stdout may take to be
+// fully read before the exit is judged (rejectedResume, exitOutcome). Both
+// wait after a sweep, so no grandchild still holds the pipe: the wait ends at
+// EOF, normally at once — the bound is only a backstop. It must be generous:
+// under load the reader can lag the exit by far more than half a second, and
+// judging the exit before the reader saw a --resume rejection turns the
+// fresh retry into a respawn of the same doomed --resume, or an error.
+const exitedOutputWait = 5 * time.Second
+
 // rejectedResume returns the --resume rejection an exited child died of
 // before any turn result, or "" when it died of anything else. Only called
-// once the child has exited.
+// once the child has exited and its group was swept.
 func (p *claudeProc) rejectedResume() string {
 	if !p.resumed {
 		return ""
 	}
-	waitClosed(p.outDone, 500*time.Millisecond)
-	if m, _ := p.lostMsg.Load().(string); m != "" {
-		return m
-	}
-	if p.gotResult.Load() {
-		return ""
+	// The reader records a rejection before the result that carries it, so
+	// a result already seen settles the answer without waiting (this runs
+	// under b.mu).
+	for waited := false; ; waited = true {
+		if m, _ := p.lostMsg.Load().(string); m != "" {
+			return m
+		}
+		if p.gotResult.Load() {
+			return ""
+		}
+		if waited {
+			break
+		}
+		waitClosed(p.outDone, exitedOutputWait)
 	}
 	waitClosed(p.errDone, 500*time.Millisecond)
 	msg := strings.TrimSpace(p.stderr.String())
@@ -127,11 +146,22 @@ type claudeBackend struct {
 	closed    bool   // Close ran: nothing may spawn again
 	inFlight  bool   // this turn's message reached the child (reset when Turn returns)
 
-	// projectPending is true until the first turn of the current fresh
-	// provider session carrying the project files is written. Touched only
+	// projectPending is true until a turn of the current fresh provider
+	// session carrying the project files ends with turn_done. Touched only
 	// by Start and the (single-flight) Turn goroutine.
 	projectPending bool
+	// projectFailures counts the turns carrying the project files that
+	// failed in a way the files may have caused, since they last reached a
+	// session; at maxProjectFailures projectGivenUp is set for this
+	// backend's life: no fresh session (the app replays after every failed
+	// turn) attaches them again — each one's first turn says so instead —
+	// so a file the provider refuses cannot fail every turn.
+	projectFailures int
+	projectGivenUp  bool
 }
+
+// maxProjectFailures is how many failed turns may carry the project files.
+const maxProjectFailures = 2
 
 // errBackendClosed ends a turn that raced with Close: after Close no child
 // may be spawned, or it would outlive the session unreaped.
@@ -200,11 +230,11 @@ func (b *claudeBackend) Start(ctx context.Context) (string, error) {
 		return "", err
 	}
 	var err error
-	if b.promptFile, err = writePrivateTemp("wt-chat-prompt-*.txt", b.opts.SystemPrompt); err != nil {
+	if b.promptFile, err = fsutil.WritePrivateTemp("wt-chat-prompt-*.txt", b.opts.SystemPrompt); err != nil {
 		return "", fmt.Errorf("writing system prompt file: %w", err)
 	}
 	if b.opts.MCPConfig != "" {
-		if b.mcpFile, err = writePrivateTemp("wt-chat-mcp-*.json", b.opts.MCPConfig); err != nil {
+		if b.mcpFile, err = fsutil.WritePrivateTemp("wt-chat-mcp-*.json", b.opts.MCPConfig); err != nil {
 			return "", fmt.Errorf("writing mcp config file: %w", err)
 		}
 	}
@@ -230,38 +260,138 @@ func (b *claudeBackend) markFreshSession() {
 	b.projectPending = len(b.opts.ProjectAttachments) > 0
 }
 
-// projectSent clears the pending flag once the first turn of the fresh
-// session has been written to the child's stdin — with whatever project
-// files were still loadable, so a skipped file is never retried.
-func (b *claudeBackend) projectSent() { b.projectPending = false }
+// projectSent clears the pending flag once the files reached the session —
+// with whatever files were still loadable, so a skipped file is never
+// retried.
+func (b *claudeBackend) projectSent() {
+	b.projectPending = false
+	b.projectFailures = 0
+}
+
+// settleProject decides, after a turn that carried the project files,
+// whether the session now holds them: a completed turn, or one killed after
+// the owner's cancel (it was streaming, so its message is in the session the
+// respawn resumes). A turn that failed in a way the files may have caused
+// (projectFileFailure) keeps them pending once more — the provider may have
+// rejected the whole request — and the second such failure gives them up.
+// Any other failure (rate limit, auth, a crash) keeps them pending without
+// counting: the app replays after it, and the fresh session carries them.
+func (b *claudeBackend) settleProject(out outcome) {
+	switch {
+	case out.kind == outcomeDone && !out.failed:
+		b.projectSent()
+	case out.kind == outcomeExited && b.wasCancelled():
+		b.projectSent()
+	case out.kind == outcomeDone && out.failed && projectFileFailure(out.code, out.msg):
+		if b.projectFailures++; b.projectFailures >= maxProjectFailures && !b.projectGivenUp {
+			b.projectGivenUp = true
+			fmt.Fprintf(b.warn(), "chat project files given up after %d failed turns: %s\n",
+				b.projectFailures, strings.Join(b.projectNames(), ", "))
+		}
+	}
+}
+
+// projectFileFailure reports whether a failed turn may have been caused by
+// a bad project file. Only an internal error can be (the provider refusing
+// the request lands there), and only when it is not a provider outage —
+// internal is also ClassifyClaudeError's catch-all for a 5xx or a dropped
+// connection. A rate limit, an auth or a start failure, a lost session or
+// an interrupt says nothing about the files.
+func projectFileFailure(code, msg string) bool {
+	if code != CodeInternal {
+		return false
+	}
+	m := strings.ToLower(msg)
+	return !serverErrorRe.MatchString(m) && !containsAny(m, "internal server error", "api_error",
+		"connection", "timed out", "timeout", "temporarily unavailable")
+}
+
+// serverErrorRe finds an HTTP 5xx status in an error message.
+var serverErrorRe = regexp.MustCompile(`\b5\d\d\b`)
+
+func (b *claudeBackend) projectNames() []string {
+	names := make([]string, len(b.opts.ProjectAttachments))
+	for i, a := range b.opts.ProjectAttachments {
+		names[i] = a.Name
+	}
+	return names
+}
+
+func (b *claudeBackend) wasCancelled() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.cancelled
+}
 
 // projectBlocks is the project files' content blocks for this turn: nil
 // unless it opens a fresh provider session. Each file is read now; one that
 // is gone or no longer valid (removed on the project page after the session
-// started) is skipped and named on Warn — a project file never fails the
-// turn, unlike the owner's own attachments.
-func (b *claudeBackend) projectBlocks() []json.RawMessage {
+// started), or that does not fit in what the per-message encoded cap leaves
+// after the owner's own files (ownSize), is skipped and named on Warn: a
+// project file never fails the turn, unlike the owner's own attachments.
+//
+// note tells the model about the files the prompt lists as attached but
+// this turn does not carry: those squeezed out by the owner's files, or all
+// of them once given up. "Listed" re-runs the prompt's fit against the whole
+// cap in the same order — approximately: the prompt sizes from the DB and
+// also counts a file missing on disk, which this loop cannot.
+func (b *claudeBackend) projectBlocks(ownSize int64) (blocks []json.RawMessage, note string) {
 	if !b.projectPending {
-		return nil
+		return nil, ""
 	}
-	out := make([]json.RawMessage, 0, len(b.opts.ProjectAttachments))
+	if b.projectGivenUp {
+		return nil, fmt.Sprintf("[Project files not attached in this session (a message carrying them failed "+
+			"twice): %s]\n\n", strings.Join(b.projectNames(), ", "))
+	}
+	budget, promptBudget := MaxTurnAttachmentEncodedBytes-ownSize, MaxTurnAttachmentEncodedBytes
+	var squeezed []string
+	blocks = make([]json.RawMessage, 0, len(b.opts.ProjectAttachments))
 	for _, a := range b.opts.ProjectAttachments {
-		blk, err := projectFileBlock(a)
+		l, err := loadAttachment(a, false)
+		if err == nil {
+			size := l.encodedSize()
+			listed := size <= promptBudget
+			if listed {
+				promptBudget -= size
+			}
+			if size > budget {
+				if listed {
+					squeezed = append(squeezed, a.Name)
+				}
+				err = fmt.Errorf("over the %d MB one message carries", MaxTurnAttachmentEncodedBytes>>20)
+			}
+		}
+		var blk json.RawMessage
+		if err == nil {
+			blk, err = l.block()
+		}
 		if err != nil {
 			fmt.Fprintf(b.warn(), "chat project file %q skipped: %v\n", a.Name, err)
 			continue
 		}
-		out = append(out, blk)
+		budget -= l.encodedSize()
+		blocks = append(blocks, blk)
 	}
-	return out
+	if len(squeezed) > 0 {
+		note = fmt.Sprintf("[Project files not attached to this message (over the %d MB one message carries, "+
+			"next to the owner's own files): %s]\n\n", MaxTurnAttachmentEncodedBytes>>20, strings.Join(squeezed, ", "))
+	}
+	return blocks, note
 }
 
-func projectFileBlock(a Attachment) (json.RawMessage, error) {
-	l, err := loadAttachment(a, false)
+// userLine builds the turn's stdin line. A rejected attachment
+// (*AttachmentError) returns here, before anything reaches the child's stdin
+// (CHAT-04): the session maps it to attachment_unsupported via
+// fallbackTerminal. Project files are lenient (projectBlocks) and only get
+// what the owner's files leave of the per-message cap; only the owner's own
+// fail the turn.
+func (b *claudeBackend) userLine(text string, atts []Attachment) ([]byte, error) {
+	own, ownSize, err := buildContentBlocks(atts)
 	if err != nil {
 		return nil, err
 	}
-	return l.block()
+	lead, note := b.projectBlocks(ownSize)
+	return claudeUserLine(append(lead, own...), note+text)
 }
 
 func (b *claudeBackend) warn() io.Writer {
@@ -334,21 +464,21 @@ func (b *claudeBackend) read(p *claudeProc, r *os.File) {
 	// Tool results arrive as one line each; allow multi-megabyte lines.
 	sc.Buffer(make([]byte, 0, 64<<10), 64<<20)
 	for sc.Scan() {
-		evs, err := b.tr.Feed(sc.Bytes())
+		evs, sid, err := b.tr.feed(sc.Bytes())
 		if err != nil {
 			continue // non-JSON noise on stdout is not a protocol event
 		}
+		if sid != "" {
+			b.noteSessionID(p, sid)
+		}
 		for _, e := range evs {
-			if isTerminal(e) {
-				p.gotResult.Store(true)
-			}
+			// lostMsg before gotResult: a reader seen half-way must never
+			// show a result without the rejection it carried.
 			if e.Type == EventError && e.Code == CodeSessionLost {
 				p.lostMsg.Store(e.Message)
 			}
-			if e.Type == EventTurnDone && e.SessionID != "" {
-				b.mu.Lock()
-				b.resume = e.SessionID
-				b.mu.Unlock()
+			if isTerminal(e) {
+				p.gotResult.Store(true)
 			}
 			select {
 			case p.events <- e:
@@ -356,6 +486,20 @@ func (b *claudeBackend) read(p *claudeProc, r *os.File) {
 				return
 			}
 		}
+	}
+}
+
+// noteSessionID makes the session id the live child reports (its init line
+// already carries it) the one the next spawn resumes. Without it a fresh
+// child killed mid-turn (a cancel past InterruptGrace) left resume empty, and
+// the next turn — sent without replay, as the app counts the stopped turn as
+// seen — opened a blank session with no history. A replaced child's late
+// lines are ignored: restartFresh has already cleared resume for the new one.
+func (b *claudeBackend) noteSessionID(p *claudeProc, sid string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.proc == p {
+		b.resume = sid
 	}
 }
 
@@ -369,8 +513,10 @@ const (
 )
 
 type outcome struct {
-	kind outcomeKind
-	msg  string
+	kind   outcomeKind
+	msg    string
+	failed bool   // outcomeDone whose terminal event was an error
+	code   string // that error's code (msg holds its message)
 }
 
 // Turn sends one owner message to the warm process and relays its events.
@@ -428,16 +574,12 @@ func (b *claudeBackend) attemptTurn(ctx context.Context, c Command, fresh bool, 
 		}
 		text = prefix + c.Text
 	}
-	// A rejected attachment (*AttachmentError) returns here, before
-	// anything reaches the child's stdin (CHAT-04): the session maps it
-	// to attachment_unsupported via fallbackTerminal. Project files are
-	// lenient (projectBlocks); only the owner's own fail the turn.
 	withProject := b.projectPending
-	line, err := claudeUserMessageLineWith(b.projectBlocks(), text, c.Attachments)
+	line, err := b.userLine(text, c.Attachments)
 	if err != nil {
 		return outcome{}, err
 	}
-	p, sent, err := b.send(ctx, line, withProject)
+	p, sent, err := b.send(ctx, line)
 	var rejected *resumeRejectedError
 	if errors.As(err, &rejected) {
 		return outcome{kind: outcomeLost, msg: rejected.msg}, nil
@@ -449,7 +591,11 @@ func (b *claudeBackend) attemptTurn(ctx context.Context, c Command, fresh bool, 
 		emit(Event{Type: EventTurnDone, TurnID: c.TurnID, Status: StatusInterrupted, SessionID: b.sessionToResume()})
 		return outcome{kind: outcomeDone}, nil
 	}
-	return b.await(ctx, p, emit), nil
+	out := b.await(ctx, p, emit)
+	if withProject {
+		b.settleProject(out)
+	}
+	return out, nil
 }
 
 // exitedTerminal is the terminal event of a turn whose child exited without a
@@ -476,7 +622,7 @@ func (b *claudeBackend) await(ctx context.Context, p *claudeProc, emit func(Even
 		}
 		emit(e)
 		if isTerminal(e) {
-			return outcome{kind: outcomeDone}, true
+			return outcome{kind: outcomeDone, failed: e.Type == EventError, code: e.Code, msg: e.Message}, true
 		}
 		return outcome{}, false
 	}
@@ -498,9 +644,15 @@ func (b *claudeBackend) await(ctx context.Context, p *claudeProc, emit func(Even
 // child printed before it died, then reads stderr — a --resume rejected
 // before any result is outcomeLost.
 func exitOutcome(p *claudeProc, handle func(Event) (outcome, bool)) outcome {
-	waitClosed(p.outDone, 500*time.Millisecond)
+	sweep(p) // nothing left in the group may hold stdout open
+	waitClosed(p.outDone, exitedOutputWait)
 	if o, done := drainPending(p.events, handle); done {
 		return o
+	}
+	// A rejection reported on stdout before this turn's message was sent
+	// (its event drained by claimForSend) still means the --resume failed.
+	if m, _ := p.lostMsg.Load().(string); p.resumed && m != "" {
+		return outcome{kind: outcomeLost, msg: m}
 	}
 	waitClosed(p.errDone, 500*time.Millisecond)
 	msg := strings.TrimSpace(p.stderr.String())
@@ -524,19 +676,13 @@ func exitOutcome(p *claudeProc, handle func(Event) (outcome, bool)) outcome {
 // writeMu) or stops it being sent, and no child is spawned after Close. The
 // write itself runs outside b.mu — it can block on a child that stopped
 // reading, and Cancel and Close must still get through to kill it.
-//
-// withProject says the line opens the fresh session: a successful write
-// clears the pending flag (a failed one keeps it for the next fresh child).
-func (b *claudeBackend) send(ctx context.Context, line []byte, withProject bool) (*claudeProc, bool, error) {
+func (b *claudeBackend) send(ctx context.Context, line []byte) (*claudeProc, bool, error) {
 	p, err := b.claimForSend(ctx)
 	if p == nil || err != nil {
 		return nil, false, err
 	}
 	_, werr := p.stdin.Write(line)
 	p.writeMu.Unlock()
-	if werr == nil && withProject {
-		b.projectSent()
-	}
 	if werr != nil {
 		b.mu.Lock()
 		closed := b.closed
@@ -595,6 +741,12 @@ func (b *claudeBackend) ensureProcLocked() (*claudeProc, error) {
 				return nil, &resumeRejectedError{msg: msg}
 			}
 		default:
+			// Alive but already reported the --resume rejection (it is
+			// about to exit): sending would drain that report away and
+			// end the turn as a plain exit. Go to the fresh retry now.
+			if m, _ := b.proc.lostMsg.Load().(string); b.proc.resumed && m != "" {
+				return nil, &resumeRejectedError{msg: m}
+			}
 			return b.proc, nil
 		}
 	}
@@ -734,7 +886,13 @@ func killGroup(p *claudeProc) { _ = syscall.Kill(-p.pgid, syscall.SIGKILL) }
 
 // sweep terminates what is left of the child's process group (the MCP
 // servers claude spawned) once claude itself is gone.
-func sweep(p *claudeProc) { _ = syscall.Kill(-p.pgid, syscall.SIGTERM) }
+// A pgid that is not a real group (a test's constructed proc) is never
+// signalled: kill(0) or kill(1) would hit the caller's group or init.
+func sweep(p *claudeProc) {
+	if p.pgid > 1 {
+		_ = syscall.Kill(-p.pgid, syscall.SIGTERM)
+	}
+}
 
 func waitClosed(ch <-chan struct{}, d time.Duration) bool {
 	select {
@@ -768,30 +926,6 @@ func drainPending(ch chan Event, handle func(Event) (outcome, bool)) (outcome, b
 			return outcome{}, false
 		}
 	}
-}
-
-// writePrivateTemp writes content to a new 0600 temp file.
-func writePrivateTemp(pattern, content string) (string, error) {
-	f, err := os.CreateTemp("", pattern)
-	if err != nil {
-		return "", err
-	}
-	path := f.Name()
-	if err := f.Chmod(0o600); err != nil {
-		f.Close()
-		os.Remove(path)
-		return "", err
-	}
-	if _, err := f.WriteString(content); err != nil {
-		f.Close()
-		os.Remove(path)
-		return "", err
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(path)
-		return "", err
-	}
-	return path, nil
 }
 
 // boundedBuffer keeps the first limit bytes written to it (stderr capture).

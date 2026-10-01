@@ -237,9 +237,17 @@ final class TranscriptCapturingRunner: CLIRunnerProtocol, @unchecked Sendable {
 final class FakeNotifier: MeetingTranscriptNotifying, @unchecked Sendable {
     private(set) var readyTitles: [String] = []
     private(set) var failedReasons: [String] = []
+    private(set) var voiceLabelNotifications: [(title: String, count: Int, transcriptID: Int64)] = []
+    private(set) var callAudioSilentCount = 0
+    private(set) var callAudioWithdrawnCount = 0
 
     func sendTranscriptReadyNotification(title: String) { readyTitles.append(title) }
     func sendTranscriptFailedNotification(reason: String) { failedReasons.append(reason) }
+    func sendVoicesToLabelNotification(title: String, count: Int, transcriptID: Int64) {
+        voiceLabelNotifications.append((title, count, transcriptID))
+    }
+    func sendCallAudioSilentNotification() { callAudioSilentCount += 1 }
+    func withdrawCallAudioSilentNotification() { callAudioWithdrawnCount += 1 }
 }
 
 // MARK: - Shared fixtures

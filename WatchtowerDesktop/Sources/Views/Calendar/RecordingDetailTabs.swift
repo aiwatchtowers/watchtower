@@ -527,11 +527,9 @@ struct RecordingNotesTab: View {
 /// flagged `deleted` and hidden, never removed — `onSetUtteranceDeleted`
 /// performs the transactional `segments_json` + `transcript_text` rewrite.
 ///
-/// Speaker identity: tapping a non-«Я» speaker label opens the rename picker
-/// (attendees first, free text after) — `onRenameSpeaker` performs the
-/// transactional rewrite + voice-print upsert. "Suggest speaker names" runs
-/// the LLM guess for unnamed clusters; suggestions render as confirm chips on
-/// the cluster's first visible utterance and are NEVER auto-applied.
+/// Speaker identity: tapping a non-«Я» speaker label opens the Voices window
+/// scoped to that speaker's samples (`onListenToSamples`) — labeling itself
+/// now happens there, through the voice registry, not in a rename sheet.
 struct RecordingTranscriptTab: View {
     let transcriptText: String
     let utterances: [TranscriptUtterance]?
@@ -539,22 +537,19 @@ struct RecordingTranscriptTab: View {
     /// scrolls to this utterance idx and clears the binding (RecordingDetailView
     /// sets it before switching to this tab).
     @Binding var scrollTarget: Int?
-    let attendees: [EventAttendee]
-    let suggestions: [SpeakerSuggestion]
-    let isSuggesting: Bool
-    let suggestError: String?
-    let suggestNotice: String?
+    /// Whether speaker names changed since this recording's recap/notes were
+    /// last generated — offers a one-tap regenerate instead of leaving stale
+    /// names silently baked into them.
+    let showRecapRefreshHint: Bool
     /// Returns whether the transactional rewrite landed — the toast only
     /// shows (and the undo only clears) on success.
     let onSetUtteranceDeleted: (_ idx: Int, _ deleted: Bool) -> Bool
-    let onSuggestNames: () -> Void
-    let onRenameSpeaker: (_ from: String, _ to: String) -> Void
-    let onDismissSuggestion: (_ speaker: String) -> Void
+    let onListenToSamples: (_ speaker: String) -> Void
+    let onRegenerateRecap: () -> Void
 
     @State private var hoveredIdx: Int?
     @State private var undoIdx: Int?
     @State private var undoDismissTask: Task<Void, Never>?
-    @State private var renameTarget: SpeakerRenameTarget?
 
     var body: some View {
         Group {
@@ -565,11 +560,6 @@ struct RecordingTranscriptTab: View {
             }
         }
         .overlay(alignment: .bottom) { undoToast }
-        .sheet(item: $renameTarget) { target in
-            SpeakerRenameSheet(speaker: target.speaker, attendees: attendees) { newName in
-                onRenameSpeaker(target.speaker, newName)
-            }
-        }
         .onDisappear { clearUndo() }
     }
 
@@ -585,19 +575,11 @@ struct RecordingTranscriptTab: View {
 
     private func utteranceList(_ utterances: [TranscriptUtterance]) -> some View {
         let visible = utterances.filter { !$0.deleted }
-        let hasUnnamed = visible.contains { SpeakerNaming.isUnnamed($0.speaker) }
-        // Chip anchor: the cluster's first visible utterance.
-        var chipAnchors: [Int: SpeakerSuggestion] = [:]
-        for suggestion in suggestions {
-            if let first = visible.first(where: { $0.speaker == suggestion.speaker }) {
-                chipAnchors[first.idx] = suggestion
-            }
-        }
         return ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 8) {
-                    if hasUnnamed || isSuggesting || suggestError != nil || suggestNotice != nil {
-                        suggestBar
+                    if showRecapRefreshHint {
+                        recapRefreshHint
                     }
                     if visible.isEmpty {
                         // Degenerate but valid: every utterance soft-deleted.
@@ -608,7 +590,7 @@ struct RecordingTranscriptTab: View {
                             .padding(.top, 24)
                     }
                     ForEach(visible) { utterance in
-                        utteranceRow(utterance, suggestion: chipAnchors[utterance.idx])
+                        utteranceRow(utterance)
                             .id(utterance.idx)
                     }
                 }
@@ -625,43 +607,21 @@ struct RecordingTranscriptTab: View {
         scrollTarget = nil
     }
 
-    /// "Suggest speaker names" control (visible while any cluster is still an
-    /// unnamed "Speaker N").
-    private var suggestBar: some View {
+    /// Shown once a speaker relabel lands after this recording's recap/notes
+    /// were generated — they still carry the old names until regenerated.
+    private var recapRefreshHint: some View {
         HStack(spacing: 8) {
-            Button {
-                onSuggestNames()
-            } label: {
-                Label("Suggest speaker names", systemImage: "person.crop.circle.badge.questionmark")
-                    .font(.caption)
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .disabled(isSuggesting)
-
-            if isSuggesting {
-                ProgressView().controlSize(.small)
-                Text("Analyzing transcript…")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else if let suggestError {
-                Label(suggestError, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .lineLimit(2)
-            } else if let suggestNotice {
-                // A successful run with nothing to confirm is info, not
-                // failure — no red triangle.
-                Label(suggestNotice, systemImage: "info.circle")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-            }
+            Label("Speaker names were updated — regenerate the recap?", systemImage: "arrow.triangle.2.circlepath")
+                .font(.caption)
+                .foregroundStyle(.secondary)
             Spacer()
+            Button("Regenerate", action: onRegenerateRecap)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
         }
     }
 
-    private func utteranceRow(_ utterance: TranscriptUtterance, suggestion: SpeakerSuggestion?) -> some View {
+    private func utteranceRow(_ utterance: TranscriptUtterance) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
                 speakerLabel(utterance.speaker)
@@ -684,9 +644,6 @@ struct RecordingTranscriptTab: View {
                 .allowsHitTesting(hoveredIdx == utterance.idx)
                 .help("Delete utterance")
             }
-            if let suggestion {
-                suggestionChip(suggestion)
-            }
             Text(utterance.text)
                 .font(.callout)
                 .textSelection(.enabled)
@@ -705,7 +662,7 @@ struct RecordingTranscriptTab: View {
     }
 
     /// «Я» stays a plain label (the owner's cluster is not renameable); every
-    /// other speaker label opens the rename picker.
+    /// other speaker label opens the Voices window on that speaker's samples.
     @ViewBuilder
     private func speakerLabel(_ speaker: String) -> some View {
         let label = Text(speaker)
@@ -715,43 +672,13 @@ struct RecordingTranscriptTab: View {
             label.foregroundStyle(Color.accentColor)
         } else {
             Button {
-                renameTarget = SpeakerRenameTarget(speaker: speaker)
+                onListenToSamples(speaker)
             } label: {
                 label.foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
-            .help("Rename this speaker")
+            .help("Listen to samples")
         }
-    }
-
-    /// "Looks like X — confirm?" chip for an LLM suggestion. Confirm applies
-    /// the manual-rename mechanics; ✕ dismisses the chip. Never auto-applied.
-    private func suggestionChip(_ suggestion: SpeakerSuggestion) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: "sparkle")
-                .font(.caption2)
-                .foregroundStyle(Color.accentColor)
-            Text("Looks like \(suggestion.candidate)")
-                .font(.caption)
-                .help(suggestion.evidence)
-            Button("Confirm") {
-                onRenameSpeaker(suggestion.speaker, suggestion.candidate)
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.mini)
-            Button {
-                onDismissSuggestion(suggestion.speaker)
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.caption2)
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .help("Dismiss suggestion")
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(Color.accentColor.opacity(0.12), in: Capsule())
     }
 
     @ViewBuilder
@@ -795,97 +722,6 @@ struct RecordingTranscriptTab: View {
         undoDismissTask?.cancel()
         undoDismissTask = nil
         undoIdx = nil
-    }
-}
-
-/// Sheet-identity wrapper for the speaker label being renamed.
-struct SpeakerRenameTarget: Identifiable {
-    let speaker: String
-    var id: String { speaker }
-}
-
-/// Rename picker: event attendees first (one tap), free-text entry after.
-/// Confirm hands the chosen display name back to the caller, which runs the
-/// transactional rename + voice-print upsert.
-struct SpeakerRenameSheet: View {
-    let speaker: String
-    let attendees: [EventAttendee]
-    let onConfirm: (String) -> Void
-
-    @Environment(\.dismiss) private var dismiss
-    @State private var freeText: String = ""
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Rename \(speaker)")
-                .font(.headline)
-
-            if !attendees.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Attendees")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    ForEach(attendees) { attendee in
-                        Button {
-                            confirm(attendee.displayName.isEmpty ? attendee.email : attendee.displayName)
-                        } label: {
-                            HStack(spacing: 6) {
-                                Image(systemName: "person.circle")
-                                    .foregroundStyle(.secondary)
-                                Text(attendee.displayName.isEmpty ? attendee.email : attendee.displayName)
-                                if !attendee.displayName.isEmpty, !attendee.email.isEmpty {
-                                    Text(attendee.email)
-                                        .foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                            }
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(attendees.isEmpty ? "Name" : "Or type a name")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                TextField("Speaker name", text: $freeText)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit { confirm(freeText) }
-                if freeTextIsReserved {
-                    Text("«Я» and “Speaker N” are reserved labels")
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                }
-            }
-
-            HStack {
-                Spacer()
-                Button("Cancel") { dismiss() }
-                Button("Rename") { confirm(freeText) }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(freeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        || freeTextIsReserved)
-            }
-        }
-        .padding(16)
-        .frame(minWidth: 320)
-    }
-
-    private var freeTextIsReserved: Bool {
-        SpeakerNaming.isReserved(freeText.trimmingCharacters(in: .whitespacesAndNewlines))
-    }
-
-    private func confirm(_ name: String) {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        // Reserved labels («Я» / "Speaker N") never leave the sheet — a
-        // rename to one would merge the cluster into the owner's identity
-        // and poison the voice-print base (also guarded in
-        // MeetingTranscriptQueries.renameSpeaker).
-        guard !trimmed.isEmpty, !SpeakerNaming.isReserved(trimmed) else { return }
-        onConfirm(trimmed)
-        dismiss()
     }
 }
 
@@ -933,6 +769,7 @@ struct RecordingChatTab: View {
                 dictationTargetID: "chat.meeting.\(chatVM.transcriptID)"
             )
         }
+        .clearsRecordingIndicator()
     }
 
     @ViewBuilder

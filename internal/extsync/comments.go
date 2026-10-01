@@ -24,13 +24,24 @@ func (e *Engine) processCommentBatch(ctx context.Context, p pass, bt batch) (str
 	if err != nil {
 		return "", err
 	}
-	sets, err := fetchCommentSets(ctx, p.f, p.c, parents)
-	if err != nil {
-		return "", err
-	}
 	cursor, err := advanceCursor(bt.cursor, bt.refs)
 	if err != nil {
 		return "", err
+	}
+	if err := e.applyCommentSets(ctx, p, parents, func(q Queryer) error {
+		return saveStream(ctx, q, p.src.ID, p.spec.name, cursor, bt.token)
+	}); err != nil {
+		return "", err
+	}
+	return cursor, nil
+}
+
+// applyCommentSets reloads the whole comment set of each parent, stamps it
+// children_changed_at and relinks it, then runs inTx, in one transaction.
+func (e *Engine) applyCommentSets(ctx context.Context, p pass, parents []string, inTx func(q Queryer) error) error {
+	sets, err := fetchCommentSets(ctx, p.f, p.c, parents)
+	if err != nil {
+		return err
 	}
 	now := e.opts.Now()
 	written := 0
@@ -47,14 +58,14 @@ func (e *Engine) processCommentBatch(ctx context.Context, p pass, bt batch) (str
 		if err := e.relinkDocs(ctx, q, p.src.Provider, p.src.ID, parents); err != nil {
 			return err
 		}
-		return saveStream(ctx, q, p.src.ID, p.spec.name, cursor, bt.token)
+		return inTx(q)
 	})
 	if err != nil {
-		return "", err
+		return err
 	}
 	collectUsers(p.users, nil, sets)
 	p.st.Comments += written
-	return cursor, nil
+	return nil
 }
 
 // changedParents returns, in first-seen order, the distinct parents of the

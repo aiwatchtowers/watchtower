@@ -49,7 +49,7 @@ func TestListMessages_PersonPlusKeyword(t *testing.T) {
 }
 
 func TestListMessages_NoFilterErrors(t *testing.T) {
-	_, err := messagesRegistry(t, seedMessagesDB(t)).CallRead(context.Background(), "list_messages", json.RawMessage(`{}`))
+	_, err := messagesRegistry(t, seedMessagesDB(t)).CallRead(context.Background(), "list_messages", json.RawMessage(`{}`), Binding{})
 	var verr *ValidationError
 	require.ErrorAs(t, err, &verr)
 	assert.Contains(t, verr.Msg, "at least one filter")
@@ -58,14 +58,14 @@ func TestListMessages_NoFilterErrors(t *testing.T) {
 // A lowercase name starting with U (e.g. "Ulyana") is not mistaken for a Slack
 // id — it goes down the name-resolution path and errors as unknown.
 func TestListMessages_LowercaseNameNotTreatedAsID(t *testing.T) {
-	_, err := messagesRegistry(t, seedMessagesDB(t)).CallRead(context.Background(), "list_messages", json.RawMessage(`{"person":"Ulyana"}`))
+	_, err := messagesRegistry(t, seedMessagesDB(t)).CallRead(context.Background(), "list_messages", json.RawMessage(`{"person":"Ulyana"}`), Binding{})
 	var verr *ValidationError
 	require.ErrorAs(t, err, &verr)
 	assert.Contains(t, verr.Msg, "no person matches")
 }
 
 func TestListMessages_UnknownPersonErrors(t *testing.T) {
-	_, err := messagesRegistry(t, seedMessagesDB(t)).CallRead(context.Background(), "list_messages", json.RawMessage(`{"person":"Nonexistent Person"}`))
+	_, err := messagesRegistry(t, seedMessagesDB(t)).CallRead(context.Background(), "list_messages", json.RawMessage(`{"person":"Nonexistent Person"}`), Binding{})
 	var verr *ValidationError
 	require.ErrorAs(t, err, &verr)
 }

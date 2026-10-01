@@ -132,7 +132,7 @@ struct MainNavigationView: View {
 
                     detailView
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .background(Color(nsColor: .controlBackgroundColor))
+                        .detailBackground()
                 }
             }
 
@@ -213,7 +213,13 @@ struct MainNavigationView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         case .briefings:
-            BriefingsListView()
+            if let vm = appState.briefingViewModel {
+                BriefingsListView(vm: vm)
+            } else {
+                Text("Briefings unavailable")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         case .dayPlan:
             if let vm = appState.dayPlanViewModel {
                 DayPlanView(vm: vm)
@@ -238,6 +244,14 @@ struct MainNavigationView: View {
             TargetsListView()
         case .tracks:
             TracksListView()
+        case .projects:
+            if let vm = appState.projectsViewModel {
+                ProjectsView(vm: vm)
+            } else {
+                Text("Projects unavailable")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         case .digests:
             DigestListView()
         case .people:

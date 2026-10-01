@@ -80,8 +80,8 @@ func TestEnsureFresh_ExpiringWithoutRefreshTokenErrors(t *testing.T) {
 	}
 
 	changed, err := EnsureFresh(context.Background(), g, now)
-	if err == nil {
-		t.Fatalf("EnsureFresh: want error for expiring grant with no refresh token")
+	if !errors.Is(err, ErrNoRefreshToken) {
+		t.Fatalf("EnsureFresh err = %v, want ErrNoRefreshToken for expiring grant with no refresh token", err)
 	}
 	if changed {
 		t.Errorf("changed = true, want false on error")

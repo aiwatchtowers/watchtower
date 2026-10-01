@@ -172,6 +172,8 @@ func sessionPromptOptions(cfg *config.Config, surface string, projectID int64, n
 		Surface: surface, ProjectID: projectID, ToolsAvailable: true,
 		Provider: cfg.AI.Provider, SkillsDir: skills.Dir(cfg.WorkspaceDir()), VaultDir: memoryVaultPath(cfg),
 		MemoryChat: cfg.Memory.Enabled && cfg.Memory.Surfaces.Chat, Now: now,
+		// Only the Claude backend unhides WebSearch (newSessionBackend).
+		WebSearch: cfg.AI.Provider != "codex" && cfg.AI.Provider != "ollama",
 	}
 }
 
@@ -227,8 +229,8 @@ func newSessionBackend(w sessionWiring) (chat.Backend, error) {
 			ResumeSessionID: aiSessionFlagResume,
 			SystemPrompt:    w.prompt,
 			MCPConfig:       ai.ChatMCPConfig(w.dbPath, w.mcpArgs, ext),
-			AllowedTools:    ai.AllowedTools(ext),
-			DisallowedTools: ai.DisallowedTools,
+			AllowedTools:    ai.AllowedTools(ext) + "," + ai.WebSearchTool,
+			DisallowedTools: ai.SessionDisallowedTools,
 			// Claude only: codex/ollama would reject an image/PDF as
 			// attachment_unsupported; their prompt still lists the files.
 			ProjectAttachments: chat.ProjectAttachments(w.project, w.warn),

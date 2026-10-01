@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"watchtower/internal/db"
@@ -214,7 +213,7 @@ func (p *Pipeline) backfillAccountMentions(ctx context.Context, accountID int64,
 			WaitingUserIDs: toWaitingJSON([]string{c.SenderUserID}),
 		})
 		if err != nil {
-			if strings.Contains(err.Error(), "UNIQUE") {
+			if isUniqueConflict(err) {
 				// Someone else (a concurrently running detector) already
 				// recovered this exact message — the row exists either way,
 				// so this counts as Created, not an error.

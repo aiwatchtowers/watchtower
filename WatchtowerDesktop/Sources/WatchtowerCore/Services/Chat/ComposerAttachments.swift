@@ -56,6 +56,13 @@ package final class ComposerAttachments {
         }
     }
 
+    /// Switching conversations: pending files belong to their own chat, so
+    /// the composer shows the newly opened chat's unsent files instead.
+    package func replacePending(with items: [ChatAttachment]) {
+        pending = items
+        errorMessage = nil
+    }
+
     /// Hands the pending set to `send` and clears the composer.
     package func takeForSend() -> [ChatAttachment] {
         let taken = pending

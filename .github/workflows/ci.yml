@@ -177,7 +177,11 @@ jobs:
     name: Swift Test
     needs: gate
     if: needs.gate.outputs.run == 'true'
-    runs-on: macos-15
+    # macos-26: its image carries Xcode 26.4+ (Swift 6.3). The pinned mlx-swift
+    # 0.31.6 (via speech-swift) declares swift-tools-version 6.3, which Xcode
+    # 26.3 (Swift 6.2.4, the newest on macos-15) cannot load on a cold SPM
+    # resolve — the job only passed on macos-15 while a warm cache hid it.
+    runs-on: macos-26
     defaults:
       run:
         working-directory: WatchtowerDesktop
@@ -193,7 +197,7 @@ jobs:
       # macOS-26 runner to execute the guarded code.
       - uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: "26.3"
+          xcode-version: "26.4.1"
 
       # GRDB alone is minutes of compile on a cold runner; reuse build
       # products across runs until dependencies change.
@@ -247,9 +251,16 @@ jobs:
       - name: Architectural rules
         run: sentrux check .
 
-      # gate blocks any structural regression vs .sentrux/baseline.json.
+      # gate blocks any structural regression vs .sentrux/baseline.json,
+      # EXCEPT the raw god-file count: that count is driven by name-based
+      # call resolution (a file gaining/losing an unrelated `append`/`flush`
+      # method can move it by dozens with zero real structural change — see
+      # docs/backlog/2026-09-28-sentrux-god-file-count-is-driven-by-name-
+      # based-method-resolution.md) and scripts/sentrux-gate.sh's own header.
+      # Quality, coupling, cycles and complex-function regressions still
+      # block exactly as before.
       - name: Structural regression gate
-        run: sentrux gate .
+        run: scripts/sentrux-gate.sh
 
       # baseline.json holds ONE god-file count, so a source file crossing the
       # threshold is indistinguishable from a test file that grew with new

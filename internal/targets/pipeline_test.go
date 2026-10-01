@@ -2,6 +2,7 @@ package targets
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 	"sync"
@@ -564,5 +565,33 @@ func TestPipeline_Extract_PositiveTimeoutStillHasDeadline(t *testing.T) {
 	}
 	if !gen.sawDeadline {
 		t.Fatalf("expected a deadline on the AI context when TimeoutSeconds > 0")
+	}
+}
+
+// TestProj01_ExtractSnapshotExcludesProjectTargets: the ACTIVE TARGETS
+// snapshot the extract prompt carries (and the link/dedup one, same query)
+// never lists a project target (PROJ-01).
+func TestProj01_ExtractSnapshotExcludesProjectTargets(t *testing.T) {
+	gen := &mockGenerator{responses: []string{`{"extracted": [], "omitted_count": 0, "notes": ""}`}}
+	p, d := makeTestPipeline(t, gen)
+	_, err := d.CreateTarget(db.Target{Text: "personal-target-visible", Status: "todo", Priority: "medium",
+		Ownership: "mine", SourceType: "manual"})
+	if err != nil {
+		t.Fatalf("create personal target: %v", err)
+	}
+	pid, err := d.CreateProject("acme", t.TempDir())
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	db.SeedTestProjectTarget(t, d, pid, sql.NullInt64{}, "project-target-hidden")
+
+	if _, err := p.Extract(context.Background(), ExtractRequest{RawText: "ship the thing"}); err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if !strings.Contains(gen.lastSystem, "personal-target-visible") {
+		t.Fatalf("snapshot lost the personal target:\n%s", gen.lastSystem)
+	}
+	if strings.Contains(gen.lastSystem, "project-target-hidden") {
+		t.Fatalf("snapshot leaked a project target:\n%s", gen.lastSystem)
 	}
 }

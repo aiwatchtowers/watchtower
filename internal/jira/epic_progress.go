@@ -41,8 +41,9 @@ func ComputeEpicProgress(database *db.DB, cfg *config.Config, now time.Time) ([]
 		return nil, nil
 	}
 
-	weekAgo := now.AddDate(0, 0, -7).Format(time.RFC3339)
-	fourWeeksAgo := now.AddDate(0, 0, -28).Format(time.RFC3339)
+	// In the stored form (db.FormatJiraTime): resolved_at is compared as a string.
+	weekAgo := db.FormatJiraTime(now.AddDate(0, 0, -7))
+	fourWeeksAgo := db.FormatJiraTime(now.AddDate(0, 0, -28))
 
 	aggs, err := database.GetJiraEpicAggregates(weekAgo, fourWeeksAgo)
 	if err != nil {

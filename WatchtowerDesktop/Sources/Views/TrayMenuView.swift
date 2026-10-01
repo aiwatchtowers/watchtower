@@ -16,6 +16,15 @@ struct TrayMenuView: View {
             syncProgress: appState.daemonManager.syncProgress,
             daemonError: appState.daemonManager.errorMessage,
             cliStoreError: appState.cliStoreError,
+            voicesPendingCount: appState.voiceRegistryCenter.pendingCount,
+            updateVersion: appState.updateService.isUpdateAvailable
+                ? appState.updateService.availableVersion : nil,
+            updateAction: {
+                // Same "become regular" move as Settings… below.
+                ActivationPolicyDecision.becomeRegularAndActivate()
+                appState.settingsTab = .system
+                openSettings()
+            },
             syncNowAction: {
                 Task { await appState.daemonManager.syncNow() }
             },
@@ -25,6 +34,15 @@ struct TrayMenuView: View {
                 // activation to actually come to the front.
                 ActivationPolicyDecision.becomeRegularAndActivate()
                 appState.openQuickCapture?()
+            },
+            voicesAction: {
+                Task { await appState.voiceRegistryCenter.open(.queue(transcriptID: nil)) }
+            },
+            reviewVoicesAction: {
+                Task { await appState.voiceRegistryCenter.open(.review) }
+            },
+            trainVoicesAction: {
+                Task { await appState.voiceRegistryCenter.open(.train) }
             },
             openAction: {
                 // Opening from the tray is a deliberate "become regular" move —
@@ -63,8 +81,16 @@ struct TrayMenuContent: View {
     let syncProgress: SyncProgress?
     let daemonError: String?
     let cliStoreError: String?
+    let voicesPendingCount: Int
+    /// Version of a found, not yet installed update; nil hides the item
+    /// (always nil for builds without an update channel).
+    let updateVersion: String?
+    let updateAction: () -> Void
     let syncNowAction: () -> Void
     let quickCaptureAction: () -> Void
+    let voicesAction: () -> Void
+    let reviewVoicesAction: () -> Void
+    let trainVoicesAction: () -> Void
     let openAction: () -> Void
     let settingsAction: () -> Void
 
@@ -88,11 +114,21 @@ struct TrayMenuContent: View {
             if let cliStoreError {
                 Text("CLI store: \(cliStoreError)")
             }
+            if let updateVersion {
+                Divider()
+                Button("Update to \(updateVersion) available…", action: updateAction)
+            }
             Divider()
             Button("Sync Now", action: syncNowAction)
                 .disabled(!isRunning)
             Divider()
             Button("New Voice Idea", action: quickCaptureAction)
+            Divider()
+            if voicesPendingCount > 0 {
+                Button("Voices to label (\(voicesPendingCount))", action: voicesAction)
+            }
+            Button("Review voices", action: reviewVoicesAction)
+            Button("Train voices", action: trainVoicesAction)
             Divider()
             Button("Open Watchtower", action: openAction)
             Button("Settings…", action: settingsAction)

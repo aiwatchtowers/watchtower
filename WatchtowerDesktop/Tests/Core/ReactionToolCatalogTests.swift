@@ -101,14 +101,16 @@ final class ReactionToolCatalogTests: XCTestCase {
         XCTAssertEqual(rows.first?.needsApproval, true)
     }
 
-    /// The Jira issue writes are chat-only (never in the reaction dictionary)
-    /// but render on the same agent-action card, so they need human names too.
+    /// The Jira issue writes and the Confluence page edit are chat-only (never
+    /// in the reaction dictionary) but render on the same agent-action card,
+    /// so they need human names too.
     func testJiraIssueWriteToolsHaveHumanNamesAndAlwaysAsk() {
         let expected = [
             "add_jira_comment": "Comment on a Jira issue",
             "transition_jira_issue": "Move a Jira issue",
             "assign_jira_issue": "Assign a Jira issue",
-            "update_jira_issue": "Update a Jira issue"
+            "update_jira_issue": "Update a Jira issue",
+            "edit_confluence_page": "Edit a Confluence page"
         ]
         for (tool, title) in expected {
             XCTAssertEqual(ReactionToolCatalog.title(for: tool), title)

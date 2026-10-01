@@ -1,7 +1,7 @@
 ---
 type: bug
 title: Chat history sidebar renders with a brown background
-status: open
+status: done
 priority: low
 tags: [desktop, chat, ui, theme, regression]
 context: fix/settings-storage-size-off-main — owner screenshot of the main AI Chat, dark mode
@@ -26,3 +26,30 @@ Expected: the history panel matches the app's standard sidebar in both light
 and dark mode, regardless of wallpaper.
 
 > Original note: «какого-то хуя покрасилась в другой цвет панель. Причем раньше была нормальная»
+
+Resolution: confirmed the second hypothesis. `ChatSidebarView`'s history `List`
+used `.listStyle(.sidebar)` while sitting in a plain `HStack` inside
+`ChatView.swift`'s `ChatSplitView` — not the leading column of a real
+`NavigationSplitView`. `.sidebar` requests the system source-list vibrancy
+material, which outside its intended split-view context renders tinted by
+the desktop wallpaper instead of the app's own dark chrome (the same failure
+mode `IdeasView.swift`'s `listPanel` comment already documents, there fixed
+by dropping `List` entirely). For this plain title-row history list, switched
+to `.listStyle(.plain)` + `.scrollContentBackground(.hidden)` +
+`.background(Color(nsColor: .windowBackgroundColor))`, matching the same
+`.windowBackgroundColor` background the app's hand-rolled `SidebarView` uses,
+so both sidebars now agree regardless of wallpaper/accent settings. Selection
+binding, section headers, and context menus are unchanged. Purely a SwiftUI
+styling fix with no pure logic to pin in a unit test; verified via
+`swift build --target WatchtowerDesktop` (clean) and `swiftlint lint` on the
+changed file (0 violations) — visual confirmation under a real wallpaper-tinted
+window is left to manual QA.
+
+Follow-up (2026-09-30): the Projects tab's list, board tree and documents
+list had the same cause — a `List` in an `HSplitView` column with
+`.listStyle(.sidebar)` or the automatic style, which resolves to the same
+source-list material there. The fix is now one shared modifier,
+`View.panelListStyle()` (`Views/Components/PanelListStyle.swift`), used by
+the chat history and all three Projects lists. `MemoryView`'s two lists
+still use `.listStyle(.sidebar)` inside an `HSplitView` and are the next
+candidates if the Memory tab shows the same tint.

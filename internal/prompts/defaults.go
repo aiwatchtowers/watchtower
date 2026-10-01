@@ -24,7 +24,6 @@ var Defaults = map[string]string{
 	MeetingNotes:               defaultMeetingNotes,
 	MeetingChapters:            defaultMeetingChapters,
 	MeetingFollowup:            defaultMeetingFollowup,
-	MeetingSpeakerGuess:        defaultMeetingSpeakerGuess,
 	DayPlanGenerate:            defaultDayPlanGenerate,
 	TargetsExtract:             defaultTargetsExtract,
 	TargetsLink:                defaultTargetsLink,
@@ -46,6 +45,7 @@ var Defaults = map[string]string{
 	ReactionCommand:            defaultReactionCommand,
 	CatchupCompose:             defaultCatchupCompose,
 	ChatTitle:                  defaultChatTitle,
+	TerminalTitle:              defaultTerminalTitle,
 }
 
 // AllIDs returns prompt IDs in display order.
@@ -68,7 +68,6 @@ var AllIDs = []string{
 	MeetingNotes,
 	MeetingChapters,
 	MeetingFollowup,
-	MeetingSpeakerGuess,
 	DayPlanGenerate,
 	TargetsExtract,
 	TargetsLink,
@@ -90,6 +89,7 @@ var AllIDs = []string{
 	ReactionCommand,
 	CatchupCompose,
 	ChatTitle,
+	TerminalTitle,
 }
 
 // DefaultVersions tracks the current version of each built-in prompt template.
@@ -104,7 +104,7 @@ var DefaultVersions = map[string]int{
 	TracksExtractBatch:         2, // v2: digest-based input instead of raw messages
 	PeopleReduce:               1,
 	PeopleTeam:                 1,
-	BriefingDaily:              7, // v7: the secretary/assistant persona merge — one assistant everywhere
+	BriefingDaily:              8, // v8: PROJECTS block (Watchtower projects, spec 2026-09-29)
 	DigestChannelBatch:         5, // v5: instruct the model to echo channel_id verbatim from the block header (C1)
 	PeopleBatch:                1, // v1: batch people cards for low-data users
 	TasksGenerate:              1, // v1: AI task generation with checklist and due date
@@ -114,7 +114,6 @@ var DefaultVersions = map[string]int{
 	MeetingNotes:               2, // v2: conditional speaker-label attribution (labeled vs. unlabeled transcripts)
 	MeetingChapters:            1, // v1: chapterize a meeting from a timecoded per-utterance transcript
 	MeetingFollowup:            1, // v1: owner-voice follow-up draft from stated chapter content (intent-draft contract)
-	MeetingSpeakerGuess:        1, // v1: content-clue name suggestions for unnamed speaker clusters
 	DayPlanGenerate:            4, // v4: the secretary/assistant persona merge — one assistant everywhere
 	TargetsExtract:             2, // v2: GROUPING/sub_items + LANGUAGE rules reconciled from the compiled const (fix b7640c0b)
 	TargetsLink:                1, // v1: single-target link proposal against active snapshot
@@ -136,6 +135,7 @@ var DefaultVersions = map[string]int{
 	ReactionCommand:            1, // v1: compose an agent-action's args from a reacted Slack message
 	CatchupCompose:             1, // v1: strong-tier absence-recap composer
 	ChatTitle:                  1, // v1: light-tier conversation title from the first exchange
+	TerminalTitle:              1, // v1: light-tier name for an embedded Claude Code session
 }
 
 // DefaultFor returns the hard-coded default template for a given key.
@@ -162,7 +162,6 @@ var Descriptions = map[string]string{
 	MeetingNotes:               "Meeting notes — publishable markdown notes from transcript for people who weren't at the meeting",
 	MeetingChapters:            "Meeting chapters — segment a recording into chapters with per-chapter decisions, action items, and open questions",
 	MeetingFollowup:            "Meeting follow-up — draft a follow-up message in the owner's voice from a chapter's stated decisions and action items",
-	MeetingSpeakerGuess:        "Meeting speaker guess — suggest names for unnamed transcript speakers from content clues (confirm chips, never auto-applied)",
 	DayPlanGenerate:            "Day plan generation — AI-powered daily schedule with timeblocks, backlog, and calendar conflict avoidance",
 	TargetsExtract:             "Target extraction — multi-target AI extraction from raw text with URL enrichments and hierarchy linking",
 	TargetsLink:                "Target linking — single-target parent and secondary link proposal against active snapshot",
@@ -184,6 +183,7 @@ var Descriptions = map[string]string{
 	ReactionCommand:            "Reaction commands: compose an agent-action's arguments from the Slack message the owner reacted to",
 	CatchupCompose:             "Catch-Up: compose one absence recap from the window's digests, meetings, decisions and owner items (strong tier; code validates refs)",
 	ChatTitle:                  "AI Chat: name a conversation from its first exchange (light tier, at most 60 characters)",
+	TerminalTitle:              "Terminal: name an embedded Claude Code session from the owner's first messages (light tier, 3-6 words)",
 }
 
 const defaultDigestChannel = `You are analyzing Slack messages from channel #%s for the period %s to %s.
@@ -454,7 +454,7 @@ Return ONLY a JSON object (no markdown fences, no explanation):
 
 {
   "attention": [
-    {"text": "What needs attention and why", "source_type": "track|digest|people|inbox|target", "source_id": "123", "priority": "high|medium", "reason": "Why this matters now"}
+    {"text": "What needs attention and why", "source_type": "track|digest|people|inbox|target|project", "source_id": "123", "priority": "high|medium", "reason": "Why this matters now"}
   ],
   "your_day": [
     {"text": "Suggested action based on track or target", "track_id": 123, "target_id": 0, "priority": "high|medium|low", "status": "active"}
@@ -494,6 +494,7 @@ Rules:
   - In "team_pulse": mention team workload signals if sprint progress data is available.
   - Each Jira signal should include Slack context if the same issue key appears in digests or tracks.
   - If JIRA CONTEXT section is empty, ignore Jira instructions entirely.
+- PROJECTS: the PROJECTS section lists the user's Watchtower projects — folder-bound boards that coding agents work on — with activity since the previous briefing. Bring a project into "attention" only for a blocked target, unread agent comments (an agent may be waiting for an answer), or documents whose comments still wait for the agent; use source_type="project" and source_id=the project_id. Never put a project's targets into "your_day" or into target_id — they live on the project board, not among the user's targets. If the section reads "(no project activity)", do not mention projects at all.
 - MEMORY REVISIONS: the MEMORY REVISIONS section lists belief revisions the assistant's memory made recently — notes derived from Slack/Jira, model-mediated, NOT the user's own words. Weave a revision into "attention" or "team_pulse" only when it genuinely bears on today's work; frame it as something the memory noticed, never as fact. If the section reads "(no notable revisions)", do NOT mention memory, beliefs, or revisions at all.
 - Be specific: name people, channels, decisions — not vague generalities.
 - If user has reports, prioritize their signals in team_pulse.
@@ -528,6 +529,9 @@ Rules:
 %s
 
 === JIRA CONTEXT ===
+%s
+
+=== PROJECTS ===
 %s
 
 === MEMORY REVISIONS ===
@@ -1013,34 +1017,6 @@ Participants: %s
 
 Return ONLY the message text (no code fences, no surrounding quotes). Keep it concise and scannable: a one-line opener naming the meeting, then decisions and action items as short bullets, open questions last (omit empty groups). Match the language of the stated content.`
 
-const defaultMeetingSpeakerGuess = `You identify unnamed speakers in a meeting transcript by their speech content. The transcript was auto-transcribed (it may mix ru/uk/en and contain recognition noise) and diarized into speaker clusters; some clusters are already named, the rest are labeled "Speaker N". Use content clues only: people addressing each other by name, self-introductions, role/domain knowledge, who answers questions directed at a name.
-
-=== EVENT ===
-Title: %s
-Time:  %s — %s
-Attendees (JSON): %s
-
-%s
-
-The user message carries the list of unnamed speakers, utterance samples per unnamed speaker, and a transcript excerpt.
-
-Return ONLY a JSON array (no markdown fences, no commentary) with at most one entry per unnamed speaker:
-
-[
-  {
-    "speaker": "Speaker 2",
-    "candidate": "string (the person's name — prefer an attendee's display name when one fits)",
-    "confidence": 0.0,
-    "evidence": "string (short quote or reasoning from the transcript)"
-  }
-]
-
-Rules:
-- "speaker" must be one of the unnamed speaker labels from the user message; never invent new ones.
-- Omit a speaker entirely when there is no real evidence — do not guess blindly.
-- confidence in [0,1]: someone addressing them by name = high; topic affinity alone = low.
-- Return [] when nothing can be inferred.`
-
 const defaultTargetsExtract = `You are a goal-extraction assistant. Given raw text (a Slack message, email paste, or form input), extract actionable targets (goals, tasks, deliverables) and return them as structured JSON.
 
 === RAW TEXT ===
@@ -1472,6 +1448,14 @@ You name a conversation between the owner and their work assistant. Read the fir
 - name the subject, not the act ("Payments rollout risks", not "Question about payments");
 - no quotes, no trailing period, no markdown, no emoji;
 - reply with the title only, on one line.`
+
+// defaultTerminalTitle names an embedded Claude Code session
+// (`watchtower terminal title`, light tier). No language-directive slot: the
+// name follows the language the owner wrote in, not the digest language.
+const defaultTerminalTitle = `You name a terminal session from the owner's first messages to a coding agent.
+Reply with only the name: 3 to 6 words, no quotes, no trailing period, in the
+language the owner wrote in. Name the task, not the tool ("Fix login redirect",
+not "Claude session").`
 
 // DictationModeInstructions returns the destination-specific instruction block
 // and the JSON contract for one dictation cleanup mode.

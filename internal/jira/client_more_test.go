@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -162,7 +163,11 @@ func TestClient_PersistentUnauthorizedIsAuthRevoked(t *testing.T) {
 // TestClient_PersistentUnauthorizedScopeIsNotRevoked: Atlassian answers a
 // request the grant lacks a scope for with 401 "Unauthorized; scope does
 // not match". That grant is alive and needs re-consent, so the surviving 401
-// comes back as *HTTPStatusError carrying the body, never as ErrAuthRevoked.
+// comes back as *HTTPStatusError carrying the body, never as ErrAuthRevoked —
+// and, since refreshing an access token can never fix a missing scope, it
+// must surface on the very first response rather than after burning the
+// refresh-token rotation budget (a scope-denied 401 used to rotate the
+// refresh token three times before this classification kicked in).
 func TestClient_PersistentUnauthorizedScopeIsNotRevoked(t *testing.T) {
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -171,8 +176,6 @@ func TestClient_PersistentUnauthorizedScopeIsNotRevoked(t *testing.T) {
 		_, _ = w.Write([]byte(`{"code":401,"message":"Unauthorized; SCOPE DOES NOT MATCH"}`))
 	}))
 	defer srv.Close()
-
-	stubTokenEndpoint(t)
 
 	c := makeTestClient(t, srv.URL)
 	var got map[string]any
@@ -184,7 +187,68 @@ func TestClient_PersistentUnauthorizedScopeIsNotRevoked(t *testing.T) {
 	require.True(t, errors.As(err, &he), "got %v", err)
 	assert.Equal(t, http.StatusUnauthorized, he.Status)
 	assert.Contains(t, he.Body, "SCOPE DOES NOT MATCH")
-	assert.Equal(t, int32(4), calls.Load(), "the refresh budget is still spent first")
+	assert.Equal(t, int32(1), calls.Load(), "a scope-denied 401 must surface immediately, with no refresh attempt")
+}
+
+// TestClient_401AfterRateLimitedAttemptsStillRefreshes pins the fix for the
+// 401/429 counter split: three 429s (e.g. the access token expiring mid
+// backoff) must not spend the 401 refresh budget — a 401 arriving right
+// after them must still get its own three refresh attempts, not be declared
+// ErrAuthRevoked immediately. Each 429 response carries "Retry-After: 0" so
+// the test does not sleep through BackoffDuration's fixed schedule.
+func TestClient_401AfterRateLimitedAttemptsStillRefreshes(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch calls.Add(1) {
+		case 1, 2, 3:
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+		case 4:
+			w.WriteHeader(http.StatusUnauthorized)
+		default:
+			assert.Equal(t, "Bearer at-refreshed", r.Header.Get("Authorization"))
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		}
+	}))
+	defer srv.Close()
+
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"access_token":"at-refreshed","refresh_token":"rt2","expires_in":3600}`))
+	}))
+	defer tokenSrv.Close()
+	prev := jiraTokenEndpoint
+	jiraTokenEndpoint = tokenSrv.URL
+	defer func() { jiraTokenEndpoint = prev }()
+
+	c := makeTestClient(t, srv.URL)
+	var got map[string]any
+	require.NoError(t, c.get(context.Background(), "/x", &got))
+	assert.Equal(t, true, got["ok"])
+	assert.Equal(t, int32(5), calls.Load(), "3 rate-limit retries + 1 failing 401 + 1 refreshed retry")
+}
+
+// TestClient_RateLimitExhaustedPreservesStatus pins that giving up on a 429
+// still lets a caller tell it was a rate limit: the returned error wraps the
+// response's own *HTTPStatusError (status 429) instead of a bare
+// "max retries exceeded" string with no status attached.
+func TestClient_RateLimitExhaustedPreservesStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "0")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"message":"rate limited"}`))
+	}))
+	defer srv.Close()
+
+	c := makeTestClient(t, srv.URL)
+	var got map[string]any
+	err := c.get(context.Background(), "/x", &got)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "max retries exceeded")
+	var he *HTTPStatusError
+	require.True(t, errors.As(err, &he), "got %v", err)
+	assert.Equal(t, http.StatusTooManyRequests, he.Status)
+	assert.Contains(t, he.Body, "rate limited")
 }
 
 func TestClient_SearchIssues(t *testing.T) {
@@ -331,4 +395,112 @@ func TestClient_GetAccessToken_PreservesRefreshTokenOnEmptyResponse(t *testing.T
 	loaded, err := store.Load()
 	require.NoError(t, err)
 	assert.Equal(t, "keep-me", loaded.RefreshToken, "client must preserve refresh_token when missing in response")
+}
+
+// TestClient_GetAccessToken_CrossProcessRefreshOnce: two Clients on the same
+// token file stand in for the daemon and a concurrent CLI — separate
+// in-process mutexes, one shared file. Atlassian rotates the refresh token, so
+// only the first refresh may reach the token endpoint; the second must wait on
+// the file lock and pick up the already-refreshed token instead of failing
+// with invalid_grant.
+func TestClient_GetAccessToken_CrossProcessRefreshOnce(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, NewTokenStore(dir, 1).Save(&OAuthToken{
+		AccessToken:  "old",
+		RefreshToken: "rt",
+		Expiry:       time.Now().Add(-time.Hour).UTC().Format(time.RFC3339),
+	}))
+
+	var calls atomic.Int32
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) > 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"invalid_grant"}`))
+			return
+		}
+		time.Sleep(100 * time.Millisecond) // widen the race window
+		_, _ = w.Write([]byte(`{"access_token":"new","refresh_token":"rt2","expires_in":3600}`))
+	}))
+	defer tokenSrv.Close()
+
+	newClient := func() *Client {
+		return &Client{
+			oauthCfg:   JiraOAuthConfig{ClientID: "c", ClientSecret: "s"},
+			tokenStore: NewTokenStore(dir, 1),
+			httpClient: &http.Client{Timeout: 3 * time.Second},
+			logger:     log.New(io.Discard, "", 0),
+			tokenURL:   tokenSrv.URL,
+		}
+	}
+	clients := []*Client{newClient(), newClient()}
+
+	var wg sync.WaitGroup
+	tokens := make([]string, len(clients))
+	errs := make([]error, len(clients))
+	for i, c := range clients {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			tokens[i], errs[i] = c.getAccessToken(context.Background())
+		}()
+	}
+	wg.Wait()
+
+	for i := range clients {
+		require.NoError(t, errs[i], "client %d", i)
+		assert.Equal(t, "new", tokens[i], "client %d", i)
+	}
+	assert.Equal(t, int32(1), calls.Load(), "the token endpoint must be hit once across both clients")
+}
+
+// TestClient_RefreshIfCurrent_CrossProcessRefreshOnce: the 401 path. Two
+// Clients (daemon + CLI) on one token file both got a 401 for the same stale
+// access token; only one may refresh — the other sees the rotated token
+// under the file lock and returns without calling the token endpoint.
+func TestClient_RefreshIfCurrent_CrossProcessRefreshOnce(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, NewTokenStore(dir, 1).Save(&OAuthToken{
+		AccessToken:  "stale",
+		RefreshToken: "rt",
+		Expiry:       time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+	}))
+
+	var calls atomic.Int32
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) > 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"invalid_grant"}`))
+			return
+		}
+		time.Sleep(100 * time.Millisecond) // widen the race window
+		_, _ = w.Write([]byte(`{"access_token":"new","refresh_token":"rt2","expires_in":3600}`))
+	}))
+	defer tokenSrv.Close()
+
+	newClient := func() *Client {
+		return &Client{
+			oauthCfg:   JiraOAuthConfig{ClientID: "c", ClientSecret: "s"},
+			tokenStore: NewTokenStore(dir, 1),
+			httpClient: &http.Client{Timeout: 3 * time.Second},
+			logger:     log.New(io.Discard, "", 0),
+			tokenURL:   tokenSrv.URL,
+		}
+	}
+	clients := []*Client{newClient(), newClient()}
+
+	var wg sync.WaitGroup
+	errs := make([]error, len(clients))
+	for i, c := range clients {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs[i] = c.refreshIfCurrent(context.Background(), "stale")
+		}()
+	}
+	wg.Wait()
+
+	for i := range clients {
+		require.NoError(t, errs[i], "client %d", i)
+	}
+	assert.Equal(t, int32(1), calls.Load(), "the token endpoint must be hit once across both clients")
 }

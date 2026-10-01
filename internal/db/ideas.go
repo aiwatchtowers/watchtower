@@ -926,14 +926,12 @@ func (db *DB) SetIdeasJiraFloor(accountID int64, ts string) error {
 // ListJiraIssuesUpdatedSince returns accountID's non-deleted Jira issues with
 // updated_at strictly above sinceISO, ascending by updated_at, capped at
 // limit — the raw input the ideas Jira pre-digest pass groups per project.
-// A plain string comparison against the raw Jira timestamp (unlike
-// ListJiraIssuesForExtract's parsed-in-Go approach): sinceISO is always the
-// account's own ideas_jira_floor, itself copied verbatim from a prior row's
-// updated_at, so the comparison is self-consistent within one account even
-// though the stored format is not a normalized unix value. beforeISO is an
-// optional upper bound on updated_at ("" is unbounded — parity with the
-// pre-bound behavior); like sinceISO it must already be in Jira's dotted-ms
-// format (db.FormatJiraTime) for the plain string compare to be format-safe.
+// A plain string comparison: updated_at is stored in db.FormatJiraTime's
+// fixed-width UTC form (migration 00092), so string order is instant order. sinceISO is the account's own
+// ideas_jira_floor, itself copied from a prior row's updated_at. beforeISO is
+// an optional upper bound on updated_at ("" is unbounded — parity with the
+// pre-bound behavior); like sinceISO it must be rendered by db.FormatJiraTime
+// for the plain string compare to be format-safe.
 //
 // The caller advances the floor to the highest updated_at it saw and reloads
 // with a strict >, so a LIMIT cut landing inside a group of issues sharing one

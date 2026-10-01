@@ -17,7 +17,7 @@ const jiraIssuesPerAccountLimit = 300
 const jiraExcerptBytes = 500
 
 // jiraFloorInitBackoff biases the init floor a few seconds into the past, on
-// top of db.FormatJiraTime matching Jira's own format, so an issue updated
+// top of db.FormatJiraTime matching the stored format, so an issue updated
 // within a couple of seconds of initialization is never lost even accounting
 // for clock skew between this process and whatever wrote the issue's
 // updated_at.
@@ -233,18 +233,16 @@ func newestComments(comments []db.JiraComment) []db.JiraComment {
 	return comments[len(comments)-maxCommentsPerIssue:]
 }
 
-// normalizeJiraStreamPeriod converts a Jira-format timestamp (raw
-// updated_at, which can carry any offset the API returned, e.g. "+0300") to
-// RFC3339 UTC for storage in stream_digests.period_from/period_to — the
-// email pre-digest pass already writes RFC3339 UTC there, and
+// normalizeJiraStreamPeriod converts a Jira timestamp (an updated_at, parsed
+// in either stored shape) to RFC3339 UTC in whole seconds for storage in
+// stream_digests.period_from/period_to — the email pre-digest pass already writes RFC3339 UTC there, and
 // ListStreamDigestsAfter/HasStreamDigestCovering compare both sources'
 // periods with plain string ordering, which is only offset-safe when every
 // row shares one format (GB4). An unparseable input (should not happen for a
 // value this pipeline itself produced) is stored verbatim rather than
 // blocking the whole pass — the worst case is one wrong coverage/window skip
-// for that single row, not a dropped digest. Pre-existing rows written before
-// this normalization may still carry a raw Jira offset; see
-// docs/inventory/ideas.md.
+// for that single row, not a dropped digest. Migration 00092 rewrote the
+// rows written before this normalization.
 func normalizeJiraStreamPeriod(raw string) string {
 	unix, ok := db.ParseJiraTime(raw)
 	if !ok {
@@ -319,6 +317,82 @@ func (p *Pipeline) renderJiraWindow(accountID int64, issues []db.JiraIssue, comm
 	return block, tags, boundary
 }
 
+// jiraLaggingProjectOverlap mirrors the Jira sync's own watermark overlap
+// (buildIncrementalJQL re-reads 2 minutes before last_synced_at).
+const jiraLaggingProjectOverlap = 2 * time.Minute
+
+// jiraLaggingProjectMaxAge caps how long one failing project may hold the
+// account's ideas floor back. Past it the project is treated as abandoned
+// (logged) so a permanently broken board cannot stall Jira mining forever.
+const jiraLaggingProjectMaxAge = 7 * 24 * time.Hour
+
+// failingJiraProjectClamp returns the instant a pass must not mine past
+// because one of the account's selected projects is currently failing to sync
+// (ok=false: no such project). jira.Syncer.Sync skips a failing project and
+// returns nil, so the healthy projects' issues could otherwise carry the
+// account-wide floor past changes the failing project has not synced yet —
+// those would land below the floor on recovery and never be mined (IDEA-01).
+func (p *Pipeline) failingJiraProjectClamp(accountID int64, now time.Time) (time.Time, bool, error) {
+	lagging, err := p.db.OldestFailingJiraProjectSync(accountID)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	if lagging == "" {
+		return time.Time{}, false, nil
+	}
+	synced, ok := parseSyncStamp(lagging)
+	if !ok {
+		p.logf("ideas: jira account %d: unparseable project last_synced_at %q, not clamping the floor", accountID, lagging)
+		return time.Time{}, false, nil
+	}
+	if now.Sub(synced) > jiraLaggingProjectMaxAge {
+		p.logAbandonedProjectOnce(accountID, lagging, now)
+		return time.Time{}, false, nil
+	}
+	return synced.Add(-jiraLaggingProjectOverlap), true, nil
+}
+
+// logAbandonedProjectOnce logs that a long-failing project no longer holds
+// the floor, at most once per (account, stalled stamp) per UTC day.
+func (p *Pipeline) logAbandonedProjectOnce(accountID int64, lagging string, now time.Time) {
+	key := fmt.Sprintf("%d|%s|%s", accountID, lagging, now.UTC().Format("2006-01-02"))
+	if p.abandonedProjectLogged[key] {
+		return
+	}
+	if p.abandonedProjectLogged == nil {
+		p.abandonedProjectLogged = map[string]bool{}
+	}
+	p.abandonedProjectLogged[key] = true
+	p.logf("ideas: jira account %d: a selected project has failed to sync since %s (over %s) — no longer holding the ideas floor for it", accountID, lagging, jiraLaggingProjectMaxAge)
+}
+
+// passBeforeISO combines the pass's optional backfill bound and the
+// failing-project clamp into one string upper bound ("" = unbounded).
+func (p *Pipeline) passBeforeISO(accountID int64, bound time.Time) (string, error) {
+	clamp, clamped, err := p.failingJiraProjectClamp(accountID, time.Now())
+	if err != nil {
+		return "", err
+	}
+	var before string
+	if !bound.IsZero() {
+		before = db.FormatJiraTime(bound)
+	}
+	if clamped {
+		c := db.FormatJiraTime(clamp)
+		if before == "" || c < before {
+			p.logf("ideas: jira account %d: a selected project is failing to sync — mining only up to %s", accountID, c)
+			before = c
+		}
+	}
+	return before, nil
+}
+
+// parseSyncStamp parses a jira_sync_state.last_synced_at (RFC3339).
+func parseSyncStamp(s string) (time.Time, bool) {
+	t, err := time.Parse(time.RFC3339, s)
+	return t, err == nil
+}
+
 // initJiraFloor stamps a never-initialized account's ideas floor at now
 // (minus jiraFloorInitBackoff) and mines nothing — no backfill, the
 // initEmailFloor precedent.
@@ -365,9 +439,9 @@ func (p *Pipeline) runJiraDigestAccount(ctx context.Context, acct db.JiraAccount
 		return p.initJiraFloor(acct)
 	}
 
-	var beforeISO string
-	if !bound.IsZero() {
-		beforeISO = db.FormatJiraTime(bound)
+	beforeISO, err := p.passBeforeISO(acct.ID, bound)
+	if err != nil {
+		return err
 	}
 	issues, err := p.db.ListJiraIssuesUpdatedSince(acct.ID, floor, beforeISO, jiraIssuesPerAccountLimit)
 	if err != nil {
