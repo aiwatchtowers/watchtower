@@ -166,7 +166,8 @@ private struct TrainGroupCardView: View {
             if !group.hint.isEmpty {
                 Text(group.hint).font(.caption).foregroundStyle(.secondary)
             }
-            VoicePersonPicker(candidates: candidates, selection: $selectedCandidate, newName: $newName, newEmail: $newEmail)
+            VoicePersonPicker(groups: [CandidateGroup(title: "", choices: candidates)], selection: $selectedCandidate,
+                              newName: $newName, newEmail: $newEmail)
             actions
         }
         .padding(12)

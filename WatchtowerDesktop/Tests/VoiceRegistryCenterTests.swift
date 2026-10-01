@@ -561,6 +561,79 @@ final class VoiceRegistryCenterTests: XCTestCase {
         XCTAssertEqual(card.candidates.map(\.inRegistry), [false, false, true, true])
     }
 
+    /// The picker never offers a name without a reason: the owner ("Me")
+    /// and this meeting's people first, then registry voices that actually
+    /// sound like this cluster (ACTIVE samples only — a pending import
+    /// does not count), then everyone else under their own heading.
+    func testCandidatesGroupOwnerMeetingSimilarAndOtherVoices() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let audio = try TestFixtures.tempAudioFile()
+        defer { try? FileManager.default.removeItem(at: audio) }
+
+        try await pool.write { db in
+            _ = try TestDatabase.insertGoogleAccount(db, email: "me@example.com")
+            let attendeesJSON = #"[{"email":"zoe@example.com","display_name":"Zoe","response_status":"accepted","slack_user_id":""},"# +
+                #"{"email":"dan@example.com","display_name":"Dan","response_status":"accepted","slack_user_id":""}]"#
+            try TestDatabase.insertCalendarEvent(db, id: "evt-1", organizerEmail: "me@example.com", attendees: attendeesJSON)
+            func person(_ key: String, _ name: String, _ vector: [Float]?, status: VoiceSampleStatus = .active) throws {
+                let p = try VoicePrintQueries.findOrCreate(db, personKey: key, displayName: name)
+                guard let vector else { return }
+                var sample = VoiceSample(
+                    personID: try XCTUnwrap(p.id), embedding: VoicePrintEmbedding.encode(vector),
+                    modelVersion: VoiceRegistryPolicy.embeddingModelVersion,
+                    origin: status == .active ? .owner : .imported, anchor: status == .active, status: status)
+                try VoiceSampleQueries.insert(db, &sample)
+            }
+            try person("me@example.com", "Owner", [0, 1])
+            try person("dan@example.com", "Dan", nil)
+            try person("close@example.com", "Close", [1, 0.2])
+            try person("closer@example.com", "Closer", [1, 0.05])
+            try person("far@example.com", "Far", [-1, 0])
+            try person("pending@example.com", "Pending", [1, 0], status: .pending)
+            let tid = try self.insertTranscript(db, audioPath: audio.path, speakersJSON: self.speakersJSON(), eventID: "evt-1")
+            try VoiceLabelQueueQueries.enqueue(
+                db, transcriptID: tid, clusterLabel: "Speaker 1", reason: .unknown, suggestedPersonID: nil, score: nil)
+        }
+
+        let center = VoiceRegistryCenter()
+        center.attach(dbPool: pool)
+        await center.open(.queue(transcriptID: nil))
+
+        let card = try XCTUnwrap(center.cards.first)
+        XCTAssertEqual(card.candidateGroups.map(\.title), ["In this meeting", "Similar voices", "Other known voices"])
+        XCTAssertEqual(card.candidateGroups.map { $0.choices.map(\.displayName) },
+                       [["Owner", "Zoe", "Dan"], ["Closer", "Close"], ["Far", "Pending"]])
+        XCTAssertEqual(card.candidates.first?.isOwner, true)
+        XCTAssertEqual(card.candidates.filter(\.isOwner).count, 1)
+    }
+
+    /// Degenerate: an owner the registry doesn't know yet is still offered
+    /// (from the invite list) — as "Me", first — never dropped.
+    func testUnregisteredOwnerAttendeeIsOfferedFirstAsMe() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let audio = try TestFixtures.tempAudioFile()
+        defer { try? FileManager.default.removeItem(at: audio) }
+
+        try await pool.write { db in
+            _ = try TestDatabase.insertGoogleAccount(db, email: "me@example.com")
+            let attendeesJSON = #"[{"email":"amy@example.com","display_name":"Amy","response_status":"accepted","slack_user_id":""}]"#
+            try TestDatabase.insertCalendarEvent(db, id: "evt-1", organizerEmail: "me@example.com", attendees: attendeesJSON)
+            let tid = try self.insertTranscript(db, audioPath: audio.path, speakersJSON: self.speakersJSON(), eventID: "evt-1")
+            try VoiceLabelQueueQueries.enqueue(
+                db, transcriptID: tid, clusterLabel: "Speaker 1", reason: .unknown, suggestedPersonID: nil, score: nil)
+        }
+
+        let center = VoiceRegistryCenter()
+        center.attach(dbPool: pool)
+        await center.open(.queue(transcriptID: nil))
+
+        let card = try XCTUnwrap(center.cards.first)
+        XCTAssertEqual(card.candidates.map(\.personKey), ["me@example.com", "amy@example.com"])
+        XCTAssertEqual(card.candidates.map(\.isOwner), [true, false])
+    }
+
     // MARK: - degenerate
 
     // A center that was never attach()ed must no-op cleanly, not crash —
