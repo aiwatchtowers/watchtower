@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"slices"
@@ -103,7 +104,24 @@ func runConnectionsTools(cmd *cobra.Command, args []string) error {
 		}
 		conn.AllowTools = nil
 	}
+	if connectionsToolsFlagRefresh || connectionsToolsFlagAllow != nil || connectionsToolsFlagDefault {
+		reconcileToolsStatus(database, conn)
+	}
 	return printConnectionTools(cmd.OutOrStdout(), conn, connectionsToolsFlagJSON)
+}
+
+// reconcileToolsStatus keeps the row's status in step with a changed tool
+// policy: no allowed tool records the tools error; a usable policy clears a
+// tools error this code wrote earlier (never a credential one).
+func reconcileToolsStatus(database *db.DB, conn db.ExternalConnection) {
+	allowed, _ := externalmcp.ResolveTools(conn)
+	switch {
+	case len(allowed) == 0:
+		connectionUnmounted(database, conn, fmt.Sprintf(
+			"none of its tools is available to the chat — `watchtower connections tools %d` to review", conn.ID))
+	case conn.Status == "error" && strings.HasPrefix(conn.Error, toolsReasonPrefix):
+		markConnectionOK(database, conn)
+	}
 }
 
 // listConnectionTools refreshes conn's cached tools/list from its server,
@@ -111,10 +129,14 @@ func runConnectionsTools(cmd *cobra.Command, args []string) error {
 func listConnectionTools(cfg *config.Config, database *db.DB, conn *db.ExternalConnection) error {
 	server, ok := connectionServer(cfg, database, *conn)
 	if !ok {
-		return fmt.Errorf("connection %d has no usable credentials (see the log; `connections oauth %d` to sign in again)", conn.ID, conn.ID)
+		return fmt.Errorf("%w (see the log; `connections oauth %d` to sign in again)", errNoCredentials, conn.ID)
 	}
 	return refreshConnectionTools(database, conn, server, toolsListTimeout)
 }
+
+// errNoCredentials: the connection's secret or OAuth grant is unusable; the
+// row already says so (applyOAuthCredentials), so the tool policy leaves it.
+var errNoCredentials = errors.New("no usable credentials")
 
 // refreshToolsAfterEnable lists a just-enabled (or just-signed-in)
 // connection's tools and reports how many the chat may call, on the row too
@@ -125,6 +147,10 @@ func refreshToolsAfterEnable(cmd *cobra.Command, cfg *config.Config, database *d
 	conn, err := database.GetExternalConnection(id)
 	if err == nil {
 		err = listConnectionTools(cfg, database, &conn)
+	}
+	if errors.Is(err, errNoCredentials) {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: connection %d: %v; none of its tools is available to the chat\n", id, err)
+		return
 	}
 	if err != nil && conn.AllowTools == nil {
 		reason := fmt.Sprintf("listing its tools failed (%v); none is available to the chat — `watchtower connections tools %d --refresh`", err, id)

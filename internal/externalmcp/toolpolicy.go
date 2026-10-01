@@ -20,7 +20,8 @@ var readVerbs = map[string]bool{
 }
 
 // mutatingWords anywhere after the leading verb deny an unannotated tool:
-// compound names such as getOrCreateIssue or read_and_delete_message write.
+// compound names such as getOrCreateIssue or read_and_delete_message write,
+// and a tool that fetches a caller-chosen address is no plain read.
 var mutatingWords = map[string]bool{
 	"or": true, "and": true, "create": true, "update": true, "upsert": true, "delete": true,
 	"remove": true, "set": true, "send": true, "post": true, "put": true, "add": true,
@@ -31,6 +32,9 @@ var mutatingWords = map[string]bool{
 	"reject": true, "cancel": true, "clear": true, "reset": true, "save": true,
 	"store": true, "mark": true, "toggle": true, "enable": true, "disable": true,
 	"start": true, "stop": true, "kill": true, "drop": true, "purge": true,
+	// Fetching an arbitrary address is the exfiltration channel WebFetch is
+	// hidden for, whatever the verb (read_url, get_webpage).
+	"url": true, "uri": true, "webpage": true, "http": true, "https": true,
 }
 
 // IsReadOnly is QC-02's default policy for one tool: a tool its server

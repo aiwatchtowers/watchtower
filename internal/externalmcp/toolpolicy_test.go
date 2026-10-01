@@ -32,6 +32,9 @@ func TestIsReadOnly(t *testing.T) {
 		{db.ExternalTool{Name: "read_and_delete_message"}, false},
 		{db.ExternalTool{Name: "list-and-archive"}, false},
 		{db.ExternalTool{Name: "getAndSetFlag"}, false},
+		// Fetching a caller-chosen address is not a plain read.
+		{db.ExternalTool{Name: "read_url"}, false},
+		{db.ExternalTool{Name: "getWebpage"}, false},
 		{db.ExternalTool{Name: "createJiraIssue"}, false},
 		{db.ExternalTool{Name: "send_message"}, false},
 		{db.ExternalTool{Name: "updateConfluencePage"}, false},

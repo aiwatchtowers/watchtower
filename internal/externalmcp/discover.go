@@ -39,9 +39,6 @@ func ListTools(ctx context.Context, spec ServerSpec) ([]db.ExternalTool, error) 
 	if err != nil {
 		return nil, err
 	}
-	if ct, ok := transport.(*mcp.CommandTransport); ok {
-		defer killProcessGroup(ct.Command)
-	}
 	client := mcp.NewClient(&mcp.Implementation{Name: "watchtower", Version: "1"}, nil)
 	session, err := client.Connect(ctx, transport, nil)
 	if err != nil {
@@ -50,6 +47,11 @@ func ListTools(ctx context.Context, spec ServerSpec) ([]db.ExternalTool, error) 
 	// Close stops a stdio server; its error only says how the server went
 	// away, which cannot change a listing already taken.
 	defer func() { _ = session.Close() }()
+	if ct, ok := transport.(*mcp.CommandTransport); ok {
+		// Runs before Close (defers are LIFO), while the leader is still
+		// alive and its group id cannot have been reused.
+		defer killProcessGroup(ct.Command)
+	}
 
 	tools := []db.ExternalTool{}
 	for tool, err := range session.Tools(ctx, nil) {
@@ -122,8 +124,8 @@ func lookPathIn(name, path string) string {
 	return name
 }
 
-// killProcessGroup stops whatever is left of a stdio server's process group
-// once the listing is done. Best effort: the group is usually gone already.
+// killProcessGroup stops a stdio server's whole process group (a wrapper's
+// children included) once the listing is done. Best effort.
 func killProcessGroup(cmd *exec.Cmd) {
 	if cmd.Process != nil {
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)

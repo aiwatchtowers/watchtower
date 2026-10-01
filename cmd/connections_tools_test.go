@@ -247,3 +247,94 @@ func TestConnectionsEnable_ListsToolsAndReportsFailure(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "ok", conn.Status)
 }
+
+// TestQC02_EnableKeepsACredentialStatus: enabling an OAuth connection whose
+// grant is dead leaves the row as QC-04 recorded it ("revoked") — the tool
+// policy neither overwrites it with a tools error nor, with an explicit
+// list, flips it to ok.
+func TestQC02_EnableKeepsACredentialStatus(t *testing.T) {
+	for name, allow := range map[string][]string{"default policy": nil, "explicit list": {"getIssue"}} {
+		t.Run(name, func(t *testing.T) {
+			cfg := writeConnectionsConfig(t)
+			database, err := db.Open(cfg.DBPath())
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = database.Close() })
+			server, _ := newFakeTokenServer(t, true) // invalid_grant
+			id, _ := setupOAuthConnection(t, database, cfg, server.URL, time.Now().Add(30*time.Second))
+			require.NoError(t, database.SetExternalConnectionEnabled(id, false))
+			if allow != nil {
+				require.NoError(t, database.SetExternalConnectionAllowTools(id, allow))
+			}
+			stubToolsList(t, []db.ExternalTool{{Name: "getIssue"}}, nil)
+
+			_, stderr, err := runConnectionsSplit(t, "", "enable", strconv.FormatInt(id, 10))
+			require.NoError(t, err)
+			assert.Contains(t, stderr, "no usable credentials")
+			conn, err := database.GetExternalConnection(id)
+			require.NoError(t, err)
+			assert.Equal(t, "revoked", conn.Status)
+		})
+	}
+}
+
+// TestQC02_ToolPolicyChangeReconcilesStatus: following the row's own advice
+// (`connections tools <id> --allow …`) clears the tools error; a policy that
+// leaves no tool records it.
+func TestQC02_ToolPolicyChangeReconcilesStatus(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	id := insertStaticConnection(t, database, cfg)
+	idArg := strconv.FormatInt(id, 10)
+	require.NoError(t, database.SetExternalConnectionTools(id,
+		[]db.ExternalTool{{Name: "createIssue"}}, time.Now().UTC().Format(time.RFC3339)))
+	require.Empty(t, loadExternalMCPServers(cfg, cfg.DBPath()))
+	conn, err := database.GetExternalConnection(id)
+	require.NoError(t, err)
+	require.Equal(t, "error", conn.Status)
+
+	_, err = runConnections(t, "", "tools", idArg, "--allow", "createIssue")
+	require.NoError(t, err)
+	conn, err = database.GetExternalConnection(id)
+	require.NoError(t, err)
+	assert.Equal(t, "ok", conn.Status)
+
+	_, err = runConnections(t, "", "tools", idArg, "--default")
+	require.NoError(t, err)
+	conn, err = database.GetExternalConnection(id)
+	require.NoError(t, err)
+	assert.Equal(t, "error", conn.Status)
+
+	// A credential error is never cleared by a tool-policy change.
+	require.NoError(t, database.SetExternalConnectionStatus(id, "revoked", "sign in again"))
+	_, err = runConnections(t, "", "tools", idArg, "--allow", "createIssue")
+	require.NoError(t, err)
+	conn, err = database.GetExternalConnection(id)
+	require.NoError(t, err)
+	assert.Equal(t, "revoked", conn.Status)
+}
+
+// TestMarkConnectionOK_KeepsANewerStatus: a launch that read the row as
+// "error" does not overwrite a "revoked" a parallel launch recorded since.
+func TestMarkConnectionOK_KeepsANewerStatus(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	id := insertStaticConnection(t, database, cfg)
+	require.NoError(t, database.SetExternalConnectionStatus(id, "error", "tools: x"))
+	snapshot, err := database.GetExternalConnection(id)
+	require.NoError(t, err)
+	require.NoError(t, database.SetExternalConnectionStatus(id, "revoked", "sign in again"))
+
+	markConnectionOK(database, snapshot)
+	conn, err := database.GetExternalConnection(id)
+	require.NoError(t, err)
+	assert.Equal(t, "revoked", conn.Status)
+
+	markConnectionOK(database, conn)
+	conn, err = database.GetExternalConnection(id)
+	require.NoError(t, err)
+	assert.Equal(t, "ok", conn.Status, "with a current snapshot it flips")
+}

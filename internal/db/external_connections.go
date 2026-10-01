@@ -181,6 +181,20 @@ func (db *DB) SetExternalConnectionStatus(id int64, status, errMsg string) error
 	return nil
 }
 
+// MarkExternalConnectionOKIf flips id's row to ok only while it still holds
+// status/errMsg — the values the caller read before its work — so a newer
+// status another process recorded meanwhile is never overwritten. Reports
+// whether the row changed.
+func (db *DB) MarkExternalConnectionOKIf(id int64, status, errMsg string) (bool, error) {
+	res, err := db.Exec(`UPDATE external_connections SET status = 'ok', error = ''
+        WHERE id = ? AND status = ? AND error = ? AND status != 'ok'`, id, status, errMsg)
+	if err != nil {
+		return false, fmt.Errorf("marking external connection %d ok: %w", id, err)
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
 // RemoveExternalConnection deletes id's row outright — a hard delete, unlike
 // the Slack/Jira "remove" precedent, since a Quick Connection carries no
 // synced data that needs to stay reachable.

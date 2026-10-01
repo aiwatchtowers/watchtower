@@ -214,8 +214,9 @@ func mountConnection(cfg *config.Config, database *db.DB, c db.ExternalConnectio
 		// enable time failed): list once now and cache it. No list mounts
 		// nothing from this server — fail closed.
 		if recentlyFailed(c.ToolsListFailedAt) {
-			log.Printf("external connection %d (%s): tools not listed (last attempt failed at %s), not mounted", c.ID, c.Name, c.ToolsListFailedAt)
-			return server, false
+			return server, connectionUnmounted(database, c, fmt.Sprintf(
+				"listing its tools failed at %s; none is available to the chat until a listing succeeds (retried after an hour, or now with `watchtower connections tools %d --refresh`)",
+				c.ToolsListFailedAt, c.ID))
 		}
 		if err := refreshConnectionTools(database, &c, server, launchToolsListTimeout); err != nil {
 			return server, connectionUnmounted(database, c, fmt.Sprintf(
@@ -238,11 +239,15 @@ func recentlyFailed(failedAt string) bool {
 	return err == nil && time.Since(at) < toolsListRetryAfter
 }
 
+// toolsReasonPrefix marks a row error written by connectionUnmounted, so a
+// later tool-policy change knows the error is its own to clear.
+const toolsReasonPrefix = "tools: "
+
 // connectionUnmounted logs why c is not mounted and records it on the row as
 // status="error"; it always returns false (the mountConnection result).
 func connectionUnmounted(database *db.DB, c db.ExternalConnection, reason string) bool {
 	log.Printf("external connection %d (%s): %s", c.ID, c.Name, reason)
-	if err := database.SetExternalConnectionStatus(c.ID, "error", reason); err != nil {
+	if err := database.SetExternalConnectionStatus(c.ID, "error", toolsReasonPrefix+reason); err != nil {
 		log.Printf("external connection %d (%s): recording error status: %v", c.ID, c.Name, err)
 	}
 	return false
@@ -405,20 +410,14 @@ func refreshFailureStatus(err error) string {
 	return "error"
 }
 
-// markConnectionOK flips a mounted connection's row back to ok. It re-reads
-// the status rather than trusting c, the launch's opening snapshot: a
-// parallel launch may have recorded an error while this one waited for the
-// token lock.
+// markConnectionOK flips a mounted connection's row back to ok — only while
+// the row still holds the status this launch read at its start (c), so a
+// newer "revoked"/"error" a parallel launch recorded meanwhile stands.
 func markConnectionOK(database *db.DB, c db.ExternalConnection) {
-	cur, err := database.GetExternalConnection(c.ID)
-	if err != nil {
-		log.Printf("external connection %d (%s): reading status: %v", c.ID, c.Name, err)
+	if c.Status == "ok" {
 		return
 	}
-	if cur.Status == "ok" {
-		return
-	}
-	if err := database.SetExternalConnectionStatus(c.ID, "ok", ""); err != nil {
+	if _, err := database.MarkExternalConnectionOKIf(c.ID, c.Status, c.Error); err != nil {
 		log.Printf("external connection %d (%s): recording ok status: %v", c.ID, c.Name, err)
 	}
 }
