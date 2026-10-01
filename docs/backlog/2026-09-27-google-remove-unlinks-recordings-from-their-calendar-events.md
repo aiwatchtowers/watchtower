@@ -1,7 +1,7 @@
 ---
 type: bug
 title: "google remove unlinks recordings from their calendar events"
-status: open
+status: done
 priority: med
 tags: [calendar, google, recordings, deletion, review-2026-09-27]
 context: noticed while fixing calendar logout's unscoped purge (fix/backlog-wave1)
@@ -21,3 +21,11 @@ events by contract. Fix direction: before the row delete, detach the account's c
 confirm dialog that N recordings will lose their event link.
 
 > Original note: «так там два больших фичи влилось. Пройдись еще разок, дополнии беклог и давай его начинать закрывать»
+
+Resolution: `DeleteGoogleAccount` now runs `purgeGoogleAccountCalendarsTx` (internal/db/calendar.go)
+before the account row delete: events referenced by `meeting_transcripts`/`meeting_recaps` are spared
+with the same `NOT EXISTS` guard as `DeleteStaleCalendarEvents`, and the calendar row still holding
+such an event is kept but detached (`account_id = NULL`, `is_selected = 0`), which also keeps the
+`calendar_calendars.account_id` foreign key valid once the account row is gone. Everything else is
+deleted as before. Pinned by `TestGoogleAccount_DeleteGoogleAccount_SparesRecordedEvents`. The CalDAV/ICS
+sibling (`DeleteCalendarAccount`) still deletes unconditionally; left as a follow-up.

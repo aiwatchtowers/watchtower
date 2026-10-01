@@ -13,7 +13,8 @@ package struct ChatTurnStore: Sendable {
     package func saveProgress(messageID: Int64, text: String, status: String, usage: ChatUsage?, errorCode: String?) throws {
         try dbPool.write { db in
             try ChatTreeQueries.updateAssistant(db, id: messageID, text: text, status: status,
-                                                tokensIn: usage?.tokensIn, tokensOut: usage?.tokensOut, errorCode: errorCode)
+                                                tokensIn: usage?.tokensIn, tokensOut: usage?.tokensOut,
+                                                errorCode: errorCode, errorMessage: nil)
             if let model = usage?.model, !model.isEmpty {
                 try ChatTreeQueries.setModel(db, messageID: messageID, model: model)
             }
@@ -49,14 +50,21 @@ package struct ChatTurnStore: Sendable {
     /// no corresponding `chat_artifacts` rows, or artifact rows with no
     /// matching message state — both writes commit or neither does. Called
     /// once per finished turn; `status == "error"` skips the artifact parse
-    /// (an errored turn produces no artifacts).
+    /// (an errored turn produces no artifacts). `error` is the failed turn's
+    /// session error: its code and its own message are both kept.
     @discardableResult
     package func finalizeTurn(
-        conversationID: Int64, messageID: Int64, text: String, status: String, usage: ChatUsage?, errorCode: String?
+        conversationID: Int64,
+        messageID: Int64,
+        text: String,
+        status: String,
+        usage: ChatUsage?,
+        error: ChatSessionError?
     ) throws -> [ChatArtifact] {
         try dbPool.write { db in
             try ChatTreeQueries.updateAssistant(db, id: messageID, text: text, status: status,
-                                                tokensIn: usage?.tokensIn, tokensOut: usage?.tokensOut, errorCode: errorCode)
+                                                tokensIn: usage?.tokensIn, tokensOut: usage?.tokensOut,
+                                                errorCode: error?.code.rawValue, errorMessage: error?.message)
             if let model = usage?.model, !model.isEmpty {
                 try ChatTreeQueries.setModel(db, messageID: messageID, model: model)
             }

@@ -44,7 +44,26 @@ func searchWindow(now time.Time, lastDate string, initialDays int) (after string
 	if lastDate != "" {
 		if t, err := time.Parse(searchDateFormat, lastDate); err == nil {
 			candidate := t.AddDate(0, 0, -2)
-			gapDays = int(now.Sub(candidate).Hours() / 24)
+			// gapDays must be an exact calendar-day count, not a real-instant
+			// subtraction: t (and so candidate) comes from time.Parse, which
+			// anchors the date-only string at UTC midnight, while now is the
+			// actual wall-clock instant in the local zone. Subtracting one
+			// from the other mixes a UTC-midnight anchor with a local
+			// time-of-day/offset residual, which time-truncates away as an
+			// off-by-one whenever the local zone sits ahead of UTC (or, in
+			// the other direction, behind it late in the day) — reproduced
+			// by TestSearchWindow under a positive UTC offset. Re-anchor
+			// "now" at its own calendar date's UTC midnight first so the
+			// subtraction is between two midnights and always lands on a
+			// whole number of days.
+			today, err := time.Parse(searchDateFormat, now.Format(searchDateFormat))
+			if err != nil {
+				// now.Format always produces a value time.Parse accepts;
+				// this can't fail, but fall back to the pre-fix math rather
+				// than panic-adjacent silence if it somehow does.
+				today = now
+			}
+			gapDays = int(today.Sub(candidate).Hours() / 24)
 			if gapDays > maxSearchCatchUpDays {
 				return now.AddDate(0, 0, -maxSearchCatchUpDays).Format(searchDateFormat), gapDays, true
 			}
@@ -68,6 +87,7 @@ func (o *Orchestrator) recordSearchGap(gapDays int, unclampedAfter, clampedAfter
 	msg := fmt.Sprintf("search sync: gap of %d days exceeds the %d-day catch-up cap; messages between %s and %s were not fetched",
 		gapDays, maxSearchCatchUpDays, unclampedAfter, clampedAfter)
 	o.logger.Printf("warning: %s", msg)
+	o.searchGapNote = msg // survives Run's closing "ok" auth-state write
 	if err := o.db.SetSlackAccountError(o.accountID, msg); err != nil {
 		o.logger.Printf("search sync: failed to record gap on account %d: %v", o.accountID, err)
 	}
@@ -131,10 +151,30 @@ func (o *Orchestrator) syncViaSearch(ctx context.Context) error {
 			if isNonFatalError(err) {
 				o.logger.Printf("search sync: non-fatal error on page %d, stopping early: %v", page, err)
 				if page == 1 {
-					// The very first page failed, so nothing was fetched (e.g. the
-					// token lacks the search:read scope). Return the error so
-					// runSearchSync falls back to full sync instead of reporting a
-					// silent success with zero messages and advancing the watermark.
+					if isRateLimitError(err) {
+						// Slack is already throttling this token: nothing was
+						// fetched, but unlike a scope/permission problem this
+						// is transient. Don't return the error (which would
+						// have runSearchSync fall back to the far more
+						// expensive full sync — exactly wrong while
+						// throttled): just end the cycle with the watermark
+						// untouched and let the next cycle retry via search.
+						// searchRateLimited also makes runSearchSync return
+						// early, skipping the read-state/roster refreshes and
+						// reactions sync (more calls against the same
+						// throttled token) as well as the separate
+						// "zero channels discovered" full-sync fallback.
+						o.searchRateLimited = true
+						o.searchGapNote = "search sync: rate-limited by Slack; retrying next cycle"
+						break
+					}
+					// The very first page failed for any other non-fatal
+					// reason (e.g. the token lacks the search:read scope, or
+					// a dead account/channel), so nothing was fetched. Return
+					// the error so runSearchSync falls back to full sync
+					// instead of reporting a silent success with zero
+					// messages and advancing the watermark — unchanged from
+					// before the rate-limit carve-out above.
 					return fmt.Errorf("search sync (page %d): %w", page, err)
 				}
 				// A later page failed after partial progress: keep what we fetched

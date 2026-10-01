@@ -190,14 +190,21 @@ func runCalendarLogout(cmd *cobra.Command, _ []string) error {
 	}
 	defer database.Close()
 
-	if err := disconnectGoogleService(cmd, cfg, database, "calendar"); err != nil {
+	accountID, err := disconnectGoogleService(cmd, cfg, database, "calendar")
+	if err != nil {
 		return err
 	}
+	if accountID == 0 {
+		return nil
+	}
 
-	if err := database.ClearCalendarEvents(); err != nil {
+	// Purge only this account's calendars: other Google accounts, CalDAV/ICS
+	// calendars and events a recording still references are kept.
+	n, err := database.ClearGoogleAccountCalendarData(accountID)
+	if err != nil {
 		return fmt.Errorf("clearing events: %w", err)
 	}
-	fmt.Fprintln(cmd.OutOrStdout(), "Calendar events removed.")
+	fmt.Fprintf(cmd.OutOrStdout(), "Removed %d calendar event(s) of Google account %d.\n", n, accountID)
 	return nil
 }
 

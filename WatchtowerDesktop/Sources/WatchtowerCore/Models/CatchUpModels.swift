@@ -184,12 +184,16 @@ package struct CatchUpCoverage: Codable, Equatable {
     /// `ok` | `skipped` | `failed` — the coverage top-up's outcome (CATCHUP-03).
     package let topup: String
     package let topupError: String
+    /// The auto window was clamped to the 31-day cap, so the recap does not
+    /// reach back to the last acknowledged one.
+    package let windowTruncated: Bool
 
     package enum CodingKeys: String, CodingKey {
         case slackTo = "slack_to"
         case streamsTo = "streams_to"
         case meetings, topup
         case topupError = "topup_error"
+        case windowTruncated = "window_truncated"
     }
 
     package init(
@@ -197,13 +201,15 @@ package struct CatchUpCoverage: Codable, Equatable {
         streamsTo: Double = 0,
         meetings: Int = 0,
         topup: String = "",
-        topupError: String = ""
+        topupError: String = "",
+        windowTruncated: Bool = false
     ) {
         self.slackTo = slackTo
         self.streamsTo = streamsTo
         self.meetings = meetings
         self.topup = topup
         self.topupError = topupError
+        self.windowTruncated = windowTruncated
     }
 
     package init(from decoder: Decoder) throws {
@@ -213,6 +219,7 @@ package struct CatchUpCoverage: Codable, Equatable {
         meetings = try container.decodeIfPresent(Int.self, forKey: .meetings) ?? 0
         topup = try container.decodeIfPresent(String.self, forKey: .topup) ?? ""
         topupError = try container.decodeIfPresent(String.self, forKey: .topupError) ?? ""
+        windowTruncated = try container.decodeIfPresent(Bool.self, forKey: .windowTruncated) ?? false
     }
 
     /// The recap footer, e.g. `"Slack to 17:40 · Jira/Gmail to 14:00 · 3 meetings"`.
@@ -235,6 +242,9 @@ package struct CatchUpCoverage: Codable, Equatable {
         }
         if topup == "failed" {
             parts.append("top-up failed")
+        }
+        if windowTruncated {
+            parts.append("window capped at 31 days")
         }
         return parts.joined(separator: " · ")
     }
@@ -326,5 +336,39 @@ package struct CatchUpRecap: FetchableRecord, Identifiable, Equatable {
         f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = format
         return f
+    }
+}
+
+/// Where the next **auto** Catch-Up window starts — a mirror of the auto branch
+/// of Go `catchup.ResolveWindow` (internal/catchup/window.go), so the caption
+/// shown before a build names the window the CLI will actually use. Change the
+/// two together.
+package enum CatchUpAutoWindow {
+    /// Go `maxWindowDays`: an older acknowledged start is clamped to this.
+    package static let maxDays = 31
+
+    package enum Start: Equatable {
+        /// Nothing acknowledged, or the last acknowledged end is not before
+        /// now: the CLI falls back to the last 24 hours.
+        case last24Hours
+        /// From the last acknowledged recap's end.
+        case since(Date)
+        /// The acknowledged end is older than `maxDays`: clamped to `now − maxDays`.
+        case capped(Date)
+    }
+
+    package static func start(lastAcknowledgedTo: Date?, now: Date) -> Start {
+        guard let ack = lastAcknowledgedTo, ack < now else { return .last24Hours }
+        let limit = now.addingTimeInterval(-Double(maxDays) * 24 * 3600)
+        return ack < limit ? .capped(limit) : .since(ack)
+    }
+
+    /// The caption under the Auto choice, e.g. "since Sep 3, 14:00".
+    package static func caption(_ start: Start, format: (Date) -> String) -> String {
+        switch start {
+        case .last24Hours: return "since 24 hours ago"
+        case .since(let date): return "since \(format(date))"
+        case .capped(let date): return "since \(format(date)) (capped at \(maxDays) days)"
+        }
     }
 }

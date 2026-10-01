@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 
 	"watchtower/internal/db"
@@ -69,23 +70,13 @@ func (p *Pipeline) SubmitTopicFeedback(ctx context.Context, recapID int64, topic
 	}
 
 	for _, lr := range parsed.Rules {
-		if lr.RuleType == "" || lr.ScopeKey == "" {
-			p.logf("catchup: skipping malformed learned rule %+v from recap %d topic %d", lr, recapID, topicIdx)
+		rule, why := validateLearnRule(lr, refs)
+		if why != "" {
+			p.logf("catchup: skipping learned rule %+v from recap %d topic %d: %s", lr, recapID, topicIdx, why)
 			continue
 		}
-		pipeline := lr.Pipeline
-		if pipeline == "" {
-			pipeline = "inbox"
-		}
-		if err := p.db.UpsertLearnedRule(db.InboxLearnedRule{
-			Pipeline:      pipeline,
-			RuleType:      lr.RuleType,
-			ScopeKey:      lr.ScopeKey,
-			Weight:        lr.Weight,
-			Source:        "explicit_feedback",
-			EvidenceCount: 1,
-		}); err != nil {
-			return 0, fmt.Errorf("persisting learned rule %s/%s: %w", pipeline, lr.ScopeKey, err)
+		if err := p.db.UpsertLearnedRule(rule); err != nil {
+			return 0, fmt.Errorf("persisting learned rule %s/%s: %w", rule.Pipeline, rule.ScopeKey, err)
 		}
 	}
 
@@ -117,4 +108,62 @@ func (p *Pipeline) topicForFeedback(recapID int64, topicIdx int) (Topic, error) 
 		return Topic{}, fmt.Errorf("catchup recap %d has %d topics: topic %d is out of range", recapID, len(body.Topics), topicIdx)
 	}
 	return body.Topics[topicIdx], nil
+}
+
+// learnRulePipelines is every pipeline a catch-up rule may be addressed to.
+var learnRulePipelines = map[string]bool{"inbox": true, "digest": true, "tracks": true, "briefing": true, "catchup": true}
+
+// learnRuleTypes is every rule_type the learn prompt may emit.
+var learnRuleTypes = map[string]bool{"source_mute": true, "source_boost": true}
+
+// validateLearnRule disposes of one model-proposed rule (the model proposes,
+// code disposes — the CATCHUP-04 shape): the pipeline and rule_type must be in
+// their allowlists, the scope_key must name an id the scope hints actually
+// supplied, in the shape the prompt prescribes ("sender:<id>"/"channel:<id>",
+// prefixed with "<pipeline>:" for every pipeline but inbox), and the weight is
+// clamped to [-1, 1]. It returns the rule to persist, or a non-empty reason to
+// skip it.
+func validateLearnRule(lr learnRule, refs []learnRef) (db.InboxLearnedRule, string) {
+	pipeline := lr.Pipeline
+	if pipeline == "" {
+		pipeline = "inbox"
+	}
+	if !learnRulePipelines[pipeline] {
+		return db.InboxLearnedRule{}, fmt.Sprintf("unknown pipeline %q", pipeline)
+	}
+	if !learnRuleTypes[lr.RuleType] {
+		return db.InboxLearnedRule{}, fmt.Sprintf("unknown rule_type %q", lr.RuleType)
+	}
+	if math.IsNaN(lr.Weight) {
+		return db.InboxLearnedRule{}, "weight is not a number"
+	}
+	if !scopeKeyFromRefs(lr.ScopeKey, pipeline, refs) {
+		return db.InboxLearnedRule{}, fmt.Sprintf("scope_key %q names no supplied id", lr.ScopeKey)
+	}
+	return db.InboxLearnedRule{
+		Pipeline:      pipeline,
+		RuleType:      lr.RuleType,
+		ScopeKey:      lr.ScopeKey,
+		Weight:        math.Max(-1, math.Min(1, lr.Weight)),
+		Source:        "explicit_feedback",
+		EvidenceCount: 1,
+	}, ""
+}
+
+// scopeKeyFromRefs reports whether key is exactly one of the scope keys the
+// refs' hints allow for pipeline.
+func scopeKeyFromRefs(key, pipeline string, refs []learnRef) bool {
+	prefix := ""
+	if pipeline != "inbox" {
+		prefix = pipeline + ":"
+	}
+	for _, r := range refs {
+		if r.ChannelID != "" && key == prefix+"channel:"+r.ChannelID {
+			return true
+		}
+		if r.SenderID != "" && key == prefix+"sender:"+r.SenderID {
+			return true
+		}
+	}
+	return false
 }

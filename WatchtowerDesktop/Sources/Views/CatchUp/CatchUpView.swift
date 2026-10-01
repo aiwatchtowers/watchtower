@@ -122,14 +122,15 @@ struct CatchUpView: View {
         .onChange(of: rangeTo) { _, _ in applyRange() }
     }
 
-    /// Where an auto build would start. Nothing acknowledged yet means the CLI
-    /// falls back to the last 24 hours, so the caption says so rather than
-    /// leaving the window a mystery.
+    /// Where an auto build would start, resolved the way the CLI resolves it
+    /// (`CatchUpAutoWindow`): the last 24 hours when nothing usable is
+    /// acknowledged, and a 31-day cap on a very old acknowledgement.
     @ViewBuilder
     private var autoCaption: some View {
         if vm.windowChoice == .auto {
-            Text(vm.autoWindowStart.map { "since \(TimeFormatting.shortDateTime(from: $0))" }
-                 ?? "since 24 hours ago")
+            Text(CatchUpAutoWindow.caption(
+                CatchUpAutoWindow.start(lastAcknowledgedTo: vm.autoWindowStart, now: Date())
+            ) { TimeFormatting.shortDateTime(from: $0) })
                 .font(.caption2)
                 .foregroundStyle(.secondary)
         }

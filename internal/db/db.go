@@ -6,8 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/pressly/goose/v3"
 	_ "modernc.org/sqlite"
@@ -22,6 +25,32 @@ type DB struct {
 // whenever Open(":memory:") is invoked. Tests set this in TestMain to return a
 // pre-migrated clone and avoid running goose on every test call.
 var openMemoryHook func() (*DB, error)
+
+// immediateTxDSN makes every Begin/BeginTx that is not ReadOnly issue BEGIN
+// IMMEDIATE, so a write transaction waits for the write lock under
+// busy_timeout up front. A DEFERRED read-then-write transaction instead fails
+// at once with SQLITE_BUSY_SNAPSHOT when another process commits in between —
+// busy_timeout never covers that upgrade. The driver cuts the query off a
+// plain path before opening the file (see sqliteDSN).
+const immediateTxDSN = "?_txlock=immediate"
+
+// busyTimeoutMS is how long a connection waits for another process's write
+// lock before failing with SQLITE_BUSY — Open's default (SetBusyTimeout
+// raises it for owner-click paths) and RunSchemaUpgrade's.
+const busyTimeoutMS = 5000
+
+// sqliteDSN appends the driver query params (params, starting with "?") to
+// dbPath. The driver splits a DSN at its FIRST '?', so a plain path holding
+// one would open the file named by the part before it and drop every param
+// (the tx lock mode, pragmas) into a bogus query. Such a path goes in as a
+// file: URI with the '?' percent-encoded, which SQLite decodes back to the
+// real file name; every other path stays the plain path it always was.
+func sqliteDSN(dbPath, params string) string {
+	if !strings.Contains(dbPath, "?") {
+		return dbPath + params
+	}
+	return "file:" + (&url.URL{Path: dbPath}).EscapedPath() + params
+}
 
 // Open creates directories if needed, opens the SQLite database, sets pragmas,
 // and runs migrations. Pass ":memory:" for an in-memory database.
@@ -41,7 +70,7 @@ func Open(dbPath string) (*DB, error) {
 		}
 	}
 
-	sqlDB, err := sql.Open("sqlite", dbPath)
+	sqlDB, err := sql.Open("sqlite", sqliteDSN(dbPath, immediateTxDSN))
 	if err != nil {
 		return nil, fmt.Errorf("opening database: %w", err)
 	}
@@ -63,6 +92,12 @@ func Open(dbPath string) (*DB, error) {
 	if err := db.migrate(); err != nil {
 		sqlDB.Close()
 		return nil, fmt.Errorf("running migrations: %w", err)
+	}
+
+	// Logged, not returned: a database missing one feature's table must still
+	// open for everything else. `watchtower db migrate` returns the error.
+	if err := db.CheckSchemaDrift(); err != nil {
+		slog.Error("database schema drift", "error", err)
 	}
 
 	if dbPath != ":memory:" {
@@ -94,7 +129,7 @@ func tightenDBFilePerms(dbPath string) {
 func (db *DB) setPragmas() error {
 	pragmas := []string{
 		"PRAGMA journal_mode=WAL",
-		"PRAGMA busy_timeout=5000",
+		fmt.Sprintf("PRAGMA busy_timeout=%d", busyTimeoutMS),
 		"PRAGMA foreign_keys=ON",
 		"PRAGMA synchronous=NORMAL",
 	}
@@ -115,9 +150,22 @@ func (db *DB) migrate() error {
 	return goose.Up(db.DB, "migrations")
 }
 
+// SetBusyTimeout replaces Open's 5 s busy_timeout on the connection: how long
+// a write waits for another process's write lock before failing with
+// SQLITE_BUSY. The owner-click write paths (approving an action, recording a
+// chat proposal) raise it so a background daemon transaction cannot fail them.
+func (db *DB) SetBusyTimeout(d time.Duration) error {
+	if _, err := db.Exec(fmt.Sprintf("PRAGMA busy_timeout=%d", d.Milliseconds())); err != nil {
+		return fmt.Errorf("setting busy_timeout: %w", err)
+	}
+	return nil
+}
+
 // SetReadOnly flips the connection to SQLite query_only mode: any subsequent
 // write (INSERT/UPDATE/DELETE/DDL) fails while reads keep working. Used by
 // read-only consumers (the MCP server) after Open has run migrations.
+// Because Begin is immediate (see Open), Begin() itself fails on such a
+// handle; a transaction there must be opened with sql.TxOptions{ReadOnly: true}.
 func (db *DB) SetReadOnly() error {
 	if _, err := db.Exec("PRAGMA query_only=ON"); err != nil {
 		return fmt.Errorf("setting query_only: %w", err)

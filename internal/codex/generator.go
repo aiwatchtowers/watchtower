@@ -1,7 +1,7 @@
 package codex
 
 import (
-	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -126,20 +126,21 @@ func buildArgs(model, systemPrompt, userMessage string, stdinOnly bool) ([]strin
 // parseJSONLOutput parses Codex JSONL output and extracts the final agent_message
 // content and accumulated usage.
 func parseJSONLOutput(output []byte) (string, *CodexUsage, error) {
-	scanner := bufio.NewScanner(strings.NewReader(string(output)))
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-
 	var lastContent string
 	totalUsage := &CodexUsage{}
 
-	for scanner.Scan() {
-		line := scanner.Text()
-		if line == "" {
+	// The whole output is already in memory, so split it instead of using a
+	// bufio.Scanner: a command_execution / mcp_tool_call item can exceed any
+	// scanner buffer, and a scanner stopping there silently returned the
+	// pre-tool preamble as the answer.
+	for _, line := range bytes.Split(output, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 {
 			continue
 		}
 
 		var event CodexEvent
-		if err := json.Unmarshal([]byte(line), &event); err != nil {
+		if err := json.Unmarshal(line, &event); err != nil {
 			continue
 		}
 

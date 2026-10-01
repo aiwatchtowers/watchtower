@@ -49,7 +49,7 @@ func TestGetJiraIssue_ReturnsIssue(t *testing.T) {
 }
 
 func TestGetJiraIssue_NotFound(t *testing.T) {
-	_, err := jiraReadRegistry(t, openDB(t)).CallRead(context.Background(), "get_jira_issue", json.RawMessage(`{"key":"NOPE-1"}`))
+	_, err := jiraReadRegistry(t, openDB(t)).CallRead(context.Background(), "get_jira_issue", json.RawMessage(`{"key":"NOPE-1"}`), Binding{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no jira issue with key NOPE-1")
 }
@@ -61,7 +61,7 @@ func TestGetJiraIssue_TombstoneIsNotFound(t *testing.T) {
 	db.SeedTestJiraAccount(t, d)
 	seedJiraIssue(t, d, "ABC-9", "deleted issue", true)
 
-	_, err := jiraReadRegistry(t, d).CallRead(context.Background(), "get_jira_issue", json.RawMessage(`{"key":"ABC-9"}`))
+	_, err := jiraReadRegistry(t, d).CallRead(context.Background(), "get_jira_issue", json.RawMessage(`{"key":"ABC-9"}`), Binding{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no jira issue with key ABC-9")
 }

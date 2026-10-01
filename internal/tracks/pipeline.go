@@ -74,6 +74,7 @@ type Pipeline struct {
 	generator   digest.Generator
 	logger      *log.Logger
 	promptStore *prompts.Store
+	now         func() time.Time // clock for the retry set's UTC day; tests inject it
 
 	OnProgress ProgressFunc
 
@@ -114,6 +115,7 @@ func New(database *db.DB, cfg *config.Config, gen digest.Generator, logger *log.
 		cfg:       cfg,
 		generator: gen,
 		logger:    logger,
+		now:       time.Now,
 	}
 }
 
@@ -266,15 +268,21 @@ func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
 	return stored, 0, err
 }
 
+// maxBatchRetryAttempts bounds how many runs a digest whose extraction batch
+// failed is re-offered to (see track_retry_digests): a transient failure gets
+// retried, a batch that fails deterministically is not re-sent forever.
+const maxBatchRetryAttempts = 3
+
 // RunForWindow executes track extraction for a specific time window and owner.
 // digestsSinceISO, if non-empty, restricts to digests created after that ISO timestamp
 // (incremental mode). If empty, falls back to overlap-based query (first run / CLI).
+//
+// A partially failed run stays a success (the watermark advances past the
+// digests that were processed), so the digests of its failed batches go into
+// the durable retry set and every later run re-offers them next to the new
+// digests, until their batch succeeds or has failed maxBatchRetryAttempts times.
 func (p *Pipeline) RunForWindow(ctx context.Context, owner db.Owner, from, to float64, digestsSinceISO ...string) (int, error) {
 	p.loadCaches()
-
-	userID := owner.ID
-	profile, allActive := p.loadWindowContext(owner)
-	userName := p.userName(userID)
 
 	sinceISO := ""
 	if len(digestsSinceISO) > 0 {
@@ -284,43 +292,148 @@ func (p *Pipeline) RunForWindow(ctx context.Context, owner db.Owner, from, to fl
 	if err != nil {
 		return 0, err
 	}
-	if len(digests) == 0 {
+	fresh, retry, retryIDs := p.splitRetryDigests(digests)
+
+	stored, res, err := p.extractFromDigests(ctx, owner, fresh, retry, from, to)
+	if err == nil || res.aborted != nil || res.failed > 0 {
+		if serr := p.settleRetryDigests(retryIDs, res); serr != nil {
+			p.logger.Printf("tracks: warning: could not record failed batches for retry: %v", serr)
+			if err == nil && res.failed > 0 {
+				// A partial success advances the watermark past its failed
+				// batches' digests on the promise that the retry set owes
+				// them; with that write lost they would be skipped for good.
+				// Fail the run so the watermark stays put instead.
+				return stored, fmt.Errorf("recording %d failed batch(es) for retry: %w", res.failed, serr)
+			}
+		}
+	}
+	return stored, err
+}
+
+// splitRetryDigests separates the window's fresh digests from the retry set's
+// owed digests (a digest in both counts as owed), and reports the owed ids. The
+// two groups are batched apart, so an owed digest that keeps failing never takes
+// fresh material down with it. A failed read of the retry set is logged and
+// the run proceeds on the window alone.
+func (p *Pipeline) splitRetryDigests(digests []db.Digest) (fresh, retry []db.Digest, ids map[int]bool) {
+	retry, err := p.db.GetTrackRetryDigests()
+	if err != nil {
+		p.logger.Printf("tracks: warning: could not load retry digests: %v", err)
+		return digests, nil, nil
+	}
+	if len(retry) == 0 {
+		return digests, nil, nil
+	}
+	ids = make(map[int]bool, len(retry))
+	for _, d := range retry {
+		ids[d.ID] = true
+	}
+	for _, d := range digests {
+		if !ids[d.ID] {
+			fresh = append(fresh, d)
+		}
+	}
+	p.logger.Printf("tracks: re-offering %d digest(s) from earlier failed batches", len(retry))
+	return fresh, retry, ids
+}
+
+// settleRetryDigests records a run's batch outcome in the retry set: digests of
+// failed batches gain an attempt, and a retry-set digest leaves the set once
+// this run processed it (its batch succeeded, or it was filtered out before
+// batching). An interrupted run only clears what its succeeded batches covered
+// — the batches that never ran are owed another go.
+//
+// Failed batches are charged in full when at least one batch succeeded, i.e.
+// the provider demonstrably worked (owed digests run in their own batches, so
+// a fresh batch's success charges a failing owed digest in full). A run in
+// which every batch failed may be an outage (and freezes the watermark
+// anyway): it adds nothing new to the set and charges an owed digest at most
+// once per UTC day, so each UTC day an outage touches costs an owed digest one
+// attempt, while a digest that fails even on its own still gives up.
+func (p *Pipeline) settleRetryDigests(retryIDs map[int]bool, res trackBatchResult) error {
+	var charged, chargedDaily []int
+	if res.succeeded > 0 {
+		charged = res.failedDigests
+	} else {
+		for _, id := range res.failedDigests {
+			if retryIDs[id] {
+				chargedDaily = append(chargedDaily, id)
+			}
+		}
+	}
+	failed := make(map[int]bool, len(res.failedDigests))
+	for _, id := range res.failedDigests {
+		failed[id] = true
+	}
+	var done []int
+	if res.aborted != nil {
+		for _, id := range res.succeededDigests {
+			if retryIDs[id] && !failed[id] {
+				done = append(done, id)
+			}
+		}
+	} else {
+		for id := range retryIDs {
+			if !failed[id] {
+				done = append(done, id)
+			}
+		}
+	}
+	day := p.now().UTC().Format("2006-01-02")
+	gaveUp, err := p.db.SettleTrackRetryDigests(done, charged, chargedDaily, day, maxBatchRetryAttempts)
+	if err != nil {
+		return err
+	}
+	if gaveUp > 0 {
+		p.logger.Printf("tracks: giving up on %d digest(s) after %d failed batch attempts", gaveUp, maxBatchRetryAttempts)
+	}
+	return nil
+}
+
+// extractFromDigests runs relevance filtering and the AI batches over the
+// loaded digests and reports the batch outcome alongside the run error.
+func (p *Pipeline) extractFromDigests(ctx context.Context, owner db.Owner, fresh, retry []db.Digest, from, to float64) (int, trackBatchResult, error) {
+	var res trackBatchResult
+	userID := owner.ID
+	profile, allActive := p.loadWindowContext(owner)
+	userName := p.userName(userID)
+
+	if len(fresh) == 0 && len(retry) == 0 {
 		p.progress(0, 0, "No new digests to process")
 		p.logger.Printf("tracks: no digests found")
-		return 0, nil
+		return 0, res, nil
 	}
 
-	allEntries, err := p.buildDigestEntries(digests)
-	if err != nil {
-		return 0, err
-	}
-	if len(allEntries) == 0 {
-		return 0, nil
-	}
-
+	// Fresh and owed digests are planned into separate batches: an owed digest
+	// that fails deterministically must not fail the fresh batch of its channel.
 	signals := buildRelevanceSignals(profile, allActive)
-	allEntries = p.filterEntriesByRelevance(allEntries, userID, signals)
+	freshEntries, err := p.relevantEntries(fresh, userID, signals)
+	if err != nil {
+		return 0, res, err
+	}
+	retryEntries, err := p.relevantEntries(retry, userID, signals)
+	if err != nil {
+		return 0, res, err
+	}
+	allEntries := make([]digestEntry, 0, len(freshEntries)+len(retryEntries))
+	allEntries = append(append(allEntries, freshEntries...), retryEntries...)
 	if len(allEntries) == 0 {
 		p.progress(0, 0, "No relevant topics after filtering")
-		return 0, nil
+		return 0, res, nil
 	}
-
-	sort.Slice(allEntries, func(i, j int) bool {
-		return allEntries[i].topicCount > allEntries[j].topicCount
-	})
 
 	totalTopicCount := 0
 	for _, e := range allEntries {
 		totalTopicCount += e.topicCount
 	}
-	batches := p.planTrackBatches(allEntries)
+	batches := append(p.planTrackBatches(freshEntries), p.planTrackBatches(retryEntries)...)
 
 	p.logger.Printf("tracks: found %d topics across %d channels → %d batch(es), budget %d tokens",
 		totalTopicCount, len(allEntries), len(batches), p.contextBudget())
 	p.progress(0, len(batches), fmt.Sprintf("Scanning %d channels (%d topics) for @%s in %d batch(es)...",
 		len(allEntries), totalTopicCount, userName, len(batches)))
 
-	res := p.runTrackBatches(ctx, batches, userID, userName, from, to)
+	res = p.runTrackBatches(ctx, batches, userID, userName, from, to)
 
 	p.LastStepDurationSeconds = 0 // reset to avoid duplicate step recording on final progress
 	p.progress(len(batches), len(batches), fmt.Sprintf("Found %d tracks for @%s across %d channels", res.stored, userName, len(allEntries)))
@@ -332,12 +445,38 @@ func (p *Pipeline) RunForWindow(ctx context.Context, owner db.Owner, from, to fl
 	switch {
 	case res.aborted != nil:
 		// Shutdown is not a batch failure, but the window is unfinished either way.
-		return res.stored, fmt.Errorf("track extraction interrupted after %d of %d batch(es): %w",
+		return res.stored, res, fmt.Errorf("track extraction interrupted after %d of %d batch(es): %w",
 			res.succeeded+res.failed, len(batches), res.aborted)
 	case res.succeeded == 0 && res.failed > 0:
-		return res.stored, fmt.Errorf("all %d track batch(es) failed, last error: %w", res.failed, res.lastErr)
+		return res.stored, res, fmt.Errorf("all %d track batch(es) failed, last error: %w", res.failed, res.lastErr)
 	}
-	return res.stored, nil //nolint:nilerr // partial success only: at least one batch stored tracks, the rest are logged above
+	return res.stored, res, nil //nolint:nilerr // partial success only: at least one batch stored tracks; the failed batches' digests go to the retry set
+}
+
+// relevantEntries groups digests per channel, drops the entries the relevance
+// filter rejects, and orders the rest largest-first for batching.
+func (p *Pipeline) relevantEntries(digests []db.Digest, userID string, signals relevanceSignals) ([]digestEntry, error) {
+	if len(digests) == 0 {
+		return nil, nil
+	}
+	entries, err := p.buildDigestEntries(digests)
+	if err != nil || len(entries) == 0 {
+		return nil, err
+	}
+	entries = p.filterEntriesByRelevance(entries, userID, signals)
+	sortEntriesForBatching(entries)
+	return entries, nil
+}
+
+// sortEntriesForBatching orders entries largest-first, breaking ties by
+// channel id, so which channels share a batch is reproducible from run to run.
+func sortEntriesForBatching(entries []digestEntry) {
+	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].topicCount != entries[j].topicCount {
+			return entries[i].topicCount > entries[j].topicCount
+		}
+		return entries[i].channelID < entries[j].channelID
+	})
 }
 
 // loadWindowContext caches the owner's profile + active-tracks reference and
@@ -600,6 +739,9 @@ type trackBatchResult struct {
 	failed    int
 	lastErr   error
 	aborted   error // non-nil when the loop stopped early because ctx was cancelled
+	// Digest ids of the batches that stored/failed, for the retry set.
+	succeededDigests []int
+	failedDigests    []int
 }
 
 // runTrackBatches runs each AI batch sequentially (per-batch errors logged but
@@ -639,14 +781,26 @@ func (p *Pipeline) runTrackBatches(ctx context.Context, batches [][]digestEntry,
 			}
 			res.failed++
 			res.lastErr = err
+			res.failedDigests = appendBatchDigestIDs(res.failedDigests, batch)
 		} else {
 			res.stored += n
 			res.succeeded++
+			res.succeededDigests = appendBatchDigestIDs(res.succeededDigests, batch)
 		}
 		p.LastStepDurationSeconds = time.Since(stepStart).Seconds()
 		p.progress(i+1, len(batches), fmt.Sprintf("Batch %d/%d done (%d tracks)", i+1, len(batches), n))
 	}
 	return res
+}
+
+// appendBatchDigestIDs appends the ids of every digest a batch covered.
+func appendBatchDigestIDs(ids []int, batch []digestEntry) []int {
+	for _, e := range batch {
+		for _, d := range e.digests {
+			ids = append(ids, d.ID)
+		}
+	}
+	return ids
 }
 
 // digestEntry represents a channel's digest data for batch processing.
@@ -659,9 +813,10 @@ type digestEntry struct {
 }
 
 // storeTrackItems validates and persists AI-extracted track items into the database.
-// Returns the number of tracks successfully stored/updated.
+// Returns the number of tracks successfully stored/updated and the first
+// failed write, if any (the remaining items are still stored).
 func (p *Pipeline) storeTrackItems(items []aiItem, userID, channelID, channelName string,
-	usage *digest.Usage, promptVersion int, from, to float64) int {
+	usage *digest.Usage, promptVersion int, from, to float64) (int, error) {
 	// Divide token cost across items.
 	var inputTokens, outputTokens int
 	model := "auto"
@@ -680,6 +835,7 @@ func (p *Pipeline) storeTrackItems(items []aiItem, userID, channelID, channelNam
 	}
 
 	stored := 0
+	var writeErr error
 	for _, item := range items {
 		priority := item.Priority
 		if priority != "high" && priority != "medium" && priority != "low" {
@@ -759,82 +915,109 @@ func (p *Pipeline) storeTrackItems(items []aiItem, userID, channelID, channelNam
 			PromptVersion:    promptVersion,
 		}
 
-		// If AI identified this as an update to an existing track, update it.
-		if item.ExistingID != nil && *item.ExistingID > 0 {
-			if owner, err := p.db.GetTrackAssignee(*item.ExistingID); err != nil || owner != userID {
-				p.logger.Printf("tracks: ignoring existing_id %d (owner mismatch or not found)", *item.ExistingID)
-				item.ExistingID = nil
-			}
-		}
-		if item.ExistingID != nil && *item.ExistingID > 0 {
-			if _, err := p.db.UpdateTrackFromExtraction(*item.ExistingID, track); err != nil {
-				p.logger.Printf("tracks: error updating track #%d: %v", *item.ExistingID, err)
-			} else {
-				stored++
+		if err := p.persistTrack(userID, item, track, fp); err != nil {
+			// Keep storing the other items, but report the loss: a batch
+			// with a failed write is a failed batch, so its digests stay
+			// owed (retry set) instead of being settled as processed.
+			p.logger.Printf("tracks: #%s — %v", channelName, err)
+			if writeErr == nil {
+				writeErr = fmt.Errorf("#%s: %w", channelName, err)
 			}
 			continue
 		}
-
-		// Custom tracks take priority: fold matching auto content into them
-		// without overwriting their user-authored narrative/instruction.
-		if custID := p.matchCustomTrack(userID, fp, item.Text, item.Context); custID > 0 {
-			if err := p.db.FoldSourceRefsIntoTrack(custID, sourceRefs, channelIDsJSON, itemDigestIDs); err != nil {
-				p.logger.Printf("tracks: warning: fold into custom track #%d failed: %v", custID, err)
-			} else {
-				p.logger.Printf("tracks: folded auto content into custom track #%d: %.80s", custID, item.Text)
-				stored++
-			}
-			continue
-		}
-
-		// Dedup: fingerprint match against existing tracks.
-		if len(fp) > 0 {
-			if matches, err := p.db.FindTracksByFingerprint(userID, fp); err == nil && len(matches) > 0 {
-				// Update the first matching track instead of creating duplicate.
-				if _, err := p.db.UpdateTrackFromExtraction(matches[0].ID, track); err != nil {
-					p.logger.Printf("tracks: warning: failed to update fingerprint-matched track %d: %v", matches[0].ID, err)
-				} else {
-					p.logger.Printf("tracks: merged into existing track #%d via fingerprint %v", matches[0].ID, fp)
-					stored++
-				}
-				continue
-			}
-		}
-
-		// Dedup: text similarity match against existing tracks.
-		if similarID, score := p.findSimilarTrack(userID, item.Text, item.Context); similarID > 0 {
-			if _, err := p.db.UpdateTrackFromExtraction(similarID, track); err != nil {
-				p.logger.Printf("tracks: warning: failed to update text-similar track %d: %v", similarID, err)
-			} else {
-				p.logger.Printf("tracks: merged into existing track #%d via text similarity (%.2f): %.80s",
-					similarID, score, item.Text)
-				stored++
-			}
-			continue
-		}
-
-		trackID, err := p.db.UpsertTrack(track)
-		if err != nil {
-			p.logger.Printf("tracks: error storing track: %v", err)
-			continue
-		}
-
-		// Detect Jira keys in the stored track.
-		if p.jiraKeyDetector != nil {
-			if n, err := p.jiraKeyDetector.ProcessTrack(int(trackID), track.Text, track.SourceRefs, track.ChannelIDs); err != nil {
-				p.logger.Printf("tracks: jira key detection error for track %d: %v", trackID, err)
-			} else if n > 0 {
-				p.logger.Printf("tracks: detected %d Jira key(s) in track %d", n, trackID)
-			}
-		}
-
 		stored++
 	}
 
 	if stored > 0 {
 		p.logger.Printf("tracks: #%s → %d tracks", channelName, stored)
 	}
-	return stored
+	return stored, writeErr
+}
+
+// persistTrack routes one validated item to its write: an update of the
+// existing track the model named, a fold into a matching custom track, a
+// merge into a fingerprint- or text-similar track, or a new row. A failed
+// write is returned rather than logged, so the caller never counts a lost
+// track as stored.
+func (p *Pipeline) persistTrack(userID string, item aiItem, track db.Track, fp []string) error {
+	// If AI identified this as an update to an existing track, update it.
+	if id := p.ownedExistingID(userID, item.ExistingID); id > 0 {
+		if _, err := p.db.UpdateTrackFromExtraction(id, track); err != nil {
+			return fmt.Errorf("updating track #%d: %w", id, err)
+		}
+		return nil
+	}
+
+	// Custom tracks take priority: fold matching auto content into them
+	// without overwriting their user-authored narrative/instruction.
+	if custID := p.matchCustomTrack(userID, fp, item.Text, item.Context); custID > 0 {
+		if err := p.db.FoldSourceRefsIntoTrack(custID, track.SourceRefs, track.ChannelIDs, track.RelatedDigestIDs); err != nil {
+			return fmt.Errorf("folding into custom track #%d: %w", custID, err)
+		}
+		p.logger.Printf("tracks: folded auto content into custom track #%d: %.80s", custID, item.Text)
+		return nil
+	}
+
+	// Dedup: fingerprint match, then text similarity, against existing
+	// tracks — update the match instead of creating a duplicate.
+	if id, how := p.findMergeTarget(userID, item, fp); id > 0 {
+		if _, err := p.db.UpdateTrackFromExtraction(id, track); err != nil {
+			return fmt.Errorf("updating track #%d (matched via %s): %w", id, how, err)
+		}
+		p.logger.Printf("tracks: merged into existing track #%d via %s: %.80s", id, how, item.Text)
+		return nil
+	}
+
+	trackID, err := p.db.UpsertTrack(track)
+	if err != nil {
+		return fmt.Errorf("storing track: %w", err)
+	}
+	p.detectTrackJiraKeys(trackID, track)
+	return nil
+}
+
+// ownedExistingID returns the model-named existing track id when that track
+// belongs to userID, else 0 (a missing or foreign id is ignored, never
+// overwritten).
+func (p *Pipeline) ownedExistingID(userID string, existingID *int) int {
+	if existingID == nil || *existingID <= 0 {
+		return 0
+	}
+	if owner, err := p.db.GetTrackAssignee(*existingID); err != nil || owner != userID {
+		p.logger.Printf("tracks: ignoring existing_id %d (owner mismatch or not found)", *existingID)
+		return 0
+	}
+	return *existingID
+}
+
+// findMergeTarget finds an existing track an item duplicates: by fingerprint
+// first, then by text similarity. It returns the track id and how it matched.
+func (p *Pipeline) findMergeTarget(userID string, item aiItem, fp []string) (int, string) {
+	if len(fp) > 0 {
+		if matches, err := p.db.FindTracksByFingerprint(userID, fp); err == nil && len(matches) > 0 {
+			return matches[0].ID, fmt.Sprintf("fingerprint %v", fp)
+		}
+	}
+	if similarID, score := p.findSimilarTrack(userID, item.Text, item.Context); similarID > 0 {
+		return similarID, fmt.Sprintf("text similarity (%.2f)", score)
+	}
+	return 0, ""
+}
+
+// detectTrackJiraKeys links the Jira keys a newly stored track mentions.
+// Best-effort, like the sync's Jira-key hook: the links are derived hints over
+// a track that is already stored, so a detection failure is logged and never
+// fails the batch (which would re-run the AI extraction over an enrichment).
+func (p *Pipeline) detectTrackJiraKeys(trackID int64, track db.Track) {
+	if p.jiraKeyDetector == nil {
+		return
+	}
+	n, err := p.jiraKeyDetector.ProcessTrack(int(trackID), track.Text, track.SourceRefs, track.ChannelIDs)
+	if err != nil {
+		p.logger.Printf("tracks: jira key detection error for track %d: %v", trackID, err)
+	} else if n > 0 {
+		p.logger.Printf("tracks: detected %d Jira key(s) in track %d", n, trackID)
+	}
 }
 
 // --- batch tracks extraction ---
@@ -1007,14 +1190,70 @@ func (p *Pipeline) generateBatchTracks(ctx context.Context, entries []digestEntr
 		return 0, fmt.Errorf("parsing batch result: %w", err)
 	}
 
-	totalStored := 0
+	resolve := newBatchChannelResolver(entries)
+	totalStored, rejected := 0, 0
+	var writeErr error // the first failed track write, across channels
 	for _, cr := range results {
-		chName := p.channelName(cr.ChannelID)
-		stored := p.storeTrackItems(cr.Items, userID, cr.ChannelID, chName, usage, promptVersion, from, to)
+		channelID, ok := resolve(cr.ChannelID)
+		if !ok {
+			// An id the batch never offered (invented, or a raw id two
+			// accounts in this batch share) must not be written as a
+			// track's channel — drop the result, keep the rest.
+			rejected++
+			continue
+		}
+		chName := p.channelName(channelID)
+		stored, err := p.storeTrackItems(cr.Items, userID, channelID, chName, usage, promptVersion, from, to)
 		totalStored += stored
+		if err != nil && writeErr == nil {
+			writeErr = err
+		}
 	}
-
+	if rejected > 0 {
+		p.logger.Printf("tracks: batch dropped %d result(s) with a channel_id not in the batch", rejected)
+	}
+	if writeErr != nil {
+		// A lost write fails the batch: runTrackBatches then keeps its
+		// digests owed (retry set) and, if no batch succeeded, the window is
+		// not stamped done — the partial failure is not a clean run.
+		return totalStored, fmt.Errorf("storing batch tracks: %w", writeErr)
+	}
 	return totalStored, nil
+}
+
+// newBatchChannelResolver maps a model-emitted channel_id back to the
+// namespaced id of the batch entry it refers to. The prompt shows each
+// channel's namespaced id ("1:C…") but its JSON example a bare one, so the
+// model may echo either form: an exact match wins, then a raw id that
+// exactly one entry carries. A raw id shared by two entries (two accounts in
+// one batch) and an id matching no entry both resolve to ok=false — the
+// digest pipeline's batchEntryLookup rule.
+func newBatchChannelResolver(entries []digestEntry) func(string) (string, bool) {
+	exact := make(map[string]bool, len(entries))
+	byRaw := make(map[string]string, len(entries))
+	ambiguous := make(map[string]bool)
+	for _, e := range entries {
+		exact[e.channelID] = true
+		_, rawID, _ := watchtowerslack.SplitAccountID(e.channelID)
+		if rawID == "" {
+			continue
+		}
+		if prev, seen := byRaw[rawID]; seen && prev != e.channelID {
+			ambiguous[rawID] = true
+			continue
+		}
+		byRaw[rawID] = e.channelID
+	}
+	return func(id string) (string, bool) {
+		if exact[id] {
+			return id, true
+		}
+		if ambiguous[id] {
+			return "", false
+		}
+		ns, ok := byRaw[id]
+		return ns, ok
+	}
 }
 
 // maxTracksForRollup is the maximum number of tracks included in rollup prompts.

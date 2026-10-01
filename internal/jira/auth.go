@@ -380,6 +380,13 @@ type LoginOptions struct {
 	// the wider scope set outright, so requesting it unconditionally would
 	// break every `jira login`/`jira add` for such an app.
 	WithConfluence bool
+	// WithConfluenceWrite additionally requests ConfluenceWriteScopes,
+	// implying WithConfluence (enforced in Login's scope-building below, so
+	// any caller of LoginOptions gets the implication, not just the CLI flag
+	// parser). Opt-in via `jira login|add --with-confluence-write`: editing
+	// Confluence pages is a stronger grant than the read-only sync, so it is
+	// never requested unless asked for.
+	WithConfluenceWrite bool
 }
 
 // Login performs the Jira OAuth2 (3LO) flow via a local HTTP callback server.
@@ -405,8 +412,11 @@ func Login(ctx context.Context, cfg JiraOAuthConfig, out io.Writer, opts ...Logi
 	}
 
 	scope := JiraScopes
-	if opt.WithConfluence {
+	if opt.WithConfluence || opt.WithConfluenceWrite {
 		scope = OAuthScopes
+	}
+	if opt.WithConfluenceWrite {
+		scope += " " + ConfluenceWriteScopes
 	}
 	authorizeURL := buildAuthURL(cfg, redirectURI, state, scope)
 

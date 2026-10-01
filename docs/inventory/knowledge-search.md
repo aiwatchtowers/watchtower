@@ -26,7 +26,9 @@ posts/attachments with their comments — see
 `kb_sources`) are an index, never a source of truth — nothing reads them to
 make a decision other than search, and the indexer never writes a source
 table (`internal/kb`'s adapters read only through the `Queryer` they are
-given). A from-scratch `kb reindex` produces byte-identical
+given — except `project_doc`, which also reads the attached files, read-only
+and inside the project folder; for it the rebuild equivalence holds over an
+unchanged folder). A from-scratch `kb reindex` produces byte-identical
 `kb_documents`/`kb_chunks` content to incremental indexing over the same
 data, across writes, in-place Slack edits/deletes inside the 48h tail rescan,
 thread promotion (a top-level message older than the tail gaining its first
@@ -48,8 +50,9 @@ older than the 48h tail (outside thread promotion) is caught only by
 channel name, recap event title) refreshes only on the parent row's own next
 change or a `kb reindex`, not on a rename of the joined row; every non-Slack
 source is one change-range, so the 60s cycle budget can be overshot by a
-whole source on its first backfill; and `Build` runs inside the batch's write
-transaction (the daemon's connection is held while a batch renders).
+whole source on its first backfill. (`Build` used to run inside the batch's
+write transaction; since 2026-09-30 a batch is rendered first and only its
+writes run in the transaction — `buildBatch`/`storeBatch`.)
 For the `confluence` source, a renamed user (a refreshed `ext_users` row)
 re-renders the documents that user authored or commented on — every one,
 paged 5000 (user, document) pairs per `Changed` call through a key-based
@@ -114,7 +117,7 @@ prompt `internal/ai/prompt.go` and Swift `ChatViewModel.knowledgeLinkRule`
 state the same rule.
 
 **Guard:** `TestKB03_EveryHitOpensAndAnchors` (`internal/kb/contracts_test.go`)
-— a fixture covering all eleven `SourceNames()` entries, asserting every one
+— a fixture covering all twelve `SourceNames()` entries, asserting every one
 of their documents is reachable by search and every hit from every source
 resolves.
 
@@ -129,6 +132,12 @@ apply to them the same as every other read tool. This file does not restate
 DEV-01.
 
 ## Changelog
+
+- 2026-10-01 (board target #89): a twelfth source, `project_doc` (attached project documents read from the project folder, `internal/kb/source_project.go`), visible only to its own project's session — `Request.ProjectID`/`DocOptions.ProjectID`, contract PROJ-08 in `projects.md`. The guards only grow: KB-01's `kbSourceTables` gains `projects`/`project_documents` and its incremental pass revises a project document on disk (an mtime-only change); KB-03's fixture covers the new source, searched and opened as the fixture project's session (`ProjectID` changes nothing for the other sources). KB-01's Observable now names the one exception to "adapters read only through the Queryer": this source also reads the attached files (read-only, inside the folder; the daemon skips folders macOS guards — `kb.IndexProjectDocs` is the explicit per-project trigger). `projects`'s delete also removes the project's entries (PROJ-02).
+
+- 2026-10-01 (board target #90): `kb.Request.Scope`/`ScopeOnly` and `kb.Recent` — a project session's `search_knowledge` boosts (or, with `project_scope: only`, restricts to) the documents of the project's Slack channels, Jira projects and Confluence spaces, via one SQL predicate over `anchor_json` (`Scope.predicate`); the boost is a second, scope-restricted retrieval per query fused in at the same weights, and `Hit.in_scope` marks such hits. Outside a project session nothing changes. KB-01..03 unchanged (in-scope hits open and anchor like any other).
+
+- 2026-09-30: a batch's documents are rendered before its write transaction opens (`buildBatch`), and only the writes run inside it (`storeBatch`) — the render used to hold SQLite's write lock for up to a whole 200-document batch, long enough to fail an owner's Approve click in another process with SQLITE_BUSY (backlog `2026-09-30-approving-a-chat-proposal-fails-with-sqlite-busy.md`). Guard `TestRun_RendersOutsideTheWriteLock`. The "Build runs inside the write transaction" v1 limit is retired; KB-01..03 unchanged.
 
 - 2026-09-27 (T13 docs pass): KB-01's Confluence users-arm wording corrected
   — the missed writer is not bounded to "the same second"; `resolveUsers`

@@ -138,14 +138,27 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) (*db.DayPlan, error
 		return nil, err
 	}
 
-	newItems, dropped := buildItems(parsed, opts.Date, events, targetsIDSet(targets), jiraKeySet(jiraIssues))
+	newItems, dropped, invalid := buildItems(parsed, opts.Date, events, targetsIDSet(targets), jiraKeySet(jiraIssues))
 	if p.logger != nil {
 		for _, d := range dropped {
 			p.logger.Printf("dayplan: dropped item: %s", d)
 		}
 	}
+	// The model proposed items and every one was dropped. That is a failed
+	// attempt (charged to the daemon's budget and retried), not an empty plan
+	// that would stick for the day, when any drop was a real validation
+	// failure, or when the day has nothing else to show (no timed meeting for
+	// syncCalendarItems to add, no manual item). A meeting-heavy day whose
+	// proposals only restated or collided with the calendar is a valid
+	// calendar-only plan, and a model that proposed nothing is an honest one.
+	// A real validation failure overrides both exemptions: a model that keeps
+	// inventing a key on a meeting day ends the day with no plan once the
+	// daemon's 3 attempts are spent (an existing plan is never touched here).
+	if len(newItems) == 0 && len(dropped) > 0 && (invalid > 0 || (len(manual) == 0 && !hasTimedEvent(events))) {
+		return nil, fmt.Errorf("day plan for %s: all %d generated items failed validation", opts.Date, len(dropped))
+	}
 
-	// ── persist atomically ────────────────────────────────────────────────────
+	// ── persist (a fresh plan either lands whole or not at all) ───────────────
 
 	var briefingID sql.NullInt64
 	if briefingData != nil {
@@ -171,25 +184,64 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) (*db.DayPlan, error
 	if err != nil {
 		return nil, fmt.Errorf("upsert plan: %w", err)
 	}
-
-	if err := p.db.ReplaceAIItems(planID, newItems); err != nil {
-		return nil, fmt.Errorf("replace AI items: %w", err)
+	if err := p.persistItems(planID, opts.Date, newItems, events); err != nil {
+		// A freshly created plan row that failed half-way would otherwise stick
+		// for the whole day: the next cycle's "plan exists" short-circuit takes
+		// an empty or partial plan as done. Drop it so the next run regenerates.
+		// A plan that existed before this run is never deleted here.
+		if existing == nil {
+			if derr := p.db.DeleteDayPlan(planID); derr != nil && p.logger != nil {
+				p.logger.Printf("dayplan: could not drop partial plan %d for %s: %v", planID, opts.Date, derr)
+			}
+		}
+		return nil, err
 	}
 
-	// syncCalendarItems is implemented in T10; stub here returns nil.
-	if err := p.syncCalendarItems(planID, opts.Date, events); err != nil {
-		return nil, fmt.Errorf("sync calendar items: %w", err)
-	}
-
-	// Increment regenerate count when this is a regeneration (with feedback or forced).
+	// Increment regenerate count when this is a regeneration (with feedback or
+	// forced). The same write records the owner's feedback in the history the
+	// next regeneration's prompt reads, so a failure is returned rather than
+	// logged: the regenerated plan is already in place, but the owner must
+	// learn that their feedback was not kept. Only owner-triggered runs reach
+	// this (the daemon neither forces nor passes feedback).
 	if opts.Feedback != "" || (existing != nil && opts.Force) {
-		_ = p.db.IncrementRegenerateCount(planID, opts.Feedback)
+		if err := p.db.IncrementRegenerateCount(planID, opts.Feedback); err != nil {
+			return nil, fmt.Errorf("day plan for %s was regenerated, but recording the regeneration failed: %w", opts.Date, err)
+		}
 	}
 
-	// DetectConflicts is implemented in T11; stub here is a no-op.
-	_ = p.DetectConflicts(ctx, opts.UserID, opts.Date)
+	// Best-effort: has_conflicts is derived from the plan's items and the
+	// calendar, and the daemon's conflict phase recomputes it every cycle
+	// (runDayPlanConflictPhase), so a failed write here only delays the flag
+	// by one cycle — it must not fail a plan that is already fully written
+	// (TestRun_ConflictWriteFailureDoesNotFailThePlan).
+	if err := p.DetectConflicts(ctx, opts.UserID, opts.Date); err != nil && p.logger != nil {
+		p.logger.Printf("dayplan: detect conflicts for %s (the daemon retries): %v", opts.Date, err)
+	}
 
 	return p.db.GetDayPlanByID(planID)
+}
+
+// hasTimedEvent reports whether events hold a non-all-day event, i.e. one
+// syncCalendarItems turns into a timeblock.
+func hasTimedEvent(events []db.CalendarEvent) bool {
+	for _, e := range events {
+		if !e.IsAllDay {
+			return true
+		}
+	}
+	return false
+}
+
+// persistItems writes a generated plan's items: the AI items, then the
+// calendar timeblocks.
+func (p *Pipeline) persistItems(planID int64, date string, newItems []db.DayPlanItem, events []db.CalendarEvent) error {
+	if err := p.db.ReplaceAIItems(planID, newItems); err != nil {
+		return fmt.Errorf("replace AI items: %w", err)
+	}
+	if err := p.syncCalendarItems(planID, date, events); err != nil {
+		return fmt.Errorf("sync calendar items: %w", err)
+	}
+	return nil
 }
 
 // ── internal helpers ───────────────────────────────────────────────────────────

@@ -20,15 +20,25 @@ type MeetingRecap struct {
 	UpdatedAt    string
 }
 
+// recapExecer is the Exec subset of *DB / *sql.Tx, so the recap writes run
+// either standalone or inside WriteTranscriptRecap's transaction.
+type recapExecer interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
 // UpsertMeetingRecap inserts a new recap or updates the existing row for the
 // given event_id. transcriptID (0 = none) links the recap to its transcript so
 // it survives event deletion. updated_at is bumped to "now" on every call.
 func (db *DB) UpsertMeetingRecap(eventID, sourceText, recapJSON string, transcriptID int64) error {
+	return upsertMeetingRecap(db, eventID, sourceText, recapJSON, transcriptID)
+}
+
+func upsertMeetingRecap(q recapExecer, eventID, sourceText, recapJSON string, transcriptID int64) error {
 	var tid any
 	if transcriptID > 0 {
 		tid = transcriptID
 	}
-	_, err := db.Exec(`
+	_, err := q.Exec(`
 		INSERT INTO meeting_recaps (event_id, source_text, recap_json, transcript_id)
 		VALUES (?, ?, ?, ?)
 		ON CONFLICT(event_id) DO UPDATE SET
@@ -39,6 +49,61 @@ func (db *DB) UpsertMeetingRecap(eventID, sourceText, recapJSON string, transcri
 	`, eventID, sourceText, recapJSON, tid)
 	if err != nil {
 		return fmt.Errorf("upserting meeting recap for %s: %w", eventID, err)
+	}
+	return nil
+}
+
+// TranscriptRecapRow is one generated recap bound for a meeting_recaps row
+// of transcript TranscriptID (see WriteTranscriptRecap).
+type TranscriptRecapRow struct {
+	// OwnRecapID > 0 rewrites that row in place (the recording's own row —
+	// by id, so it also reaches an orphan whose event_id is NULL; event_id
+	// and transcript_id are left as they are). 0 upserts EventID's row,
+	// linked to TranscriptID.
+	OwnRecapID   int64
+	EventID      string
+	TranscriptID int64
+	SourceText   string
+	RecapJSON    string
+	// SyncSummary also rewrites the transcript's own summary_json copy (and
+	// its summary_updated_at stamp) with the same recap.
+	SyncSummary bool
+}
+
+// WriteTranscriptRecap writes r's meeting_recaps row and, when
+// r.SyncSummary, the transcript's summary_json copy in ONE transaction: the
+// Desktop's recap-refresh hint reads the copy's summary_updated_at for such a
+// row, so the two must never diverge. Both writes bump their updated_at.
+func (db *DB) WriteTranscriptRecap(r TranscriptRecapRow) (err error) {
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	if r.OwnRecapID > 0 {
+		_, err = tx.Exec(`
+			UPDATE meeting_recaps
+			SET source_text = ?, recap_json = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+			WHERE id = ?
+		`, r.SourceText, r.RecapJSON, r.OwnRecapID)
+		if err != nil {
+			return fmt.Errorf("updating meeting recap %d: %w", r.OwnRecapID, err)
+		}
+	} else if err = upsertMeetingRecap(tx, r.EventID, r.SourceText, r.RecapJSON, r.TranscriptID); err != nil {
+		return err
+	}
+	if r.SyncSummary {
+		if err = setMeetingTranscriptSummary(tx, r.TranscriptID, r.RecapJSON); err != nil {
+			return err
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("committing transcript %d recap: %w", r.TranscriptID, err)
 	}
 	return nil
 }

@@ -10,9 +10,6 @@ struct SystemSettings: View {
     @State private var connectionTestRunning = false
     @State private var connectionTestResult: String?
     @State private var connectionTestSuccess = false
-    // Deliberately a separate instance from appState.daemonManager — a
-    // fire-and-forget control handle used only by the updater's install step.
-    @State private var daemonManager = DaemonManager()
 
     var body: some View {
         Form {
@@ -360,15 +357,7 @@ struct SystemSettings: View {
                 }
 
             case .readyToInstall:
-                HStack {
-                    Label("Ready to install", systemImage: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                    Spacer()
-                    Button("Install & Restart") {
-                        Task { await service.install(daemonManager: daemonManager) }
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
+                readyToInstallRow(service: service)
 
             case .installing:
                 HStack {
@@ -376,6 +365,25 @@ struct SystemSettings: View {
                         .controlSize(.small)
                     Text("Installing update...")
                         .foregroundStyle(.secondary)
+                }
+
+            case .restarting:
+                HStack {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Restarting Watchtower...")
+                        .foregroundStyle(.secondary)
+                }
+
+            case .restartRequired:
+                HStack {
+                    Label("Update installed — restart Watchtower to finish", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                    Spacer()
+                    Button("Restart Now") {
+                        Task { await service.relaunch() }
+                    }
+                    .buttonStyle(.borderedProminent)
                 }
 
             case .error(let message):
@@ -389,6 +397,29 @@ struct SystemSettings: View {
                         Task { await service.checkForUpdates() }
                     }
                 }
+            }
+        }
+    }
+
+    /// Install & Restart, disabled under the same gate `UpdateService.install()`
+    /// enforces: never swap the bundle under a running capture or transcription.
+    private func readyToInstallRow(service: UpdateService) -> some View {
+        let busy = appState.meetingRecorderCenter.isBusy
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Label("Ready to install", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                Spacer()
+                Button("Install & Restart") {
+                    Task { await service.install() }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(busy)
+            }
+            if busy {
+                Text(UpdateService.busyMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
     }

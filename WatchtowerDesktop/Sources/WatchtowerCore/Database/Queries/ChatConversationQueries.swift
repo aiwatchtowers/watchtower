@@ -8,11 +8,14 @@ package enum ChatConversationQueries {
         """)
     }
 
+    /// The main chat's list; `has_attachments` lets a message-less chat
+    /// that holds unsent files stay visible in the history.
     package static func fetchStandalone(_ db: Database) throws -> [ChatConversation] {
         try ChatConversation.fetchAll(db, sql: """
-            SELECT * FROM chat_conversations
-            WHERE context_type IS NULL AND archived_at IS NULL
-            ORDER BY updated_at DESC
+            SELECT c.*, EXISTS (SELECT 1 FROM chat_attachments a WHERE a.conversation_id = c.id) AS has_attachments
+            FROM chat_conversations c
+            WHERE c.context_type IS NULL AND c.archived_at IS NULL
+            ORDER BY c.updated_at DESC
         """)
     }
 
@@ -96,6 +99,8 @@ package enum ChatConversationQueries {
         return Date(timeIntervalSince1970: newest)
     }
 
+    /// Best-effort, unchecked: an automatic (first-turn / AI) title, not an
+    /// owner edit — a chat deleted meanwhile needs no title.
     package static func updateTitle(_ db: Database, id: Int64, title: String) throws {
         let now = Date().timeIntervalSince1970
         try db.execute(sql: """
@@ -109,6 +114,7 @@ package enum ChatConversationQueries {
         try db.execute(sql: """
             UPDATE chat_conversations SET title = ?, title_source = 'user', updated_at = ? WHERE id = ?
         """, arguments: [title, Date().timeIntervalSince1970, id])
+        try db.requireUpdated("chat", id: id)
     }
 
     /// First-message title (80 chars), only while nothing better exists.
@@ -131,6 +137,7 @@ package enum ChatConversationQueries {
 
     package static func pin(_ db: Database, id: Int64, pinned: Bool) throws {
         try db.execute(sql: "UPDATE chat_conversations SET pinned = ? WHERE id = ?", arguments: [pinned ? 1 : 0, id])
+        try db.requireUpdated("chat", id: id)
     }
 
     package static func archive(_ db: Database, id: Int64) throws {
@@ -138,13 +145,15 @@ package enum ChatConversationQueries {
             sql: "UPDATE chat_conversations SET archived_at = ? WHERE id = ?",
             arguments: [Date().timeIntervalSince1970, id]
         )
+        try db.requireUpdated("chat", id: id)
     }
 
     /// Moves a conversation into (or out of) a project. An actual move also
     /// clears the stored provider session: a `--resume`d Claude session keeps
     /// the prompt it was started with, so it would never see the new
     /// project's block or files — the next turn starts fresh and replays.
-    /// Moving to the project it is already in changes nothing.
+    /// Moving to the project it is already in changes nothing — so zero rows
+    /// is a normal outcome here and the write stays unchecked.
     package static func setProject(_ db: Database, id: Int64, projectID: Int64?) throws {
         try db.execute(
             sql: """
@@ -187,6 +196,39 @@ package enum ChatConversationQueries {
 
     package static func delete(_ db: Database, id: Int64) throws {
         try db.execute(sql: "DELETE FROM chat_conversations WHERE id = ?", arguments: [id])
+    }
+
+    /// An "untouched" main chat: standalone, outside any project, not
+    /// archived, never pinned or renamed by the owner, with no message and no
+    /// attachment — what the Chat landing makes on its first keystroke and
+    /// discards when it is left unused. Callers only ever pass the landing's
+    /// own draft id: an empty chat of any other origin (moved out of a
+    /// project, or left by a deleted one) is never theirs to delete.
+    private static let untouchedPredicate = """
+        c.context_type IS NULL AND c.project_id IS NULL AND c.archived_at IS NULL
+        AND c.pinned = 0 AND c.title_source <> 'user'
+        AND NOT EXISTS (SELECT 1 FROM chat_messages m WHERE m.conversation_id = c.id)
+        AND NOT EXISTS (SELECT 1 FROM chat_attachments a WHERE a.conversation_id = c.id)
+        """
+
+    /// The landing's draft while it is still untouched, for reuse. `createdAt`
+    /// must match too: the draft is persisted across launches, and a reset
+    /// database at the same path can reissue the id to an unrelated chat.
+    package static func fetchUntouched(_ db: Database, id: Int64, createdAt: Double) throws -> ChatConversation? {
+        try ChatConversation.fetchOne(db, sql: """
+            SELECT c.* FROM chat_conversations c WHERE c.id = ? AND c.created_at = ? AND \(untouchedPredicate)
+            """, arguments: [id, createdAt])
+    }
+
+    /// Deletes the landing's draft only while it is still untouched (and is
+    /// still the same row: `createdAt` matches); true when it was deleted.
+    @discardableResult
+    package static func deleteIfUntouched(_ db: Database, id: Int64, createdAt: Double) throws -> Bool {
+        try db.execute(sql: """
+            DELETE FROM chat_conversations WHERE id IN (
+                SELECT c.id FROM chat_conversations c WHERE c.id = ? AND c.created_at = ? AND \(untouchedPredicate))
+            """, arguments: [id, createdAt])
+        return db.changesCount > 0
     }
 
     package static func fetchByID(_ db: Database, id: Int64) throws -> ChatConversation? {

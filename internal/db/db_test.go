@@ -172,10 +172,10 @@ func TestAllTablesExist(t *testing.T) {
 		"workspace", "users", "channels", "messages",
 		"reactions", "files", "sync_state", "watch_list", "user_checkpoints",
 		"digests", "decision_reads", "user_analyses", "period_summaries",
-		"custom_emojis", "tracks",
+		"custom_emojis", "tracks", "track_retry_digests",
 		"feedback", "prompts", "prompt_history", "user_profile",
 		"track_events", "situations", "situation_signals",
-		"meeting_transcripts", "voice_prints",
+		"meeting_transcripts", "voice_prints", "voice_samples", "voice_imports", "voice_label_queue",
 		"gmail_messages", "google_accounts", "slack_accounts", "jira_accounts",
 		"email_accounts", "imap_messages", "calendar_accounts",
 		"memory_nodes", "memory_aliases", "memory_node_stats",
@@ -192,6 +192,9 @@ func TestAllTablesExist(t *testing.T) {
 		"doc_links", "ext_link_state",
 		"chat_conversations", "chat_messages", "chat_turn_steps", "chat_attachments",
 		"chat_artifacts", "chat_projects", "chat_project_sources", "chat_fts", "chat_title_fts",
+		"chat_artifact_comments",
+		"projects", "project_sources", "project_documents", "project_comments", "project_target_images",
+		"terminal_sessions", "target_status_history",
 	}
 
 	for _, table := range expectedTables {
@@ -576,19 +579,7 @@ func TestMigration00019ClearsBeliefContentHash(t *testing.T) {
 // ALTER-added columns and the dispute-flags table (precedent: 00017/00018's
 // Down), so a down;up cycle is clean.
 func TestMemorySurfacesMigrationDownUpCycle(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "surfaces-cycle.db")
-	d, err := Open(path)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer d.Close()
-
-	if err := goose.Down(d.DB, "migrations"); err != nil {
-		t.Fatalf("goose down: %v", err)
-	}
-	if err := goose.Up(d.DB, "migrations"); err != nil {
-		t.Fatalf("goose up after down: %v", err)
-	}
+	d := openAfterMigrationCycle(t, 19)
 
 	if _, err := d.Exec(`UPDATE workspace SET memory_chat_turn_floor = 0`); err != nil {
 		t.Errorf("memory_chat_turn_floor missing after cycle: %v", err)
@@ -660,19 +651,7 @@ func TestMigration00042MemoryPhase5Slice1(t *testing.T) {
 // ALTER-added columns and the memory_engagement table (precedent: 00017-19's
 // Down), so a down;up cycle is clean.
 func TestMemoryPhase5Slice1MigrationDownUpCycle(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "phase5-slice1-cycle.db")
-	d, err := Open(path)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer d.Close()
-
-	if err := goose.Down(d.DB, "migrations"); err != nil {
-		t.Fatalf("goose down: %v", err)
-	}
-	if err := goose.Up(d.DB, "migrations"); err != nil {
-		t.Fatalf("goose up after down: %v", err)
-	}
+	d := openAfterMigrationCycle(t, 42)
 
 	if _, err := d.Exec(`UPDATE workspace SET memory_last_interaction_id = 0`); err != nil {
 		t.Errorf("workspace columns missing after cycle: %v", err)
@@ -722,19 +701,7 @@ func TestMigration00033MemoryPhase5Slice2(t *testing.T) {
 // ALTER-added column (precedent: 00017-19, 00042's Down), so a down;up cycle is
 // clean.
 func TestMemoryPhase5Slice2MigrationDownUpCycle(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "phase5-slice2-cycle.db")
-	d, err := Open(path)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer d.Close()
-
-	if err := goose.Down(d.DB, "migrations"); err != nil {
-		t.Fatalf("goose down: %v", err)
-	}
-	if err := goose.Up(d.DB, "migrations"); err != nil {
-		t.Fatalf("goose up after down: %v", err)
-	}
+	d := openAfterMigrationCycle(t, 33)
 
 	if _, err := d.Exec(`UPDATE workspace SET memory_calendar_last_extracted_ts = 0`); err != nil {
 		t.Errorf("memory_calendar_last_extracted_ts missing after cycle: %v", err)
@@ -855,19 +822,7 @@ func TestMigration00034MemoryDigestCompare(t *testing.T) {
 // additive CREATE TABLEs (precedent: 00017-19, 00042/00033's Down), so a down;up cycle is
 // clean.
 func TestMemoryPhase5Slice3MigrationDownUpCycle(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "phase5-slice3-cycle.db")
-	d, err := Open(path)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer d.Close()
-
-	if err := goose.Down(d.DB, "migrations"); err != nil {
-		t.Fatalf("goose down: %v", err)
-	}
-	if err := goose.Up(d.DB, "migrations"); err != nil {
-		t.Fatalf("goose up after down: %v", err)
-	}
+	d := openAfterMigrationCycle(t, 34)
 
 	assertTableExists(t, d, "memory_provenance")
 	assertTableExists(t, d, "memory_digest_shadow")

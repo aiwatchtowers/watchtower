@@ -225,6 +225,39 @@ func TestConfluenceGetJSON_NonOKStatus(t *testing.T) {
 	assert.Contains(t, statusErr.Error(), "403")
 }
 
+// TestConfluenceGetJSON_SuccessBodyCap pins that a 2xx response is bounded
+// the same way Download already is: a body over the cap fails loudly with
+// ErrTooLarge instead of json.Decode reading (or OOMing on) it unbounded.
+func TestConfluenceGetJSON_SuccessBodyCap(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(bytes.Repeat([]byte("a"), maxSuccessBodyBytes+1))
+	}))
+	defer srv.Close()
+	c := newTestClient(t, srv.URL, "", "tok")
+	var out map[string]any
+	err := c.Confluence().GetJSON(context.Background(), "/wiki/api/v2/spaces", nil, &out)
+	assert.ErrorIs(t, err, ErrTooLarge)
+}
+
+// TestConfluenceGetJSON_ExactlyAtCapSucceeds pins the boundary: a body of
+// exactly maxSuccessBodyBytes is still read and decoded normally.
+func TestConfluenceGetJSON_ExactlyAtCapSucceeds(t *testing.T) {
+	const wrapper = 10 // len(`{"pad":""}`)
+	padLen := maxSuccessBodyBytes - wrapper
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := append([]byte(`{"pad":"`), bytes.Repeat([]byte("a"), padLen)...)
+		body = append(body, []byte(`"}`)...)
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+	c := newTestClient(t, srv.URL, "", "tok")
+	var out struct {
+		Pad string `json:"pad"`
+	}
+	require.NoError(t, c.Confluence().GetJSON(context.Background(), "/wiki/api/v2/spaces", nil, &out))
+	assert.Len(t, out.Pad, padLen)
+}
+
 // TestConfluenceDownload_OmitsJSONAcceptHeader pins that Download never sends
 // Accept: application/json — an attachment binary is not JSON, and telling
 // Confluence's download endpoint to expect one is wrong for this request
@@ -246,4 +279,118 @@ func TestConfluenceDownload_OmitsJSONAcceptHeader(t *testing.T) {
 
 	assert.False(t, sawHeader, "Download must not send an Accept header at all")
 	assert.NotEqual(t, "application/json", gotAccept)
+}
+
+// TestConfluencePutJSON_SendsPUTWithJSONBody pins PutJSON's request shape:
+// method PUT, the same "/ex/confluence/<cloud>/wiki/..." base GetJSON uses,
+// Content-Type/Accept application/json, the marshaled body, and the 2xx
+// response decoded into out.
+func TestConfluencePutJSON_SendsPUTWithJSONBody(t *testing.T) {
+	var gotMethod, gotPath, gotContentType, gotAccept, gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotContentType = r.Header.Get("Content-Type")
+		gotAccept = r.Header.Get("Accept")
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		_, _ = w.Write([]byte(`{"id":"1","version":{"number":2}}`))
+	}))
+	defer srv.Close()
+	c := newTestClient(t, srv.URL, "", "tok")
+
+	type putBody struct {
+		ID      string `json:"id"`
+		Version int    `json:"version"`
+	}
+	var out struct {
+		ID      string `json:"id"`
+		Version struct {
+			Number int `json:"number"`
+		} `json:"version"`
+	}
+	err := c.Confluence().PutJSON(context.Background(), "/wiki/api/v2/pages/1", putBody{ID: "1", Version: 2}, &out)
+	require.NoError(t, err)
+
+	assert.Equal(t, http.MethodPut, gotMethod)
+	assert.Equal(t, "/ex/confluence/cloud1/wiki/api/v2/pages/1", gotPath)
+	assert.Equal(t, "application/json", gotContentType)
+	assert.Equal(t, "application/json", gotAccept)
+	assert.JSONEq(t, `{"id":"1","version":2}`, gotBody)
+	assert.Equal(t, "1", out.ID)
+	assert.Equal(t, 2, out.Version.Number)
+}
+
+// TestConfluencePutJSON_NonOKStatus pins that a non-2xx PUT response (a 409
+// version conflict, the real-world shape a stale-version edit gets back)
+// surfaces as *HTTPStatusError rather than being decoded.
+func TestConfluencePutJSON_NonOKStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"message":"version conflict"}`))
+	}))
+	defer srv.Close()
+	c := newTestClient(t, srv.URL, "", "tok")
+
+	var out map[string]any
+	err := c.Confluence().PutJSON(context.Background(), "/wiki/api/v2/pages/1", map[string]any{"id": "1"}, &out)
+	var statusErr *HTTPStatusError
+	require.ErrorAs(t, err, &statusErr)
+	assert.Equal(t, 409, statusErr.Status)
+	assert.Contains(t, statusErr.Body, "version conflict")
+}
+
+// TestConfluencePutJSON_RefreshResendsFullBody pins the retry-safe body
+// rebuild PutJSON reuses from doURL: a 401 on the first attempt (a stale
+// access token) triggers the single-flight refresh, and the retried PUT
+// carries the exact same JSON body as the first attempt — not an empty or
+// truncated one (an already-drained reader would otherwise turn the retry
+// into an effectively empty PUT).
+func TestConfluencePutJSON_RefreshResendsFullBody(t *testing.T) {
+	var mu sync.Mutex
+	var bodies []string
+	var attempt atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, string(b))
+		mu.Unlock()
+		if attempt.Add(1) == 1 {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"message":"token expired"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"1"}`))
+	}))
+	defer srv.Close()
+
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"access_token":"new","refresh_token":"rt2","expires_in":3600,"scope":"s"}`))
+	}))
+	defer tokenSrv.Close()
+
+	c := newTestClient(t, srv.URL, tokenSrv.URL, "stale")
+	var out map[string]any
+	err := c.Confluence().PutJSON(context.Background(), "/wiki/api/v2/pages/1", map[string]any{"id": "1", "version": map[string]any{"number": 2}}, &out)
+	require.NoError(t, err)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, bodies, 2, "expected one 401 attempt and one retried attempt")
+	assert.JSONEq(t, bodies[0], bodies[1], "the retried PUT must carry the exact same body as the first attempt")
+	assert.JSONEq(t, `{"id":"1","version":{"number":2}}`, bodies[1])
+}
+
+// TestConfluencePutJSON_SuccessBodyCap pins that PutJSON's 2xx response body
+// is bounded the same way GetJSON's already is.
+func TestConfluencePutJSON_SuccessBodyCap(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		_, _ = w.Write(bytes.Repeat([]byte("a"), maxSuccessBodyBytes+1))
+	}))
+	defer srv.Close()
+	c := newTestClient(t, srv.URL, "", "tok")
+	var out map[string]any
+	err := c.Confluence().PutJSON(context.Background(), "/wiki/api/v2/pages/1", map[string]any{"id": "1"}, &out)
+	assert.ErrorIs(t, err, ErrTooLarge)
 }

@@ -624,10 +624,17 @@ func TestGetJiraActiveSprintStats(t *testing.T) {
 	db := openTestDB(t)
 	SeedTestJiraAccount(t, db)
 
+	// Dates are seeded from the wall clock: GetJiraActiveSprintStats computes
+	// DaysLeft against time.Now(), so a hardcoded end date turns this test red
+	// the day it passes. A date-only end 14 days out is midnight UTC of that
+	// day, so the remaining time is in (13, 14] days and Ceil yields 14.
+	today := time.Now().UTC()
 	require.NoError(t, db.UpsertJiraSprint(JiraSprint{
 		AccountID: 1,
 		ID:        1, BoardID: 10, Name: "Sprint 5", State: "active",
-		StartDate: "2026-04-01", EndDate: "2026-12-31", SyncedAt: "now",
+		StartDate: today.AddDate(0, 0, -7).Format("2006-01-02"),
+		EndDate:   today.AddDate(0, 0, 14).Format("2006-01-02"),
+		SyncedAt:  "now",
 	}))
 
 	// Issues in the sprint.
@@ -653,7 +660,7 @@ func TestGetJiraActiveSprintStats(t *testing.T) {
 	assert.Equal(t, 2, stats.Done)
 	assert.Equal(t, 1, stats.InProgress)
 	assert.Equal(t, 2, stats.Todo)
-	assert.True(t, stats.DaysLeft > 0)
+	assert.Equal(t, 14, stats.DaysLeft)
 }
 
 func TestGetJiraActiveSprintStats_NoSprint(t *testing.T) {
@@ -1315,4 +1322,16 @@ func TestGetJiraIssues(t *testing.T) {
 	byStatus, err := db.GetJiraIssues(JiraIssueFilter{Status: "To Do"})
 	require.NoError(t, err, "GetJiraIssues status")
 	assert.Len(t, byStatus, 2)
+}
+
+func TestParseJiraOffsetSuffix(t *testing.T) {
+	for suffix, want := range map[string]int{
+		".000-0400": -4 * 3600, ".123+0530": 5*3600 + 1800, "Z": 0, "+03:00": 3 * 3600, ".000+0000": 0, ".5Z": 0,
+	} {
+		got, ok := parseJiraOffsetSuffix(suffix)
+		assert.True(t, ok, suffix)
+		assert.Equal(t, want, got, suffix)
+	}
+	_, ok := parseJiraOffsetSuffix("garbage")
+	assert.False(t, ok)
 }

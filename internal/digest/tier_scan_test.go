@@ -59,7 +59,7 @@ var allowedStrongSources = []allowedStrongSource{
 	{"briefing.daily", "full daily-briefing synthesis across every pipeline; decision 9 backoff applies, not a tier change"},
 	{"meeting.chapters", "models_test.go: 'meeting.chapters routes strong by absence... only the followup drafts are light'"},
 	{"ideas.consolidate", "stage-2 dedupe/merge/decision-making over the whole ideas registry — the judgment layer over mechanical stage-1 mining"},
-	{"catchup.compose", "CLAUDE.md: 'One strong-tier catchup.compose call composes eight gathered window areas'"},
+	{"catchup.compose", "docs/features/catchup.md: 'One strong-tier catchup.compose call composes eight gathered window areas'"},
 
 	// Newly tagged by fix-wave-4 task 6 (previously untagged, logged
 	// source:"unknown"): tag-only per decision 9 — attribution fixed, tier

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -24,12 +26,12 @@ type failingGenerator struct {
 	response  string
 }
 
-func (g *failingGenerator) Generate(_ context.Context, _, _, _ string) (string, *digest.Usage, string, error) {
+func (g *failingGenerator) Generate(_ context.Context, sys, user, _ string) (string, *digest.Usage, string, error) {
 	g.calls++
 	if g.calls <= g.failFirst {
 		return "", nil, "", errBatchGenerator
 	}
-	return g.response, &digest.Usage{InputTokens: 100, OutputTokens: 50}, "mock-session", nil
+	return answerForFirstChannel(g.response, sys+user), &digest.Usage{InputTokens: 100, OutputTokens: 50}, "mock-session", nil
 }
 
 // cancelingGenerator answers successfully and cancels the run's context, so the
@@ -40,10 +42,26 @@ type cancelingGenerator struct {
 	response string
 }
 
-func (g *cancelingGenerator) Generate(_ context.Context, _, _, _ string) (string, *digest.Usage, string, error) {
+func (g *cancelingGenerator) Generate(_ context.Context, sys, user, _ string) (string, *digest.Usage, string, error) {
 	g.calls++
 	g.cancel()
-	return g.response, &digest.Usage{InputTokens: 100, OutputTokens: 50}, "mock-session", nil
+	return answerForFirstChannel(g.response, sys+user), &digest.Usage{InputTokens: 100, OutputTokens: 50}, "mock-session", nil
+}
+
+// firstChannelBlock matches a batch prompt's channel block header,
+// "--- #name (channelID) ---".
+var firstChannelBlock = regexp.MustCompile(`--- #\S+ \(([^)]+)\) ---`)
+
+// answerForFirstChannel points seedTrackWindow's C1 result at the first
+// channel the batch prompt actually carries. A batch only stores results for
+// its own channels, so a fixed "C1" answer would land only in the batch that
+// holds C1.
+func answerForFirstChannel(response, prompt string) string {
+	m := firstChannelBlock.FindStringSubmatch(prompt)
+	if m == nil {
+		return response
+	}
+	return strings.Replace(response, `"channel_id": "C1"`, fmt.Sprintf(`"channel_id": %q`, m[1]), 1)
 }
 
 // seedTrackWindow seeds a workspace, an owner, and n channels each carrying one
@@ -119,6 +137,29 @@ func TestRunForWindow_AllBatchesFailedReturnsError(t *testing.T) {
 	tracks, terr := database.GetAllActiveTracks()
 	require.NoError(t, terr)
 	assert.Empty(t, tracks)
+}
+
+// A batch whose track write failed is a failed batch, not a stored one: the
+// model answered, but nothing it said landed, so the window must not be
+// stamped done (the watermark would skip its digests forever).
+func TestRunForWindow_TrackWriteFailureFailsTheBatch(t *testing.T) {
+	database := testDB(t)
+	response := seedTrackWindow(t, database, 1)
+	_, err := database.Exec(`CREATE TRIGGER fail_tracks BEFORE INSERT ON tracks
+		BEGIN SELECT RAISE(ABORT, 'injected track write failure'); END`)
+	require.NoError(t, err)
+
+	gen := &failingGenerator{response: response}
+	cfg := testConfig()
+	cfg.AI.Workers = 1
+	pipe := New(database, cfg, gen, log.Default())
+
+	created, _, err := pipe.Run(context.Background())
+	require.Error(t, err, "a lost track write must not be a clean run")
+	assert.Contains(t, err.Error(), "all 1 track batch(es) failed")
+	assert.Contains(t, err.Error(), "injected track write failure")
+	assert.Equal(t, 0, created)
+	assert.Equal(t, 1, gen.calls, "the model did answer")
 }
 
 // Partial success stays a success: one failed batch out of two must not freeze
@@ -199,4 +240,292 @@ func TestRunForWindow_CancellationDuringLastBatchIsNotAnAllFailedError(t *testin
 	assert.NotErrorIs(t, err, errBatchGenerator, "a cancelled batch must not be attributed to the provider")
 	assert.Contains(t, err.Error(), "interrupted after 0 of 1 batch(es)")
 	assert.NotContains(t, err.Error(), "batch(es) failed")
+}
+
+func retryDigestCount(t *testing.T, database *db.DB) int {
+	t.Helper()
+	var n int
+	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM track_retry_digests`).Scan(&n))
+	return n
+}
+
+// futureWatermark is a digestsSinceISO past every seeded digest, so a run sees
+// no new digests — only what the retry set re-offers (the state right after a
+// partially failed run advanced the watermark).
+func futureWatermark() string {
+	return time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+}
+
+// A partially failed run advances the watermark, so the failed batch's
+// digests must be re-offered by the next run through the retry set, and leave
+// it once their batch succeeds. 16 channels → two batches, one fails.
+func TestRunForWindow_PartialFailureReoffersFailedBatchDigests(t *testing.T) {
+	database := testDB(t)
+	response := seedTrackWindow(t, database, 16)
+	owner, err := database.ResolveOwner()
+	require.NoError(t, err)
+	now := time.Now()
+	from, to := float64(now.Add(-3*time.Hour).Unix()), float64(now.Unix())
+
+	gen := &failingGenerator{failFirst: 1, response: response}
+	cfg := testConfig()
+	cfg.AI.Workers = 1
+	pipe := New(database, cfg, gen, log.Default())
+
+	_, err = pipe.RunForWindow(context.Background(), owner, from, to)
+	require.NoError(t, err, "a partial failure stays a success")
+	require.Equal(t, 2, gen.calls)
+	owed := retryDigestCount(t, database)
+	require.Greater(t, owed, 0, "the failed batch's digests must be kept for retry")
+	require.Less(t, owed, 16, "the succeeded batch's digests must not be kept")
+
+	_, err = pipe.RunForWindow(context.Background(), owner, from, to, futureWatermark())
+	require.NoError(t, err)
+	assert.Equal(t, 3, gen.calls, "the next run re-offers the failed batch even with no new digests")
+	assert.Equal(t, 0, retryDigestCount(t, database), "a succeeded retry leaves the set")
+}
+
+// A partial success advances the watermark on the promise that the retry set
+// owes the failed batch's digests. When that retry-set write fails, the run
+// must fail too, or those digests are skipped for good.
+func TestRunForWindow_RetrySetWriteFailureFailsPartialRun(t *testing.T) {
+	database := testDB(t)
+	response := seedTrackWindow(t, database, 16)
+	owner, err := database.ResolveOwner()
+	require.NoError(t, err)
+	_, err = database.Exec(`CREATE TRIGGER fail_retry BEFORE INSERT ON track_retry_digests
+		BEGIN SELECT RAISE(ABORT, 'injected retry write failure'); END`)
+	require.NoError(t, err)
+	now := time.Now()
+	from, to := float64(now.Add(-3*time.Hour).Unix()), float64(now.Unix())
+
+	gen := &failingGenerator{failFirst: 1, response: response}
+	cfg := testConfig()
+	cfg.AI.Workers = 1
+	pipe := New(database, cfg, gen, log.Default())
+
+	_, err = pipe.RunForWindow(context.Background(), owner, from, to)
+	require.Error(t, err, "a partial run whose failed digests could not be owed is not a success")
+	assert.Contains(t, err.Error(), "injected retry write failure")
+	require.Equal(t, 2, gen.calls, "one batch failed, one succeeded")
+}
+
+// channelFailingGenerator fails every batch whose prompt names the channel
+// failID and answers the rest with response.
+type channelFailingGenerator struct {
+	failID   string
+	response string
+	calls    int
+}
+
+func (g *channelFailingGenerator) Generate(_ context.Context, sys, user, _ string) (string, *digest.Usage, string, error) {
+	g.calls++
+	if strings.Contains(sys+user, "("+g.failID+")") {
+		return "", nil, "", errBatchGenerator
+	}
+	return answerForFirstChannel(g.response, sys+user), &digest.Usage{InputTokens: 100, OutputTokens: 50}, "mock-session", nil
+}
+
+// retryAttempts returns the retry-set attempt count of the digest of channel
+// channelID, or 0 when it is not in the set.
+func retryAttempts(t *testing.T, database *db.DB, channelID string) int {
+	t.Helper()
+	var n int
+	err := database.QueryRow(`SELECT COALESCE(MAX(r.attempts), 0) FROM track_retry_digests r
+		JOIN digests d ON d.id = r.digest_id WHERE d.channel_id = ?`, channelID).Scan(&n)
+	require.NoError(t, err)
+	return n
+}
+
+// A batch that keeps failing inside otherwise successful runs is charged once
+// per run and given up on after maxBatchRetryAttempts — never re-sent forever.
+// 20 channels keep two batches even after the stored track's topic is
+// filtered out, so every run is a partial success.
+func TestRunForWindow_RetryGivesUpAfterMaxAttempts(t *testing.T) {
+	database := testDB(t)
+	response := seedTrackWindow(t, database, 20)
+	owner, err := database.ResolveOwner()
+	require.NoError(t, err)
+	now := time.Now()
+	from, to := float64(now.Add(-3*time.Hour).Unix()), float64(now.Unix())
+
+	gen := &channelFailingGenerator{failID: "C20", response: response}
+	cfg := testConfig()
+	cfg.AI.Workers = 1
+	pipe := New(database, cfg, gen, log.Default())
+
+	for attempt := 1; attempt < maxBatchRetryAttempts; attempt++ {
+		_, err = pipe.RunForWindow(context.Background(), owner, from, to)
+		require.NoError(t, err, "a partial failure stays a success")
+		require.Equal(t, attempt, retryAttempts(t, database, "C20"), "one charge per partially failed run")
+	}
+	_, err = pipe.RunForWindow(context.Background(), owner, from, to)
+	require.NoError(t, err)
+	assert.Equal(t, 0, retryAttempts(t, database, "C20"), "given up on after the last allowed attempt")
+}
+
+// An outage (every batch fails) must not age owed digests: however many
+// fully failed runs follow, a digest owed by an earlier partial run stays in
+// the retry set with its attempt count unchanged.
+func TestRunForWindow_FullyFailedRunsKeepRetryDigests(t *testing.T) {
+	database := testDB(t)
+	response := seedTrackWindow(t, database, 16)
+	owner, err := database.ResolveOwner()
+	require.NoError(t, err)
+	now := time.Now()
+	from, to := float64(now.Add(-3*time.Hour).Unix()), float64(now.Unix())
+	cfg := testConfig()
+	cfg.AI.Workers = 1
+
+	partial := &failingGenerator{failFirst: 1, response: response}
+	_, err = New(database, cfg, partial, log.Default()).RunForWindow(context.Background(), owner, from, to)
+	require.NoError(t, err)
+	owed := retryDigestCount(t, database)
+	require.Greater(t, owed, 0)
+
+	outage := &failingGenerator{failFirst: 1 << 30}
+	pipe := New(database, cfg, outage, log.Default())
+	for i := 0; i < maxBatchRetryAttempts+2; i++ {
+		_, err = pipe.RunForWindow(context.Background(), owner, from, to, futureWatermark())
+		require.Error(t, err, "every batch failed")
+	}
+	require.Greater(t, outage.calls, 0, "the outage runs did reach the AI")
+	assert.Equal(t, owed, retryDigestCount(t, database), "an outage keeps every owed digest")
+	var maxAttempts int
+	require.NoError(t, database.QueryRow(`SELECT MAX(attempts) FROM track_retry_digests`).Scan(&maxAttempts))
+	assert.Equal(t, 1, maxAttempts, "fully failed runs charge nothing")
+}
+
+// An owed digest that fails even on its own (every run all-failed, no batch
+// ever succeeds) is charged at most once per UTC day and given up on after
+// maxBatchRetryAttempts days — never re-sent forever, never aged twice a day.
+func TestRunForWindow_OwedDigestAloneGivesUpOverUTCDays(t *testing.T) {
+	database := testDB(t)
+	seedTrackWindow(t, database, 1)
+	owner, err := database.ResolveOwner()
+	require.NoError(t, err)
+	now := time.Now()
+	from, to := float64(now.Add(-3*time.Hour).Unix()), float64(now.Unix())
+
+	day0 := time.Now().UTC()
+	var digestID int
+	require.NoError(t, database.QueryRow(`SELECT id FROM digests WHERE channel_id = 'C1'`).Scan(&digestID))
+	_, err = database.Exec(`INSERT INTO track_retry_digests (digest_id, attempts, last_charged_day) VALUES (?, 1, ?)`,
+		digestID, day0.Format("2006-01-02"))
+	require.NoError(t, err)
+
+	gen := &failingGenerator{failFirst: 1 << 30}
+	cfg := testConfig()
+	cfg.AI.Workers = 1
+	pipe := New(database, cfg, gen, log.Default())
+	clock := day0
+	pipe.now = func() time.Time { return clock }
+
+	run := func() {
+		t.Helper()
+		_, rerr := pipe.RunForWindow(context.Background(), owner, from, to, futureWatermark())
+		require.Error(t, rerr, "the owed digest's batch fails")
+	}
+	run() // same day as the last charge: no charge
+	assert.Equal(t, 1, retryAttempts(t, database, "C1"), "not charged again on the day it was last charged")
+
+	clock = day0.Add(24 * time.Hour)
+	run()
+	run()
+	assert.Equal(t, 2, retryAttempts(t, database, "C1"), "one charge per UTC day, however many runs")
+
+	clock = day0.Add(48 * time.Hour)
+	run()
+	assert.Equal(t, 0, retryAttempts(t, database, "C1"), "given up on after the last allowed attempt")
+	calls := gen.calls
+	_, err = pipe.RunForWindow(context.Background(), owner, from, to, futureWatermark())
+	require.NoError(t, err, "nothing left to offer")
+	assert.Equal(t, calls, gen.calls, "a digest given up on is not re-sent")
+}
+
+// poisonGenerator fails every batch whose prompt carries the poison marker
+// and answers the rest with response.
+type poisonGenerator struct {
+	response string
+	calls    int
+	poisoned int
+}
+
+func (g *poisonGenerator) Generate(_ context.Context, sys, user, _ string) (string, *digest.Usage, string, error) {
+	g.calls++
+	if strings.Contains(sys+user, "POISON-TOPIC") {
+		g.poisoned++
+		return "", nil, "", errBatchGenerator
+	}
+	return answerForFirstChannel(g.response, sys+user), &digest.Usage{InputTokens: 100, OutputTokens: 50}, "mock-session", nil
+}
+
+// An owed digest that always fails and a fresh digest of the SAME channel are
+// batched apart: the fresh digest is processed on the first run (the run is a
+// success, so the watermark advances) and the owed digest is charged in full.
+// Co-batching them would fail the whole run and stall the channel for days.
+func TestRunForWindow_PoisonRetryDigestDoesNotTakeFreshDigestDown(t *testing.T) {
+	database := testDB(t)
+	response := seedTrackWindow(t, database, 1) // the fresh C1 digest
+	owner, err := database.ResolveOwner()
+	require.NoError(t, err)
+	now := time.Now()
+	from, to := float64(now.Add(-3*time.Hour).Unix()), float64(now.Unix())
+
+	poisonID, err := database.UpsertDigest(db.Digest{
+		ChannelID: "C1", Type: "channel",
+		PeriodFrom: float64(now.Add(-6 * time.Hour).Unix()), PeriodTo: float64(now.Add(-5 * time.Hour).Unix()),
+		Summary: "older discussion", MessageCount: 5, Model: "test",
+	})
+	require.NoError(t, err)
+	_, err = database.Exec(`INSERT INTO digest_topics (digest_id, idx, title, summary, decisions, action_items, situations, key_messages)
+		VALUES (?, 0, 'POISON-TOPIC', 'Bob asked Alice about the migration.', '[]',
+		'[{"text":"Check migration","assignee":"@alice","status":"open"}]', '[]', '[]')`, poisonID)
+	require.NoError(t, err)
+	old := now.Add(-5 * time.Hour).UTC().Format("2006-01-02T15:04:05Z")
+	_, err = database.Exec(`UPDATE digests SET created_at = ? WHERE id = ?`, old, poisonID)
+	require.NoError(t, err)
+	_, err = database.Exec(`INSERT INTO track_retry_digests (digest_id, attempts, last_charged_day) VALUES (?, 1, ?)`,
+		poisonID, now.UTC().Format("2006-01-02"))
+	require.NoError(t, err)
+
+	gen := &poisonGenerator{response: response}
+	cfg := testConfig()
+	cfg.AI.Workers = 1
+	pipe := New(database, cfg, gen, log.Default())
+
+	since := now.Add(-time.Hour).UTC().Format(time.RFC3339) // the window holds only the fresh digest
+	stored, err := pipe.RunForWindow(context.Background(), owner, from, to, since)
+	require.NoError(t, err, "the fresh batch succeeded, so the run is a success and the watermark advances")
+	assert.Equal(t, 2, gen.calls, "fresh and owed digests run in separate batches")
+	assert.Equal(t, 1, gen.poisoned, "only the owed digest's batch carries the poison")
+	assert.Equal(t, 1, stored, "the fresh digest is processed on the first run")
+	assert.Equal(t, 2, retryAttempts(t, database, "C1"), "the owed digest is charged in full next to a successful batch")
+}
+
+// A shutdown is not a batch failure: an interrupted run charges nothing to
+// the retry set, whether the cut came between batches or mid-call.
+func TestRunForWindow_ShutdownIsNotChargedToRetrySet(t *testing.T) {
+	for name, mk := range map[string]func(context.CancelFunc, string) digest.Generator{
+		"between batches": func(c context.CancelFunc, r string) digest.Generator {
+			return &cancelingGenerator{cancel: c, response: r}
+		},
+		"mid-call": func(c context.CancelFunc, _ string) digest.Generator {
+			return &cancelThenFailGenerator{cancel: c}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			database := testDB(t)
+			response := seedTrackWindow(t, database, 16)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			cfg := testConfig()
+			cfg.AI.Workers = 1
+			pipe := New(database, cfg, mk(cancel, response), log.Default())
+
+			_, _, err := pipe.Run(ctx)
+			require.ErrorIs(t, err, context.Canceled)
+			assert.Equal(t, 0, retryDigestCount(t, database))
+		})
+	}
 }

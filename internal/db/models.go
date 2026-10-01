@@ -419,7 +419,7 @@ type Target struct {
 	PeriodStart         string        // YYYY-MM-DD
 	PeriodEnd           string        // YYYY-MM-DD
 	ParentID            sql.NullInt64 // references targets(id)
-	Status              string        // "todo", "in_progress", "blocked", "done", "dismissed", "snoozed"
+	Status              string        // "todo", "in_progress", "in_review" (project targets only), "blocked", "done", "dismissed", "snoozed"
 	Priority            string        // "high", "medium", "low"
 	Ownership           string        // "mine", "delegated", "watching"
 	BallOn              string
@@ -435,10 +435,13 @@ type Target struct {
 	AILevelConfidence   sql.NullFloat64
 	CreatedAt           string
 	UpdatedAt           string
-	NextStep            string // AI-suggested next action (JSON), "" when not yet generated
-	NextStepAt          string // when NextStep was generated; compared to UpdatedAt for staleness
-	NextStepAttempts    int    // attempts made since the last per-target budget reset (see 00068)
-	NextStepAttemptedAt string // UTC ISO8601 of the most recent attempt (success or failure), "" if never attempted
+	NextStep            string        // AI-suggested next action (JSON), "" when not yet generated
+	NextStepAt          string        // when NextStep was generated; compared to UpdatedAt for staleness
+	NextStepAttempts    int           // attempts made since the last per-target budget reset (see 00068)
+	NextStepAttemptedAt string        // UTC ISO8601 of the most recent attempt (success or failure), "" if never attempted
+	ProjectID           sql.NullInt64 // set = lives only on that project's board (migration 00081, PROJ-01)
+	Branch              string        // project targets: the git branch carrying the work, "" = none (00089)
+	PR                  string        // project targets: the pull request, a number or URL, "" = none (00089)
 }
 
 // TargetNote represents a single note entry in a target's notes JSON array.
@@ -459,6 +462,9 @@ type TargetFilter struct {
 	Search      string
 	Limit       int
 	IncludeDone bool
+	// ProjectID scopes the query to one project board: 0 (every existing
+	// caller) excludes project targets, N returns only project N's (PROJ-01).
+	ProjectID int64
 }
 
 // TargetLink represents a typed link between two targets or to an external reference.

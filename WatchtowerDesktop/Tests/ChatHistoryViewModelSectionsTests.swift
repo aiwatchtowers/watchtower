@@ -25,9 +25,17 @@ final class ChatHistoryViewModelSectionsTests: XCTestCase {
         return vm
     }
 
+    /// A conversation with one message on its active path.
+    nonisolated private static func answered(_ d: Database, title: String) throws -> Int64 {
+        let id = try TestDatabase.insertChatConversation(d, title: title)
+        let msg = try TestDatabase.insertChatMessage(d, conversationID: id, role: "user", text: title)
+        try d.execute(sql: "UPDATE chat_conversations SET active_leaf_message_id = ? WHERE id = ?", arguments: [msg, id])
+        return id
+    }
+
     func testSectionsPinRenameArchive() async throws {
         let (a, b) = try await dbManager.dbPool.write { d in
-            (try TestDatabase.insertChatConversation(d, title: "A"), try TestDatabase.insertChatConversation(d, title: "B"))
+            (try Self.answered(d, title: "A"), try Self.answered(d, title: "B"))
         }
         let vm = await loaded()
         XCTAssertEqual(vm.sections.map(\.kind), [.today])
@@ -43,6 +51,17 @@ final class ChatHistoryViewModelSectionsTests: XCTestCase {
         vm.archive(a)
         XCTAssertFalse(vm.conversations.contains { $0.id == a })
         XCTAssertNil(vm.lastError)
+    }
+
+    /// A message-less chat (the landing's unsent draft) is listed only while selected.
+    func testMessageLessChatsAreListedOnlyWhileSelected() async throws {
+        let (answered, empty) = try await dbManager.dbPool.write { d in
+            (try Self.answered(d, title: "A"), try TestDatabase.insertChatConversation(d, title: ""))
+        }
+        let vm = await loaded()
+        XCTAssertEqual(vm.sections.flatMap(\.conversations).map(\.id), [answered])
+        vm.selectedConversationID = empty
+        XCTAssertEqual(Set(vm.sections.flatMap(\.conversations).map(\.id)), [answered, empty])
     }
 
     func testSearchFindsMessages() async throws {

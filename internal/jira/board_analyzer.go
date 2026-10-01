@@ -10,6 +10,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"watchtower/internal/ai"
@@ -132,7 +133,39 @@ type BoardAnalyzer struct {
 	totalInputTokens  int
 	totalOutputTokens int
 	totalAPITokens    int
+
+	// now is the clock CheckAndRefreshProfiles' per-board retry budget
+	// (refreshAttempts, below) reads; nil means time.Now (a test injects a
+	// fake to cross a UTC calendar day without a real day's wait).
+	now func() time.Time
+
+	// refreshAttempts is an in-memory, process-lifetime retry budget for
+	// CheckAndRefreshProfiles' failure path — see recordFailedRefresh. Not
+	// persisted (this fix stays scoped to internal/jira/, no new migration):
+	// a daemon restart resets it, widening the retry window by at most one
+	// process lifetime.
+	refreshAttemptsMu sync.Mutex
+	refreshAttempts   map[int]*boardRefreshAttempt
 }
+
+// boardRefreshAttempt is one board's spent retry budget for the config hash
+// it was recorded against, on one UTC calendar day.
+type boardRefreshAttempt struct {
+	hash  string
+	date  string // UTC calendar day, "2006-01-02"
+	count int
+}
+
+// maxDailyBoardRefreshAttempts caps how many times CheckAndRefreshProfiles
+// retries AnalyzeBoard for one board's current config hash on one UTC
+// calendar day — the day-plan/briefing/next-step "3 attempts/day" shape
+// (docs/features/strong-tier-cost-fixes.md). Without it, a board whose config
+// hash changed and whose analysis kept failing (LLM error, or "LLM returned
+// empty workflow") retried the LLM call every phaseJiraSync pass (every
+// jira.sync_interval_mins, default 15 min) forever: ProfileGeneratedAt is
+// written only by a successful AnalyzeBoard, so RefreshCooldown never
+// engaged for a failure.
+const maxDailyBoardRefreshAttempts = 3
 
 // NewBoardAnalyzer creates a new BoardAnalyzer for one Jira account.
 func NewBoardAnalyzer(client *Client, database *db.DB, aiProvider ai.Provider, accountID int64) *BoardAnalyzer {
@@ -171,6 +204,50 @@ func (a *BoardAnalyzer) SetLanguage(lang string) {
 	if lang != "" {
 		a.language = lang
 	}
+}
+
+// clockNow returns the analyzer's clock (time.Now unless a test overrides now).
+func (a *BoardAnalyzer) clockNow() time.Time {
+	if a.now != nil {
+		return a.now()
+	}
+	return time.Now()
+}
+
+// refreshBudgetSpent reports whether board's retry budget for today's failed
+// attempts at hash is exhausted. A hash change (the board's config changed
+// again since the failing attempts) or a new UTC calendar day resets the
+// budget — the same "edited since" escape hatch docs/features/strong-tier-cost-fixes.md documents for the
+// next-step generator's per-target attempt budget.
+func (a *BoardAnalyzer) refreshBudgetSpent(boardID int, hash string) bool {
+	a.refreshAttemptsMu.Lock()
+	defer a.refreshAttemptsMu.Unlock()
+	rec := a.refreshAttempts[boardID]
+	if rec == nil || rec.hash != hash || rec.date != a.clockNow().UTC().Format("2006-01-02") {
+		return false
+	}
+	return rec.count >= maxDailyBoardRefreshAttempts
+}
+
+// recordFailedRefresh spends one unit of today's retry budget for board's
+// current hash and returns the new count. Called only when AnalyzeBoard
+// actually returns an error — never for a benign skip (cooldown, disabled
+// autoRefresh) — mirroring the day-plan/briefing/next-step budgets, which
+// charge only a real attempt.
+func (a *BoardAnalyzer) recordFailedRefresh(boardID int, hash string) int {
+	a.refreshAttemptsMu.Lock()
+	defer a.refreshAttemptsMu.Unlock()
+	if a.refreshAttempts == nil {
+		a.refreshAttempts = make(map[int]*boardRefreshAttempt)
+	}
+	date := a.clockNow().UTC().Format("2006-01-02")
+	rec := a.refreshAttempts[boardID]
+	if rec == nil || rec.hash != hash || rec.date != date {
+		rec = &boardRefreshAttempt{hash: hash, date: date}
+		a.refreshAttempts[boardID] = rec
+	}
+	rec.count++
+	return rec.count
 }
 
 // FetchBoardRawData collects board configuration and issue statistics from Jira API and local DB.
@@ -387,19 +464,9 @@ func (a *BoardAnalyzer) CheckAndRefreshProfiles(ctx context.Context, autoRefresh
 			continue // config unchanged
 		}
 
-		// Check cooldown.
-		if full.ProfileGeneratedAt != "" {
-			generated, err := time.Parse(time.RFC3339, full.ProfileGeneratedAt)
-			if err == nil && time.Since(generated) < RefreshCooldown {
-				a.logger.Printf("board %d (%s): config changed but cooldown not elapsed (generated %s ago)",
-					board.ID, board.Name, time.Since(generated).Truncate(time.Minute))
-				results = append(results, RefreshResult{
-					BoardID:   board.ID,
-					BoardName: board.Name,
-					Skipped:   true,
-				})
-				continue
-			}
+		if a.skipRefresh(board.ID, board.Name, *full, newHash) {
+			results = append(results, RefreshResult{BoardID: board.ID, BoardName: board.Name, Skipped: true})
+			continue
 		}
 
 		a.logger.Printf("board %d (%s): config changed (hash %s -> %s)",
@@ -422,7 +489,7 @@ func (a *BoardAnalyzer) CheckAndRefreshProfiles(ctx context.Context, autoRefresh
 		full.ConfigHash = ""
 		profile, err := a.AnalyzeBoard(ctx, *full)
 		if err != nil {
-			a.logger.Printf("warning: re-analysis failed for board %d (%s): %v", board.ID, board.Name, err)
+			a.recordAndLogFailedRefresh(board.ID, board.Name, newHash, err)
 			results = append(results, RefreshResult{
 				BoardID:   board.ID,
 				BoardName: board.Name,
@@ -447,6 +514,43 @@ func (a *BoardAnalyzer) CheckAndRefreshProfiles(ctx context.Context, autoRefresh
 	}
 
 	return results, nil
+}
+
+// skipRefresh reports whether a board whose config changed must still be
+// skipped this pass — either the 24h cooldown since a last SUCCESSFUL
+// analysis (logged: an owner-visible "not yet, still cooling down"), or
+// today's failure-retry budget being spent (silent: recordAndLogFailedRefresh
+// already logged once when the budget was spent, so a skip on every later
+// same-day pass would just repeat that line for no new information).
+func (a *BoardAnalyzer) skipRefresh(boardID int, boardName string, full db.JiraBoard, newHash string) bool {
+	if full.ProfileGeneratedAt != "" {
+		generated, err := time.Parse(time.RFC3339, full.ProfileGeneratedAt)
+		if err == nil && time.Since(generated) < RefreshCooldown {
+			a.logger.Printf("board %d (%s): config changed but cooldown not elapsed (generated %s ago)",
+				boardID, boardName, time.Since(generated).Truncate(time.Minute))
+			return true
+		}
+	}
+	// A failed re-analysis never advances ConfigHash/ProfileGeneratedAt (only
+	// a successful AnalyzeBoard does, via UpdateJiraBoardProfile), so without
+	// its own budget a board stuck on a failing analysis would retry the LLM
+	// call every pass forever — the cooldown above never engages for it.
+	return a.refreshBudgetSpent(boardID, newHash)
+}
+
+// recordAndLogFailedRefresh spends one unit of today's retry budget for a
+// failed AnalyzeBoard call and logs either a per-attempt warning or, on the
+// attempt that spends the last of today's budget, a one-time "giving up for
+// today" line (skipRefresh's later same-day skips stay silent instead of
+// repeating it).
+func (a *BoardAnalyzer) recordAndLogFailedRefresh(boardID int, boardName, hash string, err error) {
+	attempts := a.recordFailedRefresh(boardID, hash)
+	if attempts >= maxDailyBoardRefreshAttempts {
+		a.logger.Printf("board %d (%s): giving up for today after %d failed refresh attempts, will retry tomorrow: %v",
+			boardID, boardName, attempts, err)
+		return
+	}
+	a.logger.Printf("warning: re-analysis failed for board %d (%s): %v", boardID, boardName, err)
 }
 
 // mergeUserOverrides re-applies user override stale thresholds on top of a freshly

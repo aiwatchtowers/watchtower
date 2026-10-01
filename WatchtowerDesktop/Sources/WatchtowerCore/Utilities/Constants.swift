@@ -115,9 +115,18 @@ package enum Constants {
     }
 
     /// App version — reads from Info.plist (set at build time), falls back to hardcoded default.
+    /// A leading "v"/"V" is stripped here (not just at the one display call
+    /// site that surfaced it) so every caller — including the ones that
+    /// prepend their own "v" — is protected against a build invoked with a
+    /// "v"-prefixed VERSION (e.g. copied from a git tag).
     package static let appVersion: String = {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.0"
+        let raw = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.2.0"
+        return Self.stripLeadingV(raw)
     }()
+
+    package static func stripLeadingV(_ version: String) -> String {
+        version.hasPrefix("v") || version.hasPrefix("V") ? String(version.dropFirst()) : version
+    }
 
     /// UserDefaults key for tracking whether initial pipelines have completed.
     package static let pipelinesCompletedKey = "pipelines_completed"

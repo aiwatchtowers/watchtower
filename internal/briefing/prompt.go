@@ -2,7 +2,7 @@ package briefing
 
 // This file documents the prompt template format for briefing.daily.
 //
-// The prompt template in prompts/defaults.go uses 14 format verbs (%s):
+// The prompt template in prompts/defaults.go uses 16 format verbs (%s):
 //   1. userName       — display name of the current user
 //   2. date           — YYYY-MM-DD
 //   3. role           — user's role (or empty)
@@ -17,3 +17,5 @@ package briefing
 //  12. peopleSummaryCtx — latest team summary
 //  13. profileCtx     — user profile (role, team, reports, etc.)
 //  14. jiraCtx        — Jira issues, sprint progress, stale/overdue signals
+//  15. projectsCtx    — Watchtower projects with board/comment activity since the previous briefing
+//  16. memRevisionsCtx — notable memory belief revisions (always last)

@@ -65,7 +65,8 @@ final class AgentActionFeedTests: XCTestCase {
         let runner = FakeCLIRunner(stdout: Data(json.utf8))
         let feed = AgentActionFeed(dbPool: pool, cliRunner: runner)
         await feed.approve(1)
-        XCTAssertEqual(feed.lastError, "issuetype: invalid")
+        XCTAssertEqual(feed.rowErrors[1]?.message, "issuetype: invalid", "the failure belongs on the row's card")
+        XCTAssertNil(feed.lastError, "a row's failure is not a feed-wide banner")
     }
 
     func testApproveSurfacesProcessFailure() async throws {
@@ -74,8 +75,45 @@ final class AgentActionFeedTests: XCTestCase {
         struct Boom: Error {}
         let feed = AgentActionFeed(dbPool: pool, cliRunner: FakeCLIRunner(error: Boom()))
         await feed.approve(1)
-        XCTAssertNotNil(feed.lastError)
+        XCTAssertNotNil(feed.rowErrors[1])
         XCTAssertTrue(feed.inFlight.isEmpty)
+    }
+
+    /// Backlog 2026-09-30 (SQLITE_BUSY on Approve): the failed approve leaves
+    /// the row `pending`, so its card's Retry re-runs `approve` through the
+    /// same CLI path — which clears the row's error when it succeeds, and
+    /// never touches another row's error.
+    func testRetriedApproveClearsOnlyItsOwnRowError() async throws {
+        let (pool, path) = try makePool()
+        defer { TestDatabase.cleanup(path: path) }
+        struct Busy: LocalizedError { var errorDescription: String? { "database is locked (5) (SQLITE_BUSY)" } }
+        let runner = FakeCLIRunner(error: Busy())
+        let feed = AgentActionFeed(dbPool: pool, cliRunner: runner)
+        await feed.approve(1)
+        await feed.approve(2)
+        XCTAssertEqual(feed.rowErrors[1], AgentActionFeed.RowError(verb: "approve", message: "database is locked (5) (SQLITE_BUSY)"))
+        XCTAssertNotNil(feed.rowErrors[2])
+
+        runner.shouldThrow = nil
+        await feed.approve(1)
+        XCTAssertEqual(runner.invocations.last, ["actions", "approve", "1", "--json"])
+        XCTAssertNil(feed.rowErrors[1], "a successful retry clears the card's error")
+        XCTAssertNotNil(feed.rowErrors[2], "another card's failure stays until that card is retried")
+
+        feed.stop()
+        XCTAssertTrue(feed.rowErrors.isEmpty, "stop() drops the previous conversation's errors")
+    }
+
+    /// The card keys its Retry on the failed verb: a failed Reject must be
+    /// recorded as a reject, never as something a Retry would approve.
+    func testFailedRejectIsRecordedAsReject() async throws {
+        let (pool, path) = try makePool()
+        defer { TestDatabase.cleanup(path: path) }
+        struct Boom: Error {}
+        let feed = AgentActionFeed(dbPool: pool, cliRunner: FakeCLIRunner(error: Boom()))
+        await feed.reject(1)
+        XCTAssertEqual(feed.rowErrors[1]?.verb, "reject")
+        XCTAssertEqual(feed.rowErrors[1]?.isApprove, false)
     }
 
     func testApproveAllPendingForTurn() async throws {
@@ -189,7 +227,8 @@ final class AgentActionFeedTests: XCTestCase {
 
         await feed.approveAllPending(forTurn: "t")
         XCTAssertEqual(runner.invocations.count, 2)
-        XCTAssertEqual(feed.lastError, "boom", "the failure must not be cleared by the next row's run")
+        XCTAssertEqual(feed.rowErrors[1]?.message, "boom", "the failure must not be cleared by the next row's run")
+        XCTAssertNil(feed.rowErrors[2])
     }
 
     /// I6: a stream that dies before any assistant text persists leaves its

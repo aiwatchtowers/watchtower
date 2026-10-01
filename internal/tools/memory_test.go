@@ -57,7 +57,7 @@ func TestMemoryMap_ReturnsMapAndCounts(t *testing.T) {
 	reg := New(database)
 	require.NoError(t, reg.Register(NewMemoryMap(vaultPath)))
 
-	data, err := reg.CallRead(context.Background(), "memory_map", nil)
+	data, err := reg.CallRead(context.Background(), "memory_map", nil, Binding{})
 	require.NoError(t, err)
 	b, _ := json.Marshal(data)
 	assert.Contains(t, string(b), `"type":"entity"`)
@@ -73,7 +73,7 @@ func TestMemoryOpen_ResolvesAliasAndBumpsStats(t *testing.T) {
 	reg := New(database)
 	require.NoError(t, reg.Register(NewMemoryOpen(vaultPath)))
 
-	data, err := reg.CallRead(context.Background(), "memory_open", json.RawMessage(`{"ref":"PAY-SVC"}`))
+	data, err := reg.CallRead(context.Background(), "memory_open", json.RawMessage(`{"ref":"PAY-SVC"}`), Binding{})
 	require.NoError(t, err)
 	b, _ := json.Marshal(data)
 	assert.Contains(t, string(b), tPayments.ID)
@@ -93,7 +93,7 @@ func TestMemoryOpen_ReadOnlyConnectionStillReturnsNode(t *testing.T) {
 	reg := New(database)
 	require.NoError(t, reg.Register(NewMemoryOpen(vaultPath)))
 
-	data, err := reg.CallRead(context.Background(), "memory_open", json.RawMessage(`{"ref":"pay-svc"}`))
+	data, err := reg.CallRead(context.Background(), "memory_open", json.RawMessage(`{"ref":"pay-svc"}`), Binding{})
 	require.NoError(t, err)
 	b, _ := json.Marshal(data)
 	assert.Contains(t, string(b), tPayments.ID)
@@ -108,11 +108,11 @@ func TestMemoryOpen_BadRefs(t *testing.T) {
 	reg := New(database)
 	require.NoError(t, reg.Register(NewMemoryOpen(vaultPath)))
 
-	_, err := reg.CallRead(context.Background(), "memory_open", json.RawMessage(`{"ref":"  "}`))
+	_, err := reg.CallRead(context.Background(), "memory_open", json.RawMessage(`{"ref":"  "}`), Binding{})
 	var verr *ValidationError
 	require.ErrorAs(t, err, &verr)
 
-	_, err = reg.CallRead(context.Background(), "memory_open", json.RawMessage(`{"ref":"no-such-alias"}`))
+	_, err = reg.CallRead(context.Background(), "memory_open", json.RawMessage(`{"ref":"no-such-alias"}`), Binding{})
 	require.Error(t, err)
 	assert.NotErrorAs(t, err, &verr, "not-found is a plain error, not a validation error")
 	assert.Contains(t, err.Error(), "no-such-alias")
@@ -126,7 +126,7 @@ func TestMemoryRecall_AliasFirst(t *testing.T) {
 	reg := New(database)
 	require.NoError(t, reg.Register(NewMemoryRecall(vaultPath, nil)))
 
-	data, err := reg.CallRead(context.Background(), "memory_recall", json.RawMessage(`{"query":"Pay-Svc"}`))
+	data, err := reg.CallRead(context.Background(), "memory_recall", json.RawMessage(`{"query":"Pay-Svc"}`), Binding{})
 	require.NoError(t, err)
 	var hits []memoryHitResult
 	require.NoError(t, remarshal(data, &hits))
@@ -145,7 +145,7 @@ func TestMemoryRecall_EmptyIsArrayNotNull(t *testing.T) {
 	reg := New(database)
 	require.NoError(t, reg.Register(NewMemoryRecall(vaultPath, nil)))
 
-	data, err := reg.CallRead(context.Background(), "memory_recall", json.RawMessage(`{"query":"zzzznomatch"}`))
+	data, err := reg.CallRead(context.Background(), "memory_recall", json.RawMessage(`{"query":"zzzznomatch"}`), Binding{})
 	require.NoError(t, err)
 	b, _ := json.Marshal(data)
 	assert.Equal(t, "[]", string(b))
@@ -161,7 +161,7 @@ func TestMemoryRecall_ShadowGate(t *testing.T) {
 		reg := New(database)
 		require.NoError(t, reg.Register(NewMemoryRecall(vaultPath, nil)))
 
-		_, err := reg.CallRead(context.Background(), "memory_recall", json.RawMessage(`{"query":"pay-svc"}`))
+		_, err := reg.CallRead(context.Background(), "memory_recall", json.RawMessage(`{"query":"pay-svc"}`), Binding{})
 		require.NoError(t, err)
 		rows, err := database.ListMemoryRetrieveShadow("recall", time.Time{})
 		require.NoError(t, err)
@@ -174,7 +174,7 @@ func TestMemoryRecall_ShadowGate(t *testing.T) {
 		// Same writable handle as shadow, mirroring newMemorySessionCompare.
 		require.NoError(t, reg.Register(NewMemoryRecall(vaultPath, database)))
 
-		_, err := reg.CallRead(context.Background(), "memory_recall", json.RawMessage(`{"query":"pay-svc"}`))
+		_, err := reg.CallRead(context.Background(), "memory_recall", json.RawMessage(`{"query":"pay-svc"}`), Binding{})
 		require.NoError(t, err)
 		rows, err := database.ListMemoryRetrieveShadow("recall", time.Time{})
 		require.NoError(t, err)
@@ -199,7 +199,7 @@ func TestMemory_NotInitialized(t *testing.T) {
 		{"memory_open", json.RawMessage(`{"ref":"x"}`)},
 		{"memory_recall", json.RawMessage(`{"query":"x"}`)},
 	} {
-		_, err := reg.CallRead(context.Background(), c.name, c.args)
+		_, err := reg.CallRead(context.Background(), c.name, c.args, Binding{})
 		require.Error(t, err, c.name)
 		assert.Contains(t, err.Error(), "memory not initialized", c.name)
 	}

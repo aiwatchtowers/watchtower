@@ -27,9 +27,13 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         }
     }
 
-    /// Whether the section starts collapsed on first launch. All sections start
-    /// collapsed — the sidebar opens compact and the user expands what they need.
-    var collapsedByDefault: Bool { true }
+    /// Whether the section starts collapsed on first launch. FOCUS holds the
+    /// everyday tabs (Catch Up, Briefings, Day Plan, Inbox, Ideas, Calendar)
+    /// and starts expanded; EXECUTION and INSIGHTS are used less often and
+    /// start collapsed — the owner expands what they need, and their own
+    /// choice (persisted in UserDefaults, see `SidebarView.loadCollapsedSections`)
+    /// always wins over this default once they've toggled a section.
+    var collapsedByDefault: Bool { self != .today }
 
     /// Splits this section's items into the currently visible ones and the ones
     /// the user has hidden (matched by destination id), preserving declared order.
@@ -40,5 +44,11 @@ enum SidebarSection: String, CaseIterable, Identifiable {
             if hidden.contains(item.id) { hiddenItems.append(item) } else { visible.append(item) }
         }
         return (visible, hiddenItems)
+    }
+
+    /// The section a destination belongs to, or nil for a root/trailing/tool
+    /// item that isn't in any collapsible section.
+    static func containing(_ destination: SidebarDestination) -> Self? {
+        ordered.first { $0.items.contains(destination) }
     }
 }

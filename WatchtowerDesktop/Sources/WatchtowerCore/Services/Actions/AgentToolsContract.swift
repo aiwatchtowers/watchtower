@@ -42,12 +42,17 @@ package enum AgentToolsContract {
         "- update_jira_issue — propose changing a Jira issue's summary, priority, labels, or due date."
     ]
 
+    private static let confluenceWriteTools = [
+        "- edit_confluence_page — propose edits to a Confluence page: replace_text for a passage, replace_section to "
+            + "rewrite a section; the owner approves a word-level diff before anything is written."
+    ]
+
     private static let mainTools = [
         "- create_target — propose a new task or reminder (a task with a due date) in the owner's task list.",
         "- create_jira_issue — propose a Jira issue on a connected site.",
         "- connect_jira_board — propose watching a Jira board so its issues start syncing; pass board_name when "
             + "the project has several boards, and ask the owner when the project is ambiguous."
-    ] + jiraIssueWriteTools + [
+    ] + jiraIssueWriteTools + confluenceWriteTools + [
         "- create_track — propose a track that follows a topic over time.",
         "- create_idea — capture an idea in the owner's ideas registry.",
         "- remind_me — set a reminder that resurfaces in the Inbox at a chosen time; pass message_ref when it is "
@@ -55,7 +60,7 @@ package enum AgentToolsContract {
     ]
 
     private static let targetTools = ["- create_jira_issue — propose a Jira issue on a connected site."]
-        + jiraIssueWriteTools
+        + jiraIssueWriteTools + confluenceWriteTools
 
     private static let rules = [
         "Rules:",
@@ -66,6 +71,9 @@ package enum AgentToolsContract {
             + "When the project or type is ambiguous, ask the owner instead of guessing.",
         "- For an existing Jira issue, pass its key (e.g. ABC-123); call get_jira_issue first when you are not sure "
             + "of its current status, assignee, or fields.",
+        "- To edit a Confluence page, read it with get_confluence_page first (a live read with every comment) and "
+            + "pass its version as base_version. Prefer replace_text for a small edit. Keep every ⟦…⟧ marker you do not "
+            + "mean to delete, verbatim. After a \"page changed\" error, read the page again and propose again.",
         "- get_action <id> answers what happened to a proposal; an ACTIONS SINCE YOUR LAST MESSAGE block at the "
             + "top of the owner's message reports outcomes since your last turn."
     ]

@@ -509,6 +509,9 @@ func catchupCoverageLine(coverageJSON string) string {
 	if cov.Topup != "" {
 		parts = append(parts, "top-up "+cov.Topup)
 	}
+	if cov.WindowTruncated {
+		parts = append(parts, "window capped at 31 days")
+	}
 	return strings.Join(parts, " · ")
 }
 

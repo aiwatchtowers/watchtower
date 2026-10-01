@@ -1,0 +1,104 @@
+import Foundation
+import GRDB
+
+/// Fixtures for the Projects tables (spec §3). Project targets follow the
+/// index's constraint: `level='custom'`, `custom_label='project'`,
+/// `source_type='chat'`, `ownership='mine'`.
+extension TestDatabase {
+    @discardableResult
+    package static func insertProject(
+        _ db: Database,
+        name: String = "acme",
+        folder: String = "/tmp/acme"
+    ) throws -> Int64 {
+        try db.execute(
+            sql: "INSERT INTO projects (name, folder_path) VALUES (?, ?)",
+            arguments: [name, folder]
+        )
+        return db.lastInsertedRowID
+    }
+
+    @discardableResult
+    package static func insertProjectTarget(
+        _ db: Database,
+        projectID: Int64,
+        text: String = "Feature",
+        status: String = "todo",
+        parentID: Int64? = nil,
+        priority: String = "medium"
+    ) throws -> Int64 {
+        try db.execute(
+            sql: """
+                INSERT INTO targets (text, level, custom_label, period_start, period_end,
+                    parent_id, status, priority, ownership, source_type, project_id)
+                VALUES (?, 'custom', 'project', '2026-09-29', '2026-09-29', ?, ?, ?, 'mine', 'chat', ?)
+                """,
+            arguments: [text, parentID, status, priority, projectID]
+        )
+        return db.lastInsertedRowID
+    }
+
+    @discardableResult
+    package static func insertProjectTargetImage(
+        _ db: Database,
+        projectID: Int64,
+        targetID: Int64,
+        fileName: String = "shot.png",
+        sha256: String = "abc",
+        path: String = "/tmp/project_files/1/abc.png"
+    ) throws -> Int64 {
+        try db.execute(
+            sql: """
+                INSERT INTO project_target_images (project_id, target_id, file_name, mime, size, sha256, path)
+                VALUES (?, ?, ?, 'image/png', 3, ?, ?)
+                """,
+            arguments: [projectID, targetID, fileName, sha256, path]
+        )
+        return db.lastInsertedRowID
+    }
+
+    @discardableResult
+    package static func insertProjectDocument(
+        _ db: Database,
+        projectID: Int64,
+        relPath: String = "docs/plan.md",
+        kind: String = "plan",
+        title: String = "",
+        targetID: Int64? = nil,
+        updatedAt: String = "2026-09-29T10:00:00Z",
+        origin: String = "agent"
+    ) throws -> Int64 {
+        try db.execute(
+            sql: """
+                INSERT INTO project_documents (project_id, target_id, rel_path, kind, title, updated_at, origin)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+            arguments: [projectID, targetID, relPath, kind, title, updatedAt, origin]
+        )
+        return db.lastInsertedRowID
+    }
+
+    @discardableResult
+    package static func insertProjectComment(
+        _ db: Database,
+        projectID: Int64,
+        author: String = "agent",
+        body: String = "Question?",
+        targetID: Int64? = nil,
+        documentID: Int64? = nil,
+        parentID: Int64? = nil,
+        status: String = "open",
+        quote: String = "",
+        readAt: String = ""
+    ) throws -> Int64 {
+        try db.execute(
+            sql: """
+                INSERT INTO project_comments (project_id, target_id, document_id, parent_id,
+                    author, body, anchor_quote, status, read_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+            arguments: [projectID, targetID, documentID, parentID, author, body, quote, status, readAt]
+        )
+        return db.lastInsertedRowID
+    }
+}

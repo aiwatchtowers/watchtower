@@ -35,20 +35,82 @@ var wsRun = regexp.MustCompile(`\s+`)
 // StorageToSections converts Confluence storage-format XHTML into sections
 // split at h1-h3. User mentions become "@[~<accountId>]" tokens (resolved to
 // names at index time from ext_users); returned userIDs lists them. jiraKeys
-// lists issue keys from Jira macros and plain text (deduped, in order).
-func StorageToSections(xhtml string, maxRunes int) (sections []extsync.Section, userIDs []string, jiraKeys []string) {
-	// ParseFragment's HTML5 algorithm tolerates arbitrarily malformed input
-	// (there is no equivalent of an XML well-formedness error), so in
-	// practice this never returns a non-nil error; a nil result on error is
-	// an acceptable, harmless fallback rather than a real failure mode.
+// lists issue keys from Jira macros and plain text (deduped, in order) — on
+// the fallback path below, plain-text keys only (no ac:name="jira" macro
+// parsing, since fallbackText renders no structure), so doc_links still picks
+// up whatever keys the page's raw text names.
+//
+// ParseFragment's HTML5 algorithm tolerates arbitrarily malformed input (there
+// is no equivalent of an XML well-formedness error) with one exception:
+// golang.org/x/net/html caps its open-element stack at 512 nodes and returns
+// an error past that depth (storage_depth_test.go). parseErr is non-nil only
+// in that case; sections/jiraKeys still carry a best-effort tag-blind text
+// strip (fallbackText) rather than an empty page, so a pathologically deep or
+// malformed document is still searchable by its text and still links its
+// Jira mentions — userIDs is always nil on this path, since a mention token
+// only ever comes from an ac:link/ri:user element the fallback never parses.
+// Callers should log a non-nil parseErr — there is no useful recovery action,
+// since re-parsing the same input gives the same result.
+func StorageToSections(xhtml string, maxRunes int) (sections []extsync.Section, userIDs []string, jiraKeys []string, parseErr error) {
 	nodes, err := parseFragment(xhtml)
 	if err != nil {
-		return nil, nil, nil
+		text := fallbackText(xhtml)
+		c := &converter{}
+		c.scanJiraKeys(text)
+		return capSections(oneSection(text), maxRunes), nil, c.jiraKeys, err
 	}
 	c := &converter{}
 	nodes = flattenTransparent(nodes)
 	sections = capSections(c.splitSections(nodes), maxRunes)
-	return sections, c.userIDs, c.jiraKeys
+	return sections, c.userIDs, c.jiraKeys, nil
+}
+
+// oneSection wraps text as the one-section shape the rest of the pipeline
+// expects ("" text = no section, matching capSections' input convention
+// elsewhere in this file).
+func oneSection(text string) []extsync.Section {
+	if text == "" {
+		return nil
+	}
+	return []extsync.Section{{Text: text}}
+}
+
+// fallbackSkipTags carry no document text in fallbackText, matching
+// internal/extract's stripHTML — a raw <script>/<style> occasionally
+// survives a paste into a Confluence page.
+var fallbackSkipTags = map[string]bool{"script": true, "style": true}
+
+// fallbackText renders xhtml's visible text with the raw tokenizer alone,
+// ignoring all structure (headings, tables, macros): used only when
+// parseFragment's tree builder gives up. It stays linear in len(xhtml) — no
+// tree, no open-element stack — so a document that overflowed the tree
+// builder's depth cap still costs no more than a normal scan.
+func fallbackText(xhtml string) string {
+	z := html.NewTokenizer(strings.NewReader(escapeCDATASections(xhtml)))
+	var b strings.Builder
+	skip := 0
+	for {
+		switch z.Next() {
+		case html.ErrorToken:
+			return normalizeWS(b.String())
+		case html.TextToken:
+			if skip == 0 {
+				b.Write(z.Text())
+				b.WriteByte(' ')
+			}
+		case html.StartTagToken, html.SelfClosingTagToken, html.EndTagToken:
+			tok := z.Token()
+			if !fallbackSkipTags[tok.Data] {
+				continue
+			}
+			if tok.Type == html.StartTagToken {
+				skip++
+			} else if tok.Type == html.EndTagToken {
+				skip = max(skip-1, 0)
+			}
+		case html.CommentToken, html.DoctypeToken:
+		}
+	}
 }
 
 // HeadingAnchor is Confluence Cloud's in-page anchor for a heading text: trim,
@@ -109,32 +171,65 @@ const (
 // including its internal whitespace — survives byte-for-byte.
 func escapeCDATASections(xhtml string) string {
 	var b strings.Builder
+	SplitCDATA(xhtml, func(raw, body string, isCDATA bool) {
+		if isCDATA {
+			b.WriteString(stdhtml.EscapeString(body))
+			return
+		}
+		b.WriteString(raw)
+	})
+	return b.String()
+}
+
+// SplitCDATA is the single place that finds CDATA sections in storage
+// XHTML: it calls fn for each consecutive piece of xhtml, in order, with
+// isCDATA telling a "<![CDATA[...]]>" section apart from the markup around
+// it. raw is the piece's exact bytes (concatenating every raw reproduces
+// xhtml byte for byte); body is the CDATA content without its delimiters
+// (equal to raw for a non-CDATA piece). Empty non-CDATA pieces are skipped.
+// An unterminated section (malformed input) runs to the end of xhtml, with
+// no closing delimiter to strip. escapeCDATASections (the converter) and
+// internal/confluenceedit (the byte-exact editor, which must tokenize the
+// markup around a section without ever handing the section itself to the
+// HTML5 tokenizer) both build on it, so the rule lives here once.
+func SplitCDATA(xhtml string, fn func(raw, body string, isCDATA bool)) {
 	rest := xhtml
-	for {
+	for rest != "" {
 		i := strings.Index(rest, cdataStart)
 		if i < 0 {
-			b.WriteString(rest)
-			return b.String()
+			fn(rest, rest, false)
+			return
 		}
-		b.WriteString(rest[:i])
+		if i > 0 {
+			fn(rest[:i], rest[:i], false)
+		}
 		body := rest[i+len(cdataStart):]
 		j := strings.Index(body, cdataEnd)
 		if j < 0 {
-			// Unterminated CDATA (malformed input): escape the remainder
-			// verbatim and stop, rather than looping forever.
-			b.WriteString(stdhtml.EscapeString(body))
-			return b.String()
+			// Unterminated CDATA: the remainder is the section's body, and
+			// the loop stops rather than scanning forever.
+			fn(rest[i:], body, true)
+			return
 		}
-		b.WriteString(stdhtml.EscapeString(body[:j]))
-		rest = body[j+len(cdataEnd):]
+		end := i + len(cdataStart) + j + len(cdataEnd)
+		fn(rest[i:end], body[:j], true)
+		rest = rest[end:]
 	}
 }
+
+// alwaysSelfClosingByName are non-namespaced tag names that real Confluence
+// storage format also always self-closes with no children — unlike ac:*/
+// ri:* below, these need listing by name since they carry no ':' to key on.
+// "time" is the date lozenge (<time datetime="2026-09-01" />); it is not a
+// void element in HTML5, so left alone it stays open and swallows whatever
+// follows as its children (see normalizeSelfClosing's doc).
+var alwaysSelfClosingByName = map[string]bool{"time": true}
 
 // normalizeSelfClosing rewrites every self-closing tag whose name contains
 // ':' (ac:*/ri:* — real Confluence storage format self-closes these
 // everywhere: <ri:user .../>, <ac:structured-macro ac:name="toc" .../>, ...)
-// into an explicit start+end tag pair before handing the document to
-// html.ParseFragment.
+// or is listed in alwaysSelfClosingByName, into an explicit start+end tag
+// pair before handing the document to html.ParseFragment.
 //
 // The HTML5 parsing algorithm ParseFragment implements has no concept of
 // XML-style self-closing on a non-void custom element: a trailing "/>" on
@@ -142,11 +237,14 @@ func escapeCDATASections(xhtml string) string {
 // every sibling that follows in the source (a heading, a paragraph, ...)
 // becomes a descendant of that "self-closed" element instead of a sibling —
 // for a macro that is dropped outright (like toc), this silently swallows
-// the rest of the document. Rewriting at the tokenizer level, before the
-// tree builder ever runs, sidesteps that HTML5 rule entirely rather than
-// working around its effects after the fact (e.g. with a regex, which
-// cannot reliably tell a real tag from one that only looks like one inside
-// a CDATA/comment/attribute value).
+// the rest of the document; for <time />, it swallows the rest of its
+// surrounding phrase and its datetime attribute is never read at all
+// (renderTime never runs on a node that isn't the empty, attribute-bearing
+// element the source actually wrote). Rewriting at the tokenizer level,
+// before the tree builder ever runs, sidesteps that HTML5 rule entirely
+// rather than working around its effects after the fact (e.g. with a
+// regex, which cannot reliably tell a real tag from one that only looks
+// like one inside a CDATA/comment/attribute value).
 func normalizeSelfClosing(xhtml string) string {
 	z := html.NewTokenizer(strings.NewReader(xhtml))
 	var b strings.Builder
@@ -156,7 +254,7 @@ func normalizeSelfClosing(xhtml string) string {
 			break // io.EOF (the normal end) or a tokenizer error; either way, stop.
 		}
 		tok := z.Token()
-		if tt == html.SelfClosingTagToken && strings.Contains(tok.Data, ":") {
+		if tt == html.SelfClosingTagToken && (strings.Contains(tok.Data, ":") || alwaysSelfClosingByName[tok.Data]) {
 			start := tok
 			start.Type = html.StartTagToken
 			b.WriteString(start.String())
@@ -303,6 +401,8 @@ func (c *converter) renderBlock(n *html.Node) string {
 		return c.renderMacro(n)
 	case "ac:task-list":
 		return c.renderTaskList(n)
+	case "time":
+		return c.renderTime(n)
 	case "ac:image":
 		return "" // images are dropped (spec §7)
 	case "script", "style":
@@ -310,6 +410,16 @@ func (c *converter) renderBlock(n *html.Node) string {
 	default:
 		return c.renderChildren(n)
 	}
+}
+
+// renderTime renders a date lozenge's datetime attribute ("2026-09-01"),
+// falling back to any child text on the rare node that carries no attribute
+// (never written by Confluence itself, but not worth an empty string over).
+func (c *converter) renderTime(n *html.Node) string {
+	if dt := attrValue(n, "datetime"); dt != "" {
+		return dt
+	}
+	return c.inlineText(n)
 }
 
 // renderTaskList renders an ac:task-list's ac:task children as "- " lines,
@@ -418,6 +528,8 @@ func (c *converter) inlineElement(n *html.Node) string {
 		return c.renderLink(n)
 	case "ac:structured-macro":
 		return c.renderMacro(n)
+	case "time":
+		return c.renderTime(n)
 	case "ac:image":
 		return ""
 	case "script", "style":
@@ -593,14 +705,27 @@ func (c *converter) renderJiraMacro(n *html.Node) string {
 	return ""
 }
 
-// renderMacroBody renders an ac:rich-text-body (as ordinary nested blocks)
-// or, failing that, an ac:plain-text-body (verbatim text) child.
+// renderMacroBody renders an ac:rich-text-body (as ordinary nested blocks),
+// an ac:plain-text-body (verbatim text), or — for a macro with neither, like
+// the status lozenge, which carries only ac:parameter children — its
+// ac:parameter[ac:name="title"] value (e.g. "DONE"/"BLOCKED").
 func (c *converter) renderMacroBody(n *html.Node) string {
 	if body := firstChildByTag(n, "ac:rich-text-body"); body != nil {
 		return c.renderChildren(body)
 	}
 	if body := firstChildByTag(n, "ac:plain-text-body"); body != nil {
 		return normalizeWS(plainText(body))
+	}
+	return c.macroTitleParameter(n)
+}
+
+// macroTitleParameter returns a macro's ac:parameter[ac:name="title"] text,
+// or "" when it has none.
+func (c *converter) macroTitleParameter(n *html.Node) string {
+	for ch := n.FirstChild; ch != nil; ch = ch.NextSibling {
+		if ch.Type == html.ElementNode && ch.Data == "ac:parameter" && attrValue(ch, "ac:name") == "title" {
+			return c.inlineText(ch)
+		}
 	}
 	return ""
 }

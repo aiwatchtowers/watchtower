@@ -143,7 +143,7 @@ func TestFindExperts_DistinguishesLookupFailureFromUnmatched(t *testing.T) {
 func TestFindExperts_RequiresAnInput(t *testing.T) {
 	reg := New(openDB(t))
 	require.NoError(t, reg.Register(NewFindExperts()))
-	_, err := reg.CallRead(context.Background(), "find_experts", json.RawMessage(`{}`))
+	_, err := reg.CallRead(context.Background(), "find_experts", json.RawMessage(`{}`), Binding{})
 	var verr *ValidationError
 	require.ErrorAs(t, err, &verr)
 }

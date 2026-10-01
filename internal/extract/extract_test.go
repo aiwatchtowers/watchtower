@@ -109,9 +109,44 @@ func TestMediaTypeWithParams(t *testing.T) {
 	assert.Equal(t, []extsync.Section{{Text: "hi"}}, secs)
 }
 
+// TestPlainInvalidUTF8Fails restores this test's original intent (from
+// before this package tried, and across several review rounds withdrew, an
+// undeclared single-byte-charset guess — see readUTF8's doc comment and
+// docs/backlog/2026-09-27-review-low-priority-pr3-confluence-go.md): non-
+// UTF-8 bytes with no byte-order mark simply fail, with no attempt to guess
+// a legacy charset.
 func TestPlainInvalidUTF8Fails(t *testing.T) {
 	x := newExtractor(t, nil)
 	secs, status, err := x.Extract(context.Background(), "text/plain", "a.txt", bytes.NewReader([]byte{'a', 0xff, 0xfe}))
+	require.NoError(t, err)
+	assert.Equal(t, StatusFailed, status)
+	assert.Nil(t, secs)
+}
+
+// TestPlainUTF16BOMDecodes pins that Windows "Unicode" text (UTF-16LE with a
+// BOM) is recognized instead of failing as invalid UTF-8 — common for text
+// files exported by Windows tools (Notepad's default "Unicode" save format).
+func TestPlainUTF16BOMDecodes(t *testing.T) {
+	x := newExtractor(t, nil)
+	doc := []byte{0xFF, 0xFE, 'h', 0x00, 'i', 0x00} // UTF-16LE BOM + "hi"
+	secs, status, err := x.Extract(context.Background(), "text/plain", "a.txt", bytes.NewReader(doc))
+	require.NoError(t, err)
+	assert.Equal(t, StatusOK, status)
+	assert.Equal(t, []extsync.Section{{Text: "hi"}}, secs)
+}
+
+// TestPlainWindows1251WithoutDeclarationFails pins the final routing
+// decision on undeclared legacy single-byte charsets (windows-1251, common
+// for a CSV saved by Excel in a Russian/Ukrainian locale, with no BOM at
+// all): this package tried, and across three review rounds withdrew, a
+// guess for exactly this case — see readUTF8's doc comment and
+// docs/backlog/2026-09-27-review-low-priority-pr3-confluence-go.md. With no
+// byte-order mark and no declared charset (a plain-text/CSV attachment
+// never carries one), such a file fails, same as any other non-UTF-8 bytes.
+func TestPlainWindows1251WithoutDeclarationFails(t *testing.T) {
+	x := newExtractor(t, nil)
+	doc := []byte{0xEF, 0xF0, 0xE8, 0xE2, 0xE5, 0xF2} // cp1251 for "привет"
+	secs, status, err := x.Extract(context.Background(), "text/csv", "a.csv", bytes.NewReader(doc))
 	require.NoError(t, err)
 	assert.Equal(t, StatusFailed, status)
 	assert.Nil(t, secs)
@@ -121,6 +156,40 @@ func TestHTML(t *testing.T) {
 	secs, status := run(t, newExtractor(t, nil), "text/html", "sample.html")
 	assert.Equal(t, StatusOK, status)
 	assert.Equal(t, []extsync.Section{{Text: "Release notes\nFirst paragraph with bold text.\none\ntwo\nTail&end"}}, secs)
+}
+
+// TestHTMLMissingHeadClose pins that an HTML5 document omitting </head> (a
+// <body> start tag implicitly closes it — every browser accepts this) still
+// indexes its body text, not an empty page: before the fix, stripHTML's
+// skip-depth counter for "head" was only ever decremented by an explicit
+// </head>, so a missing one left the rest of the document — the whole
+// body — treated as skipped head content.
+func TestHTMLMissingHeadClose(t *testing.T) {
+	x := newExtractor(t, nil)
+	withClose := `<html><head><title>T</title></head><body><p>Hello body</p></body></html>`
+	noClose := `<html><head><title>T</title><body><p>Hello body</p></body></html>`
+	for name, doc := range map[string]string{"explicit </head>": withClose, "implicit (no </head>)": noClose} {
+		t.Run(name, func(t *testing.T) {
+			secs, status, err := x.Extract(context.Background(), "text/html", "t.html", strings.NewReader(doc))
+			require.NoError(t, err)
+			assert.Equal(t, StatusOK, status)
+			assert.Equal(t, []extsync.Section{{Text: "Hello body"}}, secs)
+		})
+	}
+}
+
+// TestHTMLHeadClosedByOrdinaryTag pins the general form of the </head>
+// omission rule: not just a missing <body>, but ANY ordinary content tag
+// appearing right after a head element (with no <body> tag at all) must
+// still close head — HTML5's "in head" insertion mode treats any tag it
+// doesn't recognize as head content the same way it treats <body>.
+func TestHTMLHeadClosedByOrdinaryTag(t *testing.T) {
+	x := newExtractor(t, nil)
+	doc := `<html><head><title>T</title><p>Hello`
+	secs, status, err := x.Extract(context.Background(), "text/html", "t.html", strings.NewReader(doc))
+	require.NoError(t, err)
+	assert.Equal(t, StatusOK, status)
+	assert.Equal(t, []extsync.Section{{Text: "Hello"}}, secs)
 }
 
 func TestHTMLTableCells(t *testing.T) {
@@ -187,11 +256,13 @@ func TestZipBombCapped(t *testing.T) {
 	zw := zip.NewWriter(&buf)
 	w, err := zw.Create("word/document.xml")
 	require.NoError(t, err)
-	_, err = w.Write([]byte(`<w:document xmlns:w="w"><w:body><w:p><w:r><w:t>`))
+	// Many small runs, so the byte budget — not the per-token cap — is what
+	// the archive exceeds.
+	_, err = w.Write([]byte(`<w:document xmlns:w="w"><w:body><w:p>`))
 	require.NoError(t, err)
-	_, err = w.Write(bytes.Repeat([]byte("a"), 2<<20))
+	_, err = w.Write(bytes.Repeat([]byte(`<w:r><w:t>`+strings.Repeat("a", 1000)+`</w:t></w:r>`), 2<<10))
 	require.NoError(t, err)
-	_, err = w.Write([]byte(`</w:t></w:r></w:p></w:body></w:document>`))
+	_, err = w.Write([]byte(`</w:p></w:body></w:document>`))
 	require.NoError(t, err)
 	require.NoError(t, zw.Close())
 

@@ -5,6 +5,7 @@ import WatchtowerCore
 struct SidebarView: View {
     @Binding var selection: SidebarDestination
     @Environment(AppState.self) private var appState
+    @Environment(\.openSettings) private var openSettings
 
     /// Per-section collapsed flag. Held in @State so toggling re-renders the view;
     /// seeded from UserDefaults (persisted across launches) on first appearance.
@@ -88,8 +89,7 @@ struct SidebarView: View {
             // Tools section
             VStack(alignment: .leading, spacing: 2) {
                 Text("TOOLS")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.tertiary)
+                    .sidebarSectionLabel()
                     .padding(.horizontal, 12)
                     .padding(.bottom, 2)
 
@@ -100,25 +100,7 @@ struct SidebarView: View {
 
             // Next calendar event
             if let calVM = appState.calendarViewModel, let nextEvt = calVM.nextEvent {
-                HStack(spacing: 4) {
-                    Image(systemName: "calendar")
-                        .foregroundStyle(.secondary)
-                        .frame(width: 16)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(nextEvt.title)
-                            .font(.caption)
-                            .lineLimit(1)
-                        Text(nextEvt.startDate, style: .relative)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    if nextEvt.conferenceLink != nil {
-                        Spacer(minLength: 4)
-                        JoinButton(event: nextEvt, center: appState.meetingRecorderCenter)
-                    }
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 4)
+                SidebarNextMeetingCard(event: nextEvt, center: appState.meetingRecorderCenter)
             }
 
             // Jira connection indicator
@@ -138,7 +120,9 @@ struct SidebarView: View {
             // Update available indicator
             if appState.updateService.isUpdateAvailable {
                 Button {
-                    NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                    // `showSettingsWindow:` via sendAction is a no-op on macOS 14+.
+                    appState.settingsTab = .system
+                    openSettings()
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: "arrow.down.circle.fill")
@@ -159,8 +143,25 @@ struct SidebarView: View {
         .padding(.horizontal, 8)
         .frame(maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
-        .onAppear { googleAuth.checkStatus() }
-        .onChange(of: selection) { _, _ in googleAuth.checkStatus() }
+        .onAppear {
+            googleAuth.checkStatus()
+            expandSectionContainingSelection()
+        }
+        .onChange(of: selection) { _, _ in
+            googleAuth.checkStatus()
+            expandSectionContainingSelection()
+        }
+    }
+
+    /// Expands `selection`'s section if it's currently collapsed. Called both
+    /// on first appearance — the initial `selection` can already sit inside a
+    /// collapsed section (the window reopened from the tray via a
+    /// notification route, or the sidebar toggled off and back on with a
+    /// stale selection) — and on every later change.
+    private func expandSectionContainingSelection() {
+        if let expanded = Self.expandingSection(for: selection, in: collapsedSections) {
+            collapsedSections = expanded
+        }
     }
 
     // MARK: - Main Sidebar Button
@@ -216,6 +217,7 @@ struct SidebarView: View {
                     : item == .inbox ? .blue
                     : item == .targets && overdueTaskCount > 0 ? .red
                     : item == .targets ? .blue
+                    : item == .projects ? .blue
                     : .red)
             }
         }
@@ -242,6 +244,7 @@ struct SidebarView: View {
         case .ideas: ideasCount
         case .targets: overdueTaskCount > 0 ? overdueTaskCount : activeTaskCount
         case .tracks: updatedTrackCount
+        case .projects: appState.projectsViewModel?.badgeCount ?? 0
         case .digests: digestsBadgeCount
         case .memory: memoryDisputedCount
         case .statistics: recommendationCount
@@ -298,6 +301,24 @@ struct SidebarView: View {
         return .blue
     }
 
+    /// A collapsed-sections map with `destination`'s section expanded, or nil
+    /// when there's nothing to do (the destination has no section, or its
+    /// section is already expanded) — so navigating to a tab tucked inside a
+    /// collapsed section always shows the selection instead of hiding it
+    /// behind a closed header. Pure, for the same testability reason as
+    /// `sectionBadgeCount` above.
+    static func expandingSection(
+        for destination: SidebarDestination,
+        in collapsed: [String: Bool]
+    ) -> [String: Bool]? {
+        guard let section = SidebarSection.containing(destination), collapsed[section.id] == true else {
+            return nil
+        }
+        var updated = collapsed
+        updated[section.id] = false
+        return updated
+    }
+
     private func isCollapsed(_ section: SidebarSection) -> Bool {
         collapsedSections[section.id] ?? section.collapsedByDefault
     }
@@ -323,8 +344,7 @@ struct SidebarView: View {
                         .foregroundStyle(.tertiary)
                         .frame(width: 12)
                     Text(section.title)
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.tertiary)
+                        .sidebarSectionLabel()
                     Spacer()
                     let badge = sectionBadgeCount(section)
                     if collapsed, badge > 0 {
@@ -374,4 +394,13 @@ struct SidebarView: View {
         }
     }
 
+}
+
+extension Text {
+    /// The sidebar's section labels (FOCUS, EXECUTION, TOOLS), also used by
+    /// the Projects panel's SESSIONS label so the two never drift.
+    func sidebarSectionLabel() -> some View {
+        font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(.tertiary)
+    }
 }

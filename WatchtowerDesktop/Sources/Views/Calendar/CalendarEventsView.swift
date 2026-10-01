@@ -24,7 +24,6 @@ struct CalendarEventsView: View {
     @Environment(AppState.self) private var appState
     @AppStorage("transcription.provider") private var transcriptionProvider = "whisperkit"
     @AppStorage("transcription.model") private var transcriptionModel = "large-v3-v20240930"
-    @State private var meetingPrepVM = MeetingPrepViewModel()
     private let google = GoogleConnectFlow.shared
     @State private var expandedAllDayDates: Set<Date> = []
     @State private var userNotes: String = ""
@@ -125,7 +124,6 @@ struct CalendarEventsView: View {
                 Divider()
                 MeetingDetailView(
                     entry: entry,
-                    prepVM: meetingPrepVM,
                     userNotes: $userNotes,
                     onDeleted: handleRecordingDeleted,
                     onChanged: loadRecordings,

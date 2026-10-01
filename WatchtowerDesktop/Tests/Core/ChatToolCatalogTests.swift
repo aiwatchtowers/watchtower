@@ -10,6 +10,13 @@ final class ChatToolCatalogTests: XCTestCase {
         XCTAssertEqual(ChatToolCatalog.label(name: "load_skill", args: #"{"name":"triage"}"#), "Loaded skill triage")
     }
 
+    func testWebSearchStep() {
+        XCTAssertEqual(ChatToolCatalog.label(name: "WebSearch", args: #"{"query":"swift 6 concurrency"}"#),
+                       "Searched the web: swift 6 concurrency")
+        XCTAssertEqual(ChatToolCatalog.label(name: "WebSearch", args: "{}"), "Searched the web")
+        XCTAssertEqual(ChatToolCatalog.icon(name: "WebSearch"), "globe")
+    }
+
     func testMissingSubjectFallsBack() {
         XCTAssertEqual(ChatToolCatalog.label(name: "get_jira_issue", args: "{}"), "Opened a Jira issue")
         XCTAssertEqual(ChatToolCatalog.label(name: "search_knowledge", args: "not json"), "Searched knowledge")

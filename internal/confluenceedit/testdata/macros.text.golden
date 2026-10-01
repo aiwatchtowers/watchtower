@@ -1,0 +1,23 @@
+# Macros
+
+```go
+func main() {
+    fmt.Println("hi")
+}
+```
+
+⟦1:macro panel⟧
+
+⟦2:macro expand Click to expand⟧
+
+⟦3:macro toc⟧
+
+⟦4:macro widget⟧
+
+See ⟦5:jira PROJ-42⟧ for details.
+
+⟦6:image diagram.png⟧
+
+Status: ⟦7:status DONE⟧
+
+Due ⟦8:date 2026-09-01⟧ ship it.

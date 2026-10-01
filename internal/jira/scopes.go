@@ -33,6 +33,34 @@ const ConfluenceScopes = "read:space:confluence read:page:confluence read:blogpo
 // 2.0 (3LO) app — one Atlassian grant covers both products.
 var OAuthScopes = JiraScopes + " " + ConfluenceScopes
 
+// ConfluenceWriteScopes are the write scopes for editing a Confluence page
+// or blogpost's storage body. Deliberately not part of OAuthScopes/
+// ConfluenceScopes: they are opt-in, requested only by
+// `jira login|add --with-confluence-write` (LoginOptions.WithConfluenceWrite),
+// never as a side effect of the default read-only Confluence connect.
+const ConfluenceWriteScopes = "write:page:confluence write:blogpost:confluence"
+
+// HasConfluenceWriteScopes reports whether tok's granted scopes cover every
+// scope in ConfluenceWriteScopes — the signal that an already-connected
+// Jira account's grant can write to Confluence, so a re-login can request
+// the write scopes again without needing --with-confluence-write repeated
+// (see cmd/jira.go's jiraReloginOptions).
+func HasConfluenceWriteScopes(tok *OAuthToken) bool {
+	if tok == nil {
+		return false
+	}
+	granted := make(map[string]bool)
+	for _, s := range strings.Fields(tok.Scope) {
+		granted[s] = true
+	}
+	for _, want := range strings.Fields(ConfluenceWriteScopes) {
+		if !granted[want] {
+			return false
+		}
+	}
+	return true
+}
+
 // HasConfluenceScopes reports whether tok's granted scopes cover every scope
 // in ConfluenceScopes — the signal that an already-connected Jira account
 // re-consented to the wider OAuthScopes list and Confluence sync can run

@@ -2,20 +2,26 @@ import SwiftUI
 import AppKit
 import WatchtowerCore
 
-/// Frame of the bottom sentinel row in the thread scroll view's named
-/// coordinate space; nil when nothing has published one yet.
-private struct ChatBottomSentinelFramePreferenceKey: PreferenceKey {
+/// Frame of the thread content in the thread scroll view's named coordinate
+/// space; nil when nothing has published one yet.
+private struct ChatContentFramePreferenceKey: PreferenceKey {
     static let defaultValue: CGRect? = nil
     static func reduce(value: inout CGRect?, nextValue: () -> CGRect?) {
         value = value ?? nextValue()
     }
 }
 
-/// Reference box for the sentinel's last published frame — mutating it does
-/// not invalidate the view, unlike a plain `@State CGRect?` (the
-/// `NowLineFrameBox` precedent).
-private final class ChatBottomFrameBox {
-    var value: CGRect?
+/// Reference box for the follow tracker — feeding it a measurement does not
+/// invalidate the view, unlike a plain `@State` (the `NowLineFrameBox`
+/// precedent); `isFollowing` mirrors the one bit the view renders.
+private final class ChatFollowTrackerBox {
+    var tracker = ChatFollowTracker()
+}
+
+/// One assistant answer handed to `QuoteReplySheet`.
+private struct QuoteTarget: Identifiable {
+    let id: Int64
+    let text: String
 }
 
 /// The centered thread column (spec §3.1, max ~760 pt). Reads `liveTurn`
@@ -24,17 +30,15 @@ struct ChatThreadView: View {
     @Bindable var chatVM: ChatViewModel
     let ownerName: String
 
-    /// True while the viewport sits at (or within `ChatAutoScrollPolicy
-    /// .bottomThreshold` of) the true bottom — the only state a streaming
-    /// delta or a new message consults before pulling the view down. Starts
-    /// `true` so opening a conversation lands at the bottom as before.
+    /// Whether the view tracks the latest content — every content growth
+    /// (streamed text, a tool step, an artifact block, a new row) pulls a
+    /// following view down; a user scroll up stops it (`ChatFollowTracker`).
+    /// Starts `true` so opening a conversation lands at the bottom. Mirrors
+    /// `follow.tracker.following`.
     @State private var isFollowing = true
-    @State private var lastBottomFrame = ChatBottomFrameBox()
-    /// Last conversation the bottom-follow logic reset for — a conversation
-    /// switch always lands at the bottom, ignoring whatever `isFollowing`
-    /// happened to be left over from the previous conversation's scroll
-    /// position (`ChatThreadView` keeps its `@State` across a `select`).
-    @State private var trackedConversationID: Int64?
+    @State private var follow = ChatFollowTrackerBox()
+    /// The answer being quoted ("Quote in reply"); nil = no sheet.
+    @State private var quoting: QuoteTarget?
     private static let bottomSentinelID = "chat-bottom-sentinel"
     private static let scrollSpace = "chat-thread-scroll"
 
@@ -47,7 +51,7 @@ struct ChatThreadView: View {
                             ChatEmptyState(ownerName: ownerName, onPrompt: usePrompt)
                         }
                         ForEach(chatVM.thread) { item in
-                            row(item, proxy: proxy).id(item.id)
+                            row(item).id(item.id)
                             actionCards(forTurn: item.message.turnID)
                         }
                         unattachedActionCards
@@ -60,59 +64,105 @@ struct ChatThreadView: View {
                         errors
                         bottomSentinel
                     }
-                    .padding(.vertical, 16)
+                    // No bottom padding: the sentinel's own height is it, so
+                    // scrolling to the sentinel lands at the content's true
+                    // bottom and the measured distance settles at 0.
+                    .padding(.top, 16)
                     .padding(.horizontal, 20)
                     .frame(maxWidth: 760)
                     .frame(maxWidth: .infinity)
+                    // Measured on the whole content, not a trailing sentinel:
+                    // the content frame is always laid out, while a
+                    // `LazyVStack` row off the visible range may never publish.
+                    .background(
+                        GeometryReader { geo in
+                            Color.clear.preference(
+                                key: ChatContentFramePreferenceKey.self,
+                                value: geo.frame(in: .named(Self.scrollSpace))
+                            )
+                        }
+                    )
                 }
                 .coordinateSpace(name: Self.scrollSpace)
-                .onPreferenceChange(ChatBottomSentinelFramePreferenceKey.self) { frame in
-                    lastBottomFrame.value = frame
-                    updateFollowState(viewportHeight: viewport.size.height)
+                .onPreferenceChange(ChatContentFramePreferenceKey.self) { frame in
+                    guard let frame else { return }
+                    updateFollowState(.init(contentTop: frame.minY, contentHeight: frame.height,
+                                            viewportHeight: viewport.size.height), proxy: proxy)
                 }
-                // The classification depends on both inputs — a height-only
-                // resize keeps the sentinel's frame byte-identical in the
-                // scroll space, so the preference alone would go stale (the
+                // The decision depends on both inputs — a height-only resize
+                // keeps the content frame byte-identical in the scroll space,
+                // so the preference alone would go stale (the
                 // `CalendarEventsView` now-line precedent).
                 .onChange(of: viewport.size.height) { _, height in
-                    updateFollowState(viewportHeight: height)
+                    guard let last = follow.tracker.lastMetrics else { return }
+                    updateFollowState(.init(contentTop: last.contentTop, contentHeight: last.contentHeight,
+                                            viewportHeight: height), proxy: proxy)
                 }
                 .overlay(alignment: .bottom) { jumpToLatestButton(proxy: proxy) }
-                .onChange(of: chatVM.thread.last?.id) {
-                    if trackedConversationID != chatVM.conversationID {
-                        trackedConversationID = chatVM.conversationID
-                        isFollowing = true
-                    }
-                    if isFollowing, let last = chatVM.thread.last { proxy.scrollTo(last.id, anchor: .bottom) }
-                }
-                .onChange(of: chatVM.scrollTarget) {
-                    if let target = chatVM.scrollTarget { proxy.scrollTo(target, anchor: .center) }
+                // One handler for switch/jump/turn start/new row, so a ⌘K hit
+                // that also switches into a streaming conversation lands on
+                // the hit whatever order separate handlers would have fired in.
+                // `initial`: the view can mount together with a ⌘K hit (opened
+                // from a project page); the initial call passes old == new.
+                .onChange(of: threadState, initial: true) { old, new in
+                    let change = old == new
+                        ? ChatAutoScrollPolicy.mountChange(new)
+                        : ChatAutoScrollPolicy.threadChange(from: old, to: new)
+                    handleThreadChange(change, proxy: proxy)
                 }
             }
         }
+        .sheet(item: $quoting) { target in
+            QuoteReplySheet(messageText: target.text) { chatVM.addQuote($0, comment: $1) }
+        }
     }
 
+    /// Scroll target for "the very bottom" (and the thread's bottom margin);
+    /// carries no measurement.
     private var bottomSentinel: some View {
         Color.clear
-            .frame(height: 1)
-            .background(
-                GeometryReader { geo in
-                    Color.clear.preference(
-                        key: ChatBottomSentinelFramePreferenceKey.self,
-                        value: geo.frame(in: .named(Self.scrollSpace))
-                    )
-                }
-            )
+            .frame(height: 16)
             .id(Self.bottomSentinelID)
     }
 
-    /// Derives `isFollowing` from the sentinel's last published frame — how
-    /// far its top edge sits below the visible viewport's bottom edge.
-    private func updateFollowState(viewportHeight: CGFloat) {
-        guard let frame = lastBottomFrame.value, viewportHeight > 0 else { return }
-        let distance = max(0, frame.minY - viewportHeight)
-        let following = ChatAutoScrollPolicy.isAtBottom(distanceFromBottom: distance)
-        if following != isFollowing { isFollowing = following }
+    private var threadState: ChatAutoScrollPolicy.ThreadState {
+        .init(conversationID: chatVM.conversationID, lastMessageID: chatVM.thread.last?.id,
+              scrollTarget: chatVM.scrollTarget, liveMessageID: chatVM.liveTurn?.messageID)
+    }
+
+    private func handleThreadChange(_ change: ChatAutoScrollPolicy.ThreadChange, proxy: ScrollViewProxy) {
+        switch change {
+        case let .jumpToMessage(target):
+            follow.tracker.restartTracking(following: false)
+            syncFollowing()
+            proxy.scrollTo(target, anchor: .center)
+            chatVM.consumeScrollTarget()
+        case .switchedConversation:
+            follow.tracker.restartTracking(following: true)
+            syncFollowing()
+            if let last = chatVM.thread.last { proxy.scrollTo(last.id, anchor: .bottom) }
+        case .turnStarted:
+            follow.tracker.repinToLatest()
+            syncFollowing()
+            proxy.scrollTo(Self.bottomSentinelID, anchor: .bottom)
+        case .newLastRow:
+            if isFollowing, let last = chatVM.thread.last { proxy.scrollTo(last.id, anchor: .bottom) }
+        case .none:
+            break
+        }
+    }
+
+    /// Feeds one content measurement to the tracker and pulls a following
+    /// view down when the content grew under it.
+    private func updateFollowState(_ current: ChatAutoScrollPolicy.Metrics, proxy: ScrollViewProxy) {
+        guard current.viewportHeight > 0 else { return }
+        let pull = follow.tracker.observeMeasurement(current)
+        syncFollowing()
+        if pull { proxy.scrollTo(Self.bottomSentinelID, anchor: .bottom) }
+    }
+
+    private func syncFollowing() {
+        if follow.tracker.following != isFollowing { isFollowing = follow.tracker.following }
     }
 
     /// Shown only once the user has scrolled away from the bottom; jumping
@@ -121,7 +171,8 @@ struct ChatThreadView: View {
     private func jumpToLatestButton(proxy: ScrollViewProxy) -> some View {
         if !isFollowing {
             Button {
-                isFollowing = true
+                follow.tracker.repinToLatest()
+                syncFollowing()
                 withAnimation(.easeOut(duration: 0.2)) {
                     proxy.scrollTo(Self.bottomSentinelID, anchor: .bottom)
                 }
@@ -141,13 +192,11 @@ struct ChatThreadView: View {
     }
 
     @ViewBuilder
-    private func row(_ item: ChatThreadItem, proxy: ScrollViewProxy) -> some View {
+    private func row(_ item: ChatThreadItem) -> some View {
         if let live = chatVM.liveTurn, live.messageID == item.id {
             LiveAssistantRow(turn: live, onOpenArtifact: { chatVM.openArtifact(key: $0) },
-                             onStreamingTextChanged: { text in
-                                 chatVM.updateLiveArtifacts(streamingText: text)
-                                 if isFollowing { proxy.scrollTo(Self.bottomSentinelID, anchor: .bottom) }
-                             })
+                             onOpenSources: { chatVM.openSources(messageID: live.messageID, sources: $0) },
+                             onStreamingTextChanged: { chatVM.updateLiveArtifacts(streamingText: $0) })
         } else {
             ChatMessageRow(item: item, isLast: item.id == chatVM.thread.last?.id,
                            isEditing: chatVM.editingMessageID == item.id, actions: actions,
@@ -171,7 +220,9 @@ struct ChatThreadView: View {
             beginEdit: { chatVM.editingMessageID = $0 },
             submitEdit: { chatVM.edit(messageID: $0, newText: $1) },
             cancelEdit: { chatVM.editingMessageID = nil },
-            openArtifact: { chatVM.openArtifact(key: $0) }
+            openArtifact: { chatVM.openArtifact(key: $0) },
+            openSources: { chatVM.openSources(messageID: $0, sources: $1) },
+            quote: { id, text in quoting = QuoteTarget(id: id, text: text) }
         )
     }
 
@@ -232,7 +283,8 @@ struct ChatThreadView: View {
             inFlight: chatVM.actionFeed.inFlight.contains(action.id),
             onApprove: { Task { await chatVM.actionFeed.approve(action.id) } },
             onReject: { Task { await chatVM.actionFeed.reject(action.id) } },
-            onRetry: { Task { await chatVM.actionFeed.retry(action.id) } }
+            onRetry: { Task { await chatVM.actionFeed.retry(action.id) } },
+            gestureError: chatVM.actionFeed.rowErrors[action.id]
         )
     }
 }

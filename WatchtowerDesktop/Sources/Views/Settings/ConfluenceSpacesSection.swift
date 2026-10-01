@@ -138,6 +138,7 @@ struct ConfluenceSpacesSection: View {
                 .foregroundStyle(.red)
                 .textSelection(.enabled)
         }
+        editingContent(vm)
         Button("Reload") {
             Task { await vm.load() }
         }
@@ -159,6 +160,38 @@ struct ConfluenceSpacesSection: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Its synced pages, comments and attachment text are removed from Watchtower and leave search on the next index cycle.")
+        }
+    }
+
+    // MARK: - Editing
+
+    /// Page editing from the chat (spec 2026-09-30 §2): "Allow editing" when
+    /// the grant reads Confluence but cannot write it; a note once it can.
+    @ViewBuilder
+    private func editingContent(_ vm: ConfluenceSpacesViewModel) -> some View {
+        if vm.showsAllowEditing {
+            Text(
+                "The assistant can read this site's pages but not edit them. Allowing editing signs in again "
+                    + "and asks Atlassian for write access; every edit still waits for your Approve."
+            )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let error = vm.reconsentError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
+            }
+            Button("Allow editing") {
+                vm.allowEditing()
+            }
+            .disabled(vm.isReconsenting || appState.jiraAccountsViewModel?.isConnecting == true)
+        } else if vm.canEdit {
+            Text("The assistant can propose page edits in chat; each one waits for your Approve.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

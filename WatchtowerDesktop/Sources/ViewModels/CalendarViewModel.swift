@@ -19,6 +19,10 @@ final class CalendarViewModel {
     /// reloaded together with events on `loadEvents()`.
     private(set) var calendars: [CalendarCalendarItem] = []
 
+    /// The last failed "Synced Calendars" toggle, shown under the list;
+    /// cleared by the next toggle.
+    private(set) var calendarSelectionError: String?
+
     /// Non-nil when the daemon has detected that the Google refresh token is revoked or failing.
     /// The Desktop shows a reconnect popup while this is present.
     var authState: CalendarQueries.AuthState?
@@ -138,10 +142,16 @@ final class CalendarViewModel {
     /// calendar select <id>`), then reloads so Settings reflects the new
     /// state immediately.
     func setCalendarSelected(_ id: String, selected: Bool) {
+        calendarSelectionError = nil
         Task {
-            try? await dbPool.write { db in
-                try CalendarQueries.setCalendarSelected(db, id: id, selected: selected)
+            do {
+                try await dbPool.write { db in
+                    try CalendarQueries.setCalendarSelected(db, id: id, selected: selected)
+                }
+            } catch {
+                calendarSelectionError = "Failed to update the calendar: \(error.localizedDescription)"
             }
+            // Either way: a calendar the sync dropped leaves the list.
             loadEvents()
         }
     }

@@ -61,6 +61,8 @@ package enum DigestQueries {
 
     // MARK: - Read tracking
 
+    /// Best-effort, unchecked: zero rows also means "already read" (`read_at IS
+    /// NULL` guard), and a digest deleted meanwhile has nothing left to read.
     package static func markDigestRead(_ db: Database, id: Int) throws {
         try db.execute(
             sql: "UPDATE digests SET read_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ? AND read_at IS NULL",

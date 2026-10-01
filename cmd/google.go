@@ -271,7 +271,8 @@ func runGoogleRemove(cmd *cobra.Command, args []string) error {
 // revoke failure is logged and swallowed, since a stale grant on Google's
 // side never blocks the local removal), purges the Gmail data that has no FK
 // back to the account row, deletes id's google_accounts row (cascading its
-// calendars/events/messages), then deletes its token and
+// calendars/events/messages — an event a recording or recap references is
+// kept, its calendar detached; see db.DeleteGoogleAccount), then deletes its token and
 // credentials files. It also deletes any lingering legacy
 // google_token.json/gmail_token.json (belt-and-braces: after the C1 fix to
 // ensureLegacyGoogleAccount these shouldn't exist once any account is
@@ -495,15 +496,18 @@ func rollbackGoogleAccount(database *db.DB, workspaceDir string, accountID int64
 // `google remove 1`, the next-oldest remaining account transparently becomes
 // the new "account #1" for every one of these aliases — consistent, not a
 // bug, even though no code enforces id==1 anywhere.
-func disconnectGoogleService(cmd *cobra.Command, cfg *config.Config, database *db.DB, service string) error {
+//
+// It returns the id of the account it disconnected, or 0 when no Google
+// account exists, so `calendar logout` can scope its purge to that account.
+func disconnectGoogleService(cmd *cobra.Command, cfg *config.Config, database *db.DB, service string) (int64, error) {
 	accounts, err := database.ListGoogleAccounts()
 	if err != nil {
-		return fmt.Errorf("listing accounts: %w", err)
+		return 0, fmt.Errorf("listing accounts: %w", err)
 	}
 	out := cmd.OutOrStdout()
 	if len(accounts) == 0 {
 		fmt.Fprintln(out, "No Google account connected.")
-		return nil
+		return 0, nil
 	}
 	acct := accounts[0]
 
@@ -516,7 +520,7 @@ func disconnectGoogleService(cmd *cobra.Command, cfg *config.Config, database *d
 	}
 
 	if err := database.UpdateGoogleAccountConnection(acct.ID, acct.Email, calendarEnabled, gmailEnabled); err != nil {
-		return fmt.Errorf("updating account: %w", err)
+		return 0, fmt.Errorf("updating account: %w", err)
 	}
 
 	if !calendarEnabled && !gmailEnabled {
@@ -531,13 +535,13 @@ func disconnectGoogleService(cmd *cobra.Command, cfg *config.Config, database *d
 		}
 		fmt.Fprintf(out, "%s disconnected. No Google services remain connected on account %d — run 'watchtower google remove %d' to remove it entirely.\n",
 			googleServiceLabel(service), acct.ID, acct.ID)
-		return nil
+		return acct.ID, nil
 	}
 
 	// Clear any previously recorded auth failure so the Desktop popup dismisses.
 	_ = database.SetGoogleAccountAuthState(acct.ID, "ok", "")
 	fmt.Fprintf(out, "%s disconnected.\n", googleServiceLabel(service))
-	return nil
+	return acct.ID, nil
 }
 
 func googleServiceLabel(service string) string {

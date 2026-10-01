@@ -15,12 +15,15 @@ package final class ArtifactPanelModel {
     package private(set) var isEditing = false
     package var editText = ""
     package private(set) var errorMessage: String?
+    /// The comments on this key, anchored on its latest stored version.
+    package let comments: ArtifactCommentsModel
     @ObservationIgnored private let db: any DatabaseWriter
 
     package init(db: any DatabaseWriter, conversationID: Int64, key: String) {
         self.db = db
         self.conversationID = conversationID
         self.key = key
+        comments = ArtifactCommentsModel(db: db, conversationID: conversationID, key: key)
         reload()
     }
 
@@ -30,6 +33,7 @@ package final class ArtifactPanelModel {
             if let selected = selectedVersion, !versions.contains(where: { $0.version == selected }) {
                 selectedVersion = nil
             }
+            comments.sync(latest: versions.last)
             errorMessage = nil
         } catch {
             errorMessage = "Could not load the artifact: \(error.localizedDescription)"
@@ -44,6 +48,13 @@ package final class ArtifactPanelModel {
     package var displayed: ArtifactDraft? {
         if selectedVersion == nil, let liveDraft { return liveDraft }
         return selectedArtifact?.asDraft
+    }
+
+    /// Comments go on the latest stored version, shown as stored: not an
+    /// older version, not a version being written, not while editing.
+    package var canComment: Bool {
+        guard let latest = versions.last, liveDraft == nil, !isEditing else { return false }
+        return selectedArtifact?.id == latest.id
     }
 
     /// Feed with the streaming message's drafts (`parse(…, final: false).artifacts`).

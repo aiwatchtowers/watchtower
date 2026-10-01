@@ -526,7 +526,9 @@ func (v *Vault) ReadNode(id string) (Node, error) {
 // WriteNodes renders each node to its file, stages ONLY those paths, and
 // makes exactly one commit. Unrelated worktree dirt (owner edits) is neither
 // staged nor committed — it stays in the worktree for CommitOwnerEdits to
-// pick up (MEM-03).
+// pick up (MEM-03). When every rendered node equals what is already
+// committed there is nothing to commit: that is a no-op returning ("", nil),
+// not an error — go-git's ErrEmptyCommit used to abort the whole memory run.
 func (v *Vault) WriteNodes(nodes []Node, msg CommitMsg) (string, error) {
 	if len(nodes) == 0 {
 		return "", fmt.Errorf("memory: WriteNodes called with no nodes")
@@ -553,6 +555,9 @@ func (v *Vault) WriteNodes(nodes []Node, msg CommitMsg) (string, error) {
 		}
 	}
 	hash, err := wt.Commit(msg.render(), &git.CommitOptions{Author: signature()})
+	if errors.Is(err, git.ErrEmptyCommit) {
+		return "", nil
+	}
 	if err != nil {
 		return "", fmt.Errorf("memory: commit nodes: %w", err)
 	}

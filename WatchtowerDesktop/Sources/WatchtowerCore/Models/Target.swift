@@ -120,7 +120,7 @@ package struct Target: FetchableRecord, TableRecord, Codable, Identifiable, Equa
     package let periodStart: String     // YYYY-MM-DD
     package let periodEnd: String       // YYYY-MM-DD
     package let parentId: Int?
-    package let status: String          // "todo", "in_progress", "blocked", "done", "dismissed", "snoozed"
+    package let status: String          // "todo", "in_progress", "in_review" (project targets only), "blocked", "done", "dismissed", "snoozed"
     package let priority: String        // "high", "medium", "low"
     package let ownership: String       // "mine", "delegated", "watching"
     package let ballOn: String
@@ -138,6 +138,7 @@ package struct Target: FetchableRecord, TableRecord, Codable, Identifiable, Equa
     package let updatedAt: String
     package let nextStep: String        // JSON, "" when not yet generated
     package let nextStepAt: String      // when nextStep was generated
+    package let projectID: Int64?       // non-nil = lives only on that project's board (PROJ-01)
 
     package enum CodingKeys: String, CodingKey {
         case id
@@ -166,6 +167,7 @@ package struct Target: FetchableRecord, TableRecord, Codable, Identifiable, Equa
         case updatedAt        = "updated_at"
         case nextStep         = "next_step"
         case nextStepAt       = "next_step_at"
+        case projectID        = "project_id"
     }
 
     package init(row: Row) {
@@ -195,6 +197,7 @@ package struct Target: FetchableRecord, TableRecord, Codable, Identifiable, Equa
         updatedAt        = row["updated_at"] ?? ""
         nextStep         = row["next_step"] ?? ""
         nextStepAt       = row["next_step_at"] ?? ""
+        projectID        = row["project_id"]
     }
 
     // Equatable/Hashable are synthesized on purpose: a `Target` is a stored
@@ -206,7 +209,7 @@ package struct Target: FetchableRecord, TableRecord, Codable, Identifiable, Equa
     // MARK: - Status Predicates
 
     package var isActive: Bool {
-        ["todo", "in_progress", "blocked"].contains(status)
+        ["todo", "in_progress", "in_review", "blocked"].contains(status)
     }
 
     package var isOverdue: Bool {
@@ -272,6 +275,7 @@ package struct Target: FetchableRecord, TableRecord, Codable, Identifiable, Equa
         switch status {
         case "todo":       return "circle"
         case "in_progress": return "circle.dotted.circle"
+        case "in_review":  return "eye.circle"
         case "blocked":    return "exclamationmark.circle"
         case "done":       return "checkmark.circle.fill"
         case "dismissed":  return "xmark.circle"
@@ -284,6 +288,7 @@ package struct Target: FetchableRecord, TableRecord, Codable, Identifiable, Equa
         switch status {
         case "todo":       return "secondary"
         case "in_progress": return "blue"
+        case "in_review":  return "teal"
         case "blocked":    return "red"
         case "done":       return "green"
         case "dismissed":  return "gray"

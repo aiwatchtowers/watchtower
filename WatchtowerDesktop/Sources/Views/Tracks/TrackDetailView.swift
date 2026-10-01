@@ -21,6 +21,9 @@ struct TrackDetailView: View {
     @State private var collecting = true
     @State private var isEditingInstruction = false
     @State private var draftInstruction = ""
+    /// A failed collecting toggle or instruction save — e.g. the watch was
+    /// deleted elsewhere. Cleared by the next successful edit or track switch.
+    @State private var watchEditError: String?
     @State private var showDeleteConfirm = false
 
     var body: some View {
@@ -74,6 +77,7 @@ struct TrackDetailView: View {
             timelineVM?.stop()
             timelineVM = nil
             isEditingInstruction = false
+            watchEditError = nil
             displayedInstruction = track.instruction
             collecting = track.enabled
             if let db = appState.databaseManager {
@@ -147,6 +151,11 @@ struct TrackDetailView: View {
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
+                    if let watchEditError {
+                        Label(watchEditError, systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
                 }
 
                 if let vm = timelineVM {
@@ -156,23 +165,44 @@ struct TrackDetailView: View {
         }
     }
 
-    /// Persists an edited watch instruction and reflects it immediately.
+    /// Persists an edited watch instruction and reflects it immediately. A
+    /// failed save keeps the editor open with the draft.
     private func saveInstruction() {
         let text = draftInstruction.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, let db = appState.databaseManager else { return }
-        try? db.dbPool.write { database in
-            try TrackQueries.updateInstruction(database, id: track.id, instruction: text)
+        do {
+            try db.dbPool.write { database in
+                try TrackQueries.updateInstruction(database, id: track.id, instruction: text)
+            }
+        } catch {
+            reportWatchEditFailure("save the instruction", error)
+            return
         }
+        watchEditError = nil
         displayedInstruction = text
         isEditingInstruction = false
     }
 
-    /// Toggles whether the daemon collects for this watch.
+    /// A watch deleted elsewhere reloads the tracks list so it leaves the
+    /// screen; the message stays on this pane until then.
+    private func reportWatchEditFailure(_ what: String, _ error: Error) {
+        if error is RowNotFoundError { viewModel.load() }
+        watchEditError = "Failed to \(what): \(error.localizedDescription)"
+    }
+
+    /// Toggles whether the daemon collects for this watch; a failed write
+    /// leaves the toggle where it was.
     private func setCollecting(_ on: Bool) {
         guard let db = appState.databaseManager else { return }
-        try? db.dbPool.write { database in
-            try TrackQueries.setEnabled(database, id: track.id, enabled: on)
+        do {
+            try db.dbPool.write { database in
+                try TrackQueries.setEnabled(database, id: track.id, enabled: on)
+            }
+        } catch {
+            reportWatchEditFailure("update collecting", error)
+            return
         }
+        watchEditError = nil
         collecting = on
     }
 

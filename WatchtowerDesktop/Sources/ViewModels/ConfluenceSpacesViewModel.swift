@@ -10,7 +10,9 @@ import WatchtowerCore
 /// which spaces are selected, and how far their sync got, comes from the DB
 /// (`ext_sources` + `ext_documents`) — that is what the daemon actually
 /// syncs. Selecting runs `confluence select|unselect`; every write goes
-/// through the CLI, which validates keys against the live site.
+/// through the CLI, which validates keys against the live site. Whether the
+/// grant can read and edit Confluence comes from `confluence access --json`
+/// (the stored token only), which drives "Allow editing".
 ///
 /// Owned by AppState (one per Jira account, `confluenceSpacesViewModel(
 /// forJiraAccount:)`) so a select still running when the Settings pane goes
@@ -60,6 +62,13 @@ final class ConfluenceSpacesViewModel {
         let name: String
     }
 
+    /// `confluence access --json` (cmd/confluence.go `confluenceAccess`): the
+    /// stored grant's Confluence read and write scopes.
+    private struct Access: Decodable {
+        let read: Bool
+        let write: Bool
+    }
+
     let accountID: Int64
     private(set) var spaces: [SpaceRow] = []
     private(set) var isLoading = false
@@ -72,14 +81,26 @@ final class ConfluenceSpacesViewModel {
     /// Keys with a select/unselect in flight (their toggles are disabled).
     private(set) var busyKeys: Set<String> = []
     private(set) var isReconsenting = false
-    /// Why the last "Grant Confluence access" failed (the Jira login flow's
-    /// own error), mirrored here so it shows next to the button.
+    /// Why the last "Grant Confluence access" or "Allow editing" failed (the
+    /// Jira login flow's own error), mirrored here so it shows next to the
+    /// button.
     private(set) var reconsentError: String?
+    /// The grant carries the Confluence read scopes (`confluence access`).
+    private(set) var hasReadAccess = false
+    /// The grant carries the Confluence write scopes: the assistant may
+    /// propose page edits (`edit_confluence_page`, each behind Approve).
+    private(set) var canEdit = false
+
+    /// "Allow editing" is offered when the site is readable but not writable
+    /// (spec 2026-09-30 §2) — never over the consent screen, whose own
+    /// button grants read access first.
+    var showsAllowEditing: Bool { hasReadAccess && !canEdit && !needsConsent }
 
     private let dbPool: DatabasePool
     private let runner: CLIRunnerProtocol?
     private let onReconsent: @MainActor (Int64) async -> String?
     private let onSelected: @MainActor () async -> Void
+    private let onAllowEditing: @MainActor (Int64) async -> String?
     /// The last successful live listing, reused by `refreshStatuses()` so a
     /// status poll never hits the network.
     private var liveSpaces: [LiveSpace] = []
@@ -96,11 +117,14 @@ final class ConfluenceSpacesViewModel {
     /// wires it to `JiraAccountsViewModel`). `onSelected` runs after a
     /// successful select — AppState asks the daemon to sync now (the tray's
     /// Sync Now) so the new space starts without waiting for the next poll.
+    /// `onAllowEditing` runs the login flow with `--with-confluence-write`
+    /// and returns its error, nil on success.
     init(
         accountID: Int64,
         dbPool: DatabasePool,
         runner: CLIRunnerProtocol?,
         onReconsent: @escaping @MainActor (Int64) async -> String? = { _ in nil },
+        onAllowEditing: @escaping @MainActor (Int64) async -> String? = { _ in nil },
         onSelected: @escaping @MainActor () async -> Void = {}
     ) {
         self.accountID = accountID
@@ -108,6 +132,7 @@ final class ConfluenceSpacesViewModel {
         self.runner = runner
         self.onReconsent = onReconsent
         self.onSelected = onSelected
+        self.onAllowEditing = onAllowEditing
     }
 
     // MARK: - Load
@@ -122,6 +147,7 @@ final class ConfluenceSpacesViewModel {
         loadGeneration += 1
         let generation = loadGeneration
         isLoading = true
+        let access = await readAccess(runner)
         let listing: Result<[LiveSpace], Error>
         do {
             let data = try await runner.run(args: [
@@ -146,7 +172,41 @@ final class ConfluenceSpacesViewModel {
             liveSpaces = []
             apply(error)
         }
+        applyAccess(access, listingFailed: liveSpacesFailed(listing))
         applyStatuses(statuses)
+    }
+
+    private func liveSpacesFailed(_ listing: Result<[LiveSpace], Error>) -> Bool {
+        if case .failure = listing { return true }
+        return false
+    }
+
+    /// `confluence access --json`: the stored token only, no network.
+    private func readAccess(_ runner: CLIRunnerProtocol) async -> Result<Access, Error> {
+        do {
+            let data = try await runner.run(args: [
+                "confluence", "access", "--account", String(accountID), "--json"
+            ])
+            return .success(try JSONDecoder().decode(Access.self, from: data))
+        } catch {
+            return .failure(error)
+        }
+    }
+
+    /// A failed access check hides "Allow editing" and says why — unless the
+    /// listing failed too, whose error (usually the same cause) is shown.
+    private func applyAccess(_ result: Result<Access, Error>, listingFailed: Bool) {
+        switch result {
+        case .success(let access):
+            hasReadAccess = access.read
+            canEdit = access.write
+        case .failure(let error):
+            hasReadAccess = false
+            canEdit = false
+            if !listingFailed {
+                setError("Couldn't check Confluence editing access: \(Self.message(from: error))")
+            }
+        }
     }
 
     /// Re-reads the selected spaces' sync state from the DB (the daemon
@@ -267,6 +327,23 @@ final class ConfluenceSpacesViewModel {
         await load()
     }
 
+    /// "Allow editing": the Jira account's login flow with
+    /// `--with-confluence-write`, then a reload (which re-reads the access).
+    /// Detached like `reconsent()`; shares its in-flight flag and error.
+    func allowEditing() {
+        Task { await allowEditingAsync() }
+    }
+
+    /// The awaitable body of `allowEditing()`, split out for tests.
+    func allowEditingAsync() async {
+        guard !isReconsenting else { return }
+        isReconsenting = true
+        defer { isReconsenting = false }
+        reconsentError = nil
+        reconsentError = await onAllowEditing(accountID)
+        await load()
+    }
+
     // MARK: - Errors
 
     /// Every consent-shaped CLI failure (scopes missing, sign-in expired, no
@@ -275,18 +352,20 @@ final class ConfluenceSpacesViewModel {
     /// CLI prints its error as the last stderr line (cmd/root.go), after any
     /// log lines the command wrote.
     private func apply(_ error: Error) {
-        let message: String
-        if case let CLIRunnerError.nonZeroExit(code, stderr) = error {
-            let last = stderr.split(whereSeparator: \.isNewline).last.map(String.init) ?? ""
-            message = last.isEmpty ? "watchtower exited with code \(code)" : last
-        } else {
-            message = error.localizedDescription
-        }
+        let message = Self.message(from: error)
         if message.contains("--with-confluence") {
             needsConsent = true
             consentMessage = message
         } else {
             setError(message)
         }
+    }
+
+    private static func message(from error: Error) -> String {
+        if case let CLIRunnerError.nonZeroExit(code, stderr) = error {
+            let last = stderr.split(whereSeparator: \.isNewline).last.map(String.init) ?? ""
+            return last.isEmpty ? "watchtower exited with code \(code)" : last
+        }
+        return error.localizedDescription
     }
 }

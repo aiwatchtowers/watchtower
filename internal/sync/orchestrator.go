@@ -56,6 +56,21 @@ type Orchestrator struct {
 	readStateSyncedAt time.Time
 	rosterSyncedAt    time.Time
 
+	// searchGapNote is the clamped-catch-up warning recordSearchGap wrote
+	// during the current Run ("" when the run had no gap). Run resets it;
+	// recordAuthResult's "ok" write carries it instead of blanking the error
+	// column, so the only record of a permanent data gap outlives its run.
+	searchGapNote string
+
+	// searchRateLimited records whether the current Run's search sync gave up
+	// on its first page specifically because Slack rate-limited the token
+	// (isRateLimitError — never set for a scope/permission problem or any
+	// other non-fatal error, which keep falling back to full sync as before).
+	// Run resets it; runSearchSync's "zero channels discovered" fallback must
+	// not escalate to the far more expensive full sync while this is true, or
+	// a rate-limited token gets hit with even more calls instead of backing off.
+	searchRateLimited bool
+
 	// jiraKeyDetector, if set, links Jira issue keys found in synced messages
 	// (the digest/tracks pipelines' SetJiraKeyDetector shape).
 	jiraKeyDetector interface {
@@ -79,7 +94,12 @@ func (o *Orchestrator) SetJiraKeyDetector(detector interface {
 //
 // Best-effort, like the digest and tracks hooks: the links are derived data, so
 // a detection failure is logged and the sync carries on with the messages it
-// already persisted.
+// already persisted (TestSyncMessages_JiraDetectorFailureIsBestEffort). The
+// cost is bounded: a page fetched again (the search window, a --full run)
+// re-detects, idempotently; a page never fetched again stays unlinked, which
+// only loses a "mentioned in Slack" hint, never a message. Failing the run
+// here would instead abort every later channel of the cycle over an
+// enrichment.
 func (o *Orchestrator) detectJiraKeys(msgs []db.Message) {
 	if o.jiraKeyDetector == nil || len(msgs) == 0 {
 		return
@@ -145,22 +165,25 @@ func (o *Orchestrator) resolveWorkerCount(requested int) int {
 // after an earlier phase already succeeded may still record "ok" until a
 // later cycle's failure surfaces at the top level.
 func (o *Orchestrator) Run(ctx context.Context, opts SyncOptions) error {
+	o.searchGapNote = ""
+	o.searchRateLimited = false
 	err := o.run(ctx, opts)
 	o.recordAuthResult(ctx, err)
 	return err
 }
 
 // recordAuthResult persists the account's sync auth state. Pass err=nil to
-// mark it healthy. Errors writing to the DB are logged but not returned —
-// auth state is best-effort telemetry. A cancelled ctx means daemon shutdown,
-// not an auth problem, so the state is left untouched (calendar.Syncer's
-// recordAuthResult precedent).
+// mark it healthy; either way this run's search-gap note (if any) is kept in
+// the error column — alone on success, after the error on failure. Errors writing to the DB are
+// logged but not returned — auth state is best-effort telemetry. A cancelled
+// ctx means daemon shutdown, not an auth problem, so the state is left
+// untouched (calendar.Syncer's recordAuthResult precedent).
 func (o *Orchestrator) recordAuthResult(ctx context.Context, err error) {
 	if o.db == nil {
 		return
 	}
 	if err == nil {
-		if dbErr := o.db.SetSlackAccountAuthState(o.accountID, "ok", ""); dbErr != nil {
+		if dbErr := o.db.SetSlackAccountAuthState(o.accountID, "ok", o.searchGapNote); dbErr != nil {
 			o.logger.Printf("slack: failed to clear auth state: %v", dbErr)
 		}
 		return
@@ -173,7 +196,13 @@ func (o *Orchestrator) recordAuthResult(ctx context.Context, err error) {
 	if isRevokedAuthError(err) {
 		status = "revoked"
 	}
-	if dbErr := o.db.SetSlackAccountAuthState(o.accountID, status, err.Error()); dbErr != nil {
+	msg := err.Error()
+	if o.searchGapNote != "" {
+		// A later phase failing must not erase the record of a data gap the
+		// search phase already clamped in this same run.
+		msg += "; " + o.searchGapNote
+	}
+	if dbErr := o.db.SetSlackAccountAuthState(o.accountID, status, msg); dbErr != nil {
 		o.logger.Printf("slack: failed to record auth state: %v", dbErr)
 	}
 }
@@ -267,10 +296,7 @@ func (o *Orchestrator) runFullSync(ctx context.Context, opts SyncOptions) error 
 		return fmt.Errorf("user profile sync: %w", err)
 	}
 
-	// Sync reactions for pending inbox items so auto-resolve can detect them.
-	o.syncInboxReactions(ctx)
-
-	return o.finishSync()
+	return o.finishWithInboxReactions(ctx)
 }
 
 // runSearchSync uses search.messages to save messages directly, then fetches
@@ -285,6 +311,21 @@ func (o *Orchestrator) runSearchSync(ctx context.Context, opts SyncOptions) erro
 			return o.runFullSync(ctx, opts)
 		}
 		return fmt.Errorf("search sync: %w", err)
+	}
+
+	// Slack is already throttling this token (searchRateLimited, set by
+	// syncViaSearch's page-1 handling): end the cycle here rather than spend
+	// more of the same budget on the read-state/roster refreshes or the
+	// reactions sync below, or on the zero-channels full-sync fallback right
+	// after this. searchGapNote already carries a note so this doesn't look
+	// like a healthy "ok" cycle in the account row; finishSync (in
+	// particular TouchSyncedAt) is skipped too, so the Desktop's "last
+	// synced" time isn't refreshed for a cycle that fetched nothing. Neither
+	// readStateSyncedAt nor rosterSyncedAt is touched, so both refreshes are
+	// still due next cycle exactly as if this cycle hadn't run at all.
+	if o.searchRateLimited {
+		o.logger.Println("search sync: rate-limited by Slack, skipping the rest of this cycle")
+		return nil
 	}
 
 	// Fallback: if search found 0 channels (e.g. missing search:read scope),
@@ -337,10 +378,7 @@ func (o *Orchestrator) runSearchSync(ctx context.Context, opts SyncOptions) erro
 	// both parent messages and thread replies within the search window.
 	// Full thread sync only runs with --full flag (runFullSync).
 
-	// Sync reactions for pending inbox items so auto-resolve can detect them.
-	o.syncInboxReactions(ctx)
-
-	return o.finishSync()
+	return o.finishWithInboxReactions(ctx)
 }
 
 // Cadence of the two auxiliary refreshes in runSearchSync. Both are far
@@ -460,6 +498,15 @@ func (o *Orchestrator) ownsID(id string) bool {
 	return ok && acctID == o.accountID
 }
 
+// finishWithInboxReactions is both sync paths' tail: sync reactions for
+// pending inbox items so auto-resolve can detect them, then finishSync. A
+// reaction failure does not skip finishSync — the cycle's messages did land,
+// so the "last synced" stamp is true — and is returned after it.
+func (o *Orchestrator) finishWithInboxReactions(ctx context.Context) error {
+	reactErr := o.syncInboxReactions(ctx)
+	return errors.Join(o.finishSync(), reactErr)
+}
+
 // syncInboxReactions refreshes the reactions on pending inbox messages so
 // CheckUserReplied() can see the owner's acknowledgement — search.messages
 // doesn't return reactions and conversations.history only captures them at
@@ -474,7 +521,15 @@ func (o *Orchestrator) ownsID(id string) bool {
 // reactors on a message the owner touched still land in the table as before;
 // a pending message the owner never reacted to is left alone (nothing there
 // could resolve it anyway).
-func (o *Orchestrator) syncInboxReactions(ctx context.Context) {
+//
+// A local DB failure (reading the pending items, writing the reactions) is
+// returned: the run records it (pipeline_runs, the account row) instead of
+// reporting a clean sync whose auto-resolve input was silently dropped. The
+// messages this run already committed stay committed, and the next cycle
+// re-lists every reaction (this phase keeps no watermark). A reactions.list
+// failure stays a logged warning: the Slack API is best-effort here, the
+// same way syncEmoji is — the cycle's messages are what the run reports on.
+func (o *Orchestrator) syncInboxReactions(ctx context.Context) error {
 	// GetInboxItems is account-unscoped — it returns every source's pending
 	// items (every connected Slack account, plus Gmail/Jira/Watchtower) — so
 	// filter to this orchestrator's own account; a raw channel id can collide
@@ -482,8 +537,7 @@ func (o *Orchestrator) syncInboxReactions(ctx context.Context) {
 	// account's token, so anything it returns is this account's message.
 	pendingItems, err := o.db.GetInboxItems(db.InboxFilter{Status: "pending"})
 	if err != nil {
-		o.logger.Printf("warning: failed to load pending inbox items for reaction sync: %v", err)
-		return
+		return fmt.Errorf("loading pending inbox items for reaction sync: %w", err)
 	}
 	type key struct{ ch, ts string }
 	pending := make(map[key]bool, len(pendingItems))
@@ -493,18 +547,18 @@ func (o *Orchestrator) syncInboxReactions(ctx context.Context) {
 		}
 	}
 	if len(pending) == 0 {
-		return
+		return nil
 	}
 
 	rawOwner, ok := o.ownerRawID()
 	if !ok {
 		o.logger.Println("inbox reactions: account has no current user id yet, skipping")
-		return
+		return nil
 	}
 	items, err := o.slackClient.ListUserReactions(ctx, rawOwner)
 	if err != nil {
 		o.logger.Printf("warning: reactions.list for inbox: %v", err)
-		return
+		return nil
 	}
 
 	var dbReactions []db.Reaction
@@ -534,24 +588,29 @@ func (o *Orchestrator) syncInboxReactions(ctx context.Context) {
 		}
 	}
 	if len(dbReactions) == 0 {
-		return
+		return nil
 	}
-
-	tx, err := o.db.Begin()
-	if err != nil {
-		o.logger.Printf("warning: begin tx for inbox reactions: %v", err)
-		return
-	}
-	if err := o.db.UpsertReactionBatch(tx, dbReactions); err != nil {
-		tx.Rollback()
-		o.logger.Printf("warning: upsert inbox reactions: %v", err)
-		return
-	}
-	if err := tx.Commit(); err != nil {
-		o.logger.Printf("warning: commit inbox reactions: %v", err)
-		return
+	if err := o.storeInboxReactions(dbReactions); err != nil {
+		return err
 	}
 	o.logger.Printf("synced reactions for %d/%d pending inbox messages", matched, len(pending))
+	return nil
+}
+
+// storeInboxReactions writes one listing's reactions in a single transaction.
+func (o *Orchestrator) storeInboxReactions(reactions []db.Reaction) error {
+	tx, err := o.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin tx for inbox reactions: %w", err)
+	}
+	defer tx.Rollback()
+	if err := o.db.UpsertReactionBatch(tx, reactions); err != nil {
+		return fmt.Errorf("upsert inbox reactions: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit inbox reactions: %w", err)
+	}
+	return nil
 }
 
 // ownerRawID returns the account's own Slack user id without the account
@@ -820,6 +879,20 @@ func isNonFatalError(err error) bool {
 		}
 	}
 	return false
+}
+
+// isRateLimitError reports whether err is specifically a Slack rate-limit
+// response (*slack.RateLimitedError) — as opposed to any other non-fatal
+// condition (a scope/permission problem, a dead account/channel, ...). Only
+// a rate limit gets the special "don't escalate to full sync" handling in
+// syncViaSearch's page-1 branch; every other isNonFatalError case keeps
+// falling back to full sync exactly as before that fix.
+func isRateLimitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var rlErr *slack.RateLimitedError
+	return errors.As(err, &rlErr)
 }
 
 // channelName returns a human-readable channel identifier for logging.
