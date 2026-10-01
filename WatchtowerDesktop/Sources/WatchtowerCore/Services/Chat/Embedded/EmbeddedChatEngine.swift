@@ -24,8 +24,9 @@ package protocol EmbeddedDraftMirror: AnyObject {
 /// a notice after a saved reply only raises the banner).
 ///
 /// Follow-up prompts (an approved action's outcome) wait while a turn is
-/// busy and run after it completes. After a stopped turn they ride the next
-/// owner turn or follow-up; after a failed one, Retry or the next owner turn.
+/// busy and run after it completes. Those waiting behind a stopped turn ride
+/// the next owner turn or follow-up; after a failed turn (its own carried
+/// follow-ups included), Retry or the next owner turn.
 /// They are never dropped while the engine lives.
 @MainActor
 @Observable
@@ -116,6 +117,8 @@ package final class EmbeddedChatEngine {
         let turn: LiveTurn
         var lastFlush: Date
         var lastEvent: Date
+        /// The banner shown when the turn began: a completed turn clears it.
+        let bannerAtBegin: String?
         var stopRequested = false
         var failure: EmbeddedChatErrorClassifier.Failure?
     }
@@ -313,8 +316,8 @@ package final class EmbeddedChatEngine {
         do {
             ids = try store.beginTurn(ownerText: request.ownerText, turnID: turnID, provider: provider)
         } catch {
-            // Nothing was sent: the owner's text goes back to the composer
-            // (and stays mirrored), its follow-ups back to the queue.
+            // Nothing was sent: the owner's text goes back to the composer,
+            // its follow-ups back to the queue.
             gate.release(request.slot)
             if let text = request.ownerText {
                 draft = draft.isEmpty ? text : "\(text)\n\(draft)"
@@ -330,7 +333,7 @@ package final class EmbeddedChatEngine {
         let now = clock()
         let turn = LiveTurn(messageID: ids.assistantID, turnID: turnID, startedAt: now)
         liveTurn = turn
-        running = RunningTurn(request: request, turn: turn, lastFlush: now, lastEvent: now)
+        running = RunningTurn(request: request, turn: turn, lastFlush: now, lastEvent: now, bannerAtBegin: bannerError)
         refreshRows()
 
         let input = ChatTurnInput(text: request.promptText, isResumed: sessionID != nil,
@@ -441,19 +444,25 @@ package final class EmbeddedChatEngine {
         streamTask = nil
         watchdog?.cancel()
         watchdog = nil
-        // A completed turn clears an older banner; anything raised while this
-        // turn ends (a notice or reload that fails) stays visible.
+        // A completed turn clears a banner older than itself; one raised while
+        // it ran or ended (a notice or reload that failed) stays visible.
         let earlierBanner = bannerError
         bannerError = nil
         let outcome = finalize(current)
         liveTurn = nil
         gate.release(current.request.slot)
         refreshRows()
-        if case .failed = outcome { lastTurnFailed = true }
-        if case .completed = outcome {
+        switch outcome {
+        case .completed:
             lastTurnFailed = false
+            if bannerError == nil, earlierBanner != current.bannerAtBegin { bannerError = earlierBanner }
             startFollowUps()
-        } else {
+        case .stopped:
+            // Its prompt (follow-ups included) reached the provider already.
+            lastTurnFailed = false
+            if bannerError == nil { bannerError = earlierBanner }
+        case .failed:
+            lastTurnFailed = true
             if bannerError == nil { bannerError = earlierBanner }
             // Not delivered: the follow-ups wait for Retry or the next owner turn.
             queuedFollowUps.insert(contentsOf: current.request.carriedFollowUps, at: 0)

@@ -67,6 +67,7 @@ final class EmbeddedChatViewTests: XCTestCase {
         ai.finish(throwing: WatchtowerAIError.exitCode(1, "boom"))
         let done = await waitForCondition { !engine.isStreaming }
         XCTAssertTrue(done)
+        XCTAssertNoThrow(try EmbeddedChatRows(engine: engine).inspect().find(button: "Retry"), "visible while idle")
         let filler = self.engine()
         filler.send("takes the only slot")
         engine.retry()

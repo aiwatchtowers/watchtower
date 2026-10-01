@@ -592,6 +592,39 @@ final class EmbeddedChatEngineTests: XCTestCase {
         XCTAssertNotNil(engine.bannerError, "not wiped by the completed turn it belongs to")
     }
 
+    func testABannerRaisedDuringATurnSurvivesItsCompletion() async throws {
+        let store = FlakyStore()
+        let engine = makeEngine(store: store)
+        engine.send("q")
+        store.failAppend = true
+        engine.sendFollowUp(prompt: "Action applied.", notice: "Applied: x")
+        XCTAssertNotNil(engine.bannerError)
+        store.failAppend = false
+        ai.emit(.text("ok"))
+        ai.finish()
+        expectTrue(await waitForCondition { self.ai.calls.count == 2 })
+        XCTAssertNotNil(engine.bannerError, "the unsaved notice belongs to this turn")
+    }
+
+    func testAStoppedTurnDoesNotSendItsFollowUpsAgain() async throws {
+        let engine = makeEngine()
+        engine.sendFollowUp(prompt: "Action applied: x.")
+        engine.stop()
+        engine.send("next")
+        XCTAssertEqual(ai.calls.last?.prompt, "next", "the provider already has it")
+    }
+
+    func testAStopAfterAFailureLetsFollowUpsRunAgain() async throws {
+        let engine = makeEngine()
+        engine.send("q")
+        ai.finish(throwing: WatchtowerAIError.exitCode(1, "boom"))
+        expectTrue(await waitIdle(engine))
+        engine.send("again")
+        engine.stop()
+        engine.sendFollowUp(prompt: "Action applied: y.")
+        XCTAssertEqual(ai.calls.last?.prompt, "Action applied: y.")
+    }
+
     // MARK: - Lifecycle
 
     func testQuietShutdownMidStreamShowsNothing() async throws {
