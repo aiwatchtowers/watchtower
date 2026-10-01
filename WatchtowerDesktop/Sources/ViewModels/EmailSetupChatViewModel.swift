@@ -56,11 +56,12 @@ enum ImapSettingsParser {
     private static let pattern = "```watchtower-imap-settings\\s*\\n(.*?)\\n?```"
     private static let validSecurities: Set<String> = ["ssl", "starttls", "none"]
 
-    static func parse(_ raw: String) -> (text: String, patch: ImapSettingsPatch?) {
+    /// `blockFound`: the reply carried a settings block, read or not.
+    static func parse(_ raw: String) -> (text: String, patch: ImapSettingsPatch?, blockFound: Bool) {
         guard let regex = try? NSRegularExpression(
             pattern: pattern, options: [.dotMatchesLineSeparators]
         ) else {
-            return (raw, nil)
+            return (raw, nil, false)
         }
 
         let full = raw as NSString
@@ -74,7 +75,7 @@ enum ImapSettingsParser {
         let stripped = regex.stringByReplacingMatches(
             in: raw, range: NSRange(location: 0, length: full.length), withTemplate: ""
         )
-        return (stripped.trimmingCharacters(in: .whitespacesAndNewlines), patch)
+        return (stripped.trimmingCharacters(in: .whitespacesAndNewlines), patch, !matches.isEmpty)
     }
 
     /// Decodes one block body. Unknown keys — including any "password" key the

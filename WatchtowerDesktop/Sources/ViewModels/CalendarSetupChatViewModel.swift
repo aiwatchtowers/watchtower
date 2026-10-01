@@ -49,11 +49,12 @@ struct CalendarSettingsPatch: Equatable {
 enum CalendarSettingsParser {
     private static let pattern = "```watchtower-caldav-settings\\s*\\n(.*?)\\n?```"
 
-    static func parse(_ raw: String) -> (text: String, patch: CalendarSettingsPatch?) {
+    /// `blockFound`: the reply carried a settings block, read or not.
+    static func parse(_ raw: String) -> (text: String, patch: CalendarSettingsPatch?, blockFound: Bool) {
         guard let regex = try? NSRegularExpression(
             pattern: pattern, options: [.dotMatchesLineSeparators]
         ) else {
-            return (raw, nil)
+            return (raw, nil, false)
         }
 
         let full = raw as NSString
@@ -67,7 +68,7 @@ enum CalendarSettingsParser {
         let stripped = regex.stringByReplacingMatches(
             in: raw, range: NSRange(location: 0, length: full.length), withTemplate: ""
         )
-        return (stripped.trimmingCharacters(in: .whitespacesAndNewlines), patch)
+        return (stripped.trimmingCharacters(in: .whitespacesAndNewlines), patch, !matches.isEmpty)
     }
 
     /// Decodes one block body. Unknown keys — including any "password",

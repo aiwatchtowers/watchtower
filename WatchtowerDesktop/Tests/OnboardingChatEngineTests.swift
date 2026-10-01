@@ -85,4 +85,23 @@ final class OnboardingChatEngineTests: XCTestCase {
         XCTAssertTrue(mock.prompts.last?.contains("USER: I lead payments") ?? false)
         XCTAssertTrue(mock.prompts.last?.contains("ASSISTANT: Got it.") ?? false)
     }
+
+    func testAMarkerOnlyReplyClosesTheInterviewWithoutAnError() async {
+        let vm = vm(MockClaudeService(events: [.text("[READY]"), .done]))
+        vm.inputText = "that's all"
+        vm.send()
+        await finish(vm)
+        XCTAssertTrue(vm.chatReady)
+        XCTAssertNil(vm.errorMessage)
+        XCTAssertEqual(vm.messages.last?.text, vm.loc("ready_done"))
+        XCTAssertEqual(vm.engine.messages.last?.message.status, "complete")
+    }
+
+    func testRetryThatCannotStartKeepsTheError() {
+        let vm = vm(MockClaudeService())
+        vm.errorMessage = "Failed to save profile: disk full"
+        vm.retryAfterError()  // no failed interview turn to rerun
+        XCTAssertEqual(vm.errorMessage, "Failed to save profile: disk full")
+        XCTAssertFalse(vm.isStreaming)
+    }
 }

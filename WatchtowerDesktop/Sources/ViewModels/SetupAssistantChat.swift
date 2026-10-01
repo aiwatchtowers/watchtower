@@ -27,15 +27,16 @@ final class SetupAssistantChat<Snapshot, Patch> {
     private let greeting: String
     private let connectionErrorLead: String
 
-    /// `parse` splits a reply into the text to show and the settings patch
-    /// (nil when the reply carries none, or a malformed block).
+    /// `parse` splits a reply into the text to show, the settings patch (nil
+    /// when there is none or it could not be read) and whether a settings
+    /// block was there at all.
     init(
         contextID: String,
         greeting: String,
         systemPrompt: String,
         connectionErrorLead: String,
         formStateBlock: @escaping (Snapshot) -> String,
-        parse: @escaping (String) -> (text: String, patch: Patch?),
+        parse: @escaping (String) -> (text: String, patch: Patch?, blockFound: Bool),
         aiService: (any AIServiceProtocol)?,
         gate: EmbeddedStreamGate?
     ) {
@@ -74,12 +75,17 @@ final class SetupAssistantChat<Snapshot, Patch> {
                     return ChatPostTurnResult(displayText: parsed.text.isEmpty
                         ? "(filled in the settings on the left)" : parsed.text)
                 }
-                if parsed.text.isEmpty {
-                    // Only a settings block that could not be read.
-                    NSLog("SetupAssistantChat[%@]: a settings block could not be read", contextID)
-                    return ChatPostTurnResult(displayText: "(couldn't apply the suggested settings — fill them in on the left)")
+                guard parsed.blockFound else {
+                    // No block: the prose as is (an empty reply fails the turn).
+                    return ChatPostTurnResult(displayText: parsed.text)
                 }
-                return ChatPostTurnResult(displayText: parsed.text)
+                // A block that could not be read: the form is unchanged, so
+                // say so — whatever the prose claims was filled in.
+                NSLog("SetupAssistantChat[%@]: a settings block could not be read", contextID)
+                let notice = "Couldn't apply the suggested settings — fill them in on the left."
+                return parsed.text.isEmpty
+                    ? ChatPostTurnResult(displayText: "(\(notice))")
+                    : ChatPostTurnResult(displayText: parsed.text, notices: [notice])
             },
             emptyHint: ""
         ))
