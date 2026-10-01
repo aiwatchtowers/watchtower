@@ -364,6 +364,7 @@ var searchFields = []string{
 	"summary", "description", "issuetype", "status", "assignee", "reporter",
 	"priority", "created", "updated", "duedate", "labels", "components",
 	"issuelinks", "sprint", "epic", "parent", "resolutiondate", "fixVersions",
+	"statuscategorychangedate",
 }
 
 // GetIssueComments fetches every comment on an issue, paginating with

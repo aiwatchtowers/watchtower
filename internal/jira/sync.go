@@ -731,7 +731,10 @@ func (s *Syncer) convertIssue(ctx context.Context, issue Issue, boardID int) (db
 		}
 	}
 
-	statusCatChanged := "" // Jira API doesn't expose this directly in basic search
+	statusCatChanged := ""
+	if f.StatusCategoryChanged != nil {
+		statusCatChanged = NormalizeTimestamp(*f.StatusCategoryChanged)
+	}
 
 	dbIssue := db.JiraIssue{
 		AccountID:               s.accountID,
@@ -976,6 +979,19 @@ func (s *Syncer) getFieldMap(boardID int) []db.JiraBoardFieldMap {
 	}
 	s.fieldMapCache[boardID] = mappings
 	return mappings
+}
+
+// NormalizeTimestamp rewrites a Jira timestamp ("2006-01-02T15:04:05.000-0700")
+// as RFC3339 UTC: SQLite's julianday() rejects a "+hhmm" offset, and the stale
+// query compares the column against an RFC3339 UTC cutoff as a string. A value
+// in neither shape is kept verbatim rather than dropped.
+func NormalizeTimestamp(s string) string {
+	for _, layout := range []string{"2006-01-02T15:04:05.000-0700", time.RFC3339} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t.UTC().Format(time.RFC3339)
+		}
+	}
+	return s
 }
 
 // extractDisplayValue gets a human-readable value from a Jira field value.

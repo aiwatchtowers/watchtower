@@ -170,6 +170,7 @@ func refreshedIssueRow(d *db.DB, accountID int64, issue jira.Issue) (db.JiraIssu
 		row = *existing
 		row.Summary, row.DescriptionText = fresh.Summary, fresh.DescriptionText
 		row.Status, row.StatusCategory = fresh.Status, fresh.StatusCategory
+		row.StatusCategoryChangedAt = fresh.StatusCategoryChangedAt
 		row.Priority, row.Labels = fresh.Priority, fresh.Labels
 		row.ResolvedAt = fresh.ResolvedAt
 		row.UpdatedAt, row.RawJSON, row.SyncedAt = fresh.UpdatedAt, fresh.RawJSON, fresh.SyncedAt
