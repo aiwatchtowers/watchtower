@@ -249,8 +249,23 @@ package struct ProjectDocumentListItem: Identifiable, Equatable, Sendable {
     package let targetTitle: String?
     /// Open owner threads (roots) on the document.
     package let openComments: Int
+    /// The linked target's status, if the document has a target.
+    package let targetStatus: String?
+
+    package init(document: ProjectDocument, targetTitle: String?, openComments: Int, targetStatus: String? = nil) {
+        self.document = document
+        self.targetTitle = targetTitle
+        self.openComments = openComments
+        self.targetStatus = targetStatus
+    }
 
     package var id: Int64 { document.id }
+
+    /// The agent handed it to the owner for review (#105): an agent document
+    /// whose target is `in_review`, as the watchtower-project skill does it.
+    package var awaitingReview: Bool {
+        document.isAgentAttached && targetStatus == "in_review"
+    }
 }
 
 /// A project list row.

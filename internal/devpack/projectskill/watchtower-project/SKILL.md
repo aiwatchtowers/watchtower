@@ -21,7 +21,7 @@ At session start a hook prints the project brief: counts, the open part of the b
 - `create_targets` — many targets in one call, all or nothing. Each item is `{key?, text, intent?, priority?, branch?, pr?, parent_id? | parent_key?, images?}`: `parent_id` points at an existing target, `parent_key` at another item's `key` in the same call; `priority` is `high`, `medium` (the default) or `low`; `branch`/`pr` link the git work (see "Keeping the board in step with git"); `images` are absolute paths of image files to attach (see Images).
 - `update_target` — status (`todo`, `in_progress`, `in_review`, `blocked`, `done`, `dismissed`), progress, title, intent, priority (`high`, `medium`, `low`), `branch` and `pr` (`""` clears one); `add_images` (absolute paths) and `remove_image_ids` attach and detach images. Set a status only on a target without sub-targets: a parent's status follows its children by itself (see Rules).
 - `get_target` — one target with its status history and its images (each with the `path` of Watchtower's copy — read it to look at the image).
-- `attach_document` — `rel_path` (relative to this folder, a `.md` or `.txt` file), `kind` (`spec`, `plan` or `doc`), optional `title` and `target_id`. Attaching a path that is already attached — imported ones included — marks it revised and tells the owner it is ready for review, so do that only after you actually revised it.
+- `attach_document` — `rel_path` (relative to this folder, a `.md` or `.txt` file), `kind` (`spec`, `plan` or `doc`), optional `title` and `target_id`. Attaching a path that is already attached — imported ones included — marks it revised and tells the owner it is ready for review, so do that only after you actually revised it. A document whose target is `in_review` is shown to the owner as awaiting their review (see "Documents for review").
 - `list_comments` — by `target_id`, by `document_id`, or, by default, everything new for you.
 - `add_comment` — on a target (`target_id`), or a reply to a comment (`parent_id`).
 - `resolve_comment` — `comment_id`, with an optional one-line `reply`.
@@ -44,8 +44,20 @@ During setup, create no targets, attach no documents and add no comments before 
 Priorities are the owner's ordering of the work: work on the highest-priority open target first, and change a priority only when the owner asks or agrees (`update_target` with `priority`).
 
 - **A feature is agreed** with the owner → `create_targets` with one target for it: text = the feature's name, intent = one or two sentences on what done means. If a target on the board already covers it, use that one instead.
-- **A spec or plan file is written** → `attach_document` with its path, `kind` `spec` or `plan`, and the feature's `target_id`. The owner reviews it in the app.
+- **A spec, plan or design is written** → hand it to the owner for review, every time, as "Documents for review" below says. The review happens in the project's Documents pane — not in a chat artifact or anywhere else.
 - **A plan is written** → also `create_targets` in one call, one sub-target per plan task, under the feature target (`parent_id` = the feature target's id). Text = the task's title; intent = the plan path plus the task number, e.g. `docs/plans/feature-x.md — Task 3`, so any later session can find the task's steps. Nest deeper with `parent_key` only where the plan itself nests.
+
+## Documents for review
+
+Every spec, plan and design you write goes through the owner's review in Watchtower. Here `in_review` means the owner is reviewing a document — not the code review of a plan task (see "Running a plan").
+
+1. **Pick the review target** — a target without sub-targets that will get none while the review runs, so its status is yours to set:
+   - a spec or design for a feature whose target has no sub-targets, and whose plan you will not write before the owner approves it → that feature target;
+   - a plan → first create its task sub-targets (as in "A plan is written"), then one more sub-target under the feature for the review: text = the board-language word for "Review" followed by the document title (e.g. `Review: <title>`);
+   - any document whose target already has sub-targets → such a review sub-target as well.
+2. **Attach it and mark the review:** `attach_document` with its path, `kind` `spec` (a design is a spec) or `plan`, and the review target's `target_id`; then `update_target` that target to `in_review`. The owner's Documents pane marks the document **In review** and notifies them that it awaits their review.
+3. **Keep working meanwhile** on anything that does not depend on the document. The owner answers with comments on the passages they mean, sent to you as one batch (a line in the terminal naming the document, or the next session's brief). Work through them as in "Revising an attached document"; the target stays `in_review` through every revision.
+4. **When the owner says it is approved:** a review sub-target goes to `done`; a feature target reviewed directly goes back to `todo` or `in_progress`. Do not build from a spec or plan the owner has not approved, unless they told you to go ahead. Never set the status of a target that has sub-targets.
 
 ## Revising an attached document
 

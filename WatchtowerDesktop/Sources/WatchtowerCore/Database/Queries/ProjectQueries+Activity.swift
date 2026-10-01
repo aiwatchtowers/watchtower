@@ -24,11 +24,20 @@ extension ProjectQueries {
                 id: row["id"], targetID: row["target_id"], targetTitle: row["target_title"], body: row["body"]
             )
         }
+        // Targets whose latest status change is the owner's own move to
+        // in_review: their documents are not announced back to the owner.
+        let ownerReviews = Set(try Int64.fetchAll(db, sql: """
+            SELECT h.target_id FROM target_status_history h
+            JOIN targets t ON t.id = h.target_id
+            WHERE t.project_id = ? AND h.to_status = 'in_review' AND h.actor = 'owner'
+              AND h.id = (SELECT MAX(id) FROM target_status_history WHERE target_id = h.target_id)
+            """, arguments: [project.id]))
         var documents: [Int64: ProjectNotificationPolicy.DocumentState] = [:]
         for item in try documentListItems(db, projectID: project.id) {
             documents[item.id] = .init(
                 title: item.document.displayTitle, updatedAt: item.document.updatedAt,
-                openOwnerComments: item.openComments, imported: !item.document.isAgentAttached
+                openOwnerComments: item.openComments, imported: !item.document.isAgentAttached,
+                awaitingReview: item.awaitingReview && !ownerReviews.contains(item.document.targetID ?? 0)
             )
         }
         var targets: [Int64: ProjectNotificationPolicy.TargetState] = [:]
