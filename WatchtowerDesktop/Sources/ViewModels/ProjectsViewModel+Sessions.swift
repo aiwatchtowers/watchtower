@@ -76,28 +76,34 @@ extension ProjectsViewModel {
 
     /// nil = the standalone sessions. false = the load failed and its error
     /// is in `sessionLoadErrors`; the cached list is then stale.
-    /// Only a project's latest read is applied: an older one finishing last
-    /// would drop from the layout a session created since it started.
+    /// A read older than one already applied is dropped (the list is newer
+    /// already), so on `true` the list reflects at least the caller's read.
+    /// Only the latest read started prunes the layout: an older one may
+    /// predate a session created since and must not drop it.
     @discardableResult
     func loadSessions(projectID: Int64?) async -> Bool {
         guard let projectID else { return await loadStandaloneSessions() }
-        projectLoads[projectID, default: 0] += 1
-        let load = projectLoads[projectID]
+        let load = projectLoads[projectID, default: SessionLoads()].started + 1
+        projectLoads[projectID, default: SessionLoads()].started = load
         do {
             let rows = try await dbPool.read {
                 try TerminalSessionQueries.fetchForProject($0, projectID: projectID)
             }
-            guard load == projectLoads[projectID] else { return true }
+            let loads = projectLoads[projectID, default: SessionLoads()]
+            guard load > loads.applied else { return true }
+            projectLoads[projectID]?.applied = load
             terminalSessions[projectID] = rows
             sessionLoadErrors[projectID] = nil
             // A row gone from the list (deleted from another window, or a
             // layout restored from an older run) leaves the layout too.
-            for id in layout(projectID: projectID).sessionIDs where !rows.contains(where: { $0.id == id }) {
-                forgetInLayout(id, projectID: projectID)
+            if load == loads.started {
+                for id in layout(projectID: projectID).sessionIDs where !rows.contains(where: { $0.id == id }) {
+                    forgetInLayout(id, projectID: projectID)
+                }
             }
             return true
         } catch {
-            guard load == projectLoads[projectID] else { return true }
+            guard load > projectLoads[projectID, default: SessionLoads()].applied else { return true }
             sessionLoadErrors[projectID] = "Could not load terminal sessions: \(error.localizedDescription)"
             return false
         }

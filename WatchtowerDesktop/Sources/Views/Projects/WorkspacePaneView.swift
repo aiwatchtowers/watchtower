@@ -165,7 +165,11 @@ struct WorkspaceSplitView<Pane: View>: View {
                     if index == 1 && expanded == nil { divider(width: width) }
                     pane(item)
                         .frame(width: paneWidth(index: index, item: item, total: width))
+                        // Zero width does not clip: without this its header
+                        // would draw over the expanded pane's controls.
+                        .clipped()
                         .opacity(isHidden(item) ? 0 : 1)
+                        .disabled(isHidden(item))
                         .allowsHitTesting(!isHidden(item))
                         .accessibilityHidden(isHidden(item))
                 }

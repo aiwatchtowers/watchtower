@@ -863,4 +863,17 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
 
         XCTAssertEqual(vm.layout.visiblePanes, [.session(row.id)])
     }
+
+    /// A terminal deep link to a project not loaded yet, nothing live (an
+    /// app restart): its most recent open session goes on screen, unstarted.
+    func testTerminalDeepLinkShowsTheMostRecentOpenSession() async throws {
+        let p = try await projectWithFolder()
+        let row = try await liveSession(p, "one")
+        let vm = makeVM()
+
+        await vm.revealTerminal(projectID: p)
+
+        XCTAssertEqual(vm.layout(projectID: p).visiblePanes, [.session(row.id)])
+        XCTAssertTrue(launches.isEmpty, "a deep link starts nothing")
+    }
 }

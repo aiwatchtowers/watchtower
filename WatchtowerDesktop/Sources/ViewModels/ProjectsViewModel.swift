@@ -117,8 +117,12 @@ final class ProjectsViewModel {
     @ObservationIgnored var titleTask: Task<Void, Never>?
     /// Standalone list reads started; only the latest one is applied.
     @ObservationIgnored var standaloneLoads = 0
-    /// Per project, session list reads started; only the latest is applied.
-    @ObservationIgnored var projectLoads: [Int64: Int] = [:]
+    /// Per project, session list reads started and the newest one applied.
+    struct SessionLoads {
+        var started = 0
+        var applied = 0
+    }
+    @ObservationIgnored var projectLoads: [Int64: SessionLoads] = [:]
     /// The title poll's wait. A seam for tests.
     @ObservationIgnored var titleSleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
 
@@ -277,12 +281,23 @@ final class ProjectsViewModel {
         case .board: layout.show(.board)
         case .documents: layout.show(.documents)
         case .terminal:
-            // The live session, else the most recent open one (its pane offers Resume).
-            let id = activeSessionID(projectID: route.projectID)
-                ?? terminalSessions[route.projectID]?.first { !$0.isClosed }?.id
-            if let id { layout.show(.session(id)) }
+            let projectID = route.projectID
+            Task { await revealTerminal(projectID: projectID) }
         }
         pendingDocumentID = route.pane == .documents ? route.subjectID : nil
+    }
+
+    /// The live session, else the most recent open one (its pane offers
+    /// Resume) — read first, since a project just selected has no list yet.
+    func revealTerminal(projectID: Int64) async {
+        if terminalSessions[projectID] == nil {
+            guard await loadSessions(projectID: projectID) else { return }
+        }
+        let id = activeSessionID(projectID: projectID) ?? terminalSessions[projectID]?.first { !$0.isClosed }?.id
+        guard let id else { return }
+        var updated = layout(projectID: projectID)
+        updated.show(.session(id))
+        setLayout(updated, projectID: projectID)
     }
 
     /// New project… → `project create`, then the folder install. A failed
