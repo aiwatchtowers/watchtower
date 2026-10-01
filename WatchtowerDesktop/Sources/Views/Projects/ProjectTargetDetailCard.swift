@@ -33,6 +33,11 @@ struct ProjectTargetDetailCard: View {
             }
             .frame(maxHeight: contentHeight)
             Divider()
+            // The board's banner sits under the scrim while the card is open,
+            // so a failed rename, status, priority or comment write shows here.
+            if let error = vm.errorMessage {
+                errorRow(error)
+            }
             composer
         }
         .onAppear { titleDraft = target.text }
@@ -203,6 +208,27 @@ struct ProjectTargetDetailCard: View {
     }
 
     // MARK: - Composer
+
+    private func errorRow(_ error: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.red)
+            Text(error)
+                .font(.callout)
+                .foregroundStyle(.red)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button { vm.dismissError() } label: { Image(systemName: "xmark") }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Dismiss")
+                .accessibilityLabel("Dismiss error")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.red.opacity(0.08))
+    }
 
     private var canSend: Bool {
         !commentDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty

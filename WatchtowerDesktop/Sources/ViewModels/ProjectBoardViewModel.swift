@@ -181,6 +181,16 @@ final class ProjectBoardViewModel {
         }
     }
 
+    /// Closes the detail card. Unlike `select(nil)` it keeps `errorMessage`:
+    /// a failed write from the card (rename, status, comment) moves to the
+    /// board's banner instead of vanishing with the card.
+    func closeDetail() {
+        selectedTargetID = nil
+        selectedComments = []
+        selectedImages = []
+        load()
+    }
+
     /// The board's error banner is dismissed by the owner: a poll reload
     /// does not clear it, so a failed drop's message stays until read.
     func dismissError() {

@@ -36,7 +36,7 @@ struct ProjectBoardView: View {
                 // `.keyboardShortcut(.cancelAction)`: that is window-wide and
                 // would steal Esc from a Claude Code terminal in the other
                 // split pane.
-                .onExitCommand { if vm.selectedTargetID != nil { vm.select(nil) } }
+                .onExitCommand { if vm.selectedTargetID != nil { vm.closeDetail() } }
             } else {
                 ProgressView()
             }
@@ -197,12 +197,13 @@ struct ProjectBoardView: View {
     // MARK: - Detail
 
     /// The dimmed board and the detail card over it. A click on the scrim,
-    /// the card's close button or Esc clears the selection.
+    /// the card's close button or Esc closes it (`closeDetail`, which keeps
+    /// an error raised from the card for the board's banner).
     private func detailOverlay(_ vm: ProjectBoardViewModel, _ node: ProjectBoardNode) -> some View {
         ZStack {
             Color.black.opacity(0.22)
                 .contentShape(Rectangle())
-                .onTapGesture { vm.select(nil) }
+                .onTapGesture { vm.closeDetail() }
                 .accessibilityAddTraits(.isButton)
                 .accessibilityLabel("Close target details")
             ProjectTargetDetailCard(
@@ -211,7 +212,7 @@ struct ProjectBoardView: View {
                 findings: appState.projectsViewModel?.drift[projectID]?.findings.filter { $0.targetID == node.id } ?? [],
                 titleDraft: $titleDraft,
                 commentDraft: $commentDraft
-            ) { vm.select(nil) }
+            ) { vm.closeDetail() }
             .frame(maxWidth: 620)
             .background(Color(nsColor: .windowBackgroundColor), in: RoundedRectangle(cornerRadius: 12))
             .clipShape(RoundedRectangle(cornerRadius: 12))
@@ -226,7 +227,7 @@ struct ProjectBoardView: View {
             .focusEffectDisabled()
             .focused($cardFocused)
             .onKeyPress(.escape) {
-                vm.select(nil)
+                vm.closeDetail()
                 return .handled
             }
             .onAppear { cardFocused = true }
