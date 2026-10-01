@@ -3,7 +3,7 @@ import SwiftTerm
 import XCTest
 @testable import WatchtowerDesktop
 
-/// The embedded terminal blends into the app window instead of SwiftTerm's
+/// The embedded terminal blends into the Projects workspace instead of SwiftTerm's
 /// default black, stays dark under a light app, and the host's margin
 /// follows it.
 @MainActor
@@ -11,13 +11,20 @@ final class TerminalPaletteTests: XCTestCase {
     private var dark: NSAppearance { get throws { try XCTUnwrap(NSAppearance(named: .darkAqua)) } }
     private var light: NSAppearance { get throws { try XCTUnwrap(NSAppearance(named: .aqua)) } }
 
-    func testWindowBackgroundIsAConcreteOpaqueSRGBColour() {
-        let background = TerminalPalette.windowBackground
+    /// The workspace backdrop as dark resolves it — the colour the terminal
+    /// shows through to under dark — as a concrete opaque colour.
+    func testBackgroundIsTheDarkWorkspaceBackdropAsConcreteOpaqueSRGB() throws {
+        let background = TerminalPalette.background
         XCTAssertEqual(background.colorSpace, .sRGB, "a concrete colour, not a dynamic one")
         XCTAssertEqual(background.alphaComponent, 1)
+        var expected: NSColor?
+        try dark.performAsCurrentDrawingAppearance {
+            expected = NSColor.detailBackground.usingColorSpace(.sRGB)
+        }
+        XCTAssertEqual(background, try XCTUnwrap(expected))
     }
 
-    /// Dark: transparent, so the window's backdrop shows through and the
+    /// Dark: transparent, so the workspace backdrop shows through and the
     /// terminal matches the header above it. Light: opaque, so Claude Code's
     /// dark-theme text stays readable.
     func testBackgroundShowsTheWindowThroughOnlyUnderDark() throws {
@@ -54,7 +61,7 @@ final class TerminalPaletteTests: XCTestCase {
         let preview = NSTextField(string: "https://example.com")
         preview.textColor = terminal.nativeBackgroundColor.withAlphaComponent(0)
         terminal.addSubview(preview)
-        XCTAssertEqual(preview.textColor, TerminalPalette.windowBackground)
+        XCTAssertEqual(preview.textColor, TerminalPalette.background)
     }
 
     /// The background follows every appearance change, and the hosted
@@ -66,8 +73,8 @@ final class TerminalPaletteTests: XCTestCase {
         defer { session.detach() }
 
         session.view.appearance = try light
-        XCTAssertEqual(session.view.layer?.backgroundColor, TerminalPalette.windowBackground.cgColor)
-        XCTAssertEqual(container.layer?.backgroundColor, TerminalPalette.windowBackground.cgColor)
+        XCTAssertEqual(session.view.layer?.backgroundColor, TerminalPalette.background.cgColor)
+        XCTAssertEqual(container.layer?.backgroundColor, TerminalPalette.background.cgColor)
 
         session.view.appearance = try dark
         XCTAssertEqual(session.view.layer?.backgroundColor?.alpha, 0)
