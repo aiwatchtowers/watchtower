@@ -345,7 +345,9 @@ func validateProjectDocument(d ProjectDocument) error {
 }
 
 // UpsertProjectDocument attaches d as the agent's. On an existing (project,
-// rel_path) it bumps updated_at ("revised"), marks it origin 'agent' (an
+// rel_path) — compared ignoring case, the import and owner-attach rule (APFS
+// is case-insensitive, so another spelling is the same file), keeping the
+// stored spelling — it bumps updated_at ("revised"), marks it origin 'agent' (an
 // imported document the agent revises is the agent's from then on) and
 // replaces kind/title/target only with the values d sets; created reports
 // whether a new row was inserted. Whether rel_path stays inside the folder is
@@ -360,8 +362,11 @@ func (db *DB) UpsertProjectDocument(d ProjectDocument) (id int64, created bool, 
 				return err
 			}
 		}
-		qerr := tx.QueryRow(`SELECT id FROM project_documents WHERE project_id = ? AND rel_path = ?`,
-			d.ProjectID, d.RelPath).Scan(&id)
+		// An exact match first: rows attached before this lookup ignored
+		// case may differ only in case.
+		qerr := tx.QueryRow(`SELECT id FROM project_documents WHERE project_id = ? AND rel_path = ? COLLATE NOCASE
+			ORDER BY rel_path = ? DESC, id LIMIT 1`,
+			d.ProjectID, d.RelPath, d.RelPath).Scan(&id)
 		if errors.Is(qerr, sql.ErrNoRows) {
 			created = true
 			id, qerr = insertProjectDocument(tx, d, "agent")
