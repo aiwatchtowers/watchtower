@@ -44,16 +44,29 @@ package enum ProjectNotificationPolicy {
         /// Not attached by the agent (`origin` import or owner): never "ready
         /// for review". The name predates owner attaches; kept for persisted snapshots.
         package let imported: Bool
+        /// Its target is `in_review` (`ProjectDocumentListItem.awaitingReview`).
+        package let awaitingReview: Bool
+        /// The linked target, so an owner's own move to `in_review` is not announced back.
+        package let targetID: Int64?
 
-        package init(title: String, updatedAt: String, openOwnerComments: Int, imported: Bool = false) {
+        package init(
+            title: String,
+            updatedAt: String,
+            openOwnerComments: Int,
+            imported: Bool = false,
+            awaitingReview: Bool = false,
+            targetID: Int64? = nil
+        ) {
             self.title = title
             self.updatedAt = updatedAt
             self.openOwnerComments = openOwnerComments
             self.imported = imported
+            self.awaitingReview = awaitingReview
+            self.targetID = targetID
         }
 
         private enum CodingKeys: String, CodingKey {
-            case title, updatedAt, openOwnerComments, imported
+            case title, updatedAt, openOwnerComments, imported, awaitingReview, targetID
         }
 
         package init(from decoder: Decoder) throws {
@@ -63,6 +76,8 @@ package enum ProjectNotificationPolicy {
             openOwnerComments = try c.decode(Int.self, forKey: .openOwnerComments)
             // A snapshot persisted before the key existed held no imports.
             imported = try c.decodeIfPresent(Bool.self, forKey: .imported) ?? false
+            awaitingReview = try c.decodeIfPresent(Bool.self, forKey: .awaitingReview) ?? false
+            targetID = try c.decodeIfPresent(Int64.self, forKey: .targetID)
         }
     }
 
@@ -141,11 +156,20 @@ package enum ProjectNotificationPolicy {
         }
     }
 
+    /// A revised agent document, or one whose target just entered review
+    /// (#105) — one notice either way, keyed by the revision, so attaching
+    /// and marking the review in one go never notifies twice.
     private static func readyDocuments(_ previous: Snapshot, _ current: Snapshot) -> [ProjectNotice] {
         current.documents.sorted { $0.key < $1.key }.compactMap { id, doc in
-            guard !doc.imported, previous.documents[id]?.updatedAt != doc.updatedAt else { return nil }
+            guard !doc.imported else { return nil }
+            let before = previous.documents[id]
+            let revised = before?.updatedAt != doc.updatedAt
+            let ownerMoved = doc.targetID.map { current.ownerTouched.contains(.target($0)) } ?? false
+            let enteredReview = doc.awaitingReview && before?.awaitingReview != true && !ownerMoved
+            guard revised || enteredReview else { return nil }
             return notice(.documentReady, current,
-                          title: "\(doc.title) ready for review", body: current.projectName,
+                          title: doc.awaitingReview ? "\(doc.title) awaits your review" : "\(doc.title) ready for review",
+                          body: current.projectName,
                           route: ProjectRoute(projectID: current.projectID, pane: .documents, subjectID: id),
                           key: "\(id)-\(doc.updatedAt)")
         }

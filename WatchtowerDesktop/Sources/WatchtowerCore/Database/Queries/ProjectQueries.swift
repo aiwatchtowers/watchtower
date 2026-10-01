@@ -86,7 +86,7 @@ package enum ProjectQueries {
     /// title (if any) and its open owner-thread count.
     package static func documentListItems(_ db: Database, projectID: Int64) throws -> [ProjectDocumentListItem] {
         let rows = try Row.fetchAll(db, sql: """
-            SELECT d.*, t.text AS target_title,
+            SELECT d.*, t.text AS target_title, t.status AS target_status,
                    (SELECT COUNT(*) FROM project_comments c
                     WHERE c.document_id = d.id AND c.parent_id IS NULL
                       AND c.author = 'owner' AND c.status = 'open') AS open_comments
@@ -99,7 +99,8 @@ package enum ProjectQueries {
             ProjectDocumentListItem(
                 document: ProjectDocument(row: row),
                 targetTitle: row["target_title"],
-                openComments: row["open_comments"]
+                openComments: row["open_comments"],
+                targetStatus: row["target_status"]
             )
         }
     }

@@ -300,6 +300,28 @@ final class ProjectQueriesTests: XCTestCase {
         }
     }
 
+    /// #105: an agent document whose target is in review awaits the owner's
+    /// review — in the list and in the notification snapshot.
+    func testAgentDocumentOnATargetInReviewAwaitsReview() throws {
+        try db.write { d in
+            let p = try TestDatabase.insertProject(d)
+            let t = try TestDatabase.insertProjectTarget(d, projectID: p, status: "in_review")
+            let agent = try TestDatabase.insertProjectDocument(d, projectID: p, relPath: "docs/specs/a.md", targetID: t)
+            let owner = try TestDatabase.insertProjectDocument(d, projectID: p, relPath: "notes/b.md", targetID: t, origin: "owner")
+            let loose = try TestDatabase.insertProjectDocument(d, projectID: p, relPath: "docs/plans/c.md")
+            let items = Dictionary(uniqueKeysWithValues: try ProjectQueries.documentListItems(d, projectID: p).map { ($0.id, $0) })
+            XCTAssertEqual(items[agent]?.targetStatus, "in_review")
+            XCTAssertEqual(items[agent]?.awaitingReview, true)
+            XCTAssertEqual(items[owner]?.awaitingReview, false, "the owner's own document is not handed to them for review")
+            XCTAssertEqual(items[loose]?.awaitingReview, false)
+
+            let project = try XCTUnwrap(ProjectQueries.fetch(d, id: p))
+            let snapshot = try ProjectQueries.activitySnapshot(d, project: project, afterAgentCommentID: 0)
+            XCTAssertEqual(snapshot.documents[agent]?.awaitingReview, true)
+            XCTAssertEqual(snapshot.documents[agent]?.targetID, t)
+        }
+    }
+
     /// Migration 00083 / #80: an imported or owner-attached document is not
     /// "revised" — it leaves the badge stamps and is marked non-agent in the
     /// notification snapshot. An agent re-attach (origin agent, new

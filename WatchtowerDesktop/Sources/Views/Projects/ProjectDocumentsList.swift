@@ -100,6 +100,9 @@ struct ProjectDocumentsList: View {
                 Image(systemName: collapsed ? "chevron.right" : "chevron.down").font(.caption2)
                 Text("\(section.group.title) (\(section.items.count))")
                 Spacer()
+                if collapsed, section.items.contains(where: \.awaitingReview) {
+                    Image(systemName: "eye").foregroundStyle(.purple).help("Holds a document awaiting your review")
+                }
                 if collapsed, section.items.contains(where: { vm.isRevised($0.document) }) {
                     Circle().fill(Color.blue).frame(width: 7, height: 7).help("Holds a document changed since you last viewed it")
                 }
@@ -120,6 +123,15 @@ struct ProjectDocumentsList: View {
                     .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
             }
             Spacer()
+            if item.awaitingReview {
+                Text("In review")
+                    .font(.caption2)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(Color.purple.opacity(0.18), in: Capsule())
+                    .foregroundStyle(.purple)
+                    .help("Awaiting your review: comment on passages, then send them to Claude")
+            }
             if vm.isRevised(item.document) {
                 Circle().fill(Color.blue).frame(width: 7, height: 7).help("Changed since you last viewed it")
             }
