@@ -23,32 +23,24 @@ enum MeetingChatSurface {
         ChatStarterPrompt(title: "Draft a follow-up…", text: "Draft a follow-up message to ", sendsImmediately: false)
     ]
 
-    /// The recording's conversation, created on first use; nil for a
-    /// transcript that has no row id yet.
-    static func conversationID(for transcript: MeetingTranscript, dbPool: DatabasePool) throws -> Int64? {
-        guard let id = transcript.id else { return nil }
-        return try dbPool.write { db in
-            if let existing = try ChatConversationQueries.fetchByContext(db, type: contextType, id: String(id)) {
-                return existing.id
-            }
-            return try ChatConversationQueries.create(
-                db, title: "Meeting: \(String(transcript.title.prefix(60)))", contextType: contextType,
-                contextID: String(id)
-            ).id
-        }
+    /// The recording's conversation, created on first use.
+    static func conversationID(transcriptID: Int64, title: String, dbPool: DatabasePool) throws -> Int64 {
+        try DatabaseEmbeddedChatStore.conversationID(
+            dbPool: dbPool, contextType: contextType, contextID: String(transcriptID),
+            title: "Meeting: \(String(title.prefix(60)))")
     }
 
     /// Built per render from the latest transcript and recap, so an edited
     /// transcript reaches the next first-turn prompt without a new engine.
     static func spec(
         transcript: MeetingTranscript,
+        transcriptID: Int64,
         recapContent: MeetingRecap.Content?,
         conversationID: Int64,
         dbPool: DatabasePool
     ) -> ChatSurfaceSpec {
         ChatSurfaceSpec(
-            key: EmbeddedChatKey(contextType: contextType, contextID: transcript.id.map(String.init) ?? "",
-                                 conversationID: conversationID),
+            key: EmbeddedChatKey(contextType: contextType, contextID: String(transcriptID), conversationID: conversationID),
             persistence: .database(conversationID: conversationID),
             toolAccess: .draftOnly,
             systemPrompt: { buildSystemPrompt(transcript: transcript, recapContent: recapContent, dbPool: dbPool) },
@@ -61,19 +53,6 @@ enum MeetingChatSurface {
             emptyHint: "Ask about this meeting — what was decided, who said what, or draft a follow-up.",
             starterPrompts: starterPrompts
         )
-    }
-
-    /// Message count of the persisted conversation for a transcript — cheap
-    /// badge read for a collapsed Discuss header; 0 when no conversation.
-    static func persistedMessageCount(_ db: Database, transcriptID: Int64) throws -> Int {
-        guard let conv = try ChatConversationQueries.fetchByContext(
-            db, type: contextType, id: String(transcriptID)
-        ) else { return 0 }
-        return try Int.fetchOne(
-            db,
-            sql: "SELECT COUNT(*) FROM chat_messages WHERE conversation_id = ?",
-            arguments: [conv.id]
-        ) ?? 0
     }
 
     // MARK: - System prompt
@@ -130,7 +109,7 @@ enum MeetingChatSurface {
 
         // memoryChatEnabled/memoryVaultDir default to the config-derived values
         // in production; tests inject them explicitly — same pattern as
-        // TrackChatPrompt/TargetChatViewModel.
+        // TrackChatSurface/TargetChatViewModel.
         let memoryBlock = memoryChatEnabled
             ? renderMemorySection(
                 hotMap: hotMap(vaultDir: memoryVaultDir),
@@ -142,7 +121,7 @@ enum MeetingChatSurface {
         // context_type via SkillsCatalog.chatContextTypes, and the block is
         // nil when no enabled skill matches, so a workspace with no skills
         // keeps a byte-identical prompt.
-        let skillsSuffix = SkillsCatalog.promptBlock(contextType: "meeting", dir: skillsDir)
+        let skillsSuffix = SkillsCatalog.promptBlock(contextType: contextType, dir: skillsDir)
             .map { "\n\n" + $0 } ?? ""
 
         return """

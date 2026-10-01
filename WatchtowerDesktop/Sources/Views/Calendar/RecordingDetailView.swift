@@ -204,15 +204,22 @@ struct RecordingDetailView: View {
         case .chat:
             if let chatConversationID, let db = appState.databaseManager {
                 let engine = appState.embeddedChatCenter.engine(for: MeetingChatSurface.spec(
-                    transcript: transcript, recapContent: recapContent, conversationID: chatConversationID,
-                    dbPool: db.dbPool))
+                    transcript: transcript, transcriptID: transcriptID, recapContent: recapContent,
+                    conversationID: chatConversationID, dbPool: db.dbPool))
                 RecordingChatTab(engine: engine, transcriptID: transcriptID)
                     .embeddedChatVisibility(engine.spec.key, in: appState.embeddedChatCenter)
             } else if let chatError {
-                Label(chatError, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                VStack(spacing: 8) {
+                    Label(chatError, systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                    Button("Try again") {
+                        self.chatError = nil
+                        openChat(transcript)
+                    }
+                    .controlSize(.small)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -388,11 +395,15 @@ struct RecordingDetailView: View {
     }
 
     private func openChat(_ transcript: MeetingTranscript) {
-        guard let db = appState.databaseManager else { return }
+        guard let db = appState.databaseManager else {
+            chatError = "Couldn't open the chat: the database isn't open."
+            return
+        }
         do {
-            chatConversationID = try MeetingChatSurface.conversationID(for: transcript, dbPool: db.dbPool)
-            if chatConversationID == nil { chatError = "This recording isn't saved yet." }
+            chatConversationID = try MeetingChatSurface.conversationID(
+                transcriptID: transcriptID, title: transcript.title, dbPool: db.dbPool)
         } catch {
+            NSLog("RecordingDetailView: opening the chat of recording %lld failed: %@", transcriptID, String(describing: error))
             chatError = "Couldn't open the chat: \(error.localizedDescription)"
         }
     }

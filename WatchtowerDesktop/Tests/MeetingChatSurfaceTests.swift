@@ -33,15 +33,15 @@ final class MeetingChatSurfaceTests: XCTestCase {
     }
 
     private func engine(for transcript: MeetingTranscript, ai: any AIServiceProtocol) throws -> EmbeddedChatEngine {
-        let conv = try XCTUnwrap(MeetingChatSurface.conversationID(for: transcript, dbPool: dbManager.dbPool))
-        return makeSurfaceEngine(MeetingChatSurface.spec(transcript: transcript, recapContent: nil,
+        let conv = try MeetingChatSurface.conversationID(transcriptID: 7, title: transcript.title, dbPool: dbManager.dbPool)
+        return makeSurfaceEngine(MeetingChatSurface.spec(transcript: transcript, transcriptID: 7, recapContent: nil,
                                                          conversationID: conv, dbPool: dbManager.dbPool),
                                  dbPool: dbManager.dbPool, ai: ai)
     }
 
     func testCreatesConversationWithMeetingContext() throws {
         let transcript = try loadTranscript()
-        _ = try MeetingChatSurface.conversationID(for: transcript, dbPool: dbManager.dbPool)
+        _ = try MeetingChatSurface.conversationID(transcriptID: 7, title: transcript.title, dbPool: dbManager.dbPool)
 
         let conv = try dbManager.dbPool.read { db in
             try ChatConversationQueries.fetchByContext(db, type: "meeting", id: "7")
@@ -52,7 +52,7 @@ final class MeetingChatSurfaceTests: XCTestCase {
 
     func testReopensExistingConversationWithHistory() throws {
         let transcript = try loadTranscript()
-        _ = try MeetingChatSurface.conversationID(for: transcript, dbPool: dbManager.dbPool)
+        _ = try MeetingChatSurface.conversationID(transcriptID: 7, title: transcript.title, dbPool: dbManager.dbPool)
         let conv = try XCTUnwrap(dbManager.dbPool.read { db in
             try ChatConversationQueries.fetchByContext(db, type: "meeting", id: "7")
         })
@@ -92,21 +92,6 @@ final class MeetingChatSurfaceTests: XCTestCase {
                           "transcript excerpt must be capped so the interactive CLI prompt stays clear of ARG_MAX")
     }
 
-    func testPersistedMessageCount() throws {
-        let transcript = try loadTranscript()
-        _ = try MeetingChatSurface.conversationID(for: transcript, dbPool: dbManager.dbPool)
-        let conv = try XCTUnwrap(dbManager.dbPool.read { db in
-            try ChatConversationQueries.fetchByContext(db, type: "meeting", id: "7")
-        })
-        try dbManager.dbPool.write { db in
-            _ = try ChatMessageQueries.insert(db, conversationID: conv.id, role: "user", text: "q")
-        }
-        let count = try dbManager.dbPool.read { db in
-            try MeetingChatSurface.persistedMessageCount(db, transcriptID: 7)
-        }
-        XCTAssertEqual(count, 1)
-    }
-
     /// AGENT-04: the meeting chat is draft-only — it must never carry a tool mode.
     func testSendPassesNoToolMode() async throws {
         let transcript = try loadTranscript()
@@ -125,7 +110,7 @@ final class MeetingChatSurfaceTests: XCTestCase {
     /// meeting block itself.
     func testResumedTurnCarriesTheMeetingContext() async throws {
         let transcript = try loadTranscript()
-        let conv = try XCTUnwrap(MeetingChatSurface.conversationID(for: transcript, dbPool: dbManager.dbPool))
+        let conv = try MeetingChatSurface.conversationID(transcriptID: 7, title: transcript.title, dbPool: dbManager.dbPool)
         try await dbManager.dbPool.write { db in try ChatConversationQueries.updateSessionID(db, id: conv, sessionID: "s1") }
         let mock = MockClaudeService(events: [.text("ok"), .done])
         let engine = try engine(for: transcript, ai: mock)
@@ -144,8 +129,8 @@ final class MeetingChatSurfaceTests: XCTestCase {
         let mock = MockClaudeService(events: [.text("answer")], thenAwaitsRelease: true)
         let pool = dbManager.dbPool
         let center = EmbeddedChatCenter { spec, _ in makeSurfaceEngine(spec, dbPool: pool, ai: mock) }
-        let conv = try XCTUnwrap(MeetingChatSurface.conversationID(for: transcript, dbPool: pool))
-        let engine = center.engine(for: MeetingChatSurface.spec(transcript: transcript, recapContent: nil,
+        let conv = try MeetingChatSurface.conversationID(transcriptID: 7, title: transcript.title, dbPool: pool)
+        let engine = center.engine(for: MeetingChatSurface.spec(transcript: transcript, transcriptID: 7, recapContent: nil,
                                                                 conversationID: conv, dbPool: pool))
         center.markShown(engine.spec.key)
         engine.send("q")

@@ -23,14 +23,9 @@ enum IdeaChatSurface {
     /// The idea's conversation, created on first use (the title the old view
     /// model gave it, so existing history keeps opening).
     static func conversationID(for idea: Idea, dbPool: DatabasePool) throws -> Int64 {
-        try dbPool.write { db in
-            if let existing = try ChatConversationQueries.fetchByContext(db, type: contextType, id: String(idea.id)) {
-                return existing.id
-            }
-            return try ChatConversationQueries.create(
-                db, title: "Idea: \(String(idea.title.prefix(60)))", contextType: contextType, contextID: String(idea.id)
-            ).id
-        }
+        try DatabaseEmbeddedChatStore.conversationID(
+            dbPool: dbPool, contextType: contextType, contextID: String(idea.id),
+            title: "Idea: \(String(idea.title.prefix(60)))")
     }
 
     /// `mentions` are read when the closures run, so a later call with the
@@ -100,7 +95,7 @@ enum IdeaChatSurface {
         // context_type via SkillsCatalog.chatContextTypes, and the block is
         // nil when no enabled skill matches, so a workspace with no skills
         // keeps a byte-identical prompt.
-        let skillsSuffix = SkillsCatalog.promptBlock(contextType: "idea", dir: skillsDir)
+        let skillsSuffix = SkillsCatalog.promptBlock(contextType: contextType, dir: skillsDir)
             .map { "\n\n" + $0 } ?? ""
 
         return """

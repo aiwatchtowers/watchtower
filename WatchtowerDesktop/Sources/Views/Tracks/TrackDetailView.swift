@@ -114,7 +114,8 @@ struct TrackDetailView: View {
             chatError = nil
         } catch {
             chatConversationID = nil
-            chatError = "Couldn't open the track chat: \(error.localizedDescription)"
+            NSLog("TrackDetailView: opening the chat of track %d failed: %@", track.id, String(describing: error))
+            chatError = "Couldn't open the chat: \(error.localizedDescription)"
         }
     }
 
@@ -242,11 +243,18 @@ struct TrackDetailView: View {
     /// the list's tracks-count observation drops it automatically.
     private func deleteTrack() {
         guard let db = appState.databaseManager else { return }
-        onClose?()
-        try? db.dbPool.write { database in
-            try TrackQueries.delete(database, id: track.id)
+        do {
+            try db.dbPool.write { database in
+                try TrackQueries.delete(database, id: track.id)
+            }
+        } catch {
+            NSLog("TrackDetailView: deleting track %d failed: %@", track.id, String(describing: error))
+            watchEditError = "Couldn't delete the watch: \(error.localizedDescription)"
+            return
         }
+        // Only once it is gone: a reply in its chat stops with it.
         appState.embeddedChatCenter.dropContext(type: TrackChatSurface.contextType, id: String(track.id))
+        onClose?()
     }
 
     /// Builds and starts the custom-track timeline VM. When the track is linked

@@ -35,7 +35,7 @@ final class TrackChatSkillsPromptTests: XCTestCase {
         let track = try makeTrack()
         let dir = try SkillsPromptFixtures.makePair(self)
 
-        let prompt = TrackChatPrompt.buildSystemPrompt(
+        let prompt = TrackChatSurface.buildSystemPrompt(
             track: track, dbPool: dbManager.dbPool,
             memoryChatEnabled: false, memoryVaultDir: nil, skillsDir: dir)
 
@@ -49,10 +49,10 @@ final class TrackChatSkillsPromptTests: XCTestCase {
         let track = try makeTrack()
         let empty = try SkillsPromptFixtures.makeEmptyDir(self)
 
-        let withEmptyDir = TrackChatPrompt.buildSystemPrompt(
+        let withEmptyDir = TrackChatSurface.buildSystemPrompt(
             track: track, dbPool: dbManager.dbPool,
             memoryChatEnabled: false, memoryVaultDir: nil, skillsDir: empty)
-        let withNoDir = TrackChatPrompt.buildSystemPrompt(
+        let withNoDir = TrackChatSurface.buildSystemPrompt(
             track: track, dbPool: dbManager.dbPool,
             memoryChatEnabled: false, memoryVaultDir: nil, skillsDir: nil)
 
@@ -76,15 +76,5 @@ final class TrackChatSkillsPromptTests: XCTestCase {
         // AGENT-04: draft-only surfaces never send a tool mode.
         XCTAssertEqual(mock.toolModes, [nil])
         XCTAssertNotNil(mock.systemPrompts.first.flatMap { $0 }, "the first turn carries the track prompt")
-    }
-
-    @MainActor
-    func testTheTrackKeepsOneConversation() throws {
-        let track = try makeTrack()
-        let first = try TrackChatSurface.conversationID(for: track, dbPool: dbManager.dbPool)
-        XCTAssertEqual(try TrackChatSurface.conversationID(for: track, dbPool: dbManager.dbPool), first)
-        let conv = try dbManager.dbPool.read { try ChatConversationQueries.fetchByID($0, id: first) }
-        XCTAssertEqual(conv?.contextType, "track")
-        XCTAssertEqual(conv?.title.hasPrefix("Track: "), true)
     }
 }

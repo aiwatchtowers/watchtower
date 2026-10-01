@@ -38,6 +38,26 @@ package final class DatabaseEmbeddedChatStore: EmbeddedChatStore {
 
     package var dbPath: String? { dbPool.path }
 
+    /// The conversation of one embedded chat context (a track, an idea, a
+    /// recording), created with `title` on first use. Reads first, so opening
+    /// a chat that already has one never waits on the write lock.
+    package nonisolated static func conversationID(
+        dbPool: DatabasePool, contextType: String, contextID: String, title: String
+    ) throws -> Int64 {
+        if let existing = try dbPool.read({ db in
+            try ChatConversationQueries.fetchByContext(db, type: contextType, id: contextID)
+        }) {
+            return existing.id
+        }
+        return try dbPool.write { db in
+            // Re-checked inside the write: another screen may have created it.
+            if let existing = try ChatConversationQueries.fetchByContext(db, type: contextType, id: contextID) {
+                return existing.id
+            }
+            return try ChatConversationQueries.create(db, title: title, contextType: contextType, contextID: contextID).id
+        }
+    }
+
     package func loadMessages() throws -> [ChatMessageRecord] {
         let id = conversationID
         return try dbPool.read { db in try ChatMessageQueries.fetchByConversation(db, conversationID: id) }

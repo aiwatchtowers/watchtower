@@ -332,9 +332,10 @@ struct IdeasView: View {
                 },
                 onRating: { rating, comment in vm.setRating(idea, rating: rating, comment: comment) },
                 onDelete: {
-                    vm.deleteIdea(idea)
                     // Its Discuss chat went with it: stop a reply still streaming.
-                    appState.embeddedChatCenter.dropContext(type: IdeaChatSurface.contextType, id: String(idea.id))
+                    if vm.deleteIdea(idea) {
+                        appState.embeddedChatCenter.dropContext(type: IdeaChatSurface.contextType, id: String(idea.id))
+                    }
                 }
             )
             // Identity at the CALL SITE, so the pane's OWN @State (rating

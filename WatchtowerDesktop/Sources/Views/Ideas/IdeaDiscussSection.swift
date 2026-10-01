@@ -106,7 +106,8 @@ struct IdeaDiscussSection: View {
                 state.conversationID = try IdeaChatSurface.conversationID(for: idea, dbPool: dbManager.dbPool)
                 loadError = nil
             } catch {
-                loadError = "Couldn't open the discussion: \(error.localizedDescription)"
+                NSLog("IdeaDiscussSection: opening the chat of idea %d failed: %@", idea.id, String(describing: error))
+                loadError = "Couldn't open the chat: \(error.localizedDescription)"
                 return
             }
         }

@@ -240,7 +240,8 @@ final class IdeasViewModel {
 
     /// Hard delete — the row, its mentions, and its Discuss chat. The reload's
     /// `reconcileSelection()` moves the selection off the vanished id.
-    func deleteIdea(_ idea: Idea) {
+    @discardableResult
+    func deleteIdea(_ idea: Idea) -> Bool {
         write("delete idea") { db in try IdeaQueries.delete(db, id: idea.id) }
     }
 

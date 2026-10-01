@@ -28,7 +28,7 @@ final class TrackChatMemoryPromptTests: XCTestCase {
     func testTrackMemorySubjectsIncludesChannelsParticipantsScalarsAndMirrorAlias() throws {
         let participants = #"[{"name":"Bob","user_id":"U2","stance":"blocker"}]"#
         let track = try makeTrack(channelIDs: "[\"C1\",\"C2\"]", assigneeUserID: "U1", participants: participants)
-        let subjects = Set(TrackChatPrompt.trackMemorySubjects(track: track))
+        let subjects = Set(TrackChatSurface.trackMemorySubjects(track: track))
         XCTAssertEqual(subjects, Set(["track:\(track.id)", "C1", "C2", "U1", "U2"]))
     }
 
@@ -38,7 +38,7 @@ final class TrackChatMemoryPromptTests: XCTestCase {
             try TestDatabase.insertMemoryAlias(db, alias: "C1", nodeID: "ent_cf")
         }
         let track = try makeTrack(channelIDs: "[\"C1\"]")
-        let prompt = TrackChatPrompt.buildSystemPrompt(
+        let prompt = TrackChatSurface.buildSystemPrompt(
             track: track, dbPool: dbManager.dbPool, memoryChatEnabled: true, memoryVaultDir: nil)
         XCTAssertTrue(prompt.contains("=== MEMORY ("))
         XCTAssertTrue(prompt.contains("Cloudflare (vendor)"))
@@ -50,7 +50,7 @@ final class TrackChatMemoryPromptTests: XCTestCase {
     /// shell/SQL tools it does not have.
     func testTrackPromptBriefsToolsAndBansSQL() throws {
         let track = try makeTrack()
-        let prompt = TrackChatPrompt.buildSystemPrompt(
+        let prompt = TrackChatSurface.buildSystemPrompt(
             track: track, dbPool: dbManager.dbPool, memoryChatEnabled: false, memoryVaultDir: nil)
         XCTAssertTrue(prompt.contains("list_messages"))
         XCTAssertTrue(prompt.contains("search_knowledge"))
@@ -69,7 +69,7 @@ final class TrackChatMemoryPromptTests: XCTestCase {
             try TestDatabase.insertMemoryAlias(db, alias: "C1", nodeID: "ent_cf")
         }
         let track = try makeTrack(channelIDs: "[\"C1\"]")
-        let prompt = TrackChatPrompt.buildSystemPrompt(
+        let prompt = TrackChatSurface.buildSystemPrompt(
             track: track, dbPool: dbManager.dbPool, memoryChatEnabled: false, memoryVaultDir: nil)
         XCTAssertFalse(prompt.contains("=== MEMORY ("))
         XCTAssertFalse(prompt.contains("Cloudflare (vendor)"), "no memory read should leak into the prompt when disabled")
@@ -77,6 +77,6 @@ final class TrackChatMemoryPromptTests: XCTestCase {
 
     func testEmptyTrackHasOnlyMirrorAliasSubject() throws {
         let track = try makeTrack(channelIDs: "[]", participants: "[]")
-        XCTAssertEqual(TrackChatPrompt.trackMemorySubjects(track: track), ["track:\(track.id)"])
+        XCTAssertEqual(TrackChatSurface.trackMemorySubjects(track: track), ["track:\(track.id)"])
     }
 }
