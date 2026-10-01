@@ -96,12 +96,19 @@ func (g *CodexGenerator) Generate(ctx context.Context, systemPrompt, userMessage
 	return result, digestUsage, "", nil
 }
 
-// buildArgs builds the `codex exec` CLI args; when userMessage exceeds
-// digest.StdinThreshold (or stdinOnly is set) the final positional arg is "-" (codex reads the
-// prompt from stdin) and the message is returned as stdin content instead,
-// to stay clear of ARG_MAX on very large inputs (e.g. meeting transcripts).
-func buildArgs(model, systemPrompt, userMessage string, stdinOnly bool) ([]string, string) {
-	args := []string{
+// execArgs is the common `codex exec` prefix every Watchtower call starts
+// with. Beyond the read-only sandbox it switches off codex's local tools:
+// sandbox_mode=read-only still lets the model run shell commands that read
+// anywhere on disk, and the prompts carry untrusted Slack/Gmail/Jira text, so
+// an injected "list ~/Documents" (or a curious model) would trigger a macOS
+// TCC prompt attributed to Watchtower or pull local files into stored output.
+// This is the codex twin of the claude side's `--tools ""` (batch) and
+// DisallowedTools (chat): the model keeps only the MCP tools a caller
+// configures. shell_tool also gates unified exec; view_image reads local
+// files; computer_use/browser_use drive the screen and a browser (their own
+// TCC prompts). An unknown features.* key is ignored by older codex builds.
+func execArgs(model string) []string {
+	return []string{
 		"exec",
 		"--model", model,
 		"--json",
@@ -109,7 +116,20 @@ func buildArgs(model, systemPrompt, userMessage string, stdinOnly bool) ([]strin
 		"--skip-git-repo-check",
 		"-c", "approval_policy=never",
 		"-c", "sandbox_mode=read-only",
+		"-c", "features.shell_tool=false",
+		"-c", "features.unified_exec=false",
+		"-c", "features.view_image=false",
+		"-c", "features.computer_use=false",
+		"-c", "features.browser_use=false",
 	}
+}
+
+// buildArgs builds the `codex exec` CLI args; when userMessage exceeds
+// digest.StdinThreshold (or stdinOnly is set) the final positional arg is "-" (codex reads the
+// prompt from stdin) and the message is returned as stdin content instead,
+// to stay clear of ARG_MAX on very large inputs (e.g. meeting transcripts).
+func buildArgs(model, systemPrompt, userMessage string, stdinOnly bool) ([]string, string) {
+	args := execArgs(model)
 	if systemPrompt != "" {
 		args = append(args, "-c", fmt.Sprintf("developer_instructions=%s", systemPrompt))
 	}

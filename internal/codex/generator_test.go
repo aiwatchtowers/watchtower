@@ -204,3 +204,41 @@ echo "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\"
 		})
 	}
 }
+
+// TestCodexArgs_LocalToolsDisabled pins the codex twin of the claude side's
+// `--tools ""`: every `codex exec` Watchtower starts — batch generator, plain
+// client, stdin-only chat client — switches off the shell and the other
+// local tools, since read-only sandboxing still lets a shell read anywhere on
+// disk (TCC prompts, local files pulled into stored output).
+func TestCodexArgs_LocalToolsDisabled(t *testing.T) {
+	genArgs, _ := buildArgs("gpt-5.4", "sys", "hello", false)
+	plain := NewClient("gpt-5.4", "", "codex")
+	clientArgs, _ := plain.buildArgs("sys", "hello", "/tmp/wd")
+	stdinOnly := NewClient("gpt-5.4", "", "codex")
+	stdinOnly.SetStdinOnly(true)
+	stdinOnlyArgs, _ := stdinOnly.buildArgs("sys", "hello", "/tmp/wd")
+
+	for name, args := range map[string][]string{
+		"generator":         genArgs,
+		"client":            clientArgs,
+		"client stdin-only": stdinOnlyArgs,
+	} {
+		for _, flag := range []string{
+			"features.shell_tool=false",
+			"features.unified_exec=false",
+			"features.view_image=false",
+			"features.computer_use=false",
+			"features.browser_use=false",
+		} {
+			found := false
+			for i := 0; i < len(args)-1; i++ {
+				if args[i] == "-c" && args[i+1] == flag {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("%s args %v: want -c %s", name, args, flag)
+			}
+		}
+	}
+}

@@ -103,15 +103,7 @@ func (c *Client) buildArgs(systemPrompt, userMessage, workDir string) ([]string,
 	if c.stdinOnly {
 		return c.buildStdinOnlyArgs(systemPrompt, userMessage, workDir)
 	}
-	args := []string{
-		"exec",
-		"--model", c.model,
-		"--json",
-		"--ephemeral",
-		"--skip-git-repo-check",
-		"-c", "approval_policy=never",
-		"-c", "sandbox_mode=read-only",
-	}
+	args := execArgs(c.model)
 	if workDir != "" {
 		args = append(args, "--cd", workDir)
 	}
@@ -129,15 +121,7 @@ func (c *Client) buildArgs(systemPrompt, userMessage, workDir string) ([]string,
 // message, delimited by codexStdinContent) regardless of length or leading
 // characters.
 func (c *Client) buildStdinOnlyArgs(systemPrompt, userMessage, workDir string) ([]string, string) {
-	args := []string{
-		"exec",
-		"--model", c.model,
-		"--json",
-		"--ephemeral",
-		"--skip-git-repo-check",
-		"-c", "approval_policy=never",
-		"-c", "sandbox_mode=read-only",
-	}
+	args := execArgs(c.model)
 	if workDir != "" {
 		args = append(args, "--cd", workDir)
 	}
