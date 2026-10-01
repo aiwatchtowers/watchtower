@@ -82,7 +82,8 @@ struct VoicesWindowView: View {
                             // Keyboard shortcuts belong to the first card
                             // only; confirming it promotes the next one.
                             isActive: card.id == center.cards.first?.id,
-                            onPlay: { clip in clipPlayer.play(url: URL(fileURLWithPath: card.audioPath), span: clip) },
+                            isPlaying: { clip in clipPlayer.isPlaying(url: URL(fileURLWithPath: card.audioPath), span: clip) },
+                            onPlay: { clip in clipPlayer.toggle(url: URL(fileURLWithPath: card.audioPath), span: clip) },
                             onConfirm: { person in Task { await center.confirm(card, person: person) } },
                             onDismiss: { kind in Task { await center.dismiss(card, kind) } }
                         )
@@ -90,6 +91,7 @@ struct VoicesWindowView: View {
                 }
                 .padding(12)
             }
+            .modifier(ClipPlayerErrorInset(player: clipPlayer))
         }
     }
 

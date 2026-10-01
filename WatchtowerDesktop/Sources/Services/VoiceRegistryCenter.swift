@@ -63,8 +63,9 @@ final class VoiceRegistryCenter {
         let suggestion: VoicePrint?
         let score: Float?
         let clips: [ClipSpan]
-        /// One joined-utterance snippet per clip (same order as `clips`),
-        /// built from the transcript's own segments — never a re-transcribe.
+        /// The words spoken inside each clip (same order as `clips`, see
+        /// `ClipTranscript`), built from the transcript's own segments —
+        /// never a re-transcribe.
         let clipTexts: [String]
         let audioPath: String
         let candidates: [PersonChoice]
@@ -603,12 +604,7 @@ final class VoiceRegistryCenter {
             guard let clips = cluster.clips, !clips.isEmpty else { continue }
 
             let utterances = transcript.utterances ?? []
-            let clipTexts = clips.map { clip in
-                utterances
-                    .filter { !$0.deleted && $0.speaker == task.clusterLabel && $0.startSec < clip.end && $0.endSec > clip.start }
-                    .map(\.text)
-                    .joined(separator: " ")
-            }
+            let clipTexts = clips.map { ClipTranscript.text(for: $0, speaker: task.clusterLabel, utterances: utterances) }
 
             var suggestion: VoicePrint?
             if let suggestedID = task.suggestedPersonID {
@@ -767,12 +763,7 @@ final class VoiceRegistryCenter {
 
                 if hasAudio, let audioPath = transcript.audioPath, !audioPath.isEmpty,
                    let clips = speaker.clips, !clips.isEmpty {
-                    let clipTexts = clips.map { clip in
-                        utterances
-                            .filter { !$0.deleted && $0.speaker == speaker.speaker && $0.startSec < clip.end && $0.endSec > clip.start }
-                            .map(\.text)
-                            .joined(separator: " ")
-                    }
+                    let clipTexts = clips.map { ClipTranscript.text(for: $0, speaker: speaker.speaker, utterances: utterances) }
                     clipsByKey[key] = TrainClip(audioPath: audioPath, clips: clips, clipTexts: clipTexts)
                 }
             }

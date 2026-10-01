@@ -67,6 +67,7 @@ struct VoiceReviewView: View {
                 }
             }
         }
+        .modifier(ClipPlayerErrorInset(player: clipPlayer))
         .confirmationDialog(
             "Delete \(personPendingDelete?.displayName ?? "this person")?",
             isPresented: Binding(get: { personPendingDelete != nil }, set: { if !$0 { personPendingDelete = nil } }),
@@ -189,13 +190,10 @@ struct VoiceReviewView: View {
             .font(.callout)
 
             ForEach(Array(check.clips.enumerated()), id: \.offset) { _, clip in
-                Button {
-                    clipPlayer.play(url: URL(fileURLWithPath: check.audioPath), span: clip)
-                } label: {
-                    Text("▶ \(TranscriptFormatting.formatTimecode(clip.start))").monospacedDigit()
+                let url = URL(fileURLWithPath: check.audioPath)
+                VoiceClipRow(clip: clip, text: "", isFirst: false, isPlaying: clipPlayer.isPlaying(url: url, span: clip)) {
+                    clipPlayer.toggle(url: url, span: clip)
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
             }
 
             HStack(spacing: 8) {

@@ -13,31 +13,61 @@ struct VoiceCardShortcut: ViewModifier {
     }
 }
 
-/// One playable clip: a "▶ 0:07"-style button plus its transcript snippet.
-/// Pure/stateless — shared by the Queue's `VoiceCardView` and the Train
-/// screen (`VoiceTrainView`), both of which just supply what to play and
-/// what to show.
+/// One playable clip: a play/stop toggle labeled with the clip's LENGTH
+/// ("▶ 6 s" — a start timecode on the button read as a duration), where in
+/// the meeting it starts, and the words spoken in it. Pure/stateless —
+/// shared by the Queue's `VoiceCardView` and the Train screen
+/// (`VoiceTrainView`), both of which just supply what to play and what to
+/// show.
 struct VoiceClipRow: View {
     let clip: ClipSpan
     let text: String
     /// The first clip of the ACTIVE card gets the space-bar shortcut — the
     /// common case of "hear the one sample and decide".
     let isFirst: Bool
+    /// This clip is the one playing: the button becomes its Stop.
+    let isPlaying: Bool
+    /// Toggles playback of this clip (`ClipPlayer.toggle`).
     let onPlay: () -> Void
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             Button(action: onPlay) {
-                Text("▶ \(TranscriptFormatting.formatTimecode(clip.start))")
+                Text(Self.buttonTitle(clip, isPlaying: isPlaying))
                     .monospacedDigit()
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
             .modifier(VoiceCardShortcut(shortcut: isFirst ? KeyboardShortcut(.space) : nil))
+            Text("at \(TranscriptFormatting.formatTimecode(clip.start))")
+                .font(.caption)
+                .monospacedDigit()
+                .foregroundStyle(.tertiary)
             Text(text)
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
+        }
+    }
+
+    static func buttonTitle(_ clip: ClipSpan, isPlaying: Bool) -> String {
+        isPlaying ? "■ Stop" : "▶ \(max(1, Int((clip.end - clip.start).rounded()))) s"
+    }
+}
+
+/// Shows a `ClipPlayer` failure under a Voices screen, so a clip that
+/// cannot play never looks like a button that did nothing.
+struct ClipPlayerErrorInset: ViewModifier {
+    let player: ClipPlayer
+
+    func body(content: Content) -> some View {
+        content.safeAreaInset(edge: .bottom) {
+            if let message = player.errorMessage {
+                Label(message, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .padding(8)
+            }
         }
     }
 }
