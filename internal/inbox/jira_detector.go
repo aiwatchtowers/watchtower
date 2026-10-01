@@ -2,6 +2,7 @@ package inbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -46,11 +47,18 @@ func detectJira(_ context.Context, database *db.DB, owner db.Owner, own *ownJira
 	// fraction) does not sort by instant against them.
 	sinceISO := db.FormatJiraTime(sinceTS)
 
-	created, err := detectJiraAssigned(database, assigneeID, own, sinceISO)
-	if err != nil {
+	// A failed identity read would turn both signals' comment checks off
+	// silently, so it fails the detector instead (INBOX-09).
+	if own.err != nil {
+		return 0, own.err
+	}
+	// Both signals run even when one fails; their errors are joined.
+	assigned, assignedErr := detectJiraAssigned(database, assigneeID, own, sinceISO)
+	mentions, mentionsErr := detectJiraCommentMentions(database, own.ids, sinceISO)
+	created := assigned + mentions
+	if err := errors.Join(assignedErr, mentionsErr); err != nil {
 		return created, err
 	}
-	created += detectJiraCommentMentions(database, own.ids, sinceISO)
 
 	// --- jira_status_change: no-op until jira_issue_history table is added ---
 	// TODO(inbox-pulse v2): detect status changes on issues assigned to the owner
@@ -102,7 +110,8 @@ func queryJiraAssigned(database *db.DB, assigneeID, sinceISO string) ([]jiraAssi
 }
 
 // detectJiraAssigned mints jira_assigned items: issues assigned to the owner
-// updated since sinceISO, minus the owner's own comment bumps.
+// updated since sinceISO, minus the owner's own comment bumps. A failed
+// insert does not stop the remaining issues; all failures are joined.
 func detectJiraAssigned(database *db.DB, assigneeID string, own *ownJiraComments, sinceISO string) (int, error) {
 	candidates, err := queryJiraAssigned(database, assigneeID, sinceISO)
 	if err != nil {
@@ -118,6 +127,7 @@ func detectJiraAssigned(database *db.DB, assigneeID string, own *ownJiraComments
 	}
 
 	created := 0
+	var errs []error
 	for _, c := range candidates {
 		if isOwnCommentBump(c.updatedAt, ownComments[c.key].touched) {
 			continue
@@ -140,21 +150,29 @@ func detectJiraAssigned(database *db.DB, assigneeID string, own *ownJiraComments
 			Status:       "pending",
 			Priority:     "medium",
 		}
-		if _, err := database.CreateInboxItem(item); err == nil {
-			created++
+		if err := createJiraItem(database, item); err != nil {
+			errs = append(errs, err)
+			continue
 		}
+		created++
 	}
-	return created, nil
+	return created, errors.Join(errs...)
 }
 
 // detectJiraCommentMentions mints jira_comment_mention items. A Jira
 // [~mention] embeds the mentioned user's ATLASSIAN account id, not their
 // Slack id. Zero known ids (or no jira_comments table — the owner's ids are
 // then empty) means we cannot recognize a mention at all, so it is a
-// graceful no-op.
-func detectJiraCommentMentions(database *db.DB, atlassianIDs []string, sinceISO string) int {
+// graceful no-op. A failed read or insert is returned, never treated as "no
+// mentions" (INBOX-09).
+func detectJiraCommentMentions(database *db.DB, atlassianIDs []string, sinceISO string) (int, error) {
+	candidates, err := collectJiraCommentCandidates(database, atlassianIDs, sinceISO)
+	if err != nil {
+		return 0, err
+	}
 	created := 0
-	for _, c := range collectJiraCommentCandidates(database, atlassianIDs, sinceISO) {
+	var errs []error
+	for _, c := range candidates {
 		if jiraInboxExists(database, c.issueKey, c.createdAt, "jira_comment_mention") {
 			continue
 		}
@@ -168,11 +186,22 @@ func detectJiraCommentMentions(database *db.DB, atlassianIDs []string, sinceISO 
 			Status:       "pending",
 			Priority:     "medium",
 		}
-		if _, err := database.CreateInboxItem(item); err == nil {
-			created++
+		if err := createJiraItem(database, item); err != nil {
+			errs = append(errs, err)
+			continue
 		}
+		created++
 	}
-	return created
+	return created, errors.Join(errs...)
+}
+
+// createJiraItem inserts one Jira inbox item. A UNIQUE conflict on
+// (channel_id, message_ts) is an item that already exists, not a failure.
+func createJiraItem(database *db.DB, item db.InboxItem) error {
+	if _, err := database.CreateInboxItem(item); err != nil && !isUniqueConflict(err) {
+		return fmt.Errorf("jira detector: create %s item for %s: %w", item.TriggerType, item.ChannelID, err)
+	}
+	return nil
 }
 
 // ownCommentBumpTolerance is how far an issue's updated_at may trail the
@@ -191,7 +220,10 @@ type ownJiraComments struct {
 	database *db.DB
 	// ids is every Atlassian id that is the owner — empty when the owner has
 	// none or jira_comments does not exist (no comment signal at all).
-	ids    []string
+	ids []string
+	// err is a failed identity lookup: ids is then unknown, not empty, and
+	// detection returns err rather than skipping the comment signal.
+	err    error
 	cached map[string]ownComment
 	loaded map[string]bool
 }
@@ -206,8 +238,13 @@ type ownComment struct {
 
 func newOwnJiraComments(database *db.DB, owner db.Owner) *ownJiraComments {
 	o := &ownJiraComments{database: database, cached: map[string]ownComment{}, loaded: map[string]bool{}}
-	if jiraCommentsTableExists(database) {
-		o.ids = ownerAtlassianIDs(database, owner)
+	exists, err := jiraCommentsTableExists(database)
+	if err != nil {
+		o.err = err
+		return o
+	}
+	if exists {
+		o.ids, o.err = ownerAtlassianIDs(database, owner)
 	}
 	return o
 }
@@ -322,10 +359,12 @@ func isOwnCommentBump(updatedAt string, ownCommentTS int64) bool {
 // jiraCommentsTableExists returns true if the jira_comments table is present
 // in the SQLite database. Part of the core schema since migration 00050; this
 // is now a defensive check rather than a real conditional.
-func jiraCommentsTableExists(d *db.DB) bool {
+func jiraCommentsTableExists(d *db.DB) (bool, error) {
 	var n int
-	d.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='jira_comments'`).Scan(&n) //nolint:errcheck
-	return n > 0
+	if err := d.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='jira_comments'`).Scan(&n); err != nil {
+		return false, fmt.Errorf("jira detector: check jira_comments table: %w", err)
+	}
+	return n > 0, nil
 }
 
 type commentCandidate struct {
@@ -333,16 +372,17 @@ type commentCandidate struct {
 }
 
 // collectJiraCommentCandidates queries jira_comments for a [~mention] of any
-// of the given Atlassian account ids and returns fully-scanned candidates,
-// best-effort (query or scan errors just yield fewer/no candidates rather
-// than failing the detector). An empty atlassianIDs list — the user has no
-// known Jira identity — is a graceful no-op, same as an absent table. The
-// rows are closed via defer scoped to this helper, so they are released
-// before the caller issues any further queries — required to avoid a
-// deadlock on the MaxOpenConns(1) SQLite pool.
-func collectJiraCommentCandidates(database *db.DB, atlassianIDs []string, sinceISO string) []commentCandidate {
+// of the given Atlassian account ids and returns fully-scanned candidates.
+// A query, scan or rows error fails the detector — it is never read as "no
+// candidates", which would let the watermark pass the window (INBOX-09). An
+// empty atlassianIDs list — the user has no known Jira identity — is a
+// graceful no-op, same as an absent table. The rows are closed via defer
+// scoped to this helper, so they are released before the caller issues any
+// further queries — required to avoid a deadlock on the MaxOpenConns(1)
+// SQLite pool.
+func collectJiraCommentCandidates(database *db.DB, atlassianIDs []string, sinceISO string) ([]commentCandidate, error) {
 	if len(atlassianIDs) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	whereParts := make([]string, len(atlassianIDs))
@@ -360,19 +400,22 @@ func collectJiraCommentCandidates(database *db.DB, atlassianIDs []string, sinceI
 		  AND created_at > ?`, strings.Join(whereParts, " OR "))
 	cRows, err := database.Query(query, args...)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("jira detector: query jira_comments: %w", err)
 	}
 	defer cRows.Close()
 
 	var candidates []commentCandidate
 	for cRows.Next() {
 		var c commentCandidate
-		if scanErr := cRows.Scan(&c.issueKey, &c.commentID, &c.body, &c.createdAt); scanErr != nil {
-			break
+		if err := cRows.Scan(&c.issueKey, &c.commentID, &c.body, &c.createdAt); err != nil {
+			return nil, fmt.Errorf("jira detector: scan jira_comments: %w", err)
 		}
 		candidates = append(candidates, c)
 	}
-	return candidates
+	if err := cRows.Err(); err != nil {
+		return nil, fmt.Errorf("jira detector: jira_comments rows error: %w", err)
+	}
+	return candidates, nil
 }
 
 // ownerAssigneeID is the id jira_assigned matches against
@@ -394,12 +437,15 @@ func ownerAssigneeID(owner db.Owner) string {
 // only one id, so using it alone would drop mentions of — and answers from —
 // every other mapped id the pre-resolver inbox matched. An empty Slack id is
 // never queried (atlassianIDsForUser returns nil for it).
-func ownerAtlassianIDs(database *db.DB, owner db.Owner) []string {
-	ids := atlassianIDsForUser(database, owner.SlackUserID)
+func ownerAtlassianIDs(database *db.DB, owner db.Owner) ([]string, error) {
+	ids, err := atlassianIDsForUser(database, owner.SlackUserID)
+	if err != nil {
+		return nil, err
+	}
 	if owner.JiraAccountID != "" && !slices.Contains(ids, owner.JiraAccountID) {
 		ids = append([]string{owner.JiraAccountID}, ids...)
 	}
-	return ids
+	return ids, nil
 }
 
 // atlassianIDsForUser returns every Atlassian account id mapped to a Slack
@@ -408,12 +454,12 @@ func ownerAtlassianIDs(database *db.DB, owner db.Owner) []string {
 // multi-account migration (00048: `'1:' || slack_user_id`), but this
 // dormant Jira code predates that migration and its callers (tests, and any
 // pre-migration data) may still carry the bare id — matching both forms
-// keeps identity resolution honest either way. Returns nil (not an error)
-// on an unmapped user or a query failure — the caller treats that as "skip
-// comment-mention detection gracefully".
-func atlassianIDsForUser(database *db.DB, slackUserID string) []string {
+// keeps identity resolution honest either way. An unmapped user is nil, not
+// an error — the caller skips comment-mention detection gracefully; a failed
+// read is returned.
+func atlassianIDsForUser(database *db.DB, slackUserID string) ([]string, error) {
 	if slackUserID == "" {
-		return nil
+		return nil, nil
 	}
 	candidates := []string{slackUserID}
 	if trimmed, ok := strings.CutPrefix(slackUserID, "1:"); ok {
@@ -431,19 +477,22 @@ func atlassianIDsForUser(database *db.DB, slackUserID string) []string {
 	rows, err := database.Query(fmt.Sprintf(`SELECT jira_account_id FROM jira_user_map WHERE slack_user_id IN (%s)`,
 		strings.Join(placeholders, ",")), args...)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("jira detector: query jira_user_map: %w", err)
 	}
 	defer rows.Close()
 
 	var ids []string
 	for rows.Next() {
 		var id string
-		if scanErr := rows.Scan(&id); scanErr != nil {
-			break
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("jira detector: scan jira_user_map: %w", err)
 		}
 		ids = append(ids, id)
 	}
-	return ids
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("jira detector: jira_user_map rows error: %w", err)
+	}
+	return ids, nil
 }
 
 // jiraInboxExists returns true if an inbox_item already exists for the given

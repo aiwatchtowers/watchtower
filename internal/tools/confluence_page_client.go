@@ -34,12 +34,22 @@ type ConfluenceCommentSource interface {
 type ConfluencePage struct {
 	ID       string
 	Kind     string // "page" | "blogpost"
+	Status   string // "current" | "archived" (Confluence's v2 status)
 	Title    string
 	SpaceKey string
 	URL      string
 	Version  int
 	Storage  string
 }
+
+// archived reports whether the page is archived.
+func (p ConfluencePage) archived() bool { return p.Status == "archived" }
+
+// editable reports whether edit_confluence_page may write the page: only a
+// current one (or one whose status the API left out). Its PUT carries
+// status "current", so writing an archived (or any other) page would
+// restore or publish it as a side effect nobody approved.
+func (p ConfluencePage) editable() bool { return p.Status == "" || p.Status == "current" }
 
 // ConfluenceComment is one footer or inline comment of a page; ReplyTo is
 // the id of the comment it answers ("" = top-level).
@@ -138,6 +148,7 @@ func confluenceCollection(kind string) string {
 
 type confluenceV2Page struct {
 	ID      string `json:"id"`
+	Status  string `json:"status"`
 	Title   string `json:"title"`
 	SpaceID string `json:"spaceId"`
 	Version struct {
@@ -153,7 +164,11 @@ type confluenceV2Page struct {
 	} `json:"_links"`
 }
 
-// GetPage fetches id as a page, then as a blog post.
+// GetPage fetches id as a page, then as a blog post. An archived page is
+// fetched too (status=current,archived, as the sync fetcher asks): without
+// an explicit status only current pages are returned, and a page search
+// finds would read as "not found". Blog posts cannot be archived, so their
+// GET carries no status.
 func (c *confluencePageClient) GetPage(ctx context.Context, id string) (ConfluencePage, error) {
 	return c.getPage(ctx, id, true)
 }
@@ -166,15 +181,18 @@ func (c *confluencePageClient) GetPageBody(ctx context.Context, id string) (Conf
 func (c *confluencePageClient) getPage(ctx context.Context, id string, withSpace bool) (ConfluencePage, error) {
 	for _, kind := range []string{"page", "blogpost"} {
 		var p confluenceV2Page
-		err := c.api.GetJSON(ctx, confluenceV2+confluenceCollection(kind)+url.PathEscape(id),
-			url.Values{"body-format": {"storage"}}, &p)
+		q := url.Values{"body-format": {"storage"}}
+		if kind == "page" {
+			q["status"] = []string{"current", "archived"}
+		}
+		err := c.api.GetJSON(ctx, confluenceV2+confluenceCollection(kind)+url.PathEscape(id), q, &p)
 		if httpStatus(err) == 404 {
 			continue
 		}
 		if err != nil {
 			return ConfluencePage{}, err
 		}
-		page := ConfluencePage{ID: p.ID, Kind: kind, Title: p.Title, Version: p.Version.Number, Storage: p.Body.Storage.Value}
+		page := ConfluencePage{ID: p.ID, Kind: kind, Status: p.Status, Title: p.Title, Version: p.Version.Number, Storage: p.Body.Storage.Value}
 		if withSpace {
 			page.SpaceKey = c.spaceKey(ctx, p.SpaceID)
 		}

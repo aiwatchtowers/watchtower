@@ -104,7 +104,9 @@ func NewEditConfluencePage(factory ConfluencePageClientFactory) *Tool {
 			"markers can never be invented. replace_section keeps every block you leave unchanged exactly as it " +
 			"is; changing a block whose formatting markdown cannot carry (alignment, table layout, a code block's " +
 			"title, ...) is refused — keep that block unchanged and leave that change to the owner in Confluence. " +
-			"A block you delete takes any HTML comment inside it along. At most 20 edits per call. The owner approves a diff before anything is written; if the page " +
+			"A block you delete takes any HTML comment inside it along. A section ends at the first " +
+			confluenceedit.LayoutBoundary + " line after its heading (a page-layout column or row edge): never put that " +
+			"line, or text past it, into new_body. At most 20 edits per call. The owner approves a diff before anything is written; if the page " +
 			"changed since you read it, re-read it and propose again.",
 		InputSchema: mustWriteSchema[editConfluencePageArgs]("edit_confluence_page"),
 		Access:      AccessWrite,
@@ -249,6 +251,9 @@ func prepareConfluenceEdit(ctx context.Context, client ConfluencePageClient, acc
 	if err != nil {
 		return editConfluencePinned{}, confluenceEditReadErr(err, accountID, a.PageID)
 	}
+	if !page.editable() {
+		return editConfluencePinned{}, &ValidationError{Msg: confluenceNotEditable(page)}
+	}
 	if page.Version != a.BaseVersion {
 		return editConfluencePinned{}, &ValidationError{Msg: fmt.Sprintf("page changed since you read it (now v%d) — re-read with get_confluence_page", page.Version)}
 	}
@@ -364,21 +369,56 @@ func executeConfluenceEdit(ctx context.Context, d *db.DB, factory ConfluencePage
 		return nil, confluenceWriteFailed(d, account.ID, confluenceEditReadErr(err, account.ID, p.PageID), err)
 	}
 	if live.Version != p.BaseVersion || storageHash(live.Storage) != p.BaseHash {
-		return nil, confluenceConflict(live, p)
+		return confluenceEditOutcome(p, confluenceConflict(live, p))
+	}
+	if !live.editable() {
+		return nil, errors.New(confluenceNotEditable(live) + "; nothing was written")
 	}
 	body := ConfluencePutBody{ID: p.PageID, Status: "current", Title: p.Title,
 		Body:    ConfluencePutStorage{Representation: "storage", Value: p.NewStorage},
 		Version: ConfluencePutVersionInfo{Number: p.BaseVersion + 1, Message: confluenceEditMessage}}
 	version, err := client.PutPage(ctx, p.PageID, p.Kind, body)
 	if err != nil {
-		return nil, confluenceWriteFailed(d, account.ID, confluencePutErr(ctx, client, err, account.ID, p), err)
+		return confluenceEditOutcome(p, confluenceWriteFailed(d, account.ID, confluencePutErr(ctx, client, err, account.ID, p), err))
 	}
-	return map[string]any{"page_id": p.PageID, "title": p.Title, "url": p.URL, "version": version}, nil
+	return confluenceSaved(p, version), nil
+}
+
+func confluenceSaved(p editConfluencePinned, version int) map[string]any {
+	return map[string]any{"page_id": p.PageID, "title": p.Title, "url": p.URL, "version": version}
+}
+
+// confluenceEditOutcome turns a refused write into Execute's result: an
+// edit found already saved — a Retry after a first PUT that landed but
+// whose response was lost — is a success (the page holds exactly the
+// approved edit), noted as such; anything else stays the error.
+func confluenceEditOutcome(p editConfluencePinned, err error) (any, error) {
+	var saved *confluenceAlreadySaved
+	if !errors.As(err, &saved) {
+		return nil, err
+	}
+	res := confluenceSaved(p, saved.version)
+	res["note"] = saved.Error()
+	return res, nil
+}
+
+// confluenceAlreadySaved: the live page is this very edit (see
+// confluenceConflict).
+type confluenceAlreadySaved struct{ version int }
+
+func (e *confluenceAlreadySaved) Error() string {
+	return fmt.Sprintf("this edit is already saved (v%d); nothing was written now", e.version)
+}
+
+// confluenceNotEditable refuses to edit a page that is not current (see
+// ConfluencePage.editable).
+func confluenceNotEditable(page ConfluencePage) string {
+	return fmt.Sprintf("Confluence page %s is %s, not current; only a current page can be edited (restore it in Confluence first)", page.ID, page.Status)
 }
 
 // confluenceConflict is the failure for a live page that is no longer the
 // one the preview was computed from (R12). A page one version past the
-// preview whose storage is this edit's — up to the local-id attributes
+// preview whose title and storage are this edit's — up to the local-id attributes
 // Confluence stamps on new elements when it saves — is this very edit (a
 // first PUT that landed but whose response was lost) and says so. Any
 // other page one version past the preview may still be this edit, stamped
@@ -387,8 +427,8 @@ func executeConfluenceEdit(ctx context.Context, d *db.DB, factory ConfluencePage
 // edit.
 func confluenceConflict(live ConfluencePage, p editConfluencePinned) error {
 	if live.Version == p.BaseVersion+1 {
-		if stripLocalIDs(live.Storage) == stripLocalIDs(p.NewStorage) {
-			return fmt.Errorf("this edit is already saved (v%d); nothing was written now", live.Version)
+		if live.Title == p.Title && stripLocalIDs(live.Storage) == stripLocalIDs(p.NewStorage) {
+			return &confluenceAlreadySaved{version: live.Version}
 		}
 		return fmt.Errorf("conflict: the page is now v%d (one version after your preview) — this edit may have been saved; re-read with get_confluence_page before retrying; nothing was written now", live.Version)
 	}
@@ -479,10 +519,11 @@ func confluencePutErr(ctx context.Context, client ConfluencePageClient, err erro
 	pageID := p.PageID
 	switch httpStatus(err) {
 	case 409:
-		if live, gerr := client.GetPageBody(ctx, pageID); gerr == nil {
+		live, gerr := client.GetPageBody(ctx, pageID)
+		if gerr == nil {
 			return confluenceConflict(live, p)
 		}
-		return errors.New("conflict: the page was edited after the preview; nothing was written")
+		return fmt.Errorf("conflict: Confluence refused v%d — the page was edited after the preview, or this edit may already be saved; re-read with get_confluence_page before retrying (re-reading the page failed: %v); nothing was written now", p.BaseVersion+1, gerr)
 	case 401:
 		return fmt.Errorf("%s (%w)", confluenceWriteScopeHint(accountID), err)
 	case 403:

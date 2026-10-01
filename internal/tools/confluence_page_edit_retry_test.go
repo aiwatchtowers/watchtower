@@ -19,8 +19,9 @@ import (
 
 // A first PUT that landed but whose response was lost leaves the page at
 // base+1 holding exactly this edit's storage (R12). The Retry writes
-// nothing and says the edit is already saved instead of blaming someone
-// else's edit; a page two versions on is still the plain conflict.
+// nothing and succeeds, noting the edit was already saved — the page holds
+// exactly what the owner approved, so the action is applied, not failed;
+// a page two versions on is still the plain conflict.
 func TestEditConfluencePage_RetryAfterLostResponse(t *testing.T) {
 	d := openDB(t)
 	db.SeedTestJiraAccount(t, d)
@@ -43,14 +44,36 @@ func TestEditConfluencePage_RetryAfterLostResponse(t *testing.T) {
 	f.putErr, f.putLands = nil, false
 	row, err = reg.Apply(ctx, rc.ActionID)
 	require.NoError(t, err)
-	assert.Equal(t, "failed", row.Status)
-	assert.Equal(t, "this edit is already saved (v8); nothing was written now", row.Error)
+	assert.Equal(t, "applied", row.Status, row.Error)
+	assert.Empty(t, row.Error)
+	var result map[string]any
+	require.NoError(t, json.Unmarshal([]byte(row.ResultJSON), &result))
+	assert.Equal(t, map[string]any{"page_id": cfPageID, "title": "Rollout plan", "url": cfURL, "version": float64(8),
+		"note": "this edit is already saved (v8); nothing was written now"}, result)
 	assert.Len(t, f.puts, 1, "the Retry issues no second PUT")
+}
 
+// Once the page moved two versions on, a Retry is the plain conflict.
+func TestEditConfluencePage_RetryTwoVersionsOnConflicts(t *testing.T) {
+	d := openDB(t)
+	db.SeedTestJiraAccount(t, d)
+	f := newFakeConfluence()
+	tool := NewEditConfluencePage(confluenceFactory(f))
+	args := normalized(t, tool, d, editArgs(7, fridayToMonday))
 	f.setVersion(9)
-	row, err = reg.Apply(ctx, rc.ActionID)
+	_, err := tool.Execute(context.Background(), d, Call{Args: args})
+	assert.EqualError(t, err, "conflict: the page was edited after the preview (now v9); nothing was written")
+	assert.Empty(t, f.puts)
+}
+
+// executesAlreadySaved runs Execute and asserts its success result for an
+// edit found already saved at v8.
+func executesAlreadySaved(t *testing.T, tool *Tool, d *db.DB, args json.RawMessage) {
+	t.Helper()
+	out, err := tool.Execute(context.Background(), d, Call{Args: args})
 	require.NoError(t, err)
-	assert.Equal(t, "conflict: the page was edited after the preview (now v9); nothing was written", row.Error)
+	assert.Equal(t, map[string]any{"page_id": cfPageID, "title": "Rollout plan", "url": cfURL, "version": 8,
+		"note": "this edit is already saved (v8); nothing was written now"}, out)
 }
 
 // A 409 whose re-read finds the page at base+1 tells the two cases apart by
@@ -82,8 +105,25 @@ func TestEditConfluencePage_Put409AtNextVersion(t *testing.T) {
 			f.pages[cfPageID] = p
 		}
 	}
-	_, err = tool.Execute(context.Background(), d, Call{Args: args})
-	assert.EqualError(t, err, "this edit is already saved (v8); nothing was written now")
+	executesAlreadySaved(t, tool, d, args)
+}
+
+// A 409 whose re-read fails cannot tell someone else's edit from this one
+// landing: the conflict is hedged and names the read failure.
+func TestEditConfluencePage_Put409WithFailedReRead(t *testing.T) {
+	d := openDB(t)
+	db.SeedTestJiraAccount(t, d)
+	f := newFakeConfluence()
+	tool := NewEditConfluencePage(confluenceFactory(f))
+	args := normalized(t, tool, d, editArgs(7, fridayToMonday))
+	f.putErr = &jira.HTTPStatusError{Status: 409, Body: `{"message":"Version must be incremented"}`}
+	f.onGet = func(int) {
+		if len(f.puts) > 0 {
+			f.getErr = errors.New("read: 503")
+		}
+	}
+	_, err := tool.Execute(context.Background(), d, Call{Args: args})
+	assert.EqualError(t, err, "conflict: Confluence refused v8 — the page was edited after the preview, or this edit may already be saved; re-read with get_confluence_page before retrying (re-reading the page failed: read: 503); nothing was written now")
 }
 
 // F5: two edits proposed off the same read; once the first is applied, the
@@ -168,14 +208,13 @@ func TestEditConfluencePage_AlreadySavedIgnoresLocalIDs(t *testing.T) {
 	p := f.pages[cfPageID]
 	p.Version, p.Storage = 8, stamped
 	f.pages[cfPageID] = p
-	_, err := tool.Execute(context.Background(), d, Call{Args: args})
-	assert.EqualError(t, err, "this edit is already saved (v8); nothing was written now")
+	executesAlreadySaved(t, tool, d, args)
 	assert.Empty(t, f.puts)
 
 	p.Storage = strings.Replace(stamped, "понедельник", "вторник", 1)
 	require.NotEqual(t, stamped, p.Storage, "fixture changes the text")
 	f.pages[cfPageID] = p
-	_, err = tool.Execute(context.Background(), d, Call{Args: args})
+	_, err := tool.Execute(context.Background(), d, Call{Args: args})
 	assert.EqualError(t, err, "conflict: the page is now v8 (one version after your preview) — this edit may have been saved; re-read with get_confluence_page before retrying; nothing was written now")
 	assert.Empty(t, f.puts)
 }

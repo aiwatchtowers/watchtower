@@ -75,3 +75,18 @@ func TestWatchtowerDetector_OlderThanSinceSkipped(t *testing.T) {
 		t.Errorf("old briefing should be skipped, got %d items", n)
 	}
 }
+
+// TestWatchtowerDetector_WriteErrorReturned: a failed briefing_ready insert
+// is returned, not dropped, so the caller freezes the watermark (INBOX-09).
+func TestWatchtowerDetector_WriteErrorReturned(t *testing.T) {
+	d := newTestDB(t)
+	seedBriefing(t, d, "alice", time.Now().Format("2006-01-02"), time.Now())
+	if _, err := d.Exec(`CREATE TRIGGER fail_briefing BEFORE INSERT ON inbox_items
+		WHEN NEW.trigger_type = 'briefing_ready' BEGIN SELECT RAISE(ABORT, 'disk I/O error'); END`); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := DetectWatchtowerInternal(context.Background(), d, time.Now().Add(-1*time.Hour)); err == nil {
+		t.Fatal("want the insert error returned, got nil")
+	}
+}

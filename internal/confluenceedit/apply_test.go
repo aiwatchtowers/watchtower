@@ -461,3 +461,16 @@ func TestApplyRenderConflictIsAnEditErrorNotAPanic(t *testing.T) {
 	assert.Equal(t, 4, ee.Index)
 	assert.Contains(t, ee.Msg, "internal conflict")
 }
+
+// "old must occur exactly once" counts overlapping occurrences: in "aaa",
+// "aa" occurs twice, and the model may have meant either.
+func TestApplyOverlappingOccurrencesAreAmbiguous(t *testing.T) {
+	ee := applyErr(t, `<p>aaa</p>`, text("aa", "X"))
+	assert.Contains(t, ee.Error(), "ambiguous (2 matches)")
+	ee = applyErr(t, `<p>wait...</p>`, text("..", "…"))
+	assert.Contains(t, ee.Error(), "ambiguous (2 matches)")
+	out, _ := applyOK(t, `<p>wait...</p>`, text("...", "…"))
+	assert.Equal(t, `<p>wait…</p>`, out)
+	out, _ = applyOK(t, `<p>ab ab</p>`, text("ab a", "x"))
+	assert.Equal(t, `<p>xb</p>`, out)
+}
