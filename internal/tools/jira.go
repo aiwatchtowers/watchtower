@@ -19,6 +19,7 @@ import (
 type JiraIssueClient interface {
 	CreateIssue(ctx context.Context, req jira.CreateIssueRequest) (jira.CreatedIssue, error)
 	GetIssue(ctx context.Context, key string) (jira.Issue, error)
+	SearchIssues(ctx context.Context, jql string, maxResults int, nextPageToken string) (*jira.SearchResult, error)
 }
 
 // JiraClientFactory builds a client for one connected account.
@@ -172,6 +173,44 @@ func mirrorCreatedIssue(ctx context.Context, d *db.DB, client JiraIssueClient, a
 	return ""
 }
 
+// landedIssueSearchLimit bounds the retry lookup: the owner's issues in one
+// project since the proposal was recorded, newest first.
+const landedIssueSearchLimit = 100
+
+// findLandedIssue returns the key of an issue an earlier, failed attempt of
+// action actionID created after all, "" when there is none: an issue the
+// owner reported in req's project since the proposal was recorded, with the
+// same summary and issue type. A failed lookup is an error — the caller must
+// not re-send the request when it cannot tell whether the first one landed.
+func findLandedIssue(ctx context.Context, d *db.DB, client JiraIssueClient, actionID int64, req jira.CreateIssueRequest) (string, error) {
+	row, err := d.GetAgentAction(actionID)
+	if err != nil {
+		return "", err
+	}
+	if row == nil {
+		return "", fmt.Errorf("action #%d not found", actionID)
+	}
+	proposed, err := time.Parse(time.RFC3339, row.CreatedAt)
+	if err != nil {
+		return "", fmt.Errorf("action #%d: parsing created_at %q: %w", actionID, row.CreatedAt, err)
+	}
+	// A relative window ("-90m") is free of the Jira profile's time zone,
+	// which an absolute JQL date would be read in; the two extra minutes
+	// cover the truncation and clock skew.
+	minutes := int(time.Since(proposed).Minutes()) + 2
+	jql := fmt.Sprintf(`project = "%s" AND reporter = currentUser() AND created >= -%dm ORDER BY created DESC`, req.ProjectKey, minutes)
+	res, err := client.SearchIssues(ctx, jql, landedIssueSearchLimit, "")
+	if err != nil {
+		return "", fmt.Errorf("checking whether the failed attempt created the issue: %w", err)
+	}
+	for _, issue := range res.Issues {
+		if issue.Fields.Summary == req.Summary && strings.EqualFold(issue.Fields.IssueType.Name, req.IssueType) {
+			return issue.Key, nil
+		}
+	}
+	return "", nil
+}
+
 // NewCreateJiraIssue builds the create_jira_issue write tool — the first
 // action whose write leaves the machine, hence External (AGENT-03).
 func NewCreateJiraIssue(factory JiraClientFactory) *Tool {
@@ -228,22 +267,33 @@ func NewCreateJiraIssue(factory JiraClientFactory) *Tool {
 			if err != nil {
 				return nil, err
 			}
-			created, err := client.CreateIssue(ctx, jira.CreateIssueRequest{
+			req := jira.CreateIssueRequest{
 				ProjectKey: strings.ToUpper(strings.TrimSpace(a.ProjectKey)), IssueType: strings.TrimSpace(a.IssueType),
 				Summary: strings.TrimSpace(a.Summary), Description: a.Description, Labels: a.Labels, Priority: a.Priority,
-			})
-			if err != nil {
-				// The package has no logger, so a failed side-write rides the
-				// error it accompanies rather than vanishing (§9 swallowed
-				// error): the owner must know the account was NOT marked.
-				if dbErr := recordRevokedGrant(d, account.ID, err); dbErr != nil {
-					return nil, fmt.Errorf("%w (and recording the revoked state failed: %v)", err, dbErr)
-				}
-				return nil, err
 			}
-			url := strings.TrimRight(account.SiteURL, "/") + "/browse/" + created.Key
-			result := map[string]any{"key": created.Key, "url": url}
-			if warning := mirrorCreatedIssue(ctx, d, client, account.ID, created.Key); warning != "" {
+			key := ""
+			if call.Retry {
+				// The failed attempt may have created the issue anyway (a
+				// timeout or a broken response after Jira stored it): look
+				// for it before sending the request a second time.
+				if key, err = findLandedIssue(ctx, d, client, call.ActionID, req); err != nil {
+					return nil, jiraWriteFailed(d, account.ID, err)
+				}
+			}
+			if key == "" {
+				created, err := client.CreateIssue(ctx, req)
+				if err != nil {
+					// The package has no logger, so a failed side-write rides
+					// the error it accompanies rather than vanishing (§9
+					// swallowed error): the owner must know the account was
+					// NOT marked.
+					return nil, jiraWriteFailed(d, account.ID, err)
+				}
+				key = created.Key
+			}
+			url := strings.TrimRight(account.SiteURL, "/") + "/browse/" + key
+			result := map[string]any{"key": key, "url": url}
+			if warning := mirrorCreatedIssue(ctx, d, client, account.ID, key); warning != "" {
 				result["warning"] = warning
 			}
 			return result, nil

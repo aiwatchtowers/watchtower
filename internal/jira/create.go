@@ -113,9 +113,13 @@ func (c *Client) CreateIssue(ctx context.Context, req CreateIssueRequest) (Creat
 		return CreatedIssue{}, err
 	}
 	defer resp.Body.Close()
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, readErr := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
 		return CreatedIssue{}, &APIError{Status: resp.StatusCode, Message: jiraErrorMessage(respBody)}
+	}
+	if readErr != nil {
+		// Jira answered "created": the issue exists, only its key was lost.
+		return CreatedIssue{}, fmt.Errorf("reading create issue response: %w", readErr)
 	}
 	var created CreatedIssue
 	if err := json.Unmarshal(respBody, &created); err != nil {

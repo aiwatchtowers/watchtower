@@ -22,6 +22,18 @@ type fakeJira struct {
 	// returns — the seam a test needs to break a table the executor writes
 	// AFTER the Jira call has already left the machine.
 	onCreate func()
+	// searched records each JQL query; found/searchErr answer it.
+	searched  []string
+	found     []jira.Issue
+	searchErr error
+}
+
+func (f *fakeJira) SearchIssues(_ context.Context, jql string, _ int, _ string) (*jira.SearchResult, error) {
+	f.searched = append(f.searched, jql)
+	if f.searchErr != nil {
+		return nil, f.searchErr
+	}
+	return &jira.SearchResult{Issues: f.found, IsLast: true}, nil
 }
 
 func (f *fakeJira) CreateIssue(_ context.Context, req jira.CreateIssueRequest) (jira.CreatedIssue, error) {
@@ -278,4 +290,81 @@ func seedJiraAccountWithProject(t *testing.T, d *db.DB, cloudID, projectKey stri
 	_, err = d.Exec(`INSERT INTO jira_sync_state (account_id, project_key, last_synced_at, issues_synced) VALUES (?, ?, '', 0)`, id, projectKey)
 	require.NoError(t, err)
 	return id
+}
+
+// landedIssue is an issue a failed create attempt may have left in Jira.
+func landedIssue(key, summary, issueType string) jira.Issue {
+	var issue jira.Issue
+	issue.Key = key
+	issue.Fields.Summary = summary
+	issue.Fields.IssueType.Name = issueType
+	return issue
+}
+
+// proposeFailedCreate records an approved create_jira_issue and applies it
+// once against a failing Jira, leaving the row failed.
+func proposeFailedCreate(t *testing.T, d *db.DB, fake *fakeJira) (*Registry, int64) {
+	t.Helper()
+	reg := New(d)
+	require.NoError(t, reg.Register(NewCreateJiraIssue(func(db.JiraAccount) (JiraIssueClient, error) { return fake, nil })))
+	rc, err := reg.Propose(context.Background(), "create_jira_issue",
+		json.RawMessage(`{"project_key":"ABC","issue_type":"Task","summary":"Fix login","reason":"r"}`), Binding{Surface: "main"})
+	require.NoError(t, err)
+	approve(t, d, rc.ActionID)
+	fake.createErr = errors.New("context deadline exceeded")
+	row, err := reg.Apply(context.Background(), rc.ActionID)
+	require.NoError(t, err)
+	require.Equal(t, "failed", row.Status)
+	assert.Empty(t, fake.searched, "a first attempt does not search")
+	fake.createErr = nil
+	return reg, rc.ActionID
+}
+
+// A retry of a failed create whose request actually landed finds that issue
+// and reports it instead of filing a duplicate.
+func TestCreateJiraIssue_RetryFindsTheIssueTheFailedAttemptCreated(t *testing.T) {
+	d := openDB(t)
+	seedJira(t, d)
+	fake := &fakeJira{key: "ABC-9"}
+	reg, id := proposeFailedCreate(t, d, fake)
+	fake.found = []jira.Issue{landedIssue("ABC-5", "Other work", "Task"), landedIssue("ABC-7", "Fix login", "task")}
+
+	row, err := reg.Apply(context.Background(), id)
+	require.NoError(t, err)
+	require.Equal(t, "applied", row.Status, row.Error)
+	assert.Len(t, fake.created, 1, "the request is not sent a second time")
+	assert.Contains(t, row.ResultJSON, `"key":"ABC-7"`)
+	require.Len(t, fake.searched, 1)
+	assert.Contains(t, fake.searched[0], `project = "ABC" AND reporter = currentUser() AND created >= -`)
+}
+
+// With nothing landed, the retry creates the issue as usual.
+func TestCreateJiraIssue_RetryCreatesWhenNothingLanded(t *testing.T) {
+	d := openDB(t)
+	seedJira(t, d)
+	fake := &fakeJira{key: "ABC-9"}
+	reg, id := proposeFailedCreate(t, d, fake)
+	fake.found = []jira.Issue{landedIssue("ABC-5", "Fix login", "Bug")}
+
+	row, err := reg.Apply(context.Background(), id)
+	require.NoError(t, err)
+	require.Equal(t, "applied", row.Status, row.Error)
+	assert.Len(t, fake.created, 2)
+	assert.Contains(t, row.ResultJSON, `"key":"ABC-9"`)
+}
+
+// A retry that cannot tell whether the first attempt landed does not send
+// the request again.
+func TestCreateJiraIssue_RetryLookupFailureDoesNotResend(t *testing.T) {
+	d := openDB(t)
+	seedJira(t, d)
+	fake := &fakeJira{key: "ABC-9"}
+	reg, id := proposeFailedCreate(t, d, fake)
+	fake.searchErr = errors.New("503")
+
+	row, err := reg.Apply(context.Background(), id)
+	require.NoError(t, err)
+	assert.Equal(t, "failed", row.Status)
+	assert.Contains(t, row.Error, "checking whether the failed attempt created the issue")
+	assert.Len(t, fake.created, 1)
 }
