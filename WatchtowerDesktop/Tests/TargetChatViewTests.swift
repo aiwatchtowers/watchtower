@@ -1,6 +1,7 @@
 import XCTest
 import SwiftUI
 import GRDB
+import ViewInspector
 @testable import WatchtowerDesktop
 import WatchtowerCore
 import WatchtowerTestSupport
@@ -58,5 +59,58 @@ final class TargetChatViewTests: XCTestCase {
         XCTAssertEqual(assistant.conversations.count, 1)
         _ = TargetChatSection(assistant: assistant)
         _ = TargetChatPane(chatVM: try XCTUnwrap(assistant.activeChat))
+    }
+
+    // MARK: - Proposals under a reply
+
+    private func chatWithReply(cards count: Int) throws -> (TargetChatViewModel, ChatThreadItem, () -> Void) {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        let id = try manager.dbPool.write { db in
+            try TargetQueries.create(db, text: "ship feature", intent: "x",
+                                     periodStart: "2026-06-01", periodEnd: "2026-06-30")
+        }
+        let target = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: id) })
+        let conv = try manager.dbPool.write { db in
+            try ChatConversationQueries.create(db, title: "Task", contextType: "target", contextID: String(id)).id
+        }
+        let replyID = try manager.dbPool.write { db in
+            try ChatMessageQueries.insert(db, conversationID: conv, role: "assistant", text: "(proposed)", turnID: "t1")
+        }
+        let chat = TargetChatViewModel(target: target, viewModel: TargetsViewModel(dbManager: manager),
+                                       dbManager: manager, conversationID: conv, aiService: MockClaudeService())
+        chat.actionCards = (0..<count).map { index in
+            TargetActionCard(messageID: UUID(chatRowID: replyID),
+                             action: ProposedAction(type: .addSubItem, reason: "r", text: "step \(index)"),
+                             state: .pending)
+        }
+        let item = try XCTUnwrap(chat.engine.messages.first { $0.id == replyID })
+        return (chat, item, { TestDatabase.cleanup(path: path) })
+    }
+
+    func testTwoPendingCardsUnderAReplyOfferApproveAll() throws {
+        let (chat, item, cleanup) = try chatWithReply(cards: 2)
+        defer { cleanup() }
+        let view = TargetChatProposals(chatVM: chat, item: item)
+        XCTAssertNoThrow(try view.inspect().find(text: "2 proposals"))
+        try view.inspect().find(ViewType.Button.self) { try $0.accessibilityIdentifier() == "chat.approveAll" }.tap()
+        XCTAssertEqual(chat.pendingActionCount, 0, "Approve all applied the reply's batch")
+    }
+
+    func testABigBatchCollapsesIntoOneBlock() throws {
+        let (chat, item, cleanup) = try chatWithReply(cards: 5)
+        defer { cleanup() }
+        let view = TargetChatProposals(chatVM: chat, item: item)
+        XCTAssertNoThrow(try view.inspect().find(text: "5 proposed changes"))
+        XCTAssertNoThrow(try view.inspect().find(ViewType.Button.self) {
+            try $0.accessibilityIdentifier() == "chat.batchReview"
+        })
+    }
+
+    func testOneCardHasNoApproveAll() throws {
+        let (chat, item, cleanup) = try chatWithReply(cards: 1)
+        defer { cleanup() }
+        XCTAssertThrowsError(try TargetChatProposals(chatVM: chat, item: item).inspect().find(ViewType.Button.self) {
+            try $0.accessibilityIdentifier() == "chat.approveAll"
+        })
     }
 }

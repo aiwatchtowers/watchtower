@@ -127,6 +127,10 @@ package struct ChatSurfaceSpec {
     package let turnPrompt: @MainActor (ChatTurnInput) -> String
     /// Runs once, only for a turn that completed (never a stopped or failed one).
     package let postTurn: @MainActor (ChatPostTurnInput) -> ChatPostTurnResult
+    /// Runs before an owner turn is accepted (composer, starter prompt or
+    /// `send`); false refuses it and the text stays in the composer — the
+    /// target chat re-reads its task here and refuses once it is deleted.
+    package let willSend: @MainActor (String) -> Bool
     package let emptyHint: String
     package let starterPrompts: [ChatStarterPrompt]
 
@@ -137,6 +141,7 @@ package struct ChatSurfaceSpec {
         systemPrompt: @escaping @MainActor () -> String,
         turnPrompt: @escaping @MainActor (ChatTurnInput) -> String = { $0.text },
         postTurn: @escaping @MainActor (ChatPostTurnInput) -> ChatPostTurnResult = ChatPostTurnResult.identity,
+        willSend: @escaping @MainActor (String) -> Bool = { _ in true },
         emptyHint: String,
         starterPrompts: [ChatStarterPrompt] = []
     ) {
@@ -146,6 +151,7 @@ package struct ChatSurfaceSpec {
         self.systemPrompt = systemPrompt
         self.turnPrompt = turnPrompt
         self.postTurn = postTurn
+        self.willSend = willSend
         self.emptyHint = emptyHint
         self.starterPrompts = starterPrompts
     }

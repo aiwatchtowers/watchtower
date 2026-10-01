@@ -172,7 +172,7 @@ package final class EmbeddedChatEngine {
     @discardableResult
     package func send(_ text: String) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !isBusy, historyLoaded() else { return false }
+        guard !trimmed.isEmpty, !isBusy, historyLoaded(), spec.willSend(trimmed) else { return false }
         let previous = messages.last { $0.message.isUser }?.message.createdDate
         start(TurnRequest(ownerText: trimmed, basePrompt: trimmed, carriedFollowUps: takeFollowUps(),
                           previousOwnerMessageAt: previous))
@@ -478,7 +478,7 @@ package final class EmbeddedChatEngine {
             persistFinal(turn, text: text, status: "partial", failure: nil)
             return .stopped(messageID: turn.messageID)
         }
-        if let failure = current.failure ?? emptyReplyFailure(text) {
+        if let failure = current.failure {
             return failTurn(turn, text: text, failure: failure)
         }
         // The reply must be on disk before postTurn acts on it.
@@ -491,6 +491,11 @@ package final class EmbeddedChatEngine {
                 persist: false)
         }
         let result = spec.postTurn(ChatPostTurnInput(reply: text, turnID: turn.turnID, messageID: turn.messageID))
+        // An action surface may answer with tool proposals only and show a
+        // placeholder; a reply that still has nothing to show is an error.
+        if result.displayText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return failTurn(turn, text: text, failure: .init(code: nil, message: Self.emptyReplyMessage))
+        }
         guard persistFinal(turn, text: result.displayText, status: "complete", failure: nil) else {
             // The reply is not on disk: not a successful turn, whatever postTurn did.
             let failure = EmbeddedChatErrorClassifier.Failure(
@@ -515,15 +520,6 @@ package final class EmbeddedChatEngine {
         if persist { persistFinal(turn, text: text, status: "error", failure: failure) }
         canRetry = failure.retryable
         return .failed(messageID: turn.messageID, message: failure.message)
-    }
-
-    /// An action surface may answer with tool proposals only; its postTurn
-    /// decides what to show. A draft-only surface's empty reply is an error.
-    private func emptyReplyFailure(_ text: String) -> EmbeddedChatErrorClassifier.Failure? {
-        guard spec.toolAccess == .draftOnly, text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return nil
-        }
-        return .init(code: nil, message: Self.emptyReplyMessage)
     }
 
     @discardableResult

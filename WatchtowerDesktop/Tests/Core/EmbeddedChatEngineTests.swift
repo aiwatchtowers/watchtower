@@ -726,3 +726,41 @@ private final class FlakyStore: EmbeddedChatStore {
         try base.saveSessionID(sessionID)
     }
 }
+
+@MainActor
+final class EmbeddedChatEngineWillSendTests: XCTestCase {
+    func testARefusedSendKeepsTheDraftAndStartsNothing() {
+        let ai = ScriptedAIService()
+        var allow = false
+        var seen: [String] = []
+        let spec = ChatSurfaceSpec(
+            key: EmbeddedChatKey(contextType: "target", contextID: "1", conversationID: nil),
+            persistence: .memory, toolAccess: .draftOnly, systemPrompt: { "S" },
+            willSend: { seen.append($0); return allow }, emptyHint: "")
+        let engine = EmbeddedChatEngine(spec: spec, store: MemoryEmbeddedChatStore(), aiService: ai,
+                                        gate: EmbeddedStreamGate())
+        engine.draft = "  do it  "
+        XCTAssertFalse(engine.sendDraft())
+        XCTAssertEqual(engine.draft, "  do it  ")
+        XCTAssertTrue(ai.calls.isEmpty)
+        XCTAssertTrue(engine.messages.isEmpty)
+        allow = true
+        XCTAssertTrue(engine.sendDraft())
+        XCTAssertEqual(seen, ["do it", "do it"], "the trimmed owner text")
+        XCTAssertEqual(ai.calls.count, 1)
+    }
+
+    func testAnActionSurfaceReplyWithNothingToShowIsAnError() async {
+        let ai = ScriptedAIService()
+        let spec = ChatSurfaceSpec(
+            key: EmbeddedChatKey(contextType: "target", contextID: "1", conversationID: nil),
+            persistence: .memory, toolAccess: .actions(surface: "target"), systemPrompt: { "S" }, emptyHint: "")
+        let engine = EmbeddedChatEngine(spec: spec, store: MemoryEmbeddedChatStore(), aiService: ai,
+                                        gate: EmbeddedStreamGate())
+        engine.send("q")
+        ai.finish()
+        let done = await waitForCondition { !engine.isStreaming }
+        XCTAssertTrue(done)
+        XCTAssertEqual(engine.messages.last?.message.status, "error")
+    }
+}

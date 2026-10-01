@@ -37,16 +37,21 @@ final class TargetAssistantViewModel {
     var onTargetActivity: (() -> Void)?
 
     private let dbManager: DatabaseManager
+    private let embeddedChats: EmbeddedChatCenter?
     private let makeChat: ChatFactory
     private let firstTabTitle: String
     private var chats: [Int64: TargetChatViewModel] = [:]
 
+    /// `embeddedChats` hands each tab its engine (the app-wide turn limit);
+    /// nil in tests, where every tab runs its own.
     init(
         target: Target,
         viewModel: TargetsViewModel,
         dbManager: DatabaseManager,
-        chatFactory: ChatFactory? = nil
+        chatFactory: ChatFactory? = nil,
+        embeddedChats: EmbeddedChatCenter? = nil
     ) {
+        self.embeddedChats = embeddedChats
         self.targetID = target.id
         self.dbManager = dbManager
         self.firstTabTitle = "Task: \(String(target.text.prefix(60)))"
@@ -55,7 +60,8 @@ final class TargetAssistantViewModel {
                 target: target,
                 viewModel: viewModel,
                 dbManager: dbManager,
-                conversationID: conversationID
+                conversationID: conversationID,
+                center: embeddedChats
             )
         }
         load()
@@ -199,7 +205,10 @@ final class TargetAssistantViewModel {
             errorMessage = "Failed to close the chat: \(error.localizedDescription)"
             return
         }
-        chats[conversationID]?.stop()
+        if let chat = chats[conversationID] {
+            chat.stop()
+            embeddedChats?.release(chat.engine.spec.key)
+        }
         chats[conversationID] = nil
         conversations.remove(at: index)
         if activeConversationID == conversationID {
@@ -212,7 +221,10 @@ final class TargetAssistantViewModel {
     /// container so no evicted tab keeps a GRDB observation running. Only ever
     /// called for an idle container (`isAnyWorking == false`).
     func stop() {
-        for chat in chats.values { chat.stop() }
+        for chat in chats.values {
+            chat.stop()
+            embeddedChats?.release(chat.engine.spec.key)
+        }
         chats.removeAll()
         activeChat = nil
         activeConversationID = nil

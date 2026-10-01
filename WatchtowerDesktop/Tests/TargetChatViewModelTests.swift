@@ -265,15 +265,16 @@ final class TargetChatViewModelTests: XCTestCase {
         try await waitForStreamEnd(chat)
 
         XCTAssertEqual(chat.errorMessage, "CLI exploded")
-        XCTAssertTrue(chat.messages.contains {
-            $0.role == .system && $0.text.contains("The assistant run failed: CLI exploded")
-        })
+        // The failure is the reply row itself — an error card that a reloaded
+        // conversation still shows (status `error`, the run's own text) —
+        // and no proposal is parsed out of a failed run.
         let persisted = try fetchPersistedMessages(manager, targetID: target.id)
-        XCTAssertTrue(persisted.contains {
-            $0.role == "system" && $0.text.contains("The assistant run failed: CLI exploded")
-        })
-        // No assistant turn is persisted for a failed stream.
-        XCTAssertFalse(persisted.contains { $0.role == "assistant" })
+        let reply = try XCTUnwrap(persisted.last)
+        XCTAssertEqual(reply.role, "assistant")
+        XCTAssertEqual(reply.status, "error")
+        XCTAssertEqual(reply.errorMessage, "CLI exploded")
+        XCTAssertEqual(persisted.filter { $0.role == "user" }.map(\.text), ["do the thing"])
+        XCTAssertTrue(chat.actionCards.isEmpty)
     }
 
     /// Regression pin: an action block with NO mode field keeps today's
@@ -1269,5 +1270,61 @@ final class TargetChatViewModelTests: XCTestCase {
         XCTAssertFalse(prompt.contains("list_messages"))
         XCTAssertFalse(prompt.contains("already connected"))
         XCTAssertTrue(prompt.contains("No tools are connected"))
+    }
+
+    // MARK: - Shared embedded chat component
+
+    /// A turn waiting for a free slot is a turn under way: the brief center
+    /// and the tab chip read `isStreaming` as "busy", never as "nothing sent".
+    func testATurnWaitingForASlotCountsAsBusy() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        let ai = MockClaudeService(events: [], thenHangs: true)
+        let center = EmbeddedChatCenter(gate: EmbeddedStreamGate(limit: 1)) { spec, gate in
+            makeSurfaceEngine(spec, dbPool: manager.dbPool, ai: ai, gate: gate)
+        }
+        let busyConv = try manager.dbPool.write { db in
+            try ChatConversationQueries.create(db, title: "other", contextType: "target", contextID: String(target.id)).id
+        }
+        let other = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
+                                        conversationID: busyConv, center: center)
+        other.inputText = "takes the slot"
+        other.send()
+
+        let conv = try manager.dbPool.write { db in
+            try ChatConversationQueries.create(db, title: "Task", contextType: "target", contextID: String(target.id)).id
+        }
+        let chat = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
+                                       conversationID: conv, center: center)
+        chat.inputText = "waits"
+        chat.send()
+        XCTAssertTrue(chat.engine.isQueued)
+        XCTAssertTrue(chat.isStreaming)
+        XCTAssertEqual(chat.inputText, "", "the queued text left the composer")
+        chat.cancelStream()
+        XCTAssertEqual(chat.inputText, "waits", "Stop on a queued turn puts the text back")
+        XCTAssertFalse(chat.isStreaming)
+        other.cancelStream()
+    }
+
+    /// A deleted task refuses the owner's send before anything is written.
+    func testADeletedTaskKeepsTheTextAndSendsNothing() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        let mock = MockClaudeService()
+        let chat = try makeChat(target: target, vm: vm, manager: manager, aiService: mock)
+        try manager.dbPool.write { db in try db.execute(sql: "DELETE FROM targets WHERE id = ?", arguments: [target.id]) }
+
+        chat.inputText = "close it"
+        chat.send()
+
+        XCTAssertEqual(chat.inputText, "close it")
+        XCTAssertTrue(mock.prompts.isEmpty)
+        XCTAssertTrue(chat.targetGone)
+        XCTAssertNotNil(chat.errorMessage)
     }
 }

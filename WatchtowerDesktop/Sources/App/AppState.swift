@@ -551,6 +551,7 @@ final class AppState {
     /// Once per process: initialize() re-runs on every retry
     /// (reinitializeAfterOnboarding), which must not stack observers.
     private func installLifecycleHooks() {
+        targetAssistantCenter.embeddedChats = embeddedChatCenter
         if terminateObserver == nil {
             terminateObserver = NotificationCenter.default.addObserver(
                 forName: NSApplication.willTerminateNotification,
