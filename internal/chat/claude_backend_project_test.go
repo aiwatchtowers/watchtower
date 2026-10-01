@@ -3,6 +3,7 @@ package chat
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,21 +14,24 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// first drops projectBlocks' over-cap names.
+func first(blocks []json.RawMessage, _ []string) []json.RawMessage { return blocks }
+
 func TestClaudeBackend_ProjectBlocksOnlyWhilePending(t *testing.T) {
 	att, marker := projectFixture(t)
 	b := &claudeBackend{opts: ClaudeOptions{ProjectAttachments: []Attachment{att}}}
 	b.projectPending = initialProjectPending(b.opts)
 
-	first := b.projectBlocks(MaxTurnAttachmentEncodedBytes)
-	require.Len(t, first, 1)
-	assert.Contains(t, string(first[0]), marker)
+	blocks := first(b.projectBlocks(MaxTurnAttachmentEncodedBytes))
+	require.Len(t, blocks, 1)
+	assert.Contains(t, string(blocks[0]), marker)
 	// Not cleared until a turn carrying it ended with turn_done.
-	require.Len(t, b.projectBlocks(MaxTurnAttachmentEncodedBytes), 1, "an unsent first turn still carries the project file")
+	require.Len(t, first(b.projectBlocks(MaxTurnAttachmentEncodedBytes)), 1, "an unsent first turn still carries the project file")
 	b.projectSent()
-	assert.Empty(t, b.projectBlocks(MaxTurnAttachmentEncodedBytes), "later turns carry no project files")
+	assert.Empty(t, first(b.projectBlocks(MaxTurnAttachmentEncodedBytes)), "later turns carry no project files")
 	// A replay / session_lost restart is a fresh provider session again.
 	b.markFreshSession()
-	assert.Len(t, b.projectBlocks(MaxTurnAttachmentEncodedBytes), 1, "after a fresh restart the project file is re-attached")
+	assert.Len(t, first(b.projectBlocks(MaxTurnAttachmentEncodedBytes)), 1, "after a fresh restart the project file is re-attached")
 }
 
 // A project file that is gone or no longer valid at turn time is skipped
@@ -43,8 +47,9 @@ func TestClaudeBackend_ProjectBlocksSkipMissingAndInvalid(t *testing.T) {
 		att,
 	}}}
 	b.markFreshSession()
-	blocks := b.projectBlocks(MaxTurnAttachmentEncodedBytes)
+	blocks, overCap := b.projectBlocks(MaxTurnAttachmentEncodedBytes)
 	require.Len(t, blocks, 1)
+	assert.Empty(t, overCap, "a missing or invalid file is not a cap overflow")
 	assert.Contains(t, string(blocks[0]), marker)
 	assert.Contains(t, warn.String(), "gone.pdf")
 	assert.Contains(t, warn.String(), "notreally.png")
@@ -66,14 +71,17 @@ func TestClaudeBackend_ProjectBlocksFitTheMessageCap(t *testing.T) {
 	pdfSize := int64(base64.StdEncoding.EncodedLen(len(fixturePDF)))
 	require.Greater(t, int64(base64.StdEncoding.EncodedLen(len(bigData))), pdfSize, "the PNG must be the bigger file")
 
-	blocks := b.projectBlocks(pdfSize)
+	blocks, overCap := b.projectBlocks(pdfSize)
 	require.Len(t, blocks, 1)
+	assert.Equal(t, []string{"big.png"}, overCap, "only a file over the cap is reported for the turn's note")
 	assert.Contains(t, string(blocks[0]), marker, "the file that fits still goes")
 	assert.Contains(t, warn.String(), "big.png")
 	assert.Contains(t, warn.String(), "MB one message carries")
 
 	warn.Reset()
-	assert.Empty(t, b.projectBlocks(0), "nothing fits once the owner's files used the whole cap")
+	blocks, overCap = b.projectBlocks(0)
+	assert.Empty(t, blocks, "nothing fits once the owner's files used the whole cap")
+	assert.Equal(t, []string{"big.png", "spec.pdf"}, overCap)
 	assert.Contains(t, warn.String(), "spec.pdf")
 }
 
@@ -290,4 +298,89 @@ func TestClaudeBackend_FailedTurnKeepsProjectFilesPending(t *testing.T) {
 	assert.Contains(t, lines[0], marker)
 	assert.Contains(t, lines[1], marker, "the retry after the failed turn still carries the project file")
 	assert.NotContains(t, lines[2], marker, "once a turn completed, the files are in the session")
+}
+
+// A file the provider keeps refusing must not fail every turn: the files
+// ride one retry after a failed turn, then they are given up (named on Warn).
+func TestClaudeBackend_ProjectFilesGivenUpAfterTwoFailedTurns(t *testing.T) {
+	opts, f := fakeClaude(t, "error_always")
+	att, marker := projectFixture(t)
+	var warn bytes.Buffer
+	opts.Warn = &warn
+	opts.ProjectAttachments = []Attachment{att}
+	h := startSession(t, NewClaudeBackend(opts), nil)
+	h.next(EventSessionReady)
+	// The app replays after every failed turn: each retry is a fresh session.
+	for i, id := range []string{"t1", "t2", "t3", "t4"} {
+		h.send(Command{Type: CommandTurn, TurnID: id, Text: "q", Replay: i > 0})
+		h.next(EventError)
+	}
+	require.NoError(t, h.finish())
+
+	lines := stdinLines(t, f.stdin)
+	require.Len(t, lines, 4)
+	assert.Contains(t, lines[0], marker)
+	assert.Contains(t, lines[1], marker, "one retry after a failed turn")
+	assert.NotContains(t, lines[2], marker, "then the files no longer fail the turns")
+	assert.NotContains(t, lines[3], marker, "not even on a fresh (replayed) session")
+	assert.Contains(t, warn.String(), "given up")
+}
+
+// A fresh session killed after a cancel already holds the files (its turn
+// was streaming): the respawn resumes that session and does not send them
+// again.
+func TestClaudeBackend_CancelKillDoesNotResendProjectFiles(t *testing.T) {
+	opts, f := fakeClaude(t, "ignore_interrupt")
+	opts.Env = append(opts.Env, "FAKE_INIT_SID=sess-new")
+	att, marker := projectFixture(t)
+	opts.ProjectAttachments = []Attachment{att}
+	h := startSession(t, NewClaudeBackend(opts), nil)
+	h.next(EventSessionReady)
+
+	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "long"})
+	h.next(EventTextDelta)
+	h.send(Command{Type: CommandCancel})
+	assert.Equal(t, StatusInterrupted, h.next(EventTurnDone).Status)
+	h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "next"})
+	h.next(EventTurnDone)
+	require.NoError(t, h.finish())
+
+	runs := argvRuns(t, f.argv)
+	last := runs[len(runs)-1]
+	require.True(t, contains(last, "--resume"))
+	lines := stdinLines(t, f.stdin)
+	require.Len(t, lines, 3, "turn 1, the interrupt, turn 2")
+	assert.Contains(t, lines[0], marker)
+	assert.NotContains(t, lines[2], marker, "the resumed session already holds the files")
+}
+
+// The owner's own files leave too little of the cap for the project file:
+// it is left out of the line and the turn says so — the prompt had listed it
+// as attached. (Built without a child: the fake's shell reads a 30 MB line
+// too slowly.)
+func TestClaudeBackend_OwnerFilesLeaveNoRoomForAProjectFile(t *testing.T) {
+	var warn bytes.Buffer
+	dir := t.TempDir()
+	// ≈ 29.4 MB base64: under the cap alone, too much with the project PDF.
+	ownPath := filepath.Join(dir, "own.pdf")
+	require.NoError(t, os.WriteFile(ownPath, append([]byte("%PDF-1.4\n"), make([]byte, 22<<20)...), 0o600))
+	projPath := filepath.Join(dir, "project.pdf")
+	require.NoError(t, os.WriteFile(projPath, append([]byte("%PDF-1.4\n"), make([]byte, 2<<20)...), 0o600))
+	b := &claudeBackend{opts: ClaudeOptions{Warn: &warn,
+		ProjectAttachments: []Attachment{{Path: projPath, Mime: "application/pdf", Name: "project.pdf"}}}}
+	b.markFreshSession()
+
+	line, err := b.userLine("read both", []Attachment{{Path: ownPath, Mime: "application/pdf", Name: "own.pdf"}})
+	require.NoError(t, err, "the turn is not rejected")
+	assert.LessOrEqual(t, int64(len(line)), MaxTurnAttachmentEncodedBytes+(1<<10), "the line stays within the cap")
+	assert.Equal(t, 1, strings.Count(string(line), `"type":"document"`), "only the owner's own PDF is sent")
+	assert.Contains(t, string(line), "Project files not attached to this message")
+	assert.Contains(t, string(line), "project.pdf")
+	assert.Contains(t, warn.String(), "project.pdf")
+
+	// Without the owner's file the project file goes, with no note.
+	line, err = b.userLine("just the project", nil)
+	require.NoError(t, err)
+	assert.Equal(t, 1, strings.Count(string(line), `"type":"document"`))
+	assert.NotContains(t, string(line), "not attached")
 }

@@ -146,7 +146,7 @@ func (f *fakeBackend) Close() error {
 	return nil
 }
 
-// ownerText strips the session's TurnTimeLine off a turn's text.
+// ownerText strips the session's turnTimeLine off a turn's text.
 func ownerText(text string) string {
 	if !strings.HasPrefix(text, "[Current time: ") {
 		return text
@@ -186,8 +186,8 @@ func TestSession_EveryTurnCarriesTheCurrentTime(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	require.Len(t, got, 2)
-	assert.Equal(t, TurnTimeLine(clock.Add(-26*time.Hour))+"what did Ann say yesterday?", got[0])
-	assert.Equal(t, TurnTimeLine(clock)+"and today?", got[1], "the second turn carries its own time, not the first one's")
+	assert.Equal(t, turnTimeLine(clock.Add(-26*time.Hour))+"what did Ann say yesterday?", got[0])
+	assert.Equal(t, turnTimeLine(clock)+"and today?", got[1], "the second turn carries its own time, not the first one's")
 	assert.Contains(t, got[1], clock.Format("2006-01-02"))
 }
 

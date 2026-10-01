@@ -52,10 +52,10 @@ func formatCurrentTime(now time.Time) string {
 	return fmt.Sprintf("%s (%s)", now.Format("Monday, 2006-01-02 15:04 MST"), now.UTC().Format("15:04 UTC"))
 }
 
-// TurnTimeLine opens every owner turn's text on the wire (never the stored
+// turnTimeLine opens every owner turn's text on the wire (never the stored
 // message): a session spawned or resumed days ago otherwise only knows the
 // time in its system prompt, which `--resume` never re-sends (CHAT-04).
-func TurnTimeLine(now time.Time) string {
+func turnTimeLine(now time.Time) string {
 	return "[Current time: " + formatCurrentTime(now) + "]\n\n"
 }
 
@@ -339,9 +339,10 @@ func writeProjectTextFiles(b *strings.Builder, files []db.ChatProjectFile) {
 }
 
 // writeProjectBinaryFiles names the binaries: attached on the Claude backend
-// as far as they fit in one message's encoded cap (the backend's
-// projectBlocks fits them in the same order), unavailable on any other
-// provider.
+// as far as they fit in one message's encoded cap on their own (the
+// backend's projectBlocks fits them in the same order, but after the owner's
+// own files — a turn whose files leave less room says so in its text),
+// unavailable on any other provider.
 func writeProjectBinaryFiles(b *strings.Builder, files []db.ChatProjectFile, provider string) {
 	if len(files) == 0 {
 		return

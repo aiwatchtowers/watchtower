@@ -35,7 +35,7 @@ type Session struct {
 	Provider string // reported in session_ready
 	Model    string // reported in session_ready
 	TurnFile string // when set, the running turn id is written here before each turn (spec §1.2)
-	// Now stamps each turn's TurnTimeLine; nil = time.Now (tests pin it).
+	// Now stamps each turn's turnTimeLine; nil = time.Now (tests pin it).
 	Now func() time.Time
 
 	b Backend
@@ -220,7 +220,7 @@ func (s *Session) runTurn(ctx context.Context, c Command, st *turnState) {
 		return
 	}
 
-	c.Text = TurnTimeLine(s.now()) + c.Text
+	c.Text = turnTimeLine(s.now()) + c.Text
 	err := s.b.Turn(ctx, c, emit)
 	if terminal {
 		return
