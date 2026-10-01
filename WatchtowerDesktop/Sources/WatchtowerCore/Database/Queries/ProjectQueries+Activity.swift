@@ -28,7 +28,7 @@ extension ProjectQueries {
         for item in try documentListItems(db, projectID: project.id) {
             documents[item.id] = .init(
                 title: item.document.displayTitle, updatedAt: item.document.updatedAt,
-                openOwnerComments: item.openComments, imported: item.document.isImported
+                openOwnerComments: item.openComments, imported: !item.document.isAgentAttached
             )
         }
         var targets: [Int64: ProjectNotificationPolicy.TargetState] = [:]

@@ -16,6 +16,7 @@ struct ProjectDocumentsView: View {
     @State private var composeRenderVersion = 0
     @State private var delivery: TerminalCenter.PromptDelivery?
     @State private var showThreads = true
+    @State private var addingDocument = false
 
     var body: some View {
         HSplitView {
@@ -28,7 +29,7 @@ struct ProjectDocumentsView: View {
                 }
             } else {
                 Text(vm.documents.isEmpty
-                     ? "No documents yet. Claude Code attaches specs and plans here as it writes them."
+                     ? "No documents yet. Claude Code attaches specs and plans here as it writes them — or add one with Add Document…."
                      : "Select a document.")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -37,6 +38,9 @@ struct ProjectDocumentsView: View {
         .task(id: vm.selectedProjectID) {
             await vm.loadDocuments()
             await vm.openPendingDocument()
+        }
+        .sheet(isPresented: $addingDocument) {
+            if let project = vm.selectedProject { AddProjectDocumentSheet(vm: vm, project: project) }
         }
         .onChange(of: vm.pendingDocumentID) { _, _ in Task { await vm.openPendingDocument() } }
         .onChange(of: vm.documentViewModel?.document.id) { _, _ in
@@ -48,6 +52,31 @@ struct ProjectDocumentsView: View {
     }
 
     private var list: some View {
+        VStack(spacing: 0) {
+            documentList
+            Divider()
+            HStack {
+                Button {
+                    addingDocument = true
+                } label: {
+                    Label("Add Document…", systemImage: "plus")
+                }
+                .buttonStyle(.borderless)
+                .help("Attach a .md or .txt file from the project folder")
+                Spacer()
+            }
+            .padding(8)
+            if let notice = vm.attachNotice {
+                Text(notice)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding([.horizontal, .bottom], 8)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var documentList: some View {
         List(vm.documents, selection: Binding(
             get: { vm.documentViewModel?.document.id },
             set: { id in

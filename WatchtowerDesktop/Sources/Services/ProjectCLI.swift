@@ -100,6 +100,20 @@ struct ProjectDeleted: Decodable, Equatable {
     }
 }
 
+/// `watchtower project attach-doc N <path> --json` envelope (#80).
+/// `created == false` means the path was already attached (left untouched).
+struct ProjectDocumentAttached: Decodable, Equatable {
+    let documentID: Int64
+    let relPath: String
+    let created: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case documentID = "document_id"
+        case relPath = "rel_path"
+        case created
+    }
+}
+
 /// `watchtower integrate status --project N --json` (Task 12). `skill` is a
 /// devpack status state: `unchanged` (current), `updated` (an older shipped
 /// version that an install would replace), `missing`, or `drifted`/`foreign`
@@ -182,6 +196,18 @@ struct ProjectCLI {
     func status(projectID: Int64) async throws -> ProjectInstallStatus {
         let data = try await runner.run(args: ["integrate", "status", "--project", String(projectID), "--json"])
         return try JSONDecoder().decode(ProjectInstallStatus.self, from: data)
+    }
+
+    /// Attaches a file inside the project folder as the owner's document. The
+    /// CLI owns the checks (inside the folder with symlinks resolved, a regular
+    /// .md/.txt file, the target on this board) — the attach_document rules.
+    /// `--` ends the flags, so no path can be read as one.
+    func attachDocument(projectID: Int64, path: String, kind: String, targetID: Int64?) async throws -> ProjectDocumentAttached {
+        var args = ["project", "attach-doc", "--kind", kind, "--json"]
+        if let targetID { args += ["--target", String(targetID)] }
+        args += ["--", String(projectID), path]
+        let data = try await runner.run(args: args)
+        return try JSONDecoder().decode(ProjectDocumentAttached.self, from: data)
     }
 
     /// Removes what was installed in the folder, then the project and every

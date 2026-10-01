@@ -98,6 +98,43 @@ func TestDev06_AttachDocumentStaysInsideTheFolder(t *testing.T) {
 	assert.Equal(t, 1, countProjectDocuments(t, fx.d, fx.a))
 }
 
+// The owner's `project attach-doc` shares attach_document's refusals, but
+// also takes the absolute path a file picker hands it — resolved through
+// symlinks, so a path into the folder via a symlinked parent still attaches.
+func TestResolveProjectDocumentPath(t *testing.T) {
+	fx := newProjectFixture(t)
+	p, err := fx.d.GetProject(fx.a)
+	require.NoError(t, err)
+	writeProjectFile(t, fx.d, fx.a, "docs/specs/x.md", "# X\n")
+	outsideFile := filepath.Join(t.TempDir(), "secret.md")
+	require.NoError(t, os.WriteFile(outsideFile, []byte("secret"), 0o644))
+	require.NoError(t, os.Symlink(outsideFile, filepath.Join(p.FolderPath, "docs", "link.md")))
+	viaLink := filepath.Join(t.TempDir(), "folder-link")
+	require.NoError(t, os.Symlink(p.FolderPath, viaLink))
+
+	for name, path := range map[string]string{
+		"relative":             "docs/specs/x.md",
+		"absolute":             filepath.Join(p.FolderPath, "docs", "specs", "x.md"),
+		"via a symlinked root": filepath.Join(viaLink, "docs", "specs", "x.md"),
+	} {
+		rel, err := ResolveProjectDocumentPath(p.FolderPath, path)
+		require.NoError(t, err, name)
+		assert.Equal(t, "docs/specs/x.md", rel, name)
+	}
+	for name, path := range map[string]string{
+		"empty":             " ",
+		"absolute outside":  outsideFile,
+		"symlink outside":   filepath.Join(p.FolderPath, "docs", "link.md"),
+		"dot-dot":           "../x.md",
+		"missing":           "docs/nope.md",
+		"the folder itself": p.FolderPath,
+	} {
+		_, err := ResolveProjectDocumentPath(p.FolderPath, path)
+		var verr *ValidationError
+		require.ErrorAs(t, err, &verr, name)
+	}
+}
+
 func TestComments_AgentThreadLifecycle(t *testing.T) {
 	fx := newProjectFixture(t)
 	reg := projectRegistry(t, fx.d)

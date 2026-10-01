@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,9 +25,42 @@ func resolveInsideFolder(folder, rel string) (string, error) {
 	if strings.TrimSpace(rel) == "" || filepath.IsAbs(rel) {
 		return "", &ValidationError{Msg: "rel_path must be a path relative to the project folder"}
 	}
-	abs, err := filepath.EvalSymlinks(filepath.Join(folder, rel))
+	return resolveDocumentFile(folder, filepath.Join(folder, rel), rel)
+}
+
+// ResolveProjectDocumentPath is attach_document's path check for the owner's
+// `project attach-doc`: path may be absolute or relative to the folder, and
+// the result is the folder-relative, slash-separated path of the resolved
+// file. The same refusals apply — outside the folder (symlinks followed),
+// missing, not a regular .md/.txt file.
+func ResolveProjectDocumentPath(folder, path string) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		return "", &ValidationError{Msg: "a document path is required"}
+	}
+	candidate := path
+	if !filepath.IsAbs(path) {
+		candidate = filepath.Join(folder, path)
+	}
+	abs, err := resolveDocumentFile(folder, candidate, path)
 	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(folder, abs)
+	if err != nil {
+		return "", fmt.Errorf("relativizing %s: %w", abs, err)
+	}
+	return filepath.ToSlash(rel), nil
+}
+
+// resolveDocumentFile resolves candidate's symlinks and checks it names a
+// document file inside folder; rel is how errors name the path.
+func resolveDocumentFile(folder, candidate, rel string) (string, error) {
+	abs, err := filepath.EvalSymlinks(candidate)
+	if errors.Is(err, fs.ErrNotExist) {
 		return "", &ValidationError{Msg: fmt.Sprintf("%s does not exist in the project folder", rel)}
+	}
+	if err != nil {
+		return "", &ValidationError{Msg: fmt.Sprintf("cannot read %s: %v", rel, err)}
 	}
 	inside, err := filepath.Rel(folder, abs)
 	if err != nil || inside == ".." || strings.HasPrefix(inside, ".."+string(filepath.Separator)) {
@@ -40,7 +75,10 @@ func checkDocumentFile(rel, abs string) error {
 		return &ValidationError{Msg: fmt.Sprintf("%s is not a .md or .txt file", rel)}
 	}
 	st, err := os.Stat(abs)
-	if err != nil || !st.Mode().IsRegular() {
+	if err != nil {
+		return &ValidationError{Msg: fmt.Sprintf("cannot read %s: %v", rel, err)}
+	}
+	if !st.Mode().IsRegular() {
 		return &ValidationError{Msg: fmt.Sprintf("%s is not a regular file", rel)}
 	}
 	return nil

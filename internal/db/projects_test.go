@@ -189,6 +189,60 @@ func TestUpsertProjectDocument_RefusesBadInput(t *testing.T) {
 	assert.Error(t, err, "absolute path")
 }
 
+func TestAttachOwnerProjectDocument_InsertsOwnerRowAndNeverRevises(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestProject(t, d)
+	tid := insertProjectTargetRow(t, d, pid, "feature")
+
+	id, rel, created, err := d.AttachOwnerProjectDocument(ProjectDocument{ProjectID: pid, RelPath: "docs/notes.md",
+		Kind: "spec", Title: "Notes", TargetID: nullID(tid)})
+	require.NoError(t, err)
+	assert.True(t, created)
+	assert.Equal(t, "docs/notes.md", rel)
+	doc, err := d.GetProjectDocument(id)
+	require.NoError(t, err)
+	assert.Equal(t, "owner", doc.Origin)
+	assert.Equal(t, "spec", doc.Kind)
+	assert.Equal(t, nullID(tid), doc.TargetID)
+
+	_, err = d.Exec(`UPDATE project_documents SET updated_at = '2000-01-01T00:00:00Z' WHERE id = ?`, id)
+	require.NoError(t, err)
+	again, rel, created, err := d.AttachOwnerProjectDocument(ProjectDocument{ProjectID: pid, RelPath: "DOCS/Notes.md", Kind: "plan"})
+	require.NoError(t, err)
+	assert.Equal(t, id, again, "another spelling of the same path is the same document")
+	assert.Equal(t, "docs/notes.md", rel, "the stored spelling is reported")
+	assert.False(t, created)
+	doc, err = d.GetProjectDocument(id)
+	require.NoError(t, err)
+	assert.Equal(t, "2000-01-01T00:00:00Z", doc.UpdatedAt, "an owner attach never marks a document revised")
+	assert.Equal(t, "spec", doc.Kind, "an existing row is left untouched")
+
+	// An agent re-attach makes it the agent's, as it does for an import.
+	_, _, err = d.UpsertProjectDocument(ProjectDocument{ProjectID: pid, RelPath: "docs/notes.md"})
+	require.NoError(t, err)
+	doc, err = d.GetProjectDocument(id)
+	require.NoError(t, err)
+	assert.Equal(t, "agent", doc.Origin)
+}
+
+func TestAttachOwnerProjectDocument_RefusesBadInput(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestProject(t, d)
+	foreign := insertProjectTargetRow(t, d, newTestProject(t, d), "other board")
+
+	_, _, _, err := d.AttachOwnerProjectDocument(ProjectDocument{ProjectID: pid, RelPath: "a.md", TargetID: nullID(foreign)})
+	assert.ErrorIs(t, err, ErrNotInProject)
+	_, _, _, err = d.AttachOwnerProjectDocument(ProjectDocument{ProjectID: pid + 100, RelPath: "a.md"})
+	assert.ErrorIs(t, err, ErrProjectNotFound)
+	_, _, _, err = d.AttachOwnerProjectDocument(ProjectDocument{ProjectID: pid, RelPath: "a.md", Kind: "memo"})
+	assert.Error(t, err, "unknown kind")
+	_, _, _, err = d.AttachOwnerProjectDocument(ProjectDocument{ProjectID: pid, RelPath: "/etc/passwd"})
+	assert.Error(t, err, "absolute path")
+	docs, err := d.ListProjectDocuments(pid)
+	require.NoError(t, err)
+	assert.Empty(t, docs)
+}
+
 // TestProj02_DeleteProjectLeavesNoRows is the DB half of PROJ-02
 // (docs/inventory/projects.md): deleting a project leaves no project, target,
 // source, document or comment row of it, and touches no other project.

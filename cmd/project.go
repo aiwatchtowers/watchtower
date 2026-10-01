@@ -17,6 +17,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/projectdocs"
+	"watchtower/internal/tools"
 )
 
 var projectCmd = &cobra.Command{
@@ -67,6 +68,17 @@ var projectImportDocsCmd = &cobra.Command{
 	RunE: runProjectImportDocs,
 }
 
+var projectAttachDocCmd = &cobra.Command{
+	Use:   "attach-doc <id> <path>",
+	Short: "Attach a .md/.txt file inside the project folder to Documents, as the owner's",
+	Long: "The owner's counterpart of the agent's attach_document, with the same checks: the\n" +
+		"path (absolute, or relative to the folder) must resolve — symlinks followed — to a\n" +
+		"regular .md/.txt file inside the project folder. An already attached path is left\n" +
+		"untouched and reported (created=false). Writes only the document row, never the file.",
+	Args: cobra.ExactArgs(2),
+	RunE: runProjectAttachDoc,
+}
+
 var projectDeleteCmd = &cobra.Command{
 	Use:   "delete <id>",
 	Short: "Delete a project, its board, documents and comments, and Watchtower's install in its folder",
@@ -80,6 +92,9 @@ var (
 	projectCreateFlagFolder string
 	projectCreateFlagName   string
 	projectImportFlagDryRun bool
+	projectAttachFlagKind   string
+	projectAttachFlagTitle  string
+	projectAttachFlagTarget int64
 )
 
 // projectRemoveInstall undoes what `integrate claude-code --project N` put
@@ -92,10 +107,13 @@ func init() {
 	projectCreateCmd.Flags().StringVar(&projectCreateFlagFolder, "folder", "", "project folder (required; symlinks are resolved)")
 	projectCreateCmd.Flags().StringVar(&projectCreateFlagName, "name", "", "project name (default: the folder's base name)")
 	projectImportDocsCmd.Flags().BoolVar(&projectImportFlagDryRun, "dry-run", false, "list what would be attached, write nothing")
-	for _, c := range []*cobra.Command{projectCreateCmd, projectListCmd, projectShowCmd, projectBoardCmd, projectImportDocsCmd, projectDeleteCmd} {
+	projectAttachDocCmd.Flags().StringVar(&projectAttachFlagKind, "kind", "doc", "spec | plan | doc")
+	projectAttachDocCmd.Flags().StringVar(&projectAttachFlagTitle, "title", "", "display title (default: the file name)")
+	projectAttachDocCmd.Flags().Int64Var(&projectAttachFlagTarget, "target", 0, "the project target the document belongs to")
+	for _, c := range []*cobra.Command{projectCreateCmd, projectListCmd, projectShowCmd, projectBoardCmd, projectImportDocsCmd, projectAttachDocCmd, projectDeleteCmd} {
 		c.Flags().BoolVar(&projectFlagJSON, "json", false, "output JSON")
 	}
-	projectCmd.AddCommand(projectCreateCmd, projectListCmd, projectShowCmd, projectBoardCmd, projectImportDocsCmd, projectDeleteCmd)
+	projectCmd.AddCommand(projectCreateCmd, projectListCmd, projectShowCmd, projectBoardCmd, projectImportDocsCmd, projectAttachDocCmd, projectDeleteCmd)
 	rootCmd.AddCommand(projectCmd)
 }
 
@@ -292,6 +310,53 @@ func runProjectImportDocs(cmd *cobra.Command, args []string) error {
 		return writeJSON(cmd.OutOrStdout(), rep)
 	}
 	printImportReport(cmd.OutOrStdout(), rep)
+	return nil
+}
+
+// projectAttachDocJSON is `project attach-doc --json`'s envelope.
+type projectAttachDocJSON struct {
+	DocumentID int64  `json:"document_id"`
+	RelPath    string `json:"rel_path"`
+	Created    bool   `json:"created"`
+}
+
+func runProjectAttachDoc(cmd *cobra.Command, args []string) error {
+	id, err := parseProjectID(args[0])
+	if err != nil {
+		return err
+	}
+	_, database, err := openJiraCmdDB()
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+	p, err := database.GetProject(id)
+	if err != nil {
+		return err
+	}
+	rel, err := tools.ResolveProjectDocumentPath(p.FolderPath, args[1])
+	if err != nil {
+		return err
+	}
+	doc := db.ProjectDocument{ProjectID: id, RelPath: rel, Kind: projectAttachFlagKind, Title: strings.TrimSpace(projectAttachFlagTitle)}
+	if doc.Title == "" {
+		doc.Title = strings.TrimSuffix(filepath.Base(rel), filepath.Ext(rel))
+	}
+	if projectAttachFlagTarget != 0 {
+		doc.TargetID = sql.NullInt64{Int64: projectAttachFlagTarget, Valid: true}
+	}
+	docID, rel, created, err := database.AttachOwnerProjectDocument(doc)
+	if err != nil {
+		return err
+	}
+	if projectFlagJSON {
+		return writeJSON(cmd.OutOrStdout(), projectAttachDocJSON{DocumentID: docID, RelPath: rel, Created: created})
+	}
+	if created {
+		fmt.Fprintf(cmd.OutOrStdout(), "Attached %s as document %d\n", rel, docID)
+	} else {
+		fmt.Fprintf(cmd.OutOrStdout(), "%s is already attached (document %d)\n", rel, docID)
+	}
 	return nil
 }
 

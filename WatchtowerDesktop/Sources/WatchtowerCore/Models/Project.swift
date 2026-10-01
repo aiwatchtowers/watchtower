@@ -71,9 +71,10 @@ package struct ProjectDocument: FetchableRecord, Identifiable, Equatable, Hashab
     package let title: String
     package let createdAt: String
     package let updatedAt: String   // bumped by every re-attach ("revised")
-    /// agent | import | owner (migration 00083). An `import` row was found by
-    /// the setup scan, not written for review, so it is never "revised"; an
-    /// agent re-attach turns it into `agent`.
+    /// agent | import | owner (migration 00083). Only an `agent` row was
+    /// written for review: an `import` was found by the setup scan and an
+    /// `owner` row is the owner's own "Add document…", so neither is ever
+    /// "revised"; an agent re-attach turns either into `agent`.
     package let origin: String
 
     package init(row: Row) {
@@ -88,7 +89,9 @@ package struct ProjectDocument: FetchableRecord, Identifiable, Equatable, Hashab
         origin = row["origin"] ?? "agent"
     }
 
-    package var isImported: Bool { origin == "import" }
+    /// Attached by the agent — the only documents the badge, the revised dot
+    /// and the "ready for review" notification count.
+    package var isAgentAttached: Bool { origin == "agent" }
 
     package var displayTitle: String {
         title.isEmpty ? (relPath as NSString).lastPathComponent : title

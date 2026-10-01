@@ -21,6 +21,7 @@ final class ProjectsViewModel {
             if selectedProjectID != oldValue {
                 closeDocument()
                 documents = []
+                attachNotice = nil
             }
             // One thing is on screen: a project, or a standalone terminal.
             // Selecting a project also drills the panel into it.
@@ -57,6 +58,13 @@ final class ProjectsViewModel {
         installNotes.merging(statusReadErrors) { note, read in "\(note) \(read)" }
     }
     private(set) var documents: [ProjectDocumentListItem] = []
+    /// An "Add document…" attach is running (#80); the sheet disables Attach.
+    private(set) var isAttachingDocument = false
+    /// Why the last attach failed (the CLI's refusal); the sheet shows it.
+    private(set) var attachError: String?
+    /// Set when the chosen file was already attached: it opened unchanged,
+    /// so the kind and target picked in the sheet were not applied.
+    private(set) var attachNotice: String?
     /// The open document. Kept here (not in the view) so it survives pane
     /// switches and tab changes with its watcher running.
     private(set) var documentViewModel: ProjectDocumentViewModel?
@@ -171,7 +179,7 @@ final class ProjectsViewModel {
     }
 
     func isRevised(_ document: ProjectDocument) -> Bool {
-        !document.isImported && viewed[String(document.id)] != document.updatedAt
+        document.isAgentAttached && viewed[String(document.id)] != document.updatedAt
     }
 
     func markDocumentViewed(_ document: ProjectDocument) {
@@ -357,8 +365,54 @@ final class ProjectsViewModel {
         }
     }
 
+    /// "Add document…" (#80): `project attach-doc` writes the owner's row —
+    /// the CLI checks the file is a .md/.txt inside the folder, symlinks
+    /// resolved — and the pane opens it. The file itself is never written
+    /// (PROJ-03). Returns whether it attached; on false `attachError` says why.
+    func attachDocument(fileURL: URL, kind: String, targetID: Int64?) async -> Bool {
+        guard let project = selectedProject, !isAttachingDocument else { return false }
+        guard let cli else {
+            attachError = "The watchtower CLI was not found."
+            return false
+        }
+        isAttachingDocument = true
+        clearAttachMessages()
+        defer { isAttachingDocument = false }
+        let attached: ProjectDocumentAttached
+        do {
+            attached = try await cli.attachDocument(projectID: project.id, path: fileURL.path, kind: kind, targetID: targetID)
+        } catch {
+            attachError = "Could not attach the document: \(error.localizedDescription)"
+            return false
+        }
+        if attached.created { onOwnerWrite?(project.id, .document(attached.documentID)) }
+        await loadDocuments()
+        // Still on this project: open it (also for an already attached path).
+        if let item = documents.first(where: { $0.id == attached.documentID }) {
+            await openDocument(item.document)
+            // Still the open document: a project switch during the open closed it.
+            if !attached.created, documentViewModel?.document.id == attached.documentID {
+                attachNotice = "\(attached.relPath) was already attached — it is open, with its kind and target unchanged."
+            }
+        }
+        return true
+    }
+
+    func clearAttachMessages() {
+        attachError = nil
+        attachNotice = nil
+    }
+
+    /// The target picker's choices for "Add document…", in board order.
+    func targetChoices() async throws -> [ProjectBoardRow] {
+        guard let projectID = selectedProjectID else { return [] }
+        let board = try await dbPool.read { try ProjectQueries.board($0, projectID: projectID) }
+        return ProjectBoardOutline.rows(board, collapsed: [], showDone: true)
+    }
+
     func openDocument(_ document: ProjectDocument) async {
         guard let project = selectedProject, project.id == document.projectID else { return }
+        attachNotice = nil
         if documentViewModel?.document.id != document.id {
             closeDocument()
             let docVM = ProjectDocumentViewModel(dbPool: dbPool, project: project, document: document)

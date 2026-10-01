@@ -41,7 +41,8 @@ package enum ProjectNotificationPolicy {
         package let title: String
         package let updatedAt: String
         package let openOwnerComments: Int
-        /// Found by the setup scan (`origin = 'import'`): never "ready for review".
+        /// Not attached by the agent (`origin` import or owner): never "ready
+        /// for review". The name predates owner attaches; kept for persisted snapshots.
         package let imported: Bool
 
         package init(title: String, updatedAt: String, openOwnerComments: Int, imported: Bool = false) {
