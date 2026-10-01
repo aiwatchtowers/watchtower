@@ -1034,3 +1034,12 @@ Entry format:
 - weak-dimension: 7. The only session test sets the appearance first, so the init-time background line, fg/caret/selection and the cache flush are all unpinned.
 - rule-gap (candidate, Swift): *a host override of a vendored view's colour/appearance input must be checked against the library's cache-invalidation path. Where a regression test is feasible, render the view to a bitmap (`cacheDisplay`) across the transition rather than asserting the layer colour alone.*
 - outcome: TBD
+
+## 2026-10-01 — fix/remove-session-close (owner-decided removal of the terminal-session Close action: `close`/`reopen`/`isClosed`/`closedAt` gone from the Desktop, `closed_at` left as an unused legacy column, no migration; panel: prosecutor + 3 specialists, codex lane DOWN — timeout; judge verified findings against the worktree and main's `open()`, no Swift run; judge synthesis, round 1) — verdict: approve
+
+- contested (downgraded MEDIUM → minor): the silent-failure lane said `open`/`startFresh` lost their missing-row guard when `reopen`'s `requireUpdated` went away. Main's `open()` has the same in-transaction `fetch` guard, unchanged, and had no VM test for it either. So this is a pre-existing gap that the removal makes more load-bearing, not a regression. **When a removal deletes one of two redundant guards, check whether the surviving one was ever tested. Report it as a gap, not a regression.** [7/9]
+- false-positive (dismissed): the `fetch(...) ?? current` fallback was flagged on lines this diff does not touch, and it cannot be reached inside one IMMEDIATE transaction. [9]
+- miss: none unique, since codex was absent. The vacuous `selectStandalone` assertion (a test step deleted along with the removed API leaves the following `isLive` assert passing on setup state) came from the prosecutor and was echoed by the test-analyzer. **When a test loses a setup step that put the subject into the state under test, re-read every assertion after the cut.** [7]
+- weak-dimension: none notable. On a removal diff the useful work is the grep sweep plus "which assertions lost their precondition".
+- rule-gap (candidate, dim 5): *a removed feature also needs a sweep of dated design specs that code comments cite by section, plus a legacy note on any column kept for compatibility in `schema.sql`, which the AI prompt reads.*
+- outcome: TBD
