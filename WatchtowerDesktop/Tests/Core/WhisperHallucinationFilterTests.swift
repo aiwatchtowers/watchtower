@@ -26,6 +26,8 @@ final class WhisperHallucinationFilterTests: XCTestCase {
         XCTAssertEqual(clean("Давай созвонимся завтра. Продолжение следует..."), "Давай созвонимся завтра.")
         XCTAssertEqual(clean("Субтитры сделал DimaTorzok Ну что, начнём?"), "Ну что, начнём?")
         XCTAssertEqual(clean("Сейчас запишу Продолжение следует... Да, смотрите"), "Сейчас запишу Да, смотрите")
+        // Seen on real recordings: the credit glued into lowercase speech.
+        XCTAssertEqual(clean("с конфигами хранится Субтитры сделал DimaTorzok в репо."), "с конфигами хранится в репо.")
     }
 
     // A meeting can talk ABOUT subtitles; only the credit forms go.
@@ -40,7 +42,9 @@ final class WhisperHallucinationFilterTests: XCTestCase {
             "Субтитры делал Петя, а озвучку я.",
             "Спасибо за субтитры к видео, Петя, очень помогли.",
             "Редактор субтитров сломался, надо чинить.",
-            "Нам нужен редактор субтитров для проекта."
+            "Нам нужен редактор субтитров для проекта.",
+            "Субтитры делал DeepL, качество так себе.",
+            "Субтитры сделал ChatGPT и всё поехало."
         ] {
             XCTAssertEqual(clean(speech), speech)
         }

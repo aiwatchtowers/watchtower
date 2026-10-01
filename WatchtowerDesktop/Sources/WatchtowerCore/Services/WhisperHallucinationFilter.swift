@@ -17,8 +17,14 @@ package enum WhisperHallucinationFilter {
     /// Removed wherever they appear — they often run straight into real
     /// speech with no punctuation between.
     private static let inlinePatterns: [NSRegularExpression] = [
+        // The credit Whisper writes most often, runs into real speech of
+        // any case on real recordings — removed wherever it appears.
+        #"(?:субтитры|субтитри)\s+\p{L}+\s+dimatorzok[.!?…]*"#,
         #"(?:субтитры|субтитри)\s+(?:сделал|сделала|создавал|создавала|делал|делала|подготовил|подготовила|подогнал"#
-            + #"|зробив|створив|підготував)\s+\p{Latin}[\p{Latin}\d_.-]*[.!?…]*"#,
+            // Only when nothing continues the clause after the nickname
+            // (end of text or a capitalised run-on sentence): "Субтитры
+            // делал DeepL, качество так себе" is speech about a tool.
+            + #"|зробив|створив|підготував)\s+\p{Latin}[\p{Latin}\d_.-]*+[.!?…]*+(?=\s*(?:(?-i:\p{Lu})|$))"#,
         #"редактор субтитров\s+\S+\s+корректор\s+\S+[.!?…]*"#,
         #"subtitles by(?:\s+the)?\s+amara\.org(?:\s+community)?[.!?…]*"#,
         // The ellipsis form is the hallucination; spoken "продолжение
@@ -28,7 +34,7 @@ package enum WhisperHallucinationFilter {
 
     /// Credit lines dropped only when they are the whole sentence.
     private static let sentencePatterns: [NSRegularExpression] = [
-        #"^(?:субтитры|субтитри)\s+(?:сделал|сделала|создавал|создавала|делал|делала|подготовил|подготовила"#
+        #"^(?:субтитры|субтитри)\s+(?:сделал|сделала|создавал|создавала|делал|делала|подготовил|подготовила|подогнал"#
             + #"|зробив|створив|підготував)\s+\S+(?:\s+\S+)?[.!?…]*$"#,
         #"^спасибо за субтитры(?:\s+\S+){0,2}[.!?…]*$"#
     ].map { try! NSRegularExpression(pattern: $0, options: [.caseInsensitive]) } // swiftlint:disable:this force_try
