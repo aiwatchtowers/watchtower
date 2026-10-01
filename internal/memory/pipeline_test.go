@@ -1653,8 +1653,8 @@ func TestMemory04_QuarantineIsTieSafeWithinOneSecond(t *testing.T) {
 // TestMemory04_TransientFailureNeverSpendsBudget guards the other half of the
 // budget: a failure with no later commit in its run — an outage, a provider
 // answering garbage to every batch, a single-batch install — proves nothing
-// about the window. No failure is counted, nothing is quarantined, the
-// watermark never moves.
+// about the window. Its failures may split windows but are never proven, so
+// nothing is quarantined and the watermark never moves.
 func TestMemory04_TransientFailureNeverSpendsBudget(t *testing.T) {
 	outage := func(string) (string, error) { return "", fmt.Errorf("model down") }
 	garbage := func(string) (string, error) { return "<html>502</html>", nil }
@@ -1746,8 +1746,8 @@ func TestMemory04_SingleBatchPoisonIsSplitThenQuarantined(t *testing.T) {
 	assert.Equal(t, float64(base+180), wm)
 }
 
-// TestMemory04_SuccessResetsBudget: a failure counts when a later batch of the
-// run committed, and a window that commits again forgets its failures.
+// TestMemory04_SuccessResetsBudget: failures are recorded per window, and a
+// window that commits again forgets them.
 func TestMemory04_SuccessResetsBudget(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
 	pipelineFixture(t, d)

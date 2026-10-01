@@ -1052,6 +1052,7 @@ Entry format:
 - miss: none unique, since codex was absent. The CLI `inbox generate` failing on the daemon's `sync.lock` came from code-reviewer and prosecutor. Only the silent-failure lane traced Jira's server-time `updated_at` past the new "complete up to sync start" claim. [8/6]
 - weak-dimension: 7. Three load-bearing branches of the new contract (the single-batch counting rule, the quarantine range, keeping quarantined rows on prune) were unpinned. Same bimodal shape: thorough scenario guards around untested predicates.
 - rule-gap (candidate, dim 6/8): *a watermark fix that freezes on "sync error" must enumerate every path where the sync knows its data is incomplete but returns nil (rate-limit early exit, partial pagination). Those are the most common real failures, and a synthetic `errors.New` guard never reaches them.* Candidate (dim 8): *a CLI path that newly propagates a subprocess error must check the subprocess's known benign failures (lock held by the daemon) before turning them into a non-zero exit that the Desktop task runner reports.*
+- outcome: TBD
 
 ## 2026-10-01 — fix/jira-backlog-wave (Jira timestamps stored UTC via migration 00092, propose-time account pinning, retry-safe `create_jira_issue`, closed-sprint read gate; panel: prosecutor + 3 specialists, codex lane DOWN — usage limit, prosecutor ran the verify round; judge re-ran db/jira/tools/inbox/ideas/guide tests green on HEAD 87861b86; judge synthesis after round 2) — verdict: approve
 

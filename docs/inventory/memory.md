@@ -102,7 +102,7 @@ Hardening, one line each (details: changelog + `docs/specs/memory-e2e-report.md`
 - `internal/memory/pipeline_test.go::TestMemory04_TransientFailureNeverSpendsBudget` (an outage or garbage replies, with one batch per window or a single batch, never quarantine: no proven failure, watermark frozen)
 - `internal/memory/pipeline_test.go::TestMemory04_MidRunCutoffNeverSpendsBudget` (earlier batches commit, the provider then stops: no proven failure, no quarantine)
 - `internal/memory/pipeline_test.go::TestMemory04_SingleBatchPoisonIsSplitThenQuarantined` (a quiet install whose chunk fits one batch: the bad window is split out on unproven failures, then quarantined once its neighbours commit after it)
-- `internal/memory/pipeline_test.go::TestMemory04_SuccessResetsBudget` (a failure counts when a later batch committed; a committed window forgets its failures)
+- `internal/memory/pipeline_test.go::TestMemory04_SuccessResetsBudget` (failures are recorded per window; a committed window forgets them)
 - `internal/memory/pipeline_test.go::TestProvenFailure`, `internal/db/memory_test.go::TestMemoryExtractFailures_PruneKeepsQuarantined`, `internal/db/memory_test.go::TestDropMemoryIndexKeepsExtractFailures` (the counting rule; quarantine records are never pruned or dropped by a reindex)
 - `internal/memory/pipeline_test.go::TestBatchWindowsWithSolo` (a spent window is batched alone, in first-ts order)
 
