@@ -268,15 +268,26 @@ struct UpdateChannelTests {
     }
 }
 
-/// Records the order of install steps; each step can be made to fail.
-@MainActor
-private final class InstallRecorder {
-    var calls: [String] = []
+/// The install steps run off the main actor, so the recorder guards its
+/// state with a lock. The failure flags are set before the steps run.
+private final class InstallRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [String] = []
+    private var recordedTeamID: String?
     var failStage = false
     var failVerify = false
     var failReplace = false
     var writable = true
-    var verifiedTeamID: String?
+
+    var calls: [String] { lock.withLock { recorded } }
+    var verifiedTeamID: String? { lock.withLock { recordedTeamID } }
+
+    private func record(_ call: String, teamID: String? = nil) {
+        lock.withLock {
+            recorded.append(call)
+            if let teamID { recordedTeamID = teamID }
+        }
+    }
 
     struct Boom: LocalizedError {
         let what: String
@@ -286,24 +297,23 @@ private final class InstallRecorder {
     var steps: UpdateService.InstallSteps {
         UpdateService.InstallSteps(
             canWrite: { _ in
-                self.calls.append("canWrite")
+                self.record("canWrite")
                 return self.writable
             },
             stage: { _, _ in
-                self.calls.append("stage")
+                self.record("stage")
                 if self.failStage { throw Boom(what: "stage") }
                 return URL(fileURLWithPath: "/staged/Watchtower.app")
             },
             verify: { _, team in
-                self.calls.append("verify")
-                self.verifiedTeamID = team
+                self.record("verify", teamID: team)
                 if self.failVerify { throw Boom(what: "verify") }
             },
             replace: { _, _ in
-                self.calls.append("replace")
+                self.record("replace")
                 if self.failReplace { throw Boom(what: "replace") }
             },
-            discard: { _ in self.calls.append("discard") }
+            discard: { _ in self.record("discard") }
         )
     }
 }
@@ -314,14 +324,14 @@ struct UpdateServiceInstallTests {
     private let newApp = URL(fileURLWithPath: "/downloads/Watchtower.app")
     private let currentApp = URL(fileURLWithPath: "/Applications/Watchtower.app")
 
-    private func run(_ rec: InstallRecorder, teamID: String? = "ABCDE12345") async -> UpdateService.InstallOutcome {
-        await UpdateService.performInstall(newApp: newApp, currentApp: currentApp, teamID: teamID, steps: rec.steps)
+    private func run(_ rec: InstallRecorder, teamID: String? = "ABCDE12345") -> UpdateService.InstallOutcome {
+        UpdateService.performInstall(newApp: newApp, currentApp: currentApp, teamID: teamID, steps: rec.steps)
     }
 
     @Test("happy path: writability, stage, verify against our Team ID, then swap with nothing in between")
     func happyPathOrder() async {
         let rec = InstallRecorder()
-        #expect(await run(rec) == .installed)
+        #expect(run(rec) == .installed)
         // verify -> replace back to back: no step (and no daemon stop) may sit
         // between the check and the use of the staged bundle.
         #expect(rec.calls == ["canWrite", "stage", "verify", "replace", "discard"])
@@ -331,7 +341,7 @@ struct UpdateServiceInstallTests {
     @Test("no Team ID for the running app refuses before touching anything")
     func noTeamIDFailsClosed() async {
         let rec = InstallRecorder()
-        let outcome = await run(rec, teamID: nil)
+        let outcome = run(rec, teamID: nil)
         guard case .failed(let message) = outcome else { Issue.record("expected failure"); return }
         #expect(message.contains("Team ID"))
         #expect(rec.calls.isEmpty)
@@ -340,7 +350,7 @@ struct UpdateServiceInstallTests {
     @Test("malformed Team ID is treated as no Team ID")
     func malformedTeamIDFailsClosed() async {
         let rec = InstallRecorder()
-        #expect(await run(rec, teamID: "not set") != .installed)
+        #expect(run(rec, teamID: "not set") != .installed)
         #expect(rec.calls.isEmpty)
     }
 
@@ -348,7 +358,7 @@ struct UpdateServiceInstallTests {
     func unwritableFolder() async {
         let rec = InstallRecorder()
         rec.writable = false
-        let outcome = await run(rec)
+        let outcome = run(rec)
         guard case .failed(let message) = outcome else { Issue.record("expected failure"); return }
         #expect(message.contains("/Applications"))
         #expect(message.contains("DMG"))
@@ -359,7 +369,7 @@ struct UpdateServiceInstallTests {
     func stageFailure() async {
         let rec = InstallRecorder()
         rec.failStage = true
-        let outcome = await run(rec)
+        let outcome = run(rec)
         guard case .failed(let message) = outcome else { Issue.record("expected failure"); return }
         #expect(message.contains("stage boom"))
         #expect(rec.calls == ["canWrite", "stage"])
@@ -369,7 +379,7 @@ struct UpdateServiceInstallTests {
     func verifyFailure() async {
         let rec = InstallRecorder()
         rec.failVerify = true
-        let outcome = await run(rec)
+        let outcome = run(rec)
         guard case .failed(let message) = outcome else { Issue.record("expected failure"); return }
         #expect(message.contains("verify boom"))
         #expect(rec.calls == ["canWrite", "stage", "verify", "discard"])
@@ -379,7 +389,7 @@ struct UpdateServiceInstallTests {
     func replaceFailure() async {
         let rec = InstallRecorder()
         rec.failReplace = true
-        let outcome = await run(rec)
+        let outcome = run(rec)
         guard case .failed(let message) = outcome else { Issue.record("expected failure"); return }
         #expect(message.contains("replace boom"))
         #expect(rec.calls == ["canWrite", "stage", "verify", "replace", "discard"])
