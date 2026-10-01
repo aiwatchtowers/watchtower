@@ -7,7 +7,7 @@ import WatchtowerCore
 /// title names the session in the panel; it never reaches the command line.
 struct WorkOnTargetButton: View {
     let target: Target
-    /// Icon only (a board card) or a labelled button (the detail pane).
+    /// Icon only (a board card) or a labelled prominent button (the detail card).
     let compact: Bool
     /// A card shows it on hover and when selected; hidden it takes no clicks.
     let isVisible: Bool
@@ -18,7 +18,7 @@ struct WorkOnTargetButton: View {
         let existing = hasSession(vm)
         let title = existing ? "Open Its Session" : "Work on It"
         let icon = existing ? "arrow.right.circle" : "play.circle"
-        Button {
+        let button = Button {
             Task { await vm?.workOn(targetID: Int64(target.id), targetText: target.text, projectID: target.projectID) }
         } label: {
             if compact {
@@ -27,7 +27,14 @@ struct WorkOnTargetButton: View {
                 Label(title, systemImage: icon)
             }
         }
-        .buttonStyle(.borderless)
+        // The detail card's primary action; a card's icon stays borderless.
+        Group {
+            if compact {
+                button.buttonStyle(.borderless)
+            } else {
+                button.buttonStyle(.borderedProminent)
+            }
+        }
         .help(existing ? "Open the Claude Code session for this target" : "Start a Claude Code session for this target")
         .accessibilityLabel(title)
         .opacity(isVisible ? 1 : 0)

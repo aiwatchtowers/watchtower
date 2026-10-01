@@ -188,6 +188,34 @@ final class ProjectBoardViewModelTests: XCTestCase {
         XCTAssertTrue(vm.threads.isEmpty)
     }
 
+    /// Closing the detail card keeps an error raised from it: the board's
+    /// banner shows it once the card is gone.
+    func testCloseDetailKeepsTheCardsError() throws {
+        let (pid, tid) = try dbManager.dbPool.write { db -> (Int64, Int64) in
+            let pid = try Self.insertProject(db)
+            let tid = try Self.insertTarget(db, project: pid, text: "Task")
+            _ = try Self.insertComment(db, project: pid, target: tid, author: "agent", body: "Question")
+            try db.execute(sql: """
+                CREATE TRIGGER fail_comment_insert BEFORE INSERT ON project_comments
+                BEGIN SELECT RAISE(ABORT, 'disk full'); END
+                """)
+            return (pid, tid)
+        }
+        let vm = makeVM(project: pid)
+        vm.load()
+        vm.select(Int(tid))
+        XCTAssertFalse(vm.addComment("Reply"))
+        let error = try XCTUnwrap(vm.errorMessage)
+
+        vm.closeDetail()
+
+        XCTAssertNil(vm.selectedTargetID)
+        XCTAssertNil(vm.selectedNode)
+        XCTAssertTrue(vm.threads.isEmpty)
+        XCTAssertEqual(vm.selectedImages, [])
+        XCTAssertEqual(vm.errorMessage, error, "closing the card must not swallow its error")
+    }
+
     func testReplyAndResolveAThread() throws {
         let (pid, tid, root) = try dbManager.dbPool.write { db -> (Int64, Int64, Int64) in
             let pid = try Self.insertProject(db)
