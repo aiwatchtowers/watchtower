@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/db"
+	"watchtower/internal/projectcheck"
 )
 
 func briefNode(id int, status, title string, children ...db.BoardNode) db.BoardNode {
@@ -58,7 +59,7 @@ func TestRenderProjectBrief_LargeBoardStaysWithinBudget(t *testing.T) {
 	p.Name = strings.Repeat("very long name ", 500)
 	p.FolderPath = "/tmp/" + strings.Repeat("deep/", 500)
 
-	out := renderProjectBrief(board, p, comments, docs, time.Now())
+	out := renderProjectBrief(board, p, comments, docs, nil, time.Now())
 
 	assert.LessOrEqual(t, utf8.RuneCountInString(out), briefMaxChars)
 	assert.True(t, utf8.ValidString(out))
@@ -76,7 +77,7 @@ func TestRenderProjectBrief_InReviewShowsTimeInStatus(t *testing.T) {
 	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
 	review := briefNode(8, "in_review", "reviewed task")
 	review.StatusSince = "2026-09-30T09:00:00Z"
-	out := renderProjectBrief([]db.BoardNode{review}, briefProject(), nil, nil, now)
+	out := renderProjectBrief([]db.BoardNode{review}, briefProject(), nil, nil, nil, now)
 
 	assert.Contains(t, out, "Targets: 0 in progress, 1 in review, 0 blocked, 0 todo, 0 done.")
 	assert.Contains(t, out, "- #8 [in_review 3h, medium, 0%] reviewed task")
@@ -103,7 +104,7 @@ func TestRenderProjectBrief_OpenTreeInProgressFirstDoneOmitted(t *testing.T) {
 		briefNode(1, "todo", "later feature"),
 		briefNode(2, "done", "shipped feature", briefNode(5, "todo", "leftover task")),
 	}
-	out := renderProjectBrief(board, briefProject(), nil, nil, time.Now())
+	out := renderProjectBrief(board, briefProject(), nil, nil, nil, time.Now())
 
 	assert.Contains(t, out, "Targets: 1 in progress, 0 in review, 0 blocked, 3 todo, 1 done.")
 	active := strings.Index(out, "#3 [in_progress")
@@ -128,7 +129,7 @@ func TestRenderProjectBrief_ActiveWorkFirstWhateverItsPriority(t *testing.T) {
 	}
 	// Board order (priority, then status): #4, #1, #2, #3.
 	board := []db.BoardNode{node(4, "in_progress", "high"), node(1, "todo", "high"), node(2, "in_progress", "medium"), node(3, "blocked", "low")}
-	out := renderProjectBrief(board, briefProject(), nil, nil, time.Now())
+	out := renderProjectBrief(board, briefProject(), nil, nil, nil, time.Now())
 	var order []int
 	for _, id := range []int{4, 2, 3, 1} {
 		i := strings.Index(out, fmt.Sprintf("#%d [", id))
@@ -144,7 +145,7 @@ func TestRenderProjectBrief_ActiveWorkFirstWhateverItsPriority(t *testing.T) {
 		node(2, "todo", "low", node(3, "in_progress", "medium")),
 		node(4, "done", "low", node(5, "in_progress", "low")),
 	}
-	out = renderProjectBrief(board, briefProject(), nil, nil, time.Now())
+	out = renderProjectBrief(board, briefProject(), nil, nil, nil, time.Now())
 	order = nil
 	for _, id := range []int{2, 3, 5, 1} {
 		i := strings.Index(out, fmt.Sprintf("#%d [", id))
@@ -160,7 +161,7 @@ func TestRenderProjectBrief_ActiveWorkFirstWhateverItsPriority(t *testing.T) {
 		big[len(big)-1].Target.Text = long
 	}
 	big = append(big, node(99, "in_progress", "low"))
-	out = renderProjectBrief(big, briefProject(), nil, nil, time.Now())
+	out = renderProjectBrief(big, briefProject(), nil, nil, nil, time.Now())
 	assert.Contains(t, out, "more targets (project_board)", "the board is cut")
 	assert.Contains(t, out, "#99 [in_progress, low", "the active low-priority task survives the cut")
 }
@@ -173,7 +174,7 @@ func TestRenderProjectBrief_CommentsTargetsFirstThenDocumentsWithHeadingAndQuote
 			AnchorHeading: "Task 3", AnchorQuote: "one big step"},
 		{ID: 22, TargetID: sql.NullInt64{Int64: 3, Valid: true}, Author: "owner", Body: "Use the new API"},
 	}
-	out := renderProjectBrief(board, briefProject(), comments, docs, time.Now())
+	out := renderProjectBrief(board, briefProject(), comments, docs, nil, time.Now())
 
 	onTarget := strings.Index(out, `comment #22 on target #3 "active feature": Use the new API`)
 	onDoc := strings.Index(out, `comment #21 on document #9 docs/plan.md § Task 3 on "one big step": Split task 3`)
@@ -185,7 +186,7 @@ func TestRenderProjectBrief_CommentsTargetsFirstThenDocumentsWithHeadingAndQuote
 func TestRenderProjectBrief_EmptyProjectAsksForSetup(t *testing.T) {
 	p := briefProject()
 	p.Description = ""
-	out := renderProjectBrief(nil, p, nil, nil, time.Now())
+	out := renderProjectBrief(nil, p, nil, nil, nil, time.Now())
 	assert.Contains(t, out, "Setup pending")
 	assert.Contains(t, out, "Open targets: none.")
 	assert.Contains(t, out, "Board language: follow the session language")
@@ -194,7 +195,7 @@ func TestRenderProjectBrief_EmptyProjectAsksForSetup(t *testing.T) {
 func TestRenderProjectBrief_NamesTheBoardLanguageOverride(t *testing.T) {
 	p := briefProject()
 	p.BoardLanguage = "Russian"
-	out := renderProjectBrief(nil, p, nil, nil, time.Now())
+	out := renderProjectBrief(nil, p, nil, nil, nil, time.Now())
 	assert.Contains(t, out, "Board language: Russian")
 	assert.NotContains(t, out, "follow the session language")
 }
@@ -271,4 +272,19 @@ func TestProjectBrief_RendersBoardFromDB(t *testing.T) {
 	assert.Contains(t, out, fmt.Sprintf("#%d [in_progress", tid))
 	assert.Contains(t, out, fmt.Sprintf("comment #%d on target #%d", cid, tid))
 	assert.Contains(t, out, "Setup pending", "no description yet")
+}
+
+// Many drift findings never crowd the brief past its cap or push out the
+// open tree (PROJ-07).
+func TestRenderProjectBrief_ManyDriftFindingsStayWithinBudget(t *testing.T) {
+	board := []db.BoardNode{{Target: db.Target{ID: 1, Text: "Active work", Status: "in_progress", Priority: "high"}}}
+	var drift []projectcheck.Finding
+	for i := 0; i < 60; i++ {
+		drift = append(drift, projectcheck.Finding{TargetID: 100 + i, Title: strings.Repeat("long title ", 10), Status: "in_progress",
+			Kind: projectcheck.KindMergedOpen, Detail: "branch x is merged into main", Fix: "set it done"})
+	}
+	out := renderProjectBrief(board, briefProject(), nil, nil, drift, time.Now())
+	assert.LessOrEqual(t, utf8.RuneCountInString(out), briefMaxChars)
+	assert.Contains(t, out, "drift findings (watchtower project check)")
+	assert.Contains(t, out, "#1 [in_progress")
 }

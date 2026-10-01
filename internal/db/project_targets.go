@@ -19,6 +19,8 @@ type ProjectTargetInput struct {
 	Priority    string // high | medium | low; "" = medium
 	ParentID    sql.NullInt64
 	BatchParent int
+	Branch      string // the git branch carrying the work (board drift, PROJ-07); "" = none
+	PR          string // the pull request, a number or URL; "" = none
 }
 
 // CreateProjectTargetsTx inserts items, in order, as targets of project
@@ -63,9 +65,10 @@ func insertProjectTarget(tx *sql.Tx, projectID int64, day string, it ProjectTarg
 	}
 	res, err := tx.Exec(`INSERT INTO targets
 		(text, intent, level, custom_label, period_start, period_end, parent_id,
-		 status, priority, ownership, source_type, project_id, status_actor)
-		VALUES (?, ?, 'custom', 'project', ?, ?, ?, 'todo', ?, 'mine', 'chat', ?, 'agent')`,
-		title, strings.TrimSpace(it.Intent), day, day, parent, priority, projectID)
+		 status, priority, ownership, source_type, project_id, status_actor, branch, pr)
+		VALUES (?, ?, 'custom', 'project', ?, ?, ?, 'todo', ?, 'mine', 'chat', ?, 'agent', ?, ?)`,
+		title, strings.TrimSpace(it.Intent), day, day, parent, priority, projectID,
+		strings.TrimSpace(it.Branch), strings.TrimSpace(it.PR))
 	if err != nil {
 		return 0, fmt.Errorf("inserting project target: %w", err)
 	}

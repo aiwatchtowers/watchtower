@@ -440,6 +440,8 @@ type Target struct {
 	NextStepAttempts    int           // attempts made since the last per-target budget reset (see 00068)
 	NextStepAttemptedAt string        // UTC ISO8601 of the most recent attempt (success or failure), "" if never attempted
 	ProjectID           sql.NullInt64 // set = lives only on that project's board (migration 00081, PROJ-01)
+	Branch              string        // project targets: the git branch carrying the work, "" = none (00089)
+	PR                  string        // project targets: the pull request, a number or URL, "" = none (00089)
 }
 
 // TargetNote represents a single note entry in a target's notes JSON array.

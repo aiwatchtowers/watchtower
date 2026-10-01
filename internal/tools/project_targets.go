@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode"
 
 	"watchtower/internal/db"
 	"watchtower/internal/projectfiles"
@@ -22,6 +23,8 @@ type newTargetItem struct {
 	ParentID  int64    `json:"parent_id,omitempty" jsonschema:"an existing target of this project to nest under"`
 	ParentKey string   `json:"parent_key,omitempty" jsonschema:"the key of an EARLIER item in this call to nest under"`
 	Images    []string `json:"images,omitempty" jsonschema:"absolute paths of image files (PNG, JPEG, GIF or WebP, at most 5 MB each) to attach, e.g. a screenshot the owner shared in the message this target comes from; Watchtower keeps its own copy"`
+	Branch    string   `json:"branch,omitempty" jsonschema:"the local git branch the work happens on (e.g. feature/x, no origin/ prefix), if already known"`
+	PR        string   `json:"pr,omitempty" jsonschema:"the pull request (number or URL), if already open"`
 }
 
 type createTargetsArgs struct {
@@ -45,7 +48,8 @@ func NewCreateTargets(store projectfiles.Store) *Tool {
 			"target plus one sub-target per plan task. Nest with parent_id (an existing target of this " +
 			"project) or parent_key (the key of an earlier item in the same call). Optional priority " +
 			"high | medium | low (default medium). Optional images: absolute paths of image files to " +
-			"attach to that target (PNG, JPEG, GIF or WebP, at most 5 MB each). Applied immediately.",
+			"attach to that target (PNG, JPEG, GIF or WebP, at most 5 MB each); the git branch / pull request " +
+			"carrying the work (branch, pr). Applied immediately.",
 		InputSchema: mustSchema[createTargetsArgs]("create_targets"),
 		Access:      AccessWrite,
 		Surfaces:    projectSurfaces,
@@ -112,7 +116,48 @@ func validateTargetItem(i int, it newTargetItem, earlier map[string]bool) error 
 	if err := validateImagePaths(fmt.Sprintf("items[%d].images", i), it.Images); err != nil {
 		return err
 	}
+	if err := validateGitLinks(fmt.Sprintf("items[%d]", i), it.Branch, it.PR); err != nil {
+		return err
+	}
 	return validateEnum(fmt.Sprintf("items[%d].priority", i), it.Priority, db.TargetPriorities...)
+}
+
+// validateGitLinks checks a branch name and a pull request reference: short,
+// one token, never an option-looking "-…" (both reach git/gh argv). A branch
+// is the bare local name — no "origin/" or "refs/" prefix and no revision
+// syntax (`..`, `~`, `^`, `@{`, …), so the drift check (PROJ-07) can only
+// ever resolve it as that branch. prefix names the item in an error
+// ("items[2]"); "" = the bare field name.
+func validateGitLinks(prefix, branch, pr string) error {
+	for _, f := range []struct{ name, v string }{{"branch", branch}, {"pr", pr}} {
+		v, field := strings.TrimSpace(f.v), f.name
+		if prefix != "" {
+			field = prefix + "." + f.name
+		}
+		switch {
+		case v == "":
+		case len(v) > 300:
+			return &ValidationError{Msg: field + " must be at most 300 characters"}
+		case strings.HasPrefix(v, "-") || strings.IndexFunc(v, unicode.IsSpace) >= 0 || strings.IndexFunc(v, unicode.IsControl) >= 0:
+			return &ValidationError{Msg: field + " must be one token (no spaces) and must not start with '-'"}
+		case f.name == "branch" && !validBranchName(v):
+			return &ValidationError{Msg: field + ` must be the plain local branch name (e.g. "feature/x"): no "origin/" or "refs/" prefix, no "..", "~", "^", ":", "?", "*", "[", "\" or "@{"`}
+		}
+	}
+	return nil
+}
+
+func validBranchName(b string) bool {
+	if strings.HasPrefix(b, "origin/") || strings.HasPrefix(b, "refs/") ||
+		strings.HasSuffix(b, "/") || strings.HasSuffix(b, ".lock") || strings.HasPrefix(b, ".") {
+		return false
+	}
+	for _, bad := range []string{"..", "~", "^", ":", "?", "*", "[", "\\", "@{", "//"} {
+		if strings.Contains(b, bad) {
+			return false
+		}
+	}
+	return b != "@"
 }
 
 // scopeTargetItems checks every parent_id belongs to the bound project.
@@ -178,7 +223,8 @@ func targetInputs(items []newTargetItem) []db.ProjectTargetInput {
 	position := map[string]int{} // key -> 1-based batch position
 	inputs := make([]db.ProjectTargetInput, 0, len(items))
 	for i, it := range items {
-		in := db.ProjectTargetInput{Title: strings.TrimSpace(it.Text), Intent: strings.TrimSpace(it.Intent), Priority: it.Priority}
+		in := db.ProjectTargetInput{Title: strings.TrimSpace(it.Text), Intent: strings.TrimSpace(it.Intent), Priority: it.Priority,
+			Branch: it.Branch, PR: it.PR}
 		if it.ParentKey != "" {
 			in.BatchParent = position[it.ParentKey]
 		} else if it.ParentID != 0 {
@@ -203,6 +249,8 @@ type updateTargetArgs struct {
 	Priority string   `json:"priority,omitempty" jsonschema:"high | medium | low"`
 	// AddImages / RemoveImageIDs attach and detach images (board target #117).
 	AddImages      []string `json:"add_images,omitempty" jsonschema:"absolute paths of image files (PNG, JPEG, GIF or WebP, at most 5 MB each) to attach"`
+	Branch         *string  `json:"branch,omitempty" jsonschema:"the local git branch carrying the work (e.g. feature/x, no origin/ prefix); \"\" clears it"`
+	PR             *string  `json:"pr,omitempty" jsonschema:"the pull request (number or URL); \"\" clears it"`
 	RemoveImageIDs []int64  `json:"remove_image_ids,omitempty" jsonschema:"ids of this target's images to detach (from get_target)"`
 	Reason         string   `json:"reason" jsonschema:"one sentence: why, e.g. 'task 3 passed review'"`
 }
@@ -216,7 +264,8 @@ func NewUpdateTarget(store projectfiles.Store) *Tool {
 		Description: "Change a target on this project's board: status (todo, in_progress, in_review, blocked, done, " +
 			"dismissed; in_review while the work is being reviewed), progress (0..1), title, intent or priority (high, medium, low); " +
 			"attach images (add_images: absolute paths of PNG, JPEG, GIF or WebP files, at most 5 MB each) or detach them " +
-			"(remove_image_ids, from get_target). Applied immediately.",
+			"(remove_image_ids, from get_target); set the git branch / pull request carrying the work (branch, pr; " +
+			"\"\" clears one). Applied immediately.",
 		InputSchema: mustSchema[updateTargetArgs]("update_target"),
 		Access:      AccessWrite,
 		Surfaces:    projectSurfaces,
@@ -251,11 +300,13 @@ func NewUpdateTarget(store projectfiles.Store) *Tool {
 }
 
 func validateTargetUpdate(a updateTargetArgs) error {
-	if a.Status == "" && a.Progress == nil && a.Priority == "" && len(a.AddImages) == 0 && len(a.RemoveImageIDs) == 0 &&
-		strings.TrimSpace(a.Text) == "" && strings.TrimSpace(a.Intent) == "" {
-		return &ValidationError{Msg: "give at least one of status, progress, text, intent, priority, add_images, remove_image_ids"}
+	if nothingToUpdate(a) {
+		return &ValidationError{Msg: "give at least one of status, progress, text, intent, priority, add_images, remove_image_ids, branch, pr"}
 	}
 	if err := validateImagePaths("add_images", a.AddImages); err != nil {
+		return err
+	}
+	if err := validateGitLinks("", deref(a.Branch), deref(a.PR)); err != nil {
 		return err
 	}
 	if a.Progress != nil && (*a.Progress < 0 || *a.Progress > 1) {
@@ -268,6 +319,11 @@ func validateTargetUpdate(a updateTargetArgs) error {
 		return err
 	}
 	return validateEnum("status", a.Status, "todo", "in_progress", "in_review", "blocked", "done", "dismissed")
+}
+
+func nothingToUpdate(a updateTargetArgs) bool {
+	return a.Status == "" && a.Progress == nil && a.Priority == "" && len(a.AddImages) == 0 && len(a.RemoveImageIDs) == 0 &&
+		a.Branch == nil && a.PR == nil && strings.TrimSpace(a.Text) == "" && strings.TrimSpace(a.Intent) == ""
 }
 
 // applyTargetUpdate copies add_images in, then writes title/intent and
@@ -317,6 +373,9 @@ func applyTargetFields(d *db.DB, tx *sql.Tx, t *db.Target, a updateTargetArgs) e
 		if err := d.UpdateTargetPriorityTx(tx, t.ID, a.Priority); err != nil {
 			return fmt.Errorf("updating priority: %w", err)
 		}
+	}
+	if err := d.UpdateTargetGitLinksTx(tx, t.ID, trimmed(a.Branch), trimmed(a.PR)); err != nil {
+		return err
 	}
 	if a.Status != "" && a.Status != t.Status {
 		if err := d.UpdateTargetStatusAsTx(tx, t.ID, a.Status, db.ActorAgent); err != nil {
@@ -372,4 +431,19 @@ func applyTargetText(d *db.DB, tx *sql.Tx, t *db.Target, a updateTargetArgs) err
 		return fmt.Errorf("updating target: %w", err)
 	}
 	return nil
+}
+
+func deref(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
+func trimmed(p *string) *string {
+	if p == nil {
+		return nil
+	}
+	v := strings.TrimSpace(*p)
+	return &v
 }

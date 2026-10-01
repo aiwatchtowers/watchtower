@@ -184,6 +184,8 @@ type boardNodeView struct {
 	Priority       string          `json:"priority"`
 	Progress       float64         `json:"progress"`
 	StatusSince    string          `json:"status_since,omitempty"` // when it entered its current status (UTC)
+	Branch         string          `json:"branch,omitempty"`       // the git branch carrying the work (PROJ-07)
+	PR             string          `json:"pr,omitempty"`           // the pull request, a number or URL
 	NewForAgent    int             `json:"comments_new_for_agent,omitempty"`
 	UnreadForOwner int             `json:"comments_unread_for_owner,omitempty"`
 	Documents      []documentView  `json:"documents,omitempty"`
@@ -231,7 +233,7 @@ func boardViews(nodes []db.BoardNode) []boardNodeView {
 		out = append(out, boardNodeView{
 			ID: n.Target.ID, Text: n.Target.Text, Intent: n.Target.Intent,
 			Status: n.Target.Status, Priority: n.Target.Priority, Progress: n.Target.Progress,
-			StatusSince: n.StatusSince, NewForAgent: n.NewForAgent, UnreadForOwner: n.UnreadForOwner,
+			StatusSince: n.StatusSince, Branch: n.Target.Branch, PR: n.Target.PR, NewForAgent: n.NewForAgent, UnreadForOwner: n.UnreadForOwner,
 			Documents: documentViews(n.Documents), Children: boardViews(n.Children),
 		})
 	}
