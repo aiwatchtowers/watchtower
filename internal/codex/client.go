@@ -96,11 +96,13 @@ func promptPositionalOrStdin(userMessage string) (positional, stdin string) {
 // buildArgs constructs the CLI arguments for a codex exec call, plus stdin
 // content when userMessage must travel that way instead of inline (see
 // promptPositionalOrStdin). workDir is an optional working directory to pass
-// via --cd. When c.stdinOnly is set (SetStdinOnly), it instead never emits
-// developer_instructions on argv and never places userMessage positionally —
-// see buildStdinOnlyArgs.
+// via --cd. When c.stdinOnly is set (SetStdinOnly), or the system prompt
+// exceeds digest.StdinThreshold (on argv it would overflow ARG_MAX and sit
+// readable in `ps`; codex has no file form of developer_instructions), it
+// instead never emits developer_instructions on argv and never places
+// userMessage positionally — see buildStdinOnlyArgs.
 func (c *Client) buildArgs(systemPrompt, userMessage, workDir string) ([]string, string) {
-	if c.stdinOnly {
+	if c.stdinOnly || len(systemPrompt) > digest.StdinThreshold {
 		return c.buildStdinOnlyArgs(systemPrompt, userMessage, workDir)
 	}
 	args := execArgs(c.model)

@@ -128,8 +128,14 @@ func execArgs(model string) []string {
 // digest.StdinThreshold (or stdinOnly is set) the final positional arg is "-" (codex reads the
 // prompt from stdin) and the message is returned as stdin content instead,
 // to stay clear of ARG_MAX on very large inputs (e.g. meeting transcripts).
+// A system prompt above the same threshold cannot ride -c
+// developer_instructions (codex has no file form of it), so the whole turn
+// moves to stdin as codexStdinContent — the CHAT-04 stdin-only layout.
 func buildArgs(model, systemPrompt, userMessage string, stdinOnly bool) ([]string, string) {
 	args := execArgs(model)
+	if len(systemPrompt) > digest.StdinThreshold {
+		return append(args, "-"), codexStdinContent(systemPrompt, userMessage)
+	}
 	if systemPrompt != "" {
 		args = append(args, "-c", fmt.Sprintf("developer_instructions=%s", systemPrompt))
 	}

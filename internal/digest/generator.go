@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"watchtower/internal/claude"
+	"watchtower/internal/fsutil"
 )
 
 // limitedWriter wraps a writer and stops writing after limit bytes.
@@ -98,9 +99,10 @@ const StdinThreshold = 32 * 1024
 // generateArgs builds the CLI args for a digest generation request; when
 // userMessage exceeds StdinThreshold (or stdinOnly is set) it is returned as
 // stdin content instead ("-p" with no value makes claude read the prompt from
-// stdin).
+// stdin). A non-empty systemPromptFile replaces the inline --system-prompt
+// (see Generate for when the prompt is written to a file).
 // See validateModelArgs for why --setting-sources project,local is required.
-func generateArgs(model, systemPrompt, userMessage string, stdinOnly bool) ([]string, string) {
+func generateArgs(model, systemPrompt, systemPromptFile, userMessage string, stdinOnly bool) ([]string, string) {
 	stdin := ""
 	args := []string{"-p"}
 	if stdinOnly || len(userMessage) > StdinThreshold {
@@ -115,7 +117,9 @@ func generateArgs(model, systemPrompt, userMessage string, stdinOnly bool) ([]st
 		"--tools", "",
 		"--setting-sources", "project,local",
 	)
-	if systemPrompt != "" {
+	if systemPromptFile != "" {
+		args = append(args, "--system-prompt-file", systemPromptFile)
+	} else if systemPrompt != "" {
 		args = append(args, "--system-prompt", systemPrompt)
 	}
 	return args, stdin
@@ -236,7 +240,19 @@ func parseCLIOutput(output []byte) (*cliResponse, error) {
 func (g *ClaudeGenerator) Generate(ctx context.Context, systemPrompt, userMessage, sessionID string) (string, *Usage, string, error) {
 	model := g.modelForContext(ctx)
 
-	args, stdin := generateArgs(model, systemPrompt, userMessage, g.stdinOnly)
+	// A system prompt above StdinThreshold goes to a 0600 file: pipelines
+	// that carry their whole payload there (briefing, target extract) would
+	// otherwise overflow ARG_MAX and sit readable in `ps` for the run.
+	var systemPromptFile string
+	if len(systemPrompt) > StdinThreshold {
+		path, err := fsutil.WritePrivateTemp("wt-system-prompt-*.txt", systemPrompt)
+		if err != nil {
+			return "", nil, "", fmt.Errorf("writing system prompt file: %w", err)
+		}
+		defer os.Remove(path)
+		systemPromptFile = path
+	}
+	args, stdin := generateArgs(model, systemPrompt, systemPromptFile, userMessage, g.stdinOnly)
 
 	claudeBin := claude.FindBinary(g.claudePath)
 	cmd := exec.CommandContext(ctx, claudeBin, args...)

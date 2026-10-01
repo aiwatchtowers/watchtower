@@ -17,6 +17,7 @@ import (
 
 	"watchtower/internal/claude"
 	"watchtower/internal/digest"
+	"watchtower/internal/fsutil"
 )
 
 // Usage holds token metrics from an AI call.
@@ -136,6 +137,12 @@ type Client struct {
 	// written to this 0600 temp file instead of argv, and the caller (Query/
 	// QuerySync) removes it once the subprocess has been reaped.
 	mcpConfigTempPath string
+	// systemPromptTempPath is set by buildArgs when the system prompt is
+	// larger than digest.StdinThreshold: it then travels as a 0600
+	// --system-prompt-file instead of argv, and Query/QuerySync remove the
+	// file once the subprocess has been reaped (the mcpConfigTempPath
+	// lifecycle).
+	systemPromptTempPath string
 }
 
 // SetMCPArgs appends extra flags to the MCP server command (chat mode).
@@ -185,6 +192,7 @@ func promptFlagAndStdin(userMessage string) (flagArgs []string, stdin string) {
 // of --system-prompt (the system prompt is already baked into the existing
 // session).
 func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID string) ([]string, string) {
+	c.systemPromptTempPath = "" // set again below only if this call writes one
 	promptArgs, stdin := promptFlagAndStdin(userMessage)
 	// slices.Concat always allocates a fresh backing array, so the append
 	// calls below can never alias (and corrupt) promptFlagAndStdin's slice —
@@ -256,9 +264,28 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 	if sessionID != "" {
 		args = append(args, "--resume", sessionID)
 	} else {
-		args = append(args, "--system-prompt", systemPrompt)
+		args = append(args, c.systemPromptArgs(systemPrompt)...)
 	}
 	return args, stdin
+}
+
+// systemPromptArgs passes the system prompt inline when it is small and as a
+// 0600 --system-prompt-file when it exceeds digest.StdinThreshold: pipelines
+// that put their whole data payload in the system prompt (briefing, target
+// extract) would otherwise hit ARG_MAX ("argument list too long") and leave
+// that payload readable in `ps` for the process lifetime. If the file cannot
+// be written the prompt stays inline, so an oversized one surfaces as the
+// exec error rather than a run without its instructions.
+func (c *Client) systemPromptArgs(systemPrompt string) []string {
+	if len(systemPrompt) > digest.StdinThreshold {
+		path, err := fsutil.WritePrivateTemp("wt-system-prompt-*.txt", systemPrompt)
+		if err == nil {
+			c.systemPromptTempPath = path
+			return []string{"--system-prompt-file", path}
+		}
+		log.Printf("warning: failed to write system prompt temp file, passing it inline: %v", err)
+	}
+	return []string{"--system-prompt", systemPrompt}
 }
 
 // hasSecret reports whether any external server carries a non-empty Env or
@@ -276,26 +303,7 @@ func (c *Client) hasSecret() bool {
 // writeMCPConfigTempFile writes the mcp-config JSON to a 0600 temp file and
 // returns its path. Called only when hasSecret() is true.
 func writeMCPConfigTempFile(config string) (string, error) {
-	f, err := os.CreateTemp("", "wt-mcp-*.json")
-	if err != nil {
-		return "", err
-	}
-	path := f.Name()
-	if err := f.Chmod(0o600); err != nil {
-		f.Close()
-		os.Remove(path)
-		return "", err
-	}
-	if _, err := f.WriteString(config); err != nil {
-		f.Close()
-		os.Remove(path)
-		return "", err
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(path)
-		return "", err
-	}
-	return path, nil
+	return fsutil.WritePrivateTemp("wt-mcp-*.json", config)
 }
 
 // DisallowedTools hides every built-in Claude Code tool from the chat model
@@ -431,6 +439,9 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID
 		if c.mcpConfigTempPath != "" {
 			defer os.Remove(c.mcpConfigTempPath)
 		}
+		if c.systemPromptTempPath != "" {
+			defer os.Remove(c.systemPromptTempPath)
+		}
 		cmd := exec.CommandContext(ctx, c.claudeCmd, args...)
 		if promptStdin != "" {
 			cmd.Stdin = strings.NewReader(promptStdin)
@@ -559,6 +570,9 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, sessi
 	// this defer runs the subprocess can no longer be reading the file.
 	if c.mcpConfigTempPath != "" {
 		defer os.Remove(c.mcpConfigTempPath)
+	}
+	if c.systemPromptTempPath != "" {
+		defer os.Remove(c.systemPromptTempPath)
 	}
 	cmd := exec.CommandContext(ctx, c.claudeCmd, args...)
 	if promptStdin != "" {

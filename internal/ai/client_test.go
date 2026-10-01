@@ -941,3 +941,57 @@ func TestSessionDisallowedTools_UnhidesOnlyWebSearch(t *testing.T) {
 	assert.Contains(t, session, "Bash")
 	assert.ElementsMatch(t, append(session, WebSearchTool), oneShot)
 }
+
+// TestBuildArgs_LargeSystemPromptGoesToFile: a system prompt above
+// digest.StdinThreshold (the briefing / target-extract payloads) travels as a
+// 0600 --system-prompt-file, never on argv (ARG_MAX, `ps`); a small one stays
+// inline.
+func TestBuildArgs_LargeSystemPromptGoesToFile(t *testing.T) {
+	c := NewClient("m", "", "")
+	big := strings.Repeat("s", digest.StdinThreshold+1)
+	args, _ := c.buildArgs(big, "hi", "json", "")
+	t.Cleanup(func() { os.Remove(c.systemPromptTempPath) })
+
+	assert.NotContains(t, args, "--system-prompt")
+	assert.NotContains(t, args, big)
+	assertFlagValue(t, args, "--system-prompt-file", c.systemPromptTempPath)
+	info, err := os.Stat(c.systemPromptTempPath)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	data, err := os.ReadFile(c.systemPromptTempPath)
+	require.NoError(t, err)
+	assert.Equal(t, big, string(data))
+
+	exact := strings.Repeat("s", digest.StdinThreshold)
+	args, _ = c.buildArgs(exact, "hi", "json", "")
+	assertFlagValue(t, args, "--system-prompt", exact)
+	assert.Empty(t, c.systemPromptTempPath, "a small prompt must not leave a stale temp path behind")
+}
+
+// TestQuerySync_LargeSystemPromptReachesCLIAndFileIsRemoved wires the file
+// path end to end: the mock CLI reads the prompt from --system-prompt-file,
+// and the file is gone once QuerySync returns.
+func TestQuerySync_LargeSystemPromptReachesCLIAndFileIsRemoved(t *testing.T) {
+	const marker = "SYSPROMPT-MARKER-ai-03"
+	mockPath := writeMockClaude(t, `file=""
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--system-prompt-file" ]; then file="$2"; fi
+  shift
+done
+if [ -n "$file" ] && grep -q `+marker+` "$file"; then
+  printf '{"type":"result","result":"got:`+marker+`"}'
+else
+  printf '{"type":"result","result":"marker-missing"}'
+fi
+`)
+	c := NewClient("test-model", "", "")
+	c.claudeCmd = mockPath
+
+	sys := strings.Repeat("x", digest.StdinThreshold) + marker
+	result, _, err := c.QuerySync(context.Background(), sys, "hello", "")
+	require.NoError(t, err)
+	assert.Equal(t, "got:"+marker, result)
+	require.NotEmpty(t, c.systemPromptTempPath)
+	_, statErr := os.Stat(c.systemPromptTempPath)
+	assert.True(t, os.IsNotExist(statErr), "system prompt temp file must be removed after the call, stat err = %v", statErr)
+}
