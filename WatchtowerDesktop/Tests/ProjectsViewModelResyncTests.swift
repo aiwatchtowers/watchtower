@@ -62,7 +62,6 @@ final class ProjectsViewModelResyncTests: XCTestCase {
         let runner = FakeCLIRunner(stdout: Data(Self.upToDate.utf8))
         let result = try await ProjectCLI(runner: runner).resync(projectID: 7)
         XCTAssertEqual(runner.invocations, [["project", "resync", "7", "--json"]])
-        XCTAssertFalse(result.failed)
         XCTAssertEqual(result.summaryLines, [line("Everything was already up to date.")])
 
         XCTAssertEqual(try decode(Self.added).summaryLines, [
@@ -76,7 +75,6 @@ final class ProjectsViewModelResyncTests: XCTestCase {
         ])
 
         let failed = try decode(Self.failed)
-        XCTAssertTrue(failed.failed)
         XCTAssertEqual(failed.summaryLines, [
             line("Attaching documents failed: permission denied", problem: true),
             line("Your own copy of the watchtower-project skill was kept, so its update was not applied "

@@ -214,9 +214,6 @@ struct ProjectResynced: Decodable, Equatable {
         suggestionsError = try c.decode(String.self, forKey: .suggestionsError)
     }
 
-    /// Whether a step failed.
-    var failed: Bool { !docsOK || !integrationOK || !suggestionsError.isEmpty }
-
     /// What the project page shows: what was added, what failed, then the
     /// suggestions. Never empty.
     var summaryLines: [Line] {
