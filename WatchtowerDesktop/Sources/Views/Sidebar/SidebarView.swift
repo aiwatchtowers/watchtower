@@ -100,33 +100,7 @@ struct SidebarView: View {
 
             // Next calendar event
             if let calVM = appState.calendarViewModel, let nextEvt = calVM.nextEvent {
-                HStack(spacing: 4) {
-                    Image(systemName: "calendar")
-                        .foregroundStyle(.secondary)
-                        .frame(width: 16)
-                    VStack(alignment: .leading, spacing: 1) {
-                        // Two lines and the full title on hover: a narrow
-                        // sidebar cut a one-line title down to "SYNC | C…".
-                        Text(nextEvt.title)
-                            .font(.caption)
-                            .lineLimit(2)
-                            .truncationMode(.tail)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .help(nextEvt.title)
-                        TimelineView(.periodic(from: .now, by: 1)) { context in
-                            Text(MeetingCountdown.text(start: nextEvt.startDate, now: context.date))
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
-                    }
-                    if nextEvt.conferenceLink != nil {
-                        Spacer(minLength: 4)
-                        JoinButton(event: nextEvt, center: appState.meetingRecorderCenter)
-                    }
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 4)
+                SidebarNextMeetingCard(event: nextEvt, center: appState.meetingRecorderCenter)
             }
 
             // Jira connection indicator
