@@ -81,10 +81,17 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
 
     private var acme: String { folder.appendingPathComponent("acme").path }
 
-    private func insertSession(_ new: TerminalSessionQueries.NewSession, closed: Bool = false) async throws -> TerminalSession {
+    /// `legacyClosed` sets `closed_at` the way the removed Close action did:
+    /// such a row must behave as an ordinary session that is not running.
+    private func insertSession(
+        _ new: TerminalSessionQueries.NewSession, legacyClosed: Bool = false
+    ) async throws -> TerminalSession {
         try await pool.write { db in
             let row = try TerminalSessionQueries.create(db, new)
-            if closed { try TerminalSessionQueries.close(db, id: row.id) }
+            if legacyClosed {
+                try db.execute(sql: "UPDATE terminal_sessions SET closed_at = '2026-09-30T12:00:00Z' WHERE id = ?",
+                               arguments: [row.id])
+            }
             return row
         }
     }
@@ -144,20 +151,19 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         XCTAssertEqual(vm.layout(projectID: p).primary, .session(row.id))
     }
 
-    func testWorkOnATargetWithOnlyAClosedSessionReopensAndResumesIt() async throws {
+    func testWorkOnATargetWithALegacyClosedSessionResumesIt() async throws {
         let p = try await projectWithFolder()
         let target = try await pool.write { try TestDatabase.insertProjectTarget($0, projectID: p) }
         let closed = try await insertSession(.init(
             projectID: p, kind: .claude, title: "Feature", targetID: target,
             folderPath: acme, claudeSessionID: UUID().uuidString.lowercased()
-        ), closed: true)
+        ), legacyClosed: true)
         let vm = makeVM()
 
         await vm.workOn(targetID: target, targetText: "Feature")
 
         let after = try await rows(p)
         XCTAssertEqual(after.map(\.id), [closed.id], "no new row")
-        XCTAssertFalse(after[0].isClosed)
         let uuid = try XCTUnwrap(closed.claudeSessionID)
         XCTAssertEqual(launches.map(\.args.last), ["exec claude --resume \(uuid)"])
     }
@@ -194,7 +200,7 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         let existing = try await insertSession(.init(
             projectID: p, kind: .claude, title: "Feature", targetID: target,
             folderPath: acme, claudeSessionID: UUID().uuidString.lowercased()
-        ), closed: true)
+        ))
         let vm = makeVM()
         await vm.reload()
         vm.drill(into: p)
@@ -230,7 +236,7 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         XCTAssertNil(vm.sessionErrors[b])
     }
 
-    // MARK: - Open / close / delete / rename
+    // MARK: - Open / delete / rename
 
     func testOpenMarksTheSessionMostRecentlyActive() async throws {
         let p = try await projectWithFolder()
@@ -277,20 +283,26 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         XCTAssertTrue(stored.isEmpty)
     }
 
-    func testCloseStopsTheProcessKeepsTheRowAndTriesATitle() async throws {
+    /// "Open terminal" picks a row closed by an older build like any other:
+    /// the most recent session resumes, no new one is started.
+    func testOpenMostRecentResumesALegacyClosedSession() async throws {
         let p = try await projectWithFolder()
+        let closed = try await insertSession(.init(
+            projectID: p, kind: .claude, title: "Feature",
+            folderPath: acme, claudeSessionID: UUID().uuidString.lowercased()
+        ), legacyClosed: true)
+        let fetched = try await pool.read { try ProjectQueries.fetch($0, id: p) }
+        let project = try XCTUnwrap(fetched)
         let vm = makeVM()
         await vm.reload()
-        vm.selectedProjectID = p
-        await vm.newSession(projectID: p)
-        let row = try XCTUnwrap(vm.sessions.first)
+        vm.drill(into: p)
 
-        await vm.close(row)
+        await vm.openMostRecentSession(project: project)
 
-        XCTAssertNil(center.states[row.id])
-        XCTAssertEqual(vm.sessions.map(\.id), [row.id])
-        XCTAssertTrue(vm.sessions[0].isClosed)
-        XCTAssertEqual(titleCalls, [row.id])
+        let after = try await rows(p)
+        XCTAssertEqual(after.map(\.id), [closed.id], "no new row")
+        XCTAssertEqual(launches.map(\.args.last), ["exec claude --resume \(try XCTUnwrap(closed.claudeSessionID))"])
+        XCTAssertEqual(vm.layout.primary, .session(closed.id))
     }
 
     func testRenameToEmptyLeavesTheTitle() async throws {
@@ -607,14 +619,16 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         XCTAssertNil(vm.panelSelection, "the panel lists sessions only")
     }
 
-    func testPanelSessionClickShowsItAndCloseKeepsTheRowAndMovesToTheOtherLiveSession() async throws {
+    /// A panel click shows a session and starts it if not running — a row
+    /// closed by an older build included — keeping the other one running.
+    func testPanelSessionClickShowsAndStartsItAndKeepsTheOtherRunning() async throws {
         let p = try await projectWithFolder()
         let first = try await insertSession(.init(
             projectID: p, kind: .claude, title: "first", folderPath: acme, claudeSessionID: UUID().uuidString.lowercased()
         ))
         let second = try await insertSession(.init(
             projectID: p, kind: .claude, title: "second", folderPath: acme, claudeSessionID: UUID().uuidString.lowercased()
-        ))
+        ), legacyClosed: true)
         let vm = makeVM()
         await vm.reload()
         vm.drill(into: p)
@@ -622,21 +636,11 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
 
         await vm.showFromPanel(sessionID: first.id)
         await vm.showFromPanel(sessionID: second.id)
+
+        XCTAssertNotNil(vm.drilledSessions.first { $0.id == second.id }, "a legacy closed session is listed")
         XCTAssertEqual(vm.panelSelection, .session(second.id))
         XCTAssertEqual(center.liveIDs, [first.id, second.id], "switching keeps the other process running")
-
-        await vm.close(second)
-
-        let closed = try XCTUnwrap(vm.drilledSessions.first { $0.id == second.id }, "a closed session stays listed")
-        XCTAssertTrue(closed.isClosed)
-        XCTAssertFalse(vm.isLive(closed))
-        XCTAssertEqual(vm.panelSelection, .session(first.id), "the pane falls back to the other live session")
-
-        await vm.showFromPanel(sessionID: second.id)
-        let reopened = try XCTUnwrap(vm.drilledSessions.first { $0.id == second.id })
-        XCTAssertFalse(reopened.isClosed, "clicking a closed session reopens it")
-        XCTAssertTrue(vm.isLive(reopened))
-        XCTAssertEqual(vm.panelSelection, .session(second.id))
+        XCTAssertEqual(launches.last?.args.last, "exec claude --resume \(try XCTUnwrap(second.claudeSessionID))")
     }
 
     func testNewPanelSessionStartsOneInTheDrilledProjectAndShowsTheTerminal() async throws {
@@ -668,12 +672,10 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         vm.drill(into: p)
         XCTAssertNil(vm.selectedStandalone)
 
-        await vm.close(shell)
         await vm.selectStandalone(shell)
         XCTAssertNil(vm.selectedProjectID)
         XCTAssertNil(vm.drilledProjectID)
         XCTAssertEqual(vm.selectedStandalone?.id, shell.id)
-        XCTAssertEqual(vm.selectedStandalone?.isClosed, false, "selecting a closed terminal reopens it")
         XCTAssertTrue(vm.isLive(shell))
 
         await vm.delete(shell)
@@ -833,7 +835,7 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         let p = try await projectWithFolder()
         let closed = try await insertSession(.init(
             projectID: p, kind: .claude, title: "old", folderPath: acme, claudeSessionID: UUID().uuidString.lowercased()
-        ), closed: true)
+        ), legacyClosed: true)
         let vm = makeVM()
         await vm.reload()
         vm.drill(into: p)
@@ -841,7 +843,8 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
 
         await vm.showInPane(.board, item: .session(closed.id), projectID: p)
         XCTAssertEqual(vm.layout.visiblePanes, [.session(closed.id), .documents], "the picked pane, not the secondary")
-        XCTAssertTrue(vm.isLive(try XCTUnwrap(vm.sessions.first { $0.id == closed.id })), "a closed session reopens")
+        XCTAssertTrue(vm.isLive(try XCTUnwrap(vm.sessions.first { $0.id == closed.id })),
+                      "a session closed by an older build resumes like any not running one")
         XCTAssertTrue(launches.last?.args.last?.contains("--resume") == true)
 
         await vm.showInPane(.documents, item: .board, projectID: p)
@@ -855,7 +858,7 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
 
     /// The page header's buttons: Board / Documents swap the pane beside the
     /// terminal; Terminal brings back a session already in a slot, or resumes
-    /// the most recent open one next to the view on screen.
+    /// the most recent one next to the view on screen.
     func testHeaderViewButtonsKeepTheTerminalAndPickASession() async throws {
         let p = try await projectWithFolder()
         let fetched = try await pool.read { try ProjectQueries.fetch($0, id: p) }
@@ -921,22 +924,6 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         let row = try XCTUnwrap(vm.sessions.first)
         XCTAssertEqual(vm.layout.visiblePanes, [.board, .session(row.id)], "it keeps the first view, replaces the second")
         XCTAssertEqual(launches.count, 1)
-    }
-
-    func testClosingASplitSessionLeavesTheOtherPane() async throws {
-        let p = try await projectWithFolder()
-        let row = try await liveSession(p, "one")
-        let vm = makeVM()
-        await vm.reload()
-        vm.drill(into: p)
-        await vm.showFromPanel(sessionID: row.id)
-        vm.layout.split(with: .board)
-        vm.toggleExpand(.session(row.id), projectID: p)
-
-        await vm.close(row)
-
-        XCTAssertEqual(vm.layout.visiblePanes, [.board])
-        XCTAssertFalse(vm.layout.isSplit)
     }
 
     func testExpandDividerAndClosePanePersist() async throws {
@@ -1007,10 +994,18 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
     }
 
     /// A terminal deep link to a project not loaded yet, nothing live (an
-    /// app restart): its most recent open session goes on screen, unstarted.
-    func testTerminalDeepLinkShowsTheMostRecentOpenSession() async throws {
+    /// app restart): its most recent session goes on screen, unstarted — a
+    /// row closed by an older build included.
+    func testTerminalDeepLinkShowsTheMostRecentSession() async throws {
         let p = try await projectWithFolder()
-        let row = try await liveSession(p, "one")
+        _ = try await liveSession(p, "older")
+        let row = try await insertSession(.init(
+            projectID: p, kind: .claude, title: "one", folderPath: acme, claudeSessionID: UUID().uuidString.lowercased()
+        ), legacyClosed: true)
+        try await pool.write { db in
+            try db.execute(sql: "UPDATE terminal_sessions SET last_active_at = '2099-01-01T00:00:00Z' WHERE id = ?",
+                           arguments: [row.id])
+        }
         let vm = makeVM()
 
         await vm.revealTerminal(projectID: p)

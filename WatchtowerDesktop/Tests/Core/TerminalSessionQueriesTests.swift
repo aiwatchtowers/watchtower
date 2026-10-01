@@ -22,7 +22,6 @@ final class TerminalSessionQueriesTests: XCTestCase {
             let first = try TerminalSessionQueries.create(db, claude(project, "First"))
             let second = try TerminalSessionQueries.create(db, claude(project, "Second"))
             XCTAssertEqual(first.titleSource, .auto)
-            XCTAssertFalse(first.isClosed)
             try db.execute(sql: "UPDATE terminal_sessions SET last_active_at = '2026-01-01T00:00:00Z' WHERE id = ?",
                            arguments: [first.id])
             try db.execute(sql: "UPDATE terminal_sessions SET last_active_at = '2026-01-02T00:00:00Z' WHERE id = ?",
@@ -54,14 +53,17 @@ final class TerminalSessionQueriesTests: XCTestCase {
         }
     }
 
-    func testCloseThenReopen() throws {
+    /// A row closed by an older build (`closed_at` set) still loads and is
+    /// listed like any other session.
+    func testLegacyClosedRowIsListedLikeAnyOther() throws {
         let queue = try TestDatabase.create()
         try queue.write { db in
-            let row = try TerminalSessionQueries.create(db, claude(nil))
-            try TerminalSessionQueries.close(db, id: row.id)
-            XCTAssertTrue(try XCTUnwrap(TerminalSessionQueries.fetch(db, id: row.id)).isClosed)
-            try TerminalSessionQueries.reopen(db, id: row.id)
-            XCTAssertFalse(try XCTUnwrap(TerminalSessionQueries.fetch(db, id: row.id)).isClosed)
+            let project = try TestDatabase.insertProject(db)
+            let row = try TerminalSessionQueries.create(db, claude(project))
+            try db.execute(sql: "UPDATE terminal_sessions SET closed_at = '2026-09-30T12:00:00Z' WHERE id = ?",
+                           arguments: [row.id])
+            XCTAssertEqual(try TerminalSessionQueries.fetch(db, id: row.id)?.id, row.id)
+            XCTAssertEqual(try TerminalSessionQueries.fetchForProject(db, projectID: project).map(\.id), [row.id])
         }
     }
 

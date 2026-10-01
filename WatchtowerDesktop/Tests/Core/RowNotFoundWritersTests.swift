@@ -222,7 +222,6 @@ final class RowNotFoundWritersTests: XCTestCase {
 
         let writers: [(String, (Database) throws -> Void)] = [
             ("rename", { try TerminalSessionQueries.rename($0, id: id, title: "new") }),
-            ("reopen", { try TerminalSessionQueries.reopen($0, id: id) }),
             ("replaceClaudeSessionID", { try TerminalSessionQueries.replaceClaudeSessionID($0, id: id, uuid: "u2") })
         ]
         for (name, run) in writers {
@@ -230,9 +229,8 @@ final class RowNotFoundWritersTests: XCTestCase {
                 XCTAssertEqual($0 as? TerminalSessionQueryError, .notFound(id), name)
             }
         }
-        // Best-effort by design: a gone session is neither active nor open.
+        // Best-effort by design: a gone session is not active.
         XCTAssertNoThrow(try queue.write { try TerminalSessionQueries.touch($0, id: id) })
-        XCTAssertNoThrow(try queue.write { try TerminalSessionQueries.close($0, id: id) })
     }
 
     func testNotFoundError_NamesTheRow() {

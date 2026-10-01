@@ -94,7 +94,7 @@ struct WorkspacePaneView: View {
             Divider()
             Section("Sessions") {
                 ForEach(vm.orderedSessions(projectID: project.id)) { session in
-                    Button(session.isClosed ? "\(session.title) (closed)" : session.title) {
+                    Button(session.title) {
                         show(.session(session.id))
                     }
                     .disabled(pane == .session(session.id))
