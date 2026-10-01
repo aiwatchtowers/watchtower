@@ -17,7 +17,7 @@ package enum ProjectDocumentGrouping {
             }
         }
 
-        static func of(_ document: ProjectDocument) -> Self {
+        package static func of(_ document: ProjectDocument) -> Self {
             if document.origin == "import" { return .imported }
             switch document.kind {
             case "spec": return .specs
@@ -34,15 +34,19 @@ package enum ProjectDocumentGrouping {
         package var id: Group { group }
     }
 
-    /// Non-empty groups in fixed order. `query` matches the display title or
-    /// the path, ignoring case and diacritics; blank = everything.
-    package static func sections(_ items: [ProjectDocumentListItem], query: String) -> [Section] {
+    /// Whether `query` matches the display title or the path, ignoring case
+    /// and diacritics; a blank query matches everything.
+    package static func matches(_ document: ProjectDocument, query: String) -> Bool {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        let matching = needle.isEmpty ? items : items.filter { item in
-            [item.document.displayTitle, item.document.relPath].contains {
-                $0.range(of: needle, options: [.caseInsensitive, .diacriticInsensitive]) != nil
-            }
+        guard !needle.isEmpty else { return true }
+        return [document.displayTitle, document.relPath].contains {
+            $0.range(of: needle, options: [.caseInsensitive, .diacriticInsensitive]) != nil
         }
+    }
+
+    /// Non-empty groups in fixed order, holding the items `query` matches.
+    package static func sections(_ items: [ProjectDocumentListItem], query: String) -> [Section] {
+        let matching = items.filter { matches($0.document, query: query) }
         let grouped = Dictionary(grouping: matching) { Group.of($0.document) }
         return Group.allCases.compactMap { group in
             grouped[group].map { Section(group: group, items: $0) }

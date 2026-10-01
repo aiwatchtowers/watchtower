@@ -115,6 +115,8 @@ struct DocumentTextView: NSViewRepresentable {
         textView.delegate = context.coordinator
         context.coordinator.apply(text, contentID: contentID, to: textView)
         context.coordinator.observeGeometry(of: scroll)
+        // A rebuilt view must not replay a jump made in its predecessor.
+        context.coordinator.scrolledTargetID = scrollTarget?.id
         return scroll
     }
 
@@ -177,15 +179,15 @@ struct DocumentTextView: NSViewRepresentable {
         // MARK: - Comment affordance
 
         private weak var observedTextView: NSTextView?
-        private var scrolledTargetID: UUID?
+        var scrolledTargetID: UUID?
 
         /// Puts the target's line at the top of the visible area, once.
         func scroll(_ textView: NSTextView, to target: DocumentScrollTarget?) {
-            guard let target, target.id != scrolledTargetID,
+            let length = textView.string.utf16.count
+            guard let target, target.id != scrolledTargetID, length > 0,
                   let layout = textView.layoutManager, let container = textView.textContainer else { return }
             scrolledTargetID = target.id
-            let length = textView.string.utf16.count
-            let char = NSRange(location: min(max(target.offset, 0), max(length - 1, 0)), length: length > 0 ? 1 : 0)
+            let char = NSRange(location: min(max(target.offset, 0), length - 1), length: 1)
             let glyphs = layout.glyphRange(forCharacterRange: char, actualCharacterRange: nil)
             let line = layout.boundingRect(forGlyphRange: glyphs, in: container)
             textView.scroll(NSPoint(x: 0, y: max(line.minY + textView.textContainerOrigin.y - 8, 0)))

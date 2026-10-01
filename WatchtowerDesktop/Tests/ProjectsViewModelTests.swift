@@ -178,8 +178,21 @@ final class ProjectsViewModelTests: XCTestCase {
 
         vm.documentQuery = "auth"
         XCTAssertEqual(vm.documentSections.map(\.group), [.plans])
+
+        // Opening a document the list hides (a deep link, an attach) reveals it.
+        vm.setDocumentGroup(.specs, collapsed: true)
+        let spec = try XCTUnwrap(vm.documents.first { $0.document.kind == "spec" })
+        await vm.openDocument(spec.document)
+        XCTAssertEqual(vm.documentQuery, "", "the search that hid it is cleared")
+        XCTAssertFalse(vm.isDocumentGroupCollapsed(.specs), "its group is unfolded")
+
+        vm.setDocumentGroup(.plans, collapsed: true)
+        vm.documentQuery = "auth"
         vm.selectedProjectID = nil
         XCTAssertEqual(vm.documentQuery, "")
+        XCTAssertFalse(vm.isDocumentGroupCollapsed(.plans), "folding is per project")
+        vm.selectedProjectID = p
+        XCTAssertTrue(vm.isDocumentGroupCollapsed(.plans), "and kept for the session")
     }
 
     func testCreateShowsAFailedDocumentImportWithTheRetryCommand() async throws {

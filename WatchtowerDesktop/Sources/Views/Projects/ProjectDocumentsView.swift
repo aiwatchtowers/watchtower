@@ -61,10 +61,27 @@ struct ProjectDocumentsView: View {
         VStack(spacing: 0) {
             HStack(spacing: 4) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField("Search titles", text: $vm.documentQuery)
+                TextField("Search titles and file names", text: $vm.documentQuery)
                     .textFieldStyle(.plain)
+                if !vm.documentQuery.isEmpty {
+                    Button {
+                        vm.documentQuery = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Clear the search")
+                }
             }
             .padding(8)
+            if !vm.documentQuery.trimmingCharacters(in: .whitespaces).isEmpty {
+                let shown = vm.documentSections.reduce(0) { $0 + $1.items.count }
+                Text("Showing \(shown) of \(vm.documents.count)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding([.horizontal, .bottom], 8)
+            }
             Divider()
             documentList
             Divider()
@@ -99,13 +116,13 @@ struct ProjectDocumentsView: View {
         )) {
             let sections = vm.documentSections
             if sections.isEmpty, !vm.documents.isEmpty {
-                Text("No document title matches.").foregroundStyle(.secondary)
+                Text("No title or file name matches.").foregroundStyle(.secondary)
             }
             ForEach(sections) { section in
                 Section(isExpanded: expandedBinding(section.group)) {
                     ForEach(section.items) { documentRow($0) }
                 } header: {
-                    Text("\(section.group.title) (\(section.items.count))")
+                    sectionHeader(section)
                 }
             }
         }
@@ -114,11 +131,34 @@ struct ProjectDocumentsView: View {
 
     private func expandedBinding(_ group: ProjectDocumentGrouping.Group) -> Binding<Bool> {
         Binding(
-            get: { !vm.collapsedDocumentGroups.contains(group) },
-            set: { expanded in
-                if expanded { vm.collapsedDocumentGroups.remove(group) } else { vm.collapsedDocumentGroups.insert(group) }
-            }
+            get: { !vm.isDocumentGroupCollapsed(group) },
+            set: { vm.setDocumentGroup(group, collapsed: !$0) }
         )
+    }
+
+    /// A button, not the list style's disclosure (a plain list draws none).
+    /// A folded group still shows that it holds a changed document or open
+    /// comments, so the badge always has a visible counterpart.
+    private func sectionHeader(_ section: ProjectDocumentGrouping.Section) -> some View {
+        let collapsed = vm.isDocumentGroupCollapsed(section.group)
+        let comments = section.items.reduce(0) { $0 + $1.openComments }
+        return Button {
+            vm.setDocumentGroup(section.group, collapsed: !collapsed)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: collapsed ? "chevron.right" : "chevron.down").font(.caption2)
+                Text("\(section.group.title) (\(section.items.count))")
+                Spacer()
+                if collapsed, section.items.contains(where: { vm.isRevised($0.document) }) {
+                    Circle().fill(Color.blue).frame(width: 7, height: 7).help("Holds a document changed since you last viewed it")
+                }
+                if collapsed, comments > 0 {
+                    Label("\(comments)", systemImage: "text.bubble").labelStyle(.titleAndIcon).foregroundStyle(.orange)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     private func documentRow(_ item: ProjectDocumentListItem) -> some View {
@@ -148,7 +188,9 @@ struct ProjectDocumentsView: View {
         let top = rendered.headings.map(\.level).min() ?? 1
         return Menu {
             ForEach(Array(rendered.headings.enumerated()), id: \.offset) { _, heading in
-                Button(String(repeating: "    ", count: heading.level - top) + heading.title) {
+                // Em spaces: a menu title keeps them, unlike leading plain spaces.
+                let title = heading.title.isEmpty ? "(untitled heading)" : heading.title
+                Button(String(repeating: "\u{2003}", count: heading.level - top) + title) {
                     scrollTarget = DocumentScrollTarget(offset: heading.offset)
                 }
             }
