@@ -69,14 +69,22 @@ type claudeProc struct {
 	lostMsg   atomic.Value // string: the session_lost error the child reported on stdout
 }
 
+// exitedOutputWait bounds how long rejectedResume waits for an exited
+// child's stdout to be fully read. It runs after sweep, so no grandchild
+// still holds the pipe: the wait ends at EOF, normally at once — the bound
+// is only a backstop. It must be generous: under load the reader can lag the
+// exit by far more than half a second, and judging the exit before the
+// reader saw the rejection respawns the same doomed --resume.
+const exitedOutputWait = 5 * time.Second
+
 // rejectedResume returns the --resume rejection an exited child died of
 // before any turn result, or "" when it died of anything else. Only called
-// once the child has exited.
+// once the child has exited and its group was swept.
 func (p *claudeProc) rejectedResume() string {
 	if !p.resumed {
 		return ""
 	}
-	waitClosed(p.outDone, 500*time.Millisecond)
+	waitClosed(p.outDone, exitedOutputWait)
 	if m, _ := p.lostMsg.Load().(string); m != "" {
 		return m
 	}
@@ -454,11 +462,13 @@ func (b *claudeBackend) read(p *claudeProc, r *os.File) {
 			b.noteSessionID(p, sid)
 		}
 		for _, e := range evs {
-			if isTerminal(e) {
-				p.gotResult.Store(true)
-			}
+			// lostMsg before gotResult: a reader seen half-way must never
+			// show a result without the rejection it carried.
 			if e.Type == EventError && e.Code == CodeSessionLost {
 				p.lostMsg.Store(e.Message)
+			}
+			if isTerminal(e) {
+				p.gotResult.Store(true)
 			}
 			select {
 			case p.events <- e:
@@ -628,6 +638,11 @@ func exitOutcome(p *claudeProc, handle func(Event) (outcome, bool)) outcome {
 	if o, done := drainPending(p.events, handle); done {
 		return o
 	}
+	// A rejection reported on stdout before this turn's message was sent
+	// (its event drained by claimForSend) still means the --resume failed.
+	if m, _ := p.lostMsg.Load().(string); p.resumed && m != "" {
+		return outcome{kind: outcomeLost, msg: m}
+	}
 	waitClosed(p.errDone, 500*time.Millisecond)
 	msg := strings.TrimSpace(p.stderr.String())
 	if msg == "" {
@@ -715,6 +730,12 @@ func (b *claudeBackend) ensureProcLocked() (*claudeProc, error) {
 				return nil, &resumeRejectedError{msg: msg}
 			}
 		default:
+			// Alive but already reported the --resume rejection (it is
+			// about to exit): sending would drain that report away and
+			// end the turn as a plain exit. Go to the fresh retry now.
+			if m, _ := b.proc.lostMsg.Load().(string); b.proc.resumed && m != "" {
+				return nil, &resumeRejectedError{msg: m}
+			}
 			return b.proc, nil
 		}
 	}

@@ -563,6 +563,45 @@ func TestClaudeBackend_SessionLostFromResultErrorsRetriesWithReplay(t *testing.T
 	assert.False(t, contains(runs[len(runs)-1], "--resume"))
 }
 
+// The CI flake behind SessionLostFromResultErrorsRetriesWithReplay, made
+// deterministic: the warm --resume child reports the rejection BEFORE the
+// owner's turn and is still alive when the turn is written. Sending drains
+// the child's buffered events, so the session_lost error is gone by then; the
+// recorded rejection (lostMsg) must still turn the exit into the fresh
+// retry, not an internal error.
+func TestClaudeBackend_ResumeRejectedBeforeTheTurnOnALiveChildRetriesFresh(t *testing.T) {
+	opts, f := fakeClaude(t, "lost_result_linger")
+	opts.ResumeSessionID = "gone"
+	opts.Replay = func(string) (string, error) { return "=== CONVERSATION SO FAR ===\n=== END ===\n\n", nil }
+	be := NewClaudeBackend(opts).(*claudeBackend)
+	h := startSession(t, be, nil)
+	h.next(EventSessionReady)
+	be.mu.Lock()
+	p := be.proc
+	be.mu.Unlock()
+	require.NotNil(t, p)
+	deadline := time.Now().Add(10 * time.Second)
+	for m, _ := p.lostMsg.Load().(string); m == ""; m, _ = p.lostMsg.Load().(string) {
+		require.True(t, time.Now().Before(deadline), "the child reports the rejected --resume")
+		time.Sleep(10 * time.Millisecond)
+	}
+	select {
+	case <-p.exited:
+		t.Skip("the child exited before the turn: the other path, covered elsewhere")
+	default:
+	}
+
+	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "hello"})
+	assert.Equal(t, "turn 1", h.next(EventTextDelta).Text)
+	assert.Equal(t, StatusComplete, h.next(EventTurnDone).Status)
+	require.NoError(t, h.finish())
+	for e := range h.events {
+		assert.NotEqual(t, EventError, e.Type, "session_lost is recovered silently")
+	}
+	runs := argvRuns(t, f.argv)
+	assert.False(t, contains(runs[len(runs)-1], "--resume"))
+}
+
 // ToolSearch never surfaces as a step through the whole backend either, and
 // is not hidden from the model (it must stay usable to load MCP tools).
 func TestClaudeBackend_InternalToolsAreNotSteps(t *testing.T) {
