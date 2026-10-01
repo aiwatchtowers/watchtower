@@ -9,17 +9,11 @@ import (
 	"watchtower/internal/db"
 )
 
-// reconcileSet is one enumeration the daily reconcile compares against: the
-// kind passed to All and the local kinds it covers. All(KindPage) lists
-// pages and blog posts together, mirroring Changed.
-type reconcileSet struct {
-	kind  ItemKind
-	local []ItemKind
-}
-
-var reconcileSets = []reconcileSet{
-	{kind: KindPage, local: []ItemKind{KindPage, KindBlogpost}},
-	{kind: KindAttachment, local: []ItemKind{KindAttachment}},
+// reconcileListing is what the daily reconcile enumerated: every visible
+// ref of the source, by ext id. All(KindPage) lists pages and blog posts
+// together, mirroring Changed.
+type reconcileListing struct {
+	pages, attachments, comments map[string]ItemRef
 }
 
 // reconcileDue reports whether src has not been reconciled on now's UTC
@@ -70,63 +64,70 @@ func (e *Engine) runReconcile(ctx context.Context, p pass) error {
 // reconcile deletes the local documents (and their comments) and the
 // comments the provider no longer enumerates — trashed, moved to another
 // container, or no longer visible to the account, which is the whole
-// permission model — and stamps last_reconcile_at. Every enumeration,
-// comments included, completes before anything is deleted, so a failed
-// listing deletes nothing.
+// permission model — then fetches what it enumerates but the store lacks
+// or holds at another version (see recoverListed), and stamps
+// last_reconcile_at once both are done. Every enumeration, comments
+// included, completes before anything is deleted, so a failed listing
+// deletes nothing. A recovery the budget cuts leaves the reconcile
+// unstamped, so the next cycle resumes it; the version gate makes the refs
+// it already wrote free.
 func (e *Engine) reconcile(ctx context.Context, p pass) error {
-	remote, remoteComments, err := enumerateReconcile(ctx, p)
+	l, err := enumerateReconcile(ctx, p)
 	if err != nil {
 		return err
 	}
 	deleted := 0
 	err = e.withTx(ctx, func(q Queryer) error {
-		n, err := e.reconcileDocs(ctx, q, p.src, remote)
+		n, err := e.reconcileDocs(ctx, q, p.src, l)
 		if err != nil {
 			return err
 		}
 		deleted = n
 		// After the documents: a deleted document's comments are gone
 		// already, so only the surviving parents are stamped and relinked.
-		if err := e.reconcileComments(ctx, q, p.src, remoteComments); err != nil {
-			return err
-		}
-		if _, err := q.ExecContext(ctx, `UPDATE ext_sources SET last_reconcile_at = ? WHERE id = ?`,
-			formatTime(e.opts.Now()), p.src.ID); err != nil {
-			return fmt.Errorf("extsync: stamping reconcile: %w", err)
-		}
-		return nil
+		return e.reconcileComments(ctx, q, p.src, l.comments)
 	})
 	if err != nil {
 		return err
 	}
 	p.st.Deleted += deleted
+	done, err := e.recoverListed(ctx, p, l)
+	if err != nil || !done {
+		return err
+	}
+	if _, err := e.db.ExecContext(ctx, `UPDATE ext_sources SET last_reconcile_at = ? WHERE id = ?`,
+		formatTime(e.opts.Now()), p.src.ID); err != nil {
+		return fmt.Errorf("extsync: stamping reconcile: %w", err)
+	}
 	return nil
 }
 
-// enumerateReconcile drains every reconcile enumeration: one id set per
-// reconcileSets entry, then the comments.
-func enumerateReconcile(ctx context.Context, p pass) ([]map[string]bool, map[string]bool, error) {
-	remote := make([]map[string]bool, len(reconcileSets))
-	for i, rs := range reconcileSets {
-		ids, err := enumerateAll(ctx, p.f, p.c, rs.kind)
+// enumerateReconcile drains every reconcile enumeration: pages and blog
+// posts, attachments, then comments.
+func enumerateReconcile(ctx context.Context, p pass) (reconcileListing, error) {
+	var l reconcileListing
+	for _, step := range []struct {
+		kind ItemKind
+		into *map[string]ItemRef
+	}{{KindPage, &l.pages}, {KindAttachment, &l.attachments}, {KindComment, &l.comments}} {
+		refs, err := enumerateAll(ctx, p.f, p.c, step.kind)
 		if err != nil {
-			return nil, nil, err
+			return reconcileListing{}, err
 		}
-		remote[i] = ids
+		*step.into = refs
 	}
-	comments, err := enumerateAll(ctx, p.f, p.c, KindComment)
-	if err != nil {
-		return nil, nil, err
-	}
-	return remote, comments, nil
+	return l, nil
 }
 
-// reconcileDocs deletes the documents absent from remote (one set per
-// reconcileSets entry) and relinks them, returning how many were deleted.
-func (e *Engine) reconcileDocs(ctx context.Context, q Queryer, src db.ExtSource, remote []map[string]bool) (int, error) {
+// reconcileDocs deletes the documents absent from the listing and relinks
+// them, returning how many were deleted.
+func (e *Engine) reconcileDocs(ctx context.Context, q Queryer, src db.ExtSource, l reconcileListing) (int, error) {
 	deleted := 0
-	for i, rs := range reconcileSets {
-		gone, err := deleteAbsent(ctx, q, src.ID, rs.local, remote[i])
+	for _, set := range []struct {
+		local  []ItemKind
+		remote map[string]ItemRef
+	}{{[]ItemKind{KindPage, KindBlogpost}, l.pages}, {[]ItemKind{KindAttachment}, l.attachments}} {
+		gone, err := deleteAbsent(ctx, q, src.ID, set.local, set.remote)
 		if err != nil {
 			return 0, err
 		}
@@ -143,7 +144,7 @@ func (e *Engine) reconcileDocs(ctx context.Context, q Queryer, src db.ExtSource,
 // stream only lists what changed, so without this a deleted comment would
 // stay searchable forever. Each parent that lost a comment is stamped
 // children_changed_at (the KB re-renders it) and relinked.
-func (e *Engine) reconcileComments(ctx context.Context, q Queryer, src db.ExtSource, remote map[string]bool) error {
+func (e *Engine) reconcileComments(ctx context.Context, q Queryer, src db.ExtSource, remote map[string]ItemRef) error {
 	local, err := localComments(ctx, q, src.ID)
 	if err != nil {
 		return err
@@ -151,7 +152,7 @@ func (e *Engine) reconcileComments(ctx context.Context, q Queryer, src db.ExtSou
 	var parents []string
 	seen := map[string]bool{}
 	for _, c := range local {
-		if remote[c.id] {
+		if _, ok := remote[c.id]; ok {
 			continue
 		}
 		if _, err := q.ExecContext(ctx, `DELETE FROM ext_comments WHERE source_id = ? AND ext_id = ?`,
@@ -172,13 +173,16 @@ func (e *Engine) reconcileComments(ctx context.Context, q Queryer, src db.ExtSou
 	return e.relinkDocs(ctx, q, src.Provider, src.ID, parents)
 }
 
-// storedComment is one ext_comments row's identity.
-type storedComment struct{ id, page string }
+// storedComment is one ext_comments row's identity and version.
+type storedComment struct {
+	id, page string
+	version  int
+}
 
 // localComments lists the stored comments of sourceID, ordered by id. The
 // rows are closed before it returns (see localIDs).
 func localComments(ctx context.Context, q Queryer, sourceID int64) ([]storedComment, error) {
-	rows, err := q.QueryContext(ctx, `SELECT ext_id, page_ext_id FROM ext_comments
+	rows, err := q.QueryContext(ctx, `SELECT ext_id, page_ext_id, version FROM ext_comments
 		WHERE source_id = ? ORDER BY ext_id`, sourceID)
 	if err != nil {
 		return nil, fmt.Errorf("extsync: listing local comments: %w", err)
@@ -187,7 +191,7 @@ func localComments(ctx context.Context, q Queryer, sourceID int64) ([]storedComm
 	var out []storedComment
 	for rows.Next() {
 		var c storedComment
-		if err := rows.Scan(&c.id, &c.page); err != nil {
+		if err := rows.Scan(&c.id, &c.page, &c.version); err != nil {
 			return nil, fmt.Errorf("extsync: scanning local comment: %w", err)
 		}
 		out = append(out, c)
@@ -198,9 +202,9 @@ func localComments(ctx context.Context, q Queryer, sourceID int64) ([]storedComm
 	return out, nil
 }
 
-// enumerateAll drains All(kind) into a set of ext ids.
-func enumerateAll(ctx context.Context, f Fetcher, c Container, kind ItemKind) (map[string]bool, error) {
-	ids := map[string]bool{}
+// enumerateAll drains All(kind) into its refs by ext id.
+func enumerateAll(ctx context.Context, f Fetcher, c Container, kind ItemKind) (map[string]ItemRef, error) {
+	ids := map[string]ItemRef{}
 	page := ""
 	for {
 		refs, next, err := f.All(ctx, c, kind, page)
@@ -208,7 +212,7 @@ func enumerateAll(ctx context.Context, f Fetcher, c Container, kind ItemKind) (m
 			return nil, fmt.Errorf("extsync: enumerating %s: %w", kind, err)
 		}
 		for _, r := range refs {
-			ids[r.ExtID] = true
+			ids[r.ExtID] = r
 		}
 		if next == "" {
 			return ids, nil
@@ -219,14 +223,14 @@ func enumerateAll(ctx context.Context, f Fetcher, c Container, kind ItemKind) (m
 
 // deleteAbsent deletes the local documents of kinds whose ext id is not in
 // remote, returning their ids.
-func deleteAbsent(ctx context.Context, q Queryer, sourceID int64, kinds []ItemKind, remote map[string]bool) ([]string, error) {
+func deleteAbsent(ctx context.Context, q Queryer, sourceID int64, kinds []ItemKind, remote map[string]ItemRef) ([]string, error) {
 	local, err := localIDs(ctx, q, sourceID, kinds)
 	if err != nil {
 		return nil, err
 	}
 	var gone []string
 	for _, id := range local {
-		if remote[id] {
+		if _, ok := remote[id]; ok {
 			continue
 		}
 		if err := deleteDocument(ctx, q, sourceID, id); err != nil {

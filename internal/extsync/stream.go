@@ -230,20 +230,11 @@ func (e *Engine) dropTokenOnFailure(ctx context.Context, p pass, cursor, page st
 	return err
 }
 
-// processBatch applies one batch: the version gate, the fetches (each
-// re-fetched page with its full comment set), then one transaction writing
-// the rows and the stream state. It returns the new cursor.
+// processBatch applies one batch: the version gate, then applyPages over
+// the stale refs with the stream state committed in the same transaction.
+// It returns the new cursor.
 func (e *Engine) processBatch(ctx context.Context, p pass, bt batch) (string, error) {
 	stale, err := staleRefs(ctx, e.db, p.src.ID, bt.refs)
-	if err != nil {
-		return "", err
-	}
-	items, err := fetchAll(ctx, p.f, p.c, stale)
-	if err != nil {
-		return "", err
-	}
-	parents := commentParents(items)
-	sets, err := fetchCommentSets(ctx, p.f, p.c, parents)
 	if err != nil {
 		return "", err
 	}
@@ -251,9 +242,30 @@ func (e *Engine) processBatch(ctx context.Context, p pass, bt batch) (string, er
 	if err != nil {
 		return "", err
 	}
-	st := Stats{Unchanged: len(bt.refs) - len(stale)}
+	if err := e.applyPages(ctx, p, stale, func(q Queryer) error {
+		return saveBatchState(ctx, q, p, bt, cursor)
+	}); err != nil {
+		return "", err
+	}
+	p.st.Unchanged += len(bt.refs) - len(stale)
+	return cursor, nil
+}
+
+// applyPages fetches refs (each re-fetched page with its full comment set),
+// then writes the rows and runs inTx in one transaction.
+func (e *Engine) applyPages(ctx context.Context, p pass, refs []ItemRef, inTx func(q Queryer) error) error {
+	items, err := fetchAll(ctx, p.f, p.c, refs)
+	if err != nil {
+		return err
+	}
+	parents := commentParents(items)
+	sets, err := fetchCommentSets(ctx, p.f, p.c, parents)
+	if err != nil {
+		return err
+	}
+	st := Stats{}
 	err = e.withTx(ctx, func(q Queryer) error {
-		if err := writeItems(ctx, q, p.src.ID, stale, items, e.opts.Now(), &st); err != nil {
+		if err := writeItems(ctx, q, p.src.ID, refs, items, e.opts.Now(), &st); err != nil {
 			return err
 		}
 		for i, parent := range parents {
@@ -262,17 +274,17 @@ func (e *Engine) processBatch(ctx context.Context, p pass, bt batch) (string, er
 			}
 			st.Comments += len(sets[i])
 		}
-		if err := e.relinkDocs(ctx, q, p.src.Provider, p.src.ID, refIDs(stale)); err != nil {
+		if err := e.relinkDocs(ctx, q, p.src.Provider, p.src.ID, refIDs(refs)); err != nil {
 			return err
 		}
-		return saveBatchState(ctx, q, p, bt, cursor)
+		return inTx(q)
 	})
 	if err != nil {
-		return "", err
+		return err
 	}
 	p.st.add(st)
 	collectUsers(p.users, items, sets)
-	return cursor, nil
+	return nil
 }
 
 // staleRefs returns the refs whose version differs from the stored one (or

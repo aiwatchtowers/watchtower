@@ -52,6 +52,7 @@ type fakeFetcher struct {
 	downloadErr  map[string]error    // Download fails with it
 	readErr      map[string]error    // a Read of the body fails with it after the bytes
 	downloads    map[string]int      // Download calls by id
+	onFetch      func()              // called on every Fetch
 }
 
 // hit counts one Fetcher call and returns the injected failure, if any.
@@ -76,6 +77,15 @@ func (f *fakeFetcher) removeFromAll(id string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.hidden[id] = true
+}
+
+// restoreToAll lists id in All again (a restriction lifted, a restore from
+// the trash) without a new version: Changed still does not list it unless
+// its modification time falls inside the pass.
+func (f *fakeFetcher) restoreToAll(id string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.hidden, id)
 }
 
 // addComment adds a footer comment on pageID; Changed(KindComment) lists it
@@ -300,6 +310,9 @@ func (f *fakeFetcher) Fetch(_ context.Context, _ Container, ref ItemRef) (*Item,
 		return nil, err
 	}
 	f.fetches[ref.ExtID]++
+	if f.onFetch != nil {
+		f.onFetch()
+	}
 	d := f.find(ref.ExtID)
 	if d == nil || d.item == nil {
 		return nil, nil
