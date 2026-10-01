@@ -119,7 +119,7 @@ func (h *helperOCR) run(ctx context.Context, path string, pages []int) ([]byte, 
 	stderr := &cappedBuffer{max: maxOCRStderr, truncate: true} // more stderr must not fail a good batch
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 	cmd.WaitDelay = 5 * time.Second
-	err := cmd.Run()
+	err := runHelper(cmd, h.verifier.logf)
 	switch {
 	case ctx.Err() != nil:
 		return nil, ctx.Err()

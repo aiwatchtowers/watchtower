@@ -7,8 +7,6 @@ import (
 	"io"
 	"strings"
 	"time"
-
-	"golang.org/x/sync/errgroup"
 )
 
 // maxDownload caps an attachment download (global constraint, 25 MiB). It
@@ -124,9 +122,9 @@ func cutBatch(bt batch, stale []ItemRef, done int) (string, batch, error) {
 	return cursor, bt, err
 }
 
-// applyAttachments fetches refs, downloads and extracts them (up to
-// fetchConcurrency in flight, no new item launched once the budget is
-// spent), then writes the processed prefix and runs inTx in one
+// applyAttachments fetches refs (up to fetchConcurrency in flight),
+// downloads and extracts them one at a time (no new item started once the
+// budget is spent), then writes the processed prefix and runs inTx in one
 // transaction. It returns how many refs were processed.
 func (e *Engine) applyAttachments(ctx context.Context, p pass, refs []ItemRef, inTx func(q Queryer, done int) error) (int, error) {
 	items, err := fetchAll(ctx, p.f, p.c, refs)
@@ -269,33 +267,29 @@ func writeExtractions(ctx context.Context, q Queryer, p pass, items []*Item, res
 	return nil
 }
 
-// extractAll runs extractOne for the fetched items in order, with up to
-// fetchConcurrency in flight. Once the budget is spent no further item is
-// launched — the first one always is, so a batch always progresses; done
-// is the length of the processed prefix and results are in item order.
+// extractAll runs extractOne for the fetched items one at a time, in
+// order. Extraction may run the PDF and OCR helpers for minutes and the
+// daemon cycle is serial, so items are never extracted concurrently: the
+// cycle overshoots its budget by at most one attachment. Once the budget is
+// spent no further item is started — the first one always is, so a batch
+// always progresses; done is the length of the processed prefix and
+// results are in item order.
 func (e *Engine) extractAll(ctx context.Context, p pass, items []*Item) ([]extraction, int, error) {
 	out := make([]extraction, len(items))
-	g, gctx := errgroup.WithContext(ctx)
-	g.SetLimit(fetchConcurrency)
-	done := len(items)
 	for i, it := range items {
 		if i > 0 && p.budget != nil && p.budget.over() {
-			done = i
-			break
+			return out, i, nil
 		}
 		if it == nil {
 			continue
 		}
-		g.Go(func() error {
-			r, err := e.extractOne(gctx, p.f, it)
-			out[i] = r
-			return err
-		})
+		r, err := e.extractOne(ctx, p.f, it)
+		if err != nil {
+			return nil, 0, err
+		}
+		out[i] = r
 	}
-	if err := g.Wait(); err != nil {
-		return nil, 0, err
-	}
-	return out, done, nil
+	return out, len(items), nil
 }
 
 // extractOne downloads one attachment and extracts its text. No extractor,
