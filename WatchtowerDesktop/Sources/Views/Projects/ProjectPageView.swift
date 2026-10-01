@@ -2,8 +2,8 @@ import AppKit
 import SwiftUI
 import WatchtowerCore
 
-/// One project: header (folder, install status, Repair, Split) over its
-/// workspace — one pane or a split (spec 2026-09-30-project-workspace-sessions §3).
+/// One project: a one-row header (folder, install status, view controls,
+/// the "…" menu with Repair / Re-run Setup / Delete) over its workspace — one pane or a split (spec 2026-09-30-project-workspace-sessions §3).
 struct ProjectPageView: View {
     @Bindable var vm: ProjectsViewModel
     let project: Project
@@ -67,9 +67,12 @@ struct ProjectPageView: View {
         }
     }
 
+    /// One compact row (folder, install status, view controls, the "…"
+    /// menu) so the workspace below keeps nearly all the height; an install
+    /// error or import note adds a caption line only when there is one.
     private var header: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 8) {
                 Button {
                     NSWorkspace.shared.activateFileViewerSelecting([project.folderURL])
                 } label: {
@@ -77,39 +80,79 @@ struct ProjectPageView: View {
                 }
                 .buttonStyle(.link)
                 .help("Reveal in Finder")
-                if let installError = vm.installErrors[project.id] {
-                    Text(installError).font(.caption).foregroundStyle(.red).lineLimit(2)
-                }
-                if let importNote = vm.importNotes[project.id] {
-                    // Selectable: it ends with the command that retries.
-                    Text(importNote).font(.caption).foregroundStyle(.orange).lineLimit(3).textSelection(.enabled)
-                }
+                .layoutPriority(-1)
+                installStatusIcons
+                if vm.isInstalling(projectID: project.id) { ProgressView().controlSize(.mini) }
+                Spacer(minLength: 8)
+                splitToggle
+                moreMenu
             }
-            Spacer()
-            installBadge
-            if vm.resyncing.contains(project.id) { ProgressView().controlSize(.small) }
+            if let installError = vm.installErrors[project.id] {
+                Text(installError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .lineLimit(1)
+                    .help(installError)
+            }
+            if let importNote = vm.importNotes[project.id] {
+                // Selectable: it ends with the command that retries.
+                Text(importNote)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+                    .help(importNote)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+    }
+
+    /// Repair install, Re-run Setup and Delete…, out of the header row.
+    private var moreMenu: some View {
+        let status = vm.installStatus[project.id]
+        let installing = vm.isInstalling(projectID: project.id)
+        return Menu {
+            Button {
+                Task { await vm.repairInstall(projectID: project.id) }
+            } label: {
+                Label("Repair install", systemImage: "wrench.and.screwdriver")
+            }
+            .disabled(installing || status?.needsRepair != true)
+            .help(status.map(repairHelp) ?? "Re-install what is missing in the folder")
             Button {
                 Task { await vm.resync(projectID: project.id) }
             } label: {
                 Label("Re-run Setup", systemImage: "arrow.triangle.2.circlepath")
             }
-            .disabled(vm.isInstalling(projectID: project.id))
+            .disabled(installing)
             .help("Attach new documents and re-install what is missing. Never changes the board, comments or sources.")
+            Divider()
             Button(role: .destructive) {
-                guard let pool = appState.databaseManager?.dbPool else { return }
-                do {
-                    deleteSummary = try pool.read { try ProjectDeleteSummary.fetch($0, project: project) }
-                } catch {
-                    // Never confirm a delete against unknown counts.
-                    deleteSummaryError = error.localizedDescription
-                }
+                confirmDelete()
             } label: {
                 Label("Delete…", systemImage: "trash")
             }
             .disabled(vm.deletingProjectID != nil)
-            splitToggle
+        } label: {
+            Image(systemName: "ellipsis.circle")
         }
-        .padding(10)
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Project actions")
+        .accessibilityLabel("Project actions")
+    }
+
+    private func confirmDelete() {
+        guard let pool = appState.databaseManager?.dbPool else { return }
+        do {
+            deleteSummary = try pool.read { try ProjectDeleteSummary.fetch($0, project: project) }
+        } catch {
+            // Never confirm a delete against unknown counts.
+            deleteSummaryError = error.localizedDescription
+        }
     }
 
     /// What the last Re-run setup did, with its suggestions; selectable,
@@ -136,22 +179,24 @@ struct ProjectPageView: View {
         .padding(8)
     }
 
+    /// The install state as small icons with tooltips: installed, needs
+    /// Repair (in the "…" menu), Claude Code CLI not found.
     @ViewBuilder
-    private var installBadge: some View {
+    private var installStatusIcons: some View {
         if let status = vm.installStatus[project.id] {
-            HStack(spacing: 8) {
-                if !status.claudeFound && !status.mcp { claudeNotFoundLabel }
-                if status.needsRepair {
-                    Button {
-                        Task { await vm.repairInstall(projectID: project.id) }
-                    } label: {
-                        Label("Repair install", systemImage: "wrench.and.screwdriver")
-                    }
-                    .disabled(vm.isInstalling(projectID: project.id))
-                    .help(repairHelp(status))
-                } else if status.claudeFound || status.mcp {
-                    Label("Installed", systemImage: "checkmark.seal").foregroundStyle(.secondary).font(.caption)
-                }
+            if !status.claudeFound && !status.mcp { claudeNotFoundIcon }
+            if status.needsRepair {
+                Image(systemName: "exclamationmark.circle")
+                    .foregroundStyle(.orange)
+                    .font(.caption)
+                    .help("The folder install is incomplete — Repair install is in the … menu.\n\(repairHelp(status))")
+                    .accessibilityLabel("Install incomplete")
+            } else if status.claudeFound || status.mcp {
+                Image(systemName: "checkmark.seal")
+                    .foregroundStyle(.secondary)
+                    .font(.caption)
+                    .help("Installed: \(repairHelp(status))")
+                    .accessibilityLabel("Installed")
             }
         }
     }
@@ -161,22 +206,28 @@ struct ProjectPageView: View {
             + "drift hook \(status.stopHook ? "on" : "missing") · MCP \(status.mcp ? "on" : "missing")"
     }
 
-    /// Repair cannot register the MCP server without `claude`; name the gap
-    /// and hand over the manual command instead of a Repair that always fails.
-    private var claudeNotFoundLabel: some View {
+    /// Repair cannot register the MCP server without `claude`: a warning
+    /// icon whose menu names the gap and copies the manual command instead
+    /// of a Repair that always fails.
+    private var claudeNotFoundIcon: some View {
         let command = ProjectInstallStatus.manualMCPCommand(
             projectID: project.id, folder: project.folderPath, cliPath: Constants.findCLIPath() ?? "watchtower"
         )
-        return Label("Claude Code CLI not found", systemImage: "exclamationmark.triangle")
-            .foregroundStyle(.orange)
-            .font(.caption)
-            .help("Install Claude Code, then run:\n\(command)")
-            .contextMenu {
-                Button("Copy MCP Command") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(command, forType: .string)
-                }
+        return Menu {
+            Text("Claude Code CLI not found")
+            Button("Copy MCP Command") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(command, forType: .string)
             }
+        } label: {
+            Image(systemName: "exclamationmark.triangle")
+                .foregroundStyle(.orange)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Claude Code CLI not found. Install Claude Code, then run:\n\(command)")
+        .accessibilityLabel("Claude Code CLI not found")
     }
 
     private var splitToggle: some View {
@@ -184,8 +235,10 @@ struct ProjectPageView: View {
         return Button {
             vm.toggleSplit(projectID: project.id)
         } label: {
-            Label(isSplit ? "Single Pane" : "Split", systemImage: isSplit ? "rectangle" : "rectangle.split.2x1")
+            Image(systemName: isSplit ? "rectangle" : "rectangle.split.2x1")
         }
-        .help(isSplit ? "Show one pane" : "Show two panes side by side")
+        .buttonStyle(.borderless)
+        .help(isSplit ? "Show one pane" : "Split: show two panes side by side")
+        .accessibilityLabel(isSplit ? "Single Pane" : "Split")
     }
 }
