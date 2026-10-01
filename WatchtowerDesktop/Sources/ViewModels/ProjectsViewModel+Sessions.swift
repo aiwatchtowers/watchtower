@@ -324,7 +324,8 @@ extension ProjectsViewModel {
         } catch TerminalSessionQueryError.emptyTitle {
             return
         } catch {
-            setSessionError("Could not rename the session: \(error.localizedDescription)", projectID: session.projectID)
+            // `failed` also drops a session deleted elsewhere from the list and pane.
+            await failed(session, "Could not rename the session", error)
             return
         }
         await loadSessions(projectID: session.projectID)

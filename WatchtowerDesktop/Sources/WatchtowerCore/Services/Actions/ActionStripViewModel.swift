@@ -70,6 +70,9 @@ package final class ActionStripViewModel {
             try dbPool.write { try ReminderQueries.snooze($0, id: id, until: until) }
             refresh()
         } catch {
+            // A reminder deleted elsewhere leaves the strip; `refresh` clears
+            // `lastError`, so the reason is set after it.
+            if error is RowNotFoundError { refresh() }
             lastError = error.localizedDescription
         }
     }

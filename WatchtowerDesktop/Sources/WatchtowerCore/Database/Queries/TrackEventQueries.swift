@@ -20,6 +20,10 @@ package enum TrackEventQueries {
             """, arguments: [trackId]) ?? 0
     }
 
+    package static func exists(_ db: Database, id: Int) throws -> Bool {
+        try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM track_events WHERE id = ?)", arguments: [id]) ?? false
+    }
+
     /// Best-effort, unchecked: an event deleted meanwhile has nothing left to read.
     package static func markRead(_ db: Database, id: Int) throws {
         try db.execute(sql: """

@@ -90,6 +90,7 @@ final class TargetWatchesViewModel {
     /// in the shared center so the indicator survives navigation.
     func scanWatch(_ watch: Track, since: Date?, label: String) async {
         scanCenter.begin(watch.id)
+        errorMessage = nil
         var note: String?
         defer { scanCenter.finish(watch.id, note: note) }
         do {
@@ -142,20 +143,44 @@ final class TargetWatchesViewModel {
 
     func applyAction(for event: TrackEvent) {
         guard let action = event.decodedAction else { return }
+        errorMessage = nil
         do {
-            guard let fresh = try dbPool.read({ db in try TargetQueries.fetchByID(db, id: target.id) }) else {
+            let (fresh, eventExists) = try dbPool.read { db in
+                (try TargetQueries.fetchByID(db, id: target.id), try TrackEventQueries.exists(db, id: event.id))
+            }
+            guard let fresh else {
                 errorMessage = "This target no longer exists — it may have been deleted."
+                return
+            }
+            // Checked before the target is touched: an apply whose event vanished
+            // (its watch deleted elsewhere) would land and then report a failure.
+            guard eventExists else {
+                reportWriteFailure("apply", RowNotFoundError(kind: "track event", id: event.id))
                 return
             }
             _ = try TargetActionExecutor.apply(action, target: fresh, viewModel: targetsViewModel)
             try dbPool.write { db in try TrackEventQueries.setActionStatus(db, id: event.id, status: "applied") }
-        } catch { errorMessage = error.localizedDescription }
+        } catch { reportWriteFailure("apply", error) }
     }
 
     func dismissAction(for event: TrackEvent) {
+        errorMessage = nil
         do {
             try dbPool.write { db in try TrackEventQueries.setActionStatus(db, id: event.id, status: "dismissed") }
-        } catch { errorMessage = error.localizedDescription }
+        } catch { reportWriteFailure("dismiss", error) }
+    }
+
+    /// The observations never see another process's delete, so a write that
+    /// found its row gone re-reads the watches and the feed first — the stale
+    /// row would otherwise stay and fail again on every retry.
+    private func reportWriteFailure(_ what: String, _ error: Error) {
+        if error is RowNotFoundError {
+            refreshEvents()
+            if let rows = try? dbPool.read({ db in try TrackQueries.fetchByLinkedTarget(db, targetID: target.id) }) {
+                watches = rows
+            }
+        }
+        errorMessage = "Failed to \(what): \(error.localizedDescription)"
     }
 
     func markRead(_ event: TrackEvent) {
@@ -166,10 +191,11 @@ final class TargetWatchesViewModel {
     // MARK: - Watch management
 
     func setCollecting(_ watch: Track, _ on: Bool) {
+        errorMessage = nil
         do {
             try dbPool.write { db in try TrackQueries.setEnabled(db, id: watch.id, enabled: on) }
         } catch {
-            errorMessage = "Failed to update the watch: \(error.localizedDescription)"
+            reportWriteFailure("update the watch", error)
         }
     }
 

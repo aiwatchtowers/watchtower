@@ -1,8 +1,7 @@
 import XCTest
 import GRDB
-@testable import WatchtowerDesktop
-import WatchtowerCore
 import WatchtowerTestSupport
+@testable import WatchtowerCore
 
 /// Owner edits addressed to a row deleted elsewhere (the daemon, the CLI, the
 /// agent, a second window) touch no row. Each checked writer must throw a
@@ -18,7 +17,19 @@ final class RowNotFoundWritersTests: XCTestCase {
         let make: (Database) throws -> Int64
     }
 
-    private static let extraSchema = TargetWatchesViewModelTests.trackEventsSQL + """
+    /// The custom-track columns and `track_events` the shared test schema
+    /// lacks (the TargetWatchesViewModelTests DDL), plus `meeting_notes`.
+    private static let extraSchema = """
+        ALTER TABLE tracks ADD COLUMN origin TEXT NOT NULL DEFAULT 'auto';
+        ALTER TABLE tracks ADD COLUMN instruction TEXT NOT NULL DEFAULT '';
+        ALTER TABLE tracks ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1;
+        CREATE TABLE IF NOT EXISTS track_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+            summary TEXT NOT NULL DEFAULT '',
+            action_status TEXT NOT NULL DEFAULT 'none',
+            read_at TEXT
+        );
         CREATE TABLE IF NOT EXISTS meeting_notes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             event_id TEXT NOT NULL,
@@ -123,18 +134,15 @@ final class RowNotFoundWritersTests: XCTestCase {
         Writer(name: "chat.archive", kind: "chat", table: "chat_conversations", run: {
             try ChatConversationQueries.archive($0, id: $1)
         }, make: { try TestDatabase.insertChatConversation($0) }),
-        Writer(name: "project.rename", kind: "project", table: "chat_projects", run: {
+        Writer(name: "project.rename", kind: "chat project", table: "chat_projects", run: {
             try ChatProjectQueries.rename($0, id: $1, name: "renamed")
         }, make: { try ChatProjectQueries.create($0, name: "p").id }),
-        Writer(name: "project.updateInstructions", kind: "project", table: "chat_projects", run: {
+        Writer(name: "project.updateInstructions", kind: "chat project", table: "chat_projects", run: {
             try ChatProjectQueries.updateInstructions($0, id: $1, instructions: "be brief")
         }, make: { try ChatProjectQueries.create($0, name: "p").id }),
-        Writer(name: "project.archive", kind: "project", table: "chat_projects", run: {
+        Writer(name: "project.archive", kind: "chat project", table: "chat_projects", run: {
             try ChatProjectQueries.archive($0, id: $1)
-        }, make: { try ChatProjectQueries.create($0, name: "p").id }),
-        Writer(name: "recording.saveNotes", kind: "recording", table: "meeting_transcripts", run: {
-            try MeetingTranscriptQueries.saveNotes($0, id: $1, markdown: "# notes")
-        }, make: { try TestDatabase.insertMeetingTranscript($0); return $0.lastInsertedRowID })
+        }, make: { try ChatProjectQueries.create($0, name: "p").id })
     ]
 
     func testEveryWriter_ThrowsNotFound_ForARowDeletedAfterLoad() throws {

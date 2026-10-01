@@ -13,6 +13,7 @@ package enum ChatArtifactQueries {
         let metaJSON = try encodeMeta(draft.meta)
         if !edited, let latest = try latest(db, conversationID: conversationID, key: draft.key),
            latest.messageID == messageID, !latest.edited {
+            // Unchecked: `latest` was read in this same write transaction.
             try db.execute(sql: """
                 UPDATE chat_artifacts SET kind = ?, title = ?, content = ?, meta_json = ? WHERE id = ?
                 """, arguments: [draft.kind, draft.title, draft.content, metaJSON, latest.id])

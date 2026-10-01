@@ -149,7 +149,7 @@ final class CalendarViewModel {
                     try CalendarQueries.setCalendarSelected(db, id: id, selected: selected)
                 }
             } catch {
-                calendarSelectionError = "Could not update the calendar: \(error.localizedDescription)"
+                calendarSelectionError = "Failed to update the calendar: \(error.localizedDescription)"
             }
             // Either way: a calendar the sync dropped leaves the list.
             loadEvents()

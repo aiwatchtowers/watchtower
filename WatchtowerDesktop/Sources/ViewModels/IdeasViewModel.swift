@@ -301,6 +301,7 @@ final class IdeasViewModel {
             load()
             return newTargetID
         } catch {
+            if error is RowNotFoundError { load() }
             errorMessage = "Failed to convert idea to target: \(error.localizedDescription)"
             return nil
         }

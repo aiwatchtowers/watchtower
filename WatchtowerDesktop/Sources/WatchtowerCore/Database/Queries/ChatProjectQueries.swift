@@ -45,7 +45,7 @@ package enum ChatProjectQueries {
             sql: "UPDATE chat_projects SET name = ?, updated_at = ? WHERE id = ?",
             arguments: [trimmed, Date().timeIntervalSince1970, id]
         )
-        try db.requireUpdated("project", id: id)
+        try db.requireUpdated("chat project", id: id)
     }
 
     package static func updateInstructions(_ db: Database, id: Int64, instructions: String) throws {
@@ -53,7 +53,7 @@ package enum ChatProjectQueries {
             sql: "UPDATE chat_projects SET instructions = ?, updated_at = ? WHERE id = ?",
             arguments: [instructions, Date().timeIntervalSince1970, id]
         )
-        try db.requireUpdated("project", id: id)
+        try db.requireUpdated("chat project", id: id)
     }
 
     package static func archive(_ db: Database, id: Int64) throws {
@@ -62,7 +62,7 @@ package enum ChatProjectQueries {
             sql: "UPDATE chat_projects SET archived_at = ?, updated_at = ? WHERE id = ?",
             arguments: [now, now, id]
         )
-        try db.requireUpdated("project", id: id)
+        try db.requireUpdated("chat project", id: id)
     }
 
     /// Deletes the project. Its chats survive detached (`ON DELETE SET NULL`),

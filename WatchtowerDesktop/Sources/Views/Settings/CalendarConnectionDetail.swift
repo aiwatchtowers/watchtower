@@ -122,18 +122,20 @@ struct CalendarConnectionDetail: View {
                     calendarSelectionRows(otherCalendars, calVM: calVM)
                 }
             }
-            if let error = calVM.calendarSelectionError {
-                Section {
-                    Label(error, systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                }
-            }
         } else {
             Section("Synced Calendars") {
                 Text("No calendars synced yet.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+        }
+        // Outside the branches: toggling the last calendar the sync dropped
+        // empties the list, and the reason must still show.
+        if let error = appState.calendarViewModel?.calendarSelectionError {
+            Section {
+                Label(error, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.red)
             }
         }
     }

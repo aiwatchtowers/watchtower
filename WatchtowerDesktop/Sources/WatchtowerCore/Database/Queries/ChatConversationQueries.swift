@@ -99,6 +99,8 @@ package enum ChatConversationQueries {
         return Date(timeIntervalSince1970: newest)
     }
 
+    /// Best-effort, unchecked: an automatic (first-turn / AI) title, not an
+    /// owner edit — a chat deleted meanwhile needs no title.
     package static func updateTitle(_ db: Database, id: Int64, title: String) throws {
         let now = Date().timeIntervalSince1970
         try db.execute(sql: """

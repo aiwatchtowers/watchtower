@@ -175,12 +175,19 @@ struct TrackDetailView: View {
                 try TrackQueries.updateInstruction(database, id: track.id, instruction: text)
             }
         } catch {
-            watchEditError = "Could not save the instruction: \(error.localizedDescription)"
+            reportWatchEditFailure("save the instruction", error)
             return
         }
         watchEditError = nil
         displayedInstruction = text
         isEditingInstruction = false
+    }
+
+    /// A watch deleted elsewhere reloads the tracks list so it leaves the
+    /// screen; the message stays on this pane until then.
+    private func reportWatchEditFailure(_ what: String, _ error: Error) {
+        if error is RowNotFoundError { viewModel.load() }
+        watchEditError = "Failed to \(what): \(error.localizedDescription)"
     }
 
     /// Toggles whether the daemon collects for this watch; a failed write
@@ -192,7 +199,7 @@ struct TrackDetailView: View {
                 try TrackQueries.setEnabled(database, id: track.id, enabled: on)
             }
         } catch {
-            watchEditError = "Could not update collecting: \(error.localizedDescription)"
+            reportWatchEditFailure("update collecting", error)
             return
         }
         watchEditError = nil
