@@ -80,14 +80,19 @@ struct DocumentTextView: NSViewRepresentable {
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         context.coordinator.parent = self
         guard let textView = scroll.documentView as? NSTextView else { return }
-        if textView.textContainerInset.width != horizontalInset {
-            // A new inset re-wraps every line: keep the line the owner reads at the top.
-            let anchor = ReadingAnchor.top(of: textView)
-            textView.textContainerInset = NSSize(width: horizontalInset, height: 16)
-            anchor?.restore(in: textView)
-        }
+        Self.setInset(horizontalInset, on: textView)
         context.coordinator.apply(text, contentID: contentID, to: textView)
         context.coordinator.scroll(textView, to: scrollTarget)
+    }
+
+    /// A new inset re-wraps every line: the line the owner reads stays at
+    /// the top. (A width change needs no help — NSTextView keeps its top
+    /// line itself.)
+    static func setInset(_ inset: CGFloat, on textView: NSTextView) {
+        guard textView.textContainerInset.width != inset else { return }
+        let anchor = ReadingAnchor.top(of: textView)
+        textView.textContainerInset = NSSize(width: inset, height: 16)
+        anchor?.restore(in: textView)
     }
 
     static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
@@ -99,11 +104,6 @@ struct DocumentTextView: NSViewRepresentable {
         private var shown: NSAttributedString?
         private var shownID: String?
         private var applying = false
-        /// The line at the top of the visible area, kept current while the
-        /// owner scrolls, so a resize that re-wraps the text (the comments
-        /// panel opening beside it) puts that line back at the top.
-        private var readingAnchor: ReadingAnchor?
-        private var laidOutWidth: CGFloat?
 
         init(parent: DocumentTextView) {
             self.parent = parent
@@ -127,7 +127,6 @@ struct DocumentTextView: NSViewRepresentable {
             textView.setSelectedRange(carried)
             if let anchor { anchor.restore(in: textView) } else if !sameText { textView.scroll(.zero) }
             applying = false
-            readingAnchor = ReadingAnchor.top(of: textView)
             if carried != selected {
                 DispatchQueue.main.async { [parent] in parent.selection = carried }
             }
@@ -165,37 +164,17 @@ struct DocumentTextView: NSViewRepresentable {
         func observeGeometry(of scroll: NSScrollView) {
             guard let textView = scroll.documentView as? NSTextView else { return }
             observedTextView = textView
-            laidOutWidth = textView.frame.width
             scroll.contentView.postsBoundsChangedNotifications = true
             textView.postsFrameChangedNotifications = true
             let center = NotificationCenter.default
-            center.addObserver(self, selector: #selector(boundsDidChange),
+            center.addObserver(self, selector: #selector(geometryDidChange),
                                name: NSView.boundsDidChangeNotification, object: scroll.contentView)
-            center.addObserver(self, selector: #selector(frameDidChange),
+            center.addObserver(self, selector: #selector(geometryDidChange),
                                name: NSView.frameDidChangeNotification, object: textView)
         }
 
-        @objc private func boundsDidChange() {
-            guard let observedTextView else { return }
-            reportSelectionRect(observedTextView)
-            // Only a scroll at the laid-out width moves the anchor; the clip
-            // view also reports bounds changes mid-resize.
-            if observedTextView.frame.width == laidOutWidth {
-                readingAnchor = ReadingAnchor.top(of: observedTextView)
-            }
-        }
-
-        @objc private func frameDidChange() {
-            guard let observedTextView else { return }
-            reportSelectionRect(observedTextView)
-            guard observedTextView.frame.width != laidOutWidth else { return }
-            laidOutWidth = observedTextView.frame.width
-            // After the resize's own layout pass, not inside it.
-            DispatchQueue.main.async { [weak self] in
-                guard let self, let textView = self.observedTextView else { return }
-                self.readingAnchor?.restore(in: textView)
-                self.readingAnchor = ReadingAnchor.top(of: textView)
-            }
+        @objc private func geometryDidChange() {
+            if let observedTextView { reportSelectionRect(observedTextView) }
         }
 
         private func reportSelectionRect(_ textView: NSTextView) {

@@ -37,8 +37,8 @@ final class DocumentTextViewScrollTests: XCTestCase {
         scroll.reflectScrolledClipView(scroll.contentView)
     }
 
-    func testTheViewIsTextKit1FromTheStart() {
-        let (_, textView, _) = makeView(DocumentRendering.render(markdown))
+    func testTheViewIsTextKit1FromTheStart() throws {
+        let textView = try XCTUnwrap(DocumentTextView.makeScrollView(horizontalInset: 16).documentView as? NSTextView)
         XCTAssertNil(textView.textLayoutManager, "a mid-session TextKit 2 → 1 switch re-lays the text out under the owner")
     }
 
@@ -70,6 +70,8 @@ final class DocumentTextViewScrollTests: XCTestCase {
         XCTAssertEqual(scrollTop(scroll), 0, accuracy: 1)
     }
 
+    /// AppKit's own behaviour, pinned because the comment list opening
+    /// beside the text depends on it.
     func testANarrowerViewKeepsTheTopLineInView() throws {
         let doc = DocumentRendering.render(markdown)
         let (scroll, textView, _) = makeView(doc)
@@ -89,5 +91,18 @@ final class DocumentTextViewScrollTests: XCTestCase {
         XCTAssertTrue(after.map { NSLocationInRange($0.character, paragraph) } ?? false,
                       "top character \(String(describing: after)) left paragraph \(paragraph)")
         XCTAssertGreaterThan(scrollTop(scroll), lineTop, "re-wrapped text puts the same line further down")
+    }
+
+    func testANewInsetKeepsTheTopLineInView() throws {
+        let doc = DocumentRendering.render(markdown)
+        let (scroll, textView, _) = makeView(doc)
+        let layout = try XCTUnwrap(textView.layoutManager)
+        let target = (doc.text as NSString).range(of: "Paragraph 120 about")
+        let lineTop = layout.lineFragmentRect(forGlyphAt: layout.glyphIndexForCharacter(at: target.location), effectiveRange: nil)
+            .minY + textView.textContainerOrigin.y
+        scrolled(scroll, to: lineTop)
+        DocumentTextView.setInset(120, on: textView) // a wider pane centres a readable column
+        XCTAssertEqual(ReadingAnchor.top(of: textView)?.character, target.location)
+        XCTAssertGreaterThan(scrollTop(scroll), lineTop)
     }
 }
