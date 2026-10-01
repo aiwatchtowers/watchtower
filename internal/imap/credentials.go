@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"watchtower/internal/fsutil"
 )
 
 // Credentials is the persisted secret for one email_accounts row: a password
@@ -43,7 +45,7 @@ func (s *CredentialStore) Load() (*Credentials, error) {
 	return &creds, nil
 }
 
-// Save writes the credentials to disk.
+// Save writes the credentials to disk atomically (fsutil.WriteFileAtomic).
 func (s *CredentialStore) Save(creds *Credentials) error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
 		return fmt.Errorf("creating credentials directory: %w", err)
@@ -52,7 +54,7 @@ func (s *CredentialStore) Save(creds *Credentials) error {
 	if err != nil {
 		return fmt.Errorf("marshaling imap credentials: %w", err)
 	}
-	return os.WriteFile(s.path, data, 0o600)
+	return fsutil.WriteFileAtomic(s.path, data, 0o600)
 }
 
 // Delete removes the credentials file.

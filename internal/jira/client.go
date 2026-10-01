@@ -248,20 +248,35 @@ func (c *Client) getAccessToken(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("loading token: %w", err)
 	}
-
-	if token.IsExpired() {
-		newToken, err := refreshTokenAt(ctx, c.oauthCfg, token.RefreshToken, c.tokenEndpoint())
-		if err != nil {
-			return "", err
-		}
-		carryOverUnreturnedFields(newToken, token)
-		if err := c.tokenStore.Save(newToken); err != nil {
-			return "", fmt.Errorf("saving refreshed token: %w", err)
-		}
-		return newToken.AccessToken, nil
+	if !token.IsExpired() {
+		return token.AccessToken, nil
 	}
 
-	return token.AccessToken, nil
+	// Expired: refresh under the cross-process token lock, re-reading first —
+	// another process (the daemon, a `jira`/`confluence` CLI) may have
+	// refreshed while this one waited, and refreshing again with the refresh
+	// token it already rotated away would fail with invalid_grant.
+	unlock, err := c.tokenStore.Lock(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
+	token, err = c.tokenStore.Load()
+	if err != nil {
+		return "", fmt.Errorf("loading token: %w", err)
+	}
+	if !token.IsExpired() {
+		return token.AccessToken, nil
+	}
+	newToken, err := refreshTokenAt(ctx, c.oauthCfg, token.RefreshToken, c.tokenEndpoint())
+	if err != nil {
+		return "", err
+	}
+	carryOverUnreturnedFields(newToken, token)
+	if err := c.tokenStore.Save(newToken); err != nil {
+		return "", fmt.Errorf("saving refreshed token: %w", err)
+	}
+	return newToken.AccessToken, nil
 }
 
 // refreshIfCurrent refreshes the stored token only if its access token still
@@ -273,10 +288,16 @@ func (c *Client) getAccessToken(ctx context.Context) (string, error) {
 // treats as effectively revoking the grant. Holding c.mu across the whole
 // load-check-refresh-save sequence makes "the stored token still equals
 // usedToken" an accurate test of "nobody refreshed while I waited for the
-// lock" rather than a check-then-act race of its own.
+// lock" rather than a check-then-act race of its own. The token store's file
+// lock extends the same guarantee across processes (daemon + CLI).
 func (c *Client) refreshIfCurrent(ctx context.Context, usedToken string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	unlock, err := c.tokenStore.Lock(ctx)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 
 	token, err := c.tokenStore.Load()
 	if err != nil {
