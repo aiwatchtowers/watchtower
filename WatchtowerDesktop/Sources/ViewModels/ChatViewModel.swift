@@ -183,7 +183,8 @@ final class ChatViewModel {
     }
 
     /// The streaming message of the shown conversation — its own observable,
-    /// throttled to ~30 fps (`LiveTurn`); only the row showing it re-renders.
+    /// throttled to ≤30 fps, slower as the text grows (`LiveTurn`); only the
+    /// row showing it re-renders.
     var liveTurn: LiveTurn? { pool.client(for: conversationID)?.liveTurn }
     /// A turn is running — or held by the pool waiting for a session.
     var isStreaming: Bool { liveTurn?.isRunning == true }
