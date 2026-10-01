@@ -3,7 +3,8 @@
 #   normal (default) · slow (first turn never finishes until interrupted)
 #   ignore_interrupt (first turn never finishes and ignores the interrupt)
 #   crash_once (dies on the first user message ever) · lost (--resume rejected
-#   on stderr) · lost_result (--resume rejected only in the result's "errors")
+#   on stderr) · lost_result (--resume rejected only in the result's "errors";
+#   lost_result_linger: the same, but the child stays alive until stdin closes)
 #   stubborn (ignores SIGTERM and stdin EOF) · grandchild (leaves a child behind)
 #   internal_tool (runs Claude's ToolSearch before a watchtower tool)
 #   noread (never reads stdin, so a large turn blocks the writer)
@@ -24,8 +25,10 @@ if [ "$FAKE_MODE" = "lost" ] && [ "$resumed" = yes ]; then
   echo "No conversation found with session ID: gone" >&2
   exit 1
 fi
-if [ "$FAKE_MODE" = "lost_result" ] && [ "$resumed" = yes ]; then
+if { [ "$FAKE_MODE" = "lost_result" ] || [ "$FAKE_MODE" = "lost_result_linger" ]; } && [ "$resumed" = yes ]; then
   printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"session_id":"00000000-0000-4000-8000-000000000000","usage":{"input_tokens":0,"output_tokens":0},"errors":["No conversation found with session ID: gone"]}'
+  # Lingers until stdin closes (never reading a turn as one).
+  [ "$FAKE_MODE" = "lost_result_linger" ] && cat > /dev/null
   exit 1
 fi
 if [ "$FAKE_MODE" = "stubborn" ]; then
