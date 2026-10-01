@@ -3,7 +3,7 @@ import SwiftUI
 import WatchtowerCore
 
 /// Projects tab: the collapsible two-level panel on the left (projects and
-/// standalone terminals, or one project's Board, Documents and sessions) and
+/// standalone terminals, or one project's sessions; resizable) and
 /// the selected project's page — or standalone terminal — on the right
 /// (spec 2026-09-30-project-workspace-sessions §3).
 /// A level-1 row of the Projects panel: a project, or a standalone terminal.
@@ -22,6 +22,7 @@ struct ProjectsView: View {
     @Bindable var vm: ProjectsViewModel
     @Environment(AppState.self) private var appState
     @AppStorage("projects.panelVisible") private var panelVisible = true
+    @AppStorage("projects.panelWidth") private var panelWidth = PanelResizeHandle.defaultWidth
     @State private var pendingFolder: PendingFolder?
     @State private var sensitiveLocation: String?
     @State private var renamingSession: TerminalSession?
@@ -30,8 +31,8 @@ struct ProjectsView: View {
     var body: some View {
         HStack(spacing: 0) {
             if panelVisible {
-                panel.frame(width: 260)
-                Divider()
+                panel.frame(width: PanelResizeHandle.clamp(panelWidth))
+                PanelResizeHandle(width: $panelWidth)
             }
             Group {
                 if let standalone = vm.selectedStandalone {
@@ -57,7 +58,6 @@ struct ProjectsView: View {
                 .accessibilityLabel("Toggle Projects Panel")
             }
         }
-        .navigationTitle("Projects")
         .onAppear {
             consumeRoute()
             Task { await vm.reload() }

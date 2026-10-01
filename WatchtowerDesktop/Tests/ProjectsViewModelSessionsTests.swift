@@ -597,10 +597,26 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
 
         await vm.showFromPanel(.documents)
         XCTAssertEqual(vm.layout.primary, .documents)
-        XCTAssertEqual(vm.panelSelection, .documents)
+        XCTAssertNil(vm.panelSelection, "the panel lists sessions only")
 
         await vm.showFromPanel(.board)
-        XCTAssertEqual(vm.panelSelection, .board)
+        XCTAssertEqual(vm.layout.primary, .board)
+        XCTAssertNil(vm.panelSelection)
+    }
+
+    /// A split of a session and the board highlights the session, whichever
+    /// slot holds it.
+    func testPanelHighlightsTheVisibleSessionInASplit() async throws {
+        let p = try await projectWithFolder()
+        let row = try await liveSession(p, "one")
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: p)
+        await vm.showFromPanel(.session(row.id))
+        vm.layout.split(with: .board)
+        XCTAssertEqual(vm.panelSelection, .session(row.id))
+        vm.toggleExpand(.board, projectID: p)
+        XCTAssertNil(vm.panelSelection, "the expanded board hides the session")
     }
 
     func testPanelSessionClickShowsItAndCloseKeepsTheRowAndMovesToTheOtherLiveSession() async throws {

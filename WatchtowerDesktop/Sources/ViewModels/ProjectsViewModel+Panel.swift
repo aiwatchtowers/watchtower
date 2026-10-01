@@ -59,12 +59,15 @@ extension ProjectsViewModel {
         terminalSessions[projectID]?.first { $0.id == id }
     }
 
-    /// What level 2 highlights: the expanded pane, else the pane the last
-    /// panel click filled (the secondary of a split), else the only one.
+    /// What level 2 highlights: the session on screen — the expanded pane,
+    /// else the pane the last panel click filled (the secondary of a split),
+    /// else the other one. nil when no session is visible (the panel lists
+    /// only sessions).
     var panelSelection: WorkspacePane? {
         guard let drilledProjectID else { return nil }
         let layout = layout(projectID: drilledProjectID)
-        return layout.expanded ?? layout.secondary ?? layout.primary
+        let candidates = layout.expanded.map { [$0] } ?? [layout.secondary, layout.primary].compactMap(\.self)
+        return candidates.first { if case .session = $0 { true } else { false } }
     }
 
     /// A level-1 project click: selects it, which drills into it (the
