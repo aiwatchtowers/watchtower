@@ -459,8 +459,16 @@ func runConnectionsOAuth(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("oauth sign-in: %w", err)
 	}
 
+	// Under the secret's lock, so a chat launch mid-refresh of the old grant
+	// cannot write it back over this new one (see applyOAuthCredentials).
+	unlock, err := store.Lock(cmd.Context())
+	if err != nil {
+		return err
+	}
 	secret.OAuth = grant
-	if err := store.Save(secret); err != nil {
+	err = store.Save(secret)
+	unlock()
+	if err != nil {
 		return fmt.Errorf("saving secret: %w", err)
 	}
 	if err := database.SetExternalConnectionEnabled(id, true); err != nil {

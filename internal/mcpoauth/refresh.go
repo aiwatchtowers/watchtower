@@ -2,6 +2,7 @@ package mcpoauth
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -11,9 +12,14 @@ import (
 // RefreshSkew is how early before expiry a token is refreshed.
 const RefreshSkew = 60 * time.Second
 
+// ErrNoRefreshToken marks a grant that is expiring and has nothing to refresh
+// with: like ErrInvalidGrant, only a new sign-in fixes it.
+var ErrNoRefreshToken = errors.New("mcpoauth: access token expiring with no refresh token available (sign in again)")
+
 // EnsureFresh refreshes g in place when it is expiring (or already expired) and
 // reports whether it changed. A grant without a refresh token that is expiring
-// is an error (sign in again). Returns ErrInvalidGrant when the server revoked it.
+// is ErrNoRefreshToken (sign in again). Returns ErrInvalidGrant when the
+// server revoked it; any other error (network, 5xx) is transient.
 //
 // A zero ExpiresAt (the server never told us a lifetime) is treated as
 // "must verify, not never expires": with a refresh token present, EnsureFresh
@@ -38,7 +44,7 @@ func EnsureFresh(ctx context.Context, g *externalmcp.OAuthGrant, now time.Time) 
 			// refresh token to verify against and no expiry to check.
 			return false, nil
 		}
-		return false, fmt.Errorf("mcpoauth: access token expiring with no refresh token available (sign in again)")
+		return false, ErrNoRefreshToken
 	}
 
 	tok, err := Refresh(ctx, g.TokenEndpoint, g.ClientID, g.ClientSecret, g.RefreshToken, g.Resource)

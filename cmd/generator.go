@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"log"
 	"path/filepath"
 	"time"
@@ -163,11 +164,12 @@ func newQueryClient(cfg *config.Config, dbPath string) (ai.Provider, func(), err
 // tools); a per-connection secret-load error is logged and just skips that
 // one connection, so one owner's corrupted secret file can't take down every
 // other connection's tools. An OAuth connection degrades the same way on a
-// refresh failure: EnsureFresh returning ErrInvalidGrant (or any other
-// refresh error) marks the connection row status="revoked" and skips just
-// that connection — a revoked grant can never take down the rest of the
-// chat's external tools, and the owner sees the row surfaced as needing
-// re-sign-in rather than a silently missing tool.
+// refresh failure: the row is marked status="revoked" when only a new
+// sign-in can fix it (ErrInvalidGrant, ErrNoRefreshToken) and "error" for a
+// transient failure (network, 5xx, lock wait), and just that connection is
+// skipped — a failed grant can never take down the rest of the chat's
+// external tools, and the owner sees the row surfaced rather than a silently
+// missing tool.
 func loadExternalMCPServers(cfg *config.Config, dbPath string) []ai.ExternalMCPServer {
 	database, err := db.Open(dbPath)
 	if err != nil {
@@ -198,7 +200,7 @@ func loadExternalMCPServers(cfg *config.Config, dbPath string) []ai.ExternalMCPS
 			continue
 		}
 		if secret != nil && secret.OAuth != nil {
-			if !applyOAuthCredentials(database, store, &server, secret, c) {
+			if !applyOAuthCredentials(database, store, &server, c) {
 				continue
 			}
 		} else if secret != nil {
@@ -210,10 +212,21 @@ func loadExternalMCPServers(cfg *config.Config, dbPath string) []ai.ExternalMCPS
 	return servers
 }
 
+// oauthLockWait bounds how long a chat launch waits for another process
+// (a parallel launch, `connections oauth`) to finish with a connection's
+// grant: one token-endpoint round trip is capped at 30 s, so this leaves
+// headroom without letting a wedged holder stall the launch indefinitely.
+const oauthLockWait = 45 * time.Second
+
 // applyOAuthCredentials verifies or refreshes an OAuth connection's grant and
 // puts the resulting bearer token on server. It reports whether the connection
 // may be used for this launch; false means "skip this one" and the reason has
-// already been logged and, where it is the grant's fault, recorded on the row.
+// already been logged and recorded on the row.
+//
+// The load→refresh→save runs under the secret's cross-process lock, and the
+// secret is re-read once the lock is held: every chat launch is its own
+// process, and two launches refreshing with the same rotating refresh token
+// would burn it (or, with reuse detection, the whole token family).
 //
 // Two orderings here are load-bearing for QC-04. The Authorization header goes
 // into a COPY of the secret's headers, so a bearer can never be persisted as
@@ -224,16 +237,40 @@ func applyOAuthCredentials(
 	database *db.DB,
 	store *externalmcp.SecretStore,
 	server *ai.ExternalMCPServer,
-	secret *externalmcp.Secret,
 	c db.ExternalConnection,
 ) bool {
-	changed, err := mcpoauth.EnsureFresh(context.Background(), secret.OAuth, externalMCPNow())
-	if err != nil {
-		log.Printf("external connection %d (%s): token refresh failed, skipping: %v", c.ID, c.Name, err)
-		if serr := database.SetExternalConnectionStatus(c.ID, "revoked", err.Error()); serr != nil {
-			log.Printf("external connection %d (%s): recording revoked status: %v", c.ID, c.Name, serr)
+	fail := func(status, what string, err error) bool {
+		log.Printf("external connection %d (%s): %s, skipping: %v", c.ID, c.Name, what, err)
+		if serr := database.SetExternalConnectionStatus(c.ID, status, err.Error()); serr != nil {
+			log.Printf("external connection %d (%s): recording %s status: %v", c.ID, c.Name, status, serr)
 		}
 		return false
+	}
+
+	lockCtx, cancel := context.WithTimeout(context.Background(), oauthLockWait)
+	defer cancel()
+	unlock, err := store.Lock(lockCtx)
+	if err != nil {
+		return fail("error", "waiting for the token lock", err)
+	}
+	defer unlock()
+	secret, err := store.Load()
+	if err != nil {
+		return fail("error", "re-reading secret", err)
+	}
+	if secret == nil || secret.OAuth == nil {
+		// Removed or signed out between the first read and the lock.
+		log.Printf("external connection %d (%s): oauth grant gone, skipping", c.ID, c.Name)
+		return false
+	}
+
+	changed, err := mcpoauth.EnsureFresh(context.Background(), secret.OAuth, externalMCPNow())
+	if err != nil {
+		status := "error"
+		if errors.Is(err, mcpoauth.ErrInvalidGrant) || errors.Is(err, mcpoauth.ErrNoRefreshToken) {
+			status = "revoked"
+		}
+		return fail(status, "token refresh failed", err)
 	}
 
 	headers := make(map[string]string, len(secret.Headers)+1)

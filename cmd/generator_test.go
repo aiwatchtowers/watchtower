@@ -8,12 +8,14 @@ import (
 	"net/http/httptest"
 	"os"
 	"runtime"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/ai"
 	"watchtower/internal/db"
 	"watchtower/internal/externalmcp"
 )
@@ -317,4 +319,91 @@ func TestLoadExternalMCPServers_StaticSecret_HeadersAndEnvPassThrough(t *testing
 	require.Equal(t, "bar", servers[0].Env["FOO"])
 	_, hasAuth := servers[0].Headers["Authorization"]
 	require.False(t, hasAuth, "a static (non-OAuth) secret must never gain a synthesized Authorization header")
+}
+
+// TestLoadExternalMCPServers_OAuth_TransientFailureMarksError: a token
+// endpoint that fails transiently (5xx) skips the connection for this launch
+// and surfaces it as status='error', not 'revoked' — the grant itself is
+// still good, and the next successful launch flips the row back to ok.
+func TestLoadExternalMCPServers_OAuth_TransientFailureMarksError(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "temporarily_unavailable"})
+	}))
+	t.Cleanup(server.Close)
+	now := time.Now()
+	id, _ := setupOAuthConnection(t, database, cfg, server.URL, now.Add(30*time.Second))
+
+	originalNow := externalMCPNow
+	externalMCPNow = func() time.Time { return now }
+	t.Cleanup(func() { externalMCPNow = originalNow })
+
+	servers := loadExternalMCPServers(cfg, cfg.DBPath())
+	require.Empty(t, servers)
+
+	conn, err := database.GetExternalConnection(id)
+	require.NoError(t, err)
+	require.Equal(t, "error", conn.Status)
+	require.Contains(t, conn.Error, "temporarily_unavailable")
+}
+
+// TestLoadExternalMCPServers_OAuth_ParallelLaunchesRefreshOnce: two chat
+// launches (each its own process in production) racing on one expiring grant
+// against a server that rotates refresh tokens. The secret's lock plus the
+// re-read under it make the second launch use the first one's rotated token
+// instead of refreshing again with the spent refresh token.
+func TestLoadExternalMCPServers_OAuth_ParallelLaunchesRefreshOnce(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+
+	var hits atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if hits.Add(1) > 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid_grant"})
+			return
+		}
+		time.Sleep(100 * time.Millisecond) // widen the race window
+		_ = json.NewEncoder(w).Encode(tokenResponse{AccessToken: "access-token-2", RefreshToken: "refresh-token-2", ExpiresIn: 3600})
+	}))
+	t.Cleanup(server.Close)
+	now := time.Now()
+	id, store := setupOAuthConnection(t, database, cfg, server.URL, now.Add(30*time.Second))
+
+	originalNow := externalMCPNow
+	externalMCPNow = func() time.Time { return now }
+	t.Cleanup(func() { externalMCPNow = originalNow })
+
+	results := make([][]ai.ExternalMCPServer, 2)
+	var wg sync.WaitGroup
+	for i := range results {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results[i] = loadExternalMCPServers(cfg, cfg.DBPath())
+		}()
+	}
+	wg.Wait()
+
+	for i, servers := range results {
+		require.Len(t, servers, 1, "launch %d", i)
+		require.Equal(t, "Bearer access-token-2", servers[0].Headers["Authorization"], "launch %d", i)
+	}
+	require.Equal(t, int64(1), hits.Load(), "only one launch may hit the token endpoint")
+
+	saved, err := store.Load()
+	require.NoError(t, err)
+	require.Equal(t, "refresh-token-2", saved.OAuth.RefreshToken)
+	conn, err := database.GetExternalConnection(id)
+	require.NoError(t, err)
+	require.Equal(t, "ok", conn.Status)
 }

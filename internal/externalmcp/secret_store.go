@@ -4,11 +4,14 @@
 package externalmcp
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
+
+	"watchtower/internal/fsutil"
 )
 
 // OAuthGrant is the OAuth 2.1 grant behind an http connection signed in via
@@ -132,6 +135,21 @@ func (s *SecretStore) Save(sec *Secret) error {
 		return fmt.Errorf("renaming temp secret file into place: %w", err)
 	}
 	return nil
+}
+
+// Lock takes the cross-process lock that serializes a load→refresh→save of
+// this connection's OAuth grant (fsutil.LockFile on a sibling .lock file):
+// every chat launch is its own process, and two of them refreshing with the
+// same rotating refresh token burn it. Re-Load after taking it.
+func (s *SecretStore) Lock(ctx context.Context) (func(), error) {
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
+		return nil, fmt.Errorf("creating secret directory: %w", err)
+	}
+	unlock, err := fsutil.LockFile(ctx, s.path+".lock")
+	if err != nil {
+		return nil, fmt.Errorf("locking mcp secret: %w", err)
+	}
+	return unlock, nil
 }
 
 func (s *SecretStore) Delete() error {
