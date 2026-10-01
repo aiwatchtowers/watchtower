@@ -21,14 +21,18 @@ package struct TargetParentBoardError: LocalizedError, Equatable {
 
 extension TargetQueries {
     /// Refuses `parentID` when it is on a different board than a child on
-    /// `childProjectID` (NULL vs N counts as different). A missing parent is
-    /// left to the foreign key. Twin of Go `checkParentBoard`, which guards
-    /// `CreateTarget`/`UpdateTarget` in `internal/db/targets.go` — every
-    /// Swift writer of `targets.parent_id` calls this before writing.
+    /// `childProjectID` (NULL vs N counts as different), and a parent that no
+    /// longer exists with `TargetNotFoundError` naming it — the foreign key
+    /// would refuse it too, but as a bare "FOREIGN KEY constraint failed".
+    /// Twin of Go `checkParentBoard`, which guards `CreateTarget`/`UpdateTarget`
+    /// in `internal/db/targets.go` (Go still leaves a missing parent to the
+    /// foreign key) — every Swift writer of `targets.parent_id` calls this
+    /// before writing.
     package static func checkParentBoard(_ db: Database, parentID: Int?, childProjectID: Int64?) throws {
-        guard let parentID,
-              let row = try Row.fetchOne(db, sql: "SELECT project_id FROM targets WHERE id = ?", arguments: [parentID])
-        else { return }
+        guard let parentID else { return }
+        guard let row = try Row.fetchOne(
+            db, sql: "SELECT project_id FROM targets WHERE id = ?", arguments: [parentID]
+        ) else { throw TargetNotFoundError(id: parentID) }
         let parentProjectID: Int64? = row["project_id"]
         guard parentProjectID == childProjectID else {
             throw TargetParentBoardError(

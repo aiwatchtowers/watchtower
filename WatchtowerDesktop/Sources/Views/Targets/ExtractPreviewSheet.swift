@@ -36,6 +36,7 @@ struct ExtractPreviewSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var items: [ProposedTarget]
+    @State private var errorMessage: String?
     let onCreateSelected: ([ProposedTarget]) -> Void
 
     // Footer info (set by US-002 extractor caller)
@@ -137,6 +138,13 @@ struct ExtractPreviewSheet: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal)
             }
+            if let errorMessage {
+                Text(errorMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal)
+            }
             HStack {
                 Text("\(selectedItems.count) of \(items.count) selected")
                     .font(.caption)
@@ -156,7 +164,10 @@ struct ExtractPreviewSheet: View {
     // MARK: - Create
 
     private func createSelected() {
-        guard let db = appState.databaseManager else { return }
+        guard let db = appState.databaseManager else {
+            errorMessage = "Database not available"
+            return
+        }
         let toCreate = selectedItems
         do {
             try db.dbPool.write { dbConn in
@@ -181,23 +192,21 @@ struct ExtractPreviewSheet: View {
                     )
                     for link in item.secondaryLinks {
                         if link.targetId != nil || !link.externalRef.isEmpty {
-                            try dbConn.execute(
-                                sql: """
-                                    INSERT OR IGNORE INTO target_links
-                                        (source_target_id, target_target_id, external_ref, relation, created_by)
-                                    VALUES (?, ?, ?, ?, 'ai')
-                                    """,
-                                arguments: [newID, link.targetId, link.externalRef, link.relation]
+                            try TargetQueries.insertLink(
+                                dbConn, sourceID: newID, targetID: link.targetId,
+                                externalRef: link.externalRef, relation: link.relation, createdBy: "ai"
                             )
                         }
                     }
                 }
             }
+            onCreateSelected(toCreate)
+            dismiss()
         } catch {
-            // Surface error if needed — for now proceed to dismiss
+            // The write rolled back as a whole, so nothing was created: keep
+            // the sheet open with the reason (e.g. a parent deleted meanwhile).
+            errorMessage = error.localizedDescription
         }
-        onCreateSelected(toCreate)
-        dismiss()
     }
 
     // Serialize `[TargetSubItem]` into the JSON shape persisted in targets.sub_items.

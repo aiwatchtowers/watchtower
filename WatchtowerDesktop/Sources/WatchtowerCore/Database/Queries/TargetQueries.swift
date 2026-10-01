@@ -578,14 +578,39 @@ package enum TargetQueries {
         relation: String,
         createdBy: String = "user"
     ) throws {
+        try insertLink(db, sourceID: sourceID, targetID: targetID, relation: relation, createdBy: createdBy)
+    }
+
+    /// Insert a link from `sourceID` to another target and/or an external ref
+    /// (the `target_links` CHECK wants at least one). A vanished endpoint
+    /// throws `TargetNotFoundError` naming it: `OR IGNORE` covers only the
+    /// UNIQUE constraint, never the foreign key, which would otherwise fail as
+    /// a bare "FOREIGN KEY constraint failed".
+    package static func insertLink(
+        _ db: Database,
+        sourceID: Int,
+        targetID: Int?,
+        externalRef: String = "",
+        relation: String,
+        createdBy: String
+    ) throws {
+        try requireExists(db, id: sourceID)
+        if let targetID { try requireExists(db, id: targetID) }
         try db.execute(
             sql: """
                 INSERT OR IGNORE INTO target_links
                   (source_target_id, target_target_id, external_ref, relation, created_by)
-                VALUES (?, ?, '', ?, ?)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-            arguments: [sourceID, targetID, relation, createdBy]
+            arguments: [sourceID, targetID, externalRef, relation, createdBy]
         )
+    }
+
+    private static func requireExists(_ db: Database, id: Int) throws {
+        let exists = try Bool.fetchOne(
+            db, sql: "SELECT EXISTS(SELECT 1 FROM targets WHERE id = ?)", arguments: [id]
+        ) ?? false
+        guard exists else { throw TargetNotFoundError(id: id) }
     }
 
     package static func fetchLinks(
