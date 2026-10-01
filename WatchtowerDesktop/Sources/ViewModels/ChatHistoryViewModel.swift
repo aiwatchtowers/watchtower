@@ -64,6 +64,8 @@ final class ChatHistoryViewModel {
             lastError = nil
             reloadSynchronously()
         } catch {
+            // A chat deleted elsewhere leaves the list instead of lingering.
+            if error is RowNotFoundError { reloadSynchronously() }
             lastError = error.localizedDescription
         }
     }

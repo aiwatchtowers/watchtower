@@ -122,6 +122,13 @@ struct CalendarConnectionDetail: View {
                     calendarSelectionRows(otherCalendars, calVM: calVM)
                 }
             }
+            if let error = calVM.calendarSelectionError {
+                Section {
+                    Label(error, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+            }
         } else {
             Section("Synced Calendars") {
                 Text("No calendars synced yet.")

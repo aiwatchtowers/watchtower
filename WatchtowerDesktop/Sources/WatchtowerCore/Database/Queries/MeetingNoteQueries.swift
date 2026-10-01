@@ -49,6 +49,7 @@ package enum MeetingNoteQueries {
             sql: "UPDATE meeting_notes SET text = ?, updated_at = datetime('now') WHERE id = ?",
             arguments: [text, id]
         )
+        try db.requireUpdated("meeting note", id: id)
     }
 
     package static func toggleChecked(_ db: Database, id: Int64) throws {
@@ -56,6 +57,7 @@ package enum MeetingNoteQueries {
             sql: "UPDATE meeting_notes SET is_checked = NOT is_checked, updated_at = datetime('now') WHERE id = ?",
             arguments: [id]
         )
+        try db.requireUpdated("meeting note", id: id)
     }
 
     package static func setTaskID(_ db: Database, noteID: Int64, taskID: Int64) throws {
@@ -63,6 +65,7 @@ package enum MeetingNoteQueries {
             sql: "UPDATE meeting_notes SET task_id = ?, updated_at = datetime('now') WHERE id = ?",
             arguments: [taskID, noteID]
         )
+        try db.requireUpdated("meeting note", id: noteID)
     }
 
     // MARK: - Delete

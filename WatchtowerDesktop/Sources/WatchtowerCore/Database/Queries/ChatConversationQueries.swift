@@ -112,6 +112,7 @@ package enum ChatConversationQueries {
         try db.execute(sql: """
             UPDATE chat_conversations SET title = ?, title_source = 'user', updated_at = ? WHERE id = ?
         """, arguments: [title, Date().timeIntervalSince1970, id])
+        try db.requireUpdated("chat", id: id)
     }
 
     /// First-message title (80 chars), only while nothing better exists.
@@ -134,6 +135,7 @@ package enum ChatConversationQueries {
 
     package static func pin(_ db: Database, id: Int64, pinned: Bool) throws {
         try db.execute(sql: "UPDATE chat_conversations SET pinned = ? WHERE id = ?", arguments: [pinned ? 1 : 0, id])
+        try db.requireUpdated("chat", id: id)
     }
 
     package static func archive(_ db: Database, id: Int64) throws {
@@ -141,13 +143,15 @@ package enum ChatConversationQueries {
             sql: "UPDATE chat_conversations SET archived_at = ? WHERE id = ?",
             arguments: [Date().timeIntervalSince1970, id]
         )
+        try db.requireUpdated("chat", id: id)
     }
 
     /// Moves a conversation into (or out of) a project. An actual move also
     /// clears the stored provider session: a `--resume`d Claude session keeps
     /// the prompt it was started with, so it would never see the new
     /// project's block or files — the next turn starts fresh and replays.
-    /// Moving to the project it is already in changes nothing.
+    /// Moving to the project it is already in changes nothing — so zero rows
+    /// is a normal outcome here and the write stays unchecked.
     package static func setProject(_ db: Database, id: Int64, projectID: Int64?) throws {
         try db.execute(
             sql: """

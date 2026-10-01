@@ -45,6 +45,11 @@ struct TargetWatchTabView: View {
             } else {
                 ForEach(viewModel.watches) { watch in watchRow(watch) }
             }
+            if let error = viewModel.errorMessage {
+                Label(error, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
             if let origin = viewModel.originTrack {
                 Button { appState.navigateToTrack(origin.id) } label: {
                     Label("From track: \(origin.text)", systemImage: "arrow.up.right.square")

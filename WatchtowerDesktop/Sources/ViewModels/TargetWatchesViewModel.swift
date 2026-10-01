@@ -166,7 +166,11 @@ final class TargetWatchesViewModel {
     // MARK: - Watch management
 
     func setCollecting(_ watch: Track, _ on: Bool) {
-        try? dbPool.write { db in try TrackQueries.setEnabled(db, id: watch.id, enabled: on) }
+        do {
+            try dbPool.write { db in try TrackQueries.setEnabled(db, id: watch.id, enabled: on) }
+        } catch {
+            errorMessage = "Failed to update the watch: \(error.localizedDescription)"
+        }
     }
 
     func deleteWatch(_ watch: Track) {

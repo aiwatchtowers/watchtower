@@ -169,6 +169,8 @@ package enum CalendarQueries {
             sql: "UPDATE calendar_calendars SET is_selected = ? WHERE id = ?",
             arguments: [selected, id]
         )
+        // The sync drops a calendar the account no longer lists.
+        try db.requireUpdated("calendar", id: id)
     }
 
     // MARK: - Auth State
