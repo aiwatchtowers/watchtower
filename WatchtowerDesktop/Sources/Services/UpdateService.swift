@@ -371,12 +371,13 @@ final class UpdateService {
     /// The side-effecting steps of an install, injectable for tests. `live`
     /// is the only production value.
     struct InstallSteps {
+        /// Whether the folder holding the current app can be written to.
+        var canWrite: (_ folder: URL) -> Bool
         /// Move the downloaded app next to the current one (same volume, so
         /// the swap is a rename); returns the staged app's URL.
         var stage: (_ newApp: URL, _ currentApp: URL) throws -> URL
         /// Throws when the staged app's signature is invalid or not ours.
         var verify: (_ app: URL, _ teamID: String) throws -> Void
-        var stopDaemon: () async -> Void
         /// Atomically swap the staged app in for the current one.
         var replace: (_ currentApp: URL, _ stagedApp: URL) throws -> Void
         /// Best-effort removal of whatever is left of the staged app.
@@ -384,9 +385,9 @@ final class UpdateService {
 
         static var live: Self {
             Self(
+                canWrite: { FileManager.default.isWritableFile(atPath: $0.path) },
                 stage: { try UpdateService.stageForReplacement(newApp: $0, currentApp: $1) },
                 verify: { try UpdateService.verifySignature(of: $0, teamID: $1) },
-                stopDaemon: { await DaemonManager.stopDaemonBounded() },
                 replace: { current, staged in
                     _ = try FileManager.default.replaceItemAt(current, withItemAt: staged, backupItemName: nil, options: [])
                 },
@@ -460,10 +461,18 @@ final class UpdateService {
     /// reopen the app out of the blue hours later.
     nonisolated static let relaunchWaiterTicks = 600
 
-    /// The install sequence over injectable steps: pin the signer, stage,
-    /// verify, stop the daemon, swap. Nothing destructive happens before the
-    /// staged app has passed verification, and a failure at any step leaves
-    /// the current bundle as it was.
+    /// The install sequence over injectable steps: pin the signer, check the
+    /// destination is writable, stage, verify, swap. Nothing destructive
+    /// happens before the staged app has passed verification, and a failure
+    /// at any step leaves the current bundle as it was.
+    ///
+    /// The daemon is deliberately not stopped here: it runs from the
+    /// `CLIBinaryStore` copy, not from the bundle, and the relaunch's quit
+    /// path (then the new app's store sync) stops it. Stopping it here would
+    /// leave sync dead for the session whenever the swap then failed, and
+    /// would put an `await` between verify and swap, the window in which a
+    /// verified staged bundle could be exchanged before this trusted process
+    /// moves it into place. Verify and replace run back to back.
     static func performInstall(
         newApp: URL,
         currentApp: URL,
@@ -479,6 +488,12 @@ final class UpdateService {
                 + "Refusing to install an update that can't be verified against a known signer.")
         }
 
+        let folder = currentApp.deletingLastPathComponent()
+        guard steps.canWrite(folder) else {
+            return .failed("Watchtower can't replace itself in “\(folder.path)” (no write permission). "
+                + "Move Watchtower to a folder you can write to, or install the update manually from the DMG.")
+        }
+
         let staged: URL
         do {
             staged = try steps.stage(newApp, currentApp)
@@ -492,8 +507,6 @@ final class UpdateService {
             steps.discard(staged)
             return .failed("Update aborted: \(error.localizedDescription)")
         }
-
-        await steps.stopDaemon()
 
         do {
             try steps.replace(currentApp, staged)

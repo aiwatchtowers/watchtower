@@ -275,6 +275,7 @@ private final class InstallRecorder {
     var failStage = false
     var failVerify = false
     var failReplace = false
+    var writable = true
     var verifiedTeamID: String?
 
     struct Boom: LocalizedError {
@@ -284,6 +285,10 @@ private final class InstallRecorder {
 
     var steps: UpdateService.InstallSteps {
         UpdateService.InstallSteps(
+            canWrite: { _ in
+                self.calls.append("canWrite")
+                return self.writable
+            },
             stage: { _, _ in
                 self.calls.append("stage")
                 if self.failStage { throw Boom(what: "stage") }
@@ -294,7 +299,6 @@ private final class InstallRecorder {
                 self.verifiedTeamID = team
                 if self.failVerify { throw Boom(what: "verify") }
             },
-            stopDaemon: { self.calls.append("stopDaemon") },
             replace: { _, _ in
                 self.calls.append("replace")
                 if self.failReplace { throw Boom(what: "replace") }
@@ -314,11 +318,13 @@ struct UpdateServiceInstallTests {
         await UpdateService.performInstall(newApp: newApp, currentApp: currentApp, teamID: teamID, steps: rec.steps)
     }
 
-    @Test("happy path: stage, verify against our Team ID, stop daemon, swap")
-    func happyPath() async {
+    @Test("happy path: writability, stage, verify against our Team ID, then swap with nothing in between")
+    func happyPathOrder() async {
         let rec = InstallRecorder()
         #expect(await run(rec) == .installed)
-        #expect(rec.calls == ["stage", "verify", "stopDaemon", "replace", "discard"])
+        // verify -> replace back to back: no step (and no daemon stop) may sit
+        // between the check and the use of the staged bundle.
+        #expect(rec.calls == ["canWrite", "stage", "verify", "replace", "discard"])
         #expect(rec.verifiedTeamID == "ABCDE12345")
     }
 
@@ -338,6 +344,17 @@ struct UpdateServiceInstallTests {
         #expect(rec.calls.isEmpty)
     }
 
+    @Test("an unwritable app folder is refused before anything is staged")
+    func unwritableFolder() async {
+        let rec = InstallRecorder()
+        rec.writable = false
+        let outcome = await run(rec)
+        guard case .failed(let message) = outcome else { Issue.record("expected failure"); return }
+        #expect(message.contains("/Applications"))
+        #expect(message.contains("DMG"))
+        #expect(rec.calls == ["canWrite"])
+    }
+
     @Test("staging failure surfaces an error and stops nothing")
     func stageFailure() async {
         let rec = InstallRecorder()
@@ -345,17 +362,17 @@ struct UpdateServiceInstallTests {
         let outcome = await run(rec)
         guard case .failed(let message) = outcome else { Issue.record("expected failure"); return }
         #expect(message.contains("stage boom"))
-        #expect(rec.calls == ["stage"])
+        #expect(rec.calls == ["canWrite", "stage"])
     }
 
-    @Test("signature failure discards the staged app and never stops the daemon or swaps")
+    @Test("signature failure discards the staged app and never swaps")
     func verifyFailure() async {
         let rec = InstallRecorder()
         rec.failVerify = true
         let outcome = await run(rec)
         guard case .failed(let message) = outcome else { Issue.record("expected failure"); return }
         #expect(message.contains("verify boom"))
-        #expect(rec.calls == ["stage", "verify", "discard"])
+        #expect(rec.calls == ["canWrite", "stage", "verify", "discard"])
     }
 
     @Test("swap failure surfaces an error and discards the staged app")
@@ -365,7 +382,7 @@ struct UpdateServiceInstallTests {
         let outcome = await run(rec)
         guard case .failed(let message) = outcome else { Issue.record("expected failure"); return }
         #expect(message.contains("replace boom"))
-        #expect(rec.calls == ["stage", "verify", "stopDaemon", "replace", "discard"])
+        #expect(rec.calls == ["canWrite", "stage", "verify", "replace", "discard"])
     }
 
     @Test("install outside a ready state is a no-op")
