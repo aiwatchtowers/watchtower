@@ -246,10 +246,11 @@ struct ProjectTargetDetailCard: View {
             TextField("Comment or answer the agent…", text: $commentDraft, axis: .vertical)
                 .textFieldStyle(.plain)
                 .lineLimit(1...6)
-                .onSubmit(send)
-                // ⌘↩ sends only while this field has focus: a window-wide
-                // shortcut would also fire from a terminal in the other
-                // split pane and post a stale draft.
+                // Plain Return is left to the field (a new line); only ⌘↩
+                // or the button sends. ⌘↩ is handled here so it sends only
+                // while this field has focus: a window-wide shortcut would
+                // also fire from a terminal in the other split pane and
+                // post a stale draft.
                 .onKeyPress(.return, phases: .down) { press in
                     guard press.modifiers.contains(.command) else { return .ignored }
                     send()
