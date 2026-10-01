@@ -119,20 +119,17 @@ func (r runner) reindex(ctx context.Context, d *db.DB, names []string, now time.
 		return Stats{}, err
 	}
 	st, err := r.run(ctx, d, Options{Sources: names, Now: now})
-	if err != nil {
-		return st, err
-	}
 	for _, src := range sources {
 		if src.Name() == ProjectDocSource {
 			// The daemon path skips guarded folders; a rebuild the owner
 			// started indexes every project, so it loses nothing an
-			// explicit trigger had indexed.
-			n, err := indexAllProjectDocs(ctx, d)
+			// explicit trigger had indexed — even when another source failed.
+			n, perr := indexAllProjectDocs(ctx, d)
 			st.Written += n
-			return st, err
+			err = errors.Join(err, perr)
 		}
 	}
-	return st, nil
+	return st, err
 }
 
 func indexAllProjectDocs(ctx context.Context, d *db.DB) (int, error) {

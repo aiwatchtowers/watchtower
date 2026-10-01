@@ -91,11 +91,12 @@ func (projectDocSource) Changed(ctx context.Context, q Queryer, cursor string, _
 		}
 		fi, err := statInside(folder, rel)
 		switch {
-		case errors.Is(err, fs.ErrNotExist):
-			keys = append(keys, projectDocKey(id)) // gone: re-rendered as its title
+		case errors.Is(err, fs.ErrNotExist), errors.Is(err, errDocOutside):
+			// Gone, or now leading out of the folder: re-rendered as its
+			// title (the render refuses the link before touching it).
+			keys = append(keys, projectDocKey(id))
 		case err != nil:
-			// Unreadable or leading out of the folder: keep the indexed text,
-			// and never follow it (it could point into a guarded location).
+			// Unreadable for now: keep the indexed text.
 		case float64(fi.ModTime().Unix()) != indexed:
 			keys = append(keys, projectDocKey(id))
 		}
