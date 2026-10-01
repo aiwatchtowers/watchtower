@@ -451,7 +451,7 @@ func TestPhaseSlackSyncOneAccountFailureDoesNotBlockSibling(t *testing.T) {
 }
 
 // TestPhaseSlackSyncRevokedTokenClassification proves the "revoked" status
-// classification (isRevokedAuthError) actually survives phaseSlackSync's
+// classification (IsRevokedAuthError) actually survives phaseSlackSync's
 // daemon-level fan-out, not just the orchestrator-level unit tests — an
 // account with NO team_id yet seeded means ensureWorkspace genuinely calls
 // team.info (unlike TestPhaseSlackSyncOneAccountFailureDoesNotBlockSibling's
@@ -1261,4 +1261,45 @@ func TestSyncHeartbeat_PublishesLiveProgress(t *testing.T) {
 	progress, err = sync.ReadSyncProgress(d.syncProgressPath())
 	require.NoError(t, err)
 	assert.False(t, progress.IsSyncing(time.Now()))
+}
+
+// TestInbox09_RevokedAccountSyncErrorDoesNotFreeze guards INBOX-09's
+// revoked-token carve-out (owner-approved 2026-10-01): a revoked Slack
+// account's sync error does not freeze the shared inbox watermark — it fails
+// every cycle until reconnected, so freezing on it would stop every other
+// account for good — while any other account's sync error still does.
+func TestInbox09_RevokedAccountSyncErrorDoesNotFreeze(t *testing.T) {
+	// BEHAVIOR INBOX-09 — see docs/inventory/inbox-pulse.md
+	// Do not weaken or remove without explicit owner approval.
+	t.Setenv("HOME", t.TempDir())
+	revokedMux := http.NewServeMux()
+	revokedMux.HandleFunc("/team.info", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "invalid_auth"})
+	})
+	revokedDB := db.OpenTestDB(t)
+	_, err := revokedDB.CreateSlackAccount(db.SlackAccount{}) // no team_id -> team.info is really called
+	require.NoError(t, err)
+	srv := httptest.NewServer(revokedMux)
+	t.Cleanup(srv.Close)
+	api := goslack.New("xoxp-test-token", goslack.OptionAPIURL(srv.URL+"/"))
+	revokedOrch := sync.NewOrchestrator(revokedDB, watchtowerslack.NewClientWithAPIUnlimited(api),
+		&config.Config{Sync: config.SyncConfig{Workers: 1, InitialHistoryDays: 1}}, 1)
+	revokedOrch.SetLogger(log.New(os.Stderr, "[test-revoked] ", 0))
+
+	d := New(&config.Config{Sync: config.SyncConfig{PollInterval: time.Second}})
+	d.SetLogger(log.New(os.Stderr, "[test-fanout] ", 0))
+	d.SetOrchestrators([]*sync.Orchestrator{revokedOrch})
+	syncErr := d.phaseSlackSync(context.Background())
+	require.Error(t, syncErr)
+	assert.NoError(t, inboxFreezingSyncError(syncErr), "a revoked account alone must not freeze the inbox watermark")
+
+	// A sibling failing for any other reason still freezes it.
+	var failCount atomic.Int32
+	failOrch, _ := newStatusTrackingOrchestrator(t, http.NewServeMux(), &failCount)
+	d.SetOrchestrators([]*sync.Orchestrator{revokedOrch, failOrch})
+	syncErr = d.phaseSlackSync(context.Background())
+	freezing := inboxFreezingSyncError(syncErr)
+	require.Error(t, freezing, "a non-revoked account's sync error must freeze the inbox watermark")
+	assert.NotContains(t, freezing.Error(), "invalid_auth")
 }

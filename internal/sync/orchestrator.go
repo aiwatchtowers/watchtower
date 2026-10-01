@@ -193,7 +193,7 @@ func (o *Orchestrator) recordAuthResult(ctx context.Context, err error) {
 		return
 	}
 	status := "error"
-	if isRevokedAuthError(err) {
+	if IsRevokedAuthError(err) {
 		status = "revoked"
 	}
 	msg := err.Error()
@@ -218,10 +218,12 @@ var revokedSlackErrors = map[string]bool{
 	"not_authed":       true,
 }
 
-// isRevokedAuthError classifies a Run() error for recordAuthResult — the
+// IsRevokedAuthError classifies a Run() error for recordAuthResult — the
 // isNonFatalError precedent's structured-then-string-match pattern, applied
-// to a different question (dead token vs a transient/scoped one).
-func isRevokedAuthError(err error) bool {
+// to a different question (dead token vs a transient/scoped one). The daemon
+// uses it too: a revoked account's sync error does not freeze the inbox
+// watermark (INBOX-09).
+func IsRevokedAuthError(err error) bool {
 	if err == nil {
 		return false
 	}

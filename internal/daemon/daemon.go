@@ -395,6 +395,9 @@ func (d *Daemon) triggerChannel() <-chan struct{} {
 }
 
 func (d *Daemon) runSync(ctx context.Context) {
+	// Every source sync below starts after this instant, so the data the
+	// inbox scans at the end of the cycle is complete up to it (INBOX-09).
+	syncStart := time.Now()
 	syncErr := d.phaseSlackSync(ctx)
 	// Owner commands first: the reaction poll needs only the freshly synced
 	// Slack messages (thread context) and is what `Sync Now` is usually pressed
@@ -449,6 +452,9 @@ func (d *Daemon) runSync(ctx context.Context) {
 	// are all available for marking.
 	d.autoMarkRead()
 
+	if d.inboxPipe != nil {
+		d.inboxPipe.SetSyncResult(syncStart, inboxFreezingSyncError(syncErr))
+	}
 	d.phaseInbox(ctx)
 	d.phaseStreamDigests(ctx)
 	d.phaseIdeas(ctx)
@@ -497,14 +503,15 @@ func (d *Daemon) trackedPipelineRun(name string, fn func() pipelineRunStats) {
 // the others (the wireImapSyncers/wireGoogleSyncers fan-out pattern) — each
 // orchestrator advances its own account's sync_state independently, so a
 // failed account never freezes a healthy one's watermark. The returned error
-// is the first account's error (non-nil for non-fatal sync issues); pipelines
-// still run. An empty orchestrator set means Slack is not connected — the
-// phase is skipped and the other sources still sync.
+// joins every account's error (non-nil for non-fatal sync issues; last_sync.json
+// records the first); pipelines still run. An empty orchestrator set means
+// Slack is not connected — the phase is skipped and the other sources still
+// sync.
 func (d *Daemon) phaseSlackSync(ctx context.Context) error {
 	if len(d.orchestrators) == 0 {
 		return nil
 	}
-	var firstErr error
+	var errs []error
 	snaps := make([]sync.Snapshot, 0, len(d.orchestrators))
 	// Tracked like every other pipeline so the Slack sync finally shows up in
 	// pipeline_runs (and the Desktop's Pipeline Progress window) — it was the
@@ -517,22 +524,51 @@ func (d *Daemon) phaseSlackSync(ctx context.Context) error {
 			stopBeat()
 			if err != nil {
 				d.logger.Printf("sync error: %v", err)
-				if firstErr == nil {
-					firstErr = err
-				}
+				errs = append(errs, err)
 			}
 			snap := o.Progress().Snapshot()
 			snaps = append(snaps, snap)
 			messages += snap.MessagesFetched
 		}
-		return pipelineRunStats{items: messages, err: firstErr}
+		return pipelineRunStats{items: messages, err: firstError(errs)}
 	})
 	d.writeSyncProgress(sync.IdleProgress())
 	resultPath := filepath.Join(d.config.WorkspaceDir(), "last_sync.json")
-	if err := sync.WriteSyncResult(resultPath, sync.ResultFromSnapshots(snaps, firstErr)); err != nil {
+	if err := sync.WriteSyncResult(resultPath, sync.ResultFromSnapshots(snaps, firstError(errs))); err != nil {
 		d.logger.Printf("failed to write sync result: %v", err)
 	}
-	return firstErr
+	return errors.Join(errs...)
+}
+
+// firstError returns errs[0], or nil for none.
+func firstError(errs []error) error {
+	if len(errs) == 0 {
+		return nil
+	}
+	return errs[0]
+}
+
+// inboxFreezingSyncError is the part of phaseSlackSync's error that must
+// freeze the inbox watermark (INBOX-09): every account's failure except a
+// revoked token's. A revoked account brings in no new messages, and its sync
+// fails every cycle until the owner reconnects it, so freezing on it would
+// stop every other account's watermark for good. Its status row already shows
+// it as revoked.
+func inboxFreezingSyncError(syncErr error) error {
+	if syncErr == nil {
+		return nil
+	}
+	errs := []error{syncErr}
+	if joined, ok := syncErr.(interface{ Unwrap() []error }); ok {
+		errs = joined.Unwrap()
+	}
+	var freezing []error
+	for _, err := range errs {
+		if !sync.IsRevokedAuthError(err) {
+			freezing = append(freezing, err)
+		}
+	}
+	return errors.Join(freezing...)
 }
 
 // syncHeartbeatInterval is how often a running sync republishes its progress.

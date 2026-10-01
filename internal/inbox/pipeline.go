@@ -152,6 +152,11 @@ type Pipeline struct {
 	// from the DB (db.ResolveOwner) when it is not set.
 	owner db.Owner
 
+	// syncStart and syncErr are the cycle's source-sync result, set by
+	// SetSyncResult and consumed by the next Run (INBOX-09).
+	syncStart time.Time
+	syncErr   error
+
 	// Step metrics (set before each OnProgress call).
 	LastStepDurationSeconds float64
 }
@@ -171,6 +176,16 @@ func New(database *db.DB, cfg *config.Config, gen digest.Generator, logger *log.
 // it: each Slack account is matched against its own current_user_id.
 func (p *Pipeline) SetOwner(o db.Owner) {
 	p.owner = o
+}
+
+// SetSyncResult hands the next Run this cycle's source sync: when it started
+// and the sync failure that must freeze the watermark (nil when the sync was
+// clean or failed only on a revoked token). The watermark then advances to
+// start − 30 min instead of now − 30 min, so messages that arrive while the
+// cycle's later phases run are never behind it (INBOX-09). Run consumes the
+// result; without one (a run that did not sync first) it bounds at now.
+func (p *Pipeline) SetSyncResult(start time.Time, err error) {
+	p.syncStart, p.syncErr = start, err
 }
 
 // AccumulatedUsage reports the pipeline's token usage. Run makes no AI calls,
@@ -240,26 +255,38 @@ func (p *Pipeline) runArchiveAndUnsnooze() int {
 }
 
 // decideWatermark computes the new watermark timestamp per INBOX-09 (see
-// docs/inventory/inbox-pulse.md): a detector error freezes the watermark so
-// the failed source's window is re-scanned next cycle; a clean pass advances
-// it. ok is false when the watermark must stay frozen.
-func decideWatermark(detectErr error) (ts float64, ok bool) {
-	if detectErr != nil {
+// docs/inventory/inbox-pulse.md): a detector or sync error freezes the
+// watermark so the failed window is re-scanned next cycle; a clean pass
+// advances it to dataAsOf − 30 min, where dataAsOf is when this cycle's sync
+// started (zero: no sync ran, so now). ok is false when the watermark must
+// stay frozen.
+func decideWatermark(err error, dataAsOf time.Time) (ts float64, ok bool) {
+	if err != nil {
 		return 0, false
 	}
-	// Use a 30-minute buffer instead of wall-clock time to account for
-	// Slack search API indexing delays — messages may arrive in the DB
-	// with ts_unix values behind wall-clock time.
-	return float64(time.Now().Add(-30 * time.Minute).Unix()), true
+	if dataAsOf.IsZero() {
+		dataAsOf = time.Now()
+	}
+	// The detectors filter on a message's post time, and the synced data is
+	// only complete up to the sync's start — a message posted later lands on
+	// the next cycle with a ts behind any later bound. The 30-minute buffer
+	// covers Slack search indexing lag on top of that.
+	return float64(dataAsOf.Add(-30 * time.Minute).Unix()), true
 }
 
 // Run executes the inbox pipeline: dedup, detect new items, auto-resolve,
 // auto-archive, unsnooze, then advance the watermark. It makes no AI calls —
 // the inbox is a mechanical feeder for Catch-Up, the briefing and meeting
 // prep (docs/superpowers/specs/2026-09-14-inbox-demolition-design.md).
-// Returns (created count, resolved count, error). A detector error is
-// logged, freezes the watermark (INBOX-09) and is returned to the caller.
+// Returns (created count, resolved count, error). A detector error, or the
+// sync error handed over by SetSyncResult, is logged, freezes the watermark
+// (INBOX-09) and is returned to the caller.
 func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
+	// Consumed up front, so a skipped run never leaves a stale result for
+	// the next one.
+	syncStart, syncErr := p.syncStart, p.syncErr
+	p.syncStart, p.syncErr = time.Time{}, nil
+
 	if p.cfg != nil && !p.cfg.Inbox.Enabled {
 		return 0, 0, nil
 	}
@@ -301,11 +328,16 @@ func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
 	p.progress(3, totalSteps, "archiving")
 	archived := p.runArchiveAndUnsnooze()
 
-	// Watermark decision — see docs/inventory/inbox-pulse.md INBOX-09.
-	if ts, ok := decideWatermark(detectErr); ok {
+	// Watermark decision — see docs/inventory/inbox-pulse.md INBOX-09. Items
+	// were still detected from the data that did sync; a sync error only
+	// keeps the window open for what it failed to bring in.
+	if syncErr != nil {
+		detectErr = errors.Join(detectErr, fmt.Errorf("slack sync: %w", syncErr))
+	}
+	if ts, ok := decideWatermark(detectErr, syncStart); ok {
 		p.advanceWatermark(ts, lastTS)
 	} else {
-		p.logger.Printf("inbox: detector error, leaving watermark unchanged to avoid losing the skipped window: %v", detectErr)
+		p.logger.Printf("inbox: detector or sync error, leaving watermark unchanged to avoid losing the skipped window: %v", detectErr)
 	}
 
 	p.progress(totalSteps, totalSteps, "done")
