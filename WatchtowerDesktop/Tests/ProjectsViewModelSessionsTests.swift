@@ -151,6 +151,28 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         XCTAssertEqual(vm.layout(projectID: p).primary, .session(row.id))
     }
 
+    /// Board #160: `/clear` moved Claude Code to a new session id, which the
+    /// project's SessionStart hook stored on the row from another process.
+    /// Opening it from a list loaded before that resumes the new id, not the
+    /// pre-clear conversation, and the launch names its row for the hook.
+    func testOpenResumesTheSessionIDTheHookStored() async throws {
+        let p = try await projectWithFolder()
+        let stale = try await insertSession(.init(
+            projectID: p, kind: .claude, title: "s", folderPath: acme, claudeSessionID: UUID().uuidString.lowercased()
+        ))
+        let cleared = UUID().uuidString.lowercased()
+        try await pool.write {
+            try $0.execute(sql: "UPDATE terminal_sessions SET claude_session_id = ? WHERE id = ?",
+                           arguments: [cleared, stale.id])
+        }
+        let vm = makeVM()
+
+        await vm.open(stale)
+
+        XCTAssertEqual(launches.map(\.args.last), ["exec claude --resume \(cleared)"])
+        XCTAssertEqual(launches.first?.environment, ["\(TerminalLaunch.sessionRowEnv)=\(stale.id)"])
+    }
+
     func testWorkOnATargetWithALegacyClosedSessionResumesIt() async throws {
         let p = try await projectWithFolder()
         let target = try await pool.write { try TestDatabase.insertProjectTarget($0, projectID: p) }

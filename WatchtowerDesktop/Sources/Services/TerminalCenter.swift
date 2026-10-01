@@ -157,7 +157,9 @@ final class TerminalCenter {
     /// start failed) `--resume` would be refused on every Restart, so it
     /// starts the same id anew (`--session-id`, no prompt). `fresh: true` —
     /// the row's first start, or Start fresh after the caller stored a new id
-    /// — always uses `--session-id` with the optional fixed `prompt`. A
+    /// — always uses `--session-id` with the optional fixed `prompt`; either
+    /// way the process gets the row id (`TerminalLaunch.sessionRowEnv`), so
+    /// the project hook can store the id `/clear` moves Claude Code to. A
     /// `shell` row runs the login shell alone. After an exit it relaunches in
     /// the same process view (scrollback kept). A missing folder or a stored
     /// id that is not a canonical UUID (it goes into a shell command)
@@ -198,7 +200,7 @@ final class TerminalCenter {
         }
         processes[id] = process
         states[id] = .running
-        process.start(.make(shell: shell(), folder: session.folderPath, mode: mode))
+        process.start(.make(shell: shell(), folder: session.folderPath, mode: mode, rowID: id))
         return mode
     }
 
@@ -368,6 +370,7 @@ final class SwiftTermSession: NSObject, TerminalSessionProcess, LocalProcessTerm
     func start(_ launch: TerminalLaunch) {
         var environment = Terminal.getEnvironmentVariables(termName: "xterm-256color")
         environment.append("SHELL=\(launch.executable)")
+        environment.append(contentsOf: launch.environment)
         terminal.startProcess(
             executable: launch.executable,
             args: launch.args,

@@ -25,6 +25,17 @@ final class TerminalLaunchTests: XCTestCase {
         XCTAssertEqual(l.args.last, "exec claude --resume \(uuid)")
     }
 
+    /// A claude launch names its row for the project's SessionStart hook
+    /// (board #160); a shell runs no hook and gets nothing.
+    func testClaudeLaunchCarriesTheRowIDInItsEnvironment() {
+        let env = ["\(TerminalLaunch.sessionRowEnv)=7"]
+        XCTAssertEqual(TerminalLaunch.sessionRowEnv, "WATCHTOWER_TERMINAL_SESSION_ID", "Go terminalSessionEnv")
+        XCTAssertEqual(TerminalLaunch.make(shell: nil, folder: "/tmp", mode: .newClaude(uuid: uuid, prompt: nil), rowID: 7).environment, env)
+        XCTAssertEqual(TerminalLaunch.make(shell: nil, folder: "/tmp", mode: .resumeClaude(uuid: uuid), rowID: 7).environment, env)
+        XCTAssertEqual(TerminalLaunch.make(shell: nil, folder: "/tmp", mode: .shell, rowID: 7).environment, [])
+        XCTAssertEqual(TerminalLaunch.make(shell: nil, folder: "/tmp", mode: .resumeClaude(uuid: uuid)).environment, [])
+    }
+
     func testShellIsPlainLoginShell() {
         XCTAssertEqual(TerminalLaunch.make(shell: "/bin/bash", folder: "/tmp", mode: .shell).args, ["-l"])
     }

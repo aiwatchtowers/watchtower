@@ -12,15 +12,24 @@ package struct TerminalLaunch: Equatable, Sendable {
         case shell
     }
 
+    /// Names the `terminal_sessions` row a `claude` process runs in, so the
+    /// project's `SessionStart` hook (`watchtower project brief`) can store
+    /// the conversation's new id after `/clear` or a resume (Go
+    /// `terminalSessionEnv`, a dual path).
+    package static let sessionRowEnv = "WATCHTOWER_TERMINAL_SESSION_ID"
+
     package static let firstRunPrompt = "Set up this Watchtower project using the watchtower-project skill."
     package static let fallbackShell = "/bin/zsh"
 
     package let executable: String
     package let args: [String]
     package let currentDirectory: String
+    /// `NAME=value` entries added to the terminal's environment.
+    package var environment: [String] = []
 
     /// Does not validate `uuid`: callers check `isValidSessionID` first.
-    package static func make(shell: String?, folder: String, mode: Mode) -> Self {
+    /// `rowID` reaches a `claude` launch's environment as `sessionRowEnv`.
+    package static func make(shell: String?, folder: String, mode: Mode, rowID: Int64? = nil) -> Self {
         let executable = shell.flatMap { $0.hasPrefix("/") ? $0 : nil } ?? fallbackShell
         let args: [String]
         switch mode {
@@ -31,7 +40,11 @@ package struct TerminalLaunch: Equatable, Sendable {
         case .shell:
             args = ["-l"]
         }
-        return Self(executable: executable, args: args, currentDirectory: folder)
+        var launch = Self(executable: executable, args: args, currentDirectory: folder)
+        if let rowID, mode != .shell {
+            launch.environment = ["\(sessionRowEnv)=\(rowID)"]
+        }
+        return launch
     }
 
     /// Lowercase canonical UUID only (same as Go's `uuidRe`): the id is

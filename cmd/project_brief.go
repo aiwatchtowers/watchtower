@@ -56,7 +56,9 @@ var projectBriefCmd = &cobra.Command{
 		"comments waiting for the agent, recent threads, issues and pages from the project's\n" +
 		"sources when room is left, and the board rules. Always exits 0 — a hook must\n" +
 		"never break a session start, so any failure (project gone, folder moved, database\n" +
-		"unreadable) is one line.",
+		"unreadable) is one line. Inside a session the Desktop launched (" + terminalSessionEnv + "\n" +
+		"set) it also reads the hook's stdin payload and, after /clear, /compact or a resume,\n" +
+		"stores the conversation's session id on that terminal row.",
 	// No root schema/config pre-run: a broken config would otherwise fail the
 	// hook before RunE could turn it into the one-line brief (the
 	// extract-pdf-text precedent). loadProjectBrief loads config itself.
@@ -82,6 +84,7 @@ func init() {
 }
 
 func runProjectBrief(cmd *cobra.Command, _ []string) error {
+	recordTerminalSessionID(cmd.InOrStdin(), cmd.ErrOrStderr(), projectBriefFlagProject)
 	fmt.Fprintln(cmd.OutOrStdout(), loadProjectBriefFlag(projectBriefFlagProject))
 	return nil
 }
