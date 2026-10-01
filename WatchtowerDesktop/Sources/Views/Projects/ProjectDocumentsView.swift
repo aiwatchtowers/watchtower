@@ -14,6 +14,8 @@ struct ProjectDocumentsView: View {
     @State private var delivery: TerminalCenter.PromptDelivery?
     @State private var showThreads = true
     @State private var addingDocument = false
+    /// The last table-of-contents jump in the open document.
+    @State private var scrollTarget: DocumentScrollTarget?
 
     var body: some View {
         HSplitView {
@@ -51,11 +53,19 @@ struct ProjectDocumentsView: View {
             selection = DocumentSelectionCarry.none
             // Nor the half-typed composer text written for the other document.
             composerText = ""
+            scrollTarget = nil
         }
     }
 
     private var list: some View {
         VStack(spacing: 0) {
+            HStack(spacing: 4) {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                TextField("Search titles", text: $vm.documentQuery)
+                    .textFieldStyle(.plain)
+            }
+            .padding(8)
+            Divider()
             documentList
             Divider()
             HStack {
@@ -80,30 +90,75 @@ struct ProjectDocumentsView: View {
     }
 
     private var documentList: some View {
-        List(vm.documents, selection: Binding(
+        List(selection: Binding(
             get: { vm.documentViewModel?.document.id },
             set: { id in
                 guard let item = vm.documents.first(where: { $0.id == id }) else { return }
                 Task { await vm.openDocument(item.document) }
             }
-        )) { item in
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(item.document.displayTitle)
-                    Text([item.document.kind, item.targetTitle].compactMap { $0 }.joined(separator: " · "))
-                        .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                }
-                Spacer()
-                if vm.isRevised(item.document) {
-                    Circle().fill(Color.blue).frame(width: 6, height: 6).help("Revised since you last opened it")
-                }
-                if item.openComments > 0 {
-                    Text("\(item.openComments)").font(.caption2).foregroundStyle(.secondary)
+        )) {
+            let sections = vm.documentSections
+            if sections.isEmpty, !vm.documents.isEmpty {
+                Text("No document title matches.").foregroundStyle(.secondary)
+            }
+            ForEach(sections) { section in
+                Section(isExpanded: expandedBinding(section.group)) {
+                    ForEach(section.items) { documentRow($0) }
+                } header: {
+                    Text("\(section.group.title) (\(section.items.count))")
                 }
             }
-            .tag(Optional(item.id))
         }
         .panelListStyle()
+    }
+
+    private func expandedBinding(_ group: ProjectDocumentGrouping.Group) -> Binding<Bool> {
+        Binding(
+            get: { !vm.collapsedDocumentGroups.contains(group) },
+            set: { expanded in
+                if expanded { vm.collapsedDocumentGroups.remove(group) } else { vm.collapsedDocumentGroups.insert(group) }
+            }
+        )
+    }
+
+    private func documentRow(_ item: ProjectDocumentListItem) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.document.displayTitle)
+                Text([item.document.relPath, item.targetTitle].compactMap { $0 }.joined(separator: " · "))
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+            }
+            Spacer()
+            if vm.isRevised(item.document) {
+                Circle().fill(Color.blue).frame(width: 7, height: 7).help("Changed since you last viewed it")
+            }
+            if item.openComments > 0 {
+                Label("\(item.openComments)", systemImage: "text.bubble")
+                    .labelStyle(.titleAndIcon)
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .help(item.openComments == 1 ? "1 open comment" : "\(item.openComments) open comments")
+            }
+        }
+        .tag(Optional(item.id))
+    }
+
+    /// The open document's headings; a pick scrolls the text to it.
+    private func contents(_ rendered: RenderedDocument) -> some View {
+        let top = rendered.headings.map(\.level).min() ?? 1
+        return Menu {
+            ForEach(Array(rendered.headings.enumerated()), id: \.offset) { _, heading in
+                Button(String(repeating: "    ", count: heading.level - top) + heading.title) {
+                    scrollTarget = DocumentScrollTarget(offset: heading.offset)
+                }
+            }
+        } label: {
+            Label("Contents", systemImage: "list.bullet.indent")
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .disabled(rendered.headings.isEmpty)
+        .help(rendered.headings.isEmpty ? "This document has no headings" : "Jump to a heading")
     }
 
     private func documentView(_ docVM: ProjectDocumentViewModel) -> some View {
@@ -111,6 +166,7 @@ struct ProjectDocumentsView: View {
             HStack {
                 Text(docVM.document.relPath).font(.caption).foregroundStyle(.secondary)
                 Spacer()
+                if let rendered = docVM.rendered { contents(rendered) }
                 if hasThreadsPanel(docVM) {
                     Toggle(isOn: $showThreads) {
                         Label("Threads (\(docVM.threads.count + docVM.drafts.count))", systemImage: "sidebar.right")
@@ -132,6 +188,7 @@ struct ProjectDocumentsView: View {
                         selection: $selection,
                         composerText: $composerText,
                         horizontalInset: ReadableColumn.horizontalInset(forWidth: geo.size.width),
+                        scrollTarget: scrollTarget,
                         onComment: { body, range in
                             guard docVM.addDraft(body: body, selection: range) else { return false }
                             showThreads = true

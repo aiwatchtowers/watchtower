@@ -160,6 +160,28 @@ final class ProjectsViewModelTests: XCTestCase {
         XCTAssertEqual(rows.map(\.depth), [0, 1])
     }
 
+    /// #81: the list groups by kind and filters by title; the search belongs
+    /// to one project and is cleared on a switch.
+    func testDocumentSectionsFollowTheSearchAndASwitchClearsIt() async throws {
+        let p = try await pool.write { d -> Int64 in
+            let p = try TestDatabase.insertProject(d)
+            try TestDatabase.insertProjectDocument(d, projectID: p, relPath: "docs/specs/sync.md", kind: "spec", title: "Sync")
+            try TestDatabase.insertProjectDocument(d, projectID: p, relPath: "docs/plans/auth.md", kind: "plan", title: "Auth")
+            try TestDatabase.insertProjectDocument(d, projectID: p, relPath: "README.md", kind: "doc", origin: "import")
+            return p
+        }
+        let vm = makeVM()
+        await vm.reload()
+        vm.selectedProjectID = p
+        await vm.loadDocuments()
+        XCTAssertEqual(vm.documentSections.map(\.group), [.specs, .plans, .imported])
+
+        vm.documentQuery = "auth"
+        XCTAssertEqual(vm.documentSections.map(\.group), [.plans])
+        vm.selectedProjectID = nil
+        XCTAssertEqual(vm.documentQuery, "")
+    }
+
     func testCreateShowsAFailedDocumentImportWithTheRetryCommand() async throws {
         let id = try await pool.write { try TestDatabase.insertProject($0) }
         let runner = ScriptedCLIRunner(results: [

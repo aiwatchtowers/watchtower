@@ -22,6 +22,7 @@ final class ProjectsViewModel {
                 closeDocument()
                 documents = []
                 attachNotice = nil
+                documentQuery = ""
             }
             // One thing is on screen: a project, or a standalone terminal.
             // Selecting a project also drills the panel into it.
@@ -61,6 +62,14 @@ final class ProjectsViewModel {
         installNotes.merging(statusReadErrors) { note, read in "\(note) \(read)" }
     }
     private(set) var documents: [ProjectDocumentListItem] = []
+    /// The Documents list's title search (#81); cleared on a project switch.
+    var documentQuery = ""
+    /// Collapsed groups of the Documents list; kept for the session.
+    var collapsedDocumentGroups: Set<ProjectDocumentGrouping.Group> = []
+
+    var documentSections: [ProjectDocumentGrouping.Section] {
+        ProjectDocumentGrouping.sections(documents, query: documentQuery)
+    }
     /// An "Add document…" attach is running (#80); the sheet disables Attach.
     private(set) var isAttachingDocument = false
     /// Why the last attach failed (the CLI's refusal); the sheet shows it.

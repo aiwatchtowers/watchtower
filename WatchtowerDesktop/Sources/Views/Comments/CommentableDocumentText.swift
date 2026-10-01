@@ -18,6 +18,7 @@ struct CommentableDocumentText: View {
     /// (a document that briefly fails to read replaces it).
     @Binding var composerText: String
     var horizontalInset: CGFloat = ReadableColumn.minInset
+    var scrollTarget: DocumentScrollTarget?
     /// Saves a comment on `range`; returns whether it was saved (the composer
     /// then closes and clears). On false the composer stays open with the
     /// text and a generic note; the host's own error line says why.
@@ -44,6 +45,7 @@ struct CommentableDocumentText: View {
                 horizontalInset: horizontalInset,
                 selectionRect: $selectionRect,
                 onCommentRequest: openComposer,
+                scrollTarget: scrollTarget,
                 onClick: onClick
             )
             .overlay(alignment: .topLeading) { commentButton(in: geo.size) }
