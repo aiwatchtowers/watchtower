@@ -52,6 +52,10 @@ type fakeFetcher struct {
 	downloadErr  map[string]error    // Download fails with it
 	readErr      map[string]error    // a Read of the body fails with it after the bytes
 	downloads    map[string]int      // Download calls by id
+	onFetch      func()              // called on every Fetch
+	fetchErr     map[string]error    // Fetch of this id fails with it
+	containers   []Container         // Containers' answer (nil = the one ENG space)
+	allKeys      []string            // the container key of every All call
 }
 
 // hit counts one Fetcher call and returns the injected failure, if any.
@@ -76,6 +80,15 @@ func (f *fakeFetcher) removeFromAll(id string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.hidden[id] = true
+}
+
+// restoreToAll lists id in All again (a restriction lifted, a restore from
+// the trash) without a new version: Changed still does not list it unless
+// its modification time falls inside the pass.
+func (f *fakeFetcher) restoreToAll(id string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.hidden, id)
 }
 
 // addComment adds a footer comment on pageID; Changed(KindComment) lists it
@@ -149,7 +162,7 @@ func (f *fakeFetcher) changedCalls() []changedCall {
 func newFake() *fakeFetcher {
 	return &fakeFetcher{docs: map[ItemKind][]fakeDoc{}, pageSize: 2, fetches: map[string]int{},
 		allCalls: map[ItemKind]int{}, hidden: map[string]bool{}, blobs: map[string][]byte{},
-		downloadErr: map[string]error{}, readErr: map[string]error{}, downloads: map[string]int{}}
+		downloadErr: map[string]error{}, readErr: map[string]error{}, downloads: map[string]int{}, fetchErr: map[string]error{}}
 }
 
 func (f *fakeFetcher) add(kind ItemKind, id string, version int, modified time.Time) {
@@ -236,6 +249,9 @@ func (f *fakeFetcher) Containers(context.Context) ([]Container, error) {
 	if err := f.hit(); err != nil {
 		return nil, err
 	}
+	if f.containers != nil {
+		return append([]Container(nil), f.containers...), nil
+	}
 	return []Container{{Key: "ENG", Name: "Engineering", ExtID: "1"}}, nil
 }
 
@@ -269,13 +285,14 @@ func (f *fakeFetcher) Changed(_ context.Context, _ Container, kind ItemKind, sin
 	return f.paginate(refs, page)
 }
 
-func (f *fakeFetcher) All(_ context.Context, _ Container, kind ItemKind, page string) ([]ItemRef, string, error) {
+func (f *fakeFetcher) All(_ context.Context, c Container, kind ItemKind, page string) ([]ItemRef, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.hit(); err != nil {
 		return nil, "", err
 	}
 	f.allCalls[kind]++
+	f.allKeys = append(f.allKeys, c.Key)
 	if err := f.failAll[kind]; err != nil {
 		return nil, "", err
 	}
@@ -300,6 +317,12 @@ func (f *fakeFetcher) Fetch(_ context.Context, _ Container, ref ItemRef) (*Item,
 		return nil, err
 	}
 	f.fetches[ref.ExtID]++
+	if f.onFetch != nil {
+		f.onFetch()
+	}
+	if err := f.fetchErr[ref.ExtID]; err != nil {
+		return nil, err
+	}
 	d := f.find(ref.ExtID)
 	if d == nil || d.item == nil {
 		return nil, nil

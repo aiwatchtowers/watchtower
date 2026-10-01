@@ -7,8 +7,6 @@ import (
 	"io"
 	"strings"
 	"time"
-
-	"golang.org/x/sync/errgroup"
 )
 
 // maxDownload caps an attachment download (global constraint, 25 MiB). It
@@ -124,9 +122,9 @@ func cutBatch(bt batch, stale []ItemRef, done int) (string, batch, error) {
 	return cursor, bt, err
 }
 
-// applyAttachments fetches refs, downloads and extracts them (up to
-// fetchConcurrency in flight, no new item launched once the budget is
-// spent), then writes the processed prefix and runs inTx in one
+// applyAttachments fetches refs (up to fetchConcurrency in flight),
+// downloads and extracts them one at a time (no new item started once the
+// budget is spent), then writes the processed prefix and runs inTx in one
 // transaction. It returns how many refs were processed.
 func (e *Engine) applyAttachments(ctx context.Context, p pass, refs []ItemRef, inTx func(q Queryer, done int) error) (int, error) {
 	items, err := fetchAll(ctx, p.f, p.c, refs)
@@ -149,7 +147,7 @@ func (e *Engine) applyAttachments(ctx context.Context, p pass, refs []ItemRef, i
 	}
 	st := Stats{}
 	err = e.withTx(ctx, func(q Queryer) error {
-		if err := writeAttachmentItems(ctx, q, p.src.ID, refs, items, results, e.opts.Now(), &st); err != nil {
+		if err := e.writeAttachmentItems(ctx, q, p, refs, items, results, &st); err != nil {
 			return err
 		}
 		if err := writeExtractions(ctx, q, p, items, results); err != nil {
@@ -172,15 +170,20 @@ func (e *Engine) applyAttachments(ctx context.Context, p pass, refs []ItemRef, i
 // degraded outcome for a row already stored leaves that row's content
 // alone — its text, and the version that text belongs to — so search keeps
 // the last good text while the retry is pending. The revisit re-fetches
-// such a row by id, so it still gets the new version.
-func writeAttachmentItems(ctx context.Context, q Queryer, sourceID int64, refs []ItemRef, items []*Item, results []extraction, now time.Time, st *Stats) error {
-	var ids []string
+// such a row by id, so it still gets the new version. The try that spends
+// the last attempt (a revisit at maxExtractAttempts-1) on a new version
+// writes that version with whatever it got instead: no retry is left, and
+// the old text belongs to a version that no longer exists, so the partial
+// text of an ocr_pending result (or none, for a failure) replaces it. A
+// try of the stored version itself never overwrites its text.
+func (e *Engine) writeAttachmentItems(ctx context.Context, q Queryer, p pass, refs []ItemRef, items []*Item, results []extraction, st *Stats) error {
+	var degraded []ItemRef
 	for i, it := range items {
 		if it != nil && results[i].degraded() {
-			ids = append(ids, it.Ref.ExtID)
+			degraded = append(degraded, it.Ref)
 		}
 	}
-	stored, err := localVersions(ctx, q, sourceID, ids)
+	stored, err := attachmentVersions(ctx, q, p.src.ID, degraded)
 	if err != nil {
 		return err
 	}
@@ -188,13 +191,18 @@ func writeAttachmentItems(ctx context.Context, q Queryer, sourceID int64, refs [
 	var witems []*Item
 	for i, it := range items {
 		if it != nil && results[i].degraded() {
-			if _, ok := stored[it.Ref.ExtID]; ok {
+			v, ok := stored[it.Ref.ExtID]
+			if ok && !v.lastTry(it.Ref.Version, p.revisit) {
 				continue
+			}
+			if ok {
+				e.opts.Logger.Printf("attachment %s: last attempt on version %d degraded (%s); replacing version %d's text with what it got",
+					it.Ref.ExtID, it.Ref.Version, results[i].status, v.stored)
 			}
 		}
 		wrefs, witems = append(wrefs, refs[i]), append(witems, it)
 	}
-	return writeItems(ctx, q, sourceID, wrefs, witems, now, st)
+	return writeItems(ctx, q, p.src.ID, wrefs, witems, e.opts.Now(), st)
 }
 
 // writeExtractions records each written attachment's extraction status. A
@@ -223,33 +231,29 @@ func writeExtractions(ctx context.Context, q Queryer, p pass, items []*Item, res
 	return nil
 }
 
-// extractAll runs extractOne for the fetched items in order, with up to
-// fetchConcurrency in flight. Once the budget is spent no further item is
-// launched — the first one always is, so a batch always progresses; done
-// is the length of the processed prefix and results are in item order.
+// extractAll runs extractOne for the fetched items one at a time, in
+// order. Extraction may run the PDF and OCR helpers for minutes and the
+// daemon cycle is serial, so items are never extracted concurrently: the
+// cycle overshoots its budget by at most one attachment. Once the budget is
+// spent no further item is started — the first one always is, so a batch
+// always progresses; done is the length of the processed prefix and
+// results are in item order.
 func (e *Engine) extractAll(ctx context.Context, p pass, items []*Item) ([]extraction, int, error) {
 	out := make([]extraction, len(items))
-	g, gctx := errgroup.WithContext(ctx)
-	g.SetLimit(fetchConcurrency)
-	done := len(items)
 	for i, it := range items {
 		if i > 0 && p.budget != nil && p.budget.over() {
-			done = i
-			break
+			return out, i, nil
 		}
 		if it == nil {
 			continue
 		}
-		g.Go(func() error {
-			r, err := e.extractOne(gctx, p.f, it)
-			out[i] = r
-			return err
-		})
+		r, err := e.extractOne(ctx, p.f, it)
+		if err != nil {
+			return nil, 0, err
+		}
+		out[i] = r
 	}
-	if err := g.Wait(); err != nil {
-		return nil, 0, err
-	}
-	return out, done, nil
+	return out, len(items), nil
 }
 
 // extractOne downloads one attachment and extracts its text. No extractor,
