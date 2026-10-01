@@ -432,30 +432,12 @@ final class FoundationChatSessionProcess: ChatSessionProcess, @unchecked Sendabl
         }
     }
 
-    /// Frames stdout on byte 0x0A only (`NDJSONLineSplitter`) — never
-    /// `bytes.lines`, which also splits on the raw U+0085 Go leaves in JSON
-    /// strings and would drop the event.
+    /// Reads through `ndjsonLines`, never `stdout.bytes`: that one serializes
+    /// every reader in the app, so an idle warm session stalled the others.
     private static func readEvents(from stdout: FileHandle, into continuation: AsyncStream<ChatEvent>.Continuation) async {
-        var splitter = NDJSONLineSplitter()
-        var chunk: [UInt8] = []
-        func emit(_ lines: [String]) {
-            for line in lines {
-                if let event = ChatEvent.parse(line) { continuation.yield(event) }
-            }
+        for await line in stdout.ndjsonLines {
+            if let event = ChatEvent.parse(line) { continuation.yield(event) }
         }
-        do {
-            for try await byte in stdout.bytes {
-                chunk.append(byte)
-                if byte == 0x0A {
-                    emit(splitter.append(chunk))
-                    chunk.removeAll(keepingCapacity: true)
-                }
-            }
-        } catch {
-            // A read error means stdout closed; the exit status says why.
-        }
-        emit(splitter.append(chunk))
-        if let tail = splitter.finish() { emit([tail]) }
     }
 
     func send(_ command: ChatCommand) throws {
