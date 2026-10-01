@@ -8,6 +8,27 @@ package enum WorkspacePane: Codable, Hashable, Sendable {
     case documents
 }
 
+/// The project page header's view buttons: a terminal (any session), the
+/// Board or the Documents.
+package enum WorkspaceView: CaseIterable, Sendable {
+    case terminal
+    case board
+    case documents
+
+    /// What `pane` shows.
+    package init(_ pane: WorkspacePane) {
+        switch pane {
+        case .session: self = .terminal
+        case .board: self = .board
+        case .documents: self = .documents
+        }
+    }
+
+    package func matches(_ pane: WorkspacePane) -> Bool {
+        Self(pane) == self
+    }
+}
+
 /// Which panes a project page shows, persisted per project under
 /// `WorkspaceLayout.key(projectID:)`. Pure value type: the view owns the
 /// storage, this owns the rules.
@@ -110,6 +131,33 @@ package struct WorkspaceLayout: Codable, Equatable, Sendable {
         } else {
             primary = pane
         }
+    }
+
+    /// Whether a header view button shows as on: that kind of pane is on screen.
+    package func isShowing(_ view: WorkspaceView) -> Bool {
+        visiblePanes.contains(where: view.matches)
+    }
+
+    /// The header's Board / Documents button: puts `pane` on screen without
+    /// hiding a terminal — a split keeps its session and swaps the other
+    /// pane; a single pane switches to it (`reveal`).
+    package mutating func showProjectView(_ pane: WorkspacePane) {
+        reveal(pane, keeping: sessionIDs.first.map { .session($0) } ?? primary)
+    }
+
+    /// The pane the header's session menu puts a session into: the terminal
+    /// on screen, else the last pane on screen — the one the Terminal button
+    /// replaces too (it keeps the first).
+    package var terminalSlot: WorkspacePane {
+        visiblePanes.first(where: WorkspaceView.terminal.matches) ?? visiblePanes.last ?? primary
+    }
+
+    /// A header view button turned off: in a split on screen, the pane it
+    /// names closes and the other stays alone. One pane on screen (single
+    /// or expanded) is never removed.
+    package mutating func hide(_ view: WorkspaceView) {
+        guard visiblePanes.count == 2, let pane = visiblePanes.first(where: view.matches) else { return }
+        remove(pane)
     }
 
     package mutating func setDividerFraction(_ fraction: Double) {

@@ -128,6 +128,37 @@ extension ProjectsViewModel {
         setLayout(updated, projectID: projectID)
     }
 
+    /// The page header's Terminal / Board / Documents buttons. Board and
+    /// Documents never hide a terminal (`WorkspaceLayout.showProjectView`).
+    /// Terminal keeps the view on screen beside it in a split: a session
+    /// already in a slot (or the live one) comes back as is; otherwise the
+    /// most recent open session is resumed, or a new one starts.
+    func showView(_ view: WorkspaceView, project: Project) async {
+        var updated = layout(projectID: project.id)
+        guard !updated.isShowing(view) else { return }
+        switch view {
+        case .board:
+            updated.showProjectView(.board)
+        case .documents:
+            updated.showProjectView(.documents)
+        case .terminal:
+            let kept = updated.visiblePanes.first ?? updated.primary
+            guard let id = updated.sessionIDs.first ?? activeSessionID(projectID: project.id) else {
+                await openMostRecentSession(project: project, placement: .keeping(kept))
+                return
+            }
+            updated.reveal(.session(id), keeping: kept)
+        }
+        setLayout(updated, projectID: project.id)
+    }
+
+    /// A header view button turned off: closes that pane of a split.
+    func hideView(_ view: WorkspaceView, projectID: Int64) {
+        var updated = layout(projectID: projectID)
+        updated.hide(view)
+        setLayout(updated, projectID: projectID)
+    }
+
     /// A pane's own picker: `slot` shows `item` instead. A session is opened
     /// there (reopened if closed, resumed if not running).
     func showInPane(_ slot: WorkspacePane, item: WorkspacePane, projectID: Int64) async {

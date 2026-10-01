@@ -134,30 +134,26 @@ func TestTerminalTitle_WritesAITitle(t *testing.T) {
 	assert.Equal(t, "ai", s.TitleSource)
 }
 
-func TestTerminalTitle_FollowsTheProjectBoardLanguage(t *testing.T) {
+func TestTerminalTitle_IgnoresAStoredProjectBoardLanguage(t *testing.T) {
 	defer setupWatchTestEnv(t)()
-	gen := &chatTitleMockGen{reply: "Исправить редирект логина"}
+	gen := &chatTitleMockGen{reply: "Fix the login redirect"}
 	stubTerminalTitleGenerator(t, gen)
 	id := seedTerminalSession(t, "auto", "claude", terminalOwnerLine)
-
-	_, err := runTerminalTitleCmd(t, id)
-	require.NoError(t, err)
-	assert.NotContains(t, gen.system, "Write the name in", "a standalone session follows the owner's language")
 
 	d, err := db.Open(filepath.Join(os.Getenv("HOME"), ".local", "share", "watchtower", "test-ws", "watchtower.db"))
 	require.NoError(t, err)
 	defer d.Close()
 	pid, err := d.CreateProject("acme", t.TempDir())
 	require.NoError(t, err)
-	lang := "Russian"
-	err = d.UpdateProject(pid, db.ProjectUpdate{BoardLanguage: &lang})
+	// A value stored before board item #153 retired the override.
+	_, err = d.Exec(`UPDATE projects SET board_language = 'Russian' WHERE id = ?`, pid)
 	require.NoError(t, err)
-	_, err = d.Exec(`UPDATE terminal_sessions SET project_id = ?, title_source = 'auto' WHERE id = ?`, pid, id)
+	_, err = d.Exec(`UPDATE terminal_sessions SET project_id = ? WHERE id = ?`, pid, id)
 	require.NoError(t, err)
 
 	_, err = runTerminalTitleCmd(t, id)
 	require.NoError(t, err)
-	assert.Contains(t, gen.system, "Write the name in Russian")
+	assert.NotContains(t, gen.system, "Write the name in", "the title follows the owner's language")
 }
 
 func TestTerminalTitle_UnknownIDFails(t *testing.T) {
