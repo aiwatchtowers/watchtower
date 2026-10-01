@@ -648,14 +648,16 @@ func (p *Pipeline) runExtract(ctx context.Context, runID int64, stepOffset int, 
 	}
 
 	// Count this run's failures against the windows' budgets; a window whose
-	// budget is spent is quarantined and stops holding the watermark back.
+	// budget is spent is quarantined and stops holding the watermark back. A
+	// failure caused by cancellation (shutdown) never counts.
 	var quarantined []int
 	for _, fb := range failed {
-		if !countsTowardBudget(fb.batch, lastCommitted, fb.cancelled) {
+		if fb.cancelled {
 			continue
 		}
+		proven := provenFailure(fb.batch, lastCommitted)
 		for _, i := range fb.idxs {
-			q, err := budget.failed(p.db, windows[i], fb.err)
+			q, err := budget.failed(p.db, windows[i], len(fb.idxs) == 1, proven, fb.err)
 			if err != nil {
 				// Unrecorded, the failure is simply not counted: the window
 				// stays frozen and is retried (MEM-04).
@@ -665,8 +667,8 @@ func (p *Pipeline) runExtract(ctx context.Context, runID int64, stepOffset int, 
 			if q {
 				done[i] = true
 				quarantined = append(quarantined, i)
-				p.logf("memory: QUARANTINED extraction window %s after %d failed attempts (last: %v) — memory will not read these messages; the record stays in memory_extract_failures",
-					windowSpan(windows[i]), extractQuarantineAttempts, fb.err)
+				p.logf("memory: QUARANTINED extraction window %s after %d failed solo attempts (last: %v) — memory will not read these messages; the record stays in memory_extract_failures",
+					windowSpan(windows[i]), extractSoloAttempts, fb.err)
 			}
 		}
 	}

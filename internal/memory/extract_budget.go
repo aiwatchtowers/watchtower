@@ -13,12 +13,15 @@ import (
 // pass it — instead of freezing extraction forever and re-extracting (and
 // duplicating) every later window on every run.
 const (
-	// extractBatchAttempts counted failures after which a window is
-	// extracted alone, so one bad window stops failing its batch neighbours.
+	// extractBatchAttempts consecutive failures, of any kind, after which a
+	// window is extracted alone. Splitting loses nothing, so it needs no
+	// proof that the window is at fault — and without it a quiet install
+	// whose whole chunk fits one batch could never isolate a bad window.
 	extractBatchAttempts = 3
-	// extractQuarantineAttempts counted failures (the solo ones included)
-	// after which the window is quarantined.
-	extractQuarantineAttempts = 6
+	// extractSoloAttempts proven failures while alone in its batch (split
+	// out, or alone by size) after which the window is quarantined — see
+	// provenFailure.
+	extractSoloAttempts = 3
 )
 
 // windowKey identifies an extraction window across runs: its channel and its
@@ -102,17 +105,22 @@ func (b *extractBudget) succeeded(database *db.DB, w runWindow) error {
 	return database.DeleteMemoryExtractFailure(k.channelID, k.firstTS)
 }
 
-// failed counts one failure of w and reports whether its budget is now spent
-// (the window is quarantined, and the caller may let the watermark pass it).
-func (b *extractBudget) failed(database *db.DB, w runWindow, cause error) (quarantined bool, err error) {
+// failed counts one failure of w — every failure toward the split, a proven
+// one while w was extracted alone toward quarantine — and reports whether its
+// budget is now spent (the window is quarantined, and the caller may let the
+// watermark pass it).
+func (b *extractBudget) failed(database *db.DB, w runWindow, solo, proven bool, cause error) (quarantined bool, err error) {
 	k := keyOf(w)
 	f := b.failing[k]
 	f.ChannelID, f.FirstTS = k.channelID, k.firstTS
 	last := len(w.Messages) - 1
 	f.LastTS, f.LastTSUnix = w.Messages[last].TS, w.tsUnix[last]
 	f.Failures++
+	if solo && proven {
+		f.SoloFailures++
+	}
 	f.LastError = cause.Error()
-	if f.Failures >= extractQuarantineAttempts {
+	if f.SoloFailures >= extractSoloAttempts {
 		f.QuarantinedAt = time.Now().UTC().Format(time.RFC3339)
 	}
 	if err := database.SetMemoryExtractFailure(f); err != nil {
@@ -122,16 +130,16 @@ func (b *extractBudget) failed(database *db.DB, w runWindow, cause error) (quara
 	return f.QuarantinedAt != "", nil
 }
 
-// countsTowardBudget decides whether a batch failure is evidence against the
-// batch's own windows: only when a LATER batch of the same run committed,
-// proving the provider and the vault worked after the failure. A run that
-// stopped committing — an outage, a quota running out mid-run, a broken
-// vault, a provider answering garbage — proves nothing about the windows it
-// failed on (they head the next run anyway), so a transient failure never
-// spends a budget and never lets the watermark pass a window. A failure caused
-// by cancellation never counts.
-func countsTowardBudget(batch, lastCommitted int, cancelled bool) bool {
-	return !cancelled && batch < lastCommitted
+// provenFailure decides whether a batch failure is evidence against the
+// batch's own windows — the only kind that counts toward quarantine: a LATER
+// batch of the same run committed, proving the provider and the vault worked
+// after the failure. A run that stopped committing — an outage, a quota or
+// rate limit running out mid-run, a broken vault, a provider answering garbage
+// — proves nothing about the windows it failed on (they head the next run
+// anyway), so a transient failure never quarantines a window and never lets
+// the watermark pass it.
+func provenFailure(batch, lastCommitted int) bool {
+	return batch < lastCommitted
 }
 
 // batchWindowsWithSolo groups windows like groupWindowsIntoBatches, except

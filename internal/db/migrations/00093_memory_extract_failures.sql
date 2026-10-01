@@ -7,16 +7,18 @@
 --
 -- One row per failing window, keyed by its channel and its first message's
 -- Slack ts (stable while the watermark is frozen below it). The raw ts, not
--- ts_unix: ts_unix is whole seconds, and a window boundary can fall inside
--- one second, so only the raw ts tells two neighbouring windows apart. failures counts the
--- failures that proved the window itself is the problem (see
--- memory.countsTowardBudget); after extractBatchAttempts the window is
--- extracted alone, and after extractQuarantineAttempts it is quarantined:
--- quarantined_at is set and the window's messages — channel_id, raw ts from
--- first_ts to last_ts — are skipped by later runs so the watermark can pass
--- them. last_ts_unix lets a still-retried row be pruned once the watermark
--- has passed it. A quarantined row is kept as the durable record of what memory never
--- read. A row is deleted when its window succeeds.
+-- ts_unix: ts_unix is whole seconds, and a window boundary can fall inside one
+-- second, so only the raw ts tells two neighbouring windows apart.
+--
+-- failures counts consecutive failures of any kind; after extractBatchAttempts
+-- the window is extracted alone. solo_failures counts the failures while alone
+-- that proved the window itself is the problem (a later batch of the same run
+-- committed — memory.provenFailure); after extractSoloAttempts the window is
+-- quarantined: quarantined_at is set and its messages — channel_id, raw ts
+-- from first_ts to last_ts — are skipped by later runs so the watermark can
+-- pass them. A quarantined row is never pruned: it is the durable record of
+-- what memory never read. last_ts_unix lets a still-retried row be pruned once
+-- the watermark has passed it. A row is deleted when its window succeeds.
 --
 -- Runtime state, not vault-derived: deliberately NOT in DropMemoryIndex's
 -- delete list (MEM-02 exclusion, the memory_step_state line) — a reindex that
@@ -27,6 +29,7 @@ CREATE TABLE IF NOT EXISTS memory_extract_failures (
     last_ts        TEXT NOT NULL,
     last_ts_unix   REAL NOT NULL,
     failures       INTEGER NOT NULL DEFAULT 0,
+    solo_failures  INTEGER NOT NULL DEFAULT 0,
     last_error     TEXT NOT NULL DEFAULT '',
     quarantined_at TEXT NOT NULL DEFAULT '',
     updated_at     TEXT NOT NULL DEFAULT '',
