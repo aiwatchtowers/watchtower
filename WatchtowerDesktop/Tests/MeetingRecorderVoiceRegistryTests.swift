@@ -158,7 +158,7 @@ final class MeetingRecorderVoiceRegistryTests: MeetingRecorderTestCase {
         XCTAssertEqual(alice.score ?? 0, 1, accuracy: 1e-4)
         XCTAssertEqual(alice.modelVersion, VoiceRegistryPolicy.embeddingModelVersion)
         XCTAssertEqual(alice.speechSec ?? 0, 40, accuracy: 1e-6)
-        XCTAssertEqual(alice.clips, [ClipSpan(start: 0.3, end: 10.3)], "one segment → one capped clip")
+        XCTAssertEqual(alice.clips, [ClipSpan(start: 0.3, end: 6.3)], "one segment → one capped clip")
         let unnamed = try XCTUnwrap(flow.speakers.first { $0.speaker == "Speaker 1" })
         XCTAssertEqual(unnamed.labelSource, VoiceLabelSource.none)
         XCTAssertEqual(unnamed.originalLabel, "Speaker 1")
