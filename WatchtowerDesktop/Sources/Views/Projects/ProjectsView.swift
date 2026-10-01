@@ -35,30 +35,24 @@ struct ProjectsView: View {
                 panel.frame(width: dragPanelWidth ?? PanelResizeHandle.clamp(panelWidth))
                 PanelResizeHandle(width: $panelWidth, liveWidth: $dragPanelWidth)
             }
-            Group {
-                if let standalone = vm.selectedStandalone {
-                    StandaloneTerminalView(session: standalone, actions: sessionActions)
-                        .id(standalone.id)
-                } else if let project = vm.selectedProject {
-                    ProjectPageView(vm: vm, project: project)
-                } else {
-                    emptyState
+            VStack(spacing: 0) {
+                titleRow
+                Divider()
+                Group {
+                    if let standalone = vm.selectedStandalone {
+                        StandaloneTerminalView(session: standalone, actions: sessionActions)
+                            .id(standalone.id)
+                    } else if let project = vm.selectedProject {
+                        ProjectPageView(vm: vm, project: project)
+                    } else {
+                        emptyState
+                    }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .frame(minWidth: 480, maxWidth: .infinity, maxHeight: .infinity)
         }
         .sessionActionDialogs(vm: vm, renaming: $renamingSession, deleting: $deletingSession)
-        .toolbar {
-            ToolbarItem(placement: .navigation) {
-                Button {
-                    withAnimation(.easeInOut(duration: 0.2)) { panelVisible.toggle() }
-                } label: {
-                    Image(systemName: "sidebar.leading")
-                }
-                .help("Toggle Projects Panel")
-                .accessibilityLabel("Toggle Projects Panel")
-            }
-        }
         .onAppear {
             consumeRoute()
             Task { await vm.reload() }
@@ -77,6 +71,26 @@ struct ProjectsView: View {
                     + "Desktop, Downloads and cloud storage avoids that prompt."
             )
         }
+    }
+
+    /// The chat's inline title row (`ChatSplitView.toolbar`) instead of a
+    /// window toolbar, which would add a tall title-bar strip above the tab.
+    /// It stays visible with the panel hidden: its toggle is the way back.
+    private var titleRow: some View {
+        HStack(spacing: 10) {
+            Button { withAnimation(.easeInOut(duration: 0.2)) { panelVisible.toggle() } } label: {
+                Image(systemName: "sidebar.leading")
+            }
+            .help("Toggle Projects Panel")
+            .accessibilityLabel("Toggle Projects Panel")
+            Text(vm.selectedStandalone?.title ?? vm.selectedProject?.name ?? "Projects")
+                .font(.headline)
+                .lineLimit(1)
+            Spacer()
+        }
+        .buttonStyle(.borderless)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
     }
 
     private var isTerminalPending: Bool {

@@ -70,7 +70,6 @@ struct ProjectPageView: View {
     private var header: some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(project.name).font(.headline)
                 Button {
                     NSWorkspace.shared.activateFileViewerSelecting([project.folderURL])
                 } label: {
