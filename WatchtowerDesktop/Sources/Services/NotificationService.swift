@@ -137,8 +137,9 @@ final class NotificationService: Sendable {
     }
 
     /// One push per update version (`UpdateService.noteAvailable` keeps the
-    /// memo); clicking it opens Settings → System.
-    func sendUpdateAvailableNotification(version: String) {
+    /// memo); clicking it opens Settings → System. Returns whether the system
+    /// accepted the request, so the memo is only written for a delivered push.
+    func sendUpdateAvailableNotification(version: String) async -> Bool {
         let content = UNMutableNotificationContent()
         content.title = "Watchtower update available"
         content.body = "Version \(version) is ready to download in Settings → System."
@@ -150,7 +151,13 @@ final class NotificationService: Sendable {
             content: content,
             trigger: nil
         )
-        UNUserNotificationCenter.current().add(request)
+        do {
+            try await UNUserNotificationCenter.current().add(request)
+            return true
+        } catch {
+            NSLog("NotificationService: update notification for %@ failed: %@", version, error.localizedDescription)
+            return false
+        }
     }
 
     func sendBoardConfigChangedNotification(boardName: String) {

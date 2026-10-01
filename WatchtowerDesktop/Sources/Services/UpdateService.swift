@@ -170,13 +170,13 @@ final class UpdateService {
         // The user moved on meanwhile (e.g. started the download): a late
         // result must not overwrite that.
         guard state == inFlight else { return }
-        applyCheckResult(result, previous: previous, background: background)
+        await applyCheckResult(result, previous: previous, background: background)
     }
 
     /// Fold a check result into the state. An update already on offer is only
     /// replaced by a strictly newer one, and never by an error or an
     /// "up to date" — a transient failure must not hide a found update.
-    func applyCheckResult(_ result: CheckResult, previous: UpdateState, background: Bool) {
+    func applyCheckResult(_ result: CheckResult, previous: UpdateState, background: Bool) async {
         switch result {
         case .upToDate:
             if case .available = previous {
@@ -192,7 +192,7 @@ final class UpdateService {
             }
             gatedDownload = gated
             state = .available(version: version, notes: notes, downloadURL: downloadURL)
-            noteAvailable(version: version)
+            await noteAvailable(version: version)
         case .failed(let message):
             NSLog("UpdateService: %@ update check failed: %@", background ? "background" : "manual", message)
             if case .available = previous {
@@ -288,9 +288,10 @@ final class UpdateService {
     /// inject an isolated suite.
     var defaults: UserDefaults = .standard
 
-    /// Posts the one "update available" notification for a version.
-    /// Instance property so tests can record instead of posting.
-    var announce: (String) -> Void = { NotificationService.shared.sendUpdateAvailableNotification(version: $0) }
+    /// Posts the one "update available" notification for a version and
+    /// reports whether it was accepted. Instance property so tests can record
+    /// instead of posting.
+    var announce: (String) async -> Bool = { await NotificationService.shared.sendUpdateAvailableNotification(version: $0) }
 
     /// Version of the update the last check found; nil when none. Survives
     /// `.downloading`/`.readyToInstall`, which carry no version of their own.
@@ -341,13 +342,15 @@ final class UpdateService {
         version != lastAnnounced
     }
 
-    /// Record a found update and announce it once per version.
-    func noteAvailable(version: String) {
+    /// Record a found update and announce it once per version. The memo is
+    /// written only when the push was accepted, so a failed post is retried
+    /// on the next check instead of being marked as shown.
+    func noteAvailable(version: String) async {
         availableVersion = version
         let last = defaults.string(forKey: Self.lastAnnouncedVersionKey)
         guard Self.shouldAnnounce(version: version, lastAnnounced: last) else { return }
+        guard await announce(version) else { return }
         defaults.set(version, forKey: Self.lastAnnouncedVersionKey)
-        announce(version)
     }
 
     // MARK: - Download

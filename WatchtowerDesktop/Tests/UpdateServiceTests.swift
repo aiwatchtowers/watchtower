@@ -754,7 +754,10 @@ struct UpdateServicePeriodicTests {
         svc.buildFlavor = ""
         svc.defaults = defaults
         var announced: [String] = []
-        svc.announce = { announced.append($0) }
+        svc.announce = {
+            announced.append($0)
+            return true
+        }
         let url = URL(fileURLWithPath: "/tmp/new.zip")
         svc.fetchCheck = { .found(version: "v99.0.0", notes: "n", downloadURL: url, gated: nil) }
         svc.startPeriodicChecks { _ in throw CancellationError() }
@@ -778,25 +781,47 @@ struct UpdateServicePeriodicTests {
     }
 
     @Test("an update is announced once per version, across service instances")
-    func announceOncePerVersion() {
+    func announceOncePerVersion() async {
         let defaults = isolatedDefaults()
         var announced: [String] = []
 
         let first = UpdateService()
         first.defaults = defaults
-        first.announce = { announced.append($0) }
-        first.noteAvailable(version: "v1.1.0")
-        first.noteAvailable(version: "v1.1.0")
+        first.announce = {
+            announced.append($0)
+            return true
+        }
+        await first.noteAvailable(version: "v1.1.0")
+        await first.noteAvailable(version: "v1.1.0")
         #expect(first.availableVersion == "v1.1.0")
 
         // A relaunch (new instance, same defaults) finds the same version again.
         let relaunched = UpdateService()
         relaunched.defaults = defaults
-        relaunched.announce = { announced.append($0) }
-        relaunched.noteAvailable(version: "v1.1.0")
-        relaunched.noteAvailable(version: "v1.2.0")
+        relaunched.announce = {
+            announced.append($0)
+            return true
+        }
+        await relaunched.noteAvailable(version: "v1.1.0")
+        await relaunched.noteAvailable(version: "v1.2.0")
 
         #expect(announced == ["v1.1.0", "v1.2.0"])
+    }
+
+    @Test("a push the system refused is not memoed, so the next check retries it")
+    func refusedPushIsRetried() async {
+        let defaults = isolatedDefaults()
+        var attempts: [String] = []
+        let svc = UpdateService()
+        svc.defaults = defaults
+        svc.announce = {
+            attempts.append($0)
+            return attempts.count > 1
+        }
+        await svc.noteAvailable(version: "v1.1.0")
+        await svc.noteAvailable(version: "v1.1.0")
+        await svc.noteAvailable(version: "v1.1.0")
+        #expect(attempts == ["v1.1.0", "v1.1.0"])
     }
 
     @Test("shouldAnnounce compares against the last announced version")
@@ -818,15 +843,18 @@ struct UpdateServiceCheckResultTests {
         let svc = UpdateService()
         let name = "wt-update-check-tests-\(UUID().uuidString)"
         if let defaults = UserDefaults(suiteName: name) { svc.defaults = defaults }
-        svc.announce = announced
+        svc.announce = {
+            announced($0)
+            return true
+        }
         return svc
     }
 
     @Test("a found version goes on offer and is noted (tray version + announcement)")
-    func foundFromIdle() {
+    func foundFromIdle() async {
         var announced: [String] = []
         let svc = service { announced.append($0) }
-        svc.applyCheckResult(.found(version: "v2.0.0", notes: "n", downloadURL: newURL, gated: nil),
+        await svc.applyCheckResult(.found(version: "v2.0.0", notes: "n", downloadURL: newURL, gated: nil),
                              previous: .idle, background: true)
         #expect(svc.state == .available(version: "v2.0.0", notes: "n", downloadURL: newURL))
         #expect(svc.availableVersion == "v2.0.0")
@@ -834,53 +862,53 @@ struct UpdateServiceCheckResultTests {
     }
 
     @Test("up to date clears the known version")
-    func upToDateClears() {
+    func upToDateClears() async {
         let svc = service { _ in }
-        svc.applyCheckResult(.found(version: "v2.0.0", notes: "", downloadURL: newURL, gated: nil),
+        await svc.applyCheckResult(.found(version: "v2.0.0", notes: "", downloadURL: newURL, gated: nil),
                              previous: .idle, background: false)
-        svc.applyCheckResult(.upToDate, previous: .idle, background: false)
+        await svc.applyCheckResult(.upToDate, previous: .idle, background: false)
         #expect(svc.state == .idle)
         #expect(svc.availableVersion == nil)
     }
 
     @Test("an offer is replaced only by a strictly newer version")
-    func offerReplacedOnlyByNewer() {
+    func offerReplacedOnlyByNewer() async {
         var announced: [String] = []
         let svc = service { announced.append($0) }
         let offered = UpdateService.UpdateState.available(version: "v2.0.0", notes: "", downloadURL: oldURL)
 
-        svc.applyCheckResult(.found(version: "v2.0.0", notes: "", downloadURL: newURL, gated: nil),
+        await svc.applyCheckResult(.found(version: "v2.0.0", notes: "", downloadURL: newURL, gated: nil),
                              previous: offered, background: true)
         #expect(svc.state == offered)
 
-        svc.applyCheckResult(.found(version: "v1.9.0", notes: "", downloadURL: newURL, gated: nil),
+        await svc.applyCheckResult(.found(version: "v1.9.0", notes: "", downloadURL: newURL, gated: nil),
                              previous: offered, background: true)
         #expect(svc.state == offered)
 
-        svc.applyCheckResult(.found(version: "v2.1.0", notes: "", downloadURL: newURL, gated: nil),
+        await svc.applyCheckResult(.found(version: "v2.1.0", notes: "", downloadURL: newURL, gated: nil),
                              previous: offered, background: true)
         #expect(svc.state == .available(version: "v2.1.0", notes: "", downloadURL: newURL))
         #expect(announced == ["v2.1.0"])
     }
 
     @Test("a failure or 'up to date' never hides an offer")
-    func offerSurvivesFailure() {
+    func offerSurvivesFailure() async {
         let svc = service { _ in }
         let offered = UpdateService.UpdateState.available(version: "v2.0.0", notes: "", downloadURL: oldURL)
-        svc.applyCheckResult(.failed("offline"), previous: offered, background: true)
+        await svc.applyCheckResult(.failed("offline"), previous: offered, background: true)
         #expect(svc.state == offered)
-        svc.applyCheckResult(.failed("offline"), previous: offered, background: false)
+        await svc.applyCheckResult(.failed("offline"), previous: offered, background: false)
         #expect(svc.state == offered)
-        svc.applyCheckResult(.upToDate, previous: offered, background: true)
+        await svc.applyCheckResult(.upToDate, previous: offered, background: true)
         #expect(svc.state == offered)
     }
 
     @Test("an unattended failure stays idle; a manual one shows the error")
-    func failureVisibility() {
+    func failureVisibility() async {
         let svc = service { _ in }
-        svc.applyCheckResult(.failed("offline"), previous: .idle, background: true)
+        await svc.applyCheckResult(.failed("offline"), previous: .idle, background: true)
         #expect(svc.state == .idle)
-        svc.applyCheckResult(.failed("offline"), previous: .idle, background: false)
+        await svc.applyCheckResult(.failed("offline"), previous: .idle, background: false)
         #expect(svc.state == .error("offline"))
     }
 }

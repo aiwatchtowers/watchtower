@@ -175,9 +175,12 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
             appState?.selectedDestination = .digests
         case "update":
             // An update push opens Settings → System, where it installs.
-            ActivationPolicyDecision.becomeRegularAndActivate()
             appState?.settingsTab = .system
-            appState?.openSettingsWindow?()
+            if let openSettings = appState?.openSettingsWindow {
+                openSettings()
+            } else {
+                NSLog("NotificationDelegate: update push clicked before the Settings opener was wired")
+            }
         default:
             break
         }
@@ -362,7 +365,11 @@ struct WatchtowerApp: App {
                 appState.initialize()
                 appState.openQuickCapture = { openWindow(id: QuickCaptureView.sceneID) }
                 appState.openVoicesWindow = { openWindow(id: VoicesWindowView.sceneID) }
-                appState.openSettingsWindow = { openSettings() }
+                appState.openSettingsWindow = {
+                    // Accessory (tray-only) mode needs a menu bar for Settings.
+                    ActivationPolicyDecision.becomeRegularAndActivate()
+                    openSettings()
+                }
                 appState.voiceRegistryCenter.openWindow = {
                     ActivationPolicyDecision.becomeRegularAndActivate()
                     appState.openVoicesWindow?()
@@ -471,7 +478,10 @@ struct WatchtowerApp: App {
                 .onAppear {
                     appState.openQuickCapture = { openWindow(id: QuickCaptureView.sceneID) }
                     appState.openVoicesWindow = { openWindow(id: VoicesWindowView.sceneID) }
-                    appState.openSettingsWindow = { openSettings() }
+                    appState.openSettingsWindow = {
+                        ActivationPolicyDecision.becomeRegularAndActivate()
+                        openSettings()
+                    }
                     appState.voiceRegistryCenter.openWindow = {
                         ActivationPolicyDecision.becomeRegularAndActivate()
                         appState.openVoicesWindow?()
