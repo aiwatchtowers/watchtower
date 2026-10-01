@@ -125,6 +125,9 @@ final class ProjectsViewModelTests: XCTestCase {
         XCTAssertEqual(vm.documentViewModel?.document.id, doc)
         XCTAssertTrue(vm.attachNotice?.contains("already attached") ?? false)
         XCTAssertEqual(ownerWrites, [], "nothing was written, so a real agent revision is not muted")
+
+        vm.selectedProjectID = nil
+        XCTAssertNil(vm.attachNotice, "the notice belongs to the project it was shown on")
     }
 
     func testAttachDocumentRefusedByTheCLIKeepsTheReason() async throws {

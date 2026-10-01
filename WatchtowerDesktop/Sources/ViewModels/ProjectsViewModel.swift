@@ -21,6 +21,7 @@ final class ProjectsViewModel {
             if selectedProjectID != oldValue {
                 closeDocument()
                 documents = []
+                attachNotice = nil
             }
             // One thing is on screen: a project, or a standalone terminal.
             // Selecting a project also drills the panel into it.
@@ -389,9 +390,9 @@ final class ProjectsViewModel {
         // Still on this project: open it (also for an already attached path).
         if let item = documents.first(where: { $0.id == attached.documentID }) {
             await openDocument(item.document)
-        }
-        if !attached.created {
-            attachNotice = "\(attached.relPath) was already attached — it is open, with its kind and target unchanged."
+            if !attached.created {
+                attachNotice = "\(attached.relPath) was already attached — it is open, with its kind and target unchanged."
+            }
         }
         return true
     }
