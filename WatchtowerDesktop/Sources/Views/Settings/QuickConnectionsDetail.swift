@@ -65,7 +65,7 @@ struct QuickConnectionsDetail: View {
                                 .help(connection.isOK
                                     ? "OK"
                                     : (connection.error.isEmpty ? connection.status : connection.error))
-                            if !connection.isOK {
+                            if connection.needsSignIn {
                                 Button("Sign in again") {
                                     Task { await vm.signIn(connection) }
                                 }
@@ -132,6 +132,9 @@ struct QuickConnectionsDetail: View {
     }
 
     private func connectionStatusColor(_ connection: ExternalConnection) -> Color {
-        connection.isOK ? .green : .red
+        if connection.isOK { return .green }
+        // Red only when a new sign-in is the fix; a transient or tool-list
+        // error is orange (its tooltip says what to do).
+        return connection.needsSignIn ? .red : .orange
     }
 }
