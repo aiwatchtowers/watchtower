@@ -224,16 +224,18 @@ func TestProjectDoc_SymlinkOutOfTheFolderIsNeverFollowed(t *testing.T) {
 func TestPrivacyProtected(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	for folder, want := range map[string]bool{
-		filepath.Join(home, "Documents", "acme"):                 true,
-		filepath.Join(home, "documents", "acme"):                 true, // APFS ignores case
-		filepath.Join(home, "Library", "CloudStorage", "x", "y"): true,
-		filepath.Join(home, "Library", "Mobile Documents", "a"):  true,
-		"/Volumes/USB/acme":                     true,
-		filepath.Join(home, "Code", "acme"):     false,
-		filepath.Join(home, "DocumentsArchive"): false,
-	} {
-		assert.Equal(t, want, privacyProtected(folder), folder)
+	protected := []string{
+		filepath.Join(home, "Documents", "acme"),
+		filepath.Join(home, "documents", "acme"), // APFS ignores case
+		filepath.Join(home, "Library", "CloudStorage", "x", "y"),
+		filepath.Join(home, "Library", "Mobile Documents", "a"),
+		"/Volumes/USB/acme",
+	}
+	for _, folder := range protected {
+		assert.True(t, privacyProtected(folder), folder)
+	}
+	for _, folder := range []string{filepath.Join(home, "Code", "acme"), filepath.Join(home, "DocumentsArchive")} {
+		assert.False(t, privacyProtected(folder), folder)
 	}
 }
 
