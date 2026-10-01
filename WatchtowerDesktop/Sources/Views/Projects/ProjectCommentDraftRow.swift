@@ -17,9 +17,8 @@ struct ProjectCommentDraftRow: View {
                 .italic()
                 .foregroundStyle(.secondary)
                 .lineLimit(3)
-            TextField("Comment", text: Binding(get: { draft.body }, set: onEdit), axis: .vertical)
-                .textFieldStyle(.roundedBorder)
-                .lineLimit(1...6)
+            // No ⌘↩ here: a draft is sent with its batch (Send N comments).
+            CommentTextEditor(text: Binding(get: { draft.body }, set: onEdit), placeholder: "Comment")
             HStack {
                 if let note {
                     Text(note)

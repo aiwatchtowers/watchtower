@@ -84,8 +84,9 @@ func matchKey(s string) string {
 	return strings.TrimSpace(normalize(s).s)
 }
 
-// findAll returns the source ranges in text of every non-overlapping
-// occurrence of key (a matchKey).
+// findAll returns the source ranges in text of every occurrence of key (a
+// matchKey), overlapping ones included: "aa" occurs twice in "aaa", so an
+// edit quoting it is ambiguous, not the first match.
 func findAll(text, key string) []span {
 	if key == "" {
 		return nil
@@ -99,7 +100,8 @@ func findAll(text, key string) []span {
 		}
 		i += off
 		out = append(out, span{n.start[i], n.end[i+len(key)-1]})
-		off = i + len(key)
+		_, size := utf8.DecodeRuneInString(n.s[i:])
+		off = i + size
 	}
 }
 

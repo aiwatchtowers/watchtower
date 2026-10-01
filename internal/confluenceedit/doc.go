@@ -152,6 +152,10 @@ type unit struct {
 	// links maps each link href in text to its original start tag, so a
 	// rewrite keeps the link's other attributes.
 	links map[string]string
+	// clashes lists the hrefs of links whose start tags differ (a card and
+	// a plain link to one address): links can keep only one tag per href,
+	// so a rewrite would give every such link the first one's.
+	clashes map[string]bool
 
 	// out is the seam for edits (Task 3): when non-nil, Render emits *out in
 	// place of src[start:end]. Parse never sets it.

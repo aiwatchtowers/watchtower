@@ -12,7 +12,9 @@ struct ArtifactPanelView: View {
     var onClose: () -> Void
 
     @State private var notice: String?
-    @State private var commenting = false
+    /// The comment list is open. Survives new comments and versions; a click
+    /// on a highlight opens it on that thread.
+    @State private var showComments = true
 
     var body: some View {
         VStack(spacing: 0) {
@@ -40,13 +42,14 @@ struct ArtifactPanelView: View {
                 Text("edited").font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
-            if !model.versions.isEmpty {
-                Button { commenting.toggle() } label: {
-                    Label(commentsLabel, systemImage: commenting ? "text.bubble.fill" : "text.bubble")
+            if model.canComment {
+                Toggle(isOn: $showComments) {
+                    Label(commentsLabel, systemImage: "sidebar.right")
                 }
+                .toggleStyle(.button)
                 .buttonStyle(.borderless)
-                .disabled(!model.canComment && !commenting)
-                .help(commenting ? "Back to the artifact" : "Comment on passages of this artifact")
+                .disabled(model.comments.comments.isEmpty)
+                .help(commentsHelp)
                 .accessibilityLabel("Comments")
             }
             if model.versions.count > 1 {
@@ -67,20 +70,34 @@ struct ArtifactPanelView: View {
         .padding(10)
     }
 
+    /// The threads the list shows outside its Outdated/Resolved groups.
+    private var commentCount: Int {
+        model.comments.unsent.count + model.comments.sent.count
+    }
+
     private var commentsLabel: String {
-        let unsent = model.comments.unsent.count
-        return unsent == 0 ? "Comments" : "Comments (\(unsent))"
+        commentCount == 0 ? "Comments" : "Comments (\(commentCount))"
+    }
+
+    private var commentsHelp: String {
+        if model.comments.comments.isEmpty { return "Select a passage to comment on it" }
+        return showComments ? "Hide the comments" : "Show the comments"
     }
 
     @ViewBuilder
     private var content: some View {
-        if commenting, model.canComment {
-            ArtifactCommentsView(comments: model.comments, canSend: canSendComments, onSend: onSendComments)
-        } else if model.isEditing {
+        if model.isEditing {
             TextEditor(text: $model.editText)
                 .font(.system(.body, design: .monospaced))
                 .padding(6)
+        } else if model.canComment, let rendered = model.comments.rendered, !rendered.text.isEmpty, let draft = model.displayed {
+            // The latest version: one view to read and to comment on.
+            ArtifactCommentsView(
+                comments: model.comments, rendered: rendered, fields: ArtifactField.fields(of: draft),
+                canSend: canSendComments, showsList: $showComments, onSend: onSendComments
+            )
         } else if let draft = model.displayed {
+            // A streaming draft or an older version.
             ScrollView {
                 ArtifactContentView(draft: draft)
                     .padding(12)
@@ -133,30 +150,17 @@ private struct ArtifactContentView: View {
             CSVGridView(rows: CSVTable.parse(draft.content))
         case "code":
             MarkdownView(text: "````\(draft.meta["language"] ?? "")\n\(draft.content)\n````")
-        case "email":
-            fields([("To", draft.meta["to"]), ("Cc", draft.meta["cc"]), ("Subject", draft.meta["subject"])])
-        case "slack":
-            fields([("Channel", draft.meta["channel"] ?? draft.meta["permalink"])])
-        case "event":
-            fields([("Start", draft.meta["start"]), ("End", draft.meta["end"]),
-                    ("Attendees", draft.meta["attendees"]), ("Location", draft.meta["location"])])
+        case "email", "slack", "event":
+            VStack(alignment: .leading, spacing: 8) {
+                let header = ArtifactField.fields(of: draft)
+                if !header.isEmpty {
+                    ArtifactFieldsHeader(fields: header)
+                    Divider()
+                }
+                Text(draft.content).textSelection(.enabled)
+            }
         default:
             MarkdownView(text: draft.content)
-        }
-    }
-
-    private func fields(_ items: [(String, String?)]) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 4) {
-                ForEach(items.filter { !($0.1 ?? "").isEmpty }, id: \.0) { name, value in
-                    GridRow {
-                        Text(name).foregroundStyle(.secondary)
-                        Text(value ?? "").textSelection(.enabled)
-                    }
-                }
-            }
-            Divider()
-            Text(draft.content).textSelection(.enabled)
         }
     }
 }

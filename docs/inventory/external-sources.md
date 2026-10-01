@@ -158,13 +158,16 @@ edited after the preview (now vN); nothing was written`, or, when the page is
 exactly one version on and its storage is this edit's once the `local-id`
 attributes Confluence stamps on save are stripped from start tags (never
 from text, CDATA or HTML comments) (its own earlier PUT
-whose response was lost), `this edit is already saved (vN); nothing was
-written now`, or, one version on with any other storage, the hedged
+whose response was lost), it writes nothing and succeeds with the note
+`this edit is already saved (vN); nothing was written now` (the page holds
+exactly the approved edit), or, one version on with any other storage, the hedged
 `conflict: the page is now vN (one version after your preview) — this edit
 may have been saved; re-read with get_confluence_page before retrying;
 nothing was written now` — and issues no PUT — as one `PUT` of
 `base_version + 1` with the message `Edited via Watchtower` (a 409 from
-Confluence is re-read and reported the same way). A rich element (a
+Confluence is re-read and reported the same way). An archived page is never
+written: the edit is refused at propose time, and at apply time (no PUT)
+when the page was archived after the preview. A rich element (a
 ⟦k:label⟧ marker) is removed only when the approved change lists it under
 `removed`. Every byte outside what an edit changes survives: a
 `replace_text` re-serialises only its unit's content span, and a
@@ -245,6 +248,20 @@ mounted only in chat mode, never on the dev-mode MCP surface (DEV-01).
   text merely reads as several blocks) or whose dropped twin is rich too
   (attributes, parameters or layout: the text cannot tell two such twins
   apart). A rich block is never excused for a plain twin's drop.
+- `TestEXT05_SectionNeverWritesPastALayoutBoundary`
+  (`internal/confluenceedit/apply_boundary_test.go`) — for a heading whose
+  section ends at a layout edge (the next layout cell, or a layout after a
+  body heading), the text shows the edge as a `⟦layout boundary⟧` line, a
+  `replace_section` whose new body repeats the text past the edge (or
+  carries the line itself) is refused, and one that does not leaves that
+  text exactly once, in its own place — never a second copy inside the
+  section.
+- `TestEXT05_ArchivedPageNeverWritten`
+  (`internal/tools/confluence_page_edit_test.go`) — an archived page is
+  refused at propose time and, with zero `PutPage` calls, at apply time;
+  only a Retry finding this very edit saved before the archiving reports
+  the save. `TestEditConfluencePage_RetryAfterLostResponse` pins that a
+  Retry finding the edit already saved issues no second PUT.
 - `TestEXT05_OnlyEditToolReachesPut`
   (`internal/tools/confluence_contracts_test.go`) — an AST scan of every
   non-test Go file of the module (scan floor 300 files) pins the production
@@ -262,6 +279,23 @@ every Confluence hit's `link` is the page or attachment URL.
 
 ## Changelog
 
+- 2026-10-01 (release audit, lost-response Retry): a Retry that finds this very
+  edit already saved (base+1, same title, storage equal up to `local-id`s) is now a
+  success result carrying the "already saved" note instead of a failed
+  action; still no PUT. The write rule (version AND hash must match, else
+  no PUT) is unchanged.
+- 2026-10-01 (release audit, archived pages): `get_confluence_page` reads
+  an archived page (status current and archived, as the sync fetcher
+  asks), and EXT-05 gains "an archived page is never written" (its PUT's
+  `status:"current"` would restore it; only a current page is edited),
+  pinned by the new guard `TestEXT05_ArchivedPageNeverWritten`.
+  Tightened, not weakened.
+- 2026-10-01 (release audit, section past a layout edge): `Doc.Text()` marks every layout
+  edge between two blocks with a `⟦layout boundary⟧` line (a section never
+  crosses one, R4/R5), and a `replace_section` whose new body repeats a
+  block lying past its region's end before the next same-or-higher heading
+  is refused. New guard `TestEXT05_SectionNeverWritesPastALayoutBoundary`;
+  none weakened.
 - 2026-09-30 (local-review round 4): of two same-text multi-line
   paragraphs the one carrying attributes is kept — an in-place run is
   reserved before a twin may move over it, and richness is judged by what

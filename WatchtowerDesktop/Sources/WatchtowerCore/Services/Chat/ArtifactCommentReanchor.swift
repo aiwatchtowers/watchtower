@@ -24,10 +24,11 @@ package enum ArtifactCommentReanchor {
         package var isNoOp: Bool { moved.isEmpty && lost.isEmpty }
     }
 
-    package static func plan(_ comments: [ArtifactComment], text: String, version: Int) -> Plan {
+    /// `csv`: the artifact is a `table` (see `CommentAnchor.locate`).
+    package static func plan(_ comments: [ArtifactComment], text: String, version: Int, csv: Bool = false) -> Plan {
         var plan = Plan()
         for comment in comments where comment.status != .outdated {
-            if let found = comment.anchor.locate(in: text) {
+            if let found = comment.anchor.locate(in: text, csv: csv) {
                 plan.ranges[comment.id] = NSRange(found, in: text)
                 if comment.isLive, comment.artifactVersion != version { plan.moved.append(comment.id) }
             } else if comment.isLive {
