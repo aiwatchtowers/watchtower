@@ -411,6 +411,12 @@ func runInboxGenerate(cmd *cobra.Command, _ []string) error {
 	gen, cleanupPool := cliPooledGenerator(cfg, logger)
 	defer cleanupPool()
 	pipe := inbox.New(database, cfg, gen, logger)
+	// A manual run detects but never moves the inbox watermark (INBOX-09):
+	// it cannot tell whether the data it scans is complete — its pre-sync is
+	// a subprocess whose rate-limit or revoked-account outcome it cannot
+	// see, and it fails outright while the daemon holds the sync lock. The
+	// daemon's cycle, which knows its own sync result, advances it.
+	pipe.HoldWatermark()
 
 	if inboxGenFlagProgressJSON {
 		type pj struct {

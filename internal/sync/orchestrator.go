@@ -71,6 +71,12 @@ type Orchestrator struct {
 	// a rate-limited token gets hit with even more calls instead of backing off.
 	searchRateLimited bool
 
+	// searchIncomplete records whether the current Run's search sync left
+	// messages unfetched (a rate limit, or pagination broken after page 1)
+	// and so kept search_last_date for a retry. Run resets it; the daemon
+	// reads it via SearchIncomplete to freeze the inbox watermark (INBOX-09).
+	searchIncomplete bool
+
 	// jiraKeyDetector, if set, links Jira issue keys found in synced messages
 	// (the digest/tracks pipelines' SetJiraKeyDetector shape).
 	jiraKeyDetector interface {
@@ -167,10 +173,21 @@ func (o *Orchestrator) resolveWorkerCount(requested int) int {
 func (o *Orchestrator) Run(ctx context.Context, opts SyncOptions) error {
 	o.searchGapNote = ""
 	o.searchRateLimited = false
+	o.searchIncomplete = false
 	err := o.run(ctx, opts)
 	o.recordAuthResult(ctx, err)
 	return err
 }
+
+// AccountID is the slack_accounts row this orchestrator syncs.
+func (o *Orchestrator) AccountID() int64 { return o.accountID }
+
+// SearchIncomplete reports whether the last Run returned without error but
+// left messages of its search window unfetched — Slack rate-limited the
+// search, or its pagination broke after page 1. The next Run re-covers them,
+// so a consumer that bounds by this sync (the inbox watermark, INBOX-09) must
+// not treat the cycle's data as complete.
+func (o *Orchestrator) SearchIncomplete() bool { return o.searchIncomplete }
 
 // recordAuthResult persists the account's sync auth state. Pass err=nil to
 // mark it healthy; either way this run's search-gap note (if any) is kept in
@@ -193,7 +210,7 @@ func (o *Orchestrator) recordAuthResult(ctx context.Context, err error) {
 		return
 	}
 	status := "error"
-	if isRevokedAuthError(err) {
+	if IsRevokedAuthError(err) {
 		status = "revoked"
 	}
 	msg := err.Error()
@@ -218,10 +235,12 @@ var revokedSlackErrors = map[string]bool{
 	"not_authed":       true,
 }
 
-// isRevokedAuthError classifies a Run() error for recordAuthResult — the
+// IsRevokedAuthError classifies a Run() error for recordAuthResult — the
 // isNonFatalError precedent's structured-then-string-match pattern, applied
-// to a different question (dead token vs a transient/scoped one).
-func isRevokedAuthError(err error) bool {
+// to a different question (dead token vs a transient/scoped one). The daemon
+// uses it too: a revoked account's sync error does not freeze the inbox
+// watermark (INBOX-09).
+func IsRevokedAuthError(err error) bool {
 	if err == nil {
 		return false
 	}

@@ -89,6 +89,7 @@ func TestSearchSync_PartialPaginationKeepsWatermark(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "2020-01-01", got,
 		"interrupted pagination must leave search_last_date untouched to avoid dropping unfetched pages")
+	assert.True(t, ts.orch.SearchIncomplete(), "interrupted pagination reports the cycle's data as incomplete (INBOX-09)")
 }
 
 // TestSearchSync_MissingScopeFallsBackToFullSync reproduces audit bug 2.2: a

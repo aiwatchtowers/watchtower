@@ -554,3 +554,38 @@ func TestRunInboxBackfillMentions_CancelledContextStillPrintsEnvelope(t *testing
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &envelope), "the envelope must still be printed despite the error")
 	assert.Empty(t, envelope.Accounts, "cancelled before any account was reached")
 }
+
+// TestInbox09_GenerateHoldsWatermark: `watchtower inbox generate` (what the
+// Desktop's inbox task runs) detects but never moves the inbox watermark — it
+// cannot see whether the data it scans is complete; the daemon advances it.
+func TestInbox09_GenerateHoldsWatermark(t *testing.T) {
+	// BEHAVIOR INBOX-09 — see docs/inventory/inbox-pulse.md
+	// Do not weaken or remove without explicit owner approval.
+	cleanup := setupInboxTestEnv(t)
+	defer cleanup()
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	// Fresh data, so generate does not spawn a pre-sync.
+	_, err = database.Exec(`UPDATE workspace SET synced_at = ?`, time.Now().UTC().Format(time.RFC3339))
+	require.NoError(t, err)
+	require.NoError(t, database.UpsertChannel(db.Channel{ID: "1:C9", Name: "eng", Type: "public"}))
+	ts := fmt.Sprintf("%d.000100", time.Now().Add(-time.Hour).Unix())
+	_, err = database.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:C9', ?, '1:U002', 'Hey <@U001> review please')`, ts)
+	require.NoError(t, err)
+	require.NoError(t, database.SetInboxLastProcessedTS(1000))
+	database.Close()
+
+	inboxGenFlagProgressJSON = false
+	inboxGenerateCmd.SetOut(new(bytes.Buffer))
+	require.NoError(t, inboxGenerateCmd.RunE(inboxGenerateCmd, nil))
+
+	database, err = openDBFromConfig()
+	require.NoError(t, err)
+	defer database.Close()
+	items, err := database.GetInboxItems(db.InboxFilter{})
+	require.NoError(t, err)
+	assert.Len(t, items, 1, "the run still detects")
+	wm, err := database.GetInboxLastProcessedTS()
+	require.NoError(t, err)
+	assert.Equal(t, 1000.0, wm, "a manual run never moves the watermark")
+}
