@@ -971,11 +971,16 @@ final class OnboardingChatViewModelTests: XCTestCase {
 
     @MainActor
     func testSendWhileStreamingDoesNothing() {
-        let vm = OnboardingChatViewModel(aiService: MockClaudeService(), dbManager: dbManager)
-        vm.isStreaming = true
+        let vm = OnboardingChatViewModel(aiService: MockClaudeService(events: [], thenHangs: true), dbManager: dbManager)
+        vm.inputText = "First"
+        vm.send()
+        XCTAssertTrue(vm.isStreaming)
+        let before = vm.messages.count
         vm.inputText = "Hello"
         vm.send()
-        XCTAssertTrue(vm.messages.isEmpty)
+        XCTAssertEqual(vm.messages.count, before, "a second send while streaming adds nothing")
+        XCTAssertEqual(vm.inputText, "Hello", "and keeps the text")
+        vm.skipChat()
     }
 
     @MainActor

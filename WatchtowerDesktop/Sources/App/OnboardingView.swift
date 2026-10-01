@@ -860,7 +860,7 @@ struct OnboardingView: View {
                 let configSvc = ConfigService()
                 let language = configSvc.digestLanguage ?? settingsLanguage
                 let db = appState.databaseManager
-                onboardingVM = OnboardingChatViewModel(language: language, dbManager: db)
+                onboardingVM = OnboardingChatViewModel(language: language, dbManager: db, gate: appState.embeddedChatCenter.gate)
             }
             if appState.onboarding.chatFinished {
                 // Resume fast-path: the interview already finished (e.g. a restart
@@ -996,7 +996,7 @@ struct OnboardingView: View {
             let configSvc = ConfigService()
             let language = configSvc.digestLanguage ?? settingsLanguage
             if let db = appState.databaseManager {
-                onboardingVM = OnboardingChatViewModel(language: language, dbManager: db)
+                onboardingVM = OnboardingChatViewModel(language: language, dbManager: db, gate: appState.embeddedChatCenter.gate)
             } else {
                 // DB not available — need sync first, go back to chat
                 appState.onboarding.goTo(.chat)
@@ -1041,7 +1041,7 @@ struct OnboardingView: View {
                 let configSvc = ConfigService()
                 let language = configSvc.digestLanguage ?? settingsLanguage
                 if let db = appState.databaseManager {
-                    onboardingVM = OnboardingChatViewModel(language: language, dbManager: db)
+                    onboardingVM = OnboardingChatViewModel(language: language, dbManager: db, gate: appState.embeddedChatCenter.gate)
                 } else {
                     // DB not available — need sync first, go back to chat
                     appState.onboarding.goTo(.chat)
@@ -1072,7 +1072,8 @@ struct OnboardingView: View {
                 // instead of returning false and looping Retry forever.
                 if onboardingVM == nil {
                     let language = ConfigService().digestLanguage ?? settingsLanguage
-                    onboardingVM = OnboardingChatViewModel(language: language, dbManager: appState.databaseManager)
+                    onboardingVM = OnboardingChatViewModel(
+                        language: language, dbManager: appState.databaseManager, gate: appState.embeddedChatCenter.gate)
                 }
                 _ = ensureOnboardingDatabase()
                 guard let vm = onboardingVM else { return false }
@@ -1346,7 +1347,7 @@ struct OnboardingView: View {
         if onboardingVM == nil {
             let configSvc = ConfigService()
             let language = configSvc.digestLanguage ?? settingsLanguage
-            onboardingVM = OnboardingChatViewModel(language: language, dbManager: appState.databaseManager)
+            onboardingVM = OnboardingChatViewModel(language: language, dbManager: appState.databaseManager, gate: appState.embeddedChatCenter.gate)
         }
         _ = ensureOnboardingDatabase()
         Task {

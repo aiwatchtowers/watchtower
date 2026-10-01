@@ -22,9 +22,35 @@ struct QuickReply: Identifiable {
 final class OnboardingChatViewModel {
     // MARK: - Chat State
 
-    var messages: [ChatMessage] = []
-    var isStreaming = false
-    var inputText = ""
+    /// The interview, on the shared embedded chat component (memory only —
+    /// nothing is persisted; the window owns it).
+    let engine: EmbeddedChatEngine
+
+    /// The interview as the view and the profile extraction read it. A reply
+    /// that failed and was retried is left out (the old bubble was replaced
+    /// in place); the latest failure stays, with its error card.
+    var messages: [ChatMessage] {
+        let rows = engine.messages
+        let lastAssistant = rows.last { $0.message.isAssistant }?.id
+        return rows.compactMap { item in
+            if item.message.status == "error", item.id != lastAssistant { return nil }
+            let live = engine.liveTurn.flatMap { $0.messageID == item.id ? $0 : nil }
+            let row = item.message.toChatMessage()
+            return ChatMessage(id: row.id, role: row.role, text: live?.fullText ?? row.text,
+                               timestamp: row.timestamp, isStreaming: live != nil, turnID: row.turnID)
+        }
+    }
+
+    var isStreaming: Bool { engine.isBusy }
+
+    /// The composer's text (the engine's draft).
+    var inputText: String {
+        get { engine.draft }
+        set { engine.draft = newValue }
+    }
+
+    /// The latest interview turn's failure, or a profile step's. Cleared by
+    /// each new attempt and by Skip.
     var errorMessage: String?
 
     // MARK: - Parsed Profile Data (from chat)
@@ -81,26 +107,73 @@ final class OnboardingChatViewModel {
     // MARK: - Private
 
     private static let readyMarker = "[READY]"
-    private var sessionID: String?
     private let aiService: any AIServiceProtocol
     private var dbManager: DatabaseManager?
-    private var streamTask: Task<Void, Never>?
     private var chatCompleted = false
-
-    // Last stream request, remembered so a failed AI call can be retried.
-    private var lastPrompt: String?
-    private var lastSystemPrompt: String?
-    private var lastSessionID: String?
-    private var lastOnComplete: (() -> Void)?
 
     /// The UI language selected during onboarding settings step.
     let language: String
 
-    init(aiService: any AIServiceProtocol = WatchtowerAIService(), language: String = "English", dbManager: DatabaseManager? = nil) {
+    /// `gate` is the app-wide embedded-chat turn limit when the app has one.
+    init(
+        aiService: any AIServiceProtocol = WatchtowerAIService(),
+        language: String = "English",
+        dbManager: DatabaseManager? = nil,
+        gate: EmbeddedStreamGate? = nil
+    ) {
         self.aiService = aiService
         self.language = language
         self.dbManager = dbManager
+        let systemPrompt = Self.onboardingSystemPrompt(language: language)
+        engine = EmbeddedChatEngine(
+            spec: ChatSurfaceSpec(
+                key: EmbeddedChatKey(contextType: "onboarding", contextID: "interview", conversationID: nil),
+                persistence: .memory,
+                toolAccess: .draftOnly,
+                systemPrompt: { systemPrompt },
+                emptyHint: ""
+            ),
+            store: MemoryEmbeddedChatStore(),
+            aiService: aiService,
+            gate: gate ?? EmbeddedStreamGate(),
+            provider: Constants.aiProviderID()
+        )
+        engine.update(spec: makeSpec(systemPrompt: systemPrompt))
+        engine.onTurnFinished = { [weak self] outcome in self?.turnFinished(outcome) }
         if dbManager != nil { loadUsers() }
+    }
+
+    /// The interview's spec: the onboarding prompt; every reply is checked
+    /// for the `[READY]` marker (stripped from what is shown).
+    private func makeSpec(systemPrompt: String) -> ChatSurfaceSpec {
+        ChatSurfaceSpec(
+            key: engine.spec.key,
+            persistence: .memory,
+            toolAccess: .draftOnly,
+            systemPrompt: { systemPrompt },
+            postTurn: { [weak self] input in
+                guard let self else { return .identity(input) }
+                return ChatPostTurnResult(displayText: self.readiness(of: input.reply))
+            },
+            willSend: { [weak self] _ in
+                self?.userMessageCount += 1
+                return true
+            },
+            emptyHint: ""
+        )
+    }
+
+    private func turnFinished(_ outcome: EmbeddedChatEngine.TurnOutcome) {
+        switch outcome {
+        case .failed(_, let message), .notStarted(let message):
+            errorMessage = message
+        case .completed:
+            // A retried turn (the error card's Retry) succeeded: the
+            // interview error must not hold the completion gate.
+            errorMessage = nil
+        case .stopped:
+            break
+        }
     }
 
     /// Set database after initialization (e.g. when sync completes and DB becomes available).
@@ -177,11 +250,11 @@ final class OnboardingChatViewModel {
     }
 
     private func addAssistantBubble(_ text: String) {
-        messages.append(ChatMessage(id: UUID(), role: .assistant, text: text, timestamp: Date(), isStreaming: false))
+        engine.appendLocal(role: "assistant", text: text)
     }
 
     private func addUserBubble(_ text: String) {
-        messages.append(ChatMessage(id: UUID(), role: .user, text: text, timestamp: Date(), isStreaming: false))
+        engine.appendLocal(role: "user", text: text)
     }
 
     // MARK: - Chat
@@ -199,174 +272,42 @@ final class OnboardingChatViewModel {
             + "and ask your first question about their team and domain."
             + langInstruction
 
-        beginStreaming(
-            prompt: hiddenPrompt,
-            systemPrompt: Self.onboardingSystemPrompt(language: language),
-            sessionID: nil
-        )
-    }
-
-    func send() {
-        let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !isStreaming else { return }
-
-        streamTask?.cancel()
-        inputText = ""
-        userMessageCount += 1
-
-        let userMsg = ChatMessage(
-            id: UUID(),
-            role: .user,
-            text: text,
-            timestamp: Date(),
-            isStreaming: false
-        )
-        messages.append(userMsg)
-
-        beginStreaming(
-            prompt: text,
-            systemPrompt: Self.onboardingSystemPrompt(language: language),
-            sessionID: sessionID
-        ) { [weak self] in
-            guard let self else { return }
-            if let idx = self.messages.indices.last {
-                self.stripReadyMarker(at: idx)
-            }
-            if !self.chatReady && self.userMessageCount >= Self.fallbackMessageCount {
-                self.chatReady = true
-            }
-        }
-    }
-
-    private func beginStreaming(
-        prompt: String,
-        systemPrompt: String?,
-        sessionID: String?,
-        onComplete: (() -> Void)? = nil
-    ) {
         // A new attempt invalidates any previous stream error — a stale
         // errorMessage would otherwise permanently fail the teamForm
         // completion gate in OnboardingView even when generation succeeds.
         errorMessage = nil
-        lastPrompt = prompt
-        lastSystemPrompt = systemPrompt
-        lastSessionID = sessionID
-        lastOnComplete = onComplete
-
-        let assistantMsg = ChatMessage(
-            id: UUID(),
-            role: .assistant,
-            text: "",
-            timestamp: Date(),
-            isStreaming: true
-        )
-        messages.append(assistantMsg)
-        isStreaming = true
-
-        streamTask = Task { [weak self] in
-            guard let self else { return }
-            await self.processStream(
-                prompt: prompt,
-                systemPrompt: systemPrompt,
-                sessionID: sessionID
-            )
-            if let idx = self.messages.indices.last {
-                self.messages[idx].isStreaming = false
-            }
-            onComplete?()
-            self.isStreaming = false
-        }
+        engine.sendHidden(hiddenPrompt)
     }
 
-    private func processStream(
-        prompt: String,
-        systemPrompt: String?,
-        sessionID: String?
-    ) async {
-        do {
-            let stream = aiService.stream(
-                prompt: prompt,
-                systemPrompt: systemPrompt,
-                sessionID: sessionID,
-                dbPath: nil
-            )
-            var sawTurnComplete = false
-            for try await event in stream {
-                switch event.foldingErrorIntoText {
-                case .text(let chunk):
-                    if let idx = messages.indices.last {
-                        if sawTurnComplete {
-                            messages[idx].text = chunk
-                            sawTurnComplete = false
-                        } else {
-                            messages[idx].text += chunk
-                        }
-                    }
-                case .turnComplete(let fullText):
-                    if let idx = messages.indices.last {
-                        messages[idx].text = fullText
-                    }
-                    sawTurnComplete = true
-                case .reset:
-                    if let idx = messages.indices.last {
-                        messages[idx].text = ""
-                    }
-                    sawTurnComplete = false
-                case .sessionID(let sid):
-                    self.sessionID = sid
-                case .done:
-                    break
-                case .error:
-                    break  // folded into .text above
-                }
-            }
-        } catch {
-            if !Task.isCancelled {
-                errorMessage = error.localizedDescription
-            }
-        }
+    func send() {
+        guard !isStreaming, !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        errorMessage = nil
+        engine.sendDraft()
     }
 
-    /// Skip the interview entirely: cancel any in-flight stream and clear
-    /// the quick-reply questionnaire so the user is never stuck on a broken
-    /// or missing AI provider.
+    /// Skip the interview entirely: stop any in-flight reply and clear the
+    /// quick-reply questionnaire so the user is never stuck on a broken or
+    /// missing AI provider.
     func skipChat() {
         // Skipping abandons the interview — a stream error from it must not
         // stick around to fail the downstream completion gate.
         errorMessage = nil
-        streamTask?.cancel()
-        streamTask = nil
-        isStreaming = false
+        engine.stop()
         quickReplies = []
     }
 
-    /// Retry the last stream request after an AI error. Replays the exact
-    /// prompt/system-prompt/session captured by `beginStreaming`, including
-    /// the original completion behavior (e.g. [READY]-marker stripping).
+    /// Retry the last request after an AI error — the same prompt (an owner
+    /// message or the hidden opening one), on the freshest session id; the
+    /// failed reply is replaced in `messages`, not accumulated.
     func retryAfterError() {
-        guard errorMessage != nil, !isStreaming, let prompt = lastPrompt else { return }
+        guard errorMessage != nil, !isStreaming else { return }
         errorMessage = nil
-        // Drop the trailing assistant bubble even when it holds partial text —
-        // a mid-stream failure leaves a partial bubble that would otherwise
-        // duplicate the turn and pollute the extraction transcript.
-        if let last = messages.last, last.role == .assistant {
-            messages.removeLast()
-        }
-        beginStreaming(
-            prompt: prompt,
-            systemPrompt: lastSystemPrompt,
-            // Prefer the freshest session id learned from a `.sessionID`
-            // stream event over the call-start snapshot.
-            sessionID: sessionID ?? lastSessionID,
-            onComplete: lastOnComplete
-        )
+        engine.retry()
     }
 
     /// Finish the chat phase and extract profile data from the conversation via LLM.
     func finishChat() async {
-        streamTask?.cancel()
-        streamTask = nil
-        isStreaming = false
+        engine.stop()
         chatCompleted = true
         isExtractingProfile = true
         await parseProfileFromChat()
@@ -429,32 +370,17 @@ final class OnboardingChatViewModel {
     }
 
     private func extractContextFromConversation() async -> String {
-        let transcript = messages
-            .filter { $0.role == .user || $0.role == .assistant }
-            .map { "\($0.role == .user ? "USER" : "ASSISTANT"): \($0.text)" }
-            .joined(separator: "\n")
+        let transcript = interviewTranscript()
 
         let prompt = buildContextPrompt(transcript: transcript)
 
-        var contextText = ""
+        let contextText: String
         do {
-            let stream = aiService.stream(
-                prompt: prompt,
-                systemPrompt: nil,
-                sessionID: nil,
-                dbPath: nil
-            )
-            for try await event in stream {
-                switch event.foldingErrorIntoText {
-                case .text(let chunk): contextText += chunk
-                case .turnComplete(let text): contextText = text
-                // A tool call (e.g. Codex's built-in command_execution) drops the
-                // pre-tool preamble so it never glues onto the generated context.
-                case .reset: contextText = ""
-                case .sessionID, .error, .done: break
-                }
-            }
+            contextText = try await AIStreamText.collect(aiService.stream(
+                prompt: prompt, systemPrompt: nil, sessionID: nil, dbPath: nil))
         } catch {
+            // A failed generation (an error line included) falls back to the
+            // locally known profile instead of saving the error as context.
             contextText = buildProfileSummary()
         }
         return contextText
@@ -617,27 +543,22 @@ final class OnboardingChatViewModel {
     /// Minimum user answers before secondary "no question" heuristic kicks in.
     private static let minAnswersForNoQuestionHeuristic = 6
 
-    /// Check for [READY] marker in the last assistant message, strip it, and set chatReady.
-    /// Also applies secondary heuristic: if the LLM stopped asking questions after enough answers,
-    /// consider the interview complete.
-    private func stripReadyMarker(at idx: Int) {
-        let text = messages[idx].text
-
-        // Primary: detect [READY] marker (case-insensitive)
-        if let range = text.range(of: Self.readyMarker, options: .caseInsensitive) {
-            messages[idx].text = text.replacingCharacters(in: range, with: "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            chatReady = true
-            return
+    /// Detects the `[READY]` marker in a reply (case-insensitive), sets
+    /// `chatReady` and returns the reply without it. Secondary heuristic: after
+    /// enough answers, a reply with no question in it means the interview is
+    /// done. Fallback: Continue appears after `fallbackMessageCount` answers.
+    private func readiness(of reply: String) -> String {
+        defer {
+            if !chatReady && userMessageCount >= Self.fallbackMessageCount { chatReady = true }
         }
-
-        // Secondary: if LLM response contains no question mark and user has given enough answers,
-        // the LLM has finished the interview (wrote a summary without asking another question).
-        if !chatReady &&
-            userMessageCount >= Self.minAnswersForNoQuestionHeuristic &&
-            !text.contains("?") {
+        if let range = reply.range(of: Self.readyMarker, options: .caseInsensitive) {
+            chatReady = true
+            return reply.replacingCharacters(in: range, with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if !chatReady && userMessageCount >= Self.minAnswersForNoQuestionHeuristic && !reply.contains("?") {
             chatReady = true
         }
+        return reply
     }
 
     private func loadUsers() {
@@ -653,10 +574,7 @@ final class OnboardingChatViewModel {
 
     /// Extract role, team, and pain points from the onboarding conversation via LLM.
     private func parseProfileFromChat() async {
-        let transcript = messages
-            .filter { $0.role == .user || $0.role == .assistant }
-            .map { "\($0.role == .user ? "USER" : "ASSISTANT"): \($0.text)" }
-            .joined(separator: "\n")
+        let transcript = interviewTranscript()
 
         let prompt = buildExtractionPrompt(transcript: transcript)
         let responseText = await collectStreamText(prompt: prompt)
@@ -690,28 +608,22 @@ final class OnboardingChatViewModel {
     }
 
     private func collectStreamText(prompt: String) async -> String {
-        var text = ""
         do {
-            let stream = aiService.stream(
-                prompt: prompt,
-                systemPrompt: nil,
-                sessionID: nil,
-                dbPath: nil
-            )
-            for try await event in stream {
-                switch event.foldingErrorIntoText {
-                case .text(let chunk): text += chunk
-                case .turnComplete(let full): text = full
-                // A tool call (e.g. Codex's built-in command_execution) drops the
-                // pre-tool preamble so it never corrupts the extracted JSON.
-                case .reset: text = ""
-                case .sessionID, .error, .done: break
-                }
-            }
+            return try await AIStreamText.collect(aiService.stream(
+                prompt: prompt, systemPrompt: nil, sessionID: nil, dbPath: nil))
         } catch {
             return ""
         }
-        return text
+    }
+
+    /// The interview for the profile prompts: owner and assistant rows that
+    /// did not fail.
+    private func interviewTranscript() -> String {
+        engine.messages
+            .map(\.message)
+            .filter { ($0.isUser || $0.isAssistant) && $0.status != "error" }
+            .map { "\($0.isUser ? "USER" : "ASSISTANT"): \($0.text)" }
+            .joined(separator: "\n")
     }
 
     private func applyExtractedProfile(_ responseText: String) {
@@ -765,7 +677,8 @@ final class OnboardingChatViewModel {
             "tasks": "Solving tasks",
             "header": "Tell us about yourself",
             "subtitle": "Watchtower will personalize your experience based on your role and needs.",
-            "continue": "Continue"
+            "continue": "Continue",
+            "placeholder": "Type your answer…"
         ],
         "Russian": [
             "q1": "Давайте определим вашу роль. Вам кто-то подчиняется?",
@@ -778,7 +691,8 @@ final class OnboardingChatViewModel {
             "tasks": "Решении задач",
             "header": "Расскажите о себе",
             "subtitle": "Watchtower персонализирует ваш опыт на основе вашей роли и потребностей.",
-            "continue": "Продолжить"
+            "continue": "Продолжить",
+            "placeholder": "Напишите ответ…"
         ],
         "Ukrainian": [
             "q1": "Давайте визначимо вашу роль. Вам хтось підпорядковується?",
@@ -791,7 +705,8 @@ final class OnboardingChatViewModel {
             "tasks": "Вирішенні завдань",
             "header": "Розкажіть про себе",
             "subtitle": "Watchtower персоналізує ваш досвід на основі вашої ролі та потреб.",
-            "continue": "Продовжити"
+            "continue": "Продовжити",
+            "placeholder": "Напишіть відповідь…"
         ]
     ]
 
