@@ -95,18 +95,20 @@ func recoverEach[T any](ctx context.Context, e *Engine, p pass, ran *bool, items
 }
 
 // recoverOneByOne retries a failed chunk an item at a time, logging and
-// skipping the items that fail for themselves.
+// skipping the items that fail for themselves. The budget is checked
+// before each item but the first, like recoverEach's chunks; it returns
+// how many items it got through.
 func recoverOneByOne[T any](ctx context.Context, e *Engine, p pass, chunk []T, id func(T) string,
 	apply func([]T) (int, error)) (int, error) {
 	for i, it := range chunk {
-		done, err := apply(chunk[i : i+1])
-		switch {
-		case err != nil && (ctx.Err() != nil || isExpected(err)):
-			return 0, err
-		case err != nil:
-			e.opts.Logger.Printf("source %d: reconcile could not recover %s (left to the next reconcile): %v", p.src.ID, id(it), err)
-		case done == 0:
+		if i > 0 && p.budget != nil && p.budget.over() {
 			return i, nil
+		}
+		if _, err := apply(chunk[i : i+1]); err != nil {
+			if ctx.Err() != nil || isExpected(err) {
+				return 0, err
+			}
+			e.opts.Logger.Printf("source %d: reconcile could not recover %s (left to the next reconcile): %v", p.src.ID, id(it), err)
 		}
 	}
 	return len(chunk), nil

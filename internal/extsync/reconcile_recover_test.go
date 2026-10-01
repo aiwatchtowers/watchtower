@@ -233,3 +233,37 @@ func TestListedNewer(t *testing.T) {
 	}
 	assert.Equal(t, []string{"missing", "newer"}, ids)
 }
+
+// The item-by-item retry of a failed chunk stops at the budget too: the
+// items it did not reach are resumed on the next cycle.
+func TestReconcileRecoveryRetryRespectsBudget(t *testing.T) {
+	d, src := newSourceDB(t)
+	f := newFake()
+	start := time.Now().UTC().Truncate(time.Second).Add(-30 * 24 * time.Hour)
+	for _, id := range []string{"p1", "p2", "p3"} {
+		f.addPage(id, 1, start.Add(-48*time.Hour))
+	}
+	_, err := d.Exec(`UPDATE ext_sources SET page_cursor = ?, comment_cursor = ?, attachment_cursor = ? WHERE id = ?`,
+		formatTime(start), formatTime(start), formatTime(start), src.ID)
+	require.NoError(t, err)
+	f.fetchErr["p1"] = errors.New("500: internal error")
+	clock := &manualClock{t: start}
+	e := New(d, Options{Budget: time.Minute, Now: clock.Now})
+	e.SetFetcher(src.JiraAccountID, f)
+	// The chunk's 4-wide fetch fails on p1 without spending the budget;
+	// the per-item retry then spends it on its first item.
+	f.onFetch = func() {
+		if f.fetches["p1"] > 1 {
+			clock.advance(2 * time.Minute)
+		}
+	}
+	st, err := e.Run(context.Background())
+	require.NoError(t, err)
+	assert.True(t, st.Incomplete)
+	assert.Empty(t, docIDs(t, d, src.ID), "only the failing p1 was tried item by item")
+
+	f.onFetch = nil
+	_, err = e.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"p2", "p3"}, docIDs(t, d, src.ID), "resumed on the next cycle")
+}
