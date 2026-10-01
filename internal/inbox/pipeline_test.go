@@ -1052,6 +1052,7 @@ func TestInbox09_SlackItemWriteErrorFreezesWatermark(t *testing.T) {
 	p := New(d, testConfig(), nil, log.Default())
 	_, _, err = p.Run(context.Background())
 	require.Error(t, err)
+	assert.Contains(t, err.Error(), "creating item")
 
 	ts, err := d.GetInboxLastProcessedTS()
 	require.NoError(t, err)
@@ -1082,11 +1083,12 @@ func TestInbox09_JiraCommentMentionReadErrorFreezesWatermark(t *testing.T) {
 }
 
 // TestInbox09_JiraItemWriteErrorFreezesWatermark: a failed insert of a Jira
-// item is returned, not dropped — for both Jira signals.
+// item is returned, not dropped — for both Jira signals — and does not stop
+// the other signal from surfacing its item.
 func TestInbox09_JiraItemWriteErrorFreezesWatermark(t *testing.T) {
 	// BEHAVIOR INBOX-09 — see docs/inventory/inbox-pulse.md
 	// Do not weaken or remove without explicit owner approval.
-	for _, trigger := range []string{"jira_assigned", "jira_comment_mention"} {
+	for trigger, other := range map[string]string{"jira_assigned": "jira_comment_mention", "jira_comment_mention": "jira_assigned"} {
 		t.Run(trigger, func(t *testing.T) {
 			d := newTestDB(t)
 			p := newPipelineForTest(t, d, "U_ME", "me@x.com")
@@ -1105,6 +1107,28 @@ func TestInbox09_JiraItemWriteErrorFreezesWatermark(t *testing.T) {
 			ts, err := d.GetInboxLastProcessedTS()
 			require.NoError(t, err)
 			assert.Equal(t, frozen, ts)
+			assert.Len(t, queryInboxByTrigger(t, d, other), 1, "the other Jira signal still surfaces")
 		})
 	}
+}
+
+// TestInbox09_JiraIdentityReadErrorFreezesWatermark: a failed read of the
+// owner's Atlassian ids is a detector error — never read as "the owner has
+// no Jira identity", which would skip comment-mention detection silently.
+func TestInbox09_JiraIdentityReadErrorFreezesWatermark(t *testing.T) {
+	// BEHAVIOR INBOX-09 — see docs/inventory/inbox-pulse.md
+	// Do not weaken or remove without explicit owner approval.
+	d := newTestDB(t)
+	p := newPipelineForTest(t, d, "U_ME", "me@x.com")
+	const frozen = 1000.0
+	require.NoError(t, d.SetInboxLastProcessedTS(frozen))
+	_, err := d.Exec(`DROP TABLE jira_user_map`)
+	require.NoError(t, err)
+
+	_, _, err = p.Run(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "jira_user_map")
+	ts, err := d.GetInboxLastProcessedTS()
+	require.NoError(t, err)
+	assert.Equal(t, frozen, ts)
 }

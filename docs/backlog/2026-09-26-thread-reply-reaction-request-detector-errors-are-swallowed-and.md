@@ -15,4 +15,4 @@ In `detectSlackTriggers`, a failure of `FindMentions` or `FindDMs` is returned. 
 
 > Original note: «а давай проведем ревью нашего репоза на ветке мейн с целью наполнения беклога. Наши треки - покрытие тестами, баги существующие и потенциальные, архитектурные проблемы, анализ использования и бессмысленный функционал»
 
-**Resolution (2026-10-01):** fixed on `fix/inbox-pipeline-watermarks` — thread-reply/reaction query errors, the Jira comment-mention read and failed inbox item inserts (Slack and Jira) are now returned and freeze the watermark (INBOX-09 guards added).
+**Resolution (2026-10-01):** fixed — thread-reply/reaction query errors, the Jira comment-mention and owner-identity reads, and failed inbox item inserts (Slack, Jira, briefing) are now returned and freeze the watermark (INBOX-09 guards added).

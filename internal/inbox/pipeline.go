@@ -330,45 +330,29 @@ func (p *Pipeline) advanceWatermark(ts, lastTS float64) {
 
 // detectAll runs the per-source detectors and returns counts.
 // The returned error is non-nil if any detector failed; callers use it to gate
-// the watermark advance so a failed pass does not skip its message window.
+// the watermark advance so a failed pass does not skip its message window. A
+// failing detector's count still counts the items it did create.
 func (p *Pipeline) detectAll(ctx context.Context, owner db.Owner, jiraOwn *ownJiraComments, lastTS float64, sinceTime time.Time) (slack, jira, cal, gmail, imapCount, wt int, err error) {
 	var errs []error
-	if n, e := p.detectSlackAccounts(ctx, lastTS); e != nil {
-		p.logger.Printf("inbox: slack detect error: %v", e)
-		errs = append(errs, fmt.Errorf("slack: %w", e))
-	} else {
-		slack = n
+	record := func(source string, e error) {
+		if e != nil {
+			p.logger.Printf("inbox: %s detect error: %v", source, e)
+			errs = append(errs, fmt.Errorf("%s: %w", source, e))
+		}
 	}
-	if n, e := detectJira(ctx, p.db, owner, jiraOwn, sinceTime); e != nil {
-		p.logger.Printf("inbox: jira detect error: %v", e)
-		errs = append(errs, fmt.Errorf("jira: %w", e))
-	} else {
-		jira = n
-	}
-	if n, e := DetectCalendar(ctx, p.db, owner.Email, sinceTime); e != nil {
-		p.logger.Printf("inbox: calendar detect error: %v", e)
-		errs = append(errs, fmt.Errorf("calendar: %w", e))
-	} else {
-		cal = n
-	}
-	if n, e := DetectGmailAccounts(ctx, p.db, sinceTime); e != nil {
-		p.logger.Printf("inbox: gmail detect error: %v", e)
-		errs = append(errs, fmt.Errorf("gmail: %w", e))
-	} else {
-		gmail = n
-	}
-	if n, e := DetectImapAccounts(ctx, p.db, sinceTime); e != nil {
-		p.logger.Printf("inbox: imap detect error: %v", e)
-		errs = append(errs, fmt.Errorf("imap: %w", e))
-	} else {
-		imapCount = n
-	}
-	if n, e := DetectWatchtowerInternal(ctx, p.db, sinceTime); e != nil {
-		p.logger.Printf("inbox: watchtower detect error: %v", e)
-		errs = append(errs, fmt.Errorf("watchtower: %w", e))
-	} else {
-		wt = n
-	}
+	var e error
+	slack, e = p.detectSlackAccounts(ctx, lastTS)
+	record("slack", e)
+	jira, e = detectJira(ctx, p.db, owner, jiraOwn, sinceTime)
+	record("jira", e)
+	cal, e = DetectCalendar(ctx, p.db, owner.Email, sinceTime)
+	record("calendar", e)
+	gmail, e = DetectGmailAccounts(ctx, p.db, sinceTime)
+	record("gmail", e)
+	imapCount, e = DetectImapAccounts(ctx, p.db, sinceTime)
+	record("imap", e)
+	wt, e = DetectWatchtowerInternal(ctx, p.db, sinceTime)
+	record("watchtower", e)
 	return slack, jira, cal, gmail, imapCount, wt, errors.Join(errs...)
 }
 
@@ -429,10 +413,9 @@ func (p *Pipeline) detectSlackTriggers(ctx context.Context, accountID int64, cur
 		return 0, fmt.Errorf("finding DMs: %w", err)
 	}
 
-	// A thread-reply or reaction query failure no longer aborts the account:
-	// the candidates that were found still become items, and the error is
-	// returned alongside them so the caller freezes the watermark (INBOX-09)
-	// and the failed detector's window is re-scanned next cycle.
+	// Mentions/DMs fail the account outright; thread-reply and reaction
+	// failures are collected so the candidates already found still become
+	// items, and the joined error freezes the watermark (INBOX-09).
 	var errs []error
 	threadReplies, err := p.db.FindThreadRepliesToUser(accountID, currentUserID, lastTS)
 	if err != nil {
@@ -571,7 +554,7 @@ func (p *Pipeline) createItemsFromCandidates(candidates []db.InboxCandidate, cur
 			WaitingUserIDs: waitingJSON,
 		})
 		if err != nil {
-			if strings.Contains(err.Error(), "UNIQUE") {
+			if isUniqueConflict(err) {
 				continue
 			}
 			errs = append(errs, fmt.Errorf("creating item for %s/%s: %w", c.ChannelID, c.MessageTS, err))
@@ -580,6 +563,13 @@ func (p *Pipeline) createItemsFromCandidates(candidates []db.InboxCandidate, cur
 		created++
 	}
 	return created, errors.Join(errs...)
+}
+
+// isUniqueConflict reports whether an inbox_items insert failed on
+// UNIQUE(channel_id, message_ts) — the message is already surfaced, which is
+// a skip, not a failure.
+func isUniqueConflict(err error) bool {
+	return strings.Contains(err.Error(), "UNIQUE")
 }
 
 // loadContext loads thread or channel context for an inbox item.
