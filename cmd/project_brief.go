@@ -17,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/db"
+	"watchtower/internal/kb"
 	"watchtower/internal/projectcheck"
 	"watchtower/internal/tools"
 )
@@ -29,12 +30,22 @@ const (
 	// briefDriftBudget bounds the brief's offline board drift check (git
 	// only, PROJ-07), so a slow repository never stalls a session start.
 	briefDriftBudget = 4 * time.Second
+
+	// The recent-in-project-sources section: documents of the project's
+	// Slack channels, Jira projects and Confluence spaces active in the last
+	// briefRecentDays, newest first. It takes only what the board and the
+	// comments leave, at most briefRecentChars, and is left out when less
+	// than briefRecentMinChars remain or not one document fits — it never
+	// cuts the open targets.
+	briefRecentDays     = 14
+	briefRecentLimit    = 8
+	briefRecentChars    = 1200
+	briefRecentMinChars = 120
 )
 
 var briefRules = []string{
 	"Board rules: set a target in_progress (update_target) before you work on it, in_review when its review starts and done once the review passes; ask the owner with add_comment instead of stopping.",
 	"Before revising an attached document call list_comments(document_id); resolve each comment you addressed (resolve_comment), then attach_document again.",
-	"Link work to git: set branch (and pr) on a target when you start it; after a merge, walk that PR's targets on (done, or split off what remains).",
 }
 
 var projectBriefCmd = &cobra.Command{
@@ -42,7 +53,8 @@ var projectBriefCmd = &cobra.Command{
 	Short: "Print a project's brief for Claude Code (the SessionStart hook body)",
 	Long: "Prints at most 4000 characters: target counts, the open part of the board with\n" +
 		"ids, status and priority (in progress and blocked first, then by priority; done omitted),\n" +
-		"comments waiting for the agent, and the board rules. Always exits 0 — a hook must\n" +
+		"comments waiting for the agent, recent threads, issues and pages from the project's\n" +
+		"sources when room is left, and the board rules. Always exits 0 — a hook must\n" +
 		"never break a session start, so any failure (project gone, folder moved, database\n" +
 		"unreadable) is one line.",
 	// No root schema/config pre-run: a broken config would otherwise fail the
@@ -132,7 +144,51 @@ func briefFromDB(database *db.DB, p *db.Project) string {
 	ctx, cancel := context.WithTimeout(context.Background(), briefDriftBudget)
 	defer cancel()
 	drift := projectcheck.Check(ctx, p.ID, board, projectcheck.Options{Folder: p.FolderPath}).Findings
-	return renderProjectBrief(board, p, comments, byID, drift, time.Now())
+	now := time.Now()
+	return renderProjectBrief(board, p, comments, byID, drift, loadBriefRecent(database, p.ID, now), now)
+}
+
+// briefRecent is the recent-in-project-sources input; nil when the project
+// has no Slack channel, Jira project or Confluence space source that
+// resolves. err is shown as the section's one line, never failing the brief.
+// indexed says the index holds any document of the scope at all, so "none"
+// means quiet rather than "not indexed yet".
+type briefRecent struct {
+	hits    []kb.Hit
+	indexed bool
+	err     error
+}
+
+// briefRecentTimeout bounds the section's queries: the hook body must stay
+// fast whatever the index size; a timeout is shown as the error line.
+const briefRecentTimeout = 2 * time.Second
+
+func loadBriefRecent(database *db.DB, projectID int64, now time.Time) *briefRecent {
+	ctx, cancel := context.WithTimeout(context.Background(), briefRecentTimeout)
+	defer cancel()
+	r := readBriefRecent(ctx, database, projectID, now)
+	if r != nil && r.err != nil {
+		// The section may be left out for room; stderr keeps the failure
+		// visible on a manual run or in claude --debug (exit stays 0).
+		fmt.Fprintf(os.Stderr, "watchtower: project %d brief: recent in project sources: %v\n", projectID, r.err)
+	}
+	return r
+}
+
+func readBriefRecent(ctx context.Context, database *db.DB, projectID int64, now time.Time) *briefRecent {
+	scope, _, err := tools.ProjectKnowledgeScope(ctx, database, projectID)
+	if err != nil {
+		return &briefRecent{err: err}
+	}
+	if scope.Empty() {
+		return nil
+	}
+	hits, err := kb.Recent(ctx, database, scope, now.AddDate(0, 0, -briefRecentDays), briefRecentLimit)
+	if err != nil || len(hits) > 0 {
+		return &briefRecent{hits: hits, indexed: len(hits) > 0, err: err}
+	}
+	older, err := kb.Recent(ctx, database, scope, time.Time{}, 1)
+	return &briefRecent{indexed: len(older) > 0, err: err}
 }
 
 // briefUnavailable is the one-line brief for every failure.
@@ -141,9 +197,10 @@ func briefUnavailable(id int64, reason string) string {
 }
 
 // renderProjectBrief is the hook body: header, the board drift (when any),
-// the open tree, the comments new for the agent, the rules — at most
-// briefMaxChars runes. Pure.
-func renderProjectBrief(board []db.BoardNode, p *db.Project, comments []db.ProjectComment, docs map[int64]db.ProjectDocument, drift []projectcheck.Finding, now time.Time) string {
+// the open tree, the comments new for the agent, recent documents of the
+// project's sources (recent nil = the project has none, the section is left
+// out), the rules — at most briefMaxChars runes. Pure.
+func renderProjectBrief(board []db.BoardNode, p *db.Project, comments []db.ProjectComment, docs map[int64]db.ProjectDocument, drift []projectcheck.Finding, recent *briefRecent, now time.Time) string {
 	head := briefHeader(p, board, len(comments))
 	rules := strings.Join(briefRules, "\n")
 	budget := briefMaxChars - utf8.RuneCountInString(head) - utf8.RuneCountInString(rules) - 3 // three joining newlines
@@ -152,18 +209,63 @@ func renderProjectBrief(board []db.BoardNode, p *db.Project, comments []db.Proje
 		for _, f := range drift {
 			lines = append(lines, "- "+briefClip(f.Line(), briefLineChars))
 		}
-		section := fitBriefSection("Board drift — fix it with update_target:", lines, budget/4, "drift findings (watchtower project check)")
+		section, _ := fitBriefSection("Board drift — fix it with update_target:", lines, budget/4, "drift findings (watchtower project check)")
 		head += "\n" + section
 		budget -= utf8.RuneCountInString(section) + 1
 	}
 	commentLines := briefCommentLines(comments, docs, boardTitles(board))
-	treeBudget := budget
+	const commentsTitle = "New comments for you:"
+	// Without comments the section is still its "none." line; the tree
+	// leaves room for it.
+	treeBudget := budget - utf8.RuneCountInString(briefNone(commentsTitle))
 	if len(commentLines) > 0 {
 		treeBudget = budget / 2
 	}
-	tree := fitBriefSection("Open targets:", briefTargetLines(board, now), treeBudget, "targets (project_board)")
-	section := fitBriefSection("New comments for you:", commentLines, budget-utf8.RuneCountInString(tree), "comments (list_comments)")
-	return strings.Join([]string{head, tree, section, rules}, "\n")
+	targetLines := briefTargetLines(board, now)
+	tree, treeShown := fitBriefSection("Open targets:", targetLines, treeBudget, "targets (project_board)")
+	section, commentsShown := fitBriefSection(commentsTitle, commentLines, budget-utf8.RuneCountInString(tree), "comments (list_comments)")
+	parts := []string{head, tree, section}
+	// Recent documents only ever use room nothing else wanted: once targets
+	// or comments were cut, the section is left out.
+	if treeShown == len(targetLines) && commentsShown == len(commentLines) {
+		left := budget - utf8.RuneCountInString(tree) - utf8.RuneCountInString(section) - 1 // its joining newline
+		if r := briefRecentSection(recent, min(left, briefRecentChars)); r != "" {
+			parts = append(parts, r)
+		}
+	}
+	return strings.Join(append(parts, rules), "\n")
+}
+
+// briefRecentSection renders recent within limit runes; "" when there is
+// nothing to say (no sources) or no room for a single document.
+func briefRecentSection(recent *briefRecent, limit int) string {
+	if recent == nil || limit < briefRecentMinChars {
+		return ""
+	}
+	title := fmt.Sprintf("Recent in project sources (last %d days):", briefRecentDays)
+	switch {
+	case recent.err != nil:
+		return briefClip(title+" unavailable: "+recent.err.Error(), min(limit, briefLineChars))
+	case len(recent.hits) == 0 && !recent.indexed:
+		return title + " nothing indexed from them yet (knowledge search off or still indexing)."
+	}
+	lines := make([]string, 0, len(recent.hits))
+	for _, h := range recent.hits {
+		lines = append(lines, briefClip(fmt.Sprintf("- [%s %s] %s (ref %s)", h.Source, briefDay(h.When), h.Title, h.Ref), briefLineChars))
+	}
+	out, shown := fitBriefSection(title, lines, limit, "documents (search_knowledge)")
+	if len(lines) > 0 && shown == 0 {
+		return "" // not even one document fits: a bare "… N more" says nothing
+	}
+	return out
+}
+
+// briefDay is the date part of an RFC 3339 time, the whole string otherwise.
+func briefDay(when string) string {
+	if len(when) >= 10 {
+		return when[:10]
+	}
+	return when
 }
 
 func briefHeader(p *db.Project, board []db.BoardNode, newComments int) string {
@@ -180,12 +282,14 @@ func briefHeader(p *db.Project, board []db.BoardNode, newComments int) string {
 	return strings.Join(lines, "\n")
 }
 
-// fitBriefSection writes title and as many lines as fit in limit runes; the
-// rest becomes one "… N more <what>" line. Each written line reserved room
-// for a marker at least as long as any later one, so the marker always fits.
-func fitBriefSection(title string, lines []string, limit int, what string) string {
+// fitBriefSection writes title and as many lines as fit in limit runes, and
+// says how many it wrote; the rest becomes one "… N more <what>" line. Each
+// written line reserved room for a marker at least as long as any later one,
+// so the marker always fits. No lines at all is briefNone(title), whatever
+// the limit.
+func fitBriefSection(title string, lines []string, limit int, what string) (string, int) {
 	if len(lines) == 0 {
-		return title + " none."
+		return briefNone(title), 0
 	}
 	var b strings.Builder
 	b.WriteString(title)
@@ -199,14 +303,16 @@ func fitBriefSection(title string, lines []string, limit int, what string) strin
 		need := 1 + utf8.RuneCountInString(line)
 		if used+need+reserve > limit {
 			b.WriteString(more)
-			return b.String()
+			return b.String(), i
 		}
 		b.WriteString("\n")
 		b.WriteString(line)
 		used += need
 	}
-	return b.String()
+	return b.String(), len(lines)
 }
+
+func briefNone(title string) string { return title + " none." }
 
 func briefClosed(status string) bool { return status == "done" || status == "dismissed" }
 
