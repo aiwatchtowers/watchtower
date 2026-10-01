@@ -106,10 +106,14 @@ struct SidebarView: View {
                         .foregroundStyle(.secondary)
                         .frame(width: 16)
                     VStack(alignment: .leading, spacing: 1) {
+                        // Two lines and the full title on hover: a narrow
+                        // sidebar cut a one-line title down to "SYNC | C…".
                         Text(nextEvt.title)
                             .font(.caption)
-                            .lineLimit(1)
+                            .lineLimit(2)
                             .truncationMode(.tail)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .help(nextEvt.title)
                         TimelineView(.periodic(from: .now, by: 1)) { context in
                             Text(Self.nextEventCountdownText(start: nextEvt.startDate, now: context.date))
                                 .font(.caption2)
@@ -275,19 +279,13 @@ struct SidebarView: View {
         }
     }
 
-    /// A single-line countdown to `start`: whole minutes until the final
-    /// minute, whole seconds only inside it. Replaces `Text(_, style: .relative)`,
+    /// A single-line countdown to `start` (`MeetingCountdown`): seconds in
+    /// the final minute, minutes, then hours and minutes; a meeting hours
+    /// away shows its start time. Replaces `Text(_, style: .relative)`,
     /// whose built-in "34 min, 7 sec" phrasing has no line limit and wraps
-    /// across 2-3 lines in the sidebar's narrow footer, and whose per-second
-    /// seconds count is unnecessary noise until the meeting is about to start.
+    /// across 2-3 lines in the sidebar's narrow footer.
     static func nextEventCountdownText(start: Date, now: Date) -> String {
-        let remaining = Int(start.timeIntervalSince(now).rounded())
-        guard remaining > 0 else { return "starting now" }
-        if remaining < 60 {
-            return remaining == 1 ? "in 1 sec" : "in \(remaining) sec"
-        }
-        let minutes = remaining / 60
-        return minutes == 1 ? "in 1 min" : "in \(minutes) min"
+        MeetingCountdown.text(start: start, now: now)
     }
 
     /// A section's items after BOTH filters: the user's own hide choices and
