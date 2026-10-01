@@ -197,10 +197,18 @@ final class CustomTrackTimelineViewModel {
             // applied since this VM was created (lost update). A missing row
             // means the target was deleted — surface that instead of silently
             // marking the event applied with no effect.
-            guard let fresh = try dbPool.read({ db in
-                try TargetQueries.fetchByID(db, id: linkedID)
-            }) else {
+            let (fresh, eventExists) = try dbPool.read { db in
+                (try TargetQueries.fetchByID(db, id: linkedID), try TrackEventQueries.exists(db, id: event.id))
+            }
+            guard let fresh else {
                 errorMessage = "The linked task no longer exists — it may have been deleted."
+                return
+            }
+            // Checked before the task is touched: otherwise the apply would land
+            // and then fail on the vanished event's status write.
+            guard eventExists else {
+                refreshEvents()
+                errorMessage = RowNotFoundError(kind: "track event", id: event.id).localizedDescription
                 return
             }
             _ = try TargetActionExecutor.apply(action, target: fresh, viewModel: targetsViewModel)
@@ -218,6 +226,8 @@ final class CustomTrackTimelineViewModel {
                 try TrackEventQueries.setActionStatus(db, id: event.id, status: "dismissed")
             }
         } catch {
+            // The observation never sees another process's delete.
+            if error is RowNotFoundError { refreshEvents() }
             errorMessage = error.localizedDescription
         }
     }

@@ -100,6 +100,8 @@ enum MeetingTranscriptQueries {
                 WHERE id = ?
                 """,
             arguments: [markdown, id])
+        // The owner's typed notes would otherwise vanish without a word.
+        try db.requireUpdated("recording", id: id)
     }
 
     /// Soft-deletes (or restores, `deleted: false` — the undo toast) one

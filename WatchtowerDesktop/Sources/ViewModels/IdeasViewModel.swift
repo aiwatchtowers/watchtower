@@ -301,6 +301,7 @@ final class IdeasViewModel {
             load()
             return newTargetID
         } catch {
+            if error is RowNotFoundError { load() }
             errorMessage = "Failed to convert idea to target: \(error.localizedDescription)"
             return nil
         }
@@ -316,6 +317,8 @@ final class IdeasViewModel {
             load()
             return true
         } catch {
+            // A vanished idea leaves the lists instead of failing on every retry.
+            if error is RowNotFoundError { load() }
             errorMessage = "Failed to \(label): \(error.localizedDescription)"
             return false
         }

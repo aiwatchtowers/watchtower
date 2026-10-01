@@ -95,6 +95,8 @@ package enum TrackQueries {
     // MARK: - Mark read
 
     /// Mark a track as read: set read_at=now, has_updates=0, and cascade-mark related digests.
+    /// Best-effort, unchecked: a track deleted meanwhile has nothing left to
+    /// read, so a zero-row write is the desired end state, not a failure.
     package static func markRead(_ db: Database, id: Int) throws {
         try db.execute(sql: """
             UPDATE tracks SET read_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), has_updates = 0
@@ -129,6 +131,8 @@ package enum TrackQueries {
             sql: "UPDATE tracks SET priority = ? WHERE id = ?",
             arguments: [priority, id]
         )
+        // Before the feedback row: a vanished track must not leave a correction behind.
+        try db.requireUpdated("track", id: id)
         try FeedbackQueries.addFeedback(
             db,
             entityType: "track",
@@ -145,6 +149,7 @@ package enum TrackQueries {
             sql: "UPDATE tracks SET ownership = ? WHERE id = ?",
             arguments: [ownership, id]
         )
+        try db.requireUpdated("track", id: id)
     }
 
     // MARK: - Sub-items
@@ -157,6 +162,7 @@ package enum TrackQueries {
             sql: "UPDATE tracks SET sub_items = ? WHERE id = ?",
             arguments: [json, id]
         )
+        try db.requireUpdated("track", id: id)
     }
 
     // MARK: - Dismiss / Restore
@@ -166,6 +172,7 @@ package enum TrackQueries {
             sql: "UPDATE tracks SET dismissed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?",
             arguments: [id]
         )
+        try db.requireUpdated("track", id: id)
     }
 
     package static func restore(_ db: Database, id: Int) throws {
@@ -173,6 +180,7 @@ package enum TrackQueries {
             sql: "UPDATE tracks SET dismissed_at = '' WHERE id = ?",
             arguments: [id]
         )
+        try db.requireUpdated("track", id: id)
     }
 
     // MARK: - Custom tracks
@@ -206,6 +214,7 @@ package enum TrackQueries {
         try db.execute(sql: """
             UPDATE tracks SET enabled = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?
             """, arguments: [enabled, id])
+        try db.requireUpdated("track", id: id)
     }
 
     /// Edits a custom track's watch instruction in place.
@@ -214,6 +223,7 @@ package enum TrackQueries {
             UPDATE tracks SET instruction = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
             WHERE id = ? AND origin = 'custom'
             """, arguments: [instruction, id])
+        try db.requireUpdated("track", id: id)
     }
 
     package static func fetchLastRunAt(_ db: Database, id: Int) throws -> String {

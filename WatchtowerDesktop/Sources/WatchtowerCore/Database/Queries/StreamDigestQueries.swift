@@ -16,6 +16,8 @@ package enum StreamDigestQueries {
         try StreamDigest.fetchOne(db, sql: "SELECT * FROM stream_digests WHERE id = ?", arguments: [id])
     }
 
+    /// Best-effort, unchecked: zero rows also means "already read" (`read_at IS
+    /// NULL` guard), and a digest deleted meanwhile has nothing left to read.
     package static func markRead(_ db: Database, id: Int) throws {
         try db.execute(
             sql: "UPDATE stream_digests SET read_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ? AND read_at IS NULL",

@@ -481,6 +481,9 @@ struct RecordingDetailView: View {
             }
             onChanged()
         } catch {
+            // The final flush runs as the pane goes away, with nobody left to
+            // read `errorMessage`: keep a trace as well.
+            NSLog("RecordingDetailView: could not save notes: %@", error.localizedDescription)
             errorMessage = error.localizedDescription
         }
     }
