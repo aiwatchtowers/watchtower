@@ -143,8 +143,8 @@ extension ProjectBoardCardView where Trailing == EmptyView {
     }
 }
 
-/// A small tinted capsule: a card's priority or status, and the detail pane's
-/// menu labels.
+/// A small tinted capsule: a card's priority or status, and the detail card's
+/// drift findings.
 struct ProjectBoardChip: View {
     let text: String
     let color: Color
