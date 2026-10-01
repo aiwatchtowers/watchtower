@@ -357,15 +357,7 @@ struct SystemSettings: View {
                 }
 
             case .readyToInstall:
-                HStack {
-                    Label("Ready to install", systemImage: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                    Spacer()
-                    Button("Install & Restart") {
-                        Task { await service.install() }
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
+                readyToInstallRow(service: service)
 
             case .installing:
                 HStack {
@@ -397,6 +389,29 @@ struct SystemSettings: View {
                         Task { await service.checkForUpdates() }
                     }
                 }
+            }
+        }
+    }
+
+    /// Install & Restart, disabled under the same gate `UpdateService.install()`
+    /// enforces: never swap the bundle under a running capture or transcription.
+    private func readyToInstallRow(service: UpdateService) -> some View {
+        let busy = appState.meetingRecorderCenter.isBusy
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Label("Ready to install", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                Spacer()
+                Button("Install & Restart") {
+                    Task { await service.install() }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(busy)
+            }
+            if busy {
+                Text(UpdateService.busyMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
     }

@@ -385,6 +385,18 @@ struct UpdateServiceInstallTests {
         #expect(rec.calls == ["canWrite", "stage", "verify", "replace", "discard"])
     }
 
+    @Test("install refuses while a recording or transcription is busy, before any step")
+    func installRefusesWhileBusy() async {
+        let rec = InstallRecorder()
+        let svc = UpdateService()
+        svc.isBusy = { true }
+        svc.installSteps = rec.steps
+        svc.state = .readyToInstall(appPath: URL(fileURLWithPath: "/downloads/Watchtower.app"))
+        await svc.install()
+        #expect(svc.state == .error(UpdateService.busyMessage))
+        #expect(rec.calls.isEmpty)
+    }
+
     @Test("install outside a ready state is a no-op")
     func installRequiresReadyState() async {
         let svc = UpdateService()

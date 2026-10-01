@@ -407,6 +407,14 @@ final class UpdateService {
     /// current app untouched.
     func install() async {
         guard case .readyToInstall(let newAppPath) = state else { return }
+        // Same gate as the quit path's "recording in progress" confirmation,
+        // but before the swap: once the bundle is replaced, cancelling that
+        // dialog can no longer cancel the update, and the still-running old
+        // app would spawn the new bundle's CLI.
+        guard !isBusy() else {
+            state = .error(Self.busyMessage)
+            return
+        }
         guard let currentApp = Self.currentAppBundleURL() else {
             state = .error("Cannot determine current app location")
             return
@@ -417,7 +425,7 @@ final class UpdateService {
             newApp: newAppPath,
             currentApp: currentApp,
             teamID: Self.currentTeamIdentifier(),
-            steps: .live
+            steps: installSteps
         )
         guard outcome == .installed else {
             if case .failed(let message) = outcome { state = .error(message) }
@@ -450,6 +458,16 @@ final class UpdateService {
         // Still alive: the quit was cancelled or is still stuck.
         state = .restartRequired
     }
+
+    nonisolated static let busyMessage =
+        "Finish the recording or transcription in progress, then install the update."
+
+    /// True while a meeting capture or transcription job is running. Installs
+    /// wait for it. Instance property so tests can inject it.
+    var isBusy: () -> Bool = { AppState.shared.meetingRecorderCenter.isBusy }
+
+    /// The install's side-effecting steps; tests inject recorders.
+    var installSteps: InstallSteps = .live
 
     /// How long `relaunch` waits for the app to actually quit before telling
     /// the user to restart by hand. Covers the quit path's own bounded work
