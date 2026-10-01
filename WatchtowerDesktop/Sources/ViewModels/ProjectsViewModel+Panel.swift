@@ -76,25 +76,20 @@ extension ProjectsViewModel {
         selectedProjectID = projectID
     }
 
-    /// A level-2 click. A session is opened (a closed one reopens, one not
-    /// running starts) and shown in the terminal pane.
-    func showFromPanel(_ item: WorkspacePane) async {
+    /// A level-2 click on a session: it is opened (a closed one reopens, one
+    /// not running starts) and put on screen like any panel click.
+    func showFromPanel(sessionID id: Int64) async {
         guard let projectID = drilledProjectID else { return }
-        switch item {
-        case .board, .documents:
-            showInLayout(item, projectID: projectID)
-        case let .session(id):
-            // The list may not be loaded yet (the panel loads it on appear).
-            // A failed load already reports itself; the row is not "gone".
-            if terminalSessions[projectID]?.contains(where: { $0.id == id }) != true {
-                guard await loadSessions(projectID: projectID) else { return }
-            }
-            guard let session = terminalSessions[projectID]?.first(where: { $0.id == id }) else {
-                sessionActionErrors[projectID] = "That session no longer exists."
-                return
-            }
-            await open(session)
+        // The list may not be loaded yet (the panel loads it on appear).
+        // A failed load already reports itself; the row is not "gone".
+        if terminalSessions[projectID]?.contains(where: { $0.id == id }) != true {
+            guard await loadSessions(projectID: projectID) else { return }
         }
+        guard let session = terminalSessions[projectID]?.first(where: { $0.id == id }) else {
+            sessionActionErrors[projectID] = "That session no longer exists."
+            return
+        }
+        await open(session)
     }
 
     /// Level 2's "New session": a fresh `claude` session of the drilled
@@ -188,9 +183,4 @@ extension ProjectsViewModel {
         selectedStandaloneID = id
     }
 
-    private func showInLayout(_ item: WorkspacePane, projectID: Int64) {
-        var updated = layout(projectID: projectID)
-        updated.show(item)
-        setLayout(updated, projectID: projectID)
-    }
 }

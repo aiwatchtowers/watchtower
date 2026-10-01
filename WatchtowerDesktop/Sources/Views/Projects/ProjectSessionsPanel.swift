@@ -57,11 +57,10 @@ struct ProjectSessionsPanel: View {
         .padding(.vertical, 8)
     }
 
-    /// Highlights the session on screen. A row opens on its own click
+    /// The highlight always shows the session on screen; the List's own
+    /// selection changes are ignored. A row opens on its own click
     /// (`SessionRowActions.open`), which also reaches the row already
-    /// highlighted but not running, so the List's own selection changes
-    /// nothing: arrow keys move the highlight without starting a session
-    /// (VoiceOver has the row's action).
+    /// highlighted but not running (VoiceOver has the row's action).
     private var selection: Binding<WorkspacePane?> {
         Binding(get: { vm.panelSelection }, set: { _ in })
     }
@@ -92,7 +91,7 @@ struct TerminalSessionRow: View {
                 Image(systemName: isLive ? "circle.fill" : "circle")
                     .font(.system(size: 7))
                     .foregroundStyle(isLive ? Color.green : Color.secondary)
-                    .frame(width: PanelRowLabel.iconWidth)
+                    .frame(width: 16)
                     .accessibilityLabel(isLive ? "Running" : "Not running")
                 VStack(alignment: .leading, spacing: 1) {
                     Text(session.title).lineLimit(1).truncationMode(.tail)
@@ -129,31 +128,6 @@ struct TerminalSessionRow: View {
             Divider()
             Button("Delete…", role: .destructive) { actions.delete(session) }
         }
-    }
-}
-
-/// A Board/Documents row: a small secondary icon in a fixed column, so the
-/// text lines up with the session rows' text below it.
-struct PanelRowLabel: View {
-    static let iconWidth: CGFloat = 16
-    let title: String
-    let systemImage: String
-
-    init(_ title: String, systemImage: String) {
-        self.title = title
-        self.systemImage = systemImage
-    }
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: systemImage)
-                .imageScale(.small)
-                .foregroundStyle(.secondary)
-                .frame(width: Self.iconWidth)
-                .accessibilityHidden(true)
-            Text(title).lineLimit(1)
-        }
-        .listRowSeparator(.hidden)
     }
 }
 

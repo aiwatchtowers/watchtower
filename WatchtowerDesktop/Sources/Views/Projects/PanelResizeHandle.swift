@@ -2,13 +2,15 @@ import AppKit
 import SwiftUI
 
 /// The Projects panel's right edge (board target #144): a divider the owner
-/// drags to resize the panel, within `widthRange`. The width is an
-/// `@AppStorage` value, so it survives a relaunch.
+/// drags to resize the panel, within `widthRange`. `liveWidth` follows the
+/// drag; `width` (an `@AppStorage` value, so it survives a relaunch) is
+/// written once, when the drag ends.
 struct PanelResizeHandle: View {
     static let defaultWidth: Double = 260
     static let widthRange: ClosedRange<Double> = 200...480
 
     @Binding var width: Double
+    @Binding var liveWidth: Double?
     @State private var dragStart: Double?
     @State private var cursorPushed = false
 
@@ -33,9 +35,13 @@ struct PanelResizeHandle: View {
                     .onChanged { value in
                         let start = dragStart ?? Self.clamp(width)
                         dragStart = start
-                        width = Self.clamp(start + Double(value.translation.width))
+                        liveWidth = Self.clamp(start + Double(value.translation.width))
                     }
-                    .onEnded { _ in dragStart = nil }
+                    .onEnded { _ in
+                        if let liveWidth { width = liveWidth }
+                        liveWidth = nil
+                        dragStart = nil
+                    }
             )
             .onDisappear { popCursor() }
             .accessibilityHidden(true)
