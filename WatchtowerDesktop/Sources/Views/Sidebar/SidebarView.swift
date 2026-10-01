@@ -5,6 +5,7 @@ import WatchtowerCore
 struct SidebarView: View {
     @Binding var selection: SidebarDestination
     @Environment(AppState.self) private var appState
+    @Environment(\.openSettings) private var openSettings
 
     /// Per-section collapsed flag. Held in @State so toggling re-renders the view;
     /// seeded from UserDefaults (persisted across launches) on first appearance.
@@ -142,7 +143,9 @@ struct SidebarView: View {
             // Update available indicator
             if appState.updateService.isUpdateAvailable {
                 Button {
-                    NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                    // `showSettingsWindow:` via sendAction is a no-op on macOS 14+.
+                    appState.settingsTab = .system
+                    openSettings()
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: "arrow.down.circle.fill")

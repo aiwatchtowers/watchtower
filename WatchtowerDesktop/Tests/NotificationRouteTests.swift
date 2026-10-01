@@ -145,7 +145,7 @@ final class NotificationRouteTests: XCTestCase {
         let pushTypes = [
             "decision", "track", "track_update", "task_overdue", "target_extract",
             "daily_summary", "voice_label", "meeting_reminder", "meeting_stop_recording",
-            "test", "briefing", "board_config_changed", "meeting_transcript"
+            "test", "briefing", "board_config_changed", "meeting_transcript", "project", "update"
         ]
         let actionIDs = [
             UNNotificationDefaultActionIdentifier,
@@ -183,6 +183,25 @@ final class NotificationRouteTests: XCTestCase {
     }
 
     // MARK: - Dispatch table
+
+    /// An update push opens Settings on the System tab (where the update
+    /// installs), self-received or forwarded alike: it is pure navigation.
+    func testUpdatePushOpensSettingsOnSystem() async {
+        for forwarded in [false, true] {
+            let appState = AppState()
+            appState.settingsTab = .connections
+            var opened = 0
+            appState.openSettingsWindow = { opened += 1 }
+            await NotificationDelegate.route(
+                actionID: UNNotificationDefaultActionIdentifier,
+                userInfo: ["type": "update"],
+                appState: appState,
+                forwarded: forwarded
+            )
+            XCTAssertEqual(appState.settingsTab, .system, "forwarded: \(forwarded)")
+            XCTAssertEqual(opened, 1, "forwarded: \(forwarded)")
+        }
+    }
 
     /// A decision push carries an idea id (decisions are ledger-sourced, not tied to a
     /// single digest — see DigestWatcher) and opens the Decisions segment on that entry;

@@ -22,6 +22,8 @@ final class TrayMenuViewTests: XCTestCase {
         daemonError: String? = nil,
         cliStoreError: String? = nil,
         voicesPendingCount: Int = 0,
+        updateVersion: String? = nil,
+        updateAction: @escaping () -> Void = {},
         syncNowAction: @escaping () -> Void = {},
         quickCaptureAction: @escaping () -> Void = {},
         voicesAction: @escaping () -> Void = {},
@@ -32,9 +34,26 @@ final class TrayMenuViewTests: XCTestCase {
     ) -> TrayMenuContent {
         TrayMenuContent(
             isRunning: isRunning, syncProgress: syncProgress, daemonError: daemonError, cliStoreError: cliStoreError,
-            voicesPendingCount: voicesPendingCount, syncNowAction: syncNowAction, quickCaptureAction: quickCaptureAction,
+            voicesPendingCount: voicesPendingCount, updateVersion: updateVersion, updateAction: updateAction,
+            syncNowAction: syncNowAction, quickCaptureAction: quickCaptureAction,
             voicesAction: voicesAction, reviewVoicesAction: reviewVoicesAction, trainVoicesAction: trainVoicesAction,
             openAction: openAction, settingsAction: settingsAction)
+    }
+
+    /// A found update gets its own tray item — the app lives in the tray for
+    /// weeks, so the sidebar badge alone is rarely seen.
+    func testUpdateItemShowsAndFiresWhenAnUpdateIsKnown() throws {
+        var fired = false
+        // swiftlint:disable:next trailing_closure
+        let view = Self.content(updateVersion: "v9.9.9", updateAction: { fired = true })
+        let button = try view.inspect().find(button: "Update to v9.9.9 available…")
+        try button.tap()
+        XCTAssertTrue(fired)
+    }
+
+    func testNoUpdateItemWithoutAKnownUpdate() {
+        let view = Self.content()
+        XCTAssertThrowsError(try view.inspect().find { text, _ in text.hasPrefix("Update to") })
     }
 
     func testMenuOffersOpenSettingsAndQuit() throws {

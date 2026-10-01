@@ -17,6 +17,14 @@ struct TrayMenuView: View {
             daemonError: appState.daemonManager.errorMessage,
             cliStoreError: appState.cliStoreError,
             voicesPendingCount: appState.voiceRegistryCenter.pendingCount,
+            updateVersion: appState.updateService.isUpdateAvailable
+                ? appState.updateService.availableVersion : nil,
+            updateAction: {
+                // Same "become regular" move as Settings… below.
+                ActivationPolicyDecision.becomeRegularAndActivate()
+                appState.settingsTab = .system
+                openSettings()
+            },
             syncNowAction: {
                 Task { await appState.daemonManager.syncNow() }
             },
@@ -74,6 +82,10 @@ struct TrayMenuContent: View {
     let daemonError: String?
     let cliStoreError: String?
     let voicesPendingCount: Int
+    /// Version of a found, not yet installed update; nil hides the item
+    /// (always nil for builds without an update channel).
+    let updateVersion: String?
+    let updateAction: () -> Void
     let syncNowAction: () -> Void
     let quickCaptureAction: () -> Void
     let voicesAction: () -> Void
@@ -101,6 +113,10 @@ struct TrayMenuContent: View {
             }
             if let cliStoreError {
                 Text("CLI store: \(cliStoreError)")
+            }
+            if let updateVersion {
+                Divider()
+                Button("Update to \(updateVersion) available…", action: updateAction)
             }
             Divider()
             Button("Sync Now", action: syncNowAction)
