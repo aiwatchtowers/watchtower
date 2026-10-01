@@ -9,7 +9,14 @@ protocol MeetingTranscriptNotifying {
     func sendTranscriptReadyNotification(title: String)
     func sendTranscriptFailedNotification(reason: String)
     func sendVoicesToLabelNotification(title: String, count: Int, transcriptID: Int64)
+    /// The live capture has had no call audio for `CallAudioWatch.minGapSec`
+    /// (see `callAudioSilentSince`) — the owner is usually in the call app,
+    /// not looking at Watchtower, so the pill alone would go unseen.
+    func sendCallAudioSilentNotification()
 }
+
+/// The "check your output device" hint every call-audio surface ends on.
+let callAudioOutputHint = "check that the call plays through this Mac's output device."
 
 extension NotificationService: MeetingTranscriptNotifying {}
 
@@ -932,7 +939,12 @@ final class MeetingRecorderCenter {
                 self.captureLevels = levels
                 callAudio.add(system: levels.system)
                 let silentSince = callAudio.openGap?.startSec
-                if self.callAudioSilentSince != silentSince { self.callAudioSilentSince = silentSince }
+                // Written only on change: this runs at ~10 Hz and every
+                // write would re-render the observing pill.
+                if self.callAudioSilentSince != silentSince {
+                    if self.callAudioSilentSince == nil { self.notifier.sendCallAudioSilentNotification() }
+                    self.callAudioSilentSince = silentSince
+                }
             }
             guard !Task.isCancelled, let self, self.levelsGeneration == generation else { return }
             self.captureLevels = .init(mic: 0, system: 0)
@@ -1545,30 +1557,29 @@ final class MeetingRecorderCenter {
         mutate(&jobs[index])
     }
 
-    /// Fails a job and fires the failure notification. The job stays in the
-    /// queue (retriable, and never blocking what is behind it) and its audio
-    /// file is intentionally left untouched. Any engine the job still carried is
-    /// dropped: a failed job can sit here indefinitely, and its retry loads a
-    /// fresh one anyway.
     /// Why a recording yielded no text. A bare "No speech recognized" hid
     /// the usual cause: the call's audio never reached the recording (the
     /// activity sidecar's system channel is silent throughout or went
     /// silent and stayed so), leaving only a quiet room microphone.
     nonisolated static func noSpeechMessage(_ activity: MicActivity?) -> String {
         guard let activity else { return "No speech recognized" }
-        var watch = CallAudioWatch()
+        var watch = CallAudioWatch(binSec: MicActivity.binDuration)
         activity.bins.forEach { watch.add(system: $0.sys) }
         if watch.neverHeardCall {
-            return "No speech recognized — no call audio was captured at all. "
-                + "If this was a call, check that it plays through this Mac's output device."
+            return "No speech recognized — no call audio was captured at all. If this was a call, \(callAudioOutputHint)"
         }
         if let gap = watch.openGap {
             return "No speech recognized — call audio stopped at \(TranscriptFormatting.formatTimecode(gap.startSec)) "
-                + "and never came back. Check that the call plays through this Mac's output device."
+                + "and never came back — \(callAudioOutputHint)"
         }
         return "No speech recognized"
     }
 
+    /// Fails a job and fires the failure notification. The job stays in the
+    /// queue (retriable, and never blocking what is behind it) and its audio
+    /// file is intentionally left untouched. Any engine the job still carried is
+    /// dropped: a failed job can sit here indefinitely, and its retry loads a
+    /// fresh one anyway.
     private func failJob(_ id: ProcessingJob.ID, _ message: String) {
         updateJob(id) {
             $0.phase = .failed(message)

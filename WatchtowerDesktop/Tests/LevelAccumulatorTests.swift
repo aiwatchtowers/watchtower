@@ -94,12 +94,13 @@ extension MeetingRecorderCenterTests {
 
         let recorder = FakeRecorder()
         recorder.stopResult = RecordingResult(audioURL: audio, durationSec: 3)
+        let notifier = FakeNotifier()
         let center = MeetingRecorderCenter(
             recorderFactory: { recorder },
             engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["hello"])) },
             decode: stubDecode(sampleCount: 1600),
             runnerResolver: { FakeCLIRunner(stdout: self.recapOKEnvelope) },
-            notifier: FakeNotifier(),
+            notifier: notifier,
             defaults: try isolatedDefaults(),
             recordingsDirectory: recordingsDir
         )
@@ -110,12 +111,14 @@ extension MeetingRecorderCenterTests {
         for _ in 0..<900 { recorder.emitLevels(call) }
         for _ in 0..<1300 { recorder.emitLevels(dead) }
         await waitUntil("the silence is flagged") { center.callAudioSilentSince == 90 }
+        XCTAssertEqual(notifier.callAudioSilentCount, 1, "one push when the gap opens, not one per level pair")
 
         for _ in 0..<100 { recorder.emitLevels(call) }
         await waitUntil("the call coming back clears it") { center.callAudioSilentSince == nil }
 
         for _ in 0..<1300 { recorder.emitLevels(dead) }
         await waitUntil("flagged again") { center.callAudioSilentSince != nil }
+        XCTAssertEqual(notifier.callAudioSilentCount, 2)
         await center.stopAndProcess(config: singleWindowConfig())
         await waitUntil("stop clears it") { center.callAudioSilentSince == nil }
     }

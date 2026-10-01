@@ -29,8 +29,16 @@ final class CallAudioWatchTests: XCTestCase {
     // A stray click or notification in the silence is not the call coming
     // back.
     func testABlipDoesNotEndAGap() {
-        let gaps = CallAudioWatch.gaps(system: bins(90, call) + bins(100, dead) + bins(3, call) + bins(100, dead))
+        let gaps = CallAudioWatch.gaps(system: bins(90, call) + bins(100, dead) + bins(1.5, call) + bins(100, dead))
         XCTAssertEqual(gaps, [CallAudioWatch.Gap(startSec: 90, endSec: nil)])
+    }
+
+    // An app that outputs digital silence between words: the other side
+    // talks in short turns with silent gaps — that is a live call, not a
+    // gap.
+    func testChoppyRemoteSpeechIsNoGap() {
+        let turns = (0..<40).flatMap { _ in bins(3, call) + bins(6, dead) }
+        XCTAssertEqual(CallAudioWatch.gaps(system: bins(120, call) + turns), [])
     }
 
     func testAShortPauseIsNoGap() {

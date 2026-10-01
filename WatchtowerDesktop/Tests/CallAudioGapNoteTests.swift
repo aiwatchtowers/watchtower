@@ -11,15 +11,15 @@ final class CallAudioGapNoteTests: XCTestCase {
 
     func testOneOrTwoGapsAreListed() {
         XCTAssertEqual(CallAudioGapNote.text([Gap(startSec: 929, endSec: nil)], totalSec: 2191),
-                       "No call audio from 15:29 to the end — the transcript there holds only your microphone.")
+                       "No call audio from 15:29 to the end — the transcript there may hold only your microphone.")
         XCTAssertEqual(CallAudioGapNote.text([Gap(startSec: 600, endSec: 780), Gap(startSec: 1200, endSec: nil)], totalSec: 1500),
-                       "No call audio from 10:00 to 13:00 and from 20:00 to the end — the transcript there holds only your microphone.")
+                       "No call audio from 10:00 to 13:00 and from 20:00 to the end — the transcript there may hold only your microphone.")
     }
 
     func testManyGapsAreSummarized() {
         let gaps = [Gap(startSec: 60, endSec: 240), Gap(startSec: 600, endSec: 780), Gap(startSec: 1200, endSec: nil)]
         XCTAssertEqual(CallAudioGapNote.text(gaps, totalSec: 1440),
-                       "No call audio in 3 stretches, 10 min in total, first at 1:00 — the transcript there holds only your microphone.")
+                       "No call audio in 3 stretches, 10 min in total, first at 1:00 — the transcript there may hold only your microphone.")
     }
 
     // The note is read from the recording's activity sidecar: a call heard
@@ -33,7 +33,7 @@ final class CallAudioGapNoteTests: XCTestCase {
         try lines.joined(separator: "\n").write(to: MicActivity.url(for: audio), atomically: true, encoding: .utf8)
 
         XCTAssertEqual(CallAudioGapNote.load(audioPath: audio.path),
-                       "No call audio from 1:30 to the end — the transcript there holds only your microphone.")
+                       "No call audio from 1:30 to the end — the transcript there may hold only your microphone.")
         // Degenerate: no sidecar / no path → no note.
         XCTAssertNil(CallAudioGapNote.load(audioPath: dir.appendingPathComponent("rec_none.caf").path))
         XCTAssertNil(CallAudioGapNote.load(audioPath: nil))

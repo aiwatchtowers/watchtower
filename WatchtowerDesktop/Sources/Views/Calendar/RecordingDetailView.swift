@@ -56,7 +56,8 @@ struct RecordingDetailView: View {
     @State private var transcriptScrollTarget: Int?
     @State private var followup: FollowupState?
     /// `CallAudioGapNote` for this recording, read off-main from its
-    /// activity sidecar in `load()`.
+    /// activity sidecar in `load()`. Gone once retention sweeps the audio
+    /// (the sidecar goes with it).
     @State private var callAudioNote: String?
 
     /// One in-flight follow-up draft request (sheet-scoped, ephemeral by
@@ -278,6 +279,7 @@ struct RecordingDetailView: View {
         var link: CalendarQueries.EventLink?
         var utterances: [TranscriptUtterance]?
         var chapters: MeetingChapters?
+        var callAudioNote: String?
     }
 
     private func load() async {
@@ -297,14 +299,16 @@ struct RecordingDetailView: View {
                         // row is gone — the header degrades to a plain label.
                         link = try CalendarQueries.fetchEventLink(conn, id: eventID)
                     }
+                    // The sidecar is read here, off-main with the rest, so
+                    // every field lands in one main-actor turn.
                     return LoadedDetail(row: row, recap: recap, link: link,
-                                        utterances: row?.utterances, chapters: row?.parsedChapters)
+                                        utterances: row?.utterances, chapters: row?.parsedChapters,
+                                        callAudioNote: CallAudioGapNote.load(audioPath: row?.audioPath))
                 }
             }.value
             transcript = loaded.row
             linkedEvent = loaded.link
-            let audioPath = loaded.row?.audioPath
-            callAudioNote = await Task.detached(priority: .utility) { CallAudioGapNote.load(audioPath: audioPath) }.value
+            callAudioNote = loaded.callAudioNote
             // Segments and chapters decoded ONCE here (off-main, alongside
             // the fetch), never in body evaluations or row builders.
             utterances = loaded.utterances

@@ -11,7 +11,7 @@ enum CallAudioGapNote {
     /// length, which closes an open-ended gap for the "in total" count.
     static func text(_ gaps: [CallAudioWatch.Gap], totalSec: Double) -> String? {
         guard let first = gaps.first else { return nil }
-        let suffix = " — the transcript there holds only your microphone."
+        let suffix = " — the transcript there may hold only your microphone."
         if gaps.count <= 2 {
             let ranges = gaps.map { gap in
                 "from \(TranscriptFormatting.formatTimecode(gap.startSec)) to "

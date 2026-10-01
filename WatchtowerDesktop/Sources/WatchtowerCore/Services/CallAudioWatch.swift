@@ -9,10 +9,12 @@ import Foundation
 /// for minutes looks the same in the levels, so this only reports the
 /// silence ("no call audio since …") and never decides why it happened.
 ///
-/// Pure and incremental. The recorder center feeds it the live level stream
-/// to warn during capture, and `gaps(system:)` replays a saved
-/// `rec_X.activity` sidecar to annotate a finished recording, so the two
-/// can never disagree.
+/// Pure and incremental, counting in bins. The recorder center feeds it the
+/// live level stream to warn during capture, and `gaps(system:)` replays a
+/// saved `rec_X.activity` sidecar to annotate a finished recording — one
+/// detector, so the two apply the same rules. Live level pairs can run a
+/// little longer than 100 ms (one IO buffer more), so the live warning may
+/// come somewhat after the nominal two minutes.
 package struct CallAudioWatch {
     /// Below this RMS the system channel carries nothing a person could hear
     /// (a dead tap writes exact zeros; a live call's quietest stretch sits
@@ -26,8 +28,11 @@ package struct CallAudioWatch {
     /// just the odd notification never qualifies.
     package static let recentAudioSec: Double = 30
     package static let recentWindowSec: Double = 300
-    /// A gap ends once this much call audio came back within the last
-    /// `resumeWindowSec`; a notification sound or a click is shorter.
+    /// A gap ends once the call is back: `resumeRunSec` of unbroken call
+    /// audio (a reply — a notification sound or a click is shorter), or
+    /// `resumeSec` of it within the last `resumeWindowSec` (choppy speech
+    /// from an app that gates silence between words).
+    package static let resumeRunSec: Double = 2
     package static let resumeSec: Double = 5
     package static let resumeWindowSec: Double = 10
 
@@ -47,6 +52,8 @@ package struct CallAudioWatch {
     private var audioBefore: [Int] = [0]
     /// First silent bin of the current silent stretch, once one qualifies.
     private var silentFrom: Int?
+    /// Bins of unbroken call audio up to now.
+    private var heardRun = 0
     private var closedGaps: [Gap] = []
 
     package init(binSec: Double = 0.1) {
@@ -69,7 +76,10 @@ package struct CallAudioWatch {
             silentFrom = index
         }
         audioBefore.append(audioBefore[index] + (heard ? 1 : 0))
-        guard heard, let from = silentFrom, audioSec(inLast: Self.resumeWindowSec) >= Self.resumeSec else { return }
+        heardRun = heard ? heardRun + 1 : 0
+        guard heard, let from = silentFrom,
+              Double(heardRun) * binSec >= Self.resumeRunSec || audioSec(inLast: Self.resumeWindowSec) >= Self.resumeSec
+        else { return }
         // Call audio is back. The stretch ended where the returning audio
         // began (the first audio bin of the resume window); a long enough
         // stretch is recorded as a gap.

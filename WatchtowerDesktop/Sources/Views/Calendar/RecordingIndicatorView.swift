@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 /// Shared chrome for every pill in the bottom-trailing indicator stack. A free
 /// function rather than a method, so `RecordingJobPill` renders the same capsule
@@ -171,8 +172,8 @@ struct RecordingIndicatorView: View {
             Label("No call audio", systemImage: "exclamationmark.triangle.fill")
                 .font(.caption)
                 .foregroundStyle(.orange)
-                .help("Nothing has come from the call for over two minutes. If people are still talking, "
-                    + "the call's audio is not being recorded — check that the call plays through this Mac's output device.")
+                .help("Nothing has come from the call for over \(Int(CallAudioWatch.minGapSec / 60)) minutes. "
+                    + "If people are still talking, the call's audio is not being recorded — \(callAudioOutputHint)")
         }
     }
 
