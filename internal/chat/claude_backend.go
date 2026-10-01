@@ -272,10 +272,11 @@ func (b *claudeBackend) projectSent() {
 // whether the session now holds them: a completed turn, or one killed after
 // the owner's cancel (it was streaming, so its message is in the session the
 // respawn resumes). A turn that failed in a way the files may have caused
-// (projectFileFailure) keeps them pending once more — the provider may have
-// rejected the whole request — and the second such failure gives them up.
-// Any other failure (rate limit, auth, a crash) keeps them pending without
-// counting: the app replays after it, and the fresh session carries them.
+// (projectFileFailure) — an error result, or the CLI crashing on the turn
+// (owner decision 2026-10-01: a crash counts too) — keeps them pending once
+// more, and the second such failure gives them up. Any other failure (rate
+// limit, auth, an outage) keeps them pending without counting: the app
+// replays after it, and the fresh session carries them.
 func (b *claudeBackend) settleProject(out outcome) {
 	switch {
 	case out.kind == outcomeDone && !out.failed:
@@ -283,11 +284,50 @@ func (b *claudeBackend) settleProject(out outcome) {
 	case out.kind == outcomeExited && b.wasCancelled():
 		b.projectSent()
 	case out.kind == outcomeDone && out.failed && projectFileFailure(out.code, out.msg):
-		if b.projectFailures++; b.projectFailures >= maxProjectFailures && !b.projectGivenUp {
-			b.projectGivenUp = true
-			fmt.Fprintf(b.warn(), "chat project files given up after %d failed turns: %s\n",
-				b.projectFailures, strings.Join(b.projectNames(), ", "))
+		b.countProjectFailure()
+	case out.kind == outcomeExited:
+		if reason := crashNotFileCaused(out.msg); reason != "" {
+			fmt.Fprintf(b.warn(), "chat: CLI exit on a project-file turn not counted (%s)\n", reason)
+			return
 		}
+		b.countProjectFailure()
+	}
+}
+
+// crashNotFileCaused returns why a CLI exit mid-turn is not blamed on the
+// project files ("" = it may be). It reads only the last lines of stderr —
+// the head is startup noise — and matches phrases, never bare status
+// numbers, which a stack trace's line numbers would hit.
+func crashNotFileCaused(stderr string) string {
+	lines := strings.Split(strings.TrimSpace(stderr), "\n")
+	if len(lines) > crashTailLines {
+		lines = lines[len(lines)-crashTailLines:]
+	}
+	tail := strings.ToLower(strings.Join(lines, "\n"))
+	for _, phrase := range []string{
+		"not logged in", "/login", "invalid api key", "authentication_error", "oauth token has expired",
+		"rate limit", "rate_limit", "usage limit", "overloaded",
+		"internal server error", "api_error", "service unavailable", "bad gateway", "temporarily unavailable",
+		// Network trouble: the tail is three lines, so the broad words are
+		// safe here (startup noise sits above it).
+		"connection", "timeout", "timed out", "network", "econnreset", "econnrefused", "etimedout",
+		"enotfound", "eai_again", "socket hang up", "fetch failed",
+	} {
+		if strings.Contains(tail, phrase) {
+			return phrase
+		}
+	}
+	return ""
+}
+
+// crashTailLines is how much of a crashed CLI's stderr crashNotFileCaused reads.
+const crashTailLines = 3
+
+func (b *claudeBackend) countProjectFailure() {
+	if b.projectFailures++; b.projectFailures >= maxProjectFailures && !b.projectGivenUp {
+		b.projectGivenUp = true
+		fmt.Fprintf(b.warn(), "chat project files given up after %d failed turns: %s\n",
+			b.projectFailures, strings.Join(b.projectNames(), ", "))
 	}
 }
 

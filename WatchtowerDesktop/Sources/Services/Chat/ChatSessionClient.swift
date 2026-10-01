@@ -238,6 +238,22 @@ final class ChatSessionClient {
         driver.stopRecordingSession()
     }
 
+    /// Hands back the turn this not-yet-launched session holds, so it can be
+    /// sent on a replacement session instead (its row stays as it is — the
+    /// turn neither failed nor stopped). Nil when nothing is held.
+    func surrenderHeldTurn() -> ChatTurnRequest? {
+        guard let held = pendingTurn else { return nil }
+        guard let turn = driver.liveTurn, turn.turnID == held.turnID else {
+            // startTurn always begins the driver's turn before holding it.
+            NSLog("ChatSessionClient: held turn %@ of conversation %lld has no live turn; it is dropped",
+                  held.turnID, conversationID)
+            return nil
+        }
+        pendingTurn = nil
+        driver.releaseUnsentTurn()
+        return ChatTurnRequest(command: held, assistantMessageID: turn.messageID)
+    }
+
     /// Ends the client without a process to shut down (never launched, or
     /// already exited): a held or running turn keeps its text as `partial`.
     func abandon() {

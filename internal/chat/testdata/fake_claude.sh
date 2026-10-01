@@ -2,9 +2,11 @@
 # Fake `claude` for internal/chat backend tests; behaviour by $FAKE_MODE:
 #   normal (default) · slow (first turn never finishes until interrupted)
 #   ignore_interrupt (first turn never finishes and ignores the interrupt)
-#   crash_once (dies on the first user message ever) · lost (--resume rejected
-#   on stderr) · lost_result (--resume rejected only in the result's "errors";
-#   lost_result_linger: the same, but the child stays alive until stdin closes)
+#   crash_once (dies on the first user message ever)
+#   crash_always (dies on every user message; stderr = $FAKE_CRASH or a panic)
+#   lost (--resume rejected on stderr)
+#   lost_result (--resume rejected only in the result's "errors")
+#   lost_result_linger (lost_result, but the child stays alive until stdin closes)
 #   stubborn (ignores SIGTERM and stdin EOF) · grandchild (leaves a child behind)
 #   internal_tool (runs Claude's ToolSearch before a watchtower tool)
 #   noread (never reads stdin, so a large turn blocks the writer)
@@ -85,6 +87,9 @@ while IFS= read -r line; do
       case "$FAKE_MODE" in
         crash_once)
           if first_time; then exit 3; fi ;;
+        crash_always)
+          printf '%b\n' "${FAKE_CRASH:-panic: cannot decode content block}" >&2
+          exit 3 ;;
         error_once|error_always)
           if [ "$FAKE_MODE" = error_always ] || first_time; then
             printf '{"type":"result","subtype":"error_during_execution","is_error":true,"session_id":"sess-fake","usage":{"input_tokens":0,"output_tokens":0},"errors":["%s"]}\n' "${FAKE_ERROR:-request too large}"

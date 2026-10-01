@@ -438,3 +438,73 @@ func TestClaudeBackend_OwnerFilesLeaveNoRoomForAProjectFile(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(string(line), `"type":"document"`))
 	assert.NotContains(t, string(line), "not attached")
 }
+
+// Owner decision 2026-10-01: a CLI that crashes on a turn carrying the
+// project files counts as a failed turn too — after two, the files are given
+// up (named to the model), so a file the CLI cannot handle never crash-loops
+// every replay.
+func TestClaudeBackend_CrashesOnProjectFilesGiveThemUpAfterTwo(t *testing.T) {
+	opts, f := fakeClaude(t, "crash_always")
+	att, marker := projectFixture(t)
+	var warn bytes.Buffer
+	opts.Warn = &warn
+	opts.ProjectAttachments = []Attachment{att}
+	h := startSession(t, NewClaudeBackend(opts), nil)
+	h.next(EventSessionReady)
+	for i, id := range []string{"t1", "t2", "t3"} {
+		h.send(Command{Type: CommandTurn, TurnID: id, Text: "q", Replay: i > 0})
+		h.next(EventError)
+	}
+	require.NoError(t, h.finish())
+
+	lines := stdinLines(t, f.stdin)
+	require.Len(t, lines, 3)
+	assert.Contains(t, lines[0], marker)
+	assert.Contains(t, lines[1], marker, "one retry after a crash")
+	assert.NotContains(t, lines[2], marker, "then the files no longer crash the turns")
+	assert.Contains(t, lines[2], "Project files not attached in this session")
+	assert.Contains(t, warn.String(), "given up after 2 failed turns: spec.pdf")
+}
+
+// A crash's stderr is judged by its last lines and by phrases: startup noise
+// ("connection refused" from an MCP server) and a stack trace's line numbers
+// (":529", ":503") must not excuse a crash on the project files, while a
+// crash whose end says it was rate-limited does not count (and says so).
+func TestCrashNotFileCaused(t *testing.T) {
+	noise := "mcp server: connection refused\n" + strings.Repeat("loading plugins\n", 5)
+	trace := "TypeError: cannot read content\n    at decode (cli.js:4021:529)\n    at main (cli.js:12:503)"
+	assert.Empty(t, crashNotFileCaused(noise+trace), "noise above the tail and stack numbers are ignored")
+	assert.Empty(t, crashNotFileCaused("panic: cannot decode content block"))
+	assert.Empty(t, crashNotFileCaused("claude exited: signal: killed"))
+	assert.Equal(t, "rate limit", crashNotFileCaused(noise+"Error: rate limit reached for requests"))
+	assert.Equal(t, "not logged in", crashNotFileCaused("Not logged in · run /login"))
+	for _, outage := range []string{"Error: connect ECONNREFUSED 127.0.0.1:443", "APIConnectionError: Connection error.",
+		"FetchError: request to https://api.example.com failed, reason: getaddrinfo ENOTFOUND",
+		"Error: socket hang up", "503 Service Unavailable", "Request timeout after 600000ms"} {
+		assert.NotEmpty(t, crashNotFileCaused(noise+outage), outage)
+	}
+}
+
+// A crash whose stderr says the account is rate-limited keeps the files and
+// counts nothing — and the skipped count is named on Warn.
+func TestClaudeBackend_RateLimitedCrashesNeverGiveUpProjectFiles(t *testing.T) {
+	opts, f := fakeClaude(t, "crash_always")
+	opts.Env = append(opts.Env, "FAKE_CRASH=boot ok\\nError: rate limit reached")
+	att, marker := projectFixture(t)
+	var warn bytes.Buffer
+	opts.Warn = &warn
+	opts.ProjectAttachments = []Attachment{att}
+	h := startSession(t, NewClaudeBackend(opts), nil)
+	h.next(EventSessionReady)
+	for i, id := range []string{"t1", "t2", "t3"} {
+		h.send(Command{Type: CommandTurn, TurnID: id, Text: "q", Replay: i > 0})
+		h.next(EventError)
+	}
+	require.NoError(t, h.finish())
+
+	for _, line := range stdinLines(t, f.stdin) {
+		assert.Contains(t, line, marker)
+	}
+	assert.NotContains(t, warn.String(), "given up")
+	assert.Contains(t, warn.String(), "not counted (rate limit)")
+}
