@@ -37,7 +37,7 @@ final class ProjectsViewModelDriftTests: XCTestCase {
         XCTAssertNil(vm.drift[2])
     }
 
-    func testABoardChangeIsThrottledButTheOwnersRefreshIsNot() async {
+    func testPollTicksAreThrottledButTheOwnersRefreshIsNot() async {
         let runner = ScriptedCLIRunner(results: [
             .success(report(1, findings: 1)), .success(report(1, findings: 0)), .success(report(1, findings: 3))
         ])
@@ -45,7 +45,7 @@ final class ProjectsViewModelDriftTests: XCTestCase {
         let t0 = Date()
         await vm.refreshDrift(projectID: 1, force: true, now: t0)
         await vm.refreshDrift(projectID: 1, now: t0.addingTimeInterval(5))
-        XCTAssertEqual(runner.invocations.count, 1, "a board change within the interval runs no second check")
+        XCTAssertEqual(runner.invocations.count, 1, "a poll tick within the interval runs no second check")
         await vm.refreshDrift(projectID: 1, now: t0.addingTimeInterval(ProjectsViewModel.driftMinInterval + 1))
         XCTAssertEqual(vm.drift[1]?.findings.count, 0)
         await vm.refreshDrift(projectID: 1, force: true, now: t0.addingTimeInterval(ProjectsViewModel.driftMinInterval + 2))

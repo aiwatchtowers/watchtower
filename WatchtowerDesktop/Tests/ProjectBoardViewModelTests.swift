@@ -477,4 +477,18 @@ final class ProjectBoardViewModelTests: XCTestCase {
         vm.select(nil)
         XCTAssertEqual(vm.selectedImages, [])
     }
+
+    /// PROJ-07: the drift check rides every poll tick, even on an unchanged
+    /// board — a merge or fetch never touches the board's fingerprint.
+    func testPollTickFiresOnAnUnchangedBoard() async throws {
+        let vm = makeVM(project: 1)
+        vm.load()
+        let ticked = expectation(description: "a poll tick on an unchanged board")
+        ticked.assertForOverFulfill = false
+        vm.onPollTick = { ticked.fulfill() }
+        vm.startPolling(every: .milliseconds(10))
+        await fulfillment(of: [ticked], timeout: 5)
+        vm.stopPolling()
+    }
+
 }
