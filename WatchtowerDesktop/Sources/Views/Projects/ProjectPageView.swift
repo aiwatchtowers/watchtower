@@ -89,12 +89,13 @@ struct ProjectPageView: View {
             }
             Spacer()
             installBadge
+            if vm.resyncing.contains(project.id) { ProgressView().controlSize(.small) }
             Button {
                 Task { await vm.resync(projectID: project.id) }
             } label: {
                 Label("Re-run Setup", systemImage: "arrow.triangle.2.circlepath")
             }
-            .disabled(vm.resyncing.contains(project.id))
+            .disabled(vm.isInstalling(projectID: project.id))
             .help("Attach new documents and re-install what is missing. Never changes the board, comments or sources.")
             Button(role: .destructive) {
                 guard let pool = appState.databaseManager?.dbPool else { return }
@@ -116,13 +117,12 @@ struct ProjectPageView: View {
     /// What the last Re-run setup did, with its suggestions; selectable,
     /// since a line may end with a command to run.
     private var resyncSummary: some View {
-        let result = vm.resyncResults[project.id]
-        let lines = vm.resyncErrors[project.id].map { [$0] } ?? result?.summaryLines ?? []
-        let failed = vm.resyncErrors[project.id] != nil || result?.failed == true
+        let error = vm.resyncErrors[project.id].map { [ProjectResynced.Line(text: $0, problem: true)] }
+        let lines = error ?? vm.resyncResults[project.id]?.summaryLines ?? []
         return HStack(alignment: .top, spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
                 ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
-                    Text(line).font(.caption).foregroundStyle(failed ? .red : .secondary)
+                    Text(line.text).font(.caption).foregroundStyle(line.problem ? .red : .secondary)
                 }
             }
             .textSelection(.enabled)
@@ -149,7 +149,7 @@ struct ProjectPageView: View {
                     } label: {
                         Label("Repair install", systemImage: "wrench.and.screwdriver")
                     }
-                    .disabled(vm.repairing.contains(project.id))
+                    .disabled(vm.isInstalling(projectID: project.id))
                     .help(repairHelp(status))
                 } else if status.claudeFound || status.mcp {
                     Label("Installed", systemImage: "checkmark.seal").foregroundStyle(.secondary).font(.caption)

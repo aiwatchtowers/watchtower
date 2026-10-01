@@ -21,7 +21,6 @@ import (
 
 func runResync(t *testing.T, args ...string) (string, string, error) {
 	t.Helper()
-	defer func() { projectResyncFlagProject = 0 }()
 	return runProject(t, append([]string{"resync"}, args...)...)
 }
 
@@ -67,7 +66,7 @@ func dumpRows(t *testing.T, d *db.DB, query string, args ...any) []string {
 			ptrs[i] = &vals[i]
 		}
 		require.NoError(t, rows.Scan(ptrs...))
-		out = append(out, fmt.Sprint(vals...))
+		out = append(out, fmt.Sprintf("%q", vals))
 	}
 	require.NoError(t, rows.Err())
 	return out
@@ -83,6 +82,7 @@ func projectSnapshot(t *testing.T, d *db.DB, pid int64) map[string][]string {
 		"comments":  dumpRows(t, d, `SELECT * FROM project_comments WHERE project_id = ? ORDER BY id`, pid),
 		"sources":   dumpRows(t, d, `SELECT * FROM project_sources WHERE project_id = ? ORDER BY id`, pid),
 		"documents": dumpRows(t, d, `SELECT * FROM project_documents WHERE project_id = ? ORDER BY id`, pid),
+		"images":    dumpRows(t, d, `SELECT * FROM project_target_images WHERE project_id = ? ORDER BY id`, pid),
 	}
 }
 
@@ -101,13 +101,18 @@ func TestProjectResync_IsAdditive(t *testing.T) {
 	require.NoError(t, err)
 	tid := db.SeedTestProjectTarget(t, database, pid, sql.NullInt64{}, "Ship it")
 	require.NoError(t, database.UpdateTargetStatus(int(tid), "in_progress"))
+	require.NoError(t, database.WithTx(func(tx *sql.Tx) error {
+		_, err := db.AddProjectTargetImageTx(tx, db.ProjectTargetImage{ProjectID: pid, TargetID: tid,
+			FileName: "a.png", MIME: "image/png", Size: 3, SHA256: "abc", Path: "/store/a.png"})
+		return err
+	}))
 	_, err = database.AddProjectComment(db.ProjectComment{ProjectID: pid, TargetID: sql.NullInt64{Int64: tid, Valid: true}, Author: "owner", Body: "keep it small"})
 	require.NoError(t, err)
 	_, _, err = database.UpsertProjectDocument(db.ProjectDocument{ProjectID: pid, RelPath: "README.md", Kind: "doc", Title: "Edited title"})
 	require.NoError(t, err)
 	before := projectSnapshot(t, database, pid)
 
-	out, _, err := runResync(t, "--project", strconv.FormatInt(pid, 10), "--json")
+	out, _, err := runResync(t, strconv.FormatInt(pid, 10), "--json")
 	require.NoError(t, err)
 	res := decodeResync(t, out)
 	assert.True(t, res.DocsOK, res.DocsError)
@@ -123,15 +128,16 @@ func TestProjectResync_IsAdditive(t *testing.T) {
 	assert.Contains(t, res.Suggestions[0], "1 new document(s)")
 
 	after := projectSnapshot(t, database, pid)
-	for _, table := range []string{"project", "targets", "history", "comments", "sources"} {
+	for _, table := range []string{"project", "targets", "history", "comments", "sources", "images"} {
 		assert.Equal(t, before[table], after[table], "%s rows are untouched", table)
 	}
+	require.Len(t, after["images"], 1, "fixture: the snapshot covers an image row")
 	require.Len(t, after["documents"], 2)
 	assert.Equal(t, before["documents"][0], after["documents"][0], "the attached document is untouched")
 	assert.Contains(t, after["documents"][1], "docs/specs/a.md")
 
 	// A second run finds everything in place and changes nothing.
-	out, _, err = runResync(t, "--project", strconv.FormatInt(pid, 10), "--json")
+	out, _, err = runResync(t, strconv.FormatInt(pid, 10), "--json")
 	require.NoError(t, err)
 	res = decodeResync(t, out)
 	assert.Empty(t, res.Docs.Imported)
@@ -149,12 +155,12 @@ func TestProjectResync_ReinstallsMissingPiecesAndKeepsAnEditedSkill(t *testing.T
 	pid, err := database.CreateProject("acme", folder)
 	require.NoError(t, err)
 	id := strconv.FormatInt(pid, 10)
-	_, _, err = runResync(t, "--project", id, "--json")
+	_, _, err = runResync(t, id, "--json")
 	require.NoError(t, err)
 
 	// The hooks file is gone: re-added.
 	require.NoError(t, os.Remove(filepath.Join(folder, ".claude", "settings.local.json")))
-	out, _, err := runResync(t, "--project", id, "--json")
+	out, _, err := runResync(t, id, "--json")
 	require.NoError(t, err)
 	assert.True(t, decodeResync(t, out).HooksAdded)
 
@@ -164,7 +170,7 @@ func TestProjectResync_ReinstallsMissingPiecesAndKeepsAnEditedSkill(t *testing.T
 	require.NoError(t, err)
 	edited := append(body, []byte("\nMy own rule.\n")...)
 	require.NoError(t, os.WriteFile(skill, edited, 0o600))
-	out, _, err = runResync(t, "--project", id, "--json")
+	out, _, err = runResync(t, id, "--json")
 	require.NoError(t, err)
 	assert.Equal(t, string(devpack.StateDrifted), decodeResync(t, out).Skill)
 	got, err := os.ReadFile(skill)
@@ -177,7 +183,7 @@ func TestProjectResync_EmptyProjectSuggestsSetupWithoutCreatingTargets(t *testin
 	database := writeActionsConfig(t)
 	pid, err := database.CreateProject("acme", resyncFolder(t))
 	require.NoError(t, err)
-	out, _, err := runResync(t, "--project", strconv.FormatInt(pid, 10), "--json")
+	out, _, err := runResync(t, strconv.FormatInt(pid, 10), "--json")
 	require.NoError(t, err)
 	res := decodeResync(t, out)
 	joined := strings.Join(res.Suggestions, "\n")
@@ -202,7 +208,7 @@ func TestProjectResync_FailedStepIsReported(t *testing.T) {
 	require.NoError(t, err)
 	id := strconv.FormatInt(pid, 10)
 
-	out, _, err := runResync(t, "--project", id, "--json")
+	out, _, err := runResync(t, id, "--json")
 	require.NoError(t, err)
 	res := decodeResync(t, out)
 	assert.True(t, res.DocsOK, "documents are attached even though the integration failed")
@@ -213,7 +219,7 @@ func TestProjectResync_FailedStepIsReported(t *testing.T) {
 	assert.Contains(t, res.MCPCommand, "claude mcp add --scope local "+devpack.ProjectMCPServerName)
 	assert.Equal(t, string(devpack.StateInstalled), res.Skill, "the skill was still installed")
 
-	out, _, err = runResync(t, "--project", id)
+	out, _, err = runResync(t, id)
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, devpack.ErrClaudeNotFound), "%v", err)
 	assert.Contains(t, out, "mcp      NOT registered — run:")
@@ -223,7 +229,56 @@ func TestProjectResync_FailedStepIsReported(t *testing.T) {
 func TestProjectResync_RequiresAProject(t *testing.T) {
 	writeActionsConfig(t)
 	_, _, err := runResync(t)
-	require.ErrorContains(t, err, "--project is required")
-	_, _, err = runResync(t, "--project", "99")
+	require.Error(t, err)
+	_, _, err = runResync(t, "99")
 	require.ErrorContains(t, err, "project 99")
+}
+
+// An unreadable docs/ fails the import step; the install still runs and the
+// envelope carries the failure without a docs report.
+func TestProjectResync_FailedImportStillInstalls(t *testing.T) {
+	f := useFakeProjectClaude(t)
+	database := writeActionsConfig(t)
+	folder := resyncFolder(t)
+	pid, err := database.CreateProject("acme", folder)
+	require.NoError(t, err)
+	docs := filepath.Join(folder, "docs")
+	require.NoError(t, os.Chmod(docs, 0o000))
+	t.Cleanup(func() { _ = os.Chmod(docs, 0o755) })
+	id := strconv.FormatInt(pid, 10)
+
+	out, _, err := runResync(t, id, "--json")
+	require.NoError(t, err)
+	assert.NotContains(t, out, `"docs":`, "no report for a failed import")
+	res := decodeResync(t, out)
+	assert.False(t, res.DocsOK)
+	assert.NotEmpty(t, res.DocsError)
+	assert.True(t, res.IntegrationOK, res.IntegrationError)
+	assert.True(t, f.registered[folder])
+
+	out, _, err = runResync(t, id)
+	require.Error(t, err)
+	assert.Contains(t, out, "re-synced with errors")
+	assert.Contains(t, out, "Documents: FAILED")
+	assert.Contains(t, out, "retry: watchtower project resync "+id)
+}
+
+// A failed read behind the suggestions is reported, not an empty list
+// passed off as "nothing to suggest".
+func TestProjectResync_SuggestionsErrorIsReported(t *testing.T) {
+	useFakeProjectClaude(t)
+	database := writeActionsConfig(t)
+	pid, err := database.CreateProject("acme", resyncFolder(t))
+	require.NoError(t, err)
+	p, err := database.GetProject(pid)
+	require.NoError(t, err)
+	_, err = database.Exec(`DROP TABLE project_sources`)
+	require.NoError(t, err)
+
+	res, err := resyncProject(context.Background(), database, p)
+	require.Error(t, err)
+	assert.True(t, res.DocsOK)
+	assert.True(t, res.IntegrationOK)
+	assert.Contains(t, res.SuggestionsError, "listing sources")
+	assert.True(t, res.failed())
 }

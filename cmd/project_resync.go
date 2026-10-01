@@ -15,34 +15,31 @@ import (
 )
 
 var projectResyncCmd = &cobra.Command{
-	Use:   "resync",
+	Use:   "resync <id>",
 	Short: "Bring an existing project up to the current setup, adding only what is missing",
 	Long: "Additive only: attaches the folder's documents that are not attached yet (the\n" +
 		"`import-docs` rules) and re-installs the Claude Code integration — skill, hooks,\n" +
-		"MCP registration, exclude lines — where it is missing or out of date (the\n" +
+		"exclude lines where missing or out of date, and a fresh MCP registration (the\n" +
 		"`integrate claude-code --project` rules: a skill you edited is left alone).\n" +
 		"Never deletes or changes targets, their statuses, comments, attached documents,\n" +
 		"sources or the description, and never creates targets: it prints suggestions for\n" +
 		"you to take to the agent instead.\n" +
-		"Each step runs even when the other failed. Without --json a failed step exits\n" +
-		"non-zero; --json always exits 0 once the project is found, its *_ok fields say\n" +
-		"which step failed (the `project create --json` precedent).",
-	Args: cobra.NoArgs,
+		"Each step runs even when another failed. Without --json a failed step exits\n" +
+		"non-zero; --json always exits 0 once the project is found, its *_ok/*_error\n" +
+		"fields say which step failed (the `project create --json` precedent).",
+	Args: cobra.ExactArgs(1),
 	RunE: runProjectResync,
 }
 
-var projectResyncFlagProject int64
-
 func init() {
-	projectResyncCmd.Flags().Int64Var(&projectResyncFlagProject, "project", 0, "project id (required)")
 	projectResyncCmd.Flags().BoolVar(&projectFlagJSON, "json", false, "output JSON")
 	projectCmd.AddCommand(projectResyncCmd)
 }
 
 // projectResyncJSON is `project resync --json`, read by the Desktop's
-// Re-run setup.
+// Re-run Setup.
 type projectResyncJSON struct {
-	ProjectID int64 `json:"project_id"`
+	ID int64 `json:"id"`
 
 	DocsOK    bool                `json:"docs_ok"`
 	DocsError string              `json:"docs_error"`
@@ -50,27 +47,36 @@ type projectResyncJSON struct {
 
 	IntegrationOK    bool     `json:"integration_ok"`
 	IntegrationError string   `json:"integration_error"`
-	Skill            string   `json:"skill"` // a devpack state: installed, updated, unchanged, drifted, foreign
+	Skill            string   `json:"skill"` // a devpack state: installed, updated, unchanged, drifted, foreign; "" = not installed
 	HooksAdded       bool     `json:"hooks_added"`
 	Excluded         []string `json:"excluded"`
 	MCPRegistered    bool     `json:"mcp_registered"`
 	MCPCommand       string   `json:"mcp_command"` // the manual registration when MCPRegistered is false
 
-	Suggestions []string `json:"suggestions"`
+	Suggestions      []string `json:"suggestions"`
+	SuggestionsError string   `json:"suggestions_error"` // the suggestions may be incomplete
+
+	install    devpack.ProjectInstallReport // for the text report
+	installErr error
 }
 
-func runProjectResync(cmd *cobra.Command, _ []string) error {
-	if projectResyncFlagProject <= 0 {
-		return errors.New("--project is required")
+func (r projectResyncJSON) failed() bool {
+	return !r.DocsOK || !r.IntegrationOK || r.SuggestionsError != ""
+}
+
+func runProjectResync(cmd *cobra.Command, args []string) error {
+	id, err := parseProjectID(args[0])
+	if err != nil {
+		return err
 	}
 	_, database, err := openJiraCmdDB()
 	if err != nil {
 		return err
 	}
 	defer database.Close()
-	p, err := database.GetProject(projectResyncFlagProject)
+	p, err := database.GetProject(id)
 	if err != nil {
-		return fmt.Errorf("project %d: %w", projectResyncFlagProject, err)
+		return fmt.Errorf("project %d: %w", id, err)
 	}
 	ctx := cmd.Context()
 	if ctx == nil {
@@ -85,9 +91,9 @@ func runProjectResync(cmd *cobra.Command, _ []string) error {
 }
 
 // resyncProject runs both steps and collects the suggestions; the error
-// joins the steps' failures (already recorded in the result).
+// joins every failure (each also recorded in the result).
 func resyncProject(ctx context.Context, database *db.DB, p *db.Project) (projectResyncJSON, error) {
-	res := projectResyncJSON{ProjectID: p.ID, Excluded: []string{}}
+	res := projectResyncJSON{ID: p.ID, Excluded: []string{}}
 	var errs []error
 
 	if rep, err := projectdocs.Import(database, p, false); err != nil {
@@ -98,17 +104,18 @@ func resyncProject(ctx context.Context, database *db.DB, p *db.Project) (project
 	}
 
 	if err := resyncIntegration(ctx, p, &res); err != nil {
-		res.IntegrationError = err.Error()
+		res.IntegrationError, res.installErr = err.Error(), err
 		errs = append(errs, fmt.Errorf("installing the Claude Code integration: %w", err))
 	} else {
 		res.IntegrationOK = true
 	}
 
 	suggestions, err := resyncSuggestions(database, p, res.Docs)
-	if err != nil {
-		errs = append(errs, err)
-	}
 	res.Suggestions = suggestions
+	if err != nil {
+		res.SuggestionsError = err.Error()
+		errs = append(errs, fmt.Errorf("working out suggestions: %w", err))
+	}
 	return res, errors.Join(errs...)
 }
 
@@ -118,6 +125,7 @@ func resyncIntegration(ctx context.Context, p *db.Project, res *projectResyncJSO
 		return err
 	}
 	rep, err := devpack.InstallProject(ctx, o)
+	res.install = rep
 	res.Skill = string(rep.Skill.State)
 	res.HooksAdded = rep.HookChanged
 	if rep.Excluded != nil {
@@ -158,35 +166,31 @@ func resyncSuggestions(database *db.DB, p *db.Project, docs *projectdocs.Report)
 }
 
 func printResyncReport(w io.Writer, p *db.Project, res projectResyncJSON) {
-	fmt.Fprintf(w, "Project %d (%s) re-synced:\n", p.ID, p.FolderPath)
+	outcome := "re-synced"
+	if res.failed() {
+		outcome = "re-synced with errors"
+	}
+	fmt.Fprintf(w, "Project %d (%s) %s:\n", p.ID, p.FolderPath, outcome)
 	if res.DocsOK {
 		fmt.Fprint(w, "Documents: ")
 		printImportReport(w, *res.Docs)
 	} else {
-		fmt.Fprintf(w, "Documents: FAILED — %s (retry: watchtower project import-docs %d)\n", res.DocsError, p.ID)
+		fmt.Fprintf(w, "Documents: FAILED — %s (retry: watchtower project resync %d)\n", res.DocsError, p.ID)
 	}
 	fmt.Fprintln(w, "Claude Code integration:")
-	if res.Skill != "" {
-		fmt.Fprintf(w, "  skill    %s%s\n", res.Skill, skillStateNote(devpack.State(res.Skill)))
-	}
-	hooks := "already present"
-	if res.HooksAdded {
-		hooks = "added"
-	}
-	fmt.Fprintf(w, "  hooks    %s\n", hooks)
-	fmt.Fprintf(w, "  exclude  %d line(s) added\n", len(res.Excluded))
-	if res.MCPRegistered {
-		fmt.Fprintf(w, "  mcp      registered (%s, local scope)\n", devpack.ProjectMCPServerName)
-	} else if res.MCPCommand != "" {
-		fmt.Fprintf(w, "  mcp      NOT registered — run:\n    %s\n", res.MCPCommand)
+	if res.install.MCPCommand != "" { // set once the installer got past its folder checks
+		printProjectInstallBody(w, res.install, res.installErr)
 	}
 	if !res.IntegrationOK {
 		fmt.Fprintf(w, "  FAILED — %s\n", res.IntegrationError)
 	}
-	if len(res.Suggestions) > 0 {
+	if len(res.Suggestions) > 0 || res.SuggestionsError != "" {
 		fmt.Fprintln(w, "Suggestions:")
 		for _, s := range res.Suggestions {
 			fmt.Fprintf(w, "  - %s\n", s)
+		}
+		if res.SuggestionsError != "" {
+			fmt.Fprintf(w, "  incomplete — %s\n", res.SuggestionsError)
 		}
 	}
 }

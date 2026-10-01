@@ -25,53 +25,65 @@ final class ProjectsViewModelResyncTests: XCTestCase {
     /// The Go side's empty-state wire shape: no new documents, nothing to
     /// install, no suggestions — every array present and empty.
     private static let upToDate = #"""
-        {"project_id":1,"docs_ok":true,"docs_error":"",
+        {"id":1,"docs_ok":true,"docs_error":"",
          "docs":{"imported":[],"already_attached":["README.md"],"skipped_over_cap":[],"unreadable":[],"dry_run":false},
          "integration_ok":true,"integration_error":"","skill":"unchanged","hooks_added":false,"excluded":[],
-         "mcp_registered":true,"mcp_command":"","suggestions":[]}
+         "mcp_registered":true,"mcp_command":"","suggestions":[],"suggestions_error":""}
         """#
 
     private static let added = #"""
-        {"project_id":1,"docs_ok":true,"docs_error":"",
+        {"id":1,"docs_ok":true,"docs_error":"",
          "docs":{"imported":["docs/specs/a.md"],"already_attached":[],"skipped_over_cap":["docs/plans/b.md"],
                  "unreadable":["docs/x: permission denied"],"dry_run":false},
          "integration_ok":true,"integration_error":"","skill":"updated","hooks_added":true,"excluded":[".claude/"],
-         "mcp_registered":true,"mcp_command":"","suggestions":["The project has no sources: add them."]}
+         "mcp_registered":true,"mcp_command":"","suggestions":["The project has no sources: add them."],
+         "suggestions_error":""}
         """#
 
+    /// A failed import carries no docs report (Go `omitempty`).
     private static let failed = #"""
-        {"project_id":1,"docs_ok":false,"docs_error":"permission denied","integration_ok":false,
+        {"id":1,"docs_ok":false,"docs_error":"permission denied","integration_ok":false,
          "integration_error":"claude CLI not found","skill":"drifted","hooks_added":false,"excluded":[],
-         "mcp_registered":false,"mcp_command":"cd /tmp/a && claude mcp add","suggestions":[]}
+         "mcp_registered":false,"mcp_command":"cd /tmp/a && claude mcp add","suggestions":[],
+         "suggestions_error":"listing sources: database is locked"}
         """#
 
     private static let status = Data(#"{"skill":"unchanged","hook":true,"mcp":true}"#.utf8)
 
+    private func decode(_ json: String) throws -> ProjectResynced {
+        try JSONDecoder().decode(ProjectResynced.self, from: Data(json.utf8))
+    }
+
+    private func line(_ text: String, problem: Bool = false) -> ProjectResynced.Line {
+        ProjectResynced.Line(text: text, problem: problem)
+    }
+
     func testCLIPassesTheProjectAndDecodesEveryShape() async throws {
         let runner = FakeCLIRunner(stdout: Data(Self.upToDate.utf8))
         let result = try await ProjectCLI(runner: runner).resync(projectID: 7)
-        XCTAssertEqual(runner.invocations, [["project", "resync", "--project", "7", "--json"]])
-        XCTAssertEqual(result, ProjectResynced())
+        XCTAssertEqual(runner.invocations, [["project", "resync", "7", "--json"]])
         XCTAssertFalse(result.failed)
-        XCTAssertEqual(result.summaryLines, ["Everything was already up to date."])
+        XCTAssertEqual(result.summaryLines, [line("Everything was already up to date.")])
 
-        let added = try JSONDecoder().decode(ProjectResynced.self, from: Data(Self.added.utf8))
-        XCTAssertEqual(added.summaryLines, [
-            "Attached 1 new document(s): docs/specs/a.md",
-            "1 more document(s) past the import cap — run Re-run setup again",
-            "Could not read docs/x: permission denied",
-            "Updated the watchtower-project skill",
-            "Added the session hooks",
-            "Next: The project has no sources: add them."
+        XCTAssertEqual(try decode(Self.added).summaryLines, [
+            line("Attached 1 new document(s): docs/specs/a.md"),
+            line("1 more document(s) past the import cap — run Re-run Setup again", problem: true),
+            line("Could not read docs/x: permission denied", problem: true),
+            line("Updated the watchtower-project skill"),
+            line("Added the session hooks"),
+            line("Excluded 1 more path(s) from git"),
+            line("Next: The project has no sources: add them.")
         ])
 
-        let failed = try JSONDecoder().decode(ProjectResynced.self, from: Data(Self.failed.utf8))
+        let failed = try decode(Self.failed)
         XCTAssertTrue(failed.failed)
         XCTAssertEqual(failed.summaryLines, [
-            "Attaching documents failed: permission denied",
-            "Your own copy of the watchtower-project skill was left as it is",
-            "The MCP server is not registered — run: cd /tmp/a && claude mcp add",
-            "Installing into the folder failed: claude CLI not found"
+            line("Attaching documents failed: permission denied", problem: true),
+            line("Your own copy of the watchtower-project skill was kept, so its update was not applied "
+                 + "— merge it by hand, or delete your copy and run Re-run Setup again", problem: true),
+            line("The MCP server is not registered — run: cd /tmp/a && claude mcp add", problem: true),
+            line("Installing into the folder failed: claude CLI not found", problem: true),
+            line("Suggestions may be incomplete: listing sources: database is locked", problem: true)
         ])
     }
 
@@ -83,7 +95,7 @@ final class ProjectsViewModelResyncTests: XCTestCase {
         await vm.resync(projectID: id)
 
         XCTAssertEqual(runner.invocations, [
-            ["project", "resync", "--project", String(id), "--json"],
+            ["project", "resync", String(id), "--json"],
             ["integrate", "status", "--project", String(id), "--json"]
         ])
         XCTAssertEqual(vm.resyncResults[id]?.imported, ["docs/specs/a.md"])
@@ -95,11 +107,11 @@ final class ProjectsViewModelResyncTests: XCTestCase {
         XCTAssertNil(vm.resyncResults[id])
     }
 
-    func testAFailedRunSaysWhyAndKeepsNoStaleResult() async throws {
+    func testAFailedRunSaysWhyKeepsNoStaleResultAndStillRefreshes() async throws {
         let id = try await pool.write { try TestDatabase.insertProject($0) }
         let runner = ScriptedCLIRunner(results: [
             .success(Data(Self.upToDate.utf8)), .success(Self.status),
-            .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "project 1: not found"))
+            .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "project 1: not found")), .success(Self.status)
         ])
         let vm = ProjectsViewModel(dbPool: pool, cli: ProjectCLI(runner: runner), defaults: defaults)
         await vm.resync(projectID: id)
@@ -109,26 +121,52 @@ final class ProjectsViewModelResyncTests: XCTestCase {
 
         XCTAssertNil(vm.resyncResults[id], "the previous run's result is not shown as this one's")
         let error = try XCTUnwrap(vm.resyncErrors[id])
-        XCTAssertTrue(error.hasPrefix("Re-run setup failed"), error)
+        XCTAssertTrue(error.hasPrefix("Re-run Setup failed"), error)
         XCTAssertFalse(vm.resyncing.contains(id))
+        XCTAssertEqual(runner.invocations.last, ["integrate", "status", "--project", String(id), "--json"],
+                       "the CLI may have changed the folder before failing: the status is re-read")
     }
 
-    /// The VM is AppState-owned: a run started on one project finishes and
-    /// stays shown after the owner moves to another project and back.
-    func testTheResultSurvivesNavigatingAway() async throws {
+    /// Version skew: the CLI ran (and may have attached documents) but its
+    /// report does not decode — say so, and still refresh the page.
+    func testAnUnreadableReportSaysTheRunHappened() async throws {
+        let id = try await pool.write { try TestDatabase.insertProject($0) }
+        let runner = ScriptedCLIRunner(results: [.success(Data(#"{"id":1}"#.utf8)), .success(Self.status)])
+        let vm = ProjectsViewModel(dbPool: pool, cli: ProjectCLI(runner: runner), defaults: defaults)
+
+        await vm.resync(projectID: id)
+
+        let error = try XCTUnwrap(vm.resyncErrors[id])
+        XCTAssertTrue(error.contains("its report could not be read"), error)
+        XCTAssertEqual(vm.installStatus[id]?.needsRepair, false)
+    }
+
+    /// The VM is AppState-owned: a run in flight while the owner moves to
+    /// another project finishes, and its result is there on return. A second
+    /// click, or Repair, starts no parallel folder install meanwhile.
+    func testTheResultSurvivesNavigatingAwayAndBlocksAParallelInstall() async throws {
         let (first, second) = try await pool.write { d in
             (try TestDatabase.insertProject(d), try TestDatabase.insertProject(d, name: "beta", folder: "/tmp/beta"))
         }
-        let runner = FakeCLIRunner(stdout: Data(Self.added.utf8))
+        let runner = HeldCLIRunner(stdout: Data(Self.added.utf8))
         let vm = ProjectsViewModel(dbPool: pool, cli: ProjectCLI(runner: runner), defaults: defaults)
         vm.selectedProjectID = first
         let run = Task { await vm.resync(projectID: first) }
+        await awaitStarted(runner)
+        XCTAssertTrue(vm.isInstalling(projectID: first))
+
         vm.selectedProjectID = second
+        await vm.resync(projectID: first)
+        await vm.repairInstall(projectID: first)
+        XCTAssertEqual(runner.invocations.count, 1, "no second install while one runs")
+
+        runner.release()
         await run.value
         vm.selectedProjectID = first
 
         XCTAssertEqual(vm.resyncResults[first]?.hooksAdded, true)
         XCTAssertNil(vm.resyncResults[second])
+        XCTAssertFalse(vm.isInstalling(projectID: first))
     }
 
     func testWithoutTheCLIItSaysSo() async throws {

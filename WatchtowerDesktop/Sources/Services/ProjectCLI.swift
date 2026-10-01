@@ -1,6 +1,19 @@
 import Foundation
 import WatchtowerCore
 
+/// The Go `projectdocs.Report` inside the create and resync envelopes; every
+/// list optional, so a CLI that omits one still decodes.
+private struct ProjectDocsReport: Decodable {
+    let imported: [String]?
+    let unreadable: [String]?
+    let skippedOverCap: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case imported, unreadable
+        case skippedOverCap = "skipped_over_cap"
+    }
+}
+
 /// `watchtower project create --json` envelope (Task 4). The folder's
 /// document import is best-effort: the project exists whenever the command
 /// exits 0; `docsImportOK == false` says the import failed, and a successful
@@ -21,16 +34,6 @@ struct ProjectCreated: Decodable, Equatable {
         case docsImportOK = "docs_import_ok"
         case docsImportError = "docs_import_error"
         case docsImport = "docs_import"
-    }
-
-    private struct DocsImport: Decodable {
-        let unreadable: [String]?
-        let skippedOverCap: [String]?
-
-        enum CodingKeys: String, CodingKey {
-            case unreadable
-            case skippedOverCap = "skipped_over_cap"
-        }
     }
 
     init(
@@ -59,7 +62,7 @@ struct ProjectCreated: Decodable, Equatable {
         // An older CLI without the keys imported nothing, so nothing failed.
         docsImportOK = try c.decodeIfPresent(Bool.self, forKey: .docsImportOK) ?? true
         docsImportError = try c.decodeIfPresent(String.self, forKey: .docsImportError) ?? ""
-        let report = try c.decodeIfPresent(DocsImport.self, forKey: .docsImport)
+        let report = try c.decodeIfPresent(ProjectDocsReport.self, forKey: .docsImport)
         unreadable = report?.unreadable ?? []
         skippedOverCap = report?.skippedOverCap?.count ?? 0
     }
@@ -149,13 +152,19 @@ struct ProjectDocumentAttached: Decodable, Equatable {
     }
 }
 
-/// `watchtower project resync --project N --json` (#91): what Re-run setup
-/// added. The command is additive — it never deletes or changes targets,
-/// comments, documents, sources or the description, and never creates
-/// targets; `suggestions` are what the owner may take to the agent. It exits
-/// 0 once the project is found; `docsOK`/`integrationOK` say which step
-/// failed (the `project create --json` precedent).
+/// `watchtower project resync N --json` (#91): what Re-run Setup added. The
+/// command is additive — it never deletes or changes targets, comments,
+/// documents, sources or the description, and never creates targets;
+/// `suggestions` are what the owner may take to the agent. It exits 0 once
+/// the project is found; the `*_ok`/`*_error` fields say which step failed
+/// (the `project create --json` precedent).
 struct ProjectResynced: Decodable, Equatable {
+    /// One summary line; `problem` lines show in the error colour.
+    struct Line: Equatable {
+        let text: String
+        let problem: Bool
+    }
+
     let docsOK: Bool
     let docsError: String
     let imported: [String]
@@ -163,12 +172,15 @@ struct ProjectResynced: Decodable, Equatable {
     let unreadable: [String]
     let integrationOK: Bool
     let integrationError: String
-    /// A devpack state: installed, updated, unchanged, drifted or foreign.
+    /// A devpack state: installed, updated, unchanged, drifted or foreign;
+    /// empty when the skill was not installed.
     let skill: String
     let hooksAdded: Bool
+    let excluded: [String]
     let mcpRegistered: Bool
     let mcpCommand: String
     let suggestions: [String]
+    let suggestionsError: String
 
     enum CodingKeys: String, CodingKey {
         case docsOK = "docs_ok"
@@ -176,57 +188,18 @@ struct ProjectResynced: Decodable, Equatable {
         case docs
         case integrationOK = "integration_ok"
         case integrationError = "integration_error"
-        case skill
+        case skill, excluded, suggestions
         case hooksAdded = "hooks_added"
         case mcpRegistered = "mcp_registered"
         case mcpCommand = "mcp_command"
-        case suggestions
-    }
-
-    private struct Docs: Decodable {
-        let imported: [String]?
-        let unreadable: [String]?
-        let skippedOverCap: [String]?
-
-        enum CodingKeys: String, CodingKey {
-            case imported, unreadable
-            case skippedOverCap = "skipped_over_cap"
-        }
-    }
-
-    init(
-        docsOK: Bool = true,
-        docsError: String = "",
-        imported: [String] = [],
-        skippedOverCap: Int = 0,
-        unreadable: [String] = [],
-        integrationOK: Bool = true,
-        integrationError: String = "",
-        skill: String = "unchanged",
-        hooksAdded: Bool = false,
-        mcpRegistered: Bool = true,
-        mcpCommand: String = "",
-        suggestions: [String] = []
-    ) {
-        self.docsOK = docsOK
-        self.docsError = docsError
-        self.imported = imported
-        self.skippedOverCap = skippedOverCap
-        self.unreadable = unreadable
-        self.integrationOK = integrationOK
-        self.integrationError = integrationError
-        self.skill = skill
-        self.hooksAdded = hooksAdded
-        self.mcpRegistered = mcpRegistered
-        self.mcpCommand = mcpCommand
-        self.suggestions = suggestions
+        case suggestionsError = "suggestions_error"
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         docsOK = try c.decode(Bool.self, forKey: .docsOK)
         docsError = try c.decode(String.self, forKey: .docsError)
-        let docs = try c.decodeIfPresent(Docs.self, forKey: .docs)
+        let docs = try c.decodeIfPresent(ProjectDocsReport.self, forKey: .docs)
         imported = docs?.imported ?? []
         unreadable = docs?.unreadable ?? []
         skippedOverCap = docs?.skippedOverCap?.count ?? 0
@@ -234,41 +207,65 @@ struct ProjectResynced: Decodable, Equatable {
         integrationError = try c.decode(String.self, forKey: .integrationError)
         skill = try c.decode(String.self, forKey: .skill)
         hooksAdded = try c.decode(Bool.self, forKey: .hooksAdded)
+        excluded = try c.decode([String].self, forKey: .excluded)
         mcpRegistered = try c.decode(Bool.self, forKey: .mcpRegistered)
         mcpCommand = try c.decode(String.self, forKey: .mcpCommand)
         suggestions = try c.decode([String].self, forKey: .suggestions)
+        suggestionsError = try c.decode(String.self, forKey: .suggestionsError)
     }
 
-    /// Whether a step failed; the page shows the summary in the error colour.
-    var failed: Bool { !docsOK || !integrationOK }
+    /// Whether a step failed.
+    var failed: Bool { !docsOK || !integrationOK || !suggestionsError.isEmpty }
 
     /// What the project page shows: what was added, what failed, then the
     /// suggestions. Never empty.
-    var summaryLines: [String] {
-        var lines: [String] = []
-        if docsOK {
-            if !imported.isEmpty { lines.append("Attached \(imported.count) new document(s): \(imported.joined(separator: ", "))") }
-            if skippedOverCap > 0 { lines.append("\(skippedOverCap) more document(s) past the import cap — run Re-run setup again") }
-            if let first = unreadable.first {
-                let more = unreadable.count > 1 ? " and \(unreadable.count - 1) more" : ""
-                lines.append("Could not read \(first)\(more)")
-            }
-        } else {
-            lines.append("Attaching documents failed: \(docsError)")
+    var summaryLines: [Line] {
+        var lines = documentLines + integrationLines
+        if lines.isEmpty { lines.append(Line(text: "Everything was already up to date.", problem: false)) }
+        lines += suggestions.map { Line(text: "Next: \($0)", problem: false) }
+        if !suggestionsError.isEmpty {
+            lines.append(Line(text: "Suggestions may be incomplete: \(suggestionsError)", problem: true))
         }
+        return lines
+    }
+
+    private var documentLines: [Line] {
+        guard docsOK else { return [Line(text: "Attaching documents failed: \(docsError)", problem: true)] }
+        var lines: [Line] = []
+        if !imported.isEmpty {
+            lines.append(Line(text: "Attached \(imported.count) new document(s): \(imported.joined(separator: ", "))", problem: false))
+        }
+        if skippedOverCap > 0 {
+            lines.append(Line(text: "\(skippedOverCap) more document(s) past the import cap — run Re-run Setup again", problem: true))
+        }
+        if let first = unreadable.first {
+            let more = unreadable.count > 1 ? " and \(unreadable.count - 1) more" : ""
+            lines.append(Line(text: "Could not read \(first)\(more)", problem: true))
+        }
+        return lines
+    }
+
+    private var integrationLines: [Line] {
+        var lines: [Line] = []
         switch skill {
-        case "installed": lines.append("Installed the watchtower-project skill")
-        case "updated": lines.append("Updated the watchtower-project skill")
-        case "drifted", "foreign": lines.append("Your own copy of the watchtower-project skill was left as it is")
+        case "installed": lines.append(Line(text: "Installed the watchtower-project skill", problem: false))
+        case "updated": lines.append(Line(text: "Updated the watchtower-project skill", problem: false))
+        case "drifted", "foreign":
+            lines.append(Line(text: "Your own copy of the watchtower-project skill was kept, so its update was not applied "
+                              + "— merge it by hand, or delete your copy and run Re-run Setup again", problem: true))
         default: break
         }
-        if hooksAdded { lines.append("Added the session hooks") }
-        if !mcpRegistered && !mcpCommand.isEmpty {
-            lines.append("The MCP server is not registered — run: \(mcpCommand)")
+        if hooksAdded { lines.append(Line(text: "Added the session hooks", problem: false)) }
+        if !excluded.isEmpty {
+            lines.append(Line(text: "Excluded \(excluded.count) more path(s) from git", problem: false))
         }
-        if !integrationOK { lines.append("Installing into the folder failed: \(integrationError)") }
-        if lines.isEmpty { lines.append("Everything was already up to date.") }
-        return lines + suggestions.map { "Next: \($0)" }
+        if !mcpRegistered && !mcpCommand.isEmpty {
+            lines.append(Line(text: "The MCP server is not registered — run: \(mcpCommand)", problem: true))
+        }
+        if !integrationOK {
+            lines.append(Line(text: "Installing into the folder failed: \(integrationError)", problem: true))
+        }
+        return lines
     }
 }
 
@@ -392,7 +389,7 @@ struct ProjectCLI {
     /// Re-run setup (#91): attaches new documents and re-installs missing or
     /// outdated integration pieces — additive only, never creates targets.
     func resync(projectID: Int64) async throws -> ProjectResynced {
-        let data = try await runner.run(args: ["project", "resync", "--project", String(projectID), "--json"])
+        let data = try await runner.run(args: ["project", "resync", String(projectID), "--json"])
         return try JSONDecoder().decode(ProjectResynced.self, from: data)
     }
 

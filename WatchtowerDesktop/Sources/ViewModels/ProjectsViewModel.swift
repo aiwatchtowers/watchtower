@@ -407,7 +407,7 @@ final class ProjectsViewModel {
     }
 
     func repairInstall(projectID: Int64) async {
-        guard let cli, !repairing.contains(projectID) else { return }
+        guard let cli, !isInstalling(projectID: projectID) else { return }
         repairing.insert(projectID)
         defer { repairing.remove(projectID) }
         installNotes[projectID] = nil
@@ -424,8 +424,9 @@ final class ProjectsViewModel {
     /// the page reloads what it may have changed. Additive only — it never
     /// creates targets; the result's suggestions say what to ask the agent.
     func resync(projectID: Int64) async {
-        guard !resyncing.contains(projectID) else { return }
+        guard !isInstalling(projectID: projectID) else { return }
         guard let cli else {
+            // The button is always shown, so say why nothing happened.
             resyncErrors[projectID] = "The watchtower CLI was not found."
             return
         }
@@ -435,13 +436,22 @@ final class ProjectsViewModel {
         resyncResults[projectID] = nil
         do {
             resyncResults[projectID] = try await cli.resync(projectID: projectID)
+        } catch is DecodingError {
+            resyncErrors[projectID] = "Re-run Setup ran, but its report could not be read (is the CLI out of date?)."
         } catch {
-            resyncErrors[projectID] = "Re-run setup failed: \(error.localizedDescription)"
-            return
+            resyncErrors[projectID] = "Re-run Setup failed: \(error.localizedDescription)"
         }
+        // The CLI may have attached documents or installed files even when
+        // it failed or its report could not be read.
         await reload()
         if selectedProjectID == projectID { await loadDocuments() }
         await refreshInstallStatus(projectID: projectID)
+    }
+
+    /// Repair and Re-run Setup both run the folder install (`claude mcp`
+    /// remove/add, the settings merge); never two at once for one project.
+    func isInstalling(projectID: Int64) -> Bool {
+        repairing.contains(projectID) || resyncing.contains(projectID)
     }
 
     func dismissResync(projectID: Int64) {

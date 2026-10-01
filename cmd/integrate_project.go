@@ -117,6 +117,15 @@ func runProjectInstall(ctx context.Context, w io.Writer, p *db.Project) error {
 
 func printProjectInstallReport(w io.Writer, p *db.Project, rep devpack.ProjectInstallReport, err error) {
 	fmt.Fprintf(w, "Project %d (%s):\n", p.ID, p.FolderPath)
+	printProjectInstallBody(w, rep, err)
+	if err != nil {
+		fmt.Fprintf(w, "\nProblems:\n  %v\n", err)
+	}
+}
+
+// printProjectInstallBody is the per-piece part of an install report (also
+// `project resync`'s).
+func printProjectInstallBody(w io.Writer, rep devpack.ProjectInstallReport, err error) {
 	if rep.Skill.Path != "" {
 		fmt.Fprintf(w, "  skill    %s%s\n", rep.Skill.State, skillStateNote(rep.Skill.State))
 	}
@@ -126,9 +135,6 @@ func printProjectInstallReport(w io.Writer, p *db.Project, rep devpack.ProjectIn
 		fmt.Fprintf(w, "  mcp      registered (%s, local scope)\n", devpack.ProjectMCPServerName)
 	} else {
 		fmt.Fprintf(w, "  mcp      NOT registered — run:\n    %s\n", rep.MCPCommand)
-	}
-	if err != nil {
-		fmt.Fprintf(w, "\nProblems:\n  %v\n", err)
 	}
 }
 
