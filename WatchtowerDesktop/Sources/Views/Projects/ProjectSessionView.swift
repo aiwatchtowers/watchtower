@@ -37,8 +37,8 @@ struct ProjectSessionView: View {
 }
 
 /// A standalone terminal (no project, spec §3): always the whole page,
-/// single pane, under a slim header — its title and folder, Rename, Close
-/// and Delete. No install badge, board or documents: nothing of a project.
+/// single pane, under a slim header — its folder, Rename, Close and Delete
+/// (the title is in the Projects tab's title row). No install badge, board or documents: nothing of a project.
 struct StandaloneTerminalView: View {
     let session: TerminalSession
     /// The panel's row actions: Rename and Delete open the page's own sheet
@@ -65,16 +65,13 @@ struct StandaloneTerminalView: View {
 
     private func header(isLive: Bool) -> some View {
         HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(session.title).font(.headline).lineLimit(1)
-                Button {
-                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: session.folderPath)])
-                } label: {
-                    Text(session.folderPath).font(.caption).lineLimit(1).truncationMode(.middle)
-                }
-                .buttonStyle(.link)
-                .help("Reveal in Finder")
+            Button {
+                NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: session.folderPath)])
+            } label: {
+                Text(session.folderPath).font(.caption).lineLimit(1).truncationMode(.middle)
             }
+            .buttonStyle(.link)
+            .help("Reveal in Finder")
             Spacer()
             Button("Rename…") { actions.rename(session) }
             Button("Close") { actions.close(session) }
