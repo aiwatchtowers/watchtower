@@ -493,10 +493,12 @@ final class EmbeddedChatEngineTests: XCTestCase {
         XCTAssertTrue(engine.canRetry)
         XCTAssertTrue(engine.hasPendingWork)
         engine.retry()
+        XCTAssertEqual(ai.calls[1].prompt, "Action applied: x.\n\nq", "Retry carries what waited")
         ai.emit(.text("ok"), call: 1)
         ai.finish(call: 1)
-        expectTrue(await waitForCondition { self.ai.calls.count == 3 }, "the follow-up runs after a completed turn")
-        XCTAssertEqual(ai.calls[2].prompt, "Action applied: x.")
+        expectTrue(await waitIdle(engine))
+        XCTAssertEqual(ai.calls.count, 2, "the follow-up went out once, with the retried turn")
+        XCTAssertFalse(engine.hasPendingWork)
     }
 
     func testFollowUpsQueuedBehindAStoppedTurnRideTheNextOwnerTurn() async throws {
@@ -515,6 +517,79 @@ final class EmbeddedChatEngineTests: XCTestCase {
         engine.sendHidden("The user completed the questionnaire.")
         XCTAssertEqual(engine.messages.map(\.message.role), ["assistant", "assistant"])
         XCTAssertNil(ai.calls.first?.dbPath, "a memory chat reads no workspace data")
+    }
+
+    // MARK: - Review round 2
+
+    func testTheWatchdogEndsAnInactiveTurn() async throws {
+        let engine = EmbeddedChatEngine(spec: spec(), store: MemoryEmbeddedChatStore(), aiService: ai, gate: gate,
+                                        inactivityTimeout: 0.05) { self.clock.now }
+        engine.send("q")
+        clock.advance(10)
+        expectTrue(await waitForCondition { !engine.isStreaming }, "the real watchdog task fires")
+        XCTAssertEqual(engine.messages.last?.message.status, "error")
+    }
+
+    func testQuietShutdownStillShowsAnErrorThatIsNotContextGone() async throws {
+        let store = FlakyStore()
+        let engine = makeEngine(store: store)
+        engine.send("q")
+        store.failFinalize = true
+        engine.shutdown(quietly: true)
+        XCTAssertNotNil(engine.bannerError, "only \"not found\" is swallowed")
+    }
+
+    func testFollowUpsComeBackWhenTheirTurnCannotBeSaved() throws {
+        let store = FlakyStore()
+        let engine = makeEngine(store: store)
+        store.failBegin = true
+        engine.sendFollowUp(prompt: "Action applied: x.")
+        XCTAssertTrue(engine.hasPendingWork)
+        store.failBegin = false
+        engine.send("next")
+        XCTAssertEqual(ai.calls.last?.prompt, "Action applied: x.\n\nnext")
+    }
+
+    func testFollowUpsOfAFailedTurnRideItsRetry() async throws {
+        let engine = makeEngine()
+        engine.sendFollowUp(prompt: "Action applied: x.")
+        ai.finish(throwing: WatchtowerAIError.exitCode(1, "boom"))
+        expectTrue(await waitIdle(engine))
+        engine.sendFollowUp(prompt: "Action applied: y.")
+        XCTAssertEqual(ai.calls.count, 1, "nothing runs on the session that just failed")
+        engine.retry()
+        XCTAssertEqual(ai.calls.last?.prompt, "Action applied: x.\nAction applied: y.")
+    }
+
+    func testAFailedSessionSaveIsRetriedOnTheNextEvent() async throws {
+        let store = FlakyStore()
+        store.failSession = true
+        let engine = makeEngine(store: store)
+        engine.send("q")
+        ai.emit(.sessionID("s1"))
+        expectTrue(await waitIdle(engine))
+        store.failSession = false
+        XCTAssertFalse(engine.canRetry, "a storage fault is not retried")
+        engine.send("again")
+        XCTAssertEqual(ai.calls.count, 2)
+        XCTAssertNil(ai.calls.last?.sessionID, "the unsaved session is not resumed")
+        ai.emit(.sessionID("s1"), call: 1)
+        ai.emit(.text("ok"), call: 1)
+        ai.finish(call: 1)
+        expectTrue(await waitIdle(engine))
+        XCTAssertEqual(try store.loadSessionID(), "s1")
+    }
+
+    func testANoticeThatCannotBeSavedKeepsItsBanner() async throws {
+        let store = FlakyStore()
+        let engine = makeEngine(spec: spec { _ in ChatPostTurnResult(displayText: "a", notices: ["Applied: x"]) },
+                                store: store)
+        engine.send("q")
+        store.failAppend = true
+        ai.emit(.text("a"))
+        ai.finish()
+        expectTrue(await waitIdle(engine))
+        XCTAssertNotNil(engine.bannerError, "not wiped by the completed turn it belongs to")
     }
 
     // MARK: - Lifecycle
@@ -575,9 +650,11 @@ private final class FlakyStore: EmbeddedChatStore {
 
     private let base = MemoryEmbeddedChatStore()
     var failLoad = false
+    var failBegin = false
     var failProgress = false
     var failFinalize = false
     var failSession = false
+    var failAppend = false
 
     var dbPath: String? { nil }
 
@@ -592,7 +669,8 @@ private final class FlakyStore: EmbeddedChatStore {
     }
 
     func beginTurn(ownerText: String?, turnID: String, provider: String?) throws -> (ownerID: Int64?, assistantID: Int64) {
-        try base.beginTurn(ownerText: ownerText, turnID: turnID, provider: provider)
+        if failBegin { throw Failure() }
+        return try base.beginTurn(ownerText: ownerText, turnID: turnID, provider: provider)
     }
 
     func saveProgress(messageID: Int64, text: String) throws {
@@ -606,7 +684,8 @@ private final class FlakyStore: EmbeddedChatStore {
     }
 
     func append(role: String, text: String) throws -> Int64 {
-        try base.append(role: role, text: text)
+        if failAppend { throw Failure() }
+        return try base.append(role: role, text: text)
     }
 
     func saveSessionID(_ sessionID: String) throws {

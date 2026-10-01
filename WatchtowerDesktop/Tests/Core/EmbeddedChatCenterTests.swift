@@ -132,7 +132,8 @@ private func expectTrue(_ verdict: Bool, _ message: String = "", file: StaticStr
 final class EmbeddedChatCenterSpecTests: XCTestCase {
     private func spec(_ id: String, hint: String) -> ChatSurfaceSpec {
         ChatSurfaceSpec(key: EmbeddedChatKey(contextType: "track", contextID: id, conversationID: nil),
-                        persistence: .memory, toolAccess: .draftOnly, systemPrompt: { "S" }, emptyHint: hint)
+                        persistence: .memory, toolAccess: .draftOnly, systemPrompt: { "S" },
+                        turnPrompt: { "\(hint): \($0.text)" }, emptyHint: hint)
     }
 
     private func center(ai: ScriptedAIService) -> EmbeddedChatCenter {
@@ -144,11 +145,13 @@ final class EmbeddedChatCenterSpecTests: XCTestCase {
     /// A surface asking again gets the same engine with its fresh closures —
     /// never the first screen's snapshot.
     func testAskingAgainRefreshesTheSpec() {
-        let center = center(ai: ScriptedAIService())
+        let ai = ScriptedAIService()
+        let center = center(ai: ai)
         let first = center.engine(for: spec("1", hint: "old"))
         let again = center.engine(for: spec("1", hint: "new"))
         XCTAssertTrue(first === again)
-        XCTAssertEqual(again.spec.emptyHint, "new")
+        again.send("q")
+        XCTAssertEqual(ai.calls.first?.prompt, "new: q", "the latest spec's closures build the turn")
     }
 
     func testDropContextSparesOtherContexts() {

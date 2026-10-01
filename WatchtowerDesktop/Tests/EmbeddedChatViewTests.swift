@@ -61,6 +61,19 @@ final class EmbeddedChatViewTests: XCTestCase {
         XCTAssertNoThrow(try EmbeddedChatRows(engine: engine).inspect().find(text: "AI query failed (exit 1): first failure"))
     }
 
+    func testRetryHidesWhileATurnWaits() async throws {
+        let engine = engine()
+        engine.send("first")
+        ai.finish(throwing: WatchtowerAIError.exitCode(1, "boom"))
+        let done = await waitForCondition { !engine.isStreaming }
+        XCTAssertTrue(done)
+        let filler = self.engine()
+        filler.send("takes the only slot")
+        engine.retry()
+        XCTAssertTrue(engine.isQueued)
+        XCTAssertThrowsError(try EmbeddedChatRows(engine: engine).inspect().find(button: "Retry"))
+    }
+
     func testAQueuedMessageShowsAsQueued() throws {
         let busy = engine()
         busy.send("holds the only slot")
@@ -104,5 +117,24 @@ final class EmbeddedChatViewTests: XCTestCase {
         let bar = ChatComposerBar(status: .error("Couldn't send: disk full"),
                                   input: ChatInput(text: .constant(""), isStreaming: false) {})
         XCTAssertNoThrow(try bar.inspect().find(text: "Couldn't send: disk full"))
+    }
+}
+
+@MainActor
+final class UserDefaultsDraftMirrorTests: XCTestCase {
+    func testSaveRestoreClearPerKey() throws {
+        let suite = "embedded-draft-mirror-tests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let mirror = UserDefaultsDraftMirror(defaults: defaults)
+        let first = EmbeddedChatKey(contextType: "track", contextID: "1", conversationID: 10)
+        let second = EmbeddedChatKey(contextType: "track", contextID: "1", conversationID: 11)
+        mirror.save("queued words", for: first)
+        XCTAssertEqual(mirror.restore(for: first), "queued words")
+        XCTAssertNil(mirror.restore(for: second))
+        XCTAssertEqual(UserDefaultsDraftMirror(defaults: defaults).restore(for: first), "queued words",
+                       "survives a new process")
+        mirror.clear(for: first)
+        XCTAssertNil(mirror.restore(for: first))
     }
 }

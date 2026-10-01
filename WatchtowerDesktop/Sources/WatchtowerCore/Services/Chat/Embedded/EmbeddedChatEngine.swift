@@ -20,11 +20,13 @@ package protocol EmbeddedDraftMirror: AnyObject {
 /// are written before the process starts; text is flushed at most once per
 /// `flushInterval`; the turn ends exactly once — `complete` (then
 /// `spec.postTurn`), `partial` (Stop, quit) or `error` (with the real text).
-/// A store write that fails during a turn fails the turn.
+/// A store write that fails during a turn fails the turn (a failed write of
+/// a notice after a saved reply only raises the banner).
 ///
 /// Follow-up prompts (an approved action's outcome) wait while a turn is
-/// busy and run after it completes; after a stopped or failed turn they ride
-/// the next owner turn instead. They are never dropped while the engine lives.
+/// busy and run after it completes. After a stopped turn they ride the next
+/// owner turn or follow-up; after a failed one, Retry or the next owner turn.
+/// They are never dropped while the engine lives.
 @MainActor
 @Observable
 package final class EmbeddedChatEngine {
@@ -40,7 +42,7 @@ package final class EmbeddedChatEngine {
     /// Replaced by `EmbeddedChatCenter.engine(for:)` whenever a surface asks
     /// again, so the prompt and postTurn closures always see that surface's
     /// current state (its key never changes).
-    package private(set) var spec: ChatSurfaceSpec
+    @ObservationIgnored package private(set) var spec: ChatSurfaceSpec
     /// Finished rows plus the running reply's placeholder (the view swaps
     /// that one for `LiveAssistantRow`). Never touched by a delta.
     package private(set) var messages: [ChatThreadItem] = []
@@ -84,6 +86,9 @@ package final class EmbeddedChatEngine {
     @ObservationIgnored private var pending: TurnRequest?
     @ObservationIgnored private var lastRequest: TurnRequest?
     @ObservationIgnored private var queuedFollowUps: [String] = []
+    /// The latest turn ended in an error: new follow-ups wait for Retry or
+    /// the next owner turn instead of running on the session that failed.
+    @ObservationIgnored private var lastTurnFailed = false
     /// Set by `shutdown(quietly: true)`: a deleted context's "not found"
     /// writes have no screen to go to.
     @ObservationIgnored private var isQuiet = false
@@ -92,11 +97,18 @@ package final class EmbeddedChatEngine {
         let slot = UUID()
         /// The owner row to write; nil for follow-ups, hidden prompts and retries.
         let ownerText: String?
-        let promptText: String
-        /// Follow-up prompts folded into `promptText`, given back to the
-        /// queue if the turn never starts.
+        /// The owner's (or a hidden) prompt; nil for a follow-ups-only turn.
+        let basePrompt: String?
+        /// Follow-up prompts sent ahead of `basePrompt`, given back to the
+        /// queue if the turn never starts or does not complete.
         let carriedFollowUps: [String]
         let previousOwnerMessageAt: Date?
+
+        var promptText: String {
+            let carried = carriedFollowUps.joined(separator: "\n")
+            guard let basePrompt else { return carried }
+            return carried.isEmpty ? basePrompt : "\(carried)\n\n\(basePrompt)"
+        }
     }
 
     private struct RunningTurn {
@@ -158,10 +170,8 @@ package final class EmbeddedChatEngine {
     package func send(_ text: String) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !isBusy, historyLoaded() else { return false }
-        let carried = takeFollowUps()
-        let prompt = carried.isEmpty ? trimmed : "\(carried.joined(separator: "\n"))\n\n\(trimmed)"
         let previous = messages.last { $0.message.isUser }?.message.createdDate
-        start(TurnRequest(ownerText: trimmed, promptText: prompt, carriedFollowUps: carried,
+        start(TurnRequest(ownerText: trimmed, basePrompt: trimmed, carriedFollowUps: takeFollowUps(),
                           previousOwnerMessageAt: previous))
         return true
     }
@@ -172,14 +182,15 @@ package final class EmbeddedChatEngine {
     package func sendFollowUp(prompt: String, notice: String? = nil) {
         if let notice { appendRow(role: "system", text: notice) }
         queuedFollowUps.append(prompt)
-        guard !isBusy, historyLoaded() else { return }
+        // After a failed turn the follow-ups wait for Retry or the next owner turn.
+        guard !isBusy, !lastTurnFailed, historyLoaded() else { return }
         startFollowUps()
     }
 
     /// A turn with no visible owner row (onboarding's opening prompt).
     package func sendHidden(_ prompt: String) {
         guard !isBusy, historyLoaded() else { return }
-        start(TurnRequest(ownerText: nil, promptText: prompt, carriedFollowUps: [], previousOwnerMessageAt: nil))
+        start(TurnRequest(ownerText: nil, basePrompt: prompt, carriedFollowUps: [], previousOwnerMessageAt: nil))
     }
 
     /// A scripted row with no AI call (a questionnaire bubble, a greeting).
@@ -207,12 +218,14 @@ package final class EmbeddedChatEngine {
         draftMirror?.clear(for: spec.key)
     }
 
-    /// Reruns the failed latest turn under a new reply row; the owner row is
-    /// never written twice.
+    /// Reruns the failed latest turn under a new reply row, with every
+    /// follow-up waiting since; the owner row is never written twice.
     package func retry() {
         guard canRetry, !isBusy, let last = lastRequest else { return }
-        start(TurnRequest(ownerText: nil, promptText: last.promptText, carriedFollowUps: [],
-                          previousOwnerMessageAt: last.previousOwnerMessageAt))
+        let request = TurnRequest(ownerText: nil, basePrompt: last.basePrompt, carriedFollowUps: takeFollowUps(),
+                                  previousOwnerMessageAt: last.previousOwnerMessageAt)
+        guard !request.promptText.isEmpty else { return }
+        start(request)
     }
 
     /// Re-reads the rows (another surface wrote to the conversation).
@@ -303,7 +316,10 @@ package final class EmbeddedChatEngine {
             // Nothing was sent: the owner's text goes back to the composer
             // (and stays mirrored), its follow-ups back to the queue.
             gate.release(request.slot)
-            if let text = request.ownerText { draft = draft.isEmpty ? text : "\(text)\n\(draft)" }
+            if let text = request.ownerText {
+                draft = draft.isEmpty ? text : "\(text)\n\(draft)"
+                draftMirror?.clear(for: spec.key)  // back in the composer: an ordinary draft
+            }
             queuedFollowUps.insert(contentsOf: request.carriedFollowUps, at: 0)
             report(error, prefix: "Couldn't send")
             return
@@ -377,22 +393,18 @@ package final class EmbeddedChatEngine {
     }
 
     private func startWatchdog(for turn: LiveTurn) {
-        let timeout = inactivityTimeout
+        let interval = min(inactivityTimeout, 30)
         watchdog = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(min(timeout, 30)))  // cancellation ends the loop below
-                guard let self, !Task.isCancelled, self.isCurrent(turn), let current = self.running else { return }
-                if self.clock().timeIntervalSince(current.lastEvent) >= timeout {
-                    self.fail(.init(code: nil, message: "The assistant stopped responding (no output for "
-                                    + "\(Int(timeout / 60)) min)."))
-                    self.endRunningTurn()
-                    return
-                }
+                try? await Task.sleep(for: .seconds(interval))  // a cancelled sleep ends the loop below
+                guard let self, !Task.isCancelled, self.isCurrent(turn) else { return }
+                self.checkInactivity()
             }
         }
     }
 
-    /// Test hook for the inactivity watchdog: checks once, now.
+    /// Ends a turn that has streamed nothing for `inactivityTimeout`. Run by
+    /// the watchdog; tests call it directly.
     package func checkInactivity() {
         guard let current = running, clock().timeIntervalSince(current.lastEvent) >= inactivityTimeout else { return }
         fail(.init(code: nil, message: "The assistant stopped responding (no output for "
@@ -412,9 +424,9 @@ package final class EmbeddedChatEngine {
 
     private func recordSession(_ sid: String) {
         guard !sid.isEmpty, sid != sessionID else { return }
-        sessionID = sid
         do {
             try store.saveSessionID(sid)
+            sessionID = sid  // only once stored: a failed save is retried on the next event
         } catch {
             failForStore(error, prefix: "Couldn't save the session")
         }
@@ -429,13 +441,22 @@ package final class EmbeddedChatEngine {
         streamTask = nil
         watchdog?.cancel()
         watchdog = nil
+        // A completed turn clears an older banner; anything raised while this
+        // turn ends (a notice or reload that fails) stays visible.
+        let earlierBanner = bannerError
+        bannerError = nil
         let outcome = finalize(current)
         liveTurn = nil
         gate.release(current.request.slot)
         refreshRows()
+        if case .failed = outcome { lastTurnFailed = true }
         if case .completed = outcome {
-            bannerError = nil
+            lastTurnFailed = false
             startFollowUps()
+        } else {
+            if bannerError == nil { bannerError = earlierBanner }
+            // Not delivered: the follow-ups wait for Retry or the next owner turn.
+            queuedFollowUps.insert(contentsOf: current.request.carriedFollowUps, at: 0)
         }
         onTurnFinished?(outcome)
     }
@@ -450,6 +471,15 @@ package final class EmbeddedChatEngine {
         }
         if let failure = current.failure ?? emptyReplyFailure(text) {
             return failTurn(turn, text: text, failure: failure)
+        }
+        // The reply must be on disk before postTurn acts on it.
+        do {
+            try store.saveProgress(messageID: turn.messageID, text: text)
+        } catch {
+            report(error, prefix: "Couldn't save the reply")
+            return failTurn(turn, text: text, failure: .init(
+                code: .internalError, message: "Couldn't save the reply: \(error.localizedDescription)", retryable: false),
+                persist: false)
         }
         let result = spec.postTurn(ChatPostTurnInput(reply: text, turnID: turn.turnID, messageID: turn.messageID))
         guard persistFinal(turn, text: result.displayText, status: "complete", failure: nil) else {
@@ -514,8 +544,7 @@ package final class EmbeddedChatEngine {
     private func startFollowUps() {
         guard !queuedFollowUps.isEmpty, !isBusy else { return }
         let prompts = takeFollowUps()
-        start(TurnRequest(ownerText: nil, promptText: prompts.joined(separator: "\n"), carriedFollowUps: prompts,
-                          previousOwnerMessageAt: nil))
+        start(TurnRequest(ownerText: nil, basePrompt: nil, carriedFollowUps: prompts, previousOwnerMessageAt: nil))
     }
 
     // MARK: - Rows
