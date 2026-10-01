@@ -17,6 +17,8 @@ package enum DocumentStyle: Equatable, Sendable {
     case tableCell(DocumentTableCell)
     /// A thematic break: a one-character paragraph drawn as a line.
     case rule
+    /// A highlighted token inside a code block (`CodeHighlighter`).
+    case codeToken(CodeToken.Kind)
 }
 
 /// Where a `.tableCell` run sits: which table of the document, its row
@@ -87,17 +89,28 @@ package enum DocumentRendering {
         for block in MarkdownDocument.parse(markdown) {
             render(block, into: &out, depth: 0)
         }
-        return RenderedDocument(text: out.text, headings: out.headings, runs: out.runs)
+        return out.document
     }
 
-    /// A `table` artifact's CSV rows (the first is the header) as a table;
-    /// blank lines are skipped.
+    /// A `table` artifact's CSV rows (the first is the header) as a table.
+    /// Only the empty records a trailing newline leaves at the end are
+    /// dropped; an empty record inside the data stays an empty row.
     package static func renderTable(rows: [[String]]) -> RenderedDocument {
-        let cells = rows.filter { row in row.contains { !$0.isEmpty } }.map { row in row.map { [MarkdownInline.text($0)] } }
-        guard let header = cells.first else { return RenderedDocument(text: "", headings: [], runs: []) }
+        var rows = rows
+        while let last = rows.last, last.allSatisfy(\.isEmpty) { rows.removeLast() }
         var out = Builder()
-        render(MarkdownTable(header: header, rows: Array(cells.dropFirst()), alignments: []), into: &out)
-        return RenderedDocument(text: out.text, headings: out.headings, runs: out.runs)
+        if let header = rows.first {
+            let cells = { (row: [String]) in row.map { [MarkdownInline.text($0)] } }
+            render(MarkdownTable(header: cells(header), rows: rows.dropFirst().map(cells), alignments: []), into: &out)
+        }
+        return out.document
+    }
+
+    /// A `code` artifact: one code block, highlighted for `language`.
+    package static func renderCode(_ code: String, language: String?) -> RenderedDocument {
+        var out = Builder()
+        appendCode(code, language: language, into: &out)
+        return out.document
     }
 
     private static func render(_ block: MarkdownBlock, into out: inout Builder, depth: Int) {
@@ -107,8 +120,8 @@ package enum DocumentRendering {
             out.styled(.heading(level)) { render(inlines, into: &$0) }
         case let .paragraph(inlines):
             render(inlines, into: &out)
-        case let .code(_, code):
-            out.styled(.codeBlock) { $0.append(code) }
+        case let .code(language, code):
+            appendCode(code, language: language, into: &out)
         case let .list(list):
             render(list, into: &out, depth: depth)
         case let .quote(children):
@@ -121,6 +134,18 @@ package enum DocumentRendering {
             out.styled(.rule) { $0.append("\u{00A0}") }
         }
         out.endBlock()
+    }
+
+    private static func appendCode(_ code: String, language: String?, into out: inout Builder) {
+        out.styled(.codeBlock) { out in
+            for token in CodeHighlighter.tokens(code, language: language) {
+                if token.kind == .plain {
+                    out.append(token.text)
+                } else {
+                    out.styled(.codeToken(token.kind)) { $0.append(token.text) }
+                }
+            }
+        }
     }
 
     private static func render(_ list: MarkdownList, into out: inout Builder, depth: Int) {
@@ -153,8 +178,8 @@ package enum DocumentRendering {
     private static func render(_ table: MarkdownTable, into out: inout Builder) {
         let rows = [table.header] + table.rows
         let columns = rows.map(\.count).max() ?? 0
-        let id = out.tables
-        out.tables += 1
+        let id = out.nextTableID
+        out.nextTableID += 1
         out.newlineIfNeeded()
         for (rowIndex, row) in rows.enumerated() {
             for column in 0..<columns {
@@ -196,8 +221,11 @@ package enum DocumentRendering {
         var length = 0
         var headings: [DocumentHeading] = []
         var runs: [DocumentStyleRun] = []
-        /// Tables rendered so far: the next table's id.
-        var tables = 0
+        var nextTableID = 0
+
+        var document: RenderedDocument {
+            RenderedDocument(text: text, headings: headings, runs: runs)
+        }
 
         mutating func append(_ value: String) {
             text += value

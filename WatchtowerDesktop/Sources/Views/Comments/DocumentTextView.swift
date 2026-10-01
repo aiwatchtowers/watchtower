@@ -215,7 +215,7 @@ struct DocumentTextView: NSViewRepresentable {
 
 /// A reading position that survives re-wrapping: the character at the top
 /// of the visible area and how far into its line the view was scrolled.
-struct ReadingAnchor: Equatable {
+struct ReadingAnchor {
     let character: Int
     let offset: CGFloat
 

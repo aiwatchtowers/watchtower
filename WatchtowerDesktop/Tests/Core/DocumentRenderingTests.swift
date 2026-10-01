@@ -106,4 +106,21 @@ final class DocumentRenderingTests: XCTestCase {
         XCTAssertFalse(doc.text.contains("—"))
         XCTAssertTrue(doc.runs.contains { $0.style == .rule })
     }
+
+    func testFencedCodeWithAKnownLanguageCarriesTokenRuns() {
+        let doc = DocumentRendering.render("```go\nreturn nil // done\n```")
+        XCTAssertEqual(doc.text, "return nil // done\n\n")
+        let keyword = (doc.text as NSString).range(of: "return")
+        XCTAssertTrue(doc.runs.contains(DocumentStyleRun(location: keyword.location, length: keyword.length,
+                                                         style: .codeToken(.keyword))))
+        XCTAssertTrue(doc.runs.contains { $0.style == .codeToken(.comment) })
+        XCTAssertFalse(DocumentRendering.render("```\nreturn nil\n```").runs.contains {
+            if case .codeToken = $0.style { return true } else { return false }
+        }, "no language, no guessing")
+    }
+
+    func testCSVKeepsInteriorEmptyRecordsAndDropsOnlyTrailingOnes() {
+        let doc = DocumentRendering.renderTable(rows: [["A", "B"], ["", ""], ["1", "2"], [""], ["", ""]])
+        XCTAssertEqual(doc.text, "A\nB\n\n\n1\n2\n\n")
+    }
 }

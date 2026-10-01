@@ -49,8 +49,7 @@ struct ArtifactPanelView: View {
                 .toggleStyle(.button)
                 .buttonStyle(.borderless)
                 .disabled(model.comments.comments.isEmpty)
-                .help(model.comments.comments.isEmpty ? "Select a passage to comment on it"
-                                        : showComments ? "Hide the comments" : "Show the comments")
+                .help(commentsHelp)
                 .accessibilityLabel("Comments")
             }
             if model.versions.count > 1 {
@@ -80,16 +79,21 @@ struct ArtifactPanelView: View {
         commentCount == 0 ? "Comments" : "Comments (\(commentCount))"
     }
 
+    private var commentsHelp: String {
+        if model.comments.comments.isEmpty { return "Select a passage to comment on it" }
+        return showComments ? "Hide the comments" : "Show the comments"
+    }
+
     @ViewBuilder
     private var content: some View {
         if model.isEditing {
             TextEditor(text: $model.editText)
                 .font(.system(.body, design: .monospaced))
                 .padding(6)
-        } else if model.canComment, let rendered = model.comments.rendered, let draft = model.displayed {
+        } else if model.canComment, let rendered = model.comments.rendered, !rendered.text.isEmpty, let draft = model.displayed {
             // The latest version: one view to read and to comment on.
             ArtifactCommentsView(
-                comments: model.comments, rendered: rendered, fields: ArtifactContentView.fields(of: draft),
+                comments: model.comments, rendered: rendered, fields: ArtifactField.fields(of: draft),
                 canSend: canSendComments, showsList: $showComments, onSend: onSendComments
             )
         } else if let draft = model.displayed {
@@ -137,7 +141,7 @@ struct ArtifactPanelView: View {
     }
 }
 
-struct ArtifactContentView: View {
+private struct ArtifactContentView: View {
     let draft: ArtifactDraft
 
     var body: some View {
@@ -148,7 +152,7 @@ struct ArtifactContentView: View {
             MarkdownView(text: "````\(draft.meta["language"] ?? "")\n\(draft.content)\n````")
         case "email", "slack", "event":
             VStack(alignment: .leading, spacing: 8) {
-                let header = Self.fields(of: draft)
+                let header = ArtifactField.fields(of: draft)
                 if !header.isEmpty {
                     ArtifactFieldsHeader(fields: header)
                     Divider()
@@ -157,22 +161,6 @@ struct ArtifactContentView: View {
             }
         default:
             MarkdownView(text: draft.content)
-        }
-    }
-
-    /// A draft message's header fields, empty values left out; none for
-    /// other kinds.
-    static func fields(of draft: ArtifactDraft) -> [ArtifactField] {
-        let items: [(String, String?)] = switch draft.kind {
-        case "email": [("To", draft.meta["to"]), ("Cc", draft.meta["cc"]), ("Subject", draft.meta["subject"])]
-        case "slack": [("Channel", draft.meta["channel"] ?? draft.meta["permalink"])]
-        case "event": [("Start", draft.meta["start"]), ("End", draft.meta["end"]),
-                       ("Attendees", draft.meta["attendees"]), ("Location", draft.meta["location"])]
-        default: []
-        }
-        return items.compactMap { name, value in
-            guard let value, !value.isEmpty else { return nil }
-            return ArtifactField(name: name, value: value)
         }
     }
 }

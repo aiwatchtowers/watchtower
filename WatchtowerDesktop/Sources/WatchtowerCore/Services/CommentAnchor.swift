@@ -6,7 +6,9 @@ import Foundation
 /// file; `locate` returning nil means the thread is outdated.
 ///
 /// Rules (index Review Focus #4): exact matches first, then a
-/// whitespace-collapsed match (reflow); several candidates are ranked by how
+/// whitespace-collapsed match (reflow), then — only for a quote taken from
+/// an older rendering of the same text — the legacy separators read as
+/// whitespace (see `legacyQuote`); several candidates are ranked by how
 /// much of the stored prefix/suffix still surrounds them; no candidate — or
 /// several with none of the original context — is nil. Never fuzzy.
 package struct CommentAnchor: Equatable, Sendable {
@@ -46,8 +48,25 @@ package struct CommentAnchor: Equatable, Sendable {
         let needle = Array(Self.collapsed(quote).trimmingCharacters(in: .whitespacesAndNewlines))
         guard !needle.isEmpty else { return nil }
         let exact = Self.exactOccurrences(of: quote, in: text)
-        let candidates = exact.isEmpty ? Self.collapsedOccurrences(of: needle, in: text) : exact
+        var candidates = exact.isEmpty ? Self.collapsedOccurrences(of: needle, in: text) : exact
+        if candidates.isEmpty, let legacy = Self.legacyQuote(quote) {
+            let legacyNeedle = Array(Self.collapsed(legacy).trimmingCharacters(in: .whitespacesAndNewlines))
+            if !legacyNeedle.isEmpty { candidates = Self.collapsedOccurrences(of: legacyNeedle, in: text) }
+        }
         return pick(candidates, in: text)
+    }
+
+    /// The quote as today's rendering would show it, when it was selected on
+    /// an older one (#181): table cells used to be joined with " | " and a
+    /// `table` artifact's anchor text was its raw CSV (cells now sit on their
+    /// own lines), and a rule used to be "———" (now a blank line). Nil when
+    /// the quote holds none of those separators.
+    private static func legacyQuote(_ quote: String) -> String? {
+        let legacy = quote.replacingOccurrences(of: "———", with: " ")
+            .replacingOccurrences(of: "|", with: " ")
+            // A CSV separator, not prose: "a,b", never "a, b".
+            .replacingOccurrences(of: ",(?!\\s)", with: " ", options: .regularExpression)
+        return legacy == quote ? nil : legacy
     }
 
     // MARK: - Ranking

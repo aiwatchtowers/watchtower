@@ -17,6 +17,26 @@ final class MeetingCountdownTests: XCTestCase {
         MeetingCountdown.text(start: now.addingTimeInterval(offset), now: now, calendar: calendar, locale: locale)
     }
 
+    func testWholeMinutesAboveOneMinute() {
+        let now = Date()
+        XCTAssertEqual(text(34 * 60 + 7, from: now), "in 34 min",
+                       "seconds must not show — drop them rather than round the minute up or down")
+        XCTAssertEqual(text(120, from: now), "in 2 min")
+        XCTAssertEqual(text(60, from: now), "in 1 min")
+    }
+
+    func testSecondsInTheLastMinute() {
+        let now = Date()
+        XCTAssertEqual(text(45, from: now), "in 45 sec")
+        XCTAssertEqual(text(1, from: now), "in 1 sec")
+    }
+
+    func testAtOrAfterStartReadsStartingNow() {
+        let now = Date()
+        XCTAssertEqual(text(0, from: now), "starting now")
+        XCTAssertEqual(text(-30, from: now), "starting now")
+    }
+
     func testCountsDownInHoursAndMinutesWithinTheHorizon() {
         let now = morning
         XCTAssertEqual(text(59 * 60 + 59, from: now), "in 59 min")

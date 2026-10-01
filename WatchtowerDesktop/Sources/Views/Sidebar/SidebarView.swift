@@ -115,7 +115,7 @@ struct SidebarView: View {
                             .fixedSize(horizontal: false, vertical: true)
                             .help(nextEvt.title)
                         TimelineView(.periodic(from: .now, by: 1)) { context in
-                            Text(Self.nextEventCountdownText(start: nextEvt.startDate, now: context.date))
+                            Text(MeetingCountdown.text(start: nextEvt.startDate, now: context.date))
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
@@ -277,15 +277,6 @@ struct SidebarView: View {
         case .statistics: recommendationCount
         default: 0
         }
-    }
-
-    /// A single-line countdown to `start` (`MeetingCountdown`): seconds in
-    /// the final minute, minutes, then hours and minutes; a meeting hours
-    /// away shows its start time. Replaces `Text(_, style: .relative)`,
-    /// whose built-in "34 min, 7 sec" phrasing has no line limit and wraps
-    /// across 2-3 lines in the sidebar's narrow footer.
-    static func nextEventCountdownText(start: Date, now: Date) -> String {
-        MeetingCountdown.text(start: start, now: now)
     }
 
     /// A section's items after BOTH filters: the user's own hide choices and

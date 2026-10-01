@@ -14,12 +14,38 @@ enum DocumentAttributedString {
     static let activeHighlight = NSColor.systemYellow.withAlphaComponent(0.55)
     static let draftHighlight = NSColor.systemBlue.withAlphaComponent(0.2)
 
+    /// The same inputs return the same instance: a paragraph style compares
+    /// its text blocks and tables by identity, so two equal renders never
+    /// compare equal, and `DocumentTextView` would otherwise re-lay the whole
+    /// text out on every SwiftUI body pass (each resize frame included).
+    @MainActor
     static func make(
         _ doc: RenderedDocument,
         highlights: [Int64: NSRange],
         activeThreadID: Int64?,
         drafts: [NSRange] = []
     ) -> NSAttributedString {
+        let key = Key(doc: doc, highlights: highlights, activeThreadID: activeThreadID, drafts: drafts)
+        if let hit = recent.first(where: { $0.key == key }) { return hit.text }
+        let text = build(key)
+        recent = [(key, text)] + recent.prefix(recentLimit - 1)
+        return text
+    }
+
+    private struct Key: Equatable {
+        let doc: RenderedDocument
+        let highlights: [Int64: NSRange]
+        let activeThreadID: Int64?
+        let drafts: [NSRange]
+    }
+
+    /// A few documents may be on screen at once (a project document, an
+    /// artifact panel, a quote sheet).
+    private static let recentLimit = 4
+    @MainActor private static var recent: [(key: Key, text: NSAttributedString)] = []
+
+    private static func build(_ key: Key) -> NSAttributedString {
+        let doc = key.doc
         let out = NSMutableAttributedString(
             string: doc.text,
             attributes: [.font: bodyFont, .foregroundColor: NSColor.labelColor]
@@ -36,10 +62,10 @@ enum DocumentAttributedString {
             apply(run, to: out, layout: &layout)
         }
         layout.commit(to: out)
-        for (id, range) in highlights where NSMaxRange(range) <= length {
-            out.addAttribute(.backgroundColor, value: id == activeThreadID ? activeHighlight : highlight, range: range)
+        for (id, range) in key.highlights where NSMaxRange(range) <= length {
+            out.addAttribute(.backgroundColor, value: id == key.activeThreadID ? activeHighlight : highlight, range: range)
         }
-        for range in drafts where NSMaxRange(range) <= length {
+        for range in key.drafts where NSMaxRange(range) <= length {
             out.addAttribute(.backgroundColor, value: draftHighlight, range: range)
         }
         return out
@@ -58,19 +84,13 @@ enum DocumentAttributedString {
             out.addAttribute(.strikethroughStyle, value: NSUnderlineStyle.single.rawValue, range: range)
         case .code:
             out.addAttributes([.font: codeFont, .backgroundColor: NSColor.quaternaryLabelColor], range: range)
-        case .link:
-            // Styled only: a click selects text for commenting, it never opens
-            // a URL from a document the agent wrote.
-            out.addAttributes([.foregroundColor: NSColor.linkColor, .underlineStyle: NSUnderlineStyle.single.rawValue], range: range)
-        case .codeBlock, .quote, .listItem, .tableCell, .rule:
-            applyBlock(run, to: out, layout: &layout)
-        }
-    }
-
-    /// The paragraph-level styles: boxes, hanging indents, table cells.
-    private static func applyBlock(_ run: DocumentStyleRun, to out: NSMutableAttributedString, layout: inout ParagraphLayout) {
-        let range = NSRange(location: run.location, length: run.length)
-        switch run.style {
+        case let .link(destination):
+            // Styled, with the destination on hover: a click selects text for
+            // commenting, it never opens a URL from a document the agent wrote.
+            out.addAttributes([.foregroundColor: NSColor.linkColor, .underlineStyle: NSUnderlineStyle.single.rawValue,
+                               .toolTip: destination], range: range)
+        case let .codeToken(kind):
+            out.addAttribute(.foregroundColor, value: color(for: kind), range: range)
         case .codeBlock:
             out.addAttribute(.font, value: codeFont, range: range)
             let block = box(padding: 8)
@@ -78,43 +98,75 @@ enum DocumentAttributedString {
             layout.edit(range) { _, style in style.textBlocks.append(block) }
         case .quote:
             out.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: range)
-            let block = box(padding: 2)
-            block.setWidth(10, type: .absoluteValueType, for: .padding, edge: .minX)
-            block.setWidth(3, type: .absoluteValueType, for: .border, edge: .minX)
-            block.setBorderColor(NSColor.controlAccentColor.withAlphaComponent(0.4), for: .minX)
-            layout.edit(range) { _, style in style.textBlocks.append(block) }
+            layout.edit(range) { _, style in style.textBlocks.append(quoteBlock()) }
         case let .listItem(marker):
-            let prefix = (out.string as NSString).substring(with: NSRange(location: run.location, length: min(marker, run.length)))
-            let indent = ceil((prefix as NSString).size(withAttributes: [.font: bodyFont]).width)
-            layout.edit(range) { paragraph, style in
-                style.headIndent = indent
-                style.firstLineHeadIndent = paragraph.location == run.location ? 0 : indent
-            }
+            applyListItem(run, marker: marker, to: out, layout: &layout)
         case let .tableCell(cell):
-            if cell.header { convertFonts(in: out, range: range, trait: .boldFontMask) }
-            let block = NSTextTableBlock(table: layout.table(cell), startingRow: cell.row, rowSpan: 1,
-                                         startingColumn: cell.column, columnSpan: 1)
-            block.setWidth(4, type: .absoluteValueType, for: .padding)
-            block.setWidth(8, type: .absoluteValueType, for: .padding, edge: .minX)
-            block.setWidth(8, type: .absoluteValueType, for: .padding, edge: .maxX)
-            block.setWidth(1, type: .absoluteValueType, for: .border)
-            block.setBorderColor(NSColor.separatorColor)
-            if cell.header { block.backgroundColor = NSColor.labelColor.withAlphaComponent(0.05) }
-            layout.edit(range) { _, style in
-                style.textBlocks.append(block)
-                style.alignment = switch cell.alignment {
-                case .leading: .natural
-                case .center: .center
-                case .trailing: .right
-                }
-            }
+            applyTableCell(cell, range: range, to: out, layout: &layout)
         case .rule:
             let block = box(padding: 0)
             block.setWidth(1, type: .absoluteValueType, for: .border, edge: .maxY)
             block.setBorderColor(NSColor.separatorColor, for: .maxY)
             layout.edit(range) { _, style in style.textBlocks.append(block) }
-        case .heading, .strong, .emphasis, .strikethrough, .code, .link:
-            break
+        }
+    }
+
+    /// The colours `CodeBlockView` gives the same tokens.
+    private static func color(for kind: CodeToken.Kind) -> NSColor {
+        switch kind {
+        case .keyword: .systemPurple
+        case .string: .systemRed
+        case .comment: .secondaryLabelColor
+        case .number: .systemOrange
+        case .plain: .labelColor
+        }
+    }
+
+    private static func quoteBlock() -> NSTextBlock {
+        let block = box(padding: 2)
+        block.setWidth(10, type: .absoluteValueType, for: .padding, edge: .minX)
+        block.setWidth(3, type: .absoluteValueType, for: .border, edge: .minX)
+        block.setBorderColor(NSColor.controlAccentColor.withAlphaComponent(0.4), for: .minX)
+        return block
+    }
+
+    /// Wrapped lines hang under the item's text, not under its marker.
+    private static func applyListItem(
+        _ run: DocumentStyleRun,
+        marker: Int,
+        to out: NSMutableAttributedString,
+        layout: inout ParagraphLayout
+    ) {
+        let prefix = (out.string as NSString).substring(with: NSRange(location: run.location, length: min(marker, run.length)))
+        let indent = ceil((prefix as NSString).size(withAttributes: [.font: bodyFont]).width)
+        layout.edit(NSRange(location: run.location, length: run.length)) { paragraph, style in
+            style.headIndent = indent
+            style.firstLineHeadIndent = paragraph.location == run.location ? 0 : indent
+        }
+    }
+
+    private static func applyTableCell(
+        _ cell: DocumentTableCell,
+        range: NSRange,
+        to out: NSMutableAttributedString,
+        layout: inout ParagraphLayout
+    ) {
+        if cell.header { convertFonts(in: out, range: range, trait: .boldFontMask) }
+        let block = NSTextTableBlock(table: layout.table(cell), startingRow: cell.row, rowSpan: 1,
+                                     startingColumn: cell.column, columnSpan: 1)
+        block.setWidth(4, type: .absoluteValueType, for: .padding)
+        block.setWidth(8, type: .absoluteValueType, for: .padding, edge: .minX)
+        block.setWidth(8, type: .absoluteValueType, for: .padding, edge: .maxX)
+        block.setWidth(1, type: .absoluteValueType, for: .border)
+        block.setBorderColor(NSColor.separatorColor)
+        if cell.header { block.backgroundColor = NSColor.labelColor.withAlphaComponent(0.05) }
+        layout.edit(range) { _, style in
+            style.textBlocks.append(block)
+            style.alignment = switch cell.alignment {
+            case .leading: .natural
+            case .center: .center
+            case .trailing: .right
+            }
         }
     }
 
@@ -160,8 +212,7 @@ enum DocumentAttributedString {
             var location = range.location
             while location < NSMaxRange(range) {
                 let paragraph = string.paragraphRange(for: NSRange(location: location, length: 0))
-                // swiftlint:disable:next force_cast
-                let style = styles[paragraph.location] ?? NSParagraphStyle.default.mutableCopy() as! NSMutableParagraphStyle
+                let style = styles[paragraph.location] ?? NSMutableParagraphStyle()
                 body(paragraph, style)
                 styles[paragraph.location] = style
                 location = NSMaxRange(paragraph)

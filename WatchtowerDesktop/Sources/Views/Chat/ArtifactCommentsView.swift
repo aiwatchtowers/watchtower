@@ -20,6 +20,7 @@ struct ArtifactCommentsView: View {
     @State private var selection = NSRange(location: 0, length: 0)
     @State private var activeID: Int64?
     @State private var composerText = ""
+    @State private var showResolved = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -36,7 +37,7 @@ struct ArtifactCommentsView: View {
                         }
                         text
                     }
-                    if showsList, hasThreads {
+                    if showsList, !comments.comments.isEmpty {
                         Rectangle()
                             .fill(Color(nsColor: .separatorColor))
                             .frame(width: beside ? 1 : nil, height: beside ? nil : 1)
@@ -75,10 +76,6 @@ struct ArtifactCommentsView: View {
         .frame(minWidth: 200, minHeight: 160)
     }
 
-    private var hasThreads: Bool {
-        !comments.unsent.isEmpty || !comments.sent.isEmpty || !comments.outdated.isEmpty || !comments.resolved.isEmpty
-    }
-
     private var contentID: String {
         "\(comments.conversationID)/\(comments.key)/\(comments.artifact?.version ?? -1)"
     }
@@ -95,15 +92,20 @@ struct ArtifactCommentsView: View {
                         }
                     }
                     if !comments.resolved.isEmpty {
-                        DisclosureGroup("Resolved (\(comments.resolved.count))") {
+                        DisclosureGroup("Resolved (\(comments.resolved.count))", isExpanded: $showResolved) {
                             ForEach(comments.resolved) { row($0) }
                         }
                     }
                 }
                 .padding(10)
             }
-            .onChange(of: activeID) { _, id in
-                if let id { withAnimation { proxy.scrollTo(id, anchor: .top) } }
+            // `initial`: a click on a highlight may open the list and pick
+            // its thread in one update — the new list scrolls on appear.
+            .onChange(of: activeID, initial: true) { _, id in
+                guard let id else { return }
+                // A resolved comment keeps its highlight; its row is folded away.
+                if comments.resolved.contains(where: { $0.id == id }) { showResolved = true }
+                DispatchQueue.main.async { withAnimation { proxy.scrollTo(id, anchor: .top) } }
             }
         }
     }
@@ -123,9 +125,25 @@ struct ArtifactCommentsView: View {
 }
 
 /// One header field of a draft message artifact.
-struct ArtifactField: Equatable {
+struct ArtifactField {
     let name: String
     let value: String
+
+    /// A draft message's header fields, empty values left out; none for
+    /// other kinds.
+    static func fields(of draft: ArtifactDraft) -> [Self] {
+        let items: [(String, String?)] = switch draft.kind {
+        case "email": [("To", draft.meta["to"]), ("Cc", draft.meta["cc"]), ("Subject", draft.meta["subject"])]
+        case "slack": [("Channel", draft.meta["channel"] ?? draft.meta["permalink"])]
+        case "event": [("Start", draft.meta["start"]), ("End", draft.meta["end"]),
+                       ("Attendees", draft.meta["attendees"]), ("Location", draft.meta["location"])]
+        default: []
+        }
+        return items.compactMap { name, value in
+            guard let value, !value.isEmpty else { return nil }
+            return Self(name: name, value: value)
+        }
+    }
 }
 
 /// A draft message's header fields as a two-column grid.

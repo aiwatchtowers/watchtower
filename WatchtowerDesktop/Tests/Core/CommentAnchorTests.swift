@@ -166,4 +166,28 @@ final class CommentAnchorTests: XCTestCase {
         XCTAssertEqual(foundEnd.map { String(endText[$0]) }, reflowedEnd)
         XCTAssertEqual(foundEnd?.upperBound, endText.endIndex)
     }
+
+    // MARK: legacy renderings (#181)
+
+    /// Comments made before tables and rules got their own layout keep
+    /// their place: the old " | " cell joins, raw CSV commas and "———" rule
+    /// read as the whitespace the new rendering puts there.
+    func testQuotesFromTheOldTableAndRuleRenderingStillLocate() throws {
+        let markdown = "| Name | Owner |\n|---|---|\n| retry | ops |\n\n---\n\nAfter the rule."
+        let old = "Name | Owner\nretry | ops\n\n———\n\nAfter the rule.\n\n"
+        let new = DocumentRendering.render(markdown).text
+        let row = try anchor("retry | ops", in: old)
+        XCTAssertEqual(row.locate(in: new).map { String(new[$0]) }, "retry\nops")
+        let rule = try anchor("———\n\nAfter", in: old)
+        XCTAssertNotNil(rule.locate(in: new))
+
+        let csv = try anchor("retry,ops", in: "Name,Owner\nretry,ops")
+        let table = DocumentRendering.renderTable(rows: [["Name", "Owner"], ["retry", "ops"]]).text
+        XCTAssertEqual(csv.locate(in: table).map { String(table[$0]) }, "retry\nops")
+    }
+
+    func testProseCommasAreNotTreatedAsSeparators() throws {
+        let made = try anchor("Alice, Bob agreed", in: "Then Alice, Bob agreed.")
+        XCTAssertNil(made.locate(in: "Then Alice Bob agreed."), "an edited sentence is outdated, not re-attached")
+    }
 }

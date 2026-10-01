@@ -69,6 +69,11 @@ private struct CommentNSTextEditor: NSViewRepresentable {
         textView.focusOnAppear = focusOnAppear
         textView.onSubmit = onSubmit
 
+        // A new width re-wraps the text: measure again.
+        textView.postsFrameChangedNotifications = true
+        NotificationCenter.default.addObserver(context.coordinator, selector: #selector(Coordinator.frameDidChange(_:)),
+                                               name: NSView.frameDidChangeNotification, object: textView)
+
         let scroll = NSScrollView()
         scroll.documentView = textView
         scroll.hasVerticalScroller = true
@@ -85,9 +90,20 @@ private struct CommentNSTextEditor: NSViewRepresentable {
         textView.onSubmit = onSubmit
         textView.isEditable = context.environment.isEnabled
         if textView.string != text {
-            textView.string = text
+            // Through the undoable path: a plain `string =` leaves typing undo
+            // steps pointing into the text that was just replaced.
+            let all = NSRange(location: 0, length: (textView.string as NSString).length)
+            if textView.shouldChangeText(in: all, replacementString: text) {
+                textView.replaceCharacters(in: all, with: text)
+                textView.didChangeText()
+            }
+            textView.breakUndoCoalescing()
             DispatchQueue.main.async { context.coordinator.measure(textView) }
         }
+    }
+
+    static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
+        NotificationCenter.default.removeObserver(coordinator)
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
@@ -99,7 +115,12 @@ private struct CommentNSTextEditor: NSViewRepresentable {
 
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
-            parent.text = textView.string
+            if parent.text != textView.string { parent.text = textView.string }
+            measure(textView)
+        }
+
+        @objc func frameDidChange(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView else { return }
             measure(textView)
         }
 
@@ -113,7 +134,9 @@ private struct CommentNSTextEditor: NSViewRepresentable {
 }
 
 /// Sends on ⌘↩/⌃↩ while it is the first responder; everything else —
-/// Return included — is ordinary editing.
+/// Return included — is ordinary editing. Decided on the key event, not in
+/// `doCommandBy` like the chat composer: ⌘↩ arrives as a key equivalent
+/// and never as `insertNewline:`, and ⌃↩ arrives as `insertLineBreak:`.
 private final class SubmittingTextView: NSTextView {
     var onSubmit: (() -> Void)?
     var focusOnAppear = false
