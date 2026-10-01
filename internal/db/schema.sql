@@ -1565,6 +1565,23 @@ CREATE TABLE IF NOT EXISTS memory_step_state (
     PRIMARY KEY (step, node_id)
 );
 
+-- Extraction attempt budget (see 00091, MEM-04): one row per failing Slack
+-- extraction window, keyed by channel + first message ts_unix. After the
+-- budget the window is quarantined (quarantined_at set) and its messages,
+-- channel_id between first_ts and last_ts, are skipped so the watermark can
+-- pass them; the row stays as the record of what memory never read.
+-- Runtime state, excluded from DropMemoryIndex (MEM-02).
+CREATE TABLE IF NOT EXISTS memory_extract_failures (
+    channel_id     TEXT NOT NULL,
+    first_ts       REAL NOT NULL,            -- first message ts_unix of the window
+    last_ts        REAL NOT NULL,            -- last message ts_unix at the latest failure
+    failures       INTEGER NOT NULL DEFAULT 0,
+    last_error     TEXT NOT NULL DEFAULT '',
+    quarantined_at TEXT NOT NULL DEFAULT '', -- RFC3339 UTC; '' while still retried
+    updated_at     TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (channel_id, first_ts)
+);
+
 -- Slice B Task 7 (see 00039): dark retrieval-compare telemetry
 -- (memory.retrieve.{recall_compare,briefing_compare,meeting_prep_compare}) —
 -- append-only, no FK onto memory_nodes (a shadow row is pure telemetry that

@@ -1435,8 +1435,8 @@ func (d *Daemon) phaseMemory(ctx context.Context) {
 		return
 	}
 	if stats.Seeded > 0 || stats.Episodes > 0 || stats.WindowsFailed > 0 {
-		d.logger.Printf("memory: %d seeded, %d episode(s) from %d window(s) (%d failed, %d refs rejected)",
-			stats.Seeded, stats.Episodes, stats.Windows, stats.WindowsFailed, stats.RefsRejected)
+		d.logger.Printf("memory: %d seeded, %d episode(s) from %d window(s) (%d failed, %d quarantined, %d refs rejected)",
+			stats.Seeded, stats.Episodes, stats.Windows, stats.WindowsFailed, stats.WindowsQuarantined, stats.RefsRejected)
 	}
 }
 

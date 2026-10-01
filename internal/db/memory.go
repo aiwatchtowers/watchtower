@@ -737,6 +737,72 @@ func (db *DB) SetMemoryWatermark(ts float64) error {
 	return nil
 }
 
+// MemoryExtractFailure is one failing Slack extraction window
+// (memory_extract_failures, see 00091 — MEM-04's attempt budget), keyed by
+// ChannelID + FirstTS. QuarantinedAt is "" while the window is still retried;
+// once set, the window's messages (ChannelID, FirstTS..LastTS) are skipped.
+type MemoryExtractFailure struct {
+	ChannelID     string
+	FirstTS       float64
+	LastTS        float64
+	Failures      int
+	LastError     string
+	QuarantinedAt string
+}
+
+// ListMemoryExtractFailures returns every failing and quarantined window.
+// Runtime state, MEM-02-exempt like memory_step_state (see 00091).
+func (db *DB) ListMemoryExtractFailures() ([]MemoryExtractFailure, error) {
+	rows, err := db.Query(`SELECT channel_id, first_ts, last_ts, failures, last_error, quarantined_at
+		FROM memory_extract_failures ORDER BY first_ts`)
+	if err != nil {
+		return nil, fmt.Errorf("listing memory extract failures: %w", err)
+	}
+	defer rows.Close()
+	var out []MemoryExtractFailure
+	for rows.Next() {
+		var f MemoryExtractFailure
+		if err := rows.Scan(&f.ChannelID, &f.FirstTS, &f.LastTS, &f.Failures, &f.LastError, &f.QuarantinedAt); err != nil {
+			return nil, fmt.Errorf("scanning memory extract failure: %w", err)
+		}
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
+// SetMemoryExtractFailure upserts one window's failure record.
+func (db *DB) SetMemoryExtractFailure(f MemoryExtractFailure) error {
+	_, err := db.Exec(`INSERT INTO memory_extract_failures
+		(channel_id, first_ts, last_ts, failures, last_error, quarantined_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+		ON CONFLICT(channel_id, first_ts) DO UPDATE SET
+			last_ts = excluded.last_ts, failures = excluded.failures, last_error = excluded.last_error,
+			quarantined_at = excluded.quarantined_at, updated_at = excluded.updated_at`,
+		f.ChannelID, f.FirstTS, f.LastTS, f.Failures, f.LastError, f.QuarantinedAt)
+	if err != nil {
+		return fmt.Errorf("recording memory extract failure %s@%f: %w", f.ChannelID, f.FirstTS, err)
+	}
+	return nil
+}
+
+// DeleteMemoryExtractFailure forgets a window's failures (it succeeded).
+func (db *DB) DeleteMemoryExtractFailure(channelID string, firstTS float64) error {
+	if _, err := db.Exec(`DELETE FROM memory_extract_failures WHERE channel_id = ? AND first_ts = ?`, channelID, firstTS); err != nil {
+		return fmt.Errorf("clearing memory extract failure %s@%f: %w", channelID, firstTS, err)
+	}
+	return nil
+}
+
+// PruneMemoryExtractFailures deletes the still-retried rows the watermark has
+// already passed (their messages were extracted under a different window
+// cut). Quarantined rows stay as the record of what memory never read.
+func (db *DB) PruneMemoryExtractFailures(watermark float64) error {
+	if _, err := db.Exec(`DELETE FROM memory_extract_failures WHERE quarantined_at = '' AND last_ts <= ?`, watermark); err != nil {
+		return fmt.Errorf("pruning memory extract failures: %w", err)
+	}
+	return nil
+}
+
 // MemoryChatTurnFloor returns the owner-chat ingest floor: the highest
 // chat_messages.id (a Swift-owned table) already folded by
 // ingestChatStatements into the belief pass, so a rerun does not re-stage the

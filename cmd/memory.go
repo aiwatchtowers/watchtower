@@ -609,6 +609,9 @@ func runMemoryConsolidate(cmd *cobra.Command, _ []string) error {
 	}
 	fmt.Fprintf(out, "Consolidation done: %d entities seeded, %d episodes from %d windows (%d failed, %d messages, %d refs rejected).\n",
 		stats.Seeded, stats.Episodes, stats.Windows, stats.WindowsFailed, stats.Messages, stats.RefsRejected)
+	if q := stats.WindowsQuarantined; q > 0 {
+		fmt.Fprintf(out, "Warning: %d extraction window(s) quarantined after repeated failures — their messages are skipped (see memory_extract_failures).\n", q)
+	}
 	if q := stats.Reconciled.Quarantined; q > 0 {
 		fmt.Fprintf(out, "Warning: %d vault file(s) quarantined during reconcile (parse/index failure — see warnings above).\n", q)
 	}

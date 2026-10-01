@@ -48,6 +48,8 @@ type RunStats struct {
 	Messages            int   // raw messages loaded into extraction windows
 	Windows             int   // channel windows built from those messages
 	WindowsFailed       int   // windows whose extraction failed (watermark frozen for them)
+	WindowsQuarantined  int   // windows quarantined this run after spending their attempt budget (MEM-04)
+	MessagesQuarantined int   // loaded messages skipped because their window is quarantined
 	Episodes            int   // episode nodes written by the extractor
 	RefsRejected        int   // provenance refs dropped by MEM-01 validation
 	Malformed           int   // shape-degenerate extractor episodes (parsed but zero refs)
@@ -279,8 +281,8 @@ func (p *Pipeline) Run(ctx context.Context) (RunStats, error) {
 		wmAfter = wmBefore
 	}
 	p.completeRun(runID, acc, stats.Episodes, wmBefore, wmAfter, nil)
-	p.logf("memory: run done: seeded %d, %d episodes from %d/%d windows (%d messages, %d refs rejected, %d malformed, %d quarantined); gmail: %d episodes (%d threads failed); calendar: %d episodes (%d events failed); mirrors: %d mirrored (%d failed); jira: %d built (%d failed); semantic: %d deduped, %d promoted, %d rewritten (%d failed), %d belief-ops (%d rejected), %d aged, %d evicted; surfaces: %d chat-turns, %d reflections (%d disputes flagged, %d dropped); compare: %d shadowed (%d failed, %d refs rejected); focus: %d matched, %d swept (%d failed)",
-		stats.Seeded, stats.Episodes, stats.Windows-stats.WindowsFailed, stats.Windows, stats.Messages, stats.RefsRejected, stats.Malformed, stats.Reconciled.Quarantined,
+	p.logf("memory: run done: seeded %d, %d episodes from %d/%d windows (%d messages, %d refs rejected, %d malformed, %d windows quarantined, %d quarantined); gmail: %d episodes (%d threads failed); calendar: %d episodes (%d events failed); mirrors: %d mirrored (%d failed); jira: %d built (%d failed); semantic: %d deduped, %d promoted, %d rewritten (%d failed), %d belief-ops (%d rejected), %d aged, %d evicted; surfaces: %d chat-turns, %d reflections (%d disputes flagged, %d dropped); compare: %d shadowed (%d failed, %d refs rejected); focus: %d matched, %d swept (%d failed)",
+		stats.Seeded, stats.Episodes, stats.Windows-stats.WindowsFailed, stats.Windows, stats.Messages, stats.RefsRejected, stats.Malformed, stats.WindowsQuarantined, stats.Reconciled.Quarantined,
 		stats.GmailEpisodes, stats.GmailThreadsFailed, stats.CalendarEpisodes, stats.CalendarEventsFailed, stats.Mirrored, stats.MirrorsFailed, stats.JiraEpisodes, stats.JiraIssuesFailed,
 		stats.Deduped, stats.Promoted, stats.Rewritten, stats.RewriteFailed, stats.BeliefOps, stats.BeliefOpsRejected, stats.Aged, stats.Evicted, stats.ChatTurnsIngested, stats.Reflections, stats.DisputesFlagged, stats.ReflectionsDropped,
 		stats.DigestsCompared, stats.CompareFailed, stats.CompareRefsRejected, stats.FocusMatched, stats.FocusSwept, stats.FocusFailed)
@@ -572,6 +574,17 @@ func (p *Pipeline) runExtract(ctx context.Context, runID int64, stepOffset int, 
 	if err != nil {
 		return 0, err
 	}
+	// MEM-04's attempt budget: quarantined windows' messages are skipped, and
+	// a window whose batch budget is spent is extracted alone.
+	if err := p.db.PruneMemoryExtractFailures(wm); err != nil {
+		return 0, err
+	}
+	failures, err := p.db.ListMemoryExtractFailures()
+	if err != nil {
+		return 0, err
+	}
+	budget := newExtractBudget(failures)
+	msgs, stats.MessagesQuarantined = budget.dropQuarantined(msgs)
 	if len(msgs) == 0 {
 		return 0, nil
 	}
@@ -585,9 +598,16 @@ func (p *Pipeline) runExtract(ctx context.Context, runID int64, stepOffset int, 
 	done := make([]bool, len(windows))
 	current := wm
 
-	batches := groupWindowsIntoBatches(windows,
+	batches := batchWindowsWithSolo(windows, budget.solo(windows),
 		orDefault(p.cfg.BatchMaxChannels, 20), orDefault(p.cfg.BatchMaxMessages, 1500))
 
+	type failedBatch struct {
+		idxs      []int
+		err       error
+		cancelled bool
+	}
+	var failed []failedBatch
+	anyCommitted := false
 	recorded := 0
 	for bi, idxs := range batches {
 		if ctx.Err() != nil {
@@ -609,9 +629,14 @@ func (p *Pipeline) runExtract(ctx context.Context, runID int64, stepOffset int, 
 			status = "error"
 			stats.WindowsFailed += len(idxs)
 			p.logf("memory: extract batch [%s]: %v", batchChannelNames(windows, idxs), werr)
+			failed = append(failed, failedBatch{idxs, werr, ctx.Err() != nil})
 		} else {
+			anyCommitted = true
 			for _, i := range idxs {
 				done[i] = true
+				if err := budget.succeeded(p.db, windows[i]); err != nil {
+					p.logf("memory: clear extract failures for %s: %v", windows[i].ChannelName, err)
+				}
 			}
 			stats.Episodes += episodes
 			stats.RefsRejected += rejected
@@ -619,6 +644,39 @@ func (p *Pipeline) runExtract(ctx context.Context, runID int64, stepOffset int, 
 		}
 		p.recordBatchStep(runID, stepOffset+bi+1, stepOffset+len(batches), status, windows, idxs, usage, start)
 		recorded++
+	}
+
+	// Count this run's failures against the windows' budgets; a window whose
+	// budget is spent is quarantined and stops holding the watermark back.
+	var quarantined []int
+	for _, fb := range failed {
+		if !countsTowardBudget(fb.err, fb.cancelled, anyCommitted, len(batches)) {
+			continue
+		}
+		for _, i := range fb.idxs {
+			q, err := budget.failed(p.db, windows[i], fb.err)
+			if err != nil {
+				// Unrecorded, the failure is simply not counted: the window
+				// stays frozen and is retried (MEM-04).
+				p.logf("memory: record extract failure for %s: %v", windows[i].ChannelName, err)
+				continue
+			}
+			if q {
+				done[i] = true
+				quarantined = append(quarantined, i)
+				p.logf("memory: QUARANTINED extraction window %s after %d failed attempts (last: %v) — memory will not read these messages; the record stays in memory_extract_failures",
+					windowSpan(windows[i]), extractQuarantineAttempts, fb.err)
+			}
+		}
+	}
+	if len(quarantined) > 0 {
+		stats.WindowsQuarantined += len(quarantined)
+		p.advanceWatermark(windows, done, current)
+		total := stepOffset + len(batches) + len(quarantined)
+		for qi, i := range quarantined {
+			p.recordBatchStep(runID, stepOffset+len(batches)+qi+1, total, "quarantined", windows, []int{i}, nil, time.Now())
+			recorded++
+		}
 	}
 	return recorded, nil
 }
@@ -864,7 +922,7 @@ func (p *Pipeline) extractBatch(ctx context.Context, runID int64, windows []runW
 	}
 	eps, err := parseExtract(raw)
 	if err != nil {
-		return 0, 0, 0, usage, err
+		return 0, 0, 0, usage, fmt.Errorf("%w: %w", errUnusableReply, err)
 	}
 	maxTotal := p.cfg.MaxEpisodesPerWindow * len(idxs)
 	if maxTotal > 0 && len(eps) > maxTotal {
@@ -884,7 +942,7 @@ func (p *Pipeline) extractBatch(ctx context.Context, runID int64, windows []runW
 	// genuinely empty [] stays a clean no-episode batch.
 	valid, malformed := splitMalformed(eps)
 	if malformed > 0 {
-		return 0, 0, malformed, usage, fmt.Errorf("memory: extract returned %d episode(s) with zero or cross-channel refs — schema-degenerate reply", malformed)
+		return 0, 0, malformed, usage, fmt.Errorf("%w: extract returned %d episode(s) with zero or cross-channel refs — schema-degenerate reply", errUnusableReply, malformed)
 	}
 	kept, rejected, err := validateRefs(p.checkMsg, valid)
 	if err != nil {
