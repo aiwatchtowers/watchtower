@@ -157,7 +157,8 @@ final class ProjectNotificationPolicyTests: XCTestCase {
     func testSnapshotPersistedBeforeTheImportedKeyDecodes() throws {
         let json = #"{"title":"Spec","updatedAt":"t1","openOwnerComments":2}"#
         let state = try JSONDecoder().decode(Policy.DocumentState.self, from: Data(json.utf8))
-        XCTAssertEqual(state, doc("Spec", "t1", open: 2))
+        XCTAssertEqual(state, Policy.DocumentState(title: "Spec", updatedAt: "t1", openOwnerComments: 2, reviewKnown: false),
+                       "no import, and (#105) a review state that is unknown")
         let roundTrip = try JSONDecoder().decode(
             Policy.DocumentState.self, from: JSONEncoder().encode(Policy.DocumentState(
                 title: "R", updatedAt: "t", openOwnerComments: 0, imported: true)))
@@ -166,8 +167,8 @@ final class ProjectNotificationPolicyTests: XCTestCase {
 
     // MARK: documents awaiting review (#105)
 
-    private func reviewed(_ stamp: String, awaiting: Bool, target: Int64 = 10) -> Policy.DocumentState {
-        Policy.DocumentState(title: "Spec", updatedAt: stamp, openOwnerComments: 0, awaitingReview: awaiting, targetID: target)
+    private func reviewed(_ stamp: String, awaiting: Bool, known: Bool = true) -> Policy.DocumentState {
+        Policy.DocumentState(title: "Spec", updatedAt: stamp, openOwnerComments: 0, awaitingReview: awaiting, reviewKnown: known)
     }
 
     func testTargetEnteringReviewAnnouncesTheDocumentOnceAsAwaitingReview() {
@@ -187,23 +188,24 @@ final class ProjectNotificationPolicyTests: XCTestCase {
         XCTAssertEqual(notices.map(\.title), ["Spec awaits your review"])
     }
 
-    func testOwnerMovingTheTargetToReviewIsNotAnnouncedBack() {
-        let previous = snapshot(documents: [1: reviewed("t1", awaiting: false)])
-        let current = snapshot(documents: [1: reviewed("t1", awaiting: true)], ownerTouched: [.target(10)])
-        XCTAssertTrue(Policy.decide(previous: previous, current: current).isEmpty)
+    func testAReviewAlreadyRunningBeforeAnUpgradeIsNotReAnnounced() {
+        let persistedBefore = snapshot(documents: [1: reviewed("t1", awaiting: false, known: false)])
+        XCTAssertTrue(Policy.decide(previous: persistedBefore, current: snapshot(documents: [1: reviewed("t1", awaiting: true)]))
+            .isEmpty, "unknown before is no edge")
+        XCTAssertEqual(Policy.decide(previous: persistedBefore, current: snapshot(documents: [1: reviewed("t2", awaiting: true)]))
+            .map(\.title), ["Spec awaits your review"], "a revision still notifies")
     }
 
     func testImportedDocumentNeverAwaitsReview() {
         let imported = Policy.DocumentState(title: "README", updatedAt: "t1", openOwnerComments: 0, imported: true,
-                                            awaitingReview: true, targetID: 10)
+                                            awaitingReview: true)
         XCTAssertTrue(Policy.decide(previous: snapshot(), current: snapshot(documents: [1: imported])).isEmpty)
     }
 
     func testSnapshotPersistedBeforeTheReviewKeysDecodes() throws {
         let json = #"{"title":"Spec","updatedAt":"t1","openOwnerComments":0,"imported":false}"#
         let state = try JSONDecoder().decode(Policy.DocumentState.self, from: Data(json.utf8))
-        XCTAssertFalse(state.awaitingReview)
-        XCTAssertNil(state.targetID)
+        XCTAssertFalse(state.reviewKnown, "unknown, not 'not in review'")
         let roundTrip = try JSONDecoder().decode(Policy.DocumentState.self, from: JSONEncoder().encode(reviewed("t", awaiting: true)))
         XCTAssertEqual(roundTrip, reviewed("t", awaiting: true))
     }

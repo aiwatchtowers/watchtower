@@ -44,17 +44,20 @@ During setup, create no targets, attach no documents and add no comments before 
 Priorities are the owner's ordering of the work: work on the highest-priority open target first, and change a priority only when the owner asks or agrees (`update_target` with `priority`).
 
 - **A feature is agreed** with the owner → `create_targets` with one target for it: text = the feature's name, intent = one or two sentences on what done means. If a target on the board already covers it, use that one instead.
-- **A spec, plan or design is written** → attach it and hand it to the owner for review, every time — see "Documents for review" below. Never leave one only in the folder, and never put it anywhere else for review (not a chat artifact, not a gist): the owner reviews in the project's Documents pane.
+- **A spec, plan or design is written** → hand it to the owner for review, every time, as "Documents for review" below says. The review happens in the project's Documents pane — not in a chat artifact or anywhere else.
 - **A plan is written** → also `create_targets` in one call, one sub-target per plan task, under the feature target (`parent_id` = the feature target's id). Text = the task's title; intent = the plan path plus the task number, e.g. `docs/plans/feature-x.md — Task 3`, so any later session can find the task's steps. Nest deeper with `parent_key` only where the plan itself nests.
 
 ## Documents for review
 
-Every spec, plan and design you write goes through the owner's review in Watchtower:
+Every spec, plan and design you write goes through the owner's review in Watchtower. Here `in_review` means the owner is reviewing a document — not the code review of a plan task (see "Running a plan").
 
-1. **Attach it:** `attach_document` with its path, `kind` `spec` (a design is a spec), `plan` for a plan, and the `target_id` of the target it is for.
-2. **Mark the review:** `update_target` that target to `in_review` in the same step. The owner's Documents pane then marks the document **In review** and they are notified that it awaits their review. Only a target without sub-targets takes a status: if the feature target already has sub-targets, `create_targets` one sub-target under it — text `Review: <document title>` — and attach the document to that one instead.
-3. **Wait for the verdict without blocking:** the owner answers with comments selected on the passages they mean, sent to you as one batch (a line in the terminal naming the document, or the next session's brief). Work through them as in "Revising an attached document"; the target stays `in_review` through every revision.
-4. **When the owner approves** (they say so, or resolve the review with no open comments left): move the target on — `done` for a `Review:` sub-target, back to `in_progress` (or on to the plan) for a feature target. Do not implement from a spec or plan the owner has not approved, unless they told you to go ahead.
+1. **Pick the review target** — a target without sub-targets that will get none while the review runs, so its status is yours to set:
+   - a spec or design for a feature whose target has no sub-targets → that feature target;
+   - a plan → first create its task sub-targets (as in "A plan is written"), then one more sub-target under the feature for the review: text = the board-language word for "Review" followed by the document title (e.g. `Review: <title>`);
+   - any document whose target already has sub-targets → such a review sub-target as well.
+2. **Attach it and mark the review:** `attach_document` with its path, `kind` `spec` (a design is a spec) or `plan`, and the review target's `target_id`; then `update_target` that target to `in_review`. The owner's Documents pane marks the document **In review** and notifies them that it awaits their review.
+3. **Keep working meanwhile** on anything that does not depend on the document. The owner answers with comments on the passages they mean, sent to you as one batch (a line in the terminal naming the document, or the next session's brief). Work through them as in "Revising an attached document"; the target stays `in_review` through every revision.
+4. **When the owner says it is approved:** a review sub-target goes to `done`; a feature target reviewed directly goes back to `todo` or `in_progress`. Do not build from a spec or plan the owner has not approved, unless they told you to go ahead. Never set the status of a target that has sub-targets.
 
 ## Revising an attached document
 

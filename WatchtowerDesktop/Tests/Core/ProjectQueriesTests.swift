@@ -305,7 +305,9 @@ final class ProjectQueriesTests: XCTestCase {
     func testAgentDocumentOnATargetInReviewAwaitsReview() throws {
         try db.write { d in
             let p = try TestDatabase.insertProject(d)
-            let t = try TestDatabase.insertProjectTarget(d, projectID: p, status: "in_review")
+            let t = try TestDatabase.insertProjectTarget(d, projectID: p)
+            // The agent's move, as the project MCP tools claim it.
+            try d.execute(sql: "UPDATE targets SET status = 'in_review', status_actor = 'agent' WHERE id = ?", arguments: [t])
             let agent = try TestDatabase.insertProjectDocument(d, projectID: p, relPath: "docs/specs/a.md", targetID: t)
             let owner = try TestDatabase.insertProjectDocument(d, projectID: p, relPath: "notes/b.md", targetID: t, origin: "owner")
             let loose = try TestDatabase.insertProjectDocument(d, projectID: p, relPath: "docs/plans/c.md")
@@ -318,7 +320,15 @@ final class ProjectQueriesTests: XCTestCase {
             let project = try XCTUnwrap(ProjectQueries.fetch(d, id: p))
             let snapshot = try ProjectQueries.activitySnapshot(d, project: project, afterAgentCommentID: 0)
             XCTAssertEqual(snapshot.documents[agent]?.awaitingReview, true)
-            XCTAssertEqual(snapshot.documents[agent]?.targetID, t)
+
+            // The owner moving it to review themselves is not announced back:
+            // the latest status change is theirs.
+            try d.execute(sql: "UPDATE targets SET status = 'in_progress', status_actor = 'agent' WHERE id = ?", arguments: [t])
+            try d.execute(sql: "UPDATE targets SET status = 'in_review', status_actor = 'owner' WHERE id = ?", arguments: [t])
+            let ownerMoved = try ProjectQueries.activitySnapshot(d, project: project, afterAgentCommentID: 0)
+            XCTAssertEqual(ownerMoved.documents[agent]?.awaitingReview, false)
+            XCTAssertEqual(try ProjectQueries.documentListItems(d, projectID: p).first { $0.id == agent }?.awaitingReview, true,
+                           "the list still marks it: it does await the owner's review")
         }
     }
 

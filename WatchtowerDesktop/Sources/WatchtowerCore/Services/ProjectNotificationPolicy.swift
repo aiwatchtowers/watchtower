@@ -44,10 +44,13 @@ package enum ProjectNotificationPolicy {
         /// Not attached by the agent (`origin` import or owner): never "ready
         /// for review". The name predates owner attaches; kept for persisted snapshots.
         package let imported: Bool
-        /// Its target is `in_review` (`ProjectDocumentListItem.awaitingReview`).
+        /// The agent put its target `in_review` (`ProjectDocumentListItem.awaitingReview`,
+        /// minus a review the owner started themselves).
         package let awaitingReview: Bool
-        /// The linked target, so an owner's own move to `in_review` is not announced back.
-        package let targetID: Int64?
+        /// False for a snapshot persisted before `awaitingReview` existed: its
+        /// review state is unknown, so no "entered review" edge is read from it.
+        /// Not encoded — every snapshot written now knows.
+        package let reviewKnown: Bool
 
         package init(
             title: String,
@@ -55,18 +58,18 @@ package enum ProjectNotificationPolicy {
             openOwnerComments: Int,
             imported: Bool = false,
             awaitingReview: Bool = false,
-            targetID: Int64? = nil
+            reviewKnown: Bool = true
         ) {
             self.title = title
             self.updatedAt = updatedAt
             self.openOwnerComments = openOwnerComments
             self.imported = imported
             self.awaitingReview = awaitingReview
-            self.targetID = targetID
+            self.reviewKnown = reviewKnown
         }
 
         private enum CodingKeys: String, CodingKey {
-            case title, updatedAt, openOwnerComments, imported, awaitingReview, targetID
+            case title, updatedAt, openOwnerComments, imported, awaitingReview
         }
 
         package init(from decoder: Decoder) throws {
@@ -76,8 +79,9 @@ package enum ProjectNotificationPolicy {
             openOwnerComments = try c.decode(Int.self, forKey: .openOwnerComments)
             // A snapshot persisted before the key existed held no imports.
             imported = try c.decodeIfPresent(Bool.self, forKey: .imported) ?? false
-            awaitingReview = try c.decodeIfPresent(Bool.self, forKey: .awaitingReview) ?? false
-            targetID = try c.decodeIfPresent(Int64.self, forKey: .targetID)
+            let review = try c.decodeIfPresent(Bool.self, forKey: .awaitingReview)
+            awaitingReview = review ?? false
+            reviewKnown = review != nil
         }
     }
 
@@ -156,19 +160,22 @@ package enum ProjectNotificationPolicy {
         }
     }
 
-    /// A revised agent document, or one whose target just entered review
-    /// (#105) — one notice either way, keyed by the revision, so attaching
-    /// and marking the review in one go never notifies twice.
+    /// A revised agent document, or one whose target the agent just put in
+    /// review (#105) — one notice either way, keyed by the revision, so
+    /// attaching and marking the review in one go never notifies twice. A
+    /// revision of a document already in review is titled as awaiting review.
     private static func readyDocuments(_ previous: Snapshot, _ current: Snapshot) -> [ProjectNotice] {
         current.documents.sorted { $0.key < $1.key }.compactMap { id, doc in
             guard !doc.imported else { return nil }
             let before = previous.documents[id]
             let revised = before?.updatedAt != doc.updatedAt
-            let ownerMoved = doc.targetID.map { current.ownerTouched.contains(.target($0)) } ?? false
-            let enteredReview = doc.awaitingReview && before?.awaitingReview != true && !ownerMoved
+            let awaiting = doc.awaitingReview
+            // A previous state of unknown review is no edge: an upgrade must
+            // not re-announce reviews that were already running.
+            let enteredReview = awaiting && before.map { $0.reviewKnown && !$0.awaitingReview } ?? true
             guard revised || enteredReview else { return nil }
             return notice(.documentReady, current,
-                          title: doc.awaitingReview ? "\(doc.title) awaits your review" : "\(doc.title) ready for review",
+                          title: awaiting ? "\(doc.title) awaits your review" : "\(doc.title) ready for review",
                           body: current.projectName,
                           route: ProjectRoute(projectID: current.projectID, pane: .documents, subjectID: id),
                           key: "\(id)-\(doc.updatedAt)")
