@@ -307,8 +307,11 @@ func crashNotFileCaused(stderr string) string {
 	for _, phrase := range []string{
 		"not logged in", "/login", "invalid api key", "authentication_error", "oauth token has expired",
 		"rate limit", "rate_limit", "usage limit", "overloaded",
-		"internal server error", "api_error", "econnreset", "connection reset", "connection refused",
-		"timed out", "temporarily unavailable",
+		"internal server error", "api_error", "service unavailable", "bad gateway", "temporarily unavailable",
+		// Network trouble: the tail is three lines, so the broad words are
+		// safe here (startup noise sits above it).
+		"connection", "timeout", "timed out", "network", "econnreset", "econnrefused", "etimedout",
+		"enotfound", "eai_again", "socket hang up", "fetch failed",
 	} {
 		if strings.Contains(tail, phrase) {
 			return phrase

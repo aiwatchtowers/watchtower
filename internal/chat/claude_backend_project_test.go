@@ -478,6 +478,11 @@ func TestCrashNotFileCaused(t *testing.T) {
 	assert.Empty(t, crashNotFileCaused("claude exited: signal: killed"))
 	assert.Equal(t, "rate limit", crashNotFileCaused(noise+"Error: rate limit reached for requests"))
 	assert.Equal(t, "not logged in", crashNotFileCaused("Not logged in · run /login"))
+	for _, outage := range []string{"Error: connect ECONNREFUSED 127.0.0.1:443", "APIConnectionError: Connection error.",
+		"FetchError: request to https://api.example.com failed, reason: getaddrinfo ENOTFOUND",
+		"Error: socket hang up", "503 Service Unavailable", "Request timeout after 600000ms"} {
+		assert.NotEmpty(t, crashNotFileCaused(noise+outage), outage)
+	}
 }
 
 // A crash whose stderr says the account is rate-limited keeps the files and

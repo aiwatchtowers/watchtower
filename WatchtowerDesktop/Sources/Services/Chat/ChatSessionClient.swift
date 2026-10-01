@@ -245,7 +245,7 @@ final class ChatSessionClient {
         guard let held = pendingTurn else { return nil }
         guard let turn = driver.liveTurn, turn.turnID == held.turnID else {
             // startTurn always begins the driver's turn before holding it.
-            NSLog("ChatSessionClient: held turn %@ of conversation %lld has no live turn; ending it as stopped",
+            NSLog("ChatSessionClient: held turn %@ of conversation %lld has no live turn; it is dropped",
                   held.turnID, conversationID)
             return nil
         }
