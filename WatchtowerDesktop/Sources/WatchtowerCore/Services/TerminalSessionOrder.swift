@@ -22,15 +22,14 @@ package enum TerminalSessionOrder {
         return unplaced + ordered
     }
 
-    /// A drag in the displayed list (SwiftUI's `onMove` offsets); returns the
-    /// order to save — every displayed id, so later sessions go on top.
+    /// A drag in the displayed list (SwiftUI's `onMove` offsets into exactly
+    /// that list); returns the order to save — every displayed id, so later
+    /// sessions go on top.
     package static func move(_ displayed: [TerminalSession], from source: IndexSet, to destination: Int) -> [Int64] {
         var ids = displayed.map(\.id)
-        let moving = source.sorted().filter { $0 < ids.count }.map { ids[$0] }
-        let before = source.filter { $0 < destination }.count
-        for index in source.sorted(by: >) where index < ids.count { ids.remove(at: index) }
-        let insertAt = min(max(destination - before, 0), ids.count)
-        ids.insert(contentsOf: moving, at: insertAt)
+        let moving = source.map { ids[$0] }
+        for index in source.reversed() { ids.remove(at: index) }
+        ids.insert(contentsOf: moving, at: destination - source.count { $0 < destination })
         return ids
     }
 }

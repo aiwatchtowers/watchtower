@@ -31,7 +31,8 @@ extension ProjectsViewModel {
         case inPlace
     }
 
-    /// The selected project's sessions, most recently active first.
+    /// The selected project's sessions, most recently active first (the
+    /// panel shows `orderedSessions(projectID:)` instead).
     var sessions: [TerminalSession] {
         selectedProjectID.flatMap { terminalSessions[$0] } ?? []
     }

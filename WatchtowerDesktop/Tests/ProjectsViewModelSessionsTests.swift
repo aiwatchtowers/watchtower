@@ -1029,7 +1029,7 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         await vm.showFromPanel(.session(first.id))
         XCTAssertEqual(vm.drilledSessions.map(\.id), [second.id, first.id], "opening does not raise it")
 
-        vm.moveSessions(projectID: p, from: [1], to: 0)
+        vm.moveSessions(vm.drilledSessions, projectID: p, from: [1], to: 0)
         XCTAssertEqual(vm.drilledSessions.map(\.id), [first.id, second.id])
 
         let third = try await liveSession(p, "third")
@@ -1040,16 +1040,25 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         XCTAssertEqual(relaunched.drilledSessions.map(\.id), [third.id, first.id, second.id])
     }
 
-    func testStandaloneOrderIsKeptApartFromProjects() async throws {
+    func testStandaloneAndProjectOrdersAreSavedApart() async throws {
+        let p = try await projectWithFolder()
+        let a = try await liveSession(p, "a")
+        let b = try await liveSession(p, "b")
         let vm = makeVM()
         await vm.newStandalone(kind: .shell, folder: folder)
         await vm.newStandalone(kind: .shell, folder: folder)
+        await vm.loadSessions(projectID: p)
         let shown = vm.orderedSessions(projectID: nil).map(\.id)
         XCTAssertEqual(shown.count, 2)
 
-        vm.moveSessions(projectID: nil, from: [0], to: 2)
-        XCTAssertEqual(vm.orderedSessions(projectID: nil).map(\.id), shown.reversed())
-        XCTAssertNil(defaults.array(forKey: TerminalSessionOrder.key(projectID: 1)))
+        vm.moveSessions(vm.orderedSessions(projectID: nil), projectID: nil, from: [0], to: 2)
+        XCTAssertEqual(vm.orderedSessions(projectID: p).map(\.id), [b.id, a.id], "the project list is untouched")
+
+        let relaunched = makeVM()
+        await relaunched.reload()
+        await relaunched.loadSessions(projectID: p)
+        XCTAssertEqual(relaunched.orderedSessions(projectID: nil).map(\.id), shown.reversed())
+        XCTAssertEqual(relaunched.orderedSessions(projectID: p).map(\.id), [b.id, a.id])
     }
 
     /// Bounded: a regression that never reaches the gate fails, not hangs.

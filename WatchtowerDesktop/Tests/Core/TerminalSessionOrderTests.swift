@@ -41,6 +41,17 @@ final class TerminalSessionOrderTests: XCTestCase {
         XCTAssertEqual(TerminalSessionOrder.move(shown, from: [0, 2], to: 4), [4, 2, 5, 3, 1])
     }
 
+    func testNoOpDragsKeepTheOrder() {
+        let shown = [make(3), make(2), make(1)]
+        XCTAssertEqual(TerminalSessionOrder.move(shown, from: [1], to: 1), [3, 2, 1])
+        XCTAssertEqual(TerminalSessionOrder.move(shown, from: [1], to: 2), [3, 2, 1])
+    }
+
+    func testMoveABlockToTheEnd() {
+        let shown = [make(4), make(3), make(2), make(1)]
+        XCTAssertEqual(TerminalSessionOrder.move(shown, from: [0, 1], to: 4), [2, 1, 4, 3])
+    }
+
     func testKey() {
         XCTAssertEqual(TerminalSessionOrder.key(projectID: 7), "projects.sessionOrder.7")
         XCTAssertEqual(TerminalSessionOrder.key(projectID: nil), "projects.sessionOrder.standalone")
