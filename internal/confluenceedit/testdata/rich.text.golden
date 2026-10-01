@@ -36,8 +36,12 @@ if a > b && c < d {
 
 ⟦9:macro panel⟧
 
+⟦layout boundary⟧
+
 ### Риски
 
 Текст «в кавычках» и неразрывный пробел.
+
+⟦layout boundary⟧
 
 Right column ⟦10:date 2026-10-01⟧ date.

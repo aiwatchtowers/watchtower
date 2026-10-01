@@ -254,11 +254,6 @@ func (a *applier) slots() []slot {
 	return out
 }
 
-// text is the evolving document's editable text (Doc.Text of the result).
-func (a *applier) text() string {
-	return a.blocksText(expand(a.d.blocks))
-}
-
 func (a *applier) blocksText(bs []*block) string {
 	parts := make([]string, 0, len(bs))
 	for _, bl := range bs {

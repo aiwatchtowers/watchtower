@@ -245,6 +245,14 @@ mounted only in chat mode, never on the dev-mode MCP surface (DEV-01).
   text merely reads as several blocks) or whose dropped twin is rich too
   (attributes, parameters or layout: the text cannot tell two such twins
   apart). A rich block is never excused for a plain twin's drop.
+- `TestEXT05_SectionNeverWritesPastALayoutBoundary`
+  (`internal/confluenceedit/apply_boundary_test.go`) — for a heading whose
+  section ends at a layout edge (the next layout cell, or a layout after a
+  body heading), the text shows the edge as a `⟦layout boundary⟧` line, a
+  `replace_section` whose new body repeats the text past the edge (or
+  carries the line itself) is refused, and one that does not leaves that
+  text exactly once, in its own place — never a second copy inside the
+  section.
 - `TestEXT05_OnlyEditToolReachesPut`
   (`internal/tools/confluence_contracts_test.go`) — an AST scan of every
   non-test Go file of the module (scan floor 300 files) pins the production
@@ -262,6 +270,12 @@ every Confluence hit's `link` is the page or attachment URL.
 
 ## Changelog
 
+- 2026-10-01 (release audit fix lane, H3): `Doc.Text()` marks every layout
+  edge between two blocks with a `⟦layout boundary⟧` line (a section never
+  crosses one, R4/R5), and a `replace_section` whose new body repeats a
+  block lying past its region's end before the next same-or-higher heading
+  is refused. New guard `TestEXT05_SectionNeverWritesPastALayoutBoundary`;
+  none weakened.
 - 2026-09-30 (local-review round 4): of two same-text multi-line
   paragraphs the one carrying attributes is kept — an in-place run is
   reserved before a twin may move over it, and richness is judged by what

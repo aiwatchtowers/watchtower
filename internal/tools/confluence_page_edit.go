@@ -104,7 +104,9 @@ func NewEditConfluencePage(factory ConfluencePageClientFactory) *Tool {
 			"markers can never be invented. replace_section keeps every block you leave unchanged exactly as it " +
 			"is; changing a block whose formatting markdown cannot carry (alignment, table layout, a code block's " +
 			"title, ...) is refused — keep that block unchanged and leave that change to the owner in Confluence. " +
-			"A block you delete takes any HTML comment inside it along. At most 20 edits per call. The owner approves a diff before anything is written; if the page " +
+			"A block you delete takes any HTML comment inside it along. A section ends at the first " +
+			confluenceedit.LayoutBoundary + " line after its heading (a page-layout column or row edge): never put that " +
+			"line, or text past it, into new_body. At most 20 edits per call. The owner approves a diff before anything is written; if the page " +
 			"changed since you read it, re-read it and propose again.",
 		InputSchema: mustWriteSchema[editConfluencePageArgs]("edit_confluence_page"),
 		Access:      AccessWrite,

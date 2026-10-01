@@ -461,6 +461,9 @@ func readConfluencePage(ctx context.Context, client ConfluencePageClient, accoun
 	text := doc.Text()
 	cut, truncated := textCut(text)
 	view.Text = newMarkerLabels(doc.Markers(), names).toDisplay.Replace(text[:cut])
+	if strings.Contains(view.Text, confluenceedit.LayoutBoundary) {
+		view.Notes = append(view.Notes, confluenceLayoutNote)
+	}
 	if truncated {
 		view.Truncated, view.TotalRunes = true, utf8.RuneCountInString(text)
 		view.Notes = append(view.Notes, fmt.Sprintf("text truncated at %d characters; edits must stay within the text shown", confluenceMaxTextRunes))
@@ -468,6 +471,11 @@ func readConfluencePage(ctx context.Context, client ConfluencePageClient, accoun
 	view.Comments, view.CommentsTruncated = commentThreads(comments, names)
 	return view, nil
 }
+
+// confluenceLayoutNote explains the LayoutBoundary lines of a page's text.
+const confluenceLayoutNote = confluenceedit.LayoutBoundary + " lines mark the edges of the page's layout columns " +
+	"and rows; they are not text. A section ends at the first one after its heading, so replace_section never " +
+	"reaches text past it: change that text with replace_text or under its own heading."
 
 // parseConfluenceStorage parses a page's storage, refusing an oversized one.
 func parseConfluenceStorage(page ConfluencePage) (*confluenceedit.Doc, error) {

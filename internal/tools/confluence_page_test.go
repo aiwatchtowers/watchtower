@@ -157,6 +157,7 @@ func TestConfluencePageTools_Shape(t *testing.T) {
 	}
 	assert.Contains(t, edit.Description, "replace_section keeps every block you leave unchanged", "R11: the tool docs name what a section rewrite keeps")
 	assert.Contains(t, edit.Description, "takes any HTML comment inside it along", "carry (f): the tool docs name the comment loss of a deleted block")
+	assert.Contains(t, edit.Description, "A section ends at the first ⟦layout boundary⟧ line", "the tool docs name where a section stops")
 	require.NoError(t, reg.Register(get))
 	require.NoError(t, reg.Register(edit))
 	assert.ErrorIs(t, reg.SetTrust("edit_confluence_page", TrustExecute), ErrExternalExecute)
@@ -222,6 +223,22 @@ func TestGetConfluencePage_DegradesVisibly(t *testing.T) {
 	assert.Contains(t, view.Notes[0], "comments unavailable")
 	assert.Contains(t, view.Notes[1], "user names unavailable")
 	assert.Empty(t, view.Comments)
+}
+
+// A page with a layout shows its edges in the text, explained in a note.
+func TestGetConfluencePage_ExplainsLayoutBoundaries(t *testing.T) {
+	d := openDB(t)
+	db.SeedTestJiraAccount(t, d)
+	f := newFakeConfluence()
+	view := readPage(t, d, f, `{"page":"98765"}`)
+	assert.NotContains(t, view.Notes, confluenceLayoutNote, "no layout, no note")
+
+	f.pages[cfPageID] = ConfluencePage{ID: cfPageID, Kind: "page", Title: "Cols", Version: 2,
+		Storage: `<ac:layout><ac:layout-section ac:type="two_equal"><ac:layout-cell><h2>Goals</h2><p>g1</p></ac:layout-cell>` +
+			`<ac:layout-cell><p>g2</p></ac:layout-cell></ac:layout-section></ac:layout>`}
+	view = readPage(t, d, f, `{"page":"98765"}`)
+	assert.Equal(t, "## Goals\n\ng1\n\n⟦layout boundary⟧\n\ng2", view.Text)
+	assert.Equal(t, []string{confluenceLayoutNote}, view.Notes)
 }
 
 func TestGetConfluencePage_TruncatesTextAndComments(t *testing.T) {

@@ -60,6 +60,9 @@ func (a *applier) decide(tok string, k int, known bool, c classifyCtx) (bool, er
 }
 
 func (a *applier) unknownMarker(tok string) error {
+	if tok == LayoutBoundary {
+		return errBoundaryInText
+	}
 	if k := tokenOrdinal(tok); k >= 1 && k <= len(a.orig.markers) {
 		return fmt.Errorf("unknown marker %s; copy marker tokens exactly, e.g. %s", tok, a.orig.markers[k-1].token())
 	}
