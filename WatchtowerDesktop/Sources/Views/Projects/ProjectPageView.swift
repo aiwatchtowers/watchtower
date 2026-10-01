@@ -264,7 +264,7 @@ struct ProjectPageView: View {
     private func sessionMenu(slot: WorkspacePane) -> some View {
         Menu {
             ForEach(vm.orderedSessions(projectID: project.id)) { session in
-                Button(session.isClosed ? "\(session.title) (closed)" : session.title) {
+                Button(session.title) {
                     Task { await vm.showInPane(slot, item: .session(session.id), projectID: project.id) }
                 }
                 .disabled(slot == .session(session.id))

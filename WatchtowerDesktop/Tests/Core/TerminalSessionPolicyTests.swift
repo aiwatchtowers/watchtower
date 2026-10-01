@@ -7,13 +7,12 @@ final class TerminalSessionPolicyTests: XCTestCase {
         kind: TerminalSession.Kind = .claude,
         source: TerminalSession.TitleSource = .auto,
         target: Int64? = nil,
-        active: String = "2026-09-30T10:00:00Z",
-        closed: String? = nil
+        active: String = "2026-09-30T10:00:00Z"
     ) -> TerminalSession {
         TerminalSession(
             id: id, projectID: 1, kind: kind, title: "t\(id)", titleSource: source, targetID: target,
             folderPath: "/tmp", claudeSessionID: nil, createdAt: "2026-09-30T09:00:00Z",
-            lastActiveAt: active, closedAt: closed)
+            lastActiveAt: active)
     }
 
     func testActivePrefersLastFocusedLiveClaude() {
@@ -36,10 +35,10 @@ final class TerminalSessionPolicyTests: XCTestCase {
         XCTAssertNil(TerminalSessionPolicy.activeSession([make(1, kind: .shell)], live: [1], lastFocused: [1]))
     }
 
-    func testSessionForTargetPicksMostRecentIncludingClosed() {
+    func testSessionForTargetPicksMostRecent() {
         let s = [
             make(1, target: 5, active: "2026-09-30T10:00:00Z"),
-            make(2, target: 5, active: "2026-09-30T12:00:00Z", closed: "2026-09-30T12:30:00Z"),
+            make(2, target: 5, active: "2026-09-30T12:00:00Z"),
             make(3, target: 6, active: "2026-09-30T13:00:00Z")
         ]
         XCTAssertEqual(TerminalSessionPolicy.sessionForTarget(5, in: s)?.id, 2)

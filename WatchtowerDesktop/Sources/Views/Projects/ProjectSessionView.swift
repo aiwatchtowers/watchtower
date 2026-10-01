@@ -4,7 +4,7 @@ import WatchtowerCore
 
 /// A session pane of a project page (spec §3): one `terminal_sessions` row
 /// from `AppState.terminalCenter`, which owns the process — this view never
-/// does. Not running (an app restart) or closed → a button that resumes it.
+/// does. Not running (an app restart) → a button that resumes it.
 /// The project's session errors show once, on the page (`ProjectPageView`).
 struct ProjectSessionView: View {
     let projectID: Int64
@@ -17,9 +17,9 @@ struct ProjectSessionView: View {
         TerminalSessionPane(session: session, error: nil) {
             VStack(spacing: 8) {
                 if let session {
-                    Text(session.isClosed ? "\(session.title) is closed." : "\(session.title) is not running.")
+                    Text("\(session.title) is not running.")
                         .foregroundStyle(.secondary)
-                    Button(session.isClosed ? "Reopen" : session.kind == .claude ? "Resume" : "Start") {
+                    Button(session.kind == .claude ? "Resume" : "Start") {
                         Task { await vm?.open(session, placement: .inPlace) }
                     }
                 } else if vm?.sessionErrors[projectID] == nil {
@@ -37,7 +37,7 @@ struct ProjectSessionView: View {
 }
 
 /// A standalone terminal (no project, spec §3): always the whole page,
-/// single pane, under a slim header — its folder, Rename, Close and Delete
+/// single pane, under a slim header — its folder, Rename and Delete
 /// (the title is in the Projects tab's title row). No install badge, board or documents: nothing of a project.
 struct StandaloneTerminalView: View {
     let session: TerminalSession
@@ -49,13 +49,13 @@ struct StandaloneTerminalView: View {
     var body: some View {
         let vm = appState.projectsViewModel
         VStack(spacing: 0) {
-            header(isLive: vm?.isLive(session) ?? false)
+            header
             Divider()
             TerminalSessionPane(session: session, error: vm?.standaloneSessionError) {
                 VStack(spacing: 8) {
-                    Text(session.isClosed ? "\(session.title) is closed." : "\(session.title) is not running.")
+                    Text("\(session.title) is not running.")
                         .foregroundStyle(.secondary)
-                    Button(session.isClosed ? "Reopen" : "Start") {
+                    Button("Start") {
                         Task { await vm?.open(session) }
                     }
                 }
@@ -63,7 +63,7 @@ struct StandaloneTerminalView: View {
         }
     }
 
-    private func header(isLive: Bool) -> some View {
+    private var header: some View {
         HStack(spacing: 12) {
             Button {
                 NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: session.folderPath)])
@@ -74,9 +74,6 @@ struct StandaloneTerminalView: View {
             .help("Reveal in Finder")
             Spacer()
             Button("Rename…") { actions.rename(session) }
-            Button("Close") { actions.close(session) }
-                .disabled(!isLive)
-                .help("Stop the terminal; it stays listed and can be reopened")
             Button(role: .destructive) {
                 actions.delete(session)
             } label: {

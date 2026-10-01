@@ -2,7 +2,7 @@ import SwiftUI
 import WatchtowerCore
 
 /// "Work on it" (spec 2026-09-30-project-workspace-sessions §4): opens the
-/// target's most recent session (resumed, reopened if closed), or starts a
+/// target's most recent session (resumed), or starts a
 /// new Claude Code session on it with the fixed work-on prompt. The target's
 /// title names the session in the panel; it never reaches the command line.
 struct WorkOnTargetButton: View {

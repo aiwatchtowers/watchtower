@@ -124,7 +124,6 @@ struct ProjectsView: View {
                 }
             },
             rename: { renamingSession = $0 },
-            close: { session in Task { await vm.close(session) } },
             delete: { deletingSession = $0 }
         )
     }

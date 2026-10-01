@@ -6,7 +6,7 @@ final class TerminalSessionOrderTests: XCTestCase {
         TerminalSession(
             id: id, projectID: 1, kind: .claude, title: "t\(id)", titleSource: .auto, targetID: nil,
             folderPath: "/tmp", claudeSessionID: nil, createdAt: "2026-09-30T09:00:00Z",
-            lastActiveAt: active, closedAt: nil)
+            lastActiveAt: active)
     }
 
     private func ids(_ sessions: [TerminalSession]) -> [Int64] { sessions.map(\.id) }

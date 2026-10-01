@@ -85,22 +85,10 @@ package enum TerminalSessionQueries {
         )
     }
 
-    /// `touch` and `close` are best-effort, unchecked: a session deleted
-    /// meanwhile is neither active nor open, which is what they ask for.
+    /// Best-effort, unchecked: a session deleted meanwhile is not active,
+    /// which is what it asks for.
     package static func touch(_ db: Database, id: Int64) throws {
         try db.execute(sql: "UPDATE terminal_sessions SET last_active_at = \(now) WHERE id = ?", arguments: [id])
-    }
-
-    package static func close(_ db: Database, id: Int64) throws {
-        try db.execute(sql: "UPDATE terminal_sessions SET closed_at = \(now) WHERE id = ?", arguments: [id])
-    }
-
-    package static func reopen(_ db: Database, id: Int64) throws {
-        try db.execute(
-            sql: "UPDATE terminal_sessions SET closed_at = NULL, last_active_at = \(now) WHERE id = ?",
-            arguments: [id]
-        )
-        try db.requireUpdated(orThrow: TerminalSessionQueryError.notFound(id))
     }
 
     package static func rename(_ db: Database, id: Int64, title: String) throws {

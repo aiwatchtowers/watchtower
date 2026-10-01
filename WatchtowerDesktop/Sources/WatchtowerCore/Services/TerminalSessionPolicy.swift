@@ -17,8 +17,8 @@ package enum TerminalSessionPolicy {
         return candidates.max(by: isLessRecent)
     }
 
-    /// "Work on it": the most recently active session for the target (closed
-    /// ones included), or nil — the caller creates one.
+    /// "Work on it": the most recently active session for the target (running
+    /// or not), or nil — the caller creates one.
     package static func sessionForTarget(_ targetID: Int64, in sessions: [TerminalSession]) -> TerminalSession? {
         sessions.filter { $0.targetID == targetID }.max(by: isLessRecent)
     }

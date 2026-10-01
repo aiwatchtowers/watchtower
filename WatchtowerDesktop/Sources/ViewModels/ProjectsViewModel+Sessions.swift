@@ -169,7 +169,7 @@ extension ProjectsViewModel {
     }
 
     /// "Work on it" (spec §4): the target's most recently active session
-    /// (resumed, reopened if closed), else a new one named after the target
+    /// (resumed), else a new one named after the target
     /// and started with the fixed work-on prompt. A split keeps the board it
     /// was started from (the session goes beside it); a single pane switches
     /// to the session. `projectID` is the target's own project, which keys a
@@ -209,15 +209,15 @@ extension ProjectsViewModel {
         )
     }
 
-    /// "Open terminal": resumes the project's most recently active open
-    /// session, or starts a new one when it has none.
+    /// "Open terminal": resumes the project's most recently active session,
+    /// or starts a new one when it has none.
     func openMostRecentSession(project: Project, placement: Placement = .show) async {
         guard openingSession.insert(project.id).inserted else { return }
         defer { openingSession.remove(project.id) }
         // A failed load says nothing about the project's sessions: starting a
         // new one would duplicate the session the owner meant to resume.
         guard await loadSessions(projectID: project.id) else { return }
-        if let row = terminalSessions[project.id]?.first(where: { !$0.isClosed }) {
+        if let row = terminalSessions[project.id]?.first {
             await open(row, placement: placement)
         } else {
             await startNewSession(project: project, title: TerminalSessionNaming.provisional(now: now()), placement: placement)
@@ -226,7 +226,7 @@ extension ProjectsViewModel {
 
     // MARK: - Opening and ending
 
-    /// Selects a session: reopens it if closed, marks it active, starts it
+    /// Selects a session: marks it active, starts it
     /// (a `claude` row resumes) unless it is running, focuses it and shows it.
     func open(_ session: TerminalSession, placement: Placement = .show) async {
         setSessionError(nil, projectID: session.projectID)
@@ -236,11 +236,7 @@ extension ProjectsViewModel {
                 guard let current = try TerminalSessionQueries.fetch(db, id: session.id) else {
                     throw TerminalSessionQueryError.notFound(session.id)
                 }
-                if current.isClosed {
-                    try TerminalSessionQueries.reopen(db, id: session.id)
-                } else {
-                    try TerminalSessionQueries.touch(db, id: session.id)
-                }
+                try TerminalSessionQueries.touch(db, id: session.id)
                 return try TerminalSessionQueries.fetch(db, id: session.id) ?? current
             }
         } catch {
@@ -269,11 +265,7 @@ extension ProjectsViewModel {
                     throw TerminalSessionQueryError.notFound(session.id)
                 }
                 try TerminalSessionQueries.replaceClaudeSessionID(db, id: session.id, uuid: uuid)
-                if current.isClosed {
-                    try TerminalSessionQueries.reopen(db, id: session.id)
-                } else {
-                    try TerminalSessionQueries.touch(db, id: session.id)
-                }
+                try TerminalSessionQueries.touch(db, id: session.id)
                 return try TerminalSessionQueries.fetch(db, id: session.id) ?? current
             }
         } catch {
@@ -282,25 +274,6 @@ extension ProjectsViewModel {
         }
         resumeFailed.remove(row.id)
         await activate(row, fresh: true, prompt: nil, placement: placement)
-    }
-
-    /// Stops the process and marks the row closed; it stays listed and can
-    /// be reopened. Its pane shows another live session of the project that
-    /// is not on screen yet, else it leaves the layout.
-    func close(_ session: TerminalSession) async {
-        setSessionError(nil, projectID: session.projectID)
-        await terminalCenter?.close(sessionID: session.id)
-        forgetProcessState(session.id)
-        do {
-            try await dbPool.write { try TerminalSessionQueries.close($0, id: session.id) }
-            // Only once the row is closed: a failed write keeps the pane (and
-            // its error) where the owner is looking.
-            if let projectID = session.projectID { replaceClosedInLayout(session.id, projectID: projectID) }
-        } catch {
-            setSessionError("Could not close the session: \(error.localizedDescription)", projectID: session.projectID)
-        }
-        await loadSessions(projectID: session.projectID)
-        await refreshTitle(sessionID: session.id)
     }
 
     /// Closes the process first, then deletes the row and drops it from the
@@ -489,22 +462,6 @@ extension ProjectsViewModel {
             forgetInLayout(session.id, projectID: projectID)
         }
         await loadSessions(projectID: session.projectID)
-    }
-
-    private func replaceClosedInLayout(_ sessionID: Int64, projectID: Int64) {
-        var updated = layout(projectID: projectID)
-        guard updated.sessionIDs.contains(sessionID) else { return }
-        let others = (terminalSessions[projectID] ?? []).filter { $0.id != sessionID }
-        var next: TerminalSession?
-        if let center = terminalCenter {
-            next = TerminalSessionPolicy.activeSession(others, live: center.liveIDs, lastFocused: center.focusOrder)
-        }
-        if let next, !updated.sessionIDs.contains(next.id) {
-            updated.replace(.session(sessionID), with: .session(next.id))
-            setLayout(updated, projectID: projectID)
-        } else {
-            forgetInLayout(sessionID, projectID: projectID)
-        }
     }
 
     private func forgetInLayout(_ sessionID: Int64, projectID: Int64) {

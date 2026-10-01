@@ -339,13 +339,13 @@ final class ProjectsViewModel {
         pendingDocumentID = route.pane == .documents ? route.subjectID : nil
     }
 
-    /// The live session, else the most recent open one (its pane offers
-    /// Resume) — read first, since a project just selected has no list yet.
+    /// The live session, else the most recent one (its pane offers Resume)
+    /// — read first, since a project just selected has no list yet.
     func revealTerminal(projectID: Int64) async {
         if terminalSessions[projectID] == nil {
             guard await loadSessions(projectID: projectID) else { return }
         }
-        let id = activeSessionID(projectID: projectID) ?? terminalSessions[projectID]?.first { !$0.isClosed }?.id
+        let id = activeSessionID(projectID: projectID) ?? terminalSessions[projectID]?.first?.id
         guard let id else { return }
         var updated = layout(projectID: projectID)
         updated.show(.session(id))

@@ -76,8 +76,8 @@ extension ProjectsViewModel {
         selectedProjectID = projectID
     }
 
-    /// A level-2 click on a session: it is opened (a closed one reopens, one
-    /// not running starts) and put on screen like any panel click.
+    /// A level-2 click on a session: it is opened (one not running starts)
+    /// and put on screen like any panel click.
     func showFromPanel(sessionID id: Int64) async {
         guard let projectID = drilledProjectID else { return }
         // The list may not be loaded yet (the panel loads it on appear).
@@ -160,7 +160,7 @@ extension ProjectsViewModel {
     }
 
     /// A pane's own picker: `slot` shows `item` instead. A session is opened
-    /// there (reopened if closed, resumed if not running).
+    /// there (resumed if not running).
     func showInPane(_ slot: WorkspacePane, item: WorkspacePane, projectID: Int64) async {
         guard case let .session(id) = item else {
             var updated = layout(projectID: projectID)

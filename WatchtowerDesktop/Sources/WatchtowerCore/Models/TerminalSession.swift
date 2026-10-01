@@ -19,9 +19,8 @@ package struct TerminalSession: Codable, FetchableRecord, Identifiable, Equatabl
     package var claudeSessionID: String?
     package var createdAt: String
     package var lastActiveAt: String
-    package var closedAt: String?
-
-    package var isClosed: Bool { closedAt != nil }
+    // `closed_at` is a legacy column, no longer read or written: the Close
+    // action was removed, so every row is just running or not running.
 
     package enum CodingKeys: String, CodingKey {
         case id, kind, title
@@ -32,6 +31,5 @@ package struct TerminalSession: Codable, FetchableRecord, Identifiable, Equatabl
         case claudeSessionID = "claude_session_id"
         case createdAt = "created_at"
         case lastActiveAt = "last_active_at"
-        case closedAt = "closed_at"
     }
 }
