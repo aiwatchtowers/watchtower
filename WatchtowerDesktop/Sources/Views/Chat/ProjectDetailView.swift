@@ -97,7 +97,7 @@ struct ProjectDetailView: View {
                 }
 
                 section("Chats", caption: nil) {
-                    Button("New chat in this project") { onNewChat(vm.projectID) }
+                    Button("New chat in this project") { newChat() }
                     ForEach(vm.chats) { chat in
                         Button(chat.displayTitle) { onOpenChat(chat.id) }
                             .buttonStyle(.link)
@@ -124,6 +124,15 @@ struct ProjectDetailView: View {
             }
         } message: {
             Text("Its chats are kept and move out of the project.")
+        }
+    }
+
+    /// The pending instructions save lands first: the new chat's session
+    /// prewarms right away and reads the instructions at spawn.
+    private func newChat() {
+        Task {
+            await vm.flush()
+            onNewChat(vm.projectID)
         }
     }
 
