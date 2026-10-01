@@ -13,6 +13,13 @@ extension View {
     func panelListStyle() -> some View {
         listStyle(.plain)
             .scrollContentBackground(.hidden)
-            .background(Color(nsColor: .windowBackgroundColor))
+            .panelBackground()
+    }
+
+    /// The side panels' background, for a whole tab that should read as one
+    /// surface with them (the Projects tab: its page, terminal, Board and
+    /// Documents) instead of the darker detail backdrop of `MainNavigationView`.
+    func panelBackground() -> some View {
+        background(Color(nsColor: .windowBackgroundColor))
     }
 }

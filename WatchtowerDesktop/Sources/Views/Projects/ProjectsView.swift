@@ -54,6 +54,9 @@ struct ProjectsView: View {
             }
             .frame(minWidth: 480, maxWidth: .infinity, maxHeight: .infinity)
         }
+        // One colour with the panel's list (and the app sidebar): the page
+        // header, the terminal (transparent under dark), Board and Documents.
+        .panelBackground()
         .sessionActionDialogs(vm: vm, renaming: $renamingSession, deleting: $deletingSession)
         .onAppear {
             consumeRoute()
