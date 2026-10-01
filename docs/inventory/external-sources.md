@@ -158,8 +158,9 @@ edited after the preview (now vN); nothing was written`, or, when the page is
 exactly one version on and its storage is this edit's once the `local-id`
 attributes Confluence stamps on save are stripped from start tags (never
 from text, CDATA or HTML comments) (its own earlier PUT
-whose response was lost), `this edit is already saved (vN); nothing was
-written now`, or, one version on with any other storage, the hedged
+whose response was lost), it writes nothing and succeeds with the note
+`this edit is already saved (vN); nothing was written now` (the page holds
+exactly the approved edit), or, one version on with any other storage, the hedged
 `conflict: the page is now vN (one version after your preview) — this edit
 may have been saved; re-read with get_confluence_page before retrying;
 nothing was written now` — and issues no PUT — as one `PUT` of
@@ -272,6 +273,11 @@ every Confluence hit's `link` is the page or attachment URL.
 
 ## Changelog
 
+- 2026-10-01 (release audit fix lane, L1): a Retry that finds this very
+  edit already saved (base+1, storage equal up to `local-id`s) is now a
+  success result carrying the "already saved" note instead of a failed
+  action; still no PUT. The write rule (version AND hash must match, else
+  no PUT) is unchanged.
 - 2026-10-01 (release audit fix lane): `get_confluence_page` reads an
   archived page (`status=current,archived`, as the sync fetcher asks), and
   EXT-05 gains "an archived page is never written" (its PUT's

@@ -372,16 +372,42 @@ func executeConfluenceEdit(ctx context.Context, d *db.DB, factory ConfluencePage
 		return nil, errors.New(confluenceArchivedRefusal(p.PageID) + "; nothing was written")
 	}
 	if live.Version != p.BaseVersion || storageHash(live.Storage) != p.BaseHash {
-		return nil, confluenceConflict(live, p)
+		return confluenceEditOutcome(p, confluenceConflict(live, p))
 	}
 	body := ConfluencePutBody{ID: p.PageID, Status: "current", Title: p.Title,
 		Body:    ConfluencePutStorage{Representation: "storage", Value: p.NewStorage},
 		Version: ConfluencePutVersionInfo{Number: p.BaseVersion + 1, Message: confluenceEditMessage}}
 	version, err := client.PutPage(ctx, p.PageID, p.Kind, body)
 	if err != nil {
-		return nil, confluenceWriteFailed(d, account.ID, confluencePutErr(ctx, client, err, account.ID, p), err)
+		return confluenceEditOutcome(p, confluenceWriteFailed(d, account.ID, confluencePutErr(ctx, client, err, account.ID, p), err))
 	}
-	return map[string]any{"page_id": p.PageID, "title": p.Title, "url": p.URL, "version": version}, nil
+	return confluenceSaved(p, version), nil
+}
+
+func confluenceSaved(p editConfluencePinned, version int) map[string]any {
+	return map[string]any{"page_id": p.PageID, "title": p.Title, "url": p.URL, "version": version}
+}
+
+// confluenceEditOutcome turns a refused write into Execute's result: an
+// edit found already saved — a Retry after a first PUT that landed but
+// whose response was lost — is a success (the page holds exactly the
+// approved edit), noted as such; anything else stays the error.
+func confluenceEditOutcome(p editConfluencePinned, err error) (any, error) {
+	var saved *confluenceAlreadySaved
+	if !errors.As(err, &saved) {
+		return nil, err
+	}
+	res := confluenceSaved(p, saved.version)
+	res["note"] = saved.Error()
+	return res, nil
+}
+
+// confluenceAlreadySaved: the live page is this very edit (see
+// confluenceConflict).
+type confluenceAlreadySaved struct{ version int }
+
+func (e *confluenceAlreadySaved) Error() string {
+	return fmt.Sprintf("this edit is already saved (v%d); nothing was written now", e.version)
 }
 
 // confluenceArchivedRefusal refuses to edit an archived page (see
@@ -402,7 +428,7 @@ func confluenceArchivedRefusal(pageID string) string {
 func confluenceConflict(live ConfluencePage, p editConfluencePinned) error {
 	if live.Version == p.BaseVersion+1 {
 		if stripLocalIDs(live.Storage) == stripLocalIDs(p.NewStorage) {
-			return fmt.Errorf("this edit is already saved (v%d); nothing was written now", live.Version)
+			return &confluenceAlreadySaved{version: live.Version}
 		}
 		return fmt.Errorf("conflict: the page is now v%d (one version after your preview) — this edit may have been saved; re-read with get_confluence_page before retrying; nothing was written now", live.Version)
 	}
