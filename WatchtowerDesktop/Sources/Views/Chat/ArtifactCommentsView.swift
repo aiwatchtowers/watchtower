@@ -11,25 +11,22 @@ struct ArtifactCommentsView: View {
     let onSend: () -> Void
     @State private var selection = NSRange(location: 0, length: 0)
     @State private var activeID: Int64?
-    @State private var composing = false
-    @State private var draft = ""
 
     var body: some View {
         VStack(spacing: 0) {
             if let rendered = comments.rendered {
                 HStack {
-                    Text("Select text, then Comment.").font(.caption).foregroundStyle(.secondary)
+                    Text("Select text to comment on it.").font(.caption).foregroundStyle(.secondary)
                     Spacer()
-                    Button("Comment") { composing = true }
-                        .disabled(selection.length == 0)
-                        .popover(isPresented: $composing) { composer }
                 }
                 .padding(8)
-                DocumentTextView(
+                CommentableDocumentText(
                     text: DocumentAttributedString.make(rendered, highlights: comments.ranges, activeThreadID: activeID),
                     contentID: contentID,
-                    selection: $selection
-                ) { activeID = comments.threadID(at: $0) ?? activeID }
+                    selection: $selection,
+                    onComment: { body, range in comments.add(body: body, selection: range) },
+                    onClick: { activeID = comments.threadID(at: $0) ?? activeID }
+                )
                 .frame(minHeight: 180)
                 Divider()
                 list.frame(minHeight: 100, maxHeight: 260)
@@ -49,28 +46,6 @@ struct ArtifactCommentsView: View {
 
     private var contentID: String {
         "\(comments.conversationID)/\(comments.key)/\(comments.artifact?.version ?? -1)"
-    }
-
-    private var composer: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Comment on the selection").font(.headline)
-            TextEditor(text: $draft).frame(width: 300, height: 90)
-            HStack {
-                Spacer()
-                Button("Cancel") { composing = false }
-                Button("Comment") {
-                    // A failed save keeps the composer open with the draft,
-                    // next to the error — the project documents pane's rule.
-                    if comments.add(body: draft, selection: selection) {
-                        draft = ""
-                        composing = false
-                    }
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-        }
-        .padding(12)
     }
 
     private var list: some View {

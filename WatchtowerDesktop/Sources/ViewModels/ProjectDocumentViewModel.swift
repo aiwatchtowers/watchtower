@@ -15,19 +15,22 @@ final class ProjectDocumentViewModel {
     private(set) var threads: [ProjectCommentThread] = []
     /// Root comment id → its located range in `rendered.text`.
     private(set) var anchoredRanges: [Int64: NSRange] = [:]
+    /// Draft id → its located range in `rendered.text`; a draft whose passage
+    /// is gone has none and is not sent until the owner deletes or re-makes it.
+    private(set) var draftRanges: [UUID: NSRange] = [:]
     private(set) var loadError: String?
     var errorMessage: String?
     /// The reload a file change scheduled (exposed for tests).
     private(set) var pendingReload: Task<Void, Never>?
-    /// Bumped on every successful `load()`. A composer captures this when it
-    /// opens; `addComment` refuses to write if the version has since moved,
-    /// since the selection it holds was computed against a render that no
-    /// longer exists (a reload swapped `rendered` for a fresh one).
+    /// Bumped on every successful `load()`; part of the text view's content
+    /// id, so a composer opened on an older render refuses to save
+    /// (`CommentableDocumentText`) — its selection points into text that is gone.
     private(set) var renderVersion = 0
 
     var onOwnerWrite: ((ProjectSubject) -> Void)?
 
     private let dbPool: DatabasePool
+    private let draftStore: ProjectCommentDrafts
     private let readFile: (URL) throws -> String
     private let reloadDelay: Duration
     private var watcher: DocumentFileWatcher?
@@ -36,12 +39,14 @@ final class ProjectDocumentViewModel {
         dbPool: DatabasePool,
         project: Project,
         document: ProjectDocument,
+        drafts: ProjectCommentDrafts = ProjectCommentDrafts(),
         reloadDelay: Duration = .milliseconds(500),
         readFile: @escaping (URL) throws -> String = { try String(contentsOf: $0, encoding: .utf8) }
     ) {
         self.dbPool = dbPool
         self.project = project
         self.document = document
+        self.draftStore = drafts
         self.reloadDelay = reloadDelay
         self.readFile = readFile
     }
@@ -52,6 +57,26 @@ final class ProjectDocumentViewModel {
     }
 
     var resolvedThreads: [ProjectCommentThread] { threads.filter { $0.root.status == "resolved" } }
+
+    /// The owner's unsent comments on this document, in text order (drafts
+    /// whose passage is gone last).
+    var drafts: [ProjectCommentDraft] {
+        let written = draftStore.drafts(for: document.id)
+        let order = Dictionary(uniqueKeysWithValues: written.enumerated().map { ($1.id, $0) })
+        return written.sorted { lhs, rhs in
+            (draftRanges[lhs.id]?.location ?? .max, order[lhs.id] ?? 0)
+                < (draftRanges[rhs.id]?.location ?? .max, order[rhs.id] ?? 0)
+        }
+    }
+
+    /// Drafts "Send N comments" delivers: still on the text, with a body.
+    var sendableDraftCount: Int { readyDrafts.count }
+
+    private var readyDrafts: [ProjectCommentDraft] {
+        draftStore.drafts(for: document.id).filter {
+            draftRanges[$0.id] != nil && !$0.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
     var outdatedThreads: [ProjectCommentThread] { threads.filter { $0.root.status == "outdated" } }
 
     func threadID(at location: Int) -> Int64? {
@@ -76,6 +101,7 @@ final class ProjectDocumentViewModel {
         let doc = DocumentRendering.render(text)
         rendered = doc
         renderVersion += 1
+        draftRanges = locateDrafts(on: doc.text)
         let lost = reanchor(on: doc.text)
         if !lost.isEmpty { await markOutdated(lost) }
         await markRepliesRead()
@@ -89,6 +115,7 @@ final class ProjectDocumentViewModel {
         } catch {
             rendered = nil
             anchoredRanges = [:]
+            draftRanges = [:]
             loadError = "Could not read \(document.relPath): \(error.localizedDescription)"
             return nil
         }
@@ -162,35 +189,63 @@ final class ProjectDocumentViewModel {
         }
     }
 
-    // MARK: - Owner actions
-
-    /// - Parameter renderVersion: the version the caller's selection was computed against
-    ///   (typically captured when a composer opened). `nil` skips the staleness check — used
-    ///   by callers that don't hold a composer across an `await` boundary. A mismatch means the
-    ///   file reloaded since the selection was made: the write is refused, the selection is
-    ///   surely wrong on the new text, and the caller keeps its draft so the owner can re-select.
-    /// - Returns: whether a comment was written, so a composer knows whether to close/clear.
-    ///   A failed write returns `false` (with `errorMessage` set) so the owner's draft survives.
-    @discardableResult
-    func addComment(body: String, selection: NSRange, renderVersion: Int? = nil) async -> Bool {
-        if let renderVersion, renderVersion != self.renderVersion {
-            errorMessage = "The document changed — select the passage again."
-            return false
+    private func locateDrafts(on text: String) -> [UUID: NSRange] {
+        var ranges: [UUID: NSRange] = [:]
+        for draft in draftStore.drafts(for: document.id) {
+            if let found = draft.anchor.locate(in: text) { ranges[draft.id] = NSRange(found, in: text) }
         }
+        return ranges
+    }
+
+    // MARK: - Drafts
+
+    /// Keeps a comment on `selection` as a draft — nothing is written and the
+    /// agent sees nothing until `sendDrafts`. Returns whether it was kept.
+    @discardableResult
+    func addDraft(body: String, selection: NSRange) -> Bool {
         guard let rendered, selection.length > 0,
               let range = Range(selection, in: rendered.text),
               !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
         let anchor = CommentAnchor.make(text: rendered.text, range: range, headings: rendered.headingOffsets)
-        let (projectID, documentID) = (project.id, document.id)
-        let wrote = await ownerWrite { db in
-            _ = try ProjectQueries.addOwnerComment(
-                db, projectID: projectID, targetID: nil, documentID: documentID, anchor: anchor, body: body
-            )
-        }
-        guard wrote else { return false }
-        anchoredRanges = anchoredRangesAfterAdd(rendered.text)
+        let draft = ProjectCommentDraft(anchor: anchor, body: body)
+        draftStore.add(draft, documentID: document.id)
+        draftRanges[draft.id] = selection
         return true
     }
+
+    func updateDraft(_ id: UUID, body: String) {
+        draftStore.update(id, body: body, documentID: document.id)
+    }
+
+    func deleteDraft(_ id: UUID) {
+        draftStore.remove([id], documentID: document.id)
+        draftRanges[id] = nil
+    }
+
+    /// Writes every draft still on the text as an owner comment, all in one
+    /// transaction, then drops them. A failure writes none and keeps them all.
+    /// A draft emptied by an edit is skipped (kept). Returns whether the
+    /// write committed (true with nothing to send).
+    @discardableResult
+    func sendDrafts() async -> Bool {
+        let ready = readyDrafts
+        guard !ready.isEmpty else { return true }
+        let (projectID, documentID) = (project.id, document.id)
+        let wrote = await ownerWrite { db in
+            for draft in ready {
+                _ = try ProjectQueries.addOwnerComment(
+                    db, projectID: projectID, targetID: nil, documentID: documentID, anchor: draft.anchor, body: draft.body
+                )
+            }
+        }
+        guard wrote else { return false }
+        draftStore.remove(Set(ready.map(\.id)), documentID: documentID)
+        for draft in ready { draftRanges[draft.id] = nil }
+        if let rendered { anchoredRanges = anchoredRangesAfterAdd(rendered.text) }
+        return true
+    }
+
+    // MARK: - Owner actions
 
     /// - Returns: whether the reply was written; on `false` the composer keeps
     ///   the owner's draft and `errorMessage` says why (the `addComment` rule).
