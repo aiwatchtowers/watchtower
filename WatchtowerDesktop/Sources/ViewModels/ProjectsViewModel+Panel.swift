@@ -182,5 +182,4 @@ extension ProjectsViewModel {
         selectedProjectID = nil
         selectedStandaloneID = id
     }
-
 }

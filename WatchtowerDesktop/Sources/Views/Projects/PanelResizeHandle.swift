@@ -43,7 +43,11 @@ struct PanelResizeHandle: View {
                         dragStart = nil
                     }
             )
-            .onDisappear { popCursor() }
+            .onDisappear {
+                popCursor()
+                liveWidth = nil
+                dragStart = nil
+            }
             .accessibilityHidden(true)
     }
 
