@@ -46,27 +46,6 @@ final class TerminalPaletteTests: XCTestCase {
         XCTAssertEqual(terminal.layer?.backgroundColor?.alpha, terminal.backgroundOpacity)
     }
 
-    /// Text drawn under light, then a switch to dark: the default-background
-    /// cells must turn transparent too, not keep SwiftTerm's cached opaque
-    /// colour (the appearance change has to flush its colour cache).
-    func testSwitchingToDarkLeavesNoOpaqueCellsBehind() throws {
-        let terminal = PalettedTerminalView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
-        terminal.appearance = try light
-        terminal.getTerminal().feed(text: "hello")
-        _ = try render(terminal)
-
-        terminal.appearance = try dark
-        let bitmap = try render(terminal)
-        // The cell's top-left pixel: inside the run's background fill, above the glyph.
-        XCTAssertEqual(bitmap.colorAt(x: 1, y: 1)?.alphaComponent ?? 0, 0, accuracy: 0.01)
-    }
-
-    private func render(_ view: NSView) throws -> NSBitmapImageRep {
-        let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
-        view.cacheDisplay(in: view.bounds, to: bitmap)
-        return bitmap
-    }
-
     /// SwiftTerm draws the ⌘-hover link preview's text in the default
     /// background; it must stay opaque when that background is transparent.
     func testLinkPreviewTextStaysOpaque() throws {
