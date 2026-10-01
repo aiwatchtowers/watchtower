@@ -15,11 +15,17 @@ package enum WorkspaceView: CaseIterable, Sendable {
     case board
     case documents
 
-    package func matches(_ pane: WorkspacePane) -> Bool {
-        switch (self, pane) {
-        case (.terminal, .session), (.board, .board), (.documents, .documents): true
-        default: false
+    /// What `pane` shows.
+    package init(_ pane: WorkspacePane) {
+        switch pane {
+        case .session: self = .terminal
+        case .board: self = .board
+        case .documents: self = .documents
         }
+    }
+
+    package func matches(_ pane: WorkspacePane) -> Bool {
+        Self(pane) == self
     }
 }
 

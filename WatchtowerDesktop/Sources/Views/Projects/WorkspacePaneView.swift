@@ -116,20 +116,11 @@ struct WorkspacePaneView: View {
     }
 
     private var title: String {
-        switch pane {
-        case .board: "Board"
-        case .documents: "Documents"
-        case let .session(id): vm.session(id, projectID: project.id)?.title ?? "Session"
-        }
+        if case let .session(id) = pane { return vm.session(id, projectID: project.id)?.title ?? "Session" }
+        return WorkspaceView(pane).title
     }
 
-    private var icon: String {
-        switch pane {
-        case .board: "square.grid.2x2"
-        case .documents: "doc.text"
-        case .session: "terminal"
-        }
-    }
+    private var icon: String { WorkspaceView(pane).icon }
 
     @ViewBuilder
     private var content: some View {
@@ -235,5 +226,25 @@ struct WorkspaceSplitView<Pane: View>: View {
         guard cursorPushed else { return }
         NSCursor.pop()
         cursorPushed = false
+    }
+}
+
+/// The names and symbols of what a pane shows — the page header's view
+/// buttons and the split panes' pickers.
+extension WorkspaceView {
+    var title: String {
+        switch self {
+        case .terminal: "Terminal"
+        case .board: "Board"
+        case .documents: "Documents"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .terminal: "terminal"
+        case .board: "square.grid.2x2"
+        case .documents: "doc.text"
+        }
     }
 }

@@ -297,22 +297,6 @@ struct ProjectPageView: View {
 }
 
 private extension WorkspaceView {
-    var title: String {
-        switch self {
-        case .terminal: "Terminal"
-        case .board: "Board"
-        case .documents: "Documents"
-        }
-    }
-
-    var icon: String {
-        switch self {
-        case .terminal: "terminal"
-        case .board: "square.grid.2x2"
-        case .documents: "doc.text"
-        }
-    }
-
     var help: String {
         switch self {
         case .terminal: "Show the terminal (in a split, beside the other pane)"

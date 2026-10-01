@@ -288,4 +288,12 @@ final class WorkspaceLayoutTests: XCTestCase {
         views.toggleExpand(.board)
         XCTAssertEqual(views.terminalSlot, .board, "only what is on screen")
     }
+
+    func testWorkspaceViewOfAPane() {
+        XCTAssertEqual(WorkspaceView(.session(3)), .terminal)
+        XCTAssertEqual(WorkspaceView(.board), .board)
+        XCTAssertEqual(WorkspaceView(.documents), .documents)
+        XCTAssertTrue(WorkspaceView.terminal.matches(.session(3)))
+        XCTAssertFalse(WorkspaceView.board.matches(.documents))
+    }
 }
