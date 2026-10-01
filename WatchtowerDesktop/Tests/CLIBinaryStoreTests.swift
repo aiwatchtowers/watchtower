@@ -300,4 +300,109 @@ final class CLIBinaryStoreTests: XCTestCase {
         let missing = dir.appendingPathComponent("does-not-exist").path
         XCTAssertFalse(CLIBinaryStore.signatureIsValid(path: missing, teamID: "ABCDE12345"))
     }
+
+    // MARK: resolver verdict cache
+
+    /// A store matching the bundle, plus a counter of signature checks — each
+    /// check stands for a full re-verification (hash + codesign).
+    private func makeValidatedStore(_ content: String = "v1") async throws -> (bundle: String, store: String) {
+        let bundle = try write("bundle-cli", content)
+        let store = storePath()
+        _ = await CLIBinaryStore.sync(bundleBinary: bundle, storeBinary: store) {}
+        CLIBinaryStore.invalidateResolvedPath()
+        return (bundle, store)
+    }
+
+    func testResolverReusesVerdictWhileFilesAreUnchanged() async throws {
+        let (bundle, store) = try await makeValidatedStore()
+        var checks = 0
+        for _ in 0..<3 {
+            let path = CLIBinaryStore.resolvedInstalledPath(storeBinary: store, bundleBinary: bundle) { _ in
+                checks += 1
+                return true
+            }
+            XCTAssertEqual(path, store)
+        }
+        XCTAssertEqual(checks, 1, "an unchanged store must not be re-hashed and re-verified per call")
+    }
+
+    /// The TOCTOU guard: a same-size, same-bytes rewrite in place keeps the
+    /// inode and size but bumps ctime, so it must be re-verified.
+    func testResolverReverifiesAfterInPlaceRewrite() async throws {
+        let (bundle, store) = try await makeValidatedStore()
+        var checks = 0
+        let check: (String) -> Bool = { _ in checks += 1; return true }
+        XCTAssertEqual(CLIBinaryStore.resolvedInstalledPath(storeBinary: store, bundleBinary: bundle, signatureCheck: check), store)
+        let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: store))
+        try handle.write(contentsOf: Data("v1".utf8))
+        try handle.close()
+        XCTAssertEqual(CLIBinaryStore.resolvedInstalledPath(storeBinary: store, bundleBinary: bundle, signatureCheck: check), store)
+        XCTAssertEqual(checks, 2)
+    }
+
+    func testResolverRejectsBinaryRenamedOverAfterVerification() async throws {
+        let (bundle, store) = try await makeValidatedStore()
+        XCTAssertEqual(CLIBinaryStore.resolvedInstalledPath(storeBinary: store, bundleBinary: bundle) { _ in true }, store)
+        let swapped = try write("swapped", "v1")
+        XCTAssertEqual(rename(swapped, store), 0)
+        // Same bytes, but the new file fails the signature gate: the cached
+        // verdict for the old inode must not be handed out.
+        XCTAssertNil(CLIBinaryStore.resolvedInstalledPath(storeBinary: store, bundleBinary: bundle) { _ in false })
+    }
+
+    func testResolverCachesARejectionUntilTheStoreChanges() async throws {
+        let (bundle, store) = try await makeValidatedStore()
+        var checks = 0
+        let reject: (String) -> Bool = { _ in checks += 1; return false }
+        XCTAssertNil(CLIBinaryStore.resolvedInstalledPath(storeBinary: store, bundleBinary: bundle, signatureCheck: reject))
+        XCTAssertNil(CLIBinaryStore.resolvedInstalledPath(storeBinary: store, bundleBinary: bundle, signatureCheck: reject))
+        XCTAssertEqual(checks, 1)
+        CLIBinaryStore.invalidateResolvedPath()
+        XCTAssertEqual(CLIBinaryStore.resolvedInstalledPath(storeBinary: store, bundleBinary: bundle) { _ in true }, store)
+    }
+
+    /// A store rewritten while it is being verified is not the file that
+    /// passed: it is neither handed out nor cached.
+    func testResolverRejectsStoreChangedDuringVerification() async throws {
+        let (bundle, store) = try await makeValidatedStore()
+        let rewriteDuringCheck: (String) -> Bool = { path in
+            let handle = try? FileHandle(forWritingTo: URL(fileURLWithPath: path))
+            try? handle?.write(contentsOf: Data("v1".utf8))
+            try? handle?.close()
+            return true
+        }
+        XCTAssertNil(CLIBinaryStore.resolvedInstalledPath(storeBinary: store, bundleBinary: bundle,
+                                                          signatureCheck: rewriteDuringCheck))
+        var checks = 0
+        XCTAssertEqual(CLIBinaryStore.resolvedInstalledPath(storeBinary: store, bundleBinary: bundle) { _ in
+            checks += 1
+            return true
+        }, store)
+        XCTAssertEqual(checks, 1, "the mid-check verdict must not have been cached")
+    }
+
+    func testResolverNilWithoutBundleOrStore() async throws {
+        let (bundle, store) = try await makeValidatedStore()
+        XCTAssertNil(CLIBinaryStore.resolvedInstalledPath(storeBinary: store, bundleBinary: nil) { _ in true })
+        try FileManager.default.removeItem(atPath: store)
+        XCTAssertNil(CLIBinaryStore.resolvedInstalledPath(storeBinary: store, bundleBinary: bundle) { _ in true })
+    }
+
+    /// A cache hit costs two stats, not two SHA-256 passes over the binary
+    /// (8 MB here; the shipped CLI is ~35 MB).
+    func testResolverCacheHitIsCheaperThanVerification() async throws {
+        let payload = String(repeating: "x", count: 8 * 1024 * 1024)
+        let (bundle, store) = try await makeValidatedStore(payload)
+        let clock = ContinuousClock()
+        let cold = clock.measure {
+            _ = CLIBinaryStore.resolvedInstalledPath(storeBinary: store, bundleBinary: bundle) { _ in true }
+        }
+        let warm = clock.measure {
+            for _ in 0..<100 {
+                _ = CLIBinaryStore.resolvedInstalledPath(storeBinary: store, bundleBinary: bundle) { _ in true }
+            }
+        }
+        print("CLIBinaryStore resolve 8 MB: cold \(cold), warm \(warm / 100) per call")
+        XCTAssertLessThan(warm / 100, cold / 10)
+    }
 }

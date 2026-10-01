@@ -669,6 +669,13 @@ final class AppState {
         if case .failed(let reason) = CLIBinaryStore.syncOCRHelper(bundleHelper: Constants.bundledOCRHelperPath()) {
             NSLog("CLIBinaryStore: OCR helper sync failed (%@); attachment OCR is unavailable to the store CLI", reason)
         }
+        // Prime the resolver's verdict off the main actor: the first resolution
+        // hashes the 35 MB CLI twice and checks its signature, and the next
+        // callers (DaemonManager, onboarding, view models) run on the main actor.
+        let resolved = await Task.detached(priority: .userInitiated) { CLIBinaryStore.resolvedInstalledPath() }.value
+        if resolved == nil, cliStoreError == nil {
+            NSLog("CLIBinaryStore: the store copy did not verify (hash, signature, or a build without a Team ID); the CLI runs from the app bundle")
+        }
     }
 
     /// Check if onboarding chat is needed (profile missing or onboarding_done == false).

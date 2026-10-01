@@ -1,7 +1,7 @@
 ---
 type: bug
 title: "Constants.findCLIPath() hashes the 35 MB CLI twice and re-verifies its code signature on every call, often on the main thread"
-status: open
+status: done
 priority: high
 tags: [swift, performance, main-thread, dual-path-doc-drift, review-2026-09-26]
 context: main-branch backlog review 2026-09-26 at 8cf68dcf — track bugs (Swift Desktop)
