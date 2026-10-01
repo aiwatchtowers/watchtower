@@ -55,6 +55,17 @@ struct VoiceClipRow: View {
     }
 }
 
+/// "Picking a name is not a save" — under a Queue or Train card's picker
+/// while its pick can be confirmed. Without it the owner could name every
+/// card, close the window and lose all of it.
+struct VoiceUnsavedHint: View {
+    var body: some View {
+        Label("Not saved until you press Confirm", systemImage: "exclamationmark.circle")
+            .font(.caption)
+            .foregroundStyle(.orange)
+    }
+}
+
 /// Shows a `ClipPlayer` failure under a Voices screen, so a clip that
 /// cannot play never looks like a button that did nothing.
 struct ClipPlayerErrorInset: ViewModifier {
@@ -122,7 +133,7 @@ struct VoicePersonPicker: View {
         }
     }
 
-    static func title(_ candidate: PersonChoice) -> String {
+    private static func title(_ candidate: PersonChoice) -> String {
         candidate.isOwner ? "Me (\(candidate.displayName))" : candidate.displayName
     }
 

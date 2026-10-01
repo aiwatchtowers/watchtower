@@ -58,8 +58,11 @@ database: `VoiceRegistryCenter.confirm` on a real pending task wrote the
 owner anchor and closed the task, and a hosted `VoicesWindowView` with that
 data accepted a picker selection plus Enter and closed its task. Not one of
 the 37 pending tasks had ever been closed by any disposition, so Confirm
-was simply never pressed: picking a name looked like the save. The card now
-shows "Not saved until you press Confirm" whenever a pick is confirmable.
+was simply never pressed: picking a name looked like the save. Queue and Train
+cards now show "Not saved until you press Confirm" whenever a pick is
+confirmable. Still open (deferred): an unconfirmed pick lives only in the
+card's view state, so closing the window or switching segment drops it
+without a prompt — the hint makes that visible, it doesn't prevent it.
 (2) Not a code defect: the owner had one 2026-08 anchor, and import never
 creates owner samples (registry invariant 2), so the research seed cannot
 teach the owner's voice — only confirms (Queue/Train) can. With (1) fixed,
@@ -70,6 +73,9 @@ unregistered first, then registered), "Similar voices" (registry people
 whose nearest *active* sample scores ≥ `unsureFloor` against the cluster,
 closest first) and "Other known voices". The owner is never offered as a
 colleague: a registry or attendee row carrying a connected Google account's
-email reads "Me (…)" and comes first. The owner confirm path already mints an `owner`/`anchor`
+email reads "Me (…)" and comes first (Train's picker flags it the same way).
+Owner call left open: "Other known voices" still lists the rest of the
+registry (grouped and labeled, not removed), since any registry person may be
+the speaker. The owner confirm path already mints an `owner`/`anchor`
 sample for the owner's person (unchanged; `VoiceLabelingQueries.confirm`).
 

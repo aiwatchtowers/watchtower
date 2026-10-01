@@ -69,13 +69,7 @@ struct VoiceCardView: View {
                 clipRow(clip, index: index)
             }
             VoicePersonPicker(groups: card.candidateGroups, selection: $selectedCandidate, newName: $newName, newEmail: $newEmail)
-            if !confirmDisabled {
-                // Picking a name is not a save — without this the owner can
-                // name every card, close the window and lose all of it.
-                Label("Not saved until you press Confirm", systemImage: "exclamationmark.circle")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            }
+            if !confirmDisabled { VoiceUnsavedHint() }
             actions
         }
         .padding(12)

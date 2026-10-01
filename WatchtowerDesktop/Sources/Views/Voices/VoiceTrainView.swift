@@ -168,6 +168,7 @@ private struct TrainGroupCardView: View {
             }
             VoicePersonPicker(groups: [CandidateGroup(title: "", choices: candidates)], selection: $selectedCandidate,
                               newName: $newName, newEmail: $newEmail)
+            if !confirmDisabled { VoiceUnsavedHint() }
             actions
         }
         .padding(12)

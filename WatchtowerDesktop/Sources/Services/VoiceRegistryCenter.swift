@@ -583,7 +583,7 @@ final class VoiceRegistryCenter {
     /// The owner's connected Google emails — the set import/export use to
     /// recognize (and skip, on import) the owner's own identity (invariant 2).
     nonisolated private static func ownerEmails(_ db: Database) throws -> Set<String> {
-        Set(try GoogleAccountQueries.fetchAll(db).map { $0.email.lowercased() }.filter { !$0.isEmpty })
+        Set(try GoogleAccountQueries.fetchAll(db).map { normalizedKey($0.email) }.filter { !$0.isEmpty })
     }
 
     // MARK: - Queue loading
@@ -727,8 +727,12 @@ final class VoiceRegistryCenter {
         let quality = TrainQuality(
             namedMinutes: ownerMinutes + autoMinutes, ownerMinutes: ownerMinutes, autoMinutes: autoMinutes,
             precision: accuracy.precision, recall: accuracy.recall, people: people.count, singleChannelPeople: singleChannelPeople)
+        let ownerEmails = try Self.ownerEmails(db)
         let registryChoices = people
-            .map { PersonChoice(personKey: $0.personKey, displayName: $0.displayName, inRegistry: true) }
+            .map {
+                PersonChoice(personKey: $0.personKey, displayName: $0.displayName, inRegistry: true,
+                             isOwner: VoicePrintQueries.isOwner($0, ownerEmails: ownerEmails))
+            }
             .sorted(by: byDisplayName)
         return (trainGroups, quality, scan.clipsByKey, registryChoices)
     }
@@ -888,26 +892,30 @@ final class VoiceRegistryCenter {
         // The owner first ("Me"), then attendees by name.
         invitedNotInRegistry.sort { $0.isOwner != $1.isOwner ? $0.isOwner : byDisplayName($0, $1) }
 
-        func choice(_ person: VoicePrint) -> PersonChoice {
-            PersonChoice(personKey: person.personKey, displayName: person.displayName, inRegistry: true,
-                         isOwner: VoicePrintQueries.isOwner(person, ownerEmails: ownerEmails))
+        let registry = people.compactMap { person in person.id.map { (id: $0, person: person) } }
+        func choices(_ rows: [(id: Int64, person: VoicePrint)], isOwner: Bool = false) -> [PersonChoice] {
+            rows.map {
+                PersonChoice(personKey: $0.person.personKey, displayName: $0.person.displayName, inRegistry: true, isOwner: isOwner)
+            }
         }
-        let registry = people.filter { $0.id != nil }
-        let owners = registry.filter { VoicePrintQueries.isOwner($0, ownerEmails: ownerEmails) }
-        let others = registry.filter { !VoicePrintQueries.isOwner($0, ownerEmails: ownerEmails) }
-        let invited = others.filter { invitedIDs.contains($0.id ?? -1) }
+        let owners = registry.filter { VoicePrintQueries.isOwner($0.person, ownerEmails: ownerEmails) }
+        let ownerIDs = Set(owners.map(\.id))
+        let others = registry.filter { !ownerIDs.contains($0.id) }
+        let invited = others.filter { invitedIDs.contains($0.id) }
         let similar = others
-            .filter { !invitedIDs.contains($0.id ?? -1) && (scores[$0.id ?? -1] ?? -1) >= VoiceRegistryPolicy.unsureFloor }
-            .sorted { (scores[$0.id ?? -1] ?? -1) > (scores[$1.id ?? -1] ?? -1) }
-        let shown = Set((invited + similar).compactMap(\.id))
-        let rest = others.filter { !shown.contains($0.id ?? -1) }
+            .compactMap { row in scores[row.id].map { (row: row, score: $0) } }
+            .filter { !invitedIDs.contains($0.row.id) && $0.score >= VoiceRegistryPolicy.unsureFloor }
+            .sorted { $0.score > $1.score }
+            .map(\.row)
+        let shown = Set((invited + similar).map(\.id))
+        let rest = others.filter { !shown.contains($0.id) }
 
         return [
             CandidateGroup(title: "In this meeting",
-                           choices: owners.map(choice).sorted(by: byDisplayName) + invitedNotInRegistry
-                               + invited.map(choice).sorted(by: byDisplayName)),
-            CandidateGroup(title: "Similar voices", choices: similar.map(choice)),
-            CandidateGroup(title: "Other known voices", choices: rest.map(choice).sorted(by: byDisplayName))
+                           choices: choices(owners, isOwner: true).sorted(by: byDisplayName) + invitedNotInRegistry
+                               + choices(invited).sorted(by: byDisplayName)),
+            CandidateGroup(title: "Similar voices", choices: choices(similar)),
+            CandidateGroup(title: "Other known voices", choices: choices(rest).sorted(by: byDisplayName))
         ].filter { !$0.choices.isEmpty }
     }
 
