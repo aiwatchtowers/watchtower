@@ -164,7 +164,9 @@ written now`, or, one version on with any other storage, the hedged
 may have been saved; re-read with get_confluence_page before retrying;
 nothing was written now` — and issues no PUT — as one `PUT` of
 `base_version + 1` with the message `Edited via Watchtower` (a 409 from
-Confluence is re-read and reported the same way). A rich element (a
+Confluence is re-read and reported the same way). An archived page is never
+written: the edit is refused at propose time, and at apply time (no PUT)
+when the page was archived after the preview. A rich element (a
 ⟦k:label⟧ marker) is removed only when the approved change lists it under
 `removed`. Every byte outside what an edit changes survives: a
 `replace_text` re-serialises only its unit's content span, and a
@@ -270,6 +272,11 @@ every Confluence hit's `link` is the page or attachment URL.
 
 ## Changelog
 
+- 2026-10-01 (release audit fix lane): `get_confluence_page` reads an
+  archived page (`status=current,archived`, as the sync fetcher asks), and
+  EXT-05 gains "an archived page is never written" (its PUT's
+  `status:"current"` would restore it), pinned by
+  `TestEditConfluencePage_RefusesAnArchivedPage`. Tightened, not weakened.
 - 2026-10-01 (release audit fix lane, H3): `Doc.Text()` marks every layout
   edge between two blocks with a `⟦layout boundary⟧` line (a section never
   crosses one, R4/R5), and a `replace_section` whose new body repeats a

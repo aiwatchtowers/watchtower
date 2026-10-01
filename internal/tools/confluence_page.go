@@ -367,6 +367,7 @@ type confluencePageView struct {
 	Space             string                   `json:"space,omitempty"`
 	URL               string                   `json:"url,omitempty"`
 	Version           int                      `json:"version"`
+	Archived          bool                     `json:"archived,omitempty"`
 	Text              string                   `json:"text"`
 	Truncated         bool                     `json:"truncated,omitempty"`
 	TotalRunes        int                      `json:"total_runes,omitempty"`
@@ -449,7 +450,10 @@ func readConfluencePage(ctx context.Context, client ConfluencePageClient, accoun
 		return confluencePageView{}, err
 	}
 	view := confluencePageView{AccountID: accountID, ID: page.ID, Kind: page.Kind, Title: page.Title,
-		Space: page.SpaceKey, URL: page.URL, Version: page.Version, Comments: []*confluenceCommentView{}}
+		Space: page.SpaceKey, URL: page.URL, Version: page.Version, Archived: page.archived(), Comments: []*confluenceCommentView{}}
+	if view.Archived {
+		view.Notes = append(view.Notes, confluenceArchivedNote)
+	}
 	comments, cerr := client.Comments(ctx, page.ID)
 	if cerr != nil {
 		view.Notes = append(view.Notes, "comments unavailable: "+cerr.Error())
@@ -471,6 +475,9 @@ func readConfluencePage(ctx context.Context, client ConfluencePageClient, accoun
 	view.Comments, view.CommentsTruncated = commentThreads(comments, names)
 	return view, nil
 }
+
+// confluenceArchivedNote flags an archived page in get_confluence_page.
+const confluenceArchivedNote = "this page is archived: it can be read, not edited (restore it in Confluence first)"
 
 // confluenceLayoutNote explains the LayoutBoundary lines of a page's text.
 const confluenceLayoutNote = confluenceedit.LayoutBoundary + " lines mark the edges of the page's layout columns " +

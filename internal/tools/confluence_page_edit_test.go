@@ -376,3 +376,27 @@ func TestEditConfluencePage_NameLookupFailureIsExplained(t *testing.T) {
 	assert.Contains(t, msg, "user bulk: 500")
 	assert.Contains(t, msg, "re-read with get_confluence_page and keep the markers as shown")
 }
+
+// An archived page is never edited: the PUT carries status "current",
+// which would restore it. Refused at propose time, and at apply time when
+// the page was archived after the preview — with no PUT.
+func TestEditConfluencePage_RefusesAnArchivedPage(t *testing.T) {
+	d := openDB(t)
+	db.SeedTestJiraAccount(t, d)
+	f := newFakeConfluence()
+	tool := NewEditConfluencePage(confluenceFactory(f))
+	args := normalized(t, tool, d, editArgs(7, fridayToMonday))
+
+	p := f.pages[cfPageID]
+	p.Status = "archived"
+	f.pages[cfPageID] = p
+	_, err := tool.Execute(context.Background(), d, Call{Args: args})
+	assert.EqualError(t, err, "Confluence page 98765 is archived; restore it in Confluence before editing it; nothing was written")
+	assert.Empty(t, f.puts)
+
+	_, err = tool.Normalize(context.Background(), d, editArgs(7, fridayToMonday))
+	var ve *ValidationError
+	require.ErrorAs(t, err, &ve)
+	assert.Equal(t, "Confluence page 98765 is archived; restore it in Confluence before editing it", ve.Msg)
+	assert.Empty(t, f.puts)
+}

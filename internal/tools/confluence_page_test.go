@@ -241,6 +241,20 @@ func TestGetConfluencePage_ExplainsLayoutBoundaries(t *testing.T) {
 	assert.Equal(t, []string{confluenceLayoutNote}, view.Notes)
 }
 
+// An archived page reads like any other, flagged as archived.
+func TestGetConfluencePage_ReadsAnArchivedPage(t *testing.T) {
+	d := openDB(t)
+	db.SeedTestJiraAccount(t, d)
+	f := newFakeConfluence()
+	p := f.pages[cfPageID]
+	p.Status = "archived"
+	f.pages[cfPageID] = p
+	view := readPage(t, d, f, `{"page":"98765"}`)
+	assert.True(t, view.Archived)
+	assert.Contains(t, view.Text, "Выкатываем в пятницу.")
+	assert.Equal(t, []string{confluenceArchivedNote}, view.Notes)
+}
+
 func TestGetConfluencePage_TruncatesTextAndComments(t *testing.T) {
 	d := openDB(t)
 	db.SeedTestJiraAccount(t, d)

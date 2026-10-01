@@ -251,6 +251,9 @@ func prepareConfluenceEdit(ctx context.Context, client ConfluencePageClient, acc
 	if err != nil {
 		return editConfluencePinned{}, confluenceEditReadErr(err, accountID, a.PageID)
 	}
+	if page.archived() {
+		return editConfluencePinned{}, &ValidationError{Msg: confluenceArchivedRefusal(page.ID)}
+	}
 	if page.Version != a.BaseVersion {
 		return editConfluencePinned{}, &ValidationError{Msg: fmt.Sprintf("page changed since you read it (now v%d) — re-read with get_confluence_page", page.Version)}
 	}
@@ -365,6 +368,9 @@ func executeConfluenceEdit(ctx context.Context, d *db.DB, factory ConfluencePage
 	if err != nil {
 		return nil, confluenceWriteFailed(d, account.ID, confluenceEditReadErr(err, account.ID, p.PageID), err)
 	}
+	if live.archived() {
+		return nil, errors.New(confluenceArchivedRefusal(p.PageID) + "; nothing was written")
+	}
 	if live.Version != p.BaseVersion || storageHash(live.Storage) != p.BaseHash {
 		return nil, confluenceConflict(live, p)
 	}
@@ -376,6 +382,12 @@ func executeConfluenceEdit(ctx context.Context, d *db.DB, factory ConfluencePage
 		return nil, confluenceWriteFailed(d, account.ID, confluencePutErr(ctx, client, err, account.ID, p), err)
 	}
 	return map[string]any{"page_id": p.PageID, "title": p.Title, "url": p.URL, "version": version}, nil
+}
+
+// confluenceArchivedRefusal refuses to edit an archived page (see
+// ConfluencePage.archived).
+func confluenceArchivedRefusal(pageID string) string {
+	return fmt.Sprintf("Confluence page %s is archived; restore it in Confluence before editing it", pageID)
 }
 
 // confluenceConflict is the failure for a live page that is no longer the
