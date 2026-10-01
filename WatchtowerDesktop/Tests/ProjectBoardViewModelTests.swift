@@ -267,6 +267,112 @@ final class ProjectBoardViewModelTests: XCTestCase {
         XCTAssertEqual(reported, [.target(leaf), .target(root), .target(mid)])
     }
 
+    // MARK: - Kanban drag (setStatus for a target other than the selected one)
+
+    /// A kanban drop moves the dragged card, not the selected one; the hook
+    /// names the dragged card and the parents its rollup moved.
+    func testSetStatusForANonSelectedTargetWritesItAndReportsIt() throws {
+        let (pid, root, leaf, other) = try dbManager.dbPool.write { db -> (Int64, Int64, Int64, Int64) in
+            let pid = try Self.insertProject(db)
+            let root = try Self.insertTarget(db, project: pid, text: "Feature")
+            let leaf = try Self.insertTarget(db, project: pid, text: "Task", parent: root)
+            let other = try Self.insertTarget(db, project: pid, text: "Selected")
+            return (pid, root, leaf, other)
+        }
+        let vm = makeVM(project: pid)
+        var reported: [ProjectSubject] = []
+        vm.load()
+        vm.select(Int(other))
+        vm.onOwnerWrite = { _, subject in reported.append(subject) }
+        XCTAssertTrue(vm.setStatus("done", for: Int(leaf)))
+
+        let stored = try dbManager.dbPool.read { db in
+            (try TargetQueries.fetchByID(db, id: Int(leaf))?.status,
+             try TargetQueries.fetchByID(db, id: Int(root))?.status,
+             try TargetQueries.fetchByID(db, id: Int(other))?.status)
+        }
+        XCTAssertEqual(stored.0, "done")
+        XCTAssertEqual(stored.1, "done", "PROJ-05: the parent rolls up")
+        XCTAssertEqual(stored.2, "todo", "the selected target is untouched")
+        XCTAssertEqual(reported, [.target(leaf), .target(root)])
+        XCTAssertEqual(vm.selectedTargetID, Int(other), "a drop does not change the selection")
+    }
+
+    func testSetStatusToTheCurrentStatusWritesNothing() throws {
+        let (pid, tid) = try dbManager.dbPool.write { db -> (Int64, Int64) in
+            let pid = try Self.insertProject(db)
+            return (pid, try Self.insertTarget(db, project: pid, text: "Task", status: "in_progress"))
+        }
+        let vm = makeVM(project: pid)
+        var reported = 0
+        vm.onOwnerWrite = { _, _ in reported += 1 }
+        vm.load()
+        let pool = dbManager.dbPool
+        let historyRows = {
+            try pool.read { db in
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM target_status_history WHERE target_id = ?", arguments: [tid])
+            }
+        }
+        let before = try historyRows()
+        XCTAssertFalse(vm.setStatus("in_progress", for: Int(tid)))
+        XCTAssertEqual(try historyRows(), before, "no status write, so no history row")
+        XCTAssertEqual(reported, 0)
+
+        // The menu path goes through the same writer: picking the current
+        // status is a no-op there too.
+        vm.select(Int(tid))
+        vm.setStatus("in_progress")
+        XCTAssertEqual(try historyRows(), before)
+        XCTAssertEqual(reported, 0)
+    }
+
+    func testSetStatusRefusesATargetOfAnotherProject() throws {
+        let (pid, foreign) = try dbManager.dbPool.write { db -> (Int64, Int64) in
+            let pid = try Self.insertProject(db)
+            _ = try Self.insertTarget(db, project: pid, text: "Mine")
+            let other = try Self.insertProject(db, name: "other")
+            return (pid, try Self.insertTarget(db, project: other, text: "Foreign"))
+        }
+        let vm = makeVM(project: pid)
+        var reported = 0
+        vm.onOwnerWrite = { _, _ in reported += 1 }
+        vm.load()
+        XCTAssertFalse(vm.setStatus("done", for: Int(foreign)))
+
+        let stored = try dbManager.dbPool.read { try TargetQueries.fetchByID($0, id: Int(foreign)) }
+        XCTAssertEqual(stored?.status, "todo")
+        XCTAssertEqual(reported, 0)
+    }
+
+    func testSetStatusForAnUnknownTargetWritesNothing() throws {
+        let pid = try dbManager.dbPool.write { try Self.insertProject($0) }
+        let vm = makeVM(project: pid)
+        var reported = 0
+        vm.onOwnerWrite = { _, _ in reported += 1 }
+        vm.load()
+        vm.setStatus("done", for: 999_999)
+        XCTAssertEqual(reported, 0)
+    }
+
+    func testModeAndKanbanFilterAreRememberedPerProject() throws {
+        let suite = "ProjectBoardViewModelTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let pid = try dbManager.dbPool.write { try Self.insertProject($0) }
+
+        let vm = ProjectBoardViewModel(dbPool: dbManager.dbPool, projectID: pid, defaults: defaults)
+        XCTAssertEqual(vm.mode, .list)
+        vm.mode = .kanban
+        vm.kanbanFilterRootID = 7
+
+        let reopened = ProjectBoardViewModel(dbPool: dbManager.dbPool, projectID: pid, defaults: defaults)
+        XCTAssertEqual(reopened.mode, .kanban)
+        XCTAssertEqual(reopened.kanbanFilterRootID, 7)
+        let other = ProjectBoardViewModel(dbPool: dbManager.dbPool, projectID: pid + 1, defaults: defaults)
+        XCTAssertEqual(other.mode, .list)
+        XCTAssertNil(other.kanbanFilterRootID)
+    }
+
     // MARK: - Mark read
 
     func testSelectingATargetMarksItsAgentCommentsRead() throws {

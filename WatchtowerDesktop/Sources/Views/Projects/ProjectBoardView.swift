@@ -17,9 +17,16 @@ struct ProjectBoardView: View {
                 // Both columns fill the height: an HSplitView pane sized to its
                 // content floats (the tree sank to the bottom under empty
                 // space and the "Select a target" placeholder was clipped).
+                // Kanban columns want more width than the tree; the detail
+                // keeps its own minimum in both modes.
                 HSplitView {
-                    tree(vm)
-                        .frame(minWidth: 260, idealWidth: 320, maxHeight: .infinity, alignment: .top)
+                    board(vm)
+                        .frame(
+                            minWidth: vm.mode == .kanban ? 420 : 260,
+                            idealWidth: vm.mode == .kanban ? 820 : 320,
+                            maxHeight: .infinity,
+                            alignment: .top
+                        )
                     detail(vm)
                         .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
                 }
@@ -42,42 +49,120 @@ struct ProjectBoardView: View {
         .onDisappear { viewModel?.stopPolling() }
     }
 
-    // MARK: - Tree
+    // MARK: - Board (list or kanban)
 
-    private func tree(_ vm: ProjectBoardViewModel) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("Board").font(.headline)
-                Spacer()
-                Toggle("Show done", isOn: Binding(get: { vm.showDone }, set: { vm.showDone = $0 }))
-                    .toggleStyle(.checkbox)
-                    .font(.caption)
+    private func board(_ vm: ProjectBoardViewModel) -> some View {
+        let kanban = vm.mode == .kanban ? vm.kanban : nil
+        return VStack(alignment: .leading, spacing: 0) {
+            header(vm, kanban: kanban)
+                .padding(8)
+            // Board-level, not in the detail pane: a kanban drop can fail for
+            // a card that is not the selected one (or with nothing selected).
+            if let error = vm.errorMessage {
+                HStack(alignment: .top) {
+                    Text(error)
+                        .font(.callout)
+                        .foregroundStyle(.red)
+                        .textSelection(.enabled)
+                    Spacer(minLength: 4)
+                    Button { vm.dismissError() } label: { Image(systemName: "xmark") }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                        .help("Dismiss")
+                }
+                .padding(.horizontal, 8)
+                .padding(.bottom, 6)
             }
-            .padding(8)
             Divider()
-            if vm.rows.isEmpty {
+            if vm.roots.isEmpty {
                 ContentUnavailableView(
                     "No targets yet",
                     systemImage: "square.stack.3d.up",
                     description: Text("Claude Code creates the board through the watchtower-project tools.")
                 )
                 .frame(maxHeight: .infinity)
+            } else if let kanban {
+                ProjectBoardKanbanView(
+                    board: kanban,
+                    selectedTargetID: vm.selectedTargetID,
+                    onSelect: { vm.select($0) },
+                    onMove: { vm.setStatus($1, for: $0) }
+                )
             } else {
-                // List selection keeps arrow-key navigation; the card draws the
-                // selected look itself, keyed off the selection, over a clear
-                // row background.
-                List(vm.rows, selection: Binding(get: { vm.selectedTargetID }, set: { vm.select($0) })) { row in
-                    ProjectBoardCardView(
-                        row: row,
-                        isSelected: vm.selectedTargetID == row.id,
-                        isCollapsed: vm.collapsed.contains(row.id)
-                    ) { vm.toggle(row.id) }
-                    .listRowSeparator(.hidden)
-                    .listRowInsets(EdgeInsets(top: 3, leading: 8, bottom: 3, trailing: 8))
-                    .listRowBackground(Color.clear)
-                }
-                .panelListStyle()
+                tree(vm)
             }
+        }
+    }
+
+    private func header(_ vm: ProjectBoardViewModel, kanban: ProjectBoardKanban?) -> some View {
+        HStack(spacing: 10) {
+            Text("Board").font(.headline)
+            Picker("View", selection: Binding(get: { vm.mode }, set: { vm.mode = $0 })) {
+                Text("List").tag(ProjectBoardMode.list)
+                Text("Kanban").tag(ProjectBoardMode.kanban)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+            if let kanban {
+                kanbanFilterMenu(vm, kanban)
+            }
+            Spacer()
+            Toggle("Show done", isOn: Binding(get: { vm.showDone }, set: { vm.showDone = $0 }))
+                .toggleStyle(.checkbox)
+                .font(.caption)
+        }
+    }
+
+    private func kanbanFilterMenu(_ vm: ProjectBoardViewModel, _ kanban: ProjectBoardKanban) -> some View {
+        let current = kanban.filterOptions.first { $0.id == kanban.filterRootID }
+        return Menu {
+            Toggle("All", isOn: Binding(
+                get: { kanban.filterRootID == nil },
+                set: { if $0 { vm.kanbanFilterRootID = nil } }
+            ))
+            if !kanban.filterOptions.isEmpty { Divider() }
+            ForEach(kanban.filterOptions) { option in
+                Toggle(option.title.isEmpty ? "Untitled" : option.title, isOn: Binding(
+                    get: { kanban.filterRootID == option.id },
+                    set: { if $0 { vm.kanbanFilterRootID = option.id } }
+                ))
+            }
+        } label: {
+            Text(current.map { $0.title.isEmpty ? "Untitled" : $0.title } ?? "All")
+                .lineLimit(1)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Show only one top-level target's tasks")
+    }
+
+    // MARK: - Tree
+
+    @ViewBuilder
+    private func tree(_ vm: ProjectBoardViewModel) -> some View {
+        if vm.rows.isEmpty {
+            ContentUnavailableView(
+                "Nothing open",
+                systemImage: "checkmark.circle",
+                description: Text("Every target is done or dismissed. Turn on Show done to see them.")
+            )
+            .frame(maxHeight: .infinity)
+        } else {
+            // List selection keeps arrow-key navigation; the card draws the
+            // selected look itself, keyed off the selection, over a clear
+            // row background.
+            List(vm.rows, selection: Binding(get: { vm.selectedTargetID }, set: { vm.select($0) })) { row in
+                ProjectBoardCardView(
+                    row: row,
+                    isSelected: vm.selectedTargetID == row.id,
+                    isCollapsed: vm.collapsed.contains(row.id)
+                ) { vm.toggle(row.id) }
+                .listRowSeparator(.hidden)
+                .listRowInsets(EdgeInsets(top: 3, leading: 8, bottom: 3, trailing: 8))
+                .listRowBackground(Color.clear)
+            }
+            .panelListStyle()
         }
     }
 
@@ -88,9 +173,6 @@ struct ProjectBoardView: View {
         if let node = vm.selectedNode {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    if let error = vm.errorMessage {
-                        Text(error).font(.callout).foregroundStyle(.red)
-                    }
                     TextField("Title", text: $titleDraft)
                         .font(.title3.weight(.semibold))
                         .textFieldStyle(.plain)

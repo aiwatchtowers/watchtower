@@ -19,6 +19,21 @@ final class ProjectBoardViewModel {
     private(set) var selectedComments: [ProjectComment] = []
     private(set) var errorMessage: String?
 
+    /// List or Kanban, remembered per project.
+    var mode: ProjectBoardMode {
+        didSet { preferences.mode = mode }
+    }
+
+    /// The kanban parent filter (a top-level target id; nil = All),
+    /// remembered per project. A stale id shows as All.
+    var kanbanFilterRootID: Int? {
+        didSet { preferences.kanbanFilterRootID = kanbanFilterRootID }
+    }
+
+    var kanban: ProjectBoardKanban {
+        ProjectBoardKanban(roots, filterRootID: kanbanFilterRootID, showDone: showDone)
+    }
+
     var rows: [ProjectBoardRow] {
         ProjectBoardOutline.rows(roots, collapsed: collapsed, showDone: showDone)
     }
@@ -35,12 +50,17 @@ final class ProjectBoardViewModel {
     var onOwnerWrite: ((Int64, ProjectSubject) -> Void)?
 
     private let dbPool: DatabasePool
+    private let preferences: ProjectBoardPreferences
     private var fingerprint = ""
     private var pollTask: Task<Void, Never>?
 
-    init(dbPool: DatabasePool, projectID: Int64) {
+    init(dbPool: DatabasePool, projectID: Int64, defaults: UserDefaults = .standard) {
         self.dbPool = dbPool
         self.projectID = projectID
+        let preferences = ProjectBoardPreferences(projectID: projectID, defaults: defaults)
+        self.preferences = preferences
+        mode = preferences.mode
+        kanbanFilterRootID = preferences.kanbanFilterRootID
     }
 
     // MARK: - Loading
@@ -142,6 +162,12 @@ final class ProjectBoardViewModel {
         }
     }
 
+    /// The board's error banner is dismissed by the owner: a poll reload
+    /// does not clear it, so a failed drop's message stays until read.
+    func dismissError() {
+        errorMessage = nil
+    }
+
     func toggle(_ targetID: Int) {
         if collapsed.contains(targetID) {
             collapsed.remove(targetID)
@@ -152,8 +178,22 @@ final class ProjectBoardViewModel {
 
     // MARK: - Edits
 
+    /// The detail pane's status menu: the selected target.
     func setStatus(_ status: String) {
-        guard let id = selectedTargetID, ProjectBoardCard.editableStatuses.contains(status) else { return }
+        guard let id = selectedTargetID else { return }
+        setStatus(status, for: id)
+    }
+
+    /// The one status writer — the detail menu and a kanban drop alike. A
+    /// status equal to the current one (a drop into the card's own column),
+    /// a status the board does not offer, and a target not on this board
+    /// write nothing.
+    /// - Returns: whether a status was written (a failed write sets `errorMessage`).
+    @discardableResult
+    func setStatus(_ status: String, for id: Int) -> Bool {
+        guard ProjectBoardCard.editableStatuses.contains(status),
+              let current = ProjectBoardOutline.find(id, in: roots),
+              current.target.status != status else { return false }
         // The rollup (PROJ-05) may move the target's parents in the same
         // write; they are the owner's doing too, so they never notify.
         var rolledUp: [Int64] = []
@@ -163,7 +203,7 @@ final class ProjectBoardViewModel {
             let after = try ProjectQueries.ancestorStatuses(db, of: Int64(id))
             rolledUp = after.filter { before[$0.key] != $0.value }.map(\.key).sorted()
         }
-        write("change the status", alsoTouched: { rolledUp }, body)
+        return write("change the status", target: id, alsoTouched: { rolledUp }, body)
     }
 
     func setPriority(_ priority: String) {
@@ -205,18 +245,21 @@ final class ProjectBoardViewModel {
     }
 
     /// Every owner write goes through here: the write, then the hook, then a
-    /// reload. The hook fires only after the write succeeded — for the
-    /// selected target and for every target `alsoTouched` names.
+    /// reload. The hook fires only after the write succeeded — for the target
+    /// the write touched (`target`, the selected one unless the caller names
+    /// another, e.g. a kanban drop) and for every target `alsoTouched` names.
     @discardableResult
     private func write(
         _ what: String,
+        target: Int? = nil,
         alsoTouched: () -> [Int64] = { [] },
         _ body: (Database) throws -> Void
     ) -> Bool {
+        let touched = target ?? selectedTargetID
         do {
             try dbPool.write { db in try body(db) }
             errorMessage = nil
-            if let id = selectedTargetID {
+            if let id = touched {
                 onOwnerWrite?(projectID, .target(Int64(id)))
             }
             for id in alsoTouched() {
