@@ -120,7 +120,7 @@ final class DayPlanViewModel {
             }
             await reload()
         } catch {
-            generationError = error.localizedDescription
+            await reportItemWriteFailure(error)
         }
     }
 
@@ -135,8 +135,15 @@ final class DayPlanViewModel {
             }
             await reload()
         } catch {
-            generationError = error.localizedDescription
+            await reportItemWriteFailure(error)
         }
+    }
+
+    /// An item replaced by a regenerated plan, or its task deleted elsewhere,
+    /// reloads the plan first so the stale row goes; then the reason shows.
+    private func reportItemWriteFailure(_ error: Error) async {
+        if error is RowNotFoundError || error is TargetNotFoundError { await reload() }
+        generationError = error.localizedDescription
     }
 
     func delete(_ item: DayPlanItem) async {
