@@ -52,8 +52,9 @@ extension ProjectsViewModel {
             showInLayout(item, projectID: projectID)
         case let .session(id):
             // The list may not be loaded yet (the panel loads it on appear).
+            // A failed load already reports itself; the row is not "gone".
             if terminalSessions[projectID]?.contains(where: { $0.id == id }) != true {
-                await loadSessions(projectID: projectID)
+                guard await loadSessions(projectID: projectID) else { return }
             }
             guard let session = terminalSessions[projectID]?.first(where: { $0.id == id }) else {
                 sessionActionErrors[projectID] = "That session no longer exists."
@@ -70,9 +71,10 @@ extension ProjectsViewModel {
         await newSession(projectID: projectID)
     }
 
-    /// Puts `sessionID` on screen without hiding the documents pane — the
-    /// session a Send comments line was just pasted into, so the owner sees
-    /// it land. Already visible (a split) → nothing moves.
+    /// Puts `sessionID` on screen the way `Placement.keeping(.documents)`
+    /// does — the session a Send comments line was just pasted into, so the
+    /// owner sees it land: beside the document in a split (already visible →
+    /// nothing moves), in its place in a single pane.
     func showTerminal(sessionID: Int64, projectID: Int64) {
         var updated = layout(projectID: projectID)
         updated.reveal(.session(sessionID), keeping: .documents)
@@ -107,7 +109,9 @@ extension ProjectsViewModel {
             setLayout(updated, projectID: projectID)
             return
         }
-        if session(id, projectID: projectID) == nil { await loadSessions(projectID: projectID) }
+        if session(id, projectID: projectID) == nil {
+            guard await loadSessions(projectID: projectID) else { return }
+        }
         guard let row = session(id, projectID: projectID) else {
             sessionActionErrors[projectID] = "That session no longer exists."
             return

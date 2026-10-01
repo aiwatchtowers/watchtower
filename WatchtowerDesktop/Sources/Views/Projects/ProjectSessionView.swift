@@ -5,6 +5,7 @@ import WatchtowerCore
 /// A session pane of a project page (spec §3): one `terminal_sessions` row
 /// from `AppState.terminalCenter`, which owns the process — this view never
 /// does. Not running (an app restart) or closed → a button that resumes it.
+/// The project's session errors show once, on the page (`ProjectPageView`).
 struct ProjectSessionView: View {
     let projectID: Int64
     let sessionID: Int64
@@ -13,18 +14,24 @@ struct ProjectSessionView: View {
     var body: some View {
         let vm = appState.projectsViewModel
         let session = vm?.session(sessionID, projectID: projectID)
-        TerminalSessionPane(session: session, error: vm?.sessionErrors[projectID]) {
+        TerminalSessionPane(session: session, error: nil) {
             VStack(spacing: 8) {
                 if let session {
                     Text(session.isClosed ? "\(session.title) is closed." : "\(session.title) is not running.")
                         .foregroundStyle(.secondary)
                     Button(session.isClosed ? "Reopen" : session.kind == .claude ? "Resume" : "Start") {
-                        Task { await vm?.open(session) }
+                        Task { await vm?.open(session, placement: .inPlace) }
                     }
-                } else {
+                } else if vm?.sessionErrors[projectID] == nil {
                     ProgressView().controlSize(.small)
+                } else {
+                    Button("Try Again") { Task { await vm?.loadSessions(projectID: projectID) } }
                 }
             }
+        }
+        // A layout restored before any list load names a row not read yet.
+        .task(id: sessionID) {
+            if vm?.session(sessionID, projectID: projectID) == nil { await vm?.loadSessions(projectID: projectID) }
         }
     }
 }
@@ -93,10 +100,10 @@ private struct TerminalSessionPane<NotStarted: View>: View {
                     Spacer()
                     // A failed resume fails again on Restart: only a new id gets out.
                     if let session, vm?.resumeFailed.contains(session.id) == true {
-                        Button("Start fresh") { Task { await vm?.startFresh(session) } }
+                        Button("Start fresh") { Task { await vm?.startFresh(session, placement: .inPlace) } }
                     }
                     Button("Restart") {
-                        if let session { Task { await vm?.open(session) } }
+                        if let session { Task { await vm?.open(session, placement: .inPlace) } }
                     }
                 }
                 .padding(8)

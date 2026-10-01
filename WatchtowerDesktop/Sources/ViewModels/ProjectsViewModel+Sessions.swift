@@ -23,8 +23,12 @@ extension ProjectsViewModel {
         /// Without hiding this pane (Send comments / Open terminal from a
         /// document): `WorkspaceLayout.reveal(_:keeping:)`.
         case keeping(WorkspacePane)
-        /// Into this pane's slot (a pane's own picker).
+        /// Into this pane's slot (a pane's own picker); a slot gone from
+        /// the layout meanwhile falls back to `.show`.
         case replacing(WorkspacePane)
+        /// The layout stays as it is: a button inside the session's own pane
+        /// (Resume, Restart, Start fresh) must not undo an expansion.
+        case inPlace
     }
 
     /// The selected project's sessions, most recently active first.
@@ -72,13 +76,18 @@ extension ProjectsViewModel {
 
     /// nil = the standalone sessions. false = the load failed and its error
     /// is in `sessionLoadErrors`; the cached list is then stale.
+    /// Only a project's latest read is applied: an older one finishing last
+    /// would drop from the layout a session created since it started.
     @discardableResult
     func loadSessions(projectID: Int64?) async -> Bool {
         guard let projectID else { return await loadStandaloneSessions() }
+        projectLoads[projectID, default: 0] += 1
+        let load = projectLoads[projectID]
         do {
             let rows = try await dbPool.read {
                 try TerminalSessionQueries.fetchForProject($0, projectID: projectID)
             }
+            guard load == projectLoads[projectID] else { return true }
             terminalSessions[projectID] = rows
             sessionLoadErrors[projectID] = nil
             // A row gone from the list (deleted from another window, or a
@@ -88,6 +97,7 @@ extension ProjectsViewModel {
             }
             return true
         } catch {
+            guard load == projectLoads[projectID] else { return true }
             sessionLoadErrors[projectID] = "Could not load terminal sessions: \(error.localizedDescription)"
             return false
         }
@@ -232,9 +242,9 @@ extension ProjectsViewModel {
 
     /// "Start fresh" after a failed resume: a new Claude session id under the
     /// same row and title. A shell has no Claude session: it just opens.
-    func startFresh(_ session: TerminalSession) async {
+    func startFresh(_ session: TerminalSession, placement: Placement = .show) async {
         guard session.kind == .claude else {
-            await open(session)
+            await open(session, placement: placement)
             return
         }
         setSessionError(nil, projectID: session.projectID)
@@ -260,7 +270,7 @@ extension ProjectsViewModel {
             return
         }
         resumeFailed.remove(row.id)
-        await activate(row, fresh: true, prompt: nil, placement: .show)
+        await activate(row, fresh: true, prompt: nil, placement: placement)
     }
 
     /// Stops the process and marks the row closed; it stays listed and can
@@ -270,9 +280,11 @@ extension ProjectsViewModel {
         setSessionError(nil, projectID: session.projectID)
         await terminalCenter?.close(sessionID: session.id)
         forgetProcessState(session.id)
-        if let projectID = session.projectID { replaceClosedInLayout(session.id, projectID: projectID) }
         do {
             try await dbPool.write { try TerminalSessionQueries.close($0, id: session.id) }
+            // Only once the row is closed: a failed write keeps the pane (and
+            // its error) where the owner is looking.
+            if let projectID = session.projectID { replaceClosedInLayout(session.id, projectID: projectID) }
         } catch {
             setSessionError("Could not close the session: \(error.localizedDescription)", projectID: session.projectID)
         }
@@ -448,7 +460,10 @@ extension ProjectsViewModel {
             switch placement {
             case .show: updated.show(.session(row.id))
             case let .keeping(kept): updated.reveal(.session(row.id), keeping: kept)
-            case let .replacing(slot): updated.replace(slot, with: .session(row.id))
+            case let .replacing(slot):
+                if !updated.replace(slot, with: .session(row.id)) { updated.show(.session(row.id)) }
+            case .inPlace:
+                break
             }
             setLayout(updated, projectID: projectID)
         }
@@ -466,13 +481,14 @@ extension ProjectsViewModel {
 
     private func replaceClosedInLayout(_ sessionID: Int64, projectID: Int64) {
         var updated = layout(projectID: projectID)
-        let gone = WorkspacePane.session(sessionID)
         guard updated.sessionIDs.contains(sessionID) else { return }
         let others = (terminalSessions[projectID] ?? []).filter { $0.id != sessionID }
-        if let next = terminalCenter.flatMap({ center in
-            TerminalSessionPolicy.activeSession(others, live: center.liveIDs, lastFocused: center.focusOrder)
-        }), !updated.sessionIDs.contains(next.id) {
-            updated.replace(gone, with: .session(next.id))
+        var next: TerminalSession?
+        if let center = terminalCenter {
+            next = TerminalSessionPolicy.activeSession(others, live: center.liveIDs, lastFocused: center.focusOrder)
+        }
+        if let next, !updated.sessionIDs.contains(next.id) {
+            updated.replace(.session(sessionID), with: .session(next.id))
             setLayout(updated, projectID: projectID)
         } else {
             forgetInLayout(sessionID, projectID: projectID)

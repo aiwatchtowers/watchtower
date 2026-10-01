@@ -67,8 +67,10 @@ package struct WorkspaceLayout: Codable, Equatable, Sendable {
 
     /// A pane's own picker: `slot` shows `pane` instead. A pane already in
     /// the other slot swaps places with it; an expansion follows its slot.
-    package mutating func replace(_ slot: WorkspacePane, with pane: WorkspacePane) {
-        guard slot != pane else { return }
+    /// Returns false when `slot` is in neither slot (nothing changes).
+    @discardableResult
+    package mutating func replace(_ slot: WorkspacePane, with pane: WorkspacePane) -> Bool {
+        guard slot != pane else { return primary == slot || secondary == slot }
         let wasExpanded = expanded == slot
         if primary == slot {
             if secondary == pane { secondary = slot }
@@ -77,9 +79,10 @@ package struct WorkspaceLayout: Codable, Equatable, Sendable {
             if primary == pane { primary = slot }
             secondary = pane
         } else {
-            return
+            return false
         }
         if wasExpanded { expanded = pane }
+        return true
     }
 
     /// A split pane's close button: the other pane stays, alone. A single

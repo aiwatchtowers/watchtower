@@ -15,6 +15,16 @@ struct ProjectPageView: View {
         VStack(spacing: 0) {
             header
             Divider()
+            // Session actions start from any pane (a pane picker, Open
+            // terminal): their errors show here, once, whatever is on screen.
+            if let error = vm.sessionErrors[project.id] {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+                Divider()
+            }
             WorkspaceAreaView(vm: vm, project: project)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }

@@ -4,27 +4,27 @@ import WatchtowerCore
 
 /// The project page's main area (spec 2026-09-30-project-workspace-sessions
 /// §3): one pane, or two side by side with a draggable divider, from the
-/// project's `WorkspaceLayout`. An expanded pane shows alone.
+/// project's `WorkspaceLayout`. Both slots of a split stay in the view tree
+/// while one is expanded (the other at zero width), so expanding and
+/// collapsing back keeps each pane's own state — a comment draft, the
+/// board's selection.
 struct WorkspaceAreaView: View {
     @Bindable var vm: ProjectsViewModel
     let project: Project
 
     var body: some View {
         let layout = vm.layout(projectID: project.id)
-        let panes = layout.visiblePanes
-        if panes.count == 2 {
-            WorkspaceSplitView(fraction: layout.dividerFraction) { vm.setDividerFraction($0, projectID: project.id) } leading: {
-                pane(panes[0], layout: layout)
-            } trailing: {
-                pane(panes[1], layout: layout)
+        let slots = [layout.primary] + (layout.secondary.map { [$0] } ?? [])
+        WorkspaceSplitView(
+            panes: slots, expanded: layout.expanded, fraction: layout.dividerFraction,
+            onCommit: { vm.setDividerFraction($0, projectID: project.id) },
+            pane: { pane in
+                WorkspacePaneView(
+                    vm: vm, project: project, pane: pane, isSplit: layout.isSplit,
+                    isExpanded: layout.expanded == pane, isHidden: layout.expanded.map { $0 != pane } ?? false
+                )
             }
-        } else if let only = panes.first {
-            pane(only, layout: layout)
-        }
-    }
-
-    private func pane(_ pane: WorkspacePane, layout: WorkspaceLayout) -> some View {
-        WorkspacePaneView(vm: vm, project: project, pane: pane, isSplit: layout.isSplit, isExpanded: layout.expanded == pane)
+        )
     }
 }
 
@@ -36,12 +36,20 @@ struct WorkspacePaneView: View {
     let pane: WorkspacePane
     let isSplit: Bool
     let isExpanded: Bool
+    /// The other pane of an expanded split: kept for its state, not shown.
+    /// A hidden terminal is detached (the center keeps its process) rather
+    /// than squeezed to zero columns.
+    let isHidden: Bool
 
     var body: some View {
         VStack(spacing: 0) {
             header
             Divider()
-            content.frame(maxWidth: .infinity, maxHeight: .infinity)
+            if isHidden, case .session = pane {
+                Color.clear
+            } else {
+                content.frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
     }
 
@@ -133,31 +141,51 @@ struct WorkspacePaneView: View {
     }
 }
 
-/// Two panes side by side. The divider follows the drag live and reports
-/// its fraction once, when the drag ends (the layout persists it).
-struct WorkspaceSplitView<Leading: View, Trailing: View>: View {
-    static var handleWidth: CGFloat { 7 }
+/// One or two panes side by side, each keyed by its pane so a pane keeps
+/// its identity (and state) as the layout changes. The divider follows the
+/// drag live and reports its fraction once, when the drag ends (the layout
+/// persists it). With `expanded` set, that pane takes the whole width.
+struct WorkspaceSplitView<Pane: View>: View {
+    private static var handleWidth: CGFloat { 7 }
+    private static var space: String { "workspace-split" }
 
+    let panes: [WorkspacePane]
+    let expanded: WorkspacePane?
     let fraction: Double
     let onCommit: (Double) -> Void
-    @ViewBuilder let leading: () -> Leading
-    @ViewBuilder let trailing: () -> Trailing
+    @ViewBuilder let pane: (WorkspacePane) -> Pane
     @State private var dragFraction: Double?
+    @State private var cursorPushed = false
 
     var body: some View {
         GeometryReader { geometry in
             let width = geometry.size.width
-            let current = dragFraction ?? fraction
             HStack(spacing: 0) {
-                leading().frame(width: max(0, (width - Self.handleWidth) * current))
-                divider(width: width)
-                trailing().frame(maxWidth: .infinity)
+                ForEach(Array(panes.enumerated()), id: \.element) { index, item in
+                    if index == 1 && expanded == nil { divider(width: width) }
+                    pane(item)
+                        .frame(width: paneWidth(index: index, item: item, total: width))
+                        .opacity(isHidden(item) ? 0 : 1)
+                        .allowsHitTesting(!isHidden(item))
+                        .accessibilityHidden(isHidden(item))
+                }
             }
             .coordinateSpace(name: Self.space)
         }
+        .onDisappear { popCursor() }
     }
 
-    private static var space: String { "workspace-split" }
+    private func isHidden(_ item: WorkspacePane) -> Bool {
+        expanded.map { $0 != item } ?? false
+    }
+
+    private func paneWidth(index: Int, item: WorkspacePane, total: CGFloat) -> CGFloat {
+        if let expanded { return expanded == item ? total : 0 }
+        guard panes.count == 2 else { return total }
+        let content = max(0, total - Self.handleWidth)
+        let leading = content * (dragFraction ?? fraction)
+        return index == 0 ? leading : content - leading
+    }
 
     private func divider(width: CGFloat) -> some View {
         Rectangle()
@@ -167,20 +195,36 @@ struct WorkspaceSplitView<Leading: View, Trailing: View>: View {
             .frame(maxHeight: .infinity)
             .contentShape(Rectangle())
             .onHover { inside in
-                if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+                if inside, !cursorPushed {
+                    NSCursor.resizeLeftRight.push()
+                    cursorPushed = true
+                } else if !inside {
+                    popCursor()
+                }
             }
             .gesture(
                 DragGesture(minimumDistance: 1, coordinateSpace: .named(Self.space))
                     .onChanged { value in
-                        guard width > 0 else { return }
+                        let content = width - Self.handleWidth
+                        guard content > 0 else { return }
                         let range = WorkspaceLayout.dividerRange
-                        dragFraction = min(max(Double(value.location.x / width), range.lowerBound), range.upperBound)
+                        let raw = Double((value.location.x - Self.handleWidth / 2) / content)
+                        dragFraction = min(max(raw, range.lowerBound), range.upperBound)
                     }
                     .onEnded { _ in
                         if let dragFraction { onCommit(dragFraction) }
                         dragFraction = nil
                     }
             )
+            .onDisappear { popCursor() }
             .accessibilityHidden(true)
+    }
+
+    /// Balanced with the hover push: a divider that disappears under the
+    /// pointer (expand, unsplit) must not leave the resize cursor stuck.
+    private func popCursor() {
+        guard cursorPushed else { return }
+        NSCursor.pop()
+        cursorPushed = false
     }
 }

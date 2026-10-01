@@ -830,4 +830,37 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         await vm.loadSessions(projectID: p)
         XCTAssertEqual(vm.layout.visiblePanes, [.documents])
     }
+
+    /// Resume / Restart / Start fresh inside an expanded pane keep it expanded.
+    func testInPlaceButtonsKeepAnExpandedPane() async throws {
+        let p = try await projectWithFolder()
+        let row = try await liveSession(p, "one")
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: p)
+        await vm.showFromPanel(.session(row.id))
+        vm.layout.split(with: .board)
+        vm.toggleExpand(.session(row.id), projectID: p)
+        processes.last?.exit(1)
+
+        await vm.open(row, placement: .inPlace)
+        XCTAssertEqual(vm.layout.expanded, .session(row.id))
+        await vm.startFresh(row, placement: .inPlace)
+        XCTAssertEqual(vm.layout.expanded, .session(row.id))
+        XCTAssertTrue(vm.isLive(row))
+    }
+
+    /// A pane picked from a menu that left the layout while the session
+    /// started still puts the session on screen.
+    func testReplacingAGoneSlotFallsBackToShow() async throws {
+        let p = try await projectWithFolder()
+        let row = try await liveSession(p, "one")
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: p)
+
+        await vm.showInPane(.documents, item: .session(row.id), projectID: p)
+
+        XCTAssertEqual(vm.layout.visiblePanes, [.session(row.id)])
+    }
 }

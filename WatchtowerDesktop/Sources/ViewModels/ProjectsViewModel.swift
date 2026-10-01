@@ -117,6 +117,8 @@ final class ProjectsViewModel {
     @ObservationIgnored var titleTask: Task<Void, Never>?
     /// Standalone list reads started; only the latest one is applied.
     @ObservationIgnored var standaloneLoads = 0
+    /// Per project, session list reads started; only the latest is applied.
+    @ObservationIgnored var projectLoads: [Int64: Int] = [:]
     /// The title poll's wait. A seam for tests.
     @ObservationIgnored var titleSleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
 
@@ -275,7 +277,10 @@ final class ProjectsViewModel {
         case .board: layout.show(.board)
         case .documents: layout.show(.documents)
         case .terminal:
-            if let id = activeSessionID(projectID: route.projectID) { layout.show(.session(id)) }
+            // The live session, else the most recent open one (its pane offers Resume).
+            let id = activeSessionID(projectID: route.projectID)
+                ?? terminalSessions[route.projectID]?.first { !$0.isClosed }?.id
+            if let id { layout.show(.session(id)) }
         }
         pendingDocumentID = route.pane == .documents ? route.subjectID : nil
     }

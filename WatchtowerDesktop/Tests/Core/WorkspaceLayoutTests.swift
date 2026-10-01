@@ -163,8 +163,9 @@ final class WorkspaceLayoutTests: XCTestCase {
     func testReplaceOfAPaneNotInASlotIsNoOp() {
         var l = split()
         let before = l
-        l.replace(.documents, with: .session(9))
+        XCTAssertFalse(l.replace(.documents, with: .session(9)))
         XCTAssertEqual(l, before)
+        XCTAssertTrue(l.replace(.board, with: .board), "a slot replaced by itself is applied, unchanged")
     }
 
     func testRemoveInSplitKeepsTheOtherPane() {
