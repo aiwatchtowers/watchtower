@@ -67,6 +67,8 @@ final class ProjectsViewModel {
     /// The open document. Kept here (not in the view) so it survives pane
     /// switches and tab changes with its watcher running.
     private(set) var documentViewModel: ProjectDocumentViewModel?
+    /// Unsent document comments: kept here so they outlive the open document.
+    let commentDrafts = ProjectCommentDrafts()
 
     /// A project was created: Task 18 seeds its notification baseline.
     var onProjectCreated: ((Project, _ installed: Bool) -> Void)?
@@ -464,7 +466,7 @@ final class ProjectsViewModel {
         attachNotice = nil
         if documentViewModel?.document.id != document.id {
             closeDocument()
-            let docVM = ProjectDocumentViewModel(dbPool: dbPool, project: project, document: document)
+            let docVM = ProjectDocumentViewModel(dbPool: dbPool, project: project, document: document, drafts: commentDrafts)
             docVM.onOwnerWrite = { [weak self] subject in self?.onOwnerWrite?(project.id, subject) }
             docVM.startWatching()
             documentViewModel = docVM

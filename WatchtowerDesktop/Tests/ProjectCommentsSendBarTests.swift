@@ -29,4 +29,17 @@ final class ProjectCommentsSendBarTests: XCTestCase {
         let bar = ProjectCommentsSendBar(count: 0, delivery: nil, onSend: {}, onOpenTerminal: {})
         XCTAssertThrowsError(try bar.inspect().find(ViewType.Button.self))
     }
+
+    func testUnsentDraftsAreNamedBeforeTheFirstSend() throws {
+        let bar = ProjectCommentsSendBar(count: 3, drafts: 2, delivery: nil, onSend: {}, onOpenTerminal: {})
+        XCTAssertNoThrow(try bar.inspect().find(text: "2 drafts — Claude sees them only when you send."))
+        XCTAssertNoThrow(try bar.inspect().find(button: "Send 3 comments to Claude"))
+    }
+
+    func testDraftsThatCannotBeSentAreNamedAndSendingDisablesTheButton() throws {
+        let bar = ProjectCommentsSendBar(count: 1, drafts: 1, unsendableDrafts: 2, sending: true,
+                                         delivery: nil, onSend: {}, onOpenTerminal: {})
+        XCTAssertNoThrow(try bar.inspect().find(text: "2 drafts can't be sent — see Drafts."))
+        XCTAssertTrue(try bar.inspect().find(button: "Send 1 comment to Claude").isDisabled())
+    }
 }

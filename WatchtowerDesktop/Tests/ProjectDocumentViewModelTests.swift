@@ -106,27 +106,6 @@ final class ProjectDocumentViewModelTests: XCTestCase {
         XCTAssertEqual(count, 0)
     }
 
-    /// A composer opened against an old render, then a reload swapped `rendered`
-    /// out from under it (e.g. the file watcher fired) before the owner submitted:
-    /// the stale selection must never be written, and the composer's text must
-    /// survive so the owner can re-select and retry.
-    func testAddCommentRefusesAStaleRenderVersionAndKeepsTheDraftRecoverable() async throws {
-        let vm = makeVM()
-        await vm.load()
-        let staleVersion = vm.renderVersion
-        let range = try selection("retry budget small", in: vm)
-
-        try (plan + "\n\n## Task 3\n\nNew task.").write(to: fileURL, atomically: true, encoding: .utf8)
-        await vm.load()
-        XCTAssertNotEqual(vm.renderVersion, staleVersion, "the reload must have bumped the version")
-
-        let wrote = await vm.addComment(body: "Why small?", selection: range, renderVersion: staleVersion)
-        XCTAssertFalse(wrote, "a stale version must refuse the write")
-        XCTAssertNotNil(vm.errorMessage)
-        let count = try await pool.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM project_comments") }
-        XCTAssertEqual(count, 0, "the owner's typed comment must not be persisted against the wrong text")
-    }
-
     /// A failed write must report `false` so the composer keeps the owner's
     /// draft, and must surface the error instead of pretending it saved.
     func testAddCommentReportsAFailedWriteAndKeepsTheDraft() async throws {
@@ -146,18 +125,94 @@ final class ProjectDocumentViewModelTests: XCTestCase {
         XCTAssertNotNil(vm.errorMessage)
         XCTAssertTrue(writes.isEmpty, "the owner-write hook fires only after a committed write")
         XCTAssertTrue(vm.threads.isEmpty)
+        XCTAssertEqual(vm.drafts.map(\.body), ["Why small?"], "a failed send keeps the draft")
     }
 
-    func testAddCommentWritesWhenTheCapturedVersionStillMatches() async throws {
+    // MARK: - Drafts (#84)
+
+    private func commentCount() async throws -> Int? {
+        try await pool.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM project_comments") }
+    }
+
+    func testDraftsWriteNothingUntilSentThenGoAsOneBatch() async throws {
+        let store = ProjectCommentDrafts()
+        let vm = ProjectDocumentViewModel(dbPool: pool, project: project, document: document, drafts: store,
+                                          reloadDelay: .milliseconds(10))
+        var writes: [ProjectSubject] = []
+        vm.onOwnerWrite = { writes.append($0) }
+        await vm.load()
+        XCTAssertTrue(vm.addDraft(body: "Why small?", selection: try selection("retry budget small", in: vm)))
+        XCTAssertTrue(vm.addDraft(body: "Which tests?", selection: try selection("migration tests", in: vm)))
+        XCTAssertFalse(vm.addDraft(body: "  ", selection: try selection("Plan", in: vm)), "an empty body is no draft")
+        let before = try await commentCount()
+        XCTAssertEqual(before, 0, "the agent sees nothing before the send")
+        XCTAssertEqual(vm.sendableDraftCount, 2)
+        XCTAssertEqual(vm.drafts.map(\.body), ["Why small?", "Which tests?"], "in text order")
+        XCTAssertEqual(vm.draftRanges.count, 2)
+        XCTAssertTrue(writes.isEmpty)
+
+        let sent = await vm.sendDrafts()
+        XCTAssertEqual(sent, 2)
+        let after = try await commentCount()
+        XCTAssertEqual(after, 2)
+        XCTAssertEqual(vm.openThreads.map(\.root.anchorQuote), ["retry budget small", "migration tests"])
+        XCTAssertEqual(vm.anchoredRanges.count, 2, "the sent comments are highlighted as threads now")
+        XCTAssertTrue(vm.drafts.isEmpty)
+        XCTAssertTrue(store.byDocument.isEmpty)
+        XCTAssertEqual(writes, [.document(document.id)], "one owner write for the whole batch")
+    }
+
+    /// Two clicks on Send while the first write runs write the batch once.
+    func testOverlappingSendsWriteTheDraftsOnce() async throws {
         let vm = makeVM()
         await vm.load()
-        let currentVersion = vm.renderVersion
-        let range = try selection("retry budget small", in: vm)
+        vm.addDraft(body: "Why small?", selection: try selection("retry budget small", in: vm))
+        vm.addDraft(body: "Which tests?", selection: try selection("migration tests", in: vm))
+        async let first = vm.sendDrafts()
+        async let second = vm.sendDrafts()
+        let results = await [first, second]
+        XCTAssertEqual(results.compactMap { $0 }.reduce(0, +), 2)
+        let count = try await commentCount()
+        XCTAssertEqual(count, 2)
+        XCTAssertFalse(vm.isSending)
+    }
 
-        let wrote = await vm.addComment(body: "Why small?", selection: range, renderVersion: currentVersion)
-        XCTAssertTrue(wrote)
-        let count = try await pool.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM project_comments") }
-        XCTAssertEqual(count, 1)
+    /// House rule: drafts survive navigation — the store outlives the
+    /// document's view model, which a document switch recreates.
+    func testDraftsSurviveReopeningTheDocument() async throws {
+        let store = ProjectCommentDrafts()
+        let first = ProjectDocumentViewModel(dbPool: pool, project: project, document: document, drafts: store)
+        await first.load()
+        first.addDraft(body: "Why small?", selection: try selection("retry budget small", in: first))
+        first.updateDraft(try XCTUnwrap(first.drafts.first?.id), body: "Why so small?")
+
+        let reopened = ProjectDocumentViewModel(dbPool: pool, project: project, document: document, drafts: store)
+        await reopened.load()
+        XCTAssertEqual(reopened.drafts.map(\.body), ["Why so small?"])
+        XCTAssertEqual(reopened.draftRanges[try XCTUnwrap(reopened.drafts.first?.id)],
+                       try selection("retry budget small", in: reopened))
+    }
+
+    func testADraftWhosePassageIsGoneIsKeptButNotSent() async throws {
+        let vm = makeVM()
+        await vm.load()
+        vm.addDraft(body: "Why small?", selection: try selection("retry budget small", in: vm))
+        vm.addDraft(body: "Which tests?", selection: try selection("migration tests", in: vm))
+        try plan.replacingOccurrences(of: "retry budget small", with: "retry budget generous")
+            .write(to: fileURL, atomically: true, encoding: .utf8)
+        await vm.load()
+
+        XCTAssertEqual(vm.drafts.map(\.body), ["Which tests?", "Why small?"], "the lost draft sorts last")
+        XCTAssertEqual(vm.sendableDraftCount, 1)
+        XCTAssertEqual(vm.unsendableDraftCount, 1)
+        let sent = await vm.sendDrafts()
+        XCTAssertEqual(sent, 1)
+        let after = try await commentCount()
+        XCTAssertEqual(after, 1)
+        XCTAssertEqual(vm.drafts.map(\.body), ["Why small?"], "kept for the owner to delete or redo")
+
+        vm.deleteDraft(try XCTUnwrap(vm.drafts.first?.id))
+        XCTAssertTrue(vm.drafts.isEmpty)
     }
 
     func testLostOpenThreadIsMarkedOutdatedAndCountsAsAnOwnerWrite() async throws {
@@ -339,5 +394,14 @@ final class ProjectDocumentViewModelTests: XCTestCase {
         vm.stopWatching()
         XCTAssertEqual(try Data(contentsOf: fileURL), before)
         XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: fileURL.path)[.modificationDate] as? Date, modified)
+    }
+}
+
+private extension ProjectDocumentViewModel {
+    /// An owner comment the way the pane writes one: a draft, then the send.
+    @discardableResult
+    func addComment(body: String, selection: NSRange) async -> Bool {
+        guard addDraft(body: body, selection: selection) else { return false }
+        return await sendDrafts() != nil
     }
 }

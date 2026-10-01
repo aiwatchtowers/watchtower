@@ -8,12 +8,9 @@ struct ProjectDocumentsView: View {
     @Environment(AppState.self) private var appState
     @State private var selection = NSRange(location: 0, length: 0)
     @State private var activeThreadID: Int64?
-    @State private var composing = false
-    @State private var draft = ""
-    /// The render the open composer's `selection` was computed against —
-    /// captured when the composer opens, so a reload while it's open (the
-    /// file watcher fires) is detected before the stale selection is written.
-    @State private var composeRenderVersion = 0
+    /// The selection composer's typed text, kept here so a document that
+    /// briefly fails to read (the text view goes away) does not drop it.
+    @State private var composerText = ""
     @State private var delivery: TerminalCenter.PromptDelivery?
     @State private var showThreads = true
     @State private var addingDocument = false
@@ -23,8 +20,8 @@ struct ProjectDocumentsView: View {
             list.frame(minWidth: 200, idealWidth: 240, maxWidth: 320)
             if let docVM = vm.documentViewModel {
                 documentView(docVM).frame(minWidth: 360, maxWidth: .infinity)
-                // No threads, or hidden by the owner: the text takes the width.
-                if showThreads, !docVM.threads.isEmpty {
+                // No threads or drafts, or hidden by the owner: the text takes the width.
+                if showThreads, hasThreadsPanel(docVM) {
                     threads(docVM).frame(minWidth: 240, idealWidth: 300, maxWidth: 420)
                 }
             } else {
@@ -43,11 +40,17 @@ struct ProjectDocumentsView: View {
             if let project = vm.selectedProject { AddProjectDocumentSheet(vm: vm, project: project) }
         }
         .onChange(of: vm.pendingDocumentID) { _, _ in Task { await vm.openPendingDocument() } }
+        // New drafts after a send: the old "pasted" note no longer covers them.
+        .onChange(of: vm.documentViewModel?.sendableDraftCount) { _, count in
+            if (count ?? 0) > 0 { delivery = nil }
+        }
         .onChange(of: vm.documentViewModel?.document.id) { _, _ in
             delivery = nil
             // A selection is offsets into one document's text: never carry it
             // to another document (it would anchor text the owner never chose).
             selection = DocumentSelectionCarry.none
+            // Nor the half-typed composer text written for the other document.
+            composerText = ""
         }
     }
 
@@ -108,15 +111,9 @@ struct ProjectDocumentsView: View {
             HStack {
                 Text(docVM.document.relPath).font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                Button("Comment") {
-                    composeRenderVersion = docVM.renderVersion
-                    composing = true
-                }
-                .disabled(selection.length == 0 || docVM.rendered == nil)
-                .popover(isPresented: $composing) { composer(docVM) }
-                if !docVM.threads.isEmpty {
+                if hasThreadsPanel(docVM) {
                     Toggle(isOn: $showThreads) {
-                        Label("Threads (\(docVM.threads.count))", systemImage: "sidebar.right")
+                        Label("Threads (\(docVM.threads.count + docVM.drafts.count))", systemImage: "sidebar.right")
                     }
                     .toggleStyle(.button)
                     .help(showThreads ? "Hide the comment threads" : "Show the comment threads")
@@ -126,16 +123,26 @@ struct ProjectDocumentsView: View {
             Divider()
             if let rendered = docVM.rendered {
                 GeometryReader { geo in
-                    DocumentTextView(
-                        text: DocumentAttributedString.make(rendered, highlights: docVM.anchoredRanges, activeThreadID: activeThreadID),
+                    CommentableDocumentText(
+                        text: DocumentAttributedString.make(
+                            rendered, highlights: docVM.anchoredRanges, activeThreadID: activeThreadID,
+                            drafts: Array(docVM.draftRanges.values)
+                        ),
                         contentID: "\(docVM.document.id)#\(docVM.renderVersion)",
                         selection: $selection,
-                        horizontalInset: ReadableColumn.horizontalInset(forWidth: geo.size.width)
-                    ) { location in
-                        guard let id = docVM.threadID(at: location) else { return }
-                        activeThreadID = id
-                        showThreads = true
-                    }
+                        composerText: $composerText,
+                        horizontalInset: ReadableColumn.horizontalInset(forWidth: geo.size.width),
+                        onComment: { body, range in
+                            guard docVM.addDraft(body: body, selection: range) else { return false }
+                            showThreads = true
+                            return true
+                        },
+                        onClick: { location in
+                            guard let id = docVM.threadID(at: location) else { return }
+                            activeThreadID = id
+                            showThreads = true
+                        }
+                    )
                 }
             } else {
                 Text(docVM.loadError ?? "Loading…")
@@ -147,44 +154,37 @@ struct ProjectDocumentsView: View {
             }
             Divider()
             ProjectCommentsSendBar(
-                count: ProjectCommentPrompt.openOwnerCount(docVM.threads),
+                count: ProjectCommentPrompt.openOwnerCount(docVM.threads) + docVM.sendableDraftCount,
+                drafts: docVM.sendableDraftCount,
+                unsendableDrafts: docVM.unsendableDraftCount,
+                sending: docVM.isSending,
                 delivery: delivery,
-                onSend: { sendComments(docVM) },
+                onSend: { Task { await sendComments(docVM) } },
                 onOpenTerminal: openTerminal
             )
         }
     }
 
-    private func composer(_ docVM: ProjectDocumentViewModel) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Comment on the selection").font(.headline)
-            TextEditor(text: $draft).frame(width: 320, height: 100)
-            HStack {
-                Spacer()
-                Button("Cancel") { composing = false }
-                Button("Comment") {
-                    let (text, range, version) = (draft, selection, composeRenderVersion)
-                    Task {
-                        // Only clear the draft and close on a real write: a stale
-                        // `version` (the file reloaded while the popover was open)
-                        // must keep the owner's typed text so they don't lose it.
-                        let wrote = await docVM.addComment(body: text, selection: range, renderVersion: version)
-                        if wrote {
-                            draft = ""
-                            composing = false
-                        }
-                    }
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-        }
-        .padding(12)
+    private func hasThreadsPanel(_ docVM: ProjectDocumentViewModel) -> Bool {
+        !docVM.threads.isEmpty || !docVM.drafts.isEmpty
     }
 
     private func threads(_ docVM: ProjectDocumentViewModel) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
+                if !docVM.drafts.isEmpty {
+                    Text("Drafts — not sent yet").font(.caption).fontWeight(.semibold).foregroundStyle(.secondary)
+                    ForEach(docVM.drafts) { draft in
+                        ProjectCommentDraftRow(
+                            draft: draft,
+                            located: docVM.draftRanges[draft.id] != nil,
+                            sending: docVM.isSending,
+                            onEdit: { docVM.updateDraft(draft.id, body: $0) },
+                            onDelete: { docVM.deleteDraft(draft.id) }
+                        )
+                    }
+                    Divider()
+                }
                 ForEach(docVM.openThreads) { thread($0, docVM) }
                 if !docVM.resolvedThreads.isEmpty {
                     DisclosureGroup("Resolved (\(docVM.resolvedThreads.count))") {
@@ -212,10 +212,16 @@ struct ProjectDocumentsView: View {
         .onTapGesture { activeThreadID = thread.id }
     }
 
-    private func sendComments(_ docVM: ProjectDocumentViewModel) {
+    /// Saves the drafts first (all or none); a failed save types nothing and
+    /// leaves the drafts and the reason on screen.
+    private func sendComments(_ docVM: ProjectDocumentViewModel) async {
+        delivery = nil
+        let before = ProjectCommentPrompt.openOwnerCount(docVM.threads)
+        guard let written = await docVM.sendDrafts() else { return }
+        // A failed reload after the commit leaves `threads` stale: never count fewer than were open plus sent.
+        let count = max(ProjectCommentPrompt.openOwnerCount(docVM.threads), before + written)
         let line = ProjectCommentPrompt.line(
-            relPath: docVM.document.relPath, documentID: docVM.document.id,
-            count: ProjectCommentPrompt.openOwnerCount(docVM.threads)
+            relPath: docVM.document.relPath, documentID: docVM.document.id, count: count
         )
         let center = appState.terminalCenter
         let target = center.activeSession(projectID: docVM.project.id)
@@ -233,5 +239,50 @@ struct ProjectDocumentsView: View {
             Task { await vm.openMostRecentSession(project: project, placement: .keeping(.documents)) }
         }
         delivery = nil
+    }
+}
+
+/// One unsent draft in the threads panel: its passage, its editable text and
+/// Delete. A draft whose passage left the document is kept but not sent.
+private struct ProjectCommentDraftRow: View {
+    let draft: ProjectCommentDraft
+    let located: Bool
+    let sending: Bool
+    let onEdit: (String) -> Void
+    let onDelete: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("\u{201C}\(draft.anchor.quote)\u{201D}")
+                .font(.caption)
+                .italic()
+                .foregroundStyle(.secondary)
+                .lineLimit(3)
+            TextField("Comment", text: Binding(get: { draft.body }, set: onEdit), axis: .vertical)
+                .textFieldStyle(.roundedBorder)
+                .lineLimit(1...6)
+            HStack {
+                if let note {
+                    Text(note)
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
+                Spacer()
+                Button("Delete", role: .destructive, action: onDelete)
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+            }
+        }
+        .padding(8)
+        .background(Color.blue.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+        // A send in flight writes this text: an edit now would be lost.
+        .disabled(sending)
+    }
+
+    /// Why Send leaves this draft behind, if it does.
+    private var note: String? {
+        if !located { return "Its passage changed — select the text again, or delete it. Not sent." }
+        if draft.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "Empty — not sent." }
+        return nil
     }
 }

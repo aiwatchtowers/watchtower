@@ -23,4 +23,14 @@ final class DocumentAttributedStringTests: XCTestCase {
         let out = DocumentAttributedString.make(doc, highlights: [1: NSRange(location: 3, length: 500)], activeThreadID: nil)
         XCTAssertNil(out.attribute(.backgroundColor, at: 3, effectiveRange: nil))
     }
+
+    func testDraftsGetTheirOwnHighlight() {
+        let doc = DocumentRendering.render("Keep the retry budget small.")
+        let range = (doc.text as NSString).range(of: "budget")
+        let out = DocumentAttributedString.make(doc, highlights: [:], activeThreadID: nil,
+                                                drafts: [range, NSRange(location: 2, length: 900)])
+        XCTAssertEqual(out.attribute(.backgroundColor, at: range.location, effectiveRange: nil) as? NSColor,
+                       DocumentAttributedString.draftHighlight)
+        XCTAssertNil(out.attribute(.backgroundColor, at: 2, effectiveRange: nil), "an out-of-bounds draft is ignored")
+    }
 }

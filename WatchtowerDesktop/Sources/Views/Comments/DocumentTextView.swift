@@ -3,13 +3,20 @@ import SwiftUI
 import WatchtowerCore
 
 /// Rendered text → `NSAttributedString`: fonts per style run, then a
-/// yellow background on every anchored thread (stronger on the active one).
+/// yellow background on every anchored thread (stronger on the active one)
+/// and a blue one on every unsent draft comment.
 enum DocumentAttributedString {
     static let bodyFont = NSFont.systemFont(ofSize: 14)
     static let highlight = NSColor.systemYellow.withAlphaComponent(0.25)
     static let activeHighlight = NSColor.systemYellow.withAlphaComponent(0.55)
+    static let draftHighlight = NSColor.systemBlue.withAlphaComponent(0.2)
 
-    static func make(_ doc: RenderedDocument, highlights: [Int64: NSRange], activeThreadID: Int64?) -> NSAttributedString {
+    static func make(
+        _ doc: RenderedDocument,
+        highlights: [Int64: NSRange],
+        activeThreadID: Int64?,
+        drafts: [NSRange] = []
+    ) -> NSAttributedString {
         let out = NSMutableAttributedString(
             string: doc.text,
             attributes: [.font: bodyFont, .foregroundColor: NSColor.labelColor]
@@ -20,6 +27,9 @@ enum DocumentAttributedString {
         }
         for (id, range) in highlights where NSMaxRange(range) <= length {
             out.addAttribute(.backgroundColor, value: id == activeThreadID ? activeHighlight : highlight, range: range)
+        }
+        for range in drafts where NSMaxRange(range) <= length {
+            out.addAttribute(.backgroundColor, value: draftHighlight, range: range)
         }
         return out
     }
@@ -63,7 +73,9 @@ enum DocumentSelectionCarry {
 
 /// A read-only, selectable `NSTextView` (SwiftUI `Text` cannot report a
 /// selection range). Reports the selection, and a zero-length click's
-/// location so the pane can open the thread under it.
+/// location so the pane can open the thread under it. With `onCommentRequest`
+/// it also reports where the selection is on screen (`selectionRect`, for the
+/// floating Comment button) and adds "Comment…" to the text's context menu.
 struct DocumentTextView: NSViewRepresentable {
     let text: NSAttributedString
     /// Identity of the rendered content (document + render version, artifact
@@ -74,6 +86,11 @@ struct DocumentTextView: NSViewRepresentable {
     /// Left/right text inset; a caller wanting a readable line length on a
     /// wide pane passes `ReadableColumn.horizontalInset(forWidth:)`.
     var horizontalInset: CGFloat = ReadableColumn.minInset
+    /// The selection's bounding box in the visible area (top-left origin);
+    /// nil without a selection or when it is scrolled out of view.
+    var selectionRect: Binding<CGRect?> = .constant(nil)
+    /// "Comment…" in the context menu of a non-empty selection.
+    var onCommentRequest: (() -> Void)?
     let onClick: (Int) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
@@ -88,6 +105,7 @@ struct DocumentTextView: NSViewRepresentable {
         textView.textContainerInset = NSSize(width: horizontalInset, height: 16)
         textView.delegate = context.coordinator
         context.coordinator.apply(text, contentID: contentID, to: textView)
+        context.coordinator.observeGeometry(of: scroll)
         return scroll
     }
 
@@ -98,6 +116,10 @@ struct DocumentTextView: NSViewRepresentable {
             textView.textContainerInset = NSSize(width: horizontalInset, height: 16)
         }
         context.coordinator.apply(text, contentID: contentID, to: textView)
+    }
+
+    static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
+        NotificationCenter.default.removeObserver(coordinator)
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
@@ -132,12 +154,69 @@ struct DocumentTextView: NSViewRepresentable {
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {
-            guard !applying, let textView = notification.object as? NSTextView else { return }
+            guard let textView = notification.object as? NSTextView else { return }
+            reportSelectionRect(textView)
+            guard !applying else { return }
             let range = textView.selectedRange()
             DispatchQueue.main.async { [parent] in
                 parent.selection = range
                 if range.length == 0 { parent.onClick(range.location) }
             }
+        }
+
+        // MARK: - Comment affordance
+
+        private weak var observedTextView: NSTextView?
+
+        /// Scrolling and resizing move the selection on screen.
+        func observeGeometry(of scroll: NSScrollView) {
+            guard let textView = scroll.documentView as? NSTextView else { return }
+            observedTextView = textView
+            scroll.contentView.postsBoundsChangedNotifications = true
+            textView.postsFrameChangedNotifications = true
+            let center = NotificationCenter.default
+            center.addObserver(self, selector: #selector(geometryDidChange),
+                               name: NSView.boundsDidChangeNotification, object: scroll.contentView)
+            center.addObserver(self, selector: #selector(geometryDidChange),
+                               name: NSView.frameDidChangeNotification, object: textView)
+        }
+
+        @objc private func geometryDidChange() {
+            if let observedTextView { reportSelectionRect(observedTextView) }
+        }
+
+        private func reportSelectionRect(_ textView: NSTextView) {
+            guard parent.onCommentRequest != nil else { return }
+            let rect = Self.visibleSelectionRect(textView)
+            guard rect != parent.selectionRect.wrappedValue else { return }
+            DispatchQueue.main.async { [parent] in parent.selectionRect.wrappedValue = rect }
+        }
+
+        /// The selection's bounding box relative to the visible area, top-left
+        /// origin (the clip view of a text view's scroll view is flipped).
+        static func visibleSelectionRect(_ textView: NSTextView) -> CGRect? {
+            let range = textView.selectedRange()
+            guard range.length > 0, let layout = textView.layoutManager, let container = textView.textContainer,
+                  let clip = textView.enclosingScrollView?.contentView else { return nil }
+            let glyphs = layout.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            let origin = textView.textContainerOrigin
+            let box = layout.boundingRect(forGlyphRange: glyphs, in: container).offsetBy(dx: origin.x, dy: origin.y)
+            let inClip = clip.convert(box, from: textView)
+            let visible = inClip.offsetBy(dx: -clip.bounds.minX, dy: -clip.bounds.minY)
+            return visible.intersects(CGRect(origin: .zero, size: clip.bounds.size)) ? visible : nil
+        }
+
+        func textView(_ view: NSTextView, menu: NSMenu, for event: NSEvent, at charIndex: Int) -> NSMenu? {
+            guard parent.onCommentRequest != nil, view.selectedRange().length > 0 else { return menu }
+            let item = NSMenuItem(title: "Comment…", action: #selector(requestComment), keyEquivalent: "")
+            item.target = self
+            menu.insertItem(item, at: 0)
+            menu.insertItem(.separator(), at: 1)
+            return menu
+        }
+
+        @objc private func requestComment() {
+            parent.onCommentRequest?()
         }
     }
 }

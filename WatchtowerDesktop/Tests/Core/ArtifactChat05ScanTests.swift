@@ -32,7 +32,11 @@ final class ArtifactChat05ScanTests: XCTestCase {
             "WatchtowerCore/Services/Chat/ArtifactCommentText.swift",
             "WatchtowerCore/Services/Chat/CommentBatchComposer.swift",
             "WatchtowerCore/Database/Queries/ArtifactCommentQueries.swift",
-            "Views/Chat/ArtifactCommentsView.swift"
+            "Views/Chat/ArtifactCommentsView.swift",
+            // The selection-comment affordance the artifact panel shares with
+            // project documents (#84).
+            "Views/Comments/CommentableDocumentText.swift",
+            "Views/Comments/DocumentTextView.swift"
         ]
         let forbidden = ["Process(", "CLIRunner", "URLSession", "findCLIPath", "WatchtowerAIService", "ChatSessionPool",
                          ".send(", "sendDraft", "startTurn"]
