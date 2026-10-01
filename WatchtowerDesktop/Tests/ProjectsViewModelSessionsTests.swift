@@ -876,4 +876,70 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         XCTAssertEqual(vm.layout(projectID: p).visiblePanes, [.session(row.id)])
         XCTAssertTrue(launches.isEmpty, "a deep link starts nothing")
     }
+
+    /// Two overlapping reads, the older one finishing last: the newer list
+    /// stays, and a session placed between the two starts is not pruned.
+    func testAnOlderReadFinishingLastNeitherHidesTheNewListNorPrunesTheLayout() async throws {
+        let p = try await projectWithFolder()
+        let vm = makeVM()
+        let row = try await liveSession(p, "one")
+        var gates: [CheckedContinuation<Void, Never>] = []
+        var results: [[TerminalSession]] = [[], [row]]
+        vm.readProjectSessions = { _ in
+            let rows = results.removeFirst()
+            await withCheckedContinuation { gates.append($0) }
+            return rows
+        }
+
+        let older = Task { await vm.loadSessions(projectID: p) }
+        while gates.count < 1 { await Task.yield() }
+        var placed = vm.layout(projectID: p)
+        placed.show(.session(row.id))
+        vm.setLayout(placed, projectID: p)
+        let newer = Task { await vm.loadSessions(projectID: p) }
+        while gates.count < 2 { await Task.yield() }
+
+        gates[1].resume()
+        let newerApplied = await newer.value
+        gates[0].resume()
+        let olderApplied = await older.value
+
+        XCTAssertTrue(newerApplied)
+        XCTAssertTrue(olderApplied, "the list already reflects a newer read")
+        XCTAssertEqual(vm.terminalSessions[p]?.map(\.id), [row.id], "the older, emptier read is dropped")
+        XCTAssertEqual(vm.layout(projectID: p).visiblePanes, [.session(row.id)])
+    }
+
+    /// The older read finishing first is applied (the caller sees its own
+    /// rows) but does not prune: a newer read is still in flight.
+    func testAnOlderReadFinishingFirstIsAppliedWithoutPruning() async throws {
+        let p = try await projectWithFolder()
+        let vm = makeVM()
+        let row = try await liveSession(p, "one")
+        var gates: [CheckedContinuation<Void, Never>] = []
+        var results: [[TerminalSession]] = [[], [row]]
+        vm.readProjectSessions = { _ in
+            let rows = results.removeFirst()
+            await withCheckedContinuation { gates.append($0) }
+            return rows
+        }
+
+        let older = Task { await vm.loadSessions(projectID: p) }
+        while gates.count < 1 { await Task.yield() }
+        var placed = vm.layout(projectID: p)
+        placed.show(.session(row.id))
+        vm.setLayout(placed, projectID: p)
+        let newer = Task { await vm.loadSessions(projectID: p) }
+        while gates.count < 2 { await Task.yield() }
+
+        gates[0].resume()
+        let olderApplied = await older.value
+        XCTAssertTrue(olderApplied)
+        XCTAssertEqual(vm.terminalSessions[p]?.count, 0)
+        XCTAssertEqual(vm.layout(projectID: p).visiblePanes, [.session(row.id)], "only the latest read prunes")
+
+        gates[1].resume()
+        _ = await newer.value
+        XCTAssertEqual(vm.terminalSessions[p]?.map(\.id), [row.id])
+    }
 }

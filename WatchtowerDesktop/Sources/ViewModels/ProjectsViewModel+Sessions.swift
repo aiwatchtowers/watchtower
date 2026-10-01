@@ -86,9 +86,7 @@ extension ProjectsViewModel {
         let load = projectLoads[projectID, default: SessionLoads()].started + 1
         projectLoads[projectID, default: SessionLoads()].started = load
         do {
-            let rows = try await dbPool.read {
-                try TerminalSessionQueries.fetchForProject($0, projectID: projectID)
-            }
+            let rows = try await readProjectSessions(projectID)
             let loads = projectLoads[projectID, default: SessionLoads()]
             guard load > loads.applied else { return true }
             projectLoads[projectID]?.applied = load

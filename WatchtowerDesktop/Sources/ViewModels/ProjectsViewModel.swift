@@ -123,6 +123,10 @@ final class ProjectsViewModel {
         var applied = 0
     }
     @ObservationIgnored var projectLoads: [Int64: SessionLoads] = [:]
+    /// Reads a project's sessions. A seam for tests (overlapping reads).
+    @ObservationIgnored lazy var readProjectSessions: (Int64) async throws -> [TerminalSession] = { [dbPool] projectID in
+        try await dbPool.read { try TerminalSessionQueries.fetchForProject($0, projectID: projectID) }
+    }
     /// The title poll's wait. A seam for tests.
     @ObservationIgnored var titleSleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
 
