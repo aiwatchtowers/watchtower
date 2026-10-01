@@ -28,8 +28,10 @@ struct WorkspaceAreaView: View {
     }
 }
 
-/// One pane: a slim header (the pane's own picker; in a split also expand
-/// and close) over Board, Documents or a session's terminal.
+/// One pane: Board, Documents or a session's terminal. In a split it has a
+/// slim header (its own picker, expand and close); a single pane has none —
+/// the page header's view buttons and the panel's session list cover it, so
+/// the terminal gets the height.
 struct WorkspacePaneView: View {
     @Bindable var vm: ProjectsViewModel
     let project: Project
@@ -43,8 +45,10 @@ struct WorkspacePaneView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            header
-            Divider()
+            if isSplit {
+                header
+                Divider()
+            }
             if isHidden, case .session = pane {
                 Color.clear
             } else {
@@ -54,7 +58,7 @@ struct WorkspacePaneView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             picker
             Spacer(minLength: 4)
             if isSplit {
@@ -78,8 +82,10 @@ struct WorkspacePaneView: View {
                 }
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 4)
+        .font(.caption)
+        .controlSize(.small)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 2)
     }
 
     private var picker: some View {
@@ -99,7 +105,7 @@ struct WorkspacePaneView: View {
                 }
             }
         } label: {
-            Label(title, systemImage: icon).font(.callout)
+            Label(title, systemImage: icon).font(.subheadline)
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
