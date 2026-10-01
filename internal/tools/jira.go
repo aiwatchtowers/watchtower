@@ -138,7 +138,7 @@ func issueRow(accountID int64, issue jira.Issue) db.JiraIssue {
 	if f.StatusCategoryChanged != nil {
 		statusCategoryChangedAt, _ = jira.NormalizeTimestamp(*f.StatusCategoryChanged)
 	}
-	// The same RFC3339 UTC form the syncer stores, so the mirrored row
+	// The same UTC form the syncer stores, so the mirrored row
 	// compares and sorts with the synced ones.
 	createdAt, _ := jira.NormalizeTimestamp(f.Created)
 	updatedAt, _ := jira.NormalizeTimestamp(f.Updated)
@@ -208,6 +208,11 @@ func findLandedIssue(ctx context.Context, d *db.DB, client JiraIssueClient, acti
 			return issue.Key, nil
 		}
 	}
+	if len(res.Issues) >= landedIssueSearchLimit {
+		// The window holds more issues than one page: no match on it does
+		// not prove the first attempt did not land.
+		return "", fmt.Errorf("cannot tell whether the failed attempt created the issue: over %d issues in %s since the proposal", landedIssueSearchLimit, req.ProjectKey)
+	}
 	return "", nil
 }
 
@@ -271,7 +276,7 @@ func NewCreateJiraIssue(factory JiraClientFactory) *Tool {
 				ProjectKey: strings.ToUpper(strings.TrimSpace(a.ProjectKey)), IssueType: strings.TrimSpace(a.IssueType),
 				Summary: strings.TrimSpace(a.Summary), Description: a.Description, Labels: a.Labels, Priority: a.Priority,
 			}
-			key := ""
+			key, reused := "", false
 			if call.Retry {
 				// The failed attempt may have created the issue anyway (a
 				// timeout or a broken response after Jira stored it): look
@@ -279,6 +284,7 @@ func NewCreateJiraIssue(factory JiraClientFactory) *Tool {
 				if key, err = findLandedIssue(ctx, d, client, call.ActionID, req); err != nil {
 					return nil, jiraWriteFailed(d, account.ID, err)
 				}
+				reused = key != ""
 			}
 			if key == "" {
 				created, err := client.CreateIssue(ctx, req)
@@ -291,8 +297,11 @@ func NewCreateJiraIssue(factory JiraClientFactory) *Tool {
 				}
 				key = created.Key
 			}
-			url := strings.TrimRight(account.SiteURL, "/") + "/browse/" + key
-			result := map[string]any{"key": key, "url": url}
+			result := map[string]any{"key": key, "url": browseURL(account, key)}
+			if reused {
+				// Say which path ran: the issue is the earlier attempt's.
+				result["reused"] = true
+			}
 			if warning := mirrorCreatedIssue(ctx, d, client, account.ID, key); warning != "" {
 				result["warning"] = warning
 			}

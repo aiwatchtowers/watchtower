@@ -28,4 +28,4 @@ Fix options:
 
 Memory's `runJiraIngest` watermark likely has the same shape.
 
-**Resolution (2026-10-01, branch fix/jira-backlog-wave):** the Jira timestamp columns are stored RFC3339 UTC (sync + tools mirror normalize on write, migration 00091 rewrote existing rows and the floor itself), so the floor compare is an instant compare.
+**Resolution (2026-10-01, branch fix/jira-backlog-wave):** the Jira timestamp columns are stored in one fixed-width UTC form with milliseconds (sync + tools mirror normalize on write, migration 00091 rewrote existing rows and the floor itself), so the floor compare is an instant compare.

@@ -1347,16 +1347,25 @@ func (db *DB) JiraIssueExists(key string) (bool, error) {
 
 // jiraUpdatedLayout is Jira Cloud's wire format ("+0100" offset — no colon,
 // so SQLite's julianday/strftime reject it). The sync and the tools mirror
-// store RFC3339 UTC since migration 00091; ParseJiraTime still accepts the
-// wire format for a value that could not be normalized.
+// store jiraStoredLayout since migration 00091; ParseJiraTime still accepts
+// the wire format for a value that could not be normalized.
 const jiraUpdatedLayout = "2006-01-02T15:04:05.000-0700"
 
+// jiraStoredLayout is how the Jira timestamp columns store a value: RFC3339
+// in UTC with exactly three fraction digits. The fixed width makes string
+// order instant order, and the milliseconds Jira reports are kept, so two
+// changes in one second still sort apart (the ideas floor reloads with a
+// strict >). Swift's ISO8601DateFormatter with .withFractionalSeconds and
+// SQLite's julianday() both read it.
+const jiraStoredLayout = "2006-01-02T15:04:05.000Z"
+
 // FormatJiraTime renders t the way the Jira timestamp columns store it
-// (jira_issues.created_at/updated_at/resolved_at, jira_comments.created_at/
-// updated_at): RFC3339 UTC, whole seconds. Anything compared against those
+// (jira_issues.created_at/updated_at/resolved_at/status_category_changed_at,
+// jira_comments.created_at/updated_at, and the copies of them: the ideas Jira
+// floor, the jira inbox items' message_ts). Anything compared against those
 // columns with SQL's plain string ordering MUST be formatted this way.
 func FormatJiraTime(t time.Time) string {
-	return t.UTC().Format(time.RFC3339)
+	return t.UTC().Format(jiraStoredLayout)
 }
 
 // ParseJiraTime parses a Jira timestamp column value (RFC3339, or Jira's wire

@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
+	"strconv"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -49,7 +52,7 @@ func (f *fakeJira) CreateIssue(_ context.Context, req jira.CreateIssueRequest) (
 
 func (f *fakeJira) GetIssue(_ context.Context, key string) (jira.Issue, error) {
 	var issue jira.Issue
-	_ = json.Unmarshal([]byte(`{"id":"1","key":"`+key+`","fields":{"summary":"Fix login","issuetype":{"name":"Task"},"status":{"name":"To Do","statusCategory":{"key":"new","name":"To Do"}},"priority":{"name":"High"},"labels":["backend"],"created":"2026-09-04T10:00:00.000+0000","updated":"2026-09-04T10:00:00.000+0000","description":{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"body"}]}]}}}`), &issue)
+	_ = json.Unmarshal([]byte(`{"id":"1","key":"`+key+`","fields":{"summary":"Fix login","issuetype":{"name":"Task"},"status":{"name":"To Do","statusCategory":{"key":"new","name":"To Do"}},"priority":{"name":"High"},"labels":["backend"],"created":"2026-09-04T10:00:00.000+0000","updated":"2026-09-04T13:30:00.000+0300","description":{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"body"}]}]}}}`), &issue)
 	return issue, nil
 }
 
@@ -114,6 +117,8 @@ func TestCreateJiraIssue_ExecuteCreatesFetchesAndStores(t *testing.T) {
 	assert.Equal(t, "To Do", row.Status)
 	assert.Equal(t, "body", row.DescriptionText)
 	assert.Equal(t, `["backend"]`, row.Labels)
+	assert.Equal(t, "2026-09-04T10:00:00.000Z", row.CreatedAt, "the mirror stores timestamps the way the syncer does")
+	assert.Equal(t, "2026-09-04T10:30:00.000Z", row.UpdatedAt)
 }
 
 func TestCreateJiraIssue_AuthRevokedMarksAccount(t *testing.T) {
@@ -334,8 +339,49 @@ func TestCreateJiraIssue_RetryFindsTheIssueTheFailedAttemptCreated(t *testing.T)
 	require.Equal(t, "applied", row.Status, row.Error)
 	assert.Len(t, fake.created, 1, "the request is not sent a second time")
 	assert.Contains(t, row.ResultJSON, `"key":"ABC-7"`)
+	assert.Contains(t, row.ResultJSON, `"reused":true`, "the result says the issue is the earlier attempt's")
 	require.Len(t, fake.searched, 1)
 	assert.Contains(t, fake.searched[0], `project = "ABC" AND reporter = currentUser() AND created >= -`)
+}
+
+// The lookup window reaches back to the proposal, however long ago the
+// owner approved it.
+func TestCreateJiraIssue_RetryWindowStartsAtTheProposal(t *testing.T) {
+	d := openDB(t)
+	seedJira(t, d)
+	fake := &fakeJira{key: "ABC-9"}
+	reg, id := proposeFailedCreate(t, d, fake)
+	_, err := d.Exec(`UPDATE agent_actions SET created_at = ? WHERE id = ?`,
+		time.Now().UTC().Add(-3*time.Hour).Format(time.RFC3339), id)
+	require.NoError(t, err)
+
+	_, err = reg.Apply(context.Background(), id)
+	require.NoError(t, err)
+	require.Len(t, fake.searched, 1)
+	m := regexp.MustCompile(`created >= -(\d+)m`).FindStringSubmatch(fake.searched[0])
+	require.Len(t, m, 2, fake.searched[0])
+	minutes, err := strconv.Atoi(m[1])
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, minutes, 180)
+	assert.LessOrEqual(t, minutes, 185)
+}
+
+// A full page without a match cannot prove the first attempt did not land,
+// so the retry fails instead of risking a duplicate.
+func TestCreateJiraIssue_RetryFullSearchPageDoesNotResend(t *testing.T) {
+	d := openDB(t)
+	seedJira(t, d)
+	fake := &fakeJira{key: "ABC-9"}
+	reg, id := proposeFailedCreate(t, d, fake)
+	for i := range landedIssueSearchLimit {
+		fake.found = append(fake.found, landedIssue(fmt.Sprintf("ABC-%d", 100+i), "Other work", "Task"))
+	}
+
+	row, err := reg.Apply(context.Background(), id)
+	require.NoError(t, err)
+	assert.Equal(t, "failed", row.Status)
+	assert.Contains(t, row.Error, "cannot tell whether the failed attempt created the issue")
+	assert.Len(t, fake.created, 1)
 }
 
 // With nothing landed, the retry creates the issue as usual.

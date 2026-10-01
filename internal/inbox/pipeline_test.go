@@ -564,7 +564,7 @@ func newPipelineForTest(t *testing.T, d *db.DB, userID, email string) *Pipeline 
 // about a distinct display name, and it's the account id that a [~mention]
 // and autoResolveJira's identity match actually key off.
 //
-// created_at/updated_at are written in RFC3339 UTC (db.FormatJiraTime),
+// created_at/updated_at are written in the stored UTC form (db.FormatJiraTime),
 // exactly as the real comment sync writes them — the detector's window bound
 // is a plain SQL string compare against this column, so a fixture in another
 // format would compare differently from production and hide a real format

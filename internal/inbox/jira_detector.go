@@ -16,7 +16,7 @@ import (
 // (INBOX-09: a skip for missing identity never freezes the watermark).
 //
 // Implemented signals:
-//   - jira_assigned: issues where assignee_account_id = ownerAssigneeID(owner) and updated_at >= sinceTS
+//   - jira_assigned: issues where assignee_account_id = ownerAssigneeID(owner) and updated_at > sinceTS
 //   - jira_comment_mention: comments in jira_comments (migration 00050) whose body
 //     [~mentions] one of ownerAtlassianIDs(owner).
 //     A jira_comments table absence, or the owner having no known Atlassian id,
@@ -41,10 +41,9 @@ func detectJira(_ context.Context, database *db.DB, owner db.Owner, own *ownJira
 		return 0, nil
 	}
 	// Both comparisons below are plain SQL string compares against columns
-	// stored RFC3339 UTC in whole seconds, so the bound is rendered the same
-	// way (db.FormatJiraTime). They are inclusive (>=): a change later in the
-	// bound's own second is stored with that second, and the (key, timestamp)
-	// dedupe keeps a re-read row from minting twice.
+	// stored in db.FormatJiraTime's fixed-width UTC form, so the bound has to
+	// be rendered the same way — a bound in another shape (an offset, no
+	// fraction) does not sort by instant against them.
 	sinceISO := db.FormatJiraTime(sinceTS)
 
 	created, err := detectJiraAssigned(database, assigneeID, own, sinceISO)
@@ -72,8 +71,8 @@ type jiraAssignedCandidate struct {
 	key, summary, updatedAt string
 }
 
-// queryJiraAssigned returns the issues assigned to assigneeID updated at or
-// after sinceISO. The rows are fully drained (auto-closing them) before the caller
+// queryJiraAssigned returns the issues assigned to assigneeID updated after
+// sinceISO. The rows are fully drained (auto-closing them) before the caller
 // issues any dedup query — required on the MaxOpenConns(1) SQLite pool; the
 // deferred Close is just a safety net for the scan/rows-error paths.
 func queryJiraAssigned(database *db.DB, assigneeID, sinceISO string) ([]jiraAssignedCandidate, error) {
@@ -81,7 +80,7 @@ func queryJiraAssigned(database *db.DB, assigneeID, sinceISO string) ([]jiraAssi
 		SELECT key, summary, updated_at
 		FROM jira_issues
 		WHERE assignee_account_id = ?
-		  AND updated_at >= ?
+		  AND updated_at > ?
 		  AND is_deleted = 0`,
 		assigneeID, sinceISO)
 	if err != nil {
@@ -358,7 +357,7 @@ func collectJiraCommentCandidates(database *db.DB, atlassianIDs []string, sinceI
 		SELECT issue_key, id, body_text, created_at
 		FROM jira_comments
 		WHERE (%s)
-		  AND created_at >= ?`, strings.Join(whereParts, " OR "))
+		  AND created_at > ?`, strings.Join(whereParts, " OR "))
 	cRows, err := database.Query(query, args...)
 	if err != nil {
 		return nil

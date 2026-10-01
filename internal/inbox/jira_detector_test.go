@@ -11,7 +11,7 @@ import (
 )
 
 // seedJiraIssue inserts a jira_issues row assigned to the given account ID.
-// updated is used as both updated_at and synced_at, in RFC3339 UTC
+// updated is used as both updated_at and synced_at, in the stored UTC form
 // (db.FormatJiraTime) exactly as the real sync writes it — the detector's
 // window bound is a plain SQL string compare
 // against updated_at, so a differently-formatted fixture would not exercise
@@ -59,24 +59,6 @@ func TestJiraDetector_AssignedToMe(t *testing.T) {
 	}
 	if got[0].ItemClass != "actionable" {
 		t.Errorf("expected actionable class, got %q", got[0].ItemClass)
-	}
-}
-
-// The stored updated_at keeps whole seconds, so a change later in the
-// window's own second is stored with that second: the bound is inclusive and
-// a second pass over the same window mints nothing new.
-func TestJiraDetector_AssignedInTheBoundSecond(t *testing.T) {
-	d := testDB(t)
-	since := time.Now().Add(-time.Hour).Truncate(time.Second)
-	seedJiraIssue(t, d, "WT-124", "alice", since.Add(500*time.Millisecond))
-
-	for pass := 1; pass <= 2; pass++ {
-		if _, err := DetectJira(context.Background(), d, db.Owner{SlackUserID: "alice"}, since); err != nil {
-			t.Fatal(err)
-		}
-		if got := queryInboxByTrigger(t, d, "jira_assigned"); len(got) != 1 {
-			t.Fatalf("pass %d: want 1 jira_assigned item, got %d", pass, len(got))
-		}
 	}
 }
 

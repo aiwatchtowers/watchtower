@@ -233,9 +233,9 @@ func newestComments(comments []db.JiraComment) []db.JiraComment {
 	return comments[len(comments)-maxCommentsPerIssue:]
 }
 
-// normalizeJiraStreamPeriod converts a Jira timestamp (an updated_at, stored
-// RFC3339 UTC since migration 00091 but parsed either way) to RFC3339 UTC for storage in stream_digests.period_from/period_to — the
-// email pre-digest pass already writes RFC3339 UTC there, and
+// normalizeJiraStreamPeriod converts a Jira timestamp (an updated_at, parsed
+// in either stored shape) to RFC3339 UTC in whole seconds for storage in
+// stream_digests.period_from/period_to — the email pre-digest pass already writes RFC3339 UTC there, and
 // ListStreamDigestsAfter/HasStreamDigestCovering compare both sources'
 // periods with plain string ordering, which is only offset-safe when every
 // row shares one format (GB4). An unparseable input (should not happen for a

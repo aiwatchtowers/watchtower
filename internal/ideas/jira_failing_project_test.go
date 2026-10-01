@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/db"
+	"watchtower/internal/jira"
 )
 
 // selectJiraProject seeds a selected board for projectKey and its sync state:
@@ -138,13 +139,25 @@ func TestIdeas01_JiraFailingProjectExemptions(t *testing.T) {
 // AFTER the failing project's last sync through (and move the floor past the
 // failing project's backlog). The clamp must hold every offset the data
 // carries: here -0400 and +0530.
+// jiraStored is what the sync stores for a Jira timestamp Jira returned in
+// loc's offset: the wire value ("…000-0400") through jira.NormalizeTimestamp.
+// Since migration 00091 the offset safety of these guards comes from that
+// normalization, so the fixtures take the same path instead of writing an
+// offset-bearing value no writer stores any more.
+func jiraStored(t *testing.T, tm time.Time, loc *time.Location) string {
+	t.Helper()
+	v, ok := jira.NormalizeTimestamp(tm.In(loc).Format("2006-01-02T15:04:05.000-0700"))
+	require.True(t, ok)
+	return v
+}
+
 func TestIdeas01_JiraFailingProjectClampIsOffsetSafe(t *testing.T) {
 	d := newTestDB(t)
 	now := time.Now().UTC().Truncate(time.Second)
 	acctID := seedJiraAccount(t, d)
 	ny := time.FixedZone("", -4*3600)
 	ist := time.FixedZone("", 5*3600+1800)
-	jt := func(tm time.Time, loc *time.Location) string { return db.FormatJiraTime(tm.In(loc)) }
+	jt := func(tm time.Time, loc *time.Location) string { return jiraStored(t, tm, loc) }
 
 	bSynced := now.Add(-time.Hour)
 	clamp := bSynced.Add(-jiraLaggingProjectOverlap)
@@ -199,9 +212,9 @@ func TestIdeas01_JiraBackfillBoundIsOffsetSafe(t *testing.T) {
 	ist := time.FixedZone("", 5*3600+1800)
 	ny := time.FixedZone("", -4*3600)
 	to := now.Add(-24 * time.Hour)
-	setIdeasJiraFloorRaw(t, d, acctID, db.FormatJiraTime(to.Add(-48*time.Hour).In(ny)))
-	seedJiraIssueIdeas(t, d, acctID, "WT-1", "WT", "inside window", "Open", "new", "x", db.FormatJiraTime(to.Add(-30*time.Minute).In(ist)))
-	seedJiraIssueIdeas(t, d, acctID, "WT-2", "WT", "older", "Open", "new", "x", db.FormatJiraTime(to.Add(-5*time.Hour).In(ny)))
+	setIdeasJiraFloorRaw(t, d, acctID, jiraStored(t, to.Add(-48*time.Hour), ny))
+	seedJiraIssueIdeas(t, d, acctID, "WT-1", "WT", "inside window", "Open", "new", "x", jiraStored(t, to.Add(-30*time.Minute), ist))
+	seedJiraIssueIdeas(t, d, acctID, "WT-2", "WT", "older", "Open", "new", "x", jiraStored(t, to.Add(-5*time.Hour), ny))
 
 	gen := &fakeGen{reply: jiraTopicsFor("WT-1", "WT-2")}
 	p := New(d, testCfg(), gen, testLogger())

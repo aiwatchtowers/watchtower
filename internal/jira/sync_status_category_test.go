@@ -19,7 +19,7 @@ import (
 // TestSync_StoresStatusCategoryChangedAt reproduces board #184: every
 // jira_issues.status_category_changed_at stayed empty because the search
 // never asked Jira for statuscategorychangedate and convertIssue hard-coded
-// "". The value must be requested and stored as RFC3339 UTC, the shape every
+// "". The value must be requested and stored in UTC (db.FormatJiraTime), the shape every
 // reader (julianday() in the Desktop stale query, the RFC3339 string cutoff
 // in GetStaleJiraIssues, the Go day counters) can parse.
 func TestSync_StoresStatusCategoryChangedAt(t *testing.T) {
@@ -70,7 +70,7 @@ func TestSync_StoresStatusCategoryChangedAt(t *testing.T) {
 	var stored string
 	require.NoError(t, database.QueryRow(
 		`SELECT status_category_changed_at FROM jira_issues WHERE key = 'TEST-1'`).Scan(&stored))
-	assert.Equal(t, changed.UTC().Format(time.RFC3339), stored)
+	assert.Equal(t, db.FormatJiraTime(changed), stored)
 
 	// The issue has sat in progress for 10 days, so the 7-day stale query
 	// (RFC3339 string cutoff) must find it.
@@ -82,7 +82,7 @@ func TestSync_StoresStatusCategoryChangedAt(t *testing.T) {
 
 func TestNormalizeTimestamp(t *testing.T) {
 	ts := time.Now().Truncate(time.Second)
-	want := ts.UTC().Format(time.RFC3339)
+	want := db.FormatJiraTime(ts)
 	west, east := time.FixedZone("", -5*3600), time.FixedZone("", 2*3600)
 	cases := []struct {
 		name, in, want string
@@ -90,7 +90,7 @@ func TestNormalizeTimestamp(t *testing.T) {
 	}{
 		{"jira offset", ts.In(west).Format("2006-01-02T15:04:05.000-0700"), want, true},
 		{"jira offset, no fraction", ts.In(west).Format("2006-01-02T15:04:05-0700"), want, true},
-		{"jira offset, long fraction", ts.Add(123456 * time.Microsecond).In(east).Format("2006-01-02T15:04:05.000000-0700"), want, true},
+		{"jira offset, long fraction", ts.Add(123456 * time.Microsecond).In(east).Format("2006-01-02T15:04:05.000000-0700"), db.FormatJiraTime(ts.Add(123 * time.Millisecond)), true},
 		{"rfc3339", ts.In(east).Format(time.RFC3339), want, true},
 		// An unknown shape is kept verbatim rather than dropped.
 		{"empty", "", "", false},

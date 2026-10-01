@@ -16,7 +16,7 @@ import (
 
 // TestSync_StoresIssueAndCommentTimestampsUTC: Jira returns every timestamp
 // in the Jira profile's own "+hhmm" offset. The syncer stores issue
-// created/updated/resolution and comment created/updated as RFC3339 UTC, so
+// created/updated/resolution and comment created/updated in UTC, so
 // julianday() can read them (the dashboards' cycle time) and string order is
 // instant order.
 func TestSync_StoresIssueAndCommentTimestampsUTC(t *testing.T) {
@@ -65,7 +65,7 @@ func TestSync_StoresIssueAndCommentTimestampsUTC(t *testing.T) {
 	_, err := syncer.Sync(context.Background())
 	require.NoError(t, err)
 
-	utc := func(tm time.Time) string { return tm.Format(time.RFC3339) }
+	utc := db.FormatJiraTime
 	issue, err := database.GetJiraIssue(1, "TEST-1")
 	require.NoError(t, err)
 	require.NotNil(t, issue)
@@ -83,7 +83,7 @@ func TestSync_StoresIssueAndCommentTimestampsUTC(t *testing.T) {
 	// julianday(resolved_at) - julianday(created_at), NULL (0 days) before.
 	_, err = database.Exec(`UPDATE jira_issues SET assignee_slack_id = 'U1' WHERE key = 'TEST-1'`)
 	require.NoError(t, err)
-	stats, err := database.GetJiraDeliveryStats("U1", utc(now.Add(-24*time.Hour)), utc(now))
+	stats, err := database.GetJiraDeliveryStats("U1", db.FormatJiraTime(now.Add(-24*time.Hour)), db.FormatJiraTime(now))
 	require.NoError(t, err)
 	assert.Equal(t, 1, stats.IssuesClosed, "the UTC range bounds find the issue resolved inside them")
 	assert.InDelta(t, resolved.Sub(created).Hours()/24, stats.AvgCycleTimeDays, 1e-6)

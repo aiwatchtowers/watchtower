@@ -869,7 +869,14 @@ func (s *Syncer) SyncSprints(ctx context.Context) error {
 // is logged, keeping the sprints read before it.
 func (s *Syncer) syncBoardSprints(ctx context.Context, boardID int, state string) ([]Sprint, error) {
 	sprints, err := s.fetchBoardSprints(ctx, boardID, state)
-	s.storeSprints(boardID, sprints)
+	syncedAt := time.Now().UTC().Format(time.RFC3339)
+	if err != nil {
+		// A broken read stores what it got without a sync time: the closed
+		// rows' newest synced_at is how needClosedSprints tells when the
+		// closed listing was last read in full.
+		syncedAt = ""
+	}
+	s.storeSprints(boardID, sprints, syncedAt)
 	if err != nil {
 		if errors.Is(err, ErrAuthRevoked) {
 			return nil, err
@@ -881,8 +888,8 @@ func (s *Syncer) syncBoardSprints(ctx context.Context, boardID int, state string
 
 // needClosedSprints reports whether this pass must read the board's closed
 // sprints: a sprint stored as active is no longer in the active listing (it
-// just closed), or the closed rows were last read over closedSprintRefresh
-// ago or never — which also covers a sprint that started and closed while
+// just closed), or the closed listing was last read in full over
+// closedSprintRefresh ago or never — which also covers a sprint that started and closed while
 // the daemon was off. A failed lookup reads them, the safe side.
 func (s *Syncer) needClosedSprints(boardID int, active []Sprint) bool {
 	stored, err := s.db.GetJiraActiveSprints(s.accountID, boardID)
@@ -935,9 +942,9 @@ func (s *Syncer) fetchBoardSprints(ctx context.Context, boardID int, state strin
 	return all, nil
 }
 
-// storeSprints upserts fetched sprints; a failed row is logged and skipped.
-func (s *Syncer) storeSprints(boardID int, sprints []Sprint) {
-	now := time.Now().UTC().Format(time.RFC3339)
+// storeSprints upserts fetched sprints with syncedAt; a failed row is logged
+// and skipped.
+func (s *Syncer) storeSprints(boardID int, sprints []Sprint, syncedAt string) {
 	for _, sprint := range sprints {
 		dbSprint := db.JiraSprint{
 			AccountID:    s.accountID,
@@ -949,7 +956,7 @@ func (s *Syncer) storeSprints(boardID int, sprints []Sprint) {
 			StartDate:    sprint.StartDate,
 			EndDate:      sprint.EndDate,
 			CompleteDate: sprint.CompleteDate,
-			SyncedAt:     now,
+			SyncedAt:     syncedAt,
 		}
 		if err := s.db.UpsertJiraSprint(dbSprint); err != nil {
 			s.logger.Printf("failed to upsert sprint %d: %v", sprint.ID, err)
@@ -1038,9 +1045,9 @@ func (s *Syncer) getFieldMap(boardID int) []db.JiraBoardFieldMap {
 }
 
 // NormalizeTimestamp rewrites a Jira timestamp ("2006-01-02T15:04:05.000-0700",
-// any or no fraction) as RFC3339 UTC (db.FormatJiraTime): SQLite's julianday()
-// rejects a "+hhmm" offset, and every reader compares the Jira timestamp
-// columns against RFC3339 UTC bounds as strings — a value in the Jira profile's
+// any or no fraction) in the stored UTC form (db.FormatJiraTime): SQLite's
+// julianday() rejects a "+hhmm" offset, and every reader compares the Jira
+// timestamp columns against bounds as strings — a value in the Jira profile's
 // own offset (which moves with DST) would sort by wall time, not by instant.
 // A value in neither shape is kept verbatim rather than dropped, and ok is
 // false so the caller can say so.
