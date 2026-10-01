@@ -25,7 +25,8 @@ struct AddProjectDocumentSheet: View {
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             HStack {
                 Text(fileURL == nil ? "No file chosen" : shownPath)
-                    .lineLimit(1).truncationMode(.middle)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
                     .foregroundStyle(fileURL == nil ? .secondary : .primary)
                 Spacer()
                 Button("Choose File…", action: chooseFile)

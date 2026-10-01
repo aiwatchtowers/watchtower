@@ -390,7 +390,8 @@ final class ProjectsViewModel {
         // Still on this project: open it (also for an already attached path).
         if let item = documents.first(where: { $0.id == attached.documentID }) {
             await openDocument(item.document)
-            if !attached.created {
+            // Still the open document: a project switch during the open closed it.
+            if !attached.created, documentViewModel?.document.id == attached.documentID {
                 attachNotice = "\(attached.relPath) was already attached — it is open, with its kind and target unchanged."
             }
         }
