@@ -169,9 +169,13 @@ extension ProjectsViewModel {
 
     /// "Work on it" (spec §4): the target's most recently active session
     /// (resumed, reopened if closed), else a new one named after the target
-    /// and started with the fixed work-on prompt. It goes on screen without
-    /// hiding the board it was started from (beside it in a split).
-    func workOn(targetID: Int64, targetText: String, placement: Placement = .keeping(.board)) async {
+    /// and started with the fixed work-on prompt. A split keeps the board it
+    /// was started from (the session goes beside it); a single pane switches
+    /// to the session. `projectID` is the target's own project, which keys a
+    /// read error (the selection may change during the read).
+    func workOn(
+        targetID: Int64, targetText: String, projectID: Int64? = nil, placement: Placement = .keeping(.board)
+    ) async {
         guard workingOnTarget.insert(targetID).inserted else { return }
         defer { workingOnTarget.remove(targetID) }
         let found: (project: Project, rows: [TerminalSession])?
@@ -183,11 +187,11 @@ extension ProjectsViewModel {
                 return (project, rows.filter { $0.projectID == projectID })
             }
         } catch {
-            setSessionError("Could not read the target: \(error.localizedDescription)", projectID: selectedProjectID)
+            setSessionError("Could not read the target: \(error.localizedDescription)", projectID: projectID ?? selectedProjectID)
             return
         }
         guard let found else {
-            setSessionError("Target #\(targetID) is not on a project board.", projectID: selectedProjectID)
+            setSessionError("Target #\(targetID) is not on a project board.", projectID: projectID ?? selectedProjectID)
             return
         }
         if let existing = TerminalSessionPolicy.sessionForTarget(targetID, in: found.rows) {

@@ -186,6 +186,50 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         XCTAssertEqual(launches.map(\.args), [["-l", "-c", command]])
     }
 
+    /// The existing-session branch keeps the board in a split too, also
+    /// out of an expanded board; a single pane switches to the session.
+    func testWorkOnAnExistingSessionKeepsTheBoardInASplitAndSwitchesASinglePane() async throws {
+        let p = try await projectWithFolder()
+        let target = try await pool.write { try TestDatabase.insertProjectTarget($0, projectID: p) }
+        let existing = try await insertSession(.init(
+            projectID: p, kind: .claude, title: "Feature", targetID: target,
+            folderPath: acme, claudeSessionID: UUID().uuidString.lowercased()
+        ), closed: true)
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: p)
+        vm.layout.show(.documents)
+        vm.layout.split(with: .board)
+        vm.toggleExpand(.board, projectID: p)
+
+        await vm.workOn(targetID: target, targetText: "Feature", projectID: p)
+
+        XCTAssertEqual(vm.layout.visiblePanes, [.session(existing.id), .board])
+        XCTAssertNil(vm.layout.expanded)
+        let after = try await rows(p)
+        XCTAssertEqual(after.map(\.id), [existing.id], "no new row")
+
+        vm.layout.unsplit()
+        vm.layout.show(.board)
+        await vm.workOn(targetID: target, targetText: "Feature", projectID: p)
+        XCTAssertEqual(vm.layout.visiblePanes, [.session(existing.id)], "a single pane switches to the session")
+    }
+
+    /// A read error belongs to the target's own project, not to whatever is
+    /// selected when it lands.
+    func testWorkOnErrorLandsOnTheTargetsProject() async throws {
+        let a = try await projectWithFolder("a")
+        let b = try await projectWithFolder("b")
+        let vm = makeVM()
+        await vm.reload()
+        vm.selectedProjectID = b
+
+        await vm.workOn(targetID: 9_999, targetText: "gone", projectID: a)
+
+        XCTAssertNotNil(vm.sessionErrors[a])
+        XCTAssertNil(vm.sessionErrors[b])
+    }
+
     // MARK: - Open / close / delete / rename
 
     func testOpenMarksTheSessionMostRecentlyActive() async throws {

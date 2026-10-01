@@ -17,13 +17,14 @@ struct WorkOnTargetButton: View {
         let vm = appState.projectsViewModel
         let existing = hasSession(vm)
         let title = existing ? "Open Its Session" : "Work on It"
+        let icon = existing ? "arrow.right.circle" : "play.circle"
         Button {
-            Task { await vm?.workOn(targetID: Int64(target.id), targetText: target.text) }
+            Task { await vm?.workOn(targetID: Int64(target.id), targetText: target.text, projectID: target.projectID) }
         } label: {
             if compact {
-                Image(systemName: existing ? "arrow.right.circle" : "play.circle")
+                Image(systemName: icon)
             } else {
-                Label(title, systemImage: existing ? "arrow.right.circle" : "play.circle")
+                Label(title, systemImage: icon)
             }
         }
         .buttonStyle(.borderless)
@@ -31,6 +32,7 @@ struct WorkOnTargetButton: View {
         .accessibilityLabel(title)
         .opacity(isVisible ? 1 : 0)
         .disabled(!isVisible || vm == nil)
+        .accessibilityHidden(!isVisible)
     }
 
     private func hasSession(_ vm: ProjectsViewModel?) -> Bool {
