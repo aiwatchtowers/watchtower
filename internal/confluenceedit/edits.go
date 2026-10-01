@@ -216,18 +216,16 @@ func (a *applier) checkNoSpill(hi int, region span, content, body []*block) erro
 		own[matchKey(a.d.blockText(bl))] = true
 	}
 	past := map[string]bool{}
+scan:
 	for _, bl := range a.d.blocks[hi+1:] {
 		if bl.start < region.end || bl.dead {
 			continue
 		}
-		if endsSection(bl, a.d.blocks[hi].level) {
-			break
-		}
-		past[matchKey(a.d.blockText(bl))] = true
-		if bl.section != nil {
-			for _, b := range bl.section.body {
-				past[matchKey(a.d.blockText(b))] = true
+		for _, b := range expand([]*block{bl}) {
+			if endsSection(b, a.d.blocks[hi].level) {
+				break scan
 			}
+			past[matchKey(a.d.blockText(b))] = true
 		}
 	}
 	for _, bl := range body {

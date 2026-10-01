@@ -79,6 +79,8 @@ func TestSectionSpillCaughtAfterAnEarlierRewritePastTheEdge(t *testing.T) {
 		`<ac:layout-cell><h3>Sub</h3><p>s</p></ac:layout-cell></ac:layout-section></ac:layout>`
 	ee := applyErr(t, src, sectionEdit("Sub", "s2 new para"), sectionEdit("Goals", "g1\n\ns2 new para"))
 	assert.Contains(t, ee.Error(), `new_body repeats "s2 new para"`)
+
+	applyOK(t, src, sectionEdit("Sub", "s\n\n## Other\n\nfoo"), sectionEdit("Goals", "g1\n\nfoo")) // under its own heading: not a spill
 }
 
 // Text past the edge that the section ALSO holds is the section's own: the
