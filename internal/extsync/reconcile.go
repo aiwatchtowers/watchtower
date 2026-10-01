@@ -64,7 +64,8 @@ func (e *Engine) runReconcile(ctx context.Context, p pass) error {
 // reconcile deletes the local documents (and their comments) and the
 // comments the provider no longer enumerates — trashed, moved to another
 // container, or no longer visible to the account, which is the whole
-// permission model — then fetches what it enumerates but the store lacks
+// permission model — except the children guardChildren keeps (a listing
+// that looks degraded), then fetches what it enumerates but the store lacks
 // or holds at another version (see recoverListed), and stamps
 // last_reconcile_at once both are done. Every enumeration, comments
 // included, completes before anything is deleted, so a failed listing
@@ -72,20 +73,29 @@ func (e *Engine) runReconcile(ctx context.Context, p pass) error {
 // unstamped, so the next cycle resumes it; the version gate makes the refs
 // it already wrote free.
 func (e *Engine) reconcile(ctx context.Context, p pass) error {
+	c, err := e.refreshContainer(ctx, p)
+	if err != nil {
+		return err
+	}
+	p.c = c
 	l, err := enumerateReconcile(ctx, p)
+	if err != nil {
+		return err
+	}
+	kept, err := e.guardChildren(ctx, p, l)
 	if err != nil {
 		return err
 	}
 	deleted := 0
 	err = e.withTx(ctx, func(q Queryer) error {
-		n, err := e.reconcileDocs(ctx, q, p.src, l)
+		n, err := e.reconcileDocs(ctx, q, p.src, l, kept.attachments)
 		if err != nil {
 			return err
 		}
 		deleted = n
 		// After the documents: a deleted document's comments are gone
 		// already, so only the surviving parents are stamped and relinked.
-		return e.reconcileComments(ctx, q, p.src, l.comments)
+		return e.reconcileComments(ctx, q, p.src, l.comments, kept.comments)
 	})
 	if err != nil {
 		return err
@@ -119,15 +129,17 @@ func enumerateReconcile(ctx context.Context, p pass) (reconcileListing, error) {
 	return l, nil
 }
 
-// reconcileDocs deletes the documents absent from the listing and relinks
-// them, returning how many were deleted.
-func (e *Engine) reconcileDocs(ctx context.Context, q Queryer, src db.ExtSource, l reconcileListing) (int, error) {
+// reconcileDocs deletes the documents absent from the listing, except the
+// attachments in keepAttachments, and relinks them, returning how many
+// were deleted.
+func (e *Engine) reconcileDocs(ctx context.Context, q Queryer, src db.ExtSource, l reconcileListing, keepAttachments map[string]bool) (int, error) {
 	deleted := 0
 	for _, set := range []struct {
 		local  []ItemKind
 		remote map[string]ItemRef
-	}{{[]ItemKind{KindPage, KindBlogpost}, l.pages}, {[]ItemKind{KindAttachment}, l.attachments}} {
-		gone, err := deleteAbsent(ctx, q, src.ID, set.local, set.remote)
+		keep   map[string]bool
+	}{{[]ItemKind{KindPage, KindBlogpost}, l.pages, nil}, {[]ItemKind{KindAttachment}, l.attachments, keepAttachments}} {
+		gone, err := deleteAbsent(ctx, q, src.ID, set.local, set.remote, set.keep)
 		if err != nil {
 			return 0, err
 		}
@@ -139,12 +151,13 @@ func (e *Engine) reconcileDocs(ctx context.Context, q Queryer, src db.ExtSource,
 	return deleted, nil
 }
 
-// reconcileComments deletes the stored comments absent from remote. A
+// reconcileComments deletes the stored comments absent from remote, except
+// those in keep. A
 // comment deletion does not bump its page's version, and the comments
 // stream only lists what changed, so without this a deleted comment would
 // stay searchable forever. Each parent that lost a comment is stamped
 // children_changed_at (the KB re-renders it) and relinked.
-func (e *Engine) reconcileComments(ctx context.Context, q Queryer, src db.ExtSource, remote map[string]ItemRef) error {
+func (e *Engine) reconcileComments(ctx context.Context, q Queryer, src db.ExtSource, remote map[string]ItemRef, keep map[string]bool) error {
 	local, err := localComments(ctx, q, src.ID)
 	if err != nil {
 		return err
@@ -152,7 +165,7 @@ func (e *Engine) reconcileComments(ctx context.Context, q Queryer, src db.ExtSou
 	var parents []string
 	seen := map[string]bool{}
 	for _, c := range local {
-		if _, ok := remote[c.id]; ok {
+		if _, ok := remote[c.id]; ok || keep[c.id] {
 			continue
 		}
 		if _, err := q.ExecContext(ctx, `DELETE FROM ext_comments WHERE source_id = ? AND ext_id = ?`,
@@ -221,16 +234,16 @@ func enumerateAll(ctx context.Context, f Fetcher, c Container, kind ItemKind) (m
 	}
 }
 
-// deleteAbsent deletes the local documents of kinds whose ext id is not in
-// remote, returning their ids.
-func deleteAbsent(ctx context.Context, q Queryer, sourceID int64, kinds []ItemKind, remote map[string]ItemRef) ([]string, error) {
+// deleteAbsent deletes the local documents of kinds whose ext id is in
+// neither remote nor keep, returning their ids.
+func deleteAbsent(ctx context.Context, q Queryer, sourceID int64, kinds []ItemKind, remote map[string]ItemRef, keep map[string]bool) ([]string, error) {
 	local, err := localIDs(ctx, q, sourceID, kinds)
 	if err != nil {
 		return nil, err
 	}
 	var gone []string
 	for _, id := range local {
-		if _, ok := remote[id]; ok {
+		if _, ok := remote[id]; ok || keep[id] {
 			continue
 		}
 		if err := deleteDocument(ctx, q, sourceID, id); err != nil {

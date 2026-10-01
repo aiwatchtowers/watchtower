@@ -53,6 +53,8 @@ type fakeFetcher struct {
 	readErr      map[string]error    // a Read of the body fails with it after the bytes
 	downloads    map[string]int      // Download calls by id
 	onFetch      func()              // called on every Fetch
+	containers   []Container         // Containers' answer (nil = the one ENG space)
+	allKeys      []string            // the container key of every All call
 }
 
 // hit counts one Fetcher call and returns the injected failure, if any.
@@ -246,6 +248,9 @@ func (f *fakeFetcher) Containers(context.Context) ([]Container, error) {
 	if err := f.hit(); err != nil {
 		return nil, err
 	}
+	if f.containers != nil {
+		return append([]Container(nil), f.containers...), nil
+	}
 	return []Container{{Key: "ENG", Name: "Engineering", ExtID: "1"}}, nil
 }
 
@@ -279,13 +284,14 @@ func (f *fakeFetcher) Changed(_ context.Context, _ Container, kind ItemKind, sin
 	return f.paginate(refs, page)
 }
 
-func (f *fakeFetcher) All(_ context.Context, _ Container, kind ItemKind, page string) ([]ItemRef, string, error) {
+func (f *fakeFetcher) All(_ context.Context, c Container, kind ItemKind, page string) ([]ItemRef, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if err := f.hit(); err != nil {
 		return nil, "", err
 	}
 	f.allCalls[kind]++
+	f.allKeys = append(f.allKeys, c.Key)
 	if err := f.failAll[kind]; err != nil {
 		return nil, "", err
 	}
