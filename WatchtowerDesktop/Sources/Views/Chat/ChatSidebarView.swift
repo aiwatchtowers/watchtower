@@ -7,6 +7,7 @@ struct ChatSidebarView: View {
     @Bindable var historyVM: ChatHistoryViewModel
     let chatVM: ChatViewModel
     let onNewChat: () -> Void
+    let onArchive: (Int64) -> Void
     let onDelete: (Int64) -> Void
     @State private var renaming: ChatConversation?
     @State private var renameText = ""
@@ -32,12 +33,15 @@ struct ChatSidebarView: View {
                             Text(conv.displayTitle)
                                 .lineLimit(1)
                                 .tag(conv.id)
+                                .listRowSeparator(.hidden)
                                 .contextMenu { menu(conv) }
                         }
                     }
                 }
             }
-            .listStyle(.sidebar)
+            // Sits in a plain HStack (ChatView's ChatSplitView), not a
+            // NavigationSplitView column — see panelListStyle.
+            .panelListStyle()
             if let error = historyVM.lastError {
                 Text(error).font(.caption).foregroundStyle(.red).padding(8)
             }
@@ -72,6 +76,7 @@ struct ChatSidebarView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .listRowSeparator(.hidden)
                 .listRowBackground(chatVM.openProjectID == project.id ? Color.accentColor.opacity(0.15) : nil)
             }
         } header: {
@@ -111,10 +116,7 @@ struct ChatSidebarView: View {
                 }
             }
         }
-        Button("Archive") {
-            chatVM.forget(conversationID: conv.id)
-            historyVM.archive(conv.id)
-        }
+        Button("Archive") { onArchive(conv.id) }
         Divider()
         Button("Delete…", role: .destructive) { deleting = conv }
     }

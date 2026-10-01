@@ -151,7 +151,9 @@ func (db *DB) SyncJiraTargetStatuses() (int, error) {
 			continue
 		}
 
-		if err := db.UpdateTargetStatus(t.ID, newStatus); err != nil {
+		// A sync write: recorded as the system's in a project target's
+		// status history (PROJ-06).
+		if err := updateTargetStatusOn(db, t.ID, newStatus, ActorSystem); err != nil {
 			log.Printf("jira-targets: error updating target %d status to %s: %v", t.ID, newStatus, err)
 			continue
 		}

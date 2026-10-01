@@ -16,6 +16,10 @@ struct MeetingPrepDetailView: View {
             if viewModel.isLoading {
                 loadingView
             } else if let result = viewModel.result {
+                // A failed Refresh keeps the older result; say so above it.
+                if let error = viewModel.error {
+                    refreshErrorBanner(error)
+                }
                 prepContent(result)
             } else if let error = viewModel.error {
                 errorView(error)
@@ -24,9 +28,7 @@ struct MeetingPrepDetailView: View {
             }
         }
         .onAppear {
-            if viewModel.result == nil && !viewModel.isLoading {
-                viewModel.generate(eventID: eventID)
-            }
+            viewModel.startIfNeeded(eventID: eventID)
         }
     }
 
@@ -393,6 +395,25 @@ struct MeetingPrepDetailView: View {
                 .font(.caption)
                 .foregroundStyle(done ? .secondary : .primary)
         }
+    }
+
+    private func refreshErrorBanner(_ message: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Refresh failed — showing the previous prep")
+                    .font(.caption.weight(.semibold))
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.orange.opacity(0.1))
     }
 
     private func errorView(_ message: String) -> some View {

@@ -37,12 +37,15 @@ struct UpcomingMeetingBannerView: View {
             }
 
             if event.conferenceLink != nil {
-                Button("Join") {
+                Button {
                     Task { await JoinMeetingAction.join(event: event, center: recorder) }
                     center.dismissBanner(event)
+                } label: {
+                    Label("Join", systemImage: "video")
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
+                // The shared Join look: readable over the material in any
+                // theme and window state, and kept at its intrinsic size.
+                .buttonStyle(JoinButtonStyle())
             }
 
             Button {

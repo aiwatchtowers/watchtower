@@ -438,7 +438,7 @@ final class DigestViewModel {
             try dbManager.dbPool.write { db in try IdeaQueries.supersede(db, id: id, by: newID) }
             reloadLedger()
         } catch {
-            errorMessage = "Failed to supersede decision: \(error.localizedDescription)"
+            reportLedgerWriteFailure("supersede decision", error)
         }
     }
 
@@ -447,7 +447,7 @@ final class DigestViewModel {
             try dbManager.dbPool.write { db in try IdeaQueries.setStatus(db, id: id, status: "reversed") }
             reloadLedger()
         } catch {
-            errorMessage = "Failed to reverse decision: \(error.localizedDescription)"
+            reportLedgerWriteFailure("reverse decision", error)
         }
     }
 
@@ -461,9 +461,16 @@ final class DigestViewModel {
             reloadLedger()
             return true
         } catch {
-            errorMessage = "Failed to set rating: \(error.localizedDescription)"
+            reportLedgerWriteFailure("set rating", error)
             return false
         }
+    }
+
+    /// A decision deleted elsewhere reloads the ledger first (which clears
+    /// `errorMessage` on success), then names the failure.
+    private func reportLedgerWriteFailure(_ what: String, _ error: Error) {
+        if error is RowNotFoundError { reloadLedger() }
+        errorMessage = "Failed to \(what): \(error.localizedDescription)"
     }
 
     /// Re-reads just the decisions ledger — cheaper than a full `load()`

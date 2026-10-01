@@ -42,11 +42,11 @@ Every brief must state, verbatim or adapted:
 
 ### Auditor 1 — Product
 
-`subagent_type: "general-purpose"`. Lens: does the shipped range make sense as a product change? Gaps between what a feature note in `CLAUDE.md` / `docs/superpowers/specs/` promises and what the code actually does; half-finished flows (a Desktop screen with no way to reach it, a CLI flag nothing wires up); UX regressions; anything that reads as shipped-but-not-really-done.
+`subagent_type: "general-purpose"`. Lens: does the shipped range make sense as a product change? Gaps between what a feature note in `docs/features/` (indexed from `CLAUDE.md`) / `docs/superpowers/specs/` promises and what the code actually does; half-finished flows (a Desktop screen with no way to reach it, a CLI flag nothing wires up); UX regressions; anything that reads as shipped-but-not-really-done.
 
 ### Auditor 2 — Functional correctness
 
-`subagent_type: "general-purpose"`. Lens: does the code do what it claims? Logic errors, wrong conditionals, off-by-ones, incorrect state machines, watermark/floor math, wrong dual-path renderers (Go↔Swift contracts in `CLAUDE.md`'s feature notes are full of these — segments/notes/recap dual-path precedents). Trace at least one representative flow per touched module end-to-end rather than skimming diffs in isolation.
+`subagent_type: "general-purpose"`. Lens: does the code do what it claims? Logic errors, wrong conditionals, off-by-ones, incorrect state machines, watermark/floor math, wrong dual-path renderers (Go↔Swift contracts in the `docs/features/` feature notes are full of these — segments/notes/recap dual-path precedents). Trace at least one representative flow per touched module end-to-end rather than skimming diffs in isolation.
 
 ### Auditor 3 — Security
 

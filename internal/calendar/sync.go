@@ -126,10 +126,18 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 		}
 	}
 
-	events, err := s.client.FetchEvents(ctx, calendarIDs, timeMin, timeMax)
+	events, gone, err := s.client.FetchEvents(ctx, calendarIDs, timeMin, timeMax)
 	if err != nil {
 		s.recordAuthResult(ctx, err)
 		return 0, fmt.Errorf("fetching calendar events: %w", err)
+	}
+	for _, calID := range gone {
+		// Nothing was fetched for it, so a stale-delete would wipe every one
+		// of its events; leave them alone. It stays selected (deselecting it
+		// would need a full, hidden-inclusive calendar list to trust), so it
+		// is skipped the same way every cycle until it answers again.
+		s.logger.Printf("calendar: calendar %s is no longer accessible (404/410), skipping it this cycle", calID)
+		skipStaleDelete[calID] = true
 	}
 
 	// Successful fetch — clear any previously recorded auth failure.

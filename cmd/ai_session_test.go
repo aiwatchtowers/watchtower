@@ -148,6 +148,16 @@ func TestAISession_PromptOptionsMemoryChatGate(t *testing.T) {
 	}
 }
 
+// Web search is promised in the prompt only where the backend exposes it:
+// the Claude session (SessionDisallowedTools); codex/ollama have no WebSearch.
+func TestAISession_PromptOptionsWebSearchOnlyForClaude(t *testing.T) {
+	for p, want := range map[string]bool{"": true, "claude": true, "codex": false, "ollama": false} {
+		cfg := &config.Config{ActiveWorkspace: "ws"}
+		cfg.AI.Provider = p
+		assert.Equal(t, want, sessionPromptOptions(cfg, "main", 0, time.Now()).WebSearch, "provider %q", p)
+	}
+}
+
 func TestNewSessionBackend_EveryProviderHasABackend(t *testing.T) {
 	database := db.OpenTestDB(t)
 	conv := &db.ChatConversation{ID: 1}

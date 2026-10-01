@@ -7,7 +7,7 @@
 // Registry.Propose (never Execute): it records one agent_actions proposal row
 // and hands the model a receipt, so AGENT-01 ("the model never writes") holds on
 // this path exactly as it does through MCP. Read-tool calls go through
-// Registry.CallRead and touch no proposal row.
+// Registry.CallRead with the loop's binding and touch no proposal row.
 package agentloop
 
 import (
@@ -35,7 +35,7 @@ type registry interface {
 	List(surface string) []*tools.Tool
 	Get(name string) (*tools.Tool, bool)
 	Propose(ctx context.Context, name string, args json.RawMessage, b tools.Binding) (tools.Receipt, error)
-	CallRead(ctx context.Context, name string, args json.RawMessage) (any, error)
+	CallRead(ctx context.Context, name string, args json.RawMessage, b tools.Binding) (any, error)
 }
 
 // Client implements ai.Provider by running the tool loop against an
@@ -213,7 +213,7 @@ func (c *Client) dispatch(ctx context.Context, call oaToolCall) string {
 		}
 		return marshalResult(rc)
 	default:
-		data, err := c.reg.CallRead(ctx, name, args)
+		data, err := c.reg.CallRead(ctx, name, args, c.binding)
 		if err != nil {
 			return errJSON(err.Error())
 		}

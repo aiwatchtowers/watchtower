@@ -97,8 +97,9 @@ final class WhisperKitEngine: WhisperWindowEngine, @unchecked Sendable {
             decodeOptions: options
         )
         // result.text is derived from result.segments in WhisperKit, so
-        // mapping segments (not text) cannot drop speech.
-        return results.flatMap { result in
+        // mapping segments (not text) cannot drop speech; the filter then
+        // removes only Whisper's known subtitle-credit boilerplate.
+        let segments = results.flatMap { result in
             result.segments.map {
                 TranscribedSegment(
                     text: $0.text.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -107,5 +108,14 @@ final class WhisperKitEngine: WhisperWindowEngine, @unchecked Sendable {
                 )
             }
         }
+        let cleaned = segments.withoutHallucinations()
+        if cleaned != segments {
+            // Counts only, never text — enough to tell "the filter ate it"
+            // from "the model never heard it" when a transcript looks thin.
+            NSLog("WhisperKitEngine: hallucination filter removed %d of %d segment(s), %d chars",
+                  segments.count - cleaned.count, segments.count,
+                  segments.map(\.text.count).reduce(0, +) - cleaned.map(\.text.count).reduce(0, +))
+        }
+        return cleaned
     }
 }

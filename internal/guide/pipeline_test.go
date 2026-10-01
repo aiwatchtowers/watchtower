@@ -186,7 +186,9 @@ func TestPipeline_SkipsExistingWindow(t *testing.T) {
 		seedMessage(t, database, "C1", tsStr, "U1", "message "+string(rune('a'+i)))
 	}
 
-	gen := &mockGenerator{response: `{"summary":"test","communication_style":"","decision_role":"","red_flags":[],"highlights":[],"accomplishments":[],"communication_guide":"","decision_style":"","tactics":[]}`}
+	// A batch-shaped reply naming U1, so the first run stores a real AI card —
+	// only an AI card completes the window (a fallback card does not).
+	gen := &mockGenerator{response: `[{"user_id":"U1","summary":"test","communication_style":"","decision_role":"","red_flags":[],"highlights":[],"accomplishments":[],"communication_guide":"","decision_style":"","tactics":[]}]`}
 	pipe := New(database, cfg, gen, logger)
 	pipe.ForceRegenerate = true
 	cfg.AI.Workers = 1
@@ -556,9 +558,14 @@ func TestPipeline_BatchFallback(t *testing.T) {
 	pipe.ForceRegenerate = true
 	cfg.AI.Workers = 1
 
+	// Every user fell back: the AI produced nothing, so the run is an error
+	// (not a clean run the daemon would stamp for 24h), and the team summary
+	// is not generated over fallback cards.
 	n, err := pipe.RunForWindow(context.Background(), from, to)
-	require.NoError(t, err)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no people card produced by AI")
 	assert.Equal(t, 2, n)
+	assert.Equal(t, int32(1), gen.calls.Load(), "one failed batch call, no team summary")
 
 	// Both users should get insufficient_data cards (fallback)
 	cardU1, err := database.GetLatestPeopleCard("U1")

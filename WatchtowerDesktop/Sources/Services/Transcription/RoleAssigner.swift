@@ -7,7 +7,7 @@ enum RoleAssigner {
     private static let selfLabel = "Я"
     /// Mic RMS must exceed system RMS by this factor for a bin to read as
     /// "the owner is speaking" (the mic channel leaks meeting audio quietly).
-    private static let micDominanceFactor: Float = 2.0
+    static let micDominanceFactor: Float = 2.0
     /// Minimum share of a cluster's speech bins with mic dominance for the
     /// cluster to be labelled as the owner.
     private static let selfShareThreshold = 0.6
@@ -177,7 +177,7 @@ enum RoleAssigner {
 
     /// First-appearance order of cluster IDs — drives Speaker 1..N numbering
     /// and the earliest-wins tie determinism.
-    private static func clusterOrder(_ speakers: [SpeakerSegment]) -> [String] {
+    static func clusterOrder(_ speakers: [SpeakerSegment]) -> [String] {
         var order: [String] = []
         for s in speakers.sorted(by: { $0.startSec < $1.startSec }) where !order.contains(s.speakerID) {
             order.append(s.speakerID)

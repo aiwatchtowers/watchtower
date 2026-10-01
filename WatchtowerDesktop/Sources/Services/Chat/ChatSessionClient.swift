@@ -83,6 +83,8 @@ final class ChatSessionClient {
     @ObservationIgnored private var shutdownRequested = false
     @ObservationIgnored private var sigtermSent = false
     @ObservationIgnored private var hasRunTurn = false
+    /// Set by `retireAfterTurn`: the running turn is this session's last.
+    @ObservationIgnored private var retiresAfterTurn = false
     /// The turn whose `turn` command was actually written to the process.
     @ObservationIgnored private var sentTurnID: String?
 
@@ -200,9 +202,11 @@ final class ChatSessionClient {
     func cancel(grace: Duration = .seconds(7), killAfter: Duration = ChatSessionClient.defaultKillAfter) {
         guard let turn = driver.liveTurn, turn.isRunning else { return }
         if pendingTurn != nil {
-            // Never sent: nothing to interrupt.
-            pendingTurn = nil
-            driver.finishRunningAsPartial()
+            // Never sent: nothing to interrupt, and nothing left to launch
+            // for — the pool drops the queued client instead of spawning a
+            // process that would idle until the TTL.
+            abandon()
+            onEnded?()
             return
         }
         do {
@@ -223,6 +227,15 @@ final class ChatSessionClient {
             self.isAlive = false
             await self.terminateAndReap(killAfter: killAfter)
         }
+    }
+
+    /// The prompt this session was spawned with is stale (its chat project
+    /// changed) but a turn is running: let it finish, record no session id,
+    /// then stop counting as alive so the pool replaces it (CHAT-03 — a
+    /// running turn is never cut).
+    func retireAfterTurn() {
+        retiresAfterTurn = true
+        driver.stopRecordingSession()
     }
 
     /// Ends the client without a process to shut down (never launched, or
@@ -328,6 +341,7 @@ final class ChatSessionClient {
         } else {
             continuousLeafID = turn.turnID == sentTurnID ? turn.messageID : nil
         }
+        if retiresAfterTurn { isAlive = false }
         touch()
         onTurnFinished?(conversationID)
     }

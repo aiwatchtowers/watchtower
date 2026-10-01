@@ -103,6 +103,13 @@ package enum ReactionToolCatalog {
             summary: "Edits an existing issue's summary, priority, labels or due date",
             destination: "Jira",
             alwaysAsks: true
+        ),
+        // Chat-only Confluence page edit (spec 2026-09-30 §6) — External.
+        "edit_confluence_page": ReactionToolInfo(
+            title: "Edit a Confluence page",
+            summary: "Changes text or a section of an existing Confluence page",
+            destination: "Confluence",
+            alwaysAsks: true
         )
     ]
 

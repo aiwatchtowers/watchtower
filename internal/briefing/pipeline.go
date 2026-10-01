@@ -28,9 +28,9 @@ type BriefingResult struct {
 // AttentionItem is something requiring the user's immediate focus.
 type AttentionItem struct {
 	Text          string `json:"text"`
-	SourceType    string `json:"source_type"` // track, digest, people, target
-	SourceID      string `json:"source_id"`
-	Priority      string `json:"priority"` // high, medium
+	SourceType    string `json:"source_type"`         // track, digest, people, target
+	SourceID      string `json:"source_id,omitempty"` // omitted when blanked (Swift decodes a missing key as nil)
+	Priority      string `json:"priority"`            // high, medium
 	Reason        string `json:"reason"`
 	SuggestTarget bool   `json:"suggest_target,omitempty"`
 }
@@ -77,6 +77,10 @@ type Pipeline struct {
 	generator   digest.Generator
 	logger      *log.Logger
 	promptStore *prompts.Store
+
+	// shown collects the ids the current RunForDate's prompt rendered; nil
+	// outside a run (see shownIDs).
+	shown *shownIDs
 
 	// Accumulated usage from the last Run call.
 	lastInputTokens    int
@@ -143,21 +147,24 @@ func (p *Pipeline) RunForDate(ctx context.Context, date string) (int, error) {
 		p.logger.Printf("briefing: could not load user profile: %v", err)
 	}
 
-	// Gather data in parallel-friendly sections.
+	// Gather data in parallel-friendly sections, recording every id shown.
+	p.shown = newShownIDs()
+	defer func() { p.shown = nil }()
 	targetsCtx, hasRealTargets := p.gatherTargets()
 	tracksCtx, hasRealTracks := p.gatherTracks()
 	inboxCtx, hasRealInbox := p.gatherInbox()
-	calendarCtx := p.gatherCalendar()
+	calendarCtx := p.gatherCalendar(date)
 	digestsCtx := p.gatherDigests(date)
 	dailyDigestCtx := p.gatherLatestDailyDigest()
 	peopleCardsCtx := p.gatherPeopleCards()
 	peopleSummaryCtx := p.gatherPeopleSummary()
 	profileCtx := formatUserProfile(profile)
 	jiraCtx := p.gatherJiraContext(owner)
+	projectsCtx, hasRealProjects := p.gatherProjects(p.revisionWindowStart(currentUserID, date))
 	memRevisionsCtx := p.gatherMemoryRevisions(currentUserID, date)
 
 	// Check we have some data (suggestion text alone doesn't count).
-	hasData := digestsCtx != "" || dailyDigestCtx != "" || hasRealTracks || hasRealTargets || hasRealInbox
+	hasData := hasAnyData(digestsCtx, dailyDigestCtx, hasRealTracks, hasRealTargets, hasRealInbox, hasRealProjects)
 	if !hasData {
 		p.logger.Println("briefing: no digests or tracks available, skipping")
 		return 0, nil
@@ -193,6 +200,7 @@ func (p *Pipeline) RunForDate(ctx context.Context, date string) (int, error) {
 		peopleSummaryCtx,
 		profileCtx,
 		jiraCtx,
+		projectsCtx,
 		memRevisionsCtx,
 	)
 
@@ -215,6 +223,7 @@ func (p *Pipeline) RunForDate(ctx context.Context, date string) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("parsing briefing response: %w", err)
 	}
+	p.blankUnshownIDs(result)
 
 	// Serialize JSON sections.
 	attentionJSON, _ := json.Marshal(result.Attention)
@@ -224,7 +233,9 @@ func (p *Pipeline) RunForDate(ctx context.Context, date string) (int, error) {
 	coachingJSON, _ := json.Marshal(result.Coaching)
 
 	var inTok, outTok, totalAPI int
+	var model string
 	if usage != nil {
+		model = usage.Model
 		inTok = usage.InputTokens
 		outTok = usage.OutputTokens
 		totalAPI = usage.TotalAPITokens
@@ -244,7 +255,7 @@ func (p *Pipeline) RunForDate(ctx context.Context, date string) (int, error) {
 		WhatHappened:  string(whatHappenedJSON),
 		TeamPulse:     string(teamPulseJSON),
 		Coaching:      string(coachingJSON),
-		Model:         usage.Model,
+		Model:         model,
 		InputTokens:   inTok,
 		OutputTokens:  outTok,
 		CostUSD:       0,
@@ -262,6 +273,21 @@ func (p *Pipeline) RunForDate(ctx context.Context, date string) (int, error) {
 	return int(id), nil
 }
 
+// hasAnyData reports whether the briefing has real material: a digest, the
+// daily rollup, or any of the gathered sections that found real rows
+// (suggestion/placeholder text alone never counts).
+func hasAnyData(digests, dailyRollup string, found ...bool) bool {
+	if digests != "" || dailyRollup != "" {
+		return true
+	}
+	for _, f := range found {
+		if f {
+			return true
+		}
+	}
+	return false
+}
+
 // learnedPrefs loads this pipeline's learned rules (derived from catch-up
 // review feedback) and formats them for the prompt. Best-effort: empty on error.
 func (p *Pipeline) learnedPrefs() string {
@@ -274,23 +300,39 @@ func (p *Pipeline) learnedPrefs() string {
 }
 
 func (p *Pipeline) getPrompt(id, role string) (string, int) {
-	if p.promptStore != nil {
-		tmpl, version, err := p.promptStore.GetForRole(id, role)
-		if err == nil {
-			roleInstr := prompts.GetRoleInstruction(role)
-			if roleInstr != "" {
-				tmpl = roleInstr + "\n\n" + tmpl
-			}
-			return tmpl, version
-		}
+	tmpl, version := p.storedPrompt(id, role)
+	if tmpl == "" {
+		tmpl, version = prompts.Defaults[id], 0
 	}
-
-	tmpl := prompts.Defaults[id]
-	roleInstr := prompts.GetRoleInstruction(role)
-	if roleInstr != "" {
+	if roleInstr := prompts.GetRoleInstruction(role); roleInstr != "" {
 		tmpl = roleInstr + "\n\n" + tmpl
 	}
-	return tmpl, 0
+	return tmpl, version
+}
+
+// storedPrompt returns the prompt store's template, or "" when there is no
+// store, the lookup fails, or the stored template's %s count differs from the
+// shipped default's. The last case is a row the owner customized before a
+// version added a section: formatting it with the new argument list would
+// shift every later section and append %!(EXTRA ...) to the prompt.
+func (p *Pipeline) storedPrompt(id, role string) (string, int) {
+	if p.promptStore == nil {
+		return "", 0
+	}
+	tmpl, version, err := p.promptStore.GetForRole(id, role)
+	if err != nil {
+		return "", 0
+	}
+	if got, want := countVerbs(tmpl), countVerbs(prompts.Defaults[id]); got != want {
+		p.logger.Printf("briefing: stored %s template has %d placeholders, the default has %d — using the default (reset the prompt in Settings to pick up the new sections)", id, got, want)
+		return "", 0
+	}
+	return tmpl, version
+}
+
+// countVerbs counts %s verbs, not counting an escaped %%s.
+func countVerbs(tmpl string) int {
+	return strings.Count(tmpl, "%s") - strings.Count(tmpl, "%%s")
 }
 
 // gatherTargets loads active targets for the briefing.
@@ -313,6 +355,7 @@ func (p *Pipeline) gatherTargets() (string, bool) {
 		if t.DueDate != "" && t.DueDate < today {
 			overdue = " OVERDUE"
 		}
+		p.shown.addTarget(t.ID)
 		sb.WriteString(fmt.Sprintf("- [target_id=%d level=%s %s%s] %s\n", t.ID, t.Level, t.Priority, overdue, t.Text))
 		if t.Intent != "" {
 			sb.WriteString(fmt.Sprintf("  Why: %s\n", t.Intent))
@@ -345,6 +388,7 @@ func (p *Pipeline) gatherTracks() (string, bool) {
 
 	var sb strings.Builder
 	for _, t := range tracks {
+		p.shown.addTrack(t.ID)
 		sb.WriteString(fmt.Sprintf("- [id=%d %s %s] %s\n", t.ID, t.Priority, t.Ownership, t.Text))
 		if t.Context != "" {
 			ctx := t.Context
@@ -383,6 +427,7 @@ func (p *Pipeline) gatherInbox() (string, bool) {
 		if item.TriggerType == "dm" {
 			typeLabel = "DM"
 		}
+		p.shown.addInbox(item.ID)
 		sb.WriteString(fmt.Sprintf("- [inbox_id=%d %s %s] from %s: %s\n",
 			item.ID, item.Priority, typeLabel, item.SenderUserID, item.Snippet))
 		if item.AIReason != "" {
@@ -459,6 +504,7 @@ func (p *Pipeline) gatherDigests(date string) string {
 	var sb strings.Builder
 	for _, d := range digests {
 		channelName := d.ChannelID
+		p.shown.addDigest(d.ID)
 		sb.WriteString(fmt.Sprintf("--- [digest_id=%d] #%s (msgs: %d) ---\n", d.ID, channelName, d.MessageCount))
 
 		topics := topicsByDigest[d.ID]
@@ -492,6 +538,7 @@ func (p *Pipeline) gatherLatestDailyDigest() string {
 	if err != nil || d == nil {
 		return ""
 	}
+	p.shown.addDigest(d.ID)
 	return fmt.Sprintf("--- DAILY ROLLUP (digest_id=%d) ---\n%s\n", d.ID, d.Summary)
 }
 
@@ -511,6 +558,7 @@ func (p *Pipeline) gatherPeopleCards() string {
 		if c.Status == "insufficient_data" {
 			continue
 		}
+		p.shown.addPerson(c.UserID)
 		sb.WriteString(fmt.Sprintf("@%s: %s", c.UserID, c.Summary))
 		if c.RedFlags != "" && c.RedFlags != "[]" {
 			sb.WriteString(fmt.Sprintf(" [flags: %s]", c.RedFlags))
@@ -532,11 +580,15 @@ func (p *Pipeline) gatherPeopleSummary() string {
 	return fmt.Sprintf("Team summary: %s\nAttention: %s\nTips: %s\n", s.Summary, s.Attention, s.Tips)
 }
 
-// gatherCalendar loads today's calendar events for the briefing.
-func (p *Pipeline) gatherCalendar() string {
-	today := time.Now().Local().Format("2006-01-02")
-	events, err := p.db.GetCalendarEventsForDate(today)
-	if err != nil || len(events) == 0 {
+// gatherCalendar loads the briefing date's calendar events (date is the
+// local YYYY-MM-DD the briefing is for).
+func (p *Pipeline) gatherCalendar(date string) string {
+	events, err := p.db.GetCalendarEventsForDate(date, time.Local)
+	if err != nil {
+		p.logger.Printf("briefing: error loading calendar events for %s: %v", date, err)
+		return ""
+	}
+	if len(events) == 0 {
 		return ""
 	}
 

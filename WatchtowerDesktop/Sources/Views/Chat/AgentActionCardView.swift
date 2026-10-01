@@ -10,6 +10,11 @@ struct AgentActionCardView: View {
     let onApprove: () -> Void
     let onReject: () -> Void
     let onRetry: () -> Void
+    /// Why this card's last Approve/Reject/Retry failed (`AgentActionFeed.rowErrors`).
+    /// On a still-`pending` row whose APPROVE failed (e.g. SQLITE_BUSY, the
+    /// row never moved) Approve becomes Retry, re-running the same approve; a
+    /// failed Reject keeps its labels — Reject is its retry.
+    var gestureError: AgentActionFeed.RowError?
     /// Follows an applied action to what it produced. Nil (the chat surfaces)
     /// hides the in-app "Open" button; a web destination (a created Jira
     /// issue) still links, since opening a browser needs no navigation.
@@ -39,22 +44,25 @@ struct AgentActionCardView: View {
             if let p = action.argString("priority"), !p.isEmpty { lines.append("Priority: \(p)") }
             return lines
         default:
-            return waveTwoSummaryLines(for: action) ?? jiraIssueWriteSummaryLines(for: action) ?? [action.argsJSON]
+            // The Confluence edit first: its args carry the whole new page
+            // storage, and every other branch would decode them per render.
+            return confluenceEditSummaryLines(for: action) ?? waveTwoSummaryLines(for: action)
+                ?? jiraIssueWriteSummaryLines(for: action) ?? [action.argsJSON]
         }
     }
 
-    /// The four existing-issue Jira writes (spec 2026-09-26 §8); nil for any other tool.
+    /// The four existing-issue Jira writes (spec 2026-09-26 §8); nil for any
+    /// other tool — decided on the tool name alone, before any args decode.
     private static func jiraIssueWriteSummaryLines(for action: AgentAction) -> [String]? {
-        let key = action.argString("key") ?? "?"
         switch action.tool {
         case "add_jira_comment":
-            return ["Issue: \(key)", action.argString("body") ?? ""]
+            return ["Issue: \(issueKey(action))", action.argString("body") ?? ""]
         case "transition_jira_issue":
-            return ["Issue: \(key) → \(action.argString("status") ?? "?")"]
+            return ["Issue: \(issueKey(action)) → \(action.argString("status") ?? "?")"]
         case "assign_jira_issue":
-            return assignSummaryLines(for: action, key: key)
+            return assignSummaryLines(for: action, key: issueKey(action))
         case "update_jira_issue":
-            var lines = ["Issue: \(key)"]
+            var lines = ["Issue: \(issueKey(action))"]
             let fields: [(String, String)] = [("summary", "Summary"), ("priority", "Priority"),
                                               ("labels_add", "Add labels"), ("labels_remove", "Remove labels"),
                                               ("due_date", "Due")]
@@ -65,6 +73,10 @@ struct AgentActionCardView: View {
         default:
             return nil
         }
+    }
+
+    private static func issueKey(_ action: AgentAction) -> String {
+        action.argString("key") ?? "?"
     }
 
     /// Execute assigns the person pinned at propose time (`resolved_assignee_*`,
@@ -131,6 +143,9 @@ struct AgentActionCardView: View {
             ForEach(Self.summaryLines(for: action), id: \.self) { line in
                 Text(line).font(.callout).fixedSize(horizontal: false, vertical: true)
             }
+            if let edit = Self.confluenceEdit(for: action) {
+                ConfluenceEditChangesView(edit: edit)
+            }
             if !action.reason.isEmpty {
                 Text(action.reason).font(.caption).foregroundStyle(.secondary).italic()
             }
@@ -139,11 +154,19 @@ struct AgentActionCardView: View {
             if !action.error.isEmpty {
                 Text(action.error).font(.caption).foregroundStyle(.red)
             }
+            if let shownGestureError {
+                Label(shownGestureError, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
+                    .accessibilityIdentifier("agentAction.gestureError")
+            }
             // Only a FAILED row can have left a half-finished external write:
             // Apply claims the row before it runs the tool, so an `approved`
-            // one provably never reached Jira.
+            // one provably never reached Jira. (A Confluence edit is version-
+            // checked, so its note says why a retry cannot double-write.)
             if action.status == "failed", action.external {
-                Text("Retrying re-sends the request — check Jira for a duplicate first.")
+                Text(Self.retryNote(for: action))
                     .font(.caption).foregroundStyle(.orange)
             }
             actions
@@ -151,6 +174,16 @@ struct AgentActionCardView: View {
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.accentColor.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    /// The gesture's failure, unless the row itself already says it — a failed
+    /// apply lands in the row's `error` too, possibly wrapped by the CLI — or
+    /// the row has since been decided elsewhere (a terminal card needs no
+    /// retry, and a stale red line would contradict its status).
+    private var shownGestureError: String? {
+        guard let message = gestureError?.message, !message.isEmpty, !action.isTerminal else { return nil }
+        if !action.error.isEmpty, message.contains(action.error) || action.error.contains(message) { return nil }
+        return message
     }
 
     private var header: some View {
@@ -168,7 +201,11 @@ struct AgentActionCardView: View {
 
     @ViewBuilder
     private var outcome: some View {
-        if action.status == "applied", let link = action.resultWebURL("url") {
+        if action.status == "applied", action.tool == Self.confluenceEditTool {
+            // The page is already linked above the diff; name the version
+            // the write produced instead of repeating the link.
+            Text("Saved as version \(action.resultString("version") ?? "?")").font(.callout)
+        } else if action.status == "applied", let link = action.resultWebURL("url") {
             // Generic: any tool that returns a url (+ optional label) links it —
             // label, then key, then the url itself (spec 2026-09-26 §8).
             // `resultWebURL` is the same http/https-only check
@@ -227,7 +264,10 @@ struct AgentActionCardView: View {
                 ProgressView().controlSize(.small)
             } else {
                 if action.isPending {
-                    Button("Approve", action: onApprove).buttonStyle(.borderedProminent)
+                    if Self.canApprove(action) {
+                        Button(gestureError?.isApprove == true ? "Retry" : "Approve", action: onApprove)
+                            .buttonStyle(.borderedProminent)
+                    }
                     Button("Reject", action: onReject)
                 } else if action.canRetry {
                     Button("Retry", action: onRetry)

@@ -214,4 +214,26 @@ final class SidebarCountsViewModelTests: XCTestCase {
         XCTAssertEqual(vm.updatedTrackCount, 1)
         XCTAssertEqual(vm.recommendationCount, 0, "channel recommendations need a Slack owner")
     }
+
+    /// BEHAVIOR PROJ-01 — the Targets sidebar badge (activeTaskCount /
+    /// overdueTaskCount) never counts a project target.
+    func testProj01_TargetsBadgeIgnoresProjectTargets() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+
+        try await manager.dbPool.write { db in
+            _ = try TestDatabase.insertSlackAccount(db, currentUserID: "U042")
+            try db.execute(sql: "INSERT INTO projects (name, folder_path) VALUES ('acme', '/tmp/acme')")
+            let projectID = db.lastInsertedRowID
+            _ = try TestDatabase.insertTarget(db, text: "Ordinary", dueDate: "2020-01-01T09:00")
+            let boardTarget = try TestDatabase.insertTarget(db, text: "Board", dueDate: "2020-01-01T09:00", sourceType: "chat")
+            try db.execute(sql: "UPDATE targets SET project_id = ? WHERE id = ?", arguments: [projectID, boardTarget])
+        }
+
+        let vm = SidebarCountsViewModel(dbPool: manager.dbPool)
+        await vm.loadInitial()
+
+        XCTAssertEqual(vm.activeTaskCount, 1)
+        XCTAssertEqual(vm.overdueTaskCount, 1)
+    }
 }

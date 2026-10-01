@@ -2,6 +2,7 @@ import Foundation
 import UserNotifications
 import XCTest
 @testable import WatchtowerDesktop
+import WatchtowerCore
 
 /// `NotificationDelegate.route` — the notification-response dispatch table, and the
 /// `forwarded` gate that downgrades a response handed over by a deferring duplicate to
@@ -143,8 +144,8 @@ final class NotificationRouteTests: XCTestCase {
     func testNoPushTypeArmsAnActionWhenForwarded() async {
         let pushTypes = [
             "decision", "track", "track_update", "task_overdue", "target_extract",
-            "daily_summary", "meeting_reminder", "meeting_stop_recording",
-            "test", "briefing", "board_config_changed", "meeting_transcript"
+            "daily_summary", "voice_label", "meeting_reminder", "meeting_stop_recording",
+            "test", "briefing", "board_config_changed", "meeting_transcript", "project", "update"
         ]
         let actionIDs = [
             UNNotificationDefaultActionIdentifier,
@@ -182,6 +183,25 @@ final class NotificationRouteTests: XCTestCase {
     }
 
     // MARK: - Dispatch table
+
+    /// An update push opens Settings on the System tab (where the update
+    /// installs), self-received or forwarded alike: it is pure navigation.
+    func testUpdatePushOpensSettingsOnSystem() async {
+        for forwarded in [false, true] {
+            let appState = AppState()
+            appState.settingsTab = .connections
+            var opened = 0
+            appState.openSettingsWindow = { opened += 1 }
+            await NotificationDelegate.route(
+                actionID: UNNotificationDefaultActionIdentifier,
+                userInfo: ["type": "update"],
+                appState: appState,
+                forwarded: forwarded
+            )
+            XCTAssertEqual(appState.settingsTab, .system, "forwarded: \(forwarded)")
+            XCTAssertEqual(opened, 1, "forwarded: \(forwarded)")
+        }
+    }
 
     /// A decision push carries an idea id (decisions are ledger-sourced, not tied to a
     /// single digest — see DigestWatcher) and opens the Decisions segment on that entry;
@@ -238,6 +258,62 @@ final class NotificationRouteTests: XCTestCase {
         }
     }
 
+    /// A project push opens its project on the pane the notice named — pure
+    /// navigation, so the forwarded path routes it the same way.
+    func testProjectPushOpensItsPane() async {
+        for forwarded in [true, false] {
+            let appState = AppState()
+            await NotificationDelegate.route(
+                actionID: UNNotificationDefaultActionIdentifier,
+                userInfo: ["type": "project", "projectId": Int64(3), "pane": "documents", "subjectId": Int64(8)],
+                appState: appState,
+                forwarded: forwarded
+            )
+            XCTAssertEqual(appState.selectedDestination, .projects, "forwarded: \(forwarded)")
+            XCTAssertEqual(appState.pendingProjectRoute, ProjectRoute(projectID: 3, pane: .documents, subjectID: 8))
+        }
+    }
+
+    func testProjectKeysSurviveForwarding() throws {
+        let json = try XCTUnwrap(NotificationForwarding.encode(
+            actionID: UNNotificationDefaultActionIdentifier,
+            userInfo: ["type": "project", "projectId": Int64(3), "pane": "board", "subjectId": Int64(8)]
+        ))
+        let info = try XCTUnwrap(NotificationForwarding.decode(json)).userInfo
+        XCTAssertEqual(info["projectId"] as? Int64, 3)
+        XCTAssertEqual(info["subjectId"] as? Int64, 8)
+        XCTAssertEqual(info["pane"] as? String, "board")
+    }
+
+    /// A voice-label push opens the Voices window queue scoped to the transcript it
+    /// named — pure navigation (it loads/selects, it never labels anything by itself),
+    /// so unlike Join/Stop it is not downgraded on the forwarded path either.
+    func testVoiceLabelOpensTheQueueForItsTranscript() async {
+        for forwarded in [true, false] {
+            let appState = AppState()
+            await NotificationDelegate.route(
+                actionID: UNNotificationDefaultActionIdentifier,
+                userInfo: ["type": "voice_label", "transcriptID": Int64(5)],
+                appState: appState,
+                forwarded: forwarded
+            )
+            XCTAssertEqual(appState.voiceRegistryCenter.mode, .queue(transcriptID: 5), "forwarded: \(forwarded)")
+        }
+    }
+
+    /// A malformed/racy payload with no transcript id must not crash and must leave
+    /// the queue unscoped rather than guessing.
+    func testVoiceLabelWithoutTranscriptIDIsANoop() async {
+        let appState = AppState()
+        await NotificationDelegate.route(
+            actionID: UNNotificationDefaultActionIdentifier,
+            userInfo: ["type": "voice_label"],
+            appState: appState,
+            forwarded: false
+        )
+        XCTAssertEqual(appState.voiceRegistryCenter.mode, .queue(transcriptID: nil))
+    }
+
     /// An unknown or absent type is not an error — routing falls through and leaves the
     /// UI where the user left it.
     func testUnknownTypeLeavesNavigationAlone() async {
@@ -270,6 +346,7 @@ final class NotificationRouteTests: XCTestCase {
             ["type": "decision"],
             ["type": "track_update"],
             ["type": "daily_summary"],
+            ["type": "voice_label", "transcriptID": Int64(5)],
             ["type": "meeting_reminder"],
             ["type": "meeting_stop_recording"],
             [:]
@@ -290,16 +367,35 @@ final class NotificationRouteTests: XCTestCase {
     // MARK: - Coupling
 
     /// The wire allowlist and what forwarded routing reads are one decision in two
-    /// files. Forwarded routing reads exactly `type` (the dispatch key) and `digestId`
-    /// (the one navigation argument); widening either side without the other is the
-    /// failure this pins — the payload must never regrow keys only an armed action
-    /// would use.
+    /// files. Every key here is a pure navigation argument (`digestId`/`ideaId`/
+    /// `transcriptID`/the project route triple) — widening either side without the
+    /// other is the failure this pins — the payload must never regrow keys only an
+    /// armed action would use.
     func testForwardedAllowlistMatchesWhatForwardedRoutingReads() {
         XCTAssertEqual(
             NotificationForwarding.routedKeys,
-            ["type", NotificationForwarding.digestIDKey, NotificationForwarding.ideaIDKey]
+            [
+                "type", NotificationForwarding.digestIDKey, NotificationForwarding.ideaIDKey,
+                NotificationForwarding.transcriptIDKey, NotificationForwarding.projectIDKey,
+                NotificationForwarding.projectSubjectIDKey, NotificationForwarding.projectPaneKey
+            ]
         )
         XCTAssertEqual(NotificationForwarding.digestIDKey, "digestId")
         XCTAssertEqual(NotificationForwarding.ideaIDKey, "ideaId")
+        XCTAssertEqual(NotificationForwarding.transcriptIDKey, "transcriptID")
+        XCTAssertEqual(NotificationForwarding.projectIDKey, "projectId")
+        XCTAssertEqual(NotificationForwarding.projectSubjectIDKey, "subjectId")
+        XCTAssertEqual(NotificationForwarding.projectPaneKey, "pane")
+    }
+
+    /// The wire codec itself: a voice-label push's transcript id survives encode →
+    /// decode as the `Int64` the queue-scoping read expects, not a bare string.
+    func testTranscriptIDSurvivesTheWireCodec() throws {
+        let json = NotificationForwarding.encode(
+            actionID: UNNotificationDefaultActionIdentifier,
+            userInfo: ["type": "voice_label", "transcriptID": Int64(5)]
+        )
+        let response = try XCTUnwrap(json.flatMap(NotificationForwarding.decode))
+        XCTAssertEqual(response.userInfo["transcriptID"] as? Int64, 5)
     }
 }

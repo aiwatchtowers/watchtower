@@ -163,6 +163,7 @@ package enum IdeaQueries {
     /// looking at it, so this also clears any pending review flag (IDEA-04) —
     /// the same contract `setStatus`/`snooze`/`merge`/`supersede`/
     /// `markConverted` uphold via `clearReviewFlag`.
+    /// Best-effort, unchecked: a decision deleted meanwhile has nothing left to see.
     package static func markDecisionSeen(_ db: Database, id: Int) throws {
         try db.execute(
             sql: """
@@ -249,6 +250,7 @@ package enum IdeaQueries {
                 """,
             arguments: [status, id]
         )
+        try db.requireUpdated("idea", id: id)
     }
 
     /// Every owner action clears the pending review flag, `setStatus` included:
@@ -267,21 +269,29 @@ package enum IdeaQueries {
                 """,
             arguments: [until ?? "", id]
         )
+        try db.requireUpdated("idea", id: id)
     }
 
-    /// Merges an idea into another: re-parents its mentions onto the target,
-    /// then marks it merged with a link back to the target.
+    /// Merges an idea into another: marks it merged with a link back to the
+    /// target, then re-parents its mentions onto the target. Either side gone
+    /// throws `RowNotFoundError` naming it before any mention moves (the
+    /// foreign key would refuse a gone target only as a bare constraint
+    /// failure).
     package static func merge(_ db: Database, id: Int, into targetID: Int) throws {
-        try db.execute(
-            sql: "UPDATE idea_mentions SET idea_id = ? WHERE idea_id = ?",
-            arguments: [targetID, id]
-        )
+        guard try Bool.fetchOne(
+            db, sql: "SELECT EXISTS(SELECT 1 FROM ideas WHERE id = ?)", arguments: [targetID]
+        ) == true else { throw RowNotFoundError(kind: "idea", id: targetID) }
         try db.execute(
             sql: """
                 UPDATE ideas SET status = 'merged', merged_into_id = ?, \(clearReviewFlag),
                     updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
                 WHERE id = ?
                 """,
+            arguments: [targetID, id]
+        )
+        try db.requireUpdated("idea", id: id)
+        try db.execute(
+            sql: "UPDATE idea_mentions SET idea_id = ? WHERE idea_id = ?",
             arguments: [targetID, id]
         )
     }
@@ -296,6 +306,7 @@ package enum IdeaQueries {
                 """,
             arguments: [newID, id]
         )
+        try db.requireUpdated("idea", id: id)
     }
 
     package static func setRating(_ db: Database, id: Int, rating: Int, comment: String) throws {
@@ -307,6 +318,7 @@ package enum IdeaQueries {
                 """,
             arguments: [rating, comment, id]
         )
+        try db.requireUpdated("idea", id: id)
     }
 
     /// Creates an owner-authored idea directly, active and free of review, with
@@ -402,5 +414,7 @@ package enum IdeaQueries {
                 """,
             arguments: [targetID, id]
         )
+        // Rolls back the caller's target insert in the same transaction.
+        try db.requireUpdated("idea", id: id)
     }
 }

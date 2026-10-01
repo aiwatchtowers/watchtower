@@ -131,9 +131,31 @@ func (c *Client) doGetRetry(ctx context.Context, path string, params url.Values,
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API error (%d): %s", resp.StatusCode, body)
+		return nil, &apiError{StatusCode: resp.StatusCode, Body: body}
 	}
 	return body, nil
+}
+
+// apiError is a non-200 Calendar API response, kept typed so a caller can
+// tell a gone calendar (404/410) from an account-wide failure.
+type apiError struct {
+	StatusCode int
+	Body       []byte
+}
+
+func (e *apiError) Error() string {
+	return fmt.Sprintf("API error (%d): %s", e.StatusCode, e.Body)
+}
+
+// isCalendarGone reports whether err means one calendar no longer exists or
+// is no longer shared with the account (events.list 404/410) — a per-calendar
+// condition, unlike an auth or transport failure.
+func isCalendarGone(err error) bool {
+	var ae *apiError
+	if !errors.As(err, &ae) {
+		return false
+	}
+	return ae.StatusCode == http.StatusNotFound || ae.StatusCode == http.StatusGone
 }
 
 // googleEventsList is the response from events.list.
@@ -198,20 +220,26 @@ type googleCalendarEntry struct {
 }
 
 // FetchEvents fetches events from the specified calendars within a time range.
-func (c *Client) FetchEvents(ctx context.Context, calendarIDs []string, timeMin, timeMax time.Time) ([]CalendarEvent, error) {
+// A calendar whose events.list answers 404/410 (deleted, or no longer shared
+// with the account) is skipped and returned in gone instead of failing the
+// whole fetch; any other per-calendar error still fails it.
+func (c *Client) FetchEvents(ctx context.Context, calendarIDs []string, timeMin, timeMax time.Time) (events []CalendarEvent, gone []string, err error) {
 	if len(calendarIDs) == 0 {
 		calendarIDs = []string{"primary"}
 	}
 
-	var allEvents []CalendarEvent
 	for _, calID := range calendarIDs {
-		events, err := c.fetchCalendarEvents(ctx, calID, timeMin, timeMax)
+		calEvents, err := c.fetchCalendarEvents(ctx, calID, timeMin, timeMax)
 		if err != nil {
-			return nil, fmt.Errorf("fetching events from %s: %w", calID, err)
+			if isCalendarGone(err) {
+				gone = append(gone, calID)
+				continue
+			}
+			return nil, nil, fmt.Errorf("fetching events from %s: %w", calID, err)
 		}
-		allEvents = append(allEvents, events...)
+		events = append(events, calEvents...)
 	}
-	return allEvents, nil
+	return events, gone, nil
 }
 
 func (c *Client) fetchCalendarEvents(ctx context.Context, calendarID string, timeMin, timeMax time.Time) ([]CalendarEvent, error) {

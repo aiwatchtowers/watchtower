@@ -1,5 +1,6 @@
 import SwiftUI
 import GRDB
+import Observation
 import WatchtowerCore
 
 @MainActor
@@ -109,6 +110,16 @@ final class AppState {
     /// SwiftUI environment to read one from at all).
     var openQuickCapture: (() -> Void)?
 
+    /// Opens the Voices window (the `openQuickCapture` shape). Set by the
+    /// scene once `@Environment(\.openWindow)` is available — wiring the
+    /// window itself is Task 12; this call just exposes the hook.
+    var openVoicesWindow: (() -> Void)?
+
+    /// Opens the Settings window (the `openQuickCapture` shape) for callers
+    /// with no SwiftUI environment — the update notification's click handler.
+    /// Set by the scene once `@Environment(\.openSettings)` is available.
+    var openSettingsWindow: (() -> Void)?
+
     /// App-wide, single-slot registry for meeting-recording audio playback, so
     /// only one recording's audio plays at a time regardless of how many
     /// transcript rows are expanded across the app.
@@ -120,12 +131,23 @@ final class AppState {
     /// navigation-surviving state).
     let transcriptNotesCenter = TranscriptNotesCenter()
 
-    /// App-wide, single-slot-per-transcript registry for "Suggest speaker
-    /// names" runs and their suggestion chips (same surviving-state contract
-    /// as TranscriptNotesCenter).
-    let speakerGuessCenter = SpeakerGuessCenter()
+    /// App-wide per-event registry of meeting-prep runs and results, so a
+    /// `meeting-prep` CLI run started from Day Plan or Calendar survives
+    /// navigating away and back (same surviving-state contract).
+    let meetingPrepCenter = MeetingPrepCenter()
+
     /// Same pattern for "generate chapters" runs (Recap tab).
     let transcriptChaptersCenter = TranscriptChaptersCenter()
+
+    /// App-wide, single-slot registry for the Voices window: the owner's
+    /// voice-labeling queue, confirm/dismiss/relabel transactions, and the
+    /// automatic catch-up pass. Attached to the DB pool in
+    /// `wireMeetingRecorderLoaders` (same wiring moment as the registry
+    /// loader/writer below, which need the same pool).
+    let voiceRegistryCenter = VoiceRegistryCenter()
+    /// Embedded Claude Code terminals, one per project. No DB needed; closed
+    /// on quit by `QuitCoordinator` (via `TrayAppDelegate`).
+    let terminalCenter = TerminalCenter()
 
     /// Diarizer models are prefetched only while speaker roles are on; a
     /// failure is fine — the post-pass retries the download and degrades to a
@@ -153,6 +175,10 @@ final class AppState {
 
     /// Calendar ViewModel — persists across tab switches.
     private(set) var calendarViewModel: CalendarViewModel?
+
+    /// Briefings ViewModel — persists across tab switches so an in-flight
+    /// "Generate" run (and its error) survives navigating away and back.
+    private(set) var briefingViewModel: BriefingViewModel?
 
     /// Day Plan ViewModel — persists across tab switches.
     private(set) var dayPlanViewModel: DayPlanViewModel?
@@ -222,6 +248,14 @@ final class AppState {
     /// — persists across tab switches like its siblings above.
     private(set) var actionStripViewModel: ActionStripViewModel?
 
+    /// Projects tab (spec §6). Owned here so create/repair and the selection
+    /// survive navigation.
+    private(set) var projectsViewModel: ProjectsViewModel?
+    /// Owner notifications for project activity; polls every 30 s.
+    private(set) var projectNotificationCenter: ProjectNotificationCenter?
+    /// Set by `navigateToProject`; `ProjectsView` consumes and clears it.
+    var pendingProjectRoute: ProjectRoute?
+
     /// Whether legacy people analytics is enabled (analysis.legacy_mode in config).
     var analysisLegacyMode: Bool = false
 
@@ -284,11 +318,20 @@ final class AppState {
             provider: provider,
             cliRunner: ProcessCLIRunner.makeDefault()
         )
+        // Once per launch, before anything is shown or listed.
+        cvm.cleanUpUntouchedConversations()
         let hvm = ChatHistoryViewModel(dbManager: db)
         hvm.load()
-        cvm.onConversationsChanged = { [weak hvm] in hvm?.load() }
+        Self.wireChat(cvm, history: hvm)
         chatViewModel = cvm
         chatHistoryViewModel = hvm
+    }
+
+    /// The main chat's two view models: the history list follows the chat's
+    /// writes, and the landing's first turn becomes the history selection.
+    static func wireChat(_ cvm: ChatViewModel, history hvm: ChatHistoryViewModel) {
+        cvm.onConversationsChanged = { [weak hvm] in hvm?.load() }
+        cvm.onLandingTurnStarted = { [weak hvm] id in hvm?.selectedConversationID = id }
     }
 
     @discardableResult
@@ -344,6 +387,11 @@ final class AppState {
         selectedDestination = .people
     }
 
+    func navigateToProject(_ route: ProjectRoute) {
+        pendingProjectRoute = route
+        selectedDestination = .projects
+    }
+
     private var isInitializing = false
     private var terminateObserver: NSObjectProtocol?
 
@@ -376,64 +424,121 @@ final class AppState {
         }
     }
 
-    /// Hands the MeetingRecorderCenter its DB read closures once the shared
-    /// pool opens (the Center is created before the DB). Every loader
-    /// degrades on failure instead of throwing — voice naming is a
-    /// progressive enhancement like roles themselves: no voice prints →
-    /// plain "Speaker N" labels; no attendees → global (unscoped) matching;
-    /// no owner emails → «Я» keeps its legacy absolute mic-dominance
-    /// priority. Failures are printed, never silent (the renderRoles
-    /// diagnostics convention). `func`, not `private func`, so @testable
-    /// tests can wire a test DB through it (the initSecretaryProfile precedent).
+    /// Hands the MeetingRecorderCenter its voice-registry closures once the
+    /// shared pool opens (the Center is created before the DB). Both degrade
+    /// on failure instead of throwing — voice naming is a progressive
+    /// enhancement like roles themselves: a failed read → nil, identification
+    /// off for that recording (plain "Speaker N" labels, nothing queued or
+    /// learned — spec §2.6); a failed write → nothing queued (the transcript
+    /// is already saved).
+    /// Failures are printed, never silent (the renderRoles diagnostics
+    /// convention). `func`, not `private func`, so @testable tests can wire a
+    /// test DB through it (the initSecretaryProfile precedent).
     func wireMeetingRecorderLoaders(dbPool: DatabasePool) {
-        meetingRecorderCenter.voicePrintsLoader = {
+        meetingRecorderCenter.registryLoader = { eventID in
             do {
-                return try await dbPool.read { try VoicePrintQueries.fetchAll($0) }
+                return try await dbPool.read { db in try Self.loadVoiceRegistry(db, eventID: eventID) }
             } catch {
-                print("[AppState] voice-print load failed, matching disabled for this run: \(error.localizedDescription)")
-                return []
+                print("[AppState] voice registry load failed, identification disabled for this run: "
+                      + error.localizedDescription)
+                return nil
             }
         }
-        meetingRecorderCenter.attendeesLoader = { eventID in
+        meetingRecorderCenter.registryWriter = { transcriptID, outcome in
             do {
-                let event = try await dbPool.read { try CalendarQueries.fetchEvent($0, id: eventID) }
-                guard let event else {
-                    // Delayed jobs (FIFO backlog, crash recovery, sidecar
-                    // retry) can outlive the ~24h event retention — the
-                    // silent fall to the global pool must not be
-                    // indistinguishable from ad-hoc.
-                    print("[AppState] event \(eventID) not found, voice matching stays global")
-                    return []
+                return try await dbPool.write { db -> Int in
+                    for sample in outcome.autoSamples {
+                        var sample = sample
+                        sample.transcriptID = transcriptID
+                        try VoiceSampleQueries.insertAuto(db, sample)
+                    }
+                    for task in outcome.tasks {
+                        try VoiceLabelQueueQueries.enqueue(
+                            db, transcriptID: transcriptID, clusterLabel: task.label, reason: task.reason,
+                            suggestedPersonID: task.personID, score: task.score)
+                    }
+                    return outcome.tasks.count
                 }
+            } catch {
+                print("[AppState] voice registry write failed for transcript \(transcriptID), nothing queued: "
+                      + error.localizedDescription)
+                return 0
+            }
+        }
+
+        voiceRegistryCenter.attach(dbPool: dbPool)
+        // Launch catch-up: the one full retro pass (spec §4.1), skipped with
+        // "Voice recognition" off (spec §6).
+        let voiceRecognition = TranscriptionConfig.fromDefaults().voiceRecognition
+        Task { await voiceRegistryCenter.catchUp(voiceRecognition: voiceRecognition) }
+        observeVoiceRegistryCatchUp()
+    }
+
+    /// Keeps `voiceRegistryCenter` in sync with every meeting-recorder save
+    /// (`MeetingRecorderCenter.savedTick`) via manual Observation tracking —
+    /// there's no view guaranteed to stay mounted for the app's whole
+    /// lifetime to drive a SwiftUI `.onChange` here, so AppState re-arms its
+    /// own tracking closure after each fire.
+    private func observeVoiceRegistryCatchUp() {
+        withObservationTracking {
+            _ = meetingRecorderCenter.savedTick
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                await self.handleMeetingRecorderSaved()
+                self.observeVoiceRegistryCatchUp()
+            }
+        }
+    }
+
+    /// What a meeting-recorder save tells `voiceRegistryCenter`: NOT a full
+    /// retro pass (spec §4.1 — a new meeting's freshly-minted auto samples
+    /// are not one of retro's three triggers), just
+    /// `refreshAfterSave`'s housekeeping. `func`, not `private func`, so
+    /// `@testable` tests can call it directly instead of driving the full
+    /// recorder pipeline for real just to bump `savedTick`.
+    func handleMeetingRecorderSaved() async {
+        await voiceRegistryCenter.refreshAfterSave()
+    }
+
+    /// One registry snapshot for a recording. The owner's people are those
+    /// keyed by a `google_accounts` email — deliberately unfiltered by
+    /// status (a revoked account does not change who owns the machine) and
+    /// IMAP identities excluded (people are keyed by Calendar attendee
+    /// emails; owner-reviewed 2026-08-08). `invited` is nil for ad-hoc
+    /// recordings AND for an event whose identity set is empty (swept by
+    /// retention, no human guests, undecodable attendees) — the stricter
+    /// no-event threshold applies then, never an empty invite list that
+    /// would demote every colleague to unsure.
+    nonisolated static func loadVoiceRegistry(_ db: Database, eventID: String?) throws -> VoiceRegistrySnapshot {
+        let people = Dictionary(uniqueKeysWithValues: try VoicePrintQueries.fetchAll(db).compactMap { person in
+            person.id.map { ($0, person) }
+        })
+        let ownerEmails = Set(try GoogleAccountQueries.fetchAll(db).map { $0.email.lowercased() }.filter { !$0.isEmpty })
+        let owners = Set(people.values.filter { VoicePrintQueries.isOwner($0, ownerEmails: ownerEmails) }.compactMap(\.id))
+        var invited: Set<Int64>?
+        if let eventID {
+            if let event = try CalendarQueries.fetchEvent(db, id: eventID) {
                 let identities = event.attendeesIncludingOrganizer
                 if identities.isEmpty, event.parsedAttendees.isEmpty,
                    !event.attendees.isEmpty, event.attendees != "[]" {
                     // Absent-vs-undecodable: a corrupt attendees blob folds
-                    // into the same global fallback as "no guests" — safe,
+                    // into the same no-event fallback as "no guests" — safe,
                     // but it must leave a trace.
-                    print("[AppState] event \(eventID) has an undecodable attendees JSON, voice matching stays global")
+                    print("[AppState] event \(eventID) has an undecodable attendees JSON, voice matching treats it as ad-hoc")
                 }
-                return identities
-            } catch {
-                print("[AppState] attendee load failed, voice matching stays global: \(error.localizedDescription)")
-                return []
+                if !identities.isEmpty {
+                    invited = try VoicePrintQueries.personIDs(db, matching: identities)
+                }
+            } else {
+                // Delayed jobs (FIFO backlog, crash recovery, sidecar retry)
+                // can outlive the ~24h event retention — the silent fall to
+                // ad-hoc matching must not be indistinguishable from ad-hoc.
+                print("[AppState] event \(eventID) not found, voice matching treats it as ad-hoc")
             }
         }
-        meetingRecorderCenter.ownerEmailsLoader = {
-            do {
-                // Deliberately unfiltered by status: a revoked Google account
-                // does not change who owns the machine (a removed one is
-                // hard-deleted and never appears here). IMAP (email_accounts)
-                // identities are deliberately excluded — voice prints are
-                // keyed by attendee emails, which come from Google Calendar.
-                // Owner-reviewed 2026-08-08.
-                let emails = try await dbPool.read { try GoogleAccountQueries.fetchAll($0).map(\.email) }
-                return Set(emails.map { $0.lowercased() }.filter { !$0.isEmpty })
-            } catch {
-                print("[AppState] owner-email load failed, «Я» stays mic-only: \(error.localizedDescription)")
-                return []
-            }
-        }
+        return VoiceRegistrySnapshot(samples: try VoiceSampleQueries.fetchUsable(db), people: people,
+                                     invited: invited, ownerPersonIDs: owners)
     }
 
     func initialize() {
@@ -526,8 +631,9 @@ final class AppState {
                 isLoading = false
             }
         }
-        // Check for updates in background (once per 24h)
-        Task { await updateService.checkIfNeeded() }
+        // Check for updates now and every UpdateService.checkInterval while
+        // running (a no-op for builds without an update channel).
+        updateService.startPeriodicChecks()
         // No DB dependency, so this does not wait on the DB-open Task above
         // (Settings → Features may be reached before that Task resolves).
         // Every successful service load (launch, post-apply, failure-path
@@ -669,6 +775,7 @@ final class AppState {
         initCatchUp(dbPool: manager.dbPool)
         initMemory(dbPool: manager.dbPool)
         initIdeas(dbManager: manager)
+        initBriefings(dbManager: manager)
         initSecretaryProfile(dbManager: manager)
         initEmailAccounts(dbPool: manager.dbPool)
         initCalendarAccounts(dbPool: manager.dbPool)
@@ -678,6 +785,7 @@ final class AppState {
         initExternalConnections(dbPool: manager.dbPool)
         initReactionDictionary(dbPool: manager.dbPool)
         initActionStrip(dbPool: manager.dbPool)
+        initProjects(dbPool: manager.dbPool)
         startDigestWatcher(dbPool: manager.dbPool)
         startMeetingReminders(dbPool: manager.dbPool)
         startWarmEnginePolicy(dbPool: manager.dbPool)
@@ -720,6 +828,18 @@ final class AppState {
         let vm = IdeasViewModel(dbManager: dbManager)
         vm.startObserving()
         ideasViewModel = vm
+    }
+
+    /// Not marked `private` (the `initSecretaryProfile` precedent) so XCTest can
+    /// prove `briefingViewModel` identity — and its in-flight generate state —
+    /// persists across tab switches (`BriefingViewModelTests`).
+    func initBriefings(
+        dbManager: DatabaseManager,
+        cliRunner: (any CLIRunnerProtocol)? = ProcessCLIRunner.makeDefault()
+    ) {
+        let vm = BriefingViewModel(dbManager: dbManager, cliRunner: cliRunner)
+        vm.startObserving()
+        briefingViewModel = vm
     }
 
     /// Not marked `private` (unlike most of its siblings above) so XCTest can call it
@@ -768,7 +888,8 @@ final class AppState {
     /// first call; tests pass fakes.
     /// "Grant Confluence access" runs the Jira account's own login flow with
     /// `--with-confluence` on `jiraAccountsViewModel`, so its in-flight state
-    /// and errors land where every other Jira re-login's do.
+    /// and errors land where every other Jira re-login's do; "Allow editing"
+    /// does the same with `--with-confluence-write`.
     @discardableResult
     func confluenceSpacesViewModel(
         forJiraAccount accountID: Int64,
@@ -784,6 +905,11 @@ final class AppState {
             onReconsent: { [weak self] id in
                 guard let jira = self?.jiraAccountsViewModel else { return "Jira accounts are not loaded yet." }
                 await jira.reloginWithConfluence(accountID: Int(id))
+                return jira.error
+            },
+            onAllowEditing: { [weak self] id in
+                guard let jira = self?.jiraAccountsViewModel else { return "Jira accounts are not loaded yet." }
+                await jira.reloginWithConfluenceWrite(accountID: Int(id))
                 return jira.error
             },
             // Best-effort, the tray's Sync Now: a failure only means the
@@ -810,6 +936,40 @@ final class AppState {
         let vm = ActionStripViewModel(dbPool: dbPool)
         vm.refresh()
         actionStripViewModel = vm
+    }
+
+    /// Not `private`: tests build the VM on a test pool (the
+    /// `initSecretaryProfile` precedent) to prove it survives navigation.
+    func initProjects(
+        dbPool: DatabasePool,
+        cliRunner: (any CLIRunnerProtocol)? = ProcessCLIRunner.makeDefault(),
+        notifier: ProjectNotifying = NotificationService.shared
+    ) {
+        let vm = ProjectsViewModel(
+            dbPool: dbPool, cli: cliRunner.map { ProjectCLI(runner: $0) }, terminalCenter: terminalCenter
+        )
+        vm.closeTerminal = { [weak self] projectID in
+            guard let center = self?.terminalCenter else { return }
+            let ids = center.sessionIDs(ofProject: projectID)
+            await center.closeAll { ids.contains($0) }
+        }
+        let notices = ProjectNotificationCenter(dbPool: dbPool, notifier: notifier)
+        vm.onProjectCreated = { [weak notices] project, _ in
+            notices?.seedBaseline(project: project)
+        }
+        vm.onOwnerWrite = { [weak notices] projectID, subject in
+            notices?.recordOwnerWrite(projectID: projectID, subject: subject)
+        }
+        vm.isTabOnScreen = { [weak self] in
+            self?.selectedDestination == .projects
+                && NSApp.windows.contains { TrayAppDelegate.isMainWindow($0) && $0.isVisible && $0.occlusionState.contains(.visible) }
+        }
+        notices.onPolled = { [weak vm] in await vm?.refreshOnPoll() }
+        projectsViewModel = vm
+        projectNotificationCenter = notices
+        // The first poll also loads the list (onPolled → reload).
+        notices.start()
+        vm.startTitleRefresh()
     }
 
     func initGoogleAccounts(dbPool: DatabasePool) {

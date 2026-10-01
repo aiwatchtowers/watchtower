@@ -3,7 +3,7 @@ import Foundation
 /// Pure composition for chat source chips (spec §3.2.3/§3.4, preflight
 /// ruling A12): an explicit `url` always wins; otherwise a `jira:<KEY>`
 /// ref resolves to its site's browse URL; every other url-less source
-/// stays unresolved (`SourceChipsView`'s documented v1 limit).
+/// stays unresolved (`ChatSourcesPanelView`'s documented v1 limit).
 ///
 /// The browse-URL formula duplicates `JiraHelpers.browseURL` (app target,
 /// `Sources/Utilities/JiraHelpers.swift`) rather than sharing it: `WatchtowerCore`

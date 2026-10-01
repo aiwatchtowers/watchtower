@@ -4,8 +4,10 @@ import (
 	"fmt"
 
 	"watchtower/internal/config"
+	"watchtower/internal/confluence"
 	"watchtower/internal/db"
 	"watchtower/internal/jira"
+	"watchtower/internal/projectfiles"
 	"watchtower/internal/tools"
 )
 
@@ -44,6 +46,28 @@ func jiraWriteClientFactory(cfg *config.Config) tools.JiraWriteClientFactory {
 	}
 }
 
+// confluencePageClientFactory serves get_confluence_page and
+// edit_confluence_page: the account's Jira client (shared Atlassian grant)
+// plus a Confluence fetcher for comments and user names. The grant's read
+// and write scopes are reported to the tools, each of which refuses with
+// its own re-consent hint (the edit tool asks for --with-confluence-write,
+// which implies read).
+func confluencePageClientFactory(cfg *config.Config) tools.ConfluencePageClientFactory {
+	return func(account db.JiraAccount) (tools.ConfluencePageClient, error) {
+		client, err := jiraAccountClient(cfg, account)
+		if err != nil {
+			return nil, err
+		}
+		tok, err := jira.NewTokenStore(cfg.WorkspaceDir(), account.ID).Load()
+		if err != nil {
+			return nil, fmt.Errorf("reading jira account #%d token: %w", account.ID, err)
+		}
+		api := client.Confluence()
+		return tools.NewConfluencePageClient(api, confluence.NewFetcher(api, account.SiteURL), account.SiteURL,
+			jira.HasConfluenceScopes(tok), jira.HasConfluenceWriteScopes(tok)), nil
+	}
+}
+
 // jiraConnectFactory builds the per-account board client + board analyzer
 // connect_jira_board needs, the way runJiraBoards/runJiraBoardsAnalyze do.
 func jiraConnectFactory(cfg *config.Config, database *db.DB) tools.JiraConnectFactory {
@@ -75,7 +99,15 @@ func buildToolRegistry(cfg *config.Config, database *db.DB) *tools.Registry {
 		tools.NewCreateIdea(),
 		tools.NewRemindMe(),
 		tools.NewBriefContext(),
+		// Confluence page editing (EXT-05). get_confluence_page is a LIVE
+		// network read, so it is registered here (chat mode only), never in
+		// tools.ReadTools() — dev-mode MCP stays local-only (DEV-01).
+		tools.NewGetConfluencePage(confluencePageClientFactory(cfg)),
+		tools.NewEditConfluencePage(confluencePageClientFactory(cfg)),
 	)
+	// The project tools (surface "project" only): mounted by `mcp --project N`,
+	// which applies them directly under Binding.DirectApply (DEV-06).
+	regTools = append(regTools, tools.ProjectTools(projectfiles.New(cfg.WorkspaceDir()), cfg.Knowledge.Enabled)...)
 	// Every migrated read tool. Chat mode dispatches these through the registry's
 	// read branch; the runtime-B loop calls them in-process. Dev-mode MCP mounts
 	// the same list via tools.NewReadRegistry.

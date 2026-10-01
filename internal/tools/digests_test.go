@@ -17,7 +17,7 @@ import (
 // test can assert on the model-facing shape.
 func callReadString(t *testing.T, reg *Registry, name, args string) string {
 	t.Helper()
-	data, err := reg.CallRead(context.Background(), name, json.RawMessage(args))
+	data, err := reg.CallRead(context.Background(), name, json.RawMessage(args), Binding{})
 	require.NoError(t, err)
 	b, err := json.Marshal(data)
 	require.NoError(t, err)
@@ -37,9 +37,9 @@ func digestsRegistry(t *testing.T, d *db.DB) *Registry {
 // one excluded (the filter excludes rather than being ignored).
 func TestListDigests_FiltersByType(t *testing.T) {
 	d := openDB(t)
-	_, err := d.UpsertDigest(db.Digest{ChannelID: "C1", Type: "daily", Summary: "people discussed the launch", PeriodFrom: 1, PeriodTo: 2, MessageCount: 5})
+	_, err := d.UpsertDigest(db.Digest{ChannelID: "1:C1", Type: "daily", Summary: "people discussed the launch", PeriodFrom: 1, PeriodTo: 2, MessageCount: 5})
 	require.NoError(t, err)
-	_, err = d.UpsertDigest(db.Digest{ChannelID: "C2", Type: "weekly", Summary: "weekly trends rollup", PeriodFrom: 1, PeriodTo: 2, MessageCount: 9})
+	_, err = d.UpsertDigest(db.Digest{ChannelID: "1:C2", Type: "weekly", Summary: "weekly trends rollup", PeriodFrom: 1, PeriodTo: 2, MessageCount: 9})
 	require.NoError(t, err)
 
 	got := callReadString(t, digestsRegistry(t, d), "list_digests", `{"type":"daily"}`)
@@ -49,7 +49,7 @@ func TestListDigests_FiltersByType(t *testing.T) {
 
 func TestGetDigest_ReturnsBody(t *testing.T) {
 	d := openDB(t)
-	id, err := d.UpsertDigest(db.Digest{ChannelID: "C1", Type: "daily", Summary: "single digest body", PeriodFrom: 1, PeriodTo: 2, MessageCount: 3})
+	id, err := d.UpsertDigest(db.Digest{ChannelID: "1:C1", Type: "daily", Summary: "single digest body", PeriodFrom: 1, PeriodTo: 2, MessageCount: 3})
 	require.NoError(t, err)
 
 	got := callReadString(t, digestsRegistry(t, d), "get_digest", `{"id":`+strconv.Itoa(int(id))+`}`)
@@ -57,7 +57,7 @@ func TestGetDigest_ReturnsBody(t *testing.T) {
 }
 
 func TestGetDigest_NotFound(t *testing.T) {
-	_, err := digestsRegistry(t, openDB(t)).CallRead(context.Background(), "get_digest", json.RawMessage(`{"id":4242}`))
+	_, err := digestsRegistry(t, openDB(t)).CallRead(context.Background(), "get_digest", json.RawMessage(`{"id":4242}`), Binding{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no digest with id 4242")
 }
@@ -91,7 +91,7 @@ func TestGetTodayBriefing_EmptyIsNotError(t *testing.T) {
 	_, err := d.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U1"})
 	require.NoError(t, err)
 
-	data, err := digestsRegistry(t, d).CallRead(context.Background(), "get_today_briefing", json.RawMessage(`{}`))
+	data, err := digestsRegistry(t, d).CallRead(context.Background(), "get_today_briefing", json.RawMessage(`{}`), Binding{})
 	require.NoError(t, err, "a missing briefing must not be an error")
 	assert.Nil(t, data)
 }
@@ -102,13 +102,13 @@ func TestGetTodayBriefing_EmptyIsNotError(t *testing.T) {
 // null (which reads as "not generated yet").
 func TestOwner02_GetTodayBriefingToolErrorsWithoutOwner(t *testing.T) {
 	d := openDB(t)
-	_, err := digestsRegistry(t, d).CallRead(context.Background(), "get_today_briefing", json.RawMessage(`{}`))
+	_, err := digestsRegistry(t, d).CallRead(context.Background(), "get_today_briefing", json.RawMessage(`{}`), Binding{})
 	require.Error(t, err)
 	assert.ErrorIs(t, err, db.ErrNoOwner)
 }
 
 func TestListDigests_RejectsInvalidType(t *testing.T) {
-	_, err := digestsRegistry(t, openDB(t)).CallRead(context.Background(), "list_digests", json.RawMessage(`{"type":"monthly"}`))
+	_, err := digestsRegistry(t, openDB(t)).CallRead(context.Background(), "list_digests", json.RawMessage(`{"type":"monthly"}`), Binding{})
 	var verr *ValidationError
 	require.ErrorAs(t, err, &verr)
 	assert.Contains(t, verr.Msg, "monthly")
@@ -120,9 +120,9 @@ func TestListDigests_Since(t *testing.T) {
 	d := openDB(t)
 	oldStart := time.Date(2026, 1, 10, 9, 0, 0, 0, time.Local)
 	newStart := time.Date(2026, 6, 15, 9, 0, 0, 0, time.Local)
-	_, err := d.UpsertDigest(db.Digest{ChannelID: "C1", Type: "daily", Summary: "january digest", PeriodFrom: float64(oldStart.Unix()), PeriodTo: float64(oldStart.Add(time.Hour).Unix())})
+	_, err := d.UpsertDigest(db.Digest{ChannelID: "1:C1", Type: "daily", Summary: "january digest", PeriodFrom: float64(oldStart.Unix()), PeriodTo: float64(oldStart.Add(time.Hour).Unix())})
 	require.NoError(t, err)
-	_, err = d.UpsertDigest(db.Digest{ChannelID: "C1", Type: "daily", Summary: "june digest", PeriodFrom: float64(newStart.Unix()), PeriodTo: float64(newStart.Add(time.Hour).Unix())})
+	_, err = d.UpsertDigest(db.Digest{ChannelID: "1:C1", Type: "daily", Summary: "june digest", PeriodFrom: float64(newStart.Unix()), PeriodTo: float64(newStart.Add(time.Hour).Unix())})
 	require.NoError(t, err)
 
 	got := callReadString(t, digestsRegistry(t, d), "list_digests", `{"since":"2026-06-01"}`)
@@ -131,7 +131,7 @@ func TestListDigests_Since(t *testing.T) {
 }
 
 func TestListDigests_RejectsInvalidSince(t *testing.T) {
-	_, err := digestsRegistry(t, openDB(t)).CallRead(context.Background(), "list_digests", json.RawMessage(`{"since":"yesterday"}`))
+	_, err := digestsRegistry(t, openDB(t)).CallRead(context.Background(), "list_digests", json.RawMessage(`{"since":"yesterday"}`), Binding{})
 	var verr *ValidationError
 	require.ErrorAs(t, err, &verr)
 	assert.Contains(t, verr.Msg, "yesterday")

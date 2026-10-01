@@ -21,7 +21,7 @@ func TestBuildItems_ValidResponse(t *testing.T) {
 			{SourceType: "task", SourceID: "42", Title: "T", Description: "d", Rationale: "r", Priority: "medium"},
 		},
 	}
-	items, dropped := buildItems(r, "2026-04-23", nil, map[string]bool{"42": true}, nil)
+	items, dropped, _ := buildItems(r, "2026-04-23", nil, map[string]bool{"42": true}, nil)
 	require.Len(t, items, 2)
 	assert.Empty(t, dropped)
 	// first item is timeblock (order preserved)
@@ -35,7 +35,7 @@ func TestBuildItems_DropsUnknownSourceID(t *testing.T) {
 			{SourceType: "task", SourceID: "999", Title: "Bogus", Priority: "low"},
 		},
 	}
-	items, dropped := buildItems(r, "2026-04-23", nil, map[string]bool{"1": true}, nil)
+	items, dropped, _ := buildItems(r, "2026-04-23", nil, map[string]bool{"1": true}, nil)
 	assert.Len(t, items, 0)
 	assert.Len(t, dropped, 1)
 	assert.Contains(t, dropped[0], "unknown task source_id")
@@ -61,7 +61,7 @@ func TestBuildItems_DropsTimeblockOverlappingCalendar(t *testing.T) {
 		},
 	}
 	date := fmt.Sprintf("%d-%02d-%02d", today.Year(), today.Month(), today.Day())
-	items, dropped := buildItems(r, date, events, nil, nil)
+	items, dropped, _ := buildItems(r, date, events, nil, nil)
 	assert.Len(t, items, 0)
 	assert.Len(t, dropped, 1)
 	assert.Contains(t, dropped[0], "overlaps calendar")
@@ -95,7 +95,7 @@ func TestBuildItems_KeepsTimeblocksOverlappingAllDayEvent(t *testing.T) {
 			{SourceType: "focus", Title: "Deep work", StartTimeLocal: "10:00", EndTimeLocal: "11:00", Priority: "high"},
 		},
 	}
-	items, dropped := buildItems(r, "2026-04-23", events, nil, nil)
+	items, dropped, _ := buildItems(r, "2026-04-23", events, nil, nil)
 	require.Len(t, items, 1, "all-day event must not block AI timeblocks")
 	assert.Empty(t, dropped)
 }
@@ -106,7 +106,7 @@ func TestBuildItems_DropsTimeblockMissingTime(t *testing.T) {
 			{SourceType: "focus", Title: "x", Priority: "low"}, // no start/end
 		},
 	}
-	items, dropped := buildItems(r, "2026-04-23", nil, nil, nil)
+	items, dropped, _ := buildItems(r, "2026-04-23", nil, nil, nil)
 	assert.Len(t, items, 0)
 	assert.Len(t, dropped, 1)
 }

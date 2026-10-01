@@ -136,6 +136,30 @@ final class NotificationService: Sendable {
         UNUserNotificationCenter.current().add(request)
     }
 
+    /// One push per update version (`UpdateService.noteAvailable` keeps the
+    /// memo); clicking it opens Settings → System. Returns whether the system
+    /// accepted the request, so the memo is only written for a delivered push.
+    func sendUpdateAvailableNotification(version: String) async -> Bool {
+        let content = UNMutableNotificationContent()
+        content.title = "Watchtower update available"
+        content.body = "Version \(version) is ready to download in Settings → System."
+        content.sound = .default
+        content.userInfo = ["type": "update"]
+
+        let request = UNNotificationRequest(
+            identifier: "update-\(fnv1aHash(version))",
+            content: content,
+            trigger: nil
+        )
+        do {
+            try await UNUserNotificationCenter.current().add(request)
+            return true
+        } catch {
+            NSLog("NotificationService: update notification for %@ failed: %@", version, error.localizedDescription)
+            return false
+        }
+    }
+
     func sendBoardConfigChangedNotification(boardName: String) {
         let content = UNMutableNotificationContent()
         content.title = "Board configuration changed"
@@ -205,6 +229,60 @@ final class NotificationService: Sendable {
 
     func sendTranscriptFailedNotification(reason: String) {
         sendTranscriptNotification(title: "Transcription failed", body: reason, hashInput: reason)
+    }
+
+    /// One fixed identifier, so a second gap in the same call replaces the
+    /// first push instead of stacking.
+    func sendCallAudioSilentNotification() {
+        let content = UNMutableNotificationContent()
+        content.title = "No call audio"
+        content.body = "Nothing has come from the call for over \(Int(CallAudioWatch.minGapSec / 60)) minutes. "
+            + "If people are still talking, \(callAudioOutputHint)"
+        content.sound = .default
+        UNUserNotificationCenter.current().add(
+            UNNotificationRequest(identifier: Self.callAudioSilentID, content: content, trigger: nil))
+    }
+
+    func withdrawCallAudioSilentNotification() {
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [Self.callAudioSilentID])
+    }
+
+    private static let callAudioSilentID = "call-audio-silent"
+
+    /// A saved recording queued voices for the owner to label. The
+    /// identifier is per transcript, so a re-save replaces rather than
+    /// stacks the push; `userInfo` routes a tap to that recording's queue.
+    func sendVoicesToLabelNotification(title: String, count: Int, transcriptID: Int64) {
+        let content = UNMutableNotificationContent()
+        content.title = count == 1 ? "1 voice to label" : "\(count) voices to label"
+        content.body = String(title.prefix(200))
+        content.sound = .default
+        content.userInfo = ["type": "voice_label", "transcriptID": transcriptID]
+        let request = UNNotificationRequest(
+            identifier: "voice-label-\(transcriptID)",
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(request)
+    }
+
+    /// Project activity (spec §6.5). The identifier comes from the policy and
+    /// is stable per event, so a re-post replaces rather than stacks; the
+    /// payload deep-links to the project pane (`NotificationDelegate.route`).
+    func sendProjectNotice(_ notice: ProjectNotice) {
+        let content = UNMutableNotificationContent()
+        content.title = notice.title
+        content.body = String(notice.body.prefix(200))
+        content.sound = .default
+        var info: [String: Any] = [
+            "type": "project",
+            "projectId": notice.route.projectID,
+            "pane": notice.route.pane.rawValue
+        ]
+        if let subject = notice.route.subjectID { info["subjectId"] = subject }
+        content.userInfo = info
+        let request = UNNotificationRequest(identifier: notice.identifier, content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(request)
     }
 
     /// Pre-meeting reminder. With a conference link the push carries the

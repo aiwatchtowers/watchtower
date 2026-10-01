@@ -13,6 +13,8 @@ struct ChatRowActions {
     var submitEdit: (Int64, String) -> Void = { _, _ in }
     var cancelEdit: () -> Void = {}
     var openArtifact: (String) -> Void = { _ in }
+    var openSources: (Int64, [ChatSource]) -> Void = { _, _ in }
+    var quote: (Int64, String) -> Void = { _, _ in }
 }
 
 /// A finished message. `Equatable` on its data only + `.equatable()` at the
@@ -46,7 +48,9 @@ struct ChatMessageRow: View, Equatable {
             if isEditing { editor } else { UserMessageBubble(text: item.message.text, attachments: item.attachments) }
         } else if item.message.isAssistant {
             AssistantMessageBody(text: item.message.text, steps: item.stepDisplays, isRunning: false,
-                                 versions: artifactVersions, onOpenArtifact: actions.openArtifact)
+                                 versions: artifactVersions, onOpenArtifact: actions.openArtifact) {
+                actions.openSources(item.id, item.sources)
+            }
             statusCard
         } else {
             Text(item.message.text).font(.caption).foregroundStyle(.tertiary).frame(maxWidth: .infinity)
@@ -58,7 +62,13 @@ struct ChatMessageRow: View, Equatable {
         case "error":
             HStack(spacing: 8) {
                 Image(systemName: "exclamationmark.triangle").foregroundStyle(.red)
-                Text(ChatErrorPresentation.message(for: item.message.errorCode)).font(.callout)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(ChatErrorPresentation.message(for: item.message.errorCode, provider: item.message.provider))
+                        .font(.callout)
+                    if let detail = ChatErrorPresentation.detail(item.message.errorMessage) {
+                        Text(detail).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                    }
+                }
                 Spacer()
                 if ChatErrorPresentation.isRetryable(item.message.errorCode) {
                     Button("Retry") { actions.retry(item.id) }
@@ -108,6 +118,9 @@ struct ChatMessageRow: View, Equatable {
                     .help("Edit")
                     .accessibilityLabel("Edit")
             } else if item.message.isAssistant {
+                Button { actions.quote(item.id, item.message.text) } label: { Image(systemName: "text.quote") }
+                    .help("Quote in reply")
+                    .accessibilityLabel("Quote in reply")
                 Button { actions.regenerate(item.id) } label: { Image(systemName: "arrow.clockwise") }
                     .help("Regenerate")
                     .accessibilityLabel("Regenerate")
@@ -145,16 +158,19 @@ struct ChatMessageRow: View, Equatable {
 struct LiveAssistantRow: View {
     let turn: LiveTurn
     var onOpenArtifact: (String) -> Void = { _ in }
+    var onOpenSources: ([ChatSource]) -> Void = { _ in }
     var onStreamingTextChanged: (String) -> Void = { _ in }
 
     var body: some View {
         AssistantMessageBody(text: turn.text, steps: turn.steps, isRunning: turn.isRunning,
-                             onOpenArtifact: onOpenArtifact)
+                             onOpenArtifact: onOpenArtifact) { onOpenSources(turn.steps.flatMap(\.sources)) }
             .onChange(of: turn.text, initial: true) { _, newValue in onStreamingTextChanged(newValue) }
     }
 }
 
-/// Steps → text/artifact cards → sources (spec §3.2, §7.2). `:::artifact`
+/// Steps → text/artifact cards → sources (spec §3.2, §7.2). The sources row
+/// appears only once the turn is finished (complete/partial) — while it
+/// streams, the steps block is the only progress surface. `:::artifact`
 /// blocks in the text render as `ArtifactCardView` cards instead of markdown
 /// (Task 22's `ArtifactParser`); `isRunning` decides whether an in-progress
 /// block shows "Writing …" and `final: false` parsing (a still-open fence
@@ -165,6 +181,7 @@ struct AssistantMessageBody: View {
     let isRunning: Bool
     var versions: [String: Int] = [:]
     var onOpenArtifact: (String) -> Void = { _ in }
+    var onOpenSources: () -> Void = {}
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -183,7 +200,9 @@ struct AssistantMessageBody: View {
                     }
                 }
             }
-            SourceChipsView(sources: steps.flatMap(\.sources))
+            if !isRunning {
+                SourcesSummaryRow(sources: steps.flatMap(\.sources), onOpen: onOpenSources)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }

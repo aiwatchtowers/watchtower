@@ -94,7 +94,7 @@ final class ActionStripViewModelTests: XCTestCase {
     }
 
     /// Regression for the sticky-error review finding: a failed CLI call must
-    /// not leave `lastError` stuck forever — a later SUCCESSFUL call must
+    /// not leave the card's error stuck forever — a later SUCCESSFUL call must
     /// clear it back to nil. `FakeCLIRunner.shouldThrow` is a `var`, so one
     /// runner instance models "the CLI failed once, then worked" by toggling
     /// it between the two calls.
@@ -108,11 +108,13 @@ final class ActionStripViewModelTests: XCTestCase {
         vm.refresh()
 
         await vm.approve(id)
-        XCTAssertEqual(vm.lastError, "boom", "a failed CLI call must surface on the strip's own lastError")
+        XCTAssertEqual(vm.actionFeed.rowErrors[id]?.message, "boom", "a failed CLI call must surface on the row's card")
+        XCTAssertNil(vm.lastError, "a row's failure is not the strip's banner")
 
         runner.shouldThrow = nil
         await vm.approve(id)
-        XCTAssertNil(vm.lastError, "a later successful call must clear the earlier failure, not leave it sticky")
+        XCTAssertNil(vm.actionFeed.rowErrors[id], "a later successful call must clear the earlier failure, not leave it sticky")
+        XCTAssertNil(vm.lastError)
     }
 
     /// The cheat sheet's "last check" is the latest SUCCESSFUL

@@ -92,7 +92,7 @@ func TestGetTaskContext_ThreadTruncationKeepsRecentReplies(t *testing.T) {
 }
 
 func TestGetTaskContext_UnknownKeyIsError(t *testing.T) {
-	_, err := taskContextRegistry(t, openDB(t)).CallRead(context.Background(), "get_task_context", json.RawMessage(`{"key":"NOPE-1"}`))
+	_, err := taskContextRegistry(t, openDB(t)).CallRead(context.Background(), "get_task_context", json.RawMessage(`{"key":"NOPE-1"}`), Binding{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no issue with key NOPE-1")
 }

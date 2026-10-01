@@ -30,6 +30,10 @@ struct OnboardingView: View {
     @State private var settingsHistoryDays = 3
     @State private var settingsCustomDays = ""
     @State private var settingsModelPreset = ModelPreset.balanced
+    /// The configured `ai.provider` (nil = default claude), read when the
+    /// Settings step appears: the model presets are claude aliases, so they
+    /// are shown and written only for claude (`OnboardingSettingsPlan`).
+    @State private var settingsProvider: String?
     @State private var settingsPollPreset = PollPreset.normal
     @State private var settingsNotifications = true
 
@@ -292,7 +296,9 @@ struct OnboardingView: View {
                 .font(.title2)
                 .fontWeight(.semibold)
 
-            Text("Claude is ready with **\(settingsModelPreset.title)** model.")
+            Text(OnboardingSettingsPlan.offersModelPresets(provider: settingsProvider)
+                ? "Claude is ready with **\(settingsModelPreset.title)** model."
+                : "AI provider is ready.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
 
@@ -313,7 +319,9 @@ struct OnboardingView: View {
                 .font(.title2)
                 .fontWeight(.semibold)
 
-            Text("Sending a test request to Claude (**\(settingsModelPreset.title)**)...")
+            Text(OnboardingSettingsPlan.offersModelPresets(provider: settingsProvider)
+                ? "Sending a test request to Claude (**\(settingsModelPreset.title)**)..."
+                : "Sending a test request to the AI provider...")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -672,6 +680,7 @@ struct OnboardingView: View {
             .controlSize(.large)
             .disabled(isRunning || (settingsHistoryDays == -1 && resolvedHistoryDays == -1))
         }
+        .onAppear { settingsProvider = ConfigService().aiProvider }
     }
 
     private var settingsCardStack: some View {
@@ -692,18 +701,20 @@ struct OnboardingView: View {
                 .pickerStyle(.menu)
             }
 
-            settingCard(
-                icon: "cpu",
-                iconColor: .secondary,
-                title: "AI Model",
-                description: settingsModelPreset.settingDescription
-            ) {
-                Picker("", selection: $settingsModelPreset) {
-                    ForEach(ModelPreset.allCases, id: \.self) { preset in
-                        Text(preset.title).tag(preset)
+            if OnboardingSettingsPlan.offersModelPresets(provider: settingsProvider) {
+                settingCard(
+                    icon: "cpu",
+                    iconColor: .secondary,
+                    title: "AI Model",
+                    description: settingsModelPreset.settingDescription
+                ) {
+                    Picker("", selection: $settingsModelPreset) {
+                        ForEach(ModelPreset.allCases, id: \.self) { preset in
+                            Text(preset.title).tag(preset)
+                        }
                     }
+                    .pickerStyle(.segmented)
                 }
-                .pickerStyle(.segmented)
             }
 
             settingCard(
@@ -1259,17 +1270,18 @@ struct OnboardingView: View {
         let days = resolvedHistoryDays
         let model = settingsModelPreset
         let poll = settingsPollPreset
+        let provider = settingsProvider
 
         Task.detached {
-            // Apply settings via `watchtower config set`
-            var settings: [(String, String)] = [
-                ("digest.language", lang),
-                ("sync.initial_history_days", "\(days)"),
-                ("sync.poll_interval", poll.interval)
-            ]
-            if let strong = model.strongModelOverride {
-                settings.append(("ai.models.strong", strong))
-            }
+            // Apply settings via `watchtower config set`. The model preset is
+            // written only for claude — its values are claude aliases.
+            let settings = OnboardingSettingsPlan.configSets(
+                language: lang,
+                initialHistoryDays: days,
+                pollInterval: poll.interval,
+                provider: provider,
+                strongModelOverride: model.strongModelOverride
+            )
             for (key, value) in settings {
                 let result = await Self.runCLI(path: path, arguments: ["config", "set", key, value])
                 if result.exitCode != 0 {
@@ -1370,13 +1382,10 @@ struct OnboardingView: View {
 
     /// A connected Slack account is an enabled, non-removed `slack_accounts`
     /// row — the multi-account replacement for the retired config.yaml
-    /// `slack_token` check (`SlackAuthService.tokenPresent`), which the
-    /// multi-account CLI no longer writes.
+    /// `slack_token` check, which the multi-account CLI no longer writes.
     private func hasConnectedSlackAccount() -> Bool {
         guard let dbPool = appState.databaseManager?.dbPool else { return false }
-        return (try? dbPool.read { db in
-            try SlackAccountQueries.fetchAll(db).contains { $0.enabled && $0.status != "removed" }
-        }) ?? false
+        return (try? dbPool.read { db in try SlackAccountQueries.hasConnectedAccount(db) }) ?? false
     }
 
     private func runSync() {
@@ -1385,9 +1394,9 @@ struct OnboardingView: View {
         // No Slack connected — the one-shot CLI sync is Slack-only, so skip it;
         // other sources sync via the daemon after onboarding. Connection is a
         // slack_accounts row (the multi-account model), NOT the retired
-        // config.yaml slack_token that SlackAuthService.tokenPresent() reads —
-        // the CLI stopped writing that, so the old check made a freshly
-        // connected account look disconnected and never synced (audit fn #6).
+        // config.yaml slack_token check — the CLI stopped writing that, so the
+        // old check made a freshly connected account look disconnected and
+        // never synced (audit fn #6).
         guard hasConnectedSlackAccount() else {
             appState.onboarding.syncCompleted = true
             return
@@ -1464,118 +1473,22 @@ struct OnboardingView: View {
         }
     }
 
-    private struct CLIResult {
-        let exitCode: Int32
-        let stdout: String
-        let stderr: String
-    }
-
-    /// Thread-safe line buffer that splits streamed data on newlines.
-    private final class LineBuffer: @unchecked Sendable {
-        private let onLine: (String) -> Void
-        private var buffer = Data()
-        private let lock = NSLock()
-        private var _allText = ""
-
-        var allText: String {
-            lock.lock()
-            defer { lock.unlock() }
-            return _allText
-        }
-
-        init(onLine: @escaping (String) -> Void) {
-            self.onLine = onLine
-        }
-
-        func append(_ data: Data) {
-            lock.lock()
-            buffer.append(data)
-            // Extract complete lines
-            var lines: [String] = []
-            let newline = UInt8(0x0A)
-            while let idx = buffer.firstIndex(of: newline) {
-                let lineData = buffer[buffer.startIndex..<idx]
-                buffer = buffer[(idx + 1)...]
-                if let line = String(data: lineData, encoding: .utf8) {
-                    _allText += line + "\n"
-                    lines.append(line)
-                }
-            }
-            lock.unlock()
-            for line in lines {
-                onLine(line)
-            }
-        }
-
-        func flush() {
-            lock.lock()
-            let remaining = buffer
-            buffer = Data()
-            lock.unlock()
-            if !remaining.isEmpty, let line = String(data: remaining, encoding: .utf8), !line.isEmpty {
-                lock.lock()
-                _allText += line
-                lock.unlock()
-                onLine(line)
-            }
-        }
-    }
-
-    private static func runCLI(
-        path: String,
-        arguments: [String],
-        onOutputLine: (@Sendable (String) -> Void)? = nil
-    ) async -> CLIResult {
+    /// Runs the CLI and collects its output.
+    ///
+    /// `nonisolated` on purpose (the `SystemSettings.runCLIProbe` precedent): a
+    /// `View` is `@MainActor`, so a plain static here was main-actor-isolated
+    /// and every `await Self.runCLI(...)` from a `Task.detached` hopped back
+    /// onto the main actor, where the old synchronous `waitUntilExit()` froze
+    /// the whole app for the child's lifetime — for `auth login`, the user's
+    /// entire browser OAuth round-trip, up to its 5-minute timeout.
+    /// `ProcessPipes.run` waits off-actor and drains stdout and stderr
+    /// concurrently (SB3).
+    nonisolated private static func runCLI(path: String, arguments: [String]) async -> ProcessOutput {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments
         process.environment = Constants.resolvedEnvironment()
-
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-
-        do {
-            try process.run()
-        } catch {
-            return CLIResult(exitCode: -1, stdout: "", stderr: error.localizedDescription)
-        }
-
-        var stdoutText = ""
-
-        if let onLine = onOutputLine {
-            // Use readabilityHandler for real-time line streaming
-            let lineBuffer = LineBuffer(onLine: onLine)
-            stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
-                let data = handle.availableData
-                if data.isEmpty {
-                    // EOF
-                    handle.readabilityHandler = nil
-                    return
-                }
-                lineBuffer.append(data)
-            }
-
-            process.waitUntilExit()
-            // Ensure we read any remaining data after process exits
-            stdoutPipe.fileHandleForReading.readabilityHandler = nil
-            let remaining = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-            if !remaining.isEmpty {
-                lineBuffer.append(remaining)
-            }
-            lineBuffer.flush()
-            stdoutText = lineBuffer.allText
-        } else {
-            process.waitUntilExit()
-            let data = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-            stdoutText = String(data: data, encoding: .utf8) ?? ""
-        }
-
-        let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-        let stderrText = String(data: stderrData, encoding: .utf8) ?? ""
-
-        return CLIResult(exitCode: process.terminationStatus, stdout: stdoutText, stderr: stderrText)
+        return await ProcessPipes.run(process)
     }
 }
 

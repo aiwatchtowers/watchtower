@@ -98,6 +98,32 @@ final class ChatAttachmentStoreTests: XCTestCase {
         XCTAssertTrue(att.path.hasPrefix(root.appendingPathComponent("projects/\(projectID)").path))
     }
 
+    /// A new project file changes what a fresh session attaches or inlines:
+    /// the project's chats lose their stored session (a `--resume` would
+    /// never see the file); a conversation's own attachment drops nothing.
+    func testProjectFileImportDropsTheProjectsStoredSessions() throws {
+        let (projectID, inProject) = try dbQueue.write { db -> (Int64, Int64) in
+            try db.execute(sql: "INSERT INTO chat_projects (name, instructions, created_at, updated_at) VALUES ('P', '', 0, 0)")
+            let pid = db.lastInsertedRowID
+            try db.execute(sql: """
+                INSERT INTO chat_conversations (title, created_at, updated_at, project_id, session_id)
+                VALUES ('', 0, 0, ?, 'sess-p')
+                """, arguments: [pid])
+            let inProject = db.lastInsertedRowID
+            try db.execute(sql: "UPDATE chat_conversations SET session_id = 'sess-c' WHERE id = ?", arguments: [conversationID])
+            return (pid, inProject)
+        }
+        _ = try store.importFile(url: source("a.md", Data("a".utf8)), conversationID: conversationID)
+        XCTAssertEqual(try sessionID(inProject), "sess-p")
+        _ = try store.importFile(url: source("b.md", Data("b".utf8)), projectID: projectID)
+        XCTAssertNil(try sessionID(inProject))
+        XCTAssertEqual(try sessionID(conversationID), "sess-c")
+    }
+
+    private func sessionID(_ id: Int64) throws -> String? {
+        try dbQueue.read { try String.fetchOne($0, sql: "SELECT session_id FROM chat_conversations WHERE id = ?", arguments: [id]) }
+    }
+
     func testLinkAndFetchByMessages() throws {
         let att = try store.importFile(url: source("n.md", Data("x".utf8)), conversationID: conversationID)
         let messageID = try insertUserMessage()

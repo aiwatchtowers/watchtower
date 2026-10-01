@@ -20,6 +20,29 @@ final class ChannelStatsTests: XCTestCase {
         }
     }
 
+    // MARK: - ChannelStatsQueries.fetchValueSignals
+
+    /// PROJ-01 twin of Go `GetChannelValueSignals`: a project target sourced
+    /// from a channel's digest never counts toward that channel's tasks.
+    func testValueSignalsIgnoreProjectTargets() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try TestDatabase.insertChannel(db, id: "C001", name: "general", numMembers: 10)
+            try TestDatabase.insertDigest(db, channelID: "C001")
+            let digestID = db.lastInsertedRowID
+            try db.execute(sql: "INSERT INTO projects (name, folder_path) VALUES ('acme', '/tmp/acme')")
+            let projectID = db.lastInsertedRowID
+            for project in [nil, projectID] as [Int64?] {
+                try db.execute(sql: """
+                    INSERT INTO targets (text, level, period_start, period_end, status, source_type, source_id, project_id)
+                    VALUES ('Follow up', 'day', '2026-09-30', '2026-09-30', 'todo', 'digest', ?, ?)
+                    """, arguments: [String(digestID), project])
+            }
+        }
+        let signals = try db.read { try ChannelStatsQueries.fetchValueSignals($0) }
+        XCTAssertEqual(signals["C001"]?.taskCount, 1)
+    }
+
     // MARK: - ChannelStatsQueries.fetchAll
 
     func testFetchAllReturnsChannelStats() throws {
@@ -219,6 +242,42 @@ final class ChannelStatsTests: XCTestCase {
         let stat = makeStat(type: "public", isMember: true, userMessages: 0, isFavorite: true)
         let recs = ChannelStatsQueries.computeRecommendations(from: [stat])
         XCTAssertFalse(recs.contains { $0.action == .leave })
+    }
+
+    /// Applying a "leave" recommendation mutes the channel (Watchtower can't
+    /// leave it), so a leave on an already-muted channel has nothing to do —
+    /// and applying it used to TOGGLE mute, un-muting the channel.
+    func testLeaveSkippedWhenAlreadyMuted() {
+        let stat = makeStat(type: "public", isMember: true, userMessages: 0, isMutedForLLM: true)
+        let recs = ChannelStatsQueries.computeRecommendations(from: [stat])
+        XCTAssertFalse(recs.contains { $0.action == .leave })
+    }
+
+    /// Apply must set the target state, never flip it: a leave/mute applied to
+    /// a channel that is already muted (a stale recommendation, or one raised
+    /// before the rule above) must leave it muted.
+    @MainActor
+    func testApplyRecommendationNeverUnmutesOrUnfavorites() throws {
+        let (dbManager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        try dbManager.dbPool.write { db in
+            try TestDatabase.insertChannel(db, id: "C001", name: "muted")
+            try ChannelStatsQueries.toggleMuteForLLM(db, channelID: "C001", muted: true)
+            try ChannelStatsQueries.toggleFavorite(db, channelID: "C001", favorite: true)
+        }
+        let vm = ChannelStatsViewModel(dbManager: dbManager)
+        vm.stats = [makeStat(id: "C001", isMember: true, isMutedForLLM: true, isFavorite: true)]
+
+        for action in [ChannelRecommendation.Action.leave, .mute, .favorite] {
+            vm.applyRecommendation(ChannelRecommendation(
+                channelID: "C001", channelName: "muted", action: action, reason: "test"
+            ))
+        }
+
+        let settings = try XCTUnwrap(dbManager.dbPool.read { try ChannelSettings.fetchOne($0, key: "C001") })
+        XCTAssertTrue(settings.isMutedForLLM, "applying a recommendation un-muted the channel")
+        XCTAssertTrue(settings.isFavorite, "applying a recommendation un-favorited the channel")
+        XCTAssertNil(vm.errorMessage)
     }
 
     func testFavoriteHighEngagement() {

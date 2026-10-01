@@ -366,6 +366,7 @@ extension TestDatabase {
         owner_display_name            TEXT NOT NULL DEFAULT ''
     );
 
+    -- jira_issues / jira_releases copied verbatim from internal/db/schema.sql
     CREATE TABLE IF NOT EXISTS jira_issues (
         account_id INTEGER NOT NULL REFERENCES jira_accounts(id) ON DELETE CASCADE,
         key TEXT NOT NULL, id TEXT NOT NULL DEFAULT '', project_key TEXT NOT NULL,
@@ -388,6 +389,19 @@ extension TestDatabase {
         raw_json TEXT NOT NULL DEFAULT '', custom_fields_json TEXT NOT NULL DEFAULT '',
         synced_at TEXT NOT NULL, is_deleted INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (account_id, key)
+    );
+    CREATE TABLE IF NOT EXISTS jira_releases (
+        account_id INTEGER NOT NULL REFERENCES jira_accounts(id) ON DELETE CASCADE,
+        id INTEGER NOT NULL,
+        project_key TEXT NOT NULL,
+        name TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        release_date TEXT NOT NULL DEFAULT '',
+        released INTEGER NOT NULL DEFAULT 0,
+        archived INTEGER NOT NULL DEFAULT 0,
+        synced_at TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (account_id, id),
+        UNIQUE(account_id, project_key, name)
     );
     CREATE INDEX IF NOT EXISTS idx_jira_issues_project ON jira_issues(project_key);
     CREATE INDEX IF NOT EXISTS idx_jira_issues_updated ON jira_issues(updated_at);
@@ -446,7 +460,9 @@ extension TestDatabase {
         synced_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
         updated_at      TEXT NOT NULL DEFAULT '',
         ical_uid        TEXT NOT NULL DEFAULT '',
-        conference_url  TEXT NOT NULL DEFAULT ''
+        conference_url  TEXT NOT NULL DEFAULT '',
+        time_changed_at TEXT NOT NULL DEFAULT '',
+        rsvp_changed    TEXT NOT NULL DEFAULT '{}'
     );
     CREATE INDEX IF NOT EXISTS idx_calendar_events_calendar ON calendar_events(calendar_id);
     CREATE INDEX IF NOT EXISTS idx_calendar_events_start ON calendar_events(start_time);
@@ -754,7 +770,7 @@ extension TestDatabase {
         period_end          TEXT NOT NULL DEFAULT '',
         parent_id           INTEGER REFERENCES targets(id) ON DELETE SET NULL,
         status              TEXT NOT NULL DEFAULT 'todo'
-                            CHECK(status IN ('todo','in_progress','blocked','done','dismissed','snoozed')),
+                            CHECK(status IN ('todo','in_progress','in_review','blocked','done','dismissed','snoozed')),
         priority            TEXT NOT NULL DEFAULT 'medium'
                             CHECK(priority IN ('high','medium','low')),
         ownership           TEXT NOT NULL DEFAULT 'mine'
@@ -778,7 +794,11 @@ extension TestDatabase {
         next_step           TEXT NOT NULL DEFAULT '',
         next_step_at        TEXT NOT NULL DEFAULT '',
         next_step_attempts     INTEGER NOT NULL DEFAULT 0,
-        next_step_attempted_at TEXT NOT NULL DEFAULT ''
+        next_step_attempted_at TEXT NOT NULL DEFAULT '',
+        project_id          INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+        status_actor        TEXT DEFAULT NULL
+                            CHECK(status_actor IS NULL OR status_actor IN ('agent','owner','system')),
+        CHECK(status != 'in_review' OR project_id IS NOT NULL)
     );
     CREATE INDEX IF NOT EXISTS idx_targets_level       ON targets(level);
     CREATE INDEX IF NOT EXISTS idx_targets_parent      ON targets(parent_id);
@@ -790,6 +810,184 @@ extension TestDatabase {
     CREATE INDEX IF NOT EXISTS idx_targets_updated     ON targets(updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_targets_due_unfired ON targets(due_date)
         WHERE notified_at = '' AND due_date != '';
+    CREATE INDEX IF NOT EXISTS idx_targets_project     ON targets(project_id);
+    -- Migration 00085 (PROJ-05): project parent status rollup — copied verbatim
+    -- from internal/db/migrations/00085_project_status_rollup.sql.
+    CREATE TRIGGER IF NOT EXISTS targets_project_status_rollup_ai AFTER INSERT ON targets
+    WHEN NEW.parent_id IS NOT NULL AND NEW.project_id IS NOT NULL
+    BEGIN
+        UPDATE targets
+        SET status = r.st, status_actor = 'system', updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+        FROM (
+            WITH RECURSIVE chain(id, parent, st, pid, depth) AS (
+                SELECT NEW.id, NEW.parent_id, NEW.status, NEW.project_id, 0
+                UNION ALL
+                SELECT g.id, g.parent_id, (
+                        SELECT CASE
+                            WHEN COUNT(*) = 0 THEN NULL
+                            WHEN SUM(k.s IN ('done','dismissed')) = COUNT(*)
+                                THEN CASE WHEN SUM(k.s = 'done') > 0 THEN 'done' ELSE 'dismissed' END
+                            WHEN SUM(k.s = 'blocked') = COUNT(*) - SUM(k.s IN ('done','dismissed')) THEN 'blocked'
+                            WHEN SUM(k.s IN ('in_progress','in_review','done')) > 0 THEN 'in_progress'
+                            ELSE 'todo' END
+                        FROM (SELECT CASE WHEN c.id = chain.id THEN chain.st ELSE c.status END AS s
+                              FROM targets c
+                              WHERE c.parent_id = g.id AND c.project_id = g.project_id) AS k),
+                    g.project_id, chain.depth + 1
+                FROM chain
+                JOIN targets g ON g.id = chain.parent AND g.project_id = chain.pid
+                    AND g.status != 'dismissed'
+                WHERE chain.depth < 256
+                  AND (chain.depth = 0
+                       OR (chain.st IS NOT NULL
+                           AND chain.st != (SELECT s.status FROM targets s WHERE s.id = chain.id)))
+            )
+            SELECT id, st FROM chain WHERE depth > 0 AND st IS NOT NULL
+        ) AS r
+        WHERE targets.id = r.id AND targets.status != r.st;
+    END;
+    CREATE TRIGGER IF NOT EXISTS targets_project_status_rollup_au
+    AFTER UPDATE OF status, parent_id, project_id ON targets
+    WHEN (NEW.project_id IS NOT NULL OR OLD.project_id IS NOT NULL)
+     AND (OLD.status IS NOT NEW.status
+          OR OLD.parent_id IS NOT NEW.parent_id
+          OR OLD.project_id IS NOT NEW.project_id)
+    BEGIN
+        -- The new parent's chain (the old one's too when the parent is unchanged:
+        -- the child is counted there at its new status).
+        UPDATE targets
+        SET status = r.st, status_actor = 'system', updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+        FROM (
+            WITH RECURSIVE chain(id, parent, st, pid, depth) AS (
+                SELECT NEW.id, NEW.parent_id, NEW.status, NEW.project_id, 0
+                WHERE NEW.parent_id IS NOT NULL AND NEW.project_id IS NOT NULL
+                UNION ALL
+                SELECT g.id, g.parent_id, (
+                        SELECT CASE
+                            WHEN COUNT(*) = 0 THEN NULL
+                            WHEN SUM(k.s IN ('done','dismissed')) = COUNT(*)
+                                THEN CASE WHEN SUM(k.s = 'done') > 0 THEN 'done' ELSE 'dismissed' END
+                            WHEN SUM(k.s = 'blocked') = COUNT(*) - SUM(k.s IN ('done','dismissed')) THEN 'blocked'
+                            WHEN SUM(k.s IN ('in_progress','in_review','done')) > 0 THEN 'in_progress'
+                            ELSE 'todo' END
+                        FROM (SELECT CASE WHEN c.id = chain.id THEN chain.st ELSE c.status END AS s
+                              FROM targets c
+                              WHERE c.parent_id = g.id AND c.project_id = g.project_id) AS k),
+                    g.project_id, chain.depth + 1
+                FROM chain
+                JOIN targets g ON g.id = chain.parent AND g.project_id = chain.pid
+                    AND g.status != 'dismissed'
+                WHERE chain.depth < 256
+                  AND (chain.depth = 0
+                       OR (chain.st IS NOT NULL
+                           AND chain.st != (SELECT s.status FROM targets s WHERE s.id = chain.id)))
+            )
+            SELECT id, st FROM chain WHERE depth > 0 AND st IS NOT NULL
+        ) AS r
+        WHERE targets.id = r.id AND targets.status != r.st;
+
+        -- The old parent's chain, when the child left it (moved or left the
+        -- project). Runs after the first walk, so a shared ancestor is
+        -- recomputed from both changes.
+        UPDATE targets
+        SET status = r.st, status_actor = 'system', updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+        FROM (
+            WITH RECURSIVE chain(id, parent, st, pid, depth) AS (
+                SELECT OLD.id, OLD.parent_id, NULL, OLD.project_id, 0
+                WHERE OLD.parent_id IS NOT NULL AND OLD.project_id IS NOT NULL
+                  AND (OLD.parent_id IS NOT NEW.parent_id OR OLD.project_id IS NOT NEW.project_id)
+                UNION ALL
+                SELECT g.id, g.parent_id, (
+                        SELECT CASE
+                            WHEN COUNT(*) = 0 THEN NULL
+                            WHEN SUM(k.s IN ('done','dismissed')) = COUNT(*)
+                                THEN CASE WHEN SUM(k.s = 'done') > 0 THEN 'done' ELSE 'dismissed' END
+                            WHEN SUM(k.s = 'blocked') = COUNT(*) - SUM(k.s IN ('done','dismissed')) THEN 'blocked'
+                            WHEN SUM(k.s IN ('in_progress','in_review','done')) > 0 THEN 'in_progress'
+                            ELSE 'todo' END
+                        FROM (SELECT CASE WHEN c.id = chain.id AND chain.depth > 0 THEN chain.st ELSE c.status END AS s
+                              FROM targets c
+                              WHERE c.parent_id = g.id AND c.project_id = g.project_id) AS k),
+                    g.project_id, chain.depth + 1
+                FROM chain
+                JOIN targets g ON g.id = chain.parent AND g.project_id = chain.pid
+                    AND g.status != 'dismissed'
+                WHERE chain.depth < 256
+                  AND (chain.depth = 0
+                       OR (chain.st IS NOT NULL
+                           AND chain.st != (SELECT s.status FROM targets s WHERE s.id = chain.id)))
+            )
+            SELECT id, st FROM chain WHERE depth > 0 AND st IS NOT NULL
+        ) AS r
+        WHERE targets.id = r.id AND targets.status != r.st;
+    END;
+    CREATE TRIGGER IF NOT EXISTS targets_project_status_rollup_ad AFTER DELETE ON targets
+    WHEN OLD.parent_id IS NOT NULL AND OLD.project_id IS NOT NULL
+    BEGIN
+        UPDATE targets
+        SET status = r.st, status_actor = 'system', updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+        FROM (
+            WITH RECURSIVE chain(id, parent, st, pid, depth) AS (
+                SELECT OLD.id, OLD.parent_id, NULL, OLD.project_id, 0
+                UNION ALL
+                SELECT g.id, g.parent_id, (
+                        SELECT CASE
+                            WHEN COUNT(*) = 0 THEN NULL
+                            WHEN SUM(k.s IN ('done','dismissed')) = COUNT(*)
+                                THEN CASE WHEN SUM(k.s = 'done') > 0 THEN 'done' ELSE 'dismissed' END
+                            WHEN SUM(k.s = 'blocked') = COUNT(*) - SUM(k.s IN ('done','dismissed')) THEN 'blocked'
+                            WHEN SUM(k.s IN ('in_progress','in_review','done')) > 0 THEN 'in_progress'
+                            ELSE 'todo' END
+                        FROM (SELECT CASE WHEN c.id = chain.id AND chain.depth > 0 THEN chain.st ELSE c.status END AS s
+                              FROM targets c
+                              WHERE c.parent_id = g.id AND c.project_id = g.project_id) AS k),
+                    g.project_id, chain.depth + 1
+                FROM chain
+                JOIN targets g ON g.id = chain.parent AND g.project_id = chain.pid
+                    AND g.status != 'dismissed'
+                WHERE chain.depth < 256
+                  AND (chain.depth = 0
+                       OR (chain.st IS NOT NULL
+                           AND chain.st != (SELECT s.status FROM targets s WHERE s.id = chain.id)))
+            )
+            SELECT id, st FROM chain WHERE depth > 0 AND st IS NOT NULL
+        ) AS r
+        WHERE targets.id = r.id AND targets.status != r.st;
+    END;
+
+    -- Migration 00086 (PROJ-06): project target status history, written by
+    -- triggers; a copy of the Go migration's history triggers.
+    CREATE TABLE IF NOT EXISTS target_status_history (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        target_id   INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+        from_status TEXT,
+        to_status   TEXT NOT NULL,
+        changed_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+        actor       TEXT NOT NULL CHECK(actor IN ('agent','owner','system'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_target_status_history_target ON target_status_history(target_id, changed_at);
+    CREATE TRIGGER IF NOT EXISTS targets_status_history_ai AFTER INSERT ON targets
+    WHEN NEW.project_id IS NOT NULL
+    BEGIN
+        INSERT INTO target_status_history (target_id, from_status, to_status, changed_at, actor)
+        VALUES (NEW.id, NULL, NEW.status, strftime('%Y-%m-%dT%H:%M:%SZ','now'),
+                COALESCE(NEW.status_actor, 'owner'));
+        UPDATE targets SET status_actor = NULL WHERE id = NEW.id AND status_actor IS NOT NULL;
+    END;
+    CREATE TRIGGER IF NOT EXISTS targets_status_history_au AFTER UPDATE OF status ON targets
+    WHEN NEW.project_id IS NOT NULL AND OLD.status IS NOT NEW.status
+    BEGIN
+        INSERT INTO target_status_history (target_id, from_status, to_status, changed_at, actor)
+        VALUES (NEW.id, OLD.status, NEW.status, strftime('%Y-%m-%dT%H:%M:%SZ','now'),
+                COALESCE(NEW.status_actor, 'owner'));
+        UPDATE targets SET status_actor = NULL WHERE id = NEW.id AND status_actor IS NOT NULL;
+    END;
+    CREATE TRIGGER IF NOT EXISTS targets_status_actor_reset_au AFTER UPDATE OF status_actor ON targets
+    WHEN NEW.status_actor IS NOT NULL
+     AND NOT (NEW.project_id IS NOT NULL AND OLD.status IS NOT NEW.status)
+    BEGIN
+        UPDATE targets SET status_actor = NULL WHERE id = NEW.id;
+    END;
 
     CREATE TABLE IF NOT EXISTS target_links (
         id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -896,17 +1094,60 @@ extension TestDatabase {
         speakers_json   TEXT,
         chapters_json   TEXT,
         created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-        updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+        updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        speaker_names_changed_at TEXT,
+        summary_updated_at TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_meeting_transcripts_event ON meeting_transcripts(event_id);
     CREATE TABLE IF NOT EXISTS voice_prints (
         id           INTEGER PRIMARY KEY AUTOINCREMENT,
         person_key   TEXT NOT NULL UNIQUE,
         display_name TEXT NOT NULL,
-        embedding    BLOB NOT NULL,
-        sample_count INTEGER NOT NULL DEFAULT 1,
+        created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
         updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
     );
+    CREATE TABLE IF NOT EXISTS voice_imports (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        sender_name   TEXT NOT NULL,
+        sender_email  TEXT NOT NULL DEFAULT '',
+        file_sha256   TEXT NOT NULL UNIQUE,
+        people_count  INTEGER NOT NULL,
+        sample_count  INTEGER NOT NULL,
+        model_version TEXT NOT NULL,
+        imported_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    );
+    CREATE TABLE IF NOT EXISTS voice_samples (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        person_id     INTEGER NOT NULL REFERENCES voice_prints(id) ON DELETE CASCADE,
+        embedding     BLOB NOT NULL,
+        model_version TEXT NOT NULL,
+        origin        TEXT NOT NULL CHECK (origin IN ('owner', 'auto', 'imported')),
+        anchor        INTEGER NOT NULL DEFAULT 0 CHECK (anchor IN (0, 1)),
+        status        TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'pending', 'retired')),
+        transcript_id INTEGER REFERENCES meeting_transcripts(id) ON DELETE SET NULL,
+        cluster_label TEXT,
+        channel       TEXT NOT NULL DEFAULT 'unknown' CHECK (channel IN ('room', 'remote', 'unknown')),
+        score         REAL,
+        speech_sec    REAL NOT NULL DEFAULT 0,
+        import_id     INTEGER REFERENCES voice_imports(id) ON DELETE CASCADE,
+        created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        CHECK (anchor = 0 OR origin = 'owner')
+    );
+    CREATE INDEX IF NOT EXISTS idx_voice_samples_person_status ON voice_samples(person_id, status);
+    CREATE INDEX IF NOT EXISTS idx_voice_samples_transcript ON voice_samples(transcript_id);
+    CREATE TABLE IF NOT EXISTS voice_label_queue (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        transcript_id       INTEGER NOT NULL REFERENCES meeting_transcripts(id) ON DELETE CASCADE,
+        cluster_label       TEXT NOT NULL,
+        reason              TEXT NOT NULL CHECK (reason IN ('unsure', 'unknown', 'import_confirm', 'conflict', 'relabel')),
+        suggested_person_id INTEGER REFERENCES voice_prints(id) ON DELETE SET NULL,
+        score               REAL,
+        status              TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'done', 'skipped')),
+        created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        resolved_at         TEXT
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_voice_label_queue_open ON voice_label_queue(transcript_id, cluster_label) WHERE status = 'pending';
+    CREATE INDEX IF NOT EXISTS idx_voice_label_queue_status ON voice_label_queue(status, created_at);
     CREATE TABLE IF NOT EXISTS memory_nodes (
         id            TEXT PRIMARY KEY,
         type          TEXT NOT NULL CHECK (type IN ('entity','episode','rollup','belief')),
@@ -1194,7 +1435,8 @@ extension TestDatabase {
         tokens_in       INTEGER,
         tokens_out      INTEGER,
         parent_id       INTEGER REFERENCES chat_messages(id) ON DELETE CASCADE,
-        error_code      TEXT
+        error_code      TEXT,
+        error_message   TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation ON chat_messages(conversation_id);
     CREATE INDEX IF NOT EXISTS idx_chat_messages_parent ON chat_messages(parent_id);
@@ -1245,6 +1487,24 @@ extension TestDatabase {
         UNIQUE(conversation_id, artifact_key, version)
     );
 
+    CREATE TABLE IF NOT EXISTS chat_artifact_comments (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        conversation_id  INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+        artifact_key     TEXT NOT NULL,
+        artifact_version INTEGER NOT NULL,
+        body             TEXT NOT NULL,
+        anchor_quote     TEXT NOT NULL,
+        anchor_prefix    TEXT NOT NULL DEFAULT '',
+        anchor_suffix    TEXT NOT NULL DEFAULT '',
+        anchor_heading   TEXT NOT NULL DEFAULT '',
+        status           TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','sent','resolved','outdated')),
+        created_at       REAL NOT NULL,
+        sent_at          REAL,
+        CHECK (anchor_quote != '' AND body != ''),
+        CHECK (status != 'sent' OR sent_at IS NOT NULL)
+    );
+    CREATE INDEX IF NOT EXISTS idx_chat_artifact_comments_key ON chat_artifact_comments(conversation_id, artifact_key);
+
     CREATE TABLE IF NOT EXISTS chat_project_sources (
         id         INTEGER PRIMARY KEY AUTOINCREMENT,
         project_id INTEGER NOT NULL REFERENCES chat_projects(id) ON DELETE CASCADE,
@@ -1282,5 +1542,93 @@ extension TestDatabase {
         INSERT INTO chat_title_fts(chat_title_fts, rowid, title) VALUES ('delete', old.id, old.title);
         INSERT INTO chat_title_fts(rowid, title) VALUES (new.id, new.title);
     END;
+
+    CREATE TABLE IF NOT EXISTS projects (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        name        TEXT NOT NULL,
+        folder_path TEXT NOT NULL UNIQUE,
+        description TEXT NOT NULL DEFAULT '',
+        created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+        updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+        board_language TEXT NOT NULL DEFAULT ''
+    );
+
+    CREATE TABLE IF NOT EXISTS project_sources (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        kind       TEXT NOT NULL CHECK(kind IN ('slack_channel','jira_project','confluence_space','person','link')),
+        ref        TEXT NOT NULL,
+        label      TEXT NOT NULL DEFAULT '',
+        UNIQUE(project_id, kind, ref)
+    );
+
+    CREATE TABLE IF NOT EXISTS project_documents (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        target_id  INTEGER REFERENCES targets(id) ON DELETE SET NULL,
+        rel_path   TEXT NOT NULL,
+        kind       TEXT NOT NULL DEFAULT 'doc' CHECK(kind IN ('spec','plan','doc')),
+        title      TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+        updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+        origin     TEXT NOT NULL DEFAULT 'agent' CHECK(origin IN ('agent','import','owner')),
+        UNIQUE(project_id, rel_path)
+    );
+    CREATE INDEX IF NOT EXISTS idx_project_documents_target ON project_documents(target_id);
+
+    CREATE TABLE IF NOT EXISTS project_target_images (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        target_id  INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+        file_name  TEXT NOT NULL,
+        mime       TEXT NOT NULL CHECK(mime IN ('image/png','image/jpeg','image/gif','image/webp')),
+        size       INTEGER NOT NULL,
+        sha256     TEXT NOT NULL,
+        path       TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+        UNIQUE(target_id, sha256)
+    );
+    CREATE INDEX IF NOT EXISTS idx_project_target_images_project ON project_target_images(project_id);
+
+    CREATE TABLE IF NOT EXISTS project_comments (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id     INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        target_id      INTEGER REFERENCES targets(id) ON DELETE CASCADE,
+        document_id    INTEGER REFERENCES project_documents(id) ON DELETE CASCADE,
+        parent_id      INTEGER REFERENCES project_comments(id) ON DELETE CASCADE,
+        author         TEXT NOT NULL CHECK(author IN ('owner','agent')),
+        agent_label    TEXT NOT NULL DEFAULT '',
+        body           TEXT NOT NULL,
+        anchor_quote   TEXT NOT NULL DEFAULT '',
+        anchor_prefix  TEXT NOT NULL DEFAULT '',
+        anchor_suffix  TEXT NOT NULL DEFAULT '',
+        anchor_heading TEXT NOT NULL DEFAULT '',
+        status         TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','resolved','outdated')),
+        created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+        read_at        TEXT NOT NULL DEFAULT '',
+        CHECK (target_id IS NOT NULL OR document_id IS NOT NULL OR parent_id IS NOT NULL)
+    );
+    CREATE INDEX IF NOT EXISTS idx_project_comments_project  ON project_comments(project_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_project_comments_target   ON project_comments(target_id);
+    CREATE INDEX IF NOT EXISTS idx_project_comments_document ON project_comments(document_id);
+    CREATE INDEX IF NOT EXISTS idx_project_comments_parent   ON project_comments(parent_id);
+
+    CREATE TABLE IF NOT EXISTS terminal_sessions (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id        INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+        kind              TEXT NOT NULL CHECK(kind IN ('claude','shell')),
+        title             TEXT NOT NULL,
+        title_source      TEXT NOT NULL DEFAULT 'auto' CHECK(title_source IN ('auto','ai','user')),
+        target_id         INTEGER REFERENCES targets(id) ON DELETE SET NULL,
+        folder_path       TEXT NOT NULL,
+        claude_session_id TEXT,
+        created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+        last_active_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+        closed_at         TEXT,
+        CHECK (title != '' AND folder_path != ''),
+        CHECK (kind = 'shell' OR claude_session_id IS NOT NULL)
+    );
+    CREATE INDEX IF NOT EXISTS idx_terminal_sessions_project ON terminal_sessions(project_id, last_active_at);
+    CREATE INDEX IF NOT EXISTS idx_terminal_sessions_target ON terminal_sessions(target_id);
     """
 }

@@ -50,6 +50,20 @@ package struct TargetCounts {
     package let highPriority: Int
 }
 
+/// A write addressed a target that no longer exists — typically deleted in
+/// another process (the agent over the project MCP server, the CLI, a second
+/// window) after the screen loaded it. The update touched no row, so the
+/// mutator throws instead of reporting a success that never happened.
+package struct TargetNotFoundError: LocalizedError, Equatable {
+    package let id: Int
+
+    package init(id: Int) { self.id = id }
+
+    package var errorDescription: String? {
+        "target #\(id) no longer exists (it may have been deleted elsewhere)"
+    }
+}
+
 package enum LinkDirection {
     case inbound    // target_target_id = targetID
     case outbound   // source_target_id = targetID
@@ -66,7 +80,9 @@ package enum TargetQueries {
         _ db: Database,
         filter: TargetFilter = TargetFilter()
     ) throws -> [Target] {
-        var conditions: [String] = []
+        // BEHAVIOR PROJ-01 — project targets live only on their board
+        // (ProjectQueries.board); no Targets-tab reader ever sees one.
+        var conditions: [String] = ["project_id IS NULL"]
         var args: [any DatabaseValueConvertible] = []
 
         if let level = filter.level {
@@ -160,14 +176,14 @@ package enum TargetQueries {
     package static func fetchCounts(_ db: Database) throws -> TargetCounts {
         let active = try Int.fetchOne(
             db,
-            sql: "SELECT COUNT(*) FROM targets WHERE status IN ('todo', 'in_progress', 'blocked')"
+            sql: "SELECT COUNT(*) FROM targets WHERE project_id IS NULL AND status IN ('todo', 'in_progress', 'blocked')"
         ) ?? 0
         let now = nowDatetimeString()
         let overdue = try Int.fetchOne(
             db,
             sql: """
                 SELECT COUNT(*) FROM targets
-                WHERE status IN ('todo', 'in_progress', 'blocked')
+                WHERE project_id IS NULL AND status IN ('todo', 'in_progress', 'blocked')
                 AND due_date != '' AND due_date < ?
                 """,
             arguments: [now]
@@ -177,7 +193,7 @@ package enum TargetQueries {
             db,
             sql: """
                 SELECT COUNT(*) FROM targets
-                WHERE status IN ('todo', 'in_progress', 'blocked')
+                WHERE project_id IS NULL AND status IN ('todo', 'in_progress', 'blocked')
                 AND due_date != '' AND due_date >= ? AND due_date < ?
                 """,
             arguments: [today, today + "T24:00"]
@@ -186,7 +202,7 @@ package enum TargetQueries {
             db,
             sql: """
                 SELECT COUNT(*) FROM targets
-                WHERE status IN ('todo', 'in_progress', 'blocked')
+                WHERE project_id IS NULL AND status IN ('todo', 'in_progress', 'blocked')
                 AND priority = 'high'
                 """
         ) ?? 0
@@ -215,12 +231,14 @@ package enum TargetQueries {
         tags: String = "[]",
         subItems: String = "[]",
         notes: String = "[]",
-        progress: Double = 0.0,
+        progress: Double? = nil,
         sourceType: String = "manual",
         sourceID: String = "",
         aiLevelConfidence: Double? = nil,
         secondaryLinks: [TargetPrefillLink] = []
     ) throws -> Int {
+        // Desktop-created targets are personal (project_id NULL).
+        try checkParentBoard(db, parentID: parentId, childProjectID: nil)
         try db.execute(sql: """
             INSERT INTO targets (text, intent, level, custom_label, period_start, period_end,
                 parent_id, status, priority, ownership, ball_on, due_date, snooze_until,
@@ -228,8 +246,13 @@ package enum TargetQueries {
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, arguments: [text, intent, level, customLabel, periodStart, periodEnd,
                              parentId, status, priority, ownership, ballOn, dueDate, snoozeUntil,
-                             blocking, tags, subItems, notes, progress, sourceType, sourceID, aiLevelConfidence])
+                             blocking, tags, subItems, notes, progress ?? statusProgress(status),
+                             sourceType, sourceID, aiLevelConfidence])
         let newID = Int(db.lastInsertedRowID)
+        // Go `CreateTarget` parity: fold the new child into its parent chain.
+        if let parentId {
+            try recomputeParentProgress(db, parentID: parentId)
+        }
 
         for link in secondaryLinks {
             let ref = link.externalRef
@@ -250,14 +273,27 @@ package enum TargetQueries {
 
     // MARK: - Update
 
+    /// Call right after a single-row `UPDATE targets … WHERE id = ?`, before
+    /// any follow-up statement: `changesCount` reflects only the most recent
+    /// statement (trigger writes excluded), and 0 means the row is gone.
+    private static func requireUpdated(_ db: Database, id: Int) throws {
+        guard db.changesCount > 0 else { throw TargetNotFoundError(id: id) }
+    }
+
+    /// Every Desktop status write claims the owner (`status_actor`, migration
+    /// 00086): a project target's status history records it as the owner's
+    /// (PROJ-06); the history trigger clears the claim again.
     package static func updateStatus(_ db: Database, id: Int, status: String) throws {
         try db.execute(
             sql: """
-                UPDATE targets SET status = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                UPDATE targets SET status = ?, status_actor = 'owner',
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
                 WHERE id = ?
                 """,
             arguments: [status, id]
         )
+        try requireUpdated(db, id: id)
+        try applyStatusProgress(db, id: id, status: status)
 
         // BEHAVIOR INBOX-02 — closing a target resolves its pending `target_due`
         // inbox items so the user never has to close the same thing twice.
@@ -287,6 +323,7 @@ package enum TargetQueries {
                 """,
             arguments: [priority, id]
         )
+        try requireUpdated(db, id: id)
     }
 
     package static func updateText(_ db: Database, id: Int, text: String) throws {
@@ -297,6 +334,7 @@ package enum TargetQueries {
                 """,
             arguments: [text, id]
         )
+        try requireUpdated(db, id: id)
     }
 
     package static func updateIntent(_ db: Database, id: Int, intent: String) throws {
@@ -307,6 +345,7 @@ package enum TargetQueries {
                 """,
             arguments: [intent, id]
         )
+        try requireUpdated(db, id: id)
     }
 
     package static func updateDueDate(_ db: Database, id: Int, dueDate: String) throws {
@@ -317,6 +356,52 @@ package enum TargetQueries {
                 """,
             arguments: [dueDate, id]
         )
+        try requireUpdated(db, id: id)
+    }
+
+    package static func updateOwnership(_ db: Database, id: Int, ownership: String) throws {
+        try db.execute(
+            sql: """
+                UPDATE targets SET ownership = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                WHERE id = ?
+                """,
+            arguments: [ownership, id]
+        )
+        try requireUpdated(db, id: id)
+    }
+
+    package static func updateBlocking(_ db: Database, id: Int, blocking: String) throws {
+        try db.execute(
+            sql: """
+                UPDATE targets SET blocking = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                WHERE id = ?
+                """,
+            arguments: [blocking, id]
+        )
+        try requireUpdated(db, id: id)
+    }
+
+    package static func updateBallOn(_ db: Database, id: Int, ballOn: String) throws {
+        try db.execute(
+            sql: """
+                UPDATE targets SET ball_on = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                WHERE id = ?
+                """,
+            arguments: [ballOn, id]
+        )
+        try requireUpdated(db, id: id)
+    }
+
+    package static func updateNotes(_ db: Database, id: Int, notes: [TargetNote]) throws {
+        let json = try jsonString(JSONEncoder().encode(notes))
+        try db.execute(
+            sql: """
+                UPDATE targets SET notes = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                WHERE id = ?
+                """,
+            arguments: [json, id]
+        )
+        try requireUpdated(db, id: id)
     }
 
     /// Updates a target's horizon level. Switching to any standard level
@@ -356,6 +441,7 @@ package enum TargetQueries {
                 arguments: [level, level != "custom", id]
             )
         }
+        try requireUpdated(db, id: id)
     }
 
     package static func updateProgress(_ db: Database, id: Int, progress: Double) throws {
@@ -367,6 +453,8 @@ package enum TargetQueries {
                 """,
             arguments: [clamped, id]
         )
+        try requireUpdated(db, id: id)
+        try recomputeParentOf(db, id: id)
     }
 
     package static func updateSubItems(_ db: Database, id: Int, subItems: [TargetSubItem]) throws {
@@ -378,6 +466,7 @@ package enum TargetQueries {
                 """,
             arguments: [json, id]
         )
+        try requireUpdated(db, id: id)
     }
 
     /// Tag edits are semantic add/remove against a fresh in-transaction read,
@@ -385,11 +474,11 @@ package enum TargetQueries {
     /// concurrently (daemon, CLI, second window) must survive the edit
     /// (review-rules: reload the row immediately before writing).
     /// Returns whether anything changed, so callers can report an honest
-    /// summary for the idempotent no-op cases (duplicate add, absent remove,
-    /// vanished row).
+    /// summary for the idempotent no-op cases (duplicate add, absent remove);
+    /// a vanished row throws `TargetNotFoundError` like every other mutator.
     @discardableResult
     package static func addTag(_ db: Database, id: Int, tag: String) throws -> Bool {
-        guard var tags = try currentTags(db, id: id) else { return false }
+        var tags = try currentTags(db, id: id)
         guard !tags.contains(tag) else { return false }
         tags.append(tag)
         try writeTags(db, id: id, tags: tags)
@@ -398,18 +487,19 @@ package enum TargetQueries {
 
     @discardableResult
     package static func removeTag(_ db: Database, id: Int, tag: String) throws -> Bool {
-        guard let tags = try currentTags(db, id: id), tags.contains(tag) else { return false }
+        let tags = try currentTags(db, id: id)
+        guard tags.contains(tag) else { return false }
         try writeTags(db, id: id, tags: tags.filter { $0 != tag })
         return true
     }
 
-    /// nil = row vanished (edit becomes a no-op, the sibling mutators' contract).
-    /// An undecodable column throws — deliberately NOT `Target.decodedTags`'
-    /// tolerant `try? → []`, which here would silently replace whatever the
-    /// column held with the freshly built array.
-    private static func currentTags(_ db: Database, id: Int) throws -> [String]? {
+    /// A vanished row throws `TargetNotFoundError`. An undecodable column
+    /// throws too — deliberately NOT `Target.decodedTags`' tolerant
+    /// `try? → []`, which here would silently replace whatever the column held
+    /// with the freshly built array.
+    private static func currentTags(_ db: Database, id: Int) throws -> [String] {
         guard let raw = try String.fetchOne(db, sql: "SELECT tags FROM targets WHERE id = ?", arguments: [id]) else {
-            return nil
+            throw TargetNotFoundError(id: id)
         }
         return try JSONDecoder().decode([String].self, from: Data(raw.utf8))
     }
@@ -433,6 +523,7 @@ package enum TargetQueries {
                 """,
             arguments: [json, id]
         )
+        try requireUpdated(db, id: id)
     }
 
     /// Blank tags are excluded: pre-fix `targets update --tags ""` wrote `[""]`,
@@ -442,7 +533,7 @@ package enum TargetQueries {
             db,
             sql: """
                 SELECT DISTINCT value FROM targets, json_each(targets.tags)
-                WHERE json_valid(targets.tags) AND value <> ''
+                WHERE targets.project_id IS NULL AND json_valid(targets.tags) AND value <> ''
                 ORDER BY value COLLATE NOCASE
                 """
         )
@@ -455,40 +546,60 @@ package enum TargetQueries {
         let dateStr = fmt.string(from: until)
         try db.execute(
             sql: """
-                UPDATE targets SET status = 'snoozed', snooze_until = ?,
+                UPDATE targets SET status = 'snoozed', snooze_until = ?, status_actor = 'owner',
                     updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
                 WHERE id = ?
                 """,
             arguments: [dateStr, id]
         )
+        try requireUpdated(db, id: id)
+        try applyStatusProgress(db, id: id, status: "snoozed")
     }
 
     // MARK: - Delete
 
     package static func delete(_ db: Database, id: Int) throws {
+        let parent = try parentID(db, of: id)
         try db.execute(sql: "DELETE FROM targets WHERE id = ?", arguments: [id])
+        if let parent {
+            try recomputeParentProgress(db, parentID: parent)
+        }
     }
 
     // MARK: - Links
 
-    /// Create a typed link between two existing targets. INSERT OR IGNORE respects
-    /// the UNIQUE(source, target, external_ref, relation) constraint, so re-proposing
-    /// an existing link is a no-op rather than an error.
+    /// Create a typed link from `sourceID` to another target and/or an
+    /// external ref (the `target_links` CHECK wants at least one). INSERT OR
+    /// IGNORE respects the UNIQUE(source, target, external_ref, relation)
+    /// constraint, so re-proposing an existing link is a no-op rather than an
+    /// error — but it never covers the foreign key, so a vanished endpoint is
+    /// checked first and throws `TargetNotFoundError` naming it instead of a
+    /// bare "FOREIGN KEY constraint failed".
     package static func createLink(
         _ db: Database,
         sourceID: Int,
-        targetID: Int,
+        targetID: Int?,
+        externalRef: String = "",
         relation: String,
         createdBy: String = "user"
     ) throws {
+        try requireExists(db, id: sourceID)
+        if let targetID { try requireExists(db, id: targetID) }
         try db.execute(
             sql: """
                 INSERT OR IGNORE INTO target_links
                   (source_target_id, target_target_id, external_ref, relation, created_by)
-                VALUES (?, ?, '', ?, ?)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-            arguments: [sourceID, targetID, relation, createdBy]
+            arguments: [sourceID, targetID, externalRef, relation, createdBy]
         )
+    }
+
+    private static func requireExists(_ db: Database, id: Int) throws {
+        let exists = try Bool.fetchOne(
+            db, sql: "SELECT EXISTS(SELECT 1 FROM targets WHERE id = ?)", arguments: [id]
+        ) ?? false
+        guard exists else { throw TargetNotFoundError(id: id) }
     }
 
     package static func fetchLinks(

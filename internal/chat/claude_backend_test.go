@@ -214,6 +214,49 @@ func TestClaudeBackend_CancelKillsAfterGraceAndNextTurnResumes(t *testing.T) {
 	assert.True(t, contains(runs[1], "--resume"), "the respawn resumes the session")
 }
 
+// A fresh (replayed) session killed after a cancel must not lose the
+// conversation: the next turn — sent without replay, since the app counts
+// the stopped turn as seen — resumes the session the killed child reported
+// on its init line, and the interrupted turn_done carries that id.
+func TestClaudeBackend_CancelKillOnFreshSessionResumesItsOwnSession(t *testing.T) {
+	opts, f := fakeClaude(t, "ignore_interrupt")
+	opts.Env = append(opts.Env, "FAKE_INIT_SID=sess-new")
+	opts.Replay = func(string) (string, error) { return "=== CONVERSATION SO FAR ===\n=== END ===\n\n", nil }
+	h := startSession(t, NewClaudeBackend(opts), nil)
+	h.next(EventSessionReady)
+
+	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "long", Replay: true})
+	h.next(EventTextDelta)
+	h.send(Command{Type: CommandCancel})
+	done := h.next(EventTurnDone)
+	assert.Equal(t, StatusInterrupted, done.Status)
+	assert.Equal(t, "sess-new", done.SessionID, "the app records the fresh session it can resume")
+
+	h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "next"})
+	h.next(EventTurnDone)
+	require.NoError(t, h.finish())
+
+	runs := argvRuns(t, f.argv)
+	last := runs[len(runs)-1]
+	idx := indexOf(last, "--resume")
+	require.GreaterOrEqual(t, idx, 0, "the respawn after the kill resumes, never a blank session")
+	assert.Equal(t, "sess-new", last[idx+1])
+}
+
+// A replaced child's late line must not overwrite the session the next
+// spawn resumes: only the live child's id counts.
+func TestClaudeBackend_NoteSessionIDIgnoresAReplacedChild(t *testing.T) {
+	b := &claudeBackend{}
+	old, live := &claudeProc{}, &claudeProc{}
+	b.proc = live
+	b.noteSessionID(old, "sess-old")
+	assert.Empty(t, b.resume)
+	b.noteSessionID(live, "sess-live")
+	assert.Equal(t, "sess-live", b.resume)
+	b.noteSessionID(old, "sess-old")
+	assert.Equal(t, "sess-live", b.resume)
+}
+
 func TestClaudeBackend_CrashThenNextTurnRespawnsWithResume(t *testing.T) {
 	opts, f := fakeClaude(t, "crash_once")
 	opts.ResumeSessionID = "sess-0"

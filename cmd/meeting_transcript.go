@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"slices"
 	"strconv"
@@ -94,15 +93,6 @@ var transcriptNotesCmd = &cobra.Command{
 	RunE: runTranscriptNotes,
 }
 
-var transcriptSpeakerGuessCmd = &cobra.Command{
-	Use:   "speaker-guess <id>",
-	Short: "Suggest names for unnamed speakers in a saved transcript",
-	Long: "Runs the meeting.speaker_guess AI prompt over the transcript's per-utterance segments and prints {transcript_id, suggestions}. " +
-		"Suggestions are ephemeral (nothing is persisted — the Desktop renders them as confirm chips); exits 1 on any failure.",
-	Args: cobra.ExactArgs(1),
-	RunE: runTranscriptSpeakerGuess,
-}
-
 var transcriptChaptersCmd = &cobra.Command{
 	Use:   "chapters <id>",
 	Short: "Generate meeting chapters for a saved transcript",
@@ -123,7 +113,7 @@ var transcriptFollowupCmd = &cobra.Command{
 
 func init() {
 	meetingPrepCmd.AddCommand(meetingTranscriptCmd)
-	meetingTranscriptCmd.AddCommand(transcriptSaveCmd, transcriptRecapCmd, transcriptListCmd, transcriptShowCmd, transcriptNotesCmd, transcriptSpeakerGuessCmd, transcriptChaptersCmd, transcriptFollowupCmd)
+	meetingTranscriptCmd.AddCommand(transcriptSaveCmd, transcriptRecapCmd, transcriptListCmd, transcriptShowCmd, transcriptNotesCmd, transcriptChaptersCmd, transcriptFollowupCmd)
 
 	transcriptFollowupCmd.Flags().IntVar(&transcriptFollowupChapter, "chapter", -1, "0-based chapter index to draft for (omit for a whole-meeting draft)")
 
@@ -299,7 +289,7 @@ func loadTranscriptSpeakers(path string, segmentsJSON sql.NullString, errOut io.
 		fmt.Fprintf(errOut, "warning: %v (saving transcript without speaker embeddings)\n", err)
 		return sql.NullString{}, err
 	}
-	speakers, err := meeting.ParseSpeakerEmbeddings(raw)
+	speakers, rawEntries, err := meeting.ParseSpeakerEmbeddingsRaw(raw)
 	if err != nil {
 		fmt.Fprintf(errOut, "warning: %v (saving transcript without speaker embeddings)\n", err)
 		return sql.NullString{}, err
@@ -313,25 +303,25 @@ func loadTranscriptSpeakers(path string, segmentsJSON sql.NullString, errOut io.
 	for _, u := range utterances {
 		labels[u.Speaker] = true
 	}
-	kept := speakers[:0]
+	var keptRaw []json.RawMessage
 	var dropped []string
-	for _, s := range speakers {
+	for i, s := range speakers {
 		if !labels[s.Speaker] {
 			dropped = append(dropped, s.Speaker)
 			continue
 		}
-		kept = append(kept, s)
+		keptRaw = append(keptRaw, rawEntries[i])
 	}
 	if len(dropped) == 0 {
 		return sql.NullString{String: strings.TrimSpace(string(raw)), Valid: true}, nil
 	}
 	err = fmt.Errorf("dropped speaker embeddings matching no transcript utterance: %s", strings.Join(dropped, ", "))
 	fmt.Fprintf(errOut, "warning: %v\n", err)
-	if len(kept) == 0 {
+	if len(keptRaw) == 0 {
 		fmt.Fprintf(errOut, "warning: no speaker embeddings left (saving transcript without speaker embeddings)\n")
 		return sql.NullString{}, err
 	}
-	reencoded, encErr := json.Marshal(kept)
+	reencoded, encErr := json.Marshal(keptRaw)
 	if encErr != nil {
 		fmt.Fprintf(errOut, "warning: re-encoding speaker embeddings: %v (saving transcript without speaker embeddings)\n", encErr)
 		return sql.NullString{}, err
@@ -367,10 +357,9 @@ func runTranscriptRecap(cmd *cobra.Command, args []string) error {
 }
 
 // generateAndStoreTranscriptRecap runs the AI recap for a saved transcript and
-// stores it: event-linked transcripts write meeting_recaps (shared with the
-// paste-a-recap flow), ad-hoc ones write meeting_transcripts.summary_json.
-// Shared by save and the `recap <id>` retry command. Bookkeeping failures
-// (pipeline_runs) are logged to errOut and never affect the result.
+// stores it (see storeTranscriptRecap for where it lands). Shared by save
+// and the `recap <id>` retry command. Bookkeeping failures (pipeline_runs)
+// are logged to errOut and never affect the result.
 func generateAndStoreTranscriptRecap(ctx context.Context, database *db.DB, cfg *config.Config, id int64, errOut io.Writer) error {
 	if ctx == nil { // RunE invoked outside cobra's Execute (tests)
 		ctx = context.Background()
@@ -410,24 +399,7 @@ func generateAndStoreTranscriptRecap(ctx context.Context, database *db.DB, cfg *
 		completeRun(0, 0, 0, 0, err.Error())
 		return fmt.Errorf("marshalling recap: %w", err)
 	}
-	// Collision guard, mirroring Swift MeetingTranscriptQueries.linkToEvent:
-	// an existing meeting_recaps row (e.g. a recap the user pasted earlier) is
-	// never overwritten — when the event already has one, the generated recap
-	// lands in meeting_transcripts.summary_json instead. Only a recap-less
-	// event gets the generated recap in meeting_recaps.
-	writeToRecaps := false
-	if eventID != "" {
-		existing, lookupErr := database.GetMeetingRecap(eventID)
-		writeToRecaps = lookupErr == nil && existing == nil
-		if lookupErr != nil {
-			fmt.Fprintf(errOut, "warning: checking existing recap for %s (falling back to summary_json): %v\n", eventID, lookupErr)
-		}
-	}
-	if writeToRecaps {
-		err = database.UpsertMeetingRecap(eventID, tr.TranscriptText, string(recapJSON), id)
-	} else {
-		err = database.SetMeetingTranscriptSummary(id, string(recapJSON))
-	}
+	err = storeTranscriptRecap(database, tr, eventID, string(recapJSON), errOut)
 
 	in, out, api := 0, 0, 0
 	if usage != nil {
@@ -439,6 +411,56 @@ func generateAndStoreTranscriptRecap(ctx context.Context, database *db.DB, cfg *
 	}
 	completeRun(1, in, out, api, storeErrMsg)
 	return err
+}
+
+// storeTranscriptRecap writes a generated recap where the recording's Recap
+// tab reads it (Swift RecordingDetailView resolves meeting_recaps by
+// transcript_id, then by event_id, then falls back to summary_json):
+//   - the recording's OWN meeting_recaps row (transcript_id = tr.ID, written by
+//     an earlier save or copied from summary_json by Swift linkToEvent) is
+//     refreshed in place. It is this recording's recap, never one the user
+//     pasted (a paste rewrites transcript_id to NULL), so an explicit
+//     `transcript recap <id>` — the recap-refresh hint's Regenerate — must
+//     replace what is shown rather than hide the result in summary_json;
+//   - otherwise the collision guard, mirroring Swift linkToEvent: a recap-less
+//     event gets a new meeting_recaps row, while an event that already has one
+//     (pasted, or another recording's) keeps it and the recap lands in
+//     summary_json. On save the row is brand new, so only this branch applies.
+//
+// When the recap lands in meeting_recaps and the recording also holds its own
+// summary_json copy, that copy (and its summary_updated_at stamp, which the
+// Swift hint reads for such a row) is refreshed in the same transaction
+// (db.WriteTranscriptRecap), so the two never diverge.
+// A failed lookup falls back to summary_json with a warning — never an
+// overwrite.
+func storeTranscriptRecap(database *db.DB, tr *db.MeetingTranscript, eventID, recapJSON string, errOut io.Writer) error {
+	own, err := database.GetMeetingRecapByTranscript(tr.ID)
+	if err != nil {
+		fmt.Fprintf(errOut, "warning: checking transcript %d's own recap (falling back to summary_json): %v\n", tr.ID, err)
+		return database.SetMeetingTranscriptSummary(tr.ID, recapJSON)
+	}
+	row := db.TranscriptRecapRow{
+		EventID: eventID, TranscriptID: tr.ID, SourceText: tr.TranscriptText,
+		RecapJSON: recapJSON, SyncSummary: tr.SummaryJSON.Valid,
+	}
+	if own != nil {
+		row.OwnRecapID = own.ID
+	} else if eventID == "" || !eventHasNoRecap(database, eventID, errOut) {
+		return database.SetMeetingTranscriptSummary(tr.ID, recapJSON)
+	}
+	return database.WriteTranscriptRecap(row)
+}
+
+// eventHasNoRecap reports whether the event has no meeting_recaps row yet. A
+// lookup error counts as "has one" (logged), so the guard errs toward
+// summary_json and never overwrites.
+func eventHasNoRecap(database *db.DB, eventID string, errOut io.Writer) bool {
+	existing, err := database.GetMeetingRecap(eventID)
+	if err != nil {
+		fmt.Fprintf(errOut, "warning: checking existing recap for %s (falling back to summary_json): %v\n", eventID, err)
+		return false
+	}
+	return existing == nil
 }
 
 // printTranscriptEnvelope emits the frozen stdout contract consumed by the
@@ -661,77 +683,6 @@ func runTranscriptNotes(cmd *cobra.Command, args []string) error {
 	return enc.Encode(map[string]any{
 		"transcript_id": id,
 		"notes_md":      notes,
-	})
-}
-
-func runTranscriptSpeakerGuess(cmd *cobra.Command, args []string) error {
-	id, err := strconv.ParseInt(args[0], 10, 64)
-	if err != nil {
-		return fmt.Errorf("invalid transcript id %q: %w", args[0], err)
-	}
-
-	cfg, database, err := transcriptEnv()
-	if err != nil {
-		return err
-	}
-	defer database.Close()
-
-	tr, err := database.GetMeetingTranscript(id)
-	if err != nil {
-		return err
-	}
-	if tr == nil {
-		return fmt.Errorf("transcript %d not found", id)
-	}
-	if !tr.SegmentsJSON.Valid {
-		return fmt.Errorf("transcript %d has no per-utterance segments (re-transcribe to get speaker clusters)", id)
-	}
-	utterances, err := meeting.ParseTranscriptSegments([]byte(tr.SegmentsJSON.String))
-	if err != nil {
-		return err
-	}
-
-	runID, err := database.CreatePipelineRun("meeting_speaker_guess", "cli", "auto")
-	if err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warning: recording meeting_speaker_guess pipeline run: %v\n", err)
-	}
-	completeRun := func(items, in, out, api int, errMsg string) {
-		if err := database.CompletePipelineRun(runID, items, in, out, 0, api, nil, nil, errMsg); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "warning: completing meeting_speaker_guess pipeline run %d: %v\n", runID, err)
-		}
-	}
-
-	// A stderr logger so pipeline diagnostics (e.g. the event-lookup
-	// degradation warning) are visible from the CLI.
-	pipe := meeting.New(database, cfg, transcriptGeneratorFactory(cfg),
-		log.New(cmd.ErrOrStderr(), "", 0))
-	pipe.SetPromptStore(prompts.New(database, nil))
-
-	eventID := ""
-	if tr.EventID.Valid {
-		eventID = tr.EventID.String
-	}
-	ctx := cmd.Context()
-	if ctx == nil { // RunE invoked directly (tests) — cobra sets ctx only via Execute
-		ctx = context.Background()
-	}
-	guesses, usage, err := pipe.GenerateSpeakerGuesses(ctx, eventID, utterances)
-	if err != nil {
-		completeRun(0, 0, 0, 0, err.Error())
-		return err
-	}
-
-	in, out, api := 0, 0, 0
-	if usage != nil {
-		in, out, api = usage.InputTokens, usage.OutputTokens, usage.TotalAPITokens
-	}
-	completeRun(len(guesses), in, out, api, "")
-
-	enc := json.NewEncoder(cmd.OutOrStdout())
-	enc.SetIndent("", "  ")
-	return enc.Encode(map[string]any{
-		"transcript_id": id,
-		"suggestions":   guesses,
 	})
 }
 

@@ -199,6 +199,27 @@ func TestUpdateTargetStatus(t *testing.T) {
 	assert.Equal(t, "done", tgt.Status)
 }
 
+// TestUpdateTargetText_LeavesEverythingElseAlone (I4): the project board's
+// update_target tool uses this targeted UPDATE, deliberately unlike
+// UpdateTarget's full-row rewrite, so that renaming a target never
+// re-derives (and so resets) its progress from its unchanged status.
+func TestUpdateTargetText_LeavesEverythingElseAlone(t *testing.T) {
+	db := openTestDB(t)
+
+	id, err := db.CreateTarget(makeTarget("Original text", "in_progress", "medium"))
+	require.NoError(t, err)
+	require.NoError(t, db.SetTargetProgress(int(id), 0.6))
+
+	require.NoError(t, db.UpdateTargetText(int(id), "New text", "New intent"))
+
+	tgt, err := db.GetTargetByID(int(id))
+	require.NoError(t, err)
+	assert.Equal(t, "New text", tgt.Text)
+	assert.Equal(t, "New intent", tgt.Intent)
+	assert.Equal(t, "in_progress", tgt.Status, "status is untouched")
+	assert.InDelta(t, 0.6, tgt.Progress, 1e-9, "progress must survive a text-only update")
+}
+
 // TestUpdateTargetStatus_ParentRecomputeFailureSurfaces guards F9: a failed
 // RecomputeParentProgress after a status change must be reported to the
 // caller, not swallowed — the status change itself has already persisted, so

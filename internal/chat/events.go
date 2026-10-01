@@ -70,12 +70,20 @@ type Event struct {
 	Retryable bool            `json:"retryable,omitempty"`
 }
 
-// Source is one source chip of a tool_end (spec §3.4).
+// Source is one cited source of a tool_end (spec §3.4). Group, Snippet and
+// Date are optional presentation hints for the Desktop sources panel — Group
+// is what the panel groups by ("#channel", a Jira project key, "Mail",
+// "Meetings"; empty = "Other"), Snippet a short excerpt, Date a YYYY-MM-DD
+// day. All three are omitempty, so sources persisted before they existed
+// still decode (the Desktop derives a group from a legacy title).
 type Source struct {
-	Kind  string `json:"kind"`
-	Title string `json:"title"`
-	URL   string `json:"url,omitempty"`
-	Ref   string `json:"ref"`
+	Kind    string `json:"kind"`
+	Title   string `json:"title"`
+	URL     string `json:"url,omitempty"`
+	Ref     string `json:"ref"`
+	Group   string `json:"group,omitempty"`
+	Snippet string `json:"snippet,omitempty"`
+	Date    string `json:"date,omitempty"`
 }
 
 // Attachment is a file the owner attached to a turn. Its path travels on

@@ -65,7 +65,7 @@ func TestGetTarget_ReturnsTarget(t *testing.T) {
 
 // A missing target is a friendly not-found error, not a raw sql error.
 func TestGetTarget_NotFound(t *testing.T) {
-	_, err := targetsRegistry(t, openDB(t)).CallRead(context.Background(), "get_target", json.RawMessage(`{"id":999}`))
+	_, err := targetsRegistry(t, openDB(t)).CallRead(context.Background(), "get_target", json.RawMessage(`{"id":999}`), Binding{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no target with id 999")
 	assert.NotContains(t, err.Error(), "sql: no rows")
@@ -74,13 +74,13 @@ func TestGetTarget_NotFound(t *testing.T) {
 func TestListTargets_RejectsInvalidEnums(t *testing.T) {
 	reg := targetsRegistry(t, openDB(t))
 	cases := []struct{ field, value, wantAllowed string }{
-		{"status", "in-progress", "todo|in_progress|blocked|done|dismissed|snoozed"},
+		{"status", "in-progress", "todo|in_progress|in_review|blocked|done|dismissed|snoozed"},
 		{"priority", "urgent", "high|medium|low"},
 		{"level", "year", "quarter|month|week|day|custom"},
 		{"ownership", "theirs", "mine|delegated|watching"},
 	}
 	for _, c := range cases {
-		_, err := reg.CallRead(context.Background(), "list_targets", json.RawMessage(`{"`+c.field+`":"`+c.value+`"}`))
+		_, err := reg.CallRead(context.Background(), "list_targets", json.RawMessage(`{"`+c.field+`":"`+c.value+`"}`), Binding{})
 		var verr *ValidationError
 		require.ErrorAs(t, err, &verr, "%s=%s", c.field, c.value)
 		assert.Contains(t, verr.Msg, c.value)

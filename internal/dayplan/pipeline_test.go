@@ -184,6 +184,55 @@ func TestRun_RegenerateWithFeedback_PreservesManual(t *testing.T) {
 	require.Contains(t, updated.FeedbackHistory, feedback, "feedback must appear in history")
 }
 
+// TestRun_RegenerateFeedbackWriteFailureIsReported pins that losing the
+// owner's feedback is not a log line: the regeneration bookkeeping write also
+// records the feedback the next regeneration reads, so its failure reaches
+// the caller instead of a success whose feedback silently vanished.
+func TestRun_RegenerateFeedbackWriteFailureIsReported(t *testing.T) {
+	d := gatherTestDB(t)
+	p := newTestPipeline(d, &mockGenerator{response: validResponse()})
+	today := time.Now().Format("2006-01-02")
+
+	planID, err := d.CreateDayPlan(&db.DayPlan{
+		UserID: "U1", PlanDate: today, Status: "active",
+		GeneratedAt: time.Now(), FeedbackHistory: "[]",
+	})
+	require.NoError(t, err)
+	_, err = d.Exec(`CREATE TRIGGER fail_regen BEFORE UPDATE OF regenerate_count ON day_plans
+		WHEN NEW.regenerate_count > OLD.regenerate_count
+		BEGIN SELECT RAISE(ABORT, 'injected regenerate write failure'); END`)
+	require.NoError(t, err)
+
+	plan, err := p.Run(context.Background(), RunOptions{UserID: "U1", Date: today, Feedback: "move the gym"})
+	require.Error(t, err, "a lost feedback write must reach the caller")
+	require.Contains(t, err.Error(), "injected regenerate write failure")
+	require.Nil(t, plan)
+
+	stored, err := d.GetDayPlanByID(planID)
+	require.NoError(t, err)
+	require.NotContains(t, stored.FeedbackHistory, "move the gym", "the feedback was indeed not recorded")
+}
+
+// TestRun_ConflictWriteFailureDoesNotFailThePlan pins the one deliberate
+// best-effort write in Run: has_conflicts is derived and recomputed by the
+// daemon every cycle, so a failed conflict write leaves the fully written
+// plan standing.
+func TestRun_ConflictWriteFailureDoesNotFailThePlan(t *testing.T) {
+	d := gatherTestDB(t)
+	p := newTestPipeline(d, &mockGenerator{response: validResponse()})
+	today := time.Now().Format("2006-01-02")
+	_, err := d.Exec(`CREATE TRIGGER fail_conflicts BEFORE UPDATE OF has_conflicts ON day_plans
+		BEGIN SELECT RAISE(ABORT, 'injected conflict write failure'); END`)
+	require.NoError(t, err)
+
+	plan, err := p.Run(context.Background(), RunOptions{UserID: "U1", Date: today})
+	require.NoError(t, err, "a failed conflict flag must not fail the plan")
+	require.NotNil(t, plan)
+	items, err := d.GetDayPlanItems(plan.ID)
+	require.NoError(t, err)
+	require.NotEmpty(t, items, "the plan's items are in place")
+}
+
 // TestRun_GracefulInvalidAIResponse checks that when mockGenerator returns
 // "not json at all", Run returns an error and NO plan row is created.
 func TestRun_GracefulInvalidAIResponse(t *testing.T) {
@@ -260,4 +309,123 @@ func TestRun_DropsTimeblockOverlappingCalendar(t *testing.T) {
 		}
 	}
 	require.Equal(t, 1, backlogCount, "backlog item should be persisted")
+}
+
+// A fresh plan whose item writes fail half-way must not stick for the day:
+// the "plan exists" short-circuit would take the empty plan as done. The row
+// is dropped, so the next run regenerates. An existing plan is never dropped.
+func TestRun_PartialPersistFailureLeavesNoFreshPlan(t *testing.T) {
+	d := gatherTestDB(t)
+	gen := &mockGenerator{response: validResponse()}
+	p := newTestPipeline(d, gen)
+	today := time.Now().Format("2006-01-02")
+
+	_, err := d.Exec(`CREATE TRIGGER fail_items BEFORE INSERT ON day_plan_items BEGIN SELECT RAISE(ABORT, 'injected'); END`)
+	require.NoError(t, err)
+
+	_, err = p.Run(context.Background(), RunOptions{UserID: "U1", Date: today})
+	require.Error(t, err)
+	plan, err := d.GetDayPlan("U1", today)
+	require.NoError(t, err)
+	require.Nil(t, plan, "a half-written fresh plan is dropped")
+
+	_, err = d.Exec(`DROP TRIGGER fail_items`)
+	require.NoError(t, err)
+	plan, err = p.Run(context.Background(), RunOptions{UserID: "U1", Date: today})
+	require.NoError(t, err)
+	require.NotNil(t, plan, "the next run regenerates instead of short-circuiting")
+	items, err := d.GetDayPlanItems(plan.ID)
+	require.NoError(t, err)
+	require.Len(t, items, 2)
+
+	// A forced regeneration of an EXISTING plan that fails keeps the plan.
+	_, err = d.Exec(`CREATE TRIGGER fail_items BEFORE INSERT ON day_plan_items BEGIN SELECT RAISE(ABORT, 'injected'); END`)
+	require.NoError(t, err)
+	_, err = p.Run(context.Background(), RunOptions{UserID: "U1", Date: today, Force: true})
+	require.Error(t, err)
+	kept, err := d.GetDayPlan("U1", today)
+	require.NoError(t, err)
+	require.NotNil(t, kept, "an existing plan is never dropped by a failed regeneration")
+	require.Equal(t, plan.ID, kept.ID)
+}
+
+// Every generated item failing validation is a failed attempt, not an empty
+// plan persisted as done; a model that proposed nothing is an honest empty plan.
+func TestRun_AllItemsDroppedIsAFailedAttempt(t *testing.T) {
+	d := gatherTestDB(t)
+	today := time.Now().Format("2006-01-02")
+	invented := `{"timeblocks":[],"backlog":[{"source_type":"task","source_id":"999999","title":"Ghost","description":"x","rationale":"y","priority":"medium"}],"summary":"s"}`
+	p := newTestPipeline(d, &mockGenerator{response: invented})
+
+	_, err := p.Run(context.Background(), RunOptions{UserID: "U1", Date: today})
+	require.Error(t, err)
+	plan, err := d.GetDayPlan("U1", today)
+	require.NoError(t, err)
+	require.Nil(t, plan, "nothing is persisted for a wholly invalid response")
+
+	p = newTestPipeline(d, &mockGenerator{response: `{"timeblocks":[],"backlog":[],"summary":"quiet"}`})
+	plan, err = p.Run(context.Background(), RunOptions{UserID: "U1", Date: today})
+	require.NoError(t, err)
+	require.NotNil(t, plan, "an empty proposal is still a plan")
+}
+
+// A meeting-heavy day: every proposal collides with (or restates) the
+// calendar and is dropped, but the meetings themselves make a valid
+// calendar-only plan — never a failed attempt.
+func TestRun_AllItemsDroppedOnMeetingDayKeepsCalendarPlan(t *testing.T) {
+	d := gatherTestDB(t)
+	now := time.Now()
+	today := now.Format("2006-01-02")
+	evStart := time.Date(now.Year(), now.Month(), now.Day(), 9, 0, 0, 0, time.Local)
+	require.NoError(t, d.UpsertCalendar(0, db.CalendarCalendar{ID: "cal-001", Name: "Primary", IsPrimary: true}))
+	require.NoError(t, d.UpsertCalendarEvent(db.CalendarEvent{
+		ID: "evt-all-day-meetings", CalendarID: "cal-001", Title: "Offsite sessions",
+		StartTime: evStart.UTC().Format(time.RFC3339), EndTime: evStart.Add(8 * time.Hour).UTC().Format(time.RFC3339),
+		Attendees: "[]",
+	}))
+	response := `{"timeblocks":[{"source_type":"calendar","source_id":"evt-all-day-meetings","title":"Offsite","description":"x","rationale":"y","start_time_local":"09:00","end_time_local":"17:00","priority":"high"},` +
+		`{"source_type":"focus","source_id":null,"title":"Squeezed focus","description":"x","rationale":"y","start_time_local":"10:00","end_time_local":"11:00","priority":"high"}],` +
+		`"backlog":[{"source_type":"calendar","source_id":"evt-all-day-meetings","title":"Offsite","description":"x","rationale":"y","priority":"medium"}],"summary":"meetings"}`
+	p := newTestPipeline(d, &mockGenerator{response: response})
+
+	plan, err := p.Run(context.Background(), RunOptions{UserID: "U1", Date: today})
+	require.NoError(t, err, "a calendar-only day is a plan, not a failure")
+	require.NotNil(t, plan)
+	items, err := d.GetDayPlanItems(plan.ID)
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	require.Equal(t, db.DayPlanItemSourceCalendar, items[0].SourceType)
+}
+
+// The calendar-only exemption keys on WHY items were dropped: a real
+// validation failure (unknown source, bad times) is a failed attempt even on
+// a meeting day, alone or mixed with calendar collisions.
+func TestRun_AllItemsInvalidOnMeetingDayIsAFailedAttempt(t *testing.T) {
+	cases := map[string]string{
+		"unknown-task-only": `{"timeblocks":[],"backlog":[{"source_type":"task","source_id":"999999","title":"Ghost","description":"x","rationale":"y","priority":"medium"}],"summary":"s"}`,
+		"bad-times":         `{"timeblocks":[{"source_type":"focus","source_id":null,"title":"Late","description":"x","rationale":"y","start_time_local":"18:00","end_time_local":"17:00","priority":"low"}],"backlog":[],"summary":"s"}`,
+		"mixed-with-collision": `{"timeblocks":[{"source_type":"focus","source_id":null,"title":"Squeezed","description":"x","rationale":"y","start_time_local":"10:00","end_time_local":"11:00","priority":"high"}],` +
+			`"backlog":[{"source_type":"jira","source_id":"NOPE-1","title":"Ghost","description":"x","rationale":"y","priority":"medium"}],"summary":"s"}`,
+	}
+	for name, response := range cases {
+		t.Run(name, func(t *testing.T) {
+			d := gatherTestDB(t)
+			now := time.Now()
+			today := now.Format("2006-01-02")
+			evStart := time.Date(now.Year(), now.Month(), now.Day(), 9, 0, 0, 0, time.Local)
+			require.NoError(t, d.UpsertCalendar(0, db.CalendarCalendar{ID: "cal-001", Name: "Primary", IsPrimary: true}))
+			require.NoError(t, d.UpsertCalendarEvent(db.CalendarEvent{
+				ID: "evt-meetings", CalendarID: "cal-001", Title: "Meetings",
+				StartTime: evStart.UTC().Format(time.RFC3339), EndTime: evStart.Add(8 * time.Hour).UTC().Format(time.RFC3339),
+				Attendees: "[]",
+			}))
+			p := newTestPipeline(d, &mockGenerator{response: response})
+
+			_, err := p.Run(context.Background(), RunOptions{UserID: "U1", Date: today})
+			require.Error(t, err)
+			plan, err := d.GetDayPlan("U1", today)
+			require.NoError(t, err)
+			require.Nil(t, plan)
+		})
+	}
 }

@@ -37,6 +37,8 @@ Three problems:
 
 Fix: return or throw the exit status plus drained stderr, show it on the splash/onboarding error surface, and run it detached (as `AppState.initialize` already does).
 
+**Status: point 3 fixed in fix/backlog-desktop-wave1** (stderr is drained concurrently via `ProcessPipes.drain` and logged on failure). Points 1 and 2 stay open: surfacing the failure and taking it off the main thread both need `ensureOnboardingDatabase()` (seven synchronous call sites) to become async.
+
 ## Merging an idea that already absorbed others leaves a two-hop redirect the consolidator can't follow
 
 - type: bug · confidence: med · tags: [swift, ideas, dual-path, IDEA-03]

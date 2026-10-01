@@ -178,36 +178,61 @@ var errProcessGone = errors.New("process already exited")
 
 // verifyDaemonAlive re-confirms, immediately before forceStopSync escalates
 // to a further signal, that pid still refers to the same watchtower daemon
-// FindProcess resolved earlier in runSyncStop — never assumed to still hold
-// after a multi-second grace-period wait. It re-runs daemon.FindProcess
-// against pidPath rather than a bare liveness check: FindProcess applies
-// the same identity check (isReusedPID, via `ps`'s process name) FindProcess
-// used to resolve pid in the first place, and — as a side effect — removes
-// the pid file itself once it decides the process is gone or reused, so a
-// false return here has already cleaned up the stale file. A false return
-// also covers the case where the pid file now names a *different* pid (a
-// fresh daemon started in the meantime): forceStopSync must not touch that
-// process either, and must not remove its still-valid pid file.
+// FindConfirmedProcess resolved earlier in runSyncStop — never assumed to
+// still hold after a multi-second grace-period wait. It re-runs
+// daemon.FindConfirmedProcess against pidPath, which applies the same
+// start-time + process-name identity check used to resolve pid in the
+// first place, and fails SAFE: an unconfirmable identity
+// (daemon.ErrIdentityUnconfirmed — a transient read failure, not a
+// positive "gone" or "reused" result) refuses the escalation exactly like a
+// confirmed mismatch, rather than assuming "still ours" and sending a
+// signal to a process we can no longer verify.
 //
-// A package var, not a plain function, so tests can simulate "gone/reused"
-// deterministically (real PID reuse is not something a test can force) —
-// the daemon-shutdown-hang RCA's package-var-seam precedent
-// (syncStopGracePeriod et al.).
+// This function does NOT remove the pid file itself (unlike a bare
+// FindProcess call, whose side effect the plain-stop path used to lean on)
+// — see reapPIDFile, which every branch that stops signalling calls
+// separately via daemon.FindProcess directly, so a test stubbing this seam
+// to control signalling decisions can never also silently suppress file
+// cleanup.
+//
+// A package var, not a plain function, so tests can simulate
+// "gone/reused/unconfirmable" deterministically (real PID reuse is not
+// something a test can force) — the daemon-shutdown-hang RCA's
+// package-var-seam precedent (syncStopGracePeriod et al.).
 var verifyDaemonAlive = func(pidPath string, pid int) bool {
-	current, err := daemon.FindProcess(pidPath)
+	current, err := daemon.FindConfirmedProcess(pidPath)
 	if err != nil {
-		// Unable to determine identity — conservatively assume it is still
-		// the daemon rather than silently abandoning an in-progress forced
-		// stop.
-		return true
+		// Covers daemon.ErrIdentityUnconfirmed and any other read error:
+		// fail safe. Do NOT treat an unverifiable identity as "still the
+		// daemon, keep escalating" — that was the pre-fix behavior and is
+		// exactly backwards for a function gating a real signal.
+		return false
 	}
 	return current == pid
 }
 
+// reapPIDFile asks daemon.FindProcess to re-read pidPath and decide for
+// itself whether to remove it: FindProcess only ever deletes a pid file
+// when the pid it CURRENTLY names is confirmed dead or confirmed a
+// different (reused) process — never for a live, unconfirmable, or
+// confirmed-same process. Every branch below that has just finished
+// signalling (or found the target already gone) calls this INSTEAD OF
+// daemon.RemovePID directly, so a fresh daemon that claimed pidPath in the
+// race window since we last looked never has its still-valid file deleted
+// out from under it. Called directly (not through the verifyDaemonAlive
+// seam) so a test stubbing verifyDaemonAlive to control a signalling
+// decision can never also disable this cleanup.
+func reapPIDFile(pidPath string) {
+	_, _ = daemon.FindProcess(pidPath)
+}
+
 func runSyncStop(cfg *config.Config, force bool) error {
 	pidPath := pidFilePath(cfg)
-	pid, err := daemon.FindProcess(pidPath)
+	pid, err := daemon.FindConfirmedProcess(pidPath)
 	if err != nil {
+		if errors.Is(err, daemon.ErrIdentityUnconfirmed) {
+			return fmt.Errorf("cannot confirm PID %d is the watchtower daemon (its identity could not be verified); refusing to signal it — check manually, e.g. `ps -p %d`", pid, pid)
+		}
 		return fmt.Errorf("reading pid file: %w", err)
 	}
 	if pid == 0 {
@@ -218,7 +243,7 @@ func runSyncStop(cfg *config.Config, force bool) error {
 	fmt.Printf("Stopping daemon (PID %d)...\n", pid)
 	if err := signalStop(pid, syscall.SIGTERM); err != nil {
 		if err == errProcessGone {
-			daemon.RemovePID(pidPath)
+			reapPIDFile(pidPath)
 			fmt.Println("Daemon stopped.")
 			return nil
 		}
@@ -226,7 +251,13 @@ func runSyncStop(cfg *config.Config, force bool) error {
 	}
 
 	if waitForProcessExit(pid, syncStopGracePeriod) {
-		daemon.RemovePID(pidPath)
+		// pid is confirmed gone. reapPIDFile re-reads the file and removes
+		// it only if FindProcess itself decides to — which leaves a
+		// *different*, live, correctly-identified daemon's pid file
+		// untouched, in case one started in the grace-period window we
+		// just waited out. Calling RemovePID directly here would delete
+		// such a fresh daemon's still-valid state.
+		reapPIDFile(pidPath)
 		fmt.Println("Daemon stopped.")
 		return nil
 	}
@@ -246,7 +277,7 @@ func runSyncStop(cfg *config.Config, force bool) error {
 // requested and a plain SIGTERM already timed out.
 //
 // pid was resolved once, up to syncStopGracePeriod (10s) ago, by the
-// FindProcess call in runSyncStop. Each grace-period wait below is another
+// FindConfirmedProcess call in runSyncStop. Each grace-period wait below is another
 // window in which the daemon can exit and the OS can hand pid to an
 // unrelated process — so immediately before EVERY signal after the first
 // (the second SIGTERM, and SIGKILL), verifyDaemonAlive re-confirms pid is
@@ -254,32 +285,32 @@ func runSyncStop(cfg *config.Config, force bool) error {
 // re-check risks SIGKILLing a process we never meant to touch.
 func forceStopSync(pidPath string, pid int) error {
 	if !verifyDaemonAlive(pidPath, pid) {
-		fmt.Printf("Daemon (PID %d) already exited; nothing more to stop.\n", pid)
+		fmt.Printf("Daemon (PID %d) can no longer be confirmed as still running; nothing more to signal.\n", pid)
 		return nil
 	}
 	fmt.Printf("Daemon (PID %d) still running; sending a second SIGTERM...\n", pid)
 	if err := signalStop(pid, syscall.SIGTERM); err != nil {
 		if err == errProcessGone {
-			daemon.RemovePID(pidPath)
+			reapPIDFile(pidPath)
 			fmt.Printf("Daemon (PID %d) stopped (SIGTERM).\n", pid)
 			return nil
 		}
 		return fmt.Errorf("sending second SIGTERM: %w", err)
 	}
 	if waitForProcessExit(pid, syncStopForceGracePeriod) {
-		daemon.RemovePID(pidPath)
+		reapPIDFile(pidPath)
 		fmt.Printf("Daemon (PID %d) stopped (SIGTERM).\n", pid)
 		return nil
 	}
 
 	if !verifyDaemonAlive(pidPath, pid) {
-		fmt.Printf("Daemon (PID %d) already exited; nothing more to stop.\n", pid)
+		fmt.Printf("Daemon (PID %d) can no longer be confirmed as still running; nothing more to signal.\n", pid)
 		return nil
 	}
 	fmt.Printf("Daemon (PID %d) still running; sending SIGKILL...\n", pid)
 	if err := signalStop(pid, syscall.SIGKILL); err != nil {
 		if err == errProcessGone {
-			daemon.RemovePID(pidPath)
+			reapPIDFile(pidPath)
 			fmt.Printf("Daemon (PID %d) stopped (SIGKILL).\n", pid)
 			return nil
 		}
@@ -288,7 +319,7 @@ func forceStopSync(pidPath string, pid int) error {
 	if !waitForProcessExit(pid, syncStopForceGracePeriod) {
 		return fmt.Errorf("daemon (PID %d) did not exit even after SIGKILL", pid)
 	}
-	daemon.RemovePID(pidPath)
+	reapPIDFile(pidPath)
 	fmt.Printf("Daemon (PID %d) stopped (SIGKILL).\n", pid)
 	return nil
 }
@@ -327,8 +358,11 @@ func waitForProcessExit(pid int, grace time.Duration) bool {
 // second syncer racing the daemon is exactly what that lock exists to prevent.
 func runSyncNow(cfg *config.Config) error {
 	pidPath := pidFilePath(cfg)
-	pid, err := daemon.FindProcess(pidPath)
+	pid, err := daemon.FindConfirmedProcess(pidPath)
 	if err != nil {
+		if errors.Is(err, daemon.ErrIdentityUnconfirmed) {
+			return fmt.Errorf("cannot confirm PID %d is the watchtower daemon (its identity could not be verified); refusing to signal it — check manually, e.g. `ps -p %d`", pid, pid)
+		}
 		return fmt.Errorf("reading pid file: %w", err)
 	}
 	if pid == 0 {
@@ -953,7 +987,11 @@ func wireExternalSync(d *daemon.Daemon, cfg *config.Config, database *db.DB, acc
 	engine := extsync.New(database, extSyncOptions(cfg, subLogger(logger, "[ext-sync] "), extSyncCycleBudget))
 	for _, acct := range accounts {
 		if client := clients[acct.ID]; client != nil {
-			engine.SetFetcher(acct.ID, newConfluenceFetcher(client, acct.SiteURL))
+			fetcher := newConfluenceFetcher(client, acct.SiteURL)
+			if lg, ok := fetcher.(interface{ SetLogger(*log.Logger) }); ok {
+				lg.SetLogger(subLogger(logger, "[confluence] "))
+			}
+			engine.SetFetcher(acct.ID, fetcher)
 		}
 	}
 	d.SetExternalSync(engine)

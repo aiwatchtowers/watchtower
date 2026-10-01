@@ -148,7 +148,7 @@ package struct CalendarEvent: FetchableRecord, Identifiable, Equatable {
     ///
     /// The organizer joins only a NON-EMPTY (human) attendee list: an empty
     /// result is the "no identities → treat as ad-hoc" sentinel downstream
-    /// (`VoicePrintMatcher.scoped` falls back to the global pool on []),
+    /// (voice matching treats [] as an ad-hoc recording),
     /// and a zero-guest self-created event (focus block), a room-only
     /// booking, or an undecodable attendees JSON must keep that fallback —
     /// an owner-only set would silently narrow the pool to the owner and

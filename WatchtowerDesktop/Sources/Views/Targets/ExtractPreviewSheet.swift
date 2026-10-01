@@ -36,6 +36,7 @@ struct ExtractPreviewSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var items: [ProposedTarget]
+    @State private var errorMessage: String?
     let onCreateSelected: ([ProposedTarget]) -> Void
 
     // Footer info (set by US-002 extractor caller)
@@ -137,6 +138,13 @@ struct ExtractPreviewSheet: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal)
             }
+            if let errorMessage {
+                Text(errorMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal)
+            }
             HStack {
                 Text("\(selectedItems.count) of \(items.count) selected")
                     .font(.caption)
@@ -156,48 +164,53 @@ struct ExtractPreviewSheet: View {
     // MARK: - Create
 
     private func createSelected() {
-        guard let db = appState.databaseManager else { return }
+        guard let db = appState.databaseManager else {
+            errorMessage = "Database not available"
+            return
+        }
         let toCreate = selectedItems
         do {
             try db.dbPool.write { dbConn in
                 for item in toCreate {
-                    let today = dateFormatter.string(from: Date())
-                    let start = item.periodStart.isEmpty ? today : item.periodStart
-                    let end = item.periodEnd.isEmpty ? today : item.periodEnd
-                    let subItemsJSON = Self.encodeSubItems(item.subItems)
-                    let newID = try TargetQueries.create(
-                        dbConn,
-                        text: item.text,
-                        intent: item.intent,
-                        level: item.level,
-                        customLabel: item.customLabel,
-                        periodStart: start,
-                        periodEnd: end,
-                        parentId: item.parentId,
-                        priority: item.priority,
-                        subItems: subItemsJSON,
-                        sourceType: "extract",
-                        aiLevelConfidence: item.levelConfidence
-                    )
-                    for link in item.secondaryLinks {
-                        if link.targetId != nil || !link.externalRef.isEmpty {
-                            try dbConn.execute(
-                                sql: """
-                                    INSERT OR IGNORE INTO target_links
-                                        (source_target_id, target_target_id, external_ref, relation, created_by)
-                                    VALUES (?, ?, ?, ?, 'ai')
-                                    """,
-                                arguments: [newID, link.targetId, link.externalRef, link.relation]
-                            )
+                    do {
+                        let today = dateFormatter.string(from: Date())
+                        let start = item.periodStart.isEmpty ? today : item.periodStart
+                        let end = item.periodEnd.isEmpty ? today : item.periodEnd
+                        let subItemsJSON = Self.encodeSubItems(item.subItems)
+                        let newID = try TargetQueries.create(
+                            dbConn,
+                            text: item.text,
+                            intent: item.intent,
+                            level: item.level,
+                            customLabel: item.customLabel,
+                            periodStart: start,
+                            periodEnd: end,
+                            parentId: item.parentId,
+                            priority: item.priority,
+                            subItems: subItemsJSON,
+                            sourceType: "extract",
+                            aiLevelConfidence: item.levelConfidence
+                        )
+                        for link in item.secondaryLinks {
+                            if link.targetId != nil || !link.externalRef.isEmpty {
+                                try TargetQueries.createLink(
+                                    dbConn, sourceID: newID, targetID: link.targetId,
+                                    externalRef: link.externalRef, relation: link.relation, createdBy: "ai"
+                                )
+                            }
                         }
+                    } catch {
+                        throw ExtractCreateError(itemText: item.text, underlying: error)
                     }
                 }
             }
+            onCreateSelected(toCreate)
+            dismiss()
         } catch {
-            // Surface error if needed — for now proceed to dismiss
+            // The write rolled back as a whole, so nothing was created: keep
+            // the sheet open with the reason (e.g. a parent deleted meanwhile).
+            errorMessage = error.localizedDescription
         }
-        onCreateSelected(toCreate)
-        dismiss()
     }
 
     // Serialize `[TargetSubItem]` into the JSON shape persisted in targets.sub_items.
@@ -209,6 +222,18 @@ struct ExtractPreviewSheet: View {
             return json
         }
         return "[]"
+    }
+}
+
+/// Names the proposed item a failed batch stopped at: its parent or a link
+/// target may have been deleted since extraction, and the rolled-back batch
+/// created nothing.
+private struct ExtractCreateError: LocalizedError {
+    let itemText: String
+    let underlying: Error
+
+    var errorDescription: String? {
+        "\"\(itemText)\": \(underlying.localizedDescription). Nothing was created."
     }
 }
 

@@ -53,11 +53,13 @@ The wake and trigger tests start `d.Run` with a 500 ms context, send the signal 
 
 The loop tests drive `run` directly, so the public `ai.Provider` surface that `cmd/generator.go:143` actually builds (default base URL, trailing-slash trim, streaming channel close order, error delivery on `errCh`) is never executed. `NewClient` uses `&http.Client{}` with no `Timeout`, unlike every other HTTP client in the repo (30 s is the house norm), so a hung Ollama/LM Studio server stalls the chat until the caller cancels ctx. Suggested fix: one `Query` test against an httptest server that asserts the chunk order and channel closure, and a bounded client or ResponseHeaderTimeout.
 
-## Inbox watermark "never moves backwards" clamp is never exercised
+## Inbox watermark "never moves backwards" clamp is never exercised (fixed in fix/bl-inbox-triggers)
 
 - type: chore · confidence: high · tags: [test-coverage, watermark, inbox, INBOX-09]
 - where: internal/inbox/pipeline.go:319-322
 
 In `advanceWatermark`, the block `if ts < lastTS { ts = lastTS }` has a count of 0 across all suites, and so does its error-log branch. Removing the clamp would let a clock step backwards (NTP correction, VM resume) rewind `inbox_last_processed_ts` and re-detect an already-processed window. Dedup would mostly absorb that, but the code comment promises the invariant and no test backs it. Suggested fix: a two-line unit test that calls `advanceWatermark(ts=older, lastTS=newer)` and asserts the stored value.
+
+Resolution: `TestAdvanceWatermark_NeverMovesBackwards` (internal/inbox/pipeline_extra_test.go) calls `advanceWatermark` with an older ts than `lastTS` and asserts the stored watermark stays at `lastTS`, then advances it with a newer ts. Watermark semantics are unchanged.
 
 > Original note: «а давай проведем ревью нашего репоза на ветке мейн с целью наполнения беклога. Наши треки - покрытие тестами, баги существующие и потенциальные, архитектурные проблемы, анализ использования и бессмысленный функционал»

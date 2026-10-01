@@ -28,7 +28,7 @@ final class SidebarSectionTests: XCTestCase {
     }
 
     func testRootItems() {
-        XCTAssertEqual(SidebarDestination.rootItems, [.targets, .tracks])
+        XCTAssertEqual(SidebarDestination.rootItems, [.targets, .tracks, .projects])
     }
 
     func testChatIsTrailingMainItemNotTool() {
@@ -49,9 +49,57 @@ final class SidebarSectionTests: XCTestCase {
     }
 
     func testCollapsedByDefault() {
-        for section in SidebarSection.ordered {
-            XCTAssertTrue(section.collapsedByDefault, "\(section) should start collapsed")
-        }
+        XCTAssertFalse(SidebarSection.today.collapsedByDefault, "FOCUS is an everyday section and should start expanded")
+        XCTAssertTrue(SidebarSection.delivery.collapsedByDefault, "EXECUTION should start collapsed")
+        XCTAssertTrue(SidebarSection.analytics.collapsedByDefault, "INSIGHTS should start collapsed")
+    }
+
+    func testContainingReturnsTheOwningSection() {
+        XCTAssertEqual(SidebarSection.containing(.digests), .analytics)
+        XCTAssertEqual(SidebarSection.containing(.releases), .delivery)
+        XCTAssertEqual(SidebarSection.containing(.inbox), .today)
+    }
+
+    func testContainingIsNilForRootAndToolItems() {
+        XCTAssertNil(SidebarSection.containing(.targets))
+        XCTAssertNil(SidebarSection.containing(.chat))
+        XCTAssertNil(SidebarSection.containing(.search))
+    }
+
+    // MARK: - Auto-expand on navigation
+
+    func testExpandingSectionExpandsACollapsedSection() {
+        let updated = SidebarView.expandingSection(for: .digests, in: [SidebarSection.analytics.id: true])
+        XCTAssertEqual(updated?[SidebarSection.analytics.id], false)
+    }
+
+    func testExpandingSectionNilWhenAlreadyExpanded() {
+        XCTAssertNil(SidebarView.expandingSection(for: .digests, in: [SidebarSection.analytics.id: false]))
+    }
+
+    func testExpandingSectionNilWhenDestinationHasNoSection() {
+        XCTAssertNil(SidebarView.expandingSection(for: .targets, in: [SidebarSection.analytics.id: true]))
+    }
+
+    func testExpandingSectionNilWhenMapHasNoEntryForTheSection() {
+        // In practice `loadCollapsedSections()` always fills every ordered
+        // section's entry, so this shape shouldn't occur from real UserDefaults
+        // state — this pins the pure function's own defensive contract for an
+        // incomplete map (e.g. a future caller building one by hand): a
+        // missing entry must not be treated as "collapsed" and trigger a
+        // spurious expand, only an explicit `true` does.
+        XCTAssertNil(SidebarView.expandingSection(for: .digests, in: [:]))
+    }
+
+    func testExpandingSectionHandlesInitialSelectionInsideACollapsedSection() {
+        // The same pure function backs both the sidebar's `onAppear` and its
+        // `onChange(of: selection)` — the initial `selection` can already sit
+        // inside a collapsed section (window reopened from the tray via a
+        // notification route, or the sidebar toggled off and back on with a
+        // stale selection), so this must expand exactly like a live
+        // navigation does.
+        let updated = SidebarView.expandingSection(for: .memory, in: [SidebarSection.analytics.id: true])
+        XCTAssertEqual(updated?[SidebarSection.analytics.id], false)
     }
 
     // MARK: - Feature-gated visibility

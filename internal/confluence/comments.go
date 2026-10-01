@@ -28,7 +28,8 @@ var inlineResolutionStatuses = []string{"open", "reopened", "resolved", "danglin
 // inline comments with their replies at any depth, each as one section.
 // CommentKind is "footer" or "inline" (a reply keeps its thread's); a reply
 // to an inline comment inherits the thread's AnchorText and Resolved when it
-// carries none of its own. Ref.Version is the comment's version number, the
+// carries none of its own, and ReplyTo names the comment a reply answers
+// ("" for a top-level comment). Ref.Version is the comment's version number, the
 // same number Changed(KindComment) reports. A parent search no longer finds
 // (gone, or not a page/blog post) has no comments: nil, nil.
 // https://developer.atlassian.com/cloud/confluence/rest/v2/api-group-comment/
@@ -98,7 +99,7 @@ func (f *Fetcher) commentThread(ctx context.Context, seen map[string]bool, loc, 
 		return nil, fmt.Errorf("confluence: comment %s on %s listed twice (reply cycle?)", c.ID, pageID)
 	}
 	seen[c.ID] = true
-	it, err := commentItem(loc, pageID, c, parent)
+	it, err := f.commentItem(loc, pageID, c, parent)
 	if err != nil {
 		return nil, err
 	}
@@ -151,12 +152,15 @@ func (f *Fetcher) listComments(ctx context.Context, path string, q url.Values) (
 
 // commentItem maps one comment; parent is the comment it replies to (nil
 // for a top-level comment).
-func commentItem(loc, pageID string, c *v2Comment, parent *extsync.Item) (extsync.Item, error) {
+func (f *Fetcher) commentItem(loc, pageID string, c *v2Comment, parent *extsync.Item) (extsync.Item, error) {
 	modified, err := parseTime(c.Version.CreatedAt)
 	if err != nil {
 		return extsync.Item{}, err
 	}
-	sections, users, _ := StorageToSections(c.Body.Storage.Value, maxBodyRunes)
+	sections, users, _, parseErr := StorageToSections(c.Body.Storage.Value, maxBodyRunes)
+	if parseErr != nil {
+		f.logf("confluence: comment %s on %s: storage body fell back to a flat text strip: %v", c.ID, pageID, parseErr)
+	}
 	parts := make([]string, 0, 2*len(sections))
 	for _, s := range sections {
 		parts = append(parts, s.Heading, s.Text)
@@ -175,6 +179,7 @@ func commentItem(loc, pageID string, c *v2Comment, parent *extsync.Item) (extsyn
 		MentionedUserIDs: users,
 	}
 	if parent != nil {
+		it.ReplyTo = parent.Ref.ExtID
 		if it.AnchorText == "" {
 			it.AnchorText = parent.AnchorText
 		}

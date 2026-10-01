@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -102,8 +103,18 @@ func openActionsCmd() (*config.Config, *db.DB, *tools.Registry, error) {
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	if err := database.SetBusyTimeout(ownerWriteBusyTimeout); err != nil {
+		database.Close()
+		return nil, nil, nil, err
+	}
 	return cfg, database, buildToolRegistry(cfg, database), nil
 }
+
+// ownerWriteBusyTimeout is how long an owner-facing write — an Approve,
+// Reject or Retry click, a chat proposal being recorded — waits out another
+// process's write lock (the daemon's) before failing with SQLITE_BUSY,
+// instead of Open's 5 s (backlog 2026-09-30, approving a chat proposal).
+const ownerWriteBusyTimeout = 30 * time.Second
 
 func writeJSON(w io.Writer, v any) error {
 	enc := json.NewEncoder(w)

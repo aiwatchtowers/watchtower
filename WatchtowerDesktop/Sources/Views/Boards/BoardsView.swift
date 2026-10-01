@@ -3,6 +3,7 @@ import WatchtowerCore
 
 struct BoardsView: View {
     @Environment(AppState.self) private var appState
+    @Environment(\.openSettings) private var openSettings
     @State private var jiraConnected = JiraQueries.isConnected()
     @State private var activeDetail: BoardsNavItem?
 
@@ -136,10 +137,9 @@ struct BoardsView: View {
                 .multilineTextAlignment(.center)
 
             Button("Open Settings") {
-                NSApp.sendAction(
-                    Selector(("showSettingsWindow:")),
-                    to: nil, from: nil
-                )
+                // `showSettingsWindow:` via sendAction is a no-op on macOS 14+.
+                appState.settingsTab = .connections
+                openSettings()
             }
             .buttonStyle(.borderedProminent)
 

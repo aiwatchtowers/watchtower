@@ -252,6 +252,14 @@ func (db *DB) UpsertDayPlan(p *DayPlan) (int64, error) {
 	return id, nil
 }
 
+// DeleteDayPlan removes a day plan; its items go with it (ON DELETE CASCADE).
+func (db *DB) DeleteDayPlan(planID int64) error {
+	if _, err := db.Exec(`DELETE FROM day_plans WHERE id = ?`, planID); err != nil {
+		return fmt.Errorf("deleting day_plan %d: %w", planID, err)
+	}
+	return nil
+}
+
 // ── DayPlan reads ─────────────────────────────────────────────────────────────
 
 // GetDayPlan returns the day plan for (userID, date), or (nil, nil) if not found.

@@ -231,45 +231,4 @@ package struct TranscriptSaveService {
         let data = try await runner.run(args: args)
         return try JSONDecoder().decode(TranscriptFollowupResult.self, from: data)
     }
-    /// `meeting-prep transcript speaker-guess <id>` — LLM content hints for
-    /// the transcript's unnamed "Speaker N" clusters. Nothing is persisted:
-    /// the suggestions render as confirm chips and are only applied through
-    /// the manual-rename mechanics.
-    package func speakerGuess(transcriptID: Int64) async throws -> SpeakerGuessResult {
-        let args = ["meeting-prep", "transcript", "speaker-guess", String(transcriptID)]
-        let data = try await runner.run(args: args)
-        return try JSONDecoder().decode(SpeakerGuessResult.self, from: data)
-    }
-}
-
-// MARK: - SpeakerGuessResult
-
-/// Decoded stdout envelope of `watchtower meeting-prep transcript
-/// speaker-guess <id>`. The CLI exits non-zero on any failure, so decoding
-/// only happens on success.
-package struct SpeakerGuessResult: Decodable, Equatable {
-    package let transcriptID: Int64
-    package let suggestions: [SpeakerSuggestion]
-
-    enum CodingKeys: String, CodingKey {
-        case transcriptID = "transcript_id"
-        case suggestions
-    }
-}
-
-/// One "Speaker N looks like <candidate>" hint (never auto-applied).
-package struct SpeakerSuggestion: Decodable, Equatable, Identifiable {
-    package let speaker: String
-    package let candidate: String
-    package let confidence: Double
-    package let evidence: String
-
-    package var id: String { speaker }
-
-    package init(speaker: String, candidate: String, confidence: Double, evidence: String) {
-        self.speaker = speaker
-        self.candidate = candidate
-        self.confidence = confidence
-        self.evidence = evidence
-    }
 }

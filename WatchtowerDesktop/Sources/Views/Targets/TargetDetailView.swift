@@ -326,6 +326,7 @@ struct TargetDetailView: View {
                     .padding(.horizontal, 8)
                     .padding(.vertical, 6)
             }
+            .clearsRecordingIndicator()
         case .watch:
             scrollableTab { watchTab }
         case .links:
@@ -828,8 +829,9 @@ struct TargetDetailView: View {
                     .font(.callout)
                     .textFieldStyle(.plain)
                     .onSubmit {
-                        viewModel.addSubItem(target, text: newSubItemText)
-                        newSubItemText = ""
+                        if viewModel.addSubItem(target, text: newSubItemText) {
+                            newSubItemText = ""
+                        }
                     }
             }
             .padding(.top, 2)
@@ -1329,8 +1331,9 @@ struct TargetDetailView: View {
                     .font(.callout)
                     .textFieldStyle(.plain)
                     .onSubmit {
-                        viewModel.addNote(target, text: newNoteText)
-                        newNoteText = ""
+                        if viewModel.addNote(target, text: newNoteText) {
+                            newNoteText = ""
+                        }
                     }
             }
         }
@@ -1406,8 +1409,10 @@ struct TargetDetailView: View {
         // typed text so it never looks like a silent success.
         let tag = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !tag.isEmpty, !target.decodedTags.contains(tag) else { return }
-        viewModel.addTag(target, tag: tag)
-        newTagText = ""
+        // A failed write keeps the draft too (`errorMessage` says why).
+        if viewModel.addTag(target, tag: tag) {
+            newTagText = ""
+        }
     }
 
     private func aboutRow(_ label: String, _ value: String) -> some View {

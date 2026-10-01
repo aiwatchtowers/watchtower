@@ -92,9 +92,9 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
     /// action-bearing branch, before dispatch — `handleMeetingReminderAction` takes no
     /// `forwarded` flag of its own — so widening the wire payload cannot re-open it.
     ///
-    /// The keys the FORWARDED branches read (`type`, `digestId`, `ideaId`) must stay in
-    /// sync with `NotificationForwarding.routedKeys`, the allowlist of what crosses the
-    /// boundary.
+    /// The keys the FORWARDED branches read (`type`, `digestId`, `ideaId`, `transcriptID`,
+    /// `projectId`, `pane`, `subjectId`) must stay in sync with
+    /// `NotificationForwarding.routedKeys`, the allowlist of what crosses the boundary.
     /// The self-received branches legitimately read more (`eventId`, `conferenceUrl`):
     /// those keys are absent by design from the forwarded payload and must stay so.
     /// `openURL` is an injectable seam threaded through to the meeting handler (the
@@ -116,12 +116,14 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
             } else {
                 appState?.selectedDestination = .digests
             }
-        case "track", "track_update":
-            appState?.selectedDestination = .tracks
-        case "task_overdue", "target_extract":
-            appState?.selectedDestination = .targets
-        case "daily_summary":
-            appState?.selectedDestination = .digests
+        case "track", "track_update", "task_overdue", "target_extract", "daily_summary", "update":
+            routeNavigation(userInfo["type"] as? String, appState: appState)
+        case "voice_label":
+            if let id = userInfo["transcriptID"] as? Int64 ?? (userInfo["transcriptID"] as? NSNumber)?.int64Value {
+                await appState?.voiceRegistryCenter.open(.queue(transcriptID: id))
+            }
+        case "project":
+            routeProject(userInfo, appState: appState)
         case "meeting_reminder":
             if forwarded {
                 // Say it out loud rather than degrading in silence — the same
@@ -158,6 +160,53 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
         default:
             break
         }
+    }
+
+    /// Pushes whose click only moves the UI — no `forwarded` gate needed.
+    /// Split out of `route` to keep its complexity in bounds.
+    @MainActor
+    static func routeNavigation(_ type: String?, appState: AppState?) {
+        switch type {
+        case "track", "track_update":
+            appState?.selectedDestination = .tracks
+        case "task_overdue", "target_extract":
+            appState?.selectedDestination = .targets
+        case "daily_summary":
+            appState?.selectedDestination = .digests
+        case "update":
+            // An update push opens Settings → System, where it installs.
+            appState?.settingsTab = .system
+            if let openSettings = appState?.openSettingsWindow {
+                openSettings()
+            } else {
+                NSLog("NotificationDelegate: update push clicked before the Settings opener was wired")
+            }
+        default:
+            break
+        }
+    }
+
+    /// The project deep link of a push (`NotificationService.sendProjectNotice`).
+    /// Ids arrive as Int64 when self-received and restored by
+    /// `ForwardedNotificationResponse.userInfo` when forwarded; an NSNumber is
+    /// accepted too (the `voice_label` precedent). Pure navigation either way,
+    /// so it needs no `forwarded` gate of its own.
+    @MainActor
+    static func routeProject(_ userInfo: [AnyHashable: Any], appState: AppState?) {
+        if let route = projectRoute(userInfo) {
+            appState?.navigateToProject(route)
+        } else {
+            appState?.selectedDestination = .projects
+        }
+    }
+
+    static func projectRoute(_ userInfo: [AnyHashable: Any]) -> ProjectRoute? {
+        func int64(_ key: String) -> Int64? {
+            userInfo[key] as? Int64 ?? (userInfo[key] as? NSNumber)?.int64Value
+        }
+        guard let projectID = int64("projectId") else { return nil }
+        let pane = (userInfo["pane"] as? String).flatMap(ProjectPane.init(rawValue:)) ?? .board
+        return ProjectRoute(projectID: projectID, pane: pane, subjectID: int64("subjectId"))
     }
 
     /// Pre-meeting push actions: Join / Join + Record route through the shared
@@ -223,10 +272,14 @@ struct WatchtowerApp: App {
     /// never mounts one), and a singleton is what makes "the SwiftUI-managed
     /// state" and "the state the delegate initialized" provably identical.
     @State private var appState = AppState.shared
+    /// Bottom space the recorder pills need, handed to every composer so the
+    /// pills never cover what the owner is typing.
+    @State private var recordingIndicatorInset: CGFloat = 0
     /// Read here — not inside `TrayMenuView`, which has its own copy for the
     /// tray button — so the global hotkey's plain C callback (no SwiftUI
     /// environment of its own) has something to call through `AppState`.
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
     private let notificationDelegate: NotificationDelegate
     private let isDuplicate: Bool
 
@@ -279,9 +332,10 @@ struct WatchtowerApp: App {
 
     private var rootContent: some View {
         NavigationRoot()
+            .environment(\.recordingIndicatorInset, recordingIndicatorInset)
             .frame(minWidth: 800, minHeight: 600)
             .overlay(alignment: .bottomTrailing) {
-                RecordingIndicatorView()
+                RecordingIndicatorView { recordingIndicatorInset = $0 }
             }
             .overlay(alignment: .bottomTrailing) {
                 ExtractIndicatorView()
@@ -310,6 +364,16 @@ struct WatchtowerApp: App {
                 NotificationDelegate.sharedAppState = appState
                 appState.initialize()
                 appState.openQuickCapture = { openWindow(id: QuickCaptureView.sceneID) }
+                appState.openVoicesWindow = { openWindow(id: VoicesWindowView.sceneID) }
+                appState.openSettingsWindow = {
+                    // Accessory (tray-only) mode needs a menu bar for Settings.
+                    ActivationPolicyDecision.becomeRegularAndActivate()
+                    openSettings()
+                }
+                appState.voiceRegistryCenter.openWindow = {
+                    ActivationPolicyDecision.becomeRegularAndActivate()
+                    appState.openVoicesWindow?()
+                }
             }
             .onOpenURL { url in
                 // Handle watchtower-auth:// callback — just bring app to front
@@ -386,6 +450,12 @@ struct WatchtowerApp: App {
         .windowResizability(.contentSize)
         .defaultPosition(.topTrailing)
 
+        Window("Voices", id: VoicesWindowView.sceneID) {
+            VoicesWindowView()
+                .environment(appState)
+        }
+        .defaultSize(width: 640, height: 720)
+
         Settings {
             SettingsView()
                 .environment(appState)
@@ -407,6 +477,15 @@ struct WatchtowerApp: App {
                 // with rootContent's own assignment.
                 .onAppear {
                     appState.openQuickCapture = { openWindow(id: QuickCaptureView.sceneID) }
+                    appState.openVoicesWindow = { openWindow(id: VoicesWindowView.sceneID) }
+                    appState.openSettingsWindow = {
+                        ActivationPolicyDecision.becomeRegularAndActivate()
+                        openSettings()
+                    }
+                    appState.voiceRegistryCenter.openWindow = {
+                        ActivationPolicyDecision.becomeRegularAndActivate()
+                        appState.openVoicesWindow?()
+                    }
                 }
         }
     }

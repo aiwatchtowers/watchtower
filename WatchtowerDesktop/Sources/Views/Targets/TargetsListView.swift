@@ -10,33 +10,38 @@ struct TargetsListView: View {
     @State private var pendingDeleteTarget: Target?
 
     var body: some View {
-        HStack(spacing: 0) {
-            if let vm = viewModel {
-                // Read the observed arrays at the top of `body` so SwiftUI registers
-                // the dependency for the whole view — not just inside `listPanel`'s
-                // helpers. This guarantees both the list and the detail pane below
-                // re-render when an in-pane edit (e.g. changing a target's level)
-                // calls `load()`, instead of waiting for an unrelated refresh.
-                let loaded = vm.todayTargets + vm.allTargets
+        VStack(spacing: 0) {
+            if let message = viewModel?.errorMessage {
+                errorBanner(message)
+            }
+            HStack(spacing: 0) {
+                if let vm = viewModel {
+                    // Read the observed arrays at the top of `body` so SwiftUI registers
+                    // the dependency for the whole view — not just inside `listPanel`'s
+                    // helpers. This guarantees both the list and the detail pane below
+                    // re-render when an in-pane edit (e.g. changing a target's level)
+                    // calls `load()`, instead of waiting for an unrelated refresh.
+                    let loaded = vm.todayTargets + vm.allTargets
 
-                listPanel(vm)
+                    listPanel(vm)
 
-                Divider()
+                    Divider()
 
-                if let id = selectedItemID,
-                   let item = loaded.first(where: { $0.id == id }) ?? vm.itemByID(id) {
-                    TargetDetailView(target: item, viewModel: vm) {
-                        selectedItemID = nil
+                    if let id = selectedItemID,
+                       let item = loaded.first(where: { $0.id == id }) ?? vm.itemByID(id) {
+                        TargetDetailView(target: item, viewModel: vm) {
+                            selectedItemID = nil
+                        }
+                        .id(id)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
+                    } else {
+                        emptyDetailPlaceholder
                     }
-                    .id(id)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
                 } else {
-                    emptyDetailPlaceholder
+                    ProgressView("Loading...")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-            } else {
-                ProgressView("Loading...")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -102,6 +107,23 @@ struct TargetsListView: View {
         } message: { _ in
             Text("This action cannot be undone.")
         }
+    }
+
+    /// Write failures (a target deleted elsewhere, a DB error) land in
+    /// `vm.errorMessage`; without this the owner sees an edit that silently
+    /// did nothing. Same shape as IdeasView's banner.
+    private func errorBanner(_ message: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            Text(message)
+                .font(.callout)
+                .textSelection(.enabled)
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.orange.opacity(0.12))
     }
 
     private func initViewModel() {

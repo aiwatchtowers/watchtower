@@ -20,6 +20,7 @@ func jiraLoginFlagsCmd(t *testing.T) *cobra.Command {
 	cmd.Flags().Bool("no-open", false, "")
 	cmd.Flags().Bool("app-return", false, "")
 	cmd.Flags().Bool("with-confluence", false, "")
+	cmd.Flags().Bool("with-confluence-write", false, "")
 	return cmd
 }
 
@@ -58,4 +59,26 @@ func TestJiraLoginOptionsFromFlags_WithConfluenceFlagReaches(t *testing.T) {
 func TestJiraCmds_HaveWithConfluenceFlag(t *testing.T) {
 	assert.NotNil(t, jiraLoginCmd.Flags().Lookup("with-confluence"))
 	assert.NotNil(t, jiraAddCmd.Flags().Lookup("with-confluence"))
+}
+
+// TestJiraCmds_HaveWithConfluenceWriteFlag is TestJiraCmds_HaveWithConfluenceFlag
+// for --with-confluence-write.
+func TestJiraCmds_HaveWithConfluenceWriteFlag(t *testing.T) {
+	assert.NotNil(t, jiraLoginCmd.Flags().Lookup("with-confluence-write"))
+	assert.NotNil(t, jiraAddCmd.Flags().Lookup("with-confluence-write"))
+}
+
+// TestJiraLoginOptionsFromFlags_WithConfluenceWriteImpliesConfluence pins
+// the "implies --with-confluence" rule at the flag-parsing boundary: setting
+// only --with-confluence-write (never --with-confluence itself) must still
+// produce LoginOptions with both WithConfluence and WithConfluenceWrite set
+// — jiraReloginOptions decides whether to keep read scopes by checking
+// opts.WithConfluence alone, so the implication has to land here, not just
+// inside jira.Login's scope string building.
+func TestJiraLoginOptionsFromFlags_WithConfluenceWriteImpliesConfluence(t *testing.T) {
+	cmd := jiraLoginFlagsCmd(t)
+	require.NoError(t, cmd.Flags().Set("with-confluence-write", "true"))
+
+	opts := jiraLoginOptionsFromFlags(cmd)
+	assert.Equal(t, jira.LoginOptions{WithConfluence: true, WithConfluenceWrite: true}, opts)
 }

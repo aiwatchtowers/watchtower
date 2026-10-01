@@ -1,6 +1,9 @@
 package db
 
-import "testing"
+import (
+	"database/sql"
+	"testing"
+)
 
 // OpenTestDB opens an in-memory database for use by tests in other packages
 // (e.g. internal/catchup). It registers cleanup on the test. The unexported
@@ -31,4 +34,20 @@ func SeedTestJiraAccount(t *testing.T, d *DB) int64 {
 		t.Fatalf("seeding test jira account: %v", err)
 	}
 	return id
+}
+
+// SeedTestProjectTarget creates one target on project projectID's board (the
+// board defaults, via CreateProjectTargetsTx) and returns its id.
+func SeedTestProjectTarget(t *testing.T, d *DB, projectID int64, parent sql.NullInt64, title string) int64 {
+	t.Helper()
+	var ids []int64
+	err := d.WithTx(func(tx *sql.Tx) error {
+		var err error
+		ids, err = d.CreateProjectTargetsTx(tx, projectID, []ProjectTargetInput{{Title: title, ParentID: parent}})
+		return err
+	})
+	if err != nil {
+		t.Fatalf("seeding project target %q: %v", title, err)
+	}
+	return ids[0]
 }

@@ -339,6 +339,10 @@ package final class BackgroundTaskManager {
         }
 
         runningProcesses[kind] = process
+        // SB3: drain stderr from launch, concurrently with the stdout stream —
+        // reading it only after exit lets a chatty child (>64 KiB of stderr)
+        // block on the write while we wait for its stdout EOF.
+        let stderrRead = ProcessPipes.drain(stderrPipe)
         let decoder = JSONDecoder()
 
         // Stream JSON lines from stdout
@@ -367,11 +371,7 @@ package final class BackgroundTaskManager {
 
         _ = await readTask.value
 
-        // Read stderr off main actor to avoid blocking UI
-        let stderrText: String = await Task.detached {
-            let data = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-            return String(data: data, encoding: .utf8) ?? ""
-        }.value
+        let stderrText = String(data: await stderrRead.value, encoding: .utf8) ?? ""
 
         runningProcesses.removeValue(forKey: kind)
 

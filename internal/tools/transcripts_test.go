@@ -114,7 +114,7 @@ func TestListTranscripts_QueryResolvesEventTitle(t *testing.T) {
 
 func TestListTranscripts_BadDateErrors(t *testing.T) {
 	d, _ := seedTranscriptsDB(t)
-	_, err := transcriptsRegistry(t, d).CallRead(context.Background(), "list_transcripts", json.RawMessage(`{"from":"July"}`))
+	_, err := transcriptsRegistry(t, d).CallRead(context.Background(), "list_transcripts", json.RawMessage(`{"from":"July"}`), Binding{})
 	var verr *ValidationError
 	require.ErrorAs(t, err, &verr)
 }
@@ -131,7 +131,7 @@ func TestListTranscripts_QueryFindsAndSnippets(t *testing.T) {
 
 func TestListTranscripts_QueryCannotCombineWithFilters(t *testing.T) {
 	d, _ := seedTranscriptsDB(t)
-	_, err := transcriptsRegistry(t, d).CallRead(context.Background(), "list_transcripts", json.RawMessage(`{"query":"x","event_id":"EV1"}`))
+	_, err := transcriptsRegistry(t, d).CallRead(context.Background(), "list_transcripts", json.RawMessage(`{"query":"x","event_id":"EV1"}`), Binding{})
 	var verr *ValidationError
 	require.ErrorAs(t, err, &verr)
 }
@@ -156,7 +156,7 @@ func TestGetTranscript_EventLinkedRecap(t *testing.T) {
 
 func TestGetTranscript_NotFound(t *testing.T) {
 	d, _ := seedTranscriptsDB(t)
-	_, err := transcriptsRegistry(t, d).CallRead(context.Background(), "get_transcript", json.RawMessage(`{"id":99999}`))
+	_, err := transcriptsRegistry(t, d).CallRead(context.Background(), "get_transcript", json.RawMessage(`{"id":99999}`), Binding{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no transcript with id 99999")
 }

@@ -213,11 +213,15 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        Self.terminateDecision(
+        let recording = AppState.shared.meetingRecorderCenter.isBusy
+        // Unsent document comments live in memory only; a quit drops them.
+        let unsentComments = AppState.shared.projectsViewModel?.commentDrafts.count ?? 0
+        return Self.terminateDecision(
             managesLifecycle: managesLifecycle,
-            hasBlockingWork: AppState.shared.meetingRecorderCenter.isBusy,
-            confirmQuit: Self.confirmQuitDuringWork,
+            hasBlockingWork: recording || unsentComments > 0,
+            confirmQuit: { Self.confirmQuitDuringWork(recording: recording, unsentComments: unsentComments) },
             closeChatSessions: { await AppState.shared.chatSessionPool?.closeAll() },
+            closeTerminals: { await AppState.shared.terminalCenter.closeAll() },
             stopDaemon: { await DaemonManager.stopDaemonBounded() },
             reply: { ok in sender.reply(toApplicationShouldTerminate: ok) }
         )
@@ -233,6 +237,7 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
         hasBlockingWork: Bool,
         confirmQuit: () -> Bool,
         closeChatSessions: @escaping () async -> Void = {},
+        closeTerminals: @escaping () async -> Void = {},
         stopDaemon: @escaping () async -> Void,
         reply: @escaping (Bool) -> Void
     ) -> NSApplication.TerminateReply {
@@ -241,6 +246,7 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
             hasBlockingWork: hasBlockingWork,
             confirmQuit: confirmQuit,
             closeChatSessions: closeChatSessions,
+            closeTerminals: closeTerminals,
             stopDaemon: stopDaemon,
             reply: reply
         )
@@ -274,12 +280,20 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private static func confirmQuitDuringWork() -> Bool {
+    private static func confirmQuitDuringWork(recording: Bool, unsentComments: Int) -> Bool {
         let alert = NSAlert()
-        alert.messageText = "A recording or transcription is in progress"
-        alert.informativeText = "Quitting stops the capture and drops any transcription still running. "
-            + "The audio recorded so far is kept and offered again on next launch."
-        alert.addButton(withTitle: "Stop & Quit")
+        let drafts = unsentComments == 1 ? "1 unsent document comment" : "\(unsentComments) unsent document comments"
+        if recording {
+            alert.messageText = "A recording or transcription is in progress"
+            alert.informativeText = "Quitting stops the capture and drops any transcription still running. "
+                + "The audio recorded so far is kept and offered again on next launch."
+                + (unsentComments > 0 ? " Your \(drafts) will be lost." : "")
+        } else {
+            alert.messageText = "You have \(drafts)"
+            alert.informativeText = "Drafts are kept only while Watchtower runs. Send them from the project's "
+                + "Documents pane first, or quit and lose them."
+        }
+        alert.addButton(withTitle: recording ? "Stop & Quit" : "Quit")
         alert.addButton(withTitle: "Cancel")
         return alert.runModal() == .alertFirstButtonReturn
     }

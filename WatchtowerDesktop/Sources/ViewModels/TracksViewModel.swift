@@ -193,6 +193,14 @@ final class TracksViewModel {
         }
     }
 
+    /// A write to a track deleted elsewhere (the daemon, the CLI) reloads
+    /// first so the vanished row leaves the list instead of failing again on
+    /// every retry; the message is set after the reload.
+    private func reportWriteFailure(_ what: String, _ error: Error) {
+        if error is RowNotFoundError { load() }
+        errorMessage = "Failed to \(what): \(error.localizedDescription)"
+    }
+
     func updatePriority(_ track: Track, to priority: String) {
         do {
             try dbManager.dbPool.write { db in
@@ -200,7 +208,7 @@ final class TracksViewModel {
             }
             load()
         } catch {
-            errorMessage = "Failed to update priority: \(error.localizedDescription)"
+            reportWriteFailure("update priority", error)
         }
     }
 
@@ -211,7 +219,7 @@ final class TracksViewModel {
             }
             load()
         } catch {
-            errorMessage = "Failed to update ownership: \(error.localizedDescription)"
+            reportWriteFailure("update ownership", error)
         }
     }
 
@@ -225,7 +233,7 @@ final class TracksViewModel {
             }
             load()
         } catch {
-            errorMessage = "Failed to toggle sub-item: \(error.localizedDescription)"
+            reportWriteFailure("toggle sub-item", error)
         }
     }
 
@@ -236,7 +244,7 @@ final class TracksViewModel {
             }
             load()
         } catch {
-            errorMessage = "Failed to dismiss: \(error.localizedDescription)"
+            reportWriteFailure("dismiss", error)
         }
     }
 
@@ -247,7 +255,7 @@ final class TracksViewModel {
             }
             load()
         } catch {
-            errorMessage = "Failed to restore: \(error.localizedDescription)"
+            reportWriteFailure("restore", error)
         }
     }
 

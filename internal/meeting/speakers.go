@@ -39,3 +39,18 @@ func ParseSpeakerEmbeddings(data []byte) ([]SpeakerEmbedding, error) {
 	}
 	return speakers, nil
 }
+
+// ParseSpeakerEmbeddingsRaw validates like ParseSpeakerEmbeddings but also
+// returns each entry's raw JSON so callers can store Desktop-owned fields
+// (voice registry: original_label, label_source, person_id, clips, …) untouched.
+func ParseSpeakerEmbeddingsRaw(data []byte) ([]SpeakerEmbedding, []json.RawMessage, error) {
+	var raws []json.RawMessage
+	if err := json.Unmarshal(data, &raws); err != nil {
+		return nil, nil, fmt.Errorf("parsing speaker embeddings: %w", err)
+	}
+	parsed, err := ParseSpeakerEmbeddings(data)
+	if err != nil {
+		return nil, nil, err
+	}
+	return parsed, raws, nil
+}

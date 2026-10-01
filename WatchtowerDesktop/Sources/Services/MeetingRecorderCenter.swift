@@ -8,7 +8,18 @@ import WatchtowerCore
 protocol MeetingTranscriptNotifying {
     func sendTranscriptReadyNotification(title: String)
     func sendTranscriptFailedNotification(reason: String)
+    func sendVoicesToLabelNotification(title: String, count: Int, transcriptID: Int64)
+    /// The live capture has had no call audio for `CallAudioWatch.minGapSec`
+    /// (see `callAudioSilentSince`) — the owner is usually in the call app,
+    /// not looking at Watchtower, so the pill alone would go unseen.
+    func sendCallAudioSilentNotification()
+    /// Takes that notification back once the call audio returns or the
+    /// capture ends, so a stale warning never lingers in Notification Center.
+    func withdrawCallAudioSilentNotification()
 }
+
+/// The "check your output device" hint every call-audio surface ends on.
+let callAudioOutputHint = "check that the call plays through this Mac's output device."
 
 extension NotificationService: MeetingTranscriptNotifying {}
 
@@ -155,26 +166,21 @@ final class MeetingRecorderCenter {
     /// Title snapshot for the active/last recording.
     private(set) var currentTitle: String?
 
-    /// Reads the voice-print database for the post-diarization matching pass.
-    /// Set by AppState once the shared DB opens; nil (no DB yet, tests)
-    /// disables voice matching — clusters keep their "Speaker N" labels, the
-    /// full degradation path. A loader failure must return [] rather than
-    /// throw: voice naming is a progressive enhancement like roles themselves.
-    var voicePrintsLoader: (@Sendable () async -> [VoicePrint])?
+    /// Reads the voice registry for the post-diarization identification pass
+    /// (samples, people, the event's invited set, the owner's people). Set by
+    /// AppState once the shared DB opens; nil (no DB yet, tests) disables
+    /// voice identification — clusters keep their "Speaker N" labels, the
+    /// full degradation path. A read failure returns nil, which switches
+    /// identification OFF for that recording (spec §2.6: no names, no queue,
+    /// no auto samples, no notification) — never an empty snapshot, which
+    /// would read as "nobody known" and queue every cluster as unknown.
+    var registryLoader: (@Sendable (_ eventID: String?) async -> VoiceRegistrySnapshot?)?
 
-    /// Reads an event's attendee identities (attendees + organizer — the
-    /// organizer is NOT in the attendees JSON) to scope the voice-print pool
-    /// for an event-linked recording (`VoicePrintMatcher.scoped`). Same
-    /// contract as `voicePrintsLoader`: set by AppState, nil or a failure
-    /// returns [] — which degrades to today's global matching, never to no
-    /// matching.
-    var attendeesLoader: (@Sendable (String) async -> [EventAttendee])?
-
-    /// The owner's email identities (`google_accounts` emails, lowercased) —
-    /// they mark which voice prints are the OWNER's for the «Я»
-    /// tie-break/veto (semantics: `RoleAssigner.clusterLabels`'s doc). nil
-    /// loader or an empty set = owner identity unknown = legacy «Я» behavior.
-    var ownerEmailsLoader: (@Sendable () async -> Set<String>)?
+    /// Persists a saved recording's registry outcome (label-queue tasks and
+    /// self-trained samples) against its transcript id; returns the number
+    /// of enqueued tasks. Set by AppState; failures are logged there and
+    /// report 0 — never a failed save (spec §2.6).
+    var registryWriter: (@Sendable (_ transcriptID: Int64, _ outcome: VoiceIdentificationOutcome) async -> Int)?
 
     /// `.waiting` = a recording is capturing but a job still owns the engine
     /// slot, so the live engine is deliberately not loaded yet.
@@ -188,6 +194,13 @@ final class MeetingRecorderCenter {
     /// recorder (`AudioRecording.liveLevels`), for the indicator's level
     /// meters. Zero whenever nothing is being captured.
     private(set) var captureLevels: CaptureLevels = .init(mic: 0, system: 0)
+
+    /// Seconds into the active capture where the call audio went silent, once
+    /// the silence has lasted `CallAudioWatch.minGapSec` after the call had
+    /// been heard; nil otherwise and whenever nothing is being captured. The
+    /// indicator warns on it — the tap may have dropped (an output-device
+    /// switch), and the owner can still fix it during the call.
+    private(set) var callAudioSilentSince: Double?
 
     /// Monotonic counter bumped once per transcript that lands in the database.
     /// Views that must refetch after a save observe THIS, never `phase`: with
@@ -607,7 +620,7 @@ final class MeetingRecorderCenter {
     }
 
     /// Late wiring for the warm policy's calendar read: the Center is created
-    /// before the DB pool exists (the `voicePrintsLoader` precedent), so
+    /// before the DB pool exists (the `registryLoader` precedent), so
     /// AppState hands the GRDB-backed provider in here once the pool opens.
     func configureWarmPolicy(meetingsProvider: @escaping (Date) -> WarmMeetingWindow) {
         self.meetingsProvider = meetingsProvider
@@ -675,9 +688,11 @@ final class MeetingRecorderCenter {
     /// (`text == TranscriptSegments.render(utterances)`); nil whenever roles
     /// were not rendered — the save then leaves `segments_json` NULL.
     /// `speakers` carries the per-cluster voice embeddings keyed by the final
-    /// rendered labels (nil when the diarizer produced none — non-FluidAudio
-    /// engines — or roles were not rendered); the save persists them to
-    /// `speakers_json` so a later manual rename can learn a voice print.
+    /// rendered labels plus their registry payload (nil when the diarizer
+    /// produced none — non-FluidAudio engines — or roles were not rendered);
+    /// the save persists them to `speakers_json`. `registry` is what the save
+    /// persists into the voice registry afterwards (nil = registry off or
+    /// nothing identified).
     private func renderRoles(
         jobID: ProcessingJob.ID,
         output: TranscriptionOutput,
@@ -685,8 +700,9 @@ final class MeetingRecorderCenter {
         samples: [Float]?,
         config: TranscriptionConfig,
         eventID: String?
-    ) async -> (text: String, utterances: [TranscriptUtterance]?, speakers: [SpeakerEmbedding]?) {
-        guard config.diarization, !output.segments.isEmpty else { return (output.text, nil, nil) }
+    ) async -> RenderedRoles {
+        let plain = RenderedRoles(text: output.text, utterances: nil, speakers: nil, registry: nil)
+        guard config.diarization, !output.segments.isEmpty else { return plain }
         updateJob(jobID) { $0.phase = .diarizing }
         do {
             let pcm: [Float]
@@ -703,6 +719,7 @@ final class MeetingRecorderCenter {
             // The sidecar parse is a full-file read (~36k lines per hour) —
             // off-main like the decode above.
             let activity = await Task.detached { MicActivity.load(for: audioURL) }.value
+            let features = ClusterFeatures.compute(speakers: speakers, activity: activity)
             // One embedding per cluster (the diarizer repeats the cluster's
             // centroid on every segment; first occurrence wins).
             var clusterEmbeddings: [String: [Float]] = [:]
@@ -714,10 +731,11 @@ final class MeetingRecorderCenter {
             // One dict for both RoleAssigner calls below, so the mega-cluster
             // suppression cannot apply to the transcript labels but not to the
             // embedding keys (or vice versa).
-            let (rawNames, rawOwners, ownerVoiceAlike) = await matchVoiceNames(
-                clusterEmbeddings: clusterEmbeddings, eventID: eventID)
+            let identified = await identifyVoices(clusterEmbeddings: clusterEmbeddings, features: features,
+                                                  eventID: eventID, config: config)
             let (voiceNames, ownerClusters) = Self.filterMegaClusters(
-                voiceNames: rawNames, speakers: speakers, ownerClusters: rawOwners)
+                voiceNames: identified.names, speakers: speakers, ownerClusters: identified.ownerClusters)
+            let ownerVoiceAlike = identified.ownerVoiceAlike
             // The «Я» veto silently removing the label would look like mic
             // detection randomly stopped working — log it once, here (the
             // mega-cluster suppression precedent; RoleAssigner stays pure).
@@ -743,90 +761,38 @@ final class MeetingRecorderCenter {
                     voiceNames: voiceNames, ownerClusters: ownerClusters,
                     ownerVoiceAlike: ownerVoiceAlike)
                 let usedLabels = Set(utterances.map(\.speaker))
-                let speakerEmbeddings = clusterEmbeddings
+                let shipped = clusterEmbeddings.filter { cluster, _ in
+                    labels[cluster].map(usedLabels.contains) ?? false
+                }
+                let originalLabels = Self.originalLabels(labels: labels, speakers: speakers)
+                let speakerEmbeddings = shipped
                     .compactMap { cluster, embedding -> SpeakerEmbedding? in
-                        guard let label = labels[cluster], usedLabels.contains(label) else { return nil }
-                        return SpeakerEmbedding(speaker: label, embedding: embedding)
+                        guard let label = labels[cluster] else { return nil }
+                        return Self.registryEntry(
+                            label: label, embedding: embedding, originalLabel: originalLabels[cluster],
+                            features: features[cluster], decision: identified.decisions[cluster],
+                            appliedName: voiceNames[cluster])
                     }
                     .sorted { $0.speaker < $1.speaker } // deterministic payload
-                return (TranscriptSegments.render(utterances), utterances,
-                        speakerEmbeddings.isEmpty ? nil : speakerEmbeddings)
+                let registry = identified.snapshot.map { snapshot in
+                    Self.registryOutcome(labels: labels, shipped: shipped, voiceNames: voiceNames,
+                                         decisions: identified.decisions, features: features,
+                                         originalLabels: originalLabels, snapshot: snapshot)
+                }
+                return RenderedRoles(text: TranscriptSegments.render(utterances), utterances: utterances,
+                                     speakers: speakerEmbeddings.isEmpty ? nil : speakerEmbeddings,
+                                     registry: registry)
             }
             // Roles undeterminable (diarizer found no speakers) — flag it like
             // the error path so the notification stays honest.
             print("[MeetingRecorder] diarization found no speakers, saving without labels")
             updateJob(jobID) { $0.rolesError = "no speakers detected" }
-            return (output.text, nil, nil)
+            return plain
         } catch {
             print("[MeetingRecorder] diarization failed, saving without speaker labels: \(error.localizedDescription)")
             updateJob(jobID) { $0.rolesError = error.localizedDescription }
-            return (output.text, nil, nil)
+            return plain
         }
-    }
-
-    /// Voice matching (Level 1): each cluster embedding against the
-    /// voice-print database, cosine ≥ threshold → the person's display name.
-    /// For an event-linked recording the pool is first scoped to the event's
-    /// attendees (`VoicePrintMatcher.scoped`) so a voice-alike from another
-    /// meeting cannot claim a cluster; ad-hoc recordings (or an attendee-load
-    /// failure) keep the global pool, and the owner's EMAIL-KEYED prints are
-    /// never scoped out. Empty when there is nothing to match against — no
-    /// loader (no DB), empty database, or no embeddings — which degrades to
-    /// plain "Speaker N" labels.
-    ///
-    /// `ownerClusters` marks the matched clusters whose winning print is the
-    /// OWNER's (see `VoicePrintMatcher.isOwnerPrint`; semantics in
-    /// `RoleAssigner.clusterLabels`' doc). It is non-nil ONLY when the pool
-    /// holds an owner-identified print USABLE in this run (valid embedding
-    /// of this run's dimension) — owner identity without such a print
-    /// (typical for a name-keyed print minted by an ad-hoc rename, or a
-    /// print learned under an older embedding model) must NOT arm the veto,
-    /// or an unmatchable owner would lose «Я» with no possible tie-break.
-    ///
-    /// `ownerVoiceAlike` is the veto-suppression set: clusters ANY owner
-    /// print matches at ≥ threshold, even when the globally best match is
-    /// someone else's print (the mixed name-keyed + email-keyed owner case).
-    /// Conservative by owner decision: it protects a cluster from the veto,
-    /// it never promotes one to «Я».
-    private func matchVoiceNames(
-        clusterEmbeddings: [String: [Float]], eventID: String?
-    ) async -> (names: [String: String], ownerClusters: Set<String>?, ownerVoiceAlike: Set<String>) {
-        guard !clusterEmbeddings.isEmpty, let voicePrintsLoader else { return ([:], nil, []) }
-        let allPrints = await voicePrintsLoader()
-        guard !allPrints.isEmpty else { return ([:], nil, []) }
-        let ownerEmails = await ownerEmailsLoader?() ?? []
-        var prints = allPrints
-        if let eventID, let attendeesLoader {
-            prints = VoicePrintMatcher.scoped(allPrints, attendees: await attendeesLoader(eventID),
-                                              ownerEmails: ownerEmails)
-        }
-        let ownerPrints = prints.filter { VoicePrintMatcher.isOwnerPrint($0, ownerEmails: ownerEmails) }
-        // Usable = the print could actually match SOME cluster of this run
-        // (valid vector of a present dimension) — an owner print learned
-        // under an older embedding model must not arm the veto it can never
-        // satisfy. Checked against all clusters, not a sampled one:
-        // Dictionary order is seed-randomized.
-        let dimensions = Set(clusterEmbeddings.values.map(\.count))
-        let ownerArmed = ownerPrints.contains {
-            dimensions.contains($0.embeddingVector.count)
-                && VoicePrintMatcher.normalize($0.embeddingVector) != nil
-        }
-        var names: [String: String] = [:]
-        var ownerClusters: Set<String> = []
-        var ownerVoiceAlike: Set<String> = []
-        for (cluster, embedding) in clusterEmbeddings {
-            if let match = VoicePrintMatcher.bestMatch(embedding: embedding, prints: prints) {
-                names[cluster] = match.displayName
-                if VoicePrintMatcher.isOwnerPrint(match, ownerEmails: ownerEmails) {
-                    ownerClusters.insert(cluster)
-                }
-            }
-            if ownerArmed,
-               VoicePrintMatcher.bestMatch(embedding: embedding, prints: ownerPrints) != nil {
-                ownerVoiceAlike.insert(cluster)
-            }
-        }
-        return (names, ownerArmed ? ownerClusters : nil, ownerVoiceAlike)
     }
 
     /// Share of total diarized speech above which a cluster is read as a
@@ -883,7 +849,7 @@ final class MeetingRecorderCenter {
             filtered[cluster] = nil
         }
         // "Still has a name" is a valid suppression proxy ONLY because every
-        // owner cluster is inserted together with its name in matchVoiceNames
+        // owner cluster is inserted together with its name in identifyVoices
         // — an owner cluster without a voiceNames entry would silently lose
         // its status here even though nothing was suppressed.
         return (filtered, ownerClusters.map { owners in owners.filter { filtered[$0] != nil } })
@@ -968,13 +934,33 @@ final class MeetingRecorderCenter {
         levelsGeneration += 1
         let generation = levelsGeneration
         levelsTask = Task { @MainActor [weak self] in
+            // The level stream is throttled to ~100 ms pairs — the bin size
+            // the watch expects.
+            var callAudio = CallAudioWatch()
             for await levels in recorder.liveLevels {
                 guard let self, self.levelsGeneration == generation else { return }
                 self.captureLevels = levels
+                callAudio.add(system: levels.system)
+                self.setCallAudioSilentSince(callAudio.openGap?.startSec)
             }
             guard !Task.isCancelled, let self, self.levelsGeneration == generation else { return }
             self.captureLevels = .init(mic: 0, system: 0)
+            self.setCallAudioSilentSince(nil)
         }
+    }
+
+    /// The one writer of `callAudioSilentSince`. Written only on change (the
+    /// level loop runs at ~10 Hz and every write would re-render the pill);
+    /// a gap opening sends the notification, a gap closing — or the capture
+    /// ending mid-gap — withdraws it.
+    private func setCallAudioSilentSince(_ value: Double?) {
+        guard callAudioSilentSince != value else { return }
+        if callAudioSilentSince == nil {
+            notifier.sendCallAudioSilentNotification()
+        } else if value == nil {
+            notifier.withdrawCallAudioSilentNotification()
+        }
+        callAudioSilentSince = value
     }
 
     /// Ends the level feed for a capture that is over: every path that clears
@@ -986,6 +972,7 @@ final class MeetingRecorderCenter {
         levelsTask?.cancel()
         levelsTask = nil
         captureLevels = .init(mic: 0, system: 0)
+        setCallAudioSilentSince(nil)
     }
 
     /// Loads the transcriber and, when it supports live (`makeLiveSession`
@@ -1436,7 +1423,9 @@ final class MeetingRecorderCenter {
         }
         updateJob(jobID) { $0.engine = nil }
         guard !output.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            failJob(jobID, "No speech recognized")
+            let audioURL = job.audioURL
+            let message = await Task.detached { Self.noSpeechMessage(MicActivity.load(for: audioURL)) }.value
+            failJob(jobID, message)
             return
         }
         let rendered = await renderRoles(jobID: jobID, output: output, audioURL: job.audioURL,
@@ -1448,18 +1437,24 @@ final class MeetingRecorderCenter {
                                speakers: rendered.speakers, durationSec: durationSec,
                                langStats: output.langStats, audioURL: job.audioURL)
         await save(jobID: jobID, text: rendered.text, utterances: rendered.utterances,
-                   speakers: rendered.speakers, durationSec: durationSec, langStats: output.langStats)
+                   speakers: rendered.speakers, durationSec: durationSec, langStats: output.langStats,
+                   registry: rendered.registry, voiceNotifications: config.voiceNotifications)
     }
 
     /// Save step: the only place the `watchtower` CLI is needed. Resolves the
     /// runner here — never earlier — so a missing CLI still leaves the recording
     /// stopped, the audio finalized, and the transcript persisted for retry.
+    /// `registry` (nil on the sidecar-retry path, which re-saves without
+    /// re-diarizing) is persisted against the saved transcript id afterwards;
+    /// it can never fail the save.
     private func save(jobID: ProcessingJob.ID,
                       text: String,
                       utterances: [TranscriptUtterance]?,
                       speakers: [SpeakerEmbedding]?,
                       durationSec: Int,
-                      langStats: [String: Int]) async {
+                      langStats: [String: Int],
+                      registry: VoiceIdentificationOutcome? = nil,
+                      voiceNotifications: Bool = true) async {
         guard let job = self.job(jobID) else { return }
         updateJob(jobID) { $0.phase = .summarizing }
         guard let runner = runnerResolver() else {
@@ -1513,8 +1508,26 @@ final class MeetingRecorderCenter {
             } else {
                 notifier.sendTranscriptReadyNotification(title: title)
             }
+            await persistRegistry(registry, transcriptID: result.transcriptID, title: title,
+                                  notify: voiceNotifications)
         } catch {
             failJob(jobID, error.localizedDescription)
+        }
+    }
+
+    /// Hands the outcome to the writer after a successful save and notifies
+    /// when voices were queued. Never fails the save: the writer logs and
+    /// reports 0 on error.
+    private func persistRegistry(
+        _ outcome: VoiceIdentificationOutcome?,
+        transcriptID: Int64,
+        title: String,
+        notify: Bool
+    ) async {
+        guard let outcome, !outcome.isEmpty, let registryWriter else { return }
+        let queued = await registryWriter(transcriptID, outcome)
+        if queued > 0 && notify {
+            notifier.sendVoicesToLabelNotification(title: title, count: queued, transcriptID: transcriptID)
         }
     }
 
@@ -1553,6 +1566,24 @@ final class MeetingRecorderCenter {
     private func updateJob(_ id: ProcessingJob.ID, _ mutate: (inout ProcessingJob) -> Void) {
         guard let index = jobs.firstIndex(where: { $0.id == id }) else { return }
         mutate(&jobs[index])
+    }
+
+    /// Why a recording yielded no text. A bare "No speech recognized" hid
+    /// the usual cause: the call's audio never reached the recording (the
+    /// activity sidecar's system channel is silent throughout or went
+    /// silent and stayed so), leaving only a quiet room microphone.
+    nonisolated static func noSpeechMessage(_ activity: MicActivity?) -> String {
+        guard let activity else { return "No speech recognized" }
+        var watch = CallAudioWatch(binSec: MicActivity.binDuration)
+        activity.bins.forEach { watch.add(system: $0.sys) }
+        if watch.neverHeardCall {
+            return "No speech recognized — no call audio was captured at all. If this was a call, \(callAudioOutputHint)"
+        }
+        if let gap = watch.openGap {
+            return "No speech recognized — call audio stopped at \(TranscriptFormatting.formatTimecode(gap.startSec)) "
+                + "and never came back — \(callAudioOutputHint)"
+        }
+        return "No speech recognized"
     }
 
     /// Fails a job and fires the failure notification. The job stays in the

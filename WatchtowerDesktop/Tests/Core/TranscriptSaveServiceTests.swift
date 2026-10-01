@@ -517,46 +517,4 @@ final class TranscriptSaveServiceTests: XCTestCase {
         XCTAssertFalse(args.contains("--speakers-file"),
                        "nil speakers → no flag, legacy behavior")
     }
-
-    // MARK: - speakerGuess
-
-    func test_speakerGuessInvokesCLIAndDecodesEnvelope() async throws {
-        let mock = FakeCLIRunner(stdout: Data("""
-            {"transcript_id": 7, "suggestions": [
-              {"speaker": "Speaker 2", "candidate": "Саша", "confidence": 0.8, "evidence": "introduced himself"}
-            ]}
-            """.utf8))
-        let service = TranscriptSaveService(runner: mock)
-
-        let result = try await service.speakerGuess(transcriptID: 7)
-
-        XCTAssertEqual(result.transcriptID, 7)
-        XCTAssertEqual(result.suggestions, [
-            SpeakerSuggestion(speaker: "Speaker 2", candidate: "Саша",
-                              confidence: 0.8, evidence: "introduced himself")
-        ])
-        XCTAssertEqual(mock.invocations.first, ["meeting-prep", "transcript", "speaker-guess", "7"])
-    }
-
-    func test_speakerGuessDecodesEmptySuggestions() async throws {
-        let mock = FakeCLIRunner(stdout: Data(#"{"transcript_id": 7, "suggestions": []}"#.utf8))
-        let service = TranscriptSaveService(runner: mock)
-
-        let result = try await service.speakerGuess(transcriptID: 7)
-        XCTAssertTrue(result.suggestions.isEmpty)
-    }
-
-    func test_speakerGuessPropagatesRunnerError() async {
-        let fake = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "no unnamed speakers"))
-        let svc = TranscriptSaveService(runner: fake)
-
-        do {
-            _ = try await svc.speakerGuess(transcriptID: 3)
-            XCTFail("expected throw")
-        } catch CLIRunnerError.nonZeroExit(let code, _) {
-            XCTAssertEqual(code, 1)
-        } catch {
-            XCTFail("unexpected error type: \(error)")
-        }
-    }
 }

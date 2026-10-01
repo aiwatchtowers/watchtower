@@ -104,6 +104,16 @@ final class TargetsViewModel {
         isLoading = false
     }
 
+    /// A write to a target deleted elsewhere (the agent over MCP, the CLI)
+    /// reloads first: this VM's `ValueObservation` never sees another
+    /// process's delete, so without it the vanished row would stay on screen
+    /// and fail the same way on every retry. The message is set after the
+    /// reload, which clears `errorMessage` on success.
+    private func reportWriteFailure(_ what: String, _ error: Error) {
+        if error is TargetNotFoundError { load() }
+        errorMessage = "Failed to \(what): \(error.localizedDescription)"
+    }
+
     func markDone(_ target: Target) {
         updateStatus(target, to: "done")
     }
@@ -119,7 +129,7 @@ final class TargetsViewModel {
             }
             load()
         } catch {
-            errorMessage = "Failed to snooze: \(error.localizedDescription)"
+            reportWriteFailure("snooze", error)
         }
     }
 
@@ -133,7 +143,7 @@ final class TargetsViewModel {
             }
             load()
         } catch {
-            errorMessage = "Failed to update sub-items: \(error.localizedDescription)"
+            reportWriteFailure("update sub-items", error)
         }
     }
 
@@ -146,7 +156,7 @@ final class TargetsViewModel {
             }
             load()
         } catch {
-            errorMessage = "Failed to update text: \(error.localizedDescription)"
+            reportWriteFailure("update text", error)
         }
     }
 
@@ -160,7 +170,7 @@ final class TargetsViewModel {
             }
             load()
         } catch {
-            errorMessage = "Failed to update intent: \(error.localizedDescription)"
+            reportWriteFailure("update intent", error)
         }
     }
 
@@ -171,58 +181,56 @@ final class TargetsViewModel {
             }
             load()
         } catch {
-            errorMessage = "Failed to update due date: \(error.localizedDescription)"
+            reportWriteFailure("update due date", error)
         }
     }
 
     func updateOwnership(_ target: Target, to ownership: String) {
         do {
             try dbManager.dbPool.write { db in
-                try db.execute(
-                    sql: "UPDATE targets SET ownership = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?",
-                    arguments: [ownership, target.id]
-                )
+                try TargetQueries.updateOwnership(db, id: target.id, ownership: ownership)
             }
             load()
         } catch {
-            errorMessage = "Failed to update ownership: \(error.localizedDescription)"
+            reportWriteFailure("update ownership", error)
         }
     }
 
     func updateBlocking(_ target: Target, to blocking: String) {
         do {
             try dbManager.dbPool.write { db in
-                try db.execute(
-                    sql: "UPDATE targets SET blocking = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?",
-                    arguments: [blocking.trimmingCharacters(in: .whitespacesAndNewlines), target.id]
+                try TargetQueries.updateBlocking(
+                    db, id: target.id, blocking: blocking.trimmingCharacters(in: .whitespacesAndNewlines)
                 )
             }
             load()
         } catch {
-            errorMessage = "Failed to update blocking: \(error.localizedDescription)"
+            reportWriteFailure("update blocking", error)
         }
     }
 
     func updateBallOn(_ target: Target, to ballOn: String) {
         do {
             try dbManager.dbPool.write { db in
-                try db.execute(
-                    sql: "UPDATE targets SET ball_on = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?",
-                    arguments: [ballOn.trimmingCharacters(in: .whitespacesAndNewlines), target.id]
+                try TargetQueries.updateBallOn(
+                    db, id: target.id, ballOn: ballOn.trimmingCharacters(in: .whitespacesAndNewlines)
                 )
             }
             load()
         } catch {
-            errorMessage = "Failed to update ball on: \(error.localizedDescription)"
+            reportWriteFailure("update ball on", error)
         }
     }
 
-    func addSubItem(_ target: Target, text: String) {
+    /// - Returns: whether the sub-item was written, so the composer keeps
+    ///   the owner's draft on a failure (`errorMessage` says why).
+    @discardableResult
+    func addSubItem(_ target: Target, text: String) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty else { return false }
         var items = target.decodedSubItems
         items.append(TargetSubItem(text: trimmed, done: false))
-        saveSubItems(target, items: items)
+        return saveSubItems(target, items: items)
     }
 
     func removeSubItem(_ target: Target, index: Int) {
@@ -252,14 +260,17 @@ final class TargetsViewModel {
         saveSubItems(target, items: items)
     }
 
-    private func saveSubItems(_ target: Target, items: [TargetSubItem]) {
+    @discardableResult
+    private func saveSubItems(_ target: Target, items: [TargetSubItem]) -> Bool {
         do {
             try dbManager.dbPool.write { db in
                 try TargetQueries.updateSubItems(db, id: target.id, subItems: items)
             }
             load()
+            return true
         } catch {
-            errorMessage = "Failed to update sub-items: \(error.localizedDescription)"
+            reportWriteFailure("update sub-items", error)
+            return false
         }
     }
 
@@ -282,13 +293,16 @@ final class TargetsViewModel {
         return fmt
     }()
 
-    func addNote(_ target: Target, text: String) {
+    /// - Returns: whether the note was written, so the composer keeps the
+    ///   owner's draft on a failure (`errorMessage` says why).
+    @discardableResult
+    func addNote(_ target: Target, text: String) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        guard !trimmed.isEmpty else { return false }
         var notes = target.decodedNotes
         let now = Self.iso8601Formatter.string(from: Date())
         notes.append(TargetNote(text: trimmed, createdAt: now))
-        saveNotes(target, notes: notes)
+        return saveNotes(target, notes: notes)
     }
 
     func removeNote(_ target: Target, index: Int) {
@@ -298,19 +312,17 @@ final class TargetsViewModel {
         saveNotes(target, notes: notes)
     }
 
-    private func saveNotes(_ target: Target, notes: [TargetNote]) {
-        guard let data = try? JSONEncoder().encode(notes),
-              let json = String(data: data, encoding: .utf8) else { return }
+    @discardableResult
+    private func saveNotes(_ target: Target, notes: [TargetNote]) -> Bool {
         do {
             try dbManager.dbPool.write { db in
-                try db.execute(
-                    sql: "UPDATE targets SET notes = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?",
-                    arguments: [json, target.id]
-                )
+                try TargetQueries.updateNotes(db, id: target.id, notes: notes)
             }
             load()
+            return true
         } catch {
-            errorMessage = "Failed to update notes: \(error.localizedDescription)"
+            reportWriteFailure("update notes", error)
+            return false
         }
     }
 
@@ -321,7 +333,7 @@ final class TargetsViewModel {
             }
             load()
         } catch {
-            errorMessage = "Failed to update priority: \(error.localizedDescription)"
+            reportWriteFailure("update priority", error)
         }
     }
 
@@ -337,7 +349,7 @@ final class TargetsViewModel {
             load()
             return changed
         } catch {
-            errorMessage = "Failed to add label: \(error.localizedDescription)"
+            reportWriteFailure("add label", error)
             return false
         }
     }
@@ -351,7 +363,7 @@ final class TargetsViewModel {
             load()
             return changed
         } catch {
-            errorMessage = "Failed to remove label: \(error.localizedDescription)"
+            reportWriteFailure("remove label", error)
             return false
         }
     }
@@ -373,7 +385,7 @@ final class TargetsViewModel {
             }
             load()
         } catch {
-            errorMessage = "Failed to update level: \(error.localizedDescription)"
+            reportWriteFailure("update level", error)
         }
     }
 
@@ -384,7 +396,7 @@ final class TargetsViewModel {
             }
             load()
         } catch {
-            errorMessage = "Failed to update status: \(error.localizedDescription)"
+            reportWriteFailure("update status", error)
         }
     }
 
@@ -395,7 +407,7 @@ final class TargetsViewModel {
             }
             load()
         } catch {
-            errorMessage = "Failed to update progress: \(error.localizedDescription)"
+            reportWriteFailure("update progress", error)
         }
     }
 
@@ -421,7 +433,7 @@ final class TargetsViewModel {
             load()
             return newID
         } catch {
-            errorMessage = "Failed to create child target: \(error.localizedDescription)"
+            reportWriteFailure("create child target", error)
             return nil
         }
     }
@@ -435,7 +447,7 @@ final class TargetsViewModel {
             }
             load()
         } catch {
-            errorMessage = "Failed to link target: \(error.localizedDescription)"
+            reportWriteFailure("link target", error)
         }
     }
 
@@ -446,7 +458,7 @@ final class TargetsViewModel {
             }
             load()
         } catch {
-            errorMessage = "Failed to delete: \(error.localizedDescription)"
+            reportWriteFailure("delete", error)
         }
     }
 

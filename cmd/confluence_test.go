@@ -32,7 +32,13 @@ type fakeConfluenceFetcher struct {
 	blob       []byte           // its bytes
 	failKeys   map[string]bool  // spaces whose delta listing fails
 	onChanged  func(key string) // called on every delta listing, before failKeys
+	logger     *log.Logger      // set by SetLogger, nil until wired
 }
+
+// SetLogger records the logger it was given (nil until a caller wires one),
+// mirroring *confluence.Fetcher's own seam so a test can assert wiring
+// without touching the real HTTP fetcher.
+func (f *fakeConfluenceFetcher) SetLogger(logger *log.Logger) { f.logger = logger }
 
 func (f *fakeConfluenceFetcher) Containers(context.Context) ([]extsync.Container, error) {
 	return f.containers, f.err
@@ -123,7 +129,7 @@ func runConfluence(t *testing.T, daemonPID int, args ...string) (string, error) 
 	rootCmd.SetArgs(append([]string{"confluence"}, args...))
 	err := rootCmd.Execute()
 	rootCmd.SetArgs(nil)
-	confluenceFlagAccount, confluenceSpacesJSON, confluenceStatusJSON, confluenceSyncForce = 0, false, false, false
+	confluenceFlagAccount, confluenceSpacesJSON, confluenceStatusJSON, confluenceSyncForce, confluenceAccessJSON = 0, false, false, false, false
 	confluenceCmd.PersistentFlags().VisitAll(func(f *pflag.Flag) { f.Changed = false })
 	for _, c := range confluenceCmd.Commands() {
 		c.Flags().VisitAll(func(f *pflag.Flag) { f.Changed = false })
@@ -388,6 +394,23 @@ func TestExternalSyncWiring_SharesTheJiraClient(t *testing.T) {
 	assert.Equal(t, "error", acct2.Status)
 }
 
+// TestExternalSyncWiring_SetsFetcherLogger pins that wireExternalSync gives
+// the Confluence fetcher a logger of its own (the storage-parse-fallback
+// diagnostic has nowhere else to go): a fetcher not implementing SetLogger
+// at all — the extsync.Fetcher interface itself has no such method — must
+// not be required to; the wiring is a best-effort type assertion.
+func TestExternalSyncWiring_SetsFetcherLogger(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.OAuthScopes)
+	newConfluenceFetcher = func(*jira.Client, string) extsync.Fetcher { return env.fetcher }
+	logger := log.New(io.Discard, "", 0)
+	env.cfg.Knowledge.Connectors.Enabled = true
+
+	accounts, clients := buildAtlassianClients(env.cfg, env.db, logger)
+	wireExternalSync(daemon.New(env.cfg), env.cfg, env.db, accounts, clients, logger)
+
+	assert.NotNil(t, env.fetcher.logger, "wireExternalSync must wire the fetcher's SetLogger seam")
+}
+
 func TestExternalSyncWiring_OffBuildsNoFetcher(t *testing.T) {
 	env := setupConfluenceEnv(t, jira.OAuthScopes)
 	called := false
@@ -421,6 +444,20 @@ func TestConfluenceSync_ExtractsAttachments(t *testing.T) {
 		Scan(&status, &sections))
 	assert.Equal(t, "ok", status)
 	assert.Contains(t, sections, "hello world")
+}
+
+// TestConfluenceSync_SetsFetcherLogger pins that the foreground `confluence
+// sync` command wires the fetcher's SetLogger seam too, not only the daemon
+// path (wireExternalSync) — the storage-parse-fallback diagnostic must reach
+// the command's own stderr, not silently discard.
+func TestConfluenceSync_SetsFetcherLogger(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.OAuthScopes)
+	_, err := env.db.CreateExtSource("confluence", 1, "ENG", "100", "Engineering")
+	require.NoError(t, err)
+
+	_, err = runConfluence(t, 0, "sync")
+	require.NoError(t, err)
+	assert.NotNil(t, env.fetcher.logger, "runConfluenceSync must wire the fetcher's SetLogger seam")
 }
 
 func TestExtSyncOptions_WiresTheExtractor(t *testing.T) {
@@ -526,6 +563,45 @@ func TestJiraReloginOptions_SelectedSpacesKeepConfluence(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, kept)
 	assert.True(t, opts.WithConfluence)
+}
+
+// A re-login of an account whose grant already carries the Confluence
+// write scopes keeps requesting them without --with-confluence-write.
+func TestJiraReloginOptions_WriteScopedTokenKeepsWrite(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.OAuthScopes+" "+jira.ConfluenceWriteScopes)
+
+	opts, _, err := jiraReloginOptions(jiraLoginFlagsCmd(t), env.cfg.WorkspaceDir(), env.db, 1)
+	require.NoError(t, err)
+	assert.True(t, opts.WithConfluence)
+	assert.True(t, opts.WithConfluenceWrite)
+}
+
+// A re-login of an account whose grant carries only the read Confluence
+// scopes (no write) must not request the write scopes on its own — write
+// access is never auto-added.
+func TestJiraReloginOptions_ReadOnlyTokenDoesNotAddWrite(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.OAuthScopes)
+
+	opts, _, err := jiraReloginOptions(jiraLoginFlagsCmd(t), env.cfg.WorkspaceDir(), env.db, 1)
+	require.NoError(t, err)
+	assert.True(t, opts.WithConfluence)
+	assert.False(t, opts.WithConfluenceWrite)
+}
+
+// A corrupt token never auto-adds the write scopes either (no
+// ext_sources-equivalent fallback exists for write access), but it also
+// must not block the re-login — the warning is enough.
+func TestJiraReloginOptions_CorruptTokenNeverAddsWrite(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.OAuthScopes+" "+jira.ConfluenceWriteScopes)
+	corruptJiraToken(t, env)
+	cmd := jiraLoginFlagsCmd(t)
+	var warn bytes.Buffer
+	cmd.SetErr(&warn)
+
+	opts, _, err := jiraReloginOptions(cmd, env.cfg.WorkspaceDir(), env.db, 1)
+	require.NoError(t, err)
+	assert.False(t, opts.WithConfluenceWrite)
+	assert.Contains(t, warn.String(), "reading jira account 1 token")
 }
 
 // A Jira-only account stays Jira-only: no consent-screen change.
@@ -719,4 +795,60 @@ func TestConfluenceSync_CancelReturnsCollectedFailures(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 	assert.Contains(t, err.Error(), "listing ENG failed", "the failures collected before the cancel are kept")
 	assert.NotContains(t, listed, "QA", "nothing runs after the cancel")
+}
+
+// `confluence access --json` reports the stored grant's Confluence read and
+// write scopes as two independent booleans (the Desktop's "Allow editing"
+// button keys on read && !write).
+func TestConfluenceAccess_ReportsReadAndWriteScopes(t *testing.T) {
+	cases := []struct {
+		name  string
+		scope string
+		want  string
+	}{
+		{"jira only", jira.JiraScopes, `{"read":false,"write":false}`},
+		{"read only", jira.OAuthScopes, `{"read":true,"write":false}`},
+		{"read and write", jira.OAuthScopes + " " + jira.ConfluenceWriteScopes, `{"read":true,"write":true}`},
+		{"write without read", jira.JiraScopes + " " + jira.ConfluenceWriteScopes, `{"read":false,"write":true}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			setupConfluenceEnv(t, tc.scope)
+			out, err := runConfluence(t, 0, "access", "--account", "1", "--json")
+			require.NoError(t, err)
+			assert.JSONEq(t, tc.want, out)
+		})
+	}
+}
+
+// No token file is simply "no access" (false/false), not an error.
+func TestConfluenceAccess_MissingTokenIsNoAccess(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.OAuthScopes+" "+jira.ConfluenceWriteScopes)
+	require.NoError(t, jira.NewTokenStore(env.cfg.WorkspaceDir(), 1).Delete())
+
+	out, err := runConfluence(t, 0, "access", "--account", "1", "--json")
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"read":false,"write":false}`, out)
+}
+
+// A corrupt token is an error naming the token, never a quiet false/false
+// (which would offer a re-consent that is not the fix).
+func TestConfluenceAccess_CorruptTokenIsAnError(t *testing.T) {
+	env := setupConfluenceEnv(t, jira.OAuthScopes)
+	corruptJiraToken(t, env)
+
+	out, err := runConfluence(t, 0, "access", "--account", "1", "--json")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading jira account 1 token")
+	assert.NotContains(t, out, `"read"`)
+}
+
+// Without --json the same answer prints as two human lines; the account
+// resolves like every other confluence subcommand (the single enabled one).
+func TestConfluenceAccess_TextOutputDefaultAccount(t *testing.T) {
+	setupConfluenceEnv(t, jira.OAuthScopes)
+
+	out, err := runConfluence(t, 0, "access")
+	require.NoError(t, err)
+	assert.Equal(t, "Confluence read:  yes\nConfluence write: no\n", out)
 }

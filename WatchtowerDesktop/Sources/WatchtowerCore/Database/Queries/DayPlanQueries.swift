@@ -62,6 +62,8 @@ package enum DayPlanQueries {
                 """,
             arguments: [itemId]
         )
+        // A regenerated plan replaces its items.
+        try db.requireUpdated("day plan item", id: itemId)
         if cascadeToTask {
             try cascadeTaskStatus(db, itemId: itemId, taskStatus: "done")
         }
@@ -78,6 +80,7 @@ package enum DayPlanQueries {
                 """,
             arguments: [itemId]
         )
+        try db.requireUpdated("day plan item", id: itemId)
         if cascadeToTask {
             try cascadeTaskStatus(db, itemId: itemId, taskStatus: "todo")
         }
@@ -163,7 +166,10 @@ package enum DayPlanQueries {
 
     // MARK: - Private Helpers
 
-    /// If the item has source_type='task' and a valid Int64 source_id, update that task's status.
+    /// If the item has source_type='task' and a valid Int64 source_id, update that task's status
+    /// through the ordinary `TargetQueries.updateStatus` path: a task deleted meanwhile throws
+    /// `TargetNotFoundError` (rolling back the item's own change in the same transaction), and
+    /// closing a task runs the INBOX-02 `target_due` cascade like any other Desktop "Done".
     private static func cascadeTaskStatus(_ db: Database, itemId: Int64, taskStatus: String) throws {
         // Fetch source_type and source_id for the item
         guard let row = try Row.fetchOne(
@@ -177,14 +183,7 @@ package enum DayPlanQueries {
               let sourceIdStr = row["source_id"] as String?,
               let taskId = Int64(sourceIdStr) else { return }
 
-        try db.execute(
-            sql: """
-                UPDATE targets
-                SET status = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-                WHERE id = ?
-                """,
-            arguments: [taskStatus, taskId]
-        )
+        try TargetQueries.updateStatus(db, id: Int(taskId), status: taskStatus)
     }
 
     package static func todayDateString() -> String {

@@ -2,6 +2,7 @@ package sync
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"testing"
 
@@ -67,6 +68,30 @@ func TestSyncMessages_JiraDetectorSeesTheIDsThatLandInMessages(t *testing.T) {
 		assert.Equal(t, want.TS, got.TS, "detector ts and messages.ts must be the same value")
 		assert.Equal(t, want.Text, got.Text)
 	}
+}
+
+// failingKeyDetector always fails, as a broken jira_slack_links write would.
+type failingKeyDetector struct{ calls int }
+
+func (f *failingKeyDetector) ProcessMessageBatch([]db.Message) (int, error) {
+	f.calls++
+	return 0, errors.New("injected link write failure")
+}
+
+// The Jira-key hook is deliberately best-effort (see detectJiraKeys): the
+// links are derived enrichment over messages that are already committed, so
+// a detection failure must neither fail the sync nor roll back the page.
+func TestSyncMessages_JiraDetectorFailureIsBestEffort(t *testing.T) {
+	ts := newTestSetup(t, jiraMentionMux())
+	det := &failingKeyDetector{}
+	ts.orch.SetJiraKeyDetector(det)
+
+	require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{Full: true}))
+
+	assert.Positive(t, det.calls, "the detector was reached")
+	stored, err := ts.db.GetMessagesByChannel(ts.ns("C001"), 100)
+	require.NoError(t, err)
+	assert.Len(t, stored, 2, "the page stays committed when link detection fails")
 }
 
 // End to end with the real detector: a synced message mentioning a known

@@ -26,6 +26,7 @@ type PromptOptions struct {
 	SkillsDir      string // skills.Dir(workspace); "" = no skills block
 	VaultDir       string // memory vault root; "" = no memory block
 	MemoryChat     bool   // memory.enabled && memory.surfaces.chat
+	WebSearch      bool   // the backend exposes WebSearch (Claude only)
 	Now            time.Time
 }
 
@@ -71,6 +72,15 @@ func BuildSystemPrompt(ctx context.Context, d *db.DB, cfg *config.Config, o Prom
 func toolSections(o PromptOptions, teams []blocks.SlackTeam, fallback string) []string {
 	if !o.ToolsAvailable {
 		return []string{noToolsBlock}
+	}
+	if o.WebSearch {
+		return []string{
+			blocks.LinkingRules(teams, fallback),
+			blocks.ToolsList + "\n\n" + blocks.DataAccessRulesWithWebSearch,
+			blocks.WebSearchRules,
+			blocks.Workflow,
+			ActionsContract(o.Surface),
+		}
 	}
 	return []string{
 		blocks.LinkingRules(teams, fallback),

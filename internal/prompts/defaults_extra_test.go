@@ -229,6 +229,18 @@ func TestChatTitlePromptRegistered(t *testing.T) {
 	assert.False(t, strings.HasPrefix(rendered, "-"))
 }
 
+// TestTerminalTitlePromptRegistered pins terminal.title into all four
+// registration surfaces; it has no language-directive slot by design.
+func TestTerminalTitlePromptRegistered(t *testing.T) {
+	id := TerminalTitle
+	assert.NotEmpty(t, Defaults[id])
+	assert.True(t, contains(AllIDs, id))
+	assert.Equal(t, 1, DefaultVersions[id])
+	assert.NotEmpty(t, Descriptions[id])
+	assert.NotContains(t, Defaults[id], "%s")
+	assert.False(t, strings.HasPrefix(Defaults[id], "-"))
+}
+
 // contains checks if a slice contains a string value.
 func contains(slice []string, val string) bool {
 	for _, v := range slice {

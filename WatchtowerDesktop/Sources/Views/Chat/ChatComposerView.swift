@@ -8,12 +8,15 @@ struct ChatComposerView: View {
     @Bindable var chatVM: ChatViewModel
     let modelSuggestions: [String]
     let maxHeight: CGFloat
+    /// The thread's composer is the chat's bottom-most content; on the
+    /// landing the recent list sits below it and clears the pills instead.
+    var clearsRecordingIndicator = true
     /// The caret at the time of the last edit (UTF-16 offset) — needed to
     /// resolve the active `@`/`/` trigger on a mouse-click pick, which carries
     /// no caret of its own (spec §6.2).
     @State private var lastCursor = 0
 
-    var body: some View {
+    private var composer: some View {
         VStack(alignment: .leading, spacing: 4) {
             if chatVM.composer.isOpen {
                 ComposerPickerList(items: chatVM.composer.items, selectedIndex: chatVM.composer.selectedIndex) { index in
@@ -22,6 +25,13 @@ struct ChatComposerView: View {
                         lastCursor = edit.cursor
                     }
                 }
+            }
+            if !chatVM.pendingQuotes.isEmpty {
+                QuoteBatchView(
+                    quotes: chatVM.pendingQuotes,
+                    onEditComment: { chatVM.updateQuoteComment(id: $0, comment: $1) },
+                    onRemove: { chatVM.removeQuote(id: $0) }
+                )
             }
             ComposerChipsRow(
                 mentions: chatVM.composer.mentions,
@@ -49,13 +59,23 @@ struct ChatComposerView: View {
                         lastCursor = cursor
                         chatVM.composer.update(text: text, cursor: cursor)
                     },
-                    onPickerKey: { key, text, cursor in chatVM.composer.handle(key, text: text, cursor: cursor) }
+                    onPickerKey: { key, text, cursor in chatVM.composer.handle(key, text: text, cursor: cursor) },
+                    hasPendingContent: !chatVM.pendingQuotes.isEmpty
                 )
                 modelPill.padding(.horizontal, 16).padding(.bottom, 6)
             }
         }
         .onChange(of: chatVM.draft) { old, new in
-            if old.isEmpty, !new.isEmpty { chatVM.prewarm() }
+            if old.isEmpty, !new.isEmpty { chatVM.draftStarted() }
+        }
+    }
+
+    var body: some View {
+        if clearsRecordingIndicator {
+            // The main chat's bottom-most content, model pill included.
+            composer.clearsRecordingIndicator()
+        } else {
+            composer
         }
     }
 

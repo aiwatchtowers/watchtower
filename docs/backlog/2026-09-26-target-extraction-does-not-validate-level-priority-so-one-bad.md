@@ -1,7 +1,7 @@
 ---
 type: bug
 title: "Target extraction does not validate level/priority, so one bad value fails the whole CLI batch"
-status: open
+status: done
 priority: med
 tags: [targets, ai-validation, check-constraint, review-2026-09-26]
 context: main-branch backlog review 2026-09-26 at 8cf68dcf — track bugs (Go AI pipelines/tools)
@@ -14,3 +14,5 @@ created: 2026-09-26
 `parseExtractResponse` copies the model's `level` and `priority` as-is. `insertTargetTx` only defaults empty values, while `targets` has `CHECK(level IN (...))` and `CHECK(priority IN ('high','medium','low'))`. A model reply with `"priority":"High"`, `"urgent"`, or `"level":"year"` makes the insert fail. Because `CreateBatch` runs in one transaction, every target the user confirmed in `watchtower targets extract` is rolled back with an opaque CHECK error. Items with empty `text` are also accepted and persisted. Fix: lower-case and whitelist both fields at parse time (fall back to `day`/`medium`, the way `meeting.ExtractDiscussionTopics` normalises priority), and drop empty-text items.
 
 > Original note: «а давай проведем ревью нашего репоза на ветке мейн с целью наполнения беклога. Наши треки - покрытие тестами, баги существующие и потенциальные, архитектурные проблемы, анализ использования и бессмысленный функционал»
+
+**Resolution:** `parseExtractResponse` (internal/targets/extractor.go) now lower-cases and trims `level`/`priority` and replaces a value outside the table's CHECK sets with the store's defaults (`day`/`medium`), and drops items whose text is empty after trimming (counted in the log). Pinned by `TestParseExtractResponse_NormalizesLevelPriorityAndDropsEmptyText` (internal/targets/extractor_enum_test.go), which also inserts the normalized batch through `CreateBatch`.

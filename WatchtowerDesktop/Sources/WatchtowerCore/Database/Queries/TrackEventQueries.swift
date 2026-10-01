@@ -20,6 +20,11 @@ package enum TrackEventQueries {
             """, arguments: [trackId]) ?? 0
     }
 
+    package static func exists(_ db: Database, id: Int) throws -> Bool {
+        try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM track_events WHERE id = ?)", arguments: [id]) ?? false
+    }
+
+    /// Best-effort, unchecked: an event deleted meanwhile has nothing left to read.
     package static func markRead(_ db: Database, id: Int) throws {
         try db.execute(sql: """
             UPDATE track_events SET read_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?
@@ -29,6 +34,7 @@ package enum TrackEventQueries {
     package static func setActionStatus(_ db: Database, id: Int, status: String) throws {
         try db.execute(sql: "UPDATE track_events SET action_status = ? WHERE id = ?",
                        arguments: [status, id])
+        try db.requireUpdated("track event", id: id)
     }
 
     /// Best-effort external link to an event's underlying source. Inbox-sourced
