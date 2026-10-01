@@ -1198,3 +1198,68 @@ func TestInbox09_SlackSyncErrorFreezesWatermark(t *testing.T) {
 	require.NoError(t, err)
 	assert.Greater(t, ts, frozen)
 }
+
+// TestInbox09_HeldRunDetectsWithoutMovingWatermark: a manual run
+// (HoldWatermark) still surfaces what it finds but leaves the watermark to the
+// daemon's next clean sync, and reports no error for it.
+func TestInbox09_HeldRunDetectsWithoutMovingWatermark(t *testing.T) {
+	// BEHAVIOR INBOX-09 — see docs/inventory/inbox-pulse.md
+	// Do not weaken or remove without explicit owner approval.
+	d := newTestDB(t)
+	seedWorkspaceAndUser(t, d, "1:U_ME1")
+	insertChannel(t, d, "1:C1", "public")
+	insertMessage(t, d, "1:C1", recentTS(30), "1:U_OTHER", "Hey <@U_ME1> review please")
+	const frozen = 1000.0
+	require.NoError(t, d.SetInboxLastProcessedTS(frozen))
+
+	p := New(d, testConfig(), nil, log.Default())
+	p.HoldWatermark()
+	_, _, err := p.Run(context.Background())
+	require.NoError(t, err)
+	assert.Len(t, queryInboxByTrigger(t, d, "mention"), 1)
+	ts, err := d.GetInboxLastProcessedTS()
+	require.NoError(t, err)
+	assert.Equal(t, frozen, ts)
+}
+
+// TestInbox09_OldSyncStartNeverRewindsWatermark: a sync result older than the
+// watermark (a long cycle after a manual run moved it) never moves it back.
+func TestInbox09_OldSyncStartNeverRewindsWatermark(t *testing.T) {
+	// BEHAVIOR INBOX-09 — see docs/inventory/inbox-pulse.md
+	// Do not weaken or remove without explicit owner approval.
+	d := newTestDB(t)
+	seedWorkspaceAndUser(t, d, "1:U_ME1")
+	current := float64(time.Now().Add(-10 * time.Minute).Unix())
+	require.NoError(t, d.SetInboxLastProcessedTS(current))
+
+	p := New(d, testConfig(), nil, log.Default())
+	p.SetSyncResult(time.Now().Add(-2*time.Hour), nil)
+	_, _, err := p.Run(context.Background())
+	require.NoError(t, err)
+	ts, err := d.GetInboxLastProcessedTS()
+	require.NoError(t, err)
+	assert.Equal(t, current, ts)
+}
+
+// TestInbox09_SkippedRunConsumesSyncResult: a run skipped because the inbox
+// is disabled still consumes the handed-over sync result, so a stale sync
+// error never freezes a later cycle.
+func TestInbox09_SkippedRunConsumesSyncResult(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspaceAndUser(t, d, "1:U_ME1")
+	require.NoError(t, d.SetInboxLastProcessedTS(1000))
+	cfg := testConfig()
+	p := New(d, cfg, nil, log.Default())
+
+	cfg.Inbox.Enabled = false
+	p.SetSyncResult(time.Now(), errors.New("ratelimited"))
+	_, _, err := p.Run(context.Background())
+	require.NoError(t, err)
+
+	cfg.Inbox.Enabled = true
+	_, _, err = p.Run(context.Background())
+	require.NoError(t, err)
+	ts, err := d.GetInboxLastProcessedTS()
+	require.NoError(t, err)
+	assert.Greater(t, ts, 1000.0)
+}

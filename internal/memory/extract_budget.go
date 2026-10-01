@@ -1,7 +1,6 @@
 package memory
 
 import (
-	"errors"
 	"fmt"
 	"time"
 
@@ -22,21 +21,17 @@ const (
 	extractQuarantineAttempts = 6
 )
 
-// errUnusableReply marks an extraction failure on a reply the model did
-// return (no JSON array, unparseable, schema-degenerate) — as opposed to a
-// provider or local error (see countsTowardBudget).
-var errUnusableReply = errors.New("memory: unusable extract reply")
-
-// windowKey identifies an extraction window across runs: its channel and
-// first message ts. Stable while the watermark stays below the window, since
-// windows are cut from the first loaded message onwards.
+// windowKey identifies an extraction window across runs: its channel and its
+// first message's raw Slack ts — never ts_unix, which is whole seconds while a
+// window boundary can fall inside one second. Stable while the watermark stays
+// below the window, since windows are cut from the first loaded message on.
 type windowKey struct {
 	channelID string
-	firstTS   float64
+	firstTS   string
 }
 
 func keyOf(w runWindow) windowKey {
-	return windowKey{w.ChannelID, w.tsUnix[0]}
+	return windowKey{w.ChannelID, w.Messages[0].TS}
 }
 
 // extractBudget is one run's view of memory_extract_failures.
@@ -73,9 +68,14 @@ func (b *extractBudget) dropQuarantined(msgs []db.MemoryExtractMessage) ([]db.Me
 	return kept, len(msgs) - len(kept)
 }
 
+// isQuarantined compares raw Slack ts strings: they share one fixed
+// "<10-digit seconds>.<6 digits>" shape, so string order is time order, and a
+// channel's windows are contiguous in it (ListMemoryExtractMessages orders a
+// channel's messages by ts), so a quarantined range never covers a message of
+// another window.
 func (b *extractBudget) isQuarantined(m db.MemoryExtractMessage) bool {
 	for _, q := range b.quarantined {
-		if q.ChannelID == m.ChannelID && m.TSUnix >= q.FirstTS && m.TSUnix <= q.LastTS {
+		if q.ChannelID == m.ChannelID && m.TS >= q.FirstTS && m.TS <= q.LastTS {
 			return true
 		}
 	}
@@ -108,7 +108,8 @@ func (b *extractBudget) failed(database *db.DB, w runWindow, cause error) (quara
 	k := keyOf(w)
 	f := b.failing[k]
 	f.ChannelID, f.FirstTS = k.channelID, k.firstTS
-	f.LastTS = w.tsUnix[len(w.tsUnix)-1]
+	last := len(w.Messages) - 1
+	f.LastTS, f.LastTSUnix = w.Messages[last].TS, w.tsUnix[last]
 	f.Failures++
 	f.LastError = cause.Error()
 	if f.Failures >= extractQuarantineAttempts {
@@ -122,19 +123,15 @@ func (b *extractBudget) failed(database *db.DB, w runWindow, cause error) (quara
 }
 
 // countsTowardBudget decides whether a batch failure is evidence against the
-// batch's own windows. Only a run in which another batch committed proves the
-// provider and the vault were working, so only then does a failure count —
-// a run where every batch failed (an outage, a broken vault, a provider
-// answering garbage) proves nothing about any window, never spends a budget
-// and never lets the watermark pass a window. The one exception is a run with
-// a single batch, whose reply came back but was unusable: on a quiet install
-// there is no sibling to compare with, and an unusable reply is the window's
-// own signature. A failure caused by cancellation never counts.
-func countsTowardBudget(cause error, cancelled, anyCommitted bool, batches int) bool {
-	if cancelled {
-		return false
-	}
-	return anyCommitted || (batches == 1 && errors.Is(cause, errUnusableReply))
+// batch's own windows: only when a LATER batch of the same run committed,
+// proving the provider and the vault worked after the failure. A run that
+// stopped committing — an outage, a quota running out mid-run, a broken
+// vault, a provider answering garbage — proves nothing about the windows it
+// failed on (they head the next run anyway), so a transient failure never
+// spends a budget and never lets the watermark pass a window. A failure caused
+// by cancellation never counts.
+func countsTowardBudget(batch, lastCommitted int, cancelled bool) bool {
+	return !cancelled && batch < lastCommitted
 }
 
 // batchWindowsWithSolo groups windows like groupWindowsIntoBatches, except

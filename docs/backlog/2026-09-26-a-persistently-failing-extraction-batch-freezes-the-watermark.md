@@ -15,4 +15,4 @@ MEM-04 freezes the watermark at the first ts of a failed batch. There is no retr
 
 > Original note: «а давай проведем ревью нашего репоза на ветке мейн с целью наполнения беклога. Наши треки - покрытие тестами, баги существующие и потенциальные, архитектурные проблемы, анализ использования и бессмысленный функционал»
 
-**Resolution (2026-10-01):** fixed with owner approval — MEM-04 attempt budget: a window is retried in its batch 3 times, then alone, then quarantined after 6 counted failures (`memory_extract_failures` record + `quarantined` pipeline step + log) and the watermark passes it; outages never count (MEM-04 amended).
+**Resolution (2026-10-01):** fixed with owner approval — MEM-04 attempt budget: a window is retried in its batch 3 times, then alone, then quarantined after 6 counted failures (`memory_extract_failures` record + `quarantined` pipeline step + log) and the watermark passes it; a failure counts only when a later batch of the same run committed, so outages and mid-run cutoffs never count (MEM-04 amended).

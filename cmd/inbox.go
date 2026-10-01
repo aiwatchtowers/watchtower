@@ -355,13 +355,7 @@ func runInboxGenerate(cmd *cobra.Command, _ []string) error {
 	logger := log.New(cmd.ErrOrStderr(), "[inbox] ", log.LstdFlags)
 	out := cmd.OutOrStdout()
 
-	// Ensure messages are fresh — run sync if last sync was >10 min ago. A
-	// sync run here bounds the watermark at its start and freezes it on
-	// failure (INBOX-09). Without one the last sync finished under 10 minutes
-	// ago, so Run's now − 30 min bound stays behind that sync's start unless
-	// the sync itself took over 20 minutes.
-	var syncStart time.Time
-	var syncErr error
+	// Ensure messages are fresh — run sync if last sync was >10 min ago.
 	if needsSync(database, logger) {
 		var onProgress func(string)
 		if inboxGenFlagProgressJSON {
@@ -404,9 +398,8 @@ func runInboxGenerate(cmd *cobra.Command, _ []string) error {
 			}
 		}
 		database.Close() // release DB lock for sync subprocess
-		syncStart = time.Now()
-		if syncErr = runQuickSync(cmd, logger, onProgress); syncErr != nil {
-			logger.Printf("inbox: pre-sync failed (continuing with stale data): %v", syncErr)
+		if err := runQuickSync(cmd, logger, onProgress); err != nil {
+			logger.Printf("inbox: pre-sync failed (continuing with stale data): %v", err)
 		}
 		database, err = db.Open(cfg.DBPath())
 		if err != nil {
@@ -418,9 +411,12 @@ func runInboxGenerate(cmd *cobra.Command, _ []string) error {
 	gen, cleanupPool := cliPooledGenerator(cfg, logger)
 	defer cleanupPool()
 	pipe := inbox.New(database, cfg, gen, logger)
-	if !syncStart.IsZero() {
-		pipe.SetSyncResult(syncStart, syncErr)
-	}
+	// A manual run detects but never moves the inbox watermark (INBOX-09):
+	// it cannot tell whether the data it scans is complete — its pre-sync is
+	// a subprocess whose rate-limit or revoked-account outcome it cannot
+	// see, and it fails outright while the daemon holds the sync lock. The
+	// daemon's cycle, which knows its own sync result, advances it.
+	pipe.HoldWatermark()
 
 	if inboxGenFlagProgressJSON {
 		type pj struct {

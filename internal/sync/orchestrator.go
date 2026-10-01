@@ -71,6 +71,12 @@ type Orchestrator struct {
 	// a rate-limited token gets hit with even more calls instead of backing off.
 	searchRateLimited bool
 
+	// searchIncomplete records whether the current Run's search sync left
+	// messages unfetched (a rate limit, or pagination broken after page 1)
+	// and so kept search_last_date for a retry. Run resets it; the daemon
+	// reads it via SearchIncomplete to freeze the inbox watermark (INBOX-09).
+	searchIncomplete bool
+
 	// jiraKeyDetector, if set, links Jira issue keys found in synced messages
 	// (the digest/tracks pipelines' SetJiraKeyDetector shape).
 	jiraKeyDetector interface {
@@ -167,10 +173,21 @@ func (o *Orchestrator) resolveWorkerCount(requested int) int {
 func (o *Orchestrator) Run(ctx context.Context, opts SyncOptions) error {
 	o.searchGapNote = ""
 	o.searchRateLimited = false
+	o.searchIncomplete = false
 	err := o.run(ctx, opts)
 	o.recordAuthResult(ctx, err)
 	return err
 }
+
+// AccountID is the slack_accounts row this orchestrator syncs.
+func (o *Orchestrator) AccountID() int64 { return o.accountID }
+
+// SearchIncomplete reports whether the last Run returned without error but
+// left messages of its search window unfetched — Slack rate-limited the
+// search, or its pagination broke after page 1. The next Run re-covers them,
+// so a consumer that bounds by this sync (the inbox watermark, INBOX-09) must
+// not treat the cycle's data as complete.
+func (o *Orchestrator) SearchIncomplete() bool { return o.searchIncomplete }
 
 // recordAuthResult persists the account's sync auth state. Pass err=nil to
 // mark it healthy; either way this run's search-gap note (if any) is kept in

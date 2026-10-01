@@ -288,6 +288,7 @@ func (o *Orchestrator) syncViaSearch(ctx context.Context) error {
 			return fmt.Errorf("saving search_last_date: %w", err)
 		}
 	} else {
+		o.searchIncomplete = true
 		o.logger.Printf("search sync: pagination incomplete, leaving search_last_date unchanged to avoid data loss")
 	}
 

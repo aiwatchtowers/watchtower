@@ -156,6 +156,9 @@ type Pipeline struct {
 	// SetSyncResult and consumed by the next Run (INBOX-09).
 	syncStart time.Time
 	syncErr   error
+	// holdWatermark, set by HoldWatermark, makes the next Run leave the
+	// watermark where it is.
+	holdWatermark bool
 
 	// Step metrics (set before each OnProgress call).
 	LastStepDurationSeconds float64
@@ -186,6 +189,13 @@ func (p *Pipeline) SetOwner(o db.Owner) {
 // result; without one (a run that did not sync first) it bounds at now.
 func (p *Pipeline) SetSyncResult(start time.Time, err error) {
 	p.syncStart, p.syncErr = start, err
+}
+
+// HoldWatermark makes the next Run detect without moving the watermark: the
+// caller cannot vouch for how complete the synced data is (a manual run).
+// Not an error — detection itself is unaffected. Run consumes it.
+func (p *Pipeline) HoldWatermark() {
+	p.holdWatermark = true
 }
 
 // AccumulatedUsage reports the pipeline's token usage. Run makes no AI calls,
@@ -284,8 +294,8 @@ func decideWatermark(err error, dataAsOf time.Time) (ts float64, ok bool) {
 func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
 	// Consumed up front, so a skipped run never leaves a stale result for
 	// the next one.
-	syncStart, syncErr := p.syncStart, p.syncErr
-	p.syncStart, p.syncErr = time.Time{}, nil
+	syncStart, syncErr, hold := p.syncStart, p.syncErr, p.holdWatermark
+	p.syncStart, p.syncErr, p.holdWatermark = time.Time{}, nil, false
 
 	if p.cfg != nil && !p.cfg.Inbox.Enabled {
 		return 0, 0, nil
@@ -334,7 +344,9 @@ func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
 	if syncErr != nil {
 		detectErr = errors.Join(detectErr, fmt.Errorf("slack sync: %w", syncErr))
 	}
-	if ts, ok := decideWatermark(detectErr, syncStart); ok {
+	if ts, ok := decideWatermark(detectErr, syncStart); ok && hold {
+		p.logger.Println("inbox: manual run, leaving the watermark to the daemon's next clean sync")
+	} else if ok {
 		p.advanceWatermark(ts, lastTS)
 	} else {
 		p.logger.Printf("inbox: detector or sync error, leaving watermark unchanged to avoid losing the skipped window: %v", detectErr)

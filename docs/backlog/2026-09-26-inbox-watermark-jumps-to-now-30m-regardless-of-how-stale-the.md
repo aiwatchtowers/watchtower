@@ -15,4 +15,4 @@ created: 2026-09-26
 
 > Original note: «а давай проведем ревью нашего репоза на ветке мейн с целью наполнения беклога. Наши треки - покрытие тестами, баги существующие и потенциальные, архитектурные проблемы, анализ использования и бессмысленный функционал»
 
-**Resolution (2026-10-01):** fixed with owner approval — the watermark advances to the cycle's sync start − 30 min, and a Slack sync error freezes it except a revoked token's (INBOX-09 amended, guards added).
+**Resolution (2026-10-01):** fixed with owner approval — the watermark advances to the cycle's sync start − 30 min, and a Slack sync error or a rate-limited/incomplete search freezes it except for a revoked token; a manual `watchtower inbox` run no longer moves it (INBOX-09 amended, guards added). Residue, documented in INBOX-09: Jira sync failures/lag are not consulted, and a revoked account's outage messages land behind the watermark on reconnect.

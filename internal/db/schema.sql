@@ -1566,15 +1566,17 @@ CREATE TABLE IF NOT EXISTS memory_step_state (
 );
 
 -- Extraction attempt budget (see 00091, MEM-04): one row per failing Slack
--- extraction window, keyed by channel + first message ts_unix. After the
--- budget the window is quarantined (quarantined_at set) and its messages,
--- channel_id between first_ts and last_ts, are skipped so the watermark can
--- pass them; the row stays as the record of what memory never read.
+-- extraction window, keyed by channel + first message's raw Slack ts. After
+-- the budget the window is quarantined (quarantined_at set) and its messages,
+-- channel_id with raw ts from first_ts to last_ts, are skipped so the
+-- watermark can pass them; the row stays as the record of what memory never
+-- read.
 -- Runtime state, excluded from DropMemoryIndex (MEM-02).
 CREATE TABLE IF NOT EXISTS memory_extract_failures (
     channel_id     TEXT NOT NULL,
-    first_ts       REAL NOT NULL,            -- first message ts_unix of the window
-    last_ts        REAL NOT NULL,            -- last message ts_unix at the latest failure
+    first_ts       TEXT NOT NULL,            -- first message's Slack ts (e.g. "1700000000.000100")
+    last_ts        TEXT NOT NULL,            -- last message's Slack ts at the latest failure
+    last_ts_unix   REAL NOT NULL,            -- last_ts's ts_unix, for pruning against the watermark
     failures       INTEGER NOT NULL DEFAULT 0,
     last_error     TEXT NOT NULL DEFAULT '',
     quarantined_at TEXT NOT NULL DEFAULT '', -- RFC3339 UTC; '' while still retried

@@ -379,7 +379,7 @@ func TestPhaseSlackSyncAggregatesAcrossAccounts(t *testing.T) {
 	d.SetOrchestrators([]*sync.Orchestrator{orch1, orch2})
 	d.SetLogger(log.New(os.Stderr, "[test-fanout] ", 0))
 
-	err := d.phaseSlackSync(context.Background())
+	err, _ := d.phaseSlackSync(context.Background())
 	require.NoError(t, err)
 
 	// Both accounts' orchestrators ran (each hit search.messages at least once).
@@ -400,7 +400,9 @@ func TestPhaseSlackSyncAggregatesAcrossAccounts(t *testing.T) {
 func TestPhaseSlackSyncEmptySlice(t *testing.T) {
 	d := newQuietDaemon(t)
 	d.SetOrchestrators(nil)
-	assert.NoError(t, d.phaseSlackSync(context.Background()))
+	syncErr, inboxErr := d.phaseSlackSync(context.Background())
+	assert.NoError(t, syncErr)
+	assert.NoError(t, inboxErr)
 }
 
 // TestPhaseSlackSyncOneAccountFailureDoesNotBlockSibling proves the headline
@@ -430,7 +432,7 @@ func TestPhaseSlackSyncOneAccountFailureDoesNotBlockSibling(t *testing.T) {
 	d.SetOrchestrators([]*sync.Orchestrator{healthyOrch, failOrch})
 	d.SetLogger(log.New(os.Stderr, "[test-fanout] ", 0))
 
-	err := d.phaseSlackSync(context.Background())
+	err, _ := d.phaseSlackSync(context.Background())
 	require.Error(t, err, "phaseSlackSync surfaces the first account error")
 
 	// The healthy sibling still ran, unaffected by the other's failure.
@@ -481,7 +483,8 @@ func TestPhaseSlackSyncRevokedTokenClassification(t *testing.T) {
 	d.SetOrchestrators([]*sync.Orchestrator{orch})
 	d.SetLogger(log.New(os.Stderr, "[test-fanout] ", 0))
 
-	require.Error(t, d.phaseSlackSync(context.Background()))
+	syncErr, _ := d.phaseSlackSync(context.Background())
+	require.Error(t, syncErr)
 
 	acct, err := database.GetSlackAccount(1)
 	require.NoError(t, err)
@@ -1290,16 +1293,89 @@ func TestInbox09_RevokedAccountSyncErrorDoesNotFreeze(t *testing.T) {
 	d := New(&config.Config{Sync: config.SyncConfig{PollInterval: time.Second}})
 	d.SetLogger(log.New(os.Stderr, "[test-fanout] ", 0))
 	d.SetOrchestrators([]*sync.Orchestrator{revokedOrch})
-	syncErr := d.phaseSlackSync(context.Background())
+	syncErr, inboxErr := d.phaseSlackSync(context.Background())
 	require.Error(t, syncErr)
-	assert.NoError(t, inboxFreezingSyncError(syncErr), "a revoked account alone must not freeze the inbox watermark")
+	assert.NoError(t, inboxErr, "a revoked account alone must not freeze the inbox watermark")
 
 	// A sibling failing for any other reason still freezes it.
 	var failCount atomic.Int32
 	failOrch, _ := newStatusTrackingOrchestrator(t, http.NewServeMux(), &failCount)
 	d.SetOrchestrators([]*sync.Orchestrator{revokedOrch, failOrch})
-	syncErr = d.phaseSlackSync(context.Background())
-	freezing := inboxFreezingSyncError(syncErr)
-	require.Error(t, freezing, "a non-revoked account's sync error must freeze the inbox watermark")
-	assert.NotContains(t, freezing.Error(), "invalid_auth")
+	_, inboxErr = d.phaseSlackSync(context.Background())
+	require.Error(t, inboxErr, "a non-revoked account's sync error must freeze the inbox watermark")
+	assert.NotContains(t, inboxErr.Error(), "invalid_auth")
+}
+
+// TestInbox09_RateLimitedSearchFreezes: a Slack-throttled search ends the
+// account's sync with no error but with messages left unfetched — that must
+// still freeze the inbox watermark, or the retried messages land behind it.
+func TestInbox09_RateLimitedSearchFreezes(t *testing.T) {
+	// BEHAVIOR INBOX-09 — see docs/inventory/inbox-pulse.md
+	// Do not weaken or remove without explicit owner approval.
+	t.Setenv("HOME", t.TempDir())
+	mux := http.NewServeMux()
+	mux.HandleFunc("/search.messages", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "0")
+		w.WriteHeader(http.StatusTooManyRequests)
+	})
+	var count atomic.Int32
+	orch, _ := newStatusTrackingOrchestrator(t, mux, &count)
+	d := New(&config.Config{Sync: config.SyncConfig{PollInterval: time.Second}})
+	d.SetLogger(log.New(os.Stderr, "[test-ratelimit] ", 0))
+	d.SetOrchestrators([]*sync.Orchestrator{orch})
+
+	syncErr, inboxErr := d.phaseSlackSync(context.Background())
+	require.NoError(t, syncErr, "a rate limit ends the cycle cleanly")
+	require.Error(t, inboxErr)
+	assert.Contains(t, inboxErr.Error(), "search sync incomplete")
+}
+
+// TestInbox09_RunSyncBoundsAndFreezesInboxWatermark drives the daemon cycle
+// end to end: runSync hands the inbox the instant the cycle's sync started
+// (captured before any source synced), so the watermark stops at that − 30
+// min however long the cycle ran, and a failed account sync freezes it.
+func TestInbox09_RunSyncBoundsAndFreezesInboxWatermark(t *testing.T) {
+	// BEHAVIOR INBOX-09 — see docs/inventory/inbox-pulse.md
+	// Do not weaken or remove without explicit owner approval.
+	t.Setenv("HOME", t.TempDir())
+	const slowSync = 2 * time.Second
+	base := testMux()
+	slow := http.NewServeMux()
+	slow.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/search.messages" {
+			time.Sleep(slowSync)
+		}
+		base.ServeHTTP(w, r)
+	})
+	newCycle := func(mux *http.ServeMux) (*Daemon, *db.DB) {
+		var count atomic.Int32
+		orch, database := newStatusTrackingOrchestrator(t, mux, &count)
+		_, err := database.Exec(`UPDATE slack_accounts SET current_user_id = 'U001'`)
+		require.NoError(t, err)
+		require.NoError(t, database.SetInboxLastProcessedTS(1000))
+		cfg := &config.Config{
+			Sync:  config.SyncConfig{PollInterval: time.Second},
+			Inbox: config.InboxConfig{Enabled: true},
+		}
+		l := log.New(os.Stderr, "[test-inbox-cycle] ", 0)
+		d := newDaemon(orch, cfg)
+		d.SetLogger(l)
+		d.SetDB(database)
+		d.SetInboxPipeline(inbox.New(database, cfg, nil, l))
+		return d, database
+	}
+
+	d, database := newCycle(slow)
+	d.runSync(context.Background())
+	wm, err := database.GetInboxLastProcessedTS()
+	require.NoError(t, err)
+	assert.Greater(t, wm, 1000.0, "a clean cycle advances the watermark")
+	assert.Less(t, wm, float64(time.Now().Add(-30*time.Minute).Unix())-1,
+		"the watermark stops at the cycle's sync start − 30 min, not at now − 30 min")
+
+	d, database = newCycle(http.NewServeMux()) // every Slack call fails
+	d.runSync(context.Background())
+	wm, err = database.GetInboxLastProcessedTS()
+	require.NoError(t, err)
+	assert.Equal(t, 1000.0, wm, "a failed account sync freezes the watermark")
 }

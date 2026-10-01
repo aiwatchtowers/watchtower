@@ -281,7 +281,7 @@ func (p *Pipeline) Run(ctx context.Context) (RunStats, error) {
 		wmAfter = wmBefore
 	}
 	p.completeRun(runID, acc, stats.Episodes, wmBefore, wmAfter, nil)
-	p.logf("memory: run done: seeded %d, %d episodes from %d/%d windows (%d messages, %d refs rejected, %d malformed, %d windows quarantined, %d quarantined); gmail: %d episodes (%d threads failed); calendar: %d episodes (%d events failed); mirrors: %d mirrored (%d failed); jira: %d built (%d failed); semantic: %d deduped, %d promoted, %d rewritten (%d failed), %d belief-ops (%d rejected), %d aged, %d evicted; surfaces: %d chat-turns, %d reflections (%d disputes flagged, %d dropped); compare: %d shadowed (%d failed, %d refs rejected); focus: %d matched, %d swept (%d failed)",
+	p.logf("memory: run done: seeded %d, %d episodes from %d/%d windows (%d messages, %d refs rejected, %d malformed, %d windows quarantined, %d vault files quarantined); gmail: %d episodes (%d threads failed); calendar: %d episodes (%d events failed); mirrors: %d mirrored (%d failed); jira: %d built (%d failed); semantic: %d deduped, %d promoted, %d rewritten (%d failed), %d belief-ops (%d rejected), %d aged, %d evicted; surfaces: %d chat-turns, %d reflections (%d disputes flagged, %d dropped); compare: %d shadowed (%d failed, %d refs rejected); focus: %d matched, %d swept (%d failed)",
 		stats.Seeded, stats.Episodes, stats.Windows-stats.WindowsFailed, stats.Windows, stats.Messages, stats.RefsRejected, stats.Malformed, stats.WindowsQuarantined, stats.Reconciled.Quarantined,
 		stats.GmailEpisodes, stats.GmailThreadsFailed, stats.CalendarEpisodes, stats.CalendarEventsFailed, stats.Mirrored, stats.MirrorsFailed, stats.JiraEpisodes, stats.JiraIssuesFailed,
 		stats.Deduped, stats.Promoted, stats.Rewritten, stats.RewriteFailed, stats.BeliefOps, stats.BeliefOpsRejected, stats.Aged, stats.Evicted, stats.ChatTurnsIngested, stats.Reflections, stats.DisputesFlagged, stats.ReflectionsDropped,
@@ -602,12 +602,13 @@ func (p *Pipeline) runExtract(ctx context.Context, runID int64, stepOffset int, 
 		orDefault(p.cfg.BatchMaxChannels, 20), orDefault(p.cfg.BatchMaxMessages, 1500))
 
 	type failedBatch struct {
+		batch     int
 		idxs      []int
 		err       error
 		cancelled bool
 	}
 	var failed []failedBatch
-	anyCommitted := false
+	lastCommitted := -1
 	recorded := 0
 	for bi, idxs := range batches {
 		if ctx.Err() != nil {
@@ -629,9 +630,9 @@ func (p *Pipeline) runExtract(ctx context.Context, runID int64, stepOffset int, 
 			status = "error"
 			stats.WindowsFailed += len(idxs)
 			p.logf("memory: extract batch [%s]: %v", batchChannelNames(windows, idxs), werr)
-			failed = append(failed, failedBatch{idxs, werr, ctx.Err() != nil})
+			failed = append(failed, failedBatch{bi, idxs, werr, ctx.Err() != nil})
 		} else {
-			anyCommitted = true
+			lastCommitted = bi
 			for _, i := range idxs {
 				done[i] = true
 				if err := budget.succeeded(p.db, windows[i]); err != nil {
@@ -650,7 +651,7 @@ func (p *Pipeline) runExtract(ctx context.Context, runID int64, stepOffset int, 
 	// budget is spent is quarantined and stops holding the watermark back.
 	var quarantined []int
 	for _, fb := range failed {
-		if !countsTowardBudget(fb.err, fb.cancelled, anyCommitted, len(batches)) {
+		if !countsTowardBudget(fb.batch, lastCommitted, fb.cancelled) {
 			continue
 		}
 		for _, i := range fb.idxs {
@@ -922,7 +923,7 @@ func (p *Pipeline) extractBatch(ctx context.Context, runID int64, windows []runW
 	}
 	eps, err := parseExtract(raw)
 	if err != nil {
-		return 0, 0, 0, usage, fmt.Errorf("%w: %w", errUnusableReply, err)
+		return 0, 0, 0, usage, err
 	}
 	maxTotal := p.cfg.MaxEpisodesPerWindow * len(idxs)
 	if maxTotal > 0 && len(eps) > maxTotal {
@@ -942,7 +943,7 @@ func (p *Pipeline) extractBatch(ctx context.Context, runID int64, windows []runW
 	// genuinely empty [] stays a clean no-episode batch.
 	valid, malformed := splitMalformed(eps)
 	if malformed > 0 {
-		return 0, 0, malformed, usage, fmt.Errorf("%w: extract returned %d episode(s) with zero or cross-channel refs — schema-degenerate reply", errUnusableReply, malformed)
+		return 0, 0, malformed, usage, fmt.Errorf("memory: extract returned %d episode(s) with zero or cross-channel refs — schema-degenerate reply", malformed)
 	}
 	kept, rejected, err := validateRefs(p.checkMsg, valid)
 	if err != nil {
