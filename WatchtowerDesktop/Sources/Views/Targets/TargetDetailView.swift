@@ -224,7 +224,9 @@ struct TargetDetailView: View {
             titleVisibility: .visible
         ) {
             Button("Delete", role: .destructive) {
-                viewModel.deleteTarget(target)
+                // A failed delete keeps everything: the task, its chat and a
+                // reply still streaming in it (the failure is reported).
+                guard viewModel.deleteTarget(target) else { return }
                 // The target's conversations go with it; drop its container so
                 // the center never hands out tabs for a row that is gone.
                 appState.targetAssistantCenter.drop(targetID: target.id)

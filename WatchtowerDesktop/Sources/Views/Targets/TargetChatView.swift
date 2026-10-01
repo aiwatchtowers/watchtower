@@ -126,10 +126,13 @@ struct TargetChatSection: View {
 
 // MARK: - One chat
 
-/// One conversation: header, transcript and input. Unchanged by tabs — it is
-/// handed the active tab's view model.
+/// One conversation on the shared embedded chat component: the feed and
+/// composer of the AI Chat, with the target's proposals in the accessory slot
+/// under each reply (its `watchtower-action` cards, batched with Approve all
+/// from `batchCollapseThreshold` on, then the registry proposals of that turn)
+/// and the proposals of an interrupted turn in the footer.
 struct TargetChatPane: View {
-    @Bindable var chatVM: TargetChatViewModel
+    let chatVM: TargetChatViewModel
 
     var body: some View {
         VStack(spacing: 0) {
@@ -137,58 +140,135 @@ struct TargetChatPane: View {
 
             Divider()
 
-            messageList
-
-            Divider()
-
-            ChatInput(
-                text: $chatVM.inputText,
-                isStreaming: chatVM.isStreaming,
-                onSend: { chatVM.send() },
-                onStop: { chatVM.cancelStream() },
+            EmbeddedChatView(
+                engine: chatVM.engine,
                 placeholder: "Ask the assistant to work on this task…",
-                dictationTargetID: "chat.target.\(chatVM.targetID)"
+                dictationTargetID: "chat.target.\(chatVM.targetID)",
+                accessory: { item in TargetChatProposals(chatVM: chatVM, item: item) },
+                footer: { footer }
             )
-
-            if let err = chatVM.errorMessage {
-                Label(err, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 14)
-                    .padding(.bottom, 6)
-            }
-            if let err = chatVM.actionFeed.lastError {
-                Text(err)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 14)
-                    .padding(.bottom, 6)
-            }
         }
-        // Below the error labels, the pane's bottom-most content.
+        // The composer is the pane's bottom-most content.
         .clearsRecordingIndicator()
         .background(Color(.controlBackgroundColor).opacity(0.4))
     }
 
-    // MARK: Pending proposals
+    // MARK: Header
+
+    private var header: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "sparkles")
+                .font(.caption)
+                .foregroundStyle(Color.accentColor)
+            Text("Assistant")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+    }
+
+    // MARK: Footer
+
+    /// Below the feed: proposals whose turn never persisted a message (a
+    /// stream that died mid-turn — without a slot of their own they would be
+    /// unreachable), the feed's last gesture error and a deleted task.
+    @ViewBuilder
+    private var footer: some View {
+        let orphans = AgentActionFeed.unattached(
+            rows: chatVM.actionFeed.rows,
+            messageTurnIDs: Set(chatVM.engine.messages.map(\.message.turnID).filter { !$0.isEmpty })
+        )
+        if !orphans.isEmpty || chatVM.actionFeed.lastError != nil || chatVM.targetGone {
+            VStack(alignment: .leading, spacing: 6) {
+                if !orphans.isEmpty {
+                    Text("Proposals from an interrupted turn")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    // Bounded: a long list must not squeeze the feed out.
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(orphans) { action in agentActionCard(action) }
+                        }
+                    }
+                    .frame(maxHeight: 220)
+                }
+                if let err = chatVM.actionFeed.lastError {
+                    Text(err).font(.caption).foregroundStyle(.red)
+                }
+                if chatVM.targetGone {
+                    Label("This task no longer exists — it may have been deleted.",
+                          systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 6)
+        }
+    }
+
+    private func agentActionCard(_ action: AgentAction) -> some View {
+        AgentActionCardView(
+            action: action,
+            inFlight: chatVM.actionFeed.inFlight.contains(action.id),
+            onApprove: { Task { await chatVM.actionFeed.approve(action.id) } },
+            onReject: { Task { await chatVM.actionFeed.reject(action.id) } },
+            onRetry: { Task { await chatVM.actionFeed.retry(action.id) } },
+            gestureError: chatVM.actionFeed.rowErrors[action.id]
+        )
+    }
+}
+
+/// What sits under one reply of the target chat: its `watchtower-action`
+/// cards (batched with Approve all from `batchCollapseThreshold` on), then
+/// the registry proposals of that turn with their own Approve all.
+struct TargetChatProposals: View {
+    let chatVM: TargetChatViewModel
+    let item: ChatThreadItem
 
     /// From this many cards on, a turn's proposals render as one collapsed
     /// block instead of a screenful of individual cards.
     private static let batchCollapseThreshold = 4
 
-    /// Message ids whose batch block the user expanded to review one by one.
+    /// Whether the user expanded this reply's batch block to review one by one.
     @State private var expandedBatches: Set<UUID> = []
+
+    var body: some View {
+        let messageID = UUID(chatRowID: item.id)
+        let cards = chatVM.actionCards.filter { $0.messageID == messageID }
+        if cards.count >= Self.batchCollapseThreshold {
+            collapsedBatch(for: messageID, cards: cards)
+        } else if !cards.isEmpty {
+            batchApproveRow(for: messageID, cards: cards)
+            ForEach(cards) { card in actionCardView(card) }
+        }
+        // Registry proposals sit under the reply only — the owner's row of
+        // the same turn carries the same turn id.
+        if item.message.isAssistant, !item.message.turnID.isEmpty {
+            agentActionCards(forTurn: item.message.turnID)
+        }
+    }
+
+    private func actionCardView(_ card: TargetActionCard) -> some View {
+        TargetActionCardView(
+            card: card,
+            currentTargetID: chatVM.targetID,
+            onApprove: { kind in chatVM.approve(card, as: kind) },
+            onReject: { chatVM.reject(card) }
+        )
+    }
 
     /// A big batch as one compact block: what it is (count + composition), one
     /// Approve all button, and a Review toggle that expands to the per-card
     /// list for deciding individually. Card states keep updating the block's
     /// summary line after decisions land.
     @ViewBuilder
-    private func collapsedBatch(for msg: ChatMessage, cards: [TargetActionCard]) -> some View {
+    private func collapsedBatch(for messageID: UUID, cards: [TargetActionCard]) -> some View {
         let pending = cards.filter { $0.state == .pending }.count
-        let expanded = expandedBatches.contains(msg.id)
+        let expanded = expandedBatches.contains(messageID)
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .center, spacing: 10) {
                 Image(systemName: "square.stack.3d.up.fill")
@@ -208,7 +288,7 @@ struct TargetChatPane: View {
                 }
                 Spacer()
                 if pending > 0 {
-                    Button { chatVM.approveAll(messageID: msg.id) } label: {
+                    Button { chatVM.approveAll(messageID: messageID) } label: {
                         Label("Approve all", systemImage: "checkmark.circle")
                     }
                     .buttonStyle(.borderedProminent)
@@ -218,9 +298,9 @@ struct TargetChatPane: View {
                 }
                 Button {
                     if expanded {
-                        expandedBatches.remove(msg.id)
+                        expandedBatches.remove(messageID)
                     } else {
-                        expandedBatches.insert(msg.id)
+                        expandedBatches.insert(messageID)
                     }
                 } label: {
                     Label(expanded ? "Collapse" : "Review",
@@ -233,14 +313,7 @@ struct TargetChatPane: View {
                 .accessibilityIdentifier("chat.batchReview")
             }
             if expanded {
-                ForEach(cards) { card in
-                    TargetActionCardView(
-                        card: card,
-                        currentTargetID: chatVM.targetID,
-                        onApprove: { kind in chatVM.approve(card, as: kind) },
-                        onReject: { chatVM.reject(card) }
-                    )
-                }
+                ForEach(cards) { card in actionCardView(card) }
             }
         }
         .padding(12)
@@ -256,14 +329,14 @@ struct TargetChatPane: View {
     /// proposal cards — the affordance sits where the cards are, not in a
     /// header or a docked bar the eye never visits.
     @ViewBuilder
-    private func batchApproveRow(for msg: ChatMessage, cards: [TargetActionCard]) -> some View {
+    private func batchApproveRow(for messageID: UUID, cards: [TargetActionCard]) -> some View {
         let pending = cards.filter { $0.state == .pending }.count
         if pending > 1 {
             HStack(spacing: 8) {
                 Text("\(pending) proposals")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Button { chatVM.approveAll(messageID: msg.id) } label: {
+                Button { chatVM.approveAll(messageID: messageID) } label: {
                     Label("Approve all", systemImage: "checkmark.circle")
                 }
                 .buttonStyle(.borderedProminent)
@@ -275,101 +348,21 @@ struct TargetChatPane: View {
         }
     }
 
-    // MARK: Header
-
-    private var header: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "sparkles")
-                .font(.caption)
-                .foregroundStyle(Color.accentColor)
-            Text("Assistant")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-            Spacer()
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-    }
-
-    // MARK: Messages
-
-    private var messageList: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                // A plain VStack, not Lazy: a lazy stack tears offscreen rows
-                // down and re-lays them out on every scroll pass, and with a
-                // large pasted document in a bubble that rebuild is visible
-                // scroll jank. Transcripts are tens of messages — build every
-                // row once and let scrolling be pure compositing.
-                VStack(alignment: .leading, spacing: 10) {
-                    if chatVM.messages.isEmpty {
-                        emptyState
-                    }
-                    ForEach(chatVM.messages) { msg in
-                        chatBubble(msg)
-                        let cards = chatVM.actionCards.filter { $0.messageID == msg.id }
-                        if cards.count >= Self.batchCollapseThreshold {
-                            collapsedBatch(for: msg, cards: cards)
-                        } else {
-                            batchApproveRow(for: msg, cards: cards)
-                            ForEach(cards) { card in
-                                TargetActionCardView(
-                                    card: card,
-                                    currentTargetID: chatVM.targetID,
-                                    onApprove: { kind in chatVM.approve(card, as: kind) },
-                                    onReject: { chatVM.reject(card) }
-                                )
-                            }
-                        }
-                        agentActionCards(for: msg)
-                    }
-                    unattachedAgentActionCards
-                    Color.clear.frame(height: 1).id(bottomAnchor)
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 12)
-            }
-            .onChange(of: chatVM.messages.count) { scrollToBottom(proxy) }
-            .onChange(of: chatVM.messages.last?.text) { scrollToBottom(proxy) }
-            .onChange(of: chatVM.actionCards.count) { scrollToBottom(proxy) }
-            .onChange(of: chatVM.actionFeed.rows.count) { scrollToBottom(proxy) }
-        }
-    }
+    // MARK: Registry proposals
 
     /// Agent-tool proposal cards attached to one turn — the same
-    /// `AgentActionFeed` contract as the main chat, added after the existing
+    /// `AgentActionFeed` contract as the main chat, added after the
     /// `TargetActionCardView` cards for the message so both proposal kinds
     /// interleave in turn order rather than one hiding behind the other.
     @ViewBuilder
-    private func agentActionCards(for msg: ChatMessage) -> some View {
-        if let turn = msg.turnID {
-            let cards = chatVM.actionFeed.cards(forTurn: turn)
-            if cards.filter(\.isPending).count >= 2 {
-                Button("Approve all") { Task { await chatVM.actionFeed.approveAllPending(forTurn: turn) } }
-                    .font(.caption)
-            }
-            ForEach(cards) { action in
-                agentActionCard(action)
-            }
-        }
-    }
-
-    /// Proposals whose turn never persisted a message — a stream that died
-    /// mid-turn. Without a slot of their own they would be unreachable.
-    @ViewBuilder
-    private var unattachedAgentActionCards: some View {
-        let orphans = AgentActionFeed.unattached(
-            rows: chatVM.actionFeed.rows,
-            messageTurnIDs: Set(chatVM.messages.compactMap(\.turnID))
-        )
-        if !orphans.isEmpty {
-            Text("Proposals from an interrupted turn")
+    private func agentActionCards(forTurn turn: String) -> some View {
+        let cards = chatVM.actionFeed.cards(forTurn: turn)
+        if cards.filter(\.isPending).count >= 2 {
+            Button("Approve all") { Task { await chatVM.actionFeed.approveAllPending(forTurn: turn) } }
                 .font(.caption)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            ForEach(orphans) { action in
-                agentActionCard(action)
-            }
+        }
+        ForEach(cards) { action in
+            agentActionCard(action)
         }
     }
 
@@ -382,82 +375,6 @@ struct TargetChatPane: View {
             onRetry: { Task { await chatVM.actionFeed.retry(action.id) } },
             gestureError: chatVM.actionFeed.rowErrors[action.id]
         )
-    }
-
-    private let bottomAnchor = "chat-bottom"
-
-    private func scrollToBottom(_ proxy: ScrollViewProxy) {
-        withAnimation(.easeOut(duration: 0.2)) {
-            proxy.scrollTo(bottomAnchor, anchor: .bottom)
-        }
-    }
-
-    private var emptyState: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "sparkles")
-                .font(.system(size: 26))
-                .foregroundStyle(Color.accentColor.opacity(0.6))
-            Text("Work on this task with AI")
-                .font(.subheadline.weight(.medium))
-            Text("Ask it to dig through Slack, draft a reply, or update the task — it proposes changes and you approve them.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.horizontal, 24)
-        .padding(.top, 40)
-    }
-
-    @ViewBuilder
-    private func chatBubble(_ msg: ChatMessage) -> some View {
-        switch msg.role {
-        case .user:
-            HStack {
-                Spacer(minLength: 40)
-                Text(msg.text)
-                    .font(.subheadline)
-                    .textSelection(.enabled)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(Color.accentColor.opacity(0.18), in: RoundedRectangle(cornerRadius: 14))
-            }
-        case .assistant:
-            HStack(alignment: .top, spacing: 8) {
-                Image(systemName: "sparkle")
-                    .font(.caption2)
-                    .foregroundStyle(Color.accentColor)
-                    .padding(.top, 9)
-                Group {
-                    if msg.text.isEmpty && msg.isStreaming {
-                        HStack(spacing: 6) {
-                            ProgressView().controlSize(.mini)
-                            Text("Thinking…").foregroundStyle(.secondary)
-                        }
-                        .font(.subheadline)
-                    } else {
-                        MarkdownView(text: msg.text)
-                            .font(.subheadline)
-                            .textSelection(.enabled)
-                    }
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color(.textBackgroundColor).opacity(0.6), in: RoundedRectangle(cornerRadius: 14))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14)
-                        .strokeBorder(Color(.separatorColor).opacity(0.25), lineWidth: 0.5)
-                )
-            }
-        case .system:
-            Text(msg.text)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .center)
-                .padding(.vertical, 2)
-        }
     }
 }
 

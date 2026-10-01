@@ -356,28 +356,32 @@ final class TargetAssistantViewModelTests: XCTestCase {
     /// exists so the delete takes it along. Deleting first would leave the row
     /// orphaned (or fail), exactly what the explicit message delete guards
     /// against.
-    func testClosingAStreamingTabLeavesNoOrphanedMessage() throws {
+    func testClosingAStreamingTabLeavesNoOrphanedMessage() async throws {
         let (manager, path) = try makeManager()
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager)
-        let assistant = makeContainer(manager, target: target)
+        let assistant = makeContainer(manager, target: target,
+                                      aiService: MockClaudeService(events: [.text("half a repl")], thenHangs: true))
         _ = try XCTUnwrap(assistant.activeConversationID)
         let secondID = try XCTUnwrap(assistant.newConversation())
         let chat = try XCTUnwrap(assistant.activeChat)
 
-        // Mid-turn state: an assistant placeholder carrying partial text.
-        chat.messages.append(ChatMessage(
-            id: UUID(), role: .assistant, text: "half a repl", timestamp: Date(), isStreaming: true
-        ))
-        chat.isStreaming = true
+        // A real mid-turn state: the reply has streamed part of its text.
+        chat.inputText = "go"
+        chat.send()
+        let deadline = Date().addingTimeInterval(5)
+        while chat.engine.liveTurn?.fullText != "half a repl", Date() < deadline {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertTrue(chat.isStreaming)
 
         assistant.close(secondID)
 
         XCTAssertFalse(chat.isStreaming)
-        let leftovers = try manager.dbPool.read { db in
-            try ChatMessageQueries.fetchByConversation(db, conversationID: secondID)
+        func leftovers() throws -> [ChatMessageRecord] {
+            try manager.dbPool.read { db in try ChatMessageQueries.fetchByConversation(db, conversationID: secondID) }
         }
-        XCTAssertTrue(leftovers.isEmpty, "the cancelled turn's partial reply must not outlive the tab")
+        XCTAssertTrue(try leftovers().isEmpty, "the cancelled turn's partial reply must not outlive the tab")
     }
 
     // MARK: - Auto-title
@@ -461,5 +465,105 @@ final class TargetAssistantViewModelTests: XCTestCase {
         chat.approve(card)
 
         XCTAssertEqual(notifications, 1)
+    }
+
+    // MARK: - Engines from the app-wide center
+
+    private func makeCenteredContainer(
+        _ manager: DatabaseManager, target: Target, ai: any AIServiceProtocol
+    ) -> (TargetAssistantViewModel, EmbeddedChatCenter) {
+        let center = EmbeddedChatCenter(idleTTL: 0) { spec, gate in
+            makeSurfaceEngine(spec, dbPool: manager.dbPool, ai: ai, gate: gate)
+        }
+        let assistant = TargetAssistantViewModel(target: target, viewModel: TargetsViewModel(dbManager: manager),
+                                                 dbManager: manager, embeddedChats: center)
+        return (assistant, center)
+    }
+
+    func testATabsEngineComesFromTheCenterAndSurvivesItsSweep() throws {
+        let (manager, path) = try makeManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager)
+        let (assistant, center) = makeCenteredContainer(manager, target: target, ai: MockClaudeService())
+        let chat = try XCTUnwrap(assistant.activeChat)
+        XCTAssertTrue(center.loaded(chat.engine.spec.key) === chat.engine)
+        center.sweep(now: Date().addingTimeInterval(3600))
+        XCTAssertTrue(center.loaded(chat.engine.spec.key) === chat.engine, "the open tab holds its engine")
+    }
+
+    func testClosingATabReleasesItsEngine() throws {
+        let (manager, path) = try makeManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager)
+        let (assistant, center) = makeCenteredContainer(manager, target: target, ai: MockClaudeService())
+        let secondID = try XCTUnwrap(assistant.newConversation())
+        let key = try XCTUnwrap(assistant.activeChat).engine.spec.key
+        assistant.close(secondID)
+        XCTAssertNil(center.loaded(key))
+        XCTAssertEqual(center.count, 1, "the remaining tab keeps its engine")
+    }
+
+    func testDroppingADeletedTargetDropsItsEngines() throws {
+        let (manager, path) = try makeManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager)
+        let embedded = EmbeddedChatCenter { spec, gate in
+            makeSurfaceEngine(spec, dbPool: manager.dbPool, ai: MockClaudeService(), gate: gate)
+        }
+        let targets = TargetAssistantCenter()
+        targets.embeddedChats = embedded
+        _ = targets.container(for: target, viewModel: TargetsViewModel(dbManager: manager), dbManager: manager)
+        XCTAssertEqual(embedded.count, 1)
+        targets.drop(targetID: target.id)
+        XCTAssertEqual(embedded.count, 0)
+    }
+
+    /// A decision waiting behind a failed turn keeps the container alive: its
+    /// eviction would drop the decision before it reaches the assistant.
+    func testFollowUpsWaitingBehindAFailedTurnCountAsWork() async throws {
+        let (manager, path) = try makeManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager)
+        struct Boom: Error {}
+        let assistant = makeContainer(manager, target: target, aiService: MockClaudeService(error: Boom()))
+        let chat = try XCTUnwrap(assistant.activeChat)
+        chat.inputText = "go"
+        chat.send()
+        try await waitForStreamEnd(chat)
+        let card = TargetActionCard(messageID: UUID(),
+                                    action: ProposedAction(type: .addSubItem, reason: "r", text: "step"),
+                                    state: .pending)
+        chat.actionCards = [card]
+        chat.approve(card)
+        XCTAssertFalse(chat.isStreaming, "after a failure the follow-up waits for Retry or the next message")
+        XCTAssertTrue(assistant.isAnyWorking)
+    }
+
+    /// A task deleted after a failed turn frees the follow-ups it held, so
+    /// its container is no longer pinned.
+    func testADeletedTaskReleasesTheFollowUpsItHeld() async throws {
+        let (manager, path) = try makeManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager)
+        struct Boom: Error {}
+        let assistant = makeContainer(manager, target: target, aiService: MockClaudeService(error: Boom()))
+        let chat = try XCTUnwrap(assistant.activeChat)
+        chat.inputText = "go"
+        chat.send()
+        try await waitForStreamEnd(chat)
+        let card = TargetActionCard(messageID: UUID(),
+                                    action: ProposedAction(type: .addSubItem, reason: "r", text: "step"),
+                                    state: .pending)
+        chat.actionCards = [card]
+        chat.approve(card)
+        XCTAssertTrue(assistant.isAnyWorking)
+
+        try await manager.dbPool.write { db in try db.execute(sql: "DELETE FROM targets WHERE id = ?", arguments: [target.id]) }
+        chat.inputText = "still there?"
+        chat.send()  // refused: the task is gone
+        chat.engine.retry()  // refused too
+        XCTAssertTrue(chat.targetGone)
+        XCTAssertFalse(chat.hasPendingWork)
+        XCTAssertFalse(assistant.isAnyWorking)
     }
 }

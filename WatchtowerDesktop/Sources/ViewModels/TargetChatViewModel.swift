@@ -80,13 +80,19 @@ extension TargetActionKind {
 
 // MARK: - ViewModel
 
+/// The target's assistant chat for ONE tab (`chat_conversations.context_type
+/// = "target"`), on the shared embedded chat component: the engine streams,
+/// persists and queues; this controller keeps what is specific to a task —
+/// the `watchtower-action` proposal cards, Approve / Approve all / Reject,
+/// execute-mode auto-apply (TGT-BRIEF-01..03), the tree-scoped address check
+/// and the registry proposals (`AgentActionFeed`). An action surface
+/// (AGENT-04): `.actions("target")` while the provider reaches the MCP server.
 @MainActor
 @Observable
 final class TargetChatViewModel {
-    var messages: [ChatMessage] = []
     var actionCards: [TargetActionCard] = []
-    var isStreaming = false
-    var inputText = ""
+    /// The outcome the host reads after a run (`TargetBriefCenter`): the
+    /// latest turn's failure, or a deleted task. Cleared by the host.
     var errorMessage: String?
 
     /// The task was deleted (elsewhere — the CLI, the agent, another window)
@@ -99,21 +105,17 @@ final class TargetChatViewModel {
     /// persisted by the time this VM exists.
     var targetID: Int { target.id }
 
-    private var conversationID: Int64?
-    private var sessionID: String?
-    private let aiService: any AIServiceProtocol
-    private let dbManager: DatabaseManager
+    /// The tab's chat: rows, live reply, composer draft, queue.
+    let engine: EmbeddedChatEngine
+
     private var target: Target
     private let viewModel: TargetsViewModel
-    private var streamTask: Task<Void, Never>?
+    /// The center that handed out `engine`, held for the hold below.
+    private weak var center: EmbeddedChatCenter?
+    private let dbManager: DatabaseManager
     // Cancelled by stop() (main actor) — the container calls it on tab close
     // and on container eviction; there is no deinit touching this.
     private var observationTask: Task<Void, Never>?
-
-    /// Follow-ups produced by a decision taken while a turn was still streaming.
-    /// The write applies immediately; its message waits here until the running
-    /// turn ends (or the user sends the next one) so it is never dropped.
-    private var queuedFollowUps: [String] = []
 
     /// Called after the chat did something that counts as activity on the target:
     /// an applied action or a finished turn. The host screen uses it to re-read the
@@ -143,9 +145,35 @@ final class TargetChatViewModel {
     /// config.yaml on every turn, so it stays a stable, test-injectable value.
     let toolsAvailable: Bool
 
+    /// The rows as the tab renders them (and as tests read them).
+    var messages: [ChatMessage] {
+        engine.messages.map { item in
+            let live = engine.liveTurn.flatMap { $0.messageID == item.id ? $0 : nil }
+            let row = item.message.toChatMessage()
+            return ChatMessage(id: UUID(chatRowID: item.id), role: row.role,
+                               text: live?.fullText ?? row.text, timestamp: row.timestamp,
+                               isStreaming: live != nil, turnID: row.turnID)
+        }
+    }
+
+    /// Busy streaming or waiting for a slot: either way, a turn is under way.
+    var isStreaming: Bool { engine.isBusy }
+
+    /// A turn under way, or decisions waiting to reach the assistant — the
+    /// container is never evicted while this holds.
+    var hasPendingWork: Bool { engine.hasPendingWork }
+
+    /// The composer's text (the engine's draft — it survives navigation).
+    var inputText: String {
+        get { engine.draft }
+        set { engine.draft = newValue }
+    }
+
     /// `conversationID` is the tab this VM speaks into. Finding or creating it is
     /// the container's job (`TargetAssistantViewModel` owns the target's tab
     /// list), so this VM only ever adopts a conversation that already exists.
+    /// `center` hands out the app-wide engine (the shared turn limit); without
+    /// one the chat runs its own (tests).
     init(
         target: Target,
         viewModel: TargetsViewModel,
@@ -153,18 +181,30 @@ final class TargetChatViewModel {
         conversationID: Int64,
         aiService: (any AIServiceProtocol)? = nil,
         cliRunner: CLIRunnerProtocol? = nil,
-        toolsAvailable: Bool = Constants.aiProviderID() != "ollama"
+        toolsAvailable: Bool = Constants.aiProviderID() != "ollama",
+        center: EmbeddedChatCenter? = nil
     ) {
         self.target = target
         self.viewModel = viewModel
         self.dbManager = dbManager
-        self.aiService = aiService ?? WatchtowerAIService()
         self.actionFeed = AgentActionFeed(dbPool: dbManager.dbPool, cliRunner: cliRunner)
         self.toolsAvailable = toolsAvailable
-
-        loadConversation(id: conversationID)
-        startMessageObservation()
-        if let conversationID = self.conversationID { actionFeed.start(conversationID: conversationID) }
+        let spec = Self.placeholderSpec(targetID: target.id, conversationID: conversationID)
+        self.engine = center?.engine(for: spec) ?? EmbeddedChatEngine(
+            spec: spec,
+            store: DatabaseEmbeddedChatStore(dbPool: dbManager.dbPool, conversationID: conversationID),
+            aiService: aiService ?? WatchtowerAIService(),
+            gate: EmbeddedStreamGate(),
+            provider: Constants.aiProviderID()
+        )
+        engine.update(spec: makeSpec(conversationID: conversationID))
+        // The tab container keeps this engine as long as it keeps this VM:
+        // the center's idle sweep must not release it from under the tab.
+        self.center = center
+        center?.markShown(spec.key)
+        engine.onTurnFinished = { [weak self] outcome in self?.turnFinished(outcome) }
+        startMessageObservation(conversationID: conversationID)
+        actionFeed.start(conversationID: conversationID)
     }
 
     /// Tears the VM's long-lived work down: the GRDB message observation and any
@@ -175,66 +215,75 @@ final class TargetChatViewModel {
     func stop() {
         observationTask?.cancel()
         observationTask = nil
-        streamTask?.cancel()
-        streamTask = nil
+        engine.stop()
         actionFeed.stop()
+        center?.markHidden(engine.spec.key)
     }
 
-    /// Adopt the conversation the container resolved for this tab. A row that
-    /// vanished (closed from another surface) surfaces as an error rather than
-    /// silently starting a second, unpersisted thread.
-    private func loadConversation(id: Int64) {
-        do {
-            guard let conversation = try dbManager.dbPool.read({ db in
-                try ChatConversationQueries.fetchByID(db, id: id)
-            }) else {
-                errorMessage = "This chat no longer exists."
-                return
-            }
-            let records = try dbManager.dbPool.read { db in
-                try ChatMessageQueries.fetchByConversation(db, conversationID: id)
-            }
-            conversationID = conversation.id
-            sessionID = conversation.sessionID
-            messages = records.map { $0.toChatMessage() }
-        } catch {
-            errorMessage = "Failed to load conversation: \(error.localizedDescription)"
-        }
+    // MARK: - Spec
+
+    /// The engine is created before `self` is complete; its real spec, whose
+    /// closures reach back into this controller, replaces this one at once.
+    private static func placeholderSpec(targetID: Int, conversationID: Int64) -> ChatSurfaceSpec {
+        ChatSurfaceSpec(
+            key: EmbeddedChatKey(contextType: "target", contextID: String(targetID), conversationID: conversationID),
+            persistence: .database(conversationID: conversationID),
+            toolAccess: .draftOnly,
+            systemPrompt: { "" },
+            willSend: { _ in false },
+            emptyHint: ""
+        )
     }
 
-    private func startMessageObservation() {
-        guard let convID = conversationID else { return }
+    private func makeSpec(conversationID: Int64) -> ChatSurfaceSpec {
         let dbPool = dbManager.dbPool
-        observationTask = Task { [weak self] in
-            let observation = ValueObservation.tracking { db in
-                try ChatMessageQueries.fetchByConversation(db, conversationID: convID)
-            }
-            do {
-                for try await records in observation.values(in: dbPool).dropFirst() {
-                    guard !Task.isCancelled else { break }
-                    // A vanished VM ends the observation — `continue` would keep
-                    // the pool observed for the process's lifetime.
-                    guard let self else { break }
-                    guard !self.isStreaming else { continue }
-                    // Only adopt a snapshot that has MORE messages than we hold:
-                    // observation events are delivered asynchronously, so right
-                    // after a stream ends a stale snapshot (written mid-run) can
-                    // arrive and must not clobber the fresher in-memory tail
-                    // (e.g. the just-appended run summary).
-                    if records.count > self.messages.count {
-                        self.messages = records.map { $0.toChatMessage() }
-                    }
-                }
-            } catch {
-                print("TargetChat: message observation stopped: \(error)")
-            }
-        }
+        let tools = toolsAvailable
+        return ChatSurfaceSpec(
+            key: EmbeddedChatKey(contextType: "target", contextID: String(target.id), conversationID: conversationID),
+            persistence: .database(conversationID: conversationID),
+            // The target chat is an action surface (AGENT-04): a tool mode is
+            // sent only while the provider reaches the MCP server.
+            toolAccess: tools ? .actions(surface: "target") : .draftOnly,
+            // The closures reach this controller weakly: the engine lives in the
+            // app-wide center. Every path that lets the controller go releases
+            // the engine too, so a missing controller is only ever logged.
+            systemPrompt: { [weak self] in
+                guard let self else { return Self.closedChat("system prompt", "") }
+                return Self.buildSystemPrompt(target: self.target, dbPool: dbPool, toolsAvailable: tools)
+            },
+            turnPrompt: { [weak self] input in self?.turnPrompt(input) ?? Self.closedChat("turn prompt", input.text) },
+            postTurn: { [weak self] input in
+                self?.surfaceActions(input) ?? Self.closedChat("reply", ChatPostTurnResult(
+                    displayText: input.reply, failure: "This chat was closed before its reply could be read."))
+            },
+            willSend: { [weak self] text in self?.willSend(text) ?? Self.closedChat("send", false) },
+            mayContinue: { [weak self] in
+                guard let self else { return Self.closedChat("follow-up", false) }
+                // No AI turn is started about a task that no longer exists.
+                self.reloadTarget()
+                self.releaseHeldFollowUps()
+                return !self.targetGone
+            },
+            emptyHint: "Ask it to dig through Slack, draft a reply, or update the task — it proposes changes "
+                + "and you approve them."
+        )
     }
 
-    func send() {
-        let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !isStreaming else { return }
+    /// Decisions held for a later turn can never reach a deleted task; left
+    /// queued they would pin this tab's container for good.
+    private func releaseHeldFollowUps() {
+        if targetGone { engine.discardFollowUps(reason: "the task was deleted") }
+    }
 
+    private static func closedChat<T>(_ what: String, _ fallback: T) -> T {
+        NSLog("TargetChat: %@ asked of a chat whose controller is gone", what)
+        return fallback
+    }
+
+    /// Before an owner turn: re-read the task (its checklist may have changed
+    /// under this chat), refuse once it is gone, then let the container title
+    /// a fresh tab.
+    private func willSend(_ text: String) -> Bool {
         // This VM is cached per target in an app-wide container and holds a
         // `Target` VALUE, while the detail view around it is itself a mutation
         // site (checklist drag-reorder, inline edits) — so the snapshot the
@@ -243,246 +292,90 @@ final class TargetChatViewModel {
         // both are re-checked against the live list at apply time.
         reloadTarget()
         // Keeps the typed text: nothing was sent.
-        guard !targetGone else { return }
-
-        streamTask?.cancel()
-        inputText = ""
-
-        // Captured BEFORE appending this turn's user message, so it names the
-        // PREVIOUS user turn — the floor `actionFeed.outcomesBlock` reads from.
-        let previousOwnerMessageAt = messages.last { $0.role == .user }?.timestamp
-        let turnID = UUID().uuidString
-
-        messages.append(ChatMessage(
-            id: UUID(),
-            role: .user,
-            text: text,
-            timestamp: Date(),
-            isStreaming: false
-        ))
-
-        if let convID = conversationID {
-            persistMessage(conversationID: convID, role: "user", text: text)
+        guard !targetGone else {
+            releaseHeldFollowUps()
+            return false
         }
         onUserMessage?(text)
-
-        messages.append(ChatMessage(
-            id: UUID(),
-            role: .assistant,
-            text: "",
-            timestamp: Date(),
-            isStreaming: true,
-            turnID: turnID
-        ))
-        startStream(prompt: prependQueuedFollowUps(to: text), turnID: turnID, previousOwnerMessageAt: previousOwnerMessageAt)
+        return true
     }
 
-    /// Feed a follow-up turn back into the conversation. The text is shown as a
-    /// system message right away; when a turn is already streaming the prompt is
-    /// queued instead of being dropped, and goes out at the next flush point.
-    private func sendFollowUp(_ text: String) {
-        appendSystemMessage(text)
-        // The decision's outcome stays in the transcript; no AI turn is
-        // started about a task that no longer exists.
-        guard !targetGone else { return }
-        guard !isStreaming else {
-            queuedFollowUps.append(text)
-            return
+    /// The floor is the PREVIOUS owner message, and it alone: a turn with no
+    /// prior owner message has nothing to report anyway. Gating on the
+    /// session id instead would silently exclude codex, which never emits
+    /// one — unlike the context re-injection below, which is about --resume.
+    ///
+    /// On the first turn the target context is in the system prompt. On a
+    /// resumed turn the CLI uses --resume and drops the system prompt entirely
+    /// — and if that session has expired (e.g. after an app restart) the model
+    /// would have NO context at all. So carry the live target context AND the
+    /// action contract with the message on every resumed turn: the assistant
+    /// never loses track of which target it is working on, sees the target's
+    /// current state, and can still emit valid watchtower-action blocks.
+    private func turnPrompt(_ input: ChatTurnInput) -> String {
+        let outcomes = actionFeed.outcomesBlock(after: input.previousOwnerMessageAt)
+        let base = input.isResumed
+            ? "\(Self.taskContextBlock(target))\n\(Self.taskTreeBlock(target: target, dbPool: dbManager.dbPool))\n\n"
+                + "\(Self.taskActionsContract)\n\n"
+                + "\(toolsAvailable ? AgentToolsContract.promptBlock(surface: .target) : "")\n\n\(input.text)"
+            : input.text
+        return outcomes.map { "\($0)\n\n\(base)" } ?? base
+    }
+
+    // MARK: - Commands
+
+    /// Sends the composer's text as an owner turn.
+    func send() {
+        engine.sendDraft()
+    }
+
+    func cancelStream() {
+        engine.stop()
+    }
+
+    /// A finished, stopped or failed turn: proposals made during it were
+    /// inserted by the chat-mode MCP SUBPROCESS, which the feed's
+    /// ValueObservation cannot see — the turn boundary is where they have to
+    /// appear. The host re-reads the task.
+    private func turnFinished(_ outcome: EmbeddedChatEngine.TurnOutcome) {
+        switch outcome {
+        case .failed(_, let message), .notStarted(let message):
+            errorMessage = message
+        case .completed, .stopped:
+            break
         }
-        let turnID = UUID().uuidString
-        messages.append(ChatMessage(
-            id: UUID(), role: .assistant, text: "", timestamp: Date(), isStreaming: true, turnID: turnID
-        ))
-        startStream(prompt: text, turnID: turnID, previousOwnerMessageAt: nil)
+        actionFeed.refresh()
+        reloadTarget()
+        releaseHeldFollowUps()
+        viewModel.load()
+        onTargetActivity?()
     }
 
-    /// Drain the queue into `text`, so a decision taken mid-stream still reaches
-    /// the assistant even when the turn it was queued behind was cancelled.
-    private func prependQueuedFollowUps(to text: String) -> String {
-        guard !queuedFollowUps.isEmpty else { return text }
-        let queued = queuedFollowUps.joined(separator: "\n")
-        queuedFollowUps.removeAll()
-        return "\(queued)\n\n\(text)"
-    }
-
-    /// Send everything queued during the finished turn as ONE follow-up turn.
-    /// The system messages were already appended when the decisions were taken.
-    private func flushQueuedFollowUps() {
-        guard !queuedFollowUps.isEmpty, !isStreaming else { return }
-        guard !targetGone else {
-            queuedFollowUps.removeAll()
-            return
-        }
-        let prompt = queuedFollowUps.joined(separator: "\n")
-        queuedFollowUps.removeAll()
-        let turnID = UUID().uuidString
-        messages.append(ChatMessage(
-            id: UUID(), role: .assistant, text: "", timestamp: Date(), isStreaming: true, turnID: turnID
-        ))
-        startStream(prompt: prompt, turnID: turnID, previousOwnerMessageAt: nil)
-    }
-
-    /// Per-turn context minted at send time, bundled into one parameter so
-    /// `executeStream` stays within the project's function-parameter-count
-    /// limit: the id every proposal/persisted row from this turn carries, and
-    /// the floor `actionFeed.outcomesBlock` reads from (nil on a follow-up
-    /// turn — there is no new owner message to floor from).
-    private struct TurnContext {
-        let turnID: String
-        let previousOwnerMessageAt: Date?
-    }
-
-    /// Spawn the streaming turn. Shared by `send()` and `sendFollowUp(_:)` —
-    /// the caller is responsible for appending the user/system message and the
-    /// empty assistant placeholder before calling this.
-    private func startStream(prompt: String, turnID: String, previousOwnerMessageAt: Date?) {
-        isStreaming = true
-        let currentSessionID = sessionID
+    private func startMessageObservation(conversationID: Int64) {
         let dbPool = dbManager.dbPool
-        let capturedTarget = target
-        let capturedAIService = aiService
-        let capturedConvID = conversationID
-        let capturedDBManager = dbManager
-        let turn = TurnContext(turnID: turnID, previousOwnerMessageAt: previousOwnerMessageAt)
-
-        streamTask = Task { [weak self] in
-            await self?.executeStream(
-                text: prompt,
-                turn: turn,
-                currentSessionID: currentSessionID,
-                target: capturedTarget,
-                dbPool: dbPool,
-                aiService: capturedAIService,
-                dbManager: capturedDBManager,
-                conversationID: capturedConvID
-            )
-        }
-    }
-
-    // MARK: - Stream execution
-
-    private func executeStream(
-        text: String,
-        turn: TurnContext,
-        currentSessionID: String?,
-        target: Target,
-        dbPool: DatabasePool,
-        aiService: any AIServiceProtocol,
-        dbManager: DatabaseManager,
-        conversationID: Int64?
-    ) async {
-        let systemPrompt: String? = currentSessionID == nil
-            ? Self.buildSystemPrompt(target: target, dbPool: dbPool, toolsAvailable: toolsAvailable)
-            : nil
-
-        // The target chat is an action surface (AGENT-04): a tool mode is sent
-        // only once the tab has a conversation to attach proposals to and the
-        // provider reaches the MCP server.
-        let toolMode: ChatToolMode?
-        if toolsAvailable, let conversationID {
-            toolMode = ChatToolMode(surface: "target", conversationID: conversationID, turnID: turn.turnID,
-                                    contextType: "target", contextID: String(target.id))
-        } else {
-            toolMode = nil
-        }
-        // The floor is the PREVIOUS owner message, and it alone: a turn with no
-        // prior owner message has nothing to report anyway. Gating on the
-        // session id instead would silently exclude codex, which never emits
-        // one — unlike the context re-injection below, which is about --resume.
-        let outcomes = actionFeed.outcomesBlock(after: turn.previousOwnerMessageAt)
-
-        // On the first turn the target context is in the system prompt. On a
-        // resumed turn the CLI uses --resume and drops the system prompt entirely
-        // — and if that session has expired (e.g. after an app restart) the model
-        // would have NO context at all. So carry the live target context AND the
-        // action contract with the message on every resumed turn: the assistant
-        // never loses track of which target it is working on, sees the target's
-        // current state, and can still emit valid watchtower-action blocks.
-        let effectivePrompt: String = {
-            let base = currentSessionID == nil
-                ? text
-                : "\(Self.taskContextBlock(target))\n\(Self.taskTreeBlock(target: target, dbPool: dbPool))\n\n"
-                    + "\(Self.taskActionsContract)\n\n\(toolsAvailable ? AgentToolsContract.promptBlock(surface: .target) : "")\n\n\(text)"
-            return outcomes.map { "\($0)\n\n\(base)" } ?? base
-        }()
-
-        var fullText = ""
-        var streamFailed = false
-        do {
-            let stream = aiService.stream(
-                prompt: effectivePrompt,
-                systemPrompt: systemPrompt,
-                sessionID: currentSessionID,
-                dbPath: dbPool.path,
-                model: nil,  // nil = the provider's resolved strong-tier model
-                provider: nil,
-                toolMode: toolMode
-            )
-            var sawTurnComplete = false
-            for try await event in stream {
-                switch event.foldingErrorIntoText {
-                case .text(let chunk):
-                    if sawTurnComplete {
-                        fullText = chunk
-                        sawTurnComplete = false
-                    } else {
-                        fullText += chunk
+        observationTask = Task { [weak self] in
+            let observation = ValueObservation.tracking { db in
+                try ChatMessageQueries.fetchByConversation(db, conversationID: conversationID)
+            }
+            do {
+                for try await records in observation.values(in: dbPool).dropFirst() {
+                    guard !Task.isCancelled else { break }
+                    // A vanished VM ends the observation — `continue` would keep
+                    // the pool observed for the process's lifetime.
+                    guard let self else { break }
+                    // Another writer (a brief run, another window) added rows:
+                    // adopt them while this tab is idle.
+                    if !self.engine.isStreaming, records.count > self.engine.messages.count {
+                        self.engine.refresh()
                     }
-                    updateLastMessage(fullText)
-                case .turnComplete(let text):
-                    fullText = text
-                    sawTurnComplete = true
-                    updateLastMessage(fullText)
-                case .reset:
-                    // A tool call interrupted the turn — drop the pre-tool
-                    // preamble so it never glues onto the post-tool answer.
-                    fullText = ""
-                    sawTurnComplete = false
-                    updateLastMessage("")
-                case .sessionID(let sid):
-                    handleSessionID(sid)
-                case .done:
-                    break
-                case .error:
-                    break  // folded into .text above
                 }
-            }
-        } catch {
-            streamFailed = true
-            // A user-cancelled stream is not a failure — persist nothing for it.
-            // A real failure lands in the transcript as a system message so a
-            // reloaded conversation still shows that the run died (spec §7).
-            if !Task.isCancelled {
-                errorMessage = error.localizedDescription
-                appendSystemMessage("⚠️ The assistant run failed: \(error.localizedDescription)")
+            } catch {
+                NSLog("TargetChat: message observation stopped: %@", String(describing: error))
             }
         }
-
-        // On a failed OR cancelled stream, do NOT parse actions out of partial,
-        // possibly-truncated output — that could surface a half-formed proposal
-        // or auto-apply a half-streamed directive. Cancellation must be checked
-        // explicitly: cancelling the consuming task makes the AsyncThrowingStream
-        // end WITHOUT throwing, so the loop above exits cleanly. cancelStream()
-        // has already persisted the partial assistant text; parsing here would
-        // also persist it a second time.
-        if streamFailed || Task.isCancelled {
-            finishStream()
-            return
-        }
-
-        let surfaced = surfaceActions(from: fullText)
-
-        // Persist the assistant turn BEFORE the run summary / warnings, so the
-        // reloaded transcript reads in the same order the run happened.
-        if !surfaced.displayText.isEmpty, let convID = conversationID {
-            Self.persistResponse(dbManager: dbManager, conversationID: convID, text: surfaced.displayText, turnID: turn.turnID)
-        }
-        for text in surfaced.systemMessages {
-            appendSystemMessage(text)
-        }
-
-        finishStream()
     }
+
+    // MARK: - Proposals
 
     /// Parses watchtower-action blocks out of the assistant's final text,
     /// surfaces a card per action, and auto-applies execute-mode actions (an
@@ -490,19 +383,30 @@ final class TargetChatViewModel {
     /// button uses — no per-action follow-up AI turn.
     /// Propose-mode actions stay pending and await Approve.
     /// Returns the visible prose for the assistant turn plus the system-message
-    /// texts (one apply-run summary + a warning per malformed block) that the
-    /// caller appends AFTER persisting the assistant turn, keeping the
-    /// transcript in assistant-then-system order.
-    private func surfaceActions(from fullText: String) -> (displayText: String, systemMessages: [String]) {
-        let parsed = TargetActionParser.parse(fullText)
+    /// texts (one apply-run summary + a warning per malformed block), which
+    /// the engine stores AFTER the reply, keeping the transcript in
+    /// assistant-then-system order.
+    private func surfaceActions(_ input: ChatPostTurnInput) -> ChatPostTurnResult {
+        let parsed = TargetActionParser.parse(input.reply)
         // When the AI emits only an action block, visible prose is empty; show a
         // placeholder so the turn isn't blank and gets persisted into the transcript.
-        let displayText = parsed.text.isEmpty && !parsed.actions.isEmpty
-            ? "(proposed \(parsed.actions.count) action(s))"
-            : parsed.text
-        updateLastMessage(displayText)
+        let displayText: String
+        if !parsed.text.isEmpty {
+            displayText = parsed.text
+        } else if !parsed.actions.isEmpty {
+            displayText = "(proposed \(parsed.actions.count) action(s))"
+        } else if !parsed.errors.isEmpty {
+            // Only malformed blocks: the warnings below say why.
+            displayText = "(invalid action proposal)"
+        } else {
+            // Only registry tool calls (their proposals were written by the
+            // chat-mode subprocess): name them, or this is an empty reply.
+            actionFeed.refresh()
+            let proposed = actionFeed.cards(forTurn: input.turnID).count
+            displayText = proposed > 0 ? "(proposed \(proposed) change(s) below)" : ""
+        }
 
-        let assistantMessageID = messages.indices.last.map { messages[$0].id } ?? UUID()
+        let assistantMessageID = UUID(chatRowID: input.messageID)
         var appliedSummaries: [String] = []
         var failedSummaries: [String] = []
         var heldForApproval = 0
@@ -554,39 +458,21 @@ final class TargetChatViewModel {
         for err in parsed.errors {
             systemMessages.append("⚠️ Invalid action proposal: \(err)")
         }
-        return (displayText, systemMessages)
+        return ChatPostTurnResult(displayText: displayText, notices: systemMessages)
     }
 
-    // MARK: - Persistence helpers
-
-    nonisolated private static func persistResponse(
-        dbManager: DatabaseManager, conversationID: Int64, text: String, turnID: String
-    ) {
-        do {
-            try dbManager.dbPool.write { db in
-                try ChatMessageQueries.insert(
-                    db, conversationID: conversationID, role: "assistant", text: text, turnID: turnID
-                )
-                try ChatConversationQueries.touch(db, id: conversationID)
-            }
-        } catch {
-            print("TargetChat: failed to persist assistant response for conversation \(conversationID): \(error)")
+    /// Feed a follow-up turn back into the conversation. The text is shown as a
+    /// system message right away; when a turn is already busy the prompt waits
+    /// in the engine and goes out once that turn completes (or rides the next
+    /// owner message) — never dropped.
+    private func sendFollowUp(_ text: String) {
+        // The decision's outcome stays in the transcript; no AI turn is
+        // started about a task that no longer exists.
+        guard !targetGone else {
+            engine.appendLocal(role: "system", text: text)
+            return
         }
-    }
-
-    private func updateLastMessage(_ text: String) {
-        if let idx = messages.indices.last {
-            messages[idx].text = text
-        }
-    }
-
-    private func appendSystemMessage(_ text: String) {
-        messages.append(ChatMessage(
-            id: UUID(), role: .system, text: text, timestamp: Date(), isStreaming: false
-        ))
-        if let convID = conversationID {
-            persistMessage(conversationID: convID, role: "system", text: text)
-        }
+        engine.sendFollowUp(prompt: text, notice: text)
     }
 
     /// Approve a proposed action. `kind` lets the user override what gets created
@@ -710,56 +596,6 @@ final class TargetChatViewModel {
         )
     }
 
-    private func handleSessionID(_ sid: String) {
-        self.sessionID = sid
-        if let convID = conversationID {
-            persistSessionID(conversationID: convID, sessionID: sid)
-        }
-    }
-
-    private func finishStream() {
-        // Clear every streaming flag, not just the last message: appending
-        // system messages (e.g. invalid-action warnings) after the assistant
-        // placeholder would otherwise leave the placeholder stuck "streaming".
-        for idx in messages.indices where messages[idx].isStreaming {
-            messages[idx].isStreaming = false
-        }
-        isStreaming = false
-        // Proposals made during the turn were inserted by the chat-mode MCP
-        // SUBPROCESS, which the feed's ValueObservation cannot see — the turn
-        // boundary is where they have to appear.
-        actionFeed.refresh()
-        reloadTarget()
-        viewModel.load()
-        onTargetActivity?()
-        flushQueuedFollowUps()
-    }
-
-    func cancelStream() {
-        streamTask?.cancel()
-        streamTask = nil
-        isStreaming = false
-        if let idx = messages.indices.last, messages[idx].isStreaming {
-            let partialText = messages[idx].text
-            if !partialText.isEmpty, let convID = conversationID {
-                persistMessage(conversationID: convID, role: "assistant", text: partialText, turnID: messages[idx].turnID ?? "")
-            }
-            messages[idx].isStreaming = false
-        }
-    }
-
-    private func persistMessage(conversationID: Int64, role: String, text: String, turnID: String = "") {
-        do {
-            try dbManager.dbPool.write { db in
-                _ = try ChatMessageQueries.insert(
-                    db, conversationID: conversationID, role: role, text: text, turnID: turnID
-                )
-            }
-        } catch {
-            print("TargetChat: failed to persist \(role) message for conversation \(conversationID): \(error)")
-        }
-    }
-
     /// Resolves which target an approved action applies to. An action carrying
     /// "target_id" may address any task in the current task's vertical line —
     /// its descendants or its parent chain (TargetTreeScope) — fetched fresh
@@ -809,19 +645,7 @@ final class TargetChatViewModel {
             }
             target = updated
         } catch {
-            print("TargetChat: reloadTarget failed: \(error)")
-        }
-    }
-
-    private func persistSessionID(conversationID: Int64, sessionID: String) {
-        do {
-            try dbManager.dbPool.write { db in
-                try ChatConversationQueries.updateSessionID(
-                    db, id: conversationID, sessionID: sessionID
-                )
-            }
-        } catch {
-            print("TargetChat: failed to persist session id for conversation \(conversationID): \(error)")
+            NSLog("TargetChat: reloadTarget failed: %@", String(describing: error))
         }
     }
 
@@ -1198,5 +1022,17 @@ final class TargetChatViewModel {
         - Match the user's language
         - Use markdown for readability
         """ + skillsSuffix
+    }
+}
+
+extension UUID {
+    /// A stable id for a chat row (persisted or memory) — what a
+    /// `TargetActionCard` carries to name the reply that proposed it.
+    init(chatRowID: Int64) {
+        let value = UInt64(bitPattern: chatRowID)
+        func byte(_ index: Int) -> UInt8 { UInt8(truncatingIfNeeded: value >> (8 * (7 - index))) }
+        // All eight bytes of the id, around the version (4) and variant bits.
+        self.init(uuid: (0, 0, 0, 0, byte(0), byte(1), 0x40, 0, 0x80, 0,
+                         byte(2), byte(3), byte(4), byte(5), byte(6), byte(7)))
     }
 }

@@ -6,7 +6,12 @@ import WatchtowerCore
 /// An engine for a surface's spec over the test database, streaming from
 /// `ai` — what `AppState.embeddedChatCenter` would hand the surface's view.
 @MainActor
-func makeSurfaceEngine(_ spec: ChatSurfaceSpec, dbPool: DatabasePool, ai: any AIServiceProtocol) -> EmbeddedChatEngine {
+func makeSurfaceEngine(
+    _ spec: ChatSurfaceSpec,
+    dbPool: DatabasePool,
+    ai: any AIServiceProtocol,
+    gate: EmbeddedStreamGate? = nil
+) -> EmbeddedChatEngine {
     let store: EmbeddedChatStore
     switch spec.persistence {
     case .database(let conversationID):
@@ -14,7 +19,7 @@ func makeSurfaceEngine(_ spec: ChatSurfaceSpec, dbPool: DatabasePool, ai: any AI
     case .memory:
         store = MemoryEmbeddedChatStore()
     }
-    return EmbeddedChatEngine(spec: spec, store: store, aiService: ai, gate: EmbeddedStreamGate())
+    return EmbeddedChatEngine(spec: spec, store: store, aiService: ai, gate: gate ?? EmbeddedStreamGate())
 }
 
 /// Polls on the main actor until `condition` holds (a 5 s deadline).

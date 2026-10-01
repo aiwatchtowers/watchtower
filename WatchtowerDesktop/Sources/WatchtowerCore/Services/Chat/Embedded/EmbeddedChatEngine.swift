@@ -38,6 +38,9 @@ package final class EmbeddedChatEngine {
         case completed(messageID: Int64, result: ChatPostTurnResult)
         case stopped(messageID: Int64)
         case failed(messageID: Int64, message: String)
+        /// The turn never started: its rows could not be written (the text
+        /// went back to the composer).
+        case notStarted(message: String)
     }
 
     /// Replaced by `EmbeddedChatCenter.engine(for:)` whenever a surface asks
@@ -172,7 +175,7 @@ package final class EmbeddedChatEngine {
     @discardableResult
     package func send(_ text: String) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !isBusy, historyLoaded() else { return false }
+        guard !trimmed.isEmpty, !isBusy, historyLoaded(), spec.willSend(trimmed) else { return false }
         let previous = messages.last { $0.message.isUser }?.message.createdDate
         start(TurnRequest(ownerText: trimmed, basePrompt: trimmed, carriedFollowUps: takeFollowUps(),
                           previousOwnerMessageAt: previous))
@@ -224,7 +227,7 @@ package final class EmbeddedChatEngine {
     /// Reruns the failed latest turn under a new reply row, with every
     /// follow-up waiting since; the owner row is never written twice.
     package func retry() {
-        guard canRetry, !isBusy, let last = lastRequest else { return }
+        guard canRetry, !isBusy, let last = lastRequest, spec.mayContinue() else { return }
         let request = TurnRequest(ownerText: nil, basePrompt: last.basePrompt, carriedFollowUps: takeFollowUps(),
                                   previousOwnerMessageAt: last.previousOwnerMessageAt)
         guard !request.promptText.isEmpty else { return }
@@ -260,6 +263,14 @@ package final class EmbeddedChatEngine {
             log("dropping \(queuedFollowUps.count) follow-up(s) on shutdown")
             queuedFollowUps.removeAll()
         }
+    }
+
+    /// The chat's context is gone (a deleted task): decisions waiting for a
+    /// later turn will never be sent, so they stop holding the engine.
+    package func discardFollowUps(reason: String) {
+        guard !queuedFollowUps.isEmpty else { return }
+        log("dropping \(queuedFollowUps.count) follow-up(s): \(reason)")
+        queuedFollowUps.removeAll()
     }
 
     /// The surface asked for its engine again (see `spec`).
@@ -325,6 +336,7 @@ package final class EmbeddedChatEngine {
             }
             queuedFollowUps.insert(contentsOf: request.carriedFollowUps, at: 0)
             report(error, prefix: "Couldn't send")
+            onTurnFinished?(.notStarted(message: "Couldn't send: \(error.localizedDescription)"))
             return
         }
         if request.ownerText != nil { draftMirror?.clear(for: spec.key) }
@@ -466,6 +478,8 @@ package final class EmbeddedChatEngine {
             if bannerError == nil { bannerError = earlierBanner }
             // Not delivered: the follow-ups wait for Retry or the next owner turn.
             queuedFollowUps.insert(contentsOf: current.request.carriedFollowUps, at: 0)
+        case .notStarted:
+            break  // never produced by a turn that ran
         }
         onTurnFinished?(outcome)
     }
@@ -478,7 +492,7 @@ package final class EmbeddedChatEngine {
             persistFinal(turn, text: text, status: "partial", failure: nil)
             return .stopped(messageID: turn.messageID)
         }
-        if let failure = current.failure ?? emptyReplyFailure(text) {
+        if let failure = current.failure {
             return failTurn(turn, text: text, failure: failure)
         }
         // The reply must be on disk before postTurn acts on it.
@@ -491,6 +505,11 @@ package final class EmbeddedChatEngine {
                 persist: false)
         }
         let result = spec.postTurn(ChatPostTurnInput(reply: text, turnID: turn.turnID, messageID: turn.messageID))
+        // An action surface may answer with tool proposals only and show a
+        // placeholder; a reply that still has nothing to show is an error.
+        if result.displayText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return failTurn(turn, text: text, failure: .init(code: nil, message: Self.emptyReplyMessage))
+        }
         guard persistFinal(turn, text: result.displayText, status: "complete", failure: nil) else {
             // The reply is not on disk: not a successful turn, whatever postTurn did.
             let failure = EmbeddedChatErrorClassifier.Failure(
@@ -517,15 +536,6 @@ package final class EmbeddedChatEngine {
         return .failed(messageID: turn.messageID, message: failure.message)
     }
 
-    /// An action surface may answer with tool proposals only; its postTurn
-    /// decides what to show. A draft-only surface's empty reply is an error.
-    private func emptyReplyFailure(_ text: String) -> EmbeddedChatErrorClassifier.Failure? {
-        guard spec.toolAccess == .draftOnly, text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return nil
-        }
-        return .init(code: nil, message: Self.emptyReplyMessage)
-    }
-
     @discardableResult
     private func persistFinal(
         _ turn: LiveTurn,
@@ -549,9 +559,15 @@ package final class EmbeddedChatEngine {
         return queuedFollowUps
     }
 
-    /// Queued follow-ups go out together as one turn.
+    /// Queued follow-ups go out together as one turn — unless the surface
+    /// says its context is gone (then they are dropped, with a log line).
     private func startFollowUps() {
         guard !queuedFollowUps.isEmpty, !isBusy else { return }
+        guard spec.mayContinue() else {
+            log("dropping \(queuedFollowUps.count) follow-up(s): the chat's context is gone")
+            queuedFollowUps.removeAll()
+            return
+        }
         let prompts = takeFollowUps()
         start(TurnRequest(ownerText: nil, basePrompt: nil, carriedFollowUps: prompts, previousOwnerMessageAt: nil))
     }
