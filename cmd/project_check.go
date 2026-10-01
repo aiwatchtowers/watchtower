@@ -24,8 +24,8 @@ const (
 	// (a run from a terminal has none).
 	stopHookBudget    = 8 * time.Second
 	stopHookStdinWait = 2 * time.Second
-	// stopHookStdinLimit caps what the hook reads of Claude Code's input.
-	stopHookStdinLimit = 1 << 20
+	// hookStdinLimit caps what a hook reads of Claude Code's input.
+	hookStdinLimit = 1 << 20
 	// stopHookMaxFindings caps the list handed back to the agent.
 	stopHookMaxFindings = 20
 )
@@ -175,9 +175,9 @@ func runStopHook(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer,
 		}
 	}()
 	inCtx, cancelIn := context.WithTimeout(ctx, stopHookStdinWait)
-	in, ok := readStopHookInput(inCtx, stdin)
+	in, err := readHookInput[stopHookInput](inCtx, stdin)
 	cancelIn()
-	if !ok || in.StopHookActive {
+	if err != nil || in.StopHookActive {
 		return
 	}
 	id, err := strconv.ParseInt(strings.TrimSpace(rawID), 10, 64)
@@ -213,23 +213,25 @@ func runStopHook(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer,
 	_ = json.NewEncoder(stdout).Encode(stopHookOutput{Decision: "block", Reason: stopHookReason(id, findings)})
 }
 
-// readStopHookInput decodes the hook input, giving up at ctx's deadline.
-func readStopHookInput(ctx context.Context, stdin io.Reader) (stopHookInput, bool) {
+// readHookInput decodes a hook's JSON input from stdin, giving up at ctx's
+// deadline (a run from a terminal may never send one).
+func readHookInput[T any](ctx context.Context, stdin io.Reader) (T, error) {
 	type result struct {
-		in stopHookInput
-		ok bool
+		in  T
+		err error
 	}
 	ch := make(chan result, 1)
 	go func() {
-		var in stopHookInput
-		err := json.NewDecoder(io.LimitReader(stdin, stopHookStdinLimit)).Decode(&in)
-		ch <- result{in, err == nil}
+		var in T
+		err := json.NewDecoder(io.LimitReader(stdin, hookStdinLimit)).Decode(&in)
+		ch <- result{in, err}
 	}()
 	select {
 	case r := <-ch:
-		return r.in, r.ok
+		return r.in, r.err
 	case <-ctx.Done():
-		return stopHookInput{}, false
+		var zero T
+		return zero, ctx.Err()
 	}
 }
 

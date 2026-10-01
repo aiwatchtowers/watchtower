@@ -56,7 +56,9 @@ var projectBriefCmd = &cobra.Command{
 		"comments waiting for the agent, recent threads, issues and pages from the project's\n" +
 		"sources when room is left, and the board rules. Always exits 0 — a hook must\n" +
 		"never break a session start, so any failure (project gone, folder moved, database\n" +
-		"unreadable) is one line.",
+		"unreadable) is one line. Inside a session the Desktop launched (" + terminalSessionEnv + "\n" +
+		"set) it also reads the hook's stdin payload and, after /clear, /compact, a resume or a fork,\n" +
+		"stores the conversation's session id on that terminal row.",
 	// No root schema/config pre-run: a broken config would otherwise fail the
 	// hook before RunE could turn it into the one-line brief (the
 	// extract-pdf-text precedent). loadProjectBrief loads config itself.
@@ -82,22 +84,40 @@ func init() {
 }
 
 func runProjectBrief(cmd *cobra.Command, _ []string) error {
+	if id, err := parseProjectBriefFlag(projectBriefFlagProject); err == nil && id > 0 {
+		if err := recordTerminalSessionID(cmd.InOrStdin(), id); err != nil {
+			// Best effort: the hook log shows it (never the model), and the
+			// brief is printed as always.
+			fmt.Fprintf(cmd.ErrOrStderr(), "watchtower: project %d brief: terminal session not recorded: %v\n", id, err)
+		}
+	}
 	fmt.Fprintln(cmd.OutOrStdout(), loadProjectBriefFlag(projectBriefFlagProject))
 	return nil
 }
 
-// loadProjectBriefFlag parses the raw --project flag value. Empty (missing,
-// or explicitly "") reads as "no --project id given" via loadProjectBrief's
-// own id<=0 branch; a non-empty value that isn't a positive integer gets its
-// own one-line reason so it isn't misreported as missing.
-func loadProjectBriefFlag(raw string) string {
+// parseProjectBriefFlag parses the raw --project flag value: 0 for empty
+// (missing, or explicitly ""), an error for a value that isn't a positive
+// integer.
+func parseProjectBriefFlag(raw string) (int64, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
-		return loadProjectBrief(0)
+		return 0, nil
 	}
 	id, err := strconv.ParseInt(trimmed, 10, 64)
 	if err != nil || id <= 0 {
-		return briefUnavailable(0, fmt.Sprintf("is unavailable: invalid --project value %q", raw))
+		return 0, fmt.Errorf("invalid --project value %q", raw)
+	}
+	return id, nil
+}
+
+// loadProjectBriefFlag is the brief for the raw --project flag value. Empty
+// reads as "no --project id given" via loadProjectBrief's own id<=0 branch;
+// an invalid value gets its own one-line reason so it isn't misreported as
+// missing.
+func loadProjectBriefFlag(raw string) string {
+	id, err := parseProjectBriefFlag(raw)
+	if err != nil {
+		return briefUnavailable(0, "is unavailable: "+err.Error())
 	}
 	return loadProjectBrief(id)
 }

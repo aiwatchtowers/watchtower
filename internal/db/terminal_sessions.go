@@ -48,3 +48,23 @@ func (db *DB) SetTerminalSessionAITitle(id int64, title string) (bool, error) {
 	}
 	return n > 0, nil
 }
+
+// SetTerminalClaudeSessionID points project projectID's claude row id at the
+// Claude Code conversation it now runs — the SessionStart hook after /clear
+// or a resume that switched conversations, so the Desktop's next relaunch
+// resumes it. The same column write as the Desktop's
+// `TerminalSessionQueries.replaceClaudeSessionID`; false when the row is not
+// that project's claude row or already holds sessionID.
+func (db *DB) SetTerminalClaudeSessionID(id, projectID int64, sessionID string) (bool, error) {
+	res, err := db.Exec(`UPDATE terminal_sessions SET claude_session_id = ?
+		WHERE id = ? AND project_id = ? AND kind = 'claude' AND claude_session_id IS NOT ?`,
+		sessionID, id, projectID, sessionID)
+	if err != nil {
+		return false, fmt.Errorf("setting terminal session %d claude session id: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("setting terminal session %d claude session id: %w", id, err)
+	}
+	return n > 0, nil
+}
