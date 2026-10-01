@@ -92,8 +92,9 @@ package final class ChatTurnDriver {
     }
 
     /// Forgets a turn that never reached a provider, without ending it: no
-    /// write, no `onTurnFinished`. Its owner hands it to another session
-    /// (`ChatSessionClient.surrenderHeldTurn`), whose driver begins it again.
+    /// write, no `onTurnFinished`. The caller must hand it to another session
+    /// (`ChatSessionClient.surrenderHeldTurn`), whose driver begins it again —
+    /// otherwise its row stays an empty `partial` forever.
     package func releaseUnsentTurn() {
         liveTurn = nil
     }

@@ -286,11 +286,39 @@ func (b *claudeBackend) settleProject(out outcome) {
 	case out.kind == outcomeDone && out.failed && projectFileFailure(out.code, out.msg):
 		b.countProjectFailure()
 	case out.kind == outcomeExited:
-		if code, _ := ClassifyClaudeError(out.msg); projectFileFailure(code, out.msg) {
-			b.countProjectFailure()
+		if reason := crashNotFileCaused(out.msg); reason != "" {
+			fmt.Fprintf(b.warn(), "chat: CLI exit on a project-file turn not counted (%s)\n", reason)
+			return
 		}
+		b.countProjectFailure()
 	}
 }
+
+// crashNotFileCaused returns why a CLI exit mid-turn is not blamed on the
+// project files ("" = it may be). It reads only the last lines of stderr —
+// the head is startup noise — and matches phrases, never bare status
+// numbers, which a stack trace's line numbers would hit.
+func crashNotFileCaused(stderr string) string {
+	lines := strings.Split(strings.TrimSpace(stderr), "\n")
+	if len(lines) > crashTailLines {
+		lines = lines[len(lines)-crashTailLines:]
+	}
+	tail := strings.ToLower(strings.Join(lines, "\n"))
+	for _, phrase := range []string{
+		"not logged in", "/login", "invalid api key", "authentication_error", "oauth token has expired",
+		"rate limit", "rate_limit", "usage limit", "overloaded",
+		"internal server error", "api_error", "econnreset", "connection reset", "connection refused",
+		"timed out", "temporarily unavailable",
+	} {
+		if strings.Contains(tail, phrase) {
+			return phrase
+		}
+	}
+	return ""
+}
+
+// crashTailLines is how much of a crashed CLI's stderr crashNotFileCaused reads.
+const crashTailLines = 3
 
 func (b *claudeBackend) countProjectFailure() {
 	if b.projectFailures++; b.projectFailures >= maxProjectFailures && !b.projectGivenUp {

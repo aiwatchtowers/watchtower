@@ -139,7 +139,7 @@ final class ChatSessionPoolTests: XCTestCase {
         let other = pool.session(for: 3, config: projectConfig(3, nil))
         busy.startTurn(turn("t2", row: try assistantRow()))
 
-        pool.retireSessions(projectID: 7)
+        pool.retireSessions(projectID: 7, deleted: false)
         XCTAssertNil(pool.client(for: 1))
         XCTAssertFalse(idle.isAlive)
         XCTAssertTrue(busy.isBusy, "a running turn is never cut")
@@ -175,7 +175,7 @@ final class ChatSessionPoolTests: XCTestCase {
         queued.startTurn(turn("t4", row: row))
         XCTAssertTrue(queued.isPending)
 
-        pool.retireSessions(projectID: 7)
+        pool.retireSessions(projectID: 7, deleted: false)
         let replacement = try XCTUnwrap(pool.client(for: 4))
         XCTAssertFalse(replacement === queued)
         XCTAssertFalse(queued.isAlive)
@@ -239,11 +239,16 @@ final class ChatSessionPoolTests: XCTestCase {
         XCTAssertTrue(blocked.isPending)
         XCTAssertTrue(behind.isPending)
 
-        pool.retireSessions(projectID: 7)
-        XCTAssertFalse(pool.client(for: 4) === blocked)
-        XCTAssertFalse(pool.client(for: 5) === behind)
+        pool.retireSessions(projectID: 7, deleted: false)
+        for (id, stale) in [(Int64(4), blocked), (5, behind)] {
+            let replacement = try XCTUnwrap(pool.client(for: id))
+            XCTAssertFalse(replacement === stale)
+            XCTAssertTrue(replacement.isBusy, "conversation \(id)'s held turn was re-sent")
+            XCTAssertNil(replacement.config.resumeSessionID)
+        }
         for fake in fakes.dropFirst() {
             XCTAssertNil(fake.argument(after: "--resume"), "no stale session is ever launched")
+            XCTAssertTrue([["t4"], ["t5"]].contains(fake.turns.map(\.turnID)))
             XCTAssertEqual(fake.turns.first?.replay, true)
         }
     }

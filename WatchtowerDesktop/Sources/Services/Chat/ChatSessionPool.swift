@@ -106,7 +106,7 @@ final class ChatSessionPool {
     ///
     /// They all leave the queue first: closing one re-runs admission, which
     /// must not launch another stale one still waiting behind it.
-    func retireSessions(projectID: Int64, deleted: Bool = false) {
+    func retireSessions(projectID: Int64, deleted: Bool) {
         let stale = clients.filter { $0.value.config.projectID == projectID }
         queue.removeAll { stale[$0] != nil }
         for (id, client) in stale {
@@ -119,6 +119,8 @@ final class ChatSessionPool {
             fresh.resumeSessionID = nil
             if deleted { fresh.projectID = nil }
             let command = held.command
+            NSLog("ChatSessionPool: re-sending held turn %@ of conversation %lld on a fresh session (project %@)",
+                  command.turnID, id, fresh.projectID.map(String.init) ?? "none")
             let replayed = ChatTurnCommand(turnID: command.turnID, text: command.text,
                                            attachments: command.attachments, replay: true)
             session(for: id, config: fresh)

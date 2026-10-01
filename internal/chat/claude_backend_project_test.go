@@ -465,3 +465,41 @@ func TestClaudeBackend_CrashesOnProjectFilesGiveThemUpAfterTwo(t *testing.T) {
 	assert.Contains(t, lines[2], "Project files not attached in this session")
 	assert.Contains(t, warn.String(), "given up after 2 failed turns: spec.pdf")
 }
+
+// A crash's stderr is judged by its last lines and by phrases: startup noise
+// ("connection refused" from an MCP server) and a stack trace's line numbers
+// (":529", ":503") must not excuse a crash on the project files, while a
+// crash whose end says it was rate-limited does not count (and says so).
+func TestCrashNotFileCaused(t *testing.T) {
+	noise := "mcp server: connection refused\n" + strings.Repeat("loading plugins\n", 5)
+	trace := "TypeError: cannot read content\n    at decode (cli.js:4021:529)\n    at main (cli.js:12:503)"
+	assert.Empty(t, crashNotFileCaused(noise+trace), "noise above the tail and stack numbers are ignored")
+	assert.Empty(t, crashNotFileCaused("panic: cannot decode content block"))
+	assert.Empty(t, crashNotFileCaused("claude exited: signal: killed"))
+	assert.Equal(t, "rate limit", crashNotFileCaused(noise+"Error: rate limit reached for requests"))
+	assert.Equal(t, "not logged in", crashNotFileCaused("Not logged in · run /login"))
+}
+
+// A crash whose stderr says the account is rate-limited keeps the files and
+// counts nothing — and the skipped count is named on Warn.
+func TestClaudeBackend_RateLimitedCrashesNeverGiveUpProjectFiles(t *testing.T) {
+	opts, f := fakeClaude(t, "crash_always")
+	opts.Env = append(opts.Env, "FAKE_CRASH=boot ok\\nError: rate limit reached")
+	att, marker := projectFixture(t)
+	var warn bytes.Buffer
+	opts.Warn = &warn
+	opts.ProjectAttachments = []Attachment{att}
+	h := startSession(t, NewClaudeBackend(opts), nil)
+	h.next(EventSessionReady)
+	for i, id := range []string{"t1", "t2", "t3"} {
+		h.send(Command{Type: CommandTurn, TurnID: id, Text: "q", Replay: i > 0})
+		h.next(EventError)
+	}
+	require.NoError(t, h.finish())
+
+	for _, line := range stdinLines(t, f.stdin) {
+		assert.Contains(t, line, marker)
+	}
+	assert.NotContains(t, warn.String(), "given up")
+	assert.Contains(t, warn.String(), "not counted (rate limit)")
+}

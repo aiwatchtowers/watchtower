@@ -99,16 +99,17 @@ final class ProjectDetailViewModel {
     func addSource(_ hit: ChatEntityHit) {
         guard let kind = ChatProjectSource.Kind(entity: hit.kind) else { return }
         var added = false
-        write { db, id in
+        let committed = write { db, id in
             added = try ChatProjectQueries.addSource(db, projectID: id, kind: kind, ref: hit.ref, label: hit.label)
         }
-        if added { onPromptChanged(projectID) }
+        if committed, added { onPromptChanged(projectID) }
     }
 
     func removeSource(_ source: ChatProjectSource) {
         var removed = false
-        write { db, _ in removed = try ChatProjectQueries.removeSource(db, id: source.id) }
-        if removed { onPromptChanged(projectID) }
+        if write({ db, _ in removed = try ChatProjectQueries.removeSource(db, id: source.id) }), removed {
+            onPromptChanged(projectID)
+        }
     }
 
     func addFiles(_ urls: [URL]) {
