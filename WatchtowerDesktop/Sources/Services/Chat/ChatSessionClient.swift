@@ -202,9 +202,11 @@ final class ChatSessionClient {
     func cancel(grace: Duration = .seconds(7), killAfter: Duration = ChatSessionClient.defaultKillAfter) {
         guard let turn = driver.liveTurn, turn.isRunning else { return }
         if pendingTurn != nil {
-            // Never sent: nothing to interrupt.
-            pendingTurn = nil
-            driver.finishRunningAsPartial()
+            // Never sent: nothing to interrupt, and nothing left to launch
+            // for — the pool drops the queued client instead of spawning a
+            // process that would idle until the TTL.
+            abandon()
+            onEnded?()
             return
         }
         do {

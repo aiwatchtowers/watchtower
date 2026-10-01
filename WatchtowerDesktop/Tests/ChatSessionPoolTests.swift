@@ -102,6 +102,32 @@ final class ChatSessionPoolTests: XCTestCase {
         XCTAssertLessThanOrEqual(maxAlive, ChatSessionPolicy.maxLive)
     }
 
+    /// Stopping the held turn of a queued session ends that session: a freed
+    /// slot launches nothing for it, and the next request gets a new one.
+    func testStoppingAHeldTurnNeverLaunchesTheQueuedSession() async throws {
+        for id: Int64 in 1...3 {
+            pool.session(for: id, config: config(id)).startTurn(turn("t\(id)", row: try assistantRow()))
+            clock.advance(1)
+        }
+        let fourth = pool.session(for: 4, config: config(4))
+        let row = try assistantRow()
+        fourth.startTurn(turn("t4", row: row))
+        fourth.cancel()
+        XCTAssertFalse(fourth.isBusy)
+        XCTAssertFalse(fourth.isAlive)
+        let status = try await dbPool.read { try String.fetchOne($0, sql: "SELECT status FROM chat_messages WHERE id = ?", arguments: [row]) }
+        XCTAssertEqual(status, "partial", "the stopped turn keeps its row (CHAT-01)")
+
+        fakes[1].emit(.turnDone(turnID: "t2", status: .complete, sessionID: nil))
+        pool.tick()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(fakes.count, 3, "no process for a session whose only turn was stopped")
+
+        let again = pool.session(for: 4, config: config(4))
+        XCTAssertTrue(again.isAlive)
+        XCTAssertFalse(again === fourth)
+    }
+
     /// A chat project's prompt changed: its idle sessions close at once, a
     /// busy one finishes its turn first and is then no longer reused.
     func testRetireSessionsOfAProjectClosesIdleAndRetiresBusyAfterItsTurn() async throws {
