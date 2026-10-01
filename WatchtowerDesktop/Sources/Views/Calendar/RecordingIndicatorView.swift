@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 /// Shared chrome for every pill in the bottom-trailing indicator stack. A free
 /// function rather than a method, so `RecordingJobPill` renders the same capsule
@@ -167,6 +168,13 @@ struct RecordingIndicatorView: View {
             .foregroundStyle(.secondary)
         MicLevelBars(level: center.captureLevels.system, barCount: 3)
             .help("System audio level")
+        if center.callAudioSilentSince != nil {
+            Label("No call audio", systemImage: "exclamationmark.triangle.fill")
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .help("Nothing has come from the call for over \(Int(CallAudioWatch.minGapSec / 60)) minutes. "
+                    + "If people are still talking, the call's audio is not being recorded — \(callAudioOutputHint)")
+        }
     }
 
     private func recordingCapsule(_ center: MeetingRecorderCenter, startedAt: Date) -> some View {

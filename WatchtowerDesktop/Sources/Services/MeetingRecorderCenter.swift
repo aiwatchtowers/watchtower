@@ -9,7 +9,14 @@ protocol MeetingTranscriptNotifying {
     func sendTranscriptReadyNotification(title: String)
     func sendTranscriptFailedNotification(reason: String)
     func sendVoicesToLabelNotification(title: String, count: Int, transcriptID: Int64)
+    /// The live capture has had no call audio for `CallAudioWatch.minGapSec`
+    /// (see `callAudioSilentSince`) — the owner is usually in the call app,
+    /// not looking at Watchtower, so the pill alone would go unseen.
+    func sendCallAudioSilentNotification()
 }
+
+/// The "check your output device" hint every call-audio surface ends on.
+let callAudioOutputHint = "check that the call plays through this Mac's output device."
 
 extension NotificationService: MeetingTranscriptNotifying {}
 
@@ -184,6 +191,13 @@ final class MeetingRecorderCenter {
     /// recorder (`AudioRecording.liveLevels`), for the indicator's level
     /// meters. Zero whenever nothing is being captured.
     private(set) var captureLevels: CaptureLevels = .init(mic: 0, system: 0)
+
+    /// Seconds into the active capture where the call audio went silent, once
+    /// the silence has lasted `CallAudioWatch.minGapSec` after the call had
+    /// been heard; nil otherwise and whenever nothing is being captured. The
+    /// indicator warns on it — the tap may have dropped (an output-device
+    /// switch), and the owner can still fix it during the call.
+    private(set) var callAudioSilentSince: Double?
 
     /// Monotonic counter bumped once per transcript that lands in the database.
     /// Views that must refetch after a save observe THIS, never `phase`: with
@@ -917,12 +931,24 @@ final class MeetingRecorderCenter {
         levelsGeneration += 1
         let generation = levelsGeneration
         levelsTask = Task { @MainActor [weak self] in
+            // The level stream is throttled to ~100 ms pairs — the bin size
+            // the watch expects.
+            var callAudio = CallAudioWatch()
             for await levels in recorder.liveLevels {
                 guard let self, self.levelsGeneration == generation else { return }
                 self.captureLevels = levels
+                callAudio.add(system: levels.system)
+                let silentSince = callAudio.openGap?.startSec
+                // Written only on change: this runs at ~10 Hz and every
+                // write would re-render the observing pill.
+                if self.callAudioSilentSince != silentSince {
+                    if self.callAudioSilentSince == nil { self.notifier.sendCallAudioSilentNotification() }
+                    self.callAudioSilentSince = silentSince
+                }
             }
             guard !Task.isCancelled, let self, self.levelsGeneration == generation else { return }
             self.captureLevels = .init(mic: 0, system: 0)
+            self.callAudioSilentSince = nil
         }
     }
 
@@ -935,6 +961,7 @@ final class MeetingRecorderCenter {
         levelsTask?.cancel()
         levelsTask = nil
         captureLevels = .init(mic: 0, system: 0)
+        callAudioSilentSince = nil
     }
 
     /// Loads the transcriber and, when it supports live (`makeLiveSession`
@@ -1385,7 +1412,9 @@ final class MeetingRecorderCenter {
         }
         updateJob(jobID) { $0.engine = nil }
         guard !output.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            failJob(jobID, "No speech recognized")
+            let audioURL = job.audioURL
+            let message = await Task.detached { Self.noSpeechMessage(MicActivity.load(for: audioURL)) }.value
+            failJob(jobID, message)
             return
         }
         let rendered = await renderRoles(jobID: jobID, output: output, audioURL: job.audioURL,
@@ -1526,6 +1555,24 @@ final class MeetingRecorderCenter {
     private func updateJob(_ id: ProcessingJob.ID, _ mutate: (inout ProcessingJob) -> Void) {
         guard let index = jobs.firstIndex(where: { $0.id == id }) else { return }
         mutate(&jobs[index])
+    }
+
+    /// Why a recording yielded no text. A bare "No speech recognized" hid
+    /// the usual cause: the call's audio never reached the recording (the
+    /// activity sidecar's system channel is silent throughout or went
+    /// silent and stayed so), leaving only a quiet room microphone.
+    nonisolated static func noSpeechMessage(_ activity: MicActivity?) -> String {
+        guard let activity else { return "No speech recognized" }
+        var watch = CallAudioWatch(binSec: MicActivity.binDuration)
+        activity.bins.forEach { watch.add(system: $0.sys) }
+        if watch.neverHeardCall {
+            return "No speech recognized — no call audio was captured at all. If this was a call, \(callAudioOutputHint)"
+        }
+        if let gap = watch.openGap {
+            return "No speech recognized — call audio stopped at \(TranscriptFormatting.formatTimecode(gap.startSec)) "
+                + "and never came back — \(callAudioOutputHint)"
+        }
+        return "No speech recognized"
     }
 
     /// Fails a job and fires the failure notification. The job stays in the

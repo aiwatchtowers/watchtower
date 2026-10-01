@@ -207,6 +207,18 @@ final class NotificationService: Sendable {
         sendTranscriptNotification(title: "Transcription failed", body: reason, hashInput: reason)
     }
 
+    /// One fixed identifier, so a second gap in the same call replaces the
+    /// first push instead of stacking.
+    func sendCallAudioSilentNotification() {
+        let content = UNMutableNotificationContent()
+        content.title = "No call audio"
+        content.body = "Nothing has come from the call for over \(Int(CallAudioWatch.minGapSec / 60)) minutes. "
+            + "If people are still talking, \(callAudioOutputHint)"
+        content.sound = .default
+        UNUserNotificationCenter.current().add(
+            UNNotificationRequest(identifier: "call-audio-silent", content: content, trigger: nil))
+    }
+
     /// A saved recording queued voices for the owner to label. The
     /// identifier is per transcript, so a re-save replaces rather than
     /// stacks the push; `userInfo` routes a tap to that recording's queue.

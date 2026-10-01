@@ -81,4 +81,45 @@ extension MeetingRecorderCenterTests {
             center.captureLevels == CaptureLevels(mic: 0, system: 0)
         }
     }
+
+    // The live warning: after the call was heard, two minutes of silence on
+    // the system channel raise `callAudioSilentSince`; the call coming back
+    // clears it, and so does stopping.
+    func testCallAudioSilenceIsFlaggedLiveAndClearedOnResumeAndStop() async throws {
+        let audio = try makeDummyAudioFile()
+        defer {
+            try? FileManager.default.removeItem(at: audio)
+            removeSidecars(audio)
+        }
+
+        let recorder = FakeRecorder()
+        recorder.stopResult = RecordingResult(audioURL: audio, durationSec: 3)
+        let notifier = FakeNotifier()
+        let center = MeetingRecorderCenter(
+            recorderFactory: { recorder },
+            engineFactory: { _ in TestTranscriber(ScriptedEngine(texts: ["hello"])) },
+            decode: stubDecode(sampleCount: 1600),
+            runnerResolver: { FakeCLIRunner(stdout: self.recapOKEnvelope) },
+            notifier: notifier,
+            defaults: try isolatedDefaults(),
+            recordingsDirectory: recordingsDir
+        )
+
+        await center.startRecording(eventID: nil, title: "Call")
+        let call = CaptureLevels(mic: 0.002, system: 0.05)
+        let dead = CaptureLevels(mic: 0.002, system: 0)
+        for _ in 0..<900 { recorder.emitLevels(call) }
+        for _ in 0..<1300 { recorder.emitLevels(dead) }
+        await waitUntil("the silence is flagged") { center.callAudioSilentSince == 90 }
+        XCTAssertEqual(notifier.callAudioSilentCount, 1, "one push when the gap opens, not one per level pair")
+
+        for _ in 0..<100 { recorder.emitLevels(call) }
+        await waitUntil("the call coming back clears it") { center.callAudioSilentSince == nil }
+
+        for _ in 0..<1300 { recorder.emitLevels(dead) }
+        await waitUntil("flagged again") { center.callAudioSilentSince != nil }
+        XCTAssertEqual(notifier.callAudioSilentCount, 2)
+        await center.stopAndProcess(config: singleWindowConfig())
+        await waitUntil("stop clears it") { center.callAudioSilentSince == nil }
+    }
 }
