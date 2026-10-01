@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"watchtower/internal/auth"
+	"watchtower/internal/fsutil"
 )
 
 const (
@@ -99,7 +100,7 @@ func (s *TokenStore) Load() (*OAuthToken, error) {
 	return &token, nil
 }
 
-// Save writes the token to disk.
+// Save writes the token to disk atomically (fsutil.WriteFileAtomic).
 func (s *TokenStore) Save(token *OAuthToken) error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
 		return fmt.Errorf("creating token directory: %w", err)
@@ -108,7 +109,7 @@ func (s *TokenStore) Save(token *OAuthToken) error {
 	if err != nil {
 		return fmt.Errorf("marshaling token: %w", err)
 	}
-	return os.WriteFile(s.path, data, 0o600)
+	return fsutil.WriteFileAtomic(s.path, data, 0o600)
 }
 
 // Delete removes the token file.

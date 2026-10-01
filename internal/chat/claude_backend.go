@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"watchtower/internal/claude"
+	"watchtower/internal/fsutil"
 )
 
 // ClaudeOptions configures the warm Claude backend.
@@ -212,11 +213,11 @@ func (b *claudeBackend) Start(ctx context.Context) (string, error) {
 		return "", err
 	}
 	var err error
-	if b.promptFile, err = writePrivateTemp("wt-chat-prompt-*.txt", b.opts.SystemPrompt); err != nil {
+	if b.promptFile, err = fsutil.WritePrivateTemp("wt-chat-prompt-*.txt", b.opts.SystemPrompt); err != nil {
 		return "", fmt.Errorf("writing system prompt file: %w", err)
 	}
 	if b.opts.MCPConfig != "" {
-		if b.mcpFile, err = writePrivateTemp("wt-chat-mcp-*.json", b.opts.MCPConfig); err != nil {
+		if b.mcpFile, err = fsutil.WritePrivateTemp("wt-chat-mcp-*.json", b.opts.MCPConfig); err != nil {
 			return "", fmt.Errorf("writing mcp config file: %w", err)
 		}
 	}
@@ -888,30 +889,6 @@ func drainPending(ch chan Event, handle func(Event) (outcome, bool)) (outcome, b
 			return outcome{}, false
 		}
 	}
-}
-
-// writePrivateTemp writes content to a new 0600 temp file.
-func writePrivateTemp(pattern, content string) (string, error) {
-	f, err := os.CreateTemp("", pattern)
-	if err != nil {
-		return "", err
-	}
-	path := f.Name()
-	if err := f.Chmod(0o600); err != nil {
-		f.Close()
-		os.Remove(path)
-		return "", err
-	}
-	if _, err := f.WriteString(content); err != nil {
-		f.Close()
-		os.Remove(path)
-		return "", err
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(path)
-		return "", err
-	}
-	return path, nil
 }
 
 // boundedBuffer keeps the first limit bytes written to it (stderr capture).

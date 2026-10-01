@@ -1,7 +1,7 @@
 ---
 type: bug
 title: "Token files for rotating refresh tokens are rewritten in place, with no cross-process coordination"
-status: open
+status: done
 priority: med
 tags: [auth, tokens, atomicity, concurrency, jira, outlook, review-2026-09-26]
 context: main-branch backlog review 2026-09-26 at 8cf68dcf — track bugs (Go sync/daemon/integrations)
@@ -24,3 +24,5 @@ Two failure modes follow:
 > Original note: «а давай проведем ревью нашего репоза на ветке мейн с целью наполнения беклога. Наши треки - покрытие тестами, баги существующие и потенциальные, архитектурные проблемы, анализ использования и бессмысленный функционал»
 
 Update 2026-09-27: PR #3 made the Jira token save atomic (7385d372), so only the IMAP/Outlook/CalDAV half of the non-atomic write remains. The cross-process refresh race is now hit more often: each visible Confluence section in Settings spawns `confluence spaces` with its own jira.Client, once per enabled account.
+
+Resolved 2026-10-01 (fix/ai-process-security): every token/credential store (IMAP/Outlook, CalDAV, Gmail, Calendar token + credentials, Slack, Jira) now saves through `fsutil.WriteFileAtomic` (0600 temp file in the same directory, fsync, rename; an existing wider mode is not kept). Jira's load→refresh→save also takes a cross-process `flock` (`TokenStore.Lock`, `jira_token_<id>.json.lock`) and re-reads after acquiring it, so the daemon and a concurrent CLI refresh once (both the expiry path and the 401 `refreshIfCurrent` path; `jira connect` saves a new consent under the same lock); pinned by `TestClient_GetAccessToken_CrossProcessRefreshOnce` and `TestClient_RefreshIfCurrent_CrossProcessRefreshOnce`. The Outlook IMAP refresh is daemon-only and got the atomic write but no lock. `externalmcp.SecretStore` was already atomic; its lock is the Quick Connections item.
