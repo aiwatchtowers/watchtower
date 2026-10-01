@@ -269,6 +269,9 @@ final class ProjectBoardViewModel {
             return true
         } catch {
             errorMessage = "Could not \(what): \(error.localizedDescription)"
+            // Drop a card deleted elsewhere now rather than on the next poll
+            // (this `load()` keeps `errorMessage`).
+            if error is TargetNotFoundError { load() }
             return false
         }
     }

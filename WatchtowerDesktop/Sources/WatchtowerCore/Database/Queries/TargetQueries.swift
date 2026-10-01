@@ -57,6 +57,8 @@ package struct TargetCounts {
 package struct TargetNotFoundError: LocalizedError, Equatable {
     package let id: Int
 
+    package init(id: Int) { self.id = id }
+
     package var errorDescription: String? {
         "target #\(id) no longer exists (it may have been deleted elsewhere)"
     }
@@ -274,7 +276,7 @@ package enum TargetQueries {
     /// Call right after a single-row `UPDATE targets … WHERE id = ?`, before
     /// any follow-up statement: `changesCount` reflects only the most recent
     /// statement (trigger writes excluded), and 0 means the row is gone.
-    package static func requireUpdated(_ db: Database, id: Int) throws {
+    private static func requireUpdated(_ db: Database, id: Int) throws {
         guard db.changesCount > 0 else { throw TargetNotFoundError(id: id) }
     }
 
@@ -427,7 +429,6 @@ package enum TargetQueries {
                     """,
                 arguments: [level, level != "custom", periodStart, periodEnd, id]
             )
-            try requireUpdated(db, id: id)
         } else {
             try db.execute(
                 sql: """
@@ -439,8 +440,8 @@ package enum TargetQueries {
                     """,
                 arguments: [level, level != "custom", id]
             )
-            try requireUpdated(db, id: id)
         }
+        try requireUpdated(db, id: id)
     }
 
     package static func updateProgress(_ db: Database, id: Int, progress: Double) throws {

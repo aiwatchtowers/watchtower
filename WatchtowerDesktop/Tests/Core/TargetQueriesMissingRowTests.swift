@@ -34,14 +34,13 @@ final class TargetQueriesMissingRowTests: XCTestCase {
         ("removeTag", { _ = try TargetQueries.removeTag($0, id: $1, tag: "ops") })
     ]
 
-    private func createTarget(_ db: Database, text: String = "t", parentId: Int? = nil) throws -> Int {
+    private func createTarget(_ db: Database, text: String = "t") throws -> Int {
         try TargetQueries.create(
             db,
             text: text,
             level: "day",
             periodStart: "2026-09-30",
             periodEnd: "2026-09-30",
-            parentId: parentId,
             tags: #"["ops"]"#,
             sourceType: "manual",
             sourceID: ""
