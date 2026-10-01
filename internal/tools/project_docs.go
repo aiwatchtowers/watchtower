@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -54,8 +56,11 @@ func ResolveProjectDocumentPath(folder, path string) (string, error) {
 // document file inside folder; rel is how errors name the path.
 func resolveDocumentFile(folder, candidate, rel string) (string, error) {
 	abs, err := filepath.EvalSymlinks(candidate)
-	if err != nil {
+	if errors.Is(err, fs.ErrNotExist) {
 		return "", &ValidationError{Msg: fmt.Sprintf("%s does not exist in the project folder", rel)}
+	}
+	if err != nil {
+		return "", &ValidationError{Msg: fmt.Sprintf("cannot read %s: %v", rel, err)}
 	}
 	inside, err := filepath.Rel(folder, abs)
 	if err != nil || inside == ".." || strings.HasPrefix(inside, ".."+string(filepath.Separator)) {
@@ -70,7 +75,10 @@ func checkDocumentFile(rel, abs string) error {
 		return &ValidationError{Msg: fmt.Sprintf("%s is not a .md or .txt file", rel)}
 	}
 	st, err := os.Stat(abs)
-	if err != nil || !st.Mode().IsRegular() {
+	if err != nil {
+		return &ValidationError{Msg: fmt.Sprintf("cannot read %s: %v", rel, err)}
+	}
+	if !st.Mode().IsRegular() {
 		return &ValidationError{Msg: fmt.Sprintf("%s is not a regular file", rel)}
 	}
 	return nil

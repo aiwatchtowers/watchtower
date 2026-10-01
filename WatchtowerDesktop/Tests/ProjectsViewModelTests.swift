@@ -105,6 +105,26 @@ final class ProjectsViewModelTests: XCTestCase {
         XCTAssertNil(vm.attachError)
         XCTAssertFalse(vm.isAttachingDocument)
         XCTAssertEqual(vm.badgeCount, 0, "the owner's own document is never revised")
+        XCTAssertNil(vm.attachNotice)
+    }
+
+    func testAttachingAnAlreadyAttachedFileOpensItAndSaysNothingChanged() async throws {
+        let (p, doc) = try await pool.write { d -> (Int64, Int64) in
+            let p = try TestDatabase.insertProject(d)
+            return (p, try TestDatabase.insertProjectDocument(d, projectID: p, relPath: "docs/plan.md"))
+        }
+        let runner = FakeCLIRunner(stdout: Data(#"{"document_id":\#(doc),"rel_path":"docs/plan.md","created":false}"#.utf8))
+        let vm = makeVM(runner)
+        var ownerWrites: [ProjectSubject] = []
+        vm.onOwnerWrite = { _, subject in ownerWrites.append(subject) }
+        await vm.reload()
+        vm.selectedProjectID = p
+
+        let ok = await vm.attachDocument(fileURL: URL(fileURLWithPath: "/tmp/acme/docs/plan.md"), kind: "spec", targetID: nil)
+        XCTAssertTrue(ok)
+        XCTAssertEqual(vm.documentViewModel?.document.id, doc)
+        XCTAssertTrue(vm.attachNotice?.contains("already attached") ?? false)
+        XCTAssertEqual(ownerWrites, [], "nothing was written, so a real agent revision is not muted")
     }
 
     func testAttachDocumentRefusedByTheCLIKeepsTheReason() async throws {
@@ -132,7 +152,7 @@ final class ProjectsViewModelTests: XCTestCase {
         let vm = makeVM()
         await vm.reload()
         vm.selectedProjectID = p
-        let rows = await vm.targetChoices()
+        let rows = try await vm.targetChoices()
         XCTAssertEqual(rows.map(\.node.target.text), ["Feature", "Task"])
         XCTAssertEqual(rows.map(\.depth), [0, 1])
     }

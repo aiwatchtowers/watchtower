@@ -11,9 +11,12 @@ struct AddProjectDocumentSheet: View {
     let project: Project
     @Environment(\.dismiss) private var dismiss
     @State private var fileURL: URL?
+    /// `fileURL` as the list will show it, computed once when chosen.
+    @State private var shownPath = ""
     @State private var kind = "doc"
     @State private var targetID: Int64?
     @State private var targets: [ProjectBoardRow] = []
+    @State private var targetsError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -21,7 +24,7 @@ struct AddProjectDocumentSheet: View {
             Text("A .md or .txt file inside \(project.folderPath). Watchtower only lists it — the file is never changed.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             HStack {
-                Text(fileURL.map(relativePath) ?? "No file chosen")
+                Text(fileURL == nil ? "No file chosen" : shownPath)
                     .lineLimit(1).truncationMode(.middle)
                     .foregroundStyle(fileURL == nil ? .secondary : .primary)
                 Spacer()
@@ -38,6 +41,9 @@ struct AddProjectDocumentSheet: View {
                 ForEach(targets) { row in
                     Text(String(repeating: "   ", count: row.depth) + row.node.target.text).tag(Optional(Int64(row.node.target.id)))
                 }
+            }
+            if let targetsError {
+                Text(targetsError).font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
             }
             if let error = vm.attachError {
                 Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
@@ -58,8 +64,12 @@ struct AddProjectDocumentSheet: View {
         .padding(16)
         .frame(width: 420)
         .task {
-            vm.attachError = nil
-            targets = await vm.targetChoices()
+            vm.clearAttachMessages()
+            do {
+                targets = try await vm.targetChoices()
+            } catch {
+                targetsError = "Could not load the board's targets: \(error.localizedDescription)"
+            }
         }
     }
 
@@ -73,7 +83,7 @@ struct AddProjectDocumentSheet: View {
         panel.prompt = "Choose"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         fileURL = url
-        vm.attachError = nil
+        shownPath = relativePath(url)
     }
 
     /// The chosen file as the owner will see it listed, when it is inside

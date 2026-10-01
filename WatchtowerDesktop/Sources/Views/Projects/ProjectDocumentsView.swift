@@ -66,6 +66,11 @@ struct ProjectDocumentsView: View {
                 Spacer()
             }
             .padding(8)
+            if let notice = vm.attachNotice {
+                Text(notice).font(.caption).foregroundStyle(.secondary)
+                    .padding([.horizontal, .bottom], 8)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 

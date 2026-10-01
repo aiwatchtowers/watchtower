@@ -345,7 +345,7 @@ func runProjectAttachDoc(cmd *cobra.Command, args []string) error {
 	if projectAttachFlagTarget != 0 {
 		doc.TargetID = sql.NullInt64{Int64: projectAttachFlagTarget, Valid: true}
 	}
-	docID, created, err := database.AttachOwnerProjectDocument(doc)
+	docID, rel, created, err := database.AttachOwnerProjectDocument(doc)
 	if err != nil {
 		return err
 	}

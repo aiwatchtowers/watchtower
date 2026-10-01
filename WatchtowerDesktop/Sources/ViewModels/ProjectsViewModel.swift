@@ -60,7 +60,10 @@ final class ProjectsViewModel {
     /// An "Add document…" attach is running (#80); the sheet disables Attach.
     private(set) var isAttachingDocument = false
     /// Why the last attach failed (the CLI's refusal); the sheet shows it.
-    var attachError: String?
+    private(set) var attachError: String?
+    /// Set when the chosen file was already attached: it opened unchanged,
+    /// so the kind and target picked in the sheet were not applied.
+    private(set) var attachNotice: String?
     /// The open document. Kept here (not in the view) so it survives pane
     /// switches and tab changes with its watcher running.
     private(set) var documentViewModel: ProjectDocumentViewModel?
@@ -372,7 +375,7 @@ final class ProjectsViewModel {
             return false
         }
         isAttachingDocument = true
-        attachError = nil
+        clearAttachMessages()
         defer { isAttachingDocument = false }
         let attached: ProjectDocumentAttached
         do {
@@ -381,29 +384,33 @@ final class ProjectsViewModel {
             attachError = "Could not attach the document: \(error.localizedDescription)"
             return false
         }
-        onOwnerWrite?(project.id, .document(attached.documentID))
+        if attached.created { onOwnerWrite?(project.id, .document(attached.documentID)) }
         await loadDocuments()
         // Still on this project: open it (also for an already attached path).
         if let item = documents.first(where: { $0.id == attached.documentID }) {
             await openDocument(item.document)
         }
+        if !attached.created {
+            attachNotice = "\(attached.relPath) was already attached — it is open, with its kind and target unchanged."
+        }
         return true
     }
 
+    func clearAttachMessages() {
+        attachError = nil
+        attachNotice = nil
+    }
+
     /// The target picker's choices for "Add document…", in board order.
-    func targetChoices() async -> [ProjectBoardRow] {
+    func targetChoices() async throws -> [ProjectBoardRow] {
         guard let projectID = selectedProjectID else { return [] }
-        do {
-            let board = try await dbPool.read { try ProjectQueries.board($0, projectID: projectID) }
-            return ProjectBoardOutline.rows(board, collapsed: [], showDone: true)
-        } catch {
-            attachError = "Could not load the board's targets: \(error.localizedDescription)"
-            return []
-        }
+        let board = try await dbPool.read { try ProjectQueries.board($0, projectID: projectID) }
+        return ProjectBoardOutline.rows(board, collapsed: [], showDone: true)
     }
 
     func openDocument(_ document: ProjectDocument) async {
         guard let project = selectedProject, project.id == document.projectID else { return }
+        attachNotice = nil
         if documentViewModel?.document.id != document.id {
             closeDocument()
             let docVM = ProjectDocumentViewModel(dbPool: dbPool, project: project, document: document)

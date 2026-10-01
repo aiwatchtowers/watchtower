@@ -340,7 +340,7 @@ func (db *DB) UpsertProjectDocument(d ProjectDocument) (id int64, created bool, 
 			d.ProjectID, d.RelPath).Scan(&id)
 		if errors.Is(qerr, sql.ErrNoRows) {
 			created = true
-			id, qerr = insertProjectDocument(tx, d)
+			id, qerr = insertProjectDocument(tx, d, "agent")
 			return qerr
 		}
 		if qerr != nil {
@@ -354,17 +354,21 @@ func (db *DB) UpsertProjectDocument(d ProjectDocument) (id int64, created bool, 
 	return id, created, nil
 }
 
-func insertProjectDocument(tx *sql.Tx, d ProjectDocument) (int64, error) {
+func insertProjectDocument(tx *sql.Tx, d ProjectDocument, origin string) (int64, error) {
 	kind := d.Kind
 	if kind == "" {
 		kind = "doc"
 	}
-	res, err := tx.Exec(`INSERT INTO project_documents (project_id, target_id, rel_path, kind, title)
-		VALUES (?, ?, ?, ?, ?)`, d.ProjectID, d.TargetID, d.RelPath, kind, d.Title)
+	res, err := tx.Exec(`INSERT INTO project_documents (project_id, target_id, rel_path, kind, title, origin)
+		VALUES (?, ?, ?, ?, ?, ?)`, d.ProjectID, d.TargetID, d.RelPath, kind, d.Title, origin)
 	if err != nil {
 		return 0, fmt.Errorf("inserting document %q: %w", d.RelPath, err)
 	}
-	return res.LastInsertId()
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("inserting document %q: %w", d.RelPath, err)
+	}
+	return id, nil
 }
 
 func reviseProjectDocument(tx *sql.Tx, id int64, d ProjectDocument) error {
@@ -383,12 +387,12 @@ func reviseProjectDocument(tx *sql.Tx, id int64, d ProjectDocument) error {
 
 // AttachOwnerProjectDocument attaches d as the owner's (origin 'owner', the
 // Desktop's "Add document…"). A rel_path the project already has — compared
-// ignoring case, the import rule — is left untouched and its id returned with
-// created=false: the owner attaching a file is never a revision. Whether
-// rel_path stays inside the folder is the caller's check.
-func (db *DB) AttachOwnerProjectDocument(d ProjectDocument) (id int64, created bool, err error) {
+// ignoring case, the import rule — is left untouched: created=false, and the
+// returned relPath is the stored spelling. The owner attaching a file is never
+// a revision. Whether rel_path stays inside the folder is the caller's check.
+func (db *DB) AttachOwnerProjectDocument(d ProjectDocument) (id int64, relPath string, created bool, err error) {
 	if err := validateProjectDocument(d); err != nil {
-		return 0, false, err
+		return 0, "", false, err
 	}
 	err = db.WithTx(func(tx *sql.Tx) error {
 		if err := requireProject(tx, d.ProjectID); err != nil {
@@ -399,31 +403,22 @@ func (db *DB) AttachOwnerProjectDocument(d ProjectDocument) (id int64, created b
 				return err
 			}
 		}
-		qerr := tx.QueryRow(`SELECT id FROM project_documents WHERE project_id = ? AND rel_path = ? COLLATE NOCASE`,
-			d.ProjectID, d.RelPath).Scan(&id)
-		if qerr == nil {
+		qerr := tx.QueryRow(`SELECT id, rel_path FROM project_documents WHERE project_id = ? AND rel_path = ? COLLATE NOCASE`,
+			d.ProjectID, d.RelPath).Scan(&id, &relPath)
+		switch {
+		case qerr == nil:
 			return nil
-		}
-		if !errors.Is(qerr, sql.ErrNoRows) {
+		case !errors.Is(qerr, sql.ErrNoRows):
 			return fmt.Errorf("looking up document %q: %w", d.RelPath, qerr)
 		}
-		kind := d.Kind
-		if kind == "" {
-			kind = "doc"
-		}
-		res, ierr := tx.Exec(`INSERT INTO project_documents (project_id, target_id, rel_path, kind, title, origin)
-			VALUES (?, ?, ?, ?, ?, 'owner')`, d.ProjectID, d.TargetID, d.RelPath, kind, d.Title)
-		if ierr != nil {
-			return fmt.Errorf("inserting document %q: %w", d.RelPath, ierr)
-		}
-		created = true
-		id, ierr = res.LastInsertId()
-		return ierr
+		created, relPath = true, d.RelPath
+		id, qerr = insertProjectDocument(tx, d, "owner")
+		return qerr
 	})
 	if err != nil {
-		return 0, false, err
+		return 0, "", false, err
 	}
-	return id, created, nil
+	return id, relPath, created, nil
 }
 
 // GetProjectDocument returns document id, or (nil, nil) when absent.
