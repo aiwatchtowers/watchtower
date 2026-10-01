@@ -17,14 +17,15 @@ final class SetupAssistantChat<Snapshot, Patch> {
     /// Invoked when a completed reply carries a settings block; the owning
     /// view writes the patch into its form fields.
     @ObservationIgnored var onApplySettings: ((Patch) -> Void)?
-    /// The form as it is now — read for every turn (the composer, Retry), so
-    /// the assistant always sees the current state. Set by the sheet.
+    /// The form as it is now — read for every turn (composer, Retry, a
+    /// connection error), so the assistant always sees the current state.
+    /// Set by the sheet next to `onApplySettings`.
     @ObservationIgnored var snapshotProvider: (() -> Snapshot)?
-    /// The latest turn's failure; cleared by the next send.
+    /// The latest turn's failure; cleared by the next completed turn.
     var errorMessage: String?
 
-    @ObservationIgnored private var lastSnapshot: Snapshot?
-    @ObservationIgnored private let greeting: String
+    private let greeting: String
+    private let connectionErrorLead: String
 
     /// `parse` splits a reply into the text to show and the settings patch
     /// (nil when the reply carries none, or a malformed block).
@@ -32,41 +33,53 @@ final class SetupAssistantChat<Snapshot, Patch> {
         contextID: String,
         greeting: String,
         systemPrompt: String,
-        filledPlaceholder: String,
+        connectionErrorLead: String,
         formStateBlock: @escaping (Snapshot) -> String,
         parse: @escaping (String) -> (text: String, patch: Patch?),
         aiService: (any AIServiceProtocol)?,
         gate: EmbeddedStreamGate?
     ) {
         self.greeting = greeting
+        self.connectionErrorLead = connectionErrorLead
+        let key = EmbeddedChatKey(contextType: "setup", contextID: contextID, conversationID: nil)
         engine = EmbeddedChatEngine(
-            spec: ChatSurfaceSpec(
-                key: EmbeddedChatKey(contextType: "setup", contextID: contextID, conversationID: nil),
-                persistence: .memory, toolAccess: .draftOnly, systemPrompt: { systemPrompt }, emptyHint: ""),
+            spec: ChatSurfaceSpec(key: key, persistence: .memory, toolAccess: .draftOnly,
+                                  systemPrompt: { systemPrompt }, emptyHint: ""),
             store: MemoryEmbeddedChatStore(),
             aiService: aiService ?? WatchtowerAIService(),
             gate: gate ?? EmbeddedStreamGate(),
             provider: Constants.aiProviderID()
         )
         engine.update(spec: ChatSurfaceSpec(
-            key: engine.spec.key,
+            key: key,
             persistence: .memory,
-            // A setup panel acts only through the settings block → form patch,
-            // never through a tool (review-rules "The assistant & chat contracts").
+            // The panel changes local state only through the settings block →
+            // form patch the owner sees, never through a tool, so no tool mode.
             toolAccess: .draftOnly,
             systemPrompt: { systemPrompt },
             // The form changes between turns (the owner types, patches land),
             // so EVERY turn carries a fresh snapshot — which also keeps a
             // resumed session (system prompt dropped by CLI --resume) in context.
             turnPrompt: { [weak self] input in
-                guard let snapshot = self?.currentSnapshot() else { return input.text }
+                guard let snapshot = self?.snapshotProvider?() else {
+                    NSLog("SetupAssistantChat[%@]: a turn without the form state", contextID)
+                    return input.text
+                }
                 return "\(formStateBlock(snapshot))\n\n\(input.text)"
             },
             postTurn: { [weak self] input in
                 let parsed = parse(input.reply)
-                if let patch = parsed.patch { self?.onApplySettings?(patch) }
-                let text = parsed.text.isEmpty && parsed.patch != nil ? filledPlaceholder : parsed.text
-                return ChatPostTurnResult(displayText: text)
+                if let patch = parsed.patch {
+                    self?.onApplySettings?(patch)
+                    return ChatPostTurnResult(displayText: parsed.text.isEmpty
+                        ? "(filled in the settings on the left)" : parsed.text)
+                }
+                if parsed.text.isEmpty {
+                    // Only a settings block that could not be read.
+                    NSLog("SetupAssistantChat[%@]: a settings block could not be read", contextID)
+                    return ChatPostTurnResult(displayText: "(couldn't apply the suggested settings — fill them in on the left)")
+                }
+                return ChatPostTurnResult(displayText: parsed.text)
             },
             emptyHint: ""
         ))
@@ -79,15 +92,7 @@ final class SetupAssistantChat<Snapshot, Patch> {
         }
     }
 
-    var messages: [ChatMessage] {
-        engine.messages.map { item in
-            let live = engine.liveTurn.flatMap { $0.messageID == item.id ? $0 : nil }
-            let row = item.message.toChatMessage()
-            return ChatMessage(id: row.id, role: row.role, text: live?.fullText ?? row.text,
-                               timestamp: row.timestamp, isStreaming: live != nil, turnID: row.turnID)
-        }
-    }
-
+    var messages: [ChatMessage] { engine.chatMessages }
     var isStreaming: Bool { engine.isBusy }
 
     var inputText: String {
@@ -101,31 +106,17 @@ final class SetupAssistantChat<Snapshot, Patch> {
         engine.appendLocal(role: "assistant", text: greeting)
     }
 
-    func send(snapshot: Snapshot) {
-        lastSnapshot = snapshot
-        errorMessage = nil
+    /// Sends the composer's text (what the panel's composer does).
+    func send() {
         engine.sendDraft()
     }
 
     /// Feeds a failed connect error into the chat as a visible owner turn so
     /// the assistant can explain it in plain words.
-    func sendConnectionError(_ error: String, snapshot: Snapshot) {
-        guard !isStreaming else { return }
-        lastSnapshot = snapshot
-        errorMessage = nil
-        engine.send("Connecting failed with this error:\n\(error)\n\nWhat should I do?")
-    }
-
-    func cancelStream() {
-        engine.stop()
-    }
-
-    private func currentSnapshot() -> Snapshot? {
-        if let snapshotProvider {
-            let snapshot = snapshotProvider()
-            lastSnapshot = snapshot
-            return snapshot
+    func sendConnectionError(_ error: String) {
+        guard engine.send("\(connectionErrorLead)\n\(error)\n\nWhat should I do?") else {
+            NSLog("SetupAssistantChat: a connection error was not sent (a reply is under way)")
+            return
         }
-        return lastSnapshot
     }
 }

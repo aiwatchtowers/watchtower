@@ -192,15 +192,11 @@ extension SetupAssistantChat where Snapshot == ImapFormSnapshot, Patch == ImapSe
             contextID: "email",
             greeting: EmailSetupPrompt.greeting,
             systemPrompt: EmailSetupPrompt.systemPrompt,
-            filledPlaceholder: "(filled in the settings on the left)",
+            connectionErrorLead: "\"Test and Connect\" failed with this error:",
             formStateBlock: EmailSetupPrompt.formStateBlock,
             parse: ImapSettingsParser.parse,
             aiService: aiService,
             gate: gate
         )
     }
-
-    static var greeting: String { EmailSetupPrompt.greeting }
-    static var systemPrompt: String { EmailSetupPrompt.systemPrompt }
-    static func formStateBlock(_ snapshot: ImapFormSnapshot) -> String { EmailSetupPrompt.formStateBlock(snapshot) }
 }

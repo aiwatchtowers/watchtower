@@ -26,19 +26,15 @@ final class OnboardingChatViewModel {
     /// nothing is persisted; the window owns it).
     let engine: EmbeddedChatEngine
 
-    /// The interview as the view and the profile extraction read it. A reply
-    /// that failed and was retried is left out (the old bubble was replaced
-    /// in place); the latest failure stays, with its error card.
+    /// The interview's rows as messages. A reply that failed and was then
+    /// retried is left out of this projection (the window still shows both,
+    /// as every embedded chat does); the latest failure stays.
     var messages: [ChatMessage] {
         let rows = engine.messages
         let lastAssistant = rows.last { $0.message.isAssistant }?.id
-        return rows.compactMap { item in
-            if item.message.status == "error", item.id != lastAssistant { return nil }
-            let live = engine.liveTurn.flatMap { $0.messageID == item.id ? $0 : nil }
-            let row = item.message.toChatMessage()
-            return ChatMessage(id: row.id, role: row.role, text: live?.fullText ?? row.text,
-                               timestamp: row.timestamp, isStreaming: live != nil, turnID: row.turnID)
-        }
+        let hidden = Set(rows.filter { $0.message.status == "error" && $0.id != lastAssistant }
+            .map { UUID(chatRowID: $0.id) })
+        return engine.chatMessages.filter { !hidden.contains($0.id) }
     }
 
     var isStreaming: Bool { engine.isBusy }
@@ -280,9 +276,9 @@ final class OnboardingChatViewModel {
     }
 
     func send() {
-        guard !isStreaming, !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        errorMessage = nil
-        engine.sendDraft()
+        // A new attempt invalidates a previous interview error (the teamForm
+        // completion gate reads it).
+        if engine.sendDraft() { errorMessage = nil }
     }
 
     /// Skip the interview entirely: stop any in-flight reply and clear the
@@ -300,9 +296,10 @@ final class OnboardingChatViewModel {
     /// message or the hidden opening one), on the freshest session id; the
     /// failed reply is replaced in `messages`, not accumulated.
     func retryAfterError() {
-        guard errorMessage != nil, !isStreaming else { return }
-        errorMessage = nil
+        guard errorMessage != nil else { return }
         engine.retry()
+        // Cleared only once the retry is actually under way.
+        if engine.isBusy { errorMessage = nil }
     }
 
     /// Finish the chat phase and extract profile data from the conversation via LLM.
@@ -374,15 +371,17 @@ final class OnboardingChatViewModel {
 
         let prompt = buildContextPrompt(transcript: transcript)
 
-        let contextText: String
+        var contextText = ""
         do {
             contextText = try await AIStreamText.collect(aiService.stream(
                 prompt: prompt, systemPrompt: nil, sessionID: nil, dbPath: nil))
         } catch {
-            // A failed generation (an error line included) falls back to the
-            // locally known profile instead of saving the error as context.
-            contextText = buildProfileSummary()
+            NSLog("Onboarding: profile context generation failed: %@", String(describing: error))
         }
+        // A failed or empty generation (an error line included) falls back to
+        // the locally known profile instead of saving nothing or the error.
+        contextText = contextText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if contextText.isEmpty { contextText = buildProfileSummary() }
         return contextText
     }
 
@@ -461,7 +460,9 @@ final class OnboardingChatViewModel {
                     painPoints: painPointsJSON,
                     trackFocus: trackFocusJSON,
                     onboardingDone: existingProfile?.onboardingDone ?? false,
-                    customPromptContext: trimmedContext
+                    // Nothing new to say never erases what an earlier run saved.
+                    customPromptContext: trimmedContext.isEmpty
+                        ? existingProfile?.customPromptContext ?? "" : trimmedContext
                 )
                 if owner.isKnown {
                     try ProfileQueries.upsertOwnerProfile(db, owner: owner, profile: profile)
@@ -553,7 +554,9 @@ final class OnboardingChatViewModel {
         }
         if let range = reply.range(of: Self.readyMarker, options: .caseInsensitive) {
             chatReady = true
-            return reply.replacingCharacters(in: range, with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let rest = reply.replacingCharacters(in: range, with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+            // A reply that was only the marker still closes the interview.
+            return rest.isEmpty ? loc("ready_done") : rest
         }
         if !chatReady && userMessageCount >= Self.minAnswersForNoQuestionHeuristic && !reply.contains("?") {
             chatReady = true
@@ -568,6 +571,7 @@ final class OnboardingChatViewModel {
                 try UserQueries.fetchAll(db, activeOnly: true)
             }
         } catch {
+            NSLog("Onboarding: loading people failed: %@", String(describing: error))
             allUsers = []
         }
     }
@@ -578,7 +582,10 @@ final class OnboardingChatViewModel {
 
         let prompt = buildExtractionPrompt(transcript: transcript)
         let responseText = await collectStreamText(prompt: prompt)
-        guard !responseText.isEmpty else { return }
+        guard !responseText.isEmpty else {
+            NSLog("Onboarding: profile extraction returned no text")
+            return
+        }
         applyExtractedProfile(responseText)
     }
 
@@ -612,6 +619,7 @@ final class OnboardingChatViewModel {
             return try await AIStreamText.collect(aiService.stream(
                 prompt: prompt, systemPrompt: nil, sessionID: nil, dbPath: nil))
         } catch {
+            NSLog("Onboarding: profile extraction failed: %@", String(describing: error))
             return ""
         }
     }
@@ -635,6 +643,7 @@ final class OnboardingChatViewModel {
 
         guard let data = cleaned.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            NSLog("Onboarding: profile extraction reply is not JSON (%d chars)", cleaned.count)
             return
         }
 
@@ -678,7 +687,8 @@ final class OnboardingChatViewModel {
             "header": "Tell us about yourself",
             "subtitle": "Watchtower will personalize your experience based on your role and needs.",
             "continue": "Continue",
-            "placeholder": "Type your answer…"
+            "placeholder": "Type your answer…",
+            "ready_done": "Thanks — that's everything I need."
         ],
         "Russian": [
             "q1": "Давайте определим вашу роль. Вам кто-то подчиняется?",
@@ -692,7 +702,8 @@ final class OnboardingChatViewModel {
             "header": "Расскажите о себе",
             "subtitle": "Watchtower персонализирует ваш опыт на основе вашей роли и потребностей.",
             "continue": "Продолжить",
-            "placeholder": "Напишите ответ…"
+            "placeholder": "Напишите ответ…",
+            "ready_done": "Спасибо — этого достаточно."
         ],
         "Ukrainian": [
             "q1": "Давайте визначимо вашу роль. Вам хтось підпорядковується?",
@@ -706,7 +717,8 @@ final class OnboardingChatViewModel {
             "header": "Розкажіть про себе",
             "subtitle": "Watchtower персоналізує ваш досвід на основі вашої ролі та потреб.",
             "continue": "Продовжити",
-            "placeholder": "Напишіть відповідь…"
+            "placeholder": "Напишіть відповідь…",
+            "ready_done": "Дякую — цього достатньо."
         ]
     ]
 

@@ -4,7 +4,7 @@ import ViewInspector
 @testable import WatchtowerDesktop
 
 @MainActor
-final class ChatInputViewTests: XCTestCase {
+final class ChatComposerFieldViewTests: XCTestCase {
 
     // MARK: - Helpers
 
@@ -55,7 +55,7 @@ final class ChatInputViewTests: XCTestCase {
     /// Не streaming + непустой text → кнопка активна, тап вызывает onSend.
     func testSendButtonInvokesOnSendWhenTextPresent() throws {
         var sent = 0
-        let view = makeView(text: "hi", isStreaming: false, onSend: { sent += 1 })
+        let view = makeView(text: "hi", isStreaming: false) { sent += 1 }
 
         let button = try view.inspect().find(ViewType.Button.self)
         XCTAssertFalse(try button.isDisabled())
@@ -114,7 +114,7 @@ final class ChatInputViewTests: XCTestCase {
     /// an explicit center — ViewInspector cannot inject custom `@Environment`
     /// values (the `TrayMenuContent` precedent).
     func testMicButtonShownWhenTargetIDSetAndCenterPresent() throws {
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: "ChatInputViewTests-\(UUID().uuidString)"))
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "ChatComposerFieldViewTests-\(UUID().uuidString)"))
         // Pin the whisper lane (absent key → Apple on macOS 26) so the
         // center stays on the injectable engineFactory path.
         defaults.set("small", forKey: DictationEngineChoice.defaultsKey)

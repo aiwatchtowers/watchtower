@@ -310,7 +310,7 @@ The main assistant: ask about your work, keep long conversations organized, atta
 
 These chats have no attachments, @-mentions, branches or edits. Those stay in the AI Chat.
 
-A reply keeps going when you leave the screen or collapse the section; come back and it is there. At most three of these replies run at once. A fourth waits, marked **Queued**. Stop takes it back into the input, and a queued message you never sent comes back as a draft after a restart.
+A reply keeps going when you leave the screen or collapse the section; come back and it is there. At most three of these replies run at once. A fourth waits, marked **Queued**, and Stop takes it back into the input. In the target, track, idea/decision and recording chats, a queued message you never sent also comes back as a draft after a restart. The onboarding interview and the Setup Assistant keep nothing once their window closes.
 
 **Projects** — group chats that share context. A project has instructions (given to the assistant in every chat of the project), files (text files are read in full; images and PDFs are shown to Claude at the start of each session, as far as they fit in one message — 30 MB together with the files you attach yourself), and pinned sources — Jira projects, Slack channels, targets, tracks and people — that tell it where to look first. Start a chat from the project page with "New chat in this project", or move an existing chat into a project. Changes to a project's instructions, sources or files reach every chat in it on that chat's next message (a reply still being written finishes first). Deleting a project deletes its files and keeps its chats.
 

@@ -177,15 +177,11 @@ extension SetupAssistantChat where Snapshot == CalendarFormSnapshot, Patch == Ca
             contextID: "calendar",
             greeting: CalendarSetupPrompt.greeting,
             systemPrompt: CalendarSetupPrompt.systemPrompt,
-            filledPlaceholder: "(filled in the settings on the left)",
+            connectionErrorLead: "Connecting failed with this error:",
             formStateBlock: CalendarSetupPrompt.formStateBlock,
             parse: CalendarSettingsParser.parse,
             aiService: aiService,
             gate: gate
         )
     }
-
-    static var greeting: String { CalendarSetupPrompt.greeting }
-    static var systemPrompt: String { CalendarSetupPrompt.systemPrompt }
-    static func formStateBlock(_ snapshot: CalendarFormSnapshot) -> String { CalendarSetupPrompt.formStateBlock(snapshot) }
 }

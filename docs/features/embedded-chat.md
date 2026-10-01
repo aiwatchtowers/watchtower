@@ -38,4 +38,4 @@ Every assistant chat outside the main AI Chat (target, track, idea/decision, mee
 
 - The target's action cards are still memory-only.
 - `TargetBriefCenter` runs count against the 3-turn limit.
-- Onboarding and the setup assistants own their (memory) engines directly — the window or sheet is their lifetime — and share the app's turn gate where one exists.
+- Onboarding and the setup assistants own their (memory) engines directly: the window or sheet is their lifetime. They share the app's turn gate (`appState.embeddedChatCenter.gate`), and have no draft mirror, so nothing of theirs survives a restart.
