@@ -11,6 +11,7 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/devpack"
+	"watchtower/internal/kb"
 	"watchtower/internal/projectdocs"
 )
 
@@ -53,6 +54,13 @@ type projectResyncJSON struct {
 	MCPRegistered    bool     `json:"mcp_registered"`
 	MCPCommand       string   `json:"mcp_command"` // the manual registration when MCPRegistered is false
 
+	// The search index of the project's documents (PROJ-08: searchable from
+	// this project's sessions only). IndexSkipped: knowledge search is off.
+	IndexOK      bool   `json:"index_ok"`
+	IndexError   string `json:"index_error"`
+	Indexed      int    `json:"indexed"` // documents (re)written to the index
+	IndexSkipped bool   `json:"index_skipped"`
+
 	Suggestions      []string `json:"suggestions"`
 	SuggestionsError string   `json:"suggestions_error"` // the suggestions may be incomplete
 
@@ -61,7 +69,7 @@ type projectResyncJSON struct {
 }
 
 func (r projectResyncJSON) failed() bool {
-	return !r.DocsOK || !r.IntegrationOK || r.SuggestionsError != ""
+	return !r.DocsOK || !r.IntegrationOK || !r.IndexOK || r.SuggestionsError != ""
 }
 
 func runProjectResync(cmd *cobra.Command, args []string) error {
@@ -69,7 +77,7 @@ func runProjectResync(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	_, database, err := openJiraCmdDB()
+	cfg, database, err := openJiraCmdDB()
 	if err != nil {
 		return err
 	}
@@ -82,7 +90,7 @@ func runProjectResync(cmd *cobra.Command, args []string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	res, stepErr := resyncProject(ctx, database, p)
+	res, stepErr := resyncProject(ctx, database, p, cfg.Knowledge.Enabled)
 	if projectFlagJSON {
 		return writeJSON(cmd.OutOrStdout(), res)
 	}
@@ -92,7 +100,7 @@ func runProjectResync(cmd *cobra.Command, args []string) error {
 
 // resyncProject runs both steps and collects the suggestions; the error
 // joins every failure (each also recorded in the result).
-func resyncProject(ctx context.Context, database *db.DB, p *db.Project) (projectResyncJSON, error) {
+func resyncProject(ctx context.Context, database *db.DB, p *db.Project, knowledgeEnabled bool) (projectResyncJSON, error) {
 	res := projectResyncJSON{ID: p.ID, Excluded: []string{}}
 	var errs []error
 
@@ -108,6 +116,17 @@ func resyncProject(ctx context.Context, database *db.DB, p *db.Project) (project
 		errs = append(errs, fmt.Errorf("installing the Claude Code integration: %w", err))
 	} else {
 		res.IntegrationOK = true
+	}
+
+	// After the import, so newly attached documents are searchable at once
+	// rather than after the daemon's next knowledge cycle.
+	if !knowledgeEnabled {
+		res.IndexOK, res.IndexSkipped = true, true
+	} else if st, err := kb.Run(ctx, database, kb.Options{Sources: []string{kb.ProjectDocSource}}); err != nil {
+		res.IndexError = err.Error()
+		errs = append(errs, fmt.Errorf("indexing documents for search: %w", err))
+	} else {
+		res.IndexOK, res.Indexed = true, st.Written
 	}
 
 	suggestions, err := resyncSuggestions(database, p, res.Docs)
@@ -176,6 +195,14 @@ func printResyncReport(w io.Writer, p *db.Project, res projectResyncJSON) {
 		printImportReport(w, *res.Docs)
 	} else {
 		fmt.Fprintf(w, "Documents: FAILED — %s (retry: watchtower project resync %d)\n", res.DocsError, p.ID)
+	}
+	switch {
+	case res.IndexSkipped:
+		fmt.Fprintln(w, "Search index: skipped (knowledge search is off)")
+	case res.IndexOK:
+		fmt.Fprintf(w, "Search index: %d document(s) (re)indexed, searchable from this project's sessions\n", res.Indexed)
+	default:
+		fmt.Fprintf(w, "Search index: FAILED — %s\n", res.IndexError)
 	}
 	fmt.Fprintln(w, "Claude Code integration:")
 	if res.install.MCPCommand != "" { // set once the installer got past its folder checks

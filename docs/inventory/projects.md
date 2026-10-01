@@ -312,6 +312,41 @@ timeout would be worse than none.
 
 **Locked since:** 2026-10-01
 
+## PROJ-08 — a project's documents are searchable only from its own sessions
+
+**Status:** Enforced
+
+**Observable:** Attached project documents (`project_documents`, read from
+the project folder) are indexed into the knowledge index as source
+`project_doc` (`internal/kb/source_project.go`; anchor `project_id`,
+`document_id`, `rel_path`; sections split at `#`–`###` headings, the heading
+as `chunk_anchor`). They are visible only to a search or an open made in
+that project's own session — `watchtower mcp --project N`, whose
+`tools.Binding.ProjectID` is N. `kb.Search` (`Request.ProjectID`) and
+`kb.GetDocument` (`DocOptions.ProjectID`) apply one SQL condition
+(`projectDocVisible`) on every call, so the default — ProjectID 0, i.e. the
+main AI Chat, every Discuss chat, `kb search`, the Confluence title lookup,
+`get_task_context` and any other caller — sees no project document at all,
+even when it asks for the `project_doc` source; another project's session
+sees only its own. An open of a hidden document reads as "not found", the
+same as a missing one. Indexing is mechanical (no AI, KB-02): a document is
+re-rendered when its row's `updated_at` or its file's mtime moves (capped at
+now), and the content-hash gate keeps an unchanged render write-free; a file
+that is gone, unreadable or no longer resolves inside the folder (symlinks
+followed) is indexed by its title only, never read; a detached document or
+deleted project leaves the index on the next cycle (reconcile).
+
+**Why locked:** Owner decision (board target #89): project documents are
+working material of one project and its coding agent; they must not leak
+into the owner's general assistant or another project — the PROJ-01 spirit
+applied to search.
+
+**Test guards:**
+- `internal/kb/source_project_test.go::TestProj08_ProjectDocsOnlyInTheirOwnProjectSession`
+- `internal/tools/project_knowledge_test.go::TestProj08_KnowledgeToolsShowProjectDocsOnlyToTheirProject`
+
+**Locked since:** 2026-10-01
+
 ## v1 limits and notes (accepted)
 
 - **Status rollup bounds (PROJ-05).** The ancestor walk stops after 256
@@ -380,6 +415,8 @@ timeout would be worse than none.
 - **Board language is advisory.** It is an instruction to the agent (brief, `project_info`, skill), never enforced on a write: a target written in another language is accepted, and nothing already on the board is translated when the setting changes. The mechanical document import keeps each file's own title.
 
 ## Changelog
+
+- 2026-10-01 (board target #89): **PROJ-08** added — attached project documents are indexed into kb (`project_doc`) and searchable only from their own project's session. `project resync` re-indexes them right after its import (`index_ok`/`index_error`/`indexed`/`index_skipped`, skipped when `knowledge.enabled` is off), and the Desktop's Re-run Setup summary says so. No other contract changed.
 
 - 2026-10-01 (board item #81): the Desktop Documents pane groups its list by kind (Specs, Plans, Docs, Imported — `ProjectDocumentGrouping`, pure), filters it by a title/path search, marks open comments and "changed since last viewed", and offers a Contents menu built from the open document's headings. Read-only UI over existing rows; no contract semantics or guard tests changed.
 - 2026-10-01 (board target #91): `watchtower project resync <id>` and the Desktop's **Re-run Setup** re-run the document import and the folder install additively — PROJ-04's never-overwrite rule and the PROJ-03 "Desktop never writes a document" rule hold unchanged (the CLI writes import rows only; the files are never written); nothing is deleted, so PROJ-02 is unaffected. Pinned by `TestProjectResync_IsAdditive` (every project row byte-identical apart from the new document). No contract semantics or guard tests changed.

@@ -6,6 +6,7 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -58,7 +59,7 @@ func dumpKB(t *testing.T, d *db.DB) string {
 var kbSourceTables = []string{
 	"messages", "gmail_messages", "imap_messages", "jira_issues", "jira_comments", "calendar_events",
 	"meeting_transcripts", "meeting_recaps", "digests", "digest_topics", "stream_digests", "ideas", "idea_mentions",
-	"ext_documents", "ext_comments", "ext_users",
+	"ext_documents", "ext_comments", "ext_users", "projects", "project_documents",
 }
 
 func dumpSourceTables(t *testing.T, d *db.DB) string {
@@ -90,6 +91,13 @@ func TestKB01_IncrementalEqualsRebuild(t *testing.T) {
 		VALUES (2, 9, 'jira', 'кэш на уровне CDN', 'Bob', '2026-09-26T12:00:00Z', '2026-09-26T12:30:00Z')`)
 	// A Confluence comment author is renamed: only ext_users moves.
 	exec(t, d, `UPDATE ext_users SET display_name = 'Robert', fetched_at = '2026-09-26T12:30:00Z' WHERE ext_user_id = 'u2'`)
+	// A project document is revised on disk with no row change: only its
+	// file's mtime moves.
+	var folder string
+	require.NoError(t, d.QueryRow(`SELECT folder_path FROM projects WHERE id = ?`, fixtureProjectID).Scan(&folder))
+	write(t, folder, "README.md", "Readme revised: квартальный план.\n")
+	revised := time.Now().Add(2 * time.Hour)
+	require.NoError(t, os.Chtimes(filepath.Join(folder, "README.md"), revised, revised))
 	_, err := Run(ctx, d, Options{Now: testNow().Add(time.Hour)}) // pass 2, same UTC day
 	require.NoError(t, err)
 	var recentDocs int
@@ -178,13 +186,16 @@ func TestKB03_EveryHitOpensAndAnchors(t *testing.T) {
 		"stream_digest": {"стейдж", "untitled"},
 		"idea":          {"кэш*"},
 		"confluence":    {"канарейк*", "diagram"},
+		"project_doc":   {"роадмап", "rollout"},
 	}
 	require.Len(t, perSource, len(SourceNames()), "the fixture covers every source")
 	var all []Hit
 	for _, src := range SourceNames() {
 		queries, ok := perSource[src]
 		require.True(t, ok, "no query for source %s", src)
-		res, err := Search(ctx, d, Request{Queries: queries, Sources: []string{src}, Limit: MaxLimit, Now: testNow()})
+		// The fixture project's session: project documents are visible only
+		// to it (PROJ-08); every other source is unaffected by ProjectID.
+		res, err := Search(ctx, d, Request{Queries: queries, Sources: []string{src}, Limit: MaxLimit, Now: testNow(), ProjectID: fixtureProjectID})
 		require.NoError(t, err, src)
 		n := countDocs(t, d, src)
 		require.Positive(t, n, "seedAll indexed no %s document", src)
@@ -199,7 +210,7 @@ func TestKB03_EveryHitOpensAndAnchors(t *testing.T) {
 	seen := map[string]bool{}
 	for _, h := range all {
 		seen[h.Source] = true
-		doc, err := GetDocument(ctx, d, h.Ref, DocOptions{})
+		doc, err := GetDocument(ctx, d, h.Ref, DocOptions{ProjectID: fixtureProjectID})
 		require.NoError(t, err, h.Ref)
 		assert.NotEmpty(t, strings.TrimSpace(doc.Text), h.Ref)
 		assert.Equal(t, h.Ref, doc.Ref)
@@ -209,7 +220,7 @@ func TestKB03_EveryHitOpensAndAnchors(t *testing.T) {
 		}
 		assert.Equal(t, h.Anchor, doc.Anchor, h.Ref)
 		// The hit's best-matching chunk opens too (from_chunk = hit.Chunk).
-		at, err := GetDocument(ctx, d, h.Ref, DocOptions{FromChunk: h.Chunk})
+		at, err := GetDocument(ctx, d, h.Ref, DocOptions{FromChunk: h.Chunk, ProjectID: fixtureProjectID})
 		require.NoError(t, err, "%s from chunk %d", h.Ref, h.Chunk)
 		assert.NotEmpty(t, strings.TrimSpace(at.Text), h.Ref)
 	}

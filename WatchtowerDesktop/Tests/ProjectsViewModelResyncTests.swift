@@ -37,7 +37,7 @@ final class ProjectsViewModelResyncTests: XCTestCase {
                  "unreadable":["docs/x: permission denied"],"dry_run":false},
          "integration_ok":true,"integration_error":"","skill":"updated","hooks_added":true,"excluded":[".claude/"],
          "mcp_registered":true,"mcp_command":"","suggestions":["The project has no sources: add them."],
-         "suggestions_error":""}
+         "suggestions_error":"","index_ok":true,"index_error":"","indexed":2,"index_skipped":false}
         """#
 
     /// A failed import carries no docs report (Go `omitempty`).
@@ -45,7 +45,8 @@ final class ProjectsViewModelResyncTests: XCTestCase {
         {"id":1,"docs_ok":false,"docs_error":"permission denied","integration_ok":false,
          "integration_error":"claude CLI not found","skill":"drifted","hooks_added":false,"excluded":[],
          "mcp_registered":false,"mcp_command":"cd /tmp/a && claude mcp add","suggestions":[],
-         "suggestions_error":"listing sources: database is locked"}
+         "suggestions_error":"listing sources: database is locked",
+         "index_ok":false,"index_error":"database is locked","indexed":0,"index_skipped":false}
         """#
 
     private static let status = Data(#"{"skill":"unchanged","hook":true,"mcp":true}"#.utf8)
@@ -62,12 +63,19 @@ final class ProjectsViewModelResyncTests: XCTestCase {
         let runner = FakeCLIRunner(stdout: Data(Self.upToDate.utf8))
         let result = try await ProjectCLI(runner: runner).resync(projectID: 7)
         XCTAssertEqual(runner.invocations, [["project", "resync", "7", "--json"]])
-        XCTAssertEqual(result.summaryLines, [line("Everything was already up to date.")])
+        XCTAssertEqual(result.summaryLines, [line("Everything was already up to date.")],
+                       "an envelope without the index keys (an older CLI) reports nothing about it")
+
+        let skipped = try decode(Self.upToDate.replacingOccurrences(
+            of: #""suggestions_error":"""#,
+            with: #""suggestions_error":"","index_ok":true,"index_error":"","indexed":0,"index_skipped":true"#))
+        XCTAssertEqual(skipped.summaryLines, [line("Documents not indexed for search: knowledge search is off")])
 
         XCTAssertEqual(try decode(Self.added).summaryLines, [
             line("Attached 1 new document(s): docs/specs/a.md"),
             line("1 more document(s) past the import cap — run Re-run Setup again", problem: true),
             line("Could not read docs/x: permission denied", problem: true),
+            line("Indexed 2 document(s) for search in this project's sessions"),
             line("Updated the watchtower-project skill"),
             line("Added the session hooks"),
             line("Excluded 1 more path(s) from git"),
@@ -77,6 +85,7 @@ final class ProjectsViewModelResyncTests: XCTestCase {
         let failed = try decode(Self.failed)
         XCTAssertEqual(failed.summaryLines, [
             line("Attaching documents failed: permission denied", problem: true),
+            line("Indexing the documents for search failed: database is locked", problem: true),
             line("Your own copy of the watchtower-project skill was kept, so its update was not applied "
                  + "— merge it by hand, or delete your copy and run Re-run Setup again", problem: true),
             line("The MCP server is not registered — run: cd /tmp/a && claude mcp add", problem: true),

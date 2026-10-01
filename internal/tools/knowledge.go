@@ -15,7 +15,7 @@ import (
 
 type searchKnowledgeArgs struct {
 	Queries []string `json:"queries" jsonschema:"1-5 search queries: the key terms, synonyms, both Russian and English variants, and word stems ending in * for Russian word forms (e.g. договор*)"`
-	Sources []string `json:"sources,omitempty" jsonschema:"optional filter: slack, gmail, imap, jira, confluence, calendar, transcript, recap, digest, stream_digest, idea"`
+	Sources []string `json:"sources,omitempty" jsonschema:"optional filter: slack, gmail, imap, jira, confluence, calendar, transcript, recap, digest, stream_digest, idea, project_doc (this project's attached documents; project sessions only)"`
 	From    string   `json:"from,omitempty" jsonschema:"only documents active on/after this date (YYYY-MM-DD)"`
 	To      string   `json:"to,omitempty" jsonschema:"only documents active on/before this date (YYYY-MM-DD)"`
 	Limit   int      `json:"limit,omitempty" jsonschema:"max documents, 0 = default (10), capped at 25"`
@@ -40,7 +40,8 @@ func NewSearchKnowledge() *Tool {
 			"documents with snippets, a ref for get_knowledge_document, the best-matching chunk (open the " +
 			"document there with from_chunk) with its chunk_anchor (e.g. the Slack message ts), and a source " +
 			"anchor and permalink for links. In a project session, hits from the project's own sources rank " +
-			"first and carry in_scope (project_scope: only or off to change that).",
+			"first and carry in_scope (project_scope: only or off to change that), and the project's attached " +
+			"documents (source project_doc) are searchable too.",
 		InputSchema: mustSchema[searchKnowledgeArgs]("search_knowledge"),
 		Access:      AccessRead,
 		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
@@ -48,7 +49,9 @@ func NewSearchKnowledge() *Tool {
 			if err := json.Unmarshal(call.Args, &a); err != nil {
 				return nil, &ValidationError{Msg: "invalid arguments"}
 			}
-			req := kb.Request{Queries: a.Queries, Sources: a.Sources, Limit: a.Limit}
+			// A project session sees its own attached documents; every other
+			// caller (ProjectID 0) none of them (PROJ-08).
+			req := kb.Request{Queries: a.Queries, Sources: a.Sources, Limit: a.Limit, ProjectID: call.Binding.ProjectID}
 			var err error
 			if req.From, err = parseDay(a.From, false); err != nil {
 				return nil, &ValidationError{Msg: "from must be YYYY-MM-DD"}
@@ -145,7 +148,7 @@ func NewGetKnowledgeDocument() *Tool {
 			if err := json.Unmarshal(call.Args, &a); err != nil || strings.TrimSpace(a.Ref) == "" {
 				return nil, &ValidationError{Msg: "ref is required"}
 			}
-			doc, err := kb.GetDocument(ctx, d, a.Ref, kb.DocOptions{FromChunk: a.FromChunk, MaxChars: a.MaxChars})
+			doc, err := kb.GetDocument(ctx, d, a.Ref, kb.DocOptions{FromChunk: a.FromChunk, MaxChars: a.MaxChars, ProjectID: call.Binding.ProjectID})
 			if errors.Is(err, kb.ErrNotFound) {
 				return nil, &ValidationError{Msg: "no document with that ref — search again"}
 			}

@@ -17,6 +17,7 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/devpack"
+	"watchtower/internal/kb"
 )
 
 func runResync(t *testing.T, args ...string) (string, string, error) {
@@ -126,6 +127,12 @@ func TestProjectResync_IsAdditive(t *testing.T) {
 	assert.Empty(t, res.MCPCommand)
 	require.Len(t, res.Suggestions, 1)
 	assert.Contains(t, res.Suggestions[0], "1 new document(s)")
+	assert.True(t, res.IndexOK, res.IndexError)
+	assert.Equal(t, 2, res.Indexed, "both attached documents are now searchable")
+	hits, err := kb.Search(context.Background(), database, kb.Request{Queries: []string{"spec"}, ProjectID: pid})
+	require.NoError(t, err)
+	require.Len(t, hits.Hits, 1, "the new spec is searchable from the project's session at once")
+	assert.Equal(t, kb.ProjectDocSource, hits.Hits[0].Source)
 
 	after := projectSnapshot(t, database, pid)
 	for _, table := range []string{"project", "targets", "history", "comments", "sources", "images"} {
@@ -145,6 +152,7 @@ func TestProjectResync_IsAdditive(t *testing.T) {
 	assert.False(t, res.HooksAdded)
 	assert.Empty(t, res.Excluded)
 	assert.Empty(t, res.Suggestions)
+	assert.Zero(t, res.Indexed, "nothing changed: the index is not rewritten")
 	assert.Equal(t, after, projectSnapshot(t, database, pid))
 }
 
@@ -275,10 +283,28 @@ func TestProjectResync_SuggestionsErrorIsReported(t *testing.T) {
 	_, err = database.Exec(`DROP TABLE project_sources`)
 	require.NoError(t, err)
 
-	res, err := resyncProject(context.Background(), database, p)
+	res, err := resyncProject(context.Background(), database, p, true)
 	require.Error(t, err)
 	assert.True(t, res.DocsOK)
 	assert.True(t, res.IntegrationOK)
 	assert.Contains(t, res.SuggestionsError, "listing sources")
 	assert.True(t, res.failed())
+}
+
+func TestProjectResync_SkipsTheIndexWhenKnowledgeSearchIsOff(t *testing.T) {
+	useFakeProjectClaude(t)
+	database := writeActionsConfig(t)
+	pid, err := database.CreateProject("acme", resyncFolder(t))
+	require.NoError(t, err)
+	p, err := database.GetProject(pid)
+	require.NoError(t, err)
+
+	res, err := resyncProject(context.Background(), database, p, false)
+	require.NoError(t, err)
+	assert.True(t, res.IndexOK)
+	assert.True(t, res.IndexSkipped)
+	assert.Zero(t, res.Indexed)
+	var n int
+	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM kb_documents`).Scan(&n))
+	assert.Zero(t, n, "knowledge search off: nothing indexed (FEAT-01)")
 }
