@@ -97,16 +97,19 @@ func (g *CodexGenerator) Generate(ctx context.Context, systemPrompt, userMessage
 }
 
 // execArgs is the common `codex exec` prefix every Watchtower call starts
-// with. Beyond the read-only sandbox it switches off codex's local tools:
-// sandbox_mode=read-only still lets the model run shell commands that read
-// anywhere on disk, and the prompts carry untrusted Slack/Gmail/Jira text, so
-// an injected "list ~/Documents" (or a curious model) would trigger a macOS
-// TCC prompt attributed to Watchtower or pull local files into stored output.
-// This is the codex twin of the claude side's `--tools ""` (batch) and
-// DisallowedTools (chat): the model keeps only the MCP tools a caller
-// configures. shell_tool also gates unified exec; view_image reads local
-// files; computer_use/browser_use drive the screen and a browser (their own
-// TCC prompts). An unknown features.* key is ignored by older codex builds.
+// with. Beyond the read-only sandbox it switches off codex's local and
+// account-connected tools: sandbox_mode=read-only still lets the model run
+// shell commands that read anywhere on disk, and the prompts carry untrusted
+// Slack/Gmail/Jira text, so an injected "list ~/Documents" (or a curious
+// model) would trigger a macOS TCC prompt attributed to Watchtower or pull
+// local files into stored output. This is the codex twin of the claude
+// side's `--tools ""` (batch) and DisallowedTools (chat). shell_tool also
+// gates unified exec; view_image reads local files; computer_use and the
+// browser_use pair drive the screen and a browser (their own TCC prompts);
+// apps/plugins would expose the owner's ChatGPT connectors — an
+// exfiltration channel for an injected prompt. Not covered here: MCP servers
+// and web search configured in the owner's own ~/.codex/config.toml. An
+// unknown features.* key is ignored by older codex builds.
 func execArgs(model string) []string {
 	return []string{
 		"exec",
@@ -121,6 +124,9 @@ func execArgs(model string) []string {
 		"-c", "features.view_image=false",
 		"-c", "features.computer_use=false",
 		"-c", "features.browser_use=false",
+		"-c", "features.browser_use_external=false",
+		"-c", "features.apps=false",
+		"-c", "features.plugins=false",
 	}
 }
 

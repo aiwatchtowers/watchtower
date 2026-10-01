@@ -36,7 +36,7 @@ func TestNewClient_DefaultClaudeCmd(t *testing.T) {
 
 func TestBuildArgs(t *testing.T) {
 	c := NewClient("claude-sonnet-4-6", "", "")
-	args, stdin := c.buildArgs("system prompt", "user message", "text", "")
+	args, stdin, _ := c.buildArgs("system prompt", "user message", "text", "")
 	assert.Empty(t, stdin)
 
 	assert.Contains(t, args, "-p")
@@ -121,7 +121,7 @@ func flagValue(t *testing.T, args []string, flag string) string {
 
 func TestBuildArgs_WithDBPath(t *testing.T) {
 	c := NewClient("claude-sonnet-4-6", "/tmp/test.db", "")
-	args, _ := c.buildArgs("system prompt", "user message", "text", "")
+	args, _, _ := c.buildArgs("system prompt", "user message", "text", "")
 
 	assert.Contains(t, args, "--mcp-config")
 	// The MCP server is the watchtower binary itself running `mcp --db-path`,
@@ -146,14 +146,14 @@ func TestBuildArgs_WithDBPath(t *testing.T) {
 
 func TestBuildArgs_WithoutDBPath(t *testing.T) {
 	c := NewClient("claude-sonnet-4-6", "", "")
-	args, _ := c.buildArgs("system prompt", "user message", "text", "")
+	args, _, _ := c.buildArgs("system prompt", "user message", "text", "")
 
 	assert.NotContains(t, args, "--mcp-config")
 }
 
 func TestBuildArgs_WithSessionID(t *testing.T) {
 	c := NewClient("claude-sonnet-4-6", "", "")
-	args, _ := c.buildArgs("system prompt", "user message", "stream-json", "session-123")
+	args, _, _ := c.buildArgs("system prompt", "user message", "stream-json", "session-123")
 
 	assert.Contains(t, args, "--resume")
 	assert.Contains(t, args, "session-123")
@@ -168,7 +168,7 @@ func TestBuildArgs_WithSessionID(t *testing.T) {
 func TestBuildArgs_LeadingDashPromptGoesToStdin(t *testing.T) {
 	c := NewClient("claude-sonnet-4-6", "", "")
 	msg := "-v looks wrong"
-	args, stdin := c.buildArgs("sys", msg, "text", "")
+	args, stdin, _ := c.buildArgs("sys", msg, "text", "")
 	if stdin != msg {
 		t.Fatalf("stdin = %q, want the leading-dash message", stdin)
 	}
@@ -199,14 +199,14 @@ func TestBuildArgs_StdinThresholdBoundary(t *testing.T) {
 	c := NewClient("claude-sonnet-4-6", "", "")
 
 	exact := strings.Repeat("x", digest.StdinThreshold)
-	args, stdin := c.buildArgs("sys", exact, "text", "")
+	args, stdin, _ := c.buildArgs("sys", exact, "text", "")
 	if stdin != "" {
 		t.Errorf("stdin = %d bytes, want empty: exactly StdinThreshold stays inline", len(stdin))
 	}
 	assertFlagValue(t, args, "-p", exact)
 
 	over := exact + "x"
-	args2, stdin2 := c.buildArgs("sys", over, "text", "")
+	args2, stdin2, _ := c.buildArgs("sys", over, "text", "")
 	if stdin2 != over {
 		t.Errorf("stdin length = %d, want the full over-threshold message", len(stdin2))
 	}
@@ -824,7 +824,7 @@ func TestBuildMCPConfig_HTTPServerShape(t *testing.T) {
 		t.Fatalf("command = %v, want nil (no stdio keys on an http entry)", acme.Command)
 	}
 
-	args, _ := c.buildArgs("sys", "hi", "json", "")
+	args, _, _ := c.buildArgs("sys", "hi", "json", "")
 	assertFlagValue(t, args, "--allowedTools", "mcp__watchtower,mcp__acme")
 }
 
@@ -859,7 +859,7 @@ func TestBuildMCPConfig_HTTPServerOmitsEmptyHeaders(t *testing.T) {
 func TestBuildArgs_ExternalServersExtendAllowlist(t *testing.T) {
 	c := NewClient("sonnet", "/tmp/w.db", "")
 	c.SetExternalMCPServers([]ExternalMCPServer{{Name: "trello", Kind: "stdio", Command: "npx"}})
-	args, _ := c.buildArgs("sys", "hi", "json", "")
+	args, _, _ := c.buildArgs("sys", "hi", "json", "")
 	assertFlagValue(t, args, "--allowedTools", "mcp__watchtower,mcp__trello")
 }
 
@@ -874,7 +874,7 @@ func TestBuildMCPConfig_ZeroExternalUnchanged(t *testing.T) {
 
 func TestBuildArgs_NoAllowedToolsFlagLeak(t *testing.T) {
 	c := NewClient("sonnet", "/tmp/w.db", "")
-	args, _ := c.buildArgs("sys", "hi", "stream-json", "")
+	args, _, _ := c.buildArgs("sys", "hi", "stream-json", "")
 	for _, a := range args {
 		if a == "--allowed-tools" {
 			t.Fatalf("legacy flag leaked into claude args")
@@ -887,7 +887,7 @@ func TestMCPConfigDelivery_SecretGoesToFileNotArgv(t *testing.T) {
 	c.SetExternalMCPServers([]ExternalMCPServer{{
 		Name: "trello", Kind: "stdio", Command: "npx", Env: map[string]string{"TOKEN": "secret123"},
 	}})
-	args, _ := c.buildArgs("sys", "hi", "json", "")
+	args, _, _ := c.buildArgs("sys", "hi", "json", "")
 	val := flagValue(t, args, "--mcp-config") // helper: returns the token after the flag
 	t.Cleanup(func() { _ = os.Remove(val) })  // buildArgs writes a real 0600 temp file; normally removed by Query/QuerySync after cmd.Wait()
 	if strings.Contains(strings.Join(args, " "), "secret123") {
@@ -905,7 +905,7 @@ func TestMCPConfigDelivery_SecretGoesToFileNotArgv(t *testing.T) {
 
 func TestMCPConfigDelivery_NoSecretStaysInline(t *testing.T) {
 	c := NewClient("sonnet", "/tmp/w.db", "")
-	args, _ := c.buildArgs("sys", "hi", "json", "")
+	args, _, _ := c.buildArgs("sys", "hi", "json", "")
 	val := flagValue(t, args, "--mcp-config")
 	if !strings.HasPrefix(strings.TrimSpace(val), "{") {
 		t.Fatalf("expected inline JSON, got %q", val)
@@ -949,21 +949,23 @@ func TestSessionDisallowedTools_UnhidesOnlyWebSearch(t *testing.T) {
 func TestBuildArgs_LargeSystemPromptGoesToFile(t *testing.T) {
 	c := NewClient("m", "", "")
 	big := strings.Repeat("s", digest.StdinThreshold+1)
-	args, _ := c.buildArgs(big, "hi", "json", "")
-	t.Cleanup(func() { os.Remove(c.systemPromptTempPath) })
+	args, _, err := c.buildArgs(big, "hi", "json", "")
+	require.NoError(t, err)
+	promptPath := c.systemPromptTempPath
+	t.Cleanup(func() { os.Remove(promptPath) })
 
 	assert.NotContains(t, args, "--system-prompt")
 	assert.NotContains(t, args, big)
-	assertFlagValue(t, args, "--system-prompt-file", c.systemPromptTempPath)
-	info, err := os.Stat(c.systemPromptTempPath)
+	assertFlagValue(t, args, "--system-prompt-file", promptPath)
+	info, err := os.Stat(promptPath)
 	require.NoError(t, err)
 	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
-	data, err := os.ReadFile(c.systemPromptTempPath)
+	data, err := os.ReadFile(promptPath)
 	require.NoError(t, err)
 	assert.Equal(t, big, string(data))
 
 	exact := strings.Repeat("s", digest.StdinThreshold)
-	args, _ = c.buildArgs(exact, "hi", "json", "")
+	args, _, _ = c.buildArgs(exact, "hi", "json", "")
 	assertFlagValue(t, args, "--system-prompt", exact)
 	assert.Empty(t, c.systemPromptTempPath, "a small prompt must not leave a stale temp path behind")
 }
@@ -994,4 +996,57 @@ fi
 	require.NotEmpty(t, c.systemPromptTempPath)
 	_, statErr := os.Stat(c.systemPromptTempPath)
 	assert.True(t, os.IsNotExist(statErr), "system prompt temp file must be removed after the call, stat err = %v", statErr)
+}
+
+// TestQuery_LargeSystemPromptFileIsRemoved is the streaming sibling: Query
+// hands the prompt over as a file and removes it once the stream ends.
+func TestQuery_LargeSystemPromptFileIsRemoved(t *testing.T) {
+	const marker = "SYSPROMPT-MARKER-ai-04"
+	mockPath := writeMockClaude(t, `file=""
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--system-prompt-file" ]; then file="$2"; fi
+  shift
+done
+if [ -n "$file" ] && grep -q `+marker+` "$file"; then
+  printf '{"type":"assistant","message":{"content":[{"type":"text","text":"got:`+marker+`"}]}}\n'
+else
+  printf '{"type":"assistant","message":{"content":[{"type":"text","text":"marker-missing"}]}}\n'
+fi
+`)
+	c := NewClient("test-model", "", "")
+	c.claudeCmd = mockPath
+
+	sys := strings.Repeat("x", digest.StdinThreshold) + marker
+	textCh, errCh, sidCh := c.Query(context.Background(), sys, "hello", "")
+	var got strings.Builder
+	for chunk := range textCh {
+		got.WriteString(chunk.Text)
+	}
+	for err := range errCh {
+		require.NoError(t, err)
+	}
+	for range sidCh {
+	}
+	assert.Equal(t, "got:"+marker, got.String())
+	require.NotEmpty(t, c.systemPromptTempPath)
+	_, statErr := os.Stat(c.systemPromptTempPath)
+	assert.True(t, os.IsNotExist(statErr), "system prompt temp file must be removed after the stream, stat err = %v", statErr)
+}
+
+// TestQuerySync_SystemPromptFileWriteFailureFailsTheCall: when the temp file
+// cannot be written the call fails instead of putting the oversized prompt
+// back on argv; the CLI is never started.
+func TestQuerySync_SystemPromptFileWriteFailureFailsTheCall(t *testing.T) {
+	ran := filepath.Join(t.TempDir(), "ran")
+	mockPath := writeMockClaude(t, `touch `+ran+`
+printf '{"type":"result","result":"ok"}'`)
+	c := NewClient("test-model", "", "")
+	c.claudeCmd = mockPath
+	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "missing"))
+
+	_, _, err := c.QuerySync(context.Background(), strings.Repeat("x", digest.StdinThreshold+1), "hello", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "writing system prompt file")
+	_, statErr := os.Stat(ran)
+	assert.True(t, os.IsNotExist(statErr), "the CLI must not run without its system prompt")
 }

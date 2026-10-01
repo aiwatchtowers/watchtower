@@ -212,16 +212,18 @@ func loadExternalMCPServers(cfg *config.Config, dbPath string) []ai.ExternalMCPS
 	return servers
 }
 
-// oauthLockWait bounds how long a chat launch waits for another process
-// (a parallel launch, `connections oauth`) to finish with a connection's
-// grant: one token-endpoint round trip is capped at 30 s, so this leaves
-// headroom without letting a wedged holder stall the launch indefinitely.
-const oauthLockWait = 45 * time.Second
+// oauthLockWait bounds how long a chat launch (or `connections oauth`)
+// waits for another process to finish with a connection's grant: one
+// token-endpoint round trip is capped at 30 s, so this leaves headroom
+// without letting a wedged holder stall the launch indefinitely. A var so
+// tests can shorten it.
+var oauthLockWait = 45 * time.Second
 
 // applyOAuthCredentials verifies or refreshes an OAuth connection's grant and
 // puts the resulting bearer token on server. It reports whether the connection
 // may be used for this launch; false means "skip this one" and the reason has
-// already been logged and recorded on the row.
+// already been logged and, unless the grant was removed meanwhile, recorded
+// on the row.
 //
 // The load→refresh→save runs under the secret's cross-process lock, and the
 // secret is re-read once the lock is held: every chat launch is its own
@@ -251,7 +253,9 @@ func applyOAuthCredentials(
 	defer cancel()
 	unlock, err := store.Lock(lockCtx)
 	if err != nil {
-		return fail("error", "waiting for the token lock", err)
+		log.Printf("external connection %d (%s): %v", c.ID, c.Name, err)
+		return fail("error", "waiting for the token lock",
+			errors.New("another process was still refreshing this connection's token; retried on the next chat"))
 	}
 	defer unlock()
 	secret, err := store.Load()
@@ -267,7 +271,8 @@ func applyOAuthCredentials(
 	changed, err := mcpoauth.EnsureFresh(context.Background(), secret.OAuth, externalMCPNow())
 	if err != nil {
 		status := "error"
-		if errors.Is(err, mcpoauth.ErrInvalidGrant) || errors.Is(err, mcpoauth.ErrNoRefreshToken) {
+		if errors.Is(err, mcpoauth.ErrInvalidGrant) || errors.Is(err, mcpoauth.ErrNoRefreshToken) ||
+			errors.Is(err, mcpoauth.ErrClientRejected) {
 			status = "revoked"
 		}
 		return fail(status, "token refresh failed", err)
@@ -281,14 +286,20 @@ func applyOAuthCredentials(
 
 	if changed {
 		if err := store.Save(secret); err != nil {
-			log.Printf("external connection %d (%s): persisting rotated token: %v", c.ID, c.Name, err)
-			return false
+			// The server has likely rotated the stored refresh token away, so
+			// this is a sign-in-again state; a server that does not rotate
+			// lets the next launch refresh again and flip the row back to ok.
+			return fail("revoked", "persisting rotated token", err)
 		}
 	}
 
 	server.Headers = headers
 	server.Env = secret.Env
-	if c.Status != "ok" {
+	// Re-read the status: c is the pre-lock snapshot, and a parallel launch
+	// may have recorded an error while this one waited for the lock.
+	if cur, err := database.GetExternalConnection(c.ID); err != nil {
+		log.Printf("external connection %d (%s): reading status: %v", c.ID, c.Name, err)
+	} else if cur.Status != "ok" {
 		if serr := database.SetExternalConnectionStatus(c.ID, "ok", ""); serr != nil {
 			log.Printf("external connection %d (%s): recording ok status: %v", c.ID, c.Name, serr)
 		}

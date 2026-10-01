@@ -32,8 +32,10 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) (err error) {
 		_ = tmp.Close()
 		return fmt.Errorf("writing temp file for %s: %w", filepath.Base(path), err)
 	}
-	// Durable before visible: without the sync a crash right after the
-	// rename can still surface an empty file under the new name.
+	// Contents durable before the rename makes them visible: without the
+	// sync a crash right after the rename can surface an empty file under
+	// the new name. (The directory entry itself is not fsynced, so a crash
+	// can still roll the rename back to the old, intact file.)
 	if err := tmp.Sync(); err != nil {
 		_ = tmp.Close()
 		return fmt.Errorf("syncing temp file for %s: %w", filepath.Base(path), err)

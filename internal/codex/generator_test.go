@@ -229,6 +229,9 @@ func TestCodexArgs_LocalToolsDisabled(t *testing.T) {
 			"features.view_image=false",
 			"features.computer_use=false",
 			"features.browser_use=false",
+			"features.browser_use_external=false",
+			"features.apps=false",
+			"features.plugins=false",
 		} {
 			found := false
 			for i := 0; i < len(args)-1; i++ {

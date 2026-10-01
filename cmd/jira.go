@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -489,9 +490,11 @@ func connectJiraAccount(cmd *cobra.Command, cfg *config.Config, database *db.DB,
 		return jira.CloudResource{}, fmt.Errorf("recording site: %w", err)
 	}
 	store := jira.NewTokenStore(cfg.WorkspaceDir(), accountID)
-	if err := store.Save(token); err != nil {
+	// Under the token lock, so a daemon refresh of the previous grant that is
+	// in flight cannot write it back over this new one.
+	if err := saveJiraTokenLocked(cmd.Context(), store, token); err != nil {
 		rollback()
-		return jira.CloudResource{}, fmt.Errorf("saving token: %w", err)
+		return jira.CloudResource{}, err
 	}
 	// Best effort: a /myself failure (e.g. a scope or a flaky network) must
 	// never fail the connect itself — recordJiraOwner warns and the identity
@@ -1998,4 +2001,20 @@ func ownerJiraFeaturesRole(database *db.DB, fallback string) string {
 		return profile.Role
 	}
 	return fallback
+}
+
+// saveJiraTokenLocked saves a freshly consented token under the account's
+// cross-process token lock (jira.TokenStore.Lock).
+func saveJiraTokenLocked(ctx context.Context, store *jira.TokenStore, token *jira.OAuthToken) error {
+	lockCtx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+	unlock, err := store.Lock(lockCtx)
+	if err != nil {
+		return fmt.Errorf("saving token: %w", err)
+	}
+	defer unlock()
+	if err := store.Save(token); err != nil {
+		return fmt.Errorf("saving token: %w", err)
+	}
+	return nil
 }

@@ -26,6 +26,11 @@ type Token struct {
 // token was revoked or expired and the owner must sign in again.
 var ErrInvalidGrant = errors.New("mcpoauth: invalid_grant (sign in again)")
 
+// ErrClientRejected marks a token endpoint answering invalid_client or
+// unauthorized_client: the client registration behind the grant is gone or
+// no longer allowed, and only a new sign-in (which re-registers) fixes it.
+var ErrClientRejected = errors.New("mcpoauth: client rejected by the token endpoint (sign in again)")
+
 // registerRequest is the RFC 7591 dynamic client registration request body
 // Register sends for a public client (no client secret, PKCE-only auth).
 type registerRequest struct {
@@ -244,8 +249,11 @@ func postForm(ctx context.Context, endpoint string, form url.Values) (*Token, er
 		if decErr := decodeLimitedJSON(resp.Body, &tokErr); decErr != nil {
 			return nil, fmt.Errorf("mcpoauth: token endpoint %s returned status %d with an undecodable error body: %w", endpoint, resp.StatusCode, decErr)
 		}
-		if tokErr.Error == "invalid_grant" {
+		switch tokErr.Error {
+		case "invalid_grant":
 			return nil, ErrInvalidGrant
+		case "invalid_client", "unauthorized_client":
+			return nil, fmt.Errorf("%w: %s %s", ErrClientRejected, tokErr.Error, tokErr.ErrorDescription)
 		}
 		return nil, fmt.Errorf("mcpoauth: token endpoint %s returned error %q: %s", endpoint, tokErr.Error, tokErr.ErrorDescription)
 	}

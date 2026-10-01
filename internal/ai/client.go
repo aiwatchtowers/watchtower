@@ -191,7 +191,7 @@ func promptFlagAndStdin(userMessage string) (flagArgs []string, stdin string) {
 // promptFlagAndStdin). When sessionID is non-empty, --resume is used instead
 // of --system-prompt (the system prompt is already baked into the existing
 // session).
-func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID string) ([]string, string) {
+func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID string) ([]string, string, error) {
 	c.systemPromptTempPath = "" // set again below only if this call writes one
 	promptArgs, stdin := promptFlagAndStdin(userMessage)
 	// slices.Concat always allocates a fresh backing array, so the append
@@ -264,28 +264,32 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 	if sessionID != "" {
 		args = append(args, "--resume", sessionID)
 	} else {
-		args = append(args, c.systemPromptArgs(systemPrompt)...)
+		promptArgs, err := c.systemPromptArgs(systemPrompt)
+		if err != nil {
+			return nil, "", err
+		}
+		args = append(args, promptArgs...)
 	}
-	return args, stdin
+	return args, stdin, nil
 }
 
 // systemPromptArgs passes the system prompt inline when it is small and as a
 // 0600 --system-prompt-file when it exceeds digest.StdinThreshold: pipelines
 // that put their whole data payload in the system prompt (briefing, target
 // extract) would otherwise hit ARG_MAX ("argument list too long") and leave
-// that payload readable in `ps` for the process lifetime. If the file cannot
-// be written the prompt stays inline, so an oversized one surfaces as the
-// exec error rather than a run without its instructions.
-func (c *Client) systemPromptArgs(systemPrompt string) []string {
-	if len(systemPrompt) > digest.StdinThreshold {
-		path, err := fsutil.WritePrivateTemp("wt-system-prompt-*.txt", systemPrompt)
-		if err == nil {
-			c.systemPromptTempPath = path
-			return []string{"--system-prompt-file", path}
-		}
-		log.Printf("warning: failed to write system prompt temp file, passing it inline: %v", err)
+// that payload readable in `ps` for the process lifetime. A failed file write
+// fails the call rather than falling back to argv (the digest.ClaudeGenerator
+// policy).
+func (c *Client) systemPromptArgs(systemPrompt string) ([]string, error) {
+	if len(systemPrompt) <= digest.StdinThreshold {
+		return []string{"--system-prompt", systemPrompt}, nil
 	}
-	return []string{"--system-prompt", systemPrompt}
+	path, err := fsutil.WritePrivateTemp("wt-system-prompt-*.txt", systemPrompt)
+	if err != nil {
+		return nil, fmt.Errorf("writing system prompt file: %w", err)
+	}
+	c.systemPromptTempPath = path
+	return []string{"--system-prompt-file", path}, nil
 }
 
 // hasSecret reports whether any external server carries a non-empty Env or
@@ -429,7 +433,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID
 		defer close(errCh)
 		defer close(sidCh)
 
-		args, promptStdin := c.buildArgs(systemPrompt, userMessage, "stream-json", sessionID)
+		args, promptStdin, buildErr := c.buildArgs(systemPrompt, userMessage, "stream-json", sessionID)
 		// buildArgs may have written the mcp-config to a 0600 temp file
 		// (secret present) and recorded its path — clean it up once this
 		// goroutine returns. Every path below reaches its return only after
@@ -441,6 +445,10 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID
 		}
 		if c.systemPromptTempPath != "" {
 			defer os.Remove(c.systemPromptTempPath)
+		}
+		if buildErr != nil {
+			errCh <- buildErr
+			return
 		}
 		cmd := exec.CommandContext(ctx, c.claudeCmd, args...)
 		if promptStdin != "" {
@@ -563,7 +571,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID
 // the full response text and token usage. Pass a non-empty sessionID to resume
 // an existing session.
 func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, sessionID string) (string, *Usage, error) {
-	args, promptStdin := c.buildArgs(systemPrompt, userMessage, "json", sessionID)
+	args, promptStdin, buildErr := c.buildArgs(systemPrompt, userMessage, "json", sessionID)
 	// buildArgs may have written the mcp-config to a 0600 temp file (secret
 	// present) and recorded its path — clean it up on every return path.
 	// cmd.Output() below blocks until the subprocess exits, so by the time
@@ -573,6 +581,9 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, sessi
 	}
 	if c.systemPromptTempPath != "" {
 		defer os.Remove(c.systemPromptTempPath)
+	}
+	if buildErr != nil {
+		return "", nil, buildErr
 	}
 	cmd := exec.CommandContext(ctx, c.claudeCmd, args...)
 	if promptStdin != "" {

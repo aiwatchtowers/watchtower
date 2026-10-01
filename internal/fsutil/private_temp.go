@@ -3,7 +3,10 @@
 // rewrites and cross-process locks.
 package fsutil
 
-import "os"
+import (
+	"fmt"
+	"os"
+)
 
 // WritePrivateTemp writes content to a fresh 0600 file in the system temp
 // directory (os.CreateTemp pattern) and returns its path. The caller removes
@@ -12,22 +15,22 @@ import "os"
 func WritePrivateTemp(pattern, content string) (string, error) {
 	f, err := os.CreateTemp("", pattern)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("creating private temp file: %w", err)
 	}
 	path := f.Name()
 	if err := f.Chmod(0o600); err != nil {
 		f.Close()
 		os.Remove(path)
-		return "", err
+		return "", fmt.Errorf("setting mode on %s: %w", path, err)
 	}
 	if _, err := f.WriteString(content); err != nil {
 		f.Close()
 		os.Remove(path)
-		return "", err
+		return "", fmt.Errorf("writing %s: %w", path, err)
 	}
 	if err := f.Close(); err != nil {
 		os.Remove(path)
-		return "", err
+		return "", fmt.Errorf("closing %s: %w", path, err)
 	}
 	return path, nil
 }

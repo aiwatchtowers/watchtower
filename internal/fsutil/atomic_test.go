@@ -37,9 +37,9 @@ func TestWriteFileAtomic_ReplacesAndTightensMode(t *testing.T) {
 	}
 }
 
-// TestWriteFileAtomic_FailureKeepsOldFile: a failed rename (the target is a
-// directory) leaves no temp file behind and the target untouched.
-func TestWriteFileAtomic_FailureKeepsOldFile(t *testing.T) {
+// TestWriteFileAtomic_FailureLeavesNoTempFile: a failed rename (the target is
+// a non-empty directory) returns the error and removes its temp file.
+func TestWriteFileAtomic_FailureLeavesNoTempFile(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "occupied")
 	if err := os.Mkdir(target, 0o700); err != nil {

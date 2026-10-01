@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -406,4 +407,77 @@ func TestLoadExternalMCPServers_OAuth_ParallelLaunchesRefreshOnce(t *testing.T) 
 	conn, err := database.GetExternalConnection(id)
 	require.NoError(t, err)
 	require.Equal(t, "ok", conn.Status)
+}
+
+// TestLoadExternalMCPServers_OAuth_SignInAgainCasesRevoke: the failures only
+// a new sign-in can fix — an expiring grant with no refresh token, and a
+// token endpoint rejecting the client — record 'revoked', not 'error'.
+func TestLoadExternalMCPServers_OAuth_SignInAgainCasesRevoke(t *testing.T) {
+	clientRejected := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid_client"})
+	}))
+	t.Cleanup(clientRejected.Close)
+
+	for name, tc := range map[string]struct {
+		endpoint       string
+		dropRefreshTok bool
+	}{
+		"no refresh token": {endpoint: "https://example.com/token", dropRefreshTok: true},
+		"client rejected":  {endpoint: clientRejected.URL},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := writeConnectionsConfig(t)
+			database, err := db.Open(cfg.DBPath())
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = database.Close() })
+
+			now := time.Now()
+			id, store := setupOAuthConnection(t, database, cfg, tc.endpoint, now.Add(30*time.Second))
+			if tc.dropRefreshTok {
+				secret, err := store.Load()
+				require.NoError(t, err)
+				secret.OAuth.RefreshToken = ""
+				require.NoError(t, store.Save(secret))
+			}
+			originalNow := externalMCPNow
+			externalMCPNow = func() time.Time { return now }
+			t.Cleanup(func() { externalMCPNow = originalNow })
+
+			require.Empty(t, loadExternalMCPServers(cfg, cfg.DBPath()))
+			conn, err := database.GetExternalConnection(id)
+			require.NoError(t, err)
+			require.Equal(t, "revoked", conn.Status)
+		})
+	}
+}
+
+// TestLoadExternalMCPServers_OAuth_LockTimeoutMarksError: a launch that
+// cannot get the secret's lock in time (another process holds it) skips the
+// connection with status='error' and never refreshes behind the holder's back.
+func TestLoadExternalMCPServers_OAuth_LockTimeoutMarksError(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+
+	server, hits := newFakeTokenServer(t, false)
+	now := time.Now()
+	id, store := setupOAuthConnection(t, database, cfg, server.URL, now.Add(30*time.Second))
+
+	originalNow, originalWait := externalMCPNow, oauthLockWait
+	externalMCPNow = func() time.Time { return now }
+	oauthLockWait = 100 * time.Millisecond
+	t.Cleanup(func() { externalMCPNow, oauthLockWait = originalNow, originalWait })
+
+	unlock, err := store.Lock(context.Background())
+	require.NoError(t, err)
+	t.Cleanup(unlock)
+
+	require.Empty(t, loadExternalMCPServers(cfg, cfg.DBPath()))
+	require.Equal(t, int64(0), hits.Load(), "no refresh while another process holds the lock")
+	conn, err := database.GetExternalConnection(id)
+	require.NoError(t, err)
+	require.Equal(t, "error", conn.Status)
 }

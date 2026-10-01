@@ -15,4 +15,4 @@ The claude batch generator disables every tool (`--tools ""`, internal/digest/ge
 
 > Original note: «а давай проведем ревью нашего репоза на ветке мейн с целью наполнения беклога. Наши треки - покрытие тестами, баги существующие и потенциальные, архитектурные проблемы, анализ использования и бессмысленный функционал»
 
-Resolved 2026-10-01 (fix/ai-process-security): every `codex exec` Watchtower starts (batch generator, `ai query` client, chat session) now goes through `codex.execArgs`, which adds `-c features.shell_tool=false` plus `unified_exec`/`view_image`/`computer_use`/`browser_use` off; pinned by `TestCodexArgs_LocalToolsDisabled`.
+Resolved 2026-10-01 (fix/ai-process-security): every `codex exec` Watchtower starts (batch generator, `ai query` client, chat session) now goes through `codex.execArgs`, which adds `-c features.shell_tool=false` plus `unified_exec`/`view_image`/`computer_use`/`browser_use`/`browser_use_external`/`apps`/`plugins` off (MCP servers and web search from the owner's own `~/.codex/config.toml` are not touched); pinned by `TestCodexArgs_LocalToolsDisabled`.
