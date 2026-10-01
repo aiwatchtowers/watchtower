@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerCore
 
 /// One timestamped segment of a transcribed window (seconds relative to the
 /// window start). An empty array from the engine = no speech in the window.
@@ -6,6 +7,19 @@ struct TranscribedSegment: Equatable, Sendable {
     let text: String
     let startSec: Double
     let endSec: Double
+}
+
+extension [TranscribedSegment] {
+    /// Each segment's text through `WhisperHallucinationFilter`; a segment
+    /// left with no text is dropped, so a window that decoded to nothing but
+    /// subtitle credits reads as the silence it was. Applied inside the
+    /// WhisperKit engine, so the live and batch paths see the same output.
+    func withoutHallucinations() -> [TranscribedSegment] {
+        compactMap { segment in
+            let text = WhisperHallucinationFilter.clean(segment.text)
+            return text.isEmpty ? nil : TranscribedSegment(text: text, startSec: segment.startSec, endSec: segment.endSec)
+        }
+    }
 }
 
 /// Abstraction over the on-device STT engine so tests never load WhisperKit/CoreML.
