@@ -26,19 +26,20 @@ final class EmbeddedChatStoreTests: XCTestCase {
 
     func testBeginTurnWritesTheOwnerRowThenAnEmptyPartialReply() throws {
         for store in stores() {
-            let ids = try store.beginTurn(ownerText: "hello", turnID: "t1")
+            let ids = try store.beginTurn(ownerText: "hello", turnID: "t1", provider: "codex")
             let rows = try store.loadMessages()
             XCTAssertEqual(rows.map(\.role), ["user", "assistant"], "\(store)")
             XCTAssertEqual(rows.map(\.id), [ids.ownerID, ids.assistantID].compactMap { $0 })
             XCTAssertEqual(rows[1].status, "partial")
             XCTAssertEqual(rows[1].text, "")
             XCTAssertEqual(rows.map(\.turnID), ["t1", "t1"])
+            XCTAssertEqual(rows[1].provider, "codex", "the error card's sign-in hint reads it")
         }
     }
 
     func testFollowUpTurnWritesNoOwnerRow() throws {
         for store in stores() {
-            let ids = try store.beginTurn(ownerText: nil, turnID: "t1")
+            let ids = try store.beginTurn(ownerText: nil, turnID: "t1", provider: nil)
             XCTAssertNil(ids.ownerID)
             XCTAssertEqual(try store.loadMessages().map(\.role), ["assistant"])
         }
@@ -46,7 +47,7 @@ final class EmbeddedChatStoreTests: XCTestCase {
 
     func testProgressAndFinalizeUpdateTheReply() throws {
         for store in stores() {
-            let ids = try store.beginTurn(ownerText: "q", turnID: "t")
+            let ids = try store.beginTurn(ownerText: "q", turnID: "t", provider: nil)
             try store.saveProgress(messageID: ids.assistantID, text: "half")
             XCTAssertEqual(try store.loadMessages().last?.text, "half")
             try store.finalize(messageID: ids.assistantID, text: "half and more", status: "error",
@@ -75,13 +76,13 @@ final class EmbeddedChatStoreTests: XCTestCase {
 
     func testADeletedConversationThrowsContextGone() throws {
         let store = DatabaseEmbeddedChatStore(dbPool: pool, conversationID: conversationID)
-        let ids = try store.beginTurn(ownerText: "q", turnID: "t")
+        let ids = try store.beginTurn(ownerText: "q", turnID: "t", provider: nil)
         let id = conversationID
         try pool.write { db in try ChatConversationQueries.delete(db, id: id) }
         XCTAssertThrowsError(try store.saveProgress(messageID: ids.assistantID, text: "x")) {
             XCTAssertTrue($0 is ChatContextGoneError)
         }
-        XCTAssertThrowsError(try store.beginTurn(ownerText: "again", turnID: "t2")) {
+        XCTAssertThrowsError(try store.beginTurn(ownerText: "again", turnID: "t2", provider: nil)) {
             XCTAssertTrue($0 is ChatContextGoneError)
         }
         XCTAssertThrowsError(try store.loadSessionID()) { XCTAssertTrue($0 is ChatContextGoneError) }
@@ -91,11 +92,24 @@ final class EmbeddedChatStoreTests: XCTestCase {
     /// columns at their defaults, so existing readers see a linear thread.
     func testDatabaseRowsKeepTheTreeColumnsAtTheirDefaults() throws {
         let store = DatabaseEmbeddedChatStore(dbPool: pool, conversationID: conversationID)
-        let ids = try store.beginTurn(ownerText: "q", turnID: "t")
+        let ids = try store.beginTurn(ownerText: "q", turnID: "t", provider: nil)
         try store.finalize(messageID: ids.assistantID, text: "a", status: "complete", errorCode: nil, errorMessage: nil)
         let rows = try store.loadMessages()
-        XCTAssertTrue(rows.allSatisfy { $0.parentID == nil && $0.provider == nil && $0.tokensIn == nil })
+        XCTAssertTrue(rows.allSatisfy { $0.parentID == nil && $0.model == nil && $0.tokensIn == nil })
         XCTAssertEqual(rows.last?.status, "complete")
         XCTAssertNil(rows.last?.errorCode)
+    }
+
+    func testOnlyACompletedReplyTouchesTheConversation() throws {
+        let store = DatabaseEmbeddedChatStore(dbPool: pool, conversationID: conversationID)
+        let id = conversationID
+        try pool.write { db in try db.execute(sql: "UPDATE chat_conversations SET updated_at = 1 WHERE id = ?", arguments: [id]) }
+        let updatedAt = { try self.pool.read { db in try ChatConversationQueries.fetchByID(db, id: id)?.updatedAt } }
+        let failed = try store.beginTurn(ownerText: "q", turnID: "t", provider: nil)
+        try store.finalize(messageID: failed.assistantID, text: "", status: "error", errorCode: "internal", errorMessage: "x")
+        XCTAssertEqual(try updatedAt(), 1, "a failed reply is not activity")
+        let done = try store.beginTurn(ownerText: "q2", turnID: "t2", provider: nil)
+        try store.finalize(messageID: done.assistantID, text: "a", status: "complete", errorCode: nil, errorMessage: nil)
+        XCTAssertGreaterThan(try XCTUnwrap(updatedAt()), 1)
     }
 }

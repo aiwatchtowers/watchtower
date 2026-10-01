@@ -9,7 +9,8 @@ package protocol EmbeddedChatStore: AnyObject {
     func loadSessionID() throws -> String?
     /// The owner row (nil for a follow-up or hidden prompt) plus the reply's
     /// empty `partial` placeholder, atomically.
-    func beginTurn(ownerText: String?, turnID: String) throws -> (ownerID: Int64?, assistantID: Int64)
+    /// `provider` is stamped on the reply row (the error card's sign-in hint).
+    func beginTurn(ownerText: String?, turnID: String, provider: String?) throws -> (ownerID: Int64?, assistantID: Int64)
     func saveProgress(messageID: Int64, text: String) throws
     /// `status`: complete | partial | error. A `complete` reply also touches
     /// the conversation (its `updated_at` orders the target's tabs).
@@ -50,11 +51,12 @@ package final class DatabaseEmbeddedChatStore: EmbeddedChatStore {
         return conversation.sessionID
     }
 
-    package func beginTurn(ownerText: String?, turnID: String) throws -> (ownerID: Int64?, assistantID: Int64) {
+    package func beginTurn(ownerText: String?, turnID: String, provider: String?) throws -> (ownerID: Int64?, assistantID: Int64) {
         let id = conversationID
         let now = clock().timeIntervalSince1970
         return try dbPool.write { db in
-            try ChatMessageQueries.beginEmbeddedTurn(db, conversationID: id, ownerText: ownerText, turnID: turnID, now: now)
+            try ChatMessageQueries.beginEmbeddedTurn(db, conversationID: id, ownerText: ownerText, turnID: turnID,
+                                                     provider: provider, now: now)
         }
     }
 
@@ -109,23 +111,24 @@ package final class MemoryEmbeddedChatStore: EmbeddedChatStore {
 
     package func loadSessionID() throws -> String? { sessionID }
 
-    package func beginTurn(ownerText: String?, turnID: String) throws -> (ownerID: Int64?, assistantID: Int64) {
+    package func beginTurn(ownerText: String?, turnID: String, provider: String?) throws -> (ownerID: Int64?, assistantID: Int64) {
         let ownerID = ownerText.map { insert(role: "user", text: $0, turnID: turnID, status: "complete") }
-        let assistantID = insert(role: "assistant", text: "", turnID: turnID, status: "partial")
+        let assistantID = insert(role: "assistant", text: "", turnID: turnID, status: "partial", provider: provider)
         return (ownerID, assistantID)
     }
 
     package func saveProgress(messageID: Int64, text: String) throws {
         try update(messageID) { row in
             ChatMessageRecord(id: row.id, conversationID: 0, role: row.role, text: text, createdAt: row.createdAt,
-                              turnID: row.turnID, status: row.status)
+                              turnID: row.turnID, status: row.status, provider: row.provider)
         }
     }
 
     package func finalize(messageID: Int64, text: String, status: String, errorCode: String?, errorMessage: String?) throws {
         try update(messageID) { row in
             ChatMessageRecord(id: row.id, conversationID: 0, role: row.role, text: text, createdAt: row.createdAt,
-                              turnID: row.turnID, status: status, errorCode: errorCode, errorMessage: errorMessage)
+                              turnID: row.turnID, status: status, provider: row.provider,
+                              errorCode: errorCode, errorMessage: errorMessage)
         }
     }
 
@@ -138,11 +141,12 @@ package final class MemoryEmbeddedChatStore: EmbeddedChatStore {
         self.sessionID = sessionID
     }
 
-    private func insert(role: String, text: String, turnID: String, status: String) -> Int64 {
+    private func insert(role: String, text: String, turnID: String, status: String, provider: String? = nil) -> Int64 {
         let id = nextID
         nextID -= 1
         rows.append(ChatMessageRecord(id: id, conversationID: 0, role: role, text: text,
-                                      createdAt: clock().timeIntervalSince1970, turnID: turnID, status: status))
+                                      createdAt: clock().timeIntervalSince1970, turnID: turnID, status: status,
+                                      provider: provider))
         return id
     }
 

@@ -20,6 +20,11 @@ package protocol EmbeddedDraftMirror: AnyObject {
 /// are written before the process starts; text is flushed at most once per
 /// `flushInterval`; the turn ends exactly once — `complete` (then
 /// `spec.postTurn`), `partial` (Stop, quit) or `error` (with the real text).
+/// A store write that fails during a turn fails the turn.
+///
+/// Follow-up prompts (an approved action's outcome) wait while a turn is
+/// busy and run after it completes; after a stopped or failed turn they ride
+/// the next owner turn instead. They are never dropped while the engine lives.
 @MainActor
 @Observable
 package final class EmbeddedChatEngine {
@@ -32,7 +37,10 @@ package final class EmbeddedChatEngine {
         case failed(messageID: Int64, message: String)
     }
 
-    package let spec: ChatSurfaceSpec
+    /// Replaced by `EmbeddedChatCenter.engine(for:)` whenever a surface asks
+    /// again, so the prompt and postTurn closures always see that surface's
+    /// current state (its key never changes).
+    package private(set) var spec: ChatSurfaceSpec
     /// Finished rows plus the running reply's placeholder (the view swaps
     /// that one for `LiveAssistantRow`). Never touched by a delta.
     package private(set) var messages: [ChatThreadItem] = []
@@ -44,33 +52,40 @@ package final class EmbeddedChatEngine {
     /// Survives navigation along with the engine.
     package var draft = ""
     /// A failure not tied to a row (history load, a send that could not be
-    /// saved, a deleted context).
+    /// saved, a deleted context). Cleared by the next turn that completes.
     package private(set) var bannerError: String?
     /// What `postTurn` made of each completed reply, for the view's slots.
     package private(set) var postTurnResults: [Int64: ChatPostTurnResult] = [:]
-    /// The latest turn failed (or came back empty): Retry may rerun it.
+    /// The latest turn failed on the provider's side: Retry may rerun it.
     package private(set) var canRetry = false
 
     @ObservationIgnored package var onTurnFinished: ((TurnOutcome) -> Void)?
 
     package var isStreaming: Bool { liveTurn != nil }
     package var isBusy: Bool { isStreaming || isQueued }
+    /// Busy, or holding follow-ups for a later turn — the center keeps such
+    /// an engine even when no view has shown it for a while.
+    package var hasPendingWork: Bool { isBusy || !queuedFollowUps.isEmpty }
 
     @ObservationIgnored private let store: EmbeddedChatStore
     @ObservationIgnored private let aiService: any AIServiceProtocol
     @ObservationIgnored private let gate: EmbeddedStreamGate
     @ObservationIgnored private let draftMirror: EmbeddedDraftMirror?
+    @ObservationIgnored private let provider: String?
+    @ObservationIgnored private let inactivityTimeout: TimeInterval
     @ObservationIgnored private let clock: () -> Date
     @ObservationIgnored private var sessionID: String?
+    /// The history could not be read: sending would start a fresh provider
+    /// session over the stored one, so a send first retries the load.
+    @ObservationIgnored private var loadFailed = false
     @ObservationIgnored private var streamTask: Task<Void, Never>?
+    @ObservationIgnored private var watchdog: Task<Void, Never>?
     @ObservationIgnored private var running: RunningTurn?
     @ObservationIgnored private var pending: TurnRequest?
     @ObservationIgnored private var lastRequest: TurnRequest?
-    /// Follow-up prompts produced while a turn was busy: flushed as one turn
-    /// when it ends, or carried by the next owner turn.
     @ObservationIgnored private var queuedFollowUps: [String] = []
-    /// Set by `shutdown(quietly: true)`: a deleted context's write errors
-    /// have no screen to go to.
+    /// Set by `shutdown(quietly: true)`: a deleted context's "not found"
+    /// writes have no screen to go to.
     @ObservationIgnored private var isQuiet = false
 
     private struct TurnRequest {
@@ -78,6 +93,9 @@ package final class EmbeddedChatEngine {
         /// The owner row to write; nil for follow-ups, hidden prompts and retries.
         let ownerText: String?
         let promptText: String
+        /// Follow-up prompts folded into `promptText`, given back to the
+        /// queue if the turn never starts.
+        let carriedFollowUps: [String]
         let previousOwnerMessageAt: Date?
     }
 
@@ -85,6 +103,7 @@ package final class EmbeddedChatEngine {
         let request: TurnRequest
         let turn: LiveTurn
         var lastFlush: Date
+        var lastEvent: Date
         var stopRequested = false
         var failure: EmbeddedChatErrorClassifier.Failure?
     }
@@ -95,6 +114,10 @@ package final class EmbeddedChatEngine {
         aiService: any AIServiceProtocol,
         gate: EmbeddedStreamGate,
         draftMirror: EmbeddedDraftMirror? = nil,
+        provider: String? = nil,
+        // A turn that streams nothing this long ends as an error, so a hung
+        // `ai query` cannot hold one of the app-wide slots for good.
+        inactivityTimeout: TimeInterval = 600,
         clock: @escaping () -> Date = Date.init
     ) {
         self.spec = spec
@@ -102,20 +125,23 @@ package final class EmbeddedChatEngine {
         self.aiService = aiService
         self.gate = gate
         self.draftMirror = draftMirror
+        self.provider = provider
+        self.inactivityTimeout = inactivityTimeout
         self.clock = clock
-        do {
-            sessionID = try store.loadSessionID()
-            try reload()
-        } catch {
-            bannerError = "Couldn't load this chat: \(error.localizedDescription)"
+        loadHistory()
+        if let restored = draftMirror?.restore(for: spec.key) {
+            // Back in the composer: from here on it is an ordinary draft.
+            draft = restored
+            draftMirror?.clear(for: spec.key)
         }
-        if let restored = draftMirror?.restore(for: spec.key) { draft = restored }
     }
 
     // MARK: - Commands
 
     /// Sends the composer's text as an owner turn. Returns false (and keeps
-    /// the text) when nothing was started or queued.
+    /// the text) when the text is empty, a turn is busy, or the history could
+    /// not be read; true once the turn was handed on — it may still be queued,
+    /// or fail to save, in which case the text comes back to the draft.
     @discardableResult
     package func sendDraft() -> Bool {
         let text = draft
@@ -131,31 +157,29 @@ package final class EmbeddedChatEngine {
     @discardableResult
     package func send(_ text: String) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !isBusy else { return false }
-        let carried = queuedFollowUps.joined(separator: "\n")
-        queuedFollowUps.removeAll()
-        let prompt = carried.isEmpty ? trimmed : "\(carried)\n\n\(trimmed)"
+        guard !trimmed.isEmpty, !isBusy, historyLoaded() else { return false }
+        let carried = takeFollowUps()
+        let prompt = carried.isEmpty ? trimmed : "\(carried.joined(separator: "\n"))\n\n\(trimmed)"
         let previous = messages.last { $0.message.isUser }?.message.createdDate
-        start(TurnRequest(ownerText: trimmed, promptText: prompt, previousOwnerMessageAt: previous))
+        start(TurnRequest(ownerText: trimmed, promptText: prompt, carriedFollowUps: carried,
+                          previousOwnerMessageAt: previous))
         return true
     }
 
     /// A turn the owner did not type (an approved action's outcome): the
     /// optional notice is shown first as a system row; while a turn is busy
-    /// the prompt waits for it to end.
+    /// the prompt waits for it to complete.
     package func sendFollowUp(prompt: String, notice: String? = nil) {
         if let notice { appendRow(role: "system", text: notice) }
-        guard !isBusy else {
-            queuedFollowUps.append(prompt)
-            return
-        }
-        start(TurnRequest(ownerText: nil, promptText: prompt, previousOwnerMessageAt: nil))
+        queuedFollowUps.append(prompt)
+        guard !isBusy, historyLoaded() else { return }
+        startFollowUps()
     }
 
     /// A turn with no visible owner row (onboarding's opening prompt).
     package func sendHidden(_ prompt: String) {
-        guard !isBusy else { return }
-        start(TurnRequest(ownerText: nil, promptText: prompt, previousOwnerMessageAt: nil))
+        guard !isBusy, historyLoaded() else { return }
+        start(TurnRequest(ownerText: nil, promptText: prompt, carriedFollowUps: [], previousOwnerMessageAt: nil))
     }
 
     /// A scripted row with no AI call (a questionnaire bubble, a greeting).
@@ -170,19 +194,13 @@ package final class EmbeddedChatEngine {
             cancelQueued()
             return
         }
-        guard var current = running else { return }
-        current.stopRequested = true
-        running = current
-        streamTask?.cancel()
-        finish(current)
+        guard running != nil else { return }
+        running?.stopRequested = true
+        endRunningTurn()
     }
 
     package func cancelQueued() {
-        guard let request = pending else { return }
-        gate.cancel(request.slot)
-        pending = nil
-        isQueued = false
-        queuedText = nil
+        guard let request = withdrawQueued() else { return }
         if let text = request.ownerText {
             draft = draft.isEmpty ? text : "\(text)\n\(draft)"
         }
@@ -193,7 +211,7 @@ package final class EmbeddedChatEngine {
     /// never written twice.
     package func retry() {
         guard canRetry, !isBusy, let last = lastRequest else { return }
-        start(TurnRequest(ownerText: nil, promptText: last.promptText,
+        start(TurnRequest(ownerText: nil, promptText: last.promptText, carriedFollowUps: [],
                           previousOwnerMessageAt: last.previousOwnerMessageAt))
     }
 
@@ -203,28 +221,40 @@ package final class EmbeddedChatEngine {
         refreshRows()
     }
 
-    /// App quit: a running reply keeps what streamed, as `partial`.
+    /// App quit, step 1: a queued turn never starts during termination. Its
+    /// owner text stays in the draft mirror and comes back after a restart.
+    package func abandonQueuedForQuit() {
+        _ = withdrawQueued()
+    }
+
+    /// App quit, step 2: a running reply keeps what streamed, as `partial`.
     package func finishAsPartial() {
-        guard var current = running else { return }
-        current.stopRequested = true
-        running = current
-        streamTask?.cancel()
-        finish(current)
+        guard running != nil else { return }
+        running?.stopRequested = true
+        endRunningTurn()
     }
 
     /// The center lets go of the engine. `quietly`: its context was deleted,
-    /// so write errors have nowhere to be shown.
+    /// so "not found" write errors have nowhere to be shown.
     package func shutdown(quietly: Bool) {
         isQuiet = quietly
         cancelQueued()
-        queuedFollowUps.removeAll()
         finishAsPartial()
+        if !queuedFollowUps.isEmpty {
+            log("dropping \(queuedFollowUps.count) follow-up(s) on shutdown")
+            queuedFollowUps.removeAll()
+        }
+    }
+
+    /// The surface asked for its engine again (see `spec`).
+    package func update(spec newSpec: ChatSurfaceSpec) {
+        guard newSpec.key == spec.key else { return }
+        spec = newSpec
     }
 
     // MARK: - Turn lifecycle
 
     private func start(_ request: TurnRequest) {
-        canRetry = false
         if gate.tryAcquire(request.slot) {
             begin(request)
             return
@@ -233,7 +263,12 @@ package final class EmbeddedChatEngine {
         isQueued = true
         queuedText = request.ownerText
         if let text = request.ownerText { draftMirror?.save(text, for: spec.key) }
-        gate.enqueue(request.slot) { [weak self] in self?.dequeued(request) }
+        let gate = self.gate
+        gate.enqueue(request.slot) { [weak self] in
+            // An engine gone without `shutdown` must not keep the slot.
+            guard let self else { return gate.release(request.slot) }
+            self.dequeued(request)
+        }
     }
 
     private func dequeued(_ request: TurnRequest) {
@@ -247,24 +282,39 @@ package final class EmbeddedChatEngine {
         begin(request)
     }
 
+    /// Takes the queued turn back out of the gate; its follow-ups return to
+    /// the queue. The caller decides where the owner text goes.
+    private func withdrawQueued() -> TurnRequest? {
+        guard let request = pending else { return nil }
+        gate.cancel(request.slot)
+        pending = nil
+        isQueued = false
+        queuedText = nil
+        queuedFollowUps.insert(contentsOf: request.carriedFollowUps, at: 0)
+        return request
+    }
+
     private func begin(_ request: TurnRequest) {
-        if request.ownerText != nil { draftMirror?.clear(for: spec.key) }
         let turnID = UUID().uuidString
         let ids: (ownerID: Int64?, assistantID: Int64)
         do {
-            ids = try store.beginTurn(ownerText: request.ownerText, turnID: turnID)
+            ids = try store.beginTurn(ownerText: request.ownerText, turnID: turnID, provider: provider)
         } catch {
-            // Nothing was sent: the owner's text goes back to the composer.
+            // Nothing was sent: the owner's text goes back to the composer
+            // (and stays mirrored), its follow-ups back to the queue.
             gate.release(request.slot)
             if let text = request.ownerText { draft = draft.isEmpty ? text : "\(text)\n\(draft)" }
+            queuedFollowUps.insert(contentsOf: request.carriedFollowUps, at: 0)
             report(error, prefix: "Couldn't send")
             return
         }
-        bannerError = nil
+        if request.ownerText != nil { draftMirror?.clear(for: spec.key) }
+        canRetry = false
         lastRequest = request
-        let turn = LiveTurn(messageID: ids.assistantID, turnID: turnID, startedAt: clock())
+        let now = clock()
+        let turn = LiveTurn(messageID: ids.assistantID, turnID: turnID, startedAt: now)
         liveTurn = turn
-        running = RunningTurn(request: request, turn: turn, lastFlush: clock())
+        running = RunningTurn(request: request, turn: turn, lastFlush: now, lastEvent: now)
         refreshRows()
 
         let input = ChatTurnInput(text: request.promptText, isResumed: sessionID != nil,
@@ -281,6 +331,7 @@ package final class EmbeddedChatEngine {
         streamTask = Task { [weak self] in
             await self?.consume(stream, turn: turn)
         }
+        startWatchdog(for: turn)
     }
 
     private func consume(_ stream: AsyncThrowingStream<StreamEvent, Error>, turn: LiveTurn) async {
@@ -288,6 +339,7 @@ package final class EmbeddedChatEngine {
         do {
             for try await event in stream {
                 guard isCurrent(turn) else { return }
+                running?.lastEvent = clock()
                 switch reducer.apply(event) {
                 case .text(let text):
                     turn.replaceText(text, now: clock())
@@ -295,22 +347,57 @@ package final class EmbeddedChatEngine {
                 case .sessionID(let sid):
                     recordSession(sid)
                 case .failed(let message):
-                    running?.failure = EmbeddedChatErrorClassifier.classify(message: message)
+                    fail(EmbeddedChatErrorClassifier.classify(message: message))
                 case .none:
                     break
                 }
             }
         } catch {
-            if isCurrent(turn), !Task.isCancelled {
-                running?.failure = EmbeddedChatErrorClassifier.classify(error)
-            }
+            if isCurrent(turn), !Task.isCancelled { fail(EmbeddedChatErrorClassifier.classify(error)) }
         }
-        guard isCurrent(turn), let current = running else { return }
-        finish(current)
+        guard isCurrent(turn) else { return }
+        endRunningTurn()
+    }
+
+    /// Records the turn's failure; the first one wins.
+    private func fail(_ failure: EmbeddedChatErrorClassifier.Failure) {
+        guard running != nil, running?.failure == nil else { return }
+        running?.failure = failure
+    }
+
+    /// A store write failed mid-turn: the turn ends as an error now.
+    private func failForStore(_ error: Error, prefix: String) {
+        fail(.init(code: .internalError, message: "\(prefix): \(error.localizedDescription)", retryable: false))
+        log("\(prefix): \(error)")
+        endRunningTurn()
     }
 
     private func isCurrent(_ turn: LiveTurn) -> Bool {
         running?.turn === turn
+    }
+
+    private func startWatchdog(for turn: LiveTurn) {
+        let timeout = inactivityTimeout
+        watchdog = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(min(timeout, 30)))  // cancellation ends the loop below
+                guard let self, !Task.isCancelled, self.isCurrent(turn), let current = self.running else { return }
+                if self.clock().timeIntervalSince(current.lastEvent) >= timeout {
+                    self.fail(.init(code: nil, message: "The assistant stopped responding (no output for "
+                                    + "\(Int(timeout / 60)) min)."))
+                    self.endRunningTurn()
+                    return
+                }
+            }
+        }
+    }
+
+    /// Test hook for the inactivity watchdog: checks once, now.
+    package func checkInactivity() {
+        guard let current = running, clock().timeIntervalSince(current.lastEvent) >= inactivityTimeout else { return }
+        fail(.init(code: nil, message: "The assistant stopped responding (no output for "
+                   + "\(Int(inactivityTimeout / 60)) min)."))
+        endRunningTurn()
     }
 
     private func flushIfDue(_ turn: LiveTurn) {
@@ -319,10 +406,7 @@ package final class EmbeddedChatEngine {
         do {
             try store.saveProgress(messageID: turn.messageID, text: turn.fullText)
         } catch {
-            // A turn whose text cannot be saved is not a successful turn.
-            running?.failure = .init(code: .internalError, message: "Couldn't save the reply: \(error.localizedDescription)")
-            streamTask?.cancel()
-            finish(running ?? current)
+            failForStore(error, prefix: "Couldn't save the reply")
         }
     }
 
@@ -332,73 +416,127 @@ package final class EmbeddedChatEngine {
         do {
             try store.saveSessionID(sid)
         } catch {
-            report(error, prefix: "Couldn't save the session")
+            failForStore(error, prefix: "Couldn't save the session")
         }
     }
 
-    /// Ends the running turn exactly once.
-    private func finish(_ current: RunningTurn) {
-        guard running?.turn === current.turn else { return }
+    /// Ends the running turn exactly once: cancels its stream and watchdog,
+    /// writes its final state, frees its slot, then starts what waits.
+    private func endRunningTurn() {
+        guard let current = running else { return }
         running = nil
+        streamTask?.cancel()
         streamTask = nil
+        watchdog?.cancel()
+        watchdog = nil
+        let outcome = finalize(current)
+        liveTurn = nil
+        gate.release(current.request.slot)
+        refreshRows()
+        if case .completed = outcome {
+            bannerError = nil
+            startFollowUps()
+        }
+        onTurnFinished?(outcome)
+    }
+
+    private func finalize(_ current: RunningTurn) -> TurnOutcome {
         let turn = current.turn
         let text = turn.fullText
-        let outcome: TurnOutcome
         if current.stopRequested {
             turn.finish(.interrupted, at: clock())
             persistFinal(turn, text: text, status: "partial", failure: nil)
-            outcome = .stopped(messageID: turn.messageID)
-        } else if let failure = current.failure ?? emptyReplyFailure(text) {
-            let sessionError = ChatSessionError(turnID: turn.turnID, code: failure.code ?? .internalError,
-                                                message: failure.message, retryable: true)
-            turn.finish(.failed(sessionError), at: clock())
-            persistFinal(turn, text: text, status: "error", failure: failure)
-            outcome = .failed(messageID: turn.messageID, message: failure.message)
-        } else {
-            let result = spec.postTurn(ChatPostTurnInput(reply: text, turnID: turn.turnID, messageID: turn.messageID))
-            turn.finish(.complete, at: clock())
-            persistFinal(turn, text: result.displayText, status: "complete", failure: nil)
-            for notice in result.notices { appendRow(role: "system", text: notice, reloading: false) }
-            postTurnResults[turn.messageID] = result
-            outcome = .completed(messageID: turn.messageID, result: result)
+            return .stopped(messageID: turn.messageID)
         }
-        liveTurn = nil
-        gate.release(current.request.slot)
-        if case .failed = outcome { canRetry = true }
-        refreshRows()
-        onTurnFinished?(outcome)
-        if case .stopped = outcome { return }
-        flushFollowUps()
+        if let failure = current.failure ?? emptyReplyFailure(text) {
+            return failTurn(turn, text: text, failure: failure)
+        }
+        let result = spec.postTurn(ChatPostTurnInput(reply: text, turnID: turn.turnID, messageID: turn.messageID))
+        guard persistFinal(turn, text: result.displayText, status: "complete", failure: nil) else {
+            // The reply is not on disk: not a successful turn, whatever postTurn did.
+            let failure = EmbeddedChatErrorClassifier.Failure(
+                code: .internalError, message: bannerError ?? "Couldn't save the reply", retryable: false)
+            return failTurn(turn, text: text, failure: failure, persist: false)
+        }
+        turn.finish(.complete, at: clock())
+        for notice in result.notices { appendRow(role: "system", text: notice, reloading: false) }
+        postTurnResults[turn.messageID] = result
+        return .completed(messageID: turn.messageID, result: result)
     }
 
+    private func failTurn(
+        _ turn: LiveTurn,
+        text: String,
+        failure: EmbeddedChatErrorClassifier.Failure,
+        persist: Bool = true
+    ) -> TurnOutcome {
+        let sessionError = ChatSessionError(turnID: turn.turnID, code: failure.code ?? .internalError,
+                                            message: failure.message, retryable: failure.retryable)
+        turn.finish(.failed(sessionError), at: clock())
+        if persist { persistFinal(turn, text: text, status: "error", failure: failure) }
+        canRetry = failure.retryable
+        return .failed(messageID: turn.messageID, message: failure.message)
+    }
+
+    /// An action surface may answer with tool proposals only; its postTurn
+    /// decides what to show. A draft-only surface's empty reply is an error.
     private func emptyReplyFailure(_ text: String) -> EmbeddedChatErrorClassifier.Failure? {
-        text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? .init(code: nil, message: Self.emptyReplyMessage) : nil
+        guard spec.toolAccess == .draftOnly, text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        return .init(code: nil, message: Self.emptyReplyMessage)
     }
 
+    @discardableResult
     private func persistFinal(
         _ turn: LiveTurn,
         text: String,
         status: String,
         failure: EmbeddedChatErrorClassifier.Failure?
-    ) {
+    ) -> Bool {
         do {
             try store.finalize(messageID: turn.messageID, text: text, status: status,
                                errorCode: failure.map { ($0.code ?? .internalError).rawValue },
                                errorMessage: failure?.message)
+            return true
         } catch {
             report(error, prefix: "Couldn't save the reply")
+            return false
         }
     }
 
-    private func flushFollowUps() {
+    private func takeFollowUps() -> [String] {
+        defer { queuedFollowUps.removeAll() }
+        return queuedFollowUps
+    }
+
+    /// Queued follow-ups go out together as one turn.
+    private func startFollowUps() {
         guard !queuedFollowUps.isEmpty, !isBusy else { return }
-        let prompt = queuedFollowUps.joined(separator: "\n")
-        queuedFollowUps.removeAll()
-        start(TurnRequest(ownerText: nil, promptText: prompt, previousOwnerMessageAt: nil))
+        let prompts = takeFollowUps()
+        start(TurnRequest(ownerText: nil, promptText: prompts.joined(separator: "\n"), carriedFollowUps: prompts,
+                          previousOwnerMessageAt: nil))
     }
 
     // MARK: - Rows
+
+    private func loadHistory() {
+        do {
+            sessionID = try store.loadSessionID()
+            try reload()
+            loadFailed = false
+        } catch {
+            loadFailed = true
+            report(error, prefix: "Couldn't load this chat")
+        }
+    }
+
+    /// True when the history (and its provider session) is known; retries a
+    /// failed load first.
+    private func historyLoaded() -> Bool {
+        if loadFailed { loadHistory() }
+        return !loadFailed
+    }
 
     private func appendRow(role: String, text: String, reloading: Bool = true) {
         do {
@@ -419,12 +557,18 @@ package final class EmbeddedChatEngine {
         }
     }
 
+    /// Every failure is logged; the owner sees it unless the chat's context
+    /// was deleted (`shutdown(quietly:)` swallows only "not found").
     private func report(_ error: Error, prefix: String) {
-        if isQuiet { return }
+        log("\(prefix): \(error)")
         if error is ChatContextGoneError {
-            bannerError = ChatContextGoneError().localizedDescription
-        } else {
-            bannerError = "\(prefix): \(error.localizedDescription)"
+            if !isQuiet { bannerError = ChatContextGoneError().localizedDescription }
+            return
         }
+        bannerError = "\(prefix): \(error.localizedDescription)"
+    }
+
+    private func log(_ message: String) {
+        NSLog("EmbeddedChatEngine[%@]: %@", spec.key.description, message)
     }
 }

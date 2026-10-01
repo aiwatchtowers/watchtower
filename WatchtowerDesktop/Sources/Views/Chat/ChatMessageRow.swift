@@ -39,6 +39,9 @@ struct ChatMessageRow: View, Equatable {
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.item == rhs.item && lhs.isLast == rhs.isLast && lhs.isEditing == rhs.isEditing
             && lhs.artifactVersions == rhs.artifactVersions
+            // Retry comes and goes on an embedded chat's failed reply (it
+            // hides while a turn runs or waits): its presence is data.
+            && (lhs.actions.retry == nil) == (rhs.actions.retry == nil)
     }
 
     var body: some View {

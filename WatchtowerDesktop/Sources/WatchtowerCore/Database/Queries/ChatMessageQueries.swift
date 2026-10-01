@@ -31,7 +31,7 @@ package enum ChatMessageQueries {
     /// placeholder, in one transaction — the owner text is on disk before the
     /// turn is sent. Throws `ChatContextGoneError` when the conversation is gone.
     package static func beginEmbeddedTurn(
-        _ db: Database, conversationID: Int64, ownerText: String?, turnID: String, now: Double
+        _ db: Database, conversationID: Int64, ownerText: String?, turnID: String, provider: String?, now: Double
     ) throws -> (ownerID: Int64?, assistantID: Int64) {
         try requireConversation(db, id: conversationID)
         var ownerID: Int64?
@@ -42,9 +42,9 @@ package enum ChatMessageQueries {
             ownerID = db.lastInsertedRowID
         }
         try db.execute(sql: """
-            INSERT INTO chat_messages (conversation_id, role, text, created_at, turn_id, status)
-            VALUES (?, 'assistant', '', ?, ?, 'partial')
-            """, arguments: [conversationID, now, turnID])
+            INSERT INTO chat_messages (conversation_id, role, text, created_at, turn_id, status, provider)
+            VALUES (?, 'assistant', '', ?, ?, 'partial', ?)
+            """, arguments: [conversationID, now, turnID, provider])
         return (ownerID, db.lastInsertedRowID)
     }
 

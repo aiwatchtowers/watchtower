@@ -182,9 +182,14 @@ struct EmbeddedChatEmptyState: View {
 
 extension View {
     /// Tells the center while this view shows `key`'s chat, so an engine no
-    /// screen has shown for a while can be released.
+    /// screen has shown for a while can be released. A key swapped in place
+    /// (another tab, another record) hands the mark over.
     func embeddedChatVisibility(_ key: EmbeddedChatKey, in center: EmbeddedChatCenter) -> some View {
         onAppear { center.markShown(key) }
             .onDisappear { center.markHidden(key) }
+            .onChange(of: key) { old, new in
+                center.markHidden(old)
+                center.markShown(new)
+            }
     }
 }

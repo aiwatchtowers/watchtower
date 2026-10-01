@@ -164,7 +164,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
         let reply = try XCTUnwrap(try rows().last)
         XCTAssertEqual(reply.status, "error")
         XCTAssertEqual(reply.errorCode, "internal")
-        XCTAssertEqual(reply.errorMessage, "claude crashed")
+        XCTAssertEqual(reply.errorMessage, "AI query failed (exit 1): claude crashed")
     }
 
     func testEmptyCompletedReplyIsAnError() async throws {
@@ -276,15 +276,102 @@ final class EmbeddedChatEngineTests: XCTestCase {
         XCTAssertEqual(gate.active.count, 0, "the slot is given back")
     }
 
-    func testAFailedProgressWriteFailsTheTurn() async throws {
-        let engine = makeEngine()
+    func testAFailedProgressWriteFailsTheTurnAndFreesTheSlot() async throws {
+        let store = FlakyStore()
+        var postTurnRan = false
+        var outcome: EmbeddedChatEngine.TurnOutcome?
+        let engine = makeEngine(spec: spec { postTurnRan = true; return .identity($0) }, store: store)
+        engine.onTurnFinished = { outcome = $0 }
         engine.send("q")
-        let conv = conversationID
-        try await pool.write { db in try ChatConversationQueries.delete(db, id: conv) }
+        store.failProgress = true
         clock.advance(2)
         ai.emit(.text("lost"))
         expectTrue(await waitIdle(engine))
-        XCTAssertNotNil(engine.bannerError, "the final write failed too and is shown")
+        let reply = try XCTUnwrap(engine.messages.last?.message)
+        XCTAssertEqual(reply.status, "error")
+        XCTAssertEqual(reply.errorCode, "internal")
+        XCTAssertFalse(postTurnRan)
+        guard case .failed = outcome else { return XCTFail("\(String(describing: outcome))") }
+        XCTAssertEqual(gate.active.count, 0)
+        XCTAssertFalse(engine.canRetry, "a storage fault is not fixed by rerunning the AI turn")
+        expectTrue(await waitForCondition { self.ai.terminated.first == true }, "the process is ended")
+    }
+
+    func testAFailedFinalWriteIsNotACompletedTurn() async throws {
+        let store = FlakyStore()
+        var outcome: EmbeddedChatEngine.TurnOutcome?
+        let engine = makeEngine(store: store)
+        engine.onTurnFinished = { outcome = $0 }
+        engine.send("q")
+        engine.sendFollowUp(prompt: "Action applied.")
+        store.failFinalize = true
+        ai.emit(.text("answer"))
+        ai.finish()
+        expectTrue(await waitIdle(engine))
+        guard case .failed = outcome else { return XCTFail("\(String(describing: outcome))") }
+        XCTAssertTrue(engine.postTurnResults.isEmpty)
+        XCTAssertEqual(ai.calls.count, 1, "no follow-up after a turn that was not saved")
+        XCTAssertNotNil(engine.bannerError)
+    }
+
+    func testASessionIDThatCannotBeSavedFailsTheTurn() async throws {
+        let store = FlakyStore()
+        store.failSession = true
+        let engine = makeEngine(store: store)
+        engine.send("q")
+        ai.emit(.sessionID("s1"))
+        expectTrue(await waitIdle(engine))
+        XCTAssertEqual(engine.messages.last?.message.status, "error")
+    }
+
+    func testAFailedHistoryLoadBlocksSendingUntilItLoads() throws {
+        let store = FlakyStore()
+        store.failLoad = true
+        let engine = makeEngine(store: store)
+        XCTAssertNotNil(engine.bannerError)
+        engine.draft = "hello"
+        XCTAssertFalse(engine.sendDraft(), "a send would fork the stored provider session")
+        XCTAssertEqual(engine.draft, "hello")
+        XCTAssertTrue(ai.calls.isEmpty)
+        store.failLoad = false
+        XCTAssertTrue(engine.sendDraft())
+        XCTAssertEqual(ai.calls.count, 1)
+    }
+
+    func testBlankOrBusySendsAreRefused() {
+        let engine = makeEngine()
+        XCTAssertFalse(engine.send("   \n "))
+        XCTAssertTrue(engine.send("first"))
+        XCTAssertFalse(engine.send("second"), "one turn at a time")
+        XCTAssertEqual(ai.calls.count, 1)
+    }
+
+    func testAnInactiveTurnTimesOut() async throws {
+        let engine = makeEngine()
+        engine.send("q")
+        ai.emit(.text("start"))
+        expectTrue(await waitForCondition { engine.liveTurn?.fullText == "start" })
+        clock.advance(601)
+        engine.checkInactivity()
+        XCTAssertFalse(engine.isStreaming)
+        XCTAssertEqual(engine.messages.last?.message.status, "error")
+        XCTAssertEqual(engine.messages.last?.message.text, "start")
+        XCTAssertTrue(engine.canRetry)
+        XCTAssertEqual(gate.active.count, 0)
+    }
+
+    func testAnActionSurfaceMayAnswerWithNoText() async throws {
+        var seen: String?
+        let engine = makeEngine(spec: spec(toolAccess: .actions(surface: "target")) {
+            seen = $0.reply
+            return ChatPostTurnResult(displayText: "(proposed 1 action(s))")
+        })
+        engine.send("do it")
+        ai.finish()
+        expectTrue(await waitIdle(engine))
+        XCTAssertEqual(seen, "")
+        XCTAssertEqual(engine.messages.last?.message.status, "complete")
+        XCTAssertEqual(engine.messages.last?.message.text, "(proposed 1 action(s))")
     }
 
     // MARK: - Queue
@@ -336,6 +423,49 @@ final class EmbeddedChatEngineTests: XCTestCase {
         mirror.save("left in the queue", for: spec().key)
         let engine = makeEngine(mirror: mirror)
         XCTAssertEqual(engine.draft, "left in the queue")
+        XCTAssertNil(mirror.restore(for: engine.spec.key), "an ordinary draft from now on")
+    }
+
+    func testCancellingAQueuedTurnKeepsItsFollowUps() async throws {
+        var fillers: [EmbeddedChatEngine] = []
+        for _ in 0..<3 {
+            let conv = try await pool.write { db in try TestDatabase.insertChatConversation(db, contextType: "idea") }
+            let filler = makeEngine(spec: spec(conversationID: conv))
+            filler.send("busy")
+            fillers.append(filler)
+        }
+        let engine = makeEngine()
+        engine.sendFollowUp(prompt: "Action applied: x.")
+        XCTAssertTrue(engine.isQueued, "the follow-up waits for a slot")
+        engine.stop()
+        XCTAssertFalse(engine.isQueued)
+        XCTAssertTrue(engine.hasPendingWork, "the follow-up is kept, never dropped")
+        ai.finish(call: 0)
+        expectTrue(await waitForCondition { !fillers[0].isStreaming })
+        engine.send("next")
+        XCTAssertEqual(ai.calls.last?.prompt, "Action applied: x.\n\nnext")
+    }
+
+    func testQuitNeverStartsAQueuedTurn() throws {
+        let mirror = MemoryDraftMirror()
+        gate = EmbeddedStreamGate(limit: 1)
+        let pool = try XCTUnwrap(self.pool), ai = try XCTUnwrap(self.ai)
+        let center = EmbeddedChatCenter(gate: gate) { spec, gate in
+            let store = DatabaseEmbeddedChatStore(dbPool: pool, conversationID: spec.key.conversationID ?? 0)
+            return EmbeddedChatEngine(spec: spec, store: store, aiService: ai, gate: gate, draftMirror: mirror)
+        }
+        let other = try pool.write { db in try TestDatabase.insertChatConversation(db, contextType: "idea") }
+        let running = center.engine(for: spec(conversationID: other))
+        running.send("running")
+        let queued = center.engine(for: spec())
+        queued.draft = "wait for me"
+        queued.sendDraft()
+        XCTAssertTrue(queued.isQueued)
+
+        center.finishAllAsPartial()
+        XCTAssertEqual(ai.calls.count, 1, "no process is started during termination")
+        XCTAssertTrue(try rows().isEmpty, "no owner row for the queued text")
+        XCTAssertEqual(mirror.restore(for: queued.spec.key), "wait for me", "it returns as a draft after restart")
     }
 
     // MARK: - Follow-ups and hidden prompts
@@ -351,6 +481,22 @@ final class EmbeddedChatEngineTests: XCTestCase {
         XCTAssertEqual(ai.calls[1].prompt, "CONTEXT\n\nAction applied: x.")
         XCTAssertEqual(try rows().filter(\.isUser).count, 1, "a follow-up writes no owner row")
         XCTAssertTrue(try rows().contains { $0.role == "system" && $0.text == "Action applied: x" })
+    }
+
+    func testAFollowUpBehindAFailedTurnWaitsAndRetryStaysAvailable() async throws {
+        let engine = makeEngine()
+        engine.send("q")
+        engine.sendFollowUp(prompt: "Action applied: x.")
+        ai.finish(throwing: WatchtowerAIError.exitCode(1, "boom"))
+        expectTrue(await waitIdle(engine))
+        XCTAssertEqual(ai.calls.count, 1, "no follow-up on a session that just failed")
+        XCTAssertTrue(engine.canRetry)
+        XCTAssertTrue(engine.hasPendingWork)
+        engine.retry()
+        ai.emit(.text("ok"), call: 1)
+        ai.finish(call: 1)
+        expectTrue(await waitForCondition { self.ai.calls.count == 3 }, "the follow-up runs after a completed turn")
+        XCTAssertEqual(ai.calls[2].prompt, "Action applied: x.")
     }
 
     func testFollowUpsQueuedBehindAStoppedTurnRideTheNextOwnerTurn() async throws {
@@ -418,4 +564,53 @@ final class MemoryDraftMirror: EmbeddedDraftMirror {
 @MainActor
 private func expectTrue(_ verdict: Bool, _ message: String = "", file: StaticString = #filePath, line: UInt = #line) {
     XCTAssertTrue(verdict, message, file: file, line: line)
+}
+
+/// A memory store whose reads and writes fail on demand.
+@MainActor
+private final class FlakyStore: EmbeddedChatStore {
+    struct Failure: LocalizedError {
+        var errorDescription: String? { "disk I/O error" }
+    }
+
+    private let base = MemoryEmbeddedChatStore()
+    var failLoad = false
+    var failProgress = false
+    var failFinalize = false
+    var failSession = false
+
+    var dbPath: String? { nil }
+
+    func loadMessages() throws -> [ChatMessageRecord] {
+        if failLoad { throw Failure() }
+        return try base.loadMessages()
+    }
+
+    func loadSessionID() throws -> String? {
+        if failLoad { throw Failure() }
+        return try base.loadSessionID()
+    }
+
+    func beginTurn(ownerText: String?, turnID: String, provider: String?) throws -> (ownerID: Int64?, assistantID: Int64) {
+        try base.beginTurn(ownerText: ownerText, turnID: turnID, provider: provider)
+    }
+
+    func saveProgress(messageID: Int64, text: String) throws {
+        if failProgress { throw Failure() }
+        try base.saveProgress(messageID: messageID, text: text)
+    }
+
+    func finalize(messageID: Int64, text: String, status: String, errorCode: String?, errorMessage: String?) throws {
+        if failFinalize { throw Failure() }
+        try base.finalize(messageID: messageID, text: text, status: status, errorCode: errorCode, errorMessage: errorMessage)
+    }
+
+    func append(role: String, text: String) throws -> Int64 {
+        try base.append(role: role, text: text)
+    }
+
+    func saveSessionID(_ sessionID: String) throws {
+        if failSession { throw Failure() }
+        try base.saveSessionID(sessionID)
+    }
 }

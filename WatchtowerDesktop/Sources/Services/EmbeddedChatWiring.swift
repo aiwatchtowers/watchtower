@@ -37,13 +37,17 @@ final class EmbeddedChatEngineFactory {
         case .memory:
             store = MemoryEmbeddedChatStore()
         case .database(let conversationID):
-            guard let dbPool = pool.value else {
-                preconditionFailure("a database chat was requested before the database opened")
+            if let dbPool = pool.value {
+                store = DatabaseEmbeddedChatStore(dbPool: dbPool, conversationID: conversationID)
+            } else {
+                // Unreachable while ids come from this pool; if it ever is
+                // not, the chat shows an error instead of crashing the app.
+                store = UnavailableEmbeddedChatStore()
             }
-            store = DatabaseEmbeddedChatStore(dbPool: dbPool, conversationID: conversationID)
         }
         return EmbeddedChatEngine(spec: spec, store: store, aiService: WatchtowerAIService(), gate: gate,
-                                  draftMirror: spec.persistence == .memory ? nil : draftMirror)
+                                  draftMirror: spec.persistence == .memory ? nil : draftMirror,
+                                  provider: Constants.aiProviderID())
     }
 
     @MainActor
@@ -74,4 +78,26 @@ final class UserDefaultsDraftMirror: EmbeddedDraftMirror {
     func restore(for key: EmbeddedChatKey) -> String? {
         defaults.string(forKey: Self.prefix + key.description)
     }
+}
+
+/// The store of a database chat requested before the database opened: every
+/// read and write fails with a reason the chat shows.
+@MainActor
+private final class UnavailableEmbeddedChatStore: EmbeddedChatStore {
+    struct DatabaseNotOpenError: LocalizedError {
+        var errorDescription: String? { "The database isn't open yet." }
+    }
+
+    var dbPath: String? { nil }
+    func loadMessages() throws -> [ChatMessageRecord] { throw DatabaseNotOpenError() }
+    func loadSessionID() throws -> String? { throw DatabaseNotOpenError() }
+    func beginTurn(ownerText: String?, turnID: String, provider: String?) throws -> (ownerID: Int64?, assistantID: Int64) {
+        throw DatabaseNotOpenError()
+    }
+    func saveProgress(messageID: Int64, text: String) throws { throw DatabaseNotOpenError() }
+    func finalize(messageID: Int64, text: String, status: String, errorCode: String?, errorMessage: String?) throws {
+        throw DatabaseNotOpenError()
+    }
+    func append(role: String, text: String) throws -> Int64 { throw DatabaseNotOpenError() }
+    func saveSessionID(_ sessionID: String) throws { throw DatabaseNotOpenError() }
 }

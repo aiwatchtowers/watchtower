@@ -12,7 +12,8 @@ final class EmbeddedChatErrorClassifierTests: XCTestCase {
         let failure = EmbeddedChatErrorClassifier.classify(
             WatchtowerAIError.exitCode(1, "Invalid API key · Please run /login"))
         XCTAssertEqual(failure.code, .auth)
-        XCTAssertEqual(failure.message, "Invalid API key · Please run /login")
+        XCTAssertEqual(failure.message, "AI query failed (exit 1): Invalid API key · Please run /login",
+                       "the provider's text is kept, with the exit code")
     }
 
     func testRateLimitText() {
@@ -28,5 +29,12 @@ final class EmbeddedChatErrorClassifierTests: XCTestCase {
     func testEmptyExitDetailFallsBackToTheDescription() {
         let failure = EmbeddedChatErrorClassifier.classify(WatchtowerAIError.exitCode(2, ""))
         XCTAssertEqual(failure.message, WatchtowerAIError.exitCode(2, "").localizedDescription)
+        XCTAssertTrue(failure.retryable)
+    }
+
+    func testNumbersInsideLongerOnesAreNotStatusCodes() {
+        XCTAssertNil(EmbeddedChatErrorClassifier.classify(message: "context is 14290 tokens over").code)
+        XCTAssertNil(EmbeddedChatErrorClassifier.classify(message: "request 40123 failed").code)
+        XCTAssertEqual(EmbeddedChatErrorClassifier.classify(message: "status: 401").code, .auth)
     }
 }

@@ -58,7 +58,7 @@ final class EmbeddedChatViewTests: XCTestCase {
         XCTAssertEqual(try EmbeddedChatRows(engine: engine).inspect().findAll(ViewType.Button.self) {
             (try? $0.labelView().text().string()) == "Retry"
         }.count, 1, "the earlier failure loses its Retry")
-        XCTAssertNoThrow(try EmbeddedChatRows(engine: engine).inspect().find(text: "first failure"))
+        XCTAssertNoThrow(try EmbeddedChatRows(engine: engine).inspect().find(text: "AI query failed (exit 1): first failure"))
     }
 
     func testAQueuedMessageShowsAsQueued() throws {
@@ -77,11 +77,27 @@ final class EmbeddedChatViewTests: XCTestCase {
         let engine = engine()
         engine.draft = "waiting"
         engine.sendDraft()
-        let bar = ChatComposerBar(status: .queued, onCancelQueued: { engine.cancelQueued() },
-                                  input: ChatInput(text: .constant(""), isStreaming: true) {})
-        try bar.inspect().find(button: "Cancel").tap()
+        let composer = EmbeddedChatComposer(engine: engine, placeholder: "Ask")
+        try composer.inspect().find(button: "Cancel").tap()
         XCTAssertFalse(engine.isQueued)
         XCTAssertEqual(engine.draft, "waiting")
+    }
+
+    func testAPostTurnFailureShowsUnderItsMessage() async throws {
+        let store = MemoryEmbeddedChatStore()
+        let engine = EmbeddedChatEngine(
+            spec: ChatSurfaceSpec(key: EmbeddedChatKey(contextType: "t", contextID: "1", conversationID: nil),
+                                  persistence: .memory, toolAccess: .draftOnly, systemPrompt: { "S" },
+                                  postTurn: { _ in ChatPostTurnResult(displayText: "x", failure: "Couldn't read the action") },
+                                  emptyHint: ""),
+            store: store, aiService: ai, gate: gate)
+        engine.send("q")
+        ai.emit(.text("reply"))
+        ai.finish()
+        let done = await waitForCondition { !engine.isStreaming }
+        XCTAssertTrue(done)
+        XCTAssertNoThrow(try EmbeddedChatRows(engine: engine).inspect().find(text: "Couldn't read the action"),
+                         "a postTurn failure shows under its message")
     }
 
     func testComposerShowsAnErrorStatus() throws {

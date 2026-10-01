@@ -151,12 +151,12 @@ Both `LiveTurn` and `EmbeddedStreamReducer` come from the main chat. `LiveTurn` 
 
 ### 3.4 `EmbeddedChatCenter` and `EmbeddedStreamGate` (Core; the center instance lives on `AppState`)
 
-- `engine(for spec:) -> EmbeddedChatEngine`: creates the engine on first use and returns the same instance afterwards. Views fetch the engine from the center and never hold it in `@State` (review-rules "Lifecycle & state").
+- `engine(for spec:) -> EmbeddedChatEngine`: creates the engine on first use and returns the same instance afterwards, handing it the latest spec. The spec's closures therefore always see the surface's current state, never the first screen's snapshot. Views fetch the engine from the center and never hold it in `@State` (review-rules "Lifecycle & state").
 - `markShown(key)` / `markHidden(key)`: the view calls these from `onAppear` / `onDisappear`.
-- `sweep(now:)`: runs from a 60-second timer and releases an engine that is idle and has been hidden for ≥ 5 minutes. An engine that is streaming or queued is never released.
+- `sweep(now:)`: runs from a 60-second timer and releases an engine that is idle and has been hidden for ≥ 5 minutes. An engine that is streaming, queued or holding follow-ups is never released.
 - `dropContext(type:id:)`: called from the delete paths for target, track and idea. It cancels the engine. The resulting "not found" write error is swallowed quietly, because no view is left to show it.
 - `release(key)`: onboarding and the setup sheets call this when the window or sheet closes (as today).
-- `finishAllAsPartial()`: called on app termination. Every running turn is finalized as `partial` and its streamed text is kept.
+- `finishAllAsPartial()`: called on app termination. Queued turns are withdrawn first, so a slot freed during termination never starts one, and their text stays mirrored. Then every running turn is finalized as `partial` and its streamed text is kept.
 
 `EmbeddedStreamGate(limit: 3)` hands out turn slots in FIFO order. The limit counts embedded turns
 across the whole app. The main chat's pool is separate. A turn that cannot get a slot sets the
@@ -203,10 +203,11 @@ acquired and before the process starts (the CHAT-01 order). The queue lives in m
    - `.sessionID` is persisted immediately.
    - The text is flushed with `saveProgress` at most once per second (`ChatTurnDriver.flushInterval`), so a crash keeps the partial text.
 3. **Turn end.**
-   - **`.done`.** If the text is non-empty, run `postTurn`, then finalize with status `complete` and `displayText`, append `notices` as system rows, `touch` the conversation, and store the result. An empty completed reply is finalized as `error` ("The assistant returned no text.", retryable). An action-only target reply is not empty: its `postTurn` supplies the placeholder text.
+   - **`.done`.** Run `postTurn`, then finalize with status `complete` and `displayText`, append `notices` as system rows, `touch` the conversation, and store the result. On a draft-only surface an empty reply is instead finalized as `error` ("The assistant returned no text.", retryable). An action surface may answer with tool proposals only, so its `postTurn` gets the empty reply and supplies the text to show.
    - **Thrown error or `.error(message)` event.** Finalize as `error` with the partial text kept, `error_code` from `EmbeddedChatErrorClassifier`, and `error_message` holding the real text.
    - **Stop.** Finalize as `partial`.
-   - In every case, release the slot, start the next queued turn, and fire `onTurnFinished`, which surfaces use to reload their entity.
+   - In every case, release the slot (the gate starts the next queued turn) and fire `onTurnFinished`, which surfaces use to reload their entity.
+   - Follow-ups queued during the turn start right after a **completed** turn, before `onTurnFinished`. After a stopped or failed turn they wait and ride the next owner turn. A follow-up is never dropped while the engine lives; cancelling a queued turn returns its follow-ups to the queue.
 4. **`.error` event.** `StreamEvent` gains `.error(String)`. `parseLine` emits it for the v1 `error` line instead of `.text("[Error] …")`. The legacy view models that are not migrated yet map it back to the `[Error]` text they show today, so their behaviour is byte-identical until they move.
 
 ## 5. Errors and cancellation
@@ -215,10 +216,11 @@ acquired and before the process starts (the CHAT-01 order). The queue lives in m
 |---|---|
 | Stop | Cancel the stream task. `AsyncThrowingStream.onTermination` → `WatchtowerProcessHandle.terminate()` sends SIGTERM to `watchtower ai query`. Its `notifyShutdownContext` (`cmd/shutdown.go:46`) cancels the context, which sends SIGINT to the provider child and SIGKILL after 5 s (`internal/ai/client.go:439-442`), so no orphans. The partial text is persisted as `partial` ("Stopped"). The next send resumes the same session id. |
 | Turn error (CLI missing, non-zero exit, error event, auth, timeout) | Error card under the reply, from the main chat's `ChatErrorPresentation`. The text is the classified hint plus `detail(error_message)`. `EmbeddedChatErrorClassifier` maps:<br>• `cliNotFound` → `provider_unavailable`<br>• auth phrases ("not logged in", "login", "401", "invalid api key", "authentication") → `auth`, with the per-provider sign-in hint from `Constants.aiProviderID()`<br>• "rate limit"/"429" → `rate_limit`<br>• everything else → generic.<br>Partial text is kept. |
+| Inactivity | A turn that streams nothing for 10 minutes ends as an error ("stopped responding"), which can be retried. A hung `ai query` therefore cannot hold one of the three shared slots for good. |
 | Retry | Shown only on the last failed reply while nothing streams. It reruns the last request (the owner text, a follow-up prompt or a hidden prompt) under a new placeholder. It never inserts the owner row again. The failed row stays as history and its Retry disappears, because it is no longer last. |
 | `postTurn` failure | `ChatPostTurnResult.failure` renders in that message's slot, for example "Couldn't read the proposed action: …". The reply stays and nothing is applied silently. Target malformed blocks keep today's "⚠️ Invalid action proposal" notice. |
-| DB write failure | Any store write that throws during a turn marks the turn `error` (code `internal`, message = the DB error) and shows the card. The turn is not counted as successful. Writes outside a turn (history load) set `bannerError`. |
-| Context deleted mid-stream | `EmbeddedChatCenter.dropContext` cancels the engine. Its "not found" write errors are dropped, because no view can show them. |
+| DB write failure | A store write that throws during a turn marks the turn `error` (code `internal`, message = the DB error) and shows the card. This covers the progress, session-id and final writes. The turn is not counted as successful: no `postTurn` result is kept, no follow-up starts, and Retry is not offered (rerunning the AI cannot fix storage). Writes outside a turn set `bannerError`, which lasts until the next completed turn. Every failure is also logged (`NSLog`). A failed history load blocks sending until a retried load succeeds, because sending without the stored session id would fork the provider session. |
+| Context deleted mid-stream | `EmbeddedChatCenter.dropContext` cancels the engine. Only its "not found" write errors are dropped, because no view can show them. Any other error is still logged. |
 | Queue | Stop on a queued turn removes it and returns its text to the draft. On restart, the queued text comes back as a draft (§3.4). |
 
 ## 6. Per-surface mapping

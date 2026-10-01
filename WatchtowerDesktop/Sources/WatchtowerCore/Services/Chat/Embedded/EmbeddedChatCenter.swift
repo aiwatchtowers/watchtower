@@ -9,7 +9,7 @@ import Observation
 /// An engine is released when it is idle and no view has shown it for
 /// `idleTTL` (5 minutes by default), when its context is deleted (`dropContext`), or explicitly
 /// (`release` — onboarding and the setup sheets on close). A busy engine is
-/// never released by the sweep.
+/// never released by the sweep, nor one holding follow-ups for a later turn.
 @MainActor
 @Observable
 package final class EmbeddedChatCenter {
@@ -39,9 +39,13 @@ package final class EmbeddedChatCenter {
     package var count: Int { engines.count }
 
     /// The engine for `spec.key`, created on first use; the same instance
-    /// afterwards (a later spec for the same key is ignored).
+    /// afterwards, carrying the latest spec (its closures see the surface's
+    /// current state).
     package func engine(for spec: ChatSurfaceSpec) -> EmbeddedChatEngine {
-        if let existing = engines[spec.key] { return existing }
+        if let existing = engines[spec.key] {
+            existing.update(spec: spec)
+            return existing
+        }
         let engine = makeEngine(spec, gate)
         engines[spec.key] = engine
         hiddenSince[spec.key] = clock()
@@ -64,7 +68,7 @@ package final class EmbeddedChatCenter {
     /// Releases idle engines no view has shown for `idleTTL`.
     package func sweep(now: Date? = nil) {
         let now = now ?? clock()
-        for (key, engine) in engines where shownCount[key] == nil && !engine.isBusy {
+        for (key, engine) in engines where shownCount[key] == nil && !engine.hasPendingWork {
             guard let since = hiddenSince[key], now.timeIntervalSince(since) >= idleTTL else { continue }
             remove(key, quietly: false)
         }
@@ -83,8 +87,11 @@ package final class EmbeddedChatCenter {
         remove(key, quietly: false)
     }
 
-    /// App quit: every running reply keeps what streamed, as `partial`.
+    /// App quit: every running reply keeps what streamed, as `partial`. The
+    /// queued turns are withdrawn first, so a slot freed here never starts
+    /// one — their text comes back as a draft after the restart.
     package func finishAllAsPartial() {
+        for engine in engines.values { engine.abandonQueuedForQuit() }
         for engine in engines.values { engine.finishAsPartial() }
     }
 

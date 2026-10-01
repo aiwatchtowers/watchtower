@@ -127,3 +127,50 @@ final class EmbeddedChatCenterTests: XCTestCase {
 private func expectTrue(_ verdict: Bool, _ message: String = "", file: StaticString = #filePath, line: UInt = #line) {
     XCTAssertTrue(verdict, message, file: file, line: line)
 }
+
+@MainActor
+final class EmbeddedChatCenterSpecTests: XCTestCase {
+    private func spec(_ id: String, hint: String) -> ChatSurfaceSpec {
+        ChatSurfaceSpec(key: EmbeddedChatKey(contextType: "track", contextID: id, conversationID: nil),
+                        persistence: .memory, toolAccess: .draftOnly, systemPrompt: { "S" }, emptyHint: hint)
+    }
+
+    private func center(ai: ScriptedAIService) -> EmbeddedChatCenter {
+        EmbeddedChatCenter { spec, gate in
+            EmbeddedChatEngine(spec: spec, store: MemoryEmbeddedChatStore(), aiService: ai, gate: gate)
+        }
+    }
+
+    /// A surface asking again gets the same engine with its fresh closures —
+    /// never the first screen's snapshot.
+    func testAskingAgainRefreshesTheSpec() {
+        let center = center(ai: ScriptedAIService())
+        let first = center.engine(for: spec("1", hint: "old"))
+        let again = center.engine(for: spec("1", hint: "new"))
+        XCTAssertTrue(first === again)
+        XCTAssertEqual(again.spec.emptyHint, "new")
+    }
+
+    func testDropContextSparesOtherContexts() {
+        let center = center(ai: ScriptedAIService())
+        _ = center.engine(for: spec("1", hint: ""))
+        _ = center.engine(for: spec("2", hint: ""))
+        center.dropContext(type: "track", id: "1")
+        XCTAssertEqual(center.count, 1)
+        XCTAssertNotNil(center.loaded(spec("2", hint: "").key))
+    }
+
+    func testSweepKeepsAnEngineHoldingFollowUps() async {
+        let ai = ScriptedAIService()
+        let center = EmbeddedChatCenter(idleTTL: 0) { spec, gate in
+            EmbeddedChatEngine(spec: spec, store: MemoryEmbeddedChatStore(), aiService: ai, gate: gate)
+        }
+        let key = spec("1", hint: "").key
+        let engine = center.engine(for: spec("1", hint: ""))
+        engine.send("q")
+        engine.sendFollowUp(prompt: "Action applied.")
+        engine.stop()
+        center.sweep(now: Date().addingTimeInterval(3600))
+        XCTAssertNotNil(center.loaded(key), "its follow-up still has to reach the assistant")
+    }
+}
