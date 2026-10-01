@@ -92,7 +92,29 @@ final class WatchtowerAIServiceTests: XCTestCase {
             toolMode: nil
         )
 
-        XCTAssertEqual(args, ["ai", "query", "--system-prompt", "S", "--provider", "codex", "--", "-v looks wrong"])
+        XCTAssertEqual(args, ["ai", "query", "--system-prompt-stdin", "--provider", "codex", "--", "-v looks wrong"])
+    }
+
+    /// The system prompt carries the chat's private context: it travels on
+    /// stdin, never as an argv value.
+    func testSystemPromptNeverOnArgv() {
+        let secret = "PRIVATE-CONTEXT-7c1e"
+        let args = WatchtowerAIService.buildArgs(
+            prompt: "hi", systemPrompt: secret, sessionID: nil, dbPath: nil, model: nil, provider: nil, toolMode: nil
+        )
+        XCTAssertFalse(args.contains { $0.contains(secret) })
+        XCTAssertFalse(args.contains("--system-prompt"))
+        XCTAssertTrue(args.contains("--system-prompt-stdin"))
+        XCTAssertEqual(WatchtowerAIService.stdinPayload(systemPrompt: secret), Data(secret.utf8))
+    }
+
+    func testNoSystemPromptMeansNoStdinFlagOrPayload() {
+        let args = WatchtowerAIService.buildArgs(
+            prompt: "hi", systemPrompt: "", sessionID: nil, dbPath: nil, model: nil, provider: nil, toolMode: nil
+        )
+        XCTAssertFalse(args.contains("--system-prompt-stdin"))
+        XCTAssertNil(WatchtowerAIService.stdinPayload(systemPrompt: ""))
+        XCTAssertNil(WatchtowerAIService.stdinPayload(systemPrompt: nil))
     }
 
     /// AGENT-04: no toolMode → no --tools flag, ever. And the retired

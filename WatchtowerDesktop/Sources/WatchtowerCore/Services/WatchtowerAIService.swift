@@ -107,8 +107,10 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
     ) -> [String] {
         var args = ["ai", "query"]
 
+        // The system prompt itself goes to stdin (see `run`): it carries the
+        // chat's private context, which must not sit on argv (`ps`, ARG_MAX).
         if let systemPrompt, !systemPrompt.isEmpty {
-            args += ["--system-prompt", systemPrompt]
+            args += ["--system-prompt-stdin"]
         }
         if let sessionID, !sessionID.isEmpty {
             args += ["--session-id", sessionID]
@@ -127,6 +129,13 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         }
         args += ["--", prompt]
         return args
+    }
+
+    /// The bytes `run` writes to the CLI's stdin: the system prompt that
+    /// `buildArgs` announced with `--system-prompt-stdin`, or nil.
+    package static func stdinPayload(systemPrompt: String?) -> Data? {
+        guard let systemPrompt, !systemPrompt.isEmpty else { return nil }
+        return Data(systemPrompt.utf8)
     }
 
     // swiftlint:disable:next function_parameter_count
@@ -162,9 +171,21 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         let stderr = Pipe()
         process.standardOutput = stdout
         process.standardError = stderr
+        let stdinPrompt = Self.stdinPayload(systemPrompt: systemPrompt)
+        let stdin = Pipe()
+        process.standardInput = stdin
 
         processHandle.set(process)
         try process.run()
+
+        // Written off the caller's actor: a prompt larger than the pipe buffer
+        // blocks until the CLI reads it, which it does first thing.
+        Task.detached {
+            if let stdinPrompt {
+                stdin.fileHandleForWriting.write(stdinPrompt)
+            }
+            try? stdin.fileHandleForWriting.close()
+        }
 
         let stderrTask = Task.detached { () -> String in
             let data = stderr.fileHandleForReading.readDataToEndOfFile()

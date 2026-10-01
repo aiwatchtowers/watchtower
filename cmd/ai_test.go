@@ -7,6 +7,7 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -145,5 +146,55 @@ func TestAIQueryV2_ErrorIsTerminal(t *testing.T) {
 	assert.Equal(t, chat.CodeRateLimit, last.Code)
 	for _, e := range evs {
 		assert.NotEqual(t, chat.EventTurnDone, e.Type)
+	}
+}
+
+// TestQuerySystemPrompt_Stdin: with --system-prompt-stdin the prompt comes
+// from stdin (the Desktop keeps it off argv), never together with
+// --system-prompt; without it, --system-prompt is used and stdin untouched.
+func TestQuerySystemPrompt_Stdin(t *testing.T) {
+	t.Cleanup(func() { aiFlagSystemPrompt, aiFlagSystemPromptStdin = "", false })
+
+	aiFlagSystemPrompt, aiFlagSystemPromptStdin = "argv prompt", false
+	got, err := querySystemPrompt(strings.NewReader("ignored"))
+	if err != nil || got != "argv prompt" {
+		t.Fatalf("flag prompt = %q, %v", got, err)
+	}
+
+	aiFlagSystemPrompt, aiFlagSystemPromptStdin = "", true
+	got, err = querySystemPrompt(strings.NewReader("private context\n-- with dashes"))
+	if err != nil || got != "private context\n-- with dashes" {
+		t.Fatalf("stdin prompt = %q, %v", got, err)
+	}
+
+	aiFlagSystemPrompt = "both"
+	if _, err := querySystemPrompt(strings.NewReader("x")); err == nil {
+		t.Fatal("--system-prompt with --system-prompt-stdin must be refused")
+	}
+}
+
+// TestAIQueryCmd_SystemPromptStdinFlagParses: the flag reaches RunE when the
+// Desktop places it ahead of the "--" separator.
+func TestAIQueryCmd_SystemPromptStdinFlagParses(t *testing.T) {
+	origFlagConfig := flagConfig
+	flagConfig = filepath.Join(t.TempDir(), "does-not-exist.yaml")
+	t.Cleanup(func() { flagConfig = origFlagConfig })
+	origRunE := aiQueryCmd.RunE
+	t.Cleanup(func() {
+		aiQueryCmd.RunE = origRunE
+		aiFlagSystemPromptStdin = false
+		rootCmd.SetArgs(nil)
+	})
+	var got bool
+	aiQueryCmd.RunE = func(_ *cobra.Command, _ []string) error {
+		got = aiFlagSystemPromptStdin
+		return nil
+	}
+	rootCmd.SetArgs([]string{"ai", "query", "--system-prompt-stdin", "--", "hi"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !got {
+		t.Fatal("--system-prompt-stdin did not reach RunE")
 	}
 }
