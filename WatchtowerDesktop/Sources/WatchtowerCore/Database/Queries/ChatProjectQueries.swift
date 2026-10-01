@@ -118,12 +118,15 @@ package enum ChatProjectQueries {
         return true
     }
 
-    package static func removeSource(_ db: Database, id: Int64) throws {
+    /// Returns false (and writes nothing) when no source has that id.
+    @discardableResult
+    package static func removeSource(_ db: Database, id: Int64) throws -> Bool {
         guard let projectID = try Int64.fetchOne(
             db, sql: "SELECT project_id FROM chat_project_sources WHERE id = ?", arguments: [id]
-        ) else { return }
+        ) else { return false }
         try db.execute(sql: "DELETE FROM chat_project_sources WHERE id = ?", arguments: [id])
         try dropSessions(db, projectID: projectID)
+        return true
     }
 
     package static func files(_ db: Database, projectID: Int64) throws -> [ChatAttachment] {
@@ -134,19 +137,20 @@ package enum ChatProjectQueries {
         )
     }
 
-    /// Deletes one project file row and returns its path for post-commit disk
-    /// removal. Nil when no project file has that id (a conversation's
-    /// attachment is never touched here) or when another row still points at
-    /// the same stored file (`ChatAttachmentStore` reuses a file by sha256).
-    package static func removeFile(_ db: Database, id: Int64) throws -> String? {
+    /// Deletes one project file row. `removed` is false when no project file
+    /// has that id (a conversation's attachment is never touched here).
+    /// `orphanPath` is the stored file to remove from disk post-commit — nil
+    /// when another row still points at it (`ChatAttachmentStore` reuses a
+    /// file by sha256).
+    package static func removeFile(_ db: Database, id: Int64) throws -> (removed: Bool, orphanPath: String?) {
         guard let row = try Row.fetchOne(
             db, sql: "SELECT path, project_id FROM chat_attachments WHERE id = ? AND project_id IS NOT NULL",
             arguments: [id]
-        ) else { return nil }
+        ) else { return (false, nil) }
         let path: String = row["path"]
         try ChatAttachmentQueries.delete(db, id: id)
         try dropSessions(db, projectID: row["project_id"])
-        return try ChatAttachmentQueries.referenceCount(db, path: path) == 0 ? path : nil
+        return (true, try ChatAttachmentQueries.referenceCount(db, path: path) == 0 ? path : nil)
     }
 
     package static func conversations(_ db: Database, projectID: Int64) throws -> [ChatConversation] {

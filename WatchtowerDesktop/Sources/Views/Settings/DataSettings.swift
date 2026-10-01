@@ -9,6 +9,7 @@ struct DataSettings: View {
     @State private var configSize: String?
     @State private var databaseSize: String?
     @State private var cacheSize: String?
+    @State private var sizesLoaded = false
     @State private var showLLMResetConfirmation = false
     @State private var isResettingLLM = false
     @State private var llmResetError: String?
@@ -24,7 +25,7 @@ struct DataSettings: View {
             regenerateSection
             dangerZoneSection
         }
-        .onAppear { refreshSizes() }
+        .task { await refreshSizes() }
         .alert("Reset All Data?", isPresented: $showResetConfirmation) {
             Button("Cancel", role: .cancel) {}
             Button("Continue", role: .destructive) {
@@ -64,11 +65,7 @@ struct DataSettings: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    if let size = configSize {
-                        Text(size)
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
-                    }
+                    sizeLabel(configSize)
                 }
             }
 
@@ -78,11 +75,7 @@ struct DataSettings: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    if let size = databaseSize {
-                        Text(size)
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
-                    }
+                    sizeLabel(databaseSize)
                 }
             }
 
@@ -92,11 +85,7 @@ struct DataSettings: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    if let size = cacheSize {
-                        Text(size)
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
-                    }
+                    sizeLabel(cacheSize)
                 }
             }
         }
@@ -182,10 +171,30 @@ struct DataSettings: View {
         }
     }
 
-    private func refreshSizes() {
-        configSize = Self.directorySize(configDir)
-        databaseSize = Self.directorySize(dataDir)
-        cacheSize = Self.directorySize(cacheDir)
+    /// A size, or a placeholder while the walk is still running.
+    @ViewBuilder
+    private func sizeLabel(_ size: String?) -> some View {
+        if let size {
+            Text(size)
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+        } else if !sizesLoaded {
+            Text("…")
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    /// Walks the three directories off the main actor: the data directory
+    /// holds the memory vault's loose git objects (tens of thousands of
+    /// files), and a main-thread walk froze the System tab on open.
+    private func refreshSizes() async {
+        let dirs = (configDir, dataDir, cacheDir)
+        let sizes = await Task.detached(priority: .utility) {
+            (Self.directorySize(dirs.0), Self.directorySize(dirs.1), Self.directorySize(dirs.2))
+        }.value
+        guard !Task.isCancelled else { return }
+        (configSize, databaseSize, cacheSize) = sizes
+        sizesLoaded = true
     }
 
     private func performLLMReset() async {
@@ -261,21 +270,23 @@ struct DataSettings: View {
         }
     }
 
-    private static func directorySize(_ path: String) -> String? {
+    nonisolated private static func directorySize(_ path: String) -> String? {
         let fm = FileManager.default
         guard fm.fileExists(atPath: path) else { return nil }
 
-        var totalSize: UInt64 = 0
-        guard let enumerator = fm.enumerator(atPath: path) else { return nil }
+        let keys: [URLResourceKey] = [.isRegularFileKey, .fileSizeKey]
+        guard let enumerator = fm.enumerator(
+            at: URL(fileURLWithPath: path), includingPropertiesForKeys: keys
+        ) else { return nil }
 
-        while let file = enumerator.nextObject() as? String {
-            let fullPath = "\(path)/\(file)"
-            if let attrs = try? fm.attributesOfItem(atPath: fullPath),
-               let size = attrs[.size] as? UInt64 {
-                totalSize += size
-            }
+        var totalSize: Int64 = 0
+        for case let url as URL in enumerator {
+            guard let values = try? url.resourceValues(forKeys: Set(keys)),
+                  values.isRegularFile == true,
+                  let size = values.fileSize else { continue }
+            totalSize += Int64(size)
         }
 
-        return ByteCountFormatter.string(fromByteCount: Int64(totalSize), countStyle: .file)
+        return ByteCountFormatter.string(fromByteCount: totalSize, countStyle: .file)
     }
 }

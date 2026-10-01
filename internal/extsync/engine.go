@@ -27,6 +27,9 @@ type Engine struct {
 	// reconcileFailedAt holds, per source id, when its last reconcile
 	// failed (see reconcileAllowed).
 	reconcileFailedAt map[int64]time.Time
+	// pendingRecovery holds, per source id, the listing of a reconcile
+	// whose recovery the budget cut (see resumeRecovery).
+	pendingRecovery map[int64]reconcileListing
 }
 
 // New returns an engine over d. Unset Options fields get their defaults.
@@ -37,7 +40,8 @@ func New(d *db.DB, opts Options) *Engine {
 	if opts.Logger == nil {
 		opts.Logger = log.New(io.Discard, "", 0)
 	}
-	return &Engine{db: d, fetchers: map[int64]Fetcher{}, opts: opts, reconcileFailedAt: map[int64]time.Time{}}
+	return &Engine{db: d, fetchers: map[int64]Fetcher{}, opts: opts,
+		reconcileFailedAt: map[int64]time.Time{}, pendingRecovery: map[int64]reconcileListing{}}
 }
 
 // SetFetcher wires the fetcher for every source owned by jiraAccountID.
@@ -244,9 +248,10 @@ func (e *Engine) record(src db.ExtSource, o outcome) error {
 	return e.db.SetExtSourceStatus(src.ID, statusOK, "")
 }
 
-// runSource runs src's streams in order (see runStreams), then the
-// daily reconcile when due and budget remains, then resolves the users
-// written this run.
+// runSource runs src's streams in order (see runStreams), then, when
+// budget remains, the daily reconcile when due or else the rest of a
+// reconcile's recovery the budget cut, then resolves the users written
+// this run.
 func (e *Engine) runSource(ctx context.Context, src db.ExtSource, f Fetcher, b *budget) (Stats, error) {
 	var st Stats
 	p := pass{
@@ -254,8 +259,12 @@ func (e *Engine) runSource(ctx context.Context, src db.ExtSource, f Fetcher, b *
 		c: Container{Key: src.ContainerKey, Name: src.ContainerName, ExtID: src.ContainerExtID},
 	}
 	err := e.runStreams(ctx, p, b)
-	if err == nil && !st.Incomplete && !b.over() && e.reconcileAllowed(src, e.opts.Now()) {
-		err = e.runReconcile(ctx, p)
+	if err == nil && !st.Incomplete && !b.over() {
+		if e.reconcileAllowed(src, e.opts.Now()) {
+			err = e.runReconcile(ctx, p)
+		} else if l, ok := e.pendingRecovery[src.ID]; ok {
+			err = e.resumeRecovery(ctx, p, l)
+		}
 	}
 	// Users written by committed batches are resolved even after a later
 	// failure, unless the account itself is failing or we are shutting down.

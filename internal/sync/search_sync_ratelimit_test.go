@@ -134,6 +134,7 @@ func TestSyncViaSearch_RateLimitedFirstPageDoesNotFallBackToFullSync(t *testing.
 	got, err := ts.db.GetSlackAccountSearchWatermark(ts.accountID)
 	require.NoError(t, err)
 	assert.Equal(t, "2020-01-01", got, "the watermark must stay untouched so the next cycle retries via search")
+	assert.True(t, ts.orch.SearchIncomplete(), "a rate-limited cycle reports its data as incomplete (INBOX-09)")
 
 	assert.True(t, ts.orch.readStateSyncedAt.IsZero(), "the read-state refresh must still be due next cycle")
 	assert.True(t, ts.orch.rosterSyncedAt.IsZero(), "the roster refresh must still be due next cycle")

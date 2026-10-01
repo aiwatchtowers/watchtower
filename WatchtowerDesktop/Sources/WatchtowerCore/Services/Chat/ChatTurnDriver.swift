@@ -91,6 +91,14 @@ package final class ChatTurnDriver {
         recordsSession = false
     }
 
+    /// Forgets a turn that never reached a provider, without ending it: no
+    /// write, no `onTurnFinished`. The caller must hand it to another session
+    /// (`ChatSessionClient.surrenderHeldTurn`), whose driver begins it again —
+    /// otherwise its row stays an empty `partial` forever.
+    package func releaseUnsentTurn() {
+        liveTurn = nil
+    }
+
     /// Stop watchdog, process death, eviction, app quit: whatever was
     /// streamed stays, as `partial` (CHAT-01).
     package func finishRunningAsPartial() {

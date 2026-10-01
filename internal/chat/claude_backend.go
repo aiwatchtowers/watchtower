@@ -70,19 +70,36 @@ type claudeProc struct {
 	lostMsg   atomic.Value // string: the session_lost error the child reported on stdout
 }
 
+// exitedOutputWait bounds how long an exited child's stdout may take to be
+// fully read before the exit is judged (rejectedResume, exitOutcome). Both
+// wait after a sweep, so no grandchild still holds the pipe: the wait ends at
+// EOF, normally at once — the bound is only a backstop. It must be generous:
+// under load the reader can lag the exit by far more than half a second, and
+// judging the exit before the reader saw a --resume rejection turns the
+// fresh retry into a respawn of the same doomed --resume, or an error.
+const exitedOutputWait = 5 * time.Second
+
 // rejectedResume returns the --resume rejection an exited child died of
 // before any turn result, or "" when it died of anything else. Only called
-// once the child has exited.
+// once the child has exited and its group was swept.
 func (p *claudeProc) rejectedResume() string {
 	if !p.resumed {
 		return ""
 	}
-	waitClosed(p.outDone, 500*time.Millisecond)
-	if m, _ := p.lostMsg.Load().(string); m != "" {
-		return m
-	}
-	if p.gotResult.Load() {
-		return ""
+	// The reader records a rejection before the result that carries it, so
+	// a result already seen settles the answer without waiting (this runs
+	// under b.mu).
+	for waited := false; ; waited = true {
+		if m, _ := p.lostMsg.Load().(string); m != "" {
+			return m
+		}
+		if p.gotResult.Load() {
+			return ""
+		}
+		if waited {
+			break
+		}
+		waitClosed(p.outDone, exitedOutputWait)
 	}
 	waitClosed(p.errDone, 500*time.Millisecond)
 	msg := strings.TrimSpace(p.stderr.String())
@@ -255,10 +272,11 @@ func (b *claudeBackend) projectSent() {
 // whether the session now holds them: a completed turn, or one killed after
 // the owner's cancel (it was streaming, so its message is in the session the
 // respawn resumes). A turn that failed in a way the files may have caused
-// (projectFileFailure) keeps them pending once more — the provider may have
-// rejected the whole request — and the second such failure gives them up.
-// Any other failure (rate limit, auth, a crash) keeps them pending without
-// counting: the app replays after it, and the fresh session carries them.
+// (projectFileFailure) — an error result, or the CLI crashing on the turn
+// (owner decision 2026-10-01: a crash counts too) — keeps them pending once
+// more, and the second such failure gives them up. Any other failure (rate
+// limit, auth, an outage) keeps them pending without counting: the app
+// replays after it, and the fresh session carries them.
 func (b *claudeBackend) settleProject(out outcome) {
 	switch {
 	case out.kind == outcomeDone && !out.failed:
@@ -266,11 +284,50 @@ func (b *claudeBackend) settleProject(out outcome) {
 	case out.kind == outcomeExited && b.wasCancelled():
 		b.projectSent()
 	case out.kind == outcomeDone && out.failed && projectFileFailure(out.code, out.msg):
-		if b.projectFailures++; b.projectFailures >= maxProjectFailures && !b.projectGivenUp {
-			b.projectGivenUp = true
-			fmt.Fprintf(b.warn(), "chat project files given up after %d failed turns: %s\n",
-				b.projectFailures, strings.Join(b.projectNames(), ", "))
+		b.countProjectFailure()
+	case out.kind == outcomeExited:
+		if reason := crashNotFileCaused(out.msg); reason != "" {
+			fmt.Fprintf(b.warn(), "chat: CLI exit on a project-file turn not counted (%s)\n", reason)
+			return
 		}
+		b.countProjectFailure()
+	}
+}
+
+// crashNotFileCaused returns why a CLI exit mid-turn is not blamed on the
+// project files ("" = it may be). It reads only the last lines of stderr —
+// the head is startup noise — and matches phrases, never bare status
+// numbers, which a stack trace's line numbers would hit.
+func crashNotFileCaused(stderr string) string {
+	lines := strings.Split(strings.TrimSpace(stderr), "\n")
+	if len(lines) > crashTailLines {
+		lines = lines[len(lines)-crashTailLines:]
+	}
+	tail := strings.ToLower(strings.Join(lines, "\n"))
+	for _, phrase := range []string{
+		"not logged in", "/login", "invalid api key", "authentication_error", "oauth token has expired",
+		"rate limit", "rate_limit", "usage limit", "overloaded",
+		"internal server error", "api_error", "service unavailable", "bad gateway", "temporarily unavailable",
+		// Network trouble: the tail is three lines, so the broad words are
+		// safe here (startup noise sits above it).
+		"connection", "timeout", "timed out", "network", "econnreset", "econnrefused", "etimedout",
+		"enotfound", "eai_again", "socket hang up", "fetch failed",
+	} {
+		if strings.Contains(tail, phrase) {
+			return phrase
+		}
+	}
+	return ""
+}
+
+// crashTailLines is how much of a crashed CLI's stderr crashNotFileCaused reads.
+const crashTailLines = 3
+
+func (b *claudeBackend) countProjectFailure() {
+	if b.projectFailures++; b.projectFailures >= maxProjectFailures && !b.projectGivenUp {
+		b.projectGivenUp = true
+		fmt.Fprintf(b.warn(), "chat project files given up after %d failed turns: %s\n",
+			b.projectFailures, strings.Join(b.projectNames(), ", "))
 	}
 }
 
@@ -455,11 +512,13 @@ func (b *claudeBackend) read(p *claudeProc, r *os.File) {
 			b.noteSessionID(p, sid)
 		}
 		for _, e := range evs {
-			if isTerminal(e) {
-				p.gotResult.Store(true)
-			}
+			// lostMsg before gotResult: a reader seen half-way must never
+			// show a result without the rejection it carried.
 			if e.Type == EventError && e.Code == CodeSessionLost {
 				p.lostMsg.Store(e.Message)
+			}
+			if isTerminal(e) {
+				p.gotResult.Store(true)
 			}
 			select {
 			case p.events <- e:
@@ -625,9 +684,15 @@ func (b *claudeBackend) await(ctx context.Context, p *claudeProc, emit func(Even
 // child printed before it died, then reads stderr — a --resume rejected
 // before any result is outcomeLost.
 func exitOutcome(p *claudeProc, handle func(Event) (outcome, bool)) outcome {
-	waitClosed(p.outDone, 500*time.Millisecond)
+	sweep(p) // nothing left in the group may hold stdout open
+	waitClosed(p.outDone, exitedOutputWait)
 	if o, done := drainPending(p.events, handle); done {
 		return o
+	}
+	// A rejection reported on stdout before this turn's message was sent
+	// (its event drained by claimForSend) still means the --resume failed.
+	if m, _ := p.lostMsg.Load().(string); p.resumed && m != "" {
+		return outcome{kind: outcomeLost, msg: m}
 	}
 	waitClosed(p.errDone, 500*time.Millisecond)
 	msg := strings.TrimSpace(p.stderr.String())
@@ -716,6 +781,12 @@ func (b *claudeBackend) ensureProcLocked() (*claudeProc, error) {
 				return nil, &resumeRejectedError{msg: msg}
 			}
 		default:
+			// Alive but already reported the --resume rejection (it is
+			// about to exit): sending would drain that report away and
+			// end the turn as a plain exit. Go to the fresh retry now.
+			if m, _ := b.proc.lostMsg.Load().(string); b.proc.resumed && m != "" {
+				return nil, &resumeRejectedError{msg: m}
+			}
 			return b.proc, nil
 		}
 	}
@@ -855,7 +926,13 @@ func killGroup(p *claudeProc) { _ = syscall.Kill(-p.pgid, syscall.SIGKILL) }
 
 // sweep terminates what is left of the child's process group (the MCP
 // servers claude spawned) once claude itself is gone.
-func sweep(p *claudeProc) { _ = syscall.Kill(-p.pgid, syscall.SIGTERM) }
+// A pgid that is not a real group (a test's constructed proc) is never
+// signalled: kill(0) or kill(1) would hit the caller's group or init.
+func sweep(p *claudeProc) {
+	if p.pgid > 1 {
+		_ = syscall.Kill(-p.pgid, syscall.SIGTERM)
+	}
+}
 
 func waitClosed(ch <-chan struct{}, d time.Duration) bool {
 	select {

@@ -99,14 +99,15 @@ final class ProjectDetailViewModel {
     func addSource(_ hit: ChatEntityHit) {
         guard let kind = ChatProjectSource.Kind(entity: hit.kind) else { return }
         var added = false
-        write { db, id in
+        let committed = write { db, id in
             added = try ChatProjectQueries.addSource(db, projectID: id, kind: kind, ref: hit.ref, label: hit.label)
         }
-        if added { onPromptChanged(projectID) }
+        if committed, added { onPromptChanged(projectID) }
     }
 
     func removeSource(_ source: ChatProjectSource) {
-        if write({ db, _ in try ChatProjectQueries.removeSource(db, id: source.id) }) {
+        var removed = false
+        if write({ db, _ in removed = try ChatProjectQueries.removeSource(db, id: source.id) }), removed {
             onPromptChanged(projectID)
         }
     }
@@ -127,9 +128,9 @@ final class ProjectDetailViewModel {
 
     func removeFile(_ file: ChatAttachment) {
         do {
-            let path = try dbPool.write { try ChatProjectQueries.removeFile($0, id: file.id) }
-            onPromptChanged(projectID)
-            if let path { Self.removeFromDisk([path]) }
+            let result = try dbPool.write { try ChatProjectQueries.removeFile($0, id: file.id) }
+            if result.removed { onPromptChanged(projectID) }
+            if let path = result.orphanPath { Self.removeFromDisk([path]) }
             if refresh() { errorMessage = nil }
         } catch {
             errorMessage = "Could not remove \(file.name): \(error.localizedDescription)"

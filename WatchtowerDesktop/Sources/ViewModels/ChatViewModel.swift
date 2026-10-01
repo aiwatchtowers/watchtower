@@ -401,14 +401,14 @@ final class ChatViewModel {
     /// stored sessions, so their warm processes go too and the shown chat
     /// rereads its row — the next turn starts fresh with the new prompt.
     func projectPromptChanged(_ id: Int64) {
-        pool.retireSessions(projectID: id)
+        pool.retireSessions(projectID: id, deleted: false)
         if currentConversation?.projectID == id { reload() }
     }
 
     /// Called by the project page after it deleted its project: its chats
     /// are detached (`ON DELETE SET NULL`), so the shown one reloads too.
     func projectDeleted(_ id: Int64) {
-        pool.retireSessions(projectID: id)
+        pool.retireSessions(projectID: id, deleted: true)
         reloadProjects()
         if openProjectID == id {
             showLanding()

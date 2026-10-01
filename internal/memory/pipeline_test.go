@@ -1519,3 +1519,279 @@ func TestPipeline_ReconcileGenuineErrorStillRecordsRunAsError(t *testing.T) {
 	_, status, _, _, _, _, _, _, _ := memoryPipelineRunRow(t, d)
 	assert.Equal(t, "error", status, "a genuine reconcile failure must still record pipeline_runs.status='error'")
 }
+
+// poisonGen fails every extraction whose prompt carries poison with a reply
+// that is no JSON array, and answers every other one with a clean "[]".
+func poisonGen(poison string) *fakeGen {
+	return &fakeGen{reply: func(user string) (string, error) {
+		if strings.Contains(user, poison) {
+			return "I cannot help with that.", nil
+		}
+		return "[]", nil
+	}}
+}
+
+func callsContaining(calls []string, s string) int {
+	n := 0
+	for _, c := range calls {
+		if strings.Contains(c, s) {
+			n++
+		}
+	}
+	return n
+}
+
+// TestMemory04_PoisonWindowQuarantinedAfterBudget guards MEM-04's attempt
+// budget (owner-approved 2026-10-01): a window that fails on every run while
+// a later batch commits is retried in its batch extractBatchAttempts times,
+// then alone, and after extractSoloAttempts more it is quarantined —
+// recorded in memory_extract_failures and a "quarantined" pipeline_steps row —
+// and the watermark passes it. Until then it never does. The quarantine covers
+// the window's own messages only: a later message of the same channel is
+// extracted as usual.
+func TestMemory04_PoisonWindowQuarantinedAfterBudget(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	base := pipelineFixture(t, d)
+	seedChannelRow(t, d, "C3DEV", "dev")
+	seedMessageRow(t, d, "C3DEV", fmt.Sprintf("%d.000500", base+240), "U1ALICE", "release notes drafted")
+	gen := poisonGen("the deploy to prod failed")
+	cfg := pipelineTestConfig()
+	cfg.BatchMaxChannels = 2 // [general, ops] share a batch, dev follows alone
+	p := NewPipeline(d, v, gen, cfg, t.Logf)
+
+	for run := 1; run < extractBatchAttempts+extractSoloAttempts; run++ {
+		gen.calls = nil
+		stats, err := p.Run(context.Background())
+		require.NoError(t, err)
+		assert.Zero(t, stats.WindowsQuarantined, "run %d: the budget is not spent yet", run)
+		wm, err := d.MemoryWatermark()
+		require.NoError(t, err)
+		assert.Zero(t, wm, "run %d: a failed window is never passed before its budget is spent", run)
+		if run <= extractBatchAttempts {
+			assert.Equal(t, 1, callsContaining(gen.calls, "(C2OPS)"), "run %d", run)
+			assert.Len(t, gen.calls, 2, "run %d: general and ops still share one batch", run)
+		} else {
+			for _, c := range gen.calls {
+				if strings.Contains(c, "(C1GEN)") {
+					assert.NotContains(t, c, "(C2OPS)", "run %d: the spent window is extracted alone", run)
+				}
+			}
+		}
+	}
+
+	stats, err := p.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, stats.WindowsQuarantined)
+	wm, err := d.MemoryWatermark()
+	require.NoError(t, err)
+	assert.Equal(t, float64(base+240), wm, "the quarantined window no longer holds the watermark back")
+
+	rows, err := d.ListMemoryExtractFailures()
+	require.NoError(t, err)
+	require.Len(t, rows, 1, "the innocent neighbour's record was cleared when it committed")
+	assert.Equal(t, "C1GEN", rows[0].ChannelID)
+	assert.Equal(t, fmt.Sprintf("%d.000100", base), rows[0].FirstTS)
+	assert.Equal(t, fmt.Sprintf("%d.000200", base+60), rows[0].LastTS)
+	assert.NotEmpty(t, rows[0].QuarantinedAt)
+	assert.Contains(t, rows[0].LastError, "no JSON array")
+
+	var quarantinedSteps int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM pipeline_steps WHERE status = 'quarantined' AND channel_id = 'C1GEN'`).Scan(&quarantinedSteps))
+	assert.Equal(t, 1, quarantinedSteps)
+
+	// The quarantine is kept once the watermark has passed it, and covers
+	// only its own messages: a later general message is extracted.
+	seedMessageRow(t, d, "C1GEN", fmt.Sprintf("%d.000600", base+300), "U2BOB", "new topic entirely")
+	_, err = p.Run(context.Background())
+	require.NoError(t, err)
+	rows, err = d.ListMemoryExtractFailures()
+	require.NoError(t, err)
+	require.Len(t, rows, 1, "a quarantine record outlives the watermark passing it")
+	require.NoError(t, d.SetMemoryWatermark(0))
+	gen.calls = nil
+	stats, err = p.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 2, stats.MessagesQuarantined)
+	assert.Zero(t, callsContaining(gen.calls, "the deploy to prod failed"), "a quarantined window is never extracted again")
+	assert.Equal(t, 1, callsContaining(gen.calls, "new topic entirely"), "the channel's later messages are still read")
+}
+
+// TestMemory04_QuarantineIsTieSafeWithinOneSecond: ts_unix is whole seconds,
+// and a window boundary can fall inside one second. Quarantining the first
+// window must not swallow the next window's messages from that same second.
+func TestMemory04_QuarantineIsTieSafeWithinOneSecond(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedWorkspaceRow(t, d)
+	seedUserRow(t, d, "U1ALICE", "alice")
+	seedChannelRow(t, d, "C1GEN", "general")
+	sec := time.Now().Add(-time.Hour).Unix()
+	seedMessageRow(t, d, "C1GEN", fmt.Sprintf("%d.000100", sec), "U1ALICE", "poison one")
+	seedMessageRow(t, d, "C1GEN", fmt.Sprintf("%d.000200", sec), "U1ALICE", "poison two")
+	seedMessageRow(t, d, "C1GEN", fmt.Sprintf("%d.000300", sec), "U1ALICE", "same second, next window")
+	gen := poisonGen("poison one")
+	cfg := pipelineTestConfig()
+	cfg.MaxWindowMessages = 2 // the third message starts a new window inside the same second
+	p := NewPipeline(d, v, gen, cfg, t.Logf)
+
+	for run := 0; run < extractBatchAttempts+extractSoloAttempts; run++ {
+		_, err := p.Run(context.Background())
+		require.NoError(t, err)
+	}
+	rows, err := d.ListMemoryExtractFailures()
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	require.NotEmpty(t, rows[0].QuarantinedAt)
+
+	require.NoError(t, d.SetMemoryWatermark(0))
+	gen.calls = nil
+	stats, err := p.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 2, stats.MessagesQuarantined, "only the quarantined window's two messages are skipped")
+	assert.Equal(t, 1, callsContaining(gen.calls, "same second, next window"))
+}
+
+// TestMemory04_TransientFailureNeverSpendsBudget guards the other half of the
+// budget: a failure with no later commit in its run — an outage, a provider
+// answering garbage to every batch, a single-batch install — proves nothing
+// about the window. Its failures may split windows but are never proven, so
+// nothing is quarantined and the watermark never moves.
+func TestMemory04_TransientFailureNeverSpendsBudget(t *testing.T) {
+	outage := func(string) (string, error) { return "", fmt.Errorf("model down") }
+	garbage := func(string) (string, error) { return "<html>502</html>", nil }
+	for name, tc := range map[string]struct {
+		reply func(string) (string, error)
+		cfg   config.MemoryConfig
+	}{
+		"outage, one batch per window":  {outage, pipelineTestConfig()},
+		"garbage, one batch per window": {garbage, pipelineTestConfig()},
+		"outage, single batch":          {outage, batchTestConfig()},
+		"garbage, single batch":         {garbage, batchTestConfig()},
+	} {
+		t.Run(name, func(t *testing.T) {
+			v, d := newTestVault(t), newTestDB(t)
+			pipelineFixture(t, d)
+			p := NewPipeline(d, v, &fakeGen{reply: tc.reply}, tc.cfg, t.Logf)
+			for run := 0; run < 3*(extractBatchAttempts+extractSoloAttempts); run++ {
+				stats, err := p.Run(context.Background())
+				require.NoError(t, err)
+				assert.Zero(t, stats.WindowsQuarantined)
+			}
+			assertNoProvenFailures(t, d)
+			wm, err := d.MemoryWatermark()
+			require.NoError(t, err)
+			assert.Zero(t, wm)
+		})
+	}
+}
+
+// TestMemory04_MidRunCutoffNeverSpendsBudget: earlier batches commit, then the
+// provider stops (a rate limit or quota running out mid-run). The failed
+// windows head the next run, so their failures are not evidence against them.
+func TestMemory04_MidRunCutoffNeverSpendsBudget(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	pipelineFixture(t, d)
+	gen := &fakeGen{reply: func(user string) (string, error) {
+		if strings.Contains(user, "(C2OPS)") {
+			return "", fmt.Errorf("429 rate limited")
+		}
+		return "[]", nil
+	}}
+	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
+	for run := 0; run < 3*(extractBatchAttempts+extractSoloAttempts); run++ {
+		_, err := p.Run(context.Background())
+		require.NoError(t, err)
+	}
+	assertNoProvenFailures(t, d)
+}
+
+// assertNoProvenFailures: failures were recorded (and may have split windows)
+// but none was proven, so nothing is or will be quarantined.
+func assertNoProvenFailures(t *testing.T, d *db.DB) {
+	t.Helper()
+	rows, err := d.ListMemoryExtractFailures()
+	require.NoError(t, err)
+	for _, r := range rows {
+		assert.Zero(t, r.SoloFailures, "%s: a failure with no later commit is never proven", r.ChannelID)
+		assert.Empty(t, r.QuarantinedAt)
+	}
+}
+
+// TestMemory04_SingleBatchPoisonIsSplitThenQuarantined: on a quiet install the
+// whole chunk fits one batch, so nothing ever commits behind a bad window.
+// Its unproven failures still split it out; once alone, its neighbours commit
+// after it and its failures are proven, so it is quarantined.
+func TestMemory04_SingleBatchPoisonIsSplitThenQuarantined(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	base := pipelineFixture(t, d)
+	gen := poisonGen("the deploy to prod failed")
+	p := NewPipeline(d, v, gen, batchTestConfig(), t.Logf)
+
+	for run := 1; run <= extractBatchAttempts; run++ {
+		gen.calls = nil
+		_, err := p.Run(context.Background())
+		require.NoError(t, err)
+		assert.Len(t, gen.calls, 1, "run %d: one batch", run)
+	}
+	for run := 1; run <= extractSoloAttempts; run++ {
+		_, err := p.Run(context.Background())
+		require.NoError(t, err)
+	}
+	rows, err := d.ListMemoryExtractFailures()
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, "C1GEN", rows[0].ChannelID)
+	assert.NotEmpty(t, rows[0].QuarantinedAt)
+	wm, err := d.MemoryWatermark()
+	require.NoError(t, err)
+	assert.Equal(t, float64(base+180), wm)
+}
+
+// TestMemory04_SuccessResetsBudget: failures are recorded per window, and a
+// window that commits again forgets them.
+func TestMemory04_SuccessResetsBudget(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	pipelineFixture(t, d)
+	failGen := true
+	gen := &fakeGen{reply: func(user string) (string, error) {
+		if failGen && strings.Contains(user, "(C1GEN)") {
+			return "", fmt.Errorf("context overflow")
+		}
+		return "[]", nil
+	}}
+	p := NewPipeline(d, v, gen, pipelineTestConfig(), t.Logf)
+
+	for i := 0; i < 2; i++ {
+		_, err := p.Run(context.Background())
+		require.NoError(t, err)
+	}
+	rows, err := d.ListMemoryExtractFailures()
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, 2, rows[0].Failures)
+
+	failGen = false
+	_, err = p.Run(context.Background())
+	require.NoError(t, err)
+	rows, err = d.ListMemoryExtractFailures()
+	require.NoError(t, err)
+	assert.Empty(t, rows, "a committed window forgets its failures")
+}
+
+func TestProvenFailure(t *testing.T) {
+	assert.True(t, provenFailure(0, 1), "a later batch committed")
+	assert.False(t, provenFailure(1, 0), "only an earlier batch committed")
+	assert.False(t, provenFailure(0, -1), "nothing committed")
+}
+
+// TestBatchWindowsWithSolo: a window whose batch budget is spent gets a batch
+// of its own in place; the windows around it are grouped as usual and every
+// batch keeps first-ts order.
+func TestBatchWindowsWithSolo(t *testing.T) {
+	windows := make([]runWindow, 5)
+	for i := range windows {
+		windows[i] = runWindow{channelWindow: channelWindow{Messages: []extractMsg{{}}}, tsUnix: []float64{float64(i)}}
+	}
+	got := batchWindowsWithSolo(windows, []bool{false, false, true, false, false}, 20, 1500)
+	assert.Equal(t, [][]int{{0, 1}, {2}, {3, 4}}, got)
+	assert.Equal(t, [][]int{{0}, {1, 2, 3}, {4}}, batchWindowsWithSolo(windows, []bool{true, false, false, false, true}, 20, 1500))
+}

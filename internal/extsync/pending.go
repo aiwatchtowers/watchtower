@@ -40,10 +40,20 @@ func staleAttachmentRefs(ctx context.Context, q Queryer, sourceID int64, refs []
 	return stale, nil
 }
 
-type attachmentVersion struct{ stored, pending int }
+// attachmentVersion is a stored attachment's version, the version its
+// pending retry tried (0 = none) and its attempt count.
+type attachmentVersion struct{ stored, pending, attempts int }
 
-// attachmentVersions reads the stored and pending versions of refs in one
-// query (pending 0 = none).
+// lastTry reports whether a degraded try of version spends the row's last
+// attempt on a version other than the stored one. Only a revisit counts on
+// from the stored attempts; a delta try of a newly listed version starts
+// at 1.
+func (v attachmentVersion) lastTry(version int, revisit bool) bool {
+	return revisit && version != v.stored && v.attempts+1 >= maxExtractAttempts
+}
+
+// attachmentVersions reads the stored and pending versions and the attempt
+// counts of refs in one query.
 func attachmentVersions(ctx context.Context, q Queryer, sourceID int64, refs []ItemRef) (map[string]attachmentVersion, error) {
 	out := make(map[string]attachmentVersion, len(refs))
 	if len(refs) == 0 {
@@ -55,7 +65,7 @@ func attachmentVersions(ctx context.Context, q Queryer, sourceID int64, refs []I
 		args = append(args, r.ExtID)
 	}
 	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(refs)), ",")
-	rows, err := q.QueryContext(ctx, `SELECT ext_id, version, COALESCE(json_extract(meta_json, ?), '')
+	rows, err := q.QueryContext(ctx, `SELECT ext_id, version, COALESCE(json_extract(meta_json, ?), ''), extract_attempts
 		FROM ext_documents WHERE source_id = ? AND ext_id IN (`+placeholders+`)`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("extsync: reading attachment versions: %w", err)
@@ -64,7 +74,7 @@ func attachmentVersions(ctx context.Context, q Queryer, sourceID int64, refs []I
 	for rows.Next() {
 		var id, pending string
 		var v attachmentVersion
-		if err := rows.Scan(&id, &v.stored, &pending); err != nil {
+		if err := rows.Scan(&id, &v.stored, &pending, &v.attempts); err != nil {
 			return nil, fmt.Errorf("extsync: scanning attachment version: %w", err)
 		}
 		v.pending, _ = strconv.Atoi(pending) // absent or malformed = no pending version

@@ -90,8 +90,9 @@ final class ChatProjectQueriesTests: XCTestCase {
             XCTAssertEqual(sources.map(\.kind), ["jira_project", "person"])
             XCTAssertEqual(sources.first?.label, "PAY", "the duplicate did not overwrite the label")
             XCTAssertEqual(sources.first?.sourceKind, .jiraProject)
-            try ChatProjectQueries.removeSource(d, id: sources[0].id)
+            XCTAssertTrue(try ChatProjectQueries.removeSource(d, id: sources[0].id))
             XCTAssertEqual(try ChatProjectQueries.sources(d, projectID: p.id).map(\.ref), ["1:U1"])
+            XCTAssertFalse(try ChatProjectQueries.removeSource(d, id: sources[0].id), "already gone: nothing changed")
         }
     }
 
@@ -100,9 +101,13 @@ final class ChatProjectQueriesTests: XCTestCase {
             let p = try ChatProjectQueries.create(d, name: "P")
             let fileID = try insertProjectFile(d, projectID: p.id, path: "/tmp/a.pdf")
             XCTAssertEqual(try ChatProjectQueries.files(d, projectID: p.id).map(\.path), ["/tmp/a.pdf"])
-            XCTAssertEqual(try ChatProjectQueries.removeFile(d, id: fileID), "/tmp/a.pdf")
+            let removed = try ChatProjectQueries.removeFile(d, id: fileID)
+            XCTAssertTrue(removed.removed)
+            XCTAssertEqual(removed.orphanPath, "/tmp/a.pdf")
             XCTAssertTrue(try ChatProjectQueries.files(d, projectID: p.id).isEmpty)
-            XCTAssertNil(try ChatProjectQueries.removeFile(d, id: fileID), "second remove finds nothing")
+            let again = try ChatProjectQueries.removeFile(d, id: fileID)
+            XCTAssertFalse(again.removed, "second remove finds nothing")
+            XCTAssertNil(again.orphanPath)
         }
     }
 
@@ -113,8 +118,10 @@ final class ChatProjectQueriesTests: XCTestCase {
             let p = try ChatProjectQueries.create(d, name: "P")
             let first = try insertProjectFile(d, projectID: p.id, path: "/tmp/shared.pdf")
             let second = try insertProjectFile(d, projectID: p.id, path: "/tmp/shared.pdf")
-            XCTAssertNil(try ChatProjectQueries.removeFile(d, id: first), "the other row still uses the file")
-            XCTAssertEqual(try ChatProjectQueries.removeFile(d, id: second), "/tmp/shared.pdf")
+            let kept = try ChatProjectQueries.removeFile(d, id: first)
+            XCTAssertTrue(kept.removed)
+            XCTAssertNil(kept.orphanPath, "the other row still uses the file")
+            XCTAssertEqual(try ChatProjectQueries.removeFile(d, id: second).orphanPath, "/tmp/shared.pdf")
         }
     }
 
@@ -129,7 +136,7 @@ final class ChatProjectQueriesTests: XCTestCase {
                 arguments: [chat]
             )
             let id = d.lastInsertedRowID
-            XCTAssertNil(try ChatProjectQueries.removeFile(d, id: id))
+            XCTAssertFalse(try ChatProjectQueries.removeFile(d, id: id).removed)
             XCTAssertEqual(try Int.fetchOne(d, sql: "SELECT COUNT(*) FROM chat_attachments"), 1)
         }
     }
