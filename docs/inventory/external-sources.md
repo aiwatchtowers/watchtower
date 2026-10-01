@@ -283,7 +283,8 @@ every Confluence hit's `link` is the page or attachment URL.
   edit already saved (base+1, same title, storage equal up to `local-id`s) is now a
   success result carrying the "already saved" note instead of a failed
   action; still no PUT. The write rule (version AND hash must match, else
-  no PUT) is unchanged.
+  no PUT) is unchanged. Shipped in PR #86 (3f0be7c0); approved by the owner
+  2026-10-01.
 - 2026-10-01 (release audit, archived pages): `get_confluence_page` reads
   an archived page (status current and archived, as the sync fetcher
   asks), and EXT-05 gains "an archived page is never written" (its PUT's
