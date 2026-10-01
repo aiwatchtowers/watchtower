@@ -130,6 +130,41 @@ func (b *extractBudget) failed(database *db.DB, w runWindow, solo, proven bool, 
 	return f.QuarantinedAt != "", nil
 }
 
+// failedBatch is one batch that failed in a run, as runExtract hands it to
+// countFailures.
+type failedBatch struct {
+	batch     int // index in the run's batches
+	idxs      []int
+	err       error
+	cancelled bool // failed because the run was cancelled (shutdown)
+}
+
+// countFailures records a run's failed batches against their windows'
+// budgets and returns the windows quarantined by it — they stop holding the
+// watermark back. A failure caused by cancellation never counts; an
+// unrecordable one is simply not counted (the window stays frozen, MEM-04).
+func (p *Pipeline) countFailures(budget *extractBudget, windows []runWindow, failed []failedBatch, lastCommitted int) (quarantined []int) {
+	for _, fb := range failed {
+		if fb.cancelled {
+			continue
+		}
+		proven := provenFailure(fb.batch, lastCommitted)
+		for _, i := range fb.idxs {
+			q, err := budget.failed(p.db, windows[i], len(fb.idxs) == 1, proven, fb.err)
+			if err != nil {
+				p.logf("memory: record extract failure for %s: %v", windows[i].ChannelName, err)
+				continue
+			}
+			if q {
+				quarantined = append(quarantined, i)
+				p.logf("memory: QUARANTINED extraction window %s after %d failed solo attempts (last: %v) — memory will not read these messages; the record stays in memory_extract_failures",
+					windowSpan(windows[i]), extractSoloAttempts, fb.err)
+			}
+		}
+	}
+	return quarantined
+}
+
 // provenFailure decides whether a batch failure is evidence against the
 // batch's own windows — the only kind that counts toward quarantine: a LATER
 // batch of the same run committed, proving the provider and the vault worked

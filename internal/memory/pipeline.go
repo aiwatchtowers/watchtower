@@ -601,12 +601,6 @@ func (p *Pipeline) runExtract(ctx context.Context, runID int64, stepOffset int, 
 	batches := batchWindowsWithSolo(windows, budget.solo(windows),
 		orDefault(p.cfg.BatchMaxChannels, 20), orDefault(p.cfg.BatchMaxMessages, 1500))
 
-	type failedBatch struct {
-		batch     int
-		idxs      []int
-		err       error
-		cancelled bool
-	}
 	var failed []failedBatch
 	lastCommitted := -1
 	recorded := 0
@@ -647,32 +641,11 @@ func (p *Pipeline) runExtract(ctx context.Context, runID int64, stepOffset int, 
 		recorded++
 	}
 
-	// Count this run's failures against the windows' budgets; a window whose
-	// budget is spent is quarantined and stops holding the watermark back. A
-	// failure caused by cancellation (shutdown) never counts.
-	var quarantined []int
-	for _, fb := range failed {
-		if fb.cancelled {
-			continue
-		}
-		proven := provenFailure(fb.batch, lastCommitted)
-		for _, i := range fb.idxs {
-			q, err := budget.failed(p.db, windows[i], len(fb.idxs) == 1, proven, fb.err)
-			if err != nil {
-				// Unrecorded, the failure is simply not counted: the window
-				// stays frozen and is retried (MEM-04).
-				p.logf("memory: record extract failure for %s: %v", windows[i].ChannelName, err)
-				continue
-			}
-			if q {
-				done[i] = true
-				quarantined = append(quarantined, i)
-				p.logf("memory: QUARANTINED extraction window %s after %d failed solo attempts (last: %v) — memory will not read these messages; the record stays in memory_extract_failures",
-					windowSpan(windows[i]), extractSoloAttempts, fb.err)
-			}
-		}
-	}
+	quarantined := p.countFailures(budget, windows, failed, lastCommitted)
 	if len(quarantined) > 0 {
+		for _, i := range quarantined {
+			done[i] = true
+		}
 		stats.WindowsQuarantined += len(quarantined)
 		p.advanceWatermark(windows, done, current)
 		total := stepOffset + len(batches) + len(quarantined)
