@@ -492,6 +492,7 @@ func addHTTPConnection(t *testing.T, cfg *config.Config, name, connURL string) d
 }
 
 func TestConnectionsOAuth_SignsInAndEnables(t *testing.T) {
+	stubToolsList(t, []db.ExternalTool{{Name: "get_item"}}, nil)
 	cfg := writeConnectionsConfig(t)
 	as := newConnectionsFakeOAuthServer(t)
 	captureConnectionsAuthorizeCallback(t)

@@ -36,9 +36,12 @@ struct QuickConnectionsDetail: View {
             }
             // QC-02: the chat gets a connection's read-only tools only; the
             // per-tool list lives in the CLI until the Desktop has a toggle.
-            Text("The assistant can use only the tools a server marks read-only "
-                + "(or, when it doesn't say, tools named get…, list…, search… and the like). "
-                + "Review or change them with `watchtower connections tools <id>`.")
+            // LocalizedStringKey so the command renders as code (Markdown).
+            Text(LocalizedStringKey(
+                "The assistant can use only the tools a server marks read-only "
+                    + "(or, when it doesn't say, tools named get…, list…, search… and the like). "
+                    + "Review or change them with `watchtower connections tools <id>`."
+            ))
                 .font(.caption)
                 .foregroundStyle(.secondary)
             if let vm = appState.externalConnectionsViewModel {

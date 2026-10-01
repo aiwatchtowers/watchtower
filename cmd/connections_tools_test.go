@@ -73,6 +73,14 @@ func TestQC02_FailClosed(t *testing.T) {
 		conn, err := database.GetExternalConnection(id)
 		require.NoError(t, err)
 		assert.False(t, conn.ToolsListed, "a failed listing caches nothing")
+		assert.Equal(t, "error", conn.Status, "an unmounted connection is surfaced on its row")
+		assert.Contains(t, conn.Error, "connections tools")
+		assert.NotEmpty(t, conn.ToolsListFailedAt)
+
+		// The next launch backs off instead of paying the timeout again.
+		calls := stubToolsList(t, []db.ExternalTool{{Name: "getIssue"}}, nil)
+		assert.Empty(t, loadExternalMCPServers(cfg, cfg.DBPath()))
+		assert.Empty(t, *calls, "a recent failure is not retried at launch")
 	})
 	t.Run("no read-only tool", func(t *testing.T) {
 		cfg := writeConnectionsConfig(t)
@@ -84,7 +92,64 @@ func TestQC02_FailClosed(t *testing.T) {
 			[]db.ExternalTool{{Name: "createIssue"}, {Name: "getIssue", Annotated: true}}, time.Now().UTC().Format(time.RFC3339)))
 
 		assert.Empty(t, loadExternalMCPServers(cfg, cfg.DBPath()))
+		conn, err := database.GetExternalConnection(id)
+		require.NoError(t, err)
+		assert.Equal(t, "error", conn.Status)
+		assert.Contains(t, conn.Error, "read-only")
 	})
+	t.Run("oauth row with no read-only tool is not left ok", func(t *testing.T) {
+		cfg := writeConnectionsConfig(t)
+		database, err := db.Open(cfg.DBPath())
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = database.Close() })
+		server, _ := newFakeTokenServer(t, false)
+		id, _ := setupOAuthConnection(t, database, cfg, server.URL, time.Now().Add(time.Hour))
+		require.NoError(t, database.SetExternalConnectionTools(id,
+			[]db.ExternalTool{{Name: "createIssue"}}, time.Now().UTC().Format(time.RFC3339)))
+
+		assert.Empty(t, loadExternalMCPServers(cfg, cfg.DBPath()))
+		conn, err := database.GetExternalConnection(id)
+		require.NoError(t, err)
+		assert.Equal(t, "error", conn.Status)
+	})
+}
+
+// TestQC02_OneConnectionFailingLeavesOthersMounted: a connection whose
+// listing fails is skipped alone.
+func TestQC02_OneConnectionFailingLeavesOthersMounted(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	insertStaticConnection(t, database, cfg) // never listed; its listing fails
+	otherID, err := database.InsertExternalConnection(db.ExternalConnection{
+		Name: "other", Kind: "http", URL: "https://example.com/other", Enabled: true,
+	})
+	require.NoError(t, err)
+	cacheReadOnlyTool(t, database, otherID)
+	stubToolsList(t, nil, errors.New("connection refused"))
+
+	servers := loadExternalMCPServers(cfg, cfg.DBPath())
+	require.Len(t, servers, 1)
+	assert.Equal(t, "other", servers[0].Name)
+}
+
+// TestQC02_ListingUsesTheOAuthBearer: an OAuth connection is listed with the
+// freshly verified bearer, never the raw secret.
+func TestQC02_ListingUsesTheOAuthBearer(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	server, _ := newFakeTokenServer(t, false)
+	id, _ := setupOAuthConnection(t, database, cfg, server.URL, time.Now().Add(time.Hour))
+	_, err = database.Exec(`DELETE FROM external_connection_tools WHERE connection_id = ?`, id)
+	require.NoError(t, err)
+	calls := stubToolsList(t, []db.ExternalTool{{Name: "getIssue"}}, nil)
+
+	require.Len(t, loadExternalMCPServers(cfg, cfg.DBPath()), 1)
+	require.Len(t, *calls, 1)
+	assert.Equal(t, "Bearer access-token-1", (*calls)[0].Headers["Authorization"])
 }
 
 // TestQC02_OwnerAllowListOverridesDefault: the owner's explicit list is
@@ -119,7 +184,7 @@ func TestConnectionsTools_CommandFlow(t *testing.T) {
 
 	out, err = runConnections(t, "", "tools", idArg, "--refresh")
 	require.NoError(t, err, out)
-	assert.Contains(t, out, "1 of 2 tools allowed (read-only tools only)")
+	assert.Contains(t, out, "1 of 2 tools available to the chat (read-only tools only)")
 	assert.Contains(t, out, "allow  getIssue")
 	assert.Contains(t, out, "deny   createIssue")
 
@@ -141,6 +206,19 @@ func TestConnectionsTools_CommandFlow(t *testing.T) {
 
 	_, err = runConnections(t, "", "tools", idArg, "--default", "--allow", "x")
 	require.ErrorContains(t, err, "mutually exclusive")
+
+	_, err = runConnections(t, "", "tools", idArg, "--allow", "getIssue,")
+	require.ErrorContains(t, err, "empty tool name")
+	conn, err = database.GetExternalConnection(id)
+	require.NoError(t, err)
+	assert.Nil(t, conn.AllowTools, "a rejected --allow changes nothing")
+
+	_, stderr, err := runConnectionsSplit(t, "", "tools", idArg, "--allow", " getIssue , nope")
+	require.NoError(t, err)
+	assert.Contains(t, stderr, `"nope" is not in the server's last tool list`)
+	conn, err = database.GetExternalConnection(id)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"getIssue", "nope"}, conn.AllowTools, "names are trimmed")
 }
 
 func TestConnectionsEnable_ListsToolsAndReportsFailure(t *testing.T) {
@@ -157,9 +235,15 @@ func TestConnectionsEnable_ListsToolsAndReportsFailure(t *testing.T) {
 	require.NoError(t, err, "enable succeeds even when the listing fails")
 	assert.Contains(t, stdout, "enabled")
 	assert.Contains(t, stderr, "none is available to the chat")
+	conn, err := database.GetExternalConnection(id)
+	require.NoError(t, err)
+	assert.Equal(t, "error", conn.Status, "the Desktop ignores exit-0 output, so the row says it")
 
 	stubToolsList(t, []db.ExternalTool{{Name: "getIssue"}, {Name: "createIssue"}}, nil)
 	stdout, _, err = runConnectionsSplit(t, "", "enable", idArg)
 	require.NoError(t, err)
 	assert.Contains(t, stdout, "1 of 2 tools available to the chat")
+	conn, err = database.GetExternalConnection(id)
+	require.NoError(t, err)
+	assert.Equal(t, "ok", conn.Status)
 }

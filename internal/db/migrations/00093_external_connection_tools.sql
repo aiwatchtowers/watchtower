@@ -6,11 +6,14 @@
 -- listed_at is when it was taken ('' = never). allow_json is the owner's
 -- explicit allow list of tool names (NULL = the default policy: only tools
 -- known to be read-only, see internal/externalmcp/toolpolicy.go).
+-- list_failed_at is the last failed listing ('' = none since the last
+-- success): a chat launch does not retry it for an hour.
 CREATE TABLE IF NOT EXISTS external_connection_tools (
     connection_id INTEGER PRIMARY KEY REFERENCES external_connections(id) ON DELETE CASCADE,
     tools_json    TEXT NOT NULL DEFAULT '',
     listed_at     TEXT NOT NULL DEFAULT '',
-    allow_json    TEXT
+    allow_json    TEXT,
+    list_failed_at TEXT NOT NULL DEFAULT ''
 );
 
 -- +goose Down

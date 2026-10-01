@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -84,4 +85,26 @@ func TestListTools_Stdio(t *testing.T) {
 		Env: map[string]string{fakeStdioServerEnv: "1"}})
 	require.NoError(t, err)
 	assert.Equal(t, []db.ExternalTool{{Name: "list_things"}}, tools)
+}
+
+// TestListTools_StdioStartupFailureQuotesStderr: a server that dies at
+// startup fails the listing with its own stderr in the error.
+func TestListTools_StdioStartupFailureQuotesStderr(t *testing.T) {
+	exe, err := os.Executable()
+	require.NoError(t, err)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	_, err = ListTools(ctx, ServerSpec{Kind: "stdio", Command: exe,
+		Env: map[string]string{fakeStdioServerEnv: "fail"}})
+	require.ErrorContains(t, err, "missing API key")
+}
+
+func TestLookPathIn(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "fake-mcp")
+	require.NoError(t, os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755))
+	assert.Equal(t, bin, lookPathIn("fake-mcp", "/nonexistent:"+dir))
+	assert.Equal(t, "fake-mcp", lookPathIn("fake-mcp", "/nonexistent"), "not found: left for exec to report")
+	assert.Equal(t, "./x/fake-mcp", lookPathIn("./x/fake-mcp", dir), "a path is used as given")
 }

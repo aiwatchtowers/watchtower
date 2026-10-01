@@ -113,8 +113,14 @@ func TestExternalConnectionTools_CacheAndAllowList(t *testing.T) {
 	assert.Nil(t, c.AllowTools)
 	assert.True(t, c.ToolsListed, "clearing the allow list keeps the cache")
 
-	require.NoError(t, d.SetExternalConnectionTools(id, nil, "2026-01-02T03:04:06Z"))
+	require.NoError(t, d.SetExternalConnectionListFailed(id, "2026-01-02T03:04:06Z"))
 	c = get()
+	assert.Equal(t, "2026-01-02T03:04:06Z", c.ToolsListFailedAt)
+	assert.True(t, c.ToolsListed, "a failed refresh keeps the last good listing")
+
+	require.NoError(t, d.SetExternalConnectionTools(id, nil, "2026-01-02T03:04:07Z"))
+	c = get()
+	assert.Empty(t, c.ToolsListFailedAt, "a successful listing clears the failure")
 	assert.True(t, c.ToolsListed, "an empty listing is still a listing")
 	assert.Empty(t, c.Tools)
 }

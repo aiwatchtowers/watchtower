@@ -21,8 +21,17 @@ func TestIsReadOnly(t *testing.T) {
 		{db.ExternalTool{Name: "list_pages"}, true},
 		{db.ExternalTool{Name: "search-docs"}, true},
 		{db.ExternalTool{Name: "ReadFile"}, true},
-		{db.ExternalTool{Name: "fetch"}, true},
 		{db.ExternalTool{Name: "lookupUser"}, true},
+		{db.ExternalTool{Name: "getJIRAIssue"}, true},
+		// query (arbitrary SQL) and fetch (arbitrary URL) are not known read-only.
+		{db.ExternalTool{Name: "query"}, false},
+		{db.ExternalTool{Name: "fetch_url"}, false},
+		// Compound names with a conjunction or a write verb are writes.
+		{db.ExternalTool{Name: "getOrCreateIssue"}, false},
+		{db.ExternalTool{Name: "find_or_create_contact"}, false},
+		{db.ExternalTool{Name: "read_and_delete_message"}, false},
+		{db.ExternalTool{Name: "list-and-archive"}, false},
+		{db.ExternalTool{Name: "getAndSetFlag"}, false},
 		{db.ExternalTool{Name: "createJiraIssue"}, false},
 		{db.ExternalTool{Name: "send_message"}, false},
 		{db.ExternalTool{Name: "updateConfluencePage"}, false},

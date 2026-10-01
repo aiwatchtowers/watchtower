@@ -27,6 +27,9 @@ type ExternalConnection struct {
 	Tools         []ExternalTool
 	ToolsListed   bool
 	ToolsListedAt string
+	// ToolsListFailedAt is the last failed tools/list ('' = none since the
+	// last success), so a chat launch can back off a dead server.
+	ToolsListFailedAt string
 	// AllowTools is the owner's explicit allow list of tool names; nil (SQL
 	// NULL) means the default policy — only tools known to be read-only.
 	AllowTools []string
@@ -47,7 +50,8 @@ type ExternalTool struct {
 // scanExternalConnection's Scan targets in lockstep.
 const externalConnectionColumns = `c.id, c.name, c.kind, c.command, c.args_json, c.url,
         c.enabled, c.status, c.error, c.created_at,
-        COALESCE(t.tools_json, ''), COALESCE(t.listed_at, ''), t.allow_json`
+        COALESCE(t.tools_json, ''), COALESCE(t.listed_at, ''), t.allow_json,
+        COALESCE(t.list_failed_at, '')`
 
 // externalConnectionFrom joins each connection to its QC-02 tool row (absent
 // = never listed, no allow list).
@@ -62,7 +66,7 @@ func scanExternalConnection(scanner interface{ Scan(dest ...any) error }) (Exter
 	var argsJSON, toolsJSON string
 	var allowJSON sql.NullString
 	err := scanner.Scan(&c.ID, &c.Name, &c.Kind, &c.Command, &argsJSON, &c.URL,
-		&c.Enabled, &c.Status, &c.Error, &c.CreatedAt, &toolsJSON, &c.ToolsListedAt, &allowJSON)
+		&c.Enabled, &c.Status, &c.Error, &c.CreatedAt, &toolsJSON, &c.ToolsListedAt, &allowJSON, &c.ToolsListFailedAt)
 	if err != nil {
 		return ExternalConnection{}, err
 	}
@@ -204,7 +208,8 @@ func (db *DB) SetExternalConnectionTools(id int64, tools []ExternalTool, listedA
 	}
 	_, err = db.Exec(`INSERT INTO external_connection_tools (connection_id, tools_json, listed_at)
         VALUES (?, ?, ?)
-        ON CONFLICT(connection_id) DO UPDATE SET tools_json = excluded.tools_json, listed_at = excluded.listed_at`,
+        ON CONFLICT(connection_id) DO UPDATE SET tools_json = excluded.tools_json, listed_at = excluded.listed_at,
+            list_failed_at = ''`,
 		id, string(data), listedAt)
 	if err != nil {
 		return fmt.Errorf("caching tools for external connection %d: %w", id, err)
@@ -229,6 +234,19 @@ func (db *DB) SetExternalConnectionAllowTools(id int64, names []string) error {
 		id, value)
 	if err != nil {
 		return fmt.Errorf("setting allowed tools for external connection %d: %w", id, err)
+	}
+	return nil
+}
+
+// SetExternalConnectionListFailed records a failed tools/list for id at at,
+// leaving any earlier successful listing in place.
+func (db *DB) SetExternalConnectionListFailed(id int64, at string) error {
+	_, err := db.Exec(`INSERT INTO external_connection_tools (connection_id, list_failed_at)
+        VALUES (?, ?)
+        ON CONFLICT(connection_id) DO UPDATE SET list_failed_at = excluded.list_failed_at`,
+		id, at)
+	if err != nil {
+		return fmt.Errorf("recording failed tool listing for external connection %d: %w", id, err)
 	}
 	return nil
 }

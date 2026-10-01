@@ -1754,7 +1754,8 @@ CREATE TABLE IF NOT EXISTS external_connection_tools (
     connection_id INTEGER PRIMARY KEY REFERENCES external_connections(id) ON DELETE CASCADE,
     tools_json    TEXT NOT NULL DEFAULT '',
     listed_at     TEXT NOT NULL DEFAULT '',
-    allow_json    TEXT
+    allow_json    TEXT,
+    list_failed_at TEXT NOT NULL DEFAULT ''
 );
 
 -- Reminders (migration 00065): the owner's ":later:" reaction parks a message

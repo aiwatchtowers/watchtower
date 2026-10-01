@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"path/filepath"
 	"time"
@@ -187,27 +188,64 @@ func loadExternalMCPServers(cfg *config.Config, dbPath string) []ai.ExternalMCPS
 
 	var servers []ai.ExternalMCPServer
 	for _, c := range conns {
-		server, ok := connectionServer(cfg, database, c)
-		if !ok {
-			continue
+		if server, ok := mountConnection(cfg, database, c); ok {
+			servers = append(servers, server)
 		}
-		if !c.ToolsListed && c.AllowTools == nil {
-			// Never listed (added before QC-02's allowlist, or the listing at
-			// enable time failed): list once now and cache it. A failure
-			// mounts nothing from this server — fail closed.
-			if err := refreshConnectionTools(database, &c, server); err != nil {
-				log.Printf("external connection %d (%s): listing tools failed, none allowed: %v", c.ID, c.Name, err)
-				continue
-			}
-		}
-		server.AllowTools, server.DenyTools = externalmcp.ResolveTools(c)
-		if len(server.AllowTools) == 0 {
-			log.Printf("external connection %d (%s): no tool allowed (none known read-only; `watchtower connections tools %d` to review), not mounted", c.ID, c.Name, c.ID)
-			continue
-		}
-		servers = append(servers, server)
 	}
 	return servers
+}
+
+// toolsListRetryAfter is how long a chat launch waits before listing a
+// never-listed connection's tools again after a failure, so a dead server
+// does not cost every launch a listing timeout.
+const toolsListRetryAfter = time.Hour
+
+// mountConnection resolves c's credentials and QC-02 tool policy for one
+// chat launch. false means the connection is not mounted: the reason is
+// logged and, unless it is a credential problem applyOAuthCredentials already
+// recorded, written to the row ("error") so Settings shows it.
+func mountConnection(cfg *config.Config, database *db.DB, c db.ExternalConnection) (ai.ExternalMCPServer, bool) {
+	server, ok := connectionServer(cfg, database, c)
+	if !ok {
+		return server, false
+	}
+	if !c.ToolsListed && c.AllowTools == nil {
+		// Never listed (added before QC-02's allowlist, or the listing at
+		// enable time failed): list once now and cache it. No list mounts
+		// nothing from this server — fail closed.
+		if recentlyFailed(c.ToolsListFailedAt) {
+			log.Printf("external connection %d (%s): tools not listed (last attempt failed at %s), not mounted", c.ID, c.Name, c.ToolsListFailedAt)
+			return server, false
+		}
+		if err := refreshConnectionTools(database, &c, server, launchToolsListTimeout); err != nil {
+			return server, connectionUnmounted(database, c, fmt.Sprintf(
+				"listing its tools failed (%v); none is available to the chat — `watchtower connections tools %d --refresh`", err, c.ID))
+		}
+	}
+	server.AllowTools, server.DenyTools = externalmcp.ResolveTools(c)
+	if len(server.AllowTools) == 0 {
+		return server, connectionUnmounted(database, c, fmt.Sprintf(
+			"none of its tools is known read-only, so none is available to the chat — `watchtower connections tools %d` to review", c.ID))
+	}
+	markConnectionOK(database, c)
+	return server, true
+}
+
+// recentlyFailed reports whether failedAt (RFC 3339, ” = never) lies within
+// toolsListRetryAfter.
+func recentlyFailed(failedAt string) bool {
+	at, err := time.Parse(time.RFC3339, failedAt)
+	return err == nil && time.Since(at) < toolsListRetryAfter
+}
+
+// connectionUnmounted logs why c is not mounted and records it on the row as
+// status="error"; it always returns false (the mountConnection result).
+func connectionUnmounted(database *db.DB, c db.ExternalConnection, reason string) bool {
+	log.Printf("external connection %d (%s): %s", c.ID, c.Name, reason)
+	if err := database.SetExternalConnectionStatus(c.ID, "error", reason); err != nil {
+		log.Printf("external connection %d (%s): recording error status: %v", c.ID, c.Name, err)
+	}
+	return false
 }
 
 // connectionServer builds c's ai.ExternalMCPServer with its credentials: the
@@ -239,19 +277,28 @@ func connectionServer(cfg *config.Config, database *db.DB, c db.ExternalConnecti
 	return server, true
 }
 
-// toolsListTimeout bounds one tools/list exchange (connect, list, stop).
-var toolsListTimeout = 30 * time.Second
+// toolsListTimeout bounds one tools/list exchange (connect, list, stop) the
+// owner asked for (enable, sign-in, `connections tools --refresh`);
+// launchToolsListTimeout is the tighter bound a chat launch waits.
+const (
+	toolsListTimeout       = 30 * time.Second
+	launchToolsListTimeout = 10 * time.Second
+)
 
 // refreshConnectionTools lists server's tools, caches them on c's row and
-// updates c in place (QC-02).
-func refreshConnectionTools(database *db.DB, c *db.ExternalConnection, server ai.ExternalMCPServer) error {
-	ctx, cancel := context.WithTimeout(context.Background(), toolsListTimeout)
+// updates c in place (QC-02). A failure is recorded on the row
+// (list_failed_at) for the launch-time back-off.
+func refreshConnectionTools(database *db.DB, c *db.ExternalConnection, server ai.ExternalMCPServer, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	tools, err := listServerTools(ctx, externalmcp.ServerSpec{
 		Kind: server.Kind, Command: server.Command, Args: server.Args, URL: server.URL,
 		Env: server.Env, Headers: server.Headers,
 	})
 	if err != nil {
+		if ferr := database.SetExternalConnectionListFailed(c.ID, time.Now().UTC().Format(time.RFC3339)); ferr != nil {
+			log.Printf("external connection %d (%s): recording failed listing: %v", c.ID, c.Name, ferr)
+		}
 		return err
 	}
 	listedAt := time.Now().UTC().Format(time.RFC3339)
@@ -344,7 +391,6 @@ func applyOAuthCredentials(
 
 	server.Headers = headers
 	server.Env = secret.Env
-	markConnectionOK(database, c)
 	return true
 }
 
@@ -359,9 +405,10 @@ func refreshFailureStatus(err error) string {
 	return "error"
 }
 
-// markConnectionOK flips a usable connection's row back to ok. It re-reads
-// the status rather than trusting c, the pre-lock snapshot: a parallel launch
-// may have recorded an error while this one waited for the lock.
+// markConnectionOK flips a mounted connection's row back to ok. It re-reads
+// the status rather than trusting c, the launch's opening snapshot: a
+// parallel launch may have recorded an error while this one waited for the
+// token lock.
 func markConnectionOK(database *db.DB, c db.ExternalConnection) {
 	cur, err := database.GetExternalConnection(c.ID)
 	if err != nil {

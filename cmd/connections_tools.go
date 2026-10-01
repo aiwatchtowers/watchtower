@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -19,8 +20,9 @@ var connectionsToolsCmd = &cobra.Command{
 	Long: "Lists the connection's tools (from its cached tools/list) and whether the\n" +
 		"assistant chat may call each one. By default only tools known to be read-only\n" +
 		"are allowed: the server annotates them readOnlyHint, or — when it gives no\n" +
-		"annotations — the name starts with get/list/search/read/fetch/query/find/\n" +
-		"describe/lookup. Every other tool is hidden from the chat (QC-02).\n" +
+		"annotations — the name starts with get/list/search/read/find/describe/\n" +
+		"lookup with no later write word (create, update, delete, send, or…).\n" +
+		"Every other tool is hidden from the chat (QC-02).\n" +
 		"--refresh re-lists the tools from the server; --allow replaces the default\n" +
 		"with an explicit list of tool names; --default goes back to the default.",
 	Args: cobra.ExactArgs(1),
@@ -86,10 +88,14 @@ func runConnectionsTools(cmd *cobra.Command, args []string) error {
 	}
 	switch {
 	case connectionsToolsFlagAllow != nil:
-		if err := database.SetExternalConnectionAllowTools(id, connectionsToolsFlagAllow); err != nil {
+		names, err := parseAllowList(connectionsToolsFlagAllow)
+		if err != nil {
 			return err
 		}
-		conn.AllowTools = connectionsToolsFlagAllow
+		if err := database.SetExternalConnectionAllowTools(id, names); err != nil {
+			return err
+		}
+		conn.AllowTools = names
 		warnUnknownTools(cmd.ErrOrStderr(), conn)
 	case connectionsToolsFlagDefault:
 		if err := database.SetExternalConnectionAllowTools(id, nil); err != nil {
@@ -107,31 +113,64 @@ func listConnectionTools(cfg *config.Config, database *db.DB, conn *db.ExternalC
 	if !ok {
 		return fmt.Errorf("connection %d has no usable credentials (see the log; `connections oauth %d` to sign in again)", conn.ID, conn.ID)
 	}
-	return refreshConnectionTools(database, conn, server)
+	return refreshConnectionTools(database, conn, server, toolsListTimeout)
 }
 
 // refreshToolsAfterEnable lists a just-enabled (or just-signed-in)
-// connection's tools and prints how many the chat may call. Best effort: on
-// failure the connection stays enabled with no tool allowed (fail closed) and
-// the next chat launch tries the listing again.
+// connection's tools and reports how many the chat may call, on the row too
+// (status "error" when none is) so Settings shows it — the Desktop ignores
+// this command's output on success. Best effort: on a failed listing the
+// connection stays enabled with no tool allowed (fail closed).
 func refreshToolsAfterEnable(cmd *cobra.Command, cfg *config.Config, database *db.DB, id int64) {
 	conn, err := database.GetExternalConnection(id)
 	if err == nil {
 		err = listConnectionTools(cfg, database, &conn)
 	}
-	if err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(),
-			"warning: could not list connection %d's tools (%v); none is available to the chat until a listing succeeds (`watchtower connections tools %d --refresh`)\n",
-			id, err, id)
+	if err != nil && conn.AllowTools == nil {
+		reason := fmt.Sprintf("listing its tools failed (%v); none is available to the chat — `watchtower connections tools %d --refresh`", err, id)
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: connection %d: %s\n", id, reason)
+		connectionUnmounted(database, conn, reason)
 		return
 	}
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: connection %d: listing its tools failed (%v); its explicit tool list still applies\n", id, err)
+	}
 	allowed, _ := externalmcp.ResolveTools(conn)
-	fmt.Fprintf(cmd.OutOrStdout(), "%d of %d tools available to the chat (read-only only; `watchtower connections tools %d` to review).\n",
-		len(allowed), len(conn.Tools), id)
+	if len(allowed) == 0 {
+		reason := fmt.Sprintf("none of its tools is known read-only, so none is available to the chat — `watchtower connections tools %d` to review", id)
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: connection %d: %s\n", id, reason)
+		connectionUnmounted(database, conn, reason)
+		return
+	}
+	markConnectionOK(database, conn)
+	fmt.Fprintf(cmd.OutOrStdout(), "%s. `watchtower connections tools %d` to review.\n", toolsSummary(conn, allowed), id)
+}
+
+// toolsSummary is the one-line "N tools available" sentence the CLI prints.
+func toolsSummary(conn db.ExternalConnection, allowed []string) string {
+	if conn.AllowTools != nil {
+		return fmt.Sprintf("%d tools available to the chat (explicit list)", len(allowed))
+	}
+	return fmt.Sprintf("%d of %d tools available to the chat (read-only tools only)", len(allowed), len(conn.Tools))
+}
+
+// parseAllowList trims the --allow names and rejects an empty one: an empty
+// name would render as the server-wide-looking token mcp__<name>__.
+func parseAllowList(names []string) ([]string, error) {
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		n = strings.TrimSpace(n)
+		if n == "" {
+			return nil, fmt.Errorf("--allow: empty tool name")
+		}
+		out = append(out, n)
+	}
+	return out, nil
 }
 
 func warnUnknownTools(w io.Writer, conn db.ExternalConnection) {
 	if !conn.ToolsListed {
+		fmt.Fprintf(w, "warning: connection %d's tools were never listed, so these names are unchecked\n", conn.ID)
 		return
 	}
 	for _, name := range conn.AllowTools {
@@ -155,16 +194,16 @@ func printConnectionTools(w io.Writer, conn db.ExternalConnection, asJSON bool) 
 		return enc.Encode(wire)
 	}
 	if !conn.ToolsListed {
+		if conn.AllowTools != nil {
+			fmt.Fprintf(w, "Connection #%d %s: tools never listed; explicit list allows: %s\n",
+				conn.ID, conn.Name, strings.Join(allowed, ", "))
+			return nil
+		}
 		fmt.Fprintf(w, "Connection #%d %s: tools never listed, so none is available to the chat.\n", conn.ID, conn.Name)
 		fmt.Fprintf(w, "Run 'watchtower connections tools %d --refresh' to list them.\n", conn.ID)
 		return nil
 	}
-	policy := "read-only tools only"
-	if conn.AllowTools != nil {
-		policy = "explicit list"
-	}
-	fmt.Fprintf(w, "Connection #%d %s: %d of %d tools allowed (%s), listed %s\n",
-		conn.ID, conn.Name, len(allowed), len(conn.Tools), policy, conn.ToolsListedAt)
+	fmt.Fprintf(w, "Connection #%d %s: %s, listed %s\n", conn.ID, conn.Name, toolsSummary(conn, allowed), conn.ToolsListedAt)
 	for _, t := range wire.Tools {
 		mark, kind := "deny ", "not known read-only"
 		if t.Allowed {
