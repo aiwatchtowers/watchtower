@@ -533,4 +533,5 @@ private final class JoinFakeNotifier: MeetingTranscriptNotifying, @unchecked Sen
     func sendTranscriptFailedNotification(reason: String) {}
     func sendVoicesToLabelNotification(title: String, count: Int, transcriptID: Int64) {}
     func sendCallAudioSilentNotification() {}
+    func withdrawCallAudioSilentNotification() {}
 }

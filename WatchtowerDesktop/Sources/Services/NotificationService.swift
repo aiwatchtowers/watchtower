@@ -216,8 +216,14 @@ final class NotificationService: Sendable {
             + "If people are still talking, \(callAudioOutputHint)"
         content.sound = .default
         UNUserNotificationCenter.current().add(
-            UNNotificationRequest(identifier: "call-audio-silent", content: content, trigger: nil))
+            UNNotificationRequest(identifier: Self.callAudioSilentID, content: content, trigger: nil))
     }
+
+    func withdrawCallAudioSilentNotification() {
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [Self.callAudioSilentID])
+    }
+
+    private static let callAudioSilentID = "call-audio-silent"
 
     /// A saved recording queued voices for the owner to label. The
     /// identifier is per transcript, so a re-save replaces rather than
