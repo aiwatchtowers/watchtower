@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -147,4 +148,54 @@ func TestSyncSprints_MidPaginationFailureKeepsEarlierPages(t *testing.T) {
 	require.NoError(t, quietSyncer(t, database, srv.URL).SyncSprints(context.Background()))
 	assert.Equal(t, "closed", sprintState(t, database, 1), "page 1 is stored despite the page-2 failure")
 	assert.Equal(t, "closed", sprintState(t, database, 2))
+}
+
+// TestSyncSprints_ClosedListingOnlyWhenNeeded: the closed listing pages
+// through a board's whole history, so it is read only when a stored active
+// sprint left the active listing, or the closed rows are stale or missing.
+func TestSyncSprints_ClosedListingOnlyWhenNeeded(t *testing.T) {
+	fresh := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)
+	stale := time.Now().UTC().Add(-closedSprintRefresh - time.Hour).Format(time.RFC3339)
+	cases := []struct {
+		name         string
+		storedActive int // 0 = none
+		closedSynced string
+		wantClosed   bool
+	}{
+		{"active sprint still running, closed rows fresh", 6, fresh, false},
+		{"stored active sprint left the active listing", 5, fresh, true},
+		{"closed rows stale", 6, stale, true},
+		{"no closed rows yet", 6, "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			database := revokedSyncerDB(t)
+			seedSprintBoard(t, database)
+			if tc.storedActive != 0 {
+				require.NoError(t, database.UpsertJiraSprint(db.JiraSprint{
+					AccountID: 1, ID: tc.storedActive, BoardID: 1, Name: "S", State: "active", SyncedAt: fresh,
+				}))
+			}
+			if tc.closedSynced != "" {
+				require.NoError(t, database.UpsertJiraSprint(db.JiraSprint{
+					AccountID: 1, ID: 1, BoardID: 1, Name: "Sprint 1", State: "closed", SyncedAt: tc.closedSynced,
+				}))
+			}
+			calls := map[string]*atomic.Int32{"active": {}, "closed": {}}
+			srv := sprintPageServer(t, map[string][]Sprint{
+				"active": {{ID: 6, Name: "Sprint 6", State: "active"}},
+				"closed": {{ID: 1, Name: "Sprint 1", State: "closed"}, {ID: 5, Name: "Sprint 5", State: "closed"}},
+			}, 50, calls)
+
+			require.NoError(t, quietSyncer(t, database, srv.URL).SyncSprints(context.Background()))
+
+			assert.Equal(t, int32(1), calls["active"].Load())
+			if tc.wantClosed {
+				assert.Equal(t, int32(1), calls["closed"].Load())
+				assert.Equal(t, "closed", sprintState(t, database, 5))
+			} else {
+				assert.Zero(t, calls["closed"].Load(), "the closed history is not re-read")
+			}
+		})
+	}
 }

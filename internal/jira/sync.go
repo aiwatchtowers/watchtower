@@ -827,10 +827,17 @@ func (s *Syncer) ensureUserMap(u *User) {
 // guards against a server that never reports isLast.
 const maxSprintPages = 40
 
+// closedSprintRefresh is how stale a board's closed-sprint rows may get
+// before the sprint sync re-reads the closed listing without another reason.
+const closedSprintRefresh = 24 * time.Hour
+
 // SyncSprints syncs active and closed sprints for all selected boards.
-// Every page is read: the Agile endpoint returns closed sprints oldest first,
-// so on a long-lived board the sprint that just ended is on the last page,
-// and stopping at page one would leave its row 'active' forever.
+// The active listing is read every pass. The closed listing is read only
+// when needClosedSprints says so: the Agile endpoint returns closed sprints
+// oldest first with no reverse order, so every read pages through the
+// board's whole history. When it is read, every page is: on a long-lived
+// board the sprint that just ended is on the last page, and stopping at page
+// one would leave its row 'active' forever.
 // A per-board fetch failure is logged and skipped (sprints already fetched
 // for that board and state are still stored), except a revoked grant: every
 // remaining board would fail the same way, so it is returned for the caller
@@ -842,19 +849,63 @@ func (s *Syncer) SyncSprints(ctx context.Context) error {
 	}
 
 	for _, board := range boards {
-		for _, state := range []string{"active", "closed"} {
-			sprints, err := s.fetchBoardSprints(ctx, board.ID, state)
-			s.storeSprints(board.ID, sprints)
-			if err != nil {
-				if errors.Is(err, ErrAuthRevoked) {
-					return err
-				}
-				s.logger.Printf("failed to fetch %s sprints for board %d: %v", state, board.ID, err)
-			}
+		active, err := s.syncBoardSprints(ctx, board.ID, "active")
+		if err != nil {
+			return err
+		}
+		if !s.needClosedSprints(board.ID, active) {
+			continue
+		}
+		if _, err := s.syncBoardSprints(ctx, board.ID, "closed"); err != nil {
+			return err
 		}
 	}
 
 	return nil
+}
+
+// syncBoardSprints fetches and stores one board's sprints in state and
+// returns what it read. Only a revoked grant is returned; any other failure
+// is logged, keeping the sprints read before it.
+func (s *Syncer) syncBoardSprints(ctx context.Context, boardID int, state string) ([]Sprint, error) {
+	sprints, err := s.fetchBoardSprints(ctx, boardID, state)
+	s.storeSprints(boardID, sprints)
+	if err != nil {
+		if errors.Is(err, ErrAuthRevoked) {
+			return nil, err
+		}
+		s.logger.Printf("failed to fetch %s sprints for board %d: %v", state, boardID, err)
+	}
+	return sprints, nil
+}
+
+// needClosedSprints reports whether this pass must read the board's closed
+// sprints: a sprint stored as active is no longer in the active listing (it
+// just closed), or the closed rows were last read over closedSprintRefresh
+// ago or never — which also covers a sprint that started and closed while
+// the daemon was off. A failed lookup reads them, the safe side.
+func (s *Syncer) needClosedSprints(boardID int, active []Sprint) bool {
+	stored, err := s.db.GetJiraActiveSprints(s.accountID, boardID)
+	if err != nil {
+		s.logger.Printf("board %d: reading stored active sprints: %v", boardID, err)
+		return true
+	}
+	listed := make(map[int]bool, len(active))
+	for _, sp := range active {
+		listed[sp.ID] = true
+	}
+	for _, sp := range stored {
+		if !listed[sp.ID] {
+			return true
+		}
+	}
+	latest, err := s.db.LatestJiraClosedSprintSync(s.accountID, boardID)
+	if err != nil {
+		s.logger.Printf("board %d: %v", boardID, err)
+		return true
+	}
+	last, err := time.Parse(time.RFC3339, latest)
+	return err != nil || time.Since(last) > closedSprintRefresh
 }
 
 // fetchBoardSprints pages through /rest/agile/1.0/board/{id}/sprint for one

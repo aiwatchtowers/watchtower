@@ -346,6 +346,19 @@ func (db *DB) UpsertJiraSprint(sprint JiraSprint) error {
 	return nil
 }
 
+// LatestJiraClosedSprintSync returns the newest synced_at among the board's
+// closed sprints ("" when none is stored): when the sprint sync last read the
+// closed listing.
+func (db *DB) LatestJiraClosedSprintSync(accountID int64, boardID int) (string, error) {
+	var latest string
+	err := db.QueryRow(`SELECT COALESCE(MAX(synced_at), '') FROM jira_sprints
+		WHERE account_id = ? AND board_id = ? AND state = 'closed'`, accountID, boardID).Scan(&latest)
+	if err != nil {
+		return "", fmt.Errorf("reading closed sprint sync time for board %d: %w", boardID, err)
+	}
+	return latest, nil
+}
+
 // GetJiraActiveSprints returns active sprints for a given board.
 func (db *DB) GetJiraActiveSprints(accountID int64, boardID int) ([]JiraSprint, error) {
 	rows, err := db.Query(`SELECT account_id, id, board_id, name, state, goal, start_date, end_date, complete_date, synced_at
