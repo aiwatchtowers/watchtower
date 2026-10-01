@@ -334,9 +334,12 @@ func (b *claudeBackend) read(p *claudeProc, r *os.File) {
 	// Tool results arrive as one line each; allow multi-megabyte lines.
 	sc.Buffer(make([]byte, 0, 64<<10), 64<<20)
 	for sc.Scan() {
-		evs, err := b.tr.Feed(sc.Bytes())
+		evs, sid, err := b.tr.feed(sc.Bytes())
 		if err != nil {
 			continue // non-JSON noise on stdout is not a protocol event
+		}
+		if sid != "" {
+			b.noteSessionID(p, sid)
 		}
 		for _, e := range evs {
 			if isTerminal(e) {
@@ -345,17 +348,26 @@ func (b *claudeBackend) read(p *claudeProc, r *os.File) {
 			if e.Type == EventError && e.Code == CodeSessionLost {
 				p.lostMsg.Store(e.Message)
 			}
-			if e.Type == EventTurnDone && e.SessionID != "" {
-				b.mu.Lock()
-				b.resume = e.SessionID
-				b.mu.Unlock()
-			}
 			select {
 			case p.events <- e:
 			case <-p.stop:
 				return
 			}
 		}
+	}
+}
+
+// noteSessionID makes the session id the live child reports (its init line
+// already carries it) the one the next spawn resumes. Without it a fresh
+// child killed mid-turn (a cancel past InterruptGrace) left resume empty, and
+// the next turn — sent without replay, as the app counts the stopped turn as
+// seen — opened a blank session with no history. A replaced child's late
+// lines are ignored: restartFresh has already cleared resume for the new one.
+func (b *claudeBackend) noteSessionID(p *claudeProc, sid string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.proc == p {
+		b.resume = sid
 	}
 }
 

@@ -7,6 +7,8 @@
 #   stubborn (ignores SIGTERM and stdin EOF) · grandchild (leaves a child behind)
 #   internal_tool (runs Claude's ToolSearch before a watchtower tool)
 #   noread (never reads stdin, so a large turn blocks the writer)
+# With $FAKE_INIT_SID set, every user message is first answered by a
+# system/init line carrying that session id (as the real CLI does).
 # Appends argv (one arg per line, runs separated by "--") to $FAKE_ARGV and
 # every stdin line to $FAKE_STDIN (and its physical cwd to $FAKE_CWD). "Once" modes key on the $FAKE_MARK file.
 { for a in "$@"; do printf '%s\n' "$a"; done; echo "--"; } >> "$FAKE_ARGV"
@@ -73,6 +75,7 @@ while IFS= read -r line; do
       ;;
     *'"type":"user"'*)
       n=$((n+1))
+      [ -n "$FAKE_INIT_SID" ] && printf '{"type":"system","subtype":"init","session_id":"%s"}\n' "$FAKE_INIT_SID"
       case "$FAKE_MODE" in
         crash_once)
           if first_time; then exit 3; fi ;;
