@@ -19,7 +19,8 @@ var ErrNoRefreshToken = errors.New("mcpoauth: access token expiring with no refr
 // EnsureFresh refreshes g in place when it is expiring (or already expired) and
 // reports whether it changed. A grant without a refresh token that is expiring
 // is ErrNoRefreshToken (sign in again). Returns ErrInvalidGrant when the
-// server revoked it; any other error (network, 5xx) is transient.
+// server revoked it and ErrClientRejected when it no longer accepts the
+// client; any other error (network, 5xx) is transient.
 //
 // A zero ExpiresAt (the server never told us a lifetime) is treated as
 // "must verify, not never expires": with a refresh token present, EnsureFresh

@@ -28,8 +28,9 @@ var ErrInvalidGrant = errors.New("mcpoauth: invalid_grant (sign in again)")
 
 // ErrClientRejected marks a token endpoint answering invalid_client or
 // unauthorized_client: the client registration behind the grant is gone or
-// no longer allowed, and only a new sign-in (which re-registers) fixes it.
-var ErrClientRejected = errors.New("mcpoauth: client rejected by the token endpoint (sign in again)")
+// no longer allowed. Only a new sign-in fixes it — one that re-registers, or,
+// for a bring-your-own client id, one with corrected client credentials.
+var ErrClientRejected = errors.New("mcpoauth: client rejected by the token endpoint (sign in again, checking the client id/secret)")
 
 // registerRequest is the RFC 7591 dynamic client registration request body
 // Register sends for a public client (no client secret, PKCE-only auth).

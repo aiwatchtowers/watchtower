@@ -241,9 +241,10 @@ func TestLoadExternalMCPServers_OAuth_FreshGrantRevokedRowRecoversToOK(t *testin
 // TestLoadExternalMCPServers_OAuth_SaveFailureSkipsConnection pins the
 // persist-before-use invariant's failure branch: if the rotated token can't
 // be written back to disk, the connection must be skipped rather than
-// handed a token that would be lost on the next read, the row's prior
-// status must be left alone (no silent promotion to "ok"), and nothing in
-// the log ever names a token value.
+// handed a token that would be lost on the next read, the row must not be
+// silently promoted to "ok" (since 2026-10-01 it is marked "revoked" — see
+// TestLoadExternalMCPServers_OAuth_SaveFailureFromOKRecordsRevoked), and
+// nothing in the log ever names a token value.
 func TestLoadExternalMCPServers_OAuth_SaveFailureSkipsConnection(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the directory-collision failure simulation below is unreliable on windows")
@@ -480,4 +481,31 @@ func TestLoadExternalMCPServers_OAuth_LockTimeoutMarksError(t *testing.T) {
 	conn, err := database.GetExternalConnection(id)
 	require.NoError(t, err)
 	require.Equal(t, "error", conn.Status)
+}
+
+// TestLoadExternalMCPServers_OAuth_SaveFailureFromOKRecordsRevoked: a row
+// that was ok and whose rotated token cannot be persisted is marked revoked
+// (the server has likely rotated the stored refresh token away), not left ok.
+func TestLoadExternalMCPServers_OAuth_SaveFailureFromOKRecordsRevoked(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+
+	server, _ := newFakeTokenServer(t, false)
+	now := time.Now()
+	id, store := setupOAuthConnection(t, database, cfg, server.URL, now.Add(30*time.Second))
+	// Same failure simulation as the SaveFailureSkipsConnection guard.
+	require.NoError(t, os.Mkdir(store.Path()+".tmp", 0o700))
+	t.Cleanup(func() { _ = os.RemoveAll(store.Path() + ".tmp") })
+
+	originalNow := externalMCPNow
+	externalMCPNow = func() time.Time { return now }
+	t.Cleanup(func() { externalMCPNow = originalNow })
+
+	require.Empty(t, loadExternalMCPServers(cfg, cfg.DBPath()))
+	conn, err := database.GetExternalConnection(id)
+	require.NoError(t, err)
+	require.Equal(t, "revoked", conn.Status)
+	require.Contains(t, conn.Error, "temp secret file")
 }

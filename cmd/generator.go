@@ -165,7 +165,8 @@ func newQueryClient(cfg *config.Config, dbPath string) (ai.Provider, func(), err
 // one connection, so one owner's corrupted secret file can't take down every
 // other connection's tools. An OAuth connection degrades the same way on a
 // refresh failure: the row is marked status="revoked" when only a new
-// sign-in can fix it (ErrInvalidGrant, ErrNoRefreshToken) and "error" for a
+// sign-in can fix it (ErrInvalidGrant, ErrNoRefreshToken, ErrClientRejected,
+// a rotated token that could not be saved) and "error" for a
 // transient failure (network, 5xx, lock wait), and just that connection is
 // skipped — a failed grant can never take down the rest of the chat's
 // external tools, and the owner sees the row surfaced rather than a silently
