@@ -9,12 +9,17 @@ import (
 // explicit language configured. Mirrors config.DefaultDigestLang —
 // duplicated here to keep the prompts package free of a config import
 // (prompts is imported by many packages that also depend on config).
-const DefaultLanguage = "Russian"
+const DefaultLanguage = "English"
 
 // directiveMarker is the stable phrase that identifies a Directive-produced
 // instruction inside a system prompt. Used by HasDirective and tests to
 // enforce that every AI prompt carries a language directive.
 const directiveMarker = "Respond ONLY in "
+
+// chatDirectiveMarker identifies a ChatDirective-produced instruction. It is
+// distinct from directiveMarker so the strict background-pipeline guards
+// never accept the chat wording.
+const chatDirectiveMarker = "Reply in the language of the owner's latest message"
 
 // Directive returns a non-empty response-language instruction for an AI
 // system prompt. Empty or whitespace-only input falls back to
@@ -39,4 +44,25 @@ func Directive(lang string) string {
 // a system prompt does not silently omit the language instruction.
 func HasDirective(s string) bool {
 	return strings.Contains(s, directiveMarker)
+}
+
+// ChatDirective returns the response-language instruction for an interactive
+// chat: reply in the language the owner writes in, falling back to lang
+// (DefaultLanguage when empty) when that is unclear. Background pipelines,
+// whose input is other people's messages, use the strict Directive instead.
+func ChatDirective(lang string) string {
+	lang = strings.TrimSpace(lang)
+	if lang == "" {
+		lang = DefaultLanguage
+	}
+	return fmt.Sprintf(
+		"IMPORTANT: %s. If it is unclear (a message that is only a link, code or a name), reply in %s.",
+		chatDirectiveMarker, lang,
+	)
+}
+
+// HasChatDirective reports whether s contains a ChatDirective-produced
+// instruction.
+func HasChatDirective(s string) bool {
+	return strings.Contains(s, chatDirectiveMarker)
 }

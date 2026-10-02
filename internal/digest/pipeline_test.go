@@ -1411,13 +1411,13 @@ func TestLanguageInstruction(t *testing.T) {
 	gen := &mockGenerator{}
 
 	// languageInstruction now delegates to prompts.Directive — empty falls back
-	// to the configured default language (Russian).
+	// to the configured default language (English).
 	tests := []struct {
 		name     string
 		lang     string
 		expected string
 	}{
-		{"empty language", "", "Respond ONLY in Russian"},
+		{"empty language", "", "Respond ONLY in English"},
 		{"english", "English", "Respond ONLY in English"},
 		{"russian", "Russian", "Respond ONLY in Russian"},
 	}

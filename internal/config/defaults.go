@@ -28,7 +28,7 @@ const (
 	DefaultSyncOnWake        = true
 	DefaultDigestEnabled     = true
 	DefaultDigestMinMsgs     = 10
-	DefaultDigestLang        = "Russian"
+	DefaultDigestLang        = "English"
 	DefaultDigestWorkers     = 5 // Deprecated: use DefaultAIWorkers. Kept for backward compat.
 	DefaultBriefingEnabled   = true
 	DefaultBriefingHour      = 8

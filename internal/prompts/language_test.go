@@ -57,3 +57,36 @@ func TestHasDirectiveOnUnrelatedString(t *testing.T) {
 		t.Fatal("HasDirective should be false for the older 'Respond in X' wording")
 	}
 }
+
+func TestDefaultLanguageIsEnglish(t *testing.T) {
+	if DefaultLanguage != "English" {
+		t.Fatalf("DefaultLanguage = %q; want English", DefaultLanguage)
+	}
+}
+
+func TestChatDirectiveFollowsTheOwner(t *testing.T) {
+	got := ChatDirective("Ukrainian")
+	if !HasChatDirective(got) {
+		t.Fatalf("HasChatDirective(%q) = false; want true", got)
+	}
+	if !strings.Contains(got, "Ukrainian") {
+		t.Fatalf("ChatDirective should name the fallback language; got %q", got)
+	}
+	// The chat directive is not the strict one: background-pipeline guards
+	// must not accept it, and the strict one is not a chat directive.
+	if HasDirective(got) {
+		t.Fatalf("HasDirective(%q) = true; the chat directive must not pass the strict guard", got)
+	}
+	if HasChatDirective(Directive("Ukrainian")) {
+		t.Fatal("HasChatDirective should be false for the strict directive")
+	}
+}
+
+func TestChatDirectiveFallsBackToDefault(t *testing.T) {
+	for _, lang := range []string{"", "   "} {
+		got := ChatDirective(lang)
+		if !strings.Contains(got, DefaultLanguage) || !HasChatDirective(got) {
+			t.Fatalf("ChatDirective(%q) = %q; want the %q fallback", lang, got, DefaultLanguage)
+		}
+	}
+}
