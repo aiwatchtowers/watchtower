@@ -99,13 +99,15 @@ func syncedProjectAccount(d *db.DB, accountID int64, projectKey string) (db.Jira
 	return account, nil
 }
 
+// projectSynced reports whether list_jira_projects lists projectKey for the
+// account, so a listed project is always one create_jira_issue accepts.
 func projectSynced(d *db.DB, accountID int64, projectKey string) (bool, error) {
-	states, err := d.GetJiraSyncStates()
+	keys, err := syncedJiraProjects(d)
 	if err != nil {
 		return false, err
 	}
-	for _, s := range states {
-		if s.AccountID == accountID && strings.EqualFold(s.ProjectKey, projectKey) {
+	for k := range keys {
+		if k.accountID == accountID && strings.EqualFold(k.projectKey, projectKey) {
 			return true, nil
 		}
 	}
