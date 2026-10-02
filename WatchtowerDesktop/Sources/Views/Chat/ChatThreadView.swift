@@ -66,7 +66,9 @@ struct ChatThreadView: View {
     /// turn runs.
     private func actions(for item: ChatThreadItem) -> ChatRowActions {
         var actions = baseActions
-        if item.message.isAssistant, item.id == chatVM.thread.last?.id, !chatVM.isStreaming {
+        let rows = chatVM.thread.map(\.message)
+        if let index = rows.firstIndex(where: { $0.id == item.id }),
+           ChatQuestionThread.isAnswerable(at: index, in: rows, busy: chatVM.isStreaming) {
             actions.answerQuestion = { _ = chatVM.send(text: $0) }
         }
         return actions
@@ -74,11 +76,10 @@ struct ChatThreadView: View {
 
     /// The owner's words right after `item` — a question card's answer.
     private func ownerReply(after item: ChatThreadItem) -> String? {
-        guard item.message.isAssistant, let index = chatVM.thread.firstIndex(where: { $0.id == item.id }) else {
-            return nil
-        }
-        let next = chatVM.thread[(index + 1)...].first { $0.message.isUser }
-        return next.map { ChatTurnComposer.displayParts($0.message.text).body }
+        let rows = chatVM.thread.map(\.message)
+        guard let index = rows.firstIndex(where: { $0.id == item.id }),
+              let text = ChatQuestionThread.ownerReply(after: index, in: rows) else { return nil }
+        return ChatTurnComposer.displayParts(text).body
     }
 
     private var baseActions: ChatRowActions {

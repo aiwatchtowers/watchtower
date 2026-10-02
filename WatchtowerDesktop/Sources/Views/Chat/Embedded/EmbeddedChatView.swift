@@ -109,16 +109,17 @@ struct EmbeddedChatRows<Accessory: View>: View {
     /// A question card is answered from the latest reply only, while
     /// nothing runs; the answer is an ordinary owner turn.
     private func answerQuestion(for item: ChatThreadItem) -> ((String) -> Void)? {
-        guard item.message.isAssistant, !engine.isBusy, item.id == engine.messages.last?.id else { return nil }
+        let rows = engine.messages.map(\.message)
+        guard let index = rows.firstIndex(where: { $0.id == item.id }),
+              ChatQuestionThread.isAnswerable(at: index, in: rows, busy: engine.isBusy) else { return nil }
         return { _ = engine.send($0) }
     }
 
     /// The owner's words right after `item` — a question card's answer.
     private func ownerReply(after item: ChatThreadItem) -> String? {
-        guard item.message.isAssistant, let index = engine.messages.firstIndex(where: { $0.id == item.id }) else {
-            return nil
-        }
-        return engine.messages[(index + 1)...].first { $0.message.isUser }?.message.text
+        let rows = engine.messages.map(\.message)
+        guard let index = rows.firstIndex(where: { $0.id == item.id }) else { return nil }
+        return ChatQuestionThread.ownerReply(after: index, in: rows)
     }
 
     private static func copy(_ text: String) {

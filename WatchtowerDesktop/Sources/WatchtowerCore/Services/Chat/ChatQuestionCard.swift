@@ -46,11 +46,15 @@ package struct ChatQuestionCard: Equatable, Sendable {
 package enum ChatQuestionParser {
     package static let fence = "```watchtower-question"
 
-    /// `final`: the reply is complete (an unclosed block then stays visible).
+    /// `final`: the reply is complete. Until then no card is shown and an
+    /// unclosed block is hidden; once final, an unclosed block stays visible.
+    /// When several blocks are valid, the last one is the card and the
+    /// earlier ones stay in the text.
     package static func parse(_ text: String, final: Bool) -> (text: String, card: ChatQuestionCard?) {
         guard text.contains(fence) else { return (text, nil) }
         var removals: [Range<String.Index>] = []
         var card: ChatQuestionCard?
+        var cardRange: Range<String.Index>?
         var cursor = text.startIndex
         while let open = text.range(of: fence, range: cursor..<text.endIndex) {
             cursor = open.upperBound
@@ -66,9 +70,12 @@ package enum ChatQuestionParser {
             cursor = close.upperBound
             if let decoded = decode(body) {
                 card = decoded
-                removals.append(open.lowerBound..<close.upperBound)
+                cardRange = open.lowerBound..<close.upperBound
             }
         }
+        if let cardRange { removals.append(cardRange) }
+        removals.sort { $0.lowerBound < $1.lowerBound }
+        if !final { card = nil }
         guard !removals.isEmpty else { return (text, card) }
         // Rebuilt from slices of the original, so every range stays valid.
         var visible = ""
@@ -141,9 +148,29 @@ package enum ChatQuestionParser {
             guard !question.isEmpty, (2...4).contains(options.count),
                   options.allSatisfy({ !$0.label.isEmpty }) else { return nil }
             let id = rawQuestion.id.flatMap { $0.isEmpty ? nil : $0 } ?? String(index + 1)
+            // Ids and labels key the card's state: duplicates make it no card.
+            guard Set(options.map(\.label)).count == options.count,
+                  !questions.contains(where: { $0.id == id }) else { return nil }
             questions.append(ChatQuestion(id: id, question: question, multi: rawQuestion.multi, options: options))
         }
         return ChatQuestionCard(questions: questions)
+    }
+}
+
+/// Which reply's card can be answered, and what answered it — over the
+/// rows of a thread (main chat or embedded), oldest first.
+package enum ChatQuestionThread {
+    /// The owner's words right after the reply at `index`, if any.
+    package static func ownerReply(after index: Int, in messages: [ChatMessageRecord]) -> String? {
+        guard messages.indices.contains(index), messages[index].isAssistant else { return nil }
+        return messages[(index + 1)...].first { $0.isUser }?.text
+    }
+
+    /// A card is answerable on the latest reply that nothing has answered
+    /// yet, while no turn runs (system notices after it do not count).
+    package static func isAnswerable(at index: Int, in messages: [ChatMessageRecord], busy: Bool) -> Bool {
+        guard !busy, messages.indices.contains(index), messages[index].isAssistant else { return false }
+        return messages.lastIndex { $0.isAssistant } == index && ownerReply(after: index, in: messages) == nil
     }
 }
 
@@ -199,8 +226,10 @@ package enum ChatQuestionAnswer {
                 other = String(value[range.upperBound...]).trimmingCharacters(in: .whitespaces)
                 choices = String(value[..<range.lowerBound])
             }
-            let picked = Set(choices.components(separatedBy: ", ").map { $0.trimmingCharacters(in: .whitespaces) })
-            let labels = question.options.map(\.label).filter(picked.contains)
+            // Matched against the known labels, not split: a label may hold ", ".
+            let padded = ", " + choices.trimmingCharacters(in: .whitespaces)
+                .trimmingCharacters(in: CharacterSet(charactersIn: ",")) + ", "
+            let labels = question.options.map(\.label).filter { padded.contains(", \($0), ") }
             result[question.id] = Entry(labels: labels, other: other)
         }
         return result

@@ -50,7 +50,50 @@ final class ChatQuestionCardTests: XCTestCase {
         let second = #"{"questions": [{"question": "Second?", "options": [{"label": "c"}, {"label": "d"}]}]}"#
         let parsed = ChatQuestionParser.parse(block(first) + "\nand\n" + block(second), final: true)
         XCTAssertEqual(try XCTUnwrap(parsed.card).questions.first?.question, "Second?")
-        XCTAssertEqual(parsed.text, "and")
+        XCTAssertEqual(parsed.text, block(first) + "\nand", "an earlier block stays as text")
+    }
+
+    func testNoCardWhileTheReplyStreams() {
+        let reply = "Ask.\n" + block(validJSON)
+        XCTAssertNil(ChatQuestionParser.parse(reply, final: false).card)
+        XCTAssertEqual(ChatQuestionParser.parse(reply, final: false).text, "Ask.")
+        XCTAssertNotNil(ChatQuestionParser.parse(reply, final: true).card)
+    }
+
+    func testDuplicateIdsOrLabelsAreNoCard() {
+        let question = #"{"id": "a", "question": "Q", "options": [{"label": "x"}, {"label": "y"}]}"#
+        let dupID = #"{"questions": ["# + question + ", " + question + "]}"
+        let dupLabel = #"{"questions": [{"question": "Q", "options": [{"label": "x"}, {"label": "x"}]}]}"#
+        XCTAssertNil(ChatQuestionParser.parse(block(dupID), final: true).card)
+        XCTAssertNil(ChatQuestionParser.parse(block(dupLabel), final: true).card)
+    }
+
+    func testLabelsWithCommasReadBack() throws {
+        let ship = #"{"id": "go", "question": "Ship it?", "options": [{"label": "Yes, ship it"}, {"label": "No, wait"}]}"#
+        let who = #"{"id": "who", "question": "For whom?", "multi": true, "options": [{"label": "Q3, not Q4"}, {"label": "Sales"}]}"#
+        let json = #"{"questions": ["# + ship + ", " + who + "]}"
+        let card = try XCTUnwrap(ChatQuestionParser.parse(block(json), final: true).card)
+        let answers: [String: ChatQuestionAnswer.Entry] = [
+            "go": .init(labels: ["Yes, ship it"]),
+            "who": .init(labels: ["Q3, not Q4", "Sales"])
+        ]
+        XCTAssertEqual(ChatQuestionAnswer.selections(in: ChatQuestionAnswer.format(card, answers: answers), for: card),
+                       answers)
+    }
+
+    func testAnswerableOnlyOnTheLatestUnansweredReply() {
+        func row(_ id: Int64, _ role: String, _ text: String = "x") -> ChatMessageRecord {
+            ChatMessageRecord(id: id, conversationID: 1, role: role, text: text, createdAt: Double(id))
+        }
+        let rows = [row(1, "user"), row(2, "assistant"), row(3, "system")]
+        XCTAssertTrue(ChatQuestionThread.isAnswerable(at: 1, in: rows, busy: false), "a notice after it does not count")
+        XCTAssertFalse(ChatQuestionThread.isAnswerable(at: 1, in: rows, busy: true))
+        let answered = rows + [row(4, "user", "Answers:")]
+        XCTAssertFalse(ChatQuestionThread.isAnswerable(at: 1, in: answered, busy: false))
+        XCTAssertEqual(ChatQuestionThread.ownerReply(after: 1, in: answered), "Answers:")
+        let later = answered + [row(5, "assistant")]
+        XCTAssertFalse(ChatQuestionThread.isAnswerable(at: 1, in: later, busy: false), "an older reply")
+        XCTAssertTrue(ChatQuestionThread.isAnswerable(at: 4, in: later, busy: false))
     }
 
     func testAnOpenBlockIsHiddenWhileStreamingAndShownWhenFinal() {
