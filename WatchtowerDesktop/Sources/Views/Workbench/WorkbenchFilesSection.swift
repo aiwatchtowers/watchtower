@@ -19,6 +19,9 @@ struct WorkbenchFilesSection: View {
     @State private var cursorPushed = false
     @State private var edit: CodeTreeEdit?
     @State private var trashing: CodeFileEntry?
+    /// The folder's file count for the Trash confirmation, counted off the
+    /// main thread.
+    @State private var trashCount: Int?
     @State private var operationError: String?
 
     var body: some View {
@@ -37,10 +40,11 @@ struct WorkbenchFilesSection: View {
                     actions: rowActions(tree)
                 )
                 .frame(height: liveHeight ?? height)
-                .task(id: project.id) {
+                .onAppear {
                     files.startWatching(project)
                     tree.loadIfNeeded()
                 }
+                .onDisappear { files.stopShowing(project) }
             }
         }
         .confirmationDialog(
@@ -68,9 +72,21 @@ struct WorkbenchFilesSection: View {
 
     private var trashMessage: String {
         guard let entry = trashing else { return "" }
-        guard entry.isDirectory else { return "You can put it back from the Trash. Its tab closes." }
-        let count = CodeFilesCenter.fileCount(at: project.folderURL.appendingPathComponent(entry.relPath))
-        return "It holds \(count) file\(count == 1 ? "" : "s"). You can put it back from the Trash. Tabs of files in it close."
+        let saved = "Unsaved edits are saved first, so the Trash keeps them."
+        guard entry.isDirectory else { return "You can put it back from the Trash. Its tab closes. \(saved)" }
+        let count = trashCount.map { "It holds \($0) file\($0 == 1 ? "" : "s"). " } ?? ""
+        return "\(count)You can put it back from the Trash. Tabs of files in it close. \(saved)"
+    }
+
+    private func confirmTrash(_ entry: CodeFileEntry) {
+        trashCount = nil
+        trashing = entry
+        guard entry.isDirectory else { return }
+        let url = project.folderURL.appendingPathComponent(entry.relPath)
+        Task {
+            let count = await Task.detached { CodeFilesCenter.fileCount(at: url) }.value
+            if trashing == entry { trashCount = count }
+        }
     }
 
     private func header(_ tree: CodeFileTree) -> some View {
@@ -151,7 +167,7 @@ struct WorkbenchFilesSection: View {
                 startCreate(folder: folder, in: entry.isDirectory ? entry.relPath : CodeFilesCenter.parent(entry.relPath), tree: tree)
             },
             rename: { entry in edit = CodeTreeEdit(kind: .rename(entry.relPath), text: entry.name) },
-            trash: { trashing = $0 },
+            trash: { confirmTrash($0) },
             commit: commit,
             root: project.folderURL
         )
@@ -163,9 +179,10 @@ struct WorkbenchFilesSection: View {
         edit = CodeTreeEdit(kind: .create(folder: folder, in: directory), text: "")
     }
 
-    /// Return in the name field.
+    /// Return in the name field. A rename in flight ignores another Return,
+    /// and its result only touches the field it started from.
     private func commit() {
-        guard var current = edit else { return }
+        guard var current = edit, !current.isCommitting else { return }
         let files = vm.codeFiles
         switch current.kind {
         case let .create(folder, directory):
@@ -183,11 +200,16 @@ struct WorkbenchFilesSection: View {
             }
         case let .rename(path):
             let text = current.text
+            current.isCommitting = true
+            edit = current
+            let started = current.kind
             Task {
                 do {
                     try await files.rename(path, to: text, project: project)
-                    edit = nil
+                    if edit?.kind == started { edit = nil }
                 } catch {
+                    guard edit?.kind == started else { return }
+                    current.isCommitting = false
                     current.error = error.localizedDescription
                     edit = current
                 }
@@ -196,10 +218,12 @@ struct WorkbenchFilesSection: View {
     }
 
     private func moveToTrash(_ entry: CodeFileEntry) {
-        do {
-            try vm.codeFiles.moveToTrash(entry.relPath, project: project)
-        } catch {
-            operationError = error.localizedDescription
+        Task {
+            do {
+                try await vm.codeFiles.moveToTrash(entry.relPath, project: project)
+            } catch {
+                operationError = error.localizedDescription
+            }
         }
     }
 
@@ -248,6 +272,7 @@ struct CodeTreeEdit: Equatable {
     var kind: Kind
     var text: String
     var error: String?
+    var isCommitting = false
 }
 
 /// The tree's visible rows: folders toggle on click; a file opens in a
@@ -340,7 +365,7 @@ private struct CodeTreeNameField: View {
         .padding(.vertical, 2)
         .onAppear { focused = true }
         .onChange(of: focused) { _, isFocused in
-            if !isFocused, edit?.error == nil { edit = nil }
+            if !isFocused, edit?.error == nil, edit?.isCommitting != true { edit = nil }
         }
     }
 

@@ -153,7 +153,7 @@ final class CodeFilesCenterTests: XCTestCase {
             XCTAssertEqual($0 as? CodeFilesCenter.OperationError, .exists("cmd/main.go"))
         }
         XCTAssertThrowsError(try center.createFolder("cmd", in: "", project: project))
-        XCTAssertThrowsError(try center.createFile("../outside.go", in: "cmd", project: project))
+        XCTAssertThrowsError(try center.createFile("../../outside.go", in: "cmd", project: project))
         XCTAssertFalse(FileManager.default.fileExists(atPath: folder.deletingLastPathComponent().appendingPathComponent("outside.go").path))
     }
 
@@ -205,14 +205,122 @@ final class CodeFilesCenterTests: XCTestCase {
         XCTAssertFalse(names.contains("Makefile"))
     }
 
-    func testMoveToTrashClosesTheTabsUnderIt() throws {
+    func testMoveToTrashClosesTheTabsUnderIt() async throws {
         let center = makeCenter()
         center.open("cmd/main.go", project: project, preview: false)
         center.open("Makefile", project: project, preview: false)
-        try center.moveToTrash("cmd", project: project)
+        try await center.moveToTrash("cmd", project: project)
         XCTAssertEqual(trashed.map(\.lastPathComponent), ["cmd"])
         XCTAssertEqual(center.tabs(for: project).paths, ["Makefile"])
         XCTAssertNil(center.existingBuffer(project, "cmd/main.go"))
+    }
+
+    func testRenameAndTrashNeverTouchAnotherWorkbenchsFileOfTheSameName() async throws {
+        let otherFolder = FileManager.default.temporaryDirectory.appendingPathComponent("center-other-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: otherFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: otherFolder) }
+        try "all: other\n".write(to: otherFolder.appendingPathComponent("Makefile"), atomically: true, encoding: .utf8)
+        let other = Workbench(row: Row(["id": 8, "name": "other", "folder_path": otherFolder.path]))
+        let center = makeCenter()
+        center.open("Makefile", project: other, preview: false)
+        let theirs = center.buffer(for: other, relPath: "Makefile")
+        theirs.loadIfNeeded()
+        theirs.edited("all: other edited\n", base: 0)
+        _ = center.buffer(for: project, relPath: "Makefile")
+
+        try await center.rename("Makefile", to: "GNUmakefile", project: project)
+        XCTAssertTrue(center.existingBuffer(other, "Makefile") === theirs)
+        XCTAssertEqual(theirs.url, otherFolder.appendingPathComponent("Makefile"))
+        XCTAssertTrue(theirs.isDirty, "not saved by the other workbench's rename")
+
+        try await center.moveToTrash("GNUmakefile", project: project)
+        XCTAssertTrue(center.existingBuffer(other, "Makefile") === theirs, "not forgotten by the other workbench's trash")
+        XCTAssertEqual(center.tabs(for: other).paths, ["Makefile"])
+    }
+
+    func testRenameOntoAnOpenTabIsRefused() async throws {
+        let center = makeCenter()
+        try "x".write(to: folder.appendingPathComponent("b.txt"), atomically: true, encoding: .utf8)
+        center.open("b.txt", project: project, preview: false)
+        let open = center.buffer(for: project, relPath: "b.txt")
+        open.loadIfNeeded()
+        try FileManager.default.removeItem(at: folder.appendingPathComponent("b.txt"))
+        do {
+            try await center.rename("Makefile", to: "b.txt", project: project)
+            XCTFail("expected a refusal")
+        } catch {
+            XCTAssertEqual(error as? CodeFilesCenter.OperationError, .exists("b.txt"))
+        }
+        XCTAssertTrue(center.existingBuffer(project, "b.txt") === open)
+        XCTAssertEqual(center.tabs(for: project).paths, ["b.txt"])
+    }
+
+    func testTrashSavesUnsavedEditsFirstSoTheTrashKeepsThem() async throws {
+        var saved = ""
+        let recording = CodeFilesCenter(
+            defaults: defaults,
+            trash: { url in
+                saved = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+                try FileManager.default.removeItem(at: url)
+            },
+            gitRead: { _ in .noRepository }, gitMinInterval: .zero, watchesFolders: false
+        )
+        recording.open("Makefile", project: project, preview: false)
+        let buffer = recording.buffer(for: project, relPath: "Makefile")
+        buffer.loadIfNeeded()
+        let page = FakeBridge(edits: [CodeEditorPendingEdit(id: buffer.id, text: "all: unsent\n", base: 0)])
+        recording.register(page, for: project.id)
+        try await recording.moveToTrash("Makefile", project: project)
+        XCTAssertEqual(saved, "all: unsent\n")
+        XCTAssertTrue(recording.tabs(for: project).tabs.isEmpty)
+    }
+
+    func testTrashIsRefusedWhileAnEditCannotBeSaved() async throws {
+        let center = makeCenter()
+        let buffer = center.buffer(for: project, relPath: "Makefile")
+        buffer.loadIfNeeded()
+        try "all: agent\n".write(to: folder.appendingPathComponent("Makefile"), atomically: false, encoding: .utf8)
+        buffer.edited("all: mine\n", base: 0)
+        do {
+            try await center.moveToTrash("Makefile", project: project)
+            XCTFail("expected a refusal")
+        } catch {
+            XCTAssertEqual(error as? CodeFilesCenter.OperationError, .unsaved("Makefile"))
+        }
+        XCTAssertTrue(trashed.isEmpty)
+    }
+
+    func testCaseOnlyRenameMovesItsTabAndBuffer() async throws {
+        let center = makeCenter()
+        center.open("Makefile", project: project, preview: false)
+        let buffer = center.buffer(for: project, relPath: "Makefile")
+        try await center.rename("Makefile", to: "makefile", project: project)
+        XCTAssertEqual(center.tabs(for: project).paths, ["makefile"])
+        XCTAssertTrue(center.existingBuffer(project, "makefile") === buffer)
+    }
+
+    func testAReplacedCleanPreviewLetsItsBufferGoADirtyOneIsKept() {
+        let center = makeCenter()
+        center.open("Makefile", project: project, preview: true)
+        let clean = center.buffer(for: project, relPath: "Makefile")
+        clean.loadIfNeeded()
+        center.open("cmd/main.go", project: project, preview: true)
+        XCTAssertNil(center.existingBuffer(project, "Makefile"))
+        let dirty = center.buffer(for: project, relPath: "cmd/main.go")
+        dirty.loadIfNeeded()
+        center.edited(dirty, text: "package edited\n", base: 0, project: project)
+        XCTAssertEqual(center.tabs(for: project).tabs.first?.isPreview, false, "the first edit keeps the tab")
+        center.open("Makefile", project: project, preview: true)
+        XCTAssertTrue(center.existingBuffer(project, "cmd/main.go") === dirty)
+        XCTAssertEqual(center.tabs(for: project).paths, ["cmd/main.go", "Makefile"])
+    }
+
+    func testAPageThatCannotBeAskedIsShown() async {
+        let center = makeCenter()
+        let page = BrokenBridge()
+        center.register(page, for: project.id)
+        await center.pullPending(project)
+        XCTAssertNotNil(center.editorErrors[project.id])
     }
 
     // MARK: Watching and git
@@ -280,10 +388,15 @@ private final class FakeBridge: CodeEditorBridge {
         self.edits = edits
     }
 
-    func takePending() async -> [CodeEditorPendingEdit] {
+    func takePending() async -> [CodeEditorPendingEdit]? {
         defer { edits = [] }
         return edits
     }
+}
+
+@MainActor
+private final class BrokenBridge: CodeEditorBridge {
+    func takePending() async -> [CodeEditorPendingEdit]? { nil }
 }
 
 private actor Counter {

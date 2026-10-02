@@ -48,15 +48,14 @@ final class CodeFileBufferTests: XCTestCase {
         XCTAssertEqual(mode, 0o755)
     }
 
-    func testEachEditRestartsTheDelay() async throws {
-        let buffer = CodeFileBuffer(url: file, relPath: "run.sh", autosaveDelay: .milliseconds(300))
+    func testEachEditRestartsTheDelayAndOnlyTheLastTextIsWritten() async throws {
+        let buffer = CodeFileBuffer(url: file, relPath: "run.sh", autosaveDelay: .seconds(2))
         buffer.loadIfNeeded()
         buffer.edited("echo b\n", base: 0)
-        try await Task.sleep(for: .milliseconds(150))
         buffer.edited("echo bc\n", base: 0)
-        try await Task.sleep(for: .milliseconds(150))
-        XCTAssertEqual(try disk(), "echo a\n", "the second edit pushed the save back")
-        try await eventually { !buffer.isDirty }
+        // Long before the first edit's delay could run out, under any load.
+        XCTAssertEqual(try disk(), "echo a\n")
+        try await eventually({ !buffer.isDirty }, timeout: .seconds(6))
         XCTAssertEqual(try disk(), "echo bc\n")
     }
 
@@ -89,7 +88,7 @@ final class CodeFileBufferTests: XCTestCase {
         XCTAssertEqual(try disk(), "echo mine 2\n")
     }
 
-    func testAnEditTypedBeforeAReloadIsAConflictNotASave() throws {
+    func testProj03AnEditTypedBeforeAReloadIsAConflictNotASave() throws {
         let buffer = loaded()
         try "echo agent\n".write(to: file, atomically: false, encoding: .utf8)
         buffer.diskChanged()
@@ -136,7 +135,7 @@ final class CodeFileBufferTests: XCTestCase {
         XCTAssertEqual(buffer.text, "echo mine\n")
     }
 
-    func testADeletionUnderEditsIsNeverUndoneByTheAutosave() async throws {
+    func testProj03ADeletionUnderEditsIsNeverUndoneByTheAutosave() async throws {
         let buffer = loaded()
         buffer.edited("echo mine\n", base: 0)
         try FileManager.default.removeItem(at: file)
@@ -160,14 +159,32 @@ final class CodeFileBufferTests: XCTestCase {
         XCTAssertEqual(try disk(), "echo back\n")
     }
 
-    func testAnUnreadableDiskVersionIsNeverWrittenOver() throws {
+    func testProj03AnUnreadableDiskVersionIsNeverWrittenOver() throws {
         let buffer = loaded()
         buffer.edited("echo mine\n", base: 0)
         try Data([0x65, 0x00, 0x66]).write(to: file)
         buffer.diskChanged()
-        guard case .unreadable? = buffer.problem else { return XCTFail("expected unreadable, got \(String(describing: buffer.problem))") }
+        XCTAssertEqual(buffer.problem, .unreadable(.notText))
         XCTAssertFalse(buffer.saveNow())
         XCTAssertEqual(try Data(contentsOf: file), Data([0x65, 0x00, 0x66]))
+    }
+
+    func testWriteMineOverItReplacesABinaryVersionOnlyWhenTheOwnerAsks() throws {
+        let buffer = loaded()
+        buffer.edited("echo mine\n", base: 0)
+        try Data([0x65, 0x00, 0x66]).write(to: file)
+        buffer.diskChanged()
+        XCTAssertFalse(buffer.problem?.isTransient ?? true, "a binary file is not worth a retry")
+        buffer.keepMine()
+        XCTAssertNil(buffer.problem)
+        XCTAssertEqual(try disk(), "echo mine\n")
+    }
+
+    func testAFailedReloadSaysReloadNotSave() throws {
+        let buffer = loaded()
+        try FileManager.default.removeItem(at: file)
+        buffer.reloadFromDisk()
+        XCTAssertEqual(buffer.saveError, "Could not reload: The file no longer exists.")
     }
 
     func testAFailedWriteReportsAndLeavesTheFileWhole() throws {

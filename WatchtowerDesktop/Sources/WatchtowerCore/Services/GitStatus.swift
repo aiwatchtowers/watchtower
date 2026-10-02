@@ -124,6 +124,10 @@ extension GitStatusSnapshot {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: git)
         process.arguments = arguments
+        // English messages: "not a git repository" is matched below.
+        var environment = ProcessInfo.processInfo.environment
+        environment["LC_ALL"] = "C"
+        process.environment = environment
         return await ProcessPipes.run(process)
     }
 }

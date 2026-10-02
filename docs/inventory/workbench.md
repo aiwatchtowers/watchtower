@@ -138,7 +138,10 @@ document included — only with the owner's own typed edits, and never over a
 version it has not seen: every save re-reads the disk and refuses when the
 file changed, was deleted or no longer reads as text since the edits began
 (`CodeFileBuffer.saveNow`), an edit typed before a disk reload reached the page
-counts as a conflict, and the owner then picks Reload from disk or Keep mine.
+counts as a conflict, and the owner then picks Reload from disk or Keep mine
+(Write it back for a file deleted under the edits — Cmd+S does the same, an
+explicit save; Write mine over it for a version that no longer reads as
+text). The autosave never takes any of these choices by itself.
 The document view, its comments and every workbench tool still never write
 the file.
 
@@ -151,6 +154,9 @@ overwritten unseen) while letting the owner fix a line by hand.
 **Test guards:**
 - `WatchtowerDesktop/Tests/WorkbenchDocumentViewModelTests.swift::testProj03DesktopNeverWritesTheDocument`
 - `WatchtowerDesktop/Tests/CodeFileBufferTests.swift::testProj03FilesEditorNeverWritesOverANewerDiskVersion`
+- `WatchtowerDesktop/Tests/CodeFileBufferTests.swift::testProj03AnEditTypedBeforeAReloadIsAConflictNotASave`
+- `WatchtowerDesktop/Tests/CodeFileBufferTests.swift::testProj03ADeletionUnderEditsIsNeverUndoneByTheAutosave`
+- `WatchtowerDesktop/Tests/CodeFileBufferTests.swift::testProj03AnUnreadableDiskVersionIsNeverWrittenOver`
 - Go side, by review: `grep -nE "os\.(WriteFile|Create|OpenFile|Rename|Remove)" internal/tools/workbench_docs.go`
 (expected: no match).
 
@@ -524,7 +530,7 @@ separation of boards.
 
 ## Changelog
 
-- 2026-10-02 (board #234, code viewer): **PROJ-03 amended** with the owner's approval — the Files pane may write the owner's own edits to any file of the folder, attached documents included, but never over a version it has not seen (a changed, deleted or unreadable disk version blocks the save until the owner picks Reload from disk or Keep mine; an edit typed on a stale disk revision is a conflict). New guard `testProj03FilesEditorNeverWritesOverANewerDiskVersion`; the existing `testProj03DesktopNeverWritesTheDocument` (the document view writes nothing) is unchanged. PROJ-01/02/04..09 unchanged.
+- 2026-10-02 (board #234, code viewer): **PROJ-03 amended** with the owner's approval — the Files pane may write the owner's own edits to any file of the folder, attached documents included, but never over a version it has not seen (a changed, deleted or unreadable disk version blocks the save until the owner picks Reload from disk or Keep mine; an edit typed on a stale disk revision is a conflict). New guards `testProj03FilesEditorNeverWritesOverANewerDiskVersion`, `testProj03AnEditTypedBeforeAReloadIsAConflictNotASave`, `testProj03ADeletionUnderEditsIsNeverUndoneByTheAutosave` and `testProj03AnUnreadableDiskVersionIsNeverWrittenOver`; the existing `testProj03DesktopNeverWritesTheDocument` (the document view writes nothing) is unchanged. PROJ-01/02/04..09 unchanged.
 - 2026-10-02 (board target #186): **PROJ-09** added — a workbench target can be re-parented within its workbench (`update_target`'s `parent_id`, the Desktop board's drag onto a row and **Move to…**), never into a cycle or across boards; `db.UpdateTarget` (`targets update --parent`) and Swift `TargetQueries.updateParent` refuse a cycle too. PROJ-05's rollup already covered a `parent_id` change; its wording and guards are unchanged. The `watchtower-workbench` skill now has the agent nest a new target under a topical group (creating the group if needed). PROJ-01..08 unchanged.
 - 2026-10-02 (board target #207): the Desktop board shows each target's `#id` on list rows, kanban cards and the detail card (copy from the card menu or the detail chip) and gains a search field (`WorkbenchBoardSearch`: `#N` = that id only, a bare number = the id or a title/intent containing it, other text = title/intent; matches keep their ancestors and subtrees, include closed targets and ignore collapse). Read-only UI over existing rows; no contract semantics or guard tests changed.
 - 2026-10-02 (Workbench rename, spec `docs/superpowers/specs/2026-10-02-workbench-rename-design.md`, owner decisions O1–O8): the feature is renamed from Projects to **Workbench** and this file moves from `docs/inventory/projects.md` to `docs/inventory/workbench.md`. PROJ-01..08 are reworded to the new names with the **same ids and the same meaning** (rewording approved by the owner, O2); every guard keeps its test function name (`TestProjNN_…`/`testProjNN_…`, A4) and only its file path changed (`project*`/`Project*` test files → `workbench*`/`Workbench*`; the migration tests keep theirs). Storage and wire keep `project` (tables, columns, DB values, `project_doc`, `project_files/`, `projects.*` UserDefaults keys, CLI `--json` keys). **PROJ-02 strengthened:** removal and delete also take away a never-resynced folder's legacy hooks, skill, `watchtower-project` registration and exclude lines — new guard `TestProj02_RemoveLegacyFolderLeavesNothingInstalled`. **PROJ-04 strengthened:** a resync deletes the legacy `watchtower-project` skill only through the DEV-04 marker/digest rule and replaces only our own legacy hook entries; an edited legacy skill is kept byte-identical with its exclude line — new guard `TestProj04_ResyncKeepsAnEditedLegacySkill`. Guard assertions whose expected literal said "project" (for example "workbench N no longer exists") were updated to the new wording with the same strictness. The entries below are historical and keep the names of their date (A11).

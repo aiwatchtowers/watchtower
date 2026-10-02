@@ -8,16 +8,25 @@ final class CodeFileNameTests: XCTestCase {
         XCTAssertEqual(try CodeFileName.resolve(".env.local", in: "cmd"), "cmd/.env.local")
     }
 
+    func testDotDotClimbsWithinTheFolderAndATrailingSlashIsDropped() throws {
+        XCTAssertEqual(try CodeFileName.resolve("../x.go", in: "a/b"), "a/x.go")
+        XCTAssertEqual(try CodeFileName.resolve("../../x.go", in: "a/b"), "x.go")
+        XCTAssertEqual(try CodeFileName.resolve("./c/", in: "a"), "a/c")
+    }
+
     func testRefusesWhatWouldLeaveTheFolderOrIsEmpty() {
         XCTAssertThrowsError(try CodeFileName.resolve("   ", in: "")) { XCTAssertEqual($0 as? CodeFileName.Problem, .empty) }
         XCTAssertThrowsError(try CodeFileName.resolve("/etc/hosts", in: "")) { XCTAssertEqual($0 as? CodeFileName.Problem, .absolute) }
         XCTAssertThrowsError(try CodeFileName.resolve("~/x", in: "")) { XCTAssertEqual($0 as? CodeFileName.Problem, .absolute) }
-        XCTAssertThrowsError(try CodeFileName.resolve("../x", in: "a")) {
-            XCTAssertEqual($0 as? CodeFileName.Problem, .badComponent(".."))
+        XCTAssertThrowsError(try CodeFileName.resolve("../../x", in: "a")) {
+            XCTAssertEqual($0 as? CodeFileName.Problem, .outside)
         }
         XCTAssertThrowsError(try CodeFileName.resolve("a//b", in: "")) {
             XCTAssertEqual($0 as? CodeFileName.Problem, .badComponent("//"))
         }
-        XCTAssertThrowsError(try CodeFileName.resolve("a/./b", in: ""))
+        XCTAssertThrowsError(try CodeFileName.resolve("..", in: "a")) { XCTAssertEqual($0 as? CodeFileName.Problem, .empty) }
+        XCTAssertThrowsError(try CodeFileName.resolve("a/../../x", in: "")) {
+            XCTAssertEqual($0 as? CodeFileName.Problem, .outside)
+        }
     }
 }

@@ -31,15 +31,22 @@ final class CodeFileBuffer {
         case conflict
         /// The file was deleted or moved away under unsaved edits.
         case deletedWhileEditing
+
+        /// A read that failed for a reason that may pass (permissions, IO):
+        /// worth a retry rather than an overwrite.
+        var isTransient: Bool {
+            if case .unreadable(.other) = self { return true }
+            return false
+        }
         /// The disk version can no longer be read as text (too big, binary,
         /// unreadable): nothing is written over what cannot be checked.
-        case unreadable(String)
+        case unreadable(ReadError)
 
         var message: String {
             switch self {
             case .conflict: "The file changed on disk while you were editing. Your edits are not saved."
             case .deletedWhileEditing: "The file was deleted or moved on disk while you were editing. Your edits are not saved."
-            case let .unreadable(reason): "The file on disk can no longer be read (\(reason)). Your edits are not saved."
+            case let .unreadable(error): "The file on disk can no longer be read (\(error.message)). Your edits are not saved."
             }
         }
     }
@@ -63,6 +70,7 @@ final class CodeFileBuffer {
     /// The revision at which the page keeps its text and only takes the new
     /// base, sending what it has not sent yet on it (Keep mine).
     private(set) var rebasedRevision = -1
+    /// The last failed write or reload, as a full sentence for the banner.
     var saveError: String?
     @ObservationIgnored private var autosave: Task<Void, Never>?
     @ObservationIgnored private let autosaveDelay: Duration
@@ -79,7 +87,7 @@ final class CodeFileBuffer {
     /// Why a close could not save this buffer, nil when it can.
     var unsavedReason: String? {
         if let problem { return problem.message }
-        return saveError.map { "Could not save: \($0)" }
+        return saveError
     }
 
     func loadIfNeeded() {
@@ -155,7 +163,7 @@ final class CodeFileBuffer {
                 deletedOnDisk = true
             }
         case let .failure(error):
-            problem = .unreadable(error.message)
+            problem = .unreadable(error)
             cancelAutosave()
         }
     }
@@ -165,14 +173,17 @@ final class CodeFileBuffer {
     /// leaves a half file), keeping the file's permissions, through a
     /// symlink to the real file. `explicit` (Cmd+S, Keep mine) also writes
     /// back a file that was deleted.
+    /// `overwrite` (Keep mine on an unreadable file) writes even though the
+    /// disk version could not be read — the owner chose to replace it.
     @discardableResult
-    func saveNow(explicit: Bool = false) -> Bool {
+    func saveNow(explicit: Bool = false, overwrite: Bool = false) -> Bool {
         cancelAutosave()
         guard state == .loaded else { return true }
         let gone = deletedOnDisk || problem == .deletedWhileEditing
         guard isDirty || (gone && explicit) else { return true }
         switch problem {
-        case .conflict?, .unreadable?: return false
+        case .conflict?: return false
+        case .unreadable?: if !overwrite { return false }
         case .deletedWhileEditing?: if !explicit { return false }
         case nil: break
         }
@@ -188,8 +199,10 @@ final class CodeFileBuffer {
                 return false
             }
         case let .failure(error):
-            problem = .unreadable(error.message)
-            return false
+            if !overwrite {
+                problem = .unreadable(error)
+                return false
+            }
         }
         do {
             try Self.write(text, to: url)
@@ -199,9 +212,14 @@ final class CodeFileBuffer {
             saveError = nil
             return true
         } catch {
-            saveError = error.localizedDescription
+            saveError = "Could not save: \(error.localizedDescription)"
             return false
         }
+    }
+
+    /// Banner, for a read that failed for a passing reason: read again.
+    func retryRead() {
+        diskChanged()
     }
 
     /// Banner: drop the unsaved edits, take the disk version.
@@ -217,7 +235,7 @@ final class CodeFileBuffer {
             externalRevision += 1
             forcedRevision = externalRevision
         case let .failure(error):
-            saveError = error.message
+            saveError = "Could not reload: \(error.message)"
         }
     }
 
@@ -225,11 +243,13 @@ final class CodeFileBuffer {
     /// back, if the file was deleted). The page's current text becomes the
     /// new base.
     func keepMine() {
+        let overwrite: Bool
+        if case .unreadable? = problem { overwrite = true } else { overwrite = false }
         if case let .success(content) = Self.read(url) { diskText = content }
         problem = nil
         externalRevision += 1
         rebasedRevision = externalRevision
-        saveNow(explicit: true)
+        saveNow(explicit: true, overwrite: overwrite)
     }
 
     /// The file was renamed or moved from the tree.

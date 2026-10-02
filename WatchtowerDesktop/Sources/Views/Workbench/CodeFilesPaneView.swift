@@ -44,7 +44,8 @@ struct CodeFilesPaneView: View {
                     .overlay { activeOverlay(tabs) }
             }
         }
-        .task(id: project.id) { files.startWatching(project) }
+        .onAppear { files.startWatching(project) }
+        .onDisappear { files.stopShowing(project) }
         .task(id: tabs.active) {
             if let active = tabs.active { files.buffer(for: project, relPath: active).loadIfNeeded() }
         }
@@ -285,11 +286,15 @@ private struct CodeFileBanners: View {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                 Text(problem.message).font(.caption)
                 Spacer(minLength: 4)
-                if problem != .deletedWhileEditing {
+                if problem == .conflict {
                     Button("Reload from disk") { buffer.reloadFromDisk() }
                 }
-                Button(problem == .deletedWhileEditing ? "Write it back" : "Keep mine") { buffer.keepMine() }
-                    .help(problem == .deletedWhileEditing ? "Create the file again with your edits" : "Write your edits over the version on disk")
+                if problem.isTransient {
+                    Button("Try again") { buffer.retryRead() }
+                } else {
+                    Button(keepTitle(problem)) { buffer.keepMine() }
+                        .help(problem == .deletedWhileEditing ? "Create the file again with your edits" : "Write your edits over the version on disk")
+                }
             }
             .controlSize(.small)
             .padding(8)
@@ -297,7 +302,15 @@ private struct CodeFileBanners: View {
         } else if buffer.deletedOnDisk {
             notice("The file was deleted on disk. ⌘S writes it back.", color: .orange)
         }
-        if let error = buffer.saveError { notice("Could not save: \(error)", color: .red) }
+        if let error = buffer.saveError { notice(error, color: .red) }
+    }
+
+    private func keepTitle(_ problem: CodeFileBuffer.Problem) -> String {
+        switch problem {
+        case .conflict: "Keep mine"
+        case .deletedWhileEditing: "Write it back"
+        case .unreadable: "Write mine over it"
+        }
     }
 
     private func notice(_ text: String, color: Color) -> some View {
@@ -387,13 +400,15 @@ struct MonacoEditorView: NSViewRepresentable {
                 files.editorErrors[project.id] = nil
                 push()
             case "text":
-                guard let id = body["id"] as? String, let text = body["text"] as? String,
-                      let base = body["base"] as? Int, let buffer = files.buffer(id: id) else { return }
-                buffer.edited(text, base: base, now: body["now"] as? Bool ?? false, explicit: body["explicit"] as? Bool ?? false)
-                // The first edit keeps a preview tab.
-                if buffer.isDirty, files.tabs(for: project).tabs.first(where: { $0.path == buffer.relPath })?.isPreview == true {
-                    files.pin(buffer.relPath, project: project)
+                guard let id = body["id"] as? String, let text = body["text"] as? String, let base = body["base"] as? Int else { return }
+                guard let buffer = files.buffer(id: id) else {
+                    NSLog("CodeFilesPane: an edit for a buffer no longer open was dropped")
+                    return
                 }
+                files.edited(
+                    buffer, text: text, base: base, project: project,
+                    now: body["now"] as? Bool ?? false, explicit: body["explicit"] as? Bool ?? false
+                )
             case "error":
                 files.editorErrors[project.id] = (body["message"] as? String) ?? "The editor reported an error."
             default:
@@ -436,13 +451,20 @@ struct MonacoEditorView: NSViewRepresentable {
 
         // MARK: CodeEditorBridge
 
-        func takePending() async -> [CodeEditorPendingEdit] {
+        func takePending() async -> [CodeEditorPendingEdit]? {
             guard ready, let webView else { return [] }
             return await Self.takePending(from: webView)
         }
 
-        static func takePending(from webView: WKWebView) async -> [CodeEditorPendingEdit] {
-            guard let raw = try? await webView.evaluateJavaScript("wt.takePending()") as? [[String: Any]] else { return [] }
+        /// nil when the page could not be asked (logged).
+        static func takePending(from webView: WKWebView) async -> [CodeEditorPendingEdit]? {
+            let raw: [[String: Any]]
+            do {
+                raw = try await webView.evaluateJavaScript("wt.takePending()") as? [[String: Any]] ?? []
+            } catch {
+                NSLog("CodeFilesPane: wt.takePending failed: %@", error.localizedDescription)
+                return nil
+            }
             return raw.compactMap { item in
                 guard let id = item["id"] as? String, let text = item["text"] as? String, let base = item["base"] as? Int else {
                     return nil
@@ -454,11 +476,14 @@ struct MonacoEditorView: NSViewRepresentable {
         func dismantle(_ webView: WKWebView) {
             files.unregister(self, for: project.id)
             let files = files
+            let project = project
             let wasReady = ready
             Task { @MainActor in
                 // `webView` and `files` are held by this task, not by the
                 // coordinator SwiftUI is releasing.
-                if wasReady { files.apply(await Self.takePending(from: webView), now: true) }
+                if wasReady, let edits = await Self.takePending(from: webView) {
+                    files.apply(edits, project: project, now: true)
+                }
                 webView.configuration.userContentController.removeScriptMessageHandler(forName: "wt")
             }
         }
