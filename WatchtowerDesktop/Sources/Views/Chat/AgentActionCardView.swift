@@ -153,6 +153,11 @@ struct AgentActionCardView: View {
         return Self.summaryLines(for: action)
     }
 
+    /// After a sign-in that reported no error — which a cancelled one does
+    /// not either, and a grant Slack still refused send for neither.
+    static let reconnectDoneNote = "Sign-in closed. Press Retry — if sending is still refused, Slack has not "
+        + "allowed it for this workspace yet (its app settings or admin must)."
+
     /// The owner's edits travel with the approval; no edits is a plain
     /// approve. An edit that cannot be encoded is reported, never dropped
     /// for the original draft.
@@ -227,7 +232,7 @@ struct AgentActionCardView: View {
                             reconnecting = true
                             let failure = await onReconnectSlack(accountID)
                             reconnecting = false
-                            slackMessage = failure.map { "Reconnect failed: \($0)" } ?? "Sign-in finished — press Retry to send."
+                            slackMessage = failure.map { "Reconnect failed: \($0)" } ?? Self.reconnectDoneNote
                         }
                     }
                     .disabled(reconnecting)

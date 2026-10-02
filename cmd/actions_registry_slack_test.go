@@ -91,3 +91,15 @@ func TestSlackSender_RecentMessagesThreadFiltersByOldest(t *testing.T) {
 	}
 	assert.Equal(t, []string{"parent", "new"}, texts)
 }
+
+// has_more without a cursor is an incomplete read, never "nothing else".
+func TestSlackSender_RecentMessagesMoreWithoutACursorIsMore(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/conversations.history", func(w http.ResponseWriter, _ *http.Request) {
+		writeSlackJSON(w, map[string]any{"ok": true, "has_more": true,
+			"messages": []map[string]any{{"user": "U1", "text": "hi", "ts": "1800000000.000001"}}})
+	})
+	_, more, err := stubSlackAPI(t, mux).RecentMessages(context.Background(), "C1", "", "1700000000.000000")
+	require.NoError(t, err)
+	assert.True(t, more)
+}

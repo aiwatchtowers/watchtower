@@ -242,6 +242,7 @@ func resolveSlackChannel(ctx context.Context, d *db.DB, acct db.SlackAccount, a 
 			COALESCE(NULLIF(u.display_name, ''), NULLIF(u.real_name, ''), u.name, '')
 		FROM channels c LEFT JOIN users u ON u.id = c.dm_user_id
 		WHERE c.id LIKE ? || ':%' AND c.is_archived = 0
+		  AND NOT (c.type = 'dm' AND (COALESCE(u.is_deleted, 0) = 1 OR COALESCE(u.is_bot, 0) = 1))
 		  AND (c.id = ? OR (c.type IN ('public', 'private') AND lower(c.name) = lower(?)))
 		ORDER BY c.id`, strconv.FormatInt(acct.ID, 10), slack.Namespace(acct.ID, name), name)
 	if err != nil {

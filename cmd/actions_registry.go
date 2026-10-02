@@ -110,8 +110,11 @@ func (s slackSender) RecentMessages(ctx context.Context, channelID, threadTS, ol
 		for _, m := range page.Messages {
 			out = append(out, tools.SlackPosted{User: m.User, Text: m.Text, TS: m.Timestamp})
 		}
-		if !page.HasMore || page.NextCursor == "" {
+		if !page.HasMore {
 			return out, false, nil
+		}
+		if page.NextCursor == "" {
+			return out, true, nil // more exists but cannot be read: never call it complete
 		}
 		cursor = page.NextCursor
 	}
