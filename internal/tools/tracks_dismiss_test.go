@@ -68,6 +68,8 @@ func TestDismissTracks_ValidateRejectsBadInput(t *testing.T) {
 		"unknown field":   `{"ids":[1],"reason":"r","all":true}`,
 		"pinned by model": `{"ids":[1],"reason":"r","resolved_ids":[1,2,3]}`,
 		"unknown id":      `{"ids":[424242],"reason":"r"}`,
+		"zero except id":  `{"filter":{"except_ids":[0]},"reason":"r"}`,
+		"unknown except":  `{"filter":{"except_ids":[424242]},"reason":"r"}`,
 	}
 	for name, raw := range cases {
 		_, err := reg.Propose(context.Background(), "dismiss_tracks", json.RawMessage(raw), Binding{Surface: "main"})
@@ -158,7 +160,19 @@ func TestDismissTracks_IdsDropAlreadyDismissedAndSkipLaterDismissals(t *testing.
 	require.True(t, ok)
 	applied, err := reg.Apply(context.Background(), rc.ActionID)
 	require.NoError(t, err)
-	assert.JSONEq(t, `{"dismissed":1,"skipped":1}`, applied.ResultJSON)
+	assert.JSONEq(t, `{"dismissed":1,"skipped":1,"warning":"1 of 2 tracks were already dismissed or deleted since the proposal"}`,
+		applied.ResultJSON, "the card says the approved count no longer held")
+}
+
+func TestDismissTracks_AllAlreadyDismissedSaysSo(t *testing.T) {
+	d := openDB(t)
+	gone := seedTrack(t, d, "gone", "auto", time.Hour)
+	require.NoError(t, d.DismissTrack(gone))
+	_, err := dismissRegistry(t, d).Propose(context.Background(), "dismiss_tracks",
+		json.RawMessage(`{"ids":[`+strconv.Itoa(gone)+`],"reason":"r"}`), Binding{Surface: "main"})
+	var verr *ValidationError
+	require.ErrorAs(t, err, &verr)
+	assert.Contains(t, verr.Msg, "already dismissed")
 }
 
 func TestDismissTracks_NothingMatchesIsRefused(t *testing.T) {

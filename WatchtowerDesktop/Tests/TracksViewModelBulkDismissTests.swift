@@ -56,6 +56,28 @@ final class TracksViewModelBulkDismissTests: XCTestCase {
         XCTAssertEqual(try activeIDs(pool), [ids[2], late])
     }
 
+    func testNoAutoTracksAndPartialDismissAreReported() throws {
+        let (vm, pool) = try makeVM()
+        try pool.write { db in try db.execute(sql: "ALTER TABLE tracks ADD COLUMN origin TEXT NOT NULL DEFAULT 'auto'") }
+        XCTAssertNil(vm.activeAutoTrackIDs())
+        XCTAssertEqual(vm.notice, "No active auto tracks to dismiss.")
+
+        let ids = try pool.write { db in try (0..<2).map { _ in Int(try TestDatabase.insertTrack(db)) } }
+        try pool.write { db in try TrackQueries.dismiss(db, id: ids[0]) }
+        vm.notice = nil
+        vm.dismissTracks(ids: ids)
+        XCTAssertEqual(vm.notice, "Dismissed 1 of 2; the rest were already dismissed or gone.")
+    }
+
+    func testDismissFailureIsReported() throws {
+        let (vm, pool) = try makeVM()
+        try pool.write { db in try db.execute(sql: "DROP TABLE tracks") }
+        vm.isSelecting = true
+        vm.dismissTracks(ids: [1])
+        XCTAssertNotNil(vm.errorMessage)
+        XCTAssertTrue(vm.isSelecting, "a failed write keeps the selection")
+    }
+
     func testLoadDropsSelectionHiddenByAFilter() throws {
         let (vm, pool) = try makeVM()
         let high = try pool.write { db in Int(try TestDatabase.insertTrack(db, priority: "high")) }

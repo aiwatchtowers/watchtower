@@ -1,7 +1,6 @@
 package db
 
 import (
-	"database/sql"
 	"fmt"
 	"strings"
 	"time"
@@ -74,21 +73,13 @@ func (db *DB) ActiveTracksMatching(s TrackSelection) ([]TrackBrief, error) {
 }
 
 // TrackBriefsByID returns the tracks with the given ids (dismissed ones
-// included, flagged), in no particular order; a missing id is simply absent.
+// included, flagged), newest update first; a missing id is simply absent.
 func (db *DB) TrackBriefsByID(ids []int) ([]TrackBrief, error) {
-	var out []TrackBrief
-	for _, chunk := range chunkIDs(ids) {
-		briefs, err := db.trackBriefsChunk(chunk)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, briefs...)
+	if len(ids) == 0 {
+		return nil, nil
 	}
-	return out, nil
-}
-
-func (db *DB) trackBriefsChunk(ids []int) ([]TrackBrief, error) {
-	query := `SELECT id, text, origin, updated_at, dismissed_at != '' FROM tracks WHERE id IN (` + placeholders(len(ids)) + `)`
+	query := `SELECT id, text, origin, updated_at, dismissed_at != '' FROM tracks WHERE id IN (` +
+		placeholders(len(ids)) + `) ORDER BY updated_at DESC, id DESC`
 	rows, err := db.Query(query, intArgs(ids)...)
 	if err != nil {
 		return nil, fmt.Errorf("reading tracks by id: %w", err)
@@ -105,9 +96,9 @@ func (db *DB) trackBriefsChunk(ids []int) ([]TrackBrief, error) {
 	return out, rows.Err()
 }
 
-// DismissTracks soft-dismisses the given tracks in one transaction and
-// returns how many it dismissed. Only active rows are stamped: a track that
-// is already dismissed keeps its original dismissed_at, and a missing id is
+// DismissTracks soft-dismisses the given tracks in one statement and returns
+// how many it dismissed. Only active rows are stamped: a track that is
+// already dismissed keeps its original dismissed_at, and a missing id is
 // skipped — so a retried bulk dismiss is a no-op for the rows it already
 // handled. Same stamp as DismissTrack.
 //
@@ -115,28 +106,21 @@ func (db *DB) trackBriefsChunk(ids []int) ([]TrackBrief, error) {
 // TrackQueries.dismissMany (WatchtowerCore) — same UPDATE, same
 // active-only rule. Change both together.
 func (db *DB) DismissTracks(ids []int) (int, error) {
-	total := 0
-	err := db.WithTx(func(tx *sql.Tx) error {
-		for _, chunk := range chunkIDs(ids) {
-			//nolint:gosec // G202: only "?" placeholders are concatenated; ids are bound args.
-			query := `UPDATE tracks SET dismissed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-				WHERE dismissed_at = '' AND id IN (` + placeholders(len(chunk)) + `)`
-			res, err := tx.Exec(query, intArgs(chunk)...)
-			if err != nil {
-				return err
-			}
-			n, err := res.RowsAffected()
-			if err != nil {
-				return err
-			}
-			total += int(n)
-		}
-		return nil
-	})
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	//nolint:gosec // G202: only "?" placeholders are concatenated; ids are bound args.
+	query := `UPDATE tracks SET dismissed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+		WHERE dismissed_at = '' AND id IN (` + placeholders(len(ids)) + `)`
+	res, err := db.Exec(query, intArgs(ids)...)
 	if err != nil {
 		return 0, fmt.Errorf("dismissing tracks: %w", err)
 	}
-	return total, nil
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("dismissing tracks: %w", err)
+	}
+	return int(n), nil
 }
 
 // TrackCounts is a grouped count of the tracks a selection matches. The
@@ -214,19 +198,4 @@ func (db *DB) CountTracks(s TrackSelection, now time.Time) (TrackCounts, error) 
 // isoUTC formats t the way every tracks timestamp is stored.
 func isoUTC(t time.Time) string {
 	return t.UTC().Format("2006-01-02T15:04:05Z")
-}
-
-// bulkIDChunk keeps one IN (...) list well under SQLite's bound-parameter cap.
-const bulkIDChunk = 500
-
-func chunkIDs(ids []int) [][]int {
-	var out [][]int
-	for len(ids) > bulkIDChunk {
-		out = append(out, ids[:bulkIDChunk])
-		ids = ids[bulkIDChunk:]
-	}
-	if len(ids) > 0 {
-		out = append(out, ids)
-	}
-	return out
 }

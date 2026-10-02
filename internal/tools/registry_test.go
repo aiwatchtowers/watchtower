@@ -615,6 +615,29 @@ func TestAgent03_ExternalToolNeverExecutesFromAPersistedTrustRow(t *testing.T) {
 	assert.Equal(t, "pending", row.Status)
 }
 
+// AlwaysAsk is the AGENT-03 lock for a local tool: no execute trust, no
+// inline apply from a persisted trust row, no direct-apply session.
+func TestAgent03_AlwaysAskToolNeverExecutesWithoutApproval(t *testing.T) {
+	database := openDB(t)
+	var executed []Call
+	reg := New(database)
+	tool := newEchoTool(t, false, &executed)
+	tool.AlwaysAsk = true
+	require.NoError(t, reg.Register(tool))
+
+	assert.ErrorIs(t, reg.SetTrust("echo", TrustExecute), ErrAlwaysAsk)
+	require.NoError(t, database.SetToolTrust("echo", "execute"))
+	rc, err := reg.Propose(context.Background(), "echo", json.RawMessage(`{"text":"hi","reason":"r"}`), Binding{Surface: "main"})
+	require.NoError(t, err)
+	assert.Equal(t, "pending", rc.Status)
+
+	_, err = reg.Propose(context.Background(), "echo", json.RawMessage(`{"text":"hi","reason":"r"}`),
+		Binding{Surface: "main", DirectApply: true})
+	var verr *ValidationError
+	assert.ErrorAs(t, err, &verr)
+	assert.Empty(t, executed)
+}
+
 func TestPropose_ExecuteTrustAppliesInline(t *testing.T) {
 	database := openDB(t)
 	var executed []Call

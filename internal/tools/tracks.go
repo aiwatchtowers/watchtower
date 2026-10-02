@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -145,6 +145,16 @@ type dismissTracksFilter struct {
 	ExceptIDs []int `json:"except_ids,omitempty" jsonschema:"ids of tracks to keep"`
 }
 
+// selection is the filter plus the ids it keeps.
+func (f dismissTracksFilter) selection() (db.TrackSelection, error) {
+	sel, err := f.trackFilterArgs.selection()
+	if err != nil {
+		return sel, err
+	}
+	sel.ExceptIDs = f.ExceptIDs
+	return sel, nil
+}
+
 // dismissTracksArgs is both the model's call and the stored proposal. The
 // resolved_* fields and summary/sample_titles are pinned by Normalize at
 // propose time; Execute dismisses resolved_ids and nothing else.
@@ -197,15 +207,12 @@ func NewDismissTracks() *Tool {
 			case len(a.IDs) == 0 && a.Filter == nil:
 				return &ValidationError{Msg: "pass ids, or filter ({} for every active track)"}
 			case a.Filter != nil:
-				_, err := a.Filter.selection()
-				return err
-			}
-			for _, id := range a.IDs {
-				if id <= 0 {
-					return &ValidationError{Msg: fmt.Sprintf("invalid track id %d", id)}
+				if _, err := a.Filter.selection(); err != nil {
+					return err
 				}
+				return validTrackIDs(a.Filter.ExceptIDs)
 			}
-			return nil
+			return validTrackIDs(a.IDs)
 		},
 		Normalize: normalizeDismissTracks,
 		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
@@ -220,8 +227,13 @@ func NewDismissTracks() *Tool {
 			if err != nil {
 				return nil, err
 			}
-			// skipped: tracks dismissed (or deleted) elsewhere since the proposal.
-			return map[string]any{"dismissed": n, "skipped": len(a.ResolvedIDs) - n}, nil
+			result := map[string]any{"dismissed": n, "skipped": len(a.ResolvedIDs) - n}
+			if skipped := len(a.ResolvedIDs) - n; skipped > 0 {
+				// The card shows a result warning: the owner approved a count
+				// that no longer held.
+				result["warning"] = fmt.Sprintf("%d of %d tracks were already dismissed or deleted since the proposal", skipped, len(a.ResolvedIDs))
+			}
+			return result, nil
 		},
 	}
 }
@@ -237,11 +249,15 @@ func normalizeDismissTracks(_ context.Context, d *db.DB, raw json.RawMessage) (j
 	var picked []db.TrackBrief
 	var notes []string
 	if a.Filter != nil {
+		// An id to keep that does not exist is a typo the card would hide
+		// behind "keeping #N" while the meant track gets dismissed.
+		if _, err := knownTracks(d, a.Filter.ExceptIDs); err != nil {
+			return nil, err
+		}
 		sel, err := a.Filter.selection()
 		if err != nil {
 			return nil, err
 		}
-		sel.ExceptIDs = a.Filter.ExceptIDs
 		if picked, err = d.ActiveTracksMatching(sel); err != nil {
 			return nil, err
 		}
@@ -249,14 +265,25 @@ func normalizeDismissTracks(_ context.Context, d *db.DB, raw json.RawMessage) (j
 		if len(a.Filter.ExceptIDs) > 0 {
 			notes = append(notes, "keeping "+idList(a.Filter.ExceptIDs))
 		}
+		if len(picked) == 0 {
+			return nil, &ValidationError{Msg: "no active track matches — nothing to dismiss"}
+		}
 	} else {
-		var err error
-		if picked, notes, err = activeTracksByID(d, a.IDs); err != nil {
+		briefs, err := knownTracks(d, a.IDs)
+		if err != nil {
 			return nil, err
 		}
-	}
-	if len(picked) == 0 {
-		return nil, &ValidationError{Msg: "no active track matches — nothing to dismiss"}
+		for _, b := range briefs {
+			if !b.Dismissed {
+				picked = append(picked, b)
+			}
+		}
+		if len(picked) == 0 {
+			return nil, &ValidationError{Msg: "all of these tracks are already dismissed — nothing to dismiss"}
+		}
+		if dismissed := len(briefs) - len(picked); dismissed > 0 {
+			notes = append(notes, fmt.Sprintf("%d already dismissed", dismissed))
+		}
 	}
 	a.ResolvedIDs = make([]int, len(picked))
 	a.SampleTitles = nil
@@ -277,24 +304,27 @@ func normalizeDismissTracks(_ context.Context, d *db.DB, raw json.RawMessage) (j
 	return json.Marshal(a)
 }
 
-// activeTracksByID resolves explicit ids: an unknown id is a model-facing
-// error, an already-dismissed one is dropped and noted. Newest update first.
-func activeTracksByID(d *db.DB, ids []int) ([]db.TrackBrief, []string, error) {
-	ids = uniqueInts(ids)
+// validTrackIDs refuses a non-positive id.
+func validTrackIDs(ids []int) error {
+	for _, id := range ids {
+		if id <= 0 {
+			return &ValidationError{Msg: fmt.Sprintf("invalid track id %d", id)}
+		}
+	}
+	return nil
+}
+
+// knownTracks reads the given tracks (dismissed ones flagged), newest update
+// first; an id with no track is a model-facing error.
+func knownTracks(d *db.DB, ids []int) ([]db.TrackBrief, error) {
+	ids = slices.Compact(slices.Sorted(slices.Values(ids)))
 	briefs, err := d.TrackBriefsByID(ids)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	found := make(map[int]bool, len(briefs))
-	var active []db.TrackBrief
-	dismissed := 0
 	for _, b := range briefs {
 		found[b.ID] = true
-		if b.Dismissed {
-			dismissed++
-			continue
-		}
-		active = append(active, b)
 	}
 	var missing []int
 	for _, id := range ids {
@@ -303,31 +333,9 @@ func activeTracksByID(d *db.DB, ids []int) ([]db.TrackBrief, []string, error) {
 		}
 	}
 	if len(missing) > 0 {
-		return nil, nil, &ValidationError{Msg: "no track with id " + idList(missing)}
+		return nil, &ValidationError{Msg: "no track with id " + idList(missing)}
 	}
-	sort.Slice(active, func(i, j int) bool {
-		if active[i].UpdatedAt != active[j].UpdatedAt {
-			return active[i].UpdatedAt > active[j].UpdatedAt
-		}
-		return active[i].ID > active[j].ID
-	})
-	var notes []string
-	if dismissed > 0 {
-		notes = append(notes, fmt.Sprintf("%d already dismissed", dismissed))
-	}
-	return active, notes, nil
-}
-
-func uniqueInts(in []int) []int {
-	seen := make(map[int]bool, len(in))
-	out := make([]int, 0, len(in))
-	for _, v := range in {
-		if !seen[v] {
-			seen[v] = true
-			out = append(out, v)
-		}
-	}
-	return out
+	return briefs, nil
 }
 
 // idList renders ids as "#1, #2, #3" — at most ten, then "and N more".

@@ -12,7 +12,7 @@ struct TracksListView: View {
 
     private struct BulkDismiss {
         let ids: [Int]
-        let what: String
+        let scope: String
     }
 
     var body: some View {
@@ -85,7 +85,7 @@ struct TracksListView: View {
     private var bulkDismissTitle: String {
         guard let pending = pendingBulkDismiss else { return "" }
         let noun = pending.ids.count == 1 ? "track" : "tracks"
-        return "Dismiss \(pending.ids.count) \(pending.what) \(noun)?"
+        return "Dismiss \(pending.ids.count) \(pending.scope) \(noun)?"
     }
 
     // MARK: - List Panel
@@ -96,6 +96,7 @@ struct TracksListView: View {
             if vm.isSelecting {
                 selectionBar(vm)
             }
+            statusBanner(vm)
             Divider()
             listPanelContent(vm)
         }
@@ -232,9 +233,7 @@ struct TracksListView: View {
             }
             Divider()
             Button("Dismiss all auto tracks…") {
-                if let ids = vm.activeAutoTrackIDs() {
-                    pendingBulkDismiss = ids.isEmpty ? nil : BulkDismiss(ids: ids, what: "auto")
-                }
+                pendingBulkDismiss = vm.activeAutoTrackIDs().map { BulkDismiss(ids: $0, scope: "auto") }
             }
         } label: {
             Image(systemName: "checklist")
@@ -247,6 +246,30 @@ struct TracksListView: View {
         .help("Select or dismiss tracks in bulk")
     }
 
+    /// A failed write/read or a bulk-dismiss notice; the error wins.
+    @ViewBuilder
+    private func statusBanner(_ vm: TracksViewModel) -> some View {
+        if let err = vm.errorMessage {
+            banner(err, icon: "exclamationmark.triangle.fill", tint: .orange) { vm.errorMessage = nil }
+        } else if let note = vm.notice {
+            banner(note, icon: "info.circle", tint: .secondary) { vm.notice = nil }
+        }
+    }
+
+    private func banner(_ text: String, icon: String, tint: Color, onClose: @escaping () -> Void) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon).foregroundStyle(tint)
+            Text(text).font(.caption).foregroundStyle(.secondary).lineLimit(3)
+            Spacer()
+            Button(action: onClose) { Image(systemName: "xmark") }
+                .buttonStyle(.borderless)
+        }
+        .padding(8)
+        .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
+        .padding(.horizontal)
+        .padding(.bottom, 8)
+    }
+
     private func selectionBar(_ vm: TracksViewModel) -> some View {
         HStack(spacing: 8) {
             Text("\(vm.selectedIDs.count) selected")
@@ -257,7 +280,7 @@ struct TracksListView: View {
                 .font(.caption)
             Spacer()
             Button("Dismiss selected") {
-                pendingBulkDismiss = BulkDismiss(ids: vm.selectedIDs.sorted(), what: "selected")
+                pendingBulkDismiss = BulkDismiss(ids: vm.selectedIDs.sorted(), scope: "selected")
             }
             .disabled(vm.selectedIDs.isEmpty)
             .controlSize(.small)

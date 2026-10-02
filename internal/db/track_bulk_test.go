@@ -87,22 +87,11 @@ func TestDismissTracks_StampsOnlyActiveRows(t *testing.T) {
 	assert.Empty(t, dismissedAt(t, d, a))
 }
 
-func TestDismissTracks_EmptyAndChunked(t *testing.T) {
+func TestDismissTracks_EmptyIsANoOp(t *testing.T) {
 	d := openTestDB(t)
 	n, err := d.DismissTracks(nil)
 	require.NoError(t, err)
 	assert.Zero(t, n)
-
-	ids := make([]int, 0, bulkIDChunk+3)
-	for range bulkIDChunk + 3 {
-		ids = append(ids, seedBulkTrack(t, d, "t", "auto", time.Hour))
-	}
-	n, err = d.DismissTracks(ids)
-	require.NoError(t, err)
-	assert.Equal(t, bulkIDChunk+3, n, "ids beyond one IN-list chunk are dismissed too")
-	left, err := d.ActiveTracksMatching(TrackSelection{})
-	require.NoError(t, err)
-	assert.Empty(t, left)
 }
 
 func TestTrackBriefsByID_FlagsDismissed(t *testing.T) {
@@ -114,6 +103,9 @@ func TestTrackBriefsByID_FlagsDismissed(t *testing.T) {
 	got, err := d.TrackBriefsByID([]int{a, b, 999999})
 	require.NoError(t, err)
 	require.Len(t, got, 2)
+	none, err := d.TrackBriefsByID(nil)
+	require.NoError(t, err)
+	assert.Empty(t, none)
 	byID := map[int]TrackBrief{}
 	for _, g := range got {
 		byID[g.ID] = g

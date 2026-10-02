@@ -183,23 +183,17 @@ package enum TrackQueries {
     /// Dual path: Go `db.DismissTracks` (`internal/db/track_bulk.go`, the
     /// chat's `dismiss_tracks` apply) — same UPDATE, same active-only rule.
     /// Change both together.
-    @discardableResult
     package static func dismissMany(_ db: Database, ids: [Int]) throws -> Int {
-        var dismissed = 0
-        // Chunked like Go's bulkIDChunk, well under SQLite's parameter cap.
-        for start in stride(from: 0, to: ids.count, by: 500) {
-            let chunk = Array(ids[start..<min(start + 500, ids.count)])
-            let marks = Array(repeating: "?", count: chunk.count).joined(separator: ",")
-            try db.execute(
-                sql: """
-                    UPDATE tracks SET dismissed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-                    WHERE dismissed_at = '' AND id IN (\(marks))
-                    """,
-                arguments: StatementArguments(chunk)
-            )
-            dismissed += db.changesCount
-        }
-        return dismissed
+        guard !ids.isEmpty else { return 0 }
+        let marks = Array(repeating: "?", count: ids.count).joined(separator: ",")
+        try db.execute(
+            sql: """
+                UPDATE tracks SET dismissed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                WHERE dismissed_at = '' AND id IN (\(marks))
+                """,
+            arguments: StatementArguments(ids)
+        )
+        return db.changesCount
     }
 
     /// Ids of every active auto (pipeline-found) track — what "Dismiss all

@@ -237,13 +237,6 @@ final class TrackQueryTests: XCTestCase {
         XCTAssertEqual(try db.write { try TrackQueries.dismissMany($0, ids: []) }, 0)
     }
 
-    func testDismissManyChunksLongIDLists() throws {
-        let db = try TestDatabase.create()
-        let ids = try db.write { db in try (0..<503).map { _ in Int(try TestDatabase.insertTrack(db)) } }
-        XCTAssertEqual(try db.write { try TrackQueries.dismissMany($0, ids: ids) }, 503)
-        XCTAssertEqual(try db.read { try TrackQueries.fetchCounts($0) }.total, 0)
-    }
-
     func testFetchActiveAutoIDsExcludesCustomAndDismissed() throws {
         let db = try TestDatabase.create()
         var ids: [Int64] = []

@@ -222,6 +222,27 @@ func TestActions_TrustAndTools(t *testing.T) {
 	assert.NotContains(t, out, `"create_target"`)
 }
 
+// The Desktop's Settings toggle locks a tool on always_ask (AGENT-03).
+func TestActions_ToolsJSONMarksAlwaysAsk(t *testing.T) {
+	writeActionsConfig(t)
+	_, err := runActions(t, "trust", "dismiss_tracks", "execute")
+	assert.Error(t, err, "a bulk dismiss can never execute without approval")
+
+	out, err := runActions(t, "tools", "--json")
+	require.NoError(t, err)
+	var listed []struct {
+		Name      string `json:"name"`
+		AlwaysAsk bool   `json:"always_ask"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &listed), out)
+	alwaysAsk := map[string]bool{}
+	for _, l := range listed {
+		alwaysAsk[l.Name] = l.AlwaysAsk
+	}
+	assert.True(t, alwaysAsk["dismiss_tracks"])
+	assert.False(t, alwaysAsk["create_track"])
+}
+
 func TestActions_ListAndShow(t *testing.T) {
 	database := writeActionsConfig(t)
 	_, _ = database.InsertAgentAction(db.AgentAction{Tool: "create_target", ArgsJSON: `{"text":"a","reason":"r"}`, ConversationID: 5})
