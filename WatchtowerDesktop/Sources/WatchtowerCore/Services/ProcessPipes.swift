@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 // MARK: - ProcessOutput
 
@@ -63,7 +64,15 @@ package enum ProcessPipes {
     /// child without touching argv). The write happens after both drains have
     /// started, so a child that answers before reading all of its input
     /// cannot wedge the write.
-    package static func run(_ process: Process, stdin: String? = nil) async -> ProcessOutput {
+    ///
+    /// `onLaunch` runs synchronously right after a successful launch: a
+    /// caller whose Cancel may land before the child is running (when
+    /// `terminate()` is not allowed yet) re-checks its cancel flag there.
+    package static func run(
+        _ process: Process,
+        stdin: String? = nil,
+        onLaunch: (@Sendable (Process) -> Void)? = nil
+    ) async -> ProcessOutput {
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
         process.standardOutput = stdoutPipe
@@ -74,6 +83,7 @@ package enum ProcessPipes {
         } catch {
             return ProcessOutput(exitCode: -1, stdout: "", stderr: error.localizedDescription)
         }
+        onLaunch?(process)
 
         let stdoutRead = drain(stdoutPipe)
         let stderrRead = drain(stderrPipe)
@@ -104,6 +114,25 @@ package enum ProcessPipes {
             stdout: String(data: stdoutData, encoding: .utf8) ?? "",
             stderr: String(data: stderrData, encoding: .utf8) ?? ""
         )
+    }
+
+    /// `run` under a watchdog, for a child that may hang (a provider CLI's
+    /// version skew): once `timeout` passes it is terminated (SIGTERM) and
+    /// `timedOut` says so, so the caller can tell a hang from a failure.
+    package static func run(
+        _ process: Process,
+        timeout: Duration
+    ) async -> (output: ProcessOutput, timedOut: Bool) {
+        let timedOut = OSAllocatedUnfairLock(initialState: false)
+        let watchdog = Task.detached {
+            try? await Task.sleep(for: timeout)
+            guard !Task.isCancelled, process.isRunning else { return }
+            timedOut.withLock { $0 = true }
+            process.terminate()
+        }
+        let output = await run(process)
+        watchdog.cancel()
+        return (output, timedOut.withLock { $0 })
     }
 }
 

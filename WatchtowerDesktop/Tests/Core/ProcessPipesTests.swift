@@ -1,4 +1,5 @@
 import Foundation
+import os
 import Testing
 @testable import WatchtowerCore
 
@@ -107,6 +108,44 @@ struct ProcessPipesTests {
         let output = await Self.withDeadline(process) { await ProcessPipes.run(process, stdin: "secret-value") }
         #expect(output?.stdout == "secret-value")
         #expect(output?.exitCode == 0)
+    }
+
+    @Test("run with a timeout terminates a hung child and says it timed out")
+    func runTimeoutTerminatesHungChild() async {
+        // `/bin/sleep` itself, not a shell around it: terminate() must reach
+        // the sleeper, or it would outlive the test as an orphan.
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        process.arguments = ["30"]
+        let started = ContinuousClock.now
+        let (output, timedOut) = await ProcessPipes.run(process, timeout: .milliseconds(300))
+        #expect(timedOut)
+        #expect(output.exitCode != 0)
+        #expect(!process.isRunning)
+        #expect(ContinuousClock.now - started < .seconds(10))
+    }
+
+    @Test("run with a timeout leaves a child that finishes in time alone")
+    func runTimeoutFinishesInTime() async {
+        let (output, timedOut) = await ProcessPipes.run(Self.shell("echo ok"), timeout: .seconds(10))
+        #expect(!timedOut)
+        #expect(output.exitCode == 0)
+        #expect(output.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "ok")
+    }
+
+    @Test("onLaunch sees the running child and can terminate it")
+    func onLaunchCanTerminate() async {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        process.arguments = ["30"]
+        let sawRunning = OSAllocatedUnfairLock(initialState: false)
+        let output = await ProcessPipes.run(process) { launched in
+            sawRunning.withLock { $0 = launched.isRunning }
+            launched.terminate()
+        }
+        #expect(sawRunning.withLock { $0 })
+        #expect(output.exitCode == SIGTERM)
+        #expect(process.terminationReason == .uncaughtSignal)
     }
 
     @Test("run reports a launch failure as exit -1 with the error text")
