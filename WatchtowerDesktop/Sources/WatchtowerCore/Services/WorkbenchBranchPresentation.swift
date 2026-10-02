@@ -90,6 +90,12 @@ package enum WorkbenchBranchPresentation {
         return branches.filter { $0.name.range(of: needle, options: .caseInsensitive) != nil }
     }
 
+    /// The row's caption for a branch whose upstream was deleted: it is not
+    /// level with it, there is nothing left to compare.
+    package static func upstreamCaption(_ branch: WorkbenchGitBranch) -> String? {
+        branch.upstreamGone ? "upstream gone" : nil
+    }
+
     /// Why a row is disabled: the branch is checked out in another worktree,
     /// where git refuses to check it out a second time.
     package static func disabledCaption(_ branch: WorkbenchGitBranch) -> String? {
@@ -134,40 +140,63 @@ package enum WorkbenchBranchPresentation {
         )
     }
 
-    /// What the popover says after a switch or create that did not happen,
-    /// or a stash it left behind; nil when there is nothing to say.
-    package static func outcomeMessage(_ result: WorkbenchGitSwitchResult) -> String? {
+    /// What the popover says after a switch or create: `error` in red (why
+    /// it did not happen, or a stash entry the owner's changes are stuck
+    /// in), `notice` as a caption (git's warning, the entry a switch left).
+    package struct Outcome: Equatable, Sendable {
+        package let error: String?
+        package let notice: String?
+    }
+
+    package static func outcome(_ result: WorkbenchGitSwitchResult) -> Outcome {
+        var errors: [String] = []
+        var notices: [String] = []
         if !result.error.isEmpty {
-            let restored = result.stashRestored ? " Your stashed changes were put back." : ""
-            return "git failed: \(result.error)\(restored)"
+            errors.append("git failed: \(result.error)")
+        } else if !result.refused.isEmpty {
+            errors.append(refusedText(result))
+        } else if !result.unknownConfirmations.isEmpty {
+            errors.append("Not switched: the CLI asks for a confirmation this app does not know "
+                + "(\(result.unknownConfirmations.joined(separator: ", "))) — update Watchtower.")
         }
-        if !result.refused.isEmpty {
-            return result.refusedDetail.isEmpty ? refusedText(result.refused) : result.refusedDetail
+        if !result.warning.isEmpty {
+            notices.append("\(result.created ? "Created" : "Switched to") \(result.branch), but git reported: \(result.warning)")
         }
-        if !result.unknownConfirmations.isEmpty {
-            return "Not switched: the CLI asks for a confirmation this app does not know "
-                + "(\(result.unknownConfirmations.joined(separator: ", "))) — update Watchtower."
+        if !result.stashed.isEmpty {
+            // The stack is shared by every worktree and session: the entry is
+            // named by its message and got back by its id, never popped.
+            let entry = result.stashMessage.isEmpty ? result.stashed : "\"\(result.stashMessage)\""
+            let apply = "git stash apply \(result.stashed)"
+            if !result.stashError.isEmpty {
+                errors.append("Your changes are only in the stash entry \(entry) — putting them back failed: "
+                              + "\(result.stashError). Get them back with \(apply).")
+            } else if result.stashRestored {
+                notices.append("Your changes are back in the work tree; the stash entry \(entry) was kept on the stack.")
+            } else {
+                notices.append("Your changes are saved in the stash entry \(entry) — get them back with \(apply).")
+            }
         }
-        return nil
+        return Outcome(
+            error: errors.isEmpty ? nil : errors.joined(separator: "\n"),
+            notice: notices.isEmpty ? nil : notices.joined(separator: "\n")
+        )
     }
 
-    /// A note to keep beside a switch that stashed the owner's changes.
-    package static func stashNote(_ result: WorkbenchGitSwitchResult) -> String? {
-        guard result.switched, !result.stashed.isEmpty else { return nil }
-        let message = result.stashMessage.isEmpty ? "" : " (\"\(result.stashMessage)\")"
-        return "Your changes are in \(result.stashed)\(message) — run git stash pop when you want them back."
-    }
-
-    private static func refusedText(_ code: String) -> String {
-        switch code {
-        case "unknown_branch": "There is no local branch with that name."
-        case "checked_out_elsewhere": "That branch is checked out in another worktree."
-        case "operation_in_progress": "A merge, rebase or similar is in progress — finish or abort it first."
-        case "not_git": "The folder is not a git work tree."
-        case "git_unavailable": "git is not available (install the Command Line Tools)."
-        case "invalid_name": "That is not a valid branch name."
-        case "exists": "A branch with that name already exists."
-        default: "Refused: \(code)"
+    /// Go's detail wins over the generic text, except for a failed status
+    /// read, whose detail is git's own error.
+    private static func refusedText(_ result: WorkbenchGitSwitchResult) -> String {
+        let detail = result.refusedDetail
+        switch result.refused {
+        case "git_failed": return "git could not read the folder: \(detail.isEmpty ? result.error : detail)"
+        case _ where !detail.isEmpty: return detail
+        case "unknown_branch": return "There is no local branch with that name."
+        case "checked_out_elsewhere": return "That branch is checked out in another worktree."
+        case "operation_in_progress": return "A merge, rebase or similar is in progress — finish or abort it first."
+        case "not_git": return "The folder is not a git work tree."
+        case "git_unavailable": return "git is not available (install the Command Line Tools)."
+        case "invalid_name": return "That is not a valid branch name."
+        case "exists": return "A branch with that name already exists."
+        default: return "Refused: \(result.refused)"
         }
     }
 

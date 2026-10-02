@@ -121,6 +121,9 @@ package struct WorkbenchGitBranch: Decodable, Equatable, Sendable, Identifiable 
     /// that is not RFC3339.
     package var committedAt: Date?
     package var upstream: String
+    /// The tracked upstream no longer exists (deleted on the remote and
+    /// pruned); `ahead`/`behind` are then 0, not "level".
+    package var upstreamGone: Bool
     package var ahead: Int
     package var behind: Int
     /// Set only when the branch is checked out in ANOTHER worktree — the
@@ -136,6 +139,7 @@ package struct WorkbenchGitBranch: Decodable, Equatable, Sendable, Identifiable 
         head: String = "",
         committedAt: Date? = nil,
         upstream: String = "",
+        upstreamGone: Bool = false,
         ahead: Int = 0,
         behind: Int = 0,
         worktree: String = "",
@@ -146,6 +150,7 @@ package struct WorkbenchGitBranch: Decodable, Equatable, Sendable, Identifiable 
         self.head = head
         self.committedAt = committedAt
         self.upstream = upstream
+        self.upstreamGone = upstreamGone
         self.ahead = ahead
         self.behind = behind
         self.worktree = worktree
@@ -160,6 +165,7 @@ package struct WorkbenchGitBranch: Decodable, Equatable, Sendable, Identifiable 
         let stamp = try c.decodeIfPresent(String.self, forKey: .committedAt) ?? ""
         committedAt = Self.parseTime(stamp)
         upstream = try c.decodeIfPresent(String.self, forKey: .upstream) ?? ""
+        upstreamGone = try c.decodeIfPresent(Bool.self, forKey: .upstreamGone) ?? false
         ahead = try c.decodeIfPresent(Int.self, forKey: .ahead) ?? 0
         behind = try c.decodeIfPresent(Int.self, forKey: .behind) ?? 0
         worktree = try c.decodeIfPresent(String.self, forKey: .worktree) ?? ""
@@ -169,6 +175,7 @@ package struct WorkbenchGitBranch: Decodable, Equatable, Sendable, Identifiable 
     package enum CodingKeys: String, CodingKey {
         case name, current, head, upstream, ahead, behind, worktree
         case committedAt = "committed_at"
+        case upstreamGone = "upstream_gone"
         case worktreeName = "worktree_name"
     }
 
@@ -186,11 +193,14 @@ package struct WorkbenchGitBranch: Decodable, Equatable, Sendable, Identifiable 
 }
 
 /// `workbench git branches --workbench N --json`. `branchesOK == false` means
-/// the listing failed (`branchesError`); `branches` is then empty.
+/// the listing failed (`branchesError`, or `note` when the folder is not a
+/// work tree); `branches` is then empty.
 package struct WorkbenchGitBranches: Decodable, Equatable, Sendable {
     package var workbenchID: Int64
     package var gitAvailable: Bool
     package var git: Bool
+    /// The status's note: why there is no git here.
+    package var note: String
     package var current: String
     package var branches: [WorkbenchGitBranch]
     package var branchesOK: Bool
@@ -200,6 +210,7 @@ package struct WorkbenchGitBranches: Decodable, Equatable, Sendable {
         workbenchID: Int64 = 0,
         gitAvailable: Bool = true,
         git: Bool = true,
+        note: String = "",
         current: String = "",
         branches: [WorkbenchGitBranch] = [],
         branchesOK: Bool = true,
@@ -208,6 +219,7 @@ package struct WorkbenchGitBranches: Decodable, Equatable, Sendable {
         self.workbenchID = workbenchID
         self.gitAvailable = gitAvailable
         self.git = git
+        self.note = note
         self.current = current
         self.branches = branches
         self.branchesOK = branchesOK
@@ -219,6 +231,7 @@ package struct WorkbenchGitBranches: Decodable, Equatable, Sendable {
         git = try c.decode(Bool.self, forKey: .git)
         workbenchID = try c.decodeIfPresent(Int64.self, forKey: .workbenchID) ?? 0
         gitAvailable = try c.decodeIfPresent(Bool.self, forKey: .gitAvailable) ?? true
+        note = try c.decodeIfPresent(String.self, forKey: .note) ?? ""
         current = try c.decodeIfPresent(String.self, forKey: .current) ?? ""
         branches = try c.decodeIfPresent([WorkbenchGitBranch].self, forKey: .branches) ?? []
         branchesOK = try c.decodeIfPresent(Bool.self, forKey: .branchesOK) ?? true
@@ -226,7 +239,7 @@ package struct WorkbenchGitBranches: Decodable, Equatable, Sendable {
     }
 
     package enum CodingKeys: String, CodingKey {
-        case git, current, branches
+        case git, note, current, branches
         case workbenchID = "workbench_id"
         case gitAvailable = "git_available"
         case branchesOK = "branches_ok"
@@ -260,12 +273,21 @@ package struct WorkbenchGitSwitchResult: Decodable, Equatable, Sendable {
     package var changes: Int
     package var refused: String
     package var refusedDetail: String
-    /// The stash ref this run pushed (never popped after a switch).
+    /// The commit id of the stash entry this run made ("" for none). The
+    /// entry always stays on the stack, which every worktree and session
+    /// shares — so it is named by `stashMessage` (it carries a nonce) and
+    /// got back by this id, never by its position.
     package var stashed: String
     package var stashMessage: String
-    /// The switch failed after the stash and the stash was put back.
+    /// The switch failed after the stash and the entry was applied back.
     package var stashRestored: Bool
+    /// Why applying the entry back failed: the owner's changes are only in
+    /// the stash.
+    package var stashError: String
     package var error: String
+    /// git's stderr when the switch exited non-zero but HEAD moved anyway
+    /// (a failing post-checkout hook): it counts as switched.
+    package var warning: String
     /// The status after the call; nil when the CLI sent none (or `{}`).
     package var status: WorkbenchGitStatus?
 
@@ -283,7 +305,9 @@ package struct WorkbenchGitSwitchResult: Decodable, Equatable, Sendable {
         stashed: String = "",
         stashMessage: String = "",
         stashRestored: Bool = false,
+        stashError: String = "",
         error: String = "",
+        warning: String = "",
         status: WorkbenchGitStatus? = nil
     ) {
         self.workbenchID = workbenchID
@@ -299,7 +323,9 @@ package struct WorkbenchGitSwitchResult: Decodable, Equatable, Sendable {
         self.stashed = stashed
         self.stashMessage = stashMessage
         self.stashRestored = stashRestored
+        self.stashError = stashError
         self.error = error
+        self.warning = warning
         self.status = status
     }
 
@@ -319,7 +345,9 @@ package struct WorkbenchGitSwitchResult: Decodable, Equatable, Sendable {
         stashed = try c.decodeIfPresent(String.self, forKey: .stashed) ?? ""
         stashMessage = try c.decodeIfPresent(String.self, forKey: .stashMessage) ?? ""
         stashRestored = try c.decodeIfPresent(Bool.self, forKey: .stashRestored) ?? false
+        stashError = try c.decodeIfPresent(String.self, forKey: .stashError) ?? ""
         error = try c.decodeIfPresent(String.self, forKey: .error) ?? ""
+        warning = try c.decodeIfPresent(String.self, forKey: .warning) ?? ""
         // `{}` is "no status", not a status with `git` missing; anything
         // else must decode, so a malformed status still fails loudly.
         if c.contains(.status),
@@ -332,12 +360,13 @@ package struct WorkbenchGitSwitchResult: Decodable, Equatable, Sendable {
     }
 
     package enum CodingKeys: String, CodingKey {
-        case branch, switched, already, created, changes, refused, stashed, error, status
+        case branch, switched, already, created, changes, refused, stashed, error, warning, status
         case workbenchID = "workbench_id"
         case needsConfirmation = "needs_confirmation"
         case refusedDetail = "refused_detail"
         case stashMessage = "stash_message"
         case stashRestored = "stash_restored"
+        case stashError = "stash_error"
     }
 }
 

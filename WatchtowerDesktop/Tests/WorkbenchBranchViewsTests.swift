@@ -98,6 +98,15 @@ final class WorkbenchBranchViewsTests: XCTestCase {
         XCTAssertFalse(try free.inspect().find(ViewType.Button.self).isDisabled())
     }
 
+    func testARowWhoseUpstreamIsGoneSaysSo() throws {
+        let gone = WorkbenchBranchRow(
+            branch: WorkbenchGitBranch(name: "old", upstream: "origin/old", upstreamGone: true), badge: nil, switching: nil
+        ) {}
+        XCTAssertNoThrow(try gone.inspect().find(text: "upstream gone"))
+        let level = WorkbenchBranchRow(branch: WorkbenchGitBranch(name: "main", upstream: "origin/main"), badge: nil, switching: nil) {}
+        XCTAssertThrowsError(try level.inspect().find(text: "upstream gone"))
+    }
+
     func testTappingARowSwitchesButNotTheCurrentOne() throws {
         var switched = 0
         try WorkbenchBranchRow(branch: WorkbenchGitBranch(name: "dev"), badge: nil, switching: nil) { switched += 1 }

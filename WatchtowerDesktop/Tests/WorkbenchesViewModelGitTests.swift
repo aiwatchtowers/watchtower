@@ -118,7 +118,7 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
     func testConfirmResendsWithStash() async throws {
         let runner = ScriptedCLIRunner(results: [
             .success(switchResult(#""switched":false,"needs_confirmation":["uncommitted_changes"],"changes":3"#)),
-            .success(switchResult(#""switched":true,"stashed":"stash@{0}","stash_message":"watchtower: switching from main to feature/x""#)),
+            .success(switchResult(#""switched":true,"stashed":"37ec889","stash_message":"watchtower: switching from main to feature/x [d0a6]""#)),
             .success(status(branch: "feature/x")),
             .success(branches())
         ])
@@ -128,8 +128,8 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
         XCTAssertEqual(runner.invocations[1], switchArgs(["--stash"]))
         XCTAssertNil(vm.pendingBranchConfirmation[project.id])
         XCTAssertEqual(vm.gitStatus[project.id]?.branch, "feature/x")
-        XCTAssertEqual(vm.gitNotices[project.id], "Your changes are in stash@{0} "
-                       + "(\"watchtower: switching from main to feature/x\") — run git stash pop when you want them back.")
+        XCTAssertEqual(vm.gitNotices[project.id], "Your changes are saved in the stash entry "
+                       + "\"watchtower: switching from main to feature/x [d0a6]\" — get them back with git stash apply 37ec889.")
     }
 
     func testCancelClearsThePendingSwitchWithNoCall() async {
@@ -209,14 +209,55 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
 
     func testGitStderrShowsAsText() async {
         let runner = ScriptedCLIRunner(results: [
-            .success(switchResult(#""switched":false,"error":"error: Your local changes would be overwritten","stash_restored":true"#)),
+            .success(switchResult(#""switched":false,"error":"error: Your local changes would be overwritten","#
+                                  + #""stashed":"2dd96e0","stash_message":"watchtower: m","stash_restored":true"#)),
             .success(status()),
             .success(branches())
         ])
         let vm = makeVM(runner)
         await vm.switchBranch("feature/x", project: project)
-        XCTAssertEqual(vm.gitErrors[project.id],
-                       "git failed: error: Your local changes would be overwritten Your stashed changes were put back.")
+        XCTAssertEqual(vm.gitErrors[project.id], "git failed: error: Your local changes would be overwritten")
+        XCTAssertEqual(vm.gitNotices[project.id],
+                       "Your changes are back in the work tree; the stash entry \"watchtower: m\" was kept on the stack.")
+    }
+
+    func testAStashThatCouldNotBePutBackIsShownAsAnError() async {
+        let runner = ScriptedCLIRunner(results: [
+            .success(switchResult(#""switched":false,"error":"error: simulated switch failure","stashed":"d28fb3e","#
+                                  + #""stash_message":"watchtower: m","stash_error":"error: conflict""#)),
+            .success(status()),
+            .success(branches())
+        ])
+        let vm = makeVM(runner)
+        await vm.switchBranch("feature/x", project: project)
+        XCTAssertEqual(vm.gitErrors[project.id]?.contains("only in the stash entry \"watchtower: m\""), true)
+        XCTAssertEqual(vm.gitErrors[project.id]?.contains("git stash apply d28fb3e"), true)
+        XCTAssertNil(vm.gitNotices[project.id])
+    }
+
+    func testAWarningAfterASwitchIsANotice() async {
+        let runner = ScriptedCLIRunner(results: [
+            .success(switchResult(#""switched":true,"warning":"hook says no""#)),
+            .success(status(branch: "feature/x")),
+            .success(branches())
+        ])
+        let vm = makeVM(runner)
+        await vm.switchBranch("feature/x", project: project)
+        XCTAssertNil(vm.gitErrors[project.id])
+        XCTAssertEqual(vm.gitNotices[project.id], "Switched to feature/x, but git reported: hook says no")
+    }
+
+    func testAWarningAfterACreateIsANotice() async {
+        let runner = ScriptedCLIRunner(results: [
+            .success(Data(#"{"branch":"topic","switched":true,"created":true,"warning":"hook says no"}"#.utf8)),
+            .success(status(branch: "topic")),
+            .success(branches())
+        ])
+        let vm = makeVM(runner)
+        let created = await vm.createBranch("topic", project: project)
+        XCTAssertTrue(created)
+        XCTAssertNil(vm.gitErrors[project.id])
+        XCTAssertEqual(vm.gitNotices[project.id], "Created topic, but git reported: hook says no")
     }
 
     func testASuccessfulSwitchReadsTheStatusAndTheBranchesAgain() async {

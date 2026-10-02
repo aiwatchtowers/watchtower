@@ -142,7 +142,7 @@ struct WorkbenchBranchPopover: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         if let notice = vm.gitNotices[id] {
-            // Selectable: it names the stash to pop.
+            // Selectable: it names the stash entry and how to apply it.
             Text(notice)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -189,6 +189,9 @@ struct WorkbenchBranchRow: View {
                         .truncationMode(.middle)
                     if let caption {
                         Text(caption).font(.caption2).foregroundStyle(.secondary)
+                    }
+                    if let gone = WorkbenchBranchPresentation.upstreamCaption(branch) {
+                        Text(gone).font(.caption2).foregroundStyle(.orange)
                     }
                 }
                 Spacer(minLength: 4)

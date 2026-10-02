@@ -101,7 +101,9 @@ extension WorkbenchesViewModel {
             return false
         }
         let created = result.created || result.switched
-        gitErrors[id] = WorkbenchBranchPresentation.outcomeMessage(result) ?? (created ? nil : "The branch was not created.")
+        let outcome = WorkbenchBranchPresentation.outcome(result)
+        gitErrors[id] = outcome.error ?? (created ? nil : "The branch was not created.")
+        gitNotices[id] = outcome.notice
         await afterGitWrite(project: project)
         return created
     }
@@ -176,8 +178,9 @@ extension WorkbenchesViewModel {
             pendingBranchConfirmation[id] = confirmation
             return
         }
-        gitErrors[id] = WorkbenchBranchPresentation.outcomeMessage(result)
-        gitNotices[id] = WorkbenchBranchPresentation.stashNote(result)
+        let outcome = WorkbenchBranchPresentation.outcome(result)
+        gitErrors[id] = outcome.error
+        gitNotices[id] = outcome.notice
         await afterGitWrite(project: project)
     }
 
