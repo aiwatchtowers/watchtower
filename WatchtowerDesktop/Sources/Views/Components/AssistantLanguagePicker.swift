@@ -14,6 +14,8 @@ enum AssistantLanguageText {
 /// `AssistantLanguageCatalog.systemDefault().englishName`; "(from macOS)"
 /// shows while the value is still that default.
 struct AssistantLanguageLine: View {
+    private static let macDefault = AssistantLanguageCatalog.systemDefault().englishName
+
     @Binding var selection: String
     @State private var showPicker = false
 
@@ -21,7 +23,7 @@ struct AssistantLanguageLine: View {
         HStack(spacing: 4) {
             Text("Watchtower will write to you in")
             Text(selection).fontWeight(.semibold).foregroundStyle(.primary)
-            if selection == AssistantLanguageCatalog.systemDefault().englishName {
+            if selection == Self.macDefault {
                 Text("(from macOS)").foregroundStyle(.tertiary)
             }
             Text("·")

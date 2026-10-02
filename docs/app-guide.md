@@ -406,7 +406,7 @@ Fine-tune AI prompts based on your feedback. Shows quality score, feedback stats
 
 ## Settings
 
-Six tabs, in order: **General**, **Connections**, **Features**, **Meetings**, **System**, **Profile**. Every tab that edits configuration shares the same bottom Save bar.
+Six tabs, in order: **General**, **Connections**, **Features**, **Meetings**, **System**, **Profile** — General is the first tab, but Settings opens on Connections. Every tab that edits configuration shares the same bottom Save bar.
 
 **General** — **Assistant language**: the language Catch-Up, briefings, tracks and digests are written in (in chat, the assistant replies in the language you write in). **Change…** opens a picker with your Mac's languages as quick choices and a search over every language by its own or its English name ("Polski" or "Polish"); the choice is saved with Save. A new install starts from your Mac's first preferred language; without a setting, English is used.
 

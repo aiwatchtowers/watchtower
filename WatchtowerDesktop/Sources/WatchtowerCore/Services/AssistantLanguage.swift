@@ -4,14 +4,22 @@ import Foundation
 /// `digest.language` — Go's `prompts.Directive` takes any language name, so
 /// the English name is the stored value whatever the UI shows.
 package struct AssistantLanguage: Hashable, Identifiable, Sendable {
-    /// Bare ISO language code ("ru", "pt", "fil"), the same shape
-    /// `transcription.langset` holds.
+    /// The language code, plus the script for a written variant the
+    /// catalog keeps apart ("zh-Hant", "sr-Latn").
+    package let id: String
+    /// Bare ISO language code ("ru", "pt", "fil"); a script variant shares
+    /// its language's code.
     package let code: String
     package let englishName: String
     /// The language's name in itself ("Русский", "Polski").
     package let nativeName: String
 
-    package var id: String { code }
+    package init(id: String? = nil, code: String, englishName: String, nativeName: String) {
+        self.id = id ?? code
+        self.code = code
+        self.englishName = englishName
+        self.nativeName = nativeName
+    }
 }
 
 /// The pure side of the assistant-language setting: the macOS default, the
@@ -23,11 +31,27 @@ package enum AssistantLanguageCatalog {
 
     package static let english = AssistantLanguage(code: "en", englishName: "English", nativeName: "English")
 
+    /// Written variants that are told apart, by `<code>-<script>`: someone
+    /// reading Traditional Chinese or Latin-script Serbian wants it written
+    /// that way. Every other script folds into its language.
+    private static let scriptVariants: [String: String] = [
+        "zh-Hant": "Chinese (Traditional)",
+        "sr-Latn": "Serbian (Latin)"
+    ]
+
     /// The language behind a locale identifier or BCP 47 tag ("pt-BR",
-    /// "zh_Hans_CN"), nil when Foundation has no English name for it.
+    /// "zh_Hans_CN"; "zh-TW" implies Traditional), nil when Foundation has
+    /// no English name for it.
     package static func language(identifier: String) -> AssistantLanguage? {
-        guard let code = Locale(identifier: identifier).language.languageCode?.identifier,
-              let english = Locale(identifier: "en").localizedString(forLanguageCode: code),
+        let tag = Locale(identifier: identifier).language
+        guard let code = tag.languageCode?.identifier else { return nil }
+        if let script = Locale.Language(identifier: tag.maximalIdentifier).script?.identifier,
+           let english = scriptVariants["\(code)-\(script)"] {
+            let id = "\(code)-\(script)"
+            let native = Locale(identifier: id).localizedString(forIdentifier: id) ?? english
+            return AssistantLanguage(id: id, code: code, englishName: english, nativeName: capitalized(native, code: code))
+        }
+        guard let english = Locale(identifier: "en").localizedString(forLanguageCode: code),
               english.caseInsensitiveCompare(code) != .orderedSame else { return nil }
         let native = Locale(identifier: code).localizedString(forLanguageCode: code) ?? english
         return AssistantLanguage(code: code, englishName: english, nativeName: capitalized(native, code: code))
@@ -38,7 +62,7 @@ package enum AssistantLanguageCatalog {
     /// → English once).
     package static func preferred(_ tags: [String] = Locale.preferredLanguages) -> [AssistantLanguage] {
         var seen = Set<String>()
-        return tags.compactMap(language(identifier:)).filter { seen.insert($0.code).inserted }
+        return tags.compactMap(language(identifier:)).filter { seen.insert($0.id).inserted }
     }
 
     /// The assistant language a fresh install starts with: the first macOS
@@ -49,13 +73,13 @@ package enum AssistantLanguageCatalog {
 
     /// Every language some installed locale speaks, by English name.
     package static func all(_ identifiers: [String] = Locale.availableIdentifiers) -> [AssistantLanguage] {
-        var byCode: [String: AssistantLanguage] = [:]
+        var byID: [String: AssistantLanguage] = [:]
         for identifier in identifiers {
-            if let lang = language(identifier: identifier), byCode[lang.code] == nil {
-                byCode[lang.code] = lang
+            if let lang = language(identifier: identifier), byID[lang.id] == nil {
+                byID[lang.id] = lang
             }
         }
-        return byCode.values.sorted { $0.englishName.localizedCompare($1.englishName) == .orderedAscending }
+        return byID.values.sorted { $0.englishName.localizedCompare($1.englishName) == .orderedAscending }
     }
 
     /// `languages` whose native or English name contains `query`, ignoring
@@ -108,19 +132,34 @@ package enum AssistantLanguageCatalog {
 package enum TranscriptionLangsetSeed {
     package static let defaultsKey = "transcription.langset"
 
-    /// The Mac's language codes in preference order, English appended when
-    /// missing (meetings mix in English often enough to always detect it).
-    package static func seed(_ tags: [String] = Locale.preferredLanguages) -> String {
-        var codes = AssistantLanguageCatalog.preferred(tags).map(\.code)
+    /// Foundation's code → Whisper's, where they differ (Whisper's language
+    /// tokens predate the ISO renames).
+    private static let whisperAliases = ["nb": "no", "fil": "tl", "jv": "jw", "iw": "he"]
+
+    /// The Mac's language codes in preference order, as the transcriber
+    /// names them, kept only where it can detect them (`supported`),
+    /// English appended when missing (meetings mix in English often enough
+    /// to always detect it).
+    package static func seed(_ tags: [String] = Locale.preferredLanguages, supported: Set<String>) -> String {
+        var codes: [String] = []
+        for lang in AssistantLanguageCatalog.preferred(tags) {
+            let code = whisperAliases[lang.code] ?? lang.code
+            if supported.contains(code), !codes.contains(code) { codes.append(code) }
+        }
         if !codes.contains("en") { codes.append("en") }
         return codes.joined(separator: ",")
     }
 
-    /// Writes `seed(tags)` when the key is absent. Returns whether it wrote.
+    /// Writes `seed(tags, supported:)` when the key is absent. Returns
+    /// whether it wrote.
     @discardableResult
-    package static func seedIfUntouched(_ defaults: UserDefaults, tags: [String] = Locale.preferredLanguages) -> Bool {
+    package static func seedIfUntouched(
+        _ defaults: UserDefaults,
+        supported: Set<String>,
+        tags: [String] = Locale.preferredLanguages
+    ) -> Bool {
         guard defaults.object(forKey: defaultsKey) == nil else { return false }
-        defaults.set(seed(tags), forKey: defaultsKey)
+        defaults.set(seed(tags, supported: supported), forKey: defaultsKey)
         return true
     }
 }

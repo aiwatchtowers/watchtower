@@ -14,6 +14,28 @@ final class AssistantLanguageTests: XCTestCase {
         XCTAssertEqual(AssistantLanguageCatalog.systemDefault(["zh-Hans-CN"]).englishName, "Chinese")
     }
 
+    func testTraditionalChineseIsItsOwnLanguage() {
+        for tag in ["zh-Hant-TW", "zh-TW", "zh-HK", "zh-MO"] {
+            XCTAssertEqual(AssistantLanguageCatalog.systemDefault([tag]).englishName, "Chinese (Traditional)", tag)
+        }
+        for tag in ["zh-Hans-CN", "zh-CN", "zh"] {
+            XCTAssertEqual(AssistantLanguageCatalog.systemDefault([tag]).englishName, "Chinese", tag)
+        }
+        let traditional = AssistantLanguageCatalog.systemDefault(["zh-Hant-TW"])
+        XCTAssertEqual(traditional.id, "zh-Hant")
+        XCTAssertEqual(traditional.code, "zh")
+        XCTAssertEqual(AssistantLanguageCatalog.preferred(["zh-Hant-TW", "zh-CN"]).map(\.id), ["zh-Hant", "zh"])
+    }
+
+    func testLatinSerbianIsItsOwnLanguage() {
+        XCTAssertEqual(AssistantLanguageCatalog.systemDefault(["sr-Latn-RS"]).englishName, "Serbian (Latin)")
+        XCTAssertEqual(AssistantLanguageCatalog.systemDefault(["sr-RS"]).englishName, "Serbian")
+    }
+
+    func testOtherScriptsFoldIntoTheirLanguage() {
+        XCTAssertEqual(AssistantLanguageCatalog.systemDefault(["uz-Cyrl"]).englishName, "Uzbek")
+    }
+
     func testSystemDefaultFallsBackToEnglish() {
         XCTAssertEqual(AssistantLanguageCatalog.systemDefault([]), AssistantLanguageCatalog.english)
         // A tag Foundation cannot name is skipped, not stored as a code.
@@ -37,9 +59,13 @@ final class AssistantLanguageTests: XCTestCase {
     private let catalog = AssistantLanguageCatalog.all()
 
     func testCatalogHasOneEntryPerLanguage() {
-        let codes = catalog.map(\.code)
+        let codes = catalog.filter { $0.id == $0.code }.map(\.code)
         XCTAssertEqual(codes.count, Set(codes).count)
         XCTAssertTrue(codes.contains("pl"))
+        let ids = catalog.map(\.id)
+        XCTAssertEqual(ids.count, Set(ids).count)
+        XCTAssertTrue(ids.contains("zh-Hant"))
+        XCTAssertTrue(ids.contains("sr-Latn"))
         XCTAssertGreaterThan(catalog.count, 50)
     }
 
@@ -92,21 +118,47 @@ final class TranscriptionLangsetSeedTests: XCTestCase {
         super.tearDown()
     }
 
+    /// A Whisper-shaped code set for the seed's filter.
+    private let supported: Set<String> = ["en", "ru", "uk", "de", "pl", "no", "tl", "jw", "he", "zh", "sr"]
+
+    private func seed(_ tags: [String]) -> String {
+        TranscriptionLangsetSeed.seed(tags, supported: supported)
+    }
+
     func testSeedIsMacLanguagesPlusEnglish() {
-        XCTAssertEqual(TranscriptionLangsetSeed.seed(["ru-UA", "uk-UA"]), "ru,uk,en")
-        XCTAssertEqual(TranscriptionLangsetSeed.seed(["en-GB", "de-DE"]), "en,de")
-        XCTAssertEqual(TranscriptionLangsetSeed.seed(["pl-PL", "en-US", "pl"]), "pl,en")
-        XCTAssertEqual(TranscriptionLangsetSeed.seed([]), "en")
+        XCTAssertEqual(seed(["ru-UA", "uk-UA"]), "ru,uk,en")
+        XCTAssertEqual(seed(["en-GB", "de-DE"]), "en,de")
+        XCTAssertEqual(seed(["pl-PL", "en-US", "pl"]), "pl,en")
+        XCTAssertEqual(seed([]), "en")
+    }
+
+    func testSeedUsesTheTranscribersCodes() {
+        XCTAssertEqual(seed(["nb-NO"]), "no,en")
+        XCTAssertEqual(seed(["fil-PH"]), "tl,en")
+        XCTAssertEqual(seed(["jv"]), "jw,en")
+        XCTAssertEqual(seed(["he-IL"]), "he,en")
+        XCTAssertEqual(seed(["iw"]), "he,en")
+    }
+
+    /// Script variants share one detector code.
+    func testSeedFoldsScriptVariants() {
+        XCTAssertEqual(seed(["zh-Hant-TW", "zh-CN"]), "zh,en")
+        XCTAssertEqual(seed(["sr-Latn-RS", "sr-RS"]), "sr,en")
+    }
+
+    func testSeedDropsLanguagesTheTranscriberCannotDetect() {
+        XCTAssertEqual(seed(["chr-US", "de-DE"]), "de,en")
+        XCTAssertEqual(seed(["chr-US"]), "en")
     }
 
     func testAbsentKeyIsSeeded() {
-        XCTAssertTrue(TranscriptionLangsetSeed.seedIfUntouched(defaults, tags: ["de-DE"]))
+        XCTAssertTrue(TranscriptionLangsetSeed.seedIfUntouched(defaults, supported: supported, tags: ["de-DE"]))
         XCTAssertEqual(defaults.string(forKey: TranscriptionLangsetSeed.defaultsKey), "de,en")
     }
 
     func testUserValueIsNeverOverwritten() {
         defaults.set("ru,en", forKey: TranscriptionLangsetSeed.defaultsKey)
-        XCTAssertFalse(TranscriptionLangsetSeed.seedIfUntouched(defaults, tags: ["de-DE"]))
+        XCTAssertFalse(TranscriptionLangsetSeed.seedIfUntouched(defaults, supported: supported, tags: ["de-DE"]))
         XCTAssertEqual(defaults.string(forKey: TranscriptionLangsetSeed.defaultsKey), "ru,en")
     }
 
@@ -115,13 +167,13 @@ final class TranscriptionLangsetSeedTests: XCTestCase {
     /// own default for a blank one).
     func testUserBlankValueIsNeverOverwritten() {
         defaults.set("", forKey: TranscriptionLangsetSeed.defaultsKey)
-        XCTAssertFalse(TranscriptionLangsetSeed.seedIfUntouched(defaults, tags: ["de-DE"]))
+        XCTAssertFalse(TranscriptionLangsetSeed.seedIfUntouched(defaults, supported: supported, tags: ["de-DE"]))
         XCTAssertEqual(defaults.string(forKey: TranscriptionLangsetSeed.defaultsKey), "")
     }
 
     func testSeedRunsOnce() {
-        TranscriptionLangsetSeed.seedIfUntouched(defaults, tags: ["de-DE"])
-        XCTAssertFalse(TranscriptionLangsetSeed.seedIfUntouched(defaults, tags: ["fr-FR"]))
+        TranscriptionLangsetSeed.seedIfUntouched(defaults, supported: supported, tags: ["de-DE"])
+        XCTAssertFalse(TranscriptionLangsetSeed.seedIfUntouched(defaults, supported: supported, tags: ["fr-FR"]))
         XCTAssertEqual(defaults.string(forKey: TranscriptionLangsetSeed.defaultsKey), "de,en")
     }
 }

@@ -655,12 +655,14 @@ final class AppState {
                 await reconcileOnboarding(dbPool: nil)
                 isLoading = false
             }
-            // A pending onboarding is a fresh install (or a setup re-run):
-            // the one moment the transcription langset may follow the Mac's
-            // languages. An install that finished onboarding keeps the
-            // "ru,uk,en" default it has been transcribing with.
+            // Any launch that lands in onboarding (a fresh install, or one
+            // relaunched before finishing it) may let the transcription
+            // langset follow the Mac's languages; "Run setup again" from
+            // Settings does not, it never goes through here. An install that
+            // finished onboarding keeps the "ru,uk,en" default it has been
+            // transcribing with. Whisper's codes: it is the default engine.
             if needsOnboarding {
-                TranscriptionLangsetSeed.seedIfUntouched(.standard)
+                TranscriptionLangsetSeed.seedIfUntouched(.standard, supported: WhisperKitEngine.languageCodes)
             }
         }
         // Check for updates now and every UpdateService.checkInterval while
