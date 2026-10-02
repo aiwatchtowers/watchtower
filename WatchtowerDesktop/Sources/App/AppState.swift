@@ -891,6 +891,19 @@ final class AppState {
         slackAccountsViewModel = vm
     }
 
+    /// Re-consents one Slack account from a failed send's card ("sign in
+    /// again to grant send"): the same `slack login --account <id>` flow as
+    /// Settings → Slack → Reconnect, whose error line also shows its failure.
+    func reconnectSlack(accountID: Int64) async {
+        guard let vm = slackAccountsViewModel else { return }
+        if vm.accounts.isEmpty { await vm.refreshAsync() }
+        guard let account = vm.accounts.first(where: { $0.id == accountID }) else {
+            vm.error = "Slack account #\(accountID) is no longer connected."
+            return
+        }
+        await vm.relogin(account)
+    }
+
     func initJiraAccounts(dbPool: DatabasePool) {
         let vm = JiraAccountsViewModel(dbPool: dbPool)
         vm.onAccountsChanged = { [weak self] in await self?.refreshOwner() }

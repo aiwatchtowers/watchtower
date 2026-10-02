@@ -294,4 +294,54 @@ final class AgentActionCardViewTests: XCTestCase {
             XCTAssertThrowsError(try view.inspect().find(ViewType.Link.self), "\(url) must not render a Link")
         }
     }
+
+    // MARK: - send_slack_message (#166)
+
+    private static let slackArgs =
+        ##"{"text":"build is green","reason":"r","target":{"account_id":3,"workspace":"Acme","channel_id":"C1","label":"#ops"}}"##
+
+    func testSlackSendSummaryAndTitle() throws {
+        let action = try row { db in
+            try TestDatabase.insertAgentAction(db, tool: "send_slack_message", external: true, argsJSON: Self.slackArgs,
+                                               status: "applied")
+        }
+        XCTAssertEqual(AgentActionCardView.title(for: action), "Send to Slack")
+        XCTAssertEqual(AgentActionCardView.summaryLines(for: action), ["To: #ops in Acme", "build is green"])
+    }
+
+    /// Where the host wires edits (main chat, Inbox strip) the pending card
+    /// shows the editor and "Approve & send"; elsewhere the plain card.
+    func testPendingSlackSendIsEditableOnlyWhereTheHostWiresEdits() throws {
+        let action = try row { db in
+            try TestDatabase.insertAgentAction(db, tool: "send_slack_message", external: true, argsJSON: Self.slackArgs)
+        }
+        let editable = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
+                                           onApproveEdited: { _ in })
+        XCTAssertNoThrow(try editable.inspect().find(button: "Approve & send"))
+        XCTAssertNoThrow(try editable.inspect().find(ViewType.TextEditor.self))
+        XCTAssertNoThrow(try editable.inspect().find(button: "Reject"))
+
+        let plain = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
+        XCTAssertNoThrow(try plain.inspect().find(button: "Approve"))
+        XCTAssertThrowsError(try plain.inspect().find(ViewType.TextEditor.self))
+        XCTAssertNoThrow(try plain.inspect().find(text: "build is green"))
+    }
+
+    func testFailedSlackSendForWantOfTheGrantOffersReconnect() throws {
+        let error = "slack workspace Acme has not granted Watchtower permission to send messages — sign in again to grant send"
+        let action = try row { db in
+            try TestDatabase.insertAgentAction(db, tool: "send_slack_message", external: true, argsJSON: Self.slackArgs,
+                                               status: "failed", error: error)
+        }
+        var reconnected: Int64?
+        let view = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
+                                       onReconnectSlack: { reconnected = $0 })
+        try view.inspect().find(button: "Reconnect Slack").tap()
+        XCTAssertEqual(reconnected, 3)
+        XCTAssertNoThrow(try view.inspect().find(button: "Retry"))
+        // swiftlint:disable:next trailing_closure
+        XCTAssertNoThrow(try view.inspect().find(textWhere: { text, _ in text.contains("already reached Slack") }))
+        // swiftlint:disable:next trailing_closure
+        XCTAssertThrowsError(try view.inspect().find(textWhere: { text, _ in text.contains("check Jira") }))
+    }
 }

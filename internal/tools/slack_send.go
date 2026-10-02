@@ -411,9 +411,21 @@ func slackSendFailed(account db.SlackAccount, what string, err error) error {
 	return fmt.Errorf("slack %s: %w", what, err)
 }
 
-// normalizeSlackText is the comparison form of a message: Slack stores &, <
-// and > escaped and may trim the edges.
+// slackLinkRE matches a link as Slack stores it: <https://x> for a URL it
+// auto-linked, <https://x|label> for a labelled one.
+var slackLinkRE = regexp.MustCompile(`<((?:https?|mailto):[^|>]*)(?:\|([^>]*))?>`)
+
+// normalizeSlackText is the comparison form of a message: Slack wraps the
+// URLs it auto-links in <…>, stores &, < and > escaped and may trim the
+// edges. Applied to both sides, so a labelled link compares by its label.
 func normalizeSlackText(s string) string {
+	s = slackLinkRE.ReplaceAllStringFunc(s, func(m string) string {
+		parts := slackLinkRE.FindStringSubmatch(m)
+		if parts[2] != "" {
+			return parts[2]
+		}
+		return parts[1]
+	})
 	return strings.TrimSpace(html.UnescapeString(s))
 }
 

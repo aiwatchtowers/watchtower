@@ -57,6 +57,21 @@ final class AgentActionFeedTests: XCTestCase {
         XCTAssertEqual(runner.invocations[2], ["actions", "apply", "1", "--json"])
     }
 
+    /// #166: card edits ride `--patch` before `--json`; no patch, no flag.
+    func testApproveWithPatchPassesTheEdits() async throws {
+        let (pool, path) = try makePool()
+        defer { TestDatabase.cleanup(path: path) }
+        try await pool.write { db in try TestDatabase.insertAgentAction(db) }
+        let runner = FakeCLIRunner(stdout: Data(#"{"ok":true,"applied_ok":true,"error":""}"#.utf8))
+        let feed = AgentActionFeed(dbPool: pool, cliRunner: runner)
+        feed.start(conversationID: 1)
+        await waitForRows(feed, count: 1)
+
+        await feed.approve(1, patch: #"{"text":"-edited"}"#)
+        XCTAssertEqual(runner.invocations, [["actions", "approve", "1", "--patch", #"{"text":"-edited"}"#, "--json"]])
+        feed.stop()
+    }
+
     func testApproveSurfacesExecutionErrorFromEnvelope() async throws {
         let (pool, path) = try makePool()
         defer { TestDatabase.cleanup(path: path) }

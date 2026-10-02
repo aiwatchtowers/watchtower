@@ -44,9 +44,27 @@ extension ProjectQueries {
         for row in try Row.fetchAll(db, sql: "SELECT id, text, status FROM targets WHERE project_id = ?", arguments: [project.id]) {
             targets[row["id"]] = .init(title: row["text"], status: row["status"])
         }
+        // Proposals the project session filed (`context_type='project'`, Go
+        // `tools.ProjectContextType`) — only an External, propose-only tool
+        // (a Slack send) stays pending there; the policy reads the new ones.
+        let projectKey = String(project.id)
+        let lastAction = try Int64.fetchOne(db, sql: """
+            SELECT COALESCE(MAX(id), 0) FROM agent_actions WHERE context_type = 'project' AND context_id = ?
+            """, arguments: [projectKey]) ?? 0
+        let pendingRows = try AgentAction.fetchAll(db, sql: """
+            SELECT * FROM agent_actions WHERE context_type = 'project' AND context_id = ? AND status = 'pending'
+            ORDER BY id
+            """, arguments: [projectKey])
+        let pending = pendingRows.map { action in
+            ProjectNotificationPolicy.PendingAction(
+                id: action.id, tool: action.tool,
+                summary: SlackSendProposal(action: action).map { "\($0.recipientLine) — \($0.text)" } ?? action.reason
+            )
+        }
         return ProjectNotificationPolicy.Snapshot(
             projectID: project.id, projectName: project.name, lastAgentCommentID: last,
-            questions: questions, documents: documents, targets: targets, ownerTouched: []
+            questions: questions, documents: documents, targets: targets, ownerTouched: [],
+            lastActionID: lastAction, pendingActions: pending
         )
     }
 }

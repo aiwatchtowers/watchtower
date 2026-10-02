@@ -430,3 +430,16 @@ func TestGetWritingStyle(t *testing.T) {
 	assert.Equal(t, "Russian with the team, terse, no emoji", m["style_profile"])
 	assert.Nil(t, m["note"])
 }
+
+func TestNormalizeSlackText_MatchesWhatSlackStores(t *testing.T) {
+	for sent, stored := range map[string]string{
+		"see https://example.com/a?b=1 & go": "see <https://example.com/a?b=1> &amp; go",
+		"a < b > c":                          "a &lt; b &gt; c",
+		"<https://example.com|the doc> now":  "<https://example.com|the doc> now",
+		"mail <mailto:a@example.com|a>":      "mail <mailto:a@example.com|a>",
+		"cc <@UALICE>":                       "cc <@UALICE>",
+	} {
+		assert.Equal(t, normalizeSlackText(sent), normalizeSlackText(stored), sent)
+	}
+	assert.NotEqual(t, normalizeSlackText("ship it"), normalizeSlackText("ship it!"))
+}
