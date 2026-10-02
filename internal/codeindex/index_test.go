@@ -277,3 +277,22 @@ func wantScanned(t *testing.T, r FileResult, rel, lang string) {
 		}
 	}
 }
+
+// A leading UTF-8 BOM is not part of a scanned file: the first key is
+// found, its name is clean, and its line-1 column is the editor's (which
+// drops the BOM).
+func TestRun_ScanSkipsALeadingBOM(t *testing.T) {
+	root := t.TempDir()
+	files := map[string]string{"a.toml": "first = 1\n", "a.yaml": "first: 1\n", "a.json": "{\"first\": 1}\n"}
+	wantCol := map[string]int{"a.toml": 1, "a.yaml": 1, "a.json": 3}
+	for rel, body := range files {
+		write(t, root, rel, append([]byte("\xef\xbb\xbf"), body...))
+	}
+	got := collect(t, root, nil, func() parser { return panicParser{} })
+	for rel := range files {
+		syms := got[rel].Symbols
+		if len(syms) != 1 || syms[0].Name != "first" || syms[0].Line != 1 || syms[0].Col != wantCol[rel] {
+			t.Errorf("%s = %+v, want first at 1:%d", rel, syms, wantCol[rel])
+		}
+	}
+}

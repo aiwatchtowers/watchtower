@@ -108,3 +108,21 @@ func TestScriptHost(t *testing.T) {
 		t.Error("scriptHost changed the shared TypeScript row")
 	}
 }
+
+// Only column-0 comments are a key's doc: an indented one belongs to the
+// value above (a commented-out nested key, a block scalar's line).
+func TestOutline_DocIsAColumnZeroComment(t *testing.T) {
+	for src, want := range map[string]string{
+		"ingress:\n  enabled: false\n  # annotations: {}\nnodeSelector: {}\n": "",
+		"script: |\n  # install deps\nnext: 1\n":                              "",
+		"a: 1\n# The next key. More.\nnext: 1\n":                              "The next key.",
+	} {
+		syms := yamlKeys([]byte(src))
+		if s := syms[len(syms)-1]; s.Name != "next" && s.Name != "nodeSelector" || s.Doc != want {
+			t.Errorf("yamlKeys(%q) last = %+v, want doc %q", src, s, want)
+		}
+	}
+	if s := tomlKeys([]byte("[a]\n  # x = 1\n[b]\n")); len(s) != 2 || s[1].Doc != "" {
+		t.Errorf("an indented TOML comment became a doc: %+v", s)
+	}
+}

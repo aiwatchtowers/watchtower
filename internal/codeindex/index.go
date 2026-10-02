@@ -11,6 +11,7 @@
 package codeindex
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -197,13 +198,18 @@ func indexFile(p parser, root string, j job) (FileResult, error) {
 	return res, nil
 }
 
+// utf8BOM is the byte order mark some editors write at a file's start.
+var utf8BOM = []byte("\xef\xbb\xbf")
+
 // symbolsOf indexes src as l: by its scan, or by its grammar (a Vue or
 // Svelte file's `<script>` blocks by the JavaScript or TypeScript one);
-// supported=false when this build has no grammar for it.
+// supported=false when this build has no grammar for it. A scan reads src
+// past a leading BOM, as the editor shows it: names stay clean and line-1
+// columns match.
 func symbolsOf(p parser, l *langSpec, src []byte) (syms []Symbol, supported bool, err error) {
 	switch {
 	case l.scan != nil:
-		return l.scan(src), true, nil
+		return l.scan(bytes.TrimPrefix(src, utf8BOM)), true, nil
 	case l.scripts:
 		return p.parse(scriptHost(src), src)
 	}

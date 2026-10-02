@@ -49,16 +49,14 @@ func outlineField(name string, lines []string, i, nameAt int, doc string) Symbol
 	}
 }
 
-// hashDoc is the first sentence of the `#` comment lines directly above
-// line i (no blank line between).
+// hashDoc is the first sentence of the column-0 `#` comment lines
+// directly above line i (no blank line between). An indented comment
+// belongs to the value above it (a commented-out nested key, a line of a
+// block scalar), not to the next top-level key.
 func hashDoc(lines []string, i int) string {
 	var parts []string
-	for j := i - 1; j >= 0; j-- {
-		t := strings.TrimSpace(lines[j])
-		if !strings.HasPrefix(t, "#") {
-			break
-		}
-		parts = append(parts, commentText(t))
+	for j := i - 1; j >= 0 && strings.HasPrefix(lines[j], "#"); j-- {
+		parts = append(parts, commentText(lines[j]))
 	}
 	slices.Reverse(parts)
 	return firstSentence(strings.Join(parts, " "))
