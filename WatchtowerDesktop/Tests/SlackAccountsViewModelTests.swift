@@ -98,3 +98,63 @@ final class SlackAccountsViewModelTests: XCTestCase {
         XCTAssertEqual(SlackAccountsViewModel.setEnabledArgs(for: account, enabled: false), ["slack", "disable", "2"])
     }
 }
+
+// MARK: - Daemon restart policy
+//
+// `/usr/bin/true` / `/usr/bin/false` stand in for the CLI: the VM's own
+// success/failure branch runs for real, only the daemon restart is faked.
+
+extension SlackAccountsViewModelTests {
+    private func makeVM(cli: String) throws -> (SlackAccountsViewModel, FakeDaemonRestarter, DatabasePool) {
+        let pool = try makePool()
+        let daemon = FakeDaemonRestarter()
+        return (SlackAccountsViewModel(dbPool: pool, daemon: daemon) { cli }, daemon, pool)
+    }
+
+    private func insertAccount(_ pool: DatabasePool) async throws -> SlackAccount {
+        try await pool.write { db in _ = try TestDatabase.insertSlackAccount(db, teamName: "Acme") }
+        let rows = try await pool.read { db in try SlackAccountQueries.fetchAll(db) }
+        return try XCTUnwrap(rows.first)
+    }
+
+    func testAddRestartsTheDaemonByDefault() async throws {
+        let (vm, daemon, _) = try makeVM(cli: "/usr/bin/true")
+        await vm.addAccount(label: "")
+        await vm.daemonRestartTask?.value
+        XCTAssertNil(vm.error)
+        XCTAssertEqual(daemon.restartCount, 1)
+    }
+
+    func testDeferredAddDoesNotRestartTheDaemon() async throws {
+        let (vm, daemon, _) = try makeVM(cli: "/usr/bin/true")
+        await vm.addAccount(label: "", daemonPolicy: .deferred)
+        XCTAssertNil(vm.error)
+        XCTAssertNil(vm.daemonRestartTask)
+        XCTAssertEqual(daemon.restartCount, 0)
+    }
+
+    func testRemoveRestartsTheDaemonByDefault() async throws {
+        let (vm, daemon, pool) = try makeVM(cli: "/usr/bin/true")
+        let account = try await insertAccount(pool)
+        await vm.remove(account)
+        await vm.daemonRestartTask?.value
+        XCTAssertEqual(daemon.restartCount, 1)
+    }
+
+    func testDeferredRemoveDoesNotRestartTheDaemon() async throws {
+        let (vm, daemon, pool) = try makeVM(cli: "/usr/bin/true")
+        let account = try await insertAccount(pool)
+        await vm.remove(account, daemonPolicy: .deferred)
+        XCTAssertNil(vm.error)
+        XCTAssertNil(vm.daemonRestartTask)
+        XCTAssertEqual(daemon.restartCount, 0)
+    }
+
+    func testFailedAddDoesNotRestartTheDaemon() async throws {
+        let (vm, daemon, _) = try makeVM(cli: "/usr/bin/false")
+        await vm.addAccount(label: "")
+        XCTAssertNotNil(vm.error)
+        XCTAssertNil(vm.daemonRestartTask)
+        XCTAssertEqual(daemon.restartCount, 0)
+    }
+}
