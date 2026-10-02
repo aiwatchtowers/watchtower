@@ -129,7 +129,8 @@ func resolveSlackIdentity(ctx context.Context, accessToken string) (slackIdentit
 // back (soft delete) so a failed connect never leaves an un-loginable ghost
 // account — mirrors createEmailAccountWithCredentials. Returns the resolved
 // identity on success.
-func connectSlackAccount(ctx context.Context, cfg *config.Config, database *db.DB, id int64, accessToken string, isNewRow bool, warnOut io.Writer) (slackIdentity, error) {
+func connectSlackAccount(ctx context.Context, cfg *config.Config, database *db.DB, id int64, grant *auth.OAuthResult, isNewRow bool, warnOut io.Writer) (slackIdentity, error) {
+	accessToken := grant.AccessToken
 	identity, err := resolveSlackIdentity(ctx, accessToken)
 	if err != nil {
 		if isNewRow {
@@ -152,6 +153,7 @@ func connectSlackAccount(ctx context.Context, cfg *config.Config, database *db.D
 		TeamID:      identity.TeamID,
 		TeamName:    identity.TeamName,
 		UserID:      identity.UserID,
+		Scope:       grant.Scope,
 	}); err != nil {
 		if isNewRow {
 			rollbackSlackAccount(database, id, warnOut)
@@ -230,7 +232,7 @@ func runSlackAdd(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("creating account: %w", err)
 	}
 
-	identity, err := connectSlackAccount(cmd.Context(), cfg, database, id, result.AccessToken, true, cmd.ErrOrStderr())
+	identity, err := connectSlackAccount(cmd.Context(), cfg, database, id, result, true, cmd.ErrOrStderr())
 	if err != nil {
 		return err
 	}
@@ -274,7 +276,7 @@ func runSlackLogin(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	identity, err := connectSlackAccount(cmd.Context(), cfg, database, accountID, result.AccessToken, isNewRow, cmd.ErrOrStderr())
+	identity, err := connectSlackAccount(cmd.Context(), cfg, database, accountID, result, isNewRow, cmd.ErrOrStderr())
 	if err != nil {
 		return err
 	}

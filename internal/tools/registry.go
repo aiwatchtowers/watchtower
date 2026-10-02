@@ -117,6 +117,19 @@ type Tool struct {
 	// *ValidationError from Propose writes no row. Optional.
 	Scope func(ctx context.Context, d *db.DB, args json.RawMessage, b Binding) error
 
+	// ProposeUnderDirectApply lets an External tool that names the binding's
+	// surface run in a direct-apply session — as a PENDING proposal the owner
+	// approves in the Desktop, never inline (send_slack_message from a project
+	// terminal, DEV-06). Without it an External tool is refused there.
+	ProposeUnderDirectApply bool
+	// Revise merges an owner edit (patch, a JSON object) into a pending row's
+	// stored args and returns the new args; it decides what is editable and
+	// re-validates it. Optional: a tool without it takes no edits.
+	Revise func(ctx context.Context, d *db.DB, stored, patch json.RawMessage) (json.RawMessage, error)
+	// Ready is what must hold before a row may be approved — e.g. the owner
+	// picked one of several pinned candidates. Optional.
+	Ready func(args json.RawMessage) error
+
 	// resolved is InputSchema prepared for validation. Unexported: a tool
 	// author declares the schema, the registry prepares it once in Register
 	// (RunDirect prepares it for a tool built outside the registry).
@@ -317,11 +330,70 @@ func (r *Registry) Propose(ctx context.Context, name string, args json.RawMessag
 	if trust == TrustExecute {
 		return r.applyTrusted(ctx, id)
 	}
+	where := "in this chat"
+	if b.DirectApply {
+		// A project session has no chat card: the proposal waits in the
+		// Desktop's Inbox → Actions strip.
+		where = "in Watchtower Desktop (Inbox → Actions)"
+	}
 	return Receipt{
 		ActionID: id, Status: "pending", Tool: name,
-		Message: fmt.Sprintf("Proposal #%d recorded (%s). The owner must approve it in this chat before "+
-			"anything happens — tell the owner it awaits their approval and do not claim it is done.", id, name),
+		Message: fmt.Sprintf("Proposal #%d recorded (%s). The owner must approve it %s before "+
+			"anything happens — tell the owner it awaits their approval and do not claim it is done.", id, name, where),
 	}, nil
+}
+
+// Approve moves a pending row to approved, first merging the owner's edit
+// (patch, optional) through the tool's Revise and checking the tool's Ready.
+// With a patch, the new args and the approval land in ONE conditional update
+// (still pending, args unchanged since read), so an edit can neither
+// overwrite another decision nor approve args the owner did not see. It only
+// decides — Apply runs the row afterwards, exactly as before. False (no
+// error) means the row was not pending; a Revise/Ready refusal is a
+// *ValidationError and leaves the row pending.
+func (r *Registry) Approve(ctx context.Context, id int64, patch json.RawMessage) (bool, error) {
+	row, err := r.db.GetAgentAction(id)
+	if err != nil {
+		return false, err
+	}
+	if row == nil {
+		return false, ErrNotFound
+	}
+	if row.Status != "pending" {
+		return false, nil
+	}
+	t, known := r.tools[row.Tool]
+	args := json.RawMessage(row.ArgsJSON)
+	hasPatch := len(bytes.TrimSpace(patch)) > 0
+	if hasPatch {
+		if !known || t.Revise == nil {
+			return false, &ValidationError{Msg: row.Tool + " takes no edits"}
+		}
+		if args, err = t.Revise(ctx, r.db, args, patch); err != nil {
+			return false, err
+		}
+		if !json.Valid(args) {
+			return false, fmt.Errorf("revise: tool %q returned invalid JSON", row.Tool)
+		}
+	}
+	if known && t.Ready != nil {
+		if err := t.Ready(args); err != nil {
+			return false, err
+		}
+	}
+	if !hasPatch {
+		return r.db.TransitionAgentAction(id, []string{"pending"}, "approved", "", "")
+	}
+	ok, err := r.db.ApproveAgentActionWithArgs(id, row.ArgsJSON, string(args))
+	if err != nil || ok {
+		return ok, err
+	}
+	// Still pending but with other args: an edit landed after this one read
+	// the row. Refuse rather than approve what the owner did not see.
+	if cur, gerr := r.db.GetAgentAction(id); gerr == nil && cur != nil && cur.Status == "pending" {
+		return false, fmt.Errorf("%w: #%d was edited elsewhere; reload it and approve again", ErrBadTransition, id)
+	}
+	return false, nil
 }
 
 // admitProposal runs every gate a write call passes before a row is written:
@@ -355,7 +427,7 @@ func directApplyGate(t *Tool, b Binding) error {
 	if !b.DirectApply {
 		return nil
 	}
-	if t.External {
+	if t.External && !t.ProposeUnderDirectApply {
 		return &ValidationError{Msg: t.Name + " leaves this machine and never runs in a direct-apply session"}
 	}
 	if !slices.Contains(t.Surfaces, b.Surface) {
@@ -364,7 +436,9 @@ func directApplyGate(t *Tool, b Binding) error {
 	return nil
 }
 
-// resolveTrust decides how this one call runs. External is always ask:
+// resolveTrust decides how this one call runs. External is always ask —
+// including a ProposeUnderDirectApply tool in a direct-apply session, which is
+// therefore recorded pending and waits for the owner's Approve:
 // SetTrust refuses `execute` for an external tool, but db.SetToolTrust does
 // not, and a trust row keyed by tool NAME outlives a tool later being marked
 // External — the read side decides too (AGENT-03). DirectApply is execute for

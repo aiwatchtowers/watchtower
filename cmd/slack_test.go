@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/auth"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	watchtowerslack "watchtower/internal/slack"
@@ -102,6 +103,27 @@ func TestEnsureLegacySlackAccount_SeedsFromConfigToken(t *testing.T) {
 	assert.Equal(t, "Acme Corp", acct.TeamName)
 	assert.Equal(t, "acme", acct.TeamDomain)
 	assert.Equal(t, watchtowerslack.Namespace(id, "U0OWNER"), acct.CurrentUserID)
+}
+
+// A (re-)consent records the scopes Slack granted, so a send can tell a token
+// that lacks chat:write from one that has it without a network call.
+func TestConnectSlackAccount_RecordsGrantedScope(t *testing.T) {
+	stubSlackIdentityServer(t, "U0OWNER", "T0TEAM", "Acme Corp", "acme")
+	t.Setenv("HOME", t.TempDir())
+	cfg := &config.Config{ActiveWorkspace: "test"}
+	database := db.OpenTestDB(t)
+	id, err := database.CreateSlackAccount(db.SlackAccount{})
+	require.NoError(t, err)
+
+	_, err = connectSlackAccount(context.Background(), cfg, database, id,
+		&auth.OAuthResult{AccessToken: "xoxp-new", Scope: "channels:read,chat:write"}, false, &bytes.Buffer{})
+	require.NoError(t, err)
+
+	tok, err := watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), id).Load()
+	require.NoError(t, err)
+	require.NotNil(t, tok)
+	assert.Equal(t, "channels:read,chat:write", tok.Scope)
+	assert.True(t, tok.HasScope(watchtowerslack.SendScope))
 }
 
 func TestEnsureLegacySlackAccount_SecondCallIsNoop(t *testing.T) {

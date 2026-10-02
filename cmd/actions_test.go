@@ -44,6 +44,7 @@ func runActions(t *testing.T, args ...string) (string, error) {
 	actionsFlagConversation = 0
 	actionsFlagSurface = ""
 	actionsFlagForce = false
+	actionsFlagPatch = ""
 	return out.String(), err
 }
 
