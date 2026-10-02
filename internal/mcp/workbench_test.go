@@ -142,7 +142,8 @@ func TestGetAction_ProjectSessionSeesOnlyItsRows(t *testing.T) {
 
 // workbenchToolsListed is every listed tool of the session that is a
 // workbench tool (surface "project") under either spelling, by listed name,
-// with its description.
+// with every text the agent reads about it: its description and its input
+// schema (the argument descriptions), as JSON.
 func workbenchToolsListed(t *testing.T, cs *mcpsdk.ClientSession) map[string]string {
 	t.Helper()
 	res, err := cs.ListTools(context.Background(), nil)
@@ -156,7 +157,11 @@ func workbenchToolsListed(t *testing.T, cs *mcpsdk.ClientSession) map[string]str
 	out := map[string]string{}
 	for _, tool := range res.Tools {
 		if workbench[tools.CanonicalToolName(tool.Name)] {
-			out[tool.Name] = tool.Description
+			schema, err := json.Marshal(tool.InputSchema)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out[tool.Name] = tool.Description + "\n" + string(schema)
 		}
 	}
 	return out
@@ -164,7 +169,8 @@ func workbenchToolsListed(t *testing.T, cs *mcpsdk.ClientSession) map[string]str
 
 // Spec 2026-10-02 §5.2 (extends DEV-06): `mcp --workbench N` lists only the
 // new names, `mcp --project N` only the old ones — eleven workbench tools
-// either way, with no description pointing at a tool the session lacks.
+// either way, with no description or input schema pointing at a tool the
+// session lacks.
 func TestWorkbenchMode_EachVocabularyListsElevenToolsUnderItsOwnNames(t *testing.T) {
 	database := seedDB(t)
 	pid := seedMCPWorkbench(t, database)
@@ -186,9 +192,15 @@ func TestWorkbenchMode_EachVocabularyListsElevenToolsUnderItsOwnNames(t *testing
 			}
 			for name, desc := range listed {
 				if strings.Contains(desc, unwanted) {
-					t.Errorf("legacy=%v: %s's description names %s", legacy, name, unwanted)
+					t.Errorf("legacy=%v: %s's description or input schema names %s", legacy, name, unwanted)
 				}
 			}
+		}
+		// The argument descriptions are spelled too, not only the tool's own.
+		want := map[bool]string{false: "the source id from workbench_info", true: "the source id from project_info"}[legacy]
+		remove := tools.Binding{LegacyNames: legacy}.Spell(tools.RemoveWorkbenchSourceTool)
+		if !strings.Contains(listed[remove], want) {
+			t.Errorf("legacy=%v: %s's schema lacks %q: %s", legacy, remove, want, listed[remove])
 		}
 	}
 }

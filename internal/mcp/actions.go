@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"watchtower/internal/db"
@@ -49,7 +50,7 @@ func registerRegistry(s *mcpsdk.Server, database *db.DB, reg *tools.Registry, bi
 		listed := &mcpsdk.Tool{
 			Name:        binding.Spell(tool.Name),
 			Description: binding.Spell(tool.Description),
-			InputSchema: tool.InputSchema,
+			InputSchema: spellSchema(binding, tool.InputSchema),
 		}
 		if tool.Access == tools.AccessRead {
 			s.AddTool(listed, func(ctx context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
@@ -105,6 +106,25 @@ func registerRegistry(s *mcpsdk.Server, database *db.DB, reg *tools.Registry, bi
 		}
 		return jsonResult(newActionView(*row))
 	})
+}
+
+// spellSchema is a tool's input schema as binding's session lists it: the
+// registry's own schema, or, for a legacy session, a copy whose texts name
+// the renamed tools by their old names (Binding.Spell). The registry's
+// schema is shared by every session and is never changed.
+func spellSchema(binding tools.Binding, schema *jsonschema.Schema) any {
+	if !binding.LegacyNames || schema == nil {
+		return schema
+	}
+	raw, err := json.Marshal(schema)
+	if err != nil {
+		return schema
+	}
+	var spelled map[string]any
+	if err := json.Unmarshal([]byte(binding.Spell(string(raw))), &spelled); err != nil {
+		return schema
+	}
+	return spelled
 }
 
 // actionVisible decides whether get_action may show row to this session. A
