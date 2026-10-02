@@ -1,0 +1,154 @@
+// Package workbenchgit reads a workbench folder's git state — the current
+// branch, its changes, the local branches — and switches or creates a
+// branch for the Desktop's workbench header. git is located through
+// internal/gitbin, never the macOS /usr/bin/git shim, and no git process
+// runs outside a repository. A switch never forces, discards, resets or
+// cleans, and never swaps the owner's uncommitted work or a running agent's
+// files without the caller's explicit confirmation (PROJ-10,
+// docs/inventory/workbench.md).
+package workbenchgit
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"watchtower/internal/gitbin"
+	"watchtower/internal/workbenchcheck"
+)
+
+// errorLimit caps the git stderr handed back in an envelope.
+const errorLimit = 300
+
+// Options configures one call.
+type Options struct {
+	Folder string
+	// Run runs the located git binary (its absolute path is the name
+	// argument). nil = a real process.
+	Run workbenchcheck.Runner
+	// Locate finds git. nil = gitbin.Locate.
+	Locate func() (string, bool)
+}
+
+// runError carries git's stderr apart from the rest of the failure, so an
+// envelope can show git's own words.
+type runError struct {
+	args   []string
+	err    error
+	stderr string
+}
+
+func (e *runError) Error() string {
+	return fmt.Sprintf("git %s: %v: %s", strings.Join(e.args, " "), e.err, e.stderr)
+}
+
+func (e *runError) Unwrap() error { return e.err }
+
+// execRunner runs a real process with git kept non-interactive: no
+// optional locks, no credential prompt, no editor, C locale.
+func execRunner(ctx context.Context, dir string, stdin []byte, name string, args ...string) ([]byte, int, error) {
+	c := exec.CommandContext(ctx, name, args...)
+	c.Dir = dir
+	c.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0", "GIT_EDITOR=true", "LC_ALL=C")
+	c.WaitDelay = time.Second
+	if stdin != nil {
+		c.Stdin = bytes.NewReader(stdin)
+	}
+	var stdout, stderr bytes.Buffer
+	c.Stdout, c.Stderr = &stdout, &stderr
+	err := c.Run()
+	var exitErr *exec.ExitError
+	switch {
+	case err == nil:
+		return stdout.Bytes(), 0, nil
+	case errors.As(err, &exitErr):
+		return stdout.Bytes(), exitErr.ExitCode(), &runError{args: args, err: err, stderr: string(bytes.TrimSpace(stderr.Bytes()))}
+	default:
+		return nil, -1, err
+	}
+}
+
+// repo is a folder whose git binary was found and which sits inside a
+// repository; every git call goes through it.
+type repo struct {
+	o   Options
+	bin string
+}
+
+// open resolves git and checks the folder; no process runs. The error is
+// gitbin.ErrUnavailable or errNotRepository.
+func open(o Options) (*repo, error) {
+	if o.Run == nil {
+		o.Run = execRunner
+	}
+	locate := o.Locate
+	if locate == nil {
+		locate = gitbin.Locate
+	}
+	bin, ok := locate()
+	if !ok {
+		return nil, gitbin.ErrUnavailable
+	}
+	if !gitbin.InsideRepository(o.Folder) {
+		return nil, errNotRepository
+	}
+	return &repo{o: o, bin: bin}, nil
+}
+
+var errNotRepository = errors.New("the folder is not a git work tree")
+
+func (r *repo) git(ctx context.Context, args ...string) ([]byte, error) {
+	out, _, err := r.o.Run(ctx, r.o.Folder, nil, r.bin, args...)
+	return out, err
+}
+
+// paths is where the folder's repository lives.
+type paths struct {
+	topLevel, gitDir, commonDir string
+}
+
+// locatePaths reads the work tree's top level, its git dir and the common
+// dir shared by every worktree; an error means the folder is not a work
+// tree (a .git directory itself, a bare repository).
+func (r *repo) locatePaths(ctx context.Context) (paths, error) {
+	out, err := r.git(ctx, "rev-parse", "--absolute-git-dir", "--git-common-dir", "--show-toplevel")
+	if err != nil {
+		return paths{}, err
+	}
+	lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
+	if len(lines) != 3 {
+		return paths{}, fmt.Errorf("git rev-parse: unexpected output %q", out)
+	}
+	p := paths{gitDir: lines[0], commonDir: lines[1], topLevel: lines[2]}
+	// --git-common-dir is relative to the folder unless git made it absolute.
+	if !filepath.IsAbs(p.commonDir) {
+		abs, err := filepath.Abs(r.o.Folder)
+		if err != nil {
+			return paths{}, err
+		}
+		p.commonDir = filepath.Join(abs, p.commonDir)
+	}
+	p.commonDir = filepath.Clean(p.commonDir)
+	return p, nil
+}
+
+// gitError is the failure as the envelope shows it: git's stderr when
+// there is one, trimmed and capped at errorLimit characters.
+func gitError(err error) string {
+	msg := err.Error()
+	var re *runError
+	if errors.As(err, &re) && re.stderr != "" {
+		msg = re.stderr
+	}
+	msg = strings.TrimSpace(msg)
+	if r := []rune(msg); len(r) > errorLimit {
+		msg = string(r[:errorLimit-1]) + "…"
+	}
+	return msg
+}
