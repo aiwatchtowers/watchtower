@@ -31,7 +31,7 @@ type WorkbenchTargetImage struct {
 const workbenchTargetImageCols = `id, project_id, target_id, file_name, mime, size, sha256, path, created_at`
 
 // AddWorkbenchTargetImageTx attaches img to its target. The target must be on
-// img.ProjectID's board (ErrNotInWorkbench otherwise). Attaching content the
+// img.WorkbenchID's board (ErrNotInWorkbench otherwise). Attaching content the
 // target already carries is a no-op that returns the existing row's id; a new
 // image past MaxTargetImages fails with ErrTooManyImages.
 func AddWorkbenchTargetImageTx(tx *sql.Tx, img WorkbenchTargetImage) (int64, error) {

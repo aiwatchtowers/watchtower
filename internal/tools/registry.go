@@ -406,7 +406,7 @@ func bindingOf(row *db.AgentAction) Binding {
 		ContextType: row.ContextType, ContextID: row.ContextID, TurnID: row.TurnID,
 	}
 	if row.ContextType == WorkbenchContextType {
-		// A malformed id leaves ProjectID 0, which every project tool refuses.
+		// A malformed id leaves WorkbenchID 0, which every project tool refuses.
 		b.WorkbenchID, _ = strconv.ParseInt(row.ContextID, 10, 64)
 	}
 	return b
