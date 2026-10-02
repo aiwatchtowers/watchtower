@@ -99,7 +99,7 @@ struct OnboardingGoalsStepView: View {
                     Task {
                         appState.clearOnboardingStepError()
                         if let route = await model.submit(
-                            hasSlackAccount: appState.featureVisibility.connectedSources.slack
+                            hasSlackAccount: appState.onboardingHasSlackAccount
                         ) {
                             await onContinue(route)
                         }

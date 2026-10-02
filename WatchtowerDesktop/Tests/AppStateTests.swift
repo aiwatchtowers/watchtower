@@ -1554,4 +1554,113 @@ final class AppStateTests: XCTestCase {
 
         XCTAssertEqual(appState.featureSuggestion.map(\.id), ["tracks"], "applied ids cleared, the late one kept")
     }
+
+    // MARK: - Fresh install (final review A)
+
+    /// Counts opens; fails until `ready`.
+    private final class FlakyOpen: @unchecked Sendable {
+        private let lock = NSLock()
+        private var isReady = false
+        private var opens = 0
+        let manager: DatabaseManager
+        init(_ manager: DatabaseManager) { self.manager = manager }
+        func makeReady() { lock.withLock { isReady = true } }
+        var count: Int { lock.withLock { opens } }
+        func open() throws -> DatabaseManager {
+            try lock.withLock {
+                opens += 1
+                guard isReady else { throw CocoaError(.fileNoSuchFile) }
+                return manager
+            }
+        }
+    }
+
+    /// Records the Goals step's CLI actions.
+    @MainActor
+    private final class GoalsSpy {
+        var calls: [String] = []
+        var onInit: () -> Void = {}
+    }
+
+    private func goalsModel(_ spy: GoalsSpy, defaults: UserDefaults) -> OnboardingGoalsModel {
+        OnboardingGoalsModel(
+            defaults: defaults,
+            systemLanguage: "English",
+            checkCLI: { .ready(provider: "claude") },
+            actions: OnboardingGoalsActions(
+                initWorkspace: {
+                    spy.calls.append("workspace init")
+                    spy.onInit()
+                },
+                setLanguage: { spy.calls.append("language \($0)") },
+                applyFeatures: { _ in
+                    spy.calls.append("features")
+                    return (nil, false)
+                }
+            )
+        )
+    }
+
+    /// The real launch path of a fresh install: the database cannot open
+    /// (no workspace), so nothing is connected — not the sidebar's fail-open
+    /// `.all`. Goals' Continue then initializes the workspace, the route
+    /// goes to Connect, and the onboarding open succeeds.
+    func testFreshInstallInitializesTheWorkspaceAndOpensConnect() async throws {
+        let opener = FlakyOpen(try XCTUnwrap(dbManager))
+        let spy = GoalsSpy()
+        spy.onInit = { opener.makeReady() }
+        let open: @Sendable () throws -> DatabaseManager = { try opener.open() }
+        let appState = AppState.isolated(openDatabase: open) { self.goalsModel(spy, defaults: $0) }
+        XCTAssertTrue(appState.featureVisibility.connectedSources.slack, "the fail-open default before launch")
+
+        await appState.handleLaunchDatabaseFailure(CocoaError(.fileNoSuchFile))
+        XCTAssertTrue(appState.needsOnboarding)
+        XCTAssertFalse(appState.onboardingHasSlackAccount)
+        XCTAssertEqual(appState.featureVisibility.connectedSources, .none)
+
+        let model = appState.onboardingGoals
+        await model.prepare(configuredLanguage: nil)
+        let submitted = await model.submit(hasSlackAccount: appState.onboardingHasSlackAccount)
+        let route = try XCTUnwrap(submitted)
+        XCTAssertEqual(spy.calls.filter { $0 == "workspace init" }.count, 1)
+        XCTAssertEqual(route.step(after: .purpose), .connect)
+
+        await appState.leaveOnboardingStep(.purpose, route: route) {}
+
+        XCTAssertEqual(appState.onboarding.currentStep, .connect)
+        XCTAssertNotNil(appState.databaseManager)
+        XCTAssertNotNil(appState.slackAccountsViewModel, "the Connect sheets have their view models")
+        XCTAssertNil(appState.onboardingStepError)
+    }
+
+    /// Development only on a fresh install: no Connect, no About you; finish
+    /// opens the database itself, writes onboarding_done and starts the
+    /// daemon.
+    func testFreshDevelopmentOnlyInstallFinishes() async throws {
+        let opener = FlakyOpen(try XCTUnwrap(dbManager))
+        let spy = GoalsSpy()
+        spy.onInit = { opener.makeReady() }
+        let open: @Sendable () throws -> DatabaseManager = { try opener.open() }
+        let appState = AppState.isolated(openDatabase: open) { self.goalsModel(spy, defaults: $0) }
+        let daemon = FakeDaemon()
+        appState.daemonControlOverride = daemon
+        await appState.handleLaunchDatabaseFailure(CocoaError(.fileNoSuchFile))
+
+        let model = appState.onboardingGoals
+        model.selection.goals = [.development]
+        await model.prepare(configuredLanguage: nil)
+        let submitted = await model.submit(hasSlackAccount: appState.onboardingHasSlackAccount)
+        let route = try XCTUnwrap(submitted)
+        XCTAssertEqual(route.step(after: .purpose), .complete)
+        await appState.leaveOnboardingStep(.purpose, route: route) {}
+        await appState.onboardingDaemonStart?.value
+
+        XCTAssertEqual(spy.calls.first, "workspace init")
+        XCTAssertEqual(appState.onboarding.currentStep, .complete)
+        XCTAssertEqual(daemon.starts, 1)
+        let done = try await dbManager.dbPool.read { db in
+            try Bool.fetchOne(db, sql: "SELECT onboarding_done FROM user_profile LIMIT 1")
+        }
+        XCTAssertEqual(done, true)
+    }
 }

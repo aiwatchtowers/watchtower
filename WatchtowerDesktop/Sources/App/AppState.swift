@@ -340,13 +340,14 @@ final class AppState {
         onboardingDefaults: UserDefaults = .standard,
         openDatabase: @escaping @Sendable () throws -> DatabaseManager = { try DatabaseManager.migrateAndOpen() },
         peopleRosterRun: @escaping PeopleRosterLoad.Run = PeopleRosterLoad.cliRun,
-        featureManager: FeatureManagerService? = nil
+        featureManager: FeatureManagerService? = nil,
+        onboardingGoals: OnboardingGoalsModel? = nil
     ) {
         let features = featureManager ?? FeatureManagerService()
         self.featureManager = features
         onboarding = OnboardingStateMachineV2(defaults: onboardingDefaults)
         self.onboardingDefaults = onboardingDefaults
-        onboardingGoals = .production(defaults: onboardingDefaults, featureManager: features)
+        self.onboardingGoals = onboardingGoals ?? .production(defaults: onboardingDefaults, featureManager: features)
         peopleRoster = PeopleRosterLoad(run: peopleRosterRun)
         self.openDatabase = openDatabase
     }
@@ -664,17 +665,7 @@ final class AppState {
                     ensureDaemonRunning()
                 }
             } catch {
-                print("[AppState] database open failed: \(error.localizedDescription)")
-                errorMessage = error.localizedDescription
-                databaseManager = nil
-                if case WatchtowerDatabaseError.ambiguousWorkspace(let names) = error {
-                    ambiguousWorkspaces = names
-                } else {
-                    ambiguousWorkspaces = []
-                }
-                // No DB available — if state machine not complete, onboarding needed
-                await reconcileOnboarding(dbPool: nil)
-                isLoading = false
+                await handleLaunchDatabaseFailure(error)
             }
             // Any launch that lands in onboarding (a fresh install, or one
             // relaunched before finishing it) may let the transcription
@@ -844,6 +835,27 @@ final class AppState {
         return failure
     }
 
+    /// `initialize()` when the database could not be opened: on a fresh
+    /// install (no workspace yet) that is onboarding's starting point.
+    func handleLaunchDatabaseFailure(_ error: Error) async {
+        print("[AppState] database open failed: \(error.localizedDescription)")
+        errorMessage = error.localizedDescription
+        databaseManager = nil
+        if case WatchtowerDatabaseError.ambiguousWorkspace(let names) = error {
+            ambiguousWorkspaces = names
+        } else {
+            ambiguousWorkspaces = []
+        }
+        // No DB available — if state machine not complete, onboarding needed
+        await reconcileOnboarding(dbPool: nil)
+        if needsOnboarding {
+            // Nothing is connected without a database; only the sidebar of
+            // a finished install keeps failing open.
+            featureVisibility.connectedSources = .none
+        }
+        isLoading = false
+    }
+
     /// Launch-time onboarding state: the DB's `onboarding_done` wins over a
     /// local step that is not complete (no UserDefaults — a new Mac, a wiped
     /// defaults domain — must not re-run onboarding on a finished install);
@@ -876,7 +888,15 @@ final class AppState {
     /// The route onboarding follows: the goals of the last Continue and
     /// whether a Slack account is connected.
     var onboardingRoute: OnboardingRoute {
-        onboardingGoals.route(hasSlackAccount: featureVisibility.connectedSources.slack)
+        onboardingGoals.route(hasSlackAccount: onboardingHasSlackAccount)
+    }
+
+    /// Whether a Slack account is connected, for onboarding's decisions
+    /// (workspace init, the route). Never the sidebar's fail-open value:
+    /// with no database there is no account, whatever `connectedSources`
+    /// says.
+    var onboardingHasSlackAccount: Bool {
+        databaseManager != nil && featureVisibility.connectedSources.slack
     }
 
     private enum ProfileOnboarding {
