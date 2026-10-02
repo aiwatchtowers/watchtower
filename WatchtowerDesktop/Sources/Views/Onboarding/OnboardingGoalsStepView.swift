@@ -41,7 +41,7 @@ struct OnboardingGoalsStepView: View {
         @Bindable var model = model
         Group {
             if model.isCustomizingFeatures {
-                FeatureSplashView(selection: $model.selection) { model.isCustomizingFeatures = false }
+                FeatureCustomizeView(selection: $model.selection) { model.isCustomizingFeatures = false }
             } else {
                 goals
             }

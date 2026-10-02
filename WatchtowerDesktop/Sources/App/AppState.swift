@@ -652,7 +652,7 @@ final class AppState {
                 profileComplete = !needsOnboarding
                 analysisLegacyMode = ConfigService().analysisLegacyMode
                 // Pre-load sidebar badge counts so they're already visible when the splash hides.
-                // Skipped when onboarding is needed — the OnboardingView replaces the sidebar entirely.
+                // Skipped when onboarding is needed — the onboarding view replaces the sidebar entirely.
                 if !needsOnboarding {
                     await initSidebarCounts(dbPool: manager.dbPool)
                 }

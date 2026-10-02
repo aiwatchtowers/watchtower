@@ -167,7 +167,7 @@ final class FeatureManagerService {
     }
 
     /// Throws away every staged change, including any cascade consent
-    /// collected for them (the splash's "Keep everything on" exit). Clearing
+    /// collected for them (before onboarding or a feature suggestion stages its own). Clearing
     /// `pending` alone would leave an `applyWithDependents` entry standing for
     /// a disable that is no longer staged, ready to append `--with-dependents`
     /// to some later disable of the same id (FEAT-04 spirit: consent must not

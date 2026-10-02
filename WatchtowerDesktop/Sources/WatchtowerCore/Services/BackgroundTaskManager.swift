@@ -38,19 +38,6 @@ package final class BackgroundTaskManager {
             case .people: ["people", "generate", "--progress-json"]
             }
         }
-
-        /// The feature-registry id (internal/features/registry.go) this pipeline
-        /// belongs to, so the post-onboarding burst can skip a pipeline the
-        /// owner just disabled instead of force-running it regardless of the
-        /// feature gate.
-        package var featureID: String {
-            switch self {
-            case .inbox: "secretary-inbox"
-            case .digests: "slack-digests"
-            case .tracks: "tracks"
-            case .people: "people-cards"
-            }
-        }
     }
 
     package enum TaskStatus: Equatable {
@@ -179,7 +166,6 @@ package final class BackgroundTaskManager {
     }
 
     private var runningProcesses: [TaskKind: Process] = [:]
-    private var pipelineTask: Task<Void, Never>?
 
     package init() {}
 
@@ -191,8 +177,6 @@ package final class BackgroundTaskManager {
             await ProcessPipes.offPool { process.waitUntilExit() }
         }
         runningProcesses.removeAll()
-        pipelineTask?.cancel()
-        pipelineTask = nil
         for kind in TaskKind.allCases {
             if tasks[kind]?.status == .running || tasks[kind]?.status == .pending {
                 tasks[kind]?.status = .error("Stopped")
@@ -207,76 +191,6 @@ package final class BackgroundTaskManager {
             for (_, process) in runningProcesses where process.isRunning {
                 process.terminate()
             }
-        }
-    }
-
-    /// Start all background pipelines: digests first, then tracks + people in parallel, then daemon.
-    /// - Parameter disabledFeatures: feature-registry ids currently disabled
-    ///   (`FeatureManagerService.disabledFeatureIDs`). A pipeline whose
-    ///   `featureID` is in this set is skipped — the post-onboarding burst runs
-    ///   one-shot CLI pipelines that force-enable themselves regardless of
-    ///   config (e.g. `digest generate`), so without this it would run exactly
-    ///   the features the owner just switched off on the splash (audit H5). The
-    ///   daemon started at the end already honors the per-feature gates itself.
-    package func startPipelines(legacyPeople: Bool = false, disabledFeatures: Set<String> = []) {
-        // Guard against duplicate calls — only start if no pipeline is active
-        guard pipelineTask == nil else { return }
-
-        let isEnabled: (TaskKind) -> Bool = { !disabledFeatures.contains($0.featureID) }
-
-        // Initialize task states for active, enabled pipelines only — a disabled
-        // pipeline never shows as pending in the sidebar.
-        for kind in TaskKind.allCases where isEnabled(kind) {
-            tasks[kind] = TaskState()
-        }
-
-        pipelineTask = Task {
-            // Isolate phase failures: whatever happens below (a failed phase,
-            // cooperative cancellation, or the happy path), always clear
-            // pipelineTask and make sure no task is left stuck in `.pending`
-            // ("Waiting..." forever in the sidebar) — both previously required
-            // an app restart to recover from once digests failed.
-            defer {
-                resolvePendingAsSkipped()
-                pipelineTask = nil
-            }
-
-            // Inbox runs independently — fire and forget, never blocks other pipelines.
-            if isEnabled(.inbox) {
-                Task { @MainActor in
-                    await self.runTask(.inbox)
-                }
-            }
-
-            // Phase 1: channel digests (tracks + people prefer digest data, but
-            // a digests failure must not block the rest of the chain).
-            if isEnabled(.digests) {
-                await runTask(.digests)
-            }
-            guard !Task.isCancelled else { return }
-
-            // Phase 2: tracks + people in parallel, regardless of Phase 1 outcome.
-            await withTaskGroup(of: Void.self) { group in
-                if isEnabled(.tracks) {
-                    group.addTask { @MainActor in
-                        await self.runTask(.tracks)
-                    }
-                }
-                if isEnabled(.people) {
-                    group.addTask { @MainActor in
-                        await self.runTask(.people)
-                    }
-                }
-            }
-            guard !Task.isCancelled else { return }
-
-            // Phase 3: start daemon regardless of upstream pipeline failures.
-            if let path = Constants.findCLIPath() {
-                await Self.runCLIFireAndForget(path: path, arguments: ["sync", "--daemon", "--detach"])
-            }
-
-            // Mark pipelines as completed for restart detection
-            UserDefaults.standard.set(true, forKey: Constants.pipelinesCompletedKey)
         }
     }
 
