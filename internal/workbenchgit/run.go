@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -62,12 +63,25 @@ func (e *runError) Error() string {
 
 func (e *runError) Unwrap() error { return e.err }
 
+// repositoryEnv are the variables that point git at a repository other than
+// the one dir is in; an inherited one (a hook's or another tool's shell)
+// is dropped.
+var repositoryEnv = []string{
+	"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY",
+	"GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_PREFIX",
+}
+
 // execRunner runs a real process with git kept non-interactive: no
-// optional locks, no credential prompt, no editor, C locale.
+// optional locks, no credential prompt, no editor, C locale, and no
+// inherited repository variables.
 func execRunner(ctx context.Context, dir string, stdin []byte, name string, args ...string) ([]byte, int, error) {
 	c := exec.CommandContext(ctx, name, args...)
 	c.Dir = dir
-	c.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0", "GIT_EDITOR=true", "LC_ALL=C")
+	env := slices.DeleteFunc(os.Environ(), func(kv string) bool {
+		key, _, _ := strings.Cut(kv, "=")
+		return slices.Contains(repositoryEnv, key)
+	})
+	c.Env = append(env, "GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0", "GIT_EDITOR=true", "LC_ALL=C")
 	c.WaitDelay = time.Second
 	if stdin != nil {
 		c.Stdin = bytes.NewReader(stdin)

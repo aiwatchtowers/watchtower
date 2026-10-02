@@ -236,3 +236,20 @@ func TestOperationIn_UnreadableGitDirIsAnError(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, op)
 }
+
+// An inherited GIT_DIR or GIT_WORK_TREE (a git hook, another tool's shell)
+// must not point the folder's git calls at another repository.
+func TestReadStatus_IgnoresInheritedRepositoryEnvironment(t *testing.T) {
+	dir := newRepo(t)
+	other := newRepo(t)
+	gitIn(t, other, "switch", "-q", "-c", "elsewhere")
+	t.Setenv("GIT_DIR", filepath.Join(other, ".git"))
+	t.Setenv("GIT_WORK_TREE", other)
+	t.Setenv("GIT_INDEX_FILE", filepath.Join(other, ".git", "index"))
+	st := ReadStatus(context.Background(), options(dir, &recorder{}))
+	require.True(t, st.StatusOK, st.StatusError)
+	assert.Equal(t, "main", st.Branch)
+	assert.True(t, sameDir(t, dir, st.TopLevel), st.TopLevel)
+	l := ListBranches(context.Background(), options(dir, &recorder{}))
+	assert.Equal(t, "main", l.Current)
+}
