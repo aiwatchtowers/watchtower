@@ -12,6 +12,8 @@ extension WorkbenchesViewModel {
     /// (edits do not touch refs, so the watcher misses them).
     static let gitPollInterval: Duration = .seconds(15)
 
+    static let cliMissingMessage = "The watchtower CLI was not found."
+
     /// Whether the header shows `›` and the branch button.
     func showsBranchButton(projectID: Int64) -> Bool {
         WorkbenchBranchPresentation.showsButton(gitStatus[projectID])
@@ -20,9 +22,13 @@ extension WorkbenchesViewModel {
     /// Reads `workbench git status`. Coalesced: a call while one runs only
     /// asks for one more read after it, so a burst of FSEvents, the poll
     /// and an app activation cost at most two CLI calls. A cancelled read
-    /// keeps the last status and reports nothing.
+    /// keeps the last status and reports nothing; a failed one (the call,
+    /// or git inside the repository) keeps it too and says why.
     func refreshGitStatus(projectID: Int64) async {
-        guard let cli else { return }
+        guard let cli else {
+            gitStatusErrors[projectID] = Self.cliMissingMessage
+            return
+        }
         guard !gitRefreshing.contains(projectID) else {
             gitRefreshQueued.insert(projectID)
             return
@@ -36,7 +42,8 @@ extension WorkbenchesViewModel {
             } catch {
                 if error is CancellationError || Task.isCancelled { return }
                 // The last known status stays, so the button does not vanish.
-                gitStatusErrors[projectID] = "Could not read the git status: \(error.localizedDescription)"
+                gitStatusErrors[projectID] = "Could not read the git status: "
+                    + gitFailureText(error, command: "status", projectID: projectID)
             }
         } while gitRefreshQueued.contains(projectID)
     }
@@ -81,7 +88,7 @@ extension WorkbenchesViewModel {
         let id = project.id
         guard switchingBranch[id] == nil else { return false }
         guard let cli else {
-            gitErrors[id] = "The watchtower CLI was not found."
+            gitErrors[id] = Self.cliMissingMessage
             return false
         }
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -97,7 +104,7 @@ extension WorkbenchesViewModel {
         do {
             result = try await cli.gitCreateBranch(projectID: id, name: trimmed)
         } catch {
-            gitErrors[id] = "Could not create \(trimmed): \(error.localizedDescription)"
+            gitErrors[id] = "Could not create \(trimmed): \(gitFailureText(error, command: "create", projectID: id))"
             return false
         }
         let created = result.created || result.switched
@@ -156,7 +163,7 @@ extension WorkbenchesViewModel {
     private func runSwitch(_ branch: String, project: Workbench, stash: Bool, confirmAgent: Bool) async {
         let id = project.id
         guard let cli else {
-            gitErrors[id] = "The watchtower CLI was not found."
+            gitErrors[id] = Self.cliMissingMessage
             return
         }
         gitErrors[id] = nil
@@ -169,7 +176,7 @@ extension WorkbenchesViewModel {
             result = try await cli.gitSwitch(projectID: id, branch: branch, stash: stash,
                                              agentRunning: agentRunning, confirmAgent: confirmAgent && agentRunning)
         } catch {
-            gitErrors[id] = "Could not switch to \(branch): \(error.localizedDescription)"
+            gitErrors[id] = "Could not switch to \(branch): \(gitFailureText(error, command: "switch", projectID: id))"
             await refreshGitStatus(projectID: id)
             return
         }
@@ -195,7 +202,7 @@ extension WorkbenchesViewModel {
     private func reloadBranchList(project: Workbench) async {
         let id = project.id
         guard let cli else {
-            gitErrors[id] = "The watchtower CLI was not found."
+            gitErrors[id] = Self.cliMissingMessage
             return
         }
         var problems: [String] = []
@@ -205,7 +212,7 @@ extension WorkbenchesViewModel {
             if !list.branchesOK { problems.append("Could not list the branches: \(list.branchesError)") }
         } catch {
             if error is CancellationError || Task.isCancelled { return }
-            problems.append("Could not list the branches: \(error.localizedDescription)")
+            problems.append("Could not list the branches: \(gitFailureText(error, command: "branches", projectID: id))")
         }
         do {
             branchTargets[id] = try await dbPool.read { try WorkbenchQueries.branchTargets($0, projectID: id) }
@@ -217,7 +224,13 @@ extension WorkbenchesViewModel {
         }
     }
 
+    /// A status git could not read inside the repository is a failed read:
+    /// the last good status stays and the error says why.
     private func applyGitStatus(_ status: WorkbenchGitStatus, projectID: Int64) {
+        if status.git, !status.statusOK {
+            gitStatusErrors[projectID] = "Could not read the git status: \(status.statusError)"
+            return
+        }
         gitStatus[projectID] = status
         gitStatusErrors[projectID] = nil
         armGitWatcher(status, projectID: projectID)
@@ -235,6 +248,12 @@ extension WorkbenchesViewModel {
         gitWatchers[projectID] = makeGitWatcher(status.gitDir, status.commonDir) { [weak self] in
             Task { await self?.refreshGitStatus(projectID: projectID) }
         }
+    }
+
+    /// The owner's line for a failed call; the raw error goes to the log.
+    private func gitFailureText(_ error: Error, command: String, projectID: Int64) -> String {
+        print("[WorkbenchGit] workbench git \(command) for workbench \(projectID) failed: \(error)")
+        return WorkbenchBranchPresentation.failureText(error, command: command)
     }
 
     private func observeAppActivation() {

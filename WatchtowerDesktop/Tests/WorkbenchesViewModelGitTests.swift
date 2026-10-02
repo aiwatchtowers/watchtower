@@ -282,6 +282,43 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
 
     // MARK: - Status, branches, create, copy
 
+    private func unreadableStatus(_ error: String = "fatal: this operation must be run in a work tree") -> Data {
+        Data(#"{"workbench_id":\#(project.id),"git_available":true,"git":true,"status_ok":false,"status_error":"\#(error)"}"#.utf8)
+    }
+
+    func testAnUnreadableStatusKeepsTheLastGoodOneAndSaysWhy() async {
+        let runner = ScriptedCLIRunner(results: [.success(status(branch: "main")), .success(unreadableStatus()), .success(status())])
+        let vm = makeVM(runner)
+        await vm.refreshGitStatus(projectID: project.id)
+        await vm.refreshGitStatus(projectID: project.id)
+        XCTAssertEqual(vm.gitStatus[project.id]?.branch, "main", "the button does not vanish")
+        XCTAssertEqual(vm.gitStatus[project.id]?.statusOK, true)
+        XCTAssertEqual(vm.gitStatusErrors[project.id],
+                       "Could not read the git status: fatal: this operation must be run in a work tree")
+        await vm.refreshGitStatus(projectID: project.id)
+        XCTAssertNil(vm.gitStatusErrors[project.id], "a good read clears it")
+    }
+
+    func testAFirstUnreadableStatusLeavesNoStatusButAnError() async {
+        let vm = makeVM(ScriptedCLIRunner(results: [.success(unreadableStatus())]))
+        await vm.refreshGitStatus(projectID: project.id)
+        XCTAssertNil(vm.gitStatus[project.id])
+        XCTAssertNotNil(vm.gitStatusErrors[project.id])
+    }
+
+    func testAMissingCLIIsAStatusError() async {
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: nil, defaults: defaults)
+        await vm.refreshGitStatus(projectID: project.id)
+        XCTAssertEqual(vm.gitStatusErrors[project.id], WorkbenchesViewModel.cliMissingMessage)
+    }
+
+    func testAnUndecodableStatusSaysTheCLIIsOutOfStep() async {
+        let vm = makeVM(ScriptedCLIRunner(results: [.success(Data(#"{"branch":"main"}"#.utf8))]))
+        await vm.refreshGitStatus(projectID: project.id)
+        XCTAssertEqual(vm.gitStatusErrors[project.id], "Could not read the git status: unexpected output from "
+                       + "`watchtower workbench git status` — the CLI and the app may be out of sync; update Watchtower")
+    }
+
     func testNoGitHidesTheButton() async {
         let vm = makeVM(ScriptedCLIRunner(results: [.success(status(git: false))]))
         XCTAssertFalse(vm.showsBranchButton(projectID: project.id), "unknown status: no button")

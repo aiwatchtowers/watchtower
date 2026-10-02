@@ -2,27 +2,35 @@ import SwiftUI
 import WatchtowerCore
 
 /// `› ⎇ main ● ↑2 ▾` after the folder in the workbench header (#233): the
-/// branch button and its popover, or nothing when the folder is not a
-/// readable git work tree (or git is not installed).
+/// branch button and its popover; nothing when the folder is not a git work
+/// tree (or git is not installed); a warning icon when the status could not
+/// be read and none is known yet (the CLI is missing, git failed).
 struct WorkbenchBranchCrumb: View {
     @Bindable var vm: WorkbenchesViewModel
     let project: Workbench
     @State private var showsPopover = false
 
     var body: some View {
+        let error = vm.gitStatusErrors[project.id]
         if let status = vm.gitStatus[project.id], WorkbenchBranchPresentation.showsButton(status) {
             HStack(spacing: 4) {
                 Text("›")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
                     .accessibilityHidden(true)
-                WorkbenchBranchButton(status: status, busy: vm.switchingBranch[project.id] != nil) {
+                WorkbenchBranchButton(status: status, staleError: error, busy: vm.switchingBranch[project.id] != nil) {
                     showsPopover.toggle()
                 }
                 .popover(isPresented: $showsPopover, arrowEdge: .bottom) {
                     WorkbenchBranchPopover(vm: vm, project: project)
                 }
             }
+        } else if let error {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.caption)
+                .foregroundStyle(.orange)
+                .help(error)
+                .accessibilityLabel("Git status unavailable")
         }
     }
 }
@@ -30,9 +38,12 @@ struct WorkbenchBranchCrumb: View {
 /// The branch button: branch icon, bold name (a detached HEAD's short hash
 /// in gray), an orange dot for uncommitted changes, ahead/behind counters
 /// only when nonzero, a chevron. Long names truncate; the tooltip has the
-/// full name and any operation in progress.
+/// full name and any operation in progress. A status the later reads could
+/// not refresh is marked stale, its tooltip saying why.
 struct WorkbenchBranchButton: View {
     let status: WorkbenchGitStatus
+    /// Why the reads since `status` failed; nil when it is current.
+    var staleError: String?
     var busy = false
     let action: () -> Void
 
@@ -59,6 +70,12 @@ struct WorkbenchBranchButton: View {
                 if let counters = WorkbenchBranchPresentation.counters(status) {
                     Text(counters).foregroundStyle(.secondary).monospacedDigit()
                 }
+                if staleError != nil {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                        .accessibilityLabel("Status may be out of date")
+                }
                 if busy {
                     ProgressView().controlSize(.mini)
                 } else {
@@ -71,7 +88,7 @@ struct WorkbenchBranchButton: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.borderless)
-        .help(WorkbenchBranchPresentation.help(status))
+        .help(WorkbenchBranchPresentation.help(status, staleError: staleError))
         .accessibilityLabel("Branch \(label.text)")
     }
 }

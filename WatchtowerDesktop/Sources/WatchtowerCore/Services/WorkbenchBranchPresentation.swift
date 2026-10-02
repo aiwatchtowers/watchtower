@@ -74,13 +74,33 @@ package enum WorkbenchBranchPresentation {
         return status.gitAvailable && status.git && status.statusOK
     }
 
-    /// The button's tooltip: the full name, plus an operation in progress.
-    package static func help(_ status: WorkbenchGitStatus) -> String {
+    /// The button's tooltip: the full name, plus an operation in progress,
+    /// plus why it may be out of date (the reads since this status failed).
+    package static func help(_ status: WorkbenchGitStatus, staleError: String?) -> String {
         var lines = [status.detached ? "Detached HEAD at \(status.head)" : status.branch]
         if status.dirty { lines.append("\(changeCount(status.changes)) not committed") }
         if !status.upstream.isEmpty { lines.append("Upstream \(status.upstream)") }
         if !status.operation.isEmpty { lines.append("A \(status.operation) is in progress — switching is refused until it ends") }
+        if let staleError { lines.append("May be out of date — \(staleError)") }
         return lines.joined(separator: "\n")
+    }
+
+    /// A failed `workbench git <command>` call as one line for the owner. An
+    /// envelope this app cannot decode, or a CLI that does not know the
+    /// command or a flag, means the CLI and the app are out of step — say
+    /// what to do instead of quoting a decoder.
+    package static func failureText(_ error: Error, command: String) -> String {
+        if error is DecodingError || isUnknownCommand(error) {
+            return "unexpected output from `watchtower workbench git \(command)` — the CLI and the app may be out of sync; "
+                + "update Watchtower"
+        }
+        return error.localizedDescription
+    }
+
+    /// cobra's words for an unknown subcommand or flag.
+    private static func isUnknownCommand(_ error: Error) -> Bool {
+        guard case let CLIRunnerError.nonZeroExit(_, stderr) = error else { return false }
+        return ["unknown command", "unknown flag", "unknown shorthand flag"].contains { stderr.contains($0) }
     }
 
     /// Case-insensitive substring match on the name; the order is kept.

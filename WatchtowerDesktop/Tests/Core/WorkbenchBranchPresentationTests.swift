@@ -47,11 +47,30 @@ final class WorkbenchBranchPresentationTests: XCTestCase {
     }
 
     func testHelpNamesTheOperationInProgress() {
-        let help = Pres.help(WorkbenchGitStatus(branch: "a-very-long/branch-name", dirty: true, changes: 3, operation: "rebase"))
+        let help = Pres.help(WorkbenchGitStatus(branch: "a-very-long/branch-name", dirty: true, changes: 3, operation: "rebase"),
+                             staleError: nil)
         XCTAssertTrue(help.hasPrefix("a-very-long/branch-name"))
         XCTAssertTrue(help.contains("3 changes are not committed"))
         XCTAssertTrue(help.contains("A rebase is in progress"))
-        XCTAssertEqual(Pres.help(WorkbenchGitStatus(detached: true, head: "a1b2c3d")), "Detached HEAD at a1b2c3d")
+        XCTAssertEqual(Pres.help(WorkbenchGitStatus(detached: true, head: "a1b2c3d"), staleError: nil), "Detached HEAD at a1b2c3d")
+    }
+
+    func testHelpOfAStaleStatusSaysWhy() {
+        XCTAssertEqual(Pres.help(WorkbenchGitStatus(branch: "main"), staleError: "Could not read the git status: boom"),
+                       "main\nMay be out of date — Could not read the git status: boom")
+    }
+
+    func testFailureTextTurnsAContractMismatchIntoAnInstruction() {
+        let mismatch = "unexpected output from `watchtower workbench git status` — the CLI and the app may be out of sync; "
+            + "update Watchtower"
+        let decoding = DecodingError.keyNotFound(WorkbenchGitStatus.CodingKeys.git, .init(codingPath: [], debugDescription: "no git"))
+        XCTAssertEqual(Pres.failureText(decoding, command: "status"), mismatch)
+        let unknown = CLIRunnerError.nonZeroExit(code: 1, stderr: #"Error: unknown command "git" for "watchtower workbench""#)
+        XCTAssertEqual(Pres.failureText(unknown, command: "status"), mismatch)
+        let flag = CLIRunnerError.nonZeroExit(code: 1, stderr: "Error: unknown flag: --confirm-agent")
+        XCTAssertEqual(Pres.failureText(flag, command: "switch").hasPrefix("unexpected output from `watchtower workbench git switch`"), true)
+        let other = CLIRunnerError.nonZeroExit(code: 1, stderr: "no such workbench")
+        XCTAssertEqual(Pres.failureText(other, command: "status"), other.localizedDescription)
     }
 
     func testFilterIsCaseInsensitiveAndKeepsOrder() {

@@ -38,10 +38,33 @@ final class WorkbenchBranchViewsTests: XCTestCase {
         let crumb = WorkbenchBranchCrumb(vm: vm, project: project)
         XCTAssertThrowsError(try crumb.inspect().find(text: "›"))
         XCTAssertThrowsError(try crumb.inspect().find(WorkbenchBranchButton.self))
+        XCTAssertThrowsError(try crumb.inspect().find(viewWithAccessibilityLabel: "Git status unavailable"),
+                             "not a work tree is no error")
 
         vm.gitStatus[project.id] = nil
         XCTAssertThrowsError(try WorkbenchBranchCrumb(vm: vm, project: project).inspect().find(text: "›"),
                              "an unknown status shows nothing either")
+    }
+
+    func testAnErrorWithNoStatusShowsAWarningIconOnly() throws {
+        let vm = makeVM()
+        vm.gitStatusErrors[project.id] = "The watchtower CLI was not found."
+        let crumb = WorkbenchBranchCrumb(vm: vm, project: project)
+        let icon = try crumb.inspect().find(viewWithAccessibilityLabel: "Git status unavailable")
+        XCTAssertEqual(try icon.help().string(), "The watchtower CLI was not found.")
+        XCTAssertThrowsError(try crumb.inspect().find(text: "›"))
+        XCTAssertThrowsError(try crumb.inspect().find(WorkbenchBranchButton.self))
+    }
+
+    func testAStaleStatusKeepsTheButtonMarkedWithTheError() throws {
+        let vm = makeVM()
+        vm.gitStatus[project.id] = WorkbenchGitStatus(branch: "main")
+        vm.gitStatusErrors[project.id] = "Could not read the git status: boom"
+        let crumb = WorkbenchBranchCrumb(vm: vm, project: project)
+        XCTAssertNoThrow(try crumb.inspect().find(viewWithAccessibilityLabel: "Status may be out of date"))
+        XCTAssertEqual(try crumb.inspect().find(ViewType.Button.self).help().string(),
+                       "main\nMay be out of date — Could not read the git status: boom")
+        XCTAssertThrowsError(try crumb.inspect().find(viewWithAccessibilityLabel: "Git status unavailable"))
     }
 
     func testAWorkTreeShowsTheSeparatorAndTheButton() throws {
@@ -50,6 +73,7 @@ final class WorkbenchBranchViewsTests: XCTestCase {
         let crumb = WorkbenchBranchCrumb(vm: vm, project: project)
         XCTAssertNoThrow(try crumb.inspect().find(text: "›"))
         XCTAssertNoThrow(try crumb.inspect().find(WorkbenchBranchButton.self))
+        XCTAssertThrowsError(try crumb.inspect().find(viewWithAccessibilityLabel: "Status may be out of date"))
     }
 
     // MARK: - Button
