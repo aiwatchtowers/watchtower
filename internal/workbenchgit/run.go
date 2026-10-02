@@ -27,6 +27,8 @@ import (
 // errorLimit caps the git stderr handed back in an envelope.
 const errorLimit = 300
 
+var errNotRepository = errors.New("the folder is not a git work tree")
+
 // Options configures one call.
 type Options struct {
 	Folder string
@@ -128,8 +130,6 @@ func open(o Options) (*repo, error) {
 	}
 	return &repo{o: o, bin: bin}, nil
 }
-
-var errNotRepository = errors.New("the folder is not a git work tree")
 
 func (r *repo) git(ctx context.Context, args ...string) ([]byte, error) {
 	out, _, err := r.run(ctx, args...)

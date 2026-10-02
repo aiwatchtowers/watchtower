@@ -24,8 +24,8 @@ const shim = "/usr/bin/git"
 // developer directory.
 const xcodeSelectLink = "/var/db/xcode_select_link"
 
-// Locator looks for git. A nil field falls back to the real system call.
-type Locator struct {
+// locator looks for git. A nil field falls back to the real system call.
+type locator struct {
 	GOOS         string
 	Getenv       func(string) string
 	Readlink     func(string) (string, error)
@@ -33,12 +33,12 @@ type Locator struct {
 	LookPath     func(string) (string, error)
 }
 
-// Locate returns git's absolute path. On darwin it checks, in order,
+// locate returns git's absolute path. On darwin it checks, in order,
 // $DEVELOPER_DIR, the xcode-select link's target, the Command Line Tools,
 // Xcode.app, then Homebrew (arm64, then Intel) — never /usr/bin/git and
 // never a PATH lookup, which would find the shim. Elsewhere it is a PATH
 // lookup.
-func (l Locator) Locate() (string, bool) {
+func (l locator) locate() (string, bool) {
 	l = l.withDefaults()
 	if l.GOOS != "darwin" {
 		p, err := l.LookPath("git")
@@ -52,7 +52,7 @@ func (l Locator) Locate() (string, bool) {
 	return "", false
 }
 
-func (l Locator) candidates() []string {
+func (l locator) candidates() []string {
 	var cs []string
 	if dev := l.Getenv("DEVELOPER_DIR"); dev != "" {
 		cs = append(cs, filepath.Join(dev, "usr/bin/git"))
@@ -71,7 +71,7 @@ func (l Locator) candidates() []string {
 	)
 }
 
-func (l Locator) withDefaults() Locator {
+func (l locator) withDefaults() locator {
 	if l.GOOS == "" {
 		l.GOOS = runtime.GOOS
 	}
@@ -101,9 +101,9 @@ func isExecutable(path string) bool {
 	return err == nil && fi.Mode().IsRegular() && fi.Mode().Perm()&0o111 != 0
 }
 
-var located = sync.OnceValues(Locator{}.Locate)
+var located = sync.OnceValues(locator{}.locate)
 
-// Locate is the system Locator's answer, looked up once per process.
+// Locate is the system locator's answer, looked up once per process.
 func Locate() (string, bool) { return located() }
 
 // InsideRepository reports whether dir or one of its parents holds a .git

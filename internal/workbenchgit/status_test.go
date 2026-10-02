@@ -50,7 +50,7 @@ func TestParseStatus(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := ParseStatus(tc.in)
+			got, err := parseStatus(tc.in)
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, got)
 		})
@@ -65,7 +65,7 @@ func TestParseStatus_Malformed(t *testing.T) {
 		porcelain("# branch.head main"),
 		nil,
 	} {
-		_, err := ParseStatus(in)
+		_, err := parseStatus(in)
 		assert.Error(t, err, "%q", in)
 	}
 }

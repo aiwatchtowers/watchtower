@@ -29,7 +29,7 @@ func TestParseBranches(t *testing.T) {
 		[branchFields]string{"refs/heads/old", "c3d4e5f", "1770000000", "origin/old", "gone", ""},
 		[branchFields]string{"refs/heads/wip", "d4e5f60", "1760000000", "", "", ""},
 	)
-	got, err := ParseBranches(out, "/work/acme/")
+	got, err := parseBranches(out, "/work/acme/")
 	require.NoError(t, err)
 	require.Len(t, got, 4)
 	assert.Equal(t, []string{"feature/x", "main", "old", "wip"}, []string{got[0].Name, got[1].Name, got[2].Name, got[3].Name}, "order as given")
@@ -48,19 +48,19 @@ func TestParseBranches(t *testing.T) {
 }
 
 func TestParseBranches_EmptyAndMalformed(t *testing.T) {
-	got, err := ParseBranches(nil, "/work/acme")
+	got, err := parseBranches(nil, "/work/acme")
 	require.NoError(t, err)
 	assert.NotNil(t, got)
 	assert.Empty(t, got)
 
-	_, err = ParseBranches([]byte("refs/heads/main\x00abc\x00\n"), "/work/acme")
+	_, err = parseBranches([]byte("refs/heads/main\x00abc\x00\n"), "/work/acme")
 	assert.Error(t, err, "a cut record")
-	_, err = ParseBranches(forEachRef([branchFields]string{"refs/tags/v1", "a", "1", "", "", ""}), "/work/acme")
+	_, err = parseBranches(forEachRef([branchFields]string{"refs/tags/v1", "a", "1", "", "", ""}), "/work/acme")
 	assert.Error(t, err, "not a branch")
-	_, err = ParseBranches(forEachRef([branchFields]string{"refs/heads/x", "a", "soon", "", "", ""}), "/work/acme")
+	_, err = parseBranches(forEachRef([branchFields]string{"refs/heads/x", "a", "soon", "", "", ""}), "/work/acme")
 	assert.Error(t, err, "bad time")
 	for _, track := range []string{"ahead lots", "sideways 2", "ahead 1; behind 2", "gone, ahead 1"} {
-		_, err = ParseBranches(forEachRef([branchFields]string{"refs/heads/x", "a", "1", "origin/x", track, ""}), "/work/acme")
+		_, err = parseBranches(forEachRef([branchFields]string{"refs/heads/x", "a", "1", "origin/x", track, ""}), "/work/acme")
 		assert.Error(t, err, "track %q", track)
 	}
 }

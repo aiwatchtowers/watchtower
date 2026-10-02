@@ -7,14 +7,14 @@ import (
 	"testing"
 )
 
-// fakeDarwin is a darwin Locator whose filesystem holds exactly the
+// fakeDarwin is a darwin locator whose filesystem holds exactly the
 // executables listed; the xcode-select link points at link ("" = absent).
-func fakeDarwin(env map[string]string, link string, executables ...string) Locator {
+func fakeDarwin(env map[string]string, link string, executables ...string) locator {
 	set := map[string]bool{}
 	for _, e := range executables {
 		set[e] = true
 	}
-	return Locator{
+	return locator{
 		GOOS:   "darwin",
 		Getenv: func(k string) string { return env[k] },
 		Readlink: func(string) (string, error) {
@@ -57,9 +57,9 @@ func TestLocate_DarwinOrder(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := fakeDarwin(tc.env, tc.link, tc.exist...).Locate()
+			got, ok := fakeDarwin(tc.env, tc.link, tc.exist...).locate()
 			if !ok || got != tc.want {
-				t.Fatalf("Locate() = %q, %v; want %q", got, ok, tc.want)
+				t.Fatalf("locate() = %q, %v; want %q", got, ok, tc.want)
 			}
 		})
 	}
@@ -67,42 +67,42 @@ func TestLocate_DarwinOrder(t *testing.T) {
 
 // The shim is never returned, whichever way a candidate spells it.
 func TestLocate_NeverTheShim(t *testing.T) {
-	for _, l := range []Locator{
+	for _, l := range []locator{
 		fakeDarwin(nil, "", shim),
 		fakeDarwin(map[string]string{"DEVELOPER_DIR": "/"}, "", shim),
 		fakeDarwin(map[string]string{"DEVELOPER_DIR": "/usr/../"}, "/", shim),
 	} {
-		if got, ok := l.Locate(); ok || got != "" {
-			t.Fatalf("Locate() = %q, %v; the shim must never be returned", got, ok)
+		if got, ok := l.locate(); ok || got != "" {
+			t.Fatalf("locate() = %q, %v; the shim must never be returned", got, ok)
 		}
 	}
 }
 
 func TestLocate_NoneFound(t *testing.T) {
-	if got, ok := fakeDarwin(nil, "").Locate(); ok || got != "" {
-		t.Fatalf("Locate() = %q, %v; want none", got, ok)
+	if got, ok := fakeDarwin(nil, "").locate(); ok || got != "" {
+		t.Fatalf("locate() = %q, %v; want none", got, ok)
 	}
 }
 
 func TestLocate_RelativeLinkTargetResolvesAgainstTheLinkDir(t *testing.T) {
-	got, ok := fakeDarwin(nil, "../dev", "/var/dev/usr/bin/git").Locate()
+	got, ok := fakeDarwin(nil, "../dev", "/var/dev/usr/bin/git").locate()
 	if !ok || got != "/var/dev/usr/bin/git" {
-		t.Fatalf("Locate() = %q, %v", got, ok)
+		t.Fatalf("locate() = %q, %v", got, ok)
 	}
 }
 
 func TestLocate_OtherOSesUseLookPath(t *testing.T) {
-	l := Locator{
+	l := locator{
 		GOOS:         "linux",
 		Getenv:       func(string) string { panic("no darwin lookup on linux") },
 		IsExecutable: func(string) bool { panic("no darwin lookup on linux") },
 		LookPath:     func(string) (string, error) { return "/usr/bin/git", nil },
 	}
-	if got, ok := l.Locate(); !ok || got != "/usr/bin/git" {
-		t.Fatalf("Locate() = %q, %v", got, ok)
+	if got, ok := l.locate(); !ok || got != "/usr/bin/git" {
+		t.Fatalf("locate() = %q, %v", got, ok)
 	}
 	l.LookPath = func(string) (string, error) { return "", errors.New("not found") }
-	if _, ok := l.Locate(); ok {
+	if _, ok := l.locate(); ok {
 		t.Fatal("a failed PATH lookup must report none")
 	}
 }

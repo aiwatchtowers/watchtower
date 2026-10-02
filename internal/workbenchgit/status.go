@@ -53,36 +53,40 @@ type Status struct {
 // ReadStatus reads the folder's branch and changes. It never fails: a
 // folder without git says so in Git/Note, a failed status in StatusOK.
 func ReadStatus(ctx context.Context, o Options) Status {
+	st, _ := readStatus(ctx, o)
+	return st
+}
+
+// readStatus is ReadStatus plus the repository it opened, nil when no git
+// call may run in the folder.
+func readStatus(ctx context.Context, o Options) (Status, *repo) {
 	var st Status
 	r, p, available, note, err := probe(ctx, o)
 	st.GitAvailable, st.Note = available, note
 	if r == nil {
-		return st
+		return st, nil
 	}
 	st.Git = true
 	if err != nil {
 		st.StatusError = gitError(err)
-		return st
+		return st, r
 	}
 	st.TopLevel, st.GitDir, st.CommonDir = p.topLevel, p.gitDir, p.commonDir
 	if st.Operation, err = operationIn(p.gitDir); err != nil {
 		st.StatusError = clip("checking for an operation in progress: " + err.Error())
-		return st
+		return st, r
 	}
 	out, err := r.git(ctx, "status", "--porcelain=v2", "--branch", "-z", "--untracked-files=normal")
+	if err == nil {
+		st.StatusFields, err = parseStatus(out)
+	}
 	if err != nil {
 		st.StatusError = gitError(err)
-		return st
+		return st, r
 	}
-	fields, err := ParseStatus(out)
-	if err != nil {
-		st.StatusError = gitError(err)
-		return st
-	}
-	st.StatusFields = fields
-	st.Dirty = fields.Changes > 0
+	st.Dirty = st.Changes > 0
 	st.StatusOK = true
-	return st
+	return st, r
 }
 
 // probe opens the folder's repository and reads its paths. A nil repo
@@ -123,9 +127,9 @@ func operationIn(gitDir string) (string, error) {
 	return "", nil
 }
 
-// ParseStatus reads `git status --porcelain=v2 --branch -z` output; the
+// parseStatus reads `git status --porcelain=v2 --branch -z` output; the
 // `# branch.oid` header is required.
-func ParseStatus(porcelainV2Z []byte) (StatusFields, error) {
+func parseStatus(porcelainV2Z []byte) (StatusFields, error) {
 	var f StatusFields
 	haveOID := false
 	entries := bytes.Split(porcelainV2Z, []byte{0})

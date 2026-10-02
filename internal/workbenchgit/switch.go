@@ -86,10 +86,9 @@ type SwitchResult struct {
 // discards, resets or cleans.
 func Switch(ctx context.Context, o Options, req SwitchRequest) (res SwitchResult) {
 	res = SwitchResult{Branch: req.Branch, NeedsConfirmation: []string{}}
-	st := ReadStatus(ctx, o)
+	st, r := readStatus(ctx, o)
 	res.Status, res.Changes = st, st.Changes
-	r, ok := res.start(o, st)
-	if !ok {
+	if !res.start(st) {
 		return res
 	}
 	branches, err := r.branches(ctx, st.TopLevel)
@@ -102,7 +101,7 @@ func Switch(ctx context.Context, o Options, req SwitchRequest) (res SwitchResult
 	case !found:
 		res.Refused, res.RefusedDetail = RefusedUnknownBranch, "no local branch is named "+req.Branch
 		return res
-	case !st.Detached && st.Branch == target.Name:
+	case st.Branch == target.Name: // "" when detached
 		res.Already = true
 		return res
 	case target.Worktree != "":
@@ -149,10 +148,9 @@ func Switch(ctx context.Context, o Options, req SwitchRequest) (res SwitchResult
 // stop it.
 func Create(ctx context.Context, o Options, name string) (res SwitchResult) {
 	res = SwitchResult{Branch: name, NeedsConfirmation: []string{}}
-	st := ReadStatus(ctx, o)
+	st, r := readStatus(ctx, o)
 	res.Status, res.Changes = st, st.Changes
-	r, ok := res.start(o, st)
-	if !ok {
+	if !res.start(st) {
 		return res
 	}
 	// The rules `check-ref-format --branch` adds to a ref's. --branch
@@ -193,30 +191,25 @@ func Create(ctx context.Context, o Options, name string) (res SwitchResult) {
 }
 
 // start refuses a folder without git, outside a repository or whose status
-// could not be read, and opens the repository otherwise.
-func (res *SwitchResult) start(o Options, st Status) (*repo, bool) {
+// could not be read; true means the status read opened the repository.
+func (res *SwitchResult) start(st Status) bool {
 	switch {
 	case !st.GitAvailable:
 		res.Refused, res.RefusedDetail = RefusedGitUnavailable, st.Note
-		return nil, false
 	case !st.Git:
 		res.Refused, res.RefusedDetail = RefusedNotGit, st.Note
-		return nil, false
 	case !st.StatusOK:
 		res.Refused, res.RefusedDetail = RefusedGitFailed, st.StatusError
-		return nil, false
+	default:
+		return true
 	}
-	r, err := open(o)
-	if err != nil { // the folder changed since the status was read
-		res.Refused, res.RefusedDetail = RefusedNotGit, err.Error()
-		return nil, false
-	}
-	return r, true
+	return false
 }
 
 // findBranch matches name exactly against the local branch names; an
 // option-like name never matches.
 func findBranch(branches []Branch, name string) (Branch, bool) {
+	// update-ref can make refs/heads/-x, which switch would read as a flag.
 	if name == "" || strings.HasPrefix(name, "-") {
 		return Branch{}, false
 	}

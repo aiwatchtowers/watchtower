@@ -79,13 +79,13 @@ func (r *repo) branches(ctx context.Context, topLevel string) ([]Branch, error) 
 	if err != nil {
 		return nil, err
 	}
-	return ParseBranches(out, topLevel)
+	return parseBranches(out, topLevel)
 }
 
-// ParseBranches reads for-each-ref output in branchFormat. topLevel is the
+// parseBranches reads for-each-ref output in branchFormat. topLevel is the
 // folder's own worktree: the branch checked out there is Current, one
 // checked out anywhere else carries Worktree.
-func ParseBranches(out []byte, topLevel string) ([]Branch, error) {
+func parseBranches(out []byte, topLevel string) ([]Branch, error) {
 	fields := bytes.Split(out, []byte{0})
 	// The output ends with a NUL and a newline: one field more than a whole
 	// number of records.
