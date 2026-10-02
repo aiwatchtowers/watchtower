@@ -3,7 +3,8 @@ import WatchtowerCore
 
 /// Onboarding step 2: one card per source the saved goals need, each opening
 /// the Settings Add sheet. Everything is skippable. A newly connected Slack
-/// account starts the background people load (`AppState.peopleRoster`).
+/// account starts the background people load (`AppState.peopleRoster`,
+/// started by `AppState.slackAccountsDidChange`).
 struct OnboardingConnectStepView: View {
     /// Every sheet and remove on this step: the daemon starts at completion,
     /// not mid-setup.
@@ -26,9 +27,6 @@ struct OnboardingConnectStepView: View {
 
     @Environment(AppState.self) private var appState
     @State private var sheet: Sheet?
-    /// The Slack accounts before the Slack sheet opened, to spot the one it
-    /// connected.
-    @State private var slackBefore: Set<Int> = []
     @State private var databaseError: String?
     @State private var isContinuing = false
 
@@ -110,32 +108,23 @@ struct OnboardingConnectStepView: View {
                 .disabled(isContinuing || appState.isFinishingOnboarding)
             }
         }
-        .sheet(item: $sheet, onDismiss: sheetDismissed) { sheet in
+        .sheet(item: $sheet) { sheet in
             switch sheet {
             case .slack: Self.slackSheet()
             case let .google(mail, calendar): Self.googleSheet(mail: mail, calendar: calendar)
             case .jira: Self.jiraSheet()
             }
         }
-        .task { await openDatabase() }
+        .task {
+            await openDatabase()
+            appState.resumePeopleRosterIfNeeded()
+        }
     }
 
     /// The database launch could not open on a fresh install; Goals'
     /// Continue opened it, this covers a relaunch that failed to.
     private func openDatabase() async {
         databaseError = await appState.openDatabaseForOnboarding()
-    }
-
-    private func sheetDismissed() {
-        guard let vm = appState.slackAccountsViewModel else { return }
-        let before = slackBefore
-        Task {
-            await vm.refreshAsync()
-            let after = vm.accounts.filter { $0.status != "removed" }.map(\.id)
-            if let id = OnboardingConnectPlan.newlyConnected(before: before, after: after) {
-                appState.peopleRoster.start(accountID: id)
-            }
-        }
     }
 
     @ViewBuilder
@@ -145,18 +134,17 @@ struct OnboardingConnectStepView: View {
             sourceRow(
                 letter: "S", title: "Slack",
                 subtitle: "Messages, mentions, threads · for work communication",
+                // v1: the first active account, whatever its status.
                 connected: activeSlackAccounts.first?.displayName,
                 available: appState.slackAccountsViewModel != nil,
-                connect: {
-                    slackBefore = Set(activeSlackAccounts.map(\.id))
-                    sheet = .slack
-                },
+                connect: { sheet = .slack },
                 remove: activeSlackAccounts.first.map { account in
                     { await appState.slackAccountsViewModel?.remove(account, daemonPolicy: Self.daemonPolicy) }
                 },
                 showsRoster: true
             )
         case let .google(mail, calendar):
+            // v1: the first account, whatever its status or scopes.
             let account = appState.googleAccountsViewModel?.accounts.first
             sourceRow(
                 letter: "G", title: "Google",
@@ -169,6 +157,7 @@ struct OnboardingConnectStepView: View {
                 }
             )
         case .jira:
+            // v1: the first active account, whatever its status.
             let account = appState.jiraAccountsViewModel?.accounts.first { $0.status != "removed" }
             sourceRow(
                 letter: "J", title: "Jira",
@@ -237,32 +226,21 @@ struct OnboardingConnectStepView: View {
 
     @ViewBuilder
     private var rosterLine: some View {
-        switch appState.peopleRoster.state {
-        case .idle:
-            EmptyView()
-        case let .loading(fetched, saved):
+        let roster = appState.peopleRoster
+        if let text = roster.state.progressText {
             HStack(spacing: 6) {
-                ProgressView().controlSize(.mini)
-                Text(saved == 0 ? "Loading people… \(fetched)" : "Loading people… \(saved) of \(fetched)")
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-        case .done(let count):
-            Text("\(count) people loaded")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        case .failed(let reason):
-            HStack(spacing: 6) {
-                Text("Couldn't load people: \(reason)")
-                    .font(.caption)
-                    .foregroundStyle(.red)
+                if case .loading = roster.state {
+                    ProgressView().controlSize(.mini)
+                }
+                Text(text)
+                    .foregroundStyle(roster.state.isFailure ? .red : .secondary)
                     .lineLimit(2)
-                if let account = activeSlackAccounts.first {
-                    Button("Retry") { appState.peopleRoster.start(accountID: account.id) }
+                if roster.state.isFailure {
+                    Button("Retry") { roster.retry() }
                         .buttonStyle(.link)
-                        .font(.caption)
                 }
             }
+            .font(.caption)
         }
     }
 }

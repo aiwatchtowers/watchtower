@@ -73,7 +73,7 @@ final class AppState {
 
     /// Onboarding's background Slack roster load, started from Connect and
     /// read by About you.
-    let peopleRoster = PeopleRosterLoad()
+    let peopleRoster: PeopleRosterLoad
 
     /// Cache for custom workspace emoji images.
     let emojiImageCache = EmojiImageCache()
@@ -325,11 +325,28 @@ final class AppState {
 
     /// `onboardingDefaults` backs the onboarding step and goals — tests pass
     /// an isolated suite.
-    init(onboardingDefaults: UserDefaults = .standard) {
+    /// Opens (and migrates) the workspace database.
+    @ObservationIgnored private let openDatabase: @Sendable () throws -> DatabaseManager
+
+    /// Test seams for the two steps of finishing onboarding that spawn CLI
+    /// children or ask macOS for permissions; nil runs the real thing.
+    @ObservationIgnored var startOnboardingPipelinesOverride: (() -> Void)?
+    @ObservationIgnored var wireAppDatabaseOverride: ((DatabaseManager) -> Void)?
+
+    /// `onboardingDefaults` backs the onboarding step and goals, `openDatabase`
+    /// the database open, `peopleRosterRun` the people load — tests pass an
+    /// isolated suite and fakes.
+    init(
+        onboardingDefaults: UserDefaults = .standard,
+        openDatabase: @escaping @Sendable () throws -> DatabaseManager = { try DatabaseManager.migrateAndOpen() },
+        peopleRosterRun: @escaping PeopleRosterLoad.Run = PeopleRosterLoad.cliRun
+    ) {
         let features = FeatureManagerService()
         featureManager = features
         onboarding = OnboardingStateMachineV2(defaults: onboardingDefaults)
         onboardingGoals = .production(defaults: onboardingDefaults, featureManager: features)
+        peopleRoster = PeopleRosterLoad(run: peopleRosterRun)
+        self.openDatabase = openDatabase
     }
 
     /// Ensures chat ViewModels exist (lazy init, called from ChatView).
@@ -617,18 +634,12 @@ final class AppState {
             do {
                 // Off the concurrency pool: the migrate child may run for up
                 // to 30 s (see ProcessPipes).
-                let opened = await ProcessPipes.offPool { Result { try DatabaseManager.migrateAndOpen() } }
+                let opened = await ProcessPipes.offPool { [openDatabase] in Result { try openDatabase() } }
                 let manager = try opened.get()
-                databaseManager = manager
-                embeddedChats.dbPool = manager.dbPool
-                errorMessage = nil
                 ambiguousWorkspaces = []
                 // Before the splash hides, so Day Plan / Briefings never flash
                 // the no-owner state on an install that has one.
-                await refreshOwner()
-                await refreshConnectedSources()
-                wireMeetingRecorderLoaders(dbPool: manager.dbPool)
-                wireTargetBriefCenter()
+                await wireOnboardingDatabase(manager)
                 await reconcileOnboarding(dbPool: manager.dbPool)
                 profileComplete = !needsOnboarding
                 analysisLegacyMode = ConfigService().analysisLegacyMode
@@ -638,8 +649,12 @@ final class AppState {
                     await initSidebarCounts(dbPool: manager.dbPool)
                 }
                 isLoading = false
-                loadCustomEmoji(from: manager)
-                initFeatureViewModels(manager: manager)
+                // During onboarding only the account view models run (above):
+                // the rest (watchers that ask for notification permission,
+                // meeting reminders, polling) waits for completeOnboarding().
+                if !needsOnboarding {
+                    wireAppDatabase(manager)
+                }
                 // Resume pipelines if app was closed mid-generation
                 if !needsOnboarding && !UserDefaults.standard.bool(forKey: Constants.pipelinesCompletedKey) {
                     backgroundTaskManager.startPipelines(legacyPeople: analysisLegacyMode, disabledFeatures: featureManager.disabledFeatureIDs)
@@ -766,6 +781,10 @@ final class AppState {
                 }
             },
             startPipelines: {
+                if let override = startOnboardingPipelinesOverride {
+                    override()
+                    return
+                }
                 backgroundTaskManager.startPipelines(
                     legacyPeople: analysisLegacyMode,
                     disabledFeatures: featureManager.disabledFeatureIDs
@@ -778,29 +797,20 @@ final class AppState {
 
     /// Opens the database for onboarding's Connect step, whose account
     /// sheets need the account view models — on a fresh install launch could
-    /// not open it (no workspace until Goals' Continue). The launch wiring,
-    /// minus sidebar counts, pipelines and the daemon, which completion
-    /// starts. A no-op when the database is open; concurrent calls share one
-    /// open. Returns the failure to show, nil on success.
+    /// not open it (no workspace until Goals' Continue). Only what the steps
+    /// need (`wireOnboardingDatabase`); completion wires the rest. A no-op
+    /// when the database is open; concurrent calls share one open. Returns
+    /// the failure to show, nil on success.
     func openDatabaseForOnboarding() async -> String? {
         if databaseManager != nil { return nil }
         if let onboardingDatabaseOpen { return await onboardingDatabaseOpen.value }
-        let open = Task<String?, Never> {
-            let opened = await ProcessPipes.offPool { Result { try DatabaseManager.migrateAndOpen() } }
+        let open = Task<String?, Never> { [openDatabase] in
+            let opened = await ProcessPipes.offPool { Result { try openDatabase() } }
             switch opened {
             case .failure(let error):
                 return error.localizedDescription
             case .success(let manager):
-                databaseManager = manager
-                embeddedChats.dbPool = manager.dbPool
-                errorMessage = nil
-                await refreshOwner()
-                await refreshConnectedSources()
-                wireMeetingRecorderLoaders(dbPool: manager.dbPool)
-                wireTargetBriefCenter()
-                analysisLegacyMode = ConfigService().analysisLegacyMode
-                loadCustomEmoji(from: manager)
-                initFeatureViewModels(manager: manager)
+                await wireOnboardingDatabase(manager)
                 return nil
             }
         }
@@ -870,6 +880,9 @@ final class AppState {
         onboarding.goTo(.complete)
         needsOnboarding = false
         profileComplete = true
+        if let manager = databaseManager {
+            wireAppDatabase(manager)
+        }
         // The initialize() path skips sidebar counts while onboarding is pending, so build
         // them now — otherwise the first run shows all-zero badges (incl. Catch-Up) until restart.
         if sidebarCountsViewModel == nil, let pool = databaseManager?.dbPool {
@@ -950,6 +963,40 @@ final class AppState {
         }
     }
 
+    /// What onboarding's steps need once the database is open: the database
+    /// itself, the owner, the connected sources and the account view models
+    /// behind the Connect sheets. Nothing here asks macOS for anything.
+    private func wireOnboardingDatabase(_ manager: DatabaseManager) async {
+        databaseManager = manager
+        errorMessage = nil
+        await refreshOwner()
+        await refreshConnectedSources()
+        guard slackAccountsViewModel == nil else { return }
+        initEmailAccounts(dbPool: manager.dbPool)
+        initCalendarAccounts(dbPool: manager.dbPool)
+        initGoogleAccounts(dbPool: manager.dbPool)
+        initSlackAccounts(dbPool: manager.dbPool)
+        initJiraAccounts(dbPool: manager.dbPool)
+    }
+
+    @ObservationIgnored private var appDatabaseWired = false
+
+    /// The rest of the database wiring, once per process: on launch when no
+    /// onboarding is pending, else at its completion.
+    private func wireAppDatabase(_ manager: DatabaseManager) {
+        guard !appDatabaseWired else { return }
+        appDatabaseWired = true
+        if let override = wireAppDatabaseOverride {
+            override(manager)
+            return
+        }
+        embeddedChats.dbPool = manager.dbPool
+        wireMeetingRecorderLoaders(dbPool: manager.dbPool)
+        wireTargetBriefCenter()
+        loadCustomEmoji(from: manager)
+        initFeatureViewModels(manager: manager)
+    }
+
     /// Builds every feature ViewModel and starts their sync-tolerant polling,
     /// once the DB is open and splash has decided to hand off to the main UI.
     /// Pulled out of `initialize()` to keep that function under the lint limit.
@@ -961,11 +1008,6 @@ final class AppState {
         initIdeas(dbManager: manager)
         initBriefings(dbManager: manager)
         initSecretaryProfile(dbManager: manager)
-        initEmailAccounts(dbPool: manager.dbPool)
-        initCalendarAccounts(dbPool: manager.dbPool)
-        initGoogleAccounts(dbPool: manager.dbPool)
-        initSlackAccounts(dbPool: manager.dbPool)
-        initJiraAccounts(dbPool: manager.dbPool)
         initExternalConnections(dbPool: manager.dbPool)
         initReactionDictionary(dbPool: manager.dbPool)
         initActionStrip(dbPool: manager.dbPool)
@@ -1050,9 +1092,35 @@ final class AppState {
 
     func initSlackAccounts(dbPool: DatabasePool) {
         let vm = SlackAccountsViewModel(dbPool: dbPool)
-        vm.onAccountsChanged = { [weak self] in await self?.accountsChanged() }
+        vm.onAccountsChanged = { [weak self, weak vm] in
+            if let vm { self?.slackAccountsDidChange(vm.accounts) }
+            await self?.accountsChanged()
+        }
         vm.refresh()
         slackAccountsViewModel = vm
+    }
+
+    /// The active Slack accounts at the last refresh; nil before the first.
+    @ObservationIgnored private var knownSlackAccountIDs: Set<Int>?
+
+    /// During onboarding, a Slack account that appeared since the last
+    /// refresh starts the people load — however its Add sheet was left
+    /// (closed mid-sign-in, the connect finishing afterwards, included).
+    /// The first refresh only records what is already there.
+    func slackAccountsDidChange(_ accounts: [SlackAccount]) {
+        let active = accounts.filter { $0.status != "removed" }.map(\.id)
+        defer { knownSlackAccountIDs = Set(active) }
+        guard needsOnboarding, let known = knownSlackAccountIDs,
+              let added = OnboardingConnectPlan.newlyConnected(before: known, after: active) else { return }
+        peopleRoster.start(accountID: added)
+    }
+
+    /// Connect or About you on a relaunch: the load did not survive the quit,
+    /// so an already connected Slack account starts it once.
+    func resumePeopleRosterIfNeeded() {
+        guard peopleRoster.state == .idle,
+              let account = slackAccountsViewModel?.accounts.first(where: { $0.status != "removed" }) else { return }
+        peopleRoster.start(accountID: account.id)
     }
 
     /// Re-consents one Slack account from a failed send's card ("sign in

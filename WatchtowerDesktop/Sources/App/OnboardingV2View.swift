@@ -66,6 +66,7 @@ struct OnboardingV2View: View {
                 .disabled(appState.isFinishingOnboarding)
             }
         }
+        .task { appState.resumePeopleRosterIfNeeded() }
     }
 
     private func back(to step: OnboardingV2Step) {

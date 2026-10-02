@@ -19,9 +19,15 @@ struct AddGoogleAccountView: View {
     /// what the goals need.
     init(daemonPolicy: DaemonRestartPolicy = .restart, calendar: Bool = true, mail: Bool = true) {
         self.daemonPolicy = daemonPolicy
+        presetCalendar = calendar
+        presetMail = mail
         _wantCalendar = State(initialValue: calendar)
         _wantGmail = State(initialValue: mail)
     }
+
+    /// The scopes the sheet opens with.
+    let presetCalendar: Bool
+    let presetMail: Bool
 
     @State private var label = ""
     @State private var wantCalendar = true

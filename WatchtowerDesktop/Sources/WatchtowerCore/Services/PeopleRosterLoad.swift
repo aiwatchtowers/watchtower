@@ -9,6 +9,25 @@ package enum PeopleRosterState: Equatable, Sendable {
     case loading(fetched: Int, saved: Int)
     case done(count: Int)
     case failed(String)
+
+    package var isFailure: Bool {
+        if case .failed = self { return true }
+        return false
+    }
+
+    /// The Slack card's progress line; nil when there is nothing to say.
+    /// While users.list pages arrive Slack gives no total, so the count
+    /// stands alone; saving knows its total.
+    package var progressText: String? {
+        switch self {
+        case .idle: nil
+        case let .loading(fetched, saved): saved == 0
+            ? "Loading people… \(fetched)"
+            : "Loading people… \(saved) of \(fetched)"
+        case .done(let count): "\(count) people loaded"
+        case .failed(let reason): "Couldn't load people: \(reason)"
+        }
+    }
 }
 
 /// Onboarding's `watchtower sync --users-only --progress-json` run, started
@@ -28,9 +47,14 @@ package final class PeopleRosterLoad {
     ) async -> (exitCode: Int32, stderr: String)
 
     package private(set) var state: PeopleRosterState = .idle
+    /// The account of the last run, which Retry loads again.
+    package private(set) var accountID: Int?
 
     @ObservationIgnored private let run: Run
     @ObservationIgnored private var task: Task<Void, Never>?
+    /// Bumped per run and by `stop()`: a cancelled run's late lines and exit
+    /// never touch `state`.
+    @ObservationIgnored private var generation = 0
 
     package init(run: @escaping Run = PeopleRosterLoad.cliRun) {
         self.run = run
@@ -45,23 +69,25 @@ package final class PeopleRosterLoad {
         case .loading, .done: return false
         case .idle, .failed: break
         }
+        generation += 1
+        let runGeneration = generation
+        self.accountID = accountID
         state = .loading(fetched: 0, saved: 0)
         task = Task { [run] in
             var lastTotal = 0
             var lastError: String?
             let decoder = JSONDecoder()
             let result = await run(accountID) { [weak self] line in
-                guard let progress = try? decoder.decode(SyncProgressData.self, from: Data(line.utf8)) else { return }
+                guard let self, runGeneration == generation,
+                      let progress = try? decoder.decode(SyncProgressData.self, from: Data(line.utf8)) else { return }
                 if let error = progress.error, !error.isEmpty {
                     lastError = error
                     return
                 }
                 lastTotal = progress.userProfilesTotal
-                if case .loading = self?.state {
-                    self?.state = .loading(fetched: progress.userProfilesTotal, saved: progress.userProfilesDone)
-                }
+                state = .loading(fetched: progress.userProfilesTotal, saved: progress.userProfilesDone)
             }
-            guard !Task.isCancelled else { return }
+            guard runGeneration == generation else { return }
             if result.exitCode == 0 {
                 state = .done(count: lastTotal)
             } else {
@@ -72,6 +98,13 @@ package final class PeopleRosterLoad {
         return true
     }
 
+    /// Starts again for the account whose load failed.
+    @discardableResult
+    package func retry() -> Bool {
+        guard case .failed = state, let accountID else { return false }
+        return start(accountID: accountID)
+    }
+
     /// Waits for the current run, if any.
     package func waitForCompletion() async {
         await task?.value
@@ -79,6 +112,7 @@ package final class PeopleRosterLoad {
 
     /// Ends a running load (app quit); a later `start` begins again.
     package func stop() {
+        generation += 1
         task?.cancel()
         task = nil
         if case .loading = state { state = .idle }

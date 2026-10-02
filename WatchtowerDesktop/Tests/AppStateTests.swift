@@ -260,6 +260,7 @@ final class AppStateTests: XCTestCase {
         let (defaults, suiteName) = try onboardingSuite()
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let appState = AppState(onboardingDefaults: defaults)
+        appState.wireAppDatabaseOverride = { _ in }
         appState.databaseManager = dbManager
         await appState.refreshConnectedSources()
         XCTAssertFalse(SidebarDestination.inbox.isVisible(
@@ -347,6 +348,7 @@ final class AppStateTests: XCTestCase {
     /// the DB opened (or, with `db: nil`, failed to).
     private func launch(_ defaults: UserDefaults, db: DatabaseManager?) async -> AppState {
         let appState = AppState(onboardingDefaults: defaults)
+        appState.wireAppDatabaseOverride = { _ in }
         appState.databaseManager = db
         await appState.refreshConnectedSources()
         await appState.reconcileOnboarding(dbPool: db?.dbPool)
@@ -504,5 +506,173 @@ final class AppStateTests: XCTestCase {
         XCTAssertFalse(appState.onboardingGoals.isCustomizingFeatures)
         XCTAssertEqual(appState.onboardingGoals.cliCheck, .checking)
         XCTAssertNil(appState.onboardingStepError)
+    }
+
+    // MARK: - Onboarding Connect wiring
+
+    /// Records each people-load launch; finishes at once.
+    @MainActor
+    private final class RosterLaunches {
+        var accounts: [Int] = []
+    }
+
+    /// Spins the main actor until `condition` holds (bounded).
+    private func waitUntil(_ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async {
+        for _ in 0..<2000 where !condition() {
+            await Task.yield()
+        }
+        XCTAssertTrue(condition(), "condition not reached", file: file, line: line)
+    }
+
+    private func onboardingAppState(_ launches: RosterLaunches) -> AppState {
+        let run: PeopleRosterLoad.Run = { accountID, _ in
+            await MainActor.run { launches.accounts.append(accountID) }
+            return (0, "")
+        }
+        let appState = AppState.isolated(peopleRosterRun: run)
+        appState.databaseManager = dbManager
+        appState.needsOnboarding = true
+        return appState
+    }
+
+    /// The connect lands after its sheet was closed (mid-sign-in): the
+    /// account list refresh it ends with starts the load, exactly once.
+    func testNewSlackAccountStartsThePeopleLoadOnce() async throws {
+        let launches = RosterLaunches()
+        let appState = onboardingAppState(launches)
+        appState.initSlackAccounts(dbPool: dbManager.dbPool)
+        let vm = try XCTUnwrap(appState.slackAccountsViewModel)
+        await vm.refreshAsync()
+
+        let id = try await dbManager.dbPool.write { db in try TestDatabase.insertSlackAccount(db, teamID: "T1") }
+        await vm.refreshAsync()
+        await waitUntil { launches.accounts.count == 1 }
+        await vm.refreshAsync()
+        await appState.peopleRoster.waitForCompletion()
+
+        XCTAssertEqual(launches.accounts, [Int(id)])
+    }
+
+    /// Closing the Google (or Jira) sheet with Slack already connected
+    /// refreshes nothing new on the Slack side: no load.
+    func testAlreadyConnectedSlackStartsNothing() async throws {
+        let launches = RosterLaunches()
+        let appState = onboardingAppState(launches)
+        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertSlackAccount(db, teamID: "T1") }
+        appState.initSlackAccounts(dbPool: dbManager.dbPool)
+        let vm = try XCTUnwrap(appState.slackAccountsViewModel)
+        await vm.refreshAsync()
+        await vm.refreshAsync()
+        for _ in 0..<50 { await Task.yield() }
+
+        XCTAssertEqual(launches.accounts, [])
+    }
+
+    func testSlackAccountOutsideOnboardingStartsNothing() async throws {
+        let launches = RosterLaunches()
+        let appState = onboardingAppState(launches)
+        appState.needsOnboarding = false
+        appState.slackAccountsDidChange([])
+        let id = try await dbManager.dbPool.write { db in try TestDatabase.insertSlackAccount(db, teamID: "T1") }
+        let accounts = try await dbManager.dbPool.read { db in try SlackAccountQueries.fetchAll(db) }
+        XCTAssertEqual(accounts.map(\.id), [Int(id)])
+
+        appState.slackAccountsDidChange(accounts)
+
+        XCTAssertEqual(appState.peopleRoster.state, .idle)
+    }
+
+    /// A relaunch on Connect / About you: the connected account's load runs
+    /// once.
+    func testResumePeopleRosterStartsOnceForAConnectedAccount() async throws {
+        let launches = RosterLaunches()
+        let appState = onboardingAppState(launches)
+        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertSlackAccount(db, teamID: "T1") }
+        appState.initSlackAccounts(dbPool: dbManager.dbPool)
+        await appState.slackAccountsViewModel?.refreshAsync()
+
+        appState.resumePeopleRosterIfNeeded()
+        await appState.peopleRoster.waitForCompletion()
+        appState.resumePeopleRosterIfNeeded()
+
+        XCTAssertEqual(launches.accounts.count, 1)
+    }
+
+    // MARK: - Onboarding database and finish
+
+    /// Counts opens; returns the test database.
+    private final class OpenCounter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = 0
+        var count: Int { lock.withLock { value } }
+        func bump() { lock.withLock { value += 1 } }
+    }
+
+    func testOpenDatabaseForOnboardingIsANoOpWhenOpen() async throws {
+        let opens = OpenCounter()
+        let manager = try XCTUnwrap(dbManager)
+        let open: @Sendable () throws -> DatabaseManager = { opens.bump(); return manager }
+        let appState = AppState.isolated(openDatabase: open)
+        appState.databaseManager = dbManager
+
+        let failure = await appState.openDatabaseForOnboarding()
+
+        XCTAssertNil(failure)
+        XCTAssertEqual(opens.count, 0)
+    }
+
+    func testConcurrentOpensShareOneOpen() async throws {
+        let opens = OpenCounter()
+        let manager = try XCTUnwrap(dbManager)
+        let open: @Sendable () throws -> DatabaseManager = { opens.bump(); return manager }
+        let appState = AppState.isolated(openDatabase: open)
+
+        async let first = appState.openDatabaseForOnboarding()
+        async let second = appState.openDatabaseForOnboarding()
+        let results = await [first, second]
+
+        XCTAssertEqual(results, [nil, nil])
+        XCTAssertEqual(opens.count, 1)
+        XCTAssertNotNil(appState.slackAccountsViewModel, "the Connect sheets' view models are built")
+        XCTAssertNil(appState.calendarViewModel, "the rest waits for completion")
+    }
+
+    func testFailedOpenIsReported() async {
+        let appState = AppState.isolated()
+        let failure = await appState.openDatabaseForOnboarding()
+        XCTAssertNotNil(failure)
+        XCTAssertNil(appState.databaseManager)
+    }
+
+    /// Fresh install: Goals opened the DB for Connect; leaving the last
+    /// step still runs the whole completion sequence, pipelines included,
+    /// and wires the rest of the app once.
+    func testFinishAfterTheOnboardingOpenReachesThePipelines() async throws {
+        let manager = try XCTUnwrap(dbManager)
+        let open: @Sendable () throws -> DatabaseManager = { manager }
+        let appState = AppState.isolated(openDatabase: open)
+        var pipelineStarts = 0
+        var appWirings = 0
+        var retries = 0
+        appState.startOnboardingPipelinesOverride = { pipelineStarts += 1 }
+        appState.wireAppDatabaseOverride = { _ in appWirings += 1 }
+        appState.needsOnboarding = true
+        let openFailure = await appState.openDatabaseForOnboarding()
+        XCTAssertNil(openFailure)
+
+        let route = OnboardingRoute(goals: [.tasksAndJira], hasSlackAccount: false)
+        appState.onboarding.goTo(.connect)
+        await appState.leaveOnboardingStep(.connect, route: route) { retries += 1 }
+
+        XCTAssertEqual(pipelineStarts, 1)
+        XCTAssertEqual(appWirings, 1)
+        XCTAssertEqual(retries, 1)
+        XCTAssertFalse(appState.needsOnboarding)
+        XCTAssertEqual(appState.onboarding.currentStep, .complete)
+        XCTAssertNil(appState.onboardingStepError)
+        let done = try await dbManager.dbPool.read { db in
+            try Bool.fetchOne(db, sql: "SELECT onboarding_done FROM user_profile LIMIT 1")
+        }
+        XCTAssertEqual(done, true)
     }
 }

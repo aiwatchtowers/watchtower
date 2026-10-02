@@ -13,6 +13,17 @@ final class OnboardingConnectStepTests: XCTestCase {
         XCTAssertEqual(OnboardingConnectStepView.jiraSheet().daemonPolicy, .deferred)
     }
 
+    func testGoogleSheetOpensWithTheGoalsScopes() {
+        let mailOnly = OnboardingConnectStepView.googleSheet(mail: true, calendar: false)
+        XCTAssertTrue(mailOnly.presetMail)
+        XCTAssertFalse(mailOnly.presetCalendar)
+        let calendarOnly = OnboardingConnectStepView.googleSheet(mail: false, calendar: true)
+        XCTAssertFalse(calendarOnly.presetMail)
+        XCTAssertTrue(calendarOnly.presetCalendar)
+        let settings = AddGoogleAccountView()
+        XCTAssertTrue(settings.presetMail && settings.presetCalendar, "Settings keeps both on")
+    }
+
     func testGoogleSubtitleNamesTheScopes() {
         XCTAssertEqual(OnboardingConnectStepView.googleSubtitle(mail: true, calendar: false), "Mail · for work communication")
         XCTAssertEqual(OnboardingConnectStepView.googleSubtitle(mail: false, calendar: true), "Calendar · for meetings")
