@@ -517,7 +517,8 @@ attributed to Watchtower.
   `testProj10_TheShownConfirmationGoesThroughAfterTheDialogClearedIt`, `testProj10_ALiveSessionIsReportedAndItsConfirmationResent`,
   `testProj10_ASessionStartedAfterAStashConfirmationIsAskedAbout`, `testProj10_ASessionThatExitedBeforeTheConfirmationIsNotReported`,
   `testProj10_ASessionAtTheRepositoryRootOfASubfolderWorkbenchIsReported`, `testProj10_APendingConfirmationIsDroppedWhenTheBranchMoved`,
-  `testProj10_APendingConfirmationIsDroppedOnceTheFolderIsOnItsBranch`, `testProj10_NoGitHidesTheButton`
+  `testProj10_APendingConfirmationIsDroppedOnceTheFolderIsOnItsBranch`, `testProj10_NoGitHidesTheButton`,
+  `testProj10_TheStashNoteStaysUntilDismissedOrReplaced`
 - `WatchtowerDesktop/Tests/Core/WorkbenchGitDecodingTests.swift::testProj10_UnknownConfirmationsAreKeptApart`
 
 **Locked since:** — (proposed 2026-10-02; not locked until the owner approves)

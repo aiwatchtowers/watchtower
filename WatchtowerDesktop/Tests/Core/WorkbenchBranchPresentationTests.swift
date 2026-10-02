@@ -59,6 +59,11 @@ final class WorkbenchBranchPresentationTests: XCTestCase {
                        "Detached HEAD at a1b2c3d")
     }
 
+    func testHelpOfADirtyStatusWithoutACountSaysNoZero() {
+        XCTAssertEqual(Pres.help(WorkbenchGitStatus(branch: "main", dirty: true), staleError: nil, pendingBranch: nil),
+                       "main\nUncommitted changes")
+    }
+
     func testHelpOfAStaleStatusSaysWhy() {
         XCTAssertEqual(Pres.help(WorkbenchGitStatus(branch: "main"), staleError: "Could not read the git status: boom", pendingBranch: nil),
                        "main\nMay be out of date — Could not read the git status: boom")

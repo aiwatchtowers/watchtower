@@ -87,7 +87,9 @@ package enum WorkbenchBranchPresentation {
         var lines = [status.detached ? "Detached HEAD at \(status.head)" : status.branch]
         if let pendingBranch { lines.append(pendingHelp(pendingBranch)) }
         if let stashEntry { lines.append("Stashed changes: \(stashEntry)") }
-        if status.dirty { lines.append("\(changeCount(status.changes)) not committed") }
+        if status.dirty {
+            lines.append(status.changes > 0 ? "\(changeCount(status.changes)) not committed" : "Uncommitted changes")
+        }
         if !status.upstream.isEmpty { lines.append("Upstream \(status.upstream)") }
         if !status.operation.isEmpty { lines.append("A \(status.operation) is in progress — switching is refused until it ends") }
         if let staleError { lines.append("May be out of date — \(staleError)") }

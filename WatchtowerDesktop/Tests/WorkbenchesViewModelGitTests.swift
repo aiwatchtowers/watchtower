@@ -366,7 +366,7 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
     /// outlives reopening the popover, a status refresh and a switch that
     /// stashed nothing, until the owner dismisses it or a newer stash
     /// replaces it.
-    func testTheStashNoteStaysUntilDismissedOrReplaced() async throws {
+    func testProj10_TheStashNoteStaysUntilDismissedOrReplaced() async throws {
         let runner = ScriptedCLIRunner(results: [
             .success(switchResult(#""switched":false,"error":"error: simulated switch failure","stashed":"d28fb3e","#
                                   + #""stash_message":"watchtower: m","stash_error":"error: conflict""#)),
