@@ -4,7 +4,7 @@ import UserNotifications
 struct NotificationSettings: View {
     @AppStorage("notifyDecisions") private var notifyDecisions = true
     @AppStorage("notifyDailySummary") private var notifyDailySummary = true
-    @AppStorage(ProjectNotificationCenter.enabledKey) private var notifyProjects = true
+    @AppStorage(WorkbenchNotificationCenter.enabledKey) private var notifyWorkbenches = true
     @AppStorage("quietHoursEnabled") private var quietHoursEnabled = false
     @AppStorage(MeetingReminderCenter.remindersEnabledKey) private var notifyMeetingReminders = true
     @AppStorage(MeetingReminderCenter.reminderMinutesKey) private var reminderMinutes = MeetingReminderCenter.defaultReminderMinutes
@@ -33,7 +33,7 @@ struct NotificationSettings: View {
             Section("Notification Types") {
                 Toggle("Decision notifications", isOn: $notifyDecisions)
                 Toggle("Daily summary notifications", isOn: $notifyDailySummary)
-                Toggle("Project notifications", isOn: $notifyProjects)
+                Toggle("Project notifications", isOn: $notifyWorkbenches)
                     .help("Agent questions, documents ready for review, answered comments, finished targets")
             }
 

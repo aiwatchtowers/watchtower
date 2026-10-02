@@ -30,6 +30,26 @@ func runWorkbench(t *testing.T, args ...string) (stdout, stderr string, err erro
 	return runWorkbenchAs(t, "project", args...)
 }
 
+// resetSetFlags puts every flag a run set on cmds — local, persistent or
+// inherited — back to its default value and clears its Changed mark.
+// rootCmd is shared across tests: a leftover --help would make every later
+// run print usage, a leftover --project would collide with the next run's
+// --workbench. Flags no run set are left alone (flagConfig, for one, is
+// assigned by the tests, never parsed).
+func resetSetFlags(cmds ...*cobra.Command) {
+	reset := func(f *pflag.Flag) {
+		if f.Changed {
+			_ = f.Value.Set(f.DefValue)
+			f.Changed = false
+		}
+	}
+	for _, c := range cmds {
+		c.Flags().VisitAll(reset)
+		c.PersistentFlags().VisitAll(reset)
+		c.InheritedFlags().VisitAll(reset)
+	}
+}
+
 // runWorkbenchAs is runWorkbench run as the command called name ("workbench"
 // or its alias "project").
 func runWorkbenchAs(t *testing.T, name string, args ...string) (stdout, stderr string, err error) {
@@ -40,11 +60,7 @@ func runWorkbenchAs(t *testing.T, name string, args ...string) (stdout, stderr s
 	rootCmd.SetArgs(append([]string{name}, args...))
 	err = rootCmd.Execute()
 	rootCmd.SetArgs(nil)
-	// rootCmd is shared: a flag left marked Changed would make the next
-	// run's --workbench collide with this run's --project.
-	for _, c := range append(workbenchCmd.Commands(), workbenchCmd) {
-		c.Flags().VisitAll(func(f *pflag.Flag) { f.Changed = false })
-	}
+	resetSetFlags(append(workbenchCmd.Commands(), workbenchCmd, rootCmd)...)
 	workbenchFlagJSON = false
 	workbenchCreateFlagFolder = ""
 	workbenchCreateFlagName = ""

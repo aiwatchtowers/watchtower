@@ -269,7 +269,7 @@ final class NotificationService: Sendable {
     /// Project activity (spec §6.5). The identifier comes from the policy and
     /// is stable per event, so a re-post replaces rather than stacks; the
     /// payload deep-links to the project pane (`NotificationDelegate.route`).
-    func sendProjectNotice(_ notice: ProjectNotice) {
+    func sendWorkbenchNotice(_ notice: WorkbenchNotice) {
         let content = UNMutableNotificationContent()
         content.title = notice.title
         content.body = String(notice.body.prefix(200))

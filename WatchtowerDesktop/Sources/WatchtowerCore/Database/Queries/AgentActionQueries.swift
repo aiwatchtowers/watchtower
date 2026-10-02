@@ -3,7 +3,7 @@ import GRDB
 package enum AgentActionQueries {
     /// NULL-safe filter shared by every strip/badge reader: a project's
     /// direct-apply audit rows are not owner decisions (STRIP-01).
-    private static let notProjectRow = "context_type IS NOT 'project'"
+    private static let notWorkbenchRow = "context_type IS NOT 'project'"
 
     /// Every proposal of one conversation, oldest first — the feed's
     /// observation query.
@@ -40,7 +40,7 @@ package enum AgentActionQueries {
     package static func awaitingOwnerCount(_ db: Database) throws -> Int {
         try Int.fetchOne(db, sql: """
             SELECT COUNT(*) FROM agent_actions
-            WHERE status IN ('pending','failed') AND \(notProjectRow)
+            WHERE status IN ('pending','failed') AND \(notWorkbenchRow)
             """) ?? 0
     }
 
@@ -60,7 +60,7 @@ package enum AgentActionQueries {
             SELECT * FROM agent_actions
             WHERE (status IN ('pending','approved','failed','executing')
                    OR (status IN ('applied','rejected') AND decided_at >= ?))
-              AND \(notProjectRow)
+              AND \(notWorkbenchRow)
             ORDER BY (status IN ('applied','rejected')) ASC, created_at DESC, id DESC
             """, arguments: [terminalSince])
     }

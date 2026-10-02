@@ -123,7 +123,7 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
                 await appState?.voiceRegistryCenter.open(.queue(transcriptID: id))
             }
         case "project":
-            routeProject(userInfo, appState: appState)
+            routeWorkbench(userInfo, appState: appState)
         case "meeting_reminder":
             if forwarded {
                 // Say it out loud rather than degrading in silence — the same
@@ -186,27 +186,27 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
-    /// The project deep link of a push (`NotificationService.sendProjectNotice`).
+    /// The project deep link of a push (`NotificationService.sendWorkbenchNotice`).
     /// Ids arrive as Int64 when self-received and restored by
     /// `ForwardedNotificationResponse.userInfo` when forwarded; an NSNumber is
     /// accepted too (the `voice_label` precedent). Pure navigation either way,
     /// so it needs no `forwarded` gate of its own.
     @MainActor
-    static func routeProject(_ userInfo: [AnyHashable: Any], appState: AppState?) {
-        if let route = projectRoute(userInfo) {
-            appState?.navigateToProject(route)
+    static func routeWorkbench(_ userInfo: [AnyHashable: Any], appState: AppState?) {
+        if let route = workbenchRoute(userInfo) {
+            appState?.navigateToWorkbench(route)
         } else {
             appState?.selectedDestination = .projects
         }
     }
 
-    static func projectRoute(_ userInfo: [AnyHashable: Any]) -> ProjectRoute? {
+    static func workbenchRoute(_ userInfo: [AnyHashable: Any]) -> WorkbenchRoute? {
         func int64(_ key: String) -> Int64? {
             userInfo[key] as? Int64 ?? (userInfo[key] as? NSNumber)?.int64Value
         }
         guard let projectID = int64("projectId") else { return nil }
-        let pane = (userInfo["pane"] as? String).flatMap(ProjectPane.init(rawValue:)) ?? .board
-        return ProjectRoute(projectID: projectID, pane: pane, subjectID: int64("subjectId"))
+        let pane = (userInfo["pane"] as? String).flatMap(WorkbenchPane.init(rawValue:)) ?? .board
+        return WorkbenchRoute(projectID: projectID, pane: pane, subjectID: int64("subjectId"))
     }
 
     /// Pre-meeting push actions: Join / Join + Record route through the shared

@@ -18,7 +18,7 @@ final class TerminalSessionQueriesTests: XCTestCase {
     func testCreateAndOrderByLastActiveAfterTouch() throws {
         let queue = try TestDatabase.create()
         try queue.write { db in
-            let project = try TestDatabase.insertProject(db)
+            let project = try TestDatabase.insertWorkbench(db)
             let first = try TerminalSessionQueries.create(db, claude(project, "First"))
             let second = try TerminalSessionQueries.create(db, claude(project, "Second"))
             XCTAssertEqual(first.titleSource, .auto)
@@ -26,12 +26,12 @@ final class TerminalSessionQueriesTests: XCTestCase {
                            arguments: [first.id])
             try db.execute(sql: "UPDATE terminal_sessions SET last_active_at = '2026-01-02T00:00:00Z' WHERE id = ?",
                            arguments: [second.id])
-            XCTAssertEqual(try TerminalSessionQueries.fetchForProject(db, projectID: project).map(\.id),
+            XCTAssertEqual(try TerminalSessionQueries.fetchForWorkbench(db, projectID: project).map(\.id),
                            [second.id, first.id])
             try db.execute(sql: "UPDATE terminal_sessions SET last_active_at = '2020-01-01T00:00:00Z' WHERE id = ?",
                            arguments: [second.id])
             try TerminalSessionQueries.touch(db, id: first.id)
-            let touched = try TerminalSessionQueries.fetchForProject(db, projectID: project)
+            let touched = try TerminalSessionQueries.fetchForWorkbench(db, projectID: project)
             XCTAssertEqual(touched.map(\.id), [first.id, second.id])
             XCTAssertNotEqual(touched[0].lastActiveAt, "2026-01-01T00:00:00Z")
         }
@@ -58,12 +58,12 @@ final class TerminalSessionQueriesTests: XCTestCase {
     func testLegacyClosedRowIsListedLikeAnyOther() throws {
         let queue = try TestDatabase.create()
         try queue.write { db in
-            let project = try TestDatabase.insertProject(db)
+            let project = try TestDatabase.insertWorkbench(db)
             let row = try TerminalSessionQueries.create(db, claude(project))
             try db.execute(sql: "UPDATE terminal_sessions SET closed_at = '2026-09-30T12:00:00Z' WHERE id = ?",
                            arguments: [row.id])
             XCTAssertEqual(try TerminalSessionQueries.fetch(db, id: row.id)?.id, row.id)
-            XCTAssertEqual(try TerminalSessionQueries.fetchForProject(db, projectID: project).map(\.id), [row.id])
+            XCTAssertEqual(try TerminalSessionQueries.fetchForWorkbench(db, projectID: project).map(\.id), [row.id])
             let loose = try TerminalSessionQueries.create(db, claude(nil))
             try db.execute(sql: "UPDATE terminal_sessions SET closed_at = '2026-09-30T12:00:00Z' WHERE id = ?",
                            arguments: [loose.id])
@@ -74,7 +74,7 @@ final class TerminalSessionQueriesTests: XCTestCase {
     func testFetchStandaloneExcludesProjectRows() throws {
         let queue = try TestDatabase.create()
         try queue.write { db in
-            let project = try TestDatabase.insertProject(db)
+            let project = try TestDatabase.insertWorkbench(db)
             _ = try TerminalSessionQueries.create(db, claude(project))
             let loose = try TerminalSessionQueries.create(db, claude(nil))
             XCTAssertEqual(try TerminalSessionQueries.fetchStandalone(db).map(\.id), [loose.id])
@@ -84,11 +84,11 @@ final class TerminalSessionQueriesTests: XCTestCase {
     func testDeletingProjectCascadesButKeepsStandalone() throws {
         let queue = try TestDatabase.create()
         try queue.write { db in
-            let project = try TestDatabase.insertProject(db)
+            let project = try TestDatabase.insertWorkbench(db)
             _ = try TerminalSessionQueries.create(db, claude(project))
             let loose = try TerminalSessionQueries.create(db, claude(nil))
             try db.execute(sql: "DELETE FROM projects WHERE id = ?", arguments: [project])
-            XCTAssertTrue(try TerminalSessionQueries.fetchForProject(db, projectID: project).isEmpty)
+            XCTAssertTrue(try TerminalSessionQueries.fetchForWorkbench(db, projectID: project).isEmpty)
             XCTAssertNotNil(try TerminalSessionQueries.fetch(db, id: loose.id))
         }
     }
@@ -96,8 +96,8 @@ final class TerminalSessionQueriesTests: XCTestCase {
     func testDeletingTargetNullsTargetID() throws {
         let queue = try TestDatabase.create()
         try queue.write { db in
-            let project = try TestDatabase.insertProject(db)
-            let target = try TestDatabase.insertProjectTarget(db, projectID: project)
+            let project = try TestDatabase.insertWorkbench(db)
+            let target = try TestDatabase.insertWorkbenchTarget(db, projectID: project)
             let row = try TerminalSessionQueries.create(db, claude(project, target: target))
             XCTAssertEqual(try TerminalSessionQueries.fetchForTarget(db, targetID: target).map(\.id), [row.id])
             try db.execute(sql: "DELETE FROM targets WHERE id = ?", arguments: [target])

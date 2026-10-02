@@ -245,8 +245,8 @@ struct MainNavigationView: View {
         case .tracks:
             TracksListView()
         case .projects:
-            if let vm = appState.projectsViewModel {
-                ProjectsView(vm: vm)
+            if let vm = appState.workbenchesViewModel {
+                WorkbenchesView(vm: vm)
             } else {
                 Text("Projects unavailable")
                     .foregroundStyle(.secondary)
