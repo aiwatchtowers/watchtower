@@ -24,6 +24,17 @@ package enum TimeFormatting {
         return relativeTime(from: date)
     }
 
+    /// A compact Russian age for the workbench switchers: "только что",
+    /// "5 мин", "3 ч", "2 д". Nil for an unreadable stamp.
+    package static func shortAge(from isoString: String, now: Date) -> String? {
+        guard let date = parseISO(isoString) else { return nil }
+        let interval = now.timeIntervalSince(date)
+        if interval < 60 { return "только что" }
+        if interval < 3600 { return "\(Int(interval / 60)) мин" }
+        if interval < 86400 { return "\(Int(interval / 3600)) ч" }
+        return "\(Int(interval / 86400)) д"
+    }
+
     /// Relative time from unix timestamp
     package static func relativeTimeFromUnix(_ ts: Double) -> String {
         relativeTime(from: Date(timeIntervalSince1970: ts))
