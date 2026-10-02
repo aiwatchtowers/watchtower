@@ -16,6 +16,8 @@ func TestIsReadOnly(t *testing.T) {
 		// The server's annotation wins, both ways.
 		{db.ExternalTool{Name: "createJiraIssue", Annotated: true, ReadOnlyHint: true}, true},
 		{db.ExternalTool{Name: "getJiraIssue", Annotated: true}, false},
+		// destructiveHint wins over a contradictory readOnlyHint.
+		{db.ExternalTool{Name: "getIssue", Annotated: true, ReadOnlyHint: true, DestructiveHint: true}, false},
 		// No annotations: the leading word decides.
 		{db.ExternalTool{Name: "getJiraIssue"}, true},
 		{db.ExternalTool{Name: "list_pages"}, true},

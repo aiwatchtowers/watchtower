@@ -31,6 +31,9 @@ func TestListTools_HTTP(t *testing.T) {
 		Annotations: &mcp.ToolAnnotations{Title: "Create"}}, noop)
 	server.AddTool(&mcp.Tool{Name: "summarize", InputSchema: schema,
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true}}, noop)
+	destructive := true
+	server.AddTool(&mcp.Tool{Name: "purgeCache", InputSchema: schema,
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, DestructiveHint: &destructive}}, noop)
 
 	var missingAuth atomic.Int32
 	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil)
@@ -55,7 +58,8 @@ func TestListTools_HTTP(t *testing.T) {
 	assert.Equal(t, db.ExternalTool{Name: "getIssue"}, byName["getIssue"])
 	assert.Equal(t, db.ExternalTool{Name: "createIssue", Annotated: true}, byName["createIssue"])
 	assert.Equal(t, db.ExternalTool{Name: "summarize", Annotated: true, ReadOnlyHint: true}, byName["summarize"])
-	assert.Len(t, tools, 3)
+	assert.Equal(t, db.ExternalTool{Name: "purgeCache", Annotated: true, ReadOnlyHint: true, DestructiveHint: true}, byName["purgeCache"])
+	assert.Len(t, tools, 4)
 	assert.Zero(t, missingAuth.Load(), "every request must carry the connection's headers")
 }
 

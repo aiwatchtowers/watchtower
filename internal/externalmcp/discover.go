@@ -62,6 +62,7 @@ func ListTools(ctx context.Context, spec ServerSpec) ([]db.ExternalTool, error) 
 		if tool.Annotations != nil {
 			t.Annotated = true
 			t.ReadOnlyHint = tool.Annotations.ReadOnlyHint
+			t.DestructiveHint = tool.Annotations.DestructiveHint != nil && *tool.Annotations.DestructiveHint
 		}
 		tools = append(tools, t)
 	}
