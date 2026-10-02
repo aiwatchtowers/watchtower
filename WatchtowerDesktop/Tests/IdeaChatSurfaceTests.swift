@@ -224,4 +224,11 @@ final class IdeaChatSurfaceTests: XCTestCase {
         }
         return try XCTUnwrap(mention)
     }
+
+    /// The question card is taught on this surface too (spec 2026-10-02).
+    func testSystemPromptTeachesTheQuestionCard() throws {
+        let idea = try makeIdea()
+        let prompt = IdeaChatSurface.buildSystemPrompt(idea: idea, mentions: [], dbPool: dbManager.dbPool)
+        XCTAssertTrue(prompt.hasSuffix(ChatQuestionsContract.promptBlock))
+    }
 }

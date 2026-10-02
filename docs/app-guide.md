@@ -302,6 +302,8 @@ The main assistant: ask about your work, keep long conversations organized, atta
 
 **Quote in reply** — on a finished answer, quote a passage to open it in a sheet, select the part you mean, and optionally add a note; it joins a batch shown above the composer. Quote as many passages as you like — nothing is sent until you send your own message, which carries every quote plus whatever you typed as one turn.
 
+**Question cards** — when your request can reasonably be read two ways, the assistant may ask instead of guessing. The question appears as a card with 1–4 questions. Each question has 2–4 options with a short explanation; one may be marked **Recommended**, and some questions let you pick several. Every question also has an **Other** field for your own answer. Pick your answers and press **Send answers**; they go out as your next message. Once answered, the card shows what you chose, also after a restart. A card can only be answered on the latest reply. Question cards appear in this chat and in every assistant chat listed below.
+
 **Assistant chats elsewhere in the app** look and behave like this one: the target's Discuss tab, the track chat, an idea's or decision's Discuss section, a recording's Chat tab, the onboarding interview, and the Setup Assistant in Settings → Add account (calendar or email). Each one works the same way:
 - Replies stream in, and **Stop** keeps what was written so far.
 - Every message has **Copy**.

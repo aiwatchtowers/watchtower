@@ -149,6 +149,6 @@ enum MeetingChatSurface {
         - Match the user's language in conversation.
         - Be concise; this is a working discussion, not a report.
         - Quote the transcript verbatim when the user asks "what exactly was said".
-        """ + skillsSuffix
+        """ + skillsSuffix + "\n\n" + ChatQuestionsContract.promptBlock
     }
 }
