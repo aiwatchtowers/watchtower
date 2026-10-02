@@ -63,14 +63,24 @@ package struct CodeTabs: Codable, Equatable, Sendable {
         active = tabs.isEmpty ? nil : tabs[min(index, tabs.count - 1)].path
     }
 
-    package mutating func closeOthers(_ path: String) {
-        tabs.removeAll { $0.path != path }
-        active = contains(path) ? path : nil
+    /// A file or folder was renamed or moved: every tab at `old` or under
+    /// it (a folder) follows to `new`, keeping its place and preview state.
+    package mutating func rename(_ old: String, to new: String) {
+        func moved(_ path: String) -> String? {
+            if path == old { return new }
+            if path.hasPrefix(old + "/") { return new + path.dropFirst(old.count) }
+            return nil
+        }
+        tabs = tabs.map { tab in
+            guard let path = moved(tab.path) else { return tab }
+            return Tab(path: path, isPreview: tab.isPreview)
+        }
+        if let active, let path = moved(active) { self.active = path }
     }
 
-    package mutating func closeAll() {
-        tabs = []
-        active = nil
+    /// Closes `path` and every tab under it (a folder that went away).
+    package mutating func closeTree(_ path: String) {
+        for tab in tabs where tab.path == path || tab.path.hasPrefix(path + "/") { close(tab.path) }
     }
 
     /// A drag in the tab strip: `path` lands before `target` (nil = at the end).

@@ -160,9 +160,14 @@ extension WorkbenchesViewModel {
     /// split, else in place.
     func openFile(_ relPath: String, project: Workbench, preview: Bool) {
         codeFiles.open(relPath, project: project, preview: preview)
-        var updated = layout(projectID: project.id)
+        showFilesPane(projectID: project.id)
+    }
+
+    /// The Files pane on screen, the way the header's Files button puts it.
+    func showFilesPane(projectID: Int64) {
+        var updated = layout(projectID: projectID)
         updated.showWorkbenchView(.files)
-        setLayout(updated, projectID: project.id)
+        setLayout(updated, projectID: projectID)
     }
 
     /// A header view button turned off: closes that pane of a split.

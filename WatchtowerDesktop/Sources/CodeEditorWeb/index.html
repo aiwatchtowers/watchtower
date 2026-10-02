@@ -1,15 +1,29 @@
 <!doctype html>
 <!--
-  POC (code viewer): the Monaco host page, served by CodeEditorSchemeHandler
-  under wtcode://editor/. Swift drives it through window.wt; the page reports
-  back through webkit.messageHandlers.wt with {type: ...} messages:
-    ready                      — Monaco loaded, show() may be called
-    text    {path, text, now}  — a file's text after an edit: debounced while
-                                 typing, at once (now: true on Cmd+S) on a tab
-                                 switch, a blur or Cmd+S. Swift saves it.
-    error   {message}          — load failure or an uncaught script error
-  One model per open file, so each keeps its own undo stack, cursor and
-  scroll position across tab switches.
+  The Files pane's Monaco host page, served by CodeEditorSchemeHandler under
+  wtcode://editor/. One model per open file, keyed by the Swift buffer's id
+  (stable across a rename), so each keeps its undo stack, cursor and scroll.
+  Every edit carries `base`: the disk revision the model was last given
+  (show/reload), so Swift can tell an edit typed before a reload landed.
+
+  Swift → page (window.wt):
+    show({id, path, text, rev}) | show(null)   put a file on screen / clear it
+    reload({id, text, rev, mode})              the disk changed:
+        replace — take the text, unless an edit is still unsent: then send
+                  that edit (on its old base) and keep it — Swift raises the
+                  conflict
+        force   — take the text whatever is unsent (Reload from disk)
+        rebase  — keep the text, take the new base, send what is unsent
+                  (Keep mine)
+    rename({id, path})                         the file moved: new language
+    close(id)                                  the tab closed
+    takePending() → [{id, text, base}]         the unsent edits, handed over
+  page → Swift (webkit.messageHandlers.wt):
+    ready
+    text   {id, text, base, now, explicit}     300 ms after typing stops; at
+                                               once (now) on a tab switch or
+                                               blur; explicit on Cmd+S
+    error  {message}
 -->
 <html>
 <head>
@@ -29,6 +43,10 @@
     try { window.webkit.messageHandlers.wt.postMessage(message); } catch (e) {}
   }
   window.addEventListener("error", function (e) { post({ type: "error", message: String(e.message || e) }); });
+  window.addEventListener("unhandledrejection", function (e) {
+    var reason = e.reason;
+    post({ type: "error", message: "Editor: " + String((reason && reason.message) || reason) });
+  });
 </script>
 <script src="languages.js"></script>
 <script src="vs/loader.js" onerror="document.getElementById('missing').style.display='block'; post({type:'error', message:'Monaco is not installed'})"></script>
@@ -69,77 +87,112 @@
       renderWhitespace: "selection",
       model: null
     });
-    var models = {};      // path -> model
-    var viewStates = {};  // path -> saved cursor/scroll
-    var pending = {};     // path -> debounce timer of an unsent edit
-    var current = null;   // path on screen
+    var models = {};      // buffer id -> model
+    var bases = {};       // buffer id -> disk revision the model was given
+    var viewStates = {};  // buffer id -> saved cursor/scroll
+    var pending = {};     // buffer id -> debounce timer of an unsent edit
+    var current = null;   // buffer id on screen
 
-    function send(path, now) {
-      clearTimeout(pending[path]);
-      delete pending[path];
-      var model = models[path];
-      if (model) { post({ type: "text", path: path, text: model.getValue(), now: !!now }); }
+    function send(id, now, explicit) {
+      clearTimeout(pending[id]);
+      delete pending[id];
+      var model = models[id];
+      if (model) {
+        post({ type: "text", id: id, text: model.getValue(), base: bases[id], now: !!now, explicit: !!explicit });
+      }
     }
 
-    function flush(now) {
-      Object.keys(pending).forEach(function (path) { send(path, false); });
-      if (now && current) { send(current, true); }
+    function flushAll(now) {
+      Object.keys(pending).forEach(function (id) { send(id, now, false); });
     }
 
-    function modelFor(path, text) {
-      if (models[path]) { return models[path]; }
-      var uri = monaco.Uri.file(path);
-      var stale = monaco.editor.getModel(uri);
-      if (stale) { stale.dispose(); }
-      var model = monaco.editor.createModel(text, undefined, uri);
-      model.setEOL(text.indexOf("\r\n") >= 0 ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
-      model.onDidChangeContent(function (event) {
-        if (model.__reloading) { return; }
-        clearTimeout(pending[path]);
-        pending[path] = setTimeout(function () { send(path, false); }, 300);
+    function uriFor(id, path) { return monaco.Uri.file("/" + id + "/" + path); }
+
+    function modelFor(args) {
+      if (models[args.id]) { return models[args.id]; }
+      var model = monaco.editor.createModel(args.text, undefined, uriFor(args.id, args.path));
+      model.setEOL(args.text.indexOf("\r\n") >= 0 ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
+      model.onDidChangeContent(function () {
+        if (model.__replacing) { return; }
+        clearTimeout(pending[args.id]);
+        pending[args.id] = setTimeout(function () { send(args.id, false, false); }, 300);
       });
-      models[path] = model;
+      models[args.id] = model;
+      bases[args.id] = args.rev;
       return model;
     }
 
-    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, function () { flush(true); });
-    window.addEventListener("blur", function () { flush(false); });
+    function replaceText(model, text) {
+      if (model.getValue() === text) { return; }
+      model.__replacing = true;
+      model.pushEditOperations([], [{ range: model.getFullModelRange(), text: text }], function () { return null; });
+      model.__replacing = false;
+    }
+
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, function () {
+      if (current) { send(current, true, true); }
+    });
+    window.addEventListener("blur", function () { flushAll(true); });
 
     window.wt = {
-      // Puts `path` on screen: its model when it has one (undo, cursor and
-      // scroll as left), else a new one from `text` — the buffer's text,
-      // which may carry unsaved edits from an earlier pane.
       show: function (args) {
-        if (current === args.path && editor.getModel()) { return; }
-        flush(false);
+        if (!args) {
+          if (current && models[current]) { viewStates[current] = editor.saveViewState(); }
+          editor.setModel(null);
+          current = null;
+          return;
+        }
+        if (current === args.id && editor.getModel()) { return; }
+        flushAll(true);
         if (current && models[current]) { viewStates[current] = editor.saveViewState(); }
-        var model = modelFor(args.path, args.text);
-        editor.setModel(model);
-        if (viewStates[args.path]) { editor.restoreViewState(viewStates[args.path]); }
-        current = args.path;
+        editor.setModel(modelFor(args));
+        if (viewStates[args.id]) { editor.restoreViewState(viewStates[args.id]); }
+        current = args.id;
         editor.focus();
       },
-      // The tab closed (or a preview tab was replaced): an edit still in
-      // the debounce goes out first, saved at once, then the model goes.
-      close: function (path) {
-        if (pending[path]) { send(path, true); }
-        if (models[path]) {
-          if (current === path) { editor.setModel(null); current = null; }
-          models[path].dispose();
-          delete models[path];
+      reload: function (args) {
+        var model = models[args.id];
+        if (!model) { return; }
+        if (args.mode === "rebase") {
+          bases[args.id] = args.rev;
+          if (pending[args.id]) { send(args.id, true, false); }
+          return;
         }
-        delete viewStates[path];
+        if (args.mode !== "force" && pending[args.id]) {
+          send(args.id, true, false);
+          return;
+        }
+        clearTimeout(pending[args.id]);
+        delete pending[args.id];
+        replaceText(model, args.text);
+        bases[args.id] = args.rev;
       },
-      // The file changed on disk and the buffer was clean: replace the text
-      // as one undoable edit, so the view (scroll, cursor) mostly stays.
-      reload: function (path, text) {
-        var model = models[path];
-        if (!model || model.getValue() === text) { return; }
-        model.__reloading = true;
-        model.pushEditOperations([], [{ range: model.getFullModelRange(), text: text }], function () { return null; });
-        model.__reloading = false;
+      // A model's URI cannot change: the language follows the new name by
+      // asking Monaco what a throwaway model of that name would be.
+      rename: function (args) {
+        var model = models[args.id];
+        if (!model) { return; }
+        var probe = monaco.editor.createModel("", undefined, uriFor("probe-" + args.id, args.path));
+        monaco.editor.setModelLanguage(model, probe.getLanguageId());
+        probe.dispose();
       },
-      flush: function () { flush(false); },
+      close: function (id) {
+        if (pending[id]) { send(id, true, false); }
+        if (models[id]) {
+          if (current === id) { editor.setModel(null); current = null; }
+          models[id].dispose();
+          delete models[id];
+        }
+        delete bases[id];
+        delete viewStates[id];
+      },
+      takePending: function () {
+        return Object.keys(pending).map(function (id) {
+          clearTimeout(pending[id]);
+          delete pending[id];
+          return { id: id, text: models[id] ? models[id].getValue() : "", base: bases[id] };
+        }).filter(function (edit) { return models[edit.id]; });
+      },
       focus: function () { editor.focus(); }
     };
     post({ type: "ready" });

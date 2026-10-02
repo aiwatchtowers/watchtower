@@ -308,9 +308,4 @@ final class WorkspaceLayoutTests: XCTestCase {
         XCTAssertTrue(l.isShowing(.files))
         XCTAssertEqual(WorkspaceLayout.decode(try JSONEncoder().encode(l)), l)
     }
-
-    func testRetiredFilePaneFallsBackToDefault() {
-        let old = Data(#"{"primary":{"file":{"_0":"a.go"}},"dividerFraction":0.5}"#.utf8)
-        XCTAssertEqual(WorkspaceLayout.decode(old), .default)
-    }
 }

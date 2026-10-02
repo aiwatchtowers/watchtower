@@ -65,6 +65,11 @@ final class GitStatusSnapshotReadTests: XCTestCase {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: git)
             process.arguments = ["-C", repo.path] + args
+            // The developer's global config (signing, hooks) stays out.
+            var environment = ProcessInfo.processInfo.environment
+            environment["GIT_CONFIG_GLOBAL"] = "/dev/null"
+            environment["GIT_CONFIG_NOSYSTEM"] = "1"
+            process.environment = environment
             let result = await ProcessPipes.run(process)
             XCTAssertEqual(result.exitCode, 0, result.stderr)
         }
@@ -72,16 +77,18 @@ final class GitStatusSnapshotReadTests: XCTestCase {
         try "n\n".write(to: sub.appendingPathComponent("d/new file.txt"), atomically: true, encoding: .utf8)
         try "z\n".write(to: repo.appendingPathComponent("root.txt"), atomically: true, encoding: .utf8)
 
-        let snapshot = await GitStatusSnapshot.read(folder: sub)
-        XCTAssertEqual(snapshot?.files, ["a.txt": .modified, "d/new file.txt": .untracked])
-        XCTAssertEqual(snapshot?.dirtyDirectories, ["d"])
+        guard case let .snapshot(snapshot) = await GitStatusSnapshot.read(folder: sub) else {
+            return XCTFail("expected a snapshot")
+        }
+        XCTAssertEqual(snapshot.files, ["a.txt": .modified, "d/new file.txt": .untracked])
+        XCTAssertEqual(snapshot.dirtyDirectories, ["d"])
     }
 
-    func testOutsideARepositoryIsNil() async throws {
+    func testOutsideARepositoryIsNoRepository() async throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("nogit-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
-        let snapshot = await GitStatusSnapshot.read(folder: dir)
-        XCTAssertNil(snapshot)
+        let read = await GitStatusSnapshot.read(folder: dir)
+        XCTAssertEqual(read, .noRepository)
     }
 }

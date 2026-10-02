@@ -87,21 +87,37 @@ package struct GitStatusSnapshot: Equatable, Sendable {
     }
 }
 
+/// What reading a folder's git status came to.
+package enum GitStatusRead: Equatable, Sendable {
+    /// Not inside a repository, or no git installed: no marks, nothing wrong.
+    case noRepository
+    case snapshot(GitStatusSnapshot)
+    /// git ran and failed (a corrupt index, "dubious ownership", a launch
+    /// failure): git's own message, for the log and the FILES header.
+    case failed(String)
+}
+
 extension GitStatusSnapshot {
-    /// Reads `folder`'s status; nil when it is not inside a repository or
-    /// no git is installed (found the way `MemoryVaultGit` finds it, never
-    /// the /usr/bin/git shim that pops the developer-tools dialog).
+    /// Reads `folder`'s status. git is found the way `MemoryVaultGit` finds
+    /// it, never the /usr/bin/git shim that pops the developer-tools dialog;
     /// `--no-optional-locks` keeps this background read from taking
     /// index.lock under a commit the agent is making.
-    package static func read(folder: URL) async -> Self? {
-        guard let git = MemoryVaultGit.gitPath(developerDir: await MemoryVaultGit.developerDir()) else { return nil }
+    package static func read(folder: URL) async -> GitStatusRead {
+        guard let git = MemoryVaultGit.gitPath(developerDir: await MemoryVaultGit.developerDir()) else { return .noRepository }
         let prefix = await run(git, ["-C", folder.path, "rev-parse", "--show-prefix"])
-        guard prefix.exitCode == 0 else { return nil }
+        guard prefix.exitCode == 0 else {
+            return prefix.stderr.contains("not a git repository") ? .noRepository : .failed(Self.describe(prefix))
+        }
         let status = await run(git, [
             "--no-optional-locks", "-C", folder.path, "status", "--porcelain=v2", "-z", "--untracked-files=all", "--", "."
         ])
-        guard status.exitCode == 0 else { return nil }
-        return parse(status.stdout, prefix: prefix.stdout.trimmingCharacters(in: .whitespacesAndNewlines))
+        guard status.exitCode == 0 else { return .failed(Self.describe(status)) }
+        // Only the newline: a folder name may end in a space.
+        return .snapshot(parse(status.stdout, prefix: prefix.stdout.trimmingCharacters(in: .newlines)))
+    }
+
+    private static func describe(_ output: ProcessOutput) -> String {
+        "git exited \(output.exitCode): \(CLILog.detail(output.stderr))"
     }
 
     private static func run(_ git: String, _ arguments: [String]) async -> ProcessOutput {

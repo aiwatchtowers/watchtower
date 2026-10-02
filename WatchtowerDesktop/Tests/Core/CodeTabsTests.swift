@@ -67,14 +67,24 @@ final class CodeTabsTests: XCTestCase {
         XCTAssertEqual(tabs.active, "c")
     }
 
-    func testCloseOthersAndCloseAll() {
+    func testRenameFollowsAFileAndEveryTabUnderAFolder() {
         var tabs = CodeTabs()
-        ["a", "b", "c"].forEach { tabs.open($0, preview: false) }
-        tabs.closeOthers("b")
-        XCTAssertEqual(tabs.paths, ["b"])
-        XCTAssertEqual(tabs.active, "b")
-        tabs.closeAll()
-        XCTAssertEqual(tabs, CodeTabs())
+        ["a/x.go", "a/b/y.go", "ab/z.go"].forEach { tabs.open($0, preview: false) }
+        tabs.open("a/p.go", preview: true)
+        tabs.rename("a", to: "c")
+        XCTAssertEqual(tabs.paths, ["c/x.go", "c/b/y.go", "ab/z.go", "c/p.go"])
+        XCTAssertEqual(tabs.active, "c/p.go")
+        XCTAssertEqual(tabs.tabs.last?.isPreview, true)
+        tabs.rename("ab/z.go", to: "ab/w.go")
+        XCTAssertEqual(tabs.paths[2], "ab/w.go")
+    }
+
+    func testCloseTreeClosesAFolderButNotItsNamesakes() {
+        var tabs = CodeTabs()
+        ["a/x.go", "a/b/y.go", "ab/z.go"].forEach { tabs.open($0, preview: false) }
+        tabs.closeTree("a")
+        XCTAssertEqual(tabs.paths, ["ab/z.go"])
+        XCTAssertEqual(tabs.active, "ab/z.go")
     }
 
     func testMoveBeforeATargetOrToTheEnd() {

@@ -4,60 +4,87 @@ import UniformTypeIdentifiers
 import WatchtowerCore
 import WebKit
 
-/// POC (code viewer): the Files pane — the workbench's open file tabs over
-/// one Monaco editor. A single click in the FILES tree opens a preview tab
-/// (italic, replaced by the next single click); a double click, a double
-/// click on the tab or the first edit keeps it. Edits save themselves.
+/// The Files pane — the workbench's open file tabs over one Monaco editor.
+/// A single click in the FILES tree opens a preview tab (italic, replaced by
+/// the next single click); a double click, a double click on the tab or the
+/// first edit keeps it. Edits save themselves (`CodeFileBuffer`). The editor
+/// stays mounted while tabs are open, so every tab keeps its undo, cursor
+/// and scroll; loading and errors show over it.
 struct CodeFilesPaneView: View {
     let files: CodeFilesCenter
     let project: Workbench
-    @State private var discarding: String?
+    @State private var refusals: [CodeFilesCenter.Refusal] = []
 
     var body: some View {
         let tabs = files.tabs(for: project)
         let git = files.git(for: project)
         VStack(spacing: 0) {
-            if !tabs.tabs.isEmpty {
-                CodeTabStrip(files: files, project: project, tabs: tabs, git: git) { discarding = $0 }
-                Divider()
+            if let error = files.editorErrors[project.id] {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
             }
-            if let active = tabs.active {
-                let buffer = files.buffer(for: project, relPath: active)
-                CodeFileHeader(buffer: buffer, status: git.files[active])
-                Divider()
-                CodeFileBanners(buffer: buffer)
-                switch buffer.state {
-                case .loaded:
-                    MonacoEditorView(files: files, project: project, tabs: tabs)
-                case .loading:
-                    ProgressView()
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .task(id: active) { buffer.loadIfNeeded() }
-                case let .failed(message):
-                    Text(message)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-            } else {
+            if tabs.tabs.isEmpty {
                 Text("Open a file from FILES in the side panel")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                CodeTabStrip(files: files, project: project, tabs: tabs, git: git) { refusals = $0 }
+                Divider()
+                if let active = tabs.active {
+                    let buffer = files.buffer(for: project, relPath: active)
+                    CodeFileHeader(buffer: buffer, status: git.files[active])
+                    Divider()
+                    CodeFileBanners(buffer: buffer)
+                }
+                MonacoEditorView(files: files, project: project, tabs: tabs)
+                    .overlay { activeOverlay(tabs) }
             }
+        }
+        .task(id: project.id) { files.startWatching(project) }
+        .task(id: tabs.active) {
+            if let active = tabs.active { files.buffer(for: project, relPath: active).loadIfNeeded() }
         }
         .confirmationDialog(
-            "“\(discarding.map { ($0 as NSString).lastPathComponent } ?? "")” changed on disk while you were editing it",
-            isPresented: Binding(get: { discarding != nil }, set: { if !$0 { discarding = nil } }),
+            refusals.count == 1 ? "“\(Self.name(refusals[0].path))” has edits that could not be saved"
+                : "\(refusals.count) tabs have edits that could not be saved",
+            isPresented: Binding(get: { !refusals.isEmpty }, set: { if !$0 { refusals = [] } }),
             titleVisibility: .visible
         ) {
-            Button("Close and Discard My Edits", role: .destructive) {
-                if let path = discarding { files.discardAndClose(path, project: project) }
-                discarding = nil
+            Button("Close and Discard Edits", role: .destructive) {
+                files.discardAndClose(refusals.map(\.path), project: project)
+                refusals = []
             }
-            Button("Cancel", role: .cancel) { discarding = nil }
+            Button("Cancel", role: .cancel) { refusals = [] }
         } message: {
-            Text("Your edits were not saved over the newer version. Cancel keeps the tab open with Reload / Keep mine.")
+            Text(refusals.map { "\(Self.name($0.path)): \($0.reason)" }.joined(separator: "\n"))
         }
     }
+
+    /// Over the editor while the active file is not on it.
+    @ViewBuilder
+    private func activeOverlay(_ tabs: CodeTabs) -> some View {
+        if let active = tabs.active {
+            switch files.buffer(for: project, relPath: active).state {
+            case .loaded:
+                EmptyView()
+            case .loading:
+                ProgressView()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color(nsColor: .textBackgroundColor))
+            case let .failed(message):
+                Text(message)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color(nsColor: .textBackgroundColor))
+            }
+        }
+    }
+
+    static func name(_ path: String) -> String { (path as NSString).lastPathComponent }
 }
 
 /// The tab strip: drag to reorder, double click keeps a preview tab.
@@ -66,7 +93,7 @@ private struct CodeTabStrip: View {
     let project: Workbench
     let tabs: CodeTabs
     let git: GitStatusSnapshot
-    let onRefusedClose: (String) -> Void
+    let onRefused: ([CodeFilesCenter.Refusal]) -> Void
 
     var body: some View {
         let subtitles = tabs.subtitles
@@ -77,13 +104,13 @@ private struct CodeTabStrip: View {
                         tab: tab,
                         subtitle: subtitles[tab.path],
                         isActive: tabs.active == tab.path,
-                        isDirty: files.buffer(for: project, relPath: tab.path).isDirty,
+                        isDirty: files.existingBuffer(project, tab.path)?.isDirty ?? false,
                         status: git.files[tab.path],
                         actions: actions(for: tab.path)
                     )
                     .draggable(tab.path)
                     .dropDestination(for: String.self) { items, _ in
-                        guard let dragged = items.first else { return false }
+                        guard let dragged = items.first, tabs.contains(dragged) else { return false }
                         files.move(dragged, before: tab.path, project: project)
                         return true
                     }
@@ -111,7 +138,10 @@ private struct CodeTabStrip: View {
     }
 
     private func close(_ paths: [String]) {
-        if let refused = files.close(paths, project: project).first { onRefusedClose(refused) }
+        Task {
+            let refused = await files.close(paths, project: project)
+            if !refused.isEmpty { onRefused(refused) }
+        }
     }
 }
 
@@ -136,7 +166,7 @@ private struct CodeTabView: View {
 
     var body: some View {
         HStack(spacing: 5) {
-            Text((tab.path as NSString).lastPathComponent)
+            Text(CodeFilesPaneView.name(tab.path))
                 .italic(tab.isPreview)
                 .foregroundStyle(status.map(GitMark.color) ?? (isActive ? Color.primary : Color.secondary))
             if let subtitle {
@@ -183,7 +213,7 @@ private struct CodeTabView: View {
             }
             .buttonStyle(.borderless)
             .help("Close")
-            .accessibilityLabel("Close \((tab.path as NSString).lastPathComponent)")
+            .accessibilityLabel("Close \(CodeFilesPaneView.name(tab.path))")
         } else if isDirty {
             Circle().fill(Color.secondary).frame(width: 7, height: 7).help("Not saved yet")
         } else {
@@ -222,10 +252,9 @@ private struct CodeFileHeader: View {
                     .foregroundStyle(GitMark.color(status))
                     .help("Not committed")
             }
-            Text(buffer.isDirty ? "Edited" : "Saved")
+            Text(saveState)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .help(buffer.isDirty ? "Saves itself a second after you stop typing" : "On disk")
             Button {
                 NSWorkspace.shared.open(buffer.url)
             } label: {
@@ -239,28 +268,36 @@ private struct CodeFileHeader: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 3)
     }
+
+    private var saveState: String {
+        if buffer.problem != nil || buffer.saveError != nil { return "Not saved" }
+        if buffer.deletedOnDisk { return "Deleted" }
+        return buffer.isDirty ? "Edited" : "Saved"
+    }
 }
 
 private struct CodeFileBanners: View {
     let buffer: CodeFileBuffer
 
     var body: some View {
-        if buffer.conflict {
+        if let problem = buffer.problem {
             HStack(spacing: 8) {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                Text("The file changed on disk while you were editing. Your edits are not saved.").font(.caption)
+                Text(problem.message).font(.caption)
                 Spacer(minLength: 4)
-                Button("Reload from disk") { buffer.reloadFromDisk() }
-                Button("Keep mine") { buffer.keepMine() }
-                    .help("Write your edits over the newer version")
+                if problem != .deletedWhileEditing {
+                    Button("Reload from disk") { buffer.reloadFromDisk() }
+                }
+                Button(problem == .deletedWhileEditing ? "Write it back" : "Keep mine") { buffer.keepMine() }
+                    .help(problem == .deletedWhileEditing ? "Create the file again with your edits" : "Write your edits over the version on disk")
             }
             .controlSize(.small)
             .padding(8)
             .background(Color.orange.opacity(0.12))
+        } else if buffer.deletedOnDisk {
+            notice("The file was deleted on disk. ⌘S writes it back.", color: .orange)
         }
-        if buffer.deletedOnDisk { notice("The file was deleted on disk. Your next edit writes it back.", color: .orange) }
         if let error = buffer.saveError { notice("Could not save: \(error)", color: .red) }
-        if let error = buffer.editorError { notice(error, color: .red) }
     }
 
     private func notice(_ text: String, color: Color) -> some View {
@@ -294,33 +331,46 @@ struct MonacoEditorView: NSViewRepresentable {
         let webView = WKWebView(frame: .zero, configuration: config)
         // No white flash before Monaco paints its (dark) background.
         webView.setValue(false, forKey: "drawsBackground")
+        webView.navigationDelegate = context.coordinator
         context.coordinator.webView = webView
+        files.register(context.coordinator, for: project.id)
         webView.load(URLRequest(url: CodeEditorSchemeHandler.pageURL))
         return webView
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
-        // Read here so a disk reload re-runs this (observation).
-        let revisions = Dictionary(uniqueKeysWithValues: tabs.paths.map { path in
-            (path, files.buffer(for: project, relPath: path).externalRevision)
+        // Read here so a reload or a rename re-runs this (observation).
+        let open = tabs.paths.compactMap { files.existingBuffer(project, $0) }
+        let state = Dictionary(uniqueKeysWithValues: open.map { buffer in
+            (buffer.id, Coordinator.BufferState(path: buffer.relPath, revision: buffer.externalRevision))
         })
-        context.coordinator.sync(tabs: tabs, revisions: revisions)
+        let active = tabs.active.flatMap { files.existingBuffer(project, $0) }
+        let shown = active?.state == .loaded ? active?.id : nil
+        context.coordinator.sync(buffers: state, active: shown)
     }
 
-    /// The pane goes away: what the page has not sent yet is pulled and saved.
+    /// The pane goes away: what the page has not sent yet is pulled and
+    /// saved before the page is released.
     static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
-        coordinator.flushOnDismantle(webView)
+        coordinator.dismantle(webView)
     }
 
     @MainActor
-    final class Coordinator: NSObject, WKScriptMessageHandler {
+    final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate, CodeEditorBridge {
+        struct BufferState: Equatable {
+            let path: String
+            let revision: Int
+        }
+
         let files: CodeFilesCenter
         let project: Workbench
         weak var webView: WKWebView?
         private var ready = false
         private var shown: String?
-        private var revisions: [String: Int] = [:]
-        private var tabs = CodeTabs()
+        /// What the page was last told, per buffer id.
+        private var told: [String: BufferState] = [:]
+        private var wanted: [String: BufferState] = [:]
+        private var wantedActive: String?
 
         init(files: CodeFilesCenter, project: Workbench) {
             self.files = files
@@ -333,63 +383,116 @@ struct MonacoEditorView: NSViewRepresentable {
             case "ready":
                 ready = true
                 shown = nil
-                sync(tabs: tabs, revisions: revisions)
+                told = [:]
+                files.editorErrors[project.id] = nil
+                push()
             case "text":
-                guard let path = body["path"] as? String, let text = body["text"] as? String,
-                      let buffer = files.existingBuffer(project, path) else { return }
-                buffer.edited(text, now: body["now"] as? Bool ?? false)
+                guard let id = body["id"] as? String, let text = body["text"] as? String,
+                      let base = body["base"] as? Int, let buffer = files.buffer(id: id) else { return }
+                buffer.edited(text, base: base, now: body["now"] as? Bool ?? false, explicit: body["explicit"] as? Bool ?? false)
                 // The first edit keeps a preview tab.
-                if buffer.isDirty, tabs.tabs.first(where: { $0.path == path })?.isPreview == true {
-                    files.pin(path, project: project)
+                if buffer.isDirty, files.tabs(for: project).tabs.first(where: { $0.path == buffer.relPath })?.isPreview == true {
+                    files.pin(buffer.relPath, project: project)
                 }
             case "error":
-                if let active = tabs.active {
-                    files.buffer(for: project, relPath: active).editorError = body["message"] as? String
-                }
+                files.editorErrors[project.id] = (body["message"] as? String) ?? "The editor reported an error."
             default:
                 break
             }
         }
 
-        func sync(tabs newTabs: CodeTabs, revisions newRevisions: [String: Int]) {
-            let closed = tabs.paths.filter { !newTabs.contains($0) }
-            tabs = newTabs
-            guard ready else {
-                revisions = newRevisions
+        func sync(buffers: [String: BufferState], active: String?) {
+            wanted = buffers
+            wantedActive = active
+            if ready { push() }
+        }
+
+        /// Brings the page in line with `wanted`: closed tabs go, reloads
+        /// and renames reach their models, the active file is shown.
+        private func push() {
+            for id in told.keys where wanted[id] == nil {
+                call("wt.close", id)
+                told[id] = nil
+            }
+            for (id, state) in wanted {
+                guard let previous = told[id], let buffer = files.buffer(id: id) else { continue }
+                if previous.path != state.path { call("wt.rename", ["id": id, "path": state.path]) }
+                if previous.revision != state.revision {
+                    let mode = state.revision == buffer.forcedRevision ? "force"
+                        : state.revision == buffer.rebasedRevision ? "rebase" : "replace"
+                    call("wt.reload", ["id": id, "text": buffer.text, "rev": state.revision, "mode": mode])
+                }
+                told[id] = state
+            }
+            guard wantedActive != shown else { return }
+            shown = wantedActive
+            guard let id = wantedActive, let buffer = files.buffer(id: id), let state = wanted[id] else {
+                call("wt.show", NSNull())
                 return
             }
-            for path in closed { call("wt.close", path) }
-            for (path, revision) in newRevisions where revisions[path].map({ $0 != revision }) == true {
-                call("wt.reload", path, files.buffer(for: project, relPath: path).text)
-            }
-            revisions = newRevisions
-            if let active = newTabs.active, active != shown {
-                let buffer = files.buffer(for: project, relPath: active)
-                buffer.loadIfNeeded()
-                guard buffer.state == .loaded else { return }
-                shown = active
-                call("wt.show", ["path": active, "text": buffer.text])
-            }
+            call("wt.show", ["id": id, "path": buffer.relPath, "text": buffer.text, "rev": buffer.externalRevision])
+            told[id] = state
         }
 
-        func flushOnDismantle(_ webView: WKWebView) {
-            // The handler is still attached: the page's flush posts its
-            // pending edits through it before the view is released.
-            webView.evaluateJavaScript("wt.flush()") { _, _ in
-                withExtendedLifetime(webView) {
-                    webView.configuration.userContentController.removeScriptMessageHandler(forName: "wt")
+        // MARK: CodeEditorBridge
+
+        func takePending() async -> [CodeEditorPendingEdit] {
+            guard ready, let webView else { return [] }
+            return await Self.takePending(from: webView)
+        }
+
+        static func takePending(from webView: WKWebView) async -> [CodeEditorPendingEdit] {
+            guard let raw = try? await webView.evaluateJavaScript("wt.takePending()") as? [[String: Any]] else { return [] }
+            return raw.compactMap { item in
+                guard let id = item["id"] as? String, let text = item["text"] as? String, let base = item["base"] as? Int else {
+                    return nil
                 }
+                return CodeEditorPendingEdit(id: id, text: text, base: base)
             }
         }
 
-        /// `fn(args…)` with every argument JSON-encoded, so file text never
+        func dismantle(_ webView: WKWebView) {
+            files.unregister(self, for: project.id)
+            let files = files
+            let wasReady = ready
+            Task { @MainActor in
+                // `webView` and `files` are held by this task, not by the
+                // coordinator SwiftUI is releasing.
+                if wasReady { files.apply(await Self.takePending(from: webView), now: true) }
+                webView.configuration.userContentController.removeScriptMessageHandler(forName: "wt")
+            }
+        }
+
+        // MARK: WKNavigationDelegate
+
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: any Error) {
+            files.editorErrors[project.id] = "The editor could not load: \(error.localizedDescription)"
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: any Error) {
+            files.editorErrors[project.id] = "The editor could not load: \(error.localizedDescription)"
+        }
+
+        /// The page's process died: edits it had not sent are gone; reload.
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            files.editorErrors[project.id] = "The editor stopped and was restarted. Edits typed in the last moment may be lost."
+            ready = false
+            shown = nil
+            told = [:]
+            webView.load(URLRequest(url: CodeEditorSchemeHandler.pageURL))
+        }
+
+        /// `fn(arg)` with the argument JSON-encoded, so file text never
         /// needs escaping by hand.
-        private func call(_ function: String, _ arguments: Any...) {
-            guard let data = try? JSONSerialization.data(withJSONObject: arguments, options: [.fragmentsAllowed]),
-                  let array = String(data: data, encoding: .utf8) else { return }
+        private func call(_ function: String, _ argument: Any) {
+            guard let data = try? JSONSerialization.data(withJSONObject: [argument], options: [.fragmentsAllowed]),
+                  let array = String(data: data, encoding: .utf8) else {
+                files.editorErrors[project.id] = "Editor: could not encode a call to \(function)."
+                return
+            }
             webView?.evaluateJavaScript("\(function)(\(array.dropFirst().dropLast()))") { [weak self] _, error in
-                guard let self, let error, let active = self.tabs.active else { return }
-                self.files.buffer(for: self.project, relPath: active).editorError = "Editor: \(error.localizedDescription)"
+                guard let self, let error else { return }
+                self.files.editorErrors[self.project.id] = "Editor: \(error.localizedDescription)"
             }
         }
     }
