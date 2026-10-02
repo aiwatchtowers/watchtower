@@ -203,7 +203,10 @@ func InstallWorkbench(ctx context.Context, o WorkbenchInstallOptions) (Workbench
 		return WorkbenchInstallReport{}, folderGone(o)
 	}
 	rep := WorkbenchInstallReport{MCPCommand: WorkbenchMCPCommand(o)}
-	hadLegacyHooks, _ := HasLegacyHooks(o.Folder, o.WorkbenchID) // a malformed file is reported by the hook step
+	// A malformed settings file is reported by the hook step; until then its
+	// unreadable hooks may be legacy ones, so the claude-not-found hint
+	// names the old registration too.
+	hadLegacyHooks, hooksErr := HasLegacyHooks(o.Folder, o.WorkbenchID)
 	legacySkillDir := filepath.Join(o.skillsDir(), LegacySkillName)
 	legacyFolder := hadLegacyHooks || exists(legacySkillDir)
 	var errs []error
@@ -211,7 +214,7 @@ func InstallWorkbench(ctx context.Context, o WorkbenchInstallOptions) (Workbench
 	if rep.Excluded, err = EnsureGitExclude(o.Folder, workbenchExcludeLines); err != nil {
 		errs = append(errs, err)
 	}
-	rep.MCPRegistered, rep.LegacyMCPRemoved, err = registerWorkbenchMCP(ctx, o, legacyFolder)
+	rep.MCPRegistered, rep.LegacyMCPRemoved, err = registerWorkbenchMCP(ctx, o, legacyFolder || hooksErr != nil)
 	if legacyFolder && !rep.MCPRegistered {
 		rep.LegacySkill = SkillStatus{Name: LegacySkillName, State: StateMissing}
 		if exists(legacySkillDir) {
@@ -390,7 +393,7 @@ func (o WorkbenchInstallOptions) mcpAddArgs() []string {
 // (the Desktop's Repair). The old registration goes only once the new one
 // is in: a failed add leaves a not-yet-migrated folder with its working old
 // server rather than with none. legacyFolder (old hooks or an old skill were
-// found) adds the manual removal of the old registration to a
+// found, or the hooks could not be read) adds the manual removal of the old registration to a
 // claude-not-found error, since the claude CLI cannot be asked whether it is
 // there.
 func registerWorkbenchMCP(ctx context.Context, o WorkbenchInstallOptions, legacyFolder bool) (registered, legacyRemoved bool, err error) {

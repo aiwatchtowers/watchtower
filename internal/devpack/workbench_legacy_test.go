@@ -465,6 +465,24 @@ func TestInstallWorkbench_FailedAddKeepsTheLegacyRegistration(t *testing.T) {
 	}
 }
 
+// A settings file whose hooks cannot be read may hold legacy ones: without
+// the claude CLI the error names the manual removal of the old registration
+// too.
+func TestInstallWorkbench_UnreadableHooksWithoutClaudeNameTheLegacyRemoval(t *testing.T) {
+	folder := fakeRepo(t)
+	f := newFakeClaude()
+	f.missing = true
+	writeTestFile(t, settingsFile(folder), `{"hooks": [`)
+
+	_, err := InstallWorkbench(context.Background(), legacyOpts(folder, f))
+	if !errors.Is(err, ErrClaudeNotFound) || !errors.Is(err, ErrMalformedSettings) {
+		t.Fatalf("expected both failures, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "claude mcp remove --scope local watchtower-project") {
+		t.Fatalf("the error must name the manual removal of the old registration: %v", err)
+	}
+}
+
 // TestInstallWorkbench_FailedAddLeavesTheWholeLegacySetup: the new skill and
 // hooks name tools only the new server serves, so a pre-rename folder whose
 // `mcp add` failed keeps its old skill, hooks and registration — one
