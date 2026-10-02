@@ -108,14 +108,7 @@ struct SessionSwitcherRow: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
                 if let badge = row.badge {
-                    Text(badge)
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                        .fixedSize()
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background(Color.blue, in: Capsule())
+                    WorkbenchCapsuleBadge(text: badge)
                 }
                 Spacer(minLength: 4)
                 if let caption = row.caption {

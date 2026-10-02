@@ -89,6 +89,7 @@ final class WorkbenchGoToPaletteTests: XCTestCase {
         XCTAssertEqual(vm.layout.visiblePanes, [.session(one.id), .session(two.id)], "the focused one kept first")
         XCTAssertEqual(center.focusOrder.last, two.id)
         XCTAssertEqual(center.liveIDs, [one.id, two.id])
+        XCTAssertEqual(center.keyboardFocusRequest?.sessionID, two.id, "the keyboard follows into it")
     }
 
     func testOpenInSplitReplacesTheUnfocusedPane() async throws {
@@ -127,6 +128,8 @@ final class WorkbenchGoToPaletteTests: XCTestCase {
 
         XCTAssertEqual(vm.layout, layout)
         XCTAssertEqual(center.focusOrder.last, one.id)
+        XCTAssertEqual(center.keyboardFocusRequest?.sessionID, one.id,
+                       "its terminal is attached already: only the request moves the keyboard back")
         XCTAssertEqual(launches.count, 2, "nothing restarts")
     }
 
@@ -144,6 +147,42 @@ final class WorkbenchGoToPaletteTests: XCTestCase {
         XCTAssertEqual(vm.layout, layout)
         XCTAssertEqual(vm.layout(projectID: b), .default)
         XCTAssertTrue(launches.isEmpty)
+    }
+
+    /// ↵ on the session already on screen: nothing moves, the keyboard
+    /// goes back into its terminal.
+    func testGoingToTheSessionOnScreenAsksForTheKeyboardBack() async throws {
+        let a = try await workbench("alpha")
+        let one = try await session(a, "one", lastActiveAt: "2026-09-03T10:00:00Z")
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: a)
+        await vm.showSession(id: one.id)
+        await vm.loadGoToPalette()
+        let layout = vm.layout
+        XCTAssertNil(center.keyboardFocusRequest)
+
+        await vm.goTo(try item(for: one, in: vm))
+
+        XCTAssertEqual(vm.layout, layout)
+        XCTAssertEqual(center.keyboardFocusRequest?.sessionID, one.id)
+    }
+
+    /// A workbench row whose page shows the board only: no terminal to
+    /// give the keyboard to.
+    func testNoKeyboardRequestWithoutATerminalOnScreen() async throws {
+        let a = try await workbench("alpha")
+        let b = try await workbench("beta")
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: a)
+        await vm.loadGoToPalette()
+        let row = try XCTUnwrap(vm.goToSections(query: "").flatMap(\.items).first { $0.id == "workbench-\(b)" })
+
+        await vm.goTo(row)
+
+        XCTAssertEqual(vm.selectedWorkbenchID, b)
+        XCTAssertNil(center.keyboardFocusRequest)
     }
 
     // MARK: - ↵ on another workbench
@@ -164,6 +203,7 @@ final class WorkbenchGoToPaletteTests: XCTestCase {
         XCTAssertEqual(vm.drilledWorkbenchID, b)
         XCTAssertEqual(vm.panelSelection, .session(older.id), "the chosen row, not the most recent one")
         XCTAssertEqual(center.liveIDs, [older.id])
+        XCTAssertEqual(center.keyboardFocusRequest?.sessionID, older.id)
     }
 
     func testGoingToAWorkbenchRowSwitchesToIt() async throws {
@@ -180,6 +220,7 @@ final class WorkbenchGoToPaletteTests: XCTestCase {
 
         XCTAssertEqual(vm.selectedWorkbenchID, b)
         XCTAssertEqual(vm.panelSelection, .session(latest.id), "its most recent session (switchTo)")
+        XCTAssertEqual(center.keyboardFocusRequest?.sessionID, latest.id)
     }
 
     /// The owner picks B's session while on A, then moves to C before B's
@@ -209,6 +250,7 @@ final class WorkbenchGoToPaletteTests: XCTestCase {
         XCTAssertEqual(vm.layout(projectID: b), .default, "B's layout is left alone")
         XCTAssertTrue(launches.isEmpty, "B's session is not started")
         XCTAssertEqual(vm.sessionActionErrors, [:])
+        XCTAssertNil(center.keyboardFocusRequest, "the keyboard is not pulled into B")
     }
 
     private final class ReadGate {

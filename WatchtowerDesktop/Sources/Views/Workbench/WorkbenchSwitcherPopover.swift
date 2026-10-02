@@ -156,14 +156,7 @@ struct WorkbenchStateSegments: View {
     private func segmentView(_ segment: WorkbenchSwitcherPresentation.Segment) -> some View {
         switch segment.tone {
         case .comments:
-            Text(segment.text)
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.white)
-                .lineLimit(1)
-                .fixedSize()
-                .padding(.horizontal, 5)
-                .padding(.vertical, 1)
-                .background(Color.blue, in: Capsule())
+            WorkbenchCapsuleBadge(text: segment.text)
         case .blocked:
             Text(segment.text).font(.caption2).foregroundStyle(.orange).lineLimit(1).fixedSize()
         case .sessions, .age:

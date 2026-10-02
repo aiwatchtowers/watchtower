@@ -26,11 +26,14 @@ final class WorkbenchesViewModel {
     private(set) var switcherSummaries: [WorkbenchSwitcherSummary] = []
     /// Why the last switcher read failed; the next successful read clears it.
     private(set) var switcherError: String?
+    // Go-to palette state. Written only by WorkbenchesViewModel+GoTo.swift,
+    // which cannot reach a `private(set)` setter from its own file.
+
     /// The go-to palette's sessions of every workbench (board #252), read
     /// when it opens; its workbenches are `switcherSummaries`.
-    private(set) var goToSessions: [TerminalSession] = []
+    var goToSessions: [TerminalSession] = []
     /// Why the last palette read of the sessions failed; the next success clears it.
-    private(set) var goToError: String?
+    var goToError: String?
     var selectedWorkbenchID: Int64? {
         didSet {
             if selectedWorkbenchID != oldValue {
@@ -353,19 +356,6 @@ final class WorkbenchesViewModel {
             switcherError = nil
         } catch {
             switcherError = "Could not load workbenches: \(error.localizedDescription)"
-        }
-    }
-
-    /// ⌘K: every workbench's sessions, the switcher's rows, and the page's
-    /// own list (the first section keeps the panel's order).
-    func loadGoToPalette() async {
-        if let projectID = selectedWorkbenchID { await loadSessions(projectID: projectID) }
-        await loadSwitcherSummaries()
-        do {
-            goToSessions = try await dbPool.read { try TerminalSessionQueries.fetchAllWorkbenchSessions($0) }
-            goToError = nil
-        } catch {
-            goToError = "Could not load sessions: \(error.localizedDescription)"
         }
     }
 

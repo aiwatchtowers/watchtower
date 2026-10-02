@@ -31,7 +31,7 @@ final class GoToPaletteSelectionTests: XCTestCase {
 
     private func press(_ keys: GoToPaletteSelection.Key..., on selection: inout GoToPaletteSelection)
         -> GoToPaletteSelection.Outcome {
-        var last = GoToPaletteSelection.Outcome.none
+        var last = GoToPaletteSelection.Outcome.ignored
         for key in keys {
             last = selection.handle(key, items: items, currentWorkbenchID: current.id)
         }
@@ -45,7 +45,7 @@ final class GoToPaletteSelectionTests: XCTestCase {
 
     func testArrowsMoveWithoutWrapping() {
         var selection = GoToPaletteSelection()
-        XCTAssertEqual(press(.up, on: &selection), .none)
+        XCTAssertEqual(press(.up, on: &selection), .ignored)
         XCTAssertEqual(selection.selected(in: items)?.id, "session-1", "↑ on the first row stays")
 
         _ = press(.down, .down, on: &selection)
@@ -83,7 +83,7 @@ final class GoToPaletteSelectionTests: XCTestCase {
     func testNothingListedOpensNothing() {
         var selection = GoToPaletteSelection()
         for key in [GoToPaletteSelection.Key.up, .down, .open, .openInSplit] {
-            XCTAssertEqual(selection.handle(key, items: [], currentWorkbenchID: current.id), .none)
+            XCTAssertEqual(selection.handle(key, items: [], currentWorkbenchID: current.id), .ignored)
         }
         XCTAssertEqual(selection.handle(.close, items: [], currentWorkbenchID: current.id), .close)
     }
@@ -96,7 +96,7 @@ final class GoToPaletteSelectionTests: XCTestCase {
         _ = press(.down, .down, on: &selection)
         XCTAssertEqual(selection.selected(in: Array(items.reversed()))?.id, "workbench-2")
         XCTAssertEqual(selection.selected(in: [items[3]])?.id, "session-3")
-        XCTAssertEqual(selection.handle(.down, items: [items[0], items[1]], currentWorkbenchID: current.id), .none)
+        XCTAssertEqual(selection.handle(.down, items: [items[0], items[1]], currentWorkbenchID: current.id), .ignored)
         XCTAssertEqual(selection.selected(in: items)?.id, "session-2", "moved from the first row when its row was gone")
 
         selection.select("session-3")

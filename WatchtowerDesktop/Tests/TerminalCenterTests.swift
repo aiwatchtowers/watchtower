@@ -451,6 +451,19 @@ final class TerminalCenterTests: XCTestCase {
         XCTAssertEqual(center.focusOrder, [2, 3, 1])
     }
 
+    func testAKeyboardFocusRequestIsForTheLatestSessionAsked() {
+        let center = makeCenter()
+        XCTAssertNil(center.keyboardFocusSerial(for: 1))
+        center.requestKeyboardFocus(1)
+        let first = center.keyboardFocusSerial(for: 1)
+        XCTAssertNotNil(first)
+        center.requestKeyboardFocus(1)
+        XCTAssertNotEqual(center.keyboardFocusSerial(for: 1), first, "asked again: a new serial the host honours again")
+        center.requestKeyboardFocus(2)
+        XCTAssertNil(center.keyboardFocusSerial(for: 1), "only the latest request counts")
+        XCTAssertNotNil(center.keyboardFocusSerial(for: 2))
+    }
+
     /// Send comments targets the most recently focused live claude session of
     /// the project — never a shell, never another project's session.
     func testActiveSessionIsTheLastFocusedLiveClaudeSessionOfTheProject() throws {

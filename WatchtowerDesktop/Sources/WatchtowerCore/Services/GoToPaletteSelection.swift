@@ -16,7 +16,7 @@ package struct GoToPaletteSelection: Equatable, Sendable {
 
     package enum Outcome: Equatable, Sendable {
         /// The selection moved, or there is nothing to act on.
-        case none
+        case ignored
         case close
         case open(GoToItem)
         /// A session of the workbench on screen, beside the focused pane.
@@ -48,16 +48,16 @@ package struct GoToPaletteSelection: Equatable, Sendable {
         switch key {
         case .up:
             move(by: -1, in: items)
-            return .none
+            return .ignored
         case .down:
             move(by: 1, in: items)
-            return .none
+            return .ignored
         case .close:
             return .close
         case .open:
-            return selected(in: items).map(Outcome.open) ?? .none
+            return selected(in: items).map(Outcome.open) ?? .ignored
         case .openInSplit:
-            guard let item = selected(in: items) else { return .none }
+            guard let item = selected(in: items) else { return .ignored }
             if case let .session(session, workbench) = item, workbench.id == currentWorkbenchID {
                 return .openInSplit(session)
             }

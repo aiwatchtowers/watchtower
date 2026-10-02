@@ -205,13 +205,7 @@ struct WorkbenchesView: View {
             }
             Spacer()
             if badge > 0 {
-                Text("\(badge)")
-                    .font(.caption2)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(Color.blue, in: Capsule())
+                WorkbenchCapsuleBadge(text: "\(badge)")
             }
         }
         .padding(.vertical, 2)
