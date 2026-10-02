@@ -156,3 +156,18 @@ func TestProj09_UpdateTargetRefusesACycle(t *testing.T) {
 	got.Text = "renamed"
 	require.NoError(t, d.UpdateTarget(*got), "an unchanged parent is not re-checked")
 }
+
+// The ancestor walk ends on a row already in a cycle (UNION by id): a move
+// under a member of an existing cycle is answered, not hung.
+func TestProj09_CycleCheckEndsOnAnExistingCycle(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	a := insertWorkbenchTargetRow(t, d, pid, "a")
+	b := insertBoardChild(t, d, pid, a, "todo")
+	_, err := d.Exec(`UPDATE targets SET parent_id = ? WHERE id = ?`, b, a)
+	require.NoError(t, err)
+	x := insertWorkbenchTargetRow(t, d, pid, "x")
+
+	require.NoError(t, d.CheckParentCycle(x, nullID(a)))
+	require.ErrorIs(t, d.CheckParentCycle(a, nullID(b)), ErrParentCycle)
+}

@@ -433,7 +433,7 @@ separation of boards.
 - `internal/db/proj09_move_test.go` — `TestProj09_MoveReRollsBothParentsStatusAndProgress`,
   `TestProj09_MoveToTheTopLevel`, `TestProj09_MoveRefusesACycle`,
   `TestProj09_MoveRefusesAnotherBoard`, `TestProj09_UnchangedParentWritesNothing`,
-  `TestProj09_UpdateTargetRefusesACycle`
+  `TestProj09_UpdateTargetRefusesACycle`, `TestProj09_CycleCheckEndsOnAnExistingCycle`
 - `internal/tools/workbench_targets_move_test.go` — `TestProj09_UpdateTargetMovesUnderAParentAndToTheTopLevel`,
   `TestProj09_UpdateTargetRefusesACycleAndOtherBoards`
 - `WatchtowerDesktop/Tests/Core/WorkbenchMoveTargetTests.swift` — the `testProj09_*` Desktop twins (`testProj09_UpdateParentRefusesACycle` for Suggest Links)
