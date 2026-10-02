@@ -83,8 +83,11 @@ func fillTrigger(region []byte) {
 var (
 	// groovyImplements is a class header's `implements` clause, which the
 	// grammar does not know (it then takes the interface for the class's
-	// name).
-	groovyImplements = regexp.MustCompile(`\b(?:class|interface|trait)\s+\w+[^{\n;]*?(\bimplements\b[^{]*)`)
+	// name). The header starts its line (after annotations and modifiers),
+	// and neither it nor the clause crosses a comment opener or a quote, so
+	// prose in a comment or a string ("a class that implements X") is not
+	// a header.
+	groovyImplements = regexp.MustCompile(`(?m)^[ \t]*(?:(?:@\w+|public|protected|private|abstract|final|static)[ \t]+)*(?:class|interface|trait)\s+\w+[^{\n;/"']*?(\bimplements\b[^{;/"']*)`)
 	// groovyTrait is a trait's keyword, which the grammar does not know.
 	groovyTrait = regexp.MustCompile(`(?m)^[ \t]*(?:(?:@\w+|public|protected|private|abstract|final|static)[ \t]+)*(trait)\b`)
 )

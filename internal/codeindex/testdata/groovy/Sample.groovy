@@ -53,3 +53,9 @@ trait Named {
 }
 
 println twice(2)
+
+/** A cache that implements nothing special. */
+// this class Foo implements Bar
+class Cache {
+    def text = "class X implements Y"
+}

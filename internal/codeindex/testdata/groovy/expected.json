@@ -166,5 +166,29 @@
     "signature": "String label()",
     "doc": "",
     "lang": "groovy"
+  },
+  {
+    "name": "Cache",
+    "kind": "class",
+    "path": "Sample.groovy",
+    "line": 59,
+    "col": 7,
+    "end_line": 61,
+    "container": "",
+    "signature": "class Cache",
+    "doc": "",
+    "lang": "groovy"
+  },
+  {
+    "name": "text",
+    "kind": "field",
+    "path": "Sample.groovy",
+    "line": 60,
+    "col": 9,
+    "end_line": 60,
+    "container": "Cache",
+    "signature": "def text = \"class X implements Y\"",
+    "doc": "",
+    "lang": "groovy"
   }
 ]

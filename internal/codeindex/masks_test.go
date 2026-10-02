@@ -78,6 +78,22 @@ func TestMaskGroovy(t *testing.T) {
 	}
 }
 
+// Prose that reads like a header — in a GroovyDoc, a line comment or a
+// string — is left alone, so the comment keeps its terminator and the
+// class after it keeps its header.
+func TestMaskGroovy_LeavesCommentsAndStringsAlone(t *testing.T) {
+	for _, src := range []string{
+		"/** A class that implements caching. */\nclass Cache {\n}\n",
+		"/**\n * class Foo implements Bar\n */\nclass Cache {\n}\n",
+		"// this class Foo implements Bar\ndef x = 1\nclass Real {\n}\n",
+		"def s = \"class X implements Y\"\nclass Z {\n}\n",
+	} {
+		if got := maskGroovy([]byte(src)); string(got) != src {
+			t.Errorf("maskGroovy changed %q to %q", src, got)
+		}
+	}
+}
+
 func TestMaskObjC(t *testing.T) {
 	src := []byte("typedef NS_ENUM(NSInteger, Shape) {\n    ShapeCircle,\n};\ntypedef NS_OPTIONS( NSUInteger , Opts ) {};\n")
 	got := maskObjC(src)

@@ -495,6 +495,7 @@ func TestGroovy_ClassesTraitsAndGroovyDoc(t *testing.T) {
 		"CAPACITY": {"const", "Store"}, "entries": {"field", "Store"}, "name": {"field", "Store"},
 		"add": {"method", "Store"}, "empty": {"method", "Store"}, "twice": {"function", ""},
 		"helper": {"function", ""}, "Named": {"interface", ""}, "label": {"method", "Named"},
+		"Cache": {"class", ""}, "text": {"field", "Cache"},
 	})
 	if s := one(t, syms, "Store"); s.Signature != "@CompileStatic class Store implements Storable" || s.Doc != "Keeps entries by key." {
 		t.Errorf("Store = %+v", s)
