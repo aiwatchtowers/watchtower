@@ -3,7 +3,8 @@ import Observation
 
 /// Onboarding v2's steps: Goals → Connect → About you → done. Persisted by
 /// raw string under its own key, so no value can be mistaken for a legacy
-/// `OnboardingStep` integer.
+/// `OnboardingStep` integer. The raw values ARE the persisted format:
+/// renaming a case sends everyone parked on it back to Goals.
 package enum OnboardingV2Step: String, CaseIterable, Sendable {
     case purpose
     case connect
@@ -50,17 +51,16 @@ package struct OnboardingRoute: Equatable, Sendable {
         }
     }
 
-    /// The first step after `step` this route runs.
+    /// The first step after `step` this route runs (`.complete` never
+    /// skips, so there always is one; after `.complete` it stays there).
     package func step(after step: OnboardingV2Step) -> OnboardingV2Step {
-        let all = OnboardingV2Step.allCases
-        guard let index = all.firstIndex(of: step) else { return .complete }
-        return all[(index + 1)...].first { !skips($0) } ?? .complete
+        OnboardingV2Step.allCases.drop { $0 != step }.dropFirst().first { !skips($0) } ?? .complete
     }
 
-    /// The indicator: Goals · Connect · About you, About you left out when
-    /// it will be skipped.
+    /// The indicator: Goals · Connect · About you, each left out when this
+    /// route skips it.
     package var indicatorSteps: [OnboardingV2Step] {
-        [.purpose, .connect] + (skips(.aboutYou) ? [] : [.aboutYou])
+        OnboardingV2Step.allCases.filter { $0 != .complete && !skips($0) }
     }
 }
 
@@ -98,6 +98,13 @@ package final class OnboardingStateMachineV2 {
     /// Moves to the next step `route` runs.
     package func advance(route: OnboardingRoute) {
         goTo(route.step(after: currentStep))
+    }
+
+    /// Moves on when the route skips the step a relaunch resumed on (e.g.
+    /// Connect after the goals changed to Development only, About you after
+    /// the Slack account went away).
+    package func settle(route: OnboardingRoute) {
+        if route.skips(currentStep) { advance(route: route) }
     }
 
     package func goTo(_ step: OnboardingV2Step) {

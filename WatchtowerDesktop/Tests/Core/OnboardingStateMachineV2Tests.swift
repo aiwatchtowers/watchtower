@@ -99,10 +99,36 @@ final class OnboardingStateMachineV2Tests: XCTestCase {
         XCTAssertEqual(OnboardingRoute(goals: [.development], hasSlackAccount: true).step(after: .purpose), .aboutYou)
     }
 
-    func testIndicatorHidesAboutYouOnlyWhenSkipped() {
+    func testIndicatorHidesEverySkippedStep() {
         XCTAssertEqual(OnboardingRoute(goals: [.meetings], hasSlackAccount: true).indicatorSteps, [.purpose, .connect, .aboutYou])
         XCTAssertEqual(OnboardingRoute(goals: [.meetings], hasSlackAccount: false).indicatorSteps, [.purpose, .connect])
+        XCTAssertEqual(OnboardingRoute(goals: [.development], hasSlackAccount: false).indicatorSteps, [.purpose])
+        XCTAssertEqual(OnboardingRoute(goals: [.development], hasSlackAccount: true).indicatorSteps, [.purpose, .aboutYou])
         XCTAssertEqual(OnboardingV2Step.allCases.compactMap(\.indicatorTitle), ["Goals", "Connect", "About you"])
+    }
+
+    // MARK: - Settle on resume
+
+    func testSettleMovesOffAResumedStepTheRouteSkips() {
+        let machine = Machine(defaults: defaults)
+        machine.goTo(.connect)
+        machine.settle(route: OnboardingRoute(goals: [.development], hasSlackAccount: true))
+        XCTAssertEqual(machine.currentStep, .aboutYou)
+
+        machine.goTo(.aboutYou)
+        machine.settle(route: OnboardingRoute(goals: [.meetings], hasSlackAccount: false))
+        XCTAssertEqual(machine.currentStep, .complete)
+        XCTAssertEqual(Machine(defaults: defaults).currentStep, .complete, "the settled step is persisted")
+    }
+
+    func testSettleKeepsAStepTheRouteRuns() {
+        let machine = Machine(defaults: defaults)
+        machine.goTo(.connect)
+        machine.settle(route: OnboardingRoute(goals: [.meetings], hasSlackAccount: false))
+        XCTAssertEqual(machine.currentStep, .connect)
+        machine.goTo(.purpose)
+        machine.settle(route: OnboardingRoute(goals: [], hasSlackAccount: false))
+        XCTAssertEqual(machine.currentStep, .purpose, "Goals never skips")
     }
 
     // MARK: - Run setup again
