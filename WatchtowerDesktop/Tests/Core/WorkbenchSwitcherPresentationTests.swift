@@ -46,13 +46,13 @@ final class WorkbenchSwitcherPresentationTests: XCTestCase {
     func testMatchingFiltersByNameAndFolderIgnoringCaseAndDiacritics() {
         let rows = [
             summary(id: 1, name: "Café", folder: "/work/one"),
-            summary(id: 2, name: "watchtower", folder: "/Users/x/PhpstormProjects/watchtower"),
+            summary(id: 2, name: "acme-app", folder: "/work/projects/acme-app"),
             summary(id: 3, name: "billing", folder: "/work/Résumé")
         ]
         let match = { (query: String) in WorkbenchSwitcherPresentation.matching(rows, query: query).map(\.id) }
         XCTAssertEqual(match("cafe"), [1])
         XCTAssertEqual(match("CAF"), [1])
-        XCTAssertEqual(match("phpstorm"), [2], "the folder matches")
+        XCTAssertEqual(match("projects"), [2], "the folder matches")
         XCTAssertEqual(match("resume"), [3], "the folder ignores diacritics too")
         XCTAssertEqual(match("  "), [1, 2, 3], "a blank query keeps every row in its order")
         XCTAssertEqual(match("nothing"), [])

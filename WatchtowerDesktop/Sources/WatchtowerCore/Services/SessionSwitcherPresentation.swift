@@ -42,13 +42,21 @@ package enum SessionSwitcherPresentation {
     }
 
     /// Case- and diacritic-insensitive substring match on the title, or the
-    /// target id exactly (`#233` or `233`); the order and the shortcuts are kept.
+    /// target id: a bare number exactly (`233`), a `#` and digits as a prefix
+    /// (`#2`, `#23`, `#233` → #233); the order and the shortcuts are kept.
     package static func matching(_ rows: [Row], query: String) -> [Row] {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !needle.isEmpty else { return rows }
-        let id = needle.hasPrefix("#") ? String(needle.dropFirst()) : needle
+        let hashDigits = needle.hasPrefix("#") ? String(needle.dropFirst()) : nil
         return rows.filter { row in
-            if let target = row.session.targetID, String(target) == id { return true }
+            if let target = row.session.targetID.map(String.init) {
+                if let digits = hashDigits {
+                    if !digits.isEmpty, digits.allSatisfy({ $0.isASCII && $0.isNumber }),
+                       target.hasPrefix(digits) { return true }
+                } else if target == needle {
+                    return true
+                }
+            }
             return row.session.title.range(of: needle, options: [.caseInsensitive, .diacriticInsensitive]) != nil
         }
     }

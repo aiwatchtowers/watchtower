@@ -99,7 +99,7 @@ final class GoToRankingTests: XCTestCase {
         )
         XCTAssertEqual(result.map(\.kind), [.currentSessions, .otherWorkbenches])
         XCTAssertEqual(titles(result), [["acme › deploy"], ["beta › deploy"]],
-                       "the current one leads although the other is more recent")
+                       "the current workbench's section comes first, although the other is more recent")
     }
 
     func testEqualScoresTieByRecencyThenTitle() {

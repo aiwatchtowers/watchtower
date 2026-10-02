@@ -47,8 +47,15 @@ final class SessionSwitcherPresentationTests: XCTestCase {
 
     func testMatchingByTargetIDWithOrWithoutHash() {
         let result = rows([session(1, "Board work", target: 233), session(2, "Other", target: 2330), session(3, "None")])
-        XCTAssertEqual(SessionSwitcherPresentation.matching(result, query: "#233").map(\.id), [1])
+        XCTAssertEqual(SessionSwitcherPresentation.matching(result, query: "#233").map(\.id), [1, 2],
+                       "# and digits are a prefix: #2330 starts with them too")
         XCTAssertEqual(SessionSwitcherPresentation.matching(result, query: "233").map(\.id), [1])
+        XCTAssertEqual(SessionSwitcherPresentation.matching(result, query: "#23").map(\.id), [1, 2],
+                       "# and digits match the target ids starting with them")
+        XCTAssertEqual(SessionSwitcherPresentation.matching(result, query: "23").map(\.id), [],
+                       "a bare number matches a target id exactly")
+        XCTAssertEqual(SessionSwitcherPresentation.matching(result, query: "#").map(\.id), [],
+                       "a lone # matches no target id")
         XCTAssertEqual(SessionSwitcherPresentation.matching(result, query: " ").map(\.id), [1, 2, 3])
     }
 

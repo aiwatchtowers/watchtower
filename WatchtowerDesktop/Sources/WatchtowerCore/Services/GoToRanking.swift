@@ -115,7 +115,9 @@ package enum GoToRanking {
     }
 
     /// The item's best field score, plus the current-workbench bonus; 0 when
-    /// no field matches.
+    /// no field matches. While the sections split by workbench — the current
+    /// one's sessions apart from every other workbench's items — the bonus
+    /// never changes an order: it is kept because the ranking pins it.
     package static func score(_ item: GoToItem, query: String, currentID: Int64?) -> Int {
         let best: Int = switch item {
         case let .session(session, workbench):
