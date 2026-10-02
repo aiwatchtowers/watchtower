@@ -21,7 +21,9 @@ struct ChatView: View {
 /// Holds view-local layout state; the VMs live on AppState and survive tab switches.
 /// Two columns by default (app sidebar + conversation/landing): the chat
 /// history is opt-in, and the owner's show/hide choice is remembered.
-private struct ChatSplitView: View {
+struct ChatSplitView: View {
+    static let historyWidth: CGFloat = 260
+
     @Environment(AppState.self) private var appState
     @Bindable var chatVM: ChatViewModel
     @Bindable var historyVM: ChatHistoryViewModel
@@ -47,8 +49,10 @@ private struct ChatSplitView: View {
                         historyVM: historyVM, chatVM: chatVM,
                         onNewChat: createNewChat, onArchive: archive, onDelete: delete
                     )
-                        .frame(width: 260)
-                    Divider()
+                        .frame(width: Self.historyWidth)
+                        // Its edge line lies under the tabs, so the chat on
+                        // screen runs on into the conversation (`panelTab`).
+                        .panelSurface()
                 }
                 VStack(spacing: 0) {
                     toolbar
@@ -85,6 +89,9 @@ private struct ChatSplitView: View {
                     }
                 }
             }
+            // The conversation on the detail backdrop (as `MainNavigationView`
+            // also paints it), so the selected history tab meets one colour.
+            .detailBackground()
         }
         .onChange(of: historyVM.selectedConversationID) { _, newID in
             if let newID { chatVM.select(conversationID: newID) }

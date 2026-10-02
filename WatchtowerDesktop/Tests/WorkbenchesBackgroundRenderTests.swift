@@ -119,39 +119,11 @@ final class WorkbenchesBackgroundRenderTests: XCTestCase {
 
     // MARK: - Rendering
 
-    private struct RGBA: Equatable, CustomStringConvertible {
-        let red: Int, green: Int, blue: Int, alpha: Int
-        var description: String { "rgba(\(red), \(green), \(blue), \(alpha))" }
-    }
-
     private func render(_ view: some View, _ appearance: NSAppearance) throws -> NSBitmapImageRep {
-        let host = NSHostingView(rootView: view.frame(width: Self.size.width, height: Self.size.height))
-        host.frame = NSRect(origin: .zero, size: Self.size)
-        let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.appearance = appearance
-        window.contentView = host
-        defer { window.close() }
-        host.layoutSubtreeIfNeeded()
-        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
-        // The layer tree, composited as on screen.
-        let bitmap = try XCTUnwrap(NSBitmapImageRep(
-            bitmapDataPlanes: nil, pixelsWide: Int(Self.size.width), pixelsHigh: Int(Self.size.height),
-            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
-            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
-        ))
-        let context = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: bitmap))
-        // Top-left origin, as `pixel(_:x:y:)` and the view's own coordinates.
-        context.cgContext.translateBy(x: 0, y: Self.size.height)
-        context.cgContext.scaleBy(x: 1, y: -1)
-        try XCTUnwrap(host.layer).render(in: context.cgContext)
-        return bitmap
+        try ViewRenderProbe(size: Self.size).render(view, appearance)
     }
 
-    private func pixel(_ bitmap: NSBitmapImageRep, x: Int, y: Int) throws -> RGBA {
-        let color = try XCTUnwrap(bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB))
-        func byte(_ value: CGFloat) -> Int { Int((value * 255).rounded()) }
-        return RGBA(red: byte(color.redComponent), green: byte(color.greenComponent),
-                    blue: byte(color.blueComponent), alpha: byte(color.alphaComponent))
+    private func pixel(_ bitmap: NSBitmapImageRep, x: Int, y: Int) throws -> ViewRenderProbe.RGBA {
+        try ViewRenderProbe(size: Self.size).pixel(bitmap, x: x, y: y)
     }
 }
