@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"strconv"
 	"strings"
 
@@ -50,7 +51,7 @@ func registerRegistry(s *mcpsdk.Server, database *db.DB, reg *tools.Registry, bi
 		listed := &mcpsdk.Tool{
 			Name:        binding.Spell(tool.Name),
 			Description: binding.Spell(tool.Description),
-			InputSchema: spellSchema(binding, tool.InputSchema),
+			InputSchema: spellSchema(binding, tool.Name, tool.InputSchema),
 		}
 		if tool.Access == tools.AccessRead {
 			s.AddTool(listed, func(ctx context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
@@ -117,17 +118,21 @@ func registerRegistry(s *mcpsdk.Server, database *db.DB, reg *tools.Registry, bi
 // spellSchema is a tool's input schema as binding's session lists it: the
 // registry's own schema, or, for a legacy session, a copy whose texts name
 // the renamed tools by their old names (Binding.Spell). The registry's
-// schema is shared by every session and is never changed.
-func spellSchema(binding tools.Binding, schema *jsonschema.Schema) any {
+// schema is shared by every session and is never changed. Should the copy
+// fail, the registry's schema is listed as it is (current names in its
+// texts) and the failure goes to stderr — stdout is the MCP stream.
+func spellSchema(binding tools.Binding, toolName string, schema *jsonschema.Schema) any {
 	if !binding.LegacyNames || schema == nil {
 		return schema
 	}
 	raw, err := json.Marshal(schema)
 	if err != nil {
+		log.Printf("mcp: spelling the %s input schema for a legacy session: %v", toolName, err)
 		return schema
 	}
 	var spelled map[string]any
 	if err := json.Unmarshal([]byte(binding.Spell(string(raw))), &spelled); err != nil {
+		log.Printf("mcp: spelling the %s input schema for a legacy session: %v", toolName, err)
 		return schema
 	}
 	return spelled
