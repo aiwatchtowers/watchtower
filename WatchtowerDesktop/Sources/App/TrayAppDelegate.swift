@@ -65,8 +65,8 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
     /// content mounts, which is too late for `applicationDidFinishLaunching`
     /// (the login-launch close ran against an unnamed window and matched
     /// nothing). The autosave name stays as a second, mount-time signal.
-    /// Settings (`com_apple_SwiftUI_Settings_window`) and Pipeline Progress
-    /// (`progress-detail-…`) never match.
+    /// Settings (`com_apple_SwiftUI_Settings_window`) and the other windows
+    /// (`logs-…`, …) never match.
     static func isMainWindow(_ window: NSWindow) -> Bool {
         isMainWindowIdentifier(window.identifier?.rawValue)
             || window.frameAutosaveName == mainWindowAutosaveName

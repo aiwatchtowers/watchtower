@@ -89,6 +89,7 @@ struct GoogleConnectionDetail: View {
         .sheet(isPresented: $showAddGoogleAccountSheet) {
             AddGoogleAccountView()
                 .environment(appState)
+                .marksAccountSheet(appState)
         }
         .confirmationDialog(
             "Remove \(googleAccountPendingRemoval?.displayName ?? "this account")?",

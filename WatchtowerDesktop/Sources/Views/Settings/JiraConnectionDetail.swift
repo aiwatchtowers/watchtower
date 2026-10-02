@@ -91,6 +91,7 @@ struct JiraConnectionDetail: View {
         .sheet(isPresented: $showAddJiraAccountSheet) {
             AddJiraAccountView()
                 .environment(appState)
+                .marksAccountSheet(appState)
         }
         .confirmationDialog(
             "Remove \(jiraAccountPendingRemoval?.displayName ?? "this site")?",

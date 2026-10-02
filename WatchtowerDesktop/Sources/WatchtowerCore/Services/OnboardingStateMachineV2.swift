@@ -2,8 +2,8 @@ import Foundation
 import Observation
 
 /// Onboarding v2's steps: Goals → Connect → About you → done. Persisted by
-/// raw string under its own key, so no value can be mistaken for a legacy
-/// `OnboardingStep` integer. The raw values ARE the persisted format:
+/// raw string under its own key, so no value can be mistaken for the old
+/// flow's `onboarding_current_step` integer. The raw values ARE the persisted format:
 /// renaming a case sends everyone parked on it back to Goals.
 package enum OnboardingV2Step: String, CaseIterable, Sendable {
     case purpose
@@ -67,8 +67,8 @@ package struct OnboardingRoute: Equatable, Sendable {
 /// Onboarding v2 progress, persisted in UserDefaults under
 /// `onboarding_v2_step`. On first use it reads the legacy
 /// `onboarding_current_step` once (`OnboardingV2Step.fromLegacy`) and drops
-/// the legacy keys — so it must not run beside the legacy
-/// `OnboardingStateMachine`, which still owns them until the old flow goes.
+/// the legacy keys (the old eight-step flow is gone; an install upgraded
+/// from it still carries them).
 @MainActor
 @Observable
 package final class OnboardingStateMachineV2 {

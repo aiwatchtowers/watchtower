@@ -259,7 +259,7 @@ final class AppStateTests: XCTestCase {
     func testCompleteOnboardingRefreshesConnectedSources() async throws {
         let (defaults, suiteName) = try onboardingSuite()
         defer { defaults.removePersistentDomain(forName: suiteName) }
-        let appState = AppState(onboardingDefaults: defaults)
+        let appState = AppState(onboardingDefaults: defaults, featureManager: Self.noFeatures())
         appState.wireAppDatabaseOverride = { _ in }
         appState.databaseManager = dbManager
         await appState.refreshConnectedSources()
@@ -339,6 +339,12 @@ final class AppStateTests: XCTestCase {
 
     // MARK: - Onboarding launch state
 
+    /// A Feature Manager listing nothing: a test AppState never runs the
+    /// real `features list`.
+    private static func noFeatures() -> FeatureManagerService {
+        FeatureManagerService(runner: FakeCLIRunner(stdout: Data(#"{"features":[]}"#.utf8)))
+    }
+
     private func onboardingSuite() throws -> (UserDefaults, String) {
         let name = "AppStateTests.onboarding.\(UUID().uuidString)"
         return (try XCTUnwrap(UserDefaults(suiteName: name)), name)
@@ -347,7 +353,7 @@ final class AppStateTests: XCTestCase {
     /// Launch with this suite and DB: the state `initialize()` derives after
     /// the DB opened (or, with `db: nil`, failed to).
     private func launch(_ defaults: UserDefaults, db: DatabaseManager?) async -> AppState {
-        let appState = AppState(onboardingDefaults: defaults)
+        let appState = AppState(onboardingDefaults: defaults, featureManager: Self.noFeatures())
         appState.wireAppDatabaseOverride = { _ in }
         appState.databaseManager = db
         await appState.refreshConnectedSources()
@@ -894,13 +900,13 @@ final class AppStateTests: XCTestCase {
     /// waits for it to go.
     func testOfferWaitsForTheAddSheet() async throws {
         let (appState, _, vm) = try await finishedInstall()
-        appState.isAddingSlackAccount = true
+        appState.isAddingAccount = true
 
         try await connectSlack(vm, team: "T1", appState: appState)
         XCTAssertFalse(appState.showsLateAboutYou)
         XCTAssertTrue(appState.lateAboutYouPending)
 
-        appState.isAddingSlackAccount = false
+        appState.isAddingAccount = false
         XCTAssertTrue(appState.showsLateAboutYou)
         XCTAssertFalse(appState.lateAboutYouPending)
     }
@@ -1307,5 +1313,245 @@ final class AppStateTests: XCTestCase {
         appState.needsOnboarding = true
         await appState.rerunOnboarding()
         XCTAssertFalse(appState.isOnboardingRerun)
+    }
+
+    // MARK: - Features for a source connected from Settings
+
+    private static func featureJSON(_ id: String, state: String) -> String {
+        """
+        {"id":"\(id)","title":"\(id) title","description":"d","tagline":"t","benefits":[],"icon":"i",\
+        "state":"\(state)","core":false,"parent":"","config_key":"\(id).enabled","cost":"light",\
+        "feeds_into":[],"sub_toggles":[]}
+        """
+    }
+
+    private func featuresRunner(disabled: [String], enabled: [String] = []) -> FakeCLIRunner {
+        let rows = disabled.map { Self.featureJSON($0, state: "disabled") } + enabled.map { Self.featureJSON($0, state: "enabled") }
+        return FakeCLIRunner(stdout: Data("{\"features\":[\(rows.joined(separator: ","))]}".utf8))
+    }
+
+    /// Jira connected from Settings: its task features, off now, are
+    /// offered; Turn on enables them through the CLI and restarts once.
+    func testNewJiraOffersItsFeaturesAndTurnOnEnablesThem() async throws {
+        let runner = featuresRunner(disabled: ["stream-digests", "next-step", "memory"], enabled: ["tracks"])
+        let appState = AppState.isolated(featuresRunner: runner)
+        let daemon = FakeDaemon()
+        appState.daemonControlOverride = daemon
+        appState.databaseManager = dbManager
+        await appState.refreshConnectedSources()
+
+        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertJiraAccount(db) }
+        await appState.refreshConnectedSources()
+        await appState.featureSuggestionCheck?.value
+
+        XCTAssertEqual(appState.featureSuggestion.map(\.id), ["stream-digests", "next-step"])
+        XCTAssertTrue(appState.showsFeatureSuggestion)
+        XCTAssertFalse(runner.invocations.contains { $0.first == "features" && $0.dropFirst().first == "enable" },
+                       "nothing is enabled before Turn on")
+
+        appState.featureManager.setPending("tracks", enabled: false)
+        await appState.acceptFeatureSuggestion()
+
+        XCTAssertEqual(appState.featureManager.pending, ["tracks": false], "Settings → Features' staged change is left alone")
+        XCTAssertFalse(runner.invocations.contains(["features", "disable", "tracks"]))
+        XCTAssertTrue(runner.invocations.contains(["features", "enable", "next-step"]))
+        XCTAssertTrue(runner.invocations.contains(["features", "enable", "stream-digests"]))
+        XCTAssertFalse(runner.invocations.contains(["features", "enable", "memory"]))
+        XCTAssertEqual(daemon.restarts, 1)
+        XCTAssertTrue(appState.featureSuggestion.isEmpty)
+    }
+
+    func testNotNowEnablesNothing() async throws {
+        let runner = featuresRunner(disabled: ["stream-digests", "next-step"])
+        let appState = AppState.isolated(featuresRunner: runner)
+        appState.databaseManager = dbManager
+        await appState.refreshConnectedSources()
+        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertJiraAccount(db) }
+        await appState.refreshConnectedSources()
+        await appState.featureSuggestionCheck?.value
+
+        appState.declineFeatureSuggestion()
+
+        XCTAssertFalse(appState.showsFeatureSuggestion)
+        XCTAssertFalse(runner.invocations.contains { $0.dropFirst().first == "enable" })
+    }
+
+    /// The first read is a baseline, onboarding's own connects offer
+    /// nothing, and the offer waits for the late About you sheet.
+    func testNoOfferOnLaunchOrDuringOnboardingAndAfterAboutYou() async throws {
+        let runner = featuresRunner(disabled: ["stream-digests", "next-step", "tracks"])
+        let appState = AppState.isolated(featuresRunner: runner)
+        appState.databaseManager = dbManager
+        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertJiraAccount(db) }
+        await appState.refreshConnectedSources()
+        XCTAssertNil(appState.featureSuggestionCheck, "the first read is a baseline")
+
+        appState.needsOnboarding = true
+        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertSlackAccount(db, teamID: "T1") }
+        await appState.refreshConnectedSources()
+        XCTAssertNil(appState.featureSuggestionCheck, "onboarding's Connect step picks its own features")
+
+        appState.needsOnboarding = false
+        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertGoogleAccount(db, email: "me@example.com", gmailEnabled: true) }
+        appState.showsLateAboutYou = true
+        await appState.refreshConnectedSources()
+        await appState.featureSuggestionCheck?.value
+        XCTAssertFalse(appState.featureSuggestion.isEmpty)
+        XCTAssertFalse(appState.showsFeatureSuggestion, "About you shows first")
+        appState.showsLateAboutYou = false
+        XCTAssertTrue(appState.showsFeatureSuggestion)
+        appState.isAddingAccount = true
+        XCTAssertFalse(appState.showsFeatureSuggestion, "and never over an Add account sheet")
+    }
+
+    // MARK: - #285 review
+
+    /// A features CLI whose list follows its own `features enable` calls.
+    private final class LiveFeaturesRunner: CLIRunnerProtocol, @unchecked Sendable {
+        private let lock = NSLock()
+        private var states: [String: String]
+        private(set) var calls: [[String]] = []
+
+        init(disabled: [String]) {
+            states = Dictionary(uniqueKeysWithValues: disabled.map { ($0, "disabled") })
+        }
+
+        func run(args: [String]) async throws -> Data {
+            lock.withLock {
+                calls.append(args)
+                if args.count == 3, args[0] == "features", args[1] == "enable" { states[args[2]] = "enabled" }
+                let rows = states.keys.sorted().map { id in
+                    """
+                    {"id":"\(id)","title":"\(id)","description":"d","tagline":"t","benefits":[],"icon":"i",\
+                    "state":"\(states[id] ?? "disabled")","core":false,"parent":"","config_key":"\(id).enabled",\
+                    "cost":"light","feeds_into":[],"sub_toggles":[]}
+                    """
+                }
+                return Data("{\"features\":[\(rows.joined(separator: ","))]}".utf8)
+            }
+        }
+    }
+
+    private func appStateOffering(_ runner: LiveFeaturesRunner) async throws -> AppState {
+        let appState = AppState.isolated(featuresRunner: runner)
+        appState.databaseManager = dbManager
+        await appState.refreshConnectedSources()
+        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertJiraAccount(db) }
+        await appState.refreshConnectedSources()
+        await appState.featureSuggestionCheck?.value
+        return appState
+    }
+
+    /// The restart fails after the enables: the offer stays with the error;
+    /// a retry finds everything on, only restarts, and closes the offer.
+    func testRetryAfterAFailedRestartOnlyRestarts() async throws {
+        let runner = LiveFeaturesRunner(disabled: ["stream-digests", "next-step"])
+        let appState = try await appStateOffering(runner)
+        let daemon = FakeDaemon()
+        daemon.restartError = DaemonRestartError.startFailed(status: 1, stderr: "boom")
+        appState.daemonControlOverride = daemon
+        XCTAssertEqual(appState.featureSuggestion.count, 2)
+
+        await appState.acceptFeatureSuggestion()
+        XCTAssertNotNil(appState.featureSuggestionError)
+        XCTAssertEqual(appState.featureSuggestion.count, 2, "the offer stays for a retry")
+        XCTAssertEqual(daemon.restarts, 1)
+
+        daemon.restartError = nil
+        await appState.acceptFeatureSuggestion()
+
+        XCTAssertEqual(daemon.restarts, 2)
+        XCTAssertNil(appState.featureSuggestionError)
+        XCTAssertNil(appState.featureManager.loadError, "no stale error left behind")
+        XCTAssertTrue(appState.featureSuggestion.isEmpty)
+        XCTAssertEqual(runner.calls.filter { $0.dropFirst().first == "enable" }.count, 2, "each feature enabled once")
+    }
+
+    /// The feature check finishing first never takes About you's place.
+    func testAboutYouShowsBeforeTheFeatureOffer() async throws {
+        let runner = LiveFeaturesRunner(disabled: ["tracks", "people-cards"])
+        let appState = AppState.isolated(featuresRunner: runner)
+        appState.databaseManager = dbManager
+        appState.initSlackAccounts(dbPool: dbManager.dbPool)
+        let vm = try XCTUnwrap(appState.slackAccountsViewModel)
+        await vm.refreshAsync()
+        await appState.refreshConnectedSources()
+        appState.isAddingAccount = true
+
+        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertSlackAccount(db, teamID: "T1") }
+        await vm.refreshAsync()
+        await appState.featureSuggestionCheck?.value
+        await appState.lateAboutYouCheck?.value
+        XCTAssertFalse(appState.featureSuggestion.isEmpty)
+        XCTAssertNil(appState.settingsSheet, "nothing over the Add sheet")
+
+        appState.isAddingAccount = false
+        XCTAssertEqual(appState.settingsSheet, .aboutYou)
+        appState.settingsSheetDismissed(.aboutYou)
+        XCTAssertEqual(appState.settingsSheet, .featureSuggestion)
+        appState.settingsSheetDismissed(.featureSuggestion)
+        XCTAssertEqual(appState.settingsSheet, .featureSuggestion, "only its buttons close the offer")
+    }
+
+    /// A second source while the first offer is up adds to it.
+    func testOffersMergeByID() async throws {
+        let runner = LiveFeaturesRunner(disabled: ["stream-digests", "next-step", "tracks"])
+        let appState = try await appStateOffering(runner)
+        XCTAssertEqual(Set(appState.featureSuggestion.map(\.id)), ["stream-digests", "next-step"])
+
+        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertSlackAccount(db, teamID: "T1") }
+        await appState.refreshConnectedSources()
+        await appState.featureSuggestionCheck?.value
+
+        XCTAssertEqual(Set(appState.featureSuggestion.map(\.id)), ["stream-digests", "next-step", "tracks"])
+    }
+
+    /// A sources read that began during onboarding and lands after its
+    /// completion offers nothing: onboarding picked those features itself.
+    func testReadStartedDuringOnboardingOffersNothing() async throws {
+        let runner = LiveFeaturesRunner(disabled: ["stream-digests", "next-step"])
+        let appState = AppState.isolated(featuresRunner: runner)
+        appState.databaseManager = dbManager
+        await appState.refreshConnectedSources()
+        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertJiraAccount(db) }
+
+        appState.needsOnboarding = true
+        // Hold the read back so onboarding ends while it is in flight.
+        let pool = try XCTUnwrap(dbManager?.dbPool)
+        let barrier = Task.detached {
+            try pool.barrierWriteWithoutTransaction { _ in Thread.sleep(forTimeInterval: 0.3) }
+        }
+        try await Task.sleep(for: .milliseconds(50))
+        let refresh = Task { await appState.refreshConnectedSources() }
+        try await Task.sleep(for: .milliseconds(50))
+        appState.needsOnboarding = false
+        _ = try await barrier.value
+        await refresh.value
+        await appState.featureSuggestionCheck?.value
+
+        XCTAssertTrue(appState.featureVisibility.connectedSources.jira, "the read did land")
+        XCTAssertTrue(appState.featureSuggestion.isEmpty)
+    }
+
+    /// An offer that arrives while Turn on runs is kept and shown after it.
+    func testOfferDuringAnApplyIsMergedAfterIt() async throws {
+        let runner = LiveFeaturesRunner(disabled: ["stream-digests", "next-step", "tracks"])
+        let appState = try await appStateOffering(runner)
+        let daemon = FakeDaemon()
+        daemon.running = true
+        daemon.holdRestart = true
+        appState.daemonControlOverride = daemon
+
+        let accept = Task { await appState.acceptFeatureSuggestion() }
+        await waitUntil { daemon.isRestartParked }
+        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertSlackAccount(db, teamID: "T1") }
+        await appState.refreshConnectedSources()
+        await appState.featureSuggestionCheck?.value
+        XCTAssertEqual(Set(appState.featureSuggestion.map(\.id)), ["stream-digests", "next-step"], "left alone during the apply")
+
+        daemon.releaseRestart()
+        await accept.value
+
+        XCTAssertEqual(appState.featureSuggestion.map(\.id), ["tracks"], "applied ids cleared, the late one kept")
     }
 }
