@@ -48,16 +48,22 @@ final class WorkbenchBranchPresentationTests: XCTestCase {
 
     func testHelpNamesTheOperationInProgress() {
         let help = Pres.help(WorkbenchGitStatus(branch: "a-very-long/branch-name", dirty: true, changes: 3, operation: "rebase"),
-                             staleError: nil)
+                             staleError: nil, pendingBranch: nil)
         XCTAssertTrue(help.hasPrefix("a-very-long/branch-name"))
         XCTAssertTrue(help.contains("3 changes are not committed"))
         XCTAssertTrue(help.contains("A rebase is in progress"))
-        XCTAssertEqual(Pres.help(WorkbenchGitStatus(detached: true, head: "a1b2c3d"), staleError: nil), "Detached HEAD at a1b2c3d")
+        XCTAssertEqual(Pres.help(WorkbenchGitStatus(detached: true, head: "a1b2c3d"), staleError: nil, pendingBranch: nil),
+                       "Detached HEAD at a1b2c3d")
     }
 
     func testHelpOfAStaleStatusSaysWhy() {
-        XCTAssertEqual(Pres.help(WorkbenchGitStatus(branch: "main"), staleError: "Could not read the git status: boom"),
+        XCTAssertEqual(Pres.help(WorkbenchGitStatus(branch: "main"), staleError: "Could not read the git status: boom", pendingBranch: nil),
                        "main\nMay be out of date — Could not read the git status: boom")
+    }
+
+    func testHelpNamesAPendingSwitch() {
+        XCTAssertEqual(Pres.help(WorkbenchGitStatus(branch: "main"), staleError: nil, pendingBranch: "feature/x"),
+                       "main\nConfirm switching to feature/x")
     }
 
     func testFailureTextTurnsAContractMismatchIntoAnInstruction() {

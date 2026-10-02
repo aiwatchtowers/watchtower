@@ -76,6 +76,23 @@ final class WorkbenchBranchViewsTests: XCTestCase {
         XCTAssertThrowsError(try crumb.inspect().find(viewWithAccessibilityLabel: "Status may be out of date"))
     }
 
+    /// Go asked while the popover was closed: the button says so until the
+    /// owner opens it and answers.
+    func testAPendingConfirmationMarksTheButton() throws {
+        let vm = makeVM()
+        vm.gitStatus[project.id] = WorkbenchGitStatus(branch: "main")
+        vm.pendingBranchConfirmation[project.id] = WorkbenchBranchPresentation.confirmation(
+            for: WorkbenchGitSwitchResult(branch: "feature/x", needsConfirmation: [.uncommittedChanges]), stashing: false
+        )
+        let crumb = WorkbenchBranchCrumb(vm: vm, project: project)
+        XCTAssertNoThrow(try crumb.inspect().find(viewWithAccessibilityLabel: "Confirm switching to feature/x"))
+        XCTAssertEqual(try crumb.inspect().find(ViewType.Button.self).help().string(), "main\nConfirm switching to feature/x")
+
+        vm.pendingBranchConfirmation[project.id] = nil
+        XCTAssertThrowsError(try WorkbenchBranchCrumb(vm: vm, project: project).inspect()
+            .find(viewWithAccessibilityLabel: "Confirm switching to feature/x"))
+    }
+
     // MARK: - Button
 
     func testButtonShowsTheBranchCountersAndDirtyDot() throws {

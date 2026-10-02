@@ -222,6 +222,9 @@ final class WorkbenchesViewModel {
     var switchingBranch: [Int64: String] = [:]
     /// A switch Go refused until the owner confirms (dirty tree, live agent).
     var pendingBranchConfirmation: [Int64: BranchSwitchConfirmation] = [:]
+    /// The header's label when Go asked: a status showing anything else
+    /// means the branch moved since, and the question is dropped.
+    @ObservationIgnored var pendingBranchBase: [Int64: String] = [:]
     /// Status reads running, and those asked for again meanwhile: at most
     /// one read in flight per workbench plus one rerun.
     @ObservationIgnored var gitRefreshing: Set<Int64> = []

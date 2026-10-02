@@ -75,14 +75,20 @@ package enum WorkbenchBranchPresentation {
     }
 
     /// The button's tooltip: the full name, plus an operation in progress,
-    /// plus why it may be out of date (the reads since this status failed).
-    package static func help(_ status: WorkbenchGitStatus, staleError: String?) -> String {
+    /// plus why it may be out of date (the reads since this status failed),
+    /// plus a switch waiting for the owner's confirmation.
+    package static func help(_ status: WorkbenchGitStatus, staleError: String?, pendingBranch: String?) -> String {
         var lines = [status.detached ? "Detached HEAD at \(status.head)" : status.branch]
+        if let pendingBranch { lines.append(pendingHelp(pendingBranch)) }
         if status.dirty { lines.append("\(changeCount(status.changes)) not committed") }
         if !status.upstream.isEmpty { lines.append("Upstream \(status.upstream)") }
         if !status.operation.isEmpty { lines.append("A \(status.operation) is in progress — switching is refused until it ends") }
         if let staleError { lines.append("May be out of date — \(staleError)") }
         return lines.joined(separator: "\n")
+    }
+
+    package static func pendingHelp(_ branch: String) -> String {
+        "Confirm switching to \(branch)"
     }
 
     /// A failed `workbench git <command>` call as one line for the owner. An

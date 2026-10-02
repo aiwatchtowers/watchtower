@@ -18,7 +18,13 @@ struct WorkbenchBranchCrumb: View {
                     .font(.caption)
                     .foregroundStyle(.tertiary)
                     .accessibilityHidden(true)
-                WorkbenchBranchButton(status: status, staleError: error, busy: vm.switchingBranch[project.id] != nil) {
+                WorkbenchBranchButton(
+                    status: status,
+                    staleError: error,
+                    pendingBranch: vm.pendingBranchConfirmation[project.id]?.branch,
+                    busy: vm.switchingBranch[project.id] != nil
+                ) {
+                    // A pending confirmation shows as the popover's dialog.
                     showsPopover.toggle()
                 }
                 .popover(isPresented: $showsPopover, arrowEdge: .bottom) {
@@ -44,6 +50,9 @@ struct WorkbenchBranchButton: View {
     let status: WorkbenchGitStatus
     /// Why the reads since `status` failed; nil when it is current.
     var staleError: String?
+    /// A switch waiting for the owner's confirmation (asked while the
+    /// popover was closed): an orange mark until it is answered.
+    var pendingBranch: String?
     var busy = false
     let action: () -> Void
 
@@ -70,6 +79,12 @@ struct WorkbenchBranchButton: View {
                 if let counters = WorkbenchBranchPresentation.counters(status) {
                     Text(counters).foregroundStyle(.secondary).monospacedDigit()
                 }
+                if let pendingBranch {
+                    Image(systemName: "questionmark.circle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                        .accessibilityLabel(WorkbenchBranchPresentation.pendingHelp(pendingBranch))
+                }
                 if staleError != nil {
                     Image(systemName: "exclamationmark.triangle")
                         .font(.caption2)
@@ -88,7 +103,7 @@ struct WorkbenchBranchButton: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.borderless)
-        .help(WorkbenchBranchPresentation.help(status, staleError: staleError))
+        .help(WorkbenchBranchPresentation.help(status, staleError: staleError, pendingBranch: pendingBranch))
         .accessibilityLabel("Branch \(label.text)")
     }
 }

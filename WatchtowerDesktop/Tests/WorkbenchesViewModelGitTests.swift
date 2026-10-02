@@ -262,6 +262,47 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
                         "--agent-running", "--json"])
     }
 
+    func testAPendingConfirmationOutlivesAReadOfTheSameBranch() async throws {
+        let runner = ScriptedCLIRunner(results: [
+            .success(status(branch: "main")),
+            .success(switchResult(#""switched":false,"needs_confirmation":["uncommitted_changes"]"#)),
+            .success(status(branch: "main", dirty: true))
+        ])
+        let vm = makeVM(runner)
+        await vm.refreshGitStatus(projectID: project.id)
+        await vm.switchBranch("feature/x", project: project)
+        await vm.refreshGitStatus(projectID: project.id)
+        XCTAssertNotNil(vm.pendingBranchConfirmation[project.id], "the poll's read changes nothing it asked about")
+    }
+
+    /// Asked while on main; the folder moved to another branch (the agent,
+    /// a terminal) before the owner answered: the question is stale.
+    func testAPendingConfirmationIsDroppedWhenTheBranchMoved() async {
+        let runner = ScriptedCLIRunner(results: [
+            .success(status(branch: "main")),
+            .success(switchResult(#""switched":false,"needs_confirmation":["uncommitted_changes"]"#)),
+            .success(status(branch: "hotfix"))
+        ])
+        let vm = makeVM(runner)
+        await vm.refreshGitStatus(projectID: project.id)
+        await vm.switchBranch("feature/x", project: project)
+        XCTAssertNotNil(vm.pendingBranchConfirmation[project.id])
+        await vm.refreshGitStatus(projectID: project.id)
+        XCTAssertNil(vm.pendingBranchConfirmation[project.id])
+    }
+
+    func testAPendingConfirmationIsDroppedOnceTheFolderIsOnItsBranch() async {
+        let runner = ScriptedCLIRunner(results: [
+            .success(switchResult(#""switched":false,"needs_confirmation":["agent_running"]"#)),
+            .success(status(branch: "feature/x"))
+        ])
+        let vm = makeVM(runner)
+        await vm.switchBranch("feature/x", project: project)
+        XCTAssertNotNil(vm.pendingBranchConfirmation[project.id], "no status was known when Go asked")
+        await vm.refreshGitStatus(projectID: project.id)
+        XCTAssertNil(vm.pendingBranchConfirmation[project.id])
+    }
+
     func testARefusalShowsGosDetailAndKeepsTheStatus() async {
         let runner = ScriptedCLIRunner(results: [
             .success(status(branch: "main")),

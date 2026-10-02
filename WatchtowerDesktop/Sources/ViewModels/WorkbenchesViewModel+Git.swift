@@ -204,6 +204,7 @@ extension WorkbenchesViewModel {
         // the owner already agreed to rides along with what Go asks now.
         if let confirmation = WorkbenchBranchPresentation.confirmation(for: result, stashing: stash) {
             pendingBranchConfirmation[id] = confirmation
+            pendingBranchBase[id] = gitStatus[id].map { WorkbenchBranchPresentation.label($0).text }
             return
         }
         let outcome = WorkbenchBranchPresentation.outcome(result)
@@ -270,7 +271,19 @@ extension WorkbenchesViewModel {
         }
         gitStatus[projectID] = status
         gitStatusErrors[projectID] = nil
+        dropOutdatedConfirmation(status, projectID: projectID)
         armGitWatcher(status, projectID: projectID)
+    }
+
+    /// A pending question about a branch the folder is already on, or asked
+    /// from a branch it has since left, no longer describes the switch.
+    private func dropOutdatedConfirmation(_ status: WorkbenchGitStatus, projectID: Int64) {
+        guard let pending = pendingBranchConfirmation[projectID] else { return }
+        let now = WorkbenchBranchPresentation.label(status).text
+        let moved = pendingBranchBase[projectID].map { $0 != now } ?? false
+        if now == pending.branch || moved {
+            pendingBranchConfirmation[projectID] = nil
+        }
     }
 
     /// (Re)creates the refs watcher when the page is watching and the dirs
