@@ -305,7 +305,7 @@ final class WorkbenchHeaderSwitcherTests: XCTestCase {
     // MARK: - Views
 
     private func titleRow(_ vm: WorkbenchesViewModel) -> WorkbenchTitleRow {
-        WorkbenchTitleRow(vm: vm, switcherActions: WorkbenchSwitcherActions(newWorkbench: {}, showAll: {}), openGoTo: {})
+        WorkbenchTitleRow(vm: vm, switcherActions: WorkbenchSwitcherActions(newWorkbench: {}, showAll: {})) {}
     }
 
     func testAHiddenPanelPutsTheSwitchersInTheTitleRow() async throws {
