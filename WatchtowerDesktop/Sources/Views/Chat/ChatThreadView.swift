@@ -55,13 +55,33 @@ struct ChatThreadView: View {
                              onStreamingTextChanged: { chatVM.updateLiveArtifacts(streamingText: $0) })
         } else {
             ChatMessageRow(item: item, isLast: item.id == chatVM.thread.last?.id,
-                           isEditing: chatVM.editingMessageID == item.id, actions: actions,
-                           artifactVersions: chatVM.artifactVersionsByMessage[item.id] ?? [:])
+                           isEditing: chatVM.editingMessageID == item.id, actions: actions(for: item),
+                           artifactVersions: chatVM.artifactVersionsByMessage[item.id] ?? [:],
+                           questionAnswer: ownerReply(after: item))
                 .equatable()
         }
     }
 
-    private var actions: ChatRowActions {
+    /// A question card is answered from the latest reply only, while no
+    /// turn runs.
+    private func actions(for item: ChatThreadItem) -> ChatRowActions {
+        var actions = baseActions
+        if item.message.isAssistant, item.id == chatVM.thread.last?.id, !chatVM.isStreaming {
+            actions.answerQuestion = { _ = chatVM.send(text: $0) }
+        }
+        return actions
+    }
+
+    /// The owner's words right after `item` — a question card's answer.
+    private func ownerReply(after item: ChatThreadItem) -> String? {
+        guard item.message.isAssistant, let index = chatVM.thread.firstIndex(where: { $0.id == item.id }) else {
+            return nil
+        }
+        let next = chatVM.thread[(index + 1)...].first { $0.message.isUser }
+        return next.map { ChatTurnComposer.displayParts($0.message.text).body }
+    }
+
+    private var baseActions: ChatRowActions {
         ChatRowActions(
             copy: { text in
                 NSPasteboard.general.clearContents()

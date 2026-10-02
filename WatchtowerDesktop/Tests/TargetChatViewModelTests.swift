@@ -70,6 +70,7 @@ final class TargetChatViewModelTests: XCTestCase {
         XCTAssertTrue(prompt.contains("=== TASK ACTIONS ==="))
         XCTAssertTrue(prompt.contains("watchtower-action"))
         XCTAssertTrue(prompt.contains("create_child_target"))
+        XCTAssertTrue(prompt.hasSuffix(ChatQuestionsContract.promptBlock), "the question card is taught here too")
         // The four newer kinds are documented.
         XCTAssertTrue(prompt.contains("update_title"))
         XCTAssertTrue(prompt.contains("update_priority"))

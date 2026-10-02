@@ -33,7 +33,7 @@ type PromptOptions struct {
 // BuildSystemPrompt assembles the main chat's system prompt in the spec §4.1
 // order: identity/time/owner/language, connected sources + Slack linking
 // rules, tools & workflow, the surface's actions contract, the artifacts
-// contract, skills, memory, the project block, the app guide and the response
+// and question-card contracts, skills, memory, the project block, the app guide and the response
 // style. No DB schema — the chat has no SQL tool.
 func BuildSystemPrompt(ctx context.Context, d *db.DB, cfg *config.Config, o PromptOptions) (string, error) {
 	if err := ctx.Err(); err != nil {
@@ -57,7 +57,7 @@ func BuildSystemPrompt(ctx context.Context, d *db.DB, cfg *config.Config, o Prom
 	}
 	sections := []string{identity, sources}
 	sections = append(sections, toolSections(o, teams, fallback)...)
-	sections = append(sections, ArtifactsContract())
+	sections = append(sections, ArtifactsContract(), QuestionsContract())
 	extra, err := contextSections(d, o)
 	if err != nil {
 		return "", err

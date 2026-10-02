@@ -56,4 +56,12 @@ final class TrackChatSurfaceTests: XCTestCase {
         XCTAssertTrue(center.engine(for: spec) === engine)
         XCTAssertEqual(engine.messages.last?.message.text, "the latest")
     }
+
+    /// The question card is taught on this surface too (spec 2026-10-02).
+    func testSystemPromptTeachesTheQuestionCard() throws {
+        let track = try makeTrack()
+        let prompt = TrackChatSurface.buildSystemPrompt(track: track, dbPool: dbManager.dbPool,
+                                                        memoryChatEnabled: false, memoryVaultDir: nil, skillsDir: nil)
+        XCTAssertTrue(prompt.hasSuffix(ChatQuestionsContract.promptBlock))
+    }
 }

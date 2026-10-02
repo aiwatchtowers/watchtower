@@ -120,7 +120,7 @@ final class OnboardingChatViewModel {
         self.aiService = aiService
         self.language = language
         self.dbManager = dbManager
-        let systemPrompt = Self.onboardingSystemPrompt(language: language)
+        let systemPrompt = Self.onboardingSystemPrompt(language: language) + "\n\n" + ChatQuestionsContract.promptBlock
         engine = EmbeddedChatEngine(
             spec: ChatSurfaceSpec(
                 key: EmbeddedChatKey(contextType: "onboarding", contextID: "interview", conversationID: nil),

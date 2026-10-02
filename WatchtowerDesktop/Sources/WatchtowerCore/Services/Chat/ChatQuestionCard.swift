@@ -1,0 +1,237 @@
+import Foundation
+
+/// One option of a question card.
+package struct ChatQuestionOption: Equatable, Sendable {
+    package let label: String
+    package let description: String
+    package let recommended: Bool
+
+    package init(label: String, description: String = "", recommended: Bool = false) {
+        self.label = label
+        self.description = description
+        self.recommended = recommended
+    }
+}
+
+/// One question of a card: 2–4 options, single or multi select; the card
+/// always adds a free "Other" answer of its own.
+package struct ChatQuestion: Equatable, Sendable, Identifiable {
+    package let id: String
+    package let question: String
+    package let multi: Bool
+    package let options: [ChatQuestionOption]
+
+    package init(id: String, question: String, multi: Bool = false, options: [ChatQuestionOption]) {
+        self.id = id
+        self.question = question
+        self.multi = multi
+        self.options = options
+    }
+}
+
+/// A ```watchtower-question block from an assistant reply (spec
+/// 2026-10-02): 1–4 questions the owner answers with a click.
+package struct ChatQuestionCard: Equatable, Sendable {
+    package let questions: [ChatQuestion]
+
+    package init(questions: [ChatQuestion]) {
+        self.questions = questions
+    }
+}
+
+/// Finds the question card in a reply. Only a block that decodes and stays
+/// within the bounds becomes a card; anything else stays in the text as is
+/// (the owner then reads it as plain text). While a reply streams, an open
+/// block is hidden so no half-written JSON shows.
+package enum ChatQuestionParser {
+    package static let fence = "```watchtower-question"
+
+    /// `final`: the reply is complete (an unclosed block then stays visible).
+    package static func parse(_ text: String, final: Bool) -> (text: String, card: ChatQuestionCard?) {
+        guard text.contains(fence) else { return (text, nil) }
+        var removals: [Range<String.Index>] = []
+        var card: ChatQuestionCard?
+        var cursor = text.startIndex
+        while let open = text.range(of: fence, range: cursor..<text.endIndex) {
+            cursor = open.upperBound
+            guard open.lowerBound == text.startIndex || text[text.index(before: open.lowerBound)] == "\n" else {
+                continue
+            }
+            guard let lineEnd = text[open.upperBound...].firstIndex(of: "\n"),
+                  let close = closingFence(in: text, from: lineEnd) else {
+                if !final { removals.append(open.lowerBound..<text.endIndex) }
+                break
+            }
+            let body = close.lowerBound > lineEnd ? String(text[text.index(after: lineEnd)..<close.lowerBound]) : ""
+            cursor = close.upperBound
+            if let decoded = decode(body) {
+                card = decoded
+                removals.append(open.lowerBound..<close.upperBound)
+            }
+        }
+        guard !removals.isEmpty else { return (text, card) }
+        // Rebuilt from slices of the original, so every range stays valid.
+        var visible = ""
+        var kept = text.startIndex
+        for range in removals {
+            visible += text[kept..<range.lowerBound]
+            kept = range.upperBound
+        }
+        visible += text[kept...]
+        return (visible.trimmingCharacters(in: .whitespacesAndNewlines), card)
+    }
+
+    /// The line that is exactly ``` after `start` (a newline); its range
+    /// covers the leading newline and the fence.
+    private static func closingFence(in text: String, from start: String.Index) -> Range<String.Index>? {
+        var cursor = start
+        while let found = text.range(of: "\n```", range: cursor..<text.endIndex) {
+            if found.upperBound == text.endIndex || text[found.upperBound] == "\n" { return found }
+            cursor = found.upperBound
+        }
+        return nil
+    }
+
+    private struct RawCard: Decodable {
+        let questions: [RawQuestion]
+    }
+
+    private struct RawQuestion: Decodable {
+        let id: String?
+        let question: String
+        let multi: Bool
+        let options: [RawOption]
+
+        enum CodingKeys: String, CodingKey { case id, question, multi, options }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            id = try c.decodeIfPresent(String.self, forKey: .id)
+            question = try c.decode(String.self, forKey: .question)
+            multi = try c.decodeIfPresent(Bool.self, forKey: .multi) ?? false
+            options = try c.decode([RawOption].self, forKey: .options)
+        }
+    }
+
+    private struct RawOption: Decodable {
+        let label: String
+        let description: String
+        let recommended: Bool
+
+        enum CodingKeys: String, CodingKey { case label, description, recommended }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            label = try c.decode(String.self, forKey: .label)
+            description = try c.decodeIfPresent(String.self, forKey: .description) ?? ""
+            recommended = try c.decodeIfPresent(Bool.self, forKey: .recommended) ?? false
+        }
+    }
+
+    private static func decode(_ json: String) -> ChatQuestionCard? {
+        guard let raw = try? JSONDecoder().decode(RawCard.self, from: Data(json.utf8)),
+              (1...4).contains(raw.questions.count) else { return nil }
+        var questions: [ChatQuestion] = []
+        for (index, rawQuestion) in raw.questions.enumerated() {
+            let question = rawQuestion.question.trimmingCharacters(in: .whitespacesAndNewlines)
+            let options = rawQuestion.options.map {
+                ChatQuestionOption(label: $0.label.trimmingCharacters(in: .whitespacesAndNewlines),
+                                   description: $0.description, recommended: $0.recommended)
+            }
+            guard !question.isEmpty, (2...4).contains(options.count),
+                  options.allSatisfy({ !$0.label.isEmpty }) else { return nil }
+            let id = rawQuestion.id.flatMap { $0.isEmpty ? nil : $0 } ?? String(index + 1)
+            questions.append(ChatQuestion(id: id, question: question, multi: rawQuestion.multi, options: options))
+        }
+        return ChatQuestionCard(questions: questions)
+    }
+}
+
+/// The owner's answer to a card, as their next message — and back: an
+/// answered card reads its selections from that message (nothing else is
+/// stored, so it survives restart and replay).
+package enum ChatQuestionAnswer {
+    package static let header = "Answers:"
+    private static let arrow = " → "
+    private static let otherPrefix = "Other: "
+
+    package struct Entry: Equatable, Sendable {
+        package var labels: [String]
+        package var other: String?
+
+        package init(labels: [String] = [], other: String? = nil) {
+            self.labels = labels
+            self.other = other
+        }
+
+        package var isEmpty: Bool {
+            labels.isEmpty && (other?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        }
+    }
+
+    /// "Answers:" then one line per question: `- <question> → <labels>` with
+    /// `Other: <text>` last.
+    package static func format(_ card: ChatQuestionCard, answers: [String: Entry]) -> String {
+        let lines = card.questions.map { question -> String in
+            let entry = answers[question.id] ?? Entry()
+            var parts = entry.labels
+            if let other = entry.other?.trimmingCharacters(in: .whitespacesAndNewlines), !other.isEmpty {
+                parts.append(otherPrefix + other)
+            }
+            return "- \(question.question)\(arrow)\(parts.joined(separator: ", "))"
+        }
+        return ([header] + lines).joined(separator: "\n")
+    }
+
+    /// The selections an owner message carries for `card`; empty when the
+    /// message is not an answer in this format.
+    package static func selections(in owner: String, for card: ChatQuestionCard) -> [String: Entry] {
+        let lines = owner.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
+        guard lines.first?.trimmingCharacters(in: .whitespaces) == header else { return [:] }
+        var result: [String: Entry] = [:]
+        for question in card.questions {
+            let prefix = "- \(question.question)\(arrow)"
+            guard let line = lines.first(where: { $0.hasPrefix(prefix) }) else { continue }
+            let value = String(line.dropFirst(prefix.count))
+            var choices = value
+            var other: String?
+            if let range = value.range(of: otherPrefix) {
+                other = String(value[range.upperBound...]).trimmingCharacters(in: .whitespaces)
+                choices = String(value[..<range.lowerBound])
+            }
+            let picked = Set(choices.components(separatedBy: ", ").map { $0.trimmingCharacters(in: .whitespaces) })
+            let labels = question.options.map(\.label).filter(picked.contains)
+            result[question.id] = Entry(labels: labels, other: other)
+        }
+        return result
+    }
+}
+
+// swiftlint:disable line_length
+/// The prompt text that teaches the card — the same text as Go's
+/// `internal/chat/questions_contract.md` (pinned by
+/// `ChatQuestionsContractFixtureTests`), appended by the embedded chats'
+/// Swift-built system prompts.
+package enum ChatQuestionsContract {
+    package static let promptBlock = #"""
+=== QUESTIONS ===
+When the owner's request is genuinely ambiguous — two or more reasonable readings that lead to different answers, and you cannot settle it from the data — you may ask ONE structured question card instead of guessing. The app shows it as a card the owner answers with a click; their choice comes back as their next message. Do not use it for small talk, for confirmations, or on every turn: when a sensible default exists, state it and go ahead.
+
+Syntax: a fenced block on its own lines, holding JSON, at the END of your reply after a one-line lead-in:
+```watchtower-question
+{"questions": [
+  {"id": "scope", "question": "Which release should the summary cover?", "multi": false,
+   "options": [
+     {"label": "v0.11", "description": "The release being cut now", "recommended": true},
+     {"label": "v0.10", "description": "The last shipped release"}
+   ]}
+]}
+```
+- 1 to 4 questions; each with 2 to 4 options. Every option has a short "label" and a one-line "description"; mark at most one option per question "recommended": true.
+- "multi": true lets the owner pick several options; the default is one.
+- Do not add an "Other" option: the card always offers a free answer.
+- Write the questions and options in the owner's language. Use only valid JSON (double quotes, no comments).
+- After the card, stop and wait: the owner's answer arrives as "Answers:" followed by one line per question.
+"""#
+}
+// swiftlint:enable line_length
