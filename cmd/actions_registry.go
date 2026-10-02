@@ -101,15 +101,25 @@ func (s slackSender) RecentMessages(ctx context.Context, channelID, threadTS, ol
 		}
 		return out, false, nil
 	}
-	page, err := s.GetConversationHistory(ctx, watchtowerslack.HistoryOptions{ChannelID: channelID, Oldest: oldest})
-	if err != nil {
-		return nil, false, err
+	cursor := ""
+	for range slackLandedCheckPages {
+		page, err := s.GetConversationHistory(ctx, watchtowerslack.HistoryOptions{ChannelID: channelID, Oldest: oldest, Cursor: cursor})
+		if err != nil {
+			return nil, false, err
+		}
+		for _, m := range page.Messages {
+			out = append(out, tools.SlackPosted{User: m.User, Text: m.Text, TS: m.Timestamp})
+		}
+		if !page.HasMore || page.NextCursor == "" {
+			return out, false, nil
+		}
+		cursor = page.NextCursor
 	}
-	for _, m := range page.Messages {
-		out = append(out, tools.SlackPosted{User: m.User, Text: m.Text, TS: m.Timestamp})
-	}
-	return out, page.HasMore, nil
+	return out, true, nil // more than the check reads: the caller refuses to guess
 }
+
+// slackLandedCheckPages bounds a retry's history read (200 messages a page).
+const slackLandedCheckPages = 5
 
 // slackSenderFactory serves send_slack_message: the account's token file,
 // and the scopes it records (empty for a token saved before they were).

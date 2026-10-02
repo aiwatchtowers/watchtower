@@ -893,15 +893,18 @@ final class AppState {
 
     /// Re-consents one Slack account from a failed send's card ("sign in
     /// again to grant send"): the same `slack login --account <id>` flow as
-    /// Settings → Slack → Reconnect, whose error line also shows its failure.
-    func reconnectSlack(accountID: Int64) async {
-        guard let vm = slackAccountsViewModel else { return }
+    /// Settings → Slack → Reconnect. Returns why it failed (nil on success or
+    /// a cancelled sign-in) so the card can say so.
+    func reconnectSlack(accountID: Int64) async -> String? {
+        guard let vm = slackAccountsViewModel else {
+            return "Slack accounts are not loaded yet — open Settings → Slack."
+        }
         if vm.accounts.isEmpty { await vm.refreshAsync() }
         guard let account = vm.accounts.first(where: { $0.id == accountID }) else {
-            vm.error = "Slack account #\(accountID) is no longer connected."
-            return
+            return "Slack account #\(accountID) is no longer connected."
         }
         await vm.relogin(account)
+        return vm.error
     }
 
     func initJiraAccounts(dbPool: DatabasePool) {

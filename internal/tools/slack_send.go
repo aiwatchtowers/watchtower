@@ -236,27 +236,41 @@ func resolveSlackChannel(ctx context.Context, d *db.DB, acct db.SlackAccount, a 
 		}
 		name = raw
 	}
-	rows, err := d.QueryContext(ctx, `SELECT id, name FROM channels
-		WHERE id LIKE ? || ':%' AND is_archived = 0
-		  AND (id = ? OR (type IN ('public', 'private') AND lower(name) = lower(?)))
-		ORDER BY id`, strconv.FormatInt(acct.ID, 10), slack.Namespace(acct.ID, name), name)
+	// A DM addressed by its id or a link names the person, not the IM: the
+	// card must say who receives it.
+	rows, err := d.QueryContext(ctx, `SELECT c.id, c.name, c.type, COALESCE(c.dm_user_id, ''),
+			COALESCE(NULLIF(u.display_name, ''), NULLIF(u.real_name, ''), u.name, '')
+		FROM channels c LEFT JOIN users u ON u.id = c.dm_user_id
+		WHERE c.id LIKE ? || ':%' AND c.is_archived = 0
+		  AND (c.id = ? OR (c.type IN ('public', 'private') AND lower(c.name) = lower(?)))
+		ORDER BY c.id`, strconv.FormatInt(acct.ID, 10), slack.Namespace(acct.ID, name), name)
 	if err != nil {
 		return nil, fmt.Errorf("resolving slack channel %q: %w", a.Channel, err)
 	}
 	defer rows.Close()
 	var out []slackRecipient
 	for rows.Next() {
-		var id, chName string
-		if err := rows.Scan(&id, &chName); err != nil {
+		var id, chName, chType, dmUser, person string
+		if err := rows.Scan(&id, &chName, &chType, &dmUser, &person); err != nil {
 			return nil, fmt.Errorf("resolving slack channel %q: %w", a.Channel, err)
 		}
 		_, raw, _ := slack.SplitAccountID(id)
-		label := "#" + chName
-		if chName == "" {
-			label = raw
+		r := slackRecipient{AccountID: acct.ID, Workspace: slackWorkspaceName(acct), ChannelID: raw, ThreadTS: thread}
+		switch {
+		case chType == "dm":
+			_, r.UserID, _ = slack.SplitAccountID(dmUser)
+			r.Label = "@" + person
+			if person == "" {
+				r.Label = "DM " + raw
+			}
+		case chType == "group_dm":
+			r.Label = "group DM " + chName
+		case chName != "":
+			r.Label = "#" + chName
+		default:
+			r.Label = raw
 		}
-		out = append(out, slackRecipient{AccountID: acct.ID, Workspace: slackWorkspaceName(acct),
-			ChannelID: raw, Label: label, ThreadTS: thread})
+		out = append(out, r)
 	}
 	return out, rows.Err()
 }
@@ -395,29 +409,61 @@ func rawSlackMentions(text string, accountID int64) (string, error) {
 	return out, nil
 }
 
+// SlackNotSentPrefix opens the error of a failed send that never reached
+// chat.postMessage on any attempt: its Retry needs no landed-message lookup.
+const SlackNotSentPrefix = "nothing was sent: "
+
 func slackScopeError(account db.SlackAccount) error {
 	return fmt.Errorf("slack workspace %s has not granted Watchtower permission to send messages — %s "+
 		"(Settings → Slack → Reconnect, or 'watchtower slack login --account %d'), then Retry",
 		slackWorkspaceName(account), SlackSendScopeHint, account.ID)
 }
 
-// slackSendFailed maps Slack's "this token may not do that" answers onto the
-// re-auth error; anything else passes through with what was being done.
+// slackSendFailed turns Slack's answer into what the owner can do about it:
+// a token that may not send (or no longer works) asks to sign in again; a
+// channel the owner is not in, or one that is gone, says so.
 func slackSendFailed(account db.SlackAccount, what string, err error) error {
 	msg := err.Error()
-	if strings.Contains(msg, "missing_scope") || strings.Contains(msg, "not_allowed_token_type") {
-		return slackScopeError(account)
+	switch {
+	case strings.Contains(msg, "missing_scope"), strings.Contains(msg, "not_allowed_token_type"),
+		strings.Contains(msg, "invalid_auth"), strings.Contains(msg, "token_revoked"),
+		strings.Contains(msg, "account_inactive"):
+		return fmt.Errorf("%w (Slack said: %s)", slackScopeError(account), msg)
+	case strings.Contains(msg, "not_in_channel"):
+		return fmt.Errorf("slack %s: you are not a member of that conversation in %s — join it in Slack, then Retry (%s)",
+			what, slackWorkspaceName(account), msg)
+	case strings.Contains(msg, "channel_not_found"), strings.Contains(msg, "is_archived"):
+		return fmt.Errorf("slack %s: the conversation is gone or archived — Reject this and ask for the message again (%s)", what, msg)
 	}
 	return fmt.Errorf("slack %s: %w", what, err)
 }
 
-// slackLinkRE matches a link as Slack stores it: <https://x> for a URL it
-// auto-linked, <https://x|label> for a labelled one.
-var slackLinkRE = regexp.MustCompile(`<((?:https?|mailto):[^|>]*)(?:\|([^>]*))?>`)
+// slackRejected reports whether Slack rejected the request outright, so
+// nothing can have been posted (an auth or channel refusal, not a timeout).
+func slackRejected(err error) bool {
+	msg := err.Error()
+	for _, code := range []string{"missing_scope", "not_allowed_token_type", "invalid_auth", "token_revoked",
+		"account_inactive", "not_in_channel", "channel_not_found", "is_archived", "msg_too_long", "no_text"} {
+		if strings.Contains(msg, code) {
+			return true
+		}
+	}
+	return false
+}
+
+var (
+	// slackLinkRE matches a link as Slack stores it: <https://x> for a URL it
+	// auto-linked, <https://x|label> for a labelled one.
+	slackLinkRE = regexp.MustCompile(`<((?:https?|mailto):[^|>]*)(?:\|([^>]*))?>`)
+	// slackRefLabelRE matches a mention or special token Slack may store with
+	// a label: <#C123|general>, <@U1|alice>, <!here|here>.
+	slackRefLabelRE = regexp.MustCompile(`<([@#!][^|>]*)\|[^>]*>`)
+)
 
 // normalizeSlackText is the comparison form of a message: Slack wraps the
-// URLs it auto-links in <…>, stores &, < and > escaped and may trim the
-// edges. Applied to both sides, so a labelled link compares by its label.
+// URLs it auto-links in <…>, may label mentions, stores &, < and > escaped
+// and may trim the edges. Applied to both sides, so a labelled link compares
+// by its label and a mention by its id.
 func normalizeSlackText(s string) string {
 	s = slackLinkRE.ReplaceAllStringFunc(s, func(m string) string {
 		parts := slackLinkRE.FindStringSubmatch(m)
@@ -426,27 +472,24 @@ func normalizeSlackText(s string) string {
 		}
 		return parts[1]
 	})
+	s = slackRefLabelRE.ReplaceAllString(s, "<$1>")
 	return strings.TrimSpace(html.UnescapeString(s))
 }
 
+// slackLandedCheckNext is what a retry that cannot tell tells the owner to do.
+const slackLandedCheckNext = " — check the conversation in Slack: if the message is there, Reject this card; if not, Reject it and ask for the message again"
+
 // findLandedSlackMessage returns the ts of a message an earlier, failed
-// attempt of action actionID posted after all ("" when none): one from the
-// owner, with the same text, since the proposal was recorded. A lookup that
-// cannot be completed is an error — the retry must not re-post on a guess.
-func findLandedSlackMessage(ctx context.Context, d *db.DB, sender SlackSender, actionID int64, ownerRaw, channel, thread, text string) (string, error) {
-	row, err := d.GetAgentAction(actionID)
+// attempt posted after all ("" when none): one from the owner, with the same
+// text, since the proposal was recorded (proposedAt). A lookup that cannot be
+// completed is an error — the retry must not re-post on a guess.
+func findLandedSlackMessage(ctx context.Context, sender SlackSender, proposedAt, ownerRaw, channel, thread, text string) (string, error) {
+	proposed, err := time.Parse(time.RFC3339, proposedAt)
 	if err != nil {
-		return "", err
-	}
-	if row == nil {
-		return "", fmt.Errorf("action #%d not found", actionID)
-	}
-	proposed, err := time.Parse(time.RFC3339, row.CreatedAt)
-	if err != nil {
-		return "", fmt.Errorf("action #%d: parsing created_at %q: %w", actionID, row.CreatedAt, err)
+		return "", fmt.Errorf("parsing the proposal's created_at %q: %w", proposedAt, err)
 	}
 	if ownerRaw == "" {
-		return "", errors.New("cannot tell whether the failed attempt posted the message: the account's own user id is unknown")
+		return "", errors.New("cannot tell whether the failed attempt posted the message: the account's own user id is unknown (sign in to the workspace again)" + slackLandedCheckNext)
 	}
 	// A minute of slack for clock skew between this machine and Slack.
 	oldest := strconv.FormatInt(proposed.Add(-time.Minute).Unix(), 10) + ".000000"
@@ -461,7 +504,7 @@ func findLandedSlackMessage(ctx context.Context, d *db.DB, sender SlackSender, a
 		}
 	}
 	if more {
-		return "", errors.New("cannot tell whether the failed attempt posted the message: the conversation has more messages since the proposal than one read")
+		return "", errors.New("cannot tell whether the failed attempt posted the message: the conversation has more messages since the proposal than the check reads" + slackLandedCheckNext)
 	}
 	return "", nil
 }
@@ -519,42 +562,65 @@ func NewSendSlackMessage(factory SlackSenderFactory) *Tool {
 }
 
 func executeSlackSend(ctx context.Context, d *db.DB, factory SlackSenderFactory, call Call, s storedSlackSend) (any, error) {
+	// Did any earlier attempt reach chat.postMessage? Only then can a message
+	// have landed, and only then does a retry look for it first.
+	mayHaveLanded, proposedAt := false, ""
+	if call.Retry {
+		row, err := d.GetAgentAction(call.ActionID)
+		if err != nil {
+			return nil, err
+		}
+		if row == nil {
+			return nil, fmt.Errorf("action #%d not found", call.ActionID)
+		}
+		mayHaveLanded, proposedAt = !strings.HasPrefix(row.Error, SlackNotSentPrefix), row.CreatedAt
+	}
+	notSent := func(err error) error {
+		if mayHaveLanded {
+			return err
+		}
+		return fmt.Errorf("%s%w", SlackNotSentPrefix, err)
+	}
 	t := s.Target
 	account, err := d.GetSlackAccount(t.AccountID)
 	if err != nil {
-		return nil, err
+		return nil, notSent(err)
 	}
 	if !account.Enabled || account.Status == "removed" {
-		return nil, fmt.Errorf("slack workspace %s is disabled or removed; enable it, or ask for the message again", slackWorkspaceName(account))
+		return nil, notSent(fmt.Errorf("slack workspace %s is disabled or removed; enable it, or ask for the message again", slackWorkspaceName(account)))
 	}
 	text, err := rawSlackMentions(s.Text, account.ID)
 	if err != nil {
-		return nil, err
+		return nil, notSent(err)
 	}
 	sender, scope, err := factory(account)
 	if err != nil {
-		return nil, err
+		return nil, notSent(err)
 	}
 	if scope != "" && !(&slack.Token{Scope: scope}).HasScope(slack.SendScope) {
-		return nil, slackScopeError(account)
+		return nil, notSent(slackScopeError(account))
 	}
 	channel := t.ChannelID
 	if channel == "" {
 		if channel, err = sender.OpenDM(ctx, t.UserID); err != nil {
-			return nil, slackSendFailed(account, "conversations.open", err)
+			return nil, notSent(slackSendFailed(account, "conversations.open", err))
 		}
 	}
 	ts, reused := "", false
-	if call.Retry {
+	if mayHaveLanded {
 		_, ownerRaw, _ := slack.SplitAccountID(account.CurrentUserID)
-		if ts, err = findLandedSlackMessage(ctx, d, sender, call.ActionID, ownerRaw, channel, t.ThreadTS, text); err != nil {
+		if ts, err = findLandedSlackMessage(ctx, sender, proposedAt, ownerRaw, channel, t.ThreadTS, text); err != nil {
 			return nil, err
 		}
 		reused = ts != ""
 	}
 	if ts == "" {
 		if ts, err = sender.PostMessage(ctx, channel, text, t.ThreadTS); err != nil {
-			return nil, slackSendFailed(account, "chat.postMessage", err)
+			failed := slackSendFailed(account, "chat.postMessage", err)
+			if slackRejected(err) {
+				return nil, notSent(failed) // refused by Slack: nothing posted
+			}
+			return nil, failed // a timeout or a lost answer may have posted it
 		}
 	}
 	result := map[string]any{"channel_id": channel, "ts": ts, "workspace": slackWorkspaceName(account),

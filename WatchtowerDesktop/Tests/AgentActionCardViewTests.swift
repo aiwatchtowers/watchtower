@@ -333,15 +333,47 @@ final class AgentActionCardViewTests: XCTestCase {
             try TestDatabase.insertAgentAction(db, tool: "send_slack_message", external: true, argsJSON: Self.slackArgs,
                                                status: "failed", error: error)
         }
-        var reconnected: Int64?
+        let reconnected = expectation(description: "reconnect called with the pinned account")
         let view = AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
-                                       onReconnectSlack: { reconnected = $0 })
+                                       onReconnectSlack: { id in
+                                           XCTAssertEqual(id, 3)
+                                           reconnected.fulfill()
+                                           return nil
+                                       })
         try view.inspect().find(button: "Reconnect Slack").tap()
-        XCTAssertEqual(reconnected, 3)
+        wait(for: [reconnected], timeout: 2)
         XCTAssertNoThrow(try view.inspect().find(button: "Retry"))
         // swiftlint:disable:next trailing_closure
         XCTAssertNoThrow(try view.inspect().find(textWhere: { text, _ in text.contains("already reached Slack") }))
         // swiftlint:disable:next trailing_closure
         XCTAssertThrowsError(try view.inspect().find(textWhere: { text, _ in text.contains("check Jira") }))
+    }
+
+    /// Untouched text approves plainly (no edits to carry), through the
+    /// editable card's own button; a card with candidates and no pick cannot
+    /// approve at all. (ViewInspector cannot drive the editor's @State — see
+    /// ConfigSaveBarTests — so the edited path is pinned on
+    /// `SlackSendProposal.approval`.)
+    func testApproveAndSendWithoutEditsIsAPlainApprove() throws {
+        let action = try row { db in
+            try TestDatabase.insertAgentAction(db, tool: "send_slack_message", external: true, argsJSON: Self.slackArgs)
+        }
+        var plain = 0
+        var edited: [String] = []
+        let view = AgentActionCardView(action: action, inFlight: false, onApprove: { plain += 1 }, onReject: {}, onRetry: {},
+                                       onApproveEdited: { edited.append($0) })
+        try view.inspect().find(button: "Approve & send").tap()
+        XCTAssertEqual(plain, 1)
+        XCTAssertEqual(edited, [])
+
+        let candidates = ##"{"text":"hi","candidates":["## +
+            ##"{"account_id":1,"workspace":"A","channel_id":"C1","label":"#g"},"## +
+            ##"{"account_id":2,"workspace":"B","channel_id":"C2","label":"#g"}]}"##
+        let ambiguous = try row { db in
+            try TestDatabase.insertAgentAction(db, tool: "send_slack_message", external: true, argsJSON: candidates)
+        }
+        let picker = AgentActionCardView(action: ambiguous, inFlight: false, onApprove: {}, onReject: {}, onRetry: {},
+                                         onApproveEdited: { _ in })
+        XCTAssertTrue(try picker.inspect().find(button: "Approve & send").isDisabled(), "no workspace picked yet")
     }
 }

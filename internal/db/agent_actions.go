@@ -182,7 +182,7 @@ func (db *DB) ApproveAgentActionWithArgs(id int64, oldArgs, newArgs string) (boo
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("approving agent action %d with edits: %w", id, err)
 	}
 	return n > 0, nil
 }

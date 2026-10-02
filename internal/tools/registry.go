@@ -390,7 +390,11 @@ func (r *Registry) Approve(ctx context.Context, id int64, patch json.RawMessage)
 	}
 	// Still pending but with other args: an edit landed after this one read
 	// the row. Refuse rather than approve what the owner did not see.
-	if cur, gerr := r.db.GetAgentAction(id); gerr == nil && cur != nil && cur.Status == "pending" {
+	cur, err := r.db.GetAgentAction(id)
+	if err != nil {
+		return false, fmt.Errorf("re-reading action #%d after a lost approve: %w", id, err)
+	}
+	if cur != nil && cur.Status == "pending" {
 		return false, fmt.Errorf("%w: #%d was edited elsewhere; reload it and approve again", ErrBadTransition, id)
 	}
 	return false, nil

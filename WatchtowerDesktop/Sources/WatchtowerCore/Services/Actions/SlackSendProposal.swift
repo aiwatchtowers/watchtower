@@ -31,13 +31,17 @@ package struct SlackSendProposal: Equatable, Sendable {
     package let target: Recipient?
     package let candidates: [Recipient]
 
-    /// Nil for another tool.
+    /// Nil for another tool, and for args with neither a pinned target nor
+    /// candidates (unreadable: the card falls back to the raw arguments).
     package init?(action: AgentAction) {
         guard action.tool == Self.tool else { return nil }
         let args = action.args
-        text = AgentAction.stringValue(args["text"]) ?? ""
-        target = (args["target"] as? [String: Any]).map(Self.recipient)
-        candidates = (args["candidates"] as? [[String: Any]] ?? []).map(Self.recipient)
+        let target = (args["target"] as? [String: Any]).map(Self.recipient)
+        let candidates = (args["candidates"] as? [[String: Any]] ?? []).map(Self.recipient)
+        guard target != nil || !candidates.isEmpty else { return nil }
+        self.text = AgentAction.stringValue(args["text"]) ?? ""
+        self.target = target
+        self.candidates = candidates
     }
 
     package init(text: String, target: Recipient?, candidates: [Recipient]) {
@@ -76,14 +80,30 @@ package struct SlackSendProposal: Equatable, Sendable {
 
     /// The `actions approve --patch` JSON for the owner's edits, nil when there
     /// are none (a plain approve). Only `text` and `candidate` are editable —
-    /// Go `reviseSlackSend` refuses anything else.
-    package func patch(text editedText: String, pick: Int?) -> String? {
+    /// Go `reviseSlackSend` refuses anything else. Throws rather than return
+    /// nil when the edits cannot be encoded, so they are never silently
+    /// replaced by the original draft.
+    package func patch(text editedText: String, pick: Int?) throws -> String? {
         var fields: [String: Any] = [:]
         if editedText != text { fields["text"] = editedText }
         if target == nil, let pick { fields["candidate"] = pick }
-        guard !fields.isEmpty,
-              let data = try? JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys]) else { return nil }
-        return String(data: data, encoding: .utf8)
+        guard !fields.isEmpty else { return nil }
+        let data = try JSONSerialization.data(withJSONObject: fields, options: [.sortedKeys])
+        guard let json = String(data: data, encoding: .utf8) else { throw PatchError.unencodable }
+        return json
+    }
+
+    package enum PatchError: Error { case unencodable }
+
+    /// What Approve runs: a plain approve, or one carrying the owner's edits.
+    package enum Approval: Equatable, Sendable {
+        case plain
+        case edited(patch: String)
+    }
+
+    /// The card's Approve decision for the editor's current text and pick.
+    package func approval(text editedText: String, pick: Int?) throws -> Approval {
+        try patch(text: editedText, pick: pick).map { .edited(patch: $0) } ?? .plain
     }
 
     /// The account to re-consent when a send failed for want of the

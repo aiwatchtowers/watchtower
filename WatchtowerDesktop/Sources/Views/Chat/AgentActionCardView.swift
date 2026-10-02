@@ -24,12 +24,17 @@ struct AgentActionCardView: View {
     /// no edits and Approve runs `onApprove`.
     var onApproveEdited: ((String) -> Void)?
     /// Re-consents a Slack account whose token lacks the send grant
-    /// (`SlackSendProposal.reconnectAccountID`). Nil hides the button.
-    var onReconnectSlack: ((Int64) -> Void)?
+    /// (`SlackSendProposal.reconnectAccountID`) and returns why it failed, nil
+    /// on success. Nil hides the button.
+    var onReconnectSlack: ((Int64) async -> String?)?
 
     /// The pending Slack send's edited text (nil = untouched) and workspace pick.
     @State private var slackDraft: String?
     @State private var slackPick: Int?
+    /// The card's own Slack gestures: an edit that could not be encoded, and
+    /// the outcome of Reconnect Slack (shown here, not only in Settings).
+    @State private var slackMessage: String?
+    @State private var reconnecting = false
 
     /// The shared human name (`ReactionToolCatalog`) — the same words the
     /// Inbox cheat sheet and the Settings reaction dictionary use.
@@ -148,6 +153,21 @@ struct AgentActionCardView: View {
         return Self.summaryLines(for: action)
     }
 
+    /// The owner's edits travel with the approval; no edits is a plain
+    /// approve. An edit that cannot be encoded is reported, never dropped
+    /// for the original draft.
+    private func approveSlack(_ slack: SlackSendProposal, text: String) {
+        do {
+            switch try slack.approval(text: text, pick: slackPick) {
+            case .edited(let patch): onApproveEdited?(patch)
+            case .plain: onApprove()
+            }
+            slackMessage = nil
+        } catch {
+            slackMessage = "Could not save your edits: \(error.localizedDescription)"
+        }
+    }
+
     private func slackTextBinding(_ slack: SlackSendProposal) -> Binding<String> {
         Binding(get: { slackDraft ?? slack.text }, set: { slackDraft = $0 })
     }
@@ -201,9 +221,26 @@ struct AgentActionCardView: View {
                     .font(.caption).foregroundStyle(.orange)
             }
             if let accountID = SlackSendProposal.reconnectAccountID(action), let onReconnectSlack {
-                Button("Reconnect Slack") { onReconnectSlack(accountID) }
+                HStack(spacing: 8) {
+                    Button("Reconnect Slack") {
+                        Task {
+                            reconnecting = true
+                            let failure = await onReconnectSlack(accountID)
+                            reconnecting = false
+                            slackMessage = failure.map { "Reconnect failed: \($0)" } ?? "Sign-in finished — press Retry to send."
+                        }
+                    }
+                    .disabled(reconnecting)
                     .help("Sign in to Slack again to grant Watchtower permission to send, then Retry")
                     .accessibilityIdentifier("agentAction.reconnectSlack")
+                    if reconnecting { ProgressView().controlSize(.small) }
+                }
+            }
+            if let slackMessage {
+                Text(slackMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("agentAction.slackMessage")
             }
             actions
         }
@@ -303,11 +340,7 @@ struct AgentActionCardView: View {
                     if let slack = editableSlack {
                         let text = slackDraft ?? slack.text
                         Button(gestureError?.isApprove == true ? "Retry" : "Approve & send") {
-                            if let patch = slack.patch(text: text, pick: slackPick), let onApproveEdited {
-                                onApproveEdited(patch)
-                            } else {
-                                onApprove()
-                            }
+                            approveSlack(slack, text: text)
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(!slack.canApprove(text: text, pick: slackPick))

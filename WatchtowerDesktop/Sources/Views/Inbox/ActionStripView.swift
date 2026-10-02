@@ -48,7 +48,7 @@ struct ActionStripView: View {
                         onEnable: enableReactionCommands,
                         onOpenSettings: openReactionDictionary,
                         onOpen: open
-                    ) { id in Task { await appState.reconnectSlack(accountID: id) } }
+                    ) { id in await appState.reconnectSlack(accountID: id) }
                 } else {
                     ProgressView()
                 }
@@ -134,7 +134,7 @@ struct ActionStripActionsView: View {
     let onOpenSettings: () -> Void
     let onOpen: (AgentActionDestination) -> Void
     /// A failed Slack send's Reconnect Slack button (`AppState.reconnectSlack`).
-    var onReconnectSlack: ((Int64) -> Void)?
+    var onReconnectSlack: ((Int64) async -> String?)?
 
     @State private var showsCheatSheet = false
 

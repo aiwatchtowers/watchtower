@@ -209,7 +209,7 @@ func TestApprove_EditRaceIsRefused(t *testing.T) {
 	inner := tool.Revise
 	tool.Revise = func(ctx context.Context, d *db.DB, stored, patch json.RawMessage) (json.RawMessage, error) {
 		// Another writer changes the row between this read and the update.
-		_, err := d.Exec(`UPDATE agent_actions SET args_json = '{"text":"other","reason":"r"}' WHERE status = 'pending'`)
+		_, err := d.Exec(`UPDATE agent_actions SET args_json = '{"text":"other","reason":"r"}' WHERE tool = 'echo' AND status = 'pending'`)
 		require.NoError(t, err)
 		return inner(ctx, d, stored, patch)
 	}

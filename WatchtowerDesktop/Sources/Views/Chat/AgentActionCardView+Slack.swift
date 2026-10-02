@@ -15,7 +15,7 @@ extension AgentActionCardView {
     }
 
     static func slackRetryNote() -> String {
-        "Retrying first checks whether the message already reached Slack, and posts it only if it did not."
+        "Retrying first checks whether the message already reached Slack and posts it only if it did not."
     }
 }
 

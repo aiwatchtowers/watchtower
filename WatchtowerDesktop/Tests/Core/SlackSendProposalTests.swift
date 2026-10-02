@@ -35,8 +35,10 @@ final class SlackSendProposalTests: XCTestCase {
         XCTAssertTrue(dm.target?.isDM == true)
     }
 
-    func testOtherToolsAreNotSlackProposals() {
+    func testOtherToolsAndUnreadableArgsAreNotSlackProposals() {
         XCTAssertNil(SlackSendProposal(action: action(args: "{}", tool: "create_target")))
+        XCTAssertNil(SlackSendProposal(action: action(args: ##"{"text":"hi"}"##)), "no target, no candidates: raw-args card")
+        XCTAssertNil(SlackSendProposal(action: action(args: "not json")))
     }
 
     func testCandidatesNeedAPickBeforeApprove() throws {
@@ -48,7 +50,8 @@ final class SlackSendProposalTests: XCTestCase {
         XCTAssertFalse(p.canApprove(text: "hi", pick: nil))
         XCTAssertFalse(p.canApprove(text: "hi", pick: 2))
         XCTAssertTrue(p.canApprove(text: "hi", pick: 1))
-        XCTAssertEqual(p.patch(text: "hi", pick: 1), ##"{"candidate":1}"##)
+        XCTAssertEqual(try p.patch(text: "hi", pick: 1), ##"{"candidate":1}"##)
+        XCTAssertEqual(try p.approval(text: "hi", pick: 1), .edited(patch: ##"{"candidate":1}"##))
     }
 
     func testTextRules() throws {
@@ -56,9 +59,12 @@ final class SlackSendProposalTests: XCTestCase {
         XCTAssertTrue(p.canApprove(text: "hi", pick: nil))
         XCTAssertFalse(p.canApprove(text: "  \n", pick: nil))
         XCTAssertFalse(p.canApprove(text: String(repeating: "я", count: SlackSendProposal.maxCharacters + 1), pick: nil))
-        XCTAssertNil(p.patch(text: "hi", pick: nil), "nothing edited → a plain approve")
-        XCTAssertEqual(p.patch(text: "hi \"there\"", pick: nil), ##"{"text":"hi \"there\""}"##)
-        XCTAssertNil(p.patch(text: "hi", pick: 0), "a pinned target takes no pick")
+        XCTAssertNil(try p.patch(text: "hi", pick: nil), "nothing edited → a plain approve")
+        XCTAssertEqual(try p.approval(text: "hi", pick: nil), .plain)
+        XCTAssertEqual(try p.approval(text: "hi!", pick: nil), .edited(patch: ##"{"text":"hi!"}"##),
+                       "an edited text is what Approve sends, never the original draft")
+        XCTAssertEqual(try p.patch(text: "hi \"there\"", pick: nil), ##"{"text":"hi \"there\""}"##)
+        XCTAssertNil(try p.patch(text: "hi", pick: 0), "a pinned target takes no pick")
     }
 
     func testReconnectOnlyForAScopeFailure() {

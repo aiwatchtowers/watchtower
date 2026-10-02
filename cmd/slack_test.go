@@ -124,6 +124,13 @@ func TestConnectSlackAccount_RecordsGrantedScope(t *testing.T) {
 	require.NotNil(t, tok)
 	assert.Equal(t, "channels:read,chat:write", tok.Scope)
 	assert.True(t, tok.HasScope(watchtowerslack.SendScope))
+
+	// A grant without chat:write says so: signing in again cannot fix it.
+	var warn bytes.Buffer
+	_, err = connectSlackAccount(context.Background(), cfg, database, id,
+		&auth.OAuthResult{AccessToken: "xoxp-new", Scope: "channels:read"}, false, &warn)
+	require.NoError(t, err)
+	assert.Contains(t, warn.String(), "did not grant chat:write")
 }
 
 func TestEnsureLegacySlackAccount_SecondCallIsNoop(t *testing.T) {

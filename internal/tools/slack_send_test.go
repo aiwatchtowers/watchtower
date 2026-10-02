@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -75,6 +77,7 @@ func newSlackSendEnv(t *testing.T) *slackSendEnv {
 	ch(env.acme, "COPS", "ops", "private", "")
 	ch(env.acme, "DALICE", "", "dm", slack.Namespace(env.acme, "UALICE"))
 	ch(env.beta, "CBGEN", "general", "public", "")
+	require.NoError(t, d.UpsertChannel(db.Channel{ID: slack.Namespace(env.acme, "COLD"), Name: "old", Type: "public", IsArchived: true}))
 	user := func(acct int64, id, name, display, email string) {
 		require.NoError(t, d.UpsertUser(db.User{ID: slack.Namespace(acct, id), Name: name, DisplayName: display, Email: email}))
 	}
@@ -82,6 +85,8 @@ func newSlackSendEnv(t *testing.T) *slackSendEnv {
 	user(env.acme, "UBOB", "bob", "Bob", "")
 	user(env.beta, "USAM1", "sam", "Sam", "")
 	user(env.beta, "USAM2", "sam.k", "Sam", "")
+	require.NoError(t, d.UpsertUser(db.User{ID: slack.Namespace(env.acme, "UGONE"), Name: "gone", DisplayName: "Gone", IsDeleted: true}))
+	require.NoError(t, d.UpsertUser(db.User{ID: slack.Namespace(env.acme, "UBOT"), Name: "deploybot", DisplayName: "Deploy", IsBot: true}))
 
 	env.reg = New(d)
 	require.NoError(t, env.reg.Register(NewSendSlackMessage(func(a db.SlackAccount) (SlackSender, string, error) {
@@ -128,6 +133,8 @@ func TestSendSlackMessage_ResolvesAndPinsTheRecipient(t *testing.T) {
 			slackRecipient{ChannelID: "DALICE", UserID: "UALICE", Label: "@Alice"}},
 		{"DM by handle without an IM opens one later", `{"user":"@bob"}`,
 			slackRecipient{UserID: "UBOB", Label: "@Bob"}},
+		{"DM by its channel id names the person", `{"channel":"DALICE"}`,
+			slackRecipient{ChannelID: "DALICE", UserID: "UALICE", Label: "@Alice"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -162,6 +169,11 @@ func TestSendSlackMessage_RefusesWhatItCannotResolve(t *testing.T) {
 		{"thread_ts disagrees with the link", `{"channel":"https://acme.slack.com/archives/CGEN/p1700000000123456","thread_ts":"1700000000.000001"}`, "differs from the thread"},
 		{"unknown account", `{"channel":"#ops","account_id":99}`, "Slack account #99 is not connected"},
 		{"archived link host of another workspace", `{"channel":"https://beta.slack.com/archives/COPS"}`, "no channel"},
+		{"archived channel", `{"channel":"#old"}`, "no channel #old"},
+		{"deleted person", `{"user":"gone"}`, "no person gone"},
+		{"bot", `{"user":"deploybot"}`, "no person deploybot"},
+		{"model-supplied target", `{"channel":"#ops","target":{"account_id":2,"channel_id":"CEVIL","label":"#ops"}}`, "additional properties"},
+		{"model-supplied candidates", `{"channel":"#ops","candidates":[]}`, "additional properties"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -345,13 +357,17 @@ func TestSendSlackMessage_RetryFindsTheMessageTheFailedAttemptPosted(t *testing.
 		{User: "UALICE", Text: "ship it &amp; go", TS: "1800000000.000001"},
 		{User: "UOWNER", Text: "ship it &amp; go", TS: "1800000000.000002"},
 	}
-	row, err := env.reg.Apply(context.Background(), id)
+	applied, err := env.reg.Apply(context.Background(), id)
 	require.NoError(t, err)
-	assert.Equal(t, "applied", row.Status, row.Error)
+	assert.Equal(t, "applied", applied.Status, applied.Error)
 	assert.Empty(t, env.sender.posts, "the landed message is not posted twice")
-	assert.Equal(t, "COPS", env.sender.recentArgs[0])
+	row := mustRow(t, env.d, id)
+	proposed, perr := time.Parse(time.RFC3339, row.CreatedAt)
+	require.NoError(t, perr)
+	assert.Equal(t, []string{"COPS", "", strconv.FormatInt(proposed.Add(-time.Minute).Unix(), 10) + ".000000"}, env.sender.recentArgs,
+		"the lookup reads the channel from a minute before the proposal")
 	var result map[string]any
-	require.NoError(t, json.Unmarshal([]byte(row.ResultJSON), &result))
+	require.NoError(t, json.Unmarshal([]byte(applied.ResultJSON), &result))
 	assert.Equal(t, true, result["reused"])
 	assert.Equal(t, "1800000000.000002", result["ts"])
 }
@@ -428,6 +444,7 @@ func TestGetWritingStyle(t *testing.T) {
 	require.NoError(t, err)
 	m = out.(map[string]any)
 	assert.Equal(t, "Russian with the team, terse, no emoji", m["style_profile"])
+	assert.NotEmpty(t, m["updated_at"], "the model can tell how fresh the profile is")
 	assert.Nil(t, m["note"])
 }
 
@@ -437,9 +454,99 @@ func TestNormalizeSlackText_MatchesWhatSlackStores(t *testing.T) {
 		"a < b > c":                          "a &lt; b &gt; c",
 		"<https://example.com|the doc> now":  "<https://example.com|the doc> now",
 		"mail <mailto:a@example.com|a>":      "mail <mailto:a@example.com|a>",
-		"cc <@UALICE>":                       "cc <@UALICE>",
+		"cc <@UALICE>":                       "cc <@UALICE|alice>",
+		"see <#CGEN>":                        "see <#CGEN|general>",
+		"<!here> deploy":                     "<!here|here> deploy",
 	} {
 		assert.Equal(t, normalizeSlackText(sent), normalizeSlackText(stored), sent)
 	}
 	assert.NotEqual(t, normalizeSlackText("ship it"), normalizeSlackText("ship it!"))
+}
+
+// A failure before chat.postMessage on every attempt so far cannot have
+// posted anything: the retry skips the lookup (which could dead-end on a busy
+// channel) and sends.
+func TestSendSlackMessage_RetryAfterANotSentFailureSkipsTheLookup(t *testing.T) {
+	for name, setup := range map[string]func(*slackSendEnv){
+		"scope missing, then granted": func(e *slackSendEnv) { e.scope = "channels:read" },
+		"Slack refused the post":      func(e *slackSendEnv) { e.sender.postErr = errors.New("not_in_channel") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			env := newSlackSendEnv(t)
+			setup(env)
+			rc, err := env.propose(t, `{"channel":"#ops","text":"hi","reason":"r"}`)
+			require.NoError(t, err)
+			row := approveAndApply(t, env, rc.ActionID)
+			require.Equal(t, "failed", row.Status)
+			assert.True(t, strings.HasPrefix(row.Error, SlackNotSentPrefix), row.Error)
+
+			env.scope, env.sender.postErr = "chat:write", nil
+			env.sender.recentMore = true // a lookup would refuse; it must not run
+			row, err = env.reg.Apply(context.Background(), rc.ActionID)
+			require.NoError(t, err)
+			assert.Equal(t, "applied", row.Status, row.Error)
+			assert.Nil(t, env.sender.recentArgs, "no lookup after an attempt that never posted")
+			assert.Len(t, env.sender.posts, 1)
+		})
+	}
+}
+
+// A timed-out post followed by a not-sent failure still may have landed: the
+// third attempt must look before posting.
+func TestSendSlackMessage_MayHaveLandedSticksAcrossLaterFailures(t *testing.T) {
+	env := newSlackSendEnv(t)
+	id := failOnce(t, env, `{"channel":"#ops","text":"ship it","reason":"r"}`)
+	env.scope = "channels:read"
+	row, err := env.reg.Apply(context.Background(), id)
+	require.NoError(t, err)
+	require.Equal(t, "failed", row.Status)
+	assert.False(t, strings.HasPrefix(row.Error, SlackNotSentPrefix), "the first attempt may have posted")
+
+	env.scope = "chat:write"
+	env.sender.recent = []SlackPosted{{User: "UOWNER", Text: "ship it", TS: "1800000000.000009"}}
+	row, err = env.reg.Apply(context.Background(), id)
+	require.NoError(t, err)
+	assert.Equal(t, "applied", row.Status, row.Error)
+	assert.Empty(t, env.sender.posts)
+}
+
+func TestSendSlackMessage_RetryWithAnUnknownOwnerRefuses(t *testing.T) {
+	env := newSlackSendEnv(t)
+	id := failOnce(t, env, `{"channel":"#general","account_id":2,"text":"hi","reason":"r"}`)
+	row, err := env.reg.Apply(context.Background(), id)
+	require.NoError(t, err)
+	assert.Equal(t, "failed", row.Status)
+	assert.Contains(t, row.Error, "own user id is unknown")
+	assert.Contains(t, row.Error, "check the conversation in Slack")
+	assert.Empty(t, env.sender.posts)
+}
+
+// conversations.replies returns the thread's parent too; a parent with the
+// same text is not the landed reply.
+func TestSendSlackMessage_ThreadParentIsNotTheLandedReply(t *testing.T) {
+	env := newSlackSendEnv(t)
+	id := failOnce(t, env, `{"channel":"#ops","thread_ts":"1700000000.000001","text":"ack","reason":"r"}`)
+	env.sender.recent = []SlackPosted{{User: "UOWNER", Text: "ack", TS: "1700000000.000001"}}
+	row, err := env.reg.Apply(context.Background(), id)
+	require.NoError(t, err)
+	assert.Equal(t, "applied", row.Status, row.Error)
+	require.Len(t, env.sender.posts, 1)
+	assert.Equal(t, "1700000000.000001", env.sender.recentArgs[1])
+}
+
+func TestSendSlackMessage_SlackRefusalsSayWhatToDo(t *testing.T) {
+	for code, want := range map[string]string{
+		"not_in_channel":    "join it in Slack",
+		"channel_not_found": "ask for the message again",
+		"token_revoked":     SlackSendScopeHint,
+	} {
+		env := newSlackSendEnv(t)
+		env.sender.postErr = errors.New(code)
+		rc, err := env.propose(t, `{"channel":"#ops","text":"hi","reason":"r"}`)
+		require.NoError(t, err)
+		row := approveAndApply(t, env, rc.ActionID)
+		assert.Equal(t, "failed", row.Status, code)
+		assert.Contains(t, row.Error, want, code)
+		assert.Contains(t, row.Error, code, "Slack's own code stays visible")
+	}
 }

@@ -245,4 +245,12 @@ final class ProjectNotificationPolicyTests: XCTestCase {
         XCTAssertTrue(persisted.pendingActions.isEmpty)
         XCTAssertEqual(try JSONDecoder().decode(Policy.Snapshot.self, from: JSONEncoder().encode(persisted)), persisted)
     }
+
+    func testThreeProposalsInOnePollCoalesceOntoTheBoard() {
+        let notices = Policy.decide(previous: proposals(0, []), current: proposals(3, [1, 2, 3]))
+        XCTAssertEqual(notices.count, 1)
+        XCTAssertEqual(notices.first?.title, "3 proposals await your approval")
+        XCTAssertEqual(notices.first?.kind, .actionAwaitsApproval)
+        XCTAssertEqual(notices.first?.route.pane, .board)
+    }
 }

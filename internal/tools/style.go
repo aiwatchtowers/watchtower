@@ -27,7 +27,11 @@ func NewGetWritingStyle() *Tool {
 			if err != nil {
 				return nil, fmt.Errorf("reading the style profile: %w", err)
 			}
-			out := map[string]any{"style_profile": profile}
+			updated, err := d.GetStyleProfileUpdatedAt()
+			if err != nil {
+				return nil, fmt.Errorf("reading the style profile: %w", err)
+			}
+			out := map[string]any{"style_profile": profile, "updated_at": updated}
 			if strings.TrimSpace(profile) == "" {
 				out["note"] = "No style profile yet (the owner can build one with 'watchtower inbox style-sample' or the " +
 					"Profile tab). Match the language and tone of the owner's own recent messages in that conversation instead."

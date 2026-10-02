@@ -164,7 +164,7 @@ struct ChatThreadView: View {
             onRetry: { Task { await chatVM.actionFeed.retry(action.id) } },
             gestureError: chatVM.actionFeed.rowErrors[action.id],
             onApproveEdited: { patch in Task { await chatVM.actionFeed.approve(action.id, patch: patch) } },
-            onReconnectSlack: { id in Task { await appState.reconnectSlack(accountID: id) } }
+            onReconnectSlack: { id in await appState.reconnectSlack(accountID: id) }
         )
     }
 }

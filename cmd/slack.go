@@ -164,6 +164,12 @@ func connectSlackAccount(ctx context.Context, cfg *config.Config, database *db.D
 	if err := database.SetSlackAccountAuthState(id, "ok", ""); err != nil {
 		fmt.Fprintf(warnOut, "warning: failed to record auth state: %v\n", err)
 	}
+	if grant.Scope != "" && !(&watchtowerslack.Token{Scope: grant.Scope}).HasScope(watchtowerslack.SendScope) {
+		// Signing in again will not change this: the Slack app (or the
+		// workspace admin) does not allow the send permission yet.
+		fmt.Fprintf(warnOut, "warning: Slack did not grant %s, so sending from the assistant will not work for this "+
+			"workspace; the Slack app's user scopes (or the workspace admin) must allow it first\n", watchtowerslack.SendScope)
+	}
 	return identity, nil
 }
 
