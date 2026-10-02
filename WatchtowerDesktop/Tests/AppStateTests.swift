@@ -257,8 +257,9 @@ final class AppStateTests: XCTestCase {
     /// the CLI, no VM reload); completion re-reads the sources, so Inbox
     /// shows right away.
     func testCompleteOnboardingRefreshesConnectedSources() async throws {
-        defer { UserDefaults.standard.removeObject(forKey: "onboarding_current_step") }
-        let appState = AppState()
+        let (defaults, suiteName) = try onboardingSuite()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let appState = AppState(onboardingDefaults: defaults)
         appState.databaseManager = dbManager
         await appState.refreshConnectedSources()
         XCTAssertFalse(SidebarDestination.inbox.isVisible(
@@ -333,5 +334,135 @@ final class AppStateTests: XCTestCase {
 
         XCTAssertEqual(appState.owner.id, "jira:acc-9")
         XCTAssertEqual(appState.owner.source, .jira)
+    }
+
+    // MARK: - Onboarding launch state
+
+    private func onboardingSuite() throws -> (UserDefaults, String) {
+        let name = "AppStateTests.onboarding.\(UUID().uuidString)"
+        return (try XCTUnwrap(UserDefaults(suiteName: name)), name)
+    }
+
+    /// Launch with this suite and DB: the state `initialize()` derives after
+    /// the DB opened (or, with `db: nil`, failed to).
+    private func launch(_ defaults: UserDefaults, db: DatabaseManager?) async -> AppState {
+        let appState = AppState(onboardingDefaults: defaults)
+        appState.databaseManager = db
+        await appState.refreshConnectedSources()
+        await appState.reconcileOnboarding(dbPool: db?.dbPool)
+        return appState
+    }
+
+    private func screen(_ appState: AppState) -> NavigationRoot.Screen {
+        NavigationRoot.screen(isLoading: false, ambiguousWorkspaces: [], needsOnboarding: appState.needsOnboarding)
+    }
+
+    /// GUARD: no UserDefaults at all (a new Mac, a wiped defaults domain) on
+    /// an install whose DB says onboarding is done opens the main window —
+    /// never onboarding again.
+    func testNoLocalKeysAndOnboardingDoneInDBOpensMainWindow() async throws {
+        let (defaults, suiteName) = try onboardingSuite()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        try await dbManager.dbPool.write { db in
+            _ = try TestDatabase.insertGoogleAccount(db, email: "me@example.com")
+            try TestDatabase.insertProfile(db, slackUserID: "google:me@example.com", onboardingDone: true)
+        }
+
+        let appState = await launch(defaults, db: dbManager)
+
+        XCTAssertEqual(appState.onboarding.currentStep, .complete)
+        XCTAssertEqual(screen(appState), .main)
+        XCTAssertEqual(defaults.string(forKey: OnboardingStateMachineV2.stepKey), "complete")
+    }
+
+    func testFreshInstallOpensGoals() async throws {
+        let (defaults, suiteName) = try onboardingSuite()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let appState = await launch(defaults, db: dbManager)
+
+        XCTAssertEqual(appState.onboarding.currentStep, .purpose)
+        XCTAssertEqual(screen(appState), .onboarding)
+    }
+
+    func testFreshInstallWithoutADatabaseOpensGoals() async throws {
+        let (defaults, suiteName) = try onboardingSuite()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let appState = await launch(defaults, db: nil)
+
+        XCTAssertEqual(appState.onboarding.currentStep, .purpose)
+        XCTAssertEqual(screen(appState), .onboarding)
+    }
+
+    /// The legacy `onboarding_current_step` mapping holds through AppState:
+    /// 7 (complete) → main window even with no profile row; a mid-way step
+    /// starts over at Goals.
+    func testLegacyCompleteStepOpensMainWindow() async throws {
+        let (defaults, suiteName) = try onboardingSuite()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(7, forKey: OnboardingStateMachineV2.legacyStepKey)
+
+        let appState = await launch(defaults, db: dbManager)
+
+        XCTAssertEqual(screen(appState), .main)
+        XCTAssertNil(defaults.object(forKey: OnboardingStateMachineV2.legacyStepKey))
+    }
+
+    func testLegacyMidwayStepStartsOverAtGoals() async throws {
+        let (defaults, suiteName) = try onboardingSuite()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(3, forKey: OnboardingStateMachineV2.legacyStepKey)
+
+        let appState = await launch(defaults, db: dbManager)
+
+        XCTAssertEqual(appState.onboarding.currentStep, .purpose)
+        XCTAssertEqual(screen(appState), .onboarding)
+    }
+
+    /// A relaunch on Connect after the saved goals became Development only
+    /// moves on to About you when Slack is connected.
+    func testLaunchSettlesASkippedStep() async throws {
+        let (defaults, suiteName) = try onboardingSuite()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(OnboardingV2Step.connect.rawValue, forKey: OnboardingStateMachineV2.stepKey)
+        defaults.set(["development"], forKey: OnboardingGoalsModel.goalsKey)
+        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertSlackAccount(db, teamID: "T1") }
+
+        let appState = await launch(defaults, db: dbManager)
+
+        XCTAssertEqual(appState.onboarding.currentStep, .aboutYou)
+    }
+
+    /// With nothing left after the skipped step, launch goes back to Goals
+    /// rather than to `.complete`: Goals' Continue runs the completion
+    /// sequence that writes `onboarding_done`.
+    func testLaunchNeverSettlesPastTheCompletionSequence() async throws {
+        let (defaults, suiteName) = try onboardingSuite()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(OnboardingV2Step.aboutYou.rawValue, forKey: OnboardingStateMachineV2.stepKey)
+
+        let appState = await launch(defaults, db: dbManager)
+
+        XCTAssertEqual(appState.onboarding.currentStep, .purpose)
+        XCTAssertEqual(screen(appState), .onboarding)
+    }
+
+    /// Run setup again: back to Goals, and the pipelines rerun afterwards.
+    func testStartOnboardingResetsToGoalsAndClearsPipelinesFlag() async throws {
+        let (defaults, suiteName) = try onboardingSuite()
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+            UserDefaults.standard.removeObject(forKey: Constants.pipelinesCompletedKey)
+        }
+        defaults.set(7, forKey: OnboardingStateMachineV2.legacyStepKey)
+        let appState = await launch(defaults, db: dbManager)
+        UserDefaults.standard.set(true, forKey: Constants.pipelinesCompletedKey)
+
+        appState.startOnboarding()
+
+        XCTAssertEqual(appState.onboarding.currentStep, .purpose)
+        XCTAssertTrue(appState.needsOnboarding)
+        XCTAssertNil(UserDefaults.standard.object(forKey: Constants.pipelinesCompletedKey))
     }
 }

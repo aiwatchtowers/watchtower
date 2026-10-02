@@ -30,7 +30,7 @@ struct NavigationRoot: View {
                 appState.reinitializeAfterOnboarding()
             }
         case .onboarding:
-            OnboardingView {
+            OnboardingV2View {
                 appState.reinitializeAfterOnboarding()
             }
         case .main:

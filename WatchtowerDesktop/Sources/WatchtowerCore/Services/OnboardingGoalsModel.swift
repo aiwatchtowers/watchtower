@@ -1,0 +1,164 @@
+import Foundation
+import Observation
+
+/// The Goals step's AI CLI check (`watchtower ai test`): Continue is blocked
+/// until it is `.ready` (owner decision — every AI feature runs on the CLI).
+package enum OnboardingCLICheck: Equatable, Sendable {
+    case checking
+    /// `provider` is the configured `ai.provider` the test answered for.
+    case ready(provider: String)
+    case failed(String)
+}
+
+/// What Continue on the Goals step does to the outside world, injected so
+/// the ordering and the exactly-once workspace init are testable.
+package struct OnboardingGoalsActions {
+    /// `watchtower workspace init --json`.
+    package var initWorkspace: () async throws -> Void
+    /// `watchtower config set digest.language <name>`.
+    package var setLanguage: (String) async throws -> Void
+    /// Applies the feature selection; returns the failure to show, nil when
+    /// every change landed.
+    package var applyFeatures: (OnboardingFeatureSelection) async -> String?
+
+    package init(
+        initWorkspace: @escaping () async throws -> Void,
+        setLanguage: @escaping (String) async throws -> Void,
+        applyFeatures: @escaping (OnboardingFeatureSelection) async -> String?
+    ) {
+        self.initWorkspace = initWorkspace
+        self.setLanguage = setLanguage
+        self.applyFeatures = applyFeatures
+    }
+}
+
+/// Onboarding's Goals step: the goals and feature selection, the assistant
+/// language, the AI CLI check and Continue. Lives in `AppState` so the
+/// selection survives the Customize screen and a running check or Continue
+/// survives the step re-rendering.
+@MainActor
+@Observable
+package final class OnboardingGoalsModel {
+    /// The goals of the last successful Continue, which the route of a
+    /// relaunch (`OnboardingStateMachineV2.settle`) and the step indicator
+    /// read — never the live checkboxes, so the dots do not move while the
+    /// owner is still picking.
+    package static let goalsKey = "onboarding_v2_goals"
+    /// All but Meetings: its calendar connection and transcription model are
+    /// the heaviest setup, opted into deliberately.
+    package static let defaultGoals: Set<OnboardingGoal> = [.workCommunication, .tasksAndJira, .development]
+
+    package var selection: OnboardingFeatureSelection
+    /// An English language name, the `digest.language` value Continue writes.
+    package var language: String
+    /// The Customize features screen is showing in place of the goals.
+    package var isCustomizingFeatures = false
+    package private(set) var cliCheck: OnboardingCLICheck = .checking
+    package private(set) var isContinuing = false
+    package private(set) var continueError: String?
+    package private(set) var savedGoals: Set<OnboardingGoal>
+
+    @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored private let checkCLI: () async -> OnboardingCLICheck
+    @ObservationIgnored private let actions: OnboardingGoalsActions
+    @ObservationIgnored private var cliCheckGeneration = 0
+    @ObservationIgnored private var languagePrepared = false
+    /// Set once `workspace init` succeeded: a second Continue (back from
+    /// Connect) does not run it again.
+    @ObservationIgnored private var workspaceReady = false
+
+    package init(
+        defaults: UserDefaults = .standard,
+        systemLanguage: String = AssistantLanguageCatalog.systemDefault().englishName,
+        checkCLI: @escaping () async -> OnboardingCLICheck,
+        actions: OnboardingGoalsActions
+    ) {
+        self.defaults = defaults
+        self.checkCLI = checkCLI
+        self.actions = actions
+        let saved = (defaults.stringArray(forKey: Self.goalsKey)?.compactMap(OnboardingGoal.init(rawValue:)))
+            .map(Set.init) ?? Self.defaultGoals
+        savedGoals = saved
+        selection = OnboardingFeatureSelection(goals: saved)
+        language = systemLanguage
+    }
+
+    /// The route the indicator and a relaunch follow.
+    package func route(hasSlackAccount: Bool) -> OnboardingRoute {
+        OnboardingRoute(goals: savedGoals, hasSlackAccount: hasSlackAccount)
+    }
+
+    package var canContinue: Bool {
+        guard case .ready = cliCheck else { return false }
+        return !isContinuing
+    }
+
+    /// Called when the step appears: adopts an already configured language
+    /// once (a setup re-run keeps the owner's choice instead of the macOS
+    /// default), and starts the CLI check unless it already passed.
+    package func prepare(configuredLanguage: String?) async {
+        if !languagePrepared {
+            languagePrepared = true
+            if let configured = configuredLanguage?.trimmingCharacters(in: .whitespaces), !configured.isEmpty {
+                language = configured
+            }
+        }
+        if case .ready = cliCheck { return }
+        await runCLICheck()
+    }
+
+    /// Check again. A check that finishes after a newer one started is
+    /// dropped, so a slow first run cannot overwrite a later result.
+    package func runCLICheck() async {
+        cliCheckGeneration += 1
+        let generation = cliCheckGeneration
+        cliCheck = .checking
+        let result = await checkCLI()
+        guard generation == cliCheckGeneration else { return }
+        cliCheck = result
+    }
+
+    package func toggle(_ goal: OnboardingGoal) {
+        if selection.goals.contains(goal) {
+            selection.goals.remove(goal)
+        } else {
+            selection.goals.insert(goal)
+        }
+    }
+
+    /// Continue: the workspace first when there is no Slack account (the
+    /// features CLI and the Connect step's account sheets need one), then
+    /// the language, then the features. Stops at the first failure with
+    /// `continueError` set and returns nil; on success persists the goals and
+    /// returns the route to advance by. Zero goals is allowed — the
+    /// Development-only path.
+    package func submit(hasSlackAccount: Bool) async -> OnboardingRoute? {
+        guard canContinue else { return nil }
+        isContinuing = true
+        continueError = nil
+        defer { isContinuing = false }
+
+        if !hasSlackAccount && !workspaceReady {
+            do {
+                try await actions.initWorkspace()
+                workspaceReady = true
+            } catch {
+                continueError = "Could not create the workspace: \(error.localizedDescription)"
+                return nil
+            }
+        }
+        do {
+            try await actions.setLanguage(language)
+        } catch {
+            continueError = "Could not save the assistant language: \(error.localizedDescription)"
+            return nil
+        }
+        if let failure = await actions.applyFeatures(selection) {
+            continueError = failure
+            return nil
+        }
+        savedGoals = selection.goals
+        defaults.set(selection.goals.map(\.rawValue).sorted(), forKey: Self.goalsKey)
+        return route(hasSlackAccount: hasSlackAccount)
+    }
+}

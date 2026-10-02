@@ -65,7 +65,11 @@ final class AppState {
     var needsOnboarding: Bool = false
 
     /// Persistent onboarding state machine — tracks which step the user is on across app restarts.
-    let onboarding = OnboardingStateMachine()
+    let onboarding: OnboardingStateMachineV2
+
+    /// Onboarding's Goals step (goals, feature selection, language, CLI
+    /// check), held here so it survives the Customize screen.
+    let onboardingGoals: OnboardingGoalsModel
 
     /// Cache for custom workspace emoji images.
     let emojiImageCache = EmojiImageCache()
@@ -310,10 +314,19 @@ final class AppState {
     /// dependency at all (it is backed entirely by the `watchtower features`
     /// CLI), so it can live as a plain, always-constructed `let` here and
     /// load independently of the DB-open Task in `initialize()`.
-    let featureManager = FeatureManagerService()
+    let featureManager: FeatureManagerService
 
     /// Manages background pipeline tasks (digests, people) started after onboarding sync.
     let backgroundTaskManager = BackgroundTaskManager()
+
+    /// `onboardingDefaults` backs the onboarding step and goals — tests pass
+    /// an isolated suite.
+    init(onboardingDefaults: UserDefaults = .standard) {
+        let features = FeatureManagerService()
+        featureManager = features
+        onboarding = OnboardingStateMachineV2(defaults: onboardingDefaults)
+        onboardingGoals = .production(defaults: onboardingDefaults, featureManager: features)
+    }
 
     /// Ensures chat ViewModels exist (lazy init, called from ChatView).
     func ensureChatViewModels() {
@@ -610,16 +623,7 @@ final class AppState {
                 await refreshConnectedSources()
                 wireMeetingRecorderLoaders(dbPool: manager.dbPool)
                 wireTargetBriefCenter()
-                // Sync state machine with DB: if profile says done, mark complete
-                if onboarding.currentStep != .complete {
-                    let dbDone = await checkNeedsOnboarding(dbPool: manager.dbPool)
-                    if !dbDone {
-                        onboarding.markComplete()
-                    } else {
-                        onboarding.skipCompleted()
-                    }
-                }
-                needsOnboarding = onboarding.currentStep != .complete
+                await reconcileOnboarding(dbPool: manager.dbPool)
                 profileComplete = !needsOnboarding
                 analysisLegacyMode = ConfigService().analysisLegacyMode
                 // Pre-load sidebar badge counts so they're already visible when the splash hides.
@@ -648,10 +652,7 @@ final class AppState {
                     ambiguousWorkspaces = []
                 }
                 // No DB available — if state machine not complete, onboarding needed
-                needsOnboarding = onboarding.currentStep != .complete
-                if needsOnboarding {
-                    onboarding.skipCompleted()
-                }
+                await reconcileOnboarding(dbPool: nil)
                 isLoading = false
             }
             // A pending onboarding is a fresh install (or a setup re-run):
@@ -709,6 +710,34 @@ final class AppState {
         }
     }
 
+    /// Launch-time onboarding state: the DB's `onboarding_done` wins over a
+    /// local step that is not complete (no UserDefaults — a new Mac, a wiped
+    /// defaults domain — must not re-run onboarding on a finished install);
+    /// then a resumed step the route now skips moves on. When nothing is
+    /// left after it, it goes back to Goals instead: settling straight into
+    /// `.complete` would skip the completion sequence (`onboarding_done`,
+    /// the pipelines), which Goals' Continue then runs. `dbPool` is nil when
+    /// the database could not be opened. Needs `refreshConnectedSources` to
+    /// have run: the route reads whether Slack is connected.
+    func reconcileOnboarding(dbPool: DatabasePool?) async {
+        if let dbPool, onboarding.currentStep != .complete, !(await checkNeedsOnboarding(dbPool: dbPool)) {
+            onboarding.goTo(.complete)
+        }
+        let route = onboardingRoute
+        if onboarding.currentStep != .complete, route.skips(onboarding.currentStep),
+           route.step(after: onboarding.currentStep) == .complete {
+            onboarding.goTo(.purpose)
+        }
+        onboarding.settle(route: route)
+        needsOnboarding = onboarding.currentStep != .complete
+    }
+
+    /// The route onboarding follows: the goals of the last Continue and
+    /// whether a Slack account is connected.
+    var onboardingRoute: OnboardingRoute {
+        onboardingGoals.route(hasSlackAccount: featureVisibility.connectedSources.slack)
+    }
+
     /// Check if onboarding chat is needed (profile missing or onboarding_done == false).
     private func checkNeedsOnboarding(dbPool: DatabasePool) async -> Bool {
         do {
@@ -725,7 +754,7 @@ final class AppState {
 
     /// Called when onboarding flow completes successfully.
     func completeOnboarding() {
-        onboarding.markComplete()
+        onboarding.goTo(.complete)
         needsOnboarding = false
         profileComplete = true
         // The initialize() path skips sidebar counts while onboarding is pending, so build
@@ -760,10 +789,9 @@ final class AppState {
         sidebarCountsViewModel = countsVM
     }
 
-    /// Re-triggers the onboarding flow (from Settings).
-    /// Resets to the chat step since connect/settings/claude are already done.
+    /// Re-triggers the onboarding flow (from Settings), back at Goals.
     func startOnboarding() {
-        onboarding.reset(to: .chat)
+        onboarding.reset()
         needsOnboarding = true
         profileComplete = false
         UserDefaults.standard.removeObject(forKey: Constants.pipelinesCompletedKey)
