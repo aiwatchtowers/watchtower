@@ -100,3 +100,20 @@ func TestListBranches_DetachedHasNoCurrent(t *testing.T) {
 	assert.Empty(t, st.Branch)
 	assert.Len(t, st.Head, shortHash)
 }
+
+// The branch list and the status show the same short commit id, whatever
+// the repository's core.abbrev.
+func TestListBranches_HeadMatchesTheStatus(t *testing.T) {
+	dir := newRepo(t)
+	gitIn(t, dir, "config", "core.abbrev", "12")
+	l := ListBranches(context.Background(), options(dir, &recorder{}))
+	require.True(t, l.BranchesOK, l.BranchesError)
+	st := ReadStatus(context.Background(), options(dir, &recorder{}))
+	require.True(t, st.StatusOK, st.StatusError)
+	for _, b := range l.Branches {
+		if b.Current {
+			assert.Equal(t, st.Head, b.Head)
+		}
+		assert.Len(t, b.Head, shortHash, b.Name)
+	}
+}

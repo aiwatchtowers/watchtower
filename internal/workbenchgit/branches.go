@@ -12,7 +12,7 @@ import (
 
 // branchFormat is one local branch per record, its fields and the record
 // itself NUL-terminated (for-each-ref adds a newline after each record).
-const branchFormat = "%(refname)%00%(objectname:short)%00%(committerdate:unix)%00" +
+const branchFormat = "%(refname)%00%(objectname)%00%(committerdate:unix)%00" +
 	"%(upstream:short)%00%(upstream:track,nobracket)%00%(worktreepath)%00"
 
 const branchFields = 6
@@ -118,7 +118,8 @@ func parseBranch(f []string, topLevel string) (Branch, error) {
 	if err != nil {
 		return Branch{}, fmt.Errorf("git for-each-ref: bad commit time %q of %s", f[2], name)
 	}
-	b := Branch{Name: name, Head: f[1], CommittedAt: time.Unix(sec, 0).UTC(), Upstream: f[3]}
+	// The full id cut here, as the status cuts it: :short follows core.abbrev.
+	b := Branch{Name: name, Head: f[1][:min(len(f[1]), shortHash)], CommittedAt: time.Unix(sec, 0).UTC(), Upstream: f[3]}
 	b.Ahead, b.Behind, b.UpstreamGone, err = parseTrack(f[4])
 	if err != nil {
 		return Branch{}, fmt.Errorf("git for-each-ref: %w of %s", err, name)
