@@ -202,6 +202,12 @@ struct SlackConnectionDetail: View {
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
+                                if let note = account.syncNote {
+                                    Label(note, systemImage: "exclamationmark.triangle")
+                                        .font(.caption)
+                                        .foregroundStyle(.orange)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
                             }
                             Spacer()
                             Circle()

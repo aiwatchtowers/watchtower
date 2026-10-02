@@ -309,14 +309,24 @@ func runSlackAccounts(cmd *cobra.Command, _ []string) error {
 		fmt.Fprintln(out, "Run 'watchtower slack add' to connect one.")
 		return nil
 	}
+	printSlackAccounts(out, accounts)
+	return nil
+}
+
+// printSlackAccounts writes one line per account. An ok account can still
+// carry a note in its error column (the search catch-up gap: messages beyond
+// the cap were not fetched), printed under its line so it is not lost.
+func printSlackAccounts(out io.Writer, accounts []db.SlackAccount) {
 	for _, a := range accounts {
 		state := "enabled"
 		if !a.Enabled {
 			state = "disabled"
 		}
 		fmt.Fprintf(out, "#%d %s %s [%s]\n", a.ID, slackAccountDisplayName(a), a.Status, state)
+		if a.Status == "ok" && a.Error != "" {
+			fmt.Fprintf(out, "    note: %s\n", a.Error)
+		}
 	}
-	return nil
 }
 
 func runSlackEnable(cmd *cobra.Command, args []string) error {

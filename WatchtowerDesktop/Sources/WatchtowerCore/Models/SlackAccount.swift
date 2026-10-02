@@ -33,6 +33,11 @@ package struct SlackAccount: FetchableRecord, Identifiable, Equatable {
     package var isOK: Bool { status == "ok" }
     package var isRevoked: Bool { status == "revoked" }
 
+    /// A note an ok account still carries in its error column — the search
+    /// catch-up gap ("messages … were not fetched"). nil when the account is
+    /// failing (its error is the failure, shown as such) or has no note.
+    package var syncNote: String? { isOK && !error.isEmpty ? error : nil }
+
     /// Display text for a row: the user-facing label if set, else the Slack
     /// workspace's team name, else a positional fallback for a not-yet-consented
     /// row (team name is only populated once the OAuth flow completes).
