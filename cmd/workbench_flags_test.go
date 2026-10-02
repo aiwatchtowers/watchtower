@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -22,7 +21,7 @@ import (
 // command, `project` its hidden alias; --workbench the flag, --project its
 // hidden alias, whose use selects the pre-rename vocabulary.
 
-// runRootCmd runs rootCmd with args and clears every flag cmds carry
+// runRootCmd runs rootCmd with args and resets every flag the run set on cmds
 // afterwards (rootCmd is shared across tests).
 func runRootCmd(t *testing.T, cmds []*cobra.Command, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
@@ -32,9 +31,7 @@ func runRootCmd(t *testing.T, cmds []*cobra.Command, args ...string) (stdout, st
 	rootCmd.SetArgs(args)
 	err = rootCmd.Execute()
 	rootCmd.SetArgs(nil)
-	for _, c := range cmds {
-		c.Flags().VisitAll(func(f *pflag.Flag) { f.Changed = false })
-	}
+	resetSetFlags(append(cmds, rootCmd)...)
 	return out.String(), errOut.String(), err
 }
 
