@@ -8,8 +8,30 @@ struct AssistantToolRow: Identifiable, Equatable, Decodable, Sendable {
     let description: String
     let access: String
     let external: Bool
+    /// `Tool.AlwaysAsk` (dismiss_tracks): local, but never trusted to execute.
+    let alwaysAsk: Bool
     let surfaces: [String]
     var trust: String
+
+    /// Locked to "ask": SetTrust refuses execute for both kinds.
+    var isLockedToAsk: Bool { external || alwaysAsk }
+
+    private enum CodingKeys: String, CodingKey {
+        case name, description, access, external, surfaces, trust
+        case alwaysAsk = "always_ask"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decode(String.self, forKey: .name)
+        description = try c.decode(String.self, forKey: .description)
+        access = try c.decode(String.self, forKey: .access)
+        external = try c.decode(Bool.self, forKey: .external)
+        // Absent from a CLI older than the field.
+        alwaysAsk = try c.decodeIfPresent(Bool.self, forKey: .alwaysAsk) ?? false
+        surfaces = try c.decode([String].self, forKey: .surfaces)
+        trust = try c.decode(String.self, forKey: .trust)
+    }
 }
 
 /// Settings → Assistant tools backing store. The registry lives in Go; this

@@ -32,11 +32,11 @@
 
 **Status:** Enforced
 
-**Observable:** `Registry.SetTrust(tool, execute)` returns `ErrExternalExecute` for a tool with `External: true` (`create_jira_issue`, `connect_jira_board`, `send_slack_message`, …); `watchtower actions trust` surfaces that error; the Settings toggle is disabled for external tools.
+**Observable:** `Registry.SetTrust(tool, execute)` returns `ErrExternalExecute` for a tool with `External: true` (`create_jira_issue`, `connect_jira_board`, `send_slack_message`, …); `watchtower actions trust` surfaces that error; the Settings toggle is disabled for external tools. The same lock covers a local tool marked `AlwaysAsk: true` (`dismiss_tracks`, a bulk write): `SetTrust` returns `ErrAlwaysAsk`, `Propose` records it pending even from a persisted `execute` trust row, a direct-apply session refuses it, and the Settings toggle is disabled for it (`always_ask` in `actions tools --json`).
 
 **Why locked:** An external write cannot be undone by the app. The owner's click is the only thing standing between a model mistake and a ticket in a shared tracker — or, for `connect_jira_board`, a board selected against the live site and pulled into every digest.
 
-**Test guards:** `internal/tools/registry_test.go` `TestAgent03_ExternalToolCannotBeExecuteTrust`; `internal/tools/slack_send_test.go` `TestSendSlackMessage_ExternalCannotBeExecuteTrust`; `internal/tools/jira_board_test.go` `TestConnectJiraBoard_ExternalCannotBeExecuteTrust`; `cmd/actions_test.go` `TestActions_TrustAndTools`.
+**Test guards:** `internal/tools/registry_test.go` `TestAgent03_ExternalToolCannotBeExecuteTrust`; `internal/tools/slack_send_test.go` `TestSendSlackMessage_ExternalCannotBeExecuteTrust`; `internal/tools/jira_board_test.go` `TestConnectJiraBoard_ExternalCannotBeExecuteTrust`; `internal/tools/tracks_dismiss_test.go` `TestDismissTracks_NeverExecutesWithoutApproval` (AlwaysAsk); `cmd/actions_test.go` `TestActions_TrustAndTools`.
 
 **Locked since:** 2026-09-04
 

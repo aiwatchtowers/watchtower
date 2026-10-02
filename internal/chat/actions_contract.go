@@ -59,6 +59,7 @@ var mainActionTools = concat(
 	confluenceWriteTools,
 	[]string{
 		"- create_track — propose a track that follows a topic over time.",
+		"- dismiss_tracks — propose dismissing tracks in bulk (soft, reversible): pass ids, or a filter (origin, updated_before, created_before, except_ids; {} = every active track); call get_track_counts first. Always needs the owner's approval.",
 		"- create_idea — capture an idea in the owner's ideas registry.",
 		"- remind_me — set a reminder that resurfaces in the Inbox at a chosen time; pass message_ref when it is about one Slack message.",
 		"- send_slack_message — propose a Slack message sent as the owner to a channel, a thread (pass a message link), or a person (DM).",

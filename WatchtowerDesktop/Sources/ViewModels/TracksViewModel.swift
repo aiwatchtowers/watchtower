@@ -32,6 +32,16 @@ final class TracksViewModel {
     var showDismissed: Bool = false
     var sortOrder: SortOrder = .updatedNewest
 
+    /// Multi-select for bulk dismiss: while on, a row tap toggles its id.
+    var isSelecting = false
+    var selectedIDs: Set<Int> = []
+    /// A non-error outcome of a bulk dismiss the owner should see ("nothing
+    /// to dismiss", "3 were already gone"); shown like `errorMessage`.
+    var notice: String?
+
+    /// Every track the list shows right now, across its three sections.
+    private var visibleTracks: [Track] { customTracks + updatedTracks + allTracks }
+
     enum JiraFilter: String, CaseIterable {
         case all = "All"
         case withJira = "With Jira"
@@ -152,6 +162,8 @@ final class TracksViewModel {
             let rest = autoTracks.filter { !$0.hasUpdates }
             // Hide read tracks unless showRead is enabled
             allTracks = showRead ? rest : rest.filter { $0.isUnread }
+            // A selection never reaches rows a filter change just hid.
+            selectedIDs.formIntersection(visibleTracks.map(\.id))
             totalCount = result.3.total
             updatedCount = result.3.updated
             refreshUserNameCache(tracks: tracks)
@@ -245,6 +257,59 @@ final class TracksViewModel {
             load()
         } catch {
             reportWriteFailure("dismiss", error)
+        }
+    }
+
+    // MARK: - Bulk dismiss
+
+    func toggleSelection(_ id: Int) {
+        if selectedIDs.contains(id) {
+            selectedIDs.remove(id)
+        } else {
+            selectedIDs.insert(id)
+        }
+    }
+
+    /// Selects every active track the list shows right now.
+    func selectAllVisible() {
+        selectedIDs = Set(visibleTracks.filter { !$0.isDismissed }.map(\.id))
+    }
+
+    func endSelection() {
+        isSelecting = false
+        selectedIDs = []
+    }
+
+    /// The ids "Dismiss all auto tracks" would dismiss, read when the owner
+    /// opens the confirmation — the confirmed write then touches exactly
+    /// these, not whatever the daemon added in between. Nil when there is
+    /// nothing to confirm: no auto track (`notice`) or a read error
+    /// (`errorMessage`).
+    func activeAutoTrackIDs() -> [Int]? {
+        do {
+            let ids = try dbManager.dbPool.read { db in try TrackQueries.fetchActiveAutoIDs(db) }
+            if ids.isEmpty { notice = "No active auto tracks to dismiss." }
+            return ids.isEmpty ? nil : ids
+        } catch {
+            errorMessage = "Failed to count auto tracks: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    /// Soft-dismisses `ids` in one write (reversible one by one via Restore)
+    /// and leaves selection mode.
+    func dismissTracks(ids: [Int]) {
+        do {
+            let dismissed = try dbManager.dbPool.write { db in
+                try TrackQueries.dismissMany(db, ids: ids)
+            }
+            endSelection()
+            load()
+            if dismissed < ids.count {
+                notice = "Dismissed \(dismissed) of \(ids.count); the rest were already dismissed or gone."
+            }
+        } catch {
+            errorMessage = "Failed to dismiss tracks: \(error.localizedDescription)"
         }
     }
 

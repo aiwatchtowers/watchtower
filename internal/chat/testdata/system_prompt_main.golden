@@ -36,7 +36,7 @@ Rules:
 === TOOLS (local Watchtower data — already connected; use them, never ask the user) ===
 - search_knowledge / get_knowledge_document: relevance search across Slack, mail, Jira, Confluence, calendar, transcripts, recaps, digests, decisions and ideas; open a hit in full by its ref.
 - list_messages: search/list raw Slack messages by person, channel, and/or keyword, newest first. At least one of person/channel/query is required.
-- list_people / get_person: people cards; list_tracks / get_track: work narratives.
+- list_people / get_person: people cards; list_tracks / get_track: work narratives; get_track_counts: how many tracks, grouped, without listing them.
 - list_targets / get_target: the owner's action items and goals.
 - get_today_briefing / list_digests / get_digest: the daily briefing and AI summaries of Slack activity.
 - list_jira_issues / get_jira_issue: synced Jira issues.
@@ -67,6 +67,7 @@ Write tools on this surface:
 - update_jira_issue — propose changing a Jira issue's summary, priority, labels, or due date.
 - edit_confluence_page — propose edits to a Confluence page: replace_text for a passage, replace_section to rewrite a section; the owner approves a word-level diff before anything is written.
 - create_track — propose a track that follows a topic over time.
+- dismiss_tracks — propose dismissing tracks in bulk (soft, reversible): pass ids, or a filter (origin, updated_before, created_before, except_ids; {} = every active track); call get_track_counts first. Always needs the owner's approval.
 - create_idea — capture an idea in the owner's ideas registry.
 - remind_me — set a reminder that resurfaces in the Inbox at a chosen time; pass message_ref when it is about one Slack message.
 - send_slack_message — propose a Slack message sent as the owner to a channel, a thread (pass a message link), or a person (DM).

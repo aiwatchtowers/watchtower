@@ -124,6 +124,8 @@ struct AgentActionCardView: View {
             return lines
         case "create_track":
             return [action.argString("text") ?? action.argsJSON]
+        case "dismiss_tracks":
+            return dismissTracksSummaryLines(for: action)
         case "create_idea":
             var lines = [action.argString("essence") ?? ""]
             if let t = action.argString("title"), !t.isEmpty { lines.insert(t, at: 0) }
@@ -139,6 +141,19 @@ struct AgentActionCardView: View {
         default:
             return nil
         }
+    }
+
+    /// dismiss_tracks: the summary line and sample titles Go pinned at
+    /// propose time (`internal/tools/tracks.go` normalizeDismissTracks), plus
+    /// how many tracks the preview leaves out. One args decode.
+    private static func dismissTracksSummaryLines(for action: AgentAction) -> [String] {
+        let args = action.args
+        let titles = (args["sample_titles"] as? [Any])?.compactMap { AgentAction.stringValue($0) } ?? []
+        let total = (args["resolved_ids"] as? [Any])?.count ?? titles.count
+        var lines = [AgentAction.stringValue(args["summary"]) ?? "Dismiss tracks"]
+        lines += titles.map { "• \($0)" }
+        if total > titles.count { lines.append("…and \(total - titles.count) more") }
+        return lines
     }
 
     /// The Slack send this card may edit: only where the host wired

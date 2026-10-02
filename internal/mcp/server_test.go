@@ -68,7 +68,7 @@ func TestToolsList(t *testing.T) {
 	want := []string{
 		"list_targets", "get_target",
 		"get_today_briefing", "list_digests", "get_digest",
-		"list_people", "get_person", "list_tracks", "get_track", "list_upcoming_events",
+		"list_people", "get_person", "list_tracks", "get_track", "get_track_counts", "list_upcoming_events",
 		"list_jira_issues", "get_jira_issue", "list_jira_projects",
 		"get_jira_status_history", "get_jira_time_in_status",
 		"list_messages",
@@ -221,7 +221,7 @@ func readOnlyGuardCalls() []mcpsdk.CallToolParams {
 		{Name: "list_targets"}, {Name: "get_target", Arguments: map[string]any{"id": 1}},
 		{Name: "get_today_briefing"}, {Name: "list_digests"}, {Name: "get_digest", Arguments: map[string]any{"id": 1}},
 		{Name: "list_people"}, {Name: "get_person", Arguments: map[string]any{"query": "U1"}},
-		{Name: "list_tracks"}, {Name: "get_track", Arguments: map[string]any{"id": 1}},
+		{Name: "list_tracks"}, {Name: "get_track", Arguments: map[string]any{"id": 1}}, {Name: "get_track_counts"},
 		{Name: "list_upcoming_events", Arguments: map[string]any{"hours": 48}},
 		{Name: "list_jira_issues"}, {Name: "get_jira_issue", Arguments: map[string]any{"key": "ABC-1"}},
 		{Name: "list_jira_projects"},

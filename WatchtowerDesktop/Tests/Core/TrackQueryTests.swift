@@ -214,4 +214,39 @@ final class TrackQueryTests: XCTestCase {
         let latest = try db.read { try TrackQueries.fetchLatestCustom($0) }
         XCTAssertNil(latest)
     }
+
+    // MARK: - Bulk dismiss (dual path with Go db.DismissTracks)
+
+    private func dismissedAt(_ db: DatabaseQueue, _ id: Int64) throws -> String {
+        try db.read { try String.fetchOne($0, sql: "SELECT dismissed_at FROM tracks WHERE id = ?", arguments: [id]) ?? "" }
+    }
+
+    func testDismissManyStampsOnlyActiveRows() throws {
+        let db = try TestDatabase.create()
+        var ids: [Int64] = []
+        try db.write { db in
+            for text in ["a", "b", "keep", "already"] { ids.append(try TestDatabase.insertTrack(db, text: text)) }
+            try db.execute(sql: "UPDATE tracks SET dismissed_at = '2000-01-01T00:00:00Z' WHERE id = ?", arguments: [ids[3]])
+        }
+        let n = try db.write { try TrackQueries.dismissMany($0, ids: [Int(ids[0]), Int(ids[1]), Int(ids[3]), 999_999]) }
+        XCTAssertEqual(n, 2, "missing and already-dismissed ids are skipped")
+        XCTAssertFalse(try dismissedAt(db, ids[0]).isEmpty)
+        XCTAssertFalse(try dismissedAt(db, ids[1]).isEmpty)
+        XCTAssertEqual(try dismissedAt(db, ids[2]), "")
+        XCTAssertEqual(try dismissedAt(db, ids[3]), "2000-01-01T00:00:00Z", "an earlier dismissal keeps its stamp")
+        XCTAssertEqual(try db.write { try TrackQueries.dismissMany($0, ids: []) }, 0)
+    }
+
+    func testFetchActiveAutoIDsExcludesCustomAndDismissed() throws {
+        let db = try TestDatabase.create()
+        var ids: [Int64] = []
+        try db.write { db in
+            // The test schema predates tracks.origin (see testFetchLatestCustom…).
+            try db.execute(sql: "ALTER TABLE tracks ADD COLUMN origin TEXT NOT NULL DEFAULT 'auto'")
+            for text in ["auto", "custom", "dismissed"] { ids.append(try TestDatabase.insertTrack(db, text: text)) }
+            try db.execute(sql: "UPDATE tracks SET origin = 'custom' WHERE id = ?", arguments: [ids[1]])
+            try TrackQueries.dismiss(db, id: Int(ids[2]))
+        }
+        XCTAssertEqual(try db.read { try TrackQueries.fetchActiveAutoIDs($0) }, [Int(ids[0])])
+    }
 }

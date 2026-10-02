@@ -175,6 +175,34 @@ package enum TrackQueries {
         try db.requireUpdated("track", id: id)
     }
 
+    /// Bulk soft dismiss; returns how many tracks it dismissed. Only active
+    /// rows are stamped — an already-dismissed track keeps its original
+    /// `dismissed_at`, a vanished id is skipped (no `requireUpdated`: the
+    /// daemon may delete a row between the owner's selection and the write).
+    ///
+    /// Dual path: Go `db.DismissTracks` (`internal/db/track_bulk.go`, the
+    /// chat's `dismiss_tracks` apply) — same UPDATE, same active-only rule.
+    /// Change both together.
+    package static func dismissMany(_ db: Database, ids: [Int]) throws -> Int {
+        guard !ids.isEmpty else { return 0 }
+        let marks = Array(repeating: "?", count: ids.count).joined(separator: ",")
+        try db.execute(
+            sql: """
+                UPDATE tracks SET dismissed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                WHERE dismissed_at = '' AND id IN (\(marks))
+                """,
+            arguments: StatementArguments(ids)
+        )
+        return db.changesCount
+    }
+
+    /// Ids of every active auto (pipeline-found) track — what "Dismiss all
+    /// auto tracks" counts in its confirmation and then dismisses, so the
+    /// write touches exactly the set the owner confirmed.
+    package static func fetchActiveAutoIDs(_ db: Database) throws -> [Int] {
+        try Int.fetchAll(db, sql: "SELECT id FROM tracks WHERE origin = 'auto' AND dismissed_at = '' ORDER BY id")
+    }
+
     package static func restore(_ db: Database, id: Int) throws {
         try db.execute(
             sql: "UPDATE tracks SET dismissed_at = '' WHERE id = ?",

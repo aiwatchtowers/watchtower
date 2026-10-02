@@ -20,6 +20,22 @@ final class AssistantToolsViewModelTests: XCTestCase {
         XCTAssertNil(vm.error)
     }
 
+    /// always_ask (dismiss_tracks) locks the toggle like external; a CLI
+    /// older than the field decodes it as false.
+    func testAlwaysAskLocksTheToggleAndDefaultsToFalse() async {
+        let runner = FakeCLIRunner(stdout: Data("""
+        [{"name":"dismiss_tracks","description":"d","access":"write","external":false,"always_ask":true,"surfaces":["main"],"trust":"ask"},
+         {"name":"create_target","description":"d1","access":"write","external":false,"surfaces":["main"],"trust":"ask"}]
+        """.utf8))
+        let vm = AssistantToolsViewModel(cliRunner: runner)
+        await vm.load()
+        XCTAssertTrue(vm.rows[0].alwaysAsk)
+        XCTAssertTrue(vm.rows[0].isLockedToAsk)
+        XCTAssertFalse(vm.rows[1].alwaysAsk)
+        XCTAssertFalse(vm.rows[1].isLockedToAsk)
+        XCTAssertNil(vm.error)
+    }
+
     func testSetTrustRunsCLIThenReloads() async {
         let runner = FakeCLIRunner(stdout: listing)
         let vm = AssistantToolsViewModel(cliRunner: runner)

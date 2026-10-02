@@ -369,6 +369,7 @@ type toolJSON struct {
 	Description string   `json:"description"`
 	Access      string   `json:"access"`
 	External    bool     `json:"external"`
+	AlwaysAsk   bool     `json:"always_ask"`
 	Surfaces    []string `json:"surfaces"`
 	Trust       string   `json:"trust"`
 }
@@ -396,7 +397,7 @@ func runActionsTools(cmd *cobra.Command, _ []string) error {
 			surfaces = []string{}
 		}
 		out = append(out, toolJSON{Name: t.Name, Description: t.Description, Access: string(t.Access),
-			External: t.External, Surfaces: surfaces, Trust: string(trust)})
+			External: t.External, AlwaysAsk: t.AlwaysAsk, Surfaces: surfaces, Trust: string(trust)})
 	}
 	if actionsFlagJSON {
 		return writeJSON(cmd.OutOrStdout(), out)

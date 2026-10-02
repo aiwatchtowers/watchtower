@@ -43,6 +43,20 @@ final class AgentActionCardViewTests: XCTestCase {
         XCTAssertNoThrow(try view.inspect().find(text: "Brief me"))
     }
 
+    /// dismiss_tracks renders what Go pinned at propose time: the summary,
+    /// the sample titles, and how many more the preview leaves out.
+    func testDismissTracksSummaryLines() throws {
+        let args = #"{"filter":{"except_ids":[9]},"reason":"r","resolved_ids":[1,2,3,4,5,6,7],"#
+            + #""summary":"Dismiss 7 tracks (keeping #9)","sample_titles":["One","Two","Three","Four","Five"]}"#
+        let action = try row { db in
+            try TestDatabase.insertAgentAction(db, tool: "dismiss_tracks", argsJSON: args)
+        }
+        XCTAssertEqual(AgentActionCardView.title(for: action), "Dismiss tracks")
+        XCTAssertEqual(AgentActionCardView.summaryLines(for: action), [
+            "Dismiss 7 tracks (keeping #9)", "• One", "• Two", "• Three", "• Four", "• Five", "…and 2 more"
+        ])
+    }
+
     func testUnknownToolTitleFallsBackToTheToolID() throws {
         let action = try row { db in try TestDatabase.insertAgentAction(db, tool: "frobnicate") }
         XCTAssertEqual(AgentActionCardView.title(for: action), "frobnicate")

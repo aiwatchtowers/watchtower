@@ -24,8 +24,9 @@ package struct ReactionToolInfo: Equatable, Sendable {
     package let title: String
     package let summary: String
     package let destination: String
-    /// An `External` tool (Go `internal/tools`) — `SetTrust` refuses
-    /// `execute` for it, so it lands behind Approve whatever `tool_trust` says.
+    /// An `External` or `AlwaysAsk` tool (Go `internal/tools`) — `SetTrust`
+    /// refuses `execute` for it, so it lands behind Approve whatever
+    /// `tool_trust` says.
     package let alwaysAsks: Bool
 }
 
@@ -76,6 +77,14 @@ package enum ReactionToolCatalog {
             title: "Connect a Jira board",
             summary: "Starts watching a Jira board",
             destination: "Jira",
+            alwaysAsks: true
+        ),
+        // Main AI Chat only, not a reaction tool. Local, but `AlwaysAsk` in
+        // Go: a bulk dismiss always lands behind Approve.
+        "dismiss_tracks": ReactionToolInfo(
+            title: "Dismiss tracks",
+            summary: "Dismisses tracks in bulk (reversible from the Tracks tab)",
+            destination: "Tracks",
             alwaysAsks: true
         ),
         // Chat-only Jira issue writes (spec 2026-09-26 §8) — External, so they

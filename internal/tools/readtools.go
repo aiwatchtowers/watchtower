@@ -28,6 +28,7 @@ func ReadTools() []*Tool {
 		NewGetPerson(),
 		NewListTracks(),
 		NewGetTrack(),
+		NewGetTrackCounts(),
 		NewListUpcomingEvents(),
 		NewListTranscripts(),
 		NewGetTranscript(),

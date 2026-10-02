@@ -82,7 +82,17 @@ func TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces(t *testing.T) {
 		assert.NotEqual(t, "get_confluence_page", rt.Name, "dev-mode MCP never mounts a live network read (DEV-01)")
 	}
 
+	// Bulk track dismiss (#227): main chat only, and always behind the
+	// owner's Approve whatever the trust settings.
+	dismiss, ok := reg.Get("dismiss_tracks")
+	require.True(t, ok)
+	assert.Equal(t, tools.AccessWrite, dismiss.Access)
+	assert.True(t, dismiss.AlwaysAsk, "a bulk dismiss never auto-executes")
+	assert.True(t, main["dismiss_tracks"], "dismiss_tracks missing on main")
+	assert.False(t, target["dismiss_tracks"], "dismiss_tracks is main-only (TGT-BRIEF-01 axis 3)")
+
 	reaction := names("reaction")
+	assert.False(t, reaction["dismiss_tracks"], "dismiss_tracks is main-only")
 	for _, w := range reactionTools {
 		assert.True(t, reaction[w], "%s missing on the reaction surface", w)
 	}
