@@ -59,7 +59,7 @@ func (p *Pipeline) SubmitTopicFeedback(ctx context.Context, recapID int64, topic
 	}
 
 	user := buildLearnUserMessage(topic, refs, rating, comment)
-	system := learnSystemPrompt + "\n\n" + prompts.Directive(p.cfg.Digest.Language)
+	system := p.getPrompt(prompts.CatchupLearn) + "\n\n" + prompts.Directive(p.cfg.Digest.Language)
 	raw, _, _, err := p.gen.Generate(digest.WithSource(ctx, "catchup.learn"), system, user, "")
 	if err != nil {
 		return 0, fmt.Errorf("catchup learn: %w", err)

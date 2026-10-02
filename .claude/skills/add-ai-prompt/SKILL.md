@@ -18,7 +18,9 @@ type Generator interface {
 1. **Register the prompt ID + template** (if reusable / user-editable):
    - Constant in `internal/prompts/store.go` (e.g. `MyFeature = "my.feature"`).
    - Template const + `Defaults` map entry + `AllIDs` + `DefaultVersions` in `internal/prompts/defaults.go`. **Bump `DefaultVersions[id]`** whenever you edit a shipped template so user DBs auto-upgrade.
-   - A pipeline-private prompt can instead live as a const in the package's `prompt.go` and be passed as the fallback to `getPrompt`.
+   - Register every new AI system prompt — no new package-private prompt consts. Settings → Prompts can only tune what is in `Defaults`. (Some older Jira analyzer prompts in `internal/jira` are still inline.)
+   - Load it with `prompts.Resolve(store, id, role)` (the role-variant row first when `role != ""`, then the id's store row; else `Defaults[id]` at version 0; an empty stored row also falls back). A non-nil `err` — failed read, empty stored row, or an unregistered id (which also returns an empty template) — always comes with the fallback: log it, never fail. The package's thin `getPrompt` wrapper only adds the log line (and `prompts.WithRoleInstruction` for role-aware pipelines); never add a second fallback.
+   - Give the pipeline a `SetPromptStore` seam and wire it at every construction site in `cmd/` — `cmd/prompt_store_scan_test.go` fails on an unwired one.
 
 2. **Pick the model tier** via the *source tag*, not a hardcoded model:
    - Lightweight (classify/prioritize/rollup) → route to Haiku / `gpt-5.4-mini`. Add your source name to the switch in BOTH `internal/digest/models.go` (`ModelForSource`) and `internal/codex/models.go`.
@@ -26,7 +28,7 @@ type Generator interface {
 
 3. **Build and split the prompt**, then call the generator with a source-tagged context:
    ```go
-   tmpl, version := p.getPrompt(prompts.MyFeature, fallbackTemplate)
+   tmpl, version := p.getPrompt(prompts.MyFeature) // wraps prompts.Resolve
    full := fmt.Sprintf(tmpl, args...)
    system, user := digest.SplitPromptAtData(full)            // splits at the data marker for prompt caching
    raw, usage, _, err := p.generator.Generate(

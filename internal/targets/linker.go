@@ -23,7 +23,7 @@ type aiLinkResponse struct {
 }
 
 // buildLinkPrompt assembles the smaller prompt for single-target linking.
-// tmpl is the resolved template (store override or LinkPromptTemplate) — the
+// tmpl is the resolved template (store override or the registered targets.link default) — the
 // function itself stays pure, with no store access.
 func buildLinkPrompt(tmpl string, target db.Target, snapshot []db.Target) string {
 	intent := ""

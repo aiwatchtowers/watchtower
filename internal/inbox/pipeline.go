@@ -17,6 +17,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/prompts"
 	watchtowerslack "watchtower/internal/slack"
 )
 
@@ -148,6 +149,10 @@ type Pipeline struct {
 	logger     *log.Logger
 	OnProgress ProgressFunc
 
+	// promptStore, set by SetPromptStore, carries the owner's tuned
+	// inbox.style_sample prompt; nil uses the registered default.
+	promptStore *prompts.Store
+
 	// owner is the install's owner identity, set by SetOwner; Run resolves it
 	// from the DB (db.ResolveOwner) when it is not set.
 	owner db.Owner
@@ -172,6 +177,22 @@ func New(database *db.DB, cfg *config.Config, gen digest.Generator, logger *log.
 		generator: gen,
 		logger:    logger,
 	}
+}
+
+// SetPromptStore sets the prompt store the style-profile sampler loads its
+// tuned inbox.style_sample prompt from.
+func (p *Pipeline) SetPromptStore(store *prompts.Store) {
+	p.promptStore = store
+}
+
+// getPrompt resolves a prompt via prompts.Resolve: the store row, else the
+// registered default.
+func (p *Pipeline) getPrompt(id string) string {
+	tmpl, _, err := prompts.Resolve(p.promptStore, id, "")
+	if err != nil {
+		p.logger.Printf("inbox: %v — using the built-in default", err)
+	}
+	return tmpl
 }
 
 // SetOwner sets the owner identity the per-source detectors (Jira, Calendar)

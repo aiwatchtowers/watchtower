@@ -93,10 +93,9 @@ func runDictateClean(cmd *cobra.Command, _ []string) error {
 	}
 	defer database.Close()
 
-	store := prompts.New(database, nil)
-	tmpl, _, _ := store.Get(prompts.DictationClean)
-	if tmpl == "" {
-		tmpl = prompts.Defaults[prompts.DictationClean]
+	tmpl, _, err := prompts.Resolve(prompts.New(database, nil), prompts.DictationClean, "")
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "dictate clean: using the default prompt: %v\n", err)
 	}
 	system := fmt.Sprintf(tmpl, instructions, prompts.Directive(cfg.Digest.Language))
 	// The transcript rides the USER message so the >32 KB stdin path stays

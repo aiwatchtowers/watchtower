@@ -226,34 +226,19 @@ func (p *Pipeline) SetPromptStore(store *prompts.Store) {
 	p.promptStore = store
 }
 
-// getPrompt loads a prompt template from the store (if set), falling back to the
-// built-in const. Returns the template string and its version (0 = built-in).
-// Includes role-specific instructions if available.
-func (p *Pipeline) getPrompt(id, fallback string) (string, int) {
+// getPrompt resolves a prompt via prompts.Resolve (store row, else the
+// registered default) with the owner role's instruction prepended. Returns the
+// template and its version (0 = built-in).
+func (p *Pipeline) getPrompt(id string) (string, int) {
 	role := ""
 	if p.profile != nil {
 		role = p.profile.Role
 	}
-
-	if p.promptStore != nil {
-		tmpl, version, err := p.promptStore.GetForRole(id, role)
-		if err == nil {
-			// Prepend role instruction if available
-			roleInstr := prompts.GetRoleInstruction(role)
-			if roleInstr != "" {
-				tmpl = roleInstr + "\n\n" + tmpl
-			}
-			return tmpl, version
-		}
+	tmpl, version, err := prompts.Resolve(p.promptStore, id, role)
+	if err != nil {
+		p.logger.Printf("digest: %v — using the built-in default", err)
 	}
-
-	// Fallback to default
-	tmpl := fallback
-	roleInstr := prompts.GetRoleInstruction(role)
-	if roleInstr != "" {
-		tmpl = roleInstr + "\n\n" + tmpl
-	}
-	return tmpl, 0
+	return prompts.WithRoleInstruction(role, tmpl), version
 }
 
 // acquireDigestLock acquires an exclusive file lock to prevent concurrent digest runs.
@@ -1433,7 +1418,7 @@ func (p *Pipeline) runDailyRollupForDate(ctx context.Context, dayStart time.Time
 	previousContext := p.loadPreviousContext("", "daily")
 
 	dateStr := dayStart.Format("2006-01-02")
-	tmpl, pv := p.getPrompt(prompts.DigestDaily, dailyRollupPrompt)
+	tmpl, pv := p.getPrompt(prompts.DigestDaily)
 	fullPrompt := fmt.Sprintf(tmpl, dateStr, p.formatProfileContext(), p.languageInstruction(), previousContext, channelInput)
 	if prefs := p.learnedPrefs(); prefs != "" {
 		fullPrompt = prefs + "\n\n" + fullPrompt
@@ -1500,7 +1485,7 @@ func (p *Pipeline) RunWeeklyTrends(ctx context.Context) error {
 
 	fromStr := weekStart.Format("2006-01-02")
 	toStr := now.Format("2006-01-02")
-	tmpl, pv := p.getPrompt(prompts.DigestWeekly, weeklyTrendsPrompt)
+	tmpl, pv := p.getPrompt(prompts.DigestWeekly)
 	fullPrompt := fmt.Sprintf(tmpl, now.Format("2006-01-02"), fromStr, toStr, p.formatProfileContext(), p.languageInstruction(), previousContext, sb.String())
 	if prefs := p.learnedPrefs(); prefs != "" {
 		fullPrompt = prefs + "\n\n" + fullPrompt
@@ -1576,7 +1561,7 @@ func (p *Pipeline) RunPeriodSummary(ctx context.Context, from, to time.Time) (*D
 
 	fromStr := from.Format("2006-01-02")
 	toStr := to.Format("2006-01-02")
-	tmpl, _ := p.getPrompt(prompts.DigestPeriod, periodSummaryPrompt)
+	tmpl, _ := p.getPrompt(prompts.DigestPeriod)
 	fullPrompt := fmt.Sprintf(tmpl, fromStr, toStr, p.formatProfileContext(), p.languageInstruction(), sb.String())
 	if prefs := p.learnedPrefs(); prefs != "" {
 		fullPrompt = prefs + "\n\n" + fullPrompt
@@ -1665,7 +1650,7 @@ func (p *Pipeline) generateChannelDigest(ctx context.Context, channelID, channel
 		previousContext = p.loadPreviousContext(channelID, "channel")
 	}
 
-	tmpl, pv := p.getPrompt(prompts.DigestChannel, channelDigestPrompt)
+	tmpl, pv := p.getPrompt(prompts.DigestChannel)
 	fullPrompt := fmt.Sprintf(tmpl, channelName, fromStr, toStr, p.formatProfileContext(), p.languageInstruction(), previousContext, formatted)
 	if prefs := p.learnedPrefs(); prefs != "" {
 		fullPrompt = prefs + "\n\n" + fullPrompt
@@ -2069,7 +2054,7 @@ func (p *Pipeline) generateBatchDigest(ctx context.Context, entries []batchEntry
 		return nil, fmt.Errorf("no visible messages in batch")
 	}
 
-	tmpl, pv := p.getPrompt(prompts.DigestChannelBatch, channelBatchDigestPrompt)
+	tmpl, pv := p.getPrompt(prompts.DigestChannelBatch)
 	// The 5th slot is the batch-level previous-context note; per-channel
 	// context is embedded in each channel block instead, so it is always empty.
 	fullPrompt := fmt.Sprintf(tmpl, fromStr, toStr, p.formatProfileContext(), p.languageInstruction(), "", channelBlocks)

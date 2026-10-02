@@ -400,9 +400,9 @@ func runTargetsGenerate(cmd *cobra.Command, _ []string) error {
 	now := time.Now().Format("2006-01-02T15:04 (Monday)")
 	promptTmpl := prompts.Defaults[prompts.TasksGenerate]
 	if promptDB, dbErr := db.Open(cfg.DBPath()); dbErr == nil {
-		store := prompts.New(promptDB, nil)
-		if tmpl, _, err := store.Get(prompts.TasksGenerate); err == nil && tmpl != "" {
-			promptTmpl = tmpl
+		promptTmpl, _, err = prompts.Resolve(prompts.New(promptDB, nil), prompts.TasksGenerate, "")
+		if err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: using the default prompt: %v\n", err)
 		}
 		promptDB.Close()
 	}
@@ -534,10 +534,9 @@ func runTargetsAIUpdate(cmd *cobra.Command, args []string) error {
 		target.Text, target.Intent, target.Priority, target.DueDate, target.Status, target.SubItems, target.Notes)
 
 	now := time.Now().Format("2006-01-02T15:04 (Monday)")
-	store := prompts.New(database, nil)
-	promptTmpl, _, _ := store.Get(prompts.TasksUpdate)
-	if promptTmpl == "" {
-		promptTmpl = prompts.Defaults[prompts.TasksUpdate]
+	promptTmpl, _, err := prompts.Resolve(prompts.New(database, nil), prompts.TasksUpdate, "")
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: using the default prompt: %v\n", err)
 	}
 	systemPrompt := fmt.Sprintf(promptTmpl, now, targetContext)
 

@@ -181,7 +181,7 @@ func (p *Pipeline) prepareForEvent(ctx context.Context, event db.CalendarEvent, 
 	langDirective := prompts.Directive(p.cfg.Digest.Language)
 
 	// Load prompt template.
-	promptTmpl := p.loadPromptTemplate()
+	promptTmpl := p.getPrompt(prompts.MeetingPrep)
 
 	// Meeting description/agenda.
 	meetingDesc := "(no description or agenda provided)"
@@ -472,14 +472,14 @@ func (p *Pipeline) gatherSharedContext(attendees []attendeeEntry) string {
 	return sb.String()
 }
 
-func (p *Pipeline) loadPromptTemplate() string {
-	if p.promptStore != nil {
-		tmpl, _, err := p.promptStore.Get(prompts.MeetingPrep)
-		if err == nil && tmpl != "" {
-			return tmpl
-		}
+// getPrompt resolves a prompt via prompts.Resolve: the store row, else the
+// registered default.
+func (p *Pipeline) getPrompt(id string) string {
+	tmpl, _, err := prompts.Resolve(p.promptStore, id, "")
+	if err != nil {
+		p.logger.Printf("meeting: %v — using the built-in default", err)
 	}
-	return prompts.Defaults[prompts.MeetingPrep]
+	return tmpl
 }
 
 func formatProfile(profile *db.UserProfile) string {

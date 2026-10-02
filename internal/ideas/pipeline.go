@@ -108,16 +108,14 @@ func (p *Pipeline) logf(format string, args ...any) {
 	p.logger.Printf(format, args...)
 }
 
-// getPrompt returns a prompt template and its version, preferring an
-// owner-customized version from the prompt store over the compiled default.
+// getPrompt resolves a prompt via prompts.Resolve: the store row, else the
+// registered default.
 func (p *Pipeline) getPrompt(id string) (string, int) {
-	if p.promptStore != nil {
-		tmpl, version, err := p.promptStore.Get(id)
-		if err == nil {
-			return tmpl, version
-		}
+	tmpl, version, err := prompts.Resolve(p.promptStore, id, "")
+	if err != nil {
+		p.logf("ideas: %v — using the built-in default", err)
 	}
-	return prompts.Defaults[id], 0
+	return tmpl, version
 }
 
 // language returns the digest output language, defaulting via

@@ -18,7 +18,8 @@ type SlackTeam struct {
 	Name      string
 }
 
-// ToolsList names the read tools every tool-bearing surface has.
+// ToolsList names the read tools every tool-bearing surface has. Each name
+// must be a registered read tool (internal/tools/prompt_mentions_test.go).
 const ToolsList = `=== TOOLS (local Watchtower data — already connected; use them, never ask the user) ===
 - search_knowledge / get_knowledge_document: relevance search across Slack, mail, Jira, Confluence, calendar, transcripts, recaps, digests, decisions and ideas; open a hit in full by its ref.
 - list_messages: search/list raw Slack messages by person, channel, and/or keyword, newest first. At least one of person/channel/query is required.
