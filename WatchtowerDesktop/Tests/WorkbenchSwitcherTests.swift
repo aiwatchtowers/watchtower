@@ -182,6 +182,25 @@ final class WorkbenchSwitcherTests: XCTestCase {
         XCTAssertTrue(launches.isEmpty)
     }
 
+    func testPickingTheCurrentWorkbenchAtLevelOneOnlyDrillsIntoIt() async throws {
+        let a = try await workbench("alpha")
+        _ = try await session(a, "one", lastActiveAt: "2026-09-01T10:00:00Z")
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: a)
+        vm.layout.show(.board)
+        // ⌘⇧O then ⌥⌘S: the page stays, the panel is hidden at level 1, and
+        // the title row's switcher still names this workbench.
+        vm.showAllWorkbenches()
+        vm.panelVisible = false
+
+        await vm.switchTo(workbenchID: a)
+
+        XCTAssertEqual(vm.drilledWorkbenchID, a)
+        XCTAssertEqual(vm.layout.visiblePanes, [.board])
+        XCTAssertTrue(launches.isEmpty, "the session on file is not resumed")
+    }
+
     // MARK: - All workbenches, live counts, summaries
 
     func testShowAllWorkbenchesGoesToLevelOneAndKeepsThePage() async throws {

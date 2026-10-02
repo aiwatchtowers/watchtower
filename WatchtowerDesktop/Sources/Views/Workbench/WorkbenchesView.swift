@@ -43,7 +43,7 @@ struct WorkbenchesView: View {
                 PanelResizeHandle(width: $panelWidth, liveWidth: $dragPanelWidth)
             }
             VStack(spacing: 0) {
-                WorkbenchTitleRow(vm: vm, switcherActions: switcherActions) { goToOpen = true }
+                WorkbenchTitleRow(vm: vm, switcherActions: switcherActions, paletteOpen: goToOpen) { goToOpen = true }
                 Divider()
                 Group {
                     if let standalone = vm.selectedStandalone {
@@ -225,6 +225,9 @@ struct WorkbenchesView: View {
     /// "Choose another folder" leaves no empty folder behind.
     private func chooseNewWorkbenchFolder() {
         guard let url = runNewWorkbenchPanel() else { return }
+        // From the switcher (level 2, or the panel hidden): the list carries
+        // the create's progress and errors, so it goes on screen first.
+        vm.showAllWorkbenches()
         do {
             _ = try NewWorkbenchFolder.check(url)
         } catch {
@@ -315,10 +318,12 @@ struct WorkbenchesView: View {
 /// then on a workbench page it carries `▦ <workbench> ▾ › ● <session> ▾`
 /// (board #251, variant H) instead of the plain title. At its right, Go
 /// to… opens the go-to palette (⌘K, board #252). It also holds the tab's
-/// shortcuts, so they exist on the Workbench tab only.
+/// shortcuts, so they exist on the Workbench tab only, and not under the
+/// open palette (they would change the page behind it).
 struct WorkbenchTitleRow: View {
     @Bindable var vm: WorkbenchesViewModel
     let switcherActions: WorkbenchSwitcherActions
+    var paletteOpen = false
     let openGoTo: () -> Void
 
     var body: some View {
@@ -327,6 +332,7 @@ struct WorkbenchTitleRow: View {
                 Image(systemName: "sidebar.leading")
             }
             .keyboardShortcut("s", modifiers: [.command, .option])
+            .disabled(paletteOpen)
             .help(vm.panelVisible ? "Hide Sessions Panel (⌥⌘S)" : "Show Sessions Panel (⌥⌘S)")
             .accessibilityLabel(vm.panelVisible ? "Hide Sessions Panel" : "Show Sessions Panel")
             if let project = vm.headerSwitcherWorkbench {
@@ -376,6 +382,7 @@ struct WorkbenchTitleRow: View {
             }
             .disabled(!vm.hasWorkbenchPage)
         }
+        .disabled(paletteOpen)
         .hidden()
     }
 }

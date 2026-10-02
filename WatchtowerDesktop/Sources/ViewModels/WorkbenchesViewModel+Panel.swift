@@ -104,9 +104,13 @@ extension WorkbenchesViewModel {
     /// A workbench picked in the switcher (board #250): drilled into, and
     /// its most recent session opened — the live one focused last, else the
     /// latest active (a `claude` row resumes). No sessions: its page alone,
-    /// nothing starts. The workbench already on screen is left as it is.
+    /// nothing starts. The workbench already on screen is left as it is;
+    /// a panel at level 1 drills into it.
     func switchTo(workbenchID id: Int64) async {
-        guard selectedWorkbenchID != id || drilledWorkbenchID != id else { return }
+        guard selectedWorkbenchID != id else {
+            drill(into: id)
+            return
+        }
         drill(into: id)
         guard await loadSessions(projectID: id), selectedWorkbenchID == id else { return }
         let rows = terminalSessions[id] ?? []

@@ -18,6 +18,12 @@ extension WorkbenchesViewModel {
         }
     }
 
+    /// Every read behind the palette that failed: its sessions, the
+    /// switcher's rows, and the page's own list (the first section).
+    var goToErrors: [String] {
+        [goToError, switcherError, selectedWorkbenchID.flatMap { sessionLoadErrors[$0] }].compactMap(\.self)
+    }
+
     /// The palette's sections for `query` (`GoToRanking`): the page's own
     /// sessions in the panel's order first, when a workbench page is shown.
     func goToSections(query: String) -> [GoToSection] {

@@ -357,4 +357,56 @@ final class WorkbenchGoToPaletteTests: XCTestCase {
 
         XCTAssertEqual(opened, 1)
     }
+
+    func testTheTitleRowShortcutsAreOffUnderThePalette() async throws {
+        let vm = makeVM()
+        let actions = WorkbenchSwitcherActions(newWorkbench: {}, showAll: {})
+
+        let open = try WorkbenchTitleRow(vm: vm, switcherActions: actions, paletteOpen: true) {}
+            .inspect().findAll(ViewType.Button.self)
+        let closed = try WorkbenchTitleRow(vm: vm, switcherActions: actions, paletteOpen: false) {}
+            .inspect().findAll(ViewType.Button.self)
+
+        // The toggle, Go to…, ⌘⇧O, ⌘T and ⌘1…⌘9.
+        XCTAssertEqual(open.count, 4 + SessionSwitcherPresentation.maxShortcut)
+        let goTo = { (button: InspectableView<ViewType.Button>) in
+            (try? button.accessibilityLabel().string()) == "Go to…"
+        }
+        XCTAssertTrue(open.filter { !goTo($0) }.allSatisfy { $0.isDisabled() }, "nothing changes the page behind it")
+        XCTAssertFalse(open.first(where: goTo)?.isDisabled() ?? true)
+        // Closed: the toggle and ⌘⇧O work; the session keys need a page.
+        let toggle = try XCTUnwrap(closed.first { (try? $0.accessibilityLabel().string()) == "Hide Sessions Panel" })
+        XCTAssertFalse(toggle.isDisabled())
+        XCTAssertEqual(closed.filter { !$0.isDisabled() }.count, 3)
+    }
+
+    // MARK: - Failed reads
+
+    func testAFailedReadKeepsTheRowsBesideItsErrorsUntilTheNextSuccess() async throws {
+        let a = try await workbench("alpha")
+        let b = try await workbench("beta")
+        _ = try await session(a, "a-one", lastActiveAt: "2026-09-03T10:00:00Z")
+        _ = try await session(b, "b-one", lastActiveAt: "2026-09-02T10:00:00Z")
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: a)
+        await vm.loadGoToPalette()
+        XCTAssertEqual(vm.goToErrors, [])
+        let sessions = vm.goToSessions.map(\.id)
+
+        try await pool.write { try $0.execute(sql: "ALTER TABLE terminal_sessions RENAME TO terminal_sessions_away") }
+        await vm.loadGoToPalette()
+
+        // Its sessions, the switcher's rows and the page's own list all failed.
+        XCTAssertEqual(vm.goToErrors.count, 3, "\(vm.goToErrors)")
+        XCTAssertEqual(vm.goToSessions.map(\.id), sessions, "the last rows stay")
+        XCTAssertEqual(vm.switcherSummaries.count, 2)
+        let palette = GoToPalette(vm: vm) {}
+        XCTAssertNoThrow(try palette.inspect().find(text: vm.goToErrors.joined(separator: "\n")))
+
+        try await pool.write { try $0.execute(sql: "ALTER TABLE terminal_sessions_away RENAME TO terminal_sessions") }
+        await vm.loadGoToPalette()
+
+        XCTAssertEqual(vm.goToErrors, [])
+    }
 }

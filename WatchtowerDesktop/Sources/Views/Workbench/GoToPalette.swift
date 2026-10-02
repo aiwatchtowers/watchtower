@@ -103,8 +103,9 @@ struct GoToPalette: View {
 
     @ViewBuilder
     private func results(_ sections: [GoToSection], selectedID: String?) -> some View {
-        if let error = vm.goToError ?? vm.switcherError {
-            Text(error)
+        let errors = vm.goToErrors
+        if !errors.isEmpty {
+            Text(errors.joined(separator: "\n"))
                 .font(.caption)
                 .foregroundStyle(.red)
                 .textSelection(.enabled)
@@ -113,7 +114,8 @@ struct GoToPalette: View {
                 .padding(.top, 8)
         }
         if sections.isEmpty {
-            if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // A failed read is no proof that nothing matches.
+            if errors.isEmpty, !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Text("No session or workbench matches.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
