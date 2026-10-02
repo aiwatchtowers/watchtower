@@ -98,6 +98,49 @@ func TestGmailExtract_ThreadBecomesOneEpisode(t *testing.T) {
 	assert.Zero(t, slackWM)
 }
 
+// TestGmailExtract_ExtraEpisodeForOneThreadKeepsTheOthers: a reply with two
+// episodes for the first thread of a two-thread batch still extracts the second
+// thread — the extra episode folds into the first thread's node instead of
+// pushing the second thread's episode past a positional cap.
+func TestGmailExtract_ExtraEpisodeForOneThreadKeepsTheOthers(t *testing.T) {
+	v, d := newTestVault(t), newTestDB(t)
+	seedWorkspaceRow(t, d)
+	iso1, u1 := gmailMsgTime(0)
+	iso2, u2 := gmailMsgTime(60)
+	iso3, u3 := gmailMsgTime(120)
+	seedGmailMessage(t, d, "m1", "thr-1", "a@example.com", "Ann", "Budget", "Q?", iso1)
+	seedGmailMessage(t, d, "m2", "thr-1", "b@example.com", "Bob", "Re: Budget", "A.", iso2)
+	seedGmailMessage(t, d, "m3", "thr-2", "c@example.com", "Cy", "Offsite", "When?", iso3)
+
+	ep := func(title, ref string, ts int64) string {
+		return strings.TrimSuffix(strings.TrimPrefix(emailEpisodeJSON(title, [2]string{ref, fmt.Sprintf("%d", ts)}), "["), "]")
+	}
+	gen := &fakeGen{usage: digest.Usage{TotalAPITokens: 1}, reply: func(string) (string, error) {
+		return "[" + ep("Budget question", "mail:m1", u1) + ", " + ep("Budget answer", "mail:m2", u2) + ", " +
+			ep("Offsite date", "mail:m3", u3) + "]", nil
+	}}
+	cfg := gmailPipelineConfig()
+	cfg.BatchMaxChannels = 2 // both threads share one extraction call
+	p := NewPipeline(d, v, gen, cfg, t.Logf)
+
+	_, err := p.Run(context.Background())
+	require.NoError(t, err)
+	ids := liveEpisodeNodes(t, d)
+	require.Len(t, ids, 2, "one episode node per thread")
+	var bodies string
+	for _, id := range ids {
+		node, rerr := v.ReadNode(id)
+		require.NoError(t, rerr)
+		bodies += node.Body
+	}
+	assert.Contains(t, bodies, "mail:m3", "the second thread's episode is not cut")
+	assert.Contains(t, bodies, "mail:m2", "the extra first-thread episode folds into its node")
+
+	wm, err := d.MemoryGmailWatermark(gmailTestAccountID)
+	require.NoError(t, err)
+	assert.Equal(t, float64(u3), wm)
+}
+
 // TestGmailExtract_ShapeDegenerateFreezesWatermark: a zero-ref (schema-drifted)
 // thread freezes the Gmail watermark for its batch while a good sibling thread
 // commits (BatchMaxChannels=1 → one thread per batch). MEM-04 over threads.
