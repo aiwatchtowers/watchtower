@@ -392,3 +392,21 @@ func TestProj10_FailingHookAfterTheSwitchCountsAsSwitched(t *testing.T) {
 	assert.Contains(t, res.Warning, "hook says no")
 	assert.Equal(t, "refs/heads/topic", gitIn(t, dir, "symbolic-ref", "HEAD"))
 }
+
+// An ignored file the target branch tracks is the owner's: the switch
+// refuses to overwrite it instead of silently replacing its content.
+func TestProj10_SwitchNeverOverwritesAnIgnoredFile(t *testing.T) {
+	dir := newRepo(t)
+	gitIn(t, dir, "switch", "-q", "feature")
+	commit(t, dir, ".env", "SECRET=feature\n", "track .env")
+	gitIn(t, dir, "switch", "-q", "main")
+	commit(t, dir, ".gitignore", ".env\n", "ignore .env")
+	writeFile(t, dir, ".env", "SECRET=owner\n")
+	require.False(t, ReadStatus(context.Background(), options(dir, &recorder{})).Dirty, "an ignored file is not a change")
+
+	res := Switch(context.Background(), options(dir, &recorder{}), SwitchRequest{Branch: "feature"})
+	assert.False(t, res.Switched, "%+v", res)
+	assert.Contains(t, res.Error, ".env")
+	assert.Equal(t, "SECRET=owner\n", readFile(t, dir, ".env"), "the owner's file is untouched")
+	assert.Equal(t, "refs/heads/main", gitIn(t, dir, "symbolic-ref", "HEAD"))
+}

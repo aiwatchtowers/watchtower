@@ -131,7 +131,8 @@ func Switch(ctx context.Context, o Options, req SwitchRequest) (res SwitchResult
 			return res
 		}
 	}
-	if _, err := r.git(ctx, "switch", "--no-guess", target.Name); err != nil {
+	// git otherwise overwrites an ignored file the target branch tracks.
+	if _, err := r.git(ctx, "switch", "--no-guess", "--no-overwrite-ignore", target.Name); err != nil {
 		if !r.headIs(ctx, target.Name) {
 			res.Error = gitError(err)
 			res.restore(ctx, r)
