@@ -2,6 +2,7 @@ package jira
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -162,20 +163,22 @@ func TestClassifyFields_Guards(t *testing.T) {
 
 // MapFieldsForBoard samples the board's issues, sends only populated useful
 // fields to the LLM, and stores its roles — dropping "skip", empty roles and
-// any field id the LLM invented that was not in the sample.
+// any field id the LLM was not shown (invented, or useful but unpopulated).
 func TestMapFieldsForBoard_StoresSampledRoles(t *testing.T) {
 	d := openTestDB(t)
 	seedCustomField(t, d, "customfield_1", "Story Points", "number", true, "estimation")
 	seedCustomField(t, d, "customfield_2", "Team", "option", true, "categorization")
 	seedCustomField(t, d, "customfield_3", "Never set", "string", true, "tracking")
+	seedCustomField(t, d, "customfield_4", "Region", "string", true, "categorization")
 	srv := fieldsServer(t, `[]`, `{"issues":[
-		{"fields":{"customfield_1":3,"customfield_2":{"value":"Core"},"customfield_3":null}},
+		{"fields":{"customfield_1":3,"customfield_2":{"value":"Core"},"customfield_3":null,"customfield_4":"EU"}},
 		{"fields":{"customfield_1":5,"customfield_9":"not useful"}}
 	]}`)
 	gen := &scriptedAI{reply: `[
 		{"id":"customfield_1","role":"story_points"},
 		{"id":"customfield_2","role":"skip"},
-		{"id":"customfield_3","role":""},
+		{"id":"customfield_3","role":"team"},
+		{"id":"customfield_4","role":""},
 		{"id":"customfield_777","role":"team"}
 	]`}
 	fd := NewFieldDiscovery(newTestClient(t, srv.URL, "", "at"), d, gen, 1)
@@ -216,4 +219,45 @@ func TestMapFieldsForBoard_EarlyExits(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, got)
 	assert.Empty(t, gen.calls)
+}
+
+// A reply that names only fields the LLM was never shown keeps the stored
+// map instead of replacing it with an empty one.
+func TestMapFieldsForBoard_AllUnknownKeepsStoredMap(t *testing.T) {
+	d := openTestDB(t)
+	seedCustomField(t, d, "customfield_1", "Story Points", "number", true, "estimation")
+	require.NoError(t, d.UpsertJiraBoardFieldMap(1, 42, []db.JiraBoardFieldMap{{FieldID: "customfield_1", Role: "story_points"}}))
+	srv := fieldsServer(t, `[]`, `{"issues":[{"fields":{"customfield_1":3}}]}`)
+	gen := &scriptedAI{reply: `[{"id":"customfield_777","role":"team"}]`}
+	fd := NewFieldDiscovery(newTestClient(t, srv.URL, "", "at"), d, gen, 1)
+
+	_, err := fd.MapFieldsForBoard(context.Background(), db.JiraBoard{ID: 42, ProjectKey: "CORE"})
+	assert.ErrorContains(t, err, "only unknown fields")
+	stored, err := d.GetJiraBoardFieldMap(1, 42)
+	require.NoError(t, err)
+	require.Len(t, stored, 1, "the working map survives a bad reply")
+	assert.Equal(t, "customfield_1", stored[0].FieldID)
+}
+
+// Issue.UnmarshalJSON keeps customfield_* values (null included) as raw
+// bytes, leaves standard fields to IssueFields, and passes errors through.
+func TestIssueUnmarshalJSON_CustomFields(t *testing.T) {
+	var is Issue
+	require.NoError(t, json.Unmarshal([]byte(`{"id":"1","key":"A-1","fields":{
+		"summary":"s","customfield_1":5,"customfield_2":null,"customfield_3":{"value":"x"}}}`), &is))
+	assert.Equal(t, "s", is.Fields.Summary)
+	assert.Equal(t, map[string]json.RawMessage{
+		"customfield_1": json.RawMessage(`5`),
+		"customfield_2": json.RawMessage(`null`),
+		"customfield_3": json.RawMessage(`{"value":"x"}`),
+	}, is.CustomFields)
+
+	var bare Issue
+	require.NoError(t, json.Unmarshal([]byte(`{"id":"2","key":"A-2","fields":{"summary":"t"}}`), &bare))
+	assert.Nil(t, bare.CustomFields)
+	require.NoError(t, json.Unmarshal([]byte(`{"id":"3","key":"A-3"}`), &bare))
+	assert.Equal(t, "A-3", bare.Key)
+
+	assert.Error(t, json.Unmarshal([]byte(`{"id":`), &is))
+	assert.Error(t, json.Unmarshal([]byte(`{"fields":"not an object"}`), &is))
 }

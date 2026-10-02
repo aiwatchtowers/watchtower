@@ -366,13 +366,12 @@ func (c *Client) getWithQuery(ctx context.Context, path string, params url.Value
 // SearchIssues executes a JQL search query with cursor-based pagination.
 // Pass empty nextPageToken for the first page.
 func (c *Client) SearchIssues(ctx context.Context, jql string, maxResults int, nextPageToken string) (*SearchResult, error) {
-	return c.SearchIssuesWithFields(ctx, jql, maxResults, nextPageToken, nil)
+	return c.searchIssues(ctx, jql, maxResults, nextPageToken, nil)
 }
 
-// SearchIssuesWithFields is SearchIssues that also requests extraFields
-// (custom field ids) on top of searchFields; they come back in
-// Issue.CustomFields.
-func (c *Client) SearchIssuesWithFields(ctx context.Context, jql string, maxResults int, nextPageToken string, extraFields []string) (*SearchResult, error) {
+// searchIssues is SearchIssues that also requests extraFields (custom field
+// ids) on top of searchFields; they come back in Issue.CustomFields.
+func (c *Client) searchIssues(ctx context.Context, jql string, maxResults int, nextPageToken string, extraFields []string) (*SearchResult, error) {
 	fields := append(slices.Clone(searchFields), extraFields...)
 	params := url.Values{
 		"jql":        {jql},

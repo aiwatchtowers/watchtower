@@ -57,8 +57,8 @@ Two bugs found and fixed:
   search API never returned `customfield_*` values, and `Issue` decoded only the standard fields.
   `convertIssue`'s extraction therefore always came up empty: `jira_issues.story_points` and
   `custom_fields_json` stayed empty on every install (workload, project map and epic progress read
-  them), and `planned_end` never stood in for a missing due date. `syncWithJQL` now requests the
-  board's mapped field ids (`SearchIssuesWithFields`), and `Issue.CustomFields` keeps the raw values.
+  them), and `planned_end` never stood in for a missing due date. `syncWithJQL` now reads the
+  board's field map once per pass and requests its field ids, and `Issue.CustomFields` keeps the raw values.
   Issues already synced pick the values up the next time they change, or on a full re-sync.
 - `MapFieldsForBoard` stored a role for any field id the LLM returned, including ids it was never
   shown. An invented id reached `jira_board_field_map` and the board profile as a nameless field.

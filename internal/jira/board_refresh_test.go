@@ -121,7 +121,7 @@ func TestCheckConfigChanged(t *testing.T) {
 }
 
 // AnalyzeAllSelected counts the boards it analyzed; a failing board is
-// logged and skipped, never an error for the whole pass.
+// skipped, never an error for the whole pass.
 func TestAnalyzeAllSelected(t *testing.T) {
 	d := refreshTestDB(t, "oldhash", "", "")
 	n, err := NewBoardAnalyzer(nil, d, &scriptedAI{reply: freshProfileJSON}, 1).AnalyzeAllSelected(context.Background())

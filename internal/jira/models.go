@@ -34,7 +34,8 @@ type Issue struct {
 
 	// CustomFields holds the issue's customfield_* values as the API returned
 	// them (IssueFields decodes only the standard fields). Filled by
-	// UnmarshalJSON; never re-encoded.
+	// UnmarshalJSON; never re-encoded, so jira_issues.raw_json does not
+	// carry them.
 	CustomFields map[string]json.RawMessage `json:"-"`
 }
 

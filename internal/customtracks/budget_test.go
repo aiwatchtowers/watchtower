@@ -223,7 +223,10 @@ func TestRunShutdownIsNotCountedAsFailure(t *testing.T) {
 // nothing is due, a fresh track is due, and a track that spent today's
 // failure budget is not — so the daemon opens no empty tracked run for it.
 func TestHasDueTracks(t *testing.T) {
-	d, _ := db.Open(":memory:")
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer d.Close()
 	seedActivity(t, d)
 	gen := newScripted("BROKEN")
