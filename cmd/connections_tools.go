@@ -249,7 +249,11 @@ func printConnectionTools(w io.Writer, conn db.ExternalConnection, asJSON bool) 
 		return enc.Encode(wire)
 	}
 	if !conn.ToolsListed {
-		fmt.Fprintf(w, "Connection #%d %s: tools never listed, so none is available to the chat.\n", conn.ID, conn.Name)
+		state := "tools never listed"
+		if conn.ToolsStale {
+			state = "tools listed before write marks were recorded, so the list is stale"
+		}
+		fmt.Fprintf(w, "Connection #%d %s: %s, so none is available to the chat.\n", conn.ID, conn.Name, state)
 		fmt.Fprintf(w, "Run 'watchtower connections tools %d --refresh' to list them.\n", conn.ID)
 		return nil
 	}

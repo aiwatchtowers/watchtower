@@ -211,7 +211,9 @@ func mountConnection(cfg *config.Config, database *db.DB, c db.ExternalConnectio
 	}
 	if !c.ToolsListed {
 		// Never listed (added before QC-02's allowlist, or the listing at
-		// enable time failed): list once now and cache it. No list mounts
+		// enable time failed), or a stale list cached before tools carried
+		// their destructive mark (db.ExternalConnection.ToolsStale): list
+		// once now and cache it. No list mounts
 		// nothing from this server — fail closed, an owner allow list
 		// included, since only a listing shows which tools are writes.
 		if recentlyFailed(c.ToolsListFailedAt) {

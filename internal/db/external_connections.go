@@ -27,6 +27,11 @@ type ExternalConnection struct {
 	Tools         []ExternalTool
 	ToolsListed   bool
 	ToolsListedAt string
+	// ToolsStale marks a cached list taken before tools carried their
+	// destructive mark: it is read as never listed (ToolsListed false, no
+	// Tools), so a launch lists the tools again before mounting any and
+	// fails closed if that listing fails.
+	ToolsStale bool
 	// ToolsListFailedAt is the last failed tools/list ('' = none since the
 	// last success), so a chat launch can back off a dead server.
 	ToolsListFailedAt string
@@ -43,7 +48,9 @@ type ExternalTool struct {
 	ReadOnlyHint bool   `json:"read_only_hint"`
 	// DestructiveHint is the server's explicit destructiveHint: true. It
 	// makes the tool a write even beside a (contradictory) readOnlyHint.
-	DestructiveHint bool `json:"destructive_hint,omitempty"`
+	// Always stored, false included: a cached tool without the key predates
+	// the field (see ToolsStale).
+	DestructiveHint bool `json:"destructive_hint"`
 	Annotated       bool `json:"annotated"`
 }
 
@@ -78,10 +85,15 @@ func scanExternalConnection(scanner interface{ Scan(dest ...any) error }) (Exter
 		return ExternalConnection{}, fmt.Errorf("decoding args_json: %w", err)
 	}
 	if toolsJSON != "" {
-		if err := json.Unmarshal([]byte(toolsJSON), &c.Tools); err != nil {
-			return ExternalConnection{}, fmt.Errorf("decoding tools_json: %w", err)
+		tools, stale, err := decodeCachedTools(toolsJSON)
+		if err != nil {
+			return ExternalConnection{}, err
 		}
-		c.ToolsListed = true
+		if stale {
+			c.ToolsStale, c.ToolsListedAt = true, ""
+		} else {
+			c.Tools, c.ToolsListed = tools, true
+		}
 	}
 	if allowJSON.Valid {
 		c.AllowTools = []string{}
@@ -90,6 +102,28 @@ func scanExternalConnection(scanner interface{ Scan(dest ...any) error }) (Exter
 		}
 	}
 	return c, nil
+}
+
+// decodeCachedTools decodes tools_json; stale reports a list cached before
+// tools carried their destructive mark (a tool without the key), whose write
+// verdicts can no longer be trusted (QC-02).
+func decodeCachedTools(toolsJSON string) (tools []ExternalTool, stale bool, err error) {
+	var stored []struct {
+		ExternalTool
+		Destructive *bool `json:"destructive_hint"` // shadows the embedded field
+	}
+	if err := json.Unmarshal([]byte(toolsJSON), &stored); err != nil {
+		return nil, false, fmt.Errorf("decoding tools_json: %w", err)
+	}
+	tools = make([]ExternalTool, 0, len(stored))
+	for _, t := range stored {
+		if t.Destructive == nil {
+			return nil, true, nil
+		}
+		t.DestructiveHint = *t.Destructive
+		tools = append(tools, t.ExternalTool)
+	}
+	return tools, false, nil
 }
 
 // InsertExternalConnection inserts a new external connection and returns its

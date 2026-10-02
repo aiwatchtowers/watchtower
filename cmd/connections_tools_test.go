@@ -487,3 +487,66 @@ func TestConnectionsTools_JSONForTheDesktop(t *testing.T) {
 	assert.Equal(t, []string{}, conn.AllowTools)
 	assert.Equal(t, "error", conn.Status, "no allowed tool: the row says the connection is not mounted")
 }
+
+// insertPreDestructiveCache writes a tool list the way it was cached before
+// tools carried their destructive mark (no destructive_hint key).
+func insertPreDestructiveCache(t *testing.T, database *db.DB, id int64) {
+	t.Helper()
+	_, err := database.Exec(`INSERT INTO external_connection_tools (connection_id, tools_json, listed_at)
+        VALUES (?, ?, ?)`, id,
+		`[{"name":"getIssue","read_only_hint":true,"annotated":true},{"name":"purgeCache","read_only_hint":true,"annotated":true}]`,
+		time.Now().UTC().Format(time.RFC3339))
+	require.NoError(t, err)
+}
+
+// TestQC02_StaleCacheIsRelistedBeforeMount: a list cached before tools
+// carried their destructive mark cannot show a destructive tool as a write,
+// so a launch lists the tools again before mounting any — and a tool the
+// fresh listing marks destructive stays out of the chat.
+func TestQC02_StaleCacheIsRelistedBeforeMount(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	id := insertStaticConnection(t, database, cfg)
+	insertPreDestructiveCache(t, database, id)
+	calls := stubToolsList(t, []db.ExternalTool{
+		{Name: "getIssue", Annotated: true, ReadOnlyHint: true},
+		{Name: "purgeCache", Annotated: true, ReadOnlyHint: true, DestructiveHint: true},
+	}, nil)
+
+	servers := loadExternalMCPServers(cfg, cfg.DBPath())
+	require.Len(t, servers, 1)
+	assert.Equal(t, []string{"getIssue"}, servers[0].AllowTools)
+	assert.Equal(t, []string{"purgeCache"}, servers[0].DenyTools)
+	assert.Len(t, *calls, 1, "the stale list was replaced by a fresh listing")
+
+	conn, err := database.GetExternalConnection(id)
+	require.NoError(t, err)
+	assert.False(t, conn.ToolsStale)
+	assert.True(t, conn.ToolsListed)
+	require.Len(t, loadExternalMCPServers(cfg, cfg.DBPath()), 1)
+	assert.Len(t, *calls, 1, "the fresh list is used from the cache afterwards")
+}
+
+// TestQC02_StaleCacheFailsClosed: when the re-listing fails, the stale list
+// is never used: the connection is not mounted and its row says why.
+func TestQC02_StaleCacheFailsClosed(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	id := insertStaticConnection(t, database, cfg)
+	insertPreDestructiveCache(t, database, id)
+	stubToolsList(t, nil, errors.New("connection refused"))
+
+	assert.Empty(t, loadExternalMCPServers(cfg, cfg.DBPath()))
+	conn, err := database.GetExternalConnection(id)
+	require.NoError(t, err)
+	assert.Equal(t, "error", conn.Status)
+	assert.Contains(t, conn.Error, "listing its tools failed")
+
+	out, err := runConnections(t, "", "tools", strconv.FormatInt(id, 10))
+	require.NoError(t, err, out)
+	assert.Contains(t, out, "stale")
+}
