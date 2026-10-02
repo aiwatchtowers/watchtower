@@ -1,6 +1,12 @@
 import CoreServices
 import Foundation
 
+/// What the workbench view model holds per watched folder; a seam for tests.
+@MainActor
+protocol GitRefsWatching: AnyObject {
+    func stop()
+}
+
 /// Watches a workbench folder's git dir and common dir with FSEvents and
 /// calls `onChange` when something the header shows may have moved: HEAD,
 /// the index, a local or remote-tracking ref, packed-refs, or another
@@ -10,7 +16,7 @@ import Foundation
 /// One callback per FSEvents batch (`latency` coalesces them; NoDefer
 /// delivers the first one at once). `stop()` silences it for good.
 @MainActor
-final class GitRefsWatcher {
+final class GitRefsWatcher: GitRefsWatching {
     /// FSEvents holds this, not the watcher, so a callback after the watcher
     /// is gone finds nil instead of a freed object.
     private final class Relay {
