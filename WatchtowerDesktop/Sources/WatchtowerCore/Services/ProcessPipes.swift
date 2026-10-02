@@ -117,22 +117,29 @@ package enum ProcessPipes {
     }
 
     /// `run` under a watchdog, for a child that may hang (a provider CLI's
-    /// version skew): once `timeout` passes it is terminated (SIGTERM) and
-    /// `timedOut` says so, so the caller can tell a hang from a failure.
+    /// version skew): once `timeout` passes it is terminated (SIGTERM, then
+    /// SIGKILL after `killGrace`) and `timedOut` says so, so the caller can
+    /// tell a hang from a failure. A grandchild still holding the pipes can
+    /// postpone the return until it exits too.
     package static func run(
         _ process: Process,
-        timeout: Duration
+        timeout: Duration,
+        killGrace: Duration = .seconds(2)
     ) async -> (output: ProcessOutput, timedOut: Bool) {
-        let timedOut = OSAllocatedUnfairLock(initialState: false)
+        let fired = OSAllocatedUnfairLock(initialState: false)
         let watchdog = Task.detached {
             try? await Task.sleep(for: timeout)
             guard !Task.isCancelled, process.isRunning else { return }
-            timedOut.withLock { $0 = true }
+            fired.withLock { $0 = true }
             process.terminate()
+            try? await Task.sleep(for: killGrace)
+            if !Task.isCancelled, process.isRunning { kill(process.processIdentifier, SIGKILL) }
         }
         let output = await run(process)
         watchdog.cancel()
-        return (output, timedOut.withLock { $0 })
+        // A child that exited on its own right at the deadline is no hang.
+        let timedOut = fired.withLock { $0 } && process.terminationReason == .uncaughtSignal
+        return (output, timedOut)
     }
 }
 

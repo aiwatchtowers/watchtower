@@ -61,7 +61,7 @@ Scenario: C is merged into A, then the owner merges A into B. The candidate filt
 
 The recap sheet invites "paste a recap, transcript fragment, or rough notes". Target extraction and extract-topics also take arbitrary pasted text, and all of these go in as a single argv element. A very large paste (macOS ARG_MAX is ~1 MB including the environment) makes `posix_spawn` fail with "Argument list too long", surfaced as a cryptic launch failure. Meanwhile every paste of meeting content is readable by any local process via `ps` for the call's duration. Transcripts already travel via `--transcript-file` "never argv" for exactly this reason. Fix: add `--text-file`/stdin to `targets extract`, `meeting-prep recap` and `extract-topics`, and use a temp file (the `TranscriptSaveService` pattern).
 
-**Status (fix/desktop-low-bundle):** fixed: the four commands (plus `tracks create`) take `--text-file`; the Desktop writes an owner-only temp file via `CLITextFile` and removes it after the call.
+**Status (fix/desktop-low-bundle):** fixed: `targets extract`, `meeting-prep recap`, `meeting-prep extract-topics` and `tracks create` take `--text-file` (mutually exclusive with `--text`); the Desktop writes an owner-only temp file via `CLITextFile` and removes it after the call. Still on argv, left for a follow-up: `meeting-prep --user-notes` (MeetingPrepViewModel) and `targets promote-sub-item --text` (usually short); `DictationCleanService`/`TranscriptSaveService` could move onto `CLITextFile` too.
 
 ## "Silent" auth trust-cert actually edits user trust settings, which macOS gates behind a password dialog
 

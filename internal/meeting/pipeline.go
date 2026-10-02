@@ -31,8 +31,8 @@ type MeetingPrepResult struct {
 }
 
 // normalizeSlices turns the arrays the model omitted (or wrote as null) into
-// empty ones, so the wire shape is always `[]`: the Desktop decodes them as
-// non-optional arrays and would reject a valid prep over a missing key.
+// empty ones, so a fresh prep's wire shape is always `[]` (the Desktop also
+// tolerates null, for preps cached before this normalisation).
 func (r *MeetingPrepResult) normalizeSlices() {
 	if r.TalkingPoints == nil {
 		r.TalkingPoints = []TalkingPoint{}
@@ -258,6 +258,12 @@ func (p *Pipeline) prepareForEvent(ctx context.Context, event db.CalendarEvent, 
 	result.Title = event.Title
 	result.StartTime = event.StartTime
 	result.normalizeSlices()
+	// One omitted section is fine (no people_notes on a solo event); none at
+	// all means the answer was not a prep ({} after cleanJSON, renamed or
+	// wrapped keys) and must not be cached as one.
+	if len(result.TalkingPoints)+len(result.OpenItems)+len(result.PeopleNotes)+len(result.SuggestedPrep) == 0 {
+		return nil, fmt.Errorf("AI response has no prep sections (raw: %.500s)", aiResponse)
+	}
 
 	p.logger.Printf("meeting: completed prep for %q (%d talking points, %d open items)",
 		event.Title, len(result.TalkingPoints), len(result.OpenItems))

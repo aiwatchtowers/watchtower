@@ -125,6 +125,17 @@ struct ProcessPipesTests {
         #expect(ContinuousClock.now - started < .seconds(10))
     }
 
+    @Test("run with a timeout kills a child that ignores SIGTERM")
+    func runTimeoutKillsSigtermIgnorer() async {
+        // `exec` keeps one process: the trap-ignoring shell becomes the sleeper.
+        let process = Self.shell("trap '' TERM; exec /bin/sleep 30")
+        let started = ContinuousClock.now
+        let (_, timedOut) = await ProcessPipes.run(process, timeout: .milliseconds(300), killGrace: .milliseconds(300))
+        #expect(timedOut)
+        #expect(process.terminationStatus == SIGKILL)
+        #expect(ContinuousClock.now - started < .seconds(10))
+    }
+
     @Test("run with a timeout leaves a child that finishes in time alone")
     func runTimeoutFinishesInTime() async {
         let (output, timedOut) = await ProcessPipes.run(Self.shell("echo ok"), timeout: .seconds(10))

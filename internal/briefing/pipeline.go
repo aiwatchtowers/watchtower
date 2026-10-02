@@ -410,6 +410,7 @@ func (p *Pipeline) gatherInbox() (string, bool) {
 			typeLabel = "DM"
 		}
 		p.shown.addInbox(item.ID)
+		p.shown.addPerson(item.SenderUserID)
 		sb.WriteString(fmt.Sprintf("- [inbox_id=%d %s %s] from %s: %s\n",
 			item.ID, item.Priority, typeLabel, item.SenderUserID, item.Snippet))
 		if item.AIReason != "" {

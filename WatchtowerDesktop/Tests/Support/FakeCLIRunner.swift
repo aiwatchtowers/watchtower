@@ -69,14 +69,12 @@ package final class FakeCLIRunner: CLIRunnerProtocol, @unchecked Sendable {
     }
 
     private func record(_ args: [String]) {
-        var textFile: String??
-        if let flag = args.firstIndex(of: "--text-file"), args.indices.contains(flag + 1) {
-            textFile = .some(try? String(contentsOfFile: args[flag + 1], encoding: .utf8))
-        }
         lock.lock()
+        defer { lock.unlock() }
         recordedInvocations.append(args)
-        if let textFile { recordedTextFiles.append(textFile) }
-        lock.unlock()
+        if let flag = args.firstIndex(of: "--text-file"), args.indices.contains(flag + 1) {
+            recordedTextFiles.append(try? String(contentsOfFile: args[flag + 1], encoding: .utf8))
+        }
     }
 
     /// Suspends until this instance is told a cancellation happened (via the

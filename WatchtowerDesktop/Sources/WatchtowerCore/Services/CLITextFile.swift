@@ -11,12 +11,11 @@ package enum CLITextFile {
     ) async throws -> T {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("watchtower-text-\(UUID().uuidString).txt")
-        guard FileManager.default.createFile(
-            atPath: url.path, contents: Data(text.utf8), attributes: [.posixPermissions: 0o600]
-        ) else {
-            throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: url.path])
-        }
+        // Thrown errors carry the cause (disk full, permissions); `$TMPDIR`
+        // is per-user 0700, and the file is narrowed to 0600 before any use.
+        try Data(text.utf8).write(to: url, options: .withoutOverwriting)
         defer { try? FileManager.default.removeItem(at: url) }
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         return try await body(url.path)
     }
 }

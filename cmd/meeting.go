@@ -60,6 +60,7 @@ func init() {
 	meetingPrepCmd.AddCommand(meetingExtractTopicsCmd)
 	meetingExtractTopicsCmd.Flags().StringVar(&meetingExtractTopicsFlagText, "text", "", "raw text to split into topics (this or --text-file is required)")
 	meetingExtractTopicsCmd.Flags().StringVar(&meetingExtractTopicsFlagTextFile, "text-file", "", "read the text from this file instead of --text")
+	meetingExtractTopicsCmd.MarkFlagsMutuallyExclusive("text", "text-file")
 	meetingExtractTopicsCmd.Flags().StringVar(&meetingExtractTopicsFlagEventID, "event-id", "", "optional event id for title context")
 	meetingExtractTopicsCmd.Flags().BoolVar(&meetingExtractTopicsFlagJSON, "json", false, "output as JSON (default format is also JSON — kept for symmetry)")
 
@@ -67,6 +68,7 @@ func init() {
 	meetingRecapCmd.Flags().StringVar(&meetingRecapFlagEventID, "event-id", "", "calendar event id (required)")
 	meetingRecapCmd.Flags().StringVar(&meetingRecapFlagText, "text", "", "raw recap text (this or --text-file is required)")
 	meetingRecapCmd.Flags().StringVar(&meetingRecapFlagTextFile, "text-file", "", "read the recap text from this file instead of --text")
+	meetingRecapCmd.MarkFlagsMutuallyExclusive("text", "text-file")
 	meetingRecapCmd.Flags().BoolVar(&meetingRecapFlagJSON, "json", true, "output as JSON (default true)")
 }
 

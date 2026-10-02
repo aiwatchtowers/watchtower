@@ -20,7 +20,7 @@ package enum MemoryVaultGit {
             args += ["--follow", "--", path]
         }
         guard let git = gitPath(developerDir: await developerDir()) else {
-            report("git log skipped: no git outside the xcode-select shim (developer tools not installed)")
+            report("git log skipped: no git in the developer dir, the Command Line Tools or Homebrew (the /usr/bin/git shim is never run)")
             return []
         }
         let result = await run(git: git, arguments: args)

@@ -53,6 +53,7 @@ package final class JiraBoardSyncManager {
     }
 
     /// Runs the sync CLI process off the main actor. Calls `onProgress` for each JSON line.
+    /// Internal (not private) for `JiraBoardSyncProcessTests`.
     nonisolated static func runSyncProcess(
         cliPath: String,
         accountID: Int64,

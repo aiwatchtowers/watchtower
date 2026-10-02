@@ -22,18 +22,18 @@ func TestTextFlagValue(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "inline", got)
 
-	_, err = textFlagValue("inline", file)
-	assert.ErrorContains(t, err, "mutually exclusive")
-
 	_, err = textFlagValue("", filepath.Join(t.TempDir(), "missing.txt"))
 	assert.ErrorContains(t, err, "reading --text-file")
 }
 
 // The Desktop passes --text-file to each of these; cobra rejects an unknown
-// flag before RunE runs, so every one must register it.
+// flag before RunE runs, so every one must register it — and refuse it
+// together with --text.
 func TestTextFileFlagRegisteredOnDesktopCommands(t *testing.T) {
 	for _, c := range []*cobra.Command{meetingRecapCmd, meetingExtractTopicsCmd, targetsExtractCmd, tracksCreateCmd} {
-		assert.NotNil(t, c.Flags().Lookup("text-file"), c.CommandPath())
+		require.NotNil(t, c.Flags().Lookup("text-file"), c.CommandPath())
+		assert.Equal(t, []string{"text text-file"},
+			c.Flags().Lookup("text-file").Annotations["cobra_annotation_mutually_exclusive"], c.CommandPath())
 	}
 }
 
@@ -41,7 +41,7 @@ func TestMeetingRecapReadsTextFile(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "empty.txt")
 	require.NoError(t, os.WriteFile(file, nil, 0o600))
 	meetingRecapFlagText, meetingRecapFlagTextFile, meetingRecapFlagEventID = "", file, "evt-1"
-	t.Cleanup(func() { meetingRecapFlagTextFile = "" })
+	t.Cleanup(func() { meetingRecapFlagText, meetingRecapFlagTextFile, meetingRecapFlagEventID = "", "", "" })
 
 	err := runMeetingRecap(meetingRecapCmd, nil)
 	assert.ErrorContains(t, err, "--text or --text-file is required", "an empty file is no text")

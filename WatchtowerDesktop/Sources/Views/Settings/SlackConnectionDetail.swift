@@ -22,7 +22,7 @@ final class SlackAuthFlowState {
     /// Cancel that lands before `auth login` is running (during trust-cert or
     /// the launch hop) cannot terminate it, so the flow checks this after
     /// trust-cert and right after the launch. Replaced per reconnect.
-    var cancelRequested = OSAllocatedUnfairLock(initialState: false)
+    @ObservationIgnored var cancelRequested = OSAllocatedUnfairLock(initialState: false)
     var disconnecting = false
     let daemonManager = DaemonManager()
 }
@@ -391,7 +391,8 @@ struct SlackConnectionDetail: View {
             // Ensure TLS cert is trusted first
             let trustResult = await Self.runCLIProcess(path: cliPath, arguments: ["auth", "trust-cert"])
             // Cancelled during trust-cert: cancelSlackReconnect already reset
-            // the flow; never go on to open the browser.
+            // the flow; never go on to open the browser. The trust-cert child
+            // itself (a seconds-long local step) is left to finish.
             if cancelRequested.withLock({ $0 }) { return }
             if trustResult.exitCode != 0 {
                 await MainActor.run {
@@ -404,7 +405,11 @@ struct SlackConnectionDetail: View {
             }
 
             await MainActor.run {
-                flow.reconnectResult = "Complete authorization in your browser..."
+                // Re-checked here: a Cancel since the check above already
+                // cleared the line, and must not get it written back.
+                if !cancelRequested.withLock({ $0 }) {
+                    flow.reconnectResult = "Complete authorization in your browser..."
+                }
             }
 
             // Run auth login (opens browser) — keep reference to process for cancellation
@@ -427,6 +432,15 @@ struct SlackConnectionDetail: View {
                 // A newer reconnect may own the slot by now.
                 await MainActor.run {
                     if flow.authProcess === process { flow.authProcess = nil }
+                    // The login finished just before Cancel landed: the token
+                    // is written, so the status must show it.
+                    if output.exitCode == 0 {
+                        config.reload()
+                        Task {
+                            slackAuth.clearDisconnectError()
+                            await slackAuth.refreshStatus()
+                        }
+                    }
                 }
                 return
             }

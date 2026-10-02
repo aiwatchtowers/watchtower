@@ -506,11 +506,11 @@ struct SystemSettings: View {
         }
     }
 
-    /// One CLI probe; nil means the model answered. nonisolated: the View is
-    /// @MainActor, and the probe sets up the child off it.
     /// A cold `claude -p` answers in well under this; anything longer is a hang.
     nonisolated private static let probeTimeout: Duration = .seconds(60)
 
+    /// One CLI probe; nil means the model answered. nonisolated: the View is
+    /// @MainActor, and the probe sets up the child off it.
     nonisolated private static func runCLIProbe(path: String, isCodex: Bool, model: String) async -> String? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
@@ -530,10 +530,13 @@ struct SystemSettings: View {
         // >64 KiB of output); a launch failure is exit -1 with its error. A
         // hung CLI is terminated, so "Testing…" cannot spin forever.
         let (raw, timedOut) = await ProcessPipes.run(process, timeout: probeTimeout)
-        if timedOut {
-            return "No answer within \(probeTimeout.components.seconds) s — the CLI may be hung or outdated"
-        }
         let output = raw.trimmed
+        if timedOut {
+            // What it printed before hanging (a login or update prompt) is
+            // the only diagnosis there is.
+            let said = output.stderr.isEmpty ? "" : ": \(output.stderr.suffix(200))"
+            return "No answer within \(probeTimeout.components.seconds) s — the CLI may be hung or outdated\(said)"
+        }
         if output.exitCode == -1 {
             return "Failed to launch: \(output.stderr)"
         }

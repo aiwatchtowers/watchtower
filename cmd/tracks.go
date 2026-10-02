@@ -133,6 +133,7 @@ func init() {
 		tracksEventsCmd, tracksEnableCmd, tracksDisableCmd)
 	tracksCreateCmd.Flags().StringVar(&tracksCreateFlagText, "text", "", "description of what to watch")
 	tracksCreateCmd.Flags().StringVar(&tracksCreateFlagTextFile, "text-file", "", "read the description from this file instead of --text")
+	tracksCreateCmd.MarkFlagsMutuallyExclusive("text", "text-file")
 	tracksCreateCmd.Flags().IntVar(&tracksCreateFlagTarget, "target", 0, "optional linked target id")
 	tracksScanCmd.Flags().StringVar(&tracksScanFlagSince, "since", "", "scan history from this ISO8601 instant")
 	tracksCmd.Flags().StringVar(&tracksFlagPriority, "priority", "", "filter by priority (high, medium, low)")
