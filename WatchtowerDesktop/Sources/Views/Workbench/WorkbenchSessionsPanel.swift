@@ -43,7 +43,7 @@ struct WorkbenchSessionsPanel: View {
 
     /// The chat history's header shape ("Chats" + New Chat), the title being
     /// the workbench switcher (board #250): it fills the width, and its
-    /// popover's "Все workbench" is the way back to level 1.
+    /// popover's "All Workbenches" is the way back to level 1.
     private var header: some View {
         HStack(spacing: 6) {
             WorkbenchSwitcher(vm: vm, project: project, actions: switcherActions)

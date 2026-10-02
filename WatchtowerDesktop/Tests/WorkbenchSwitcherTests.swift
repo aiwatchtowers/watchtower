@@ -7,7 +7,7 @@ import WatchtowerCore
 import WatchtowerTestSupport
 
 /// The workbench switcher in the sessions panel's header (board #250,
-/// variant F): what picking a workbench opens, "Все workbench", the live
+/// variant F): what picking a workbench opens, "All Workbenches", the live
 /// counts, and the header it replaces Back in.
 @MainActor
 final class WorkbenchSwitcherTests: XCTestCase {
@@ -124,6 +124,50 @@ final class WorkbenchSwitcherTests: XCTestCase {
         XCTAssertTrue(rows.isEmpty, "no session is created")
     }
 
+    /// The owner picks B, then moves to C while B's sessions are still being
+    /// read: B's session must not open over C.
+    func testSwitchingAwayDuringTheReadOpensNothing() async throws {
+        let b = try await workbench("beta")
+        let c = try await workbench("gamma")
+        let stale = try await session(b, "beta work", lastActiveAt: "2026-09-01T10:00:00Z")
+        let vm = makeVM()
+        await vm.reload()
+        var gate: CheckedContinuation<Void, Never>?
+        var held = false
+        // Only the switch's own read is held; a later read (an open's) passes.
+        let db: DatabasePool = pool
+        vm.readWorkbenchSessions = { projectID in
+            if projectID == b, !held {
+                held = true
+                await withCheckedContinuation { gate = $0 }
+            }
+            return try await db.read { try TerminalSessionQueries.fetchForWorkbench($0, projectID: projectID) }
+        }
+
+        let switching = Task { await vm.switchTo(workbenchID: b) }
+        try await yieldUntil { gate != nil }
+        vm.drill(into: c)
+        let selection = vm.panelSelection
+        gate?.resume()
+        await switching.value
+
+        XCTAssertEqual(vm.drilledWorkbenchID, c)
+        XCTAssertEqual(vm.panelSelection, selection)
+        XCTAssertTrue(launches.isEmpty, "B's session is not started")
+        XCTAssertFalse(center.liveIDs.contains(stale.id))
+    }
+
+    private func yieldUntil(_ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
+        let deadline = Date().addingTimeInterval(5)
+        while !condition() {
+            guard Date() < deadline else {
+                XCTFail("condition not met within 5 s", file: file, line: line)
+                throw CancellationError()
+            }
+            await Task.yield()
+        }
+    }
+
     func testPickingTheCurrentWorkbenchLeavesTheScreen() async throws {
         let a = try await workbench("alpha")
         _ = try await session(a, "one", lastActiveAt: "2026-09-01T10:00:00Z")
@@ -229,8 +273,8 @@ final class WorkbenchSwitcherTests: XCTestCase {
         var picked = 0
         let current = WorkbenchSwitcherRow(row: row, isCurrent: true, segments: segments, isLive: true) { picked += 1 }
         XCTAssertNoThrow(try current.inspect().find(text: "alpha"))
-        XCTAssertNoThrow(try current.inspect().find(text: "2 новых коммента"))
-        XCTAssertNoThrow(try current.inspect().find(text: "1 сессия · 1 в работе"))
+        XCTAssertNoThrow(try current.inspect().find(text: "2 new comments"))
+        XCTAssertNoThrow(try current.inspect().find(text: "1 session · 1 running"))
         XCTAssertNoThrow(try current.inspect().find(viewWithAccessibilityLabel: "Running"))
         try current.inspect().find(ViewType.Button.self).tap()
         XCTAssertEqual(picked, 1)

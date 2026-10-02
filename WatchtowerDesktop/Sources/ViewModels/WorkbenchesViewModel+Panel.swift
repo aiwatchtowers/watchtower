@@ -85,11 +85,11 @@ extension WorkbenchesViewModel {
         drill(into: id)
         guard await loadSessions(projectID: id), selectedWorkbenchID == id else { return }
         let rows = terminalSessions[id] ?? []
-        let live = activeSessionID(projectID: id).flatMap { active in rows.first { $0.id == active } }
-        if let row = live ?? rows.first { await open(row) }
+        let active = activeSessionID(projectID: id)
+        if let row = rows.first(where: { $0.id == active }) ?? rows.first { await open(row) }
     }
 
-    /// The switcher's "All workbenches" (⌘⇧O): back to level 1, the page
+    /// The switcher's "All Workbenches" (⌘⇧O): back to level 1, the page
     /// stays on screen.
     func showAllWorkbenches() {
         drilledWorkbenchID = nil

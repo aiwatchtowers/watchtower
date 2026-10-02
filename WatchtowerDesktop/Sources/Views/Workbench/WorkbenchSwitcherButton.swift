@@ -4,9 +4,9 @@ import WatchtowerCore
 /// What the switcher's two list actions do; the workbench list owns the
 /// create flow (folder panel, TCC warning) and the panel's visibility.
 struct WorkbenchSwitcherActions {
-    /// "＋ Новый workbench…": the workbench list's New Workbench… flow.
+    /// "New Workbench…": the workbench list's New Workbench… flow.
     let newWorkbench: () -> Void
-    /// "‹ Все workbench" (⌘⇧O): level 1, the panel shown.
+    /// "All Workbenches" (⌘⇧O): level 1, the panel shown.
     let showAll: () -> Void
 }
 
@@ -67,8 +67,8 @@ struct WorkbenchSwitcherButton: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.borderless)
-        .help("\(name) — сменить workbench")
+        .help("\(name) — Switch Workbench")
         .accessibilityLabel("Workbench \(name)")
-        .accessibilityHint("Сменить workbench")
+        .accessibilityHint("Switch workbench")
     }
 }

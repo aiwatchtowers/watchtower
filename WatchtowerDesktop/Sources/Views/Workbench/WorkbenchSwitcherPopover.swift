@@ -15,23 +15,23 @@ struct WorkbenchSwitcherPopover: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            TextField("Найти workbench", text: $query)
+            TextField("Find workbench", text: $query)
                 .textFieldStyle(.roundedBorder)
                 .focused($searchFocused)
-            Text("НЕДАВНИЕ")
+            Text("RECENT")
                 .font(.caption2.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .accessibilityAddTraits(.isHeader)
             list
             Divider()
             Button(action: onNewWorkbench) {
-                Label("Новый workbench…", systemImage: "plus")
+                Label("New Workbench…", systemImage: "plus")
             }
             .buttonStyle(.borderless)
             .disabled(vm.isCreating)
             Button(action: onShowAll) {
                 HStack {
-                    Label("Все workbench", systemImage: "chevron.backward")
+                    Label("All Workbenches", systemImage: "chevron.backward")
                     Spacer(minLength: 4)
                     Text("⌘⇧O").foregroundStyle(.secondary)
                 }
@@ -61,7 +61,7 @@ struct WorkbenchSwitcherPopover: View {
         )
         if rows.isEmpty {
             if !query.trimmingCharacters(in: .whitespaces).isEmpty {
-                Text("Ничего не найдено.").font(.caption).foregroundStyle(.secondary)
+                Text("No workbench matches.").font(.caption).foregroundStyle(.secondary)
             }
         } else {
             let now = vm.now()
@@ -73,7 +73,7 @@ struct WorkbenchSwitcherPopover: View {
                             row: row,
                             isCurrent: row.id == currentID,
                             segments: WorkbenchSwitcherPresentation.stateSegments(
-                                summary: row, newComments: vm.newCommentCount(for: row.summary),
+                                summary: row, newComments: vm.badgeCount(for: row.summary),
                                 liveCount: live, now: now
                             ),
                             isLive: live > 0
@@ -138,6 +138,7 @@ struct WorkbenchSwitcherRow: View {
         }
         .buttonStyle(.plain)
         .help(row.project.folderPath)
+        .accessibilityAddTraits(isCurrent ? .isSelected : [])
     }
 
     @ViewBuilder

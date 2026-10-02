@@ -96,20 +96,20 @@ struct WorkbenchesView: View {
                 .font(.headline)
                 .lineLimit(1)
             Spacer()
-            // ⌘⇧O lives on the Workbench tab only; the switcher's popover
-            // shows the key beside "Все workbench".
-            Button("Все workbench", action: showAllWorkbenches)
-                .keyboardShortcut("o", modifiers: [.command, .shift])
-                .frame(width: 0, height: 0)
-                .opacity(0)
-                .accessibilityHidden(true)
         }
         .buttonStyle(.borderless)
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+        // ⌘⇧O lives on the Workbench tab only; the switcher's popover
+        // shows the key beside "All Workbenches".
+        .background {
+            Button("", action: showAllWorkbenches)
+                .keyboardShortcut("o", modifiers: [.command, .shift])
+                .hidden()
+        }
     }
 
-    /// "Все workbench" (⌘⇧O): level 1 of the panel, shown if hidden.
+    /// "All Workbenches" (⌘⇧O): level 1 of the panel, shown if hidden.
     private func showAllWorkbenches() {
         vm.showAllWorkbenches()
         if !panelVisible { withAnimation(.easeInOut(duration: 0.2)) { panelVisible = true } }
@@ -209,7 +209,7 @@ struct WorkbenchesView: View {
     }
 
     private func row(_ summary: WorkbenchSummary) -> some View {
-        let badge = vm.newCommentCount(for: summary)
+        let badge = vm.badgeCount(for: summary)
         return HStack {
             VStack(alignment: .leading, spacing: 2) {
                 Text(summary.project.name).font(.body)

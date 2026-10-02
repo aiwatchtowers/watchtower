@@ -291,11 +291,11 @@ final class WorkbenchesViewModel {
 
     /// Sidebar badge: unread agent comments + documents revised since last viewed.
     var badgeCount: Int {
-        summaries.reduce(0) { $0 + newCommentCount(for: $1) }
+        summaries.reduce(0) { $0 + badgeCount(for: $1) }
     }
 
     /// A workbench row's blue badge: unread agent comments + revised documents.
-    func newCommentCount(for summary: WorkbenchSummary) -> Int {
+    func badgeCount(for summary: WorkbenchSummary) -> Int {
         summary.unreadAgentComments + revisedDocumentCount(for: summary)
     }
 
