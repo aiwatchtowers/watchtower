@@ -106,7 +106,7 @@ func TestMCPProjectMode_BindsTheProjectAndAppliesDirectly(t *testing.T) {
 	require.Len(t, opts, 1)
 
 	names, ls := localToolNames(t, database, opts)
-	for _, n := range []string{"project_info", "project_board", "create_targets", "attach_document", "get_action", "list_targets"} {
+	for _, n := range []string{"workbench_info", "workbench_board", "create_targets", "attach_document", "get_action", "list_targets"} {
 		assert.True(t, names[n], "project mode mounts %s", n)
 	}
 	for _, n := range []string{"create_target", "create_jira_issue", "connect_jira_board", "create_idea"} {
@@ -137,4 +137,48 @@ func TestMCPProjectMode_RefusesMissingProjectAndChat(t *testing.T) {
 	mcpFlagChat = true
 	_, err = mcpModeOptions(cfg, database, "", nil)
 	assert.ErrorContains(t, err, "mutually exclusive")
+}
+
+// Spec 2026-10-02 §5.2: `mcp --project N` (a folder installed before the
+// rename) serves the renamed workbench tools under their old names only;
+// `mcp --workbench N` the new names only. Eleven workbench tools either way.
+func TestMCPProjectMode_LegacyFlagServesTheOldToolNames(t *testing.T) {
+	resetMCPFlags(t)
+	legacyFlag := mcpCmd.Flags().Lookup(legacyWorkbenchFlag)
+	t.Cleanup(func() { legacyFlag.Changed = false })
+	cfg := &config.Config{ActiveWorkspace: "test-ws"}
+
+	for _, legacy := range []bool{false, true} {
+		database := openMCPTestDB(t)
+		folder, err := db.ResolveWorkbenchFolder(t.TempDir(), nil)
+		require.NoError(t, err)
+		pid, err := database.CreateWorkbench("acme", folder)
+		require.NoError(t, err)
+		mcpFlagWorkbench, legacyFlag.Changed = pid, legacy
+
+		opts, err := mcpModeOptions(cfg, database, "", nil)
+		require.NoError(t, err)
+		names, ls := localToolNames(t, database, opts)
+		workbenchTools := 0
+		for name := range names {
+			if tool, ok := buildToolRegistry(cfg, database).Get(name); ok && slices.Contains(tool.Surfaces, "project") {
+				workbenchTools++
+			}
+		}
+		assert.Equal(t, 11, workbenchTools, "legacy=%v", legacy)
+		for newName, oldName := range tools.LegacyWorkbenchToolNames {
+			assert.Equal(t, legacy, names[oldName], "legacy=%v lists %s", legacy, oldName)
+			assert.Equal(t, !legacy, names[newName], "legacy=%v lists %s", legacy, newName)
+		}
+
+		if legacy {
+			text, isErr, err := ls.Call(context.Background(), "update_project", map[string]any{"description": "Old setup.", "reason": "setup"})
+			require.NoError(t, err)
+			require.False(t, isErr, text)
+			rows, err := database.ListAgentActions(db.AgentActionFilter{})
+			require.NoError(t, err)
+			require.Len(t, rows, 1)
+			assert.Equal(t, tools.UpdateWorkbenchTool, rows[0].Tool, "the audit row records the canonical name")
+		}
+	}
 }

@@ -211,13 +211,13 @@ func TestListComments_RefusesAnotherProjectsDocument(t *testing.T) {
 			json.RawMessage(fmt.Sprintf(`{"document_id":%d}`, id)), directBinding(fx.a))
 		var verr *ValidationError
 		require.ErrorAs(t, err, &verr)
-		assert.Equal(t, fmt.Sprintf("document %d is not in this project", id), verr.Msg)
+		assert.Equal(t, fmt.Sprintf("document %d is not in this workbench", id), verr.Msg)
 	}
 	for _, id := range []int64{fx.bComment, 999} {
 		_, err := proposeIn(t, reg, fx.a, "resolve_comment", fmt.Sprintf(`{"comment_id":%d,"reason":"r"}`, id))
 		var verr *ValidationError
 		require.ErrorAs(t, err, &verr)
-		assert.Equal(t, fmt.Sprintf("comment %d is not in this project", id), verr.Msg)
+		assert.Equal(t, fmt.Sprintf("comment %d is not in this workbench", id), verr.Msg)
 	}
 }
 

@@ -17,7 +17,7 @@ func TestProjectTargets_BranchAndPRAreSetShownAndCleared(t *testing.T) {
 	created := out["created"].([]any)
 	id := int64(created[0].(map[string]any)["target_id"].(float64))
 
-	board := callReadIn(t, reg, fx.a, "project_board", `{}`)
+	board := callReadIn(t, reg, fx.a, "workbench_board", `{}`)
 	assert.Contains(t, board, `"branch":"feature/x","pr":"#12"`)
 
 	mustApply(t, reg, fx.a, "update_target", fmt.Sprintf(`{"target_id":%d,"branch":" feature/y ","reason":"renamed"}`, id))

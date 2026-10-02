@@ -47,11 +47,14 @@ const (
 // read at propose time and wins over TurnID — a warm `ai session` spans many
 // turns and publishes the running one through a turn file (spec §1.2).
 //
-// WorkbenchID binds the session to one project (`watchtower mcp --project N`):
-// every call first checks the project still exists, and project tools scope
-// every row they touch to it (DEV-06). DirectApply makes Propose apply a
+// WorkbenchID binds the session to one workbench (`watchtower mcp --workbench
+// N`): every call first checks the workbench still exists, and workbench tools
+// scope every row they touch to it (DEV-06). DirectApply makes Propose apply a
 // non-External tool inline for this call only — the owner's standing trust
 // rows are neither read nor changed — and refuses an External one outright.
+// LegacyNames marks a session started the pre-rename way (`mcp --project N`):
+// the MCP adapter lists the renamed workbench tools under their old names
+// (LegacyWorkbenchToolNames) and spells its texts the same way (Spell).
 type Binding struct {
 	Surface        string
 	ConversationID int64
@@ -61,6 +64,7 @@ type Binding struct {
 	TurnIDFunc     func() string
 	WorkbenchID    int64
 	DirectApply    bool
+	LegacyNames    bool
 }
 
 // turnID is the turn a proposal attaches to right now.
@@ -112,7 +116,7 @@ type Tool struct {
 	Normalize func(ctx context.Context, d *db.DB, args json.RawMessage) (json.RawMessage, error)
 
 	// Scope runs the checks that need the binding — "does this row belong to
-	// the bound project" — after Validate in Propose, and again in Apply
+	// the bound workbench" — after Validate in Propose, and again in Apply
 	// before Execute, against the binding rebuilt from the stored row. A
 	// *ValidationError from Propose writes no row. Optional.
 	Scope func(ctx context.Context, d *db.DB, args json.RawMessage, b Binding) error
@@ -228,9 +232,15 @@ func (r *Registry) Register(t *Tool) error {
 	return nil
 }
 
-// Get returns the named tool, or false when it is not registered.
+// Get returns the named tool, or false when it is not registered. A renamed
+// workbench tool resolves under its pre-rename name too (CanonicalToolName),
+// so a legacy session's call, and an agent_actions row recorded before the
+// rename, still find it.
 func (r *Registry) Get(name string) (*Tool, bool) {
 	t, ok := r.tools[name]
+	if !ok {
+		t, ok = r.tools[CanonicalToolName(name)]
+	}
 	return t, ok
 }
 
@@ -257,10 +267,11 @@ func (r *Registry) All() []*Tool {
 
 // Trust returns the tool's trust level ("ask" when never set).
 func (r *Registry) Trust(name string) (Trust, error) {
-	if _, ok := r.tools[name]; !ok {
+	t, ok := r.Get(name)
+	if !ok {
 		return "", ErrUnknownTool
 	}
-	s, err := r.db.GetToolTrust(name)
+	s, err := r.db.GetToolTrust(t.Name)
 	if err != nil {
 		return "", err
 	}
@@ -269,7 +280,7 @@ func (r *Registry) Trust(name string) (Trust, error) {
 
 // SetTrust changes the trust level; execute is refused for External tools.
 func (r *Registry) SetTrust(name string, trust Trust) error {
-	t, ok := r.tools[name]
+	t, ok := r.Get(name)
 	if !ok {
 		return ErrUnknownTool
 	}
@@ -279,7 +290,7 @@ func (r *Registry) SetTrust(name string, trust Trust) error {
 	if t.External && trust == TrustExecute {
 		return ErrExternalExecute
 	}
-	return r.db.SetToolTrust(name, string(trust))
+	return r.db.SetToolTrust(t.Name, string(trust))
 }
 
 // reasonOf extracts the mandatory "reason" argument every write tool carries.
@@ -293,9 +304,11 @@ func reasonOf(args json.RawMessage) string {
 
 // Propose validates a write-tool call and records it. With trust "ask" the
 // row is pending and nothing executes; with "execute" the row is inserted as
-// approved and applied inline, so the model sees the result immediately.
+// approved and applied inline, so the model sees the result immediately. A
+// call by a pre-rename workbench tool name is recorded under the tool's
+// current name (Tool.Name), the one name agent_actions.tool ever gets.
 func (r *Registry) Propose(ctx context.Context, name string, args json.RawMessage, b Binding) (Receipt, error) {
-	t, ok := r.tools[name]
+	t, ok := r.Get(name)
 	if !ok {
 		return Receipt{}, ErrUnknownTool
 	}
@@ -318,14 +331,14 @@ func (r *Registry) Propose(ctx context.Context, name string, args json.RawMessag
 		return r.applyTrusted(ctx, id)
 	}
 	return Receipt{
-		ActionID: id, Status: "pending", Tool: name,
+		ActionID: id, Status: "pending", Tool: t.Name,
 		Message: fmt.Sprintf("Proposal #%d recorded (%s). The owner must approve it in this chat before "+
-			"anything happens — tell the owner it awaits their approval and do not claim it is done.", id, name),
+			"anything happens — tell the owner it awaits their approval and do not claim it is done.", id, t.Name),
 	}, nil
 }
 
 // admitProposal runs every gate a write call passes before a row is written:
-// the bound project is alive, the direct-apply gate, the args checks, the
+// the bound workbench is alive, the direct-apply gate, the args checks, the
 // mandatory reason, then the tool's Scope. Any failure writes nothing.
 func (r *Registry) admitProposal(ctx context.Context, t *Tool, args json.RawMessage, b Binding) (json.RawMessage, error) {
 	if err := r.WorkbenchAlive(ctx, b); err != nil {
@@ -379,8 +392,8 @@ func (r *Registry) resolveTrust(t *Tool, b Binding) (Trust, error) {
 	return r.Trust(t.Name)
 }
 
-// newProposalRow is the agent_actions row a proposal records. A project-bound
-// call stores its project in context_type/context_id, so Apply — possibly a
+// newProposalRow is the agent_actions row a proposal records. A workbench-bound
+// call stores its workbench in context_type/context_id, so Apply — possibly a
 // later `actions apply` — rebuilds the same binding (bindingOf).
 func newProposalRow(t *Tool, args json.RawMessage, trust Trust, b Binding) db.AgentAction {
 	ctxType, ctxID := b.ContextType, b.ContextID
@@ -406,15 +419,15 @@ func bindingOf(row *db.AgentAction) Binding {
 		ContextType: row.ContextType, ContextID: row.ContextID, TurnID: row.TurnID,
 	}
 	if row.ContextType == WorkbenchContextType {
-		// A malformed id leaves WorkbenchID 0, which every project tool refuses.
+		// A malformed id leaves WorkbenchID 0, which every workbench tool refuses.
 		b.WorkbenchID, _ = strconv.ParseInt(row.ContextID, 10, 64)
 	}
 	return b
 }
 
-// WorkbenchAlive fails a project-bound call once its project is gone — the
-// first check of every call, read or write, project tool or not, so a
-// session outliving its project answers "project N no longer exists".
+// WorkbenchAlive fails a workbench-bound call once its workbench is gone — the
+// first check of every call, read or write, workbench tool or not, so a
+// session outliving its workbench answers "workbench N no longer exists".
 // Exported for the MCP adapter's get_action, which reads agent_actions
 // directly rather than through a registry tool.
 func (r *Registry) WorkbenchAlive(ctx context.Context, b Binding) error {
@@ -488,9 +501,9 @@ func (r *Registry) applyTrusted(ctx context.Context, id int64) (Receipt, error) 
 // Propose. It writes NO agent_actions row: a read is not a proposal. A write
 // tool is refused with ErrNotReadable, so the proposal flow can never be
 // bypassed by calling a write through the read path. b reaches Execute as
-// Call.Binding, so a read can scope itself (list_targets in a project session).
+// Call.Binding, so a read can scope itself (list_targets in a workbench session).
 func (r *Registry) CallRead(ctx context.Context, name string, args json.RawMessage, b Binding) (any, error) {
-	t, ok := r.tools[name]
+	t, ok := r.Get(name)
 	if !ok {
 		return nil, ErrUnknownTool
 	}
@@ -551,13 +564,13 @@ func (r *Registry) Apply(ctx context.Context, id int64) (*db.AgentAction, error)
 		return nil, fmt.Errorf("%w: #%d is already executing or decided", ErrBadTransition, id)
 	}
 	from := []string{"executing"}
-	t, ok := r.tools[row.Tool]
+	t, ok := r.Get(row.Tool)
 	if !ok {
 		return r.finishTransition(id, from, "failed", "", "unknown tool "+row.Tool)
 	}
 	call := Call{ActionID: id, Args: json.RawMessage(row.ArgsJSON), Binding: bindingOf(row), Retry: row.Status == "failed"}
-	// Re-scope against the stored binding: a retried or late-applied project
-	// row must still belong to a live project and touch only its rows.
+	// Re-scope against the stored binding: a retried or late-applied workbench
+	// row must still belong to a live workbench and touch only its rows.
 	if err := r.WorkbenchAlive(ctx, call.Binding); err != nil {
 		return r.recordFailure(id, from, err)
 	}

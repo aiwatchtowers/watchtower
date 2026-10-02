@@ -18,19 +18,19 @@ import (
 // workbenchAgentLabel is the agent_label every agent comment carries.
 const workbenchAgentLabel = "claude-code"
 
-// resolveInsideFolder resolves rel against the project folder — symlinks
+// resolveInsideFolder resolves rel against the workbench folder — symlinks
 // included — and returns the absolute path only when it stays inside the
 // folder and names an existing .md/.txt file. `../` and a symlink (file or
 // directory) pointing out of the folder are both refused.
 func resolveInsideFolder(folder, rel string) (string, error) {
 	if strings.TrimSpace(rel) == "" || filepath.IsAbs(rel) {
-		return "", &ValidationError{Msg: "rel_path must be a path relative to the project folder"}
+		return "", &ValidationError{Msg: "rel_path must be a path relative to the workbench folder"}
 	}
 	return resolveDocumentFile(folder, filepath.Join(folder, rel), rel)
 }
 
 // ResolveWorkbenchDocumentPath is attach_document's path check for the owner's
-// `project attach-doc`: path may be absolute or relative to the folder, and
+// `workbench attach-doc`: path may be absolute or relative to the folder, and
 // the result is the folder-relative, slash-separated path of the resolved
 // file. The same refusals apply — outside the folder (symlinks followed),
 // missing, not a regular .md/.txt file.
@@ -58,14 +58,14 @@ func ResolveWorkbenchDocumentPath(folder, path string) (string, error) {
 func resolveDocumentFile(folder, candidate, rel string) (string, error) {
 	abs, err := filepath.EvalSymlinks(candidate)
 	if errors.Is(err, fs.ErrNotExist) {
-		return "", &ValidationError{Msg: fmt.Sprintf("%s does not exist in the project folder", rel)}
+		return "", &ValidationError{Msg: fmt.Sprintf("%s does not exist in the workbench folder", rel)}
 	}
 	if err != nil {
 		return "", &ValidationError{Msg: fmt.Sprintf("cannot read %s: %v", rel, err)}
 	}
 	inside, err := filepath.Rel(folder, abs)
 	if err != nil || inside == ".." || strings.HasPrefix(inside, ".."+string(filepath.Separator)) {
-		return "", &ValidationError{Msg: fmt.Sprintf("%s resolves outside the project folder", rel)}
+		return "", &ValidationError{Msg: fmt.Sprintf("%s resolves outside the workbench folder", rel)}
 	}
 	return abs, checkDocumentFile(rel, abs)
 }
@@ -117,7 +117,7 @@ func commentInWorkbench(d *db.DB, projectID, commentID int64) (*db.WorkbenchComm
 	return c, nil
 }
 
-// optionalTarget checks an optional target id against the project.
+// optionalTarget checks an optional target id against the workbench.
 func optionalTarget(d *db.DB, projectID, targetID int64) (sql.NullInt64, error) {
 	if targetID == 0 {
 		return sql.NullInt64{}, nil
@@ -131,22 +131,22 @@ func optionalTarget(d *db.DB, projectID, targetID int64) (sql.NullInt64, error) 
 // ---- attach_document ---------------------------------------------------
 
 type attachDocumentArgs struct {
-	RelPath  string `json:"rel_path" jsonschema:"path of the .md/.txt file relative to the project folder, e.g. docs/specs/x.md"`
+	RelPath  string `json:"rel_path" jsonschema:"path of the .md/.txt file relative to the workbench folder, e.g. docs/specs/x.md"`
 	Kind     string `json:"kind" jsonschema:"spec | plan | doc"`
 	Title    string `json:"title,omitempty" jsonschema:"display title; defaults to the file name"`
-	TargetID int64  `json:"target_id,omitempty" jsonschema:"the project target this document belongs to"`
+	TargetID int64  `json:"target_id,omitempty" jsonschema:"the workbench target this document belongs to"`
 	Reason   string `json:"reason" jsonschema:"one sentence: what the document is, e.g. 'plan for feature X'"`
 }
 
 // NewAttachDocument attaches (or re-attaches, marking it revised) a file in
-// the project folder so the owner can review and comment on it.
+// the workbench folder so the owner can review and comment on it.
 // NewAttachDocument builds attach_document; with indexDocs a successful
-// attach also re-indexes the project's documents (kb.IndexWorkbenchDocs), so
-// a revision is searchable from the project's sessions at once.
+// attach also re-indexes the workbench's documents (kb.IndexWorkbenchDocs), so
+// a revision is searchable from the workbench's sessions at once.
 func NewAttachDocument(indexDocs bool) *Tool {
 	return &Tool{
 		Name: "attach_document",
-		Description: "Attach a spec, plan or doc (a .md/.txt file inside the project folder) so the owner can " +
+		Description: "Attach a spec, plan or doc (a .md/.txt file inside the workbench folder) so the owner can " +
 			"review and comment on it in Watchtower. Attach again after revising it — that marks it revised. " +
 			"Applied immediately.",
 		InputSchema: mustSchema[attachDocumentArgs]("attach_document"),
@@ -239,7 +239,7 @@ func attachDocument(ctx context.Context, d *db.DB, b Binding, a attachDocumentAr
 // ---- list_comments -----------------------------------------------------
 
 type listCommentsArgs struct {
-	TargetID    int64 `json:"target_id,omitempty" jsonschema:"comments on this project target"`
+	TargetID    int64 `json:"target_id,omitempty" jsonschema:"comments on this workbench target"`
 	DocumentID  int64 `json:"document_id,omitempty" jsonschema:"comments on this attached document"`
 	NewForAgent *bool `json:"new_for_agent,omitempty" jsonschema:"only what is new for you (open owner comments, unanswered owner replies); default true when no id is given"`
 }
@@ -257,12 +257,12 @@ type workbenchCommentView struct {
 	CreatedAt  string `json:"created_at"`
 }
 
-// NewListComments lists project comments by target, by document, or — the
+// NewListComments lists workbench comments by target, by document, or — the
 // default — everything new for the agent.
 func NewListComments() *Tool {
 	return &Tool{
 		Name: "list_comments",
-		Description: "List comments on this project: on a target (target_id), on a document (document_id, " +
+		Description: "List comments on this workbench: on a target (target_id), on a document (document_id, " +
 			"with the quoted passage and its heading), or — by default — every owner comment new for you. " +
 			"Read a document's comments before revising it.",
 		InputSchema: mustSchema[listCommentsArgs]("list_comments"),
@@ -324,17 +324,17 @@ func commentViews(comments []db.WorkbenchComment) []workbenchCommentView {
 // ---- add_comment -------------------------------------------------------
 
 type addCommentArgs struct {
-	TargetID int64  `json:"target_id,omitempty" jsonschema:"start a thread on this project target"`
+	TargetID int64  `json:"target_id,omitempty" jsonschema:"start a thread on this workbench target"`
 	ParentID int64  `json:"parent_id,omitempty" jsonschema:"reply to this comment instead"`
 	Body     string `json:"body" jsonschema:"the comment: a question, a blocker or a done-summary"`
 	Reason   string `json:"reason" jsonschema:"one sentence: why you comment"`
 }
 
-// NewAddComment posts an agent comment on a project target, or a reply.
+// NewAddComment posts an agent comment on a workbench target, or a reply.
 func NewAddComment() *Tool {
 	return &Tool{
 		Name: "add_comment",
-		Description: "Comment on a project target (target_id) or reply to a comment (parent_id) — questions for " +
+		Description: "Comment on a workbench target (target_id) or reply to a comment (parent_id) — questions for " +
 			"the owner, blockers, done-summaries only. The owner is notified; keep working meanwhile. " +
 			"Applied immediately.",
 		InputSchema: mustSchema[addCommentArgs]("add_comment"),

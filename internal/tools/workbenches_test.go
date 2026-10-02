@@ -103,9 +103,9 @@ func TestProjectTools_AllOnProjectSurfaceNeverExternal(t *testing.T) {
 func TestProjectInfo_DescribesTheBoundProject(t *testing.T) {
 	fx := newWorkbenchFixture(t)
 	reg := workbenchRegistry(t, fx.d)
-	mustApply(t, reg, fx.a, "update_project", `{"description":"A test project.","reason":"setup"}`)
+	mustApply(t, reg, fx.a, "update_workbench", `{"description":"A test project.","reason":"setup"}`)
 
-	got := callReadIn(t, reg, fx.a, "project_info", `{}`)
+	got := callReadIn(t, reg, fx.a, "workbench_info", `{}`)
 	assert.Contains(t, got, `"name":"alpha"`)
 	assert.Contains(t, got, `"description":"A test project."`)
 	assert.Contains(t, got, `"targets_by_status":{"todo":1}`)
@@ -119,7 +119,7 @@ func TestProjectInfo_BoardAlwaysFollowsTheSessionLanguage(t *testing.T) {
 	_, err := fx.d.Exec(`UPDATE projects SET board_language = 'Russian' WHERE id = ?`, fx.a)
 	require.NoError(t, err)
 
-	got := callReadIn(t, reg, fx.a, "project_info", `{}`)
+	got := callReadIn(t, reg, fx.a, "workbench_info", `{}`)
 	assert.Contains(t, got, "Board language: follow the session language")
 	assert.NotContains(t, got, "Russian")
 }
@@ -132,7 +132,7 @@ func TestUpdateProject_RefusesBadInputWithoutWriting(t *testing.T) {
 		`{"board_language":"Russian","reason":"the override is gone"}`,
 		`{"description":"  ","reason":"x"}`,
 	} {
-		_, err := proposeIn(t, reg, fx.a, "update_project", args)
+		_, err := proposeIn(t, reg, fx.a, "update_workbench", args)
 		var ve *ValidationError
 		assert.ErrorAs(t, err, &ve, args)
 	}
@@ -156,7 +156,7 @@ func TestProjectBoard_ReturnsTheTreeAndDocuments(t *testing.T) {
 	mustApply(t, reg, fx.a, "create_targets", fmt.Sprintf(
 		`{"items":[{"text":"Task 1","parent_id":%d}],"reason":"plan"}`, fx.aTarget))
 
-	got := callReadIn(t, reg, fx.a, "project_board", `{}`)
+	got := callReadIn(t, reg, fx.a, "workbench_board", `{}`)
 	assert.Contains(t, got, `"text":"Alpha feature"`)
 	assert.Contains(t, got, `"children":[{"id":`)
 	assert.Contains(t, got, `"text":"Task 1"`)
@@ -166,7 +166,7 @@ func TestProjectBoard_ReturnsTheTreeAndDocuments(t *testing.T) {
 func TestProjectSources_AddAndRemove(t *testing.T) {
 	fx := newWorkbenchFixture(t)
 	reg := workbenchRegistry(t, fx.d)
-	out := mustApply(t, reg, fx.a, "add_project_source", `{"kind":"jira_project","ref":"ACME","reason":"named in README"}`)
+	out := mustApply(t, reg, fx.a, "add_workbench_source", `{"kind":"jira_project","ref":"ACME","reason":"named in README"}`)
 	id := int64(out["source_id"].(float64))
 
 	sources, err := fx.d.ListWorkbenchSources(fx.a)
@@ -174,12 +174,12 @@ func TestProjectSources_AddAndRemove(t *testing.T) {
 	require.Len(t, sources, 1)
 	assert.Equal(t, "ACME", sources[0].Ref)
 
-	mustApply(t, reg, fx.a, "remove_project_source", fmt.Sprintf(`{"source_id":%d,"reason":"wrong"}`, id))
+	mustApply(t, reg, fx.a, "remove_workbench_source", fmt.Sprintf(`{"source_id":%d,"reason":"wrong"}`, id))
 	sources, err = fx.d.ListWorkbenchSources(fx.a)
 	require.NoError(t, err)
 	assert.Empty(t, sources)
 
-	_, err = proposeIn(t, reg, fx.a, "add_project_source", `{"kind":"wiki","ref":"x","reason":"r"}`)
+	_, err = proposeIn(t, reg, fx.a, "add_workbench_source", `{"kind":"wiki","ref":"x","reason":"r"}`)
 	var verr *ValidationError
 	require.ErrorAs(t, err, &verr)
 }
@@ -305,7 +305,7 @@ func TestProjectTargets_PriorityOnCreateUpdateAndBoard(t *testing.T) {
 	assert.Equal(t, "high", got.Priority)
 	assert.InDelta(t, 0.3, got.Progress, 1e-9, "a priority change leaves progress alone")
 
-	board := callReadIn(t, reg, fx.a, "project_board", `{}`)
+	board := callReadIn(t, reg, fx.a, "workbench_board", `{}`)
 	assert.Contains(t, board, `"priority":"high"`)
 	assert.Less(t, strings.Index(board, "Low one"), strings.Index(board, "Alpha feature"),
 		"a high-priority root sorts before the medium fixture target")
@@ -384,8 +384,8 @@ func outsideWorkbenchCalls(t *testing.T, fx workbenchFixture) []outsideWorkbench
 		{"update a non-project target", "update_target", fmt.Sprintf(`{"target_id":%d,"status":"done","reason":"r"}`, fx.plain), true},
 		{"nest under another project's target", "create_targets", fmt.Sprintf(`{"items":[{"text":"x","parent_id":%d}],"reason":"r"}`, fx.bTarget), true},
 		{"smuggle a project_id", "create_targets", fmt.Sprintf(`{"project_id":%d,"items":[{"text":"x"}],"reason":"r"}`, fx.b), false},
-		{"smuggle a project_id into a source", "add_project_source", fmt.Sprintf(`{"project_id":%d,"kind":"link","ref":"x","reason":"r"}`, fx.b), false},
-		{"remove another project's source", "remove_project_source", fmt.Sprintf(`{"source_id":%d,"reason":"r"}`, fx.bSource), true},
+		{"smuggle a project_id into a source", "add_workbench_source", fmt.Sprintf(`{"project_id":%d,"kind":"link","ref":"x","reason":"r"}`, fx.b), false},
+		{"remove another project's source", "remove_workbench_source", fmt.Sprintf(`{"source_id":%d,"reason":"r"}`, fx.bSource), true},
 		{"comment on another project's target", "add_comment", fmt.Sprintf(`{"target_id":%d,"body":"hi","reason":"r"}`, fx.bTarget), true},
 		{"comment on a non-project target", "add_comment", fmt.Sprintf(`{"target_id":%d,"body":"hi","reason":"r"}`, fx.plain), true},
 		{"reply in another project's thread", "add_comment", fmt.Sprintf(`{"parent_id":%d,"body":"hi","reason":"r"}`, fx.bComment), true},
@@ -491,7 +491,7 @@ func TestUpdateTarget_InReviewIsRecordedAsTheAgentsAndShown(t *testing.T) {
 	assert.Contains(t, got, `"actor":"agent"`)
 	assert.NotContains(t, got, `"actor":"owner"`, "every write here was the agent's")
 
-	board := callReadIn(t, reg, fx.a, "project_board", `{}`)
+	board := callReadIn(t, reg, fx.a, "workbench_board", `{}`)
 	assert.Contains(t, board, `"status":"in_review","priority":"medium","progress":0.8,"status_since":"`)
 
 	plain, err := reg.CallRead(context.Background(), "get_target", json.RawMessage(fmt.Sprintf(`{"id":%d}`, fx.plain)), Binding{})

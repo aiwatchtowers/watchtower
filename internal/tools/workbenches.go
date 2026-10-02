@@ -12,8 +12,10 @@ import (
 	"watchtower/internal/workbenchfiles"
 )
 
-// workbenchSurface is the registry surface of `watchtower mcp --project N`.
-// Every project tool is visible there and nowhere else.
+// workbenchSurface is the registry surface of `watchtower mcp --workbench N`.
+// Every workbench tool is visible there and nowhere else. The value is the
+// pre-rename "project": it is persisted as agent_actions.surface (spec
+// 2026-10-02 A1).
 const workbenchSurface = "project"
 
 var workbenchSurfaces = []string{workbenchSurface}
@@ -21,10 +23,10 @@ var workbenchSurfaces = []string{workbenchSurface}
 // maxBatchTargets caps one create_targets call — a whole plan, not a backlog.
 const maxBatchTargets = 100
 
-// WorkbenchTools returns every project tool (surface "project"), in the order
+// WorkbenchTools returns every workbench tool (surface "project"), in the order
 // buildToolRegistry registers them. files stores the images attached to
 // targets.
-// indexDocs says whether attach_document also re-indexes the project's
+// indexDocs says whether attach_document also re-indexes the workbench's
 // documents for its search (knowledge.enabled, PROJ-08).
 func WorkbenchTools(files workbenchfiles.Store, indexDocs bool) []*Tool {
 	return []*Tool{
@@ -36,8 +38,8 @@ func WorkbenchTools(files workbenchfiles.Store, indexDocs bool) []*Tool {
 }
 
 // targetInWorkbench loads a target and fails unless it belongs to projectID —
-// a target of another project, of no project, or a missing one all read as
-// "not in this project" (wrapping db.ErrNotInWorkbench), never as a different
+// a target of another workbench, of no workbench, or a missing one all read as
+// "not in this workbench" (wrapping db.ErrNotInWorkbench), never as a different
 // error that would confirm it exists.
 func targetInWorkbench(d *db.DB, projectID, targetID int64) (*db.Target, error) {
 	notHere := notInWorkbench("target", targetID)
@@ -58,13 +60,13 @@ func targetInWorkbench(d *db.DB, projectID, targetID int64) (*db.Target, error) 
 }
 
 // notInWorkbench is the model-facing refusal for a row outside the bound
-// project; it wraps db.ErrNotInWorkbench.
+// workbench; it wraps db.ErrNotInWorkbench.
 func notInWorkbench(noun string, id int64) error {
-	return &ValidationError{Msg: fmt.Sprintf("%s %d is not in this project", noun, id), Err: db.ErrNotInWorkbench}
+	return &ValidationError{Msg: fmt.Sprintf("%s %d is not in this workbench", noun, id), Err: db.ErrNotInWorkbench}
 }
 
-// workbenchScope is the Scope of a project tool that touches no existing row:
-// the binding must name a live project.
+// workbenchScope is the Scope of a workbench tool that touches no existing row:
+// the binding must name a live workbench.
 func workbenchScope(ctx context.Context, d *db.DB, _ json.RawMessage, b Binding) error {
 	_, err := workbenchOf(ctx, d, b)
 	return err
@@ -84,7 +86,7 @@ func requireText(field, s string, limit int) (string, error) {
 
 type emptyArgs struct{}
 
-// ---- project_info ------------------------------------------------------
+// ---- workbench_info ----------------------------------------------------
 
 type sourceView struct {
 	ID    int64  `json:"id"`
@@ -106,15 +108,15 @@ type workbenchInfoView struct {
 	NewComments       int            `json:"comments_new_for_agent"`
 }
 
-// NewWorkbenchInfo describes the bound project: what it is, its sources and
+// NewWorkbenchInfo describes the bound workbench: what it is, its sources and
 // how much is on its board.
 func NewWorkbenchInfo() *Tool {
 	return &Tool{
-		Name: "project_info",
-		Description: "Describe this Watchtower project: name, folder, description, board language, sources, target counts by " +
+		Name: WorkbenchInfoTool,
+		Description: "Describe this Watchtower workbench: name, folder, description, board language, sources, target counts by " +
 			"status, attached documents and owner comments waiting for you. An empty description means the " +
-			"project is not set up yet (run the watchtower-project skill's setup).",
-		InputSchema: mustSchema[emptyArgs]("project_info"),
+			"workbench is not set up yet (run the setup of the Watchtower skill in this folder).",
+		InputSchema: mustSchema[emptyArgs](WorkbenchInfoTool),
 		Access:      AccessRead,
 		Surfaces:    workbenchSurfaces,
 		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
@@ -163,7 +165,7 @@ func countStatuses(nodes []db.BoardNode, into map[string]int) {
 	}
 }
 
-// ---- project_board -----------------------------------------------------
+// ---- workbench_board ---------------------------------------------------
 
 type documentView struct {
 	ID       int64  `json:"id"`
@@ -192,20 +194,20 @@ type boardNodeView struct {
 }
 
 type workbenchBoardView struct {
-	WorkbenchID int64           `json:"project_id"`
+	WorkbenchID int64           `json:"workbench_id"`
 	Targets     []boardNodeView `json:"targets"`
 	Documents   []documentView  `json:"documents"`
 }
 
-// NewWorkbenchBoard returns the bound project's target tree with comment
+// NewWorkbenchBoard returns the bound workbench's target tree with comment
 // counters, plus every attached document.
 func NewWorkbenchBoard() *Tool {
 	return &Tool{
-		Name: "project_board",
-		Description: "The project board: the target tree (ids, status and since when, priority, progress, comment counters, " +
+		Name: WorkbenchBoardTool,
+		Description: "The workbench board: the target tree (ids, status and since when, priority, progress, comment counters, " +
 			"linked documents; siblings sorted by priority, then status) and every attached document. " +
 			"Read it before changing the board.",
-		InputSchema: mustSchema[emptyArgs]("project_board"),
+		InputSchema: mustSchema[emptyArgs](WorkbenchBoardTool),
 		Access:      AccessRead,
 		Surfaces:    workbenchSurfaces,
 		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
@@ -250,19 +252,19 @@ func documentViews(docs []db.WorkbenchDocument) []documentView {
 	return out
 }
 
-// ---- update_project ----------------------------------------------------
+// ---- update_workbench --------------------------------------------------
 
 type updateWorkbenchArgs struct {
-	Description string `json:"description" jsonschema:"what the project is, a few sentences; replaces the current description"`
+	Description string `json:"description" jsonschema:"what the workbench is, a few sentences; replaces the current description"`
 	Reason      string `json:"reason" jsonschema:"one sentence: why you make this change"`
 }
 
-// NewUpdateWorkbench sets the bound project's description.
+// NewUpdateWorkbench sets the bound workbench's description.
 func NewUpdateWorkbench() *Tool {
 	return &Tool{
-		Name:        "update_project",
-		Description: "Set this project's description (what it is, a few sentences). Applied immediately.",
-		InputSchema: mustSchema[updateWorkbenchArgs]("update_project"),
+		Name:        UpdateWorkbenchTool,
+		Description: "Set this workbench's description (what it is, a few sentences). Applied immediately.",
+		InputSchema: mustSchema[updateWorkbenchArgs](UpdateWorkbenchTool),
 		Access:      AccessWrite,
 		Surfaces:    workbenchSurfaces,
 		Validate: func(_ context.Context, _ *db.DB, raw json.RawMessage) error {
@@ -277,39 +279,41 @@ func NewUpdateWorkbench() *Tool {
 		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
 			var a updateWorkbenchArgs
 			if err := json.Unmarshal(call.Args, &a); err != nil {
-				return nil, fmt.Errorf("decoding update_project args: %w", err)
+				return nil, fmt.Errorf("decoding update_workbench args: %w", err)
 			}
 			if err := d.UpdateWorkbenchDescription(call.Binding.WorkbenchID, a.Description); err != nil {
-				return nil, fmt.Errorf("updating project: %w", err)
+				return nil, fmt.Errorf("updating workbench: %w", err)
 			}
+			// "project_id" stays: this result is persisted in
+			// agent_actions.result_json (spec 2026-10-02 A1).
 			return map[string]any{"project_id": call.Binding.WorkbenchID}, nil
 		},
 	}
 }
 
-// BoardLanguageLine is the one line every session reads (project brief,
-// project_info) to know which language the board is written in: always the
-// session's (board item #153 retired the per-project override; the
+// BoardLanguageLine is the one line every session reads (workbench brief,
+// workbench_info) to know which language the board is written in: always the
+// session's (board item #153 retired the per-workbench override; the
 // projects.board_language column is no longer read).
 const BoardLanguageLine = "Board language: follow the session language (write targets, intents and comments in the language the owner uses with you)."
 
-// ---- add_project_source / remove_project_source -------------------------
+// ---- add_workbench_source / remove_workbench_source ---------------------
 
 type addWorkbenchSourceArgs struct {
 	Kind   string `json:"kind" jsonschema:"slack_channel | jira_project | confluence_space | person | link"`
 	Ref    string `json:"ref" jsonschema:"the source reference: channel id or name, Jira project key, space key, person email, URL"`
 	Label  string `json:"label,omitempty" jsonschema:"short human label"`
-	Reason string `json:"reason" jsonschema:"one sentence: why this source belongs to the project"`
+	Reason string `json:"reason" jsonschema:"one sentence: why this source belongs to the workbench"`
 }
 
 // NewAddWorkbenchSource records a source (channel, Jira project, space, person,
-// link) as belonging to the bound project. Idempotent on (kind, ref).
+// link) as belonging to the bound workbench. Idempotent on (kind, ref).
 func NewAddWorkbenchSource() *Tool {
 	return &Tool{
-		Name: "add_project_source",
-		Description: "Record a source that belongs to this project (a Slack channel, Jira project, Confluence " +
-			"space, person or link). Add only sources the project's docs clearly name. Applied immediately.",
-		InputSchema: mustSchema[addWorkbenchSourceArgs]("add_project_source"),
+		Name: AddWorkbenchSourceTool,
+		Description: "Record a source that belongs to this workbench (a Slack channel, Jira project, Confluence " +
+			"space, person or link). Add only sources the workbench's docs clearly name. Applied immediately.",
+		InputSchema: mustSchema[addWorkbenchSourceArgs](AddWorkbenchSourceTool),
 		Access:      AccessWrite,
 		Surfaces:    workbenchSurfaces,
 		Validate: func(_ context.Context, _ *db.DB, raw json.RawMessage) error {
@@ -330,7 +334,7 @@ func NewAddWorkbenchSource() *Tool {
 		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
 			var a addWorkbenchSourceArgs
 			if err := json.Unmarshal(call.Args, &a); err != nil {
-				return nil, fmt.Errorf("decoding add_project_source args: %w", err)
+				return nil, fmt.Errorf("decoding add_workbench_source args: %w", err)
 			}
 			id, err := d.AddWorkbenchSource(db.WorkbenchSource{
 				WorkbenchID: call.Binding.WorkbenchID, Kind: a.Kind,
@@ -345,16 +349,16 @@ func NewAddWorkbenchSource() *Tool {
 }
 
 type removeWorkbenchSourceArgs struct {
-	SourceID int64  `json:"source_id" jsonschema:"the source id from project_info"`
+	SourceID int64  `json:"source_id" jsonschema:"the source id from workbench_info"`
 	Reason   string `json:"reason" jsonschema:"one sentence: why the source no longer belongs"`
 }
 
-// NewRemoveWorkbenchSource drops one of the bound project's sources.
+// NewRemoveWorkbenchSource drops one of the bound workbench's sources.
 func NewRemoveWorkbenchSource() *Tool {
 	return &Tool{
-		Name:        "remove_project_source",
-		Description: "Remove a source from this project (id from project_info). Applied immediately.",
-		InputSchema: mustSchema[removeWorkbenchSourceArgs]("remove_project_source"),
+		Name:        RemoveWorkbenchSourceTool,
+		Description: "Remove a source from this workbench (id from workbench_info). Applied immediately.",
+		InputSchema: mustSchema[removeWorkbenchSourceArgs](RemoveWorkbenchSourceTool),
 		Access:      AccessWrite,
 		Surfaces:    workbenchSurfaces,
 		Validate: func(_ context.Context, _ *db.DB, raw json.RawMessage) error {
@@ -371,7 +375,7 @@ func NewRemoveWorkbenchSource() *Tool {
 		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
 			var a removeWorkbenchSourceArgs
 			if err := json.Unmarshal(call.Args, &a); err != nil {
-				return nil, fmt.Errorf("decoding remove_project_source args: %w", err)
+				return nil, fmt.Errorf("decoding remove_workbench_source args: %w", err)
 			}
 			if err := d.RemoveWorkbenchSource(call.Binding.WorkbenchID, a.SourceID); err != nil {
 				return nil, fmt.Errorf("removing source: %w", err)

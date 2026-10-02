@@ -37,22 +37,29 @@ type getActionArgs struct {
 // tools always mount (dispatched through CallRead, which records no proposal).
 // Write tools and get_action mount only when mountWrites is set (chat mode) —
 // dev mode passes false, so the developer surface never sees a write tool.
+//
+// A legacy workbench session (binding.LegacyNames, `mcp --project N`) lists
+// the renamed workbench tools under their pre-rename names and reads every
+// description, refusal and receipt in that vocabulary (Binding.Spell); the
+// call itself dispatches by the tool's current name, the one agent_actions
+// records.
 func registerRegistry(s *mcpsdk.Server, database *db.DB, reg *tools.Registry, binding tools.Binding, mountWrites bool) {
 	for _, t := range reg.List(binding.Surface) {
 		tool := t
+		listed := &mcpsdk.Tool{
+			Name:        binding.Spell(tool.Name),
+			Description: binding.Spell(tool.Description),
+			InputSchema: tool.InputSchema,
+		}
 		if tool.Access == tools.AccessRead {
-			s.AddTool(&mcpsdk.Tool{
-				Name:        tool.Name,
-				Description: tool.Description,
-				InputSchema: tool.InputSchema,
-			}, func(ctx context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+			s.AddTool(listed, func(ctx context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 				data, err := reg.CallRead(ctx, tool.Name, req.Params.Arguments, binding)
 				if err != nil {
 					var verr *tools.ValidationError
 					if errors.As(err, &verr) {
-						return errResult(verr.Msg), nil
+						return errResult(binding.Spell(verr.Msg)), nil
 					}
-					return errResult(err.Error()), nil
+					return errResult(binding.Spell(err.Error())), nil
 				}
 				res, _, jerr := jsonResult(data)
 				return res, jerr
@@ -62,19 +69,16 @@ func registerRegistry(s *mcpsdk.Server, database *db.DB, reg *tools.Registry, bi
 		if !mountWrites {
 			continue
 		}
-		s.AddTool(&mcpsdk.Tool{
-			Name:        tool.Name,
-			Description: tool.Description,
-			InputSchema: tool.InputSchema,
-		}, func(ctx context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+		s.AddTool(listed, func(ctx context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 			rc, err := reg.Propose(ctx, tool.Name, req.Params.Arguments, binding)
 			if err != nil {
 				var verr *tools.ValidationError
 				if errors.As(err, &verr) {
-					return errResult(verr.Msg), nil
+					return errResult(binding.Spell(verr.Msg)), nil
 				}
-				return errResult(fmt.Sprintf("recording proposal: %v", err)), nil
+				return errResult(binding.Spell(fmt.Sprintf("recording proposal: %v", err))), nil
 			}
+			rc.Tool, rc.Message, rc.Error = binding.Spell(rc.Tool), binding.Spell(rc.Message), binding.Spell(rc.Error)
 			res, _, err := jsonResult(rc)
 			return res, err
 		})
@@ -104,7 +108,7 @@ func registerRegistry(s *mcpsdk.Server, database *db.DB, reg *tools.Registry, bi
 }
 
 // actionVisible decides whether get_action may show row to this session. A
-// project session sees only its own project's rows. A binding with no
+// workbench session sees only its own workbench's rows. A binding with no
 // conversation (conversation_id 0: a CLI-only install, spec §12, or a
 // dev/test session with none bound) sees every other row; otherwise a row
 // from a different conversation answers the same not-found error as a
