@@ -54,6 +54,43 @@ final class ChatHistoryViewModelSectionsTests: XCTestCase {
     }
 
     /// A message-less chat (the landing's unsent draft) is listed only while selected.
+    /// ↑/↓ walk the chats in the order shown (Pinned first), stop at the
+    /// ends, and with nothing selected start from the first (↓) or last (↑).
+    func testSelectAdjacentWalksTheListedOrder() async throws {
+        let (a, b, c) = try await dbManager.dbPool.write { d in
+            (try Self.answered(d, title: "A"), try Self.answered(d, title: "B"), try Self.answered(d, title: "C"))
+        }
+        let vm = await loaded()
+        XCTAssertFalse(vm.selectAdjacent(by: 0))
+        vm.togglePin(b)
+        let shown = vm.sections.flatMap(\.conversations).map(\.id)
+        XCTAssertEqual(shown.first, b, "the pinned chat leads")
+        XCTAssertEqual(Set(shown), [a, b, c])
+
+        XCTAssertNil(vm.selectedConversationID)
+        XCTAssertTrue(vm.selectAdjacent(by: 1))
+        XCTAssertEqual(vm.selectedConversationID, shown[0])
+        XCTAssertFalse(vm.selectAdjacent(by: -1), "already the first")
+        XCTAssertEqual(vm.selectedConversationID, shown[0])
+        XCTAssertTrue(vm.selectAdjacent(by: 1))
+        XCTAssertTrue(vm.selectAdjacent(by: 1))
+        XCTAssertEqual(vm.selectedConversationID, shown[2])
+        XCTAssertFalse(vm.selectAdjacent(by: 1), "already the last")
+        XCTAssertTrue(vm.selectAdjacent(by: -1))
+        XCTAssertEqual(vm.selectedConversationID, shown[1])
+
+        vm.selectedConversationID = nil
+        XCTAssertTrue(vm.selectAdjacent(by: -1))
+        XCTAssertEqual(vm.selectedConversationID, shown[2], "↑ with nothing selected picks the last")
+    }
+
+    func testSelectAdjacentOnAnEmptyHistoryDoesNothing() async {
+        let vm = await loaded()
+        XCTAssertFalse(vm.selectAdjacent(by: 1))
+        XCTAssertFalse(vm.selectAdjacent(by: -1))
+        XCTAssertNil(vm.selectedConversationID)
+    }
+
     func testMessageLessChatsAreListedOnlyWhileSelected() async throws {
         let (answered, empty) = try await dbManager.dbPool.write { d in
             (try Self.answered(d, title: "A"), try TestDatabase.insertChatConversation(d, title: ""))

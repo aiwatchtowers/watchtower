@@ -32,6 +32,25 @@ final class ChatHistoryViewModel {
         return ChatHistoryGrouping.group(listed, now: now(), calendar: .current)
     }
 
+    /// ↑/↓ in the history column: the listed chat `offset` rows from the
+    /// selected one, in the order shown; with none selected (the landing, a
+    /// project page) ↓ picks the first and ↑ the last. It stops at either
+    /// end. Returns whether the selection moved.
+    @discardableResult
+    func selectAdjacent(by offset: Int) -> Bool {
+        let ids = sections.flatMap(\.conversations).map(\.id)
+        guard !ids.isEmpty, offset != 0 else { return false }
+        let target: Int
+        if let current = selectedConversationID, let index = ids.firstIndex(of: current) {
+            target = min(max(index + offset, 0), ids.count - 1)
+        } else {
+            target = offset > 0 ? 0 : ids.count - 1
+        }
+        guard ids[target] != selectedConversationID else { return false }
+        selectedConversationID = ids[target]
+        return true
+    }
+
     func rename(_ id: Int64, title: String) {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
