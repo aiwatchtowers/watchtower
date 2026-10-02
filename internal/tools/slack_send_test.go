@@ -77,6 +77,7 @@ func newSlackSendEnv(t *testing.T) *slackSendEnv {
 	ch(env.acme, "COPS", "ops", "private", "")
 	ch(env.acme, "DALICE", "", "dm", slack.Namespace(env.acme, "UALICE"))
 	ch(env.acme, "DGONE", "", "dm", slack.Namespace(env.acme, "UGONE"))
+	ch(env.acme, "DBOT", "", "dm", slack.Namespace(env.acme, "UBOT"))
 	ch(env.beta, "CBGEN", "general", "public", "")
 	require.NoError(t, d.UpsertChannel(db.Channel{ID: slack.Namespace(env.acme, "COLD"), Name: "old", Type: "public", IsArchived: true}))
 	user := func(acct int64, id, name, display, email string) {
@@ -173,6 +174,7 @@ func TestSendSlackMessage_RefusesWhatItCannotResolve(t *testing.T) {
 		{"archived channel", `{"channel":"#old"}`, "no channel #old"},
 		{"deleted person", `{"user":"gone"}`, "no person gone"},
 		{"deleted person's DM by channel id", `{"channel":"DGONE"}`, "no channel DGONE"},
+		{"bot's DM by channel id", `{"channel":"DBOT"}`, "no channel DBOT"},
 		{"bot", `{"user":"deploybot"}`, "no person deploybot"},
 		{"model-supplied target", `{"channel":"#ops","target":{"account_id":2,"channel_id":"CEVIL","label":"#ops"}}`, "additional properties"},
 		{"model-supplied candidates", `{"channel":"#ops","candidates":[]}`, "additional properties"},
