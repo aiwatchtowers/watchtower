@@ -82,9 +82,12 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         }
     }
 
-    /// Always-visible items rendered above the collapsible sections.
+    /// Always-visible items rendered above the collapsible sections. Calendar
+    /// sits right under Workbench (board #206; it was in FOCUS before): a root
+    /// item has no hide menu, so a `sidebar.hiddenItems` entry left from
+    /// hiding it in FOCUS is ignored and the tab shows again.
     static var rootItems: [Self] {
-        [.targets, .tracks, .workbench]
+        [.targets, .tracks, .workbench, .calendar]
     }
 
     /// Always-visible items rendered below the collapsible sections, as the last

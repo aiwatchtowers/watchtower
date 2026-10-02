@@ -22,13 +22,13 @@ final class SidebarSectionTests: XCTestCase {
     }
 
     func testSectionMembership() {
-        XCTAssertEqual(SidebarSection.today.items, [.catchUp, .briefings, .dayPlan, .inbox, .ideas, .calendar])
+        XCTAssertEqual(SidebarSection.today.items, [.catchUp, .briefings, .dayPlan, .inbox, .ideas])
         XCTAssertEqual(SidebarSection.delivery.items, [.projectMap, .releases, .blockers, .workload])
         XCTAssertEqual(SidebarSection.analytics.items, [.digests, .people, .memory, .statistics])
     }
 
     func testRootItems() {
-        XCTAssertEqual(SidebarDestination.rootItems, [.targets, .tracks, .workbench])
+        XCTAssertEqual(SidebarDestination.rootItems, [.targets, .tracks, .workbench, .calendar])
     }
 
     /// The Workbench tab keeps the persisted raw value of the old Projects
@@ -72,6 +72,7 @@ final class SidebarSectionTests: XCTestCase {
 
     func testContainingIsNilForRootAndToolItems() {
         XCTAssertNil(SidebarSection.containing(.targets))
+        XCTAssertNil(SidebarSection.containing(.calendar))
         XCTAssertNil(SidebarSection.containing(.chat))
         XCTAssertNil(SidebarSection.containing(.search))
     }
@@ -148,7 +149,7 @@ final class SidebarSectionTests: XCTestCase {
     /// Fixed per-item counts for the Today section, so the sums below are
     /// arithmetic rather than a live SidebarCountsViewModel read.
     private static let todayCounts: [SidebarDestination: Int] = [
-        .catchUp: 2, .briefings: 3, .dayPlan: 4, .inbox: 5, .ideas: 7, .calendar: 0
+        .catchUp: 2, .briefings: 3, .dayPlan: 4, .inbox: 5, .ideas: 7
     ]
 
     private func todayBadge(hidden: Set<String> = [], disabled: Set<String> = []) -> Int {
