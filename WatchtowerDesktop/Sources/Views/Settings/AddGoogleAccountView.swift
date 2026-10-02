@@ -13,10 +13,14 @@ struct AddGoogleAccountView: View {
 
     /// `.deferred` from onboarding: the connect must not restart the daemon
     /// mid-setup (`DaemonRestartPolicy`). Settings keeps the default.
-    private let daemonPolicy: DaemonRestartPolicy
+    let daemonPolicy: DaemonRestartPolicy
 
-    init(daemonPolicy: DaemonRestartPolicy = .restart) {
+    /// `calendar`/`mail` preset the scope toggles: onboarding asks only for
+    /// what the goals need.
+    init(daemonPolicy: DaemonRestartPolicy = .restart, calendar: Bool = true, mail: Bool = true) {
         self.daemonPolicy = daemonPolicy
+        _wantCalendar = State(initialValue: calendar)
+        _wantGmail = State(initialValue: mail)
     }
 
     @State private var label = ""

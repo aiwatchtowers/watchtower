@@ -71,6 +71,10 @@ final class AppState {
     /// check), held here so it survives the Customize screen.
     let onboardingGoals: OnboardingGoalsModel
 
+    /// Onboarding's background Slack roster load, started from Connect and
+    /// read by About you.
+    let peopleRoster = PeopleRosterLoad()
+
     /// Cache for custom workspace emoji images.
     let emojiImageCache = EmojiImageCache()
     /// Map of custom emoji name → image URL, loaded from DB.
@@ -576,6 +580,8 @@ final class AppState {
                     self?.embeddedChatCenter.finishAllAsPartial()
                     // Edits in the code viewer not yet on disk are written now.
                     self?.workbenchesViewModel?.codeFiles.flushAll()
+                    // Onboarding's people load: its child gets SIGTERM.
+                    self?.peopleRoster.stop()
                 }
                 self?.backgroundTaskManager.terminateProcessesSync()
             }
@@ -710,6 +716,42 @@ final class AppState {
         if resolved == nil, cliStoreError == nil {
             NSLog("CLIBinaryStore: the store copy did not verify (hash, signature, or a build without a Team ID); the CLI runs from the app bundle")
         }
+    }
+
+    @ObservationIgnored private var onboardingDatabaseOpen: Task<String?, Never>?
+
+    /// Opens the database for onboarding's Connect step, whose account
+    /// sheets need the account view models — on a fresh install launch could
+    /// not open it (no workspace until Goals' Continue). The launch wiring,
+    /// minus sidebar counts, pipelines and the daemon, which completion
+    /// starts. A no-op when the database is open; concurrent calls share one
+    /// open. Returns the failure to show, nil on success.
+    func openDatabaseForOnboarding() async -> String? {
+        if databaseManager != nil { return nil }
+        if let onboardingDatabaseOpen { return await onboardingDatabaseOpen.value }
+        let open = Task<String?, Never> {
+            let opened = await ProcessPipes.offPool { Result { try DatabaseManager.migrateAndOpen() } }
+            switch opened {
+            case .failure(let error):
+                return error.localizedDescription
+            case .success(let manager):
+                databaseManager = manager
+                embeddedChats.dbPool = manager.dbPool
+                errorMessage = nil
+                await refreshOwner()
+                await refreshConnectedSources()
+                wireMeetingRecorderLoaders(dbPool: manager.dbPool)
+                wireTargetBriefCenter()
+                analysisLegacyMode = ConfigService().analysisLegacyMode
+                loadCustomEmoji(from: manager)
+                initFeatureViewModels(manager: manager)
+                return nil
+            }
+        }
+        onboardingDatabaseOpen = open
+        let failure = await open.value
+        onboardingDatabaseOpen = nil
+        return failure
     }
 
     /// Launch-time onboarding state: the DB's `onboarding_done` wins over a

@@ -3,9 +3,9 @@ import SwiftUI
 import WatchtowerCore
 
 /// Onboarding v2: Goals → Connect → About you, driven by
-/// `AppState.onboarding` (`OnboardingStateMachineV2`). Connect and About you
-/// are placeholders with Back/Continue until their own steps land; leaving
-/// the last step the route runs finishes onboarding.
+/// `AppState.onboarding` (`OnboardingStateMachineV2`). About you is a
+/// placeholder with Back/Continue until its own step lands; leaving the last
+/// step the route runs finishes onboarding.
 struct OnboardingV2View: View {
     /// Re-runs the app bootstrap once onboarding completes (`NavigationRoot`
     /// passes `AppState.reinitializeAfterOnboarding()`).
@@ -28,7 +28,10 @@ struct OnboardingV2View: View {
             case .purpose:
                 OnboardingGoalsStepView { route in await leave(.purpose, route: route) }
             case .connect:
-                placeholderStep(.connect, text: "Connect the sources your goals need.")
+                OnboardingConnectStepView(
+                    onBack: { appState.onboarding.goTo(.purpose) },
+                    onContinue: { await leave(.connect, route: appState.onboardingRoute) }
+                )
             case .aboutYou:
                 placeholderStep(.aboutYou, text: "Tell Watchtower about your role and team.")
             case .complete:
@@ -55,7 +58,9 @@ struct OnboardingV2View: View {
             Text(text).foregroundStyle(.secondary)
             Spacer()
             HStack {
-                Button("Back") { appState.onboarding.goTo(.purpose) }
+                Button("Back") {
+                    appState.onboarding.goTo(appState.onboardingRoute.skips(.connect) ? .purpose : .connect)
+                }
                     .disabled(isFinishing)
                 Spacer()
                 Button("Continue") {
@@ -70,6 +75,15 @@ struct OnboardingV2View: View {
     /// Moves past `step`: to the next step the route runs, or — when none is
     /// left — through the completion sequence.
     private func leave(_ step: OnboardingV2Step, route: OnboardingRoute) async {
+        // Connect's account sheets need the database, which Goals' Continue
+        // has just created on a fresh install.
+        if step == .purpose, route.step(after: step) == .connect {
+            if let failure = await appState.openDatabaseForOnboarding() {
+                finishError = "Could not open the database: \(failure)"
+                return
+            }
+        }
+        finishError = nil
         guard route.step(after: step) == .complete else {
             appState.onboarding.advance(route: route)
             return
