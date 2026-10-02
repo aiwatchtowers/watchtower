@@ -54,12 +54,12 @@ the scope-denied-401 sub-item in `docs/backlog/2026-09-27-review-low-priority-pr
 
 `SearchNewSince` fetches the UID range `lastUID+1:*`. RFC 3501 §6.4.8 says a range like `559:*` "always includes the UID of the last message in the mailbox, even if 559 is higher than any assigned UID value". So on a real server (Dovecot, Exchange, Gmail IMAP), a cycle with no new mail still returns the latest message. The code comment claims FETCH is immune and only SEARCH has this quirk; the RFC rule applies to UID sets in general. The effect is mostly waste, but it is real: every cycle re-fetches and re-upserts that message (bumping `synced_at`/`updated_at`), logs "imap: 1 messages synced", and re-feeds the inbox detector and kb cursor. The in-repo go-imap memory test server does not implement the rule (a throwaway overlay test with lastUID = highest returned `[]`), which is why tests pass. Fix: drop UIDs `<= lastUID` from the result.
 
-Resolution (fix/go-low-priority-bundle): not reproducible through our client. The RFC rule is real,
-but go-imap v2's `FetchCommand` keeps only responses whose UID is inside the requested set; an
-out-of-set `FETCH` (the last message answered for `N:*`) is routed to unilateral data and never
-reaches `SearchNewSince`'s loop. Pinned by `TestSearchNewSinceDropsAlreadySeenUIDsTheServerReturns`,
-whose test session widens every FETCH to `1:*` the way a real server would; the doc comment that
-claimed FETCH itself is immune now names the client-side filter instead.
+Resolution (fix/go-low-priority-bundle): not reproducible through our client — go-imap v2's
+`FetchCommand` keeps only responses whose UID is inside the requested set, so the last message a
+real server answers for `N:*` never reached `SearchNewSince`'s loop. The loop now also skips any
+UID <= lastUID itself, so the contract no longer rests on that library detail. Pinned by
+`TestSearchNewSinceDropsAlreadySeenUIDsTheServerReturns`, whose test session widens every FETCH to
+`1:*` the way a real server would; the doc comment that claimed FETCH itself is immune is corrected.
 
 ## Slack search sync can never finish a window with more than 100 result pages
 

@@ -72,10 +72,9 @@ func (cl *Client) Close() error {
 // RFC 3501 §6.4.8 says a UID range like "N:*" always includes the mailbox's
 // last message, even when N is higher than any assigned UID, so a real server
 // answers a cycle with no new mail with the newest already-seen UID. The
-// go-imap client drops a FETCH response whose UID is outside the requested
-// set (it is treated as unilateral data, not a command result), so that UID
-// never reaches the loop below; TestSearchNewSinceDropsAlreadySeenUIDsTheServerReturns
-// pins this against a server that widens the range. Callers sort, cap to a per-cycle maximum, and only then pass
+// go-imap client already drops a FETCH response outside the requested set;
+// the loop below also skips any UID <= lastUID so the contract does not rest
+// on that library detail. Callers sort, cap to a per-cycle maximum, and only then pass
 // the surviving subset to FetchUIDs — see Syncer.Sync, which mirrors
 // gmail.Syncer's two-phase list-then-fetch shape so a capped cycle never pays
 // for a full fetch of messages it's about to discard. Used once an account
@@ -95,7 +94,7 @@ func (cl *Client) SearchNewSince(lastUID uint32) ([]uint32, error) {
 			_ = cmd.Close()
 			return nil, fmt.Errorf("imap: listing new since uid %d: %w", lastUID, err)
 		}
-		if buf.UID == 0 {
+		if buf.UID == 0 || uint32(buf.UID) <= lastUID {
 			continue
 		}
 		uids = append(uids, uint32(buf.UID))

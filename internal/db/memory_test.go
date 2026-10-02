@@ -1658,8 +1658,33 @@ func TestListCalendarEventsForExtract_FullLookbackDoesNotWedge(t *testing.T) {
 	for _, e := range evs {
 		ids = append(ids, e.ID)
 	}
-	assert.Equal(t, []string{"old-1", "old-2", "new-1"}, ids,
-		"the lookback is capped on its own and the event past the watermark still comes back")
+	assert.Equal(t, []string{"old-2", "old-3", "new-1"}, ids,
+		"the lookback is capped on its own, keeping the events nearest the watermark, and the event past the watermark still comes back")
+}
+
+// TestListCalendarEventsForExtract_FullNewSliceDrainsBoundaryTies: when the
+// past-watermark slice hits the cap, every event tied at its last end second
+// comes back too — the caller moves the watermark to that second, and a tie
+// left behind would only be reachable through the capped lookback.
+func TestListCalendarEventsForExtract_FullNewSliceDrainsBoundaryTies(t *testing.T) {
+	db := openTestDB(t)
+	require.NoError(t, db.UpsertCalendar(0, CalendarCalendar{ID: "cal1", Name: "C", SyncedAt: "2026-01-01T00:00:00Z"}))
+	end := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	for _, id := range []string{"tie-a", "tie-b", "tie-c", "tie-d"} {
+		require.NoError(t, db.UpsertCalendarEvent(CalendarEvent{
+			ID: id, CalendarID: "cal1", Title: id,
+			StartTime: end.Add(-time.Hour).Format(time.RFC3339), EndTime: end.Format(time.RFC3339),
+		}))
+	}
+	wm := float64(end.Add(-time.Hour).Unix())
+
+	evs, err := db.ListCalendarEventsForExtract(wm, 2, 2)
+	require.NoError(t, err)
+	var ids []string
+	for _, e := range evs {
+		ids = append(ids, e.ID)
+	}
+	assert.Equal(t, []string{"tie-a", "tie-b", "tie-c", "tie-d"}, ids, "the capped slice drains its boundary second")
 }
 
 // TestTrackSubjectRefs: a track's subject refs are its channel_ids +

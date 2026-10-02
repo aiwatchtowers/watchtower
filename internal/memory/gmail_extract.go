@@ -375,11 +375,9 @@ func (p *Pipeline) generateValidatedGmailEpisodes(ctx context.Context, mailReg *
 	if err != nil {
 		return nil, usage, err
 	}
-	// No positional cap on len(eps): a reply may carry several episodes for one
-	// thread, and cutting the list at len(batch) dropped a later thread's
-	// episode while its mail still counted as consumed. Every episode must ref
-	// a thread of this batch (splitMalformedEmail) and buildGmailEpisodeNodes
-	// folds same-thread episodes into one node, so nodes stay <= len(batch).
+	// No cap on len(eps): every episode must ref a thread of this batch
+	// (splitMalformedEmail) and buildGmailEpisodeNodes folds same-thread
+	// episodes into one node, so nodes stay <= len(batch).
 
 	valid, malformed := splitMalformedEmail(eps, msgToThread)
 	if malformed > 0 {

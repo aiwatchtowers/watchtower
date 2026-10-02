@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -1331,34 +1332,50 @@ type CalendarExtractEvent struct {
 // watermark passed a still-present event refreshes its episode via the
 // calevent: alias, while the content-equality check keeps an unchanged re-scan
 // a no-op. The lookback slice (end in (sinceTS - lookback, sinceTS]) and the
-// new slice (end above sinceTS) are each capped at limit separately, so a
+// new slice (end in (sinceTS, now)) are each capped at limit separately, so a
 // lookback holding limit or more already-built events can never crowd out the
-// new ones and wedge the watermark. calendar_events is a migration-guaranteed
-// base table, so a query failure propagates (freezing the calendar watermark)
+// new ones and wedge the watermark. A full lookback keeps the events nearest
+// the watermark (the likeliest to get a late recap); a full new slice also
+// returns every event tied at its last end second, because the caller moves
+// the watermark to that second and a tie left behind would only be reachable
+// through the capped lookback. calendar_events is a migration-guaranteed base
+// table, so a query failure propagates (freezing the calendar watermark)
 // rather than being masked as an empty read.
 func (db *DB) ListCalendarEventsForExtract(sinceTS float64, lookbackDays, limit int) ([]CalendarExtractEvent, error) {
 	if limit <= 0 {
 		limit = 2000
 	}
-	nowUnix := time.Now().Unix()
 	wmUnix := int64(sinceTS)
 	floorUnix := wmUnix - int64(lookbackDays)*86400
-	lookback, err := db.listEndedCalendarEvents(floorUnix, wmUnix+1, limit)
+	lookback, err := db.queryCalendarExtract(calendarExtractWhere+`
+		ORDER BY CAST(strftime('%s', end_time) AS INTEGER) DESC, id DESC
+		LIMIT ?`, wmUnix+1, floorUnix, limit)
 	if err != nil {
 		return nil, err
 	}
-	fresh, err := db.listEndedCalendarEvents(wmUnix, nowUnix, limit)
+	slices.Reverse(lookback)
+	fresh, err := db.queryCalendarExtract(calendarExtractWhere+`
+		ORDER BY CAST(strftime('%s', end_time) AS INTEGER), id
+		LIMIT ?`, time.Now().Unix(), wmUnix, limit)
 	if err != nil {
 		return nil, err
+	}
+	if len(fresh) == limit {
+		last := fresh[limit-1]
+		// (end-1, end+1) is exactly the last end second.
+		ties, err := db.queryCalendarExtract(calendarExtractWhere+` AND id > ?
+			ORDER BY id`, last.EndUnix+1, last.EndUnix-1, last.ID)
+		if err != nil {
+			return nil, err
+		}
+		fresh = append(fresh, ties...)
 	}
 	return append(lookback, fresh...), nil
 }
 
-// listEndedCalendarEvents returns events whose end_time unix is in
-// (afterUnix, beforeUnix), oldest end-time first, capped at limit. Callers pass
-// beforeUnix <= now, so only ended events come back.
-func (db *DB) listEndedCalendarEvents(afterUnix, beforeUnix int64, limit int) ([]CalendarExtractEvent, error) {
-	rows, err := db.Query(`
+// calendarExtractWhere selects the extract columns of the events whose
+// end_time unix is in (?2, ?1) — before first, after second.
+const calendarExtractWhere = `
 		SELECT id, title, description, location, organizer_email, attendees,
 		       CAST(strftime('%s', start_time) AS INTEGER),
 		       CAST(strftime('%s', end_time) AS INTEGER),
@@ -1366,9 +1383,11 @@ func (db *DB) listEndedCalendarEvents(afterUnix, beforeUnix int64, limit int) ([
 		FROM calendar_events
 		WHERE end_time != ''
 		  AND CAST(strftime('%s', end_time) AS INTEGER) < ?
-		  AND CAST(strftime('%s', end_time) AS INTEGER) > ?
-		ORDER BY CAST(strftime('%s', end_time) AS INTEGER), id
-		LIMIT ?`, beforeUnix, afterUnix, limit)
+		  AND CAST(strftime('%s', end_time) AS INTEGER) > ?`
+
+// queryCalendarExtract runs one ListCalendarEventsForExtract slice query.
+func (db *DB) queryCalendarExtract(query string, args ...any) ([]CalendarExtractEvent, error) {
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("listing calendar events for extract: %w", err)
 	}

@@ -68,8 +68,10 @@ Resolution (fix/go-low-priority-bundle): `GetScanActivity` takes an inclusive up
 reads activity up to the last fully elapsed second (now - 1s, taken before the read) and makes that
 its watermark, so a row written later in the still-running second is read by the next run rather
 than skipped. An upper bound instead of an overlapping re-read, so a row is never fed to the model
-twice. Pinned by `TestScanWatermarkDoesNotSkipRowsWrittenInTheReadSecond`; `seedActivity` in the
-budget tests now stamps its row in an elapsed second.
+twice. Pinned by `TestScanWatermarkDoesNotSkipRowsWrittenInTheReadSecond` and
+`TestGetScanActivity_UntilIsInclusive`; `seedActivity` in the budget tests now stamps its row in an
+elapsed second. Residual: a row stamped earlier but committed after the read (a writer transaction
+held open over a second) can still be missed.
 
 ## Link suggestion can make a target its own parent or create a cycle (fixed in fix/bl-ai-output-validation)
 
@@ -134,8 +136,12 @@ you wrote"), plus reordering the evict/merge writes — a vault-layer design cha
 
 Resolution (fix/go-low-priority-bundle): `ListCalendarEventsForExtract` now caps the lookback slice
 (end in (wm - lookback, wm]) and the past-watermark slice (end in (wm, now)) separately, so a full
-lookback can no longer crowd out the new events and wedge the watermark; the inventory's bounded
-lookback re-scan is unchanged. Pinned by `TestListCalendarEventsForExtract_FullLookbackDoesNotWedge`.
+lookback can no longer crowd out the new events and wedge the watermark. A full lookback keeps the
+events nearest the watermark (likeliest to get a late recap), and a full past-watermark slice drains
+every event tied at its last end second, since the watermark moves to that second. The inventory's
+bounded lookback re-scan is unchanged. Pinned by
+`TestListCalendarEventsForExtract_FullLookbackDoesNotWedge` and
+`TestListCalendarEventsForExtract_FullNewSliceDrainsBoundaryTies`.
 
 ## Shutdown during an extraction AI call is recorded as a failed batch
 
