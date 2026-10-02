@@ -16,6 +16,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"unicode"
 	"unicode/utf8"
 
@@ -50,17 +51,22 @@ type Options struct {
 // of the full line (what Monaco and NSString use). Text is the line, cut
 // to maxTextChars around the match when longer; Before and After hold up
 // to Options.Context neighbouring lines, each cut to maxTextChars.
+// TextCol is the match's 1-based UTF-16 column inside Text (equal to Col
+// when the line was not cut), for highlighting it.
 type Match struct {
-	Path   string   `json:"path"`
-	Line   int      `json:"line"`
-	Col    int      `json:"col"`
-	Text   string   `json:"text"`
-	Before []string `json:"before"`
-	After  []string `json:"after"`
+	Path    string   `json:"path"`
+	Line    int      `json:"line"`
+	Col     int      `json:"col"`
+	Text    string   `json:"text"`
+	TextCol int      `json:"text_col"`
+	Before  []string `json:"before"`
+	After   []string `json:"after"`
 }
 
-// Summary counts what a run emitted: Files with at least one emitted match
-// and the Matches emitted; Truncated when Max stopped it.
+// Summary counts a run: Files read and searched (a file the walk or the
+// size cap skips is not counted; a run stopped by Max still counts the
+// files its workers had searched by then), the Matches emitted, and
+// Truncated when Max stopped it.
 type Summary struct {
 	Files     int
 	Matches   int
@@ -89,12 +95,16 @@ func Run(ctx context.Context, root string, opt Options, emit func(Match) error) 
 		walkErr <- feed(ctx, root, jobs)
 	}()
 
+	var scanned atomic.Int64
 	var wg sync.WaitGroup
 	for range runtime.GOMAXPROCS(0) {
 		wg.Go(func() {
 			s := scanner{m: m, opt: opt, limit: opt.Max + 1}
 			for rel := range jobs {
-				ms := s.file(root, rel)
+				ms, ok := s.file(root, rel)
+				if ok {
+					scanned.Add(1)
+				}
 				if len(ms) == 0 {
 					continue
 				}
@@ -118,7 +128,6 @@ func Run(ctx context.Context, root string, opt Options, emit func(Match) error) 
 		if stopped {
 			continue // drain until the workers stop
 		}
-		emitted := 0
 		for _, match := range ms {
 			if sum.Matches == opt.Max {
 				sum.Truncated = true
@@ -128,16 +137,14 @@ func Run(ctx context.Context, root string, opt Options, emit func(Match) error) 
 				break
 			}
 			sum.Matches++
-			emitted++
-		}
-		if emitted > 0 {
-			sum.Files++
 		}
 		if emitErr != nil || sum.Truncated {
 			stopped = true
 			cancel()
 		}
 	}
+	// results closes only after every worker stopped: scanned is final.
+	sum.Files = int(scanned.Load())
 	switch {
 	case emitErr != nil:
 		return sum, emitErr
@@ -280,13 +287,14 @@ type scanner struct {
 	folded []byte
 }
 
-// file returns rel's matches, at most s.limit. A file that vanished or
-// became unreadable since the walk listed it is skipped, as the walk
-// skips one it cannot read.
-func (s *scanner) file(root, rel string) []Match {
+// file returns rel's matches, at most s.limit, and whether it was
+// searched. A file that vanished or became unreadable since the walk
+// listed it is skipped (not searched), as the walk skips one it cannot
+// read.
+func (s *scanner) file(root, rel string) ([]Match, bool) {
 	buf, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
 	if err != nil || len(buf) > codewalk.MaxSearchBytes {
-		return nil
+		return nil, false
 	}
 	hay := buf
 	if s.m.fold {
@@ -294,7 +302,7 @@ func (s *scanner) file(root, rel string) []Match {
 		hay = s.folded
 	}
 	if s.m.lit != nil && !bytes.Contains(hay, s.m.lit) {
-		return nil
+		return nil, true
 	}
 	starts := lineStarts(buf)
 	var out []Match
@@ -309,9 +317,10 @@ func (s *scanner) file(root, rel string) []Match {
 			}
 			col += utf16Len(line[colAt:ms])
 			colAt = ms
+			ta, tb := window(line, ms, me)
 			out = append(out, Match{
 				Path: rel, Line: i + 1, Col: col,
-				Text:   string(window(line, ms, me)),
+				Text: string(line[ta:tb]), TextCol: utf16Len(line[ta:ms]) + 1,
 				Before: before, After: after,
 			})
 			return len(out) < s.limit
@@ -320,7 +329,7 @@ func (s *scanner) file(root, rel string) []Match {
 			break
 		}
 	}
-	return out
+	return out, true
 }
 
 // context returns the opt.Context lines around line i, never nil.
@@ -328,11 +337,11 @@ func (s *scanner) context(buf []byte, starts []int, i int) (before, after []stri
 	before, after = []string{}, []string{}
 	for j := max(0, i-s.opt.Context); j < i; j++ {
 		a, b := lineBounds(buf, starts, j)
-		before = append(before, string(window(buf[a:b], 0, 0)))
+		before = append(before, prefix(buf[a:b]))
 	}
 	for j := i + 1; j <= i+s.opt.Context && j < len(starts); j++ {
 		a, b := lineBounds(buf, starts, j)
-		after = append(after, string(window(buf[a:b], 0, 0)))
+		after = append(after, prefix(buf[a:b]))
 	}
 	return before, after
 }
@@ -365,25 +374,31 @@ func lineBounds(buf []byte, starts []int, i int) (a, b int) {
 	return a, b
 }
 
-// window cuts line to maxTextChars characters around line[s:e], about as
-// many before the match as after it; a shorter line is returned whole.
-// It walks only the characters it keeps, so a long minified line costs
-// the same as a short one.
-func window(line []byte, s, e int) []byte {
+// prefix is a context line cut to its first maxTextChars characters.
+func prefix(line []byte) string {
+	a, b := window(line, 0, 0)
+	return string(line[a:b])
+}
+
+// window is the byte range [a, b) of line that keeps maxTextChars
+// characters around line[s:e], about as many before the match as after
+// it; a shorter line is kept whole. It walks only the characters it
+// keeps, so a long minified line costs the same as a short one.
+func window(line []byte, s, e int) (a, b int) {
 	if len(line) <= maxTextChars {
-		return line // fewer bytes than the cap: fewer characters too
+		return 0, len(line) // fewer bytes than the cap: fewer characters too
 	}
 	n := utf8.RuneCount(line[s:e])
 	if n >= maxTextChars {
-		return line[s:advance(line, s, maxTextChars)]
+		return s, advance(line, s, maxTextChars)
 	}
 	budget := maxTextChars - n
-	a := retreat(line, s, budget/2)
-	b := advance(line, e, budget-utf8.RuneCount(line[a:s]))
+	a = retreat(line, s, budget/2)
+	b = advance(line, e, budget-utf8.RuneCount(line[a:s]))
 	if left := budget - utf8.RuneCount(line[a:s]) - utf8.RuneCount(line[e:b]); left > 0 {
 		a = retreat(line, a, left)
 	}
-	return line[a:b]
+	return a, b
 }
 
 // advance is the offset n characters after i (or the line's end).

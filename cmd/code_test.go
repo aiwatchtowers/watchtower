@@ -332,8 +332,8 @@ func TestCodeSearch_StreamsMatchesThenDone(t *testing.T) {
 	}
 	lines := strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n")
 	want := []string{
-		`{"path":"a.go","line":3,"col":6,"text":"func saveNow() {}","before":["package a",""],"after":[]}`,
-		`{"done":true,"files":1,"matches":1,"truncated":false}`,
+		`{"path":"a.go","line":3,"col":6,"text":"func saveNow() {}","text_col":6,"before":["package a",""],"after":[]}`,
+		`{"done":true,"files":2,"matches":1,"truncated":false}`,
 	}
 	if !slices.Equal(lines, want) {
 		t.Fatalf("output:\n%s\nwant:\n%s", out.String(), strings.Join(want, "\n"))
@@ -343,7 +343,7 @@ func TestCodeSearch_StreamsMatchesThenDone(t *testing.T) {
 	if err := codeSearch(context.Background(), root, codesearch.Options{Query: "absent", Max: 10}, &out); err != nil {
 		t.Fatalf("codeSearch(no match): %v", err)
 	}
-	if got := out.String(); got != `{"done":true,"files":0,"matches":0,"truncated":false}`+"\n" {
+	if got := out.String(); got != `{"done":true,"files":2,"matches":0,"truncated":false}`+"\n" {
 		t.Fatalf("no-match output = %q", got)
 	}
 }

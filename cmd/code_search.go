@@ -16,10 +16,12 @@ var codeSearchCmd = &cobra.Command{
 	Use:   "search --folder DIR --query Q [--word] [--case] [--regex] [--max N] [--context N] [--json]",
 	Short: "Search a folder's text, streaming matches as JSON lines",
 	Long: `Search the text of a workbench folder and stream the matches as JSON lines:
-{"path","line","col","text","before":[…],"after":[…]} per match (line and col
-1-based, col in UTF-16 units; text cut to 400 characters around the match),
-then {"done":true,"files":N,"matches":M,"truncated":bool}. "files" counts the
-files with a match; "truncated" says --max stopped the search.
+{"path","line","col","text","text_col","before":[…],"after":[…]} per match
+(line and col 1-based, col in UTF-16 units of the line; text cut to 400
+characters around the match, text_col the match's 1-based UTF-16 column in
+text), then {"done":true,"files":N,"matches":M,"truncated":bool}. "files"
+counts the files searched (not those skipped as binary or over 5 MB);
+"truncated" says --max stopped the search.
 
 Smart case: case-insensitive unless the query has an upper-case letter; --case
 forces sensitive. --word keeps whole identifiers ([A-Za-z0-9_$], so "$x" is one

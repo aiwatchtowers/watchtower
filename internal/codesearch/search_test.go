@@ -1,7 +1,6 @@
 package codesearch
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -10,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf16"
 	"unicode/utf8"
 
 	"watchtower/internal/codewalk"
@@ -166,6 +166,43 @@ func TestRun_UTF16Columns(t *testing.T) {
 	if p := positions(got); !slices.Equal(p, want) {
 		t.Fatalf("matches = %v, want %v", p, want)
 	}
+	for _, m := range got {
+		if m.TextCol != m.Col {
+			t.Errorf("%s: text_col %d on an uncut line, want col %d", m.Path, m.TextCol, m.Col)
+		}
+	}
+}
+
+// textAt is the UTF-16 slice of text starting at the 1-based column col.
+func textAt(t *testing.T, text string, col, n int) string {
+	t.Helper()
+	u := utf16.Encode([]rune(text))
+	if col < 1 || col-1+n > len(u) {
+		t.Fatalf("text_col %d (+%d) outside a text of %d units", col, n, len(u))
+	}
+	return string(utf16.Decode(u[col-1 : col-1+n]))
+}
+
+func TestRun_TextColInACutLine(t *testing.T) {
+	root := t.TempDir()
+	write(t, root, "plain.txt", strings.Repeat("a", 5000)+"NEEDLE"+strings.Repeat("b", 5000)+"\n")
+	// An emoji (2 UTF-16 units) inside the kept window, before the match.
+	write(t, root, "emoji.txt", strings.Repeat("a", 5000)+"😀 é NEEDLE"+strings.Repeat("b", 5000)+"\n")
+	got, _ := search(t, root, Options{Query: "NEEDLE"})
+	if len(got) != 2 {
+		t.Fatalf("matches = %v", positions(got))
+	}
+	for _, m := range got {
+		if m.TextCol == m.Col {
+			t.Errorf("%s: text_col %d equals col on a cut line", m.Path, m.TextCol)
+		}
+		if at := textAt(t, m.Text, m.TextCol, len("NEEDLE")); at != "NEEDLE" {
+			t.Errorf("%s: text at text_col %d = %q, want NEEDLE", m.Path, m.TextCol, at)
+		}
+	}
+	if m := got[0]; m.Path != "emoji.txt" || !strings.Contains(m.Text, "😀") || m.Col != 5006 {
+		t.Errorf("emoji line = %s col %d, text has the emoji: %v", m.Path, m.Col, strings.Contains(m.Text, "😀"))
+	}
 }
 
 func TestRun_TextCapAndContext(t *testing.T) {
@@ -221,14 +258,15 @@ func TestRun_MaxTruncates(t *testing.T) {
 	root := t.TempDir()
 	write(t, root, "a.txt", strings.Repeat("hit\n", 4))
 	write(t, root, "b.txt", strings.Repeat("hit\n", 4))
+	write(t, root, "c.txt", "nothing\n")
 
 	got, sum := search(t, root, Options{Query: "hit", Max: 5})
 	if len(got) != 5 || sum.Matches != 5 || !sum.Truncated {
 		t.Fatalf("%d matches, summary %+v; want 5 and truncated", len(got), sum)
 	}
 	got, sum = search(t, root, Options{Query: "hit", Max: 8})
-	if len(got) != 8 || sum.Truncated || sum.Files != 2 {
-		t.Fatalf("%d matches, summary %+v; want 8, two files, not truncated", len(got), sum)
+	if len(got) != 8 || sum.Truncated || sum.Files != 3 {
+		t.Fatalf("%d matches, summary %+v; want 8, three files scanned, not truncated", len(got), sum)
 	}
 }
 
@@ -263,12 +301,13 @@ func TestRun_SizeAndBinary(t *testing.T) {
 	write(t, root, "min.js", strings.Repeat("x", 3<<20)+"needle")
 	write(t, root, "huge.js", strings.Repeat("x", codewalk.MaxSearchBytes+(1<<20))+"needle")
 	write(t, root, "blob.bin", "\x00\x01needle")
+	write(t, root, "plain.txt", "no match here\n")
 	got, sum := search(t, root, Options{Query: "needle"})
 	if p := positions(got); !slices.Equal(p, []string{"min.js:1:3145729"}) {
 		t.Fatalf("matches = %v", p)
 	}
-	if sum.Files != 1 {
-		t.Errorf("summary %+v", sum)
+	if sum.Files != 2 {
+		t.Errorf("summary %+v, want 2 files scanned (min.js, plain.txt)", sum)
 	}
 }
 
@@ -303,16 +342,16 @@ func TestRun_UnreadableRoot(t *testing.T) {
 
 func TestWindow(t *testing.T) {
 	line := []byte(strings.Repeat("é", 1000))
-	got := window(line, 1500, 1502) // the 751st rune
-	if utf8.RuneCount(got) != maxTextChars || !utf8.Valid(got) {
-		t.Fatalf("window = %d runes, valid %v", utf8.RuneCount(got), utf8.Valid(got))
+	a, b := window(line, 1500, 1502) // the 751st rune
+	if got := line[a:b]; utf8.RuneCount(got) != maxTextChars || !utf8.Valid(got) || a > 1500 || b < 1502 {
+		t.Fatalf("window [%d,%d) = %d runes, valid %v", a, b, utf8.RuneCount(got), utf8.Valid(got))
 	}
-	if short := window([]byte("abc"), 1, 2); !bytes.Equal(short, []byte("abc")) {
-		t.Errorf("short line = %q", short)
+	if a, b := window([]byte("abc"), 1, 2); a != 0 || b != 3 {
+		t.Errorf("short line window = [%d,%d), want [0,3)", a, b)
 	}
 	// A match at the very end keeps the window inside the line.
 	end := []byte(strings.Repeat("a", 1000) + "Z")
-	if got := window(end, 1000, 1001); !bytes.HasSuffix(got, []byte("Z")) || utf8.RuneCount(got) != maxTextChars {
-		t.Errorf("end window = %q…", got[:10])
+	if a, b := window(end, 1000, 1001); b != len(end) || utf8.RuneCount(end[a:b]) != maxTextChars {
+		t.Errorf("end window = [%d,%d)", a, b)
 	}
 }
