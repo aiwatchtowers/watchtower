@@ -257,6 +257,47 @@ package enum WorkbenchQueries {
         return out
     }
 
+    /// Every target status on the project's board, keyed by id. Read before
+    /// and after a move, it tells which parents the PROJ-05 rollup moved.
+    package static func statuses(_ db: Database, projectID: Int64) throws -> [Int64: String] {
+        let rows = try Row.fetchAll(
+            db, sql: "SELECT id, status FROM targets WHERE project_id = ?", arguments: [projectID]
+        )
+        return Dictionary(uniqueKeysWithValues: rows.map { (row: Row) -> (Int64, String) in (row["id"], row["status"]) })
+    }
+
+    /// Nests `targetID` under `parentID`, or moves it to the top level when
+    /// `parentID` is nil (board #186, PROJ-09). Both must be on project
+    /// `projectID` (`wrongWorkbench`, also for a missing row), and the parent
+    /// must not be the target or one of its sub-targets
+    /// (`TargetParentCycleError`). An unchanged parent writes nothing. The old
+    /// and new parents' progress is recomputed; their status follows from the
+    /// PROJ-05 rollup triggers.
+    ///
+    /// Dual path of Go `MoveWorkbenchTargetTx` (internal/db/workbench_board.go)
+    /// — change the rules together.
+    package static func moveTarget(_ db: Database, projectID: Int64, targetID: Int64, parentID: Int64?) throws {
+        try requireInWorkbench(db, projectID: projectID, table: "targets", id: targetID)
+        if let parentID {
+            try requireInWorkbench(db, projectID: projectID, table: "targets", id: parentID)
+            try TargetQueries.checkParentCycle(db, id: targetID, parentID: parentID)
+        }
+        let oldParentID: Int64? = try Row.fetchOne(
+            db, sql: "SELECT parent_id FROM targets WHERE id = ?", arguments: [targetID]
+        )?["parent_id"]
+        guard oldParentID != parentID else { return }
+        try db.execute(
+            sql: """
+                UPDATE targets SET parent_id = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                WHERE id = ?
+                """,
+            arguments: [parentID, targetID]
+        )
+        for parent in [oldParentID, parentID].compactMap({ $0 }) {
+            try TargetQueries.recomputeParentProgress(db, parentID: Int(parent))
+        }
+    }
+
     /// The project's target tree: roots (and orphans whose parent is outside
     /// the project) in `WorkbenchBoardOrder` (priority, then status, then id —
     /// Go's `boardSiblingOrder`). Children use the same order.

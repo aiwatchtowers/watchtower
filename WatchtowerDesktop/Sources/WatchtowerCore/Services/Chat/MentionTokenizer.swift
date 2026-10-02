@@ -46,7 +46,8 @@ package struct MentionCandidate: Equatable, Hashable, Sendable, Identifiable {
         self.detail = detail
     }
 
-    /// nil for a Jira project hit — projects are pinned, not mentioned.
+    /// nil for a Jira project or Confluence space hit — those are pinned, not
+    /// mentioned.
     package init?(hit: ChatEntityHit) {
         let kind: Kind
         switch hit.kind {
@@ -55,7 +56,7 @@ package struct MentionCandidate: Equatable, Hashable, Sendable, Identifiable {
         case .jiraIssue: kind = .jira
         case .target: kind = .target
         case .track: kind = .track
-        case .jiraProject: return nil
+        case .jiraProject, .confluenceSpace: return nil
         }
         self.init(kind: kind, ref: hit.ref, label: hit.label, detail: hit.detail)
     }

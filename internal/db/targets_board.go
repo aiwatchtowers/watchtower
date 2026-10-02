@@ -10,6 +10,10 @@ import (
 // different boards — the personal board (project_id NULL) or a workbench's.
 var ErrParentOtherBoard = errors.New("a parent and its child must be on the same board")
 
+// ErrParentCycle is returned when a new parent is the target itself or one of
+// its descendants (board #186).
+var ErrParentCycle = errors.New("a target cannot be nested under itself or its own sub-target")
+
 func boardName(projectID sql.NullInt64) string {
 	if !projectID.Valid {
 		return "the personal board"
@@ -56,4 +60,36 @@ func checkChildrenBoard(q targetsQuerier, id int64, projectID sql.NullInt64) err
 	}
 	return fmt.Errorf("target #%d would move to %s but its child #%d stays behind: %w",
 		id, boardName(projectID), child, ErrParentOtherBoard)
+}
+
+// CheckParentCycle is checkParentCycle on the pool, for a caller that
+// validates a move before its write transaction (update_target's Scope).
+func (db *DB) CheckParentCycle(id int64, parentID sql.NullInt64) error {
+	return checkParentCycle(db, id, parentID)
+}
+
+// checkParentCycle refuses parentID when it is id itself or one of id's
+// descendants: it walks up from parentID by id, and UNION drops an id already
+// seen, so the walk ends at the root or, on a row already in a cycle, once
+// round the cycle.
+//
+// Dual path: Swift TargetQueries.checkParentCycle (WatchtowerCore).
+func checkParentCycle(q targetsQuerier, id int64, parentID sql.NullInt64) error {
+	if !parentID.Valid {
+		return nil
+	}
+	var cycle bool
+	err := q.QueryRow(`WITH RECURSIVE up(id) AS (
+			SELECT ?1
+			UNION
+			SELECT t.parent_id FROM targets t JOIN up ON t.id = up.id WHERE t.parent_id IS NOT NULL
+		)
+		SELECT EXISTS (SELECT 1 FROM up WHERE id = ?2)`, parentID.Int64, id).Scan(&cycle)
+	if err != nil {
+		return fmt.Errorf("checking the ancestors of target #%d: %w", parentID.Int64, err)
+	}
+	if cycle {
+		return fmt.Errorf("target #%d under #%d: %w", id, parentID.Int64, ErrParentCycle)
+	}
+	return nil
 }

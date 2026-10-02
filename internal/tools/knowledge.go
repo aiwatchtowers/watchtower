@@ -20,8 +20,9 @@ type searchKnowledgeArgs struct {
 	To      string   `json:"to,omitempty" jsonschema:"only documents active on/before this date (YYYY-MM-DD)"`
 	Limit   int      `json:"limit,omitempty" jsonschema:"max documents, 0 = default (10), capped at 25"`
 	// WorkbenchScope is honoured only in a workbench session (watchtower mcp
-	// --workbench N); elsewhere a value is refused rather than ignored.
-	WorkbenchScope string `json:"workbench_scope,omitempty" jsonschema:"workbench sessions only: boost (default) ranks hits from this workbench's Slack channels, Jira projects and Confluence spaces first (marked in_scope) and drops nothing; only returns just those; off ignores them"`
+	// --workbench N) or a chat project's chat (--chat-project N); elsewhere a
+	// value is refused rather than ignored.
+	WorkbenchScope string `json:"workbench_scope,omitempty" jsonschema:"workbench sessions and chat-project chats only: boost (default) ranks hits from the workbench's or chat project's Slack channels, Jira projects and Confluence spaces first (marked in_scope) and drops nothing; only returns just those; off ignores them"`
 	// ProjectScope is WorkbenchScope's pre-rename name, still sent by the
 	// skill of a folder set up before the Workbench rename. It must stay in
 	// the schema — the MCP SDK refuses an argument the schema does not name.
@@ -57,9 +58,9 @@ func NewSearchKnowledge() *Tool {
 			"relevance. Pass several queries (synonyms, Russian and English variants, stems with *). Returns " +
 			"documents with snippets, a ref for get_knowledge_document, the best-matching chunk (open the " +
 			"document there with from_chunk) with its chunk_anchor (e.g. the Slack message ts), and a source " +
-			"anchor and permalink for links. In a workbench session, hits from the workbench's own sources rank " +
-			"first and carry in_scope (workbench_scope: only or off to change that), and the workbench's attached " +
-			"documents (source project_doc) are searchable too.",
+			"anchor and permalink for links. In a workbench session or a chat project's chat, hits from its own " +
+			"Slack/Jira/Confluence sources rank first and carry in_scope (workbench_scope: only or off to change " +
+			"that); a workbench's attached documents (source project_doc) are searchable too.",
 		InputSchema: mustSchema[searchKnowledgeArgs]("search_knowledge"),
 		Access:      AccessRead,
 		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
@@ -106,17 +107,18 @@ func NewSearchKnowledge() *Tool {
 // scopeSources are the kb sources a workbench scope can hold documents of.
 var scopeSources = []string{"slack", "jira", "confluence"}
 
-// applyWorkbenchScope sets req's scope from the bound workbench's sources:
-// boost by default, only/off on request. An explicit sources filter still
-// applies on top (kb.Search honours it in the scoped retrieval too). The
-// returned note names the workbench's sources that matched no synced data.
-// arg is the argument name the mode came under (workbench_scope or its alias
-// project_scope), named back in every refusal.
+// applyWorkbenchScope sets req's scope from the session's pinned sources —
+// its workbench's, or its chat project's: boost by default, only/off on
+// request. An explicit sources filter still applies on top (kb.Search
+// honours it in the scoped retrieval too). The returned note names the
+// sources that matched no synced data. arg is the argument name the mode
+// came under (workbench_scope or its alias project_scope), named back in
+// every refusal.
 func applyWorkbenchScope(ctx context.Context, d *db.DB, b Binding, mode, arg string, req *kb.Request) (string, error) {
 	mode = strings.TrimSpace(mode)
-	if b.WorkbenchID == 0 {
+	if b.WorkbenchID == 0 && b.ChatProjectID == 0 {
 		if mode != "" {
-			return "", &ValidationError{Msg: arg + " works only in a workbench session (watchtower mcp --workbench N)"}
+			return "", &ValidationError{Msg: arg + " works only in a workbench session (watchtower mcp --workbench N) or a chat project's chat"}
 		}
 		return "", nil
 	}
@@ -126,13 +128,13 @@ func applyWorkbenchScope(ctx context.Context, d *db.DB, b Binding, mode, arg str
 	if mode == "off" {
 		return "", nil
 	}
-	scope, unresolved, err := WorkbenchKnowledgeScope(ctx, d, b.WorkbenchID)
+	scope, unresolved, owner, err := sessionKnowledgeScope(ctx, d, b)
 	if err != nil {
 		return "", err
 	}
 	only := mode == "only"
 	if only && scope.Empty() {
-		return "", &ValidationError{Msg: "this workbench has no usable Slack channel, Jira project or Confluence space source — add one with " + AddWorkbenchSourceTool + ", or search without " + arg}
+		return "", &ValidationError{Msg: "this " + owner.noun + " has no usable Slack channel, Jira project or Confluence space source — " + owner.addHint + ", or search without " + arg}
 	}
 	if only && len(req.Sources) > 0 && !slices.ContainsFunc(req.Sources, func(s string) bool { return slices.Contains(scopeSources, s) }) {
 		return "", &ValidationError{Msg: arg + " only covers slack, jira and confluence; sources names none of them"}
@@ -141,7 +143,24 @@ func applyWorkbenchScope(ctx context.Context, d *db.DB, b Binding, mode, arg str
 	if len(unresolved) == 0 {
 		return "", nil
 	}
-	return "left out of the workbench scope (no synced Slack channel by that ref, or not a Jira project or Confluence space key): " + strings.Join(unresolved, "; "), nil
+	return "left out of the " + owner.noun + " scope (no synced Slack channel by that ref, or not a Jira project or Confluence space key): " + strings.Join(unresolved, "; "), nil
+}
+
+// scopeOwner names whose sources a scope came from, for the texts that say
+// so: the noun, and how a source is added to it.
+type scopeOwner struct{ noun, addHint string }
+
+// sessionKnowledgeScope resolves the bound session's scope and names whose
+// it is: the workbench's (a workbench session) or the chat project's (a
+// project chat). A binding never carries both — `mcp --workbench` refuses
+// --chat, and --chat-project needs --chat.
+func sessionKnowledgeScope(ctx context.Context, d *db.DB, b Binding) (kb.Scope, []string, scopeOwner, error) {
+	if b.WorkbenchID != 0 {
+		scope, unresolved, err := WorkbenchKnowledgeScope(ctx, d, b.WorkbenchID)
+		return scope, unresolved, scopeOwner{"workbench", "add one with " + AddWorkbenchSourceTool}, err
+	}
+	scope, unresolved, err := chatProjectKnowledgeScope(ctx, d, b.ChatProjectID)
+	return scope, unresolved, scopeOwner{"chat project", "the owner pins one in the project's settings"}, err
 }
 
 // parseDay parses a YYYY-MM-DD filter date in UTC; "" passes through as "no

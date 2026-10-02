@@ -37,8 +37,6 @@ final class TracksViewModelBulkDismissTests: XCTestCase {
     func testSelectAllVisibleAndAutoIDsForConfirmation() throws {
         let (vm, pool) = try makeVM()
         let ids = try pool.write { db in
-            // The test schema predates tracks.origin.
-            try db.execute(sql: "ALTER TABLE tracks ADD COLUMN origin TEXT NOT NULL DEFAULT 'auto'")
             let ids = try (0..<3).map { _ in Int(try TestDatabase.insertTrack(db)) }
             try db.execute(sql: "UPDATE tracks SET origin = 'custom' WHERE id = ?", arguments: [ids[2]])
             return ids
@@ -58,7 +56,6 @@ final class TracksViewModelBulkDismissTests: XCTestCase {
 
     func testNoAutoTracksAndPartialDismissAreReported() throws {
         let (vm, pool) = try makeVM()
-        try pool.write { db in try db.execute(sql: "ALTER TABLE tracks ADD COLUMN origin TEXT NOT NULL DEFAULT 'auto'") }
         XCTAssertNil(vm.activeAutoTrackIDs())
         XCTAssertEqual(vm.notice, "No active auto tracks to dismiss.")
 

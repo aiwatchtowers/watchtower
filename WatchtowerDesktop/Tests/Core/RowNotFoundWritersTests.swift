@@ -17,38 +17,6 @@ final class RowNotFoundWritersTests: XCTestCase {
         let make: (Database) throws -> Int64
     }
 
-    /// The custom-track columns and `track_events` the shared test schema
-    /// lacks (the TargetWatchesViewModelTests DDL), plus `meeting_notes`.
-    private static let extraSchema = """
-        ALTER TABLE tracks ADD COLUMN origin TEXT NOT NULL DEFAULT 'auto';
-        ALTER TABLE tracks ADD COLUMN instruction TEXT NOT NULL DEFAULT '';
-        ALTER TABLE tracks ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1;
-        CREATE TABLE IF NOT EXISTS track_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
-            summary TEXT NOT NULL DEFAULT '',
-            action_status TEXT NOT NULL DEFAULT 'none',
-            read_at TEXT
-        );
-        CREATE TABLE IF NOT EXISTS meeting_notes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            event_id TEXT NOT NULL,
-            type TEXT NOT NULL CHECK(type IN ('question', 'note')),
-            text TEXT NOT NULL DEFAULT '',
-            is_checked INTEGER NOT NULL DEFAULT 0,
-            sort_order INTEGER NOT NULL DEFAULT 0,
-            task_id INTEGER,
-            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-        );
-        """
-
-    private func makeQueue() throws -> DatabaseQueue {
-        let queue = try TestDatabase.create()
-        try queue.write { try $0.execute(sql: Self.extraSchema) }
-        return queue
-    }
-
     private static func track(_ db: Database) throws -> Int64 {
         try db.execute(sql: """
             INSERT INTO tracks (assignee_user_id, text, context, category, ownership, priority, origin, instruction)
@@ -147,7 +115,7 @@ final class RowNotFoundWritersTests: XCTestCase {
 
     func testEveryWriter_ThrowsNotFound_ForARowDeletedAfterLoad() throws {
         for writer in writers {
-            let queue = try makeQueue()
+            let queue = try TestDatabase.create()
             let id = try queue.write { db -> Int64 in
                 let id = try writer.make(db)
                 try db.execute(sql: "DELETE FROM \(writer.table) WHERE id = ?", arguments: [id])
@@ -161,7 +129,7 @@ final class RowNotFoundWritersTests: XCTestCase {
 
     func testEveryWriter_Succeeds_OnAnExistingRow_EvenWhenNothingChanges() throws {
         for writer in writers {
-            let queue = try makeQueue()
+            let queue = try TestDatabase.create()
             let id = try queue.write { try writer.make($0) }
             // The repeat writes the same values: SQLite still counts the matched
             // row, so an unchanged value never reads as "gone".
@@ -171,7 +139,7 @@ final class RowNotFoundWritersTests: XCTestCase {
     }
 
     func testTrackPriority_OnADeletedTrack_LeavesNoFeedbackRow() throws {
-        let queue = try makeQueue()
+        let queue = try TestDatabase.create()
         let id = try queue.write { db -> Int64 in
             let id = try Self.track(db)
             try db.execute(sql: "DELETE FROM tracks WHERE id = ?", arguments: [id])
@@ -182,7 +150,7 @@ final class RowNotFoundWritersTests: XCTestCase {
     }
 
     func testIdeaMerge_IntoADeletedIdea_NamesIt_AndMovesNoMention() throws {
-        let queue = try makeQueue()
+        let queue = try TestDatabase.create()
         let (source, gone) = try queue.write { db -> (Int64, Int64) in
             let source = try TestDatabase.insertIdea(db)
             try TestDatabase.insertIdeaMention(db, ideaID: source)
@@ -201,7 +169,7 @@ final class RowNotFoundWritersTests: XCTestCase {
     }
 
     func testCalendarSelection_OnACalendarTheSyncDropped_ThrowsNotFound() throws {
-        let queue = try makeQueue()
+        let queue = try TestDatabase.create()
         try queue.write { try $0.execute(sql: "INSERT INTO calendar_calendars (id, name) VALUES ('team', 'Team')") }
 
         XCTAssertNoThrow(try queue.write { try CalendarQueries.setCalendarSelected($0, id: "team", selected: false) })
@@ -211,7 +179,7 @@ final class RowNotFoundWritersTests: XCTestCase {
     }
 
     func testTerminalSessionWriters_OnADeletedSession_ThrowNotFound() throws {
-        let queue = try makeQueue()
+        let queue = try TestDatabase.create()
         let id = try queue.write { db -> Int64 in
             let row = try TerminalSessionQueries.create(
                 db, .init(projectID: nil, kind: .claude, title: "s", folderPath: "/tmp/acme", claudeSessionID: "u1")

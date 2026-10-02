@@ -4,6 +4,9 @@ import WatchtowerCore
 /// Shows background task progress panels in the sidebar.
 struct SidebarProgressView: View {
     @Environment(AppState.self) private var appState
+    /// The folded icon rail's form: one status icon (the worst state across
+    /// the unfinished tasks), their titles in the tooltip, click opens Usage.
+    var compact = false
 
     var body: some View {
         let manager = appState.backgroundTaskManager
@@ -15,7 +18,11 @@ struct SidebarProgressView: View {
             }
         }
 
-        if !visibleTasks.isEmpty {
+        if compact {
+            if !visibleTasks.isEmpty {
+                compactIndicator(visibleTasks.compactMap { manager.tasks[$0]?.status }, titles: visibleTasks.map(\.title))
+            }
+        } else if !visibleTasks.isEmpty {
             VStack(alignment: .leading, spacing: 6) {
                 Text("BACKGROUND")
                     .font(.system(size: 10, weight: .semibold))
@@ -29,6 +36,16 @@ struct SidebarProgressView: View {
                 }
             }
         }
+    }
+
+    private func compactIndicator(_ statuses: [BackgroundTaskManager.TaskStatus], titles: [String]) -> some View {
+        let failed = statuses.first { if case .error = $0 { true } else { false } }
+        let worst = failed ?? (statuses.contains(.running) ? .running : .pending)
+        return statusIcon(worst)
+            .frame(width: 34, height: 24)
+            .contentShape(Rectangle())
+            .onTapGesture { appState.selectedDestination = .usage }
+            .help(titles.joined(separator: ", "))
     }
 
     @ViewBuilder

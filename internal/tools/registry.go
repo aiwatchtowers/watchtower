@@ -55,6 +55,10 @@ const (
 // LegacyNames marks a session started the pre-rename way (`mcp --project N`):
 // the MCP adapter lists the renamed workbench tools under their old names
 // (LegacyWorkbenchToolNames) and spells its texts the same way (Spell).
+// ChatProjectID is the chat project of a project chat (`ai session
+// --project-id N`, passed on as `mcp --chat --chat-project N`): it only
+// steers search_knowledge toward the project's pinned sources, and grants
+// nothing — a chat project owns no rows a tool could write.
 type Binding struct {
 	Surface        string
 	ConversationID int64
@@ -63,6 +67,7 @@ type Binding struct {
 	TurnID         string
 	TurnIDFunc     func() string
 	WorkbenchID    int64
+	ChatProjectID  int64
 	DirectApply    bool
 	LegacyNames    bool
 }

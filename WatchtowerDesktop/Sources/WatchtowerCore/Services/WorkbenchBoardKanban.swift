@@ -49,7 +49,12 @@ package struct WorkbenchBoardKanban {
     /// among `filterOptions` (deleted, or no longer a parent).
     package let filterRootID: Int?
 
-    package init(_ roots: [WorkbenchBoardNode], filterRootID: Int?, showDone: Bool) {
+    /// A non-empty `query` (`WorkbenchBoardSearch`) keeps the leaves it
+    /// matches and the leaves under a parent it matches, and shows the done
+    /// and dismissed ones as if "Show done" were on.
+    package init(_ roots: [WorkbenchBoardNode], filterRootID: Int?, showDone: Bool, query: String = "") {
+        let search = WorkbenchBoardSearch(query)
+        let showDone = showDone || search != nil
         let options = roots.filter { !$0.children.isEmpty }.map {
             FilterOption(id: $0.target.id, title: WorkbenchBoardCard.title($0.target.text))
         }
@@ -57,7 +62,7 @@ package struct WorkbenchBoardKanban {
         let scope = applied.map { id in roots.filter { $0.target.id == id } } ?? roots
 
         var leaves: [Card] = []
-        Self.collectLeaves(scope, chain: [], into: &leaves)
+        Self.collectLeaves(scope, chain: [], search: search, ancestorMatched: false, into: &leaves)
 
         var statuses = ["todo", "in_progress", "in_review", "blocked", "done"]
         if showDone { statuses.append("dismissed") }
@@ -100,12 +105,21 @@ package struct WorkbenchBoardKanban {
         return (WorkbenchBoardOrder.priorityRank(l.priority), l.id) < (WorkbenchBoardOrder.priorityRank(r.priority), r.id)
     }
 
-    private static func collectLeaves(_ nodes: [WorkbenchBoardNode], chain: [String], into out: inout [Card]) {
+    /// With a `search`, a leaf is kept when it or an ancestor matches.
+    private static func collectLeaves(
+        _ nodes: [WorkbenchBoardNode],
+        chain: [String],
+        search: WorkbenchBoardSearch?,
+        ancestorMatched: Bool,
+        into out: inout [Card]
+    ) {
         for n in nodes {
+            let matched = ancestorMatched || (search.map { $0.matches(n.target) } ?? true)
             if n.children.isEmpty {
-                out.append(Card(node: n, breadcrumb: chain.joined(separator: " › ")))
+                if matched { out.append(Card(node: n, breadcrumb: chain.joined(separator: " › "))) }
             } else {
-                collectLeaves(n.children, chain: chain + [WorkbenchBoardCard.title(n.target.text)], into: &out)
+                collectLeaves(n.children, chain: chain + [WorkbenchBoardCard.title(n.target.text)],
+                              search: search, ancestorMatched: matched, into: &out)
             }
         }
     }

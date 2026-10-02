@@ -61,6 +61,7 @@ struct WorkbenchTargetDetailCard: View {
                 closeButton
             }
             FlowLayout(spacing: 6) {
+                numberButton
                 statusMenu
                 priorityMenu
                 ForEach(findings) { finding in
@@ -111,6 +112,17 @@ struct WorkbenchTargetDetailCard: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Progress")
+    }
+
+    /// The target's `#id` (board #207); a click copies it.
+    private var numberButton: some View {
+        Button { WorkbenchTargetNumber.copy(target.id) } label: {
+            WorkbenchBoardChip(text: WorkbenchTargetNumber.label(target.id), color: .secondary)
+                .monospacedDigit()
+        }
+        .buttonStyle(.plain)
+        .fixedSize()
+        .help("Copy the target number")
     }
 
     private var statusMenu: some View {

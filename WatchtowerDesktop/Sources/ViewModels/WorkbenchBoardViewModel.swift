@@ -15,6 +15,9 @@ final class WorkbenchBoardViewModel {
     private(set) var roots: [WorkbenchBoardNode] = []
     var collapsed: Set<Int> = []
     var showDone = false
+    /// The board's search field (board #207; `WorkbenchBoardSearch`): view
+    /// state, not remembered.
+    var searchText = ""
     private(set) var selectedTargetID: Int?
     private(set) var selectedComments: [WorkbenchComment] = []
     /// The selected target's images (board target #117), read-only here.
@@ -33,11 +36,11 @@ final class WorkbenchBoardViewModel {
     }
 
     var kanban: WorkbenchBoardKanban {
-        WorkbenchBoardKanban(roots, filterRootID: kanbanFilterRootID, showDone: showDone)
+        WorkbenchBoardKanban(roots, filterRootID: kanbanFilterRootID, showDone: showDone, query: searchText)
     }
 
     var rows: [WorkbenchBoardRow] {
-        WorkbenchBoardOutline.rows(roots, collapsed: collapsed, showDone: showDone)
+        WorkbenchBoardOutline.rows(roots, collapsed: collapsed, showDone: showDone, query: searchText)
     }
 
     var selectedNode: WorkbenchBoardNode? {
@@ -235,6 +238,37 @@ final class WorkbenchBoardViewModel {
         return write("change the status", target: id, alsoTouched: { rolledUp }, body)
     }
 
+    /// Nests a target under another one, or moves it to the top level when
+    /// `parentID` is nil (board #186) — the list's drag and drop and the
+    /// "Move to…" menu. A move the board does not allow (`canMove`) writes
+    /// nothing. The new parent is expanded so the moved target stays in view.
+    /// - Returns: whether the target moved (a failed write sets `errorMessage`).
+    @discardableResult
+    func move(_ id: Int, under parentID: Int?) -> Bool {
+        guard WorkbenchBoardOutline.canMove(id, under: parentID, in: roots) else {
+            // A drop onto its own sub-target is a refusal worth saying; a drop
+            // onto itself or its current parent is a quiet no-op.
+            if let parentID, parentID != id, let node = WorkbenchBoardOutline.find(id, in: roots),
+               WorkbenchBoardOutline.find(parentID, in: [node]) != nil {
+                errorMessage = TargetParentCycleError(id: Int64(id), parentID: Int64(parentID)).errorDescription
+            }
+            return false
+        }
+        let pid = projectID
+        // Both the old and the new parent chain may roll up (PROJ-05); those
+        // are the owner's doing too, so they never notify.
+        var rolledUp: [Int64] = []
+        let body: (Database) throws -> Void = { db in
+            let before = try WorkbenchQueries.statuses(db, projectID: pid)
+            try WorkbenchQueries.moveTarget(db, projectID: pid, targetID: Int64(id), parentID: parentID.map(Int64.init))
+            let after = try WorkbenchQueries.statuses(db, projectID: pid)
+            rolledUp = after.filter { before[$0.key] != $0.value }.map(\.key).sorted()
+        }
+        let moved = write("move the target", target: id, alsoTouched: { rolledUp }, body)
+        if moved, let parentID { collapsed.remove(parentID) }
+        return moved
+    }
+
     func setPriority(_ priority: String) {
         guard let id = selectedTargetID, WorkbenchBoardCard.editablePriorities.contains(priority) else { return }
         write("change the priority") { db in try TargetQueries.updatePriority(db, id: id, priority: priority) }
@@ -299,8 +333,9 @@ final class WorkbenchBoardViewModel {
         } catch {
             errorMessage = "Could not \(what): \(error.localizedDescription)"
             // Drop a card deleted elsewhere now rather than on the next poll
-            // (this `load()` keeps `errorMessage`).
-            if error is TargetNotFoundError { load() }
+            // (this `load()` keeps `errorMessage`); from this board a
+            // `wrongWorkbench` means a row that is gone.
+            if error is TargetNotFoundError || (error as? WorkbenchQueryError) == .wrongWorkbench { load() }
             return false
         }
     }

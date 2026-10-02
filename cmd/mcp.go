@@ -43,6 +43,7 @@ var (
 	mcpFlagTurnFile     string
 	mcpFlagContextType  string
 	mcpFlagContextID    string
+	mcpFlagChatProject  int64
 	mcpFlagWorkbench    int64
 	// mcpFlagWorkbenchLegacy reports an `mcp --project N` invocation: the
 	// registration a pre-rename install wrote, whose session lists the
@@ -60,6 +61,7 @@ func init() {
 	mcpCmd.Flags().StringVar(&mcpFlagTurnFile, "turn-file", "", "file holding the running turn id for --chat (a warm ai session); mutually exclusive with --turn")
 	mcpCmd.Flags().StringVar(&mcpFlagContextType, "context-type", "", "chat context type for --chat (e.g. target)")
 	mcpCmd.Flags().StringVar(&mcpFlagContextID, "context-id", "", "chat context id for --chat")
+	mcpCmd.Flags().Int64Var(&mcpFlagChatProject, "chat-project", 0, "chat project for --chat: search_knowledge prefers its pinned sources")
 	mcpFlagWorkbenchLegacy = addWorkbenchIDFlag(mcpCmd, &mcpFlagWorkbench, "workbench mode: bind to workbench N and apply its workbench tools directly (installed by 'integrate claude-code --workbench N')")
 }
 
@@ -82,6 +84,12 @@ func mcpTurnBinding(chatMode bool, turn, turnFile string) (string, func() string
 // mcpModeOptions sets up project mode, chat mode (the write-tool registry) or
 // dev mode (the read-only fence) on the opened database.
 func mcpModeOptions(cfg *config.Config, database *db.DB, turn string, turnFunc func() string) ([]internalmcp.ServerOption, error) {
+	if mcpFlagChatProject != 0 && !mcpFlagChat {
+		return nil, errors.New("--chat-project requires --chat")
+	}
+	if mcpFlagChatProject < 0 {
+		return nil, fmt.Errorf("--chat-project must be a chat project id, got %d", mcpFlagChatProject)
+	}
 	if mcpFlagWorkbench == 0 && !mcpFlagChat {
 		// The MCP surface is read-only; enforce it at the connection level so even
 		// a buggy handler cannot write. Must run after Open (migrations need writes).
@@ -107,7 +115,7 @@ func mcpModeOptions(cfg *config.Config, database *db.DB, turn string, turnFunc f
 	}
 	return []internalmcp.ServerOption{internalmcp.WithRegistry(buildToolRegistry(cfg, database), tools.Binding{
 		Surface: mcpFlagSurface, ConversationID: mcpFlagConversation, TurnID: turn, TurnIDFunc: turnFunc,
-		ContextType: mcpFlagContextType, ContextID: mcpFlagContextID,
+		ContextType: mcpFlagContextType, ContextID: mcpFlagContextID, ChatProjectID: mcpFlagChatProject,
 	})}, nil
 }
 

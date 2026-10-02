@@ -6,12 +6,9 @@ import WatchtowerTestSupport
 
 @MainActor
 final class TargetChatWatchContextTests: XCTestCase {
-    static let trackEventsSQL = TargetWatchesViewModelTests.trackEventsSQL
-
     func testWatchActivityBlockPresentWhenEventsExistAbsentOtherwise() throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        try manager.dbPool.write { db in try db.execute(sql: Self.trackEventsSQL) }
 
         let targetID = try manager.dbPool.write { db -> Int in
             try TargetQueries.create(db, text: "goal", periodStart: "2026-06-01", periodEnd: "2026-06-30")

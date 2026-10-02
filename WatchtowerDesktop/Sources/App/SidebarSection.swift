@@ -19,16 +19,27 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         }
     }
 
+    /// The section's group icon in the folded icon rail (⌘B), where the
+    /// section title gives way to one icon that expands its items inline.
+    /// Distinct from every item icon so a group never reads as a tab.
+    var railIcon: String {
+        switch self {
+        case .today: "sun.horizon"
+        case .delivery: "hammer"
+        case .analytics: "chart.line.uptrend.xyaxis"
+        }
+    }
+
     var items: [SidebarDestination] {
         switch self {
-        case .today: [.catchUp, .briefings, .dayPlan, .inbox, .ideas, .calendar]
+        case .today: [.catchUp, .briefings, .dayPlan, .inbox, .ideas]
         case .delivery: [.projectMap, .releases, .blockers, .workload]
         case .analytics: [.digests, .people, .memory, .statistics]
         }
     }
 
     /// Whether the section starts collapsed on first launch. FOCUS holds the
-    /// everyday tabs (Catch Up, Briefings, Day Plan, Inbox, Ideas, Calendar)
+    /// everyday tabs (Catch Up, Briefings, Day Plan, Inbox, Ideas)
     /// and starts expanded; EXECUTION and INSIGHTS are used less often and
     /// start collapsed — the owner expands what they need, and their own
     /// choice (persisted in UserDefaults, see `SidebarView.loadCollapsedSections`)

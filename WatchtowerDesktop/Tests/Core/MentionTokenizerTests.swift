@@ -69,6 +69,7 @@ final class MentionTokenizerTests: XCTestCase {
 
     func testCandidateFromHitSkipsJiraProjects() {
         XCTAssertNil(MentionCandidate(hit: ChatEntityHit(kind: .jiraProject, ref: "PAY", label: "PAY", detail: "")))
+        XCTAssertNil(MentionCandidate(hit: ChatEntityHit(kind: .confluenceSpace, ref: "ENG", label: "ENG", detail: "")))
         XCTAssertEqual(
             MentionCandidate(hit: ChatEntityHit(kind: .jiraIssue, ref: "PAY-1", label: "PAY-1", detail: "x"))?.kind,
             .jira

@@ -244,7 +244,7 @@ func (db *DB) GetChatProjectContext(projectID int64) (*ChatProjectContext, error
 	if err != nil {
 		return nil, fmt.Errorf("reading chat project %d: %w", projectID, err)
 	}
-	if pc.Sources, err = db.chatProjectSources(projectID); err != nil {
+	if pc.Sources, err = db.ChatProjectSources(projectID); err != nil {
 		return nil, err
 	}
 	rows, err := db.Query(`SELECT id, name, mime, path, size FROM chat_attachments
@@ -267,7 +267,9 @@ func (db *DB) GetChatProjectContext(projectID int64) (*ChatProjectContext, error
 	return &pc, rows.Err()
 }
 
-func (db *DB) chatProjectSources(projectID int64) ([]ChatProjectSource, error) {
+// ChatProjectSources lists a chat project's pinned sources in pin order (none
+// for a project that does not exist).
+func (db *DB) ChatProjectSources(projectID int64) ([]ChatProjectSource, error) {
 	rows, err := db.Query(`SELECT kind, ref, label FROM chat_project_sources WHERE project_id = ? ORDER BY id`, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("reading sources of chat project %d: %w", projectID, err)

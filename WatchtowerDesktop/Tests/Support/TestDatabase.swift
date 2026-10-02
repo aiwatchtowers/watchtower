@@ -307,7 +307,7 @@ package enum TestDatabase {
         decisionStyle: String = "",
         tactics: String = "[]",
         relationshipContext: String = "",
-        status: String = "ok",
+        status: String = "active",
         model: String = "haiku"
     ) throws {
         try db.execute(sql: """
@@ -365,8 +365,9 @@ package enum TestDatabase {
     ) throws {
         try db.execute(sql: """
             INSERT INTO targets (text, intent, status, priority, ownership, ball_on,
-                due_date, snooze_until, blocking, tags, sub_items, source_type, source_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                due_date, snooze_until, blocking, tags, sub_items, source_type, source_id,
+                period_start, period_end)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, date('now'), date('now'))
             """, arguments: [text, intent, status, priority, ownership, ballOn,
                              dueDate, snoozeUntil, blocking, tags, subItems, sourceType, sourceID])
     }

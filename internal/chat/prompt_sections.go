@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -14,6 +15,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/prompts"
 	"watchtower/internal/skills"
+	"watchtower/internal/tools"
 )
 
 // memoryMapMaxRunes caps the hot map in the prompt (the Swift MEMORY block's
@@ -295,12 +297,18 @@ func writePinnedSources(b *strings.Builder, sources []db.ChatProjectSource) {
 		return
 	}
 	b.WriteString("Pinned sources (prefer these when relevant):\n")
+	searchable := false
 	for _, s := range sources {
 		line := "- " + oneLine(s.Kind, maxFieldRunes) + ": " + oneLine(s.Ref, maxFieldRunes)
 		if s.Label != "" {
 			line += " (" + oneLine(s.Label, maxFieldRunes) + ")"
 		}
 		b.WriteString(line + "\n")
+		searchable = searchable || slices.Contains(tools.ScopedSourceKinds, s.Kind)
+	}
+	if searchable {
+		b.WriteString("search_knowledge already ranks hits from the pinned Slack channels, Jira projects and " +
+			"Confluence spaces first (marked in_scope); pass workbench_scope: \"only\" to search just them.\n")
 	}
 }
 

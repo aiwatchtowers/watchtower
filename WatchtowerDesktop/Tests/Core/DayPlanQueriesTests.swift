@@ -38,8 +38,8 @@ final class DayPlanQueriesTests: XCTestCase {
         // Seed task with id=42
         try db.write { db in
             try db.execute(sql: """
-                INSERT INTO targets (id, text, intent, status, priority, ownership, tags, sub_items, created_at, updated_at)
-                VALUES (42, 'T', '', 'todo', 'medium', 'mine', '[]', '[]', datetime('now'), datetime('now'))
+                INSERT INTO targets (id, text, intent, status, priority, ownership, tags, sub_items, created_at, updated_at, period_start, period_end)
+                VALUES (42, 'T', '', 'todo', 'medium', 'mine', '[]', '[]', datetime('now'), datetime('now'), date('now'), date('now'))
                 """)
         }
         let planId = try db.write { db in
@@ -65,8 +65,8 @@ final class DayPlanQueriesTests: XCTestCase {
     private func seedTaskItem(_ db: DatabaseQueue) throws -> Int64 {
         try db.write { db in
             try db.execute(sql: """
-                INSERT INTO targets (id, text, intent, status, priority, ownership, tags, sub_items, created_at, updated_at)
-                VALUES (42, 'T', '', 'todo', 'medium', 'mine', '[]', '[]', datetime('now'), datetime('now'))
+                INSERT INTO targets (id, text, intent, status, priority, ownership, tags, sub_items, created_at, updated_at, period_start, period_end)
+                VALUES (42, 'T', '', 'todo', 'medium', 'mine', '[]', '[]', datetime('now'), datetime('now'), date('now'), date('now'))
                 """)
             let planId = try TestDatabase.insertDayPlan(db, userID: "U1", planDate: "2026-04-23")
             return try TestDatabase.insertDayPlanItem(db, dayPlanID: planId, kind: "backlog",
@@ -128,8 +128,8 @@ final class DayPlanQueriesTests: XCTestCase {
         let db = try TestDatabase.create()
         try db.write { db in
             try db.execute(sql: """
-                INSERT INTO targets (id, text, intent, status, priority, ownership, tags, sub_items, created_at, updated_at)
-                VALUES (10, 'Task', '', 'done', 'medium', 'mine', '[]', '[]', datetime('now'), datetime('now'))
+                INSERT INTO targets (id, text, intent, status, priority, ownership, tags, sub_items, created_at, updated_at, period_start, period_end)
+                VALUES (10, 'Task', '', 'done', 'medium', 'mine', '[]', '[]', datetime('now'), datetime('now'), date('now'), date('now'))
                 """)
         }
         let planId = try db.write { db in

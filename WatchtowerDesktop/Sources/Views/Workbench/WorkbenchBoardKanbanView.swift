@@ -7,6 +7,8 @@ import WatchtowerCore
 /// menu uses. The menu stays the keyboard/accessibility path.
 struct WorkbenchBoardKanbanView: View {
     let board: WorkbenchBoardKanban
+    /// For the cards' context menu (copy the number, Move to…).
+    let vm: WorkbenchBoardViewModel
     let selectedTargetID: Int?
     let onSelect: (Int) -> Void
     /// Returns whether the status was written.
@@ -18,6 +20,7 @@ struct WorkbenchBoardKanbanView: View {
                 ForEach(board.columns) { column in
                     WorkbenchBoardKanbanColumnView(
                         column: column,
+                        vm: vm,
                         selectedTargetID: selectedTargetID,
                         onSelect: onSelect
                     ) { id, status in
@@ -34,6 +37,7 @@ struct WorkbenchBoardKanbanView: View {
 
 private struct WorkbenchBoardKanbanColumnView: View {
     let column: WorkbenchBoardKanban.Column
+    let vm: WorkbenchBoardViewModel
     let selectedTargetID: Int?
     let onSelect: (Int) -> Void
     let onMove: (_ targetID: Int, _ status: String) -> Bool
@@ -66,6 +70,7 @@ private struct WorkbenchBoardKanbanColumnView: View {
                             }
                         )
                         .onTapGesture { onSelect(card.id) }
+                        .contextMenu { WorkbenchTargetMenu(target: card.row.node.target, vm: vm) }
                         .draggable(String(card.id))
                     }
                     if column.hiddenCount > 0 {
