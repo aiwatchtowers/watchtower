@@ -283,3 +283,32 @@ func TestCodeIndex_UsageErrorsExitTwo(t *testing.T) {
 		})
 	}
 }
+
+// A server idle on stdin between runs also stops at once on SIGTERM.
+func TestCodeIndex_SIGTERMWhileIdleExitsAtOnce(t *testing.T) {
+	root := t.TempDir()
+	writeCodeFile(t, root, "a.md", "# A\n")
+	p := startCLI(t, "code", "index", "--folder", root, "--serve")
+	if _, err := io.WriteString(p.stdin, "a.md\n"); err != nil {
+		t.Fatal(err)
+	}
+	p.untilDone(t)
+
+	sent := time.Now()
+	if err := p.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- p.wait() }()
+	select {
+	case err := <-done:
+		if code := exitCode(err); code != 0 {
+			t.Fatalf("exit code = %d, want 0", code)
+		}
+		if elapsed := time.Since(sent); elapsed > 50*time.Millisecond {
+			t.Errorf("exited %v after SIGTERM, want ≤ 50ms", elapsed)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("still running 5s after SIGTERM (blocked on stdin)")
+	}
+}
