@@ -984,6 +984,8 @@ final class AppState {
     private func wireOnboardingDatabase(_ manager: DatabaseManager) async {
         databaseManager = manager
         errorMessage = nil
+        // completion's startPipelines reads it.
+        analysisLegacyMode = ConfigService().analysisLegacyMode
         await refreshOwner()
         await refreshConnectedSources()
         guard slackAccountsViewModel == nil else { return }
@@ -1121,12 +1123,17 @@ final class AppState {
     /// During onboarding, a Slack account that appeared since the last
     /// refresh starts the people load — however its Add sheet was left
     /// (closed mid-sign-in, the connect finishing afterwards, included).
-    /// The first refresh only records what is already there.
+    /// The first refresh records what is already there, and an account
+    /// already connected (a relaunch mid-onboarding) resumes the load.
     func slackAccountsDidChange(_ accounts: [SlackAccount]) {
         let active = accounts.filter { $0.status != "removed" }.map(\.id)
         defer { knownSlackAccountIDs = Set(active) }
-        guard needsOnboarding, let known = knownSlackAccountIDs,
-              let added = OnboardingConnectPlan.newlyConnected(before: known, after: active) else { return }
+        guard needsOnboarding else { return }
+        guard let known = knownSlackAccountIDs else {
+            resumePeopleRosterIfNeeded()
+            return
+        }
+        guard let added = OnboardingConnectPlan.newlyConnected(before: known, after: active) else { return }
         peopleRoster.start(accountID: added)
     }
 

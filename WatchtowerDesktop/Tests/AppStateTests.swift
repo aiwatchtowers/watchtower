@@ -553,19 +553,22 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(launches.accounts, [Int(id)])
     }
 
-    /// Closing the Google (or Jira) sheet with Slack already connected
-    /// refreshes nothing new on the Slack side: no load.
-    func testAlreadyConnectedSlackStartsNothing() async throws {
+    /// A relaunch mid-onboarding with Slack connected: the first account
+    /// refresh resumes the load by itself (no view `.task` needed), and
+    /// later refreshes — closing the Google or Jira sheet — start no other.
+    func testFirstRefreshResumesTheLoadForAConnectedAccountOnce() async throws {
         let launches = RosterLaunches()
         let appState = onboardingAppState(launches)
-        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertSlackAccount(db, teamID: "T1") }
+        let id = try await dbManager.dbPool.write { db in try TestDatabase.insertSlackAccount(db, teamID: "T1") }
         appState.initSlackAccounts(dbPool: dbManager.dbPool)
         let vm = try XCTUnwrap(appState.slackAccountsViewModel)
+        await waitUntil { launches.accounts.count == 1 }
+        await appState.peopleRoster.waitForCompletion()
         await vm.refreshAsync()
         await vm.refreshAsync()
         for _ in 0..<50 { await Task.yield() }
 
-        XCTAssertEqual(launches.accounts, [])
+        XCTAssertEqual(launches.accounts, [Int(id)])
     }
 
     func testSlackAccountOutsideOnboardingStartsNothing() async throws {
