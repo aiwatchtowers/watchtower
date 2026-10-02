@@ -38,6 +38,8 @@ func init() {
 	goldenFixtures["perl"] = "Store.pm"
 	goldenFixtures["julia"] = "store.jl"
 	goldenFixtures["nim"] = "store.nim"
+	goldenFixtures["vue"] = "Counter.vue"
+	goldenFixtures["svelte"] = "Counter.svelte"
 }
 
 // wantKinds checks that each named symbol exists once with the kind and
@@ -687,5 +689,37 @@ func TestNim_RoutinesTypesAndTrailingDocs(t *testing.T) {
 	}
 	if len(byName(syms, "inner")) != 0 || len(byName(syms, "local")) != 0 {
 		t.Error("a local was indexed")
+	}
+}
+
+// A Vue file's <script setup lang="ts"> is parsed with the TypeScript
+// query, its symbols on their lines in the .vue file; what the template
+// holds is not code.
+func TestVue_ScriptSetupLinesAreTheFile(t *testing.T) {
+	syms := fixtureSymbols(t, "vue", "Counter.vue")
+	inc := one(t, syms, "increment")
+	if inc.Kind != KindFunction || inc.Line != 19 || inc.Col != 10 || inc.EndLine != 21 || inc.Doc != "Adds one to the count." {
+		t.Errorf("increment = %+v, want a function at 19:10–21 with its doc", inc)
+	}
+	if s := one(t, syms, "Counter"); s.Kind != KindInterface || s.Line != 12 {
+		t.Errorf("Counter = %+v, want an interface on line 12 (TypeScript)", s)
+	}
+	wantKinds(t, syms, map[string][2]string{"reset": {"method", "Store"}})
+	if len(byName(syms, "fakeTemplate")) != 0 {
+		t.Error("text in the template was indexed")
+	}
+}
+
+// A Svelte file's lang="ts" blocks (module and instance) are TypeScript.
+func TestSvelte_TypeScriptBlocks(t *testing.T) {
+	syms := fixtureSymbols(t, "svelte", "Counter.svelte")
+	wantKinds(t, syms, map[string][2]string{
+		"Options": {"interface", ""}, "step": {"function", ""}, "Tally": {"class", ""}, "total": {"method", "Tally"},
+	})
+	if s := one(t, syms, "step"); s.Line != 12 || s.Doc != "Moves the count by one step." {
+		t.Errorf("step = %+v, want line 12 with its doc", s)
+	}
+	if len(byName(syms, "fakeMarkup")) != 0 {
+		t.Error("text in the markup was indexed")
 	}
 }

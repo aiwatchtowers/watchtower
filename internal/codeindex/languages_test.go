@@ -35,6 +35,9 @@ var associationExceptions = map[string]string{
 	".pp": "",
 	// A compiled Rust library, not source.
 	".rlib": "",
+	// languages.js highlights Vue and Svelte files as HTML; the index
+	// parses their <script> blocks.
+	".vue": "vue", ".svelte": "svelte",
 }
 
 func monacoAssociations(t *testing.T) map[string]association {
@@ -69,11 +72,6 @@ func languagesJSAssociations(t *testing.T) map[string]association {
 		t.Fatal(err)
 	}
 	src := string(data)
-	start := strings.Index(src, "var associations = [")
-	end := strings.Index(src[max(start, 0):], "];")
-	if start < 0 || end < 0 {
-		t.Fatal("languages.js has no associations list")
-	}
 	strs := func(re *regexp.Regexp, body string) []string {
 		var out []string
 		if m := re.FindStringSubmatch(body); m != nil {
@@ -84,11 +82,20 @@ func languagesJSAssociations(t *testing.T) map[string]association {
 		return out
 	}
 	out := map[string]association{}
-	for _, m := range jsEntry.FindAllStringSubmatch(src[start:start+end], -1) {
-		out[m[1]] = association{Extensions: strs(jsExts, m[2]), Filenames: strs(jsNames, m[2])}
+	// The associations for Monaco's languages, then the languages
+	// languages.js registers itself (TOML).
+	for _, list := range []string{"var associations = [", "var grammars = ["} {
+		start := strings.Index(src, list)
+		end := strings.Index(src[max(start, 0):], "];")
+		if start < 0 || end < 0 {
+			t.Fatalf("languages.js has no %q list", list)
+		}
+		for _, m := range jsEntry.FindAllStringSubmatch(src[start:start+end], -1) {
+			out[m[1]] = association{Extensions: strs(jsExts, m[2]), Filenames: strs(jsNames, m[2])}
+		}
 	}
-	if len(out) == 0 {
-		t.Fatal("no associations read from languages.js")
+	if out["toml"].Extensions == nil {
+		t.Fatal("no TOML language read from languages.js")
 	}
 	return out
 }

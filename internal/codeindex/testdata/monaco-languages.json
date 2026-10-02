@@ -1,5 +1,5 @@
 {
-  "_comment": "Monaco's built-in language associations (extensions and file names) for the languages the code index knows or will, copied from basic-languages/monaco.contribution.js of the monaco-editor build scripts/fetch-monaco.sh pins. That build is gitignored, so they are pinned here; refresh them when the pinned version changes.",
+  "_comment": "Monaco's built-in language associations (extensions and file names) for the languages the code index knows or will, copied from basic-languages/monaco.contribution.js (JSON: language/json's registration) of the monaco-editor build scripts/fetch-monaco.sh pins. That build is gitignored, so they are pinned here; refresh them when the pinned version changes.",
   "monaco": "0.57.0",
   "languages": {
     "c": {
@@ -104,6 +104,17 @@
       ],
       "filenames": [
         "jakefile"
+      ]
+    },
+    "json": {
+      "extensions": [
+        ".json",
+        ".bowerrc",
+        ".jshintrc",
+        ".jscsrc",
+        ".eslintrc",
+        ".babelrc",
+        ".har"
       ]
     },
     "julia": {

@@ -53,8 +53,12 @@ type langSpec struct {
 	docMarkup *regexp.Regexp
 	// docstring: the first statement string of a body is the doc (Python).
 	docstring bool
-	// lineScanned languages are indexed without a grammar (Markdown).
-	lineScanned bool
+	// scan indexes the language without a grammar (Markdown headings,
+	// config files' top-level keys; noSymbols for a language named only).
+	scan func(src []byte) []Symbol
+	// scripts: the file's `<script>` blocks are parsed with the JavaScript
+	// or TypeScript grammar (Vue, Svelte; scriptHost).
+	scripts bool
 }
 
 // xmlTag is an XML doc comment's markup: `<summary>`, `<see cref="X"/>`.
@@ -327,10 +331,47 @@ var languages = []langSpec{
 	jsLike("typescript", []string{".ts", ".cts", ".mts"}, nil, nil),
 	jsLike("tsx", []string{".tsx"}, nil, nil),
 	{
-		id:          "markdown",
-		exts:        []string{".md", ".markdown", ".mdown", ".mkdn", ".mkd", ".mdwn", ".mdtxt", ".mdtext", ".mdc"},
-		lineScanned: true,
+		id:   "markdown",
+		exts: []string{".md", ".markdown", ".mdown", ".mkdn", ".mkd", ".mdwn", ".mdtxt", ".mdtext", ".mdc"},
+		scan: markdownHeadings,
 	},
+	{
+		id:   "yaml",
+		exts: []string{".yaml", ".yml", ".clang-format", ".clang-tidy", ".yamllint", ".cff"},
+		scan: yamlKeys,
+	},
+	{
+		id:    "toml",
+		exts:  []string{".toml"},
+		names: []string{"Cargo.lock", "Pipfile", "poetry.lock", "uv.lock", "Gopkg.lock"},
+		scan:  tomlKeys,
+	},
+	{
+		id: "json",
+		exts: []string{
+			".json", ".bowerrc", ".jshintrc", ".jscsrc", ".eslintrc", ".babelrc", ".har", ".jsonc", ".json5",
+			".jsonl", ".ndjson", ".webmanifest", ".code-workspace", ".resolved", ".prettierrc", ".swcrc", ".map",
+		},
+		names: []string{"composer.lock", "Pipfile.lock", "flake.lock", ".watchmanconfig"},
+		scan:  jsonKeys,
+	},
+	{
+		id: "html",
+		exts: []string{
+			".html", ".htm", ".shtml", ".xhtml", ".mdoc", ".jsp", ".asp", ".aspx", ".jshtm", ".astro", ".ejs",
+		},
+		scan: noSymbols,
+	},
+	{id: "css", exts: []string{".css"}, scan: noSymbols},
+	{id: "scss", exts: []string{".scss"}, scan: noSymbols},
+	{
+		id:    "dockerfile",
+		exts:  []string{".dockerfile"},
+		names: []string{"Dockerfile", "Containerfile"},
+		scan:  noSymbols,
+	},
+	{id: "vue", exts: []string{".vue"}, scripts: true},
+	{id: "svelte", exts: []string{".svelte"}, scripts: true},
 }
 
 // jsLike is a JavaScript-family row: one syntax tree shape, so one set of

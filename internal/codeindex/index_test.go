@@ -78,6 +78,18 @@ func TestLanguageFor(t *testing.T) {
 		{"rules.mdc", "", "markdown"},
 		{"notes.txt", "", ""},
 		{"Makefile", "", ""},
+		{"deploy/values.yml", "", "yaml"},
+		{"Cargo.toml", "", "toml"},
+		{"Pipfile", "", "toml"},
+		{"package.json", "", "json"},
+		{"tsconfig.jsonc", "", "json"},
+		{"web/index.html", "", "html"},
+		{"web/site.css", "", "css"},
+		{"web/site.scss", "", "scss"},
+		{"Dockerfile", "", "dockerfile"},
+		{"build/dockerfile", "", "dockerfile"},
+		{"web/App.vue", "", "vue"},
+		{"web/App.svelte", "", "svelte"},
 	}
 	for _, tc := range cases {
 		if got := LanguageFor(tc.rel, []byte(tc.head)); got != tc.want {
@@ -218,5 +230,50 @@ func TestClipAndFirstSentence(t *testing.T) {
 	long := clip(string(bytes.Repeat([]byte("é"), 300)))
 	if n := len([]rune(long)); n != textLimit {
 		t.Errorf("clip kept %d characters, want %d", n, textLimit)
+	}
+}
+
+// HTML, CSS, SCSS and Dockerfiles are known by name only: lang set, no
+// symbols, no grammar involved; the config formats are scanned without one
+// too, their keys flagged outline.
+func TestRun_ScannedLanguagesNeedNoGrammar(t *testing.T) {
+	root := t.TempDir()
+	files := map[string][2]string{
+		"web/index.html": {"html", "<script>function f() {}</script>\n<h1>Title</h1>\n"},
+		"web/site.css":   {"css", ".a { color: red; }\n"},
+		"web/site.scss":  {"scss", "$c: red;\n.a { .b { color: $c; } }\n"},
+		"Dockerfile":     {"dockerfile", "FROM scratch AS base\nCOPY . /app\n"},
+		"conf.yaml":      {"yaml", "a:\n  b: 1\n"},
+		"conf.toml":      {"toml", "[a]\nb = 1\n"},
+		"conf.json":      {"json", "{\"a\": {\"b\": 1}}\n"},
+	}
+	for rel, f := range files {
+		write(t, root, rel, []byte(f[1]))
+	}
+	got := collect(t, root, nil, func() parser { return panicParser{} })
+	for rel, f := range files {
+		wantScanned(t, got[rel], rel, f[0])
+	}
+	data, err := json.Marshal(got["web/site.css"])
+	if err != nil || string(data) != `{"file":"web/site.css","lang":"css","symbols":[]}` {
+		t.Errorf("css json = %s (%v)", data, err)
+	}
+}
+
+// wantScanned checks a scanned file's result: its lang, and for a config
+// format its one top-level key a, flagged outline.
+func wantScanned(t *testing.T, r FileResult, rel, lang string) {
+	t.Helper()
+	want := 0
+	if lang == "yaml" || lang == "toml" || lang == "json" {
+		want = 1
+	}
+	if r.Lang != lang || len(r.Symbols) != want {
+		t.Errorf("%s = %+v, want lang %s with %d symbols", rel, r, lang, want)
+	}
+	for _, s := range r.Symbols {
+		if s.Name != "a" || !s.Outline || s.Lang != lang || s.Path != rel {
+			t.Errorf("%s symbol %+v, want a, outline, lang and path set", rel, s)
+		}
 	}
 }

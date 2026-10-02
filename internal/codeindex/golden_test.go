@@ -31,7 +31,10 @@ func fixtureSymbols(t *testing.T, lang, file string) []Symbol {
 
 // goldenFixtures maps a language to its fixture file under testdata/<lang>;
 // a tagged build adds its languages (golden_full_test.go).
-var goldenFixtures = map[string]string{"go": "sample.go", "swift": "sample.swift", "python": "sample.py"}
+var goldenFixtures = map[string]string{
+	"go": "sample.go", "swift": "sample.swift", "python": "sample.py",
+	"yaml": "settings.yaml", "toml": "config.toml", "json": "package.json",
+}
 
 // The golden fixtures: every symbol field (name, kind, line, col,
 // end_line, container, signature, doc) equals expected.json.
@@ -79,18 +82,25 @@ func TestGolden(t *testing.T) {
 }
 
 // noTypes are the fixture languages with no type or module definitions to
-// index, noFuncs those with no functions or methods.
+// index, noFuncs those with no functions or methods; outlineLangs are
+// indexed as an outline of top-level fields only.
 var (
-	noTypes = map[string]bool{"lua": true, "r": true, "bash": true}
-	noFuncs = map[string]bool{"hcl": true}
+	noTypes      = map[string]bool{"lua": true, "r": true, "bash": true}
+	noFuncs      = map[string]bool{"hcl": true}
+	outlineLangs = map[string]bool{"yaml": true, "toml": true, "json": true}
 )
 
 // Every fixture exercises a function or method, a type (or module) and a
 // doc, so a query that lost a whole family shows here and not only as a
-// golden diff.
+// golden diff. An outline language's fixture instead lists only top-level
+// fields, each flagged outline.
 func TestGolden_FixturesCoverTheBasics(t *testing.T) {
 	for lang, file := range goldenFixtures {
 		t.Run(lang, func(t *testing.T) {
+			if outlineLangs[lang] {
+				wantOutlineFields(t, fixtureSymbols(t, lang, file))
+				return
+			}
 			var fn, typ, doc bool
 			for _, s := range fixtureSymbols(t, lang, file) {
 				switch s.Kind {
@@ -106,6 +116,20 @@ func TestGolden_FixturesCoverTheBasics(t *testing.T) {
 				t.Errorf("function/method %v, type %v, doc %v; want all", fn, typ, doc)
 			}
 		})
+	}
+}
+
+// wantOutlineFields checks a non-empty outline: every symbol a top-level
+// field flagged outline.
+func wantOutlineFields(t *testing.T, syms []Symbol) {
+	t.Helper()
+	if len(syms) == 0 {
+		t.Fatal("no symbols")
+	}
+	for _, s := range syms {
+		if s.Kind != KindField || !s.Outline || s.Container != "" {
+			t.Errorf("%+v: want a top-level field flagged outline", s)
+		}
 	}
 }
 

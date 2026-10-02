@@ -1,12 +1,13 @@
 // Package codeindex builds a workbench folder's symbol index for
 // `watchtower code index` (spec 2026-10-02-code-navigation-design §6):
 // tree-sitter grammars with our own tags queries, signatures and doc
-// comments cut out of the tree in Go, Markdown headings from a line scan.
+// comments cut out of the tree in Go, Markdown headings and config files'
+// top-level keys from a scan, Vue and Svelte by their <script> blocks.
 //
 // Grammars are cgo. Untagged cgo builds carry Go, Swift and Python
 // (grammars_min.go); `-tags codegrammars` the full set (grammars_full.go);
-// a CGO_ENABLED=0 build none (grammars_nocgo.go), so every file except
-// Markdown then reports lang "".
+// a CGO_ENABLED=0 build none (grammars_nocgo.go), so every file except a
+// scanned one (Markdown, YAML, TOML, JSON, HTML…) then reports lang "".
 package codeindex
 
 import (
@@ -181,18 +182,12 @@ func indexFile(p parser, root string, j job) (FileResult, error) {
 	if l == nil {
 		return res, nil
 	}
-	var syms []Symbol
-	if l.lineScanned {
-		syms = markdownHeadings(src)
-	} else {
-		parsed, supported, err := p.parse(l, src)
-		if err != nil {
-			return FileResult{}, fmt.Errorf("indexing %s: %w", res.File, err)
-		}
-		if !supported {
-			return res, nil
-		}
-		syms = parsed
+	syms, supported, err := symbolsOf(p, l, src)
+	if err != nil {
+		return FileResult{}, fmt.Errorf("indexing %s: %w", res.File, err)
+	}
+	if !supported {
+		return res, nil
 	}
 	res.Lang = l.id
 	for i := range syms {
@@ -200,6 +195,19 @@ func indexFile(p parser, root string, j job) (FileResult, error) {
 	}
 	res.Symbols = syms
 	return res, nil
+}
+
+// symbolsOf indexes src as l: by its scan, or by its grammar (a Vue or
+// Svelte file's `<script>` blocks by the JavaScript or TypeScript one);
+// supported=false when this build has no grammar for it.
+func symbolsOf(p parser, l *langSpec, src []byte) (syms []Symbol, supported bool, err error) {
+	switch {
+	case l.scan != nil:
+		return l.scan(src), true, nil
+	case l.scripts:
+		return p.parse(scriptHost(src), src)
+	}
+	return p.parse(l, src)
 }
 
 // lookupNamed checks a path asked for by name: deleted when nothing is
