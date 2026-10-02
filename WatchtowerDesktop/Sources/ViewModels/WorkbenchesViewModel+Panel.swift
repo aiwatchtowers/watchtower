@@ -141,6 +141,8 @@ extension WorkbenchesViewModel {
             updated.showWorkbenchView(.board)
         case .documents:
             updated.showWorkbenchView(.documents)
+        case .files:
+            updated.showWorkbenchView(.files)
         case .terminal:
             let kept = updated.visiblePanes.first ?? updated.primary
             guard let id = updated.sessionIDs.first ?? activeSessionID(projectID: project.id) else {
@@ -150,6 +152,25 @@ extension WorkbenchesViewModel {
             updated.reveal(.session(id), keeping: kept)
         }
         setLayout(updated, projectID: project.id)
+    }
+
+    /// A FILES tree click (POC): the file opens in a tab (a preview tab on a
+    /// single click, a kept one on a double click) and the Files pane goes
+    /// on screen the way Board and Documents do — beside a terminal in a
+    /// split, else in place.
+    func openFile(_ relPath: String, project: Workbench, preview: Bool) async {
+        // An edit still unsent in the preview tab keeps it before a preview
+        // open could replace it.
+        await codeFiles.pullPending(project)
+        codeFiles.open(relPath, project: project, preview: preview)
+        showFilesPane(projectID: project.id)
+    }
+
+    /// The Files pane on screen, the way the header's Files button puts it.
+    func showFilesPane(projectID: Int64) {
+        var updated = layout(projectID: projectID)
+        updated.showWorkbenchView(.files)
+        setLayout(updated, projectID: projectID)
     }
 
     /// A header view button turned off: closes that pane of a split.

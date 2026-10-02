@@ -16,6 +16,10 @@ final class WorkbenchesViewModel {
     /// `projects.` prefix predates the Workbench rename; persisted, so kept (spec 2026-10-02 A1).
     static let viewedDocumentsKey = "projects.viewedDocuments"
 
+    /// The code viewer's file trees and open buffers (POC), here so unsaved
+    /// edits survive switching panes and tabs.
+    let codeFiles: CodeFilesCenter
+
     private(set) var summaries: [WorkbenchSummary] = []
     var selectedWorkbenchID: Int64? {
         didSet {
@@ -212,6 +216,7 @@ final class WorkbenchesViewModel {
         self.cli = cli
         self.defaults = defaults
         self.terminalCenter = terminalCenter
+        codeFiles = CodeFilesCenter(defaults: defaults)
         viewed = defaults.dictionary(forKey: Self.viewedDocumentsKey) as? [String: String] ?? [:]
         if let cli {
             let service = TerminalTitleService(runner: cli.runner)

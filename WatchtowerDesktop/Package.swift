@@ -71,6 +71,8 @@ let package = Package(
             exclude: ["WatchtowerCore", "OCRKit", "OCRHelper"],
             resources: [
                 .process("Resources"),
+                // POC (code viewer): Monaco host page + build (scripts/fetch-monaco.sh).
+                .copy("CodeEditorWeb"),
             ]
         ),
         .target(

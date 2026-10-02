@@ -1,0 +1,205 @@
+<!doctype html>
+<!--
+  The Files pane's Monaco host page, served by CodeEditorSchemeHandler under
+  wtcode://editor/. One model per open file, keyed by the Swift buffer's id
+  (stable across a rename), so each keeps its undo stack, cursor and scroll.
+  Every edit carries `base`: the disk revision the model was last given
+  (show/reload), so Swift can tell an edit typed before a reload landed.
+
+  Swift → page (window.wt):
+    show({id, path, text, rev}) | show(null)   put a file on screen / clear it
+    reload({id, text, rev, mode})              the disk changed:
+        replace — take the text, unless an edit is still unsent: then send
+                  that edit (on its old base) and keep it — Swift raises the
+                  conflict
+        force   — take the text whatever is unsent (Reload from disk)
+        rebase  — keep the text, take the new base, send what is unsent
+                  (Keep mine)
+    rename({id, path})                         the file moved: new language
+    close(id)                                  the tab closed
+    takePending() → [{id, text, base}]         the unsent edits, handed over
+  page → Swift (webkit.messageHandlers.wt):
+    ready
+    text   {id, text, base, now, explicit}     300 ms after typing stops; at
+                                               once (now) on a tab switch or
+                                               blur; explicit on Cmd+S
+    error  {message}
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body, #editor { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; }
+  body { background: #ffffff; }
+  @media (prefers-color-scheme: dark) { body { background: #1e1e1e; } }
+  #missing { display: none; font: 13px -apple-system, sans-serif; color: #888; padding: 16px; }
+</style>
+</head>
+<body>
+<div id="editor"></div>
+<div id="missing">Monaco is not installed. Run <code>scripts/fetch-monaco.sh</code> and rebuild.</div>
+<script>
+  function post(message) {
+    try { window.webkit.messageHandlers.wt.postMessage(message); } catch (e) {}
+  }
+  window.addEventListener("error", function (e) { post({ type: "error", message: String(e.message || e) }); });
+  window.addEventListener("unhandledrejection", function (e) {
+    var reason = e.reason;
+    post({ type: "error", message: "Editor: " + String((reason && reason.message) || reason) });
+  });
+</script>
+<script src="languages.js"></script>
+<script src="vs/loader.js" onerror="document.getElementById('missing').style.display='block'; post({type:'error', message:'Monaco is not installed'})"></script>
+<script>
+(function () {
+  if (typeof require === "undefined") { return; }
+  require.config({ paths: { vs: "vs" } });
+  require(["vs/editor/editor.main"], function () {
+    registerExtraLanguages();
+
+    // The TypeScript worker is trimmed from the bundle (fetch-monaco.sh):
+    // switch the TS/JS language service off so nothing asks for it.
+    // Highlighting comes from the Monarch grammars and stays.
+    var ts = (monaco.typescript || (monaco.languages && monaco.languages.typescript));
+    if (ts) {
+      var off = { completionItems: false, hovers: false, documentSymbols: false, definitions: false,
+        references: false, documentHighlights: false, rename: false, diagnostics: false,
+        documentRangeFormattingEdits: false, signatureHelp: false, onTypeFormattingEdits: false,
+        codeActions: false, inlayHints: false };
+      [ts.typescriptDefaults, ts.javascriptDefaults].forEach(function (d) {
+        if (!d) { return; }
+        if (d.setModeConfiguration) { d.setModeConfiguration(off); }
+        if (d.setDiagnosticsOptions) { d.setDiagnosticsOptions({ noSemanticValidation: true, noSyntaxValidation: true }); }
+      });
+    }
+
+    var dark = window.matchMedia("(prefers-color-scheme: dark)");
+    function applyTheme() { monaco.editor.setTheme(dark.matches ? "wt-dark" : "wt-light"); }
+    applyTheme();
+    dark.addEventListener("change", applyTheme);
+
+    var editor = monaco.editor.create(document.getElementById("editor"), {
+      automaticLayout: true,
+      fontFamily: "SF Mono, Menlo, monospace",
+      fontSize: 12,
+      minimap: { enabled: false },
+      scrollBeyondLastLine: false,
+      renderWhitespace: "selection",
+      model: null
+    });
+    var models = {};      // buffer id -> model
+    var bases = {};       // buffer id -> disk revision the model was given
+    var viewStates = {};  // buffer id -> saved cursor/scroll
+    var pending = {};     // buffer id -> debounce timer of an unsent edit
+    var current = null;   // buffer id on screen
+
+    function send(id, now, explicit) {
+      clearTimeout(pending[id]);
+      delete pending[id];
+      var model = models[id];
+      if (model) {
+        post({ type: "text", id: id, text: model.getValue(), base: bases[id], now: !!now, explicit: !!explicit });
+      }
+    }
+
+    function flushAll(now) {
+      Object.keys(pending).forEach(function (id) { send(id, now, false); });
+    }
+
+    function uriFor(id, path) { return monaco.Uri.file("/" + id + "/" + path); }
+
+    function modelFor(args) {
+      if (models[args.id]) { return models[args.id]; }
+      var model = monaco.editor.createModel(args.text, undefined, uriFor(args.id, args.path));
+      model.setEOL(args.text.indexOf("\r\n") >= 0 ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
+      model.onDidChangeContent(function () {
+        if (model.__replacing) { return; }
+        clearTimeout(pending[args.id]);
+        pending[args.id] = setTimeout(function () { send(args.id, false, false); }, 300);
+      });
+      models[args.id] = model;
+      bases[args.id] = args.rev;
+      return model;
+    }
+
+    function replaceText(model, text) {
+      if (model.getValue() === text) { return; }
+      model.__replacing = true;
+      model.pushEditOperations([], [{ range: model.getFullModelRange(), text: text }], function () { return null; });
+      model.__replacing = false;
+    }
+
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, function () {
+      if (current) { send(current, true, true); }
+    });
+    window.addEventListener("blur", function () { flushAll(true); });
+
+    window.wt = {
+      show: function (args) {
+        if (!args) {
+          if (current && models[current]) { viewStates[current] = editor.saveViewState(); }
+          editor.setModel(null);
+          current = null;
+          return;
+        }
+        if (current === args.id && editor.getModel()) { return; }
+        flushAll(true);
+        if (current && models[current]) { viewStates[current] = editor.saveViewState(); }
+        editor.setModel(modelFor(args));
+        if (viewStates[args.id]) { editor.restoreViewState(viewStates[args.id]); }
+        current = args.id;
+        editor.focus();
+      },
+      reload: function (args) {
+        var model = models[args.id];
+        if (!model) { return; }
+        if (args.mode === "rebase") {
+          bases[args.id] = args.rev;
+          if (pending[args.id]) { send(args.id, true, false); }
+          return;
+        }
+        if (args.mode !== "force" && pending[args.id]) {
+          send(args.id, true, false);
+          return;
+        }
+        clearTimeout(pending[args.id]);
+        delete pending[args.id];
+        replaceText(model, args.text);
+        bases[args.id] = args.rev;
+      },
+      // A model's URI cannot change: the language follows the new name by
+      // asking Monaco what a throwaway model of that name would be.
+      rename: function (args) {
+        var model = models[args.id];
+        if (!model) { return; }
+        var probe = monaco.editor.createModel("", undefined, uriFor("probe-" + args.id, args.path));
+        monaco.editor.setModelLanguage(model, probe.getLanguageId());
+        probe.dispose();
+      },
+      close: function (id) {
+        if (pending[id]) { send(id, true, false); }
+        if (models[id]) {
+          if (current === id) { editor.setModel(null); current = null; }
+          models[id].dispose();
+          delete models[id];
+        }
+        delete bases[id];
+        delete viewStates[id];
+      },
+      takePending: function () {
+        return Object.keys(pending).map(function (id) {
+          clearTimeout(pending[id]);
+          delete pending[id];
+          return { id: id, text: models[id] ? models[id].getValue() : "", base: bases[id] };
+        }).filter(function (edit) { return models[edit.id]; });
+      },
+      focus: function () { editor.focus(); }
+    };
+    post({ type: "ready" });
+  }, function (err) {
+    post({ type: "error", message: "Monaco failed to load: " + String(err && err.message || err) });
+  });
+})();
+</script>
+</body>
+</html>

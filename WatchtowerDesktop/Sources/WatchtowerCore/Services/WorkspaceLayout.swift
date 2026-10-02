@@ -1,11 +1,12 @@
 import Foundation
 
-/// One pane of a project workspace: a terminal session or one of the two
-/// project views.
+/// One pane of a project workspace: a terminal session, one of the two
+/// project views, or the code editor with its file tabs (POC).
 package enum WorkspacePane: Codable, Hashable, Sendable {
     case session(Int64)
     case board
     case documents
+    case files
 }
 
 /// The project page header's view buttons: a terminal (any session), the
@@ -14,6 +15,8 @@ package enum WorkspaceView: CaseIterable, Sendable {
     case terminal
     case board
     case documents
+    /// The code editor's file tabs (POC).
+    case files
 
     /// What `pane` shows.
     package init(_ pane: WorkspacePane) {
@@ -21,6 +24,7 @@ package enum WorkspaceView: CaseIterable, Sendable {
         case .session: self = .terminal
         case .board: self = .board
         case .documents: self = .documents
+        case .files: self = .files
         }
     }
 

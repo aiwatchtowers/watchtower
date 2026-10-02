@@ -125,6 +125,8 @@ GOARCH=arm64 CGO_ENABLED=1 go build \
 echo "    Go CLI built ($(du -h "$BUILD_DIR/watchtower" | cut -f1))"
 
 # 2. Build Swift desktop app
+# POC (code viewer): the Monaco build is fetched, not committed.
+"$SCRIPT_DIR/fetch-monaco.sh"
 echo "==> Building Desktop app..."
 cd "$DESKTOP_DIR"
 swift build -c release --arch arm64 2>&1
