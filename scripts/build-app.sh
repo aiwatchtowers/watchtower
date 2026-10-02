@@ -89,9 +89,11 @@ echo ""
 # BEGIN finish-staged-build (extracted verbatim by scripts/tests/test-app-swap.sh)
 # finish_staged_build — marks the staging dir complete and hands it to
 # app-swap.sh. While anything runs from build/ the swap is DEFERRED (exit 3):
-# the build itself succeeded, so this script still exits 0, leaves the result
-# in STAGE_DIR and ends with a banner telling the owner to quit the app and run
-# `make app-swap`. Any other swap failure fails the build. Sets OUT_DIR (where
+# the result stays in STAGE_DIR and the build ends with a banner telling the
+# owner to quit the app and run `make app-swap`. A dev build then exits 0; a
+# release build exits 3 too (finish_exit), so a release flow that picks up
+# build/*.dmg / *.zip after `make app` can never ship the previous build's
+# artifacts. Any other swap failure fails the build. Sets OUT_DIR (where
 # the artifacts ended up), APP_BUNDLE and SWAP_DEFERRED.
 # app-swap.sh runs as a child process, not a sourced function, so its own
 # set -e stays in force despite the `||` here. WAIT is cleared for it: an
@@ -112,13 +114,21 @@ finish_staged_build() {
     APP_BUNDLE="$OUT_DIR/$APP_NAME.app"
 }
 
-# print_swap_deferred_banner — the last thing a deferred build prints.
-print_swap_deferred_banner() {
+# finish_exit — the build's last step: prints the deferral banner when the
+# swap was deferred and exits (3 for a deferred release build, else 0).
+finish_exit() {
     if $SWAP_DEFERRED; then
         echo ""
         echo "!!! BUILD OK, NOT YET IN build/: Watchtower is running from $BUILD_DIR."
+        if ! $DEV_MODE; then
+            echo "!!! Release artifacts (DMG/ZIP/checksums) are in $STAGE_DIR — they become build/ after 'make app-swap'."
+        fi
         echo "!!! Quit Watchtower (⌘Q), then run: make app-swap   (or: WAIT=1 make app-swap)"
+        if ! $DEV_MODE; then
+            exit 3
+        fi
     fi
+    exit 0
 }
 # END finish-staged-build
 
@@ -420,8 +430,7 @@ if $DEV_MODE; then
     if ! $SWAP_DEFERRED; then
         echo "    To run: open \"$APP_BUNDLE\"   (or 'make app-install' to run an installed copy)"
     fi
-    print_swap_deferred_banner
-    exit 0
+    finish_exit
 fi
 
 # Create DMG
@@ -571,4 +580,4 @@ echo "      - WatchtowerDesktop (GUI app)"
 echo "      - watchtower (CLI — bundled)"
 echo ""
 echo "    To install: open DMG → drag Watchtower to Applications"
-print_swap_deferred_banner
+finish_exit

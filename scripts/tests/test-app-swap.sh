@@ -24,9 +24,10 @@
 #   - WAIT=1, app never quits                  → exit 1 after WAIT_TIMEOUT
 #   - WAIT=1 with a non-numeric WAIT_TIMEOUT   → exit 1, nothing touched
 #   - project path with a space and a '+'      → deferral and swap both work
-#   - build-app.sh: swap ok → OUT_DIR=build/; deferred → exit 0, OUT_DIR=staging,
-#     banner names `make app-swap`; swap error → build fails; an exported
-#     WAIT=1 does not reach the swap
+#   - build-app.sh: swap ok → OUT_DIR=build/, exit 0; deferred → OUT_DIR=staging,
+#     banner names `make app-swap`, dev build exits 0 but a release build exits
+#     3 and names build.next/ for its artifacts; swap error → build fails; an
+#     exported WAIT=1 does not reach the swap
 #   - build-app.sh checks build.next/ for live processes before deleting it
 #   - build-app.sh never writes to $BUILD_DIR itself (only the swap does)
 set -euo pipefail
@@ -281,6 +282,7 @@ mkdir -p "$FAKE/scripts" "$FAKE/build.next"
 RUNNER="$WORK_DIR/finish-runner.sh"
 cat > "$RUNNER" <<EOF
 set -euo pipefail
+DEV_MODE="\${DEV_MODE:-false}"
 PROJECT_ROOT="$FAKE"
 SCRIPT_DIR="$FAKE/scripts"
 BUILD_DIR="$FAKE/build"
@@ -291,22 +293,23 @@ STAGED_BUILD_MARKER=".build-complete"
 finish_staged_build
 echo "OUT_DIR=\$OUT_DIR"
 echo "APP_BUNDLE=\$APP_BUNDLE"
-print_swap_deferred_banner
+finish_exit
 EOF
 
-# run_finish <stub-app-swap-exit-code> — the stub reports the WAIT it was given;
-# WAIT=1 is exported to the build, which must not pass it on.
+# run_finish <stub-app-swap-exit-code> [dev-mode:true|false] — the stub reports
+# the WAIT it was given; WAIT=1 is exported to the build, which must not pass
+# it on.
 run_finish() {
     # shellcheck disable=SC2016  # ${WAIT} expands in the stub, not here
     printf '#!/bin/bash\necho "SWAP_WAIT=[${WAIT:-}]"\nexit %s\n' "$1" > "$FAKE/scripts/app-swap.sh"
     chmod +x "$FAKE/scripts/app-swap.sh"
     rm -f "$FAKE/build.next/.build-complete"
     RC=0
-    OUT=$(WAIT=1 bash "$RUNNER" 2>&1) || RC=$?
+    OUT=$(WAIT=1 DEV_MODE="${2:-false}" bash "$RUNNER" 2>&1) || RC=$?
 }
 
 run_finish 0
-check_eq "finish: swapped build exits 0" "$RC" 0
+check_eq "finish: swapped release build exits 0" "$RC" 0
 check "finish: swapped build reports build/" "$OUT" "OUT_DIR=$FAKE/build"$'\n'
 check "finish: swapped build points APP_BUNDLE at build/" "$OUT" "APP_BUNDLE=$FAKE/build/Watchtower.app"
 case "$OUT" in
@@ -316,10 +319,22 @@ esac
 check "finish: an exported WAIT=1 does not reach the swap" "$OUT" "SWAP_WAIT=[]"
 check_test "finish: marks the staged build complete before the swap" "finish: completion marker not written" -f "$FAKE/build.next/.build-complete"
 
-run_finish 3
-check_eq "finish: deferred swap still exits 0" "$RC" 0
-check "finish: deferred swap reports the staging dir" "$OUT" "OUT_DIR=$FAKE/build.next"
-check "finish: deferred swap ends with the make app-swap banner" "$OUT" "make app-swap"
+run_finish 3 false
+check_eq "finish: deferred release build exits 3" "$RC" 3
+check "finish: deferred release build reports the staging dir" "$OUT" "OUT_DIR=$FAKE/build.next"
+check "finish: deferred release build ends with the make app-swap banner" "$OUT" "make app-swap"
+check "finish: deferred release build says where its artifacts are" "$OUT" "Release artifacts (DMG/ZIP/checksums) are in $FAKE/build.next"
+
+run_finish 3 true
+check_eq "finish: deferred dev build exits 0" "$RC" 0
+check "finish: deferred dev build ends with the make app-swap banner" "$OUT" "make app-swap"
+case "$OUT" in
+    *"Release artifacts"*) note_fail "finish: dev build must not mention release artifacts" ;;
+    *) echo "ok: finish: deferred dev build does not mention release artifacts" ;;
+esac
+
+run_finish 0 true
+check_eq "finish: swapped dev build exits 0" "$RC" 0
 
 run_finish 1
 check_eq "finish: swap error fails the build" "$RC" 1
