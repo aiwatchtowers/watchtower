@@ -7,6 +7,7 @@ import (
 
 	golang "github.com/alexaandru/go-sitter-forest/go"
 	"github.com/alexaandru/go-sitter-forest/python"
+	"github.com/alexaandru/go-sitter-forest/rust"
 	"github.com/alexaandru/go-sitter-forest/swift"
 )
 
@@ -16,5 +17,6 @@ import (
 var grammars = map[string]func() unsafe.Pointer{
 	"go":     golang.GetLanguage,
 	"python": python.GetLanguage,
+	"rust":   rust.GetLanguage,
 	"swift":  swift.GetLanguage,
 }

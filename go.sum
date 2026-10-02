@@ -15,6 +15,8 @@ github.com/alexaandru/go-sitter-forest/go v1.9.4 h1:Xpq8HijvTp2+AHL4UplLLiCOdIAA
 github.com/alexaandru/go-sitter-forest/go v1.9.4/go.mod h1:jCpJr1AOFPGq1DrAJevuurB04NJVk8jw3hYW3Mxc7G8=
 github.com/alexaandru/go-sitter-forest/python v1.9.10 h1:qKbso5wI4vlkQ0EjZBO5hRrxwqf0tmGLVdbzasZCcrg=
 github.com/alexaandru/go-sitter-forest/python v1.9.10/go.mod h1:CXs3nuPcj4p3FqY8BnvJqsJ0vbsrda6Oj3sQDyRumNY=
+github.com/alexaandru/go-sitter-forest/rust v1.9.13 h1:orVZVXQ+IkXkIvzeyO6YvHBwujEvbYFvpMRNAGulHmw=
+github.com/alexaandru/go-sitter-forest/rust v1.9.13/go.mod h1:ZKZRL1Yfy6siuWMvv2h/F9lt/8kMKn6VHnGj00PPNmM=
 github.com/alexaandru/go-sitter-forest/swift v1.9.5 h1:CCfvj4BRjvN7HtznqDbgU7ylHHO9ML34ezsJFbErjV0=
 github.com/alexaandru/go-sitter-forest/swift v1.9.5/go.mod h1:EzSPcZpETNyJIoAyPdbQgFUxWM+vcO3y5eYh8kmNvNc=
 github.com/anmitsu/go-shlex v0.0.0-20200514113438-38f4b401e2be h1:9AeTilPcZAjCFIImctFaOjnTIavg87rW78vTPkQqLI8=

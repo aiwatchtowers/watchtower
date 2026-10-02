@@ -29,10 +29,14 @@ func fixtureSymbols(t *testing.T, lang, file string) []Symbol {
 	return r.Symbols
 }
 
+// goldenFixtures maps a language to its fixture file under testdata/<lang>;
+// a tagged build adds its languages (golden_full_test.go).
+var goldenFixtures = map[string]string{"go": "sample.go", "swift": "sample.swift", "python": "sample.py"}
+
 // The golden fixtures: every symbol field (name, kind, line, col,
 // end_line, container, signature, doc) equals expected.json.
 func TestGolden(t *testing.T) {
-	for lang, file := range map[string]string{"go": "sample.go", "swift": "sample.swift", "python": "sample.py"} {
+	for lang, file := range goldenFixtures {
 		t.Run(lang, func(t *testing.T) {
 			got := fixtureSymbols(t, lang, file)
 			path := filepath.Join("testdata", lang, "expected.json")

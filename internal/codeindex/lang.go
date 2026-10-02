@@ -63,6 +63,12 @@ var languages = []langSpec{
 		docstring:    true,
 	},
 	{
+		id:          "rust",
+		exts:        []string{".rs"},
+		bodies:      []string{"block", "field_declaration_list", "declaration_list", "enum_variant_list"},
+		docPrefixes: []string{"///", "/**"},
+	},
+	{
 		id:          "markdown",
 		exts:        []string{".md", ".markdown", ".mdown", ".mkdn", ".mkd", ".mdwn", ".mdtxt", ".mdtext", ".mdc"},
 		lineScanned: true,

@@ -5,6 +5,7 @@ go 1.25.7
 require (
 	github.com/alexaandru/go-sitter-forest/go v1.9.4
 	github.com/alexaandru/go-sitter-forest/python v1.9.10
+	github.com/alexaandru/go-sitter-forest/rust v1.9.13
 	github.com/alexaandru/go-sitter-forest/swift v1.9.5
 	github.com/charmbracelet/glamour v0.10.0
 	github.com/charmbracelet/lipgloss v1.1.1-0.20250404203927-76690c660834
