@@ -12,13 +12,13 @@ import (
 	"watchtower/internal/workbenchfiles"
 )
 
-// workbenchSurface is the registry surface of `watchtower mcp --workbench N`.
+// WorkbenchSurface is the registry surface of `watchtower mcp --workbench N`.
 // Every workbench tool is visible there and nowhere else. The value is the
 // pre-rename "project": it is persisted as agent_actions.surface (spec
 // 2026-10-02 A1).
-const workbenchSurface = "project"
+const WorkbenchSurface = "project"
 
-var workbenchSurfaces = []string{workbenchSurface}
+var workbenchSurfaces = []string{WorkbenchSurface}
 
 // maxBatchTargets caps one create_targets call — a whole plan, not a backlog.
 const maxBatchTargets = 100

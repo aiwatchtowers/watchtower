@@ -69,6 +69,7 @@ type vocabulary struct {
 	InfoTool   string
 	UpdateTool string
 	BoardTool  string
+	SourceTool string
 	Legacy     bool
 }
 
@@ -76,12 +77,14 @@ var (
 	workbenchVocabulary = vocabulary{
 		SkillName: devpack.WorkbenchSkillName, InfoTool: tools.WorkbenchInfoTool,
 		UpdateTool: tools.UpdateWorkbenchTool, BoardTool: tools.WorkbenchBoardTool,
+		SourceTool: tools.AddWorkbenchSourceTool,
 	}
 	legacyWorkbenchVocabulary = vocabulary{
 		SkillName:  devpack.LegacySkillName,
 		InfoTool:   tools.LegacyWorkbenchToolNames[tools.WorkbenchInfoTool],
 		UpdateTool: tools.LegacyWorkbenchToolNames[tools.UpdateWorkbenchTool],
 		BoardTool:  tools.LegacyWorkbenchToolNames[tools.WorkbenchBoardTool],
+		SourceTool: tools.LegacyWorkbenchToolNames[tools.AddWorkbenchSourceTool],
 		Legacy:     true,
 	}
 )

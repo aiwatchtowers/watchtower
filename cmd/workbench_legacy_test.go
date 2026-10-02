@@ -6,9 +6,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -70,7 +73,7 @@ func TestIntegrateWorkbenchStatusJSON_ReportsALegacyFolder(t *testing.T) {
 	var out bytes.Buffer
 	require.NoError(t, runWorkbenchInstall(context.Background(), &out, p))
 	assert.Contains(t, out.String(), "legacy   removed the old watchtower-project skill")
-	assert.Contains(t, out.String(), "2 permission rule(s) still name the old watchtower-project server")
+	assert.Contains(t, out.String(), "2 permission rule(s) in .claude/settings.local.json still name the old watchtower-project server")
 
 	got = statusJSON(t, p)
 	assert.False(t, got.Legacy)
@@ -103,7 +106,7 @@ func TestWorkbenchResyncJSON_ReportsTheLegacyMigration(t *testing.T) {
 	assert.True(t, res.LegacyHooksReplaced)
 	assert.Equal(t, 2, res.LegacyPermissionRules)
 	assert.Contains(t, res.Suggestions,
-		"2 permission rule(s) still name the old watchtower-project server; re-allow the tools under watchtower-workbench when Claude Code asks.")
+		"2 permission rule(s) in .claude/settings.local.json still name the old watchtower-project server; re-allow the tools under watchtower-workbench when Claude Code asks.")
 
 	// A second resync finds nothing legacy left.
 	out, _, err = runResync(t, strconv.FormatInt(pid, 10), "--json")
@@ -131,10 +134,10 @@ func TestIntegrateWorkbenchRemove_NamesEverySurvivingRegistration(t *testing.T) 
 	assert.NotContains(t, out.String(), "Nothing left installed.")
 }
 
-// A resync whose `mcp add` failed leaves a legacy folder on the new skill
-// with only the old registration: mcp still reads true (the session keeps
-// working), current_mcp says the new one is missing, so the Desktop can
-// offer Repair. A later install that registers it clears both.
+// A resync whose `mcp add` failed leaves a legacy folder entirely on its old
+// setup (old skill, hooks and registration): mcp and hook still read true
+// (the session keeps working), current_mcp says the new registration is
+// missing. A later install that registers it migrates the folder.
 func TestIntegrateWorkbenchStatusJSON_ReportsTheCurrentRegistration(t *testing.T) {
 	f := useFakeWorkbenchClaude(t)
 	p := testWorkbench(t)
@@ -145,7 +148,9 @@ func TestIntegrateWorkbenchStatusJSON_ReportsTheCurrentRegistration(t *testing.T
 	var out bytes.Buffer
 	assert.Error(t, runWorkbenchInstall(context.Background(), &out, p))
 	got := statusJSON(t, p)
-	assert.Equal(t, "unchanged", got.Skill)
+	assert.Equal(t, "missing", got.Skill, "the new skill is not installed over an old registration")
+	assert.Equal(t, "unchanged", got.LegacySkill, "the old skill is kept")
+	assert.True(t, got.Hook && got.StopHook, "the old hooks are kept: %+v", got)
 	assert.True(t, got.MCP, "the old registration still serves the folder")
 	assert.False(t, got.CurrentMCP)
 	assert.True(t, got.Legacy)
@@ -156,4 +161,87 @@ func TestIntegrateWorkbenchStatusJSON_ReportsTheCurrentRegistration(t *testing.T
 	got = statusJSON(t, p)
 	assert.True(t, got.MCP && got.CurrentMCP, "%+v", got)
 	assert.False(t, got.Legacy)
+}
+
+// The resync's suggestions name the skill and tools the folder's session
+// actually has: the new ones once the new server is registered, the old ones
+// when a pre-rename folder was left on its old setup, and no tool at all
+// when no server of ours is known to serve the folder.
+func TestWorkbenchResync_SuggestionsMatchTheRegisteredVocabulary(t *testing.T) {
+	sourcesLine := func(t *testing.T, res workbenchResyncJSON) string {
+		t.Helper()
+		for _, s := range res.Suggestions {
+			if strings.Contains(s, "no sources") {
+				return s
+			}
+		}
+		t.Fatalf("no sources suggestion in %q", res.Suggestions)
+		return ""
+	}
+	resync := func(t *testing.T, legacy bool, failAdd bool) workbenchResyncJSON {
+		t.Helper()
+		f := useFakeWorkbenchClaude(t)
+		database := writeActionsConfig(t)
+		folder := resyncFolder(t)
+		pid, err := database.CreateWorkbench("acme", folder)
+		require.NoError(t, err)
+		if legacy {
+			seedLegacyInstall(t, f, folder, pid)
+		}
+		f.failAdd = failAdd
+		out, _, err := runResync(t, strconv.FormatInt(pid, 10), "--json")
+		require.NoError(t, err)
+		return decodeResync(t, out)
+	}
+
+	t.Run("registered", func(t *testing.T) {
+		res := resync(t, true, false)
+		assert.Contains(t, sourcesLine(t, res), "(add_workbench_source)")
+		assert.Contains(t, strings.Join(res.Suggestions, "\n"), "run the watchtower-workbench skill's setup")
+	})
+	t.Run("legacy folder kept on its old setup", func(t *testing.T) {
+		res := resync(t, true, true)
+		require.False(t, res.MCPRegistered)
+		assert.Contains(t, sourcesLine(t, res), "(add_project_source)")
+		joined := strings.Join(res.Suggestions, "\n")
+		assert.Contains(t, joined, "run the watchtower-project skill's setup")
+		assert.NotContains(t, joined, "add_workbench_source")
+	})
+	t.Run("fresh folder without a registration", func(t *testing.T) {
+		res := resync(t, false, true)
+		require.False(t, res.MCPRegistered)
+		line := sourcesLine(t, res)
+		assert.NotContains(t, line, "add_workbench_source")
+		assert.NotContains(t, line, "add_project_source")
+	})
+}
+
+// Without the claude CLI the removal cannot see the registrations, so its
+// report says so instead of "Nothing left installed."
+func TestIntegrateWorkbenchRemove_WithoutClaudeRegistrationsAreUnknown(t *testing.T) {
+	p := testWorkbench(t)
+	prev := workbenchCommandRunner
+	workbenchCommandRunner = func(context.Context, string, string, ...string) ([]byte, error) {
+		return nil, fmt.Errorf("exec: claude: %w", exec.ErrNotFound)
+	}
+	t.Cleanup(func() { workbenchCommandRunner = prev })
+
+	var out bytes.Buffer
+	require.Error(t, runWorkbenchRemove(context.Background(), &out, p), "the manual unregistration is reported")
+	assert.Contains(t, out.String(), "MCP registrations: unknown (claude CLI not found)")
+	assert.NotContains(t, out.String(), "Nothing left installed.")
+}
+
+// A leftovers check that fails is reported, not swallowed.
+func TestIntegrateWorkbenchRemove_ReportsAFailedLeftoversCheck(t *testing.T) {
+	useFakeWorkbenchClaude(t)
+	p := testWorkbench(t)
+	settings := filepath.Join(p.FolderPath, ".claude", "settings.local.json")
+	require.NoError(t, os.MkdirAll(filepath.Dir(settings), 0o755))
+	require.NoError(t, os.WriteFile(settings, []byte(`{"hooks": [`), 0o644))
+
+	var out bytes.Buffer
+	require.Error(t, runWorkbenchRemove(context.Background(), &out, p))
+	assert.Contains(t, out.String(), "Could not check what is left installed:")
+	assert.NotContains(t, out.String(), "Nothing left installed.")
 }

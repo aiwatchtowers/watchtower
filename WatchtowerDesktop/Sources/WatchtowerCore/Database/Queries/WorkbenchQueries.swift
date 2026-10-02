@@ -22,7 +22,7 @@ package enum WorkbenchQueryError: LocalizedError, Equatable {
 /// Projects (spec §3, §6). The Go CLI and the project MCP server write
 /// projects, sources, documents, targets and agent comments; the Desktop
 /// writes only owner comments, root statuses and `read_at` — directly, the
-/// targets dual-path precedent (Go twin: `internal/db/project_comments.go`,
+/// targets dual-path precedent (Go twin: `internal/db/workbench_comments.go`,
 /// whose reply-inherits-root rule this file mirrors).
 package enum WorkbenchQueries {
     private static let now = "strftime('%Y-%m-%dT%H:%M:%SZ','now')"

@@ -134,7 +134,7 @@ func printWorkbenchInstallReport(w io.Writer, p *db.Workbench, rep devpack.Workb
 }
 
 // printWorkbenchInstallBody is the per-piece part of an install report (also
-// `project resync`'s).
+// `workbench resync`'s).
 func printWorkbenchInstallBody(w io.Writer, rep devpack.WorkbenchInstallReport, err error) {
 	if rep.Skill.Path != "" {
 		fmt.Fprintf(w, "  skill    %s%s\n", rep.Skill.State, skillStateNote(rep.Skill.State))
@@ -183,7 +183,7 @@ func legacyPermissionNote(rep devpack.WorkbenchInstallReport) string {
 	if rep.LegacyPermissionRules == 0 {
 		return ""
 	}
-	return fmt.Sprintf("%d permission rule(s) still name the old %s server; re-allow the tools under %s when Claude Code asks.",
+	return fmt.Sprintf("%d permission rule(s) in .claude/settings.local.json still name the old %s server; re-allow the tools under %s when Claude Code asks.",
 		rep.LegacyPermissionRules, devpack.LegacyMCPServerName, devpack.WorkbenchMCPServerName)
 }
 
@@ -207,7 +207,9 @@ func runWorkbenchRemove(ctx context.Context, w io.Writer, p *db.Workbench) error
 	}
 	rmErr := devpack.RemoveWorkbench(ctx, o)
 	fmt.Fprintf(w, "Workbench %d (%s): removal ran.\n", p.ID, p.FolderPath)
-	if st, err := devpack.StatusWorkbench(ctx, o); err == nil {
+	if st, err := devpack.StatusWorkbench(ctx, o); err != nil {
+		fmt.Fprintf(w, "  Could not check what is left installed: %v\n", err)
+	} else {
 		printWorkbenchLeftovers(w, st)
 	}
 	if rmErr != nil {
@@ -218,7 +220,8 @@ func runWorkbenchRemove(ctx context.Context, w io.Writer, p *db.Workbench) error
 
 // printWorkbenchLeftovers names whatever is still installed after a removal —
 // in practice only a skill the owner edited (kept by PROJ-04), in either
-// vocabulary.
+// vocabulary. Without the claude CLI the registrations cannot be checked,
+// so it never claims that nothing is left.
 func printWorkbenchLeftovers(w io.Writer, st devpack.WorkbenchStatus) {
 	left := false
 	for _, s := range []devpack.SkillStatus{st.Skill, st.LegacySkill} {
@@ -241,6 +244,10 @@ func printWorkbenchLeftovers(w io.Writer, st devpack.WorkbenchStatus) {
 	}
 	if st.LegacyMCP {
 		fmt.Fprintf(w, "  still registered: %s\n", devpack.LegacyMCPServerName)
+		left = true
+	}
+	if !st.ClaudeFound {
+		fmt.Fprintln(w, "  MCP registrations: unknown (claude CLI not found)")
 		left = true
 	}
 	if !left {

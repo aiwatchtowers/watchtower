@@ -166,7 +166,8 @@ func buildToolRegistry(cfg *config.Config, database *db.DB) *tools.Registry {
 		tools.NewSendSlackMessage(slackSenderFactory(cfg)),
 		tools.NewGetWritingStyle(),
 	)
-	// The project tools (surface "project" only): mounted by `mcp --project N`,
+	// The workbench tools (surface "project" only, spec 2026-10-02 A1):
+	// mounted by `mcp --workbench N` (and the legacy `mcp --project N`),
 	// which applies them directly under Binding.DirectApply (DEV-06).
 	regTools = append(regTools, tools.WorkbenchTools(workbenchfiles.New(cfg.WorkspaceDir()), cfg.Knowledge.Enabled)...)
 	// Every migrated read tool. Chat mode dispatches these through the registry's

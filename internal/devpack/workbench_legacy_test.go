@@ -375,19 +375,49 @@ func TestStatusWorkbench_ReportsALegacyFolderUntilItIsResynced(t *testing.T) {
 // never rewritten.
 func TestLegacyPermissionRules_CountsWithoutWriting(t *testing.T) {
 	folder := fakeRepo(t)
-	if n := LegacyPermissionRules(folder); n != 0 {
-		t.Fatalf("no settings file: want 0, got %d", n)
+	if n, err := LegacyPermissionRules(folder); n != 0 || err != nil {
+		t.Fatalf("no settings file: want 0, got %d err=%v", n, err)
 	}
 	writeTestFile(t, settingsFile(folder), legacyOwnerSettings)
-	if n := LegacyPermissionRules(folder); n != 2 {
-		t.Fatalf("want 2, got %d", n)
+	if n, err := LegacyPermissionRules(folder); n != 2 || err != nil {
+		t.Fatalf("want 2, got %d err=%v", n, err)
 	}
 	if readTestFile(t, settingsFile(folder)) != legacyOwnerSettings {
 		t.Fatalf("counting the rules changed the file")
 	}
 	writeTestFile(t, settingsFile(folder), `{"permissions": {"allow": ["mcp__watchtower-project", "mcp__watchtower-projector__x", "mcp__watchtower-project__x"]}}`)
-	if n := LegacyPermissionRules(folder); n != 2 {
-		t.Fatalf("the bare server rule and a tool rule count, a lookalike does not: got %d", n)
+	if n, err := LegacyPermissionRules(folder); n != 2 || err != nil {
+		t.Fatalf("the bare server rule and a tool rule count, a lookalike does not: got %d err=%v", n, err)
+	}
+	// Only settings.local.json is read: rules in settings.json are not counted.
+	writeTestFile(t, filepath.Join(folder, ".claude", "settings.json"), legacyOwnerSettings)
+	writeTestFile(t, settingsFile(folder), `{}`)
+	if n, err := LegacyPermissionRules(folder); n != 0 || err != nil {
+		t.Fatalf("settings.json is not counted: got %d err=%v", n, err)
+	}
+}
+
+// A settings file that cannot be read or parsed is an error, not 0 rules.
+func TestLegacyPermissionRules_ReportsAnUnreadableFile(t *testing.T) {
+	folder := fakeRepo(t)
+	writeTestFile(t, settingsFile(folder), `{"permissions": [`)
+	if _, err := LegacyPermissionRules(folder); !errors.Is(err, ErrMalformedSettings) {
+		t.Fatalf("a malformed file: want ErrMalformedSettings, got %v", err)
+	}
+	if err := os.Remove(settingsFile(folder)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(settingsFile(folder), 0o755); err != nil { // a directory cannot be read as a file
+		t.Fatal(err)
+	}
+	if _, err := LegacyPermissionRules(folder); err == nil {
+		t.Fatalf("an unreadable file must be an error")
+	}
+	// The install reports it (the hook step's own error aside).
+	f := newFakeClaude()
+	if _, err := InstallWorkbench(context.Background(), legacyOpts(folder, f)); err == nil ||
+		!strings.Contains(err.Error(), "counting the allow rules that name the old watchtower-project server") {
+		t.Fatalf("the install must report the failed count: %v", err)
 	}
 }
 
@@ -409,8 +439,9 @@ func TestInstallWorkbench_LegacyFolderWithoutClaudeNamesBothCommands(t *testing.
 	if !strings.Contains(rep.MCPCommand, "mcp add --scope local watchtower-workbench") || rep.MCPRegistered {
 		t.Fatalf("the report must carry the manual registration: %+v", rep)
 	}
-	if !rep.LegacyHooksReplaced || rep.LegacySkill.State != StateRemoved {
-		t.Fatalf("the file steps still migrate without claude: %+v", rep)
+	assertLegacySetupKept(t, folder, rep, err)
+	if rep.LegacySkill.State != StateUnchanged {
+		t.Fatalf("without claude nothing is migrated: %+v", rep)
 	}
 }
 
@@ -461,5 +492,137 @@ func TestInstallWorkbench_FailedAddKeepsTheLegacyRegistration(t *testing.T) {
 		if c[3] == "remove" && c[len(c)-1] == LegacyMCPServerName {
 			t.Fatalf("no removal of the legacy server may run before the add succeeded: %q", c)
 		}
+	}
+}
+
+// A settings file whose hooks cannot be read may hold legacy ones: without
+// the claude CLI the error names the manual removal of the old registration
+// too.
+func TestInstallWorkbench_UnreadableHooksWithoutClaudeNameTheLegacyRemoval(t *testing.T) {
+	folder := fakeRepo(t)
+	f := newFakeClaude()
+	f.missing = true
+	writeTestFile(t, settingsFile(folder), `{"hooks": [`)
+
+	_, err := InstallWorkbench(context.Background(), legacyOpts(folder, f))
+	if !errors.Is(err, ErrClaudeNotFound) || !errors.Is(err, ErrMalformedSettings) {
+		t.Fatalf("expected both failures, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "claude mcp remove --scope local watchtower-project") {
+		t.Fatalf("the error must name the manual removal of the old registration: %v", err)
+	}
+}
+
+// TestInstallWorkbench_FailedAddLeavesTheWholeLegacySetup: the new skill and
+// hooks name tools only the new server serves, so a pre-rename folder whose
+// `mcp add` failed keeps its old skill, hooks and registration — one
+// vocabulary — instead of new hooks over an old server.
+func TestInstallWorkbench_FailedAddLeavesTheWholeLegacySetup(t *testing.T) {
+	folder := fakeRepo(t)
+	f := newFakeClaude()
+	seedLegacyFolder(t, folder, f, legacySkillContent, true, legacyOwnerSettings)
+	f.failAdd = true
+	o := legacyOpts(folder, f)
+
+	rep, err := InstallWorkbench(context.Background(), o)
+	assertLegacySetupKept(t, folder, rep, err)
+	if rep.LegacySkill.State != StateUnchanged || rep.LegacyPermissionRules != 0 {
+		t.Fatalf("report: %+v", rep)
+	}
+
+	st, err := StatusWorkbench(context.Background(), o)
+	if err != nil || st.CurrentMCP || !st.LegacyMCP || !st.Legacy || !st.Hook || !st.StopHook ||
+		st.Skill.State != StateMissing || st.LegacySkill.State != StateUnchanged {
+		t.Fatalf("status after the failed resync: %+v err=%v", st, err)
+	}
+}
+
+// assertLegacySetupKept checks a pre-rename folder was left on its old setup
+// by an install whose registration did not go in.
+func assertLegacySetupKept(t *testing.T, folder string, rep WorkbenchInstallReport, err error) {
+	t.Helper()
+	if err == nil || !strings.Contains(err.Error(), "was left on that setup") ||
+		!strings.Contains(err.Error(), "the old watchtower-project skill, hooks and MCP registration kept") {
+		t.Fatalf("the error must name the kept setup: %v", err)
+	}
+	if got := readTestFile(t, filepath.Join(legacySkillDir(folder), "SKILL.md")); got != legacySkillContent {
+		t.Fatalf("the legacy skill changed:\n%s", got)
+	}
+	if _, statErr := os.Lstat(filepath.Dir(workbenchSkillFile(folder))); !os.IsNotExist(statErr) {
+		t.Fatalf("the new skill must not be installed next to the old setup (err=%v)", statErr)
+	}
+	if got := readTestFile(t, settingsFile(folder)); got != legacyOwnerSettings {
+		t.Fatalf("the settings (legacy hooks) must stay byte-identical:\n%s", got)
+	}
+	if !strings.Contains(excludeOf(t, folder), "/.claude/skills/watchtower-project/") {
+		t.Fatalf("the kept legacy skill's exclude line must stay:\n%s", excludeOf(t, folder))
+	}
+	if rep.MCPRegistered || rep.LegacyMCPRemoved || rep.HookChanged || rep.LegacyHooksReplaced || rep.Skill.State != "" {
+		t.Fatalf("nothing may be reported migrated: %+v", rep)
+	}
+}
+
+// The new registration went in but the old one could not be removed: both
+// stay registered, the failure names the manual removal, and the folder is
+// migrated — the new server serves the new skill and hooks.
+func TestInstallWorkbench_FailedLegacyRemovalKeepsBothRegistrations(t *testing.T) {
+	folder := fakeRepo(t)
+	f := newFakeClaude()
+	seedLegacyFolder(t, folder, f, legacySkillContent, true, legacyOwnerSettings)
+	f.failRemove = true
+	o := legacyOpts(folder, f)
+
+	rep, err := InstallWorkbench(context.Background(), o)
+	if err == nil || !strings.Contains(err.Error(), "claude mcp remove --scope local watchtower-project") {
+		t.Fatalf("the failed removal must name the manual command: %v", err)
+	}
+	if !rep.MCPRegistered || rep.LegacyMCPRemoved {
+		t.Fatalf("mcp: %+v", rep)
+	}
+	if _, ok := f.registered[folder]; !ok || !f.legacy[folder] {
+		t.Fatalf("both registrations must be there: current=%v legacy=%v", f.registered, f.legacy)
+	}
+	if rep.Skill.State != StateInstalled || rep.LegacySkill.State != StateRemoved || !rep.LegacyHooksReplaced {
+		t.Fatalf("with the new server in, the files migrate: %+v", rep)
+	}
+	st, err := StatusWorkbench(context.Background(), o)
+	if err != nil || !st.CurrentMCP || !st.LegacyMCP || !st.Legacy {
+		t.Fatalf("status: %+v err=%v", st, err)
+	}
+}
+
+// A hook event holding both a legacy and a current entry of ours (a
+// hand-merged file) ends with exactly one of ours: the first, updated in
+// place with its own fields, the second dropped; the owner's entries stay
+// byte-exact.
+func TestInstallWorkbench_LegacyAndCurrentEntryCollapseToOne(t *testing.T) {
+	folder := fakeRepo(t)
+	f := newFakeClaude()
+	ownerGroup := `{"matcher": "startup", "hooks": [{"type": "command", "command": "echo owner-start", "timeout": 3}]}`
+	settings := `{
+  "hooks": {
+    "SessionStart": [
+      ` + ownerGroup + `,
+      {"hooks": [{"type": "command", "command": "` + legacyStartCommand + `", "timeout": 10}]},
+      {"hooks": [{"type": "command", "command": "` + WorkbenchHookCommand(legacyBin, 7) + `", "timeout": 30}]}
+    ]
+  }
+}`
+	seedLegacyFolder(t, folder, f, legacySkillContent, true, settings)
+	before := decodeSettings(t, folder)["hooks"].(map[string]any)["SessionStart"].([]any)[0]
+
+	if _, err := InstallWorkbench(context.Background(), legacyOpts(folder, f)); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if got := ourCommands(t, folder)["SessionStart"]; !reflect.DeepEqual(got, []string{WorkbenchHookCommand(legacyBin, 7)}) {
+		t.Fatalf("SessionStart entries of ours = %q, want exactly the new one", got)
+	}
+	raw := readTestFile(t, settingsFile(folder))
+	if !strings.Contains(raw, `"timeout": 10`) || strings.Contains(raw, `"timeout": 30`) {
+		t.Fatalf("the first entry keeps its timeout, the duplicate goes:\n%s", raw)
+	}
+	after := decodeSettings(t, folder)["hooks"].(map[string]any)["SessionStart"].([]any)[0]
+	if !reflect.DeepEqual(after, before) || !strings.Contains(raw, "echo owner-start") {
+		t.Fatalf("PROJ-04: the owner's entry changed: %#v → %#v", before, after)
 	}
 }

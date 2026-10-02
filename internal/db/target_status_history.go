@@ -11,7 +11,7 @@ import (
 // same UPDATE; the history trigger copies it and clears the claim again. An
 // unclaimed write is recorded as ActorOwner.
 const (
-	ActorAgent  = "agent"  // the project MCP tools (watchtower mcp --project N)
+	ActorAgent  = "agent"  // the workbench MCP tools (watchtower mcp --workbench N)
 	ActorOwner  = "owner"  // the Desktop, the CLI
 	ActorSystem = "system" // the rollup triggers (PROJ-05), unsnooze, the Jira status sync
 )

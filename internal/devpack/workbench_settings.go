@@ -349,15 +349,16 @@ func HasLegacyHooks(dir string, workbenchID int64) (bool, error) {
 // tool of the pre-rename MCP server.
 const legacyPermissionPrefix = "mcp__" + LegacyMCPServerName
 
-// LegacyPermissionRules counts the allow rules in dir's
-// .claude/settings.local.json that name the pre-rename MCP server
+// LegacyPermissionRules counts the `permissions.allow` rules in dir's
+// .claude/settings.local.json — that file only; .claude/settings.json and the
+// global settings are not read — that name the pre-rename MCP server
 // (`mcp__watchtower-project` or `mcp__watchtower-project__<tool>`). They are
-// the owner's: a resync only reports them (spec 2026-10-02 A6). A missing or
-// malformed file counts 0 — the hook step reports a malformed one.
-func LegacyPermissionRules(dir string) int {
+// the owner's: a resync only reports them (spec 2026-10-02 A6). A missing
+// file counts 0; a file that cannot be read or parsed is an error.
+func LegacyPermissionRules(dir string) (int, error) {
 	settings, _, _, err := readSettings(settingsLocalPath(dir))
 	if err != nil {
-		return 0
+		return 0, err
 	}
 	perms, _ := settings["permissions"].(map[string]any)
 	allow, _ := perms["allow"].([]any)
@@ -368,7 +369,7 @@ func LegacyPermissionRules(dir string) int {
 			n++
 		}
 	}
-	return n
+	return n, nil
 }
 
 // upsertOurHook returns groups with our hook for projectID set to command.

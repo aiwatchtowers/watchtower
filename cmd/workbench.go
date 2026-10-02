@@ -109,8 +109,8 @@ var (
 	workbenchAttachFlagTarget int64
 )
 
-// workbenchRemoveInstall undoes what `integrate claude-code --project N` put
-// into the project's folder. integrate.go's init points it at
+// workbenchRemoveInstall undoes what `integrate claude-code --workbench N` put
+// into the workbench's folder. integrate.go's init points it at
 // removeWorkbenchInstall (devpack.RemoveWorkbench); a package var so tests can
 // observe and fail it.
 var workbenchRemoveInstall = func(context.Context, *config.Config, *db.Workbench) error { return nil }
@@ -287,9 +287,9 @@ func runWorkbenchCreate(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-// workbenchCreateJSON is `project create --json`'s envelope. The document
+// workbenchCreateJSON is `workbench create --json`'s envelope. The document
 // import is best-effort, so it has its own ok/error fields (the recap_ok
-// precedent): the project exists either way. So is the search index.
+// precedent): the workbench exists either way. So is the search index.
 type workbenchCreateJSON struct {
 	workbenchJSON
 	DocsImportOK    bool                  `json:"docs_import_ok"`
@@ -333,7 +333,7 @@ func runWorkbenchImportDocs(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// workbenchAttachDocJSON is `project attach-doc --json`'s envelope.
+// workbenchAttachDocJSON is `workbench attach-doc --json`'s envelope.
 type workbenchAttachDocJSON struct {
 	DocumentID int64  `json:"document_id"`
 	RelPath    string `json:"rel_path"`
@@ -382,11 +382,11 @@ func runWorkbenchAttachDoc(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// indexWorkbenchDocs re-indexes the project's documents for search (PROJ-08)
+// indexWorkbenchDocs re-indexes the workbench's documents for search (PROJ-08)
 // after an owner-side attach or import, so they are searchable from the
-// project's sessions at once. The daemon's knowledge phase never reads a
-// folder under ~/Documents, ~/Desktop and the like, so for such a project
-// this explicit trigger is the only one (the `project resync` precedent).
+// workbench's sessions at once. The daemon's knowledge phase never reads a
+// folder under ~/Documents, ~/Desktop and the like, so for such a workbench
+// this explicit trigger is the only one (the `workbench resync` precedent).
 // Best-effort: the documents are attached, so a failure is never an error —
 // it is a stderr warning (in JSON mode too) and the returned outcome, which
 // create and attach-doc put in their JSON (resync's index_* fields).
@@ -407,7 +407,7 @@ func indexWorkbenchDocs(cmd *cobra.Command, knowledgeEnabled bool, database *db.
 }
 
 // workbenchIndexJSON is the search-index outcome in `create --json` and
-// `attach-doc --json`, named as in `project resync --json`.
+// `attach-doc --json`, named as in `workbench resync --json`.
 type workbenchIndexJSON struct {
 	IndexOK      bool   `json:"index_ok"`
 	IndexError   string `json:"index_error"`
@@ -663,7 +663,7 @@ func discardTargetImages(cfg *config.Config, database *db.DB, projectID int64, i
 }
 
 // workbenchDeleteJSON is `project delete --json`'s envelope; the Desktop
-// decodes these exact keys (ProjectCLI.ProjectDeleted) to surface a failed folder or image cleanup.
+// decodes these exact keys (WorkbenchCLI.WorkbenchDeleted) to surface a failed folder or image cleanup.
 type workbenchDeleteJSON struct {
 	ID           int64  `json:"id"`
 	Deleted      bool   `json:"deleted"`

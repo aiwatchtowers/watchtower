@@ -132,7 +132,7 @@ func mcpWorkbenchOptions(cfg *config.Config, database *db.DB, workbenchID int64,
 		return nil, fmt.Errorf("workbench %d: %w", workbenchID, err)
 	}
 	return []internalmcp.ServerOption{internalmcp.WithRegistry(buildToolRegistry(cfg, database), tools.Binding{
-		Surface: "project", WorkbenchID: workbenchID, DirectApply: true, LegacyNames: legacy,
+		Surface: tools.WorkbenchSurface, WorkbenchID: workbenchID, DirectApply: true, LegacyNames: legacy,
 	})}, nil
 }
 
