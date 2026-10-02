@@ -225,16 +225,22 @@ struct WorkbenchesView: View {
     /// "Choose another folder" leaves no empty folder behind.
     private func chooseNewWorkbenchFolder() {
         guard let url = runNewWorkbenchPanel() else { return }
-        // From the switcher (level 2, or the panel hidden): the list carries
-        // the create's progress and errors, so it goes on screen first.
-        vm.showAllWorkbenches()
         do {
             _ = try NewWorkbenchFolder.check(url)
         } catch {
-            vm.errorMessage = error.localizedDescription
+            showCreateOutcome(error: error)
             return
         }
         confirmLocation(of: .newWorkbench(url), path: url.path)
+    }
+
+    /// New Workbench… may come from the switcher (level 2, or the panel
+    /// hidden), where the list that carries the create's progress and
+    /// errors is not on screen: it goes there once the create fails or
+    /// starts, not on "Choose another folder".
+    private func showCreateOutcome(error: Error?) {
+        vm.showAllWorkbenches()
+        if let error { vm.errorMessage = error.localizedDescription }
     }
 
     /// Add Existing Folder… → a folder already on disk becomes the project.
@@ -296,9 +302,10 @@ struct WorkbenchesView: View {
             do {
                 try NewWorkbenchFolder.prepare(folder)
             } catch {
-                vm.errorMessage = error.localizedDescription
+                showCreateOutcome(error: error)
                 return
             }
+            showCreateOutcome(error: nil)
             Task { await vm.createWorkbench(folder: folder, name: folder.lastPathComponent) }
         case let .terminal(kind, folder):
             Task { await vm.newStandalone(kind: kind, folder: folder) }
