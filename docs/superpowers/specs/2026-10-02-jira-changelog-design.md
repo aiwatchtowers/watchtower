@@ -80,8 +80,9 @@ A new step at the end of `Syncer.Sync`, after issues, sprints and releases, once
    50 pages per request; hitting it stores nothing for that batch and logs). The response is keyed by
    issue **id**, mapped back to the requested keys. An issue the response does not mention had no
    status/assignee change and is stored with an empty history (the pass log counts them). A request
-   the site rejects (4xx other than 429) is split in half down to single issues, so one refused
-   issue cannot starve its batch; an outage (5xx, network) is not split.
+   the site rejects (4xx other than 429) is split in half down to single issues, so a refused
+   issue cannot starve its batch, within a budget of 32 extra requests per pass (a refusal of the
+   request itself would otherwise cost one call per issue); an outage (5xx, network) is not split.
 
 Errors follow the existing syncer split: `ErrAuthRevoked` aborts the account's pass (the daemon records
 `revoked`); anything else is logged and the cursors stay, so the next pass retries. The step never

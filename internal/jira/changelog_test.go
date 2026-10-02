@@ -244,7 +244,7 @@ func TestSyncChangelogs_BatchesAndSplitsARejectedRequest(t *testing.T) {
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
 		sizes = append(sizes, len(req.IssueIDsOrKeys))
 		for _, id := range req.IssueIDsOrKeys {
-			if id == "7" { // the site refuses one issue
+			if id == "7" || id == "60" { // the site refuses two issues, one in each half
 				http.Error(w, `{"errorMessages":["bad id 7"]}`, http.StatusBadRequest)
 				return
 			}
@@ -262,8 +262,11 @@ func TestSyncChangelogs_BatchesAndSplitsARejectedRequest(t *testing.T) {
 
 	due, err := database.ListJiraChangelogDue(1, 500)
 	require.NoError(t, err)
-	require.Len(t, due, 1, "only the refused issue stays due; its 99 batch mates are stored")
-	assert.Equal(t, "PROJ-7", due[0].Key)
+	var left []string
+	for _, x := range due {
+		left = append(left, x.Key)
+	}
+	assert.ElementsMatch(t, []string{"PROJ-7", "PROJ-60"}, left, "only the refused issues stay due; their batch mates are stored")
 }
 
 func TestSyncChangelogs_OutageIsNotSplit(t *testing.T) {
@@ -362,5 +365,5 @@ func TestSyncChangelogs_RequestLevelRejectionStopsSplitting(t *testing.T) {
 	s.SetChangelogLimit(500)
 
 	require.Error(t, s.syncChangelogs(context.Background()))
-	assert.EqualValues(t, 3, calls.Load(), "the batch and its two halves, then stop")
+	assert.EqualValues(t, 1+splitCallsPerPass, calls.Load(), "a refusal of the request itself costs the split budget, not one call per issue")
 }

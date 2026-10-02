@@ -265,7 +265,7 @@ func (s *Syncer) syncChangelogs(ctx context.Context) error {
 		return err
 	}
 	var firstErr error
-	var tally changelogTally
+	tally := changelogTally{splitCallsLeft: splitCallsPerPass}
 	for start := 0; start < len(due); start += changelogBatch {
 		if err := s.syncChangelogBatch(ctx, due[start:min(start+changelogBatch, len(due))], &tally); err != nil {
 			if errors.Is(err, ErrAuthRevoked) || ctx.Err() != nil {
@@ -283,10 +283,16 @@ func (s *Syncer) syncChangelogs(ctx context.Context) error {
 	return firstErr
 }
 
-// changelogTally counts what one pass stored.
+// splitCallsPerPass bounds the extra requests one pass may spend narrowing
+// rejected changelog requests down to the refused issues (splitRejected):
+// enough to isolate a couple of bad issues in a batch of 100.
+const splitCallsPerPass = 32
+
+// changelogTally counts what one pass stored and the split budget left.
 type changelogTally struct {
-	stored    int // issues whose history was written
-	unchanged int // of those, issues the response did not mention
+	stored         int // issues whose history was written
+	unchanged      int // of those, issues the response did not mention
+	splitCallsLeft int
 }
 
 // syncChangelogBatch fetches and stores one batch; a request the site
@@ -299,35 +305,37 @@ func (s *Syncer) syncChangelogBatch(ctx context.Context, batch []db.JiraChangelo
 	return s.splitRejected(ctx, batch, tally)
 }
 
-// splitRejected retries a rejected batch as two halves, then narrows each
-// half that is still rejected the same way, so one issue the API refuses
-// cannot keep the rest of its batch without history pass after pass. When
-// both halves are rejected the refusal is not about one issue (the endpoint
-// itself, a scope), so it stops there: three calls, not one per issue. An
-// issue rejected on its own is logged by key and stays due.
+// splitRejected retries a rejected batch as two halves and narrows each half
+// that is still rejected the same way, so one or two issues the API refuses
+// cannot keep the rest of their batch without history pass after pass. The
+// extra requests share the pass's splitCallsPerPass budget: a refusal of the
+// request itself (the endpoint, a scope) would otherwise cost one call per
+// issue, every pass. What the budget leaves unsplit stays due; the halves
+// already stored stay stored, so the next pass narrows further. An issue
+// rejected on its own is logged by key and stays due.
 func (s *Syncer) splitRejected(ctx context.Context, batch []db.JiraChangelogDue, tally *changelogTally) error {
-	halves := [][]db.JiraChangelogDue{batch[:len(batch)/2], batch[len(batch)/2:]}
-	errs := make([]error, len(halves))
-	for i, h := range halves {
-		errs[i] = s.storeChangelogBatch(ctx, h, tally)
-		if errors.Is(errs[i], ErrAuthRevoked) || ctx.Err() != nil {
-			return errs[i]
+	var errs []error
+	for _, h := range [][]db.JiraChangelogDue{batch[:len(batch)/2], batch[len(batch)/2:]} {
+		if tally.splitCallsLeft <= 0 {
+			errs = append(errs, fmt.Errorf("%d issues left unsplit: split budget spent", len(h)))
+			continue
 		}
-	}
-	if isRequestRejected(errs[0]) && isRequestRejected(errs[1]) {
-		return errors.Join(errs...)
-	}
-	for i, h := range halves {
+		tally.splitCallsLeft--
+		err := s.storeChangelogBatch(ctx, h, tally)
 		switch {
-		case !isRequestRejected(errs[i]):
+		case err == nil:
+		case errors.Is(err, ErrAuthRevoked) || ctx.Err() != nil:
+			return err
+		case !isRequestRejected(err):
 		case len(h) == 1:
-			s.logger.Printf("changelog sync: %s: %v", h[0].Key, errs[i])
+			s.logger.Printf("changelog sync: %s: %v", h[0].Key, err)
 		default:
-			errs[i] = s.splitRejected(ctx, h, tally)
-			if errors.Is(errs[i], ErrAuthRevoked) || ctx.Err() != nil {
-				return errs[i]
+			err = s.splitRejected(ctx, h, tally)
+			if errors.Is(err, ErrAuthRevoked) || ctx.Err() != nil {
+				return err
 			}
 		}
+		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
 }
