@@ -250,11 +250,40 @@ func TestClaudeBackend_NoteSessionIDIgnoresAReplacedChild(t *testing.T) {
 	old, live := &claudeProc{}, &claudeProc{}
 	b.proc = live
 	b.noteSessionID(old, "sess-old")
-	assert.Empty(t, b.resume)
+	assert.Empty(t, b.sessionToResume())
 	b.noteSessionID(live, "sess-live")
-	assert.Equal(t, "sess-live", b.resume)
+	assert.Equal(t, "sess-live", b.sessionToResume())
 	b.noteSessionID(old, "sess-old")
-	assert.Equal(t, "sess-live", b.resume)
+	assert.Equal(t, "sess-live", b.sessionToResume())
+}
+
+// The reader never waits on b.mu: rejectedResume holds b.mu while it waits
+// for the reader to reach EOF, so a reader that took b.mu to note the
+// rejection's session id stalled that wait to its bound, missed the
+// rejection, and the dead --resume was respawned (the CI flake: three spawns
+// instead of two). Here the reader runs while the test holds b.mu.
+func TestClaudeBackend_RejectedResumeSeenWhileHoldingTheLock(t *testing.T) {
+	b := &claudeBackend{}
+	b.curTurn.Store("")
+	b.tr = NewClaudeTranslator(func() string { return "" })
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	_, err = w.WriteString(`{"type":"result","subtype":"error_during_execution","is_error":true,"session_id":"sess-x","usage":{"input_tokens":0,"output_tokens":0},"errors":["No conversation found with session ID: gone"]}` + "\n")
+	require.NoError(t, err)
+	require.NoError(t, w.Close())
+	p := &claudeProc{resumed: true, events: make(chan Event, 256), outDone: make(chan struct{}),
+		errDone: make(chan struct{}), stop: make(chan struct{}), stderr: &boundedBuffer{limit: 1 << 10}}
+	close(p.errDone)
+
+	b.mu.Lock()
+	b.proc = p
+	go b.read(p, r)
+	start := time.Now()
+	msg := p.rejectedResume()
+	b.mu.Unlock()
+
+	assert.Contains(t, msg, "No conversation found")
+	assert.Less(t, time.Since(start), exitedOutputWait, "the reader reached EOF without waiting on b.mu")
 }
 
 func TestClaudeBackend_CrashThenNextTurnRespawnsWithResume(t *testing.T) {
