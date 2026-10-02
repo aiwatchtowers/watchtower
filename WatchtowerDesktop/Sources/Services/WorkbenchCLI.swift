@@ -295,11 +295,9 @@ struct WorkbenchResynced: Decodable, Equatable {
                               + "— merge it by hand, or delete your copy and run Re-run Setup again", problem: true))
         default: break
         }
-        // A replaced legacy hook also reports `hooks_added` (the file changed).
-        if hooksAdded {
-            lines.append(Line(text: legacyHooksReplaced ? "Replaced the old session hooks" : "Added the session hooks",
-                              problem: false))
-        }
+        // A replaced legacy hook also reports `hooks_added` (the file changed);
+        // `legacyLines` says that instead.
+        if hooksAdded && !legacyHooksReplaced { lines.append(Line(text: "Added the session hooks", problem: false)) }
         if !excluded.isEmpty {
             lines.append(Line(text: "Excluded \(excluded.count) more path(s) from git", problem: false))
         }
@@ -312,9 +310,11 @@ struct WorkbenchResynced: Decodable, Equatable {
         return lines + legacyLines
     }
 
-    /// What the migration did to a folder set up before the rename. The
-    /// wording follows Go's `printLegacyMigration` and `legacySkillKeptNote`
-    /// (`cmd/integrate_workbench.go`), which `--json` does not carry.
+    /// What the migration did to a folder set up before the rename. Go twin:
+    /// `printLegacyMigration` and `legacySkillKeptNote`
+    /// (`cmd/integrate_workbench.go`) — same lines in the same order, the
+    /// first letter capitalised like every summary line here; `--json`
+    /// carries only the states, so change both sides together.
     private var legacyLines: [Line] {
         let legacy = WorkbenchVocabulary.legacy
         var lines: [Line] = []
@@ -325,6 +325,9 @@ struct WorkbenchResynced: Decodable, Equatable {
                               + ".claude/skills/\(legacy.skillName) yourself once you no longer need it; "
                               + "until then Claude Code sees both skills.", problem: true))
         default: break
+        }
+        if legacyHooksReplaced {
+            lines.append(Line(text: "Replaced the old hook commands", problem: false))
         }
         if legacyMCPRemoved {
             lines.append(Line(text: "Removed the old \(legacy.mcpServerName) MCP server", problem: false))

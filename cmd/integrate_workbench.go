@@ -151,6 +151,8 @@ func printWorkbenchInstallBody(w io.Writer, rep devpack.WorkbenchInstallReport, 
 
 // printLegacyMigration reports what the install did to a folder set up
 // before the Workbench rename (spec 2026-10-02 §5.4); nothing for any other.
+// Desktop twin: WorkbenchResynced.legacyLines (WorkbenchCLI.swift) repeats
+// these lines, first letter capitalised — change both together.
 func printLegacyMigration(w io.Writer, rep devpack.WorkbenchInstallReport) {
 	switch rep.LegacySkill.State {
 	case devpack.StateRemoved:

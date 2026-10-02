@@ -112,8 +112,8 @@ final class WorkbenchesViewModelResyncTests: XCTestCase {
         XCTAssertEqual(removed.legacyPermissionRules, 2)
         XCTAssertEqual(removed.summaryLines, [
             line("Installed the watchtower-workbench skill"),
-            line("Replaced the old session hooks"),
             line("Removed the old watchtower-project skill"),
+            line("Replaced the old hook commands"),
             line("Removed the old watchtower-project MCP server"),
             line("Next: 2 permission rule(s) still name the old watchtower-project server; "
                  + "re-allow the tools under watchtower-workbench when Claude Code asks.")
