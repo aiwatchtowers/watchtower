@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"watchtower/internal/fsutil"
 )
@@ -14,6 +15,27 @@ type Token struct {
 	TeamID      string `json:"team_id"`
 	TeamName    string `json:"team_name"`
 	UserID      string `json:"user_id"`
+	// Scope is the comma-separated user scopes Slack granted (authed_user.scope).
+	// Empty on a token saved before scopes were recorded: unknown, not none.
+	Scope string `json:"scope,omitempty"`
+}
+
+// SendScope is the user scope chat.postMessage needs.
+const SendScope = "chat:write"
+
+// HasScope reports whether the token's recorded grant includes scope. A token
+// without a recorded grant answers false — callers that must still try such a
+// token (it may predate recording) check Scope == "" themselves.
+func (t *Token) HasScope(scope string) bool {
+	if t == nil {
+		return false
+	}
+	for _, s := range strings.Split(t.Scope, ",") {
+		if strings.TrimSpace(s) == scope {
+			return true
+		}
+	}
+	return false
 }
 
 type TokenStore struct {

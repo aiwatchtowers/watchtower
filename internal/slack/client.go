@@ -337,6 +337,47 @@ func (c *Client) GetConversationReplies(ctx context.Context, channelID, threadTS
 	return allMessages, nil
 }
 
+// PostMessage posts text into channelID as the token's owner (a user token
+// posts as that user), as a thread reply when threadTS is set, and returns
+// the new message's ts. A 429 is retried by doRequest — Slack rejected that
+// request, so nothing was posted. (Tier 3)
+func (c *Client) PostMessage(ctx context.Context, channelID, text, threadTS string) (string, error) {
+	opts := []slack.MsgOption{slack.MsgOptionText(text, false)}
+	if threadTS != "" {
+		opts = append(opts, slack.MsgOptionTS(threadTS))
+	}
+	var ts string
+	err := c.doRequest(ctx, Tier3, func() error {
+		c.logf("slack API: chat.postMessage channel=%s thread=%s", channelID, threadTS)
+		var err error
+		_, ts, err = c.api.PostMessageContext(ctx, channelID, opts...)
+		return err
+	})
+	if err != nil {
+		return "", err
+	}
+	return ts, nil
+}
+
+// OpenDM returns the id of the direct-message channel between the token's
+// owner and userID, opening it when it does not exist yet. (Tier 3)
+func (c *Client) OpenDM(ctx context.Context, userID string) (string, error) {
+	var ch *slack.Channel
+	err := c.doRequest(ctx, Tier3, func() error {
+		c.logf("slack API: conversations.open user=%s", userID)
+		var err error
+		ch, _, _, err = c.api.OpenConversationContext(ctx, &slack.OpenConversationParameters{Users: []string{userID}, ReturnIM: true})
+		return err
+	})
+	if err != nil {
+		return "", err
+	}
+	if ch == nil || ch.ID == "" {
+		return "", errors.New("conversations.open returned no channel")
+	}
+	return ch.ID, nil
+}
+
 // SearchResult holds one page of search.messages results.
 type SearchResult struct {
 	Messages []slack.SearchMessage
