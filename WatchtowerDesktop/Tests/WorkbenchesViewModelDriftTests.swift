@@ -6,7 +6,7 @@ import WatchtowerTestSupport
 
 /// The board drift check (PROJ-07) as the Projects tab runs it.
 @MainActor
-final class ProjectsViewModelDriftTests: XCTestCase {
+final class WorkbenchesViewModelDriftTests: XCTestCase {
     private var pool: DatabasePool!
     private var path: String!
     private var defaults: UserDefaults!
@@ -30,7 +30,7 @@ final class ProjectsViewModelDriftTests: XCTestCase {
 
     func testRefreshRunsTheOfflineCheckAndKeysTheResultByProject() async {
         let runner = ScriptedCLIRunner(results: [.success(report(1, findings: 2))])
-        let vm = ProjectsViewModel(dbPool: pool, cli: ProjectCLI(runner: runner), defaults: defaults)
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: runner), defaults: defaults)
         await vm.refreshDrift(projectID: 1, force: true)
         XCTAssertEqual(runner.invocations, [["project", "check", "--project", "1", "--json", "--no-network"]])
         XCTAssertEqual(vm.drift[1]?.findings.count, 2)
@@ -41,14 +41,14 @@ final class ProjectsViewModelDriftTests: XCTestCase {
         let runner = ScriptedCLIRunner(results: [
             .success(report(1, findings: 1)), .success(report(1, findings: 0)), .success(report(1, findings: 3))
         ])
-        let vm = ProjectsViewModel(dbPool: pool, cli: ProjectCLI(runner: runner), defaults: defaults)
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: runner), defaults: defaults)
         let t0 = Date()
         await vm.refreshDrift(projectID: 1, force: true, now: t0)
         await vm.refreshDrift(projectID: 1, now: t0.addingTimeInterval(5))
         XCTAssertEqual(runner.invocations.count, 1, "a poll tick within the interval runs no second check")
-        await vm.refreshDrift(projectID: 1, now: t0.addingTimeInterval(ProjectsViewModel.driftMinInterval + 1))
+        await vm.refreshDrift(projectID: 1, now: t0.addingTimeInterval(WorkbenchesViewModel.driftMinInterval + 1))
         XCTAssertEqual(vm.drift[1]?.findings.count, 0)
-        await vm.refreshDrift(projectID: 1, force: true, now: t0.addingTimeInterval(ProjectsViewModel.driftMinInterval + 2))
+        await vm.refreshDrift(projectID: 1, force: true, now: t0.addingTimeInterval(WorkbenchesViewModel.driftMinInterval + 2))
         XCTAssertEqual(vm.drift[1]?.findings.count, 3, "Refresh always runs")
     }
 
@@ -58,7 +58,7 @@ final class ProjectsViewModelDriftTests: XCTestCase {
             .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "folder missing")),
             .success(report(1, findings: 0))
         ])
-        let vm = ProjectsViewModel(dbPool: pool, cli: ProjectCLI(runner: runner), defaults: defaults)
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: runner), defaults: defaults)
         await vm.refreshDrift(projectID: 1, force: true)
         await vm.refreshDrift(projectID: 1, force: true)
         XCTAssertNotNil(vm.driftErrors[1])
@@ -72,11 +72,11 @@ final class ProjectsViewModelDriftTests: XCTestCase {
     /// lands, on the project it belongs to.
     func testAResultArrivingAfterTheOwnerSwitchedProjectsLandsOnItsOwn() async {
         let held = HeldCLIRunner(stdout: report(1, findings: 2))
-        let vm = ProjectsViewModel(dbPool: pool, cli: ProjectCLI(runner: held), defaults: defaults)
-        vm.selectedProjectID = 1
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: held), defaults: defaults)
+        vm.selectedWorkbenchID = 1
         let check = Task { await vm.refreshDrift(projectID: 1, force: true) }
         await awaitStarted(held)
-        vm.selectedProjectID = 2
+        vm.selectedWorkbenchID = 2
         held.release()
         await check.value
         XCTAssertEqual(vm.drift[1]?.findings.count, 2)

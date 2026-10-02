@@ -5,7 +5,7 @@ import Foundation
 /// created or an existing empty folder reused, and refuses anything else;
 /// `prepare` then makes it. The caller runs the TCC-location warning between
 /// the two, so "Choose another folder" leaves nothing behind on disk.
-package enum NewProjectFolder {
+package enum NewWorkbenchFolder {
     package enum Plan: Equatable {
         case create
         case reuseEmpty

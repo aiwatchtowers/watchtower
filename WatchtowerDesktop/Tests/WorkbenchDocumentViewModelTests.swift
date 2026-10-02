@@ -5,13 +5,13 @@ import WatchtowerCore
 import WatchtowerTestSupport
 
 @MainActor
-final class ProjectDocumentViewModelTests: XCTestCase {
+final class WorkbenchDocumentViewModelTests: XCTestCase {
     private var pool: DatabasePool!
     private var dbPath: String!
     private var folder: URL!
     private var fileURL: URL!
-    private var project: Project!
-    private var document: ProjectDocument!
+    private var project: Workbench!
+    private var document: WorkbenchDocument!
 
     private let plan = """
     # Plan
@@ -34,11 +34,11 @@ final class ProjectDocumentViewModelTests: XCTestCase {
         fileURL = folder.appendingPathComponent("docs/plan.md")
         try plan.write(to: fileURL, atomically: true, encoding: .utf8)
         let ids = try pool.write { d -> (Int64, Int64) in
-            let p = try TestDatabase.insertProject(d, folder: folder.path)
-            return (p, try TestDatabase.insertProjectDocument(d, projectID: p, relPath: "docs/plan.md", title: "Plan"))
+            let p = try TestDatabase.insertWorkbench(d, folder: folder.path)
+            return (p, try TestDatabase.insertWorkbenchDocument(d, projectID: p, relPath: "docs/plan.md", title: "Plan"))
         }
-        project = try pool.read { try ProjectQueries.fetch($0, id: ids.0) }
-        document = try pool.read { try ProjectQueries.document($0, id: ids.1) }
+        project = try pool.read { try WorkbenchQueries.fetch($0, id: ids.0) }
+        document = try pool.read { try WorkbenchQueries.document($0, id: ids.1) }
     }
 
     override func tearDown() {
@@ -47,11 +47,11 @@ final class ProjectDocumentViewModelTests: XCTestCase {
         super.tearDown()
     }
 
-    private func makeVM() -> ProjectDocumentViewModel {
-        ProjectDocumentViewModel(dbPool: pool, project: project, document: document, reloadDelay: .milliseconds(10))
+    private func makeVM() -> WorkbenchDocumentViewModel {
+        WorkbenchDocumentViewModel(dbPool: pool, project: project, document: document, reloadDelay: .milliseconds(10))
     }
 
-    private func selection(_ needle: String, in vm: ProjectDocumentViewModel) throws -> NSRange {
+    private func selection(_ needle: String, in vm: WorkbenchDocumentViewModel) throws -> NSRange {
         let text = try XCTUnwrap(vm.rendered?.text)
         return (text as NSString).range(of: needle)
     }
@@ -67,7 +67,7 @@ final class ProjectDocumentViewModelTests: XCTestCase {
         let root = try XCTUnwrap(vm.threads.first?.id)
         let (projectID, documentID) = (project.id, document.id)
         try await pool.write { d in
-            _ = try TestDatabase.insertProjectComment(d, projectID: projectID, body: "Because…", documentID: documentID, parentID: root)
+            _ = try TestDatabase.insertWorkbenchComment(d, projectID: projectID, body: "Because…", documentID: documentID, parentID: root)
         }
 
         await vm.load()
@@ -81,13 +81,13 @@ final class ProjectDocumentViewModelTests: XCTestCase {
 
     func testAddCommentAnchorsTheSelectionOnRenderedTextAndReportsAnOwnerWrite() async throws {
         let vm = makeVM()
-        var writes: [ProjectSubject] = []
+        var writes: [WorkbenchSubject] = []
         vm.onOwnerWrite = { writes.append($0) }
         await vm.load()
         await vm.addComment(body: "Why small?", selection: try selection("retry budget small", in: vm))
 
         let documentID = document.id
-        let comments = try await pool.read { try ProjectQueries.comments($0, documentID: documentID) }
+        let comments = try await pool.read { try WorkbenchQueries.comments($0, documentID: documentID) }
         let row = try XCTUnwrap(comments.first)
         XCTAssertEqual(row.author, "owner")
         XCTAssertEqual(row.anchorQuote, "retry budget small")
@@ -110,7 +110,7 @@ final class ProjectDocumentViewModelTests: XCTestCase {
     /// draft, and must surface the error instead of pretending it saved.
     func testAddCommentReportsAFailedWriteAndKeepsTheDraft() async throws {
         let vm = makeVM()
-        var writes: [ProjectSubject] = []
+        var writes: [WorkbenchSubject] = []
         vm.onOwnerWrite = { writes.append($0) }
         await vm.load()
         try await pool.write { d in
@@ -135,10 +135,10 @@ final class ProjectDocumentViewModelTests: XCTestCase {
     }
 
     func testDraftsWriteNothingUntilSentThenGoAsOneBatch() async throws {
-        let store = ProjectCommentDrafts()
-        let vm = ProjectDocumentViewModel(dbPool: pool, project: project, document: document, drafts: store,
-                                          reloadDelay: .milliseconds(10))
-        var writes: [ProjectSubject] = []
+        let store = WorkbenchCommentDrafts()
+        let vm = WorkbenchDocumentViewModel(dbPool: pool, project: project, document: document, drafts: store,
+                                            reloadDelay: .milliseconds(10))
+        var writes: [WorkbenchSubject] = []
         vm.onOwnerWrite = { writes.append($0) }
         await vm.load()
         XCTAssertTrue(vm.addDraft(body: "Why small?", selection: try selection("retry budget small", in: vm)))
@@ -180,13 +180,13 @@ final class ProjectDocumentViewModelTests: XCTestCase {
     /// House rule: drafts survive navigation — the store outlives the
     /// document's view model, which a document switch recreates.
     func testDraftsSurviveReopeningTheDocument() async throws {
-        let store = ProjectCommentDrafts()
-        let first = ProjectDocumentViewModel(dbPool: pool, project: project, document: document, drafts: store)
+        let store = WorkbenchCommentDrafts()
+        let first = WorkbenchDocumentViewModel(dbPool: pool, project: project, document: document, drafts: store)
         await first.load()
         first.addDraft(body: "Why small?", selection: try selection("retry budget small", in: first))
         first.updateDraft(try XCTUnwrap(first.drafts.first?.id), body: "Why so small?")
 
-        let reopened = ProjectDocumentViewModel(dbPool: pool, project: project, document: document, drafts: store)
+        let reopened = WorkbenchDocumentViewModel(dbPool: pool, project: project, document: document, drafts: store)
         await reopened.load()
         XCTAssertEqual(reopened.drafts.map(\.body), ["Why so small?"])
         XCTAssertEqual(reopened.draftRanges[try XCTUnwrap(reopened.drafts.first?.id)],
@@ -220,7 +220,7 @@ final class ProjectDocumentViewModelTests: XCTestCase {
         await vm.load()
         await vm.addComment(body: "Why small?", selection: try selection("retry budget small", in: vm))
         let root = try XCTUnwrap(vm.threads.first?.id)
-        var writes: [ProjectSubject] = []
+        var writes: [WorkbenchSubject] = []
         vm.onOwnerWrite = { writes.append($0) }
 
         try plan.replacingOccurrences(of: "Keep the retry budget small so a flaky service cannot stall the sync.", with: "Rewritten.")
@@ -254,12 +254,12 @@ final class ProjectDocumentViewModelTests: XCTestCase {
         XCTAssertEqual(try status(root), "open", "an unanswered owner reply keeps the lost root open")
         XCTAssertTrue(vm.outdatedThreads.isEmpty)
         let projectID = project.id
-        let docs = try await pool.read { try ProjectQueries.documentListItems($0, projectID: projectID) }
+        let docs = try await pool.read { try WorkbenchQueries.documentListItems($0, projectID: projectID) }
         XCTAssertEqual(docs.first?.openComments, 1, "the Swift open counter includes it")
 
         let documentID = document.id
         try await pool.write { d in
-            _ = try TestDatabase.insertProjectComment(
+            _ = try TestDatabase.insertWorkbenchComment(
                 d, projectID: projectID, body: "Moved to Task 2.", documentID: documentID, parentID: root
             )
         }
@@ -397,7 +397,7 @@ final class ProjectDocumentViewModelTests: XCTestCase {
     }
 }
 
-private extension ProjectDocumentViewModel {
+private extension WorkbenchDocumentViewModel {
     /// An owner comment the way the pane writes one: a draft, then the send.
     @discardableResult
     func addComment(body: String, selection: NSRange) async -> Bool {

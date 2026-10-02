@@ -5,7 +5,7 @@ import WatchtowerCore
 import WatchtowerTestSupport
 
 @MainActor
-final class ProjectsViewModelTests: XCTestCase {
+final class WorkbenchesViewModelTests: XCTestCase {
     private var pool: DatabasePool!
     private var path: String!
     private var defaults: UserDefaults!
@@ -20,8 +20,8 @@ final class ProjectsViewModelTests: XCTestCase {
         super.tearDown()
     }
 
-    private func makeVM(_ runner: any CLIRunnerProtocol = FakeCLIRunner()) -> ProjectsViewModel {
-        ProjectsViewModel(dbPool: pool, cli: ProjectCLI(runner: runner), defaults: defaults)
+    private func makeVM(_ runner: any CLIRunnerProtocol = FakeCLIRunner()) -> WorkbenchesViewModel {
+        WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: runner), defaults: defaults)
     }
 
     private func createdJSON(_ id: Int64) -> Data {
@@ -30,10 +30,10 @@ final class ProjectsViewModelTests: XCTestCase {
 
     func testReloadBuildsSummariesAndTheBadgeCountsUnreadAndUnviewedDocuments() async throws {
         let ids = try await pool.write { d -> (Int64, Int64) in
-            let p = try TestDatabase.insertProject(d)
-            let doc = try TestDatabase.insertProjectDocument(d, projectID: p)
-            let t = try TestDatabase.insertProjectTarget(d, projectID: p)
-            _ = try TestDatabase.insertProjectComment(d, projectID: p, targetID: t)
+            let p = try TestDatabase.insertWorkbench(d)
+            let doc = try TestDatabase.insertWorkbenchDocument(d, projectID: p)
+            let t = try TestDatabase.insertWorkbenchTarget(d, projectID: p)
+            _ = try TestDatabase.insertWorkbenchComment(d, projectID: p, targetID: t)
             return (p, doc)
         }
         let vm = makeVM()
@@ -45,12 +45,12 @@ final class ProjectsViewModelTests: XCTestCase {
 
     func testViewedDocumentStopsCountingUntilItIsRevisedAgain() async throws {
         let (p, doc) = try await pool.write { d -> (Int64, Int64) in
-            let p = try TestDatabase.insertProject(d)
-            return (p, try TestDatabase.insertProjectDocument(d, projectID: p, updatedAt: "2026-09-29T10:00:00Z"))
+            let p = try TestDatabase.insertWorkbench(d)
+            return (p, try TestDatabase.insertWorkbenchDocument(d, projectID: p, updatedAt: "2026-09-29T10:00:00Z"))
         }
         let vm = makeVM()
         await vm.reload()
-        let fetched = try await pool.read { try ProjectQueries.document($0, id: doc) }
+        let fetched = try await pool.read { try WorkbenchQueries.document($0, id: doc) }
         let document = try XCTUnwrap(fetched)
         vm.markDocumentViewed(document)
         XCTAssertEqual(vm.badgeCount, 0)
@@ -71,13 +71,13 @@ final class ProjectsViewModelTests: XCTestCase {
 
     func testImportedDocumentNeverLightsTheBadge() async throws {
         let doc = try await pool.write { d -> Int64 in
-            let p = try TestDatabase.insertProject(d)
-            return try TestDatabase.insertProjectDocument(d, projectID: p, origin: "import")
+            let p = try TestDatabase.insertWorkbench(d)
+            return try TestDatabase.insertWorkbenchDocument(d, projectID: p, origin: "import")
         }
         let vm = makeVM()
         await vm.reload()
         XCTAssertEqual(vm.badgeCount, 0, "a never-opened imported document is not revised")
-        let fetched = try await pool.read { try ProjectQueries.document($0, id: doc) }
+        let fetched = try await pool.read { try WorkbenchQueries.document($0, id: doc) }
         XCTAssertFalse(vm.isRevised(try XCTUnwrap(fetched)))
     }
 
@@ -86,16 +86,16 @@ final class ProjectsViewModelTests: XCTestCase {
     /// reported so it is never announced back.
     func testAttachDocumentRunsTheCLIAndOpensTheDocument() async throws {
         let (p, doc) = try await pool.write { d -> (Int64, Int64) in
-            let p = try TestDatabase.insertProject(d)
+            let p = try TestDatabase.insertWorkbench(d)
             // The row `project attach-doc` wrote.
-            return (p, try TestDatabase.insertProjectDocument(d, projectID: p, relPath: "notes/x.md", origin: "owner"))
+            return (p, try TestDatabase.insertWorkbenchDocument(d, projectID: p, relPath: "notes/x.md", origin: "owner"))
         }
         let runner = FakeCLIRunner(stdout: Data(#"{"document_id":\#(doc),"rel_path":"notes/x.md","created":true}"#.utf8))
         let vm = makeVM(runner)
-        var ownerWrites: [ProjectSubject] = []
+        var ownerWrites: [WorkbenchSubject] = []
         vm.onOwnerWrite = { _, subject in ownerWrites.append(subject) }
         await vm.reload()
-        vm.selectedProjectID = p
+        vm.selectedWorkbenchID = p
 
         let ok = await vm.attachDocument(fileURL: URL(fileURLWithPath: "/tmp/acme/notes/x.md"), kind: "spec", targetID: nil)
         XCTAssertTrue(ok)
@@ -110,15 +110,15 @@ final class ProjectsViewModelTests: XCTestCase {
 
     func testAttachingAnAlreadyAttachedFileOpensItAndSaysNothingChanged() async throws {
         let (p, doc) = try await pool.write { d -> (Int64, Int64) in
-            let p = try TestDatabase.insertProject(d)
-            return (p, try TestDatabase.insertProjectDocument(d, projectID: p, relPath: "docs/plan.md"))
+            let p = try TestDatabase.insertWorkbench(d)
+            return (p, try TestDatabase.insertWorkbenchDocument(d, projectID: p, relPath: "docs/plan.md"))
         }
         let runner = FakeCLIRunner(stdout: Data(#"{"document_id":\#(doc),"rel_path":"docs/plan.md","created":false}"#.utf8))
         let vm = makeVM(runner)
-        var ownerWrites: [ProjectSubject] = []
+        var ownerWrites: [WorkbenchSubject] = []
         vm.onOwnerWrite = { _, subject in ownerWrites.append(subject) }
         await vm.reload()
-        vm.selectedProjectID = p
+        vm.selectedWorkbenchID = p
 
         let ok = await vm.attachDocument(fileURL: URL(fileURLWithPath: "/tmp/acme/docs/plan.md"), kind: "spec", targetID: nil)
         XCTAssertTrue(ok)
@@ -126,17 +126,17 @@ final class ProjectsViewModelTests: XCTestCase {
         XCTAssertTrue(vm.attachNotice?.contains("already attached") ?? false)
         XCTAssertEqual(ownerWrites, [], "nothing was written, so a real agent revision is not muted")
 
-        vm.selectedProjectID = nil
+        vm.selectedWorkbenchID = nil
         XCTAssertNil(vm.attachNotice, "the notice belongs to the project it was shown on")
     }
 
     func testAttachDocumentRefusedByTheCLIKeepsTheReason() async throws {
-        let p = try await pool.write { try TestDatabase.insertProject($0) }
+        let p = try await pool.write { try TestDatabase.insertWorkbench($0) }
         let runner = FakeCLIRunner()
         runner.shouldThrow = CLIRunnerError.nonZeroExit(code: 1, stderr: "Error: /etc/x.md resolves outside the project folder")
         let vm = makeVM(runner)
         await vm.reload()
-        vm.selectedProjectID = p
+        vm.selectedWorkbenchID = p
 
         let ok = await vm.attachDocument(fileURL: URL(fileURLWithPath: "/etc/x.md"), kind: "doc", targetID: 4)
         XCTAssertFalse(ok)
@@ -147,14 +147,14 @@ final class ProjectsViewModelTests: XCTestCase {
 
     func testTargetChoicesFollowTheBoardWithDepth() async throws {
         let p = try await pool.write { d -> Int64 in
-            let p = try TestDatabase.insertProject(d)
-            let feature = try TestDatabase.insertProjectTarget(d, projectID: p, text: "Feature")
-            try TestDatabase.insertProjectTarget(d, projectID: p, text: "Task", parentID: feature)
+            let p = try TestDatabase.insertWorkbench(d)
+            let feature = try TestDatabase.insertWorkbenchTarget(d, projectID: p, text: "Feature")
+            try TestDatabase.insertWorkbenchTarget(d, projectID: p, text: "Task", parentID: feature)
             return p
         }
         let vm = makeVM()
         await vm.reload()
-        vm.selectedProjectID = p
+        vm.selectedWorkbenchID = p
         let rows = try await vm.targetChoices()
         XCTAssertEqual(rows.map(\.node.target.text), ["Feature", "Task"])
         XCTAssertEqual(rows.map(\.depth), [0, 1])
@@ -164,15 +164,15 @@ final class ProjectsViewModelTests: XCTestCase {
     /// to one project and is cleared on a switch.
     func testDocumentSectionsFollowTheSearchAndASwitchClearsIt() async throws {
         let p = try await pool.write { d -> Int64 in
-            let p = try TestDatabase.insertProject(d)
-            try TestDatabase.insertProjectDocument(d, projectID: p, relPath: "docs/specs/sync.md", kind: "spec", title: "Sync")
-            try TestDatabase.insertProjectDocument(d, projectID: p, relPath: "docs/plans/auth.md", kind: "plan", title: "Auth")
-            try TestDatabase.insertProjectDocument(d, projectID: p, relPath: "README.md", kind: "doc", origin: "import")
+            let p = try TestDatabase.insertWorkbench(d)
+            try TestDatabase.insertWorkbenchDocument(d, projectID: p, relPath: "docs/specs/sync.md", kind: "spec", title: "Sync")
+            try TestDatabase.insertWorkbenchDocument(d, projectID: p, relPath: "docs/plans/auth.md", kind: "plan", title: "Auth")
+            try TestDatabase.insertWorkbenchDocument(d, projectID: p, relPath: "README.md", kind: "doc", origin: "import")
             return p
         }
         let vm = makeVM()
         await vm.reload()
-        vm.selectedProjectID = p
+        vm.selectedWorkbenchID = p
         await vm.loadDocuments()
         XCTAssertEqual(vm.documentSections.map(\.group), [.specs, .plans, .imported])
 
@@ -188,22 +188,22 @@ final class ProjectsViewModelTests: XCTestCase {
 
         vm.setDocumentGroup(.plans, collapsed: true)
         vm.documentQuery = "auth"
-        vm.selectedProjectID = nil
+        vm.selectedWorkbenchID = nil
         XCTAssertEqual(vm.documentQuery, "")
         XCTAssertFalse(vm.isDocumentGroupCollapsed(.plans), "folding is per project")
-        vm.selectedProjectID = p
+        vm.selectedWorkbenchID = p
         XCTAssertTrue(vm.isDocumentGroupCollapsed(.plans), "and kept for the session")
     }
 
     func testCreateShowsAFailedDocumentImportWithTheRetryCommand() async throws {
-        let id = try await pool.write { try TestDatabase.insertProject($0) }
+        let id = try await pool.write { try TestDatabase.insertWorkbench($0) }
         let runner = ScriptedCLIRunner(results: [
             .success(Data(#"{"id":\#(id),"folder":"/tmp/acme","name":"acme","docs_import_ok":false,"docs_import_error":"permission denied"}"#.utf8)),
             .success(Data("installed".utf8)),
             .success(Data(#"{"skill":"unchanged","hook":true,"mcp":true}"#.utf8))
         ])
         let vm = makeVM(runner)
-        await vm.createProject(folder: URL(fileURLWithPath: "/tmp/acme"), name: nil)
+        await vm.createWorkbench(folder: URL(fileURLWithPath: "/tmp/acme"), name: nil)
         let note = try XCTUnwrap(vm.importNotes[id])
         XCTAssertTrue(note.contains("permission denied"))
         XCTAssertTrue(note.contains("watchtower project import-docs \(id)"))
@@ -212,7 +212,7 @@ final class ProjectsViewModelTests: XCTestCase {
     }
 
     func testCreateRunsCreateThenInstallSelectsTheProjectAndAnnouncesIt() async throws {
-        let id = try await pool.write { try TestDatabase.insertProject($0) }
+        let id = try await pool.write { try TestDatabase.insertWorkbench($0) }
         let runner = ScriptedCLIRunner(results: [
             .success(createdJSON(id)),
             .success(Data("installed".utf8)),
@@ -220,14 +220,14 @@ final class ProjectsViewModelTests: XCTestCase {
         ])
         let vm = makeVM(runner)
         var announced: [Int64] = []
-        vm.onProjectCreated = { project, installed in if installed { announced.append(project.id) } }
+        vm.onWorkbenchCreated = { project, installed in if installed { announced.append(project.id) } }
 
-        await vm.createProject(folder: URL(fileURLWithPath: "/tmp/acme"), name: nil)
+        await vm.createWorkbench(folder: URL(fileURLWithPath: "/tmp/acme"), name: nil)
 
         XCTAssertEqual(runner.invocations.map { Array($0.prefix(2)) }, [
             ["project", "create"], ["integrate", "claude-code"], ["integrate", "status"]
         ])
-        XCTAssertEqual(vm.selectedProjectID, id)
+        XCTAssertEqual(vm.selectedWorkbenchID, id)
         guard case .session = vm.layout.primary else { return XCTFail("the setup session goes on screen") }
         XCTAssertEqual(announced, [id])
         XCTAssertNil(vm.errorMessage)
@@ -236,7 +236,7 @@ final class ProjectsViewModelTests: XCTestCase {
     }
 
     func testInstallFailureKeepsTheProjectAndPointsAtRepair() async throws {
-        let id = try await pool.write { try TestDatabase.insertProject($0) }
+        let id = try await pool.write { try TestDatabase.insertWorkbench($0) }
         let runner = ScriptedCLIRunner(results: [
             .success(createdJSON(id)),
             .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "claude not found")),
@@ -244,9 +244,9 @@ final class ProjectsViewModelTests: XCTestCase {
         ])
         let vm = makeVM(runner)
         var announced: [(Int64, Bool)] = []
-        vm.onProjectCreated = { announced.append(($0.id, $1)) }
-        await vm.createProject(folder: URL(fileURLWithPath: "/tmp/acme"), name: nil)
-        XCTAssertEqual(vm.selectedProjectID, id)
+        vm.onWorkbenchCreated = { announced.append(($0.id, $1)) }
+        await vm.createWorkbench(folder: URL(fileURLWithPath: "/tmp/acme"), name: nil)
+        XCTAssertEqual(vm.selectedWorkbenchID, id)
         XCTAssertTrue(vm.installErrors[id]?.contains("Repair") == true)
         XCTAssertTrue(vm.installErrors[id]?.contains("claude not found") == true, "the install error is shown")
         XCTAssertNil(vm.errorMessage, "the note belongs to its project, not the list-wide line")
@@ -259,15 +259,15 @@ final class ProjectsViewModelTests: XCTestCase {
         let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "folder is already bound to a project"))
         let vm = makeVM(runner)
         var announced = false
-        vm.onProjectCreated = { _, _ in announced = true }
-        await vm.createProject(folder: URL(fileURLWithPath: "/tmp/acme"), name: nil)
+        vm.onWorkbenchCreated = { _, _ in announced = true }
+        await vm.createWorkbench(folder: URL(fileURLWithPath: "/tmp/acme"), name: nil)
         XCTAssertTrue(vm.errorMessage?.contains("already bound") == true)
-        XCTAssertNil(vm.selectedProjectID)
+        XCTAssertNil(vm.selectedWorkbenchID)
         XCTAssertFalse(announced)
     }
 
     func testRepairRunsIntegrateAndRefreshesTheStatus() async throws {
-        let id = try await pool.write { try TestDatabase.insertProject($0) }
+        let id = try await pool.write { try TestDatabase.insertWorkbench($0) }
         let runner = FakeCLIRunner(stdout: Data(#"{"skill":"unchanged","hook":true,"mcp":true}"#.utf8))
         let vm = makeVM(runner)
         await vm.repairInstall(projectID: id)
@@ -303,11 +303,11 @@ final class ProjectsViewModelTests: XCTestCase {
     func testStatusReadThatFailsAfterTheOwnerSwitchedAwayIsSilent() async throws {
         let held = HeldCLIRunner(error: CLIRunnerError.nonZeroExit(code: 15, stderr: ""))
         let vm = makeVM(held)
-        vm.selectedProjectID = 1
+        vm.selectedWorkbenchID = 1
         let read = Task { await vm.refreshInstallStatus(projectID: 1) }
         await awaitStarted(held)
 
-        vm.selectedProjectID = 2
+        vm.selectedWorkbenchID = 2
         read.cancel()
         held.release()
         await read.value
@@ -337,9 +337,9 @@ final class ProjectsViewModelTests: XCTestCase {
     }
 
     /// Selecting the new project starts the page's own status read, racing
-    /// `createProject`'s: a later read that still needs repair keeps the note.
+    /// `createWorkbench`'s: a later read that still needs repair keeps the note.
     func testCreateTimeInstallNoteSurvivesTheNextStatusRead() async throws {
-        let id = try await pool.write { try TestDatabase.insertProject($0) }
+        let id = try await pool.write { try TestDatabase.insertWorkbench($0) }
         let missing = Data(#"{"skill":"missing","hook":false,"mcp":false}"#.utf8)
         let runner = ScriptedCLIRunner(results: [
             .success(createdJSON(id)),
@@ -349,7 +349,7 @@ final class ProjectsViewModelTests: XCTestCase {
             .success(Data(#"{"skill":"unchanged","hook":true,"mcp":true}"#.utf8))
         ])
         let vm = makeVM(runner)
-        await vm.createProject(folder: URL(fileURLWithPath: "/tmp/acme"), name: nil)
+        await vm.createWorkbench(folder: URL(fileURLWithPath: "/tmp/acme"), name: nil)
         await vm.refreshInstallStatus(projectID: id)
         XCTAssertTrue(vm.installErrors[id]?.contains("claude not found") == true, "the note still explains Repair")
 
@@ -380,8 +380,8 @@ final class ProjectsViewModelTests: XCTestCase {
 
     func testRevealSelectsTheProjectAndPane() {
         let vm = makeVM()
-        vm.reveal(ProjectRoute(projectID: 4, pane: .documents, subjectID: 9))
-        XCTAssertEqual(vm.selectedProjectID, 4)
+        vm.reveal(WorkbenchRoute(projectID: 4, pane: .documents, subjectID: 9))
+        XCTAssertEqual(vm.selectedWorkbenchID, 4)
         XCTAssertEqual(vm.layout.visiblePanes, [.documents])
     }
 
@@ -389,15 +389,15 @@ final class ProjectsViewModelTests: XCTestCase {
     /// it. The VM lives on AppState, so the create keeps running while the
     /// owner is on another tab and the result is there when they return.
     func testCreateSurvivesNavigatingAwayAndSelectsTheProjectOnReturn() async throws {
-        let id = try await pool.write { try TestDatabase.insertProject($0) }
+        let id = try await pool.write { try TestDatabase.insertWorkbench($0) }
         let held = HeldCLIRunner(stdout: createdJSON(id))
         let appState = AppState()
         appState.terminalCenter.makeProcess = { FakeTerminalSession() }
-        appState.initProjects(dbPool: pool, cliRunner: held, notifier: RecordingProjectNotifier())
-        let vm = try XCTUnwrap(appState.projectsViewModel)
+        appState.initWorkbenches(dbPool: pool, cliRunner: held, notifier: RecordingWorkbenchNotifier())
+        let vm = try XCTUnwrap(appState.workbenchesViewModel)
         appState.selectedDestination = .projects
 
-        let run = Task { await vm.createProject(folder: URL(fileURLWithPath: "/tmp/acme"), name: nil) }
+        let run = Task { await vm.createWorkbench(folder: URL(fileURLWithPath: "/tmp/acme"), name: nil) }
         await awaitStarted(held)
         XCTAssertTrue(vm.isCreating)
 
@@ -406,8 +406,8 @@ final class ProjectsViewModelTests: XCTestCase {
         await run.value
 
         appState.selectedDestination = .projects
-        XCTAssertTrue(appState.projectsViewModel === vm, "the same AppState-owned VM, not a fresh one")
-        XCTAssertEqual(vm.selectedProjectID, id)
+        XCTAssertTrue(appState.workbenchesViewModel === vm, "the same AppState-owned VM, not a fresh one")
+        XCTAssertEqual(vm.selectedWorkbenchID, id)
         XCTAssertFalse(vm.isCreating)
     }
 
@@ -417,7 +417,7 @@ final class ProjectsViewModelTests: XCTestCase {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("wt-create-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
-        let id = try await pool.write { try TestDatabase.insertProject($0, name: "acme", folder: folder.path) }
+        let id = try await pool.write { try TestDatabase.insertWorkbench($0, name: "acme", folder: folder.path) }
         let runner = ScriptedCLIRunner(results: [
             .success(createdJSON(id)),
             .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "claude not found")),
@@ -425,14 +425,14 @@ final class ProjectsViewModelTests: XCTestCase {
         ])
         let appState = AppState()
         appState.terminalCenter.makeProcess = { FakeTerminalSession() }
-        appState.initProjects(dbPool: pool, cliRunner: runner, notifier: RecordingProjectNotifier())
-        let vm = try XCTUnwrap(appState.projectsViewModel)
+        appState.initWorkbenches(dbPool: pool, cliRunner: runner, notifier: RecordingWorkbenchNotifier())
+        let vm = try XCTUnwrap(appState.workbenchesViewModel)
 
-        await vm.createProject(folder: folder, name: nil)
+        await vm.createWorkbench(folder: folder, name: nil)
 
-        XCTAssertEqual(vm.selectedProjectID, id)
+        XCTAssertEqual(vm.selectedWorkbenchID, id)
         XCTAssertTrue(appState.terminalCenter.states.isEmpty, "no terminal after a failed install")
-        let rows = try await pool.read { try TerminalSessionQueries.fetchForProject($0, projectID: id) }
+        let rows = try await pool.read { try TerminalSessionQueries.fetchForWorkbench($0, projectID: id) }
         XCTAssertTrue(rows.isEmpty, "no setup session row after a failed install")
     }
 
@@ -442,15 +442,15 @@ final class ProjectsViewModelTests: XCTestCase {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("wt-open-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
-        let id = try await pool.write { try TestDatabase.insertProject($0, name: "acme", folder: folder.path) }
+        let id = try await pool.write { try TestDatabase.insertWorkbench($0, name: "acme", folder: folder.path) }
         var processes: [FakeTerminalSession] = []
         let center = TerminalCenter {
             let process = FakeTerminalSession(pid: 0)
             processes.append(process)
             return process
         }
-        let vm = ProjectsViewModel(dbPool: pool, cli: ProjectCLI(runner: FakeCLIRunner()), defaults: defaults,
-                                   terminalCenter: center)
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: FakeCLIRunner()), defaults: defaults,
+                                      terminalCenter: center)
         await vm.reload()
         let project = try XCTUnwrap(vm.summaries.first { $0.id == id }?.project)
 
@@ -458,12 +458,12 @@ final class ProjectsViewModelTests: XCTestCase {
         async let second: Void = vm.openMostRecentSession(project: project)
         _ = await (first, second)
 
-        let rows = try await pool.read { try TerminalSessionQueries.fetchForProject($0, projectID: id) }
+        let rows = try await pool.read { try TerminalSessionQueries.fetchForWorkbench($0, projectID: id) }
         XCTAssertEqual(rows.count, 1)
         XCTAssertEqual(processes.flatMap(\.launches).count, 1)
 
         await vm.openMostRecentSession(project: project)
-        let after = try await pool.read { try TerminalSessionQueries.fetchForProject($0, projectID: id) }
+        let after = try await pool.read { try TerminalSessionQueries.fetchForWorkbench($0, projectID: id) }
         XCTAssertEqual(after.map(\.id), rows.map(\.id), "the next open reuses the row")
         XCTAssertEqual(processes.flatMap(\.launches).count, 1, "a running session is not relaunched")
         XCTAssertEqual(center.focusOrder, [rows[0].id])
@@ -475,15 +475,15 @@ final class ProjectsViewModelTests: XCTestCase {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("wt-open-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
-        let id = try await pool.write { try TestDatabase.insertProject($0, name: "acme", folder: folder.path) }
+        let id = try await pool.write { try TestDatabase.insertWorkbench($0, name: "acme", folder: folder.path) }
         var processes: [FakeTerminalSession] = []
         let center = TerminalCenter {
             let process = FakeTerminalSession(pid: 0)
             processes.append(process)
             return process
         }
-        let vm = ProjectsViewModel(dbPool: pool, cli: ProjectCLI(runner: FakeCLIRunner()), defaults: defaults,
-                                   terminalCenter: center)
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: FakeCLIRunner()), defaults: defaults,
+                                      terminalCenter: center)
         await vm.reload()
         let project = try XCTUnwrap(vm.summaries.first { $0.id == id }?.project)
 
@@ -491,7 +491,7 @@ final class ProjectsViewModelTests: XCTestCase {
         await vm.openMostRecentSession(project: project)
         try await pool.write { try $0.execute(sql: "ALTER TABLE terminal_sessions_hidden RENAME TO terminal_sessions") }
 
-        let rows = try await pool.read { try TerminalSessionQueries.fetchForProject($0, projectID: id) }
+        let rows = try await pool.read { try TerminalSessionQueries.fetchForWorkbench($0, projectID: id) }
         XCTAssertTrue(rows.isEmpty)
         XCTAssertTrue(processes.flatMap(\.launches).isEmpty)
         XCTAssertNotNil(vm.sessionErrors[id])
@@ -503,7 +503,7 @@ final class ProjectsViewModelTests: XCTestCase {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("wt-create-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
-        let id = try await pool.write { try TestDatabase.insertProject($0, name: "acme", folder: folder.path) }
+        let id = try await pool.write { try TestDatabase.insertWorkbench($0, name: "acme", folder: folder.path) }
         let runner = ScriptedCLIRunner(results: [
             .success(createdJSON(id)),
             .success(Data()),
@@ -513,12 +513,12 @@ final class ProjectsViewModelTests: XCTestCase {
         let process = FakeTerminalSession(pid: 0)
         appState.terminalCenter.makeProcess = { process }
         appState.terminalCenter.shell = { "/bin/zsh" }
-        appState.initProjects(dbPool: pool, cliRunner: runner, notifier: RecordingProjectNotifier())
-        let vm = try XCTUnwrap(appState.projectsViewModel)
+        appState.initWorkbenches(dbPool: pool, cliRunner: runner, notifier: RecordingWorkbenchNotifier())
+        let vm = try XCTUnwrap(appState.workbenchesViewModel)
 
-        await vm.createProject(folder: folder, name: nil)
+        await vm.createWorkbench(folder: folder, name: nil)
 
-        let rows = try await pool.read { try TerminalSessionQueries.fetchForProject($0, projectID: id) }
+        let rows = try await pool.read { try TerminalSessionQueries.fetchForWorkbench($0, projectID: id) }
         let row = try XCTUnwrap(rows.first)
         XCTAssertEqual(rows.count, 1)
         XCTAssertEqual(row.kind, .claude)
@@ -534,9 +534,9 @@ final class ProjectsViewModelTests: XCTestCase {
 
     func testNavigateToProjectSetsThePendingRouteAndTheTab() {
         let appState = AppState()
-        appState.navigateToProject(ProjectRoute(projectID: 2, pane: .board))
+        appState.navigateToWorkbench(WorkbenchRoute(projectID: 2, pane: .board))
         XCTAssertEqual(appState.selectedDestination, .projects)
-        XCTAssertEqual(appState.pendingProjectRoute, ProjectRoute(projectID: 2, pane: .board))
+        XCTAssertEqual(appState.pendingWorkbenchRoute, WorkbenchRoute(projectID: 2, pane: .board))
     }
 
     func testOpenDocumentMarksItViewedAndKeepsItsViewModelAcrossPaneSwitches() async throws {
@@ -545,13 +545,13 @@ final class ProjectsViewModelTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: folder) }
         try "# Plan".write(to: folder.appendingPathComponent("docs/plan.md"), atomically: true, encoding: .utf8)
         let p = try await pool.write { d -> Int64 in
-            let p = try TestDatabase.insertProject(d, folder: folder.path)
-            _ = try TestDatabase.insertProjectDocument(d, projectID: p)
+            let p = try TestDatabase.insertWorkbench(d, folder: folder.path)
+            _ = try TestDatabase.insertWorkbenchDocument(d, projectID: p)
             return p
         }
         let vm = makeVM()
         await vm.reload()
-        vm.selectedProjectID = p
+        vm.selectedWorkbenchID = p
         await vm.loadDocuments()
         let doc = try XCTUnwrap(vm.documents.first?.document)
 
@@ -569,16 +569,16 @@ final class ProjectsViewModelTests: XCTestCase {
     /// must still open: the list reloads whenever the id is not in it.
     func testOpenPendingReloadsWhenTheDocumentIsNotListedYet() async throws {
         let p = try await pool.write { d -> Int64 in
-            let p = try TestDatabase.insertProject(d, name: "one", folder: "/tmp/one")
-            _ = try TestDatabase.insertProjectDocument(d, projectID: p, relPath: "docs/a.md")
+            let p = try TestDatabase.insertWorkbench(d, name: "one", folder: "/tmp/one")
+            _ = try TestDatabase.insertWorkbenchDocument(d, projectID: p, relPath: "docs/a.md")
             return p
         }
         let vm = makeVM()
         await vm.reload()
-        vm.selectedProjectID = p
+        vm.selectedWorkbenchID = p
         await vm.loadDocuments()
         XCTAssertEqual(vm.documents.count, 1)
-        let added = try await pool.write { try TestDatabase.insertProjectDocument($0, projectID: p, relPath: "docs/b.md") }
+        let added = try await pool.write { try TestDatabase.insertWorkbenchDocument($0, projectID: p, relPath: "docs/b.md") }
 
         vm.pendingDocumentID = added
         await vm.openPendingDocument()
@@ -596,19 +596,19 @@ final class ProjectsViewModelTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: folder) }
         try "# Plan\n\nShip it.".write(to: folder.appendingPathComponent("docs/plan.md"), atomically: true, encoding: .utf8)
         let (p, doc) = try await pool.write { d -> (Int64, Int64) in
-            let p = try TestDatabase.insertProject(d, folder: folder.path)
-            return (p, try TestDatabase.insertProjectDocument(d, projectID: p))
+            let p = try TestDatabase.insertWorkbench(d, folder: folder.path)
+            return (p, try TestDatabase.insertWorkbenchDocument(d, projectID: p))
         }
         let vm = makeVM()
         await vm.reload()
-        vm.selectedProjectID = p
+        vm.selectedWorkbenchID = p
         await vm.loadDocuments()
         await vm.openDocument(try XCTUnwrap(vm.documents.first?.document))
         let docVM = try XCTUnwrap(vm.documentViewModel)
         let version = docVM.renderVersion
         try await pool.write { d in
-            _ = try TestDatabase.insertProjectDocument(d, projectID: p, relPath: "docs/spec.md")
-            _ = try TestDatabase.insertProjectComment(d, projectID: p, body: "Which date?", documentID: doc, quote: "Ship it")
+            _ = try TestDatabase.insertWorkbenchDocument(d, projectID: p, relPath: "docs/spec.md")
+            _ = try TestDatabase.insertWorkbenchComment(d, projectID: p, body: "Which date?", documentID: doc, quote: "Ship it")
         }
 
         await vm.refreshOnPoll()
@@ -629,17 +629,17 @@ final class ProjectsViewModelTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: folder) }
         try "# Plan\n\nShip it.".write(to: folder.appendingPathComponent("docs/plan.md"), atomically: true, encoding: .utf8)
         let (p, doc) = try await pool.write { d -> (Int64, Int64) in
-            let p = try TestDatabase.insertProject(d, folder: folder.path)
-            return (p, try TestDatabase.insertProjectDocument(d, projectID: p))
+            let p = try TestDatabase.insertWorkbench(d, folder: folder.path)
+            return (p, try TestDatabase.insertWorkbenchDocument(d, projectID: p))
         }
         let root = try await pool.write { d in
-            try TestDatabase.insertProjectComment(d, projectID: p, author: "owner", documentID: doc, quote: "Ship it")
+            try TestDatabase.insertWorkbenchComment(d, projectID: p, author: "owner", documentID: doc, quote: "Ship it")
         }
         var onScreen = false
         let vm = makeVM()
         vm.isTabOnScreen = { onScreen }
         await vm.reload()
-        vm.selectedProjectID = p
+        vm.selectedWorkbenchID = p
         vm.layout.show(.documents)
         await vm.loadDocuments()
         await vm.openDocument(try XCTUnwrap(vm.documents.first?.document))
@@ -650,7 +650,7 @@ final class ProjectsViewModelTests: XCTestCase {
         }
         func reply(_ body: String) async throws {
             try await pool.write { d in
-                _ = try TestDatabase.insertProjectComment(d, projectID: p, body: body, documentID: doc, parentID: root)
+                _ = try TestDatabase.insertWorkbenchComment(d, projectID: p, body: body, documentID: doc, parentID: root)
             }
         }
 
@@ -672,17 +672,17 @@ final class ProjectsViewModelTests: XCTestCase {
 
     func testSwitchingProjectClosesTheOpenDocument() async throws {
         let (p1, p2) = try await pool.write { d -> (Int64, Int64) in
-            let p1 = try TestDatabase.insertProject(d, name: "one", folder: "/tmp/one")
-            _ = try TestDatabase.insertProjectDocument(d, projectID: p1)
-            return (p1, try TestDatabase.insertProject(d, name: "two", folder: "/tmp/two"))
+            let p1 = try TestDatabase.insertWorkbench(d, name: "one", folder: "/tmp/one")
+            _ = try TestDatabase.insertWorkbenchDocument(d, projectID: p1)
+            return (p1, try TestDatabase.insertWorkbench(d, name: "two", folder: "/tmp/two"))
         }
         let vm = makeVM()
         await vm.reload()
-        vm.selectedProjectID = p1
+        vm.selectedWorkbenchID = p1
         await vm.loadDocuments()
         await vm.openDocument(try XCTUnwrap(vm.documents.first?.document))
         XCTAssertNotNil(vm.documentViewModel)
-        vm.selectedProjectID = p2
+        vm.selectedWorkbenchID = p2
         XCTAssertNil(vm.documentViewModel)
     }
 }

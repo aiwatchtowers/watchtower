@@ -4,7 +4,7 @@ import WatchtowerCore
 /// Level 1's "Terminals" section: standalone sessions (outside any project)
 /// and the "New terminal" menu.
 struct TerminalsSection: View {
-    @Bindable var vm: ProjectsViewModel
+    @Bindable var vm: WorkbenchesViewModel
     let actions: SessionRowActions
     /// Picks a folder for a new terminal (the page warns about guarded ones).
     let chooseFolder: (TerminalSession.Kind) -> Void
@@ -14,7 +14,7 @@ struct TerminalsSection: View {
         Section {
             ForEach(sessions) { session in
                 TerminalSessionRow(session: session, isLive: vm.isLive(session), actions: actions)
-                    .tag(ProjectsPanelItem.terminal(session.id))
+                    .tag(WorkbenchesPanelItem.terminal(session.id))
             }
             .onMove { vm.moveSessions(sessions, projectID: nil, from: $0, to: $1) }
             // Shown on the terminal's own page when one is on screen.
@@ -32,7 +32,7 @@ struct TerminalsSection: View {
 }
 
 private struct NewTerminalMenu: View {
-    let vm: ProjectsViewModel
+    let vm: WorkbenchesViewModel
     let chooseFolder: (TerminalSession.Kind) -> Void
 
     var body: some View {

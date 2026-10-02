@@ -6,23 +6,23 @@ import Foundation
 /// Only leaves are cards — a parent's status is derived from its children by
 /// the PROJ-05 rollup triggers, so moving a parent would be undone by its next
 /// child change. Within a column cards sort by priority, then id (the status
-/// part of `ProjectBoardOrder` is constant there); the Done column instead
+/// part of `WorkbenchBoardOrder` is constant there); the Done column instead
 /// lists the most recently updated first, because with "Show done" off it
 /// keeps only the latest `doneCap` and "latest" is what the owner looks for.
-package struct ProjectBoardKanban {
+package struct WorkbenchBoardKanban {
     /// Status of the catch-all column for a status this build does not know.
     package static let otherStatus = "__other__"
     /// Done cards shown while "Show done" is off.
     package static let doneCap = 10
 
     package struct Card: Identifiable {
-        package let node: ProjectBoardNode
+        package let node: WorkbenchBoardNode
         /// The parent chain from the top-level target down, " › "-joined;
         /// empty for a top-level leaf.
         package let breadcrumb: String
         package var id: Int { node.target.id }
         /// The card as a flat board row: no indent, no chevron.
-        package var row: ProjectBoardRow { ProjectBoardRow(node: node, depth: 0, hasChildren: false) }
+        package var row: WorkbenchBoardRow { WorkbenchBoardRow(node: node, depth: 0, hasChildren: false) }
     }
 
     package struct Column: Identifiable {
@@ -33,7 +33,7 @@ package struct ProjectBoardKanban {
         package let hiddenCount: Int
         /// Dropping a card here sets its status to `status`; the Other column
         /// has no single status to set.
-        package var acceptsDrops: Bool { status != ProjectBoardKanban.otherStatus }
+        package var acceptsDrops: Bool { status != WorkbenchBoardKanban.otherStatus }
         package var id: String { status }
     }
 
@@ -49,9 +49,9 @@ package struct ProjectBoardKanban {
     /// among `filterOptions` (deleted, or no longer a parent).
     package let filterRootID: Int?
 
-    package init(_ roots: [ProjectBoardNode], filterRootID: Int?, showDone: Bool) {
+    package init(_ roots: [WorkbenchBoardNode], filterRootID: Int?, showDone: Bool) {
         let options = roots.filter { !$0.children.isEmpty }.map {
-            FilterOption(id: $0.target.id, title: ProjectBoardCard.title($0.target.text))
+            FilterOption(id: $0.target.id, title: WorkbenchBoardCard.title($0.target.text))
         }
         let applied = filterRootID.flatMap { id in options.contains { $0.id == id } ? id : nil }
         let scope = applied.map { id in roots.filter { $0.target.id == id } } ?? roots
@@ -64,7 +64,7 @@ package struct ProjectBoardKanban {
         var columns = statuses.map { status in
             Self.column(status, cards: leaves.filter { $0.node.target.status == status }, showDone: showDone)
         }
-        let known = Set(ProjectBoardCard.editableStatuses)
+        let known = Set(WorkbenchBoardCard.editableStatuses)
         let other = leaves.filter { !known.contains($0.node.target.status) }
         if !other.isEmpty {
             columns.append(Self.column(Self.otherStatus, cards: other, showDone: showDone))
@@ -83,7 +83,7 @@ package struct ProjectBoardKanban {
     }
 
     private static func column(_ status: String, cards: [Card], showDone: Bool) -> Column {
-        let title = status == otherStatus ? "Other" : ProjectBoardCard.statusLabel(status)
+        let title = status == otherStatus ? "Other" : WorkbenchBoardCard.statusLabel(status)
         guard status == "done" else {
             return Column(status: status, title: title, cards: cards.sorted(by: byPriorityThenID), hiddenCount: 0)
         }
@@ -97,29 +97,29 @@ package struct ProjectBoardKanban {
 
     private static func byPriorityThenID(_ lhs: Card, _ rhs: Card) -> Bool {
         let l = lhs.node.target, r = rhs.node.target
-        return (ProjectBoardOrder.priorityRank(l.priority), l.id) < (ProjectBoardOrder.priorityRank(r.priority), r.id)
+        return (WorkbenchBoardOrder.priorityRank(l.priority), l.id) < (WorkbenchBoardOrder.priorityRank(r.priority), r.id)
     }
 
-    private static func collectLeaves(_ nodes: [ProjectBoardNode], chain: [String], into out: inout [Card]) {
+    private static func collectLeaves(_ nodes: [WorkbenchBoardNode], chain: [String], into out: inout [Card]) {
         for n in nodes {
             if n.children.isEmpty {
                 out.append(Card(node: n, breadcrumb: chain.joined(separator: " › ")))
             } else {
-                collectLeaves(n.children, chain: chain + [ProjectBoardCard.title(n.target.text)], into: &out)
+                collectLeaves(n.children, chain: chain + [WorkbenchBoardCard.title(n.target.text)], into: &out)
             }
         }
     }
 }
 
 /// How the Board pane shows the board.
-package enum ProjectBoardMode: String, CaseIterable {
+package enum WorkbenchBoardMode: String, CaseIterable {
     case list
     case kanban
 }
 
 /// Per-project Board view state in UserDefaults — view state, not data, so it
 /// never touches the database.
-package struct ProjectBoardPreferences {
+package struct WorkbenchBoardPreferences {
     private let defaults: UserDefaults
     private let modeKey: String
     private let filterKey: String
@@ -131,13 +131,13 @@ package struct ProjectBoardPreferences {
     }
 
     /// Defaults to List; an unknown stored value reads as List too.
-    package var mode: ProjectBoardMode {
-        get { defaults.string(forKey: modeKey).flatMap(ProjectBoardMode.init(rawValue:)) ?? .list }
+    package var mode: WorkbenchBoardMode {
+        get { defaults.string(forKey: modeKey).flatMap(WorkbenchBoardMode.init(rawValue:)) ?? .list }
         nonmutating set { defaults.set(newValue.rawValue, forKey: modeKey) }
     }
 
     /// The kanban parent filter's root target id; nil = All. A stale id is
-    /// resolved to All by `ProjectBoardKanban`, not here.
+    /// resolved to All by `WorkbenchBoardKanban`, not here.
     package var kanbanFilterRootID: Int? {
         get { defaults.object(forKey: filterKey) == nil ? nil : defaults.integer(forKey: filterKey) }
         nonmutating set {

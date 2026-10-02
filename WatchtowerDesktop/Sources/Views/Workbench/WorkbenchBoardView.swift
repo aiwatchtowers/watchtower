@@ -4,11 +4,11 @@ import WatchtowerCore
 /// Board pane of the project page: the target tree or kanban across the
 /// whole pane; the selected target's detail and comment threads open as a
 /// card over it.
-struct ProjectBoardView: View {
+struct WorkbenchBoardView: View {
     let projectID: Int64
 
     @Environment(AppState.self) private var appState
-    @State private var viewModel: ProjectBoardViewModel?
+    @State private var viewModel: WorkbenchBoardViewModel?
     @State private var titleDraft = ""
     @State private var commentDraft = ""
     @FocusState private var cardFocused: Bool
@@ -44,11 +44,11 @@ struct ProjectBoardView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
             if viewModel == nil, let pool = appState.databaseManager?.dbPool {
-                let vm = ProjectBoardViewModel(dbPool: pool, projectID: projectID)
-                vm.onOwnerWrite = { [weak projects = appState.projectsViewModel] project, subject in
+                let vm = WorkbenchBoardViewModel(dbPool: pool, projectID: projectID)
+                vm.onOwnerWrite = { [weak projects = appState.workbenchesViewModel] project, subject in
                     projects?.onOwnerWrite?(project, subject)
                 }
-                vm.onPollTick = { [weak projects = appState.projectsViewModel, projectID] in
+                vm.onPollTick = { [weak projects = appState.workbenchesViewModel, projectID] in
                     Task { await projects?.refreshDrift(projectID: projectID) }
                 }
                 vm.load()
@@ -58,19 +58,19 @@ struct ProjectBoardView: View {
         }
         .onDisappear { viewModel?.stopPolling() }
         .task(id: projectID) {
-            await appState.projectsViewModel?.refreshDrift(projectID: projectID, force: true)
+            await appState.workbenchesViewModel?.refreshDrift(projectID: projectID, force: true)
         }
     }
 
     // MARK: - Board (list or kanban)
 
-    private func board(_ vm: ProjectBoardViewModel) -> some View {
+    private func board(_ vm: WorkbenchBoardViewModel) -> some View {
         let kanban = vm.mode == .kanban ? vm.kanban : nil
         return VStack(alignment: .leading, spacing: 0) {
             header(vm, kanban: kanban)
                 .padding(8)
-            if let projects = appState.projectsViewModel {
-                ProjectDriftBanner(
+            if let projects = appState.workbenchesViewModel {
+                WorkbenchDriftBanner(
                     report: projects.drift[projectID],
                     error: projects.driftErrors[projectID],
                     onSelect: { vm.select($0) },
@@ -105,7 +105,7 @@ struct ProjectBoardView: View {
                 )
                 .frame(maxHeight: .infinity)
             } else if let kanban {
-                ProjectBoardKanbanView(
+                WorkbenchBoardKanbanView(
                     board: kanban,
                     selectedTargetID: vm.selectedTargetID,
                     onSelect: { vm.select($0) },
@@ -117,12 +117,12 @@ struct ProjectBoardView: View {
         }
     }
 
-    private func header(_ vm: ProjectBoardViewModel, kanban: ProjectBoardKanban?) -> some View {
+    private func header(_ vm: WorkbenchBoardViewModel, kanban: WorkbenchBoardKanban?) -> some View {
         HStack(spacing: 10) {
             Text("Board").font(.headline)
             Picker("View", selection: Binding(get: { vm.mode }, set: { vm.mode = $0 })) {
-                Text("List").tag(ProjectBoardMode.list)
-                Text("Kanban").tag(ProjectBoardMode.kanban)
+                Text("List").tag(WorkbenchBoardMode.list)
+                Text("Kanban").tag(WorkbenchBoardMode.kanban)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
@@ -137,7 +137,7 @@ struct ProjectBoardView: View {
         }
     }
 
-    private func kanbanFilterMenu(_ vm: ProjectBoardViewModel, _ kanban: ProjectBoardKanban) -> some View {
+    private func kanbanFilterMenu(_ vm: WorkbenchBoardViewModel, _ kanban: WorkbenchBoardKanban) -> some View {
         let current = kanban.filterOptions.first { $0.id == kanban.filterRootID }
         return Menu {
             Toggle("All", isOn: Binding(
@@ -163,7 +163,7 @@ struct ProjectBoardView: View {
     // MARK: - Tree
 
     @ViewBuilder
-    private func tree(_ vm: ProjectBoardViewModel) -> some View {
+    private func tree(_ vm: WorkbenchBoardViewModel) -> some View {
         if vm.rows.isEmpty {
             ContentUnavailableView(
                 "Nothing open",
@@ -176,7 +176,7 @@ struct ProjectBoardView: View {
             // selected look itself, keyed off the selection, over a clear
             // row background.
             List(vm.rows, selection: Binding(get: { vm.selectedTargetID }, set: { vm.select($0) })) { row in
-                ProjectBoardCardView(
+                WorkbenchBoardCardView(
                     row: row,
                     isSelected: vm.selectedTargetID == row.id,
                     isCollapsed: vm.collapsed.contains(row.id),
@@ -199,17 +199,17 @@ struct ProjectBoardView: View {
     /// The dimmed board and the detail card over it. A click on the scrim,
     /// the card's close button or Esc closes it (`closeDetail`, which keeps
     /// an error raised from the card for the board's banner).
-    private func detailOverlay(_ vm: ProjectBoardViewModel, _ node: ProjectBoardNode) -> some View {
+    private func detailOverlay(_ vm: WorkbenchBoardViewModel, _ node: WorkbenchBoardNode) -> some View {
         ZStack {
             Color.black.opacity(0.22)
                 .contentShape(Rectangle())
                 .onTapGesture { vm.closeDetail() }
                 .accessibilityAddTraits(.isButton)
                 .accessibilityLabel("Close target details")
-            ProjectTargetDetailCard(
+            WorkbenchTargetDetailCard(
                 vm: vm,
                 node: node,
-                findings: appState.projectsViewModel?.drift[projectID]?.findings.filter { $0.targetID == node.id } ?? [],
+                findings: appState.workbenchesViewModel?.drift[projectID]?.findings.filter { $0.targetID == node.id } ?? [],
                 titleDraft: $titleDraft,
                 commentDraft: $commentDraft
             ) { vm.closeDetail() }

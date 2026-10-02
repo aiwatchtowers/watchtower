@@ -6,11 +6,11 @@ import WatchtowerCore
 /// it with the progress, then the intent, documents, images and comment
 /// threads; the comment composer stays pinned under them. The card is as
 /// tall as its content and scrolls inside once the pane is shorter.
-struct ProjectTargetDetailCard: View {
-    let vm: ProjectBoardViewModel
-    let node: ProjectBoardNode
+struct WorkbenchTargetDetailCard: View {
+    let vm: WorkbenchBoardViewModel
+    let node: WorkbenchBoardNode
     /// The board drift findings on this target (PROJ-07), shown as chips.
-    let findings: [ProjectDriftFinding]
+    let findings: [WorkbenchDriftFinding]
     /// Owned by the board view so a half-typed title or comment survives
     /// the card closing and reopening.
     @Binding var titleDraft: String
@@ -64,7 +64,7 @@ struct ProjectTargetDetailCard: View {
                 statusMenu
                 priorityMenu
                 ForEach(findings) { finding in
-                    ProjectBoardChip(
+                    WorkbenchBoardChip(
                         text: finding.kindLabel,
                         color: finding.isConflict ? .orange : .secondary,
                         dot: true
@@ -115,17 +115,17 @@ struct ProjectTargetDetailCard: View {
 
     private var statusMenu: some View {
         Menu {
-            ForEach(ProjectBoardCard.editableStatuses, id: \.self) { status in
-                Toggle(ProjectBoardCard.statusLabel(status), isOn: Binding(
+            ForEach(WorkbenchBoardCard.editableStatuses, id: \.self) { status in
+                Toggle(WorkbenchBoardCard.statusLabel(status), isOn: Binding(
                     get: { target.status == status },
                     set: { if $0 { vm.setStatus(status) } }
                 ))
             }
         } label: {
-            ProjectDetailMenuLabel(
-                text: ProjectBoardCard.statusLabel(target.status),
+            WorkbenchDetailMenuLabel(
+                text: WorkbenchBoardCard.statusLabel(target.status),
                 systemImage: target.statusIcon,
-                color: ProjectBoardColors.status(target.statusColor)
+                color: WorkbenchBoardColors.status(target.statusColor)
             )
         }
         .menuStyle(.borderlessButton)
@@ -136,17 +136,17 @@ struct ProjectTargetDetailCard: View {
 
     private var priorityMenu: some View {
         Menu {
-            ForEach(ProjectBoardCard.editablePriorities, id: \.self) { priority in
+            ForEach(WorkbenchBoardCard.editablePriorities, id: \.self) { priority in
                 Toggle(priority.capitalized, isOn: Binding(
                     get: { target.priority == priority },
                     set: { if $0 { vm.setPriority(priority) } }
                 ))
             }
         } label: {
-            ProjectDetailMenuLabel(
+            WorkbenchDetailMenuLabel(
                 text: target.priority.capitalized,
                 systemImage: "flag.fill",
-                color: ProjectBoardColors.priority(target.priority)
+                color: WorkbenchBoardColors.priority(target.priority)
             )
         }
         .menuStyle(.borderlessButton)
@@ -169,7 +169,7 @@ struct ProjectTargetDetailCard: View {
             }
             if !node.documents.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
-                    ProjectDetailSectionHeader(title: "Documents", systemImage: "doc.text", count: node.documents.count)
+                    WorkbenchDetailSectionHeader(title: "Documents", systemImage: "doc.text", count: node.documents.count)
                     ForEach(node.documents, id: \.id) { doc in
                         Label(doc.title.isEmpty ? doc.relPath : doc.title, systemImage: "doc.text")
                             .font(.callout)
@@ -183,10 +183,10 @@ struct ProjectTargetDetailCard: View {
                 }
             }
             if !vm.selectedImages.isEmpty {
-                ProjectTargetImagesSection(images: vm.selectedImages)
+                WorkbenchTargetImagesSection(images: vm.selectedImages)
             }
             VStack(alignment: .leading, spacing: 8) {
-                ProjectDetailSectionHeader(title: "Comments", systemImage: "bubble.left.and.bubble.right", count: vm.threads.count)
+                WorkbenchDetailSectionHeader(title: "Comments", systemImage: "bubble.left.and.bubble.right", count: vm.threads.count)
                 if vm.threads.isEmpty {
                     Text("No comments yet. Agents ask their questions here; write below to ask or answer.")
                         .font(.callout)
@@ -265,7 +265,7 @@ struct ProjectTargetDetailCard: View {
 
 /// A section title inside the target detail card (Documents, Images,
 /// Comments), so every section reads the same.
-struct ProjectDetailSectionHeader: View {
+struct WorkbenchDetailSectionHeader: View {
     let title: String
     let systemImage: String
     var count: Int?
@@ -287,7 +287,7 @@ struct ProjectDetailSectionHeader: View {
 
 /// A status or priority menu's label: a tinted capsule with an icon and a
 /// chevron, so it reads as a control rather than a bare tag.
-private struct ProjectDetailMenuLabel: View {
+private struct WorkbenchDetailMenuLabel: View {
     let text: String
     let systemImage: String
     let color: Color

@@ -7,7 +7,7 @@ import Foundation
 /// and `project board`: priority high, medium, then anything else; then status
 /// in_progress, in_review, blocked, todo, done, then anything else; then id.
 /// Change both sides together.
-package enum ProjectBoardOrder {
+package enum WorkbenchBoardOrder {
     package static func priorityRank(_ priority: String) -> Int {
         switch priority {
         case "high": 0
@@ -38,7 +38,7 @@ package enum ProjectBoardOrder {
 
 /// What one board card shows, derived from its node. Pure; the view only maps
 /// these values to colours and layout.
-package struct ProjectBoardCard: Equatable {
+package struct WorkbenchBoardCard: Equatable {
     /// Statuses the owner can set from the board. `snoozed` is a Targets-tab
     /// concept (snooze_until) with no meaning on a project board.
     package static let editableStatuses = ["todo", "in_progress", "in_review", "blocked", "done", "dismissed"]
@@ -61,7 +61,7 @@ package struct ProjectBoardCard: Equatable {
     /// A leaf's own partial progress (strictly between 0 and 1), else nil.
     package let leafProgress: Double?
 
-    package init(_ node: ProjectBoardNode) {
+    package init(_ node: WorkbenchBoardNode) {
         let target = node.target
         title = Self.title(target.text)
         isDone = target.status == "done"

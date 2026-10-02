@@ -5,7 +5,7 @@ import WatchtowerCore
 import WatchtowerTestSupport
 
 @MainActor
-final class ProjectBoardViewModelTests: XCTestCase {
+final class WorkbenchBoardViewModelTests: XCTestCase {
     private var dbManager: DatabaseManager!
     private var dbPath: String!
 
@@ -25,7 +25,7 @@ final class ProjectBoardViewModelTests: XCTestCase {
 
     // MARK: - Fixtures (raw SQL: the board must work on rows the Go side wrote)
 
-    nonisolated private static func insertProject(_ db: Database, name: String = "acme") throws -> Int64 {
+    nonisolated private static func insertWorkbench(_ db: Database, name: String = "acme") throws -> Int64 {
         try db.execute(
             sql: "INSERT INTO projects (name, folder_path) VALUES (?, ?)",
             arguments: [name, "/tmp/\(name)-\(UUID().uuidString)"]
@@ -60,16 +60,16 @@ final class ProjectBoardViewModelTests: XCTestCase {
         return db.lastInsertedRowID
     }
 
-    private func makeVM(project: Int64) -> ProjectBoardViewModel {
-        ProjectBoardViewModel(dbPool: dbManager.dbPool, projectID: project)
+    private func makeVM(project: Int64) -> WorkbenchBoardViewModel {
+        WorkbenchBoardViewModel(dbPool: dbManager.dbPool, projectID: project)
     }
 
     // MARK: - Tree
 
     func testLoadBuildsTheTreeForThisProjectOnly() throws {
         let (pid, feature, task) = try dbManager.dbPool.write { db -> (Int64, Int64, Int64) in
-            let pid = try Self.insertProject(db)
-            let other = try Self.insertProject(db, name: "other")
+            let pid = try Self.insertWorkbench(db)
+            let other = try Self.insertWorkbench(db, name: "other")
             let feature = try Self.insertTarget(db, project: pid, text: "Feature")
             let task = try Self.insertTarget(db, project: pid, text: "Task 1", parent: feature)
             _ = try Self.insertTarget(db, project: other, text: "Foreign")
@@ -87,7 +87,7 @@ final class ProjectBoardViewModelTests: XCTestCase {
 
     func testSetStatusWritesTheSelectedTargetAndReloads() throws {
         let (pid, tid) = try dbManager.dbPool.write { db -> (Int64, Int64) in
-            let pid = try Self.insertProject(db)
+            let pid = try Self.insertWorkbench(db)
             return (pid, try Self.insertTarget(db, project: pid, text: "Task"))
         }
         let vm = makeVM(project: pid)
@@ -102,7 +102,7 @@ final class ProjectBoardViewModelTests: XCTestCase {
 
     func testSetStatusRejectsAStatusTheBoardDoesNotOffer() throws {
         let (pid, tid) = try dbManager.dbPool.write { db -> (Int64, Int64) in
-            let pid = try Self.insertProject(db)
+            let pid = try Self.insertWorkbench(db)
             return (pid, try Self.insertTarget(db, project: pid, text: "Task"))
         }
         let vm = makeVM(project: pid)
@@ -116,7 +116,7 @@ final class ProjectBoardViewModelTests: XCTestCase {
 
     func testSetPriorityWritesTheSelectedTargetAndRejectsOthers() throws {
         let (pid, tid) = try dbManager.dbPool.write { db -> (Int64, Int64) in
-            let pid = try Self.insertProject(db)
+            let pid = try Self.insertWorkbench(db)
             return (pid, try Self.insertTarget(db, project: pid, text: "Task"))
         }
         let vm = makeVM(project: pid)
@@ -133,7 +133,7 @@ final class ProjectBoardViewModelTests: XCTestCase {
 
     func testRenameTrimsAndIgnoresBlank() throws {
         let (pid, tid) = try dbManager.dbPool.write { db -> (Int64, Int64) in
-            let pid = try Self.insertProject(db)
+            let pid = try Self.insertWorkbench(db)
             return (pid, try Self.insertTarget(db, project: pid, text: "Old"))
         }
         let vm = makeVM(project: pid)
@@ -149,7 +149,7 @@ final class ProjectBoardViewModelTests: XCTestCase {
 
     func testAddCommentCreatesAnOwnerRootOnTheSelectedTarget() throws {
         let (pid, tid) = try dbManager.dbPool.write { db -> (Int64, Int64) in
-            let pid = try Self.insertProject(db)
+            let pid = try Self.insertWorkbench(db)
             return (pid, try Self.insertTarget(db, project: pid, text: "Task"))
         }
         let vm = makeVM(project: pid)
@@ -167,7 +167,7 @@ final class ProjectBoardViewModelTests: XCTestCase {
     /// owner's draft, and surfaces the error.
     func testAddCommentReportsAFailedWriteAndKeepsTheDraft() throws {
         let (pid, tid) = try dbManager.dbPool.write { db -> (Int64, Int64) in
-            let pid = try Self.insertProject(db)
+            let pid = try Self.insertWorkbench(db)
             return (pid, try Self.insertTarget(db, project: pid, text: "Task"))
         }
         let vm = makeVM(project: pid)
@@ -192,7 +192,7 @@ final class ProjectBoardViewModelTests: XCTestCase {
     /// banner shows it once the card is gone.
     func testCloseDetailKeepsTheCardsError() throws {
         let (pid, tid) = try dbManager.dbPool.write { db -> (Int64, Int64) in
-            let pid = try Self.insertProject(db)
+            let pid = try Self.insertWorkbench(db)
             let tid = try Self.insertTarget(db, project: pid, text: "Task")
             _ = try Self.insertComment(db, project: pid, target: tid, author: "agent", body: "Question")
             try db.execute(sql: """
@@ -218,7 +218,7 @@ final class ProjectBoardViewModelTests: XCTestCase {
 
     func testReplyAndResolveAThread() throws {
         let (pid, tid, root) = try dbManager.dbPool.write { db -> (Int64, Int64, Int64) in
-            let pid = try Self.insertProject(db)
+            let pid = try Self.insertWorkbench(db)
             let tid = try Self.insertTarget(db, project: pid, text: "Task")
             let root = try Self.insertComment(db, project: pid, target: tid, author: "agent", body: "Which API?")
             return (pid, tid, root)
@@ -235,11 +235,11 @@ final class ProjectBoardViewModelTests: XCTestCase {
 
     func testEveryOwnerWriteReportsItsTargetToTheNotificationHook() throws {
         let (pid, tid) = try dbManager.dbPool.write { db -> (Int64, Int64) in
-            let pid = try Self.insertProject(db)
+            let pid = try Self.insertWorkbench(db)
             return (pid, try Self.insertTarget(db, project: pid, text: "Task"))
         }
         let vm = makeVM(project: pid)
-        var reported: [ProjectSubject] = []
+        var reported: [WorkbenchSubject] = []
         vm.onOwnerWrite = { project, subject in
             XCTAssertEqual(project, pid)
             reported.append(subject)
@@ -259,7 +259,7 @@ final class ProjectBoardViewModelTests: XCTestCase {
 
     func testAFailedWriteDoesNotReportToTheHook() throws {
         let (pid, tid) = try dbManager.dbPool.write { db -> (Int64, Int64) in
-            let pid = try Self.insertProject(db)
+            let pid = try Self.insertWorkbench(db)
             return (pid, try Self.insertTarget(db, project: pid, text: "Task"))
         }
         let vm = makeVM(project: pid)
@@ -267,7 +267,7 @@ final class ProjectBoardViewModelTests: XCTestCase {
         vm.onOwnerWrite = { _, _ in reported += 1 }
         vm.load()
         vm.select(Int(tid))
-        let replied = vm.reply(to: 999_999, body: "orphan")   // no such root: ProjectQueries.reply throws
+        let replied = vm.reply(to: 999_999, body: "orphan")   // no such root: WorkbenchQueries.reply throws
         XCTAssertFalse(replied, "a failed reply reports false so the thread keeps the owner's draft")
         XCTAssertEqual(reported, 0)
         XCTAssertNotNil(vm.errorMessage)
@@ -278,14 +278,14 @@ final class ProjectBoardViewModelTests: XCTestCase {
     /// the hook names them too and no "target done" notice fires for them.
     func testStatusWriteReportsTheParentsTheRollupMoved() throws {
         let (pid, root, mid, leaf) = try dbManager.dbPool.write { db -> (Int64, Int64, Int64, Int64) in
-            let pid = try Self.insertProject(db)
+            let pid = try Self.insertWorkbench(db)
             let root = try Self.insertTarget(db, project: pid, text: "Plan")
             let mid = try Self.insertTarget(db, project: pid, text: "Feature", parent: root)
             let leaf = try Self.insertTarget(db, project: pid, text: "Task", parent: mid)
             return (pid, root, mid, leaf)
         }
         let vm = makeVM(project: pid)
-        var reported: [ProjectSubject] = []
+        var reported: [WorkbenchSubject] = []
         vm.onOwnerWrite = { _, subject in reported.append(subject) }
         vm.load()
         vm.select(Int(leaf))
@@ -301,14 +301,14 @@ final class ProjectBoardViewModelTests: XCTestCase {
     /// names the dragged card and the parents its rollup moved.
     func testSetStatusForANonSelectedTargetWritesItAndReportsIt() throws {
         let (pid, root, leaf, other) = try dbManager.dbPool.write { db -> (Int64, Int64, Int64, Int64) in
-            let pid = try Self.insertProject(db)
+            let pid = try Self.insertWorkbench(db)
             let root = try Self.insertTarget(db, project: pid, text: "Feature")
             let leaf = try Self.insertTarget(db, project: pid, text: "Task", parent: root)
             let other = try Self.insertTarget(db, project: pid, text: "Selected")
             return (pid, root, leaf, other)
         }
         let vm = makeVM(project: pid)
-        var reported: [ProjectSubject] = []
+        var reported: [WorkbenchSubject] = []
         vm.load()
         vm.select(Int(other))
         vm.onOwnerWrite = { _, subject in reported.append(subject) }
@@ -328,7 +328,7 @@ final class ProjectBoardViewModelTests: XCTestCase {
 
     func testSetStatusToTheCurrentStatusWritesNothing() throws {
         let (pid, tid) = try dbManager.dbPool.write { db -> (Int64, Int64) in
-            let pid = try Self.insertProject(db)
+            let pid = try Self.insertWorkbench(db)
             return (pid, try Self.insertTarget(db, project: pid, text: "Task", status: "in_progress"))
         }
         let vm = makeVM(project: pid)
@@ -356,9 +356,9 @@ final class ProjectBoardViewModelTests: XCTestCase {
 
     func testSetStatusRefusesATargetOfAnotherProject() throws {
         let (pid, foreign) = try dbManager.dbPool.write { db -> (Int64, Int64) in
-            let pid = try Self.insertProject(db)
+            let pid = try Self.insertWorkbench(db)
             _ = try Self.insertTarget(db, project: pid, text: "Mine")
-            let other = try Self.insertProject(db, name: "other")
+            let other = try Self.insertWorkbench(db, name: "other")
             return (pid, try Self.insertTarget(db, project: other, text: "Foreign"))
         }
         let vm = makeVM(project: pid)
@@ -373,7 +373,7 @@ final class ProjectBoardViewModelTests: XCTestCase {
     }
 
     func testSetStatusForAnUnknownTargetWritesNothing() throws {
-        let pid = try dbManager.dbPool.write { try Self.insertProject($0) }
+        let pid = try dbManager.dbPool.write { try Self.insertWorkbench($0) }
         let vm = makeVM(project: pid)
         var reported = 0
         vm.onOwnerWrite = { _, _ in reported += 1 }
@@ -386,17 +386,17 @@ final class ProjectBoardViewModelTests: XCTestCase {
         let suite = "ProjectBoardViewModelTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        let pid = try dbManager.dbPool.write { try Self.insertProject($0) }
+        let pid = try dbManager.dbPool.write { try Self.insertWorkbench($0) }
 
-        let vm = ProjectBoardViewModel(dbPool: dbManager.dbPool, projectID: pid, defaults: defaults)
+        let vm = WorkbenchBoardViewModel(dbPool: dbManager.dbPool, projectID: pid, defaults: defaults)
         XCTAssertEqual(vm.mode, .list)
         vm.mode = .kanban
         vm.kanbanFilterRootID = 7
 
-        let reopened = ProjectBoardViewModel(dbPool: dbManager.dbPool, projectID: pid, defaults: defaults)
+        let reopened = WorkbenchBoardViewModel(dbPool: dbManager.dbPool, projectID: pid, defaults: defaults)
         XCTAssertEqual(reopened.mode, .kanban)
         XCTAssertEqual(reopened.kanbanFilterRootID, 7)
-        let other = ProjectBoardViewModel(dbPool: dbManager.dbPool, projectID: pid + 1, defaults: defaults)
+        let other = WorkbenchBoardViewModel(dbPool: dbManager.dbPool, projectID: pid + 1, defaults: defaults)
         XCTAssertEqual(other.mode, .list)
         XCTAssertNil(other.kanbanFilterRootID)
     }
@@ -405,7 +405,7 @@ final class ProjectBoardViewModelTests: XCTestCase {
 
     func testSelectingATargetMarksItsAgentCommentsRead() throws {
         let (pid, tid) = try dbManager.dbPool.write { db -> (Int64, Int64) in
-            let pid = try Self.insertProject(db)
+            let pid = try Self.insertWorkbench(db)
             let tid = try Self.insertTarget(db, project: pid, text: "Task")
             _ = try Self.insertComment(db, project: pid, target: tid, author: "agent", body: "Blocked on keys")
             return (pid, tid)
@@ -425,7 +425,7 @@ final class ProjectBoardViewModelTests: XCTestCase {
 
     func testMarkReadFailureKeepsTheUnreadBadge() throws {
         let (pid, tid) = try dbManager.dbPool.write { db -> (Int64, Int64) in
-            let pid = try Self.insertProject(db)
+            let pid = try Self.insertWorkbench(db)
             let tid = try Self.insertTarget(db, project: pid, text: "Task")
             _ = try Self.insertComment(db, project: pid, target: tid, author: "agent", body: "Question")
             // Any UPDATE of project_comments fails: models a locked/readonly DB.
@@ -447,7 +447,7 @@ final class ProjectBoardViewModelTests: XCTestCase {
 
     func testRefreshIfChangedSeesAWriteFromAnotherConnection() throws {
         let (pid, tid) = try dbManager.dbPool.write { db -> (Int64, Int64) in
-            let pid = try Self.insertProject(db)
+            let pid = try Self.insertWorkbench(db)
             return (pid, try Self.insertTarget(db, project: pid, text: "Task"))
         }
         let vm = makeVM(project: pid)
@@ -471,10 +471,10 @@ final class ProjectBoardViewModelTests: XCTestCase {
 
     func testSelectedTargetsImagesLoadAndAnAgentAttachIsPickedUp() throws {
         let (pid, tid, other) = try dbManager.dbPool.write { db -> (Int64, Int64, Int64) in
-            let pid = try Self.insertProject(db)
+            let pid = try Self.insertWorkbench(db)
             let tid = try Self.insertTarget(db, project: pid, text: "Bug")
             let other = try Self.insertTarget(db, project: pid, text: "Other")
-            try TestDatabase.insertProjectTargetImage(db, projectID: pid, targetID: other, sha256: "o")
+            try TestDatabase.insertWorkbenchTargetImage(db, projectID: pid, targetID: other, sha256: "o")
             return (pid, tid, other)
         }
         let vm = makeVM(project: pid)
@@ -484,13 +484,13 @@ final class ProjectBoardViewModelTests: XCTestCase {
 
         let foreign = try DatabasePool(path: dbPath)
         try foreign.write { db in
-            try TestDatabase.insertProjectTargetImage(db, projectID: pid, targetID: tid, fileName: "shot.png", sha256: "s")
+            try TestDatabase.insertWorkbenchTargetImage(db, projectID: pid, targetID: tid, fileName: "shot.png", sha256: "s")
         }
         XCTAssertTrue(vm.refreshIfChanged(), "an attach from the agent's process changes the fingerprint")
         XCTAssertEqual(vm.selectedImages.map(\.fileName), ["shot.png"])
 
         let second = try foreign.write { db in
-            try TestDatabase.insertProjectTargetImage(db, projectID: pid, targetID: tid, fileName: "later.png", sha256: "l")
+            try TestDatabase.insertWorkbenchTargetImage(db, projectID: pid, targetID: tid, fileName: "later.png", sha256: "l")
         }
         XCTAssertTrue(vm.refreshIfChanged())
         // Detaching the OLDER image keeps MAX(id); the count still moves.

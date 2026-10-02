@@ -3,7 +3,7 @@ import Observation
 
 /// One unsent owner comment on a project document: the passage it anchors on
 /// and the owner's text. Nothing reaches the agent until the batch is sent.
-package struct ProjectCommentDraft: Identifiable, Equatable, Sendable {
+package struct WorkbenchCommentDraft: Identifiable, Equatable, Sendable {
     package let id: UUID
     package let anchor: CommentAnchor
     package var body: String
@@ -16,23 +16,23 @@ package struct ProjectCommentDraft: Identifiable, Equatable, Sendable {
 }
 
 /// The owner's unsent document comments, per document id, in the order they
-/// were written. Owned by `ProjectsViewModel` (AppState), so drafts survive
+/// were written. Owned by `WorkbenchesViewModel` (AppState), so drafts survive
 /// switching documents, panes, projects and tabs; they live in memory only
 /// and are gone when the app quits — "Send N comments" is what persists them.
 @MainActor @Observable
-package final class ProjectCommentDrafts {
-    package private(set) var byDocument: [Int64: [ProjectCommentDraft]] = [:]
+package final class WorkbenchCommentDrafts {
+    package private(set) var byDocument: [Int64: [WorkbenchCommentDraft]] = [:]
 
     package nonisolated init() {}
 
     /// Every unsent draft, on any document.
     package var count: Int { byDocument.values.reduce(0) { $0 + $1.count } }
 
-    package func drafts(for documentID: Int64) -> [ProjectCommentDraft] {
+    package func drafts(for documentID: Int64) -> [WorkbenchCommentDraft] {
         byDocument[documentID] ?? []
     }
 
-    package func add(_ draft: ProjectCommentDraft, documentID: Int64) {
+    package func add(_ draft: WorkbenchCommentDraft, documentID: Int64) {
         byDocument[documentID, default: []].append(draft)
     }
 

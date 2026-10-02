@@ -3,7 +3,7 @@ import GRDB
 
 /// What a project delete removes, for the confirmation dialog (spec §6.1:
 /// "confirmation lists what is removed, incl. the folder cleanup").
-package struct ProjectDeleteSummary: Equatable {
+package struct WorkbenchDeleteSummary: Equatable {
     package let name: String
     package let folder: String
     package let targets: Int
@@ -18,7 +18,7 @@ package struct ProjectDeleteSummary: Equatable {
         self.comments = comments
     }
 
-    package static func fetch(_ db: Database, project: Project) throws -> Self {
+    package static func fetch(_ db: Database, project: Workbench) throws -> Self {
         func count(_ table: String) throws -> Int {
             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \(table) WHERE project_id = ?",
                              arguments: [project.id]) ?? 0

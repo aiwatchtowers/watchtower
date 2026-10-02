@@ -4,7 +4,7 @@ import Foundation
 /// runs Claude Code as Watchtower's child, so macOS attributes its file access
 /// to Watchtower: a folder under one of these locations makes the first file
 /// read raise a TCC prompt naming Watchtower. The POC warns before creating.
-package enum ProjectFolderPolicy {
+package enum WorkbenchFolderPolicy {
     package static let tccSensitiveLocations = ["Documents", "Desktop", "Downloads", "Library/CloudStorage"]
 
     /// The `~/…` location `path` lies in (or is), or nil. Both paths must be

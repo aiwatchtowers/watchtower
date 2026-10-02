@@ -4,7 +4,7 @@ import ImageIO
 /// What decoding a stored target image gave: the image, no file at all, or
 /// a file that is there but cannot be shown — three states, so the viewer
 /// never calls an undecodable file "missing".
-package enum ProjectImageLoad: Sendable {
+package enum WorkbenchImageLoad: Sendable {
     case image(CGImage)
     case missing
     case undecodable
@@ -18,7 +18,7 @@ package enum ProjectImageLoad: Sendable {
 /// Decodes a board target's stored image (board target #117) for the
 /// Desktop: a downscaled thumbnail for the detail pane, a bounded-size image
 /// for the viewer. Pure ImageIO, no AppKit, so it runs off the main actor.
-package enum ProjectImageLoader {
+package enum WorkbenchImageLoader {
     /// The viewer's cap on the longer side: a 5 MB PNG that compresses well
     /// can be tens of thousands of pixels wide, and decoding that in full
     /// would take gigabytes.
@@ -26,7 +26,7 @@ package enum ProjectImageLoader {
 
     /// The image scaled so its longer side is at most `maxPixel` (never
     /// enlarged).
-    package static func load(at url: URL, maxPixel: Int) -> ProjectImageLoad {
+    package static func load(at url: URL, maxPixel: Int) -> WorkbenchImageLoad {
         guard FileManager.default.fileExists(atPath: url.path) else { return .missing }
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return .undecodable }
         let options: [CFString: Any] = [

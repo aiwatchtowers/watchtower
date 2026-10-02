@@ -3,8 +3,8 @@ import WatchtowerCore
 
 /// Beside an open project document: the owner's unsent drafts, then its
 /// open, resolved and outdated comment threads.
-struct ProjectDocumentThreadsPanel: View {
-    let docVM: ProjectDocumentViewModel
+struct WorkbenchDocumentThreadsPanel: View {
+    let docVM: WorkbenchDocumentViewModel
     @Binding var activeThreadID: Int64?
 
     @State private var showResolved = false
@@ -16,7 +16,7 @@ struct ProjectDocumentThreadsPanel: View {
                     if !docVM.drafts.isEmpty {
                         Text("Drafts — not sent yet").font(.caption).fontWeight(.semibold).foregroundStyle(.secondary)
                         ForEach(docVM.drafts) { draft in
-                            ProjectCommentDraftRow(
+                            WorkbenchCommentDraftRow(
                                 draft: draft,
                                 located: docVM.draftRanges[draft.id] != nil,
                                 sending: docVM.isSending,
@@ -56,7 +56,7 @@ struct ProjectDocumentThreadsPanel: View {
         }
     }
 
-    private func thread(_ thread: ProjectCommentThread) -> some View {
+    private func thread(_ thread: WorkbenchCommentThread) -> some View {
         CommentThreadView(
             thread: thread.content,
             isActive: thread.id == activeThreadID,

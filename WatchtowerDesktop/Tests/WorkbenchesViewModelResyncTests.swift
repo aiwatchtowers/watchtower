@@ -7,7 +7,7 @@ import WatchtowerTestSupport
 /// Board target #91: Re-run setup runs `watchtower project resync`, shows what
 /// it added and its suggestions, and keeps the result across navigation.
 @MainActor
-final class ProjectsViewModelResyncTests: XCTestCase {
+final class WorkbenchesViewModelResyncTests: XCTestCase {
     private var pool: DatabasePool!
     private var path: String!
     private var defaults: UserDefaults!
@@ -51,17 +51,17 @@ final class ProjectsViewModelResyncTests: XCTestCase {
 
     private static let status = Data(#"{"skill":"unchanged","hook":true,"mcp":true}"#.utf8)
 
-    private func decode(_ json: String) throws -> ProjectResynced {
-        try JSONDecoder().decode(ProjectResynced.self, from: Data(json.utf8))
+    private func decode(_ json: String) throws -> WorkbenchResynced {
+        try JSONDecoder().decode(WorkbenchResynced.self, from: Data(json.utf8))
     }
 
-    private func line(_ text: String, problem: Bool = false) -> ProjectResynced.Line {
-        ProjectResynced.Line(text: text, problem: problem)
+    private func line(_ text: String, problem: Bool = false) -> WorkbenchResynced.Line {
+        WorkbenchResynced.Line(text: text, problem: problem)
     }
 
     func testCLIPassesTheProjectAndDecodesEveryShape() async throws {
         let runner = FakeCLIRunner(stdout: Data(Self.upToDate.utf8))
-        let result = try await ProjectCLI(runner: runner).resync(projectID: 7)
+        let result = try await WorkbenchCLI(runner: runner).resync(projectID: 7)
         XCTAssertEqual(runner.invocations, [["project", "resync", "7", "--json"]])
         XCTAssertEqual(result.summaryLines, [line("Everything was already up to date.")],
                        "an envelope without the index keys (an older CLI) reports nothing about it")
@@ -95,9 +95,9 @@ final class ProjectsViewModelResyncTests: XCTestCase {
     }
 
     func testResyncStoresTheResultAndRefreshesTheInstallStatus() async throws {
-        let id = try await pool.write { try TestDatabase.insertProject($0) }
+        let id = try await pool.write { try TestDatabase.insertWorkbench($0) }
         let runner = ScriptedCLIRunner(results: [.success(Data(Self.added.utf8)), .success(Self.status)])
-        let vm = ProjectsViewModel(dbPool: pool, cli: ProjectCLI(runner: runner), defaults: defaults)
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: runner), defaults: defaults)
 
         await vm.resync(projectID: id)
 
@@ -115,12 +115,12 @@ final class ProjectsViewModelResyncTests: XCTestCase {
     }
 
     func testAFailedRunSaysWhyKeepsNoStaleResultAndStillRefreshes() async throws {
-        let id = try await pool.write { try TestDatabase.insertProject($0) }
+        let id = try await pool.write { try TestDatabase.insertWorkbench($0) }
         let runner = ScriptedCLIRunner(results: [
             .success(Data(Self.upToDate.utf8)), .success(Self.status),
             .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "project 1: not found")), .success(Self.status)
         ])
-        let vm = ProjectsViewModel(dbPool: pool, cli: ProjectCLI(runner: runner), defaults: defaults)
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: runner), defaults: defaults)
         await vm.resync(projectID: id)
         XCTAssertNotNil(vm.resyncResults[id])
 
@@ -137,9 +137,9 @@ final class ProjectsViewModelResyncTests: XCTestCase {
     /// Version skew: the CLI ran (and may have attached documents) but its
     /// report does not decode — say so, and still refresh the page.
     func testAnUnreadableReportSaysTheRunHappened() async throws {
-        let id = try await pool.write { try TestDatabase.insertProject($0) }
+        let id = try await pool.write { try TestDatabase.insertWorkbench($0) }
         let runner = ScriptedCLIRunner(results: [.success(Data(#"{"id":1}"#.utf8)), .success(Self.status)])
-        let vm = ProjectsViewModel(dbPool: pool, cli: ProjectCLI(runner: runner), defaults: defaults)
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: runner), defaults: defaults)
 
         await vm.resync(projectID: id)
 
@@ -153,23 +153,23 @@ final class ProjectsViewModelResyncTests: XCTestCase {
     /// click, or Repair, starts no parallel folder install meanwhile.
     func testTheResultSurvivesNavigatingAwayAndBlocksAParallelInstall() async throws {
         let (first, second) = try await pool.write { d in
-            (try TestDatabase.insertProject(d), try TestDatabase.insertProject(d, name: "beta", folder: "/tmp/beta"))
+            (try TestDatabase.insertWorkbench(d), try TestDatabase.insertWorkbench(d, name: "beta", folder: "/tmp/beta"))
         }
         let runner = HeldCLIRunner(stdout: Data(Self.added.utf8))
-        let vm = ProjectsViewModel(dbPool: pool, cli: ProjectCLI(runner: runner), defaults: defaults)
-        vm.selectedProjectID = first
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: runner), defaults: defaults)
+        vm.selectedWorkbenchID = first
         let run = Task { await vm.resync(projectID: first) }
         await awaitStarted(runner)
         XCTAssertTrue(vm.isInstalling(projectID: first))
 
-        vm.selectedProjectID = second
+        vm.selectedWorkbenchID = second
         await vm.resync(projectID: first)
         await vm.repairInstall(projectID: first)
         XCTAssertEqual(runner.invocations.count, 1, "no second install while one runs")
 
         runner.release()
         await run.value
-        vm.selectedProjectID = first
+        vm.selectedWorkbenchID = first
 
         XCTAssertEqual(vm.resyncResults[first]?.hooksAdded, true)
         XCTAssertNil(vm.resyncResults[second])
@@ -177,7 +177,7 @@ final class ProjectsViewModelResyncTests: XCTestCase {
     }
 
     func testWithoutTheCLIItSaysSo() async throws {
-        let vm = ProjectsViewModel(dbPool: pool, cli: nil, defaults: defaults)
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: nil, defaults: defaults)
         await vm.resync(projectID: 1)
         XCTAssertEqual(vm.resyncErrors[1], "The watchtower CLI was not found.")
     }

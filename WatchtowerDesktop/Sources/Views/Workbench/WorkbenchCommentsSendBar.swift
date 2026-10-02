@@ -6,7 +6,7 @@ import WatchtowerCore
 /// running Claude Code session (or copies it when the session has no
 /// bracketed paste); with none running it explains the brief and offers the
 /// terminal. N counts the drafts plus the open comments already saved.
-struct ProjectCommentsSendBar: View {
+struct WorkbenchCommentsSendBar: View {
     static let copiedNote = "Prompt copied — press ⌘V in the terminal"
     static let noSessionNote =
         "No Claude Code session is running for this project. The next session you start gets these comments in its brief."

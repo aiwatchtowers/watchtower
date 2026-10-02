@@ -11,14 +11,14 @@ import WatchtowerCore
 /// notification center's 30 s poll reloads it (Task 18).
 @MainActor
 @Observable
-final class ProjectsViewModel {
+final class WorkbenchesViewModel {
     /// Document id (string) → the `updated_at` the owner last opened.
     static let viewedDocumentsKey = "projects.viewedDocuments"
 
-    private(set) var summaries: [ProjectSummary] = []
-    var selectedProjectID: Int64? {
+    private(set) var summaries: [WorkbenchSummary] = []
+    var selectedWorkbenchID: Int64? {
         didSet {
-            if selectedProjectID != oldValue {
+            if selectedWorkbenchID != oldValue {
                 closeDocument()
                 documents = []
                 attachNotice = nil
@@ -26,11 +26,11 @@ final class ProjectsViewModel {
             }
             // One thing is on screen: a project, or a standalone terminal.
             // Selecting a project also drills the panel into it.
-            if let selectedProjectID {
+            if let selectedWorkbenchID {
                 selectedStandaloneID = nil
-                drilledProjectID = selectedProjectID
+                drilledWorkbenchID = selectedWorkbenchID
             } else {
-                drilledProjectID = nil
+                drilledWorkbenchID = nil
             }
         }
     }
@@ -41,18 +41,18 @@ final class ProjectsViewModel {
     private(set) var repairing: Set<Int64> = []
     private(set) var resyncing: Set<Int64> = []
     /// The last Re-run setup result per project, until the owner dismisses it.
-    private(set) var resyncResults: [Int64: ProjectResynced] = [:]
+    private(set) var resyncResults: [Int64: WorkbenchResynced] = [:]
     private(set) var resyncErrors: [Int64: String] = [:]
     var errorMessage: String?
-    private(set) var installStatus: [Int64: ProjectInstallStatus] = [:]
+    private(set) var installStatus: [Int64: WorkbenchInstallStatus] = [:]
     /// Why installing or repairing a project's install failed. It explains
     /// the Repair button, so it stays until a status read finds nothing to
-    /// repair — the page's own `.task` read races `createProject`'s and must
+    /// repair — the page's own `.task` read races `createWorkbench`'s and must
     /// not wipe it.
     private var installNotes: [Int64: String] = [:]
     /// Why the last status read failed; the next successful read clears it.
     private var statusReadErrors: [Int64: String] = [:]
-    /// What create's document import could not do (`ProjectCreated.importNote`),
+    /// What create's document import could not do (`WorkbenchCreated.importNote`),
     /// per project. A status read says nothing about it, so it stays for the
     /// session; a retry runs in the terminal, which the Desktop does not watch.
     private(set) var importNotes: [Int64: String] = [:]
@@ -61,35 +61,35 @@ final class ProjectsViewModel {
     var installErrors: [Int64: String] {
         installNotes.merging(statusReadErrors) { note, read in "\(note) \(read)" }
     }
-    private(set) var documents: [ProjectDocumentListItem] = []
+    private(set) var documents: [WorkbenchDocumentListItem] = []
     /// The Documents list's title search (#81); cleared on a project switch.
     var documentQuery = ""
     /// Collapsed groups of the Documents list, per project; kept for the session.
-    private(set) var collapsedDocumentGroups: [Int64: Set<ProjectDocumentGrouping.Group>] = [:]
+    private(set) var collapsedDocumentGroups: [Int64: Set<WorkbenchDocumentGrouping.Group>] = [:]
 
-    var documentSections: [ProjectDocumentGrouping.Section] {
-        ProjectDocumentGrouping.sections(documents, query: documentQuery)
+    var documentSections: [WorkbenchDocumentGrouping.Section] {
+        WorkbenchDocumentGrouping.sections(documents, query: documentQuery)
     }
 
-    func isDocumentGroupCollapsed(_ group: ProjectDocumentGrouping.Group) -> Bool {
-        selectedProjectID.map { collapsedDocumentGroups[$0, default: []].contains(group) } ?? false
+    func isDocumentGroupCollapsed(_ group: WorkbenchDocumentGrouping.Group) -> Bool {
+        selectedWorkbenchID.map { collapsedDocumentGroups[$0, default: []].contains(group) } ?? false
     }
 
-    func setDocumentGroup(_ group: ProjectDocumentGrouping.Group, collapsed: Bool) {
-        guard let selectedProjectID else { return }
+    func setDocumentGroup(_ group: WorkbenchDocumentGrouping.Group, collapsed: Bool) {
+        guard let selectedWorkbenchID else { return }
         if collapsed {
-            collapsedDocumentGroups[selectedProjectID, default: []].insert(group)
+            collapsedDocumentGroups[selectedWorkbenchID, default: []].insert(group)
         } else {
-            collapsedDocumentGroups[selectedProjectID]?.remove(group)
+            collapsedDocumentGroups[selectedWorkbenchID]?.remove(group)
         }
     }
 
     /// An opened document is always findable in the list: a search that
     /// hides it is cleared and its group unfolded (a deep link or an attach
     /// may open one the list currently hides).
-    private func revealInList(_ document: ProjectDocument) {
-        if !ProjectDocumentGrouping.matches(document, query: documentQuery) { documentQuery = "" }
-        setDocumentGroup(ProjectDocumentGrouping.Group.of(document), collapsed: false)
+    private func revealInList(_ document: WorkbenchDocument) {
+        if !WorkbenchDocumentGrouping.matches(document, query: documentQuery) { documentQuery = "" }
+        setDocumentGroup(WorkbenchDocumentGrouping.Group.of(document), collapsed: false)
     }
     /// An "Add document…" attach is running (#80); the sheet disables Attach.
     private(set) var isAttachingDocument = false
@@ -100,12 +100,12 @@ final class ProjectsViewModel {
     private(set) var attachNotice: String?
     /// The open document. Kept here (not in the view) so it survives pane
     /// switches and tab changes with its watcher running.
-    private(set) var documentViewModel: ProjectDocumentViewModel?
+    private(set) var documentViewModel: WorkbenchDocumentViewModel?
     /// Unsent document comments: kept here so they outlive the open document.
-    let commentDrafts = ProjectCommentDrafts()
+    let commentDrafts = WorkbenchCommentDrafts()
 
     /// A project was created: Task 18 seeds its notification baseline.
-    var onProjectCreated: ((Project, _ installed: Bool) -> Void)?
+    var onWorkbenchCreated: ((Workbench, _ installed: Bool) -> Void)?
     /// The embedded terminals. AppState passes its own; nil (most tests) =
     /// nothing launches.
     let terminalCenter: TerminalCenter?
@@ -113,7 +113,7 @@ final class ProjectsViewModel {
     @ObservationIgnored var titleService: ((Int64) async throws -> TerminalTitleResult)?
     @ObservationIgnored var now: () -> Date = Date.init
 
-    // Session state. Written only by ProjectsViewModel+Sessions.swift, which
+    // Session state. Written only by WorkbenchesViewModel+Sessions.swift, which
     // cannot reach a `private(set)` setter from its own file.
 
     /// Each project's `terminal_sessions` rows, most recently active first.
@@ -121,11 +121,11 @@ final class ProjectsViewModel {
     /// Standalone terminals (`project_id` NULL), most recently active first.
     var standaloneSessions: [TerminalSession] = []
     /// The left panel's level 2: the project drilled into (nil = level 1).
-    /// Always nil or `selectedProjectID`: selecting a project drills into
+    /// Always nil or `selectedWorkbenchID`: selecting a project drills into
     /// it, Back sets it to nil.
-    var drilledProjectID: Int64?
+    var drilledWorkbenchID: Int64?
     /// The standalone terminal on screen; mutually exclusive with
-    /// `selectedProjectID` (setting a project clears it).
+    /// `selectedWorkbenchID` (setting a project clears it).
     var selectedStandaloneID: Int64?
     /// Sessions whose `--resume` exited non-zero within
     /// `resumeFailureWindow` of launch: the pane offers "Start fresh".
@@ -161,20 +161,20 @@ final class ProjectsViewModel {
         var started = 0
         var applied = 0
     }
-    @ObservationIgnored var projectLoads: [Int64: SessionLoads] = [:]
+    @ObservationIgnored var workbenchLoads: [Int64: SessionLoads] = [:]
     /// Reads a project's sessions. A seam for tests (overlapping reads).
-    @ObservationIgnored lazy var readProjectSessions: (Int64) async throws -> [TerminalSession] = { [dbPool] projectID in
-        try await dbPool.read { try TerminalSessionQueries.fetchForProject($0, projectID: projectID) }
+    @ObservationIgnored lazy var readWorkbenchSessions: (Int64) async throws -> [TerminalSession] = { [dbPool] projectID in
+        try await dbPool.read { try TerminalSessionQueries.fetchForWorkbench($0, projectID: projectID) }
     }
     /// The title poll's wait. A seam for tests.
     @ObservationIgnored var titleSleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
 
     /// The owner changed something in a project (a comment, a status): the
     /// notification policy must not report it back (Task 18).
-    var onOwnerWrite: ((Int64, ProjectSubject) -> Void)?
+    var onOwnerWrite: ((Int64, WorkbenchSubject) -> Void)?
     /// Closes every embedded terminal of a project (SIGHUP → SIGKILL).
     /// AppState wires it to `TerminalCenter.closeAll(where:)` over the
-    /// project's sessions in initProjects; a project with none is a no-op,
+    /// project's sessions in initWorkbenches; a project with none is a no-op,
     /// so calling it twice is harmless.
     var closeTerminal: ((Int64) async -> Void)?
     /// Whether the Projects tab is what the owner is looking at (AppState:
@@ -183,12 +183,12 @@ final class ProjectsViewModel {
     /// Unwired = never on screen.
     var isTabOnScreen: () -> Bool = { false }
     /// The project a delete is running for; the page disables Delete meanwhile.
-    private(set) var deletingProjectID: Int64?
+    private(set) var deletingWorkbenchID: Int64?
     /// Why the last delete failed; the page shows it in an alert.
     var deleteError: String?
     /// The last board drift check per project (PROJ-07, `project check`).
     /// Kept here, not on the board pane, so a result survives navigation.
-    private(set) var drift: [Int64: ProjectDriftReport] = [:]
+    private(set) var drift: [Int64: WorkbenchDriftReport] = [:]
     /// Why the last drift check of a project failed; the next success clears it.
     private(set) var driftErrors: [Int64: String] = [:]
     private var driftCheckedAt: [Int64: Date] = [:]
@@ -197,13 +197,13 @@ final class ProjectsViewModel {
     static let driftMinInterval: TimeInterval = 30
 
     let dbPool: DatabasePool
-    private let cli: ProjectCLI?
+    private let cli: WorkbenchCLI?
     let defaults: UserDefaults
     private var viewed: [String: String]
 
     init(
         dbPool: DatabasePool,
-        cli: ProjectCLI?,
+        cli: WorkbenchCLI?,
         defaults: UserDefaults = .standard,
         terminalCenter: TerminalCenter? = nil
     ) {
@@ -219,8 +219,8 @@ final class ProjectsViewModel {
         terminalCenter?.onSessionExit = { [weak self] id, code in self?.sessionExited(id, code: code) }
     }
 
-    var selectedProject: Project? {
-        summaries.first { $0.id == selectedProjectID }?.project
+    var selectedWorkbench: Workbench? {
+        summaries.first { $0.id == selectedWorkbenchID }?.project
     }
 
     /// Sidebar badge: unread agent comments + documents revised since last viewed.
@@ -228,15 +228,15 @@ final class ProjectsViewModel {
         summaries.reduce(0) { $0 + $1.unreadAgentComments + revisedDocumentCount(for: $1) }
     }
 
-    func revisedDocumentCount(for summary: ProjectSummary) -> Int {
+    func revisedDocumentCount(for summary: WorkbenchSummary) -> Int {
         summary.documentStamps.filter { id, stamp in viewed[String(id)] != stamp }.count
     }
 
-    func isRevised(_ document: ProjectDocument) -> Bool {
+    func isRevised(_ document: WorkbenchDocument) -> Bool {
         document.isAgentAttached && viewed[String(document.id)] != document.updatedAt
     }
 
-    func markDocumentViewed(_ document: ProjectDocument) {
+    func markDocumentViewed(_ document: WorkbenchDocument) {
         viewed[String(document.id)] = document.updatedAt
         defaults.set(viewed, forKey: Self.viewedDocumentsKey)
     }
@@ -246,7 +246,7 @@ final class ProjectsViewModel {
         do {
             // A deleted project's documents fall out of `summaries`; their
             // stale `viewed` stamps are never read again, so none are pruned.
-            summaries = try await dbPool.read { try ProjectQueries.summaries($0) }
+            summaries = try await dbPool.read { try WorkbenchQueries.summaries($0) }
         } catch {
             errorMessage = "Could not load projects: \(error.localizedDescription)"
             return
@@ -255,9 +255,9 @@ final class ProjectsViewModel {
             await closeTerminal?(id)
             terminalSessions[id] = nil
             // Deleted elsewhere (CLI): never leave its id selected.
-            if selectedProjectID == id { selectedProjectID = nil }
+            if selectedWorkbenchID == id { selectedWorkbenchID = nil }
         }
-        if let selectedProjectID { await loadSessions(projectID: selectedProjectID) }
+        if let selectedWorkbenchID { await loadSessions(projectID: selectedWorkbenchID) }
         await loadSessions(projectID: nil)
     }
 
@@ -270,17 +270,17 @@ final class ProjectsViewModel {
     /// leaves a non-blocking warning in `errorMessage`. A second call while one
     /// runs is refused.
     @discardableResult
-    func deleteProject(_ id: Int64) async -> Bool {
-        guard deletingProjectID == nil else { return false }
+    func deleteWorkbench(_ id: Int64) async -> Bool {
+        guard deletingWorkbenchID == nil else { return false }
         guard let cli else {
             deleteError = "The watchtower CLI was not found."
             return false
         }
-        deletingProjectID = id
+        deletingWorkbenchID = id
         deleteError = nil
-        defer { deletingProjectID = nil }
+        defer { deletingWorkbenchID = nil }
         await closeTerminal?(id)
-        let result: ProjectDeleted
+        let result: WorkbenchDeleted
         do {
             result = try await cli.delete(projectID: id)
         } catch {
@@ -290,7 +290,7 @@ final class ProjectsViewModel {
         if let warning = result.cleanupWarning {
             errorMessage = warning
         }
-        if selectedProjectID == id { selectedProjectID = nil }
+        if selectedWorkbenchID == id { selectedWorkbenchID = nil }
         await reload()
         return true
     }
@@ -303,7 +303,7 @@ final class ProjectsViewModel {
     /// owner has on screen is marked read, the way opening it does; the list
     /// reloads last so its unread badge already reflects that.
     func refreshOnPoll() async {
-        if selectedProjectID != nil {
+        if selectedWorkbenchID != nil {
             await loadDocuments()
             await documentViewModel?.refreshThreads(markRead: layout.visiblePanes.contains(.documents) && isTabOnScreen())
         }
@@ -327,8 +327,8 @@ final class ProjectsViewModel {
     }
 
     /// A deep link puts its pane on screen the way a panel click does.
-    func reveal(_ route: ProjectRoute) {
-        selectedProjectID = route.projectID
+    func reveal(_ route: WorkbenchRoute) {
+        selectedWorkbenchID = route.projectID
         switch route.pane {
         case .board: layout.show(.board)
         case .documents: layout.show(.documents)
@@ -354,8 +354,8 @@ final class ProjectsViewModel {
 
     /// New project… → `project create`, then the folder install. A failed
     /// install keeps the project (it exists now), shows the install error,
-    /// points at Repair and reports `installed: false` to `onProjectCreated`.
-    func createProject(folder: URL, name: String?) async {
+    /// points at Repair and reports `installed: false` to `onWorkbenchCreated`.
+    func createWorkbench(folder: URL, name: String?) async {
         guard !isCreating else { return }
         guard let cli else {
             errorMessage = "The watchtower CLI was not found."
@@ -365,7 +365,7 @@ final class ProjectsViewModel {
         errorMessage = nil
         defer { isCreating = false }
 
-        let created: ProjectCreated
+        let created: WorkbenchCreated
         do {
             created = try await cli.create(folder: folder.path, name: name)
         } catch {
@@ -382,10 +382,10 @@ final class ProjectsViewModel {
                 + error.localizedDescription
         }
         await reload()
-        selectedProjectID = created.id
+        selectedWorkbenchID = created.id
         await refreshInstallStatus(projectID: created.id)
-        guard let project = selectedProject else { return }
-        onProjectCreated?(project, installed)
+        guard let project = selectedWorkbench else { return }
+        onWorkbenchCreated?(project, installed)
         // After a failed install the setup would run without the skill, hook
         // and MCP server it relies on, so no first-run session.
         if installed {
@@ -473,7 +473,7 @@ final class ProjectsViewModel {
         // The CLI may have attached documents or installed files even when
         // it failed or its report could not be read.
         await reload()
-        if selectedProjectID == projectID { await loadDocuments() }
+        if selectedWorkbenchID == projectID { await loadDocuments() }
         await refreshInstallStatus(projectID: projectID)
     }
 
@@ -489,9 +489,9 @@ final class ProjectsViewModel {
     }
 
     func loadDocuments() async {
-        guard let projectID = selectedProjectID else { return }
+        guard let projectID = selectedWorkbenchID else { return }
         do {
-            documents = try await dbPool.read { try ProjectQueries.documentListItems($0, projectID: projectID) }
+            documents = try await dbPool.read { try WorkbenchQueries.documentListItems($0, projectID: projectID) }
         } catch {
             errorMessage = "Could not load documents: \(error.localizedDescription)"
         }
@@ -502,7 +502,7 @@ final class ProjectsViewModel {
     /// resolved — and the pane opens it. The file itself is never written
     /// (PROJ-03). Returns whether it attached; on false `attachError` says why.
     func attachDocument(fileURL: URL, kind: String, targetID: Int64?) async -> Bool {
-        guard let project = selectedProject, !isAttachingDocument else { return false }
+        guard let project = selectedWorkbench, !isAttachingDocument else { return false }
         guard let cli else {
             attachError = "The watchtower CLI was not found."
             return false
@@ -510,7 +510,7 @@ final class ProjectsViewModel {
         isAttachingDocument = true
         clearAttachMessages()
         defer { isAttachingDocument = false }
-        let attached: ProjectDocumentAttached
+        let attached: WorkbenchDocumentAttached
         do {
             attached = try await cli.attachDocument(projectID: project.id, path: fileURL.path, kind: kind, targetID: targetID)
         } catch {
@@ -536,19 +536,19 @@ final class ProjectsViewModel {
     }
 
     /// The target picker's choices for "Add document…", in board order.
-    func targetChoices() async throws -> [ProjectBoardRow] {
-        guard let projectID = selectedProjectID else { return [] }
-        let board = try await dbPool.read { try ProjectQueries.board($0, projectID: projectID) }
-        return ProjectBoardOutline.rows(board, collapsed: [], showDone: true)
+    func targetChoices() async throws -> [WorkbenchBoardRow] {
+        guard let projectID = selectedWorkbenchID else { return [] }
+        let board = try await dbPool.read { try WorkbenchQueries.board($0, projectID: projectID) }
+        return WorkbenchBoardOutline.rows(board, collapsed: [], showDone: true)
     }
 
-    func openDocument(_ document: ProjectDocument) async {
-        guard let project = selectedProject, project.id == document.projectID else { return }
+    func openDocument(_ document: WorkbenchDocument) async {
+        guard let project = selectedWorkbench, project.id == document.projectID else { return }
         attachNotice = nil
         revealInList(document)
         if documentViewModel?.document.id != document.id {
             closeDocument()
-            let docVM = ProjectDocumentViewModel(dbPool: dbPool, project: project, document: document, drafts: commentDrafts)
+            let docVM = WorkbenchDocumentViewModel(dbPool: dbPool, project: project, document: document, drafts: commentDrafts)
             docVM.onOwnerWrite = { [weak self] subject in self?.onOwnerWrite?(project.id, subject) }
             docVM.startWatching()
             documentViewModel = docVM

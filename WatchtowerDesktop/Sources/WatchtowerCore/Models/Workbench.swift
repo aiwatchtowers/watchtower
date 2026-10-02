@@ -3,7 +3,7 @@ import GRDB
 
 /// The three panes of a project page (spec §6.1). Lives in Core because the
 /// notification policy deep-links into one.
-package enum ProjectPane: String, CaseIterable, Codable, Sendable {
+package enum WorkbenchPane: String, CaseIterable, Codable, Sendable {
     case terminal
     case board
     case documents
@@ -19,19 +19,19 @@ package enum ProjectPane: String, CaseIterable, Codable, Sendable {
 
 /// What an owner write touched, so the notification policy can tell the
 /// owner's own changes from an agent's (Task 18: owner writes never notify).
-package enum ProjectSubject: Hashable, Codable, Sendable {
+package enum WorkbenchSubject: Hashable, Codable, Sendable {
     case document(Int64)
     case target(Int64)
 }
 
 /// Where a notification click or an in-app link lands: a project, a pane and
 /// optionally the document (documents pane) or target (board pane) to open.
-package struct ProjectRoute: Equatable, Sendable {
+package struct WorkbenchRoute: Equatable, Sendable {
     package let projectID: Int64
-    package let pane: ProjectPane
+    package let pane: WorkbenchPane
     package let subjectID: Int64?
 
-    package init(projectID: Int64, pane: ProjectPane, subjectID: Int64? = nil) {
+    package init(projectID: Int64, pane: WorkbenchPane, subjectID: Int64? = nil) {
         self.projectID = projectID
         self.pane = pane
         self.subjectID = subjectID
@@ -40,7 +40,7 @@ package struct ProjectRoute: Equatable, Sendable {
 
 /// A `projects` row. Written only by the Go CLI (`watchtower project create`);
 /// the Desktop reads it.
-package struct Project: FetchableRecord, Identifiable, Equatable, Hashable, Sendable {
+package struct Workbench: FetchableRecord, Identifiable, Equatable, Hashable, Sendable {
     package let id: Int64
     package let name: String
     package let folderPath: String
@@ -62,7 +62,7 @@ package struct Project: FetchableRecord, Identifiable, Equatable, Hashable, Send
 
 /// A `project_documents` row: a spec/plan/doc file inside the project folder
 /// that an agent attached. The Desktop reads the file, never writes it (PROJ-03).
-package struct ProjectDocument: FetchableRecord, Identifiable, Equatable, Hashable, Sendable {
+package struct WorkbenchDocument: FetchableRecord, Identifiable, Equatable, Hashable, Sendable {
     package let id: Int64
     package let projectID: Int64
     package let targetID: Int64?
@@ -97,7 +97,7 @@ package struct ProjectDocument: FetchableRecord, Identifiable, Equatable, Hashab
         title.isEmpty ? (relPath as NSString).lastPathComponent : title
     }
 
-    package func fileURL(in project: Project) -> URL {
+    package func fileURL(in project: Workbench) -> URL {
         project.folderURL.appendingPathComponent(relPath)
     }
 }
@@ -106,7 +106,7 @@ package struct ProjectDocument: FetchableRecord, Identifiable, Equatable, Hashab
 /// attached to a board target. `path` is Watchtower's own 0600 copy under
 /// `<workspace>/project_files/<project_id>/`, written only by the Go project
 /// tools; the Desktop only reads it.
-package struct ProjectTargetImage: FetchableRecord, Identifiable, Equatable, Hashable, Sendable {
+package struct WorkbenchTargetImage: FetchableRecord, Identifiable, Equatable, Hashable, Sendable {
     package let id: Int64
     package let targetID: Int64
     package let fileName: String
@@ -130,7 +130,7 @@ package struct ProjectTargetImage: FetchableRecord, Identifiable, Equatable, Has
 
 /// A `project_comments` row — a thread root (on a target or a document) or a
 /// reply. Status is meaningful on roots only.
-package struct ProjectComment: FetchableRecord, Identifiable, Equatable, Hashable, Sendable {
+package struct WorkbenchComment: FetchableRecord, Identifiable, Equatable, Hashable, Sendable {
     package let id: Int64
     package let projectID: Int64
     package let targetID: Int64?
@@ -178,9 +178,9 @@ package struct ProjectComment: FetchableRecord, Identifiable, Equatable, Hashabl
 }
 
 /// A root comment with its replies, in creation order.
-package struct ProjectCommentThread: Identifiable, Equatable, Sendable {
-    package let root: ProjectComment
-    package let replies: [ProjectComment]
+package struct WorkbenchCommentThread: Identifiable, Equatable, Sendable {
+    package let root: WorkbenchComment
+    package let replies: [WorkbenchComment]
 
     package var id: Int64 { root.id }
 
@@ -192,9 +192,9 @@ package struct ProjectCommentThread: Identifiable, Equatable, Sendable {
         return replies.contains { !$0.isAgent && $0.id > lastAgent }
     }
 
-    /// Groups a flat, creation-ordered comment list (as `ProjectQueries.comments`
+    /// Groups a flat, creation-ordered comment list (as `WorkbenchQueries.comments`
     /// returns it) into threads. A reply whose root is not in the list is dropped.
-    package static func group(_ comments: [ProjectComment]) -> [Self] {
+    package static func group(_ comments: [WorkbenchComment]) -> [Self] {
         let replies = Dictionary(grouping: comments.filter { !$0.isRoot }) { $0.parentID ?? 0 }
         return comments.filter(\.isRoot).map { root in
             Self(root: root, replies: replies[root.id] ?? [])
@@ -202,7 +202,7 @@ package struct ProjectCommentThread: Identifiable, Equatable, Sendable {
     }
 }
 
-extension ProjectCommentThread {
+extension WorkbenchCommentThread {
     /// The thread as `CommentThreadView` shows it — the same labels the
     /// Phase 4 view derived itself ("You"/the agent's label/"Agent";
     /// "Resolved"/"Outdated — the quoted text changed").
@@ -226,7 +226,7 @@ extension ProjectCommentThread {
 
 /// One node of a project board: a project target with its sub-targets and
 /// the counters the board badges show.
-package struct ProjectBoardNode: Identifiable, Equatable {
+package struct WorkbenchBoardNode: Identifiable, Equatable {
     package let target: Target
     package let children: [Self]
     /// Open owner threads (roots) on this target — the same count the
@@ -234,21 +234,21 @@ package struct ProjectBoardNode: Identifiable, Equatable {
     package let openComments: Int
     /// Agent comments on this target the owner has not seen.
     package let unreadForOwner: Int
-    package let documents: [ProjectDocument]
+    package let documents: [WorkbenchDocument]
 
     package var id: Int { target.id }
 }
 
 /// A row of the Documents pane's list.
-package struct ProjectDocumentListItem: Identifiable, Equatable, Sendable {
-    package let document: ProjectDocument
+package struct WorkbenchDocumentListItem: Identifiable, Equatable, Sendable {
+    package let document: WorkbenchDocument
     package let targetTitle: String?
     /// Open owner threads (roots) on the document.
     package let openComments: Int
     /// The linked target's status, if the document has a target.
     package let targetStatus: String?
 
-    package init(document: ProjectDocument, targetTitle: String?, openComments: Int, targetStatus: String? = nil) {
+    package init(document: WorkbenchDocument, targetTitle: String?, openComments: Int, targetStatus: String? = nil) {
         self.document = document
         self.targetTitle = targetTitle
         self.openComments = openComments
@@ -265,8 +265,8 @@ package struct ProjectDocumentListItem: Identifiable, Equatable, Sendable {
 }
 
 /// A project list row.
-package struct ProjectSummary: Identifiable, Equatable, Sendable {
-    package let project: Project
+package struct WorkbenchSummary: Identifiable, Equatable, Sendable {
+    package let project: Workbench
     package let openTargets: Int
     package let inProgressTargets: Int
     package let unreadAgentComments: Int

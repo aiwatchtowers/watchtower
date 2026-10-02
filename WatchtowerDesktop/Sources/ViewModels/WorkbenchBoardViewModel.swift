@@ -10,19 +10,19 @@ import WatchtowerCore
 /// pane polls a cheap fingerprint while it is on screen.
 @MainActor
 @Observable
-final class ProjectBoardViewModel {
+final class WorkbenchBoardViewModel {
     let projectID: Int64
-    private(set) var roots: [ProjectBoardNode] = []
+    private(set) var roots: [WorkbenchBoardNode] = []
     var collapsed: Set<Int> = []
     var showDone = false
     private(set) var selectedTargetID: Int?
-    private(set) var selectedComments: [ProjectComment] = []
+    private(set) var selectedComments: [WorkbenchComment] = []
     /// The selected target's images (board target #117), read-only here.
-    private(set) var selectedImages: [ProjectTargetImage] = []
+    private(set) var selectedImages: [WorkbenchTargetImage] = []
     private(set) var errorMessage: String?
 
     /// List or Kanban, remembered per project.
-    var mode: ProjectBoardMode {
+    var mode: WorkbenchBoardMode {
         didSet { preferences.mode = mode }
     }
 
@@ -32,40 +32,40 @@ final class ProjectBoardViewModel {
         didSet { preferences.kanbanFilterRootID = kanbanFilterRootID }
     }
 
-    var kanban: ProjectBoardKanban {
-        ProjectBoardKanban(roots, filterRootID: kanbanFilterRootID, showDone: showDone)
+    var kanban: WorkbenchBoardKanban {
+        WorkbenchBoardKanban(roots, filterRootID: kanbanFilterRootID, showDone: showDone)
     }
 
-    var rows: [ProjectBoardRow] {
-        ProjectBoardOutline.rows(roots, collapsed: collapsed, showDone: showDone)
+    var rows: [WorkbenchBoardRow] {
+        WorkbenchBoardOutline.rows(roots, collapsed: collapsed, showDone: showDone)
     }
 
-    var selectedNode: ProjectBoardNode? {
-        selectedTargetID.flatMap { ProjectBoardOutline.find($0, in: roots) }
+    var selectedNode: WorkbenchBoardNode? {
+        selectedTargetID.flatMap { WorkbenchBoardOutline.find($0, in: roots) }
     }
 
-    var threads: [ProjectCommentThread] { ProjectCommentThread.group(selectedComments) }
+    var threads: [WorkbenchCommentThread] { WorkbenchCommentThread.group(selectedComments) }
 
-    /// `ProjectsViewModel.onOwnerWrite`, set by the view: every successful owner
+    /// `WorkbenchesViewModel.onOwnerWrite`, set by the view: every successful owner
     /// write reports its target so the notification center never announces the
     /// owner's own change (e.g. a target the owner marked done).
-    var onOwnerWrite: ((Int64, ProjectSubject) -> Void)?
+    var onOwnerWrite: ((Int64, WorkbenchSubject) -> Void)?
 
     /// Called on every poll tick while the pane is on screen: the view asks
-    /// for a drift check (`ProjectsViewModel.refreshDrift`, throttled there),
+    /// for a drift check (`WorkbenchesViewModel.refreshDrift`, throttled there),
     /// so a git change — a merge, a fetch — that never touches the board
     /// shows too.
     var onPollTick: (() -> Void)?
 
     private let dbPool: DatabasePool
-    private let preferences: ProjectBoardPreferences
+    private let preferences: WorkbenchBoardPreferences
     private var fingerprint = ""
     private var pollTask: Task<Void, Never>?
 
     init(dbPool: DatabasePool, projectID: Int64, defaults: UserDefaults = .standard) {
         self.dbPool = dbPool
         self.projectID = projectID
-        let preferences = ProjectBoardPreferences(projectID: projectID, defaults: defaults)
+        let preferences = WorkbenchBoardPreferences(projectID: projectID, defaults: defaults)
         self.preferences = preferences
         mode = preferences.mode
         kanbanFilterRootID = preferences.kanbanFilterRootID
@@ -79,9 +79,9 @@ final class ProjectBoardViewModel {
             let selected = selectedTargetID
             let (board, comments, images, stamp) = try dbPool.read { db in
                 (
-                    try ProjectQueries.board(db, projectID: pid),
-                    try selected.map { try ProjectQueries.comments(db, targetID: Int64($0)) } ?? [],
-                    try selected.map { try ProjectQueries.images(db, targetID: Int64($0)) } ?? [],
+                    try WorkbenchQueries.board(db, projectID: pid),
+                    try selected.map { try WorkbenchQueries.comments(db, targetID: Int64($0)) } ?? [],
+                    try selected.map { try WorkbenchQueries.images(db, targetID: Int64($0)) } ?? [],
                     try Self.fingerprint(db, projectID: pid)
                 )
             }
@@ -89,7 +89,7 @@ final class ProjectBoardViewModel {
             selectedComments = comments
             selectedImages = images
             fingerprint = stamp
-            if let selected, ProjectBoardOutline.find(selected, in: board) == nil {
+            if let selected, WorkbenchBoardOutline.find(selected, in: board) == nil {
                 selectedTargetID = nil
                 selectedComments = []
                 selectedImages = []
@@ -170,7 +170,7 @@ final class ProjectBoardViewModel {
         do {
             let pid = projectID
             try dbPool.write { db in
-                try ProjectQueries.markAgentCommentsRead(
+                try WorkbenchQueries.markAgentCommentsRead(
                     db, projectID: pid, targetID: Int64(node.target.id), documentID: nil
                 )
             }
@@ -220,23 +220,23 @@ final class ProjectBoardViewModel {
     /// - Returns: whether a status was written (a failed write sets `errorMessage`).
     @discardableResult
     func setStatus(_ status: String, for id: Int) -> Bool {
-        guard ProjectBoardCard.editableStatuses.contains(status),
-              let current = ProjectBoardOutline.find(id, in: roots),
+        guard WorkbenchBoardCard.editableStatuses.contains(status),
+              let current = WorkbenchBoardOutline.find(id, in: roots),
               current.target.status != status else { return false }
         // The rollup (PROJ-05) may move the target's parents in the same
         // write; they are the owner's doing too, so they never notify.
         var rolledUp: [Int64] = []
         let body: (Database) throws -> Void = { db in
-            let before = try ProjectQueries.ancestorStatuses(db, of: Int64(id))
+            let before = try WorkbenchQueries.ancestorStatuses(db, of: Int64(id))
             try TargetQueries.updateStatus(db, id: id, status: status)
-            let after = try ProjectQueries.ancestorStatuses(db, of: Int64(id))
+            let after = try WorkbenchQueries.ancestorStatuses(db, of: Int64(id))
             rolledUp = after.filter { before[$0.key] != $0.value }.map(\.key).sorted()
         }
         return write("change the status", target: id, alsoTouched: { rolledUp }, body)
     }
 
     func setPriority(_ priority: String) {
-        guard let id = selectedTargetID, ProjectBoardCard.editablePriorities.contains(priority) else { return }
+        guard let id = selectedTargetID, WorkbenchBoardCard.editablePriorities.contains(priority) else { return }
         write("change the priority") { db in try TargetQueries.updatePriority(db, id: id, priority: priority) }
     }
 
@@ -254,7 +254,7 @@ final class ProjectBoardViewModel {
         guard let id = selectedTargetID, !text.isEmpty else { return false }
         let pid = projectID
         return write("add the comment") { db in
-            _ = try ProjectQueries.addOwnerComment(
+            _ = try WorkbenchQueries.addOwnerComment(
                 db, projectID: pid, targetID: Int64(id), documentID: nil, anchor: nil, body: text
             )
         }
@@ -266,11 +266,11 @@ final class ProjectBoardViewModel {
     func reply(to rootID: Int64, body: String) -> Bool {
         let text = body.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return false }
-        return write("reply") { db in _ = try ProjectQueries.reply(db, to: rootID, body: text) }
+        return write("reply") { db in _ = try WorkbenchQueries.reply(db, to: rootID, body: text) }
     }
 
     func setThreadStatus(rootID: Int64, status: String) {
-        write("update the thread") { db in try ProjectQueries.setStatus(db, commentID: rootID, status: status) }
+        write("update the thread") { db in try WorkbenchQueries.setStatus(db, commentID: rootID, status: status) }
     }
 
     /// Every owner write goes through here: the write, then the hook, then a

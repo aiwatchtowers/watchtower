@@ -14,12 +14,12 @@ struct WorkOnTargetButton: View {
     @Environment(AppState.self) private var appState
 
     var body: some View {
-        let vm = appState.projectsViewModel
+        let vm = appState.workbenchesViewModel
         let existing = hasSession(vm)
         let title = existing ? "Open Its Session" : "Work on It"
         let icon = existing ? "arrow.right.circle" : "play.circle"
         let button = Button {
-            Task { await vm?.workOn(targetID: Int64(target.id), targetText: target.text, projectID: target.projectID) }
+            Task { await vm?.workOn(targetID: Int64(target.id), targetText: target.text, projectID: target.workbenchID) }
         } label: {
             if compact {
                 Image(systemName: icon)
@@ -42,8 +42,8 @@ struct WorkOnTargetButton: View {
         .accessibilityHidden(!isVisible)
     }
 
-    private func hasSession(_ vm: ProjectsViewModel?) -> Bool {
-        guard let vm, let projectID = target.projectID else { return false }
+    private func hasSession(_ vm: WorkbenchesViewModel?) -> Bool {
+        guard let vm, let projectID = target.workbenchID else { return false }
         return TerminalSessionPolicy.sessionForTarget(Int64(target.id), in: vm.terminalSessions[projectID] ?? []) != nil
     }
 }

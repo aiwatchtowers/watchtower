@@ -257,11 +257,11 @@ final class AppState {
 
     /// Projects tab (spec §6). Owned here so create/repair and the selection
     /// survive navigation.
-    private(set) var projectsViewModel: ProjectsViewModel?
+    private(set) var workbenchesViewModel: WorkbenchesViewModel?
     /// Owner notifications for project activity; polls every 30 s.
-    private(set) var projectNotificationCenter: ProjectNotificationCenter?
-    /// Set by `navigateToProject`; `ProjectsView` consumes and clears it.
-    var pendingProjectRoute: ProjectRoute?
+    private(set) var workbenchNotificationCenter: WorkbenchNotificationCenter?
+    /// Set by `navigateToWorkbench`; `WorkbenchesView` consumes and clears it.
+    var pendingWorkbenchRoute: WorkbenchRoute?
 
     /// Whether legacy people analytics is enabled (analysis.legacy_mode in config).
     var analysisLegacyMode: Bool = false
@@ -394,8 +394,8 @@ final class AppState {
         selectedDestination = .people
     }
 
-    func navigateToProject(_ route: ProjectRoute) {
-        pendingProjectRoute = route
+    func navigateToWorkbench(_ route: WorkbenchRoute) {
+        pendingWorkbenchRoute = route
         selectedDestination = .projects
     }
 
@@ -814,7 +814,7 @@ final class AppState {
         initExternalConnections(dbPool: manager.dbPool)
         initReactionDictionary(dbPool: manager.dbPool)
         initActionStrip(dbPool: manager.dbPool)
-        initProjects(dbPool: manager.dbPool)
+        initWorkbenches(dbPool: manager.dbPool)
         startDigestWatcher(dbPool: manager.dbPool)
         startMeetingReminders(dbPool: manager.dbPool)
         startWarmEnginePolicy(dbPool: manager.dbPool)
@@ -969,21 +969,21 @@ final class AppState {
 
     /// Not `private`: tests build the VM on a test pool (the
     /// `initSecretaryProfile` precedent) to prove it survives navigation.
-    func initProjects(
+    func initWorkbenches(
         dbPool: DatabasePool,
         cliRunner: (any CLIRunnerProtocol)? = ProcessCLIRunner.makeDefault(),
-        notifier: ProjectNotifying = NotificationService.shared
+        notifier: WorkbenchNotifying = NotificationService.shared
     ) {
-        let vm = ProjectsViewModel(
-            dbPool: dbPool, cli: cliRunner.map { ProjectCLI(runner: $0) }, terminalCenter: terminalCenter
+        let vm = WorkbenchesViewModel(
+            dbPool: dbPool, cli: cliRunner.map { WorkbenchCLI(runner: $0) }, terminalCenter: terminalCenter
         )
         vm.closeTerminal = { [weak self] projectID in
             guard let center = self?.terminalCenter else { return }
-            let ids = center.sessionIDs(ofProject: projectID)
+            let ids = center.sessionIDs(ofWorkbench: projectID)
             await center.closeAll { ids.contains($0) }
         }
-        let notices = ProjectNotificationCenter(dbPool: dbPool, notifier: notifier)
-        vm.onProjectCreated = { [weak notices] project, _ in
+        let notices = WorkbenchNotificationCenter(dbPool: dbPool, notifier: notifier)
+        vm.onWorkbenchCreated = { [weak notices] project, _ in
             notices?.seedBaseline(project: project)
         }
         vm.onOwnerWrite = { [weak notices] projectID, subject in
@@ -994,8 +994,8 @@ final class AppState {
                 && NSApp.windows.contains { TrayAppDelegate.isMainWindow($0) && $0.isVisible && $0.occlusionState.contains(.visible) }
         }
         notices.onPolled = { [weak vm] in await vm?.refreshOnPoll() }
-        projectsViewModel = vm
-        projectNotificationCenter = notices
+        workbenchesViewModel = vm
+        workbenchNotificationCenter = notices
         // The first poll also loads the list (onPolled → reload).
         notices.start()
         vm.startTitleRefresh()

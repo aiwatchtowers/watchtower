@@ -3,7 +3,7 @@ import SwiftUI
 import WatchtowerCore
 
 /// A level-1 row of the Projects panel: a project, or a standalone terminal.
-enum ProjectsPanelItem: Hashable {
+enum WorkbenchesPanelItem: Hashable {
     case project(Int64)
     case terminal(Int64)
 }
@@ -12,7 +12,7 @@ enum ProjectsPanelItem: Hashable {
 private enum PendingFolder {
     case project(URL)
     /// New Project…: not on disk yet (or empty) until the warning is passed.
-    case newProject(URL)
+    case newWorkbench(URL)
     case terminal(TerminalSession.Kind, URL)
 }
 
@@ -20,8 +20,8 @@ private enum PendingFolder {
 /// (projects and standalone terminals, or one project's sessions) and the
 /// selected project's page — or standalone terminal — on the right
 /// (spec 2026-09-30-project-workspace-sessions §3).
-struct ProjectsView: View {
-    @Bindable var vm: ProjectsViewModel
+struct WorkbenchesView: View {
+    @Bindable var vm: WorkbenchesViewModel
     @Environment(AppState.self) private var appState
     @AppStorage("projects.panelVisible") private var panelVisible = true
     @AppStorage("projects.panelWidth") private var panelWidth = PanelResizeHandle.defaultWidth
@@ -46,8 +46,8 @@ struct ProjectsView: View {
                     if let standalone = vm.selectedStandalone {
                         StandaloneTerminalView(session: standalone, actions: sessionActions)
                             .id(standalone.id)
-                    } else if let project = vm.selectedProject {
-                        ProjectPageView(vm: vm, project: project)
+                    } else if let project = vm.selectedWorkbench {
+                        WorkbenchPageView(vm: vm, project: project)
                     } else {
                         emptyState
                     }
@@ -65,7 +65,7 @@ struct ProjectsView: View {
             consumeRoute()
             Task { await vm.reload() }
         }
-        .onChange(of: appState.pendingProjectRoute) { _, _ in consumeRoute() }
+        .onChange(of: appState.pendingWorkbenchRoute) { _, _ in consumeRoute() }
         .alert(
             "Folder in \(sensitiveLocation ?? "")",
             isPresented: Binding(get: { sensitiveLocation != nil }, set: { if !$0 { sensitiveLocation = nil } })
@@ -91,7 +91,7 @@ struct ProjectsView: View {
             }
             .help("Toggle Projects Panel")
             .accessibilityLabel("Toggle Projects Panel")
-            Text(vm.selectedStandalone?.title ?? vm.selectedProject?.name ?? "Projects")
+            Text(vm.selectedStandalone?.title ?? vm.selectedWorkbench?.name ?? "Projects")
                 .font(.headline)
                 .lineLimit(1)
             Spacer()
@@ -108,10 +108,10 @@ struct ProjectsView: View {
 
     @ViewBuilder
     private var panel: some View {
-        if let project = vm.drilledProject {
-            ProjectSessionsPanel(vm: vm, project: project, actions: sessionActions)
+        if let project = vm.drilledWorkbench {
+            WorkbenchSessionsPanel(vm: vm, project: project, actions: sessionActions)
         } else {
-            projectList
+            workbenchList
         }
     }
 
@@ -131,14 +131,14 @@ struct ProjectsView: View {
         )
     }
 
-    private var projectList: some View {
+    private var workbenchList: some View {
         VStack(spacing: 0) {
-            projectListHeader
+            workbenchListHeader
             List(selection: listSelection) {
                 Section {
                     ForEach(vm.summaries) { summary in
                         row(summary)
-                            .tag(ProjectsPanelItem.project(summary.id))
+                            .tag(WorkbenchesPanelItem.project(summary.id))
                             .listRowSeparator(.hidden)
                             // A click on the already-selected project (after
                             // Back) changes no selection: drill in anyway.
@@ -155,13 +155,13 @@ struct ProjectsView: View {
     }
 
     /// The chat history's header shape ("Chats" + New Chat).
-    private var projectListHeader: some View {
+    private var workbenchListHeader: some View {
         HStack(spacing: 6) {
             Text("Projects").font(.headline)
             Spacer(minLength: 4)
             if vm.isCreating { ProgressView().controlSize(.small) }
             Menu {
-                Button("New Project…") { chooseNewProjectFolder() }
+                Button("New Project…") { chooseNewWorkbenchFolder() }
                 Button("Add Existing Folder…") { chooseExistingFolder() }
             } label: {
                 Image(systemName: "plus")
@@ -177,11 +177,11 @@ struct ProjectsView: View {
         .padding(.vertical, 8)
     }
 
-    private var listSelection: Binding<ProjectsPanelItem?> {
+    private var listSelection: Binding<WorkbenchesPanelItem?> {
         Binding(
             get: {
                 if let id = vm.selectedStandaloneID { return .terminal(id) }
-                return vm.selectedProjectID.map(ProjectsPanelItem.project)
+                return vm.selectedWorkbenchID.map(WorkbenchesPanelItem.project)
             },
             set: { item in
                 // A terminal row opens on its own click (`SessionRowActions.open`);
@@ -191,7 +191,7 @@ struct ProjectsView: View {
         )
     }
 
-    private func row(_ summary: ProjectSummary) -> some View {
+    private func row(_ summary: WorkbenchSummary) -> some View {
         let badge = summary.unreadAgentComments + vm.revisedDocumentCount(for: summary)
         return HStack {
             VStack(alignment: .leading, spacing: 2) {
@@ -231,15 +231,15 @@ struct ProjectsView: View {
     /// New Project… → name a folder that is created for it. Only checked
     /// here; it is created once the TCC warning (if any) is passed, so
     /// "Choose another folder" leaves no empty folder behind.
-    private func chooseNewProjectFolder() {
-        guard let url = runNewProjectPanel() else { return }
+    private func chooseNewWorkbenchFolder() {
+        guard let url = runNewWorkbenchPanel() else { return }
         do {
-            _ = try NewProjectFolder.check(url)
+            _ = try NewWorkbenchFolder.check(url)
         } catch {
             vm.errorMessage = error.localizedDescription
             return
         }
-        confirmLocation(of: .newProject(url), path: url.path)
+        confirmLocation(of: .newWorkbench(url), path: url.path)
     }
 
     /// Add Existing Folder… → a folder already on disk becomes the project.
@@ -267,23 +267,23 @@ struct ProjectsView: View {
 
     /// The entered name is the folder's and the project's. Whatever the panel
     /// says about an existing name, nothing is ever replaced: an empty folder
-    /// is reused and anything else is refused by `NewProjectFolder`.
-    private func runNewProjectPanel() -> URL? {
+    /// is reused and anything else is refused by `NewWorkbenchFolder`.
+    private func runNewWorkbenchPanel() -> URL? {
         let panel = NSSavePanel()
         panel.title = "New Project"
         panel.nameFieldLabel = "Project name:"
         panel.prompt = "Create"
         panel.canCreateDirectories = true
         panel.showsTagField = false
-        panel.directoryURL = NewProjectFolder.defaultParent(home: FileManager.default.homeDirectoryForCurrentUser)
+        panel.directoryURL = NewWorkbenchFolder.defaultParent(home: FileManager.default.homeDirectoryForCurrentUser)
         guard panel.runModal() == .OK, let url = panel.url else { return nil }
-        return NewProjectFolder.resolved(url)
+        return NewWorkbenchFolder.resolved(url)
     }
 
     private func confirmLocation(of pending: PendingFolder, path: String) {
         pendingFolder = pending
         let home = FileManager.default.homeDirectoryForCurrentUser.resolvingSymlinksInPath().path
-        if let location = ProjectFolderPolicy.tccSensitiveLocation(path: path, home: home) {
+        if let location = WorkbenchFolderPolicy.tccSensitiveLocation(path: path, home: home) {
             sensitiveLocation = location
         } else {
             startPending()
@@ -296,23 +296,23 @@ struct ProjectsView: View {
         sensitiveLocation = nil
         switch pending {
         case let .project(folder):
-            Task { await vm.createProject(folder: folder, name: nil) }
-        case let .newProject(folder):
+            Task { await vm.createWorkbench(folder: folder, name: nil) }
+        case let .newWorkbench(folder):
             do {
-                try NewProjectFolder.prepare(folder)
+                try NewWorkbenchFolder.prepare(folder)
             } catch {
                 vm.errorMessage = error.localizedDescription
                 return
             }
-            Task { await vm.createProject(folder: folder, name: folder.lastPathComponent) }
+            Task { await vm.createWorkbench(folder: folder, name: folder.lastPathComponent) }
         case let .terminal(kind, folder):
             Task { await vm.newStandalone(kind: kind, folder: folder) }
         }
     }
 
     private func consumeRoute() {
-        guard let route = appState.pendingProjectRoute else { return }
-        appState.pendingProjectRoute = nil
+        guard let route = appState.pendingWorkbenchRoute else { return }
+        appState.pendingWorkbenchRoute = nil
         vm.reveal(route)
     }
 }

@@ -3,7 +3,7 @@ import WatchtowerCore
 
 /// The Go `projectdocs.Report` inside the create and resync envelopes; every
 /// list optional, so a CLI that omits one still decodes.
-private struct ProjectDocsReport: Decodable {
+private struct WorkbenchDocsReport: Decodable {
     let imported: [String]?
     let unreadable: [String]?
     let skippedOverCap: [String]?
@@ -18,7 +18,7 @@ private struct ProjectDocsReport: Decodable {
 /// document import is best-effort: the project exists whenever the command
 /// exits 0; `docsImportOK == false` says the import failed, and a successful
 /// one may still have skipped unreadable paths or files past its cap.
-struct ProjectCreated: Decodable, Equatable {
+struct WorkbenchCreated: Decodable, Equatable {
     let id: Int64
     let folder: String
     let name: String
@@ -62,7 +62,7 @@ struct ProjectCreated: Decodable, Equatable {
         // An older CLI without the keys imported nothing, so nothing failed.
         docsImportOK = try c.decodeIfPresent(Bool.self, forKey: .docsImportOK) ?? true
         docsImportError = try c.decodeIfPresent(String.self, forKey: .docsImportError) ?? ""
-        let report = try c.decodeIfPresent(ProjectDocsReport.self, forKey: .docsImport)
+        let report = try c.decodeIfPresent(WorkbenchDocsReport.self, forKey: .docsImport)
         unreadable = report?.unreadable ?? []
         skippedOverCap = report?.skippedOverCap?.count ?? 0
     }
@@ -93,7 +93,7 @@ struct ProjectCreated: Decodable, Equatable {
 /// Watchtower's stored copies of the targets' images could not all be
 /// removed (`filesError`). A CLI older than the images feature sends no
 /// `files_*` keys: nothing to remove, so they decode as clean.
-struct ProjectDeleted: Decodable, Equatable {
+struct WorkbenchDeleted: Decodable, Equatable {
     let id: Int64
     let deleted: Bool
     let removalOK: Bool
@@ -140,7 +140,7 @@ struct ProjectDeleted: Decodable, Equatable {
 
 /// `watchtower project attach-doc N <path> --json` envelope (#80).
 /// `created == false` means the path was already attached (left untouched).
-struct ProjectDocumentAttached: Decodable, Equatable {
+struct WorkbenchDocumentAttached: Decodable, Equatable {
     let documentID: Int64
     let relPath: String
     let created: Bool
@@ -158,7 +158,7 @@ struct ProjectDocumentAttached: Decodable, Equatable {
 /// `suggestions` are what the owner may take to the agent. It exits 0 once
 /// the project is found; the `*_ok`/`*_error` fields say which step failed
 /// (the `project create --json` precedent).
-struct ProjectResynced: Decodable, Equatable {
+struct WorkbenchResynced: Decodable, Equatable {
     /// One summary line; `problem` lines show in the error colour.
     struct Line: Equatable {
         let text: String
@@ -209,7 +209,7 @@ struct ProjectResynced: Decodable, Equatable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         docsOK = try c.decode(Bool.self, forKey: .docsOK)
         docsError = try c.decode(String.self, forKey: .docsError)
-        let docs = try c.decodeIfPresent(ProjectDocsReport.self, forKey: .docs)
+        let docs = try c.decodeIfPresent(WorkbenchDocsReport.self, forKey: .docs)
         imported = docs?.imported ?? []
         unreadable = docs?.unreadable ?? []
         skippedOverCap = docs?.skippedOverCap?.count ?? 0
@@ -295,7 +295,7 @@ struct ProjectResynced: Decodable, Equatable {
 /// — the owner's own content (PROJ-04), which counts as present.
 /// `claude_found == false` means the `claude` CLI is not on PATH, so `mcp`
 /// could not be checked and a Repair could not register it either.
-struct ProjectInstallStatus: Decodable, Equatable {
+struct WorkbenchInstallStatus: Decodable, Equatable {
     let skill: String
     let hook: Bool
     /// The Stop hook running the board drift check (PROJ-07). A project
@@ -359,14 +359,14 @@ struct ProjectInstallStatus: Decodable, Equatable {
 /// to project rows it does not own goes through here — never a direct write.
 /// Folder paths travel as a single argv element (`Process` does no shell
 /// parsing), so spaces and Unicode need no quoting.
-struct ProjectCLI {
+struct WorkbenchCLI {
     let runner: any CLIRunnerProtocol
 
-    func create(folder: String, name: String?) async throws -> ProjectCreated {
+    func create(folder: String, name: String?) async throws -> WorkbenchCreated {
         var args = ["project", "create", "--folder", folder, "--json"]
         if let name, !name.isEmpty { args += ["--name", name] }
         let data = try await runner.run(args: args)
-        return try JSONDecoder().decode(ProjectCreated.self, from: data)
+        return try JSONDecoder().decode(WorkbenchCreated.self, from: data)
     }
 
     /// Installs the skill, the SessionStart and Stop hooks and the local MCP
@@ -375,41 +375,41 @@ struct ProjectCLI {
         _ = try await runner.run(args: ["integrate", "claude-code", "--project", String(projectID)])
     }
 
-    func status(projectID: Int64) async throws -> ProjectInstallStatus {
+    func status(projectID: Int64) async throws -> WorkbenchInstallStatus {
         let data = try await runner.run(args: ["integrate", "status", "--project", String(projectID), "--json"])
-        return try JSONDecoder().decode(ProjectInstallStatus.self, from: data)
+        return try JSONDecoder().decode(WorkbenchInstallStatus.self, from: data)
     }
 
     /// Attaches a file inside the project folder as the owner's document. The
     /// CLI owns the checks (inside the folder with symlinks resolved, a regular
     /// .md/.txt file, the target on this board) — the attach_document rules.
     /// `--` ends the flags, so no path can be read as one.
-    func attachDocument(projectID: Int64, path: String, kind: String, targetID: Int64?) async throws -> ProjectDocumentAttached {
+    func attachDocument(projectID: Int64, path: String, kind: String, targetID: Int64?) async throws -> WorkbenchDocumentAttached {
         var args = ["project", "attach-doc", "--kind", kind, "--json"]
         if let targetID { args += ["--target", String(targetID)] }
         args += ["--", String(projectID), path]
         let data = try await runner.run(args: args)
-        return try JSONDecoder().decode(ProjectDocumentAttached.self, from: data)
+        return try JSONDecoder().decode(WorkbenchDocumentAttached.self, from: data)
     }
 
     /// The board drift check (PROJ-07), offline — no gh call, so it stays
     /// cheap enough to run whenever the board changes.
-    func checkDrift(projectID: Int64) async throws -> ProjectDriftReport {
+    func checkDrift(projectID: Int64) async throws -> WorkbenchDriftReport {
         let data = try await runner.run(args: ["project", "check", "--project", String(projectID), "--json", "--no-network"])
-        return try JSONDecoder().decode(ProjectDriftReport.self, from: data)
+        return try JSONDecoder().decode(WorkbenchDriftReport.self, from: data)
     }
 
     /// Re-run setup (#91): attaches new documents and re-installs missing or
     /// outdated integration pieces — additive only, never creates targets.
-    func resync(projectID: Int64) async throws -> ProjectResynced {
+    func resync(projectID: Int64) async throws -> WorkbenchResynced {
         let data = try await runner.run(args: ["project", "resync", String(projectID), "--json"])
-        return try JSONDecoder().decode(ProjectResynced.self, from: data)
+        return try JSONDecoder().decode(WorkbenchResynced.self, from: data)
     }
 
     /// Removes what was installed in the folder, then the project and every
     /// row it owns (Task 4 runs the removal first). Used by Task 20.
-    func delete(projectID: Int64) async throws -> ProjectDeleted {
+    func delete(projectID: Int64) async throws -> WorkbenchDeleted {
         let data = try await runner.run(args: ["project", "delete", String(projectID), "--json"])
-        return try JSONDecoder().decode(ProjectDeleted.self, from: data)
+        return try JSONDecoder().decode(WorkbenchDeleted.self, from: data)
     }
 }

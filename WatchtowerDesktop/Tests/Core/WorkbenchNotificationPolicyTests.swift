@@ -1,15 +1,15 @@
 import XCTest
 @testable import WatchtowerCore
 
-final class ProjectNotificationPolicyTests: XCTestCase {
-    typealias Policy = ProjectNotificationPolicy
+final class WorkbenchNotificationPolicyTests: XCTestCase {
+    typealias Policy = WorkbenchNotificationPolicy
 
     private func snapshot(
         last: Int64 = 0,
         questions: [Policy.Question] = [],
         documents: [Int64: Policy.DocumentState] = [:],
         targets: [Int64: Policy.TargetState] = [:],
-        ownerTouched: Set<ProjectSubject> = []
+        ownerTouched: Set<WorkbenchSubject> = []
     ) -> Policy.Snapshot {
         Policy.Snapshot(
             projectID: 1, projectName: "acme", lastAgentCommentID: last, questions: questions,
@@ -33,7 +33,7 @@ final class ProjectNotificationPolicyTests: XCTestCase {
         XCTAssertEqual(notices[0].kind, .agentAsks)
         XCTAssertEqual(notices[0].title, "Agent asks on Task 10")
         XCTAssertEqual(notices[0].body, "acme: Which queue should retry?")
-        XCTAssertEqual(notices[0].route, ProjectRoute(projectID: 1, pane: .board, subjectID: 10))
+        XCTAssertEqual(notices[0].route, WorkbenchRoute(projectID: 1, pane: .board, subjectID: 10))
     }
 
     func testQuestionAtOrBelowTheWatermarkIsIgnored() {
@@ -47,8 +47,8 @@ final class ProjectNotificationPolicyTests: XCTestCase {
         let notices = Policy.decide(previous: previous, current: current)
         XCTAssertEqual(notices.map(\.title), ["Spec ready for review", "Plan ready for review"])
         XCTAssertEqual(notices.map(\.route), [
-            ProjectRoute(projectID: 1, pane: .documents, subjectID: 1),
-            ProjectRoute(projectID: 1, pane: .documents, subjectID: 3)
+            WorkbenchRoute(projectID: 1, pane: .documents, subjectID: 1),
+            WorkbenchRoute(projectID: 1, pane: .documents, subjectID: 3)
         ])
         XCTAssertNotEqual(notices[0].identifier, Policy.decide(
             previous: current, current: snapshot(documents: [1: doc("Spec", "t3")])
@@ -61,7 +61,7 @@ final class ProjectNotificationPolicyTests: XCTestCase {
         let notices = Policy.decide(previous: previous, current: current)
         XCTAssertEqual(notices.map(\.kind), [.commentsAnswered])
         XCTAssertEqual(notices.first?.title, "All comments on Plan answered")
-        XCTAssertEqual(notices.first?.route, ProjectRoute(projectID: 1, pane: .documents, subjectID: 1))
+        XCTAssertEqual(notices.first?.route, WorkbenchRoute(projectID: 1, pane: .documents, subjectID: 1))
     }
 
     func testDocumentThatNeverHadOpenCommentsAnnouncesNothingAnswered() {
@@ -86,7 +86,7 @@ final class ProjectNotificationPolicyTests: XCTestCase {
         ])
         let notices = Policy.decide(previous: previous, current: current)
         XCTAssertEqual(notices.map(\.title), ["Task 1 done"])
-        XCTAssertEqual(notices.first?.route, ProjectRoute(projectID: 1, pane: .board, subjectID: 1))
+        XCTAssertEqual(notices.first?.route, WorkbenchRoute(projectID: 1, pane: .board, subjectID: 1))
     }
 
     // MARK: owner writes
@@ -112,7 +112,7 @@ final class ProjectNotificationPolicyTests: XCTestCase {
         XCTAssertEqual(notices.count, 1)
         XCTAssertEqual(notices[0].title, "3 agent questions")
         XCTAssertEqual(notices[0].body, "acme")
-        XCTAssertEqual(notices[0].route, ProjectRoute(projectID: 1, pane: .board))
+        XCTAssertEqual(notices[0].route, WorkbenchRoute(projectID: 1, pane: .board))
     }
 
     func testTwoOfAKindStayIndividualAndKindsCoalesceSeparately() {
@@ -176,7 +176,7 @@ final class ProjectNotificationPolicyTests: XCTestCase {
         let inReview = snapshot(documents: [1: reviewed("t1", awaiting: true)])
         let notices = Policy.decide(previous: attached, current: inReview)
         XCTAssertEqual(notices.map(\.title), ["Spec awaits your review"])
-        XCTAssertEqual(notices.first?.route, ProjectRoute(projectID: 1, pane: .documents, subjectID: 1))
+        XCTAssertEqual(notices.first?.route, WorkbenchRoute(projectID: 1, pane: .documents, subjectID: 1))
         XCTAssertEqual(notices.first?.identifier,
                        Policy.decide(previous: snapshot(), current: attached).first?.identifier,
                        "the same revision: it replaces the earlier ready-for-review notice, never stacks")

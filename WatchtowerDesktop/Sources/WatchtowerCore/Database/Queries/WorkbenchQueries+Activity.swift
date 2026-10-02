@@ -1,14 +1,14 @@
 import Foundation
 import GRDB
 
-extension ProjectQueries {
+extension WorkbenchQueries {
     /// What the notification policy compares between polls (spec §6.5).
     /// `questions` = agent root comments on targets with id > the watermark.
     package static func activitySnapshot(
         _ db: Database,
-        project: Project,
+        project: Workbench,
         afterAgentCommentID: Int64
-    ) throws -> ProjectNotificationPolicy.Snapshot {
+    ) throws -> WorkbenchNotificationPolicy.Snapshot {
         let last = try Int64.fetchOne(db, sql: """
             SELECT COALESCE(MAX(id), 0) FROM project_comments
             WHERE project_id = ? AND author = 'agent' AND parent_id IS NULL AND target_id IS NOT NULL
@@ -20,7 +20,7 @@ extension ProjectQueries {
             ORDER BY c.id
             """, arguments: [project.id, afterAgentCommentID])
         let questions = questionRows.map { row in
-            ProjectNotificationPolicy.Question(
+            WorkbenchNotificationPolicy.Question(
                 id: row["id"], targetID: row["target_id"], targetTitle: row["target_title"], body: row["body"]
             )
         }
@@ -32,7 +32,7 @@ extension ProjectQueries {
             WHERE t.project_id = ? AND h.to_status = 'in_review' AND h.actor = 'owner'
               AND h.id = (SELECT MAX(id) FROM target_status_history WHERE target_id = h.target_id)
             """, arguments: [project.id]))
-        var documents: [Int64: ProjectNotificationPolicy.DocumentState] = [:]
+        var documents: [Int64: WorkbenchNotificationPolicy.DocumentState] = [:]
         for item in try documentListItems(db, projectID: project.id) {
             documents[item.id] = .init(
                 title: item.document.displayTitle, updatedAt: item.document.updatedAt,
@@ -40,11 +40,11 @@ extension ProjectQueries {
                 awaitingReview: item.awaitingReview && !ownerReviews.contains(item.document.targetID ?? 0)
             )
         }
-        var targets: [Int64: ProjectNotificationPolicy.TargetState] = [:]
+        var targets: [Int64: WorkbenchNotificationPolicy.TargetState] = [:]
         for row in try Row.fetchAll(db, sql: "SELECT id, text, status FROM targets WHERE project_id = ?", arguments: [project.id]) {
             targets[row["id"]] = .init(title: row["text"], status: row["status"])
         }
-        return ProjectNotificationPolicy.Snapshot(
+        return WorkbenchNotificationPolicy.Snapshot(
             projectID: project.id, projectName: project.name, lastAgentCommentID: last,
             questions: questions, documents: documents, targets: targets, ownerTouched: []
         )

@@ -5,14 +5,14 @@ import WatchtowerCore
 /// A session pane of a project page (spec §3): one `terminal_sessions` row
 /// from `AppState.terminalCenter`, which owns the process — this view never
 /// does. Not running (an app restart) → a button that resumes it.
-/// The project's session errors show once, on the page (`ProjectPageView`).
-struct ProjectSessionView: View {
+/// The project's session errors show once, on the page (`WorkbenchPageView`).
+struct WorkbenchSessionView: View {
     let projectID: Int64
     let sessionID: Int64
     @Environment(AppState.self) private var appState
 
     var body: some View {
-        let vm = appState.projectsViewModel
+        let vm = appState.workbenchesViewModel
         let session = vm?.session(sessionID, projectID: projectID)
         TerminalSessionPane(session: session, error: nil) {
             VStack(spacing: 8) {
@@ -47,7 +47,7 @@ struct StandaloneTerminalView: View {
     @Environment(AppState.self) private var appState
 
     var body: some View {
-        let vm = appState.projectsViewModel
+        let vm = appState.workbenchesViewModel
         VStack(spacing: 0) {
             header
             Divider()
@@ -96,7 +96,7 @@ private struct TerminalSessionPane<NotStarted: View>: View {
     var body: some View {
         let center = appState.terminalCenter
         let state = session.flatMap { center.states[$0.id] }
-        let vm = appState.projectsViewModel
+        let vm = appState.workbenchesViewModel
         VStack(spacing: 0) {
             if let error {
                 Text(error)
@@ -110,7 +110,7 @@ private struct TerminalSessionPane<NotStarted: View>: View {
             case .running?:
                 if let session, center.clipboardHints.contains(session.id) {
                     HStack {
-                        Label(ProjectCommentsSendBar.copiedNote, systemImage: "doc.on.clipboard")
+                        Label(WorkbenchCommentsSendBar.copiedNote, systemImage: "doc.on.clipboard")
                             .font(.caption).foregroundStyle(.secondary)
                         Spacer()
                         Button("Dismiss") { center.dismissClipboardHint(sessionID: session.id) }

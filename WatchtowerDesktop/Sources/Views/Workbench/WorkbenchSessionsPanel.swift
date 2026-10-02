@@ -7,9 +7,9 @@ import WatchtowerCore
 /// screen is a tab of the workspace: filled with its backdrop, it runs on
 /// into the page beside it (`SessionTab`, `panelSurface()`).
 /// Board and Documents are picked in a pane's own header (`WorkspacePaneView`).
-struct ProjectSessionsPanel: View {
-    @Bindable var vm: ProjectsViewModel
-    let project: Project
+struct WorkbenchSessionsPanel: View {
+    @Bindable var vm: WorkbenchesViewModel
+    let project: Workbench
     let actions: SessionRowActions
 
     var body: some View {
@@ -43,7 +43,7 @@ struct ProjectSessionsPanel: View {
     private var header: some View {
         HStack(spacing: 6) {
             Button {
-                vm.drilledProjectID = nil
+                vm.drilledWorkbenchID = nil
             } label: {
                 Image(systemName: "chevron.backward")
             }
@@ -69,7 +69,7 @@ struct ProjectSessionsPanel: View {
     }
 }
 
-/// A session row of `ProjectSessionsPanel` as a tab: inset from the panel's
+/// A session row of `WorkbenchSessionsPanel` as a tab: inset from the panel's
 /// leading edge by the plain List's own 8pt margin and running to its
 /// trailing edge, rounded on the leading corners only. The session on screen
 /// is filled with the workspace's backdrop, which covers the panel's edge
@@ -158,7 +158,7 @@ struct TerminalSessionRow: View {
 extension View {
     /// The Rename sheet and the Delete confirmation behind `SessionRowActions`.
     func sessionActionDialogs(
-        vm: ProjectsViewModel,
+        vm: WorkbenchesViewModel,
         renaming: Binding<TerminalSession?>,
         deleting: Binding<TerminalSession?>
     ) -> some View {
@@ -167,7 +167,7 @@ extension View {
 }
 
 private struct SessionActionDialogs: ViewModifier {
-    let vm: ProjectsViewModel
+    let vm: WorkbenchesViewModel
     @Binding var renaming: TerminalSession?
     @Binding var deleting: TerminalSession?
 

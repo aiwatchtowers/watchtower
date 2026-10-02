@@ -5,8 +5,8 @@ import WatchtowerCore
 /// card selects it (the detail pane is shared with the list mode); dragging a
 /// card to another column sets its status through the same writer the status
 /// menu uses. The menu stays the keyboard/accessibility path.
-struct ProjectBoardKanbanView: View {
-    let board: ProjectBoardKanban
+struct WorkbenchBoardKanbanView: View {
+    let board: WorkbenchBoardKanban
     let selectedTargetID: Int?
     let onSelect: (Int) -> Void
     /// Returns whether the status was written.
@@ -16,7 +16,7 @@ struct ProjectBoardKanbanView: View {
         ScrollView(.horizontal) {
             HStack(alignment: .top, spacing: 10) {
                 ForEach(board.columns) { column in
-                    ProjectBoardKanbanColumnView(
+                    WorkbenchBoardKanbanColumnView(
                         column: column,
                         selectedTargetID: selectedTargetID,
                         onSelect: onSelect
@@ -32,8 +32,8 @@ struct ProjectBoardKanbanView: View {
     }
 }
 
-private struct ProjectBoardKanbanColumnView: View {
-    let column: ProjectBoardKanban.Column
+private struct WorkbenchBoardKanbanColumnView: View {
+    let column: WorkbenchBoardKanban.Column
     let selectedTargetID: Int?
     let onSelect: (Int) -> Void
     let onMove: (_ targetID: Int, _ status: String) -> Bool
@@ -54,7 +54,7 @@ private struct ProjectBoardKanbanColumnView: View {
             ScrollView(.vertical) {
                 LazyVStack(alignment: .leading, spacing: 6) {
                     ForEach(column.cards) { card in
-                        ProjectBoardCardView(
+                        WorkbenchBoardCardView(
                             row: card.row,
                             isSelected: selectedTargetID == card.id,
                             isCollapsed: false,
@@ -96,7 +96,7 @@ private struct ProjectBoardKanbanColumnView: View {
 
 /// A column takes drops only when it stands for one status (not Other).
 private struct DropTarget: ViewModifier {
-    let column: ProjectBoardKanban.Column
+    let column: WorkbenchBoardKanban.Column
     @Binding var isTargeted: Bool
     let onMove: (_ targetID: Int, _ status: String) -> Bool
 

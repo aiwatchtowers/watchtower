@@ -2,12 +2,12 @@ import XCTest
 import GRDB
 @testable import WatchtowerCore
 
-final class ProjectDocumentGroupingTests: XCTestCase {
+final class WorkbenchDocumentGroupingTests: XCTestCase {
     private func item(_ id: Int64, _ relPath: String, kind: String, title: String = "", origin: String = "agent")
-        -> ProjectDocumentListItem {
+        -> WorkbenchDocumentListItem {
         let row: Row = ["id": id, "project_id": 1, "rel_path": relPath, "kind": kind, "title": title,
                         "created_at": "", "updated_at": "", "origin": origin]
-        return ProjectDocumentListItem(document: ProjectDocument(row: row), targetTitle: nil, openComments: 0)
+        return WorkbenchDocumentListItem(document: WorkbenchDocument(row: row), targetTitle: nil, openComments: 0)
     }
 
     private lazy var items = [
@@ -20,7 +20,7 @@ final class ProjectDocumentGroupingTests: XCTestCase {
     ]
 
     func testGroupsByKindInFixedOrderWithImportsApartAndListOrderKept() {
-        let sections = ProjectDocumentGrouping.sections(items, query: "")
+        let sections = WorkbenchDocumentGrouping.sections(items, query: "")
         XCTAssertEqual(sections.map(\.group), [.specs, .plans, .docs, .imported])
         XCTAssertEqual(sections.map { $0.items.map(\.id) }, [[2, 6], [1], [5], [3, 4]],
                        "an imported spec sits under Imported; order inside a group is the list's")
@@ -28,11 +28,11 @@ final class ProjectDocumentGroupingTests: XCTestCase {
     }
 
     func testSearchMatchesTitleOrPathIgnoringCaseAndDiacriticsAndDropsEmptyGroups() {
-        XCTAssertEqual(ProjectDocumentGrouping.sections(items, query: "SYNC").flatMap { $0.items.map(\.id) }, [2, 1])
-        XCTAssertEqual(ProjectDocumentGrouping.sections(items, query: "idee").map(\.group), [.docs])
-        XCTAssertEqual(ProjectDocumentGrouping.sections(items, query: "readme").map(\.group), [.imported],
+        XCTAssertEqual(WorkbenchDocumentGrouping.sections(items, query: "SYNC").flatMap { $0.items.map(\.id) }, [2, 1])
+        XCTAssertEqual(WorkbenchDocumentGrouping.sections(items, query: "idee").map(\.group), [.docs])
+        XCTAssertEqual(WorkbenchDocumentGrouping.sections(items, query: "readme").map(\.group), [.imported],
                        "an untitled document matches by its file name")
-        XCTAssertTrue(ProjectDocumentGrouping.sections(items, query: "nothing").isEmpty)
-        XCTAssertEqual(ProjectDocumentGrouping.sections(items, query: "  ").count, 4, "a blank query shows everything")
+        XCTAssertTrue(WorkbenchDocumentGrouping.sections(items, query: "nothing").isEmpty)
+        XCTAssertEqual(WorkbenchDocumentGrouping.sections(items, query: "  ").count, 4, "a blank query shows everything")
     }
 }

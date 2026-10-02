@@ -3,8 +3,8 @@ import WatchtowerCore
 
 /// One unsent draft in the threads panel: its passage, its editable text and
 /// Delete. A draft whose passage left the document is kept but not sent.
-struct ProjectCommentDraftRow: View {
-    let draft: ProjectCommentDraft
+struct WorkbenchCommentDraftRow: View {
+    let draft: WorkbenchCommentDraft
     let located: Bool
     let sending: Bool
     let onEdit: (String) -> Void

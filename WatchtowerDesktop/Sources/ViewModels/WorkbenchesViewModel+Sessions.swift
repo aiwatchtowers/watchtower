@@ -7,7 +7,7 @@ import WatchtowerCore
 /// the session's own project, never the current selection: an action that
 /// finishes after the owner selected another project changes only its own
 /// project's list and layout (house rule).
-extension ProjectsViewModel {
+extension WorkbenchesViewModel {
     static let titleRefreshInterval: Duration = .seconds(120)
     /// A resume that fails exits almost at once; a later non-zero exit is
     /// the owner's own session ending.
@@ -34,15 +34,15 @@ extension ProjectsViewModel {
     /// The selected project's sessions, most recently active first (the
     /// panel shows `orderedSessions(projectID:)` instead).
     var sessions: [TerminalSession] {
-        selectedProjectID.flatMap { terminalSessions[$0] } ?? []
+        selectedWorkbenchID.flatMap { terminalSessions[$0] } ?? []
     }
 
     /// The selected project's layout; setting it persists it. With no
     /// selection it reads `.default` and ignores writes.
     var layout: WorkspaceLayout {
-        get { selectedProjectID.map { layout(projectID: $0) } ?? .default }
+        get { selectedWorkbenchID.map { layout(projectID: $0) } ?? .default }
         set {
-            if let selectedProjectID { setLayout(newValue, projectID: selectedProjectID) }
+            if let selectedWorkbenchID { setLayout(newValue, projectID: selectedWorkbenchID) }
         }
     }
 
@@ -84,13 +84,13 @@ extension ProjectsViewModel {
     @discardableResult
     func loadSessions(projectID: Int64?) async -> Bool {
         guard let projectID else { return await loadStandaloneSessions() }
-        let load = projectLoads[projectID, default: SessionLoads()].started + 1
-        projectLoads[projectID, default: SessionLoads()].started = load
+        let load = workbenchLoads[projectID, default: SessionLoads()].started + 1
+        workbenchLoads[projectID, default: SessionLoads()].started = load
         do {
-            let rows = try await readProjectSessions(projectID)
-            let loads = projectLoads[projectID, default: SessionLoads()]
+            let rows = try await readWorkbenchSessions(projectID)
+            let loads = workbenchLoads[projectID, default: SessionLoads()]
             guard load > loads.applied else { return true }
-            projectLoads[projectID]?.applied = load
+            workbenchLoads[projectID]?.applied = load
             terminalSessions[projectID] = rows
             sessionLoadErrors[projectID] = nil
             // A row gone from the list (deleted from another window, or a
@@ -102,7 +102,7 @@ extension ProjectsViewModel {
             }
             return true
         } catch {
-            guard load > projectLoads[projectID, default: SessionLoads()].applied else { return true }
+            guard load > workbenchLoads[projectID, default: SessionLoads()].applied else { return true }
             sessionLoadErrors[projectID] = "Could not load terminal sessions: \(error.localizedDescription)"
             return false
         }
@@ -159,7 +159,7 @@ extension ProjectsViewModel {
 
     /// Creates a `claude` session row with a new Claude session id and starts
     /// it fresh (`--session-id`).
-    func startNewSession(project: Project, title: String, prompt: String? = nil, placement: Placement = .show) async {
+    func startNewSession(project: Workbench, title: String, prompt: String? = nil, placement: Placement = .show) async {
         await createAndStart(
             .init(projectID: project.id, kind: .claude, title: title, folderPath: project.folderPath,
                   claudeSessionID: Self.newClaudeSessionID()),
@@ -179,20 +179,20 @@ extension ProjectsViewModel {
     ) async {
         guard workingOnTarget.insert(targetID).inserted else { return }
         defer { workingOnTarget.remove(targetID) }
-        let found: (project: Project, rows: [TerminalSession])?
+        let found: (project: Workbench, rows: [TerminalSession])?
         do {
             found = try await dbPool.read { db in
-                guard let projectID = try TargetQueries.fetchByID(db, id: Int(targetID))?.projectID,
-                      let project = try ProjectQueries.fetch(db, id: projectID) else { return nil }
+                guard let projectID = try TargetQueries.fetchByID(db, id: Int(targetID))?.workbenchID,
+                      let project = try WorkbenchQueries.fetch(db, id: projectID) else { return nil }
                 let rows = try TerminalSessionQueries.fetchForTarget(db, targetID: targetID)
                 return (project, rows.filter { $0.projectID == projectID })
             }
         } catch {
-            setSessionError("Could not read the target: \(error.localizedDescription)", projectID: projectID ?? selectedProjectID)
+            setSessionError("Could not read the target: \(error.localizedDescription)", projectID: projectID ?? selectedWorkbenchID)
             return
         }
         guard let found else {
-            setSessionError("Target #\(targetID) is not on a project board.", projectID: projectID ?? selectedProjectID)
+            setSessionError("Target #\(targetID) is not on a project board.", projectID: projectID ?? selectedWorkbenchID)
             return
         }
         if let existing = TerminalSessionPolicy.sessionForTarget(targetID, in: found.rows) {
@@ -211,7 +211,7 @@ extension ProjectsViewModel {
 
     /// "Open terminal": resumes the project's most recently active session,
     /// or starts a new one when it has none.
-    func openMostRecentSession(project: Project, placement: Placement = .show) async {
+    func openMostRecentSession(project: Workbench, placement: Placement = .show) async {
         guard openingSession.insert(project.id).inserted else { return }
         defer { openingSession.remove(project.id) }
         // A failed load says nothing about the project's sessions: starting a
@@ -314,7 +314,7 @@ extension ProjectsViewModel {
     // MARK: - Titles
 
     /// Starts the 2-minute AI-title poll over live sessions (spec §5). Once,
-    /// from `AppState.initProjects`; calling it again restarts it.
+    /// from `AppState.initWorkbenches`; calling it again restarts it.
     func startTitleRefresh() {
         titleTask?.cancel()
         titleTask = Task { [weak self] in
@@ -391,10 +391,10 @@ extension ProjectsViewModel {
         UUID().uuidString.lowercased()
     }
 
-    private func project(id: Int64) async -> Project? {
+    private func project(id: Int64) async -> Workbench? {
         if let known = summaries.first(where: { $0.id == id })?.project { return known }
         do {
-            if let fetched = try await dbPool.read({ try ProjectQueries.fetch($0, id: id) }) { return fetched }
+            if let fetched = try await dbPool.read({ try WorkbenchQueries.fetch($0, id: id) }) { return fetched }
             setSessionError("Project \(id) no longer exists.", projectID: id)
         } catch {
             setSessionError("Could not read the project: \(error.localizedDescription)", projectID: id)

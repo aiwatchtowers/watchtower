@@ -9,8 +9,8 @@ import WatchtowerCore
 /// collapsing back keeps each pane's own state — a comment draft, the
 /// board's selection.
 struct WorkspaceAreaView: View {
-    @Bindable var vm: ProjectsViewModel
-    let project: Project
+    @Bindable var vm: WorkbenchesViewModel
+    let project: Workbench
 
     var body: some View {
         let layout = vm.layout(projectID: project.id)
@@ -33,8 +33,8 @@ struct WorkspaceAreaView: View {
 /// the page header's view buttons and the panel's session list cover it, so
 /// the terminal gets the height.
 struct WorkspacePaneView: View {
-    @Bindable var vm: ProjectsViewModel
-    let project: Project
+    @Bindable var vm: WorkbenchesViewModel
+    let project: Workbench
     let pane: WorkspacePane
     let isSplit: Bool
     let isExpanded: Bool
@@ -126,12 +126,12 @@ struct WorkspacePaneView: View {
     private var content: some View {
         switch pane {
         case .board:
-            ProjectBoardView(projectID: project.id)
+            WorkbenchBoardView(projectID: project.id)
                 .id(project.id)
         case .documents:
-            ProjectDocumentsView(vm: vm)
+            WorkbenchDocumentsView(vm: vm)
         case let .session(id):
-            ProjectSessionView(projectID: project.id, sessionID: id)
+            WorkbenchSessionView(projectID: project.id, sessionID: id)
                 .id(id)
         }
     }

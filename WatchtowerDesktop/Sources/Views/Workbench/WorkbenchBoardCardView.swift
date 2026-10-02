@@ -6,8 +6,8 @@ import WatchtowerCore
 /// progress and a collapse chevron. `trailing` is the card's action slot,
 /// told whether the pointer is over the card; `caption` is an extra line
 /// under the title (the kanban's parent chain).
-struct ProjectBoardCardView<Trailing: View>: View {
-    let row: ProjectBoardRow
+struct WorkbenchBoardCardView<Trailing: View>: View {
+    let row: WorkbenchBoardRow
     let isSelected: Bool
     let isCollapsed: Bool
     var caption: String?
@@ -17,14 +17,14 @@ struct ProjectBoardCardView<Trailing: View>: View {
     @State private var hovering = false
 
     private var target: Target { row.node.target }
-    private var card: ProjectBoardCard { ProjectBoardCard(row.node) }
+    private var card: WorkbenchBoardCard { WorkbenchBoardCard(row.node) }
 
     var body: some View {
         let card = card
         HStack(alignment: .top, spacing: 8) {
             chevron
             Image(systemName: target.statusIcon)
-                .foregroundStyle(ProjectBoardColors.status(target.statusColor))
+                .foregroundStyle(WorkbenchBoardColors.status(target.statusColor))
             VStack(alignment: .leading, spacing: 5) {
                 Text(card.title.isEmpty ? "Untitled" : card.title)
                     .font(row.hasChildren ? .callout.weight(.semibold) : .callout)
@@ -90,16 +90,16 @@ struct ProjectBoardCardView<Trailing: View>: View {
         return RoundedRectangle(cornerRadius: 8).fill(fill)
     }
 
-    private func chips(_ card: ProjectBoardCard) -> some View {
+    private func chips(_ card: WorkbenchBoardCard) -> some View {
         HStack(spacing: 6) {
-            ProjectBoardChip(
+            WorkbenchBoardChip(
                 text: target.priority.capitalized,
-                color: ProjectBoardColors.priority(target.priority),
+                color: WorkbenchBoardColors.priority(target.priority),
                 dot: true
             )
-            ProjectBoardChip(
-                text: ProjectBoardCard.statusLabel(target.status),
-                color: ProjectBoardColors.status(target.statusColor)
+            WorkbenchBoardChip(
+                text: WorkbenchBoardCard.statusLabel(target.status),
+                color: WorkbenchBoardColors.status(target.statusColor)
             )
             if let children = card.children {
                 counter("\(children.done)/\(children.total)", systemImage: "checklist", help: "Sub-tasks done")
@@ -129,9 +129,9 @@ struct ProjectBoardCardView<Trailing: View>: View {
     }
 }
 
-extension ProjectBoardCardView where Trailing == EmptyView {
+extension WorkbenchBoardCardView where Trailing == EmptyView {
     init(
-        row: ProjectBoardRow,
+        row: WorkbenchBoardRow,
         isSelected: Bool,
         isCollapsed: Bool,
         caption: String? = nil,
@@ -145,7 +145,7 @@ extension ProjectBoardCardView where Trailing == EmptyView {
 
 /// A small tinted capsule: a card's priority or status, and the detail card's
 /// drift findings.
-struct ProjectBoardChip: View {
+struct WorkbenchBoardChip: View {
     let text: String
     let color: Color
     var dot = false
@@ -165,7 +165,7 @@ struct ProjectBoardChip: View {
 }
 
 /// The Targets tab's colours for status and priority.
-enum ProjectBoardColors {
+enum WorkbenchBoardColors {
     /// Maps `Target.statusColor`'s name to a colour; an unknown status is neutral.
     static func status(_ name: String) -> Color {
         switch name {

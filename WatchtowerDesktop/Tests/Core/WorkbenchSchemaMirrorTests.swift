@@ -4,7 +4,7 @@ import WatchtowerTestSupport
 
 /// The test schema mirror must carry migration 00081 (projects) so Desktop
 /// queries written against it see the real shape.
-final class ProjectSchemaMirrorTests: XCTestCase {
+final class WorkbenchSchemaMirrorTests: XCTestCase {
     func testMirrorHasProjectTablesAndTargetsProjectID() throws {
         let queue = try TestDatabase.create()
         try queue.read { db in

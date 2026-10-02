@@ -4,15 +4,15 @@ import WatchtowerCore
 /// The Projects tab's left panel (spec 2026-09-30-project-workspace-sessions
 /// §3): level 1 lists projects and standalone terminals, level 2 one
 /// project's Board, Documents and sessions. The views only call these.
-extension ProjectsViewModel {
+extension WorkbenchesViewModel {
     /// Level 2's project, when it is still listed.
-    var drilledProject: Project? {
-        summaries.first { $0.id == drilledProjectID }?.project
+    var drilledWorkbench: Workbench? {
+        summaries.first { $0.id == drilledWorkbenchID }?.project
     }
 
     /// Level 2's sessions in the panel's order (`TerminalSessionOrder`).
     var drilledSessions: [TerminalSession] {
-        drilledProjectID.map { orderedSessions(projectID: $0) } ?? []
+        drilledWorkbenchID.map { orderedSessions(projectID: $0) } ?? []
     }
 
     /// A session list in the panel's order: stable while the owner switches
@@ -64,22 +64,22 @@ extension ProjectsViewModel {
     /// else the other one. nil when no session is visible (the panel lists
     /// only sessions).
     var panelSelection: WorkspacePane? {
-        guard let drilledProjectID else { return nil }
-        let layout = layout(projectID: drilledProjectID)
+        guard let drilledWorkbenchID else { return nil }
+        let layout = layout(projectID: drilledWorkbenchID)
         let candidates = layout.expanded.map { [$0] } ?? [layout.secondary, layout.primary].compactMap(\.self)
         return candidates.first { if case .session = $0 { true } else { false } }
     }
 
     /// A level-1 project click: selects it, which drills into it (the
-    /// `selectedProjectID` observer). Nothing starts.
+    /// `selectedWorkbenchID` observer). Nothing starts.
     func drill(into projectID: Int64) {
-        selectedProjectID = projectID
+        selectedWorkbenchID = projectID
     }
 
     /// A level-2 click on a session: it is opened (one not running starts)
     /// and put on screen like any panel click.
     func showFromPanel(sessionID id: Int64) async {
-        guard let projectID = drilledProjectID else { return }
+        guard let projectID = drilledWorkbenchID else { return }
         // The list may not be loaded yet (the panel loads it on appear).
         // A failed load already reports itself; the row is not "gone".
         if terminalSessions[projectID]?.contains(where: { $0.id == id }) != true {
@@ -95,7 +95,7 @@ extension ProjectsViewModel {
     /// Level 2's "New session": a fresh `claude` session of the drilled
     /// project, put on screen like a panel click.
     func newPanelSession() async {
-        guard let projectID = drilledProjectID else { return }
+        guard let projectID = drilledWorkbenchID else { return }
         await newSession(projectID: projectID)
     }
 
@@ -129,18 +129,18 @@ extension ProjectsViewModel {
     }
 
     /// The page header's Terminal / Board / Documents buttons. Board and
-    /// Documents never hide a terminal (`WorkspaceLayout.showProjectView`).
+    /// Documents never hide a terminal (`WorkspaceLayout.showWorkbenchView`).
     /// Terminal keeps the view on screen beside it in a split: a session
     /// already in a slot (or the live one) comes back as is; otherwise the
     /// most recent open session is resumed, or a new one starts.
-    func showView(_ view: WorkspaceView, project: Project) async {
+    func showView(_ view: WorkspaceView, project: Workbench) async {
         var updated = layout(projectID: project.id)
         guard !updated.isShowing(view) else { return }
         switch view {
         case .board:
-            updated.showProjectView(.board)
+            updated.showWorkbenchView(.board)
         case .documents:
-            updated.showProjectView(.documents)
+            updated.showWorkbenchView(.documents)
         case .terminal:
             let kept = updated.visiblePanes.first ?? updated.primary
             guard let id = updated.sessionIDs.first ?? activeSessionID(projectID: project.id) else {
@@ -210,7 +210,7 @@ extension ProjectsViewModel {
 
     /// Puts a standalone terminal on screen instead of any project.
     func showStandalone(_ id: Int64) {
-        selectedProjectID = nil
+        selectedWorkbenchID = nil
         selectedStandaloneID = id
     }
 }

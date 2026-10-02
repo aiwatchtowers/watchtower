@@ -4,9 +4,9 @@ import Foundation
 /// into the project's Claude Code session. The line carries only the
 /// document's path and id — Claude reads the open comments themselves through
 /// its `list_comments` tool — so the whole batch goes at once. Pure.
-package enum ProjectCommentPrompt {
+package enum WorkbenchCommentPrompt {
     /// Open owner threads on a document — what the button counts.
-    package static func openOwnerCount(_ threads: [ProjectCommentThread]) -> Int {
+    package static func openOwnerCount(_ threads: [WorkbenchCommentThread]) -> Int {
         threads.filter { $0.root.isOpen && !$0.root.isAgent }.count
     }
 

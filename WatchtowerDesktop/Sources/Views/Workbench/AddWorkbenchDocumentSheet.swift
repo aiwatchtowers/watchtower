@@ -6,16 +6,16 @@ import WatchtowerCore
 /// "Add document…" (#80): the owner picks a .md/.txt file inside the project
 /// folder, a kind and optionally a board target. The CLI attaches it and
 /// refuses anything outside the folder; the error stays in the sheet.
-struct AddProjectDocumentSheet: View {
-    @Bindable var vm: ProjectsViewModel
-    let project: Project
+struct AddWorkbenchDocumentSheet: View {
+    @Bindable var vm: WorkbenchesViewModel
+    let project: Workbench
     @Environment(\.dismiss) private var dismiss
     @State private var fileURL: URL?
     /// `fileURL` as the list will show it, computed once when chosen.
     @State private var shownPath = ""
     @State private var kind = "doc"
     @State private var targetID: Int64?
-    @State private var targets: [ProjectBoardRow] = []
+    @State private var targets: [WorkbenchBoardRow] = []
     @State private var targetsError: String?
 
     var body: some View {

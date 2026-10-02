@@ -13,7 +13,7 @@ import WatchtowerTestSupport
 /// workspace across the panel's edge line.
 /// (The terminal's transparency under dark is `TerminalPaletteTests`'.)
 @MainActor
-final class ProjectsBackgroundRenderTests: XCTestCase {
+final class WorkbenchesBackgroundRenderTests: XCTestCase {
     private var manager: DatabaseManager!
     private var path: String!
     private var suiteName: String!
@@ -33,16 +33,16 @@ final class ProjectsBackgroundRenderTests: XCTestCase {
 
     func testProjectPagePaintsTheDetailBackdropBesideThePanelColour() async throws {
         let projectID = try await manager.dbPool.write { db -> Int64 in
-            let id = try TestDatabase.insertProject(db)
-            _ = try TestDatabase.insertProjectTarget(db, projectID: id)
+            let id = try TestDatabase.insertWorkbench(db)
+            _ = try TestDatabase.insertWorkbenchTarget(db, projectID: id)
             return id
         }
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        let vm = ProjectsViewModel(dbPool: manager.dbPool, cli: ProjectCLI(runner: FakeCLIRunner()), defaults: defaults)
+        let vm = WorkbenchesViewModel(dbPool: manager.dbPool, cli: WorkbenchCLI(runner: FakeCLIRunner()), defaults: defaults)
         await vm.reload()
         vm.drill(into: projectID)
         XCTAssertNil(vm.errorMessage)
-        XCTAssertEqual(vm.selectedProject?.id, projectID, "the page, not the empty state, is on screen")
+        XCTAssertEqual(vm.selectedWorkbench?.id, projectID, "the page, not the empty state, is on screen")
         let appState = AppState()
         appState.databaseManager = manager
 
@@ -54,7 +54,7 @@ final class ProjectsBackgroundRenderTests: XCTestCase {
             XCTAssertEqual(detail.alpha, 255, "an empty capture would compare equal to another one")
             // A sentinel stands in for the window behind the tab, so any spot
             // the tab leaves unpainted shows.
-            let page = try render(ProjectsView(vm: vm).environment(appState).background(Color.red), appearance)
+            let page = try render(WorkbenchesView(vm: vm).environment(appState).background(Color.red), appearance)
             // Near both edges of the page and its middle (the Board), right
             // of the panel whether the panel is shown or not.
             for (x, y) in [(880, 15), (880, 55), (880, 480), (700, 300)] {
@@ -73,7 +73,7 @@ final class ProjectsBackgroundRenderTests: XCTestCase {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
         let projectID = try await manager.dbPool.write { db in
-            try TestDatabase.insertProject(db, name: "acme", folder: folder.path)
+            try TestDatabase.insertWorkbench(db, name: "acme", folder: folder.path)
         }
         var sessions: [TerminalSession] = []
         for title in ["first", "second", "third"] {
@@ -86,7 +86,7 @@ final class ProjectsBackgroundRenderTests: XCTestCase {
             sessions.append(row)
         }
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        let vm = ProjectsViewModel(dbPool: manager.dbPool, cli: ProjectCLI(runner: FakeCLIRunner()), defaults: defaults)
+        let vm = WorkbenchesViewModel(dbPool: manager.dbPool, cli: WorkbenchCLI(runner: FakeCLIRunner()), defaults: defaults)
         await vm.reload()
         vm.drill(into: projectID)
         _ = await vm.loadSessions(projectID: projectID)
@@ -104,7 +104,7 @@ final class ProjectsBackgroundRenderTests: XCTestCase {
         for name in [NSAppearance.Name.darkAqua, .aqua] {
             let appearance = try XCTUnwrap(NSAppearance(named: name))
             let detail = try pixel(render(Color.clear.detailBackground(), appearance), x: 450, y: 250)
-            let page = try render(ProjectsView(vm: vm).environment(appState), appearance)
+            let page = try render(WorkbenchesView(vm: vm).environment(appState), appearance)
             // The panel's last column, where its edge line runs; the rows sit
             // under the header and the SESSIONS label, about 26pt apart.
             let edge = Int(PanelResizeHandle.defaultWidth) - 1

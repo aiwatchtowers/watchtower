@@ -7,7 +7,7 @@ import WatchtowerTestSupport
 /// Review Focus #5 (Desktop side): deleting a project while Claude Code is
 /// connected closes its terminal first, and a failed delete keeps it listed.
 @MainActor
-final class ProjectsViewModelDeleteTests: XCTestCase {
+final class WorkbenchesViewModelDeleteTests: XCTestCase {
     private var pool: DatabasePool!
     private var path: String!
     private var defaults: UserDefaults!
@@ -47,43 +47,43 @@ final class ProjectsViewModelDeleteTests: XCTestCase {
         }
     }
 
-    private func makeVM(_ runner: DeletingCLIRunner) -> ProjectsViewModel {
-        ProjectsViewModel(dbPool: pool, cli: ProjectCLI(runner: runner), defaults: defaults)
+    private func makeVM(_ runner: DeletingCLIRunner) -> WorkbenchesViewModel {
+        WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: runner), defaults: defaults)
     }
 
     func testDeleteClosesTheTerminalBeforeTheCLIRunsThenDropsTheProject() async throws {
-        let id = try await pool.write { try TestDatabase.insertProject($0) }
+        let id = try await pool.write { try TestDatabase.insertWorkbench($0) }
         let runner = DeletingCLIRunner(pool: pool)
         let vm = makeVM(runner)
         await vm.reload()
-        vm.selectedProjectID = id
+        vm.selectedWorkbenchID = id
         var closedBeforeCLI: [Int64] = []
         vm.closeTerminal = { closed in
             if runner.calls.isEmpty { closedBeforeCLI.append(closed) }
         }
 
-        let ok = await vm.deleteProject(id)
+        let ok = await vm.deleteWorkbench(id)
 
         XCTAssertTrue(ok)
         XCTAssertEqual(closedBeforeCLI, [id], "the terminal closes before `project delete` runs")
         XCTAssertEqual(runner.calls, [["project", "delete", String(id), "--json"]])
         XCTAssertTrue(vm.summaries.isEmpty)
-        XCTAssertNil(vm.selectedProjectID)
+        XCTAssertNil(vm.selectedWorkbenchID)
         XCTAssertNil(vm.deleteError)
         XCTAssertNil(vm.errorMessage)
-        XCTAssertNil(vm.deletingProjectID)
+        XCTAssertNil(vm.deletingWorkbenchID)
     }
 
     /// The rows are gone but the folder cleanup failed: the project still
     /// leaves the list, and a non-blocking warning names the removal error.
     func testFolderCleanupFailureDeletesTheProjectAndWarns() async throws {
-        let id = try await pool.write { try TestDatabase.insertProject($0) }
+        let id = try await pool.write { try TestDatabase.insertWorkbench($0) }
         let runner = DeletingCLIRunner(pool: pool)
         runner.removalError = "permission denied: .claude/skills"
         let vm = makeVM(runner)
         await vm.reload()
 
-        let ok = await vm.deleteProject(id)
+        let ok = await vm.deleteWorkbench(id)
 
         XCTAssertTrue(ok)
         XCTAssertTrue(vm.summaries.isEmpty)
@@ -94,13 +94,13 @@ final class ProjectsViewModelDeleteTests: XCTestCase {
     /// The stored image copies could not all be removed: the delete stands
     /// and the owner is told (PROJ-02 — never a silent leftover).
     func testImageCleanupFailureDeletesTheProjectAndWarns() async throws {
-        let id = try await pool.write { try TestDatabase.insertProject($0) }
+        let id = try await pool.write { try TestDatabase.insertWorkbench($0) }
         let runner = DeletingCLIRunner(pool: pool)
         runner.filesError = "permission denied: project_files/1"
         let vm = makeVM(runner)
         await vm.reload()
 
-        let ok = await vm.deleteProject(id)
+        let ok = await vm.deleteWorkbench(id)
 
         XCTAssertTrue(ok)
         XCTAssertTrue(vm.summaries.isEmpty)
@@ -109,25 +109,25 @@ final class ProjectsViewModelDeleteTests: XCTestCase {
     }
 
     func testCLIFailureKeepsTheProjectAndShowsTheError() async throws {
-        let id = try await pool.write { try TestDatabase.insertProject($0) }
+        let id = try await pool.write { try TestDatabase.insertWorkbench($0) }
         let runner = DeletingCLIRunner(pool: pool)
         runner.fail = true
         let vm = makeVM(runner)
         await vm.reload()
 
-        let ok = await vm.deleteProject(id)
+        let ok = await vm.deleteWorkbench(id)
 
         XCTAssertFalse(ok)
         XCTAssertEqual(vm.summaries.map(\.id), [id])
         XCTAssertNotNil(vm.deleteError)
         XCTAssertTrue(vm.deleteError?.contains("database is locked") ?? false)
-        XCTAssertNil(vm.deletingProjectID)
+        XCTAssertNil(vm.deletingWorkbenchID)
     }
 
     func testASecondDeleteWhileOneRunsIsRefused() async throws {
         let (a, b) = try await pool.write { d in
-            (try TestDatabase.insertProject(d, name: "a", folder: "/tmp/a"),
-             try TestDatabase.insertProject(d, name: "b", folder: "/tmp/b"))
+            (try TestDatabase.insertWorkbench(d, name: "a", folder: "/tmp/a"),
+             try TestDatabase.insertWorkbench(d, name: "b", folder: "/tmp/b"))
         }
         let runner = DeletingCLIRunner(pool: pool)
         let vm = makeVM(runner)
@@ -137,9 +137,9 @@ final class ProjectsViewModelDeleteTests: XCTestCase {
         // releases it and every later call (reload's vanished-close) at once.
         vm.closeTerminal = { _ in for await _ in gate.stream { break } }
 
-        let first = Task { await vm.deleteProject(a) }
-        while vm.deletingProjectID == nil { await Task.yield() }
-        let second = await vm.deleteProject(b)
+        let first = Task { await vm.deleteWorkbench(a) }
+        while vm.deletingWorkbenchID == nil { await Task.yield() }
+        let second = await vm.deleteWorkbench(b)
         gate.continuation.yield()
         gate.continuation.finish()
         _ = await first.value
@@ -150,8 +150,8 @@ final class ProjectsViewModelDeleteTests: XCTestCase {
 
     func testReloadClosesTheTerminalOfAProjectDeletedFromOutside() async throws {
         let (a, b) = try await pool.write { d in
-            (try TestDatabase.insertProject(d, name: "a", folder: "/tmp/a"),
-             try TestDatabase.insertProject(d, name: "b", folder: "/tmp/b"))
+            (try TestDatabase.insertWorkbench(d, name: "a", folder: "/tmp/a"),
+             try TestDatabase.insertWorkbench(d, name: "b", folder: "/tmp/b"))
         }
         let vm = makeVM(DeletingCLIRunner(pool: pool))
         await vm.reload()
@@ -167,11 +167,11 @@ final class ProjectsViewModelDeleteTests: XCTestCase {
     }
 
     func testVanishedListsIDsThatDisappeared() {
-        XCTAssertEqual(ProjectsViewModel.vanished(previous: [1, 2, 3], current: [3, 1]), [2])
-        XCTAssertEqual(ProjectsViewModel.vanished(previous: [], current: [1]), [])
+        XCTAssertEqual(WorkbenchesViewModel.vanished(previous: [1, 2, 3], current: [3, 1]), [2])
+        XCTAssertEqual(WorkbenchesViewModel.vanished(previous: [], current: [1]), [])
     }
 
-    /// AppState wiring: initProjects hands the VM `TerminalCenter.closeAll`
+    /// AppState wiring: initWorkbenches hands the VM `TerminalCenter.closeAll`
     /// over the project's sessions, so a delete ends every terminal of that
     /// project — and only those.
     func testInitProjectsWiresDeleteToTheTerminalCenter() async throws {
@@ -179,8 +179,8 @@ final class ProjectsViewModelDeleteTests: XCTestCase {
             .appendingPathComponent("wt-delete-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
-        let id = try await pool.write { try TestDatabase.insertProject($0, name: "acme", folder: folder.path) }
-        let other = try await pool.write { try TestDatabase.insertProject($0, name: "other", folder: folder.path + "/x") }
+        let id = try await pool.write { try TestDatabase.insertWorkbench($0, name: "acme", folder: folder.path) }
+        let other = try await pool.write { try TestDatabase.insertWorkbench($0, name: "other", folder: folder.path + "/x") }
         func session(_ projectID: Int64) async throws -> TerminalSession {
             try await pool.write { d in
                 try TerminalSessionQueries.create(d, .init(
@@ -201,13 +201,13 @@ final class ProjectsViewModelDeleteTests: XCTestCase {
             processes.append(process)
             return process
         }
-        appState.initProjects(dbPool: pool, cliRunner: DeletingCLIRunner(pool: pool), notifier: RecordingProjectNotifier())
-        let vm = try XCTUnwrap(appState.projectsViewModel)
+        appState.initWorkbenches(dbPool: pool, cliRunner: DeletingCLIRunner(pool: pool), notifier: RecordingWorkbenchNotifier())
+        let vm = try XCTUnwrap(appState.workbenchesViewModel)
         await vm.reload()
         for s in [a, b, kept] { appState.terminalCenter.start(s, fresh: true) }
         XCTAssertEqual(appState.terminalCenter.liveIDs, [a.id, b.id, kept.id])
 
-        let ok = await vm.deleteProject(id)
+        let ok = await vm.deleteWorkbench(id)
 
         XCTAssertTrue(ok)
         XCTAssertEqual(appState.terminalCenter.liveIDs, [kept.id])

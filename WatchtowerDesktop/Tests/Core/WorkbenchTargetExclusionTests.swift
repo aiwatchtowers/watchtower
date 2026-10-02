@@ -6,7 +6,7 @@ import WatchtowerTestSupport
 /// BEHAVIOR PROJ-01 (Desktop side) — a project target lives only on its
 /// project's board: it never reaches the Targets tab's list, counts, tag menu,
 /// or the chat `@` picker. See docs/inventory/projects.md.
-final class ProjectTargetExclusionTests: XCTestCase {
+final class WorkbenchTargetExclusionTests: XCTestCase {
 
     /// One ordinary target and one project target, identical in every field a
     /// reader filters on (active, overdue, due today, high priority, tagged,
@@ -83,7 +83,7 @@ final class ProjectTargetExclusionTests: XCTestCase {
         let queue = try TestDatabase.create()
         try queue.write(seed)
         let ids = try queue.read { db in
-            try Target.fetchAll(db, sql: "SELECT * FROM targets ORDER BY id").map(\.projectID)
+            try Target.fetchAll(db, sql: "SELECT * FROM targets ORDER BY id").map(\.workbenchID)
         }
         XCTAssertNil(ids[0])
         XCTAssertNotNil(ids[1])

@@ -5,33 +5,33 @@ import WatchtowerCore
 /// The selected board target's images (board target #117): thumbnails in the
 /// detail pane, a click opens the full image in a sheet. Read-only — only the
 /// agent's project tools attach or detach images.
-struct ProjectTargetImagesSection: View {
-    let images: [ProjectTargetImage]
-    @State private var shown: ProjectTargetImage?
+struct WorkbenchTargetImagesSection: View {
+    let images: [WorkbenchTargetImage]
+    @State private var shown: WorkbenchTargetImage?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ProjectDetailSectionHeader(title: "Images", systemImage: "photo", count: images.count)
+            WorkbenchDetailSectionHeader(title: "Images", systemImage: "photo", count: images.count)
             LazyVGrid(
                 columns: [GridItem(.adaptive(minimum: 96, maximum: 140), spacing: 8)],
                 alignment: .leading,
                 spacing: 8
             ) {
                 ForEach(images) { image in
-                    Button { shown = image } label: { ProjectImageThumbnail(image: image) }
+                    Button { shown = image } label: { WorkbenchImageThumbnail(image: image) }
                         .buttonStyle(.plain)
                         .help(image.fileName)
                 }
             }
         }
-        .sheet(item: $shown) { ProjectImageViewer(image: $0) }
+        .sheet(item: $shown) { WorkbenchImageViewer(image: $0) }
     }
 }
 
 /// One thumbnail, decoded off the main actor.
-private struct ProjectImageThumbnail: View {
-    let image: ProjectTargetImage
-    @State private var load: ProjectImageLoad?
+private struct WorkbenchImageThumbnail: View {
+    let image: WorkbenchTargetImage
+    @State private var load: WorkbenchImageLoad?
 
     var body: some View {
         ZStack {
@@ -59,17 +59,17 @@ private struct ProjectImageThumbnail: View {
         .task(id: image.path) {
             let url = image.fileURL
             load = await Task.detached(priority: .utility) {
-                ProjectImageLoader.load(at: url, maxPixel: 448)
+                WorkbenchImageLoader.load(at: url, maxPixel: 448)
             }.value
         }
     }
 }
 
 /// The full-size image, scrollable when larger than the sheet.
-private struct ProjectImageViewer: View {
-    let image: ProjectTargetImage
+private struct WorkbenchImageViewer: View {
+    let image: WorkbenchTargetImage
     @Environment(\.dismiss) private var dismiss
-    @State private var load: ProjectImageLoad?
+    @State private var load: WorkbenchImageLoad?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -113,7 +113,7 @@ private struct ProjectImageViewer: View {
         .task(id: image.path) {
             let url = image.fileURL
             load = await Task.detached(priority: .userInitiated) {
-                ProjectImageLoader.load(at: url, maxPixel: ProjectImageLoader.viewerMaxPixel)
+                WorkbenchImageLoader.load(at: url, maxPixel: WorkbenchImageLoader.viewerMaxPixel)
             }.value
         }
     }

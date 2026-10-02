@@ -4,15 +4,15 @@ import Observation
 import WatchtowerCore
 
 /// One open project document: its rendered text, its comment threads and
-/// their anchors (spec §6.3). Owned by `ProjectsViewModel`, so it outlives
+/// their anchors (spec §6.3). Owned by `WorkbenchesViewModel`, so it outlives
 /// pane switches. Reads and watches the file; never writes it (PROJ-03).
 @MainActor
 @Observable
-final class ProjectDocumentViewModel {
-    let project: Project
-    private(set) var document: ProjectDocument
+final class WorkbenchDocumentViewModel {
+    let project: Workbench
+    private(set) var document: WorkbenchDocument
     private(set) var rendered: RenderedDocument?
-    private(set) var threads: [ProjectCommentThread] = []
+    private(set) var threads: [WorkbenchCommentThread] = []
     /// Root comment id → its located range in `rendered.text`.
     private(set) var anchoredRanges: [Int64: NSRange] = [:]
     /// Draft id → its located range in `rendered.text`; a draft whose passage
@@ -27,19 +27,19 @@ final class ProjectDocumentViewModel {
     /// (`CommentableDocumentText`) — its selection points into text that is gone.
     private(set) var renderVersion = 0
 
-    var onOwnerWrite: ((ProjectSubject) -> Void)?
+    var onOwnerWrite: ((WorkbenchSubject) -> Void)?
 
     private let dbPool: DatabasePool
-    private let draftStore: ProjectCommentDrafts
+    private let draftStore: WorkbenchCommentDrafts
     private let readFile: (URL) throws -> String
     private let reloadDelay: Duration
     private var watcher: DocumentFileWatcher?
 
     init(
         dbPool: DatabasePool,
-        project: Project,
-        document: ProjectDocument,
-        drafts: ProjectCommentDrafts = ProjectCommentDrafts(),
+        project: Workbench,
+        document: WorkbenchDocument,
+        drafts: WorkbenchCommentDrafts = WorkbenchCommentDrafts(),
         reloadDelay: Duration = .milliseconds(500),
         readFile: @escaping (URL) throws -> String = { try String(contentsOf: $0, encoding: .utf8) }
     ) {
@@ -51,17 +51,17 @@ final class ProjectDocumentViewModel {
         self.readFile = readFile
     }
 
-    var openThreads: [ProjectCommentThread] {
+    var openThreads: [WorkbenchCommentThread] {
         threads.filter { $0.root.status == "open" }
             .sorted { (anchoredRanges[$0.id]?.location ?? .max) < (anchoredRanges[$1.id]?.location ?? .max) }
     }
 
-    var resolvedThreads: [ProjectCommentThread] { threads.filter { $0.root.status == "resolved" } }
+    var resolvedThreads: [WorkbenchCommentThread] { threads.filter { $0.root.status == "resolved" } }
 
     /// The owner's unsent comments on this document, in text order (drafts
     /// whose passage is gone last).
     /// (`sorted` is stable: equal locations keep the order they were written.)
-    var drafts: [ProjectCommentDraft] {
+    var drafts: [WorkbenchCommentDraft] {
         draftStore.drafts(for: document.id).sorted {
             (draftRanges[$0.id]?.location ?? .max) < (draftRanges[$1.id]?.location ?? .max)
         }
@@ -76,12 +76,12 @@ final class ProjectDocumentViewModel {
     /// Drafts a send leaves behind: their passage is gone or their text is empty.
     var unsendableDraftCount: Int { draftStore.drafts(for: document.id).count - readyDrafts.count }
 
-    private var readyDrafts: [ProjectCommentDraft] {
+    private var readyDrafts: [WorkbenchCommentDraft] {
         draftStore.drafts(for: document.id).filter {
             draftRanges[$0.id] != nil && !$0.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
     }
-    var outdatedThreads: [ProjectCommentThread] { threads.filter { $0.root.status == "outdated" } }
+    var outdatedThreads: [WorkbenchCommentThread] { threads.filter { $0.root.status == "outdated" } }
 
     func threadID(at location: Int) -> Int64? {
         anchoredRanges.first { NSLocationInRange(location, $0.value) }?.key
@@ -93,10 +93,10 @@ final class ProjectDocumentViewModel {
         let id = document.id
         do {
             let (fresh, comments) = try await dbPool.read { db in
-                (try ProjectQueries.document(db, id: id), try ProjectQueries.comments(db, documentID: id))
+                (try WorkbenchQueries.document(db, id: id), try WorkbenchQueries.comments(db, documentID: id))
             }
             if let fresh { document = fresh }
-            threads = ProjectCommentThread.group(comments)
+            threads = WorkbenchCommentThread.group(comments)
         } catch {
             errorMessage = "Could not load comments: \(error.localizedDescription)"
             return
@@ -128,7 +128,7 @@ final class ProjectDocumentViewModel {
     /// Locates every anchored open/resolved root; returns the open ones lost.
     /// A lost root with an unanswered owner reply stays open: marking it
     /// `outdated` would drop that reply from the agent's new-for-agent
-    /// channels again right after `ProjectQueries.reply` reopened it. The
+    /// channels again right after `WorkbenchQueries.reply` reopened it. The
     /// agent answering (or resolving) is what lets it go `outdated` later.
     private func reanchor(on text: String) -> [Int64] {
         var ranges: [Int64: NSRange] = [:]
@@ -148,7 +148,7 @@ final class ProjectDocumentViewModel {
     private func markOutdated(_ ids: [Int64]) async {
         do {
             try await dbPool.write { db in
-                for id in ids { try ProjectQueries.setStatus(db, commentID: id, status: "outdated") }
+                for id in ids { try WorkbenchQueries.setStatus(db, commentID: id, status: "outdated") }
             }
             onOwnerWrite?(.document(document.id))
             await reloadThreads()
@@ -165,7 +165,7 @@ final class ProjectDocumentViewModel {
         let (projectID, documentID) = (project.id, document.id)
         do {
             try await dbPool.write { db in
-                try ProjectQueries.markAgentCommentsRead(db, projectID: projectID, targetID: nil, documentID: documentID)
+                try WorkbenchQueries.markAgentCommentsRead(db, projectID: projectID, targetID: nil, documentID: documentID)
             }
             await reloadThreads()
         } catch {
@@ -186,8 +186,8 @@ final class ProjectDocumentViewModel {
     private func reloadThreads() async {
         let id = document.id
         do {
-            let comments = try await dbPool.read { try ProjectQueries.comments($0, documentID: id) }
-            threads = ProjectCommentThread.group(comments)
+            let comments = try await dbPool.read { try WorkbenchQueries.comments($0, documentID: id) }
+            threads = WorkbenchCommentThread.group(comments)
         } catch {
             errorMessage = "Could not reload comments: \(error.localizedDescription)"
         }
@@ -211,7 +211,7 @@ final class ProjectDocumentViewModel {
               let range = Range(selection, in: rendered.text),
               !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
         let anchor = CommentAnchor.make(text: rendered.text, range: range, headings: rendered.headingOffsets)
-        let draft = ProjectCommentDraft(anchor: anchor, body: body)
+        let draft = WorkbenchCommentDraft(anchor: anchor, body: body)
         draftStore.add(draft, documentID: document.id)
         draftRanges[draft.id] = selection
         return true
@@ -241,7 +241,7 @@ final class ProjectDocumentViewModel {
         let (projectID, documentID) = (project.id, document.id)
         let wrote = await ownerWrite { db in
             for draft in ready {
-                _ = try ProjectQueries.addOwnerComment(
+                _ = try WorkbenchQueries.addOwnerComment(
                     db, projectID: projectID, targetID: nil, documentID: documentID, anchor: draft.anchor, body: draft.body
                 )
             }
@@ -260,15 +260,15 @@ final class ProjectDocumentViewModel {
     @discardableResult
     func reply(to rootID: Int64, body: String) async -> Bool {
         guard !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
-        return await ownerWrite { db in _ = try ProjectQueries.reply(db, to: rootID, body: body) }
+        return await ownerWrite { db in _ = try WorkbenchQueries.reply(db, to: rootID, body: body) }
     }
 
     func resolve(_ rootID: Int64) async {
-        await ownerWrite { db in try ProjectQueries.setStatus(db, commentID: rootID, status: "resolved") }
+        await ownerWrite { db in try WorkbenchQueries.setStatus(db, commentID: rootID, status: "resolved") }
     }
 
     func reopen(_ rootID: Int64) async {
-        await ownerWrite { db in try ProjectQueries.setStatus(db, commentID: rootID, status: "open") }
+        await ownerWrite { db in try WorkbenchQueries.setStatus(db, commentID: rootID, status: "open") }
     }
 
     /// - Returns: whether the write committed; on failure `errorMessage` says why.

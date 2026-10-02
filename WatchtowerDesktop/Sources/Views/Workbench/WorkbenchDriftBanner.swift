@@ -5,8 +5,8 @@ import WatchtowerCore
 /// opens the list, and a finding selects its target. A failed or partial
 /// check says so (with a Refresh); a complete check with no findings —
 /// the board and git agree — shows nothing.
-struct ProjectDriftBanner: View {
-    let report: ProjectDriftReport?
+struct WorkbenchDriftBanner: View {
+    let report: WorkbenchDriftReport?
     let error: String?
     let onSelect: (Int) -> Void
     let onRefresh: () -> Void
@@ -35,7 +35,7 @@ struct ProjectDriftBanner: View {
         }
     }
 
-    private func summary(_ findings: [ProjectDriftFinding]) -> String {
+    private func summary(_ findings: [WorkbenchDriftFinding]) -> String {
         let conflicts = findings.filter(\.isConflict).count
         let advisory = findings.count - conflicts
         if conflicts == 0 { return "Board drift: \(advisory) to review" }
@@ -67,7 +67,7 @@ struct ProjectDriftBanner: View {
             .help(error)
     }
 
-    private func list(_ report: ProjectDriftReport) -> some View {
+    private func list(_ report: WorkbenchDriftReport) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text("Board drift").font(.headline)
@@ -97,7 +97,7 @@ struct ProjectDriftBanner: View {
         .frame(width: 440)
     }
 
-    private func row(_ finding: ProjectDriftFinding) -> some View {
+    private func row(_ finding: WorkbenchDriftFinding) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 6) {
                 Text(finding.kindLabel)

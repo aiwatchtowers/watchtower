@@ -6,7 +6,7 @@ import GRDB
 /// `source_type='chat'`, `ownership='mine'`.
 extension TestDatabase {
     @discardableResult
-    package static func insertProject(
+    package static func insertWorkbench(
         _ db: Database,
         name: String = "acme",
         folder: String = "/tmp/acme"
@@ -19,7 +19,7 @@ extension TestDatabase {
     }
 
     @discardableResult
-    package static func insertProjectTarget(
+    package static func insertWorkbenchTarget(
         _ db: Database,
         projectID: Int64,
         text: String = "Feature",
@@ -39,7 +39,7 @@ extension TestDatabase {
     }
 
     @discardableResult
-    package static func insertProjectTargetImage(
+    package static func insertWorkbenchTargetImage(
         _ db: Database,
         projectID: Int64,
         targetID: Int64,
@@ -58,7 +58,7 @@ extension TestDatabase {
     }
 
     @discardableResult
-    package static func insertProjectDocument(
+    package static func insertWorkbenchDocument(
         _ db: Database,
         projectID: Int64,
         relPath: String = "docs/plan.md",
@@ -79,7 +79,7 @@ extension TestDatabase {
     }
 
     @discardableResult
-    package static func insertProjectComment(
+    package static func insertWorkbenchComment(
         _ db: Database,
         projectID: Int64,
         author: String = "agent",

@@ -3,7 +3,7 @@ import GRDB
 import WatchtowerTestSupport
 @testable import WatchtowerCore
 
-final class ProjectBoardCardTests: XCTestCase {
+final class WorkbenchBoardCardTests: XCTestCase {
     private var queue: DatabaseQueue!
 
     override func setUpWithError() throws {
@@ -32,8 +32,8 @@ final class ProjectBoardCardTests: XCTestCase {
         }
     }
 
-    private func node(_ t: Target, _ children: [ProjectBoardNode] = []) -> ProjectBoardNode {
-        ProjectBoardNode(target: t, children: children, openComments: 0, unreadForOwner: 0, documents: [])
+    private func node(_ t: Target, _ children: [WorkbenchBoardNode] = []) -> WorkbenchBoardNode {
+        WorkbenchBoardNode(target: t, children: children, openComments: 0, unreadForOwner: 0, documents: [])
     }
 
     // MARK: - Order (Go boardSiblingOrder)
@@ -48,16 +48,16 @@ final class ProjectBoardCardTests: XCTestCase {
             try target(6, status: "dismissed", priority: "high"),
             try target(7, status: "todo", priority: "high")
         ]
-        XCTAssertEqual(ProjectBoardOrder.sorted(targets.shuffled()).map(\.id), [3, 7, 2, 6, 5, 4, 1])
+        XCTAssertEqual(WorkbenchBoardOrder.sorted(targets.shuffled()).map(\.id), [3, 7, 2, 6, 5, 4, 1])
     }
 
     // Go's boardSiblingOrder has the same arms except in_review, which it gains
     // with the status itself; keep the two in step.
     func testRankTables() {
-        XCTAssertEqual(["high", "medium", "low", "bogus"].map(ProjectBoardOrder.priorityRank), [0, 1, 2, 2])
+        XCTAssertEqual(["high", "medium", "low", "bogus"].map(WorkbenchBoardOrder.priorityRank), [0, 1, 2, 2])
         XCTAssertEqual(
             ["in_progress", "in_review", "blocked", "todo", "done", "dismissed", "snoozed"]
-                .map(ProjectBoardOrder.statusRank),
+                .map(WorkbenchBoardOrder.statusRank),
             [0, 1, 2, 3, 4, 5, 5]
         )
     }
@@ -65,7 +65,7 @@ final class ProjectBoardCardTests: XCTestCase {
     // MARK: - Card
 
     func testParentCountsDoneChildrenAndIgnoresDismissed() throws {
-        let card = ProjectBoardCard(node(try target(1, "Feature"), [
+        let card = WorkbenchBoardCard(node(try target(1, "Feature"), [
             node(try target(2, status: "done")),
             node(try target(3, status: "in_progress")),
             node(try target(4, status: "dismissed"))
@@ -76,40 +76,40 @@ final class ProjectBoardCardTests: XCTestCase {
     }
 
     func testParentWithOnlyDismissedChildrenShowsNoChildProgress() throws {
-        let card = ProjectBoardCard(node(try target(1), [node(try target(2, status: "dismissed"))]))
+        let card = WorkbenchBoardCard(node(try target(1), [node(try target(2, status: "dismissed"))]))
         XCTAssertNil(card.children, "no 0/0 counter or empty bar")
         XCTAssertNil(card.leafProgress)
     }
 
     func testLeafShowsOnlyPartialProgress() throws {
-        XCTAssertEqual(ProjectBoardCard(node(try target(1, progress: 0.4))).leafProgress, 0.4)
-        XCTAssertNil(ProjectBoardCard(node(try target(2, progress: 0))).leafProgress)
-        XCTAssertNil(ProjectBoardCard(node(try target(3, progress: 1))).leafProgress)
-        XCTAssertNil(ProjectBoardCard(node(try target(4))).children)
+        XCTAssertEqual(WorkbenchBoardCard(node(try target(1, progress: 0.4))).leafProgress, 0.4)
+        XCTAssertNil(WorkbenchBoardCard(node(try target(2, progress: 0))).leafProgress)
+        XCTAssertNil(WorkbenchBoardCard(node(try target(3, progress: 1))).leafProgress)
+        XCTAssertNil(WorkbenchBoardCard(node(try target(4))).children)
     }
 
     func testClosedAndDoneFlags() throws {
-        let done = ProjectBoardCard(node(try target(1, status: "done")))
-        let dismissed = ProjectBoardCard(node(try target(2, status: "dismissed")))
-        let blocked = ProjectBoardCard(node(try target(3, status: "blocked")))
+        let done = WorkbenchBoardCard(node(try target(1, status: "done")))
+        let dismissed = WorkbenchBoardCard(node(try target(2, status: "dismissed")))
+        let blocked = WorkbenchBoardCard(node(try target(3, status: "blocked")))
         XCTAssertEqual([done.isClosed, done.isDone], [true, true])
         XCTAssertEqual([dismissed.isClosed, dismissed.isDone], [true, false])
         XCTAssertEqual([blocked.isClosed, blocked.isDone], [false, false])
     }
 
     func testTitleIsFirstNonBlankLine() {
-        XCTAssertEqual(ProjectBoardCard.title("\n  \n  Ship it  \nDetails"), "Ship it")
-        XCTAssertEqual(ProjectBoardCard.title("One"), "One")
-        XCTAssertEqual(ProjectBoardCard.title(" \n "), "")
+        XCTAssertEqual(WorkbenchBoardCard.title("\n  \n  Ship it  \nDetails"), "Ship it")
+        XCTAssertEqual(WorkbenchBoardCard.title("One"), "One")
+        XCTAssertEqual(WorkbenchBoardCard.title(" \n "), "")
     }
 
     func testStatusLabels() {
         XCTAssertEqual(
-            ProjectBoardCard.editableStatuses.map(ProjectBoardCard.statusLabel),
+            WorkbenchBoardCard.editableStatuses.map(WorkbenchBoardCard.statusLabel),
             ["To Do", "In Progress", "In Review", "Blocked", "Done", "Dismissed"]
         )
-        XCTAssertEqual(ProjectBoardCard.statusLabel("in_review"), "In Review")
-        XCTAssertEqual(ProjectBoardCard.statusLabel("waiting_on_vendor"), "waiting_on_vendor", "unknown = raw text")
+        XCTAssertEqual(WorkbenchBoardCard.statusLabel("in_review"), "In Review")
+        XCTAssertEqual(WorkbenchBoardCard.statusLabel("waiting_on_vendor"), "waiting_on_vendor", "unknown = raw text")
     }
 
     /// A real row with its status replaced: the targets CHECK does not admit
@@ -131,6 +131,6 @@ final class ProjectBoardCardTests: XCTestCase {
         XCTAssertEqual(review.statusIcon, "eye.circle")
         let unknown = try target(2, rawStatus: "waiting_on_vendor")
         XCTAssertEqual(unknown.statusColor, "secondary", "unknown status = neutral")
-        XCTAssertEqual(ProjectBoardCard.statusLabel(unknown.status), "waiting_on_vendor")
+        XCTAssertEqual(WorkbenchBoardCard.statusLabel(unknown.status), "waiting_on_vendor")
     }
 }

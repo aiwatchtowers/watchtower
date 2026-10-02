@@ -2,10 +2,10 @@ import SwiftUI
 import WatchtowerCore
 
 /// The Documents pane's list (#81): a title/file-name search, collapsible
-/// groups by kind (`ProjectDocumentGrouping`) with their markers, and
+/// groups by kind (`WorkbenchDocumentGrouping`) with their markers, and
 /// Add Document…. Selecting a row opens it in the pane.
-struct ProjectDocumentsList: View {
-    @Bindable var vm: ProjectsViewModel
+struct WorkbenchDocumentsList: View {
+    @Bindable var vm: WorkbenchesViewModel
     let onAdd: () -> Void
 
     var body: some View {
@@ -80,7 +80,7 @@ struct ProjectDocumentsList: View {
         .workspaceListStyle()
     }
 
-    private func expandedBinding(_ group: ProjectDocumentGrouping.Group) -> Binding<Bool> {
+    private func expandedBinding(_ group: WorkbenchDocumentGrouping.Group) -> Binding<Bool> {
         Binding(
             get: { !vm.isDocumentGroupCollapsed(group) },
             set: { vm.setDocumentGroup(group, collapsed: !$0) }
@@ -90,7 +90,7 @@ struct ProjectDocumentsList: View {
     /// A button, not the list style's disclosure (a plain list draws none).
     /// A folded group still shows that it holds a changed document or open
     /// comments, so the badge always has a visible counterpart.
-    private func sectionHeader(_ section: ProjectDocumentGrouping.Section) -> some View {
+    private func sectionHeader(_ section: WorkbenchDocumentGrouping.Section) -> some View {
         let collapsed = vm.isDocumentGroupCollapsed(section.group)
         let comments = section.items.reduce(0) { $0 + $1.openComments }
         return Button {
@@ -115,7 +115,7 @@ struct ProjectDocumentsList: View {
         .buttonStyle(.plain)
     }
 
-    private func documentRow(_ item: ProjectDocumentListItem) -> some View {
+    private func documentRow(_ item: WorkbenchDocumentListItem) -> some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.document.displayTitle)

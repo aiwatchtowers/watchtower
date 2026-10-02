@@ -26,7 +26,7 @@ private final class Counter {
 }
 
 @MainActor
-final class ProjectsViewModelSessionsTests: XCTestCase {
+final class WorkbenchesViewModelSessionsTests: XCTestCase {
     private var pool: DatabasePool!
     private var path: String!
     private var defaults: UserDefaults!
@@ -62,9 +62,9 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         super.tearDown()
     }
 
-    private func makeVM() -> ProjectsViewModel {
-        let vm = ProjectsViewModel(dbPool: pool, cli: ProjectCLI(runner: FakeCLIRunner()), defaults: defaults,
-                                   terminalCenter: center)
+    private func makeVM() -> WorkbenchesViewModel {
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: FakeCLIRunner()), defaults: defaults,
+                                      terminalCenter: center)
         vm.titleService = { [weak self] id in
             guard let self else { throw CancellationError() }
             titleCalls.append(id)
@@ -76,7 +76,7 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
 
     private func project(_ name: String = "acme") async throws -> Int64 {
         let path = folder.appendingPathComponent(name).path
-        return try await pool.write { try TestDatabase.insertProject($0, name: name, folder: path) }
+        return try await pool.write { try TestDatabase.insertWorkbench($0, name: name, folder: path) }
     }
 
     private var acme: String { folder.appendingPathComponent("acme").path }
@@ -96,14 +96,14 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         }
     }
 
-    private func projectWithFolder(_ name: String = "acme") async throws -> Int64 {
+    private func workbenchWithFolder(_ name: String = "acme") async throws -> Int64 {
         let id = try await project(name)
         try FileManager.default.createDirectory(at: folder.appendingPathComponent(name), withIntermediateDirectories: true)
         return id
     }
 
     private func rows(_ projectID: Int64) async throws -> [TerminalSession] {
-        try await pool.read { try TerminalSessionQueries.fetchForProject($0, projectID: projectID) }
+        try await pool.read { try TerminalSessionQueries.fetchForWorkbench($0, projectID: projectID) }
     }
 
     private var launches: [TerminalLaunch] { processes.flatMap(\.launches) }
@@ -113,8 +113,8 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
     /// A double click on Work on it: two overlapping calls both see no
     /// session yet; the in-flight guard keeps it to one row and one launch.
     func testConcurrentWorkOnCreatesOneRow() async throws {
-        let p = try await projectWithFolder()
-        let target = try await pool.write { try TestDatabase.insertProjectTarget($0, projectID: p, text: "Ship it") }
+        let p = try await workbenchWithFolder()
+        let target = try await pool.write { try TestDatabase.insertWorkbenchTarget($0, projectID: p, text: "Ship it") }
         let vm = makeVM()
         await vm.reload()
 
@@ -128,8 +128,8 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
     }
 
     func testWorkOnTwiceCreatesOneRowAndTheSecondCallFocusesIt() async throws {
-        let p = try await projectWithFolder()
-        let target = try await pool.write { try TestDatabase.insertProjectTarget($0, projectID: p, text: "Ship it") }
+        let p = try await workbenchWithFolder()
+        let target = try await pool.write { try TestDatabase.insertWorkbenchTarget($0, projectID: p, text: "Ship it") }
         let vm = makeVM()
         await vm.reload()
 
@@ -156,7 +156,7 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
     /// Opening it from a list loaded before that resumes the new id, not the
     /// pre-clear conversation, and the launch names its row for the hook.
     func testOpenResumesTheSessionIDTheHookStored() async throws {
-        let p = try await projectWithFolder()
+        let p = try await workbenchWithFolder()
         let stale = try await insertSession(.init(
             projectID: p, kind: .claude, title: "s", folderPath: acme, claudeSessionID: UUID().uuidString.lowercased()
         ))
@@ -174,8 +174,8 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
     }
 
     func testWorkOnATargetWithALegacyClosedSessionResumesIt() async throws {
-        let p = try await projectWithFolder()
-        let target = try await pool.write { try TestDatabase.insertProjectTarget($0, projectID: p) }
+        let p = try await workbenchWithFolder()
+        let target = try await pool.write { try TestDatabase.insertWorkbenchTarget($0, projectID: p) }
         let closed = try await insertSession(.init(
             projectID: p, kind: .claude, title: "Feature", targetID: target,
             folderPath: acme, claudeSessionID: UUID().uuidString.lowercased()
@@ -194,9 +194,9 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
     /// when the board is the second pane; a title with shell or flag syntax
     /// names the row only, the command line keeps the fixed prompt.
     func testWorkOnFromASplitBoardKeepsTheBoardAndTheFixedPrompt() async throws {
-        let p = try await projectWithFolder()
+        let p = try await workbenchWithFolder()
         let title = "Fix 'quotes'\n--dangerously-skip-permissions; rm -rf ~"
-        let target = try await pool.write { try TestDatabase.insertProjectTarget($0, projectID: p, text: title) }
+        let target = try await pool.write { try TestDatabase.insertWorkbenchTarget($0, projectID: p, text: title) }
         let vm = makeVM()
         await vm.reload()
         vm.drill(into: p)
@@ -217,8 +217,8 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
     /// The existing-session branch keeps the board in a split too, also
     /// out of an expanded board; a single pane switches to the session.
     func testWorkOnAnExistingSessionKeepsTheBoardInASplitAndSwitchesASinglePane() async throws {
-        let p = try await projectWithFolder()
-        let target = try await pool.write { try TestDatabase.insertProjectTarget($0, projectID: p) }
+        let p = try await workbenchWithFolder()
+        let target = try await pool.write { try TestDatabase.insertWorkbenchTarget($0, projectID: p) }
         let existing = try await insertSession(.init(
             projectID: p, kind: .claude, title: "Feature", targetID: target,
             folderPath: acme, claudeSessionID: UUID().uuidString.lowercased()
@@ -246,11 +246,11 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
     /// A read error belongs to the target's own project, not to whatever is
     /// selected when it lands.
     func testWorkOnErrorLandsOnTheTargetsProject() async throws {
-        let a = try await projectWithFolder("a")
-        let b = try await projectWithFolder("b")
+        let a = try await workbenchWithFolder("a")
+        let b = try await workbenchWithFolder("b")
         let vm = makeVM()
         await vm.reload()
-        vm.selectedProjectID = b
+        vm.selectedWorkbenchID = b
 
         await vm.workOn(targetID: 9_999, targetText: "gone", projectID: a)
 
@@ -261,7 +261,7 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
     // MARK: - Open / delete / rename
 
     func testOpenMarksTheSessionMostRecentlyActive() async throws {
-        let p = try await projectWithFolder()
+        let p = try await workbenchWithFolder()
         let older = try await insertSession(.init(projectID: p, kind: .shell, title: "older", folderPath: acme))
         let newer = try await insertSession(.init(projectID: p, kind: .shell, title: "newer", folderPath: acme))
         try await pool.write { db in
@@ -271,7 +271,7 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         }
         let vm = makeVM()
         await vm.reload()
-        vm.selectedProjectID = p
+        vm.selectedWorkbenchID = p
 
         await vm.open(older)
 
@@ -281,13 +281,13 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
     }
 
     func testDeleteOfARunningSessionClosesItBeforeTheRowGoesAndDropsItFromTheLayout() async throws {
-        let p = try await projectWithFolder()
+        let p = try await workbenchWithFolder()
         var rowExistedAtDetach = false
         let probe = ProbedTerminalSession()
         center.makeProcess = { probe }
         let vm = makeVM()
         await vm.reload()
-        vm.selectedProjectID = p
+        vm.selectedWorkbenchID = p
         await vm.newSession(projectID: p)
         let row = try XCTUnwrap(vm.sessions.first)
         XCTAssertEqual(vm.layout.primary, .session(row.id))
@@ -308,12 +308,12 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
     /// "Open terminal" picks a row closed by an older build like any other:
     /// the most recent session resumes, no new one is started.
     func testOpenMostRecentResumesALegacyClosedSession() async throws {
-        let p = try await projectWithFolder()
+        let p = try await workbenchWithFolder()
         let closed = try await insertSession(.init(
             projectID: p, kind: .claude, title: "Feature",
             folderPath: acme, claudeSessionID: UUID().uuidString.lowercased()
         ), legacyClosed: true)
-        let fetched = try await pool.read { try ProjectQueries.fetch($0, id: p) }
+        let fetched = try await pool.read { try WorkbenchQueries.fetch($0, id: p) }
         let project = try XCTUnwrap(fetched)
         let vm = makeVM()
         await vm.reload()
@@ -328,10 +328,10 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
     }
 
     func testRenameToEmptyLeavesTheTitle() async throws {
-        let p = try await projectWithFolder()
+        let p = try await workbenchWithFolder()
         let vm = makeVM()
         await vm.reload()
-        vm.selectedProjectID = p
+        vm.selectedWorkbenchID = p
         await vm.newSession(projectID: p)
         let row = try XCTUnwrap(vm.sessions.first)
 
@@ -360,7 +360,7 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
     // MARK: - Resume failure / start fresh
 
     func testAResumeExitingNonZeroAtOnceOffersStartFreshWhichUsesANewID() async throws {
-        let p = try await projectWithFolder()
+        let p = try await workbenchWithFolder()
         let row = try await insertSession(.init(
             projectID: p, kind: .claude, title: "s", folderPath: acme, claudeSessionID: UUID().uuidString.lowercased()
         ))
@@ -383,7 +383,7 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
     /// A transcript the check missed makes the relaunch a `--session-id` of
     /// the stored id, which Claude Code refuses at once: Start fresh too.
     func testARelaunchWithoutATranscriptExitingAtOnceOffersStartFresh() async throws {
-        let p = try await projectWithFolder()
+        let p = try await workbenchWithFolder()
         let uuid = UUID().uuidString.lowercased()
         let row = try await insertSession(.init(
             projectID: p, kind: .claude, title: "s", folderPath: acme, claudeSessionID: uuid
@@ -400,7 +400,7 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
     }
 
     func testAResumeEndingLaterOrCleanlyIsNotAFailure() async throws {
-        let p = try await projectWithFolder()
+        let p = try await workbenchWithFolder()
         let row = try await insertSession(.init(
             projectID: p, kind: .claude, title: "s", folderPath: acme, claudeSessionID: UUID().uuidString.lowercased()
         ))
@@ -418,10 +418,10 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
     // MARK: - Titles
 
     func testRefreshTitlesAsksOnlyForAutoClaudeSessionsAndStopsAfterFiveFailures() async throws {
-        let p = try await projectWithFolder()
+        let p = try await workbenchWithFolder()
         let vm = makeVM()
         await vm.reload()
-        vm.selectedProjectID = p
+        vm.selectedWorkbenchID = p
         await vm.newSession(projectID: p)
         let auto = try XCTUnwrap(vm.sessions.first)
         await vm.newSession(projectID: p)
@@ -437,25 +437,25 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
     }
 
     func testANotYetTitledAnswerDoesNotUseTheAttemptBudget() async throws {
-        let p = try await projectWithFolder()
+        let p = try await workbenchWithFolder()
         let vm = makeVM()
         await vm.newSession(projectID: p)
         titleCalls = []
 
         for _ in 0..<7 { await vm.refreshTitles() }
 
-        XCTAssertEqual(titleCalls.count, ProjectsViewModel.maxNotYetTitledPolls,
+        XCTAssertEqual(titleCalls.count, WorkbenchesViewModel.maxNotYetTitledPolls,
                        "a session with no owner message yet is left alone after a streak")
         let all = try await rows(p)
         let row = try XCTUnwrap(all.first)
         await vm.open(row)
         await vm.refreshTitles()
-        XCTAssertEqual(titleCalls.count, ProjectsViewModel.maxNotYetTitledPolls + 1,
+        XCTAssertEqual(titleCalls.count, WorkbenchesViewModel.maxNotYetTitledPolls + 1,
                        "switching back to the session asks again")
     }
 
     func testASessionWithoutATranscriptSpawnsNoTitleCall() async throws {
-        let p = try await projectWithFolder()
+        let p = try await workbenchWithFolder()
         let vm = makeVM()
         transcripts = false
         await vm.newSession(projectID: p)
@@ -467,7 +467,7 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
     }
 
     func testClaudeNotFoundIsNotAFailedResume() async throws {
-        let p = try await projectWithFolder()
+        let p = try await workbenchWithFolder()
         let row = try await insertSession(.init(
             projectID: p, kind: .claude, title: "s", folderPath: acme, claudeSessionID: UUID().uuidString.lowercased()
         ))
@@ -481,10 +481,10 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
     }
 
     func testSwitchingAwayTitlesTheSessionLeft() async throws {
-        let p = try await projectWithFolder()
+        let p = try await workbenchWithFolder()
         let vm = makeVM()
         await vm.reload()
-        vm.selectedProjectID = p
+        vm.selectedWorkbenchID = p
         await vm.newSession(projectID: p)
         let first = try XCTUnwrap(vm.sessions.first)
         await vm.newSession(projectID: p)
@@ -496,7 +496,7 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
     }
 
     func testTheTitlePollEndsOnceTheVMIsGone() async throws {
-        var vm: ProjectsViewModel? = makeVM()
+        var vm: WorkbenchesViewModel? = makeVM()
         let waits = Counter()
         vm?.titleSleep = { _ in
             waits.value += 1
@@ -526,7 +526,7 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
 
     /// Spec §6: no process for a row that was not written.
     func testAFailedCreateStartsNoProcess() async throws {
-        let p = try await projectWithFolder()
+        let p = try await workbenchWithFolder()
         let vm = makeVM()
         await vm.reload()
 
@@ -540,14 +540,14 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
     }
 
     func testASuccessfulLoadClearsTheLoadErrorButKeepsAnActionError() async throws {
-        let p = try await projectWithFolder()
+        let p = try await workbenchWithFolder()
         let loose = try await pool.write { d -> Int64 in
             try d.execute(sql: "INSERT INTO targets (text) VALUES ('personal')")
             return d.lastInsertedRowID
         }
         let vm = makeVM()
         await vm.reload()
-        vm.selectedProjectID = p
+        vm.selectedWorkbenchID = p
 
         try await pool.write { try $0.execute(sql: "ALTER TABLE terminal_sessions RENAME TO terminal_sessions_hidden") }
         await vm.loadSessions(projectID: p)
@@ -567,20 +567,20 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
     /// House rule: a `newSession` for project A that finishes after the owner
     /// selected project B leaves B's sessions and layout alone.
     func testNewSessionFinishingAfterSwitchingProjectsLandsOnItsOwnProject() async throws {
-        let a = try await projectWithFolder("a")
-        let b = try await projectWithFolder("b")
+        let a = try await workbenchWithFolder("a")
+        let b = try await workbenchWithFolder("b")
         let vm = makeVM()
         await vm.reload()
-        vm.selectedProjectID = a
+        vm.selectedWorkbenchID = a
         center.makeProcess = { [weak vm] in
             // Mid-flight: the row exists, the list and layout are not updated yet.
-            vm?.selectedProjectID = b
+            vm?.selectedWorkbenchID = b
             return FakeTerminalSession(pid: 0)
         }
 
         await vm.newSession(projectID: a)
 
-        XCTAssertEqual(vm.selectedProjectID, b)
+        XCTAssertEqual(vm.selectedWorkbenchID, b)
         XCTAssertTrue(vm.sessions.isEmpty)
         XCTAssertEqual(vm.layout, .default)
         let row = try XCTUnwrap(vm.terminalSessions[a]?.first)
@@ -593,40 +593,40 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         let vm = makeVM()
         await vm.reload()
 
-        vm.selectedProjectID = a
+        vm.selectedWorkbenchID = a
         vm.layout.split(with: .documents)
-        vm.selectedProjectID = b
+        vm.selectedWorkbenchID = b
         XCTAssertFalse(vm.layout.isSplit)
-        vm.selectedProjectID = a
+        vm.selectedWorkbenchID = a
         XCTAssertTrue(vm.layout.isSplit)
 
         let relaunched = makeVM()
-        relaunched.selectedProjectID = a
+        relaunched.selectedWorkbenchID = a
         XCTAssertEqual(relaunched.layout.visiblePanes, [.board, .documents])
     }
 
     // MARK: - Left panel
 
     func testSelectingAProjectDrillsInAndBackKeepsTheSelection() async throws {
-        let p = try await projectWithFolder()
+        let p = try await workbenchWithFolder()
         let vm = makeVM()
         await vm.reload()
 
         vm.drill(into: p)
-        XCTAssertEqual(vm.drilledProjectID, p)
-        XCTAssertEqual(vm.drilledProject?.id, p)
+        XCTAssertEqual(vm.drilledWorkbenchID, p)
+        XCTAssertEqual(vm.drilledWorkbench?.id, p)
         XCTAssertTrue(launches.isEmpty, "drilling in starts nothing")
 
-        vm.drilledProjectID = nil
-        XCTAssertEqual(vm.selectedProjectID, p, "Back leaves the project on screen")
+        vm.drilledWorkbenchID = nil
+        XCTAssertEqual(vm.selectedWorkbenchID, p, "Back leaves the project on screen")
         vm.drill(into: p)
-        XCTAssertEqual(vm.drilledProjectID, p, "clicking the selected project again drills back in")
+        XCTAssertEqual(vm.drilledWorkbenchID, p, "clicking the selected project again drills back in")
     }
 
     /// A split of a session and the board highlights the session, whichever
     /// slot holds it.
     func testPanelHighlightsTheVisibleSessionInASplit() async throws {
-        let p = try await projectWithFolder()
+        let p = try await workbenchWithFolder()
         let row = try await liveSession(p, "one")
         let vm = makeVM()
         await vm.reload()
@@ -644,7 +644,7 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
     /// A panel click shows a session and starts it if not running — a row
     /// closed by an older build included — keeping the other one running.
     func testPanelSessionClickShowsAndStartsItAndKeepsTheOtherRunning() async throws {
-        let p = try await projectWithFolder()
+        let p = try await workbenchWithFolder()
         let first = try await insertSession(.init(
             projectID: p, kind: .claude, title: "first", folderPath: acme, claudeSessionID: UUID().uuidString.lowercased()
         ))
@@ -666,7 +666,7 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
     }
 
     func testNewPanelSessionStartsOneInTheDrilledProjectAndShowsTheTerminal() async throws {
-        let p = try await projectWithFolder()
+        let p = try await workbenchWithFolder()
         let vm = makeVM()
         await vm.reload()
         vm.drill(into: p)
@@ -680,23 +680,23 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
     }
 
     func testStandaloneAndProjectSelectionExcludeEachOther() async throws {
-        let p = try await projectWithFolder()
+        let p = try await workbenchWithFolder()
         let vm = makeVM()
         await vm.reload()
         vm.drill(into: p)
-        vm.drilledProjectID = nil
+        vm.drilledWorkbenchID = nil
 
         await vm.newStandalone(kind: .shell, folder: folder)
         let shell = try XCTUnwrap(vm.standaloneSessions.first)
         XCTAssertEqual(vm.selectedStandalone?.id, shell.id, "a new terminal goes on screen")
-        XCTAssertNil(vm.selectedProjectID)
+        XCTAssertNil(vm.selectedWorkbenchID)
 
         vm.drill(into: p)
         XCTAssertNil(vm.selectedStandalone)
 
         await vm.selectStandalone(shell)
-        XCTAssertNil(vm.selectedProjectID)
-        XCTAssertNil(vm.drilledProjectID)
+        XCTAssertNil(vm.selectedWorkbenchID)
+        XCTAssertNil(vm.drilledWorkbenchID)
         XCTAssertEqual(vm.selectedStandalone?.id, shell.id)
 
         await vm.delete(shell)
@@ -726,7 +726,7 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
     /// A session opened from the panel stays on screen when it exits (its
     /// exit bar offers Restart / Start fresh), even with another one live.
     func testAnOpenedSessionThatExitsStaysShownOverAnotherLiveOne() async throws {
-        let p = try await projectWithFolder()
+        let p = try await workbenchWithFolder()
         let live = try await insertSession(.init(
             projectID: p, kind: .claude, title: "live", folderPath: acme, claudeSessionID: UUID().uuidString.lowercased()
         ))
@@ -753,7 +753,7 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
     }
 
     func testShowingAMissingSessionReportsIt() async throws {
-        let p = try await projectWithFolder()
+        let p = try await workbenchWithFolder()
         let vm = makeVM()
         await vm.reload()
         vm.drill(into: p)
@@ -768,7 +768,7 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
     /// row deleted elsewhere, for Open and Start fresh alike — no process
     /// starts and the pane leaves the layout.
     func testOpeningASessionDeletedElsewhereReportsItAndStartsNothing() async throws {
-        let p = try await projectWithFolder()
+        let p = try await workbenchWithFolder()
         let row = try await liveSession(p, "gone")
         let vm = makeVM()
         await vm.reload()
@@ -789,20 +789,20 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
     }
 
     func testARevealDrillsInAndReplacesAStandaloneTerminal() async throws {
-        let p = try await projectWithFolder()
+        let p = try await workbenchWithFolder()
         let vm = makeVM()
         await vm.reload()
         await vm.newStandalone(kind: .shell, folder: folder)
         XCTAssertNotNil(vm.selectedStandaloneID)
 
-        vm.reveal(ProjectRoute(projectID: p, pane: .board))
+        vm.reveal(WorkbenchRoute(projectID: p, pane: .board))
 
         XCTAssertNil(vm.selectedStandaloneID)
-        XCTAssertEqual(vm.drilledProjectID, p)
+        XCTAssertEqual(vm.drilledWorkbenchID, p)
     }
 
     func testAProjectDeletedElsewhereLeavesTheSelectionAndThePanel() async throws {
-        let p = try await projectWithFolder()
+        let p = try await workbenchWithFolder()
         let vm = makeVM()
         await vm.reload()
         vm.drill(into: p)
@@ -810,8 +810,8 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         try await pool.write { try $0.execute(sql: "DELETE FROM projects WHERE id = ?", arguments: [p]) }
         await vm.reload()
 
-        XCTAssertNil(vm.selectedProjectID)
-        XCTAssertNil(vm.drilledProjectID)
+        XCTAssertNil(vm.selectedWorkbenchID)
+        XCTAssertNil(vm.drilledWorkbenchID)
     }
 
     func testAStandaloneDeletedElsewhereLeavesThePage() async throws {
@@ -835,7 +835,7 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
     }
 
     func testSplitPicksTheSecondPaneAndStartsNothing() async throws {
-        let p = try await projectWithFolder()
+        let p = try await workbenchWithFolder()
         let row = try await liveSession(p, "one")
         let vm = makeVM()
         await vm.reload()
@@ -863,7 +863,7 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
     /// stays where it is; a split without it replaces the other pane, never
     /// the document.
     func testSendCommentsInASplitNeverHidesTheDocument() async throws {
-        let p = try await projectWithFolder()
+        let p = try await workbenchWithFolder()
         let row = try await liveSession(p, "one")
         let vm = makeVM()
         await vm.reload()
@@ -881,8 +881,8 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
     }
 
     func testOpenTerminalFromADocumentKeepsItInTheSplit() async throws {
-        let p = try await projectWithFolder()
-        let fetched = try await pool.read { try ProjectQueries.fetch($0, id: p) }
+        let p = try await workbenchWithFolder()
+        let fetched = try await pool.read { try WorkbenchQueries.fetch($0, id: p) }
         let project = try XCTUnwrap(fetched)
         let vm = makeVM()
         await vm.reload()
@@ -896,7 +896,7 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
     }
 
     func testPanePickerOpensASessionInThatPane() async throws {
-        let p = try await projectWithFolder()
+        let p = try await workbenchWithFolder()
         let closed = try await insertSession(.init(
             projectID: p, kind: .claude, title: "old", folderPath: acme, claudeSessionID: UUID().uuidString.lowercased()
         ), legacyClosed: true)
@@ -924,8 +924,8 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
     /// terminal; Terminal brings back a session already in a slot, or resumes
     /// the most recent one next to the view on screen.
     func testHeaderViewButtonsKeepTheTerminalAndPickASession() async throws {
-        let p = try await projectWithFolder()
-        let fetched = try await pool.read { try ProjectQueries.fetch($0, id: p) }
+        let p = try await workbenchWithFolder()
+        let fetched = try await pool.read { try WorkbenchQueries.fetch($0, id: p) }
         let project = try XCTUnwrap(fetched)
         let row = try await liveSession(p, "one")
         let vm = makeVM()
@@ -957,7 +957,7 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
     /// The header's session menu in a single pane: another session replaces
     /// the terminal on screen, "New session" starts one there.
     func testHeaderSessionMenuSwitchesTheSinglePaneSession() async throws {
-        let p = try await projectWithFolder()
+        let p = try await workbenchWithFolder()
         let one = try await liveSession(p, "one")
         let two = try await liveSession(p, "two")
         let vm = makeVM()
@@ -975,8 +975,8 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
     }
 
     func testHeaderTerminalButtonStartsASessionWhenTheProjectHasNone() async throws {
-        let p = try await projectWithFolder()
-        let fetched = try await pool.read { try ProjectQueries.fetch($0, id: p) }
+        let p = try await workbenchWithFolder()
+        let fetched = try await pool.read { try WorkbenchQueries.fetch($0, id: p) }
         let project = try XCTUnwrap(fetched)
         let vm = makeVM()
         await vm.reload()
@@ -991,7 +991,7 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
     }
 
     func testExpandDividerAndClosePanePersist() async throws {
-        let p = try await projectWithFolder()
+        let p = try await workbenchWithFolder()
         let vm = makeVM()
         await vm.reload()
         vm.drill(into: p)
@@ -1000,7 +1000,7 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
         vm.toggleExpand(.documents, projectID: p)
         vm.setDividerFraction(0.95, projectID: p)
         let relaunched = makeVM()
-        relaunched.selectedProjectID = p
+        relaunched.selectedWorkbenchID = p
         XCTAssertEqual(relaunched.layout.visiblePanes, [.documents])
         XCTAssertEqual(relaunched.layout.dividerFraction, 0.8)
 
@@ -1012,7 +1012,7 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
     /// A layout saved in an earlier run can name a session that is gone:
     /// the first list load drops it instead of showing an empty pane.
     func testALoadDropsASessionTheLayoutStillNames() async throws {
-        let p = try await projectWithFolder()
+        let p = try await workbenchWithFolder()
         var stale = WorkspaceLayout.default
         stale.show(.session(999))
         stale.split(with: .documents)
@@ -1026,7 +1026,7 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
 
     /// Resume / Restart / Start fresh inside an expanded pane keep it expanded.
     func testInPlaceButtonsKeepAnExpandedPane() async throws {
-        let p = try await projectWithFolder()
+        let p = try await workbenchWithFolder()
         let row = try await liveSession(p, "one")
         let vm = makeVM()
         await vm.reload()
@@ -1046,7 +1046,7 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
     /// A pane picked from a menu that left the layout while the session
     /// started still puts the session on screen.
     func testReplacingAGoneSlotFallsBackToShow() async throws {
-        let p = try await projectWithFolder()
+        let p = try await workbenchWithFolder()
         let row = try await liveSession(p, "one")
         let vm = makeVM()
         await vm.reload()
@@ -1061,7 +1061,7 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
     /// app restart): its most recent session goes on screen, unstarted — a
     /// row closed by an older build included.
     func testTerminalDeepLinkShowsTheMostRecentSession() async throws {
-        let p = try await projectWithFolder()
+        let p = try await workbenchWithFolder()
         _ = try await liveSession(p, "older")
         let row = try await insertSession(.init(
             projectID: p, kind: .claude, title: "one", folderPath: acme, claudeSessionID: UUID().uuidString.lowercased()
@@ -1081,12 +1081,12 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
     /// Two overlapping reads, the older one finishing last: the newer list
     /// stays, and a session placed between the two starts is not pruned.
     func testAnOlderReadFinishingLastNeitherHidesTheNewListNorPrunesTheLayout() async throws {
-        let p = try await projectWithFolder()
+        let p = try await workbenchWithFolder()
         let vm = makeVM()
         let row = try await liveSession(p, "one")
         var gates: [CheckedContinuation<Void, Never>] = []
         var results: [[TerminalSession]] = [[], [row]]
-        vm.readProjectSessions = { _ in
+        vm.readWorkbenchSessions = { _ in
             let rows = results.removeFirst()
             await withCheckedContinuation { gates.append($0) }
             return rows
@@ -1114,12 +1114,12 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
     /// The older read finishing first is applied (the caller sees its own
     /// rows) but does not prune: a newer read is still in flight.
     func testAnOlderReadFinishingFirstIsAppliedWithoutPruning() async throws {
-        let p = try await projectWithFolder()
+        let p = try await workbenchWithFolder()
         let vm = makeVM()
         let row = try await liveSession(p, "one")
         var gates: [CheckedContinuation<Void, Never>] = []
         var results: [[TerminalSession]] = [[], [row]]
-        vm.readProjectSessions = { _ in
+        vm.readWorkbenchSessions = { _ in
             let rows = results.removeFirst()
             await withCheckedContinuation { gates.append($0) }
             return rows
@@ -1149,7 +1149,7 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
     /// Opening a session never moves it; a drag does, and the order outlives
     /// a relaunch; a session created later appears on top once.
     func testPanelOrderIsStableAndChangesOnlyByDrag() async throws {
-        let p = try await projectWithFolder()
+        let p = try await workbenchWithFolder()
         let first = try await liveSession(p, "first")
         let second = try await liveSession(p, "second")
         let vm = makeVM()
@@ -1174,7 +1174,7 @@ final class ProjectsViewModelSessionsTests: XCTestCase {
     }
 
     func testStandaloneAndProjectOrdersAreSavedApart() async throws {
-        let p = try await projectWithFolder()
+        let p = try await workbenchWithFolder()
         let a = try await liveSession(p, "a")
         let b = try await liveSession(p, "b")
         let vm = makeVM()

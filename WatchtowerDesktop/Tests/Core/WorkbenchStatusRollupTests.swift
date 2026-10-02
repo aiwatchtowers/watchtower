@@ -6,7 +6,7 @@ import WatchtowerTestSupport
 /// BEHAVIOR PROJ-05 — a project parent's status never lags its children.
 /// The rule lives in migration 00085's triggers, so a Desktop write through
 /// GRDB rolls the parent up exactly like a Go write, with no Swift port.
-final class ProjectStatusRollupTests: XCTestCase {
+final class WorkbenchStatusRollupTests: XCTestCase {
 
     private func status(_ db: Database, _ id: Int64) throws -> String? {
         try String.fetchOne(db, sql: "SELECT status FROM targets WHERE id = ?", arguments: [id])
@@ -15,10 +15,10 @@ final class ProjectStatusRollupTests: XCTestCase {
     func testGRDBChildStatusUpdateRollsTheChainUp() throws {
         let queue = try TestDatabase.create()
         try queue.write { db in
-            let project = try TestDatabase.insertProject(db)
-            let root = try TestDatabase.insertProjectTarget(db, projectID: project, text: "Plan")
-            let mid = try TestDatabase.insertProjectTarget(db, projectID: project, parentID: root)
-            let leaf = try TestDatabase.insertProjectTarget(db, projectID: project, parentID: mid)
+            let project = try TestDatabase.insertWorkbench(db)
+            let root = try TestDatabase.insertWorkbenchTarget(db, projectID: project, text: "Plan")
+            let mid = try TestDatabase.insertWorkbenchTarget(db, projectID: project, parentID: root)
+            let leaf = try TestDatabase.insertWorkbenchTarget(db, projectID: project, parentID: mid)
             XCTAssertEqual(try status(db, root), "todo")
 
             try TargetQueries.updateStatus(db, id: Int(leaf), status: "in_progress")
@@ -34,10 +34,10 @@ final class ProjectStatusRollupTests: XCTestCase {
     func testGRDBParentOwnUpdateStandsAndChildDeleteReRollsIt() throws {
         let queue = try TestDatabase.create()
         try queue.write { db in
-            let project = try TestDatabase.insertProject(db)
-            let parent = try TestDatabase.insertProjectTarget(db, projectID: project)
-            _ = try TestDatabase.insertProjectTarget(db, projectID: project, status: "done", parentID: parent)
-            let open = try TestDatabase.insertProjectTarget(db, projectID: project, parentID: parent)
+            let project = try TestDatabase.insertWorkbench(db)
+            let parent = try TestDatabase.insertWorkbenchTarget(db, projectID: project)
+            _ = try TestDatabase.insertWorkbenchTarget(db, projectID: project, status: "done", parentID: parent)
+            let open = try TestDatabase.insertWorkbenchTarget(db, projectID: project, parentID: parent)
             XCTAssertEqual(try status(db, parent), "in_progress")
 
             try TargetQueries.updateStatus(db, id: Int(parent), status: "blocked")
@@ -51,16 +51,16 @@ final class ProjectStatusRollupTests: XCTestCase {
     func testDeletingAProjectWithAMultiLevelBoardLeavesNoTargets() throws {
         let queue = try TestDatabase.create()
         try queue.write { db in
-            let project = try TestDatabase.insertProject(db)
-            let other = try TestDatabase.insertProject(db, name: "other", folder: "/tmp/other")
-            let root = try TestDatabase.insertProjectTarget(db, projectID: project, text: "Plan")
+            let project = try TestDatabase.insertWorkbench(db)
+            let other = try TestDatabase.insertWorkbench(db, name: "other", folder: "/tmp/other")
+            let root = try TestDatabase.insertWorkbenchTarget(db, projectID: project, text: "Plan")
             for _ in 0..<3 {
-                let mid = try TestDatabase.insertProjectTarget(db, projectID: project, status: "in_progress", parentID: root)
-                let leaf = try TestDatabase.insertProjectTarget(db, projectID: project, parentID: mid)
-                _ = try TestDatabase.insertProjectTarget(db, projectID: project, status: "done", parentID: leaf)
+                let mid = try TestDatabase.insertWorkbenchTarget(db, projectID: project, status: "in_progress", parentID: root)
+                let leaf = try TestDatabase.insertWorkbenchTarget(db, projectID: project, parentID: mid)
+                _ = try TestDatabase.insertWorkbenchTarget(db, projectID: project, status: "done", parentID: leaf)
             }
-            let keep = try TestDatabase.insertProjectTarget(db, projectID: other, text: "Other plan")
-            _ = try TestDatabase.insertProjectTarget(db, projectID: other, status: "in_progress", parentID: keep)
+            let keep = try TestDatabase.insertWorkbenchTarget(db, projectID: other, text: "Other plan")
+            _ = try TestDatabase.insertWorkbenchTarget(db, projectID: other, status: "in_progress", parentID: keep)
 
             try db.execute(sql: "DELETE FROM projects WHERE id = ?", arguments: [project])
 

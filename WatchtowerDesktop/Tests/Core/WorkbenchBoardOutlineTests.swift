@@ -3,7 +3,7 @@ import GRDB
 import WatchtowerTestSupport
 @testable import WatchtowerCore
 
-final class ProjectBoardOutlineTests: XCTestCase {
+final class WorkbenchBoardOutlineTests: XCTestCase {
 
     // Builds real Target rows through the DB so the fixture never drifts from
     // Target's own row decoding.
@@ -22,8 +22,8 @@ final class ProjectBoardOutlineTests: XCTestCase {
         }
     }
 
-    private func node(_ t: Target, _ children: [ProjectBoardNode] = []) -> ProjectBoardNode {
-        ProjectBoardNode(target: t, children: children, openComments: 0, unreadForOwner: 0, documents: [])
+    private func node(_ t: Target, _ children: [WorkbenchBoardNode] = []) -> WorkbenchBoardNode {
+        WorkbenchBoardNode(target: t, children: children, openComments: 0, unreadForOwner: 0, documents: [])
     }
 
     func testRowsFlattenDepthFirstWithDepth() throws {
@@ -34,7 +34,7 @@ final class ProjectBoardOutlineTests: XCTestCase {
             ]),
             node(try target(5, "Other"))
         ]
-        let rows = ProjectBoardOutline.rows(tree, collapsed: [], showDone: true)
+        let rows = WorkbenchBoardOutline.rows(tree, collapsed: [], showDone: true)
         XCTAssertEqual(rows.map(\.id), [1, 2, 3, 4, 5])
         XCTAssertEqual(rows.map(\.depth), [0, 1, 1, 2, 0])
         XCTAssertEqual(rows.map(\.hasChildren), [true, false, true, false, false])
@@ -42,7 +42,7 @@ final class ProjectBoardOutlineTests: XCTestCase {
 
     func testCollapsedNodeHidesItsSubtreeButNotItself() throws {
         let tree = [node(try target(1, "Feature"), [node(try target(2, "Task"), [node(try target(3, "Step"))])])]
-        let rows = ProjectBoardOutline.rows(tree, collapsed: [2], showDone: true)
+        let rows = WorkbenchBoardOutline.rows(tree, collapsed: [2], showDone: true)
         XCTAssertEqual(rows.map(\.id), [1, 2])
     }
 
@@ -54,13 +54,13 @@ final class ProjectBoardOutlineTests: XCTestCase {
             ]),
             node(try target(4, "Dismissed", status: "dismissed"))
         ]
-        let rows = ProjectBoardOutline.rows(tree, collapsed: [], showDone: false)
+        let rows = WorkbenchBoardOutline.rows(tree, collapsed: [], showDone: false)
         XCTAssertEqual(rows.map(\.id), [1, 2], "a closed node stays while any descendant is open")
     }
 
     func testFindLocatesANestedNode() throws {
         let tree = [node(try target(1, "Feature"), [node(try target(2, "Task"))])]
-        XCTAssertEqual(ProjectBoardOutline.find(2, in: tree)?.target.text, "Task")
-        XCTAssertNil(ProjectBoardOutline.find(99, in: tree))
+        XCTAssertEqual(WorkbenchBoardOutline.find(2, in: tree)?.target.text, "Task")
+        XCTAssertNil(WorkbenchBoardOutline.find(99, in: tree))
     }
 }

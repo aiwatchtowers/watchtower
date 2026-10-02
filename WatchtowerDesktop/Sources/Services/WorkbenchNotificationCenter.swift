@@ -5,31 +5,31 @@ import WatchtowerCore
 
 /// Native-push seam (the `MeetingReminderNotifying` shape), so the center is
 /// testable without `UNUserNotificationCenter`.
-protocol ProjectNotifying {
-    func sendProjectNotice(_ notice: ProjectNotice)
+protocol WorkbenchNotifying {
+    func sendWorkbenchNotice(_ notice: WorkbenchNotice)
 }
 
-extension NotificationService: ProjectNotifying {}
+extension NotificationService: WorkbenchNotifying {}
 
 /// One project's activity read, seamed so a test can fail a single project
 /// without corrupting the shared database for every other one.
-protocol ProjectActivityReading {
-    func snapshot(_ db: Database, project: Project, afterAgentCommentID: Int64) throws -> ProjectNotificationPolicy.Snapshot
+protocol WorkbenchActivityReading {
+    func snapshot(_ db: Database, project: Workbench, afterAgentCommentID: Int64) throws -> WorkbenchNotificationPolicy.Snapshot
 }
 
-struct DefaultProjectActivityReader: ProjectActivityReading {
-    func snapshot(_ db: Database, project: Project, afterAgentCommentID: Int64) throws -> ProjectNotificationPolicy.Snapshot {
-        try ProjectQueries.activitySnapshot(db, project: project, afterAgentCommentID: afterAgentCommentID)
+struct DefaultWorkbenchActivityReader: WorkbenchActivityReading {
+    func snapshot(_ db: Database, project: Workbench, afterAgentCommentID: Int64) throws -> WorkbenchNotificationPolicy.Snapshot {
+        try WorkbenchQueries.activitySnapshot(db, project: project, afterAgentCommentID: afterAgentCommentID)
     }
 }
 
 /// Owner notifications for project activity (spec §6.5). A 30 s poll — the
 /// agent writes from another process (the project MCP server), so GRDB
 /// observation never fires. Per project it compares the persisted snapshot
-/// with the current one through the pure `ProjectNotificationPolicy`.
+/// with the current one through the pure `WorkbenchNotificationPolicy`.
 @MainActor
 @Observable
-final class ProjectNotificationCenter {
+final class WorkbenchNotificationCenter {
     /// `@AppStorage` key of the Settings toggle; absent = on.
     static let enabledKey = "projects.notifications"
     static let pollInterval: Duration = .seconds(30)
@@ -40,17 +40,17 @@ final class ProjectNotificationCenter {
     /// other processes too).
     @ObservationIgnored var onPolled: (() async -> Void)?
 
-    @ObservationIgnored private var ownerTouched: [Int64: Set<ProjectSubject>] = [:]
+    @ObservationIgnored private var ownerTouched: [Int64: Set<WorkbenchSubject>] = [:]
     @ObservationIgnored private var pollTask: Task<Void, Never>?
     private let dbPool: DatabasePool
-    private let notifier: ProjectNotifying
-    private let activityReader: ProjectActivityReading
+    private let notifier: WorkbenchNotifying
+    private let activityReader: WorkbenchActivityReading
     private let defaults: UserDefaults
 
     init(
         dbPool: DatabasePool,
-        notifier: ProjectNotifying = NotificationService.shared,
-        activityReader: ProjectActivityReading = DefaultProjectActivityReader(),
+        notifier: WorkbenchNotifying = NotificationService.shared,
+        activityReader: WorkbenchActivityReading = DefaultWorkbenchActivityReader(),
         defaults: UserDefaults = .standard
     ) {
         self.dbPool = dbPool
@@ -75,14 +75,14 @@ final class ProjectNotificationCenter {
     }
 
     /// The owner changed `subject`: the next poll must not report it.
-    func recordOwnerWrite(projectID: Int64, subject: ProjectSubject) {
+    func recordOwnerWrite(projectID: Int64, subject: WorkbenchSubject) {
         ownerTouched[projectID, default: []].insert(subject)
     }
 
     /// A project created in-app starts from an empty baseline, so what Claude
     /// Code attaches during setup is reported (a project the center merely
     /// discovers baselines silently instead).
-    func seedBaseline(project: Project) {
+    func seedBaseline(project: Workbench) {
         save(.empty(projectID: project.id, projectName: project.name))
     }
 
@@ -92,9 +92,9 @@ final class ProjectNotificationCenter {
     }
 
     func poll() async {
-        let projects: [Project]
+        let projects: [Workbench]
         do {
-            projects = try await dbPool.read { try ProjectQueries.fetchAll($0) }
+            projects = try await dbPool.read { try WorkbenchQueries.fetchAll($0) }
         } catch {
             // Nothing to iterate and nothing to prune against: bail before
             // touching either.
@@ -116,7 +116,7 @@ final class ProjectNotificationCenter {
         await onPolled?()
     }
 
-    private func poll(_ project: Project) async throws {
+    private func poll(_ project: Workbench) async throws {
         let previous = load(project.id)
         let touchedBefore = ownerTouched[project.id] ?? []
         let watermark = previous?.lastAgentCommentID ?? 0
@@ -128,17 +128,17 @@ final class ProjectNotificationCenter {
         current.ownerTouched = ownerTouched[project.id] ?? []
         ownerTouched[project.id] = current.ownerTouched.subtracting(touchedBefore)
         if let previous, sending {
-            for notice in ProjectNotificationPolicy.decide(previous: previous, current: current) {
-                notifier.sendProjectNotice(notice)
+            for notice in WorkbenchNotificationPolicy.decide(previous: previous, current: current) {
+                notifier.sendWorkbenchNotice(notice)
             }
         }
         save(current.persisted)
     }
 
-    private func load(_ projectID: Int64) -> ProjectNotificationPolicy.Snapshot? {
+    private func load(_ projectID: Int64) -> WorkbenchNotificationPolicy.Snapshot? {
         guard let data = defaults.data(forKey: Self.snapshotKey(projectID)) else { return nil }
         do {
-            return try JSONDecoder().decode(ProjectNotificationPolicy.Snapshot.self, from: data)
+            return try JSONDecoder().decode(WorkbenchNotificationPolicy.Snapshot.self, from: data)
         } catch {
             // Undecodable ≠ absent: say so, then re-baseline silently rather
             // than replay the project's whole history.
@@ -147,7 +147,7 @@ final class ProjectNotificationCenter {
         }
     }
 
-    private func save(_ snapshot: ProjectNotificationPolicy.Snapshot) {
+    private func save(_ snapshot: WorkbenchNotificationPolicy.Snapshot) {
         do {
             defaults.set(try JSONEncoder().encode(snapshot), forKey: Self.snapshotKey(snapshot.projectID))
         } catch {

@@ -1,10 +1,10 @@
 import Foundation
 import GRDB
 
-package enum ProjectQueryError: LocalizedError, Equatable {
+package enum WorkbenchQueryError: LocalizedError, Equatable {
     case emptyBody
     case noSubject
-    case wrongProject
+    case wrongWorkbench
     case notARoot(Int64)
     case invalidStatus(String)
 
@@ -12,7 +12,7 @@ package enum ProjectQueryError: LocalizedError, Equatable {
         switch self {
         case .emptyBody: "A comment needs some text."
         case .noSubject: "A comment belongs to a target or a document."
-        case .wrongProject: "That target or document belongs to another project."
+        case .wrongWorkbench: "That target or document belongs to another project."
         case let .notARoot(id): "Comment \(id) is a reply; only a thread's first comment has a status."
         case let .invalidStatus(status): "Unknown comment status \u{201C}\(status)\u{201D}."
         }
@@ -24,21 +24,21 @@ package enum ProjectQueryError: LocalizedError, Equatable {
 /// writes only owner comments, root statuses and `read_at` — directly, the
 /// targets dual-path precedent (Go twin: `internal/db/project_comments.go`,
 /// whose reply-inherits-root rule this file mirrors).
-package enum ProjectQueries {
+package enum WorkbenchQueries {
     private static let now = "strftime('%Y-%m-%dT%H:%M:%SZ','now')"
     private static let statuses: Set<String> = ["open", "resolved", "outdated"]
 
     // MARK: - Projects
 
-    package static func fetchAll(_ db: Database) throws -> [Project] {
-        try Project.fetchAll(db, sql: "SELECT * FROM projects ORDER BY name COLLATE NOCASE, id")
+    package static func fetchAll(_ db: Database) throws -> [Workbench] {
+        try Workbench.fetchAll(db, sql: "SELECT * FROM projects ORDER BY name COLLATE NOCASE, id")
     }
 
-    package static func fetch(_ db: Database, id: Int64) throws -> Project? {
-        try Project.fetchOne(db, sql: "SELECT * FROM projects WHERE id = ?", arguments: [id])
+    package static func fetch(_ db: Database, id: Int64) throws -> Workbench? {
+        try Workbench.fetchOne(db, sql: "SELECT * FROM projects WHERE id = ?", arguments: [id])
     }
 
-    package static func summaries(_ db: Database) throws -> [ProjectSummary] {
+    package static func summaries(_ db: Database) throws -> [WorkbenchSummary] {
         let projects = try fetchAll(db)
         let unread = try unreadCounts(db)
         var open: [Int64: Int] = [:]
@@ -58,7 +58,7 @@ package enum ProjectQueries {
             stamps[row["project_id"], default: [:]][row["id"]] = row["updated_at"]
         }
         return projects.map { project in
-            ProjectSummary(
+            WorkbenchSummary(
                 project: project,
                 openTargets: open[project.id] ?? 0,
                 inProgressTargets: active[project.id] ?? 0,
@@ -70,21 +70,21 @@ package enum ProjectQueries {
 
     // MARK: - Documents
 
-    package static func documents(_ db: Database, projectID: Int64) throws -> [ProjectDocument] {
-        try ProjectDocument.fetchAll(
+    package static func documents(_ db: Database, projectID: Int64) throws -> [WorkbenchDocument] {
+        try WorkbenchDocument.fetchAll(
             db,
             sql: "SELECT * FROM project_documents WHERE project_id = ? ORDER BY updated_at DESC, id DESC",
             arguments: [projectID]
         )
     }
 
-    package static func document(_ db: Database, id: Int64) throws -> ProjectDocument? {
-        try ProjectDocument.fetchOne(db, sql: "SELECT * FROM project_documents WHERE id = ?", arguments: [id])
+    package static func document(_ db: Database, id: Int64) throws -> WorkbenchDocument? {
+        try WorkbenchDocument.fetchOne(db, sql: "SELECT * FROM project_documents WHERE id = ?", arguments: [id])
     }
 
     /// The Documents pane's list row: each document with its linked target's
     /// title (if any) and its open owner-thread count.
-    package static func documentListItems(_ db: Database, projectID: Int64) throws -> [ProjectDocumentListItem] {
+    package static func documentListItems(_ db: Database, projectID: Int64) throws -> [WorkbenchDocumentListItem] {
         let rows = try Row.fetchAll(db, sql: """
             SELECT d.*, t.text AS target_title, t.status AS target_status,
                    (SELECT COUNT(*) FROM project_comments c
@@ -96,8 +96,8 @@ package enum ProjectQueries {
             ORDER BY d.updated_at DESC, d.id DESC
             """, arguments: [projectID])
         return rows.map { row in
-            ProjectDocumentListItem(
-                document: ProjectDocument(row: row),
+            WorkbenchDocumentListItem(
+                document: WorkbenchDocument(row: row),
                 targetTitle: row["target_title"],
                 openComments: row["open_comments"],
                 targetStatus: row["target_status"]
@@ -108,8 +108,8 @@ package enum ProjectQueries {
     // MARK: - Target images
 
     /// The images attached to a board target, oldest first.
-    package static func images(_ db: Database, targetID: Int64) throws -> [ProjectTargetImage] {
-        try ProjectTargetImage.fetchAll(
+    package static func images(_ db: Database, targetID: Int64) throws -> [WorkbenchTargetImage] {
+        try WorkbenchTargetImage.fetchAll(
             db,
             sql: "SELECT * FROM project_target_images WHERE target_id = ? ORDER BY id",
             arguments: [targetID]
@@ -118,16 +118,16 @@ package enum ProjectQueries {
 
     // MARK: - Comments
 
-    package static func comments(_ db: Database, documentID: Int64) throws -> [ProjectComment] {
-        try ProjectComment.fetchAll(
+    package static func comments(_ db: Database, documentID: Int64) throws -> [WorkbenchComment] {
+        try WorkbenchComment.fetchAll(
             db,
             sql: "SELECT * FROM project_comments WHERE document_id = ? ORDER BY created_at, id",
             arguments: [documentID]
         )
     }
 
-    package static func comments(_ db: Database, targetID: Int64) throws -> [ProjectComment] {
-        try ProjectComment.fetchAll(
+    package static func comments(_ db: Database, targetID: Int64) throws -> [WorkbenchComment] {
+        try WorkbenchComment.fetchAll(
             db,
             sql: "SELECT * FROM project_comments WHERE target_id = ? ORDER BY created_at, id",
             arguments: [targetID]
@@ -145,10 +145,10 @@ package enum ProjectQueries {
         body: String
     ) throws -> Int64 {
         let text = body.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { throw ProjectQueryError.emptyBody }
-        guard targetID != nil || documentID != nil else { throw ProjectQueryError.noSubject }
-        try requireInProject(db, projectID: projectID, table: "targets", id: targetID)
-        try requireInProject(db, projectID: projectID, table: "project_documents", id: documentID)
+        guard !text.isEmpty else { throw WorkbenchQueryError.emptyBody }
+        guard targetID != nil || documentID != nil else { throw WorkbenchQueryError.noSubject }
+        try requireInWorkbench(db, projectID: projectID, table: "targets", id: targetID)
+        try requireInWorkbench(db, projectID: projectID, table: "project_documents", id: documentID)
         try db.execute(
             sql: """
                 INSERT INTO project_comments (project_id, target_id, document_id, author, body,
@@ -173,10 +173,10 @@ package enum ProjectQueries {
     @discardableResult
     package static func reply(_ db: Database, to rootID: Int64, body: String) throws -> Int64 {
         let text = body.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { throw ProjectQueryError.emptyBody }
-        guard let root = try ProjectComment.fetchOne(
+        guard !text.isEmpty else { throw WorkbenchQueryError.emptyBody }
+        guard let root = try WorkbenchComment.fetchOne(
             db, sql: "SELECT * FROM project_comments WHERE id = ?", arguments: [rootID]
-        ), root.isRoot else { throw ProjectQueryError.notARoot(rootID) }
+        ), root.isRoot else { throw WorkbenchQueryError.notARoot(rootID) }
         try db.execute(
             sql: """
                 INSERT INTO project_comments (project_id, target_id, document_id, parent_id, author, body)
@@ -192,12 +192,12 @@ package enum ProjectQueries {
     }
 
     package static func setStatus(_ db: Database, commentID: Int64, status: String) throws {
-        guard statuses.contains(status) else { throw ProjectQueryError.invalidStatus(status) }
+        guard statuses.contains(status) else { throw WorkbenchQueryError.invalidStatus(status) }
         try db.execute(
             sql: "UPDATE project_comments SET status = ? WHERE id = ? AND parent_id IS NULL",
             arguments: [status, commentID]
         )
-        if db.changesCount == 0 { throw ProjectQueryError.notARoot(commentID) }
+        if db.changesCount == 0 { throw WorkbenchQueryError.notARoot(commentID) }
     }
 
     /// Marks unread agent comments read. A nil target/document id widens the
@@ -258,9 +258,9 @@ package enum ProjectQueries {
     }
 
     /// The project's target tree: roots (and orphans whose parent is outside
-    /// the project) in `ProjectBoardOrder` (priority, then status, then id —
+    /// the project) in `WorkbenchBoardOrder` (priority, then status, then id —
     /// Go's `boardSiblingOrder`). Children use the same order.
-    package static func board(_ db: Database, projectID: Int64) throws -> [ProjectBoardNode] {
+    package static func board(_ db: Database, projectID: Int64) throws -> [WorkbenchBoardNode] {
         let targets = try Target.fetchAll(
             db, sql: "SELECT * FROM targets WHERE project_id = ?", arguments: [projectID]
         )
@@ -272,17 +272,17 @@ package enum ProjectQueries {
         let byParent = Dictionary(grouping: targets) { target in
             target.parentId.flatMap { ids.contains($0) ? $0 : nil } ?? 0
         }
-        func node(_ target: Target) -> ProjectBoardNode {
+        func node(_ target: Target) -> WorkbenchBoardNode {
             let key = Int64(target.id)
-            return ProjectBoardNode(
+            return WorkbenchBoardNode(
                 target: target,
-                children: ProjectBoardOrder.sorted(byParent[target.id] ?? []).map(node),
+                children: WorkbenchBoardOrder.sorted(byParent[target.id] ?? []).map(node),
                 openComments: counters.open[key] ?? 0,
                 unreadForOwner: counters.unread[key] ?? 0,
                 documents: docs[key] ?? []
             )
         }
-        return ProjectBoardOrder.sorted(byParent[0] ?? []).map(node)
+        return WorkbenchBoardOrder.sorted(byParent[0] ?? []).map(node)
     }
 
     private static func boardCounters(_ db: Database, projectID: Int64) throws -> (open: [Int64: Int], unread: [Int64: Int]) {
@@ -302,9 +302,9 @@ package enum ProjectQueries {
         return (open, unread)
     }
 
-    private static func requireInProject(_ db: Database, projectID: Int64, table: String, id: Int64?) throws {
+    private static func requireInWorkbench(_ db: Database, projectID: Int64, table: String, id: Int64?) throws {
         guard let id else { return }
         let owner = try Int64.fetchOne(db, sql: "SELECT project_id FROM \(table) WHERE id = ?", arguments: [id])
-        guard owner == projectID else { throw ProjectQueryError.wrongProject }
+        guard owner == projectID else { throw WorkbenchQueryError.wrongWorkbench }
     }
 }

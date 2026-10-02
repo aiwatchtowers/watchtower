@@ -3,11 +3,11 @@ import GRDB
 import WatchtowerTestSupport
 @testable import WatchtowerCore
 
-final class ProjectDeleteSummaryTests: XCTestCase {
+final class WorkbenchDeleteSummaryTests: XCTestCase {
 
     func testFetchCountsOnlyThisProjectsRows() throws {
         let queue = try TestDatabase.create()
-        let project = try queue.write { db -> Project in
+        let project = try queue.write { db -> Workbench in
             try db.execute(sql: "INSERT INTO projects (name, folder_path) VALUES ('acme', '/tmp/acme')")
             let pid = db.lastInsertedRowID
             try db.execute(sql: "INSERT INTO projects (name, folder_path) VALUES ('other', '/tmp/other')")
@@ -27,9 +27,9 @@ final class ProjectDeleteSummaryTests: XCTestCase {
             let doc = db.lastInsertedRowID
             try db.execute(sql: "INSERT INTO project_comments (project_id, document_id, author, body) VALUES (?, ?, 'owner', 'x')",
                            arguments: [pid, doc])
-            return try XCTUnwrap(ProjectQueries.fetch(db, id: pid))
+            return try XCTUnwrap(WorkbenchQueries.fetch(db, id: pid))
         }
-        let summary = try queue.read { try ProjectDeleteSummary.fetch($0, project: project) }
+        let summary = try queue.read { try WorkbenchDeleteSummary.fetch($0, project: project) }
         XCTAssertEqual(summary.targets, 2)
         XCTAssertEqual(summary.documents, 1)
         XCTAssertEqual(summary.comments, 1)
@@ -37,7 +37,7 @@ final class ProjectDeleteSummaryTests: XCTestCase {
     }
 
     func testMessageListsWhatIsRemovedAndWhatIsKept() {
-        let s = ProjectDeleteSummary(name: "acme", folder: "/tmp/acme", targets: 1, documents: 2, comments: 0)
+        let s = WorkbenchDeleteSummary(name: "acme", folder: "/tmp/acme", targets: 1, documents: 2, comments: 0)
         XCTAssertEqual(s.title, "Delete project “acme”?")
         XCTAssertTrue(s.message.contains("1 target, 2 documents and 0 comments"))
         XCTAssertTrue(s.message.contains("watchtower-project skill"))

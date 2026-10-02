@@ -3,8 +3,8 @@ import WatchtowerCore
 
 /// Documents pane (spec §6.3): attached documents on the left, the open one
 /// in the middle as selectable text, its threads on the right.
-struct ProjectDocumentsView: View {
-    @Bindable var vm: ProjectsViewModel
+struct WorkbenchDocumentsView: View {
+    @Bindable var vm: WorkbenchesViewModel
     @Environment(AppState.self) private var appState
     @State private var selection = NSRange(location: 0, length: 0)
     @State private var activeThreadID: Int64?
@@ -19,13 +19,13 @@ struct ProjectDocumentsView: View {
 
     var body: some View {
         HSplitView {
-            ProjectDocumentsList(vm: vm) { addingDocument = true }
+            WorkbenchDocumentsList(vm: vm) { addingDocument = true }
                 .frame(minWidth: 200, idealWidth: 240, maxWidth: 320)
             if let docVM = vm.documentViewModel {
                 documentView(docVM).frame(minWidth: 360, maxWidth: .infinity)
                 // No threads or drafts, or hidden by the owner: the text takes the width.
                 if showThreads, hasThreadsPanel(docVM) {
-                    ProjectDocumentThreadsPanel(docVM: docVM, activeThreadID: $activeThreadID).frame(minWidth: 240, idealWidth: 300, maxWidth: 420)
+                    WorkbenchDocumentThreadsPanel(docVM: docVM, activeThreadID: $activeThreadID).frame(minWidth: 240, idealWidth: 300, maxWidth: 420)
                 }
             } else {
                 Text(vm.documents.isEmpty
@@ -35,12 +35,12 @@ struct ProjectDocumentsView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .task(id: vm.selectedProjectID) {
+        .task(id: vm.selectedWorkbenchID) {
             await vm.loadDocuments()
             await vm.openPendingDocument()
         }
         .sheet(isPresented: $addingDocument) {
-            if let project = vm.selectedProject { AddProjectDocumentSheet(vm: vm, project: project) }
+            if let project = vm.selectedWorkbench { AddWorkbenchDocumentSheet(vm: vm, project: project) }
         }
         .onChange(of: vm.pendingDocumentID) { _, _ in Task { await vm.openPendingDocument() } }
         // New drafts after a send: the old "pasted" note no longer covers them.
@@ -58,7 +58,7 @@ struct ProjectDocumentsView: View {
         }
     }
 
-    private func documentView(_ docVM: ProjectDocumentViewModel) -> some View {
+    private func documentView(_ docVM: WorkbenchDocumentViewModel) -> some View {
         VStack(spacing: 0) {
             HStack {
                 Text(docVM.document.relPath).font(.caption).foregroundStyle(.secondary)
@@ -107,8 +107,8 @@ struct ProjectDocumentsView: View {
                 Text(error).font(.caption).foregroundStyle(.red).padding(6)
             }
             Divider()
-            ProjectCommentsSendBar(
-                count: ProjectCommentPrompt.openOwnerCount(docVM.threads) + docVM.sendableDraftCount,
+            WorkbenchCommentsSendBar(
+                count: WorkbenchCommentPrompt.openOwnerCount(docVM.threads) + docVM.sendableDraftCount,
                 drafts: docVM.sendableDraftCount,
                 unsendableDrafts: docVM.unsendableDraftCount,
                 sending: docVM.isSending,
@@ -119,19 +119,19 @@ struct ProjectDocumentsView: View {
         }
     }
 
-    private func hasThreadsPanel(_ docVM: ProjectDocumentViewModel) -> Bool {
+    private func hasThreadsPanel(_ docVM: WorkbenchDocumentViewModel) -> Bool {
         !docVM.threads.isEmpty || !docVM.drafts.isEmpty
     }
 
     /// Saves the drafts first (all or none); a failed save types nothing and
     /// leaves the drafts and the reason on screen.
-    private func sendComments(_ docVM: ProjectDocumentViewModel) async {
+    private func sendComments(_ docVM: WorkbenchDocumentViewModel) async {
         delivery = nil
-        let before = ProjectCommentPrompt.openOwnerCount(docVM.threads)
+        let before = WorkbenchCommentPrompt.openOwnerCount(docVM.threads)
         guard let written = await docVM.sendDrafts() else { return }
         // A failed reload after the commit leaves `threads` stale: never count fewer than were open plus sent.
-        let count = max(ProjectCommentPrompt.openOwnerCount(docVM.threads), before + written)
-        let line = ProjectCommentPrompt.line(
+        let count = max(WorkbenchCommentPrompt.openOwnerCount(docVM.threads), before + written)
+        let line = WorkbenchCommentPrompt.line(
             relPath: docVM.document.relPath, documentID: docVM.document.id, count: count
         )
         let center = appState.terminalCenter
@@ -146,7 +146,7 @@ struct ProjectDocumentsView: View {
     }
 
     private func openTerminal() {
-        if let project = vm.selectedProject {
+        if let project = vm.selectedWorkbench {
             Task { await vm.openMostRecentSession(project: project, placement: .keeping(.documents)) }
         }
         delivery = nil

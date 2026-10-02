@@ -1,10 +1,10 @@
 import XCTest
 @testable import WatchtowerCore
 
-final class ProjectDriftReportTests: XCTestCase {
+final class WorkbenchDriftReportTests: XCTestCase {
 
-    private func decode(_ json: String) throws -> ProjectDriftReport {
-        try JSONDecoder().decode(ProjectDriftReport.self, from: Data(json.utf8))
+    private func decode(_ json: String) throws -> WorkbenchDriftReport {
+        try JSONDecoder().decode(WorkbenchDriftReport.self, from: Data(json.utf8))
     }
 
     /// The shape `watchtower project check --json` prints (Go

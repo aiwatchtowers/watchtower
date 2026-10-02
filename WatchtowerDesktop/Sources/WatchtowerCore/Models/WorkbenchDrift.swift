@@ -5,17 +5,17 @@ import Foundation
 /// request. Go owns the check (`internal/projectcheck`); the Desktop only
 /// decodes and shows it. Keys mirror `projectcheck.Report`/`Finding`; only
 /// Go's `omitempty` fields may be absent.
-package struct ProjectDriftReport: Decodable, Equatable, Sendable {
+package struct WorkbenchDriftReport: Decodable, Equatable, Sendable {
     package let git: Bool
     package let base: String
     package let incomplete: Bool
-    package let findings: [ProjectDriftFinding]
+    package let findings: [WorkbenchDriftFinding]
     package let notes: [String]
 
     package init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         git = try c.decode(Bool.self, forKey: .git)
-        findings = try c.decode([ProjectDriftFinding].self, forKey: .findings)
+        findings = try c.decode([WorkbenchDriftFinding].self, forKey: .findings)
         base = try c.decodeIfPresent(String.self, forKey: .base) ?? ""
         incomplete = try c.decodeIfPresent(Bool.self, forKey: .incomplete) ?? false
         notes = try c.decodeIfPresent([String].self, forKey: .notes) ?? []
@@ -31,7 +31,7 @@ package struct ProjectDriftReport: Decodable, Equatable, Sendable {
     package var isPartial: Bool { incomplete || !git || base.isEmpty }
 }
 
-package struct ProjectDriftFinding: Decodable, Equatable, Sendable, Identifiable {
+package struct WorkbenchDriftFinding: Decodable, Equatable, Sendable, Identifiable {
     package let targetID: Int
     package let title: String
     package let kind: String

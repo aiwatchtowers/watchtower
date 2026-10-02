@@ -588,7 +588,7 @@ struct BriefingDetailView: View {
             }
         case "project":
             if let id, let projectID = Int64(id) {
-                appState.navigateToProject(ProjectRoute(projectID: projectID, pane: .board))
+                appState.navigateToWorkbench(WorkbenchRoute(projectID: projectID, pane: .board))
             } else {
                 appState.selectedDestination = .projects
             }

@@ -4,11 +4,11 @@ import WatchtowerCore
 
 /// One project: a one-row header (folder, install status, view controls,
 /// the "…" menu with Repair / Re-run Setup / Delete) over its workspace — one pane or a split (spec 2026-09-30-project-workspace-sessions §3).
-struct ProjectPageView: View {
-    @Bindable var vm: ProjectsViewModel
-    let project: Project
+struct WorkbenchPageView: View {
+    @Bindable var vm: WorkbenchesViewModel
+    let project: Workbench
     @Environment(AppState.self) private var appState
-    @State private var deleteSummary: ProjectDeleteSummary?
+    @State private var deleteSummary: WorkbenchDeleteSummary?
     @State private var deleteSummaryError: String?
 
     var body: some View {
@@ -40,7 +40,7 @@ struct ProjectPageView: View {
         ) {
             Button("Delete Project", role: .destructive) {
                 let id = project.id
-                Task { await vm.deleteProject(id) }
+                Task { await vm.deleteWorkbench(id) }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
@@ -135,7 +135,7 @@ struct ProjectPageView: View {
             } label: {
                 Label("Delete…", systemImage: "trash")
             }
-            .disabled(vm.deletingProjectID != nil)
+            .disabled(vm.deletingWorkbenchID != nil)
         } label: {
             Image(systemName: "ellipsis.circle")
         }
@@ -149,7 +149,7 @@ struct ProjectPageView: View {
     private func confirmDelete() {
         guard let pool = appState.databaseManager?.dbPool else { return }
         do {
-            deleteSummary = try pool.read { try ProjectDeleteSummary.fetch($0, project: project) }
+            deleteSummary = try pool.read { try WorkbenchDeleteSummary.fetch($0, project: project) }
         } catch {
             // Never confirm a delete against unknown counts.
             deleteSummaryError = error.localizedDescription
@@ -159,7 +159,7 @@ struct ProjectPageView: View {
     /// What the last Re-run setup did, with its suggestions; selectable,
     /// since a line may end with a command to run.
     private var resyncSummary: some View {
-        let error = vm.resyncErrors[project.id].map { [ProjectResynced.Line(text: $0, problem: true)] }
+        let error = vm.resyncErrors[project.id].map { [WorkbenchResynced.Line(text: $0, problem: true)] }
         let lines = error ?? vm.resyncResults[project.id]?.summaryLines ?? []
         return HStack(alignment: .top, spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
@@ -202,7 +202,7 @@ struct ProjectPageView: View {
         }
     }
 
-    private func repairHelp(_ status: ProjectInstallStatus) -> String {
+    private func repairHelp(_ status: WorkbenchInstallStatus) -> String {
         "Skill \(status.skill) · hook \(status.hook ? "on" : "missing") · "
             + "drift hook \(status.stopHook ? "on" : "missing") · MCP \(status.mcp ? "on" : "missing")"
     }
@@ -211,7 +211,7 @@ struct ProjectPageView: View {
     /// icon whose menu names the gap and copies the manual command instead
     /// of a Repair that always fails.
     private var claudeNotFoundIcon: some View {
-        let command = ProjectInstallStatus.manualMCPCommand(
+        let command = WorkbenchInstallStatus.manualMCPCommand(
             projectID: project.id, folder: project.folderPath, cliPath: Constants.findCLIPath() ?? "watchtower"
         )
         return Menu {
