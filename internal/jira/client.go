@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -365,10 +366,18 @@ func (c *Client) getWithQuery(ctx context.Context, path string, params url.Value
 // SearchIssues executes a JQL search query with cursor-based pagination.
 // Pass empty nextPageToken for the first page.
 func (c *Client) SearchIssues(ctx context.Context, jql string, maxResults int, nextPageToken string) (*SearchResult, error) {
+	return c.SearchIssuesWithFields(ctx, jql, maxResults, nextPageToken, nil)
+}
+
+// SearchIssuesWithFields is SearchIssues that also requests extraFields
+// (custom field ids) on top of searchFields; they come back in
+// Issue.CustomFields.
+func (c *Client) SearchIssuesWithFields(ctx context.Context, jql string, maxResults int, nextPageToken string, extraFields []string) (*SearchResult, error) {
+	fields := append(slices.Clone(searchFields), extraFields...)
 	params := url.Values{
 		"jql":        {jql},
 		"maxResults": {fmt.Sprintf("%d", maxResults)},
-		"fields":     {strings.Join(searchFields, ",")},
+		"fields":     {strings.Join(fields, ",")},
 	}
 	if nextPageToken != "" {
 		params.Set("nextPageToken", nextPageToken)

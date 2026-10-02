@@ -470,12 +470,19 @@ func (s *Syncer) syncWithJQL(ctx context.Context, jql string, boardID int) (int,
 	pageCh := make(chan fetchedPage, 2) // buffer 2 pages ahead
 	fetchErr := make(chan error, 1)
 
+	// Request the board's mapped custom fields too (convertIssue reads them).
+	// Read before the reader starts: DB access stays off the reader goroutine.
+	var extraFields []string
+	for _, fm := range s.getFieldMap(boardID) {
+		extraFields = append(extraFields, fm.FieldID)
+	}
+
 	// Reader: fetch pages from Jira API using cursor-based pagination (no DB access).
 	go func() {
 		defer close(pageCh)
 		nextToken := ""
 		for {
-			result, err := s.client.SearchIssues(ctx, jql, maxResults, nextToken)
+			result, err := s.client.SearchIssuesWithFields(ctx, jql, maxResults, nextToken, extraFields)
 			if err != nil {
 				fetchErr <- fmt.Errorf("searching issues: %w", err)
 				return
@@ -690,48 +697,39 @@ func (s *Syncer) convertIssue(ctx context.Context, issue Issue, boardID int) (db
 
 	rawJSON, _ := json.Marshal(issue)
 
-	// Extract custom field values from raw JSON.
+	// Extract the board's mapped custom field values.
 	var storyPoints *float64
 	customFieldsMap := make(map[string]interface{})
 
-	fieldMappings := s.getFieldMap(boardID)
-	if len(fieldMappings) > 0 {
-		// Parse raw issue JSON to access custom fields.
-		var rawIssue struct {
-			Fields map[string]json.RawMessage `json:"fields"`
+	for _, fm := range s.getFieldMap(boardID) {
+		rawVal, ok := issue.CustomFields[fm.FieldID]
+		if !ok || string(rawVal) == "null" {
+			continue
 		}
-		if err := json.Unmarshal(rawJSON, &rawIssue); err == nil {
-			for _, fm := range fieldMappings {
-				rawVal, ok := rawIssue.Fields[fm.FieldID]
-				if !ok || string(rawVal) == "null" {
-					continue
-				}
 
-				switch fm.Role {
-				case "story_points":
-					var sp float64
-					if err := json.Unmarshal(rawVal, &sp); err == nil {
-						storyPoints = &sp
+		switch fm.Role {
+		case "story_points":
+			var sp float64
+			if err := json.Unmarshal(rawVal, &sp); err == nil {
+				storyPoints = &sp
+			}
+		case "planned_end":
+			// Use as due date if standard dueDate is empty.
+			if dueDate == "" {
+				var val interface{}
+				if err := json.Unmarshal(rawVal, &val); err == nil {
+					if dateStr := extractDisplayValue(val); dateStr != "" {
+						dueDate = dateStr
 					}
-				case "planned_end":
-					// Use as due date if standard dueDate is empty.
-					if dueDate == "" {
-						var val interface{}
-						if err := json.Unmarshal(rawVal, &val); err == nil {
-							if dateStr := extractDisplayValue(val); dateStr != "" {
-								dueDate = dateStr
-							}
-						}
-					}
-				default:
-					// For other roles, extract a display value.
-					var val interface{}
-					if err := json.Unmarshal(rawVal, &val); err == nil {
-						displayVal := extractDisplayValue(val)
-						if displayVal != "" {
-							customFieldsMap[fm.Role] = displayVal
-						}
-					}
+				}
+			}
+		default:
+			// For other roles, extract a display value.
+			var val interface{}
+			if err := json.Unmarshal(rawVal, &val); err == nil {
+				displayVal := extractDisplayValue(val)
+				if displayVal != "" {
+					customFieldsMap[fm.Role] = displayVal
 				}
 			}
 		}

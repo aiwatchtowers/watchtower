@@ -1,6 +1,11 @@
 // Package jira provides Jira Cloud integration for Watchtower.
 package jira
 
+import (
+	"encoding/json"
+	"strings"
+)
+
 // Board represents a Jira agile board.
 type Board struct {
 	ID       int    `json:"id"`
@@ -26,6 +31,38 @@ type Issue struct {
 	ID     string      `json:"id"`
 	Key    string      `json:"key"`
 	Fields IssueFields `json:"fields"`
+
+	// CustomFields holds the issue's customfield_* values as the API returned
+	// them (IssueFields decodes only the standard fields). Filled by
+	// UnmarshalJSON; never re-encoded.
+	CustomFields map[string]json.RawMessage `json:"-"`
+}
+
+// UnmarshalJSON decodes the standard fields and keeps every customfield_*
+// value in CustomFields, so the sync can read a board's mapped custom fields.
+func (i *Issue) UnmarshalJSON(data []byte) error {
+	type plain Issue
+	var p plain
+	if err := json.Unmarshal(data, &p); err != nil {
+		return err
+	}
+	var raw struct {
+		Fields map[string]json.RawMessage `json:"fields"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	for k, v := range raw.Fields {
+		if !strings.HasPrefix(k, "customfield_") {
+			continue
+		}
+		if p.CustomFields == nil {
+			p.CustomFields = make(map[string]json.RawMessage)
+		}
+		p.CustomFields[k] = v
+	}
+	*i = Issue(p)
+	return nil
 }
 
 // IssueFields holds the fields of a Jira issue.
