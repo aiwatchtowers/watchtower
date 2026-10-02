@@ -162,26 +162,20 @@ func feed(ctx context.Context, root string, paths []string, jobs chan<- job) err
 func indexFile(p parser, root string, j job) (FileResult, error) {
 	res := FileResult{File: j.rel}
 	if j.explicit {
-		f, err := codewalk.Lookup(root, j.rel)
-		switch {
-		case errors.Is(err, fs.ErrNotExist):
-			res.Deleted = true
-			return res, nil
-		case err != nil || f.Size > codewalk.MaxIndexBytes:
+		f, deleted, ok := lookupNamed(root, j.rel)
+		if !ok {
+			res.Deleted = deleted
 			return res, nil
 		}
 		res.File = f.Rel
 	}
-	src, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(res.File)))
+	src, deleted, ok := readSource(filepath.Join(root, filepath.FromSlash(res.File)))
 	switch {
-	case err != nil && j.explicit && errors.Is(err, fs.ErrNotExist):
-		res.Deleted = true
-		return res, nil
-	case err != nil || len(src) > codewalk.MaxIndexBytes:
-		if j.explicit {
-			return res, nil
-		}
+	case !ok && !j.explicit:
 		return FileResult{}, nil
+	case !ok:
+		res.Deleted = deleted
+		return res, nil
 	}
 	l := langFor(res.File, src[:min(len(src), 256)])
 	if l == nil {
@@ -191,14 +185,14 @@ func indexFile(p parser, root string, j job) (FileResult, error) {
 	if l.lineScanned {
 		syms = markdownHeadings(src)
 	} else {
-		var ok bool
-		syms, ok, err = p.parse(l, src)
+		parsed, supported, err := p.parse(l, src)
 		if err != nil {
 			return FileResult{}, fmt.Errorf("indexing %s: %w", res.File, err)
 		}
-		if !ok {
+		if !supported {
 			return res, nil
 		}
+		syms = parsed
 	}
 	res.Lang = l.id
 	for i := range syms {
@@ -206,4 +200,25 @@ func indexFile(p parser, root string, j job) (FileResult, error) {
 	}
 	res.Symbols = syms
 	return res, nil
+}
+
+// lookupNamed checks a path asked for by name: deleted when nothing is
+// there; ok=false also for one the walk would skip or the index would not
+// parse (an empty result).
+func lookupNamed(root, rel string) (f codewalk.File, deleted, ok bool) {
+	f, err := codewalk.Lookup(root, rel)
+	if errors.Is(err, fs.ErrNotExist) {
+		return f, true, false
+	}
+	return f, false, err == nil && f.Size <= codewalk.MaxIndexBytes
+}
+
+// readSource reads a file the walk listed; ok=false when it is gone
+// (deleted), unreadable, or has grown past codewalk.MaxIndexBytes since.
+func readSource(path string) (src []byte, deleted, ok bool) {
+	src, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, true, false
+	}
+	return src, false, err == nil && len(src) <= codewalk.MaxIndexBytes
 }

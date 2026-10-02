@@ -125,7 +125,7 @@ func (w *walker) list(ctx context.Context, names iter.Seq[string], yield func(Fi
 			yield(File{}, err)
 			return
 		}
-		f, real, isLink, err := w.check(rel)
+		f, realPath, isLink, err := w.check(rel)
 		if err != nil {
 			continue
 		}
@@ -133,7 +133,7 @@ func (w *walker) list(ctx context.Context, names iter.Seq[string], yield func(Fi
 			links = append(links, rel)
 			continue
 		}
-		if !w.emit(f, real, yield) {
+		if !w.emit(f, realPath, yield) {
 			return
 		}
 	}
@@ -142,11 +142,11 @@ func (w *walker) list(ctx context.Context, names iter.Seq[string], yield func(Fi
 			yield(File{}, err)
 			return
 		}
-		f, real, _, err := w.check(rel)
+		f, realPath, _, err := w.check(rel)
 		if err != nil {
 			continue
 		}
-		if !w.emit(f, real, yield) {
+		if !w.emit(f, realPath, yield) {
 			return
 		}
 	}
@@ -154,18 +154,18 @@ func (w *walker) list(ctx context.Context, names iter.Seq[string], yield func(Fi
 
 // emit yields f unless its real file was listed already; it reports
 // whether the walk goes on.
-func (w *walker) emit(f File, real string, yield func(File, error) bool) bool {
-	if w.seen[real] {
+func (w *walker) emit(f File, realPath string, yield func(File, error) bool) bool {
+	if w.seen[realPath] {
 		return true
 	}
-	w.seen[real] = true
+	w.seen[realPath] = true
 	return yield(f, nil)
 }
 
 // check decides whether rel (relative to the folder) is a listed file. It
 // returns the file, its real path and whether rel itself is a symlink, or
 // fs.ErrNotExist / ErrSkipped / a read error.
-func (w *walker) check(rel string) (f File, real string, isLink bool, err error) {
+func (w *walker) check(rel string) (f File, realPath string, isLink bool, err error) {
 	clean := filepath.Clean(filepath.FromSlash(rel))
 	if filepath.IsAbs(clean) || clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 		return File{}, "", false, ErrSkipped
@@ -175,30 +175,30 @@ func (w *walker) check(rel string) (f File, real string, isLink bool, err error)
 	if err != nil {
 		return File{}, "", false, err
 	}
-	real = abs
+	realPath = abs
 	if info.Mode()&fs.ModeSymlink != 0 {
 		isLink = true
-		if real, err = filepath.EvalSymlinks(abs); err != nil {
+		if realPath, err = filepath.EvalSymlinks(abs); err != nil {
 			return File{}, "", true, ErrSkipped // dangling or looping link
 		}
-		if !inside(w.realRoot, real) {
+		if !inside(w.realRoot, realPath) {
 			return File{}, "", true, ErrSkipped
 		}
-		if info, err = os.Stat(real); err != nil {
+		if info, err = os.Stat(realPath); err != nil {
 			return File{}, "", true, err
 		}
 	}
 	if !info.Mode().IsRegular() || info.Size() > MaxSearchBytes {
 		return File{}, "", isLink, ErrSkipped
 	}
-	binary, err := hasNUL(real)
+	binary, err := hasNUL(realPath)
 	if err != nil {
 		return File{}, "", isLink, err
 	}
 	if binary {
 		return File{}, "", isLink, ErrSkipped
 	}
-	return File{Rel: filepath.ToSlash(clean), Size: info.Size()}, real, isLink, nil
+	return File{Rel: filepath.ToSlash(clean), Size: info.Size()}, realPath, isLink, nil
 }
 
 // Lookup checks one path relative to root the way the walk checks every
@@ -242,12 +242,9 @@ func (w *walker) walkNames(ctx context.Context) iter.Seq[string] {
 				return filepath.SkipAll // list reports the cancellation
 			}
 			if err != nil {
-				// An unreadable subdirectory is skipped, like an
-				// unreadable file; the root itself was read by newWalker.
-				if d != nil && d.IsDir() && path != w.realRoot {
-					return filepath.SkipDir
-				}
-				return nil
+				// An unreadable entry is skipped, like a binary; the root
+				// itself was read by newWalker.
+				return skipUnreadable(d)
 			}
 			if path == w.realRoot {
 				return nil
@@ -261,16 +258,23 @@ func (w *walker) walkNames(ctx context.Context) iter.Seq[string] {
 			if d.IsDir() {
 				return nil
 			}
-			rel, err := filepath.Rel(w.realRoot, path)
-			if err != nil {
-				return nil
-			}
+			// WalkDir joins every path onto the root it was given.
+			rel := strings.TrimPrefix(path[len(w.realRoot):], string(filepath.Separator))
 			if !yield(filepath.ToSlash(rel)) {
 				return filepath.SkipAll
 			}
 			return nil
 		})
 	}
+}
+
+// skipUnreadable is the WalkDir answer for an entry it could not read:
+// skip it (a directory with all it holds) and go on.
+func skipUnreadable(d fs.DirEntry) error {
+	if d != nil && d.IsDir() {
+		return filepath.SkipDir
+	}
+	return nil
 }
 
 // repositoryEnv are the variables that would point git at a repository

@@ -114,7 +114,9 @@ type cliProcess struct {
 func startCLI(t *testing.T, args ...string) *cliProcess {
 	t.Helper()
 	c := exec.Command(os.Args[0], args...)
-	c.Env = append(os.Environ(), runCLIEnv+"=1")
+	// GORACE: a -race binary otherwise sleeps 1 s at exit, which the
+	// SIGTERM timing tests would measure.
+	c.Env = append(os.Environ(), runCLIEnv+"=1", "GORACE=atexit_sleep_ms=0")
 	c.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	c.Stderr = os.Stderr
 	stdin, err := c.StdinPipe()
