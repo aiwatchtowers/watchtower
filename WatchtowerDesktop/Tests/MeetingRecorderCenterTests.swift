@@ -1735,7 +1735,12 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         var dictationResult: DictationCleanResult?
         dictation.start(targetID: "t1", mode: .idea,
                         onLiveText: { _ in }, onResult: { dictationResult = $0 })
-        await waitUntil("dictation recording") { dictation.phase == .recording }
+        // `.recording` is set synchronously by start(); wait for the engine
+        // too, so the run is past its mic start. A handshake landing before
+        // that makes the run's post-start latch stop the mic a second time.
+        await waitUntil("dictation recording, engine loaded") {
+            dictation.phase == .recording && !dictation.isEngineLoading
+        }
         mic.emit([Float](repeating: 0.1, count: 1_600))
 
         await center.startRecording(eventID: nil, title: "Standup")
