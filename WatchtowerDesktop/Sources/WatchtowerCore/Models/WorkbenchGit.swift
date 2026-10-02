@@ -340,3 +340,17 @@ package struct WorkbenchGitSwitchResult: Decodable, Equatable, Sendable {
         case stashRestored = "stash_restored"
     }
 }
+
+/// A board target carrying a branch (`targets.branch`), for the branch
+/// popover's `#id` badge. Read from the DB when the popover opens.
+package struct WorkbenchBranchTarget: Equatable, Sendable {
+    package let id: Int64
+    package let title: String
+    package let status: String
+
+    package init(id: Int64, title: String, status: String) {
+        self.id = id
+        self.title = title
+        self.status = status
+    }
+}
