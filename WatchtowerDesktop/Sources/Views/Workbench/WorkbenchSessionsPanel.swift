@@ -78,11 +78,8 @@ struct TerminalSessionRow: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Image(systemName: isLive ? "circle.fill" : "circle")
-                .font(.system(size: 7))
-                .foregroundStyle(isLive ? Color.green : Color.secondary)
+            SessionLiveDot(isLive: isLive)
                 .frame(width: 16)
-                .accessibilityLabel(isLive ? "Running" : "Not running")
             VStack(alignment: .leading, spacing: 1) {
                 Text(session.title).lineLimit(1).truncationMode(.tail)
                 if let targetID = session.targetID {
@@ -103,6 +100,19 @@ struct TerminalSessionRow: View {
             Divider()
             Button("Delete…", role: .destructive) { actions.delete(session) }
         }
+    }
+}
+
+/// A session's state dot: green while its process runs, hollow otherwise —
+/// the panel's rows and both session switchers draw the same one.
+struct SessionLiveDot: View {
+    let isLive: Bool
+
+    var body: some View {
+        Image(systemName: isLive ? "circle.fill" : "circle")
+            .font(.system(size: 7))
+            .foregroundStyle(isLive ? Color.green : Color.secondary)
+            .accessibilityLabel(isLive ? "Running" : "Not running")
     }
 }
 

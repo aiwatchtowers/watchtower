@@ -47,12 +47,7 @@ struct SessionSwitcherButton: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 6) {
-                if title != nil {
-                    Image(systemName: isLive ? "circle.fill" : "circle")
-                        .font(.system(size: 7))
-                        .foregroundStyle(isLive ? Color.green : Color.secondary)
-                        .accessibilityLabel(isLive ? "Running" : "Not running")
-                }
+                if title != nil { SessionLiveDot(isLive: isLive) }
                 Text(title ?? "No session")
                     .font(.headline)
                     .foregroundStyle(title == nil ? .secondary : .primary)
@@ -66,7 +61,7 @@ struct SessionSwitcherButton: View {
         }
         .buttonStyle(.borderless)
         .help("\(title ?? "No session") — Switch Session")
-        .accessibilityLabel(title.map { "Session \($0)" } ?? "No session")
+        .accessibilityLabel(title.map { "Session \($0), \(isLive ? "running" : "not running")" } ?? "No session")
         .accessibilityHint("Switch session")
     }
 }

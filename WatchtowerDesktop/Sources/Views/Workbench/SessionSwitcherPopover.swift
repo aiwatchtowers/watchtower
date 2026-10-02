@@ -61,9 +61,12 @@ struct SessionSwitcherPopover: View {
             query: query
         )
         if rows.isEmpty {
-            Text(query.trimmingCharacters(in: .whitespaces).isEmpty ? "No sessions yet." : "No session matches.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            if !query.trimmingCharacters(in: .whitespaces).isEmpty {
+                Text("No session matches.").font(.caption).foregroundStyle(.secondary)
+            } else if vm.terminalSessions[project.id] != nil, vm.sessionLoadErrors[project.id] == nil {
+                // Not while the first read is in flight, nor over its error.
+                Text("No sessions yet.").font(.caption).foregroundStyle(.secondary)
+            }
         } else {
             ScrollView {
                 VStack(alignment: .leading, spacing: 1) {
@@ -98,11 +101,8 @@ struct SessionSwitcherRow: View {
         let running = row.state == .running
         Button(action: onSelect) {
             HStack(spacing: 6) {
-                Image(systemName: running ? "circle.fill" : "circle")
-                    .font(.system(size: 7))
-                    .foregroundStyle(running ? Color.green : Color.secondary)
+                SessionLiveDot(isLive: running)
                     .frame(width: 12)
-                    .accessibilityLabel(running ? "Running" : "Not running")
                 Text(row.session.title)
                     .font(.callout.weight(isCurrent ? .semibold : .regular))
                     .lineLimit(1)

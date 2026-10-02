@@ -324,9 +324,9 @@ struct WorkbenchTitleRow: View {
                 Image(systemName: "sidebar.leading")
             }
             .keyboardShortcut("s", modifiers: [.command, .option])
-            .help(vm.panelVisible ? "Hide Sessions Panel ⌥⌘S" : "Show Sessions Panel ⌥⌘S")
+            .help(vm.panelVisible ? "Hide Sessions Panel (⌥⌘S)" : "Show Sessions Panel (⌥⌘S)")
             .accessibilityLabel(vm.panelVisible ? "Hide Sessions Panel" : "Show Sessions Panel")
-            if vm.showsHeaderSwitchers, let project = vm.selectedWorkbench {
+            if let project = vm.headerSwitcherWorkbench {
                 WorkbenchSwitcher(vm: vm, project: project, actions: switcherActions, fillsWidth: false)
                 Image(systemName: "chevron.right")
                     .font(.caption)

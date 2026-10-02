@@ -89,10 +89,10 @@ extension WorkbenchesViewModel {
         selectedWorkbench != nil
     }
 
-    /// Only while the panel is hidden does the title row carry the
-    /// workbench and session switchers (board #251, variant H).
-    var showsHeaderSwitchers: Bool {
-        !panelVisible && hasWorkbenchPage
+    /// The workbench whose switchers the title row carries: only while the
+    /// panel is hidden over its page (board #251, variant H).
+    var headerSwitcherWorkbench: Workbench? {
+        panelVisible ? nil : selectedWorkbench
     }
 
     /// A level-1 project click: selects it, which drills into it (the
@@ -149,7 +149,8 @@ extension WorkbenchesViewModel {
         // The list may not be loaded yet (the panel loads it on appear).
         // A failed load already reports itself; the row is not "gone".
         if terminalSessions[projectID]?.contains(where: { $0.id == id }) != true {
-            guard await loadSessions(projectID: projectID) else { return }
+            // The owner may have moved to another page during the read.
+            guard await loadSessions(projectID: projectID), selectedWorkbenchID == projectID else { return }
         }
         guard let session = terminalSessions[projectID]?.first(where: { $0.id == id }) else {
             sessionActionErrors[projectID] = "That session no longer exists."

@@ -205,6 +205,86 @@ final class WorkbenchHeaderSwitcherTests: XCTestCase {
         XCTAssertNil(vm.drilledWorkbenchID)
     }
 
+    /// The owner presses ⌘2 on A, then moves to B while A's sessions are
+    /// still being read: A's session must not open over B.
+    func testAShortcutDuringTheReadOpensNothingAfterTheOwnerMovesOn() async throws {
+        let a = try await workbench("alpha")
+        let b = try await workbench("beta")
+        _ = try await session(a, "one", lastActiveAt: "2026-09-03T10:00:00Z")
+        _ = try await session(a, "two", lastActiveAt: "2026-09-02T10:00:00Z")
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: a)
+        vm.terminalSessions[a] = nil
+        let gate = holdFirstRead(of: a, vm)
+
+        let pressing = Task { await vm.openSession(atShortcut: 2) }
+        try await yieldUntil { gate.continuation != nil }
+        vm.drill(into: b)
+        let layoutB = vm.layout(projectID: b)
+        gate.continuation?.resume()
+        await pressing.value
+
+        XCTAssertEqual(vm.selectedWorkbenchID, b)
+        XCTAssertEqual(vm.layout(projectID: b), layoutB)
+        XCTAssertTrue(launches.isEmpty, "A's session is not started")
+        XCTAssertEqual(vm.sessionActionErrors, [:], "a dropped press reports nothing, on B least of all")
+    }
+
+    /// A pick whose row is not loaded yet reads the list first; a move to
+    /// another page meanwhile drops it.
+    func testAPickDuringTheReadOpensNothingAfterTheOwnerMovesOn() async throws {
+        let a = try await workbench("alpha")
+        let b = try await workbench("beta")
+        let row = try await session(a, "one", lastActiveAt: "2026-09-03T10:00:00Z")
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: a)
+        vm.terminalSessions[a] = nil
+        let gate = holdFirstRead(of: a, vm)
+
+        let picking = Task { await vm.showFromPanel(sessionID: row.id) }
+        try await yieldUntil { gate.continuation != nil }
+        vm.drill(into: b)
+        let layoutB = vm.layout(projectID: b)
+        gate.continuation?.resume()
+        await picking.value
+
+        XCTAssertEqual(vm.layout(projectID: b), layoutB)
+        XCTAssertTrue(launches.isEmpty, "A's session is not started")
+        XCTAssertNil(vm.sessionActionErrors[a], "a dropped pick reports nothing")
+    }
+
+    private final class ReadGate {
+        var continuation: CheckedContinuation<Void, Never>?
+        var held = false
+    }
+
+    /// Holds only the first read of `projectID`'s sessions; later reads pass.
+    private func holdFirstRead(of projectID: Int64, _ vm: WorkbenchesViewModel) -> ReadGate {
+        let gate = ReadGate()
+        let db: DatabasePool = pool
+        vm.readWorkbenchSessions = { id in
+            if id == projectID, !gate.held {
+                gate.held = true
+                await withCheckedContinuation { gate.continuation = $0 }
+            }
+            return try await db.read { try TerminalSessionQueries.fetchForWorkbench($0, projectID: id) }
+        }
+        return gate
+    }
+
+    private func yieldUntil(_ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
+        let deadline = Date().addingTimeInterval(5)
+        while !condition() {
+            guard Date() < deadline else {
+                XCTFail("condition not met within 5 s", file: file, line: line)
+                throw CancellationError()
+            }
+            await Task.yield()
+        }
+    }
+
     // MARK: - The session in focus
 
     func testTheHeaderSessionIsTheVisibleOneElseTheActiveOne() async throws {
@@ -275,8 +355,13 @@ final class WorkbenchHeaderSwitcherTests: XCTestCase {
         try button.inspect().find(ViewType.Button.self).tap()
         XCTAssertEqual(taps, 1)
 
+        XCTAssertNoThrow(try button.inspect().find(viewWithAccessibilityLabel: "No session"))
+
+        // VoiceOver hears the state with the title, not as a separate element.
         let live = SessionSwitcherButton(title: "one", isLive: true) {}
-        XCTAssertNoThrow(try live.inspect().find(viewWithAccessibilityLabel: "Running"))
+        XCTAssertNoThrow(try live.inspect().find(viewWithAccessibilityLabel: "Session one, running"))
+        let idle = SessionSwitcherButton(title: "one", isLive: false) {}
+        XCTAssertNoThrow(try idle.inspect().find(viewWithAccessibilityLabel: "Session one, not running"))
     }
 
     func testASessionRowShowsItsBadgeCaptionAndShortcut() async throws {
@@ -298,5 +383,27 @@ final class WorkbenchHeaderSwitcherTests: XCTestCase {
         XCTAssertNoThrow(try idle.inspect().find(text: "#\(target)"))
         XCTAssertNoThrow(try idle.inspect().find(text: "not started · 1d"))
         XCTAssertNoThrow(try idle.inspect().find(text: "⌘2"))
+    }
+
+    func testThePopoverSaysNoSessionsYetOnlyAfterASuccessfulRead() async throws {
+        let a = try await workbench("alpha")
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: a)
+        let project = try XCTUnwrap(vm.selectedWorkbench)
+        let popover = SessionSwitcherPopover(
+            vm: vm, project: project, currentID: nil, onSelect: { _ in }, onNewSession: {}, onShowPanel: {}
+        )
+
+        vm.terminalSessions[a] = nil
+        XCTAssertThrowsError(try popover.inspect().find(text: "No sessions yet."), "the first read is in flight")
+
+        vm.terminalSessions[a] = []
+        vm.sessionLoadErrors[a] = "Could not load terminal sessions: boom"
+        XCTAssertThrowsError(try popover.inspect().find(text: "No sessions yet."), "the read failed")
+        XCTAssertNoThrow(try popover.inspect().find(text: "Could not load terminal sessions: boom"))
+
+        vm.sessionLoadErrors[a] = nil
+        XCTAssertNoThrow(try popover.inspect().find(text: "No sessions yet."))
     }
 }
