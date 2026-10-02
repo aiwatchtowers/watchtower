@@ -209,4 +209,48 @@ final class WorkbenchNotificationPolicyTests: XCTestCase {
         let roundTrip = try JSONDecoder().decode(Policy.DocumentState.self, from: JSONEncoder().encode(reviewed("t", awaiting: true)))
         XCTAssertEqual(roundTrip, reviewed("t", awaiting: true))
     }
+
+    // MARK: proposals from the project terminal (#166)
+
+    private func proposals(_ last: Int64, _ pending: [Int64]) -> Policy.Snapshot {
+        Policy.Snapshot(
+            projectID: 1, projectName: "acme", lastAgentCommentID: 0, questions: [], documents: [:], targets: [:],
+            ownerTouched: [], lastActionID: last,
+            pendingActions: pending.map { .init(id: $0, tool: "send_slack_message", summary: "To: #ops in Acme — build is green") }
+        )
+    }
+
+    func testANewPendingProposalAnnouncesItsApproval() {
+        let notices = Policy.decide(previous: proposals(4, []), current: proposals(6, [3, 5]))
+        XCTAssertEqual(notices.map(\.kind), [.actionAwaitsApproval], "only the proposal past the watermark")
+        XCTAssertEqual(notices.first?.title, "Send to Slack awaits your approval")
+        XCTAssertEqual(notices.first?.body, "acme: To: #ops in Acme — build is green")
+        XCTAssertEqual(notices.first?.identifier, "project-1-actionAwaitsApproval-5")
+    }
+
+    func testAnUnknownWatermarkBaselinesSilently() {
+        let previous = proposals(Policy.Snapshot.unknownActionWatermark, [])
+        XCTAssertTrue(Policy.decide(previous: previous, current: proposals(9, [7, 8, 9])).isEmpty)
+    }
+
+    func testSnapshotPersistedBeforeProposalsDecodesWithAnUnknownWatermark() throws {
+        let old = snapshot(last: 3)
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(old)) as? [String: Any])
+        json.removeValue(forKey: "lastActionID")
+        json.removeValue(forKey: "pendingActions")
+        let decoded = try JSONDecoder().decode(Policy.Snapshot.self, from: JSONSerialization.data(withJSONObject: json))
+        XCTAssertEqual(decoded.lastActionID, Policy.Snapshot.unknownActionWatermark)
+        XCTAssertEqual(decoded.lastAgentCommentID, 3)
+        let persisted = proposals(6, [5]).persisted
+        XCTAssertTrue(persisted.pendingActions.isEmpty)
+        XCTAssertEqual(try JSONDecoder().decode(Policy.Snapshot.self, from: JSONEncoder().encode(persisted)), persisted)
+    }
+
+    func testThreeProposalsInOnePollCoalesceOntoTheBoard() {
+        let notices = Policy.decide(previous: proposals(0, []), current: proposals(3, [1, 2, 3]))
+        XCTAssertEqual(notices.count, 1)
+        XCTAssertEqual(notices.first?.title, "3 proposals await your approval")
+        XCTAssertEqual(notices.first?.kind, .actionAwaitsApproval)
+        XCTAssertEqual(notices.first?.route.pane, .board)
+    }
 }

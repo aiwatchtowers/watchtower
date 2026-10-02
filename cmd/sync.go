@@ -759,7 +759,9 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	briefingPipe := briefing.New(database, cfg, gen, logger)
 	briefingPipe.SetPromptStore(prompts.New(database, nil))
 	d.SetBriefingPipeline(briefingPipe)
-	d.SetInboxPipeline(inbox.New(database, cfg, gen, logger))
+	inboxPipe := inbox.New(database, cfg, gen, logger)
+	inboxPipe.SetPromptStore(prompts.New(database, nil))
+	d.SetInboxPipeline(inboxPipe)
 	wireIdeasPipeline(d, database, cfg, gen, logger)
 	wireReactionCommandsPipeline(d, database, cfg, gen, logger)
 	wireMemoryPipeline(d, database, cfg, logger)
@@ -959,6 +961,9 @@ func newJiraAccountSyncer(cfg *config.Config, database *db.DB, acct db.JiraAccou
 	if jiraCommentSyncEnabled(cfg) {
 		syncer.SetCommentSyncLimit(cfg.Ideas.MaxCommentIssuesPerSync)
 	}
+	// Status/assignee history for the chat's time-in-status questions;
+	// paced per pass so a first backfill spreads over cycles.
+	syncer.SetChangelogLimit(cfg.Jira.ChangelogIssuesPerSync)
 	// Wire board analyzer for auto-refresh of changed configs. This
 	// serves Boards, not digests, so it attaches whenever the account
 	// itself is wired — no longer behind cfg.Digest.Enabled (Task 3).

@@ -105,6 +105,20 @@ func (db *DB) GetStyleProfile() (string, error) {
 	return s, nil
 }
 
+// GetStyleProfileUpdatedAt returns when the style profile was last generated
+// or edited ("" when never or when no workspace row exists).
+func (db *DB) GetStyleProfileUpdatedAt() (string, error) {
+	var s sql.NullString
+	err := db.QueryRow(`SELECT style_profile_updated_at FROM workspace LIMIT 1`).Scan(&s)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", nil
+		}
+		return "", fmt.Errorf("getting style_profile_updated_at: %w", err)
+	}
+	return s.String, nil
+}
+
 // SetStyleProfile stores the communication style profile and stamps its
 // generation/edit time.
 func (db *DB) SetStyleProfile(text string) error {

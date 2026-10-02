@@ -77,8 +77,8 @@ package final class ActionStripViewModel {
         }
     }
 
-    package func approve(_ id: Int64) async {
-        await actionFeed.approve(id)
+    package func approve(_ id: Int64, patch: String? = nil) async {
+        await actionFeed.approve(id, patch: patch)
         refresh()
         adoptFeedError()
     }

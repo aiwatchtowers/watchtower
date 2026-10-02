@@ -114,8 +114,10 @@ func mcpModeOptions(cfg *config.Config, database *db.DB, turn string, turnFunc f
 // mcpWorkbenchOptions is `watchtower mcp --workbench N` (DEV-06): the connection
 // stays writable, the registry is bound to workbench N on the "project" surface,
 // and its tools apply directly (DirectApply) with an agent_actions audit row —
-// never an External tool. The workbench must exist when the server starts; if
-// it is deleted later, every tool answers "workbench N no longer exists".
+// never an External tool inline: the one propose-only External tool
+// (send_slack_message) is recorded pending for the owner's Approve (DEV-06).
+// The workbench must exist when the server starts; if it is deleted later,
+// every tool answers "workbench N no longer exists".
 // legacy is the pre-rename `--project N` spelling: the same session, listing
 // the renamed tools under their old names (Binding.LegacyNames).
 func mcpWorkbenchOptions(cfg *config.Config, database *db.DB, workbenchID int64, legacy bool) ([]internalmcp.ServerOption, error) {

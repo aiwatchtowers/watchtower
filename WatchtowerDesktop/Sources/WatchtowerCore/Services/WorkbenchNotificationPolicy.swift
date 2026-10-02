@@ -5,6 +5,9 @@ package enum WorkbenchNoticeKind: String, Codable, Sendable {
     case documentReady
     case commentsAnswered
     case targetDone
+    /// A write the agent proposed from the workbench terminal that only the
+    /// owner can approve (a Slack send, DEV-06) — the card is in the Inbox.
+    case actionAwaitsApproval
 }
 
 package struct WorkbenchNotice: Equatable, Sendable {
@@ -85,6 +88,19 @@ package enum WorkbenchNotificationPolicy {
         }
     }
 
+    /// A pending `agent_actions` row the project's session proposed.
+    package struct PendingAction: Codable, Equatable, Sendable {
+        package let id: Int64
+        package let tool: String
+        package let summary: String
+
+        package init(id: Int64, tool: String, summary: String) {
+            self.id = id
+            self.tool = tool
+            self.summary = summary
+        }
+    }
+
     package struct TargetState: Codable, Equatable, Sendable {
         package let title: String
         package let status: String
@@ -96,12 +112,16 @@ package enum WorkbenchNotificationPolicy {
     }
 
     /// One project's state at a poll. `questions` holds only the agent root
-    /// comments past the previous watermark; `ownerTouched` what the owner
-    /// changed since the previous poll. Both are transient (`persisted`).
+    /// comments past the previous watermark, `pendingActions` only the
+    /// pending proposals past `lastActionID`; `ownerTouched` what the owner
+    /// changed since the previous poll. All three are transient (`persisted`).
     package struct Snapshot: Codable, Equatable, Sendable {
         package var projectID: Int64
         package var projectName: String
         package var lastAgentCommentID: Int64
+        /// The highest `agent_actions` id bound to this project at the poll.
+        package var lastActionID: Int64
+        package var pendingActions: [PendingAction]
         package var questions: [Question]
         package var documents: [Int64: DocumentState]
         package var targets: [Int64: TargetState]
@@ -114,11 +134,15 @@ package enum WorkbenchNotificationPolicy {
             questions: [Question],
             documents: [Int64: DocumentState],
             targets: [Int64: TargetState],
-            ownerTouched: Set<WorkbenchSubject>
+            ownerTouched: Set<WorkbenchSubject>,
+            lastActionID: Int64 = 0,
+            pendingActions: [PendingAction] = []
         ) {
             self.projectID = projectID
             self.projectName = projectName
             self.lastAgentCommentID = lastAgentCommentID
+            self.lastActionID = lastActionID
+            self.pendingActions = pendingActions
             self.questions = questions
             self.documents = documents
             self.targets = targets
@@ -134,9 +158,35 @@ package enum WorkbenchNotificationPolicy {
         package var persisted: Self {
             var copy = self
             copy.questions = []
+            copy.pendingActions = []
             copy.ownerTouched = []
             return copy
         }
+
+        private enum CodingKeys: String, CodingKey {
+            case projectID, projectName, lastAgentCommentID, lastActionID, pendingActions
+            case questions, documents, targets, ownerTouched
+        }
+
+        package init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            projectID = try c.decode(Int64.self, forKey: .projectID)
+            projectName = try c.decode(String.self, forKey: .projectName)
+            lastAgentCommentID = try c.decode(Int64.self, forKey: .lastAgentCommentID)
+            // A snapshot persisted before proposals were watched has no
+            // watermark: the first poll baselines instead of announcing every
+            // pending proposal at once.
+            lastActionID = try c.decodeIfPresent(Int64.self, forKey: .lastActionID) ?? Self.unknownActionWatermark
+            pendingActions = try c.decodeIfPresent([PendingAction].self, forKey: .pendingActions) ?? []
+            questions = try c.decode([Question].self, forKey: .questions)
+            documents = try c.decode([Int64: DocumentState].self, forKey: .documents)
+            targets = try c.decode([Int64: TargetState].self, forKey: .targets)
+            ownerTouched = try c.decode(Set<WorkbenchSubject>.self, forKey: .ownerTouched)
+        }
+
+        /// The watermark of a snapshot persisted before proposals were
+        /// watched: no edge is read from it.
+        package static let unknownActionWatermark: Int64 = -1
     }
 
     package static func decide(previous: Snapshot, current: Snapshot) -> [WorkbenchNotice] {
@@ -144,7 +194,8 @@ package enum WorkbenchNotificationPolicy {
             coalesce(questions(previous, current), kind: .agentAsks, in: current),
             coalesce(readyDocuments(previous, current), kind: .documentReady, in: current),
             coalesce(answeredDocuments(previous, current), kind: .commentsAnswered, in: current),
-            coalesce(doneTargets(previous, current), kind: .targetDone, in: current)
+            coalesce(doneTargets(previous, current), kind: .targetDone, in: current),
+            coalesce(proposedActions(previous, current), kind: .actionAwaitsApproval, in: current)
         ].flatMap { $0 }
     }
 
@@ -204,11 +255,24 @@ package enum WorkbenchNotificationPolicy {
         }
     }
 
+    /// A proposal the workbench session filed since the previous poll that
+    /// still waits for the owner. The card lives in the Inbox → Actions strip.
+    private static func proposedActions(_ previous: Snapshot, _ current: Snapshot) -> [WorkbenchNotice] {
+        guard previous.lastActionID != Snapshot.unknownActionWatermark else { return [] }
+        return current.pendingActions.filter { $0.id > previous.lastActionID }.map { action in
+            notice(.actionAwaitsApproval, current,
+                   title: "\(ReactionToolCatalog.title(for: action.tool)) awaits your approval",
+                   body: "\(current.projectName): \(action.summary.prefix(200))",
+                   route: WorkbenchRoute(projectID: current.projectID, pane: .board),
+                   key: "\(action.id)")
+        }
+    }
+
     // MARK: - Shaping
 
     private static func coalesce(_ notices: [WorkbenchNotice], kind: WorkbenchNoticeKind, in snapshot: Snapshot) -> [WorkbenchNotice] {
         guard notices.count >= coalesceThreshold else { return notices }
-        let pane: WorkbenchPane = kind == .agentAsks || kind == .targetDone ? .board : .documents
+        let pane: WorkbenchPane = kind == .documentReady || kind == .commentsAnswered ? .documents : .board
         return [notice(kind, snapshot,
                        title: summaryTitle(kind, count: notices.count), body: snapshot.projectName,
                        route: WorkbenchRoute(projectID: snapshot.projectID, pane: pane),
@@ -221,6 +285,7 @@ package enum WorkbenchNotificationPolicy {
         case .documentReady: "\(count) documents ready for review"
         case .commentsAnswered: "All comments answered on \(count) documents"
         case .targetDone: "\(count) targets done"
+        case .actionAwaitsApproval: "\(count) proposals await your approval"
         }
     }
 

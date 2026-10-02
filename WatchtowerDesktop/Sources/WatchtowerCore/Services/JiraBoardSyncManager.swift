@@ -91,7 +91,7 @@ package final class JiraBoardSyncManager {
         }
 
         let stderrData = await stderrRead.value
-        proc.waitUntilExit()
+        await ProcessPipes.offPool { proc.waitUntilExit() }
 
         if proc.terminationStatus != 0 {
             let stderr = String(data: stderrData, encoding: .utf8)?

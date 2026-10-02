@@ -9,6 +9,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/inbox"
+	"watchtower/internal/prompts"
 
 	"github.com/spf13/cobra"
 )
@@ -127,6 +128,7 @@ func runProfileStyleSample(cmd *cobra.Command, _ []string) error {
 	defer closeGen()
 
 	pipe := inbox.New(database, cfg, gen, logger)
+	pipe.SetPromptStore(prompts.New(database, nil))
 	if err := pipe.GenerateStyleProfile(cmd.Context()); err != nil {
 		return err
 	}

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"strconv"
@@ -430,4 +431,129 @@ func TestQC02_AllowRefusesADestructiveTool(t *testing.T) {
 	require.Len(t, servers, 1)
 	assert.Equal(t, []string{"getIssue"}, servers[0].AllowTools)
 	assert.Equal(t, []string{"purgeCache"}, servers[0].DenyTools)
+}
+
+// The Desktop reads `connections tools --json`: an annotated write carries
+// write:true (shown without a toggle), the empty states are [] not null, and
+// `--allow=` (no names) stores an explicit empty list — every tool off.
+func TestConnectionsTools_JSONForTheDesktop(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	id := insertStaticConnection(t, database, cfg)
+	idArg := strconv.FormatInt(id, 10)
+
+	out, err := runConnections(t, "", "tools", idArg, "--json")
+	require.NoError(t, err, out)
+	assert.Contains(t, out, `"tools": []`, "a never-listed connection renders an empty array, not null")
+
+	require.NoError(t, database.SetExternalConnectionTools(id, []db.ExternalTool{
+		{Name: "getIssue", Annotated: true, ReadOnlyHint: true},
+		{Name: "createIssue", Annotated: true},
+		{Name: "runQuery"},
+		{Name: "purgeCache", Annotated: true, ReadOnlyHint: true, DestructiveHint: true},
+	}, time.Now().UTC().Format(time.RFC3339)))
+	out, err = runConnections(t, "", "tools", idArg, "--json")
+	require.NoError(t, err, out)
+	var wire connectionToolsJSON
+	require.NoError(t, json.Unmarshal([]byte(out), &wire))
+	assert.Equal(t, []connectionToolJSON{
+		{Name: "getIssue", Allowed: true, ReadOnly: true},
+		{Name: "createIssue", Write: true},
+		{Name: "runQuery"},
+		{Name: "purgeCache", Write: true},
+	}, wire.Tools)
+
+	// The Desktop passes `--allow=`, which a fresh process parses to an empty,
+	// non-nil list. The package-level flag keeps pflag's "changed" state
+	// across in-process runs (an empty value then appends to nil), so set the
+	// parsed value directly here.
+	var buf bytes.Buffer
+	connectionsToolsCmd.SetOut(&buf)
+	t.Cleanup(func() { connectionsToolsCmd.SetOut(nil) })
+	connectionsToolsFlagAllow, connectionsToolsFlagJSON = []string{}, true
+	t.Cleanup(resetConnectionsFlags)
+	require.NoError(t, runConnectionsTools(connectionsToolsCmd, []string{idArg}))
+	out = buf.String()
+	wire = connectionToolsJSON{}
+	require.NoError(t, json.Unmarshal([]byte(out), &wire))
+	assert.True(t, wire.ExplicitSet)
+	for _, tool := range wire.Tools {
+		assert.False(t, tool.Allowed, tool.Name)
+	}
+	conn, err := database.GetExternalConnection(id)
+	require.NoError(t, err)
+	assert.Equal(t, []string{}, conn.AllowTools)
+	assert.Equal(t, "error", conn.Status, "no allowed tool: the row says the connection is not mounted")
+}
+
+// insertPreDestructiveCache writes a tool list the way it was cached before
+// tools carried their destructive mark (no destructive_hint key).
+func insertPreDestructiveCache(t *testing.T, database *db.DB, id int64) {
+	t.Helper()
+	_, err := database.Exec(`INSERT INTO external_connection_tools (connection_id, tools_json, listed_at)
+        VALUES (?, ?, ?)`, id,
+		`[{"name":"getIssue","read_only_hint":true,"annotated":true},{"name":"purgeCache","read_only_hint":true,"annotated":true}]`,
+		time.Now().UTC().Format(time.RFC3339))
+	require.NoError(t, err)
+}
+
+// TestQC02_StaleCacheIsRelistedBeforeMount: a list cached before tools
+// carried their destructive mark cannot show a destructive tool as a write,
+// so a launch lists the tools again before mounting any — and a tool the
+// fresh listing marks destructive stays out of the chat.
+func TestQC02_StaleCacheIsRelistedBeforeMount(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	id := insertStaticConnection(t, database, cfg)
+	insertPreDestructiveCache(t, database, id)
+	calls := stubToolsList(t, []db.ExternalTool{
+		{Name: "getIssue", Annotated: true, ReadOnlyHint: true},
+		{Name: "purgeCache", Annotated: true, ReadOnlyHint: true, DestructiveHint: true},
+	}, nil)
+
+	servers := loadExternalMCPServers(cfg, cfg.DBPath())
+	require.Len(t, servers, 1)
+	assert.Equal(t, []string{"getIssue"}, servers[0].AllowTools)
+	assert.Equal(t, []string{"purgeCache"}, servers[0].DenyTools)
+	assert.Len(t, *calls, 1, "the stale list was replaced by a fresh listing")
+
+	conn, err := database.GetExternalConnection(id)
+	require.NoError(t, err)
+	assert.False(t, conn.ToolsStale)
+	assert.True(t, conn.ToolsListed)
+	require.Len(t, loadExternalMCPServers(cfg, cfg.DBPath()), 1)
+	assert.Len(t, *calls, 1, "the fresh list is used from the cache afterwards")
+}
+
+// TestQC02_StaleCacheFailsClosed: when the re-listing fails, the stale list
+// is never used: the connection is not mounted and its row says why.
+func TestQC02_StaleCacheFailsClosed(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	id := insertStaticConnection(t, database, cfg)
+	insertPreDestructiveCache(t, database, id)
+	stubToolsList(t, nil, errors.New("connection refused"))
+
+	assert.Empty(t, loadExternalMCPServers(cfg, cfg.DBPath()))
+	conn, err := database.GetExternalConnection(id)
+	require.NoError(t, err)
+	assert.Equal(t, "error", conn.Status)
+	assert.Contains(t, conn.Error, "predates write marks", "the owner is told the cache, not the server, changed")
+	assert.Contains(t, conn.Error, "listing its tools failed")
+
+	out, err := runConnections(t, "", "tools", strconv.FormatInt(id, 10))
+	require.NoError(t, err, out)
+	assert.Contains(t, out, "stale")
+	out, err = runConnections(t, "", "tools", strconv.FormatInt(id, 10), "--json")
+	require.NoError(t, err, out)
+	var wire connectionToolsJSON
+	require.NoError(t, json.Unmarshal([]byte(out), &wire))
+	assert.True(t, wire.Stale)
+	assert.False(t, wire.Listed)
 }

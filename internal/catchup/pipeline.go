@@ -333,17 +333,14 @@ func (p *Pipeline) learnedPrefs() string {
 	return digest.LearnedPreferencesBlock(rules)
 }
 
-// getPrompt returns the operator-customised template when a prompt store is
-// wired, falling back to the built-in default.
+// getPrompt resolves a prompt via prompts.Resolve: the operator-customised
+// store row, else the registered default.
 func (p *Pipeline) getPrompt(id string) string {
-	if p.promptStore != nil {
-		tmpl, _, err := p.promptStore.Get(id)
-		if err == nil {
-			return tmpl
-		}
-		p.logf("catchup: loading prompt %q failed, using the built-in default: %v", id, err)
+	tmpl, _, err := prompts.Resolve(p.promptStore, id, "")
+	if err != nil {
+		p.logf("catchup: %v — using the built-in default", err)
 	}
-	return prompts.Defaults[id]
+	return tmpl
 }
 
 func (p *Pipeline) logf(format string, args ...any) {

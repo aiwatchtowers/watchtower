@@ -99,6 +99,10 @@ const (
 	// Jira defaults
 	DefaultJiraEnabled          = false
 	DefaultJiraSyncIntervalMins = 15
+	// DefaultJiraChangelogIssuesPerSync caps how many issues get their
+	// status/assignee history fetched per account per sync pass (0 = off);
+	// a first backfill spreads over passes.
+	DefaultJiraChangelogIssuesPerSync = 500
 
 	// DefaultJiraFeaturesRole is the default role for Jira feature toggles.
 	DefaultJiraFeaturesRole = "ic"

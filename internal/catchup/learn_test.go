@@ -64,7 +64,7 @@ func TestSubmitTopicFeedback_BareRatingWritesNoRuleAndNoAICall(t *testing.T) {
 func TestSubmitTopicFeedback_CommentDerivesTargetedRule(t *testing.T) {
 	var learnSystem, learnUser string
 	gen := &mockGenerator{fn: func(system, user string) string {
-		if !strings.HasPrefix(system, learnSystemPrompt) {
+		if !strings.HasPrefix(system, prompts.Defaults[prompts.CatchupLearn]) {
 			t.Errorf("unexpected AI call with system prompt %q", system)
 			return ""
 		}
@@ -104,7 +104,7 @@ func TestSubmitTopicFeedback_PresentationCorrectionRegeneratesRecap(t *testing.T
 	recapID := seedReadyRecap(t, d, digestID)
 	var composeUser string
 	gen.fn = func(system, user string) string {
-		if strings.HasPrefix(system, learnSystemPrompt) {
+		if strings.HasPrefix(system, prompts.Defaults[prompts.CatchupLearn]) {
 			return `{"rules":[],"regenerate":true}`
 		}
 		composeUser = user
@@ -132,7 +132,7 @@ func TestSubmitTopicFeedback_FailedRegenerationStillReportsItsRecap(t *testing.T
 	p, d := newPipeline(t, gen, &fakeTopUp{})
 	recapID := seedReadyRecap(t, d, seedDigest(t, d, 1500, 1900))
 	gen.fn = func(system, _ string) string {
-		if strings.HasPrefix(system, learnSystemPrompt) {
+		if strings.HasPrefix(system, prompts.Defaults[prompts.CatchupLearn]) {
 			return `{"rules":[],"regenerate":true}`
 		}
 		return "not json"
@@ -188,7 +188,7 @@ func TestSubmitTopicFeedback_InvalidRulesAreSkippedNotPersisted(t *testing.T) {
 	digestID := seedDigest(t, d, 1500, 1900)
 	recapID := seedReadyRecap(t, d, digestID)
 	gen.fn = func(system, _ string) string {
-		if strings.HasPrefix(system, learnSystemPrompt) {
+		if strings.HasPrefix(system, prompts.Defaults[prompts.CatchupLearn]) {
 			return `{"rules":[
 				{"pipeline":"digest","rule_type":"source_mute","scope_key":"digest:channel:Cxxx","weight":-1},
 				{"pipeline":"digest","rule_type":"trigger_nonsense","scope_key":"digest:channel:1:C1","weight":-1},
@@ -240,4 +240,28 @@ func TestValidateLearnRule_SenderKeyAndNaN(t *testing.T) {
 
 	_, why = validateLearnRule(learnRule{Pipeline: "inbox", RuleType: "source_mute", ScopeKey: "sender:1:U7", Weight: -0.3}, nil)
 	assert.NotEmpty(t, why, "no refs → no key can be valid")
+}
+
+// TestSubmitTopicFeedback_UsesPromptStoreOverride pins the catchup.learn
+// registration: a customized store row, not the registered default, reaches
+// the AI call.
+func TestSubmitTopicFeedback_UsesPromptStoreOverride(t *testing.T) {
+	const sentinel = "SENTINEL-CUSTOMIZED-CATCHUP-LEARN-8B3C"
+	var learnSystem string
+	gen := &mockGenerator{fn: func(system, _ string) string {
+		learnSystem = system
+		return learnMuteRule
+	}}
+	p, d := newPipeline(t, gen, &fakeTopUp{})
+	store := prompts.New(d, nil)
+	require.NoError(t, store.Seed())
+	require.NoError(t, store.Update(prompts.CatchupLearn, sentinel, "test customization"))
+	p.SetPromptStore(store)
+	recapID := seedReadyRecap(t, d, seedDigest(t, d, 1500, 1900))
+
+	_, err := p.SubmitTopicFeedback(context.Background(), recapID, 0, -1, "this channel is noise")
+	require.NoError(t, err)
+
+	assert.True(t, strings.HasPrefix(learnSystem, sentinel), "the customized template must lead the system prompt")
+	assert.NotContains(t, learnSystem, "You are the learning interpreter", "the registered default leaked through a customized store")
 }

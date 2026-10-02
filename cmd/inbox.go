@@ -15,6 +15,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/inbox"
+	"watchtower/internal/prompts"
 
 	"github.com/spf13/cobra"
 )
@@ -411,6 +412,7 @@ func runInboxGenerate(cmd *cobra.Command, _ []string) error {
 	gen, cleanupPool := cliPooledGenerator(cfg, logger)
 	defer cleanupPool()
 	pipe := inbox.New(database, cfg, gen, logger)
+	pipe.SetPromptStore(prompts.New(database, nil))
 	// A manual run detects but never moves the inbox watermark (INBOX-09):
 	// it cannot tell whether the data it scans is complete — its pre-sync is
 	// a subprocess whose rate-limit or revoked-account outcome it cannot
@@ -645,6 +647,7 @@ func newBackfillMentionsPipeline(cmd *cobra.Command) (pipe *inbox.Pipeline, clos
 
 	logger := log.New(cmd.ErrOrStderr(), "[inbox] ", log.LstdFlags)
 	pipe = inbox.New(database, cfg, nil, logger)
+	pipe.SetPromptStore(prompts.New(database, nil))
 	return pipe, func() { database.Close() }, nil
 }
 

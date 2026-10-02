@@ -91,8 +91,9 @@ func TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces(t *testing.T) {
 	}
 
 	// The workbench surface (`mcp --workbench N`, DEV-06): exactly the workbench
-	// tools plus the surface-less read tools — no other write tool, nothing
-	// External — and no workbench tool leaks onto another surface.
+	// tools, the Slack pair and the surface-less read tools — no other write
+	// tool, nothing External but the propose-only Slack send — and no
+	// workbench tool leaks onto another surface.
 	projectTools := []string{
 		"workbench_info", "workbench_board", "update_workbench", "add_workbench_source", "remove_workbench_source",
 		"create_targets", "update_target", "attach_document", "list_comments", "add_comment", "resolve_comment",
@@ -105,8 +106,26 @@ func TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces(t *testing.T) {
 	for _, rt := range tools.ReadTools() {
 		assert.True(t, project[rt.Name], "read tool %s missing on the project surface", rt.Name)
 	}
-	assert.Len(t, project, len(projectTools)+len(tools.ReadTools()), "nothing else on the project surface")
+	// Slack send (#166, owner decision 2026-10-02): the one External tool on
+	// the project surface, and only because it is propose-only there — the
+	// owner approves it in the Desktop (DEV-06 rule 3, amended).
+	slackTools := []string{"send_slack_message", "get_writing_style"}
+	for _, s := range slackTools {
+		assert.True(t, project[s], "%s missing on the project surface", s)
+		assert.True(t, main[s], "%s missing on main", s)
+		assert.False(t, target[s] || reaction[s], "%s is main + project only", s)
+	}
+	for _, rt := range tools.ReadTools() {
+		assert.NotEqual(t, "get_writing_style", rt.Name, "dev-mode MCP is unchanged (DEV-01)")
+	}
+	assert.Len(t, project, len(projectTools)+len(slackTools)+len(tools.ReadTools()), "nothing else on the project surface")
 	for _, tool := range reg.List("project") {
+		if tool.Name == "send_slack_message" {
+			assert.True(t, tool.External, "a Slack send leaves the machine (AGENT-03)")
+			assert.True(t, tool.ProposeUnderDirectApply, "in a workbench session it is only ever proposed (DEV-06)")
+			continue
+		}
 		assert.False(t, tool.External, "%s is External on the project surface (DEV-06)", tool.Name)
+		assert.False(t, tool.ProposeUnderDirectApply, "%s", tool.Name)
 	}
 }

@@ -300,6 +300,35 @@ final class WorkbenchQueriesTests: XCTestCase {
         }
     }
 
+    /// #166: the snapshot carries the workbench's pending proposals (a Slack
+    /// send from the terminal) and the highest proposal id, never another
+    /// workbench's or a decided one.
+    func testActivitySnapshotReadsTheProjectsPendingProposals() throws {
+        try db.write { d in
+            let p = try TestDatabase.insertWorkbench(d)
+            let key = String(p)
+            let args = ##"{"text":"build is green","target":{"account_id":1,"workspace":"Acme","channel_id":"C1","label":"#ops"}}"##
+            let pending = try TestDatabase.insertAgentAction(
+                d, tool: "send_slack_message", external: true, argsJSON: args,
+                surface: "project", conversationID: 0, contextType: "project", contextID: key
+            )
+            let decided = try TestDatabase.insertAgentAction(
+                d, tool: "send_slack_message", external: true, argsJSON: args,
+                surface: "project", conversationID: 0, contextType: "project", contextID: key, status: "applied"
+            )
+            _ = try TestDatabase.insertAgentAction(
+                d, tool: "send_slack_message", argsJSON: args,
+                surface: "project", conversationID: 0, contextType: "project", contextID: "999"
+            )
+            let project = try XCTUnwrap(WorkbenchQueries.fetch(d, id: p))
+
+            let snap = try WorkbenchQueries.activitySnapshot(d, project: project, afterAgentCommentID: 0)
+            XCTAssertEqual(snap.pendingActions.map(\.id), [pending])
+            XCTAssertEqual(snap.pendingActions.first?.summary, "To: #ops in Acme — build is green")
+            XCTAssertEqual(snap.lastActionID, decided)
+        }
+    }
+
     /// #105: an agent document whose target is in review awaits the owner's
     /// review — in the list and in the notification snapshot.
     func testAgentDocumentOnATargetInReviewAwaitsReview() throws {

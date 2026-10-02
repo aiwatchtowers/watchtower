@@ -211,17 +211,20 @@ func mountConnection(cfg *config.Config, database *db.DB, c db.ExternalConnectio
 	}
 	if !c.ToolsListed {
 		// Never listed (added before QC-02's allowlist, or the listing at
-		// enable time failed): list once now and cache it. No list mounts
-		// nothing from this server — fail closed, an owner allow list
-		// included, since only a listing shows which tools are writes.
+		// enable time failed), or a stale list cached before tools carried
+		// their destructive mark (db.ExternalConnection.ToolsStale): list
+		// once now and cache it. No list mounts nothing from this server —
+		// fail closed, an owner allow list included, since only a listing
+		// shows which tools are writes.
 		if recentlyFailed(c.ToolsListFailedAt) {
 			return server, connectionUnmounted(database, c, fmt.Sprintf(
-				"listing its tools failed at %s; none is available to the chat until a listing succeeds (retried after an hour, or now with `watchtower connections tools %d --refresh`)",
-				c.ToolsListFailedAt, c.ID))
+				"%slisting its tools failed at %s; none is available to the chat until a listing succeeds (retried after an hour, or now with `watchtower connections tools %d --refresh`)",
+				staleNote(c), c.ToolsListFailedAt, c.ID))
 		}
+		stale := staleNote(c)
 		if err := refreshConnectionTools(database, &c, server, launchToolsListTimeout); err != nil {
 			return server, connectionUnmounted(database, c, fmt.Sprintf(
-				"listing its tools failed (%v); none is available to the chat — `watchtower connections tools %d --refresh`", err, c.ID))
+				"%slisting its tools failed (%v); none is available to the chat — `watchtower connections tools %d --refresh`", stale, err, c.ID))
 		}
 	}
 	server.AllowTools, server.DenyTools = externalmcp.ResolveTools(c)
@@ -231,6 +234,15 @@ func mountConnection(cfg *config.Config, database *db.DB, c db.ExternalConnectio
 	}
 	markConnectionOK(database, c)
 	return server, true
+}
+
+// staleNote is the reason prefix for a connection whose cached tool list was
+// dropped as stale, so a failed re-listing does not read as a broken server.
+func staleNote(c db.ExternalConnection) string {
+	if c.ToolsStale {
+		return "its cached tool list predates write marks and must be listed again; "
+	}
+	return ""
 }
 
 // recentlyFailed reports whether failedAt (RFC 3339, ” = never) lies within
@@ -311,7 +323,7 @@ func refreshConnectionTools(database *db.DB, c *db.ExternalConnection, server ai
 	if err := database.SetExternalConnectionTools(c.ID, tools, listedAt); err != nil {
 		return err
 	}
-	c.Tools, c.ToolsListed, c.ToolsListedAt = tools, true, listedAt
+	c.Tools, c.ToolsListed, c.ToolsListedAt, c.ToolsStale = tools, true, listedAt, false
 	return nil
 }
 

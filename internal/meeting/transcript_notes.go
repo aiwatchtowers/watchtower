@@ -37,7 +37,7 @@ func (p *Pipeline) GenerateTranscriptNotes(ctx context.Context, eventID, transcr
 		lang = p.cfg.Digest.Language
 	}
 
-	tmpl := p.loadNotesPrompt()
+	tmpl := p.getPrompt(prompts.MeetingNotes)
 	systemPrompt := fmt.Sprintf(tmpl,
 		title, startTime, endTime, attendees, description,
 		recapBlock,
@@ -75,18 +75,3 @@ func stripMarkdownFence(s string) string {
 	}
 	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
-
-func (p *Pipeline) loadNotesPrompt() string {
-	if p.promptStore != nil {
-		if tmpl, _, err := p.promptStore.Get(prompts.MeetingNotes); err == nil && tmpl != "" {
-			return tmpl
-		}
-	}
-	if tmpl, ok := prompts.Defaults[prompts.MeetingNotes]; ok && tmpl != "" {
-		return tmpl
-	}
-	return defaultNotesPromptFallback
-}
-
-const defaultNotesPromptFallback = `Write publishable markdown meeting notes. Event: %s (%s-%s, attendees: %s, description: %s). Recap: %s. %s
-Return ONLY markdown.`

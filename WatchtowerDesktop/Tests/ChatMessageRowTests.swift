@@ -14,12 +14,13 @@ final class ChatMessageRowTests: XCTestCase {
         errorCode: String? = nil,
         errorMessage: String? = nil,
         provider: String? = nil,
-        siblings: Int = 1
+        siblings: Int = 1,
+        text: String = "body"
     ) throws -> ChatThreadItem {
         let db = try TestDatabase.create()
         let message = try db.write { d -> ChatMessageRecord in
             let conv = try TestDatabase.insertChatConversation(d)
-            let id = try TestDatabase.insertChatMessage(d, conversationID: conv, role: role, text: "body", status: status)
+            let id = try TestDatabase.insertChatMessage(d, conversationID: conv, role: role, text: text, status: status)
             try d.execute(sql: "UPDATE chat_messages SET error_code = ?, error_message = ?, provider = ? WHERE id = ?",
                           arguments: [errorCode, errorMessage, provider, id])
             return try XCTUnwrap(ChatMessageRecord.fetchOne(d, sql: "SELECT * FROM chat_messages WHERE id = ?", arguments: [id]))
@@ -94,6 +95,28 @@ final class ChatMessageRowTests: XCTestCase {
         XCTAssertEqual(quoted?.1, "body")
     }
 
+    func testCopyAndQuoteTakeAQuestionCardAsTextNotJSON() throws {
+        let reply = """
+        Which one?
+        ```watchtower-question
+        {"questions": [{"question": "Pick a release", "options": [{"label": "v1"}, {"label": "v2"}]}]}
+        ```
+        """
+        var copied: String?
+        var quoted: String?
+        var actions = ChatRowActions()
+        actions.copy = { copied = $0 }
+        actions.quote = { quoted = $1 }
+        let row = ChatMessageRow(item: try item(role: "assistant", status: "complete", text: reply),
+                                 isLast: true, isEditing: false, actions: actions)
+        for label in ["Copy message", "Quote in reply"] {
+            try row.inspect().find(ViewType.Button.self) { try $0.accessibilityLabel().string() == label }.tap()
+        }
+        let expected = "Which one?\n\nPick a release\n- v1\n- v2"
+        XCTAssertEqual(copied, expected)
+        XCTAssertEqual(quoted, expected)
+    }
+
     func testOwnerMessagesHaveNoQuoteButton() throws {
         let row = ChatMessageRow(item: try item(role: "user", status: "complete"),
                                  isLast: true, isEditing: false, actions: ChatRowActions())
@@ -121,6 +144,23 @@ final class ChatMessageRowTests: XCTestCase {
         XCTAssertThrowsError(try owner.inspect().find(ViewType.Button.self) {
             try $0.accessibilityLabel().string() == "Edit"
         })
+    }
+
+    /// A reply whose error could not be written stays `partial`: an embedded
+    /// chat handed Retry for it shows Retry, the main chat's stopped row
+    /// keeps Continue only.
+    func testAnUnsavedPartialRowOffersRetryOnlyInAnEmbeddedChat() throws {
+        var retried: Int64?
+        let partial = try item(role: "assistant", status: "partial")
+        let embedded = ChatMessageRow(item: partial, isLast: true, isEditing: false,
+                                      actions: .embedded(copy: { _ in }, retry: { retried = $0 }))
+        try embedded.inspect().find(button: "Retry").tap()
+        XCTAssertEqual(retried, partial.id)
+        XCTAssertThrowsError(try embedded.inspect().find(text: "Stopped"))
+
+        let main = ChatMessageRow(item: partial, isLast: true, isEditing: false, actions: ChatRowActions())
+        XCTAssertThrowsError(try main.inspect().find(button: "Retry"))
+        XCTAssertNoThrow(try main.inspect().find(text: "Stopped"))
     }
 
     func testEmbeddedErrorRowShowsRetryOnlyWhenGivenOne() throws {

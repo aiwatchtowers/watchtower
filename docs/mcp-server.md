@@ -26,6 +26,8 @@ the read-only switch, like every other `watchtower` command.)
 | `list_upcoming_events` | Calendar events in the next N hours |
 | `list_jira_issues` | Synced Jira issues, filterable by project/status/assignee |
 | `get_jira_issue` | One Jira issue by key |
+| `get_jira_status_history` | Status/assignee change history of Jira issues (board and linked) |
+| `get_jira_time_in_status` | Time in status per assignee over a period (wall-clock, not hours worked) |
 
 All `list_` tools accept a `limit` (default 50, capped at 200). Invalid enum
 filter values (e.g. `status: "in-progress"`) return a validation error naming

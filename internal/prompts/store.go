@@ -52,6 +52,9 @@ const (
 	DictationClean             = "dictation.clean"
 	ReactionCommand            = "reactioncmd.command"
 	CatchupCompose             = "catchup.compose"
+	CatchupLearn               = "catchup.learn"
+	TargetsNextStep            = "targets.next_step"
+	InboxStyleSample           = "inbox.style_sample"
 	ChatTitle                  = "chat.title"
 	TerminalTitle              = "terminal.title"
 )

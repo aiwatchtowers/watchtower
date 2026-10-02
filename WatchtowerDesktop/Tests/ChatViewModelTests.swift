@@ -647,6 +647,26 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertTrue(vm.composer.mentions.isEmpty, "the draft's mentions are cleared after send")
     }
 
+    /// A question card's answer goes out as a turn of its own: the owner's
+    /// half-written draft keeps the mention it picked.
+    func testAnAnswerSentPastTheComposerKeepsItsPicks() throws {
+        try dbManager.dbPool.write { db in
+            _ = try TargetQueries.create(db, text: "ship feature", periodStart: "2026-06-01", periodEnd: "2026-06-30")
+        }
+        let vm = try makeViewModel()
+        _ = try XCTUnwrap(vm.newConversation())
+        vm.composer.update(text: "@ship", cursor: 5)
+        XCTAssertTrue(vm.composer.isOpen)
+        _ = vm.composer.accept(index: 0, text: "@ship", cursor: 5)
+        let picked = vm.composer.mentions
+        XCTAssertEqual(picked.count, 1)
+
+        XCTAssertTrue(vm.send(text: "v0.11", keepsComposer: true))
+
+        XCTAssertEqual(vm.composer.mentions, picked, "the answer must not wipe the draft's picks")
+        XCTAssertEqual(try lastStoredUserText(vm), "v0.11")
+    }
+
     /// Editing a message keeps its references (Review Focus 3). `edit` refuses
     /// while streaming (like `send`), so the first turn must finish first.
     func testEditKeepsReferences() async throws {

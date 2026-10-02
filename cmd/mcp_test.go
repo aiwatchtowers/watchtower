@@ -161,11 +161,15 @@ func TestMCPProjectMode_LegacyFlagServesTheOldToolNames(t *testing.T) {
 		names, ls := localToolNames(t, database, opts)
 		workbenchTools := 0
 		for name := range names {
+			if name == "send_slack_message" || name == "get_writing_style" {
+				continue // main + project surfaces, not workbench tools (#166)
+			}
 			if tool, ok := buildToolRegistry(cfg, database).Get(name); ok && slices.Contains(tool.Surfaces, "project") {
 				workbenchTools++
 			}
 		}
 		assert.Equal(t, 11, workbenchTools, "legacy=%v", legacy)
+		assert.True(t, names["send_slack_message"] && names["get_writing_style"], "legacy=%v lists the Slack pair", legacy)
 		for newName, oldName := range tools.LegacyWorkbenchToolNames {
 			assert.Equal(t, legacy, names[oldName], "legacy=%v lists %s", legacy, oldName)
 			assert.Equal(t, !legacy, names[newName], "legacy=%v lists %s", legacy, newName)

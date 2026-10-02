@@ -45,30 +45,6 @@ var validNextStepKinds = map[string]bool{
 	"assistant": true, "open_links": true, "mark_done": true, "dismiss": true,
 }
 
-const nextStepSystemPrompt = `You are an execution coach embedded in a goal-tracking app. Given ONE target (a goal/task the operator owns) with its full context, decide the single most important NEXT ACTION the operator should take right now to move it forward.
-
-Return ONLY a JSON object (no markdown, no prose) with this shape:
-{
-  "title": "imperative one-line action, max ~80 chars",
-  "rationale": "1-2 sentences: why this is the next step and what it unblocks",
-  "urgency": "deadline | blocked | stale | normal",
-  "urgency_detail": "short hint like \"6 days\" (days to due) or \"\"",
-  "actions": [
-    {"label": "short button text", "kind": "assistant", "prompt": "what to ask the assistant"},
-    {"label": "Show tickets", "kind": "open_links"},
-    {"label": "Different plan", "kind": "assistant", "prompt": "Suggest a different next step for this target"}
-  ]
-}
-
-Rules:
-- Exactly one concrete next action in "title" — not a list, not a summary of the goal.
-- Pick "urgency": "deadline" if a due date is near/passed, "blocked" if status is blocked or someone else holds the ball, "stale" if it has not moved in a while, else "normal".
-- "urgency_detail" is a SHORT hint (e.g. days remaining). Leave "" if nothing meaningful.
-- Provide 1-3 actions. The FIRST is the primary action. Always include a final {"kind":"assistant","prompt":"Suggest a different next step for this target"} option labelled like "Different plan" unless it would be the only action.
-- If the recent history (notes, assistant conversation, applied actions) shows the previously suggested step was already carried out, propose what comes AFTER it — never repeat a step that is done.
-- Use "open_links" only if the target has links/referenced items.
-- Keep everything in the operator's language (match the target's text language).`
-
 // ErrWorkbenchTarget is returned for a target on a project board: project
 // targets are moved by the project's agent, never by next-step (PROJ-01).
 var ErrWorkbenchTarget = errors.New("project targets have no next step")
@@ -102,7 +78,7 @@ func (p *Pipeline) GenerateNextStep(ctx context.Context, targetID int) (*NextSte
 
 	prompt := p.buildNextStepPrompt(target)
 	ctx2 := digest.WithSource(ctx, "targets.next_step")
-	sys := nextStepSystemPrompt + "\n\n" + prompts.Directive(p.lang)
+	sys := p.getPrompt(prompts.TargetsNextStep) + "\n\n" + prompts.Directive(p.lang)
 	raw, _, _, err := p.gen.Generate(ctx2, sys,
 		"Decide the single next action for this target.\n\n"+prompt, "")
 	if err != nil {

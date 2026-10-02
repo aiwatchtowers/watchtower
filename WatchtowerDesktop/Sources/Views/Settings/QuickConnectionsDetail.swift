@@ -16,6 +16,8 @@ struct QuickConnectionsDetail: View {
     @State private var providerID = "claude"
     @State private var showAddConnectionSheet = false
     @State private var connectionPendingRemoval: ExternalConnection?
+    /// Connections whose Tools list is open.
+    @State private var expandedTools: Set<Int> = []
 
     var body: some View {
         Form {
@@ -34,14 +36,13 @@ struct QuickConnectionsDetail: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            // QC-02: the chat gets a connection's read-only tools only; the
-            // per-tool list lives in the CLI until the Desktop has a toggle.
-            // LocalizedStringKey so the command renders as code (Markdown).
-            Text(LocalizedStringKey(
-                "The assistant can use only the tools a server marks read-only "
+            // QC-02: by default the chat gets a connection's read-only tools
+            // only; each connection's Tools list below changes that per tool.
+            Text(
+                "By default the assistant can use only the tools a server marks read-only "
                     + "(or, when it doesn't say, tools named get…, list…, search… and the like). "
-                    + "Review or change them with `watchtower connections tools <id>`."
-            ))
+                    + "Open a connection's Tools to change that; tools the server marks as writes stay off."
+            )
                 .font(.caption)
                 .foregroundStyle(.secondary)
             if let vm = appState.externalConnectionsViewModel {
@@ -51,42 +52,11 @@ struct QuickConnectionsDetail: View {
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(vm.connections) { connection in
-                        HStack {
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(connection.name)
-                                Text(connection.kind)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Circle()
-                                .fill(connectionStatusColor(connection))
-                                .frame(width: 8, height: 8)
-                                .help(connection.isOK
-                                    ? "OK"
-                                    : (connection.error.isEmpty ? connection.status : connection.error))
-                            if connection.needsSignIn {
-                                Button("Sign in again") {
-                                    Task { await vm.signIn(connection) }
-                                }
-                                .buttonStyle(.plain)
-                                .disabled(vm.isBusy)
-                            }
-                            Toggle("Enabled", isOn: Binding(
-                                get: { connection.enabled },
-                                set: { newValue in
-                                    Task { await vm.setEnabled(connection, enabled: newValue) }
-                                }
-                            ))
-                            .toggleStyle(.switch)
-                            .controlSize(.mini)
-                            .disabled(vm.isBusy)
-                            Button("Remove") {
-                                connectionPendingRemoval = connection
-                            }
-                            .buttonStyle(.plain)
-                            .foregroundStyle(.red)
-                            .disabled(vm.isBusy)
+                        connectionRow(connection, vm: vm)
+                        DisclosureGroup(isExpanded: toolsExpanded(connection)) {
+                            QuickConnectionToolsView(connection: connection, vm: vm)
+                        } label: {
+                            Text("Tools").font(.caption)
                         }
                     }
                 }
@@ -129,6 +99,55 @@ struct QuickConnectionsDetail: View {
         } message: {
             Text("Removes the connection and its stored secret. The assistant loses access to its tools immediately.")
         }
+    }
+
+    private func connectionRow(_ connection: ExternalConnection, vm: ExternalConnectionsViewModel) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(connection.name)
+                Text(connection.kind)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Circle()
+                .fill(connectionStatusColor(connection))
+                .frame(width: 8, height: 8)
+                .help(connection.isOK
+                    ? "OK"
+                    : (connection.error.isEmpty ? connection.status : connection.error))
+            if connection.needsSignIn {
+                Button("Sign in again") {
+                    Task { await vm.signIn(connection) }
+                }
+                .buttonStyle(.plain)
+                .disabled(vm.isBusy || vm.toolsInFlight.contains(connection.id))
+            }
+            Toggle("Enabled", isOn: Binding(
+                get: { connection.enabled },
+                set: { newValue in
+                    Task { await vm.setEnabled(connection, enabled: newValue) }
+                }
+            ))
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+            .disabled(vm.isBusy || vm.toolsInFlight.contains(connection.id))
+            Button("Remove") {
+                connectionPendingRemoval = connection
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.red)
+            .disabled(vm.isBusy || vm.toolsInFlight.contains(connection.id))
+        }
+    }
+
+    private func toolsExpanded(_ connection: ExternalConnection) -> Binding<Bool> {
+        Binding(
+            get: { expandedTools.contains(connection.id) },
+            set: { open in
+                if open { expandedTools.insert(connection.id) } else { expandedTools.remove(connection.id) }
+            }
+        )
     }
 
     private func connectionStatusColor(_ connection: ExternalConnection) -> Color {

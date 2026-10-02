@@ -100,17 +100,15 @@ func TestMeetingPromptsSpeakerAttribution(t *testing.T) {
 }
 
 // TestTargetsExtractVersionFloor pins the 2026-09-23 drift reconciliation:
-// internal/targets/prompts.go's compiled ExtractPromptTemplate carried a
+// a compiled ExtractPromptTemplate const in internal/targets carried a
 // GROUPING/sub_items/LANGUAGE-preservation block (fix b7640c0b) that the
-// registered defaultTargetsExtract lacked entirely. Reconciling the two
-// copies (see TestExtractPromptTemplate_MatchesRegistryDefault in
-// internal/targets/prompt_store_test.go) only reaches an existing install's
-// seeded-and-never-edited targets.extract row through Store.Seed's
-// version-upgrade path, which requires the registry version to have moved.
-// Silently reverting DefaultVersions[TargetsExtract] to v1 would leave those
-// installs on the pre-reconciliation template even though the compiled
-// const and the registry default stay byte-identical — a regression the
-// drift guard alone cannot catch.
+// registered defaultTargetsExtract lacked entirely. The reconciled default
+// only reaches an existing install's seeded-and-never-edited targets.extract
+// row through Store.Seed's version-upgrade path, which requires the registry
+// version to have moved. Silently reverting DefaultVersions[TargetsExtract]
+// to v1 would leave those installs on the pre-reconciliation template. (The
+// compiled const is gone since 2026-10-02: every pipeline now falls back to
+// the registry through prompts.Resolve.)
 func TestTargetsExtractVersionFloor(t *testing.T) {
 	assert.GreaterOrEqual(t, DefaultVersions[TargetsExtract], 2,
 		"%q was reconciled with the compiled const on 2026-09-23 and must stay at v2 or later so Seed upgrades existing installs", TargetsExtract)
@@ -239,6 +237,24 @@ func TestTerminalTitlePromptRegistered(t *testing.T) {
 	assert.NotEmpty(t, Descriptions[id])
 	assert.NotContains(t, Defaults[id], "%s")
 	assert.False(t, strings.HasPrefix(Defaults[id], "-"))
+}
+
+// TestAppendedSystemPromptsRegistered pins the three system prompts that
+// bypassed the store until 2026-10-02 (catchup.learn, targets.next_step,
+// inbox.style_sample) into all four registration surfaces. None is a format
+// string — the callers append the language directive or use the text
+// verbatim — so a stray %s would reach the model unrendered.
+func TestAppendedSystemPromptsRegistered(t *testing.T) {
+	for _, id := range []string{CatchupLearn, TargetsNextStep, InboxStyleSample} {
+		t.Run(id, func(t *testing.T) {
+			assert.NotEmpty(t, Defaults[id])
+			assert.True(t, contains(AllIDs, id))
+			assert.Equal(t, 1, DefaultVersions[id])
+			assert.NotEmpty(t, Descriptions[id])
+			assert.NotContains(t, Defaults[id], "%s")
+			assert.False(t, strings.HasPrefix(Defaults[id], "-"))
+		})
+	}
 }
 
 // contains checks if a slice contains a string value.

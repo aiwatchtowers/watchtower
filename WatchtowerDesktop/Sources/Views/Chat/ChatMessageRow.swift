@@ -100,10 +100,19 @@ struct ChatMessageRow: View, Equatable {
             .padding(8)
             .background(.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
         case "partial":
-            HStack(spacing: 8) {
-                Text("Stopped").font(.caption).foregroundStyle(.secondary)
-                if isLast, let continueStopped = actions.continueStopped {
-                    Button("Continue") { continueStopped(item.id) }.controlSize(.small)
+            // An embedded chat (no Continue) is handed Retry for a partial
+            // row only when its error could not be written over it.
+            if actions.continueStopped == nil, let retry = actions.retry {
+                HStack(spacing: 8) {
+                    Text("Not saved").font(.caption).foregroundStyle(.secondary)
+                    Button("Retry") { retry(item.id) }.controlSize(.small)
+                }
+            } else {
+                HStack(spacing: 8) {
+                    Text("Stopped").font(.caption).foregroundStyle(.secondary)
+                    if isLast, let continueStopped = actions.continueStopped {
+                        Button("Continue") { continueStopped(item.id) }.controlSize(.small)
+                    }
                 }
             }
         default:
@@ -115,6 +124,9 @@ struct ChatMessageRow: View, Equatable {
     /// (Task 25) — what the edit box and the copy button work with for a
     /// user message.
     private var userDisplayBody: String { ChatTurnComposer.displayParts(item.message.text).body }
+
+    /// A reply without its raw question-card JSON — what Copy and Quote take.
+    private var assistantReadableText: String { ChatQuestionParser.readableText(item.message.text) }
 
     private var editor: some View {
         VStack(alignment: .trailing, spacing: 6) {
@@ -134,7 +146,7 @@ struct ChatMessageRow: View, Equatable {
 
     private var actionBar: some View {
         HStack(spacing: 10) {
-            Button { actions.copy(item.message.isUser ? userDisplayBody : item.message.text) }
+            Button { actions.copy(item.message.isUser ? userDisplayBody : assistantReadableText) }
                 label: { Image(systemName: "doc.on.doc") }
                 .help("Copy message")
                 .accessibilityLabel("Copy message")
@@ -144,7 +156,7 @@ struct ChatMessageRow: View, Equatable {
                     .accessibilityLabel("Edit")
             } else if item.message.isAssistant {
                 if let quote = actions.quote {
-                    Button { quote(item.id, item.message.text) } label: { Image(systemName: "text.quote") }
+                    Button { quote(item.id, assistantReadableText) } label: { Image(systemName: "text.quote") }
                         .help("Quote in reply")
                         .accessibilityLabel("Quote in reply")
                 }

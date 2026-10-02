@@ -276,7 +276,8 @@ final class NotificationService: Sendable {
         content.sound = .default
         // Pre-rename `type`/`projectId` values: delivered pushes still route (spec 2026-10-02 A1).
         var info: [String: Any] = [
-            "type": "project",
+            // A proposal's card lives in the Inbox strip, not on the project page.
+            "type": notice.kind == .actionAwaitsApproval ? "agent_action" : "project",
             "projectId": notice.route.projectID,
             "pane": notice.route.pane.rawValue
         ]
