@@ -50,27 +50,27 @@ final class WorkbenchBranchPresentationTests: XCTestCase {
     }
 
     func testHelpNamesTheOperationInProgress() {
-        let help = Pres.help(WorkbenchGitStatus(branch: "a-very-long/branch-name", dirty: true, changes: 3, operation: "rebase"),
-                             staleError: nil, pendingBranch: nil)
+        let help = Pres.buttonHelp(WorkbenchGitStatus(branch: "a-very-long/branch-name", dirty: true, changes: 3, operation: "rebase"),
+                                   staleError: nil, pendingBranch: nil)
         XCTAssertTrue(help.hasPrefix("a-very-long/branch-name"))
         XCTAssertTrue(help.contains("3 changes are not committed"))
         XCTAssertTrue(help.contains("A rebase is in progress"))
-        XCTAssertEqual(Pres.help(WorkbenchGitStatus(detached: true, head: "a1b2c3d"), staleError: nil, pendingBranch: nil),
+        XCTAssertEqual(Pres.buttonHelp(WorkbenchGitStatus(detached: true, head: "a1b2c3d"), staleError: nil, pendingBranch: nil),
                        "Detached HEAD at a1b2c3d")
     }
 
     func testHelpOfADirtyStatusWithoutACountSaysNoZero() {
-        XCTAssertEqual(Pres.help(WorkbenchGitStatus(branch: "main", dirty: true), staleError: nil, pendingBranch: nil),
+        XCTAssertEqual(Pres.buttonHelp(WorkbenchGitStatus(branch: "main", dirty: true), staleError: nil, pendingBranch: nil),
                        "main\nUncommitted changes")
     }
 
     func testHelpOfAStaleStatusSaysWhy() {
-        XCTAssertEqual(Pres.help(WorkbenchGitStatus(branch: "main"), staleError: "Could not read the git status: boom", pendingBranch: nil),
+        XCTAssertEqual(Pres.buttonHelp(WorkbenchGitStatus(branch: "main"), staleError: "Could not read the git status: boom", pendingBranch: nil),
                        "main\nMay be out of date — Could not read the git status: boom")
     }
 
     func testHelpNamesAPendingSwitch() {
-        XCTAssertEqual(Pres.help(WorkbenchGitStatus(branch: "main"), staleError: nil, pendingBranch: "feature/x"),
+        XCTAssertEqual(Pres.buttonHelp(WorkbenchGitStatus(branch: "main"), staleError: nil, pendingBranch: "feature/x"),
                        "main\nConfirm switching to feature/x")
     }
 
@@ -89,10 +89,10 @@ final class WorkbenchBranchPresentationTests: XCTestCase {
 
     func testFilterIsCaseInsensitiveAndKeepsOrder() {
         let branches = ["main", "Feature/Login", "fix/feature-flag", "dev"].map { WorkbenchGitBranch(name: $0) }
-        XCTAssertEqual(Pres.filter(branches, query: "FEAT").map(\.name), ["Feature/Login", "fix/feature-flag"])
-        XCTAssertEqual(Pres.filter(branches, query: "").map(\.name), branches.map(\.name))
-        XCTAssertEqual(Pres.filter(branches, query: "  ").map(\.name), branches.map(\.name))
-        XCTAssertEqual(Pres.filter(branches, query: "nothing"), [])
+        XCTAssertEqual(Pres.matchingBranches(branches, query: "FEAT").map(\.name), ["Feature/Login", "fix/feature-flag"])
+        XCTAssertEqual(Pres.matchingBranches(branches, query: "").map(\.name), branches.map(\.name))
+        XCTAssertEqual(Pres.matchingBranches(branches, query: "  ").map(\.name), branches.map(\.name))
+        XCTAssertEqual(Pres.matchingBranches(branches, query: "nothing"), [])
     }
 
     func testDisabledCaptionForABranchOpenElsewhere() {
@@ -256,7 +256,7 @@ final class WorkbenchBranchPresentationTests: XCTestCase {
     }
 
     func testHelpNamesAPendingStashNote() {
-        XCTAssertEqual(Pres.help(WorkbenchGitStatus(branch: "main"), staleError: nil, pendingBranch: nil, stashEntry: entry),
+        XCTAssertEqual(Pres.buttonHelp(WorkbenchGitStatus(branch: "main"), staleError: nil, pendingBranch: nil, stashEntry: entry),
                        "main\nStashed changes: \(entry)")
     }
 

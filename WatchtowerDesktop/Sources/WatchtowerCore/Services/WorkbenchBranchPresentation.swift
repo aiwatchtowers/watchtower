@@ -78,7 +78,7 @@ package enum WorkbenchBranchPresentation {
     /// plus why it may be out of date (the reads since this status failed),
     /// plus a switch waiting for the owner's confirmation, plus a stash note
     /// the owner has not dismissed (its entry stays findable).
-    package static func help(
+    package static func buttonHelp(
         _ status: WorkbenchGitStatus,
         staleError: String?,
         pendingBranch: String?,
@@ -119,7 +119,7 @@ package enum WorkbenchBranchPresentation {
     }
 
     /// Case-insensitive substring match on the name; the order is kept.
-    package static func filter(_ branches: [WorkbenchGitBranch], query: String) -> [WorkbenchGitBranch] {
+    package static func matchingBranches(_ branches: [WorkbenchGitBranch], query: String) -> [WorkbenchGitBranch] {
         let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !needle.isEmpty else { return branches }
         return branches.filter { $0.name.range(of: needle, options: .caseInsensitive) != nil }

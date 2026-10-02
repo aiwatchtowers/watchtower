@@ -73,7 +73,7 @@ struct WorkbenchBranchPopover: View {
         let failed: String? = if case .failed(let message) = state { message } else { nil }
         if let failed { caption(failed, color: .red) }
         if let list = vm.gitBranches[id] {
-            let rows = WorkbenchBranchPresentation.filter(list.branches, query: query)
+            let rows = WorkbenchBranchPresentation.matchingBranches(list.branches, query: query)
             if rows.isEmpty {
                 if failed == nil {
                     Text(list.branches.isEmpty ? "No local branches yet." : "No branch matches.")

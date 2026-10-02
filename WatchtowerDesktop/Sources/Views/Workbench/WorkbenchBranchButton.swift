@@ -107,8 +107,8 @@ struct WorkbenchBranchButton: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.borderless)
-        .help(WorkbenchBranchPresentation.help(status, staleError: staleError, pendingBranch: pendingBranch,
-                                               stashEntry: stashEntry))
+        .help(WorkbenchBranchPresentation.buttonHelp(status, staleError: staleError, pendingBranch: pendingBranch,
+                                                     stashEntry: stashEntry))
         .accessibilityLabel("Branch \(label.text)")
     }
 }
