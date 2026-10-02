@@ -16,18 +16,21 @@ final class WorkbenchBranchPresentationTests: XCTestCase {
 
     func testLabelForABranchADetachedHeadAndAnUnbornBranch() {
         XCTAssertEqual(Pres.label(WorkbenchGitStatus(branch: "feature/x", head: "a1b2c3d")),
-                       Pres.Label(text: "feature/x", style: .branch))
+                       Pres.ButtonLabel(text: "feature/x", style: .branch))
         XCTAssertEqual(Pres.label(WorkbenchGitStatus(branch: "", detached: true, head: "a1b2c3d")),
-                       Pres.Label(text: "a1b2c3d", style: .detachedHash))
+                       Pres.ButtonLabel(text: "a1b2c3d", style: .detachedHash))
         XCTAssertEqual(Pres.label(WorkbenchGitStatus(branch: "main", unborn: true, head: "")),
-                       Pres.Label(text: "main", style: .branch), "an unborn branch shows its name, no hash")
+                       Pres.ButtonLabel(text: "main", style: .branch), "an unborn branch shows its name, no hash")
     }
 
     func testCappedCutsLongNamesAtTheTail() {
         XCTAssertEqual(Pres.capped("main"), "main")
         let exact = String(repeating: "a", count: Pres.maxButtonNameLength)
         XCTAssertEqual(Pres.capped(exact), exact)
-        XCTAssertEqual(Pres.capped("feature/very-long-branch-name", limit: 10), "feature/v…")
+        let long = "feature/" + String(repeating: "x", count: 40)
+        let capped = Pres.capped(long)
+        XCTAssertEqual(capped.count, Pres.maxButtonNameLength)
+        XCTAssertEqual(capped, String(long.prefix(Pres.maxButtonNameLength - 1)) + "…")
     }
 
     func testCounters() {

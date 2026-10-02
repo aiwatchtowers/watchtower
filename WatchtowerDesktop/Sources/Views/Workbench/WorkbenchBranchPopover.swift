@@ -15,8 +15,6 @@ struct WorkbenchBranchPopover: View {
     @FocusState private var searchFocused: Bool
     @FocusState private var nameFocused: Bool
 
-    static let width: CGFloat = 320
-
     var body: some View {
         let id = project.id
         let pending = vm.pendingBranchConfirmation[id]
@@ -39,7 +37,7 @@ struct WorkbenchBranchPopover: View {
             messages
         }
         .padding(10)
-        .frame(width: Self.width)
+        .frame(width: 320)
         .task(id: id) {
             searchFocused = true
             await vm.loadBranches(project: project)
@@ -56,7 +54,7 @@ struct WorkbenchBranchPopover: View {
                 Button(pending.primaryLabel) {
                     // The dialog's dismissal clears the pending switch: pass
                     // the one it showed.
-                    Task { await vm.confirmPendingSwitch(project: project, pending) }
+                    Task { await vm.confirmPendingSwitch(project: project, confirming: pending) }
                 }
             }
             Button("Cancel", role: .cancel) { vm.cancelPendingSwitch(projectID: id) }
@@ -73,13 +71,7 @@ struct WorkbenchBranchPopover: View {
         let id = project.id
         let state = vm.branchListStates[id] ?? .loading
         let failed: String? = if case .failed(let message) = state { message } else { nil }
-        if let failed {
-            Text(failed)
-                .font(.caption)
-                .foregroundStyle(.red)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-        }
+        if let failed { caption(failed, color: .red) }
         if let list = vm.gitBranches[id] {
             let rows = WorkbenchBranchPresentation.filter(list.branches, query: query)
             if rows.isEmpty {
@@ -147,28 +139,19 @@ struct WorkbenchBranchPopover: View {
     @ViewBuilder
     private var messages: some View {
         let id = project.id
-        if let error = vm.gitErrors[id] {
-            Text(error)
-                .font(.caption)
-                .foregroundStyle(.red)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        if let status = vm.gitStatusErrors[id] {
-            Text(status)
-                .font(.caption)
-                .foregroundStyle(.red)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        if let notice = vm.gitNotices[id] {
-            // Selectable: it names the stash entry and how to apply it.
-            Text(notice)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-        }
+        if let error = vm.gitErrors[id] { caption(error, color: .red) }
+        if let status = vm.gitStatusErrors[id] { caption(status, color: .red) }
+        // Selectable: it names the stash entry and how to apply it.
+        if let notice = vm.gitNotices[id] { caption(notice, color: .secondary) }
+    }
+
+    /// A message line: wraps, and can be selected to copy git's words.
+    private func caption(_ text: String, color: Color) -> some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(color)
+            .textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     private func create() {

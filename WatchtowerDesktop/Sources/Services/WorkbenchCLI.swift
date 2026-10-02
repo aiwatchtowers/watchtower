@@ -555,9 +555,9 @@ struct WorkbenchCLI {
     func gitSwitch(
         projectID: Int64,
         branch: String,
-        stash: Bool = false,
-        agentRunning: Bool = false,
-        confirmAgent: Bool = false
+        stash: Bool,
+        agentRunning: Bool,
+        confirmAgent: Bool
     ) async throws -> WorkbenchGitSwitchResult {
         var args = ["workbench", "git", "switch", "--workbench", String(projectID), "--branch", branch]
         if stash { args.append("--stash") }

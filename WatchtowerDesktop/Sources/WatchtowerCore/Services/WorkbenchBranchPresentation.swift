@@ -24,7 +24,7 @@ package enum WorkbenchBranchPresentation {
         case detachedHash
     }
 
-    package struct Label: Equatable, Sendable {
+    package struct ButtonLabel: Equatable, Sendable {
         package let text: String
         package let style: LabelStyle
     }
@@ -43,11 +43,11 @@ package enum WorkbenchBranchPresentation {
         return path
     }
 
-    package static func label(_ status: WorkbenchGitStatus) -> Label {
+    package static func label(_ status: WorkbenchGitStatus) -> ButtonLabel {
         if status.detached {
-            return Label(text: status.head.isEmpty ? "detached" : status.head, style: .detachedHash)
+            return ButtonLabel(text: status.head.isEmpty ? "detached" : status.head, style: .detachedHash)
         }
-        return Label(text: status.branch, style: .branch)
+        return ButtonLabel(text: status.branch, style: .branch)
     }
 
     /// The longest branch name the header button shows whole.
@@ -55,8 +55,8 @@ package enum WorkbenchBranchPresentation {
 
     /// A long name cut at the tail with `…`, so the button never pushes the
     /// header's view buttons away.
-    package static func capped(_ name: String, limit: Int = maxButtonNameLength) -> String {
-        name.count <= limit ? name : String(name.prefix(max(limit - 1, 1))) + "…"
+    package static func capped(_ name: String) -> String {
+        name.count <= maxButtonNameLength ? name : String(name.prefix(maxButtonNameLength - 1)) + "…"
     }
 
     /// `↑2`, `↓1`, `↑2 ↓1`; nil when the branch is level with its upstream

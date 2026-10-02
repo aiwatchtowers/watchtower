@@ -601,8 +601,11 @@ final class WorkbenchGitDecodingTests: XCTestCase {
         XCTAssertEqual(result.unknownConfirmations, ["lfs_locked"])
     }
 
-    func testMalformedStatusInsideTheEnvelopeFails() {
-        XCTAssertThrowsError(try decode(WorkbenchGitSwitchResult.self, #"{"switched":true,"status":{"branch":"x"}}"#))
+    /// The view model re-reads the status after every call; the
+    /// envelope's copy is not decoded, so its shape cannot fail a switch.
+    func testTheEnvelopesStatusIsNotRead() {
+        XCTAssertNoThrow(try decode(WorkbenchGitSwitchResult.self, #"{"switched":true,"status":{"branch":"x"}}"#))
         XCTAssertNoThrow(try decode(WorkbenchGitSwitchResult.self, #"{"switched":true,"status":null}"#))
+        XCTAssertNoThrow(try decode(WorkbenchGitSwitchResult.self, #"{"switched":true,"status":{}}"#))
     }
 }

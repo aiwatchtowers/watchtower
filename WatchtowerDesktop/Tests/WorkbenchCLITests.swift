@@ -260,9 +260,9 @@ final class WorkbenchCLITests: XCTestCase {
     func testGitSwitchPassesFlagsOnlyWhenSet() async throws {
         let runner = FakeCLIRunner(stdout: Data(#"{"switched":true,"branch":"-odd name"}"#.utf8))
         let cli = WorkbenchCLI(runner: runner)
-        _ = try await cli.gitSwitch(projectID: 3, branch: "-odd name")
-        _ = try await cli.gitSwitch(projectID: 3, branch: "feature/x", stash: true)
-        _ = try await cli.gitSwitch(projectID: 3, branch: "feature/x", agentRunning: true)
+        _ = try await cli.gitSwitch(projectID: 3, branch: "-odd name", stash: false, agentRunning: false, confirmAgent: false)
+        _ = try await cli.gitSwitch(projectID: 3, branch: "feature/x", stash: true, agentRunning: false, confirmAgent: false)
+        _ = try await cli.gitSwitch(projectID: 3, branch: "feature/x", stash: false, agentRunning: true, confirmAgent: false)
         _ = try await cli.gitSwitch(projectID: 3, branch: "feature/x", stash: true, agentRunning: true, confirmAgent: true)
         let base = ["workbench", "git", "switch", "--workbench", "3", "--branch"]
         XCTAssertEqual(runner.invocations, [

@@ -141,7 +141,8 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
         ])
         let vm = makeVM(runner)
         await vm.switchBranch("feature/x", project: project)
-        await vm.confirmPendingSwitch(project: project)
+        let pending = try XCTUnwrap(vm.pendingBranchConfirmation[project.id])
+        await vm.confirmPendingSwitch(project: project, confirming: pending)
         XCTAssertEqual(runner.invocations[1], switchArgs(["--stash"]))
         XCTAssertNil(vm.pendingBranchConfirmation[project.id])
         XCTAssertEqual(vm.gitStatus[project.id]?.branch, "feature/x")
@@ -157,8 +158,7 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
         await vm.switchBranch("feature/x", project: project)
         vm.cancelPendingSwitch(projectID: project.id)
         XCTAssertNil(vm.pendingBranchConfirmation[project.id])
-        await vm.confirmPendingSwitch(project: project)
-        XCTAssertEqual(runner.invocations.count, 1, "nothing left to confirm")
+        XCTAssertEqual(runner.invocations.count, 1, "cancelling sends nothing")
     }
 
     /// The dialog's dismissal clears the pending switch; the confirmation it
@@ -174,7 +174,7 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
         await vm.switchBranch("feature/x", project: project)
         let shown = try XCTUnwrap(vm.pendingBranchConfirmation[project.id])
         vm.cancelPendingSwitch(projectID: project.id)
-        await vm.confirmPendingSwitch(project: project, shown)
+        await vm.confirmPendingSwitch(project: project, confirming: shown)
         XCTAssertEqual(runner.invocations[1], switchArgs(["--stash"]))
     }
 
@@ -191,7 +191,7 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
         let pending = try XCTUnwrap(vm.pendingBranchConfirmation[project.id])
         XCTAssertTrue(pending.message.contains("the agent's files will be swapped"))
         XCTAssertEqual(pending.primaryLabel, "Switch anyway")
-        await vm.confirmPendingSwitch(project: project)
+        await vm.confirmPendingSwitch(project: project, confirming: pending)
         XCTAssertEqual(runner.invocations[1], switchArgs(["--agent-running", "--confirm-agent"]))
     }
 
@@ -211,12 +211,12 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
         await vm.switchBranch("feature/x", project: project)
         let stash = try XCTUnwrap(vm.pendingBranchConfirmation[project.id])
         try startClaude(in: center, folder: folder.path, projectID: project.id)
-        await vm.confirmPendingSwitch(project: project, stash)
+        await vm.confirmPendingSwitch(project: project, confirming: stash)
         XCTAssertEqual(runner.invocations[1], switchArgs(["--stash", "--agent-running"]))
         let agent = try XCTUnwrap(vm.pendingBranchConfirmation[project.id], "Go's agent question reaches the owner")
         XCTAssertTrue(agent.confirmAgent)
         XCTAssertTrue(agent.stash, "the confirmed stash rides along")
-        await vm.confirmPendingSwitch(project: project, agent)
+        await vm.confirmPendingSwitch(project: project, confirming: agent)
         XCTAssertEqual(runner.invocations[2], switchArgs(["--stash", "--agent-running", "--confirm-agent"]))
     }
 
@@ -234,7 +234,7 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
         await vm.switchBranch("feature/x", project: project)
         let pending = try XCTUnwrap(vm.pendingBranchConfirmation[project.id])
         fakeSessions[0].exit(0)
-        await vm.confirmPendingSwitch(project: project, pending)
+        await vm.confirmPendingSwitch(project: project, confirming: pending)
         XCTAssertEqual(runner.invocations[1], switchArgs([]))
     }
 
@@ -446,12 +446,13 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
 
     func testNoGitHidesTheButton() async {
         let vm = makeVM(ScriptedCLIRunner(results: [.success(status(git: false))]))
-        XCTAssertFalse(vm.showsBranchButton(projectID: project.id), "unknown status: no button")
+        XCTAssertFalse(WorkbenchBranchPresentation.showsButton(vm.gitStatus[project.id]), "unknown status: no button")
         await vm.refreshGitStatus(projectID: project.id)
-        XCTAssertFalse(vm.showsBranchButton(projectID: project.id))
+        XCTAssertFalse(WorkbenchBranchPresentation.showsButton(vm.gitStatus[project.id]))
+        XCTAssertNil(vm.gitStatusErrors[project.id], "not a work tree is no error")
         let withGit = makeVM(ScriptedCLIRunner(results: [.success(status())]))
         await withGit.refreshGitStatus(projectID: project.id)
-        XCTAssertTrue(withGit.showsBranchButton(projectID: project.id))
+        XCTAssertTrue(WorkbenchBranchPresentation.showsButton(withGit.gitStatus[project.id]))
     }
 
     /// Requests while a read runs queue exactly one rerun: two calls, not

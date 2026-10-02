@@ -252,7 +252,8 @@ package struct WorkbenchGitBranches: Decodable, Equatable, Sendable {
 /// `needsConfirmation` asks the owner first (resend with `--stash` /
 /// `--confirm-agent`), `refused` cannot be overridden, `error` is git's own
 /// stderr. Go decides every guard; the Desktop only resends what the owner
-/// confirmed.
+/// confirmed. The envelope's `status` is not read: the view model re-reads
+/// the status after every call.
 package struct WorkbenchGitSwitchResult: Decodable, Equatable, Sendable {
     package enum Confirmation: String, Sendable, Equatable {
         case uncommittedChanges = "uncommitted_changes"
@@ -288,8 +289,6 @@ package struct WorkbenchGitSwitchResult: Decodable, Equatable, Sendable {
     /// git's stderr when the switch exited non-zero but HEAD moved anyway
     /// (a failing post-checkout hook): it counts as switched.
     package var warning: String
-    /// The status after the call; nil when the CLI sent none (or `{}`).
-    package var status: WorkbenchGitStatus?
 
     package init(
         workbenchID: Int64 = 0,
@@ -307,8 +306,7 @@ package struct WorkbenchGitSwitchResult: Decodable, Equatable, Sendable {
         stashRestored: Bool = false,
         stashError: String = "",
         error: String = "",
-        warning: String = "",
-        status: WorkbenchGitStatus? = nil
+        warning: String = ""
     ) {
         self.workbenchID = workbenchID
         self.branch = branch
@@ -326,7 +324,6 @@ package struct WorkbenchGitSwitchResult: Decodable, Equatable, Sendable {
         self.stashError = stashError
         self.error = error
         self.warning = warning
-        self.status = status
     }
 
     package init(from decoder: Decoder) throws {
@@ -348,19 +345,10 @@ package struct WorkbenchGitSwitchResult: Decodable, Equatable, Sendable {
         stashError = try c.decodeIfPresent(String.self, forKey: .stashError) ?? ""
         error = try c.decodeIfPresent(String.self, forKey: .error) ?? ""
         warning = try c.decodeIfPresent(String.self, forKey: .warning) ?? ""
-        // `{}` is "no status", not a status with `git` missing; anything
-        // else must decode, so a malformed status still fails loudly.
-        if c.contains(.status),
-           try !c.decodeNil(forKey: .status),
-           try !c.nestedContainer(keyedBy: WorkbenchGitStatus.CodingKeys.self, forKey: .status).allKeys.isEmpty {
-            status = try c.decode(WorkbenchGitStatus.self, forKey: .status)
-        } else {
-            status = nil
-        }
     }
 
     package enum CodingKeys: String, CodingKey {
-        case branch, switched, already, created, changes, refused, stashed, error, warning, status
+        case branch, switched, already, created, changes, refused, stashed, error, warning
         case workbenchID = "workbench_id"
         case needsConfirmation = "needs_confirmation"
         case refusedDetail = "refused_detail"

@@ -21,11 +21,6 @@ extension WorkbenchesViewModel {
         case failed(String)
     }
 
-    /// Whether the header shows `›` and the branch button.
-    func showsBranchButton(projectID: Int64) -> Bool {
-        WorkbenchBranchPresentation.showsButton(gitStatus[projectID])
-    }
-
     /// Reads `workbench git status`. Coalesced: a call while one runs only
     /// asks for one more read after it, so a burst of FSEvents, the poll
     /// and an app activation cost at most two CLI calls. A cancelled read
@@ -79,16 +74,15 @@ extension WorkbenchesViewModel {
         await runSwitch(branch, project: project, stash: false, confirmAgent: false)
     }
 
-    /// The owner confirmed the pending switch: resend it with exactly the
-    /// flags the dialog named. The live-session fact is read again, so an
-    /// agent started since the first try is still asked about. The dialog
-    /// passes the confirmation it showed: dismissing it clears the pending
-    /// one, possibly before this runs.
-    func confirmPendingSwitch(project: Workbench, _ confirmation: BranchSwitchConfirmation? = nil) async {
-        guard switchingBranch[project.id] == nil,
-              let pending = confirmation ?? pendingBranchConfirmation[project.id] else { return }
+    /// The owner confirmed a switch: resend it with exactly the flags the
+    /// dialog named. The live-session fact is read again, so an agent
+    /// started since the first try is still asked about. The dialog passes
+    /// the confirmation it showed: dismissing it clears the pending one,
+    /// possibly before this runs.
+    func confirmPendingSwitch(project: Workbench, confirming confirmation: BranchSwitchConfirmation) async {
+        guard switchingBranch[project.id] == nil else { return }
         pendingBranchConfirmation[project.id] = nil
-        await runSwitch(pending.branch, project: project, stash: pending.stash, confirmAgent: pending.confirmAgent)
+        await runSwitch(confirmation.branch, project: project, stash: confirmation.stash, confirmAgent: confirmation.confirmAgent)
     }
 
     func cancelPendingSwitch(projectID: Int64) {
