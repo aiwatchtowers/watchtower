@@ -210,6 +210,7 @@ func writeSwitchResult(w io.Writer, id int64, res workbenchgit.SwitchResult) err
 		{"refused", strings.TrimSpace(res.Refused + " " + res.RefusedDetail)},
 		{"stashed", strings.TrimSpace(res.Stashed + " " + res.StashMessage)},
 		{"stash restored", boolField(res.StashRestored)},
+		{"stash error", res.StashError},
 		{"error", res.Error},
 	} {
 		if f.value != "" {

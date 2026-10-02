@@ -97,7 +97,7 @@ func TestProj10_StashAndSwitch(t *testing.T) {
 	require.True(t, res.Switched, "%+v", res)
 	assert.Empty(t, res.Error)
 	assert.Empty(t, res.NeedsConfirmation)
-	assert.Equal(t, "watchtower: switching from main to feature", res.StashMessage)
+	assert.Regexp(t, `^watchtower: switching from main to feature \[[0-9a-f]{16}\]$`, res.StashMessage)
 	assert.Equal(t, gitIn(t, dir, "rev-parse", "refs/stash"), res.Stashed, "stashed names the stash commit")
 	assert.False(t, res.StashRestored)
 	assert.Equal(t, "refs/heads/feature", gitIn(t, dir, "symbolic-ref", "HEAD"))
@@ -171,10 +171,11 @@ func TestProj10_FailedSwitchRestoresTheStash(t *testing.T) {
 	assert.False(t, res.Switched)
 	assert.Contains(t, res.Error, "simulated switch failure")
 	assert.NotEmpty(t, res.Stashed)
-	assert.True(t, res.StashRestored, res.Error)
+	assert.True(t, res.StashRestored, res.StashError)
+	assert.Empty(t, res.StashError)
 	assert.Equal(t, "edited\n", readFile(t, dir, "README.md"), "the tracked change is back")
 	assert.Equal(t, "untracked\n", readFile(t, dir, "notes.txt"), "the untracked file is back")
-	assert.Empty(t, gitIn(t, dir, "stash", "list"))
+	assert.Equal(t, map[string]string{res.Stashed: res.StashMessage}, stashes(t, dir), "applied, never popped or dropped")
 	assert.Equal(t, "refs/heads/main", gitIn(t, dir, "symbolic-ref", "HEAD"))
 	assert.True(t, res.Status.Dirty)
 }
@@ -201,7 +202,7 @@ func TestProj10_DetachedSwitchesAwayWithTheDirtyGuard(t *testing.T) {
 	assert.Equal(t, []string{NeedUncommitted}, res.NeedsConfirmation, "detached on feature's commit is not 'already' on feature")
 	res = Switch(context.Background(), options(dir, &recorder{}), SwitchRequest{Branch: "main", Stash: true})
 	require.True(t, res.Switched, "%+v", res)
-	assert.Equal(t, "watchtower: switching from "+head+" to main", res.StashMessage)
+	assert.True(t, strings.HasPrefix(res.StashMessage, "watchtower: switching from "+head+" to main ["), res.StashMessage)
 }
 
 func TestProj10_NoGitIsRefused(t *testing.T) {
@@ -239,7 +240,7 @@ func TestProj10_NeverForcesOrDiscards(t *testing.T) {
 	ReadStatus(ctx, o)
 	ListBranches(ctx, o)
 
-	forbidden := []string{"--force", "-f", "--discard-changes", "-C", "--force-create", "--hard", "reset", "clean", "checkout", "drop", "clear"}
+	forbidden := []string{"--force", "-f", "--discard-changes", "-C", "--force-create", "--hard", "reset", "clean", "checkout", "pop", "drop", "clear"}
 	require.NotEmpty(t, rec.argv())
 	for _, c := range rec.argv() {
 		for _, a := range c {
@@ -282,5 +283,80 @@ func TestProj10_CreateRefusesAnInvalidName(t *testing.T) {
 		assert.False(t, res.Created, "%q", name)
 		assertNoWrites(t, rec)
 	}
+	assert.Equal(t, "refs/heads/main", gitIn(t, dir, "symbolic-ref", "HEAD"))
+}
+
+// stashes maps each stash entry's commit id to its message (the reflog
+// subject without git's "On <branch>: " prefix).
+func stashes(t *testing.T, dir string) map[string]string {
+	t.Helper()
+	m := map[string]string{}
+	for _, line := range strings.Split(gitIn(t, dir, "stash", "list", "--format=%H %gs"), "\n") {
+		if line == "" {
+			continue
+		}
+		sha, subject, _ := strings.Cut(line, " ")
+		_, msg, _ := strings.Cut(subject, ": ")
+		m[sha] = msg
+	}
+	return m
+}
+
+// pushForeignStash stashes an untracked file the way another session would.
+func pushForeignStash(t *testing.T, dir string) string {
+	t.Helper()
+	writeFile(t, dir, "foreign.txt", "another session\n")
+	gitIn(t, dir, "stash", "push", "-q", "--include-untracked", "-m", "another session's work")
+	return gitIn(t, dir, "rev-parse", "refs/stash")
+}
+
+func TestProj10_FailedSwitchLeavesAForeignStashAlone(t *testing.T) {
+	dir := newRepo(t)
+	foreign := pushForeignStash(t, dir)
+	dirty(t, dir)
+	res := Switch(context.Background(), options(dir, &recorder{fail: "switch"}), SwitchRequest{Branch: "feature", Stash: true})
+	assert.False(t, res.Switched)
+	require.True(t, res.StashRestored, res.StashError)
+	assert.Equal(t, map[string]string{foreign: "another session's work", res.Stashed: res.StashMessage}, stashes(t, dir))
+	assert.Equal(t, "edited\n", readFile(t, dir, "README.md"))
+	assert.NoFileExists(t, filepath.Join(dir, "foreign.txt"), "the foreign stash is not applied")
+}
+
+func TestProj10_FailedSwitchRestoresOursPastAConcurrentStash(t *testing.T) {
+	dir := newRepo(t)
+	dirty(t, dir)
+	var foreign string
+	rec := &recorder{fail: "switch"}
+	rec.before = func(args []string) {
+		if len(args) > 0 && args[0] == "switch" {
+			foreign = pushForeignStash(t, dir) // another session stashes while the switch runs
+		}
+	}
+	res := Switch(context.Background(), options(dir, rec), SwitchRequest{Branch: "feature", Stash: true})
+	assert.False(t, res.Switched)
+	require.NotEmpty(t, foreign)
+	require.True(t, res.StashRestored, res.StashError)
+	assert.NotEqual(t, foreign, res.Stashed)
+	assert.Equal(t, map[string]string{foreign: "another session's work", res.Stashed: res.StashMessage}, stashes(t, dir),
+		"both entries stay on the stack")
+	assert.Equal(t, "edited\n", readFile(t, dir, "README.md"), "our tracked change is back")
+	assert.Equal(t, "untracked\n", readFile(t, dir, "notes.txt"), "our untracked file is back")
+	assert.NoFileExists(t, filepath.Join(dir, "foreign.txt"), "the other session's change stays in its stash")
+	for _, c := range rec.argv() {
+		assert.NotContains(t, c, "pop", "git %s", strings.Join(c, " "))
+	}
+}
+
+func TestProj10_FailedStashPushReportsTheStashItMade(t *testing.T) {
+	dir := newRepo(t)
+	dirty(t, dir)
+	rec := &recorder{failAfter: "stash push"}
+	res := Switch(context.Background(), options(dir, rec), SwitchRequest{Branch: "feature", Stash: true})
+	assert.False(t, res.Switched)
+	assert.False(t, rec.ran("switch"), "no switch after a failed stash")
+	require.NotEmpty(t, res.Stashed, "%+v", res)
+	assert.Equal(t, map[string]string{res.Stashed: res.StashMessage}, stashes(t, dir))
+	assert.Contains(t, res.Error, "a stash was created")
+	assert.Contains(t, res.Error, "simulated stash push failure")
 	assert.Equal(t, "refs/heads/main", gitIn(t, dir, "symbolic-ref", "HEAD"))
 }

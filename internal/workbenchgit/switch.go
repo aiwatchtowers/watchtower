@@ -2,6 +2,9 @@ package workbenchgit
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -26,8 +29,8 @@ const (
 	RefusedExists              = "exists"
 )
 
-// restoreBudget bounds putting the stash back after a failed switch; it
-// runs even when the caller's context is already done.
+// restoreBudget bounds finding the stash and putting it back after a
+// failed switch; both run even when the caller's context is already done.
 const restoreBudget = 10 * time.Second
 
 // SwitchRequest is one `workbench git switch`. Stash and ConfirmAgent are
@@ -55,11 +58,13 @@ type SwitchResult struct {
 	Refused           string   `json:"refused"`
 	RefusedDetail     string   `json:"refused_detail"`
 	// Stashed is the commit id of the stash this switch made ("" for none),
-	// StashMessage its message. It is never popped after a switch that
-	// succeeded; after one that failed it is put back (StashRestored).
+	// StashMessage its message. The entry always stays on the stack; after
+	// a failed switch it is applied back (StashRestored), or StashError says
+	// why not.
 	Stashed       string `json:"stashed"`
 	StashMessage  string `json:"stash_message"`
 	StashRestored bool   `json:"stash_restored"`
+	StashError    string `json:"stash_error"`
 	Error         string `json:"error"`  // git's stderr when a git call failed
 	Status        Status `json:"status"` // read after the call
 }
@@ -206,64 +211,80 @@ func findBranch(branches []Branch, name string) (Branch, bool) {
 }
 
 // stash saves every change, untracked files included, under a message that
-// names the switch; false when the switch must not go on.
+// names the switch and carries a nonce; false when the switch must not go
+// on. The stash stack is shared by every worktree and session, so this
+// run's entry is found by its exact message, never taken from the stack's
+// tip.
 func (res *SwitchResult) stash(ctx context.Context, r *repo, st Status) bool {
 	from := st.Branch
 	if st.Detached {
 		from = st.Head
 	}
-	msg := "watchtower: switching from " + from + " to " + res.Branch
-	before, err := r.stashTip(ctx)
-	if err != nil {
-		res.Error = gitError(err)
+	msg := fmt.Sprintf("watchtower: switching from %s to %s [%s]", from, res.Branch, nonce())
+	_, pushErr := r.git(ctx, "stash", "push", "--include-untracked", "-m", msg)
+	// A push that failed may still have made the entry: look either way.
+	findCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), restoreBudget)
+	defer cancel()
+	sha, findErr := r.findStash(findCtx, msg)
+	if sha != "" {
+		res.Stashed, res.StashMessage = sha, msg
+	}
+	switch {
+	case pushErr != nil && sha != "":
+		res.Error = clip("a stash was created (" + msg + ") but git stash push failed: " + gitError(pushErr))
+		return false
+	case pushErr != nil:
+		res.Error = gitError(pushErr)
+		return false
+	case findErr != nil:
+		res.Error = clip("git stash push succeeded but its entry was not found: " + gitError(findErr))
 		return false
 	}
-	if _, err := r.git(ctx, "stash", "push", "--include-untracked", "-m", msg); err != nil {
-		res.Error = gitError(err)
-		return false
-	}
-	after, err := r.stashTip(ctx)
-	if err != nil {
-		res.Error = gitError(err)
-		return false
-	}
-	if after != before { // git saves nothing when no change is stashable
-		res.Stashed, res.StashMessage = after, msg
-	}
+	// No entry after a clean push: git saved nothing, nothing was stashable.
 	return true
 }
 
-// restore puts this run's stash back after a failed switch, only while it
-// is still the newest stash.
+// nonce makes a stash message unique across sessions.
+func nonce() string {
+	b := make([]byte, 8)
+	_, _ = rand.Read(b) // crypto/rand.Read never fails
+	return hex.EncodeToString(b)
+}
+
+// findStash is the commit id of the stash entry whose message is exactly
+// msg, "" when there is none.
+func (r *repo) findStash(ctx context.Context, msg string) (string, error) {
+	out, err := r.git(ctx, "stash", "list", "--format=%H%x00%gs")
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		sha, subject, ok := strings.Cut(line, "\x00")
+		if !ok || sha == "" {
+			return "", fmt.Errorf("git stash list: unexpected line %q", line)
+		}
+		// The subject is "On <branch>: <message>"; a branch name holds no ':'.
+		if _, m, _ := strings.Cut(subject, ": "); m == msg {
+			return sha, nil
+		}
+	}
+	return "", nil
+}
+
+// restore applies this run's stash, by its commit id, after a failed
+// switch. The entry stays on the stack: it is never popped or dropped.
 func (res *SwitchResult) restore(ctx context.Context, r *repo) {
 	if res.Stashed == "" {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), restoreBudget)
 	defer cancel()
-	tip, err := r.stashTip(ctx)
-	if err == nil && tip != res.Stashed {
-		res.Error = clip(res.Error + "; the stash was not restored: it is no longer the newest stash")
-		return
-	}
-	if err == nil {
-		_, err = r.git(ctx, "stash", "pop", "--index")
-	}
-	if err != nil {
-		res.Error = clip(res.Error + "; the stash was not restored: " + gitError(err))
+	if _, err := r.git(ctx, "stash", "apply", "--index", res.Stashed); err != nil {
+		res.StashError = gitError(err)
 		return
 	}
 	res.StashRestored = true
-}
-
-// stashTip is refs/stash's commit id, "" when there is no stash.
-func (r *repo) stashTip(ctx context.Context) (string, error) {
-	out, code, err := r.o.Run(ctx, r.o.Folder, nil, r.bin, "rev-parse", "--verify", "--quiet", "refs/stash")
-	switch {
-	case err == nil:
-		return strings.TrimSpace(string(out)), nil
-	case code == 1 && ctx.Err() == nil: // --quiet: a missing ref exits 1
-		return "", nil
-	}
-	return "", err
 }

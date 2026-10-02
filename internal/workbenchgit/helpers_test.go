@@ -87,22 +87,34 @@ func newRepo(t *testing.T) string {
 	return dir
 }
 
-// recorder wraps the real runner and records every git argv; fail makes a
-// call whose first argument matches fail without running.
+// recorder wraps the real runner and records every git argv. A call whose
+// argv starts with fail fails without running; one that starts with
+// failAfter runs and then reports a failure. before, when set, runs ahead
+// of every call.
 type recorder struct {
-	mu    sync.Mutex
-	calls [][]string
-	fail  string
+	mu        sync.Mutex
+	calls     [][]string
+	fail      string
+	failAfter string
+	before    func(args []string)
 }
 
 func (r *recorder) run(ctx context.Context, dir string, stdin []byte, name string, args ...string) ([]byte, int, error) {
 	r.mu.Lock()
 	r.calls = append(r.calls, append([]string(nil), args...))
 	r.mu.Unlock()
-	if r.fail != "" && len(args) > 0 && args[0] == r.fail {
+	if r.before != nil {
+		r.before(args)
+	}
+	argv := strings.Join(args, " ")
+	if r.fail != "" && strings.HasPrefix(argv, r.fail) {
 		return nil, 128, &runError{args: args, err: os.ErrInvalid, stderr: "fatal: simulated " + r.fail + " failure"}
 	}
-	return execRunner(ctx, dir, stdin, name, args...)
+	out, code, err := execRunner(ctx, dir, stdin, name, args...)
+	if err == nil && r.failAfter != "" && strings.HasPrefix(argv, r.failAfter) {
+		return out, 1, &runError{args: args, err: os.ErrInvalid, stderr: "fatal: simulated " + r.failAfter + " failure"}
+	}
+	return out, code, err
 }
 
 func (r *recorder) argv() [][]string {

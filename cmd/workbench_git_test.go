@@ -87,7 +87,7 @@ var (
 	gitBranchesKeys = sorted("workbench_id", "git_available", "git", "current", "branches", "branches_ok", "branches_error")
 	gitBranchKeys   = sorted("name", "current", "head", "committed_at", "upstream", "ahead", "behind", "worktree", "worktree_name")
 	gitSwitchKeys   = sorted("workbench_id", "branch", "switched", "already", "created", "needs_confirmation", "changes",
-		"refused", "refused_detail", "stashed", "stash_message", "stash_restored", "error", "status")
+		"refused", "refused_detail", "stashed", "stash_message", "stash_restored", "stash_error", "error", "status")
 )
 
 // The key sets the Desktop's decoders read (WorkbenchGit.swift).
@@ -137,7 +137,7 @@ func TestWorkbenchGit_SwitchGuardsAndFlags(t *testing.T) {
 
 	sw = gitJSON(t, id, "switch", "--branch", "feature", "--stash", "--agent-running", "--confirm-agent")
 	assert.Equal(t, true, sw["switched"], "%v", sw)
-	assert.Equal(t, "watchtower: switching from main to feature", sw["stash_message"])
+	assert.Regexp(t, `^watchtower: switching from main to feature \[[0-9a-f]+\]$`, sw["stash_message"])
 	assert.Equal(t, "feature", sw["status"].(map[string]any)["branch"])
 
 	cr := gitJSON(t, id, "create", "--name", "-x")
