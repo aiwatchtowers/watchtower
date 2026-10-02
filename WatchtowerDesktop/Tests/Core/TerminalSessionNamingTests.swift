@@ -15,6 +15,10 @@ final class TerminalSessionNamingTests: XCTestCase {
     }
 
     func testSetupTitle() {
-        XCTAssertEqual(TerminalSessionNaming.setupTitle, "Project setup")
+        XCTAssertEqual(TerminalSessionNaming.setupTitle, "Workbench setup")
+        XCTAssertEqual(TerminalSessionNaming.legacySetupTitle, "Project setup")
+        XCTAssertTrue(TerminalSessionNaming.isSetupTitle("Workbench setup"))
+        XCTAssertTrue(TerminalSessionNaming.isSetupTitle("Project setup"))
+        XCTAssertFalse(TerminalSessionNaming.isSetupTitle("New session · 09:05"))
     }
 }

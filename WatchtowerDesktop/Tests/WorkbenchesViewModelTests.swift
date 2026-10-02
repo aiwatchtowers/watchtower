@@ -497,7 +497,7 @@ final class WorkbenchesViewModelTests: XCTestCase {
         XCTAssertNotNil(vm.sessionErrors[id])
     }
 
-    /// A created and installed project gets one "Project setup" claude row,
+    /// A created and installed workbench gets one "Workbench setup" claude row,
     /// started fresh with its own session id and the first-run prompt.
     func testInstalledProjectStartsTheSetupSessionFresh() async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("wt-create-\(UUID().uuidString)")

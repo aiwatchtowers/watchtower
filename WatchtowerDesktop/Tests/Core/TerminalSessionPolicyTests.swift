@@ -62,4 +62,12 @@ final class TerminalSessionPolicyTests: XCTestCase {
         setup.title = TerminalSessionNaming.setupTitle
         XCTAssertFalse(TerminalSessionPolicy.needsTitle(setup, attempts: 0))
     }
+
+    /// A setup row created before the Workbench rename keeps its old title
+    /// and is never auto-retitled either.
+    func testNeedsTitleSkipsALegacySetupRow() {
+        var setup = make(1)
+        setup.title = "Project setup"
+        XCTAssertFalse(TerminalSessionPolicy.needsTitle(setup, attempts: 0))
+    }
 }
