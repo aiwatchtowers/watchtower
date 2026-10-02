@@ -19,6 +19,17 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         }
     }
 
+    /// The section's group icon in the folded icon rail (⌘B), where the
+    /// section title gives way to one icon that expands its items inline.
+    /// Distinct from every item icon so a group never reads as a tab.
+    var railIcon: String {
+        switch self {
+        case .today: "sun.horizon"
+        case .delivery: "hammer"
+        case .analytics: "chart.line.uptrend.xyaxis"
+        }
+    }
+
     var items: [SidebarDestination] {
         switch self {
         case .today: [.catchUp, .briefings, .dayPlan, .inbox, .ideas, .calendar]

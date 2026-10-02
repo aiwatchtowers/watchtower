@@ -1,3 +1,4 @@
+import SwiftUI
 import XCTest
 @testable import WatchtowerDesktop
 
@@ -188,5 +189,87 @@ final class SidebarSectionTests: XCTestCase {
 
     func testFallbackDestinationNilWhenCurrentStillVisible() {
         XCTAssertNil(SidebarDestination.fallbackDestination(current: .targets, disabled: ["ideas"]))
+    }
+
+    // MARK: - Icon rail
+
+    /// Opening a section in the rail closes whichever was open: at most one.
+    func testRailToggleOpensClickedSectionAndClosesTheOther() {
+        XCTAssertEqual(SidebarView.railSection(afterToggling: .delivery, current: SidebarSection.today.id), "delivery")
+        XCTAssertEqual(SidebarView.railSection(afterToggling: .today, current: nil), "today")
+    }
+
+    func testRailToggleOfTheOpenSectionClosesIt() {
+        XCTAssertNil(SidebarView.railSection(afterToggling: .analytics, current: SidebarSection.analytics.id))
+    }
+
+    func testRailSectionFollowsTheSelectionsSection() {
+        XCTAssertEqual(SidebarView.railSection(for: .digests, current: SidebarSection.today.id), "analytics")
+        XCTAssertEqual(SidebarView.railSection(for: .workload, current: nil), "delivery")
+    }
+
+    /// A root, trailing or tool selection has no section: whatever the
+    /// owner had open stays open (or closed).
+    func testRailSectionKeptForSelectionsOutsideAnySection() {
+        XCTAssertEqual(SidebarView.railSection(for: .targets, current: SidebarSection.delivery.id), "delivery")
+        XCTAssertNil(SidebarView.railSection(for: .chat, current: nil))
+        XCTAssertNil(SidebarView.railSection(for: .search, current: nil))
+    }
+
+    func testRailGroupIconsAreDistinctFromItemIcons() {
+        let groupIcons = SidebarSection.ordered.map(\.railIcon)
+        XCTAssertEqual(Set(groupIcons).count, groupIcons.count)
+        let itemIcons = Set(SidebarDestination.allCases.map(\.icon))
+        XCTAssertTrue(itemIcons.isDisjoint(with: groupIcons), "a group icon must not read as a tab")
+    }
+
+    /// The menu capsule's colour rule, shared by the rail dot.
+    func testBadgeColorRule() {
+        XCTAssertEqual(SidebarView.badgeColor(for: .tracks, overdue: false), .orange)
+        XCTAssertEqual(SidebarView.badgeColor(for: .memory, overdue: false), .orange)
+        XCTAssertEqual(SidebarView.badgeColor(for: .ideas, overdue: false), .orange)
+        XCTAssertEqual(SidebarView.badgeColor(for: .inbox, overdue: false), .blue)
+        XCTAssertEqual(SidebarView.badgeColor(for: .workbench, overdue: true), .blue)
+        XCTAssertEqual(SidebarView.badgeColor(for: .targets, overdue: false), .blue)
+        XCTAssertEqual(SidebarView.badgeColor(for: .targets, overdue: true), .red)
+        XCTAssertEqual(SidebarView.badgeColor(for: .digests, overdue: false), .red)
+        XCTAssertEqual(SidebarView.badgeColor(for: .catchUp, overdue: false), .red)
+    }
+
+    private func railDot(
+        _ item: SidebarDestination,
+        count: Int = 0,
+        overdue: Bool = false,
+        conflicts: Bool = false,
+        calendarConnected: Bool = true
+    ) -> Color? {
+        SidebarView.railDotColor(
+            for: item,
+            count: count,
+            overdue: overdue,
+            dayPlanHasConflicts: conflicts,
+            calendarConnected: calendarConnected
+        )
+    }
+
+    func testRailDotFollowsCountAndColour() {
+        XCTAssertNil(railDot(.digests))
+        XCTAssertEqual(railDot(.digests, count: 3), .red)
+        XCTAssertEqual(railDot(.tracks, count: 1), .orange)
+        XCTAssertEqual(railDot(.targets, count: 2, overdue: true), .red)
+        XCTAssertEqual(railDot(.targets, count: 2), .blue)
+    }
+
+    /// Day Plan and Calendar carry no count; their menu indicators map to dots.
+    func testRailDotForDayPlanConflictsAndCalendarConnection() {
+        XCTAssertNil(railDot(.dayPlan))
+        XCTAssertEqual(railDot(.dayPlan, conflicts: true), .red)
+        XCTAssertNil(railDot(.calendar))
+        XCTAssertEqual(railDot(.calendar, calendarConnected: false), .orange)
+    }
+
+    func testRailHelpAppendsAPositiveCount() {
+        XCTAssertEqual(SidebarView.railHelp(title: "Digests", count: 4), "Digests · 4")
+        XCTAssertEqual(SidebarView.railHelp(title: "Digests", count: 0), "Digests")
     }
 }
