@@ -144,7 +144,8 @@ func TestInstallWorkbench_MigratesALegacyFolder(t *testing.T) {
 		t.Fatalf("each replaced entry keeps its own fields:\n%s", settings)
 	}
 
-	// MCP: the old registration removed, then the new one added.
+	// MCP: the new registration added first, then the old one removed — never
+	// a moment without a server if the add fails.
 	var mcpCalls []string
 	for _, c := range f.calls {
 		if c[3] != "get" {
@@ -152,8 +153,8 @@ func TestInstallWorkbench_MigratesALegacyFolder(t *testing.T) {
 		}
 	}
 	wantCalls := []string{
-		"mcp remove --scope local watchtower-project",
 		"mcp add --scope local watchtower-workbench -- /tmp/acme bin/watchtower mcp --workbench 7",
+		"mcp remove --scope local watchtower-project",
 	}
 	if !reflect.DeepEqual(mcpCalls, wantCalls) {
 		t.Fatalf("claude calls = %q, want %q", mcpCalls, wantCalls)
@@ -434,5 +435,31 @@ func TestLooksLikeOurHook_RecognisesBothVocabularies(t *testing.T) {
 	if !looksLikeOurHook("/x/watchtower project check --project 7 --stop-hook", stopSpec, 7) ||
 		looksLikeOurHook("/x/watchtower project check --project 7", stopSpec, 7) {
 		t.Errorf("the Stop hook needs its --stop-hook flag in either vocabulary")
+	}
+}
+
+// A failed `mcp add` must not cost a not-yet-migrated folder its working old
+// server: the old registration stays, and the failure is reported.
+func TestInstallWorkbench_FailedAddKeepsTheLegacyRegistration(t *testing.T) {
+	folder := fakeRepo(t)
+	f := newFakeClaude()
+	seedLegacyFolder(t, folder, f, legacySkillContent, true, legacyOwnerSettings)
+	f.failAdd = true
+
+	rep, err := InstallWorkbench(context.Background(), legacyOpts(folder, f))
+	if err == nil || !strings.Contains(err.Error(), "claude mcp add") ||
+		!strings.Contains(err.Error(), "the old watchtower-project registration was kept") {
+		t.Fatalf("the failed add must be reported, naming the kept registration: %v", err)
+	}
+	if !f.legacy[folder] {
+		t.Fatalf("the legacy registration was removed although the new one never came")
+	}
+	if rep.MCPRegistered || rep.LegacyMCPRemoved || rep.MCPCommand == "" {
+		t.Fatalf("report: %+v", rep)
+	}
+	for _, c := range f.calls {
+		if c[3] == "remove" && c[len(c)-1] == LegacyMCPServerName {
+			t.Fatalf("no removal of the legacy server may run before the add succeeded: %q", c)
+		}
 	}
 }
