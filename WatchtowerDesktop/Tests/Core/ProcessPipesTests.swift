@@ -136,6 +136,17 @@ struct ProcessPipesTests {
         #expect(ContinuousClock.now - started < .seconds(10))
     }
 
+    @Test("run with a timeout reports a hang even when the child exits 0 on SIGTERM")
+    func runTimeoutCleanExitOnSigterm() async {
+        // A graceful SIGTERM handler (as Node CLIs have) exits normally; the
+        // deadline still fired. `wait` keeps the trap live while the sleeper
+        // runs in the background off the pipes; the handler reaps it.
+        let process = Self.shell("trap 'kill $!; exit 0' TERM; /bin/sleep 30 >/dev/null 2>&1 & wait")
+        let (output, timedOut) = await ProcessPipes.run(process, timeout: .milliseconds(300))
+        #expect(timedOut)
+        #expect(output.exitCode == 0)
+    }
+
     @Test("run with a timeout leaves a child that finishes in time alone")
     func runTimeoutFinishesInTime() async {
         let (output, timedOut) = await ProcessPipes.run(Self.shell("echo ok"), timeout: .seconds(10))

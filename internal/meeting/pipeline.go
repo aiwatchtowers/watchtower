@@ -51,6 +51,21 @@ func (r *MeetingPrepResult) normalizeSlices() {
 	}
 }
 
+// hasPrepSection reports whether the model's JSON object carries at least
+// one prep section key, whatever its value.
+func hasPrepSection(cleaned string) bool {
+	var keys map[string]json.RawMessage
+	if json.Unmarshal([]byte(cleaned), &keys) != nil {
+		return false
+	}
+	for _, k := range []string{"talking_points", "open_items", "people_notes", "suggested_prep", "recommendations", "context_gaps"} {
+		if _, ok := keys[k]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 // MeetingRecommendation is a suggestion for improving the meeting.
 type MeetingRecommendation struct {
 	Text     string `json:"text"`
@@ -258,10 +273,10 @@ func (p *Pipeline) prepareForEvent(ctx context.Context, event db.CalendarEvent, 
 	result.Title = event.Title
 	result.StartTime = event.StartTime
 	result.normalizeSlices()
-	// One omitted section is fine (no people_notes on a solo event); none at
-	// all means the answer was not a prep ({} after cleanJSON, renamed or
-	// wrapped keys) and must not be cached as one.
-	if len(result.TalkingPoints)+len(result.OpenItems)+len(result.PeopleNotes)+len(result.SuggestedPrep) == 0 {
+	// Omitted or empty sections are fine (the prompt asks for [] when there
+	// is no data); no section key at all means the answer was not a prep
+	// ({} after cleanJSON, renamed or wrapped keys) and must not be cached.
+	if !hasPrepSection(cleaned) {
 		return nil, fmt.Errorf("AI response has no prep sections (raw: %.500s)", aiResponse)
 	}
 

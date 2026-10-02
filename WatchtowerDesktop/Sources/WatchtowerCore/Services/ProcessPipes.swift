@@ -137,9 +137,7 @@ package enum ProcessPipes {
         }
         let output = await run(process)
         watchdog.cancel()
-        // A child that exited on its own right at the deadline is no hang.
-        let timedOut = fired.withLock { $0 } && process.terminationReason == .uncaughtSignal
-        return (output, timedOut)
+        return (output, fired.withLock { $0 })
     }
 }
 

@@ -116,6 +116,21 @@ func TestPrepareForEvent_NoSectionsIsAnError(t *testing.T) {
 	assert.ErrorContains(t, err, "no prep sections")
 }
 
+// The prompt asks for [] when a section has no data: an all-empty but
+// well-formed prep (here only a recommendation) is a valid answer.
+func TestPrepareForEvent_AllEmptySectionsIsValid(t *testing.T) {
+	database := openTestDB(t)
+	seedTestEvent(t, database)
+
+	gen := &mockGenerator{response: `{"talking_points":[],"open_items":[],"people_notes":[],"suggested_prep":[],` +
+		`"recommendations":[{"text":"Add an agenda","category":"agenda","priority":"high"}],"context_gaps":["No agenda"]}`}
+	pipe := New(database, &config.Config{}, gen, nil)
+
+	result, err := pipe.PrepareForEvent(context.Background(), "evt1", "")
+	require.NoError(t, err)
+	assert.Len(t, result.Recommendations, 1)
+}
+
 func TestPrepareForEvent_NotFound(t *testing.T) {
 	database := openTestDB(t)
 	gen := &mockGenerator{response: "{}"}

@@ -13,8 +13,8 @@ package enum CLITextFile {
             .appendingPathComponent("watchtower-text-\(UUID().uuidString).txt")
         // Thrown errors carry the cause (disk full, permissions); `$TMPDIR`
         // is per-user 0700, and the file is narrowed to 0600 before any use.
-        try Data(text.utf8).write(to: url, options: .withoutOverwriting)
         defer { try? FileManager.default.removeItem(at: url) }
+        try Data(text.utf8).write(to: url, options: .withoutOverwriting)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         return try await body(url.path)
     }
