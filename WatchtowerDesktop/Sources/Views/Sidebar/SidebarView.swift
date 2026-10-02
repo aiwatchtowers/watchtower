@@ -175,10 +175,16 @@ struct SidebarView: View {
                 Image(systemName: item.icon)
                     .frame(width: 20)
                     .foregroundStyle(isSelected ? .white : .secondary)
+                // One line always: on a narrow sidebar a long title next to a
+                // wide badge shrinks a little instead of breaking mid-word.
                 Text(item.title)
                     .foregroundStyle(isSelected ? .white : .primary)
-                Spacer()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .layoutPriority(1)
+                Spacer(minLength: 4)
                 badgeCount(for: item)
+                    .fixedSize()
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
