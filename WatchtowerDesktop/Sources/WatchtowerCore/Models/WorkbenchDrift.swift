@@ -1,9 +1,9 @@
 import Foundation
 
-/// `watchtower project check --project N --json` (PROJ-07, board target
+/// `watchtower workbench check --workbench N --json` (PROJ-07, board target
 /// #131): targets whose status disagrees with their git branch or pull
-/// request. Go owns the check (`internal/projectcheck`); the Desktop only
-/// decodes and shows it. Keys mirror `projectcheck.Report`/`Finding`; only
+/// request. Go owns the check (`internal/workbenchcheck`); the Desktop only
+/// decodes and shows it. Keys mirror `workbenchcheck.Report`/`Finding`; only
 /// Go's `omitempty` fields may be absent.
 package struct WorkbenchDriftReport: Decodable, Equatable, Sendable {
     package let git: Bool
@@ -50,7 +50,7 @@ package struct WorkbenchDriftFinding: Decodable, Equatable, Sendable, Identifiab
     /// Stop hook acts on (Go `Finding.Blocking`); the rest are advisory.
     package var isConflict: Bool { kind != "stale" && kind != "done_but_unmerged" }
 
-    /// A short human label for the kind (Go `projectcheck.Kind*`).
+    /// A short human label for the kind (Go `workbenchcheck.Kind*`).
     package var kindLabel: String {
         switch kind {
         case "merged_but_open": "Merged, still open"

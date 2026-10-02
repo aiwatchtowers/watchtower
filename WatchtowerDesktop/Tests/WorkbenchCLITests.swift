@@ -162,12 +162,29 @@ final class WorkbenchCLITests: XCTestCase {
         XCTAssertEqual(older.vocabulary, .current)
         XCTAssertEqual(older.skillDisplay, "unchanged")
 
-        // Still legacy but already on the new skill (e.g. only the old
-        // registration is left): the prompts name the new one.
-        let mixed = WorkbenchInstallStatus(skill: "unchanged", hook: true, mcp: true, legacy: true, legacySkill: "drifted")
+        // A resync whose `mcp add` failed: the new skill is in, only the old
+        // registration serves it. The skill names tools the session lacks,
+        // so Repair (which re-runs the add) is offered.
+        let mixed = try JSONDecoder().decode(WorkbenchInstallStatus.self, from: Data(#"""
+            {"skill":"unchanged","hook":true,"stop_hook":true,"mcp":true,"claude_found":true,
+             "legacy":true,"legacy_skill":"","current_mcp":false}
+            """#.utf8))
+        XCTAssertEqual(mixed.currentMCP, false)
         XCTAssertEqual(mixed.vocabulary, .current)
         XCTAssertEqual(mixed.legacyNotice, "Set up by an older Watchtower — Re-run Setup to update")
-        XCTAssertFalse(mixed.needsRepair)
+        XCTAssertTrue(mixed.needsRepair)
+        XCTAssertFalse(WorkbenchInstallStatus(skill: "unchanged", hook: true, mcp: true, currentMCP: true).needsRepair)
+        XCTAssertFalse(WorkbenchInstallStatus(skill: "unchanged", hook: true, mcp: false, claudeFound: false,
+                                              currentMCP: false).needsRepair,
+                       "without claude the registration is not repairable from here")
+    }
+
+    /// An older CLI sends no `current_mcp`: the decision falls back to `mcp`.
+    func testStatusWithoutCurrentMCPKeepsTheOldRule() throws {
+        let older = try JSONDecoder().decode(WorkbenchInstallStatus.self, from: Data(
+            #"{"skill":"unchanged","hook":true,"mcp":true,"legacy":true,"legacy_skill":""}"#.utf8))
+        XCTAssertNil(older.currentMCP)
+        XCTAssertFalse(older.needsRepair)
     }
 
     /// A legacy folder still needs Repair for what is actually broken, and

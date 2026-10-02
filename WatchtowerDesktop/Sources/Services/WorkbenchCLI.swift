@@ -241,6 +241,7 @@ struct WorkbenchResynced: Decodable, Equatable {
         indexed = try c.decodeIfPresent(Int.self, forKey: .indexed) ?? 0
         indexSkipped = try c.decodeIfPresent(Bool.self, forKey: .indexSkipped) ?? false
         legacySkill = try c.decodeIfPresent(String.self, forKey: .legacySkill) ?? ""
+        currentMCP = try c.decodeIfPresent(Bool.self, forKey: .currentMCP)
         legacyMCPRemoved = try c.decodeIfPresent(Bool.self, forKey: .legacyMCPRemoved) ?? false
         legacyHooksReplaced = try c.decodeIfPresent(Bool.self, forKey: .legacyHooksReplaced) ?? false
         legacyPermissionRules = try c.decodeIfPresent(Int.self, forKey: .legacyPermissionRules) ?? 0
@@ -294,11 +295,9 @@ struct WorkbenchResynced: Decodable, Equatable {
                               + "— merge it by hand, or delete your copy and run Re-run Setup again", problem: true))
         default: break
         }
-        // A replaced legacy hook also reports `hooks_added` (the file changed).
-        if hooksAdded {
-            lines.append(Line(text: legacyHooksReplaced ? "Replaced the old session hooks" : "Added the session hooks",
-                              problem: false))
-        }
+        // A replaced legacy hook also reports `hooks_added` (the file changed);
+        // `legacyLines` says that instead.
+        if hooksAdded && !legacyHooksReplaced { lines.append(Line(text: "Added the session hooks", problem: false)) }
         if !excluded.isEmpty {
             lines.append(Line(text: "Excluded \(excluded.count) more path(s) from git", problem: false))
         }
@@ -311,9 +310,11 @@ struct WorkbenchResynced: Decodable, Equatable {
         return lines + legacyLines
     }
 
-    /// What the migration did to a folder set up before the rename. The
-    /// wording follows Go's `printLegacyMigration` and `legacySkillKeptNote`
-    /// (`cmd/integrate_workbench.go`), which `--json` does not carry.
+    /// What the migration did to a folder set up before the rename. Go twin:
+    /// `printLegacyMigration` and `legacySkillKeptNote`
+    /// (`cmd/integrate_workbench.go`) — same lines in the same order, the
+    /// first letter capitalised like every summary line here; `--json`
+    /// carries only the states, so change both sides together.
     private var legacyLines: [Line] {
         let legacy = WorkbenchVocabulary.legacy
         var lines: [Line] = []
@@ -324,6 +325,9 @@ struct WorkbenchResynced: Decodable, Equatable {
                               + ".claude/skills/\(legacy.skillName) yourself once you no longer need it; "
                               + "until then Claude Code sees both skills.", problem: true))
         default: break
+        }
+        if legacyHooksReplaced {
+            lines.append(Line(text: "Replaced the old hook commands", problem: false))
         }
         if legacyMCPRemoved {
             lines.append(Line(text: "Removed the old \(legacy.mcpServerName) MCP server", problem: false))
@@ -355,12 +359,16 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
     /// The old skill's state: empty when absent, `unchanged`, `drifted` or
     /// `foreign`.
     let legacySkill: String
+    /// The watchtower-workbench registration itself; `mcp` also counts the
+    /// old one. nil from a CLI that does not send the key.
+    let currentMCP: Bool?
 
     enum CodingKeys: String, CodingKey {
         case skill, hook, mcp, legacy
         case stopHook = "stop_hook"
         case claudeFound = "claude_found"
         case legacySkill = "legacy_skill"
+        case currentMCP = "current_mcp"
     }
 
     init(
@@ -370,9 +378,11 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         mcp: Bool,
         claudeFound: Bool = true,
         legacy: Bool = false,
-        legacySkill: String = ""
+        legacySkill: String = "",
+        currentMCP: Bool? = nil
     ) {
         self.legacy = legacy
+        self.currentMCP = currentMCP
         self.legacySkill = legacySkill
         self.skill = skill
         self.hook = hook
@@ -398,7 +408,15 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
     /// Whether Repair can fix something. Without `claude` an unregistered
     /// MCP server is not repairable from here — see `manualMCPCommand`.
     var needsRepair: Bool {
-        (skill == "missing" && !runsOnLegacySkill) || skill == "updated" || !hook || !stopHook || (claudeFound && !mcp)
+        (skill == "missing" && !runsOnLegacySkill) || skill == "updated" || !hook || !stopHook
+            || (claudeFound && (!mcp || missesCurrentMCP))
+    }
+
+    /// The new skill is in but only the old registration serves it — a
+    /// resync whose `mcp add` failed: the skill names tools the session does
+    /// not have, so Repair re-runs the add.
+    private var missesCurrentMCP: Bool {
+        skill != "missing" && currentMCP == false
     }
 
     /// The install icon's tooltip for a folder set up before the Workbench

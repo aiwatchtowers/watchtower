@@ -24,6 +24,7 @@ type fakeWorkbenchClaude struct {
 	mu         sync.Mutex
 	registered map[string]bool
 	failRemove bool // every `mcp remove` exits non-zero
+	failAdd    bool // every `mcp add` exits non-zero
 }
 
 func fakeRegistration(dir, server string) string { return dir + "\x00" + server }
@@ -46,6 +47,9 @@ func (f *fakeWorkbenchClaude) run(_ context.Context, dir, name string, args ...s
 		}
 		return nil, devpack.ErrCommandExit
 	case "add":
+		if f.failAdd {
+			return []byte("add failed"), devpack.ErrCommandExit
+		}
 		f.registered[key] = true
 		return nil, nil
 	case "remove":
