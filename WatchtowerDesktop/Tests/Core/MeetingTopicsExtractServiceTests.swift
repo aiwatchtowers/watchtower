@@ -43,6 +43,9 @@ final class MeetingTopicsExtractServiceTests: XCTestCase {
         }
         XCTAssertTrue(args.contains("--event-id"))
         XCTAssertTrue(args.contains("evt_123"))
+        XCTAssertTrue(args.contains("--text-file"))
+        XCTAssertFalse(args.contains("x"), "pasted text never rides argv")
+        XCTAssertEqual(runner.textFileContents, ["x"])
     }
 
     // MARK: - Missing priority tolerated

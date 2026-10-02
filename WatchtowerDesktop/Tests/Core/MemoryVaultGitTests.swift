@@ -21,6 +21,29 @@ struct MemoryVaultGitTests {
         #expect(line.contains("not a git repository"))
         #expect(line.contains("exit 128"))
     }
+
+    /// Never the `/usr/bin/git` shim (it pops the install-developer-tools
+    /// dialog): the developer dir's git, then CLT and Homebrew, else nil.
+    @Test("gitPath prefers the developer dir and never falls back to the shim")
+    func gitPathResolution() {
+        let xcode = "/Applications/Xcode.app/Contents/Developer"
+        let all: Set = [
+            xcode + "/usr/bin/git",
+            "/Library/Developer/CommandLineTools/usr/bin/git",
+            "/opt/homebrew/bin/git",
+            "/usr/bin/git"
+        ]
+        #expect(MemoryVaultGit.gitPath(developerDir: xcode) { all.contains($0) } == xcode + "/usr/bin/git")
+        #expect(
+            MemoryVaultGit.gitPath(developerDir: nil) { all.contains($0) }
+                == "/Library/Developer/CommandLineTools/usr/bin/git"
+        )
+        #expect(
+            MemoryVaultGit.gitPath(developerDir: "/stale/dir") { $0 == "/opt/homebrew/bin/git" || $0 == "/usr/bin/git" }
+                == "/opt/homebrew/bin/git"
+        )
+        #expect(MemoryVaultGit.gitPath(developerDir: nil) { $0 == "/usr/bin/git" } == nil)
+    }
 }
 
 /// Collects report lines from any thread.

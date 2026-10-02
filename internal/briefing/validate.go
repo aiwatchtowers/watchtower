@@ -112,6 +112,16 @@ func (s *shownIDs) validateIDs(result *BriefingResult) int {
 			blanked++
 		}
 	}
+	for i := range result.TeamPulse {
+		if !s.resolvePersonField(&result.TeamPulse[i].UserID) {
+			blanked++
+		}
+	}
+	for i := range result.Coaching {
+		if !s.resolvePersonField(&result.Coaching[i].RelatedUserID) {
+			blanked++
+		}
+	}
 	for i := range result.Attention {
 		item := &result.Attention[i]
 		if item.SourceID == "" {
@@ -125,6 +135,17 @@ func (s *shownIDs) validateIDs(result *BriefingResult) int {
 		}
 	}
 	return blanked
+}
+
+// resolvePersonField rewrites a non-empty person id to the stored form of a
+// shown person, or blanks it; false when it blanked one.
+func (s *shownIDs) resolvePersonField(id *string) bool {
+	if *id == "" {
+		return true
+	}
+	resolved, ok := s.resolvePerson(*id)
+	*id = resolved
+	return ok
 }
 
 // blankUnshownIDs runs validateIDs against the current run's shown ids and

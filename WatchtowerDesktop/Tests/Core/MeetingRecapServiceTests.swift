@@ -22,8 +22,9 @@ final class MeetingRecapServiceTests: XCTestCase {
         XCTAssertTrue(captured.contains("recap"))
         XCTAssertTrue(captured.contains("--event-id"))
         XCTAssertTrue(captured.contains("evt-1"))
-        XCTAssertTrue(captured.contains("--text"))
-        XCTAssertTrue(captured.contains("raw"))
+        XCTAssertTrue(captured.contains("--text-file"))
+        XCTAssertFalse(captured.contains("raw"), "pasted text never rides argv")
+        XCTAssertEqual(fake.textFileContents, ["raw"])
         XCTAssertTrue(captured.contains("--json"))
     }
 
@@ -36,14 +37,15 @@ final class MeetingRecapServiceTests: XCTestCase {
         guard let args = fake.invocations.first else {
             return XCTFail("no invocation recorded")
         }
-        // Expected: ["meeting-prep", "recap", "--event-id", "my-event", "--text", "notes here", "--json"]
+        // Expected: ["meeting-prep", "recap", "--event-id", "my-event", "--text-file", <tmp>, "--json"]
         XCTAssertEqual(args.count, 7)
         XCTAssertEqual(args[0], "meeting-prep")
         XCTAssertEqual(args[1], "recap")
         XCTAssertEqual(args[2], "--event-id")
         XCTAssertEqual(args[3], "my-event")
-        XCTAssertEqual(args[4], "--text")
-        XCTAssertEqual(args[5], "notes here")
+        XCTAssertEqual(args[4], "--text-file")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: args[5]), "the temp file is removed after the call")
+        XCTAssertEqual(fake.textFileContents, ["notes here"])
         XCTAssertEqual(args[6], "--json")
     }
 

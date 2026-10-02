@@ -294,6 +294,14 @@ package enum IdeaQueries {
             sql: "UPDATE idea_mentions SET idea_id = ? WHERE idea_id = ?",
             arguments: [targetID, id]
         )
+        // Items merged into this one earlier now point at the survivor too:
+        // the consolidator follows `merged_into_id` exactly one hop (IDEA-03),
+        // so a two-hop chain would land their next sighting on this hidden
+        // merged row.
+        try db.execute(
+            sql: "UPDATE ideas SET merged_into_id = ? WHERE merged_into_id = ?",
+            arguments: [targetID, id]
+        )
     }
 
     /// Marks an idea superseded, optionally linking to the idea that replaces it.

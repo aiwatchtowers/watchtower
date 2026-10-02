@@ -18,12 +18,16 @@ stays readable. Split any item into its own file when it gets picked up.
 
 `/usr/bin/git` is the xcode-select shim. On a Mac without Command Line Tools, running it pops a system "The git command requires the command line developer tools. Install?" dialog, attributed to Watchtower. It pops the moment the owner opens a memory node. The Go side uses go-git precisely to avoid needing git, and the Swift reader then degrades to an empty list anyway, so the prompt buys nothing. It is not a TCC prompt, but it belongs to the same "Watchtower pops system dialogs" class the owner treats as P0. Fix: check `xcode-select -p` / the CLT receipt before spawning, or add a tiny `watchtower memory log --json` CLI command backed by go-git.
 
+**Status (fix/desktop-low-bundle):** fixed. `MemoryVaultGit.gitPath` resolves git from the active developer dir (`xcode-select -p`, which never prompts), then the CLT and Homebrew installs, and never runs the `/usr/bin/git` shim; with none installed the history is skipped and logged.
+
 ## Meeting prep decode fails when the model omits an array: Go emits null, Swift expects non-optional arrays
 
 - type: bug · confidence: med · tags: [swift, dual-path, wire-shape, meeting-prep]
 - where: WatchtowerDesktop/Sources/ViewModels/MeetingPrepViewModel.swift:59-81; internal/meeting/pipeline.go:20-30,227-237
 
 `MeetingPrepResult` in Swift declares `talkingPoints`/`openItems`/`peopleNotes`/`suggestedPrep` as non-optional arrays. Go unmarshals the model's JSON straight into a struct whose slices stay nil when a key is missing or `null`, and re-marshals them as `null` (no omitempty, no `[]T{}` init). Scenario: a solo or ad-hoc event with no attendees, where the model returns no `people_notes`. The CLI succeeds, but Swift shows "Failed to parse meeting prep" and discards a valid prep. This is exactly the review-rules wire-shape rule. Fix: normalize nil slices to empty in `prepareForEvent` (plus an empty-state wire test), or make the Swift fields default to `[]`.
+
+**Status (fix/desktop-low-bundle):** fixed on both sides: Go normalises the slices (`TestPrepareForEvent_EmptyArraysOnTheWire`), Swift decodes a missing/null array as `[]`.
 
 ## DatabaseManager.runCLIMigrations swallows migration failure, runs on the main thread in onboarding, and never reads its stderr pipe
 
@@ -39,12 +43,16 @@ Fix: return or throw the exit status plus drained stderr, show it on the splash/
 
 **Status: point 3 fixed in fix/backlog-desktop-wave1** (stderr is drained concurrently via `ProcessPipes.drain` and logged on failure). Points 1 and 2 stay open: surfacing the failure and taking it off the main thread both need `ensureOnboardingDatabase()` (seven synchronous call sites) to become async.
 
+**Status (fix/desktop-low-bundle):** point 2 fixed in dfb0ba02 (`OnboardingDatabaseOpener`, off the main actor; launch failures are logged too). Point 1 left: the launch path has no non-fatal warning surface, and making a failed migrate fatal would lock the owner out on a transient `database is locked` — whether it should block, warn, or retry is a product call.
+
 ## Merging an idea that already absorbed others leaves a two-hop redirect the consolidator can't follow
 
 - type: bug · confidence: med · tags: [swift, ideas, dual-path, IDEA-03]
 - where: WatchtowerDesktop/Sources/WatchtowerCore/Database/Queries/IdeaQueries.swift:274-287; internal/ideas/consolidate.go:753-757; Views/Ideas/IdeaDetailPane.swift:514
 
 Scenario: C is merged into A, then the owner merges A into B. The candidate filter allows this, since A is active/proposed. `IdeaQueries.merge` re-parents A's mentions but leaves C's `merged_into_id = A`. `applyAttachMentionOp` follows `merged_into_id` exactly one hop, so a later sighting of C lands on A, a hidden `status='merged'` row. That is what IDEA-03 promises cannot happen ("a later sighting of a merged-away item lands on the survivor"). Fix inside the same write: `UPDATE ideas SET merged_into_id = B WHERE merged_into_id = A`. Relevant to the IDEA-03 guard, so owner review is needed. Secondary: re-parenting can duplicate a `(source, ref)` mention already on B, since the index is non-unique.
+
+**Status (fix/desktop-low-bundle):** main point fixed: `IdeaQueries.merge` repoints rows merged into A at B in the same write (`testMergeRepointsEarlierMergesAtTheSurvivor`); this makes the code match IDEA-03's wording, no guard test changed. Secondary left: deduping a re-parented mention means choosing which row's quote/timestamp survives — deferred.
 
 ## Large free text is passed on argv (--text) to AI commands, so big pastes hit E2BIG and the content is visible in ps
 
@@ -53,6 +61,8 @@ Scenario: C is merged into A, then the owner merges A into B. The candidate filt
 
 The recap sheet invites "paste a recap, transcript fragment, or rough notes". Target extraction and extract-topics also take arbitrary pasted text, and all of these go in as a single argv element. A very large paste (macOS ARG_MAX is ~1 MB including the environment) makes `posix_spawn` fail with "Argument list too long", surfaced as a cryptic launch failure. Meanwhile every paste of meeting content is readable by any local process via `ps` for the call's duration. Transcripts already travel via `--transcript-file` "never argv" for exactly this reason. Fix: add `--text-file`/stdin to `targets extract`, `meeting-prep recap` and `extract-topics`, and use a temp file (the `TranscriptSaveService` pattern).
 
+**Status (fix/desktop-low-bundle):** fixed: `targets extract`, `meeting-prep recap`, `meeting-prep extract-topics` and `tracks create` take `--text-file` (mutually exclusive with `--text`); the Desktop writes an owner-only temp file via `CLITextFile` and removes it after the call. Still on argv, left for a follow-up: `meeting-prep --user-notes` (MeetingPrepViewModel) and `targets promote-sub-item --text` (usually short); `DictationCleanService`/`TranscriptSaveService` could move onto `CLITextFile` too.
+
 ## "Silent" auth trust-cert actually edits user trust settings, which macOS gates behind a password dialog
 
 - type: question · confidence: low · tags: [swift, system-prompt, slack-auth, onboarding]
@@ -60,11 +70,15 @@ The recap sheet invites "paste a recap, transcript fragment, or rough notes". Ta
 
 Both Swift call sites say the trust step is "silent — adds to user trust store, no password needed". `TrustCert` runs `security add-trusted-cert -r trustRoot -p ssl -k login.keychain`. Modifying per-user certificate trust settings normally raises the "security is trying to modify your Certificate Trust Settings — enter your password" authorization dialog. That would be an unexpected system prompt on the first Slack connect, and on reconnect whenever the cert was regenerated. Not verified on a live machine. Worth confirming on a clean account; if it prompts, fix the copy and consider an alternative (a trusted loopback without HTTPS, or the `--app-return` flow the other providers use).
 
+**Status (fix/desktop-low-bundle):** left: needs a check on a clean macOS account; nothing to change until it is confirmed.
+
 ## Settings "Test Connection" probes have no timeout and no safe working directory
 
 - type: bug · confidence: med · tags: [swift, process, settings, tcc-hygiene]
 - where: WatchtowerDesktop/Sources/Views/Settings/SystemSettings.swift:479-513
 
 `runCLIProbe` launches `claude -p …` / `codex exec …` directly, with no watchdog and no `currentDirectoryURL`. Every other AI-spawning site sets `Constants.processWorkingDirectory()`, whose documented purpose is avoiding TCC prompts from a child scanning a protected cwd. A hung provider CLI, such as the codex version-skew hangs recorded in project memory, leaves "Testing…" spinning forever with no cancel. The probe also runs in the app's inherited cwd. Fix: set the safe cwd and add a timeout that terminates the probe (the `stopDaemonBounded` pattern).
+
+**Status (fix/desktop-low-bundle):** fixed: the probe runs in `Constants.processWorkingDirectory()` under `ProcessPipes.run(_:timeout:)` (60 s), and a timeout is reported as a likely hung/outdated CLI.
 
 > Original note: «а давай проведем ревью нашего репоза на ветке мейн с целью наполнения беклога. Наши треки - покрытие тестами, баги существующие и потенциальные, архитектурные проблемы, анализ использования и бессмысленный функционал»

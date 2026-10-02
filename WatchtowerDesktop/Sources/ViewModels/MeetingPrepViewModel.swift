@@ -78,6 +78,25 @@ struct MeetingPrepResult: Codable, Equatable {
     }
 }
 
+extension MeetingPrepResult {
+    /// A missing or null array decodes as empty: the model may omit a section
+    /// (no `people_notes` on a solo event), and a valid prep must not be
+    /// rejected over it. Go normalises these to `[]` too; this covers older
+    /// CLIs.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        eventID = try container.decode(String.self, forKey: .eventID)
+        title = try container.decode(String.self, forKey: .title)
+        startTime = try container.decode(String.self, forKey: .startTime)
+        talkingPoints = try container.decodeIfPresent([TalkingPoint].self, forKey: .talkingPoints) ?? []
+        openItems = try container.decodeIfPresent([OpenItem].self, forKey: .openItems) ?? []
+        peopleNotes = try container.decodeIfPresent([PersonNote].self, forKey: .peopleNotes) ?? []
+        suggestedPrep = try container.decodeIfPresent([String].self, forKey: .suggestedPrep) ?? []
+        recommendations = try container.decodeIfPresent([MeetingRecommendation].self, forKey: .recommendations)
+        contextGaps = try container.decodeIfPresent([String].self, forKey: .contextGaps)
+    }
+}
+
 // MARK: - ViewModel
 
 /// Prep state for ONE calendar event. Instances are handed out and kept by

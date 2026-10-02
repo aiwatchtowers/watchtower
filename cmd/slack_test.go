@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	goslack "github.com/slack-go/slack"
@@ -332,4 +333,22 @@ func TestSlackEnable_RemovedAccountRejected(t *testing.T) {
 	acct, err := database2.GetSlackAccount(1)
 	require.NoError(t, err)
 	assert.False(t, acct.Enabled, "the rejected enable must not have flipped the row")
+}
+
+// An ok account's error column carries the search catch-up gap note; it is
+// printed under the account. A failing account's error is not repeated.
+func TestPrintSlackAccounts_ShowsNoteOnOKAccount(t *testing.T) {
+	var out bytes.Buffer
+	printSlackAccounts(&out, []db.SlackAccount{
+		{ID: 1, Label: "Acme", Status: "ok", Enabled: true, Error: "search sync: gap of 40 days exceeds the 30-day catch-up cap"},
+		{ID: 2, Label: "Beta", Status: "error", Enabled: true, Error: "token revoked"},
+		{ID: 3, Label: "Gamma", Status: "ok", Enabled: false},
+	})
+
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	require.Len(t, lines, 4)
+	assert.Equal(t, "#1 Acme ok [enabled]", lines[0])
+	assert.Equal(t, "    note: search sync: gap of 40 days exceeds the 30-day catch-up cap", lines[1])
+	assert.Equal(t, "#2 Beta error [enabled]", lines[2])
+	assert.Equal(t, "#3 Gamma ok [disabled]", lines[3])
 }

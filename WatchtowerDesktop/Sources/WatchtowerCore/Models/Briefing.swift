@@ -11,7 +11,7 @@ package struct AttentionItem: Decodable, Identifiable, Equatable {
     package let priority: String?
     package let reason: String?
     package let suggestTrack: Bool? // swiftlint:disable:this discouraged_optional_boolean
-    package let suggestTask: Bool? // swiftlint:disable:this discouraged_optional_boolean
+    package let suggestTarget: Bool? // swiftlint:disable:this discouraged_optional_boolean
 
     package enum CodingKeys: String, CodingKey {
         case text
@@ -19,7 +19,9 @@ package struct AttentionItem: Decodable, Identifiable, Equatable {
         case sourceID = "source_id"
         case priority, reason
         case suggestTrack = "suggest_track"
-        case suggestTask = "suggest_task"
+        case suggestTarget = "suggest_target"
+        // Pre-rename key (tasks → targets); read only as a fallback.
+        case legacySuggestTask = "suggest_task"
     }
 
     package init(from decoder: Decoder) throws {
@@ -29,7 +31,8 @@ package struct AttentionItem: Decodable, Identifiable, Equatable {
         priority = try container.decodeIfPresent(String.self, forKey: .priority)
         reason = try container.decodeIfPresent(String.self, forKey: .reason)
         suggestTrack = try container.decodeIfPresent(Bool.self, forKey: .suggestTrack)
-        suggestTask = try container.decodeIfPresent(Bool.self, forKey: .suggestTask)
+        suggestTarget = try container.decodeIfPresent(Bool.self, forKey: .suggestTarget)
+            ?? container.decodeIfPresent(Bool.self, forKey: .legacySuggestTask)
         // Accept both string and int for source_id
         if let str = try? container.decodeIfPresent(String.self, forKey: .sourceID) {
             sourceID = str
@@ -44,7 +47,7 @@ package struct AttentionItem: Decodable, Identifiable, Equatable {
         lhs.text == rhs.text && lhs.sourceType == rhs.sourceType
             && lhs.sourceID == rhs.sourceID && lhs.priority == rhs.priority
             && lhs.reason == rhs.reason && lhs.suggestTrack == rhs.suggestTrack
-            && lhs.suggestTask == rhs.suggestTask
+            && lhs.suggestTarget == rhs.suggestTarget
     }
 }
 
@@ -52,7 +55,7 @@ package struct YourDayItem: Decodable, Identifiable, Equatable {
     package let id = UUID()
     package let text: String
     package let trackID: Int?
-    package let taskID: Int?
+    package let targetID: Int?
     package let dueDate: String?
     package let priority: String?
     package let status: String?
@@ -61,14 +64,28 @@ package struct YourDayItem: Decodable, Identifiable, Equatable {
     package enum CodingKeys: String, CodingKey {
         case text
         case trackID = "track_id"
-        case taskID = "task_id"
+        case targetID = "target_id"
+        // Pre-rename key (tasks → targets); read only as a fallback.
+        case legacyTaskID = "task_id"
         case dueDate = "due_date"
         case priority, status, ownership
     }
 
+    package init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        text = try container.decode(String.self, forKey: .text)
+        trackID = try container.decodeIfPresent(Int.self, forKey: .trackID)
+        targetID = try container.decodeIfPresent(Int.self, forKey: .targetID)
+            ?? container.decodeIfPresent(Int.self, forKey: .legacyTaskID)
+        dueDate = try container.decodeIfPresent(String.self, forKey: .dueDate)
+        priority = try container.decodeIfPresent(String.self, forKey: .priority)
+        status = try container.decodeIfPresent(String.self, forKey: .status)
+        ownership = try container.decodeIfPresent(String.self, forKey: .ownership)
+    }
+
     package static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.text == rhs.text && lhs.trackID == rhs.trackID
-            && lhs.taskID == rhs.taskID
+            && lhs.targetID == rhs.targetID
             && lhs.dueDate == rhs.dueDate && lhs.priority == rhs.priority
             && lhs.status == rhs.status && lhs.ownership == rhs.ownership
     }
