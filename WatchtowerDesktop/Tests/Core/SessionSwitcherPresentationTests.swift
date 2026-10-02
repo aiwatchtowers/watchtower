@@ -36,7 +36,7 @@ final class SessionSwitcherPresentationTests: XCTestCase {
             session(2, secondsAgo: 3 * 3600 + 3),
             session(3, secondsAgo: 86_400 + 3)
         ])
-        XCTAssertEqual(result.map(\.caption), ["не запущена · 5 мин", "не запущена · 3 ч", "не запущена · 1 д"])
+        XCTAssertEqual(result.map(\.caption), ["not started · 5m", "not started · 3h", "not started · 1d"])
         XCTAssertEqual(result[0].state, .notStarted)
     }
 

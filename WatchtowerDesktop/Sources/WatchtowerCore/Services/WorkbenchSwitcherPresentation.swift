@@ -61,18 +61,16 @@ package enum WorkbenchSwitcherPresentation {
     ) -> [Segment] {
         var out: [Segment] = []
         if newComments > 0 {
-            let words = RussianPlural.form(newComments, one: "новый коммент", few: "новых коммента", many: "новых комментов")
-            out.append(Segment(text: "\(newComments) \(words)", tone: .comments))
+            out.append(Segment(text: "\(newComments) new \(newComments == 1 ? "comment" : "comments")", tone: .comments))
         }
         if summary.blockedTargets > 0 {
             out.append(Segment(text: "\(summary.blockedTargets) blocked", tone: .blocked))
         }
         var sessions: [String] = []
         if summary.sessionCount > 0 {
-            let word = RussianPlural.form(summary.sessionCount, one: "сессия", few: "сессии", many: "сессий")
-            sessions.append("\(summary.sessionCount) \(word)")
+            sessions.append("\(summary.sessionCount) \(summary.sessionCount == 1 ? "session" : "sessions")")
         }
-        if liveCount > 0 { sessions.append("\(liveCount) в работе") }
+        if liveCount > 0 { sessions.append("\(liveCount) running") }
         if !sessions.isEmpty {
             out.append(Segment(text: sessions.joined(separator: " · "), tone: .sessions))
         }

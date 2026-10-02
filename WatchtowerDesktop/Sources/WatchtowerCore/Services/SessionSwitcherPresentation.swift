@@ -12,7 +12,7 @@ package enum SessionSwitcherPresentation {
     package struct Row: Identifiable, Equatable, Sendable {
         package let session: TerminalSession
         package let state: State
-        /// "не запущена · 5 мин"; nil for a running session.
+        /// "not started · 5m"; nil for a running session.
         package let caption: String?
         /// `#233` for a session working on a target.
         package let badge: String?
@@ -29,8 +29,8 @@ package enum SessionSwitcherPresentation {
     package static func rows(_ sessions: [TerminalSession], liveIDs: Set<Int64>, now: Date) -> [Row] {
         sessions.enumerated().map { index, session in
             let live = liveIDs.contains(session.id)
-            let caption = TimeFormatting.shortAge(from: session.lastActiveAt, now: now).map { "не запущена · \($0)" }
-                ?? "не запущена"
+            let caption = TimeFormatting.shortAge(from: session.lastActiveAt, now: now).map { "not started · \($0)" }
+                ?? "not started"
             return Row(
                 session: session,
                 state: live ? .running : .notStarted,

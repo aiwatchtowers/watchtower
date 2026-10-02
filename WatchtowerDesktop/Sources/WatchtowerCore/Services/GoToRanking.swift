@@ -38,9 +38,9 @@ package enum GoToItem: Identifiable, Equatable, Sendable {
 /// A palette section; the order of sections is fixed, ranking is within one.
 package struct GoToSection: Identifiable, Equatable, Sendable {
     package enum Kind: Equatable, Sendable {
-        /// "СЕССИИ · <current workbench>".
+        /// "SESSIONS · <current workbench>".
         case currentSessions
-        /// "ДРУГИЕ WORKBENCH": workbench rows and their sessions.
+        /// "OTHER WORKBENCHES": workbench rows and their sessions.
         case otherWorkbenches
     }
 

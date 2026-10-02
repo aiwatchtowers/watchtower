@@ -72,54 +72,47 @@ final class WorkbenchSwitcherPresentationTests: XCTestCase {
         typealias Seg = WorkbenchSwitcherPresentation.Segment
         let all = summary(id: 1, name: "a", blocked: 2, sessions: 5, lastActivity: iso(60))
         XCTAssertEqual(segments(all, comments: 3, live: 1), [
-            Seg(text: "3 новых коммента", tone: .comments),
+            Seg(text: "3 new comments", tone: .comments),
             Seg(text: "2 blocked", tone: .blocked),
-            Seg(text: "5 сессий · 1 в работе", tone: .sessions)
+            Seg(text: "5 sessions · 1 running", tone: .sessions)
         ])
         XCTAssertEqual(segments(all, comments: 1), [
-            Seg(text: "1 новый коммент", tone: .comments),
+            Seg(text: "1 new comment", tone: .comments),
             Seg(text: "2 blocked", tone: .blocked),
-            Seg(text: "5 сессий", tone: .sessions)
+            Seg(text: "5 sessions", tone: .sessions)
         ], "no live session → no second part")
         let sessionsOnly = summary(id: 2, name: "b", sessions: 1, lastActivity: iso(60))
-        XCTAssertEqual(segments(sessionsOnly, live: 1), [Seg(text: "1 сессия · 1 в работе", tone: .sessions)])
+        XCTAssertEqual(segments(sessionsOnly, live: 1), [Seg(text: "1 session · 1 running", tone: .sessions)])
         let blockedOnly = summary(id: 3, name: "c", blocked: 1)
         XCTAssertEqual(segments(blockedOnly), [Seg(text: "1 blocked", tone: .blocked)])
         let commentsOnly = summary(id: 4, name: "d")
-        XCTAssertEqual(segments(commentsOnly, comments: 5), [Seg(text: "5 новых комментов", tone: .comments)])
+        XCTAssertEqual(segments(commentsOnly, comments: 5), [Seg(text: "5 new comments", tone: .comments)])
     }
 
     /// Unreachable from the DB (a live session has a row) but the counts
     /// come from two sources: a live count alone still says it is running.
     func testSegmentsLiveWithoutCountedSessions() {
         let row = summary(id: 1, name: "a")
-        XCTAssertEqual(segments(row, live: 2), [.init(text: "2 в работе", tone: .sessions)])
+        XCTAssertEqual(segments(row, live: 2), [.init(text: "2 running", tone: .sessions)])
     }
 
     func testSegmentsFallBackToTheAgeThenToNothing() {
         let quiet = summary(id: 1, name: "a", lastActivity: iso(3 * 86_400 + 100))
-        XCTAssertEqual(segments(quiet), [.init(text: "3 д", tone: .age)])
+        XCTAssertEqual(segments(quiet), [.init(text: "3d", tone: .age)])
         XCTAssertEqual(segments(summary(id: 2, name: "b")), [])
         XCTAssertEqual(segments(summary(id: 3, name: "c", lastActivity: "garbage")), [],
                        "an unreadable stamp shows nothing rather than the raw text")
     }
 
-    // MARK: - Plurals and ages
-
-    func testRussianPluralForms() {
-        let form = { (n: Int) in RussianPlural.form(n, one: "сессия", few: "сессии", many: "сессий") }
-        XCTAssertEqual([1, 2, 5, 11, 21].map(form), ["сессия", "сессии", "сессий", "сессий", "сессия"])
-        XCTAssertEqual([0, 4, 12, 14, 22, 25, 101, 111, 112].map(form),
-                       ["сессий", "сессии", "сессий", "сессий", "сессии", "сессий", "сессия", "сессий", "сессий"])
-    }
+    // MARK: - Ages
 
     func testShortAge() {
         let age = { (seconds: TimeInterval) in TimeFormatting.shortAge(from: self.iso(seconds), now: self.now) }
-        XCTAssertEqual(age(10), "только что")
-        XCTAssertEqual(age(5 * 60 + 5), "5 мин")
-        XCTAssertEqual(age(3 * 3600 + 5), "3 ч")
-        XCTAssertEqual(age(86_400 + 5), "1 д")
-        XCTAssertEqual(age(-120), "только что", "a clock skew into the future is not a negative age")
+        XCTAssertEqual(age(10), "just now")
+        XCTAssertEqual(age(5 * 60 + 5), "5m")
+        XCTAssertEqual(age(3 * 3600 + 5), "3h")
+        XCTAssertEqual(age(86_400 + 5), "1d")
+        XCTAssertEqual(age(-120), "just now", "a clock skew into the future is not a negative age")
         XCTAssertNil(TimeFormatting.shortAge(from: "", now: now))
     }
 }
