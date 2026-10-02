@@ -142,7 +142,8 @@ func resyncWorkbench(ctx context.Context, database *db.DB, p *db.Workbench, know
 		res.IndexOK, res.Indexed = true, changed
 	}
 
-	suggestions, err := resyncSuggestions(database, p, res.Docs)
+	voc, toolsKnown := resyncVocabulary(res.install)
+	suggestions, err := resyncSuggestions(database, p, res.Docs, voc, toolsKnown)
 	if note := legacyPermissionNote(res.install); note != "" {
 		suggestions = append(suggestions, note)
 	}
@@ -176,19 +177,42 @@ func resyncIntegration(ctx context.Context, p *db.Workbench, res *workbenchResyn
 	return err
 }
 
-// resyncSuggestions names what the owner may want the agent to do next;
-// resync itself never creates targets (the agent proposes, the owner agrees).
-func resyncSuggestions(database *db.DB, p *db.Workbench, docs *workbenchdocs.Report) ([]string, error) {
+// resyncVocabulary is the skill and tool names the folder's Claude Code
+// session has after the install: the new ones once the new server is
+// registered, the old ones when a pre-rename folder was left on its old
+// setup (its registration did not go in). Otherwise no server of ours is
+// known to serve the folder, so toolsKnown is false and the suggestions name
+// no tool.
+func resyncVocabulary(rep devpack.WorkbenchInstallReport) (voc vocabulary, toolsKnown bool) {
+	switch {
+	case rep.MCPRegistered:
+		return workbenchVocabulary, true
+	case rep.LegacySkill.State == devpack.StateUnchanged: // the old setup was kept
+		return legacyWorkbenchVocabulary, true
+	default:
+		return workbenchVocabulary, false
+	}
+}
+
+// resyncSuggestions names what the owner may want the agent to do next, in
+// voc (toolsKnown false: without a tool name); resync itself never creates
+// targets (the agent proposes, the owner agrees).
+func resyncSuggestions(database *db.DB, p *db.Workbench, docs *workbenchdocs.Report, voc vocabulary, toolsKnown bool) ([]string, error) {
 	out := []string{}
 	if strings.TrimSpace(p.Description) == "" {
-		out = append(out, "The workbench has no description yet: ask Claude Code to run the "+workbenchVocabulary.SkillName+" skill's setup.")
+		out = append(out, "The workbench has no description yet: ask Claude Code to run the "+voc.SkillName+" skill's setup.")
 	}
 	sources, err := database.ListWorkbenchSources(p.ID)
 	if err != nil {
 		return out, fmt.Errorf("listing sources: %w", err)
 	}
 	if len(sources) == 0 {
-		out = append(out, "The workbench has no sources: ask Claude Code to add the Slack channels, Jira projects and Confluence spaces its docs name (add_workbench_source) — search and the session brief then prefer them.")
+		tool := ""
+		if toolsKnown {
+			tool = " (" + voc.SourceTool + ")"
+		}
+		out = append(out, "The workbench has no sources: ask Claude Code to add the Slack channels, Jira projects and Confluence spaces its docs name"+
+			tool+" — search and the session brief then prefer them.")
 	}
 	board, err := database.GetWorkbenchBoard(p.ID)
 	if err != nil {

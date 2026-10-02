@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -160,6 +161,59 @@ func TestIntegrateWorkbenchStatusJSON_ReportsTheCurrentRegistration(t *testing.T
 	got = statusJSON(t, p)
 	assert.True(t, got.MCP && got.CurrentMCP, "%+v", got)
 	assert.False(t, got.Legacy)
+}
+
+// The resync's suggestions name the skill and tools the folder's session
+// actually has: the new ones once the new server is registered, the old ones
+// when a pre-rename folder was left on its old setup, and no tool at all
+// when no server of ours is known to serve the folder.
+func TestWorkbenchResync_SuggestionsMatchTheRegisteredVocabulary(t *testing.T) {
+	sourcesLine := func(t *testing.T, res workbenchResyncJSON) string {
+		t.Helper()
+		for _, s := range res.Suggestions {
+			if strings.Contains(s, "no sources") {
+				return s
+			}
+		}
+		t.Fatalf("no sources suggestion in %q", res.Suggestions)
+		return ""
+	}
+	resync := func(t *testing.T, legacy bool, failAdd bool) workbenchResyncJSON {
+		t.Helper()
+		f := useFakeWorkbenchClaude(t)
+		database := writeActionsConfig(t)
+		folder := resyncFolder(t)
+		pid, err := database.CreateWorkbench("acme", folder)
+		require.NoError(t, err)
+		if legacy {
+			seedLegacyInstall(t, f, folder, pid)
+		}
+		f.failAdd = failAdd
+		out, _, err := runResync(t, strconv.FormatInt(pid, 10), "--json")
+		require.NoError(t, err)
+		return decodeResync(t, out)
+	}
+
+	t.Run("registered", func(t *testing.T) {
+		res := resync(t, true, false)
+		assert.Contains(t, sourcesLine(t, res), "(add_workbench_source)")
+		assert.Contains(t, strings.Join(res.Suggestions, "\n"), "run the watchtower-workbench skill's setup")
+	})
+	t.Run("legacy folder kept on its old setup", func(t *testing.T) {
+		res := resync(t, true, true)
+		require.False(t, res.MCPRegistered)
+		assert.Contains(t, sourcesLine(t, res), "(add_project_source)")
+		joined := strings.Join(res.Suggestions, "\n")
+		assert.Contains(t, joined, "run the watchtower-project skill's setup")
+		assert.NotContains(t, joined, "add_workbench_source")
+	})
+	t.Run("fresh folder without a registration", func(t *testing.T) {
+		res := resync(t, false, true)
+		require.False(t, res.MCPRegistered)
+		line := sourcesLine(t, res)
+		assert.NotContains(t, line, "add_workbench_source")
+		assert.NotContains(t, line, "add_project_source")
+	})
 }
 
 // Without the claude CLI the removal cannot see the registrations, so its
