@@ -31,6 +31,8 @@ A reply may end with a ```watchtower-question JSON block. The Go prompt's `Quest
 - `ChatQuestionParser` reads the block. A malformed block stays plain text, and an open block is hidden while the reply streams.
 - The answers go out as the owner's next message, formatted by `ChatQuestionAnswer.format`. They can be given only on the latest reply, while nothing runs.
 - An answered card reads its selections back from that message, so nothing new is stored.
+- Copy and Quote take the reply as a person reads it (`ChatQuestionParser.readableText`): the prose, then each question and its options as plain lines, never the raw JSON.
+- An answer sent from the main chat (`send(…, keepsComposer: true)`) leaves the composer's own draft, @-mentions and skill alone.
 
 See spec `docs/superpowers/specs/2026-10-02-chat-question-card-design.md`.
 
@@ -38,7 +40,8 @@ See spec `docs/superpowers/specs/2026-10-02-chat-question-card-design.md`.
 
 - A draft-only surface never sends a `toolMode`. Only the target spec uses `.actions("target")`, and only when the provider is not ollama.
 - `postTurn` runs only for a completed turn. A stopped or failed reply is never parsed (no half-streamed directive is ever applied).
-- Owner text is on disk before a turn is sent. If that write fails, nothing is sent and the text goes back to the composer.
+- Owner text is on disk before a turn is sent. If that write fails, nothing is sent and the text goes back to the composer. A `TargetBriefCenter` brief that never starts (that write failed, or the chat was busy) also lands in the target chat's composer, after any owner draft.
+- A completed reply whose final save fails is an `error` turn that can be retried. `postTurn` reports what it already wrote (`ChatPostTurnResult.applied`), and the error text names it ("Already applied: …"). On Retry the target chat tells the model those changes are done and does not apply a matching execute-mode action again (matched by type and card text); its card reads "already applied before the retry".
 - Errors: the error card (`ChatErrorPresentation`) shows a hint by kind (`EmbeddedChatErrorClassifier`) over the provider's own text. The `ai query` v1 `error` line now arrives as `StreamEvent.error`. Chats not yet migrated fold it back into `[Error] …` text (`foldingErrorIntoText`).
 - Stop terminates `ai query`. SIGTERM → `notifyShutdownContext` → SIGINT to the provider child (SIGKILL after 5 s).
 - CHAT-04 (content off argv) still covers only the main chat. Embedded chats keep `ai query` with the prompt on argv, as before.
