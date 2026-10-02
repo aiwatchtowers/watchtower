@@ -23,6 +23,13 @@ final class WorkbenchBranchPresentationTests: XCTestCase {
                        Pres.Label(text: "main", style: .branch), "an unborn branch shows its name, no hash")
     }
 
+    func testCappedCutsLongNamesAtTheTail() {
+        XCTAssertEqual(Pres.capped("main"), "main")
+        let exact = String(repeating: "a", count: Pres.maxButtonNameLength)
+        XCTAssertEqual(Pres.capped(exact), exact)
+        XCTAssertEqual(Pres.capped("feature/very-long-branch-name", limit: 10), "feature/v…")
+    }
+
     func testCounters() {
         XCTAssertNil(Pres.counters(WorkbenchGitStatus(ahead: 0, behind: 0)))
         XCTAssertEqual(Pres.counters(WorkbenchGitStatus(ahead: 2)), "↑2")

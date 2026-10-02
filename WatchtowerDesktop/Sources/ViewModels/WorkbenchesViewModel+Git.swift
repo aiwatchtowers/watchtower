@@ -60,10 +60,13 @@ extension WorkbenchesViewModel {
 
     /// The owner confirmed the pending switch: resend it with exactly the
     /// flags the dialog named. The live-session fact is read again, so an
-    /// agent started since the first try is still asked about.
-    func confirmPendingSwitch(project: Workbench) async {
+    /// agent started since the first try is still asked about. The dialog
+    /// passes the confirmation it showed: dismissing it clears the pending
+    /// one, possibly before this runs.
+    func confirmPendingSwitch(project: Workbench, _ confirmation: BranchSwitchConfirmation? = nil) async {
         guard switchingBranch[project.id] == nil,
-              let pending = pendingBranchConfirmation.removeValue(forKey: project.id) else { return }
+              let pending = confirmation ?? pendingBranchConfirmation[project.id] else { return }
+        pendingBranchConfirmation[project.id] = nil
         await runSwitch(pending.branch, project: project, stash: pending.stash, confirmAgent: pending.confirmAgent)
     }
 

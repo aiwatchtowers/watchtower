@@ -144,6 +144,23 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
         XCTAssertEqual(runner.invocations.count, 1, "nothing left to confirm")
     }
 
+    /// The dialog's dismissal clears the pending switch; the confirmation it
+    /// showed still goes through.
+    func testTheShownConfirmationGoesThroughAfterTheDialogClearedIt() async throws {
+        let runner = ScriptedCLIRunner(results: [
+            .success(switchResult(#""switched":false,"needs_confirmation":["uncommitted_changes"]"#)),
+            .success(switchResult(#""switched":true"#)),
+            .success(status(branch: "feature/x")),
+            .success(branches())
+        ])
+        let vm = makeVM(runner)
+        await vm.switchBranch("feature/x", project: project)
+        let shown = try XCTUnwrap(vm.pendingBranchConfirmation[project.id])
+        vm.cancelPendingSwitch(projectID: project.id)
+        await vm.confirmPendingSwitch(project: project, shown)
+        XCTAssertEqual(runner.invocations[1], switchArgs(["--stash"]))
+    }
+
     func testALiveSessionIsReportedAndItsConfirmationResent() async throws {
         let runner = ScriptedCLIRunner(results: [
             .success(switchResult(#""switched":false,"needs_confirmation":["agent_running"]"#)),

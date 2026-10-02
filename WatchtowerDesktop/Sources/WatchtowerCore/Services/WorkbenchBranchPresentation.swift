@@ -50,6 +50,15 @@ package enum WorkbenchBranchPresentation {
         return Label(text: status.branch, style: .branch)
     }
 
+    /// The longest branch name the header button shows whole.
+    package static let maxButtonNameLength = 32
+
+    /// A long name cut at the tail with `…`, so the button never pushes the
+    /// header's view buttons away.
+    package static func capped(_ name: String, limit: Int = maxButtonNameLength) -> String {
+        name.count <= limit ? name : String(name.prefix(max(limit - 1, 1))) + "…"
+    }
+
     /// `↑2`, `↓1`, `↑2 ↓1`; nil when the branch is level with its upstream
     /// (or has none).
     package static func counters(_ status: WorkbenchGitStatus) -> String? {
