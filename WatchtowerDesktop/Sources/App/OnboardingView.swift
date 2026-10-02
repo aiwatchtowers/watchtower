@@ -9,6 +9,10 @@ struct OnboardingView: View {
     let onRetry: () -> Void
 
     @Environment(AppState.self) private var appState
+    /// The legacy flow's own step machine. Nothing shows this view any more
+    /// (`NavigationRoot` runs `OnboardingV2View`); it stays compiling until
+    /// the old flow is deleted.
+    @State private var legacyOnboarding = OnboardingStateMachine()
     @State private var isRunning = false
     /// runSync is waiting for the DB open before it starts the sync: a
     /// second runSync (chatStep's .task, a double Retry) must not start one too.
@@ -66,7 +70,7 @@ struct OnboardingView: View {
             stepsIndicator
 
             // Current step content
-            switch appState.onboarding.currentStep {
+            switch legacyOnboarding.currentStep {
             case .connect:
                 connectStep
             case .settings:
@@ -97,7 +101,7 @@ struct OnboardingView: View {
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .overlay(alignment: .topTrailing) {
-            if appState.onboarding.currentStep != .complete {
+            if legacyOnboarding.currentStep != .complete {
                 Button(isSkipping ? "Finishing setup…" : "Skip setup") {
                     skipOnboarding()
                 }
@@ -109,13 +113,13 @@ struct OnboardingView: View {
             }
         }
         .safeAreaInset(edge: .bottom) {
-            if appState.onboarding.currentStep <= .claude {
+            if legacyOnboarding.currentStep <= .claude {
                 onboardingStatusBar
             }
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .onAppear {
-            appState.onboarding.skipCompleted()
+            legacyOnboarding.skipCompleted()
         }
     }
 
@@ -123,7 +127,7 @@ struct OnboardingView: View {
 
     private var stepsIndicator: some View {
         let visible = OnboardingStep.indicatorSteps
-        let current = appState.onboarding.currentStep
+        let current = legacyOnboarding.currentStep
         return HStack(spacing: 4) {
             ForEach(visible, id: \.rawValue) { s in
                 HStack(spacing: 4) {
@@ -170,7 +174,7 @@ struct OnboardingView: View {
             hasClaudeCLI = Constants.findCLIPath() != nil
             if hasClaudeCLI && claudeHealthPassed && !isRunning {
                 // Already verified — auto-advance to chat
-                appState.onboarding.goTo(.chat)
+                legacyOnboarding.goTo(.chat)
                 runSync()
             } else if hasClaudeCLI && !claudeHealthPassed && !isRunning && claudeHealthError == nil {
                 runClaudeHealthCheck()
@@ -264,13 +268,13 @@ struct OnboardingView: View {
     private var claudeInstallButtons: some View {
         HStack(spacing: 16) {
             Button("Back to Settings") {
-                appState.onboarding.goTo(.settings)
+                legacyOnboarding.goTo(.settings)
             }
             .buttonStyle(.bordered)
             .controlSize(.large)
 
             Button("Skip for now") {
-                appState.onboarding.goTo(.chat)
+                legacyOnboarding.goTo(.chat)
                 runSync()
             }
             .buttonStyle(.bordered)
@@ -377,14 +381,14 @@ struct OnboardingView: View {
             HStack(spacing: 16) {
                 Button("Back to Settings") {
                     claudeHealthError = nil
-                    appState.onboarding.goTo(.settings)
+                    legacyOnboarding.goTo(.settings)
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.large)
 
                 Button("Skip for now") {
                     claudeHealthError = nil
-                    appState.onboarding.goTo(.chat)
+                    legacyOnboarding.goTo(.chat)
                     runSync()
                 }
                 .buttonStyle(.bordered)
@@ -530,7 +534,7 @@ struct OnboardingView: View {
                 // Slack can be connected later from Settings; runSync()'s
                 // no-token guard handles the unconnected case downstream.
                 Button("Skip for now") {
-                    appState.onboarding.goTo(.settings)
+                    legacyOnboarding.goTo(.settings)
                 }
                 .buttonStyle(.bordered)
 
@@ -821,8 +825,8 @@ struct OnboardingView: View {
                     hasClaudeCLI = true
                     Task { @MainActor in
                         try? await Task.sleep(for: .seconds(1.5))
-                        if appState.onboarding.currentStep == .claude {
-                            appState.onboarding.goTo(.chat)
+                        if legacyOnboarding.currentStep == .claude {
+                            legacyOnboarding.goTo(.chat)
                             runSync()
                         }
                     }
@@ -849,16 +853,16 @@ struct OnboardingView: View {
                 let db = appState.databaseManager
                 onboardingVM = OnboardingChatViewModel(language: language, dbManager: db, gate: appState.embeddedChatCenter.gate)
             }
-            if appState.onboarding.chatFinished {
+            if legacyOnboarding.chatFinished {
                 // Resume fast-path: the interview already finished (e.g. a restart
                 // mid-wait under the old sync-gated flow) — go straight to the team
                 // form instead of re-running the interview. A DB-open failure does
                 // not block navigation: the team form degrades gracefully.
-                appState.onboarding.goTo(.teamForm)
+                legacyOnboarding.goTo(.teamForm)
                 await ensureOnboardingDatabase()
                 return
             }
-            if !isRunning && !appState.onboarding.syncCompleted {
+            if !isRunning && !legacyOnboarding.syncCompleted {
                 runSync()
             }
         }
@@ -897,7 +901,7 @@ struct OnboardingView: View {
         } else if cliError != nil {
             Divider()
             syncFailedCompactBanner
-        } else if syncRanWithSlack && appState.onboarding.syncCompleted {
+        } else if syncRanWithSlack && legacyOnboarding.syncCompleted {
             Divider()
             HStack(spacing: 6) {
                 Image(systemName: "checkmark.circle.fill")
@@ -968,7 +972,7 @@ struct OnboardingView: View {
         VStack(spacing: 16) {
             if let vm = onboardingVM {
                 OnboardingTeamFormView(viewModel: vm) {
-                    appState.onboarding.goTo(.generating)
+                    legacyOnboarding.goTo(.generating)
                     Task {
                         await vm.generatePromptContext()
                         if vm.errorMessage == nil {
@@ -976,12 +980,12 @@ struct OnboardingView: View {
                             // is next; it (not this closure) now runs the
                             // completion sequence on its own exit. See
                             // finishOnboarding() below.
-                            appState.onboarding.goTo(.features)
-                        } else if appState.onboarding.currentStep == .generating {
+                            legacyOnboarding.goTo(.features)
+                        } else if legacyOnboarding.currentStep == .generating {
                             // Only bounce back while still on the generating step —
                             // a late-failing generation must not yank a user who
                             // already skipped setup back into onboarding.
-                            appState.onboarding.goTo(.teamForm)
+                            legacyOnboarding.goTo(.teamForm)
                         }
                     }
                 }
@@ -1001,7 +1005,7 @@ struct OnboardingView: View {
                 onboardingVM = OnboardingChatViewModel(language: language, dbManager: db, gate: appState.embeddedChatCenter.gate)
             } else {
                 // DB not available — need sync first, go back to chat
-                appState.onboarding.goTo(.chat)
+                legacyOnboarding.goTo(.chat)
             }
         }
     }
@@ -1047,7 +1051,7 @@ struct OnboardingView: View {
                     onboardingVM = OnboardingChatViewModel(language: language, dbManager: db, gate: appState.embeddedChatCenter.gate)
                 } else {
                     // DB not available — need sync first, go back to chat
-                    appState.onboarding.goTo(.chat)
+                    legacyOnboarding.goTo(.chat)
                 }
             }
     }
@@ -1182,8 +1186,8 @@ struct OnboardingView: View {
                 if result.exitCode == 0 {
                     // Guard against a late OAuth completion clobbering a step
                     // the user (or persisted completion) has already moved past.
-                    if appState.onboarding.currentStep == .connect {
-                        appState.onboarding.goTo(.settings)
+                    if legacyOnboarding.currentStep == .connect {
+                        legacyOnboarding.goTo(.settings)
                     }
                 } else {
                     cliError = result.stderr.isEmpty
@@ -1231,8 +1235,8 @@ struct OnboardingView: View {
                 isRunning = false
                 // Guard against a late settings save clobbering a step the
                 // user has already moved past (e.g. after skipping setup).
-                if appState.onboarding.currentStep == .settings {
-                    appState.onboarding.goTo(.claude)
+                if legacyOnboarding.currentStep == .settings {
+                    legacyOnboarding.goTo(.claude)
                 }
             }
         }
@@ -1307,11 +1311,11 @@ struct OnboardingView: View {
     /// Shared chat → team-form transition, used by both the normal interview
     /// completion and the "Skip interview" escape hatch.
     private func advanceToTeamForm() {
-        appState.onboarding.chatFinished = true
+        legacyOnboarding.chatFinished = true
         // Continue even if the DB open fails — the team form degrades
         // gracefully with no users and teamFormStep has its own DB fallback;
         // the users appear once the open (shown in the status strip) lands.
-        appState.onboarding.goTo(.teamForm)
+        legacyOnboarding.goTo(.teamForm)
         Task { await ensureOnboardingDatabase() }
     }
 
@@ -1343,7 +1347,7 @@ struct OnboardingView: View {
         // old check made a freshly connected account look disconnected and
         // never synced (audit fn #6).
         guard hasConnectedSlackAccount() else {
-            appState.onboarding.syncCompleted = true
+            legacyOnboarding.syncCompleted = true
             return
         }
         syncRanWithSlack = true
@@ -1409,7 +1413,7 @@ struct OnboardingView: View {
                 // Open DB and pass to onboarding ViewModel (loads users for the team form).
                 // Sync completion is informational only — it never drives navigation.
                 await ensureOnboardingDatabase()
-                appState.onboarding.syncCompleted = true
+                legacyOnboarding.syncCompleted = true
             } else {
                 cliError = stderrText.isEmpty
                     ? "Sync failed (exit code \(exitCode))"

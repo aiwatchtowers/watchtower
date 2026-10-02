@@ -4,7 +4,7 @@ import WatchtowerCore
 /// The Settings window's tabs. `AppState.settingsTab` holds the selection so
 /// an in-app link can open Settings on a given tab.
 enum SettingsTab: Hashable {
-    case connections, features, meetings, system, profile
+    case general, connections, features, meetings, system, profile
 }
 
 struct SettingsView: View {
@@ -14,6 +14,9 @@ struct SettingsView: View {
     var body: some View {
         @Bindable var appState = appState
         TabView(selection: $appState.settingsTab) {
+            GeneralSettings(config: config)
+                .tabItem { Label("General", systemImage: "gearshape") }
+                .tag(SettingsTab.general)
             ConnectionsSettings(config: config)
                 .environment(appState)
                 .tabItem { Label("Connections", systemImage: "link") }

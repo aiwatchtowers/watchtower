@@ -10,6 +10,9 @@ import WhisperKit
 /// `@unchecked Sendable`: WhisperKit itself is not Sendable, but `WindowedTranscriber`
 /// awaits every engine call sequentially, so the instance is never used concurrently.
 final class WhisperKitEngine: WhisperWindowEngine, @unchecked Sendable {
+    /// Every language code Whisper's detector can answer with.
+    static let languageCodes: Set<String> = Constants.languageCodes
+
     private let whisperKit: WhisperKit
 
     private init(whisperKit: WhisperKit) {

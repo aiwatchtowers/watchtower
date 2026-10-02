@@ -18,7 +18,7 @@ struct AddSlackAccountView: View {
 
     /// `.deferred` from onboarding: the connect must not restart the daemon
     /// mid-setup (`DaemonRestartPolicy`). Settings keeps the default.
-    private let daemonPolicy: DaemonRestartPolicy
+    let daemonPolicy: DaemonRestartPolicy
 
     init(daemonPolicy: DaemonRestartPolicy = .restart) {
         self.daemonPolicy = daemonPolicy

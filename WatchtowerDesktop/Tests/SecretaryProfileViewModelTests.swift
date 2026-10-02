@@ -106,7 +106,7 @@ final class SecretaryProfileViewModelTests: XCTestCase {
 
     func testAppStateOwnsVMIdentityAcrossAccesses() throws {
         // Navigation must not recreate the VM (async ops survive navigation).
-        let appState = AppState()
+        let appState = AppState.isolated()
         appState.initSecretaryProfile(dbManager: dbManager)
         let first = appState.secretaryProfileViewModel
         let second = appState.secretaryProfileViewModel
