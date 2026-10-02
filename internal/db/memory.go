@@ -1325,20 +1325,39 @@ type CalendarExtractEvent struct {
 
 // ListCalendarEventsForExtract returns ENDED calendar events (end_time before
 // now) whose end_time unix is above (sinceTS - lookbackDays), oldest end-time
-// first, capped at limit — the raw input the mechanical calendar builder folds
-// into episodes. sinceTS is memory_calendar_last_extracted_ts; the bounded
-// lookback re-scan overlap (resolved ambiguity #3) means a recap or event-edit
-// landing after the watermark passed a still-present event refreshes its episode
-// via the calevent: alias, while the content-equality check keeps an unchanged
-// re-scan a no-op. calendar_events is a migration-guaranteed base table, so a
-// query failure propagates (freezing the calendar watermark) rather than being
-// masked as an empty read.
+// first — the raw input the mechanical calendar builder folds into episodes.
+// sinceTS is memory_calendar_last_extracted_ts; the bounded lookback re-scan
+// overlap (resolved ambiguity #3) means a recap or event-edit landing after the
+// watermark passed a still-present event refreshes its episode via the
+// calevent: alias, while the content-equality check keeps an unchanged re-scan
+// a no-op. The lookback slice (end in (sinceTS - lookback, sinceTS]) and the
+// new slice (end above sinceTS) are each capped at limit separately, so a
+// lookback holding limit or more already-built events can never crowd out the
+// new ones and wedge the watermark. calendar_events is a migration-guaranteed
+// base table, so a query failure propagates (freezing the calendar watermark)
+// rather than being masked as an empty read.
 func (db *DB) ListCalendarEventsForExtract(sinceTS float64, lookbackDays, limit int) ([]CalendarExtractEvent, error) {
 	if limit <= 0 {
 		limit = 2000
 	}
 	nowUnix := time.Now().Unix()
-	floorUnix := int64(sinceTS) - int64(lookbackDays)*86400
+	wmUnix := int64(sinceTS)
+	floorUnix := wmUnix - int64(lookbackDays)*86400
+	lookback, err := db.listEndedCalendarEvents(floorUnix, wmUnix+1, limit)
+	if err != nil {
+		return nil, err
+	}
+	fresh, err := db.listEndedCalendarEvents(wmUnix, nowUnix, limit)
+	if err != nil {
+		return nil, err
+	}
+	return append(lookback, fresh...), nil
+}
+
+// listEndedCalendarEvents returns events whose end_time unix is in
+// (afterUnix, beforeUnix), oldest end-time first, capped at limit. Callers pass
+// beforeUnix <= now, so only ended events come back.
+func (db *DB) listEndedCalendarEvents(afterUnix, beforeUnix int64, limit int) ([]CalendarExtractEvent, error) {
 	rows, err := db.Query(`
 		SELECT id, title, description, location, organizer_email, attendees,
 		       CAST(strftime('%s', start_time) AS INTEGER),
@@ -1349,7 +1368,7 @@ func (db *DB) ListCalendarEventsForExtract(sinceTS float64, lookbackDays, limit 
 		  AND CAST(strftime('%s', end_time) AS INTEGER) < ?
 		  AND CAST(strftime('%s', end_time) AS INTEGER) > ?
 		ORDER BY CAST(strftime('%s', end_time) AS INTEGER), id
-		LIMIT ?`, nowUnix, floorUnix, limit)
+		LIMIT ?`, beforeUnix, afterUnix, limit)
 	if err != nil {
 		return nil, fmt.Errorf("listing calendar events for extract: %w", err)
 	}
