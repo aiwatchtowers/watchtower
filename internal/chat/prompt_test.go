@@ -81,6 +81,7 @@ func TestBuildSystemPrompt_SectionsAndOrder(t *testing.T) {
 		"=== WORKFLOW ===",
 		"=== AGENT ACTIONS ===",
 		"=== ARTIFACTS ===",
+		"=== QUESTIONS ===",
 		"=== SKILLS ===",
 		"=== MEMORY",
 		"=== WATCHTOWER APP",
@@ -310,6 +311,16 @@ func TestActionsContract(t *testing.T) {
 	assert.Contains(t, target, "create_jira_issue")
 	assert.NotContains(t, target, "create_target —", "the target chat may not create other targets")
 	assert.Equal(t, "", ActionsContract("meeting"), "a draft-only surface has no actions contract (AGENT-04)")
+}
+
+func TestQuestionsContract(t *testing.T) {
+	c := QuestionsContract()
+	assert.True(t, strings.HasPrefix(c, "=== QUESTIONS ===\n"))
+	assert.Contains(t, c, "```watchtower-question")
+	assert.Contains(t, c, "1 to 4 questions; each with 2 to 4 options")
+	assert.Contains(t, c, "always offers a free answer")
+	assert.Contains(t, c, "genuinely ambiguous", "the card is for real ambiguity, not every turn")
+	assert.Contains(t, c, "Answers:")
 }
 
 func TestArtifactsContract(t *testing.T) {

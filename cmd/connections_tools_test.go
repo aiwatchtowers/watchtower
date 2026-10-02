@@ -153,20 +153,22 @@ func TestQC02_ListingUsesTheOAuthBearer(t *testing.T) {
 }
 
 // TestQC02_OwnerAllowListOverridesDefault: the owner's explicit list is
-// allowed as given — write tools included — even before any listing.
+// allowed as given for tools the server does not mark as writes — but only
+// once the tools are listed (a never-listed connection is listed first).
 func TestQC02_OwnerAllowListOverridesDefault(t *testing.T) {
 	cfg := writeConnectionsConfig(t)
 	database, err := db.Open(cfg.DBPath())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = database.Close() })
 	id := insertStaticConnection(t, database, cfg)
-	calls := stubToolsList(t, nil, errors.New("must not be called"))
+	calls := stubToolsList(t, []db.ExternalTool{{Name: "getIssue"}, {Name: "createIssue"}}, nil)
 	require.NoError(t, database.SetExternalConnectionAllowTools(id, []string{"createIssue"}))
 
 	servers := loadExternalMCPServers(cfg, cfg.DBPath())
 	require.Len(t, servers, 1)
 	assert.Equal(t, []string{"createIssue"}, servers[0].AllowTools)
-	assert.Empty(t, *calls, "an explicit list needs no listing")
+	assert.Equal(t, []string{"getIssue"}, servers[0].DenyTools)
+	assert.Len(t, *calls, 1, "an explicit list still needs a listing to rule out writes")
 }
 
 func TestConnectionsTools_CommandFlow(t *testing.T) {
@@ -213,12 +215,42 @@ func TestConnectionsTools_CommandFlow(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, conn.AllowTools, "a rejected --allow changes nothing")
 
-	_, stderr, err := runConnectionsSplit(t, "", "tools", idArg, "--allow", " getIssue , nope")
-	require.NoError(t, err)
-	assert.Contains(t, stderr, `"nope" is not in the server's last tool list`)
+	_, err = runConnections(t, "", "tools", idArg, "--allow", " getIssue , nope")
+	require.ErrorContains(t, err, `"nope" is not in the server's last tool list`,
+		"an unlisted name could be a write the listing never saw")
 	conn, err = database.GetExternalConnection(id)
 	require.NoError(t, err)
-	assert.Equal(t, []string{"getIssue", "nope"}, conn.AllowTools, "names are trimmed")
+	assert.Nil(t, conn.AllowTools)
+
+	_, err = runConnections(t, "", "tools", idArg, "--allow", " getIssue ")
+	require.NoError(t, err)
+	conn, err = database.GetExternalConnection(id)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"getIssue"}, conn.AllowTools, "names are trimmed")
+}
+
+// TestQC02_EnableWithAFailedRelistingKeepsTheLastListing: re-enabling a
+// connection whose earlier listing succeeded but whose new one fails mounts
+// from the last good listing (the same cache a chat launch uses), never from
+// names the listing lacks.
+func TestQC02_EnableWithAFailedRelistingKeepsTheLastListing(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	id := insertStaticConnection(t, database, cfg)
+	require.NoError(t, database.SetExternalConnectionTools(id,
+		[]db.ExternalTool{{Name: "getIssue"}, {Name: "createIssue"}}, time.Now().UTC().Format(time.RFC3339)))
+	require.NoError(t, database.SetExternalConnectionEnabled(id, false))
+	stubToolsList(t, nil, errors.New("connection refused"))
+
+	stdout, stderr, err := runConnectionsSplit(t, "", "enable", strconv.FormatInt(id, 10))
+	require.NoError(t, err)
+	assert.Contains(t, stderr, "still applies")
+	assert.Contains(t, stdout, "1 of 2 tools available")
+	conn, err := database.GetExternalConnection(id)
+	require.NoError(t, err)
+	assert.Equal(t, "ok", conn.Status)
 }
 
 func TestConnectionsEnable_ListsToolsAndReportsFailure(t *testing.T) {
@@ -337,4 +369,65 @@ func TestMarkConnectionOK_KeepsANewerStatus(t *testing.T) {
 	conn, err = database.GetExternalConnection(id)
 	require.NoError(t, err)
 	assert.Equal(t, "ok", conn.Status, "with a current snapshot it flips")
+}
+
+// TestQC02_AllowNeverAdmitsAnAnnotatedWrite: QC-02 stays read-only — `--allow`
+// refuses a tool the server marks as a write, and an allow list set before
+// the listing still leaves such a tool out of the chat.
+func TestQC02_AllowNeverAdmitsAnAnnotatedWrite(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	id := insertStaticConnection(t, database, cfg)
+	idArg := strconv.FormatInt(id, 10)
+	tools := []db.ExternalTool{
+		{Name: "getIssue", Annotated: true, ReadOnlyHint: true},
+		{Name: "createIssue", Annotated: true},
+		{Name: "summarize"},
+	}
+
+	// Allow list set while the tools were never listed: unchecked for now,
+	// and the connection is not mounted until a listing rules on it.
+	_, err = runConnections(t, "", "tools", idArg, "--allow", "createIssue,summarize")
+	require.NoError(t, err)
+	stubToolsList(t, nil, errors.New("connection refused"))
+	require.Empty(t, loadExternalMCPServers(cfg, cfg.DBPath()))
+	_, err = database.Exec(`UPDATE external_connection_tools SET list_failed_at = '' WHERE connection_id = ?`, id)
+	require.NoError(t, err)
+	stubToolsList(t, tools, nil)
+	servers := loadExternalMCPServers(cfg, cfg.DBPath())
+	require.Len(t, servers, 1)
+	assert.Equal(t, []string{"summarize"}, servers[0].AllowTools, "the annotated write stays out")
+	assert.Contains(t, servers[0].DenyTools, "createIssue")
+
+	// Now listed: naming the write is refused outright, and nothing changes.
+	_, err = runConnections(t, "", "tools", idArg, "--allow", "getIssue,createIssue")
+	require.ErrorContains(t, err, `"createIssue" is a write tool`)
+	conn, err := database.GetExternalConnection(id)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"createIssue", "summarize"}, conn.AllowTools)
+}
+
+// TestQC02_AllowRefusesADestructiveTool: owner decision 2026-10-02 — a tool
+// the server marks destructiveHint: true is a write even beside readOnlyHint,
+// and no --allow unlocks it.
+func TestQC02_AllowRefusesADestructiveTool(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	id := insertStaticConnection(t, database, cfg)
+	require.NoError(t, database.SetExternalConnectionTools(id, []db.ExternalTool{
+		{Name: "getIssue", Annotated: true, ReadOnlyHint: true},
+		{Name: "purgeCache", Annotated: true, ReadOnlyHint: true, DestructiveHint: true},
+	}, time.Now().UTC().Format(time.RFC3339)))
+
+	_, err = runConnections(t, "", "tools", strconv.FormatInt(id, 10), "--allow", "getIssue,purgeCache")
+	require.ErrorContains(t, err, `"purgeCache" is a write tool`)
+
+	servers := loadExternalMCPServers(cfg, cfg.DBPath())
+	require.Len(t, servers, 1)
+	assert.Equal(t, []string{"getIssue"}, servers[0].AllowTools)
+	assert.Equal(t, []string{"purgeCache"}, servers[0].DenyTools)
 }

@@ -1013,7 +1013,7 @@ final class TargetChatViewModel {
         - Be concise and direct
         - Match the user's language
         - Use markdown for readability
-        """ + skillsSuffix
+        """ + skillsSuffix + "\n\n" + ChatQuestionsContract.promptBlock
     }
 }
 

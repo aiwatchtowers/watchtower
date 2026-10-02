@@ -209,10 +209,11 @@ func mountConnection(cfg *config.Config, database *db.DB, c db.ExternalConnectio
 	if !ok {
 		return server, false
 	}
-	if !c.ToolsListed && c.AllowTools == nil {
+	if !c.ToolsListed {
 		// Never listed (added before QC-02's allowlist, or the listing at
 		// enable time failed): list once now and cache it. No list mounts
-		// nothing from this server — fail closed.
+		// nothing from this server — fail closed, an owner allow list
+		// included, since only a listing shows which tools are writes.
 		if recentlyFailed(c.ToolsListFailedAt) {
 			return server, connectionUnmounted(database, c, fmt.Sprintf(
 				"listing its tools failed at %s; none is available to the chat until a listing succeeds (retried after an hour, or now with `watchtower connections tools %d --refresh`)",
