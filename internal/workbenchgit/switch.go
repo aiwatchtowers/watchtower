@@ -27,12 +27,16 @@ const (
 	RefusedOperationInProgress = "operation_in_progress"
 	RefusedInvalidName         = "invalid_name"
 	RefusedExists              = "exists"
+	RefusedGitFailed           = "git_failed"
 )
 
 // restoreBudget bounds what runs after a git write even when the caller's
 // context is already done: finding the stash, reading HEAD after a failed
 // switch and putting the stash back.
 const restoreBudget = 10 * time.Second
+
+// statusAfterBudget bounds the status read after a git write.
+const statusAfterBudget = 5 * time.Second
 
 // SwitchRequest is one `workbench git switch`. Stash and ConfirmAgent are
 // the owner's confirmations; AgentRunning is the Desktop's fact that a
@@ -88,10 +92,6 @@ func Switch(ctx context.Context, o Options, req SwitchRequest) (res SwitchResult
 	if !ok {
 		return res
 	}
-	if !st.StatusOK {
-		res.Error = st.StatusError
-		return res
-	}
 	branches, err := r.branches(ctx, st.TopLevel)
 	if err != nil {
 		res.Error = gitError(err)
@@ -125,7 +125,7 @@ func Switch(ctx context.Context, o Options, req SwitchRequest) (res SwitchResult
 		return res
 	}
 	// From here on git may write: the envelope carries the status after.
-	defer func() { res.Status = ReadStatus(ctx, o) }()
+	defer func() { res.Status = statusAfter(ctx, o) }()
 	if st.Dirty {
 		if !res.stash(ctx, r, st) {
 			return res
@@ -155,15 +155,19 @@ func Create(ctx context.Context, o Options, name string) (res SwitchResult) {
 	if !ok {
 		return res
 	}
-	if name == "" || strings.HasPrefix(name, "-") {
-		res.Refused, res.RefusedDetail = RefusedInvalidName, "a branch name may not be empty or start with -"
+	// The rules `check-ref-format --branch` adds to a ref's. --branch
+	// exits 128 on a bad name, the code of git failing, so the plain ref
+	// check runs instead: exit 1 is an invalid name, anything else an error.
+	if name == "" || name == "HEAD" || strings.HasPrefix(name, "-") {
+		res.Refused, res.RefusedDetail = RefusedInvalidName, "a branch name may not be empty, HEAD or start with -"
 		return res
 	}
-	// --branch also expands @{-N}: a name that comes back changed is not a
-	// plain name.
-	out, err := r.git(ctx, "check-ref-format", "--branch", name)
-	if err != nil || strings.TrimSpace(string(out)) != name {
+	switch _, code, err := r.run(ctx, "check-ref-format", "refs/heads/"+name); {
+	case code == 1:
 		res.Refused, res.RefusedDetail = RefusedInvalidName, name+" is not a valid branch name"
+		return res
+	case err != nil:
+		res.Error = gitError(err)
 		return res
 	}
 	branches, err := r.branches(ctx, st.TopLevel)
@@ -176,7 +180,7 @@ func Create(ctx context.Context, o Options, name string) (res SwitchResult) {
 		return res
 	}
 	// From here on git may write: the envelope carries the status after.
-	defer func() { res.Status = ReadStatus(ctx, o) }()
+	defer func() { res.Status = statusAfter(ctx, o) }()
 	if _, err := r.git(ctx, "switch", "-c", name); err != nil {
 		if !r.headIs(ctx, name) {
 			res.Error = gitError(err)
@@ -188,8 +192,8 @@ func Create(ctx context.Context, o Options, name string) (res SwitchResult) {
 	return res
 }
 
-// start refuses a folder without git or outside a work tree and opens the
-// repository otherwise.
+// start refuses a folder without git, outside a repository or whose status
+// could not be read, and opens the repository otherwise.
 func (res *SwitchResult) start(o Options, st Status) (*repo, bool) {
 	switch {
 	case !st.GitAvailable:
@@ -197,6 +201,9 @@ func (res *SwitchResult) start(o Options, st Status) (*repo, bool) {
 		return nil, false
 	case !st.Git:
 		res.Refused, res.RefusedDetail = RefusedNotGit, st.Note
+		return nil, false
+	case !st.StatusOK:
+		res.Refused, res.RefusedDetail = RefusedGitFailed, st.StatusError
 		return nil, false
 	}
 	r, err := open(o)
@@ -219,6 +226,14 @@ func findBranch(branches []Branch, name string) (Branch, bool) {
 		}
 	}
 	return Branch{}, false
+}
+
+// statusAfter reads the status once git may have written, on its own
+// budget even when the caller's context is already done.
+func statusAfter(ctx context.Context, o Options) Status {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), statusAfterBudget)
+	defer cancel()
+	return ReadStatus(ctx, o)
 }
 
 // headIs reports whether HEAD is now the local branch name: a switch that

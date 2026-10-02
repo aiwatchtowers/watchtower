@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -53,14 +54,21 @@ type Status struct {
 // folder without git says so in Git/Note, a failed status in StatusOK.
 func ReadStatus(ctx context.Context, o Options) Status {
 	var st Status
-	r, p, available, note := probe(ctx, o)
+	r, p, available, note, err := probe(ctx, o)
 	st.GitAvailable, st.Note = available, note
 	if r == nil {
 		return st
 	}
 	st.Git = true
+	if err != nil {
+		st.StatusError = gitError(err)
+		return st
+	}
 	st.TopLevel, st.GitDir, st.CommonDir = p.topLevel, p.gitDir, p.commonDir
-	st.Operation = operationIn(p.gitDir)
+	if st.Operation, err = operationIn(p.gitDir); err != nil {
+		st.StatusError = clip("checking for an operation in progress: " + err.Error())
+		return st
+	}
 	out, err := r.git(ctx, "status", "--porcelain=v2", "--branch", "-z", "--untracked-files=normal")
 	if err != nil {
 		st.StatusError = gitError(err)
@@ -78,17 +86,15 @@ func ReadStatus(ctx context.Context, o Options) Status {
 }
 
 // probe opens the folder's repository and reads its paths. A nil repo
-// means no further git call may run; note says why.
-func probe(ctx context.Context, o Options) (r *repo, p paths, available bool, note string) {
-	r, err := open(o)
+// means no git call may run; note says why. With a repo, err is git
+// failing to read the paths: the folder is in a repository all the same.
+func probe(ctx context.Context, o Options) (r *repo, p paths, available bool, note string, err error) {
+	r, err = open(o)
 	if err != nil {
-		return nil, paths{}, !errors.Is(err, gitbin.ErrUnavailable), err.Error()
+		return nil, paths{}, !errors.Is(err, gitbin.ErrUnavailable), err.Error(), nil
 	}
 	p, err = r.locatePaths(ctx)
-	if err != nil {
-		return nil, paths{}, true, errNotRepository.Error() + ": " + gitError(err)
-	}
-	return r, p, true, ""
+	return r, p, true, "", err
 }
 
 // operations maps a marker in the git dir to the operation it means,
@@ -102,24 +108,33 @@ var operations = []struct{ marker, name string }{
 	{"BISECT_LOG", "bisect"},
 }
 
-func operationIn(gitDir string) string {
+// operationIn is the operation whose marker is in gitDir, "" for none; a
+// marker that cannot be checked is an error, not "none".
+func operationIn(gitDir string) (string, error) {
 	for _, op := range operations {
-		if _, err := os.Lstat(filepath.Join(gitDir, op.marker)); err == nil {
-			return op.name
+		_, err := os.Lstat(filepath.Join(gitDir, op.marker))
+		switch {
+		case err == nil:
+			return op.name, nil
+		case !errors.Is(err, fs.ErrNotExist):
+			return "", err
 		}
 	}
-	return ""
+	return "", nil
 }
 
-// ParseStatus reads `git status --porcelain=v2 --branch -z` output.
+// ParseStatus reads `git status --porcelain=v2 --branch -z` output; the
+// `# branch.oid` header is required.
 func ParseStatus(porcelainV2Z []byte) (StatusFields, error) {
 	var f StatusFields
+	haveOID := false
 	entries := bytes.Split(porcelainV2Z, []byte{0})
 	for i := 0; i < len(entries); i++ {
 		e := string(entries[i])
 		switch {
 		case e == "":
 		case strings.HasPrefix(e, "# "):
+			haveOID = haveOID || strings.HasPrefix(e, "# branch.oid ")
 			if err := f.header(strings.TrimPrefix(e, "# ")); err != nil {
 				return StatusFields{}, err
 			}
@@ -139,6 +154,9 @@ func ParseStatus(porcelainV2Z []byte) (StatusFields, error) {
 		default:
 			return StatusFields{}, fmt.Errorf("git status: unexpected entry %q", e)
 		}
+	}
+	if !haveOID {
+		return StatusFields{}, errors.New("git status: no branch.oid header")
 	}
 	return f, nil
 }

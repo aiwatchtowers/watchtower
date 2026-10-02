@@ -238,6 +238,10 @@ func printGitStatus(w io.Writer, st workbenchgit.Status) {
 	if !st.Git {
 		return
 	}
+	if !st.StatusOK { // the fields below would read as a clean worktree
+		fmt.Fprintf(w, "status error: %s\n", st.StatusError)
+		return
+	}
 	branch := st.Branch
 	if st.Detached {
 		branch = "(detached at " + st.Head + ")"
@@ -249,9 +253,6 @@ func printGitStatus(w io.Writer, st workbenchgit.Status) {
 	fmt.Fprintf(w, "changes: %d\n", st.Changes)
 	if st.Operation != "" {
 		fmt.Fprintf(w, "operation: %s\n", st.Operation)
-	}
-	if st.StatusError != "" {
-		fmt.Fprintf(w, "status error: %s\n", st.StatusError)
 	}
 	fmt.Fprintf(w, "folder: %s\n", st.TopLevel)
 }

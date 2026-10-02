@@ -410,3 +410,44 @@ func TestProj10_SwitchNeverOverwritesAnIgnoredFile(t *testing.T) {
 	assert.Equal(t, "SECRET=owner\n", readFile(t, dir, ".env"), "the owner's file is untouched")
 	assert.Equal(t, "refs/heads/main", gitIn(t, dir, "symbolic-ref", "HEAD"))
 }
+
+func TestProj10_GitFailureIsRefusedAsGitFailed(t *testing.T) {
+	dir := newRepo(t)
+	rec := &recorder{}
+	o := options(filepath.Join(dir, ".git"), rec)
+	res := Switch(context.Background(), o, SwitchRequest{Branch: "feature", Stash: true, ConfirmAgent: true})
+	assert.Equal(t, RefusedGitFailed, res.Refused)
+	assert.Contains(t, res.RefusedDetail, "work tree")
+	res = Create(context.Background(), o, "topic")
+	assert.Equal(t, RefusedGitFailed, res.Refused)
+	assertNoWrites(t, rec)
+}
+
+func TestProj10_CanceledSwitchStillReadsTheStatusAfter(t *testing.T) {
+	dir := newRepo(t)
+	dirty(t, dir)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rec := &recorder{}
+	rec.before = func(args []string) {
+		if len(args) > 0 && args[0] == "switch" {
+			cancel()
+		}
+	}
+	res := Switch(ctx, options(dir, rec), SwitchRequest{Branch: "feature", Stash: true})
+	assert.False(t, res.Switched)
+	assert.Equal(t, "git switch was canceled", res.Error)
+	assert.True(t, res.StashRestored, res.StashError)
+	assert.True(t, res.Status.StatusOK, "the status after is read on its own budget: %s", res.Status.StatusError)
+	assert.True(t, res.Status.Dirty)
+}
+
+func TestProj10_CheckRefFormatFailureIsNotAnInvalidName(t *testing.T) {
+	dir := newRepo(t)
+	rec := &recorder{fail: "check-ref-format"}
+	res := Create(context.Background(), options(dir, rec), "topic")
+	assert.Empty(t, res.Refused)
+	assert.False(t, res.Created)
+	assert.Contains(t, res.Error, "simulated check-ref-format failure")
+	assertNoWrites(t, rec)
+}

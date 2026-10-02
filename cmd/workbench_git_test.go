@@ -7,12 +7,14 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/gitbin"
+	"watchtower/internal/workbenchgit"
 )
 
 // gitBranchRepo is a repository on main with a second branch "feature",
@@ -84,8 +86,8 @@ var (
 	gitStatusKeys = sorted("workbench_id", "git_available", "git", "note", "branch", "detached", "unborn", "head",
 		"upstream", "ahead", "behind", "dirty", "changes", "operation", "top_level", "git_dir", "common_dir",
 		"status_ok", "status_error")
-	gitBranchesKeys = sorted("workbench_id", "git_available", "git", "current", "branches", "branches_ok", "branches_error")
-	gitBranchKeys   = sorted("name", "current", "head", "committed_at", "upstream", "ahead", "behind", "worktree", "worktree_name")
+	gitBranchesKeys = sorted("workbench_id", "git_available", "git", "note", "current", "branches", "branches_ok", "branches_error")
+	gitBranchKeys   = sorted("name", "current", "head", "committed_at", "upstream", "upstream_gone", "ahead", "behind", "worktree", "worktree_name")
 	gitSwitchKeys   = sorted("workbench_id", "branch", "switched", "already", "created", "needs_confirmation", "changes",
 		"refused", "refused_detail", "stashed", "stash_message", "stash_restored", "stash_error", "error", "warning", "status")
 )
@@ -191,4 +193,10 @@ func TestWorkbenchGit_EverySubcommandTakesWorkbenchAndJSON(t *testing.T) {
 		assert.NotNil(t, workbenchGitSwitchCmd.Flags().Lookup(f), f)
 	}
 	assert.NotNil(t, workbenchGitCreateCmd.Flags().Lookup("name"))
+}
+
+func TestWorkbenchGit_TextStatusLeadsWithTheError(t *testing.T) {
+	var b strings.Builder
+	printGitStatus(&b, workbenchgit.Status{GitAvailable: true, Git: true, StatusError: "git status timed out"})
+	assert.Equal(t, "git: true\nstatus error: git status timed out\n", b.String(), "no clean-looking fields after a failed status")
 }

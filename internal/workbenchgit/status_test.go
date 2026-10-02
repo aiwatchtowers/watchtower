@@ -2,10 +2,12 @@ package workbenchgit
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -60,6 +62,8 @@ func TestParseStatus_Malformed(t *testing.T) {
 		porcelain("# branch.ab two -1"),
 		[]byte("2 R. N... 100644 100644 100644 " + oid + " " + oid + " R100 new"),
 		porcelain("X what"),
+		porcelain("# branch.head main"),
+		nil,
 	} {
 		_, err := ParseStatus(in)
 		assert.Error(t, err, "%q", in)
@@ -149,6 +153,7 @@ func TestReadStatus_GitUnavailableRunsNothing(t *testing.T) {
 	assert.Contains(t, st.Note, "not available")
 	l := ListBranches(context.Background(), o)
 	assert.False(t, l.GitAvailable)
+	assert.Contains(t, l.Note, "not available")
 	assert.Empty(t, rec.argv(), "no git process without a located git")
 }
 
@@ -161,7 +166,8 @@ func TestReadStatus_RunsTheLocatedBinary(t *testing.T) {
 			return nil, 1, os.ErrNotExist
 		}}
 	st := ReadStatus(context.Background(), o)
-	assert.False(t, st.Git)
+	assert.True(t, st.Git, "a failed git call inside a repository is not 'not git'")
+	assert.False(t, st.StatusOK)
 	assert.Equal(t, []string{"/opt/acme/bin/git"}, names)
 }
 
@@ -174,4 +180,59 @@ func TestReadStatus_Operation(t *testing.T) {
 	st := ReadStatus(context.Background(), options(dir, rec))
 	assert.Equal(t, "merge", st.Operation)
 	assert.Equal(t, 1, st.Unmerged)
+}
+
+// Inside a repository a failing git is a failure, never "not git": the
+// .git directory itself has no work tree, so rev-parse fails there.
+func TestReadStatus_GitFailureInsideARepository(t *testing.T) {
+	dir := newRepo(t)
+	gitDir := filepath.Join(dir, ".git")
+	st := ReadStatus(context.Background(), options(gitDir, &recorder{}))
+	assert.True(t, st.GitAvailable)
+	assert.True(t, st.Git)
+	assert.Empty(t, st.Note)
+	assert.False(t, st.StatusOK)
+	assert.Contains(t, st.StatusError, "work tree")
+
+	l := ListBranches(context.Background(), options(gitDir, &recorder{}))
+	assert.True(t, l.Git)
+	assert.False(t, l.BranchesOK)
+	assert.Contains(t, l.BranchesError, "work tree")
+	assert.NotNil(t, l.Branches)
+}
+
+func TestReadStatus_TimeoutReadsAsATimeout(t *testing.T) {
+	dir := newRepo(t)
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	st := ReadStatus(ctx, options(dir, &recorder{}))
+	assert.True(t, st.Git)
+	assert.False(t, st.StatusOK)
+	assert.Equal(t, "git rev-parse timed out", st.StatusError)
+}
+
+func TestRunError_Message(t *testing.T) {
+	cases := []struct {
+		e    runError
+		want string
+	}{
+		{runError{args: []string{"status", "-z"}, err: errors.New("exit status 128"), stderr: "fatal: no"}, "git status -z: exit status 128: fatal: no"},
+		{runError{args: []string{"status", "-z"}, err: errors.New("exit status 1")}, "git status -z: exit status 1"},
+		{runError{args: []string{"status", "-z"}, err: context.DeadlineExceeded}, "git status timed out"},
+		{runError{args: []string{"switch", "x"}, err: context.Canceled}, "git switch was canceled"},
+	}
+	for _, tc := range cases {
+		assert.Equal(t, tc.want, tc.e.Error())
+	}
+}
+
+func TestOperationIn_UnreadableGitDirIsAnError(t *testing.T) {
+	dir := t.TempDir()
+	notADir := filepath.Join(dir, "file")
+	require.NoError(t, os.WriteFile(notADir, nil, 0o644))
+	_, err := operationIn(notADir)
+	assert.Error(t, err, "a marker that cannot be checked is not 'no operation'")
+	op, err := operationIn(dir)
+	require.NoError(t, err)
+	assert.Empty(t, op)
 }

@@ -41,6 +41,8 @@ func TestParseBranches(t *testing.T) {
 	assert.False(t, got[1].Current)
 	assert.Equal(t, 3, got[1].Behind)
 	assert.Equal(t, 0, got[2].Ahead+got[2].Behind, "a gone upstream counts nothing")
+	assert.True(t, got[2].UpstreamGone)
+	assert.False(t, got[0].UpstreamGone || got[1].UpstreamGone || got[3].UpstreamGone)
 	assert.Empty(t, got[3].Upstream)
 	assert.Equal(t, time.UTC, got[3].CommittedAt.Location())
 }
@@ -57,6 +59,10 @@ func TestParseBranches_EmptyAndMalformed(t *testing.T) {
 	assert.Error(t, err, "not a branch")
 	_, err = ParseBranches(forEachRef([branchFields]string{"refs/heads/x", "a", "soon", "", "", ""}), "/work/acme")
 	assert.Error(t, err, "bad time")
+	for _, track := range []string{"ahead lots", "sideways 2", "ahead 1; behind 2", "gone, ahead 1"} {
+		_, err = ParseBranches(forEachRef([branchFields]string{"refs/heads/x", "a", "1", "origin/x", track, ""}), "/work/acme")
+		assert.Error(t, err, "track %q", track)
+	}
 }
 
 func TestListBranches_RealRepository(t *testing.T) {

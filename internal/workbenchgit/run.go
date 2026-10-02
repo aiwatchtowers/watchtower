@@ -45,6 +45,18 @@ type runError struct {
 }
 
 func (e *runError) Error() string {
+	sub := ""
+	if len(e.args) > 0 {
+		sub = e.args[0]
+	}
+	switch {
+	case errors.Is(e.err, context.DeadlineExceeded):
+		return "git " + sub + " timed out"
+	case errors.Is(e.err, context.Canceled):
+		return "git " + sub + " was canceled"
+	case e.stderr == "":
+		return fmt.Sprintf("git %s: %v", strings.Join(e.args, " "), e.err)
+	}
 	return fmt.Sprintf("git %s: %v: %s", strings.Join(e.args, " "), e.err, e.stderr)
 }
 
@@ -65,6 +77,8 @@ func execRunner(ctx context.Context, dir string, stdin []byte, name string, args
 	err := c.Run()
 	var exitErr *exec.ExitError
 	switch {
+	case err != nil && ctx.Err() != nil: // killed or never started: say why
+		return stdout.Bytes(), -1, &runError{args: args, err: ctx.Err()}
 	case err == nil:
 		return stdout.Bytes(), 0, nil
 	case errors.As(err, &exitErr):
@@ -104,8 +118,13 @@ func open(o Options) (*repo, error) {
 var errNotRepository = errors.New("the folder is not a git work tree")
 
 func (r *repo) git(ctx context.Context, args ...string) ([]byte, error) {
-	out, _, err := r.o.Run(ctx, r.o.Folder, nil, r.bin, args...)
+	out, _, err := r.run(ctx, args...)
 	return out, err
+}
+
+// run is git with its exit code.
+func (r *repo) run(ctx context.Context, args ...string) ([]byte, int, error) {
+	return r.o.Run(ctx, r.o.Folder, nil, r.bin, args...)
 }
 
 // paths is where the folder's repository lives.
@@ -114,8 +133,8 @@ type paths struct {
 }
 
 // locatePaths reads the work tree's top level, its git dir and the common
-// dir shared by every worktree; an error means the folder is not a work
-// tree (a .git directory itself, a bare repository).
+// dir shared by every worktree. It fails in a folder inside a repository
+// but outside its work tree (a .git directory itself, a bare repository).
 func (r *repo) locatePaths(ctx context.Context) (paths, error) {
 	out, err := r.git(ctx, "rev-parse", "--absolute-git-dir", "--git-common-dir", "--show-toplevel")
 	if err != nil {

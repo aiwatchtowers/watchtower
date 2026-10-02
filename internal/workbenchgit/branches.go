@@ -24,8 +24,10 @@ type Branch struct {
 	Head        string    `json:"head"`
 	CommittedAt time.Time `json:"committed_at"` // UTC
 	Upstream    string    `json:"upstream"`
-	Ahead       int       `json:"ahead"`
-	Behind      int       `json:"behind"`
+	// UpstreamGone: the branch tracks an upstream that no longer exists.
+	UpstreamGone bool `json:"upstream_gone"`
+	Ahead        int  `json:"ahead"`
+	Behind       int  `json:"behind"`
 	// Worktree is set only when the branch is checked out in another
 	// worktree: switching to it here is refused.
 	Worktree     string `json:"worktree"`
@@ -37,6 +39,7 @@ type BranchList struct {
 	WorkbenchID   int64    `json:"workbench_id"`
 	GitAvailable  bool     `json:"git_available"`
 	Git           bool     `json:"git"`
+	Note          string   `json:"note"`
 	Current       string   `json:"current"`
 	Branches      []Branch `json:"branches"` // newest commit first
 	BranchesOK    bool     `json:"branches_ok"`
@@ -48,13 +51,16 @@ type BranchList struct {
 // BranchesOK.
 func ListBranches(ctx context.Context, o Options) BranchList {
 	l := BranchList{Branches: []Branch{}}
-	r, p, available, _ := probe(ctx, o)
-	l.GitAvailable = available
+	r, p, available, note, err := probe(ctx, o)
+	l.GitAvailable, l.Note = available, note
 	if r == nil {
 		return l
 	}
 	l.Git = true
-	branches, err := r.branches(ctx, p.topLevel)
+	var branches []Branch
+	if err == nil {
+		branches, err = r.branches(ctx, p.topLevel)
+	}
 	if err != nil {
 		l.BranchesError = gitError(err)
 		return l
@@ -113,7 +119,10 @@ func parseBranch(f []string, topLevel string) (Branch, error) {
 		return Branch{}, fmt.Errorf("git for-each-ref: bad commit time %q of %s", f[2], name)
 	}
 	b := Branch{Name: name, Head: f[1], CommittedAt: time.Unix(sec, 0).UTC(), Upstream: f[3]}
-	b.Ahead, b.Behind = parseTrack(f[4])
+	b.Ahead, b.Behind, b.UpstreamGone, err = parseTrack(f[4])
+	if err != nil {
+		return Branch{}, fmt.Errorf("git for-each-ref: %w of %s", err, name)
+	}
 	if wt := f[5]; wt != "" {
 		if filepath.Clean(wt) == filepath.Clean(topLevel) {
 			b.Current = true
@@ -126,19 +135,24 @@ func parseBranch(f []string, topLevel string) (Branch, error) {
 
 // parseTrack reads %(upstream:track,nobracket): "ahead 2, behind 1",
 // "ahead 2", "behind 1", "gone" or "".
-func parseTrack(track string) (ahead, behind int) {
+func parseTrack(track string) (ahead, behind int, gone bool, err error) {
+	switch track {
+	case "":
+		return 0, 0, false, nil
+	case "gone":
+		return 0, 0, true, nil
+	}
 	for _, part := range strings.Split(track, ", ") {
 		key, value, _ := strings.Cut(part, " ")
-		n, err := strconv.Atoi(value)
-		if err != nil {
-			continue
-		}
-		switch key {
-		case "ahead":
+		n, convErr := strconv.Atoi(value)
+		switch {
+		case convErr == nil && key == "ahead":
 			ahead = n
-		case "behind":
+		case convErr == nil && key == "behind":
 			behind = n
+		default:
+			return 0, 0, false, fmt.Errorf("unexpected upstream track %q", track)
 		}
 	}
-	return ahead, behind
+	return ahead, behind, false, nil
 }
