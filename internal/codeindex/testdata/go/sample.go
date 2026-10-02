@@ -14,6 +14,12 @@ const (
 
 var ErrFull = errors.New("full")
 
+var (
+	// ErrEmpty is returned by an empty store.
+	ErrEmpty       = errors.New("empty")
+	lastID, nextID int
+)
+
 // ID names a stored item.
 type ID = string
 

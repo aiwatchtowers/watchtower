@@ -25,6 +25,13 @@
   (var_declaration
     (var_spec name: (identifier) @name) @definition.var))
 
+; A parenthesised `var ( … )` group puts its specs in a var_spec_list
+; (a `const ( … )` group does not).
+(source_file
+  (var_declaration
+    (var_spec_list
+      (var_spec name: (identifier) @name) @definition.var)))
+
 (field_declaration_list
   (field_declaration name: (field_identifier) @name) @definition.field)
 

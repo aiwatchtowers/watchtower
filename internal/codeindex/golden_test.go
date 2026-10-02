@@ -296,4 +296,11 @@ func TestGo_ReceiverContainerAndDirectives(t *testing.T) {
 	if len(byName(syms, "local")) != 0 {
 		t.Error("a local inside a function body was indexed")
 	}
+	// A `var ( … )` group's specs are indexed, each name of a spec too.
+	if s := one(t, syms, "ErrEmpty"); s.Kind != KindVar || s.Doc != "ErrEmpty is returned by an empty store." {
+		t.Errorf("grouped var ErrEmpty = %+v", s)
+	}
+	for _, name := range []string{"lastID", "nextID", "ModeB"} {
+		one(t, syms, name)
+	}
 }
