@@ -7,6 +7,7 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -56,7 +57,7 @@ func TestAIQueryCmd_FlagsBeforeSeparatorReachRunEVerbatim(t *testing.T) {
 	origRunE := aiQueryCmd.RunE
 	t.Cleanup(func() { aiQueryCmd.RunE = origRunE })
 	t.Cleanup(func() {
-		aiFlagSystemPrompt = ""
+		resetSystemPromptFlags(t)
 		rootCmd.SetArgs(nil)
 	})
 
@@ -145,5 +146,94 @@ func TestAIQueryV2_ErrorIsTerminal(t *testing.T) {
 	assert.Equal(t, chat.CodeRateLimit, last.Code)
 	for _, e := range evs {
 		assert.NotEqual(t, chat.EventTurnDone, e.Type)
+	}
+}
+
+// TestQuerySystemPrompt_Stdin: with --system-prompt-stdin the prompt comes
+// from stdin (the Desktop keeps it off argv), never together with
+// --system-prompt; without it, --system-prompt is used and stdin untouched.
+func TestQuerySystemPrompt_Stdin(t *testing.T) {
+	t.Cleanup(func() { aiFlagSystemPrompt, aiFlagSystemPromptStdin = "", false })
+
+	aiFlagSystemPrompt, aiFlagSystemPromptStdin = "argv prompt", false
+	got, err := querySystemPrompt(strings.NewReader("ignored"))
+	if err != nil || got != "argv prompt" {
+		t.Fatalf("flag prompt = %q, %v", got, err)
+	}
+
+	aiFlagSystemPrompt, aiFlagSystemPromptStdin = "", true
+	got, err = querySystemPrompt(strings.NewReader("private context\n-- with dashes"))
+	if err != nil || got != "private context\n-- with dashes" {
+		t.Fatalf("stdin prompt = %q, %v", got, err)
+	}
+
+	if _, err := querySystemPrompt(strings.NewReader("")); err == nil {
+		t.Fatal("an empty stdin with --system-prompt-stdin must fail, not run without the prompt")
+	}
+
+	atCap := strings.Repeat("x", maxStdinSystemPrompt)
+	if got, err := querySystemPrompt(strings.NewReader(atCap)); err != nil || len(got) != maxStdinSystemPrompt {
+		t.Fatalf("a prompt of exactly the cap: len %d, err %v", len(got), err)
+	}
+	if _, err := querySystemPrompt(strings.NewReader(atCap + "x")); err == nil {
+		t.Fatal("a prompt over the cap must be refused")
+	}
+}
+
+func TestAIQueryCmd_SystemPromptFlagsMutuallyExclusive(t *testing.T) {
+	resetSystemPromptFlags(t)
+	t.Cleanup(func() { resetSystemPromptFlags(t) })
+	origFlagConfig := flagConfig
+	flagConfig = filepath.Join(t.TempDir(), "does-not-exist.yaml")
+	t.Cleanup(func() { flagConfig = origFlagConfig })
+	origRunE := aiQueryCmd.RunE
+	t.Cleanup(func() {
+		aiQueryCmd.RunE = origRunE
+		aiFlagSystemPrompt, aiFlagSystemPromptStdin = "", false
+		rootCmd.SetArgs(nil)
+	})
+	aiQueryCmd.RunE = func(*cobra.Command, []string) error { return nil }
+	rootCmd.SetArgs([]string{"ai", "query", "--system-prompt", "", "--system-prompt-stdin", "--", "hi"})
+	if err := rootCmd.Execute(); err == nil {
+		t.Fatal("--system-prompt with --system-prompt-stdin must be refused, even with an empty value")
+	}
+}
+
+// TestAIQueryCmd_SystemPromptStdinFlagParses: the flag reaches RunE when the
+// Desktop places it ahead of the "--" separator.
+func TestAIQueryCmd_SystemPromptStdinFlagParses(t *testing.T) {
+	resetSystemPromptFlags(t)
+	t.Cleanup(func() { resetSystemPromptFlags(t) })
+	origFlagConfig := flagConfig
+	flagConfig = filepath.Join(t.TempDir(), "does-not-exist.yaml")
+	t.Cleanup(func() { flagConfig = origFlagConfig })
+	origRunE := aiQueryCmd.RunE
+	t.Cleanup(func() {
+		aiQueryCmd.RunE = origRunE
+		aiFlagSystemPromptStdin = false
+		rootCmd.SetArgs(nil)
+	})
+	var got bool
+	aiQueryCmd.RunE = func(_ *cobra.Command, _ []string) error {
+		got = aiFlagSystemPromptStdin
+		return nil
+	}
+	rootCmd.SetArgs([]string{"ai", "query", "--system-prompt-stdin", "--", "hi"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !got {
+		t.Fatal("--system-prompt-stdin did not reach RunE")
+	}
+}
+
+// resetSystemPromptFlags clears both system-prompt flags, values and pflag
+// "changed" state alike: aiQueryCmd is a package singleton, and the
+// mutual-exclusion check reads "changed" left over from an earlier test.
+func resetSystemPromptFlags(t *testing.T) {
+	t.Helper()
+	aiFlagSystemPrompt, aiFlagSystemPromptStdin = "", false
+	for _, name := range []string{"system-prompt", "system-prompt-stdin"} {
+		aiQueryCmd.Flags().Lookup(name).Changed = false
 	}
 }

@@ -49,11 +49,12 @@ struct CalendarSettingsPatch: Equatable {
 enum CalendarSettingsParser {
     private static let pattern = "```watchtower-caldav-settings\\s*\\n(.*?)\\n?```"
 
-    static func parse(_ raw: String) -> (text: String, patch: CalendarSettingsPatch?) {
+    /// `blockFound`: the reply carried a settings block, read or not.
+    static func parse(_ raw: String) -> (text: String, patch: CalendarSettingsPatch?, blockFound: Bool) {
         guard let regex = try? NSRegularExpression(
             pattern: pattern, options: [.dotMatchesLineSeparators]
         ) else {
-            return (raw, nil)
+            return (raw, nil, false)
         }
 
         let full = raw as NSString
@@ -67,7 +68,7 @@ enum CalendarSettingsParser {
         let stripped = regex.stringByReplacingMatches(
             in: raw, range: NSRange(location: 0, length: full.length), withTemplate: ""
         )
-        return (stripped.trimmingCharacters(in: .whitespacesAndNewlines), patch)
+        return (stripped.trimmingCharacters(in: .whitespacesAndNewlines), patch, !matches.isEmpty)
     }
 
     /// Decodes one block body. Unknown keys — including any "password",
@@ -85,195 +86,19 @@ enum CalendarSettingsParser {
     }
 }
 
-// MARK: - CalendarSetupChatViewModel
+// MARK: - CalendarSetupPrompt
 
-/// Drives the embedded "Setup Assistant" chat next to the calendar connect
-/// cards in the Add Calendar Account sheet. Deliberate copy of
-/// `EmailSetupChatViewModel` (that duplication is the house pattern), and
-/// EPHEMERAL like it: a setup wizard chat is throwaway, so nothing is
-/// persisted to `chat_conversations`/`chat_messages` — only the CLI
-/// `sessionID` is kept for turn-to-turn continuity within one sheet
-/// presentation.
-///
-/// PRIVACY BOUNDARY: the assistant has NO access to the CalDAV password OR the
-/// secret ICS feed URL — not read, not write, never in any prompt. Enforced
-/// structurally: `send()` takes a `CalendarFormSnapshot` (no credential slots)
-/// and `CalendarSettingsPatch` (url/username only) is the only write-back
-/// channel.
-@MainActor
-@Observable
-final class CalendarSetupChatViewModel {
-    var messages: [ChatMessage] = []
-    var isStreaming = false
-    var inputText = ""
-    var errorMessage: String?
-
-    /// Invoked on the main actor when a completed turn carries a settings
-    /// block; the owning view writes the patch into its @State form fields.
-    var onApplySettings: ((CalendarSettingsPatch) -> Void)?
-
-    private var sessionID: String?
-    private let aiService: any AIServiceProtocol
-    private var streamTask: Task<Void, Never>?
-
-    init(aiService: (any AIServiceProtocol)? = nil) {
-        self.aiService = aiService ?? WatchtowerAIService()
-    }
-
-    /// Local greeting shown when the panel opens — no AI call.
+/// The calendar setup assistant's text: greeting, form-state block and
+/// system prompt.
+enum CalendarSetupPrompt {
     static let greeting = "Hi! I can help you connect your calendar. "
         + "Which calendar do you use — Google, iCloud, Fastmail, Yandex, a company one…?"
-
-    func seedGreetingIfNeeded() {
-        guard messages.isEmpty else { return }
-        messages.append(ChatMessage(
-            id: UUID(), role: .assistant, text: Self.greeting, timestamp: Date(), isStreaming: false
-        ))
-    }
-
-    // MARK: - Sending
-
-    func send(snapshot: CalendarFormSnapshot) {
-        let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !isStreaming else { return }
-        inputText = ""
-        sendUserMessage(text, snapshot: snapshot)
-    }
-
-    /// Feeds a failed connect error into the chat as a visible user turn so
-    /// the assistant can explain it in plain words.
-    func sendConnectionError(_ error: String, snapshot: CalendarFormSnapshot) {
-        guard !isStreaming else { return }
-        sendUserMessage(
-            "Connecting failed with this error:\n\(error)\n\nWhat should I do?",
-            snapshot: snapshot
-        )
-    }
-
-    private func sendUserMessage(_ text: String, snapshot: CalendarFormSnapshot) {
-        streamTask?.cancel()
-        messages.append(ChatMessage(
-            id: UUID(), role: .user, text: text, timestamp: Date(), isStreaming: false
-        ))
-        messages.append(ChatMessage(
-            id: UUID(), role: .assistant, text: "", timestamp: Date(), isStreaming: true
-        ))
-
-        isStreaming = true
-        let currentSessionID = sessionID
-
-        streamTask = Task { [weak self] in
-            await self?.executeStream(
-                text: text, snapshot: snapshot, currentSessionID: currentSessionID
-            )
-        }
-    }
-
-    // MARK: - Stream execution
-
-    private func executeStream(
-        text: String,
-        snapshot: CalendarFormSnapshot,
-        currentSessionID: String?
-    ) async {
-        let systemPrompt: String? = currentSessionID == nil ? Self.systemPrompt : nil
-        // The form changes between turns (the user types, patches land), so
-        // EVERY turn carries a fresh snapshot — which also keeps a resumed
-        // session (system prompt dropped by CLI --resume) fully in context.
-        let effectivePrompt = "\(Self.formStateBlock(snapshot))\n\n\(text)"
-
-        var fullText = ""
-        var streamFailed = false
-        do {
-            let stream = aiService.stream(
-                prompt: effectivePrompt,
-                systemPrompt: systemPrompt,
-                sessionID: currentSessionID,
-                dbPath: nil,
-                model: nil  // nil = the provider's resolved strong-tier model
-            )
-            var sawTurnComplete = false
-            for try await event in stream {
-                switch event {
-                case .text(let chunk):
-                    if sawTurnComplete {
-                        fullText = chunk
-                        sawTurnComplete = false
-                    } else {
-                        fullText += chunk
-                    }
-                    updateLastMessage(fullText)
-                case .turnComplete(let text):
-                    fullText = text
-                    sawTurnComplete = true
-                    updateLastMessage(fullText)
-                case .reset:
-                    fullText = ""
-                    sawTurnComplete = false
-                    updateLastMessage("")
-                case .sessionID(let sid):
-                    sessionID = sid
-                case .done:
-                    break
-                }
-            }
-        } catch {
-            streamFailed = true
-            if !Task.isCancelled {
-                errorMessage = error.localizedDescription
-            }
-        }
-
-        // On a failed/cancelled stream, do NOT parse settings out of partial,
-        // possibly-truncated output — a half-formed patch could misfill the form.
-        if streamFailed {
-            finishStream()
-            return
-        }
-
-        let parsed = CalendarSettingsParser.parse(fullText)
-        let displayText = parsed.text.isEmpty && parsed.patch != nil
-            ? "(filled in the settings on the left)"
-            : parsed.text
-        updateLastMessage(displayText)
-        if let patch = parsed.patch {
-            onApplySettings?(patch)
-        }
-
-        finishStream()
-    }
-
-    func cancelStream() {
-        streamTask?.cancel()
-        streamTask = nil
-        isStreaming = false
-        if let idx = messages.indices.last, messages[idx].isStreaming {
-            messages[idx].isStreaming = false
-        }
-    }
-
-    // MARK: - State helpers
-
-    private func updateLastMessage(_ text: String) {
-        if let idx = messages.indices.last {
-            messages[idx].text = text
-        }
-    }
-
-    private func finishStream() {
-        for idx in messages.indices where messages[idx].isStreaming {
-            messages[idx].isStreaming = false
-        }
-        isStreaming = false
-    }
-
-    // MARK: - Prompt building
 
     /// Renders the form snapshot for the prompt. PRIVACY: the CalDAV password
     /// and the secret ICS feed URL are represented ONLY as "filled"/"empty" —
     /// the snapshot type cannot carry either value, so this function cannot
     /// leak them.
-    nonisolated static func formStateBlock(_ snapshot: CalendarFormSnapshot) -> String {
+    static func formStateBlock(_ snapshot: CalendarFormSnapshot) -> String {
         func show(_ value: String) -> String {
             value.isEmpty ? "(empty)" : value
         }
@@ -291,7 +116,7 @@ final class CalendarSetupChatViewModel {
         return lines.joined(separator: "\n")
     }
 
-    nonisolated static let systemPrompt = """
+    static let systemPrompt = """
     You are a friendly calendar-setup assistant embedded in the Watchtower app, right next to a calendar connect form. \
     The user sees two paths on the left: a CalDAV card (Server URL, Username, App password, Label) and an ICS card \
     (one field for a secret iCal/ICS feed link, plus Label). Your job is to figure out which path fits their calendar \
@@ -339,4 +164,25 @@ final class CalendarSetupChatViewModel {
     A 401 with iCloud/Fastmail/Yandex usually means the normal account password was used instead of an \
     app-specific password. A 404 on CalDAV usually means the server URL is wrong.
     """
+}
+
+// MARK: - CalendarSetupChatViewModel
+
+/// The calendar setup assistant next to the connect form (see
+/// `SetupAssistantChat` for the privacy boundary).
+typealias CalendarSetupChatViewModel = SetupAssistantChat<CalendarFormSnapshot, CalendarSettingsPatch>
+
+extension SetupAssistantChat where Snapshot == CalendarFormSnapshot, Patch == CalendarSettingsPatch {
+    convenience init(aiService: (any AIServiceProtocol)? = nil, gate: EmbeddedStreamGate? = nil) {
+        self.init(
+            contextID: "calendar",
+            greeting: CalendarSetupPrompt.greeting,
+            systemPrompt: CalendarSetupPrompt.systemPrompt,
+            connectionErrorLead: "Connecting failed with this error:",
+            formStateBlock: CalendarSetupPrompt.formStateBlock,
+            parse: CalendarSettingsParser.parse,
+            aiService: aiService,
+            gate: gate
+        )
+    }
 }

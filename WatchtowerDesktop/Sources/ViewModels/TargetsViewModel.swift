@@ -451,14 +451,17 @@ final class TargetsViewModel {
         }
     }
 
-    func deleteTarget(_ target: Target) {
+    @discardableResult
+    func deleteTarget(_ target: Target) -> Bool {
         do {
             try dbManager.dbPool.write { db in
                 try TargetQueries.delete(db, id: target.id)
             }
             load()
+            return true
         } catch {
             reportWriteFailure("delete", error)
+            return false
         }
     }
 

@@ -224,7 +224,9 @@ struct TargetDetailView: View {
             titleVisibility: .visible
         ) {
             Button("Delete", role: .destructive) {
-                viewModel.deleteTarget(target)
+                // A failed delete keeps everything: the task, its chat and a
+                // reply still streaming in it (the failure is reported).
+                guard viewModel.deleteTarget(target) else { return }
                 // The target's conversations go with it; drop its container so
                 // the center never hands out tabs for a row that is gone.
                 appState.targetAssistantCenter.drop(targetID: target.id)
@@ -308,7 +310,7 @@ struct TargetDetailView: View {
 
     /// Every tab owns its own scrolling. The Assistant tab is deliberately NOT
     /// wrapped in a ScrollView here: it already nests one (the message list)
-    /// plus the ChatInput's NSScrollView, and a scroll view inside a scroll
+    /// plus the ChatComposerField's NSScrollView, and a scroll view inside a scroll
     /// view leaves the outer one stuck — neither end of the conversation is
     /// reachable (the nested-NSScrollView collapse house gotcha; the same reason
     /// `RecordingDetailView` scrolls per tab rather than around them).
@@ -319,7 +321,7 @@ struct TargetDetailView: View {
             VStack(spacing: 0) {
                 scrollableTab { detailsTab }
                 Divider()
-                // Docked below the scroll, never inside it: ChatInput wraps an
+                // Docked below the scroll, never inside it: ChatComposerField wraps an
                 // NSScrollView, which misbehaves nested in a SwiftUI ScrollView
                 // (the nested-NSScrollView collapse gotcha, same reason).
                 assistantInlineInput
@@ -946,16 +948,16 @@ struct TargetDetailView: View {
                 .font(.caption)
                 .foregroundStyle(.purple)
                 .padding(.bottom, 14)
-            // Reuse the chat composer so the inline input is a real auto-expanding
-            // text area (Enter sends, Shift+Enter inserts a newline) — consistent
-            // with the Assistant tab instead of a single-line field.
-            ChatInput(
+            // Not a chat — a prompt routed into the Assistant tab — but it
+            // uses the chats' composer, so it is the same auto-expanding text
+            // area (Enter sends, Shift+Enter inserts a newline).
+            ChatComposerBar(input: ChatComposerField(
                 text: $assistantInput,
                 isStreaming: false,
                 onSend: { submitAssistantInput() },
                 placeholder: "Ask the assistant about this target…",
                 dictationTargetID: "chat.target-assistant.\(target.id)"
-            )
+            ))
         }
     }
 

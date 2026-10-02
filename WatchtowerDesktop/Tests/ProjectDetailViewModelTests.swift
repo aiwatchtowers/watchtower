@@ -84,13 +84,19 @@ final class ProjectDetailViewModelTests: XCTestCase {
         vm.addSource(hit)
         vm.addSource(hit)
         XCTAssertEqual(promptChanges.count, 2, "a duplicate source changes nothing")
-        vm.removeSource(try XCTUnwrap(vm.sources.first))
+        let source = try XCTUnwrap(vm.sources.first)
+        vm.removeSource(source)
         XCTAssertEqual(promptChanges.count, 3)
+        vm.removeSource(source)
+        XCTAssertEqual(promptChanges.count, 3, "removing an already-gone source changes nothing")
 
         vm.addFiles([URL(fileURLWithPath: NSTemporaryDirectory() + "imported_\(UUID().uuidString).pdf")])
         XCTAssertEqual(promptChanges.count, 4)
-        vm.removeFile(try XCTUnwrap(vm.files.first))
+        let file = try XCTUnwrap(vm.files.first)
+        vm.removeFile(file)
         XCTAssertEqual(promptChanges.count, 5)
+        vm.removeFile(file)
+        XCTAssertEqual(promptChanges.count, 5, "removing an already-gone file changes nothing")
         XCTAssertEqual(Set(promptChanges), [projectID])
     }
 

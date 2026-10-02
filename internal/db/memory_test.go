@@ -2156,3 +2156,39 @@ func TestListMemoryNodeTitles(t *testing.T) {
 		}
 	}
 }
+
+// TestMemoryExtractFailures_PruneKeepsQuarantined: prune drops only the
+// still-retried rows the watermark has passed; a quarantined row is the
+// durable record of what memory never read and survives any watermark (MEM-04).
+func TestMemoryExtractFailures_PruneKeepsQuarantined(t *testing.T) {
+	db := openTestDB(t)
+	rows := []MemoryExtractFailure{
+		{ChannelID: "C1", FirstTS: "1000.000100", LastTS: "1050.000100", LastTSUnix: 1050, Failures: 2},
+		{ChannelID: "C2", FirstTS: "1000.000200", LastTS: "1050.000200", LastTSUnix: 1050, Failures: 6, QuarantinedAt: "2026-10-01T00:00:00Z"},
+		{ChannelID: "C3", FirstTS: "2000.000100", LastTS: "2050.000100", LastTSUnix: 2050, Failures: 1},
+	}
+	for _, r := range rows {
+		require.NoError(t, db.SetMemoryExtractFailure(r))
+	}
+
+	require.NoError(t, db.PruneMemoryExtractFailures(1500))
+
+	got, err := db.ListMemoryExtractFailures()
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	assert.Equal(t, "C2", got[0].ChannelID, "a quarantined row survives the watermark passing it")
+	assert.Equal(t, "C3", got[1].ChannelID, "a row ahead of the watermark stays")
+}
+
+// TestDropMemoryIndexKeepsExtractFailures: memory_extract_failures is runtime
+// state (MEM-02 exclusion) — a reindex must not un-quarantine a poison window.
+func TestDropMemoryIndexKeepsExtractFailures(t *testing.T) {
+	db := openTestDB(t)
+	require.NoError(t, db.SetMemoryExtractFailure(MemoryExtractFailure{
+		ChannelID: "C1", FirstTS: "1000.000100", LastTS: "1000.000200", LastTSUnix: 1000, Failures: 6, QuarantinedAt: "2026-10-01T00:00:00Z",
+	}))
+	require.NoError(t, db.DropMemoryIndex())
+	got, err := db.ListMemoryExtractFailures()
+	require.NoError(t, err)
+	assert.Len(t, got, 1)
+}

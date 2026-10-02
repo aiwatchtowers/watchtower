@@ -64,7 +64,7 @@ final class DictationSpanTests: XCTestCase {
 /// Capsule rendering of `DictationButton` — driven by a real `DictationCenter`
 /// on fakes (the `DictationCenterTests` doubles), inspected via ViewInspector
 /// through the explicit `center:` parameter (ViewInspector cannot inject
-/// custom `@Environment` values — the `ChatInputViewTests` precedent).
+/// custom `@Environment` values — the `ChatComposerFieldViewTests` precedent).
 @MainActor
 final class DictationButtonViewTests: XCTestCase {
 

@@ -15,17 +15,18 @@ import WatchtowerCore
 final class TargetAssistantCenter {
     typealias ContainerFactory = (Target, TargetsViewModel, DatabaseManager) -> TargetAssistantViewModel
 
+    /// Set by `AppState` once it starts: the tabs' engines come from it, so
+    /// target turns count toward the app-wide embedded-chat limit.
+    var embeddedChats: EmbeddedChatCenter?
     private var containers: [Int: TargetAssistantViewModel] = [:]
     /// Target ids in use order, least-recently-used first.
     private var usage: [Int] = []
     private let limit: Int
-    private let factory: ContainerFactory
+    private let factory: ContainerFactory?
 
     init(limit: Int = 4, factory: ContainerFactory? = nil) {
         self.limit = max(1, limit)
-        self.factory = factory ?? { target, viewModel, dbManager in
-            TargetAssistantViewModel(target: target, viewModel: viewModel, dbManager: dbManager)
-        }
+        self.factory = factory
     }
 
     /// Number of containers currently held (tests and diagnostics).
@@ -41,17 +42,27 @@ final class TargetAssistantCenter {
         viewModel: TargetsViewModel,
         dbManager: DatabaseManager
     ) -> TargetAssistantViewModel {
-        let container = containers[target.id] ?? factory(target, viewModel, dbManager)
+        let container = containers[target.id] ?? makeContainer(target, viewModel, dbManager)
         containers[target.id] = container
         touch(target.id)
         evictIfNeeded()
         return container
     }
 
+    private func makeContainer(
+        _ target: Target, _ viewModel: TargetsViewModel, _ dbManager: DatabaseManager
+    ) -> TargetAssistantViewModel {
+        factory?(target, viewModel, dbManager)
+            ?? TargetAssistantViewModel(target: target, viewModel: viewModel, dbManager: dbManager,
+                                        embeddedChats: embeddedChats)
+    }
+
     /// Drops a target's container outright — the target was deleted, so its
     /// conversations are gone by the existing delete path and nothing the
     /// container holds is worth keeping.
     func drop(targetID: Int) {
+        // Quietly first: the conversations went with the target.
+        embeddedChats?.dropContext(type: "target", id: String(targetID))
         containers[targetID]?.stop()
         containers[targetID] = nil
         usage.removeAll { $0 == targetID }

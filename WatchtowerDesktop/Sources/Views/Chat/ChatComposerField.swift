@@ -2,7 +2,9 @@ import SwiftUI
 import AppKit
 import WatchtowerCore
 
-struct ChatInput: View {
+/// The input row of `ChatComposerBar` — the one text input every chat uses
+/// (Enter sends, Shift+Enter newline, Esc stops, dictation, attachments).
+struct ChatComposerField: View {
     @Binding var text: String
     let isStreaming: Bool
     let onSend: () -> Void
@@ -38,7 +40,7 @@ struct ChatInput: View {
     @Environment(\.dictationCenter) private var dictationCenter
 
     var body: some View {
-        ChatInputContent(
+        ChatComposerFieldContent(
             text: $text,
             isStreaming: isStreaming,
             onSend: onSend,
@@ -61,11 +63,11 @@ struct ChatInput: View {
     }
 }
 
-/// The input row's actual rendering, split from `ChatInput` so it reads no
+/// The input row's actual rendering, split from `ChatComposerField` so it reads no
 /// custom `@Environment` — ViewInspector cannot resolve those without a real
 /// render pass (the `TrayMenuView`/`TrayMenuContent` precedent); tests drive
 /// this view with an explicit center.
-struct ChatInputContent: View {
+struct ChatComposerFieldContent: View {
     @Binding var text: String
     let isStreaming: Bool
     let onSend: () -> Void

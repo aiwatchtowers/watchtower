@@ -140,7 +140,9 @@ so an empty or failed listing cannot pass.
 
 ## EXT-05 — Confluence writes are approved, versioned and bounded
 
-**Status:** Enforced (2026-09-30)
+**Status:** Enforced (2026-09-30; amended 2026-10-01 — a Retry that finds this
+very edit already saved reports applied with a note instead of failed, and
+issues no second PUT (PR #86); approved by the owner 2026-10-01: «1 да»)
 
 **Observable:** The only Confluence write path is the chat tool
 `edit_confluence_page` (`internal/tools/confluence_page_edit.go`), registered
@@ -283,7 +285,8 @@ every Confluence hit's `link` is the page or attachment URL.
   edit already saved (base+1, same title, storage equal up to `local-id`s) is now a
   success result carrying the "already saved" note instead of a failed
   action; still no PUT. The write rule (version AND hash must match, else
-  no PUT) is unchanged.
+  no PUT) is unchanged. Shipped in PR #86 (3f0be7c0); approved by the owner
+  2026-10-01 («1 да»).
 - 2026-10-01 (release audit, archived pages): `get_confluence_page` reads
   an archived page (status current and archived, as the sync fetcher
   asks), and EXT-05 gains "an archived page is never written" (its PUT's

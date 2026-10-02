@@ -72,7 +72,7 @@ func (x *Extractor) runPDFHelper(ctx context.Context, path string) ([]pdfPage, b
 	stderr := &cappedBuffer{max: maxPDFHelperStderr, truncate: true}
 	cmd.Stdout, cmd.Stderr = out, stderr
 	cmd.WaitDelay = 5 * time.Second
-	err := cmd.Run()
+	err := runHelper(cmd, x.logf)
 	diag := strings.TrimSpace(stderr.buf.String())
 	switch {
 	case ctx.Err() != nil:

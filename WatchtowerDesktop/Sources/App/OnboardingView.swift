@@ -860,7 +860,7 @@ struct OnboardingView: View {
                 let configSvc = ConfigService()
                 let language = configSvc.digestLanguage ?? settingsLanguage
                 let db = appState.databaseManager
-                onboardingVM = OnboardingChatViewModel(language: language, dbManager: db)
+                onboardingVM = OnboardingChatViewModel(language: language, dbManager: db, gate: appState.embeddedChatCenter.gate)
             }
             if appState.onboarding.chatFinished {
                 // Resume fast-path: the interview already finished (e.g. a restart
@@ -996,7 +996,7 @@ struct OnboardingView: View {
             let configSvc = ConfigService()
             let language = configSvc.digestLanguage ?? settingsLanguage
             if let db = appState.databaseManager {
-                onboardingVM = OnboardingChatViewModel(language: language, dbManager: db)
+                onboardingVM = OnboardingChatViewModel(language: language, dbManager: db, gate: appState.embeddedChatCenter.gate)
             } else {
                 // DB not available — need sync first, go back to chat
                 appState.onboarding.goTo(.chat)
@@ -1041,7 +1041,7 @@ struct OnboardingView: View {
                 let configSvc = ConfigService()
                 let language = configSvc.digestLanguage ?? settingsLanguage
                 if let db = appState.databaseManager {
-                    onboardingVM = OnboardingChatViewModel(language: language, dbManager: db)
+                    onboardingVM = OnboardingChatViewModel(language: language, dbManager: db, gate: appState.embeddedChatCenter.gate)
                 } else {
                     // DB not available — need sync first, go back to chat
                     appState.onboarding.goTo(.chat)
@@ -1072,7 +1072,8 @@ struct OnboardingView: View {
                 // instead of returning false and looping Retry forever.
                 if onboardingVM == nil {
                     let language = ConfigService().digestLanguage ?? settingsLanguage
-                    onboardingVM = OnboardingChatViewModel(language: language, dbManager: appState.databaseManager)
+                    onboardingVM = OnboardingChatViewModel(
+                        language: language, dbManager: appState.databaseManager, gate: appState.embeddedChatCenter.gate)
                 }
                 _ = ensureOnboardingDatabase()
                 guard let vm = onboardingVM else { return false }
@@ -1346,7 +1347,7 @@ struct OnboardingView: View {
         if onboardingVM == nil {
             let configSvc = ConfigService()
             let language = configSvc.digestLanguage ?? settingsLanguage
-            onboardingVM = OnboardingChatViewModel(language: language, dbManager: appState.databaseManager)
+            onboardingVM = OnboardingChatViewModel(language: language, dbManager: appState.databaseManager, gate: appState.embeddedChatCenter.gate)
         }
         _ = ensureOnboardingDatabase()
         Task {
@@ -1431,16 +1432,12 @@ struct OnboardingView: View {
             // so syncProgress updates trigger SwiftUI re-renders directly.
             let decoder = JSONDecoder()
             let readTask = Task<Void, Never> {
-                do {
-                    for try await line in stdoutPipe.fileHandleForReading.bytes.lines {
-                        if let data = line.data(using: .utf8),
-                           let json = try? decoder.decode(SyncProgressData.self, from: data) {
-                            self.syncProgress = json
-                            self.updateSyncETA(json)
-                        }
+                for await line in stdoutPipe.fileHandleForReading.ndjsonLines {
+                    if let data = line.data(using: .utf8),
+                       let json = try? decoder.decode(SyncProgressData.self, from: data) {
+                        self.syncProgress = json
+                        self.updateSyncETA(json)
                     }
-                } catch {
-                    // EOF or pipe closed
                 }
             }
 
@@ -1451,12 +1448,12 @@ struct OnboardingView: View {
                 }
             }
 
-            // Close the stdout file handle to force bytes.lines to see EOF, then cancel the task.
-            // Don't await readTask.value — it can hang indefinitely if the pipe's write end
-            // was inherited by a subprocess (e.g. Claude CLI). The exit code is already known,
-            // progress parsing is no longer needed.
-            stdoutPipe.fileHandleForReading.closeFile()
+            // Stop reading instead of awaiting readTask.value — that can hang indefinitely
+            // if the pipe's write end was inherited by a subprocess (e.g. Claude CLI). The
+            // exit code is already known, progress parsing is no longer needed. Don't close
+            // the handle: a readabilityHandler still in flight would read a closed fd.
             readTask.cancel()
+            stdoutPipe.fileHandleForReading.readabilityHandler = nil
 
             let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
             let stderrText = String(data: stderrData, encoding: .utf8) ?? ""

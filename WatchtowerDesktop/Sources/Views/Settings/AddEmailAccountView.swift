@@ -88,11 +88,9 @@ struct AddEmailAccountView: View {
             if showAssistant, let chatVM = setupChatVM {
                 Divider()
                     .padding(.leading, 16)
-                EmailSetupAssistantPanel(
-                    chatVM: chatVM,
-                    makeSnapshot: { formSnapshot() },
-                    onClose: { withAnimation(.easeInOut(duration: 0.2)) { showAssistant = false } }
-                )
+                SetupAssistantPanel(chatVM: chatVM, placeholder: "e.g. \"my mail is on Yahoo\"", dictationTargetID: "chat.setup.email") {
+                    withAnimation(.easeInOut(duration: 0.2)) { showAssistant = false }
+                }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
@@ -296,8 +294,10 @@ struct AddEmailAccountView: View {
 
     private func openAssistant() {
         if setupChatVM == nil {
-            let vm = EmailSetupChatViewModel()
+            let vm = EmailSetupChatViewModel(gate: appState.embeddedChatCenter.gate)
             vm.onApplySettings = { patch in applyAssistantSettings(patch) }
+            // Snapshot only — never the credential fields' values.
+            vm.snapshotProvider = { formSnapshot() }
             setupChatVM = vm
         }
         setupChatVM?.seedGreetingIfNeeded()
@@ -327,7 +327,7 @@ struct AddEmailAccountView: View {
 
     private func askAssistantAboutError(_ error: String) {
         openAssistant()
-        setupChatVM?.sendConnectionError(error, snapshot: formSnapshot())
+        setupChatVM?.sendConnectionError(error)
     }
 
     private func connectIMAP() {
@@ -358,7 +358,7 @@ struct AddEmailAccountView: View {
                 // it can explain the error in plain words (snapshot only —
                 // never the password value).
                 if showAssistant, let err = imapError, let chatVM = setupChatVM {
-                    chatVM.sendConnectionError(err, snapshot: formSnapshot())
+                    chatVM.sendConnectionError(err)
                 }
             }
         }

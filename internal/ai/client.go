@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -110,13 +111,20 @@ func envelopeMessage(result string) string {
 // shape of db.ExternalConnection without importing internal/db, keeping
 // internal/ai free of a DB dependency.
 type ExternalMCPServer struct {
-	Name    string // becomes the mcpServers key and the mcp__<Name> allow token
+	Name    string // becomes the mcpServers key and the mcp__<Name>__ tool prefix
 	Kind    string // "stdio" | "http"
 	Command string
 	Args    []string
 	URL     string
 	Env     map[string]string
 	Headers map[string]string
+	// AllowTools are the tool names the chat may call without a prompt
+	// (QC-02: only tools known to be read-only, or the owner's explicit
+	// list); DenyTools are the server's other listed tools, hidden from the
+	// model outright. A tool in neither (added after the last tools/list)
+	// is visible but never approved — headless chats cannot prompt.
+	AllowTools []string
+	DenyTools  []string
 }
 
 // Client wraps the Claude Code CLI for AI queries.
@@ -223,7 +231,7 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 		//    for prompt-injection payloads in synced content;
 		//  - filesystem reads (Read/Grep/Glob/LS): local files are out of scope,
 		//    and probing user folders can trigger TCC prompts (a project P0).
-		"--disallowedTools", DisallowedTools,
+		"--disallowedTools", WithExternalDisallowed(DisallowedTools, c.externalServers),
 		// Skip user-level ~/.claude/settings.json so its plugins/hooks/CLAUDE.md
 		// auto-discovery don't probe ~/Desktop or ~/Documents at startup —
 		// those probes trigger macOS TCC prompts attributed to Watchtower.app.
@@ -337,14 +345,50 @@ const sessionDisallowedTools = "Edit,Write,NotebookEdit,TodoWrite,Task,TodoRead,
 	"ListMcpResourcesTool,ReadMcpResourceTool,ReadMcpResourceDirTool"
 
 // AllowedTools builds the --allowedTools value: the built-in watchtower
-// server plus one mcp__<Name> token per external server, in slice order.
+// server plus one mcp__<Name>__<tool> token per allowed external tool, in
+// slice order. An external server is never granted whole (QC-02): a whole
+// `mcp__<Name>` token would let the chat call its write tools unapproved.
 func AllowedTools(ext []ExternalMCPServer) string {
 	tools := "mcp__watchtower"
 	for _, s := range ext {
-		tools += ",mcp__" + s.Name
+		for _, t := range s.AllowTools {
+			tools += "," + externalToolToken(s.Name, t)
+		}
 	}
 	return tools
 }
+
+// ExternalDisallowedTools lists every external tool the chat must not call
+// (each server's DenyTools) as mcp__<Name>__<tool> tokens, for appending to
+// --disallowedTools so the model never sees them; "" when there are none.
+func ExternalDisallowedTools(ext []ExternalMCPServer) string {
+	var tokens []string
+	for _, s := range ext {
+		for _, t := range s.DenyTools {
+			tokens = append(tokens, externalToolToken(s.Name, t))
+		}
+	}
+	return strings.Join(tokens, ",")
+}
+
+// WithExternalDisallowed appends ExternalDisallowedTools(ext) to a base
+// --disallowedTools value.
+func WithExternalDisallowed(base string, ext []ExternalMCPServer) string {
+	if extra := ExternalDisallowedTools(ext); extra != "" {
+		return base + "," + extra
+	}
+	return base
+}
+
+// externalToolToken is the name Claude Code gives an MCP tool,
+// mcp__<server>__<tool>, with every character outside [A-Za-z0-9_-] replaced
+// by '_' the way the CLI normalizes it — which also keeps a hostile tool name
+// from injecting a comma-separated token into the flag.
+func externalToolToken(server, tool string) string {
+	return "mcp__" + server + "__" + nonToolNameChars.ReplaceAllString(tool, "_")
+}
+
+var nonToolNameChars = regexp.MustCompile(`[^A-Za-z0-9_-]`)
 
 // ChatMCPConfig renders the chat's mcp-config JSON: the watchtower server
 // (this binary as `mcp --db-path <db>` plus mcpArgs) and every external
@@ -367,9 +411,8 @@ func ChatMCPConfig(dbPath string, mcpArgs []string, ext []ExternalMCPServer) str
 	return string(data)
 }
 
-// allowedToolsFlag builds the --allowedTools value: the built-in watchtower
-// server plus one mcp__<Name> token per external server, in slice order
-// (deterministic — no external servers means byte-identical to today).
+// allowedToolsFlag builds the --allowedTools value (see AllowedTools; no
+// external servers means byte-identical to the pre-feature value).
 func (c *Client) allowedToolsFlag() string {
 	return AllowedTools(c.externalServers)
 }

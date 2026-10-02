@@ -32,7 +32,8 @@ var connectionsCmd = &cobra.Command{
 	Short: "Manage external MCP connections (Quick Connections)",
 	Long: "Owner-managed external MCP servers whose read-only tools can be surfaced\n" +
 		"in the assistant chat on demand. A connection is created disabled — the\n" +
-		"owner enables it explicitly (per-connection consent).",
+		"owner enables it explicitly (per-connection consent). Only tools known to be\n" +
+		"read-only reach the chat unless the owner allows others ('connections tools').",
 }
 
 var connectionsAddCmd = &cobra.Command{
@@ -371,6 +372,7 @@ func setConnectionEnabled(cmd *cobra.Command, idArg string, enabled bool) error 
 			label = conn.Name
 		}
 		warnIfProviderIgnoresConnections(cmd.ErrOrStderr(), cfg, label)
+		refreshToolsAfterEnable(cmd, cfg, database, id)
 	} else {
 		fmt.Fprintf(out, "Connection %d disabled.\n", id)
 	}
@@ -484,6 +486,7 @@ func runConnectionsOAuth(cmd *cobra.Command, args []string) error {
 	out := cmd.OutOrStdout()
 	fmt.Fprintf(out, "Connection %d signed in and enabled.\n", id)
 	warnIfProviderIgnoresConnections(cmd.ErrOrStderr(), cfg, conn.Name)
+	refreshToolsAfterEnable(cmd, cfg, database, id)
 	return nil
 }
 

@@ -5,7 +5,7 @@ import WatchtowerCore
 import WatchtowerTestSupport
 
 @MainActor
-final class MeetingChatViewModelTests: XCTestCase {
+final class MeetingChatSurfaceTests: XCTestCase {
     private var dbManager: DatabaseManager!
     private var dbPath: String!
 
@@ -32,11 +32,16 @@ final class MeetingChatViewModelTests: XCTestCase {
         })
     }
 
+    private func engine(for transcript: MeetingTranscript, ai: any AIServiceProtocol) throws -> EmbeddedChatEngine {
+        let conv = try MeetingChatSurface.conversationID(transcriptID: 7, title: transcript.title, dbPool: dbManager.dbPool)
+        return makeSurfaceEngine(MeetingChatSurface.spec(transcript: transcript, transcriptID: 7, recapContent: nil,
+                                                         conversationID: conv, dbPool: dbManager.dbPool),
+                                 dbPool: dbManager.dbPool, ai: ai)
+    }
+
     func testCreatesConversationWithMeetingContext() throws {
         let transcript = try loadTranscript()
-        _ = MeetingChatViewModel(
-            transcript: transcript, recapContent: nil,
-            dbManager: dbManager, aiService: MockClaudeService())
+        _ = try MeetingChatSurface.conversationID(transcriptID: 7, title: transcript.title, dbPool: dbManager.dbPool)
 
         let conv = try dbManager.dbPool.read { db in
             try ChatConversationQueries.fetchByContext(db, type: "meeting", id: "7")
@@ -47,9 +52,7 @@ final class MeetingChatViewModelTests: XCTestCase {
 
     func testReopensExistingConversationWithHistory() throws {
         let transcript = try loadTranscript()
-        _ = MeetingChatViewModel(
-            transcript: transcript, recapContent: nil,
-            dbManager: dbManager, aiService: MockClaudeService())
+        _ = try MeetingChatSurface.conversationID(transcriptID: 7, title: transcript.title, dbPool: dbManager.dbPool)
         let conv = try XCTUnwrap(dbManager.dbPool.read { db in
             try ChatConversationQueries.fetchByContext(db, type: "meeting", id: "7")
         })
@@ -57,10 +60,8 @@ final class MeetingChatViewModelTests: XCTestCase {
             _ = try ChatMessageQueries.insert(db, conversationID: conv.id, role: "user", text: "earlier question")
         }
 
-        let vm2 = MeetingChatViewModel(
-            transcript: transcript, recapContent: nil,
-            dbManager: dbManager, aiService: MockClaudeService())
-        XCTAssertEqual(vm2.messages.map(\.text), ["earlier question"])
+        let engine = try engine(for: transcript, ai: MockClaudeService())
+        XCTAssertEqual(engine.messages.map(\.message.text), ["earlier question"])
     }
 
     func testSystemPromptCarriesMeetingContextAndCapsTranscript() throws {
@@ -76,7 +77,7 @@ final class MeetingChatViewModelTests: XCTestCase {
 
         // Hermetic: the defaults read the developer's real config and skills
         // directory, which made the size bound depend on the machine.
-        let prompt = MeetingChatViewModel.buildSystemPrompt(
+        let prompt = MeetingChatSurface.buildSystemPrompt(
             transcript: transcript, recapContent: recap, dbPool: dbManager.dbPool,
             memoryChatEnabled: false, memoryVaultDir: nil, skillsDir: nil)
 
@@ -91,37 +92,53 @@ final class MeetingChatViewModelTests: XCTestCase {
                           "transcript excerpt must be capped so the interactive CLI prompt stays clear of ARG_MAX")
     }
 
-    func testPersistedMessageCount() throws {
-        let transcript = try loadTranscript()
-        let vm = MeetingChatViewModel(
-            transcript: transcript, recapContent: nil,
-            dbManager: dbManager, aiService: MockClaudeService())
-        _ = vm
-        let conv = try XCTUnwrap(dbManager.dbPool.read { db in
-            try ChatConversationQueries.fetchByContext(db, type: "meeting", id: "7")
-        })
-        try dbManager.dbPool.write { db in
-            _ = try ChatMessageQueries.insert(db, conversationID: conv.id, role: "user", text: "q")
-        }
-        let count = try dbManager.dbPool.read { db in
-            try MeetingChatViewModel.persistedMessageCount(db, transcriptID: 7)
-        }
-        XCTAssertEqual(count, 1)
-    }
-
     /// AGENT-04: the meeting chat is draft-only — it must never carry a tool mode.
     func testSendPassesNoToolMode() async throws {
         let transcript = try loadTranscript()
         let mock = MockClaudeService(events: [.text("ok"), .done])
-        let vm = MeetingChatViewModel(
-            transcript: transcript, recapContent: nil,
-            dbManager: dbManager, aiService: mock)
+        let engine = try engine(for: transcript, ai: mock)
 
-        vm.inputText = "what did we decide?"
-        vm.send()
-        for _ in 0..<200 where vm.isStreaming { try await Task.sleep(for: .milliseconds(10)) }
+        engine.send("what did we decide?")
+        let done = await eventually { !engine.isStreaming }
+        XCTAssertTrue(done)
 
         // AGENT-04: draft-only surfaces never send a tool mode.
         XCTAssertEqual(mock.toolModes, [nil])
+    }
+
+    /// A resumed session drops the system prompt, so the turn carries the
+    /// meeting block itself.
+    func testResumedTurnCarriesTheMeetingContext() async throws {
+        let transcript = try loadTranscript()
+        let conv = try MeetingChatSurface.conversationID(transcriptID: 7, title: transcript.title, dbPool: dbManager.dbPool)
+        try await dbManager.dbPool.write { db in try ChatConversationQueries.updateSessionID(db, id: conv, sessionID: "s1") }
+        let mock = MockClaudeService(events: [.text("ok"), .done])
+        let engine = try engine(for: transcript, ai: mock)
+        engine.send("who owns the launch?")
+        let done = await eventually { !engine.isStreaming }
+        XCTAssertTrue(done)
+        let prompt = try XCTUnwrap(mock.prompts.first)
+        XCTAssertTrue(prompt.contains("=== MEETING RECORDING ==="))
+        XCTAssertTrue(prompt.hasSuffix("who owns the launch?"))
+    }
+
+    /// Switching to another recording no longer cancels this one's reply:
+    /// the engine lives in the center, keyed by the transcript.
+    func testAnotherRecordingNeverStopsThisReply() async throws {
+        let transcript = try loadTranscript()
+        let mock = MockClaudeService(events: [.text("answer")], thenAwaitsRelease: true)
+        let pool = dbManager.dbPool
+        let center = EmbeddedChatCenter { spec, _ in makeSurfaceEngine(spec, dbPool: pool, ai: mock) }
+        let conv = try MeetingChatSurface.conversationID(transcriptID: 7, title: transcript.title, dbPool: pool)
+        let engine = center.engine(for: MeetingChatSurface.spec(transcript: transcript, transcriptID: 7, recapContent: nil,
+                                                                conversationID: conv, dbPool: pool))
+        center.markShown(engine.spec.key)
+        engine.send("q")
+        center.markHidden(engine.spec.key)
+        mock.release()
+        let done = await eventually { !engine.isStreaming }
+        XCTAssertTrue(done)
+        XCTAssertEqual(engine.messages.last?.message.text, "answer")
+        XCTAssertEqual(engine.messages.last?.message.status, "complete")
     }
 }

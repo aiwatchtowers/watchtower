@@ -5,7 +5,7 @@ import ViewInspector
 @testable import WatchtowerCore // memberwise init of the package struct ChatAttachment (TrayMenuViewTests precedent)
 
 @MainActor
-final class ChatInputAttachmentTests: XCTestCase {
+final class ChatComposerFieldAttachmentTests: XCTestCase {
     private func attachment(id: Int64, name: String, mime: String) -> ChatAttachment {
         ChatAttachment(id: id, conversationID: 1, projectID: nil, messageID: nil, name: name, mime: mime,
                        size: 1, path: "/tmp/\(name)", sha256: "x", createdAt: 0)
@@ -18,9 +18,9 @@ final class ChatInputAttachmentTests: XCTestCase {
         onSend: @escaping () -> Void = {},
         onAttach: (([URL]) -> Void)? = { _ in },
         onRemove: ((Int64) -> Void)? = { _ in }
-    ) -> ChatInputContent {
+    ) -> ChatComposerFieldContent {
         var stored = text
-        return ChatInputContent(
+        return ChatComposerFieldContent(
             text: Binding(get: { stored }, set: { stored = $0 }),
             isStreaming: false, onSend: onSend, onStop: nil,
             placeholder: "Ask…", dictationTargetID: nil, dictationCenter: nil,

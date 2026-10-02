@@ -2,19 +2,27 @@ import SwiftUI
 import WatchtowerCore
 
 /// What a row can ask of the thread. Closures are rebuilt per render and are
-/// deliberately excluded from `ChatMessageRow`'s equality.
+/// deliberately excluded from `ChatMessageRow`'s equality. A nil action hides
+/// its button: the embedded chats offer Copy and Retry only (`embedded`).
 struct ChatRowActions {
     var copy: (String) -> Void = { _ in }
-    var regenerate: (Int64) -> Void = { _ in }
-    var retry: (Int64) -> Void = { _ in }
-    var continueStopped: (Int64) -> Void = { _ in }
-    var showVariant: (Int64, Int) -> Void = { _, _ in }
-    var beginEdit: (Int64) -> Void = { _ in }
+    var regenerate: ((Int64) -> Void)? = { _ in }
+    var retry: ((Int64) -> Void)? = { _ in }
+    var continueStopped: ((Int64) -> Void)? = { _ in }
+    var showVariant: ((Int64, Int) -> Void)? = { _, _ in }
+    var beginEdit: ((Int64) -> Void)? = { _ in }
     var submitEdit: (Int64, String) -> Void = { _, _ in }
     var cancelEdit: () -> Void = {}
     var openArtifact: (String) -> Void = { _ in }
     var openSources: (Int64, [ChatSource]) -> Void = { _, _ in }
-    var quote: (Int64, String) -> Void = { _, _ in }
+    var quote: ((Int64, String) -> Void)? = { _, _ in }
+
+    /// An embedded chat's row: Copy always, Retry only where the caller
+    /// passes one (the last failed reply).
+    static func embedded(copy: @escaping (String) -> Void, retry: ((Int64) -> Void)?) -> Self {
+        Self(copy: copy, regenerate: nil, retry: retry, continueStopped: nil, showVariant: nil,
+             beginEdit: nil, quote: nil)
+    }
 }
 
 /// A finished message. `Equatable` on its data only + `.equatable()` at the
@@ -31,6 +39,9 @@ struct ChatMessageRow: View, Equatable {
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.item == rhs.item && lhs.isLast == rhs.isLast && lhs.isEditing == rhs.isEditing
             && lhs.artifactVersions == rhs.artifactVersions
+            // Retry comes and goes on an embedded chat's failed reply (it
+            // hides while a turn runs or waits): its presence is data.
+            && (lhs.actions.retry == nil) == (rhs.actions.retry == nil)
     }
 
     var body: some View {
@@ -70,8 +81,8 @@ struct ChatMessageRow: View, Equatable {
                     }
                 }
                 Spacer()
-                if ChatErrorPresentation.isRetryable(item.message.errorCode) {
-                    Button("Retry") { actions.retry(item.id) }
+                if ChatErrorPresentation.isRetryable(item.message.errorCode), let retry = actions.retry {
+                    Button("Retry") { retry(item.id) }
                 }
             }
             .padding(8)
@@ -79,7 +90,9 @@ struct ChatMessageRow: View, Equatable {
         case "partial":
             HStack(spacing: 8) {
                 Text("Stopped").font(.caption).foregroundStyle(.secondary)
-                if isLast { Button("Continue") { actions.continueStopped(item.id) }.controlSize(.small) }
+                if isLast, let continueStopped = actions.continueStopped {
+                    Button("Continue") { continueStopped(item.id) }.controlSize(.small)
+                }
             }
         default:
             EmptyView()
@@ -113,25 +126,29 @@ struct ChatMessageRow: View, Equatable {
                 label: { Image(systemName: "doc.on.doc") }
                 .help("Copy message")
                 .accessibilityLabel("Copy message")
-            if item.message.isUser {
-                Button { actions.beginEdit(item.id) } label: { Image(systemName: "pencil") }
+            if item.message.isUser, let beginEdit = actions.beginEdit {
+                Button { beginEdit(item.id) } label: { Image(systemName: "pencil") }
                     .help("Edit")
                     .accessibilityLabel("Edit")
             } else if item.message.isAssistant {
-                Button { actions.quote(item.id, item.message.text) } label: { Image(systemName: "text.quote") }
-                    .help("Quote in reply")
-                    .accessibilityLabel("Quote in reply")
-                Button { actions.regenerate(item.id) } label: { Image(systemName: "arrow.clockwise") }
-                    .help("Regenerate")
-                    .accessibilityLabel("Regenerate")
+                if let quote = actions.quote {
+                    Button { quote(item.id, item.message.text) } label: { Image(systemName: "text.quote") }
+                        .help("Quote in reply")
+                        .accessibilityLabel("Quote in reply")
+                }
+                if let regenerate = actions.regenerate {
+                    Button { regenerate(item.id) } label: { Image(systemName: "arrow.clockwise") }
+                        .help("Regenerate")
+                        .accessibilityLabel("Regenerate")
+                }
             }
-            if item.siblingCount > 1 {
-                Button { actions.showVariant(item.id, -1) } label: { Image(systemName: "chevron.left") }
+            if item.siblingCount > 1, let showVariant = actions.showVariant {
+                Button { showVariant(item.id, -1) } label: { Image(systemName: "chevron.left") }
                     .disabled(item.siblingIndex <= 1)
                     .help("Previous version")
                     .accessibilityLabel("Previous version")
                 Text("\(item.siblingIndex)/\(item.siblingCount)").font(.caption).monospacedDigit()
-                Button { actions.showVariant(item.id, 1) } label: { Image(systemName: "chevron.right") }
+                Button { showVariant(item.id, 1) } label: { Image(systemName: "chevron.right") }
                     .disabled(item.siblingIndex >= item.siblingCount)
                     .help("Next version")
                     .accessibilityLabel("Next version")

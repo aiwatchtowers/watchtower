@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -108,6 +109,10 @@ func resetConnectionsFlags() {
 	connectionsOAuthFlagClientID = ""
 	connectionsOAuthFlagClientSecretStdin = false
 	connectionsOAuthFlagScope = ""
+	connectionsToolsFlagRefresh = false
+	connectionsToolsFlagAllow = nil
+	connectionsToolsFlagDefault = false
+	connectionsToolsFlagJSON = false
 }
 
 // connectionsFakeOAuthServer is a minimal RFC 8414/7591/7009 authorization
@@ -363,6 +368,7 @@ func TestConnections_AddRejectsReservedName(t *testing.T) {
 // B), so enabling a connection under either is inert. The warning must not
 // block the enable — the row still ends up Enabled either way.
 func TestConnectionsEnable_WarnsUnderNonClaudeProvider(t *testing.T) {
+	stubToolsList(t, []db.ExternalTool{{Name: "get_item"}}, nil)
 	tests := []struct {
 		name        string
 		provider    string
@@ -486,6 +492,7 @@ func addHTTPConnection(t *testing.T, cfg *config.Config, name, connURL string) d
 }
 
 func TestConnectionsOAuth_SignsInAndEnables(t *testing.T) {
+	stubToolsList(t, []db.ExternalTool{{Name: "get_item"}}, nil)
 	cfg := writeConnectionsConfig(t)
 	as := newConnectionsFakeOAuthServer(t)
 	captureConnectionsAuthorizeCallback(t)
@@ -748,6 +755,7 @@ func TestConnectionsOAuth_PreservesExistingSecret(t *testing.T) {
 // under a non-claude provider still enables the connection but warns on
 // stderr; claude stays silent. The add/enable precedent's table shape.
 func TestConnectionsOAuth_WarnsUnderNonClaudeProvider(t *testing.T) {
+	stubToolsList(t, []db.ExternalTool{{Name: "get_item"}}, nil)
 	tests := []struct {
 		name        string
 		provider    string
@@ -819,4 +827,18 @@ func TestConnectionsRemove_RevokesSuccessfully(t *testing.T) {
 	t.Cleanup(func() { _ = database.Close() })
 	_, err = database.GetExternalConnection(conn.ID)
 	assert.Error(t, err, "row must be gone after remove")
+}
+
+// stubToolsList makes every tools/list in this test return tools (or err)
+// instead of reaching a server, restoring the TestMain stub afterwards.
+func stubToolsList(t *testing.T, tools []db.ExternalTool, err error) *[]externalmcp.ServerSpec {
+	t.Helper()
+	var calls []externalmcp.ServerSpec
+	orig := listServerTools
+	listServerTools = func(_ context.Context, spec externalmcp.ServerSpec) ([]db.ExternalTool, error) {
+		calls = append(calls, spec)
+		return tools, err
+	}
+	t.Cleanup(func() { listServerTools = orig })
+	return &calls
 }

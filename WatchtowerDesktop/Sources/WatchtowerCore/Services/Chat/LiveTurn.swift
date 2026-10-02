@@ -84,6 +84,10 @@ package final class LiveTurn {
             text = fullText
             return
         }
+        scheduleTrailingFlush()
+    }
+
+    private func scheduleTrailingFlush() {
         guard trailingFlush == nil else { return }
         let delay = Duration.milliseconds(Int(throttle.interval(forLength: fullLength) * 1000) + 1)
         trailingFlush = Task { [weak self] in
@@ -92,6 +96,17 @@ package final class LiveTurn {
             self.text = self.fullText
             self.trailingFlush = nil
         }
+    }
+
+    /// Replaces the whole text (a `.reset` or `.turnComplete` from the
+    /// embedded chats' `ai query` stream), throttled like `appendDelta`.
+    package func replaceText(_ newText: String, now: Date) {
+        fullText = newText
+        if throttle.shouldPublish(now: now) {
+            text = fullText
+            return
+        }
+        scheduleTrailingFlush()
     }
 
     /// Returns the step's position (its persisted `seq`); a repeated

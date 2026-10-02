@@ -825,7 +825,7 @@ func TestBuildMCPConfig_HTTPServerShape(t *testing.T) {
 	}
 
 	args, _, _ := c.buildArgs("sys", "hi", "json", "")
-	assertFlagValue(t, args, "--allowedTools", "mcp__watchtower,mcp__acme")
+	assertFlagValue(t, args, "--allowedTools", "mcp__watchtower")
 }
 
 // TestBuildMCPConfig_HTTPServerOmitsEmptyHeaders pins that an http server with
@@ -856,11 +856,31 @@ func TestBuildMCPConfig_HTTPServerOmitsEmptyHeaders(t *testing.T) {
 	}
 }
 
-func TestBuildArgs_ExternalServersExtendAllowlist(t *testing.T) {
+// TestBuildArgs_ExternalToolsAllowedPerTool pins QC-02: an external server
+// is never granted whole (`mcp__trello`); only its allowed tools are, each as
+// mcp__<server>__<tool>, and its other listed tools are hidden outright via
+// --disallowedTools. A hostile tool name cannot inject an extra token.
+func TestBuildArgs_ExternalToolsAllowedPerTool(t *testing.T) {
 	c := NewClient("sonnet", "/tmp/w.db", "")
-	c.SetExternalMCPServers([]ExternalMCPServer{{Name: "trello", Kind: "stdio", Command: "npx"}})
+	c.SetExternalMCPServers([]ExternalMCPServer{{
+		Name: "trello", Kind: "stdio", Command: "npx",
+		AllowTools: []string{"list_boards", "get card,Bash"},
+		DenyTools:  []string{"create_card"},
+	}})
 	args, _, _ := c.buildArgs("sys", "hi", "json", "")
-	assertFlagValue(t, args, "--allowedTools", "mcp__watchtower,mcp__trello")
+	assertFlagValue(t, args, "--allowedTools", "mcp__watchtower,mcp__trello__list_boards,mcp__trello__get_card_Bash")
+	assertFlagValue(t, args, "--disallowedTools", DisallowedTools+",mcp__trello__create_card")
+
+	for _, a := range strings.Split(flagValue(t, args, "--allowedTools"), ",") {
+		assert.NotEqual(t, "mcp__trello", a, "the whole server must never be granted")
+	}
+}
+
+func TestBuildArgs_NoExternalDenyKeepsDisallowedTools(t *testing.T) {
+	c := NewClient("sonnet", "/tmp/w.db", "")
+	c.SetExternalMCPServers([]ExternalMCPServer{{Name: "trello", Kind: "stdio", Command: "npx", AllowTools: []string{"list_boards"}}})
+	args, _, _ := c.buildArgs("sys", "hi", "json", "")
+	assertFlagValue(t, args, "--disallowedTools", DisallowedTools)
 }
 
 func TestBuildMCPConfig_ZeroExternalUnchanged(t *testing.T) {
@@ -916,7 +936,8 @@ func TestMCPConfigDelivery_NoSecretStaysInline(t *testing.T) {
 // must render exactly what the one-shot client sends, so `ai query` and
 // `ai session` expose the same tools.
 func TestChatMCPConfig_MatchesClient(t *testing.T) {
-	ext := []ExternalMCPServer{{Name: "confluence", Kind: "http", URL: "https://mcp.example.com"}}
+	ext := []ExternalMCPServer{{Name: "confluence", Kind: "http", URL: "https://mcp.example.com",
+		AllowTools: []string{"search"}, DenyTools: []string{"createPage"}}}
 	args := []string{"--chat", "--surface", "main", "--conversation", "7", "--turn-file", "/tmp/t"}
 	c := NewClient("m", "/tmp/wt.db", "")
 	c.SetMCPArgs(args)
@@ -924,7 +945,8 @@ func TestChatMCPConfig_MatchesClient(t *testing.T) {
 
 	assert.Equal(t, c.buildMCPConfig(), ChatMCPConfig("/tmp/wt.db", args, ext))
 	assert.Equal(t, c.allowedToolsFlag(), AllowedTools(ext))
-	assert.Equal(t, "mcp__watchtower,mcp__confluence", AllowedTools(ext))
+	assert.Equal(t, "mcp__watchtower,mcp__confluence__search", AllowedTools(ext))
+	assert.Equal(t, "Edit,mcp__confluence__createPage", WithExternalDisallowed("Edit", ext))
 	assert.Contains(t, DisallowedTools, "Bash")
 	assert.Contains(t, DisallowedTools, "WebFetch")
 }

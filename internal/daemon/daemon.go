@@ -395,7 +395,10 @@ func (d *Daemon) triggerChannel() <-chan struct{} {
 }
 
 func (d *Daemon) runSync(ctx context.Context) {
-	syncErr := d.phaseSlackSync(ctx)
+	// Every source sync below starts after this instant, so the data the
+	// inbox scans at the end of the cycle is complete up to it (INBOX-09).
+	syncStart := time.Now()
+	syncErr, inboxSyncErr := d.phaseSlackSync(ctx)
 	// Owner commands first: the reaction poll needs only the freshly synced
 	// Slack messages (thread context) and is what `Sync Now` is usually pressed
 	// for, so it runs before the other source syncs (Jira alone can take
@@ -449,6 +452,9 @@ func (d *Daemon) runSync(ctx context.Context) {
 	// are all available for marking.
 	d.autoMarkRead()
 
+	if d.inboxPipe != nil {
+		d.inboxPipe.SetSyncResult(syncStart, inboxSyncErr)
+	}
 	d.phaseInbox(ctx)
 	d.phaseStreamDigests(ctx)
 	d.phaseIdeas(ctx)
@@ -500,11 +506,19 @@ func (d *Daemon) trackedPipelineRun(name string, fn func() pipelineRunStats) {
 // is the first account's error (non-nil for non-fatal sync issues); pipelines
 // still run. An empty orchestrator set means Slack is not connected — the
 // phase is skipped and the other sources still sync.
-func (d *Daemon) phaseSlackSync(ctx context.Context) error {
+//
+// inboxErr is what must freeze the inbox watermark (INBOX-09): every account
+// whose sync failed or left its search window incomplete (a rate limit,
+// broken pagination — Run returns nil for those), named by account — except
+// an account whose token is revoked. A revoked account fails every cycle
+// until the owner reconnects it, so freezing on it would stop every other
+// account's watermark for good; its status row already shows it as revoked.
+func (d *Daemon) phaseSlackSync(ctx context.Context) (syncErr, inboxErr error) {
 	if len(d.orchestrators) == 0 {
-		return nil
+		return nil, nil
 	}
 	var firstErr error
+	var freezing []error
 	snaps := make([]sync.Snapshot, 0, len(d.orchestrators))
 	// Tracked like every other pipeline so the Slack sync finally shows up in
 	// pipeline_runs (and the Desktop's Pipeline Progress window) — it was the
@@ -515,11 +529,17 @@ func (d *Daemon) phaseSlackSync(ctx context.Context) error {
 			stopBeat := d.startSyncHeartbeat(o)
 			err := o.Run(ctx, sync.SyncOptions{})
 			stopBeat()
-			if err != nil {
+			switch {
+			case err != nil:
 				d.logger.Printf("sync error: %v", err)
 				if firstErr == nil {
 					firstErr = err
 				}
+				if !sync.IsRevokedAuthError(err) {
+					freezing = append(freezing, fmt.Errorf("slack account %d: %w", o.AccountID(), err))
+				}
+			case o.SearchIncomplete():
+				freezing = append(freezing, fmt.Errorf("slack account %d: search sync incomplete, retrying next cycle", o.AccountID()))
 			}
 			snap := o.Progress().Snapshot()
 			snaps = append(snaps, snap)
@@ -532,7 +552,7 @@ func (d *Daemon) phaseSlackSync(ctx context.Context) error {
 	if err := sync.WriteSyncResult(resultPath, sync.ResultFromSnapshots(snaps, firstErr)); err != nil {
 		d.logger.Printf("failed to write sync result: %v", err)
 	}
-	return firstErr
+	return firstErr, errors.Join(freezing...)
 }
 
 // syncHeartbeatInterval is how often a running sync republishes its progress.
@@ -1399,8 +1419,8 @@ func (d *Daemon) phaseMemory(ctx context.Context) {
 		return
 	}
 	if stats.Seeded > 0 || stats.Episodes > 0 || stats.WindowsFailed > 0 {
-		d.logger.Printf("memory: %d seeded, %d episode(s) from %d window(s) (%d failed, %d refs rejected)",
-			stats.Seeded, stats.Episodes, stats.Windows, stats.WindowsFailed, stats.RefsRejected)
+		d.logger.Printf("memory: %d seeded, %d episode(s) from %d window(s) (%d failed, %d quarantined, %d refs rejected)",
+			stats.Seeded, stats.Episodes, stats.Windows, stats.WindowsFailed, stats.WindowsQuarantined, stats.RefsRejected)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -100,6 +101,8 @@ func TestNewQueryClientWiresEnabledExternalConnections(t *testing.T) {
 		Enabled: true,
 	})
 	require.NoError(t, err)
+	require.NoError(t, database.SetExternalConnectionTools(connID,
+		[]db.ExternalTool{{Name: "list_boards"}, {Name: "create_card"}}, time.Now().UTC().Format(time.RFC3339)))
 	require.NoError(t, externalmcp.NewSecretStore(cfg.WorkspaceDir(), connID).Save(&externalmcp.Secret{
 		Env: map[string]string{"TRELLO_TOKEN": "abc"},
 	}))
@@ -124,6 +127,8 @@ func TestNewQueryClientWiresEnabledExternalConnections(t *testing.T) {
 	assert.Equal(t, "npx", servers[0].Command)
 	assert.Equal(t, []string{"-y", "trello-mcp"}, servers[0].Args)
 	assert.Equal(t, map[string]string{"TRELLO_TOKEN": "abc"}, servers[0].Env)
+	assert.Equal(t, []string{"list_boards"}, servers[0].AllowTools, "only the read-only tool is allowed (QC-02)")
+	assert.Equal(t, []string{"create_card"}, servers[0].DenyTools)
 }
 
 // TestNewQueryClientExternalConnectionsMissingTableDegradesGracefully makes

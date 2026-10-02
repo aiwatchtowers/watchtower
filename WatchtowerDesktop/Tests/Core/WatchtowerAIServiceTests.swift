@@ -92,7 +92,46 @@ final class WatchtowerAIServiceTests: XCTestCase {
             toolMode: nil
         )
 
-        XCTAssertEqual(args, ["ai", "query", "--system-prompt", "S", "--provider", "codex", "--", "-v looks wrong"])
+        XCTAssertEqual(args, ["ai", "query", "--system-prompt-stdin", "--provider", "codex", "--", "-v looks wrong"])
+    }
+
+    /// The system prompt carries the chat's private context: it travels on
+    /// stdin, never as an argv value.
+    func testSystemPromptNeverOnArgv() {
+        let secret = "PRIVATE-CONTEXT-7c1e"
+        let args = WatchtowerAIService.buildArgs(
+            prompt: "hi", systemPrompt: secret, sessionID: nil, dbPath: nil, model: nil, provider: nil, toolMode: nil
+        )
+        XCTAssertFalse(args.contains { $0.contains(secret) })
+        XCTAssertFalse(args.contains("--system-prompt"))
+        XCTAssertTrue(args.contains("--system-prompt-stdin"))
+        XCTAssertEqual(WatchtowerAIService.stdinPayload(systemPrompt: secret), Data(secret.utf8))
+    }
+
+    /// The payload reaches the reader and the pipe is closed (the CLI's
+    /// io.ReadAll would otherwise wait forever).
+    func testFeedStdinWritesPayloadAndCloses() {
+        let pipe = Pipe()
+        WatchtowerAIService.feedStdin(pipe, payload: Data("system prompt".utf8))
+        let read = pipe.fileHandleForReading.readDataToEndOfFile()
+        XCTAssertEqual(String(data: read, encoding: .utf8), "system prompt")
+    }
+
+    /// A CLI that exited before reading must not take the app down: the
+    /// write fails with EPIPE (no SIGPIPE) and is dropped.
+    func testFeedStdinSurvivesAClosedReader() {
+        let pipe = Pipe()
+        try? pipe.fileHandleForReading.close()
+        WatchtowerAIService.feedStdin(pipe, payload: Data(repeating: 0x61, count: 1 << 20))
+    }
+
+    func testNoSystemPromptMeansNoStdinFlagOrPayload() {
+        let args = WatchtowerAIService.buildArgs(
+            prompt: "hi", systemPrompt: "", sessionID: nil, dbPath: nil, model: nil, provider: nil, toolMode: nil
+        )
+        XCTAssertFalse(args.contains("--system-prompt-stdin"))
+        XCTAssertNil(WatchtowerAIService.stdinPayload(systemPrompt: ""))
+        XCTAssertNil(WatchtowerAIService.stdinPayload(systemPrompt: nil))
     }
 
     /// AGENT-04: no toolMode → no --tools flag, ever. And the retired
@@ -131,5 +170,30 @@ final class WatchtowerAIServiceTests: XCTestCase {
         // Text after the reset rebuilds the answer from scratch.
         _ = service.parseLine(#"{"type":"text","text":"Here is the answer."}"#, accumulatedText: &acc)
         XCTAssertEqual(acc, "Here is the answer.")
+    }
+
+    // MARK: - parseLine error line
+
+    /// `ai query` reports a provider failure as a v1 `error` line and exits 0:
+    /// it surfaces as `.error` with the provider's own text, never as reply text.
+    func testParseLineErrorEmitsErrorEvent() {
+        let service = WatchtowerAIService()
+        var acc = "partial answer"
+
+        let ev = service.parseLine(#"{"type":"error","error":"claude: not logged in"}"#, accumulatedText: &acc)
+        guard case .error(let message) = ev else {
+            return XCTFail("expected .error, got \(String(describing: ev))")
+        }
+        XCTAssertEqual(message, "claude: not logged in")
+        XCTAssertEqual(acc, "partial answer", "the error line never touches the turn's text")
+    }
+
+    /// Chats not yet on the embedded engine keep rendering `[Error] …` text.
+    func testFoldingErrorIntoTextKeepsTheLegacyRendering() {
+        guard case .text(let text) = StreamEvent.error("boom").foldingErrorIntoText else {
+            return XCTFail("expected .text")
+        }
+        XCTAssertEqual(text, "[Error] boom")
+        guard case .reset = StreamEvent.reset.foldingErrorIntoText else { return XCTFail("expected .reset") }
     }
 }

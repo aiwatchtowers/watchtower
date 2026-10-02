@@ -107,8 +107,10 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
     ) -> [String] {
         var args = ["ai", "query"]
 
+        // The system prompt itself goes to stdin (see `run`): it carries the
+        // chat's private context, which must not sit on argv (`ps`, ARG_MAX).
         if let systemPrompt, !systemPrompt.isEmpty {
-            args += ["--system-prompt", systemPrompt]
+            args += ["--system-prompt-stdin"]
         }
         if let sessionID, !sessionID.isEmpty {
             args += ["--session-id", sessionID]
@@ -127,6 +129,27 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         }
         args += ["--", prompt]
         return args
+    }
+
+    /// The bytes `run` writes to the CLI's stdin: the system prompt that
+    /// `buildArgs` announced with `--system-prompt-stdin`, or nil.
+    package static func stdinPayload(systemPrompt: String?) -> Data? {
+        guard let systemPrompt, !systemPrompt.isEmpty else { return nil }
+        return Data(systemPrompt.utf8)
+    }
+
+    /// Writes `payload` to the CLI's stdin pipe and closes it. The write end
+    /// ignores SIGPIPE, so a CLI that exits before reading (a cancelled chat,
+    /// a refused flag, an early config error) makes the write fail with EPIPE
+    /// instead of killing the app; that failure is dropped on purpose — the
+    /// CLI's own exit status and stderr already report the run.
+    package static func feedStdin(_ pipe: Pipe, payload: Data?) {
+        let handle = pipe.fileHandleForWriting
+        _ = fcntl(handle.fileDescriptor, F_SETNOSIGPIPE, 1)
+        if let payload {
+            try? handle.write(contentsOf: payload)
+        }
+        try? handle.close()
     }
 
     // swiftlint:disable:next function_parameter_count
@@ -162,9 +185,16 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         let stderr = Pipe()
         process.standardOutput = stdout
         process.standardError = stderr
+        let stdinPrompt = Self.stdinPayload(systemPrompt: systemPrompt)
+        let stdin = Pipe()
+        process.standardInput = stdin
 
         processHandle.set(process)
         try process.run()
+
+        // Written off the caller's actor: a prompt larger than the pipe buffer
+        // blocks until the CLI reads it, which it does first thing in RunE.
+        Task.detached { Self.feedStdin(stdin, payload: stdinPrompt) }
 
         let stderrTask = Task.detached { () -> String in
             let data = stderr.fileHandleForReading.readDataToEndOfFile()
@@ -174,7 +204,7 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         var accumulatedText = ""
         let handle = stdout.fileHandleForReading
 
-        for try await line in handle.bytes.lines {
+        for await line in handle.ndjsonLines {
             if Task.isCancelled { break }
             if let event = parseLine(line, accumulatedText: &accumulatedText) {
                 continuation.yield(event)
@@ -230,8 +260,7 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
             }
         case "error":
             if let errMsg = json["error"] as? String {
-                // Emit as text so the UI can display it
-                return .text("[Error] \(errMsg)")
+                return .error(errMsg)
             }
         case "done":
             // Handled after the stream loop (turnComplete + done)

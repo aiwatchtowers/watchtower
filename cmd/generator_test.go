@@ -55,6 +55,15 @@ func newFakeTokenServer(t *testing.T, invalidGrant bool) (server *httptest.Serve
 	return server, hits
 }
 
+// cacheReadOnlyTool gives connection id a cached tools/list holding one
+// read-only tool, so loadExternalMCPServers mounts it (QC-02 fails closed on
+// a never-listed connection, and cmd tests never list for real).
+func cacheReadOnlyTool(t *testing.T, database *db.DB, id int64) {
+	t.Helper()
+	require.NoError(t, database.SetExternalConnectionTools(id,
+		[]db.ExternalTool{{Name: "get_item", Annotated: true, ReadOnlyHint: true}}, time.Now().UTC().Format(time.RFC3339)))
+}
+
 // setupOAuthConnection creates one enabled http connection in cfg's DB plus
 // its secret file holding an oauth grant pointing at tokenEndpoint, and
 // returns the connection id and the store used to read the secret back.
@@ -68,6 +77,7 @@ func setupOAuthConnection(t *testing.T, database *db.DB, cfg interface{ Workspac
 	})
 	require.NoError(t, err)
 
+	cacheReadOnlyTool(t, database, id)
 	store := externalmcp.NewSecretStore(cfg.WorkspaceDir(), id)
 	secret := &externalmcp.Secret{
 		Headers: map[string]string{"X-Foo": "bar"},
@@ -165,6 +175,7 @@ func TestLoadExternalMCPServers_OAuth_InvalidGrantRevokesAndSkips(t *testing.T) 
 		Enabled: true,
 	})
 	require.NoError(t, err)
+	cacheReadOnlyTool(t, database, otherID)
 
 	originalNow := externalMCPNow
 	externalMCPNow = func() time.Time { return now }
@@ -308,6 +319,7 @@ func TestLoadExternalMCPServers_StaticSecret_HeadersAndEnvPassThrough(t *testing
 		Enabled: true,
 	})
 	require.NoError(t, err)
+	cacheReadOnlyTool(t, database, id)
 
 	store := externalmcp.NewSecretStore(cfg.WorkspaceDir(), id)
 	require.NoError(t, store.Save(&externalmcp.Secret{

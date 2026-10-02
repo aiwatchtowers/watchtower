@@ -1,11 +1,14 @@
 package cmd
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
 
 	"watchtower/internal/db"
+	"watchtower/internal/externalmcp"
 	"watchtower/internal/extract"
 )
 
@@ -55,6 +58,11 @@ func TestMain(m *testing.M) {
 	}
 	if os.Getenv("GO_WANT_HELPER_PROCESS") == "1" || os.Getenv("GO_WANT_HELPER_PROCESS_DELAYED") == "1" {
 		os.Exit(m.Run())
+	}
+	// No cmd test may start a real Quick Connection server or dial its URL
+	// to list tools (QC-02); tests that need a listing stub it themselves.
+	listServerTools = func(context.Context, externalmcp.ServerSpec) ([]db.ExternalTool, error) {
+		return nil, errors.New("tools/list is stubbed out in cmd tests")
 	}
 	if err := db.InitTestTemplate(); err != nil {
 		fmt.Fprintf(os.Stderr, "testmain: %v\n", err)

@@ -48,7 +48,11 @@ struct RecordingDetailView: View {
     @State private var shownRecap: RecordingRecap?
     @State private var chapters: MeetingChapters?
     @State private var tab: RecordingDetailTab = .recap
-    @State private var chatVM: MeetingChatViewModel?
+    /// The recording's chat conversation, resolved when the Chat tab opens.
+    /// The chat itself lives in `AppState.embeddedChatCenter`: switching
+    /// recordings or leaving never stops a reply.
+    @State private var chatConversationID: Int64?
+    @State private var chatError: String?
     @State private var isRetryingRecap = false
     @State private var showDeleteConfirm = false
     @State private var linkTarget: MeetingTranscript?
@@ -118,7 +122,8 @@ struct RecordingDetailView: View {
         }
         .task(id: transcriptID) {
             tab = .recap
-            chatVM = nil
+            chatConversationID = nil
+            chatError = nil
             utterances = nil
             chapters = nil
             transcriptScrollTarget = nil
@@ -197,8 +202,24 @@ struct RecordingDetailView: View {
                 onRegenerateRecap: retryRecap
             )
         case .chat:
-            if let chatVM {
-                RecordingChatTab(chatVM: chatVM)
+            if let chatConversationID, let db = appState.databaseManager {
+                let engine = appState.embeddedChatCenter.engine(for: MeetingChatSurface.spec(
+                    transcript: transcript, transcriptID: transcriptID, recapContent: recapContent,
+                    conversationID: chatConversationID, dbPool: db.dbPool))
+                RecordingChatTab(engine: engine, transcriptID: transcriptID)
+                    .embeddedChatVisibility(engine.spec.key, in: appState.embeddedChatCenter)
+            } else if let chatError {
+                VStack(spacing: 8) {
+                    Label(chatError, systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                    Button("Try again") {
+                        self.chatError = nil
+                        openChat(transcript)
+                    }
+                    .controlSize(.small)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -355,13 +376,9 @@ struct RecordingDetailView: View {
                 try MeetingTranscriptQueries.setUtteranceDeleted(
                     conn, id: transcriptID, idx: idx, deleted: deleted)
             }
-            // The chat VM snapshots the transcript at init (its system-prompt
-            // excerpt is built from that copy) — reset it so the next chat
-            // turn is created over the edited text instead of still carrying
-            // the deleted utterance. It is recreated lazily on the Chat tab
-            // from the reloaded row; the persisted conversation survives.
-            chatVM?.cancelStream()
-            chatVM = nil
+            // The chat's prompts are rebuilt from the reloaded row on the next
+            // render (`MeetingChatSurface.spec`), so a later first turn never
+            // carries the deleted utterance; a reply in flight keeps going.
             onChanged()
             Task { await load() }
             return true
@@ -378,9 +395,17 @@ struct RecordingDetailView: View {
     }
 
     private func openChat(_ transcript: MeetingTranscript) {
-        guard let db = appState.databaseManager else { return }
-        chatVM = MeetingChatViewModel(
-            transcript: transcript, recapContent: recapContent, dbManager: db)
+        guard let db = appState.databaseManager else {
+            chatError = "Couldn't open the chat: the database isn't open."
+            return
+        }
+        do {
+            chatConversationID = try MeetingChatSurface.conversationID(
+                transcriptID: transcriptID, title: transcript.title, dbPool: db.dbPool)
+        } catch {
+            NSLog("RecordingDetailView: opening the chat of recording %lld failed: %@", transcriptID, String(describing: error))
+            chatError = "Couldn't open the chat: \(error.localizedDescription)"
+        }
     }
 
     private func retryRecap() {
@@ -508,13 +533,13 @@ struct RecordingDetailView: View {
     private func deleteRecording() {
         guard let db = appState.databaseManager else { return }
         do {
-            chatVM?.cancelStream()
             if appState.audioPlaybackCenter.activeTranscriptID == transcriptID {
                 appState.audioPlaybackCenter.pause()
             }
             let audioPath = try db.dbPool.write { conn in
                 try MeetingTranscriptQueries.delete(conn, id: transcriptID)
             }
+            appState.embeddedChatCenter.dropContext(type: MeetingChatSurface.contextType, id: String(transcriptID))
             // Post-commit, best-effort: the daemon retention phase may have
             // already removed the file — a missing file is success.
             if let audioPath {

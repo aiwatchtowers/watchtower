@@ -516,7 +516,7 @@ func TestSyncTeamInfoError(t *testing.T) {
 }
 
 // TestSyncTeamInfoError_GenericErrorNotClassifiedAsRevoked proves
-// isRevokedAuthError actually discriminates: a non-auth failure (unlike
+// IsRevokedAuthError actually discriminates: a non-auth failure (unlike
 // TestSyncTeamInfoError's invalid_auth) must record plain "error", not
 // "revoked" — a classifier that always says "revoked" would pass the other
 // test too, so this is the branch that actually pins the distinction.

@@ -1,7 +1,7 @@
 ---
 type: bug
 title: TestClaudeBackend_SessionLostFromResultErrorsRetriesWithReplay is flaky on CI
-status: open
+status: done
 priority: med
 tags: [test, flaky, chat, ci]
 context: seen failing on CI for PR #16 and PR #23 (neither touches internal/chat); passes locally
@@ -22,3 +22,28 @@ process and a replayed session under a loaded CI runner. Worth checking:
 - that the stub's process group is reaped on the timeout path (house rule).
 
 A red Go Test on an unrelated PR costs a full CI re-run each time.
+
+## Resolution (2026-10-01)
+
+Not a slow runner: a real race in `claudeBackend`. The warm `--resume`
+child reports the rejection (an error `result`) before the owner's turn
+arrives. When it is still alive at that moment, `claimForSend` drains its
+buffered events — the `session_lost` error included — and writes the turn;
+the child then exits, and `exitOutcome` saw a child that had produced a
+result (`gotResult`) and no stderr rejection, so it ended the turn as a
+plain exit (`internal`) instead of the fresh retry. The test then waited
+10 s for a `text_delta` that never came.
+
+Fix: the recorded rejection (`lostMsg`) is now consulted for a live child
+in `ensureProcLocked` (straight to the fresh retry) and in `exitOutcome`.
+Made deterministic by `TestClaudeBackend_ResumeRejectedBeforeTheTurnOnALiveChildRetriesFresh`
+(fake mode `lost_result_linger`), which failed with the exact CI message
+before the fix. The sibling flake
+`TestClaudeBackend_ResumeRejectedBeforeFirstTurnIsNotRespawned/lost_result`
+had the exited-child twin: `rejectedResume` gave the reader only 500 ms to
+reach the rejection line, so under load it respawned the doomed `--resume`.
+It now waits up to `exitedOutputWait` (5 s, after the sweep, so it ends at
+EOF; skipped when the result already settled it), `exitOutcome` does the
+same, and the reader stores the rejection before marking the result. That
+half is a timing fix: no test pins it (a 500 ms bound passes locally too).
+

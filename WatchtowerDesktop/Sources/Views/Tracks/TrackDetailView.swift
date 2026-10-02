@@ -6,7 +6,11 @@ struct TrackDetailView: View {
     let viewModel: TracksViewModel
     var onClose: (() -> Void)?
     @Environment(AppState.self) private var appState
-    @State private var chatVM: TrackChatViewModel?
+    /// The track's chat conversation, resolved on appear. The chat itself
+    /// lives in `AppState.embeddedChatCenter`: leaving the track never stops
+    /// a reply.
+    @State private var chatConversationID: Int64?
+    @State private var chatError: String?
     @State private var showCreateTarget = false
     @State private var targetPrefill: TargetPrefill?
     @State private var targetPrefillError: String?
@@ -54,17 +58,23 @@ struct TrackDetailView: View {
             .frame(minHeight: 200)
 
             // Bottom: embedded chat
-            if let chatVM {
+            if let db = appState.databaseManager, let chatConversationID {
+                let engine = trackChatEngine(db: db, conversationID: chatConversationID)
                 Divider()
-                TrackChatSection(chatVM: chatVM)
+                TrackChatSection(engine: engine, trackID: track.id)
                     .frame(minHeight: 200, idealHeight: 300)
+                    .embeddedChatVisibility(engine.spec.key, in: appState.embeddedChatCenter)
+            } else if let chatError {
+                Divider()
+                Label(chatError, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .padding(8)
             }
         }
         .onAppear {
             if let db = appState.databaseManager {
-                chatVM = TrackChatViewModel(
-                    track: track, viewModel: viewModel, dbManager: db
-                )
+                openChat(db: db)
                 loadLinkedTargets(db: db)
                 loadJiraIssues(db: db)
                 loadTrackStates(db: db)
@@ -74,6 +84,7 @@ struct TrackDetailView: View {
             }
         }
         .onChange(of: track.id) {
+            if let db = appState.databaseManager { openChat(db: db) }
             timelineVM?.stop()
             timelineVM = nil
             isEditingInstruction = false
@@ -93,6 +104,28 @@ struct TrackDetailView: View {
                 loadLinkedTargets(db: db)
             }
         }
+    }
+
+    // MARK: - Chat
+
+    private func openChat(db: DatabaseManager) {
+        do {
+            chatConversationID = try TrackChatSurface.conversationID(for: track, dbPool: db.dbPool)
+            chatError = nil
+        } catch {
+            chatConversationID = nil
+            NSLog("TrackDetailView: opening the chat of track %d failed: %@", track.id, String(describing: error))
+            chatError = "Couldn't open the chat: \(error.localizedDescription)"
+        }
+    }
+
+    /// A finished reply can change what the track shows (the daemon's
+    /// re-scan reads the same conversation), so the list reloads after it.
+    private func trackChatEngine(db: DatabaseManager, conversationID: Int64) -> EmbeddedChatEngine {
+        let engine = appState.embeddedChatCenter.engine(
+            for: TrackChatSurface.spec(track: track, conversationID: conversationID, dbPool: db.dbPool))
+        engine.onTurnFinished = { [weak viewModel] _ in viewModel?.load() }
+        return engine
     }
 
     // MARK: - Custom-track Activity
@@ -210,10 +243,18 @@ struct TrackDetailView: View {
     /// the list's tracks-count observation drops it automatically.
     private func deleteTrack() {
         guard let db = appState.databaseManager else { return }
-        onClose?()
-        try? db.dbPool.write { database in
-            try TrackQueries.delete(database, id: track.id)
+        do {
+            try db.dbPool.write { database in
+                try TrackQueries.delete(database, id: track.id)
+            }
+        } catch {
+            NSLog("TrackDetailView: deleting track %d failed: %@", track.id, String(describing: error))
+            watchEditError = "Couldn't delete the watch: \(error.localizedDescription)"
+            return
         }
+        // Only once it is gone: a reply in its chat stops with it.
+        appState.embeddedChatCenter.dropContext(type: TrackChatSurface.contextType, id: String(track.id))
+        onClose?()
     }
 
     /// Builds and starts the custom-track timeline VM. When the track is linked

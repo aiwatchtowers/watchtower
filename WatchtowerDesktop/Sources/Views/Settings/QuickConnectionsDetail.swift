@@ -34,6 +34,16 @@ struct QuickConnectionsDetail: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            // QC-02: the chat gets a connection's read-only tools only; the
+            // per-tool list lives in the CLI until the Desktop has a toggle.
+            // LocalizedStringKey so the command renders as code (Markdown).
+            Text(LocalizedStringKey(
+                "The assistant can use only the tools a server marks read-only "
+                    + "(or, when it doesn't say, tools named get…, list…, search… and the like). "
+                    + "Review or change them with `watchtower connections tools <id>`."
+            ))
+                .font(.caption)
+                .foregroundStyle(.secondary)
             if let vm = appState.externalConnectionsViewModel {
                 if vm.connections.isEmpty {
                     Text("No external connections configured.")
@@ -55,7 +65,7 @@ struct QuickConnectionsDetail: View {
                                 .help(connection.isOK
                                     ? "OK"
                                     : (connection.error.isEmpty ? connection.status : connection.error))
-                            if !connection.isOK {
+                            if connection.needsSignIn {
                                 Button("Sign in again") {
                                     Task { await vm.signIn(connection) }
                                 }
@@ -122,6 +132,9 @@ struct QuickConnectionsDetail: View {
     }
 
     private func connectionStatusColor(_ connection: ExternalConnection) -> Color {
-        connection.isOK ? .green : .red
+        if connection.isOK { return .green }
+        // Red only when a new sign-in is the fix; a transient or tool-list
+        // error is orange (its tooltip says what to do).
+        return connection.needsSignIn ? .red : .orange
     }
 }

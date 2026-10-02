@@ -188,7 +188,7 @@ final class TargetBriefCenter {
         }
         setVM(chatVM, for: next.id)
         guard send(next.request.text, on: chatVM) else {
-            failToStart(next.id, message: "The brief could not be sent — re-ask here.")
+            failToStart(next.id, message: chatVM.errorMessage ?? "The brief could not be sent — re-ask here.")
             return
         }
         watch(next.id, chatVM: chatVM)

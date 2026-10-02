@@ -84,6 +84,10 @@ final class CatchUpViewModel {
     private let dbPool: DatabasePool
     private var observationTask: Task<Void, Never>?
     private var pollTask: Task<Void, Never>?
+    /// Re-reads the list once the oldest `building` row passes
+    /// `CatchUpRecap.staleBuildingAfter`, so a run that died while the app was
+    /// open flips to failed (with Retry) instead of spinning until relaunch.
+    private var staleRecheckTask: Task<Void, Never>?
 
     /// One-shot: the next `apply` selects the newest recap instead of keeping the
     /// current selection. Set when a build or regen starts, consumed by the first
@@ -133,6 +137,7 @@ final class CatchUpViewModel {
 
     private func apply(_ recaps: [CatchUpRecap]) async {
         self.recaps = recaps
+        scheduleStaleRecheck()
         do {
             autoWindowStart = try await dbPool.read { try CatchUpQueries.autoWindowStart($0) }
         } catch {
@@ -155,6 +160,19 @@ final class CatchUpViewModel {
             selected = fresh
         } else {
             selected = recaps.first
+        }
+    }
+
+    private func scheduleStaleRecheck() {
+        staleRecheckTask?.cancel()
+        staleRecheckTask = nil
+        guard let due = recaps.compactMap(\.staleAt).min() else { return }
+        // One second past the threshold: the projection flips strictly after it.
+        let delay = max(due.timeIntervalSinceNow, 0) + 1
+        staleRecheckTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled, let self else { return }
+            await self.reload()
         }
     }
 

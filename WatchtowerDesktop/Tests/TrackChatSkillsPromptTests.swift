@@ -35,7 +35,7 @@ final class TrackChatSkillsPromptTests: XCTestCase {
         let track = try makeTrack()
         let dir = try SkillsPromptFixtures.makePair(self)
 
-        let prompt = TrackChatViewModel.buildSystemPrompt(
+        let prompt = TrackChatSurface.buildSystemPrompt(
             track: track, dbPool: dbManager.dbPool,
             memoryChatEnabled: false, memoryVaultDir: nil, skillsDir: dir)
 
@@ -49,10 +49,10 @@ final class TrackChatSkillsPromptTests: XCTestCase {
         let track = try makeTrack()
         let empty = try SkillsPromptFixtures.makeEmptyDir(self)
 
-        let withEmptyDir = TrackChatViewModel.buildSystemPrompt(
+        let withEmptyDir = TrackChatSurface.buildSystemPrompt(
             track: track, dbPool: dbManager.dbPool,
             memoryChatEnabled: false, memoryVaultDir: nil, skillsDir: empty)
-        let withNoDir = TrackChatViewModel.buildSystemPrompt(
+        let withNoDir = TrackChatSurface.buildSystemPrompt(
             track: track, dbPool: dbManager.dbPool,
             memoryChatEnabled: false, memoryVaultDir: nil, skillsDir: nil)
 
@@ -64,15 +64,17 @@ final class TrackChatSkillsPromptTests: XCTestCase {
     @MainActor
     func testSendPassesNoToolMode() async throws {
         let track = try makeTrack()
-        let vm = TracksViewModel(dbManager: dbManager)
         let mock = MockClaudeService(events: [.text("ok"), .done])
-        let chat = TrackChatViewModel(track: track, viewModel: vm, dbManager: dbManager, aiService: mock)
+        let conv = try TrackChatSurface.conversationID(for: track, dbPool: dbManager.dbPool)
+        let engine = makeSurfaceEngine(TrackChatSurface.spec(track: track, conversationID: conv, dbPool: dbManager.dbPool),
+                                       dbPool: dbManager.dbPool, ai: mock)
 
-        chat.inputText = "hello"
-        chat.send()
-        for _ in 0..<200 where chat.isStreaming { try await Task.sleep(for: .milliseconds(10)) }
+        engine.send("hello")
+        let done = await eventually { !engine.isStreaming }
+        XCTAssertTrue(done)
 
         // AGENT-04: draft-only surfaces never send a tool mode.
         XCTAssertEqual(mock.toolModes, [nil])
+        XCTAssertNotNil(mock.systemPrompts.first.flatMap { $0 }, "the first turn carries the track prompt")
     }
 }

@@ -971,11 +971,16 @@ final class OnboardingChatViewModelTests: XCTestCase {
 
     @MainActor
     func testSendWhileStreamingDoesNothing() {
-        let vm = OnboardingChatViewModel(aiService: MockClaudeService(), dbManager: dbManager)
-        vm.isStreaming = true
+        let vm = OnboardingChatViewModel(aiService: MockClaudeService(events: [], thenHangs: true), dbManager: dbManager)
+        vm.inputText = "First"
+        vm.send()
+        XCTAssertTrue(vm.isStreaming)
+        let before = vm.messages.count
         vm.inputText = "Hello"
         vm.send()
-        XCTAssertTrue(vm.messages.isEmpty)
+        XCTAssertEqual(vm.messages.count, before, "a second send while streaming adds nothing")
+        XCTAssertEqual(vm.inputText, "Hello", "and keeps the text")
+        vm.skipChat()
     }
 
     @MainActor
@@ -1277,6 +1282,37 @@ final class OnboardingChatViewModelTests: XCTestCase {
         XCTAssertEqual(mock.sessionIDs.count, 2)
         XCTAssertNil(mock.sessionIDs[0])
         XCTAssertEqual(mock.sessionIDs[1], "sess-live")
+    }
+
+    /// A failed generation with nothing known locally never erases the
+    /// context an earlier run saved.
+    @MainActor
+    func testFailedContextGenerationKeepsTheEarlierContext() async throws {
+        try await dbManager.dbPool.write { db in
+            try TestDatabase.insertWorkspace(db, id: "T001")
+            try db.execute(sql: "INSERT INTO slack_accounts (id, current_user_id) VALUES (1, 'U001')")
+            try TestDatabase.insertProfile(db, slackUserID: "U001", customPromptContext: "Leads the payments team.")
+        }
+        let vm = OnboardingChatViewModel(aiService: MockClaudeService(events: [.error("not logged in"), .done]),
+                                         dbManager: dbManager)
+        await vm.generatePromptContext()
+        let profile = try await dbManager.dbPool.read { db in try ProfileQueries.fetchProfile(db, slackUserID: "U001") }
+        XCTAssertEqual(profile?.customPromptContext, "Leads the payments team.")
+    }
+
+    /// A blank generation falls back to the locally known profile.
+    @MainActor
+    func testBlankContextGenerationFallsBackToTheLocalProfile() async throws {
+        try await dbManager.dbPool.write { db in
+            try TestDatabase.insertWorkspace(db, id: "T001")
+            try db.execute(sql: "INSERT INTO slack_accounts (id, current_user_id) VALUES (1, 'U001')")
+            try TestDatabase.insertProfile(db, slackUserID: "U001")
+        }
+        let vm = OnboardingChatViewModel(aiService: MockClaudeService(events: [.text("   "), .done]), dbManager: dbManager)
+        vm.role = "Staff Engineer"
+        await vm.generatePromptContext()
+        let profile = try await dbManager.dbPool.read { db in try ProfileQueries.fetchProfile(db, slackUserID: "U001") }
+        XCTAssertEqual(profile?.customPromptContext, "Role: Staff Engineer")
     }
 
     @MainActor

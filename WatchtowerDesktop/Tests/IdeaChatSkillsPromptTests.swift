@@ -35,7 +35,7 @@ final class IdeaChatSkillsPromptTests: XCTestCase {
         let idea = try makeIdea()
         let dir = try SkillsPromptFixtures.makePair(self)
 
-        let prompt = IdeaChatViewModel.buildSystemPrompt(
+        let prompt = IdeaChatSurface.buildSystemPrompt(
             idea: idea, mentions: [], dbPool: dbManager.dbPool, skillsDir: dir)
 
         XCTAssertTrue(prompt.contains("=== AVAILABLE SKILLS ==="))
@@ -48,9 +48,9 @@ final class IdeaChatSkillsPromptTests: XCTestCase {
         let idea = try makeIdea()
         let empty = try SkillsPromptFixtures.makeEmptyDir(self)
 
-        let withEmptyDir = IdeaChatViewModel.buildSystemPrompt(
+        let withEmptyDir = IdeaChatSurface.buildSystemPrompt(
             idea: idea, mentions: [], dbPool: dbManager.dbPool, skillsDir: empty)
-        let withNoDir = IdeaChatViewModel.buildSystemPrompt(
+        let withNoDir = IdeaChatSurface.buildSystemPrompt(
             idea: idea, mentions: [], dbPool: dbManager.dbPool, skillsDir: nil)
 
         XCTAssertFalse(withEmptyDir.contains("AVAILABLE SKILLS"))

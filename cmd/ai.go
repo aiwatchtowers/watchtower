@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -22,14 +23,17 @@ var (
 	aiFlagModel        string
 	aiFlagSessionID    string
 	aiFlagSystemPrompt string
-	aiFlagDBPath       string
-	aiFlagTools        string
-	aiFlagSurface      string
-	aiFlagConversation int64
-	aiFlagTurn         string
-	aiFlagContextType  string
-	aiFlagContextID    string
-	aiFlagEvents       string
+	// aiFlagSystemPromptStdin reads the system prompt from stdin instead of
+	// argv (the Desktop's chats: their prompt carries private context).
+	aiFlagSystemPromptStdin bool
+	aiFlagDBPath            string
+	aiFlagTools             string
+	aiFlagSurface           string
+	aiFlagConversation      int64
+	aiFlagTurn              string
+	aiFlagContextType       string
+	aiFlagContextID         string
+	aiFlagEvents            string
 )
 
 var aiCmd = &cobra.Command{
@@ -82,6 +86,9 @@ func init() {
 	aiQueryCmd.Flags().StringVar(&aiFlagModel, "model", "", "override AI model")
 	aiQueryCmd.Flags().StringVar(&aiFlagSessionID, "session-id", "", "resume session (Claude only)")
 	aiQueryCmd.Flags().StringVar(&aiFlagSystemPrompt, "system-prompt", "", "system prompt")
+	aiQueryCmd.Flags().BoolVar(&aiFlagSystemPromptStdin, "system-prompt-stdin", false,
+		"read the system prompt from stdin (keeps it off argv: visible in ps, bounded by ARG_MAX)")
+	aiQueryCmd.MarkFlagsMutuallyExclusive("system-prompt", "system-prompt-stdin")
 	aiQueryCmd.Flags().StringVar(&aiFlagDBPath, "db-path", "", "SQLite database path for MCP (overrides default)")
 	aiQueryCmd.Flags().StringVar(&aiFlagTools, "tools", "", "tool mode: chat = mount the assistant's write tools as proposals")
 	aiQueryCmd.Flags().StringVar(&aiFlagSurface, "surface", "main", "chat surface for --tools chat: main|target")
@@ -92,11 +99,43 @@ func init() {
 	aiQueryCmd.Flags().StringVar(&aiFlagEvents, "events", "v1", "output protocol: v1 (text/reset/session_id/done) or v2 (chat events)")
 }
 
+// maxStdinSystemPrompt bounds --system-prompt-stdin; a chat prompt is tens of
+// KB, so anything near this is a caller bug, not a prompt.
+const maxStdinSystemPrompt = 16 << 20
+
+// querySystemPrompt returns the system prompt from --system-prompt, or, with
+// --system-prompt-stdin, everything on stdin.
+func querySystemPrompt(stdin io.Reader) (string, error) {
+	if !aiFlagSystemPromptStdin {
+		return aiFlagSystemPrompt, nil
+	}
+	data, err := io.ReadAll(io.LimitReader(stdin, maxStdinSystemPrompt+1))
+	if err != nil {
+		return "", fmt.Errorf("reading the system prompt from stdin: %w", err)
+	}
+	if len(data) > maxStdinSystemPrompt {
+		return "", fmt.Errorf("system prompt on stdin exceeds %d bytes", maxStdinSystemPrompt)
+	}
+	if len(data) == 0 {
+		// The flag is passed only with a prompt to send: empty stdin means
+		// the delivery failed, and a chat without its prompt must not run.
+		return "", errors.New("--system-prompt-stdin: stdin was empty")
+	}
+	return string(data), nil
+}
+
 func runAIQuery(_ *cobra.Command, args []string) error {
 	prompt := args[0]
 	enc := json.NewEncoder(os.Stdout)
 	if aiFlagEvents != "v1" && aiFlagEvents != "v2" {
 		return emitError(enc, fmt.Sprintf("--events must be v1 or v2, got %q", aiFlagEvents))
+	}
+	// Before the config/DB work below, so a writer feeding a large prompt on
+	// stdin is not kept waiting (the Desktop tolerates a CLI that exits
+	// before reading — see WatchtowerAIService.feedStdin).
+	systemPrompt, err := querySystemPrompt(os.Stdin)
+	if err != nil {
+		return emitError(enc, err.Error())
 	}
 
 	cfg, err := config.Load(flagConfig)
@@ -126,7 +165,6 @@ func runAIQuery(_ *cobra.Command, args []string) error {
 	ctx, cancel := notifyShutdownContext(context.Background(), stderrLogf)
 	defer cancel()
 
-	systemPrompt := aiFlagSystemPrompt
 	textCh, errCh, sidCh := aiClient.Query(ctx, systemPrompt, prompt, aiFlagSessionID)
 
 	if aiFlagEvents == "v2" {

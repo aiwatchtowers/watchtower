@@ -512,3 +512,57 @@ func TestAttachmentDeadlineIsTransientFailure(t *testing.T) {
 	assert.Equal(t, "ok", row.status)
 	assert.Equal(t, "ok", loadSource(t, d).Status)
 }
+
+// Attachments are extracted one at a time — never several Vision/PDF
+// helpers at once inside the serial daemon cycle — and once the budget is
+// spent no further one starts, so a cycle overshoots by at most one
+// attachment.
+func TestAttachmentExtractionIsSequentialAndBudgetBound(t *testing.T) {
+	d, src := newSourceDB(t)
+	f := newFake()
+	f.pageSize = 20
+	start := time.Now().UTC().Truncate(time.Second).Add(-time.Hour)
+	f.addPage("p1", 1, start)
+	for i := range 6 {
+		f.addAttachment(fmt.Sprintf("a%d", i), "p1", 1, start.Add(time.Duration(i+1)*time.Second),
+			fmt.Sprintf("n%d.txt", i), "text/plain", []byte("x"), -1)
+	}
+	x := newFakeExtractor()
+	var mu sync.Mutex
+	inFlight, peak := 0, 0
+	x.onExtract = func() {
+		mu.Lock()
+		inFlight++
+		peak = max(peak, inFlight)
+		mu.Unlock()
+		time.Sleep(10 * time.Millisecond)
+		mu.Lock()
+		inFlight--
+		mu.Unlock()
+	}
+	e := New(d, Options{Extractor: x})
+	e.SetFetcher(src.JiraAccountID, f)
+	_, err := e.Run(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 6, countStatus(t, d, src.ID, "ok"))
+	assert.Equal(t, 1, peak, "no two extractions overlap")
+
+	// A budget spent by the first extraction stops the batch after it.
+	d2, src2 := newSourceDB(t)
+	f2 := newFake()
+	f2.pageSize = 20
+	f2.addPage("p1", 1, start)
+	for i := range 6 {
+		f2.addAttachment(fmt.Sprintf("a%d", i), "p1", 1, start.Add(time.Duration(i+1)*time.Second),
+			fmt.Sprintf("n%d.txt", i), "text/plain", []byte("x"), -1)
+	}
+	clock := &manualClock{t: start}
+	x2 := newFakeExtractor()
+	x2.onExtract = func() { clock.advance(2 * time.Minute) }
+	e2 := New(d2, Options{Extractor: x2, Budget: time.Minute, Now: clock.Now})
+	e2.SetFetcher(src2.JiraAccountID, f2)
+	st, err := e2.Run(context.Background())
+	require.NoError(t, err)
+	assert.True(t, st.Incomplete)
+	assert.Equal(t, 1, countStatus(t, d2, src2.ID, "ok"), "only the first attachment ran past the budget")
+}
