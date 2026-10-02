@@ -34,4 +34,20 @@ package enum OnboardingSettingsPlan {
         }
         return sets
     }
+
+    /// Writes `sets` in order with `watchtower config set` through `run` (the
+    /// CLI argv after the binary), stopping at the first failure. Returns that
+    /// failure's message for the step to show, nil when every key was written.
+    package static func apply(
+        _ sets: [(key: String, value: String)],
+        run: (_ arguments: [String]) async -> ProcessOutput
+    ) async -> String? {
+        for (key, value) in sets {
+            let result = await run(["config", "set", key, value])
+            if result.exitCode != 0 {
+                return "Failed to set \(key): \(result.stderr)"
+            }
+        }
+        return nil
+    }
 }

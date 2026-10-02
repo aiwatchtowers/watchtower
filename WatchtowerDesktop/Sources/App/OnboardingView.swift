@@ -26,9 +26,7 @@ struct OnboardingView: View {
     // never sees a false green checkmark.
     @State private var syncRanWithSlack = false
     @State private var syncProgress: SyncProgressData?
-    @State private var syncPhaseStartedAt: Date?
-    @State private var syncLastPhase: String?
-    @State private var syncEtaSeconds: Double?
+    @State private var syncETA = OnboardingSyncProgress()
 
     // Onboarding chat (runs in parallel with sync)
     @State private var onboardingVM: OnboardingChatViewModel?
@@ -445,7 +443,13 @@ struct OnboardingView: View {
         if !manualClaudePath.isEmpty {
             let path = manualClaudePath.trimmingCharacters(in: .whitespacesAndNewlines)
             if FileManager.default.isExecutableFile(atPath: path) {
-                saveClaudePathToConfig(path)
+                do {
+                    try OnboardingClaudePathConfig.save(path, configPath: Constants.configPath)
+                } catch {
+                    claudeCheckResult = "Could not save the path to config.yaml: \(error.localizedDescription)"
+                    isRunning = false
+                    return
+                }
                 claudeCheckResult = "Found: \(path)"
                 hasClaudeCLI = true
                 // Don't reset isRunning — health check continues the running state
@@ -466,32 +470,6 @@ struct OnboardingView: View {
         } else {
             claudeCheckResult = "Watchtower CLI not found."
             isRunning = false
-        }
-    }
-
-    /// Quote a YAML value safely: wrap in single quotes, escaping internal single quotes.
-    private func yamlQuote(_ value: String) -> String {
-        "'" + value.replacingOccurrences(of: "'", with: "''") + "'"
-    }
-
-    private func saveClaudePathToConfig(_ path: String) {
-        let configDir = (Constants.configPath as NSString).deletingLastPathComponent
-        try? FileManager.default.createDirectory(atPath: configDir, withIntermediateDirectories: true)
-
-        // C3 fix: YAML-safe quoting to prevent injection via path value
-        let safeLine = "claude_path: \(yamlQuote(path))\n"
-
-        if var content = try? String(contentsOfFile: Constants.configPath, encoding: .utf8) {
-            // Remove existing claude_path line if present
-            let lines = content.components(separatedBy: "\n").filter { !$0.hasPrefix("claude_path:") }
-            content = lines.joined(separator: "\n")
-            if !content.hasSuffix("\n") { content += "\n" }
-            content += safeLine
-            try? content.write(toFile: Constants.configPath, atomically: true, encoding: .utf8)
-            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: Constants.configPath)
-        } else {
-            try? safeLine.write(toFile: Constants.configPath, atomically: true, encoding: .utf8)
-            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: Constants.configPath)
         }
     }
 
@@ -1129,13 +1107,13 @@ struct OnboardingView: View {
                         .foregroundStyle(.primary)
                     if progress.elapsedSec > 0 {
                         Text("·").font(.caption).foregroundStyle(.secondary.opacity(0.5))
-                        Text(formatElapsed(progress.elapsedSec))
+                        Text(OnboardingSyncProgress.formatElapsed(progress.elapsedSec))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-                    if let eta = syncEtaSeconds, eta > 0 {
+                    if let eta = syncETA.etaSeconds, eta > 0 {
                         Text("·").font(.caption).foregroundStyle(.secondary.opacity(0.5))
-                        Text("\(formatETA(eta)) left")
+                        Text("\(OnboardingSyncProgress.formatETA(eta)) left")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -1150,7 +1128,7 @@ struct OnboardingView: View {
 
             // Progress bar from current phase
             if let progress = syncProgress {
-                let (done, total) = currentPhaseProgress(progress)
+                let (done, total) = OnboardingSyncProgress.phaseCounts(progress)
                 if total > 0 {
                     ProgressView(value: Double(done), total: Double(total))
                         .tint(.accentColor)
@@ -1165,76 +1143,6 @@ struct OnboardingView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
         .background(Color(nsColor: .controlBackgroundColor))
-    }
-
-    private func currentPhaseProgress(_ progress: SyncProgressData) -> (done: Int, total: Int) {
-        switch progress.phase {
-        case "Discovery":
-            return (progress.discoveryPages, progress.discoveryTotalPages)
-        case "Messages":
-            return (progress.msgChannelsDone, progress.msgChannelsTotal)
-        case "Users":
-            return (progress.userProfilesDone, progress.userProfilesTotal)
-        case "Threads":
-            return (progress.threadsDone ?? 0, progress.threadsTotal ?? 0)
-        default:
-            return (0, 0)
-        }
-    }
-
-    private func formatElapsed(_ s: Double) -> String {
-        let i = Int(s); return i < 60 ? "\(i)s" : "\(i / 60)m \(i % 60)s"
-    }
-
-    private func updateSyncETA(_ progress: SyncProgressData) {
-        // Reset timer when phase changes
-        if progress.phase != syncLastPhase {
-            syncLastPhase = progress.phase
-            syncPhaseStartedAt = Date()
-            syncEtaSeconds = nil
-            return
-        }
-
-        guard let phaseStart = syncPhaseStartedAt else {
-            syncEtaSeconds = nil
-            return
-        }
-
-        // Get done/total for current phase
-        let (done, total) = syncPhaseCounts(progress)
-        guard done > 0, total > 0 else {
-            syncEtaSeconds = nil
-            return
-        }
-
-        let elapsed = Date().timeIntervalSince(phaseStart)
-        guard elapsed > 2 else {
-            syncEtaSeconds = nil
-            return
-        }
-
-        let rate = Double(done) / elapsed
-        let remaining = Double(total - done) / rate
-        syncEtaSeconds = remaining
-    }
-
-    private func syncPhaseCounts(_ progress: SyncProgressData) -> (done: Int, total: Int) {
-        switch progress.phase {
-        case "Discovery": return (progress.discoveryPages, progress.discoveryTotalPages)
-        case "Messages": return (progress.msgChannelsDone, progress.msgChannelsTotal)
-        case "Users": return (progress.userProfilesDone, progress.userProfilesTotal)
-        case "Threads": return (progress.threadsDone ?? 0, progress.threadsTotal ?? 0)
-        default: return (0, 0)
-        }
-    }
-
-    private func formatETA(_ seconds: Double) -> String {
-        let s = Int(seconds)
-        if s < 5 { return "< 5s" }
-        if s < 60 { return "~\(s)s" }
-        let min = s / 60, rem = s % 60
-        if rem == 0 { return "~\(min)m" }
-        return "~\(min)m \(rem)s"
     }
 
     // MARK: - CLI Execution
@@ -1308,15 +1216,15 @@ struct OnboardingView: View {
                 provider: provider,
                 strongModelOverride: model.strongModelOverride
             )
-            for (key, value) in settings {
-                let result = await Self.runCLI(path: path, arguments: ["config", "set", key, value])
-                if result.exitCode != 0 {
-                    await MainActor.run {
-                        cliError = "Failed to set \(key): \(result.stderr)"
-                        isRunning = false
-                    }
-                    return
+            let failure = await OnboardingSettingsPlan.apply(settings) { arguments in
+                await Self.runCLI(path: path, arguments: arguments)
+            }
+            if let failure {
+                await MainActor.run {
+                    cliError = failure
+                    isRunning = false
                 }
+                return
             }
 
             await MainActor.run {
@@ -1442,9 +1350,7 @@ struct OnboardingView: View {
         isRunning = true
         cliError = nil
         syncProgress = nil
-        syncPhaseStartedAt = nil
-        syncLastPhase = nil
-        syncEtaSeconds = nil
+        syncETA = OnboardingSyncProgress()
 
         Task {
             let process = Process()
@@ -1474,7 +1380,7 @@ struct OnboardingView: View {
                     if let data = line.data(using: .utf8),
                        let json = try? decoder.decode(SyncProgressData.self, from: data) {
                         self.syncProgress = json
-                        self.updateSyncETA(json)
+                        self.syncETA.update(json)
                     }
                 }
             }

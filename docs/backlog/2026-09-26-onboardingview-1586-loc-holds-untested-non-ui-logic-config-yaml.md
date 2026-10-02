@@ -1,7 +1,7 @@
 ---
 type: chore
 title: "OnboardingView (1586 LOC) holds untested non-UI logic: config.yaml hand-edits, CLI argv, sync ETA"
-status: open
+status: done
 priority: med
 tags: [test-coverage, onboarding, review-2026-09-26]
 context: main-branch backlog review 2026-09-26 at 8cf68dcf — track test coverage (Swift Desktop)
@@ -14,3 +14,5 @@ created: 2026-09-26
 The largest non-generated Sources file has no test at all. It rewrites `config.yaml` by string surgery: it filters lines with the prefix `claude_path:`, appends a quoted line, and silently ignores write errors with `try?`, while every other config write goes through the CLI. It builds `config set` argv in a detached task, computes sync ETA and phase counts from `SyncProgressData`, and runs its own `Process` wrapper (see the deadlock finding). The onboarding-unstick and feature-splash work (PRs #117/#118) tested `OnboardingCompletion` and `FeatureSplashLogic`, but these paths stayed in the view. Suggest extracting a testable `OnboardingSetupService` (config writes through `config set`, argv builder, ETA math) and covering the YAML quote/injection case, a missing config file, and a failed `config set` (the error path that stops the flow).
 
 > Original note: «а давай проведем ревью нашего репоза на ветке мейн с целью наполнения беклога. Наши треки - покрытие тестами, баги существующие и потенциальные, архитектурные проблемы, анализ использования и бессмысленный функционал»
+
+Fixed in test/swift-test-infra: the non-UI logic moved to WatchtowerCore and is covered by `Tests/Core/OnboardingSetupTests`. `OnboardingClaudePathConfig` owns the `claude_path` edit (YAML quoting incl. the newline-injection case, replace-in-place, missing file/directory, 0600) and now throws instead of `try?` — the Claude step shows the failure and stops, and an unreadable config is no longer overwritten with the single line. `OnboardingSettingsPlan.apply` runs the `config set` sequence and stops at the first failed key. `OnboardingSyncProgress` holds the phase counts (the view had two copies), the per-phase ETA and its formatting. Remaining: the `sync --progress-json` process wrapper and the OAuth flow stay in the view (process lifecycle, covered by the ProcessPipes work).
