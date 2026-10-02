@@ -7,9 +7,25 @@ final class LiveTurnTests: XCTestCase {
     func testThrottlePublishesAtMostOncePerInterval() {
         var throttle = TextThrottle(interval: 1.0 / 30)
         let t0 = Date(timeIntervalSinceReferenceDate: 0)
-        XCTAssertTrue(throttle.shouldPublish(now: t0))
-        XCTAssertFalse(throttle.shouldPublish(now: t0.addingTimeInterval(0.01)))
-        XCTAssertTrue(throttle.shouldPublish(now: t0.addingTimeInterval(0.05)))
+        XCTAssertTrue(throttle.shouldPublish(now: t0, length: 0))
+        XCTAssertFalse(throttle.shouldPublish(now: t0.addingTimeInterval(0.01), length: 0))
+        XCTAssertTrue(throttle.shouldPublish(now: t0.addingTimeInterval(0.05), length: 0))
+    }
+
+    /// A long streamed text publishes less often (its re-render costs more),
+    /// never slower than the cap, and a short one keeps the base rate.
+    func testThrottleStretchesWithTextLength() {
+        let throttle = TextThrottle(interval: 1.0 / 30)
+        XCTAssertEqual(throttle.interval(forLength: 0), 1.0 / 30)
+        XCTAssertEqual(throttle.interval(forLength: 2_000), 1.0 / 30)
+        XCTAssertEqual(throttle.interval(forLength: 10_000), 0.065, accuracy: 0.001)
+        XCTAssertEqual(throttle.interval(forLength: 1_000_000), TextThrottle.maxInterval)
+
+        var stretched = TextThrottle(interval: 1.0 / 30)
+        let t0 = Date(timeIntervalSinceReferenceDate: 0)
+        XCTAssertTrue(stretched.shouldPublish(now: t0, length: 30_000))
+        XCTAssertFalse(stretched.shouldPublish(now: t0.addingTimeInterval(0.1), length: 30_000))
+        XCTAssertTrue(stretched.shouldPublish(now: t0.addingTimeInterval(0.2), length: 30_000))
     }
 
     /// Deltas inside one frame accumulate in `fullText`; the published `text`
