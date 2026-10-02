@@ -565,7 +565,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
     func testASuccessfulLoadClearsTheLoadErrorButKeepsAnActionError() async throws {
         let p = try await workbenchWithFolder()
         let loose = try await pool.write { d -> Int64 in
-            try d.execute(sql: "INSERT INTO targets (text) VALUES ('personal')")
+            try d.execute(sql: "INSERT INTO targets (text, period_start, period_end) VALUES ('personal', date('now'), date('now'))")
             return d.lastInsertedRowID
         }
         let vm = makeVM()

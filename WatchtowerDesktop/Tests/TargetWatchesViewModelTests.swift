@@ -7,27 +7,6 @@ import WatchtowerTestSupport
 @MainActor
 final class TargetWatchesViewModelTests: XCTestCase {
 
-    // Mirrors the track_events DDL the CustomTrackTimeline tests use, so the
-    // test DB has the table the app schema creates at runtime.
-    // linked_target_id is now part of the shared schema itself (Secretary
-    // Memory Slice C) — no longer patched here.
-    static let trackEventsSQL = """
-        ALTER TABLE tracks ADD COLUMN origin TEXT NOT NULL DEFAULT 'auto';
-        ALTER TABLE tracks ADD COLUMN instruction TEXT NOT NULL DEFAULT '';
-        ALTER TABLE tracks ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1;
-        ALTER TABLE tracks ADD COLUMN last_run_at TEXT NOT NULL DEFAULT '';
-        CREATE TABLE IF NOT EXISTS track_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
-            summary TEXT NOT NULL DEFAULT '', detail TEXT NOT NULL DEFAULT '',
-            source_type TEXT NOT NULL DEFAULT '', source_id TEXT NOT NULL DEFAULT '',
-            source_refs TEXT NOT NULL DEFAULT '[]', decision TEXT NOT NULL DEFAULT '',
-            proposed_action TEXT NOT NULL DEFAULT '',
-            action_status TEXT NOT NULL DEFAULT 'none',
-            read_at TEXT, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
-        );
-        """
-
     private func makeWatch(_ db: Database, targetID: Int?, text: String) throws -> Int {
         try db.execute(sql: """
             INSERT INTO tracks (assignee_user_id, text, context, category, ownership, priority,
@@ -40,7 +19,6 @@ final class TargetWatchesViewModelTests: XCTestCase {
     func testFetchForTargetScopesToTargetsWatches() throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        try manager.dbPool.write { db in try db.execute(sql: Self.trackEventsSQL) }
 
         let t1 = try manager.dbPool.write { db -> Int in
             try TargetQueries.create(db, text: "goal one", periodStart: "2026-06-01", periodEnd: "2026-06-30")
@@ -68,7 +46,6 @@ final class TargetWatchesViewModelTests: XCTestCase {
     func testScanWatchRefreshesFeedWithoutAnyObservationRunning() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        try await manager.dbPool.write { db in try db.execute(sql: Self.trackEventsSQL) }
 
         let targetID = try await manager.dbPool.write { db -> Int in
             try TargetQueries.create(db, text: "goal", periodStart: "2026-06-01", periodEnd: "2026-06-30")
@@ -116,7 +93,6 @@ final class TargetWatchesViewModelTests: XCTestCase {
     func testApplyActionMutatesTargetAndMarksApplied() throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        try manager.dbPool.write { db in try db.execute(sql: Self.trackEventsSQL) }
 
         let targetID = try manager.dbPool.write { db -> Int in
             try TargetQueries.create(db, text: "ship it", periodStart: "2026-06-01", periodEnd: "2026-06-30")

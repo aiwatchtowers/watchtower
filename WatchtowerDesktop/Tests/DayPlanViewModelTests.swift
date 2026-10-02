@@ -105,8 +105,8 @@ final class DayPlanViewModelTests: XCTestCase {
     func testCascadeMarkDone() async throws {
         try await pool.write { db in
             try db.execute(sql: """
-                INSERT INTO targets (id, text, intent, status, priority, ownership, tags, sub_items, created_at, updated_at)
-                VALUES (42, 'T', '', 'todo', 'medium', 'mine', '[]', '[]', datetime('now'), datetime('now'))
+                INSERT INTO targets (id, text, intent, status, priority, ownership, tags, sub_items, created_at, updated_at, period_start, period_end)
+                VALUES (42, 'T', '', 'todo', 'medium', 'mine', '[]', '[]', datetime('now'), datetime('now'), date('now'), date('now'))
                 """)
         }
         let planId = try await pool.write { db in
@@ -159,8 +159,8 @@ final class DayPlanViewModelTests: XCTestCase {
     func testCascadeMarkPending() async throws {
         try await pool.write { db in
             try db.execute(sql: """
-                INSERT INTO targets (id, text, intent, status, priority, ownership, tags, sub_items, created_at, updated_at)
-                VALUES (10, 'Task', '', 'done', 'medium', 'mine', '[]', '[]', datetime('now'), datetime('now'))
+                INSERT INTO targets (id, text, intent, status, priority, ownership, tags, sub_items, created_at, updated_at, period_start, period_end)
+                VALUES (10, 'Task', '', 'done', 'medium', 'mine', '[]', '[]', datetime('now'), datetime('now'), date('now'), date('now'))
                 """)
         }
         let planId = try await pool.write { db in
