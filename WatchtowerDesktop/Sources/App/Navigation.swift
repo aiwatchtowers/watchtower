@@ -158,6 +158,7 @@ struct MainNavigationView: View {
         }
         .onAppear { applyFeatureFallback() }
         .onChange(of: appState.featureVisibility.disabledFeatureIDs) { _, _ in applyFeatureFallback() }
+        .onChange(of: appState.featureVisibility.connectedSources) { _, _ in applyFeatureFallback() }
     }
 
     /// Redirects away from the current tab when it becomes hidden — a
@@ -168,7 +169,8 @@ struct MainNavigationView: View {
     private func applyFeatureFallback() {
         if let fallback = SidebarDestination.fallbackDestination(
             current: appState.selectedDestination,
-            disabled: appState.featureVisibility.disabledFeatureIDs
+            disabled: appState.featureVisibility.disabledFeatureIDs,
+            connected: appState.featureVisibility.connectedSources
         ) {
             appState.selectedDestination = fallback
         }

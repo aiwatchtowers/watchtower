@@ -64,6 +64,13 @@ struct SidebarView: View {
     /// Feature Manager change (or the initial load) hides/reveals tabs
     /// without a separate observation wire-up.
     private var disabledFeatures: Set<String> { appState.featureVisibility.disabledFeatureIDs }
+    /// Connected sources, the second visibility axis — same read-fresh rule.
+    private var connectedSources: ConnectedSources { appState.featureVisibility.connectedSources }
+
+    /// Both visibility axes for `item` (`SidebarDestination.isVisible`).
+    private func isShown(_ item: SidebarDestination) -> Bool {
+        item.isVisible(disabledFeatures: disabledFeatures, connected: connectedSources)
+    }
 
     private var counts: SidebarCountsViewModel? { appState.sidebarCountsViewModel }
     private var updatedTrackCount: Int { counts?.updatedTrackCount ?? 0 }
@@ -103,7 +110,7 @@ struct SidebarView: View {
 
     private var menuBody: some View {
         VStack(alignment: .leading, spacing: 2) {
-            ForEach(SidebarDestination.rootItems.filter { $0.isVisible(disabledFeatures: disabledFeatures) }) { item in
+            ForEach(SidebarDestination.rootItems.filter(isShown)) { item in
                 sidebarButton(item)
             }
 
@@ -111,7 +118,7 @@ struct SidebarView: View {
                 sectionView(section)
             }
 
-            ForEach(SidebarDestination.mainTrailingItems.filter { $0.isVisible(disabledFeatures: disabledFeatures) }) { item in
+            ForEach(SidebarDestination.mainTrailingItems.filter(isShown)) { item in
                 sidebarButton(item)
             }
 
@@ -127,7 +134,7 @@ struct SidebarView: View {
                     .padding(.horizontal, 12)
                     .padding(.bottom, 2)
 
-                ForEach(SidebarDestination.toolItems.filter { $0.isVisible(disabledFeatures: disabledFeatures) }) { item in
+                ForEach(SidebarDestination.toolItems.filter(isShown)) { item in
                     sidebarButton(item)
                 }
             }
@@ -280,10 +287,11 @@ struct SidebarView: View {
     static func visibleItems(
         in section: SidebarSection,
         hidden: Set<String>,
-        disabledFeatures: Set<String>
+        disabledFeatures: Set<String>,
+        connected: ConnectedSources
     ) -> [SidebarDestination] {
         section.partition(hidden: hidden).visible
-            .filter { $0.isVisible(disabledFeatures: disabledFeatures) }
+            .filter { $0.isVisible(disabledFeatures: disabledFeatures, connected: connected) }
     }
 
     /// Sum of badge counts for a section's VISIBLE items (drives the collapsed-header
@@ -294,9 +302,10 @@ struct SidebarView: View {
         in section: SidebarSection,
         hidden: Set<String>,
         disabledFeatures: Set<String>,
+        connected: ConnectedSources,
         count: (SidebarDestination) -> Int
     ) -> Int {
-        visibleItems(in: section, hidden: hidden, disabledFeatures: disabledFeatures)
+        visibleItems(in: section, hidden: hidden, disabledFeatures: disabledFeatures, connected: connected)
             .reduce(0) { $0 + count($1) }
     }
 
@@ -305,6 +314,7 @@ struct SidebarView: View {
             in: section,
             hidden: hiddenItems,
             disabledFeatures: disabledFeatures,
+            connected: connectedSources,
             count: count(for:)
         )
     }
@@ -314,7 +324,9 @@ struct SidebarView: View {
     /// one: its badge counts the action strip, and the high-priority inbox_items
     /// that used to turn it red are no longer shown on that tab.
     private func sectionBadgeColor(_ section: SidebarSection) -> Color {
-        let visible = Self.visibleItems(in: section, hidden: hiddenItems, disabledFeatures: disabledFeatures)
+        let visible = Self.visibleItems(
+            in: section, hidden: hiddenItems, disabledFeatures: disabledFeatures, connected: connectedSources
+        )
         if visible.contains(.digests), digestsBadgeCount > 0 { return .red }
         if visible.contains(.briefings), unreadBriefingCount > 0 { return .red }
         if visible.contains(.statistics), recommendationCount > 0 { return .red }
@@ -384,8 +396,8 @@ struct SidebarView: View {
                 // own show/hide choice, on BOTH halves — a feature-disabled
                 // item disappears from the section entirely rather than
                 // resurfacing in the "Hidden" sub-list.
-                let visibleItems = parts.visible.filter { $0.isVisible(disabledFeatures: disabledFeatures) }
-                let userHiddenItems = parts.hidden.filter { $0.isVisible(disabledFeatures: disabledFeatures) }
+                let visibleItems = parts.visible.filter(isShown)
+                let userHiddenItems = parts.hidden.filter(isShown)
                 ForEach(visibleItems) { item in
                     sidebarButton(item)
                         .contextMenu {
@@ -480,7 +492,7 @@ struct SidebarView: View {
 
     private var railBody: some View {
         VStack(spacing: 2) {
-            ForEach(SidebarDestination.rootItems.filter { $0.isVisible(disabledFeatures: disabledFeatures) }) { item in
+            ForEach(SidebarDestination.rootItems.filter(isShown)) { item in
                 railButton(item)
             }
 
@@ -490,7 +502,7 @@ struct SidebarView: View {
 
             railSeparator
 
-            ForEach(SidebarDestination.mainTrailingItems.filter { $0.isVisible(disabledFeatures: disabledFeatures) }) { item in
+            ForEach(SidebarDestination.mainTrailingItems.filter(isShown)) { item in
                 railButton(item)
             }
 
@@ -500,7 +512,7 @@ struct SidebarView: View {
 
             railSeparator
 
-            ForEach(SidebarDestination.toolItems.filter { $0.isVisible(disabledFeatures: disabledFeatures) }) { item in
+            ForEach(SidebarDestination.toolItems.filter(isShown)) { item in
                 railButton(item)
             }
 
@@ -559,7 +571,9 @@ struct SidebarView: View {
 
     @ViewBuilder
     private func railSectionView(_ section: SidebarSection) -> some View {
-        let items = Self.visibleItems(in: section, hidden: hiddenItems, disabledFeatures: disabledFeatures)
+        let items = Self.visibleItems(
+            in: section, hidden: hiddenItems, disabledFeatures: disabledFeatures, connected: connectedSources
+        )
         if !items.isEmpty {
             let expanded = railExpandedSection == section.id
             let badge = sectionBadgeCount(section)

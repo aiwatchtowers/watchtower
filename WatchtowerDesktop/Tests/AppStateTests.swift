@@ -218,6 +218,29 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(appState.owner.source, .slack)
     }
 
+    /// Connecting a source in Settings shows its tabs at once: the account
+    /// VMs' reload hook re-reads the connected sources.
+    func testAccountReloadRefreshesConnectedSources() async throws {
+        let appState = AppState()
+        appState.databaseManager = dbManager
+        appState.initSlackAccounts(dbPool: dbManager.dbPool)
+        appState.initEmailAccounts(dbPool: dbManager.dbPool)
+        let slack = try XCTUnwrap(appState.slackAccountsViewModel)
+        let mail = try XCTUnwrap(appState.emailAccountsViewModel)
+        await slack.refreshAsync()
+        XCTAssertEqual(appState.featureVisibility.connectedSources, .none)
+
+        try await dbManager.dbPool.write { db in
+            _ = try TestDatabase.insertSlackAccount(db, teamID: "T1", currentUserID: "1:U1")
+        }
+        await slack.refreshAsync()
+        XCTAssertEqual(appState.featureVisibility.connectedSources, ConnectedSources(slack: true))
+
+        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertEmailAccount(db) }
+        await mail.refreshAsync()
+        XCTAssertEqual(appState.featureVisibility.connectedSources, ConnectedSources(slack: true, mail: true))
+    }
+
     /// The Google accounts VM's reload hook re-resolves the owner too.
     func testOwner02GoogleAccountReloadRefreshesOwner() async throws {
         let appState = AppState()
