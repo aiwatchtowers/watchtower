@@ -45,9 +45,9 @@ var validNextStepKinds = map[string]bool{
 	"assistant": true, "open_links": true, "mark_done": true, "dismiss": true,
 }
 
-// ErrWorkbenchTarget is returned for a target on a project board: project
-// targets are moved by the project's agent, never by next-step (PROJ-01).
-var ErrWorkbenchTarget = errors.New("project targets have no next step")
+// ErrWorkbenchTarget is returned for a target on a workbench board: workbench
+// targets are moved by the workbench's agent, never by next-step (PROJ-01).
+var ErrWorkbenchTarget = errors.New("workbench targets have no next step")
 
 // GenerateNextStep computes and persists the next-step suggestion for a single
 // target. It returns the parsed suggestion. The call routes to the default
