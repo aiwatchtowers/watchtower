@@ -1,6 +1,13 @@
 import SwiftUI
 import WatchtowerCore
 
+/// The Settings window's sheets, one at a time (`AppState.settingsSheet`).
+enum SettingsSheet: String, Identifiable {
+    case aboutYou, featureSuggestion
+
+    var id: String { rawValue }
+}
+
 extension View {
     /// An Add account sheet in Settings: while it is up, the late About you
     /// sheet and the feature suggestion wait.

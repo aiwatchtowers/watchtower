@@ -947,9 +947,28 @@ final class AppState {
         !featureSuggestion.isEmpty && !showsLateAboutYou && !lateAboutYouPending && !isAddingAccount
     }
 
+    /// Settings' one sheet slot: About you always first, the feature offer
+    /// queued behind it.
+    var settingsSheet: SettingsSheet? {
+        if showsLateAboutYou { return .aboutYou }
+        return showsFeatureSuggestion ? .featureSuggestion : nil
+    }
+
+    /// The slot was closed from outside its buttons (Esc on About you); the
+    /// feature offer closes only through its own.
+    func settingsSheetDismissed(_ sheet: SettingsSheet) {
+        if sheet == .aboutYou { showsLateAboutYou = false }
+    }
+
+    /// Offered while an apply runs: merged once it is over.
+    @ObservationIgnored private var deferredSuggestion: [FeatureInfo] = []
+
     private func suggestFeatures(for goals: [OnboardingGoal]) async {
         await featureManager.load()
-        guard featureManager.loadError == nil else { return }
+        if let error = featureManager.loadError {
+            print("[AppState] related features not offered, the feature list failed: \(error)")
+            return
+        }
         let features = featureManager.features
         let ids = SourceConnectPrompt.suggestedFeatureIDs(
             for: goals,
@@ -958,28 +977,52 @@ final class AppState {
         )
         let suggested = features.filter { ids.contains($0.id) }
         guard !suggested.isEmpty else { return }
+        if isApplyingFeatureSuggestion {
+            deferredSuggestion = Self.union(deferredSuggestion, suggested)
+            return
+        }
         featureSuggestionError = nil
-        featureSuggestion = suggested
+        featureSuggestion = Self.union(featureSuggestion, suggested)
     }
 
-    /// Yes: enables the offered features through the Feature Manager (the
-    /// CLI, `features enable`) and restarts the daemon once, as Settings →
-    /// Features' Save does.
+    private static func union(_ lhs: [FeatureInfo], _ rhs: [FeatureInfo]) -> [FeatureInfo] {
+        lhs + rhs.filter { new in !lhs.contains { $0.id == new.id } }
+    }
+
+    /// Yes: enables the offered features right away (`features enable`,
+    /// never through Settings → Features' staged changes) and restarts the
+    /// daemon once. After a failed restart a retry finds them already on
+    /// and only restarts.
     func acceptFeatureSuggestion() async {
         guard !featureSuggestion.isEmpty, !isApplyingFeatureSuggestion else { return }
         isApplyingFeatureSuggestion = true
-        defer { isApplyingFeatureSuggestion = false }
-        featureManager.discardPending()
-        for feature in featureSuggestion {
-            featureManager.setPending(feature.id, enabled: true)
+        defer {
+            isApplyingFeatureSuggestion = false
+            featureSuggestion = Self.union(featureSuggestion, deferredSuggestion)
+            deferredSuggestion = []
         }
+        let ids = featureSuggestion.map(\.id)
         let daemon = daemonControl
-        await featureManager.apply { try await daemon.restartWaiting() }
-        if let error = featureManager.loadError {
+        let result = await featureManager.enableNow(ids) { try await daemon.restartWaiting() }
+        let stillOff = Set(ids).intersection(featureManager.disabledFeatureIDs)
+        if result.enabled.isEmpty, stillOff.isEmpty {
+            // Everything is on already (a retry after a failed restart): the
+            // daemon still has to pick it up.
+            do {
+                try await daemon.restartWaiting()
+                featureManager.loadError = nil
+            } catch {
+                featureSuggestionError = error.localizedDescription
+                return
+            }
+        } else if let error = featureManager.loadError {
+            // An enable or the restart failed: the offer stays, its retry
+            // enables what is still off and restarts.
             featureSuggestionError = error
             return
         }
-        featureSuggestion = []
+        featureSuggestionError = nil
+        featureSuggestion.removeAll { ids.contains($0.id) }
     }
 
     func declineFeatureSuggestion() {
@@ -1592,6 +1635,7 @@ final class AppState {
     func refreshConnectedSources() async {
         guard let pool = databaseManager?.dbPool else { return }
         connectedSourcesGeneration += 1
+        let wasOnboarding = needsOnboarding
         let generation = connectedSourcesGeneration
         do {
             let sources = try await pool.read { db in try ConnectedSources.fetch(db) }
@@ -1600,7 +1644,9 @@ final class AppState {
             featureVisibility.connectedSources = sources
             let previous = lastReadConnectedSources
             lastReadConnectedSources = sources
-            if let previous, !needsOnboarding {
+            // Onboarding's own connects (before or after the read) pick
+            // their features there.
+            if let previous, !wasOnboarding, !needsOnboarding {
                 let goals = SourceConnectPrompt.goals(newlyConnectedFrom: previous, to: sources)
                 if !goals.isEmpty {
                     featureSuggestionCheck = Task { await suggestFeatures(for: goals) }

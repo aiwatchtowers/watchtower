@@ -8,7 +8,7 @@ final class SourceConnectPromptTests: XCTestCase {
         XCTAssertEqual(SourceConnectPrompt.rowTitle(connected: ConnectedSources(slack: true), dismissed: false),
                        "+ Connect Mail, Jira…")
         XCTAssertEqual(SourceConnectPrompt.rowTitle(connected: ConnectedSources(calendar: true, jira: true), dismissed: false),
-                       "+ Connect Slack…", "a calendar-only Google account counts as mail's Google")
+                       "+ Connect Slack…", "any calendar source (Google or CalDAV/ICS) counts as Mail")
     }
 
     func testRowHidesWhenAllAreConnectedOrItWasClosed() {

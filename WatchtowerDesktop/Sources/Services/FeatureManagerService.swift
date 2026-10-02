@@ -290,32 +290,55 @@ final class FeatureManagerService {
     /// enabled out of band (the CLI, while this screen held a stale list)
     /// would silently drop the owner's newest reactions as commands.
     func enableNow(_ id: String, restart: @MainActor () async throws -> Void) async {
-        guard !isApplying else { return }
+        await enableNow([id], restart: restart)
+    }
+
+    /// `enableNow(_:restart:)` for several features: each one still disabled
+    /// is enabled in order (stopping at the first failure), then the daemon
+    /// restarts once if anything was enabled. Returns the ids it enabled and
+    /// whether the restart ran and succeeded; a failure is in `loadError`.
+    @discardableResult
+    func enableNow(
+        _ ids: [String],
+        restart: @MainActor () async throws -> Void
+    ) async -> (enabled: [String], restarted: Bool) {
+        guard !isApplying else { return ([], false) }
         isApplying = true
         defer { isApplying = false }
 
         await load()
-        guard loadError == nil,
-              features.first(where: { $0.id == id })?.state == "disabled" else { return }
+        guard loadError == nil else { return ([], false) }
+        let toEnable = ids.filter { id in features.first { $0.id == id }?.state == "disabled" }
+        guard !toEnable.isEmpty else { return ([], false) }
 
         var failure: Error?
-        do {
-            try await applyOne(id: id, enabled: true, isFeature: true)
-            pending.removeValue(forKey: id)
-            applyWithDependents.remove(id)
+        var enabled: [String] = []
+        var restarted = false
+        for id in toEnable {
             do {
-                try await restart()
+                try await applyOne(id: id, enabled: true, isFeature: true)
+                pending.removeValue(forKey: id)
+                applyWithDependents.remove(id)
+                enabled.append(id)
             } catch {
                 failure = error
+                break
             }
-        } catch {
-            failure = error
+        }
+        if !enabled.isEmpty {
+            do {
+                try await restart()
+                restarted = true
+            } catch {
+                failure = failure ?? error
+            }
         }
 
         await load()
         if let failure {
             loadError = failure.localizedDescription
         }
+        return (enabled, restarted)
     }
 
     /// Onboarding's write path: makes exactly `enabled` on and the rest of

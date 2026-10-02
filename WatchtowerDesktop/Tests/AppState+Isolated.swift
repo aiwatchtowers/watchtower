@@ -14,7 +14,7 @@ extension AppState {
     static func isolated(
         openDatabase: @escaping @Sendable () throws -> DatabaseManager = { throw CocoaError(.fileNoSuchFile) },
         peopleRosterRun: @escaping PeopleRosterLoad.Run = { _, _ in (0, "") },
-        featuresRunner: FakeCLIRunner = FakeCLIRunner(stdout: Data(#"{"features":[]}"#.utf8))
+        featuresRunner: any CLIRunnerProtocol = FakeCLIRunner(stdout: Data(#"{"features":[]}"#.utf8))
     ) -> AppState {
         let name = "WatchtowerDesktopTests.onboarding"
         UserDefaults.standard.removePersistentDomain(forName: name)

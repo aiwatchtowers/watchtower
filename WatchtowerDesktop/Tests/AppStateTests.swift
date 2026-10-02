@@ -1349,8 +1349,11 @@ final class AppStateTests: XCTestCase {
         XCTAssertFalse(runner.invocations.contains { $0.first == "features" && $0.dropFirst().first == "enable" },
                        "nothing is enabled before Turn on")
 
+        appState.featureManager.setPending("tracks", enabled: false)
         await appState.acceptFeatureSuggestion()
 
+        XCTAssertEqual(appState.featureManager.pending, ["tracks": false], "Settings → Features' staged change is left alone")
+        XCTAssertFalse(runner.invocations.contains(["features", "disable", "tracks"]))
         XCTAssertTrue(runner.invocations.contains(["features", "enable", "next-step"]))
         XCTAssertTrue(runner.invocations.contains(["features", "enable", "stream-digests"]))
         XCTAssertFalse(runner.invocations.contains(["features", "enable", "memory"]))
@@ -1399,5 +1402,107 @@ final class AppStateTests: XCTestCase {
         XCTAssertTrue(appState.showsFeatureSuggestion)
         appState.isAddingAccount = true
         XCTAssertFalse(appState.showsFeatureSuggestion, "and never over an Add account sheet")
+    }
+
+    // MARK: - #285 review
+
+    /// A features CLI whose list follows its own `features enable` calls.
+    private final class LiveFeaturesRunner: CLIRunnerProtocol, @unchecked Sendable {
+        private let lock = NSLock()
+        private var states: [String: String]
+        private(set) var calls: [[String]] = []
+
+        init(disabled: [String]) {
+            states = Dictionary(uniqueKeysWithValues: disabled.map { ($0, "disabled") })
+        }
+
+        func run(args: [String]) async throws -> Data {
+            lock.withLock {
+                calls.append(args)
+                if args.count == 3, args[0] == "features", args[1] == "enable" { states[args[2]] = "enabled" }
+                let rows = states.keys.sorted().map { id in
+                    """
+                    {"id":"\(id)","title":"\(id)","description":"d","tagline":"t","benefits":[],"icon":"i",\
+                    "state":"\(states[id] ?? "disabled")","core":false,"parent":"","config_key":"\(id).enabled",\
+                    "cost":"light","feeds_into":[],"sub_toggles":[]}
+                    """
+                }
+                return Data("{\"features\":[\(rows.joined(separator: ","))]}".utf8)
+            }
+        }
+    }
+
+    private func appStateOffering(_ runner: LiveFeaturesRunner) async throws -> AppState {
+        let appState = AppState.isolated(featuresRunner: runner)
+        appState.databaseManager = dbManager
+        await appState.refreshConnectedSources()
+        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertJiraAccount(db) }
+        await appState.refreshConnectedSources()
+        await appState.featureSuggestionCheck?.value
+        return appState
+    }
+
+    /// The restart fails after the enables: the offer stays with the error;
+    /// a retry finds everything on, only restarts, and closes the offer.
+    func testRetryAfterAFailedRestartOnlyRestarts() async throws {
+        let runner = LiveFeaturesRunner(disabled: ["stream-digests", "next-step"])
+        let appState = try await appStateOffering(runner)
+        let daemon = FakeDaemon()
+        daemon.restartError = DaemonRestartError.startFailed(status: 1, stderr: "boom")
+        appState.daemonControlOverride = daemon
+        XCTAssertEqual(appState.featureSuggestion.count, 2)
+
+        await appState.acceptFeatureSuggestion()
+        XCTAssertNotNil(appState.featureSuggestionError)
+        XCTAssertEqual(appState.featureSuggestion.count, 2, "the offer stays for a retry")
+        XCTAssertEqual(daemon.restarts, 1)
+
+        daemon.restartError = nil
+        await appState.acceptFeatureSuggestion()
+
+        XCTAssertEqual(daemon.restarts, 2)
+        XCTAssertNil(appState.featureSuggestionError)
+        XCTAssertNil(appState.featureManager.loadError, "no stale error left behind")
+        XCTAssertTrue(appState.featureSuggestion.isEmpty)
+        XCTAssertEqual(runner.calls.filter { $0.dropFirst().first == "enable" }.count, 2, "each feature enabled once")
+    }
+
+    /// The feature check finishing first never takes About you's place.
+    func testAboutYouShowsBeforeTheFeatureOffer() async throws {
+        let runner = LiveFeaturesRunner(disabled: ["tracks", "people-cards"])
+        let appState = AppState.isolated(featuresRunner: runner)
+        appState.databaseManager = dbManager
+        appState.initSlackAccounts(dbPool: dbManager.dbPool)
+        let vm = try XCTUnwrap(appState.slackAccountsViewModel)
+        await vm.refreshAsync()
+        await appState.refreshConnectedSources()
+        appState.isAddingAccount = true
+
+        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertSlackAccount(db, teamID: "T1") }
+        await vm.refreshAsync()
+        await appState.featureSuggestionCheck?.value
+        await appState.lateAboutYouCheck?.value
+        XCTAssertFalse(appState.featureSuggestion.isEmpty)
+        XCTAssertNil(appState.settingsSheet, "nothing over the Add sheet")
+
+        appState.isAddingAccount = false
+        XCTAssertEqual(appState.settingsSheet, .aboutYou)
+        appState.settingsSheetDismissed(.aboutYou)
+        XCTAssertEqual(appState.settingsSheet, .featureSuggestion)
+        appState.settingsSheetDismissed(.featureSuggestion)
+        XCTAssertEqual(appState.settingsSheet, .featureSuggestion, "only its buttons close the offer")
+    }
+
+    /// A second source while the first offer is up adds to it.
+    func testOffersMergeByID() async throws {
+        let runner = LiveFeaturesRunner(disabled: ["stream-digests", "next-step", "tracks"])
+        let appState = try await appStateOffering(runner)
+        XCTAssertEqual(Set(appState.featureSuggestion.map(\.id)), ["stream-digests", "next-step"])
+
+        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertSlackAccount(db, teamID: "T1") }
+        await appState.refreshConnectedSources()
+        await appState.featureSuggestionCheck?.value
+
+        XCTAssertEqual(Set(appState.featureSuggestion.map(\.id)), ["stream-digests", "next-step", "tracks"])
     }
 }
