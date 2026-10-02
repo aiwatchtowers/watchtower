@@ -8,14 +8,22 @@ package enum MemoryVaultGit {
 
     /// Last 50 commits touching `path` (vault-relative), or the whole repo
     /// history when nil. Any git failure — missing binary, corrupt repo,
-    /// non-zero exit — degrades to an empty list.
-    package static func log(vault: URL, path: String?) async -> [MemoryCommit] {
+    /// non-zero exit — degrades to an empty list, reported with git's stderr
+    /// through `report` (the log).
+    package static func log(
+        vault: URL,
+        path: String?,
+        report: (String) -> Void = { NSLog("[MemoryVaultGit] %@", $0) }
+    ) async -> [MemoryCommit] {
         var args = ["-C", vault.path, "log", "--date=iso-strict", "--format=%H%x09%ad%x09%s", "-n", "50"]
         if let path {
             args += ["--follow", "--", path]
         }
         let result = await run(arguments: args)
-        guard result.exitCode == 0 else { return [] }
+        guard result.exitCode == 0 else {
+            report("git log failed (exit \(result.exitCode)): \(CLILog.detail(result.stderr))")
+            return []
+        }
         return result.stdout.split(separator: "\n").compactMap { line in
             let parts = line.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false)
             guard parts.count == 3 else { return nil }
@@ -24,11 +32,10 @@ package enum MemoryVaultGit {
     }
 
     /// Off the concurrency pool, both streams drained (`ProcessPipes`).
-    private static func run(arguments: [String]) async -> (exitCode: Int32, stdout: String) {
+    private static func run(arguments: [String]) async -> ProcessOutput {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         process.arguments = arguments
-        let output = await ProcessPipes.run(process)
-        return (output.exitCode, output.stdout)
+        return await ProcessPipes.run(process)
     }
 }

@@ -596,14 +596,7 @@ final class AppState {
             do {
                 // Off the concurrency pool: the migrate child may run for up
                 // to 30 s (see ProcessPipes).
-                let opened = await ProcessPipes.offPool {
-                    Result {
-                        // Run Go CLI to apply any pending DB migrations before opening
-                        DatabaseManager.runCLIMigrations()
-                        let dbPath = try DatabaseManager.resolveDBPath()
-                        return try DatabaseManager(path: dbPath)
-                    }
-                }
+                let opened = await ProcessPipes.offPool { Result { try DatabaseManager.migrateAndOpen() } }
                 let manager = try opened.get()
                 databaseManager = manager
                 embeddedChats.dbPool = manager.dbPool
