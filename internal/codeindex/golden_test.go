@@ -79,8 +79,11 @@ func TestGolden(t *testing.T) {
 }
 
 // noTypes are the fixture languages with no type or module definitions to
-// index.
-var noTypes = map[string]bool{"lua": true, "r": true}
+// index, noFuncs those with no functions or methods.
+var (
+	noTypes = map[string]bool{"lua": true, "r": true, "bash": true}
+	noFuncs = map[string]bool{"hcl": true}
+)
 
 // Every fixture exercises a function or method, a type (or module) and a
 // doc, so a query that lost a whole family shows here and not only as a
@@ -99,7 +102,7 @@ func TestGolden_FixturesCoverTheBasics(t *testing.T) {
 				}
 				doc = doc || s.Doc != ""
 			}
-			if !fn || (!typ && !noTypes[lang]) || !doc {
+			if (!fn && !noFuncs[lang]) || (!typ && !noTypes[lang]) || !doc {
 				t.Errorf("function/method %v, type %v, doc %v; want all", fn, typ, doc)
 			}
 		})

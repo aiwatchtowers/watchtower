@@ -40,13 +40,25 @@ type langSpec struct {
 	// heads are first-byte prefixes that name the language of a file
 	// with no known name or extension (`<?php`).
 	heads []string
-	// docTags: the doc comment is XML (C#'s <summary>); tags are dropped.
-	docTags bool
+	// leads are the kinds of a definition's leading children its
+	// signature starts after (GraphQL's description string).
+	leads []string
+	// mask rewrites a file before it is parsed, keeping its length and
+	// newlines (every position unchanged), around a construct the grammar
+	// cannot parse (SQLite triggers); symbol text is still read from the
+	// file itself.
+	mask func(src []byte) []byte
+	// docMarkup matches a doc comment's markup, dropped from the doc (C#'s
+	// XML tags, Erlang's @doc).
+	docMarkup *regexp.Regexp
 	// docstring: the first statement string of a body is the doc (Python).
 	docstring bool
 	// lineScanned languages are indexed without a grammar (Markdown).
 	lineScanned bool
 }
+
+// xmlTag is an XML doc comment's markup: `<summary>`, `<see cref="X"/>`.
+var xmlTag = regexp.MustCompile(`</?[A-Za-z][^>]*>`)
 
 // languages is the language table. Associations mirror Monaco's built-ins
 // and WatchtowerDesktop/Sources/CodeEditorWeb/languages.js for each
@@ -134,7 +146,7 @@ var languages = []langSpec{
 		bodies:      []string{"declaration_list", "enum_member_declaration_list", "block", "accessor_list"},
 		locals:      []string{"method_declaration", "constructor_declaration", "accessor_declaration", "lambda_expression", "local_function_statement"},
 		docPrefixes: []string{"///", "/**"},
-		docTags:     true,
+		docMarkup:   xmlTag,
 	},
 	{
 		id:           "lua",
@@ -187,6 +199,129 @@ var languages = []langSpec{
 		interpreters: []string{"Rscript"},
 		bodies:       []string{"braced_expression"},
 		docPrefixes:  []string{"#'"},
+	},
+	{
+		id:     "kotlin",
+		exts:   []string{".kt", ".kts"},
+		bodies: []string{"class_body", "enum_class_body", "function_body"},
+		locals: []string{
+			"function_body", "lambda_literal", "anonymous_initializer", "getter", "setter",
+			"secondary_constructor", "object_literal",
+		},
+		docPrefixes: []string{"/**"},
+	},
+	{
+		id:   "bash",
+		exts: []string{".sh", ".bash", ".zsh", ".ksh", ".command"},
+		names: []string{
+			".zshrc", ".zprofile", ".zshenv", ".zlogin", ".zlogout", ".bashrc", ".bash_profile",
+			".bash_aliases", ".bash_logout", ".profile", ".envrc", "pre-commit", "pre-push", "commit-msg",
+			"prepare-commit-msg", "post-commit", "post-merge", "post-checkout", "pre-rebase", "gradlew",
+		},
+		interpreters: []string{"sh", "bash", "zsh", "ksh", "dash"},
+		bodies:       []string{"compound_statement", "subshell"},
+		locals:       []string{"function_definition"},
+		docPrefixes:  []string{"#"},
+		directive:    regexp.MustCompile(`^#(!|\s*shellcheck\s)`),
+	},
+	{
+		id:          "sql",
+		exts:        []string{".sql", ".ddl", ".dml", ".psql", ".pgsql"},
+		bodies:      []string{"column_definitions", "create_query", "function_body"},
+		wrappers:    []string{"statement"},
+		docPrefixes: []string{"--"},
+		directive:   regexp.MustCompile(`^--\s*\+goose\b`),
+		mask:        maskSQLiteTriggers,
+	},
+	{
+		id:          "hcl",
+		exts:        []string{".tf", ".tfvars", ".hcl", ".nomad"},
+		bodies:      []string{"block_start"},
+		docPrefixes: []string{"#", "//", "/*"},
+	},
+	{
+		id:          "proto",
+		exts:        []string{".proto"},
+		bodies:      []string{"message_body", "enum_body"},
+		docPrefixes: []string{"//", "/*"},
+	},
+	{
+		id:   "graphql",
+		exts: []string{".graphql", ".gql"},
+		bodies: []string{
+			"fields_definition", "enum_values_definition", "input_fields_definition", "selection_set",
+		},
+		leads: []string{"description"},
+	},
+	{
+		id:     "groovy",
+		exts:   []string{".groovy", ".gradle", ".gvy"},
+		names:  []string{"Jenkinsfile"},
+		bodies: []string{"closure"},
+		locals: []string{"function_definition"},
+		mask:   maskGroovy,
+	},
+	{
+		id:          "objc",
+		exts:        []string{".m", ".mm"},
+		bodies:      []string{"compound_statement", "field_declaration_list", "enumerator_list", "instance_variables"},
+		wrappers:    []string{"type_definition"},
+		locals:      []string{"function_definition", "method_definition"},
+		docPrefixes: []string{"///", "/**", "//!", "/*!"},
+		mask:        maskObjC,
+	},
+	{
+		id:          "zig",
+		exts:        []string{".zig"},
+		bodies:      []string{"block", "struct_declaration", "enum_declaration", "union_declaration", "opaque_declaration"},
+		locals:      []string{"function_declaration", "test_declaration", "comptime_declaration"},
+		docPrefixes: []string{"///"},
+	},
+	{
+		id:   "haskell",
+		exts: []string{".hs"},
+		// A Haddock comment inside a definition (before a class's
+		// declarations) ends its signature like a body.
+		bodies: []string{"match", "class_declarations", "data_constructors", "fields", "haddock"},
+	},
+	{
+		id:           "erlang",
+		exts:         []string{".erl", ".hrl"},
+		interpreters: []string{"escript"},
+		bodies:       []string{"clause_body"},
+		between:      []string{"spec"},
+		docPrefixes:  []string{"%%"},
+		docMarkup:    regexp.MustCompile(`@doc\b`),
+	},
+	{
+		id:          "clojure",
+		exts:        []string{".clj", ".cljs", ".cljc", ".edn"},
+		docPrefixes: []string{";;"},
+	},
+	{
+		id:           "perl",
+		exts:         []string{".pl", ".pm"},
+		interpreters: []string{"perl"},
+		bodies:       []string{"block"},
+		locals:       []string{"subroutine_declaration_statement", "anonymous_subroutine_expression"},
+		docPrefixes:  []string{"#"},
+		directive:    regexp.MustCompile(`^#!`),
+	},
+	{
+		id:           "julia",
+		exts:         []string{".jl"},
+		interpreters: []string{"julia"},
+		locals:       []string{"function_definition", "macro_definition", "let_statement"},
+	},
+	{
+		id:   "nim",
+		exts: []string{".nim", ".nims"},
+		// A type's `##` doc opens its body: the signature ends there.
+		bodies: []string{"statement_list", "field_declaration_list", "documentation_comment"},
+		locals: []string{
+			"proc_declaration", "func_declaration", "method_declaration", "iterator_declaration",
+			"converter_declaration", "template_declaration", "macro_declaration",
+		},
 	},
 	jsLike("javascript", []string{".js", ".es6", ".jsx", ".mjs", ".cjs"}, []string{"jakefile"}, []string{"node", "deno", "bun"}),
 	jsLike("typescript", []string{".ts", ".cts", ".mts"}, nil, nil),

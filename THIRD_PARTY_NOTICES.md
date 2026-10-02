@@ -24,32 +24,55 @@ in the same change that adds it to `internal/codeindex/grammars_full.go`.
 
 | Language | Go module | Version | Wrapper licence | Grammar licence | Upstream grammar |
 |---|---|---|---|---|---|
+| Bash | `github.com/alexaandru/go-sitter-forest/bash` | v1.9.6 | MIT | MIT | https://github.com/tree-sitter/tree-sitter-bash |
 | C | `github.com/alexaandru/go-sitter-forest/c` | v1.9.4 | MIT | MIT | https://github.com/tree-sitter/tree-sitter-c |
 | C# | `github.com/alexaandru/go-sitter-forest/c_sharp` | v1.9.6 | MIT | MIT | https://github.com/tree-sitter/tree-sitter-c-sharp |
 | C++ | `github.com/alexaandru/go-sitter-forest/cpp` | v1.9.5 | MIT | MIT | https://github.com/tree-sitter/tree-sitter-cpp |
+| Clojure | `github.com/alexaandru/go-sitter-forest/clojure` | v1.9.1 | MIT | CC0-1.0 (below) | https://github.com/sogaiu/tree-sitter-clojure |
 | Dart | `github.com/alexaandru/go-sitter-forest/dart` | v1.9.4 | MIT | MIT | https://github.com/UserNobody14/tree-sitter-dart |
 | Elixir | `github.com/alexaandru/go-sitter-forest/elixir` | v1.9.5 | MIT | Apache-2.0 and MIT (below) | https://github.com/elixir-lang/tree-sitter-elixir |
 | Elm | `github.com/alexaandru/go-sitter-forest/elm` | v1.9.1 | MIT | MIT | https://github.com/elm-tooling/tree-sitter-elm |
+| Erlang | `github.com/alexaandru/go-sitter-forest/erlang` | v1.9.7 | MIT | Apache-2.0 (below) | https://github.com/WhatsApp/tree-sitter-erlang |
 | Go | `github.com/alexaandru/go-sitter-forest/go` | v1.9.4 | MIT | MIT | https://github.com/tree-sitter/tree-sitter-go |
+| GraphQL | `github.com/alexaandru/go-sitter-forest/graphql` | v1.9.0 | MIT | MIT | https://github.com/bkegley/tree-sitter-graphql |
+| Groovy | `github.com/alexaandru/go-sitter-forest/groovy` | v1.9.4 | MIT | MIT | https://github.com/murtaza64/tree-sitter-groovy |
+| Haskell | `github.com/alexaandru/go-sitter-forest/haskell` | v1.9.2 | MIT | MIT | https://github.com/tree-sitter/tree-sitter-haskell |
+| HCL / Terraform | `github.com/alexaandru/go-sitter-forest/hcl` | v1.9.3 | MIT | Apache-2.0 (below) | https://github.com/tree-sitter-grammars/tree-sitter-hcl |
 | Java | `github.com/alexaandru/go-sitter-forest/java` | v1.9.5 | MIT | MIT | https://github.com/tree-sitter/tree-sitter-java |
 | JavaScript | `github.com/alexaandru/go-sitter-forest/javascript` | v1.9.2 | MIT | MIT | https://github.com/tree-sitter/tree-sitter-javascript |
+| Julia | `github.com/alexaandru/go-sitter-forest/julia` | v1.9.10 | MIT | MIT | https://github.com/tree-sitter/tree-sitter-julia |
+| Kotlin | `github.com/alexaandru/go-sitter-forest/kotlin` | v1.9.4 | MIT | MIT | https://github.com/fwcd/tree-sitter-kotlin |
 | Lua | `github.com/alexaandru/go-sitter-forest/lua` | v1.9.3 | MIT | MIT | https://github.com/tree-sitter-grammars/tree-sitter-lua |
+| Nim | `github.com/alexaandru/go-sitter-forest/nim` | v1.9.1 | MIT | MPL-2.0 (below) | https://github.com/alaviss/tree-sitter-nim |
+| Objective-C | `github.com/alexaandru/go-sitter-forest/objc` | v1.9.1 | MIT | MIT | https://github.com/tree-sitter-grammars/tree-sitter-objc |
 | OCaml | `github.com/alexaandru/go-sitter-forest/ocaml` | v1.9.6 | MIT | MIT | https://github.com/tree-sitter/tree-sitter-ocaml |
+| Perl | `github.com/alexaandru/go-sitter-forest/perl` | v1.9.9 | MIT | MIT | https://github.com/tree-sitter-perl/tree-sitter-perl |
 | PHP | `github.com/alexaandru/go-sitter-forest/php` | v1.9.5 | MIT | MIT | https://github.com/tree-sitter/tree-sitter-php |
+| Protocol Buffers | `github.com/alexaandru/go-sitter-forest/proto` | v1.9.1 | MIT | MIT | https://github.com/coder3101/tree-sitter-proto |
 | Python | `github.com/alexaandru/go-sitter-forest/python` | v1.9.10 | MIT | MIT | https://github.com/tree-sitter/tree-sitter-python |
 | R | `github.com/alexaandru/go-sitter-forest/r` | v1.9.6 | MIT | MIT | https://github.com/r-lib/tree-sitter-r |
 | Ruby | `github.com/alexaandru/go-sitter-forest/ruby` | v1.9.3 | MIT | MIT | https://github.com/tree-sitter/tree-sitter-ruby |
 | Rust | `github.com/alexaandru/go-sitter-forest/rust` | v1.9.13 | MIT | MIT | https://github.com/tree-sitter/tree-sitter-rust |
 | Scala | `github.com/alexaandru/go-sitter-forest/scala` | v1.9.8 | MIT | MIT | https://github.com/tree-sitter/tree-sitter-scala |
+| SQL | `github.com/alexaandru/go-sitter-forest/sql` | v1.9.13 | MIT | MIT | https://github.com/DerekStride/tree-sitter-sql |
 | Swift | `github.com/alexaandru/go-sitter-forest/swift` | v1.9.5 | MIT | MIT | https://github.com/alex-pinkus/tree-sitter-swift |
 | TSX | `github.com/alexaandru/go-sitter-forest/tsx` | v1.9.2 | MIT | MIT | https://github.com/tree-sitter/tree-sitter-typescript |
 | TypeScript | `github.com/alexaandru/go-sitter-forest/typescript` | v1.9.4 | MIT | MIT | https://github.com/tree-sitter/tree-sitter-typescript |
+| Zig | `github.com/alexaandru/go-sitter-forest/zig` | v1.9.4 | MIT | MIT | https://github.com/tree-sitter-grammars/tree-sitter-zig |
 
 The Elixir grammar is mixed, per its upstream NOTICE file: the generated
 `parser.c` is MIT ("Copyright (c) 2018-2021 Max Brunsfeld"), its other files —
 the `scanner.c` compiled in here among them — are under the Apache License 2.0
 ("Copyright 2021 The Elixir Team", https://www.apache.org/licenses/LICENSE-2.0).
-Every other grammar above is MIT.
+The Erlang and HCL grammars are under the Apache License 2.0 as a whole
+(https://www.apache.org/licenses/LICENSE-2.0; their upstream repositories
+carry no NOTICE file). The Nim grammar's `parser.c` and `scanner.c` are under
+the Mozilla Public License 2.0 ("Copyright (c) 2022-2023 Leorize",
+https://mozilla.org/MPL/2.0/): file-level copyleft, compiled in unmodified, its
+source available at the upstream repository above. The Clojure grammar is
+dedicated to the public domain under CC0 1.0
+(https://creativecommons.org/publicdomain/zero/1.0/). Every other grammar
+above is MIT.
 
 The queries under `internal/codeindex/queries/` are Watchtower's own; those
 that start from an upstream grammar's `tags.scm` say so in their header and

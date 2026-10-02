@@ -5,7 +5,6 @@ package codeindex
 import (
 	"embed"
 	"fmt"
-	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -25,12 +24,14 @@ var compiled sync.Map // language id → func() (*ts.Grammar, error)
 // from, when it is not just queries/<id>.scm: TypeScript and TSX are the
 // JavaScript query plus the TypeScript-only one, as upstream intends;
 // JavaScript adds the node kinds only its grammar has; C++ is the C query
-// plus the C++-only one (its grammar extends C's).
+// plus the C++-only one (its grammar extends C's), Objective-C the C query
+// plus its own.
 var queryParts = map[string][]string{
 	"javascript": {"javascript", "javascript_only"},
 	"typescript": {"javascript", "typescript"},
 	"tsx":        {"javascript", "typescript"},
 	"cpp":        {"c", "cpp"},
+	"objc":       {"c", "objc"},
 }
 
 func grammarFor(id string) (*ts.Grammar, error) {
@@ -72,7 +73,11 @@ func (t *tsParser) parse(l *langSpec, src []byte) ([]Symbol, bool, error) {
 	}
 	var spans []span
 	seen := map[uint]bool{}
-	_, err = t.p.Each(g, src, func(_ *ts.Node, caps []ts.Capture) {
+	tree := src
+	if l.mask != nil {
+		tree = l.mask(src)
+	}
+	_, err = t.p.Each(g, tree, func(_ *ts.Node, caps []ts.Capture) {
 		var name, def *ts.Node
 		var kind Kind
 		for i := range caps {
@@ -99,13 +104,15 @@ func (t *tsParser) parse(l *langSpec, src []byte) ([]Symbol, bool, error) {
 	return assignContainers(spans), true, nil
 }
 
-// symbolAt builds the symbol a match names; ok=false drops it.
+// symbolAt builds the symbol a match names; ok=false drops it (a kind
+// outside the set, a local, or an empty name: a node the parser inserted
+// to recover from an error).
 func symbolAt(l *langSpec, src []byte, name, def *ts.Node, kind Kind) (span, bool) {
 	var container string
 	if r := refiners[l.id]; r != nil {
 		kind, container = r(src, def, kind)
 	}
-	if !kinds[kind] || isLocal(l, def) {
+	if !kinds[kind] || name.StartByte() == name.EndByte() || isLocal(l, def) {
 		return span{}, false
 	}
 	outer := wrapperOf(l, def)
@@ -114,7 +121,7 @@ func symbolAt(l *langSpec, src []byte, name, def *ts.Node, kind Kind) (span, boo
 		start: def.StartByte(),
 		end:   last.EndByte(),
 		sym: Symbol{
-			Name:      name.Utf8Text(src),
+			Name:      symbolName(l, src, name, def),
 			Kind:      kind,
 			Line:      int(name.StartPosition().Row) + 1,
 			Col:       utf16Col(src, int(name.StartByte())),
@@ -173,12 +180,44 @@ var refiners = map[string]func(src []byte, def *ts.Node, kind Kind) (Kind, strin
 	"javascript": refineJS,
 	"typescript": refineJS,
 	"tsx":        refineJS,
+
+	"kotlin": refineKotlin,
+	"bash":   refineBash,
+	"groovy": refineGroovy,
+	"objc":   refineObjC,
+	"zig":    refineZig,
+
+	"haskell": refineHaskell,
+	"erlang":  refineErlang,
+	"perl":    refinePerl,
+	"nim":     refineNim,
+}
+
+// nameFuncs build, per language, a name that is not one node's text (an
+// HCL block's two labels).
+var nameFuncs = map[string]func(src []byte, name, def *ts.Node) string{
+	"hcl":  hclName,
+	"objc": objcName,
+}
+
+func symbolName(l *langSpec, src []byte, name, def *ts.Node) string {
+	if f := nameFuncs[l.id]; f != nil {
+		return f(src, name, def)
+	}
+	return name.Utf8Text(src)
 }
 
 // docFuncs read a doc that is not a comment above the definition, tried
 // when the comment rule found none (Elixir's @doc attribute).
 var docFuncs = map[string]func(src []byte, outer *ts.Node) string{
-	"elixir": elixirDoc,
+	"elixir":  elixirDoc,
+	"kotlin":  kotlinDoc,
+	"graphql": graphqlDoc,
+	"groovy":  groovyDoc,
+	"haskell": haskellDoc,
+	"clojure": clojureDoc,
+	"julia":   juliaDoc,
+	"nim":     nimDoc,
 }
 
 // refineSwift: a class_declaration's kind is its declaration_kind.
@@ -283,16 +322,17 @@ func wrapperOf(l *langSpec, def *ts.Node) *ts.Node {
 	}
 }
 
-// signature is the definition's source from its outer start to its body
-// (or to a comment of its own before that: Ruby's leading body comment),
-// whitespace collapsed; with no body found, its first line. A trailing
-// `{`, `:` or `=` (the body opener) is dropped.
+// signature is the definition's source from its outer start (past any
+// lead children) to its body (or to a comment of its own before that:
+// Ruby's leading body comment), whitespace collapsed; with no body found,
+// its first line. A trailing `{`, `:` or `=` (the body opener) is dropped.
 func signature(l *langSpec, src []byte, outer, def *ts.Node) string {
+	start := sigStart(l, outer)
 	end := def.EndByte()
 	if body := bodyOf(l, def); body != nil {
 		end = body.StartByte()
-	} else if nl := strings.IndexByte(string(src[outer.StartByte():end]), '\n'); nl >= 0 {
-		end = outer.StartByte() + uint(nl)
+	} else if nl := strings.IndexByte(string(src[start:end]), '\n'); nl >= 0 {
+		end = start + uint(nl)
 	}
 	for i := range def.ChildCount() {
 		if c := def.Child(i); c != nil && strings.Contains(c.Kind(), "comment") && c.StartByte() < end {
@@ -300,9 +340,25 @@ func signature(l *langSpec, src []byte, outer, def *ts.Node) string {
 			break
 		}
 	}
-	s := strings.TrimSpace(string(src[outer.StartByte():end]))
+	s := strings.TrimSpace(string(src[start:end]))
 	s = strings.TrimSpace(strings.TrimRight(s, "{:="))
 	return clip(s)
+}
+
+// sigStart is where outer's signature starts: past its leading children
+// of the language's lead kinds (a GraphQL description).
+func sigStart(l *langSpec, outer *ts.Node) uint {
+	start := outer.StartByte()
+	for i := range outer.NamedChildCount() {
+		c := outer.NamedChild(i)
+		if c == nil || !slices.Contains(l.leads, c.Kind()) {
+			break
+		}
+		if n := c.NextSibling(); n != nil {
+			start = n.StartByte()
+		}
+	}
+	return start
 }
 
 // bodyOf finds def's body: a child or grandchild of one of the language's
@@ -362,8 +418,8 @@ func docComment(l *langSpec, src []byte, outer *ts.Node) string {
 	}
 	slices.Reverse(parts)
 	doc := strings.Join(parts, " ")
-	if l.docTags {
-		doc = xmlTag.ReplaceAllString(doc, " ")
+	if l.docMarkup != nil {
+		doc = l.docMarkup.ReplaceAllString(doc, " ")
 	}
 	return firstSentence(doc)
 }
@@ -382,9 +438,6 @@ func docStart(l *langSpec, outer *ts.Node) *ts.Node {
 }
 
 func isComment(n *ts.Node) bool { return strings.Contains(n.Kind(), "comment") }
-
-// xmlTag is an XML doc comment's markup: `<summary>`, `<see cref="X"/>`.
-var xmlTag = regexp.MustCompile(`</?[A-Za-z][^>]*>`)
 
 func hasDocPrefix(l *langSpec, text string) bool {
 	for _, p := range l.docPrefixes {

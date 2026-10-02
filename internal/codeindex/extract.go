@@ -48,8 +48,8 @@ func firstSentence(s string) string {
 var blockComments = [][3]string{{"/*", "/*!", "*/"}, {"(*", "(*", "*)"}, {"{-", "{-|", "-}"}}
 
 // commentText strips comment markers from one comment's source: line
-// prefixes (`///`, `//`, `---`, `#'`, `#`) and block delimiters with
-// their leading `*`.
+// prefixes (`///`, `//`, `---`, `#'`, `##`, `#`, `%%`, `;;`…) and block
+// delimiters with their leading `*`.
 func commentText(c string) string {
 	c = strings.TrimSpace(c)
 	for _, b := range blockComments {
@@ -63,7 +63,7 @@ func commentText(c string) string {
 		}
 		return strings.Join(lines, " ")
 	}
-	for _, p := range []string{"///", "//!", "//", "---", "--", "#'", "#"} {
+	for _, p := range []string{"///", "//!", "//", "---", "--", "#'", "##", "#", "%%%", "%%", "%", ";;;", ";;"} {
 		if strings.HasPrefix(c, p) {
 			return strings.TrimPrefix(c, p)
 		}

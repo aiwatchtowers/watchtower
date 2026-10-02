@@ -23,6 +23,21 @@ func init() {
 	goldenFixtures["elm"] = "Sample.elm"
 	goldenFixtures["ocaml"] = "sample.ml"
 	goldenFixtures["r"] = "sample.R"
+	goldenFixtures["kotlin"] = "sample.kt"
+	goldenFixtures["bash"] = "sample.sh"
+	goldenFixtures["sql"] = "00001_init.sql"
+	goldenFixtures["hcl"] = "main.tf"
+	goldenFixtures["proto"] = "store.proto"
+	goldenFixtures["graphql"] = "schema.graphql"
+	goldenFixtures["groovy"] = "Sample.groovy"
+	goldenFixtures["objc"] = "Store.m"
+	goldenFixtures["zig"] = "store.zig"
+	goldenFixtures["haskell"] = "Store.hs"
+	goldenFixtures["erlang"] = "store.erl"
+	goldenFixtures["clojure"] = "store.clj"
+	goldenFixtures["perl"] = "Store.pm"
+	goldenFixtures["julia"] = "store.jl"
+	goldenFixtures["nim"] = "store.nim"
 }
 
 // wantKinds checks that each named symbol exists once with the kind and
@@ -335,5 +350,337 @@ func TestR_Assignments(t *testing.T) {
 	}
 	if len(byName(syms, "local")) != 0 || len(byName(syms, "push")) != 0 {
 		t.Error("a definition inside a function or a call was indexed")
+	}
+}
+
+// Kotlin: class, object, interface, fun, extension fun and property kinds;
+// a KDoc right after the imports or the package header is still a doc.
+func TestKotlin_KindsAndDocsAfterTheHeader(t *testing.T) {
+	syms := fixtureSymbols(t, "kotlin", "sample.kt")
+	wantKinds(t, syms, map[string][2]string{
+		"MAX_SIZE": {"const", ""}, "Entry": {"class", ""}, "value": {"field", "Entry"},
+		"Shape": {"enum", ""}, "CIRCLE": {"const", "Shape"}, "sides": {"method", "Shape"},
+		"Storable": {"interface", ""}, "Store": {"class", ""}, "name": {"field", "Store"},
+		"count": {"field", "Store"}, "add": {"method", "Store"}, "empty": {"method", "Store"},
+		"Registry": {"module", ""}, "stores": {"field", "Registry"}, "register": {"method", "Registry"},
+		"double": {"function", ""}, "lastChar": {"method", "String"}, "Id": {"type", ""},
+		"counter": {"var", ""}, "Event": {"interface", ""},
+	})
+	if d := one(t, syms, "MAX_SIZE").Doc; d != "The largest size a store holds." {
+		t.Errorf("MAX_SIZE doc = %q (the KDoc right after the imports)", d)
+	}
+	if s := one(t, syms, "MAX_SIZE"); s.Signature != "const val MAX_SIZE = 64" {
+		t.Errorf("MAX_SIZE signature = %q (from `const`, not the bare name)", s.Signature)
+	}
+	if d := one(t, syms, "Shape").Doc; d != "" {
+		t.Errorf("a // comment became a doc: %q", d)
+	}
+	if len(byName(syms, "local")) != 0 || len(byName(syms, "inner")) != 0 {
+		t.Error("a local inside a function was indexed")
+	}
+	if s := one(t, fixtureSymbols(t, "kotlin", "NoImports.kt"), "Point"); s.Doc != "A point in the plane." {
+		t.Errorf("Point doc = %q (the KDoc right after the package header)", s.Doc)
+	}
+}
+
+// Both function forms are found; a function inside a function is not.
+func TestBash_FunctionFormsAndDirectives(t *testing.T) {
+	syms := fixtureSymbols(t, "bash", "sample.sh")
+	wantKinds(t, syms, map[string][2]string{
+		"log": {"function", ""}, "double": {"function", ""}, "cleanup": {"function", ""},
+		"usage": {"function", ""}, "debug": {"function", ""}, "MAX_SIZE": {"const", ""},
+		"GREETING": {"const", ""}, "LOG_LEVEL": {"var", ""}, "counter": {"var", ""}, "STORES": {"var", ""},
+	})
+	for name, doc := range map[string]string{
+		"log": "Prints a message to stderr.", "double": "Doubles a number.",
+		"MAX_SIZE": "The largest size a store holds.", "cleanup": "",
+	} {
+		if d := one(t, syms, name).Doc; d != doc {
+			t.Errorf("%s doc = %q, want %q (## and a shellcheck directive in the run)", name, d, doc)
+		}
+	}
+	if len(byName(syms, "inner")) != 0 || len(byName(syms, "level")) != 0 {
+		t.Error("a function or a local inside a function was indexed")
+	}
+}
+
+// Tables, views, indexes and triggers in a goose migration: the
+// annotations are no docs, a SQLite trigger parses, and what follows it
+// is still indexed.
+func TestSQL_MigrationStatements(t *testing.T) {
+	syms := fixtureSymbols(t, "sql", "00001_init.sql")
+	wantKinds(t, syms, map[string][2]string{
+		"stores": {"type", ""}, "created_at": {"field", "stores"}, "entries": {"type", ""},
+		"idx_entries_key": {"const", ""}, "busy_stores": {"type", ""}, "entries_touch": {"const", ""},
+		"audit": {"type", ""}, "changed_at": {"field", "audit"}, "audit_touch": {"const", ""},
+		"mood": {"type", ""}, "add_one": {"function", ""}, "store_names": {"type", ""},
+	})
+	if s := one(t, syms, "stores"); s.Doc != "Stores hold entries by key." || s.Signature != "CREATE TABLE IF NOT EXISTS stores" {
+		t.Errorf("stores = %+v", s)
+	}
+	if s := one(t, syms, "entries_touch"); s.Line != 24 || s.EndLine != 27 || s.Signature != "CREATE TRIGGER entries_touch AFTER INSERT ON entries" {
+		t.Errorf("entries_touch = %+v, want lines 24-27 and the file's own text", s)
+	}
+	if d := one(t, syms, "entries").Doc; d != "" {
+		t.Errorf("entries doc = %q", d)
+	}
+}
+
+func TestHCL_TerraformBlocks(t *testing.T) {
+	syms := fixtureSymbols(t, "hcl", "main.tf")
+	wantKinds(t, syms, map[string][2]string{
+		"aws_s3_bucket.artifacts": {"var", ""}, "aws_caller_identity.current": {"var", ""},
+		"network": {"module", ""}, "region": {"var", ""}, "bucket_arn": {"const", ""},
+		"name_prefix": {"var", ""}, "tags": {"var", ""},
+	})
+	if s := one(t, syms, "aws_s3_bucket.artifacts"); s.Signature != `resource "aws_s3_bucket" "artifacts"` || s.Doc != "The bucket that holds build artifacts." {
+		t.Errorf("artifacts = %+v", s)
+	}
+	for _, name := range []string{"aws", "terraform", "lifecycle", "bucket", "source", "prevent_destroy"} {
+		if len(byName(syms, name)) != 0 {
+			t.Errorf("%s was indexed (a provider, a nested block or a block attribute)", name)
+		}
+	}
+}
+
+func TestProto_MessagesAndServices(t *testing.T) {
+	syms := fixtureSymbols(t, "proto", "store.proto")
+	wantKinds(t, syms, map[string][2]string{
+		"Entry": {"struct", ""}, "key": {"field", "Entry"}, "Label": {"struct", "Entry"},
+		"name": {"field", "Label"}, "meta": {"field", "Entry"}, "user": {"field", "Entry"},
+		"Shape": {"enum", ""}, "SHAPE_CIRCLE": {"const", "Shape"}, "StoreService": {"interface", ""},
+		"Add": {"method", "StoreService"}, "Watch": {"method", "StoreService"}, "AddRequest": {"struct", ""},
+	})
+	if s := one(t, syms, "Watch"); s.Signature != "rpc Watch(WatchRequest) returns (stream Entry)" || s.EndLine != 40 {
+		t.Errorf("Watch = %+v", s)
+	}
+	if len(byName(syms, "source")) != 0 || len(byName(syms, "acme")) != 0 {
+		t.Error("a oneof or the package was indexed")
+	}
+}
+
+// Docs are descriptions, not # comments; a signature starts after the
+// description.
+func TestGraphQL_DescriptionsAreDocs(t *testing.T) {
+	syms := fixtureSymbols(t, "graphql", "schema.graphql")
+	wantKinds(t, syms, map[string][2]string{
+		"Node": {"interface", ""}, "Shape": {"enum", ""}, "CIRCLE": {"const", "Shape"},
+		"AddInput": {"struct", ""}, "SearchResult": {"type", ""}, "Time": {"type", ""},
+		"internal": {"macro", ""}, "shape": {"field", "Entry"}, "Query": {"class", ""},
+		"LoadEntry": {"function", ""}, "AddEntry": {"function", ""}, "EntryParts": {"function", ""},
+	})
+	entries := byName(syms, "Entry")
+	if len(entries) != 2 || entries[0].Kind != KindClass || entries[1].Kind != KindType {
+		t.Fatalf("Entry = %+v, want the type and its extension", entries)
+	}
+	if s := entries[0]; s.Signature != "type Entry implements Node" || s.Doc != "A value kept under a key." || s.Line != 4 {
+		t.Errorf("Entry = %+v", s)
+	}
+	for name, doc := range map[string]string{"Node": "", "LoadEntry": "", "Shape": "How an entry is drawn."} {
+		if d := one(t, syms, name).Doc; d != doc {
+			t.Errorf("%s doc = %q, want %q", name, d, doc)
+		}
+	}
+	if len(byName(syms, "format")) != 0 {
+		t.Error("a field argument was indexed")
+	}
+}
+
+// `implements` and `trait`, which the grammar does not know, still give
+// the class its own name.
+func TestGroovy_ClassesTraitsAndGroovyDoc(t *testing.T) {
+	syms := fixtureSymbols(t, "groovy", "Sample.groovy")
+	wantKinds(t, syms, map[string][2]string{
+		"MAX_SIZE": {"const", ""}, "Storable": {"interface", ""}, "Store": {"class", ""},
+		"CAPACITY": {"const", "Store"}, "entries": {"field", "Store"}, "name": {"field", "Store"},
+		"add": {"method", "Store"}, "empty": {"method", "Store"}, "twice": {"function", ""},
+		"helper": {"function", ""}, "Named": {"interface", ""}, "label": {"method", "Named"},
+	})
+	if s := one(t, syms, "Store"); s.Signature != "@CompileStatic class Store implements Storable" || s.Doc != "Keeps entries by key." {
+		t.Errorf("Store = %+v", s)
+	}
+	if d := one(t, syms, "add").Doc; d != "Adds a value under a key." {
+		t.Errorf("add doc = %q", d)
+	}
+	if len(byName(syms, "local")) != 0 || len(byName(syms, "Shape")) != 0 {
+		t.Error("a local, or an enum the grammar cannot parse, was indexed")
+	}
+}
+
+// Objective-C runs the C query too; methods are named by selector, and an
+// NS_ENUM is an enum.
+func TestObjC_SelectorsCategoriesAndEnumMacros(t *testing.T) {
+	syms := fixtureSymbols(t, "objc", "Store.m")
+	wantKinds(t, syms, map[string][2]string{
+		"Storable": {"protocol", ""}, "empty": {"method", "Storable"},
+		"Shape": {"enum", ""}, "ShapeCircle": {"const", "Shape"}, "name": {"field", "Store"},
+		"dump": {"method", "Store"}, "_entries": {"field", "Store"}, "twice": {"function", ""},
+		"Point": {"struct", ""}, "x": {"field", "Point"}, "MAX_SIZE": {"macro", ""},
+	})
+	adds := byName(syms, "addValue:forKey:")
+	if len(adds) != 2 || adds[0].Container != "Store" || adds[1].Container != "Store" || adds[1].Signature != "- (void)addValue:(id)value forKey:(NSString *)key" {
+		t.Errorf("addValue:forKey: = %+v, want the declaration and the definition in Store", adds)
+	}
+	stores := byName(syms, "Store")
+	if len(stores) != 3 || stores[0].Kind != KindClass || stores[1].Kind != KindType || stores[2].Kind != KindClass {
+		t.Errorf("Store = %+v, want the @interface, its category (a type) and the @implementation", stores)
+	}
+	if s := one(t, syms, "Shape"); s.Signature != "typedef NS_ENUM(NSInteger, Shape)" || s.Doc != "How a store is drawn." || s.Col != 28 {
+		t.Errorf("Shape = %+v (the file's own text, the name where it is)", s)
+	}
+	if len(byName(syms, "local")) != 0 || len(byName(syms, "doubled")) != 0 || len(byName(syms, "")) != 0 {
+		t.Error("a local, or an empty typedef name, was indexed")
+	}
+}
+
+func TestZig_ContainersAndImports(t *testing.T) {
+	syms := fixtureSymbols(t, "zig", "store.zig")
+	wantKinds(t, syms, map[string][2]string{
+		"max_size": {"const", ""}, "counter": {"var", ""}, "Store": {"struct", ""}, "len": {"field", "Store"},
+		"capacity": {"const", "Store"}, "init": {"method", "Store"}, "Shape": {"enum", ""},
+		"circle": {"const", "Shape"}, "sides": {"method", "Shape"}, "Value": {"struct", ""},
+		"text": {"field", "Value"}, "Failure": {"enum", ""}, "twice": {"function", ""},
+	})
+	if d := one(t, syms, "init").Doc; d != "Builds an empty store." {
+		t.Errorf("init doc = %q", d)
+	}
+	if d := one(t, syms, "Shape").Doc; d != "" {
+		t.Errorf("a // comment became a doc: %q", d)
+	}
+	if len(byName(syms, "std")) != 0 || len(byName(syms, "local")) != 0 {
+		t.Error("an @import alias or a local was indexed")
+	}
+}
+
+// One row per function (at its first equation), Haddock docs above the
+// definition or its signature.
+func TestHaskell_EquationsAndHaddock(t *testing.T) {
+	syms := fixtureSymbols(t, "haskell", "Store.hs")
+	wantKinds(t, syms, map[string][2]string{
+		"Acme.Store": {"module", ""}, "maxSize": {"const", ""}, "Store": {"struct", ""},
+		"entries": {"field", "Store"}, "Shape": {"enum", ""}, "Circle": {"const", "Shape"},
+		"Key": {"struct", ""}, "Id": {"type", ""}, "Storable": {"interface", ""}, "key": {"method", "Storable"},
+		"label": {"method", "Storable"}, "empty": {"function", ""}, "add": {"function", ""},
+		"twice": {"function", ""}, "size": {"function", ""},
+	})
+	for name, doc := range map[string]string{
+		"maxSize": "The largest size a store holds.", "empty": "Builds an empty store.",
+		"key": "The key a value is stored under.", "label": "", "Shape": "", "size": "Counts the entries.",
+	} {
+		if d := one(t, syms, name).Doc; d != doc {
+			t.Errorf("%s doc = %q, want %q", name, d, doc)
+		}
+	}
+	if s := one(t, syms, "Storable"); s.Signature != "class Storable a where" {
+		t.Errorf("Storable signature = %q", s.Signature)
+	}
+	if len(byName(syms, "local")) != 0 {
+		t.Error("a where binding was indexed")
+	}
+}
+
+func TestErlang_FormsAndClauses(t *testing.T) {
+	syms := fixtureSymbols(t, "erlang", "store.erl")
+	wantKinds(t, syms, map[string][2]string{
+		"MAX_SIZE": {"macro", ""}, "is_key": {"macro", ""}, "entry": {"struct", ""},
+		"key": {"field", "entry"}, "id": {"type", ""}, "new": {"function", ""}, "add": {"function", ""},
+		"size": {"function", ""},
+	})
+	if s := byName(syms, "store"); len(s) != 2 || s[0].Kind != KindModule || s[1].Kind != KindType {
+		t.Errorf("store = %+v, want the module and the opaque type", s)
+	}
+	for name, doc := range map[string]string{
+		"new": "Builds an empty store.", "add": "Adds a value under a key.", "size": "", "entry": "A stored entry.",
+	} {
+		if d := one(t, syms, name).Doc; d != doc {
+			t.Errorf("%s doc = %q, want %q (through -spec, @doc dropped, %% not a doc)", name, d, doc)
+		}
+	}
+	if len(byName(syms, "init")) != 0 {
+		t.Error("a -callback was indexed")
+	}
+}
+
+func TestClojure_DefFormsAndDocstrings(t *testing.T) {
+	syms := fixtureSymbols(t, "clojure", "store.clj")
+	wantKinds(t, syms, map[string][2]string{
+		"acme.store": {"module", ""}, "max-size": {"var", ""}, "greeting": {"var", ""}, "registry": {"var", ""},
+		"add": {"function", ""}, "helper": {"function", ""}, "area": {"function", ""}, "with-store": {"macro", ""},
+		"Storable": {"protocol", ""}, "key-of": {"method", "Storable"}, "Entry": {"struct", ""}, "Box": {"struct", ""},
+	})
+	for name, doc := range map[string]string{
+		"acme.store": "A key-value store.", "add": "Adds a value under a key.", "greeting": "The greeting a store prints.",
+		"max-size": "The largest size a store holds.", "key-of": "The key a value is stored under.", "registry": "",
+	} {
+		if d := one(t, syms, name).Doc; d != doc {
+			t.Errorf("%s doc = %q, want %q", name, d, doc)
+		}
+	}
+	if len(byName(syms, "inner")) != 0 || len(byName(syms, "local")) != 0 {
+		t.Error("a local was indexed")
+	}
+}
+
+// A sub's container is the package statement above it.
+func TestPerl_PackagesAndConstants(t *testing.T) {
+	syms := fixtureSymbols(t, "perl", "Store.pm")
+	wantKinds(t, syms, map[string][2]string{
+		"Acme::Store": {"module", ""}, "MAX_SIZE": {"const", ""}, "CIRCLE": {"const", ""}, "SQUARE": {"const", ""},
+		"VERSION": {"var", ""}, "counter": {"var", ""}, "new": {"function", "Acme::Store"},
+		"add": {"function", "Acme::Store"}, "key": {"function", "Acme::Store::Entry"},
+	})
+	if d := one(t, syms, "new").Doc; d != "Builds an empty store." {
+		t.Errorf("new doc = %q", d)
+	}
+	for _, name := range []string{"entries", "self", "inner", "class"} {
+		if len(byName(syms, name)) != 0 {
+			t.Errorf("%s was indexed (a hash key or a local)", name)
+		}
+	}
+}
+
+func TestJulia_DefinitionsAndDocstrings(t *testing.T) {
+	syms := fixtureSymbols(t, "julia", "store.jl")
+	wantKinds(t, syms, map[string][2]string{
+		"Acme": {"module", ""}, "MAX_SIZE": {"const", "Acme"}, "counter": {"var", "Acme"}, "Store": {"struct", "Acme"},
+		"entries": {"field", "Store"}, "Shape": {"type", "Acme"}, "Bits": {"type", "Acme"}, "Color": {"enum", "Acme"},
+		"green": {"const", "Color"}, "add!": {"function", "Acme"}, "twice": {"function", "Acme"},
+		"trace": {"macro", "Acme"}, "length": {"function", "Acme"},
+	})
+	for name, doc := range map[string]string{
+		"Store": "A key-value store.", "twice": "Doubles a number.", "add!": "", "MAX_SIZE": "The largest size a store holds.",
+	} {
+		if d := one(t, syms, name).Doc; d != doc {
+			t.Errorf("%s doc = %q, want %q", name, d, doc)
+		}
+	}
+	if len(byName(syms, "inner")) != 0 || len(byName(syms, "local_key")) != 0 {
+		t.Error("a local was indexed")
+	}
+}
+
+// Nim docs sit after the definition's line or open its body.
+func TestNim_RoutinesTypesAndTrailingDocs(t *testing.T) {
+	syms := fixtureSymbols(t, "nim", "store.nim")
+	wantKinds(t, syms, map[string][2]string{
+		"MaxSize": {"const", ""}, "defaultName": {"const", ""}, "counter": {"var", ""}, "Shape": {"enum", ""},
+		"circle": {"const", "Shape"}, "Store": {"struct", ""}, "name": {"field", "Store"}, "Storable": {"interface", ""},
+		"Id": {"type", ""}, "Node": {"class", ""}, "Pair": {"struct", ""}, "newStore": {"function", ""},
+		"area": {"method", "Node"}, "items": {"function", ""}, "withStore": {"macro", ""}, "trace": {"macro", ""},
+		"toInt": {"function", ""},
+	})
+	for name, doc := range map[string]string{
+		"MaxSize": "The largest size a store holds.", "Shape": "How a store is drawn.", "Store": "A key-value store.",
+		"name": "The store's name.", "newStore": "Builds an empty store.", "add": "",
+	} {
+		if d := one(t, syms, name).Doc; d != doc {
+			t.Errorf("%s doc = %q, want %q", name, d, doc)
+		}
+	}
+	if s := one(t, syms, "Shape"); s.Signature != "Shape* = enum" {
+		t.Errorf("Shape signature = %q (the trailing doc must not leak in)", s.Signature)
+	}
+	if len(byName(syms, "inner")) != 0 || len(byName(syms, "local")) != 0 {
+		t.Error("a local was indexed")
 	}
 }

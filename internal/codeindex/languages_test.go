@@ -17,7 +17,7 @@ type association struct {
 }
 
 // monacoIDs maps an editor language id to the index's, where they differ.
-var monacoIDs = map[string]string{"csharp": "c_sharp"}
+var monacoIDs = map[string]string{"csharp": "c_sharp", "shell": "bash", "objective-c": "objc", "pgsql": "sql"}
 
 // associationExceptions are the editor associations the index maps
 // differently on purpose, with why.
@@ -25,9 +25,11 @@ var associationExceptions = map[string]string{
 	// Monaco's typescript also highlights .tsx; the index parses TSX with
 	// its own grammar.
 	".tsx": "tsx",
-	// languages.js borrows Java's highlighter for Groovy; Groovy is not
-	// Java to a parser.
-	".groovy": "", ".gradle": "", ".gvy": "", "Jenkinsfile": "",
+	// languages.js borrows Java's highlighter for Groovy; the index parses
+	// Groovy with its own grammar.
+	".groovy": "groovy", ".gradle": "groovy", ".gvy": "groovy", "Jenkinsfile": "groovy",
+	// languages.js highlights fish as shell; fish is not Bash to a parser.
+	".fish": "",
 	// Monaco gives .pp to both Pascal and Ruby (Puppet manifests); neither
 	// parses as Ruby.
 	".pp": "",
@@ -144,6 +146,13 @@ func TestLanguageFor_FirstLines(t *testing.T) {
 		"#!/usr/bin/env Rscript\n":      "r",
 		"#!/usr/bin/env elixir\n":       "elixir",
 		"#!/usr/bin/env scala\n":        "scala",
+		"#!/bin/sh\n":                   "bash",
+		"#!/usr/bin/env bash\n":         "bash",
+		"#!/bin/zsh\n":                  "bash",
+		"#!/usr/bin/env fish\n":         "",
+		"#!/usr/bin/perl -w\n":          "perl",
+		"#!/usr/bin/env julia\n":        "julia",
+		"#!/usr/bin/env escript\n":      "erlang",
 		"<?xml version=\"1.0\"?>\n<a/>": "",
 	} {
 		if got := LanguageFor("bin/tool", []byte(head)); got != want {
