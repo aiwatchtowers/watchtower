@@ -45,16 +45,16 @@ type Orchestrator struct {
 	// now is the clock the auxiliary-refresh throttles read; nil means
 	// time.Now (a test injects a fake to step through the cadence).
 	now func() time.Time
-	// readStateSyncedAt / rosterSyncedAt stamp the last read-cursor refresh
-	// and the last full users.list roster fetch for this process — both are
-	// throttled (readStateRefreshInterval / rosterRefreshInterval) because
-	// neither is message sync: a read cursor moves at human pace and the
-	// roster at hiring pace, yet each used to cost a Tier-3 call per channel
-	// / a page per 200 users on every 15-minute cycle. In-memory on purpose:
-	// a daemon restart refreshes both on its first run, which is the right
-	// answer after downtime of unknown length.
+	// readStateSyncedAt stamps the last read-cursor refresh for this process
+	// — throttled (readStateRefreshInterval) because it is not message sync:
+	// a read cursor moves at human pace, yet the refresh used to cost a
+	// Tier-3 call per channel on every 15-minute cycle. In-memory on purpose:
+	// a daemon restart refreshes it on its first run, which is the right
+	// answer after downtime of unknown length. The roster's twin throttle
+	// (rosterRefreshInterval) is persisted instead, on the account row
+	// (slack_accounts.roster_synced_at), because `sync --users-only` fetches
+	// the roster from another process and the next regular cycle must see it.
 	readStateSyncedAt time.Time
-	rosterSyncedAt    time.Time
 
 	// searchGapNote is the clamped-catch-up warning recordSearchGap wrote
 	// during the current Run ("" when the run had no gap). Run resets it;
@@ -177,6 +177,56 @@ func (o *Orchestrator) Run(ctx context.Context, opts SyncOptions) error {
 	err := o.run(ctx, opts)
 	o.recordAuthResult(ctx, err)
 	return err
+}
+
+// RunUsersOnly fetches only what the onboarding people picker needs: the
+// account's team and current user, then the full workspace roster
+// (users.list, every page) into users — no search, channels, messages or
+// reactions. It ignores the roster's daily throttle and stamps the shared
+// roster marker, so the next regular sync does not fetch the roster again
+// within the day. A failure is recorded on the account row as Run records
+// one; success leaves the row's auth state alone, so a search-gap note the
+// last full cycle kept there is not erased by a run that never searched.
+func (o *Orchestrator) RunUsersOnly(ctx context.Context) error {
+	err := o.runUsersOnly(ctx)
+	if err != nil {
+		o.recordAuthResult(ctx, err)
+	}
+	return err
+}
+
+func (o *Orchestrator) runUsersOnly(ctx context.Context) error {
+	o.logger.Println("starting users-only sync")
+	o.progress.SetPhase(PhaseMetadata)
+	if err := o.ensureWorkspace(ctx); err != nil {
+		return fmt.Errorf("workspace sync: %w", err)
+	}
+	if o.account.CurrentUserID == "" {
+		o.syncCurrentUser(ctx)
+	}
+
+	o.progress.SetPhase(PhaseUsers)
+	if err := o.fetchRoster(ctx); err != nil {
+		return fmt.Errorf("user roster sync: %w", err)
+	}
+	o.progress.SetPhase(PhaseDone)
+	return nil
+}
+
+// fetchRoster fetches the full workspace roster and stamps the account's
+// roster marker with the time the fetch STARTED, on success only, so a failed
+// fetch is retried next cycle and a long one does not push the next refresh
+// later than the stated cadence. A failed stamp is logged, not returned: the
+// roster is already saved, and the cost is one extra fetch next cycle.
+func (o *Orchestrator) fetchRoster(ctx context.Context) error {
+	started := o.clock()
+	if err := o.fetchAllUserProfiles(ctx); err != nil {
+		return err
+	}
+	if err := o.db.SetSlackRosterSyncedAt(o.accountID, started); err != nil {
+		o.logger.Printf("warning: %v (the roster will be fetched again next cycle)", err)
+	}
+	return nil
 }
 
 // AccountID is the slack_accounts row this orchestrator syncs.
@@ -380,15 +430,18 @@ func (o *Orchestrator) runSearchSync(ctx context.Context, opts SyncOptions) erro
 	// Phase 4: full user roster (users.list) — search sync only discovers users
 	// from recent messages (EnsureUser stubs carrying the search username), so
 	// the complete workspace roster is fetched here; once a day, not every
-	// cycle. A failed fetch fails the run (as it always did) and retries next cycle.
-	if o.refreshDue(o.rosterSyncedAt, rosterRefreshInterval) {
+	// cycle, counting a `sync --users-only` fetch (the shared account-row
+	// marker). A failed fetch fails the run (as it always did) and retries next cycle.
+	rosterSyncedAt, err := o.db.SlackRosterSyncedAt(o.accountID)
+	if err != nil {
+		return fmt.Errorf("user roster sync: %w", err)
+	}
+	if o.refreshDue(rosterSyncedAt, rosterRefreshInterval) {
 		o.logger.Println("phase 4: syncing all workspace users")
 		o.progress.SetPhase(PhaseUsers)
-		started := o.clock()
-		if err := o.fetchAllUserProfiles(ctx); err != nil {
+		if err := o.fetchRoster(ctx); err != nil {
 			return fmt.Errorf("user roster sync: %w", err)
 		}
-		o.rosterSyncedAt = started
 	} else {
 		o.logger.Println("phase 4: workspace roster fetched within the day, skipping")
 	}
@@ -421,7 +474,7 @@ func (o *Orchestrator) clock() time.Time {
 }
 
 // refreshDue reports whether a throttled refresh last run at last (zero =
-// never in this process) is due again after every.
+// never) is due again after every.
 func (o *Orchestrator) refreshDue(last time.Time, every time.Duration) bool {
 	return last.IsZero() || o.clock().Sub(last) >= every
 }
