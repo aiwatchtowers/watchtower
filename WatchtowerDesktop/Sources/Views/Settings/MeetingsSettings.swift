@@ -21,6 +21,7 @@ struct MeetingsSettings: View {
     @AppStorage(MeetingRecorderCenter.preloadBeforeMeetingsKey) private var transcriptionPreload = true
     @AppStorage("transcription.diarizationThreshold") private var transcriptionDiarizationThreshold = 0.6
     @AppStorage("transcription.micAGC") private var transcriptionMicAGC = false
+    @AppStorage(SystemAudioRecorder.reattachKey) private var reattachSystemAudio = true
     @AppStorage("transcription.voiceRecognition") private var voiceRecognition = true
     @AppStorage("transcription.voiceNotifications") private var voiceNotifications = true
     @AppStorage(JoinMeetingAction.autoRecordKey) private var autoRecordOnJoin = true
@@ -137,6 +138,11 @@ struct MeetingsSettings: View {
                     + "dominant sound in it, so your own voice is not lost in the recording. "
                     + "Moments where remote participants are the dominant sound are left untouched, "
                     + "so their audio leaking into your mic is never amplified.")
+
+            Toggle("Follow output device changes", isOn: $reattachSystemAudio)
+                .help("When headphones or a Bluetooth headset connect or disconnect during a recording, "
+                    + "reconnect the call audio capture to the new device automatically. "
+                    + "Takes effect from the next recording.")
 
             Stepper(
                 "Delete audio after \(config.transcriptAudioRetentionDays) days",

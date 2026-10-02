@@ -2,6 +2,7 @@ import AVFoundation
 import AudioToolbox
 import CoreAudio
 import Foundation
+import WatchtowerCore
 
 /// Captures microphone + system audio into a single 16 kHz mono AAC file in a
 /// CAF container (crash-tolerant: CAF needs no header finalization, so a file
@@ -17,6 +18,18 @@ final class SystemAudioRecorder: AudioRecording {
     static var isSupported: Bool {
         if #available(macOS 14.4, *) { return true }
         return false
+    }
+
+    static let reattachKey = "transcription.reattachSystemAudio"
+
+    /// `transcription.reattachSystemAudio`, default ON: rebuild the tap when
+    /// the default output or input device changes mid-recording
+    /// (`TapReattachController`). A kill switch rather than a dark launch —
+    /// the rebuild is make-before-break, so a failed one leaves the capture
+    /// exactly as it would have been without it. `defaults` is injectable so
+    /// tests use an isolated suite.
+    static func reattachEnabled(_ defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: reattachKey) as? Bool ?? true
     }
 
     private var impl: AnyObject?
@@ -120,10 +133,17 @@ private final class TapRecorderImpl {
     /// recording into the next. nil = the `transcription.micAGC` gate is off,
     /// and the mix line below is then exactly what it was before the AGC.
     private var micAGC: MicAGC?
+    /// Rebuilds the tap on a default-device change; nil when the
+    /// `transcription.reattachSystemAudio` gate is off or its listener could
+    /// not be installed. Lives on `controlQueue`.
+    private var reattach: TapReattachController?
 
     /// Serial queue owning file writes and converter state; the realtime IO
     /// block only copies + mixes samples and hops here for everything else.
     private let writeQueue = DispatchQueue(label: "com.watchtower.recorder.write")
+    /// Serial queue for device-change callbacks and the tap rebuild, so a
+    /// rebuild never overlaps another one or `stop()` (which syncs here first).
+    private let controlQueue = DispatchQueue(label: "com.watchtower.recorder.control")
 
     private static let outputSampleRate: Double = 16_000
 
@@ -140,19 +160,17 @@ private final class TapRecorderImpl {
 
         // 2. Process tap over all system output (first call shows the
         //    System Audio Recording TCC prompt; denial surfaces as an OSStatus error).
-        let tapDescription = CATapDescription(stereoGlobalTapButExcludeProcesses: [])
-        tapDescription.uuid = UUID()
-        tapDescription.muteBehavior = .unmuted
-        var newTapID = AudioObjectID(kAudioObjectUnknown)
-        var status = AudioHardwareCreateProcessTap(tapDescription, &newTapID)
-        guard status == noErr, newTapID != kAudioObjectUnknown else {
+        let tap: (id: AudioObjectID, uuid: UUID)
+        do {
+            tap = try Self.createTap()
+        } catch {
             throw AudioRecordingError.systemAudioPermissionDenied
         }
-        tapID = newTapID
+        tapID = tap.id
 
         // 3. Private aggregate device: default input device (mic) + the tap.
         do {
-            aggregateID = try Self.createAggregateDevice(tapUUID: tapDescription.uuid)
+            aggregateID = try Self.createAggregateDevice(tapUUID: tap.uuid)
         } catch {
             teardownTap()
             throw error
@@ -182,18 +200,17 @@ private final class TapRecorderImpl {
         micAGC = MicAGC.isEnabled() ? MicAGC() : nil
 
         // 5. IO proc: mix to mono on the realtime thread, write on writeQueue.
-        var newProcID: AudioDeviceIOProcID?
-        status = AudioDeviceCreateIOProcIDWithBlock(&newProcID, aggregateID, writeQueue) { [weak self] _, inInputData, _, _, _ in
-            self?.handleInput(inInputData)
-        }
-        guard status == noErr, let procID = newProcID else {
+        let procID: AudioDeviceIOProcID
+        do {
+            procID = try makeIOProc(on: aggregateID)
+        } catch {
             audioFile = nil
             discardActivitySidecar()
             teardownDevices()
-            throw AudioRecordingError.deviceSetupFailed("creating IO proc (OSStatus \(status))")
+            throw error
         }
         ioProcID = procID
-        status = AudioDeviceStart(aggregateID, procID)
+        let status = AudioDeviceStart(aggregateID, procID)
         guard status == noErr else {
             AudioDeviceDestroyIOProcID(aggregateID, procID)
             ioProcID = nil
@@ -202,9 +219,21 @@ private final class TapRecorderImpl {
             teardownDevices()
             throw AudioRecordingError.deviceSetupFailed("starting device (OSStatus \(status))")
         }
+
+        // 6. Follow default-device changes. Best effort: without the listener
+        //    the recording runs exactly as before, it just cannot re-attach.
+        if SystemAudioRecorder.reattachEnabled() {
+            startReattachMonitoring()
+        }
     }
 
     func stop() throws -> RecordingResult {
+        // No rebuild may run past this point: waits out one in flight, and
+        // drops a pending one.
+        controlQueue.sync {
+            reattach?.stop()
+            reattach = nil
+        }
         // Teardown order matters: IOProc → aggregate → tap, then finalize the file.
         if let procID = ioProcID {
             AudioDeviceStop(aggregateID, procID)
@@ -235,6 +264,10 @@ private final class TapRecorderImpl {
     }
 
     deinit {
+        // Not `controlQueue.sync`: the last reference can drop inside a
+        // rebuild running on controlQueue, and syncing there would deadlock.
+        // `stop()` already did this on every normal path.
+        reattach?.stop()
         if let procID = ioProcID {
             AudioDeviceStop(aggregateID, procID)
             AudioDeviceDestroyIOProcID(aggregateID, procID)
@@ -434,7 +467,120 @@ private final class TapRecorderImpl {
         }
     }
 
+    // MARK: Re-attach on device change
+
+    /// The mix format and converter for one aggregate device's sample rate.
+    private struct CaptureFormat {
+        let deviceFormat: AVAudioFormat
+        let converter: AVAudioConverter
+    }
+
+    private func startReattachMonitoring() {
+        let controller = TapReattachController(
+            monitor: DefaultDeviceChangeMonitor(queue: controlQueue),
+            scheduler: DispatchReattachScheduler(queue: controlQueue),
+            rebuild: { [weak self] in try self?.swapCapture() },
+            log: { print("[Recorder] \($0)") }
+        )
+        controlQueue.sync {
+            do {
+                try controller.start()
+                reattach = controller
+            } catch {
+                print("[Recorder] cannot follow output device changes, the tap will not re-attach: "
+                    + error.localizedDescription)
+            }
+        }
+    }
+
+    /// Rebuilds the tap and aggregate on the CURRENT default devices without
+    /// touching the file: make-before-break, so every failure before the
+    /// switch leaves the running capture exactly as it was (mic included).
+    /// Only the short window between stopping the old IO proc and starting
+    /// the new one is lost. Runs on `controlQueue`.
+    ///
+    /// No TCC prompt can come from here: the mic and System Audio Recording
+    /// permissions were granted when `start` ran (it requests them; this does
+    /// not), and both are per app, not per device.
+    private func swapCapture() throws {
+        let tap = try Self.createTap()
+        let newAggregate: AudioObjectID
+        do {
+            newAggregate = try Self.createAggregateDevice(tapUUID: tap.uuid)
+        } catch {
+            AudioHardwareDestroyProcessTap(tap.id)
+            throw error
+        }
+        func discardNew(_ procID: AudioDeviceIOProcID?) {
+            if let procID { AudioDeviceDestroyIOProcID(newAggregate, procID) }
+            AudioHardwareDestroyAggregateDevice(newAggregate)
+            AudioHardwareDestroyProcessTap(tap.id)
+        }
+        let sampleRate = Self.nominalSampleRate(of: newAggregate)
+        let newProcID: AudioDeviceIOProcID
+        let capture: CaptureFormat
+        do {
+            capture = try Self.makeCaptureFormat(sampleRate: sampleRate)
+            newProcID = try makeIOProc(on: newAggregate)
+        } catch {
+            discardNew(nil)
+            throw error
+        }
+
+        // Switch. Once the old proc is stopped no old buffer is still queued
+        // ahead of the format swap (the sync below runs after them on the
+        // serial writeQueue), and none of the new device's arrives before it.
+        let oldProcID = ioProcID
+        if let oldProcID { AudioDeviceStop(aggregateID, oldProcID) }
+        let previous = writeQueue.sync { installCaptureFormat(capture) }
+        let status = AudioDeviceStart(newAggregate, newProcID)
+        guard status == noErr else {
+            if let previous { _ = writeQueue.sync { installCaptureFormat(previous) } }
+            if let oldProcID { AudioDeviceStart(aggregateID, oldProcID) }
+            discardNew(newProcID)
+            throw AudioRecordingError.deviceSetupFailed("starting the re-attached device (OSStatus \(status))")
+        }
+        if let oldProcID { AudioDeviceDestroyIOProcID(aggregateID, oldProcID) }
+        teardownDevices()
+        tapID = tap.id
+        aggregateID = newAggregate
+        ioProcID = newProcID
+        print("[Recorder] system audio tap rebuilt on the current default devices (\(Int(sampleRate)) Hz)")
+    }
+
+    /// Swaps in the mix format/converter for a (possibly different) device
+    /// rate and returns the previous pair (nil only before `openOutputFile`,
+    /// which runs before any rebuild can be scheduled). The activity
+    /// sidecar's bin size is counted in device frames, so its accumulator
+    /// follows the rate (the partial bin at the switch is dropped). Runs on
+    /// `writeQueue`.
+    private func installCaptureFormat(_ capture: CaptureFormat) -> CaptureFormat? {
+        let previous = deviceFormat.flatMap { format in
+            converter.map { CaptureFormat(deviceFormat: format, converter: $0) }
+        }
+        if capture.deviceFormat.sampleRate != deviceFormat?.sampleRate, activityAccumulator != nil {
+            activityAccumulator = MicActivityAccumulator(sampleRate: capture.deviceFormat.sampleRate)
+        }
+        deviceFormat = capture.deviceFormat
+        converter = capture.converter
+        return previous
+    }
+
     // MARK: Setup helpers
+
+    /// Creates a process tap over all system output. Throws without side
+    /// effects.
+    private static func createTap() throws -> (id: AudioObjectID, uuid: UUID) {
+        let tapDescription = CATapDescription(stereoGlobalTapButExcludeProcesses: [])
+        tapDescription.uuid = UUID()
+        tapDescription.muteBehavior = .unmuted
+        var newTapID = AudioObjectID(kAudioObjectUnknown)
+        let status = AudioHardwareCreateProcessTap(tapDescription, &newTapID)
+        guard status == noErr, newTapID != kAudioObjectUnknown else {
+            throw AudioRecordingError.deviceSetupFailed("creating process tap (OSStatus \(status))")
+        }
+        return (newTapID, tapDescription.uuid)
+    }
 
     /// Creates the private aggregate device combining the default input device
     /// (mic) with the process tap. Sub-devices come before taps in the IOProc's
@@ -472,14 +618,7 @@ private final class TapRecorderImpl {
     /// every step succeeds, so on throw no partial state is left behind; the
     /// caller owns device/tap teardown.
     private func openOutputFile(url: URL) throws {
-        let sampleRate = Self.nominalSampleRate(of: aggregateID)
-        guard let monoDeviceFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: 1, interleaved: false
-        ), let monoOutputFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32, sampleRate: Self.outputSampleRate, channels: 1, interleaved: false
-        ) else {
-            throw AudioRecordingError.deviceSetupFailed("building PCM formats (device rate \(sampleRate))")
-        }
+        let capture = try Self.makeCaptureFormat(sampleRate: Self.nominalSampleRate(of: aggregateID))
         let file: AVAudioFile
         do {
             file = try AVAudioFile(
@@ -496,12 +635,37 @@ private final class TapRecorderImpl {
         } catch {
             throw AudioRecordingError.deviceSetupFailed("opening \(url.lastPathComponent): \(error.localizedDescription)")
         }
+        audioFile = file
+        converter = capture.converter
+        deviceFormat = capture.deviceFormat
+    }
+
+    /// The device-rate mono mix format plus its → 16 kHz converter.
+    private static func makeCaptureFormat(sampleRate: Double) throws -> CaptureFormat {
+        guard let monoDeviceFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: 1, interleaved: false
+        ), let monoOutputFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32, sampleRate: outputSampleRate, channels: 1, interleaved: false
+        ) else {
+            throw AudioRecordingError.deviceSetupFailed("building PCM formats (device rate \(sampleRate))")
+        }
         guard let downConverter = AVAudioConverter(from: monoDeviceFormat, to: monoOutputFormat) else {
             throw AudioRecordingError.deviceSetupFailed("creating 16 kHz converter")
         }
-        audioFile = file
-        converter = downConverter
-        deviceFormat = monoDeviceFormat
+        return CaptureFormat(deviceFormat: monoDeviceFormat, converter: downConverter)
+    }
+
+    /// Creates the IO proc that mixes each cycle on the realtime thread and
+    /// writes on `writeQueue`. Not started.
+    private func makeIOProc(on deviceID: AudioObjectID) throws -> AudioDeviceIOProcID {
+        var newProcID: AudioDeviceIOProcID?
+        let status = AudioDeviceCreateIOProcIDWithBlock(&newProcID, deviceID, writeQueue) { [weak self] _, inInputData, _, _, _ in
+            self?.handleInput(inInputData)
+        }
+        guard status == noErr, let procID = newProcID else {
+            throw AudioRecordingError.deviceSetupFailed("creating IO proc (OSStatus \(status))")
+        }
+        return procID
     }
 
     // MARK: Device helpers
@@ -558,5 +722,46 @@ private final class TapRecorderImpl {
         let status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &rate)
         guard status == noErr, rate > 0 else { return 48_000 }
         return rate
+    }
+}
+
+/// `AudioDeviceChangeMonitoring` over CoreAudio: listens on the system object
+/// for default output and input device changes, delivering on `queue`.
+/// Property listeners need no permission of their own.
+private final class DefaultDeviceChangeMonitor: AudioDeviceChangeMonitoring {
+    private let queue: DispatchQueue
+    private var listeners: [(address: AudioObjectPropertyAddress, block: AudioObjectPropertyListenerBlock)] = []
+
+    init(queue: DispatchQueue) {
+        self.queue = queue
+    }
+
+    func startMonitoring(_ handler: @escaping (AudioDeviceChange) -> Void) throws {
+        let watched: [(AudioObjectPropertySelector, AudioDeviceChange)] = [
+            (kAudioHardwarePropertyDefaultOutputDevice, .defaultOutput),
+            (kAudioHardwarePropertyDefaultInputDevice, .defaultInput)
+        ]
+        for (selector, change) in watched {
+            var address = AudioObjectPropertyAddress(
+                mSelector: selector,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            let block: AudioObjectPropertyListenerBlock = { _, _ in handler(change) }
+            let status = AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, queue, block)
+            guard status == noErr else {
+                stopMonitoring()
+                throw AudioRecordingError.deviceSetupFailed("listening for \(change.rawValue) changes (OSStatus \(status))")
+            }
+            listeners.append((address, block))
+        }
+    }
+
+    func stopMonitoring() {
+        for listener in listeners {
+            var address = listener.address
+            AudioObjectRemovePropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, queue, listener.block)
+        }
+        listeners = []
     }
 }
