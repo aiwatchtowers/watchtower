@@ -313,6 +313,30 @@ final class FeatureManagerService {
         }
     }
 
+    /// Onboarding's write path: makes exactly `enabled` on and the rest of
+    /// `managed` off, through the same `features enable`/`disable` calls as
+    /// `apply()` but with NO daemon restart — onboarding starts the daemon
+    /// itself once it completes. Anything staged elsewhere is discarded
+    /// first, so only this decision is replayed.
+    ///
+    /// It re-reads the live state first and does nothing if that fails:
+    /// against an empty list `setPending` would stage every id, and
+    /// `features enable` on a feature that is already on still runs its
+    /// fast-forward hook (FEAT-03). Ids the CLI does not list, or lists as
+    /// core, are never staged. Failure surfaces through `loadError`, as for
+    /// `apply()`.
+    func applySelection(enabled: Set<String>, managed: Set<String>) async {
+        guard !isApplying else { return }
+        await load()
+        guard loadError == nil else { return }
+
+        discardPending()
+        for feature in features where !feature.core && managed.contains(feature.id) {
+            setPending(feature.id, enabled: enabled.contains(feature.id))
+        }
+        await apply {}
+    }
+
     private func applyOne(id: String, enabled: Bool, isFeature: Bool) async throws {
         guard isFeature else {
             _ = try await runner.run(args: ["config", "set", id, enabled ? "true" : "false"])

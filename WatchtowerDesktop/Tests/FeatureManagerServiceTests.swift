@@ -786,3 +786,56 @@ extension FeatureManagerServiceTests {
         #expect(service.loadError?.contains("restart failed") == true)
     }
 }
+
+// MARK: - applySelection() — onboarding's write path, no restart
+
+extension FeatureManagerServiceTests {
+    @Test("applySelection() re-reads the list, writes only real changes over the managed ids, and reloads")
+    func applySelectionWritesOnlyChanges() async {
+        let (service, runner) = Self.makeService(stdout: Self.featuresListJSON)
+        await service.load()
+        service.setPending("memory.semantic.enabled", enabled: true)
+
+        // ideas on → off, tracks off → on, memory already off; the core
+        // "dashboard" and an id the CLI does not list are never staged.
+        await service.applySelection(
+            enabled: ["tracks", "dashboard", "ghost"],
+            managed: ["ideas", "tracks", "memory", "dashboard", "ghost"]
+        )
+
+        #expect(runner.invocations == [
+            ["features", "list", "--json"],
+            ["features", "list", "--json"],
+            ["features", "disable", "ideas"],
+            ["features", "enable", "tracks"],
+            ["features", "list", "--json"]
+        ])
+        #expect(service.pending.isEmpty, "a change staged elsewhere is discarded, not replayed")
+        #expect(service.loadError == nil)
+        #expect(service.isApplying == false)
+    }
+
+    @Test("applySelection() with nothing to change writes nothing")
+    func applySelectionNoOpWhenStateMatches() async {
+        let (service, runner) = Self.makeService(stdout: Self.featuresListJSON)
+
+        await service.applySelection(enabled: ["ideas"], managed: ["ideas", "tracks", "memory"])
+
+        #expect(runner.invocations == [["features", "list", "--json"]])
+        #expect(service.pending.isEmpty)
+    }
+
+    @Test("applySelection() writes nothing when the live list cannot be read")
+    func applySelectionSkipsWhenLoadFails() async {
+        let (service, runner) = Self.makeService(
+            stdout: "",
+            error: CLIRunnerError.nonZeroExit(code: 1, stderr: "list failed")
+        )
+
+        await service.applySelection(enabled: ["tracks"], managed: ["ideas", "tracks"])
+
+        #expect(runner.invocations == [["features", "list", "--json"]])
+        #expect(service.pending.isEmpty)
+        #expect(service.loadError?.contains("list failed") == true)
+    }
+}
