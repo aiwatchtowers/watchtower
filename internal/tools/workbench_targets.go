@@ -439,7 +439,8 @@ func applyTargetMove(d *db.DB, tx *sql.Tx, t *db.Target, parentID *int64) error 
 	case errors.Is(err, db.ErrParentCycle):
 		return cycleRefusal(err, int64(t.ID), *parentID)
 	case errors.Is(err, db.ErrNotInWorkbench):
-		return notInWorkbench("target", *parentID)
+		// The db error names the row that left (the target or its new parent).
+		return &ValidationError{Msg: err.Error(), Err: err}
 	case err != nil:
 		return fmt.Errorf("moving target: %w", err)
 	}

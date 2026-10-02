@@ -19,7 +19,41 @@ package struct TargetParentBoardError: LocalizedError, Equatable {
     }
 }
 
+/// A new parent that is the target itself or one of its sub-targets (board
+/// #186, PROJ-09). Go twin: `db.ErrParentCycle`.
+package struct TargetParentCycleError: LocalizedError, Equatable {
+    package let id: Int64
+    package let parentID: Int64
+
+    package init(id: Int64, parentID: Int64) {
+        self.id = id
+        self.parentID = parentID
+    }
+
+    package var errorDescription: String? {
+        "target #\(id) cannot move under #\(parentID): a target cannot be nested under itself or its own sub-target"
+    }
+}
+
 extension TargetQueries {
+    /// Refuses `parentID` when it is `id` itself or one of its descendants: it
+    /// walks up from `parentID` by id, and UNION drops an id already seen, so
+    /// a row already in a cycle ends the walk too. Twin of Go
+    /// `checkParentCycle` (`internal/db/targets_board.go`).
+    package static func checkParentCycle(_ db: Database, id: Int64, parentID: Int64?) throws {
+        guard let parentID else { return }
+        let cycle = try Bool.fetchOne(db, sql: """
+            WITH RECURSIVE up(id) AS (
+                SELECT ?
+                UNION
+                SELECT t.parent_id FROM targets t JOIN up ON t.id = up.id WHERE t.parent_id IS NOT NULL
+            )
+            SELECT EXISTS (SELECT 1 FROM up WHERE id = ?)
+            """, arguments: [parentID, id])
+        // EXISTS always yields a row; a missing one refuses rather than risk a cycle.
+        if cycle ?? true { throw TargetParentCycleError(id: id, parentID: parentID) }
+    }
+
     /// Refuses `parentID` when it is on a different board than a child on
     /// `childWorkbenchID` (NULL vs N counts as different), and a parent that no
     /// longer exists with `TargetNotFoundError` naming it — the foreign key

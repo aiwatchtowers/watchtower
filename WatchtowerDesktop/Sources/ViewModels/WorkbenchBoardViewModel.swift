@@ -245,7 +245,15 @@ final class WorkbenchBoardViewModel {
     /// - Returns: whether the target moved (a failed write sets `errorMessage`).
     @discardableResult
     func move(_ id: Int, under parentID: Int?) -> Bool {
-        guard WorkbenchBoardOutline.canMove(id, under: parentID, in: roots) else { return false }
+        guard WorkbenchBoardOutline.canMove(id, under: parentID, in: roots) else {
+            // A drop onto its own sub-target is a refusal worth saying; a drop
+            // onto itself or its current parent is a quiet no-op.
+            if let parentID, parentID != id, let node = WorkbenchBoardOutline.find(id, in: roots),
+               WorkbenchBoardOutline.find(parentID, in: [node]) != nil {
+                errorMessage = TargetParentCycleError(id: Int64(id), parentID: Int64(parentID)).errorDescription
+            }
+            return false
+        }
         let pid = projectID
         // Both the old and the new parent chain may roll up (PROJ-05); those
         // are the owner's doing too, so they never notify.
@@ -325,8 +333,9 @@ final class WorkbenchBoardViewModel {
         } catch {
             errorMessage = "Could not \(what): \(error.localizedDescription)"
             // Drop a card deleted elsewhere now rather than on the next poll
-            // (this `load()` keeps `errorMessage`).
-            if error is TargetNotFoundError { load() }
+            // (this `load()` keeps `errorMessage`); from this board a
+            // `wrongWorkbench` means a row that is gone.
+            if error is TargetNotFoundError || (error as? WorkbenchQueryError) == .wrongWorkbench { load() }
             return false
         }
     }

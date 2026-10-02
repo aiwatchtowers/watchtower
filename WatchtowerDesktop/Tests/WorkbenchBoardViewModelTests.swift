@@ -326,9 +326,12 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
 
         reported = []
         XCTAssertFalse(vm.move(Int(to), under: Int(leaf)), "under its own sub-target")
+        XCTAssertNotNil(vm.errorMessage, "a refused drop onto a sub-target says why")
+        vm.dismissError()
         XCTAssertFalse(vm.move(Int(leaf), under: Int(to)), "already there")
+        XCTAssertFalse(vm.move(Int(leaf), under: Int(leaf)), "onto itself")
+        XCTAssertNil(vm.errorMessage, "a no-op drop stays quiet")
         XCTAssertTrue(reported.isEmpty)
-        XCTAssertNil(vm.errorMessage)
 
         XCTAssertTrue(vm.move(Int(leaf), under: nil))
         XCTAssertNil(WorkbenchBoardOutline.find(Int(leaf), in: vm.roots)?.target.parentId)

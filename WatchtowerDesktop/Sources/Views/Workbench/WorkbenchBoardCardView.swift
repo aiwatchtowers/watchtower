@@ -221,7 +221,8 @@ struct WorkbenchTargetMenu: View {
             .disabled(!WorkbenchBoardOutline.canMove(target.id, under: nil, in: vm.roots))
     }
 
-    /// Indented by depth so the menu reads as the board's tree.
+    /// Indented by depth so the menu reads as the board's tree (capped like
+    /// the board's own indent).
     private static func destinationTitle(_ row: WorkbenchBoardRow) -> String {
         let title = WorkbenchBoardCard.title(row.node.target.text)
         return String(repeating: "    ", count: min(row.depth, 6))

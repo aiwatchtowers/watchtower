@@ -54,6 +54,8 @@ package enum WorkbenchBoardOutline {
     /// under, depth-first with its depth.
     package static func moveDestinations(for targetID: Int, in roots: [WorkbenchBoardNode]) -> [WorkbenchBoardRow] {
         guard let node = find(targetID, in: roots) else { return [] }
+        // Collapsing the target hides its subtree — with itself and its
+        // current parent, the only places it cannot go.
         return rows(roots, collapsed: [node.target.id], showDone: true)
             .filter { $0.id != targetID && $0.id != node.target.parentId }
     }

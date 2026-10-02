@@ -69,18 +69,20 @@ func (db *DB) CheckParentCycle(id int64, parentID sql.NullInt64) error {
 }
 
 // checkParentCycle refuses parentID when it is id itself or one of id's
-// descendants: it walks up from parentID (UNION drops a row already seen, so
-// an existing cycle ends the walk; 256 levels is the PROJ-05 triggers' bound).
+// descendants: it walks up from parentID by id, and UNION drops an id already
+// seen, so the walk ends at the root or, on a row already in a cycle, once
+// round the cycle.
+//
+// Dual path: Swift TargetQueries.checkParentCycle (WatchtowerCore).
 func checkParentCycle(q targetsQuerier, id int64, parentID sql.NullInt64) error {
 	if !parentID.Valid {
 		return nil
 	}
 	var cycle bool
-	err := q.QueryRow(`WITH RECURSIVE up(id, depth) AS (
-			SELECT ?1, 0
+	err := q.QueryRow(`WITH RECURSIVE up(id) AS (
+			SELECT ?1
 			UNION
-			SELECT t.parent_id, up.depth + 1 FROM targets t JOIN up ON t.id = up.id
-			WHERE t.parent_id IS NOT NULL AND up.depth < 256
+			SELECT t.parent_id FROM targets t JOIN up ON t.id = up.id WHERE t.parent_id IS NOT NULL
 		)
 		SELECT EXISTS (SELECT 1 FROM up WHERE id = ?2)`, parentID.Int64, id).Scan(&cycle)
 	if err != nil {

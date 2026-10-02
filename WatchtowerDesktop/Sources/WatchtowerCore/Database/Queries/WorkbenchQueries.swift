@@ -7,8 +7,6 @@ package enum WorkbenchQueryError: LocalizedError, Equatable {
     case wrongWorkbench
     case notARoot(Int64)
     case invalidStatus(String)
-    /// A move under the target itself or one of its sub-targets (board #186).
-    case parentCycle
 
     package var errorDescription: String? {
         switch self {
@@ -17,7 +15,6 @@ package enum WorkbenchQueryError: LocalizedError, Equatable {
         case .wrongWorkbench: "That target or document belongs to another workbench."
         case let .notARoot(id): "Comment \(id) is a reply; only a thread's first comment has a status."
         case let .invalidStatus(status): "Unknown comment status \u{201C}\(status)\u{201D}."
-        case .parentCycle: "A target cannot be moved under itself or one of its own sub-targets."
         }
     }
 }
@@ -272,21 +269,22 @@ package enum WorkbenchQueries {
     /// Nests `targetID` under `parentID`, or moves it to the top level when
     /// `parentID` is nil (board #186, PROJ-09). Both must be on project
     /// `projectID` (`wrongWorkbench`, also for a missing row), and the parent
-    /// must not be the target or one of its sub-targets (`parentCycle`). An
-    /// unchanged parent writes nothing. The old and new parents' progress is
-    /// recomputed; their status follows from the PROJ-05 rollup triggers.
+    /// must not be the target or one of its sub-targets
+    /// (`TargetParentCycleError`). An unchanged parent writes nothing. The old
+    /// and new parents' progress is recomputed; their status follows from the
+    /// PROJ-05 rollup triggers.
     ///
     /// Dual path of Go `MoveWorkbenchTargetTx` (internal/db/workbench_board.go)
     /// — change the rules together.
     package static func moveTarget(_ db: Database, projectID: Int64, targetID: Int64, parentID: Int64?) throws {
-        guard let row = try Row.fetchOne(
-            db, sql: "SELECT project_id, parent_id FROM targets WHERE id = ?", arguments: [targetID]
-        ), (row["project_id"] as Int64?) == projectID else { throw WorkbenchQueryError.wrongWorkbench }
-        let oldParentID: Int64? = row["parent_id"]
+        try requireInWorkbench(db, projectID: projectID, table: "targets", id: targetID)
         if let parentID {
             try requireInWorkbench(db, projectID: projectID, table: "targets", id: parentID)
-            if try isAncestorOrSelf(db, targetID, of: parentID) { throw WorkbenchQueryError.parentCycle }
+            try TargetQueries.checkParentCycle(db, id: targetID, parentID: parentID)
         }
+        let oldParentID: Int64? = try Row.fetchOne(
+            db, sql: "SELECT parent_id FROM targets WHERE id = ?", arguments: [targetID]
+        )?["parent_id"]
         guard oldParentID != parentID else { return }
         try db.execute(
             sql: """
@@ -298,20 +296,6 @@ package enum WorkbenchQueries {
         for parent in [oldParentID, parentID].compactMap({ $0 }) {
             try TargetQueries.recomputeParentProgress(db, parentID: Int(parent))
         }
-    }
-
-    /// Whether `candidate` is `id` or one of its ancestors — Go
-    /// `checkParentCycle`'s walk (UNION ends an existing cycle; 256 levels).
-    private static func isAncestorOrSelf(_ db: Database, _ candidate: Int64, of id: Int64) throws -> Bool {
-        try Bool.fetchOne(db, sql: """
-            WITH RECURSIVE up(id, depth) AS (
-                SELECT ?, 0
-                UNION
-                SELECT t.parent_id, up.depth + 1 FROM targets t JOIN up ON t.id = up.id
-                WHERE t.parent_id IS NOT NULL AND up.depth < 256
-            )
-            SELECT EXISTS (SELECT 1 FROM up WHERE id = ?)
-            """, arguments: [id, candidate]) ?? false
     }
 
     /// The project's target tree: roots (and orphans whose parent is outside

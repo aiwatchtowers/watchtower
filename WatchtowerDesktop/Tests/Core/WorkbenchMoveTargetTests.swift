@@ -57,7 +57,7 @@ final class WorkbenchMoveTargetTests: XCTestCase {
             let leaf = try TestDatabase.insertWorkbenchTarget(db, projectID: pid, parentID: mid)
             for candidate in [root, mid, leaf] {
                 XCTAssertThrowsError(try WorkbenchQueries.moveTarget(db, projectID: pid, targetID: root, parentID: candidate)) {
-                    XCTAssertEqual($0 as? WorkbenchQueryError, .parentCycle)
+                    XCTAssertEqual($0 as? TargetParentCycleError, TargetParentCycleError(id: root, parentID: candidate))
                 }
                 XCTAssertNil(try parent(db, root), "nothing written")
             }
@@ -83,6 +83,7 @@ final class WorkbenchMoveTargetTests: XCTestCase {
                 ("missing parent", mine, 99_999),
                 ("target of another workbench", theirs, mine),
                 ("target of another workbench to the top level", theirs, nil),
+                ("personal target", personal, mine),
                 ("missing target", 99_999, mine)
             ]
             for (name, id, parentID) in cases {
@@ -92,6 +93,24 @@ final class WorkbenchMoveTargetTests: XCTestCase {
             }
             XCTAssertNil(try parent(db, mine))
             XCTAssertNil(try parent(db, theirs))
+        }
+    }
+
+    /// The generic reparent (`TargetQueries.updateParent`, Suggest Links)
+    /// refuses a cycle too, like Go `UpdateTarget`.
+    func testProj09_UpdateParentRefusesACycle() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            let pid = try TestDatabase.insertWorkbench(db)
+            let root = try TestDatabase.insertWorkbenchTarget(db, projectID: pid)
+            let child = try TestDatabase.insertWorkbenchTarget(db, projectID: pid, parentID: root)
+            let other = try TestDatabase.insertWorkbenchTarget(db, projectID: pid)
+            XCTAssertThrowsError(try TargetQueries.updateParent(db, id: Int(root), parentID: Int(child))) {
+                XCTAssertEqual($0 as? TargetParentCycleError, TargetParentCycleError(id: root, parentID: child))
+            }
+            XCTAssertNil(try parent(db, root), "nothing written")
+            try TargetQueries.updateParent(db, id: Int(child), parentID: Int(other))
+            XCTAssertEqual(try parent(db, child), other)
         }
     }
 

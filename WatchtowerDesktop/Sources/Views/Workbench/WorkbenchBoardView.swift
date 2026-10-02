@@ -189,7 +189,7 @@ struct WorkbenchBoardView: View {
 
     @ViewBuilder
     private func tree(_ vm: WorkbenchBoardViewModel) -> some View {
-        if vm.rows.isEmpty, !vm.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if vm.rows.isEmpty, WorkbenchBoardSearch(vm.searchText) != nil {
             ContentUnavailableView.search(text: vm.searchText)
                 .frame(maxHeight: .infinity)
         } else if vm.rows.isEmpty {

@@ -159,9 +159,13 @@ func (db *DB) UpdateTarget(t Target) error {
 
 	// Capture old parent before mutating.
 	var oldParentID sql.NullInt64
-	_ = db.QueryRow(`SELECT parent_id FROM targets WHERE id = ?`, t.ID).Scan(&oldParentID)
+	if err := db.QueryRow(`SELECT parent_id FROM targets WHERE id = ?`, t.ID).Scan(&oldParentID); err != nil &&
+		!errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("loading target %d's parent: %w", t.ID, err)
+	}
 	// Only a parent change is checked, so a row already in a cycle can still
-	// be edited.
+	// be edited. Checked before the write, outside a transaction: best-effort
+	// against a concurrent move (MoveWorkbenchTargetTx checks in its tx).
 	if t.ParentID.Valid && t.ParentID != oldParentID {
 		if err := checkParentCycle(db, int64(t.ID), t.ParentID); err != nil {
 			return err
