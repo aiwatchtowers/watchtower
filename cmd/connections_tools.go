@@ -41,7 +41,7 @@ var (
 func init() {
 	connectionsToolsCmd.Flags().BoolVar(&connectionsToolsFlagRefresh, "refresh", false, "re-list the tools from the server first")
 	connectionsToolsCmd.Flags().StringSliceVar(&connectionsToolsFlagAllow, "allow", nil,
-		"allow exactly these tool names (comma-separated or repeated), replacing the read-only default; a tool the server marks as a write is refused")
+		"allow exactly these tool names (comma-separated or repeated), replacing the read-only default; a name not in the last listing or marked a write by the server is refused")
 	connectionsToolsCmd.Flags().BoolVar(&connectionsToolsFlagDefault, "default", false,
 		"drop the explicit list: allow only tools known to be read-only")
 	connectionsToolsCmd.Flags().BoolVar(&connectionsToolsFlagJSON, "json", false, "output JSON")
@@ -97,8 +97,9 @@ func runConnectionsTools(cmd *cobra.Command, args []string) error {
 	return printConnectionTools(cmd.OutOrStdout(), conn, connectionsToolsFlagJSON)
 }
 
-// applyAllowFlags stores --allow (validated: trimmed, no empty name, no tool
-// the server marks as a write) or --default on conn's row and in conn.
+// applyAllowFlags stores --allow (validated: trimmed, no empty name, only
+// listed tools the server does not mark as a write) or --default on conn's
+// row and in conn.
 func applyAllowFlags(warn io.Writer, database *db.DB, conn *db.ExternalConnection) error {
 	switch {
 	case connectionsToolsFlagAllow != nil:
@@ -153,8 +154,9 @@ var errNoCredentials = errors.New("no usable credentials")
 // refreshToolsAfterEnable lists a just-enabled (or just-signed-in)
 // connection's tools and reports how many the chat may call, on the row too
 // (status "error" when none is) so Settings shows it — the Desktop ignores
-// this command's output on success. Best effort: on a failed listing the
-// connection stays enabled with no tool allowed (fail closed).
+// this command's output on success. Best effort: on a failed listing a
+// never-listed connection stays enabled with no tool allowed (fail closed); a
+// listed one keeps its last good listing.
 func refreshToolsAfterEnable(cmd *cobra.Command, cfg *config.Config, database *db.DB, id int64) {
 	conn, err := database.GetExternalConnection(id)
 	if err == nil {
