@@ -69,11 +69,13 @@ func (cl *Client) Close() error {
 // SearchNewSince returns the UIDs of every message with UID > lastUID in the
 // selected folder (order is not guaranteed by IMAP; callers sort if needed) —
 // a cheap UID-only FETCH (no envelope/flags/body fetched) on the "N:*" range.
-// This deliberately uses FETCH rather than SEARCH: a UID SEARCH whose range
-// start exceeds the mailbox's current highest UID resolves "*" dynamically
-// and can spuriously match already-seen UIDs on at least one widely-used test
-// server implementation, whereas a plain ranged FETCH does not have this
-// failure mode. Callers sort, cap to a per-cycle maximum, and only then pass
+// RFC 3501 §6.4.8 says a UID range like "N:*" always includes the mailbox's
+// last message, even when N is higher than any assigned UID, so a real server
+// answers a cycle with no new mail with the newest already-seen UID. The
+// go-imap client drops a FETCH response whose UID is outside the requested
+// set (it is treated as unilateral data, not a command result), so that UID
+// never reaches the loop below; TestSearchNewSinceDropsAlreadySeenUIDsTheServerReturns
+// pins this against a server that widens the range. Callers sort, cap to a per-cycle maximum, and only then pass
 // the surviving subset to FetchUIDs — see Syncer.Sync, which mirrors
 // gmail.Syncer's two-phase list-then-fetch shape so a capped cycle never pays
 // for a full fetch of messages it's about to discard. Used once an account
