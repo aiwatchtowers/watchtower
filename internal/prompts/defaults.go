@@ -104,7 +104,7 @@ var DefaultVersions = map[string]int{
 	TracksExtractBatch:         2, // v2: digest-based input instead of raw messages
 	PeopleReduce:               1,
 	PeopleTeam:                 1,
-	BriefingDaily:              8, // v8: PROJECTS block (Watchtower projects, spec 2026-09-29)
+	BriefingDaily:              9, // v9: the PROJECTS block is WORKBENCHES (Workbench rename, spec 2026-10-02); v8: PROJECTS block (spec 2026-09-29)
 	DigestChannelBatch:         5, // v5: instruct the model to echo channel_id verbatim from the block header (C1)
 	PeopleBatch:                1, // v1: batch people cards for low-data users
 	TasksGenerate:              1, // v1: AI task generation with checklist and due date
@@ -494,7 +494,7 @@ Rules:
   - In "team_pulse": mention team workload signals if sprint progress data is available.
   - Each Jira signal should include Slack context if the same issue key appears in digests or tracks.
   - If JIRA CONTEXT section is empty, ignore Jira instructions entirely.
-- PROJECTS: the PROJECTS section lists the user's Watchtower projects — folder-bound boards that coding agents work on — with activity since the previous briefing. Bring a project into "attention" only for a blocked target, unread agent comments (an agent may be waiting for an answer), or documents whose comments still wait for the agent; use source_type="project" and source_id=the project_id. Never put a project's targets into "your_day" or into target_id — they live on the project board, not among the user's targets. If the section reads "(no project activity)", do not mention projects at all.
+- WORKBENCHES: the WORKBENCHES section lists the user's Watchtower workbenches — folder-bound boards that coding agents work on — with activity since the previous briefing. Bring a workbench into "attention" only for a blocked target, unread agent comments (an agent may be waiting for an answer), or documents whose comments still wait for the agent; use source_type="project" and source_id=the block's project_id (both keep their stored names). Never put a workbench's targets into "your_day" or into target_id — they live on the workbench board, not among the user's targets. If the section reads "(no project activity)", do not mention workbenches at all.
 - MEMORY REVISIONS: the MEMORY REVISIONS section lists belief revisions the assistant's memory made recently — notes derived from Slack/Jira, model-mediated, NOT the user's own words. Weave a revision into "attention" or "team_pulse" only when it genuinely bears on today's work; frame it as something the memory noticed, never as fact. If the section reads "(no notable revisions)", do NOT mention memory, beliefs, or revisions at all.
 - Be specific: name people, channels, decisions — not vague generalities.
 - If user has reports, prioritize their signals in team_pulse.
@@ -531,7 +531,7 @@ Rules:
 === JIRA CONTEXT ===
 %s
 
-=== PROJECTS ===
+=== WORKBENCHES ===
 %s
 
 === MEMORY REVISIONS ===

@@ -121,13 +121,13 @@ func TestBriefingHasDataWithProjectsOnly(t *testing.T) {
 	id, err := pipe.RunForDate(context.Background(), time.Now().Format("2006-01-02"))
 	require.NoError(t, err)
 	assert.Greater(t, id, 0, "project activity alone is enough for a briefing")
-	assert.Contains(t, gen.systemMsg, "=== PROJECTS ===")
+	assert.Contains(t, gen.systemMsg, "=== WORKBENCHES ===")
 	assert.Contains(t, gen.systemMsg, "Payments feature")
 	assert.NotContains(t, gen.systemMsg, "%!", "every verb got exactly one argument")
 }
 
 // A briefing.daily row the owner customized before v8 carries one %s fewer.
-// Formatting it with the v8 arguments would shift PROJECTS into the MEMORY
+// Formatting it with the v8 arguments would shift WORKBENCHES into the MEMORY
 // REVISIONS slot and append %!(EXTRA ...) to the prompt; getPrompt must fall
 // back to the shipped default instead.
 func TestGetPrompt_CustomizedTemplateWithOldVerbCountFallsBackToDefault(t *testing.T) {
@@ -155,7 +155,7 @@ func TestGetPrompt_CustomizedTemplateWithOldVerbCountFallsBackToDefault(t *testi
 
 	assert.NotContains(t, gen.systemMsg, sentinel, "the mismatched template must not be used")
 	assert.NotContains(t, gen.systemMsg, "%!")
-	assert.Contains(t, gen.systemMsg, "=== PROJECTS ===")
+	assert.Contains(t, gen.systemMsg, "=== WORKBENCHES ===")
 	stored, err := d.GetBriefingByID(id)
 	require.NoError(t, err)
 	assert.Equal(t, 0, stored.PromptVersion, "a fallback records the default arm's version 0")
@@ -180,4 +180,50 @@ func TestValidateIDs_ProjectSourceMustBeShown(t *testing.T) {
 func TestBriefingDailyVersionAtLeastEight(t *testing.T) {
 	// v8 introduced the PROJECTS block.
 	assert.GreaterOrEqual(t, prompts.DefaultVersions[prompts.BriefingDaily], 8)
+}
+
+// Workbench rename (spec 2026-10-02 A8): v9 heads the block WORKBENCHES with
+// the same verb count, and attention items keep the stored source_type
+// "project".
+func TestBriefingDailyV9_WorkbenchesHeaderSameVerbsLegacySourceType(t *testing.T) {
+	tmpl := prompts.Defaults[prompts.BriefingDaily]
+	assert.GreaterOrEqual(t, prompts.DefaultVersions[prompts.BriefingDaily], 9, "the reworded template must auto-upgrade stored v8 rows")
+	assert.Contains(t, tmpl, "\n=== WORKBENCHES ===\n%s\n")
+	assert.NotContains(t, tmpl, "=== PROJECTS ===")
+	assert.Equal(t, 16, countVerbs(tmpl), "v9 keeps v8's 16 verbs")
+	assert.Contains(t, tmpl, `source_type="project"`)
+	assert.Contains(t, tmpl, noWorkbenchActivity, "the placeholder the template names is the one rendered")
+}
+
+// A briefing.daily row the owner customized at v8 keeps its own wording
+// (Seed never upgrades a customized row) and still renders: same verb count,
+// so the workbench block lands in its PROJECTS slot.
+func TestGetPrompt_CustomizedV8TemplateStillRenders(t *testing.T) {
+	d := testDB(t)
+	require.NoError(t, d.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test", Domain: "test"}))
+	_, err := d.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U001"})
+	require.NoError(t, err)
+	pid := seedWorkbench(t, d, "acme")
+	seedWorkbenchTarget(t, d, pid, 0, "Payments feature", "in_progress", time.Now().UTC().Format("2006-01-02T15:04:05Z"))
+
+	const sentinel = "SENTINEL-CUSTOM-V8-BRIEFING-4E19"
+	v8 := strings.Replace(prompts.Defaults[prompts.BriefingDaily], "=== WORKBENCHES ===", "=== PROJECTS ===", 1)
+	require.NotEqual(t, prompts.Defaults[prompts.BriefingDaily], v8)
+	custom := sentinel + "\n" + v8
+
+	store := prompts.New(d, nil)
+	require.NoError(t, store.Seed())
+	require.NoError(t, store.Update(prompts.BriefingDaily, custom, "customized at v8"))
+	require.NoError(t, store.Seed(), "a later seed must leave the customized row alone")
+
+	gen := &capturingGenerator{response: `{"attention":[],"your_day":[],"what_happened":[],"team_pulse":[],"coaching":[]}`}
+	pipe := New(d, testConfig(), gen, log.New(io.Discard, "", 0))
+	pipe.SetPromptStore(store)
+	_, err = pipe.RunForDate(context.Background(), time.Now().Format("2006-01-02"))
+	require.NoError(t, err)
+
+	assert.Contains(t, gen.systemMsg, sentinel, "the customized template is used")
+	assert.Contains(t, gen.systemMsg, "=== PROJECTS ===\n--- [project_id=")
+	assert.Contains(t, gen.systemMsg, "Payments feature")
+	assert.NotContains(t, gen.systemMsg, "%!")
 }
