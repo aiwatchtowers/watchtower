@@ -1,6 +1,8 @@
 package externalmcp
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -202,4 +204,64 @@ func TestOAuthGrant_Expiring(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestSecretStore_DeleteAndExists: Delete removes the secret, a second
+// Delete of the missing file is not an error, and a path Delete cannot
+// remove (a non-empty directory) surfaces its error.
+func TestSecretStore_DeleteAndExists(t *testing.T) {
+	dir := t.TempDir()
+	st := NewSecretStore(dir, 3)
+	if st.Exists() {
+		t.Fatal("Exists before Save = true")
+	}
+	if err := st.Save(&Secret{Env: map[string]string{"K": "v"}}); err != nil {
+		t.Fatal(err)
+	}
+	if !st.Exists() {
+		t.Fatal("Exists after Save = false")
+	}
+	if err := st.Delete(); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if st.Exists() {
+		t.Error("Exists after Delete = true")
+	}
+	if err := st.Delete(); err != nil {
+		t.Errorf("second Delete: %v, want nil", err)
+	}
+
+	if err := os.MkdirAll(filepath.Join(st.Path(), "child"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Delete(); err == nil {
+		t.Error("Delete over a non-empty directory = nil, want an error")
+	}
+}
+
+// TestSecretStore_LockSerializesHolders: while one holder has the lock a
+// second Lock waits and gives up with the context's error; after unlock the
+// next Lock succeeds. Lock also creates a missing workspace directory.
+func TestSecretStore_LockSerializesHolders(t *testing.T) {
+	st := NewSecretStore(filepath.Join(t.TempDir(), "ws"), 4)
+	unlock, err := st.Lock(context.Background())
+	if err != nil {
+		t.Fatalf("first Lock: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	if second, err := st.Lock(ctx); err == nil {
+		second()
+		t.Fatal("second Lock while held = nil error, want a context error")
+	} else if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("second Lock err = %v, want context.DeadlineExceeded", err)
+	}
+
+	unlock()
+	again, err := st.Lock(context.Background())
+	if err != nil {
+		t.Fatalf("Lock after unlock: %v", err)
+	}
+	again()
 }
