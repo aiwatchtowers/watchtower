@@ -510,13 +510,14 @@ private final class TapRecorderImpl {
     /// permissions were granted when `start` ran (it requests them; this does
     /// not), and both are per app, not per device.
     private func swapCapture() throws {
-        // start() set all three before the controller existed, and stop()
+        // openOutputFile set both before the controller existed, and stop()
         // drains controlQueue before clearing them.
-        guard let runningProcID = ioProcID, let oldFormat = deviceFormat, let oldConverter = converter else {
-            throw AudioRecordingError.deviceSetupFailed("re-attach without a running capture")
+        guard let oldFormat = deviceFormat, let oldConverter = converter else {
+            throw AudioRecordingError.deviceSetupFailed("re-attach without an open recording")
         }
-        // nil once the old proc is gone and there is nothing to roll back to.
-        var oldProcID: AudioDeviceIOProcID? = runningProcID
+        // nil once an earlier swap lost the old proc: nothing to stop or roll
+        // back to, and rebuilding is then the only way to capture again.
+        var oldProcID = ioProcID
         let previous = CaptureFormat(deviceFormat: oldFormat, converter: oldConverter)
         let tap = try Self.createTap()
         let newAggregate: AudioObjectID
@@ -571,6 +572,9 @@ private final class TapRecorderImpl {
                     print("[Recorder] the previous capture could not be restarted either (OSStatus \(restart)): "
                         + "nothing is being captured until a re-attach succeeds")
                 }
+            } else {
+                print("[Recorder] no previous capture to fall back to: "
+                    + "nothing is being captured until a re-attach succeeds")
             }
             discardNew(newProcID)
             throw AudioRecordingError.deviceSetupFailed("starting the re-attached device (OSStatus \(status))")
