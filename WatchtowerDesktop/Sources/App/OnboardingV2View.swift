@@ -2,9 +2,8 @@ import SwiftUI
 import WatchtowerCore
 
 /// Onboarding v2: Goals → Connect → About you, driven by
-/// `AppState.onboarding` (`OnboardingStateMachineV2`). About you is a
-/// placeholder with Back/Continue until its own step lands; leaving the last
-/// step the route runs finishes onboarding.
+/// `AppState.onboarding` (`OnboardingStateMachineV2`); leaving the last step
+/// the route runs finishes onboarding.
 struct OnboardingV2View: View {
     /// Re-runs the app bootstrap once onboarding completes (`NavigationRoot`
     /// passes `AppState.reinitializeAfterOnboarding()`).
@@ -29,7 +28,14 @@ struct OnboardingV2View: View {
                     onContinue: { await leave(.connect, route: appState.onboardingRoute) }
                 )
             case .aboutYou:
-                placeholderStep(.aboutYou, text: "Tell Watchtower about your role and team.")
+                OnboardingAboutYouStepView(
+                    onBack: { back(to: appState.onboardingRoute.skips(.connect) ? .purpose : .connect) },
+                    onFinish: { about in
+                        await appState.leaveOnboardingStep(
+                            .aboutYou, route: appState.onboardingRoute, about: about, onRetry: onRetry
+                        )
+                    }
+                )
             case .complete:
                 EmptyView()
             }
@@ -46,27 +52,6 @@ struct OnboardingV2View: View {
         .frame(maxWidth: 820)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(nsColor: .windowBackgroundColor))
-    }
-
-    private func placeholderStep(_ step: OnboardingV2Step, text: String) -> some View {
-        VStack(spacing: 16) {
-            Spacer()
-            Text(text).foregroundStyle(.secondary)
-            Spacer()
-            HStack {
-                Button("Back") {
-                    back(to: appState.onboardingRoute.skips(.connect) ? .purpose : .connect)
-                }
-                .disabled(appState.isFinishingOnboarding)
-                Spacer()
-                Button("Continue") {
-                    Task { await leave(step, route: appState.onboardingRoute) }
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(appState.isFinishingOnboarding)
-            }
-        }
-        .task { appState.resumePeopleRosterIfNeeded() }
     }
 
     private func back(to step: OnboardingV2Step) {

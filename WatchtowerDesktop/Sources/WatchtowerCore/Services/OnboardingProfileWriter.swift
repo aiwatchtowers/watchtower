@@ -49,12 +49,39 @@ package enum OnboardingProfileWriter {
         try write(db) { _ in }
     }
 
-    private static func write(_ db: Database, edit: (inout UserProfile) -> Void) throws {
+    /// The row `done`/`later` would write over — what About you prefills
+    /// from, so an untouched field writes back what was there.
+    package static func current(_ db: Database) throws -> UserProfile? {
+        try target(db).existing
+    }
+
+    /// The answers `current(db)` holds, people ids decoded (a malformed list
+    /// reads as empty).
+    package static func currentAnswers(_ db: Database) throws -> OnboardingAboutYou {
+        guard let profile = try current(db) else { return OnboardingAboutYou() }
+        return OnboardingAboutYou(
+            role: profile.role,
+            manager: profile.manager,
+            reports: decode(profile.reports),
+            peers: decode(profile.peers)
+        )
+    }
+
+    private static func target(_ db: Database) throws -> (owner: Owner, key: String, existing: UserProfile?) {
         let owner = try OwnerQueries.resolve(db)
         let key = owner.isKnown ? owner.id : try ProfileQueries.noOwnerProfileKey(db)
         let existing = owner.isKnown
             ? try ProfileQueries.fetchOwnerProfile(db, owner: owner)
             : try ProfileQueries.fetchProfile(db, slackUserID: key)
+        return (owner, key, existing)
+    }
+
+    private static func decode(_ json: String) -> [String] {
+        (try? JSONDecoder().decode([String].self, from: Data(json.utf8))) ?? []
+    }
+
+    private static func write(_ db: Database, edit: (inout UserProfile) -> Void) throws {
+        let (owner, key, existing) = try target(db)
         var profile = existing ?? UserProfile(slackUserID: key)
         edit(&profile)
         profile.onboardingDone = true

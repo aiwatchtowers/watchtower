@@ -75,6 +75,9 @@ final class AppState {
     /// read by About you.
     let peopleRoster: PeopleRosterLoad
 
+    /// Onboarding's About you answers, kept across Back and return.
+    let onboardingAboutYou = OnboardingAboutYouModel()
+
     /// Cache for custom workspace emoji images.
     let emojiImageCache = EmojiImageCache()
     /// Map of custom emoji name → image URL, loaded from DB.
@@ -748,10 +751,15 @@ final class AppState {
 
     /// Moves past `step`: to the next step `route` runs — opening the
     /// database first when that is Connect, whose account sheets need it —
-    /// or, when none is left, through `OnboardingCompletion.finish`, with
-    /// `onboarding_done` written on its own (`OnboardingProfileWriter.later`;
-    /// About you replaces it with its answers).
-    func leaveOnboardingStep(_ step: OnboardingV2Step, route: OnboardingRoute, onRetry: () -> Void) async {
+    /// or, when none is left, through `OnboardingCompletion.finish`, which
+    /// writes `onboarding_done` with About you's answers when given
+    /// (`OnboardingProfileWriter.done`), else alone (`.later`).
+    func leaveOnboardingStep(
+        _ step: OnboardingV2Step,
+        route: OnboardingRoute,
+        about: OnboardingAboutYou? = nil,
+        onRetry: () -> Void
+    ) async {
         guard !isFinishingOnboarding else { return }
         onboardingStepError = nil
         let next = route.step(after: step)
@@ -773,7 +781,13 @@ final class AppState {
                 }
                 guard let manager = databaseManager else { return false }
                 do {
-                    try await manager.dbPool.write { db in try OnboardingProfileWriter.later(db) }
+                    try await manager.dbPool.write { db in
+                        if let about {
+                            try OnboardingProfileWriter.done(db, about: about)
+                        } else {
+                            try OnboardingProfileWriter.later(db)
+                        }
+                    }
                     return true
                 } catch {
                     onboardingStepError = "Could not finish setup: \(error.localizedDescription)"
@@ -919,6 +933,7 @@ final class AppState {
     func startOnboarding() {
         onboarding.reset()
         onboardingGoals.prepareForRerun()
+        onboardingAboutYou.prepareForRerun()
         onboardingStepError = nil
         needsOnboarding = true
         profileComplete = false

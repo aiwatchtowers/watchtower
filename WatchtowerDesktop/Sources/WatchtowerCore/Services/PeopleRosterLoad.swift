@@ -15,6 +15,12 @@ package enum PeopleRosterState: Equatable, Sendable {
         return false
     }
 
+    /// About you's line under the pickers while the load runs.
+    package var stillLoadingText: String? {
+        guard case let .loading(fetched, saved) = self else { return nil }
+        return saved == 0 ? "Still loading people — \(fetched)" : "Still loading people — \(saved) of \(fetched)"
+    }
+
     /// The Slack card's progress line; nil when there is nothing to say.
     /// While users.list pages arrive Slack gives no total, so the count
     /// stands alone; saving knows its total.

@@ -675,4 +675,44 @@ final class AppStateTests: XCTestCase {
         }
         XCTAssertEqual(done, true)
     }
+
+    // MARK: - About you exits
+
+    private func finishFromAboutYou(_ about: OnboardingAboutYou?) async throws -> UserProfile? {
+        let manager = try XCTUnwrap(dbManager)
+        let open: @Sendable () throws -> DatabaseManager = { manager }
+        let appState = AppState.isolated(openDatabase: open)
+        try await dbManager.dbPool.write { db in
+            _ = try TestDatabase.insertSlackAccount(db, teamID: "T1", currentUserID: "1:U_ME")
+            try TestDatabase.insertProfile(
+                db, slackUserID: "1:U_ME", role: "old role", reports: #"["1:U_OLD"]"#, manager: "1:U_BOSS"
+            )
+        }
+        appState.needsOnboarding = true
+        appState.onboarding.goTo(.aboutYou)
+        let route = OnboardingRoute(goals: [.workCommunication], hasSlackAccount: true)
+        await appState.leaveOnboardingStep(.aboutYou, route: route, about: about) {}
+        XCTAssertEqual(appState.onboarding.currentStep, .complete)
+        return try await dbManager.dbPool.read { db in try ProfileQueries.fetchCurrentProfile(db) }
+    }
+
+    func testDoneWritesTheAnswers() async throws {
+        let about = OnboardingAboutYou(role: "EM, Platform", manager: "1:U_ANNA", reports: ["1:U_OLEG"], peers: [])
+        let written = try await finishFromAboutYou(about)
+        let profile = try XCTUnwrap(written)
+        XCTAssertTrue(profile.onboardingDone)
+        XCTAssertEqual(profile.role, "EM, Platform")
+        XCTAssertEqual(profile.manager, "1:U_ANNA")
+        XCTAssertEqual(profile.reports, #"["1:U_OLEG"]"#)
+        XCTAssertEqual(profile.peers, "[]")
+    }
+
+    func testLaterWritesOnlyTheFlag() async throws {
+        let written = try await finishFromAboutYou(nil)
+        let profile = try XCTUnwrap(written)
+        XCTAssertTrue(profile.onboardingDone)
+        XCTAssertEqual(profile.role, "old role")
+        XCTAssertEqual(profile.manager, "1:U_BOSS")
+        XCTAssertEqual(profile.reports, #"["1:U_OLD"]"#)
+    }
 }
