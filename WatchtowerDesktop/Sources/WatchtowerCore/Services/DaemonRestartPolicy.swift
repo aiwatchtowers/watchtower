@@ -10,7 +10,6 @@ package enum DaemonRestartPolicy: Sendable {
 
     /// Kicks off `daemon.restartLogging()` under `.restart` and returns its
     /// task (so a caller can await it); does nothing under `.deferred`.
-    @discardableResult
     package func apply(using daemon: any DaemonRestarting) -> Task<Void, Never>? {
         switch self {
         case .restart:

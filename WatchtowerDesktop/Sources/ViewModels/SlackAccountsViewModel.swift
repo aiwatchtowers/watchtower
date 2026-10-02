@@ -19,7 +19,7 @@ final class SlackAccountsViewModel {
 
     /// The restart the last successful account change kicked off under
     /// `.restart` (nil under `.deferred`) — held so tests can await it.
-    private(set) var daemonRestartTask: Task<Void, Never>?
+    @ObservationIgnored private(set) var daemonRestartTask: Task<Void, Never>?
 
     private let dbPool: DatabasePool
     private let daemon: any DaemonRestarting
