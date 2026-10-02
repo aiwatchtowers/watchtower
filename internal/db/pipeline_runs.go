@@ -91,6 +91,20 @@ func (db *DB) CompletePipelineRun(id int64, itemsFound, inputTokens, outputToken
 	return nil
 }
 
+// FailStalePipelineRuns marks every run still 'running' that started before
+// cutoff as 'error' with errMsg — rows a killed process never finished, which
+// otherwise sit in 'running' forever and inflate the Pipeline Progress view.
+// duration_seconds stays 0: the real run length is unknown.
+func (db *DB) FailStalePipelineRuns(cutoff time.Time, errMsg string) (int64, error) {
+	res, err := db.DB.Exec(`UPDATE pipeline_runs SET status='error', error_msg=?,
+		finished_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE status='running' AND started_at < ?`,
+		errMsg, cutoff.UTC().Format("2006-01-02T15:04:05Z"))
+	if err != nil {
+		return 0, fmt.Errorf("failing stale pipeline_runs: %w", err)
+	}
+	return res.RowsAffected()
+}
+
 // InsertPipelineStep inserts a step record within a pipeline run.
 func (db *DB) InsertPipelineStep(s PipelineStep) error {
 	_, err := db.DB.Exec(`

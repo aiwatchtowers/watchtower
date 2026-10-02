@@ -297,6 +297,53 @@ func TestIdeas01_EmailEmptyTopics_NoRowFloorAdvances(t *testing.T) {
 	assert.Equal(t, float64(base+10), floor)
 }
 
+// TestRunEmailDigests_LogsRejectedRefs pins that the log tells a model that
+// found nothing apart from a model whose candidates were all thrown out by
+// ref validation: rejected candidates are counted against the proposed ones,
+// and an empty reply logs no rejection at all.
+func TestRunEmailDigests_LogsRejectedRefs(t *testing.T) {
+	cases := []struct {
+		name    string
+		reply   func(acctID int64) string
+		wantLog string
+	}{
+		{
+			name: "invented refs are counted",
+			reply: func(acctID int64) string {
+				return fmt.Sprintf(`{"topics":[{"title":"t","summary":"s",
+					"ideas":[{"text":"real","author":"Ann","ref":"gmail:%d:thr-1"},{"text":"invented","author":"Ann","ref":"gmail:999:fake"}],
+					"decisions":[{"text":"invented too","author":"Ann","ref":"gmail:999:fake-2"}]}]}`, acctID)
+			},
+			wantLog: "ideas: ideas.digest_email: dropped 2 of 3 proposed candidates",
+		},
+		{
+			name:  "an empty reply rejects nothing",
+			reply: func(int64) string { return `{"topics":[]}` },
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newTestDB(t)
+			base := time.Now().Add(-time.Hour).Unix()
+			acctID := seedGoogleAccount(t, d, float64(base))
+			setIdeasEmailFloorRaw(t, d, acctID, float64(base-10))
+			seedGmailMessageIdeas(t, d, acctID, "m1", "thr-1", "a@example.com", "Ann", "Subj", "body",
+				time.Unix(base+10, 0).UTC().Format(time.RFC3339))
+
+			gen := &fakeGen{reply: func(string) (string, error) { return tc.reply(acctID), nil }}
+			var logBuf bytes.Buffer
+			p := New(d, testCfg(), gen, log.New(&logBuf, "", 0))
+			require.NoError(t, p.runEmailDigests(context.Background(), time.Time{}))
+
+			if tc.wantLog == "" {
+				assert.NotContains(t, logBuf.String(), "dropped")
+				return
+			}
+			assert.Contains(t, logBuf.String(), tc.wantLog)
+		})
+	}
+}
+
 // TestIdeas01_EmailFloorStopsAtBudgetDroppedThread pins the floor to what the
 // renderer actually put in front of the model: with a budget that fits only
 // the first thread, the floor must stop at that thread's newest message, so

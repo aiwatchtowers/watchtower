@@ -1379,3 +1379,33 @@ func TestInbox09_RunSyncBoundsAndFreezesInboxWatermark(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1000.0, wm, "a failed account sync freezes the watermark")
 }
+
+// A daemon start fails the pipeline_runs rows a killed process left in
+// 'running' long ago, and leaves a recent run (another live process may still
+// own it) alone.
+func TestDaemon_StartReapsAbandonedPipelineRuns(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	database := db.OpenTestDB(t)
+	stale, err := database.CreatePipelineRun("memory", "daemon", "auto")
+	require.NoError(t, err)
+	fresh, err := database.CreatePipelineRun("ask", "cli", "auto")
+	require.NoError(t, err)
+	_, err = database.Exec(`UPDATE pipeline_runs SET started_at=? WHERE id=?`,
+		time.Now().Add(-stalePipelineRunAfter-time.Hour).UTC().Format("2006-01-02T15:04:05Z"), stale)
+	require.NoError(t, err)
+
+	d := newDaemon(nil, &config.Config{Sync: config.SyncConfig{PollInterval: 10 * time.Second}})
+	d.SetLogger(log.New(io.Discard, "", 0))
+	d.SetDB(database)
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	require.NoError(t, d.Run(ctx))
+
+	status := func(id int64) string {
+		var s string
+		require.NoError(t, database.QueryRow(`SELECT status FROM pipeline_runs WHERE id=?`, id).Scan(&s))
+		return s
+	}
+	assert.Equal(t, "error", status(stale), "an abandoned run is failed at daemon start")
+	assert.Equal(t, "running", status(fresh), "a recent run is left to the process that owns it")
+}

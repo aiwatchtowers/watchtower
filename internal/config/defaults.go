@@ -118,12 +118,8 @@ const (
 
 	// Targets defaults
 	DefaultTargetsExtractEnabled        = true
-	DefaultTargetsExtractMaxPerCall     = 10
-	DefaultTargetsExtractTimeoutSeconds = 0  // 0 = no deadline; extraction is user-cancellable in the Desktop capsule
-	DefaultTargetsExtractModel          = "" // empty → provider default
+	DefaultTargetsExtractTimeoutSeconds = 0 // 0 = no deadline; extraction is user-cancellable in the Desktop capsule
 
-	DefaultTargetsResolverSlackEnabled        = true
-	DefaultTargetsResolverJiraEnabled         = true
 	DefaultTargetsResolverMCPTimeoutSeconds   = 10
 	DefaultTargetsResolverActiveSnapshotLimit = 100
 

@@ -409,7 +409,22 @@ func (p *Pipeline) mineStreamTopics(ctx context.Context, promptID, block string,
 	if parsed.Topics == nil {
 		return nil, fmt.Errorf("%s reply has no \"topics\" key", promptID)
 	}
-	return validateRefs(*parsed.Topics, renderedTags), nil
+	topics := validateRefs(*parsed.Topics, renderedTags)
+	// Log what validation threw away, so "the model found nothing" and "the
+	// model found topics but every ref was rejected" read differently in the
+	// log (the refs_rejected pattern of the consolidator).
+	if proposed, kept := countCandidates(*parsed.Topics), countCandidates(topics); kept < proposed {
+		p.logf("ideas: %s: dropped %d of %d proposed candidates with a ref outside the mined window", promptID, proposed-kept, proposed)
+	}
+	return topics, nil
+}
+
+func countCandidates(topics []streamTopic) int {
+	n := 0
+	for _, t := range topics {
+		n += len(t.Ideas) + len(t.Decisions)
+	}
+	return n
 }
 
 // insertStreamTopics writes one stream_digests row carrying topics, or writes

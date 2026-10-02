@@ -332,6 +332,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.loadBriefingAttempts()
 	d.loadRollupAttempts()
 	d.loadPeopleAttempts()
+	d.reapStalePipelineRuns()
 
 	d.logger.Printf("daemon started, polling every %s", pollInterval)
 
@@ -496,6 +497,31 @@ func (d *Daemon) trackedPipelineRun(name string, fn func() pipelineRunStats) {
 		errMsg = stats.err.Error()
 	}
 	_ = d.db.CompletePipelineRun(runID, stats.items, stats.inTok, stats.outTok, stats.cost, stats.totalAPI, stats.pFrom, stats.pTo, errMsg)
+}
+
+// stalePipelineRunAfter is how long a pipeline_runs row may stay 'running'
+// before a daemon start treats it as abandoned. Generous on purpose: a run
+// another live process (a CLI backfill) is still working on must not be
+// failed under it.
+const stalePipelineRunAfter = 24 * time.Hour
+
+// reapStalePipelineRuns fails every pipeline_runs row a killed process left in
+// 'running' (the catchup reapStaleRecaps precedent), so the Pipeline Progress
+// view and run statistics stop counting runs that will never finish. Runs once
+// at daemon start, before this process opens any run of its own. Best-effort:
+// a failed cleanup must not keep the daemon from starting.
+func (d *Daemon) reapStalePipelineRuns() {
+	if d.db == nil {
+		return
+	}
+	n, err := d.db.FailStalePipelineRuns(time.Now().Add(-stalePipelineRunAfter), "interrupted: the process running it exited before it finished")
+	if err != nil {
+		d.logger.Printf("pipeline_runs: reaping abandoned runs failed: %v", err)
+		return
+	}
+	if n > 0 {
+		d.logger.Printf("pipeline_runs: marked %d abandoned run(s) as error after %s in 'running'", n, stalePipelineRunAfter)
+	}
 }
 
 // phaseSlackSync runs every connected account's orchestrator and persists one
