@@ -21,6 +21,9 @@ import WebKit
 
 // MARK: - Page plumbing
 
+/// Mirrors CodeEditorSchemeHandler in
+/// WatchtowerDesktop/Sources/Views/Workbench/CodeFilesPaneView.swift (served
+/// from a folder instead of the app bundle) — keep the two in step.
 final class FolderSchemeHandler: NSObject, WKURLSchemeHandler {
     let root: URL
 
@@ -115,8 +118,10 @@ final class Page: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         loadError = "the web content process terminated"
     }
 
-    /// The completion-handler form, as the Coordinator uses; scripts end in a
-    /// value so nothing comes back undefined.
+    /// evaluateJavaScript in its completion-handler form — the form the
+    /// Coordinator's `call` uses. An error is recorded and fails the run's
+    /// last check (in the app it would land in `editorErrors`). The harness's
+    /// own probe scripts end in a value.
     func eval(_ script: String) async -> Any? {
         await withCheckedContinuation { continuation in
             webView.evaluateJavaScript(script) { [weak self] result, error in
@@ -126,16 +131,22 @@ final class Page: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         }
     }
 
-    /// `fn(arg)` with the argument JSON-encoded — the Coordinator's `call`.
+    /// The Coordinator's `call`: `fn(arg)` with the argument JSON-encoded,
+    /// through the completion-handler evaluateJavaScript, nothing appended.
     func call(_ function: String, _ argument: Any) async {
-        let data = try! JSONSerialization.data(withJSONObject: [argument], options: [.fragmentsAllowed])
-        let array = String(data: data, encoding: .utf8)!
-        _ = await eval("\(function)(\(array.dropFirst().dropLast())); true")
+        _ = await eval("\(function)(\(jsonArgument(argument)))")
     }
 
-    /// The Coordinator's `takePending(from:)`.
+    /// The Coordinator's `takePending(from:)`: the async throwing
+    /// evaluateJavaScript, the result read as [[String: Any]].
     func takePending() async -> [(id: String, text: String, base: Int)] {
-        let raw = await eval("wt.takePending()") as? [[String: Any]] ?? []
+        let raw: [[String: Any]]
+        do {
+            raw = try await webView.evaluateJavaScript("wt.takePending()") as? [[String: Any]] ?? []
+        } catch {
+            errors.append("wt.takePending failed: \(error.localizedDescription)")
+            return []
+        }
         return raw.compactMap { item in
             guard let id = item["id"] as? String, let text = item["text"] as? String, let base = item["base"] as? Int else {
                 errors.append("malformed takePending item: \(item)")
@@ -231,8 +242,10 @@ func pause(_ seconds: Double) async {
     try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
 }
 
-func quoted(_ s: String) -> String {
-    let data = try! JSONSerialization.data(withJSONObject: [s])
+/// A value as a JavaScript literal: JSON-encoded inside an array, the
+/// brackets dropped (the Coordinator's `call` encoding).
+func jsonArgument(_ value: Any) -> String {
+    let data = try! JSONSerialization.data(withJSONObject: [value], options: [.fragmentsAllowed])
     return String(String(data: data, encoding: .utf8)!.dropFirst().dropLast())
 }
 
@@ -451,7 +464,7 @@ func detectionChecks(_ page: Page) async {
         ("data.tsv", "", "tsv")
     ]
     for item in cases {
-        let got = await page.string("__h.detect(\(quoted(item.path)), \(quoted(item.text)))")
+        let got = await page.string("__h.detect(\(jsonArgument(item.path)), \(jsonArgument(item.text)))")
         let shebang = item.text.hasPrefix("#!") ? " (\(item.text.split(separator: "\n")[0]))" : ""
         check("language: \(item.path)\(shebang) → \(item.expected)", got == item.expected, "got \(got ?? "nil")")
     }
@@ -501,8 +514,8 @@ func tokenChecks(_ page: Page) async {
         ])
     ]
     for (language, sample, needles) in samples {
-        let array = needles.map { "[\($0.0), \(quoted($0.1))]" }.joined(separator: ", ")
-        let got = await page.eval("__h.tokens(\(quoted(sample)), \(quoted(language)), [\(array)])") as? [String] ?? []
+        let array = needles.map { "[\($0.0), \(jsonArgument($0.1))]" }.joined(separator: ", ")
+        let got = await page.eval("__h.tokens(\(jsonArgument(sample)), \(jsonArgument(language)), [\(array)])") as? [String] ?? []
         for (index, needle) in needles.enumerated() {
             let actual = index < got.count ? got[index] : "<missing>"
             let shown = needle.1.replacingOccurrences(of: "\t", with: "\\t")
@@ -510,13 +523,21 @@ func tokenChecks(_ page: Page) async {
                   actual == needle.2, "got \(actual.isEmpty ? "(plain)" : actual)")
         }
     }
-    let themes = await page.eval("""
-        (function () {
-          try { monaco.editor.setTheme('wt-dark'); monaco.editor.setTheme('wt-light'); return true; }
-          catch (e) { return String(e); }
-        })()
-        """)
-    check("themes: wt-light and wt-dark are defined", themes as? Bool == true, "\(String(describing: themes))")
+    // setTheme falls back silently on an unknown name, so a theme counts as
+    // defined only when Monaco's generated token colours include a colour
+    // that only its extraRules in languages.js set.
+    for (theme, colour) in [("wt-dark", "#85e89d"), ("wt-light", "#22863a")] {
+        let css = await page.string("""
+            (function () {
+              monaco.editor.setTheme(\(jsonArgument(theme)));
+              return Array.prototype.map.call(document.querySelectorAll('style'), function (s) {
+                return s.textContent.indexOf('.mtk') >= 0 ? s.textContent : '';
+              }).join('').toLowerCase();
+            })()
+            """) ?? ""
+        check("themes: \(theme) is defined (its diff colour \(colour) is in the token colours)",
+              css.contains(colour), css.isEmpty ? "no token colour style found" : "colour absent")
+    }
 }
 
 // MARK: - Main
@@ -547,10 +568,6 @@ guard CommandLine.arguments.count == 2 else {
     exit(2)
 }
 let root = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
-guard FileManager.default.fileExists(atPath: root.appendingPathComponent("vs/loader.js").path) else {
-    fputs("Monaco is not installed in \(root.path)/vs — run scripts/fetch-monaco.sh first.\n", stderr)
-    exit(2)
-}
 
 let app = NSApplication.shared
 app.setActivationPolicy(.prohibited)

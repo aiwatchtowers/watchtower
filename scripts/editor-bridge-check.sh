@@ -22,7 +22,7 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 echo "==> Compiling the harness..."
-xcrun swiftc -swift-version 5 -O -o "$TMP/editor-bridge-check" "$SCRIPT_DIR/editor-bridge-check.swift"
+xcrun swiftc -swift-version 5 -o "$TMP/editor-bridge-check" "$SCRIPT_DIR/editor-bridge-check.swift"
 
 echo "==> Running against CodeEditorWeb/index.html"
 "$TMP/editor-bridge-check" "$WEB"
