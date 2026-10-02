@@ -22,7 +22,7 @@ package enum EmbeddedChatErrorClassifier {
     package static func classify(_ error: Error) -> Failure {
         if let aiError = error as? WatchtowerAIError {
             switch aiError {
-            case .cliNotFound:
+            case .cliNotFound, .launchFailed:
                 return Failure(code: .providerUnavailable, message: aiError.localizedDescription)
             case let .exitCode(_, detail):
                 // The description keeps the exit code next to the provider's text.
