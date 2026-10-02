@@ -44,8 +44,7 @@ struct CodeFilesPaneView: View {
                     .overlay { activeOverlay(tabs) }
             }
         }
-        .onAppear { files.startWatching(project) }
-        .onDisappear { files.stopShowing(project) }
+        .task(id: project.id) { await files.show(project) }
         .task(id: tabs.active) {
             if let active = tabs.active { files.buffer(for: project, relPath: active).loadIfNeeded() }
         }
@@ -346,7 +345,7 @@ struct MonacoEditorView: NSViewRepresentable {
         webView.setValue(false, forKey: "drawsBackground")
         webView.navigationDelegate = context.coordinator
         context.coordinator.webView = webView
-        files.register(context.coordinator, for: project.id)
+        files.register(context.coordinator, for: project)
         webView.load(URLRequest(url: CodeEditorSchemeHandler.pageURL))
         return webView
     }

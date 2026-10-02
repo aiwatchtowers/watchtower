@@ -143,6 +143,16 @@ final class CodeFilesCenter {
         showing[project.id] = max(0, (showing[project.id] ?? 0) - 1)
     }
 
+    /// `startWatching` for as long as the calling task runs — a view's
+    /// `.task(id:)`, cancelled when the view goes or its workbench changes.
+    func show(_ project: Workbench) async {
+        startWatching(project)
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .seconds(3600))
+        }
+        stopShowing(project)
+    }
+
     /// What FSEvents saw; internal for tests.
     func handle(_ batch: FolderWatcher.Batch, projectID: Int64) {
         guard let root = folders[projectID] else { return }
@@ -311,8 +321,14 @@ final class CodeFilesCenter {
     /// The loaded buffers of `project` at `path` or under it (a folder) —
     /// never another workbench's file of the same relative name.
     func buffers(under path: String, project: Workbench) -> [CodeFileBuffer] {
-        let target = project.folderURL.appendingPathComponent(path).path
-        return buffers.values.filter { $0.url.path == target || $0.url.path.hasPrefix(target + "/") }
+        let root = project.folderURL
+        let target = root.appendingPathComponent(path).path
+        return buffers.values.filter { buffer in
+            // Its own: a nested workbench's buffer of the same folder has a
+            // path relative to that workbench, not this one.
+            root.appendingPathComponent(buffer.relPath).path == buffer.url.path
+                && (buffer.url.path == target || buffer.url.path.hasPrefix(target + "/"))
+        }
     }
 
     private func forgetBuffer(_ project: Workbench, _ path: String) {
@@ -323,8 +339,8 @@ final class CodeFilesCenter {
 
     // MARK: Flushing
 
-    func register(_ bridge: CodeEditorBridge, for workbenchID: Int64) {
-        bridges[workbenchID] = WeakBridge(bridge: bridge)
+    func register(_ bridge: CodeEditorBridge, for project: Workbench) {
+        bridges[project.id] = WeakBridge(bridge: bridge, project: project)
     }
 
     func unregister(_ bridge: CodeEditorBridge, for workbenchID: Int64) {
@@ -341,6 +357,7 @@ final class CodeFilesCenter {
             editorErrors[project.id] = "The editor did not answer; edits typed in the last moment may not be saved."
             return
         }
+        if editorErrors[project.id]?.hasPrefix("The editor did not answer") == true { editorErrors[project.id] = nil }
         apply(edits, project: project, now: false)
     }
 
@@ -369,7 +386,8 @@ final class CodeFilesCenter {
     func flushEverything() async {
         for entry in bridges.values {
             guard let bridge = entry.bridge, let edits = await bridge.takePending() else { continue }
-            for edit in edits { buffer(id: edit.id)?.edited(edit.text, base: edit.base) }
+            // Through `apply`: the first edit keeps a preview tab here too.
+            apply(edits, project: entry.project, now: false)
         }
         flushAll()
     }
@@ -450,7 +468,11 @@ final class CodeFilesCenter {
                 do {
                     try FileManager.default.moveItem(at: step, to: to)
                 } catch {
-                    try? FileManager.default.moveItem(at: step, to: from)
+                    do {
+                        try FileManager.default.moveItem(at: step, to: from)
+                    } catch {
+                        throw OperationError.failed("The rename stopped halfway: the entry is now named “\(step.lastPathComponent)” in the same folder.")
+                    }
                     throw error
                 }
             } else {
@@ -531,4 +553,5 @@ final class CodeFilesCenter {
 
 private struct WeakBridge {
     weak var bridge: CodeEditorBridge?
+    let project: Workbench
 }

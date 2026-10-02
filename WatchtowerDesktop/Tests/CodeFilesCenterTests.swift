@@ -100,7 +100,7 @@ final class CodeFilesCenterTests: XCTestCase {
         let buffer = center.buffer(for: project, relPath: "Makefile")
         buffer.loadIfNeeded()
         let page = FakeBridge(edits: [CodeEditorPendingEdit(id: buffer.id, text: "all: last keystroke\n", base: 0)])
-        center.register(page, for: project.id)
+        center.register(page, for: project)
         let refusals = await center.close(["Makefile"], project: project)
         XCTAssertEqual(refusals, [])
         XCTAssertEqual(try text("Makefile"), "all: last keystroke\n")
@@ -269,7 +269,7 @@ final class CodeFilesCenterTests: XCTestCase {
         let buffer = recording.buffer(for: project, relPath: "Makefile")
         buffer.loadIfNeeded()
         let page = FakeBridge(edits: [CodeEditorPendingEdit(id: buffer.id, text: "all: unsent\n", base: 0)])
-        recording.register(page, for: project.id)
+        recording.register(page, for: project)
         try await recording.moveToTrash("Makefile", project: project)
         XCTAssertEqual(saved, "all: unsent\n")
         XCTAssertTrue(recording.tabs(for: project).tabs.isEmpty)
@@ -318,9 +318,54 @@ final class CodeFilesCenterTests: XCTestCase {
     func testAPageThatCannotBeAskedIsShown() async {
         let center = makeCenter()
         let page = BrokenBridge()
-        center.register(page, for: project.id)
+        center.register(page, for: project)
         await center.pullPending(project)
         XCTAssertNotNil(center.editorErrors[project.id])
+    }
+
+    func testGitRunsOnlyForAWorkbenchOnScreenAndRefreshesWhenItShowsAgain() async throws {
+        let runs = Counter()
+        let center = makeCenter { _ in
+            await runs.increment()
+            return .snapshot(GitStatusSnapshot())
+        }
+        center.startWatching(project)
+        await eventually { await runs.value == 1 }
+        center.stopShowing(project)
+        center.handle(FolderWatcher.Batch(gitChanged: true), projectID: project.id)
+        try await Task.sleep(for: .milliseconds(100))
+        let hidden = await runs.value
+        XCTAssertEqual(hidden, 1, "no git run while nothing shows the workbench")
+        center.startWatching(project)
+        await eventually { await runs.value == 2 }
+        let shown = await runs.value
+        XCTAssertEqual(shown, 2, "shown again: refreshed")
+    }
+
+    func testShowCountsWhileTheTaskRunsAndStopsWhenCancelled() async throws {
+        let runs = Counter()
+        let center = makeCenter { _ in
+            await runs.increment()
+            return .snapshot(GitStatusSnapshot())
+        }
+        let task = Task { await center.show(project) }
+        await eventually { await runs.value == 1 }
+        task.cancel()
+        await task.value
+        center.handle(FolderWatcher.Batch(gitChanged: true), projectID: project.id)
+        try await Task.sleep(for: .milliseconds(100))
+        let count = await runs.value
+        XCTAssertEqual(count, 1)
+    }
+
+    func testANestedWorkbenchsBufferIsNotMovedByARenameOfItsFolder() async throws {
+        let nested = Workbench(row: Row(["id": 9, "name": "nested", "folder_path": folder.appendingPathComponent("cmd").path]))
+        let center = makeCenter()
+        let theirs = center.buffer(for: nested, relPath: "main.go")
+        theirs.loadIfNeeded()
+        try await center.rename("cmd", to: "tools", project: project)
+        XCTAssertEqual(theirs.relPath, "main.go")
+        XCTAssertEqual(theirs.url, folder.appendingPathComponent("cmd/main.go"), "left where it was, like any outside move")
     }
 
     // MARK: Watching and git

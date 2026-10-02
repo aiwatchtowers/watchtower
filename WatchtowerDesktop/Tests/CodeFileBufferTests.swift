@@ -48,7 +48,9 @@ final class CodeFileBufferTests: XCTestCase {
         XCTAssertEqual(mode, 0o755)
     }
 
-    func testEachEditRestartsTheDelayAndOnlyTheLastTextIsWritten() async throws {
+    /// Back-to-back edits leave one save of the last text (the restart of
+    /// the delay itself is the Task cancellation in `scheduleAutosave`).
+    func testBackToBackEditsWriteOnlyTheLastText() async throws {
         let buffer = CodeFileBuffer(url: file, relPath: "run.sh", autosaveDelay: .seconds(2))
         buffer.loadIfNeeded()
         buffer.edited("echo b\n", base: 0)

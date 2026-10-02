@@ -158,14 +158,12 @@ extension WorkbenchesViewModel {
     /// single click, a kept one on a double click) and the Files pane goes
     /// on screen the way Board and Documents do — beside a terminal in a
     /// split, else in place.
-    func openFile(_ relPath: String, project: Workbench, preview: Bool) {
-        Task {
-            // An edit still unsent in the preview tab keeps it before a
-            // preview open could replace it.
-            await codeFiles.pullPending(project)
-            codeFiles.open(relPath, project: project, preview: preview)
-            showFilesPane(projectID: project.id)
-        }
+    func openFile(_ relPath: String, project: Workbench, preview: Bool) async {
+        // An edit still unsent in the preview tab keeps it before a preview
+        // open could replace it.
+        await codeFiles.pullPending(project)
+        codeFiles.open(relPath, project: project, preview: preview)
+        showFilesPane(projectID: project.id)
     }
 
     /// The Files pane on screen, the way the header's Files button puts it.

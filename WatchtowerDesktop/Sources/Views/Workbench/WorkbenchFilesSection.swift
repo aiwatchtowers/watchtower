@@ -40,11 +40,13 @@ struct WorkbenchFilesSection: View {
                     actions: rowActions(tree)
                 )
                 .frame(height: liveHeight ?? height)
-                .onAppear {
-                    files.startWatching(project)
+                // Keyed by the workbench: the panel is not rebuilt when a deep
+                // link switches workbenches, and each one counts as shown
+                // exactly while this runs.
+                .task(id: project.id) {
                     tree.loadIfNeeded()
+                    await files.show(project)
                 }
-                .onDisappear { files.stopShowing(project) }
             }
         }
         .confirmationDialog(
@@ -160,7 +162,7 @@ struct WorkbenchFilesSection: View {
                 if entry.isDirectory {
                     tree.toggle(entry.relPath)
                 } else {
-                    vm.openFile(entry.relPath, project: project, preview: preview)
+                    Task { await vm.openFile(entry.relPath, project: project, preview: preview) }
                 }
             },
             newEntry: { entry, folder in
