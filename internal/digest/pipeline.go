@@ -2323,32 +2323,60 @@ func (p *Pipeline) loadCaches() {
 
 // formatProfileContext builds the profile context section for digest prompts.
 // Returns personalization hints so the AI focuses on what matters to the user.
+// The block renders whenever the profile carries an identity line or a list it
+// renders; CustomPromptContext, when a legacy profile has one, stands in for
+// the role and team lines.
 func (p *Pipeline) formatProfileContext() string {
-	if p.profile == nil || p.profile.CustomPromptContext == "" {
+	if p.profile == nil {
+		return ""
+	}
+
+	// Rendered in raw-id form (SplitAccountID via RawIDsJSON): the model matches
+	// these ids against message text, which carries raw Slack ids regardless of
+	// how the id blob itself is namespaced.
+	var lists strings.Builder
+	if p.profile.StarredChannels != "" && p.profile.StarredChannels != "[]" {
+		lists.WriteString(fmt.Sprintf("\nSTARRED CHANNELS: %s — provide more detail for these channels, lower threshold for including topics\n", sanitizePromptValue(watchtowerslack.RawIDsJSON(p.profile.StarredChannels))))
+	}
+	if p.profile.StarredPeople != "" && p.profile.StarredPeople != "[]" {
+		lists.WriteString(fmt.Sprintf("\nSTARRED PEOPLE: %s — highlight decisions and actions by these people\n", sanitizePromptValue(watchtowerslack.RawIDsJSON(p.profile.StarredPeople))))
+	}
+	if p.profile.Reports != "" && p.profile.Reports != "[]" {
+		lists.WriteString(fmt.Sprintf("\nMY REPORTS: %s — flag action items assigned to these people\n", sanitizePromptValue(watchtowerslack.RawIDsJSON(p.profile.Reports))))
+	}
+
+	identity := p.profileIdentity()
+	if identity == "" && lists.Len() == 0 {
 		return ""
 	}
 
 	var sb strings.Builder
 	sb.WriteString("=== USER PROFILE CONTEXT ===\n")
-	sb.WriteString(sanitizePromptValue(p.profile.CustomPromptContext))
-	sb.WriteString("\n\nPERSONALIZATION RULES:\n")
+	if identity != "" {
+		sb.WriteString(identity + "\n\n")
+	}
+	sb.WriteString("PERSONALIZATION RULES:\n")
 	sb.WriteString("- Prioritize decisions and action items relevant to this user's role and responsibilities\n")
 	sb.WriteString("- Highlight topics that fall within the user's area of focus\n")
-
-	// Rendered in raw-id form (SplitAccountID via RawIDsJSON): the model matches
-	// these ids against message text, which carries raw Slack ids regardless of
-	// how the id blob itself is namespaced.
-	if p.profile.StarredChannels != "" && p.profile.StarredChannels != "[]" {
-		sb.WriteString(fmt.Sprintf("\nSTARRED CHANNELS: %s — provide more detail for these channels, lower threshold for including topics\n", sanitizePromptValue(watchtowerslack.RawIDsJSON(p.profile.StarredChannels))))
-	}
-	if p.profile.StarredPeople != "" && p.profile.StarredPeople != "[]" {
-		sb.WriteString(fmt.Sprintf("\nSTARRED PEOPLE: %s — highlight decisions and actions by these people\n", sanitizePromptValue(watchtowerslack.RawIDsJSON(p.profile.StarredPeople))))
-	}
-	if p.profile.Reports != "" && p.profile.Reports != "[]" {
-		sb.WriteString(fmt.Sprintf("\nMY REPORTS: %s — flag action items assigned to these people\n", sanitizePromptValue(watchtowerslack.RawIDsJSON(p.profile.Reports))))
-	}
+	sb.WriteString(lists.String())
 
 	return sb.String()
+}
+
+// profileIdentity is the profile's free-text identity: the legacy
+// CustomPromptContext when set, else the role and team lines.
+func (p *Pipeline) profileIdentity() string {
+	if p.profile.CustomPromptContext != "" {
+		return sanitizePromptValue(p.profile.CustomPromptContext)
+	}
+	var lines []string
+	if p.profile.Role != "" {
+		lines = append(lines, "Role: "+sanitizePromptValue(p.profile.Role))
+	}
+	if p.profile.Team != "" {
+		lines = append(lines, "Team: "+sanitizePromptValue(p.profile.Team))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (p *Pipeline) languageInstruction() string {
