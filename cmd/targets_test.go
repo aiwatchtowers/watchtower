@@ -817,11 +817,11 @@ func TestRunTargets_ParentOnAnotherBoardIsRefused(t *testing.T) {
 	defer cleanup()
 	database, err := openDBFromConfig()
 	require.NoError(t, err)
-	pid, err := database.CreateProject("acme", t.TempDir())
+	pid, err := database.CreateWorkbench("acme", t.TempDir())
 	require.NoError(t, err)
 	projectTarget, err := database.CreateTarget(db.Target{Text: "project parent", Level: "day",
 		PeriodStart: "2026-04-23", PeriodEnd: "2026-04-23", Status: "todo", Priority: "medium",
-		Ownership: "mine", SourceType: "manual", ProjectID: sql.NullInt64{Int64: pid, Valid: true}})
+		Ownership: "mine", SourceType: "manual", WorkbenchID: sql.NullInt64{Int64: pid, Valid: true}})
 	require.NoError(t, err)
 	database.Close()
 	personal := createTestTarget(t, "Personal", "medium", "todo")

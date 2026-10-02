@@ -94,8 +94,8 @@ func TestKB01_IncrementalEqualsRebuild(t *testing.T) {
 	// A project document is revised on disk with no row change: only its
 	// file's mtime moves.
 	var folder string
-	require.NoError(t, d.QueryRow(`SELECT folder_path FROM projects WHERE id = ?`, fixtureProjectID).Scan(&folder))
-	writeProjectFile(t, folder, "README.md", "Readme revised: квартальный план.\n")
+	require.NoError(t, d.QueryRow(`SELECT folder_path FROM projects WHERE id = ?`, fixtureWorkbenchID).Scan(&folder))
+	writeWorkbenchFile(t, folder, "README.md", "Readme revised: квартальный план.\n")
 	revised := time.Now().Add(2 * time.Hour)
 	require.NoError(t, os.Chtimes(filepath.Join(folder, "README.md"), revised, revised))
 	_, err := Run(ctx, d, Options{Now: testNow().Add(time.Hour)}) // pass 2, same UTC day
@@ -195,7 +195,7 @@ func TestKB03_EveryHitOpensAndAnchors(t *testing.T) {
 		require.True(t, ok, "no query for source %s", src)
 		// The fixture project's session: project documents are visible only
 		// to it (PROJ-08); every other source is unaffected by ProjectID.
-		res, err := Search(ctx, d, Request{Queries: queries, Sources: []string{src}, Limit: MaxLimit, Now: testNow(), ProjectID: fixtureProjectID})
+		res, err := Search(ctx, d, Request{Queries: queries, Sources: []string{src}, Limit: MaxLimit, Now: testNow(), WorkbenchID: fixtureWorkbenchID})
 		require.NoError(t, err, src)
 		n := countDocs(t, d, src)
 		require.Positive(t, n, "seedAll indexed no %s document", src)
@@ -210,7 +210,7 @@ func TestKB03_EveryHitOpensAndAnchors(t *testing.T) {
 	seen := map[string]bool{}
 	for _, h := range all {
 		seen[h.Source] = true
-		doc, err := GetDocument(ctx, d, h.Ref, DocOptions{ProjectID: fixtureProjectID})
+		doc, err := GetDocument(ctx, d, h.Ref, DocOptions{WorkbenchID: fixtureWorkbenchID})
 		require.NoError(t, err, h.Ref)
 		assert.NotEmpty(t, strings.TrimSpace(doc.Text), h.Ref)
 		assert.Equal(t, h.Ref, doc.Ref)
@@ -220,7 +220,7 @@ func TestKB03_EveryHitOpensAndAnchors(t *testing.T) {
 		}
 		assert.Equal(t, h.Anchor, doc.Anchor, h.Ref)
 		// The hit's best-matching chunk opens too (from_chunk = hit.Chunk).
-		at, err := GetDocument(ctx, d, h.Ref, DocOptions{FromChunk: h.Chunk, ProjectID: fixtureProjectID})
+		at, err := GetDocument(ctx, d, h.Ref, DocOptions{FromChunk: h.Chunk, WorkbenchID: fixtureWorkbenchID})
 		require.NoError(t, err, "%s from chunk %d", h.Ref, h.Chunk)
 		assert.NotEmpty(t, strings.TrimSpace(at.Text), h.Ref)
 	}

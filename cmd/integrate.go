@@ -43,12 +43,12 @@ var integrateRemoveCmd = &cobra.Command{
 }
 
 var (
-	integrateScope      string
-	integratePath       string
-	integrateSkillsOnly bool
-	integrateMCPOnly    bool
-	integrateProjectID  int64
-	integrateJSON       bool
+	integrateScope       string
+	integratePath        string
+	integrateSkillsOnly  bool
+	integrateMCPOnly     bool
+	integrateWorkbenchID int64
+	integrateJSON        bool
 )
 
 func init() {
@@ -71,7 +71,7 @@ func init() {
 	}
 
 	for _, c := range []*cobra.Command{integrateClaudeCodeCmd, integrateStatusCmd, integrateRemoveCmd} {
-		c.Flags().Int64Var(&integrateProjectID, "project", 0,
+		c.Flags().Int64Var(&integrateWorkbenchID, "project", 0,
 			"act on a Watchtower project's folder (skill, SessionStart hook, local MCP) instead of the global pack")
 	}
 	integrateStatusCmd.Flags().BoolVar(&integrateJSON, "json", false, "with --project: print the status as JSON")
@@ -79,7 +79,7 @@ func init() {
 	// `project delete` removes what the install put in the folder (PROJ-02).
 	// A package var's initializer runs before any init(), so this replaces
 	// cmd/project.go's no-op default.
-	projectRemoveInstall = removeProjectInstall
+	workbenchRemoveInstall = removeWorkbenchInstall
 }
 
 // resolveSkillsDir turns --scope/--path into one directory. An explicit path
@@ -108,8 +108,8 @@ func resolveSkillsDir(scope, explicit string) (string, error) {
 }
 
 func runIntegrateClaudeCode(cmd *cobra.Command, args []string) error {
-	if integrateProjectID != 0 {
-		return runIntegrateForProject(cmd, runProjectInstall)
+	if integrateWorkbenchID != 0 {
+		return runIntegrateForWorkbench(cmd, runWorkbenchInstall)
 	}
 	scope, err := resolveMCPScope(integrateScope, integratePath, integrateSkillsOnly, integrateMCPOnly)
 	if err != nil {
@@ -135,9 +135,9 @@ func runIntegrateClaudeCode(cmd *cobra.Command, args []string) error {
 }
 
 func runIntegrateStatus(cmd *cobra.Command, args []string) error {
-	if integrateProjectID != 0 {
-		return runIntegrateForProject(cmd, func(ctx context.Context, w io.Writer, p *db.Project) error {
-			return runProjectStatus(ctx, w, p, integrateJSON)
+	if integrateWorkbenchID != 0 {
+		return runIntegrateForWorkbench(cmd, func(ctx context.Context, w io.Writer, p *db.Workbench) error {
+			return runWorkbenchStatus(ctx, w, p, integrateJSON)
 		})
 	}
 	dir, err := resolveSkillsDir(integrateScope, integratePath)
@@ -159,8 +159,8 @@ func runIntegrateStatus(cmd *cobra.Command, args []string) error {
 }
 
 func runIntegrateRemove(cmd *cobra.Command, args []string) error {
-	if integrateProjectID != 0 {
-		return runIntegrateForProject(cmd, runProjectRemove)
+	if integrateWorkbenchID != 0 {
+		return runIntegrateForWorkbench(cmd, runWorkbenchRemove)
 	}
 	scope, err := resolveMCPScope(integrateScope, integratePath, integrateSkillsOnly, integrateMCPOnly)
 	if err != nil {

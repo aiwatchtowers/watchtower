@@ -54,9 +54,9 @@ func statusActor(t *testing.T, d *DB, id int64) sql.NullString {
 // actor, and the claim never outlives its own write.
 func TestProj06_EveryProjectStatusTransitionIsRecorded(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestProject(t, d)
-	parent := SeedTestProjectTarget(t, d, pid, sql.NullInt64{}, "feature")
-	child := SeedTestProjectTarget(t, d, pid, nullID(parent), "task")
+	pid := newTestWorkbench(t, d)
+	parent := SeedTestWorkbenchTarget(t, d, pid, sql.NullInt64{}, "feature")
+	child := SeedTestWorkbenchTarget(t, d, pid, nullID(parent), "task")
 
 	// Agent: the project MCP path.
 	require.NoError(t, d.WithTx(func(tx *sql.Tx) error {
@@ -99,9 +99,9 @@ func TestProj06_EveryProjectStatusTransitionIsRecorded(t *testing.T) {
 // daemon's automated status writers (unsnooze).
 func TestProj06_RollupDeleteMoveAndUnsnoozeAreRecordedAsSystem(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestProject(t, d)
-	a := SeedTestProjectTarget(t, d, pid, sql.NullInt64{}, "feature a")
-	b := SeedTestProjectTarget(t, d, pid, sql.NullInt64{}, "feature b")
+	pid := newTestWorkbench(t, d)
+	a := SeedTestWorkbenchTarget(t, d, pid, sql.NullInt64{}, "feature a")
+	b := SeedTestWorkbenchTarget(t, d, pid, sql.NullInt64{}, "feature b")
 	doneChild := insertBoardChild(t, d, pid, a, "done")
 	openChild := insertBoardChild(t, d, pid, a, "todo")
 	moved := insertBoardChild(t, d, pid, b, "done")
@@ -125,7 +125,7 @@ func TestProj06_RollupDeleteMoveAndUnsnoozeAreRecordedAsSystem(t *testing.T) {
 		}
 	}
 
-	snoozed := SeedTestProjectTarget(t, d, pid, sql.NullInt64{}, "snoozed")
+	snoozed := SeedTestWorkbenchTarget(t, d, pid, sql.NullInt64{}, "snoozed")
 	_, err = d.Exec(`UPDATE targets SET status = 'snoozed', snooze_until = '2000-01-01T00:00' WHERE id = ?`, snoozed)
 	require.NoError(t, err)
 	n, err := d.UnsnoozeExpiredTargets()
@@ -137,8 +137,8 @@ func TestProj06_RollupDeleteMoveAndUnsnoozeAreRecordedAsSystem(t *testing.T) {
 
 func TestProj06_NoStatusChangeRecordsNothingAndDropsTheClaim(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestProject(t, d)
-	id := SeedTestProjectTarget(t, d, pid, sql.NullInt64{}, "task")
+	pid := newTestWorkbench(t, d)
+	id := SeedTestWorkbenchTarget(t, d, pid, sql.NullInt64{}, "task")
 
 	_, err := d.Exec(`UPDATE targets SET status = 'todo', status_actor = 'agent' WHERE id = ?`, id)
 	require.NoError(t, err)
@@ -171,8 +171,8 @@ func TestProj06_InReviewOnlyOnProjectTargets(t *testing.T) {
 	require.NoError(t, err)
 	assert.Error(t, d.UpdateTargetStatus(int(personal), "in_review"), "CHECK rejects in_review off a board")
 
-	pid := newTestProject(t, d)
-	id := SeedTestProjectTarget(t, d, pid, sql.NullInt64{}, "task")
+	pid := newTestWorkbench(t, d)
+	id := SeedTestWorkbenchTarget(t, d, pid, sql.NullInt64{}, "task")
 	require.NoError(t, d.UpdateTargetStatus(int(id), "in_review"))
 	_, err = d.Exec(`UPDATE targets SET project_id = NULL WHERE id = ?`, id)
 	assert.Error(t, err, "an in_review target cannot leave its board")
@@ -183,10 +183,10 @@ func TestProj06_InReviewOnlyOnProjectTargets(t *testing.T) {
 
 func TestProj06_HistoryCascadesWithTheTarget(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestProject(t, d)
-	id := SeedTestProjectTarget(t, d, pid, sql.NullInt64{}, "task")
+	pid := newTestWorkbench(t, d)
+	id := SeedTestWorkbenchTarget(t, d, pid, sql.NullInt64{}, "task")
 	require.NoError(t, d.UpdateTargetStatus(int(id), "in_progress"))
-	require.NoError(t, d.DeleteProject(pid))
+	require.NoError(t, d.DeleteWorkbench(pid))
 
 	var n int
 	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM target_status_history`).Scan(&n))
@@ -195,8 +195,8 @@ func TestProj06_HistoryCascadesWithTheTarget(t *testing.T) {
 
 func TestGetTargetStatusHistory_OldestFirstAndCapped(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestProject(t, d)
-	id := SeedTestProjectTarget(t, d, pid, sql.NullInt64{}, "task")
+	pid := newTestWorkbench(t, d)
+	id := SeedTestWorkbenchTarget(t, d, pid, sql.NullInt64{}, "task")
 	statuses := []string{"in_progress", "in_review", "in_progress", "in_review", "done"}
 	for _, s := range statuses {
 		require.NoError(t, d.UpdateTargetStatus(int(id), s))
@@ -222,17 +222,17 @@ func TestGetTargetStatusHistory_OldestFirstAndCapped(t *testing.T) {
 
 func TestProjectBoard_StatusSinceAndInReviewOrder(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestProject(t, d)
-	todo := SeedTestProjectTarget(t, d, pid, sql.NullInt64{}, "a todo")
-	review := SeedTestProjectTarget(t, d, pid, sql.NullInt64{}, "b review")
-	blocked := SeedTestProjectTarget(t, d, pid, sql.NullInt64{}, "c blocked")
+	pid := newTestWorkbench(t, d)
+	todo := SeedTestWorkbenchTarget(t, d, pid, sql.NullInt64{}, "a todo")
+	review := SeedTestWorkbenchTarget(t, d, pid, sql.NullInt64{}, "b review")
+	blocked := SeedTestWorkbenchTarget(t, d, pid, sql.NullInt64{}, "c blocked")
 	require.NoError(t, d.UpdateTargetStatus(int(review), "in_review"))
 	require.NoError(t, d.UpdateTargetStatus(int(blocked), "blocked"))
 	_, err := d.Exec(`UPDATE target_status_history SET changed_at = '2026-01-02T03:04:05Z'
 		WHERE target_id = ? AND to_status = 'in_review'`, review)
 	require.NoError(t, err)
 
-	board, err := d.GetProjectBoard(pid)
+	board, err := d.GetWorkbenchBoard(pid)
 	require.NoError(t, err)
 	require.Len(t, board, 3)
 	assert.Equal(t, []int64{review, blocked, todo},

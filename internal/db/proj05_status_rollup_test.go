@@ -58,8 +58,8 @@ func TestProj05_ProjectParentStatusFollowsChildren(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			d := openTestDB(t)
-			pid := newTestProject(t, d)
-			parent := insertProjectTargetRow(t, d, pid, "feature")
+			pid := newTestWorkbench(t, d)
+			parent := insertWorkbenchTargetRow(t, d, pid, "feature")
 			for _, s := range tc.children {
 				insertBoardChild(t, d, pid, parent, s)
 			}
@@ -70,8 +70,8 @@ func TestProj05_ProjectParentStatusFollowsChildren(t *testing.T) {
 
 func TestProj05_ChildStatusChangeRollsUpThroughGoWriter(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestProject(t, d)
-	parent := insertProjectTargetRow(t, d, pid, "feature")
+	pid := newTestWorkbench(t, d)
+	parent := insertWorkbenchTargetRow(t, d, pid, "feature")
 	a := insertBoardChild(t, d, pid, parent, "todo")
 	b := insertBoardChild(t, d, pid, parent, "todo")
 	assert.Equal(t, "todo", targetStatus(t, d, parent))
@@ -94,8 +94,8 @@ func TestProj05_ChildStatusChangeRollsUpThroughGoWriter(t *testing.T) {
 
 func TestProj05_MultiLevelChainRollsUp(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestProject(t, d)
-	root := insertProjectTargetRow(t, d, pid, "plan")
+	pid := newTestWorkbench(t, d)
+	root := insertWorkbenchTargetRow(t, d, pid, "plan")
 	mid := insertBoardChild(t, d, pid, root, "todo")
 	leaf1 := insertBoardChild(t, d, pid, mid, "todo")
 	leaf2 := insertBoardChild(t, d, pid, mid, "todo")
@@ -119,11 +119,11 @@ func TestProj05_DeepChainWithParentIDsAboveChildren(t *testing.T) {
 	// Parents created after their children (ids ascending upward) must roll
 	// up the same way: the walk does not depend on row order.
 	d := openTestDB(t)
-	pid := newTestProject(t, d)
-	leaf := insertProjectTargetRow(t, d, pid, "leaf")
+	pid := newTestWorkbench(t, d)
+	leaf := insertWorkbenchTargetRow(t, d, pid, "leaf")
 	chain := []int64{leaf}
 	for i := 0; i < 6; i++ {
-		p := insertProjectTargetRow(t, d, pid, "level")
+		p := insertWorkbenchTargetRow(t, d, pid, "level")
 		_, err := d.Exec(`UPDATE targets SET parent_id = ? WHERE id = ?`, p, chain[len(chain)-1])
 		require.NoError(t, err)
 		chain = append(chain, p)
@@ -136,8 +136,8 @@ func TestProj05_DeepChainWithParentIDsAboveChildren(t *testing.T) {
 
 func TestProj05_ExplicitParentStatusStandsUntilAChildChanges(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestProject(t, d)
-	root := insertProjectTargetRow(t, d, pid, "plan")
+	pid := newTestWorkbench(t, d)
+	root := insertWorkbenchTargetRow(t, d, pid, "plan")
 	parent := insertBoardChild(t, d, pid, root, "todo")
 	a := insertBoardChild(t, d, pid, parent, "todo")
 	insertBoardChild(t, d, pid, parent, "todo")
@@ -156,8 +156,8 @@ func TestProj05_ExplicitParentStatusStandsUntilAChildChanges(t *testing.T) {
 
 func TestProj05_AncestorOverrideSurvivesWhenIntermediateStatusUnchanged(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestProject(t, d)
-	root := insertProjectTargetRow(t, d, pid, "plan")
+	pid := newTestWorkbench(t, d)
+	root := insertWorkbenchTargetRow(t, d, pid, "plan")
 	mid := insertBoardChild(t, d, pid, root, "todo")
 	a := insertBoardChild(t, d, pid, mid, "in_progress")
 	b := insertBoardChild(t, d, pid, mid, "todo")
@@ -174,9 +174,9 @@ func TestProj05_AncestorOverrideSurvivesWhenIntermediateStatusUnchanged(t *testi
 
 func TestProj05_InsertDeleteAndMoveRollUp(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestProject(t, d)
-	p1 := insertProjectTargetRow(t, d, pid, "one")
-	p2 := insertProjectTargetRow(t, d, pid, "two")
+	pid := newTestWorkbench(t, d)
+	p1 := insertWorkbenchTargetRow(t, d, pid, "one")
+	p2 := insertWorkbenchTargetRow(t, d, pid, "two")
 	done := insertBoardChild(t, d, pid, p1, "done")
 	assert.Equal(t, "done", targetStatus(t, d, p1))
 
@@ -196,8 +196,8 @@ func TestProj05_InsertDeleteAndMoveRollUp(t *testing.T) {
 
 func TestProj05_MoveBetweenSiblingsRecomputesSharedAncestor(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestProject(t, d)
-	root := insertProjectTargetRow(t, d, pid, "plan")
+	pid := newTestWorkbench(t, d)
+	root := insertWorkbenchTargetRow(t, d, pid, "plan")
 	a := insertBoardChild(t, d, pid, root, "todo")
 	b := insertBoardChild(t, d, pid, root, "todo")
 	x := insertBoardChild(t, d, pid, a, "blocked")
@@ -233,10 +233,10 @@ func TestProj05_NonProjectTargetsAreNeverRolledUp(t *testing.T) {
 
 func TestProj05_OtherProjectRowsAreNeverTouched(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestProject(t, d)
-	other := newTestProject(t, d)
-	parent := insertProjectTargetRow(t, d, pid, "feature")
-	foreign := insertProjectTargetRow(t, d, other, "other board")
+	pid := newTestWorkbench(t, d)
+	other := newTestWorkbench(t, d)
+	parent := insertWorkbenchTargetRow(t, d, pid, "feature")
+	foreign := insertWorkbenchTargetRow(t, d, other, "other board")
 	// A child of the other project wired under our parent (never produced
 	// by the tools) is neither counted nor does it write across projects.
 	_, err := d.Exec(`INSERT INTO targets (text, period_start, period_end, project_id, parent_id, status)
@@ -251,8 +251,8 @@ func TestProj05_OtherProjectRowsAreNeverTouched(t *testing.T) {
 
 func TestProj05_UpdatedAtMovesOnlyWithARealStatusChange(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestProject(t, d)
-	parent := insertProjectTargetRow(t, d, pid, "feature")
+	pid := newTestWorkbench(t, d)
+	parent := insertWorkbenchTargetRow(t, d, pid, "feature")
 	a := insertBoardChild(t, d, pid, parent, "in_progress")
 	b := insertBoardChild(t, d, pid, parent, "todo")
 	require.Equal(t, "in_progress", targetStatus(t, d, parent))
@@ -276,8 +276,8 @@ func TestProj05_SameResultWithRecursiveTriggersOn(t *testing.T) {
 	var on int
 	require.NoError(t, d.QueryRow(`PRAGMA recursive_triggers`).Scan(&on))
 	require.Equal(t, 1, on, "the pragma is on for the connection the writes use")
-	pid := newTestProject(t, d)
-	root := insertProjectTargetRow(t, d, pid, "plan")
+	pid := newTestWorkbench(t, d)
+	root := insertWorkbenchTargetRow(t, d, pid, "plan")
 	mid := insertBoardChild(t, d, pid, root, "todo")
 	leaf := insertBoardChild(t, d, pid, mid, "todo")
 	insertBoardChild(t, d, pid, root, "todo")
@@ -288,9 +288,9 @@ func TestProj05_SameResultWithRecursiveTriggersOn(t *testing.T) {
 
 func TestProj05_DeleteProjectWithMultiLevelBoardLeavesNoRows(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestProject(t, d)
-	keep := newTestProject(t, d)
-	root := insertProjectTargetRow(t, d, pid, "plan")
+	pid := newTestWorkbench(t, d)
+	keep := newTestWorkbench(t, d)
+	root := insertWorkbenchTargetRow(t, d, pid, "plan")
 	for i := 0; i < 3; i++ {
 		mid := insertBoardChild(t, d, pid, root, "in_progress")
 		for j := 0; j < 3; j++ {
@@ -298,13 +298,13 @@ func TestProj05_DeleteProjectWithMultiLevelBoardLeavesNoRows(t *testing.T) {
 			insertBoardChild(t, d, pid, leaf, "done")
 		}
 	}
-	keepRoot := insertProjectTargetRow(t, d, keep, "other plan")
+	keepRoot := insertWorkbenchTargetRow(t, d, keep, "other plan")
 	keepChild := insertBoardChild(t, d, keep, keepRoot, "in_progress")
 	require.Equal(t, "in_progress", targetStatus(t, d, keepRoot))
 	_, err := d.Exec(`UPDATE targets SET updated_at = '2000-01-01T00:00:00Z' WHERE project_id = ?`, keep)
 	require.NoError(t, err)
 
-	require.NoError(t, d.DeleteProject(pid))
+	require.NoError(t, d.DeleteWorkbench(pid))
 
 	var n int
 	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM targets WHERE project_id = ?`, pid).Scan(&n))

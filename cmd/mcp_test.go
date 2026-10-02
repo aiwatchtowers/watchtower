@@ -40,9 +40,9 @@ func TestMCPTurnBinding(t *testing.T) {
 // resetMCPFlags restores the mcp command's package-level flags after a test.
 func resetMCPFlags(t *testing.T) {
 	t.Helper()
-	chat, project := mcpFlagChat, mcpFlagProject
-	t.Cleanup(func() { mcpFlagChat, mcpFlagProject = chat, project })
-	mcpFlagChat, mcpFlagProject = false, 0
+	chat, project := mcpFlagChat, mcpFlagWorkbench
+	t.Cleanup(func() { mcpFlagChat, mcpFlagWorkbench = chat, project })
+	mcpFlagChat, mcpFlagWorkbench = false, 0
 }
 
 func openMCPTestDB(t *testing.T) *db.DB {
@@ -95,11 +95,11 @@ func TestDev06_PlainMCPStaysReadOnly(t *testing.T) {
 func TestMCPProjectMode_BindsTheProjectAndAppliesDirectly(t *testing.T) {
 	resetMCPFlags(t)
 	database := openMCPTestDB(t)
-	folder, err := db.ResolveProjectFolder(t.TempDir(), nil)
+	folder, err := db.ResolveWorkbenchFolder(t.TempDir(), nil)
 	require.NoError(t, err)
-	pid, err := database.CreateProject("acme", folder)
+	pid, err := database.CreateWorkbench("acme", folder)
 	require.NoError(t, err)
-	mcpFlagProject = pid
+	mcpFlagWorkbench = pid
 
 	opts, err := mcpModeOptions(&config.Config{ActiveWorkspace: "test-ws"}, database, "", nil)
 	require.NoError(t, err)
@@ -119,7 +119,7 @@ func TestMCPProjectMode_BindsTheProjectAndAppliesDirectly(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, isErr, text)
 	assert.Contains(t, text, `"status": "applied"`)
-	board, err := database.GetProjectBoard(pid)
+	board, err := database.GetWorkbenchBoard(pid)
 	require.NoError(t, err)
 	require.Len(t, board, 1)
 	assert.Equal(t, "Feature X", board[0].Target.Text)
@@ -130,9 +130,9 @@ func TestMCPProjectMode_RefusesMissingProjectAndChat(t *testing.T) {
 	database := openMCPTestDB(t)
 	cfg := &config.Config{ActiveWorkspace: "test-ws"}
 
-	mcpFlagProject = 404
+	mcpFlagWorkbench = 404
 	_, err := mcpModeOptions(cfg, database, "", nil)
-	assert.ErrorIs(t, err, db.ErrProjectNotFound)
+	assert.ErrorIs(t, err, db.ErrWorkbenchNotFound)
 
 	mcpFlagChat = true
 	_, err = mcpModeOptions(cfg, database, "", nil)

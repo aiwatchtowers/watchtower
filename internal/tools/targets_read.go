@@ -51,7 +51,7 @@ func NewListTargets() *Tool {
 				IncludeDone: a.Status == "done" || a.Status == "dismissed",
 				// 0 (every non-project session) excludes project targets
 				// (PROJ-01); a project session sees only its own board.
-				ProjectID: call.Binding.ProjectID,
+				WorkbenchID: call.Binding.WorkbenchID,
 			})
 			if err != nil {
 				return nil, fmt.Errorf("listing targets: %w", err)
@@ -64,12 +64,12 @@ func NewListTargets() *Tool {
 	}
 }
 
-// projectTargetView is get_target's answer in a project session: the target
+// workbenchTargetView is get_target's answer in a project session: the target
 // plus its newest status changes, oldest first, and its attached images.
-type projectTargetView struct {
+type workbenchTargetView struct {
 	*db.Target
-	StatusHistory []db.TargetStatusChange `json:"status_history"`
-	Images        []db.ProjectTargetImage `json:"images"`
+	StatusHistory []db.TargetStatusChange   `json:"status_history"`
+	Images        []db.WorkbenchTargetImage `json:"images"`
 }
 
 // NewGetTarget fetches one target by id, including sub-items, notes, and metadata.
@@ -96,10 +96,10 @@ func NewGetTarget() *Tool {
 			// A target outside the session's scope reads as missing: a project
 			// target never reaches a non-project session (PROJ-01), and a
 			// project session sees only its own project's targets (DEV-06).
-			if target.ProjectID.Int64 != call.Binding.ProjectID {
+			if target.WorkbenchID.Int64 != call.Binding.WorkbenchID {
 				return nil, fmt.Errorf("no target with id %d", a.ID)
 			}
-			if call.Binding.ProjectID == 0 {
+			if call.Binding.WorkbenchID == 0 {
 				return target, nil
 			}
 			// A project target also carries its status history (PROJ-06).
@@ -107,11 +107,11 @@ func NewGetTarget() *Tool {
 			if err != nil {
 				return nil, err
 			}
-			images, err := d.ListProjectTargetImages(int64(target.ID))
+			images, err := d.ListWorkbenchTargetImages(int64(target.ID))
 			if err != nil {
 				return nil, err
 			}
-			return projectTargetView{Target: target, StatusHistory: history, Images: images}, nil
+			return workbenchTargetView{Target: target, StatusHistory: history, Images: images}, nil
 		},
 	}
 }
