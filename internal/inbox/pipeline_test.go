@@ -47,7 +47,6 @@ func testConfig() *config.Config {
 		},
 		Inbox: config.InboxConfig{
 			Enabled:             true,
-			MaxItemsPerRun:      100,
 			InitialLookbackDays: 7,
 		},
 	}

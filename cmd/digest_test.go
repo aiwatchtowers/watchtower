@@ -309,3 +309,31 @@ func TestDigestFlags(t *testing.T) {
 	assert.NotNil(t, digestSummaryCmd.Flags().Lookup("days"))
 	assert.NotNil(t, digestSummaryCmd.Flags().Lookup("hours"))
 }
+
+func TestJiraBadgeForText(t *testing.T) {
+	issues := map[string]db.JiraIssue{
+		"ACME-12": {Key: "ACME-12", Status: "In Progress"},
+		"OPS-7":   {Key: "OPS-7"},
+	}
+	cases := []struct {
+		name   string
+		text   string
+		issues map[string]db.JiraIssue
+		show   bool
+		want   string
+	}{
+		{"badges off", "see ACME-12", issues, false, ""},
+		{"empty map", "see ACME-12", nil, true, ""},
+		{"no keys", "nothing here", issues, true, ""},
+		{"unknown key only", "see BETA-1", issues, true, ""},
+		{"known keys deduped in order", "ACME-12 then OPS-7 and ACME-12 again", issues, true, " [ACME-12 In Progress] [OPS-7 Unknown]"},
+		{"key inside a word is not a key", "xACME-12", issues, true, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := jiraBadgeForText(tc.text, tc.issues, tc.show); got != tc.want {
+				t.Fatalf("jiraBadgeForText(%q) = %q, want %q", tc.text, got, tc.want)
+			}
+		})
+	}
+}

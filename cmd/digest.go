@@ -6,7 +6,6 @@ import (
 	"io"
 	"log"
 	"os"
-	"regexp"
 	"strings"
 	"time"
 
@@ -708,9 +707,6 @@ func joinTopics(topics []string) string {
 	return strings.Join(topics, ", ")
 }
 
-// digestJiraKeyPattern matches Jira issue keys like "PROJ-123" in text.
-var digestJiraKeyPattern = regexp.MustCompile(`\b([A-Z][A-Z0-9_]+-\d+)\b`)
-
 // loadJiraIssueMap loads Jira issues linked to a digest and returns them as a map keyed by issue key.
 // Returns an empty map if Jira is disabled or no issues are found.
 func loadJiraIssueMap(database *db.DB, cfg *config.Config, digestID int) map[string]db.JiraIssue {
@@ -734,7 +730,7 @@ func jiraBadgeForText(text string, issueMap map[string]db.JiraIssue, showBadges 
 	if !showBadges || len(issueMap) == 0 {
 		return ""
 	}
-	keys := digestJiraKeyPattern.FindAllString(text, -1)
+	keys := jira.KeyRegexp.FindAllString(text, -1)
 	if len(keys) == 0 {
 		return ""
 	}
