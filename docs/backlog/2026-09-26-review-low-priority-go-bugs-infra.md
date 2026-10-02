@@ -11,6 +11,9 @@ created: 2026-09-26
 5 low-priority findings from the bugs (Go sync/daemon/integrations) track, bundled so the backlog
 stays readable. Split any item into its own file when it gets picked up.
 
+Still open after fix/go-low-priority-bundle: the Slack search >100-pages item (needs a live-API
+check) and the calendar `(account_id, id)` identity half (a migration-sized design item).
+
 ## Jira key detector caches known project keys for the whole daemon lifetime (fixed in fix/bl-jira-hardening)
 
 - type: bug · confidence: high · tags: [jira, slack-links, cache]
@@ -50,6 +53,13 @@ the scope-denied-401 sub-item in `docs/backlog/2026-09-27-review-low-priority-pr
 - where: internal/imap/client.go:64-99, internal/imap/sync.go:94-163
 
 `SearchNewSince` fetches the UID range `lastUID+1:*`. RFC 3501 §6.4.8 says a range like `559:*` "always includes the UID of the last message in the mailbox, even if 559 is higher than any assigned UID value". So on a real server (Dovecot, Exchange, Gmail IMAP), a cycle with no new mail still returns the latest message. The code comment claims FETCH is immune and only SEARCH has this quirk; the RFC rule applies to UID sets in general. The effect is mostly waste, but it is real: every cycle re-fetches and re-upserts that message (bumping `synced_at`/`updated_at`), logs "imap: 1 messages synced", and re-feeds the inbox detector and kb cursor. The in-repo go-imap memory test server does not implement the rule (a throwaway overlay test with lastUID = highest returned `[]`), which is why tests pass. Fix: drop UIDs `<= lastUID` from the result.
+
+Resolution (fix/go-low-priority-bundle): not reproducible through our client. The RFC rule is real,
+but go-imap v2's `FetchCommand` keeps only responses whose UID is inside the requested set; an
+out-of-set `FETCH` (the last message answered for `N:*`) is routed to unilateral data and never
+reaches `SearchNewSince`'s loop. Pinned by `TestSearchNewSinceDropsAlreadySeenUIDsTheServerReturns`,
+whose test session widens every FETCH to `1:*` the way a real server would; the doc comment that
+claimed FETCH itself is immune now names the client-side filter instead.
 
 ## Slack search sync can never finish a window with more than 100 result pages
 
@@ -102,6 +112,9 @@ end of the whole recursion. PR #20 kept only the separate, narrower fix in
 `docs/backlog/2026-09-26-a-rate-limited-first-search-page-triggers-a-full-conversations.md`
 (status: done) — this sub-item is unchanged and stays open.
 
+Left open (fix/go-low-priority-bundle): still needs the live-API check of `after:`/`before:`
+exclusivity and the `pages` shape described above before any window split is safe.
+
 ## Google calendar events share one global id key across accounts, so shared meetings flip owner and account removal unlinks recordings
 
 (Minimal guard fixed in fix/bl-calendar-account-removal — `DeleteGoogleAccount` now spares referenced events and detaches their calendar; tracked as done in `2026-09-27-google-remove-unlinks-recordings-from-their-calendar-events`. The `(account_id, id)` identity / flip-flop half stays open.)
@@ -110,5 +123,9 @@ end of the whole recursion. PR #20 kept only the separate, narrower fix in
 - where: internal/db/calendar.go:87-112 (ON CONFLICT(id)), internal/db/google_accounts.go:106-123, internal/calendar/sync.go:143-186
 
 Google gives the same event id to every attendee's copy of a meeting, but `calendar_events` is keyed on `id` alone. When two connected Google accounts (or two selected calendars in one account) both have the same meeting, each sync overwrites `calendar_id`, `attendees` (including each attendee's `responseStatus`) and `raw_json` with the latest writer's view, so the row flip-flops every cycle. The documented v1 non-goal is cross-account dedup; the harm here goes further. `DeleteGoogleAccount` deletes by `calendar_id IN (account's calendars)` without the transcript/recap guard. Removing the account that happened to write last deletes the shared event, and every recording or recap linked to it is set to NULL for good, even though the other account re-inserts the event on its next sync. Fix: at minimum, add the `NOT EXISTS meeting_transcripts/meeting_recaps` guard to `DeleteGoogleAccount`. The longer-term fix is an `(account_id, id)` identity (a migration plus a key change).
+
+Left open (fix/go-low-priority-bundle): the remaining `(account_id, id)` identity is a migration
+plus a key change across the calendar sync, meeting links and the Desktop — a design item, not a
+low-priority patch.
 
 > Original note: «а давай проведем ревью нашего репоза на ветке мейн с целью наполнения беклога. Наши треки - покрытие тестами, баги существующие и потенциальные, архитектурные проблемы, анализ использования и бессмысленный функционал»
