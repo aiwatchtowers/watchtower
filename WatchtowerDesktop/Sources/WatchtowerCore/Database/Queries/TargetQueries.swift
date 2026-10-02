@@ -81,7 +81,7 @@ package enum TargetQueries {
         filter: TargetFilter = TargetFilter()
     ) throws -> [Target] {
         // BEHAVIOR PROJ-01 — project targets live only on their board
-        // (ProjectQueries.board); no Targets-tab reader ever sees one.
+        // (WorkbenchQueries.board); no Targets-tab reader ever sees one.
         var conditions: [String] = ["project_id IS NULL"]
         var args: [any DatabaseValueConvertible] = []
 
@@ -238,7 +238,7 @@ package enum TargetQueries {
         secondaryLinks: [TargetPrefillLink] = []
     ) throws -> Int {
         // Desktop-created targets are personal (project_id NULL).
-        try checkParentBoard(db, parentID: parentId, childProjectID: nil)
+        try checkParentBoard(db, parentID: parentId, childWorkbenchID: nil)
         try db.execute(sql: """
             INSERT INTO targets (text, intent, level, custom_label, period_start, period_end,
                 parent_id, status, priority, ownership, ball_on, due_date, snooze_until,

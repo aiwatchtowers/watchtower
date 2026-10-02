@@ -164,14 +164,14 @@ final class TerminalCenterTests: XCTestCase {
         let missing = try row(folder: "/tmp/does-not-exist-\(UUID().uuidString)")
         center.start(missing, fresh: true)
         center.focus(missing.id)
-        XCTAssertEqual(center.sessionIDs(ofProject: 1), [missing.id])
+        XCTAssertEqual(center.sessionIDs(ofWorkbench: 1), [missing.id])
 
-        let ids = center.sessionIDs(ofProject: 1)
+        let ids = center.sessionIDs(ofWorkbench: 1)
         await center.closeAll { ids.contains($0) }
 
         XCTAssertTrue(center.states.isEmpty)
         XCTAssertTrue(center.focusOrder.isEmpty)
-        XCTAssertTrue(center.sessionIDs(ofProject: 1).isEmpty)
+        XCTAssertTrue(center.sessionIDs(ofWorkbench: 1).isEmpty)
     }
 
     func testShellRowLaunchesTheLoginShellAlone() throws {
@@ -344,15 +344,15 @@ final class TerminalCenterTests: XCTestCase {
         let a2 = try row(project: 1)
         let b = try row(project: 2)
         for s in [a1, a2, b] { center.start(s, fresh: true) }
-        XCTAssertEqual(center.sessionIDs(ofProject: 1), [a1.id, a2.id])
+        XCTAssertEqual(center.sessionIDs(ofWorkbench: 1), [a1.id, a2.id])
 
-        let ofProject = center.sessionIDs(ofProject: 1)
-        await center.closeAll { ofProject.contains($0) }
+        let ofWorkbench = center.sessionIDs(ofWorkbench: 1)
+        await center.closeAll { ofWorkbench.contains($0) }
 
         XCTAssertEqual(Set(signals.map(\.0)), [100, 101])
         XCTAssertEqual(center.liveIDs, [b.id])
         XCTAssertEqual(center.states[b.id], .running)
-        XCTAssertTrue(center.sessionIDs(ofProject: 1).isEmpty)
+        XCTAssertTrue(center.sessionIDs(ofWorkbench: 1).isEmpty)
     }
 
     func testFocusMovesAnIDToTheEndWithoutDuplicates() {
@@ -390,7 +390,7 @@ final class TerminalCenterTests: XCTestCase {
         let center = makeCenter()
         let s = try row()
         center.start(s, fresh: true)
-        let line = ProjectCommentPrompt.line(relPath: "docs/plan.md", documentID: 7, count: 3)
+        let line = WorkbenchCommentPrompt.line(relPath: "docs/plan.md", documentID: 7, count: 3)
         XCTAssertEqual(center.sendPrompt(line, sessionID: s.id), .sent)
         XCTAssertEqual(sessions[0].inputs, [
             [0x1B, 0x5B, 0x32, 0x30, 0x30, 0x7E] + Array(line.utf8) + [0x1B, 0x5B, 0x32, 0x30, 0x31, 0x7E]

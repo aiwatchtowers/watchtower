@@ -244,7 +244,7 @@ struct SidebarView: View {
         case .ideas: ideasCount
         case .targets: overdueTaskCount > 0 ? overdueTaskCount : activeTaskCount
         case .tracks: updatedTrackCount
-        case .projects: appState.projectsViewModel?.badgeCount ?? 0
+        case .projects: appState.workbenchesViewModel?.badgeCount ?? 0
         case .digests: digestsBadgeCount
         case .memory: memoryDisputedCount
         case .statistics: recommendationCount

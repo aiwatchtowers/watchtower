@@ -138,7 +138,7 @@ package struct Target: FetchableRecord, TableRecord, Codable, Identifiable, Equa
     package let updatedAt: String
     package let nextStep: String        // JSON, "" when not yet generated
     package let nextStepAt: String      // when nextStep was generated
-    package let projectID: Int64?       // non-nil = lives only on that project's board (PROJ-01)
+    package let workbenchID: Int64?     // non-nil = lives only on that project's board (PROJ-01)
 
     package enum CodingKeys: String, CodingKey {
         case id
@@ -167,7 +167,7 @@ package struct Target: FetchableRecord, TableRecord, Codable, Identifiable, Equa
         case updatedAt        = "updated_at"
         case nextStep         = "next_step"
         case nextStepAt       = "next_step_at"
-        case projectID        = "project_id"
+        case workbenchID      = "project_id"
     }
 
     package init(row: Row) {
@@ -197,7 +197,7 @@ package struct Target: FetchableRecord, TableRecord, Codable, Identifiable, Equa
         updatedAt        = row["updated_at"] ?? ""
         nextStep         = row["next_step"] ?? ""
         nextStepAt       = row["next_step_at"] ?? ""
-        projectID        = row["project_id"]
+        workbenchID      = row["project_id"]
     }
 
     // Equatable/Hashable are synthesized on purpose: a `Target` is a stored

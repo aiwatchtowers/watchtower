@@ -141,7 +141,7 @@ package struct WorkspaceLayout: Codable, Equatable, Sendable {
     /// The header's Board / Documents button: puts `pane` on screen without
     /// hiding a terminal — a split keeps its session and swaps the other
     /// pane; a single pane switches to it (`reveal`).
-    package mutating func showProjectView(_ pane: WorkspacePane) {
+    package mutating func showWorkbenchView(_ pane: WorkspacePane) {
         reveal(pane, keeping: sessionIDs.first.map { .session($0) } ?? primary)
     }
 
