@@ -228,30 +228,7 @@ func NewGetJiraStatusHistory() *Tool {
 			found := map[string]bool{}
 			for _, is := range issues {
 				found[is.Key] = true
-				items := changelogs[is.AccountID][is.Key]
-				view := issueHistoryView{
-					Key: is.Key, AccountID: is.AccountID, Source: is.Source, Summary: is.Summary,
-					Status: is.Status, StatusCategory: is.StatusCategory,
-					Assignee: is.AssigneeDisplayName, AssigneeAccountID: is.AssigneeAccountID,
-					CreatedAt: is.CreatedAt, History: historyState(is),
-					Events: make([]historyEvent, 0, len(items)), StatusIntervals: []statusInterval{},
-				}
-				for _, it := range items {
-					ev := historyEvent{At: it.ChangedAt, Field: it.Field, From: it.FromString, To: it.ToString,
-						Author: it.AuthorDisplayName, AuthorAccountID: it.AuthorAccountID}
-					if it.Field == "assignee" {
-						ev.FromAccountID, ev.ToAccountID = it.FromValue, it.ToValue
-					}
-					view.Events = append(view.Events, ev)
-				}
-				if view.History != historyStateMissing {
-					intervals, _ := buildStatusIntervals(is, items, now) // an unreadable created_at leaves the list empty
-					for _, iv := range intervals {
-						iv.StatusCategory = cats[iv.Status]
-						view.StatusIntervals = append(view.StatusIntervals, iv)
-					}
-				}
-				res.Issues = append(res.Issues, view)
+				res.Issues = append(res.Issues, issueHistory(is, changelogs[is.AccountID][is.Key], cats, now))
 			}
 			for _, k := range keys {
 				if !found[k] {
@@ -261,6 +238,35 @@ func NewGetJiraStatusHistory() *Tool {
 			return res, nil
 		},
 	}
+}
+
+// issueHistory is one issue's view: its raw events and, when its history
+// is synced, the derived intervals over its whole life.
+func issueHistory(is db.JiraHistoryIssue, items []db.JiraChangelogItem, cats map[string]string, now time.Time) issueHistoryView {
+	view := issueHistoryView{
+		Key: is.Key, AccountID: is.AccountID, Source: is.Source, Summary: is.Summary,
+		Status: is.Status, StatusCategory: is.StatusCategory,
+		Assignee: is.AssigneeDisplayName, AssigneeAccountID: is.AssigneeAccountID,
+		CreatedAt: is.CreatedAt, History: historyState(is),
+		Events: make([]historyEvent, 0, len(items)), StatusIntervals: []statusInterval{},
+	}
+	for _, it := range items {
+		ev := historyEvent{At: it.ChangedAt, Field: it.Field, From: it.FromString, To: it.ToString,
+			Author: it.AuthorDisplayName, AuthorAccountID: it.AuthorAccountID}
+		if it.Field == "assignee" {
+			ev.FromAccountID, ev.ToAccountID = it.FromValue, it.ToValue
+		}
+		view.Events = append(view.Events, ev)
+	}
+	if view.History == historyStateMissing {
+		return view
+	}
+	intervals, _ := buildStatusIntervals(is, items, now) // an unreadable created_at leaves the list empty
+	for _, iv := range intervals {
+		iv.StatusCategory = cats[iv.Status]
+		view.StatusIntervals = append(view.StatusIntervals, iv)
+	}
+	return view
 }
 
 // normalizeKeys trims, upper-cases and de-duplicates issue keys.
@@ -416,19 +422,85 @@ func activeSince(a jiraTimeInStatusArgs, cats map[string]string, since time.Time
 // timeInStatus is the tool's pure part: reconstruct, clip, filter, sum.
 func timeInStatus(a jiraTimeInStatusArgs, issues []db.JiraHistoryIssue, changelogs map[int64]map[string][]db.JiraChangelogItem,
 	cats map[string]string, since, until time.Time) timeInStatusResult {
-	limit := a.Limit
-	if limit <= 0 {
-		limit = defaultTimeInStatusLimit
+	res := timeInStatusResult{Note: timeInStatusNote, Since: since, Until: until, IssuesConsidered: len(issues),
+		Intervals: []statusInterval{}, StatusCategories: cats}
+	keep := intervalFilter(a)
+	sums := newTimeInStatusSums()
+	uncategorized := map[string]bool{}
+	var all []statusInterval
+	for _, is := range issues {
+		intervals, ok := buildStatusIntervals(is, changelogs[is.AccountID][is.Key], until)
+		if !res.noteHistory(is, ok) {
+			continue
+		}
+		issueID := fmt.Sprintf("%d/%s", is.AccountID, is.Key)
+		for _, iv := range intervals {
+			iv.StatusCategory = cats[iv.Status]
+			iv, ok := clipInterval(iv, since, until)
+			if !ok || !keep(iv) {
+				continue
+			}
+			all = append(all, iv)
+			if iv.StatusCategory == "" {
+				uncategorized[iv.Status] = true
+			}
+			sums.add(iv, issueID)
+		}
 	}
-	if limit > maxTimeInStatusIntervals {
-		limit = maxTimeInStatusIntervals
+	for st := range uncategorized {
+		res.StatusesWithoutCategory = append(res.StatusesWithoutCategory, st)
 	}
+	sort.Strings(res.StatusesWithoutCategory)
+	res.Totals, res.PerAssignee = sums.results()
+	sort.SliceStable(all, func(i, j int) bool { return all[i].Start.Before(all[j].Start) })
+	if limit := intervalLimit(a.Limit); len(all) > limit {
+		all, res.Truncated = all[:limit], true
+	}
+	res.Intervals = append(res.Intervals, all...)
+	return res
+}
+
+// noteHistory records an issue's history state in the result and reports
+// whether its intervals count: an issue without synced history, or without
+// a readable creation time (ok false), is left out and listed.
+func (res *timeInStatusResult) noteHistory(is db.JiraHistoryIssue, ok bool) bool {
+	state := historyState(is)
+	if state == historyStateMissing || !ok {
+		res.IssuesWithoutHistoryCount++
+		if len(res.IssuesWithoutHistory) < maxIssuesListed {
+			res.IssuesWithoutHistory = append(res.IssuesWithoutHistory, is.Key)
+		}
+		return false
+	}
+	if state == historyStateStale {
+		res.IssuesWithStaleHistoryCount++
+		if len(res.IssuesWithStaleHistory) < maxIssuesListed {
+			res.IssuesWithStaleHistory = append(res.IssuesWithStaleHistory, is.Key)
+		}
+	}
+	return true
+}
+
+func intervalLimit(n int) int {
+	switch {
+	case n <= 0:
+		return defaultTimeInStatusLimit
+	case n > maxTimeInStatusIntervals:
+		return maxTimeInStatusIntervals
+	}
+	return n
+}
+
+// intervalFilter applies the statuses / include_done / assignee arguments:
+// named statuses win; without them done-category time is left out unless
+// include_done; the assignee matches the account id or part of the name.
+func intervalFilter(a jiraTimeInStatusArgs) func(statusInterval) bool {
 	wantStatus := map[string]bool{}
 	for _, s := range a.Statuses {
 		wantStatus[strings.TrimSpace(s)] = true
 	}
 	assignee := strings.TrimSpace(a.Assignee)
-	keep := func(iv statusInterval) bool {
+	return func(iv statusInterval) bool {
 		if len(wantStatus) > 0 {
 			if !wantStatus[iv.Status] {
 				return false
@@ -442,102 +514,76 @@ func timeInStatus(a jiraTimeInStatusArgs, issues []db.JiraHistoryIssue, changelo
 		return iv.AssigneeAccountID == assignee ||
 			(iv.Assignee != "" && strings.Contains(strings.ToLower(iv.Assignee), strings.ToLower(assignee)))
 	}
+}
 
-	res := timeInStatusResult{Note: timeInStatusNote, Since: since, Until: until, IssuesConsidered: len(issues),
-		Intervals: []statusInterval{}, StatusCategories: cats}
-	// A person is keyed by account id (their display name can differ between
-	// the issue row and the changelog); a name stands in only without one.
-	type totalKey struct{ person, status string }
-	totals := map[totalKey]*timeInStatusTotal{}
-	totalIssues := map[totalKey]map[string]bool{}
-	type shownName struct {
-		name string
-		at   time.Time
+// timeInStatusSums accumulates hours per (person, status) and per person. A
+// person is keyed by account id (their display name can differ between the
+// issue row and the changelog) and shown by their latest name; a name stands
+// in only without an id.
+type timeInStatusSums struct {
+	totals map[sumKey]*timeInStatusTotal
+	issues map[sumKey]map[string]bool
+	names  map[string]shownName
+}
+
+type sumKey struct{ person, status string } // status "" = the person's total
+
+type shownName struct {
+	name string
+	at   time.Time
+}
+
+func newTimeInStatusSums() *timeInStatusSums {
+	return &timeInStatusSums{totals: map[sumKey]*timeInStatusTotal{}, issues: map[sumKey]map[string]bool{}, names: map[string]shownName{}}
+}
+
+func (s *timeInStatusSums) add(iv statusInterval, issueID string) {
+	person := iv.AssigneeAccountID
+	if person == "" {
+		person = "name:" + iv.Assignee
 	}
-	names := map[string]shownName{} // person → their latest display name
-	uncategorized := map[string]bool{}
-	var all []statusInterval
-	for _, is := range issues {
-		state := historyState(is)
-		intervals, ok := buildStatusIntervals(is, changelogs[is.AccountID][is.Key], until)
-		if state == historyStateMissing || !ok {
-			res.IssuesWithoutHistoryCount++
-			if len(res.IssuesWithoutHistory) < maxIssuesListed {
-				res.IssuesWithoutHistory = append(res.IssuesWithoutHistory, is.Key)
-			}
-			continue
+	for _, k := range []sumKey{{person, iv.Status}, {person, ""}} {
+		t := s.totals[k]
+		if t == nil {
+			t = &timeInStatusTotal{AssigneeAccountID: iv.AssigneeAccountID, Status: k.status}
+			s.totals[k] = t
+			s.issues[k] = map[string]bool{}
 		}
-		if state == historyStateStale {
-			res.IssuesWithStaleHistoryCount++
-			if len(res.IssuesWithStaleHistory) < maxIssuesListed {
-				res.IssuesWithStaleHistory = append(res.IssuesWithStaleHistory, is.Key)
-			}
-		}
-		issueID := fmt.Sprintf("%d/%s", is.AccountID, is.Key)
-		for _, iv := range intervals {
-			iv.StatusCategory = cats[iv.Status]
-			iv, ok := clipInterval(iv, since, until)
-			if !ok || !keep(iv) {
-				continue
-			}
-			all = append(all, iv)
-			if iv.StatusCategory == "" {
-				uncategorized[iv.Status] = true
-			}
-			person := iv.AssigneeAccountID
-			if person == "" {
-				person = "name:" + iv.Assignee
-			}
-			for _, k := range []totalKey{{person, iv.Status}, {person, ""}} {
-				t := totals[k]
-				if t == nil {
-					t = &timeInStatusTotal{AssigneeAccountID: iv.AssigneeAccountID, Status: k.status}
-					totals[k] = t
-					totalIssues[k] = map[string]bool{}
-				}
-				t.Hours += iv.End.Sub(iv.Start).Hours()
-				totalIssues[k][issueID] = true
-			}
-			if iv.Assignee != "" && !iv.End.Before(names[person].at) {
-				names[person] = shownName{iv.Assignee, iv.End}
-			}
-		}
+		t.Hours += iv.End.Sub(iv.Start).Hours()
+		s.issues[k][issueID] = true
 	}
-	for st := range uncategorized {
-		res.StatusesWithoutCategory = append(res.StatusesWithoutCategory, st)
+	if iv.Assignee != "" && !iv.End.Before(s.names[person].at) {
+		s.names[person] = shownName{iv.Assignee, iv.End}
 	}
-	sort.Strings(res.StatusesWithoutCategory)
-	for k, t := range totals {
-		t.Assignee = names[k.person].name
+}
+
+// results returns the per-(person, status) and per-person totals, most
+// hours first.
+func (s *timeInStatusSums) results() (totals, perAssignee []timeInStatusTotal) {
+	totals, perAssignee = []timeInStatusTotal{}, []timeInStatusTotal{}
+	for k, t := range s.totals {
+		t.Assignee = s.names[k.person].name
 		t.Hours = math.Round(t.Hours*timeInStatusHoursDecimals) / timeInStatusHoursDecimals
-		t.Issues = len(totalIssues[k])
+		t.Issues = len(s.issues[k])
 		if t.Assignee == "" && t.AssigneeAccountID == "" {
 			t.Assignee = "(unassigned)"
 		}
 		if k.status == "" {
-			res.PerAssignee = append(res.PerAssignee, *t)
+			perAssignee = append(perAssignee, *t)
 		} else {
-			res.Totals = append(res.Totals, *t)
+			totals = append(totals, *t)
 		}
 	}
-	byHours := func(s []timeInStatusTotal) {
-		sort.Slice(s, func(i, j int) bool {
-			if s[i].Hours != s[j].Hours {
-				return s[i].Hours > s[j].Hours
-			}
-			return s[i].Assignee+s[i].Status < s[j].Assignee+s[j].Status
-		})
-	}
-	byHours(res.Totals)
-	byHours(res.PerAssignee)
-	if res.Totals == nil {
-		res.Totals = []timeInStatusTotal{}
-		res.PerAssignee = []timeInStatusTotal{}
-	}
-	sort.SliceStable(all, func(i, j int) bool { return all[i].Start.Before(all[j].Start) })
-	if len(all) > limit {
-		all, res.Truncated = all[:limit], true
-	}
-	res.Intervals = append(res.Intervals, all...)
-	return res
+	byHours(totals)
+	byHours(perAssignee)
+	return totals, perAssignee
+}
+
+func byHours(s []timeInStatusTotal) {
+	sort.Slice(s, func(i, j int) bool {
+		if s[i].Hours != s[j].Hours {
+			return s[i].Hours > s[j].Hours
+		}
+		return s[i].Assignee+s[i].Status < s[j].Assignee+s[j].Status
+	})
 }
