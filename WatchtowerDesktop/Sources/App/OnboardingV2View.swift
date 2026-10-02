@@ -1,4 +1,3 @@
-import GRDB
 import SwiftUI
 import WatchtowerCore
 
@@ -12,9 +11,6 @@ struct OnboardingV2View: View {
     let onRetry: () -> Void
 
     @Environment(AppState.self) private var appState
-    @State private var dbOpener = OnboardingDatabaseOpener()
-    @State private var isFinishing = false
-    @State private var finishError: String?
 
     var body: some View {
         VStack(spacing: 20) {
@@ -29,7 +25,7 @@ struct OnboardingV2View: View {
                 OnboardingGoalsStepView { route in await leave(.purpose, route: route) }
             case .connect:
                 OnboardingConnectStepView(
-                    onBack: { appState.onboarding.goTo(.purpose) },
+                    onBack: { back(to: .purpose) },
                     onContinue: { await leave(.connect, route: appState.onboardingRoute) }
                 )
             case .aboutYou:
@@ -38,8 +34,8 @@ struct OnboardingV2View: View {
                 EmptyView()
             }
 
-            if let finishError {
-                Text(finishError)
+            if let error = appState.onboardingStepError {
+                Text(error)
                     .font(.caption)
                     .foregroundStyle(.red)
                     .multilineTextAlignment(.center)
@@ -59,77 +55,26 @@ struct OnboardingV2View: View {
             Spacer()
             HStack {
                 Button("Back") {
-                    appState.onboarding.goTo(appState.onboardingRoute.skips(.connect) ? .purpose : .connect)
+                    back(to: appState.onboardingRoute.skips(.connect) ? .purpose : .connect)
                 }
-                    .disabled(isFinishing)
+                .disabled(appState.isFinishingOnboarding)
                 Spacer()
                 Button("Continue") {
                     Task { await leave(step, route: appState.onboardingRoute) }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(isFinishing)
+                .disabled(appState.isFinishingOnboarding)
             }
         }
     }
 
-    /// Moves past `step`: to the next step the route runs, or — when none is
-    /// left — through the completion sequence.
+    private func back(to step: OnboardingV2Step) {
+        appState.clearOnboardingStepError()
+        appState.onboarding.goTo(step)
+    }
+
     private func leave(_ step: OnboardingV2Step, route: OnboardingRoute) async {
-        // Connect's account sheets need the database, which Goals' Continue
-        // has just created on a fresh install.
-        if step == .purpose, route.step(after: step) == .connect {
-            if let failure = await appState.openDatabaseForOnboarding() {
-                finishError = "Could not open the database: \(failure)"
-                return
-            }
-        }
-        finishError = nil
-        guard route.step(after: step) == .complete else {
-            appState.onboarding.advance(route: route)
-            return
-        }
-        await finish()
-    }
-
-    /// `OnboardingCompletion.finish` with `onboarding_done` written on its
-    /// own (`OnboardingProfileWriter.later`); About you replaces it with its
-    /// answers.
-    private func finish() async {
-        guard !isFinishing else { return }
-        isFinishing = true
-        finishError = nil
-        defer { isFinishing = false }
-        await OnboardingCompletion.finish(
-            markOnboardingDone: {
-                let manager: DatabaseManager
-                if let open = appState.databaseManager {
-                    manager = open
-                } else {
-                    switch await dbOpener.open() {
-                    case .success(let opened):
-                        manager = opened
-                    case .failure(let error):
-                        finishError = "Could not open the database: \(error.localizedDescription)"
-                        return false
-                    }
-                }
-                do {
-                    try await manager.dbPool.write { db in try OnboardingProfileWriter.later(db) }
-                    return true
-                } catch {
-                    finishError = "Could not finish setup: \(error.localizedDescription)"
-                    return false
-                }
-            },
-            startPipelines: {
-                appState.backgroundTaskManager.startPipelines(
-                    legacyPeople: appState.analysisLegacyMode,
-                    disabledFeatures: appState.featureManager.disabledFeatureIDs
-                )
-            },
-            completeOnboarding: { appState.completeOnboarding() },
-            onRetry: onRetry
-        )
+        await appState.leaveOnboardingStep(step, route: route, onRetry: onRetry)
     }
 }
 

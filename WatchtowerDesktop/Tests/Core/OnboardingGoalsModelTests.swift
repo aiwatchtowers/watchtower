@@ -34,12 +34,15 @@ final class OnboardingGoalsModelTests: XCTestCase {
         super.tearDown()
     }
 
-    private func makeModel(systemLanguage: String = "Russian") -> OnboardingGoalsModel {
+    private func makeModel(
+        systemLanguage: String = "Russian",
+        checkCLI: (() async -> OnboardingCLICheck)? = nil
+    ) -> OnboardingGoalsModel {
         let spy = self.spy
         return OnboardingGoalsModel(
             defaults: defaults,
             systemLanguage: systemLanguage,
-            checkCLI: { spy.cliResult },
+            checkCLI: checkCLI ?? { spy.cliResult },
             actions: OnboardingGoalsActions(
                 initWorkspace: {
                     spy.calls.append("workspace init")
@@ -233,5 +236,108 @@ final class OnboardingGoalsModelTests: XCTestCase {
     func testUnknownPersistedGoalIsIgnored() {
         defaults.set(["meetings", "teleportation"], forKey: OnboardingGoalsModel.goalsKey)
         XCTAssertEqual(makeModel().savedGoals, [.meetings])
+    }
+
+    // MARK: - One check at a time, rerun
+
+    /// A CLI check the test releases by hand.
+    @MainActor
+    private final class GatedCheck {
+        var calls = 0
+        private var waiting: [CheckedContinuation<OnboardingCLICheck, Never>] = []
+
+        func check() async -> OnboardingCLICheck {
+            calls += 1
+            return await withCheckedContinuation { waiting.append($0) }
+        }
+
+        func release(_ index: Int, with result: OnboardingCLICheck) {
+            waiting[index].resume(returning: result)
+        }
+
+        var pending: Int { waiting.count }
+    }
+
+    private func yieldALot() async {
+        for _ in 0..<10 { await Task.yield() }
+    }
+
+    /// The step re-appearing (Goals ↔ Customize) or Check again while a
+    /// check runs joins it: one `ai test`.
+    func testNoSecondCheckWhileOneIsInFlight() async {
+        let gate = GatedCheck()
+        let model = makeModel { await gate.check() }
+        let first = Task { await model.prepare(configuredLanguage: nil) }
+        await yieldALot()
+        let second = Task { await model.prepare(configuredLanguage: nil) }
+        let third = Task { await model.runCLICheck() }
+        await yieldALot()
+        XCTAssertEqual(gate.calls, 1)
+
+        gate.release(0, with: .ready(provider: "claude"))
+        await first.value
+        await second.value
+        await third.value
+        XCTAssertEqual(model.cliCheck, .ready(provider: "claude"))
+    }
+
+    /// A failed check is not rerun by the step re-appearing; Check again
+    /// runs it.
+    func testReappearingDoesNotRerunAFailedCheck() async {
+        spy.cliResult = .failed("not signed in")
+        let calls = Counter()
+        let model = makeModel { [spy] in
+            calls.value += 1
+            return spy.cliResult
+        }
+        await model.prepare(configuredLanguage: nil)
+        await model.prepare(configuredLanguage: nil)
+        XCTAssertEqual(calls.value, 1)
+        await model.runCLICheck()
+        XCTAssertEqual(calls.value, 2)
+    }
+
+    @MainActor
+    private final class Counter {
+        var value = 0
+    }
+
+    /// A check started before "Run setup again" finishes after the new one:
+    /// its result is dropped.
+    func testStaleCheckResultIsDropped() async {
+        let gate = GatedCheck()
+        let model = makeModel { await gate.check() }
+        let stale = Task { await model.prepare(configuredLanguage: nil) }
+        await yieldALot()
+
+        model.prepareForRerun()
+        let fresh = Task { await model.prepare(configuredLanguage: nil) }
+        await yieldALot()
+        XCTAssertEqual(gate.pending, 2)
+
+        gate.release(1, with: .failed("claude: not signed in"))
+        await fresh.value
+        gate.release(0, with: .ready(provider: "claude"))
+        await stale.value
+        XCTAssertEqual(model.cliCheck, .failed("claude: not signed in"))
+    }
+
+    func testPrepareForRerunResetsTheTransientState() async {
+        spy.featuresFailure = "boom"
+        let model = await readyModel()
+        await model.prepare(configuredLanguage: "Polish")
+        _ = await model.submit(hasSlackAccount: true)
+        model.isCustomizingFeatures = true
+        model.toggle(.meetings)
+
+        model.prepareForRerun()
+
+        XCTAssertEqual(model.cliCheck, .checking)
+        XCTAssertNil(model.continueError)
+        XCTAssertFalse(model.isCustomizingFeatures)
+        XCTAssertTrue(model.selection.goals.contains(.meetings), "the goals stay")
+        await model.prepare(configuredLanguage: "German")
+        XCTAssertEqual(model.language, "German", "the configured language is adopted again")
+        XCTAssertEqual(model.cliCheck, .ready(provider: "claude"), "the CLI is checked again")
     }
 }

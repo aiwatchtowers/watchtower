@@ -97,6 +97,7 @@ struct OnboardingGoalsStepView: View {
                 }
                 Button {
                     Task {
+                        appState.clearOnboardingStepError()
                         if let route = await model.submit(
                             hasSlackAccount: appState.featureVisibility.connectedSources.slack
                         ) {
@@ -112,7 +113,7 @@ struct OnboardingGoalsStepView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
-                .disabled(!model.canContinue)
+                .disabled(!model.canContinue || appState.isFinishingOnboarding)
             }
         }
         .disabled(model.isContinuing)

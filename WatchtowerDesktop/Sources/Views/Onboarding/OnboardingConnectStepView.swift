@@ -107,7 +107,7 @@ struct OnboardingConnectStepView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
-                .disabled(isContinuing)
+                .disabled(isContinuing || appState.isFinishingOnboarding)
             }
         }
         .sheet(item: $sheet, onDismiss: sheetDismissed) { sheet in

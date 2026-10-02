@@ -720,6 +720,62 @@ final class AppState {
 
     @ObservationIgnored private var onboardingDatabaseOpen: Task<String?, Never>?
 
+    /// The completion sequence is running: every step's Continue is off, so
+    /// a second click cannot run it (or Goals' writes) again.
+    private(set) var isFinishingOnboarding = false
+    /// Why the last step exit failed (the database, the completion
+    /// sequence); cleared on the next exit and on Back.
+    private(set) var onboardingStepError: String?
+
+    func clearOnboardingStepError() {
+        onboardingStepError = nil
+    }
+
+    /// Moves past `step`: to the next step `route` runs — opening the
+    /// database first when that is Connect, whose account sheets need it —
+    /// or, when none is left, through `OnboardingCompletion.finish`, with
+    /// `onboarding_done` written on its own (`OnboardingProfileWriter.later`;
+    /// About you replaces it with its answers).
+    func leaveOnboardingStep(_ step: OnboardingV2Step, route: OnboardingRoute, onRetry: () -> Void) async {
+        guard !isFinishingOnboarding else { return }
+        onboardingStepError = nil
+        let next = route.step(after: step)
+        if next == .connect, let failure = await openDatabaseForOnboarding() {
+            onboardingStepError = "Could not open the database: \(failure)"
+            return
+        }
+        guard next == .complete else {
+            onboarding.advance(route: route)
+            return
+        }
+        isFinishingOnboarding = true
+        defer { isFinishingOnboarding = false }
+        await OnboardingCompletion.finish(
+            markOnboardingDone: {
+                if let failure = await openDatabaseForOnboarding() {
+                    onboardingStepError = "Could not open the database: \(failure)"
+                    return false
+                }
+                guard let manager = databaseManager else { return false }
+                do {
+                    try await manager.dbPool.write { db in try OnboardingProfileWriter.later(db) }
+                    return true
+                } catch {
+                    onboardingStepError = "Could not finish setup: \(error.localizedDescription)"
+                    return false
+                }
+            },
+            startPipelines: {
+                backgroundTaskManager.startPipelines(
+                    legacyPeople: analysisLegacyMode,
+                    disabledFeatures: featureManager.disabledFeatureIDs
+                )
+            },
+            completeOnboarding: { completeOnboarding() },
+            onRetry: onRetry
+        )
+    }
+
     /// Opens the database for onboarding's Connect step, whose account
     /// sheets need the account view models — on a fresh install launch could
     /// not open it (no workspace until Goals' Continue). The launch wiring,
@@ -764,8 +820,15 @@ final class AppState {
     /// the database could not be opened. Needs `refreshConnectedSources` to
     /// have run: the route reads whether Slack is connected.
     func reconcileOnboarding(dbPool: DatabasePool?) async {
-        if let dbPool, onboarding.currentStep != .complete, !(await checkNeedsOnboarding(dbPool: dbPool)) {
-            onboarding.goTo(.complete)
+        // An unreadable profile skips onboarding for this launch only — not
+        // persisted, so the next launch checks again.
+        var skipThisLaunch = false
+        if let dbPool, onboarding.currentStep != .complete {
+            switch await checkProfileOnboarding(dbPool: dbPool) {
+            case .done: onboarding.goTo(.complete)
+            case .unreadable: skipThisLaunch = true
+            case .pending: break
+            }
         }
         let route = onboardingRoute
         if onboarding.currentStep != .complete, route.skips(onboarding.currentStep),
@@ -773,7 +836,7 @@ final class AppState {
             onboarding.goTo(.purpose)
         }
         onboarding.settle(route: route)
-        needsOnboarding = onboarding.currentStep != .complete
+        needsOnboarding = !skipThisLaunch && onboarding.currentStep != .complete
     }
 
     /// The route onboarding follows: the goals of the last Continue and
@@ -782,17 +845,23 @@ final class AppState {
         onboardingGoals.route(hasSlackAccount: featureVisibility.connectedSources.slack)
     }
 
-    /// Check if onboarding chat is needed (profile missing or onboarding_done == false).
-    private func checkNeedsOnboarding(dbPool: DatabasePool) async -> Bool {
+    private enum ProfileOnboarding {
+        /// Profile missing or onboarding_done == false.
+        case pending
+        case done
+        /// The read failed (logged).
+        case unreadable
+    }
+
+    private func checkProfileOnboarding(dbPool: DatabasePool) async -> ProfileOnboarding {
         do {
             return try await dbPool.read { db in
-                guard let profile = try ProfileQueries.fetchCurrentProfile(db) else {
-                    return true
-                }
-                return !profile.onboardingDone
+                guard let profile = try ProfileQueries.fetchCurrentProfile(db) else { return .pending }
+                return profile.onboardingDone ? .done : .pending
             }
         } catch {
-            return false // On error, don't block — skip onboarding
+            print("[AppState] onboarding check failed: \(error.localizedDescription)")
+            return .unreadable
         }
     }
 
@@ -836,6 +905,8 @@ final class AppState {
     /// Re-triggers the onboarding flow (from Settings), back at Goals.
     func startOnboarding() {
         onboarding.reset()
+        onboardingGoals.prepareForRerun()
+        onboardingStepError = nil
         needsOnboarding = true
         profileComplete = false
         UserDefaults.standard.removeObject(forKey: Constants.pipelinesCompletedKey)

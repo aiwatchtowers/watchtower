@@ -62,6 +62,12 @@ package final class OnboardingGoalsModel {
     @ObservationIgnored private let checkCLI: () async -> OnboardingCLICheck
     @ObservationIgnored private let actions: OnboardingGoalsActions
     @ObservationIgnored private var cliCheckGeneration = 0
+    /// The check in flight; a second request joins it instead of running
+    /// another `ai test`.
+    @ObservationIgnored private var cliCheckTask: Task<Void, Never>?
+    /// A check ran (or runs) since the last setup start: the step
+    /// re-appearing (Goals ↔ Customize) does not run another.
+    @ObservationIgnored private var cliCheckStarted = false
     @ObservationIgnored private var languagePrepared = false
     /// Set once `workspace init` succeeded: a second Continue (back from
     /// Connect) does not run it again.
@@ -95,7 +101,8 @@ package final class OnboardingGoalsModel {
 
     /// Called when the step appears: adopts an already configured language
     /// once (a setup re-run keeps the owner's choice instead of the macOS
-    /// default), and starts the CLI check unless it already passed.
+    /// default), and runs the CLI check once per setup run — Check again is
+    /// the owner's way to repeat it.
     package func prepare(configuredLanguage: String?) async {
         if !languagePrepared {
             languagePrepared = true
@@ -103,19 +110,46 @@ package final class OnboardingGoalsModel {
                 language = configured
             }
         }
-        if case .ready = cliCheck { return }
+        guard !cliCheckStarted else {
+            await cliCheckTask?.value
+            return
+        }
         await runCLICheck()
     }
 
-    /// Check again. A check that finishes after a newer one started is
-    /// dropped, so a slow first run cannot overwrite a later result.
+    /// Check again. Joins a check already in flight. A check that finishes
+    /// after `prepareForRerun` reset the step is dropped, so a slow old run
+    /// cannot overwrite a later result.
     package func runCLICheck() async {
+        if let cliCheckTask {
+            await cliCheckTask.value
+            return
+        }
+        cliCheckStarted = true
         cliCheckGeneration += 1
         let generation = cliCheckGeneration
         cliCheck = .checking
-        let result = await checkCLI()
-        guard generation == cliCheckGeneration else { return }
-        cliCheck = result
+        let task = Task { [checkCLI] in
+            let result = await checkCLI()
+            guard generation == cliCheckGeneration else { return }
+            cliCheck = result
+            cliCheckTask = nil
+        }
+        cliCheckTask = task
+        await task.value
+    }
+
+    /// "Run setup again": the step starts over as if just shown — the CLI is
+    /// checked again, the configured language adopted again, no error or
+    /// Customize screen left from the last run. The goals and selection stay.
+    package func prepareForRerun() {
+        cliCheckGeneration += 1
+        cliCheckTask = nil
+        cliCheckStarted = false
+        cliCheck = .checking
+        continueError = nil
+        languagePrepared = false
+        isCustomizingFeatures = false
     }
 
     package func toggle(_ goal: OnboardingGoal) {

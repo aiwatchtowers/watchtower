@@ -73,7 +73,7 @@ final class BriefingViewModelTests: XCTestCase {
     /// a second click starts no parallel `briefing generate`.
     func testGenerateInFlightSurvivesNavigationAndBlocksSecondRun() async throws {
         let cli = HeldCLIRunner()
-        let appState = AppState()
+        let appState = AppState.isolated()
         appState.initBriefings(dbManager: dbManager, cliRunner: cli)
         let first = try XCTUnwrap(appState.briefingViewModel)
 
@@ -103,7 +103,7 @@ final class BriefingViewModelTests: XCTestCase {
     /// when they come back.
     func testGenerateErrorSurvivesNavigation() async throws {
         let cli = HeldCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "boom"))
-        let appState = AppState()
+        let appState = AppState.isolated()
         appState.initBriefings(dbManager: dbManager, cliRunner: cli)
         let first = try XCTUnwrap(appState.briefingViewModel)
 
