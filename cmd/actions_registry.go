@@ -153,6 +153,7 @@ func buildToolRegistry(cfg *config.Config, database *db.DB) *tools.Registry {
 	regTools = append(regTools,
 		tools.NewConnectJiraBoard(jiraConnectFactory(cfg, database)),
 		tools.NewCreateTrack(),
+		tools.NewDismissTracks(),
 		tools.NewCreateIdea(),
 		tools.NewRemindMe(),
 		tools.NewBriefContext(),

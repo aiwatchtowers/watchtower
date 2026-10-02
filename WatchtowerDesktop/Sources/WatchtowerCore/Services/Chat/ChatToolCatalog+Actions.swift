@@ -26,6 +26,8 @@ extension ChatToolCatalog {
             return "Saving an idea"
         case "create_track":
             return arg("text").map { "Proposing a track: \($0)" } ?? "Proposing a track"
+        case "dismiss_tracks":
+            return "Proposing to dismiss tracks"
         case "remind_me":
             return arg("remind_at").map { "Setting a reminder for \($0)" } ?? "Setting a reminder"
         default:
@@ -41,6 +43,7 @@ extension ChatToolCatalog {
         case "update_jira_issue": return "square.and.pencil"
         case "create_idea": return "lightbulb"
         case "create_track": return "binoculars"
+        case "dismiss_tracks": return "archivebox"
         case "remind_me": return "alarm"
         default: return nil
         }

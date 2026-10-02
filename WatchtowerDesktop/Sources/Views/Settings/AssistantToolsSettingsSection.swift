@@ -49,10 +49,12 @@ struct AssistantToolsSettingsSection: View {
     private func executeToggle(for row: AssistantToolRow) -> some View {
         Toggle("Execute without approval", isOn: executeBinding(for: row))
             .labelsHidden()
-            .disabled(row.external)
+            .disabled(row.isLockedToAsk)
             .help(row.external
                   ? "External tools always need your approval."
-                  : "When on, the assistant's proposals with this tool run immediately and show as done.")
+                  : row.alwaysAsk
+                    ? "Bulk changes always need your approval."
+                    : "When on, the assistant's proposals with this tool run immediately and show as done.")
     }
 
     private func executeBinding(for row: AssistantToolRow) -> Binding<Bool> {

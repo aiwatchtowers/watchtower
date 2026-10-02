@@ -23,7 +23,7 @@ type SlackTeam struct {
 const ToolsList = `=== TOOLS (local Watchtower data — already connected; use them, never ask the user) ===
 - search_knowledge / get_knowledge_document: relevance search across Slack, mail, Jira, Confluence, calendar, transcripts, recaps, digests, decisions and ideas; open a hit in full by its ref.
 - list_messages: search/list raw Slack messages by person, channel, and/or keyword, newest first. At least one of person/channel/query is required.
-- list_people / get_person: people cards; list_tracks / get_track: work narratives.
+- list_people / get_person: people cards; list_tracks / get_track: work narratives; get_track_counts: how many tracks, grouped, without listing them.
 - list_targets / get_target: the owner's action items and goals.
 - get_today_briefing / list_digests / get_digest: the daily briefing and AI summaries of Slack activity.
 - list_jira_issues / get_jira_issue: synced Jira issues.

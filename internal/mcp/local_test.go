@@ -35,7 +35,7 @@ func TestLocalSession_ToolsListsRegisteredToolsWithArgs(t *testing.T) {
 	}
 	for _, want := range []string{
 		"list_targets", "get_target", "get_today_briefing", "list_digests",
-		"get_digest", "list_people", "get_person", "list_tracks", "get_track",
+		"get_digest", "list_people", "get_person", "list_tracks", "get_track", "get_track_counts",
 		"list_upcoming_events", "list_jira_issues", "get_jira_issue",
 	} {
 		if _, ok := byName[want]; !ok {

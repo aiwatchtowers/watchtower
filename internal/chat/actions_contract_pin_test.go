@@ -26,12 +26,12 @@ func TestActionsContract_MatchesSharedFixtures(t *testing.T) {
 func TestActionsContract_ListsEveryWriteToolOfTheSurface(t *testing.T) {
 	main := ActionsContract("main")
 	for _, tool := range []string{"create_target", "create_jira_issue", "connect_jira_board", "add_jira_comment",
-		"transition_jira_issue", "assign_jira_issue", "update_jira_issue", "edit_confluence_page", "create_track", "create_idea", "remind_me",
+		"transition_jira_issue", "assign_jira_issue", "update_jira_issue", "edit_confluence_page", "create_track", "dismiss_tracks", "create_idea", "remind_me",
 		"send_slack_message"} {
 		assert.Contains(t, main, "- "+tool+" — ", tool)
 	}
 	target := ActionsContract("target")
-	for _, tool := range []string{"create_target", "connect_jira_board", "create_track", "create_idea", "remind_me", "send_slack_message"} {
+	for _, tool := range []string{"create_target", "connect_jira_board", "create_track", "dismiss_tracks", "create_idea", "remind_me", "send_slack_message"} {
 		assert.NotContains(t, target, "- "+tool+" — ", "%s is not offered on the target surface", tool)
 	}
 	// Slack send (#166): the style rule rides with the tool, main only.

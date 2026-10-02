@@ -6,6 +6,14 @@ struct TracksListView: View {
     @State private var viewModel: TracksViewModel?
     @State private var selectedItemID: Int?
     @State private var showCreateSheet = false
+    /// The bulk dismiss awaiting confirmation: ids read when the dialog
+    /// opened, so the write touches exactly the counted set.
+    @State private var pendingBulkDismiss: BulkDismiss?
+
+    private struct BulkDismiss {
+        let ids: [Int]
+        let what: String
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -54,6 +62,19 @@ struct TracksListView: View {
                 appState.pendingTrackID = nil
             }
         }
+        .confirmationDialog(
+            bulkDismissTitle,
+            isPresented: Binding(get: { pendingBulkDismiss != nil }, set: { if !$0 { pendingBulkDismiss = nil } }),
+            titleVisibility: .visible,
+            presenting: pendingBulkDismiss
+        ) { pending in
+            Button("Dismiss \(pending.ids.count)", role: .destructive) {
+                if let id = selectedItemID, pending.ids.contains(id) { selectedItemID = nil }
+                viewModel?.dismissTracks(ids: pending.ids)
+            }
+        } message: { _ in
+            Text("Dismissed tracks leave the list; show them with the archive filter and restore any one.")
+        }
         .onChange(of: selectedItemID) { _, newID in
             if let id = newID, let track = viewModel?.itemByID(id), track.isUnread {
                 viewModel?.markRead(track)
@@ -61,11 +82,20 @@ struct TracksListView: View {
         }
     }
 
+    private var bulkDismissTitle: String {
+        guard let pending = pendingBulkDismiss else { return "" }
+        let noun = pending.ids.count == 1 ? "track" : "tracks"
+        return "Dismiss \(pending.ids.count) \(pending.what) \(noun)?"
+    }
+
     // MARK: - List Panel
 
     private func listPanel(_ vm: TracksViewModel) -> some View {
         VStack(spacing: 0) {
             listPanelToolbar(vm)
+            if vm.isSelecting {
+                selectionBar(vm)
+            }
             Divider()
             listPanelContent(vm)
         }
@@ -188,7 +218,54 @@ struct TracksListView: View {
             }
             .buttonStyle(.plain)
             .help(vm.showDismissed ? "Hide dismissed" : "Show dismissed")
+
+            bulkMenu(vm)
         }
+    }
+
+    // MARK: - Bulk dismiss
+
+    private func bulkMenu(_ vm: TracksViewModel) -> some View {
+        Menu {
+            Button(vm.isSelecting ? "Stop selecting" : "Select tracks") {
+                if vm.isSelecting { vm.endSelection() } else { vm.isSelecting = true }
+            }
+            Divider()
+            Button("Dismiss all auto tracks…") {
+                if let ids = vm.activeAutoTrackIDs() {
+                    pendingBulkDismiss = ids.isEmpty ? nil : BulkDismiss(ids: ids, what: "auto")
+                }
+            }
+        } label: {
+            Image(systemName: "checklist")
+                .font(.caption)
+                .foregroundStyle(vm.isSelecting ? .primary : .secondary)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Select or dismiss tracks in bulk")
+    }
+
+    private func selectionBar(_ vm: TracksViewModel) -> some View {
+        HStack(spacing: 8) {
+            Text("\(vm.selectedIDs.count) selected")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Button("Select all") { vm.selectAllVisible() }
+                .buttonStyle(.link)
+                .font(.caption)
+            Spacer()
+            Button("Dismiss selected") {
+                pendingBulkDismiss = BulkDismiss(ids: vm.selectedIDs.sorted(), what: "selected")
+            }
+            .disabled(vm.selectedIDs.isEmpty)
+            .controlSize(.small)
+            Button("Done") { vm.endSelection() }
+                .controlSize(.small)
+        }
+        .padding(.horizontal)
+        .padding(.bottom, 8)
     }
 
     // MARK: - Content
@@ -309,9 +386,23 @@ struct TracksListView: View {
                     ? Color.blue.opacity(0.06)
                     : Color.clear
 
-        return TrackRow(track: track, viewModel: vm)
+        return HStack(alignment: .top, spacing: 8) {
+            if vm.isSelecting {
+                Image(systemName: vm.selectedIDs.contains(track.id) ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(vm.selectedIDs.contains(track.id) ? Color.accentColor : .secondary)
+                    .opacity(track.isDismissed ? 0.3 : 1)
+            }
+            TrackRow(track: track, viewModel: vm)
+        }
             .contentShape(Rectangle())
-            .onTapGesture { selectedItemID = track.id }
+            .onTapGesture {
+                if vm.isSelecting {
+                    // A dismissed row has nothing to dismiss.
+                    if !track.isDismissed { vm.toggleSelection(track.id) }
+                } else {
+                    selectedItemID = track.id
+                }
+            }
             .contextMenu {
                 if track.isDismissed {
                     Button {

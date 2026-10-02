@@ -30,6 +30,7 @@ package enum ChatToolCatalog {
         "get_person": Entry(template: "Looked up {}", fallback: "Looked up a person", keys: ["name", "query", "id"]),
         "list_tracks": Entry(template: nil, fallback: "Listed tracks", keys: []),
         "get_track": Entry(template: nil, fallback: "Opened a track", keys: []),
+        "get_track_counts": Entry(template: nil, fallback: "Counted tracks", keys: []),
         "list_targets": Entry(template: nil, fallback: "Listed targets", keys: []),
         "get_target": Entry(template: nil, fallback: "Opened a target", keys: []),
         "list_upcoming_events": Entry(template: nil, fallback: "Checked the calendar", keys: []),

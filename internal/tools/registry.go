@@ -92,6 +92,11 @@ type Tool struct {
 	// External marks writes that leave this machine (Jira). Such a tool can
 	// never be granted execute trust (AGENT-03).
 	External bool
+	// AlwaysAsk marks a local write too broad to ever run without the
+	// owner's per-call Approve (dismiss_tracks: hundreds of rows at once).
+	// Like External it can never be granted execute trust and is never
+	// applied inline by a direct-apply session.
+	AlwaysAsk bool
 	// Surfaces lists the chat surfaces that may see the tool; empty = every
 	// surface.
 	Surfaces []string
@@ -195,6 +200,7 @@ var (
 	ErrNotWritable     = errors.New("tool is not a write tool")
 	ErrNotReadable     = errors.New("tool is not a read tool")
 	ErrExternalExecute = errors.New("an external tool can never be trusted to execute without approval")
+	ErrAlwaysAsk       = errors.New("this tool always needs the owner's approval and can never be trusted to execute")
 	ErrBadTransition   = errors.New("action is not in an applicable state")
 	ErrNotFound        = errors.New("action not found")
 )
@@ -291,6 +297,9 @@ func (r *Registry) SetTrust(name string, trust Trust) error {
 	}
 	if t.External && trust == TrustExecute {
 		return ErrExternalExecute
+	}
+	if t.AlwaysAsk && trust == TrustExecute {
+		return ErrAlwaysAsk
 	}
 	return r.db.SetToolTrust(name, string(trust))
 }
@@ -452,6 +461,9 @@ func directApplyGate(t *Tool, b Binding) error {
 	if t.External && !t.ProposeUnderDirectApply {
 		return &ValidationError{Msg: t.Name + " leaves this machine and never runs in a direct-apply session"}
 	}
+	if t.AlwaysAsk {
+		return &ValidationError{Msg: t.Name + " always needs the owner's approval and never runs in a direct-apply session"}
+	}
 	if !slices.Contains(t.Surfaces, b.Surface) {
 		return &ValidationError{Msg: fmt.Sprintf("%s is not available on the %s surface", t.Name, b.Surface)}
 	}
@@ -464,9 +476,10 @@ func directApplyGate(t *Tool, b Binding) error {
 // SetTrust refuses `execute` for an external tool, but db.SetToolTrust does
 // not, and a trust row keyed by tool NAME outlives a tool later being marked
 // External — the read side decides too (AGENT-03). DirectApply is execute for
-// this call only; the stored trust row is not consulted or changed.
+// this call only; the stored trust row is not consulted or changed. An
+// AlwaysAsk tool is ask on the same grounds as External.
 func (r *Registry) resolveTrust(t *Tool, b Binding) (Trust, error) {
-	if t.External {
+	if t.External || t.AlwaysAsk {
 		return TrustAsk, nil
 	}
 	if b.DirectApply {

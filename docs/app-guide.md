@@ -348,6 +348,8 @@ Each track shows:
 
 **Actions:** Change priority, rate quality with thumbs up/down, chat with AI about a specific track.
 
+**Dismissing in bulk:** the checklist button in the filter row opens **Select tracks** — rows get a checkbox, a bar shows how many are selected with **Select all** (every track the list currently shows) and **Dismiss selected** — and **Dismiss all auto tracks…**, which dismisses every track the pipeline created (your custom tracks stay). Both ask to confirm with the exact count first. Dismiss is soft: dismissed tracks leave the list, the archive button shows them again, and **Restore** on any one brings it back. You can also ask the main AI Chat ("dismiss every track except the newest one", "how many auto tracks haven't moved in a month?"): it counts tracks without listing them, and a bulk dismiss always arrives as one card stating the count and a few sample titles — nothing is dismissed until you **Approve**, and Approve dismisses exactly the tracks the card counted.
+
 ### Digests
 A cross-source overview of what happened, plus the settled decisions ledger. Two sub-views:
 

@@ -1,7 +1,7 @@
 ---
 type: idea
 title: Chat cannot bulk-dismiss tracks
-status: open
+status: done
 priority: med
 tags: [chat, agent-actions, tracks, bulk, desktop]
 context: docs/chat-projects-vision — backlog collection session, item 5 (owner screenshot of the main AI Chat)

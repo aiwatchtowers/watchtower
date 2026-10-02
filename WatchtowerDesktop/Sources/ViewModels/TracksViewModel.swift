@@ -32,6 +32,10 @@ final class TracksViewModel {
     var showDismissed: Bool = false
     var sortOrder: SortOrder = .updatedNewest
 
+    /// Multi-select for bulk dismiss: while on, a row tap toggles its id.
+    var isSelecting = false
+    var selectedIDs: Set<Int> = []
+
     enum JiraFilter: String, CaseIterable {
         case all = "All"
         case withJira = "With Jira"
@@ -152,6 +156,10 @@ final class TracksViewModel {
             let rest = autoTracks.filter { !$0.hasUpdates }
             // Hide read tracks unless showRead is enabled
             allTracks = showRead ? rest : rest.filter { $0.isUnread }
+            // A selection never reaches rows a filter change just hid.
+            if !selectedIDs.isEmpty {
+                selectedIDs.formIntersection((customTracks + updatedTracks + allTracks).map(\.id))
+            }
             totalCount = result.3.total
             updatedCount = result.3.updated
             refreshUserNameCache(tracks: tracks)
@@ -245,6 +253,53 @@ final class TracksViewModel {
             load()
         } catch {
             reportWriteFailure("dismiss", error)
+        }
+    }
+
+    // MARK: - Bulk dismiss
+
+    func toggleSelection(_ id: Int) {
+        if selectedIDs.contains(id) {
+            selectedIDs.remove(id)
+        } else {
+            selectedIDs.insert(id)
+        }
+    }
+
+    /// Selects every active track the list shows right now.
+    func selectAllVisible() {
+        selectedIDs = Set((customTracks + updatedTracks + allTracks).filter { !$0.isDismissed }.map(\.id))
+    }
+
+    func endSelection() {
+        isSelecting = false
+        selectedIDs = []
+    }
+
+    /// The ids "Dismiss all auto tracks" would dismiss, read when the owner
+    /// opens the confirmation — the confirmed write then touches exactly
+    /// these, not whatever the daemon added in between. Nil on a read error
+    /// (reported in `errorMessage`).
+    func activeAutoTrackIDs() -> [Int]? {
+        do {
+            return try dbManager.dbPool.read { db in try TrackQueries.fetchActiveAutoIDs(db) }
+        } catch {
+            errorMessage = "Failed to count auto tracks: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    /// Soft-dismisses `ids` in one write (reversible one by one via Restore)
+    /// and leaves selection mode.
+    func dismissTracks(ids: [Int]) {
+        do {
+            try dbManager.dbPool.write { db in
+                try TrackQueries.dismissMany(db, ids: ids)
+            }
+            endSelection()
+            load()
+        } catch {
+            errorMessage = "Failed to dismiss tracks: \(error.localizedDescription)"
         }
     }
 
