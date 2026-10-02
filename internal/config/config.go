@@ -66,13 +66,12 @@ type SyncConfig struct {
 }
 
 type DigestConfig struct {
-	Enabled          bool          `mapstructure:"enabled"`
-	MinMessages      int           `mapstructure:"min_messages"`
-	Language         string        `mapstructure:"language"`
-	Workers          int           `mapstructure:"workers"`
-	TracksInterval   time.Duration `mapstructure:"action_items_interval"` // YAML key kept for backward compat
-	BatchMaxChannels int           `mapstructure:"batch_max_channels"`
-	BatchMaxMessages int           `mapstructure:"batch_max_messages"`
+	Enabled          bool   `mapstructure:"enabled"`
+	MinMessages      int    `mapstructure:"min_messages"`
+	Language         string `mapstructure:"language"`
+	Workers          int    `mapstructure:"workers"`
+	BatchMaxChannels int    `mapstructure:"batch_max_channels"`
+	BatchMaxMessages int    `mapstructure:"batch_max_messages"`
 }
 
 // BriefingConfig holds settings for the daily briefing pipeline.
@@ -84,7 +83,6 @@ type BriefingConfig struct {
 // InboxConfig holds settings for the inbox detection pipeline.
 type InboxConfig struct {
 	Enabled             bool `mapstructure:"enabled"`               // enable inbox detection (default: true)
-	MaxItemsPerRun      int  `mapstructure:"max_items_per_run"`     // max candidates per run (default: 100)
 	InitialLookbackDays int  `mapstructure:"initial_lookback_days"` // days to look back on first run (default: 7)
 }
 
@@ -146,8 +144,7 @@ type CatchupCaps struct {
 
 // TracksConfig holds settings for the tracks extraction pipeline.
 type TracksConfig struct {
-	Enabled     bool `mapstructure:"enabled"`      // enable tracks extraction (default: true)
-	MinMessages int  `mapstructure:"min_messages"` // minimum visible messages for individual processing (default: 3)
+	Enabled bool `mapstructure:"enabled"` // enable tracks extraction (default: true)
 }
 
 // PeopleConfig holds settings for the people-cards pipeline.
@@ -213,7 +210,6 @@ type JiraConfig struct {
 	CloudID          string             `mapstructure:"cloud_id"`
 	SiteURL          string             `mapstructure:"site_url"`
 	UserDisplayName  string             `mapstructure:"user_display_name"`
-	SelectedBoards   []int              `mapstructure:"selected_boards"`
 	SyncIntervalMins int                `mapstructure:"sync_interval_mins"`
 	UserMap          map[string]string  `mapstructure:"user_map"`
 	Features         JiraFeatureToggles `mapstructure:"features"`
@@ -264,9 +260,6 @@ type DayPlanConfig struct {
 	Hour              int    `yaml:"hour" mapstructure:"hour"`
 	WorkingHoursStart string `yaml:"working_hours_start" mapstructure:"working_hours_start"`
 	WorkingHoursEnd   string `yaml:"working_hours_end" mapstructure:"working_hours_end"`
-	MaxTimeblocks     int    `yaml:"max_timeblocks" mapstructure:"max_timeblocks"`
-	MinBacklog        int    `yaml:"min_backlog" mapstructure:"min_backlog"`
-	MaxBacklog        int    `yaml:"max_backlog" mapstructure:"max_backlog"`
 }
 
 // MemoryConfig holds settings for the secretary memory consolidation
@@ -432,14 +425,11 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("digest.min_messages", DefaultDigestMinMsgs)
 	v.SetDefault("digest.language", DefaultDigestLang)
 	v.SetDefault("digest.workers", DefaultDigestWorkers)
-	v.SetDefault("digest.action_items_interval", DefaultTracksInterval)
 	v.SetDefault("digest.batch_max_channels", DefaultBatchMaxChannels)
 	v.SetDefault("digest.batch_max_messages", DefaultBatchMaxMessages)
-	v.RegisterAlias("digest.tracks_interval", "digest.action_items_interval")
 	v.SetDefault("briefing.enabled", DefaultBriefingEnabled)
 	v.SetDefault("briefing.hour", DefaultBriefingHour)
 	v.SetDefault("inbox.enabled", DefaultInboxEnabled)
-	v.SetDefault("inbox.max_items_per_run", DefaultInboxMaxItems)
 	v.SetDefault("inbox.initial_lookback_days", DefaultInboxLookbackDays)
 	v.SetDefault("knowledge.enabled", DefaultKnowledgeEnabled)
 	v.SetDefault("knowledge.connectors.enabled", DefaultKnowledgeConnectorsEnabled)
@@ -452,7 +442,6 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("reaction_commands.enabled", DefaultReactionCommandsEnabled)
 	v.SetDefault("reaction_commands.interval_hours", DefaultReactionCommandsIntervalHours)
 	v.SetDefault("tracks.enabled", DefaultTracksEnabled)
-	v.SetDefault("tracks.min_messages", DefaultTracksMinMsgs)
 	v.SetDefault("people.enabled", DefaultPeopleEnabled)
 	v.SetDefault("targets.next_step.enabled", DefaultTargetsNextStepEnabled)
 	v.SetDefault("catchup.caps.digests", 150)
@@ -481,9 +470,6 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("day_plan.hour", DefaultDayPlanHour)
 	v.SetDefault("day_plan.working_hours_start", DefaultDayPlanWorkingHoursStart)
 	v.SetDefault("day_plan.working_hours_end", DefaultDayPlanWorkingHoursEnd)
-	v.SetDefault("day_plan.max_timeblocks", DefaultDayPlanMaxTimeblocks)
-	v.SetDefault("day_plan.min_backlog", DefaultDayPlanMinBacklog)
-	v.SetDefault("day_plan.max_backlog", DefaultDayPlanMaxBacklog)
 	v.SetDefault("memory.enabled", false) // off by default until the feature settles
 	v.SetDefault("memory.max_chunk_messages", 2000)
 	v.SetDefault("memory.seed_min_messages", 20)

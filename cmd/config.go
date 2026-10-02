@@ -220,8 +220,6 @@ var knownConfigKeys = map[string]bool{
 	"digest.min_messages":                  true,
 	"digest.language":                      true,
 	"digest.workers":                       true,
-	"digest.action_items_interval":         true,
-	"digest.tracks_interval":               true,
 	"memory.enabled":                       true,
 	"memory.max_chunk_messages":            true,
 	"memory.seed_min_messages":             true,
@@ -271,10 +269,32 @@ var knownConfigKeys = map[string]bool{
 	"features.migrated":                    true,
 }
 
+// retiredConfigKeys were once accepted but nothing reads them any more;
+// `config set` refuses them instead of writing a setting with no effect.
+// An existing config.yaml that still carries one loads fine.
+var retiredConfigKeys = map[string]bool{
+	"digest.action_items_interval":   true,
+	"digest.tracks_interval":         true,
+	"inbox.max_items_per_run":        true,
+	"tracks.min_messages":            true,
+	"jira.selected_boards":           true,
+	"day_plan.max_timeblocks":        true,
+	"day_plan.min_backlog":           true,
+	"day_plan.max_backlog":           true,
+	"targets.extract.max_per_call":   true,
+	"targets.extract.model":          true,
+	"targets.resolver.slack_enabled": true,
+	"targets.resolver.jira_enabled":  true,
+}
+
 func runConfigSet(cmd *cobra.Command, args []string) error {
 	key := args[0]
 	value := args[1]
 	configPath := flagConfig
+
+	if retiredConfigKeys[key] {
+		return fmt.Errorf("%q is retired and has no effect; nothing was written", key)
+	}
 
 	// Warn on unrecognized keys (allow workspace-level keys like workspaces.*.slack_token)
 	if !knownConfigKeys[key] && !strings.HasPrefix(key, "workspaces.") {

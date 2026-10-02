@@ -29,9 +29,6 @@ func pipeTestCfg() *config.Config {
 		Hour:              8,
 		WorkingHoursStart: "09:00",
 		WorkingHoursEnd:   "19:00",
-		MaxTimeblocks:     3,
-		MinBacklog:        3,
-		MaxBacklog:        8,
 	}}
 }
 

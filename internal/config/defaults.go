@@ -30,11 +30,9 @@ const (
 	DefaultDigestMinMsgs     = 10
 	DefaultDigestLang        = "Russian"
 	DefaultDigestWorkers     = 5 // Deprecated: use DefaultAIWorkers. Kept for backward compat.
-	DefaultTracksInterval    = 1 * time.Hour
 	DefaultBriefingEnabled   = true
 	DefaultBriefingHour      = 8
 	DefaultInboxEnabled      = true
-	DefaultInboxMaxItems     = 100
 	DefaultInboxLookbackDays = 7
 
 	// DefaultKnowledgeEnabled gates the knowledge-search index. Mechanical
@@ -67,7 +65,6 @@ const (
 
 	// Tracks and people pipelines
 	DefaultTracksEnabled          = true
-	DefaultTracksMinMsgs          = 3
 	DefaultPeopleEnabled          = true
 	DefaultTargetsNextStepEnabled = true
 	DefaultBatchMaxChannels       = 20
@@ -112,9 +109,6 @@ const (
 	DefaultDayPlanHour              = 8
 	DefaultDayPlanWorkingHoursStart = "09:00"
 	DefaultDayPlanWorkingHoursEnd   = "19:00"
-	DefaultDayPlanMaxTimeblocks     = 3
-	DefaultDayPlanMinBacklog        = 3
-	DefaultDayPlanMaxBacklog        = 8
 
 	// Targets defaults
 	DefaultTargetsExtractEnabled        = true

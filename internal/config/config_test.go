@@ -347,11 +347,10 @@ func TestDayPlanConfig_Defaults(t *testing.T) {
 	assert.Equal(t, DefaultDayPlanHour, cfg.DayPlan.Hour)
 	assert.Equal(t, DefaultDayPlanWorkingHoursStart, cfg.DayPlan.WorkingHoursStart)
 	assert.Equal(t, DefaultDayPlanWorkingHoursEnd, cfg.DayPlan.WorkingHoursEnd)
-	assert.Equal(t, DefaultDayPlanMaxTimeblocks, cfg.DayPlan.MaxTimeblocks)
-	assert.Equal(t, DefaultDayPlanMinBacklog, cfg.DayPlan.MinBacklog)
-	assert.Equal(t, DefaultDayPlanMaxBacklog, cfg.DayPlan.MaxBacklog)
 }
 
+// The retired max_timeblocks/min_backlog/max_backlog keys stay in the
+// fixture: an existing config.yaml still carrying them must load.
 func TestDayPlanConfig_FromYAML(t *testing.T) {
 	yaml := `
 day_plan:
@@ -371,9 +370,6 @@ day_plan:
 	assert.Equal(t, 7, cfg.DayPlan.Hour)
 	assert.Equal(t, "08:00", cfg.DayPlan.WorkingHoursStart)
 	assert.Equal(t, "18:00", cfg.DayPlan.WorkingHoursEnd)
-	assert.Equal(t, 5, cfg.DayPlan.MaxTimeblocks)
-	assert.Equal(t, 2, cfg.DayPlan.MinBacklog)
-	assert.Equal(t, 10, cfg.DayPlan.MaxBacklog)
 }
 
 func TestMemoryConfig_Defaults(t *testing.T) {
@@ -603,6 +599,35 @@ targets:
 
 	assert.False(t, cfg.Targets.Extract.Enabled)
 	assert.Equal(t, 20, cfg.Targets.Resolver.MCPTimeoutSeconds)
+}
+
+// TestRetiredNoReaderKeysStillLoad pins that a config.yaml still carrying
+// the retired digest/inbox/tracks/jira keys loads and leaves its live
+// siblings intact.
+func TestRetiredNoReaderKeysStillLoad(t *testing.T) {
+	yaml := `
+digest:
+  min_messages: 4
+  action_items_interval: 30m
+  tracks_interval: 2h
+inbox:
+  max_items_per_run: 10
+  initial_lookback_days: 3
+tracks:
+  enabled: false
+  min_messages: 9
+jira:
+  enabled: true
+  selected_boards: [1, 2]
+`
+	path := writeTestConfig(t, yaml)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	assert.Equal(t, 4, cfg.Digest.MinMessages)
+	assert.Equal(t, 3, cfg.Inbox.InitialLookbackDays)
+	assert.False(t, cfg.Tracks.Enabled)
+	assert.True(t, cfg.Jira.Enabled)
 }
 
 func TestTargetsConfigDisabled(t *testing.T) {

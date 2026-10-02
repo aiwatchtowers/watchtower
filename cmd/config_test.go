@@ -425,3 +425,30 @@ func TestConfigSet_OtherKeysNeverCheckWorkspaces(t *testing.T) {
 	_, stderr, _ := runConfigSetCapture(t, "ai.model", "sonnet")
 	assert.Empty(t, stderr)
 }
+
+func TestConfigSet_RetiredKeyIsRefusedAndNotWritten(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+
+	initial := "active_workspace: test\n"
+	require.NoError(t, os.WriteFile(configPath, []byte(initial), 0o600))
+
+	oldFlagConfig := flagConfig
+	flagConfig = configPath
+	defer func() { flagConfig = oldFlagConfig }()
+
+	for key := range retiredConfigKeys {
+		assert.False(t, knownConfigKeys[key], "%q is both known and retired", key)
+
+		buf := new(bytes.Buffer)
+		configSetCmd.SetOut(buf)
+		err := configSetCmd.RunE(configSetCmd, []string{key, "5"})
+		require.Error(t, err, key)
+		assert.Contains(t, err.Error(), "retired")
+		assert.Empty(t, buf.String(), key)
+	}
+
+	data, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	assert.Equal(t, initial, string(data), "a retired key must not touch config.yaml")
+}
