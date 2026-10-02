@@ -270,8 +270,8 @@ final class NotificationRouteTests: XCTestCase {
                 appState: appState,
                 forwarded: forwarded
             )
-            XCTAssertEqual(appState.selectedDestination, .projects, "forwarded: \(forwarded)")
-            XCTAssertEqual(appState.pendingProjectRoute, ProjectRoute(projectID: 3, pane: .documents, subjectID: 8))
+            XCTAssertEqual(appState.selectedDestination, .workbench, "forwarded: \(forwarded)")
+            XCTAssertEqual(appState.pendingWorkbenchRoute, WorkbenchRoute(projectID: 3, pane: .documents, subjectID: 8))
         }
     }
 
@@ -377,16 +377,16 @@ final class NotificationRouteTests: XCTestCase {
             NotificationForwarding.routedKeys,
             [
                 "type", NotificationForwarding.digestIDKey, NotificationForwarding.ideaIDKey,
-                NotificationForwarding.transcriptIDKey, NotificationForwarding.projectIDKey,
-                NotificationForwarding.projectSubjectIDKey, NotificationForwarding.projectPaneKey
+                NotificationForwarding.transcriptIDKey, NotificationForwarding.workbenchIDKey,
+                NotificationForwarding.workbenchSubjectIDKey, NotificationForwarding.workbenchPaneKey
             ]
         )
         XCTAssertEqual(NotificationForwarding.digestIDKey, "digestId")
         XCTAssertEqual(NotificationForwarding.ideaIDKey, "ideaId")
         XCTAssertEqual(NotificationForwarding.transcriptIDKey, "transcriptID")
-        XCTAssertEqual(NotificationForwarding.projectIDKey, "projectId")
-        XCTAssertEqual(NotificationForwarding.projectSubjectIDKey, "subjectId")
-        XCTAssertEqual(NotificationForwarding.projectPaneKey, "pane")
+        XCTAssertEqual(NotificationForwarding.workbenchIDKey, "projectId")
+        XCTAssertEqual(NotificationForwarding.workbenchSubjectIDKey, "subjectId")
+        XCTAssertEqual(NotificationForwarding.workbenchPaneKey, "pane")
     }
 
     /// The wire codec itself: a voice-label push's transcript id survives encode →

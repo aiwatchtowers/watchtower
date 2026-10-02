@@ -27,7 +27,7 @@ posts/attachments with their comments — see
 make a decision other than search, and the indexer never writes a source
 table (`internal/kb`'s adapters read only through the `Queryer` they are
 given — except `project_doc`, which also reads the attached files, read-only
-and inside the project folder; for it the rebuild equivalence holds over an
+and inside the workbench folder; for it the rebuild equivalence holds over an
 unchanged folder). A from-scratch `kb reindex` produces byte-identical
 `kb_documents`/`kb_chunks` content to incremental indexing over the same
 data, across writes, in-place Slack edits/deletes inside the 48h tail rescan,

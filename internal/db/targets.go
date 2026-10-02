@@ -23,7 +23,7 @@ func scanTarget(row interface{ Scan(...any) error }) (*Target, error) {
 		&t.ParentID, &t.Status, &t.Priority, &t.Ownership,
 		&t.BallOn, &t.DueDate, &t.SnoozeUntil, &t.Blocking, &t.Tags, &t.SubItems, &t.Notes,
 		&t.Progress, &t.SourceType, &t.SourceID, &t.AILevelConfidence, &t.CreatedAt, &t.UpdatedAt,
-		&t.NextStep, &t.NextStepAt, &t.NextStepAttempts, &t.NextStepAttemptedAt, &t.ProjectID,
+		&t.NextStep, &t.NextStepAt, &t.NextStepAttempts, &t.NextStepAttemptedAt, &t.WorkbenchID,
 		&t.Branch, &t.PR,
 	); err != nil {
 		return nil, err
@@ -52,7 +52,7 @@ func (db *DB) CreateTarget(t Target) (int64, error) {
 		t.PeriodEnd = t.PeriodStart
 	}
 
-	if err := checkParentBoard(db, t.ParentID, t.ProjectID); err != nil {
+	if err := checkParentBoard(db, t.ParentID, t.WorkbenchID); err != nil {
 		return 0, err
 	}
 
@@ -66,7 +66,7 @@ func (db *DB) CreateTarget(t Target) (int64, error) {
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.Text, t.Intent, t.Level, t.CustomLabel, t.PeriodStart, t.PeriodEnd, t.ParentID,
 		t.Status, t.Priority, t.Ownership, t.BallOn, t.DueDate, t.SnoozeUntil, t.Blocking,
-		t.Tags, t.SubItems, t.Notes, progress, t.SourceType, t.SourceID, t.AILevelConfidence, t.ProjectID,
+		t.Tags, t.SubItems, t.Notes, progress, t.SourceType, t.SourceID, t.AILevelConfidence, t.WorkbenchID,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("inserting target: %w", err)
@@ -92,7 +92,7 @@ func (db *DB) CreateTarget(t Target) (int64, error) {
 // leaf's progress from its status on every call), this is safe for a caller
 // that only means to rename or reword a target: the project board's
 // update_target tool uses it so renaming an in-progress target never resets
-// the progress the owner or agent set earlier (I4, docs/inventory/projects.md).
+// the progress the owner or agent set earlier (I4, docs/inventory/workbench.md).
 func (db *DB) UpdateTargetText(id int, text, intent string) error {
 	return updateTargetTextOn(db, id, text, intent)
 }
@@ -150,10 +150,10 @@ func updateTargetTextOn(q targetsQuerier, id int, text, intent string) error {
 // (mirroring UpdateTargetStatus semantics for leaf targets), and propagates
 // progress to both old and new parents when parent_id changes.
 func (db *DB) UpdateTarget(t Target) error {
-	if err := checkParentBoard(db, t.ParentID, t.ProjectID); err != nil {
+	if err := checkParentBoard(db, t.ParentID, t.WorkbenchID); err != nil {
 		return err
 	}
-	if err := checkChildrenBoard(db, int64(t.ID), t.ProjectID); err != nil {
+	if err := checkChildrenBoard(db, int64(t.ID), t.WorkbenchID); err != nil {
 		return err
 	}
 
@@ -174,7 +174,7 @@ func (db *DB) UpdateTarget(t Target) error {
 		t.Text, t.Intent, t.Level, t.CustomLabel, t.PeriodStart, t.PeriodEnd,
 		t.ParentID, t.Status, t.Priority, t.Ownership,
 		t.BallOn, t.DueDate, t.SnoozeUntil, t.Blocking,
-		t.Tags, t.SubItems, t.Notes, t.SourceType, t.SourceID, t.ProjectID,
+		t.Tags, t.SubItems, t.Notes, t.SourceType, t.SourceID, t.WorkbenchID,
 		t.ID,
 	)
 	if err != nil {
@@ -320,9 +320,9 @@ func (db *DB) GetTargetsNeedingNextStep(limit int) ([]Target, error) {
 	return targets, rows.Err()
 }
 
-// projectScope is the PROJ-01 clause of GetTargets: 0 keeps project targets
-// out, N selects only project N's board (docs/inventory/projects.md).
-func projectScope(projectID int64) (string, []any) {
+// workbenchScope is the PROJ-01 clause of GetTargets: 0 keeps project targets
+// out, N selects only project N's board (docs/inventory/workbench.md).
+func workbenchScope(projectID int64) (string, []any) {
 	if projectID > 0 {
 		return "project_id = ?", []any{projectID}
 	}
@@ -342,7 +342,7 @@ func (db *DB) GetTargets(f TargetFilter) ([]Target, error) {
 	if !f.IncludeDone && f.Status == "" {
 		conditions = append(conditions, "status NOT IN ('done','dismissed')")
 	}
-	scope, scopeArgs := projectScope(f.ProjectID)
+	scope, scopeArgs := workbenchScope(f.WorkbenchID)
 	conditions = append(conditions, scope)
 	args = append(args, scopeArgs...)
 	if f.Status != "" {

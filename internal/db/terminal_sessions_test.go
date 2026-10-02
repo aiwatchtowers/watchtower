@@ -7,7 +7,7 @@ import (
 
 func TestSetTerminalSessionAITitle_NeverOverwritesUserOrAI(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestProject(t, d)
+	pid := newTestWorkbench(t, d)
 	for _, src := range []string{"auto", "ai", "user"} {
 		res, err := d.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, title_source, folder_path, claude_session_id)
 			VALUES (?, 'claude', 'New session', ?, '/tmp/acme', 'uuid-'||?)`, pid, src, src)
@@ -34,8 +34,8 @@ func TestGetTerminalSession_NotFound(t *testing.T) {
 
 func TestSetTerminalClaudeSessionID_OnlyThatProjectsClaudeRow(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestProject(t, d)
-	other := newTestProject(t, d)
+	pid := newTestWorkbench(t, d)
+	other := newTestWorkbench(t, d)
 	insert := func(project any, kind string, uuid any) int64 {
 		t.Helper()
 		res, err := d.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id)

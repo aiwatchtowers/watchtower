@@ -2143,6 +2143,7 @@ CREATE TRIGGER IF NOT EXISTS chat_conversations_fts_au AFTER UPDATE OF title ON 
     INSERT INTO chat_title_fts(rowid, title) VALUES (NEW.id, NEW.title);
 END;
 
+-- projects* tables = Workbench (UI/CLI/code name since 2026-10-02; table names kept).
 -- Projects (00081, spec 2026-09-29-project-board-poc-design.md): a folder-bound
 -- project worked on by Claude Code through `watchtower mcp --project N`. Its
 -- targets carry targets.project_id and appear only on its board. Documents are

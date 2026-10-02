@@ -13,12 +13,17 @@ package struct TerminalLaunch: Equatable, Sendable {
     }
 
     /// Names the `terminal_sessions` row a `claude` process runs in, so the
-    /// project's `SessionStart` hook (`watchtower project brief`) can store
+    /// workbench's `SessionStart` hook (`watchtower workbench brief`) can store
     /// the conversation's new id after `/clear` or a resume (Go
     /// `terminalSessionEnv`, a dual path).
     package static let sessionRowEnv = "WATCHTOWER_TERMINAL_SESSION_ID"
 
-    package static let firstRunPrompt = "Set up this Watchtower project using the watchtower-project skill."
+    /// The first session of a new workbench. `vocabulary` picks the skill the
+    /// folder has installed (spec 2026-10-02 §5.3).
+    package static func firstRunPrompt(_ vocabulary: WorkbenchVocabulary) -> String {
+        "Set up this Watchtower workbench using the \(vocabulary.skillName) skill."
+    }
+
     package static let fallbackShell = "/bin/zsh"
 
     package let executable: String
@@ -58,8 +63,8 @@ package struct TerminalLaunch: Equatable, Sendable {
         }
     }
 
-    package static func workOnTargetPrompt(targetID: Int64) -> String {
-        "Work on target #\(targetID) using the watchtower-project skill."
+    package static func workOnTargetPrompt(targetID: Int64, vocabulary: WorkbenchVocabulary) -> String {
+        "Work on target #\(targetID) using the \(vocabulary.skillName) skill."
     }
 
     /// The terminal pane's line after the session ends. 127 is the shell's

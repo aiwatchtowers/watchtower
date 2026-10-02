@@ -40,9 +40,9 @@ func TestMCPTurnBinding(t *testing.T) {
 // resetMCPFlags restores the mcp command's package-level flags after a test.
 func resetMCPFlags(t *testing.T) {
 	t.Helper()
-	chat, project := mcpFlagChat, mcpFlagProject
-	t.Cleanup(func() { mcpFlagChat, mcpFlagProject = chat, project })
-	mcpFlagChat, mcpFlagProject = false, 0
+	chat, project := mcpFlagChat, mcpFlagWorkbench
+	t.Cleanup(func() { mcpFlagChat, mcpFlagWorkbench = chat, project })
+	mcpFlagChat, mcpFlagWorkbench = false, 0
 }
 
 func openMCPTestDB(t *testing.T) *db.DB {
@@ -95,18 +95,18 @@ func TestDev06_PlainMCPStaysReadOnly(t *testing.T) {
 func TestMCPProjectMode_BindsTheProjectAndAppliesDirectly(t *testing.T) {
 	resetMCPFlags(t)
 	database := openMCPTestDB(t)
-	folder, err := db.ResolveProjectFolder(t.TempDir(), nil)
+	folder, err := db.ResolveWorkbenchFolder(t.TempDir(), nil)
 	require.NoError(t, err)
-	pid, err := database.CreateProject("acme", folder)
+	pid, err := database.CreateWorkbench("acme", folder)
 	require.NoError(t, err)
-	mcpFlagProject = pid
+	mcpFlagWorkbench = pid
 
 	opts, err := mcpModeOptions(&config.Config{ActiveWorkspace: "test-ws"}, database, "", nil)
 	require.NoError(t, err)
 	require.Len(t, opts, 1)
 
 	names, ls := localToolNames(t, database, opts)
-	for _, n := range []string{"project_info", "project_board", "create_targets", "attach_document", "get_action", "list_targets"} {
+	for _, n := range []string{"workbench_info", "workbench_board", "create_targets", "attach_document", "get_action", "list_targets"} {
 		assert.True(t, names[n], "project mode mounts %s", n)
 	}
 	for _, n := range []string{"create_target", "create_jira_issue", "connect_jira_board", "create_idea"} {
@@ -119,7 +119,7 @@ func TestMCPProjectMode_BindsTheProjectAndAppliesDirectly(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, isErr, text)
 	assert.Contains(t, text, `"status": "applied"`)
-	board, err := database.GetProjectBoard(pid)
+	board, err := database.GetWorkbenchBoard(pid)
 	require.NoError(t, err)
 	require.Len(t, board, 1)
 	assert.Equal(t, "Feature X", board[0].Target.Text)
@@ -130,11 +130,59 @@ func TestMCPProjectMode_RefusesMissingProjectAndChat(t *testing.T) {
 	database := openMCPTestDB(t)
 	cfg := &config.Config{ActiveWorkspace: "test-ws"}
 
-	mcpFlagProject = 404
+	mcpFlagWorkbench = 404
 	_, err := mcpModeOptions(cfg, database, "", nil)
-	assert.ErrorIs(t, err, db.ErrProjectNotFound)
+	assert.ErrorIs(t, err, db.ErrWorkbenchNotFound)
 
 	mcpFlagChat = true
 	_, err = mcpModeOptions(cfg, database, "", nil)
 	assert.ErrorContains(t, err, "mutually exclusive")
+}
+
+// Spec 2026-10-02 §5.2: `mcp --project N` (a folder installed before the
+// rename) serves the renamed workbench tools under their old names only;
+// `mcp --workbench N` the new names only. Eleven workbench tools either way.
+func TestMCPProjectMode_LegacyFlagServesTheOldToolNames(t *testing.T) {
+	resetMCPFlags(t)
+	legacyFlag := mcpCmd.Flags().Lookup(legacyWorkbenchFlag)
+	t.Cleanup(func() { legacyFlag.Changed = false })
+	cfg := &config.Config{ActiveWorkspace: "test-ws"}
+
+	for _, legacy := range []bool{false, true} {
+		database := openMCPTestDB(t)
+		folder, err := db.ResolveWorkbenchFolder(t.TempDir(), nil)
+		require.NoError(t, err)
+		pid, err := database.CreateWorkbench("acme", folder)
+		require.NoError(t, err)
+		mcpFlagWorkbench, legacyFlag.Changed = pid, legacy
+
+		opts, err := mcpModeOptions(cfg, database, "", nil)
+		require.NoError(t, err)
+		names, ls := localToolNames(t, database, opts)
+		workbenchTools := 0
+		for name := range names {
+			if name == "send_slack_message" || name == "get_writing_style" {
+				continue // main + project surfaces, not workbench tools (#166)
+			}
+			if tool, ok := buildToolRegistry(cfg, database).Get(name); ok && slices.Contains(tool.Surfaces, "project") {
+				workbenchTools++
+			}
+		}
+		assert.Equal(t, 11, workbenchTools, "legacy=%v", legacy)
+		assert.True(t, names["send_slack_message"] && names["get_writing_style"], "legacy=%v lists the Slack pair", legacy)
+		for newName, oldName := range tools.LegacyWorkbenchToolNames {
+			assert.Equal(t, legacy, names[oldName], "legacy=%v lists %s", legacy, oldName)
+			assert.Equal(t, !legacy, names[newName], "legacy=%v lists %s", legacy, newName)
+		}
+
+		if legacy {
+			text, isErr, err := ls.Call(context.Background(), "update_project", map[string]any{"description": "Old setup.", "reason": "setup"})
+			require.NoError(t, err)
+			require.False(t, isErr, text)
+			rows, err := database.ListAgentActions(db.AgentActionFilter{})
+			require.NoError(t, err)
+			require.Len(t, rows, 1)
+			assert.Equal(t, tools.UpdateWorkbenchTool, rows[0].Tool, "the audit row records the canonical name")
+		}
+	}
 }

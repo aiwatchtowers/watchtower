@@ -17,13 +17,13 @@ import (
 // DEV-06 rule 3 (amended 2026-10-02, owner decision on #166): an External tool
 // that opts into ProposeUnderDirectApply and names the project surface is
 // recorded as a PENDING proposal in a direct-apply session — one row, bound to
-// the project, trust ask — and never executes there. The owner's Approve in
+// the workbench, trust ask — and never executes there. The owner's Approve in
 // the Desktop is the only way it runs.
 func TestDev06_ProposeOnlyExternalToolLandsPendingUnderDirectApply(t *testing.T) {
 	d := openDB(t)
-	pid := seedProject(t, d, "acme")
+	pid := seedWorkbench(t, d, "acme")
 	var executed []Call
-	tool := newProjectEchoTool(t, true, []string{"project"}, &executed)
+	tool := newWorkbenchEchoTool(t, true, []string{"project"}, &executed)
 	tool.ProposeUnderDirectApply = true
 	reg := New(d)
 	require.NoError(t, reg.Register(tool))
@@ -42,10 +42,10 @@ func TestDev06_ProposeOnlyExternalToolLandsPendingUnderDirectApply(t *testing.T)
 	assert.Equal(t, "pending", rows[0].Status)
 	assert.Equal(t, "ask", rows[0].TrustAtCreate)
 	assert.True(t, rows[0].External)
-	assert.Equal(t, ProjectContextType, rows[0].ContextType)
+	assert.Equal(t, WorkbenchContextType, rows[0].ContextType)
 	assert.Equal(t, strconv.FormatInt(pid, 10), rows[0].ContextID)
 
-	// The owner approves; Apply runs it once, with the project binding.
+	// The owner approves; Apply runs it once, with the workbench binding.
 	ok, err := reg.Approve(context.Background(), rc.ActionID, nil)
 	require.NoError(t, err)
 	require.True(t, ok)
@@ -53,16 +53,16 @@ func TestDev06_ProposeOnlyExternalToolLandsPendingUnderDirectApply(t *testing.T)
 	require.NoError(t, err)
 	assert.Equal(t, "applied", applied.Status)
 	require.Len(t, executed, 1)
-	assert.Equal(t, pid, executed[0].Binding.ProjectID)
+	assert.Equal(t, pid, executed[0].Binding.WorkbenchID)
 }
 
 // The opt-in does not widen the surface rule: a propose-only tool that does
 // not name the session's surface is still refused there, with no row.
 func TestDirectApply_ProposeOnlyToolStillNeedsTheSurface(t *testing.T) {
 	d := openDB(t)
-	pid := seedProject(t, d, "acme")
+	pid := seedWorkbench(t, d, "acme")
 	var executed []Call
-	tool := newProjectEchoTool(t, true, []string{"main"}, &executed)
+	tool := newWorkbenchEchoTool(t, true, []string{"main"}, &executed)
 	tool.ProposeUnderDirectApply = true
 	reg := New(d)
 	require.NoError(t, reg.Register(tool))

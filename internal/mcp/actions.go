@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"strconv"
 	"strings"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"watchtower/internal/db"
@@ -37,22 +39,29 @@ type getActionArgs struct {
 // tools always mount (dispatched through CallRead, which records no proposal).
 // Write tools and get_action mount only when mountWrites is set (chat mode) —
 // dev mode passes false, so the developer surface never sees a write tool.
+//
+// A legacy workbench session (binding.LegacyNames, `mcp --project N`) lists
+// the renamed workbench tools under their pre-rename names and reads every
+// description, refusal and receipt in that vocabulary (Binding.Spell); the
+// call itself dispatches by the tool's current name, the one agent_actions
+// records.
 func registerRegistry(s *mcpsdk.Server, database *db.DB, reg *tools.Registry, binding tools.Binding, mountWrites bool) {
 	for _, t := range reg.List(binding.Surface) {
 		tool := t
+		listed := &mcpsdk.Tool{
+			Name:        binding.Spell(tool.Name),
+			Description: binding.Spell(tool.Description),
+			InputSchema: spellSchema(binding, tool.Name, tool.InputSchema),
+		}
 		if tool.Access == tools.AccessRead {
-			s.AddTool(&mcpsdk.Tool{
-				Name:        tool.Name,
-				Description: tool.Description,
-				InputSchema: tool.InputSchema,
-			}, func(ctx context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+			s.AddTool(listed, func(ctx context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 				data, err := reg.CallRead(ctx, tool.Name, req.Params.Arguments, binding)
 				if err != nil {
 					var verr *tools.ValidationError
 					if errors.As(err, &verr) {
-						return errResult(verr.Msg), nil
+						return errResult(binding.Spell(verr.Msg)), nil
 					}
-					return errResult(err.Error()), nil
+					return errResult(binding.Spell(err.Error())), nil
 				}
 				res, _, jerr := jsonResult(data)
 				return res, jerr
@@ -62,19 +71,16 @@ func registerRegistry(s *mcpsdk.Server, database *db.DB, reg *tools.Registry, bi
 		if !mountWrites {
 			continue
 		}
-		s.AddTool(&mcpsdk.Tool{
-			Name:        tool.Name,
-			Description: tool.Description,
-			InputSchema: tool.InputSchema,
-		}, func(ctx context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+		s.AddTool(listed, func(ctx context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 			rc, err := reg.Propose(ctx, tool.Name, req.Params.Arguments, binding)
 			if err != nil {
 				var verr *tools.ValidationError
 				if errors.As(err, &verr) {
-					return errResult(verr.Msg), nil
+					return errResult(binding.Spell(verr.Msg)), nil
 				}
-				return errResult(fmt.Sprintf("recording proposal: %v", err)), nil
+				return errResult(binding.Spell(fmt.Sprintf("recording proposal: %v", err))), nil
 			}
+			rc.Tool, rc.Message, rc.Error = binding.Spell(rc.Tool), binding.Spell(rc.Message), binding.Spell(rc.Error)
 			res, _, err := jsonResult(rc)
 			return res, err
 		})
@@ -89,8 +95,8 @@ func registerRegistry(s *mcpsdk.Server, database *db.DB, reg *tools.Registry, bi
 		Description: "Look up one proposed action by id: its status (pending, approved, rejected, applied, " +
 			"failed), result and error. Use it when the owner asks what happened to a proposal.",
 	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, args getActionArgs) (*mcpsdk.CallToolResult, any, error) {
-		if err := reg.ProjectAlive(ctx, binding); err != nil {
-			return errResult(err.Error()), nil, nil
+		if err := reg.WorkbenchAlive(ctx, binding); err != nil {
+			return errResult(binding.Spell(err.Error())), nil, nil
 		}
 		row, err := database.GetAgentAction(args.ID)
 		if err != nil {
@@ -99,20 +105,49 @@ func registerRegistry(s *mcpsdk.Server, database *db.DB, reg *tools.Registry, bi
 		if row == nil || !actionVisible(*row, binding) {
 			return errResult(fmt.Sprintf("no action #%d", args.ID)), nil, nil
 		}
-		return jsonResult(newActionView(*row))
+		view := newActionView(*row)
+		// The tool by the name this session lists it under: a row recorded
+		// under either spelling reads as the current name, or, in a legacy
+		// session, as the old one.
+		view.Tool = binding.Spell(tools.CanonicalToolName(row.Tool))
+		view.Error = binding.Spell(view.Error)
+		return jsonResult(view)
 	})
 }
 
+// spellSchema is a tool's input schema as binding's session lists it: the
+// registry's own schema, or, for a legacy session, a copy whose texts name
+// the renamed tools by their old names (Binding.Spell). The registry's
+// schema is shared by every session and is never changed. Should the copy
+// fail, the registry's schema is listed as it is (current names in its
+// texts) and the failure goes to stderr — stdout is the MCP stream.
+func spellSchema(binding tools.Binding, toolName string, schema *jsonschema.Schema) any {
+	if !binding.LegacyNames || schema == nil {
+		return schema
+	}
+	raw, err := json.Marshal(schema)
+	if err != nil {
+		log.Printf("mcp: spelling the %s input schema for a legacy session: %v", toolName, err)
+		return schema
+	}
+	var spelled map[string]any
+	if err := json.Unmarshal([]byte(binding.Spell(string(raw))), &spelled); err != nil {
+		log.Printf("mcp: spelling the %s input schema for a legacy session: %v", toolName, err)
+		return schema
+	}
+	return spelled
+}
+
 // actionVisible decides whether get_action may show row to this session. A
-// project session sees only its own project's rows. A binding with no
+// workbench session sees only its own workbench's rows. A binding with no
 // conversation (conversation_id 0: a CLI-only install, spec §12, or a
 // dev/test session with none bound) sees every other row; otherwise a row
 // from a different conversation answers the same not-found error as a
 // missing row, so the model cannot learn that an id it invented belongs to
 // someone else's chat.
 func actionVisible(row db.AgentAction, binding tools.Binding) bool {
-	if binding.ProjectID != 0 {
-		return row.ContextType == tools.ProjectContextType && row.ContextID == strconv.FormatInt(binding.ProjectID, 10)
+	if binding.WorkbenchID != 0 {
+		return row.ContextType == tools.WorkbenchContextType && row.ContextID == strconv.FormatInt(binding.WorkbenchID, 10)
 	}
 	return binding.ConversationID == 0 || row.ConversationID == binding.ConversationID
 }

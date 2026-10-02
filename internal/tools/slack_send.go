@@ -544,7 +544,7 @@ func findLandedSlackMessage(ctx context.Context, sender SlackSender, proposedAt,
 }
 
 // NewSendSlackMessage builds the send_slack_message write tool. External
-// (AGENT-03: never execute trust); in a project session it is recorded as a
+// (AGENT-03: never execute trust); in a workbench session it is recorded as a
 // pending proposal the owner approves in the Desktop (DEV-06 amendment).
 func NewSendSlackMessage(factory SlackSenderFactory) *Tool {
 	return &Tool{
@@ -556,7 +556,7 @@ func NewSendSlackMessage(factory SlackSenderFactory) *Tool {
 		InputSchema:             mustSchema[sendSlackMessageArgs]("send_slack_message"),
 		Access:                  AccessWrite,
 		External:                true,
-		Surfaces:                []string{"main", "project"},
+		Surfaces:                []string{"main", WorkbenchSurface},
 		ProposeUnderDirectApply: true,
 		Validate: func(ctx context.Context, d *db.DB, raw json.RawMessage) error {
 			var a sendSlackMessageArgs

@@ -62,7 +62,7 @@ package enum TerminalSessionQueries {
         try TerminalSession.fetchOne(db, sql: "SELECT * FROM terminal_sessions WHERE id = ?", arguments: [id])
     }
 
-    package static func fetchForProject(_ db: Database, projectID: Int64) throws -> [TerminalSession] {
+    package static func fetchForWorkbench(_ db: Database, projectID: Int64) throws -> [TerminalSession] {
         try TerminalSession.fetchAll(
             db,
             sql: "SELECT * FROM terminal_sessions WHERE project_id = ? ORDER BY last_active_at DESC, id DESC",

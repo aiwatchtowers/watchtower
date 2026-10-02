@@ -579,11 +579,11 @@ func TestProj01_ExtractSnapshotExcludesProjectTargets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create personal target: %v", err)
 	}
-	pid, err := d.CreateProject("acme", t.TempDir())
+	pid, err := d.CreateWorkbench("acme", t.TempDir())
 	if err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	db.SeedTestProjectTarget(t, d, pid, sql.NullInt64{}, "project-target-hidden")
+	db.SeedTestWorkbenchTarget(t, d, pid, sql.NullInt64{}, "project-target-hidden")
 
 	if _, err := p.Extract(context.Background(), ExtractRequest{RawText: "ship the thing"}); err != nil {
 		t.Fatalf("Extract: %v", err)

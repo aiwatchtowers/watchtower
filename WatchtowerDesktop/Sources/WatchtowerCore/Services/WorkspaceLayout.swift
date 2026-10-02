@@ -30,7 +30,7 @@ package enum WorkspaceView: CaseIterable, Sendable {
 }
 
 /// Which panes a project page shows, persisted per project under
-/// `WorkspaceLayout.key(projectID:)`. Pure value type: the view owns the
+/// `WorkspaceLayout.key(workbenchID:)`. Pure value type: the view owns the
 /// storage, this owns the rules.
 package struct WorkspaceLayout: Codable, Equatable, Sendable {
     package static let dividerRange: ClosedRange<Double> = 0.2...0.8
@@ -141,7 +141,7 @@ package struct WorkspaceLayout: Codable, Equatable, Sendable {
     /// The header's Board / Documents button: puts `pane` on screen without
     /// hiding a terminal — a split keeps its session and swaps the other
     /// pane; a single pane switches to it (`reveal`).
-    package mutating func showProjectView(_ pane: WorkspacePane) {
+    package mutating func showWorkbenchView(_ pane: WorkspacePane) {
         reveal(pane, keeping: sessionIDs.first.map { .session($0) } ?? primary)
     }
 
@@ -187,7 +187,8 @@ package struct WorkspaceLayout: Codable, Equatable, Sendable {
         }
     }
 
-    package static func key(projectID: Int64) -> String { "projects.layout.\(projectID)" }
+    /// The `projects.` prefix predates the Workbench rename; persisted, so kept (spec 2026-10-02 A1).
+    package static func key(workbenchID: Int64) -> String { "projects.layout.\(workbenchID)" }
 
     /// Bad or missing data → `.default`; the divider is clamped to its range,
     /// a secondary equal to the primary and an expansion naming neither slot

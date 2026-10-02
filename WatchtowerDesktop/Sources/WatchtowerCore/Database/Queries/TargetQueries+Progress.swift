@@ -117,7 +117,7 @@ extension TargetQueries {
             db, sql: "SELECT status, project_id FROM targets WHERE id = ?", arguments: [id]
         ) else { throw TargetNotFoundError(id: id) }
         let status: String = row["status"]
-        try checkParentBoard(db, parentID: newParentID, childProjectID: row["project_id"])
+        try checkParentBoard(db, parentID: newParentID, childWorkbenchID: row["project_id"])
         let oldParentID = try parentID(db, of: id)
 
         try db.execute(
