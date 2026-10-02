@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -80,8 +81,8 @@ func TestSync_HiddenCalendarStartsUnselectedAndOwnerChoiceWins(t *testing.T) {
 	mux.HandleFunc("/users/me/calendarList", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"items":[{"id":"aliceprimary","primary":true},` +
-			`{"id":"holidays","hidden":` + boolJSON(hidden["holidays"]) + `},` +
-			`{"id":"team","hidden":` + boolJSON(hidden["team"]) + `}]}`))
+			`{"id":"holidays","hidden":` + strconv.FormatBool(hidden["holidays"]) + `},` +
+			`{"id":"team","hidden":` + strconv.FormatBool(hidden["team"]) + `}]}`))
 	})
 	for _, id := range []string{"aliceprimary", "holidays", "team"} {
 		mux.HandleFunc("/calendars/"+id+"/events", func(w http.ResponseWriter, _ *http.Request) {
@@ -115,11 +116,4 @@ func TestSync_HiddenCalendarStartsUnselectedAndOwnerChoiceWins(t *testing.T) {
 	require.NoError(t, err)
 	assert.ElementsMatch(t, []string{"aliceprimary", "holidays", "team"}, selected(),
 		"the owner's Watchtower selection wins over Google's hidden flag")
-}
-
-func boolJSON(b bool) string {
-	if b {
-		return "true"
-	}
-	return "false"
 }

@@ -1047,7 +1047,7 @@ func wireGoogleSyncers(ctx context.Context, cfg *config.Config, database *db.DB,
 		token, err := store.Load()
 		if err != nil {
 			logger.Printf("google: account %d: failed to load token: %v", acct.ID, err)
-			recordGoogleTokenError(database, logger, acct, fmt.Sprintf("unreadable token file — re-login required: %v", err))
+			recordGoogleTokenError(database, logger, acct, fmt.Sprintf("unreadable token file: %v", err))
 			continue
 		}
 		googleCfg := resolveGoogleOAuthConfigForAccount(cfg.WorkspaceDir(), acct.ID)

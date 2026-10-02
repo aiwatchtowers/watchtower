@@ -2,6 +2,7 @@ package db
 
 import (
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 )
@@ -114,7 +115,7 @@ func TestGetScanActivity_CapDrainsBoundaryTies(t *testing.T) {
 		got = append(got, a.ID)
 	}
 	want := append([]int{first}, tied...)
-	if fmt.Sprint(got) != fmt.Sprint(want) {
+	if !slices.Equal(got, want) {
 		t.Fatalf("inbox ids = %v; want %v (cap 2 + drained ties)", got, want)
 	}
 	if act.CappedAt != scanTS(base, 2) {
@@ -187,7 +188,7 @@ func TestGetScanActivityTitles_MergesNewestFirstAndCaps(t *testing.T) {
 		got = append(got, ttl.Kind+":"+ttl.Title)
 	}
 	want := []string{"inbox:inbox m4", "track:track m3", "inbox:inbox m2"}
-	if fmt.Sprint(got) != fmt.Sprint(want) {
+	if !slices.Equal(got, want) {
 		t.Fatalf("titles = %v; want %v", got, want)
 	}
 }

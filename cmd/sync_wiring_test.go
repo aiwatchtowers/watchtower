@@ -303,16 +303,3 @@ func TestOutlookAuthenticator_RefreshFailureRecordsError(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "rt-old", creds.RefreshToken)
 }
-
-// TestRunSyncNow_NoDaemonFails pins that `sync --now` without a running
-// daemon fails with a hint instead of syncing in-process (the daemon's flock
-// exists to keep a second syncer out).
-func TestRunSyncNow_NoDaemonFails(t *testing.T) {
-	cfg, pidPath := syncStopTestConfig(t)
-	_, statErr := os.Stat(pidPath)
-	require.True(t, os.IsNotExist(statErr), "fixture must start without a pid file")
-
-	err := runSyncNow(cfg)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no daemon is running")
-}

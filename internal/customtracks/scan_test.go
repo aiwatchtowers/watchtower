@@ -16,6 +16,11 @@ func scanTS(base time.Time, n int) string {
 	return base.Add(time.Duration(n) * time.Minute).Format("2006-01-02T15:04:05Z")
 }
 
+// backfillSince returns a history-backfill window start a month back.
+func backfillSince() string {
+	return time.Now().UTC().Add(-30 * 24 * time.Hour).Format("2006-01-02T15:04:05Z")
+}
+
 // newScanFixture opens a DB with one custom track whose watermark sits two
 // hours in the past, and returns the track id plus the watermark time; seeded
 // activity is placed after it relative to time.Now().
@@ -93,7 +98,8 @@ func TestRunOneCapHitAdvancesWatermarkToCappedAt(t *testing.T) {
 	if _, err := p.RunForTrack(context.Background(), id); err != nil {
 		t.Fatalf("second run: %v", err)
 	}
-	if !strings.Contains(mock.lastUser, "overflow-row") || strings.Contains(mock.lastUser, "row-01") {
+	if !strings.Contains(mock.lastUser, "overflow-row") || strings.Contains(mock.lastUser, "row-01") ||
+		strings.Contains(mock.lastUser, fmt.Sprintf("row-%02d", defaultActivityLimit)) {
 		t.Fatalf("second run did not feed exactly the overflow:\n%s", mock.lastUser)
 	}
 	if got := watermark(t, d, id); got <= scanTS(base, defaultActivityLimit+1) {
@@ -227,7 +233,7 @@ func TestBackfillRoutesShortlistedIDsByKind(t *testing.T) {
 	g := &routingGenerator{shortlist: fmt.Sprintf(`{"refs":[
 		{"kind":"digest","id":%d},{"kind":"track","id":%d},{"kind":"inbox","id":%d},
 		{"kind":"track","id":%d},{"kind":"bogus","id":1}]}`, dg, tr, in, id)}
-	since := time.Now().UTC().Add(-30 * 24 * time.Hour).Format("2006-01-02T15:04:05Z")
+	since := backfillSince()
 	if _, err := New(d, g, "", nil).RunForTrackSince(context.Background(), id, since); err != nil {
 		t.Fatalf("RunForTrackSince: %v", err)
 	}
@@ -256,13 +262,12 @@ func TestBackfillShortlistChunksAndCandidateCap(t *testing.T) {
 		d, id, base := newScanFixture(t)
 		var ids []int
 		for i := 0; i < shortlistChunk+1; i++ {
-			// Distinct seconds keep the newest-first title order deterministic.
 			ts := base.Add(time.Duration(i) * time.Second).Format("2006-01-02T15:04:05Z")
 			ids = append(ids, seedInboxAt(t, d, fmt.Sprintf("item-%04d", i), ts))
 		}
 		return d, id, ids
 	}
-	since := time.Now().UTC().Add(-30 * 24 * time.Hour).Format("2006-01-02T15:04:05Z")
+	since := backfillSince()
 
 	t.Run("few selected: every chunk is shortlisted", func(t *testing.T) {
 		d, id, ids := seed(t)
@@ -306,7 +311,7 @@ func TestBackfillNothingSelectedSkipsExtract(t *testing.T) {
 	d, id, base := newScanFixture(t)
 	seedInboxAt(t, d, "irrelevant", scanTS(base, 1))
 	g := &routingGenerator{shortlist: `{"refs":[]}`}
-	since := time.Now().UTC().Add(-30 * 24 * time.Hour).Format("2006-01-02T15:04:05Z")
+	since := backfillSince()
 	if _, err := New(d, g, "", nil).RunForTrackSince(context.Background(), id, since); err != nil {
 		t.Fatalf("RunForTrackSince: %v", err)
 	}
