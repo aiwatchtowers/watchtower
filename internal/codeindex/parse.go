@@ -109,21 +109,7 @@ func symbolAt(l *langSpec, src []byte, name, def *ts.Node, kind Kind) (span, boo
 		return span{}, false
 	}
 	outer := wrapperOf(l, def)
-	doc := docComment(l, src, outer)
-	if doc == "" && l.docstring {
-		doc = docstring(src, def)
-	}
-	if d := docFuncs[l.id]; doc == "" && d != nil {
-		doc = d(src, outer)
-	}
-	last := def
-	if n := outer.NextSibling(); l.bodySibling != "" && n != nil && n.Kind() == l.bodySibling {
-		last = n
-	}
-	end := last.EndPosition()
-	if end.Column == 0 && end.Row > def.StartPosition().Row {
-		end.Row-- // a node that takes its line's newline (a #define) ends on that line
-	}
+	last, endRow := defEnd(l, def, outer)
 	return span{
 		start: def.StartByte(),
 		end:   last.EndByte(),
@@ -132,12 +118,40 @@ func symbolAt(l *langSpec, src []byte, name, def *ts.Node, kind Kind) (span, boo
 			Kind:      kind,
 			Line:      int(name.StartPosition().Row) + 1,
 			Col:       utf16Col(src, int(name.StartByte())),
-			EndLine:   int(end.Row) + 1,
+			EndLine:   int(endRow) + 1,
 			Container: container,
 			Signature: signature(l, src, outer, def),
-			Doc:       doc,
+			Doc:       docOf(l, src, def, outer),
 		},
 	}, true
+}
+
+// defEnd is the last node of def's span — def, or the body that follows
+// it as a sibling (Dart) — and the row it ends on: a node that takes its
+// line's newline (a #define) ends on that line.
+func defEnd(l *langSpec, def, outer *ts.Node) (*ts.Node, uint) {
+	last := def
+	if n := outer.NextSibling(); l.bodySibling != "" && n != nil && n.Kind() == l.bodySibling {
+		last = n
+	}
+	end := last.EndPosition()
+	if end.Column == 0 && end.Row > def.StartPosition().Row {
+		return last, end.Row - 1
+	}
+	return last, end.Row
+}
+
+// docOf is the definition's doc: the comment above it, else a Python
+// docstring, else the language's own doc reader (Elixir's @doc).
+func docOf(l *langSpec, src []byte, def, outer *ts.Node) string {
+	doc := docComment(l, src, outer)
+	if doc == "" && l.docstring {
+		doc = docstring(src, def)
+	}
+	if d := docFuncs[l.id]; doc == "" && d != nil {
+		doc = d(src, outer)
+	}
+	return doc
 }
 
 // refiners settle, per language, what a capture alone cannot: a kind the
@@ -325,20 +339,16 @@ func docComment(l *langSpec, src []byte, outer *ts.Node) string {
 	}
 	var parts []string
 	nextRow := outer.StartPosition().Row
-	first := outer.PrevSibling()
-	if par := outer.Parent(); first == nil && par != nil && slices.Contains(l.bodies, par.Kind()) {
-		first = par.PrevSibling() // Ruby: a body's leading comment sits before the body node
-	}
-	for p := first; p != nil; p = p.PrevSibling() {
+	for p := docStart(l, outer); p != nil; p = p.PrevSibling() {
 		between := slices.Contains(l.between, p.Kind())
-		if !between && !strings.Contains(p.Kind(), "comment") || p.EndPosition().Row+1 < nextRow {
+		if !between && !isComment(p) || p.EndPosition().Row+1 < nextRow {
 			break
 		}
 		nextRow = p.StartPosition().Row
 		if between {
 			continue
 		}
-		if q := p.PrevSibling(); q != nil && q.EndPosition().Row == nextRow && !strings.Contains(q.Kind(), "comment") {
+		if q := p.PrevSibling(); q != nil && q.EndPosition().Row == nextRow && !isComment(q) {
 			break // a trailing comment of the line above, not a doc for outer
 		}
 		text := p.Utf8Text(src)
@@ -357,6 +367,21 @@ func docComment(l *langSpec, src []byte, outer *ts.Node) string {
 	}
 	return firstSentence(doc)
 }
+
+// docStart is the sibling a doc search starts from: the one before outer,
+// or, for the first statement of a body, the one before the body (Ruby
+// puts a body's leading comment there).
+func docStart(l *langSpec, outer *ts.Node) *ts.Node {
+	if p := outer.PrevSibling(); p != nil {
+		return p
+	}
+	if par := outer.Parent(); par != nil && slices.Contains(l.bodies, par.Kind()) {
+		return par.PrevSibling()
+	}
+	return nil
+}
+
+func isComment(n *ts.Node) bool { return strings.Contains(n.Kind(), "comment") }
 
 // xmlTag is an XML doc comment's markup: `<summary>`, `<see cref="X"/>`.
 var xmlTag = regexp.MustCompile(`</?[A-Za-z][^>]*>`)
