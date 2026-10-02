@@ -23,6 +23,8 @@ package enum ChatToolCatalog {
         "list_jira_issues": Entry(template: "Listed Jira issues: {}", fallback: "Listed Jira issues", keys: ["project", "assignee", "status"]),
         "list_jira_projects": Entry(template: nil, fallback: "Listed Jira projects", keys: []),
         "get_jira_issue": Entry(template: "Opened {}", fallback: "Opened a Jira issue", keys: ["key"]),
+        "get_jira_status_history": Entry(template: nil, fallback: "Read Jira status history", keys: []),
+        "get_jira_time_in_status": Entry(template: nil, fallback: "Summed Jira time in status", keys: []),
         "get_task_context": Entry(template: "Gathered context for {}", fallback: "Gathered task context", keys: ["key", "issue_key"]),
         "list_people": Entry(template: nil, fallback: "Listed people", keys: []),
         "get_person": Entry(template: "Looked up {}", fallback: "Looked up a person", keys: ["name", "query", "id"]),
