@@ -293,6 +293,19 @@ package final class DaemonManager {
     /// Poll interval while waiting out `restartStopGrace`.
     nonisolated private static let restartPollStep: Duration = .milliseconds(250)
 
+    /// Waits up to `restartStopGrace` for the active workspace's daemon to
+    /// be gone; throws `.stopTimedOut` if it never goes.
+    package nonisolated static func waitForDaemonExit() async throws {
+        let outcome = await waitForPidDeath(
+            isAlive: { activeWorkspaceDaemonPID() != nil },
+            step: restartPollStep,
+            deadline: restartStopGrace
+        )
+        if outcome == .timedOut {
+            throw DaemonRestartError.stopTimedOut(pid: activeWorkspaceDaemonPID())
+        }
+    }
+
     /// Polls `isAlive` every `step` until it reports death or `deadline`
     /// (wall time from the first call) elapses. Pure aside from the clock
     /// read and the sleep: `isAlive` is the only I/O seam, so both branches

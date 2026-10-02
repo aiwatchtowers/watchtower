@@ -267,6 +267,7 @@ struct SlackConnectionDetail: View {
             AddSlackAccountView()
                 .environment(appState)
                 .onAppear { appState.isAddingSlackAccount = true }
+                .onDisappear { appState.isAddingSlackAccount = false }
         }
         .confirmationDialog(
             "Remove \(slackAccountPendingRemoval?.displayName ?? "this workspace")?",

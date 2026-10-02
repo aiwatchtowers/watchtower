@@ -11,6 +11,9 @@ package protocol DaemonControl: AnyObject {
     /// Stops the daemon, waits for it to die, starts it again.
     func restartWaiting() async throws
     func stopDaemonNow() async
+    /// Waits (bounded) for a stopped daemon's process to be gone; throws
+    /// when it outlives the wait.
+    func waitUntilStopped() async throws
 }
 
 /// Where the app opens once onboarding is done, how the daemon is brought up
@@ -110,5 +113,10 @@ extension DaemonManager: DaemonControl {
     package func stopDaemonNow() async {
         resolvePathIfNeeded()
         await stopDaemon()
+    }
+
+    package func waitUntilStopped() async throws {
+        try await Self.waitForDaemonExit()
+        checkStatus()
     }
 }

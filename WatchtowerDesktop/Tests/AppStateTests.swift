@@ -1131,4 +1131,62 @@ final class AppStateTests: XCTestCase {
         appState.cancelOnboardingRerun()
         XCTAssertEqual(screen(appState), .onboarding)
     }
+
+    // MARK: - Verify follow-ups 2
+
+    /// The daemon outlives the stop: nothing is wiped, the failure reaches
+    /// Settings, no restart.
+    func testResetLLMDataWipesNothingWhenTheDaemonDoesNotStop() async throws {
+        defer { UserDefaults.standard.removeObject(forKey: Constants.pipelinesCompletedKey) }
+        UserDefaults.standard.removeObject(forKey: Constants.pipelinesCompletedKey)
+        let dir = try workspaceWithStamps()
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let appState = AppState.isolated()
+        appState.databaseManager = dbManager
+        let daemon = FakeDaemon()
+        daemon.running = true
+        daemon.stopTimesOut = true
+        appState.daemonControlOverride = daemon
+
+        do {
+            try await appState.resetLLMData(workspaceDir: dir)
+            XCTFail("a daemon that does not stop must stop the reset")
+        } catch {}
+
+        XCTAssertEqual(daemon.stops, 1)
+        XCTAssertEqual(daemon.restarts, 0)
+        XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: dir)),
+                       Set(DaemonStampFiles.names + ["last_sync.json"]), "no stamp removed")
+        XCTAssertFalse(UserDefaults.standard.bool(forKey: Constants.pipelinesCompletedKey))
+    }
+
+    /// Two finishes in a row (a quick re-run): the second bring-up waits
+    /// for the first, so the restarts never overlap.
+    func testFinishBringUpsAreChained() async throws {
+        defer { UserDefaults.standard.removeObject(forKey: Constants.pipelinesCompletedKey) }
+        let manager = try XCTUnwrap(dbManager)
+        let open: @Sendable () throws -> DatabaseManager = { manager }
+        let appState = AppState.isolated(openDatabase: open)
+        let daemon = FakeDaemon()
+        daemon.running = true
+        daemon.holdRestart = true
+        appState.daemonControlOverride = daemon
+        let route = OnboardingRoute(goals: [.development], hasSlackAccount: false)
+
+        appState.needsOnboarding = true
+        appState.onboarding.goTo(.purpose)
+        await appState.leaveOnboardingStep(.purpose, route: route) {}
+        await waitUntil { daemon.isRestartParked }
+
+        appState.startOnboarding(enabledFeatureIDs: [], configuredLanguage: nil)
+        await appState.leaveOnboardingStep(.purpose, route: route) {}
+        for _ in 0..<50 { await Task.yield() }
+        XCTAssertEqual(daemon.restarts, 1, "the second restart waits for the first")
+
+        daemon.releaseRestart()
+        await waitUntil { daemon.restarts == 2 && daemon.isRestartParked }
+        daemon.releaseRestart()
+        await appState.onboardingDaemonStart?.value
+        XCTAssertEqual(daemon.restarts, 2)
+    }
 }

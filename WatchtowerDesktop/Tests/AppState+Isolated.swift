@@ -36,6 +36,9 @@ final class FakeDaemon: DaemonControl {
     var startSucceeds = true
     var restartError: Error?
     var holdRestart = false
+    /// The stopped daemon's process never goes.
+    var stopTimesOut = false
+    private(set) var waits = 0
     private(set) var starts = 0
     private(set) var restarts = 0
     private(set) var stops = 0
@@ -63,6 +66,11 @@ final class FakeDaemon: DaemonControl {
     func stopDaemonNow() async {
         stops += 1
         running = false
+    }
+
+    func waitUntilStopped() async throws {
+        waits += 1
+        if stopTimesOut { throw DaemonRestartError.stopTimedOut(pid: 4242) }
     }
 
     func releaseRestart() {

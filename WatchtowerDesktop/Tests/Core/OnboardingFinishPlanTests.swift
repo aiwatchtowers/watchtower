@@ -21,6 +21,7 @@ final class OnboardingFinishPlanTests: XCTestCase {
             if restartFails { throw Boom() }
         }
         func stopDaemonNow() async { calls.append("stop") }
+        func waitUntilStopped() async throws { calls.append("wait") }
     }
 
     func testStartsAStoppedDaemonAndRestartsARunningOne() async {

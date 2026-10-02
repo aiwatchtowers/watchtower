@@ -806,7 +806,11 @@ final class AppState {
                 // and Continue must not. It starts only after the
                 // onboarding_done write above.
                 let daemon = daemonControl
+                // After any earlier bring-up (a quick re-run): two restarts
+                // overlapping would read as a failed start.
+                let previous = onboardingDaemonStart
                 onboardingDaemonStart = Task {
+                    await previous?.value
                     // The flag tells the next launch nothing is left to resume.
                     if await OnboardingFinishPlan.bringUpDaemon(daemon) {
                         UserDefaults.standard.set(true, forKey: Constants.pipelinesCompletedKey)
@@ -1029,11 +1033,15 @@ final class AppState {
         // 1. Stop running pipelines (if any) — await ensures process exits and releases file locks
         await backgroundTaskManager.stopAll()
 
-        // 2. Stop the daemon so nothing writes while the tables are wiped.
+        // 2. Stop the daemon so nothing writes while the tables are wiped —
+        // after a finish still bringing one up, and only once its process is
+        // really gone (a timeout wipes nothing).
+        await onboardingDaemonStart?.value
         let daemon = daemonControl
         if daemon.daemonIsRunning() {
             await daemon.stopDaemonNow()
         }
+        try await daemon.waitUntilStopped()
 
         // 3. Wipe LLM-generated tables and the daemon's stamps.
         try db.wipeLLMData()
