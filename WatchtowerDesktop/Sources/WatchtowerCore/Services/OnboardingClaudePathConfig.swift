@@ -39,15 +39,16 @@ package enum OnboardingClaudePathConfig {
             ? try String(contentsOfFile: configPath, encoding: .utf8)
             : nil
         let staged = configPath + ".tmp-\(UUID().uuidString)"
-        guard fileManager.createFile(
-            atPath: staged,
-            contents: Data(settingClaudePath(path, in: existing).utf8),
-            attributes: [.posixPermissions: 0o600]
-        ) else {
-            throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: staged])
-        }
-        guard rename(staged, configPath) == 0 else {
-            let error = POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        // Created 0600 (not chmod-ed after the write), so the secrets are
+        // never on disk with a looser mode.
+        let fd = open(staged, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        do {
+            let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+            try handle.write(contentsOf: Data(settingClaudePath(path, in: existing).utf8))
+            try handle.close()
+            guard rename(staged, configPath) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        } catch {
             try? fileManager.removeItem(atPath: staged)
             throw error
         }
