@@ -87,38 +87,31 @@ package final class AIModelCatalog {
             return
         }
 
-        let result: Data? = await Task.detached {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: cliPath)
-            process.currentDirectoryURL = Constants.processWorkingDirectory()
-            process.arguments = ["ai", "models", "--json"]
-            process.environment = Constants.resolvedEnvironment()
-
-            let stdout = Pipe()
-            process.standardOutput = stdout
-            process.standardError = Pipe()
-
-            do {
-                try process.run()
-            } catch {
-                return nil
-            }
-            let data = stdout.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
-            guard process.terminationStatus == 0 else { return nil }
-            return data
-        }.value
-
-        guard let data = result else {
-            lastError = "watchtower ai models failed"
+        let output = await Self.fetchModels(cliPath: cliPath)
+        guard output.exitCode == 0 else {
+            let detail = CLILog.detail(output.stderr)
+            lastError = "watchtower ai models failed (exit \(output.exitCode))" + (detail.isEmpty ? "" : ": \(detail)")
             return
         }
+        let data = Data(output.stdout.utf8)
         do {
-            let output = try Self.parse(data)
-            providers = output.providers
+            let parsed = try Self.parse(data)
+            providers = parsed.providers
             lastError = nil
         } catch {
             lastError = "parsing ai models output: \(error.localizedDescription)"
         }
+    }
+
+    /// `watchtower ai models --json`, set up off the main actor: an
+    /// unresolved `resolvedEnvironment()` runs the login shell (AppState
+    /// prewarms it at launch on a thread of its own).
+    nonisolated private static func fetchModels(cliPath: String) async -> ProcessOutput {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: cliPath)
+        process.currentDirectoryURL = Constants.processWorkingDirectory()
+        process.arguments = ["ai", "models", "--json"]
+        process.environment = Constants.resolvedEnvironment()
+        return await ProcessPipes.run(process)
     }
 }

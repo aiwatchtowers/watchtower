@@ -70,11 +70,16 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 			if ci.Primary {
 				realPrimaryID = ci.ID
 			}
+			// A calendar the owner hid in Google is listed but starts
+			// unselected. is_selected is only written on first sight
+			// (UpsertCalendar keeps it afterwards), so the owner's own
+			// Watchtower choice wins either way, and hiding a calendar in
+			// Google later never deselects it here.
 			cal := db.CalendarCalendar{
 				ID:         ci.ID,
 				Name:       ci.Summary,
 				IsPrimary:  ci.Primary,
-				IsSelected: true,
+				IsSelected: !ci.Hidden,
 				Color:      ci.Color,
 				SyncedAt:   syncedAt,
 			}

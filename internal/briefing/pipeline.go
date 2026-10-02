@@ -14,6 +14,7 @@ import (
 	"watchtower/internal/digest"
 	"watchtower/internal/prompts"
 	watchtowerslack "watchtower/internal/slack"
+	"watchtower/internal/textutil"
 )
 
 // BriefingResult is the structured output from the AI.
@@ -378,17 +379,11 @@ func (p *Pipeline) gatherTracks() (string, bool) {
 		p.shown.addTrack(t.ID)
 		sb.WriteString(fmt.Sprintf("- [id=%d %s %s] %s\n", t.ID, t.Priority, t.Ownership, t.Text))
 		if t.Context != "" {
-			ctx := t.Context
-			if len(ctx) > 200 {
-				ctx = ctx[:200] + "..."
-			}
+			ctx := textutil.Truncate(t.Context, 200, "...")
 			sb.WriteString(fmt.Sprintf("  Context: %s\n", ctx))
 		}
 		if t.Participants != "" && t.Participants != "[]" {
-			participants := t.Participants
-			if len(participants) > 150 {
-				participants = participants[:150] + "...]"
-			}
+			participants := textutil.Truncate(t.Participants, 150, "...]")
 			sb.WriteString(fmt.Sprintf("  Participants: %s\n", participants))
 		}
 	}

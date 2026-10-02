@@ -1379,3 +1379,39 @@ func TestInbox09_RunSyncBoundsAndFreezesInboxWatermark(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1000.0, wm, "a failed account sync freezes the watermark")
 }
+
+// A daemon start fails the pipeline_runs rows a killed process left in
+// 'running': every earlier daemon run whatever its age (the daemon is a
+// singleton, so nothing else writes those), and another source's run only once
+// it is past stalePipelineRunAfter (a live CLI may still own a recent one).
+func TestDaemon_StartReapsAbandonedPipelineRuns(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	database := db.OpenTestDB(t)
+	create := func(source string, age time.Duration) int64 {
+		id, err := database.CreatePipelineRun("memory", source, "auto")
+		require.NoError(t, err)
+		_, err = database.Exec(`UPDATE pipeline_runs SET started_at=? WHERE id=?`,
+			time.Now().Add(-age).UTC().Format("2006-01-02T15:04:05Z"), id)
+		require.NoError(t, err)
+		return id
+	}
+	daemonRecent := create("daemon", time.Minute)
+	cliOld := create("cli", stalePipelineRunAfter+time.Hour)
+	cliRecent := create("cli", time.Hour)
+
+	d := newDaemon(nil, &config.Config{Sync: config.SyncConfig{PollInterval: 10 * time.Second}})
+	d.SetLogger(log.New(io.Discard, "", 0))
+	d.SetDB(database)
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	require.NoError(t, d.Run(ctx))
+
+	status := func(id int64) string {
+		var s string
+		require.NoError(t, database.QueryRow(`SELECT status FROM pipeline_runs WHERE id=?`, id).Scan(&s))
+		return s
+	}
+	assert.Equal(t, "error", status(daemonRecent), "a previous daemon's run is an orphan however young")
+	assert.Equal(t, "error", status(cliOld), "an abandoned CLI run is failed once past the window")
+	assert.Equal(t, "running", status(cliRecent), "a recent CLI run is left to the process that may own it")
+}

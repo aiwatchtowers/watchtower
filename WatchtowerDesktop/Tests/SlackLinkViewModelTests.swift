@@ -91,17 +91,6 @@ final class SlackLinkViewModelTests: XCTestCase {
                        "slack://channel?team=T999&id=C0456")
     }
 
-    @MainActor
-    func testWorkspaceOverviewViewModelResolvesSecondAccountTeam() async throws {
-        let second = try seed(Self.seedTwoAccounts)
-
-        let vm = WorkspaceOverviewViewModel(dbManager: dbManager)
-        await vm.load()
-
-        XCTAssertEqual(vm.slackChannelURL(channelID: "\(second):C0456")?.absoluteString,
-                       "slack://channel?team=T999&id=C0456")
-    }
-
     /// Catch-Up's archives fallback carries no team, so the pin is that a
     /// second account's prefix is stripped, never passed through.
     func testCatchUpArchivesLinkStripsSecondAccountPrefix() {

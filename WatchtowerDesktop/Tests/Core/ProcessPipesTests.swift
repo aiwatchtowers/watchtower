@@ -137,7 +137,12 @@ struct ProcessPipesTests {
     /// active at once. Everything that ends the test runs on threads of its
     /// own (a GCD global queue starves with the pool): a regression fails on
     /// the watchdog's exit code instead of hanging the suite.
-    @Test("run needs no free concurrency-pool threads for its blocking reads")
+    @Test(
+        "run needs no free concurrency-pool threads for its blocking reads",
+        // The strict-pool CI run (a one-thread pool) is this check's stronger
+        // twin; holding pool threads there would leave none for the test.
+        .disabled(if: ProcessInfo.processInfo.environment["LIBDISPATCH_COOPERATIVE_POOL_STRICT"] == "1")
+    )
     func runDoesNotBlockPoolThreads() async {
         let process = Self.shell("printf '%300000s' '' 1>&2; printf '%300000s' ''; printf '%300000s' '' 1>&2")
         let held = max(ProcessInfo.processInfo.activeProcessorCount - 1, 0)

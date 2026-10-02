@@ -471,52 +471,16 @@ final class CatchUpViewModel {
         return SlackDeepLink.archives(channelID: item.channelID, messageTS: item.messageTS)
     }
 
-    // MARK: - CLI (detached, drains stdout+stderr concurrently)
+    // MARK: - CLI (drains stdout+stderr concurrently, off the concurrency pool)
 
     nonisolated private static func runCLI(
         path: String, arguments: [String]
     ) async -> (exitCode: Int32, stdout: String, stderr: String) {
-        await withCheckedContinuation { continuation in
-            DispatchQueue.global().async {
-                continuation.resume(returning: runCLIBlocking(path: path, arguments: arguments))
-            }
-        }
-    }
-
-    nonisolated private static func runCLIBlocking(
-        path: String, arguments: [String]
-    ) -> (exitCode: Int32, stdout: String, stderr: String) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments
         process.environment = Constants.resolvedEnvironment()
         process.currentDirectoryURL = Constants.processWorkingDirectory()
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-        do {
-            try process.run()
-        } catch {
-            return (-1, "", error.localizedDescription)
-        }
-        // Drain stdout and stderr CONCURRENTLY before waitUntilExit: if stderr fills its
-        // ~64KB pipe buffer while we block on stdout (or vice versa), the child stalls and
-        // we deadlock. Reading both in parallel keeps both buffers flowing.
-        var stderrData = Data()
-        let group = DispatchGroup()
-        group.enter()
-        DispatchQueue.global().async {
-            stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-            group.leave()
-        }
-        let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        group.wait()
-        process.waitUntilExit()
-        let stdout = String(data: stdoutData, encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let stderr = String(data: stderrData, encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return (process.terminationStatus, stdout, stderr)
+        return await ProcessPipes.run(process).trimmed
     }
 }

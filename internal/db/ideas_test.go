@@ -118,6 +118,29 @@ func TestIdeas_ListIdeasQueryMatchesMentionQuote(t *testing.T) {
 	}
 }
 
+func TestIdeas_ListIdeasQueryWildcardsMatchLiterally(t *testing.T) {
+	d := openTestDB(t)
+
+	want := mustCreateIdea(t, d, Idea{Kind: "idea", Title: "Rename max_rows", Essence: "e", Status: "proposed"})
+	mustCreateIdea(t, d, Idea{Kind: "idea", Title: "Rename maxXrows", Essence: "e", Status: "proposed"})
+
+	got, err := d.ListIdeas(IdeaFilter{Query: "max_rows"})
+	if err != nil {
+		t.Fatalf("ListIdeas: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != want {
+		t.Errorf("ListIdeas(query %q) = %+v, want only idea %d", "max_rows", got, want)
+	}
+
+	got, err = d.ListIdeas(IdeaFilter{Query: "%"})
+	if err != nil {
+		t.Fatalf("ListIdeas: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("ListIdeas(query %%) = %+v, want none", got)
+	}
+}
+
 func TestIdeas_InsertMentionBumpsLastMentionAt(t *testing.T) {
 	d := openTestDB(t)
 

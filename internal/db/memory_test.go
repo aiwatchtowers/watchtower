@@ -1630,6 +1630,63 @@ func TestListCalendarEventsForExtract(t *testing.T) {
 	assert.Equal(t, "past-1h", evs[0].ID)
 }
 
+// TestListCalendarEventsForExtract_FullLookbackDoesNotWedge: a lookback
+// holding limit or more already-built events must not crowd out the events
+// that ended after the watermark — otherwise every run reloads the same
+// lookback, the watermark never moves, and newer events age out of the ~24 h
+// sync retention unbuilt.
+func TestListCalendarEventsForExtract_FullLookbackDoesNotWedge(t *testing.T) {
+	db := openTestDB(t)
+	require.NoError(t, db.UpsertCalendar(0, CalendarCalendar{ID: "cal1", Name: "C", SyncedAt: "2026-01-01T00:00:00Z"}))
+	now := time.Now().UTC()
+	mk := func(id string, endOffset time.Duration) {
+		end := now.Add(endOffset)
+		require.NoError(t, db.UpsertCalendarEvent(CalendarEvent{
+			ID: id, CalendarID: "cal1", Title: id,
+			StartTime: end.Add(-time.Hour).Format(time.RFC3339), EndTime: end.Format(time.RFC3339),
+		}))
+	}
+	mk("old-1", -5*time.Hour)
+	mk("old-2", -4*time.Hour)
+	mk("old-3", -3*time.Hour)
+	mk("new-1", -1*time.Hour)
+	wm := float64(now.Add(-2 * time.Hour).Unix())
+
+	evs, err := db.ListCalendarEventsForExtract(wm, 2, 2)
+	require.NoError(t, err)
+	var ids []string
+	for _, e := range evs {
+		ids = append(ids, e.ID)
+	}
+	assert.Equal(t, []string{"old-2", "old-3", "new-1"}, ids,
+		"the lookback is capped on its own, keeping the events nearest the watermark, and the event past the watermark still comes back")
+}
+
+// TestListCalendarEventsForExtract_FullNewSliceDrainsBoundaryTies: when the
+// past-watermark slice hits the cap, every event tied at its last end second
+// comes back too — the caller moves the watermark to that second, and a tie
+// left behind would only be reachable through the capped lookback.
+func TestListCalendarEventsForExtract_FullNewSliceDrainsBoundaryTies(t *testing.T) {
+	db := openTestDB(t)
+	require.NoError(t, db.UpsertCalendar(0, CalendarCalendar{ID: "cal1", Name: "C", SyncedAt: "2026-01-01T00:00:00Z"}))
+	end := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	for _, id := range []string{"tie-a", "tie-b", "tie-c", "tie-d"} {
+		require.NoError(t, db.UpsertCalendarEvent(CalendarEvent{
+			ID: id, CalendarID: "cal1", Title: id,
+			StartTime: end.Add(-time.Hour).Format(time.RFC3339), EndTime: end.Format(time.RFC3339),
+		}))
+	}
+	wm := float64(end.Add(-time.Hour).Unix())
+
+	evs, err := db.ListCalendarEventsForExtract(wm, 2, 2)
+	require.NoError(t, err)
+	var ids []string
+	for _, e := range evs {
+		ids = append(ids, e.ID)
+	}
+	assert.Equal(t, []string{"tie-a", "tie-b", "tie-c", "tie-d"}, ids, "the capped slice drains its boundary second")
+}
+
 // TestTrackSubjectRefs: a track's subject refs are its channel_ids +
 // participant user ids + assignee/requester/owner user ids, deduped, and an
 // unknown track id is a clean empty read.

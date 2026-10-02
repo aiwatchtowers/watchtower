@@ -14,6 +14,7 @@ import (
 	"watchtower/internal/digest"
 	"watchtower/internal/prompts"
 	watchtowerslack "watchtower/internal/slack"
+	"watchtower/internal/textutil"
 )
 
 // MeetingPrepResult is the AI output for a single meeting.
@@ -506,10 +507,7 @@ func formatProfile(profile *db.UserProfile) string {
 }
 
 func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
+	return textutil.Truncate(s, maxLen, "...")
 }
 
 // cleanJSON extracts the JSON payload from a model response. A response that

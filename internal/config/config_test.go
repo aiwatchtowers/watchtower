@@ -556,11 +556,7 @@ func TestTargetsConfigDefaults(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.True(t, cfg.Targets.Extract.Enabled)
-	assert.Equal(t, DefaultTargetsExtractMaxPerCall, cfg.Targets.Extract.MaxPerCall)
 	assert.Equal(t, DefaultTargetsExtractTimeoutSeconds, cfg.Targets.Extract.TimeoutSeconds)
-	assert.Equal(t, DefaultTargetsExtractModel, cfg.Targets.Extract.Model)
-	assert.True(t, cfg.Targets.Resolver.SlackEnabled)
-	assert.True(t, cfg.Targets.Resolver.JiraEnabled)
 	assert.Equal(t, DefaultTargetsResolverMCPTimeoutSeconds, cfg.Targets.Resolver.MCPTimeoutSeconds)
 	assert.Equal(t, DefaultTargetsResolverActiveSnapshotLimit, cfg.Targets.Resolver.ActiveSnapshotLimit)
 }
@@ -570,12 +566,8 @@ func TestTargetsConfigOverride(t *testing.T) {
 targets:
   extract:
     enabled: true
-    max_per_call: 5
     timeout_seconds: 60
-    model: "claude-haiku-4-5"
   resolver:
-    slack_enabled: false
-    jira_enabled: true
     mcp_timeout_seconds: 20
     active_snapshot_limit: 50
 `
@@ -584,13 +576,33 @@ targets:
 	require.NoError(t, err)
 
 	assert.True(t, cfg.Targets.Extract.Enabled)
-	assert.Equal(t, 5, cfg.Targets.Extract.MaxPerCall)
 	assert.Equal(t, 60, cfg.Targets.Extract.TimeoutSeconds)
-	assert.Equal(t, "claude-haiku-4-5", cfg.Targets.Extract.Model)
-	assert.False(t, cfg.Targets.Resolver.SlackEnabled)
-	assert.True(t, cfg.Targets.Resolver.JiraEnabled)
 	assert.Equal(t, 20, cfg.Targets.Resolver.MCPTimeoutSeconds)
 	assert.Equal(t, 50, cfg.Targets.Resolver.ActiveSnapshotLimit)
+}
+
+// TestTargetsConfigRetiredKeysStillLoad pins that a config.yaml still
+// carrying the retired, never-read targets keys (max_per_call, model,
+// resolver slack_enabled/jira_enabled) loads without error and leaves the
+// live keys intact.
+func TestTargetsConfigRetiredKeysStillLoad(t *testing.T) {
+	yaml := `
+targets:
+  extract:
+    enabled: false
+    max_per_call: 5
+    model: "claude-haiku-4-5"
+  resolver:
+    slack_enabled: false
+    jira_enabled: false
+    mcp_timeout_seconds: 20
+`
+	path := writeTestConfig(t, yaml)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	assert.False(t, cfg.Targets.Extract.Enabled)
+	assert.Equal(t, 20, cfg.Targets.Resolver.MCPTimeoutSeconds)
 }
 
 func TestTargetsConfigDisabled(t *testing.T) {

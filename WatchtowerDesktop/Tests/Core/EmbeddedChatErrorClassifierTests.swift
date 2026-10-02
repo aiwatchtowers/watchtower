@@ -8,6 +8,12 @@ final class EmbeddedChatErrorClassifierTests: XCTestCase {
         XCTAssertFalse(failure.message.isEmpty)
     }
 
+    func testCLIThatCannotStartIsProviderUnavailable() {
+        let failure = EmbeddedChatErrorClassifier.classify(WatchtowerAIError.launchFailed("permission denied"))
+        XCTAssertEqual(failure.code, .providerUnavailable)
+        XCTAssertTrue(failure.message.contains("permission denied"))
+    }
+
     func testAuthTextIsAuthAndKeepsTheRealText() {
         let failure = EmbeddedChatErrorClassifier.classify(
             WatchtowerAIError.exitCode(1, "Invalid API key · Please run /login"))

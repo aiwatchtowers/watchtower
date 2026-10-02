@@ -1427,6 +1427,8 @@ struct OnboardingView: View {
                 isRunning = false
                 return
             }
+            // SB3: drained from launch, so a chatty sync cannot fill the pipe.
+            let stderrRead = ProcessPipes.drain(stderrPipe)
 
             // Read stdout lines via async sequence — runs on MainActor,
             // so syncProgress updates trigger SwiftUI re-renders directly.
@@ -1455,7 +1457,7 @@ struct OnboardingView: View {
             readTask.cancel()
             stdoutPipe.fileHandleForReading.readabilityHandler = nil
 
-            let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+            let stderrData = await stderrRead.value
             let stderrText = String(data: stderrData, encoding: .utf8) ?? ""
 
             isRunning = false

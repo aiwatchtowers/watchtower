@@ -49,7 +49,10 @@ func newScripted(instrs ...string) *scriptedGenerator {
 // therefore makes an AI call).
 func seedActivity(t *testing.T, d *db.DB) {
 	t.Helper()
-	if _, err := d.Exec(`INSERT INTO tracks (assignee_user_id, text) VALUES ('U1', 'auto activity')`); err != nil {
+	// Stamped in an elapsed second: a scan reads activity only up to the last
+	// fully elapsed second.
+	ts := time.Now().UTC().Add(-time.Minute).Format("2006-01-02T15:04:05Z")
+	if _, err := d.Exec(`INSERT INTO tracks (assignee_user_id, text, updated_at) VALUES ('U1', 'auto activity', ?)`, ts); err != nil {
 		t.Fatalf("seed activity: %v", err)
 	}
 }

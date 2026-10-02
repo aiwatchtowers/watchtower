@@ -194,8 +194,11 @@ type ScanActivity struct {
 // drains every remaining row tied at the boundary second — the caller reopens
 // the next window with a strict `>`, and any tie left behind would be skipped
 // forever (realistic: inbox_items batch-inserted 100-in-one-second on a cold
-// start).
-func (db *DB) GetScanActivity(since string, limit int) (ScanActivity, error) {
+// start). The window is (since, until] with until inclusive: a caller passes a
+// second that has already ended and makes it its next watermark, so a row
+// written later in a second that is still running is left for the next scan
+// instead of landing at the watermark and being skipped.
+func (db *DB) GetScanActivity(since, until string, limit int) (ScanActivity, error) {
 	if limit <= 0 {
 		limit = 40
 	}
@@ -217,8 +220,8 @@ func (db *DB) GetScanActivity(since string, limit int) (ScanActivity, error) {
 		return nil
 	}
 	if err := db.forEachRow(scanDigest, `SELECT id, channel_id, summary, decisions, created_at
-		FROM digests WHERE type = 'channel' AND created_at > ?
-		ORDER BY created_at ASC, id ASC LIMIT ?`, since, limit); err != nil {
+		FROM digests WHERE type = 'channel' AND created_at > ? AND created_at <= ?
+		ORDER BY created_at ASC, id ASC LIMIT ?`, since, until, limit); err != nil {
 		return act, err
 	}
 	if len(act.Digests) == limit {
@@ -240,8 +243,8 @@ func (db *DB) GetScanActivity(since string, limit int) (ScanActivity, error) {
 		return nil
 	}
 	if err := db.forEachRow(scanTrack, `SELECT id, text, context, updated_at
-		FROM tracks WHERE dismissed_at = '' AND origin = 'auto' AND updated_at > ?
-		ORDER BY updated_at ASC, id ASC LIMIT ?`, since, limit); err != nil {
+		FROM tracks WHERE dismissed_at = '' AND origin = 'auto' AND updated_at > ? AND updated_at <= ?
+		ORDER BY updated_at ASC, id ASC LIMIT ?`, since, until, limit); err != nil {
 		return act, err
 	}
 	if len(act.Tracks) == limit {
@@ -263,8 +266,8 @@ func (db *DB) GetScanActivity(since string, limit int) (ScanActivity, error) {
 		return nil
 	}
 	if err := db.forEachRow(scanInbox, `SELECT id, trigger_type, snippet, permalink, created_at
-		FROM inbox_items WHERE created_at > ?
-		ORDER BY created_at ASC, id ASC LIMIT ?`, since, limit); err != nil {
+		FROM inbox_items WHERE created_at > ? AND created_at <= ?
+		ORDER BY created_at ASC, id ASC LIMIT ?`, since, until, limit); err != nil {
 		return act, err
 	}
 	if len(act.Inbox) == limit {

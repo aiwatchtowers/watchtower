@@ -495,7 +495,7 @@ struct SystemSettings: View {
         Task.detached {
             var results: [(model: String, error: String?)] = []
             for model in models {
-                results.append((model, Self.runCLIProbe(path: path, isCodex: isCodex, model: model)))
+                results.append((model, await Self.runCLIProbe(path: path, isCodex: isCodex, model: model)))
             }
             let (ok, message) = ConnectionTest.summary(results)
             await MainActor.run {
@@ -506,9 +506,9 @@ struct SystemSettings: View {
         }
     }
 
-    /// One blocking CLI probe; nil means the model answered. nonisolated so the
-    /// detached test task can run it off the main actor (View infers @MainActor).
-    nonisolated private static func runCLIProbe(path: String, isCodex: Bool, model: String) -> String? {
+    /// One CLI probe; nil means the model answered. nonisolated: the View is
+    /// @MainActor, and the probe sets up the child off it.
+    nonisolated private static func runCLIProbe(path: String, isCodex: Bool, model: String) async -> String? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
 
@@ -520,28 +520,16 @@ struct SystemSettings: View {
 
         process.environment = Constants.resolvedEnvironment()
 
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-
-        do {
-            try process.run()
-        } catch {
-            return "Failed to launch: \(error.localizedDescription)"
+        // Both streams drained while it runs (the old wait-then-read hung on
+        // >64 KiB of output); a launch failure is exit -1 with its error.
+        let output = await ProcessPipes.run(process).trimmed
+        if output.exitCode == -1 {
+            return "Failed to launch: \(output.stderr)"
         }
-
-        process.waitUntilExit()
-
-        let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-        let stdout = String(data: stdoutData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let stderr = String(data: stderrData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-
-        if process.terminationStatus == 0 && !stdout.isEmpty {
+        if output.exitCode == 0 && !output.stdout.isEmpty {
             return nil
         }
-        return diagnoseError(stderr: stderr, exitCode: process.terminationStatus)
+        return diagnoseError(stderr: output.stderr, exitCode: output.exitCode)
     }
 
     /// Test an OpenAI-compatible server with a direct chat-completions call,

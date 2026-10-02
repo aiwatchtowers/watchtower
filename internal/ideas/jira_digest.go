@@ -465,7 +465,8 @@ func (p *Pipeline) runJiraDigestAccount(ctx context.Context, acct db.JiraAccount
 		return fmt.Errorf("no issue rendered from %d jira issues", len(issues))
 	}
 
-	topics, err := p.mineStreamTopics(ctx, "ideas.digest_jira", block, tags)
+	what := fmt.Sprintf("jira account %d", acct.ID)
+	topics, err := p.mineStreamTopics(ctx, "ideas.digest_jira", what, block, tags)
 	if err != nil {
 		return err
 	}
@@ -476,7 +477,7 @@ func (p *Pipeline) runJiraDigestAccount(ctx context.Context, acct db.JiraAccount
 		Scope:      "",
 		PeriodFrom: normalizeJiraStreamPeriod(floor),
 		PeriodTo:   normalizeJiraStreamPeriod(renderedTo),
-	}, topics, fmt.Sprintf("jira account %d", acct.ID)); err != nil {
+	}, topics, what); err != nil {
 		return err
 	}
 

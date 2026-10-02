@@ -193,7 +193,8 @@ struct LogsSettings: View {
         isLoading = true
         let count = pageSize
         loadTask = Task.detached {
-            let result = Self.readTail(path: path, lineCount: count)
+            // Runs tail/wc: off the concurrency pool (ProcessPipes).
+            let result = await ProcessPipes.offPool { Self.readTail(path: path, lineCount: count) }
             guard !Task.isCancelled else { return }
             await MainActor.run {
                 logLines = result.lines
@@ -212,7 +213,7 @@ struct LogsSettings: View {
         let currentCount = logLines.count
         let nextCount = currentCount + pageSize
         Task.detached {
-            let result = Self.readTail(path: path, lineCount: nextCount)
+            let result = await ProcessPipes.offPool { Self.readTail(path: path, lineCount: nextCount) }
             await MainActor.run {
                 // Prepend older lines, keep scroll position stable
                 let newLines = result.lines

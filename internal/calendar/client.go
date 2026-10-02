@@ -209,7 +209,8 @@ type googlePerson struct {
 
 // googleCalendarList is the response from calendarList.list.
 type googleCalendarList struct {
-	Items []googleCalendarEntry `json:"items"`
+	Items         []googleCalendarEntry `json:"items"`
+	NextPageToken string                `json:"nextPageToken"`
 }
 
 type googleCalendarEntry struct {
@@ -217,6 +218,7 @@ type googleCalendarEntry struct {
 	Summary         string `json:"summary"`
 	Primary         bool   `json:"primary"`
 	BackgroundColor string `json:"backgroundColor"`
+	Hidden          bool   `json:"hidden"`
 }
 
 // FetchEvents fetches events from the specified calendars within a time range.
@@ -387,26 +389,42 @@ func sanitizeTitle(title string) string {
 	return strings.TrimSpace(title)
 }
 
-// FetchCalendars lists the user's visible calendars.
+// FetchCalendars lists every calendar on the user's calendar list, paging to
+// the end and including the ones the user hid in Google (flagged Hidden), so
+// the result is the complete list rather than its first visible page.
 func (c *Client) FetchCalendars(ctx context.Context) ([]CalendarInfo, error) {
-	body, err := c.doGet(ctx, "/users/me/calendarList", nil)
-	if err != nil {
-		return nil, fmt.Errorf("listing calendars: %w", err)
-	}
-
-	var result googleCalendarList
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("decoding calendar list: %w", err)
-	}
-
 	var calendars []CalendarInfo
-	for _, item := range result.Items {
-		calendars = append(calendars, CalendarInfo{
-			ID:      item.ID,
-			Summary: item.Summary,
-			Primary: item.Primary,
-			Color:   item.BackgroundColor,
-		})
+	pageToken := ""
+	for {
+		params := url.Values{
+			"showHidden": {"true"},
+			"maxResults": {"250"},
+		}
+		if pageToken != "" {
+			params.Set("pageToken", pageToken)
+		}
+		body, err := c.doGet(ctx, "/users/me/calendarList", params)
+		if err != nil {
+			return nil, fmt.Errorf("listing calendars: %w", err)
+		}
+
+		var result googleCalendarList
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, fmt.Errorf("decoding calendar list: %w", err)
+		}
+		for _, item := range result.Items {
+			calendars = append(calendars, CalendarInfo{
+				ID:      item.ID,
+				Summary: item.Summary,
+				Primary: item.Primary,
+				Color:   item.BackgroundColor,
+				Hidden:  item.Hidden,
+			})
+		}
+
+		pageToken = result.NextPageToken
+		if pageToken == "" {
+			return calendars, nil
+		}
 	}
-	return calendars, nil
 }

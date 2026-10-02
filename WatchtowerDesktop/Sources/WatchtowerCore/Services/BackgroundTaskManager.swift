@@ -188,9 +188,7 @@ package final class BackgroundTaskManager {
     package func stopAll() async {
         for (_, process) in runningProcesses {
             process.terminate()
-            await Task.detached {
-                process.waitUntilExit()
-            }.value
+            await ProcessPipes.offPool { process.waitUntilExit() }
         }
         runningProcesses.removeAll()
         pipelineTask?.cancel()

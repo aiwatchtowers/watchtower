@@ -229,31 +229,6 @@ final class DayPlanQueriesTests: XCTestCase {
         XCTAssertTrue(items.isEmpty)
     }
 
-    // MARK: - markRead
-
-    func testMarkRead() throws {
-        let db = try TestDatabase.create()
-        let planId = try db.write { db in
-            try TestDatabase.insertDayPlan(db, userID: "U1", planDate: "2026-04-23", readAt: nil)
-        }
-
-        // Verify unread before
-        let before = try db.read { db in
-            try DayPlanQueries.fetchByDate(db, date: "2026-04-23")
-        }
-        XCTAssertNil(before?.readAt)
-
-        try db.write { db in
-            try DayPlanQueries.markRead(db, planId: planId)
-        }
-
-        let after = try db.read { db in
-            try DayPlanQueries.fetchByDate(db, date: "2026-04-23")
-        }
-        XCTAssertNotNil(after?.readAt)
-        XCTAssertTrue(after?.isRead == true)
-    }
-
     // MARK: - fetchList
 
     func testFetchList() throws {

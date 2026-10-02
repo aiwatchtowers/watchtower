@@ -202,6 +202,14 @@ package enum Constants {
         return nil
     }
 
+    /// Resolves `resolvedEnvironment()` once on a thread of its own, at launch:
+    /// the first call runs the login shell (up to 5 s) and every caller waits
+    /// on it, which must not happen on a Swift-concurrency pool thread (see
+    /// `ProcessPipes`) or on the main thread.
+    package nonisolated static func prewarmResolvedEnvironment() {
+        Thread.detachNewThread { _ = resolvedEnvironment() }
+    }
+
     /// Returns a process environment with the user's full PATH resolved from their login shell.
     /// Cached after first call. Useful for launching subprocesses from a macOS app (where PATH is minimal).
     package nonisolated static func resolvedEnvironment() -> [String: String] {
