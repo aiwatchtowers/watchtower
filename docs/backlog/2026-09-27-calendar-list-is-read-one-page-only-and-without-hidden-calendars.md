@@ -1,7 +1,7 @@
 ---
 type: question
 title: "Calendar list is read one page only and without hidden calendars"
-status: open
+status: done
 priority: low
 tags: [calendar, google, pagination, review-2026-09-27]
 context: debate-review of fix/backlog-wave2 — the deselect-unlisted-calendars pass was dropped because of this
@@ -21,3 +21,5 @@ filter over writing `is_selected` (a deselect must never override the owner's ow
 itself when the calendar comes back).
 
 > Original note: «так там два больших фичи влилось. Пройдись еще разок, дополнии беклог и давай его начинать закрывать»
+
+**Resolution (fix/pipeline-tests-and-calendar-paging):** `FetchCalendars` now pages `calendarList.list` to the end with `showHidden=true` and carries Google's `hidden` flag (`CalendarInfo.Hidden`). Hidden-calendar rule taken: a calendar hidden in Google is listed (so the owner can pick it) but starts unselected; `is_selected` is only written on first sight, so the owner's Watchtower choice wins in both directions and hiding a selected calendar in Google never deselects it. The "deselect unlisted calendars" cleanup is still not built; the complete list is now a safe basis for it if it is ever wanted.
