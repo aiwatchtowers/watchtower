@@ -25,7 +25,8 @@ var connectionsToolsCmd = &cobra.Command{
 		"lookup with no later write word (create, update, delete, send, or…).\n" +
 		"Every other tool is hidden from the chat (QC-02).\n" +
 		"--refresh re-lists the tools from the server; --allow replaces the default\n" +
-		"with an explicit list of tool names; --default goes back to the default.",
+		"with an explicit list of tool names (never a tool the server marks as a write);\n" +
+		"--default goes back to the default.",
 	Args: cobra.ExactArgs(1),
 	RunE: runConnectionsTools,
 }
@@ -40,7 +41,7 @@ var (
 func init() {
 	connectionsToolsCmd.Flags().BoolVar(&connectionsToolsFlagRefresh, "refresh", false, "re-list the tools from the server first")
 	connectionsToolsCmd.Flags().StringSliceVar(&connectionsToolsFlagAllow, "allow", nil,
-		"allow exactly these tool names (comma-separated or repeated), replacing the read-only default")
+		"allow exactly these tool names (comma-separated or repeated), replacing the read-only default; a tool the server marks as a write is refused")
 	connectionsToolsCmd.Flags().BoolVar(&connectionsToolsFlagDefault, "default", false,
 		"drop the explicit list: allow only tools known to be read-only")
 	connectionsToolsCmd.Flags().BoolVar(&connectionsToolsFlagJSON, "json", false, "output JSON")
@@ -91,6 +92,9 @@ func runConnectionsTools(cmd *cobra.Command, args []string) error {
 	case connectionsToolsFlagAllow != nil:
 		names, err := parseAllowList(connectionsToolsFlagAllow)
 		if err != nil {
+			return err
+		}
+		if err := refuseAnnotatedWrites(conn, names); err != nil {
 			return err
 		}
 		if err := database.SetExternalConnectionAllowTools(id, names); err != nil {
@@ -152,14 +156,14 @@ func refreshToolsAfterEnable(cmd *cobra.Command, cfg *config.Config, database *d
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: connection %d: %v; none of its tools is available to the chat\n", id, err)
 		return
 	}
-	if err != nil && conn.AllowTools == nil {
+	if err != nil && !conn.ToolsListed {
 		reason := fmt.Sprintf("listing its tools failed (%v); none is available to the chat — `watchtower connections tools %d --refresh`", err, id)
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: connection %d: %s\n", id, reason)
 		connectionUnmounted(database, conn, reason)
 		return
 	}
 	if err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warning: connection %d: listing its tools failed (%v); its explicit tool list still applies\n", id, err)
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: connection %d: listing its tools failed (%v); the listing from %s still applies\n", id, err, conn.ToolsListedAt)
 	}
 	allowed, _ := externalmcp.ResolveTools(conn)
 	if len(allowed) == 0 {
@@ -194,9 +198,22 @@ func parseAllowList(names []string) ([]string, error) {
 	return out, nil
 }
 
+// refuseAnnotatedWrites rejects an --allow list naming a tool the server's
+// last listing annotates as a write: QC-02 keeps write tools out of the chat
+// until external writes go through an Approve. ResolveTools enforces the same
+// rule for names checked only after a later listing.
+func refuseAnnotatedWrites(conn db.ExternalConnection, names []string) error {
+	for _, t := range conn.Tools {
+		if externalmcp.IsAnnotatedWrite(t) && slices.Contains(names, t.Name) {
+			return fmt.Errorf("--allow: %q is a write tool (its server does not mark it read-only); write tools never reach the chat without an Approve step", t.Name)
+		}
+	}
+	return nil
+}
+
 func warnUnknownTools(w io.Writer, conn db.ExternalConnection) {
 	if !conn.ToolsListed {
-		fmt.Fprintf(w, "warning: connection %d's tools were never listed, so these names are unchecked\n", conn.ID)
+		fmt.Fprintf(w, "warning: connection %d's tools were never listed, so these names are unchecked; any its server marks as a write will be denied once listed\n", conn.ID)
 		return
 	}
 	for _, name := range conn.AllowTools {
@@ -220,11 +237,6 @@ func printConnectionTools(w io.Writer, conn db.ExternalConnection, asJSON bool) 
 		return enc.Encode(wire)
 	}
 	if !conn.ToolsListed {
-		if conn.AllowTools != nil {
-			fmt.Fprintf(w, "Connection #%d %s: tools never listed; explicit list allows: %s\n",
-				conn.ID, conn.Name, strings.Join(allowed, ", "))
-			return nil
-		}
 		fmt.Fprintf(w, "Connection #%d %s: tools never listed, so none is available to the chat.\n", conn.ID, conn.Name)
 		fmt.Fprintf(w, "Run 'watchtower connections tools %d --refresh' to list them.\n", conn.ID)
 		return nil

@@ -83,20 +83,39 @@ func nameWords(name string) []string {
 	return words
 }
 
+// IsAnnotatedWrite reports whether t's server declared it a write: it sent
+// annotations without readOnlyHint (the MCP default is false, and a
+// destructiveHint is meaningful only then). No owner allow list can admit
+// such a tool (QC-02 stays read-only until external writes get an Approve).
+func IsAnnotatedWrite(t db.ExternalTool) bool {
+	return t.Annotated && !t.ReadOnlyHint
+}
+
 // ResolveTools splits c's tools into the names the chat may call and the
 // listed names it must not (QC-02). With the owner's explicit allow list,
-// exactly those names are allowed. Otherwise only IsReadOnly tools are, and a
-// connection whose tools were never listed allows none (fail closed).
+// those names are allowed — except any the last listing shows annotated as a
+// write, which stay denied. Otherwise only IsReadOnly tools are. A
+// connection whose tools were never listed allows none, explicit list or not
+// (fail closed: only a listing shows which tools are writes).
 func ResolveTools(c db.ExternalConnection) (allowed, denied []string) {
+	if !c.ToolsListed {
+		return nil, nil
+	}
 	if c.AllowTools != nil {
 		allow := make(map[string]bool, len(c.AllowTools))
 		for _, name := range c.AllowTools {
 			allow[name] = true
 		}
-		allowed = append(allowed, c.AllowTools...)
+		write := make(map[string]bool)
 		for _, t := range c.Tools {
-			if !allow[t.Name] {
+			if !allow[t.Name] || IsAnnotatedWrite(t) {
 				denied = append(denied, t.Name)
+				write[t.Name] = IsAnnotatedWrite(t)
+			}
+		}
+		for _, name := range c.AllowTools {
+			if !write[name] {
+				allowed = append(allowed, name)
 			}
 		}
 		return allowed, denied

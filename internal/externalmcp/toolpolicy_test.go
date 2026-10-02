@@ -64,11 +64,21 @@ func TestResolveTools(t *testing.T) {
 		assert.Empty(t, allowed)
 		assert.Empty(t, denied)
 	})
+	t.Run("never listed allows nothing even with an explicit list", func(t *testing.T) {
+		allowed, _ := ResolveTools(db.ExternalConnection{AllowTools: []string{"createIssue"}})
+		assert.Empty(t, allowed, "only a listing shows whether a named tool is a write")
+	})
 	t.Run("explicit list replaces the default", func(t *testing.T) {
 		allowed, denied := ResolveTools(db.ExternalConnection{Tools: listed, ToolsListed: true,
 			AllowTools: []string{"createIssue"}})
-		assert.Equal(t, []string{"createIssue"}, allowed)
+		assert.Equal(t, []string{"createIssue"}, allowed, "an unannotated tool the owner names is allowed")
 		assert.Equal(t, []string{"getIssue", "deleteIssue", "summarize"}, denied)
+	})
+	t.Run("explicit list never admits an annotated write", func(t *testing.T) {
+		allowed, denied := ResolveTools(db.ExternalConnection{Tools: listed, ToolsListed: true,
+			AllowTools: []string{"deleteIssue", "summarize"}})
+		assert.Equal(t, []string{"summarize"}, allowed)
+		assert.Equal(t, []string{"getIssue", "createIssue", "deleteIssue"}, denied)
 	})
 	t.Run("explicit empty list allows nothing", func(t *testing.T) {
 		allowed, denied := ResolveTools(db.ExternalConnection{Tools: listed, ToolsListed: true, AllowTools: []string{}})
