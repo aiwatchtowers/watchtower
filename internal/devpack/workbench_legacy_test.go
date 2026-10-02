@@ -561,3 +561,68 @@ func assertLegacySetupKept(t *testing.T, folder string, rep WorkbenchInstallRepo
 		t.Fatalf("nothing may be reported migrated: %+v", rep)
 	}
 }
+
+// The new registration went in but the old one could not be removed: both
+// stay registered, the failure names the manual removal, and the folder is
+// migrated — the new server serves the new skill and hooks.
+func TestInstallWorkbench_FailedLegacyRemovalKeepsBothRegistrations(t *testing.T) {
+	folder := fakeRepo(t)
+	f := newFakeClaude()
+	seedLegacyFolder(t, folder, f, legacySkillContent, true, legacyOwnerSettings)
+	f.failRemove = true
+	o := legacyOpts(folder, f)
+
+	rep, err := InstallWorkbench(context.Background(), o)
+	if err == nil || !strings.Contains(err.Error(), "claude mcp remove --scope local watchtower-project") {
+		t.Fatalf("the failed removal must name the manual command: %v", err)
+	}
+	if !rep.MCPRegistered || rep.LegacyMCPRemoved {
+		t.Fatalf("mcp: %+v", rep)
+	}
+	if _, ok := f.registered[folder]; !ok || !f.legacy[folder] {
+		t.Fatalf("both registrations must be there: current=%v legacy=%v", f.registered, f.legacy)
+	}
+	if rep.Skill.State != StateInstalled || rep.LegacySkill.State != StateRemoved || !rep.LegacyHooksReplaced {
+		t.Fatalf("with the new server in, the files migrate: %+v", rep)
+	}
+	st, err := StatusWorkbench(context.Background(), o)
+	if err != nil || !st.CurrentMCP || !st.LegacyMCP || !st.Legacy {
+		t.Fatalf("status: %+v err=%v", st, err)
+	}
+}
+
+// A hook event holding both a legacy and a current entry of ours (a
+// hand-merged file) ends with exactly one of ours: the first, updated in
+// place with its own fields, the second dropped; the owner's entries stay
+// byte-exact.
+func TestInstallWorkbench_LegacyAndCurrentEntryCollapseToOne(t *testing.T) {
+	folder := fakeRepo(t)
+	f := newFakeClaude()
+	ownerGroup := `{"matcher": "startup", "hooks": [{"type": "command", "command": "echo owner-start", "timeout": 3}]}`
+	settings := `{
+  "hooks": {
+    "SessionStart": [
+      ` + ownerGroup + `,
+      {"hooks": [{"type": "command", "command": "` + legacyStartCommand + `", "timeout": 10}]},
+      {"hooks": [{"type": "command", "command": "` + WorkbenchHookCommand(legacyBin, 7) + `", "timeout": 30}]}
+    ]
+  }
+}`
+	seedLegacyFolder(t, folder, f, legacySkillContent, true, settings)
+	before := decodeSettings(t, folder)["hooks"].(map[string]any)["SessionStart"].([]any)[0]
+
+	if _, err := InstallWorkbench(context.Background(), legacyOpts(folder, f)); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if got := ourCommands(t, folder)["SessionStart"]; !reflect.DeepEqual(got, []string{WorkbenchHookCommand(legacyBin, 7)}) {
+		t.Fatalf("SessionStart entries of ours = %q, want exactly the new one", got)
+	}
+	raw := readTestFile(t, settingsFile(folder))
+	if !strings.Contains(raw, `"timeout": 10`) || strings.Contains(raw, `"timeout": 30`) {
+		t.Fatalf("the first entry keeps its timeout, the duplicate goes:\n%s", raw)
+	}
+	after := decodeSettings(t, folder)["hooks"].(map[string]any)["SessionStart"].([]any)[0]
+	if !reflect.DeepEqual(after, before) || !strings.Contains(raw, "echo owner-start") {
+		t.Fatalf("PROJ-04: the owner's entry changed: %#v → %#v", before, after)
+	}
+}
