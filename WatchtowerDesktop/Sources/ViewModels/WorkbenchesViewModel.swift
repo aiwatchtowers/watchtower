@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import GRDB
 import Observation
@@ -197,8 +198,51 @@ final class WorkbenchesViewModel {
     /// How often the open Board pane re-runs the check (git work in the folder).
     static let driftMinInterval: TimeInterval = 30
 
+    // Git state (#233). Written only by WorkbenchesViewModel+Git.swift,
+    // keyed by workbench id; kept here so a switch in flight, its pending
+    // confirmation and the last status survive navigating away.
+
+    /// The last `workbench git status` per workbench.
+    var gitStatus: [Int64: WorkbenchGitStatus] = [:]
+    /// The popover's branch list, read when it opens.
+    var gitBranches: [Int64: WorkbenchGitBranches] = [:]
+    /// Board targets carrying a branch, by branch name — the `#id` badges.
+    var branchTargets: [Int64: [String: [WorkbenchBranchTarget]]] = [:]
+    /// Why the last branch action (list, switch, create) failed or was
+    /// refused; the popover shows it. The next action clears it.
+    var gitErrors: [Int64: String] = [:]
+    /// Why the last status read failed; the next successful read clears it.
+    var gitStatusErrors: [Int64: String] = [:]
+    /// What the last switch left behind (the stash it pushed).
+    var gitNotices: [Int64: String] = [:]
+    /// The branch a switch or create is running for.
+    var switchingBranch: [Int64: String] = [:]
+    /// A switch Go refused until the owner confirms (dirty tree, live agent).
+    var pendingBranchConfirmation: [Int64: BranchSwitchConfirmation] = [:]
+    /// Status reads running, and those asked for again meanwhile: at most
+    /// one read in flight per workbench plus one rerun.
+    @ObservationIgnored var gitRefreshing: Set<Int64> = []
+    @ObservationIgnored var gitRefreshQueued: Set<Int64> = []
+    /// Workbench pages on screen that watch their refs.
+    @ObservationIgnored var gitWatching: Set<Int64> = []
+    @ObservationIgnored var gitWatchers: [Int64: any GitRefsWatching] = [:]
+    @ObservationIgnored var gitWatchedDirs: [Int64: [String]] = [:]
+    @ObservationIgnored var gitTimers: [Int64: Task<Void, Never>] = [:]
+    @ObservationIgnored var gitActivationObserver: NSObjectProtocol?
+    /// Seams for tests: the refs watcher, the dirty-dot poll's wait, the
+    /// notification center, the clipboard.
+    @ObservationIgnored var makeGitWatcher: (_ gitDir: String, _ commonDir: String, _ onChange: @escaping @MainActor () -> Void)
+        -> any GitRefsWatching = { GitRefsWatcher(gitDir: $0, commonDir: $1, onChange: $2) }
+    @ObservationIgnored var gitPollSleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+    @ObservationIgnored var gitNotificationCenter: NotificationCenter = .default
+    @ObservationIgnored var copyToPasteboard: (String) -> Void = { text in
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
     let dbPool: DatabasePool
-    private let cli: WorkbenchCLI?
+    /// Not private: WorkbenchesViewModel+Git.swift runs the `workbench git` calls.
+    let cli: WorkbenchCLI?
     let defaults: UserDefaults
     private var viewed: [String: String]
 
