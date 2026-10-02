@@ -215,12 +215,42 @@ func TestConnectionsTools_CommandFlow(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, conn.AllowTools, "a rejected --allow changes nothing")
 
-	_, stderr, err := runConnectionsSplit(t, "", "tools", idArg, "--allow", " getIssue , nope")
-	require.NoError(t, err)
-	assert.Contains(t, stderr, `"nope" is not in the server's last tool list`)
+	_, err = runConnections(t, "", "tools", idArg, "--allow", " getIssue , nope")
+	require.ErrorContains(t, err, `"nope" is not in the server's last tool list`,
+		"an unlisted name could be a write the listing never saw")
 	conn, err = database.GetExternalConnection(id)
 	require.NoError(t, err)
-	assert.Equal(t, []string{"getIssue", "nope"}, conn.AllowTools, "names are trimmed")
+	assert.Nil(t, conn.AllowTools)
+
+	_, err = runConnections(t, "", "tools", idArg, "--allow", " getIssue ")
+	require.NoError(t, err)
+	conn, err = database.GetExternalConnection(id)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"getIssue"}, conn.AllowTools, "names are trimmed")
+}
+
+// TestQC02_EnableWithAFailedRelistingKeepsTheLastListing: re-enabling a
+// connection whose earlier listing succeeded but whose new one fails mounts
+// from the last good listing (the same cache a chat launch uses), never from
+// names the listing lacks.
+func TestQC02_EnableWithAFailedRelistingKeepsTheLastListing(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	id := insertStaticConnection(t, database, cfg)
+	require.NoError(t, database.SetExternalConnectionTools(id,
+		[]db.ExternalTool{{Name: "getIssue"}, {Name: "createIssue"}}, time.Now().UTC().Format(time.RFC3339)))
+	require.NoError(t, database.SetExternalConnectionEnabled(id, false))
+	stubToolsList(t, nil, errors.New("connection refused"))
+
+	stdout, stderr, err := runConnectionsSplit(t, "", "enable", strconv.FormatInt(id, 10))
+	require.NoError(t, err)
+	assert.Contains(t, stderr, "still applies")
+	assert.Contains(t, stdout, "1 of 2 tools available")
+	conn, err := database.GetExternalConnection(id)
+	require.NoError(t, err)
+	assert.Equal(t, "ok", conn.Status)
 }
 
 func TestConnectionsEnable_ListsToolsAndReportsFailure(t *testing.T) {

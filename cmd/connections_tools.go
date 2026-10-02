@@ -25,7 +25,7 @@ var connectionsToolsCmd = &cobra.Command{
 		"lookup with no later write word (create, update, delete, send, or…).\n" +
 		"Every other tool is hidden from the chat (QC-02).\n" +
 		"--refresh re-lists the tools from the server; --allow replaces the default\n" +
-		"with an explicit list of tool names (never a tool the server marks as a write);\n" +
+		"with an explicit list of listed tool names (never one the server marks as a write);\n" +
 		"--default goes back to the default.",
 	Args: cobra.ExactArgs(1),
 	RunE: runConnectionsTools,
@@ -106,14 +106,13 @@ func applyAllowFlags(warn io.Writer, database *db.DB, conn *db.ExternalConnectio
 		if err != nil {
 			return err
 		}
-		if err := refuseAnnotatedWrites(*conn, names); err != nil {
+		if err := checkAllowList(warn, *conn, names); err != nil {
 			return err
 		}
 		if err := database.SetExternalConnectionAllowTools(conn.ID, names); err != nil {
 			return err
 		}
 		conn.AllowTools = names
-		warnUnknownTools(warn, *conn)
 	case connectionsToolsFlagDefault:
 		if err := database.SetExternalConnectionAllowTools(conn.ID, nil); err != nil {
 			return err
@@ -207,29 +206,27 @@ func parseAllowList(names []string) ([]string, error) {
 	return out, nil
 }
 
-// refuseAnnotatedWrites rejects an --allow list naming a tool the server's
-// last listing annotates as a write: QC-02 keeps write tools out of the chat
-// until external writes go through an Approve. ResolveTools enforces the same
-// rule for names checked only after a later listing.
-func refuseAnnotatedWrites(conn db.ExternalConnection, names []string) error {
-	for _, t := range conn.Tools {
-		if externalmcp.IsAnnotatedWrite(t) && slices.Contains(names, t.Name) {
-			return fmt.Errorf("--allow: %q is a write tool (its server does not mark it read-only); write tools never reach the chat without an Approve step", t.Name)
+// checkAllowList rejects an --allow list naming a tool the server's last
+// listing annotates as a write, or a name that listing lacks (it could be a
+// write the listing never saw): QC-02 keeps write tools out of the chat until
+// external writes go through an Approve. ResolveTools enforces the same rule
+// at launch. A never-listed connection only gets a warning — its names are
+// checked once it is listed.
+func checkAllowList(w io.Writer, conn db.ExternalConnection, names []string) error {
+	if !conn.ToolsListed {
+		fmt.Fprintf(w, "warning: connection %d's tools were never listed, so these names are unchecked; none is available until a listing confirms it is not a write\n", conn.ID)
+		return nil
+	}
+	for _, name := range names {
+		i := slices.IndexFunc(conn.Tools, func(t db.ExternalTool) bool { return t.Name == name })
+		switch {
+		case i < 0:
+			return fmt.Errorf("--allow: %q is not in the server's last tool list (listed %s); run with --refresh first", name, conn.ToolsListedAt)
+		case externalmcp.IsAnnotatedWrite(conn.Tools[i]):
+			return fmt.Errorf("--allow: %q is a write tool (its server does not mark it read-only); write tools never reach the chat without an Approve step", name)
 		}
 	}
 	return nil
-}
-
-func warnUnknownTools(w io.Writer, conn db.ExternalConnection) {
-	if !conn.ToolsListed {
-		fmt.Fprintf(w, "warning: connection %d's tools were never listed, so these names are unchecked; any its server marks as a write will be denied once listed\n", conn.ID)
-		return
-	}
-	for _, name := range conn.AllowTools {
-		if !slices.ContainsFunc(conn.Tools, func(t db.ExternalTool) bool { return t.Name == name }) {
-			fmt.Fprintf(w, "warning: %q is not in the server's last tool list\n", name)
-		}
-	}
 }
 
 func printConnectionTools(w io.Writer, conn db.ExternalConnection, asJSON bool) error {

@@ -91,37 +91,26 @@ func IsAnnotatedWrite(t db.ExternalTool) bool {
 	return t.Annotated && !t.ReadOnlyHint
 }
 
-// ResolveTools splits c's tools into the names the chat may call and the
-// listed names it must not (QC-02). With the owner's explicit allow list,
-// those names are allowed — except any the last listing shows annotated as a
-// write, which stay denied. Otherwise only IsReadOnly tools are. A
-// connection whose tools were never listed allows none, explicit list or not
-// (fail closed: only a listing shows which tools are writes).
+// ResolveTools splits c's listed tools into the names the chat may call and
+// the names it must not (QC-02). With the owner's explicit allow list, a
+// listed tool it names is allowed unless the listing shows it annotated as a
+// write; a name the listing lacks is never allowed (only a listing shows
+// whether a tool is a write). Otherwise only IsReadOnly tools are. A
+// connection whose tools were never listed allows none (fail closed).
 func ResolveTools(c db.ExternalConnection) (allowed, denied []string) {
 	if !c.ToolsListed {
 		return nil, nil
 	}
+	ok := IsReadOnly
 	if c.AllowTools != nil {
-		allow := make(map[string]bool, len(c.AllowTools))
+		named := make(map[string]bool, len(c.AllowTools))
 		for _, name := range c.AllowTools {
-			allow[name] = true
+			named[name] = true
 		}
-		write := make(map[string]bool)
-		for _, t := range c.Tools {
-			if !allow[t.Name] || IsAnnotatedWrite(t) {
-				denied = append(denied, t.Name)
-				write[t.Name] = IsAnnotatedWrite(t)
-			}
-		}
-		for _, name := range c.AllowTools {
-			if !write[name] {
-				allowed = append(allowed, name)
-			}
-		}
-		return allowed, denied
+		ok = func(t db.ExternalTool) bool { return named[t.Name] && !IsAnnotatedWrite(t) }
 	}
 	for _, t := range c.Tools {
-		if IsReadOnly(t) {
+		if ok(t) {
 			allowed = append(allowed, t.Name)
 		} else {
 			denied = append(denied, t.Name)

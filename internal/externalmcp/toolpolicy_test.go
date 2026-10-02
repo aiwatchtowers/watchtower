@@ -74,6 +74,11 @@ func TestResolveTools(t *testing.T) {
 		assert.Equal(t, []string{"createIssue"}, allowed, "an unannotated tool the owner names is allowed")
 		assert.Equal(t, []string{"getIssue", "deleteIssue", "summarize"}, denied)
 	})
+	t.Run("explicit list never admits a name the listing lacks", func(t *testing.T) {
+		allowed, _ := ResolveTools(db.ExternalConnection{Tools: listed, ToolsListed: true,
+			AllowTools: []string{"getIssue", "delete_page"}})
+		assert.Equal(t, []string{"getIssue"}, allowed, "an unlisted name could be a write the listing never saw")
+	})
 	t.Run("explicit list never admits an annotated write", func(t *testing.T) {
 		allowed, denied := ResolveTools(db.ExternalConnection{Tools: listed, ToolsListed: true,
 			AllowTools: []string{"deleteIssue", "summarize"}})
