@@ -156,8 +156,8 @@ final class Page: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         }
     }
 
-    func string(_ script: String) async -> String? { await eval(script) as? String }
-    func int(_ script: String) async -> Int? { await eval(script) as? Int }
+    func evalString(_ script: String) async -> String? { await eval(script) as? String }
+    func evalInt(_ script: String) async -> Int? { await eval(script) as? Int }
 }
 
 // MARK: - Harness helpers injected into the page
@@ -253,8 +253,8 @@ func jsonArgument(_ value: Any) -> String {
 func protocolChecks(_ page: Page) async {
     // show
     await page.call("wt.show", ["id": "a", "path": "main.go", "text": "package main\n", "rev": 1])
-    check("show: puts the file on screen", await page.string("__h.onScreen()") == "a")
-    check("show: language from the path", await page.string("__h.lang('a')") == "go")
+    check("show: puts the file on screen", await page.evalString("__h.onScreen()") == "a")
+    check("show: language from the path", await page.evalString("__h.lang('a')") == "go")
     check("show: sends no text", page.texts.isEmpty)
 
     // edit revisions and the 300 ms debounce
@@ -281,7 +281,7 @@ func protocolChecks(_ page: Page) async {
 
     // reload replace, nothing unsent
     await page.call("wt.reload", ["id": "a", "text": "package disk\n", "rev": 2, "mode": "replace"])
-    check("reload replace: takes the disk text", await page.string("__h.value('a')") == "package disk\n")
+    check("reload replace: takes the disk text", await page.evalString("__h.value('a')") == "package disk\n")
     await pause(0.5)
     check("reload replace: sends no text", page.texts.isEmpty, "\(page.texts)")
     _ = await page.eval("__h.type('a', 'z'); true")
@@ -295,7 +295,7 @@ func protocolChecks(_ page: Page) async {
           page.texts.count == 1 && page.texts.first?.base == 2 && page.texts.first?.now == true
               && page.texts.first?.text == "package disk\nzq",
           "\(page.texts)")
-    check("reload replace + unsent edit: keeps the edit", await page.string("__h.value('a')") == "package disk\nzq")
+    check("reload replace + unsent edit: keeps the edit", await page.evalString("__h.value('a')") == "package disk\nzq")
     page.texts.removeAll()
     _ = await page.eval("__h.type('a', '1'); true")
     let stillOld = await page.takePending()
@@ -304,7 +304,7 @@ func protocolChecks(_ page: Page) async {
     // reload force with an unsent edit: the disk wins, nothing is sent
     _ = await page.eval("__h.type('a', '2'); true")
     await page.call("wt.reload", ["id": "a", "text": "package forced\n", "rev": 4, "mode": "force"])
-    check("reload force: takes the text over an unsent edit", await page.string("__h.value('a')") == "package forced\n")
+    check("reload force: takes the text over an unsent edit", await page.evalString("__h.value('a')") == "package forced\n")
     await pause(0.5)
     check("reload force: sends nothing", page.texts.isEmpty, "\(page.texts)")
     check("reload force: drops the unsent edit", await page.takePending().isEmpty)
@@ -315,7 +315,7 @@ func protocolChecks(_ page: Page) async {
     // reload rebase with an unsent edit: text kept, new base, sent at once
     _ = await page.eval("__h.type('a', '4'); true")
     await page.call("wt.reload", ["id": "a", "text": "ignored\n", "rev": 5, "mode": "rebase"])
-    check("reload rebase: keeps the text", await page.string("__h.value('a')") == "package forced\n34")
+    check("reload rebase: keeps the text", await page.evalString("__h.value('a')") == "package forced\n34")
     check("reload rebase: sends the unsent edit at once on the new base",
           page.texts.count == 1 && page.texts.first?.base == 5 && page.texts.first?.now == true
               && page.texts.first?.text == "package forced\n34",
@@ -332,9 +332,9 @@ func protocolChecks(_ page: Page) async {
           rebasedAgain.first?.base == 6, "\(rebasedAgain)")
 
     // reload of an unknown id is ignored
-    let before = await page.int("__h.count()")
+    let before = await page.evalInt("__h.count()")
     await page.call("wt.reload", ["id": "nope", "text": "x", "rev": 1, "mode": "force"])
-    check("reload: an unknown id is ignored", await page.int("__h.count()") == before && page.errors.isEmpty)
+    check("reload: an unknown id is ignored", await page.evalInt("__h.count()") == before && page.errors.isEmpty)
 
     // tab switch flushes the previous file's edit with now
     _ = await page.eval("__h.type('a', '6'); true")
@@ -342,17 +342,17 @@ func protocolChecks(_ page: Page) async {
     check("show (switch): sends the previous file's edit at once",
           page.texts.count == 1 && page.texts.first?.id == "a" && page.texts.first?.now == true, "\(page.texts)")
     page.texts.removeAll()
-    check("show (switch): the new file is on screen", await page.string("__h.onScreen()") == "b")
-    check("show: keeps CRLF line endings", await page.string("__h.eol('b')") == "\r\n")
+    check("show (switch): the new file is on screen", await page.evalString("__h.onScreen()") == "b")
+    check("show: keeps CRLF line endings", await page.evalString("__h.eol('b')") == "\r\n")
     _ = await page.eval("__h.type('b', 'c = 3\\r\\n'); true")
     let crlf = await page.takePending()
     check("edit: CRLF text comes back as CRLF", crlf.first?.text == "a = 1\r\nb = 2\r\nc = 3\r\n", "\(crlf)")
 
     // switching back reuses the model (undo, cursor and scroll survive)
-    let models = await page.int("__h.count()")
+    let models = await page.evalInt("__h.count()")
     await page.call("wt.show", ["id": "a", "path": "main.go", "text": "stale text Swift holds\n", "rev": 1])
-    let backText = await page.string("__h.value('a')")
-    let backCount = await page.int("__h.count()")
+    let backText = await page.evalString("__h.value('a')")
+    let backCount = await page.evalInt("__h.count()")
     check("show (back): reuses the model, keeps its text over what show sent",
           backText == "package forced\n3456" && backCount == models, "\(String(describing: backText)), \(String(describing: backCount)) models")
     _ = await page.eval("__h.type('a', '7'); true")
@@ -381,43 +381,43 @@ func protocolChecks(_ page: Page) async {
     page.texts.removeAll()
 
     // rename: new language, same model, the probe model is disposed
-    let countBeforeRename = await page.int("__h.count()")
+    let countBeforeRename = await page.evalInt("__h.count()")
     await page.call("wt.rename", ["id": "a", "path": "build/Makefile"])
-    check("rename: the language follows the new name", await page.string("__h.lang('a')") == "makefile")
-    let renamedText = await page.string("__h.value('a')")
-    let renamedCount = await page.int("__h.count()")
+    check("rename: the language follows the new name", await page.evalString("__h.lang('a')") == "makefile")
+    let renamedText = await page.evalString("__h.value('a')")
+    let renamedCount = await page.evalInt("__h.count()")
     check("rename: keeps the text and leaves no probe model",
           renamedText == "package forced\n345678" && renamedCount == countBeforeRename,
           "\(String(describing: renamedText)), \(String(describing: renamedCount)) models")
     await page.call("wt.rename", ["id": "b", "path": ".env.local"])
-    check("rename: a file off screen changes language too", await page.string("__h.lang('b')") == "dotenv")
+    check("rename: a file off screen changes language too", await page.evalString("__h.lang('b')") == "dotenv")
 
     // text that would break hand-escaping survives the JSON-encoded call
     let tricky = "quote \" backslash \\ </script> \u{2028} line sep, emoji \u{1F600}, tab\t\n"
     await page.call("wt.show", ["id": "c", "path": "tricky.txt", "text": tricky, "rev": 1])
     check("show: arbitrary text round-trips through the JSON-encoded call",
-          await page.string("__h.value('c')") == tricky)
+          await page.evalString("__h.value('c')") == tricky)
 
     // close
     _ = await page.eval("__h.type('b', 'e'); true")
-    let countBeforeClose = await page.int("__h.count()") ?? 0
+    let countBeforeClose = await page.evalInt("__h.count()") ?? 0
     await page.call("wt.close", "b")
     check("close: sends the closing file's unsent edit at once",
           page.texts.count == 1 && page.texts.first?.id == "b" && page.texts.first?.now == true, "\(page.texts)")
     page.texts.removeAll()
-    let closedCount = await page.int("__h.count()")
+    let closedCount = await page.evalInt("__h.count()")
     let closedGone = await page.eval("__h.model('b') === null") as? Bool
     check("close: disposes the model", closedCount == countBeforeClose - 1 && closedGone == true)
-    check("close: an off-screen close leaves the screen alone", await page.string("__h.onScreen()") == "c")
+    check("close: an off-screen close leaves the screen alone", await page.evalString("__h.onScreen()") == "c")
     await page.call("wt.close", "c")
-    check("close: closing the file on screen clears the editor", await page.string("__h.onScreen()") == "")
+    check("close: closing the file on screen clears the editor", await page.evalString("__h.onScreen()") == "")
     await page.call("wt.close", "never-opened")
     check("close: an unknown id is harmless", page.errors.isEmpty, "\(page.errors)")
     check("close: nothing pending afterwards", await page.takePending().isEmpty)
 
     // reopening a closed id starts fresh from what Swift sends
     await page.call("wt.show", ["id": "b", "path": ".env.local", "text": "FRESH=1\n", "rev": 9])
-    check("show after close: a new model with the given text", await page.string("__h.value('b')") == "FRESH=1\n")
+    check("show after close: a new model with the given text", await page.evalString("__h.value('b')") == "FRESH=1\n")
     _ = await page.eval("__h.type('b', 'x'); true")
     let fresh = await page.takePending()
     check("show after close: the new model carries the given revision", fresh.first?.base == 9, "\(fresh)")
@@ -425,8 +425,8 @@ func protocolChecks(_ page: Page) async {
     // show(null)
     _ = await page.eval("__h.type('b', 'y'); true")
     await page.call("wt.show", NSNull())
-    check("show(null): clears the editor", await page.string("__h.onScreen()") == "")
-    check("show(null): keeps the model", await page.string("__h.value('b')") == "FRESH=1\nxy")
+    check("show(null): clears the editor", await page.evalString("__h.onScreen()") == "")
+    check("show(null): keeps the model", await page.evalString("__h.value('b')") == "FRESH=1\nxy")
     let afterNull = await page.takePending()
     check("show(null): an unsent edit stays pending", afterNull.count == 1 && afterNull.first?.id == "b", "\(afterNull)")
     await page.call("wt.close", "b")
@@ -464,7 +464,7 @@ func detectionChecks(_ page: Page) async {
         ("data.tsv", "", "tsv")
     ]
     for item in cases {
-        let got = await page.string("__h.detect(\(jsonArgument(item.path)), \(jsonArgument(item.text)))")
+        let got = await page.evalString("__h.detect(\(jsonArgument(item.path)), \(jsonArgument(item.text)))")
         let shebang = item.text.hasPrefix("#!") ? " (\(item.text.split(separator: "\n")[0]))" : ""
         check("language: \(item.path)\(shebang) → \(item.expected)", got == item.expected, "got \(got ?? "nil")")
     }
@@ -527,7 +527,7 @@ func tokenChecks(_ page: Page) async {
     // defined only when Monaco's generated token colours include a colour
     // that only its extraRules in languages.js set.
     for (theme, colour) in [("wt-dark", "#85e89d"), ("wt-light", "#22863a")] {
-        let css = await page.string("""
+        let css = await page.evalString("""
             (function () {
               monaco.editor.setTheme(\(jsonArgument(theme)));
               return Array.prototype.map.call(document.querySelectorAll('style'), function (s) {
