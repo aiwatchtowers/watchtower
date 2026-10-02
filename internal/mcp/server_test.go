@@ -70,6 +70,7 @@ func TestToolsList(t *testing.T) {
 		"get_today_briefing", "list_digests", "get_digest",
 		"list_people", "get_person", "list_tracks", "get_track", "list_upcoming_events",
 		"list_jira_issues", "get_jira_issue", "list_jira_projects",
+		"get_jira_status_history", "get_jira_time_in_status",
 		"list_messages",
 		"list_transcripts", "get_transcript",
 		"list_ideas", "get_idea",

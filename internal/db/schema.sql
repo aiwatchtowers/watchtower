@@ -1691,6 +1691,55 @@ CREATE INDEX IF NOT EXISTS idx_jira_comments_issue ON jira_comments(account_id, 
 CREATE INDEX IF NOT EXISTS idx_jira_comments_issue_author ON jira_comments(issue_key, author_account_id);
 CREATE INDEX IF NOT EXISTS idx_jira_comments_synced ON jira_comments(synced_at);
 
+-- Jira status/assignee history (00095). For field 'status' *_value is the
+-- status id and *_string its name; for 'assignee' *_value is the Atlassian
+-- account id and *_string the display name. Timestamps are UTC.
+CREATE TABLE IF NOT EXISTS jira_issue_changelog (
+    account_id          INTEGER NOT NULL REFERENCES jira_accounts(id) ON DELETE CASCADE,
+    issue_key           TEXT NOT NULL,
+    history_id          TEXT NOT NULL,
+    field               TEXT NOT NULL,
+    from_value          TEXT NOT NULL DEFAULT '',
+    from_string         TEXT NOT NULL DEFAULT '',
+    to_value            TEXT NOT NULL DEFAULT '',
+    to_string           TEXT NOT NULL DEFAULT '',
+    author_account_id   TEXT NOT NULL DEFAULT '',
+    author_display_name TEXT NOT NULL DEFAULT '',
+    changed_at          TEXT NOT NULL,
+    PRIMARY KEY (account_id, issue_key, history_id, field)
+);
+CREATE INDEX IF NOT EXISTS idx_jira_issue_changelog_issue ON jira_issue_changelog(account_id, issue_key, changed_at);
+
+-- Per-issue changelog cursor: the issue updated_at the stored history belongs to.
+CREATE TABLE IF NOT EXISTS jira_changelog_sync (
+    account_id       INTEGER NOT NULL REFERENCES jira_accounts(id) ON DELETE CASCADE,
+    issue_key        TEXT NOT NULL,
+    issue_updated_at TEXT NOT NULL,
+    synced_at        TEXT NOT NULL,
+    PRIMARY KEY (account_id, issue_key)
+);
+
+-- Issues linked from synced issues that live on other boards (not in
+-- jira_issues); fetch_error is set when the site would not return the key.
+CREATE TABLE IF NOT EXISTS jira_linked_issues (
+    account_id            INTEGER NOT NULL REFERENCES jira_accounts(id) ON DELETE CASCADE,
+    key                   TEXT NOT NULL,
+    id                    TEXT NOT NULL DEFAULT '',
+    project_key           TEXT NOT NULL DEFAULT '',
+    summary               TEXT NOT NULL DEFAULT '',
+    issue_type            TEXT NOT NULL DEFAULT '',
+    status                TEXT NOT NULL DEFAULT '',
+    status_category       TEXT NOT NULL DEFAULT '',
+    assignee_account_id   TEXT NOT NULL DEFAULT '',
+    assignee_display_name TEXT NOT NULL DEFAULT '',
+    created_at            TEXT NOT NULL DEFAULT '',
+    updated_at            TEXT NOT NULL DEFAULT '',
+    resolved_at           TEXT NOT NULL DEFAULT '',
+    fetch_error           TEXT NOT NULL DEFAULT '',
+    synced_at             TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (account_id, key)
+);
+
 CREATE TABLE IF NOT EXISTS agent_actions (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     tool            TEXT    NOT NULL,
