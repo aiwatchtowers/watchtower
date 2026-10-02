@@ -30,10 +30,52 @@
 </script>
 <script src="vs/loader.js" onerror="document.getElementById('missing').style.display='block'; post({type:'error', message:'Monaco is not installed'})"></script>
 <script>
+// Monaco ships no dotenv grammar: .env, .env.local, prod.env, ...
+// KEY=value lines, `export`, # comments, quoted values with ${VAR}.
+function registerDotenv() {
+  monaco.languages.register({
+    id: "dotenv",
+    aliases: ["dotenv", "env"],
+    extensions: [".env"],
+    filenames: [".env"],
+    filenamePatterns: [".env.*", "*.env"]
+  });
+  monaco.languages.setLanguageConfiguration("dotenv", {
+    comments: { lineComment: "#" },
+    autoClosingPairs: [{ open: "\"", close: "\"" }, { open: "'", close: "'" }, { open: "{", close: "}" }]
+  });
+  monaco.languages.setMonarchTokensProvider("dotenv", {
+    tokenizer: {
+      root: [
+        [/^\s*#.*$/, "comment"],
+        [/^(\s*)(export)(\s+)([A-Za-z_][\w.\-]*)(\s*)(=)/, ["", "keyword", "", "variable", "", "delimiter"]],
+        [/^(\s*)([A-Za-z_][\w.\-]*)(\s*)(=)/, ["", "variable", "", "delimiter"]],
+        [/\s+#.*$/, "comment"],
+        [/"/, { token: "string.quote", next: "@dquoted" }],
+        [/'[^']*'?/, "string"],
+        [/\$\{[^}]*\}|\$[A-Za-z_]\w*/, "variable.predefined"],
+        [/\b(true|false|yes|no|null)\b/, "keyword"],
+        [/-?\d+(\.\d+)?\b/, "number"],
+        [/[^\s#$"']+|\$/, "string"],
+        [/\s+/, ""]
+      ],
+      // Double quotes may span lines in dotenv, so this state may too.
+      dquoted: [
+        [/\$\{[^}]*\}|\$[A-Za-z_]\w*/, "variable.predefined"],
+        [/\\./, "string.escape"],
+        [/"/, { token: "string.quote", next: "@pop" }],
+        [/[^"\\$]+|\$/, "string"]
+      ]
+    }
+  });
+}
+
 (function () {
   if (typeof require === "undefined") { return; }
   require.config({ paths: { vs: "vs" } });
   require(["vs/editor/editor.main"], function () {
+    registerDotenv();
+
     // The TypeScript worker is trimmed from the bundle (fetch-monaco.sh):
     // switch the TS/JS language service off so nothing asks for it.
     // Highlighting comes from the Monarch grammars and stays.
