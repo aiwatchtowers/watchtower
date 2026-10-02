@@ -209,7 +209,13 @@ struct MainNavigationView: View {
             ChatView()
         case .catchUp:
             if let vm = appState.catchUpViewModel {
-                CatchUpView(vm: vm)
+                CatchUpView(
+                    vm: vm,
+                    firstSync: OnboardingFinishPlan.firstSyncText(
+                        progress: appState.daemonManager.syncProgress,
+                        historyDays: appState.initialHistoryDays
+                    )
+                )
             } else {
                 Text("Catch Up unavailable")
                     .foregroundStyle(.secondary)

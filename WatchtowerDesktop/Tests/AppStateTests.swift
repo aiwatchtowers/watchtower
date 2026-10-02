@@ -648,35 +648,112 @@ final class AppStateTests: XCTestCase {
     }
 
     /// Fresh install: Goals opened the DB for Connect; leaving the last
-    /// step still runs the whole completion sequence, pipelines included,
-    /// and wires the rest of the app once.
-    func testFinishAfterTheOnboardingOpenReachesThePipelines() async throws {
+    /// step runs the whole completion sequence — onboarding_done written
+    /// first, then the daemon started exactly once — and wires the rest of
+    /// the app once.
+    func testFinishAfterTheOnboardingOpenStartsTheDaemonOnce() async throws {
+        defer { UserDefaults.standard.removeObject(forKey: Constants.pipelinesCompletedKey) }
         let manager = try XCTUnwrap(dbManager)
         let open: @Sendable () throws -> DatabaseManager = { manager }
         let appState = AppState.isolated(openDatabase: open)
-        var pipelineStarts = 0
+        let daemon = FakeOnboardingDaemon()
+        appState.onboardingDaemonOverride = daemon
         var appWirings = 0
         var retries = 0
-        appState.startOnboardingPipelinesOverride = { pipelineStarts += 1 }
         appState.wireAppDatabaseOverride = { _ in appWirings += 1 }
         appState.needsOnboarding = true
-        let openFailure = await appState.openDatabaseForOnboarding()
-        XCTAssertNil(openFailure)
+        UserDefaults.standard.removeObject(forKey: Constants.pipelinesCompletedKey)
 
+        // Goals → Connect: no daemon.
         let route = OnboardingRoute(goals: [.tasksAndJira], hasSlackAccount: false)
-        appState.onboarding.goTo(.connect)
-        await appState.leaveOnboardingStep(.connect, route: route) { retries += 1 }
+        await appState.leaveOnboardingStep(.purpose, route: route) {}
+        XCTAssertEqual(appState.onboarding.currentStep, .connect)
+        XCTAssertEqual(daemon.starts + daemon.restarts, 0, "no step before finish touches the daemon")
 
-        XCTAssertEqual(pipelineStarts, 1)
+        await appState.leaveOnboardingStep(.connect, route: route) { retries += 1 }
+        // A stray second click after finish starts nothing more.
+        await appState.leaveOnboardingStep(.connect, route: route) {}
+
+        XCTAssertEqual(daemon.starts, 1)
+        XCTAssertEqual(daemon.restarts, 0)
         XCTAssertEqual(appWirings, 1)
         XCTAssertEqual(retries, 1)
         XCTAssertFalse(appState.needsOnboarding)
         XCTAssertEqual(appState.onboarding.currentStep, .complete)
         XCTAssertNil(appState.onboardingStepError)
+        XCTAssertTrue(UserDefaults.standard.bool(forKey: Constants.pipelinesCompletedKey))
         let done = try await dbManager.dbPool.read { db in
             try Bool.fetchOne(db, sql: "SELECT onboarding_done FROM user_profile LIMIT 1")
         }
         XCTAssertEqual(done, true)
+    }
+
+    /// "Run setup again" with a live daemon: finish restarts it once so the
+    /// new feature set reaches it.
+    func testFinishRestartsARunningDaemonOnce() async throws {
+        defer { UserDefaults.standard.removeObject(forKey: Constants.pipelinesCompletedKey) }
+        let manager = try XCTUnwrap(dbManager)
+        let open: @Sendable () throws -> DatabaseManager = { manager }
+        let appState = AppState.isolated(openDatabase: open)
+        let daemon = FakeOnboardingDaemon()
+        daemon.running = true
+        appState.onboardingDaemonOverride = daemon
+        appState.needsOnboarding = true
+        appState.onboarding.goTo(.purpose)
+
+        await appState.leaveOnboardingStep(.purpose, route: OnboardingRoute(goals: [.development], hasSlackAccount: false)) {}
+
+        XCTAssertEqual(daemon.restarts, 1)
+        XCTAssertEqual(daemon.starts, 0)
+    }
+
+    /// The DB flag lands before the daemon starts: a failed write starts
+    /// nothing and leaves onboarding where it is.
+    func testFailedDoneWriteStartsNoDaemon() async throws {
+        let manager = try XCTUnwrap(dbManager)
+        try await manager.dbPool.write { db in try db.execute(sql: "DROP TABLE user_profile") }
+        let open: @Sendable () throws -> DatabaseManager = { manager }
+        let appState = AppState.isolated(openDatabase: open)
+        let daemon = FakeOnboardingDaemon()
+        appState.onboardingDaemonOverride = daemon
+        appState.needsOnboarding = true
+        appState.onboarding.goTo(.purpose)
+
+        await appState.leaveOnboardingStep(.purpose, route: OnboardingRoute(goals: [.development], hasSlackAccount: false)) {}
+
+        XCTAssertEqual(daemon.starts + daemon.restarts, 0)
+        XCTAssertTrue(appState.needsOnboarding)
+        XCTAssertEqual(appState.onboarding.currentStep, .purpose)
+        XCTAssertNotNil(appState.onboardingStepError)
+    }
+
+    /// Landing: Catch-Up for work communication with Slack, else Workbench
+    /// for development, else AI Chat.
+    func testFinishLandsOnTheGoalsTab() async throws {
+        defer { UserDefaults.standard.removeObject(forKey: Constants.pipelinesCompletedKey) }
+        let cases: [(Set<OnboardingGoal>, Bool, SidebarDestination)] = [
+            ([.workCommunication, .development], true, .catchUp),
+            ([.workCommunication, .development], false, .workbench),
+            ([.development], true, .workbench),
+            ([.tasksAndJira], false, .chat)
+        ]
+        for (goals, slack, expected) in cases {
+            let (manager, path) = try TestDatabase.createDatabaseManager()
+            defer { TestDatabase.cleanup(path: path) }
+            if slack {
+                try await manager.dbPool.write { db in _ = try TestDatabase.insertSlackAccount(db, teamID: "T1") }
+            }
+            let open: @Sendable () throws -> DatabaseManager = { manager }
+            let appState = AppState.isolated(openDatabase: open)
+            appState.needsOnboarding = true
+            _ = await appState.openDatabaseForOnboarding()
+            appState.onboarding.goTo(.aboutYou)
+
+            let route = OnboardingRoute(goals: goals, hasSlackAccount: slack)
+            await appState.leaveOnboardingStep(.aboutYou, route: route) {}
+
+            XCTAssertEqual(appState.selectedDestination, expected, "\(goals) slack=\(slack)")
+        }
     }
 
     // MARK: - About you exits
