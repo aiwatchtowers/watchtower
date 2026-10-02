@@ -23,8 +23,8 @@ private enum PendingFolder {
 struct WorkbenchesView: View {
     @Bindable var vm: WorkbenchesViewModel
     @Environment(AppState.self) private var appState
-    // The `projects.` keys predate the Workbench rename; persisted, so kept (spec 2026-10-02 A1).
-    @AppStorage("projects.panelVisible") private var panelVisible = true
+    // The `projects.` keys predate the Workbench rename; persisted, so kept
+    // (spec 2026-10-02 A1). The panel's visibility is the VM's (`panelVisible`).
     @AppStorage("projects.panelWidth") private var panelWidth = PanelResizeHandle.defaultWidth
     @State private var dragPanelWidth: Double?
     @State private var pendingFolder: PendingFolder?
@@ -34,14 +34,14 @@ struct WorkbenchesView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            if panelVisible {
+            if vm.panelVisible {
                 panel
                     .frame(width: dragPanelWidth ?? PanelResizeHandle.clamp(panelWidth))
                     .panelSurface()
                 PanelResizeHandle(width: $panelWidth, liveWidth: $dragPanelWidth)
             }
             VStack(spacing: 0) {
-                titleRow
+                WorkbenchTitleRow(vm: vm, switcherActions: switcherActions)
                 Divider()
                 Group {
                     if let standalone = vm.selectedStandalone {
@@ -57,6 +57,9 @@ struct WorkbenchesView: View {
             }
             .frame(minWidth: 480, maxWidth: .infinity, maxHeight: .infinity)
         }
+        // ⌥⌘S, the title row's toggle, ⌘⇧O and the switchers' "Show
+        // Sessions Panel" all slide the panel the same way.
+        .animation(.easeInOut(duration: 0.2), value: vm.panelVisible)
         // The workspace — title row, page header, the terminal (transparent
         // under dark), Board and Documents — on the detail backdrop, as AI
         // Chat's conversation is; the panel paints its own lighter surface.
@@ -82,39 +85,6 @@ struct WorkbenchesView: View {
         }
     }
 
-    /// The chat's inline title row (`ChatSplitView.toolbar`) instead of a
-    /// window toolbar, which would add a tall title-bar strip above the tab.
-    /// It stays visible with the panel hidden: its toggle is the way back.
-    private var titleRow: some View {
-        HStack(spacing: 10) {
-            Button { withAnimation(.easeInOut(duration: 0.2)) { panelVisible.toggle() } } label: {
-                Image(systemName: "sidebar.leading")
-            }
-            .help("Toggle Workbench Panel")
-            .accessibilityLabel("Toggle Workbench Panel")
-            Text(vm.selectedStandalone?.title ?? vm.selectedWorkbench?.name ?? "Workbench")
-                .font(.headline)
-                .lineLimit(1)
-            Spacer()
-        }
-        .buttonStyle(.borderless)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        // ⌘⇧O lives on the Workbench tab only; the switcher's popover
-        // shows the key beside "All Workbenches".
-        .background {
-            Button("", action: showAllWorkbenches)
-                .keyboardShortcut("o", modifiers: [.command, .shift])
-                .hidden()
-        }
-    }
-
-    /// "All Workbenches" (⌘⇧O): level 1 of the panel, shown if hidden.
-    private func showAllWorkbenches() {
-        vm.showAllWorkbenches()
-        if !panelVisible { withAnimation(.easeInOut(duration: 0.2)) { panelVisible = true } }
-    }
-
     private var isTerminalPending: Bool {
         if case .terminal? = pendingFolder { return true }
         return false
@@ -125,11 +95,15 @@ struct WorkbenchesView: View {
         if let project = vm.drilledWorkbench {
             WorkbenchSessionsPanel(
                 vm: vm, project: project, actions: sessionActions,
-                switcherActions: WorkbenchSwitcherActions(newWorkbench: chooseNewWorkbenchFolder, showAll: showAllWorkbenches)
+                switcherActions: switcherActions
             )
         } else {
             workbenchList
         }
+    }
+
+    private var switcherActions: WorkbenchSwitcherActions {
+        WorkbenchSwitcherActions(newWorkbench: chooseNewWorkbenchFolder, showAll: vm.showAllWorkbenches)
     }
 
     private var sessionActions: SessionRowActions {
@@ -331,5 +305,64 @@ struct WorkbenchesView: View {
         guard let route = appState.pendingWorkbenchRoute else { return }
         appState.pendingWorkbenchRoute = nil
         vm.reveal(route)
+    }
+}
+
+/// The chat's inline title row (`ChatSplitView.toolbar`) instead of a
+/// window toolbar, which would add a tall title-bar strip above the tab.
+/// It stays visible with the panel hidden: its toggle is the way back, and
+/// then on a workbench page it carries `▦ <workbench> ▾ › ● <session> ▾`
+/// (board #251, variant H) instead of the plain title. It also holds the
+/// tab's shortcuts, so they exist on the Workbench tab only.
+struct WorkbenchTitleRow: View {
+    @Bindable var vm: WorkbenchesViewModel
+    let switcherActions: WorkbenchSwitcherActions
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Button { vm.panelVisible.toggle() } label: {
+                Image(systemName: "sidebar.leading")
+            }
+            .keyboardShortcut("s", modifiers: [.command, .option])
+            .help(vm.panelVisible ? "Hide Sessions Panel ⌥⌘S" : "Show Sessions Panel ⌥⌘S")
+            .accessibilityLabel(vm.panelVisible ? "Hide Sessions Panel" : "Show Sessions Panel")
+            if vm.showsHeaderSwitchers, let project = vm.selectedWorkbench {
+                WorkbenchSwitcher(vm: vm, project: project, actions: switcherActions, fillsWidth: false)
+                Image(systemName: "chevron.right")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .accessibilityHidden(true)
+                SessionSwitcher(vm: vm, project: project)
+            } else {
+                Text(vm.selectedStandalone?.title ?? vm.selectedWorkbench?.name ?? "Workbench")
+                    .font(.headline)
+                    .lineLimit(1)
+            }
+            Spacer()
+        }
+        .buttonStyle(.borderless)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background { shortcuts }
+    }
+
+    /// ⌘⇧O (the workbench switcher shows it beside "All Workbenches"), ⌘T
+    /// and ⌘1…⌘9 (the session switcher shows them) as hidden buttons; the
+    /// session ones need a workbench page.
+    private var shortcuts: some View {
+        Group {
+            Button("", action: vm.showAllWorkbenches)
+                .keyboardShortcut("o", modifiers: [.command, .shift])
+            Group {
+                Button("") { Task { await vm.newPanelSession() } }
+                    .keyboardShortcut("t", modifiers: .command)
+                ForEach(1...SessionSwitcherPresentation.maxShortcut, id: \.self) { n in
+                    Button("") { Task { await vm.openSession(atShortcut: n) } }
+                        .keyboardShortcut(KeyEquivalent(Character(String(n))), modifiers: .command)
+                }
+            }
+            .disabled(!vm.hasWorkbenchPage)
+        }
+        .hidden()
     }
 }

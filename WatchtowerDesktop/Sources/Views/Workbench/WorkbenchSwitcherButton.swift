@@ -12,15 +12,16 @@ struct WorkbenchSwitcherActions {
 
 /// `▦ <workbench> ▾` (board #250, variant F): the workbench switcher's
 /// button and its popover. The sessions panel's header fills its width
-/// with it.
+/// with it; the collapsed title row (#251) sizes it to the name.
 struct WorkbenchSwitcher: View {
     @Bindable var vm: WorkbenchesViewModel
     let project: Workbench
     let actions: WorkbenchSwitcherActions
+    var fillsWidth = true
     @State private var showsPopover = false
 
     var body: some View {
-        WorkbenchSwitcherButton(name: project.name) { showsPopover.toggle() }
+        WorkbenchSwitcherButton(name: project.name, fillsWidth: fillsWidth) { showsPopover.toggle() }
             .popover(isPresented: $showsPopover, arrowEdge: .bottom) {
                 WorkbenchSwitcherPopover(
                     vm: vm,
@@ -48,6 +49,7 @@ struct WorkbenchSwitcher: View {
 /// the click target.
 struct WorkbenchSwitcherButton: View {
     let name: String
+    var fillsWidth = true
     let action: () -> Void
 
     var body: some View {
@@ -63,7 +65,7 @@ struct WorkbenchSwitcherButton: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: fillsWidth ? .infinity : nil, alignment: .leading)
             .contentShape(Rectangle())
         }
         .buttonStyle(.borderless)

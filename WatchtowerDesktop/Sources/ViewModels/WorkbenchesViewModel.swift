@@ -134,6 +134,13 @@ final class WorkbenchesViewModel {
     /// Always nil or `selectedWorkbenchID`: selecting a project drills into
     /// it, Back sets it to nil.
     var drilledWorkbenchID: Int64?
+    /// Whether the left panel is shown. Persisted under the key the view's
+    /// `@AppStorage` used (the `projects.` prefix predates the rename, spec
+    /// 2026-10-02 A1), so the owner's choice carries over.
+    var panelVisible: Bool {
+        didSet { defaults.set(panelVisible, forKey: Self.panelVisibleKey) }
+    }
+    static let panelVisibleKey = "projects.panelVisible"
     /// The standalone terminal on screen; mutually exclusive with
     /// `selectedWorkbenchID` (setting a project clears it).
     var selectedStandaloneID: Int64?
@@ -276,6 +283,7 @@ final class WorkbenchesViewModel {
         self.cli = cli
         self.defaults = defaults
         self.terminalCenter = terminalCenter
+        panelVisible = defaults.object(forKey: Self.panelVisibleKey) as? Bool ?? true
         codeFiles = CodeFilesCenter(defaults: defaults)
         viewed = defaults.dictionary(forKey: Self.viewedDocumentsKey) as? [String: String] ?? [:]
         if let cli {
