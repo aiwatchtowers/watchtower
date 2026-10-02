@@ -100,13 +100,14 @@ func TestLoad_LeavesActiveWorkspaceEmptyWithoutAnyDatabase(t *testing.T) {
 	require.Empty(t, cfg.ActiveWorkspace)
 
 	// No workspace holds a database yet, so the hint offers both ways to create
-	// one: Slack via auth login, or a named workspace for a Google/Jira-only
+	// one: Slack via auth login, or workspace init for a Google/Jira-only
 	// start. Never config init — it rewrites the config.yaml that was just read.
+	// ErrNoWorkspace marks this case for workspace init.
 	err = cfg.ValidateWorkspace()
-	require.Error(t, err)
+	require.ErrorIs(t, err, ErrNoWorkspace)
 	require.Contains(t, err.Error(), "no workspace with a database was found")
 	require.Contains(t, err.Error(), "'watchtower auth login'")
-	require.Contains(t, err.Error(), "'watchtower config set active_workspace <name>'")
+	require.Contains(t, err.Error(), "'watchtower workspace init'")
 	require.NotContains(t, err.Error(), "config init")
 	require.NotContains(t, err.Error(), "several workspaces")
 }

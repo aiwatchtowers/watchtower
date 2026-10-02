@@ -1,0 +1,252 @@
+package cmd
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"log"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/spf13/cobra"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"watchtower/internal/auth"
+	"watchtower/internal/config"
+	"watchtower/internal/db"
+)
+
+// workspaceInitHome isolates HOME (the data root) and points flagConfig at a
+// config file that does not exist yet — a clean install before onboarding.
+func workspaceInitHome(t *testing.T) (home, configPath string) {
+	t.Helper()
+	home = t.TempDir()
+	t.Setenv("HOME", home)
+	configPath = filepath.Join(t.TempDir(), "config.yaml")
+	old := flagConfig
+	flagConfig = configPath
+	t.Cleanup(func() { flagConfig = old })
+	return home, configPath
+}
+
+// workspaceDirs lists the workspace directories under the data root.
+func workspaceDirs(t *testing.T) []string {
+	t.Helper()
+	root, err := config.DataRoot()
+	require.NoError(t, err)
+	entries, err := os.ReadDir(root)
+	require.NoError(t, err)
+	var names []string
+	for _, e := range entries {
+		if e.IsDir() {
+			names = append(names, e.Name())
+		}
+	}
+	return names
+}
+
+func TestWorkspaceInit_FreshHomeCreatesDefaultWorkspace(t *testing.T) {
+	_, configPath := workspaceInitHome(t)
+
+	stdout, _, err := runRootCmd(t, []*cobra.Command{workspaceInitCmd},
+		"workspace", "init", "--json", "--config", configPath)
+	require.NoError(t, err)
+
+	var res workspaceInitResult
+	require.NoError(t, json.Unmarshal([]byte(stdout), &res))
+	assert.Equal(t, "default", res.Workspace)
+	assert.True(t, res.Created)
+	assert.FileExists(t, res.DBPath)
+
+	cfg, err := config.Load(configPath)
+	require.NoError(t, err)
+	assert.Equal(t, "default", cfg.ActiveWorkspace)
+	data, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "active_workspace: default",
+		"the workspace is recorded in the file, not only resolved from disk")
+}
+
+func TestWorkspaceInit_CustomName(t *testing.T) {
+	_, configPath := workspaceInitHome(t)
+
+	res, err := initWorkspace(configPath, "acme")
+	require.NoError(t, err)
+	assert.Equal(t, "acme", res.Workspace)
+	assert.Equal(t, []string{"acme"}, workspaceDirs(t))
+}
+
+func TestWorkspaceInit_RejectsInvalidName(t *testing.T) {
+	_, configPath := workspaceInitHome(t)
+
+	_, err := initWorkspace(configPath, "../escape")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid workspace name")
+	assert.NoFileExists(t, configPath)
+}
+
+func TestWorkspaceInit_RepeatIsNoOp(t *testing.T) {
+	_, configPath := workspaceInitHome(t)
+
+	first, err := initWorkspace(configPath, "default")
+	require.NoError(t, err)
+	before, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+
+	second, err := initWorkspace(configPath, "other")
+	require.NoError(t, err)
+	assert.Equal(t, "default", second.Workspace, "an existing workspace wins over --name")
+	assert.False(t, second.Created)
+	assert.Equal(t, first.DBPath, second.DBPath)
+
+	after, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	assert.Equal(t, string(before), string(after), "a repeat run must not rewrite config.yaml")
+	assert.Equal(t, []string{"default"}, workspaceDirs(t))
+}
+
+func TestWorkspaceInit_KeepsAnExplicitWorkspace(t *testing.T) {
+	_, configPath := workspaceInitHome(t)
+	require.NoError(t, os.WriteFile(configPath, []byte("active_workspace: acme\n"), 0o600))
+
+	res, err := initWorkspace(configPath, "default")
+	require.NoError(t, err)
+	assert.Equal(t, "acme", res.Workspace)
+	assert.True(t, res.Created, "the named workspace had no database yet")
+	assert.Equal(t, []string{"acme"}, workspaceDirs(t))
+}
+
+// A config without active_workspace on a data root holding exactly one
+// workspace database resolves to it: init adopts that workspace and writes
+// its name, instead of creating "default" beside it.
+func TestWorkspaceInit_AdoptsTheSingleExistingWorkspace(t *testing.T) {
+	home, configPath := workspaceInitHome(t)
+	seedWorkspaceDB(t, home, "acme")
+
+	res, err := initWorkspace(configPath, "default")
+	require.NoError(t, err)
+	assert.Equal(t, "acme", res.Workspace)
+	assert.False(t, res.Created)
+	data, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "active_workspace: acme")
+}
+
+func TestWorkspaceInit_RefusesWhenSeveralWorkspacesHoldADatabase(t *testing.T) {
+	home, configPath := workspaceInitHome(t)
+	seedWorkspaceDB(t, home, "alpha")
+	seedWorkspaceDB(t, home, "zenith")
+
+	_, err := initWorkspace(configPath, "default")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "several workspaces hold a database")
+	assert.ElementsMatch(t, []string{"alpha", "zenith"}, workspaceDirs(t))
+	assert.NoFileExists(t, configPath)
+}
+
+// After init, the commands that used to fail without a Slack login work:
+// the db-migrate preamble, the sync config check, the Google and Jira account
+// commands, and a daemon that has no sources and idles.
+func TestWorkspaceInit_UnblocksCommandsWithoutSlack(t *testing.T) {
+	_, configPath := workspaceInitHome(t)
+	_, err := initWorkspace(configPath, "default")
+	require.NoError(t, err)
+
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	require.NoError(t, database.Close())
+
+	cfg, err := config.Load(configPath)
+	require.NoError(t, err)
+	require.NoError(t, validateSyncConfig(cfg))
+
+	stdout, _, err := runRootCmd(t, nil, "google", "accounts", "--config", configPath)
+	require.NoError(t, err)
+	assert.Contains(t, stdout, "No Google accounts connected.")
+
+	_, _, err = runRootCmd(t, nil, "jira", "accounts", "--config", configPath)
+	require.NoError(t, err)
+
+	database, err = db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	defer database.Close()
+	logger := log.New(io.Discard, "", 0)
+	orchestrators := wireSlackSyncers(database, cfg, logger)
+	assert.Empty(t, orchestrators)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan error, 1)
+	go func() { done <- runSyncDaemon(ctx, cfg, database, logger, orchestrators) }()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(60 * time.Second):
+		t.Fatal("a daemon with no sources did not stop on a cancelled context")
+	}
+}
+
+func TestSaveAuthResult_AfterWorkspaceInitReusesTheWorkspace(t *testing.T) {
+	stubSlackIdentityServer(t, "U456", "T123", "Acme Corp", "acme")
+	_, configPath := workspaceInitHome(t)
+	_, err := initWorkspace(configPath, "default")
+	require.NoError(t, err)
+
+	result := &auth.OAuthResult{AccessToken: "xoxp-acme", TeamID: "T123", TeamName: "Acme Corp", UserID: "U456"}
+	info, err := saveAuthResult(newSaveAuthResultCmd(), result)
+	require.NoError(t, err)
+	assert.Equal(t, "default", info.Workspace)
+	assert.Equal(t, []string{"default"}, workspaceDirs(t), "a Slack login must not fork a second workspace")
+
+	cfg, err := config.Load(configPath)
+	require.NoError(t, err)
+	assert.Equal(t, "default", cfg.ActiveWorkspace)
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	accounts, err := database.ListSlackAccounts()
+	require.NoError(t, err)
+	require.NoError(t, database.Close())
+	require.Len(t, accounts, 1)
+	assert.Equal(t, "T123", accounts[0].TeamID)
+
+	// A re-login into the same team stays in the same workspace too.
+	info, err = saveAuthResult(newSaveAuthResultCmd(), result)
+	require.NoError(t, err)
+	assert.Equal(t, "default", info.Workspace)
+	assert.Equal(t, []string{"default"}, workspaceDirs(t))
+}
+
+// A login into a different team from a workspace whose account #1 is already
+// another team keeps the team-named workspace: reusing it would re-consent
+// account #1 with the other team's token and mix the two teams' data.
+func TestSaveAuthResult_DifferentTeamKeepsTeamNamedWorkspace(t *testing.T) {
+	_, configPath := workspaceInitHome(t)
+	_, err := initWorkspace(configPath, "default")
+	require.NoError(t, err)
+
+	stubSlackIdentityServer(t, "U456", "T123", "Acme Corp", "acme")
+	_, err = saveAuthResult(newSaveAuthResultCmd(),
+		&auth.OAuthResult{AccessToken: "xoxp-acme", TeamID: "T123", TeamName: "Acme Corp", UserID: "U456"})
+	require.NoError(t, err)
+
+	stubSlackIdentityServer(t, "U789", "T999", "Beta Inc", "beta")
+	info, err := saveAuthResult(newSaveAuthResultCmd(),
+		&auth.OAuthResult{AccessToken: "xoxp-beta", TeamID: "T999", TeamName: "Beta Inc", UserID: "U789"})
+	require.NoError(t, err)
+	assert.Equal(t, "beta-inc", info.Workspace)
+	assert.ElementsMatch(t, []string{"default", "beta-inc"}, workspaceDirs(t))
+}
+
+// seedWorkspaceDB creates a migrated watchtower.db for workspace name under
+// home's data root.
+func seedWorkspaceDB(t *testing.T, home, name string) {
+	t.Helper()
+	dir := filepath.Join(home, ".local", "share", "watchtower", name)
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	database, err := db.Open(filepath.Join(dir, "watchtower.db"))
+	require.NoError(t, err)
+	require.NoError(t, database.Close())
+}

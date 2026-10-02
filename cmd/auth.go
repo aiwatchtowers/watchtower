@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -14,7 +13,6 @@ import (
 	"watchtower/internal/db"
 
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 )
 
 var authCmd = &cobra.Command{
@@ -254,6 +252,9 @@ type authResultInfo struct {
 // defaults) so a fresh install has a resolvable workspace/DB path, but the
 // Slack token itself now lives only in the DB row + token file.
 //
+// The workspace is the config's existing one when slackLoginWorkspace says a
+// login belongs there; otherwise it is named after the Slack team.
+//
 // Behaves as the legacy single-account alias: it seeds account #1 from any
 // pre-multi-account config token, then re-consents account #1 when one already
 // exists (like `slack login --account 1`) or creates it when none does (like
@@ -263,40 +264,19 @@ func saveAuthResult(cmd *cobra.Command, result *auth.OAuthResult) (*authResultIn
 		fmt.Fprintf(os.Stderr, "Warning: token expires in %d seconds. Token rotation is not yet supported.\n", result.ExpiresIn)
 	}
 
-	workspace := sanitizeWorkspaceName(result.TeamName)
-	if workspace == "" {
-		workspace = result.TeamID
-	}
-
 	configPath := flagConfig
-	configDir := filepath.Dir(configPath)
-	if err := os.MkdirAll(configDir, 0o700); err != nil {
-		return nil, fmt.Errorf("creating config directory: %w", err)
+	workspace, err := slackLoginWorkspace(configPath, result.TeamID)
+	if err != nil {
+		return nil, err
 	}
-
-	v := viper.New()
-	v.SetConfigFile(configPath)
-	_ = v.ReadInConfig()
-
-	v.Set("active_workspace", workspace)
-
-	defaults := map[string]any{
-		"ai.context_budget":         config.DefaultAIContextBudget,
-		"sync.workers":              config.DefaultSyncWorkers,
-		"sync.initial_history_days": config.DefaultInitialHistDays,
-		"sync.poll_interval":        config.DefaultPollInterval.String(),
-		"sync.sync_threads":         config.DefaultSyncThreads,
-		"sync.sync_on_wake":         config.DefaultSyncOnWake,
-		"digest.enabled":            config.DefaultDigestEnabled,
-		"digest.min_messages":       config.DefaultDigestMinMsgs,
-	}
-	for key, val := range defaults {
-		if !v.IsSet(key) {
-			v.Set(key, val)
+	if workspace == "" {
+		workspace = sanitizeWorkspaceName(result.TeamName)
+		if workspace == "" {
+			workspace = result.TeamID
 		}
 	}
 
-	if err := writeConfigAtomic(v, configPath); err != nil {
+	if err := writeWorkspaceScaffold(configPath, workspace, true); err != nil {
 		return nil, err
 	}
 
@@ -335,6 +315,48 @@ func saveAuthResult(cmd *cobra.Command, result *auth.OAuthResult) (*authResultIn
 	}
 
 	return &authResultInfo{workspace, result.TeamID, result.UserID}, nil
+}
+
+// slackLoginWorkspace returns the existing workspace a Slack login into team
+// teamID must reuse, or "" to name the workspace after the team (the
+// pre-onboarding-v2 behavior). An existing workspace is one the config
+// selects (explicitly or as the single workspace holding a database) whose
+// database already exists. It is reused when its database has no Slack
+// account yet — `workspace init` created it, or the owner started with
+// Google or Jira — or when account #1 (the account this login re-consents)
+// is already this team, so connecting Slack later never forks a second
+// database. A login into a different team from a Slack-connected workspace,
+// or onto a legacy config token not migrated yet, keeps the team-named
+// workspace: re-consenting account #1 with another team's token would mix two
+// teams' data under one namespace.
+func slackLoginWorkspace(configPath, teamID string) (string, error) {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return "", fmt.Errorf("loading config: %w", err)
+	}
+	if cfg.ValidateWorkspace() != nil {
+		return "", nil
+	}
+	if _, err := os.Stat(cfg.DBPath()); err != nil {
+		return "", nil
+	}
+
+	database, err := db.Open(cfg.DBPath())
+	if err != nil {
+		return "", fmt.Errorf("opening database: %w", err)
+	}
+	defer database.Close()
+	accounts, err := database.ListSlackAccounts()
+	if err != nil {
+		return "", fmt.Errorf("listing slack accounts: %w", err)
+	}
+	switch {
+	case len(accounts) == 0 && legacySlackConfigToken(cfg) == "":
+		return cfg.ActiveWorkspace, nil
+	case len(accounts) > 0 && accounts[0].TeamID == teamID:
+		return cfg.ActiveWorkspace, nil
+	}
+	return "", nil
 }
 
 var sanitizeRe = regexp.MustCompile(`[^a-z0-9_-]+`)
