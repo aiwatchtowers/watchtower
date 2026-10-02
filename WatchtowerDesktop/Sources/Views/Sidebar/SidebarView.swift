@@ -4,6 +4,10 @@ import WatchtowerCore
 
 struct SidebarView: View {
     @Binding var selection: SidebarDestination
+    /// The folded icon rail (⌘B) instead of the full menu: the same items,
+    /// counts and visibility rules, drawn as icons with dot badges, and each
+    /// section folded into one group icon (see `railBody`).
+    var compact = false
     @Environment(AppState.self) private var appState
     @Environment(\.openSettings) private var openSettings
 
@@ -14,6 +18,14 @@ struct SidebarView: View {
     /// Destination ids the user has hidden into their section's "Hidden" sub-list.
     /// Held in @State so hide/show re-renders; persisted to UserDefaults.
     @State private var hiddenItems: Set<String> = Self.loadHiddenItems()
+
+    /// The one section expanded in the icon rail (an accordion), or nil.
+    /// Separate from `collapsedSections` so folding the menu never rewrites
+    /// the expanded menu's own per-section choices; persisted to UserDefaults.
+    @State private var railExpandedSection: String? = UserDefaults.standard.string(forKey: Self.railExpandedKey)
+
+    /// Shows the full next-meeting card (with Join) from the rail's compact chip.
+    @State private var showsMeetingPopover = false
 
     /// DB-derived connection check for the "connect" badge on the Calendar
     /// item — reuses `GoogleConnectFlow.shared.calendar` (wired to a dbPool
@@ -37,6 +49,7 @@ struct SidebarView: View {
     }
 
     private static let hiddenItemsKey = "sidebar.hiddenItems"
+    private static let railExpandedKey = "sidebar.rail.expandedSection"
 
     private static func loadHiddenItems() -> Set<String> {
         Set(UserDefaults.standard.stringArray(forKey: hiddenItemsKey) ?? [])
@@ -68,6 +81,27 @@ struct SidebarView: View {
     private var catchUpTotalCount: Int { counts?.catchUpTotalCount ?? 0 }
 
     var body: some View {
+        Group {
+            if compact { railBody } else { menuBody }
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, compact ? 6 : 8)
+        .frame(maxHeight: .infinity)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .onAppear {
+            googleAuth.checkStatus()
+            expandSectionContainingSelection()
+            expandRailSectionContainingSelection()
+        }
+        .onChange(of: selection) { _, _ in
+            googleAuth.checkStatus()
+            expandSectionContainingSelection()
+            expandRailSectionContainingSelection()
+        }
+        .onChange(of: compact) { _, _ in expandRailSectionContainingSelection() }
+    }
+
+    private var menuBody: some View {
         VStack(alignment: .leading, spacing: 2) {
             ForEach(SidebarDestination.rootItems.filter { $0.isVisible(disabledFeatures: disabledFeatures) }) { item in
                 sidebarButton(item)
@@ -139,18 +173,6 @@ struct SidebarView: View {
                 .buttonStyle(.plain)
             }
         }
-        .padding(.vertical, 8)
-        .padding(.horizontal, 8)
-        .frame(maxHeight: .infinity)
-        .background(Color(nsColor: .windowBackgroundColor))
-        .onAppear {
-            googleAuth.checkStatus()
-            expandSectionContainingSelection()
-        }
-        .onChange(of: selection) { _, _ in
-            googleAuth.checkStatus()
-            expandSectionContainingSelection()
-        }
     }
 
     /// Expands `selection`'s section if it's currently collapsed. Called both
@@ -217,14 +239,7 @@ struct SidebarView: View {
         } else {
             let count = self.count(for: item)
             if count > 0 {
-                capsuleBadge(count, color: item == .tracks ? .orange
-                    : item == .memory ? .orange
-                    : item == .ideas ? .orange
-                    : item == .inbox ? .blue
-                    : item == .targets && overdueTaskCount > 0 ? .red
-                    : item == .targets ? .blue
-                    : item == .workbench ? .blue
-                    : .red)
+                capsuleBadge(count, color: Self.badgeColor(for: item, overdue: overdueTaskCount > 0))
             }
         }
     }
@@ -400,6 +415,234 @@ struct SidebarView: View {
         }
     }
 
+    // MARK: - Badge colours (shared by the menu and the rail)
+
+    /// The colour of an item's count badge: the capsule in the menu, the dot
+    /// in the rail. Targets turn red once anything is overdue.
+    static func badgeColor(for item: SidebarDestination, overdue: Bool) -> Color {
+        switch item {
+        case .tracks, .memory, .ideas: .orange
+        case .inbox, .workbench: .blue
+        case .targets: overdue ? .red : .blue
+        default: .red
+        }
+    }
+
+    /// The rail's dot for an item, or nil for none — the menu's badge rule
+    /// without the number: Day Plan's conflict dot, Calendar's not-connected
+    /// indicator, otherwise `badgeColor` whenever the count is positive.
+    static func railDotColor(
+        for item: SidebarDestination,
+        count: Int,
+        overdue: Bool,
+        dayPlanHasConflicts: Bool,
+        calendarConnected: Bool
+    ) -> Color? {
+        switch item {
+        case .dayPlan: dayPlanHasConflicts ? .red : nil
+        case .calendar: calendarConnected ? nil : .orange
+        default: count > 0 ? badgeColor(for: item, overdue: overdue) : nil
+        }
+    }
+
+    /// A rail icon's tooltip: the title, plus " · <count>" when there is one.
+    static func railHelp(title: String, count: Int) -> String {
+        count > 0 ? "\(title) · \(count)" : title
+    }
+
+    // MARK: - Icon rail accordion
+
+    /// The rail's expanded section after clicking `section`'s group icon:
+    /// clicking the open one closes it, clicking another opens it and closes
+    /// the rest — at most one section is expanded in the rail.
+    static func railSection(afterToggling section: SidebarSection, current: String?) -> String? {
+        current == section.id ? nil : section.id
+    }
+
+    /// The rail's expanded section for `destination`: its own section when it
+    /// has one (the selection is never tucked away in a closed group), else
+    /// whatever was expanded — the rail twin of `expandingSection`.
+    static func railSection(for destination: SidebarDestination, current: String?) -> String? {
+        SidebarSection.containing(destination)?.id ?? current
+    }
+
+    private func setRailExpandedSection(_ id: String?) {
+        guard id != railExpandedSection else { return }
+        railExpandedSection = id
+        UserDefaults.standard.set(id, forKey: Self.railExpandedKey)
+    }
+
+    private func expandRailSectionContainingSelection() {
+        setRailExpandedSection(Self.railSection(for: selection, current: railExpandedSection))
+    }
+
+    // MARK: - Icon rail
+
+    private var railBody: some View {
+        VStack(spacing: 2) {
+            ForEach(SidebarDestination.rootItems.filter { $0.isVisible(disabledFeatures: disabledFeatures) }) { item in
+                railButton(item)
+            }
+
+            ForEach(SidebarSection.ordered) { section in
+                railSectionView(section)
+            }
+
+            railSeparator
+
+            ForEach(SidebarDestination.mainTrailingItems.filter { $0.isVisible(disabledFeatures: disabledFeatures) }) { item in
+                railButton(item)
+            }
+
+            Spacer()
+
+            SidebarProgressView(compact: true)
+
+            railSeparator
+
+            ForEach(SidebarDestination.toolItems.filter { $0.isVisible(disabledFeatures: disabledFeatures) }) { item in
+                railButton(item)
+            }
+
+            railFooter
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var railSeparator: some View {
+        Divider()
+            .frame(width: 24)
+            .padding(.vertical, 4)
+    }
+
+    private func railIcon(_ systemName: String, isSelected: Bool, tint: Color = .secondary, dot: Color?) -> some View {
+        Image(systemName: systemName)
+            .font(.system(size: 14))
+            .foregroundStyle(isSelected ? .white : tint)
+            .frame(width: 34, height: 28)
+            .background(
+                isSelected ? Color.accentColor : Color.clear,
+                in: RoundedRectangle(cornerRadius: 6)
+            )
+            .overlay(alignment: .topTrailing) {
+                if let dot {
+                    Circle()
+                        .fill(dot)
+                        .frame(width: 6, height: 6)
+                        .offset(x: -3, y: 3)
+                }
+            }
+            .contentShape(Rectangle())
+    }
+
+    private func railButton(_ item: SidebarDestination) -> some View {
+        let count = count(for: item)
+        let dot = Self.railDotColor(
+            for: item,
+            count: count,
+            overdue: overdueTaskCount > 0,
+            dayPlanHasConflicts: appState.dayPlanViewModel?.hasConflicts == true,
+            calendarConnected: googleAuth.isConnected
+        )
+        var help = Self.railHelp(title: item.title, count: count)
+        if item == .calendar, !googleAuth.isConnected {
+            help += " · Google is not connected"
+        }
+        return Button {
+            selection = item
+        } label: {
+            railIcon(item.icon, isSelected: selection == item, dot: dot)
+        }
+        .buttonStyle(.plain)
+        .help(help)
+    }
+
+    @ViewBuilder
+    private func railSectionView(_ section: SidebarSection) -> some View {
+        let items = Self.visibleItems(in: section, hidden: hiddenItems, disabledFeatures: disabledFeatures)
+        if !items.isEmpty {
+            let expanded = railExpandedSection == section.id
+            let badge = sectionBadgeCount(section)
+            railSeparator
+            VStack(spacing: 2) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        setRailExpandedSection(Self.railSection(afterToggling: section, current: railExpandedSection))
+                    }
+                } label: {
+                    // A closed group holding the selection keeps an accent
+                    // tint, so the current tab is never invisible.
+                    railIcon(
+                        section.railIcon,
+                        isSelected: false,
+                        tint: !expanded && items.contains(selection) ? .accentColor : .secondary,
+                        dot: !expanded && badge > 0 ? sectionBadgeColor(section) : nil
+                    )
+                }
+                .buttonStyle(.plain)
+                .help(Self.railHelp(title: section.title.capitalized, count: expanded ? 0 : badge))
+
+                if expanded {
+                    ForEach(items) { item in
+                        railButton(item)
+                    }
+                }
+            }
+            .background(
+                expanded ? Color.primary.opacity(0.05) : Color.clear,
+                in: RoundedRectangle(cornerRadius: 8)
+            )
+        }
+    }
+
+    private static let railTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+        return formatter
+    }()
+
+    @ViewBuilder
+    private var railFooter: some View {
+        if let calVM = appState.calendarViewModel, let nextEvt = calVM.nextEvent {
+            Button {
+                showsMeetingPopover = true
+            } label: {
+                VStack(spacing: 1) {
+                    Image(systemName: "calendar")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                    Text(Self.railTimeFormatter.string(from: nextEvt.startDate))
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+                .frame(width: 40, height: 32)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(nextEvt.title)
+            .popover(isPresented: $showsMeetingPopover, arrowEdge: .trailing) {
+                SidebarNextMeetingCard(event: nextEvt, center: appState.meetingRecorderCenter)
+                    .frame(width: 240)
+                    .padding(.vertical, 8)
+            }
+        }
+
+        if JiraQueries.isConnected() {
+            railIcon("bolt.horizontal.circle.fill", isSelected: false, tint: .blue, dot: nil)
+                .help("Jira connected")
+        }
+
+        if appState.updateService.isUpdateAvailable {
+            Button {
+                appState.settingsTab = .system
+                openSettings()
+            } label: {
+                railIcon("arrow.down.circle.fill", isSelected: false, tint: .blue, dot: nil)
+            }
+            .buttonStyle(.plain)
+            .help("Update Available")
+        }
+    }
 }
 
 extension Text {

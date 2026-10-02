@@ -84,8 +84,15 @@ struct MainNavigationView: View {
         return auth.updatedAt != dismissedAuthTimestamp
     }
 
+    /// Menu column widths: the full menu, and the icon rail ⌘B folds it into.
+    private static let menuWidth: CGFloat = 180
+    private static let railWidth: CGFloat = 52
+
+    /// The fold/unfold toggle at the top of the menu column — leading in the
+    /// full menu, centred as the rail's first item.
     private var sidebarToggleRow: some View {
         HStack(spacing: 8) {
+            if !showMenu { Spacer(minLength: 0) }
             Button {
                 withAnimation(.easeInOut(duration: 0.2)) {
                     showMenu.toggle()
@@ -95,10 +102,10 @@ struct MainNavigationView: View {
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.borderless)
-            .help("Toggle Menu")
+            .help(showMenu ? "Collapse Menu (⌘B)" : "Expand Menu (⌘B)")
             .keyboardShortcut("b", modifiers: [.command])
 
-            Spacer()
+            Spacer(minLength: 0)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
@@ -109,31 +116,21 @@ struct MainNavigationView: View {
         VStack(spacing: 0) {
             // Content
             HStack(spacing: 0) {
-                if showMenu {
-                    // Left sidebar with toggle button in toolbar row
-                    VStack(spacing: 0) {
-                        sidebarToggleRow
-
-                        SidebarView(selection: $state.selectedDestination)
-                    }
-                    .frame(width: 180)
-                    .background(Color(nsColor: .windowBackgroundColor))
-                    .transition(.move(edge: .leading).combined(with: .opacity))
-
-                    Divider()
-                }
-
-                // Main content
+                // Menu column: the full menu, or the icon rail when folded (⌘B).
                 VStack(spacing: 0) {
-                    if !showMenu {
-                        sidebarToggleRow
-                            .background(Color(nsColor: .windowBackgroundColor))
-                    }
+                    sidebarToggleRow
 
-                    detailView
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .detailBackground()
+                    SidebarView(selection: $state.selectedDestination, compact: !showMenu)
                 }
+                .frame(width: showMenu ? Self.menuWidth : Self.railWidth)
+                .clipped()
+                .background(Color(nsColor: .windowBackgroundColor))
+
+                Divider()
+
+                detailView
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .detailBackground()
             }
 
             StatusBarView()
