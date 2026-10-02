@@ -56,8 +56,9 @@ final class WorkbenchesBackgroundRenderTests: XCTestCase {
             // the tab leaves unpainted shows.
             let page = try render(WorkbenchesView(vm: vm).environment(appState).background(Color.red), appearance)
             // Near both edges of the page and its middle (the Board), right
-            // of the panel whether the panel is shown or not.
-            for (x, y) in [(880, 15), (880, 55), (880, 480), (700, 300)] {
+            // of the panel whether the panel is shown or not; the title row
+            // between its title and the Go to… button at its right end.
+            for (x, y) in [(650, 15), (880, 55), (880, 480), (700, 300)] {
                 XCTAssertEqual(try pixel(page, x: x, y: y), detail, "\(name) workspace at (\(x), \(y))")
             }
             // The panel's empty space below its list.

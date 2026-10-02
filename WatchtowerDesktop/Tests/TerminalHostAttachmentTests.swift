@@ -82,4 +82,14 @@ final class TerminalHostAttachmentTests: XCTestCase {
         other.removeFromSuperview()
         XCTAssertNil(container.layer?.backgroundColor)
     }
+
+    /// An attach that changed something focuses (as before); an attached
+    /// terminal focuses only for a request it has not honoured yet.
+    func testTheHostFocusesAfterAnAttachOrForANewRequest() {
+        XCTAssertTrue(TerminalHostAttachment.needsFocus(attached: true, requested: nil, honoured: nil))
+        XCTAssertFalse(TerminalHostAttachment.needsFocus(attached: false, requested: nil, honoured: nil))
+        XCTAssertTrue(TerminalHostAttachment.needsFocus(attached: false, requested: 3, honoured: nil))
+        XCTAssertTrue(TerminalHostAttachment.needsFocus(attached: false, requested: 3, honoured: 2))
+        XCTAssertFalse(TerminalHostAttachment.needsFocus(attached: false, requested: 3, honoured: 3), "honoured once")
+    }
 }

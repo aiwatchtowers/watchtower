@@ -68,6 +68,33 @@ package enum WorkbenchQueries {
         }
     }
 
+    /// The switcher's rows (board #250): `summaries` plus the blocked count
+    /// and the session count and latest activity, in `summaries`' order.
+    package static func switcherSummaries(_ db: Database) throws -> [WorkbenchSwitcherSummary] {
+        var blocked: [Int64: Int] = [:]
+        for row in try Row.fetchAll(db, sql: """
+            SELECT project_id, COUNT(*) AS n FROM targets
+            WHERE project_id IS NOT NULL AND status = 'blocked' GROUP BY project_id
+            """) {
+            blocked[row["project_id"]] = row["n"]
+        }
+        var sessions: [Int64: (count: Int, last: String)] = [:]
+        for row in try Row.fetchAll(db, sql: """
+            SELECT project_id, COUNT(*) AS n, MAX(last_active_at) AS last FROM terminal_sessions
+            WHERE project_id IS NOT NULL GROUP BY project_id
+            """) {
+            sessions[row["project_id"]] = (row["n"], row["last"] ?? "")
+        }
+        return try summaries(db).map { summary in
+            WorkbenchSwitcherSummary(
+                summary: summary,
+                blockedTargets: blocked[summary.id] ?? 0,
+                sessionCount: sessions[summary.id]?.count ?? 0,
+                lastSessionActivity: sessions[summary.id]?.last ?? ""
+            )
+        }
+    }
+
     // MARK: - Documents
 
     package static func documents(_ db: Database, projectID: Int64) throws -> [WorkbenchDocument] {

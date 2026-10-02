@@ -60,6 +60,9 @@ final class TerminalCenter {
     /// Session ids the owner focused, most recent last, without duplicates —
     /// fed to `TerminalSessionPolicy.activeSession`.
     private(set) var focusOrder: [Int64] = []
+    /// The latest keyboard focus move asked into a session's terminal
+    /// (`requestKeyboardFocus`); its host honours each serial once.
+    private(set) var keyboardFocusRequest: KeyboardFocusRequest?
     @ObservationIgnored private var processes: [Int64: any TerminalSessionProcess] = [:]
     /// The row each process was started from, so a project's sessions can be
     /// found (and closed) after the project's rows are gone.
@@ -140,6 +143,24 @@ final class TerminalCenter {
     func focus(_ sessionID: Int64) {
         focusOrder.removeAll { $0 == sessionID }
         focusOrder.append(sessionID)
+    }
+
+    struct KeyboardFocusRequest: Equatable {
+        let sessionID: Int64
+        let serial: Int
+    }
+
+    /// Moves the keyboard into the session's terminal once its host is on
+    /// screen — also when that host shows it already, where attaching
+    /// changes nothing and so moves no focus (an overlay such as the go-to
+    /// palette took it away).
+    func requestKeyboardFocus(_ sessionID: Int64) {
+        keyboardFocusRequest = KeyboardFocusRequest(sessionID: sessionID, serial: (keyboardFocusRequest?.serial ?? 0) + 1)
+    }
+
+    /// The latest request's serial when it is for `sessionID`.
+    func keyboardFocusSerial(for sessionID: Int64) -> Int? {
+        keyboardFocusRequest.flatMap { $0.sessionID == sessionID ? $0.serial : nil }
     }
 
     enum PromptDelivery: Equatable {

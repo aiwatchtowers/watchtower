@@ -64,10 +64,35 @@ extension WorkbenchesViewModel {
     /// else the other one. nil when no session is visible (the panel lists
     /// only sessions).
     var panelSelection: WorkspacePane? {
-        guard let drilledWorkbenchID else { return nil }
-        let layout = layout(projectID: drilledWorkbenchID)
+        drilledWorkbenchID.flatMap(visibleSession(projectID:))
+    }
+
+    /// The collapsed header's session (board #251): the one on screen the
+    /// way `panelSelection` picks it, else the workbench's active one. nil
+    /// without a workbench page or when it has neither.
+    var headerSession: TerminalSession? {
+        guard let projectID = selectedWorkbenchID else { return nil }
+        if case let .session(id)? = visibleSession(projectID: projectID), let row = session(id, projectID: projectID) {
+            return row
+        }
+        return activeSessionID(projectID: projectID).flatMap { session($0, projectID: projectID) }
+    }
+
+    private func visibleSession(projectID: Int64) -> WorkspacePane? {
+        let layout = layout(projectID: projectID)
         let candidates = layout.expanded.map { [$0] } ?? [layout.secondary, layout.primary].compactMap(\.self)
         return candidates.first { if case .session = $0 { true } else { false } }
+    }
+
+    /// A workbench page is on screen: ⌘1…⌘9 and ⌘T act on it.
+    var hasWorkbenchPage: Bool {
+        selectedWorkbench != nil
+    }
+
+    /// The workbench whose switchers the title row carries: only while the
+    /// panel is hidden over its page (board #251, variant H).
+    var headerSwitcherWorkbench: Workbench? {
+        panelVisible ? nil : selectedWorkbench
     }
 
     /// A level-1 project click: selects it, which drills into it (the
@@ -76,14 +101,60 @@ extension WorkbenchesViewModel {
         selectedWorkbenchID = projectID
     }
 
-    /// A level-2 click on a session: it is opened (one not running starts)
-    /// and put on screen like any panel click.
-    func showFromPanel(sessionID id: Int64) async {
-        guard let projectID = drilledWorkbenchID else { return }
+    /// A workbench picked in the switcher (board #250): drilled into, and
+    /// its most recent session opened — the live one focused last, else the
+    /// latest active (a `claude` row resumes). No sessions: its page alone,
+    /// nothing starts. The workbench already on screen is left as it is;
+    /// a panel at level 1 drills into it.
+    func switchTo(workbenchID id: Int64) async {
+        guard selectedWorkbenchID != id else {
+            drill(into: id)
+            return
+        }
+        drill(into: id)
+        guard await loadSessions(projectID: id), selectedWorkbenchID == id else { return }
+        let rows = terminalSessions[id] ?? []
+        let active = activeSessionID(projectID: id)
+        if let row = rows.first(where: { $0.id == active }) ?? rows.first { await open(row) }
+    }
+
+    /// The switcher's "All Workbenches" (⌘⇧O): back to level 1, the panel
+    /// shown if hidden; the page stays on screen.
+    func showAllWorkbenches() {
+        drilledWorkbenchID = nil
+        panelVisible = true
+    }
+
+    /// ⌘1…⌘9: the n-th session of the workbench on screen, in the panel's
+    /// order, opened like a panel click. Out of range, or no workbench
+    /// page: nothing happens.
+    func openSession(atShortcut n: Int) async {
+        guard (1...SessionSwitcherPresentation.maxShortcut).contains(n), let projectID = selectedWorkbenchID else { return }
+        // With the panel hidden nothing may have read the list yet.
+        if terminalSessions[projectID] == nil {
+            guard await loadSessions(projectID: projectID), selectedWorkbenchID == projectID else { return }
+        }
+        let rows = orderedSessions(projectID: projectID)
+        guard n <= rows.count else { return }
+        await showSession(id: rows[n - 1].id)
+    }
+
+    /// The workbench's sessions running in this app (`TerminalCenter`, not the DB).
+    func liveSessionCount(workbenchID: Int64) -> Int {
+        guard let terminalCenter else { return 0 }
+        return terminalCenter.sessionIDs(ofWorkbench: workbenchID).intersection(terminalCenter.liveIDs).count
+    }
+
+    /// A level-2 click on a session — or a pick in the collapsed header's
+    /// switcher, or ⌘N — in the workbench on screen: it is opened (one not
+    /// running starts) and put on screen like any panel click.
+    func showSession(id: Int64) async {
+        guard let projectID = selectedWorkbenchID else { return }
         // The list may not be loaded yet (the panel loads it on appear).
         // A failed load already reports itself; the row is not "gone".
         if terminalSessions[projectID]?.contains(where: { $0.id == id }) != true {
-            guard await loadSessions(projectID: projectID) else { return }
+            // The owner may have moved to another page during the read.
+            guard await loadSessions(projectID: projectID), selectedWorkbenchID == projectID else { return }
         }
         guard let session = terminalSessions[projectID]?.first(where: { $0.id == id }) else {
             sessionActionErrors[projectID] = "That session no longer exists."
@@ -92,10 +163,11 @@ extension WorkbenchesViewModel {
         await open(session)
     }
 
-    /// Level 2's "New session": a fresh `claude` session of the drilled
-    /// project, put on screen like a panel click.
-    func newPanelSession() async {
-        guard let projectID = drilledWorkbenchID else { return }
+    /// Level 2's "New session" (and ⌘T): a fresh `claude` session of the
+    /// workbench on screen, put on screen like a panel click. The panel may
+    /// be hidden or at level 1 (`drilledWorkbenchID` is nil or this one).
+    func newSessionOnPage() async {
+        guard let projectID = selectedWorkbenchID else { return }
         await newSession(projectID: projectID)
     }
 

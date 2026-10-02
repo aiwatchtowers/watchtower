@@ -654,7 +654,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         let vm = makeVM()
         await vm.reload()
         vm.drill(into: p)
-        await vm.showFromPanel(sessionID: row.id)
+        await vm.showSession(id: row.id)
         vm.layout.split(with: .board)
         XCTAssertEqual(vm.panelSelection, .session(row.id))
         vm.toggleExpand(.board, projectID: p)
@@ -679,8 +679,8 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         vm.drill(into: p)
         vm.layout.show(.board)
 
-        await vm.showFromPanel(sessionID: first.id)
-        await vm.showFromPanel(sessionID: second.id)
+        await vm.showSession(id: first.id)
+        await vm.showSession(id: second.id)
 
         XCTAssertNotNil(vm.drilledSessions.first { $0.id == second.id }, "a legacy closed session is listed")
         XCTAssertEqual(vm.panelSelection, .session(second.id))
@@ -695,7 +695,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         vm.drill(into: p)
         vm.layout.show(.documents)
 
-        await vm.newPanelSession()
+        await vm.newSessionOnPage()
 
         let row = try XCTUnwrap(vm.drilledSessions.first)
         XCTAssertEqual(vm.panelSelection, .session(row.id))
@@ -760,8 +760,8 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         await vm.reload()
         vm.drill(into: p)
 
-        await vm.showFromPanel(sessionID: live.id)
-        await vm.showFromPanel(sessionID: failing.id)
+        await vm.showSession(id: live.id)
+        await vm.showSession(id: failing.id)
         processes.last?.exit(1)
 
         XCTAssertEqual(center.liveIDs, [live.id])
@@ -781,7 +781,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         await vm.reload()
         vm.drill(into: p)
 
-        await vm.showFromPanel(sessionID: 999)
+        await vm.showSession(id: 999)
 
         XCTAssertEqual(vm.sessionErrors[p], "That session no longer exists.")
         XCTAssertTrue(launches.isEmpty)
@@ -869,7 +869,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         vm.toggleSplit(projectID: p)
         XCTAssertEqual(vm.layout.visiblePanes, [.board])
 
-        await vm.showFromPanel(sessionID: row.id)
+        await vm.showSession(id: row.id)
         vm.layout.show(.board)
         XCTAssertEqual(launches.count, 1)
         vm.toggleSplit(projectID: p)
@@ -891,7 +891,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         let vm = makeVM()
         await vm.reload()
         vm.drill(into: p)
-        await vm.showFromPanel(sessionID: row.id)
+        await vm.showSession(id: row.id)
         vm.layout.split(with: .documents)
         let before = vm.layout
 
@@ -986,7 +986,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         let vm = makeVM()
         await vm.reload()
         vm.drill(into: p)
-        await vm.showFromPanel(sessionID: one.id)
+        await vm.showSession(id: one.id)
         XCTAssertEqual(vm.layout.visiblePanes, [.session(one.id)])
 
         await vm.showInPane(vm.layout.terminalSlot, item: .session(two.id), projectID: p)
@@ -1054,7 +1054,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         let vm = makeVM()
         await vm.reload()
         vm.drill(into: p)
-        await vm.showFromPanel(sessionID: row.id)
+        await vm.showSession(id: row.id)
         vm.layout.split(with: .board)
         vm.toggleExpand(.session(row.id), projectID: p)
         processes.last?.exit(1)
@@ -1182,7 +1182,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         XCTAssertEqual(vm.drilledSessions.map(\.id), [second.id, first.id])
 
         clock = clock.addingTimeInterval(60)
-        await vm.showFromPanel(sessionID: first.id)
+        await vm.showSession(id: first.id)
         XCTAssertEqual(vm.drilledSessions.map(\.id), [second.id, first.id], "opening does not raise it")
 
         vm.moveSessions(vm.drilledSessions, projectID: p, from: [1], to: 0)

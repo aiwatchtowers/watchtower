@@ -70,6 +70,15 @@ package enum TerminalSessionQueries {
         )
     }
 
+    /// Every workbench's sessions, most recently active first — the ⌘K
+    /// palette's data (board #252). Standalone terminals are left out.
+    package static func fetchAllWorkbenchSessions(_ db: Database) throws -> [TerminalSession] {
+        try TerminalSession.fetchAll(
+            db,
+            sql: "SELECT * FROM terminal_sessions WHERE project_id IS NOT NULL ORDER BY last_active_at DESC, id DESC"
+        )
+    }
+
     package static func fetchStandalone(_ db: Database) throws -> [TerminalSession] {
         try TerminalSession.fetchAll(
             db,

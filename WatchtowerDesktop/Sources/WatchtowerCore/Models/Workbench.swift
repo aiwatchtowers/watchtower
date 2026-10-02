@@ -276,3 +276,18 @@ package struct WorkbenchSummary: Identifiable, Equatable, Sendable {
 
     package var id: Int64 { project.id }
 }
+
+/// A row of the workbench switcher (board #250): the list row's summary plus
+/// what the switcher shows beside it. Live sessions are not here — they come
+/// from `TerminalCenter`, not the DB.
+package struct WorkbenchSwitcherSummary: Identifiable, Equatable, Sendable {
+    package let summary: WorkbenchSummary
+    /// `blocked` targets on the workbench's own board.
+    package let blockedTargets: Int
+    package let sessionCount: Int
+    /// `MAX(last_active_at)` of its sessions; empty when it has none.
+    package let lastSessionActivity: String
+
+    package var id: Int64 { summary.id }
+    package var project: Workbench { summary.project }
+}
