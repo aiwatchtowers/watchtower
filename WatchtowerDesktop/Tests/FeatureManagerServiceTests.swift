@@ -858,6 +858,23 @@ extension FeatureManagerServiceTests {
         #expect(service.pending.isEmpty)
     }
 
+    /// "Run setup again" without a change: the selection seeded from the
+    /// current set applies as a no-op.
+    @Test("A re-run's seeded selection applies without a write")
+    func rerunSelectionWritesNothing() async {
+        let (service, runner) = Self.makeService(stdout: Self.featuresListJSON)
+        await service.load()
+        let enabled = Set(service.features.filter { $0.state == "enabled" }.map(\.id))
+        let selection = OnboardingFeatureSelection.current(enabledIDs: enabled, savedGoals: [.development])
+
+        let applied = await service.applySelection(
+            enabled: selection.enabledFeatureIDs, managed: OnboardingFeaturePlan.managedFeatureIDs
+        )
+
+        #expect(applied)
+        #expect(runner.invocations == [["features", "list", "--json"], ["features", "list", "--json"]])
+    }
+
     @Test("applySelection() writes nothing when the live list cannot be read")
     func applySelectionSkipsWhenLoadFails() async {
         let (service, runner) = Self.makeService(

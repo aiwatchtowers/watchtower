@@ -16,6 +16,8 @@ final class OnboardingGoalsModelTests: XCTestCase {
         var languageError: Error?
         var featuresFailure: String?
         var appliedSelection: OnboardingFeatureSelection?
+        var historyUnset = false
+        var featuresChanged = false
     }
 
     private struct Failure: LocalizedError {
@@ -55,8 +57,10 @@ final class OnboardingGoalsModelTests: XCTestCase {
                 applyFeatures: {
                     spy.calls.append("features")
                     spy.appliedSelection = $0
-                    return spy.featuresFailure
-                }
+                    return (spy.featuresFailure, spy.featuresChanged)
+                },
+                historyDepthUnset: { spy.historyUnset },
+                setHistoryDepth: { spy.calls.append("history \($0)") }
             )
         )
     }
@@ -339,5 +343,101 @@ final class OnboardingGoalsModelTests: XCTestCase {
         await model.prepare(configuredLanguage: "German")
         XCTAssertEqual(model.language, "German", "the configured language is adopted again")
         XCTAssertEqual(model.cliCheck, .ready(provider: "claude"), "the CLI is checked again")
+    }
+
+    // MARK: - History depth
+
+    /// A config with no history depth gets the old onboarding's default,
+    /// written after the workspace exists; one that has it is left alone.
+    func testUnsetHistoryDepthGetsTheOldDefault() async {
+        spy.historyUnset = true
+        let model = await readyModel()
+        _ = await model.submit(hasSlackAccount: false)
+        XCTAssertEqual(spy.calls, ["workspace init", "history 3", "language Russian", "features"])
+    }
+
+    func testSetHistoryDepthIsLeftAlone() async {
+        let model = await readyModel()
+        _ = await model.submit(hasSlackAccount: false)
+        XCTAssertFalse(spy.calls.contains { $0.hasPrefix("history") })
+    }
+
+    // MARK: - Run setup again
+
+    /// A re-run with no change writes no language (and the features apply
+    /// as a no-op — `FeatureManagerServiceTests`).
+    func testRerunWithoutChangesWritesNoLanguage() async {
+        let model = makeModel()
+        let enabled = OnboardingFeaturePlan.enabledFeatureIDs(for: [.workCommunication])
+        model.seedForRerun(enabledFeatureIDs: enabled, language: "Polish")
+        await model.prepare(configuredLanguage: "German")
+        XCTAssertEqual(model.language, "Polish", "the seeded config language is kept")
+
+        _ = await model.submit(hasSlackAccount: true)
+
+        XCTAssertEqual(spy.calls, ["features"])
+        XCTAssertEqual(spy.appliedSelection?.enabledFeatureIDs, enabled)
+    }
+
+    func testRerunWithANewLanguageWritesIt() async {
+        let model = makeModel()
+        model.seedForRerun(enabledFeatureIDs: [], language: "Polish")
+        await model.prepare(configuredLanguage: nil)
+        model.language = "German"
+        _ = await model.submit(hasSlackAccount: true)
+        XCTAssertEqual(spy.calls, ["language German", "features"])
+    }
+
+    /// The reverse mapping: goals whose features are on; the saved goals win
+    /// among equal combinations; a hand-toggled set is "customized".
+    func testCurrentSelectionMapsBackToGoals() {
+        let wcTasks = OnboardingFeaturePlan.enabledFeatureIDs(for: [.workCommunication, .tasksAndJira])
+        let seeded = OnboardingFeatureSelection.current(
+            enabledIDs: wcTasks, savedGoals: [.workCommunication, .tasksAndJira, .development]
+        )
+        XCTAssertEqual(seeded.goals, [.workCommunication, .tasksAndJira, .development])
+        XCTAssertFalse(seeded.isCustomized)
+
+        let fromNothing = OnboardingFeatureSelection.current(enabledIDs: wcTasks, savedGoals: [])
+        XCTAssertEqual(fromNothing.goals, [.workCommunication, .tasksAndJira], "no extra goal without a reason")
+        XCTAssertFalse(fromNothing.isCustomized)
+
+        let devOnly = OnboardingFeatureSelection.current(
+            enabledIDs: OnboardingFeaturePlan.alwaysOnFeatureIDs, savedGoals: [.development]
+        )
+        XCTAssertEqual(devOnly.goals, [.development])
+    }
+
+    func testHandToggledSetIsCustomized() {
+        var enabled = OnboardingFeaturePlan.enabledFeatureIDs(for: [.workCommunication])
+        enabled.remove("ideas")
+        enabled.insert("memory")
+        enabled.insert("not-managed")
+        let seeded = OnboardingFeatureSelection.current(enabledIDs: enabled, savedGoals: [.development])
+        XCTAssertTrue(seeded.isCustomized)
+        XCTAssertTrue(seeded.goals.contains(.workCommunication), "the goals the set overlaps most, not the saved ones")
+        XCTAssertEqual(seeded.enabledFeatureIDs, enabled.subtracting(["not-managed"]))
+    }
+
+    // MARK: - What a Continue wrote
+
+    func testWroteChangesFollowsRealWrites() async {
+        let model = makeModel()
+        model.seedForRerun(enabledFeatureIDs: [], language: "Polish")
+        await model.prepare(configuredLanguage: nil)
+        _ = await model.submit(hasSlackAccount: true)
+        XCTAssertFalse(model.wroteChanges, "no language change, no feature change")
+
+        spy.featuresChanged = true
+        _ = await model.submit(hasSlackAccount: true)
+        XCTAssertTrue(model.wroteChanges)
+
+        model.seedForRerun(enabledFeatureIDs: [], language: "Polish")
+        XCTAssertFalse(model.wroteChanges, "a new run starts clean")
+        spy.featuresChanged = false
+        await model.prepare(configuredLanguage: nil)
+        model.language = "German"
+        _ = await model.submit(hasSlackAccount: true)
+        XCTAssertTrue(model.wroteChanges, "a language write counts")
     }
 }

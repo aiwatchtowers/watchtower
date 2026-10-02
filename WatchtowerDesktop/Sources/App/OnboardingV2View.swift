@@ -34,7 +34,8 @@ struct OnboardingV2View: View {
                         await appState.leaveOnboardingStep(
                             .aboutYou, route: appState.onboardingRoute, about: about, onRetry: onRetry
                         )
-                    }
+                    },
+                    isBusy: appState.isFinishingOnboarding
                 )
             case .complete:
                 EmptyView()
@@ -51,6 +52,16 @@ struct OnboardingV2View: View {
         .padding(.vertical, 28)
         .frame(maxWidth: 820)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay(alignment: .topTrailing) {
+            // A re-run from Settings can always go back, whatever the step
+            // (a broken CLI would otherwise hold it on Goals).
+            if appState.isOnboardingRerun {
+                Button("Cancel") { appState.cancelOnboardingRerun() }
+                    .keyboardShortcut(.cancelAction)
+                    .disabled(appState.isFinishingOnboarding || appState.onboardingGoals.isContinuing)
+                    .padding(16)
+            }
+        }
         .background(Color(nsColor: .windowBackgroundColor))
     }
 

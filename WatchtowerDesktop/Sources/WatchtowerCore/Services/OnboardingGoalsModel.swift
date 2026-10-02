@@ -17,18 +17,27 @@ package struct OnboardingGoalsActions {
     package var initWorkspace: () async throws -> Void
     /// `watchtower config set digest.language <name>`.
     package var setLanguage: (String) async throws -> Void
-    /// Applies the feature selection; returns the failure to show, nil when
-    /// every change landed.
-    package var applyFeatures: (OnboardingFeatureSelection) async -> String?
+    /// Applies the feature selection; returns the failure to show (nil when
+    /// every change landed) and whether any feature actually changed.
+    package var applyFeatures: (OnboardingFeatureSelection) async -> (failure: String?, changed: Bool)
+    /// Whether the config has no `sync.initial_history_days` yet — read
+    /// before `workspace init`, which fills in Go's default.
+    package var historyDepthUnset: @MainActor () -> Bool
+    /// `watchtower config set sync.initial_history_days <days>`.
+    package var setHistoryDepth: (Int) async throws -> Void
 
     package init(
         initWorkspace: @escaping () async throws -> Void,
         setLanguage: @escaping (String) async throws -> Void,
-        applyFeatures: @escaping (OnboardingFeatureSelection) async -> String?
+        applyFeatures: @escaping (OnboardingFeatureSelection) async -> (failure: String?, changed: Bool),
+        historyDepthUnset: @escaping @MainActor () -> Bool = { false },
+        setHistoryDepth: @escaping (Int) async throws -> Void = { _ in }
     ) {
         self.initWorkspace = initWorkspace
         self.setLanguage = setLanguage
         self.applyFeatures = applyFeatures
+        self.historyDepthUnset = historyDepthUnset
+        self.setHistoryDepth = setHistoryDepth
     }
 }
 
@@ -47,6 +56,10 @@ package final class OnboardingGoalsModel {
     /// All but Meetings: its calendar connection and transcription model are
     /// the heaviest setup, opted into deliberately.
     package static let defaultGoals: Set<OnboardingGoal> = [.workCommunication, .tasksAndJira, .development]
+    /// The Slack history the first sync fetches when nothing set it: the
+    /// old onboarding's default pick, kept so a fresh install syncs as much
+    /// as it used to.
+    package static let defaultHistoryDays = 3
 
     package var selection: OnboardingFeatureSelection
     /// An English language name, the `digest.language` value Continue writes.
@@ -57,6 +70,9 @@ package final class OnboardingGoalsModel {
     package private(set) var isContinuing = false
     package private(set) var continueError: String?
     package private(set) var savedGoals: Set<OnboardingGoal>
+    /// A Continue of this run changed the config (language, history depth)
+    /// or a feature: the daemon needs a restart to pick it up.
+    package private(set) var wroteChanges = false
 
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let checkCLI: () async -> OnboardingCLICheck
@@ -69,6 +85,9 @@ package final class OnboardingGoalsModel {
     /// re-appearing (Goals ↔ Customize) does not run another.
     @ObservationIgnored private var cliCheckStarted = false
     @ObservationIgnored private var languagePrepared = false
+    /// The language the config already holds on a re-run; Continue writes
+    /// the language only when it differs.
+    @ObservationIgnored private var configuredLanguage: String?
     /// Set once `workspace init` succeeded: a second Continue (back from
     /// Connect) does not run it again.
     @ObservationIgnored private var workspaceReady = false
@@ -149,7 +168,21 @@ package final class OnboardingGoalsModel {
         cliCheck = .checking
         continueError = nil
         languagePrepared = false
+        configuredLanguage = nil
         isCustomizingFeatures = false
+        wroteChanges = false
+    }
+
+    /// "Run setup again" starts from what is in effect now: the feature set
+    /// (`OnboardingFeatureSelection.current`) and the configured language
+    /// (`language`, English when the config names none — Go's default),
+    /// never the macOS default.
+    package func seedForRerun(enabledFeatureIDs: Set<String>, language: String) {
+        prepareForRerun()
+        selection = OnboardingFeatureSelection.current(enabledIDs: enabledFeatureIDs, savedGoals: savedGoals)
+        self.language = language
+        configuredLanguage = language
+        languagePrepared = true
     }
 
     package func toggle(_ goal: OnboardingGoal) {
@@ -172,6 +205,7 @@ package final class OnboardingGoalsModel {
         continueError = nil
         defer { isContinuing = false }
 
+        let historyUnset = actions.historyDepthUnset()
         if !hasSlackAccount && !workspaceReady {
             do {
                 try await actions.initWorkspace()
@@ -181,13 +215,28 @@ package final class OnboardingGoalsModel {
                 return nil
             }
         }
+        if historyUnset {
+            do {
+                try await actions.setHistoryDepth(Self.defaultHistoryDays)
+                wroteChanges = true
+            } catch {
+                continueError = "Could not save the history depth: \(error.localizedDescription)"
+                return nil
+            }
+        }
         do {
-            try await actions.setLanguage(language)
+            if language != configuredLanguage {
+                try await actions.setLanguage(language)
+                configuredLanguage = language
+                wroteChanges = true
+            }
         } catch {
             continueError = "Could not save the assistant language: \(error.localizedDescription)"
             return nil
         }
-        if let failure = await actions.applyFeatures(selection) {
+        let applied = await actions.applyFeatures(selection)
+        if applied.changed { wroteChanges = true }
+        if let failure = applied.failure {
             continueError = failure
             return nil
         }

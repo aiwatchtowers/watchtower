@@ -29,8 +29,11 @@ extension OnboardingGoalsModel {
                         enabled: selection.enabledFeatureIDs,
                         managed: OnboardingFeaturePlan.managedFeatureIDs
                     )
-                    return applied ? nil : (featureManager.loadError ?? "Could not apply the feature selection.")
-                }
+                    let changed = featureManager.lastSelectionChangeCount > 0
+                    return (applied ? nil : (featureManager.loadError ?? "Could not apply the feature selection."), changed)
+                },
+                historyDepthUnset: { ConfigService().initialHistoryDays == nil },
+                setHistoryDepth: { try await run(["config", "set", "sync.initial_history_days", "\($0)"]) }
             )
         )
     }

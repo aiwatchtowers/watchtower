@@ -1086,7 +1086,7 @@ struct OnboardingView: View {
                 guard let vm = onboardingVM else { return false }
                 return await vm.markOnboardingDone()
             },
-            startPipelines: {
+            startDaemon: {
                 appState.backgroundTaskManager.startPipelines(
                     legacyPeople: appState.analysisLegacyMode,
                     disabledFeatures: appState.featureManager.disabledFeatureIDs

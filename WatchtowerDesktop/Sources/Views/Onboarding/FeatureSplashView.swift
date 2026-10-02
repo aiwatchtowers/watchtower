@@ -474,12 +474,20 @@ struct FeatureSplashView: View {
         service.features.filter { OnboardingFeaturePlan.customizableFeatureIDs.contains($0.id) }
     }
 
-    /// Core entries, the features onboarding always switches on, and
-    /// Workbench (no feature switch at all), in that order.
-    private var alwaysOnTitles: [String] {
+    /// Core entries, the features onboarding always switches on (unless
+    /// this selection keeps one off — a re-run of a setup that turned it
+    /// off in Settings), and Workbench (no feature switch at all).
+    private func alwaysOnTitles(_ selection: OnboardingFeatureSelection) -> [String] {
         service.features
-            .filter { $0.core || OnboardingFeaturePlan.alwaysOnFeatureIDs.contains($0.id) }
+            .filter { $0.core || (OnboardingFeaturePlan.alwaysOnFeatureIDs.contains($0.id) && selection.isEnabled($0.id)) }
             .map(\.title) + ["Workbench"]
+    }
+
+    /// The always-on features this selection keeps off.
+    private func keptOffTitles(_ selection: OnboardingFeatureSelection) -> [String] {
+        service.features
+            .filter { OnboardingFeaturePlan.alwaysOnFeatureIDs.contains($0.id) && !selection.isEnabled($0.id) }
+            .map(\.title)
     }
 
     @ViewBuilder
@@ -502,8 +510,14 @@ struct FeatureSplashView: View {
                 }
             } else {
                 (Text("Always on: ").foregroundStyle(.secondary)
-                    + Text(alwaysOnTitles.joined(separator: " · ")))
+                    + Text(alwaysOnTitles(selection.wrappedValue).joined(separator: " · ")))
                     .font(.caption)
+                let keptOff = keptOffTitles(selection.wrappedValue)
+                if !keptOff.isEmpty {
+                    (Text("Off (as in Settings): ").foregroundStyle(.secondary)
+                        + Text(keptOff.joined(separator: " · ")))
+                        .font(.caption)
+                }
 
                 LazyVGrid(
                     columns: [GridItem(.flexible(), spacing: 14), GridItem(.flexible(), spacing: 14)],

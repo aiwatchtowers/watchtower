@@ -82,6 +82,17 @@ package final class DaemonManager {
     package func checkStatus() {
         isRunning = Self.isDaemonRunning()
         syncProgress = Self.readSyncProgress()
+        lastSyncTime = Self.readLastSyncTime() ?? lastSyncTime
+    }
+
+    /// When the active workspace's last sync finished: `last_sync.json` is
+    /// written at the end of every run (and only then). nil before the
+    /// first one.
+    nonisolated package static func readLastSyncTime() -> Date? {
+        guard let dir = Constants.activeWorkspaceDir(),
+              let attributes = try? FileManager.default.attributesOfItem(atPath: "\(dir)/last_sync.json")
+        else { return nil }
+        return attributes[.modificationDate] as? Date
     }
 
     /// Reads the active workspace's sync heartbeat. Scoped to the active
@@ -281,6 +292,19 @@ package final class DaemonManager {
 
     /// Poll interval while waiting out `restartStopGrace`.
     nonisolated private static let restartPollStep: Duration = .milliseconds(250)
+
+    /// Waits up to `restartStopGrace` for the active workspace's daemon to
+    /// be gone; throws `.stopTimedOut` if it never goes.
+    package nonisolated static func waitForDaemonExit() async throws {
+        let outcome = await waitForPidDeath(
+            isAlive: { activeWorkspaceDaemonPID() != nil },
+            step: restartPollStep,
+            deadline: restartStopGrace
+        )
+        if outcome == .timedOut {
+            throw DaemonRestartError.stopTimedOut(pid: activeWorkspaceDaemonPID())
+        }
+    }
 
     /// Polls `isAlive` every `step` until it reports death or `deadline`
     /// (wall time from the first call) elapses. Pure aside from the clock

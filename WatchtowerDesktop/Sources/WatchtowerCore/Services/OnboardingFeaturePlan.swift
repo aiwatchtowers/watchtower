@@ -78,6 +78,55 @@ package struct OnboardingFeatureSelection: Equatable, Sendable {
         self.goals = goals
     }
 
+    /// "Run setup again": the selection that reproduces `enabledIDs` (the
+    /// managed features on right now), so Continue changes nothing the owner
+    /// did not change. Goals whose features are exactly what is on; among
+    /// several such combinations (Development and Meetings add no feature of
+    /// their own beyond Work communication's), the one closest to
+    /// `savedGoals`. When no combination matches — features toggled by hand
+    /// in Settings — the last goals with the current set as a manual pick
+    /// ("Features customized").
+    package static func current(
+        enabledIDs: Set<String>,
+        savedGoals: Set<OnboardingGoal>
+    ) -> Self {
+        let enabled = enabledIDs.intersection(OnboardingFeaturePlan.managedFeatureIDs)
+        let matching = allGoalCombinations.filter { OnboardingFeaturePlan.enabledFeatureIDs(for: $0) == enabled }
+        let closest = matching.max { lhs, rhs in
+            closeness(lhs, to: savedGoals) < closeness(rhs, to: savedGoals)
+        }
+        if let closest { return Self(goals: closest) }
+        // The goals whose features overlap the set most (fewest extras,
+        // then closest to the saved goals), with the set as a manual pick.
+        let nearest = allGoalCombinations.max { lhs, rhs in
+            overlapScore(lhs, enabled: enabled, saved: savedGoals) < overlapScore(rhs, enabled: enabled, saved: savedGoals)
+        } ?? savedGoals
+        var selection = Self(goals: nearest)
+        selection.customEnabledIDs = enabled
+        return selection
+    }
+
+    private static let allGoalCombinations: [Set<OnboardingGoal>] = {
+        let goals = OnboardingGoal.allCases
+        return (0..<(1 << goals.count)).map { mask in
+            Set(goals.enumerated().filter { mask & (1 << $0.offset) != 0 }.map(\.element))
+        }
+    }()
+
+    private static func overlapScore(
+        _ goals: Set<OnboardingGoal>,
+        enabled: Set<String>,
+        saved: Set<OnboardingGoal>
+    ) -> (overlap: Int, extras: Int, closeness: Int) {
+        let ids = OnboardingFeaturePlan.enabledFeatureIDs(for: goals)
+        return (ids.intersection(enabled).count, -ids.subtracting(enabled).count, closeness(goals, to: saved))
+    }
+
+    /// Goals in both minus goals in only one: ties keep `saved` itself on top.
+    private static func closeness(_ goals: Set<OnboardingGoal>, to saved: Set<OnboardingGoal>) -> Int {
+        goals.intersection(saved).count - goals.symmetricDifference(saved).count
+    }
+
     package var isCustomized: Bool { customEnabledIDs != nil }
 
     /// The managed features to enable; every other id in

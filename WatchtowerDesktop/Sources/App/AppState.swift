@@ -328,25 +328,30 @@ final class AppState {
 
     /// `onboardingDefaults` backs the onboarding step and goals — tests pass
     /// an isolated suite.
+    @ObservationIgnored private let onboardingDefaults: UserDefaults
+
     /// Opens (and migrates) the workspace database.
     @ObservationIgnored private let openDatabase: @Sendable () throws -> DatabaseManager
 
     /// Test seams for the two steps of finishing onboarding that spawn CLI
-    /// children or ask macOS for permissions; nil runs the real thing.
-    @ObservationIgnored var startOnboardingPipelinesOverride: (() -> Void)?
+    /// children or ask macOS for permissions; nil runs the real thing
+    /// (`daemonManager`, `wireAppDatabase`'s body).
+    @ObservationIgnored var daemonControlOverride: (any DaemonControl)?
     @ObservationIgnored var wireAppDatabaseOverride: ((DatabaseManager) -> Void)?
 
     /// `onboardingDefaults` backs the onboarding step and goals, `openDatabase`
-    /// the database open, `peopleRosterRun` the people load — tests pass an
-    /// isolated suite and fakes.
+    /// the database open, `peopleRosterRun` the people load, `featureManager`
+    /// the Feature Manager — tests pass an isolated suite and fakes.
     init(
         onboardingDefaults: UserDefaults = .standard,
         openDatabase: @escaping @Sendable () throws -> DatabaseManager = { try DatabaseManager.migrateAndOpen() },
-        peopleRosterRun: @escaping PeopleRosterLoad.Run = PeopleRosterLoad.cliRun
+        peopleRosterRun: @escaping PeopleRosterLoad.Run = PeopleRosterLoad.cliRun,
+        featureManager: FeatureManagerService? = nil
     ) {
-        let features = FeatureManagerService()
-        featureManager = features
+        let features = featureManager ?? FeatureManagerService()
+        self.featureManager = features
         onboarding = OnboardingStateMachineV2(defaults: onboardingDefaults)
+        self.onboardingDefaults = onboardingDefaults
         onboardingGoals = .production(defaults: onboardingDefaults, featureManager: features)
         peopleRoster = PeopleRosterLoad(run: peopleRosterRun)
         self.openDatabase = openDatabase
@@ -658,10 +663,10 @@ final class AppState {
                 if !needsOnboarding {
                     wireAppDatabase(manager)
                 }
-                // Resume pipelines if app was closed mid-generation
-                if !needsOnboarding && !UserDefaults.standard.bool(forKey: Constants.pipelinesCompletedKey) {
-                    backgroundTaskManager.startPipelines(legacyPeople: analysisLegacyMode, disabledFeatures: featureManager.disabledFeatureIDs)
-                } else if !needsOnboarding {
+                // The daemon's cycle generates everything itself, so a launch
+                // after an interrupted generation needs nothing more than the
+                // daemon (`pipelinesCompletedKey` is kept for older builds).
+                if !needsOnboarding {
                     // Ensure a fresh daemon is running (rebuild-safe): stop any existing
                     // one (possibly from an older binary), then start the current binary.
                     ensureDaemonRunning()
@@ -760,7 +765,8 @@ final class AppState {
         about: OnboardingAboutYou? = nil,
         onRetry: () -> Void
     ) async {
-        guard !isFinishingOnboarding else { return }
+        // Finishing, or finished: a late click must not run it again.
+        guard !isFinishingOnboarding, onboarding.currentStep != .complete else { return }
         onboardingStepError = nil
         let next = route.step(after: step)
         if next == .connect, let failure = await openDatabaseForOnboarding() {
@@ -773,7 +779,8 @@ final class AppState {
         }
         isFinishingOnboarding = true
         defer { isFinishingOnboarding = false }
-        await OnboardingCompletion.finish(
+        let isRerun = isOnboardingRerun
+        let finished = await OnboardingCompletion.finish(
             markOnboardingDone: {
                 if let failure = await openDatabaseForOnboarding() {
                     onboardingStepError = "Could not open the database: \(failure)"
@@ -794,19 +801,30 @@ final class AppState {
                     return false
                 }
             },
-            startPipelines: {
-                if let override = startOnboardingPipelinesOverride {
-                    override()
-                    return
-                }
-                backgroundTaskManager.startPipelines(
-                    legacyPeople: analysisLegacyMode,
-                    disabledFeatures: featureManager.disabledFeatureIDs
-                )
+            startDaemon: {
+                // One daemon start (or restart) instead of one-shot CLI
+                // generators racing its first cycle. In the background: a
+                // restart may wait up to a minute for the old daemon to die,
+                // and Continue must not. It starts only after the
+                // onboarding_done write above.
+                // A re-run that changed nothing needs no restart — only a
+                // daemon, if none runs.
+                bringUpDaemonInBackground(startOnly: isRerun && !rerunChangedSomething)
+                // The landing reads the sources the steps just connected.
+                await refreshConnectedSources()
             },
-            completeOnboarding: { completeOnboarding() },
+            completeOnboarding: {
+                completeOnboarding()
+                // Landing is for the first run; a re-run goes back to where
+                // the owner was.
+                if !isRerun { land(after: route) }
+            },
             onRetry: onRetry
         )
+        // About you was answered (or deferred) here: no later sheet.
+        if finished, step == .aboutYou {
+            markAboutYouShown()
+        }
     }
 
     /// Opens the database for onboarding's Connect step, whose account
@@ -889,8 +907,61 @@ final class AppState {
         }
     }
 
+    /// Finish's daemon bring-up, held so tests can await it.
+    @ObservationIgnored private(set) var onboardingDaemonStart: Task<Void, Never>?
+
+    /// Starts (or, with `startOnly` false, restarts) the daemon in the
+    /// background, after any earlier bring-up still running: two restarts
+    /// overlapping would read as a failed start.
+    private func bringUpDaemonInBackground(startOnly: Bool) {
+        let daemon = daemonControl
+        let previous = onboardingDaemonStart
+        onboardingDaemonStart = Task {
+            await previous?.value
+            let up = startOnly && daemon.daemonIsRunning()
+                ? true
+                : await OnboardingFinishPlan.bringUpDaemon(daemon)
+            // The flag tells the next launch nothing is left to resume.
+            if up {
+                UserDefaults.standard.set(true, forKey: Constants.pipelinesCompletedKey)
+            }
+        }
+    }
+
+    /// The Slack, Google and Jira account ids when a re-run started: an
+    /// account added or removed meanwhile (the Connect sheets defer the
+    /// daemon restart to finish) counts as a change.
+    @ObservationIgnored private var rerunAccountsAtStart: [Int] = []
+
+    private var accountFingerprint: [Int] {
+        (slackAccountsViewModel?.accounts.map(\.id) ?? []).sorted()
+            + [-1] + (googleAccountsViewModel?.accounts.map(\.id) ?? []).sorted()
+            + [-1] + (jiraAccountsViewModel?.accounts.map(\.id) ?? []).sorted()
+    }
+
+    /// The re-run wrote something the daemon must pick up.
+    private var rerunChangedSomething: Bool {
+        onboardingGoals.wroteChanges || accountFingerprint != rerunAccountsAtStart
+    }
+
+    private var daemonControl: any DaemonControl { daemonControlOverride ?? daemonManager }
+
+    /// Opens the tab the goals point at (`OnboardingFinishPlan.landing`).
+    private func land(after route: OnboardingRoute) {
+        let catchUpVisible = SidebarDestination.catchUp.isVisible(
+            disabledFeatures: featureVisibility.disabledFeatureIDs,
+            connected: featureVisibility.connectedSources
+        )
+        switch OnboardingFinishPlan.landing(goals: route.goals, catchUpVisible: catchUpVisible) {
+        case .catchUp: selectedDestination = .catchUp
+        case .workbench: selectedDestination = .workbench
+        case .chat: selectedDestination = .chat
+        }
+    }
+
     /// Called when onboarding flow completes successfully.
     func completeOnboarding() {
+        isOnboardingRerun = false
         onboarding.goTo(.complete)
         needsOnboarding = false
         profileComplete = true
@@ -929,38 +1000,107 @@ final class AppState {
         sidebarCountsViewModel = countsVM
     }
 
-    /// Re-triggers the onboarding flow (from Settings), back at Goals.
-    func startOnboarding() {
-        onboarding.reset()
-        onboardingGoals.prepareForRerun()
-        onboardingAboutYou.prepareForRerun()
-        onboardingStepError = nil
-        needsOnboarding = true
-        profileComplete = false
-        UserDefaults.standard.removeObject(forKey: Constants.pipelinesCompletedKey)
+    /// The onboarding on screen was started from Settings: it can be
+    /// cancelled back to the main window.
+    private(set) var isOnboardingRerun = false
+    /// Why the last "Run setup again" did not start, for both of its
+    /// buttons (Settings → Profile's line, the chat's alert).
+    private(set) var rerunError: String?
+    /// The re-run is reading the features and config.
+    private(set) var isPreparingRerun = false
+
+    func clearRerunError() {
+        rerunError = nil
     }
 
-    /// Wipe all LLM-generated data, stop daemon, and re-run post-onboarding pipelines.
-    func resetLLMData() async throws {
+    /// "Run setup again" (Settings → Profile, the chat's profile button):
+    /// reads what is in effect now — the feature set from the Feature
+    /// Manager, the assistant language from the config — and starts the
+    /// flow from it. Returns the failure to show instead of starting with a
+    /// guess (a reverted feature, the macOS language over the configured
+    /// one).
+    func rerunOnboarding(readConfig: @MainActor () -> ConfigService = { ConfigService() }) async {
+        guard !needsOnboarding, !isPreparingRerun else { return }
+        isPreparingRerun = true
+        defer { isPreparingRerun = false }
+        rerunError = nil
+        await featureManager.load()
+        if let error = featureManager.loadError {
+            rerunError = "Could not read the features: \(error)"
+            return
+        }
+        let config = readConfig()
+        if let error = config.parseError {
+            rerunError = "Could not read the config: \(error)"
+            return
+        }
+        let enabled = Set(featureManager.features.filter { $0.state == "enabled" }.map(\.id))
+        startOnboarding(enabledFeatureIDs: enabled, configuredLanguage: config.digestLanguage)
+    }
+
+    /// Re-triggers the onboarding flow back at Goals, seeded from
+    /// `enabledFeatureIDs` and `configuredLanguage` (absent: English, what
+    /// the pipelines use). Nothing is written until a step's Continue.
+    func startOnboarding(enabledFeatureIDs: Set<String>, configuredLanguage: String?) {
+        let language = configuredLanguage?.trimmingCharacters(in: .whitespaces) ?? ""
+        onboarding.reset()
+        onboardingGoals.seedForRerun(
+            enabledFeatureIDs: enabledFeatureIDs,
+            language: language.isEmpty ? AssistantLanguageCatalog.fallbackName : language
+        )
+        onboardingAboutYou.prepareForRerun()
+        onboardingStepError = nil
+        isOnboardingRerun = true
+        rerunAccountsAtStart = accountFingerprint
+        needsOnboarding = true
+        profileComplete = false
+    }
+
+    /// Cancel on a re-run: back to the main window, nothing more written.
+    /// What a step's Continue already wrote stays and reaches the daemon (a
+    /// restart in the background).
+    func cancelOnboardingRerun() {
+        guard isOnboardingRerun, !isFinishingOnboarding, !onboardingGoals.isContinuing else { return }
+        if rerunChangedSomething {
+            bringUpDaemonInBackground(startOnly: false)
+        }
+        isOnboardingRerun = false
+        onboarding.goTo(.complete)
+        onboardingStepError = nil
+        needsOnboarding = false
+        profileComplete = true
+    }
+
+    /// Wipe all LLM-generated data, stop the daemon, and start it again to
+    /// rebuild them: its stamps go too, so the first cycle regenerates
+    /// people cards and the briefing at once instead of on their cadence.
+    /// A failed restart is thrown for the Settings error line.
+    func resetLLMData(workspaceDir: String? = Constants.activeWorkspaceDir()) async throws {
         guard let db = databaseManager else { return }
 
         // 1. Stop running pipelines (if any) — await ensures process exits and releases file locks
         await backgroundTaskManager.stopAll()
 
-        // 2. Stop daemon
-        daemonManager.resolvePathIfNeeded()
-        if DaemonManager.checkDaemonRunning() {
-            await daemonManager.stopDaemon()
-            try? await Task.sleep(for: .milliseconds(500))
+        // 2. Stop the daemon so nothing writes while the tables are wiped —
+        // after a finish still bringing one up, and only once its process is
+        // really gone (a timeout wipes nothing).
+        await onboardingDaemonStart?.value
+        let daemon = daemonControl
+        if daemon.daemonIsRunning() {
+            await daemon.stopDaemonNow()
+        }
+        try await daemon.waitUntilStopped()
+
+        // 3. Wipe LLM-generated tables and the daemon's stamps.
+        try db.wipeLLMData()
+        if let workspaceDir {
+            try DaemonStampFiles.clear(in: workspaceDir)
         }
 
-        // 3. Wipe LLM-generated tables
-        try db.wipeLLMData()
-
-        // 4. Reset pipelines flag and re-run
-        UserDefaults.standard.removeObject(forKey: Constants.pipelinesCompletedKey)
+        // 4. Restart: waits for the stopped daemon to be gone, then starts it.
         backgroundTaskManager.tasks.removeAll()
-        backgroundTaskManager.startPipelines(legacyPeople: analysisLegacyMode, disabledFeatures: featureManager.disabledFeatureIDs)
+        try await daemon.restartWaiting()
+        UserDefaults.standard.set(true, forKey: Constants.pipelinesCompletedKey)
     }
 
     /// Ensure the daemon is running against the current CLI binary.
@@ -984,7 +1124,6 @@ final class AppState {
     private func wireOnboardingDatabase(_ manager: DatabaseManager) async {
         databaseManager = manager
         errorMessage = nil
-        // completion's startPipelines reads it.
         analysisLegacyMode = ConfigService().analysisLegacyMode
         await refreshOwner()
         await refreshConnectedSources()
@@ -997,6 +1136,9 @@ final class AppState {
     }
 
     @ObservationIgnored private var appDatabaseWired = false
+
+    /// Mirrors Go's `DefaultInitialHistDays`.
+    static let defaultInitialHistoryDays = 2
 
     /// The rest of the database wiring, once per process: on launch when no
     /// onboarding is pending, else at its completion.
@@ -1120,21 +1262,111 @@ final class AppState {
     /// The active Slack accounts at the last refresh; nil before the first.
     @ObservationIgnored private var knownSlackAccountIDs: Set<Int>?
 
-    /// During onboarding, a Slack account that appeared since the last
-    /// refresh starts the people load — however its Add sheet was left
-    /// (closed mid-sign-in, the connect finishing afterwards, included).
-    /// The first refresh records what is already there, and an account
-    /// already connected (a relaunch mid-onboarding) resumes the load.
+    /// A Slack account that appeared since the last refresh starts the
+    /// people load — however its Add sheet was left (closed mid-sign-in, the
+    /// connect finishing afterwards, included) — and, outside onboarding,
+    /// offers About you once. The first refresh records what is already
+    /// there, and during onboarding an account already connected (a
+    /// relaunch mid-onboarding) resumes the load.
     func slackAccountsDidChange(_ accounts: [SlackAccount]) {
         let active = accounts.filter { $0.status != "removed" }.map(\.id)
         defer { knownSlackAccountIDs = Set(active) }
-        guard needsOnboarding else { return }
         guard let known = knownSlackAccountIDs else {
-            resumePeopleRosterIfNeeded()
+            if needsOnboarding { resumePeopleRosterIfNeeded() }
             return
         }
         guard let added = OnboardingConnectPlan.newlyConnected(before: known, after: active) else { return }
-        peopleRoster.start(accountID: added)
+        if needsOnboarding {
+            peopleRoster.start(accountID: added)
+        } else if known.isEmpty, lateAboutYouCheck == nil {
+            // The first Slack account after onboarding; a second workspace
+            // is not "connecting Slack".
+            lateAboutYouCheck = Task {
+                await offerLateAboutYou(accountID: added)
+                lateAboutYouCheck = nil
+            }
+        }
+    }
+
+    // MARK: - About you after a later Slack connect
+
+    /// UserDefaults key: About you was shown — the onboarding step left
+    /// through Done or Later, or the sheet after a later Slack connect. The
+    /// sheet is offered only while it is unset.
+    static let lateAboutYouShownKey = "about_you_after_slack_shown"
+
+    /// The sheet waits for Settings: set once the offer passed its checks,
+    /// turned into `showsLateAboutYou` by `presentLateAboutYouIfReady()`.
+    private(set) var lateAboutYouPending = false
+    /// The About you sheet over the Settings window.
+    var showsLateAboutYou = false
+    /// Settings' Add Slack sheet is up: a second sheet waits for it.
+    var isAddingSlackAccount = false {
+        didSet { presentLateAboutYouIfReady() }
+    }
+    private(set) var isSavingLateAboutYou = false
+    private(set) var lateAboutYouError: String?
+    /// The check `slackAccountsDidChange` kicked off — held so tests can
+    /// await it; a second one does not start while it runs.
+    @ObservationIgnored private(set) var lateAboutYouCheck: Task<Void, Never>?
+
+    private var lateAboutYouShown: Bool {
+        onboardingDefaults.bool(forKey: Self.lateAboutYouShownKey)
+    }
+
+    /// The first Slack account connected after onboarding (say a
+    /// Development-only setup, Slack added in Settings later): offer About
+    /// you once, unless it was shown or the profile already names people.
+    /// Only then does the people load start, for the pickers.
+    private func offerLateAboutYou(accountID: Int) async {
+        guard !lateAboutYouShown, let pool = databaseManager?.dbPool else { return }
+        do {
+            let answers = try await pool.read { db in try OnboardingProfileWriter.currentAnswers(db) }
+            guard answers.manager.isEmpty, answers.reports.isEmpty, answers.peers.isEmpty else { return }
+        } catch {
+            print("[AppState] About you check failed: \(error.localizedDescription)")
+            return
+        }
+        // Shown meanwhile (the onboarding step, another offer)?
+        guard !lateAboutYouShown else { return }
+        peopleRoster.start(accountID: accountID)
+        onboardingAboutYou.prepareForRerun()
+        lateAboutYouError = nil
+        lateAboutYouPending = true
+        presentLateAboutYouIfReady()
+    }
+
+    /// Shows the pending sheet unless the Add Slack sheet is still up (its
+    /// dismissal calls this again).
+    func presentLateAboutYouIfReady() {
+        guard lateAboutYouPending, !isAddingSlackAccount else { return }
+        lateAboutYouPending = false
+        showsLateAboutYou = true
+    }
+
+    /// The sheet appeared: it counts as shown from now on.
+    func markAboutYouShown() {
+        onboardingDefaults.set(true, forKey: Self.lateAboutYouShownKey)
+    }
+
+    /// The sheet's Done (`about`) writes the answers — the profile alone, no
+    /// daemon, no onboarding state; the sheet stays up on a failure. Later
+    /// (nil) only closes it.
+    func finishLateAboutYou(_ about: OnboardingAboutYou?) async {
+        guard let about else {
+            showsLateAboutYou = false
+            return
+        }
+        guard !isSavingLateAboutYou, let pool = databaseManager?.dbPool else { return }
+        isSavingLateAboutYou = true
+        defer { isSavingLateAboutYou = false }
+        do {
+            try await pool.write { db in try OnboardingProfileWriter.done(db, about: about) }
+            lateAboutYouError = nil
+            showsLateAboutYou = false
+        } catch {
+            lateAboutYouError = "Could not save: \(error.localizedDescription)"
+        }
     }
 
     /// Connect or About you on a relaunch: the load did not survive the quit,
