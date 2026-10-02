@@ -40,7 +40,14 @@ extension WorkbenchesViewModel {
             do {
                 applyGitStatus(try await cli.gitStatus(projectID: projectID), projectID: projectID)
             } catch {
-                if error is CancellationError || Task.isCancelled { return }
+                if error is CancellationError || Task.isCancelled {
+                    // Another caller's rerun is not this task's to drop: it
+                    // runs once this loop has let go of the id.
+                    if gitRefreshQueued.contains(projectID) {
+                        Task { await self.refreshGitStatus(projectID: projectID) }
+                    }
+                    return
+                }
                 // The last known status stays, so the button does not vanish.
                 gitStatusErrors[projectID] = "Could not read the git status: "
                     + gitFailureText(error, command: "status", projectID: projectID)
@@ -105,6 +112,8 @@ extension WorkbenchesViewModel {
             result = try await cli.gitCreateBranch(projectID: id, name: trimmed)
         } catch {
             gitErrors[id] = "Could not create \(trimmed): \(gitFailureText(error, command: "create", projectID: id))"
+            // The call may have failed after git wrote.
+            await refreshGitStatus(projectID: id)
             return false
         }
         let created = result.created || result.switched
@@ -186,7 +195,8 @@ extension WorkbenchesViewModel {
             return
         }
         let outcome = WorkbenchBranchPresentation.outcome(result)
-        gitErrors[id] = outcome.error
+        let moved = result.switched || result.already
+        gitErrors[id] = outcome.error ?? (moved ? nil : "Not switched to \(branch).")
         gitNotices[id] = outcome.notice
         await afterGitWrite(project: project)
     }

@@ -329,17 +329,55 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
         XCTAssertTrue(withGit.showsBranchButton(projectID: project.id))
     }
 
+    /// Requests while a read runs queue exactly one rerun: two calls, not
+    /// one (the queued rerun is never dropped) and not five.
     func testConcurrentRefreshesCoalesceToTwoCalls() async {
         let held = HeldCLIRunner(stdout: status())
         let vm = makeVM(held)
-        let reads = (0..<5).map { _ in Task { await vm.refreshGitStatus(projectID: project.id) } }
+        let first = Task { await vm.refreshGitStatus(projectID: project.id) }
         await awaitStarted(held)
-        for _ in 0..<5 { await Task.yield() }
+        for _ in 0..<4 { await vm.refreshGitStatus(projectID: project.id) }
         held.release()
-        for read in reads { await read.value }
-        XCTAssertLessThanOrEqual(held.invocations.count, 2)
-        XCTAssertGreaterThanOrEqual(held.invocations.count, 1)
+        await first.value
+        XCTAssertEqual(held.invocations.count, 2)
         XCTAssertEqual(vm.gitStatus[project.id]?.branch, "main")
+    }
+
+    func testARefreshAloneIsOneCall() async {
+        let runner = ScriptedCLIRunner(results: [.success(status())])
+        let vm = makeVM(runner)
+        await vm.refreshGitStatus(projectID: project.id)
+        XCTAssertEqual(runner.invocations.count, 1)
+    }
+
+    /// The loop's owner was cancelled (the page went away) while another
+    /// caller queued a rerun: the rerun still happens.
+    func testACancelledOwnerHandsTheQueuedRerunOn() async {
+        let runner = CancellableFirstCallRunner(stdout: status(branch: "feature/x"))
+        let vm = makeVM(runner)
+        let owner = Task { await vm.refreshGitStatus(projectID: project.id) }
+        await runner.started.wait()
+        await vm.refreshGitStatus(projectID: project.id)
+        owner.cancel()
+        runner.release()
+        await owner.value
+        await waitUntil { runner.invocations.count == 2 && vm.gitStatus[self.project.id] != nil }
+        XCTAssertEqual(vm.gitStatus[project.id]?.branch, "feature/x")
+        XCTAssertTrue(vm.gitRefreshing.isEmpty)
+    }
+
+    func testACancelledOwnerWithNothingQueuedStops() async {
+        let runner = CancellableFirstCallRunner(stdout: status())
+        let vm = makeVM(runner)
+        let owner = Task { await vm.refreshGitStatus(projectID: project.id) }
+        await runner.started.wait()
+        owner.cancel()
+        runner.release()
+        await owner.value
+        await settle(vm)
+        XCTAssertEqual(runner.invocations.count, 1)
+        XCTAssertNil(vm.gitStatus[project.id])
+        XCTAssertNil(vm.gitStatusErrors[project.id], "a cancelled read reports nothing")
     }
 
     func testLoadBranchesReadsTheBoardBadges() async throws {
@@ -375,6 +413,41 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
         XCTAssertTrue(created)
         XCTAssertEqual(runner.invocations[0], ["workbench", "git", "create", "--workbench", String(project.id), "--name", "new/one", "--json"])
         XCTAssertEqual(vm.gitStatus[project.id]?.branch, "new/one")
+    }
+
+    func testAFailedCreateCallReadsTheStatusAgain() async {
+        let runner = ScriptedCLIRunner(results: [
+            .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "killed")),
+            .success(status(branch: "new/one"))
+        ])
+        let vm = makeVM(runner)
+        let created = await vm.createBranch("new/one", project: project)
+        XCTAssertFalse(created)
+        XCTAssertEqual(runner.invocations.last, ["workbench", "git", "status", "--workbench", String(project.id), "--json"])
+        XCTAssertEqual(vm.gitStatus[project.id]?.branch, "new/one", "git may have written before the call failed")
+        XCTAssertEqual(vm.gitErrors[project.id]?.hasPrefix("Could not create new/one:"), true)
+    }
+
+    func testASwitchThatReportsNothingSaysItDidNotHappen() async {
+        let runner = ScriptedCLIRunner(results: [
+            .success(switchResult(#""switched":false"#)),
+            .success(status()),
+            .success(branches())
+        ])
+        let vm = makeVM(runner)
+        await vm.switchBranch("feature/x", project: project)
+        XCTAssertEqual(vm.gitErrors[project.id], "Not switched to feature/x.")
+    }
+
+    func testAlreadyOnTheBranchIsNoError() async {
+        let runner = ScriptedCLIRunner(results: [
+            .success(switchResult(#""switched":false,"already":true"#)),
+            .success(status()),
+            .success(branches())
+        ])
+        let vm = makeVM(runner)
+        await vm.switchBranch("feature/x", project: project)
+        XCTAssertNil(vm.gitErrors[project.id])
     }
 
     func testCreateRefusedAndEmptyName() async {
@@ -502,6 +575,38 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
     }
 
     // MARK: - Helpers
+
+    /// The first call waits for `release()` and then fails as a cancelled
+    /// process does; every later call answers at once.
+    final class CancellableFirstCallRunner: CLIRunnerProtocol, @unchecked Sendable {
+        let started = AsyncGate()
+        private let finish = AsyncGate()
+        private let stdout: Data
+        private let lock = NSLock()
+        private var recorded: [[String]] = []
+
+        init(stdout: Data) { self.stdout = stdout }
+
+        var invocations: [[String]] {
+            lock.lock()
+            defer { lock.unlock() }
+            return recorded
+        }
+
+        func release() { finish.release() }
+
+        func run(args: [String]) async throws -> Data {
+            lock.lock()
+            recorded.append(args)
+            let first = recorded.count == 1
+            lock.unlock()
+            guard first else { return stdout }
+            started.release()
+            await finish.wait()
+            try Task.checkCancellation()
+            return stdout
+        }
+    }
 
     private func waitUntil(timeout: TimeInterval = 5, _ condition: @escaping @MainActor () -> Bool) async {
         let deadline = Date().addingTimeInterval(timeout)
