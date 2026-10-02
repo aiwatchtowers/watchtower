@@ -118,7 +118,7 @@ final class TerminalCenter {
         case sent
         /// Bracketed paste was off: the line is on the clipboard instead.
         case copied
-        /// Nothing running: the next session gets it from `project brief`.
+        /// Nothing running: the next session gets it from `workbench brief`.
         case noSession
     }
 

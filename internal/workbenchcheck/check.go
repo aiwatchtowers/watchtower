@@ -63,7 +63,7 @@ type Finding struct {
 // legitimate (waiting on someone), and KindDoneUnmerged is an offline guess
 // (the local origin/<default> may predate a merge made on GitHub, and a
 // merge style the patch-id match cannot see reads as unmerged): both are
-// shown in the brief and by `project check`, never forced on a turn.
+// shown in the brief and by `workbench check`, never forced on a turn.
 func (f Finding) Blocking() bool { return f.Kind != KindStale && f.Kind != KindDoneUnmerged }
 
 // Line renders the finding as one line for the brief, the CLI and the hook.

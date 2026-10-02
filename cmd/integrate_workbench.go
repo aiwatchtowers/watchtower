@@ -134,7 +134,7 @@ func printWorkbenchInstallReport(w io.Writer, p *db.Workbench, rep devpack.Workb
 }
 
 // printWorkbenchInstallBody is the per-piece part of an install report (also
-// `project resync`'s).
+// `workbench resync`'s).
 func printWorkbenchInstallBody(w io.Writer, rep devpack.WorkbenchInstallReport, err error) {
 	if rep.Skill.Path != "" {
 		fmt.Fprintf(w, "  skill    %s%s\n", rep.Skill.State, skillStateNote(rep.Skill.State))

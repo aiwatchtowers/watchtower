@@ -186,7 +186,7 @@ package struct WorkbenchCommentThread: Identifiable, Equatable, Sendable {
 
     /// An owner reply newer than the thread's latest agent comment (the agent
     /// root counts) — the reply half of Go's `newForAgentPredicate`
-    /// (`internal/db/project_comments.go`). Ids, not timestamps, order them.
+    /// (`internal/db/workbench_comments.go`). Ids, not timestamps, order them.
     package var hasUnansweredOwnerReply: Bool {
         let lastAgent = ([root] + replies).filter(\.isAgent).map(\.id).max() ?? 0
         return replies.contains { !$0.isAgent && $0.id > lastAgent }

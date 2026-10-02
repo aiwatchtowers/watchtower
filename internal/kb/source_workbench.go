@@ -21,8 +21,10 @@ import (
 
 // WorkbenchDocSource is the source name of attached workbench documents. Its
 // documents are visible only to a search or open that names their workbench
-// (Request.ProjectID, DocOptions.ProjectID; workbenchDocVisible in search.go) —
+// (Request.WorkbenchID, DocOptions.WorkbenchID; workbenchDocVisible in search.go) —
 // PROJ-08: a workbench session sees its own documents, every other caller none.
+// The value keeps its pre-rename spelling: it is persisted in kb_documents
+// (spec 2026-10-02 A1).
 const WorkbenchDocSource = "project_doc"
 
 const (

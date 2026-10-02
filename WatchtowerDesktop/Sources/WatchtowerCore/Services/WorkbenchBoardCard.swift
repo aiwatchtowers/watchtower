@@ -2,7 +2,7 @@ import Foundation
 
 /// Sibling order of the project board. Pure.
 ///
-/// Dual path with Go's `boardSiblingOrder` (`internal/db/project_board.go`),
+/// Dual path with Go's `boardSiblingOrder` (`internal/db/workbench_board.go`),
 /// which orders the board the agent sees through `watchtower mcp --workbench N`
 /// and `workbench board`: priority high, medium, then anything else; then status
 /// in_progress, in_review, blocked, todo, done, then anything else; then id.
