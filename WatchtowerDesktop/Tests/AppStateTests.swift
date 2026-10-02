@@ -1663,4 +1663,26 @@ final class AppStateTests: XCTestCase {
         }
         XCTAssertEqual(done, true)
     }
+
+    /// Settings → Features applying its own batch: Turn on does nothing,
+    /// says so, and keeps the offer.
+    func testTurnOnWhileSettingsAppliesKeepsTheOffer() async throws {
+        let runner = LiveFeaturesRunner(disabled: ["stream-digests", "next-step"])
+        let appState = try await appStateOffering(runner)
+        let daemon = FakeDaemon()
+        appState.daemonControlOverride = daemon
+        appState.featureManager.isApplying = true
+
+        await appState.acceptFeatureSuggestion()
+
+        XCTAssertEqual(appState.featureSuggestionError, AppState.featureChangesBusy)
+        XCTAssertEqual(appState.featureSuggestion.count, 2)
+        XCTAssertEqual(daemon.restarts, 0)
+        XCTAssertFalse(runner.calls.contains { $0.dropFirst().first == "enable" })
+
+        appState.featureManager.isApplying = false
+        await appState.acceptFeatureSuggestion()
+        XCTAssertTrue(appState.featureSuggestion.isEmpty)
+        XCTAssertNil(appState.featureSuggestionError)
+    }
 }

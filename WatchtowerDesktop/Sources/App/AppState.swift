@@ -972,6 +972,8 @@ final class AppState {
         if sheet == .aboutYou { showsLateAboutYou = false }
     }
 
+    static let featureChangesBusy = "Feature changes are being applied in Settings — try again"
+
     /// Offered while an apply runs: merged once it is over.
     @ObservationIgnored private var deferredSuggestion: [FeatureInfo] = []
 
@@ -1016,6 +1018,11 @@ final class AppState {
         let ids = featureSuggestion.map(\.id)
         let daemon = daemonControl
         let result = await featureManager.enableNow(ids) { try await daemon.restartWaiting() }
+        if result.busy {
+            // Settings → Features is applying its own batch.
+            featureSuggestionError = Self.featureChangesBusy
+            return
+        }
         let stillOff = Set(ids).intersection(featureManager.disabledFeatureIDs)
         if result.enabled.isEmpty, stillOff.isEmpty {
             // Everything is on already (a retry after a failed restart): the
@@ -1031,6 +1038,10 @@ final class AppState {
             // An enable or the restart failed: the offer stays, its retry
             // enables what is still off and restarts.
             featureSuggestionError = error
+            return
+        } else if result.enabled.isEmpty {
+            // Nothing enabled, nothing failed, yet some are still off.
+            featureSuggestionError = Self.featureChangesBusy
             return
         }
         featureSuggestionError = nil
