@@ -265,6 +265,11 @@ type workbenchStatusJSON struct {
 	ClaudeFound bool   `json:"claude_found"`
 	Legacy      bool   `json:"legacy"`
 	LegacySkill string `json:"legacy_skill"`
+	// CurrentMCP: the watchtower-workbench registration itself, while mcp
+	// also counts the legacy one. Additive: a folder whose new skill is in
+	// but whose new registration is not (a resync whose `mcp add` failed)
+	// needs a Repair even though mcp reads true.
+	CurrentMCP bool `json:"current_mcp"`
 }
 
 // legacySkillState is a legacy skill's state on the wire: "" when there is
@@ -293,6 +298,7 @@ func runWorkbenchStatus(ctx context.Context, w io.Writer, p *db.Workbench, asJSO
 			Skill: string(st.Skill.State), SkillPath: st.Skill.Path,
 			Hook: st.Hook, StopHook: st.StopHook, MCP: st.MCP, ClaudeFound: st.ClaudeFound,
 			Legacy: st.Legacy, LegacySkill: legacySkillState(st.LegacySkill),
+			CurrentMCP: st.CurrentMCP,
 		})
 	}
 	fmt.Fprintf(w, "Workbench %d (%s):\n", p.ID, p.FolderPath)

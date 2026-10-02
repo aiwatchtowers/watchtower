@@ -241,6 +241,7 @@ struct WorkbenchResynced: Decodable, Equatable {
         indexed = try c.decodeIfPresent(Int.self, forKey: .indexed) ?? 0
         indexSkipped = try c.decodeIfPresent(Bool.self, forKey: .indexSkipped) ?? false
         legacySkill = try c.decodeIfPresent(String.self, forKey: .legacySkill) ?? ""
+        currentMCP = try c.decodeIfPresent(Bool.self, forKey: .currentMCP)
         legacyMCPRemoved = try c.decodeIfPresent(Bool.self, forKey: .legacyMCPRemoved) ?? false
         legacyHooksReplaced = try c.decodeIfPresent(Bool.self, forKey: .legacyHooksReplaced) ?? false
         legacyPermissionRules = try c.decodeIfPresent(Int.self, forKey: .legacyPermissionRules) ?? 0
@@ -355,12 +356,16 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
     /// The old skill's state: empty when absent, `unchanged`, `drifted` or
     /// `foreign`.
     let legacySkill: String
+    /// The watchtower-workbench registration itself; `mcp` also counts the
+    /// old one. nil from a CLI that does not send the key.
+    let currentMCP: Bool?
 
     enum CodingKeys: String, CodingKey {
         case skill, hook, mcp, legacy
         case stopHook = "stop_hook"
         case claudeFound = "claude_found"
         case legacySkill = "legacy_skill"
+        case currentMCP = "current_mcp"
     }
 
     init(
@@ -370,9 +375,11 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         mcp: Bool,
         claudeFound: Bool = true,
         legacy: Bool = false,
-        legacySkill: String = ""
+        legacySkill: String = "",
+        currentMCP: Bool? = nil
     ) {
         self.legacy = legacy
+        self.currentMCP = currentMCP
         self.legacySkill = legacySkill
         self.skill = skill
         self.hook = hook
@@ -398,7 +405,15 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
     /// Whether Repair can fix something. Without `claude` an unregistered
     /// MCP server is not repairable from here — see `manualMCPCommand`.
     var needsRepair: Bool {
-        (skill == "missing" && !runsOnLegacySkill) || skill == "updated" || !hook || !stopHook || (claudeFound && !mcp)
+        (skill == "missing" && !runsOnLegacySkill) || skill == "updated" || !hook || !stopHook
+            || (claudeFound && (!mcp || missesCurrentMCP))
+    }
+
+    /// The new skill is in but only the old registration serves it — a
+    /// resync whose `mcp add` failed: the skill names tools the session does
+    /// not have, so Repair re-runs the add.
+    private var missesCurrentMCP: Bool {
+        skill != "missing" && currentMCP == false
     }
 
     /// The install icon's tooltip for a folder set up before the Workbench

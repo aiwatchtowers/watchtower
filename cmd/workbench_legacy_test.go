@@ -47,7 +47,7 @@ func statusJSON(t *testing.T, p *db.Workbench) workbenchStatusJSON {
 	require.NoError(t, json.Unmarshal(out.Bytes(), &got), out.String())
 	var raw map[string]any
 	require.NoError(t, json.Unmarshal(out.Bytes(), &raw))
-	for _, key := range []string{"legacy", "legacy_skill", "project_id", "hook", "mcp"} {
+	for _, key := range []string{"legacy", "legacy_skill", "project_id", "hook", "mcp", "current_mcp"} {
 		assert.Contains(t, raw, key, "integrate status --json carries %q", key)
 	}
 	return got
@@ -129,4 +129,31 @@ func TestIntegrateWorkbenchRemove_NamesEverySurvivingRegistration(t *testing.T) 
 	assert.Contains(t, out.String(), "still registered: "+devpack.WorkbenchMCPServerName+"\n")
 	assert.Contains(t, out.String(), "still registered: "+devpack.LegacyMCPServerName+"\n")
 	assert.NotContains(t, out.String(), "Nothing left installed.")
+}
+
+// A resync whose `mcp add` failed leaves a legacy folder on the new skill
+// with only the old registration: mcp still reads true (the session keeps
+// working), current_mcp says the new one is missing, so the Desktop can
+// offer Repair. A later install that registers it clears both.
+func TestIntegrateWorkbenchStatusJSON_ReportsTheCurrentRegistration(t *testing.T) {
+	f := useFakeWorkbenchClaude(t)
+	p := testWorkbench(t)
+	seedLegacyInstall(t, f, p.FolderPath, p.ID)
+	assert.False(t, statusJSON(t, p).CurrentMCP)
+
+	f.failAdd = true
+	var out bytes.Buffer
+	assert.Error(t, runWorkbenchInstall(context.Background(), &out, p))
+	got := statusJSON(t, p)
+	assert.Equal(t, "unchanged", got.Skill)
+	assert.True(t, got.MCP, "the old registration still serves the folder")
+	assert.False(t, got.CurrentMCP)
+	assert.True(t, got.Legacy)
+
+	f.failAdd = false
+	out.Reset()
+	require.NoError(t, runWorkbenchInstall(context.Background(), &out, p))
+	got = statusJSON(t, p)
+	assert.True(t, got.MCP && got.CurrentMCP, "%+v", got)
+	assert.False(t, got.Legacy)
 }
