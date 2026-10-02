@@ -5,6 +5,7 @@ package codeindex
 import (
 	"embed"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -20,11 +21,31 @@ var queryFS embed.FS
 // spike measured), and never closed.
 var compiled sync.Map // language id → func() (*ts.Grammar, error)
 
+// queryParts lists the query files a language's query is concatenated
+// from, when it is not just queries/<id>.scm: TypeScript and TSX are the
+// JavaScript query plus the TypeScript-only one, as upstream intends;
+// JavaScript adds the node kinds only its grammar has; C++ is the C query
+// plus the C++-only one (its grammar extends C's).
+var queryParts = map[string][]string{
+	"javascript": {"javascript", "javascript_only"},
+	"typescript": {"javascript", "typescript"},
+	"tsx":        {"javascript", "typescript"},
+	"cpp":        {"c", "cpp"},
+}
+
 func grammarFor(id string) (*ts.Grammar, error) {
 	get, _ := compiled.LoadOrStore(id, sync.OnceValues(func() (*ts.Grammar, error) {
-		query, err := queryFS.ReadFile("queries/" + id + ".scm")
-		if err != nil {
-			return nil, fmt.Errorf("reading the %s query: %w", id, err)
+		parts := queryParts[id]
+		if parts == nil {
+			parts = []string{id}
+		}
+		var query []byte
+		for _, part := range parts {
+			q, err := queryFS.ReadFile("queries/" + part + ".scm")
+			if err != nil {
+				return nil, fmt.Errorf("reading the %s query: %w", id, err)
+			}
+			query = append(append(query, q...), '\n')
 		}
 		g, err := ts.NewGrammar(grammars[id](), string(query))
 		if err != nil {
@@ -80,14 +101,21 @@ func (t *tsParser) parse(l *langSpec, src []byte) ([]Symbol, bool, error) {
 
 // symbolAt builds the symbol a match names; ok=false drops it.
 func symbolAt(l *langSpec, src []byte, name, def *ts.Node, kind Kind) (span, bool) {
-	kind, container := refine(l.id, src, def, kind)
-	if !kinds[kind] {
+	var container string
+	if r := refiners[l.id]; r != nil {
+		kind, container = r(src, def, kind)
+	}
+	if !kinds[kind] || isLocal(l, def) {
 		return span{}, false
 	}
 	outer := wrapperOf(l, def)
 	doc := docComment(l, src, outer)
 	if doc == "" && l.docstring {
 		doc = docstring(src, def)
+	}
+	end := def.EndPosition()
+	if end.Column == 0 && end.Row > def.StartPosition().Row {
+		end.Row-- // a node that takes its line's newline (a #define) ends on that line
 	}
 	return span{
 		start: def.StartByte(),
@@ -97,7 +125,7 @@ func symbolAt(l *langSpec, src []byte, name, def *ts.Node, kind Kind) (span, boo
 			Kind:      kind,
 			Line:      int(name.StartPosition().Row) + 1,
 			Col:       utf16Col(src, int(name.StartByte())),
-			EndLine:   int(def.EndPosition().Row) + 1,
+			EndLine:   int(end.Row) + 1,
 			Container: container,
 			Signature: signature(l, src, outer, def),
 			Doc:       doc,
@@ -105,41 +133,59 @@ func symbolAt(l *langSpec, src []byte, name, def *ts.Node, kind Kind) (span, boo
 	}, true
 }
 
-// refine settles what a capture alone cannot: a Swift class_declaration's
-// kind is its declaration_kind; a Go type is a struct or an interface by
-// its type, and a Go method's container is its receiver's type.
-func refine(lang string, src []byte, def *ts.Node, kind Kind) (Kind, string) {
-	switch lang {
-	case "swift":
-		if def.Kind() != "class_declaration" {
-			return kind, ""
-		}
-		dk := def.ChildByFieldName("declaration_kind")
-		if dk == nil {
-			return kind, ""
-		}
-		switch dk.Utf8Text(src) {
-		case "struct":
+// refiners settle, per language, what a capture alone cannot: a kind the
+// node's contents decide, or a container the enclosing definitions do not
+// give (a Go receiver, a Rust impl's type).
+var refiners = map[string]func(src []byte, def *ts.Node, kind Kind) (Kind, string){
+	"swift": refineSwift,
+	"go":    refineGo,
+	"rust":  refineRust,
+	"c":     refineC,
+	"cpp":   refineC,
+	"lua":   refineLua,
+	"java":  refineJava,
+
+	"c_sharp": refineCSharp,
+
+	"javascript": refineJS,
+	"typescript": refineJS,
+	"tsx":        refineJS,
+}
+
+// refineSwift: a class_declaration's kind is its declaration_kind.
+func refineSwift(src []byte, def *ts.Node, kind Kind) (Kind, string) {
+	if def.Kind() != "class_declaration" {
+		return kind, ""
+	}
+	dk := def.ChildByFieldName("declaration_kind")
+	if dk == nil {
+		return kind, ""
+	}
+	switch dk.Utf8Text(src) {
+	case "struct":
+		return KindStruct, ""
+	case "enum":
+		return KindEnum, ""
+	case "extension":
+		return KindType, ""
+	}
+	return KindClass, "" // class, actor
+}
+
+// refineGo: a type is a struct or an interface by its type, and a method's
+// container is its receiver's type.
+func refineGo(src []byte, def *ts.Node, kind Kind) (Kind, string) {
+	switch def.Kind() {
+	case "type_spec":
+		switch t := def.ChildByFieldName("type"); {
+		case t == nil:
+		case t.Kind() == "struct_type":
 			return KindStruct, ""
-		case "enum":
-			return KindEnum, ""
-		case "extension":
-			return KindType, ""
+		case t.Kind() == "interface_type":
+			return KindInterface, ""
 		}
-		return KindClass, "" // class, actor
-	case "go":
-		switch def.Kind() {
-		case "type_spec":
-			switch t := def.ChildByFieldName("type"); {
-			case t == nil:
-			case t.Kind() == "struct_type":
-				return KindStruct, ""
-			case t.Kind() == "interface_type":
-				return KindInterface, ""
-			}
-		case "method_declaration":
-			return kind, goReceiverType(src, def)
-		}
+	case "method_declaration":
+		return kind, goReceiverType(src, def)
 	}
 	return kind, ""
 }
@@ -167,6 +213,24 @@ func goReceiverType(src []byte, def *ts.Node) string {
 	return ""
 }
 
+// isLocal reports a definition inside the body of one of the language's
+// local scopes (a function): not indexed. A function's parameters are not
+// in its body (PHP's promoted constructor properties stay).
+func isLocal(l *langSpec, def *ts.Node) bool {
+	if len(l.locals) == 0 {
+		return false
+	}
+	for cur, p := def, def.Parent(); p != nil; cur, p = p, p.Parent() {
+		if !slices.Contains(l.locals, p.Kind()) {
+			continue
+		}
+		if b := p.ChildByFieldName("body"); b != nil && b.Id() == cur.Id() {
+			return true
+		}
+	}
+	return false
+}
+
 // wrapperOf climbs from def through the language's wrapper parents that
 // hold nothing but def (`type X struct`, decorators — not a `type (…)`
 // group, even of one), returning the outermost.
@@ -190,7 +254,8 @@ func wrapperOf(l *langSpec, def *ts.Node) *ts.Node {
 	}
 }
 
-// signature is the definition's source from its outer start to its body,
+// signature is the definition's source from its outer start to its body
+// (or to a comment of its own before that: Ruby's leading body comment),
 // whitespace collapsed; with no body found, its first line. A trailing
 // `{` or `:` (the body opener) is dropped.
 func signature(l *langSpec, src []byte, outer, def *ts.Node) string {
@@ -199,6 +264,12 @@ func signature(l *langSpec, src []byte, outer, def *ts.Node) string {
 		end = body.StartByte()
 	} else if nl := strings.IndexByte(string(src[outer.StartByte():end]), '\n'); nl >= 0 {
 		end = outer.StartByte() + uint(nl)
+	}
+	for i := range def.ChildCount() {
+		if c := def.Child(i); c != nil && strings.Contains(c.Kind(), "comment") && c.StartByte() < end {
+			end = c.StartByte()
+			break
+		}
 	}
 	s := strings.TrimSpace(string(src[outer.StartByte():end]))
 	s = strings.TrimSpace(strings.TrimRight(s, "{:"))
@@ -231,19 +302,27 @@ func bodyOf(l *langSpec, def *ts.Node) *ts.Node {
 
 // docComment is the first sentence of the doc comments directly above
 // outer (no blank line between), accepted only with one of the language's
-// doc prefixes; directives in the run are skipped, any other comment ends
-// it.
+// doc prefixes; directives and the language's between kinds (attributes)
+// in the run are skipped, any other comment ends it.
 func docComment(l *langSpec, src []byte, outer *ts.Node) string {
 	if len(l.docPrefixes) == 0 {
 		return ""
 	}
 	var parts []string
 	nextRow := outer.StartPosition().Row
-	for p := outer.PrevSibling(); p != nil && strings.Contains(p.Kind(), "comment"); p = p.PrevSibling() {
-		if p.EndPosition().Row+1 < nextRow {
+	first := outer.PrevSibling()
+	if par := outer.Parent(); first == nil && par != nil && slices.Contains(l.bodies, par.Kind()) {
+		first = par.PrevSibling() // Ruby: a body's leading comment sits before the body node
+	}
+	for p := first; p != nil; p = p.PrevSibling() {
+		between := slices.Contains(l.between, p.Kind())
+		if !between && !strings.Contains(p.Kind(), "comment") || p.EndPosition().Row+1 < nextRow {
 			break
 		}
 		nextRow = p.StartPosition().Row
+		if between {
+			continue
+		}
 		text := p.Utf8Text(src)
 		if l.directive != nil && l.directive.MatchString(text) {
 			continue
@@ -254,8 +333,15 @@ func docComment(l *langSpec, src []byte, outer *ts.Node) string {
 		parts = append(parts, commentText(text))
 	}
 	slices.Reverse(parts)
-	return firstSentence(strings.Join(parts, " "))
+	doc := strings.Join(parts, " ")
+	if l.docTags {
+		doc = xmlTag.ReplaceAllString(doc, " ")
+	}
+	return firstSentence(doc)
 }
+
+// xmlTag is an XML doc comment's markup: `<summary>`, `<see cref="X"/>`.
+var xmlTag = regexp.MustCompile(`</?[A-Za-z][^>]*>`)
 
 func hasDocPrefix(l *langSpec, text string) bool {
 	for _, p := range l.docPrefixes {

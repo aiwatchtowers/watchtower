@@ -1,0 +1,74 @@
+[
+  {
+    "name": "new",
+    "kind": "function",
+    "path": "sample.lua",
+    "line": 10,
+    "col": 12,
+    "end_line": 13,
+    "container": "M",
+    "signature": "function M.new()",
+    "doc": "Builds an empty store.",
+    "lang": "lua"
+  },
+  {
+    "name": "add",
+    "kind": "method",
+    "path": "sample.lua",
+    "line": 16,
+    "col": 12,
+    "end_line": 18,
+    "container": "M",
+    "signature": "function M:add(key, value)",
+    "doc": "Adds a value under a key.",
+    "lang": "lua"
+  },
+  {
+    "name": "helper",
+    "kind": "function",
+    "path": "sample.lua",
+    "line": 21,
+    "col": 16,
+    "end_line": 23,
+    "container": "",
+    "signature": "local function helper(a, b)",
+    "doc": "",
+    "lang": "lua"
+  },
+  {
+    "name": "double",
+    "kind": "function",
+    "path": "sample.lua",
+    "line": 26,
+    "col": 10,
+    "end_line": 28,
+    "container": "",
+    "signature": "function double(n)",
+    "doc": "Doubles a number.",
+    "lang": "lua"
+  },
+  {
+    "name": "start",
+    "kind": "function",
+    "path": "sample.lua",
+    "line": 32,
+    "col": 3,
+    "end_line": 32,
+    "container": "",
+    "signature": "start = function() end",
+    "doc": "Starts a run.",
+    "lang": "lua"
+  },
+  {
+    "name": "stop",
+    "kind": "function",
+    "path": "sample.lua",
+    "line": 35,
+    "col": 3,
+    "end_line": 35,
+    "container": "M",
+    "signature": "M.stop = function() end",
+    "doc": "",
+    "lang": "lua"
+  }
+]

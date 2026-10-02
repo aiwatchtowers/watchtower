@@ -3,10 +3,20 @@ module watchtower
 go 1.25.7
 
 require (
+	github.com/alexaandru/go-sitter-forest/c v1.9.4
+	github.com/alexaandru/go-sitter-forest/c_sharp v1.9.6
+	github.com/alexaandru/go-sitter-forest/cpp v1.9.5
 	github.com/alexaandru/go-sitter-forest/go v1.9.4
+	github.com/alexaandru/go-sitter-forest/java v1.9.5
+	github.com/alexaandru/go-sitter-forest/javascript v1.9.2
+	github.com/alexaandru/go-sitter-forest/lua v1.9.3
+	github.com/alexaandru/go-sitter-forest/php v1.9.5
 	github.com/alexaandru/go-sitter-forest/python v1.9.10
+	github.com/alexaandru/go-sitter-forest/ruby v1.9.3
 	github.com/alexaandru/go-sitter-forest/rust v1.9.13
 	github.com/alexaandru/go-sitter-forest/swift v1.9.5
+	github.com/alexaandru/go-sitter-forest/tsx v1.9.2
+	github.com/alexaandru/go-sitter-forest/typescript v1.9.4
 	github.com/charmbracelet/glamour v0.10.0
 	github.com/charmbracelet/lipgloss v1.1.1-0.20250404203927-76690c660834
 	github.com/dustin/go-humanize v1.0.1

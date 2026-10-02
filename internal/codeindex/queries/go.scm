@@ -1,6 +1,6 @@
 ; Go definitions. Captures: @name and @definition.<kind> (codeindex.Kind).
 ; A type_spec's struct/interface kind and a method's receiver container are
-; settled in Go (parse.go refine). Only top-level declarations: nothing
+; settled in Go (parse.go refineGo). Only top-level declarations: nothing
 ; declared inside a function body is indexed.
 
 (source_file

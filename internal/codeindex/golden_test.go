@@ -78,6 +78,44 @@ func TestGolden(t *testing.T) {
 	}
 }
 
+// noTypes are the fixture languages with no type or module definitions to
+// index.
+var noTypes = map[string]bool{"lua": true, "r": true}
+
+// Every fixture exercises a function or method, a type (or module) and a
+// doc, so a query that lost a whole family shows here and not only as a
+// golden diff.
+func TestGolden_FixturesCoverTheBasics(t *testing.T) {
+	for lang, file := range goldenFixtures {
+		t.Run(lang, func(t *testing.T) {
+			var fn, typ, doc bool
+			for _, s := range fixtureSymbols(t, lang, file) {
+				switch s.Kind {
+				case KindFunction, KindMethod:
+					fn = true
+				case KindClass, KindStruct, KindEnum, KindProtocol, KindInterface, KindType, KindModule:
+					typ = true
+				case KindConst, KindVar, KindField, KindMacro:
+				}
+				doc = doc || s.Doc != ""
+			}
+			if !fn || (!typ && !noTypes[lang]) || !doc {
+				t.Errorf("function/method %v, type %v, doc %v; want all", fn, typ, doc)
+			}
+		})
+	}
+}
+
+// Every query this build carries compiles against its grammar on the
+// official runtime (Ruby's upstream predicates did not).
+func TestQueriesCompile(t *testing.T) {
+	for id := range grammars {
+		if _, err := grammarFor(id); err != nil {
+			t.Errorf("%s: %v", id, err)
+		}
+	}
+}
+
 func byName(syms []Symbol, name string) []Symbol {
 	var out []Symbol
 	for _, s := range syms {

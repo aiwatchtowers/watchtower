@@ -43,19 +43,27 @@ func firstSentence(s string) string {
 	return clip(s)
 }
 
+// blockComments are the block comment delimiters, opener and closer:
+// C's, OCaml's and Elm's/Haskell's.
+var blockComments = [][3]string{{"/*", "/*!", "*/"}, {"(*", "(*", "*)"}, {"{-", "{-|", "-}"}}
+
 // commentText strips comment markers from one comment's source: line
-// prefixes (`///`, `//`, `#`) and block delimiters with their leading `*`.
+// prefixes (`///`, `//`, `---`, `#'`, `#`) and block delimiters with
+// their leading `*`.
 func commentText(c string) string {
 	c = strings.TrimSpace(c)
-	if strings.HasPrefix(c, "/*") {
-		c = strings.TrimSuffix(strings.TrimLeft(c, "/*!"), "*/")
+	for _, b := range blockComments {
+		if !strings.HasPrefix(c, b[0]) {
+			continue
+		}
+		c = strings.TrimSuffix(strings.TrimLeft(c, b[1]), b[2])
 		lines := strings.Split(c, "\n")
 		for i, l := range lines {
 			lines[i] = strings.TrimPrefix(strings.TrimSpace(l), "*")
 		}
 		return strings.Join(lines, " ")
 	}
-	for _, p := range []string{"///", "//!", "//", "#"} {
+	for _, p := range []string{"///", "//!", "//", "---", "--", "#'", "#"} {
 		if strings.HasPrefix(c, p) {
 			return strings.TrimPrefix(c, p)
 		}
