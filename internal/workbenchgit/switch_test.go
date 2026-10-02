@@ -360,3 +360,35 @@ func TestProj10_FailedStashPushReportsTheStashItMade(t *testing.T) {
 	assert.Contains(t, res.Error, "simulated stash push failure")
 	assert.Equal(t, "refs/heads/main", gitIn(t, dir, "symbolic-ref", "HEAD"))
 }
+
+// failPostCheckout installs a post-checkout hook that complains and fails;
+// git has already moved HEAD and the files when it runs.
+func failPostCheckout(t *testing.T, dir string) {
+	t.Helper()
+	hooks := filepath.Join(dir, gitIn(t, dir, "rev-parse", "--git-path", "hooks"))
+	require.NoError(t, os.MkdirAll(hooks, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(hooks, "post-checkout"),
+		[]byte("#!/bin/sh\necho 'hook says no' >&2\nexit 3\n"), 0o755))
+}
+
+func TestProj10_FailingHookAfterTheSwitchCountsAsSwitched(t *testing.T) {
+	dir := newRepo(t)
+	failPostCheckout(t, dir)
+	dirty(t, dir)
+	res := Switch(context.Background(), options(dir, &recorder{}), SwitchRequest{Branch: "feature", Stash: true})
+	assert.True(t, res.Switched, "%+v", res)
+	assert.Empty(t, res.Error)
+	assert.Contains(t, res.Warning, "hook says no")
+	assert.Equal(t, "refs/heads/feature", gitIn(t, dir, "symbolic-ref", "HEAD"))
+	assert.False(t, res.StashRestored, "the stash is not applied onto the new branch")
+	assert.Equal(t, "hello\n", readFile(t, dir, "README.md"))
+	assert.Equal(t, map[string]string{res.Stashed: res.StashMessage}, stashes(t, dir))
+	assert.Equal(t, "feature", res.Status.Branch)
+
+	res = Create(context.Background(), options(dir, &recorder{}), "topic")
+	assert.True(t, res.Created, "%+v", res)
+	assert.True(t, res.Switched)
+	assert.Empty(t, res.Error)
+	assert.Contains(t, res.Warning, "hook says no")
+	assert.Equal(t, "refs/heads/topic", gitIn(t, dir, "symbolic-ref", "HEAD"))
+}

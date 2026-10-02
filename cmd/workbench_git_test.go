@@ -87,7 +87,7 @@ var (
 	gitBranchesKeys = sorted("workbench_id", "git_available", "git", "current", "branches", "branches_ok", "branches_error")
 	gitBranchKeys   = sorted("name", "current", "head", "committed_at", "upstream", "ahead", "behind", "worktree", "worktree_name")
 	gitSwitchKeys   = sorted("workbench_id", "branch", "switched", "already", "created", "needs_confirmation", "changes",
-		"refused", "refused_detail", "stashed", "stash_message", "stash_restored", "stash_error", "error", "status")
+		"refused", "refused_detail", "stashed", "stash_message", "stash_restored", "stash_error", "error", "warning", "status")
 )
 
 // The key sets the Desktop's decoders read (WorkbenchGit.swift).

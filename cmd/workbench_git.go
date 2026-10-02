@@ -212,6 +212,7 @@ func writeSwitchResult(w io.Writer, id int64, res workbenchgit.SwitchResult) err
 		{"stash restored", boolField(res.StashRestored)},
 		{"stash error", res.StashError},
 		{"error", res.Error},
+		{"warning", res.Warning},
 	} {
 		if f.value != "" {
 			fmt.Fprintf(w, "%s: %s\n", f.key, f.value)

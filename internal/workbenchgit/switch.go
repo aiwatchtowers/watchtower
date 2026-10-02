@@ -29,8 +29,9 @@ const (
 	RefusedExists              = "exists"
 )
 
-// restoreBudget bounds finding the stash and putting it back after a
-// failed switch; both run even when the caller's context is already done.
+// restoreBudget bounds what runs after a git write even when the caller's
+// context is already done: finding the stash, reading HEAD after a failed
+// switch and putting the stash back.
 const restoreBudget = 10 * time.Second
 
 // SwitchRequest is one `workbench git switch`. Stash and ConfirmAgent are
@@ -65,8 +66,11 @@ type SwitchResult struct {
 	StashMessage  string `json:"stash_message"`
 	StashRestored bool   `json:"stash_restored"`
 	StashError    string `json:"stash_error"`
-	Error         string `json:"error"`  // git's stderr when a git call failed
-	Status        Status `json:"status"` // read after the call
+	Error         string `json:"error"` // git's stderr when a git call failed
+	// Warning is git's stderr when switch exited non-zero but HEAD moved
+	// anyway (a failing post-checkout hook): the switch counts as done.
+	Warning string `json:"warning"`
+	Status  Status `json:"status"` // read after the call
 }
 
 // Switch switches the folder's worktree to the local branch req.Branch.
@@ -128,9 +132,12 @@ func Switch(ctx context.Context, o Options, req SwitchRequest) (res SwitchResult
 		}
 	}
 	if _, err := r.git(ctx, "switch", "--no-guess", target.Name); err != nil {
-		res.Error = gitError(err)
-		res.restore(ctx, r)
-		return res
+		if !r.headIs(ctx, target.Name) {
+			res.Error = gitError(err)
+			res.restore(ctx, r)
+			return res
+		}
+		res.Warning = gitError(err)
 	}
 	res.Switched = true
 	return res
@@ -170,8 +177,11 @@ func Create(ctx context.Context, o Options, name string) (res SwitchResult) {
 	// From here on git may write: the envelope carries the status after.
 	defer func() { res.Status = ReadStatus(ctx, o) }()
 	if _, err := r.git(ctx, "switch", "-c", name); err != nil {
-		res.Error = gitError(err)
-		return res
+		if !r.headIs(ctx, name) {
+			res.Error = gitError(err)
+			return res
+		}
+		res.Warning = gitError(err)
 	}
 	res.Created, res.Switched = true, true
 	return res
@@ -208,6 +218,16 @@ func findBranch(branches []Branch, name string) (Branch, bool) {
 		}
 	}
 	return Branch{}, false
+}
+
+// headIs reports whether HEAD is now the local branch name: a switch that
+// exited non-zero may still have moved it (a failing post-checkout hook).
+// It runs even when the caller's context is already done.
+func (r *repo) headIs(ctx context.Context, name string) bool {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), restoreBudget)
+	defer cancel()
+	out, err := r.git(ctx, "symbolic-ref", "-q", "HEAD")
+	return err == nil && strings.TrimSpace(string(out)) == "refs/heads/"+name
 }
 
 // stash saves every change, untracked files included, under a message that
