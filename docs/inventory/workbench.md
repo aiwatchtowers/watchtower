@@ -468,9 +468,25 @@ separation of boards.
 
 **Observable:** Branch switching from the Workbench header never loses work,
 never switches without the owner's confirmation, and never runs git where it
-could pop the developer-tools install dialog. The Desktop never runs git:
-every read and write is `watchtower workbench git status|branches|switch|create
---workbench N --json` (`cmd/workbench_git.go`, `internal/workbenchgit`).
+could pop the developer-tools install dialog. The branch button and popover
+never run git in the Desktop: every branch read and write is `watchtower
+workbench git status|branches|switch|create --workbench N --json`
+(`cmd/workbench_git.go`, `internal/workbenchgit`). Known exception outside the
+branch UI: the code viewer's FILES git marks (`CodeFilesCenter.refreshGit` →
+`GitStatusSnapshot.read`, WatchtowerCore) run `git status` from the Desktop.
+That reader never runs the `/usr/bin/git` shim either (`MemoryVaultGit.gitPath`:
+the active developer directory's git, the Command Line Tools', Homebrew's), but
+it spawns `xcode-select -p` to find the developer directory and has no
+outside-a-repository pre-check, so the "no stray process" bullet below is Go's
+rule, not the marks reader's.
+- **The code viewer's edits are on disk first.** Before every `switch` (the
+  first try and a confirmed resend; not `create`, which swaps no files) the
+  Desktop pulls the editor page's unsent edits and saves every dirty buffer of
+  the workbench or of any workbench inside the repository's work tree, so Go's
+  dirty check sees them and a stash takes them. A buffer whose edits cannot be
+  written (a conflict, a deleted or unreadable file, a write error) holds the
+  switch in the Desktop — "Save or discard the edits in <file> first — they
+  are not on disk yet." — and nothing is sent to Go.
 - **No shim, no stray process.** git is located by `internal/gitbin` without
   spawning anything (`$DEVELOPER_DIR`, the `xcode_select_link` target, the
   Command Line Tools, Xcode.app, Homebrew) and is never `/usr/bin/git` — the
@@ -537,7 +553,8 @@ attributed to Watchtower.
   `testProj10_ASessionStartedAfterAStashConfirmationIsAskedAbout`, `testProj10_ASessionThatExitedBeforeTheConfirmationIsNotReported`,
   `testProj10_ASessionAtTheRepositoryRootOfASubfolderWorkbenchIsReported`, `testProj10_APendingConfirmationIsDroppedWhenTheBranchMoved`,
   `testProj10_APendingConfirmationIsDroppedOnceTheFolderIsOnItsBranch`, `testProj10_NoGitHidesTheButton`,
-  `testProj10_TheStashNoteStaysUntilDismissedOrReplaced`
+  `testProj10_TheStashNoteStaysUntilDismissedOrReplaced`, `testProj10_ASwitchFirstSavesTheCodeViewersEdits`,
+  `testProj10_AnEditThatCannotBeSavedHoldsTheSwitch`, `testProj10_NoUnsavedEditsInTheWorkTreeLeaveTheSwitchAsItWas`
 - `WatchtowerDesktop/Tests/Core/WorkbenchGitDecodingTests.swift::testProj10_UnknownConfirmationsAreKeptApart`
 
 **Locked since:** — (proposed 2026-10-02; not locked until the owner approves)
