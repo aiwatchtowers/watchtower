@@ -48,11 +48,14 @@ func init() {
 	connectionsCmd.AddCommand(connectionsToolsCmd)
 }
 
-// connectionToolJSON is one row of `connections tools --json`.
+// connectionToolJSON is one row of `connections tools --json`. Write marks a
+// tool its server declares a write: no allow list admits it (QC-02), so the
+// Desktop shows it without a toggle.
 type connectionToolJSON struct {
 	Name     string `json:"name"`
 	Allowed  bool   `json:"allowed"`
 	ReadOnly bool   `json:"read_only"`
+	Write    bool   `json:"write"`
 }
 
 // connectionToolsJSON is the wire shape of `connections tools --json`.
@@ -237,7 +240,8 @@ func printConnectionTools(w io.Writer, conn db.ExternalConnection, asJSON bool) 
 		ListedAt: conn.ToolsListedAt, ExplicitSet: conn.AllowTools != nil, Tools: []connectionToolJSON{}}
 	for _, t := range conn.Tools {
 		wire.Tools = append(wire.Tools, connectionToolJSON{Name: t.Name,
-			Allowed: slices.Contains(allowed, t.Name), ReadOnly: externalmcp.IsReadOnly(t)})
+			Allowed: slices.Contains(allowed, t.Name), ReadOnly: externalmcp.IsReadOnly(t),
+			Write: externalmcp.IsAnnotatedWrite(t)})
 	}
 	if asJSON {
 		enc := json.NewEncoder(w)

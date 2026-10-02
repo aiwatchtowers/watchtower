@@ -17,11 +17,22 @@ final class ExternalConnectionsViewModel {
     var isBusy = false
     var error: String?
 
+    /// Per-connection tool lists (QC-02), loaded when the owner opens a
+    /// connection's Tools; keyed by connection id.
+    private(set) var toolLists: [Int: ExternalConnectionTools] = [:]
+    /// Connections with a `connections tools` command running.
+    private(set) var toolsInFlight: Set<Int> = []
+    /// The last tools command's failure, per connection (cleared on success).
+    private(set) var toolsErrors: [Int: String] = [:]
+
     private let dbPool: DatabasePool
+    private let toolsRunner: () -> CLIRunnerProtocol?
     private var authProcess: Process?
 
-    init(dbPool: DatabasePool) {
+    init(dbPool: DatabasePool,
+         toolsRunner: @escaping () -> CLIRunnerProtocol? = { ProcessCLIRunner.makeDefault() }) {
         self.dbPool = dbPool
+        self.toolsRunner = toolsRunner
     }
 
     // MARK: - Refresh
@@ -140,6 +151,7 @@ final class ExternalConnectionsViewModel {
     /// `SlackAccountsViewModel.runAuthFlow`/`addAccount`.
     func signIn(_ connection: ExternalConnection) async {
         await runAuthFlow(args: Self.oauthArgs(id: Int64(connection.id)), failurePrefix: "Sign in failed")
+        await reloadShownTools(connection) // a sign-in re-lists the tools
     }
 
     /// Terminates an in-flight sign-in process, if any. Mirrors
@@ -169,6 +181,7 @@ final class ExternalConnectionsViewModel {
             args: Self.setEnabledArgs(for: c, enabled: enabled),
             failurePrefix: enabled ? "Enable failed" : "Disable failed"
         )
+        await reloadShownTools(c) // enabling re-lists the tools
     }
 
     // MARK: - Remove
@@ -183,6 +196,86 @@ final class ExternalConnectionsViewModel {
     /// Removes `c` via `watchtower connections remove <id>`.
     func remove(_ c: ExternalConnection) async {
         await runManagementCommand(args: Self.removeArgs(for: c), failurePrefix: "Remove failed")
+        if error == nil {
+            toolLists[c.id] = nil
+            toolsErrors[c.id] = nil
+        }
+    }
+
+    // MARK: - Tools (QC-02)
+
+    /// Loads `c`'s tool list (`connections tools <id> --json`, read-only).
+    func loadTools(_ c: ExternalConnection) async {
+        await runToolsCommand(c) { _ in ExternalConnectionTools.listArgs(id: Int64(c.id)) }
+    }
+
+    /// Re-lists `c`'s tools from its server (`--refresh`).
+    func refreshTools(_ c: ExternalConnection) async {
+        await runToolsCommand(c) { _ in ExternalConnectionTools.listArgs(id: Int64(c.id), refresh: true) }
+    }
+
+    /// Turns one tool on or off. The next allow list is built from a list
+    /// read just before the write, never from the snapshot on screen, so a
+    /// change made meanwhile (the CLI, a re-listing) is not overwritten.
+    func setTool(_ name: String, allowed: Bool, on c: ExternalConnection) async {
+        await runToolsCommand(c) { runner in
+            let fresh = try await Self.decodeTools(runner.run(args: ExternalConnectionTools.listArgs(id: Int64(c.id))))
+            return fresh.allowArgs(setting: name, allowed: allowed)
+        }
+    }
+
+    /// Drops the explicit list: back to the read-only default (`--default`).
+    func useDefaultTools(_ c: ExternalConnection) async {
+        await runToolsCommand(c) { _ in ExternalConnectionTools.defaultArgs(id: Int64(c.id)) }
+    }
+
+    /// Re-reads the tools of a connection whose list is on screen, after a
+    /// command that may have re-listed them.
+    private func reloadShownTools(_ c: ExternalConnection) async {
+        guard toolLists[c.id] != nil else { return }
+        await loadTools(c)
+    }
+
+    /// Runs one `connections tools` command for `c` (the arguments may need
+    /// a read first) and stores the list it prints. Every tools command can
+    /// change the row's status (no allowed tool → `error`), so the
+    /// connections reload after it, success or not. A second command for the
+    /// same connection while one runs is dropped (the controls are disabled).
+    private func runToolsCommand(
+        _ c: ExternalConnection,
+        args: (CLIRunnerProtocol) async throws -> [String]
+    ) async {
+        guard !toolsInFlight.contains(c.id) else { return }
+        guard let runner = toolsRunner() else {
+            toolsErrors[c.id] = "Watchtower CLI not found"
+            return
+        }
+        toolsInFlight.insert(c.id)
+        defer { toolsInFlight.remove(c.id) }
+        do {
+            let data = try await runner.run(args: args(runner))
+            toolLists[c.id] = try Self.decodeTools(data)
+            toolsErrors[c.id] = nil
+        } catch {
+            toolsErrors[c.id] = Self.toolsErrorText(error)
+        }
+        await refreshAsync()
+    }
+
+    nonisolated private static func decodeTools(_ data: Data) throws -> ExternalConnectionTools {
+        try JSONDecoder().decode(ExternalConnectionTools.self, from: data)
+    }
+
+    /// The CLI's own message (its stderr) when it refused, else the error.
+    nonisolated static func toolsErrorText(_ error: Error) -> String {
+        if case let CLIRunnerError.nonZeroExit(code, stderr) = error {
+            let text = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            return text.isEmpty ? "Tools command failed (exit \(code))" : String(text.prefix(300))
+        }
+        if error is DecodingError {
+            return "Could not read the tool list: \(error.localizedDescription)"
+        }
+        return error.localizedDescription
     }
 
     // MARK: - Flow helpers

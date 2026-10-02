@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"strconv"
@@ -407,4 +408,57 @@ func TestQC02_AllowNeverAdmitsAnAnnotatedWrite(t *testing.T) {
 	conn, err := database.GetExternalConnection(id)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"createIssue", "summarize"}, conn.AllowTools)
+}
+
+// The Desktop reads `connections tools --json`: an annotated write carries
+// write:true (shown without a toggle), the empty states are [] not null, and
+// `--allow=` (no names) stores an explicit empty list — every tool off.
+func TestConnectionsTools_JSONForTheDesktop(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	id := insertStaticConnection(t, database, cfg)
+	idArg := strconv.FormatInt(id, 10)
+
+	out, err := runConnections(t, "", "tools", idArg, "--json")
+	require.NoError(t, err, out)
+	assert.Contains(t, out, `"tools": []`, "a never-listed connection renders an empty array, not null")
+
+	require.NoError(t, database.SetExternalConnectionTools(id, []db.ExternalTool{
+		{Name: "getIssue", Annotated: true, ReadOnlyHint: true},
+		{Name: "createIssue", Annotated: true},
+		{Name: "runQuery"},
+	}, time.Now().UTC().Format(time.RFC3339)))
+	out, err = runConnections(t, "", "tools", idArg, "--json")
+	require.NoError(t, err, out)
+	var wire connectionToolsJSON
+	require.NoError(t, json.Unmarshal([]byte(out), &wire))
+	assert.Equal(t, []connectionToolJSON{
+		{Name: "getIssue", Allowed: true, ReadOnly: true},
+		{Name: "createIssue", Write: true},
+		{Name: "runQuery"},
+	}, wire.Tools)
+
+	// The Desktop passes `--allow=`, which a fresh process parses to an empty,
+	// non-nil list. The package-level flag keeps pflag's "changed" state
+	// across in-process runs (an empty value then appends to nil), so set the
+	// parsed value directly here.
+	var buf bytes.Buffer
+	connectionsToolsCmd.SetOut(&buf)
+	t.Cleanup(func() { connectionsToolsCmd.SetOut(nil) })
+	connectionsToolsFlagAllow, connectionsToolsFlagJSON = []string{}, true
+	t.Cleanup(resetConnectionsFlags)
+	require.NoError(t, runConnectionsTools(connectionsToolsCmd, []string{idArg}))
+	out = buf.String()
+	wire = connectionToolsJSON{}
+	require.NoError(t, json.Unmarshal([]byte(out), &wire))
+	assert.True(t, wire.ExplicitSet)
+	for _, tool := range wire.Tools {
+		assert.False(t, tool.Allowed, tool.Name)
+	}
+	conn, err := database.GetExternalConnection(id)
+	require.NoError(t, err)
+	assert.Equal(t, []string{}, conn.AllowTools)
+	assert.Equal(t, "error", conn.Status, "no allowed tool: the row says the connection is not mounted")
 }

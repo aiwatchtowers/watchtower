@@ -1,6 +1,6 @@
 # Quick Connections — Behavior Inventory
 
-**Module:** `internal/db/external_connections.go`, `internal/externalmcp/`, `internal/ai/client.go` (config merge + allowlist), `cmd/connections.go`, `WatchtowerDesktop/Sources/ViewModels/ExternalConnectionsViewModel.swift`, `WatchtowerDesktop/Sources/Views/Settings/{ConnectionsSettings,QuickConnectionsDetail,AddExternalConnectionView}.swift`
+**Module:** `internal/db/external_connections.go`, `internal/externalmcp/`, `internal/ai/client.go` (config merge + allowlist), `cmd/connections.go`, `WatchtowerDesktop/Sources/ViewModels/ExternalConnectionsViewModel.swift`, `WatchtowerDesktop/Sources/WatchtowerCore/Models/ExternalConnectionTools.swift`, `WatchtowerDesktop/Sources/Views/Settings/{ConnectionsSettings,QuickConnectionsDetail,QuickConnectionToolsView,AddExternalConnectionView}.swift`
 **Spec:** `docs/superpowers/specs/2026-09-09-quick-connections-external-mcp-design.md`
 **Last full audit:** 2026-09-09
 
