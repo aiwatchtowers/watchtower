@@ -108,6 +108,22 @@ final class TerminalCenter {
         )
     }
 
+    /// Whether a Claude Code session this app runs works in the workbench's
+    /// files: a live `claude` row of the workbench, or one (a standalone
+    /// terminal, another workbench) whose folder is the workbench folder or
+    /// inside it. The branch switch's agent guard (#233); a `claude` in the
+    /// owner's own terminal app is not seen (v1 limit).
+    func hasLiveClaudeSession(workbenchID: Int64, folder: String) -> Bool {
+        let root = URL(fileURLWithPath: folder).standardizedFileURL.path
+        let live = liveIDs
+        return rows.values.contains { row in
+            guard row.kind == .claude, live.contains(row.id) else { return false }
+            if row.projectID == workbenchID { return true }
+            let path = URL(fileURLWithPath: row.folderPath).standardizedFileURL.path
+            return path == root || path.hasPrefix(root.hasSuffix("/") ? root : root + "/")
+        }
+    }
+
     func focus(_ sessionID: Int64) {
         focusOrder.removeAll { $0 == sessionID }
         focusOrder.append(sessionID)

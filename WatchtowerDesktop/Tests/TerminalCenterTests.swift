@@ -355,6 +355,51 @@ final class TerminalCenterTests: XCTestCase {
         XCTAssertTrue(center.sessionIDs(ofWorkbench: 1).isEmpty)
     }
 
+    // MARK: - The branch switch's agent guard (#233)
+
+    func testALiveClaudeRowOfTheWorkbenchCountsWhateverItsFolder() throws {
+        let center = makeCenter()
+        let s = try row(project: 1)
+        center.start(s, fresh: true)
+        XCTAssertTrue(center.hasLiveClaudeSession(workbenchID: 1, folder: "/tmp/elsewhere"))
+        XCTAssertFalse(center.hasLiveClaudeSession(workbenchID: 2, folder: "/tmp/elsewhere"))
+    }
+
+    func testAShellRowDoesNotCount() throws {
+        let center = makeCenter()
+        center.start(try row(project: 1, kind: .shell), fresh: true)
+        XCTAssertFalse(center.hasLiveClaudeSession(workbenchID: 1, folder: folder.path))
+    }
+
+    func testAnExitedClaudeRowDoesNotCount() throws {
+        let center = makeCenter()
+        let s = try row(project: 1)
+        center.start(s, fresh: true)
+        sessions.first?.exit(0)
+        XCTAssertFalse(center.hasLiveClaudeSession(workbenchID: 1, folder: folder.path))
+    }
+
+    func testAStandaloneClaudeRowInsideTheFolderCounts() throws {
+        let sub = folder.appendingPathComponent("sub/deeper", isDirectory: true)
+        try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: true)
+        let center = makeCenter()
+        center.start(try row(project: nil, folder: sub.path), fresh: true)
+        XCTAssertTrue(center.hasLiveClaudeSession(workbenchID: 9, folder: folder.path))
+        XCTAssertTrue(center.hasLiveClaudeSession(workbenchID: 9, folder: folder.path + "/"))
+        XCTAssertTrue(center.hasLiveClaudeSession(workbenchID: 9, folder: sub.path))
+    }
+
+    func testAClaudeRowInAnotherFolderDoesNotCount() throws {
+        let sub = folder.appendingPathComponent("sub", isDirectory: true)
+        try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: true)
+        let center = makeCenter()
+        center.start(try row(project: nil, folder: sub.path), fresh: true)
+        XCTAssertFalse(center.hasLiveClaudeSession(workbenchID: 9, folder: folder.appendingPathComponent("su").path),
+                       "a sibling sharing a name prefix is not inside")
+        XCTAssertFalse(center.hasLiveClaudeSession(workbenchID: 9, folder: sub.appendingPathComponent("child").path),
+                       "a session in the parent is not inside a child folder")
+    }
+
     func testFocusMovesAnIDToTheEndWithoutDuplicates() {
         let center = makeCenter()
         center.focus(1)
