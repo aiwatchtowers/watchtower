@@ -1,6 +1,9 @@
 package db
 
-import "fmt"
+import (
+	"database/sql"
+	"fmt"
+)
 
 // BoardNode is one target of a workbench board with its subtree, its comment
 // counters and the documents attached to it.
@@ -132,4 +135,47 @@ func (ix boardIndex) build(level []Target) []BoardNode {
 			Documents: ix.docs[id], StatusSince: ix.since[id], Children: ix.build(ix.children[id])})
 	}
 	return nodes
+}
+
+// MoveWorkbenchTargetTx nests target id of workbench projectID under parent,
+// or moves it to the top level when parent is not Valid (board #186). Both
+// must be on that workbench (ErrNotInWorkbench otherwise, also for a missing
+// row), and parent must not be the target or one of its sub-targets
+// (ErrParentCycle). An unchanged parent writes nothing. The old and new
+// parents' progress is recomputed in tx; their status follows from the
+// PROJ-05 rollup triggers, which re-derive both on the parent_id change.
+//
+// Dual path: the Desktop board moves targets with
+// WorkbenchQueries.moveTarget (WatchtowerCore) — change the rules together.
+func (db *DB) MoveWorkbenchTargetTx(tx *sql.Tx, projectID, id int64, parent sql.NullInt64) error {
+	if err := checkTargetInWorkbench(tx, projectID, id); err != nil {
+		return err
+	}
+	if parent.Valid {
+		if err := checkTargetInWorkbench(tx, projectID, parent.Int64); err != nil {
+			return err
+		}
+		if err := checkParentCycle(tx, id, parent); err != nil {
+			return err
+		}
+	}
+	var oldParent sql.NullInt64
+	if err := tx.QueryRow(`SELECT parent_id FROM targets WHERE id = ?`, id).Scan(&oldParent); err != nil {
+		return fmt.Errorf("loading target %d's parent: %w", id, err)
+	}
+	if parent == oldParent {
+		return nil
+	}
+	if _, err := tx.Exec(`UPDATE targets SET parent_id = ?,
+		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`, parent, id); err != nil {
+		return fmt.Errorf("moving target %d: %w", id, err)
+	}
+	for _, p := range []sql.NullInt64{oldParent, parent} {
+		if p.Valid {
+			if err := recomputeParentProgressOn(tx, p.Int64); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

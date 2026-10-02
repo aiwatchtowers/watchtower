@@ -2,7 +2,7 @@ import SwiftUI
 import WatchtowerCore
 
 /// One target of the project board as a task card: status icon, title,
-/// priority/status chips, counters, and — for a parent — its children's
+/// its `#id`, priority/status chips, counters, and — for a parent — its children's
 /// progress and a collapse chevron. `trailing` is the card's action slot,
 /// told whether the pointer is over the card; `caption` is an extra line
 /// under the title (the kanban's parent chain).
@@ -92,6 +92,10 @@ struct WorkbenchBoardCardView<Trailing: View>: View {
 
     private func chips(_ card: WorkbenchBoardCard) -> some View {
         HStack(spacing: 6) {
+            Text(WorkbenchTargetNumber.label(target.id))
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .help("Target number — right-click to copy it")
             WorkbenchBoardChip(
                 text: target.priority.capitalized,
                 color: WorkbenchBoardColors.priority(target.priority),
@@ -185,5 +189,56 @@ enum WorkbenchBoardColors {
         case "low": .blue
         default: .orange
         }
+    }
+}
+
+/// A board target's number as the agent writes it (`#163`, board #207), and
+/// the copy to the pasteboard behind the card menu and the detail card.
+enum WorkbenchTargetNumber {
+    static func label(_ id: Int) -> String { "#\(id)" }
+
+    static func copy(_ id: Int) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(label(id), forType: .string)
+    }
+}
+
+/// The context menu of a board row or kanban card: copy the number, and
+/// "Move to…" another target or the top level (board #186).
+struct WorkbenchTargetMenu: View {
+    let target: Target
+    let vm: WorkbenchBoardViewModel
+
+    var body: some View {
+        Button("Copy \(WorkbenchTargetNumber.label(target.id))") { WorkbenchTargetNumber.copy(target.id) }
+        Divider()
+        Menu("Move to") {
+            ForEach(WorkbenchBoardOutline.moveDestinations(for: target.id, in: vm.roots)) { row in
+                Button(Self.destinationTitle(row)) { vm.move(target.id, under: row.id) }
+            }
+        }
+        Button("Move to Top Level") { vm.move(target.id, under: nil) }
+            .disabled(!WorkbenchBoardOutline.canMove(target.id, under: nil, in: vm.roots))
+    }
+
+    /// Indented by depth so the menu reads as the board's tree (capped like
+    /// the board's own indent).
+    private static func destinationTitle(_ row: WorkbenchBoardRow) -> String {
+        let title = WorkbenchBoardCard.title(row.node.target.text)
+        return String(repeating: "    ", count: min(row.depth, 6))
+            + "\(WorkbenchTargetNumber.label(row.id))  \(title.isEmpty ? "Untitled" : title)"
+    }
+}
+
+/// The list's drag payload (board #186): a prefixed id, so plain text dropped
+/// from elsewhere (a number from the terminal) never moves a target.
+enum WorkbenchTargetDrag {
+    private static let prefix = "watchtower-board-target:"
+
+    static func payload(_ id: Int) -> String { prefix + String(id) }
+
+    static func targetID(_ payload: String) -> Int? {
+        guard payload.hasPrefix(prefix) else { return nil }
+        return Int(payload.dropFirst(prefix.count))
     }
 }

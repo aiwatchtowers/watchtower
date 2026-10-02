@@ -400,6 +400,48 @@ applied to search.
 
 **Locked since:** 2026-10-01
 
+## PROJ-09 — a target moves only within its own workbench, never into a cycle
+
+**Status:** Enforced (Go and Desktop — a dual path)
+
+**Observable:** A workbench target can be moved under another target of the
+same workbench, or to the top level: the agent's `update_target` with
+`parent_id` (`0` = top level), and the Desktop board's drag of a list row
+onto another row or its card menu's **Move to** / **Move to Top Level**. A
+move is refused — and writes nothing — when the new parent is the target
+itself or one of its sub-targets at any depth (`db.ErrParentCycle` / Swift
+`TargetParentCycleError`), and when the target or the new parent is
+on another workbench, on the personal board or missing
+(`db.ErrNotInWorkbench` / `.wrongWorkbench`); `update_target` refuses both in
+its Scope, before any write, and the write re-checks them in its
+transaction. A move to the parent the target already has writes nothing. A
+move re-derives the status of both the old and the new parent chain through
+the PROJ-05 triggers (recorded as `system` in the status history, PROJ-06) and
+recomputes both parents' progress. The generic reparent — `watchtower targets
+update --parent` (`db.UpdateTarget`) and the Desktop's Suggest Links
+(`TargetQueries.updateParent`) — refuses a cycle too, checked only when the
+parent changes (in Go before the write, outside a transaction, so a
+concurrent move is not serialised against it). The rule lives in Go `db.MoveWorkbenchTargetTx` and Swift
+`WorkbenchQueries.moveTarget`, which are kept in step by name.
+
+**Why locked:** Owner request (board target #186): related tickets must be
+groupable on the board after they were filed. A cycle would hide a subtree
+from every board reader, and a cross-workbench parent would break PROJ-01's
+separation of boards.
+
+**Test guards:**
+- `internal/db/proj09_move_test.go` — `TestProj09_MoveReRollsBothParentsStatusAndProgress`,
+  `TestProj09_MoveToTheTopLevel`, `TestProj09_MoveRefusesACycle`,
+  `TestProj09_MoveRefusesAnotherBoard`, `TestProj09_UnchangedParentWritesNothing`,
+  `TestProj09_UpdateTargetRefusesACycle`, `TestProj09_CycleCheckEndsOnAnExistingCycle`
+- `internal/tools/workbench_targets_move_test.go` — `TestProj09_UpdateTargetMovesUnderAParentAndToTheTopLevel`,
+  `TestProj09_UpdateTargetRefusesACycleAndOtherBoards`
+- `WatchtowerDesktop/Tests/Core/WorkbenchMoveTargetTests.swift` — the `testProj09_*` Desktop twins (`testProj09_UpdateParentRefusesACycle` for Suggest Links)
+- `WatchtowerDesktop/Tests/WorkbenchBoardViewModelTests.swift::testMoveReportsBothRolledUpParentsAndExpandsTheNewOne`
+  (both rolled-up parents count as the owner's writes)
+
+**Locked since:** 2026-10-02
+
 ## v1 limits and notes (accepted)
 
 - **Status rollup bounds (PROJ-05).** The ancestor walk stops after 256
@@ -469,6 +511,8 @@ applied to search.
 
 ## Changelog
 
+- 2026-10-02 (board target #186): **PROJ-09** added — a workbench target can be re-parented within its workbench (`update_target`'s `parent_id`, the Desktop board's drag onto a row and **Move to…**), never into a cycle or across boards; `db.UpdateTarget` (`targets update --parent`) and Swift `TargetQueries.updateParent` refuse a cycle too. PROJ-05's rollup already covered a `parent_id` change; its wording and guards are unchanged. The `watchtower-workbench` skill now has the agent nest a new target under a topical group (creating the group if needed). PROJ-01..08 unchanged.
+- 2026-10-02 (board target #207): the Desktop board shows each target's `#id` on list rows, kanban cards and the detail card (copy from the card menu or the detail chip) and gains a search field (`WorkbenchBoardSearch`: `#N` = that id only, a bare number = the id or a title/intent containing it, other text = title/intent; matches keep their ancestors and subtrees, include closed targets and ignore collapse). Read-only UI over existing rows; no contract semantics or guard tests changed.
 - 2026-10-02 (Workbench rename, spec `docs/superpowers/specs/2026-10-02-workbench-rename-design.md`, owner decisions O1–O8): the feature is renamed from Projects to **Workbench** and this file moves from `docs/inventory/projects.md` to `docs/inventory/workbench.md`. PROJ-01..08 are reworded to the new names with the **same ids and the same meaning** (rewording approved by the owner, O2); every guard keeps its test function name (`TestProjNN_…`/`testProjNN_…`, A4) and only its file path changed (`project*`/`Project*` test files → `workbench*`/`Workbench*`; the migration tests keep theirs). Storage and wire keep `project` (tables, columns, DB values, `project_doc`, `project_files/`, `projects.*` UserDefaults keys, CLI `--json` keys). **PROJ-02 strengthened:** removal and delete also take away a never-resynced folder's legacy hooks, skill, `watchtower-project` registration and exclude lines — new guard `TestProj02_RemoveLegacyFolderLeavesNothingInstalled`. **PROJ-04 strengthened:** a resync deletes the legacy `watchtower-project` skill only through the DEV-04 marker/digest rule and replaces only our own legacy hook entries; an edited legacy skill is kept byte-identical with its exclude line — new guard `TestProj04_ResyncKeepsAnEditedLegacySkill`. Guard assertions whose expected literal said "project" (for example "workbench N no longer exists") were updated to the new wording with the same strictness. The entries below are historical and keep the names of their date (A11).
 
 - 2026-10-01 (board item #181): project documents render tables as one paragraph per cell and a rule as a blank line (they were `a | b` rows and `———`); `CommentAnchor.locate` gains a last tier that reads those legacy separators (` | `, `———`, and for a `table` artifact its CSV commas) in a stored quote and its context as the new line breaks, and accepts a match only where real stored context still surrounds it, so comments made on the old rendering keep their passage instead of turning `outdated`. PROJ-03 unchanged — the same passage is found, look-alike text elsewhere is not (`testTheLegacyTierNeedsTheOriginalContext`); no guard test changed.

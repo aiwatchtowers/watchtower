@@ -74,6 +74,24 @@ final class WorkbenchBoardKanbanTests: XCTestCase {
         XCTAssertEqual(ids(board, "done"), [7])
     }
 
+    func testSearchKeepsMatchingLeavesAndLeavesUnderAMatchingParent() throws {
+        let roots = [
+            node(try target(1, "Comments group"), [
+                node(try target(2, "Artifact comments")),
+                node(try target(3, "Document comments", status: "dismissed"))
+            ]),
+            node(try target(4, "Widget")),
+            node(try target(5, "Artifact viewer", status: "done"))
+        ]
+        let byGroup = WorkbenchBoardKanban(roots, filterRootID: nil, showDone: false, query: "#1")
+        XCTAssertEqual(ids(byGroup, "todo"), [2])
+        XCTAssertEqual(ids(byGroup, "dismissed"), [3], "a search shows dismissed cards as Show done would")
+        let byText = WorkbenchBoardKanban(roots, filterRootID: nil, showDone: false, query: "artifact")
+        XCTAssertEqual(ids(byText, "todo"), [2])
+        XCTAssertEqual(ids(byText, "done"), [5])
+        XCTAssertFalse(byText.showsCard(4))
+    }
+
     func testColumnOrderIsPriorityThenID() throws {
         let roots = [
             node(try target(1, priority: "low")),
