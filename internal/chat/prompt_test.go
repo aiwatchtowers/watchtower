@@ -257,6 +257,7 @@ func TestBuildSystemPrompt_ProjectBlock(t *testing.T) {
 	assert.Contains(t, got, "=== PROJECT: Payments ===")
 	assert.Contains(t, got, "Always answer in bullets.")
 	assert.Contains(t, got, "- jira_project: PAY (Payments)")
+	assert.Contains(t, got, `pass workbench_scope: "only" to search just them`, "a Jira pin steers search_knowledge")
 	assert.Contains(t, got, "--- file: notes.md ---\nRefunds ship on Oct 3.")
 	assert.Contains(t, got, "--- end file: notes.md ---", "an inlined file is explicitly bounded so it cannot fake a new section")
 	assert.Contains(t, got, "--- begin project instructions ---\nAlways answer in bullets.\n--- end project instructions ---")
@@ -275,6 +276,23 @@ func TestBuildSystemPrompt_ProjectBlock(t *testing.T) {
 		assert.NotContains(t, got, "Attached to the first message", provider)
 		assert.Contains(t, got, "Not available in this session (images and PDFs need the Claude provider): arch.png", provider)
 	}
+}
+
+// Pins search_knowledge's scope cannot resolve (target, track, person) get
+// no search line: only the listed kinds steer search.
+func TestBuildSystemPrompt_PromptOnlyPinsGetNoSearchLine(t *testing.T) {
+	d, cfg, o := promptFixture(t)
+	res, err := d.Exec(`INSERT INTO chat_projects (name, instructions, created_at, updated_at) VALUES ('Ops', '', 1, 1)`)
+	require.NoError(t, err)
+	pid, err := res.LastInsertId()
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO chat_project_sources (project_id, kind, ref) VALUES (?, 'target', '4'), (?, 'person', '1:U1')`, pid, pid)
+	require.NoError(t, err)
+	o.ProjectID = pid
+	got, err := BuildSystemPrompt(context.Background(), d, cfg, o)
+	require.NoError(t, err)
+	assert.Contains(t, got, "- target: 4")
+	assert.NotContains(t, got, "workbench_scope")
 }
 
 // Project binaries that together exceed one message's encoded cap are not

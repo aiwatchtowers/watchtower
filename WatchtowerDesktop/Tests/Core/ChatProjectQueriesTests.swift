@@ -96,6 +96,18 @@ final class ChatProjectQueriesTests: XCTestCase {
         }
     }
 
+    /// Migration 00096: a chat project pins a Confluence space.
+    func testAddSourceStoresAConfluenceSpace() throws {
+        try db.write { d in
+            let p = try ChatProjectQueries.create(d, name: "P")
+            XCTAssertTrue(try ChatProjectQueries.addSource(
+                d, projectID: p.id, kind: .confluenceSpace, ref: "ENG", label: "Engineering"))
+            let sources = try ChatProjectQueries.sources(d, projectID: p.id)
+            XCTAssertEqual(sources.map(\.kind), ["confluence_space"])
+            XCTAssertEqual(sources.first?.sourceKind, .confluenceSpace)
+        }
+    }
+
     func testFilesAndRemoveFileReturnsPath() throws {
         try db.write { d in
             let p = try ChatProjectQueries.create(d, name: "P")

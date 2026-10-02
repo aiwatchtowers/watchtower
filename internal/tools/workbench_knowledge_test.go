@@ -262,7 +262,7 @@ func TestSearchKnowledge_ProjectScopeIsAnAliasOfWorkbenchScope(t *testing.T) {
 
 	_, err = searchIn(t, reg, 0, `{"queries":["стейдж"],"workbench_scope":"only"}`)
 	require.ErrorAs(t, err, &ve)
-	assert.Equal(t, "workbench_scope works only in a workbench session (watchtower mcp --workbench N)", ve.Msg)
+	assert.Equal(t, "workbench_scope works only in a workbench session (watchtower mcp --workbench N) or a chat project's chat", ve.Msg)
 
 	props := NewSearchKnowledge().InputSchema.Properties
 	require.Contains(t, props, "workbench_scope")

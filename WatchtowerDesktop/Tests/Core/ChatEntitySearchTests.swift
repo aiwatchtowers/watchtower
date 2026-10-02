@@ -136,6 +136,27 @@ final class ChatEntitySearchTests: XCTestCase {
         }
     }
 
+    func testConfluenceSpacesMatchKeyOrNameAndDedupeAcrossSites() throws {
+        try db.write { d in
+            let siteA = try TestDatabase.insertJiraAccount(d, cloudID: "a")
+            let siteB = try TestDatabase.insertJiraAccount(d, cloudID: "b")
+            try TestDatabase.insertExtSource(d, jiraAccountID: siteA, containerKey: "ENG", containerName: "Engineering")
+            try TestDatabase.insertExtSource(d, jiraAccountID: siteB, containerKey: "ENG", containerName: "Engineering")
+            try TestDatabase.insertExtSource(d, jiraAccountID: siteA, containerKey: "DOC", containerName: "")
+            let off = try TestDatabase.insertExtSource(d, jiraAccountID: siteA, containerKey: "OLD", containerName: "Old")
+            try d.execute(sql: "UPDATE ext_sources SET enabled = 0 WHERE id = ?", arguments: [off])
+
+            let byKey = try ChatEntitySearch.confluenceSpaces(d, query: "en")
+            XCTAssertEqual(byKey, [ChatEntityHit(kind: .confluenceSpace, ref: "ENG", label: "Engineering",
+                                                 detail: "Confluence space ENG")], "one hit for a key two sites share")
+            XCTAssertEqual(try ChatEntitySearch.confluenceSpaces(d, query: "engin").map(\.ref), ["ENG"], "name prefix")
+            let unnamed = try ChatEntitySearch.search(d, kind: .confluenceSpace, query: "doc")
+            XCTAssertEqual(unnamed.map(\.label), ["DOC"], "an unnamed space is labelled by its key")
+            XCTAssertEqual(try ChatEntitySearch.confluenceSpaces(d, query: "").map(\.ref), ["DOC", "ENG"],
+                           "a space no longer synced is not offered")
+        }
+    }
+
     func testSearchByKindDispatches() throws {
         try db.write { d in
             try TestDatabase.insertChannel(d, id: "1:C1", name: "general")
@@ -148,6 +169,7 @@ final class ChatEntitySearchTests: XCTestCase {
         XCTAssertEqual(ChatProjectSource.Kind(entity: .person), .person)
         XCTAssertEqual(ChatProjectSource.Kind(entity: .channel), .slackChannel)
         XCTAssertEqual(ChatProjectSource.Kind(entity: .jiraProject), .jiraProject)
+        XCTAssertEqual(ChatProjectSource.Kind(entity: .confluenceSpace), .confluenceSpace)
         XCTAssertEqual(ChatProjectSource.Kind(entity: .target), .target)
         XCTAssertEqual(ChatProjectSource.Kind(entity: .track), .track)
         XCTAssertNil(ChatProjectSource.Kind(entity: .jiraIssue), "an issue is a mention, not a project source")
