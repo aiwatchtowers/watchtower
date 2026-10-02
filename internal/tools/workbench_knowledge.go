@@ -16,7 +16,7 @@ import (
 // internal/jira's sync accepts).
 var jiraProjectKey = regexp.MustCompile(`^[A-Z][A-Z0-9_]+$`)
 
-// ProjectKnowledgeScope turns the project's slack_channel, jira_project and
+// WorkbenchKnowledgeScope turns the project's slack_channel, jira_project and
 // confluence_space sources into the kb.Scope its search and brief prefer.
 // Mechanical: a Slack ref (an id with or without the account prefix, a
 // #name or a channel URL) resolves against the synced channels — every
@@ -25,8 +25,8 @@ var jiraProjectKey = regexp.MustCompile(`^[A-Z][A-Z0-9_]+$`)
 // ref is a space key or a /spaces/KEY or /display/KEY URL. A ref that
 // resolves to nothing is skipped, never an error — a source is informational,
 // not a filter — and returned in unresolved so the caller can say so.
-func ProjectKnowledgeScope(ctx context.Context, d *db.DB, projectID int64) (s kb.Scope, unresolved []string, err error) {
-	sources, err := d.ListProjectSources(projectID)
+func WorkbenchKnowledgeScope(ctx context.Context, d *db.DB, projectID int64) (s kb.Scope, unresolved []string, err error) {
+	sources, err := d.ListWorkbenchSources(projectID)
 	if err != nil {
 		return kb.Scope{}, nil, fmt.Errorf("listing project sources: %w", err)
 	}

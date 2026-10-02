@@ -13,19 +13,19 @@ import (
 	"watchtower/internal/db"
 )
 
-// seedProject creates a project bound to a fresh temp folder and returns its id.
-func seedProject(t *testing.T, d *db.DB, name string) int64 {
+// seedWorkbench creates a project bound to a fresh temp folder and returns its id.
+func seedWorkbench(t *testing.T, d *db.DB, name string) int64 {
 	t.Helper()
-	folder, err := db.ResolveProjectFolder(t.TempDir(), nil)
+	folder, err := db.ResolveWorkbenchFolder(t.TempDir(), nil)
 	require.NoError(t, err)
-	id, err := d.CreateProject(name, folder)
+	id, err := d.CreateWorkbench(name, folder)
 	require.NoError(t, err)
 	return id
 }
 
-// newProjectEchoTool is a write tool on the given surfaces that records every
+// newWorkbenchEchoTool is a write tool on the given surfaces that records every
 // Execute call, so a test can see whether and with which binding it ran.
-func newProjectEchoTool(t *testing.T, external bool, surfaces []string, executed *[]Call) *Tool {
+func newWorkbenchEchoTool(t *testing.T, external bool, surfaces []string, executed *[]Call) *Tool {
 	t.Helper()
 	schema, err := jsonschema.For[echoArgs](nil)
 	require.NoError(t, err)
@@ -41,7 +41,7 @@ func newProjectEchoTool(t *testing.T, external bool, surfaces []string, executed
 }
 
 func directBinding(projectID int64) Binding {
-	return Binding{Surface: "project", ProjectID: projectID, DirectApply: true}
+	return Binding{Surface: "project", WorkbenchID: projectID, DirectApply: true}
 }
 
 const pechoArgs = `{"text":"hi","reason":"r"}`
@@ -50,10 +50,10 @@ const pechoArgs = `{"text":"hi","reason":"r"}`
 // pending proposal: the call is refused before any row is written.
 func TestDev06_ExternalToolRefusedUnderDirectApply(t *testing.T) {
 	d := openDB(t)
-	pid := seedProject(t, d, "acme")
+	pid := seedWorkbench(t, d, "acme")
 	var executed []Call
 	reg := New(d)
-	require.NoError(t, reg.Register(newProjectEchoTool(t, true, []string{"project"}, &executed)))
+	require.NoError(t, reg.Register(newWorkbenchEchoTool(t, true, []string{"project"}, &executed)))
 
 	_, err := reg.Propose(context.Background(), "pecho", json.RawMessage(pechoArgs), directBinding(pid))
 	var verr *ValidationError
@@ -69,16 +69,16 @@ func TestDev06_ExternalToolRefusedUnderDirectApply(t *testing.T) {
 // this call only: the owner's stored trust stays "ask".
 func TestDirectApply_AppliesInlineWithAuditRow(t *testing.T) {
 	d := openDB(t)
-	pid := seedProject(t, d, "acme")
+	pid := seedWorkbench(t, d, "acme")
 	var executed []Call
 	reg := New(d)
-	require.NoError(t, reg.Register(newProjectEchoTool(t, false, []string{"project"}, &executed)))
+	require.NoError(t, reg.Register(newWorkbenchEchoTool(t, false, []string{"project"}, &executed)))
 
 	rc, err := reg.Propose(context.Background(), "pecho", json.RawMessage(pechoArgs), directBinding(pid))
 	require.NoError(t, err)
 	assert.Equal(t, "applied", rc.Status)
 	require.Len(t, executed, 1)
-	assert.Equal(t, pid, executed[0].Binding.ProjectID, "Execute sees the bound project")
+	assert.Equal(t, pid, executed[0].Binding.WorkbenchID, "Execute sees the bound project")
 
 	row, err := d.GetAgentAction(rc.ActionID)
 	require.NoError(t, err)
@@ -97,11 +97,11 @@ func TestDirectApply_AppliesInlineWithAuditRow(t *testing.T) {
 // "every surface") never inherits direct apply.
 func TestDirectApply_RefusesToolNotOnTheSurface(t *testing.T) {
 	d := openDB(t)
-	pid := seedProject(t, d, "acme")
+	pid := seedWorkbench(t, d, "acme")
 	for _, surfaces := range [][]string{nil, {"main"}} {
 		var executed []Call
 		reg := New(d)
-		require.NoError(t, reg.Register(newProjectEchoTool(t, false, surfaces, &executed)))
+		require.NoError(t, reg.Register(newWorkbenchEchoTool(t, false, surfaces, &executed)))
 		_, err := reg.Propose(context.Background(), "pecho", json.RawMessage(pechoArgs), directBinding(pid))
 		var verr *ValidationError
 		require.ErrorAs(t, err, &verr, "surfaces %v", surfaces)
@@ -113,12 +113,12 @@ func TestDirectApply_RefusesToolNotOnTheSurface(t *testing.T) {
 // read, project tool or not — answers "project N no longer exists".
 func TestProjectBinding_DeletedProjectAnswersNoLongerExists(t *testing.T) {
 	d := openDB(t)
-	pid := seedProject(t, d, "acme")
+	pid := seedWorkbench(t, d, "acme")
 	var executed, reads []Call
 	reg := New(d)
-	require.NoError(t, reg.Register(newProjectEchoTool(t, false, []string{"project"}, &executed)))
+	require.NoError(t, reg.Register(newWorkbenchEchoTool(t, false, []string{"project"}, &executed)))
 	require.NoError(t, reg.Register(newPeekTool(t, &reads)))
-	require.NoError(t, d.DeleteProject(pid))
+	require.NoError(t, d.DeleteWorkbench(pid))
 	want := "project " + strconv.FormatInt(pid, 10) + " no longer exists"
 
 	_, err := reg.Propose(context.Background(), "pecho", json.RawMessage(pechoArgs), directBinding(pid))
@@ -136,15 +136,15 @@ func TestProjectBinding_DeletedProjectAnswersNoLongerExists(t *testing.T) {
 // CallRead hands the binding to Execute.
 func TestCallRead_PassesBindingToExecute(t *testing.T) {
 	d := openDB(t)
-	pid := seedProject(t, d, "acme")
+	pid := seedWorkbench(t, d, "acme")
 	var reads []Call
 	reg := New(d)
 	require.NoError(t, reg.Register(newPeekTool(t, &reads)))
 
-	_, err := reg.CallRead(context.Background(), "peek", json.RawMessage(`{"query":"x"}`), Binding{Surface: "project", ProjectID: pid})
+	_, err := reg.CallRead(context.Background(), "peek", json.RawMessage(`{"query":"x"}`), Binding{Surface: "project", WorkbenchID: pid})
 	require.NoError(t, err)
 	require.Len(t, reads, 1)
-	assert.Equal(t, pid, reads[0].Binding.ProjectID)
+	assert.Equal(t, pid, reads[0].Binding.WorkbenchID)
 }
 
 // Scope runs in Propose (a refusal writes no row) and again in Apply against
@@ -152,9 +152,9 @@ func TestCallRead_PassesBindingToExecute(t *testing.T) {
 // project was deleted meanwhile fails instead of executing.
 func TestScope_RunsInProposeAndAgainInApply(t *testing.T) {
 	d := openDB(t)
-	pid := seedProject(t, d, "acme")
+	pid := seedWorkbench(t, d, "acme")
 	var executed []Call
-	tool := newProjectEchoTool(t, false, []string{"project"}, &executed)
+	tool := newWorkbenchEchoTool(t, false, []string{"project"}, &executed)
 	var scoped []Binding
 	tool.Scope = func(_ context.Context, _ *db.DB, raw json.RawMessage, b Binding) error {
 		scoped = append(scoped, b)
@@ -165,7 +165,7 @@ func TestScope_RunsInProposeAndAgainInApply(t *testing.T) {
 	}
 	reg := New(d)
 	require.NoError(t, reg.Register(tool))
-	bound := Binding{Surface: "project", ProjectID: pid} // ask trust: stays pending
+	bound := Binding{Surface: "project", WorkbenchID: pid} // ask trust: stays pending
 
 	_, err := reg.Propose(context.Background(), "pecho", json.RawMessage(`{"text":"bad","reason":"r"}`), bound)
 	var verr *ValidationError
@@ -179,7 +179,7 @@ func TestScope_RunsInProposeAndAgainInApply(t *testing.T) {
 	ok, err := d.TransitionAgentAction(rc.ActionID, []string{"pending"}, "approved", "", "")
 	require.NoError(t, err)
 	require.True(t, ok)
-	require.NoError(t, d.DeleteProject(pid))
+	require.NoError(t, d.DeleteWorkbench(pid))
 
 	row, err := reg.Apply(context.Background(), rc.ActionID)
 	require.NoError(t, err)
@@ -187,5 +187,5 @@ func TestScope_RunsInProposeAndAgainInApply(t *testing.T) {
 	assert.Contains(t, row.Error, "no longer exists")
 	assert.Empty(t, executed, "a de-scoped row never executes")
 	require.Len(t, scoped, 2, "Scope ran for both proposals, never again once the project was gone")
-	assert.Equal(t, pid, scoped[1].ProjectID)
+	assert.Equal(t, pid, scoped[1].WorkbenchID)
 }

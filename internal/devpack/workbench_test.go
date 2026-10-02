@@ -13,7 +13,7 @@ import (
 )
 
 func TestProjectSkillShipsWithMarkerAndName(t *testing.T) {
-	name, body := ProjectSkill()
+	name, body := WorkbenchSkill()
 	if name != "watchtower-project" {
 		t.Fatalf("expected the skill to be named watchtower-project, got %q", name)
 	}
@@ -27,7 +27,7 @@ func TestProjectSkillShipsWithMarkerAndName(t *testing.T) {
 	if !strings.Contains(content, "\ndescription: ") {
 		t.Fatalf("frontmatter must carry a description")
 	}
-	s := projectSkill()
+	s := workbenchSkill()
 	if s.Name != name || s.Content != content || len(s.SHA256) != 64 {
 		t.Fatalf("projectSkill() must wrap ProjectSkill() with a hex sha256, got %+v", s)
 	}
@@ -38,14 +38,14 @@ func TestProjectSkillShipsWithMarkerAndName(t *testing.T) {
 // folder, so it must never leak into it.
 func TestProjectSkillIsNotInTheGenericPack(t *testing.T) {
 	for _, s := range Skills() {
-		if s.Name == ProjectSkillName {
-			t.Fatalf("%s must be embedded separately from the generic pack", ProjectSkillName)
+		if s.Name == WorkbenchSkillName {
+			t.Fatalf("%s must be embedded separately from the generic pack", WorkbenchSkillName)
 		}
 	}
 }
 
 func TestProjectSkillTeachesEveryProjectTool(t *testing.T) {
-	_, body := ProjectSkill()
+	_, body := WorkbenchSkill()
 	content := string(body)
 	for _, tool := range []string{
 		"project_info", "project_board", "update_project",
@@ -61,7 +61,7 @@ func TestProjectSkillTeachesEveryProjectTool(t *testing.T) {
 
 // Spec §5: every flow the skill must teach, pinned by a phrase from it.
 func TestProjectSkillTeachesEveryFlow(t *testing.T) {
-	_, body := ProjectSkill()
+	_, body := WorkbenchSkill()
 	content := string(body)
 	for _, phrase := range []string{
 		"## Setup",
@@ -139,19 +139,19 @@ func (f *fakeClaude) run(_ context.Context, dir, name string, args ...string) ([
 	return nil, ErrCommandExit
 }
 
-func projectOpts(folder string, f *fakeClaude) ProjectInstallOptions {
-	return ProjectInstallOptions{ProjectID: 7, Folder: folder, Bin: "/tmp/acme bin/watchtower", Run: f.run}
+func workbenchOpts(folder string, f *fakeClaude) WorkbenchInstallOptions {
+	return WorkbenchInstallOptions{WorkbenchID: 7, Folder: folder, Bin: "/tmp/acme bin/watchtower", Run: f.run}
 }
 
-func projectSkillFile(folder string) string {
-	return filepath.Join(folder, ".claude", "skills", ProjectSkillName, "SKILL.md")
+func workbenchSkillFile(folder string) string {
+	return filepath.Join(folder, ".claude", "skills", WorkbenchSkillName, "SKILL.md")
 }
 
 func TestProjectHookCommandQuotesPathsWithSpaces(t *testing.T) {
-	if got := ProjectHookCommand("/tmp/acme/bin/watchtower", 3); got != "/tmp/acme/bin/watchtower project brief --project 3" {
+	if got := WorkbenchHookCommand("/tmp/acme/bin/watchtower", 3); got != "/tmp/acme/bin/watchtower project brief --project 3" {
 		t.Fatalf("a plain path must stay unquoted, got %q", got)
 	}
-	got := ProjectHookCommand("/tmp/Application Support/it's/watchtower", 3)
+	got := WorkbenchHookCommand("/tmp/Application Support/it's/watchtower", 3)
 	want := `'/tmp/Application Support/it'\''s/watchtower' project brief --project 3`
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
@@ -161,17 +161,17 @@ func TestProjectHookCommandQuotesPathsWithSpaces(t *testing.T) {
 func TestInstallProjectInstallsSkillHookExcludeAndMCP(t *testing.T) {
 	folder := fakeRepo(t)
 	f := newFakeClaude()
-	o := projectOpts(folder, f)
+	o := workbenchOpts(folder, f)
 
-	rep, err := InstallProject(context.Background(), o)
+	rep, err := InstallWorkbench(context.Background(), o)
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
-	if rep.Skill.State != StateInstalled || rep.Skill.Path != projectSkillFile(folder) {
+	if rep.Skill.State != StateInstalled || rep.Skill.Path != workbenchSkillFile(folder) {
 		t.Fatalf("skill: %+v", rep.Skill)
 	}
-	_, body := ProjectSkill()
-	if readTestFile(t, projectSkillFile(folder)) != string(body) {
+	_, body := WorkbenchSkill()
+	if readTestFile(t, workbenchSkillFile(folder)) != string(body) {
 		t.Fatalf("the installed skill differs from the embedded one")
 	}
 	if !rep.HookChanged {
@@ -203,14 +203,14 @@ func TestInstallProjectInstallsSkillHookExcludeAndMCP(t *testing.T) {
 func TestInstallProjectTwiceIsIdempotent(t *testing.T) {
 	folder := fakeRepo(t)
 	f := newFakeClaude()
-	o := projectOpts(folder, f)
-	if _, err := InstallProject(context.Background(), o); err != nil {
+	o := workbenchOpts(folder, f)
+	if _, err := InstallWorkbench(context.Background(), o); err != nil {
 		t.Fatalf("first install: %v", err)
 	}
 	settingsBefore := readTestFile(t, settingsFile(folder))
 	excludeBefore := readTestFile(t, filepath.Join(folder, ".git", "info", "exclude"))
 
-	rep, err := InstallProject(context.Background(), o)
+	rep, err := InstallWorkbench(context.Background(), o)
 	if err != nil {
 		t.Fatalf("second install: %v", err)
 	}
@@ -233,7 +233,7 @@ func TestInstallProjectWithoutClaudeStillInstallsTheFilesAndReportsTheCommand(t 
 	f := newFakeClaude()
 	f.missing = true
 
-	rep, err := InstallProject(context.Background(), projectOpts(folder, f))
+	rep, err := InstallWorkbench(context.Background(), workbenchOpts(folder, f))
 	if !errors.Is(err, ErrClaudeNotFound) {
 		t.Fatalf("expected ErrClaudeNotFound, got %v", err)
 	}
@@ -251,7 +251,7 @@ func TestInstallProjectWithMalformedSettingsContinuesTheOtherSteps(t *testing.T)
 	writeTestFile(t, settingsFile(folder), broken)
 	f := newFakeClaude()
 
-	rep, err := InstallProject(context.Background(), projectOpts(folder, f))
+	rep, err := InstallWorkbench(context.Background(), workbenchOpts(folder, f))
 	if !errors.Is(err, ErrMalformedSettings) {
 		t.Fatalf("expected ErrMalformedSettings, got %v", err)
 	}
@@ -268,17 +268,17 @@ func TestProj02_RemoveProjectLeavesNothingInstalled(t *testing.T) {
 	exclude := filepath.Join(folder, ".git", "info", "exclude")
 	writeTestFile(t, exclude, "*.swp\n")
 	f := newFakeClaude()
-	o := projectOpts(folder, f)
-	if _, err := InstallProject(context.Background(), o); err != nil {
+	o := workbenchOpts(folder, f)
+	if _, err := InstallWorkbench(context.Background(), o); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 
-	if err := RemoveProject(context.Background(), o); err != nil {
+	if err := RemoveWorkbench(context.Background(), o); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
 	for _, p := range []string{
-		projectSkillFile(folder),
-		filepath.Join(folder, ".claude", "skills", ProjectSkillName, shippedDigestFile),
+		workbenchSkillFile(folder),
+		filepath.Join(folder, ".claude", "skills", WorkbenchSkillName, shippedDigestFile),
 		settingsFile(folder),
 		filepath.Join(folder, ".claude"),
 	} {
@@ -292,7 +292,7 @@ func TestProj02_RemoveProjectLeavesNothingInstalled(t *testing.T) {
 	if len(f.registered) != 0 {
 		t.Fatalf("PROJ-02: the MCP registration survived: %v", f.registered)
 	}
-	if err := RemoveProject(context.Background(), o); err != nil {
+	if err := RemoveWorkbench(context.Background(), o); err != nil {
 		t.Fatalf("a second removal must be a clean no-op: %v", err)
 	}
 }
@@ -325,14 +325,14 @@ func TestProj02_RemoveProjectLeavesGitStatusClean(t *testing.T) {
 	}
 
 	f := newFakeClaude()
-	o := projectOpts(folder, f)
-	if _, err := InstallProject(context.Background(), o); err != nil {
+	o := workbenchOpts(folder, f)
+	if _, err := InstallWorkbench(context.Background(), o); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 	if s := status(); s != "" {
 		t.Fatalf("installed files are visible to git:\n%s", s)
 	}
-	if err := RemoveProject(context.Background(), o); err != nil {
+	if err := RemoveWorkbench(context.Background(), o); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
 	if s := status(); s != "" {
@@ -347,11 +347,11 @@ func TestProj02_RemoveProjectKeepsOwnerSettingsButDropsOurHook(t *testing.T) {
 	folder := fakeRepo(t)
 	writeTestFile(t, settingsFile(folder), `{"model": "sonnet"}`)
 	f := newFakeClaude()
-	o := projectOpts(folder, f)
-	if _, err := InstallProject(context.Background(), o); err != nil {
+	o := workbenchOpts(folder, f)
+	if _, err := InstallWorkbench(context.Background(), o); err != nil {
 		t.Fatalf("install: %v", err)
 	}
-	if err := RemoveProject(context.Background(), o); err != nil {
+	if err := RemoveWorkbench(context.Background(), o); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
 	got := decodeSettings(t, folder)
@@ -369,27 +369,27 @@ func TestProj02_RemoveProjectKeepsOwnerSettingsButDropsOurHook(t *testing.T) {
 func TestProj04_EditedProjectSkillIsNeverClobbered(t *testing.T) {
 	folder := fakeRepo(t)
 	f := newFakeClaude()
-	o := projectOpts(folder, f)
-	if _, err := InstallProject(context.Background(), o); err != nil {
+	o := workbenchOpts(folder, f)
+	if _, err := InstallWorkbench(context.Background(), o); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 	edited := "---\nname: watchtower-project\ndescription: mine now\n" + MarkerKey + ": v1\n---\n\nMy own board rules.\n"
-	writeTestFile(t, projectSkillFile(folder), edited)
+	writeTestFile(t, workbenchSkillFile(folder), edited)
 
-	rep, err := InstallProject(context.Background(), o)
+	rep, err := InstallWorkbench(context.Background(), o)
 	if err != nil {
 		t.Fatalf("reinstall: %v", err)
 	}
 	if rep.Skill.State != StateDrifted {
 		t.Fatalf("expected drifted, got %s", rep.Skill.State)
 	}
-	if err := RemoveProject(context.Background(), o); err != nil {
+	if err := RemoveWorkbench(context.Background(), o); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
-	if got := readTestFile(t, projectSkillFile(folder)); got != edited {
+	if got := readTestFile(t, workbenchSkillFile(folder)); got != edited {
 		t.Fatalf("PROJ-04: an edited project skill was overwritten or removed")
 	}
-	st, err := StatusProject(context.Background(), o)
+	st, err := StatusWorkbench(context.Background(), o)
 	if err != nil || st.Skill.State != StateDrifted || st.Hook || st.MCP {
 		t.Fatalf("after remove only the edited skill may remain: %+v err=%v", st, err)
 	}
@@ -401,8 +401,8 @@ func TestProj04_EditedProjectSkillIsNeverClobbered(t *testing.T) {
 
 func TestRemoveProjectWithAMissingFolderTouchesNothing(t *testing.T) {
 	f := newFakeClaude()
-	o := projectOpts(filepath.Join(t.TempDir(), "gone"), f)
-	err := RemoveProject(context.Background(), o)
+	o := workbenchOpts(filepath.Join(t.TempDir(), "gone"), f)
+	err := RemoveWorkbench(context.Background(), o)
 	if err == nil || !strings.Contains(err.Error(), "no longer exists") {
 		t.Fatalf("expected a folder-gone error, got %v", err)
 	}
@@ -414,25 +414,25 @@ func TestRemoveProjectWithAMissingFolderTouchesNothing(t *testing.T) {
 func TestStatusProjectReportsEachPart(t *testing.T) {
 	folder := fakeRepo(t)
 	f := newFakeClaude()
-	o := projectOpts(folder, f)
+	o := workbenchOpts(folder, f)
 
-	st, err := StatusProject(context.Background(), o)
+	st, err := StatusWorkbench(context.Background(), o)
 	if err != nil {
 		t.Fatalf("status: %v", err)
 	}
 	if st.Skill.State != StateMissing || st.Hook || st.MCP || !st.ClaudeFound {
 		t.Fatalf("before install: %+v", st)
 	}
-	if _, err := InstallProject(context.Background(), o); err != nil {
+	if _, err := InstallWorkbench(context.Background(), o); err != nil {
 		t.Fatalf("install: %v", err)
 	}
-	st, err = StatusProject(context.Background(), o)
+	st, err = StatusWorkbench(context.Background(), o)
 	if err != nil || st.Skill.State != StateUnchanged || !st.Hook || !st.MCP {
 		t.Fatalf("after install: %+v err=%v", st, err)
 	}
 
 	f.missing = true
-	st, err = StatusProject(context.Background(), o)
+	st, err = StatusWorkbench(context.Background(), o)
 	if err != nil || st.ClaudeFound || st.MCP {
 		t.Fatalf("without claude, status must report it rather than fail: %+v err=%v", st, err)
 	}
@@ -443,16 +443,16 @@ func TestStatusProjectReportsEachPart(t *testing.T) {
 // testManualMCPCommandMatchesTheGoTwin): change both sides together.
 func TestProjectMCPCommand_MatchesTheDesktopFixture(t *testing.T) {
 	cases := []struct {
-		o    ProjectInstallOptions
+		o    WorkbenchInstallOptions
 		want string
 	}{
-		{ProjectInstallOptions{ProjectID: 7, Folder: "/tmp/acme project", Bin: "/tmp/acme bin/it's/watchtower"},
+		{WorkbenchInstallOptions{WorkbenchID: 7, Folder: "/tmp/acme project", Bin: "/tmp/acme bin/it's/watchtower"},
 			`cd '/tmp/acme project' && claude mcp add --scope local watchtower-project -- '/tmp/acme bin/it'\''s/watchtower' mcp --project 7`},
-		{ProjectInstallOptions{ProjectID: 3, Folder: "/tmp/acme", Bin: "/usr/local/bin/watchtower"},
+		{WorkbenchInstallOptions{WorkbenchID: 3, Folder: "/tmp/acme", Bin: "/usr/local/bin/watchtower"},
 			`cd /tmp/acme && claude mcp add --scope local watchtower-project -- /usr/local/bin/watchtower mcp --project 3`},
 	}
 	for _, c := range cases {
-		if got := ProjectMCPCommand(c.o); got != c.want {
+		if got := WorkbenchMCPCommand(c.o); got != c.want {
 			t.Errorf("ProjectMCPCommand(%+v):\n got %s\nwant %s", c.o, got, c.want)
 		}
 	}

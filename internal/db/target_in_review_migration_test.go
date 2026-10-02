@@ -138,9 +138,9 @@ func TestProj06_SameHistoryWithRecursiveTriggersOn(t *testing.T) {
 	d := openTestDB(t)
 	_, err := d.Exec(`PRAGMA recursive_triggers = ON`)
 	require.NoError(t, err)
-	pid := newTestProject(t, d)
-	parent := SeedTestProjectTarget(t, d, pid, sql.NullInt64{}, "feature")
-	child := SeedTestProjectTarget(t, d, pid, nullID(parent), "task")
+	pid := newTestWorkbench(t, d)
+	parent := SeedTestWorkbenchTarget(t, d, pid, sql.NullInt64{}, "feature")
+	child := SeedTestWorkbenchTarget(t, d, pid, nullID(parent), "task")
 	require.NoError(t, d.WithTx(func(tx *sql.Tx) error {
 		return d.UpdateTargetStatusAsTx(tx, int(child), "in_review", ActorAgent)
 	}))

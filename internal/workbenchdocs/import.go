@@ -1,4 +1,4 @@
-package projectdocs
+package workbenchdocs
 
 import (
 	"fmt"
@@ -22,7 +22,7 @@ type Report struct {
 // does not have yet as an origin 'import' document. It is additive and
 // idempotent: an attached rel_path is never touched, so running it again
 // (e.g. a re-run of setup) only adds what is new. A dry run writes nothing.
-func Import(d *db.DB, p *db.Project, dryRun bool) (Report, error) {
+func Import(d *db.DB, p *db.Workbench, dryRun bool) (Report, error) {
 	found, unreadable, err := Scan(p.FolderPath)
 	if err != nil {
 		return Report{}, err
@@ -33,7 +33,7 @@ func Import(d *db.DB, p *db.Project, dryRun bool) (Report, error) {
 	}
 	rep := Report{Imported: []string{}, AlreadyAttached: []string{}, SkippedOverCap: []string{},
 		Unreadable: append([]string{}, unreadable...), DryRun: dryRun}
-	var todo []db.ProjectDocument
+	var todo []db.WorkbenchDocument
 	for _, c := range found {
 		switch {
 		case attached[strings.ToLower(c.RelPath)]:
@@ -41,7 +41,7 @@ func Import(d *db.DB, p *db.Project, dryRun bool) (Report, error) {
 		case len(todo) >= MaxImport:
 			rep.SkippedOverCap = append(rep.SkippedOverCap, c.RelPath)
 		default:
-			todo = append(todo, db.ProjectDocument{ProjectID: p.ID, RelPath: c.RelPath, Kind: c.Kind, Title: c.Title})
+			todo = append(todo, db.WorkbenchDocument{WorkbenchID: p.ID, RelPath: c.RelPath, Kind: c.Kind, Title: c.Title})
 		}
 	}
 	if dryRun {
@@ -50,7 +50,7 @@ func Import(d *db.DB, p *db.Project, dryRun bool) (Report, error) {
 		}
 		return rep, nil
 	}
-	inserted, err := d.ImportProjectDocuments(p.ID, todo)
+	inserted, err := d.ImportWorkbenchDocuments(p.ID, todo)
 	if err != nil {
 		return Report{}, fmt.Errorf("importing documents into project %d: %w", p.ID, err)
 	}
@@ -68,7 +68,7 @@ func Import(d *db.DB, p *db.Project, dryRun bool) (Report, error) {
 // attachedPaths is the project's attached rel_paths, lowercased (APFS is
 // case-insensitive).
 func attachedPaths(d *db.DB, projectID int64) (map[string]bool, error) {
-	docs, err := d.ListProjectDocuments(projectID)
+	docs, err := d.ListWorkbenchDocuments(projectID)
 	if err != nil {
 		return nil, fmt.Errorf("listing documents of project %d: %w", projectID, err)
 	}

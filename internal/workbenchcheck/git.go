@@ -1,4 +1,4 @@
-package projectcheck
+package workbenchcheck
 
 import (
 	"bufio"

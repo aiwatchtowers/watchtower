@@ -89,7 +89,7 @@ func registerRegistry(s *mcpsdk.Server, database *db.DB, reg *tools.Registry, bi
 		Description: "Look up one proposed action by id: its status (pending, approved, rejected, applied, " +
 			"failed), result and error. Use it when the owner asks what happened to a proposal.",
 	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, args getActionArgs) (*mcpsdk.CallToolResult, any, error) {
-		if err := reg.ProjectAlive(ctx, binding); err != nil {
+		if err := reg.WorkbenchAlive(ctx, binding); err != nil {
 			return errResult(err.Error()), nil, nil
 		}
 		row, err := database.GetAgentAction(args.ID)
@@ -111,8 +111,8 @@ func registerRegistry(s *mcpsdk.Server, database *db.DB, reg *tools.Registry, bi
 // missing row, so the model cannot learn that an id it invented belongs to
 // someone else's chat.
 func actionVisible(row db.AgentAction, binding tools.Binding) bool {
-	if binding.ProjectID != 0 {
-		return row.ContextType == tools.ProjectContextType && row.ContextID == strconv.FormatInt(binding.ProjectID, 10)
+	if binding.WorkbenchID != 0 {
+		return row.ContextType == tools.WorkbenchContextType && row.ContextID == strconv.FormatInt(binding.WorkbenchID, 10)
 	}
 	return binding.ConversationID == 0 || row.ConversationID == binding.ConversationID
 }

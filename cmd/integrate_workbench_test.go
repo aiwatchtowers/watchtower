@@ -16,14 +16,14 @@ import (
 	"watchtower/internal/devpack"
 )
 
-// fakeProjectClaude keeps one local-scope registration per cwd. It never
-// execs anything; tests swap it in for projectCommandRunner.
-type fakeProjectClaude struct {
+// fakeWorkbenchClaude keeps one local-scope registration per cwd. It never
+// execs anything; tests swap it in for workbenchCommandRunner.
+type fakeWorkbenchClaude struct {
 	mu         sync.Mutex
 	registered map[string]bool
 }
 
-func (f *fakeProjectClaude) run(_ context.Context, dir, name string, args ...string) ([]byte, error) {
+func (f *fakeWorkbenchClaude) run(_ context.Context, dir, name string, args ...string) ([]byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if name != "claude" || len(args) < 2 || args[0] != "mcp" {
@@ -45,16 +45,16 @@ func (f *fakeProjectClaude) run(_ context.Context, dir, name string, args ...str
 	return nil, devpack.ErrCommandExit
 }
 
-func useFakeProjectClaude(t *testing.T) *fakeProjectClaude {
+func useFakeWorkbenchClaude(t *testing.T) *fakeWorkbenchClaude {
 	t.Helper()
-	f := &fakeProjectClaude{registered: map[string]bool{}}
-	prev := projectCommandRunner
-	projectCommandRunner = f.run
-	t.Cleanup(func() { projectCommandRunner = prev })
+	f := &fakeWorkbenchClaude{registered: map[string]bool{}}
+	prev := workbenchCommandRunner
+	workbenchCommandRunner = f.run
+	t.Cleanup(func() { workbenchCommandRunner = prev })
 	return f
 }
 
-func testProject(t *testing.T) *db.Project {
+func testWorkbench(t *testing.T) *db.Workbench {
 	t.Helper()
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, ".git", "info"), 0o755); err != nil {
@@ -62,27 +62,27 @@ func testProject(t *testing.T) *db.Project {
 	}
 	// The test binary is not named "watchtower" (looksLikeOurHook, I2), so
 	// hook recognition would never see its own entry as installed.
-	prev := projectExecutable
-	projectExecutable = func() (string, error) { return "/usr/local/bin/watchtower", nil }
-	t.Cleanup(func() { projectExecutable = prev })
-	return &db.Project{ID: 7, Name: "acme", FolderPath: dir}
+	prev := workbenchExecutable
+	workbenchExecutable = func() (string, error) { return "/usr/local/bin/watchtower", nil }
+	t.Cleanup(func() { workbenchExecutable = prev })
+	return &db.Workbench{ID: 7, Name: "acme", FolderPath: dir}
 }
 
 // PROJ-02: `project delete` reaches the folder removal through the
-// projectRemoveInstall hook Task 4 left as a no-op.
+// workbenchRemoveInstall hook Task 4 left as a no-op.
 func TestProj02_ProjectDeleteRunsTheFolderRemoval(t *testing.T) {
-	f := useFakeProjectClaude(t)
-	p := testProject(t)
+	f := useFakeWorkbenchClaude(t)
+	p := testWorkbench(t)
 	var out bytes.Buffer
-	if err := runProjectInstall(context.Background(), &out, p); err != nil {
+	if err := runWorkbenchInstall(context.Background(), &out, p); err != nil {
 		t.Fatalf("install: %v\n%s", err, out.String())
 	}
-	skill := filepath.Join(p.FolderPath, ".claude", "skills", devpack.ProjectSkillName, "SKILL.md")
+	skill := filepath.Join(p.FolderPath, ".claude", "skills", devpack.WorkbenchSkillName, "SKILL.md")
 	if _, err := os.Stat(skill); err != nil {
 		t.Fatalf("install did not write the skill: %v", err)
 	}
 
-	if err := projectRemoveInstall(context.Background(), nil, p); err != nil {
+	if err := workbenchRemoveInstall(context.Background(), nil, p); err != nil {
 		t.Fatalf("projectRemoveInstall: %v", err)
 	}
 	for _, path := range []string{skill, filepath.Join(p.FolderPath, ".claude", "settings.local.json")} {
@@ -96,27 +96,27 @@ func TestProj02_ProjectDeleteRunsTheFolderRemoval(t *testing.T) {
 }
 
 func TestIntegrateProjectStatusJSON(t *testing.T) {
-	useFakeProjectClaude(t)
-	p := testProject(t)
+	useFakeWorkbenchClaude(t)
+	p := testWorkbench(t)
 	var out bytes.Buffer
-	if err := runProjectInstall(context.Background(), &out, p); err != nil {
+	if err := runWorkbenchInstall(context.Background(), &out, p); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 	out.Reset()
-	if err := runProjectStatus(context.Background(), &out, p, true); err != nil {
+	if err := runWorkbenchStatus(context.Background(), &out, p, true); err != nil {
 		t.Fatalf("status: %v", err)
 	}
-	var got projectStatusJSON
+	var got workbenchStatusJSON
 	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
 		t.Fatalf("status --json is not JSON: %v\n%s", err, out.String())
 	}
-	if got.ProjectID != 7 || got.Folder != p.FolderPath || got.Skill != "unchanged" || !got.Hook || !got.MCP || !got.ClaudeFound {
+	if got.WorkbenchID != 7 || got.Folder != p.FolderPath || got.Skill != "unchanged" || !got.Hook || !got.MCP || !got.ClaudeFound {
 		t.Fatalf("unexpected status: %+v", got)
 	}
 }
 
 func TestIntegrateProjectRejectsGlobalFlags(t *testing.T) {
-	if err := checkProjectFlags(false, "", false, false); err != nil {
+	if err := checkWorkbenchFlags(false, "", false, false); err != nil {
 		t.Fatalf("plain --project must be accepted: %v", err)
 	}
 	for name, args := range map[string][4]any{
@@ -125,7 +125,7 @@ func TestIntegrateProjectRejectsGlobalFlags(t *testing.T) {
 		"skills-only": {false, "", true, false},
 		"mcp-only":    {false, "", false, true},
 	} {
-		if err := checkProjectFlags(args[0].(bool), args[1].(string), args[2].(bool), args[3].(bool)); err == nil {
+		if err := checkWorkbenchFlags(args[0].(bool), args[1].(string), args[2].(bool), args[3].(bool)); err == nil {
 			t.Fatalf("--project with --%s must be refused", name)
 		}
 	}

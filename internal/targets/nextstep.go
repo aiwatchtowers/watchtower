@@ -69,9 +69,9 @@ Rules:
 - Use "open_links" only if the target has links/referenced items.
 - Keep everything in the operator's language (match the target's text language).`
 
-// ErrProjectTarget is returned for a target on a project board: project
+// ErrWorkbenchTarget is returned for a target on a project board: project
 // targets are moved by the project's agent, never by next-step (PROJ-01).
-var ErrProjectTarget = errors.New("project targets have no next step")
+var ErrWorkbenchTarget = errors.New("project targets have no next step")
 
 // GenerateNextStep computes and persists the next-step suggestion for a single
 // target. It returns the parsed suggestion. The call routes to the default
@@ -87,8 +87,8 @@ func (p *Pipeline) GenerateNextStep(ctx context.Context, targetID int) (*NextSte
 	if err != nil {
 		return nil, fmt.Errorf("loading target %d: %w", targetID, err)
 	}
-	if target.ProjectID.Valid {
-		return nil, fmt.Errorf("target %d: %w", targetID, ErrProjectTarget)
+	if target.WorkbenchID.Valid {
+		return nil, fmt.Errorf("target %d: %w", targetID, ErrWorkbenchTarget)
 	}
 
 	now := time.Now().UTC()

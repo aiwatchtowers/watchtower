@@ -14,7 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/db"
-	"watchtower/internal/projectcheck"
+	"watchtower/internal/workbenchcheck"
 )
 
 const (
@@ -30,7 +30,7 @@ const (
 	stopHookMaxFindings = 20
 )
 
-var projectCheckCmd = &cobra.Command{
+var workbenchCheckCmd = &cobra.Command{
 	Use:   "check",
 	Short: "Find board drift: targets whose status disagrees with their git branch or pull request",
 	Long: "Mechanical, no AI, reads only: compares each target's branch (and, with gh and\n" +
@@ -50,41 +50,41 @@ var projectCheckCmd = &cobra.Command{
 	PersistentPreRunE:  func(*cobra.Command, []string) error { return nil },
 	Args:               cobra.ArbitraryArgs,
 	FParseErrWhitelist: cobra.FParseErrWhitelist{UnknownFlags: true},
-	RunE:               runProjectCheck,
+	RunE:               runWorkbenchCheck,
 }
 
 var (
-	projectCheckFlagProject   string
-	projectCheckFlagJSON      bool
-	projectCheckFlagStaleDays int
-	projectCheckFlagNoNetwork bool
-	projectCheckFlagStopHook  bool
+	workbenchCheckFlagWorkbench string
+	workbenchCheckFlagJSON      bool
+	workbenchCheckFlagStaleDays int
+	workbenchCheckFlagNoNetwork bool
+	workbenchCheckFlagStopHook  bool
 )
 
 func init() {
-	projectCheckCmd.Flags().StringVar(&projectCheckFlagProject, "project", "", "project id")
-	projectCheckCmd.Flags().BoolVar(&projectCheckFlagJSON, "json", false, "output JSON")
-	projectCheckCmd.Flags().IntVar(&projectCheckFlagStaleDays, "stale-days", int(projectcheck.DefaultStaleAfter/(24*time.Hour)),
+	workbenchCheckCmd.Flags().StringVar(&workbenchCheckFlagWorkbench, "project", "", "project id")
+	workbenchCheckCmd.Flags().BoolVar(&workbenchCheckFlagJSON, "json", false, "output JSON")
+	workbenchCheckCmd.Flags().IntVar(&workbenchCheckFlagStaleDays, "stale-days", int(workbenchcheck.DefaultStaleAfter/(24*time.Hour)),
 		"days without movement before an in-progress target counts as stale")
-	projectCheckCmd.Flags().BoolVar(&projectCheckFlagNoNetwork, "no-network", false, "skip pull request states (no gh call)")
-	projectCheckCmd.Flags().BoolVar(&projectCheckFlagStopHook, "stop-hook", false, "run as the Claude Code Stop hook (stdin input, always exit 0)")
-	projectCmd.AddCommand(projectCheckCmd)
+	workbenchCheckCmd.Flags().BoolVar(&workbenchCheckFlagNoNetwork, "no-network", false, "skip pull request states (no gh call)")
+	workbenchCheckCmd.Flags().BoolVar(&workbenchCheckFlagStopHook, "stop-hook", false, "run as the Claude Code Stop hook (stdin input, always exit 0)")
+	workbenchCmd.AddCommand(workbenchCheckCmd)
 }
 
-func runProjectCheck(cmd *cobra.Command, _ []string) error {
+func runWorkbenchCheck(cmd *cobra.Command, _ []string) error {
 	ctx := cmd.Context()
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if projectCheckFlagStopHook {
-		runStopHook(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), projectCheckFlagProject)
+	if workbenchCheckFlagStopHook {
+		runStopHook(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), workbenchCheckFlagWorkbench)
 		return nil
 	}
-	id, err := parseProjectID(strings.TrimSpace(projectCheckFlagProject))
+	id, err := parseWorkbenchID(strings.TrimSpace(workbenchCheckFlagWorkbench))
 	if err != nil {
 		return fmt.Errorf("--project: %w", err)
 	}
-	if projectCheckFlagStaleDays <= 0 {
+	if workbenchCheckFlagStaleDays <= 0 {
 		return errors.New("--stale-days must be positive")
 	}
 	_, database, err := openJiraCmdDB()
@@ -92,40 +92,40 @@ func runProjectCheck(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	defer database.Close()
-	rep, err := checkProject(ctx, database, id, projectcheck.Options{
-		StaleAfter: time.Duration(projectCheckFlagStaleDays) * 24 * time.Hour,
-		Network:    !projectCheckFlagNoNetwork,
+	rep, err := checkWorkbench(ctx, database, id, workbenchcheck.Options{
+		StaleAfter: time.Duration(workbenchCheckFlagStaleDays) * 24 * time.Hour,
+		Network:    !workbenchCheckFlagNoNetwork,
 	})
 	if err != nil {
 		return err
 	}
-	if projectCheckFlagJSON {
+	if workbenchCheckFlagJSON {
 		return writeJSON(cmd.OutOrStdout(), rep)
 	}
 	printCheckReport(cmd.OutOrStdout(), rep)
 	return nil
 }
 
-// checkProject loads project id's board and checks it in the project's
+// checkWorkbench loads project id's board and checks it in the project's
 // folder; o.Folder is filled in here.
-func checkProject(ctx context.Context, database *db.DB, id int64, o projectcheck.Options) (projectcheck.Report, error) {
-	p, err := database.GetProject(id)
+func checkWorkbench(ctx context.Context, database *db.DB, id int64, o workbenchcheck.Options) (workbenchcheck.Report, error) {
+	p, err := database.GetWorkbench(id)
 	if err != nil {
-		return projectcheck.Report{}, fmt.Errorf("project %d: %w", id, err)
+		return workbenchcheck.Report{}, fmt.Errorf("project %d: %w", id, err)
 	}
 	if _, err := os.Stat(p.FolderPath); err != nil {
-		return projectcheck.Report{}, fmt.Errorf("project %d: folder %s is missing (moved or deleted?)", id, p.FolderPath)
+		return workbenchcheck.Report{}, fmt.Errorf("project %d: folder %s is missing (moved or deleted?)", id, p.FolderPath)
 	}
-	board, err := database.GetProjectBoard(p.ID)
+	board, err := database.GetWorkbenchBoard(p.ID)
 	if err != nil {
-		return projectcheck.Report{}, fmt.Errorf("loading board: %w", err)
+		return workbenchcheck.Report{}, fmt.Errorf("loading board: %w", err)
 	}
 	o.Folder = p.FolderPath
-	return projectcheck.Check(ctx, p.ID, board, o), nil
+	return workbenchcheck.Check(ctx, p.ID, board, o), nil
 }
 
-func printCheckReport(w io.Writer, rep projectcheck.Report) {
-	head := fmt.Sprintf("Project %d board drift", rep.ProjectID)
+func printCheckReport(w io.Writer, rep workbenchcheck.Report) {
+	head := fmt.Sprintf("Project %d board drift", rep.WorkbenchID)
 	if rep.Base != "" {
 		head += " (against " + rep.Base + ")"
 	}
@@ -196,9 +196,9 @@ func runStopHook(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer,
 	defer database.Close()
 	ctx, cancel := context.WithTimeout(ctx, stopHookBudget)
 	defer cancel()
-	rep, err := checkProject(ctx, database, id, projectcheck.Options{})
+	rep, err := checkWorkbench(ctx, database, id, workbenchcheck.Options{})
 	switch {
-	case errors.Is(err, db.ErrProjectNotFound):
+	case errors.Is(err, db.ErrWorkbenchNotFound):
 		return // a deleted project's leftover hook: nothing to say
 	case err != nil:
 		fmt.Fprintf(stderr, "watchtower: board drift check skipped: %v\n", err)
@@ -235,7 +235,7 @@ func readHookInput[T any](ctx context.Context, stdin io.Reader) (T, error) {
 	}
 }
 
-func stopHookReason(id int64, findings []projectcheck.Finding) string {
+func stopHookReason(id int64, findings []workbenchcheck.Finding) string {
 	lines := []string{fmt.Sprintf("Watchtower: the board of project %d disagrees with git. Fix the board before you finish "+
 		"(update_target; the watchtower-project skill's \"Keeping the board in step with git\"):", id)}
 	for i, f := range findings {

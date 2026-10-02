@@ -16,24 +16,24 @@ import (
 	"watchtower/internal/db"
 )
 
-// fixtureProjectID is the project seedProjectDocs creates (the first row).
-const fixtureProjectID = 1
+// fixtureWorkbenchID is the project seedWorkbenchDocs creates (the first row).
+const fixtureWorkbenchID = 1
 
-// seedProjectDocs creates a project with two attached documents: a plan with
+// seedWorkbenchDocs creates a project with two attached documents: a plan with
 // headings, and a README.
-func seedProjectDocs(t *testing.T, d *db.DB) string {
+func seedWorkbenchDocs(t *testing.T, d *db.DB) string {
 	t.Helper()
 	folder := t.TempDir()
-	writeProjectFile(t, folder, "docs/plans/rollout.md", "# Rollout plan\nIntro text.\n## Phase 1\nРоадмап первой фазы.\n```\n# not a heading\n```\n")
-	writeProjectFile(t, folder, "README.md", "Readme without headings, rollout notes.\n")
-	exec(t, d, `INSERT INTO projects (id, name, folder_path) VALUES (?, 'acme', ?)`, fixtureProjectID, folder)
+	writeWorkbenchFile(t, folder, "docs/plans/rollout.md", "# Rollout plan\nIntro text.\n## Phase 1\nРоадмап первой фазы.\n```\n# not a heading\n```\n")
+	writeWorkbenchFile(t, folder, "README.md", "Readme without headings, rollout notes.\n")
+	exec(t, d, `INSERT INTO projects (id, name, folder_path) VALUES (?, 'acme', ?)`, fixtureWorkbenchID, folder)
 	exec(t, d, `INSERT INTO project_documents (id, project_id, rel_path, kind, title, updated_at) VALUES
 		(1, ?, 'docs/plans/rollout.md', 'plan', 'Rollout plan', '2026-09-20T10:00:00Z'),
-		(2, ?, 'README.md', 'doc', '', '2026-09-18T10:00:00Z')`, fixtureProjectID, fixtureProjectID)
+		(2, ?, 'README.md', 'doc', '', '2026-09-18T10:00:00Z')`, fixtureWorkbenchID, fixtureWorkbenchID)
 	return folder
 }
 
-func writeProjectFile(t *testing.T, folder, rel, text string) {
+func writeWorkbenchFile(t *testing.T, folder, rel, text string) {
 	t.Helper()
 	path := filepath.Join(folder, rel)
 	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
@@ -43,8 +43,8 @@ func writeProjectFile(t *testing.T, folder, rel, text string) {
 func TestProjectDoc_RendersSectionsAtHeadings(t *testing.T) {
 	ctx := context.Background()
 	d := db.OpenTestDB(t)
-	folder := seedProjectDocs(t, d)
-	doc, err := projectDocSource{}.Build(ctx, d, "project_doc:1")
+	folder := seedWorkbenchDocs(t, d)
+	doc, err := workbenchDocSource{}.Build(ctx, d, "project_doc:1")
 	require.NoError(t, err)
 	require.NotNil(t, doc)
 	assert.Equal(t, "Rollout plan", doc.Title)
@@ -56,13 +56,13 @@ func TestProjectDoc_RendersSectionsAtHeadings(t *testing.T) {
 	assert.Contains(t, doc.Sections[1].Text, "# not a heading")
 	assert.Contains(t, doc.Meta, "acme")
 
-	readme, err := projectDocSource{}.Build(ctx, d, "project_doc:2")
+	readme, err := workbenchDocSource{}.Build(ctx, d, "project_doc:2")
 	require.NoError(t, err)
 	assert.Equal(t, "README.md", readme.Title, "an untitled document is titled by its path")
 	require.Len(t, readme.Sections, 1)
 	assert.Empty(t, readme.Sections[0].Anchor)
 
-	gone, err := projectDocSource{}.Build(ctx, d, "project_doc:99")
+	gone, err := workbenchDocSource{}.Build(ctx, d, "project_doc:99")
 	require.NoError(t, err)
 	assert.Nil(t, gone)
 }
@@ -73,10 +73,10 @@ func TestProjectDoc_RendersSectionsAtHeadings(t *testing.T) {
 func TestProjectDoc_UnreadableFilesAreTitleOnlyAndSaySo(t *testing.T) {
 	ctx := context.Background()
 	d := db.OpenTestDB(t)
-	folder := seedProjectDocs(t, d)
+	folder := seedWorkbenchDocs(t, d)
 	readme := filepath.Join(folder, "README.md")
 	outside := t.TempDir()
-	writeProjectFile(t, outside, "secret.md", "top secret")
+	writeWorkbenchFile(t, outside, "secret.md", "top secret")
 
 	for _, tc := range []struct {
 		name, reason string
@@ -90,7 +90,7 @@ func TestProjectDoc_UnreadableFilesAreTitleOnlyAndSaySo(t *testing.T) {
 	} {
 		require.NoError(t, os.RemoveAll(readme))
 		tc.setup()
-		doc, err := projectDocSource{}.Build(ctx, d, "project_doc:2")
+		doc, err := workbenchDocSource{}.Build(ctx, d, "project_doc:2")
 		require.NoError(t, err, tc.name)
 		assert.Equal(t, "README.md", doc.Title, tc.name)
 		assert.Empty(t, doc.Sections, tc.name)
@@ -101,18 +101,18 @@ func TestProjectDoc_UnreadableFilesAreTitleOnlyAndSaySo(t *testing.T) {
 func TestProjectDoc_LongFileIsCutAndSaysSo(t *testing.T) {
 	ctx := context.Background()
 	d := db.OpenTestDB(t)
-	folder := seedProjectDocs(t, d)
-	writeProjectFile(t, folder, "README.md", strings.Repeat("я", projectDocMaxBytes)) // 2 bytes a rune: twice the cap
-	doc, err := projectDocSource{}.Build(ctx, d, "project_doc:2")
+	folder := seedWorkbenchDocs(t, d)
+	writeWorkbenchFile(t, folder, "README.md", strings.Repeat("я", workbenchDocMaxBytes)) // 2 bytes a rune: twice the cap
+	doc, err := workbenchDocSource{}.Build(ctx, d, "project_doc:2")
 	require.NoError(t, err)
 	assert.Equal(t, "indexed up to 2 MiB", doc.Anchor["truncated"])
 	require.NotEmpty(t, doc.Sections)
-	assert.Equal(t, projectDocMaxBytes/2, utf8.RuneCountInString(doc.Sections[0].Text)-1, "cut at the cap, on a rune boundary")
+	assert.Equal(t, workbenchDocMaxBytes/2, utf8.RuneCountInString(doc.Sections[0].Text)-1, "cut at the cap, on a rune boundary")
 }
 
-func runProjectDocs(t *testing.T, d *db.DB) Stats {
+func runWorkbenchDocs(t *testing.T, d *db.DB) Stats {
 	t.Helper()
-	st, err := Run(context.Background(), d, Options{Sources: []string{ProjectDocSource}, Now: time.Now()})
+	st, err := Run(context.Background(), d, Options{Sources: []string{WorkbenchDocSource}, Now: time.Now()})
 	require.NoError(t, err)
 	return st
 }
@@ -130,63 +130,63 @@ func indexedText(t *testing.T, d *db.DB, id string) string {
 // detached document leaves the index.
 func TestProjectDoc_ReindexesOnRevision(t *testing.T) {
 	d := db.OpenTestDB(t)
-	folder := seedProjectDocs(t, d)
+	folder := seedWorkbenchDocs(t, d)
 	readme := filepath.Join(folder, "README.md")
-	assert.Equal(t, 2, runProjectDocs(t, d).Written)
-	assert.Zero(t, runProjectDocs(t, d).Written, "nothing changed: no write")
+	assert.Equal(t, 2, runWorkbenchDocs(t, d).Written)
+	assert.Zero(t, runWorkbenchDocs(t, d).Written, "nothing changed: no write")
 
-	writeProjectFile(t, folder, "README.md", "Readme rewritten: квартальный отчёт.\n")
+	writeWorkbenchFile(t, folder, "README.md", "Readme rewritten: квартальный отчёт.\n")
 	later := time.Now().Add(time.Hour)
 	require.NoError(t, os.Chtimes(readme, later, later))
-	assert.Equal(t, 1, runProjectDocs(t, d).Written)
+	assert.Equal(t, 1, runWorkbenchDocs(t, d).Written)
 	assert.Contains(t, indexedText(t, d, "project_doc:2"), "квартальный")
 
-	writeProjectFile(t, folder, "README.md", "Readme restored from a backup: годовой отчёт.\n")
+	writeWorkbenchFile(t, folder, "README.md", "Readme restored from a backup: годовой отчёт.\n")
 	older := time.Now().Add(-48 * time.Hour)
 	require.NoError(t, os.Chtimes(readme, older, older))
-	assert.Equal(t, 1, runProjectDocs(t, d).Written, "an edit with an older mtime is a revision too")
+	assert.Equal(t, 1, runWorkbenchDocs(t, d).Written, "an edit with an older mtime is a revision too")
 	assert.Contains(t, indexedText(t, d, "project_doc:2"), "годовой")
 
 	require.NoError(t, os.Rename(readme, readme+".bak"))
-	runProjectDocs(t, d)
+	runWorkbenchDocs(t, d)
 	assert.NotContains(t, indexedText(t, d, "project_doc:2"), "годовой", "gone: title only")
 	require.NoError(t, os.Rename(readme+".bak", readme)) // back with its old mtime
-	runProjectDocs(t, d)
+	runWorkbenchDocs(t, d)
 	assert.Contains(t, indexedText(t, d, "project_doc:2"), "годовой", "back: its text is indexed again")
 
 	exec(t, d, `DELETE FROM project_documents WHERE id = 2`)
-	assert.Equal(t, 1, runProjectDocs(t, d).Deleted)
+	assert.Equal(t, 1, runWorkbenchDocs(t, d).Deleted)
 }
 
 // The daemon never reads a folder macOS guards (~/Documents and the like):
 // a background read could raise a privacy prompt. An explicit trigger
-// (IndexProjectDocs) indexes it, and drops what the project no longer has.
+// (IndexWorkbenchDocs) indexes it, and drops what the project no longer has.
 func TestProjectDoc_DaemonSkipsProtectedFoldersExplicitIndexDoesNot(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	d := db.OpenTestDB(t)
 	folder := filepath.Join(home, "Documents", "acme")
-	writeProjectFile(t, folder, "plan.md", "# Plan\nКанареечный выкат\n")
+	writeWorkbenchFile(t, folder, "plan.md", "# Plan\nКанареечный выкат\n")
 	exec(t, d, `INSERT INTO projects (id, name, folder_path) VALUES (1, 'acme', ?)`, folder)
 	exec(t, d, `INSERT INTO project_documents (id, project_id, rel_path, kind) VALUES (1, 1, 'plan.md', 'plan'), (2, 1, 'gone.md', 'doc')`)
 	other := t.TempDir()
-	writeProjectFile(t, other, "b.md", "beta")
+	writeWorkbenchFile(t, other, "b.md", "beta")
 	exec(t, d, `INSERT INTO projects (id, name, folder_path) VALUES (2, 'beta', ?)`, other)
 	exec(t, d, `INSERT INTO project_documents (id, project_id, rel_path, kind) VALUES (3, 2, 'b.md', 'doc')`)
 
-	runProjectDocs(t, d)
+	runWorkbenchDocs(t, d)
 	assert.Empty(t, indexedText(t, d, "project_doc:1"), "the daemon did not read the protected folder")
 	assert.Contains(t, indexedText(t, d, "project_doc:3"), "beta")
 
-	documents, changed, err := IndexProjectDocs(ctx, d, 1)
+	documents, changed, err := IndexWorkbenchDocs(ctx, d, 1)
 	require.NoError(t, err)
 	assert.Equal(t, 2, documents)
 	assert.Equal(t, 2, changed)
 	assert.Contains(t, indexedText(t, d, "project_doc:1"), "Канареечный")
 
 	exec(t, d, `DELETE FROM project_documents WHERE id = 2`)
-	_, changed, err = IndexProjectDocs(ctx, d, 1)
+	_, changed, err = IndexWorkbenchDocs(ctx, d, 1)
 	require.NoError(t, err)
 	assert.Equal(t, 1, changed, "the detached document left the index")
 	assert.Empty(t, indexedText(t, d, "project_doc:2"))
@@ -200,7 +200,7 @@ func TestProjectDoc_SymlinkOutOfTheFolderIsNeverFollowed(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	guarded := filepath.Join(home, "Documents")
-	writeProjectFile(t, guarded, "x.md", "private")
+	writeWorkbenchFile(t, guarded, "x.md", "private")
 	require.NoError(t, os.Chmod(guarded, 0o000))
 	t.Cleanup(func() { _ = os.Chmod(guarded, 0o755) })
 	folder := t.TempDir()
@@ -210,7 +210,7 @@ func TestProjectDoc_SymlinkOutOfTheFolderIsNeverFollowed(t *testing.T) {
 	require.NoError(t, os.Symlink(filepath.Join(guarded, "x.md"), filepath.Join(folder, "docs", "x.md")))
 	require.NoError(t, os.Symlink(guarded, filepath.Join(folder, "linked")))
 	require.NoError(t, os.Symlink("../docs/inner.md", filepath.Join(folder, "docs", "rel.md")))
-	writeProjectFile(t, folder, "docs/inner.md", "inside")
+	writeWorkbenchFile(t, folder, "docs/inner.md", "inside")
 
 	for _, rel := range []string{"docs/x.md", "linked/x.md", "../outside.md"} {
 		_, err := resolveInside(realFolder, rel)
@@ -247,13 +247,13 @@ func TestReindex_KeepsProtectedProjectDocs(t *testing.T) {
 	t.Setenv("HOME", home)
 	d := db.OpenTestDB(t)
 	folder := filepath.Join(home, "Documents", "acme")
-	writeProjectFile(t, folder, "plan.md", "# Plan\nКанареечный выкат\n")
+	writeWorkbenchFile(t, folder, "plan.md", "# Plan\nКанареечный выкат\n")
 	exec(t, d, `INSERT INTO projects (id, name, folder_path) VALUES (1, 'acme', ?)`, folder)
 	exec(t, d, `INSERT INTO project_documents (id, project_id, rel_path, kind) VALUES (1, 1, 'plan.md', 'plan')`)
-	_, _, err := IndexProjectDocs(ctx, d, 1)
+	_, _, err := IndexWorkbenchDocs(ctx, d, 1)
 	require.NoError(t, err)
 
-	_, err = Reindex(ctx, d, []string{ProjectDocSource}, time.Now())
+	_, err = Reindex(ctx, d, []string{WorkbenchDocSource}, time.Now())
 	require.NoError(t, err)
 	assert.Contains(t, indexedText(t, d, "project_doc:1"), "Канареечный")
 }
@@ -264,21 +264,21 @@ func TestReindex_KeepsProtectedProjectDocs(t *testing.T) {
 func TestProj08_ProjectDocsOnlyInTheirOwnProjectSession(t *testing.T) {
 	ctx := context.Background()
 	d := db.OpenTestDB(t)
-	seedProjectDocs(t, d)
+	seedWorkbenchDocs(t, d)
 	other := t.TempDir()
-	writeProjectFile(t, other, "plan.md", "# Other\nроадмап другого проекта\n")
+	writeWorkbenchFile(t, other, "plan.md", "# Other\nроадмап другого проекта\n")
 	exec(t, d, `INSERT INTO projects (id, name, folder_path) VALUES (2, 'beta', ?)`, other)
 	exec(t, d, `INSERT INTO project_documents (id, project_id, rel_path, kind) VALUES (3, 2, 'plan.md', 'plan')`)
 	_, err := Run(ctx, d, Options{Now: testNow()})
 	require.NoError(t, err)
 
 	search := func(projectID int64, sources ...string) []string {
-		res, err := Search(ctx, d, Request{Queries: []string{"роадмап"}, Sources: sources, ProjectID: projectID, Limit: MaxLimit, Now: testNow()})
+		res, err := Search(ctx, d, Request{Queries: []string{"роадмап"}, Sources: sources, WorkbenchID: projectID, Limit: MaxLimit, Now: testNow()})
 		require.NoError(t, err)
 		return hitRefs(res)
 	}
 	assert.Empty(t, search(0), "a non-project search sees no project document")
-	assert.Empty(t, search(0, ProjectDocSource), "not even when it asks for the source")
+	assert.Empty(t, search(0, WorkbenchDocSource), "not even when it asks for the source")
 	assert.Equal(t, []string{"project_doc:1"}, search(1))
 	assert.Equal(t, []string{"project_doc:3"}, search(2), "another project sees only its own")
 
@@ -287,7 +287,7 @@ func TestProj08_ProjectDocsOnlyInTheirOwnProjectSession(t *testing.T) {
 		ref       string
 		visible   bool
 	}{{0, "project_doc:1", false}, {2, "project_doc:1", false}, {1, "project_doc:1", true}, {2, "project_doc:3", true}} {
-		_, err := GetDocument(ctx, d, tc.ref, DocOptions{ProjectID: tc.projectID})
+		_, err := GetDocument(ctx, d, tc.ref, DocOptions{WorkbenchID: tc.projectID})
 		if tc.visible {
 			assert.NoError(t, err, "%s from project %d", tc.ref, tc.projectID)
 		} else {

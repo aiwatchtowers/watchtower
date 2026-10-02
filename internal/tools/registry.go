@@ -47,7 +47,7 @@ const (
 // read at propose time and wins over TurnID — a warm `ai session` spans many
 // turns and publishes the running one through a turn file (spec §1.2).
 //
-// ProjectID binds the session to one project (`watchtower mcp --project N`):
+// WorkbenchID binds the session to one project (`watchtower mcp --project N`):
 // every call first checks the project still exists, and project tools scope
 // every row they touch to it (DEV-06). DirectApply makes Propose apply a
 // non-External tool inline for this call only — the owner's standing trust
@@ -59,7 +59,7 @@ type Binding struct {
 	ContextID      string
 	TurnID         string
 	TurnIDFunc     func() string
-	ProjectID      int64
+	WorkbenchID    int64
 	DirectApply    bool
 }
 
@@ -166,7 +166,7 @@ type Receipt struct {
 }
 
 // ValidationError carries a model-facing message; no row is written for it.
-// Err, when set, is the sentinel behind it (e.g. db.ErrNotInProject), so a
+// Err, when set, is the sentinel behind it (e.g. db.ErrNotInWorkbench), so a
 // caller can still match the cause with errors.Is.
 type ValidationError struct {
 	Msg string
@@ -328,7 +328,7 @@ func (r *Registry) Propose(ctx context.Context, name string, args json.RawMessag
 // the bound project is alive, the direct-apply gate, the args checks, the
 // mandatory reason, then the tool's Scope. Any failure writes nothing.
 func (r *Registry) admitProposal(ctx context.Context, t *Tool, args json.RawMessage, b Binding) (json.RawMessage, error) {
-	if err := r.ProjectAlive(ctx, b); err != nil {
+	if err := r.WorkbenchAlive(ctx, b); err != nil {
 		return nil, err
 	}
 	if err := directApplyGate(t, b); err != nil {
@@ -384,8 +384,8 @@ func (r *Registry) resolveTrust(t *Tool, b Binding) (Trust, error) {
 // later `actions apply` — rebuilds the same binding (bindingOf).
 func newProposalRow(t *Tool, args json.RawMessage, trust Trust, b Binding) db.AgentAction {
 	ctxType, ctxID := b.ContextType, b.ContextID
-	if b.ProjectID != 0 {
-		ctxType, ctxID = ProjectContextType, strconv.FormatInt(b.ProjectID, 10)
+	if b.WorkbenchID != 0 {
+		ctxType, ctxID = WorkbenchContextType, strconv.FormatInt(b.WorkbenchID, 10)
 	}
 	row := db.AgentAction{
 		Tool: t.Name, External: t.External, ArgsJSON: string(args), Reason: reasonOf(args),
@@ -405,23 +405,23 @@ func bindingOf(row *db.AgentAction) Binding {
 		Surface: row.Surface, ConversationID: row.ConversationID,
 		ContextType: row.ContextType, ContextID: row.ContextID, TurnID: row.TurnID,
 	}
-	if row.ContextType == ProjectContextType {
+	if row.ContextType == WorkbenchContextType {
 		// A malformed id leaves ProjectID 0, which every project tool refuses.
-		b.ProjectID, _ = strconv.ParseInt(row.ContextID, 10, 64)
+		b.WorkbenchID, _ = strconv.ParseInt(row.ContextID, 10, 64)
 	}
 	return b
 }
 
-// ProjectAlive fails a project-bound call once its project is gone — the
+// WorkbenchAlive fails a project-bound call once its project is gone — the
 // first check of every call, read or write, project tool or not, so a
 // session outliving its project answers "project N no longer exists".
 // Exported for the MCP adapter's get_action, which reads agent_actions
 // directly rather than through a registry tool.
-func (r *Registry) ProjectAlive(ctx context.Context, b Binding) error {
-	if b.ProjectID == 0 {
+func (r *Registry) WorkbenchAlive(ctx context.Context, b Binding) error {
+	if b.WorkbenchID == 0 {
 		return nil
 	}
-	_, err := projectOf(ctx, r.db, b)
+	_, err := workbenchOf(ctx, r.db, b)
 	return err
 }
 
@@ -497,7 +497,7 @@ func (r *Registry) CallRead(ctx context.Context, name string, args json.RawMessa
 	if t.Access != AccessRead {
 		return nil, ErrNotReadable
 	}
-	if err := r.ProjectAlive(ctx, b); err != nil {
+	if err := r.WorkbenchAlive(ctx, b); err != nil {
 		return nil, err
 	}
 	// A parameterless call arrives as absent, empty, or literal null (an MCP
@@ -558,7 +558,7 @@ func (r *Registry) Apply(ctx context.Context, id int64) (*db.AgentAction, error)
 	call := Call{ActionID: id, Args: json.RawMessage(row.ArgsJSON), Binding: bindingOf(row), Retry: row.Status == "failed"}
 	// Re-scope against the stored binding: a retried or late-applied project
 	// row must still belong to a live project and touch only its rows.
-	if err := r.ProjectAlive(ctx, call.Binding); err != nil {
+	if err := r.WorkbenchAlive(ctx, call.Binding); err != nil {
 		return r.recordFailure(id, from, err)
 	}
 	if err := t.scope(ctx, r.db, call.Args, call.Binding); err != nil {

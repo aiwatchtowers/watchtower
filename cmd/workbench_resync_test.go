@@ -22,12 +22,12 @@ import (
 
 func runResync(t *testing.T, args ...string) (string, string, error) {
 	t.Helper()
-	return runProject(t, append([]string{"resync"}, args...)...)
+	return runWorkbench(t, append([]string{"resync"}, args...)...)
 }
 
-func decodeResync(t *testing.T, out string) projectResyncJSON {
+func decodeResync(t *testing.T, out string) workbenchResyncJSON {
 	t.Helper()
-	var res projectResyncJSON
+	var res workbenchResyncJSON
 	require.NoError(t, json.Unmarshal([]byte(out), &res), out)
 	return res
 }
@@ -42,10 +42,10 @@ func resyncFolder(t *testing.T) string {
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "docs", "specs"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# acme\n"), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "docs", "specs", "a.md"), []byte("# spec a\n"), 0o600))
-	prev := projectExecutable
-	projectExecutable = func() (string, error) { return "/usr/local/bin/watchtower", nil }
-	t.Cleanup(func() { projectExecutable = prev })
-	folder, err := db.ResolveProjectFolder(dir, nil)
+	prev := workbenchExecutable
+	workbenchExecutable = func() (string, error) { return "/usr/local/bin/watchtower", nil }
+	t.Cleanup(func() { workbenchExecutable = prev })
+	folder, err := db.ResolveWorkbenchFolder(dir, nil)
 	require.NoError(t, err)
 	return folder
 }
@@ -73,8 +73,8 @@ func dumpRows(t *testing.T, d *db.DB, query string, args ...any) []string {
 	return out
 }
 
-// projectSnapshot is every owner- or agent-authored row of the project.
-func projectSnapshot(t *testing.T, d *db.DB, pid int64) map[string][]string {
+// workbenchSnapshot is every owner- or agent-authored row of the project.
+func workbenchSnapshot(t *testing.T, d *db.DB, pid int64) map[string][]string {
 	t.Helper()
 	return map[string][]string{
 		"project":   dumpRows(t, d, `SELECT * FROM projects WHERE id = ?`, pid),
@@ -88,29 +88,29 @@ func projectSnapshot(t *testing.T, d *db.DB, pid int64) map[string][]string {
 }
 
 func TestProjectResync_IsAdditive(t *testing.T) {
-	f := useFakeProjectClaude(t)
+	f := useFakeWorkbenchClaude(t)
 	database := writeActionsConfig(t)
 	folder := resyncFolder(t)
-	pid, err := database.CreateProject("acme", folder)
+	pid, err := database.CreateWorkbench("acme", folder)
 	require.NoError(t, err)
 
 	// An existing project: an owner-edited description, a source, a board
 	// with statuses, a comment and an attached document.
-	require.NoError(t, database.UpdateProjectDescription(pid, "Owner's own words."))
-	_, err = database.AddProjectSource(db.ProjectSource{ProjectID: pid, Kind: "jira_project", Ref: "ACME"})
+	require.NoError(t, database.UpdateWorkbenchDescription(pid, "Owner's own words."))
+	_, err = database.AddWorkbenchSource(db.WorkbenchSource{WorkbenchID: pid, Kind: "jira_project", Ref: "ACME"})
 	require.NoError(t, err)
-	tid := db.SeedTestProjectTarget(t, database, pid, sql.NullInt64{}, "Ship it")
+	tid := db.SeedTestWorkbenchTarget(t, database, pid, sql.NullInt64{}, "Ship it")
 	require.NoError(t, database.UpdateTargetStatus(int(tid), "in_progress"))
 	require.NoError(t, database.WithTx(func(tx *sql.Tx) error {
-		_, err := db.AddProjectTargetImageTx(tx, db.ProjectTargetImage{ProjectID: pid, TargetID: tid,
+		_, err := db.AddWorkbenchTargetImageTx(tx, db.WorkbenchTargetImage{WorkbenchID: pid, TargetID: tid,
 			FileName: "a.png", MIME: "image/png", Size: 3, SHA256: "abc", Path: "/store/a.png"})
 		return err
 	}))
-	_, err = database.AddProjectComment(db.ProjectComment{ProjectID: pid, TargetID: sql.NullInt64{Int64: tid, Valid: true}, Author: "owner", Body: "keep it small"})
+	_, err = database.AddWorkbenchComment(db.WorkbenchComment{WorkbenchID: pid, TargetID: sql.NullInt64{Int64: tid, Valid: true}, Author: "owner", Body: "keep it small"})
 	require.NoError(t, err)
-	_, _, err = database.UpsertProjectDocument(db.ProjectDocument{ProjectID: pid, RelPath: "README.md", Kind: "doc", Title: "Edited title"})
+	_, _, err = database.UpsertWorkbenchDocument(db.WorkbenchDocument{WorkbenchID: pid, RelPath: "README.md", Kind: "doc", Title: "Edited title"})
 	require.NoError(t, err)
-	before := projectSnapshot(t, database, pid)
+	before := workbenchSnapshot(t, database, pid)
 
 	out, _, err := runResync(t, strconv.FormatInt(pid, 10), "--json")
 	require.NoError(t, err)
@@ -128,12 +128,12 @@ func TestProjectResync_IsAdditive(t *testing.T) {
 	assert.Contains(t, res.Suggestions[0], "1 new document(s)")
 	assert.True(t, res.IndexOK, res.IndexError)
 	assert.Equal(t, 2, res.Indexed, "both attached documents are now searchable")
-	hits, err := kb.Search(context.Background(), database, kb.Request{Queries: []string{"spec"}, ProjectID: pid})
+	hits, err := kb.Search(context.Background(), database, kb.Request{Queries: []string{"spec"}, WorkbenchID: pid})
 	require.NoError(t, err)
 	require.Len(t, hits.Hits, 1, "the new spec is searchable from the project's session at once")
-	assert.Equal(t, kb.ProjectDocSource, hits.Hits[0].Source)
+	assert.Equal(t, kb.WorkbenchDocSource, hits.Hits[0].Source)
 
-	after := projectSnapshot(t, database, pid)
+	after := workbenchSnapshot(t, database, pid)
 	for _, table := range []string{"project", "targets", "history", "comments", "sources", "images"} {
 		assert.Equal(t, before[table], after[table], "%s rows are untouched", table)
 	}
@@ -152,14 +152,14 @@ func TestProjectResync_IsAdditive(t *testing.T) {
 	assert.Empty(t, res.Excluded)
 	assert.Empty(t, res.Suggestions)
 	assert.Zero(t, res.Indexed, "nothing changed: the index is not rewritten")
-	assert.Equal(t, after, projectSnapshot(t, database, pid))
+	assert.Equal(t, after, workbenchSnapshot(t, database, pid))
 }
 
 func TestProjectResync_ReinstallsMissingPiecesAndKeepsAnEditedSkill(t *testing.T) {
-	useFakeProjectClaude(t)
+	useFakeWorkbenchClaude(t)
 	database := writeActionsConfig(t)
 	folder := resyncFolder(t)
-	pid, err := database.CreateProject("acme", folder)
+	pid, err := database.CreateWorkbench("acme", folder)
 	require.NoError(t, err)
 	id := strconv.FormatInt(pid, 10)
 	_, _, err = runResync(t, id, "--json")
@@ -172,7 +172,7 @@ func TestProjectResync_ReinstallsMissingPiecesAndKeepsAnEditedSkill(t *testing.T
 	assert.True(t, decodeResync(t, out).HooksAdded)
 
 	// The owner edited the skill: left alone and reported (PROJ-04).
-	skill := filepath.Join(folder, ".claude", "skills", devpack.ProjectSkillName, "SKILL.md")
+	skill := filepath.Join(folder, ".claude", "skills", devpack.WorkbenchSkillName, "SKILL.md")
 	body, err := os.ReadFile(skill)
 	require.NoError(t, err)
 	edited := append(body, []byte("\nMy own rule.\n")...)
@@ -186,9 +186,9 @@ func TestProjectResync_ReinstallsMissingPiecesAndKeepsAnEditedSkill(t *testing.T
 }
 
 func TestProjectResync_EmptyProjectSuggestsSetupWithoutCreatingTargets(t *testing.T) {
-	useFakeProjectClaude(t)
+	useFakeWorkbenchClaude(t)
 	database := writeActionsConfig(t)
-	pid, err := database.CreateProject("acme", resyncFolder(t))
+	pid, err := database.CreateWorkbench("acme", resyncFolder(t))
 	require.NoError(t, err)
 	out, _, err := runResync(t, strconv.FormatInt(pid, 10), "--json")
 	require.NoError(t, err)
@@ -197,7 +197,7 @@ func TestProjectResync_EmptyProjectSuggestsSetupWithoutCreatingTargets(t *testin
 	assert.Contains(t, joined, "no description yet")
 	assert.Contains(t, joined, "no sources")
 	assert.Contains(t, joined, "board is empty")
-	board, err := database.GetProjectBoard(pid)
+	board, err := database.GetWorkbenchBoard(pid)
 	require.NoError(t, err)
 	assert.Empty(t, board, "resync never creates targets")
 }
@@ -205,13 +205,13 @@ func TestProjectResync_EmptyProjectSuggestsSetupWithoutCreatingTargets(t *testin
 // A failed step does not stop the other; --json exits 0 and says which
 // step failed, the text form exits non-zero.
 func TestProjectResync_FailedStepIsReported(t *testing.T) {
-	prev := projectCommandRunner
-	projectCommandRunner = func(context.Context, string, string, ...string) ([]byte, error) {
+	prev := workbenchCommandRunner
+	workbenchCommandRunner = func(context.Context, string, string, ...string) ([]byte, error) {
 		return nil, devpack.ErrClaudeNotFound
 	}
-	t.Cleanup(func() { projectCommandRunner = prev })
+	t.Cleanup(func() { workbenchCommandRunner = prev })
 	database := writeActionsConfig(t)
-	pid, err := database.CreateProject("acme", resyncFolder(t))
+	pid, err := database.CreateWorkbench("acme", resyncFolder(t))
 	require.NoError(t, err)
 	id := strconv.FormatInt(pid, 10)
 
@@ -223,7 +223,7 @@ func TestProjectResync_FailedStepIsReported(t *testing.T) {
 	assert.False(t, res.IntegrationOK)
 	assert.NotEmpty(t, res.IntegrationError)
 	assert.False(t, res.MCPRegistered)
-	assert.Contains(t, res.MCPCommand, "claude mcp add --scope local "+devpack.ProjectMCPServerName)
+	assert.Contains(t, res.MCPCommand, "claude mcp add --scope local "+devpack.WorkbenchMCPServerName)
 	assert.Equal(t, string(devpack.StateInstalled), res.Skill, "the skill was still installed")
 
 	out, _, err = runResync(t, id)
@@ -244,10 +244,10 @@ func TestProjectResync_RequiresAProject(t *testing.T) {
 // An unreadable docs/ fails the import step; the install still runs and the
 // envelope carries the failure without a docs report.
 func TestProjectResync_FailedImportStillInstalls(t *testing.T) {
-	f := useFakeProjectClaude(t)
+	f := useFakeWorkbenchClaude(t)
 	database := writeActionsConfig(t)
 	folder := resyncFolder(t)
-	pid, err := database.CreateProject("acme", folder)
+	pid, err := database.CreateWorkbench("acme", folder)
 	require.NoError(t, err)
 	docs := filepath.Join(folder, "docs")
 	require.NoError(t, os.Chmod(docs, 0o000))
@@ -273,16 +273,16 @@ func TestProjectResync_FailedImportStillInstalls(t *testing.T) {
 // A failed read behind the suggestions is reported, not an empty list
 // passed off as "nothing to suggest".
 func TestProjectResync_SuggestionsErrorIsReported(t *testing.T) {
-	useFakeProjectClaude(t)
+	useFakeWorkbenchClaude(t)
 	database := writeActionsConfig(t)
-	pid, err := database.CreateProject("acme", resyncFolder(t))
+	pid, err := database.CreateWorkbench("acme", resyncFolder(t))
 	require.NoError(t, err)
-	p, err := database.GetProject(pid)
+	p, err := database.GetWorkbench(pid)
 	require.NoError(t, err)
 	_, err = database.Exec(`DROP TABLE project_sources`)
 	require.NoError(t, err)
 
-	res, err := resyncProject(context.Background(), database, p, true)
+	res, err := resyncWorkbench(context.Background(), database, p, true)
 	require.Error(t, err)
 	assert.True(t, res.DocsOK)
 	assert.True(t, res.IntegrationOK)
@@ -291,14 +291,14 @@ func TestProjectResync_SuggestionsErrorIsReported(t *testing.T) {
 }
 
 func TestProjectResync_SkipsTheIndexWhenKnowledgeSearchIsOff(t *testing.T) {
-	useFakeProjectClaude(t)
+	useFakeWorkbenchClaude(t)
 	database := writeActionsConfig(t)
-	pid, err := database.CreateProject("acme", resyncFolder(t))
+	pid, err := database.CreateWorkbench("acme", resyncFolder(t))
 	require.NoError(t, err)
-	p, err := database.GetProject(pid)
+	p, err := database.GetWorkbench(pid)
 	require.NoError(t, err)
 
-	res, err := resyncProject(context.Background(), database, p, false)
+	res, err := resyncWorkbench(context.Background(), database, p, false)
 	require.NoError(t, err)
 	assert.True(t, res.IndexOK)
 	assert.True(t, res.IndexSkipped)

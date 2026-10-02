@@ -9,38 +9,38 @@ import (
 	"strings"
 
 	"watchtower/internal/db"
-	"watchtower/internal/projectfiles"
+	"watchtower/internal/workbenchfiles"
 )
 
-// projectSurface is the registry surface of `watchtower mcp --project N`.
+// workbenchSurface is the registry surface of `watchtower mcp --project N`.
 // Every project tool is visible there and nowhere else.
-const projectSurface = "project"
+const workbenchSurface = "project"
 
-var projectSurfaces = []string{projectSurface}
+var workbenchSurfaces = []string{workbenchSurface}
 
 // maxBatchTargets caps one create_targets call — a whole plan, not a backlog.
 const maxBatchTargets = 100
 
-// ProjectTools returns every project tool (surface "project"), in the order
+// WorkbenchTools returns every project tool (surface "project"), in the order
 // buildToolRegistry registers them. files stores the images attached to
 // targets.
 // indexDocs says whether attach_document also re-indexes the project's
 // documents for its search (knowledge.enabled, PROJ-08).
-func ProjectTools(files projectfiles.Store, indexDocs bool) []*Tool {
+func WorkbenchTools(files workbenchfiles.Store, indexDocs bool) []*Tool {
 	return []*Tool{
-		NewProjectInfo(), NewProjectBoard(), NewUpdateProject(),
-		NewAddProjectSource(), NewRemoveProjectSource(),
+		NewWorkbenchInfo(), NewWorkbenchBoard(), NewUpdateWorkbench(),
+		NewAddWorkbenchSource(), NewRemoveWorkbenchSource(),
 		NewCreateTargets(files), NewUpdateTarget(files),
 		NewAttachDocument(indexDocs), NewListComments(), NewAddComment(), NewResolveComment(),
 	}
 }
 
-// targetInProject loads a target and fails unless it belongs to projectID —
+// targetInWorkbench loads a target and fails unless it belongs to projectID —
 // a target of another project, of no project, or a missing one all read as
-// "not in this project" (wrapping db.ErrNotInProject), never as a different
+// "not in this project" (wrapping db.ErrNotInWorkbench), never as a different
 // error that would confirm it exists.
-func targetInProject(d *db.DB, projectID, targetID int64) (*db.Target, error) {
-	notHere := notInProject("target", targetID)
+func targetInWorkbench(d *db.DB, projectID, targetID int64) (*db.Target, error) {
+	notHere := notInWorkbench("target", targetID)
 	if projectID <= 0 || targetID <= 0 {
 		return nil, notHere
 	}
@@ -51,22 +51,22 @@ func targetInProject(d *db.DB, projectID, targetID int64) (*db.Target, error) {
 	if err != nil {
 		return nil, fmt.Errorf("loading target %d: %w", targetID, err)
 	}
-	if t.ProjectID.Int64 != projectID {
+	if t.WorkbenchID.Int64 != projectID {
 		return nil, notHere
 	}
 	return t, nil
 }
 
-// notInProject is the model-facing refusal for a row outside the bound
-// project; it wraps db.ErrNotInProject.
-func notInProject(noun string, id int64) error {
-	return &ValidationError{Msg: fmt.Sprintf("%s %d is not in this project", noun, id), Err: db.ErrNotInProject}
+// notInWorkbench is the model-facing refusal for a row outside the bound
+// project; it wraps db.ErrNotInWorkbench.
+func notInWorkbench(noun string, id int64) error {
+	return &ValidationError{Msg: fmt.Sprintf("%s %d is not in this project", noun, id), Err: db.ErrNotInWorkbench}
 }
 
-// projectScope is the Scope of a project tool that touches no existing row:
+// workbenchScope is the Scope of a project tool that touches no existing row:
 // the binding must name a live project.
-func projectScope(ctx context.Context, d *db.DB, _ json.RawMessage, b Binding) error {
-	_, err := projectOf(ctx, d, b)
+func workbenchScope(ctx context.Context, d *db.DB, _ json.RawMessage, b Binding) error {
+	_, err := workbenchOf(ctx, d, b)
 	return err
 }
 
@@ -93,7 +93,7 @@ type sourceView struct {
 	Label string `json:"label,omitempty"`
 }
 
-type projectInfoView struct {
+type workbenchInfoView struct {
 	ID          int64  `json:"id"`
 	Name        string `json:"name"`
 	Folder      string `json:"folder"`
@@ -106,9 +106,9 @@ type projectInfoView struct {
 	NewComments       int            `json:"comments_new_for_agent"`
 }
 
-// NewProjectInfo describes the bound project: what it is, its sources and
+// NewWorkbenchInfo describes the bound project: what it is, its sources and
 // how much is on its board.
-func NewProjectInfo() *Tool {
+func NewWorkbenchInfo() *Tool {
 	return &Tool{
 		Name: "project_info",
 		Description: "Describe this Watchtower project: name, folder, description, board language, sources, target counts by " +
@@ -116,35 +116,35 @@ func NewProjectInfo() *Tool {
 			"project is not set up yet (run the watchtower-project skill's setup).",
 		InputSchema: mustSchema[emptyArgs]("project_info"),
 		Access:      AccessRead,
-		Surfaces:    projectSurfaces,
+		Surfaces:    workbenchSurfaces,
 		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
-			p, err := projectOf(ctx, d, call.Binding)
+			p, err := workbenchOf(ctx, d, call.Binding)
 			if err != nil {
 				return nil, err
 			}
-			return buildProjectInfo(d, p)
+			return buildWorkbenchInfo(d, p)
 		},
 	}
 }
 
-func buildProjectInfo(d *db.DB, p *db.Project) (*projectInfoView, error) {
-	sources, err := d.ListProjectSources(p.ID)
+func buildWorkbenchInfo(d *db.DB, p *db.Workbench) (*workbenchInfoView, error) {
+	sources, err := d.ListWorkbenchSources(p.ID)
 	if err != nil {
 		return nil, fmt.Errorf("listing sources: %w", err)
 	}
-	board, err := d.GetProjectBoard(p.ID)
+	board, err := d.GetWorkbenchBoard(p.ID)
 	if err != nil {
 		return nil, fmt.Errorf("loading board: %w", err)
 	}
-	docs, err := d.ListProjectDocuments(p.ID)
+	docs, err := d.ListWorkbenchDocuments(p.ID)
 	if err != nil {
 		return nil, fmt.Errorf("listing documents: %w", err)
 	}
-	fresh, err := d.ListProjectComments(db.ProjectCommentFilter{ProjectID: p.ID, NewForAgent: true})
+	fresh, err := d.ListWorkbenchComments(db.WorkbenchCommentFilter{WorkbenchID: p.ID, NewForAgent: true})
 	if err != nil {
 		return nil, fmt.Errorf("listing comments: %w", err)
 	}
-	v := &projectInfoView{
+	v := &workbenchInfoView{
 		ID: p.ID, Name: p.Name, Folder: p.FolderPath, Description: p.Description,
 		BoardLanguageRule: BoardLanguageLine, Sources: make([]sourceView, 0, len(sources)),
 		Targets: map[string]int{}, Documents: len(docs), NewComments: len(fresh),
@@ -191,15 +191,15 @@ type boardNodeView struct {
 	Children       []boardNodeView `json:"children,omitempty"`
 }
 
-type projectBoardView struct {
-	ProjectID int64           `json:"project_id"`
-	Targets   []boardNodeView `json:"targets"`
-	Documents []documentView  `json:"documents"`
+type workbenchBoardView struct {
+	WorkbenchID int64           `json:"project_id"`
+	Targets     []boardNodeView `json:"targets"`
+	Documents   []documentView  `json:"documents"`
 }
 
-// NewProjectBoard returns the bound project's target tree with comment
+// NewWorkbenchBoard returns the bound project's target tree with comment
 // counters, plus every attached document.
-func NewProjectBoard() *Tool {
+func NewWorkbenchBoard() *Tool {
 	return &Tool{
 		Name: "project_board",
 		Description: "The project board: the target tree (ids, status and since when, priority, progress, comment counters, " +
@@ -207,21 +207,21 @@ func NewProjectBoard() *Tool {
 			"Read it before changing the board.",
 		InputSchema: mustSchema[emptyArgs]("project_board"),
 		Access:      AccessRead,
-		Surfaces:    projectSurfaces,
+		Surfaces:    workbenchSurfaces,
 		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
-			p, err := projectOf(ctx, d, call.Binding)
+			p, err := workbenchOf(ctx, d, call.Binding)
 			if err != nil {
 				return nil, err
 			}
-			board, err := d.GetProjectBoard(p.ID)
+			board, err := d.GetWorkbenchBoard(p.ID)
 			if err != nil {
 				return nil, fmt.Errorf("loading board: %w", err)
 			}
-			docs, err := d.ListProjectDocuments(p.ID)
+			docs, err := d.ListWorkbenchDocuments(p.ID)
 			if err != nil {
 				return nil, fmt.Errorf("listing documents: %w", err)
 			}
-			return projectBoardView{ProjectID: p.ID, Targets: boardViews(board), Documents: documentViews(docs)}, nil
+			return workbenchBoardView{WorkbenchID: p.ID, Targets: boardViews(board), Documents: documentViews(docs)}, nil
 		},
 	}
 }
@@ -239,7 +239,7 @@ func boardViews(nodes []db.BoardNode) []boardNodeView {
 	return out
 }
 
-func documentViews(docs []db.ProjectDocument) []documentView {
+func documentViews(docs []db.WorkbenchDocument) []documentView {
 	out := make([]documentView, 0, len(docs))
 	for _, doc := range docs {
 		out = append(out, documentView{
@@ -252,37 +252,37 @@ func documentViews(docs []db.ProjectDocument) []documentView {
 
 // ---- update_project ----------------------------------------------------
 
-type updateProjectArgs struct {
+type updateWorkbenchArgs struct {
 	Description string `json:"description" jsonschema:"what the project is, a few sentences; replaces the current description"`
 	Reason      string `json:"reason" jsonschema:"one sentence: why you make this change"`
 }
 
-// NewUpdateProject sets the bound project's description.
-func NewUpdateProject() *Tool {
+// NewUpdateWorkbench sets the bound project's description.
+func NewUpdateWorkbench() *Tool {
 	return &Tool{
 		Name:        "update_project",
 		Description: "Set this project's description (what it is, a few sentences). Applied immediately.",
-		InputSchema: mustSchema[updateProjectArgs]("update_project"),
+		InputSchema: mustSchema[updateWorkbenchArgs]("update_project"),
 		Access:      AccessWrite,
-		Surfaces:    projectSurfaces,
+		Surfaces:    workbenchSurfaces,
 		Validate: func(_ context.Context, _ *db.DB, raw json.RawMessage) error {
-			var a updateProjectArgs
+			var a updateWorkbenchArgs
 			if err := decodeStrict(raw, &a); err != nil {
 				return err
 			}
 			_, err := requireText("description", a.Description, 4000)
 			return err
 		},
-		Scope: projectScope,
+		Scope: workbenchScope,
 		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
-			var a updateProjectArgs
+			var a updateWorkbenchArgs
 			if err := json.Unmarshal(call.Args, &a); err != nil {
 				return nil, fmt.Errorf("decoding update_project args: %w", err)
 			}
-			if err := d.UpdateProjectDescription(call.Binding.ProjectID, a.Description); err != nil {
+			if err := d.UpdateWorkbenchDescription(call.Binding.WorkbenchID, a.Description); err != nil {
 				return nil, fmt.Errorf("updating project: %w", err)
 			}
-			return map[string]any{"project_id": call.Binding.ProjectID}, nil
+			return map[string]any{"project_id": call.Binding.WorkbenchID}, nil
 		},
 	}
 }
@@ -295,25 +295,25 @@ const BoardLanguageLine = "Board language: follow the session language (write ta
 
 // ---- add_project_source / remove_project_source -------------------------
 
-type addProjectSourceArgs struct {
+type addWorkbenchSourceArgs struct {
 	Kind   string `json:"kind" jsonschema:"slack_channel | jira_project | confluence_space | person | link"`
 	Ref    string `json:"ref" jsonschema:"the source reference: channel id or name, Jira project key, space key, person email, URL"`
 	Label  string `json:"label,omitempty" jsonschema:"short human label"`
 	Reason string `json:"reason" jsonschema:"one sentence: why this source belongs to the project"`
 }
 
-// NewAddProjectSource records a source (channel, Jira project, space, person,
+// NewAddWorkbenchSource records a source (channel, Jira project, space, person,
 // link) as belonging to the bound project. Idempotent on (kind, ref).
-func NewAddProjectSource() *Tool {
+func NewAddWorkbenchSource() *Tool {
 	return &Tool{
 		Name: "add_project_source",
 		Description: "Record a source that belongs to this project (a Slack channel, Jira project, Confluence " +
 			"space, person or link). Add only sources the project's docs clearly name. Applied immediately.",
-		InputSchema: mustSchema[addProjectSourceArgs]("add_project_source"),
+		InputSchema: mustSchema[addWorkbenchSourceArgs]("add_project_source"),
 		Access:      AccessWrite,
-		Surfaces:    projectSurfaces,
+		Surfaces:    workbenchSurfaces,
 		Validate: func(_ context.Context, _ *db.DB, raw json.RawMessage) error {
-			var a addProjectSourceArgs
+			var a addWorkbenchSourceArgs
 			if err := decodeStrict(raw, &a); err != nil {
 				return err
 			}
@@ -326,14 +326,14 @@ func NewAddProjectSource() *Tool {
 			_, err := requireText("ref", a.Ref, 500)
 			return err
 		},
-		Scope: projectScope,
+		Scope: workbenchScope,
 		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
-			var a addProjectSourceArgs
+			var a addWorkbenchSourceArgs
 			if err := json.Unmarshal(call.Args, &a); err != nil {
 				return nil, fmt.Errorf("decoding add_project_source args: %w", err)
 			}
-			id, err := d.AddProjectSource(db.ProjectSource{
-				ProjectID: call.Binding.ProjectID, Kind: a.Kind,
+			id, err := d.AddWorkbenchSource(db.WorkbenchSource{
+				WorkbenchID: call.Binding.WorkbenchID, Kind: a.Kind,
 				Ref: strings.TrimSpace(a.Ref), Label: strings.TrimSpace(a.Label),
 			})
 			if err != nil {
@@ -344,36 +344,36 @@ func NewAddProjectSource() *Tool {
 	}
 }
 
-type removeProjectSourceArgs struct {
+type removeWorkbenchSourceArgs struct {
 	SourceID int64  `json:"source_id" jsonschema:"the source id from project_info"`
 	Reason   string `json:"reason" jsonschema:"one sentence: why the source no longer belongs"`
 }
 
-// NewRemoveProjectSource drops one of the bound project's sources.
-func NewRemoveProjectSource() *Tool {
+// NewRemoveWorkbenchSource drops one of the bound project's sources.
+func NewRemoveWorkbenchSource() *Tool {
 	return &Tool{
 		Name:        "remove_project_source",
 		Description: "Remove a source from this project (id from project_info). Applied immediately.",
-		InputSchema: mustSchema[removeProjectSourceArgs]("remove_project_source"),
+		InputSchema: mustSchema[removeWorkbenchSourceArgs]("remove_project_source"),
 		Access:      AccessWrite,
-		Surfaces:    projectSurfaces,
+		Surfaces:    workbenchSurfaces,
 		Validate: func(_ context.Context, _ *db.DB, raw json.RawMessage) error {
-			var a removeProjectSourceArgs
+			var a removeWorkbenchSourceArgs
 			return decodeStrict(raw, &a)
 		},
 		Scope: func(_ context.Context, d *db.DB, raw json.RawMessage, b Binding) error {
-			var a removeProjectSourceArgs
+			var a removeWorkbenchSourceArgs
 			if err := json.Unmarshal(raw, &a); err != nil {
 				return &ValidationError{Msg: "invalid arguments"}
 			}
-			return sourceInProject(d, b.ProjectID, a.SourceID)
+			return sourceInWorkbench(d, b.WorkbenchID, a.SourceID)
 		},
 		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
-			var a removeProjectSourceArgs
+			var a removeWorkbenchSourceArgs
 			if err := json.Unmarshal(call.Args, &a); err != nil {
 				return nil, fmt.Errorf("decoding remove_project_source args: %w", err)
 			}
-			if err := d.RemoveProjectSource(call.Binding.ProjectID, a.SourceID); err != nil {
+			if err := d.RemoveWorkbenchSource(call.Binding.WorkbenchID, a.SourceID); err != nil {
 				return nil, fmt.Errorf("removing source: %w", err)
 			}
 			return map[string]any{"source_id": a.SourceID, "removed": true}, nil
@@ -381,8 +381,8 @@ func NewRemoveProjectSource() *Tool {
 	}
 }
 
-func sourceInProject(d *db.DB, projectID, sourceID int64) error {
-	sources, err := d.ListProjectSources(projectID)
+func sourceInWorkbench(d *db.DB, projectID, sourceID int64) error {
+	sources, err := d.ListWorkbenchSources(projectID)
 	if err != nil {
 		return fmt.Errorf("listing sources: %w", err)
 	}
@@ -391,5 +391,5 @@ func sourceInProject(d *db.DB, projectID, sourceID int64) error {
 			return nil
 		}
 	}
-	return notInProject("source", sourceID)
+	return notInWorkbench("source", sourceID)
 }

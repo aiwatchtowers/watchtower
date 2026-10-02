@@ -1,4 +1,4 @@
-package projectfiles
+package workbenchfiles
 
 import (
 	"errors"
@@ -134,8 +134,8 @@ func TestRemoveProject_DeletesOnlyThatProjectsDirectory(t *testing.T) {
 	b, err := s.Ingest(2, writeSource(t, "b.png", pngMagic+"b"))
 	require.NoError(t, err)
 
-	require.NoError(t, s.RemoveProject(1))
-	require.NoError(t, s.RemoveProject(1), "a missing directory is a no-op")
+	require.NoError(t, s.RemoveWorkbench(1))
+	require.NoError(t, s.RemoveWorkbench(1), "a missing directory is a no-op")
 	_, err = os.Stat(s.Dir(1))
 	assert.True(t, os.IsNotExist(err))
 	_, err = os.Stat(b.Path)

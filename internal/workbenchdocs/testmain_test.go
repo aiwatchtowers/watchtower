@@ -1,4 +1,4 @@
-package projectdocs
+package workbenchdocs
 
 import (
 	"fmt"

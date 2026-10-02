@@ -8,33 +8,33 @@ import (
 	"strings"
 )
 
-// ErrProjectFolderNotAllowed is returned for a folder a project must never be
+// ErrWorkbenchFolderNotAllowed is returned for a folder a project must never be
 // bound to: the agent working it would roam the whole disk, the whole home
 // directory, or a protected directory (Watchtower's own data — the caller
 // knows where that lives; db stays a leaf and never imports config).
-var ErrProjectFolderNotAllowed = errors.New("folder cannot be a project")
+var ErrWorkbenchFolderNotAllowed = errors.New("folder cannot be a project")
 
-// checkProjectFolderAllowed refuses resolved when it contains a line break
+// checkWorkbenchFolderAllowed refuses resolved when it contains a line break
 // (checkFolderLineBreaks), is the filesystem root, the home directory or an
 // ancestor of it, or is equal to, inside, or an ancestor of a protected dir.
-func checkProjectFolderAllowed(resolved string, protected []string) error {
+func checkWorkbenchFolderAllowed(resolved string, protected []string) error {
 	if err := checkFolderLineBreaks(resolved); err != nil {
 		return err
 	}
 	if resolved == string(filepath.Separator) {
-		return fmt.Errorf("%s is the filesystem root: %w", resolved, ErrProjectFolderNotAllowed)
+		return fmt.Errorf("%s is the filesystem root: %w", resolved, ErrWorkbenchFolderNotAllowed)
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("checking folder %s: %w", resolved, err)
 	}
 	if pathWithin(resolveIfExists(home), resolved) {
-		return fmt.Errorf("%s is the home directory or contains it: %w", resolved, ErrProjectFolderNotAllowed)
+		return fmt.Errorf("%s is the home directory or contains it: %w", resolved, ErrWorkbenchFolderNotAllowed)
 	}
 	for _, dir := range protected {
 		dir = resolveIfExists(dir)
 		if pathWithin(resolved, dir) || pathWithin(dir, resolved) {
-			return fmt.Errorf("%s overlaps Watchtower's own data at %s: %w", resolved, dir, ErrProjectFolderNotAllowed)
+			return fmt.Errorf("%s overlaps Watchtower's own data at %s: %w", resolved, dir, ErrWorkbenchFolderNotAllowed)
 		}
 	}
 	return nil
@@ -59,7 +59,7 @@ func pathWithin(child, parent string) bool {
 // a line break would smuggle in an extra pattern.
 func checkFolderLineBreaks(folder string) error {
 	if strings.ContainsAny(folder, "\n\r") {
-		return fmt.Errorf("%q contains a line break: %w", folder, ErrProjectFolderNotAllowed)
+		return fmt.Errorf("%q contains a line break: %w", folder, ErrWorkbenchFolderNotAllowed)
 	}
 	return nil
 }

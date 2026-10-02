@@ -10,7 +10,7 @@ import (
 	"unicode"
 
 	"watchtower/internal/db"
-	"watchtower/internal/projectfiles"
+	"watchtower/internal/workbenchfiles"
 )
 
 // ---- create_targets ----------------------------------------------------
@@ -41,7 +41,7 @@ type createdTarget struct {
 // a whole plan in one call. Nesting is by parent_id (an existing target of
 // the project) or parent_key (an earlier item). An item's images are copied
 // into store before the transaction. All or nothing.
-func NewCreateTargets(store projectfiles.Store) *Tool {
+func NewCreateTargets(store workbenchfiles.Store) *Tool {
 	return &Tool{
 		Name: "create_targets",
 		Description: "Create targets on this project's board in one all-or-nothing call — e.g. a feature " +
@@ -52,7 +52,7 @@ func NewCreateTargets(store projectfiles.Store) *Tool {
 			"carrying the work (branch, pr). Applied immediately.",
 		InputSchema: mustSchema[createTargetsArgs]("create_targets"),
 		Access:      AccessWrite,
-		Surfaces:    projectSurfaces,
+		Surfaces:    workbenchSurfaces,
 		Validate: func(_ context.Context, _ *db.DB, raw json.RawMessage) error {
 			var a createTargetsArgs
 			if err := decodeStrict(raw, &a); err != nil {
@@ -72,7 +72,7 @@ func NewCreateTargets(store projectfiles.Store) *Tool {
 			if err := json.Unmarshal(call.Args, &a); err != nil {
 				return nil, fmt.Errorf("decoding create_targets args: %w", err)
 			}
-			created, err := insertTargetItems(d, store, call.Binding.ProjectID, a.Items)
+			created, err := insertTargetItems(d, store, call.Binding.WorkbenchID, a.Items)
 			if err != nil {
 				return nil, err
 			}
@@ -162,14 +162,14 @@ func validBranchName(b string) bool {
 
 // scopeTargetItems checks every parent_id belongs to the bound project.
 func scopeTargetItems(ctx context.Context, d *db.DB, items []newTargetItem, b Binding) error {
-	if _, err := projectOf(ctx, d, b); err != nil {
+	if _, err := workbenchOf(ctx, d, b); err != nil {
 		return err
 	}
 	for _, it := range items {
 		if it.ParentID == 0 {
 			continue
 		}
-		if _, err := targetInProject(d, b.ProjectID, it.ParentID); err != nil {
+		if _, err := targetInWorkbench(d, b.WorkbenchID, it.ParentID); err != nil {
 			return err
 		}
 	}
@@ -177,12 +177,12 @@ func scopeTargetItems(ctx context.Context, d *db.DB, items []newTargetItem, b Bi
 }
 
 // insertTargetItems copies every item's images in, then inserts the batch
-// and the image rows in one transaction through db.CreateProjectTargetsTx,
+// and the image rows in one transaction through db.CreateWorkbenchTargetsTx,
 // which also rolls progress up into every parent. A parent_key becomes the
 // 1-based BatchParent of the earlier item holding that key
 // (validateTargetItems guaranteed it is earlier). On a failed write the
 // copies no row names are removed again.
-func insertTargetItems(d *db.DB, store projectfiles.Store, projectID int64, items []newTargetItem) ([]createdTarget, error) {
+func insertTargetItems(d *db.DB, store workbenchfiles.Store, projectID int64, items []newTargetItem) ([]createdTarget, error) {
 	var paths []string
 	for _, it := range items {
 		paths = append(paths, it.Images...)
@@ -195,7 +195,7 @@ func insertTargetItems(d *db.DB, store projectfiles.Store, projectID int64, item
 	var ids []int64
 	err = d.WithTx(func(tx *sql.Tx) error {
 		var err error
-		if ids, err = d.CreateProjectTargetsTx(tx, projectID, inputs); err != nil {
+		if ids, err = d.CreateWorkbenchTargetsTx(tx, projectID, inputs); err != nil {
 			return err
 		}
 		for i, it := range items {
@@ -219,11 +219,11 @@ func insertTargetItems(d *db.DB, store projectfiles.Store, projectID int64, item
 	return created, nil
 }
 
-func targetInputs(items []newTargetItem) []db.ProjectTargetInput {
+func targetInputs(items []newTargetItem) []db.WorkbenchTargetInput {
 	position := map[string]int{} // key -> 1-based batch position
-	inputs := make([]db.ProjectTargetInput, 0, len(items))
+	inputs := make([]db.WorkbenchTargetInput, 0, len(items))
 	for i, it := range items {
-		in := db.ProjectTargetInput{Title: strings.TrimSpace(it.Text), Intent: strings.TrimSpace(it.Intent), Priority: it.Priority,
+		in := db.WorkbenchTargetInput{Title: strings.TrimSpace(it.Text), Intent: strings.TrimSpace(it.Intent), Priority: it.Priority,
 			Branch: it.Branch, PR: it.PR}
 		if it.ParentKey != "" {
 			in.BatchParent = position[it.ParentKey]
@@ -258,7 +258,7 @@ type updateTargetArgs struct {
 // NewUpdateTarget changes one project target's status, progress, title,
 // intent or priority, and attaches or detaches its images (copied into
 // store).
-func NewUpdateTarget(store projectfiles.Store) *Tool {
+func NewUpdateTarget(store workbenchfiles.Store) *Tool {
 	return &Tool{
 		Name: "update_target",
 		Description: "Change a target on this project's board: status (todo, in_progress, in_review, blocked, done, " +
@@ -268,7 +268,7 @@ func NewUpdateTarget(store projectfiles.Store) *Tool {
 			"\"\" clears one). Applied immediately.",
 		InputSchema: mustSchema[updateTargetArgs]("update_target"),
 		Access:      AccessWrite,
-		Surfaces:    projectSurfaces,
+		Surfaces:    workbenchSurfaces,
 		Validate: func(_ context.Context, _ *db.DB, raw json.RawMessage) error {
 			var a updateTargetArgs
 			if err := decodeStrict(raw, &a); err != nil {
@@ -281,10 +281,10 @@ func NewUpdateTarget(store projectfiles.Store) *Tool {
 			if err := json.Unmarshal(raw, &a); err != nil {
 				return &ValidationError{Msg: "invalid arguments"}
 			}
-			if _, err := projectOf(ctx, d, b); err != nil {
+			if _, err := workbenchOf(ctx, d, b); err != nil {
 				return err
 			}
-			if _, err := targetInProject(d, b.ProjectID, a.TargetID); err != nil {
+			if _, err := targetInWorkbench(d, b.WorkbenchID, a.TargetID); err != nil {
 				return err
 			}
 			return scopeImageIDs(d, a.TargetID, a.RemoveImageIDs)
@@ -294,7 +294,7 @@ func NewUpdateTarget(store projectfiles.Store) *Tool {
 			if err := json.Unmarshal(call.Args, &a); err != nil {
 				return nil, fmt.Errorf("decoding update_target args: %w", err)
 			}
-			return applyTargetUpdate(d, store, call.Binding.ProjectID, a)
+			return applyTargetUpdate(d, store, call.Binding.WorkbenchID, a)
 		},
 	}
 }
@@ -331,8 +331,8 @@ func nothingToUpdate(a updateTargetArgs) bool {
 // change re-derives a leaf's progress — and the image rows in one
 // transaction, so a failure part-way leaves the target untouched. A detached
 // image's copy is removed once no row names it.
-func applyTargetUpdate(d *db.DB, store projectfiles.Store, projectID int64, a updateTargetArgs) (map[string]any, error) {
-	t, err := targetInProject(d, projectID, a.TargetID)
+func applyTargetUpdate(d *db.DB, store workbenchfiles.Store, projectID int64, a updateTargetArgs) (map[string]any, error) {
+	t, err := targetInWorkbench(d, projectID, a.TargetID)
 	if err != nil {
 		return nil, err
 	}
@@ -346,7 +346,7 @@ func applyTargetUpdate(d *db.DB, store projectfiles.Store, projectID int64, a up
 			return err
 		}
 		for _, id := range a.RemoveImageIDs {
-			path, err := db.RemoveProjectTargetImageTx(tx, projectID, int64(t.ID), id)
+			path, err := db.RemoveWorkbenchTargetImageTx(tx, projectID, int64(t.ID), id)
 			if err != nil {
 				return err
 			}
@@ -396,7 +396,7 @@ func scopeImageIDs(d *db.DB, targetID int64, ids []int64) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	images, err := d.ListProjectTargetImages(targetID)
+	images, err := d.ListWorkbenchTargetImages(targetID)
 	if err != nil {
 		return err
 	}
@@ -406,7 +406,7 @@ func scopeImageIDs(d *db.DB, targetID int64, ids []int64) error {
 	}
 	for _, id := range ids {
 		if !own[id] {
-			return &ValidationError{Msg: fmt.Sprintf("image %d is not an image of target %d", id, targetID), Err: db.ErrNotInProject}
+			return &ValidationError{Msg: fmt.Sprintf("image %d is not an image of target %d", id, targetID), Err: db.ErrNotInWorkbench}
 		}
 	}
 	return nil

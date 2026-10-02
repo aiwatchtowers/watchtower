@@ -18,7 +18,7 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/devpack"
-	"watchtower/internal/projectcheck"
+	"watchtower/internal/workbenchcheck"
 )
 
 // driftRepo is a git repository whose branch "merged" is merged into main
@@ -57,15 +57,15 @@ func driftRepo(t *testing.T) string {
 	return dir
 }
 
-// driftProject creates a project in folder with one in-progress target on
+// driftWorkbench creates a project in folder with one in-progress target on
 // branch.
-func driftProject(t *testing.T, database *db.DB, folder, branch string) (int64, int64) {
+func driftWorkbench(t *testing.T, database *db.DB, folder, branch string) (int64, int64) {
 	t.Helper()
-	pid, err := database.CreateProject("acme", folder)
+	pid, err := database.CreateWorkbench("acme", folder)
 	require.NoError(t, err)
 	var ids []int64
 	require.NoError(t, database.WithTx(func(tx *sql.Tx) error {
-		ids, err = database.CreateProjectTargetsTx(tx, pid, []db.ProjectTargetInput{{Title: "Feature", Branch: branch}})
+		ids, err = database.CreateWorkbenchTargetsTx(tx, pid, []db.WorkbenchTargetInput{{Title: "Feature", Branch: branch}})
 		return err
 	}))
 	require.NoError(t, database.UpdateTargetStatus(int(ids[0]), "in_progress"))
@@ -88,7 +88,7 @@ func stopHookIO(t *testing.T, rawID, input string) (stdout, stderr string) {
 func TestProj07_StopHookBlocksOnceWithTheDrift(t *testing.T) {
 	database := writeActionsConfig(t)
 	folder := driftRepo(t)
-	pid, tid := driftProject(t, database, folder, "merged")
+	pid, tid := driftWorkbench(t, database, folder, "merged")
 
 	out := stopHook(t, pid, `{"hook_event_name":"Stop","stop_hook_active":false}`)
 	var got stopHookOutput
@@ -108,7 +108,7 @@ func TestProj07_StopHookBlocksOnceWithTheDrift(t *testing.T) {
 func TestProj07_StopHookIsSilentWithoutGitDrift(t *testing.T) {
 	database := writeActionsConfig(t)
 	folder := driftRepo(t)
-	pid, tid := driftProject(t, database, folder, "open")
+	pid, tid := driftWorkbench(t, database, folder, "open")
 	assert.Empty(t, stopHook(t, pid, `{"stop_hook_active":false}`), "an unmerged branch of in-progress work is no drift")
 
 	// Staleness alone never stops a turn.
@@ -126,7 +126,7 @@ func TestProj07_StopHookIsSilentWithoutGitDrift(t *testing.T) {
 func TestProj07_StopHookFailuresAreSilent(t *testing.T) {
 	database := writeActionsConfig(t)
 	folder := driftRepo(t)
-	pid, _ := driftProject(t, database, folder, "merged")
+	pid, _ := driftWorkbench(t, database, folder, "merged")
 
 	assert.Empty(t, stopHook(t, pid, `not json`))
 	assert.Empty(t, stopHook(t, pid, ``))
@@ -134,56 +134,56 @@ func TestProj07_StopHookFailuresAreSilent(t *testing.T) {
 	assert.Empty(t, out)
 	assert.Contains(t, errOut, "invalid --project", "a real failure names itself on stderr")
 
-	require.NoError(t, database.DeleteProject(pid))
+	require.NoError(t, database.DeleteWorkbench(pid))
 	out, errOut = stopHookIO(t, strconv.FormatInt(pid, 10), `{"stop_hook_active":false}`)
 	assert.Empty(t, out, "a deleted project's leftover hook exits silently")
 	assert.Empty(t, errOut, "a deleted project's leftover hook is not an error")
 
-	pid2, _ := driftProject(t, database, folder, "merged")
+	pid2, _ := driftWorkbench(t, database, folder, "merged")
 	require.NoError(t, os.RemoveAll(filepath.Join(folder, ".git")))
 	assert.Empty(t, stopHook(t, pid2, `{"stop_hook_active":false}`), "no repository: nothing to check")
 
 	// Through cobra: exit 0, even with an unknown flag and a bad id.
-	stdout, _, err := runProjectCheckCmd(t, strings.NewReader(`{}`), "check", "--project", "nope", "--stop-hook", "--future-flag")
+	stdout, _, err := runWorkbenchCheckCmd(t, strings.NewReader(`{}`), "check", "--project", "nope", "--stop-hook", "--future-flag")
 	require.NoError(t, err)
 	assert.Empty(t, stdout)
 }
 
-func runProjectCheckCmd(t *testing.T, stdin *strings.Reader, args ...string) (string, string, error) {
+func runWorkbenchCheckCmd(t *testing.T, stdin *strings.Reader, args ...string) (string, string, error) {
 	t.Helper()
 	rootCmd.SetIn(stdin)
 	t.Cleanup(func() {
 		rootCmd.SetIn(nil)
-		projectCheckFlagProject, projectCheckFlagJSON, projectCheckFlagStopHook = "", false, false
-		projectCheckFlagNoNetwork = false
-		projectCheckFlagStaleDays = int(projectcheck.DefaultStaleAfter / (24 * time.Hour))
+		workbenchCheckFlagWorkbench, workbenchCheckFlagJSON, workbenchCheckFlagStopHook = "", false, false
+		workbenchCheckFlagNoNetwork = false
+		workbenchCheckFlagStaleDays = int(workbenchcheck.DefaultStaleAfter / (24 * time.Hour))
 	})
-	return runProject(t, args...)
+	return runWorkbench(t, args...)
 }
 
 func TestProjectCheck_JSONReportsTheDrift(t *testing.T) {
 	database := writeActionsConfig(t)
 	folder := driftRepo(t)
-	pid, tid := driftProject(t, database, folder, "merged")
+	pid, tid := driftWorkbench(t, database, folder, "merged")
 
-	stdout, _, err := runProjectCheckCmd(t, strings.NewReader(""), "check", "--project", strconv.FormatInt(pid, 10), "--json", "--no-network")
+	stdout, _, err := runWorkbenchCheckCmd(t, strings.NewReader(""), "check", "--project", strconv.FormatInt(pid, 10), "--json", "--no-network")
 	require.NoError(t, err)
-	var rep projectcheck.Report
+	var rep workbenchcheck.Report
 	require.NoError(t, json.Unmarshal([]byte(stdout), &rep), stdout)
 	require.Len(t, rep.Findings, 1)
-	assert.Equal(t, projectcheck.KindMergedOpen, rep.Findings[0].Kind)
+	assert.Equal(t, workbenchcheck.KindMergedOpen, rep.Findings[0].Kind)
 	assert.Equal(t, int(tid), rep.Findings[0].TargetID)
 	assert.Equal(t, "main", rep.Base)
 
-	_, _, err = runProjectCheckCmd(t, strings.NewReader(""), "check", "--project", "999", "--no-network")
+	_, _, err = runWorkbenchCheckCmd(t, strings.NewReader(""), "check", "--project", "999", "--no-network")
 	assert.Error(t, err, "outside the hook an unknown project is an error")
 }
 
 func TestProjectBrief_ShowsTheBoardDrift(t *testing.T) {
 	database := writeActionsConfig(t)
 	folder := driftRepo(t)
-	pid, tid := driftProject(t, database, folder, "merged")
-	brief := loadProjectBrief(pid)
+	pid, tid := driftWorkbench(t, database, folder, "merged")
+	brief := loadWorkbenchBrief(pid)
 	assert.Contains(t, brief, "Board drift")
 	assert.Contains(t, brief, "#"+strconv.FormatInt(tid, 10)+` "Feature" [in_progress]: branch merged is merged into main`)
 	assert.LessOrEqual(t, len([]rune(brief)), briefMaxChars)
@@ -192,19 +192,19 @@ func TestProjectBrief_ShowsTheBoardDrift(t *testing.T) {
 // PROJ-02/PROJ-04: nothing of a deleted project remains in the folder's
 // settings — neither hook — while the owner's own settings survive.
 func TestProj02_ProjectDeleteLeavesNoHookOfTheProject(t *testing.T) {
-	useFakeProjectClaude(t)
-	p := testProject(t)
+	useFakeWorkbenchClaude(t)
+	p := testWorkbench(t)
 	settings := filepath.Join(p.FolderPath, ".claude", "settings.local.json")
 	require.NoError(t, os.MkdirAll(filepath.Dir(settings), 0o755))
 	require.NoError(t, os.WriteFile(settings, []byte(`{"model":"sonnet","hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo mine"}]}]}}`), 0o644))
 	var out bytes.Buffer
-	require.NoError(t, runProjectInstall(context.Background(), &out, p), out.String())
+	require.NoError(t, runWorkbenchInstall(context.Background(), &out, p), out.String())
 	installed, err := os.ReadFile(settings)
 	require.NoError(t, err)
-	require.Contains(t, string(installed), devpack.ProjectStopHookCommand("/usr/local/bin/watchtower", p.ID))
-	require.Contains(t, string(installed), devpack.ProjectHookCommand("/usr/local/bin/watchtower", p.ID))
+	require.Contains(t, string(installed), devpack.WorkbenchStopHookCommand("/usr/local/bin/watchtower", p.ID))
+	require.Contains(t, string(installed), devpack.WorkbenchHookCommand("/usr/local/bin/watchtower", p.ID))
 
-	require.NoError(t, projectRemoveInstall(context.Background(), nil, p))
+	require.NoError(t, workbenchRemoveInstall(context.Background(), nil, p))
 	after, err := os.ReadFile(settings)
 	require.NoError(t, err)
 	assert.NotContains(t, string(after), "--project 7", "PROJ-02: a hook of the deleted project survived:\n%s", after)
@@ -213,10 +213,10 @@ func TestProj02_ProjectDeleteLeavesNoHookOfTheProject(t *testing.T) {
 }
 
 func TestStopHookReason_CapsAndClips(t *testing.T) {
-	var findings []projectcheck.Finding
+	var findings []workbenchcheck.Finding
 	for i := 0; i < stopHookMaxFindings+5; i++ {
-		findings = append(findings, projectcheck.Finding{TargetID: i + 1, Title: strings.Repeat("x", 600), Status: "in_progress",
-			Kind: projectcheck.KindMergedOpen, Detail: "d", Fix: "f"})
+		findings = append(findings, workbenchcheck.Finding{TargetID: i + 1, Title: strings.Repeat("x", 600), Status: "in_progress",
+			Kind: workbenchcheck.KindMergedOpen, Detail: "d", Fix: "f"})
 	}
 	reason := stopHookReason(3, findings)
 	lines := strings.Split(reason, "\n")

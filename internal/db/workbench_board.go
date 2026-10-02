@@ -9,7 +9,7 @@ type BoardNode struct {
 	Children       []BoardNode
 	NewForAgent    int // comments the agent has not answered (newForAgentPredicate)
 	UnreadForOwner int // agent comments with an empty read_at
-	Documents      []ProjectDocument
+	Documents      []WorkbenchDocument
 	// StatusSince is when the target entered its current status (its latest
 	// target_status_history row, UTC ISO-8601); "" when it has none.
 	StatusSince string
@@ -24,9 +24,9 @@ const boardSiblingOrder = `CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1
 
 type boardCounts struct{ newForAgent, unreadForOwner int }
 
-// GetProjectBoard returns project projectID's target forest. An unknown
-// project yields an empty board; callers check GetProject first.
-func (db *DB) GetProjectBoard(projectID int64) ([]BoardNode, error) {
+// GetWorkbenchBoard returns project projectID's target forest. An unknown
+// project yields an empty board; callers check GetWorkbench first.
+func (db *DB) GetWorkbenchBoard(projectID int64) ([]BoardNode, error) {
 	targets, err := db.listBoardTargets(projectID)
 	if err != nil {
 		return nil, err
@@ -35,11 +35,11 @@ func (db *DB) GetProjectBoard(projectID int64) ([]BoardNode, error) {
 	if err != nil {
 		return nil, err
 	}
-	docs, err := db.ListProjectDocuments(projectID)
+	docs, err := db.ListWorkbenchDocuments(projectID)
 	if err != nil {
 		return nil, err
 	}
-	since, err := db.projectStatusSince(projectID)
+	since, err := db.workbenchStatusSince(projectID)
 	if err != nil {
 		return nil, err
 	}
@@ -90,17 +90,17 @@ func (db *DB) boardCommentCounts(projectID int64) (map[int64]boardCounts, error)
 type boardIndex struct {
 	children map[int64][]Target
 	counts   map[int64]boardCounts
-	docs     map[int64][]ProjectDocument
+	docs     map[int64][]WorkbenchDocument
 	seen     map[int64]bool
 	since    map[int64]string
 }
 
-func assembleBoard(targets []Target, counts map[int64]boardCounts, docs []ProjectDocument, since map[int64]string) []BoardNode {
+func assembleBoard(targets []Target, counts map[int64]boardCounts, docs []WorkbenchDocument, since map[int64]string) []BoardNode {
 	onBoard := make(map[int64]bool, len(targets))
 	for _, t := range targets {
 		onBoard[int64(t.ID)] = true
 	}
-	ix := boardIndex{children: map[int64][]Target{}, counts: counts, docs: map[int64][]ProjectDocument{}, seen: map[int64]bool{}, since: since}
+	ix := boardIndex{children: map[int64][]Target{}, counts: counts, docs: map[int64][]WorkbenchDocument{}, seen: map[int64]bool{}, since: since}
 	for _, d := range docs {
 		if d.TargetID.Valid {
 			ix.docs[d.TargetID.Int64] = append(ix.docs[d.TargetID.Int64], d)

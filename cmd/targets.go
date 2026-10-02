@@ -719,7 +719,7 @@ func runTargetsDelete(cmd *cobra.Command, args []string) error {
 		}
 		return fmt.Errorf("looking up target #%d: %w", id, err)
 	}
-	images, err := database.ListProjectTargetImages(int64(id))
+	images, err := database.ListWorkbenchTargetImages(int64(id))
 	if err != nil {
 		return fmt.Errorf("listing target #%d's images: %w", id, err)
 	}
@@ -732,8 +732,8 @@ func runTargetsDelete(cmd *cobra.Command, args []string) error {
 	// A failure leaves only unreferenced files — reported, never undoing
 	// the delete.
 	var ferr error
-	if target.ProjectID.Valid {
-		ferr = discardTargetImages(cfg, database, target.ProjectID.Int64, images)
+	if target.WorkbenchID.Valid {
+		ferr = discardTargetImages(cfg, database, target.WorkbenchID.Int64, images)
 		if ferr != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "warning: removing target #%d's stored images failed: %v\n", id, ferr)
 		}
@@ -743,7 +743,7 @@ func runTargetsDelete(cmd *cobra.Command, args []string) error {
 		payload := map[string]any{"id": id, "removed": true}
 		// Only a project target has stored images; a reader treats absent
 		// files_* keys as clean (the ProjectDeleted precedent).
-		if target.ProjectID.Valid {
+		if target.WorkbenchID.Valid {
 			payload["files_ok"] = ferr == nil
 			payload["files_error"] = ""
 			if ferr != nil {

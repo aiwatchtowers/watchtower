@@ -350,7 +350,7 @@ func TestProj04_RemoveLeavingNothingThroughASymlinkEmptiesTheTarget(t *testing.T
 	if _, err := InstallSessionStartHook(dir, testHookCmd, 7); err != nil {
 		t.Fatalf("install: %v", err)
 	}
-	if _, err := InstallStopHook(dir, ProjectStopHookCommand("/tmp/acme bin/watchtower", 7), 7); err != nil {
+	if _, err := InstallStopHook(dir, WorkbenchStopHookCommand("/tmp/acme bin/watchtower", 7), 7); err != nil {
 		t.Fatalf("install stop: %v", err)
 	}
 
@@ -416,8 +416,8 @@ func TestHasSessionStartHook(t *testing.T) {
 // binary takes it out.
 func TestProj04_HookRecognitionSurvivesADifferentWatchtowerBinary(t *testing.T) {
 	dir := t.TempDir()
-	binA := ProjectHookCommand("/usr/local/bin/watchtower", 7)
-	binB := ProjectHookCommand("/Users/owner/Library/Application Support/Watchtower/bin/watchtower", 7)
+	binA := WorkbenchHookCommand("/usr/local/bin/watchtower", 7)
+	binB := WorkbenchHookCommand("/Users/owner/Library/Application Support/Watchtower/bin/watchtower", 7)
 	if binA == binB {
 		t.Fatalf("fixture bug: the two commands must differ")
 	}

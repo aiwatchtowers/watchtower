@@ -21,7 +21,7 @@ func stopGroups(t *testing.T, m map[string]any) []any {
 }
 
 func TestProjectStopHookCommand(t *testing.T) {
-	got := ProjectStopHookCommand("/tmp/Application Support/watchtower", 3)
+	got := WorkbenchStopHookCommand("/tmp/Application Support/watchtower", 3)
 	if got != "'/tmp/Application Support/watchtower' project check --project 3 --stop-hook" {
 		t.Fatalf("got %q", got)
 	}
@@ -29,12 +29,12 @@ func TestProjectStopHookCommand(t *testing.T) {
 
 func TestInstallProjectInstallsTheStopHook(t *testing.T) {
 	folder := fakeRepo(t)
-	o := projectOpts(folder, newFakeClaude())
-	if _, err := InstallProject(context.Background(), o); err != nil {
+	o := workbenchOpts(folder, newFakeClaude())
+	if _, err := InstallWorkbench(context.Background(), o); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 	groups := stopGroups(t, decodeSettings(t, folder))
-	cmd := ProjectStopHookCommand(o.Bin, 7)
+	cmd := WorkbenchStopHookCommand(o.Bin, 7)
 	if len(groups) != 1 || countCommand(groups, cmd) != 1 {
 		t.Fatalf("expected one Stop group running %q, got %#v", cmd, groups)
 	}
@@ -42,12 +42,12 @@ func TestInstallProjectInstallsTheStopHook(t *testing.T) {
 	if h["timeout"] == nil {
 		t.Fatalf("the Stop hook must carry a timeout: %#v", h)
 	}
-	st, err := StatusProject(context.Background(), o)
+	st, err := StatusWorkbench(context.Background(), o)
 	if err != nil || !st.Hook || !st.StopHook {
 		t.Fatalf("status after install: %+v err=%v", st, err)
 	}
 	// Installing again adds nothing.
-	rep, err := InstallProject(context.Background(), o)
+	rep, err := InstallWorkbench(context.Background(), o)
 	if err != nil || rep.HookChanged {
 		t.Fatalf("reinstall: changed=%v err=%v", rep.HookChanged, err)
 	}
@@ -57,10 +57,10 @@ func TestInstallProjectInstallsTheStopHook(t *testing.T) {
 // `integrate claude-code --project N`, and the SessionStart entry is untouched.
 func TestInstallProjectAddsTheStopHookToAnOldInstall(t *testing.T) {
 	folder := fakeRepo(t)
-	if _, err := InstallSessionStartHook(folder, ProjectHookCommand("/tmp/acme bin/watchtower", 7), 7); err != nil {
+	if _, err := InstallSessionStartHook(folder, WorkbenchHookCommand("/tmp/acme bin/watchtower", 7), 7); err != nil {
 		t.Fatal(err)
 	}
-	rep, err := InstallProject(context.Background(), projectOpts(folder, newFakeClaude()))
+	rep, err := InstallWorkbench(context.Background(), workbenchOpts(folder, newFakeClaude()))
 	if err != nil || !rep.HookChanged {
 		t.Fatalf("changed=%v err=%v", rep.HookChanged, err)
 	}
@@ -73,7 +73,7 @@ func TestInstallProjectAddsTheStopHookToAnOldInstall(t *testing.T) {
 func TestProj04_StopHookKeepsOwnerStopHooksAndRemovesOnlyOurs(t *testing.T) {
 	dir := t.TempDir()
 	writeTestFile(t, settingsFile(dir), `{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "echo owner-stop"}]}]}}`)
-	cmd := ProjectStopHookCommand("/tmp/acme bin/watchtower", 7)
+	cmd := WorkbenchStopHookCommand("/tmp/acme bin/watchtower", 7)
 	if changed, err := InstallStopHook(dir, cmd, 7); err != nil || !changed {
 		t.Fatalf("install: changed=%v err=%v", changed, err)
 	}
@@ -98,14 +98,14 @@ func TestProj04_MalformedStopLeavesTheFileByteIdentical(t *testing.T) {
 	dir := t.TempDir()
 	const content = `{"hooks": {"Stop": {"hooks": []}}}`
 	writeTestFile(t, settingsFile(dir), content)
-	if _, err := InstallProject(context.Background(), projectOpts(dir, newFakeClaude())); !errors.Is(err, ErrMalformedSettings) {
+	if _, err := InstallWorkbench(context.Background(), workbenchOpts(dir, newFakeClaude())); !errors.Is(err, ErrMalformedSettings) {
 		t.Fatalf("expected ErrMalformedSettings, got %v", err)
 	}
 	if got := readTestFile(t, settingsFile(dir)); got != content {
 		t.Fatalf("PROJ-04: a malformed file must be left byte-identical, got %s", got)
 	}
 	// Reported once, not once per hook.
-	if _, err := InstallProject(context.Background(), projectOpts(dir, newFakeClaude())); strings.Count(err.Error(), "malformed") != 1 {
+	if _, err := InstallWorkbench(context.Background(), workbenchOpts(dir, newFakeClaude())); strings.Count(err.Error(), "malformed") != 1 {
 		t.Fatalf("the malformed file must be reported once: %v", err)
 	}
 	if _, err := InstallSessionStartHook(dir, testHookCmd, 7); !errors.Is(err, ErrMalformedSettings) {

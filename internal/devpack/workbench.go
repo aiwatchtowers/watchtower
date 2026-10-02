@@ -21,16 +21,16 @@ import (
 // `integrate claude-code` (which installs Skills() into ~/.claude/skills)
 // must never pick it up.
 //
-//go:embed projectskill/*/SKILL.md
-var projectSkillFS embed.FS
+//go:embed workbenchskill/*/SKILL.md
+var workbenchSkillFS embed.FS
 
-// ProjectSkillName is the skill's directory name inside the project folder's
+// WorkbenchSkillName is the skill's directory name inside the project folder's
 // .claude/skills and the frontmatter name it carries.
-const ProjectSkillName = "watchtower-project"
+const WorkbenchSkillName = "watchtower-project"
 
-// ProjectMCPServerName is the name the project's MCP server is registered
+// WorkbenchMCPServerName is the name the project's MCP server is registered
 // under in Claude Code's local scope for the folder.
-const ProjectMCPServerName = "watchtower-project"
+const WorkbenchMCPServerName = "watchtower-project"
 
 var (
 	// ErrCommandExit is what a CommandRunner wraps a non-zero exit in, so a
@@ -42,10 +42,10 @@ var (
 	ErrClaudeNotFound = errors.New("claude CLI not found")
 )
 
-// projectExcludeLines are the folder-relative paths the install makes
+// workbenchExcludeLines are the folder-relative paths the install makes
 // git-invisible: everything it writes into the folder, nothing else.
-var projectExcludeLines = []string{
-	".claude/skills/" + ProjectSkillName + "/",
+var workbenchExcludeLines = []string{
+	".claude/skills/" + WorkbenchSkillName + "/",
 	".claude/settings.local.json",
 }
 
@@ -54,19 +54,19 @@ var projectExcludeLines = []string{
 // wrapping exec.ErrNotFound.
 type CommandRunner func(ctx context.Context, dir, name string, args ...string) ([]byte, error)
 
-// ProjectInstallOptions names the project, its (symlink-resolved, absolute)
+// WorkbenchInstallOptions names the project, its (symlink-resolved, absolute)
 // folder, the watchtower binary the hook and MCP server run, and the runner
 // for the claude CLI.
-type ProjectInstallOptions struct {
-	ProjectID int64
-	Folder    string
-	Bin       string
-	Run       CommandRunner
+type WorkbenchInstallOptions struct {
+	WorkbenchID int64
+	Folder      string
+	Bin         string
+	Run         CommandRunner
 }
 
-// ProjectInstallReport is what InstallProject did; Excluded holds the
+// WorkbenchInstallReport is what InstallWorkbench did; Excluded holds the
 // anchored exclude patterns it added.
-type ProjectInstallReport struct {
+type WorkbenchInstallReport struct {
 	Skill         SkillStatus
 	HookChanged   bool
 	MCPRegistered bool
@@ -74,8 +74,8 @@ type ProjectInstallReport struct {
 	Excluded      []string
 }
 
-// ProjectStatus is what is installed in a project folder right now.
-type ProjectStatus struct {
+// WorkbenchStatus is what is installed in a project folder right now.
+type WorkbenchStatus struct {
 	Skill       SkillStatus
 	Hook        bool // the SessionStart hook (the brief)
 	StopHook    bool // the Stop hook (the board drift check, PROJ-07)
@@ -83,38 +83,38 @@ type ProjectStatus struct {
 	ClaudeFound bool
 }
 
-// ProjectSkill returns the embedded watchtower-project skill.
-func ProjectSkill() (name string, body []byte) {
-	b, err := projectSkillFS.ReadFile(path.Join("projectskill", ProjectSkillName, "SKILL.md"))
+// WorkbenchSkill returns the embedded watchtower-project skill.
+func WorkbenchSkill() (name string, body []byte) {
+	b, err := workbenchSkillFS.ReadFile(path.Join("workbenchskill", WorkbenchSkillName, "SKILL.md"))
 	if err != nil {
 		// An embed failure is a build-time defect, not a runtime condition.
 		panic("devpack: reading embedded project skill: " + err.Error())
 	}
-	return ProjectSkillName, b
+	return WorkbenchSkillName, b
 }
 
-// projectSkill wraps ProjectSkill in the pack's Skill shape, so the project
+// workbenchSkill wraps WorkbenchSkill in the pack's Skill shape, so the project
 // install reuses the same DEV-04 decision (installSkill/planFor) as the pack.
-func projectSkill() Skill {
-	name, body := ProjectSkill()
+func workbenchSkill() Skill {
+	name, body := WorkbenchSkill()
 	sum := sha256.Sum256(body)
 	return Skill{Name: name, Content: string(body), SHA256: hex.EncodeToString(sum[:])}
 }
 
-// ProjectHookCommand is the SessionStart hook's command line (the brief).
-func ProjectHookCommand(bin string, projectID int64) string {
+// WorkbenchHookCommand is the SessionStart hook's command line (the brief).
+func WorkbenchHookCommand(bin string, projectID int64) string {
 	return sessionStartSpec.command(bin, projectID)
 }
 
-// ProjectStopHookCommand is the Stop hook's command line (the board drift
+// WorkbenchStopHookCommand is the Stop hook's command line (the board drift
 // check, PROJ-07).
-func ProjectStopHookCommand(bin string, projectID int64) string {
+func WorkbenchStopHookCommand(bin string, projectID int64) string {
 	return stopSpec.command(bin, projectID)
 }
 
-// ProjectMCPCommand is the registration the owner can run by hand when the
+// WorkbenchMCPCommand is the registration the owner can run by hand when the
 // claude CLI is unavailable to us.
-func ProjectMCPCommand(o ProjectInstallOptions) string {
+func WorkbenchMCPCommand(o WorkbenchInstallOptions) string {
 	args := o.mcpAddArgs()
 	quoted := make([]string, len(args))
 	for i, a := range args {
@@ -123,40 +123,40 @@ func ProjectMCPCommand(o ProjectInstallOptions) string {
 	return "cd " + shellQuote(o.Folder) + " && claude " + strings.Join(quoted, " ")
 }
 
-// InstallProject makes the folder ready for Claude Code: exclude lines
+// InstallWorkbench makes the folder ready for Claude Code: exclude lines
 // first (so nothing we write ever shows in git status), then the skill, the
 // SessionStart and Stop hooks and the local MCP registration. Every step runs even
 // when an earlier one failed; the failures come back joined.
-func InstallProject(ctx context.Context, o ProjectInstallOptions) (ProjectInstallReport, error) {
+func InstallWorkbench(ctx context.Context, o WorkbenchInstallOptions) (WorkbenchInstallReport, error) {
 	if err := o.validate(); err != nil {
-		return ProjectInstallReport{}, err
+		return WorkbenchInstallReport{}, err
 	}
 	if !isDir(o.Folder) {
-		return ProjectInstallReport{}, folderGone(o)
+		return WorkbenchInstallReport{}, folderGone(o)
 	}
-	rep := ProjectInstallReport{MCPCommand: ProjectMCPCommand(o)}
+	rep := WorkbenchInstallReport{MCPCommand: WorkbenchMCPCommand(o)}
 	var errs []error
 	var err error
-	if rep.Excluded, err = EnsureGitExclude(o.Folder, projectExcludeLines); err != nil {
+	if rep.Excluded, err = EnsureGitExclude(o.Folder, workbenchExcludeLines); err != nil {
 		errs = append(errs, err)
 	}
-	if rep.Skill, err = installSkill(o.skillsDir(), projectSkill()); err != nil {
+	if rep.Skill, err = installSkill(o.skillsDir(), workbenchSkill()); err != nil {
 		errs = append(errs, err)
 	}
-	if rep.HookChanged, err = installProjectHooks(o); err != nil {
+	if rep.HookChanged, err = installWorkbenchHooks(o); err != nil {
 		errs = append(errs, err)
 	}
-	if rep.MCPRegistered, err = registerProjectMCP(ctx, o); err != nil {
+	if rep.MCPRegistered, err = registerWorkbenchMCP(ctx, o); err != nil {
 		errs = append(errs, err)
 	}
 	return rep, errors.Join(errs...)
 }
 
-// RemoveProject undoes InstallProject (PROJ-02): our two hooks, our un-edited
+// RemoveWorkbench undoes InstallWorkbench (PROJ-02): our two hooks, our un-edited
 // skill, the MCP registration, and the exclude line of every path that is
 // gone. What the owner owns stays (PROJ-04): an edited skill, other
 // settings — and the exclude line keeping a surviving file git-invisible.
-func RemoveProject(ctx context.Context, o ProjectInstallOptions) error {
+func RemoveWorkbench(ctx context.Context, o WorkbenchInstallOptions) error {
 	if err := o.validate(); err != nil {
 		return err
 	}
@@ -164,17 +164,17 @@ func RemoveProject(ctx context.Context, o ProjectInstallOptions) error {
 		return folderGone(o)
 	}
 	var errs []error
-	_, startErr := RemoveSessionStartHook(o.Folder, o.ProjectID)
+	_, startErr := RemoveSessionStartHook(o.Folder, o.WorkbenchID)
 	if startErr != nil {
 		errs = append(errs, startErr)
 	}
-	if _, err := RemoveStopHook(o.Folder, o.ProjectID); err != nil && !bothMalformed(startErr, err) {
+	if _, err := RemoveStopHook(o.Folder, o.WorkbenchID); err != nil && !bothMalformed(startErr, err) {
 		errs = append(errs, err)
 	}
-	if _, err := removeSkill(o.skillsDir(), projectSkill()); err != nil {
+	if _, err := removeSkill(o.skillsDir(), workbenchSkill()); err != nil {
 		errs = append(errs, err)
 	}
-	if err := unregisterProjectMCP(ctx, o); err != nil {
+	if err := unregisterWorkbenchMCP(ctx, o); err != nil {
 		errs = append(errs, err)
 	}
 	removeIfEmpty(o.skillsDir())
@@ -185,29 +185,29 @@ func RemoveProject(ctx context.Context, o ProjectInstallOptions) error {
 	return errors.Join(errs...)
 }
 
-// StatusProject reports skill, hook and MCP state, writing nothing. A
+// StatusWorkbench reports skill, hook and MCP state, writing nothing. A
 // missing claude CLI is reported through ClaudeFound, not as an error.
-func StatusProject(ctx context.Context, o ProjectInstallOptions) (ProjectStatus, error) {
+func StatusWorkbench(ctx context.Context, o WorkbenchInstallOptions) (WorkbenchStatus, error) {
 	if err := o.validate(); err != nil {
-		return ProjectStatus{}, err
+		return WorkbenchStatus{}, err
 	}
 	if !isDir(o.Folder) {
-		return ProjectStatus{}, folderGone(o)
+		return WorkbenchStatus{}, folderGone(o)
 	}
-	ps := ProjectStatus{ClaudeFound: true}
+	ps := WorkbenchStatus{ClaudeFound: true}
 	var errs []error
 	var err error
-	if ps.Skill, err = statusSkill(o.skillsDir(), projectSkill()); err != nil {
+	if ps.Skill, err = statusSkill(o.skillsDir(), workbenchSkill()); err != nil {
 		errs = append(errs, err)
 	}
 	var startErr error
-	if ps.Hook, startErr = HasSessionStartHook(o.Folder, o.ProjectID); startErr != nil {
+	if ps.Hook, startErr = HasSessionStartHook(o.Folder, o.WorkbenchID); startErr != nil {
 		errs = append(errs, startErr)
 	}
-	if ps.StopHook, err = HasStopHook(o.Folder, o.ProjectID); err != nil && !bothMalformed(startErr, err) {
+	if ps.StopHook, err = HasStopHook(o.Folder, o.WorkbenchID); err != nil && !bothMalformed(startErr, err) {
 		errs = append(errs, err)
 	}
-	ps.MCP, err = projectMCPRegistered(ctx, o)
+	ps.MCP, err = workbenchMCPRegistered(ctx, o)
 	switch {
 	case errors.Is(err, ErrClaudeNotFound):
 		ps.ClaudeFound = false
@@ -217,10 +217,10 @@ func StatusProject(ctx context.Context, o ProjectInstallOptions) (ProjectStatus,
 	return ps, errors.Join(errs...)
 }
 
-func (o ProjectInstallOptions) validate() error {
+func (o WorkbenchInstallOptions) validate() error {
 	switch {
-	case o.ProjectID <= 0:
-		return fmt.Errorf("project id must be positive, got %d", o.ProjectID)
+	case o.WorkbenchID <= 0:
+		return fmt.Errorf("project id must be positive, got %d", o.WorkbenchID)
 	case !filepath.IsAbs(o.Folder):
 		return fmt.Errorf("project folder must be an absolute path, got %q", o.Folder)
 	case o.Bin == "":
@@ -231,7 +231,7 @@ func (o ProjectInstallOptions) validate() error {
 	return nil
 }
 
-func (o ProjectInstallOptions) skillsDir() string {
+func (o WorkbenchInstallOptions) skillsDir() string {
 	return filepath.Join(o.Folder, ".claude", "skills")
 }
 
@@ -242,33 +242,33 @@ func bothMalformed(first, second error) bool {
 	return errors.Is(first, ErrMalformedSettings) && errors.Is(second, ErrMalformedSettings)
 }
 
-// installProjectHooks installs the SessionStart and Stop hooks; changed is
+// installWorkbenchHooks installs the SessionStart and Stop hooks; changed is
 // true when either was added or repaired. A malformed settings file is
 // reported once, by the first install, and the second is not attempted.
-func installProjectHooks(o ProjectInstallOptions) (bool, error) {
-	started, err := InstallSessionStartHook(o.Folder, ProjectHookCommand(o.Bin, o.ProjectID), o.ProjectID)
+func installWorkbenchHooks(o WorkbenchInstallOptions) (bool, error) {
+	started, err := InstallSessionStartHook(o.Folder, WorkbenchHookCommand(o.Bin, o.WorkbenchID), o.WorkbenchID)
 	if errors.Is(err, ErrMalformedSettings) {
 		return false, err
 	}
-	stopped, stopErr := InstallStopHook(o.Folder, ProjectStopHookCommand(o.Bin, o.ProjectID), o.ProjectID)
+	stopped, stopErr := InstallStopHook(o.Folder, WorkbenchStopHookCommand(o.Bin, o.WorkbenchID), o.WorkbenchID)
 	return started || stopped, errors.Join(err, stopErr)
 }
 
-func (o ProjectInstallOptions) mcpAddArgs() []string {
-	return []string{"mcp", "add", "--scope", "local", ProjectMCPServerName, "--",
-		o.Bin, "mcp", "--project", strconv.FormatInt(o.ProjectID, 10)}
+func (o WorkbenchInstallOptions) mcpAddArgs() []string {
+	return []string{"mcp", "add", "--scope", "local", WorkbenchMCPServerName, "--",
+		o.Bin, "mcp", "--project", strconv.FormatInt(o.WorkbenchID, 10)}
 }
 
-// registerProjectMCP (re)registers the server in the folder's local scope.
+// registerWorkbenchMCP (re)registers the server in the folder's local scope.
 // An existing registration is replaced, so a moved binary is picked up on
 // every install (the Desktop's Repair).
-func registerProjectMCP(ctx context.Context, o ProjectInstallOptions) (bool, error) {
-	registered, err := projectMCPRegistered(ctx, o)
+func registerWorkbenchMCP(ctx context.Context, o WorkbenchInstallOptions) (bool, error) {
+	registered, err := workbenchMCPRegistered(ctx, o)
 	if err != nil {
 		return false, err
 	}
 	if registered {
-		if out, err := o.Run(ctx, o.Folder, "claude", "mcp", "remove", "--scope", "local", ProjectMCPServerName); err != nil {
+		if out, err := o.Run(ctx, o.Folder, "claude", "mcp", "remove", "--scope", "local", WorkbenchMCPServerName); err != nil {
 			return false, fmt.Errorf("claude mcp remove: %w: %s", err, bytes.TrimSpace(out))
 		}
 	}
@@ -278,25 +278,25 @@ func registerProjectMCP(ctx context.Context, o ProjectInstallOptions) (bool, err
 	return true, nil
 }
 
-func unregisterProjectMCP(ctx context.Context, o ProjectInstallOptions) error {
-	registered, err := projectMCPRegistered(ctx, o)
+func unregisterWorkbenchMCP(ctx context.Context, o WorkbenchInstallOptions) error {
+	registered, err := workbenchMCPRegistered(ctx, o)
 	if errors.Is(err, ErrClaudeNotFound) {
 		return fmt.Errorf("%w — unregister the MCP server yourself with: cd %s && claude mcp remove --scope local %s",
-			err, shellQuote(o.Folder), ProjectMCPServerName)
+			err, shellQuote(o.Folder), WorkbenchMCPServerName)
 	}
 	if err != nil || !registered {
 		return err
 	}
-	if out, err := o.Run(ctx, o.Folder, "claude", "mcp", "remove", "--scope", "local", ProjectMCPServerName); err != nil {
+	if out, err := o.Run(ctx, o.Folder, "claude", "mcp", "remove", "--scope", "local", WorkbenchMCPServerName); err != nil {
 		return fmt.Errorf("claude mcp remove: %w: %s", err, bytes.TrimSpace(out))
 	}
 	return nil
 }
 
-// projectMCPRegistered asks `claude mcp get` in the folder: exit 0 means
+// workbenchMCPRegistered asks `claude mcp get` in the folder: exit 0 means
 // registered, a non-zero exit means not registered.
-func projectMCPRegistered(ctx context.Context, o ProjectInstallOptions) (bool, error) {
-	out, err := o.Run(ctx, o.Folder, "claude", "mcp", "get", ProjectMCPServerName)
+func workbenchMCPRegistered(ctx context.Context, o WorkbenchInstallOptions) (bool, error) {
+	out, err := o.Run(ctx, o.Folder, "claude", "mcp", "get", WorkbenchMCPServerName)
 	switch {
 	case err == nil:
 		return true, nil
@@ -313,7 +313,7 @@ func projectMCPRegistered(ctx context.Context, o ProjectInstallOptions) (bool, e
 // surviving path (an edited skill, the owner's own settings) keeps its line.
 func goneExcludeLines(folder string) []string {
 	var gone []string
-	for _, l := range projectExcludeLines {
+	for _, l := range workbenchExcludeLines {
 		p := filepath.Join(folder, filepath.FromSlash(strings.TrimSuffix(l, "/")))
 		if _, err := os.Lstat(p); errors.Is(err, os.ErrNotExist) {
 			gone = append(gone, l)
@@ -322,9 +322,9 @@ func goneExcludeLines(folder string) []string {
 	return gone
 }
 
-func folderGone(o ProjectInstallOptions) error {
+func folderGone(o WorkbenchInstallOptions) error {
 	return fmt.Errorf("project folder %s no longer exists; if it comes back, run 'watchtower integrate remove --project %d' (or, in that folder: claude mcp remove --scope local %s)",
-		o.Folder, o.ProjectID, ProjectMCPServerName)
+		o.Folder, o.WorkbenchID, WorkbenchMCPServerName)
 }
 
 func isDir(p string) bool {

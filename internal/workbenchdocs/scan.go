@@ -1,7 +1,7 @@
-// Package projectdocs finds the specs, plans and README a project folder
+// Package workbenchdocs finds the specs, plans and README a project folder
 // already holds, so project setup can attach them to Documents without an AI
 // call (board item #79). It only reads the folder; it never writes a file.
-package projectdocs
+package workbenchdocs
 
 import (
 	"errors"

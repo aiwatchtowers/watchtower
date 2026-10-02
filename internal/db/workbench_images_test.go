@@ -13,7 +13,7 @@ func attachImage(d *DB, projectID, targetID int64, sha string) (int64, error) {
 	var id int64
 	err := d.WithTx(func(tx *sql.Tx) error {
 		var err error
-		id, err = AddProjectTargetImageTx(tx, ProjectTargetImage{ProjectID: projectID, TargetID: targetID,
+		id, err = AddWorkbenchTargetImageTx(tx, WorkbenchTargetImage{WorkbenchID: projectID, TargetID: targetID,
 			FileName: "shot.png", MIME: "image/png", Size: 3, SHA256: sha, Path: "/store/" + sha + ".png"})
 		return err
 	})
@@ -22,9 +22,9 @@ func attachImage(d *DB, projectID, targetID int64, sha string) (int64, error) {
 
 func TestProjectTargetImages_AttachDedupesPerTargetAndCaps(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestProject(t, d)
-	a := insertProjectTargetRow(t, d, pid, "a")
-	b := insertProjectTargetRow(t, d, pid, "b")
+	pid := newTestWorkbench(t, d)
+	a := insertWorkbenchTargetRow(t, d, pid, "a")
+	b := insertWorkbenchTargetRow(t, d, pid, "b")
 
 	first, err := attachImage(d, pid, a, "s1")
 	require.NoError(t, err)
@@ -43,51 +43,51 @@ func TestProjectTargetImages_AttachDedupesPerTargetAndCaps(t *testing.T) {
 	_, err = attachImage(d, pid, a, "s1")
 	assert.NoError(t, err, "re-attaching carried content is never refused by the cap")
 
-	got, err := d.ListProjectTargetImages(a)
+	got, err := d.ListWorkbenchTargetImages(a)
 	require.NoError(t, err)
 	assert.Len(t, got, MaxTargetImages)
-	keep, err := d.ProjectImagePaths(pid)
+	keep, err := d.WorkbenchImagePaths(pid)
 	require.NoError(t, err)
 	assert.Len(t, keep, MaxTargetImages, "paths are distinct across targets")
 }
 
 func TestProjectTargetImages_ScopedToTheProjectAndTarget(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestProject(t, d)
-	other := newTestProject(t, d)
-	mine := insertProjectTargetRow(t, d, pid, "mine")
-	theirs := insertProjectTargetRow(t, d, other, "theirs")
+	pid := newTestWorkbench(t, d)
+	other := newTestWorkbench(t, d)
+	mine := insertWorkbenchTargetRow(t, d, pid, "mine")
+	theirs := insertWorkbenchTargetRow(t, d, other, "theirs")
 
 	_, err := attachImage(d, pid, theirs, "x")
-	assert.ErrorIs(t, err, ErrNotInProject, "a target of another project is refused")
+	assert.ErrorIs(t, err, ErrNotInWorkbench, "a target of another project is refused")
 
 	id, err := attachImage(d, pid, mine, "x")
 	require.NoError(t, err)
 	err = d.WithTx(func(tx *sql.Tx) error {
-		_, err := RemoveProjectTargetImageTx(tx, other, mine, id)
+		_, err := RemoveWorkbenchTargetImageTx(tx, other, mine, id)
 		return err
 	})
-	assert.ErrorIs(t, err, ErrNotInProject)
+	assert.ErrorIs(t, err, ErrNotInWorkbench)
 	var path string
 	require.NoError(t, d.WithTx(func(tx *sql.Tx) error {
 		var err error
-		path, err = RemoveProjectTargetImageTx(tx, pid, mine, id)
+		path, err = RemoveWorkbenchTargetImageTx(tx, pid, mine, id)
 		return err
 	}))
 	assert.Equal(t, "/store/x.png", path)
-	got, err := d.ListProjectTargetImages(mine)
+	got, err := d.ListWorkbenchTargetImages(mine)
 	require.NoError(t, err)
 	assert.Empty(t, got)
 }
 
 func TestProjectTargetImages_GoWithTheirTarget(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestProject(t, d)
-	tid := insertProjectTargetRow(t, d, pid, "doomed")
+	pid := newTestWorkbench(t, d)
+	tid := insertWorkbenchTargetRow(t, d, pid, "doomed")
 	_, err := attachImage(d, pid, tid, "x")
 	require.NoError(t, err)
 	require.NoError(t, d.DeleteTarget(int(tid)))
-	keep, err := d.ProjectImagePaths(pid)
+	keep, err := d.WorkbenchImagePaths(pid)
 	require.NoError(t, err)
 	assert.Empty(t, keep)
 }

@@ -1,12 +1,12 @@
-// Package projectfiles stores the images attached to project board targets
+// Package workbenchfiles stores the images attached to project board targets
 // (board target #117) under <workspace>/project_files/<project_id>/ — outside
 // the project folder, so nothing of it can ever be committed to the owner's
 // repository. Directories are 0700 and files 0600; a file is named by its
 // content's sha256, so one project stores each image once however many of
 // its targets carry it. Deciding which files are still wanted is the
-// database's job (db.ProjectImagePaths); this package only copies, sweeps and
+// database's job (db.WorkbenchImagePaths); this package only copies, sweeps and
 // removes.
-package projectfiles
+package workbenchfiles
 
 import (
 	"crypto/sha256"
@@ -228,9 +228,9 @@ func (s Store) contains(p string) bool {
 	return perr == nil && file != "" && !strings.Contains(dir, string(filepath.Separator))
 }
 
-// RemoveProject deletes project projectID's whole directory; a missing one
+// RemoveWorkbench deletes project projectID's whole directory; a missing one
 // is a no-op.
-func (s Store) RemoveProject(projectID int64) error {
+func (s Store) RemoveWorkbench(projectID int64) error {
 	if err := os.RemoveAll(s.Dir(projectID)); err != nil {
 		return fmt.Errorf("removing %s: %w", s.Dir(projectID), err)
 	}

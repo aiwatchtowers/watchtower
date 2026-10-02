@@ -24,7 +24,7 @@ const (
 func briefSessionFixture(t *testing.T) (database *db.DB, projectID, rowID int64) {
 	t.Helper()
 	database = writeActionsConfig(t)
-	projectID, err := database.CreateProject("acme", t.TempDir())
+	projectID, err := database.CreateWorkbench("acme", t.TempDir())
 	require.NoError(t, err)
 	res, err := database.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id)
 		VALUES (?, 'claude', 's', '/tmp/acme', ?)`, projectID, briefLaunchID)
@@ -40,7 +40,7 @@ func runBriefHook(t *testing.T, projectID int64, stdin string) (stdout, stderr s
 	t.Helper()
 	rootCmd.SetIn(strings.NewReader(stdin))
 	t.Cleanup(func() { rootCmd.SetIn(nil) })
-	out, errOut, err := runProject(t, "brief", "--project", strconv.FormatInt(projectID, 10))
+	out, errOut, err := runWorkbench(t, "brief", "--project", strconv.FormatInt(projectID, 10))
 	require.NoError(t, err, "the hook always exits 0")
 	return out, errOut
 }
@@ -93,7 +93,7 @@ func TestProjectBrief_HookWritesNothingWithoutTheTerminalEnv(t *testing.T) {
 
 func TestProjectBrief_HookLeavesAnotherProjectsRowAlone(t *testing.T) {
 	database, _, row := briefSessionFixture(t)
-	other, err := database.CreateProject("other", t.TempDir())
+	other, err := database.CreateWorkbench("other", t.TempDir())
 	require.NoError(t, err)
 	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
 
@@ -166,7 +166,7 @@ func TestProjectBrief_HookNeverStallsOnAnOpenStdin(t *testing.T) {
 	t.Cleanup(func() { rootCmd.SetIn(nil) })
 
 	start := time.Now()
-	out, errOut, err := runProject(t, "brief", "--project", strconv.FormatInt(pid, 10))
+	out, errOut, err := runWorkbench(t, "brief", "--project", strconv.FormatInt(pid, 10))
 
 	require.NoError(t, err)
 	assert.Less(t, time.Since(start), 5*time.Second)

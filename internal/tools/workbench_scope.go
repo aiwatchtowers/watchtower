@@ -8,25 +8,25 @@ import (
 	"watchtower/internal/db"
 )
 
-// ProjectContextType is the agent_actions.context_type of a project-bound
+// WorkbenchContextType is the agent_actions.context_type of a project-bound
 // proposal; context_id then holds the project id (newProposalRow/bindingOf).
 // Exported so a reader outside this package (internal/mcp's actionVisible)
 // need not hardcode the literal.
-const ProjectContextType = "project"
+const WorkbenchContextType = "project"
 
-// projectOf loads the project the binding is bound to. A binding with no
+// workbenchOf loads the project the binding is bound to. A binding with no
 // project, or a project deleted while the session runs, is a model-facing
 // ValidationError — the latter always worded "project N no longer exists".
-func projectOf(_ context.Context, d *db.DB, b Binding) (*db.Project, error) {
-	if b.ProjectID == 0 {
+func workbenchOf(_ context.Context, d *db.DB, b Binding) (*db.Workbench, error) {
+	if b.WorkbenchID == 0 {
 		return nil, &ValidationError{Msg: "this tool works only in a project session (watchtower mcp --project N)"}
 	}
-	p, err := d.GetProject(b.ProjectID)
-	if errors.Is(err, db.ErrProjectNotFound) || (err == nil && p == nil) {
-		return nil, &ValidationError{Msg: fmt.Sprintf("project %d no longer exists", b.ProjectID)}
+	p, err := d.GetWorkbench(b.WorkbenchID)
+	if errors.Is(err, db.ErrWorkbenchNotFound) || (err == nil && p == nil) {
+		return nil, &ValidationError{Msg: fmt.Sprintf("project %d no longer exists", b.WorkbenchID)}
 	}
 	if err != nil {
-		return nil, fmt.Errorf("loading project %d: %w", b.ProjectID, err)
+		return nil, fmt.Errorf("loading project %d: %w", b.WorkbenchID, err)
 	}
 	return p, nil
 }

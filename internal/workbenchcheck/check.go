@@ -1,9 +1,9 @@
-// Package projectcheck finds board drift on a project board: targets whose
+// Package workbenchcheck finds board drift on a project board: targets whose
 // status disagrees with the git work they are linked to (branch, pull
 // request), and in-progress work that has not moved for days. Mechanical —
 // no AI call, no database write, nothing written to the folder's
 // repository (PROJ-07, docs/inventory/projects.md).
-package projectcheck
+package workbenchcheck
 
 import (
 	"context"
@@ -73,10 +73,10 @@ func (f Finding) Line() string {
 
 // Report is the outcome of one check.
 type Report struct {
-	ProjectID int64  `json:"project_id"`
-	Git       bool   `json:"git"`            // the folder is a git work tree
-	Base      string `json:"base,omitempty"` // the default branch compared against, e.g. origin/main
-	PRChecked bool   `json:"pr_checked"`     // pull request states were read through gh
+	WorkbenchID int64  `json:"project_id"`
+	Git         bool   `json:"git"`            // the folder is a git work tree
+	Base        string `json:"base,omitempty"` // the default branch compared against, e.g. origin/main
+	PRChecked   bool   `json:"pr_checked"`     // pull request states were read through gh
 	// Incomplete: the context ran out before every target was checked; the
 	// findings cover only the targets checked in time.
 	Incomplete bool      `json:"incomplete,omitempty"`
@@ -124,7 +124,7 @@ func Check(ctx context.Context, projectID int64, board []db.BoardNode, o Options
 	if o.Run == nil {
 		o.Run = ExecRunner
 	}
-	rep := Report{ProjectID: projectID, Findings: []Finding{}}
+	rep := Report{WorkbenchID: projectID, Findings: []Finding{}}
 	g := newGitState(ctx, o)
 	rep.Git = g.workTree
 	rep.Base = g.baseName()

@@ -915,14 +915,14 @@ func TestNextStepSystemPrompt_ForbidsRepeatingADoneStep(t *testing.T) {
 func TestProj01_NextStepSkipsProjectTarget(t *testing.T) {
 	gen := &mockGenerator{responses: []string{`{"title":"x","rationale":"y","urgency":"normal","actions":[]}`}}
 	p, d := makeTestPipeline(t, gen)
-	pid, err := d.CreateProject("acme", t.TempDir())
+	pid, err := d.CreateWorkbench("acme", t.TempDir())
 	if err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	id := db.SeedTestProjectTarget(t, d, pid, sql.NullInt64{}, "board only")
+	id := db.SeedTestWorkbenchTarget(t, d, pid, sql.NullInt64{}, "board only")
 
 	_, err = p.GenerateNextStep(context.Background(), int(id))
-	if !errors.Is(err, ErrProjectTarget) {
+	if !errors.Is(err, ErrWorkbenchTarget) {
 		t.Fatalf("GenerateNextStep err = %v, want ErrProjectTarget", err)
 	}
 	if gen.calls() != 0 {

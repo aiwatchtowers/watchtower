@@ -16,7 +16,7 @@ import (
 
 func addSource(t *testing.T, d *db.DB, projectID int64, kind, ref string) {
 	t.Helper()
-	_, err := d.AddProjectSource(db.ProjectSource{ProjectID: projectID, Kind: kind, Ref: ref})
+	_, err := d.AddWorkbenchSource(db.WorkbenchSource{WorkbenchID: projectID, Kind: kind, Ref: ref})
 	require.NoError(t, err)
 }
 
@@ -25,7 +25,7 @@ func TestProjectKnowledgeScope_ResolvesRefs(t *testing.T) {
 	_, err := d.Exec(`INSERT INTO channels (id, name, type) VALUES
 		('1:C1', 'general', 'public'), ('2:C9', 'General', 'public'), ('1:C5', 'eng', 'private'), ('1:C7', 'random', 'public')`)
 	require.NoError(t, err)
-	p := seedProject(t, d, "alpha")
+	p := seedWorkbench(t, d, "alpha")
 	for _, s := range []struct{ kind, ref string }{
 		{"slack_channel", "#general"}, // a name in two accounts
 		{"slack_channel", "C5"},       // a raw id
@@ -47,7 +47,7 @@ func TestProjectKnowledgeScope_ResolvesRefs(t *testing.T) {
 	} {
 		addSource(t, d, p, s.kind, s.ref)
 	}
-	scope, unresolved, err := ProjectKnowledgeScope(context.Background(), d, p)
+	scope, unresolved, err := WorkbenchKnowledgeScope(context.Background(), d, p)
 	require.NoError(t, err)
 	assert.ElementsMatch(t, []string{"1:C1", "2:C9", "1:C5", "1:C7"}, scope.SlackChannels)
 	assert.ElementsMatch(t, []string{"PROJ", "OPS", "WEB"}, scope.JiraProjects)
@@ -55,7 +55,7 @@ func TestProjectKnowledgeScope_ResolvesRefs(t *testing.T) {
 	assert.Equal(t, []string{"confluence_space two words", "jira_project not a key", "jira_project my-team", "slack_channel nope"}, unresolved,
 		"person and link sources are never reported; sources come by kind, then id")
 
-	empty, unresolved, err := ProjectKnowledgeScope(context.Background(), d, seedProject(t, d, "beta"))
+	empty, unresolved, err := WorkbenchKnowledgeScope(context.Background(), d, seedWorkbench(t, d, "beta"))
 	require.NoError(t, err)
 	assert.True(t, empty.Empty())
 	assert.Empty(t, unresolved)
@@ -76,14 +76,14 @@ func seedScopedKnowledge(t *testing.T, d *db.DB) int64 {
 	}
 	_, err := kb.Run(context.Background(), d, kb.Options{})
 	require.NoError(t, err)
-	p := seedProject(t, d, "alpha")
+	p := seedWorkbench(t, d, "alpha")
 	addSource(t, d, p, "jira_project", "PROJ")
 	return p
 }
 
 func searchIn(t *testing.T, reg *Registry, projectID int64, args string) (kb.Result, error) {
 	t.Helper()
-	out, err := reg.CallRead(context.Background(), "search_knowledge", json.RawMessage(args), Binding{ProjectID: projectID})
+	out, err := reg.CallRead(context.Background(), "search_knowledge", json.RawMessage(args), Binding{WorkbenchID: projectID})
 	if err != nil {
 		return kb.Result{}, err
 	}
@@ -148,7 +148,7 @@ func TestSearchKnowledge_ProjectScopeErrors(t *testing.T) {
 	require.ErrorAs(t, err, &ve)
 	assert.Contains(t, ve.Msg, "project_scope")
 
-	bare := seedProject(t, d, "bare")
+	bare := seedWorkbench(t, d, "bare")
 	_, err = searchIn(t, reg, bare, `{"queries":["стейдж"],"project_scope":"only"}`)
 	require.ErrorAs(t, err, &ve)
 	assert.Contains(t, ve.Msg, "add_project_source")
@@ -177,11 +177,11 @@ func TestProj08_KnowledgeToolsShowProjectDocsOnlyToTheirProject(t *testing.T) {
 	d := openDB(t)
 	folder := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(folder, "plan.md"), []byte("# Plan\nКанареечный выкат\n"), 0o600))
-	p := seedProject(t, d, "alpha")
+	p := seedWorkbench(t, d, "alpha")
 	_, err := d.Exec(`UPDATE projects SET folder_path = ? WHERE id = ?`, folder, p)
 	require.NoError(t, err)
-	other := seedProject(t, d, "beta")
-	_, _, err = d.UpsertProjectDocument(db.ProjectDocument{ProjectID: p, RelPath: "plan.md", Kind: "plan", Title: "Plan"})
+	other := seedWorkbench(t, d, "beta")
+	_, _, err = d.UpsertWorkbenchDocument(db.WorkbenchDocument{WorkbenchID: p, RelPath: "plan.md", Kind: "plan", Title: "Plan"})
 	require.NoError(t, err)
 	_, err = kb.Run(context.Background(), d, kb.Options{})
 	require.NoError(t, err)
@@ -192,10 +192,10 @@ func TestProj08_KnowledgeToolsShowProjectDocsOnlyToTheirProject(t *testing.T) {
 	require.Len(t, own.Hits, 1)
 	assert.Equal(t, "project_doc", own.Hits[0].Source)
 	ref := own.Hits[0].Ref
-	_, err = reg.CallRead(context.Background(), "get_knowledge_document", json.RawMessage(`{"ref":"`+ref+`"}`), Binding{ProjectID: p})
+	_, err = reg.CallRead(context.Background(), "get_knowledge_document", json.RawMessage(`{"ref":"`+ref+`"}`), Binding{WorkbenchID: p})
 	require.NoError(t, err)
 
-	for _, b := range []Binding{{}, {Surface: "main", ConversationID: 3}, {ContextType: "target", ContextID: "9"}, {ProjectID: other}} {
+	for _, b := range []Binding{{}, {Surface: "main", ConversationID: 3}, {ContextType: "target", ContextID: "9"}, {WorkbenchID: other}} {
 		out, err := reg.CallRead(context.Background(), "search_knowledge", json.RawMessage(`{"queries":["канареечн*"]}`), b)
 		require.NoError(t, err)
 		assert.Empty(t, out.(kb.Result).Hits, "binding %+v", b)
@@ -211,10 +211,10 @@ func TestProj08_KnowledgeToolsShowProjectDocsOnlyToTheirProject(t *testing.T) {
 // project's session at once — protected folder or not.
 func TestAttachDocument_IndexesForTheProjectsSearch(t *testing.T) {
 	d := openDB(t)
-	reg := projectRegistry(t, d) // knowledge search on
+	reg := workbenchRegistry(t, d) // knowledge search on
 	require.NoError(t, reg.Register(NewSearchKnowledge()))
-	p := seedProject(t, d, "alpha")
-	proj, err := d.GetProject(p)
+	p := seedWorkbench(t, d, "alpha")
+	proj, err := d.GetWorkbench(p)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(proj.FolderPath, "plan.md"), []byte("# Plan\nКанареечный выкат\n"), 0o600))
 

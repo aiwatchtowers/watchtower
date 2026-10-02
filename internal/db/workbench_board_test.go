@@ -10,11 +10,11 @@ import (
 
 func TestGetProjectBoard_TreeOrderCountsAndDocuments(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestProject(t, d)
+	pid := newTestWorkbench(t, d)
 	var ids []int64
 	require.NoError(t, d.WithTx(func(tx *sql.Tx) error {
 		var err error
-		ids, err = d.CreateProjectTargetsTx(tx, pid, []ProjectTargetInput{
+		ids, err = d.CreateWorkbenchTargetsTx(tx, pid, []WorkbenchTargetInput{
 			{Title: "todo root"},
 			{Title: "done root"},
 			{Title: "active root"},
@@ -25,19 +25,19 @@ func TestGetProjectBoard_TreeOrderCountsAndDocuments(t *testing.T) {
 	require.NoError(t, d.UpdateTargetStatus(int(ids[1]), "done"))
 	require.NoError(t, d.UpdateTargetStatus(int(ids[2]), "in_progress"))
 
-	SeedTestProjectTarget(t, d, newTestProject(t, d), sql.NullInt64{}, "another board")
+	SeedTestWorkbenchTarget(t, d, newTestWorkbench(t, d), sql.NullInt64{}, "another board")
 	_, err := d.CreateTarget(Target{Text: "personal", Status: "todo", Priority: "medium", Ownership: "mine", SourceType: "manual"})
 	require.NoError(t, err)
 
 	active := nullID(ids[2])
-	_, err = d.AddProjectComment(ProjectComment{ProjectID: pid, TargetID: active, Author: "owner", Body: "please split"})
+	_, err = d.AddWorkbenchComment(WorkbenchComment{WorkbenchID: pid, TargetID: active, Author: "owner", Body: "please split"})
 	require.NoError(t, err)
-	_, err = d.AddProjectComment(ProjectComment{ProjectID: pid, TargetID: active, Author: "agent", Body: "which part?"})
+	_, err = d.AddWorkbenchComment(WorkbenchComment{WorkbenchID: pid, TargetID: active, Author: "agent", Body: "which part?"})
 	require.NoError(t, err)
-	docID, _, err := d.UpsertProjectDocument(ProjectDocument{ProjectID: pid, TargetID: active, RelPath: "docs/plan.md", Kind: "plan"})
+	docID, _, err := d.UpsertWorkbenchDocument(WorkbenchDocument{WorkbenchID: pid, TargetID: active, RelPath: "docs/plan.md", Kind: "plan"})
 	require.NoError(t, err)
 
-	board, err := d.GetProjectBoard(pid)
+	board, err := d.GetWorkbenchBoard(pid)
 	require.NoError(t, err)
 	require.Len(t, board, 3, "only this project's roots")
 	assert.Equal(t, "active root", board[0].Target.Text, "in_progress first")
@@ -52,7 +52,7 @@ func TestGetProjectBoard_TreeOrderCountsAndDocuments(t *testing.T) {
 	assert.Equal(t, docID, board[0].Documents[0].ID)
 	assert.Zero(t, board[1].NewForAgent)
 
-	empty, err := d.GetProjectBoard(pid + 100)
+	empty, err := d.GetWorkbenchBoard(pid + 100)
 	require.NoError(t, err)
 	assert.Empty(t, empty)
 }
@@ -61,11 +61,11 @@ func TestGetProjectBoard_TreeOrderCountsAndDocuments(t *testing.T) {
 // status order, then id; an item without a priority defaults to medium.
 func TestGetProjectBoard_SiblingsSortByPriorityThenStatus(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestProject(t, d)
+	pid := newTestWorkbench(t, d)
 	var ids []int64
 	require.NoError(t, d.WithTx(func(tx *sql.Tx) error {
 		var err error
-		ids, err = d.CreateProjectTargetsTx(tx, pid, []ProjectTargetInput{
+		ids, err = d.CreateWorkbenchTargetsTx(tx, pid, []WorkbenchTargetInput{
 			{Title: "low todo", Priority: "low"},
 			{Title: "medium todo"},
 			{Title: "high todo", Priority: "high"},
@@ -77,7 +77,7 @@ func TestGetProjectBoard_SiblingsSortByPriorityThenStatus(t *testing.T) {
 	}))
 	require.NoError(t, d.UpdateTargetStatus(int(ids[3]), "in_progress"))
 
-	board, err := d.GetProjectBoard(pid)
+	board, err := d.GetWorkbenchBoard(pid)
 	require.NoError(t, err)
 	var titles []string
 	for _, n := range board {
@@ -91,9 +91,9 @@ func TestGetProjectBoard_SiblingsSortByPriorityThenStatus(t *testing.T) {
 
 func TestCreateProjectTargets_InvalidPriorityFailsTheBatch(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestProject(t, d)
+	pid := newTestWorkbench(t, d)
 	err := d.WithTx(func(tx *sql.Tx) error {
-		_, err := d.CreateProjectTargetsTx(tx, pid, []ProjectTargetInput{{Title: "x", Priority: "urgent"}})
+		_, err := d.CreateWorkbenchTargetsTx(tx, pid, []WorkbenchTargetInput{{Title: "x", Priority: "urgent"}})
 		return err
 	})
 	require.ErrorContains(t, err, "invalid priority")
@@ -101,8 +101,8 @@ func TestCreateProjectTargets_InvalidPriorityFailsTheBatch(t *testing.T) {
 
 func TestUpdateTargetPriorityTx_SetsOnlyPriority(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestProject(t, d)
-	id := SeedTestProjectTarget(t, d, pid, sql.NullInt64{}, "feature")
+	pid := newTestWorkbench(t, d)
+	id := SeedTestWorkbenchTarget(t, d, pid, sql.NullInt64{}, "feature")
 	require.NoError(t, d.WithTx(func(tx *sql.Tx) error { return d.UpdateTargetPriorityTx(tx, int(id), "high") }))
 	got, err := d.GetTargetByID(int(id))
 	require.NoError(t, err)

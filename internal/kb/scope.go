@@ -62,7 +62,7 @@ func Recent(ctx context.Context, d *db.DB, scope Scope, since time.Time, limit i
 	// project: none visible) keeps it that way should one ever be added.
 	args = append(args, "0", float64(since.Unix()), limit)
 	rows, err := d.QueryContext(ctx, `SELECT d.id, d.source, d.title, d.doc_time, d.link, d.anchor_json
-		FROM kb_documents d WHERE `+pred+` AND `+projectDocVisible+` AND d.doc_time_unix >= ?
+		FROM kb_documents d WHERE `+pred+` AND `+workbenchDocVisible+` AND d.doc_time_unix >= ?
 		ORDER BY d.doc_time_unix DESC, d.id LIMIT ?`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("kb: recent in scope: %w", err)

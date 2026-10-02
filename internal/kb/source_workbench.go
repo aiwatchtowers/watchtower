@@ -19,21 +19,21 @@ import (
 	"watchtower/internal/db"
 )
 
-// ProjectDocSource is the source name of attached project documents. Its
+// WorkbenchDocSource is the source name of attached project documents. Its
 // documents are visible only to a search or open that names their project
-// (Request.ProjectID, DocOptions.ProjectID; projectDocVisible in search.go) —
+// (Request.ProjectID, DocOptions.ProjectID; workbenchDocVisible in search.go) —
 // PROJ-08: a project session sees its own documents, every other caller none.
-const ProjectDocSource = "project_doc"
+const WorkbenchDocSource = "project_doc"
 
 const (
-	projectDocPrefix = ProjectDocSource + ":"
-	// projectDocMaxBytes caps how much of one file is read; a longer file is
+	workbenchDocPrefix = WorkbenchDocSource + ":"
+	// workbenchDocMaxBytes caps how much of one file is read; a longer file is
 	// indexed up to it and its anchor says so (attached documents are
 	// .md/.txt plans and specs).
-	projectDocMaxBytes = 2 << 20
+	workbenchDocMaxBytes = 2 << 20
 )
 
-// projectDocSource renders one document per attached project document
+// workbenchDocSource renders one document per attached project document
 // (project_documents), reading the file from the project folder.
 //
 // There is no cursor: a file changes on disk without its row changing, and
@@ -47,33 +47,33 @@ const (
 // (~/Documents, ~/Desktop, ~/Downloads, iCloud and cloud storage): a
 // background read there could raise a macOS privacy prompt attributed to
 // Watchtower. Those projects' documents are indexed only on an explicit
-// trigger — IndexProjectDocs, run by `project resync` and the agent's
+// trigger — IndexWorkbenchDocs, run by `project resync` and the agent's
 // attach_document.
-type projectDocSource struct{}
+type workbenchDocSource struct{}
 
-func (projectDocSource) Name() string { return ProjectDocSource }
+func (workbenchDocSource) Name() string { return WorkbenchDocSource }
 
-const projectDocSelect = `SELECT d.id, d.project_id, d.rel_path, d.kind, d.title, d.updated_at, p.folder_path, p.name
+const workbenchDocSelect = `SELECT d.id, d.project_id, d.rel_path, d.kind, d.title, d.updated_at, p.folder_path, p.name
 	FROM project_documents d JOIN projects p ON p.id = d.project_id`
 
-type projectDocRow struct {
-	id, projectID                   int64
+type workbenchDocRow struct {
+	id, workbenchID                 int64
 	relPath, kind, title, updatedAt string
-	folder, projectName             string
+	folder, workbenchName           string
 }
 
-func scanProjectDoc(s interface{ Scan(...any) error }) (projectDocRow, error) {
-	var r projectDocRow
-	err := s.Scan(&r.id, &r.projectID, &r.relPath, &r.kind, &r.title, &r.updatedAt, &r.folder, &r.projectName)
+func scanWorkbenchDoc(s interface{ Scan(...any) error }) (workbenchDocRow, error) {
+	var r workbenchDocRow
+	err := s.Scan(&r.id, &r.workbenchID, &r.relPath, &r.kind, &r.title, &r.updatedAt, &r.folder, &r.workbenchName)
 	return r, err
 }
 
-func projectDocKey(id int64) string { return projectDocPrefix + strconv.FormatInt(id, 10) }
+func workbenchDocKey(id int64) string { return workbenchDocPrefix + strconv.FormatInt(id, 10) }
 
-func (projectDocSource) Changed(ctx context.Context, q Queryer, cursor string, _ time.Time) ([]string, string, bool, error) {
+func (workbenchDocSource) Changed(ctx context.Context, q Queryer, cursor string, _ time.Time) ([]string, string, bool, error) {
 	rs, err := q.QueryContext(ctx, `SELECT d.id, p.folder_path, d.rel_path, COALESCE(k.doc_time_unix, -1)
 		FROM project_documents d JOIN projects p ON p.id = d.project_id
-		LEFT JOIN kb_documents k ON k.id = '`+projectDocPrefix+`' || d.id ORDER BY d.id`)
+		LEFT JOIN kb_documents k ON k.id = '`+workbenchDocPrefix+`' || d.id ORDER BY d.id`)
 	if err != nil {
 		return nil, cursor, true, fmt.Errorf("kb project docs: %w", err)
 	}
@@ -94,11 +94,11 @@ func (projectDocSource) Changed(ctx context.Context, q Queryer, cursor string, _
 		case errors.Is(err, fs.ErrNotExist), errors.Is(err, errDocOutside):
 			// Gone, or now leading out of the folder: re-rendered as its
 			// title (the render refuses the link before touching it).
-			keys = append(keys, projectDocKey(id))
+			keys = append(keys, workbenchDocKey(id))
 		case err != nil:
 			// Unreadable for now: keep the indexed text.
 		case float64(fi.ModTime().Unix()) != indexed:
-			keys = append(keys, projectDocKey(id))
+			keys = append(keys, workbenchDocKey(id))
 		}
 	}
 	return keys, cursor, true, rs.Err()
@@ -175,26 +175,26 @@ func strictlyInside(root, path string) bool {
 	return strings.HasPrefix(path, root+string(filepath.Separator))
 }
 
-func (projectDocSource) Keys(ctx context.Context, q Queryer) ([]string, error) {
-	return queryStrings(ctx, q, `SELECT '`+projectDocPrefix+`' || id FROM project_documents`)
+func (workbenchDocSource) Keys(ctx context.Context, q Queryer) ([]string, error) {
+	return queryStrings(ctx, q, `SELECT '`+workbenchDocPrefix+`' || id FROM project_documents`)
 }
 
-func (projectDocSource) Build(ctx context.Context, q Queryer, key string) (*Doc, error) {
-	idStr, ok := splitRef(key, projectDocPrefix)
+func (workbenchDocSource) Build(ctx context.Context, q Queryer, key string) (*Doc, error) {
+	idStr, ok := splitRef(key, workbenchDocPrefix)
 	if !ok {
 		return nil, nil //nolint:nilerr // malformed ref: treat as missing doc, not an error
 	}
-	r, err := scanProjectDoc(q.QueryRowContext(ctx, projectDocSelect+` WHERE d.id = ?`, idStr))
+	r, err := scanWorkbenchDoc(q.QueryRowContext(ctx, workbenchDocSelect+` WHERE d.id = ?`, idStr))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("kb %s: %w", key, err)
 	}
-	return renderProjectDoc(key, r), nil
+	return renderWorkbenchDoc(key, r), nil
 }
 
-func renderProjectDoc(key string, r projectDocRow) *Doc {
+func renderWorkbenchDoc(key string, r workbenchDocRow) *Doc {
 	title := r.title
 	if strings.TrimSpace(title) == "" {
 		title = r.relPath
@@ -202,18 +202,18 @@ func renderProjectDoc(key string, r projectDocRow) *Doc {
 	path := filepath.Join(r.folder, r.relPath)
 	doc := &Doc{
 		ID:     key,
-		Source: ProjectDocSource,
+		Source: WorkbenchDocSource,
 		Title:  title,
-		Meta:   joinNonEmpty([]string{r.projectName, r.relPath, r.kind}),
+		Meta:   joinNonEmpty([]string{r.workbenchName, r.relPath, r.kind}),
 		Link:   (&url.URL{Scheme: "file", Path: path}).String(),
 		Time:   parseTime(r.updatedAt),
 		Anchor: map[string]string{
-			"project_id":  strconv.FormatInt(r.projectID, 10),
+			"project_id":  strconv.FormatInt(r.workbenchID, 10),
 			"document_id": strconv.FormatInt(r.id, 10),
 			"rel_path":    r.relPath,
 		},
 	}
-	f, err := readProjectDoc(r.folder, r.relPath)
+	f, err := readWorkbenchDoc(r.folder, r.relPath)
 	if err != nil {
 		// Indexed by the title the row still carries; the anchor says why
 		// the text is missing, so an open does not read as an empty file.
@@ -228,7 +228,7 @@ func renderProjectDoc(key string, r projectDocRow) *Doc {
 	return doc
 }
 
-type projectDocFile struct {
+type workbenchDocFile struct {
 	text      string
 	modTime   time.Time
 	truncated bool
@@ -240,42 +240,42 @@ var (
 	errDocOutside    = errors.New("no longer inside the project folder")
 )
 
-// readProjectDoc reads a regular file that still resolves (symlinks
-// followed, resolveInside) inside folder, capped at projectDocMaxBytes and
+// readWorkbenchDoc reads a regular file that still resolves (symlinks
+// followed, resolveInside) inside folder, capped at workbenchDocMaxBytes and
 // cut to valid UTF-8. The type is checked before the open, and the open
 // never blocks, so a named pipe put in a document's place cannot stall the
 // indexer.
-func readProjectDoc(folder, rel string) (projectDocFile, error) {
+func readWorkbenchDoc(folder, rel string) (workbenchDocFile, error) {
 	realFolder, err := filepath.EvalSymlinks(folder)
 	if err != nil {
-		return projectDocFile{}, fmt.Errorf("project folder: %w", err)
+		return workbenchDocFile{}, fmt.Errorf("project folder: %w", err)
 	}
 	realPath, err := resolveInside(realFolder, rel)
 	if errors.Is(err, fs.ErrNotExist) {
-		return projectDocFile{}, errDocMissing
+		return workbenchDocFile{}, errDocMissing
 	}
 	if err != nil {
-		return projectDocFile{}, err
+		return workbenchDocFile{}, err
 	}
 	if fi, err := os.Stat(realPath); err != nil || !fi.Mode().IsRegular() {
-		return projectDocFile{}, errDocNotRegular
+		return workbenchDocFile{}, errDocNotRegular
 	}
 	f, err := os.OpenFile(realPath, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
-		return projectDocFile{}, err
+		return workbenchDocFile{}, err
 	}
 	defer f.Close()
 	fi, err := f.Stat()
 	if err != nil || !fi.Mode().IsRegular() {
-		return projectDocFile{}, errDocNotRegular
+		return workbenchDocFile{}, errDocNotRegular
 	}
-	b, err := io.ReadAll(io.LimitReader(f, projectDocMaxBytes+1))
+	b, err := io.ReadAll(io.LimitReader(f, workbenchDocMaxBytes+1))
 	if err != nil {
-		return projectDocFile{}, err
+		return workbenchDocFile{}, err
 	}
-	out := projectDocFile{modTime: fi.ModTime().UTC(), truncated: len(b) > projectDocMaxBytes}
+	out := workbenchDocFile{modTime: fi.ModTime().UTC(), truncated: len(b) > workbenchDocMaxBytes}
 	if out.truncated {
-		b = b[:projectDocMaxBytes]
+		b = b[:workbenchDocMaxBytes]
 	}
 	for len(b) > 0 && !utf8.Valid(b) {
 		b = b[:len(b)-1] // a cap can split a multi-byte rune
@@ -317,24 +317,24 @@ func hasPathPrefix(path, root string) bool {
 		(len(path) > len(root) && path[len(root)] == filepath.Separator && strings.EqualFold(path[:len(root)], root))
 }
 
-// IndexProjectDocs re-renders every attached document of one project now,
+// IndexWorkbenchDocs re-renders every attached document of one project now,
 // protected location or not — an explicit trigger (`project resync`, the
 // agent's attach_document) runs in a process the owner or the agent started
 // — and drops index entries of documents the project no longer has. An
 // unreadable document is indexed by its title, never an error. documents is
 // how many the project has, changed how many index entries were written or
 // removed.
-func IndexProjectDocs(ctx context.Context, d *db.DB, projectID int64) (documents, changed int, err error) {
-	rows, err := projectDocRows(ctx, d, projectID)
+func IndexWorkbenchDocs(ctx context.Context, d *db.DB, projectID int64) (documents, changed int, err error) {
+	rows, err := workbenchDocRows(ctx, d, projectID)
 	if err != nil {
 		return 0, 0, fmt.Errorf("kb: listing project %d documents: %w", projectID, err)
 	}
 	docs := make([]*Doc, 0, len(rows))
 	live := map[string]bool{}
 	for _, r := range rows {
-		key := projectDocKey(r.id)
+		key := workbenchDocKey(r.id)
 		live[key] = true
-		docs = append(docs, renderProjectDoc(key, r)) // rendered before the write tx opens
+		docs = append(docs, renderWorkbenchDoc(key, r)) // rendered before the write tx opens
 	}
 	err = withTx(ctx, d, func(tx *sql.Tx) error {
 		for _, doc := range docs {
@@ -347,7 +347,7 @@ func IndexProjectDocs(ctx context.Context, d *db.DB, projectID int64) (documents
 			}
 		}
 		indexed, err := queryStrings(ctx, tx, `SELECT id FROM kb_documents WHERE source = ?
-			AND json_extract(anchor_json, '$.project_id') = ?`, ProjectDocSource, strconv.FormatInt(projectID, 10))
+			AND json_extract(anchor_json, '$.project_id') = ?`, WorkbenchDocSource, strconv.FormatInt(projectID, 10))
 		if err != nil {
 			return err
 		}
@@ -368,15 +368,15 @@ func IndexProjectDocs(ctx context.Context, d *db.DB, projectID int64) (documents
 	return len(docs), changed, nil
 }
 
-func projectDocRows(ctx context.Context, q Queryer, projectID int64) ([]projectDocRow, error) {
-	rs, err := q.QueryContext(ctx, projectDocSelect+` WHERE d.project_id = ? ORDER BY d.id`, projectID)
+func workbenchDocRows(ctx context.Context, q Queryer, projectID int64) ([]workbenchDocRow, error) {
+	rs, err := q.QueryContext(ctx, workbenchDocSelect+` WHERE d.project_id = ? ORDER BY d.id`, projectID)
 	if err != nil {
 		return nil, err
 	}
 	defer rs.Close()
-	var out []projectDocRow
+	var out []workbenchDocRow
 	for rs.Next() {
-		r, err := scanProjectDoc(rs)
+		r, err := scanWorkbenchDoc(rs)
 		if err != nil {
 			return nil, err
 		}

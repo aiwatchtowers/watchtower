@@ -15,8 +15,8 @@ import (
 	"watchtower/internal/kb"
 )
 
-// projectAgentLabel is the agent_label every agent comment carries.
-const projectAgentLabel = "claude-code"
+// workbenchAgentLabel is the agent_label every agent comment carries.
+const workbenchAgentLabel = "claude-code"
 
 // resolveInsideFolder resolves rel against the project folder — symlinks
 // included — and returns the absolute path only when it stays inside the
@@ -29,12 +29,12 @@ func resolveInsideFolder(folder, rel string) (string, error) {
 	return resolveDocumentFile(folder, filepath.Join(folder, rel), rel)
 }
 
-// ResolveProjectDocumentPath is attach_document's path check for the owner's
+// ResolveWorkbenchDocumentPath is attach_document's path check for the owner's
 // `project attach-doc`: path may be absolute or relative to the folder, and
 // the result is the folder-relative, slash-separated path of the resolved
 // file. The same refusals apply — outside the folder (symlinks followed),
 // missing, not a regular .md/.txt file.
-func ResolveProjectDocumentPath(folder, path string) (string, error) {
+func ResolveWorkbenchDocumentPath(folder, path string) (string, error) {
 	if strings.TrimSpace(path) == "" {
 		return "", &ValidationError{Msg: "a document path is required"}
 	}
@@ -85,33 +85,33 @@ func checkDocumentFile(rel, abs string) error {
 	return nil
 }
 
-// documentInProject loads a document and fails unless it belongs to projectID.
-func documentInProject(d *db.DB, projectID, documentID int64) (*db.ProjectDocument, error) {
-	notHere := notInProject("document", documentID)
+// documentInWorkbench loads a document and fails unless it belongs to projectID.
+func documentInWorkbench(d *db.DB, projectID, documentID int64) (*db.WorkbenchDocument, error) {
+	notHere := notInWorkbench("document", documentID)
 	if projectID <= 0 || documentID <= 0 {
 		return nil, notHere
 	}
-	doc, err := d.GetProjectDocument(documentID)
+	doc, err := d.GetWorkbenchDocument(documentID)
 	if err != nil {
 		return nil, fmt.Errorf("loading document %d: %w", documentID, err)
 	}
-	if doc == nil || doc.ProjectID != projectID {
+	if doc == nil || doc.WorkbenchID != projectID {
 		return nil, notHere
 	}
 	return doc, nil
 }
 
-// commentInProject loads a comment and fails unless it belongs to projectID.
-func commentInProject(d *db.DB, projectID, commentID int64) (*db.ProjectComment, error) {
-	notHere := notInProject("comment", commentID)
+// commentInWorkbench loads a comment and fails unless it belongs to projectID.
+func commentInWorkbench(d *db.DB, projectID, commentID int64) (*db.WorkbenchComment, error) {
+	notHere := notInWorkbench("comment", commentID)
 	if projectID <= 0 || commentID <= 0 {
 		return nil, notHere
 	}
-	c, err := d.GetProjectComment(commentID)
+	c, err := d.GetWorkbenchComment(commentID)
 	if err != nil {
 		return nil, fmt.Errorf("loading comment %d: %w", commentID, err)
 	}
-	if c == nil || c.ProjectID != projectID {
+	if c == nil || c.WorkbenchID != projectID {
 		return nil, notHere
 	}
 	return c, nil
@@ -122,7 +122,7 @@ func optionalTarget(d *db.DB, projectID, targetID int64) (sql.NullInt64, error) 
 	if targetID == 0 {
 		return sql.NullInt64{}, nil
 	}
-	if _, err := targetInProject(d, projectID, targetID); err != nil {
+	if _, err := targetInWorkbench(d, projectID, targetID); err != nil {
 		return sql.NullInt64{}, err
 	}
 	return sql.NullInt64{Int64: targetID, Valid: true}, nil
@@ -141,7 +141,7 @@ type attachDocumentArgs struct {
 // NewAttachDocument attaches (or re-attaches, marking it revised) a file in
 // the project folder so the owner can review and comment on it.
 // NewAttachDocument builds attach_document; with indexDocs a successful
-// attach also re-indexes the project's documents (kb.IndexProjectDocs), so
+// attach also re-indexes the project's documents (kb.IndexWorkbenchDocs), so
 // a revision is searchable from the project's sessions at once.
 func NewAttachDocument(indexDocs bool) *Tool {
 	return &Tool{
@@ -151,7 +151,7 @@ func NewAttachDocument(indexDocs bool) *Tool {
 			"Applied immediately.",
 		InputSchema: mustSchema[attachDocumentArgs]("attach_document"),
 		Access:      AccessWrite,
-		Surfaces:    projectSurfaces,
+		Surfaces:    workbenchSurfaces,
 		Validate: func(_ context.Context, _ *db.DB, raw json.RawMessage) error {
 			var a attachDocumentArgs
 			if err := decodeStrict(raw, &a); err != nil {
@@ -180,7 +180,7 @@ func NewAttachDocument(indexDocs bool) *Tool {
 				return out, err
 			}
 			// Best-effort: the attach itself is done and must not read as failed.
-			if _, _, ierr := kb.IndexProjectDocs(ctx, d, call.Binding.ProjectID); ierr != nil {
+			if _, _, ierr := kb.IndexWorkbenchDocs(ctx, d, call.Binding.WorkbenchID); ierr != nil {
 				out["index_warning"] = "the document is attached, but indexing it for search failed: " + ierr.Error()
 			}
 			return out, nil
@@ -191,7 +191,7 @@ func NewAttachDocument(indexDocs bool) *Tool {
 // resolveAttachment returns the folder-relative clean path of the file and
 // the checked target link.
 func resolveAttachment(ctx context.Context, d *db.DB, b Binding, a attachDocumentArgs) (string, sql.NullInt64, error) {
-	p, err := projectOf(ctx, d, b)
+	p, err := workbenchOf(ctx, d, b)
 	if err != nil {
 		return "", sql.NullInt64{}, err
 	}
@@ -219,8 +219,8 @@ func attachDocument(ctx context.Context, d *db.DB, b Binding, a attachDocumentAr
 	if title == "" {
 		title = strings.TrimSuffix(filepath.Base(rel), filepath.Ext(rel))
 	}
-	id, created, err := d.UpsertProjectDocument(db.ProjectDocument{
-		ProjectID: b.ProjectID, TargetID: target, RelPath: rel, Kind: a.Kind, Title: title,
+	id, created, err := d.UpsertWorkbenchDocument(db.WorkbenchDocument{
+		WorkbenchID: b.WorkbenchID, TargetID: target, RelPath: rel, Kind: a.Kind, Title: title,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("attaching %s: %w", rel, err)
@@ -229,7 +229,7 @@ func attachDocument(ctx context.Context, d *db.DB, b Binding, a attachDocumentAr
 		// A re-attach may spell the path in another case: report the stored
 		// spelling, as the owner's attach-doc does. Cosmetic, so a failed
 		// read keeps the caller's spelling rather than failing a done attach.
-		if doc, err := d.GetProjectDocument(id); err == nil && doc != nil {
+		if doc, err := d.GetWorkbenchDocument(id); err == nil && doc != nil {
 			rel = doc.RelPath
 		}
 	}
@@ -244,7 +244,7 @@ type listCommentsArgs struct {
 	NewForAgent *bool `json:"new_for_agent,omitempty" jsonschema:"only what is new for you (open owner comments, unanswered owner replies); default true when no id is given"`
 }
 
-type projectCommentView struct {
+type workbenchCommentView struct {
 	ID         int64  `json:"id"`
 	TargetID   int64  `json:"target_id,omitempty"`
 	DocumentID int64  `json:"document_id,omitempty"`
@@ -267,7 +267,7 @@ func NewListComments() *Tool {
 			"Read a document's comments before revising it.",
 		InputSchema: mustSchema[listCommentsArgs]("list_comments"),
 		Access:      AccessRead,
-		Surfaces:    projectSurfaces,
+		Surfaces:    workbenchSurfaces,
 		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
 			var a listCommentsArgs
 			if err := json.Unmarshal(call.Args, &a); err != nil {
@@ -277,7 +277,7 @@ func NewListComments() *Tool {
 			if err != nil {
 				return nil, err
 			}
-			comments, err := d.ListProjectComments(f)
+			comments, err := d.ListWorkbenchComments(f)
 			if err != nil {
 				return nil, fmt.Errorf("listing comments: %w", err)
 			}
@@ -286,33 +286,33 @@ func NewListComments() *Tool {
 	}
 }
 
-func commentFilter(ctx context.Context, d *db.DB, b Binding, a listCommentsArgs) (db.ProjectCommentFilter, error) {
-	p, err := projectOf(ctx, d, b)
+func commentFilter(ctx context.Context, d *db.DB, b Binding, a listCommentsArgs) (db.WorkbenchCommentFilter, error) {
+	p, err := workbenchOf(ctx, d, b)
 	if err != nil {
-		return db.ProjectCommentFilter{}, err
+		return db.WorkbenchCommentFilter{}, err
 	}
-	f := db.ProjectCommentFilter{ProjectID: p.ID, TargetID: a.TargetID, DocumentID: a.DocumentID}
+	f := db.WorkbenchCommentFilter{WorkbenchID: p.ID, TargetID: a.TargetID, DocumentID: a.DocumentID}
 	f.NewForAgent = a.TargetID == 0 && a.DocumentID == 0
 	if a.NewForAgent != nil {
 		f.NewForAgent = *a.NewForAgent
 	}
 	if a.TargetID != 0 {
-		if _, err := targetInProject(d, p.ID, a.TargetID); err != nil {
+		if _, err := targetInWorkbench(d, p.ID, a.TargetID); err != nil {
 			return f, err
 		}
 	}
 	if a.DocumentID != 0 {
-		if _, err := documentInProject(d, p.ID, a.DocumentID); err != nil {
+		if _, err := documentInWorkbench(d, p.ID, a.DocumentID); err != nil {
 			return f, err
 		}
 	}
 	return f, nil
 }
 
-func commentViews(comments []db.ProjectComment) []projectCommentView {
-	out := make([]projectCommentView, 0, len(comments))
+func commentViews(comments []db.WorkbenchComment) []workbenchCommentView {
+	out := make([]workbenchCommentView, 0, len(comments))
 	for _, c := range comments {
-		out = append(out, projectCommentView{
+		out = append(out, workbenchCommentView{
 			ID: c.ID, TargetID: c.TargetID.Int64, DocumentID: c.DocumentID.Int64, ParentID: c.ParentID.Int64,
 			Author: c.Author, Body: c.Body, Status: c.Status,
 			Quote: c.AnchorQuote, Heading: c.AnchorHeading, CreatedAt: c.CreatedAt,
@@ -339,7 +339,7 @@ func NewAddComment() *Tool {
 			"Applied immediately.",
 		InputSchema: mustSchema[addCommentArgs]("add_comment"),
 		Access:      AccessWrite,
-		Surfaces:    projectSurfaces,
+		Surfaces:    workbenchSurfaces,
 		Validate: func(_ context.Context, _ *db.DB, raw json.RawMessage) error {
 			var a addCommentArgs
 			if err := decodeStrict(raw, &a); err != nil {
@@ -363,7 +363,7 @@ func NewAddComment() *Tool {
 			if err := json.Unmarshal(call.Args, &a); err != nil {
 				return nil, fmt.Errorf("decoding add_comment args: %w", err)
 			}
-			id, err := addAgentComment(d, call.Binding.ProjectID, a.TargetID, a.ParentID, a.Body)
+			id, err := addAgentComment(d, call.Binding.WorkbenchID, a.TargetID, a.ParentID, a.Body)
 			if err != nil {
 				return nil, err
 			}
@@ -373,27 +373,27 @@ func NewAddComment() *Tool {
 }
 
 func scopeComment(ctx context.Context, d *db.DB, b Binding, targetID, parentID int64) error {
-	if _, err := projectOf(ctx, d, b); err != nil {
+	if _, err := workbenchOf(ctx, d, b); err != nil {
 		return err
 	}
 	if targetID != 0 {
-		_, err := targetInProject(d, b.ProjectID, targetID)
+		_, err := targetInWorkbench(d, b.WorkbenchID, targetID)
 		return err
 	}
-	_, err := commentInProject(d, b.ProjectID, parentID)
+	_, err := commentInWorkbench(d, b.WorkbenchID, parentID)
 	return err
 }
 
 func addAgentComment(d *db.DB, projectID, targetID, parentID int64, body string) (int64, error) {
-	id, err := d.AddProjectComment(agentComment(projectID, targetID, parentID, body))
+	id, err := d.AddWorkbenchComment(agentComment(projectID, targetID, parentID, body))
 	if err != nil {
 		return 0, fmt.Errorf("adding comment: %w", err)
 	}
 	return id, nil
 }
 
-func agentComment(projectID, targetID, parentID int64, body string) db.ProjectComment {
-	c := db.ProjectComment{ProjectID: projectID, Author: "agent", AgentLabel: projectAgentLabel, Body: strings.TrimSpace(body)}
+func agentComment(projectID, targetID, parentID int64, body string) db.WorkbenchComment {
+	c := db.WorkbenchComment{WorkbenchID: projectID, Author: "agent", AgentLabel: workbenchAgentLabel, Body: strings.TrimSpace(body)}
 	if targetID != 0 {
 		c.TargetID = sql.NullInt64{Int64: targetID, Valid: true}
 	}
@@ -419,7 +419,7 @@ func NewResolveComment() *Tool {
 			"one-line reply saying what changed. Applied immediately.",
 		InputSchema: mustSchema[resolveCommentArgs]("resolve_comment"),
 		Access:      AccessWrite,
-		Surfaces:    projectSurfaces,
+		Surfaces:    workbenchSurfaces,
 		Validate: func(_ context.Context, _ *db.DB, raw json.RawMessage) error {
 			var a resolveCommentArgs
 			if err := decodeStrict(raw, &a); err != nil {
@@ -442,16 +442,16 @@ func NewResolveComment() *Tool {
 			if err := json.Unmarshal(call.Args, &a); err != nil {
 				return nil, fmt.Errorf("decoding resolve_comment args: %w", err)
 			}
-			return resolveComment(d, call.Binding.ProjectID, a)
+			return resolveComment(d, call.Binding.WorkbenchID, a)
 		},
 	}
 }
 
 func scopeResolve(ctx context.Context, d *db.DB, b Binding, commentID int64) error {
-	if _, err := projectOf(ctx, d, b); err != nil {
+	if _, err := workbenchOf(ctx, d, b); err != nil {
 		return err
 	}
-	c, err := commentInProject(d, b.ProjectID, commentID)
+	c, err := commentInWorkbench(d, b.WorkbenchID, commentID)
 	if err != nil {
 		return err
 	}
@@ -467,13 +467,13 @@ func resolveComment(d *db.DB, projectID int64, a resolveCommentArgs) (any, error
 	out := map[string]any{"comment_id": a.CommentID}
 	err := d.WithTx(func(tx *sql.Tx) error {
 		if strings.TrimSpace(a.Reply) != "" {
-			id, err := d.AddProjectCommentTx(tx, agentComment(projectID, 0, a.CommentID, a.Reply))
+			id, err := d.AddWorkbenchCommentTx(tx, agentComment(projectID, 0, a.CommentID, a.Reply))
 			if err != nil {
 				return fmt.Errorf("adding comment: %w", err)
 			}
 			out["reply_id"] = id
 		}
-		if err := d.SetProjectCommentStatusTx(tx, a.CommentID, "resolved"); err != nil {
+		if err := d.SetWorkbenchCommentStatusTx(tx, a.CommentID, "resolved"); err != nil {
 			return fmt.Errorf("resolving comment %d: %w", a.CommentID, err)
 		}
 		return nil

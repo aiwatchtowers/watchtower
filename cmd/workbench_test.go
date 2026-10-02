@@ -20,9 +20,9 @@ import (
 	"watchtower/internal/kb"
 )
 
-// runProject executes the real "project" command tree via rootCmd (the
+// runWorkbench executes the real "project" command tree via rootCmd (the
 // runActions precedent) with stdout and stderr captured separately.
-func runProject(t *testing.T, args ...string) (stdout, stderr string, err error) {
+func runWorkbench(t *testing.T, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
 	var out, errOut bytes.Buffer
 	rootCmd.SetOut(&out)
@@ -30,14 +30,14 @@ func runProject(t *testing.T, args ...string) (stdout, stderr string, err error)
 	rootCmd.SetArgs(append([]string{"project"}, args...))
 	err = rootCmd.Execute()
 	rootCmd.SetArgs(nil)
-	projectFlagJSON = false
-	projectCreateFlagFolder = ""
-	projectCreateFlagName = ""
-	projectBriefFlagProject = ""
-	projectImportFlagDryRun = false
-	projectAttachFlagKind = "doc"
-	projectAttachFlagTitle = ""
-	projectAttachFlagTarget = 0
+	workbenchFlagJSON = false
+	workbenchCreateFlagFolder = ""
+	workbenchCreateFlagName = ""
+	workbenchBriefFlagWorkbench = ""
+	workbenchImportFlagDryRun = false
+	workbenchAttachFlagKind = "doc"
+	workbenchAttachFlagTitle = ""
+	workbenchAttachFlagTarget = 0
 	return out.String(), errOut.String(), err
 }
 
@@ -51,16 +51,16 @@ func TestProject_CreateStoresTheResolvedFolderAndDefaultsTheName(t *testing.T) {
 	want, err := filepath.EvalSymlinks(realDir)
 	require.NoError(t, err)
 
-	out, _, err := runProject(t, "create", "--folder", link, "--json")
+	out, _, err := runWorkbench(t, "create", "--folder", link, "--json")
 	require.NoError(t, err)
-	var got projectJSON
+	var got workbenchJSON
 	require.NoError(t, json.Unmarshal([]byte(out), &got))
 	assert.Positive(t, got.ID)
 	assert.Equal(t, want, got.Folder, "the symlink-resolved absolute path is stored")
 	assert.Equal(t, "my проект", got.Name, "the name defaults to the folder's base name")
 
-	out, _, err = runProject(t, "create", "--folder", realDir, "--name", "Acme", "--json")
-	assert.ErrorIs(t, err, db.ErrProjectFolderTaken, "the real path of an already-bound symlink is taken: %s", out)
+	out, _, err = runWorkbench(t, "create", "--folder", realDir, "--name", "Acme", "--json")
+	assert.ErrorIs(t, err, db.ErrWorkbenchFolderTaken, "the real path of an already-bound symlink is taken: %s", out)
 }
 
 // #79: create attaches the folder's README/specs/plans as imported
@@ -72,14 +72,14 @@ func TestProject_CreateImportsFolderDocsAndImportDocsIsAdditive(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(folder, "docs", "specs"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(folder, "docs", "specs", "x.md"), []byte("# x"), 0o644))
 
-	out, _, err := runProject(t, "create", "--folder", folder, "--json")
+	out, _, err := runWorkbench(t, "create", "--folder", folder, "--json")
 	require.NoError(t, err)
-	var created projectCreateJSON
+	var created workbenchCreateJSON
 	require.NoError(t, json.Unmarshal([]byte(out), &created))
 	assert.True(t, created.DocsImportOK)
 	require.NotNil(t, created.DocsImport)
 	assert.ElementsMatch(t, []string{"README.md", "docs/specs/x.md"}, created.DocsImport.Imported)
-	docs, err := database.ListProjectDocuments(created.ID)
+	docs, err := database.ListWorkbenchDocuments(created.ID)
 	require.NoError(t, err)
 	require.Len(t, docs, 2)
 	assert.Equal(t, "import", docs[0].Origin)
@@ -87,17 +87,17 @@ func TestProject_CreateImportsFolderDocsAndImportDocsIsAdditive(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(folder, "docs", "plans"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(folder, "docs", "plans", "y.md"), []byte("# y"), 0o644))
 	id := strconv.FormatInt(created.ID, 10)
-	out, _, err = runProject(t, "import-docs", id, "--dry-run")
+	out, _, err = runWorkbench(t, "import-docs", id, "--dry-run")
 	require.NoError(t, err)
 	assert.Contains(t, out, "Would import 1 document(s); 2 already attached.")
-	docs, err = database.ListProjectDocuments(created.ID)
+	docs, err = database.ListWorkbenchDocuments(created.ID)
 	require.NoError(t, err)
 	assert.Len(t, docs, 2, "a dry run writes nothing")
 
-	out, _, err = runProject(t, "import-docs", id, "--json")
+	out, _, err = runWorkbench(t, "import-docs", id, "--json")
 	require.NoError(t, err)
 	assert.Contains(t, out, "docs/plans/y.md")
-	docs, err = database.ListProjectDocuments(created.ID)
+	docs, err = database.ListWorkbenchDocuments(created.ID)
 	require.NoError(t, err)
 	assert.Len(t, docs, 3)
 }
@@ -111,38 +111,38 @@ func TestProject_AttachDocAttachesOwnerDocumentsInsideTheFolderOnly(t *testing.T
 	require.NoError(t, os.WriteFile(filepath.Join(folder, "notes", "idea.md"), []byte("# idea"), 0o644))
 	outside := filepath.Join(t.TempDir(), "secret.md")
 	require.NoError(t, os.WriteFile(outside, []byte("secret"), 0o644))
-	out, _, err := runProject(t, "create", "--folder", folder, "--json")
+	out, _, err := runWorkbench(t, "create", "--folder", folder, "--json")
 	require.NoError(t, err)
-	var created projectCreateJSON
+	var created workbenchCreateJSON
 	require.NoError(t, json.Unmarshal([]byte(out), &created))
 	id := strconv.FormatInt(created.ID, 10)
 	resolved, err := filepath.EvalSymlinks(folder)
 	require.NoError(t, err)
 
 	// The Desktop's argv shape: flags first, then `--`, then id and path.
-	out, _, err = runProject(t, "attach-doc", "--kind", "spec", "--json", "--", id, filepath.Join(resolved, "notes", "idea.md"))
+	out, _, err = runWorkbench(t, "attach-doc", "--kind", "spec", "--json", "--", id, filepath.Join(resolved, "notes", "idea.md"))
 	require.NoError(t, err)
-	var got projectAttachDocJSON
+	var got workbenchAttachDocJSON
 	require.NoError(t, json.Unmarshal([]byte(out), &got))
 	assert.True(t, got.Created)
 	assert.Equal(t, "notes/idea.md", got.RelPath)
-	doc, err := database.GetProjectDocument(got.DocumentID)
+	doc, err := database.GetWorkbenchDocument(got.DocumentID)
 	require.NoError(t, err)
 	assert.Equal(t, "owner", doc.Origin)
 	assert.Equal(t, "spec", doc.Kind)
 	assert.Equal(t, "idea", doc.Title, "the title defaults to the file name")
 
-	out, _, err = runProject(t, "attach-doc", id, "notes/idea.md")
+	out, _, err = runWorkbench(t, "attach-doc", id, "notes/idea.md")
 	require.NoError(t, err)
 	assert.Contains(t, out, "already attached")
 
-	_, _, err = runProject(t, "attach-doc", id, outside)
+	_, _, err = runWorkbench(t, "attach-doc", id, outside)
 	assert.ErrorContains(t, err, "outside the project folder")
-	_, _, err = runProject(t, "attach-doc", id, "notes/idea.md", "--kind", "memo")
+	_, _, err = runWorkbench(t, "attach-doc", id, "notes/idea.md", "--kind", "memo")
 	assert.Error(t, err, "unknown kind")
-	_, _, err = runProject(t, "attach-doc", id, "notes/idea.md", "--target", "999")
-	assert.ErrorIs(t, err, db.ErrNotInProject)
-	docs, err := database.ListProjectDocuments(created.ID)
+	_, _, err = runWorkbench(t, "attach-doc", id, "notes/idea.md", "--target", "999")
+	assert.ErrorIs(t, err, db.ErrNotInWorkbench)
+	docs, err := database.ListWorkbenchDocuments(created.ID)
 	require.NoError(t, err)
 	assert.Len(t, docs, 1)
 }
@@ -158,9 +158,9 @@ func TestProject_CreateJSONReportsAFailedImportOnStderr(t *testing.T) {
 	require.NoError(t, os.Chmod(locked, 0))
 	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
 
-	out, errOut, err := runProject(t, "create", "--folder", folder, "--json")
+	out, errOut, err := runWorkbench(t, "create", "--folder", folder, "--json")
 	require.NoError(t, err)
-	var created projectCreateJSON
+	var created workbenchCreateJSON
 	require.NoError(t, json.Unmarshal([]byte(out), &created))
 	assert.Positive(t, created.ID)
 	assert.False(t, created.DocsImportOK)
@@ -171,48 +171,48 @@ func TestProject_CreateJSONReportsAFailedImportOnStderr(t *testing.T) {
 
 func TestProject_CreateRefusesMissingAndAlreadyBoundFolders(t *testing.T) {
 	writeActionsConfig(t)
-	_, _, err := runProject(t, "create", "--folder", filepath.Join(t.TempDir(), "gone"))
+	_, _, err := runWorkbench(t, "create", "--folder", filepath.Join(t.TempDir(), "gone"))
 	assert.Error(t, err, "a missing directory is refused")
-	_, _, err = runProject(t, "create")
+	_, _, err = runWorkbench(t, "create")
 	assert.ErrorContains(t, err, "--folder is required")
 
 	folder := t.TempDir()
-	_, _, err = runProject(t, "create", "--folder", folder)
+	_, _, err = runWorkbench(t, "create", "--folder", folder)
 	require.NoError(t, err)
-	_, _, err = runProject(t, "create", "--folder", folder)
-	assert.ErrorIs(t, err, db.ErrProjectFolderTaken)
+	_, _, err = runWorkbench(t, "create", "--folder", folder)
+	assert.ErrorIs(t, err, db.ErrWorkbenchFolderTaken)
 }
 
 func TestProject_ListShowAndBoardJSON(t *testing.T) {
 	database := writeActionsConfig(t)
-	pid, err := database.CreateProject("acme", t.TempDir())
+	pid, err := database.CreateWorkbench("acme", t.TempDir())
 	require.NoError(t, err)
-	_, err = database.CreateProject("other", t.TempDir())
+	_, err = database.CreateWorkbench("other", t.TempDir())
 	require.NoError(t, err)
 	var ids []int64
 	require.NoError(t, database.WithTx(func(tx *sql.Tx) error {
 		var err error
-		ids, err = database.CreateProjectTargetsTx(tx, pid, []db.ProjectTargetInput{
+		ids, err = database.CreateWorkbenchTargetsTx(tx, pid, []db.WorkbenchTargetInput{
 			{Title: "feature", Priority: "high"}, {Title: "task 1", BatchParent: 1},
 		})
 		return err
 	}))
 	require.NoError(t, database.UpdateTargetStatus(int(ids[1]), "in_progress"))
-	_, err = database.AddProjectSource(db.ProjectSource{ProjectID: pid, Kind: "link", Ref: "https://example.com", Label: "site"})
+	_, err = database.AddWorkbenchSource(db.WorkbenchSource{WorkbenchID: pid, Kind: "link", Ref: "https://example.com", Label: "site"})
 	require.NoError(t, err)
-	_, err = database.AddProjectComment(db.ProjectComment{ProjectID: pid, TargetID: sql.NullInt64{Int64: ids[0], Valid: true},
+	_, err = database.AddWorkbenchComment(db.WorkbenchComment{WorkbenchID: pid, TargetID: sql.NullInt64{Int64: ids[0], Valid: true},
 		Author: "owner", Body: "go"})
 	require.NoError(t, err)
 
-	out, _, err := runProject(t, "list", "--json")
+	out, _, err := runWorkbench(t, "list", "--json")
 	require.NoError(t, err)
-	var list []projectJSON
+	var list []workbenchJSON
 	require.NoError(t, json.Unmarshal([]byte(out), &list))
 	assert.Len(t, list, 2)
 
-	out, _, err = runProject(t, "show", strconv.FormatInt(pid, 10), "--json")
+	out, _, err = runWorkbench(t, "show", strconv.FormatInt(pid, 10), "--json")
 	require.NoError(t, err)
-	var view projectViewJSON
+	var view workbenchViewJSON
 	require.NoError(t, json.Unmarshal([]byte(out), &view))
 	assert.Equal(t, "acme", view.Name)
 	require.Len(t, view.Sources, 1)
@@ -221,7 +221,7 @@ func TestProject_ListShowAndBoardJSON(t *testing.T) {
 	assert.Equal(t, 0, view.Counts["todo"])
 	assert.Equal(t, 2, view.Counts["in_progress"])
 
-	out, _, err = runProject(t, "board", strconv.FormatInt(pid, 10), "--json")
+	out, _, err = runWorkbench(t, "board", strconv.FormatInt(pid, 10), "--json")
 	require.NoError(t, err)
 	var board []boardNodeJSON
 	require.NoError(t, json.Unmarshal([]byte(out), &board))
@@ -235,13 +235,13 @@ func TestProject_ListShowAndBoardJSON(t *testing.T) {
 	assert.NotEmpty(t, board[0].Children[0].StatusSince)
 	assert.Equal(t, "medium", board[0].Children[0].Priority)
 
-	out, _, err = runProject(t, "board", strconv.FormatInt(pid, 10))
+	out, _, err = runWorkbench(t, "board", strconv.FormatInt(pid, 10))
 	require.NoError(t, err)
 	assert.Contains(t, out, "[in_progress <1m, high] feature", "status with its time in status (PROJ-06)")
 
-	_, _, err = runProject(t, "show", "999")
-	assert.ErrorIs(t, err, db.ErrProjectNotFound)
-	_, _, err = runProject(t, "board", "abc")
+	_, _, err = runWorkbench(t, "show", "999")
+	assert.ErrorIs(t, err, db.ErrWorkbenchNotFound)
+	_, _, err = runWorkbench(t, "board", "abc")
 	assert.Error(t, err)
 }
 
@@ -249,41 +249,41 @@ func TestProject_ListShowAndBoardJSON(t *testing.T) {
 // runs first; its failure is reported and the delete still happens (spec §4.4).
 func TestProject_DeleteStillDeletesWhenInstallRemovalFails(t *testing.T) {
 	database := writeActionsConfig(t)
-	pid, err := database.CreateProject("acme", t.TempDir())
+	pid, err := database.CreateWorkbench("acme", t.TempDir())
 	require.NoError(t, err)
-	db.SeedTestProjectTarget(t, database, pid, sql.NullInt64{}, "board item")
+	db.SeedTestWorkbenchTarget(t, database, pid, sql.NullInt64{}, "board item")
 
-	var removed *db.Project
-	orig := projectRemoveInstall
-	projectRemoveInstall = func(_ context.Context, _ *config.Config, p *db.Project) error {
+	var removed *db.Workbench
+	orig := workbenchRemoveInstall
+	workbenchRemoveInstall = func(_ context.Context, _ *config.Config, p *db.Workbench) error {
 		removed = p
 		return errors.New("folder is read-only")
 	}
-	t.Cleanup(func() { projectRemoveInstall = orig })
+	t.Cleanup(func() { workbenchRemoveInstall = orig })
 
-	out, errOut, err := runProject(t, "delete", strconv.FormatInt(pid, 10))
+	out, errOut, err := runWorkbench(t, "delete", strconv.FormatInt(pid, 10))
 	require.NoError(t, err)
 	require.NotNil(t, removed, "the folder cleanup ran")
 	assert.Equal(t, pid, removed.ID)
 	assert.Contains(t, errOut, "folder is read-only")
 	assert.Contains(t, out, "Deleted project")
 
-	_, err = database.GetProject(pid)
-	assert.ErrorIs(t, err, db.ErrProjectNotFound)
+	_, err = database.GetWorkbench(pid)
+	assert.ErrorIs(t, err, db.ErrWorkbenchNotFound)
 	var n int
 	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM targets WHERE project_id = ?`, pid).Scan(&n))
 	assert.Zero(t, n)
 
-	_, _, err = runProject(t, "delete", strconv.FormatInt(pid, 10))
-	assert.ErrorIs(t, err, db.ErrProjectNotFound)
+	_, _, err = runWorkbench(t, "delete", strconv.FormatInt(pid, 10))
+	assert.ErrorIs(t, err, db.ErrWorkbenchNotFound)
 }
 
 // TestProject_DeleteJSONReportsTheFolderCleanupOutcome: --json carries the
 // cleanup outcome the stderr warning alone hid from the Desktop.
 func TestProject_DeleteJSONReportsTheFolderCleanupOutcome(t *testing.T) {
 	database := writeActionsConfig(t)
-	orig := projectRemoveInstall
-	t.Cleanup(func() { projectRemoveInstall = orig })
+	orig := workbenchRemoveInstall
+	t.Cleanup(func() { workbenchRemoveInstall = orig })
 
 	for _, tc := range []struct {
 		name      string
@@ -295,11 +295,11 @@ func TestProject_DeleteJSONReportsTheFolderCleanupOutcome(t *testing.T) {
 		{name: "removal fails", removeErr: errors.New("folder is read-only"), wantError: "folder is read-only"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pid, err := database.CreateProject("acme", t.TempDir())
+			pid, err := database.CreateWorkbench("acme", t.TempDir())
 			require.NoError(t, err)
-			projectRemoveInstall = func(context.Context, *config.Config, *db.Project) error { return tc.removeErr }
+			workbenchRemoveInstall = func(context.Context, *config.Config, *db.Workbench) error { return tc.removeErr }
 
-			out, _, err := runProject(t, "delete", strconv.FormatInt(pid, 10), "--json")
+			out, _, err := runWorkbench(t, "delete", strconv.FormatInt(pid, 10), "--json")
 			require.NoError(t, err)
 			var got map[string]any
 			require.NoError(t, json.Unmarshal([]byte(out), &got), "stdout is exactly one JSON object: %q", out)
@@ -307,8 +307,8 @@ func TestProject_DeleteJSONReportsTheFolderCleanupOutcome(t *testing.T) {
 				"id": float64(pid), "deleted": true, "removal_ok": tc.wantOK, "removal_error": tc.wantError,
 				"files_ok": true, "files_error": "",
 			}, got)
-			_, err = database.GetProject(pid)
-			assert.ErrorIs(t, err, db.ErrProjectNotFound)
+			_, err = database.GetWorkbench(pid)
+			assert.ErrorIs(t, err, db.ErrWorkbenchNotFound)
 		})
 	}
 }
@@ -325,8 +325,8 @@ func TestProject_CreateRefusesWatchtowerOwnDirs(t *testing.T) {
 		filepath.Join(home, "Library", "Application Support", "Watchtower", "recordings"),
 	} {
 		require.NoError(t, os.MkdirAll(dir, 0o755))
-		_, _, err := runProject(t, "create", "--folder", dir)
-		assert.ErrorIs(t, err, db.ErrProjectFolderNotAllowed, dir)
+		_, _, err := runWorkbench(t, "create", "--folder", dir)
+		assert.ErrorIs(t, err, db.ErrWorkbenchFolderNotAllowed, dir)
 	}
 }
 
@@ -344,14 +344,14 @@ func TestProj08_OwnerAttachPathsIndexTheDocumentsAtOnce(t *testing.T) {
 
 	search := func(pid int64, word string) int {
 		t.Helper()
-		res, err := kb.Search(context.Background(), database, kb.Request{Queries: []string{word}, ProjectID: pid})
+		res, err := kb.Search(context.Background(), database, kb.Request{Queries: []string{word}, WorkbenchID: pid})
 		require.NoError(t, err)
 		return len(res.Hits)
 	}
 
-	out, _, err := runProject(t, "create", "--folder", folder, "--json")
+	out, _, err := runWorkbench(t, "create", "--folder", folder, "--json")
 	require.NoError(t, err)
-	var created projectCreateJSON
+	var created workbenchCreateJSON
 	require.NoError(t, json.Unmarshal([]byte(out), &created))
 	pid := created.ID
 	id := strconv.FormatInt(pid, 10)
@@ -360,17 +360,17 @@ func TestProj08_OwnerAttachPathsIndexTheDocumentsAtOnce(t *testing.T) {
 	assert.Zero(t, search(0, "zebrafinch"), "and only from the project's own session")
 
 	require.NoError(t, os.WriteFile(filepath.Join(folder, "docs", "plans", "p.md"), []byte("# plan\nquokka\n"), 0o644))
-	_, _, err = runProject(t, "import-docs", id, "--dry-run")
+	_, _, err = runWorkbench(t, "import-docs", id, "--dry-run")
 	require.NoError(t, err)
 	assert.Zero(t, search(pid, "quokka"), "a dry run indexes nothing")
-	_, _, err = runProject(t, "import-docs", id)
+	_, _, err = runWorkbench(t, "import-docs", id)
 	require.NoError(t, err)
 	assert.Equal(t, 1, search(pid, "quokka"), "import-docs: the new plan is searchable at once")
 
 	require.NoError(t, os.WriteFile(filepath.Join(folder, "note.md"), []byte("# note\nnarwhal\n"), 0o644))
-	out, _, err = runProject(t, "attach-doc", id, "note.md", "--json")
+	out, _, err = runWorkbench(t, "attach-doc", id, "note.md", "--json")
 	require.NoError(t, err)
-	var attached projectAttachDocJSON
+	var attached workbenchAttachDocJSON
 	require.NoError(t, json.Unmarshal([]byte(out), &attached))
 	assert.True(t, attached.IndexOK, attached.IndexError)
 	assert.Equal(t, 1, search(pid, "narwhal"), "attach-doc: the owner's document is searchable at once")
@@ -381,14 +381,14 @@ func TestProj08_OwnerAttachPathsIndexTheDocumentsAtOnce(t *testing.T) {
 	require.NoError(t, os.MkdirAll(other, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(other, "README.md"), []byte("# other\nokapi\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(other, "n.md"), []byte("# n\nokapi\n"), 0o644))
-	out, _, err = runProject(t, "create", "--folder", other, "--json")
+	out, _, err = runWorkbench(t, "create", "--folder", other, "--json")
 	require.NoError(t, err)
 	require.NoError(t, json.Unmarshal([]byte(out), &created))
 	assert.True(t, created.IndexSkipped)
-	_, _, err = runProject(t, "attach-doc", strconv.FormatInt(created.ID, 10), "n.md")
+	_, _, err = runWorkbench(t, "attach-doc", strconv.FormatInt(created.ID, 10), "n.md")
 	require.NoError(t, err)
 	var n int
-	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM kb_documents WHERE source = ?`, kb.ProjectDocSource).Scan(&n))
+	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM kb_documents WHERE source = ?`, kb.WorkbenchDocSource).Scan(&n))
 	assert.Equal(t, 3, n, "only the first project's three documents are indexed")
 }
 
@@ -396,7 +396,7 @@ func TestProj08_OwnerAttachPathsIndexTheDocumentsAtOnce(t *testing.T) {
 // naming the retry, and the outcome the JSON envelopes carry.
 func TestProj08_IndexFailureIsAWarningNotAnError(t *testing.T) {
 	database := writeActionsConfig(t)
-	pid, err := database.CreateProject("acme", t.TempDir())
+	pid, err := database.CreateWorkbench("acme", t.TempDir())
 	require.NoError(t, err)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -405,7 +405,7 @@ func TestProj08_IndexFailureIsAWarningNotAnError(t *testing.T) {
 	cmd.SetContext(ctx)
 	cmd.SetErr(&errOut)
 
-	got := indexProjectDocs(cmd, true, database, pid)
+	got := indexWorkbenchDocs(cmd, true, database, pid)
 	assert.False(t, got.IndexOK)
 	assert.NotEmpty(t, got.IndexError)
 	assert.Contains(t, errOut.String(), "warning: indexing the project's documents for search failed")

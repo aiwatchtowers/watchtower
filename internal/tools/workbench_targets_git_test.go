@@ -10,8 +10,8 @@ import (
 
 // #131: project targets link to their git branch and pull request.
 func TestProjectTargets_BranchAndPRAreSetShownAndCleared(t *testing.T) {
-	fx := newProjectFixture(t)
-	reg := projectRegistry(t, fx.d)
+	fx := newWorkbenchFixture(t)
+	reg := workbenchRegistry(t, fx.d)
 	out := mustApply(t, reg, fx.a, "create_targets",
 		`{"items":[{"text":"Feature","branch":"feature/x","pr":"#12"}],"reason":"plan"}`)
 	created := out["created"].([]any)
@@ -43,8 +43,8 @@ func TestProjectTargets_BranchAndPRAreSetShownAndCleared(t *testing.T) {
 }
 
 func TestProjectTargets_GitLinksMustBeOneTokenNeverAnOption(t *testing.T) {
-	fx := newProjectFixture(t)
-	reg := projectRegistry(t, fx.d)
+	fx := newWorkbenchFixture(t)
+	reg := workbenchRegistry(t, fx.d)
 	cases := []struct{ name, tool, args string }{
 		{"option branch", "create_targets", `{"items":[{"text":"F","branch":"--upload-pack=x"}],"reason":"r"}`},
 		{"spaced pr", "create_targets", `{"items":[{"text":"F","pr":"12 13"}],"reason":"r"}`},

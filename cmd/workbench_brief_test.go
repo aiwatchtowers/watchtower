@@ -18,16 +18,16 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/kb"
-	"watchtower/internal/projectcheck"
 	"watchtower/internal/tools"
+	"watchtower/internal/workbenchcheck"
 )
 
 func briefNode(id int, status, title string, children ...db.BoardNode) db.BoardNode {
 	return db.BoardNode{Target: db.Target{ID: id, Status: status, Priority: "medium", Text: title}, Children: children}
 }
 
-func briefProject() *db.Project {
-	return &db.Project{ID: 7, Name: "acme", FolderPath: "/tmp/acme", Description: "A demo project."}
+func briefWorkbench() *db.Workbench {
+	return &db.Workbench{ID: 7, Name: "acme", FolderPath: "/tmp/acme", Description: "A demo project."}
 }
 
 // TestRenderProjectBrief_LargeBoardStaysWithinBudget: whatever the board
@@ -45,10 +45,10 @@ func TestRenderProjectBrief_LargeBoardStaysWithinBudget(t *testing.T) {
 		}
 		board = append(board, root)
 	}
-	docs := map[int64]db.ProjectDocument{1: {ID: 1, RelPath: "docs/plan.md"}}
-	var comments []db.ProjectComment
+	docs := map[int64]db.WorkbenchDocument{1: {ID: 1, RelPath: "docs/plan.md"}}
+	var comments []db.WorkbenchComment
 	for i := 0; i < 150; i++ {
-		c := db.ProjectComment{ID: int64(1000 + i), Author: "owner", Body: strings.Repeat("Please revise this. ", 25)}
+		c := db.WorkbenchComment{ID: int64(1000 + i), Author: "owner", Body: strings.Repeat("Please revise this. ", 25)}
 		if i%2 == 0 {
 			c.DocumentID = sql.NullInt64{Int64: 1, Valid: true}
 			c.AnchorHeading = strings.Repeat("Heading ", 20)
@@ -58,11 +58,11 @@ func TestRenderProjectBrief_LargeBoardStaysWithinBudget(t *testing.T) {
 		}
 		comments = append(comments, c)
 	}
-	p := briefProject()
+	p := briefWorkbench()
 	p.Name = strings.Repeat("very long name ", 500)
 	p.FolderPath = "/tmp/" + strings.Repeat("deep/", 500)
 
-	out := renderProjectBrief(board, p, comments, docs, projectcheck.Report{}, nil, time.Now())
+	out := renderWorkbenchBrief(board, p, comments, docs, workbenchcheck.Report{}, nil, time.Now())
 
 	assert.LessOrEqual(t, utf8.RuneCountInString(out), briefMaxChars)
 	assert.True(t, utf8.ValidString(out))
@@ -80,7 +80,7 @@ func TestRenderProjectBrief_InReviewShowsTimeInStatus(t *testing.T) {
 	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
 	review := briefNode(8, "in_review", "reviewed task")
 	review.StatusSince = "2026-09-30T09:00:00Z"
-	out := renderProjectBrief([]db.BoardNode{review}, briefProject(), nil, nil, projectcheck.Report{}, nil, now)
+	out := renderWorkbenchBrief([]db.BoardNode{review}, briefWorkbench(), nil, nil, workbenchcheck.Report{}, nil, now)
 
 	assert.Contains(t, out, "Targets: 0 in progress, 1 in review, 0 blocked, 0 todo, 0 done.")
 	assert.Contains(t, out, "- #8 [in_review 3h, medium, 0%] reviewed task")
@@ -107,7 +107,7 @@ func TestRenderProjectBrief_OpenTreeInProgressFirstDoneOmitted(t *testing.T) {
 		briefNode(1, "todo", "later feature"),
 		briefNode(2, "done", "shipped feature", briefNode(5, "todo", "leftover task")),
 	}
-	out := renderProjectBrief(board, briefProject(), nil, nil, projectcheck.Report{}, nil, time.Now())
+	out := renderWorkbenchBrief(board, briefWorkbench(), nil, nil, workbenchcheck.Report{}, nil, time.Now())
 
 	assert.Contains(t, out, "Targets: 1 in progress, 0 in review, 0 blocked, 3 todo, 1 done.")
 	active := strings.Index(out, "#3 [in_progress")
@@ -132,7 +132,7 @@ func TestRenderProjectBrief_ActiveWorkFirstWhateverItsPriority(t *testing.T) {
 	}
 	// Board order (priority, then status): #4, #1, #2, #3.
 	board := []db.BoardNode{node(4, "in_progress", "high"), node(1, "todo", "high"), node(2, "in_progress", "medium"), node(3, "blocked", "low")}
-	out := renderProjectBrief(board, briefProject(), nil, nil, projectcheck.Report{}, nil, time.Now())
+	out := renderWorkbenchBrief(board, briefWorkbench(), nil, nil, workbenchcheck.Report{}, nil, time.Now())
 	var order []int
 	for _, id := range []int{4, 2, 3, 1} {
 		i := strings.Index(out, fmt.Sprintf("#%d [", id))
@@ -148,7 +148,7 @@ func TestRenderProjectBrief_ActiveWorkFirstWhateverItsPriority(t *testing.T) {
 		node(2, "todo", "low", node(3, "in_progress", "medium")),
 		node(4, "done", "low", node(5, "in_progress", "low")),
 	}
-	out = renderProjectBrief(board, briefProject(), nil, nil, projectcheck.Report{}, nil, time.Now())
+	out = renderWorkbenchBrief(board, briefWorkbench(), nil, nil, workbenchcheck.Report{}, nil, time.Now())
 	order = nil
 	for _, id := range []int{2, 3, 5, 1} {
 		i := strings.Index(out, fmt.Sprintf("#%d [", id))
@@ -164,20 +164,20 @@ func TestRenderProjectBrief_ActiveWorkFirstWhateverItsPriority(t *testing.T) {
 		big[len(big)-1].Target.Text = long
 	}
 	big = append(big, node(99, "in_progress", "low"))
-	out = renderProjectBrief(big, briefProject(), nil, nil, projectcheck.Report{}, nil, time.Now())
+	out = renderWorkbenchBrief(big, briefWorkbench(), nil, nil, workbenchcheck.Report{}, nil, time.Now())
 	assert.Contains(t, out, "more targets (project_board)", "the board is cut")
 	assert.Contains(t, out, "#99 [in_progress, low", "the active low-priority task survives the cut")
 }
 
 func TestRenderProjectBrief_CommentsTargetsFirstThenDocumentsWithHeadingAndQuote(t *testing.T) {
 	board := []db.BoardNode{briefNode(3, "in_progress", "active feature")}
-	docs := map[int64]db.ProjectDocument{9: {ID: 9, RelPath: "docs/plan.md"}}
-	comments := []db.ProjectComment{
+	docs := map[int64]db.WorkbenchDocument{9: {ID: 9, RelPath: "docs/plan.md"}}
+	comments := []db.WorkbenchComment{
 		{ID: 21, DocumentID: sql.NullInt64{Int64: 9, Valid: true}, Author: "owner", Body: "Split task 3",
 			AnchorHeading: "Task 3", AnchorQuote: "one big step"},
 		{ID: 22, TargetID: sql.NullInt64{Int64: 3, Valid: true}, Author: "owner", Body: "Use the new API"},
 	}
-	out := renderProjectBrief(board, briefProject(), comments, docs, projectcheck.Report{}, nil, time.Now())
+	out := renderWorkbenchBrief(board, briefWorkbench(), comments, docs, workbenchcheck.Report{}, nil, time.Now())
 
 	onTarget := strings.Index(out, `comment #22 on target #3 "active feature": Use the new API`)
 	onDoc := strings.Index(out, `comment #21 on document #9 docs/plan.md § Task 3 on "one big step": Split task 3`)
@@ -187,9 +187,9 @@ func TestRenderProjectBrief_CommentsTargetsFirstThenDocumentsWithHeadingAndQuote
 }
 
 func TestRenderProjectBrief_EmptyProjectAsksForSetup(t *testing.T) {
-	p := briefProject()
+	p := briefWorkbench()
 	p.Description = ""
-	out := renderProjectBrief(nil, p, nil, nil, projectcheck.Report{}, nil, time.Now())
+	out := renderWorkbenchBrief(nil, p, nil, nil, workbenchcheck.Report{}, nil, time.Now())
 	assert.Contains(t, out, "Setup pending")
 	assert.Contains(t, out, "Open targets: none.")
 	assert.Contains(t, out, "Board language: follow the session language")
@@ -197,7 +197,7 @@ func TestRenderProjectBrief_EmptyProjectAsksForSetup(t *testing.T) {
 
 func TestProjectBrief_DeletedProjectPrintsOneLineAndExitsZero(t *testing.T) {
 	writeActionsConfig(t)
-	out, _, err := runProject(t, "brief", "--project", "5")
+	out, _, err := runWorkbench(t, "brief", "--project", "5")
 	require.NoError(t, err, "a hook never fails the session start")
 	assert.Equal(t, "Watchtower: project 5 no longer exists.\n", out)
 }
@@ -206,11 +206,11 @@ func TestProjectBrief_MissingFolderPrintsOneLine(t *testing.T) {
 	database := writeActionsConfig(t)
 	folder := filepath.Join(t.TempDir(), "repo")
 	require.NoError(t, os.Mkdir(folder, 0o755))
-	pid, err := database.CreateProject("acme", folder)
+	pid, err := database.CreateWorkbench("acme", folder)
 	require.NoError(t, err)
 	require.NoError(t, os.RemoveAll(folder))
 
-	out, _, err := runProject(t, "brief", "--project", strconv.FormatInt(pid, 10))
+	out, _, err := runWorkbench(t, "brief", "--project", strconv.FormatInt(pid, 10))
 	require.NoError(t, err)
 	assert.Equal(t, 1, strings.Count(out, "\n"), out)
 	assert.Contains(t, out, "is missing")
@@ -224,45 +224,45 @@ func TestProjectBrief_UnreadableConfigPrintsOneLine(t *testing.T) {
 	flagConfig = cfgPath
 	t.Cleanup(func() { flagConfig = orig })
 
-	out, _, err := runProject(t, "brief", "--project", "5")
+	out, _, err := runWorkbench(t, "brief", "--project", "5")
 	require.NoError(t, err)
 	assert.Equal(t, 1, strings.Count(out, "\n"), out)
 	assert.True(t, strings.HasPrefix(out, "Watchtower: project 5 "), out)
 }
 
 func TestProjectBrief_NoProjectFlagPrintsOneLine(t *testing.T) {
-	out, _, err := runProject(t, "brief")
+	out, _, err := runWorkbench(t, "brief")
 	require.NoError(t, err, "a missing --project must never fail cobra's own parsing")
 	assert.Equal(t, "Watchtower: project 0 is unavailable: no --project id given.\n", out)
 }
 
 func TestProjectBrief_EmptyProjectFlagPrintsOneLine(t *testing.T) {
-	out, _, err := runProject(t, "brief", "--project", "")
+	out, _, err := runWorkbench(t, "brief", "--project", "")
 	require.NoError(t, err)
 	assert.Equal(t, "Watchtower: project 0 is unavailable: no --project id given.\n", out)
 }
 
 // TestProjectBrief_NonNumericProjectFlagPrintsOneLine: --project is a string
-// flag precisely so a non-numeric value is rejected by loadProjectBriefFlag,
+// flag precisely so a non-numeric value is rejected by loadWorkbenchBriefFlag,
 // not by cobra's own flag parser (which would exit non-zero before RunE ever
 // ran, breaking the "always exit 0" contract of a SessionStart hook).
 func TestProjectBrief_NonNumericProjectFlagPrintsOneLine(t *testing.T) {
-	out, _, err := runProject(t, "brief", "--project", "abc")
+	out, _, err := runWorkbench(t, "brief", "--project", "abc")
 	require.NoError(t, err, "an unparseable --project value must never fail cobra's own parsing")
 	assert.Equal(t, "Watchtower: project 0 is unavailable: invalid --project value \"abc\".\n", out)
 }
 
 func TestProjectBrief_RendersBoardFromDB(t *testing.T) {
 	database := writeActionsConfig(t)
-	pid, err := database.CreateProject("acme", t.TempDir())
+	pid, err := database.CreateWorkbench("acme", t.TempDir())
 	require.NoError(t, err)
-	tid := db.SeedTestProjectTarget(t, database, pid, sql.NullInt64{}, "Ship the board")
+	tid := db.SeedTestWorkbenchTarget(t, database, pid, sql.NullInt64{}, "Ship the board")
 	require.NoError(t, database.UpdateTargetStatus(int(tid), "in_progress"))
-	cid, err := database.AddProjectComment(db.ProjectComment{ProjectID: pid, TargetID: sql.NullInt64{Int64: tid, Valid: true},
+	cid, err := database.AddWorkbenchComment(db.WorkbenchComment{WorkbenchID: pid, TargetID: sql.NullInt64{Int64: tid, Valid: true},
 		Author: "owner", Body: "Keep it small"})
 	require.NoError(t, err)
 
-	out, _, err := runProject(t, "brief", "--project", strconv.FormatInt(pid, 10))
+	out, _, err := runWorkbench(t, "brief", "--project", strconv.FormatInt(pid, 10))
 	require.NoError(t, err)
 	assert.Contains(t, out, fmt.Sprintf("#%d [in_progress", tid))
 	assert.Contains(t, out, fmt.Sprintf("comment #%d on target #%d", cid, tid))
@@ -273,12 +273,12 @@ func TestProjectBrief_RendersBoardFromDB(t *testing.T) {
 // open tree (PROJ-07).
 func TestRenderProjectBrief_ManyDriftFindingsStayWithinBudget(t *testing.T) {
 	board := []db.BoardNode{{Target: db.Target{ID: 1, Text: "Active work", Status: "in_progress", Priority: "high"}}}
-	var drift []projectcheck.Finding
+	var drift []workbenchcheck.Finding
 	for i := 0; i < 60; i++ {
-		drift = append(drift, projectcheck.Finding{TargetID: 100 + i, Title: strings.Repeat("long title ", 10), Status: "in_progress",
-			Kind: projectcheck.KindMergedOpen, Detail: "branch x is merged into main", Fix: "set it done"})
+		drift = append(drift, workbenchcheck.Finding{TargetID: 100 + i, Title: strings.Repeat("long title ", 10), Status: "in_progress",
+			Kind: workbenchcheck.KindMergedOpen, Detail: "branch x is merged into main", Fix: "set it done"})
 	}
-	out := renderProjectBrief(board, briefProject(), nil, nil, projectcheck.Report{Findings: drift}, nil, time.Now())
+	out := renderWorkbenchBrief(board, briefWorkbench(), nil, nil, workbenchcheck.Report{Findings: drift}, nil, time.Now())
 	assert.LessOrEqual(t, utf8.RuneCountInString(out), briefMaxChars)
 	assert.Contains(t, out, "drift findings (watchtower project check)")
 	assert.Contains(t, out, "#1 [in_progress")
@@ -289,22 +289,22 @@ func TestRenderProjectBrief_ManyDriftFindingsStayWithinBudget(t *testing.T) {
 // clean board (PROJ-07).
 func TestProj07_BriefSaysWhenTheDriftCheckWasPartial(t *testing.T) {
 	board := []db.BoardNode{briefNode(1, "in_progress", "active")}
-	out := renderProjectBrief(board, briefProject(), nil, nil, projectcheck.Report{Incomplete: true}, nil, time.Now())
+	out := renderWorkbenchBrief(board, briefWorkbench(), nil, nil, workbenchcheck.Report{Incomplete: true}, nil, time.Now())
 	assert.Contains(t, out, "Board drift: none found, but the drift check ran out of time")
 
-	drift := projectcheck.Report{Incomplete: true, Findings: []projectcheck.Finding{{TargetID: 1, Title: "active", Status: "in_progress",
-		Kind: projectcheck.KindMergedOpen, Detail: "branch x is merged into main", Fix: "set it done"}}}
-	out = renderProjectBrief(board, briefProject(), nil, nil, drift, nil, time.Now())
+	drift := workbenchcheck.Report{Incomplete: true, Findings: []workbenchcheck.Finding{{TargetID: 1, Title: "active", Status: "in_progress",
+		Kind: workbenchcheck.KindMergedOpen, Detail: "branch x is merged into main", Fix: "set it done"}}}
+	out = renderWorkbenchBrief(board, briefWorkbench(), nil, nil, drift, nil, time.Now())
 	assert.Contains(t, out, "Board drift (the drift check ran out of time, so only part of the board was checked)")
 	assert.Contains(t, out, "branch x is merged into main")
 
-	out = renderProjectBrief(board, briefProject(), nil, nil, projectcheck.Report{Git: true, Base: "main"}, nil, time.Now())
+	out = renderWorkbenchBrief(board, briefWorkbench(), nil, nil, workbenchcheck.Report{Git: true, Base: "main"}, nil, time.Now())
 	assert.NotContains(t, out, "Board drift", "a complete check with nothing found adds no section")
-	out = renderProjectBrief(board, briefProject(), nil, nil, projectcheck.Report{}, nil, time.Now())
+	out = renderWorkbenchBrief(board, briefWorkbench(), nil, nil, workbenchcheck.Report{}, nil, time.Now())
 	assert.NotContains(t, out, "Board drift", "not a git repository: nothing to say")
 
-	skipped := projectcheck.Report{Git: true, Notes: []string{"default branch master could not be resolved locally or on origin; branch checks skipped"}}
-	out = renderProjectBrief(board, briefProject(), nil, nil, skipped, nil, time.Now())
+	skipped := workbenchcheck.Report{Git: true, Notes: []string{"default branch master could not be resolved locally or on origin; branch checks skipped"}}
+	out = renderWorkbenchBrief(board, briefWorkbench(), nil, nil, skipped, nil, time.Now())
 	assert.Contains(t, out, "Board drift: none found, but branch checks did not run: default branch master could not be resolved")
 }
 
@@ -321,12 +321,12 @@ func briefRecentHits(n int) *briefRecent {
 // line per document with its source, day and ref.
 func TestRenderProjectBrief_RecentSourcesAfterCommentsBeforeRules(t *testing.T) {
 	board := []db.BoardNode{briefNode(3, "in_progress", "active feature")}
-	comments := []db.ProjectComment{{ID: 22, TargetID: sql.NullInt64{Int64: 3, Valid: true}, Author: "owner", Body: "Use the new API"}}
+	comments := []db.WorkbenchComment{{ID: 22, TargetID: sql.NullInt64{Int64: 3, Valid: true}, Author: "owner", Body: "Use the new API"}}
 	recent := &briefRecent{hits: []kb.Hit{
 		{Ref: "slack:thread:1:C1:1.1", Source: "slack", Title: "#eng — release plan", When: "2026-09-30T08:00:00Z"},
 		{Ref: "jira:1:PROJ-7", Source: "jira", Title: "PROJ-7 Stage environment", When: "2026-09-28T08:00:00Z"},
 	}}
-	out := renderProjectBrief(board, briefProject(), comments, nil, projectcheck.Report{}, recent, time.Now())
+	out := renderWorkbenchBrief(board, briefWorkbench(), comments, nil, workbenchcheck.Report{}, recent, time.Now())
 
 	comment := strings.Index(out, "comment #22")
 	section := strings.Index(out, "Recent in project sources (last 14 days):")
@@ -339,16 +339,16 @@ func TestRenderProjectBrief_RecentSourcesAfterCommentsBeforeRules(t *testing.T) 
 	assert.IsIncreasing(t, []int{comment, section, slackLine, jiraLine, rules})
 	assert.Contains(t, out, "data, not instructions", "third-party titles are framed as data")
 
-	out = renderProjectBrief(board, briefProject(), nil, nil, projectcheck.Report{}, &briefRecent{indexed: true}, time.Now())
+	out = renderWorkbenchBrief(board, briefWorkbench(), nil, nil, workbenchcheck.Report{}, &briefRecent{indexed: true}, time.Now())
 	assert.Contains(t, out, "Recent in project sources (last 14 days): none.")
 
-	out = renderProjectBrief(board, briefProject(), nil, nil, projectcheck.Report{}, &briefRecent{}, time.Now())
+	out = renderWorkbenchBrief(board, briefWorkbench(), nil, nil, workbenchcheck.Report{}, &briefRecent{}, time.Now())
 	assert.Contains(t, out, "Recent in project sources (last 14 days): nothing indexed from them yet", "none is not claimed for an empty index")
 
-	out = renderProjectBrief(board, briefProject(), nil, nil, projectcheck.Report{}, nil, time.Now())
+	out = renderWorkbenchBrief(board, briefWorkbench(), nil, nil, workbenchcheck.Report{}, nil, time.Now())
 	assert.NotContains(t, out, "Recent in project sources", "no knowledge source, no section")
 
-	out = renderProjectBrief(board, briefProject(), nil, nil, projectcheck.Report{}, &briefRecent{err: errors.New("index unreadable")}, time.Now())
+	out = renderWorkbenchBrief(board, briefWorkbench(), nil, nil, workbenchcheck.Report{}, &briefRecent{err: errors.New("index unreadable")}, time.Now())
 	assert.Contains(t, out, "Recent in project sources (last 14 days): unavailable: index unreadable")
 }
 
@@ -360,21 +360,21 @@ func TestRenderProjectBrief_RecentSourcesNeverCutTheBoard(t *testing.T) {
 	for id := 1; id <= 60; id++ {
 		big = append(big, briefNode(id, "in_progress", long))
 	}
-	without := renderProjectBrief(big, briefProject(), nil, nil, projectcheck.Report{}, nil, time.Now())
-	with := renderProjectBrief(big, briefProject(), nil, nil, projectcheck.Report{}, briefRecentHits(8), time.Now())
+	without := renderWorkbenchBrief(big, briefWorkbench(), nil, nil, workbenchcheck.Report{}, nil, time.Now())
+	with := renderWorkbenchBrief(big, briefWorkbench(), nil, nil, workbenchcheck.Report{}, briefRecentHits(8), time.Now())
 	assert.Equal(t, without, with, "a full board leaves no room, the section is left out")
 
 	// A comment caps the tree at half the budget; the rest the comment leaves
 	// unused never goes to recent documents while targets are cut.
-	comment := []db.ProjectComment{{ID: 5, TargetID: sql.NullInt64{Int64: 1, Valid: true}, Author: "owner", Body: "short"}}
-	without = renderProjectBrief(big, briefProject(), comment, nil, projectcheck.Report{}, nil, time.Now())
-	with = renderProjectBrief(big, briefProject(), comment, nil, projectcheck.Report{}, briefRecentHits(8), time.Now())
+	comment := []db.WorkbenchComment{{ID: 5, TargetID: sql.NullInt64{Int64: 1, Valid: true}, Author: "owner", Body: "short"}}
+	without = renderWorkbenchBrief(big, briefWorkbench(), comment, nil, workbenchcheck.Report{}, nil, time.Now())
+	with = renderWorkbenchBrief(big, briefWorkbench(), comment, nil, workbenchcheck.Report{}, briefRecentHits(8), time.Now())
 	require.Contains(t, with, "more targets (project_board)")
 	assert.Equal(t, without, with, "targets were cut, the section is left out")
 
 	// A small board leaves room, but the section stays within its own cap.
 	small := []db.BoardNode{briefNode(1, "in_progress", "one task")}
-	out := renderProjectBrief(small, briefProject(), nil, nil, projectcheck.Report{}, briefRecentHits(8), time.Now())
+	out := renderWorkbenchBrief(small, briefWorkbench(), nil, nil, workbenchcheck.Report{}, briefRecentHits(8), time.Now())
 	assert.LessOrEqual(t, utf8.RuneCountInString(out), briefMaxChars)
 	start := strings.Index(out, "Recent in project sources")
 	end := strings.Index(out, briefRules[0])
@@ -387,7 +387,7 @@ func TestRenderProjectBrief_RecentSourcesNeverCutTheBoard(t *testing.T) {
 	// overflowed by the "New comments for you: none." line).
 	for n := 0; n <= 40; n++ {
 		for _, r := range []*briefRecent{nil, briefRecentHits(8)} {
-			out := renderProjectBrief(big[:n], briefProject(), nil, nil, projectcheck.Report{}, r, time.Now())
+			out := renderWorkbenchBrief(big[:n], briefWorkbench(), nil, nil, workbenchcheck.Report{}, r, time.Now())
 			assert.LessOrEqual(t, utf8.RuneCountInString(out), briefMaxChars, "board of %d, recent %v", n, r != nil)
 		}
 	}
@@ -395,9 +395,9 @@ func TestRenderProjectBrief_RecentSourcesNeverCutTheBoard(t *testing.T) {
 
 func TestProjectBrief_RecentFromProjectSources(t *testing.T) {
 	database := writeActionsConfig(t)
-	pid, err := database.CreateProject("acme", t.TempDir())
+	pid, err := database.CreateWorkbench("acme", t.TempDir())
 	require.NoError(t, err)
-	_, err = database.AddProjectSource(db.ProjectSource{ProjectID: pid, Kind: "jira_project", Ref: "PROJ"})
+	_, err = database.AddWorkbenchSource(db.WorkbenchSource{WorkbenchID: pid, Kind: "jira_project", Ref: "PROJ"})
 	require.NoError(t, err)
 	accountID := db.SeedTestJiraAccount(t, database)
 	updated := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)
@@ -414,7 +414,7 @@ func TestProjectBrief_RecentFromProjectSources(t *testing.T) {
 	_, err = kb.Run(context.Background(), database, kb.Options{})
 	require.NoError(t, err)
 
-	out, _, err := runProject(t, "brief", "--project", strconv.FormatInt(pid, 10))
+	out, _, err := runWorkbench(t, "brief", "--project", strconv.FormatInt(pid, 10))
 	require.NoError(t, err)
 	assert.Contains(t, out, "Recent in project sources (last 14 days):")
 	assert.Contains(t, out, "PROJ-1 Fresh work")

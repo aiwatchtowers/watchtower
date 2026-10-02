@@ -18,16 +18,16 @@ import (
 	"watchtower/internal/devpack"
 )
 
-// projectCommandRunner runs the claude CLI for the project install; tests
+// workbenchCommandRunner runs the claude CLI for the project install; tests
 // replace it so no test ever execs the real claude.
-var projectCommandRunner devpack.CommandRunner = execCommandRunner
+var workbenchCommandRunner devpack.CommandRunner = execCommandRunner
 
-// projectExecutable resolves the watchtower binary path recorded in the
+// workbenchExecutable resolves the watchtower binary path recorded in the
 // project's hook and MCP registration. A seam (not a bare os.Executable
 // call) because looksLikeOurHook (I2) keys on the binary's basename being
 // "watchtower" — the real binary always is, but a test binary (e.g.
 // "cmd.test") is not, so tests substitute a fixed watchtower-named path.
-var projectExecutable = os.Executable
+var workbenchExecutable = os.Executable
 
 // execCommandRunner runs name in dir. "claude" is resolved through
 // claude.FindBinary because the Desktop runs this with a GUI-app PATH. A
@@ -48,40 +48,40 @@ func execCommandRunner(ctx context.Context, dir, name string, args ...string) ([
 	return out, err
 }
 
-func projectInstallOptions(p *db.Project) (devpack.ProjectInstallOptions, error) {
-	bin, err := projectExecutable()
+func workbenchInstallOptions(p *db.Workbench) (devpack.WorkbenchInstallOptions, error) {
+	bin, err := workbenchExecutable()
 	if err != nil {
-		return devpack.ProjectInstallOptions{}, fmt.Errorf("determining the watchtower binary path: %w", err)
+		return devpack.WorkbenchInstallOptions{}, fmt.Errorf("determining the watchtower binary path: %w", err)
 	}
-	return devpack.ProjectInstallOptions{ProjectID: p.ID, Folder: p.FolderPath, Bin: bin, Run: projectCommandRunner}, nil
+	return devpack.WorkbenchInstallOptions{WorkbenchID: p.ID, Folder: p.FolderPath, Bin: bin, Run: workbenchCommandRunner}, nil
 }
 
-// removeProjectInstall is `project delete`'s folder cleanup (PROJ-02),
-// assigned to projectRemoveInstall in integrate.go's init.
-func removeProjectInstall(ctx context.Context, _ *config.Config, p *db.Project) error {
-	o, err := projectInstallOptions(p)
+// removeWorkbenchInstall is `project delete`'s folder cleanup (PROJ-02),
+// assigned to workbenchRemoveInstall in integrate.go's init.
+func removeWorkbenchInstall(ctx context.Context, _ *config.Config, p *db.Workbench) error {
+	o, err := workbenchInstallOptions(p)
 	if err != nil {
 		return err
 	}
-	return devpack.RemoveProject(ctx, o)
+	return devpack.RemoveWorkbench(ctx, o)
 }
 
-// checkProjectFlags refuses the global-pack flags next to --project: the
+// checkWorkbenchFlags refuses the global-pack flags next to --project: the
 // project install always targets the project's own folder.
-func checkProjectFlags(scopeChanged bool, explicitPath string, skillsOnly, mcpOnly bool) error {
+func checkWorkbenchFlags(scopeChanged bool, explicitPath string, skillsOnly, mcpOnly bool) error {
 	if scopeChanged || explicitPath != "" || skillsOnly || mcpOnly {
 		return errors.New("--project installs into the project's own folder; it cannot be combined with --scope, --path, --skills-only or --mcp-only")
 	}
 	return nil
 }
 
-type projectIntegrateFunc func(ctx context.Context, w io.Writer, p *db.Project) error
+type workbenchIntegrateFunc func(ctx context.Context, w io.Writer, p *db.Workbench) error
 
-func runIntegrateForProject(cmd *cobra.Command, fn projectIntegrateFunc) error {
-	if err := checkProjectFlags(cmd.Flags().Changed("scope"), integratePath, integrateSkillsOnly, integrateMCPOnly); err != nil {
+func runIntegrateForWorkbench(cmd *cobra.Command, fn workbenchIntegrateFunc) error {
+	if err := checkWorkbenchFlags(cmd.Flags().Changed("scope"), integratePath, integrateSkillsOnly, integrateMCPOnly); err != nil {
 		return err
 	}
-	p, err := loadIntegrateProject(integrateProjectID)
+	p, err := loadIntegrateWorkbench(integrateWorkbenchID)
 	if err != nil {
 		return err
 	}
@@ -92,47 +92,47 @@ func runIntegrateForProject(cmd *cobra.Command, fn projectIntegrateFunc) error {
 	return fn(ctx, cmd.OutOrStdout(), p)
 }
 
-func loadIntegrateProject(id int64) (*db.Project, error) {
+func loadIntegrateWorkbench(id int64) (*db.Workbench, error) {
 	database, err := openDBFromConfig()
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = database.Close() }()
-	p, err := database.GetProject(id)
+	p, err := database.GetWorkbench(id)
 	if err != nil {
 		return nil, fmt.Errorf("project %d: %w", id, err)
 	}
 	return p, nil
 }
 
-func runProjectInstall(ctx context.Context, w io.Writer, p *db.Project) error {
-	o, err := projectInstallOptions(p)
+func runWorkbenchInstall(ctx context.Context, w io.Writer, p *db.Workbench) error {
+	o, err := workbenchInstallOptions(p)
 	if err != nil {
 		return err
 	}
-	rep, err := devpack.InstallProject(ctx, o)
-	printProjectInstallReport(w, p, rep, err)
+	rep, err := devpack.InstallWorkbench(ctx, o)
+	printWorkbenchInstallReport(w, p, rep, err)
 	return err
 }
 
-func printProjectInstallReport(w io.Writer, p *db.Project, rep devpack.ProjectInstallReport, err error) {
+func printWorkbenchInstallReport(w io.Writer, p *db.Workbench, rep devpack.WorkbenchInstallReport, err error) {
 	fmt.Fprintf(w, "Project %d (%s):\n", p.ID, p.FolderPath)
-	printProjectInstallBody(w, rep, err)
+	printWorkbenchInstallBody(w, rep, err)
 	if err != nil {
 		fmt.Fprintf(w, "\nProblems:\n  %v\n", err)
 	}
 }
 
-// printProjectInstallBody is the per-piece part of an install report (also
+// printWorkbenchInstallBody is the per-piece part of an install report (also
 // `project resync`'s).
-func printProjectInstallBody(w io.Writer, rep devpack.ProjectInstallReport, err error) {
+func printWorkbenchInstallBody(w io.Writer, rep devpack.WorkbenchInstallReport, err error) {
 	if rep.Skill.Path != "" {
 		fmt.Fprintf(w, "  skill    %s%s\n", rep.Skill.State, skillStateNote(rep.Skill.State))
 	}
 	fmt.Fprintf(w, "  hook     %s\n", hookReportLine(rep.HookChanged, err))
 	fmt.Fprintf(w, "  exclude  %d line(s) added\n", len(rep.Excluded))
 	if rep.MCPRegistered {
-		fmt.Fprintf(w, "  mcp      registered (%s, local scope)\n", devpack.ProjectMCPServerName)
+		fmt.Fprintf(w, "  mcp      registered (%s, local scope)\n", devpack.WorkbenchMCPServerName)
 	} else {
 		fmt.Fprintf(w, "  mcp      NOT registered — run:\n    %s\n", rep.MCPCommand)
 	}
@@ -151,15 +151,15 @@ func hookReportLine(changed bool, err error) string {
 	}
 }
 
-func runProjectRemove(ctx context.Context, w io.Writer, p *db.Project) error {
-	o, err := projectInstallOptions(p)
+func runWorkbenchRemove(ctx context.Context, w io.Writer, p *db.Workbench) error {
+	o, err := workbenchInstallOptions(p)
 	if err != nil {
 		return err
 	}
-	rmErr := devpack.RemoveProject(ctx, o)
+	rmErr := devpack.RemoveWorkbench(ctx, o)
 	fmt.Fprintf(w, "Project %d (%s): removal ran.\n", p.ID, p.FolderPath)
-	if st, err := devpack.StatusProject(ctx, o); err == nil {
-		printProjectLeftovers(w, st)
+	if st, err := devpack.StatusWorkbench(ctx, o); err == nil {
+		printWorkbenchLeftovers(w, st)
 	}
 	if rmErr != nil {
 		fmt.Fprintf(w, "\nProblems:\n  %v\n", rmErr)
@@ -167,9 +167,9 @@ func runProjectRemove(ctx context.Context, w io.Writer, p *db.Project) error {
 	return rmErr
 }
 
-// printProjectLeftovers names whatever is still installed after a removal —
+// printWorkbenchLeftovers names whatever is still installed after a removal —
 // in practice only a skill the owner edited (kept by PROJ-04).
-func printProjectLeftovers(w io.Writer, st devpack.ProjectStatus) {
+func printWorkbenchLeftovers(w io.Writer, st devpack.WorkbenchStatus) {
 	left := false
 	if st.Skill.State != devpack.StateMissing {
 		fmt.Fprintf(w, "  kept: skill %s%s (%s)\n", st.Skill.State, skillStateNote(st.Skill.State), st.Skill.Path)
@@ -184,7 +184,7 @@ func printProjectLeftovers(w io.Writer, st devpack.ProjectStatus) {
 		left = true
 	}
 	if st.MCP {
-		fmt.Fprintf(w, "  still registered: %s\n", devpack.ProjectMCPServerName)
+		fmt.Fprintf(w, "  still registered: %s\n", devpack.WorkbenchMCPServerName)
 		left = true
 	}
 	if !left {
@@ -192,10 +192,10 @@ func printProjectLeftovers(w io.Writer, st devpack.ProjectStatus) {
 	}
 }
 
-// projectStatusJSON is `integrate status --project N --json`, read by the
+// workbenchStatusJSON is `integrate status --project N --json`, read by the
 // Desktop's ProjectCLI (Task 14).
-type projectStatusJSON struct {
-	ProjectID   int64  `json:"project_id"`
+type workbenchStatusJSON struct {
+	WorkbenchID int64  `json:"project_id"`
 	Folder      string `json:"folder"`
 	Skill       string `json:"skill"`
 	SkillPath   string `json:"skill_path"`
@@ -205,20 +205,20 @@ type projectStatusJSON struct {
 	ClaudeFound bool   `json:"claude_found"`
 }
 
-func runProjectStatus(ctx context.Context, w io.Writer, p *db.Project, asJSON bool) error {
-	o, err := projectInstallOptions(p)
+func runWorkbenchStatus(ctx context.Context, w io.Writer, p *db.Workbench, asJSON bool) error {
+	o, err := workbenchInstallOptions(p)
 	if err != nil {
 		return err
 	}
-	st, err := devpack.StatusProject(ctx, o)
+	st, err := devpack.StatusWorkbench(ctx, o)
 	if err != nil {
 		return err
 	}
 	if asJSON {
 		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
-		return enc.Encode(projectStatusJSON{
-			ProjectID: p.ID, Folder: p.FolderPath,
+		return enc.Encode(workbenchStatusJSON{
+			WorkbenchID: p.ID, Folder: p.FolderPath,
 			Skill: string(st.Skill.State), SkillPath: st.Skill.Path,
 			Hook: st.Hook, StopHook: st.StopHook, MCP: st.MCP, ClaudeFound: st.ClaudeFound,
 		})

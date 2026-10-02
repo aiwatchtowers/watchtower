@@ -15,30 +15,30 @@ import (
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
-	"watchtower/internal/projectfiles"
+	"watchtower/internal/workbenchfiles"
 )
 
 // attachTestImage stores a fake PNG (a PNG signature is all the sniff needs)
 // in projectID's image directory and attaches it to targetID.
-func attachTestImage(t *testing.T, database *db.DB, store projectfiles.Store, projectID, targetID int64, payload string) string {
+func attachTestImage(t *testing.T, database *db.DB, store workbenchfiles.Store, projectID, targetID int64, payload string) string {
 	t.Helper()
 	src := filepath.Join(t.TempDir(), "shot.png")
 	require.NoError(t, os.WriteFile(src, []byte("\x89PNG\r\n\x1a\n"+payload), 0o600))
 	img, err := store.Ingest(projectID, src)
 	require.NoError(t, err)
 	require.NoError(t, database.WithTx(func(tx *sql.Tx) error {
-		_, err := db.AddProjectTargetImageTx(tx, db.ProjectTargetImage{ProjectID: projectID, TargetID: targetID,
+		_, err := db.AddWorkbenchTargetImageTx(tx, db.WorkbenchTargetImage{WorkbenchID: projectID, TargetID: targetID,
 			FileName: img.FileName, MIME: img.MIME, Size: img.Size, SHA256: img.SHA256, Path: img.Path})
 		return err
 	}))
 	return img.Path
 }
 
-func testImageStore(t *testing.T) projectfiles.Store {
+func testImageStore(t *testing.T) workbenchfiles.Store {
 	t.Helper()
 	cfg, err := config.Load(flagConfig)
 	require.NoError(t, err)
-	return projectfiles.New(cfg.WorkspaceDir())
+	return workbenchfiles.New(cfg.WorkspaceDir())
 }
 
 // TestProj02_ProjectDeleteRemovesStoredTargetImages: `project delete` leaves
@@ -46,21 +46,21 @@ func testImageStore(t *testing.T) projectfiles.Store {
 // project's.
 func TestProj02_ProjectDeleteRemovesStoredTargetImages(t *testing.T) {
 	database := writeActionsConfig(t)
-	orig := projectRemoveInstall
-	projectRemoveInstall = func(context.Context, *config.Config, *db.Project) error { return nil }
-	t.Cleanup(func() { projectRemoveInstall = orig })
+	orig := workbenchRemoveInstall
+	workbenchRemoveInstall = func(context.Context, *config.Config, *db.Workbench) error { return nil }
+	t.Cleanup(func() { workbenchRemoveInstall = orig })
 	store := testImageStore(t)
 
-	pid, err := database.CreateProject("acme", t.TempDir())
+	pid, err := database.CreateWorkbench("acme", t.TempDir())
 	require.NoError(t, err)
-	other, err := database.CreateProject("other", t.TempDir())
+	other, err := database.CreateWorkbench("other", t.TempDir())
 	require.NoError(t, err)
-	target := db.SeedTestProjectTarget(t, database, pid, sql.NullInt64{}, "with a screenshot")
-	otherTarget := db.SeedTestProjectTarget(t, database, other, sql.NullInt64{}, "other board")
+	target := db.SeedTestWorkbenchTarget(t, database, pid, sql.NullInt64{}, "with a screenshot")
+	otherTarget := db.SeedTestWorkbenchTarget(t, database, other, sql.NullInt64{}, "other board")
 	stored := attachTestImage(t, database, store, pid, target, "a")
 	kept := attachTestImage(t, database, store, other, otherTarget, "a")
 
-	_, _, err = runProject(t, "delete", strconv.FormatInt(pid, 10))
+	_, _, err = runWorkbench(t, "delete", strconv.FormatInt(pid, 10))
 	require.NoError(t, err)
 
 	_, err = os.Stat(stored)
@@ -80,10 +80,10 @@ func TestProj02_ProjectDeleteRemovesStoredTargetImages(t *testing.T) {
 func TestProj02_TargetDeleteDiscardsItsUnsharedImages(t *testing.T) {
 	database := writeActionsConfig(t)
 	store := testImageStore(t)
-	pid, err := database.CreateProject("acme", t.TempDir())
+	pid, err := database.CreateWorkbench("acme", t.TempDir())
 	require.NoError(t, err)
-	doomed := db.SeedTestProjectTarget(t, database, pid, sql.NullInt64{}, "doomed")
-	sibling := db.SeedTestProjectTarget(t, database, pid, sql.NullInt64{}, "sibling")
+	doomed := db.SeedTestWorkbenchTarget(t, database, pid, sql.NullInt64{}, "doomed")
+	sibling := db.SeedTestWorkbenchTarget(t, database, pid, sql.NullInt64{}, "sibling")
 	own := attachTestImage(t, database, store, pid, doomed, "own")
 	shared := attachTestImage(t, database, store, pid, doomed, "shared")
 	require.Equal(t, shared, attachTestImage(t, database, store, pid, sibling, "shared"), "one copy per content")
@@ -113,19 +113,19 @@ func TestProject_DeleteJSONReportsAFailedImageCleanup(t *testing.T) {
 		t.Skip("root ignores the read-only directory this test relies on")
 	}
 	database := writeActionsConfig(t)
-	orig := projectRemoveInstall
-	projectRemoveInstall = func(context.Context, *config.Config, *db.Project) error { return nil }
-	t.Cleanup(func() { projectRemoveInstall = orig })
+	orig := workbenchRemoveInstall
+	workbenchRemoveInstall = func(context.Context, *config.Config, *db.Workbench) error { return nil }
+	t.Cleanup(func() { workbenchRemoveInstall = orig })
 	store := testImageStore(t)
-	pid, err := database.CreateProject("acme", t.TempDir())
+	pid, err := database.CreateWorkbench("acme", t.TempDir())
 	require.NoError(t, err)
-	target := db.SeedTestProjectTarget(t, database, pid, sql.NullInt64{}, "with a screenshot")
+	target := db.SeedTestWorkbenchTarget(t, database, pid, sql.NullInt64{}, "with a screenshot")
 	attachTestImage(t, database, store, pid, target, "a")
 	// A read-only project directory makes removing its file fail.
 	require.NoError(t, os.Chmod(store.Dir(pid), 0o500))
 	t.Cleanup(func() { _ = os.Chmod(store.Dir(pid), 0o700) })
 
-	out, errOut, err := runProject(t, "delete", strconv.FormatInt(pid, 10), "--json")
+	out, errOut, err := runWorkbench(t, "delete", strconv.FormatInt(pid, 10), "--json")
 	require.NoError(t, err)
 	var got map[string]any
 	require.NoError(t, json.Unmarshal([]byte(out), &got), "stdout is one JSON object: %q", out)
@@ -133,6 +133,6 @@ func TestProject_DeleteJSONReportsAFailedImageCleanup(t *testing.T) {
 	assert.Equal(t, false, got["files_ok"])
 	assert.NotEmpty(t, got["files_error"])
 	assert.Contains(t, errOut, "stored images failed")
-	_, err = database.GetProject(pid)
-	assert.ErrorIs(t, err, db.ErrProjectNotFound, "the delete stands")
+	_, err = database.GetWorkbench(pid)
+	assert.ErrorIs(t, err, db.ErrWorkbenchNotFound, "the delete stands")
 }

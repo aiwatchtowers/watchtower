@@ -52,10 +52,10 @@ func NewSearchKnowledge() *Tool {
 			// A project session sees its own attached documents; every other
 			// caller (ProjectID 0) none of them (PROJ-08) — and is told so
 			// rather than handed an empty result that reads as "no match".
-			if call.Binding.ProjectID == 0 && slices.Contains(a.Sources, kb.ProjectDocSource) {
+			if call.Binding.WorkbenchID == 0 && slices.Contains(a.Sources, kb.WorkbenchDocSource) {
 				return nil, &ValidationError{Msg: "project_doc is searchable only from that project's own session (watchtower mcp --project N)"}
 			}
-			req := kb.Request{Queries: a.Queries, Sources: a.Sources, Limit: a.Limit, ProjectID: call.Binding.ProjectID}
+			req := kb.Request{Queries: a.Queries, Sources: a.Sources, Limit: a.Limit, WorkbenchID: call.Binding.WorkbenchID}
 			var err error
 			if req.From, err = parseDay(a.From, false); err != nil {
 				return nil, &ValidationError{Msg: "from must be YYYY-MM-DD"}
@@ -63,7 +63,7 @@ func NewSearchKnowledge() *Tool {
 			if req.To, err = parseDay(a.To, true); err != nil {
 				return nil, &ValidationError{Msg: "to must be YYYY-MM-DD"}
 			}
-			scopeNote, err := applyProjectScope(ctx, d, call.Binding, a.ProjectScope, &req)
+			scopeNote, err := applyWorkbenchScope(ctx, d, call.Binding, a.ProjectScope, &req)
 			if err != nil {
 				return nil, err
 			}
@@ -84,13 +84,13 @@ func NewSearchKnowledge() *Tool {
 // scopeSources are the kb sources a project scope can hold documents of.
 var scopeSources = []string{"slack", "jira", "confluence"}
 
-// applyProjectScope sets req's scope from the bound project's sources:
+// applyWorkbenchScope sets req's scope from the bound project's sources:
 // boost by default, only/off on request. An explicit sources filter still
 // applies on top (kb.Search honours it in the scoped retrieval too). The
 // returned note names the project's sources that matched no synced data.
-func applyProjectScope(ctx context.Context, d *db.DB, b Binding, mode string, req *kb.Request) (string, error) {
+func applyWorkbenchScope(ctx context.Context, d *db.DB, b Binding, mode string, req *kb.Request) (string, error) {
 	mode = strings.TrimSpace(mode)
-	if b.ProjectID == 0 {
+	if b.WorkbenchID == 0 {
 		if mode != "" {
 			return "", &ValidationError{Msg: "project_scope works only in a project session (watchtower mcp --project N)"}
 		}
@@ -102,7 +102,7 @@ func applyProjectScope(ctx context.Context, d *db.DB, b Binding, mode string, re
 	if mode == "off" {
 		return "", nil
 	}
-	scope, unresolved, err := ProjectKnowledgeScope(ctx, d, b.ProjectID)
+	scope, unresolved, err := WorkbenchKnowledgeScope(ctx, d, b.WorkbenchID)
 	if err != nil {
 		return "", err
 	}
@@ -152,7 +152,7 @@ func NewGetKnowledgeDocument() *Tool {
 			if err := json.Unmarshal(call.Args, &a); err != nil || strings.TrimSpace(a.Ref) == "" {
 				return nil, &ValidationError{Msg: "ref is required"}
 			}
-			doc, err := kb.GetDocument(ctx, d, a.Ref, kb.DocOptions{FromChunk: a.FromChunk, MaxChars: a.MaxChars, ProjectID: call.Binding.ProjectID})
+			doc, err := kb.GetDocument(ctx, d, a.Ref, kb.DocOptions{FromChunk: a.FromChunk, MaxChars: a.MaxChars, WorkbenchID: call.Binding.WorkbenchID})
 			if errors.Is(err, kb.ErrNotFound) {
 				return nil, &ValidationError{Msg: "no document with that ref — search again"}
 			}

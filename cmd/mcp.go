@@ -43,7 +43,7 @@ var (
 	mcpFlagTurnFile     string
 	mcpFlagContextType  string
 	mcpFlagContextID    string
-	mcpFlagProject      int64
+	mcpFlagWorkbench    int64
 )
 
 func init() {
@@ -56,7 +56,7 @@ func init() {
 	mcpCmd.Flags().StringVar(&mcpFlagTurnFile, "turn-file", "", "file holding the running turn id for --chat (a warm ai session); mutually exclusive with --turn")
 	mcpCmd.Flags().StringVar(&mcpFlagContextType, "context-type", "", "chat context type for --chat (e.g. target)")
 	mcpCmd.Flags().StringVar(&mcpFlagContextID, "context-id", "", "chat context id for --chat")
-	mcpCmd.Flags().Int64Var(&mcpFlagProject, "project", 0, "project mode: bind to project N and apply its project tools directly (installed by 'integrate claude-code --project N')")
+	mcpCmd.Flags().Int64Var(&mcpFlagWorkbench, "project", 0, "project mode: bind to project N and apply its project tools directly (installed by 'integrate claude-code --project N')")
 }
 
 // mcpTurnBinding resolves the turn a chat-mode proposal attaches to: a fixed
@@ -78,7 +78,7 @@ func mcpTurnBinding(chatMode bool, turn, turnFile string) (string, func() string
 // mcpModeOptions sets up project mode, chat mode (the write-tool registry) or
 // dev mode (the read-only fence) on the opened database.
 func mcpModeOptions(cfg *config.Config, database *db.DB, turn string, turnFunc func() string) ([]internalmcp.ServerOption, error) {
-	if mcpFlagProject == 0 && !mcpFlagChat {
+	if mcpFlagWorkbench == 0 && !mcpFlagChat {
 		// The MCP surface is read-only; enforce it at the connection level so even
 		// a buggy handler cannot write. Must run after Open (migrations need writes).
 		if err := database.SetReadOnly(); err != nil {
@@ -91,8 +91,8 @@ func mcpModeOptions(cfg *config.Config, database *db.DB, turn string, turnFunc f
 	if err := database.SetBusyTimeout(ownerWriteBusyTimeout); err != nil {
 		return nil, err
 	}
-	if mcpFlagProject != 0 {
-		return mcpProjectOptions(cfg, database, mcpFlagProject)
+	if mcpFlagWorkbench != 0 {
+		return mcpWorkbenchOptions(cfg, database, mcpFlagWorkbench)
 	}
 	// Chat mode: the connection stays writable ONLY so the registry can
 	// record proposals (agent_actions) — the tools themselves still never
@@ -107,23 +107,23 @@ func mcpModeOptions(cfg *config.Config, database *db.DB, turn string, turnFunc f
 	})}, nil
 }
 
-// mcpProjectOptions is `watchtower mcp --project N` (DEV-06): the connection
+// mcpWorkbenchOptions is `watchtower mcp --project N` (DEV-06): the connection
 // stays writable, the registry is bound to project N on the "project" surface,
 // and its tools apply directly (DirectApply) with an agent_actions audit row —
 // never an External tool. The project must exist when the server starts; if
 // it is deleted later, every tool answers "project N no longer exists".
-func mcpProjectOptions(cfg *config.Config, database *db.DB, projectID int64) ([]internalmcp.ServerOption, error) {
+func mcpWorkbenchOptions(cfg *config.Config, database *db.DB, projectID int64) ([]internalmcp.ServerOption, error) {
 	if mcpFlagChat {
 		return nil, errors.New("--project and --chat are mutually exclusive")
 	}
 	if projectID < 0 {
 		return nil, fmt.Errorf("--project must be a project id, got %d", projectID)
 	}
-	if _, err := database.GetProject(projectID); err != nil {
+	if _, err := database.GetWorkbench(projectID); err != nil {
 		return nil, fmt.Errorf("project %d: %w", projectID, err)
 	}
 	return []internalmcp.ServerOption{internalmcp.WithRegistry(buildToolRegistry(cfg, database), tools.Binding{
-		Surface: "project", ProjectID: projectID, DirectApply: true,
+		Surface: "project", WorkbenchID: projectID, DirectApply: true,
 	})}, nil
 }
 

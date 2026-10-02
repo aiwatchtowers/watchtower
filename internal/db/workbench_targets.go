@@ -9,11 +9,11 @@ import (
 	"time"
 )
 
-// ProjectTargetInput is one item of a CreateProjectTargetsTx batch. Its parent
+// WorkbenchTargetInput is one item of a CreateWorkbenchTargetsTx batch. Its parent
 // is an existing target of the same project (ParentID) or an earlier item of
 // the same batch (BatchParent, 1-based; 0 = none) — never both — so a whole
 // plan (feature → tasks → steps) lands in one call.
-type ProjectTargetInput struct {
+type WorkbenchTargetInput struct {
 	Title       string
 	Intent      string
 	Priority    string // high | medium | low; "" = medium
@@ -23,7 +23,7 @@ type ProjectTargetInput struct {
 	PR          string // the pull request, a number or URL; "" = none
 }
 
-// CreateProjectTargetsTx inserts items, in order, as targets of project
+// CreateWorkbenchTargetsTx inserts items, in order, as targets of project
 // projectID inside tx and returns their ids. Every item gets the board
 // defaults: level custom, custom_label project, period = the UTC day of
 // creation, source chat, ownership mine, status todo, and priority medium
@@ -31,14 +31,14 @@ type ProjectTargetInput struct {
 // create_targets tool, so the creation is recorded as the agent's
 // (status_actor, PROJ-06). The first invalid item
 // fails the call; the caller's transaction then rolls the whole batch back.
-func (db *DB) CreateProjectTargetsTx(tx *sql.Tx, projectID int64, items []ProjectTargetInput) ([]int64, error) {
-	if err := requireProject(tx, projectID); err != nil {
+func (db *DB) CreateWorkbenchTargetsTx(tx *sql.Tx, projectID int64, items []WorkbenchTargetInput) ([]int64, error) {
+	if err := requireWorkbench(tx, projectID); err != nil {
 		return nil, err
 	}
 	day := time.Now().UTC().Format("2006-01-02")
 	ids := make([]int64, 0, len(items))
 	for i, it := range items {
-		id, err := insertProjectTarget(tx, projectID, day, it, ids)
+		id, err := insertWorkbenchTarget(tx, projectID, day, it, ids)
 		if err != nil {
 			return nil, fmt.Errorf("target %d of %d: %w", i+1, len(items), err)
 		}
@@ -47,7 +47,7 @@ func (db *DB) CreateProjectTargetsTx(tx *sql.Tx, projectID int64, items []Projec
 	return ids, nil
 }
 
-func insertProjectTarget(tx *sql.Tx, projectID int64, day string, it ProjectTargetInput, created []int64) (int64, error) {
+func insertWorkbenchTarget(tx *sql.Tx, projectID int64, day string, it WorkbenchTargetInput, created []int64) (int64, error) {
 	title := strings.TrimSpace(it.Title)
 	if title == "" {
 		return 0, errors.New("empty title")
@@ -59,7 +59,7 @@ func insertProjectTarget(tx *sql.Tx, projectID int64, day string, it ProjectTarg
 	if !slices.Contains(TargetPriorities, priority) {
 		return 0, fmt.Errorf("invalid priority %q", it.Priority)
 	}
-	parent, err := resolveProjectParent(tx, projectID, it, created)
+	parent, err := resolveWorkbenchParent(tx, projectID, it, created)
 	if err != nil {
 		return 0, err
 	}
@@ -84,7 +84,7 @@ func insertProjectTarget(tx *sql.Tx, projectID int64, day string, it ProjectTarg
 	return id, nil
 }
 
-func resolveProjectParent(q targetsQuerier, projectID int64, it ProjectTargetInput, created []int64) (sql.NullInt64, error) {
+func resolveWorkbenchParent(q targetsQuerier, projectID int64, it WorkbenchTargetInput, created []int64) (sql.NullInt64, error) {
 	switch {
 	case it.ParentID.Valid && it.BatchParent != 0:
 		return sql.NullInt64{}, errors.New("parent_id and a batch parent are mutually exclusive")
@@ -93,7 +93,7 @@ func resolveProjectParent(q targetsQuerier, projectID int64, it ProjectTargetInp
 	case it.BatchParent > 0:
 		return sql.NullInt64{Int64: created[it.BatchParent-1], Valid: true}, nil
 	case it.ParentID.Valid:
-		return it.ParentID, checkTargetInProject(q, projectID, it.ParentID.Int64)
+		return it.ParentID, checkTargetInWorkbench(q, projectID, it.ParentID.Int64)
 	}
 	return sql.NullInt64{}, nil
 }

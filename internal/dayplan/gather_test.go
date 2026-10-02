@@ -221,9 +221,9 @@ func TestProj01_DayPlanGatherExcludesProjectTargets(t *testing.T) {
 	p := testPipeline(d)
 	_, err := d.CreateTarget(db.Target{Text: "personal", Status: "todo", Priority: "medium", Ownership: "mine", SourceType: "manual"})
 	require.NoError(t, err)
-	pid, err := d.CreateProject("acme", t.TempDir())
+	pid, err := d.CreateWorkbench("acme", t.TempDir())
 	require.NoError(t, err)
-	db.SeedTestProjectTarget(t, d, pid, sql.NullInt64{}, "board only")
+	db.SeedTestWorkbenchTarget(t, d, pid, sql.NullInt64{}, "board only")
 
 	got, err := p.gatherTargets()
 	require.NoError(t, err)

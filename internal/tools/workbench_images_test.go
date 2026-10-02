@@ -13,15 +13,15 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/db"
-	"watchtower/internal/projectfiles"
+	"watchtower/internal/workbenchfiles"
 )
 
-// imageRegistry is projectRegistry with a store the test can look into.
-func imageRegistry(t *testing.T, d *db.DB) (*Registry, projectfiles.Store) {
+// imageRegistry is workbenchRegistry with a store the test can look into.
+func imageRegistry(t *testing.T, d *db.DB) (*Registry, workbenchfiles.Store) {
 	t.Helper()
-	store := projectfiles.New(t.TempDir())
+	store := workbenchfiles.New(t.TempDir())
 	reg := New(d)
-	for _, tool := range append(ProjectTools(store, false), NewGetTarget()) {
+	for _, tool := range append(WorkbenchTools(store, false), NewGetTarget()) {
 		require.NoError(t, reg.Register(tool))
 	}
 	return reg, store
@@ -35,7 +35,7 @@ func fakeImage(t *testing.T, name, payload string) string {
 	return p
 }
 
-func storedFiles(t *testing.T, store projectfiles.Store, projectID int64) []string {
+func storedFiles(t *testing.T, store workbenchfiles.Store, projectID int64) []string {
 	t.Helper()
 	entries, err := os.ReadDir(store.Dir(projectID))
 	if os.IsNotExist(err) {
@@ -58,10 +58,10 @@ func createdTargetIDs(out map[string]any) []int64 {
 }
 
 type targetImagesView struct {
-	Images []db.ProjectTargetImage `json:"images"`
+	Images []db.WorkbenchTargetImage `json:"images"`
 }
 
-func targetImages(t *testing.T, reg *Registry, projectID, targetID int64) []db.ProjectTargetImage {
+func targetImages(t *testing.T, reg *Registry, projectID, targetID int64) []db.WorkbenchTargetImage {
 	t.Helper()
 	var v targetImagesView
 	require.NoError(t, json.Unmarshal([]byte(callReadIn(t, reg, projectID, "get_target", fmt.Sprintf(`{"id":%d}`, targetID))), &v))
@@ -69,7 +69,7 @@ func targetImages(t *testing.T, reg *Registry, projectID, targetID int64) []db.P
 }
 
 func TestCreateTargets_AttachesImagesAndGetTargetListsThem(t *testing.T) {
-	fx := newProjectFixture(t)
+	fx := newWorkbenchFixture(t)
 	reg, store := imageRegistry(t, fx.d)
 	shot := fakeImage(t, "Screenshot.png", "a")
 
@@ -92,7 +92,7 @@ func TestCreateTargets_AttachesImagesAndGetTargetListsThem(t *testing.T) {
 
 // A file Validate refuses fails the call before anything is copied in.
 func TestCreateTargets_ARefusedImageFailsTheWholeCallBeforeAnyCopy(t *testing.T) {
-	fx := newProjectFixture(t)
+	fx := newWorkbenchFixture(t)
 	reg, store := imageRegistry(t, fx.d)
 	good := fakeImage(t, "good.png", "g")
 	bad := filepath.Join(t.TempDir(), "notes.png")
@@ -103,7 +103,7 @@ func TestCreateTargets_ARefusedImageFailsTheWholeCallBeforeAnyCopy(t *testing.T)
 	var verr *ValidationError
 	require.ErrorAs(t, err, &verr)
 	assert.Contains(t, verr.Msg, "not a PNG, JPEG, GIF or WebP image")
-	assert.Equal(t, 1, countProjectTargets(t, fx.d, fx.a), "no target was created")
+	assert.Equal(t, 1, countWorkbenchTargets(t, fx.d, fx.a), "no target was created")
 	assert.Empty(t, storedFiles(t, store, fx.a), "Validate refused the call before any copy was made")
 
 	_, err = proposeIn(t, reg, fx.a, "create_targets", `{"items":[{"text":"A","images":["relative.png"]}],"reason":"r"}`)
@@ -125,7 +125,7 @@ func TestCreateTargets_ARefusedImageFailsTheWholeCallBeforeAnyCopy(t *testing.T)
 // A write that fails after the images were copied in removes the copies it
 // created, and never a copy it reused that another target still carries.
 func TestCreateTargets_AFailedWriteRemovesOnlyTheCopiesItCreated(t *testing.T) {
-	fx := newProjectFixture(t)
+	fx := newWorkbenchFixture(t)
 	reg, store := imageRegistry(t, fx.d)
 	shared := fakeImage(t, "shared.png", "s")
 	mustApply(t, reg, fx.a, "update_target", fmt.Sprintf(`{"target_id":%d,"add_images":[%q],"reason":"r"}`, fx.aTarget, shared))
@@ -140,7 +140,7 @@ func TestCreateTargets_AFailedWriteRemovesOnlyTheCopiesItCreated(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "failed", rc.Status)
 	assert.Contains(t, rc.Error, "boom")
-	assert.Equal(t, 1, countProjectTargets(t, fx.d, fx.a), "the target rolled back")
+	assert.Equal(t, 1, countWorkbenchTargets(t, fx.d, fx.a), "the target rolled back")
 	assert.Equal(t, []string{filepath.Base(sharedCopy)}, storedFiles(t, store, fx.a),
 		"the fresh copy is gone, the shared one another target carries stays")
 
@@ -165,8 +165,8 @@ func TestIngestedImagesUndo_ReportsAFailedCleanupKeepingTheErrorKind(t *testing.
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores the read-only directory this test relies on")
 	}
-	fx := newProjectFixture(t)
-	store := projectfiles.New(t.TempDir())
+	fx := newWorkbenchFixture(t)
+	store := workbenchfiles.New(t.TempDir())
 	in, err := ingestImages(fx.d, store, fx.a, []string{fakeImage(t, "x.png", "x")})
 	require.NoError(t, err)
 	require.NoError(t, os.Chmod(store.Dir(fx.a), 0o500))
@@ -184,7 +184,7 @@ func TestIngestedImagesUndo_ReportsAFailedCleanupKeepingTheErrorKind(t *testing.
 }
 
 func TestUpdateTarget_AddsAndRemovesImagesKeepingSharedCopies(t *testing.T) {
-	fx := newProjectFixture(t)
+	fx := newWorkbenchFixture(t)
 	reg, store := imageRegistry(t, fx.d)
 	shared := fakeImage(t, "shared.png", "s")
 	own := fakeImage(t, "own.png", "o")
@@ -213,7 +213,7 @@ func TestUpdateTarget_AddsAndRemovesImagesKeepingSharedCopies(t *testing.T) {
 }
 
 func TestUpdateTarget_ImageCapFailsTheWholeUpdate(t *testing.T) {
-	fx := newProjectFixture(t)
+	fx := newWorkbenchFixture(t)
 	reg, store := imageRegistry(t, fx.d)
 	for batch := 0; batch < 2; batch++ {
 		var paths []string

@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"watchtower/internal/db"
-	"watchtower/internal/projectfiles"
+	"watchtower/internal/workbenchfiles"
 )
 
 // maxImagesPerCall caps the image paths one target item or update names;
@@ -16,14 +16,14 @@ const maxImagesPerCall = 10
 
 // validateImagePaths refuses, before any row is written, more than
 // maxImagesPerCall paths or a path that is not a small PNG/JPEG/GIF/WebP
-// file (projectfiles.Check, read-only). Ingest checks the file again when it
+// file (workbenchfiles.Check, read-only). Ingest checks the file again when it
 // copies it in.
 func validateImagePaths(field string, paths []string) error {
 	if len(paths) > maxImagesPerCall {
 		return &ValidationError{Msg: fmt.Sprintf("%s holds at most %d paths", field, maxImagesPerCall)}
 	}
 	for _, p := range paths {
-		if err := projectfiles.Check(strings.TrimSpace(p)); err != nil {
+		if err := workbenchfiles.Check(strings.TrimSpace(p)); err != nil {
 			return &ValidationError{Msg: err.Error()}
 		}
 	}
@@ -33,15 +33,15 @@ func validateImagePaths(field string, paths []string) error {
 // ingestedImages is what one call copied into the project's directory, by
 // the argument path it came from.
 type ingestedImages struct {
-	store  projectfiles.Store
-	byPath map[string]projectfiles.Image
+	store  workbenchfiles.Store
+	byPath map[string]workbenchfiles.Image
 }
 
 // ingestImages copies every path into project projectID's directory before
 // any row is written, so a refused file fails the whole call with nothing
 // on the board. A copy already there (same content) is reused.
-func ingestImages(d *db.DB, store projectfiles.Store, projectID int64, paths []string) (*ingestedImages, error) {
-	in := &ingestedImages{store: store, byPath: map[string]projectfiles.Image{}}
+func ingestImages(d *db.DB, store workbenchfiles.Store, projectID int64, paths []string) (*ingestedImages, error) {
+	in := &ingestedImages{store: store, byPath: map[string]workbenchfiles.Image{}}
 	for _, p := range paths {
 		p = strings.TrimSpace(p)
 		if _, ok := in.byPath[p]; ok {
@@ -49,7 +49,7 @@ func ingestImages(d *db.DB, store projectfiles.Store, projectID int64, paths []s
 		}
 		img, err := store.Ingest(projectID, p)
 		if err != nil {
-			var rej *projectfiles.RejectError
+			var rej *workbenchfiles.RejectError
 			if errors.As(err, &rej) {
 				err = &ValidationError{Msg: rej.Error()}
 			}
@@ -65,8 +65,8 @@ func ingestImages(d *db.DB, store projectfiles.Store, projectID int64, paths []s
 func (in *ingestedImages) attach(tx *sql.Tx, projectID, targetID int64, paths []string) error {
 	for _, p := range paths {
 		img := in.byPath[strings.TrimSpace(p)]
-		_, err := db.AddProjectTargetImageTx(tx, db.ProjectTargetImage{
-			ProjectID: projectID, TargetID: targetID, FileName: img.FileName,
+		_, err := db.AddWorkbenchTargetImageTx(tx, db.WorkbenchTargetImage{
+			WorkbenchID: projectID, TargetID: targetID, FileName: img.FileName,
 			MIME: img.MIME, Size: img.Size, SHA256: img.SHA256, Path: img.Path,
 		})
 		if errors.Is(err, db.ErrTooManyImages) {
@@ -105,11 +105,11 @@ func (in *ingestedImages) undo(d *db.DB, projectID int64, writeErr error) error 
 
 // discardUnreferenced removes those of paths that no row of the project
 // names — the copies of detached images, or of a failed write.
-func discardUnreferenced(d *db.DB, store projectfiles.Store, projectID int64, paths []string) error {
+func discardUnreferenced(d *db.DB, store workbenchfiles.Store, projectID int64, paths []string) error {
 	if len(paths) == 0 {
 		return nil
 	}
-	keep, err := d.ProjectImagePaths(projectID)
+	keep, err := d.WorkbenchImagePaths(projectID)
 	if err != nil {
 		return err
 	}

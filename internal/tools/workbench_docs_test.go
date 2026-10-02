@@ -16,34 +16,34 @@ import (
 	"watchtower/internal/db"
 )
 
-// writeProjectFile creates rel (and its directories) inside project id's folder.
-func writeProjectFile(t *testing.T, d *db.DB, projectID int64, rel, body string) {
+// writeWorkbenchFile creates rel (and its directories) inside project id's folder.
+func writeWorkbenchFile(t *testing.T, d *db.DB, projectID int64, rel, body string) {
 	t.Helper()
-	p, err := d.GetProject(projectID)
+	p, err := d.GetWorkbench(projectID)
 	require.NoError(t, err)
 	path := filepath.Join(p.FolderPath, rel)
 	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
 	require.NoError(t, os.WriteFile(path, []byte(body), 0o644))
 }
 
-func countProjectDocuments(t *testing.T, d *db.DB, projectID int64) int {
+func countWorkbenchDocuments(t *testing.T, d *db.DB, projectID int64) int {
 	t.Helper()
-	docs, err := d.ListProjectDocuments(projectID)
+	docs, err := d.ListWorkbenchDocuments(projectID)
 	require.NoError(t, err)
 	return len(docs)
 }
 
 func TestAttachDocument_AttachesAndReattaches(t *testing.T) {
-	fx := newProjectFixture(t)
-	reg := projectRegistry(t, fx.d)
-	writeProjectFile(t, fx.d, fx.a, "docs/plans/x-plan.md", "# Plan\n")
+	fx := newWorkbenchFixture(t)
+	reg := workbenchRegistry(t, fx.d)
+	writeWorkbenchFile(t, fx.d, fx.a, "docs/plans/x-plan.md", "# Plan\n")
 
 	args := fmt.Sprintf(`{"rel_path":"docs/plans/x-plan.md","kind":"plan","target_id":%d,"reason":"plan for X"}`, fx.aTarget)
 	out := mustApply(t, reg, fx.a, "attach_document", args)
 	assert.Equal(t, true, out["created"])
 	assert.Equal(t, "docs/plans/x-plan.md", out["rel_path"])
 
-	docs, err := fx.d.ListProjectDocuments(fx.a)
+	docs, err := fx.d.ListWorkbenchDocuments(fx.a)
 	require.NoError(t, err)
 	require.Len(t, docs, 1)
 	assert.Equal(t, "plan", docs[0].Kind)
@@ -52,16 +52,16 @@ func TestAttachDocument_AttachesAndReattaches(t *testing.T) {
 
 	out = mustApply(t, reg, fx.a, "attach_document", args)
 	assert.Equal(t, false, out["created"], "re-attaching marks the same document revised")
-	assert.Equal(t, 1, countProjectDocuments(t, fx.d, fx.a))
+	assert.Equal(t, 1, countWorkbenchDocuments(t, fx.d, fx.a))
 }
 
 // On a case-insensitive volume (APFS) another spelling is the same file: the
 // re-attach revises the attached document and reports its stored spelling.
 func TestAttachDocument_ReattachUnderAnotherCaseRevisesTheSameDocument(t *testing.T) {
-	fx := newProjectFixture(t)
-	reg := projectRegistry(t, fx.d)
-	writeProjectFile(t, fx.d, fx.a, "docs/Plans/X-Plan.md", "# Plan\n")
-	p, err := fx.d.GetProject(fx.a)
+	fx := newWorkbenchFixture(t)
+	reg := workbenchRegistry(t, fx.d)
+	writeWorkbenchFile(t, fx.d, fx.a, "docs/Plans/X-Plan.md", "# Plan\n")
+	p, err := fx.d.GetWorkbench(fx.a)
 	require.NoError(t, err)
 	if _, err := os.Stat(filepath.Join(p.FolderPath, "docs/plans/x-plan.md")); err != nil {
 		t.Skip("case-sensitive file system")
@@ -72,16 +72,16 @@ func TestAttachDocument_ReattachUnderAnotherCaseRevisesTheSameDocument(t *testin
 	out = mustApply(t, reg, fx.a, "attach_document", `{"rel_path":"docs/plans/x-plan.md","kind":"plan","reason":"revised"}`)
 	assert.Equal(t, false, out["created"], "another spelling of the attached file is a revision")
 	assert.Equal(t, "docs/Plans/X-Plan.md", out["rel_path"], "the stored spelling is reported")
-	assert.Equal(t, 1, countProjectDocuments(t, fx.d, fx.a))
+	assert.Equal(t, 1, countWorkbenchDocuments(t, fx.d, fx.a))
 }
 
 // DEV-06 / Review Focus #1: attach_document never reaches a file outside the
 // project folder — not by `../`, an absolute path, a symlinked file or a
 // symlinked directory — and only an existing .md/.txt regular file attaches.
 func TestDev06_AttachDocumentStaysInsideTheFolder(t *testing.T) {
-	fx := newProjectFixture(t)
-	reg := projectRegistry(t, fx.d)
-	p, err := fx.d.GetProject(fx.a)
+	fx := newWorkbenchFixture(t)
+	reg := workbenchRegistry(t, fx.d)
+	p, err := fx.d.GetWorkbench(fx.a)
 	require.NoError(t, err)
 	outsideDir := t.TempDir()
 	outsideFile := filepath.Join(outsideDir, "secret.md")
@@ -90,7 +90,7 @@ func TestDev06_AttachDocumentStaysInsideTheFolder(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(p.FolderPath, "docs"), 0o755))
 	require.NoError(t, os.Symlink(outsideFile, filepath.Join(p.FolderPath, "docs", "link.md")))
 	require.NoError(t, os.Symlink(outsideDir, filepath.Join(p.FolderPath, "docs", "ext")))
-	writeProjectFile(t, fx.d, fx.a, "docs/diagram.pdf", "%PDF")
+	writeWorkbenchFile(t, fx.d, fx.a, "docs/diagram.pdf", "%PDF")
 	require.NoError(t, os.MkdirAll(filepath.Join(p.FolderPath, "docs", "dir.md"), 0o755))
 
 	for name, rel := range map[string]string{
@@ -109,23 +109,23 @@ func TestDev06_AttachDocumentStaysInsideTheFolder(t *testing.T) {
 		var verr *ValidationError
 		require.ErrorAs(t, err, &verr, name)
 	}
-	assert.Equal(t, 0, countProjectDocuments(t, fx.d, fx.a), "nothing attached")
+	assert.Equal(t, 0, countWorkbenchDocuments(t, fx.d, fx.a), "nothing attached")
 	assert.Equal(t, 0, countActions(t, fx.d), "a refused attach writes no audit row")
 
 	// The folder path itself may hold spaces and non-ASCII characters.
-	writeProjectFile(t, fx.d, fx.a, "docs/spec ü.md", "# Spec\n")
+	writeWorkbenchFile(t, fx.d, fx.a, "docs/spec ü.md", "# Spec\n")
 	mustApply(t, reg, fx.a, "attach_document", `{"rel_path":"docs/spec ü.md","kind":"spec","reason":"r"}`)
-	assert.Equal(t, 1, countProjectDocuments(t, fx.d, fx.a))
+	assert.Equal(t, 1, countWorkbenchDocuments(t, fx.d, fx.a))
 }
 
 // The owner's `project attach-doc` shares attach_document's refusals, but
 // also takes the absolute path a file picker hands it — resolved through
 // symlinks, so a path into the folder via a symlinked parent still attaches.
 func TestResolveProjectDocumentPath(t *testing.T) {
-	fx := newProjectFixture(t)
-	p, err := fx.d.GetProject(fx.a)
+	fx := newWorkbenchFixture(t)
+	p, err := fx.d.GetWorkbench(fx.a)
 	require.NoError(t, err)
-	writeProjectFile(t, fx.d, fx.a, "docs/specs/x.md", "# X\n")
+	writeWorkbenchFile(t, fx.d, fx.a, "docs/specs/x.md", "# X\n")
 	outsideFile := filepath.Join(t.TempDir(), "secret.md")
 	require.NoError(t, os.WriteFile(outsideFile, []byte("secret"), 0o644))
 	require.NoError(t, os.Symlink(outsideFile, filepath.Join(p.FolderPath, "docs", "link.md")))
@@ -137,7 +137,7 @@ func TestResolveProjectDocumentPath(t *testing.T) {
 		"absolute":             filepath.Join(p.FolderPath, "docs", "specs", "x.md"),
 		"via a symlinked root": filepath.Join(viaLink, "docs", "specs", "x.md"),
 	} {
-		rel, err := ResolveProjectDocumentPath(p.FolderPath, path)
+		rel, err := ResolveWorkbenchDocumentPath(p.FolderPath, path)
 		require.NoError(t, err, name)
 		assert.Equal(t, "docs/specs/x.md", rel, name)
 	}
@@ -149,19 +149,19 @@ func TestResolveProjectDocumentPath(t *testing.T) {
 		"missing":           "docs/nope.md",
 		"the folder itself": p.FolderPath,
 	} {
-		_, err := ResolveProjectDocumentPath(p.FolderPath, path)
+		_, err := ResolveWorkbenchDocumentPath(p.FolderPath, path)
 		var verr *ValidationError
 		require.ErrorAs(t, err, &verr, name)
 	}
 }
 
 func TestComments_AgentThreadLifecycle(t *testing.T) {
-	fx := newProjectFixture(t)
-	reg := projectRegistry(t, fx.d)
-	writeProjectFile(t, fx.d, fx.a, "docs/spec.md", "# Spec\n")
+	fx := newWorkbenchFixture(t)
+	reg := workbenchRegistry(t, fx.d)
+	writeWorkbenchFile(t, fx.d, fx.a, "docs/spec.md", "# Spec\n")
 	doc := mustApply(t, reg, fx.a, "attach_document", `{"rel_path":"docs/spec.md","kind":"spec","reason":"r"}`)
 	docID := int64(doc["document_id"].(float64))
-	ownerRoot, err := fx.d.AddProjectComment(db.ProjectComment{ProjectID: fx.a,
+	ownerRoot, err := fx.d.AddWorkbenchComment(db.WorkbenchComment{WorkbenchID: fx.a,
 		DocumentID: nullInt(docID), Author: "owner", Body: "tighten this", AnchorQuote: "Spec", AnchorHeading: "Spec"})
 	require.NoError(t, err)
 
@@ -171,7 +171,7 @@ func TestComments_AgentThreadLifecycle(t *testing.T) {
 	assert.NotContains(t, fresh, "why?", "another project's comment is not listed")
 
 	mustApply(t, reg, fx.a, "resolve_comment", fmt.Sprintf(`{"comment_id":%d,"reply":"Tightened.","reason":"addressed"}`, ownerRoot))
-	root, err := fx.d.GetProjectComment(ownerRoot)
+	root, err := fx.d.GetWorkbenchComment(ownerRoot)
 	require.NoError(t, err)
 	assert.Equal(t, "resolved", root.Status)
 	thread := callReadIn(t, reg, fx.a, "list_comments", fmt.Sprintf(`{"document_id":%d}`, docID))
@@ -179,11 +179,11 @@ func TestComments_AgentThreadLifecycle(t *testing.T) {
 	assert.Contains(t, thread, `"author":"agent"`)
 
 	out := mustApply(t, reg, fx.a, "add_comment", fmt.Sprintf(`{"target_id":%d,"body":"Which DB?","reason":"blocked"}`, fx.aTarget))
-	c, err := fx.d.GetProjectComment(int64(out["comment_id"].(float64)))
+	c, err := fx.d.GetWorkbenchComment(int64(out["comment_id"].(float64)))
 	require.NoError(t, err)
 	assert.Equal(t, "agent", c.Author)
 	assert.Equal(t, "claude-code", c.AgentLabel)
-	assert.Equal(t, fx.a, c.ProjectID)
+	assert.Equal(t, fx.a, c.WorkbenchID)
 
 	reply := mustApply(t, reg, fx.a, "add_comment", fmt.Sprintf(`{"parent_id":%d,"body":"Answer?","reason":"r"}`, c.ID))
 	_, err = proposeIn(t, reg, fx.a, "resolve_comment", fmt.Sprintf(`{"comment_id":%d,"reason":"r"}`, int64(reply["comment_id"].(float64))))
@@ -204,8 +204,8 @@ func TestComments_AgentThreadLifecycle(t *testing.T) {
 // Another project's document and a missing one answer the same line — no
 // existence oracle.
 func TestListComments_RefusesAnotherProjectsDocument(t *testing.T) {
-	fx := newProjectFixture(t)
-	reg := projectRegistry(t, fx.d)
+	fx := newWorkbenchFixture(t)
+	reg := workbenchRegistry(t, fx.d)
 	for _, id := range []int64{fx.bDocument, 999} {
 		_, err := reg.CallRead(context.Background(), "list_comments",
 			json.RawMessage(fmt.Sprintf(`{"document_id":%d}`, id)), directBinding(fx.a))
@@ -226,9 +226,9 @@ func nullInt(v int64) sql.NullInt64 { return sql.NullInt64{Int64: v, Valid: true
 // resolve_comment's reply and status change are one transaction: a failure
 // resolving the root leaves no reply behind, so a Retry cannot duplicate it.
 func TestResolveComment_FailedResolveLeavesNoReply(t *testing.T) {
-	fx := newProjectFixture(t)
-	reg := projectRegistry(t, fx.d)
-	root, err := fx.d.AddProjectComment(db.ProjectComment{ProjectID: fx.a,
+	fx := newWorkbenchFixture(t)
+	reg := workbenchRegistry(t, fx.d)
+	root, err := fx.d.AddWorkbenchComment(db.WorkbenchComment{WorkbenchID: fx.a,
 		TargetID: nullInt(fx.aTarget), Author: "owner", Body: "fix it"})
 	require.NoError(t, err)
 	_, err = fx.d.Exec(`CREATE TRIGGER fail_resolve BEFORE UPDATE OF status ON project_comments
@@ -250,7 +250,7 @@ func TestResolveComment_FailedResolveLeavesNoReply(t *testing.T) {
 	_, err = reg.Apply(context.Background(), rc.ActionID)
 	require.NoError(t, err)
 	assert.Equal(t, 1, replies(), "the retry posts the reply exactly once")
-	c, err := fx.d.GetProjectComment(root)
+	c, err := fx.d.GetWorkbenchComment(root)
 	require.NoError(t, err)
 	assert.Equal(t, "resolved", c.Status)
 }

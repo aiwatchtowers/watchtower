@@ -12,16 +12,16 @@ import (
 // (project_id NULL) or one project's board. NULL vs N counts as different.
 func TestTargetParent_MustShareTheChildsBoard(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestProject(t, d)
-	otherPID := newTestProject(t, d)
-	projectParent := insertProjectTargetRow(t, d, pid, "project parent")
+	pid := newTestWorkbench(t, d)
+	otherPID := newTestWorkbench(t, d)
+	projectParent := insertWorkbenchTargetRow(t, d, pid, "project parent")
 	personalParent, err := d.CreateTarget(makeTarget("personal parent", "todo", "medium"))
 	require.NoError(t, err)
 
 	withParent := func(text string, parent int64, project sql.NullInt64) Target {
 		tg := makeTarget(text, "todo", "medium")
 		tg.ParentID = nullID(parent)
-		tg.ProjectID = project
+		tg.WorkbenchID = project
 		return tg
 	}
 
@@ -46,7 +46,7 @@ func TestTargetParent_MustShareTheChildsBoard(t *testing.T) {
 	// So does moving a parent off its children's board.
 	parent, err := d.GetTargetByID(int(projectParent))
 	require.NoError(t, err)
-	parent.ProjectID = sql.NullInt64{}
+	parent.WorkbenchID = sql.NullInt64{}
 	assert.ErrorIs(t, d.UpdateTarget(*parent), ErrParentOtherBoard, "a parent cannot leave its children's board")
 
 	var n int

@@ -160,7 +160,7 @@ func (p *Pipeline) RunForDate(ctx context.Context, date string) (int, error) {
 	peopleSummaryCtx := p.gatherPeopleSummary()
 	profileCtx := formatUserProfile(profile)
 	jiraCtx := p.gatherJiraContext(owner)
-	projectsCtx, hasRealProjects := p.gatherProjects(p.revisionWindowStart(currentUserID, date))
+	projectsCtx, hasRealProjects := p.gatherWorkbenches(p.revisionWindowStart(currentUserID, date))
 	memRevisionsCtx := p.gatherMemoryRevisions(currentUserID, date)
 
 	// Check we have some data (suggestion text alone doesn't count).

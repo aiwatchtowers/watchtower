@@ -9,31 +9,31 @@ import (
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"watchtower/internal/db"
-	"watchtower/internal/projectfiles"
 	"watchtower/internal/tools"
+	"watchtower/internal/workbenchfiles"
 )
 
-// newProjectSession mirrors cmd/mcp.go's --project wiring: a writable
+// newWorkbenchSession mirrors cmd/mcp.go's --project wiring: a writable
 // connection, the project tools plus every read tool, bound to projectID
 // with DirectApply.
-func newProjectSession(t *testing.T, database *db.DB, projectID int64) *mcpsdk.ClientSession {
+func newWorkbenchSession(t *testing.T, database *db.DB, projectID int64) *mcpsdk.ClientSession {
 	t.Helper()
 	reg := tools.New(database)
-	for _, tool := range append(tools.ProjectTools(projectfiles.New(t.TempDir()), false), tools.ReadTools()...) {
+	for _, tool := range append(tools.WorkbenchTools(workbenchfiles.New(t.TempDir()), false), tools.ReadTools()...) {
 		if err := reg.Register(tool); err != nil {
 			t.Fatal(err)
 		}
 	}
-	return newChatSession(t, database, reg, tools.Binding{Surface: "project", ProjectID: projectID, DirectApply: true})
+	return newChatSession(t, database, reg, tools.Binding{Surface: "project", WorkbenchID: projectID, DirectApply: true})
 }
 
-func seedMCPProject(t *testing.T, database *db.DB) int64 {
+func seedMCPWorkbench(t *testing.T, database *db.DB) int64 {
 	t.Helper()
-	folder, err := db.ResolveProjectFolder(t.TempDir(), nil)
+	folder, err := db.ResolveWorkbenchFolder(t.TempDir(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, err := database.CreateProject("acme", folder)
+	id, err := database.CreateWorkbench("acme", folder)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,9 +44,9 @@ func seedMCPProject(t *testing.T, database *db.DB) int64 {
 // every tool, project tool or not, read or write, answers the same line.
 func TestProjectMode_DeletedProjectEveryToolAnswersNoLongerExists(t *testing.T) {
 	database := seedDB(t)
-	pid := seedMCPProject(t, database)
-	cs := newProjectSession(t, database, pid)
-	if err := database.DeleteProject(pid); err != nil {
+	pid := seedMCPWorkbench(t, database)
+	cs := newWorkbenchSession(t, database, pid)
+	if err := database.DeleteWorkbench(pid); err != nil {
 		t.Fatal(err)
 	}
 	want := "project " + strconv.FormatInt(pid, 10) + " no longer exists"
@@ -79,7 +79,7 @@ func TestProjectMode_DeletedProjectEveryToolAnswersNoLongerExists(t *testing.T) 
 // get_action in a project session shows that project's rows only.
 func TestGetAction_ProjectSessionSeesOnlyItsRows(t *testing.T) {
 	database := seedDB(t)
-	pid := seedMCPProject(t, database)
+	pid := seedMCPWorkbench(t, database)
 	mainRow, err := database.InsertAgentAction(db.AgentAction{Tool: "create_target", ArgsJSON: `{}`, Reason: "r",
 		Surface: "main", ConversationID: 0, Status: "pending", TrustAtCreate: "ask"})
 	if err != nil {
@@ -87,21 +87,21 @@ func TestGetAction_ProjectSessionSeesOnlyItsRows(t *testing.T) {
 	}
 	// A row of a second project: same context_type, different context_id —
 	// only actionVisible's context_id clause keeps it out of project A's view.
-	otherFolder, err := db.ResolveProjectFolder(t.TempDir(), nil)
+	otherFolder, err := db.ResolveWorkbenchFolder(t.TempDir(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	otherPID, err := database.CreateProject("other", otherFolder)
+	otherPID, err := database.CreateWorkbench("other", otherFolder)
 	if err != nil {
 		t.Fatal(err)
 	}
 	otherProjectRow, err := database.InsertAgentAction(db.AgentAction{Tool: "create_targets", ArgsJSON: `{}`, Reason: "r",
-		Surface: "project", ContextType: tools.ProjectContextType, ContextID: strconv.FormatInt(otherPID, 10),
+		Surface: "project", ContextType: tools.WorkbenchContextType, ContextID: strconv.FormatInt(otherPID, 10),
 		Status: "pending", TrustAtCreate: "execute"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	cs := newProjectSession(t, database, pid)
+	cs := newWorkbenchSession(t, database, pid)
 
 	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "create_targets",
 		Arguments: map[string]any{"items": []any{map[string]any{"text": "x"}}, "reason": "r"}})

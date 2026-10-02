@@ -18,8 +18,8 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/kb"
-	"watchtower/internal/projectcheck"
 	"watchtower/internal/tools"
+	"watchtower/internal/workbenchcheck"
 )
 
 const (
@@ -48,7 +48,7 @@ var briefRules = []string{
 	"Before revising an attached document call list_comments(document_id); resolve each comment you addressed (resolve_comment), then attach_document again.",
 }
 
-var projectBriefCmd = &cobra.Command{
+var workbenchBriefCmd = &cobra.Command{
 	Use:   "brief",
 	Short: "Print a project's brief for Claude Code (the SessionStart hook body)",
 	Long: "Prints at most 4000 characters: target counts, the open part of the board with\n" +
@@ -61,44 +61,44 @@ var projectBriefCmd = &cobra.Command{
 		"stores the conversation's session id on that terminal row.",
 	// No root schema/config pre-run: a broken config would otherwise fail the
 	// hook before RunE could turn it into the one-line brief (the
-	// extract-pdf-text precedent). loadProjectBrief loads config itself.
+	// extract-pdf-text precedent). loadWorkbenchBrief loads config itself.
 	PersistentPreRunE: func(*cobra.Command, []string) error { return nil },
 	// ArbitraryArgs + UnknownFlags: a hook invocation carrying an extra
 	// positional arg or a flag this version doesn't know must still exit 0
 	// with the one-line brief, never fail in cobra's own flag parser.
 	Args:               cobra.ArbitraryArgs,
 	FParseErrWhitelist: cobra.FParseErrWhitelist{UnknownFlags: true},
-	RunE:               runProjectBrief,
+	RunE:               runWorkbenchBrief,
 }
 
-// projectBriefFlagProject is a string, not an int64: an Int64Var flag makes
+// workbenchBriefFlagWorkbench is a string, not an int64: an Int64Var flag makes
 // cobra's flag parser itself reject a non-numeric --project value before
 // RunE (or PersistentPreRunE) ever runs, exiting non-zero — exactly what this
-// command must never do. loadProjectBriefFlag turns it into an id (0 for
+// command must never do. loadWorkbenchBriefFlag turns it into an id (0 for
 // empty/invalid) so every bad value becomes the one-line brief instead.
-var projectBriefFlagProject string
+var workbenchBriefFlagWorkbench string
 
 func init() {
-	projectBriefCmd.Flags().StringVar(&projectBriefFlagProject, "project", "", "project id")
-	projectCmd.AddCommand(projectBriefCmd)
+	workbenchBriefCmd.Flags().StringVar(&workbenchBriefFlagWorkbench, "project", "", "project id")
+	workbenchCmd.AddCommand(workbenchBriefCmd)
 }
 
-func runProjectBrief(cmd *cobra.Command, _ []string) error {
-	if id, err := parseProjectBriefFlag(projectBriefFlagProject); err == nil && id > 0 {
+func runWorkbenchBrief(cmd *cobra.Command, _ []string) error {
+	if id, err := parseWorkbenchBriefFlag(workbenchBriefFlagWorkbench); err == nil && id > 0 {
 		if err := recordTerminalSessionID(cmd.InOrStdin(), id); err != nil {
 			// Best effort: the hook log shows it (never the model), and the
 			// brief is printed as always.
 			fmt.Fprintf(cmd.ErrOrStderr(), "watchtower: project %d brief: terminal session not recorded: %v\n", id, err)
 		}
 	}
-	fmt.Fprintln(cmd.OutOrStdout(), loadProjectBriefFlag(projectBriefFlagProject))
+	fmt.Fprintln(cmd.OutOrStdout(), loadWorkbenchBriefFlag(workbenchBriefFlagWorkbench))
 	return nil
 }
 
-// parseProjectBriefFlag parses the raw --project flag value: 0 for empty
+// parseWorkbenchBriefFlag parses the raw --project flag value: 0 for empty
 // (missing, or explicitly ""), an error for a value that isn't a positive
 // integer.
-func parseProjectBriefFlag(raw string) (int64, error) {
+func parseWorkbenchBriefFlag(raw string) (int64, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
 		return 0, nil
@@ -110,19 +110,19 @@ func parseProjectBriefFlag(raw string) (int64, error) {
 	return id, nil
 }
 
-// loadProjectBriefFlag is the brief for the raw --project flag value. Empty
-// reads as "no --project id given" via loadProjectBrief's own id<=0 branch;
+// loadWorkbenchBriefFlag is the brief for the raw --project flag value. Empty
+// reads as "no --project id given" via loadWorkbenchBrief's own id<=0 branch;
 // an invalid value gets its own one-line reason so it isn't misreported as
 // missing.
-func loadProjectBriefFlag(raw string) string {
-	id, err := parseProjectBriefFlag(raw)
+func loadWorkbenchBriefFlag(raw string) string {
+	id, err := parseWorkbenchBriefFlag(raw)
 	if err != nil {
 		return briefUnavailable(0, "is unavailable: "+err.Error())
 	}
-	return loadProjectBrief(id)
+	return loadWorkbenchBrief(id)
 }
 
-func loadProjectBrief(id int64) string {
+func loadWorkbenchBrief(id int64) string {
 	if id <= 0 {
 		return briefUnavailable(id, "is unavailable: no --project id given")
 	}
@@ -131,8 +131,8 @@ func loadProjectBrief(id int64) string {
 		return briefUnavailable(id, "is unavailable: "+err.Error())
 	}
 	defer database.Close()
-	p, err := database.GetProject(id)
-	if errors.Is(err, db.ErrProjectNotFound) {
+	p, err := database.GetWorkbench(id)
+	if errors.Is(err, db.ErrWorkbenchNotFound) {
 		return briefUnavailable(id, "no longer exists")
 	}
 	if err != nil {
@@ -144,28 +144,28 @@ func loadProjectBrief(id int64) string {
 	return briefFromDB(database, p)
 }
 
-func briefFromDB(database *db.DB, p *db.Project) string {
-	board, err := database.GetProjectBoard(p.ID)
+func briefFromDB(database *db.DB, p *db.Workbench) string {
+	board, err := database.GetWorkbenchBoard(p.ID)
 	if err != nil {
 		return briefUnavailable(p.ID, "is unavailable: "+err.Error())
 	}
-	comments, err := database.ListProjectComments(db.ProjectCommentFilter{ProjectID: p.ID, NewForAgent: true})
+	comments, err := database.ListWorkbenchComments(db.WorkbenchCommentFilter{WorkbenchID: p.ID, NewForAgent: true})
 	if err != nil {
 		return briefUnavailable(p.ID, "is unavailable: "+err.Error())
 	}
-	docs, err := database.ListProjectDocuments(p.ID)
+	docs, err := database.ListWorkbenchDocuments(p.ID)
 	if err != nil {
 		return briefUnavailable(p.ID, "is unavailable: "+err.Error())
 	}
-	byID := make(map[int64]db.ProjectDocument, len(docs))
+	byID := make(map[int64]db.WorkbenchDocument, len(docs))
 	for _, d := range docs {
 		byID[d.ID] = d
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), briefDriftBudget)
 	defer cancel()
-	drift := projectcheck.Check(ctx, p.ID, board, projectcheck.Options{Folder: p.FolderPath})
+	drift := workbenchcheck.Check(ctx, p.ID, board, workbenchcheck.Options{Folder: p.FolderPath})
 	now := time.Now()
-	return renderProjectBrief(board, p, comments, byID, drift, loadBriefRecent(database, p.ID, now), now)
+	return renderWorkbenchBrief(board, p, comments, byID, drift, loadBriefRecent(database, p.ID, now), now)
 }
 
 // briefRecent is the recent-in-project-sources input; nil when the project
@@ -196,7 +196,7 @@ func loadBriefRecent(database *db.DB, projectID int64, now time.Time) *briefRece
 }
 
 func readBriefRecent(ctx context.Context, database *db.DB, projectID int64, now time.Time) *briefRecent {
-	scope, _, err := tools.ProjectKnowledgeScope(ctx, database, projectID)
+	scope, _, err := tools.WorkbenchKnowledgeScope(ctx, database, projectID)
 	if err != nil {
 		return &briefRecent{err: err}
 	}
@@ -216,12 +216,12 @@ func briefUnavailable(id int64, reason string) string {
 	return briefClip(fmt.Sprintf("Watchtower: project %d %s.", id, reason), briefLineChars)
 }
 
-// renderProjectBrief is the hook body: header, the board drift (when any),
+// renderWorkbenchBrief is the hook body: header, the board drift (when any),
 // the open tree, the comments new for the agent, recent documents of the
 // project's sources (recent nil = the project has none, the section is left
 // out), the rules — at most briefMaxChars runes. A drift check cut short
 // says so, so a partial check never reads as a clean board. Pure.
-func renderProjectBrief(board []db.BoardNode, p *db.Project, comments []db.ProjectComment, docs map[int64]db.ProjectDocument, drift projectcheck.Report, recent *briefRecent, now time.Time) string {
+func renderWorkbenchBrief(board []db.BoardNode, p *db.Workbench, comments []db.WorkbenchComment, docs map[int64]db.WorkbenchDocument, drift workbenchcheck.Report, recent *briefRecent, now time.Time) string {
 	head := briefHeader(p, board, len(comments))
 	rules := strings.Join(briefRules, "\n")
 	budget := briefMaxChars - utf8.RuneCountInString(head) - utf8.RuneCountInString(rules) - 3 // three joining newlines
@@ -256,7 +256,7 @@ func renderProjectBrief(board []db.BoardNode, p *db.Project, comments []db.Proje
 // the check ran to the end and found nothing. A check cut short, or a
 // repository whose branch checks could not run (no default branch
 // resolves), says so, so it never reads as a clean board.
-func briefDriftSection(drift projectcheck.Report, limit int) string {
+func briefDriftSection(drift workbenchcheck.Report, limit int) string {
 	caveat := ""
 	switch {
 	case drift.Incomplete:
@@ -320,7 +320,7 @@ func briefDay(when string) string {
 	return when
 }
 
-func briefHeader(p *db.Project, board []db.BoardNode, newComments int) string {
+func briefHeader(p *db.Workbench, board []db.BoardNode, newComments int) string {
 	c := countBoardStatuses(board)
 	lines := []string{
 		briefClip(fmt.Sprintf("Watchtower project #%d %q — %s", p.ID, p.Name, p.FolderPath), briefLineChars),
@@ -447,8 +447,8 @@ func boardTitles(board []db.BoardNode) map[int64]string {
 }
 
 // briefCommentLines renders target comments first, then document comments.
-func briefCommentLines(comments []db.ProjectComment, docs map[int64]db.ProjectDocument, titles map[int64]string) []string {
-	ordered := append([]db.ProjectComment(nil), comments...)
+func briefCommentLines(comments []db.WorkbenchComment, docs map[int64]db.WorkbenchDocument, titles map[int64]string) []string {
+	ordered := append([]db.WorkbenchComment(nil), comments...)
 	sort.SliceStable(ordered, func(i, j int) bool {
 		return !ordered[i].DocumentID.Valid && ordered[j].DocumentID.Valid
 	})
@@ -459,7 +459,7 @@ func briefCommentLines(comments []db.ProjectComment, docs map[int64]db.ProjectDo
 	return lines
 }
 
-func briefCommentLine(c db.ProjectComment, docs map[int64]db.ProjectDocument, titles map[int64]string) string {
+func briefCommentLine(c db.WorkbenchComment, docs map[int64]db.WorkbenchDocument, titles map[int64]string) string {
 	who := fmt.Sprintf("- comment #%d", c.ID)
 	if c.ParentID.Valid {
 		who += fmt.Sprintf(" (reply in thread #%d)", c.ParentID.Int64)

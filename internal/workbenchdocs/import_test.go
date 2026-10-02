@@ -1,4 +1,4 @@
-package projectdocs
+package workbenchdocs
 
 import (
 	"fmt"
@@ -22,14 +22,14 @@ func writeFile(t *testing.T, folder, rel string, age time.Duration) {
 	require.NoError(t, os.Chtimes(p, at, at))
 }
 
-func newProject(t *testing.T) (*db.DB, *db.Project) {
+func newWorkbench(t *testing.T) (*db.DB, *db.Workbench) {
 	t.Helper()
 	d := db.OpenTestDB(t)
-	folder, err := db.ResolveProjectFolder(t.TempDir(), nil)
+	folder, err := db.ResolveWorkbenchFolder(t.TempDir(), nil)
 	require.NoError(t, err)
-	id, err := d.CreateProject("acme", folder)
+	id, err := d.CreateWorkbench("acme", folder)
 	require.NoError(t, err)
-	p, err := d.GetProject(id)
+	p, err := d.GetWorkbench(id)
 	require.NoError(t, err)
 	return d, p
 }
@@ -46,7 +46,7 @@ func relPaths(cs []Candidate) []string {
 // plans directory anywhere under docs/, README first, then newest first, and
 // nothing else.
 func TestScan_FindsReadmeSpecsAndPlansNewestFirst(t *testing.T) {
-	_, p := newProject(t)
+	_, p := newWorkbench(t)
 	f := p.FolderPath
 	writeFile(t, f, "README.md", 10*time.Hour)
 	writeFile(t, f, "docs/superpowers/specs/old-spec.md", 5*time.Hour)
@@ -70,7 +70,7 @@ func TestScan_FindsReadmeSpecsAndPlansNewestFirst(t *testing.T) {
 // Symlinks are never followed or listed: a linked file, a linked directory and
 // a docs/ that is itself a link all stay out, so no rel_path leaves the folder.
 func TestScan_IgnoresSymlinks(t *testing.T) {
-	_, p := newProject(t)
+	_, p := newWorkbench(t)
 	outside := t.TempDir()
 	writeFile(t, outside, "specs/secret.md", 0)
 	writeFile(t, outside, "note.md", 0)
@@ -92,12 +92,12 @@ func TestScan_IgnoresSymlinks(t *testing.T) {
 // Import is additive and idempotent: an attached document is never touched,
 // a second run imports nothing, and imported rows carry origin 'import'.
 func TestImport_AdditiveIdempotentAndMarkedImport(t *testing.T) {
-	d, p := newProject(t)
+	d, p := newWorkbench(t)
 	writeFile(t, p.FolderPath, "README.md", 0)
 	writeFile(t, p.FolderPath, "docs/specs/a.md", 0)
-	agentID, _, err := d.UpsertProjectDocument(db.ProjectDocument{ProjectID: p.ID, RelPath: "docs/specs/A.md", Kind: "spec", Title: "Agent title"})
+	agentID, _, err := d.UpsertWorkbenchDocument(db.WorkbenchDocument{WorkbenchID: p.ID, RelPath: "docs/specs/A.md", Kind: "spec", Title: "Agent title"})
 	require.NoError(t, err)
-	before, err := d.GetProjectDocument(agentID)
+	before, err := d.GetWorkbenchDocument(agentID)
 	require.NoError(t, err)
 
 	rep, err := Import(d, p, false)
@@ -105,12 +105,12 @@ func TestImport_AdditiveIdempotentAndMarkedImport(t *testing.T) {
 	assert.Equal(t, []string{"README.md"}, rep.Imported)
 	assert.Equal(t, []string{"docs/specs/a.md"}, rep.AlreadyAttached, "another spelling of an attached path is the same file")
 
-	after, err := d.GetProjectDocument(agentID)
+	after, err := d.GetWorkbenchDocument(agentID)
 	require.NoError(t, err)
 	assert.Equal(t, before, after, "an attached document is never touched")
 	assert.Equal(t, "agent", after.Origin)
 
-	docs, err := d.ListProjectDocuments(p.ID)
+	docs, err := d.ListWorkbenchDocuments(p.ID)
 	require.NoError(t, err)
 	require.Len(t, docs, 2)
 	assert.Equal(t, "import", docs[1].Origin)
@@ -123,13 +123,13 @@ func TestImport_AdditiveIdempotentAndMarkedImport(t *testing.T) {
 }
 
 func TestImport_DryRunWritesNothing(t *testing.T) {
-	d, p := newProject(t)
+	d, p := newWorkbench(t)
 	writeFile(t, p.FolderPath, "docs/plans/p.md", 0)
 	rep, err := Import(d, p, true)
 	require.NoError(t, err)
 	assert.True(t, rep.DryRun)
 	assert.Equal(t, []string{"docs/plans/p.md"}, rep.Imported)
-	docs, err := d.ListProjectDocuments(p.ID)
+	docs, err := d.ListWorkbenchDocuments(p.ID)
 	require.NoError(t, err)
 	assert.Empty(t, docs)
 }
@@ -137,7 +137,7 @@ func TestImport_DryRunWritesNothing(t *testing.T) {
 // The cap counts only new documents: past it the rest is reported, and the
 // next run picks it up.
 func TestImport_CapReportsTheRestAndTheNextRunTakesIt(t *testing.T) {
-	d, p := newProject(t)
+	d, p := newWorkbench(t)
 	for i := range MaxImport + 5 {
 		writeFile(t, p.FolderPath, fmt.Sprintf("docs/specs/s%02d.md", i), time.Duration(i)*time.Minute)
 	}
@@ -155,14 +155,14 @@ func TestImport_CapReportsTheRestAndTheNextRunTakesIt(t *testing.T) {
 
 // An agent re-attach of an imported document makes it the agent's.
 func TestUpsertProjectDocument_ReattachOfImportBecomesAgent(t *testing.T) {
-	d, p := newProject(t)
+	d, p := newWorkbench(t)
 	writeFile(t, p.FolderPath, "docs/plans/p.md", 0)
 	_, err := Import(d, p, false)
 	require.NoError(t, err)
-	id, created, err := d.UpsertProjectDocument(db.ProjectDocument{ProjectID: p.ID, RelPath: "docs/plans/p.md", Kind: "plan"})
+	id, created, err := d.UpsertWorkbenchDocument(db.WorkbenchDocument{WorkbenchID: p.ID, RelPath: "docs/plans/p.md", Kind: "plan"})
 	require.NoError(t, err)
 	assert.False(t, created)
-	doc, err := d.GetProjectDocument(id)
+	doc, err := d.GetWorkbenchDocument(id)
 	require.NoError(t, err)
 	assert.Equal(t, "agent", doc.Origin)
 }
@@ -170,7 +170,7 @@ func TestUpsertProjectDocument_ReattachOfImportBecomesAgent(t *testing.T) {
 // A path below docs/ that cannot be read is skipped and reported; the rest,
 // README included, is imported. Only an unreadable docs/ fails the import.
 func TestImport_UnreadablePathIsSkippedAndReported(t *testing.T) {
-	d, p := newProject(t)
+	d, p := newWorkbench(t)
 	writeFile(t, p.FolderPath, "README.md", 0)
 	writeFile(t, p.FolderPath, "docs/plans/p.md", 0)
 	writeFile(t, p.FolderPath, "docs/private/specs/s.md", 0)
