@@ -141,6 +141,10 @@ extension WorkbenchesViewModel {
             updated.showWorkbenchView(.board)
         case .documents:
             updated.showWorkbenchView(.documents)
+        case .editor:
+            // Not a header button (`WorkspaceView.headerCases`): files open
+            // from the FILES tree (`openFile`).
+            return
         case .terminal:
             let kept = updated.visiblePanes.first ?? updated.primary
             guard let id = updated.sessionIDs.first ?? activeSessionID(projectID: project.id) else {
@@ -150,6 +154,14 @@ extension WorkbenchesViewModel {
             updated.reveal(.session(id), keeping: kept)
         }
         setLayout(updated, projectID: project.id)
+    }
+
+    /// A FILES tree click (POC): the file goes on screen the way Board and
+    /// Documents do — beside a terminal in a split, else in place.
+    func openFile(_ relPath: String, projectID: Int64) {
+        var updated = layout(projectID: projectID)
+        updated.showWorkbenchView(.file(relPath))
+        setLayout(updated, projectID: projectID)
     }
 
     /// A header view button turned off: closes that pane of a split.

@@ -16,6 +16,10 @@ final class WorkbenchesViewModel {
     /// `projects.` prefix predates the Workbench rename; persisted, so kept (spec 2026-10-02 A1).
     static let viewedDocumentsKey = "projects.viewedDocuments"
 
+    /// The code viewer's file trees and open buffers (POC), here so unsaved
+    /// edits survive switching panes and tabs.
+    let codeFiles = CodeFilesCenter()
+
     private(set) var summaries: [WorkbenchSummary] = []
     var selectedWorkbenchID: Int64? {
         didSet {

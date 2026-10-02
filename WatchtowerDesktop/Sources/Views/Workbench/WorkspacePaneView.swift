@@ -117,6 +117,7 @@ struct WorkspacePaneView: View {
 
     private var title: String {
         if case let .session(id) = pane { return vm.session(id, projectID: project.id)?.title ?? "Session" }
+        if case let .file(path) = pane { return (path as NSString).lastPathComponent }
         return WorkspaceView(pane).title
     }
 
@@ -133,6 +134,9 @@ struct WorkspacePaneView: View {
         case let .session(id):
             WorkbenchSessionView(projectID: project.id, sessionID: id)
                 .id(id)
+        case let .file(path):
+            CodeFilePaneView(files: vm.codeFiles, project: project, relPath: path)
+                .id(path)
         }
     }
 }
@@ -237,6 +241,7 @@ extension WorkspaceView {
         case .terminal: "Terminal"
         case .board: "Board"
         case .documents: "Documents"
+        case .editor: "Editor"
         }
     }
 
@@ -245,6 +250,7 @@ extension WorkspaceView {
         case .terminal: "terminal"
         case .board: "square.grid.2x2"
         case .documents: "doc.text"
+        case .editor: "chevron.left.forwardslash.chevron.right"
         }
     }
 }

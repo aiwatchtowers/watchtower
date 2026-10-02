@@ -296,4 +296,16 @@ final class WorkspaceLayoutTests: XCTestCase {
         XCTAssertTrue(WorkspaceView.terminal.matches(.session(3)))
         XCTAssertFalse(WorkspaceView.board.matches(.documents))
     }
+
+    // POC (code viewer): a file pane round-trips through the saved layout
+    // and opens beside a terminal without displacing it.
+    func testFilePaneRoundTripsAndKeepsTheTerminal() throws {
+        var l = split()
+        l.showWorkbenchView(.file("cmd/main.go"))
+        XCTAssertEqual(l.visiblePanes, [.file("cmd/main.go"), .session(1)])
+        XCTAssertEqual(WorkspaceView(.file("x")), .editor)
+        XCTAssertFalse(WorkspaceView.headerCases.contains(.editor))
+        let decoded = WorkspaceLayout.decode(try JSONEncoder().encode(l))
+        XCTAssertEqual(decoded, l)
+    }
 }

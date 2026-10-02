@@ -35,6 +35,7 @@ struct WorkbenchSessionsPanel: View {
                 .onMove { vm.moveSessions(sessions, projectID: project.id, from: $0, to: $1) }
             }
             .clearPlainList()
+            WorkbenchFilesSection(vm: vm, project: project)
         }
         .task(id: project.id) { await vm.loadSessions(projectID: project.id) }
     }
