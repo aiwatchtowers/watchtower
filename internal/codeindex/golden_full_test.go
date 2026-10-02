@@ -17,6 +17,12 @@ func init() {
 	goldenFixtures["cpp"] = "sample.cpp"
 	goldenFixtures["c_sharp"] = "Sample.cs"
 	goldenFixtures["lua"] = "sample.lua"
+	goldenFixtures["scala"] = "sample.scala"
+	goldenFixtures["dart"] = "sample.dart"
+	goldenFixtures["elixir"] = "sample.ex"
+	goldenFixtures["elm"] = "Sample.elm"
+	goldenFixtures["ocaml"] = "sample.ml"
+	goldenFixtures["r"] = "sample.R"
 }
 
 // wantKinds checks that each named symbol exists once with the kind and
@@ -218,5 +224,116 @@ func TestLua_TableFunctions(t *testing.T) {
 	}
 	if len(byName(syms, "inner")) != 0 {
 		t.Error("a local function inside a function was indexed")
+	}
+}
+
+func TestScala_Kinds(t *testing.T) {
+	syms := fixtureSymbols(t, "scala", "sample.scala")
+	wantKinds(t, syms, map[string][2]string{
+		"Storable": {"interface", ""}, "MaxSize": {"const", ""}, "add": {"method", "Store"},
+		"entries": {"field", "Store"}, "name": {"field", "Store"}, "Shape": {"enum", ""}, "Circle": {"const", "Shape"},
+		"Point": {"class", ""}, "Id": {"type", ""}, "double": {"function", ""}, "empty": {"method", "Store"},
+	})
+	if s := one(t, syms, "add"); s.Signature != "def add(key: String, value: T): Unit" {
+		t.Errorf("add signature = %q (the trailing = must go)", s.Signature)
+	}
+	if len(byName(syms, "local")) != 0 {
+		t.Error("a local inside a method was indexed")
+	}
+}
+
+// A Dart method's body is the signature's sibling: the span takes it in.
+func TestDart_BodySiblingAndAnnotations(t *testing.T) {
+	syms := fixtureSymbols(t, "dart", "sample.dart")
+	wantKinds(t, syms, map[string][2]string{
+		"Storable": {"class", ""}, "maxSize": {"const", ""}, "entries": {"field", "Store"},
+		"add": {"method", "Store"}, "Shape": {"enum", ""}, "circle": {"const", "Shape"},
+		"Counts": {"interface", ""}, "Shout": {"type", ""}, "shout": {"method", "Shout"},
+		"Id": {"type", ""}, "twice": {"function", ""},
+	})
+	if s := one(t, syms, "add"); s.EndLine != 32 {
+		t.Errorf("add ends on line %d, want 32 (its body)", s.EndLine)
+	}
+	for _, s := range byName(syms, "key") {
+		if s.Container == "Store" && s.Doc != "" {
+			t.Errorf("a // comment above @override became a doc: %q", s.Doc)
+		}
+	}
+	if d := one(t, syms, "maxSize").Doc; d != "The largest size a store holds." {
+		t.Errorf("maxSize doc = %q (through `const`)", d)
+	}
+	if len(byName(syms, "local")) != 0 {
+		t.Error("a local inside a method was indexed")
+	}
+}
+
+// defmodule is a module, defprotocol a protocol; docs are @moduledoc/@doc.
+func TestElixir_ModulesAndDocAttributes(t *testing.T) {
+	syms := fixtureSymbols(t, "elixir", "sample.ex")
+	wantKinds(t, syms, map[string][2]string{
+		"Acme.Store": {"module", ""}, "Acme.Storable": {"protocol", ""}, "Inner": {"module", "Acme.Store"},
+		"new": {"function", "Acme.Store"}, "add": {"function", "Acme.Store"}, "size": {"function", "Acme.Store"},
+		"twice": {"macro", "Acme.Store"}, "assist": {"function", "Inner"}, "key": {"function", "Acme.Storable"},
+	})
+	for name, doc := range map[string]string{
+		"Acme.Store": "A key-value store.", "new": "Builds an empty store.", "add": "Adds a value under a key.",
+		"size": "", "Inner": "", "key": "The key this value is stored under.",
+	} {
+		if d := one(t, syms, name).Doc; d != doc {
+			t.Errorf("%s doc = %q, want %q", name, d, doc)
+		}
+	}
+	if len(byName(syms, "helper")) != 0 {
+		t.Error("a local inside a function was indexed")
+	}
+}
+
+func TestElm_Kinds(t *testing.T) {
+	syms := fixtureSymbols(t, "elm", "Sample.elm")
+	wantKinds(t, syms, map[string][2]string{
+		"Sample": {"module", ""}, "maxSize": {"function", ""}, "Store": {"type", ""}, "Shape": {"enum", ""},
+		"Circle": {"const", "Shape"}, "add": {"function", ""}, "send": {"function", ""},
+	})
+	if d := one(t, syms, "maxSize").Doc; d != "The largest size a store holds." {
+		t.Errorf("maxSize doc = %q (above its type annotation)", d)
+	}
+	if d := one(t, syms, "add").Doc; d != "" {
+		t.Errorf("a -- comment became a doc: %q", d)
+	}
+	if len(byName(syms, "local")) != 0 {
+		t.Error("a let binding was indexed")
+	}
+}
+
+func TestOCaml_Kinds(t *testing.T) {
+	syms := fixtureSymbols(t, "ocaml", "sample.ml")
+	wantKinds(t, syms, map[string][2]string{
+		"max_size": {"const", ""}, "store": {"struct", ""}, "entries": {"field", "store"}, "shape": {"enum", ""},
+		"Circle": {"const", "shape"}, "empty": {"function", ""}, "add": {"function", ""},
+		"STORABLE": {"interface", ""}, "key": {"function", "STORABLE"}, "Helpers": {"module", ""},
+		"assist": {"function", "Helpers"}, "counter": {"class", ""}, "incr": {"method", "counter"}, "now": {"function", ""},
+	})
+	if d := one(t, syms, "name").Doc; d != "" {
+		t.Errorf("the line above's trailing comment became name's doc: %q", d)
+	}
+	if d := one(t, syms, "add").Doc; d != "" {
+		t.Errorf("a (* *) comment became a doc: %q", d)
+	}
+	if len(byName(syms, "local")) != 0 {
+		t.Error("a let inside an expression was indexed")
+	}
+}
+
+func TestR_Assignments(t *testing.T) {
+	syms := fixtureSymbols(t, "r", "sample.R")
+	wantKinds(t, syms, map[string][2]string{
+		"double": {"function", ""}, "helper": {"function", ""}, "add_value": {"function", ""},
+		"max_size": {"var", ""}, "stack": {"var", ""},
+	})
+	if d := one(t, syms, "double").Doc; d != "Doubles a number." {
+		t.Errorf("double roxygen doc = %q", d)
+	}
+	if len(byName(syms, "local")) != 0 || len(byName(syms, "push")) != 0 {
+		t.Error("a definition inside a function or a call was indexed")
 	}
 }

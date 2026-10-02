@@ -141,6 +141,9 @@ func TestLanguageFor_FirstLines(t *testing.T) {
 		"<?php\necho 1;\n":              "php",
 		"#!/usr/bin/env python3\n":      "python",
 		"#!/usr/bin/env lua5.4\n":       "lua",
+		"#!/usr/bin/env Rscript\n":      "r",
+		"#!/usr/bin/env elixir\n":       "elixir",
+		"#!/usr/bin/env scala\n":        "scala",
 		"<?xml version=\"1.0\"?>\n<a/>": "",
 	} {
 		if got := LanguageFor("bin/tool", []byte(head)); got != want {

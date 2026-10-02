@@ -113,13 +113,20 @@ func symbolAt(l *langSpec, src []byte, name, def *ts.Node, kind Kind) (span, boo
 	if doc == "" && l.docstring {
 		doc = docstring(src, def)
 	}
-	end := def.EndPosition()
+	if d := docFuncs[l.id]; doc == "" && d != nil {
+		doc = d(src, outer)
+	}
+	last := def
+	if n := outer.NextSibling(); l.bodySibling != "" && n != nil && n.Kind() == l.bodySibling {
+		last = n
+	}
+	end := last.EndPosition()
 	if end.Column == 0 && end.Row > def.StartPosition().Row {
 		end.Row-- // a node that takes its line's newline (a #define) ends on that line
 	}
 	return span{
 		start: def.StartByte(),
-		end:   def.EndByte(),
+		end:   last.EndByte(),
 		sym: Symbol{
 			Name:      name.Utf8Text(src),
 			Kind:      kind,
@@ -146,10 +153,18 @@ var refiners = map[string]func(src []byte, def *ts.Node, kind Kind) (Kind, strin
 	"java":  refineJava,
 
 	"c_sharp": refineCSharp,
+	"ocaml":   refineOCaml,
+	"r":       refineR,
 
 	"javascript": refineJS,
 	"typescript": refineJS,
 	"tsx":        refineJS,
+}
+
+// docFuncs read a doc that is not a comment above the definition, tried
+// when the comment rule found none (Elixir's @doc attribute).
+var docFuncs = map[string]func(src []byte, outer *ts.Node) string{
+	"elixir": elixirDoc,
 }
 
 // refineSwift: a class_declaration's kind is its declaration_kind.
@@ -224,8 +239,8 @@ func isLocal(l *langSpec, def *ts.Node) bool {
 		if !slices.Contains(l.locals, p.Kind()) {
 			continue
 		}
-		if b := p.ChildByFieldName("body"); b != nil && b.Id() == cur.Id() {
-			return true
+		if b := p.ChildByFieldName("body"); b == nil || b.Id() == cur.Id() {
+			return true // in the body, or the scope is all body (Dart's function_body)
 		}
 	}
 	return false
@@ -257,7 +272,7 @@ func wrapperOf(l *langSpec, def *ts.Node) *ts.Node {
 // signature is the definition's source from its outer start to its body
 // (or to a comment of its own before that: Ruby's leading body comment),
 // whitespace collapsed; with no body found, its first line. A trailing
-// `{` or `:` (the body opener) is dropped.
+// `{`, `:` or `=` (the body opener) is dropped.
 func signature(l *langSpec, src []byte, outer, def *ts.Node) string {
 	end := def.EndByte()
 	if body := bodyOf(l, def); body != nil {
@@ -272,7 +287,7 @@ func signature(l *langSpec, src []byte, outer, def *ts.Node) string {
 		}
 	}
 	s := strings.TrimSpace(string(src[outer.StartByte():end]))
-	s = strings.TrimSpace(strings.TrimRight(s, "{:"))
+	s = strings.TrimSpace(strings.TrimRight(s, "{:="))
 	return clip(s)
 }
 
@@ -322,6 +337,9 @@ func docComment(l *langSpec, src []byte, outer *ts.Node) string {
 		nextRow = p.StartPosition().Row
 		if between {
 			continue
+		}
+		if q := p.PrevSibling(); q != nil && q.EndPosition().Row == nextRow && !strings.Contains(q.Kind(), "comment") {
+			break // a trailing comment of the line above, not a doc for outer
 		}
 		text := p.Utf8Text(src)
 		if l.directive != nil && l.directive.MatchString(text) {

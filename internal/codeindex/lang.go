@@ -30,6 +30,10 @@ type langSpec struct {
 	// between are sibling kinds that may sit between a doc comment and
 	// its definition without ending the run (Rust's #[derive]).
 	between []string
+	// bodySibling is the node kind that holds a definition's body as its
+	// next sibling (Dart's function_body), joined into the definition's
+	// span.
+	bodySibling string
 	// locals are ancestor kinds that make a definition local — a
 	// function's body — so it is not indexed.
 	locals []string
@@ -139,6 +143,50 @@ var languages = []langSpec{
 		bodies:       []string{"block"},
 		locals:       []string{"function_declaration", "function_definition"},
 		docPrefixes:  []string{"---"},
+	},
+	{
+		id:           "scala",
+		exts:         []string{".scala", ".sc", ".sbt"},
+		interpreters: []string{"scala"},
+		bodies:       []string{"template_body", "block", "enum_body"},
+		locals:       []string{"function_definition", "lambda_expression"},
+		docPrefixes:  []string{"/**"},
+	},
+	{
+		id:          "dart",
+		exts:        []string{".dart"},
+		bodies:      []string{"class_body", "enum_body", "extension_body", "function_body"},
+		wrappers:    []string{"static_final_declaration_list"},
+		between:     []string{"annotation", "const_builtin", "final_builtin"},
+		bodySibling: "function_body",
+		locals:      []string{"function_body", "function_expression"},
+		docPrefixes: []string{"///", "/**"},
+	},
+	{
+		id:           "elixir",
+		exts:         []string{".ex", ".exs"},
+		interpreters: []string{"elixir"},
+		bodies:       []string{"do_block"},
+	},
+	{
+		id:          "elm",
+		exts:        []string{".elm"},
+		between:     []string{"type_annotation"},
+		docPrefixes: []string{"{-|"},
+	},
+	{
+		id:          "ocaml",
+		exts:        []string{".ml"},
+		bodies:      []string{"structure", "signature", "object_expression", "record_declaration", "variant_declaration"},
+		wrappers:    []string{"value_definition", "type_definition", "module_definition", "class_definition", "class_type_definition"},
+		docPrefixes: []string{"(**"},
+	},
+	{
+		id:           "r",
+		exts:         []string{".r", ".rhistory", ".rmd", ".rprofile", ".rt"},
+		interpreters: []string{"Rscript"},
+		bodies:       []string{"braced_expression"},
+		docPrefixes:  []string{"#'"},
 	},
 	jsLike("javascript", []string{".js", ".es6", ".jsx", ".mjs", ".cjs"}, []string{"jakefile"}, []string{"node", "deno", "bun"}),
 	jsLike("typescript", []string{".ts", ".cts", ".mts"}, nil, nil),

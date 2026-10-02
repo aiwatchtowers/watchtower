@@ -79,6 +79,41 @@ func refineJava(src []byte, def *ts.Node, kind Kind) (Kind, string) {
 	return kind, ""
 }
 
+// refineOCaml: a let with parameters or a fun body is a function, any
+// other a const; a type is a struct for a record and an enum for a
+// variant.
+func refineOCaml(_ []byte, def *ts.Node, kind Kind) (Kind, string) {
+	switch def.Kind() {
+	case "let_binding":
+		if body := def.ChildByFieldName("body"); body != nil && (body.Kind() == "fun_expression" || body.Kind() == "function_expression") {
+			return KindFunction, ""
+		}
+		for i := range def.NamedChildCount() {
+			if c := def.NamedChild(i); c != nil && c.Kind() == "parameter" {
+				return KindFunction, ""
+			}
+		}
+		return KindConst, ""
+	case "type_binding":
+		switch body := def.ChildByFieldName("body"); {
+		case body == nil:
+		case body.Kind() == "record_declaration":
+			return KindStruct, ""
+		case body.Kind() == "variant_declaration":
+			return KindEnum, ""
+		}
+	}
+	return kind, ""
+}
+
+// refineR: an assignment of a function is a function.
+func refineR(_ []byte, def *ts.Node, kind Kind) (Kind, string) {
+	if rhs := def.ChildByFieldName("rhs"); rhs != nil && rhs.Kind() == "function_definition" {
+		return KindFunction, ""
+	}
+	return kind, ""
+}
+
 // refineCSharp: a `const` field is a const.
 func refineCSharp(src []byte, def *ts.Node, kind Kind) (Kind, string) {
 	if def.Kind() != "field_declaration" {
@@ -154,4 +189,67 @@ func refineLua(src []byte, def *ts.Node, kind Kind) (Kind, string) {
 		}
 	}
 	return kind, ""
+}
+
+// elixirDoc is a definition's @doc — the attribute among the module
+// attributes directly before it (@spec, @impl… may sit between) — or a
+// module's or protocol's @moduledoc, the attribute in its body. `@doc
+// false` gives none.
+func elixirDoc(src []byte, def *ts.Node) string {
+	if t := def.ChildByFieldName("target"); t != nil && (t.Utf8Text(src) == "defmodule" || t.Utf8Text(src) == "defprotocol") {
+		return elixirModuledoc(src, def)
+	}
+	for p := def.PrevNamedSibling(); p != nil; p = p.PrevNamedSibling() {
+		if p.Kind() == "comment" {
+			continue
+		}
+		if p.Kind() != "unary_operator" {
+			return ""
+		}
+		if text, ok := elixirAttr(src, p, "doc"); ok {
+			return text
+		}
+	}
+	return ""
+}
+
+// elixirModuledoc is the @moduledoc in a module's do block.
+func elixirModuledoc(src []byte, def *ts.Node) string {
+	for i := range def.NamedChildCount() {
+		body := def.NamedChild(i)
+		if body == nil || body.Kind() != "do_block" {
+			continue
+		}
+		for j := range body.NamedChildCount() {
+			if text, ok := elixirAttr(src, body.NamedChild(j), "moduledoc"); ok {
+				return text
+			}
+		}
+	}
+	return ""
+}
+
+// elixirAttr reads `@name "text"` (or a heredoc): ok=false when n is not
+// that attribute; "" for a non-string value such as false.
+func elixirAttr(src []byte, n *ts.Node, name string) (string, bool) {
+	if n == nil || n.Kind() != "unary_operator" {
+		return "", false
+	}
+	call := n.ChildByFieldName("operand")
+	if call == nil || call.Kind() != "call" {
+		return "", false
+	}
+	if t := call.ChildByFieldName("target"); t == nil || t.Utf8Text(src) != name {
+		return "", false
+	}
+	for i := range call.NamedChildCount() {
+		args := call.NamedChild(i)
+		if args == nil || args.Kind() != "arguments" || args.NamedChildCount() == 0 {
+			continue
+		}
+		if str := args.NamedChild(0); str != nil && str.Kind() == "string" {
+			return firstSentence(docstringText(str.Utf8Text(src))), true
+		}
+	}
+	return "", true
 }
