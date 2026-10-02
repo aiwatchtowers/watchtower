@@ -24,7 +24,7 @@ type scopeSource struct{ Kind, Ref string }
 // WorkbenchKnowledgeScope turns the project's slack_channel, jira_project and
 // confluence_space sources into the kb.Scope its search and brief prefer
 // (resolution rules: knowledgeScope).
-func WorkbenchKnowledgeScope(ctx context.Context, d *db.DB, projectID int64) (s kb.Scope, unresolved []string, err error) {
+func WorkbenchKnowledgeScope(ctx context.Context, d *db.DB, projectID int64) (kb.Scope, []string, error) {
 	sources, err := d.ListWorkbenchSources(projectID)
 	if err != nil {
 		return kb.Scope{}, nil, fmt.Errorf("listing workbench sources: %w", err)
@@ -36,14 +36,14 @@ func WorkbenchKnowledgeScope(ctx context.Context, d *db.DB, projectID int64) (s 
 	return knowledgeScope(ctx, d, refs)
 }
 
-// ChatProjectKnowledgeScope is WorkbenchKnowledgeScope for a chat project's
+// chatProjectKnowledgeScope is WorkbenchKnowledgeScope for a chat project's
 // pinned sources: the same kinds steer search the same way, the rest
 // (target, track, person) stay prompt-only. A chat project that does not
 // exist (deleted mid-session) has no sources, so an empty scope.
-func ChatProjectKnowledgeScope(ctx context.Context, d *db.DB, chatProjectID int64) (s kb.Scope, unresolved []string, err error) {
+func chatProjectKnowledgeScope(ctx context.Context, d *db.DB, chatProjectID int64) (kb.Scope, []string, error) {
 	sources, err := d.ChatProjectSources(chatProjectID)
 	if err != nil {
-		return kb.Scope{}, nil, err
+		return kb.Scope{}, nil, fmt.Errorf("listing chat project sources: %w", err)
 	}
 	refs := make([]scopeSource, len(sources))
 	for i, src := range sources {
@@ -52,8 +52,13 @@ func ChatProjectKnowledgeScope(ctx context.Context, d *db.DB, chatProjectID int6
 	return knowledgeScope(ctx, d, refs)
 }
 
+// ScopedSourceKinds are the source kinds knowledgeScope resolves; every other
+// kind (person, link, target, track) is informational only. The chat prompt
+// names them to the model.
+var ScopedSourceKinds = []string{"slack_channel", "jira_project", "confluence_space"}
+
 // knowledgeScope turns slack_channel, jira_project and confluence_space
-// sources into a kb.Scope. Mechanical: a Slack ref (an id with or without the
+// sources (ScopedSourceKinds) into a kb.Scope. Mechanical: a Slack ref (an id with or without the
 // account prefix, a #name or a channel URL) resolves against the synced
 // channels — every account's channel of that name or id, none when nothing
 // matches; a Jira ref is a project key, an issue key or a browse/projects

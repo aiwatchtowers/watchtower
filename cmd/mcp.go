@@ -87,6 +87,9 @@ func mcpModeOptions(cfg *config.Config, database *db.DB, turn string, turnFunc f
 	if mcpFlagChatProject != 0 && !mcpFlagChat {
 		return nil, errors.New("--chat-project requires --chat")
 	}
+	if mcpFlagChatProject < 0 {
+		return nil, fmt.Errorf("--chat-project must be a chat project id, got %d", mcpFlagChatProject)
+	}
 	if mcpFlagWorkbench == 0 && !mcpFlagChat {
 		// The MCP surface is read-only; enforce it at the connection level so even
 		// a buggy handler cannot write. Must run after Open (migrations need writes).

@@ -142,6 +142,11 @@ func TestMCPChatMode_BindsTheChatProject(t *testing.T) {
 	assert.ErrorContains(t, err, "--chat-project requires --chat")
 
 	mcpFlagChat = true
+	mcpFlagChatProject = -1
+	_, err = mcpModeOptions(cfg, database, "t1", nil)
+	assert.ErrorContains(t, err, "must be a chat project id")
+
+	mcpFlagChatProject = pid
 	opts, err := mcpModeOptions(cfg, database, "t1", nil)
 	require.NoError(t, err)
 	_, ls := localToolNames(t, database, opts)
@@ -160,6 +165,30 @@ func TestSessionMCPArgs_PassesTheChatProject(t *testing.T) {
 	i := slices.Index(args, "--chat-project")
 	require.GreaterOrEqual(t, i, 0)
 	assert.Equal(t, "9", args[i+1])
+}
+
+// A --project-id naming no chat project binds nothing: no --chat-project, no
+// ChatProjectID on the in-process binding.
+func TestLoadSessionProject_BindsOnlyAnExistingProject(t *testing.T) {
+	database := openMCPTestDB(t)
+	res, err := database.Exec(`INSERT INTO chat_projects (name, created_at, updated_at) VALUES ('p', 1, 1)`)
+	require.NoError(t, err)
+	pid, err := res.LastInsertId()
+	require.NoError(t, err)
+
+	project, id, err := loadSessionProject(database, pid)
+	require.NoError(t, err)
+	require.NotNil(t, project)
+	assert.Equal(t, pid, id)
+	w := sessionWiring{conv: &db.ChatConversation{ID: 5}, chatProjectID: id}
+	assert.Equal(t, pid, sessionToolBinding(w).ChatProjectID, "ollama binds the project like the MCP server")
+
+	for _, missing := range []int64{0, 404} {
+		project, id, err = loadSessionProject(database, missing)
+		require.NoError(t, err)
+		assert.Nil(t, project)
+		assert.Zero(t, id, "project %d", missing)
+	}
 }
 
 func TestMCPProjectMode_RefusesMissingProjectAndChat(t *testing.T) {

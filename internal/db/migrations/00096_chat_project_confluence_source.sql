@@ -1,7 +1,7 @@
 -- +goose Up
 -- A chat project can pin a Confluence space (board #209): its pinned Slack
 -- channels, Jira projects and Confluence spaces now steer search_knowledge
--- (the workbench scope, internal/tools/knowledge_scope.go). SQLite cannot
+-- (the workbench scope, internal/tools/workbench_knowledge.go). SQLite cannot
 -- alter a CHECK, so the table is recreated. Nothing references
 -- chat_project_sources, so its DROP cascades nothing and no foreign_keys
 -- toggle is needed.

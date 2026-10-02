@@ -14,7 +14,7 @@ struct ProjectSourcePickerSheet: View {
     @State private var searchError: String?
 
     private static let kinds: [(ChatEntityKind, String)] = [
-        (.jiraProject, "Jira project"), (.channel, "Slack channel"), (.confluenceSpace, "Confluence"),
+        (.jiraProject, "Jira project"), (.channel, "Slack channel"), (.confluenceSpace, "Confluence space"),
         (.target, "Target"), (.track, "Track"), (.person, "Person")
     ]
 
@@ -58,7 +58,7 @@ struct ProjectSourcePickerSheet: View {
             }
         }
         .padding(16)
-        .frame(width: 540)
+        .frame(width: 600)
         .onAppear(perform: runSearch)
         .onChange(of: kind) { runSearch() }
         .onChange(of: query) { runSearch() }

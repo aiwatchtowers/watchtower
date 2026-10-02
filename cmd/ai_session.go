@@ -96,19 +96,17 @@ func runAISession(cmd *cobra.Command, _ []string) error {
 		return fail(chat.CodeInternal, fmt.Sprintf("creating the turn file: %v", err))
 	}
 	defer os.Remove(turnFile)
-	mcpArgs := sessionMCPArgs(aiSessionFlagSurface, conv, turnFile, aiSessionFlagProjectID)
 
-	var project *db.ChatProjectContext
-	if aiSessionFlagProjectID > 0 {
-		if project, err = database.GetChatProjectContext(aiSessionFlagProjectID); err != nil {
-			return fail(chat.CodeInternal, fmt.Sprintf("loading chat project %d: %v", aiSessionFlagProjectID, err))
-		}
+	project, chatProjectID, err := loadSessionProject(database, aiSessionFlagProjectID)
+	if err != nil {
+		return fail(chat.CodeInternal, err.Error())
 	}
+	mcpArgs := sessionMCPArgs(aiSessionFlagSurface, conv, turnFile, chatProjectID)
 
 	backend, err := newSessionBackend(sessionWiring{
 		cfg: cfg, database: database, dbPath: dbPath, conv: conv,
 		model: model, prompt: prompt, mcpArgs: mcpArgs, turnFile: turnFile,
-		project: project, chatProjectID: aiSessionFlagProjectID, warn: cmd.ErrOrStderr(),
+		project: project, chatProjectID: chatProjectID, warn: cmd.ErrOrStderr(),
 	})
 	if err != nil {
 		return fail(chat.CodeProviderUnavailable, err.Error())
@@ -154,6 +152,23 @@ func openAISessionConversation(convID int64, dbPathFlag string) (*config.Config,
 	return cfg, database, dbPath, conv, nil
 }
 
+// loadSessionProject reads the --project-id chat project. The id comes back
+// only when the project exists — a deleted one leaves the prompt without its
+// block, and the tools must not be bound to it either.
+func loadSessionProject(database *db.DB, projectID int64) (*db.ChatProjectContext, int64, error) {
+	if projectID <= 0 {
+		return nil, 0, nil
+	}
+	project, err := database.GetChatProjectContext(projectID)
+	if err != nil {
+		return nil, 0, fmt.Errorf("loading chat project %d: %w", projectID, err)
+	}
+	if project == nil {
+		return nil, 0, nil
+	}
+	return project, projectID, nil
+}
+
 // sessionMCPArgs are the chat-mode MCP server's arguments: the running turn
 // is read from turnFile at propose time (spec §1.2); a project chat passes
 // its chat project on so search_knowledge prefers the pinned sources.
@@ -183,19 +198,17 @@ func sessionPromptOptions(cfg *config.Config, surface string, projectID int64, n
 
 // sessionWiring is what a provider backend needs from the command.
 type sessionWiring struct {
-	cfg      *config.Config
-	database *db.DB
-	dbPath   string
-	conv     *db.ChatConversation
-	model    string
-	prompt   string
-	mcpArgs  []string
-	turnFile string
-	project  *db.ChatProjectContext // nil = not a project chat
-	// chatProjectID is the --project-id the session runs under (0 = none);
-	// the in-process (ollama) registry binds it like the MCP server does.
-	chatProjectID int64
-	warn          io.Writer // skipped project files are named here
+	cfg           *config.Config
+	database      *db.DB
+	dbPath        string
+	conv          *db.ChatConversation
+	model         string
+	prompt        string
+	mcpArgs       []string
+	turnFile      string
+	project       *db.ChatProjectContext // nil = not a project chat
+	chatProjectID int64                  // 0 = not a project chat; bound into the ollama registry
+	warn          io.Writer              // skipped project files are named here
 }
 
 // newSessionBackend picks the provider backend for `ai session`.
@@ -221,15 +234,20 @@ func newSessionBackend(w sessionWiring) (chat.Backend, error) {
 		}
 		// Runtime B: the registry runs in-process; proposals bind to the
 		// running turn through the same turn file.
-		binding := tools.Binding{
-			Surface: aiSessionFlagSurface, ConversationID: w.conv.ID,
-			ContextType: w.conv.ContextType, ContextID: w.conv.ContextID,
-			TurnIDFunc: chat.TurnFileReader(w.turnFile), ChatProjectID: w.chatProjectID,
-		}
-		loop := agentloop.NewClient(w.model, w.cfg.AI.OllamaURL, buildToolRegistry(w.cfg, w.database), binding)
+		loop := agentloop.NewClient(w.model, w.cfg.AI.OllamaURL, buildToolRegistry(w.cfg, w.database), sessionToolBinding(w))
 		return chat.NewTurnBackend(loop, w.database, w.conv.ID, chat.WithSystemPrompt(w.prompt)), nil
 	default:
 		return chat.NewClaudeBackend(claudeSessionOptions(w, loadExternalMCPServers(w.cfg, w.dbPath))), nil
+	}
+}
+
+// sessionToolBinding is the in-process registry's binding (runtime B): the
+// same conversation, context and chat project the MCP server gets on argv.
+func sessionToolBinding(w sessionWiring) tools.Binding {
+	return tools.Binding{
+		Surface: aiSessionFlagSurface, ConversationID: w.conv.ID,
+		ContextType: w.conv.ContextType, ContextID: w.conv.ContextID,
+		TurnIDFunc: chat.TurnFileReader(w.turnFile), ChatProjectID: w.chatProjectID,
 	}
 }
 

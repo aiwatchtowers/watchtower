@@ -143,6 +143,8 @@ final class ChatEntitySearchTests: XCTestCase {
             try TestDatabase.insertExtSource(d, jiraAccountID: siteA, containerKey: "ENG", containerName: "Engineering")
             try TestDatabase.insertExtSource(d, jiraAccountID: siteB, containerKey: "ENG", containerName: "Engineering")
             try TestDatabase.insertExtSource(d, jiraAccountID: siteA, containerKey: "DOC", containerName: "")
+            let off = try TestDatabase.insertExtSource(d, jiraAccountID: siteA, containerKey: "OLD", containerName: "Old")
+            try d.execute(sql: "UPDATE ext_sources SET enabled = 0 WHERE id = ?", arguments: [off])
 
             let byKey = try ChatEntitySearch.confluenceSpaces(d, query: "en")
             XCTAssertEqual(byKey, [ChatEntityHit(kind: .confluenceSpace, ref: "ENG", label: "Engineering",
@@ -150,7 +152,8 @@ final class ChatEntitySearchTests: XCTestCase {
             XCTAssertEqual(try ChatEntitySearch.confluenceSpaces(d, query: "engin").map(\.ref), ["ENG"], "name prefix")
             let unnamed = try ChatEntitySearch.search(d, kind: .confluenceSpace, query: "doc")
             XCTAssertEqual(unnamed.map(\.label), ["DOC"], "an unnamed space is labelled by its key")
-            XCTAssertEqual(try ChatEntitySearch.confluenceSpaces(d, query: "").map(\.ref), ["DOC", "ENG"])
+            XCTAssertEqual(try ChatEntitySearch.confluenceSpaces(d, query: "").map(\.ref), ["DOC", "ENG"],
+                           "a space no longer synced is not offered")
         }
     }
 

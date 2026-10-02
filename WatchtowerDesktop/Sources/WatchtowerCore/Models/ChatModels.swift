@@ -391,7 +391,7 @@ package struct ChatProject: FetchableRecord, Decodable, Identifiable, Equatable,
 package struct ChatProjectSource: FetchableRecord, Decodable, Identifiable, Equatable, Hashable, Sendable {
     /// The `chat_project_sources.kind` CHECK values (migrations 00076,
     /// 00096). Slack channel, Jira project and Confluence space pins also
-    /// steer the chat's `search_knowledge` (Go `tools.ChatProjectKnowledgeScope`).
+    /// steer the chat's `search_knowledge` (Go `tools.ScopedSourceKinds`).
     package enum Kind: String, CaseIterable, Sendable {
         case jiraProject = "jira_project"
         case slackChannel = "slack_channel"

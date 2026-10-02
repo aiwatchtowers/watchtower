@@ -134,11 +134,7 @@ func applyWorkbenchScope(ctx context.Context, d *db.DB, b Binding, mode, arg str
 	}
 	only := mode == "only"
 	if only && scope.Empty() {
-		hint := "add one with " + AddWorkbenchSourceTool
-		if b.WorkbenchID == 0 {
-			hint = "the owner pins one in the project's settings"
-		}
-		return "", &ValidationError{Msg: "this " + owner + " has no usable Slack channel, Jira project or Confluence space source — " + hint + ", or search without " + arg}
+		return "", &ValidationError{Msg: "this " + owner.noun + " has no usable Slack channel, Jira project or Confluence space source — " + owner.addHint + ", or search without " + arg}
 	}
 	if only && len(req.Sources) > 0 && !slices.ContainsFunc(req.Sources, func(s string) bool { return slices.Contains(scopeSources, s) }) {
 		return "", &ValidationError{Msg: arg + " only covers slack, jira and confluence; sources names none of them"}
@@ -147,20 +143,24 @@ func applyWorkbenchScope(ctx context.Context, d *db.DB, b Binding, mode, arg str
 	if len(unresolved) == 0 {
 		return "", nil
 	}
-	return "left out of the " + owner + " scope (no synced Slack channel by that ref, or not a Jira project or Confluence space key): " + strings.Join(unresolved, "; "), nil
+	return "left out of the " + owner.noun + " scope (no synced Slack channel by that ref, or not a Jira project or Confluence space key): " + strings.Join(unresolved, "; "), nil
 }
+
+// scopeOwner names whose sources a scope came from, for the texts that say
+// so: the noun, and how a source is added to it.
+type scopeOwner struct{ noun, addHint string }
 
 // sessionKnowledgeScope resolves the bound session's scope and names whose
 // it is: the workbench's (a workbench session) or the chat project's (a
 // project chat). A binding never carries both — `mcp --workbench` refuses
 // --chat, and --chat-project needs --chat.
-func sessionKnowledgeScope(ctx context.Context, d *db.DB, b Binding) (kb.Scope, []string, string, error) {
+func sessionKnowledgeScope(ctx context.Context, d *db.DB, b Binding) (kb.Scope, []string, scopeOwner, error) {
 	if b.WorkbenchID != 0 {
 		scope, unresolved, err := WorkbenchKnowledgeScope(ctx, d, b.WorkbenchID)
-		return scope, unresolved, "workbench", err
+		return scope, unresolved, scopeOwner{"workbench", "add one with " + AddWorkbenchSourceTool}, err
 	}
-	scope, unresolved, err := ChatProjectKnowledgeScope(ctx, d, b.ChatProjectID)
-	return scope, unresolved, "chat project", err
+	scope, unresolved, err := chatProjectKnowledgeScope(ctx, d, b.ChatProjectID)
+	return scope, unresolved, scopeOwner{"chat project", "the owner pins one in the project's settings"}, err
 }
 
 // parseDay parses a YYYY-MM-DD filter date in UTC; "" passes through as "no

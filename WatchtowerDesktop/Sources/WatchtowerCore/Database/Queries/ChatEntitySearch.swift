@@ -47,8 +47,8 @@ extension ChatProjectSource.Kind {
 
 /// Prefix search over the local DB (spec §6.2: people, Slack channels, Jira
 /// issues, targets, tracks — prefix match, 8 results), plus Jira project keys
-/// and Confluence spaces for the project source picker. Pure reads; every function is bounded by
-/// `limit`.
+/// and Confluence spaces for the project source picker. Pure reads; every
+/// function is bounded by `limit`.
 package enum ChatEntitySearch {
     package static let defaultLimit = 8
 
@@ -153,8 +153,8 @@ package enum ChatEntitySearch {
         }
     }
 
-    /// The synced Confluence spaces (`ext_sources`), by key prefix or name
-    /// word prefix. A key two sites share is one hit — search scopes a space
+    /// The Confluence spaces being synced (enabled `ext_sources` rows), by
+    /// key prefix or name word prefix. A key two sites share is one hit — search scopes a space
     /// by key alone (Go `kb.Scope`).
     package static func confluenceSpaces(_ db: Database, query: String, limit: Int = defaultLimit) throws -> [ChatEntityHit] {
         let name = PrefixMatch(query).clause(columns: ["container_name"])
@@ -166,7 +166,7 @@ package enum ChatEntitySearch {
             db,
             sql: """
                 SELECT upper(container_key) AS space_key, MAX(container_name) AS name FROM ext_sources
-                WHERE provider = 'confluence' AND (upper(container_key) LIKE ? ESCAPE '\\' OR \(name.sql))
+                WHERE provider = 'confluence' AND enabled = 1 AND (upper(container_key) LIKE ? ESCAPE '\\' OR \(name.sql))
                 GROUP BY upper(container_key)
                 ORDER BY space_key
                 LIMIT ?

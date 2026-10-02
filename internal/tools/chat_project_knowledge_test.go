@@ -53,13 +53,21 @@ func TestChatProjectKnowledgeScope_ResolvesSearchKinds(t *testing.T) {
 		[2]string{"slack_channel", "1:C404"}, // no longer synced
 		[2]string{"target", "12"}, [2]string{"track", "3"}, [2]string{"person", "1:U1"},
 	)
-	scope, unresolved, err := ChatProjectKnowledgeScope(context.Background(), d, p)
+	scope, unresolved, err := chatProjectKnowledgeScope(context.Background(), d, p)
 	require.NoError(t, err)
 	assert.Equal(t, kb.Scope{SlackChannels: []string{"1:C1"}, JiraProjects: []string{"PAY"}, ConfluenceSpaces: []string{"ENG"}}, scope)
 	assert.Equal(t, []string{"slack_channel 1:C404"}, unresolved)
 
+	// Every scoped kind resolves to something; nothing else does.
+	for _, kind := range ScopedSourceKinds {
+		s, _, err := knowledgeScope(context.Background(), d, []scopeSource{{Kind: kind, Ref: map[string]string{
+			"slack_channel": "1:C1", "jira_project": "PAY", "confluence_space": "ENG"}[kind]}})
+		require.NoError(t, err)
+		assert.False(t, s.Empty(), kind)
+	}
+
 	for _, id := range []int64{seedChatProject(t, d, "bare", [2]string{"person", "1:U1"}), 404} {
-		empty, unresolved, err := ChatProjectKnowledgeScope(context.Background(), d, id)
+		empty, unresolved, err := chatProjectKnowledgeScope(context.Background(), d, id)
 		require.NoError(t, err)
 		assert.True(t, empty.Empty(), "project %d", id)
 		assert.Empty(t, unresolved)
