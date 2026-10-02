@@ -347,6 +347,40 @@ final class EmbeddedChatEngineTests: XCTestCase {
         XCTAssertEqual(handedBack, [[], [change]])
     }
 
+    /// A Retry whose reply also cannot be saved keeps the first attempt's
+    /// changes even when it did not propose them again.
+    func testASecondUnsavedReplyStillCarriesTheFirstAttemptsChanges() async throws {
+        let store = FlakyStore()
+        let first = ChatAppliedChange(key: "k1", summary: "added x")
+        let second = ChatAppliedChange(key: "k2", summary: "set due")
+        var outcome: EmbeddedChatEngine.TurnOutcome?
+        var handedBack: [[ChatAppliedChange]] = []
+        let engine = makeEngine(spec: spec { input in
+            handedBack.append(input.alreadyApplied)
+            return ChatPostTurnResult(displayText: input.reply, applied: input.alreadyApplied.isEmpty ? [first] : [second])
+        }, store: store)
+        engine.onTurnFinished = { outcome = $0 }
+        engine.send("do it")
+        store.failFinalizeOnce = true
+        ai.emit(.text("Done."))
+        ai.finish()
+        expectTrue(await waitIdle(engine))
+
+        engine.retry()
+        store.failFinalizeOnce = true
+        ai.emit(.text("Done."), call: 1)
+        ai.finish(call: 1)
+        expectTrue(await waitIdle(engine))
+        guard case .failed(_, let message) = outcome else { return XCTFail("\(String(describing: outcome))") }
+        XCTAssertTrue(message.contains("Already applied: added x; set due"), message)
+
+        engine.retry()
+        ai.emit(.text("Done."), call: 2)
+        ai.finish(call: 2)
+        expectTrue(await waitIdle(engine))
+        XCTAssertEqual(handedBack, [[], [first], [first, second]])
+    }
+
     /// Only a Retry carries the list: the owner's next message after a
     /// failed turn is a new turn with nothing already applied.
     func testANewOwnerTurnAfterAnUnsavedReplyCarriesNothingApplied() async throws {
@@ -386,7 +420,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
         expectTrue(await waitIdle(engine))
         guard case .failed(_, let message) = outcome else { return XCTFail("\(String(describing: outcome))") }
         XCTAssertTrue(message.contains("Already applied: added x"))
-        XCTAssertTrue(message.contains("retry before leaving this chat"), message)
+        XCTAssertTrue(message.contains("retry before quitting the app"), message)
         XCTAssertTrue(engine.canRetry)
         XCTAssertEqual(engine.bannerError, message)
     }

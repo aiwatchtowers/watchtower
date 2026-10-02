@@ -146,6 +146,23 @@ final class ChatMessageRowTests: XCTestCase {
         })
     }
 
+    /// A reply whose error could not be written stays `partial`: an embedded
+    /// chat handed Retry for it shows Retry, the main chat's stopped row
+    /// keeps Continue only.
+    func testAnUnsavedPartialRowOffersRetryOnlyInAnEmbeddedChat() throws {
+        var retried: Int64?
+        let partial = try item(role: "assistant", status: "partial")
+        let embedded = ChatMessageRow(item: partial, isLast: true, isEditing: false,
+                                      actions: .embedded(copy: { _ in }, retry: { retried = $0 }))
+        try embedded.inspect().find(button: "Retry").tap()
+        XCTAssertEqual(retried, partial.id)
+        XCTAssertThrowsError(try embedded.inspect().find(text: "Stopped"))
+
+        let main = ChatMessageRow(item: partial, isLast: true, isEditing: false, actions: ChatRowActions())
+        XCTAssertThrowsError(try main.inspect().find(button: "Retry"))
+        XCTAssertNoThrow(try main.inspect().find(text: "Stopped"))
+    }
+
     func testEmbeddedErrorRowShowsRetryOnlyWhenGivenOne() throws {
         let failed = try item(role: "assistant", status: "error", errorCode: "rate_limit")
         var retried: Int64?

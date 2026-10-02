@@ -100,10 +100,19 @@ struct ChatMessageRow: View, Equatable {
             .padding(8)
             .background(.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
         case "partial":
-            HStack(spacing: 8) {
-                Text("Stopped").font(.caption).foregroundStyle(.secondary)
-                if isLast, let continueStopped = actions.continueStopped {
-                    Button("Continue") { continueStopped(item.id) }.controlSize(.small)
+            // An embedded chat (no Continue) is handed Retry for a partial
+            // row only when its error could not be written over it.
+            if actions.continueStopped == nil, let retry = actions.retry {
+                HStack(spacing: 8) {
+                    Text("Not saved").font(.caption).foregroundStyle(.secondary)
+                    Button("Retry") { retry(item.id) }.controlSize(.small)
+                }
+            } else {
+                HStack(spacing: 8) {
+                    Text("Stopped").font(.caption).foregroundStyle(.secondary)
+                    if isLast, let continueStopped = actions.continueStopped {
+                        Button("Continue") { continueStopped(item.id) }.controlSize(.small)
+                    }
                 }
             }
         default:

@@ -525,17 +525,19 @@ package final class EmbeddedChatEngine {
             // The reply is not on disk: not a successful turn. What postTurn
             // already applied is named, so the owner knows it happened and a
             // Retry (which the surface tells not to repeat it) can follow.
+            // A retried turn still owns what its earlier attempt applied,
+            // whether or not this reply proposed it again.
+            let carried = current.request.alreadyApplied.filter { old in !result.applied.contains { $0.key == old.key } }
+            appliedBeforeFailure = carried + result.applied
             var message = bannerError ?? "Couldn't save the reply"
-            if !result.applied.isEmpty {
-                message += ". Already applied: " + result.applied.map(\.summary).joined(separator: "; ")
+            if !appliedBeforeFailure.isEmpty {
+                message += ". Already applied: " + appliedBeforeFailure.map(\.summary).joined(separator: "; ")
                     + " — Retry won't apply them again."
             }
-            appliedBeforeFailure = result.applied
             let marked = EmbeddedChatErrorClassifier.Failure(code: .internalError, message: message, retryable: true)
             if !markFailedBestEffort(turn, text: text, failure: marked) {
-                // The row stays `partial` on disk: Retry lives only in this
-                // session, so say so.
-                message += " The reply couldn't be marked failed either — retry before leaving this chat."
+                // The row stays `partial` on disk; Retry is only in memory.
+                message += " The reply couldn't be marked failed either — retry before quitting the app."
             }
             bannerError = message
             return failTurn(turn, text: text, failure: .init(code: .internalError, message: message, retryable: true),
