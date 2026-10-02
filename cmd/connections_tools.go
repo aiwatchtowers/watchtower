@@ -88,30 +88,39 @@ func runConnectionsTools(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("listing tools: %w", err)
 		}
 	}
+	if err := applyAllowFlags(cmd.ErrOrStderr(), database, &conn); err != nil {
+		return err
+	}
+	if connectionsToolsFlagRefresh || connectionsToolsFlagAllow != nil || connectionsToolsFlagDefault {
+		reconcileToolsStatus(database, conn)
+	}
+	return printConnectionTools(cmd.OutOrStdout(), conn, connectionsToolsFlagJSON)
+}
+
+// applyAllowFlags stores --allow (validated: trimmed, no empty name, no tool
+// the server marks as a write) or --default on conn's row and in conn.
+func applyAllowFlags(warn io.Writer, database *db.DB, conn *db.ExternalConnection) error {
 	switch {
 	case connectionsToolsFlagAllow != nil:
 		names, err := parseAllowList(connectionsToolsFlagAllow)
 		if err != nil {
 			return err
 		}
-		if err := refuseAnnotatedWrites(conn, names); err != nil {
+		if err := refuseAnnotatedWrites(*conn, names); err != nil {
 			return err
 		}
-		if err := database.SetExternalConnectionAllowTools(id, names); err != nil {
+		if err := database.SetExternalConnectionAllowTools(conn.ID, names); err != nil {
 			return err
 		}
 		conn.AllowTools = names
-		warnUnknownTools(cmd.ErrOrStderr(), conn)
+		warnUnknownTools(warn, *conn)
 	case connectionsToolsFlagDefault:
-		if err := database.SetExternalConnectionAllowTools(id, nil); err != nil {
+		if err := database.SetExternalConnectionAllowTools(conn.ID, nil); err != nil {
 			return err
 		}
 		conn.AllowTools = nil
 	}
-	if connectionsToolsFlagRefresh || connectionsToolsFlagAllow != nil || connectionsToolsFlagDefault {
-		reconcileToolsStatus(database, conn)
-	}
-	return printConnectionTools(cmd.OutOrStdout(), conn, connectionsToolsFlagJSON)
+	return nil
 }
 
 // reconcileToolsStatus keeps the row's status in step with a changed tool
