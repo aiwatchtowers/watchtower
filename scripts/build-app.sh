@@ -43,9 +43,14 @@ fi
 FLAVOR_SUFFIX="${FLAVOR:+-$FLAVOR}"
 # END profile-selection
 DESKTOP_DIR="$PROJECT_ROOT/WatchtowerDesktop"
+# Everything is built into STAGE_DIR, a sibling of build/, and promoted to
+# BUILD_DIR by scripts/app-swap.sh only at the very end — so the owner can keep
+# running the app from build/Watchtower.app through the whole build. Nothing in
+# this script writes to BUILD_DIR directly (pinned by test-app-swap.sh).
 BUILD_DIR="$PROJECT_ROOT/build"
+STAGE_DIR="$PROJECT_ROOT/build.next"
 APP_NAME="Watchtower"
-APP_BUNDLE="$BUILD_DIR/$APP_NAME.app"
+APP_BUNDLE="$STAGE_DIR/$APP_NAME.app"
 ENTITLEMENTS="$SCRIPT_DIR/Watchtower.entitlements"
 
 # Parse flags
@@ -77,35 +82,58 @@ else
 fi
 echo ""
 
-# BEGIN live-process-guard (extracted verbatim by scripts/tests/test-build-app-guard.sh)
-# Refuse to rebuild while anything executes from build/: rm -rf replaces the
-# binary beneath the live process (app, bundled daemon, or standalone CLI),
-# breaking its Security.framework/TLS and desyncing LaunchServices.
-# ps snapshot is taken separately so set -e still aborts if ps itself fails
-# (the guard must fail closed).
-# awk matches the WHOLE LINE by literal prefix: `ps -axo command=` emits no
-# leading whitespace, so the executable path always starts at position 1 and an
-# argv that merely MENTIONS build/ in a later token can never match there. The
-# match is index()/literal rather than a regex because paths carry regex
-# metacharacters ('+' in worktree names); matching $0 rather than $1 also keeps
-# a BUILD_DIR containing a space from being truncated at the field split.
-# `awk -v` processes backslash escapes in p — irrelevant for macOS paths, which
-# do not realistically contain backslashes.
-# Accepted limitation: a process launched via a RELATIVE argv (./build/watchtower)
-# is not matched, since ps reports argv[0] as typed. Every primary consumer (the
-# app bundle, the make targets, the daemon spawn) launches from an absolute path.
-PS_SNAPSHOT=$(ps -axo command=)
-RUNNING_FROM_BUILD=$(printf '%s\n' "$PS_SNAPSHOT" | awk -v p="$BUILD_DIR/" 'index($0, p) == 1')
-if [ -n "$RUNNING_FROM_BUILD" ]; then
-    echo "ERROR: a Watchtower process (app or daemon) is still running from $BUILD_DIR — quit it before rebuilding:" >&2
-    printf '%s\n' "$RUNNING_FROM_BUILD" >&2
+# shellcheck source=lib/app-guard.sh
+. "$SCRIPT_DIR/lib/app-guard.sh"
+
+# BEGIN finish-staged-build (extracted verbatim by scripts/tests/test-app-swap.sh)
+# finish_staged_build — marks the staging dir complete and hands it to
+# app-swap.sh. While anything runs from build/ the swap is DEFERRED (exit 3):
+# the build itself succeeded, so this script still exits 0, leaves the result
+# in STAGE_DIR and ends with a banner telling the owner to quit the app and run
+# `make app-swap`. Any other swap failure fails the build. Sets OUT_DIR (where
+# the artifacts ended up), APP_BUNDLE and SWAP_DEFERRED.
+# app-swap.sh runs as a child process, not a sourced function, so its own
+# set -e stays in force despite the `||` here.
+finish_staged_build() {
+    touch "$STAGE_DIR/$STAGED_BUILD_MARKER"
+    cd "$PROJECT_ROOT"
+    local swap_rc=0
+    "$SCRIPT_DIR/app-swap.sh" || swap_rc=$?
+    case "$swap_rc" in
+        0) OUT_DIR="$BUILD_DIR"; SWAP_DEFERRED=false ;;
+        3) OUT_DIR="$STAGE_DIR"; SWAP_DEFERRED=true ;;
+        *)
+            echo "ERROR: the build finished but promoting it to $BUILD_DIR failed (app-swap exit $swap_rc); the finished build is in $STAGE_DIR" >&2
+            exit "$swap_rc"
+            ;;
+    esac
+    APP_BUNDLE="$OUT_DIR/$APP_NAME.app"
+}
+
+# print_swap_deferred_banner — the last thing a deferred build prints.
+print_swap_deferred_banner() {
+    if $SWAP_DEFERRED; then
+        echo ""
+        echo "!!! BUILD OK, NOT YET IN build/: Watchtower is running from $BUILD_DIR."
+        echo "!!! Quit Watchtower (⌘Q), then run: make app-swap   (or: WAIT=1 make app-swap)"
+    fi
+}
+# END finish-staged-build
+
+# Clean the previous staging dir only; build/ stays untouched until the swap.
+# Someone may have launched a deferred staged build straight from build.next/:
+# the same live-process rule applies to the directory we are about to delete.
+RUNNING_FROM_STAGE=$(running_from "$STAGE_DIR") || {
+    echo "ERROR: could not read the process list (ps failed) — refusing to delete $STAGE_DIR" >&2
+    exit 1
+}
+if [ -n "$RUNNING_FROM_STAGE" ]; then
+    echo "ERROR: a Watchtower process is running from $STAGE_DIR — quit it before rebuilding:" >&2
+    printf '%s\n' "$RUNNING_FROM_STAGE" >&2
     exit 1
 fi
-# END live-process-guard
-
-# Clean previous build
-rm -rf "$BUILD_DIR"
-mkdir -p "$BUILD_DIR"
+rm -rf "$STAGE_DIR"
+mkdir -p "$STAGE_DIR"
 
 # 1. Build Go CLI
 echo "==> Building Go CLI..."
@@ -121,8 +149,8 @@ JIRA_SECRET="${WATCHTOWER_JIRA_CLIENT_SECRET:-}"
 MS_ID="${WATCHTOWER_MICROSOFT_CLIENT_ID:-}"
 GOARCH=arm64 CGO_ENABLED=1 go build \
     -ldflags="-s -w -X watchtower/cmd.Version=${VERSION} -X watchtower/cmd.Commit=${COMMIT} -X watchtower/cmd.BuildDate=${BUILD_DATE} -X watchtower/cmd.BuildFlavor=${FLAVOR} -X watchtower/internal/auth.DefaultClientID=${OAUTH_ID} -X watchtower/internal/auth.DefaultClientSecret=${OAUTH_SECRET} -X watchtower/internal/calendar.DefaultGoogleClientID=${GOOGLE_ID} -X watchtower/internal/calendar.DefaultGoogleClientSecret=${GOOGLE_SECRET} -X watchtower/internal/jira.DefaultJiraClientID=${JIRA_ID} -X watchtower/internal/jira.DefaultJiraClientSecret=${JIRA_SECRET} -X watchtower/internal/imap.DefaultMicrosoftClientID=${MS_ID}" \
-    -o "$BUILD_DIR/watchtower" .
-echo "    Go CLI built ($(du -h "$BUILD_DIR/watchtower" | cut -f1))"
+    -o "$STAGE_DIR/watchtower" .
+echo "    Go CLI built ($(du -h "$STAGE_DIR/watchtower" | cut -f1))"
 
 # 2. Build Swift desktop app
 # POC (code viewer): the Monaco build is fetched, not committed.
@@ -193,7 +221,7 @@ echo "    Bundled default.metallib ($(du -h "$MLX_BUNDLE/default.metallib" | cut
 
 # Copy Go CLI into bundle, and the OCR helper next to it (the CLI looks for
 # watchtower-ocr beside its own executable; CLIBinaryStore copies both).
-cp "$BUILD_DIR/watchtower" "$APP_BUNDLE/Contents/MacOS/watchtower"
+cp "$STAGE_DIR/watchtower" "$APP_BUNDLE/Contents/MacOS/watchtower"
 cp "$OCR_HELPER" "$APP_BUNDLE/Contents/MacOS/watchtower-ocr"
 
 # Create Info.plist
@@ -382,19 +410,21 @@ fi
 
 # In dev mode, skip DMG/ZIP/notarization — just output the .app
 if $DEV_MODE; then
+    finish_staged_build
     echo ""
     echo "==> Done! (dev mode)"
     echo "    App: $APP_BUNDLE"
     echo ""
-    echo "    To run: open $APP_BUNDLE"
+    echo "    To run: open \"$APP_BUNDLE\"   (or 'make app-install' to run an installed copy)"
+    print_swap_deferred_banner
     exit 0
 fi
 
 # Create DMG
 echo "==> Creating DMG..."
 DMG_NAME="Watchtower${FLAVOR_SUFFIX}-arm64.dmg"
-DMG_PATH="$BUILD_DIR/$DMG_NAME"
-DMG_STAGING="$BUILD_DIR/dmg-staging"
+DMG_PATH="$STAGE_DIR/$DMG_NAME"
+DMG_STAGING="$STAGE_DIR/dmg-staging"
 
 rm -rf "$DMG_STAGING"
 mkdir -p "$DMG_STAGING"
@@ -441,7 +471,7 @@ DMG_SIZE=$(du -h "$DMG_PATH" | cut -f1)
 # Create ZIP (used by auto-update + install script)
 echo "==> Creating ZIP..."
 ZIP_NAME="Watchtower-${VERSION}${FLAVOR_SUFFIX}-arm64.zip"
-cd "$BUILD_DIR"
+cd "$STAGE_DIR"
 ditto -c -k --keepParent "$APP_NAME.app" "$ZIP_NAME"
 ZIP_SIZE=$(du -h "$ZIP_NAME" | cut -f1)
 
@@ -458,7 +488,7 @@ if [ "$SIGN_IDENTITY" != "-" ] && [ -n "$NOTARIZE_PROFILE" ]; then
     # Re-create DMG with stapled app
     echo "==> Re-creating DMG with stapled app..."
     rm -f "$DMG_PATH"
-    DMG_STAGING="$BUILD_DIR/dmg-staging"
+    DMG_STAGING="$STAGE_DIR/dmg-staging"
     rm -rf "$DMG_STAGING"
     mkdir -p "$DMG_STAGING"
     cp -R "$APP_BUNDLE" "$DMG_STAGING/"
@@ -518,15 +548,16 @@ fi
 echo "==> Generating checksums..."
 # Flavored builds get a flavored manifest so artifacts moved out of build/
 # stay self-describing; the default name is a contract with install.sh.
-CHECKSUMS="$BUILD_DIR/checksums${FLAVOR_SUFFIX}.txt"
+CHECKSUMS="$STAGE_DIR/checksums${FLAVOR_SUFFIX}.txt"
 shasum -a 256 "$DMG_NAME" "$ZIP_NAME" > "$CHECKSUMS"
 
+finish_staged_build
 echo ""
 echo "==> Done!"
 echo "    App:  $APP_BUNDLE"
-echo "    DMG:  $DMG_PATH ($DMG_SIZE)"
-echo "    ZIP:  $BUILD_DIR/$ZIP_NAME ($ZIP_SIZE)  ← auto-update"
-echo "    SHA:  $CHECKSUMS"
+echo "    DMG:  $OUT_DIR/$DMG_NAME ($DMG_SIZE)"
+echo "    ZIP:  $OUT_DIR/$ZIP_NAME ($ZIP_SIZE)  ← auto-update"
+echo "    SHA:  $OUT_DIR/$(basename "$CHECKSUMS")"
 if [ -n "$NOTARIZE_PROFILE" ] && [ "$SIGN_IDENTITY" != "-" ]; then
     echo "    Notarized & stapled ✓"
 fi
@@ -536,3 +567,4 @@ echo "      - WatchtowerDesktop (GUI app)"
 echo "      - watchtower (CLI — bundled)"
 echo ""
 echo "    To install: open DMG → drag Watchtower to Applications"
+print_swap_deferred_banner
