@@ -56,6 +56,7 @@ func TestPromptToolMentionsAreRegistered(t *testing.T) {
 		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".swift") {
 			return err
 		}
+		// #nosec G122 -- path comes from WalkDir over the repo's own source tree in a test.
 		raw, rerr := os.ReadFile(path)
 		if rerr != nil {
 			return rerr
