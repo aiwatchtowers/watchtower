@@ -63,15 +63,6 @@ package struct ExternalConnectionTools: Decodable, Equatable {
         case listedAt = "listed_at"
     }
 
-    package init(id: Int64, name: String, listed: Bool, listedAt: String?, explicit: Bool, tools: [Tool]) {
-        self.id = id
-        self.name = name
-        self.listed = listed
-        self.listedAt = listedAt
-        self.explicit = explicit
-        self.tools = tools
-    }
-
     /// `connections tools <id> --json`: the current list, read-only.
     package static func listArgs(id: Int64, refresh: Bool = false) -> [String] {
         ["connections", "tools", String(id)] + (refresh ? ["--refresh"] : []) + ["--json"]

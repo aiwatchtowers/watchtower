@@ -226,7 +226,8 @@ final class ExternalConnectionsViewModelTests: XCTestCase {
     func testARefusedChangeShowsTheCLIMessage() async throws {
         let runner = ScriptedToolsRunner { args in
             if args.contains(where: { $0.hasPrefix("--allow") }) {
-                throw CLIRunnerError.nonZeroExit(code: 1, stderr: "Error: --allow: \"x\" is a write tool\n")
+                throw CLIRunnerError.nonZeroExit(
+                    code: 1, stderr: "2026/01/01 00:00:00 external MCP: a log line\n--allow: \"x\" is a write tool\n\n")
             }
             return Self.toolsJSON([("x", false, false, false)])
         }
@@ -235,12 +236,43 @@ final class ExternalConnectionsViewModelTests: XCTestCase {
 
         await vm.setTool("x", allowed: true, on: c)
 
-        XCTAssertEqual(vm.toolsErrors[3], "Error: --allow: \"x\" is a write tool")
+        XCTAssertEqual(vm.toolsErrors[3], "--allow: \"x\" is a write tool", "the last stderr line, not the log")
         XCTAssertEqual(vm.toolLists[3]?.tools.first?.allowed, false, "the list on screen is unchanged")
         XCTAssertFalse(vm.toolsInFlight.contains(3))
 
         await vm.loadTools(c)
         XCTAssertNil(vm.toolsErrors[3], "the next successful command clears the error")
+    }
+
+    /// A re-listing dropped the tool: nothing is written, the fresh list
+    /// replaces the stale one, and the owner is told.
+    func testTogglingAToolTheServerDroppedWritesNothing() async throws {
+        var listing = Self.toolsJSON([("getIssue", true, true, false), ("runQuery", false, false, false)])
+        let runner = ScriptedToolsRunner { _ in listing }
+        let (vm, c) = try makeToolsVM(runner)
+        await vm.loadTools(c)
+        listing = Self.toolsJSON([("getIssue", true, true, false)])
+
+        await vm.setTool("runQuery", allowed: true, on: c)
+
+        XCTAssertEqual(runner.invocations.count, 2, "only reads, no --allow")
+        XCTAssertEqual(vm.toolLists[3]?.tools.map(\.name), ["getIssue"])
+        XCTAssertTrue(vm.toolsErrors[3]?.contains("runQuery is no longer") == true)
+    }
+
+    /// A write whose output cannot be read may have landed: the old toggles
+    /// are dropped rather than shown as current.
+    func testUnreadableOutputAfterAWriteDropsTheStaleList() async throws {
+        let runner = ScriptedToolsRunner { args in
+            args.contains("--default") ? Data("garbled".utf8) : Self.toolsJSON([("getIssue", true, true, false)])
+        }
+        let (vm, c) = try makeToolsVM(runner)
+        await vm.loadTools(c)
+
+        await vm.useDefaultTools(c)
+
+        XCTAssertNil(vm.toolLists[3])
+        XCTAssertNotNil(vm.toolsErrors[3])
     }
 
     func testUnreadableOutputIsAnErrorNotAnEmptyList() async throws {

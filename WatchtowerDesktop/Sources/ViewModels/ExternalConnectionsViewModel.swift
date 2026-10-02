@@ -26,13 +26,13 @@ final class ExternalConnectionsViewModel {
     private(set) var toolsErrors: [Int: String] = [:]
 
     private let dbPool: DatabasePool
-    private let toolsRunner: () -> CLIRunnerProtocol?
+    private let makeRunner: () -> (any CLIRunnerProtocol)?
     private var authProcess: Process?
 
     init(dbPool: DatabasePool,
-         toolsRunner: @escaping () -> CLIRunnerProtocol? = { ProcessCLIRunner.makeDefault() }) {
+         makeRunner: @escaping () -> (any CLIRunnerProtocol)? = { ProcessCLIRunner.makeDefault() }) {
         self.dbPool = dbPool
-        self.toolsRunner = toolsRunner
+        self.makeRunner = makeRunner
     }
 
     // MARK: - Refresh
@@ -217,9 +217,15 @@ final class ExternalConnectionsViewModel {
     /// Turns one tool on or off. The next allow list is built from a list
     /// read just before the write, never from the snapshot on screen, so a
     /// change made meanwhile (the CLI, a re-listing) is not overwritten.
+    /// A tool the fresh list no longer has (a re-listing dropped it) is an
+    /// error, and nothing is written.
     func setTool(_ name: String, allowed: Bool, on c: ExternalConnection) async {
         await runToolsCommand(c) { runner in
             let fresh = try await Self.decodeTools(runner.run(args: ExternalConnectionTools.listArgs(id: Int64(c.id))))
+            guard fresh.tools.contains(where: { $0.name == name }) else {
+                self.toolLists[c.id] = fresh
+                throw ToolsCommandError.toolGone(name)
+            }
             return fresh.allowArgs(setting: name, allowed: allowed)
         }
     }
@@ -240,13 +246,16 @@ final class ExternalConnectionsViewModel {
     /// a read first) and stores the list it prints. Every tools command can
     /// change the row's status (no allowed tool → `error`), so the
     /// connections reload after it, success or not. A second command for the
-    /// same connection while one runs is dropped (the controls are disabled).
+    /// same connection while one runs is dropped: the view disables the
+    /// tools controls and the row's Enabled, Sign in and Remove meanwhile.
+    /// When the output cannot be read, the list on screen is dropped too — a
+    /// write may have landed, so the old toggles would no longer be true.
     private func runToolsCommand(
         _ c: ExternalConnection,
-        args: (CLIRunnerProtocol) async throws -> [String]
+        args: (any CLIRunnerProtocol) async throws -> [String]
     ) async {
         guard !toolsInFlight.contains(c.id) else { return }
-        guard let runner = toolsRunner() else {
+        guard let runner = makeRunner() else {
             toolsErrors[c.id] = "Watchtower CLI not found"
             return
         }
@@ -257,20 +266,36 @@ final class ExternalConnectionsViewModel {
             toolLists[c.id] = try Self.decodeTools(data)
             toolsErrors[c.id] = nil
         } catch {
+            if error is DecodingError { toolLists[c.id] = nil }
             toolsErrors[c.id] = Self.toolsErrorText(error)
         }
         await refreshAsync()
+    }
+
+    private enum ToolsCommandError: LocalizedError {
+        case toolGone(String)
+
+        var errorDescription: String? {
+            switch self {
+            case let .toolGone(name):
+                "\(name) is no longer in the server's tool list. The list is updated; nothing was changed."
+            }
+        }
     }
 
     nonisolated private static func decodeTools(_ data: Data) throws -> ExternalConnectionTools {
         try JSONDecoder().decode(ExternalConnectionTools.self, from: data)
     }
 
-    /// The CLI's own message (its stderr) when it refused, else the error.
-    nonisolated static func toolsErrorText(_ error: Error) -> String {
+    /// The CLI's own message when it refused — the last stderr line (the
+    /// error `Execute` prints; earlier lines are timestamped log output) —
+    /// else the error.
+    nonisolated private static func toolsErrorText(_ error: Error) -> String {
         if case let CLIRunnerError.nonZeroExit(code, stderr) = error {
-            let text = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-            return text.isEmpty ? "Tools command failed (exit \(code))" : String(text.prefix(300))
+            let last = stderr.split(whereSeparator: \.isNewline)
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .last { !$0.isEmpty }
+            return last.map { String($0.prefix(300)) } ?? "Tools command failed (exit \(code))"
         }
         if error is DecodingError {
             return "Could not read the tool list: \(error.localizedDescription)"

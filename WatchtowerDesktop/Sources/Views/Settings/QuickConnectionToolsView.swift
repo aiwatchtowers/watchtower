@@ -8,7 +8,7 @@ import WatchtowerCore
 /// change goes through `watchtower connections tools`; the verdicts are Go's.
 struct QuickConnectionToolsView: View {
     let connection: ExternalConnection
-    @Bindable var vm: ExternalConnectionsViewModel
+    let vm: ExternalConnectionsViewModel
 
     private var list: ExternalConnectionTools? { vm.toolLists[connection.id] }
     private var running: Bool { vm.toolsInFlight.contains(connection.id) }
@@ -28,7 +28,7 @@ struct QuickConnectionToolsView: View {
                 } else {
                     caption("Tools not listed yet, so none is available to the assistant. Refresh the list to fetch them.")
                 }
-            } else if !running && vm.toolsErrors[connection.id] == nil {
+            } else if vm.toolsErrors[connection.id] == nil {
                 caption("Loading tools…")
             }
             if let err = vm.toolsErrors[connection.id] {

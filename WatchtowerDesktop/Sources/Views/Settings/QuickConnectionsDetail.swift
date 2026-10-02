@@ -121,7 +121,7 @@ struct QuickConnectionsDetail: View {
                     Task { await vm.signIn(connection) }
                 }
                 .buttonStyle(.plain)
-                .disabled(vm.isBusy)
+                .disabled(vm.isBusy || vm.toolsInFlight.contains(connection.id))
             }
             Toggle("Enabled", isOn: Binding(
                 get: { connection.enabled },
@@ -131,13 +131,13 @@ struct QuickConnectionsDetail: View {
             ))
             .toggleStyle(.switch)
             .controlSize(.mini)
-            .disabled(vm.isBusy)
+            .disabled(vm.isBusy || vm.toolsInFlight.contains(connection.id))
             Button("Remove") {
                 connectionPendingRemoval = connection
             }
             .buttonStyle(.plain)
             .foregroundStyle(.red)
-            .disabled(vm.isBusy)
+            .disabled(vm.isBusy || vm.toolsInFlight.contains(connection.id))
         }
     }
 
