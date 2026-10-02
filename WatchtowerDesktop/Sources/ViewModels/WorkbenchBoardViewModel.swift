@@ -15,6 +15,9 @@ final class WorkbenchBoardViewModel {
     private(set) var roots: [WorkbenchBoardNode] = []
     var collapsed: Set<Int> = []
     var showDone = false
+    /// The board's search field (board #207; `WorkbenchBoardSearch`): view
+    /// state, not remembered.
+    var searchText = ""
     private(set) var selectedTargetID: Int?
     private(set) var selectedComments: [WorkbenchComment] = []
     /// The selected target's images (board target #117), read-only here.
@@ -33,11 +36,11 @@ final class WorkbenchBoardViewModel {
     }
 
     var kanban: WorkbenchBoardKanban {
-        WorkbenchBoardKanban(roots, filterRootID: kanbanFilterRootID, showDone: showDone)
+        WorkbenchBoardKanban(roots, filterRootID: kanbanFilterRootID, showDone: showDone, query: searchText)
     }
 
     var rows: [WorkbenchBoardRow] {
-        WorkbenchBoardOutline.rows(roots, collapsed: collapsed, showDone: showDone)
+        WorkbenchBoardOutline.rows(roots, collapsed: collapsed, showDone: showDone, query: searchText)
     }
 
     var selectedNode: WorkbenchBoardNode? {

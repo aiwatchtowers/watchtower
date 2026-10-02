@@ -131,10 +131,34 @@ struct WorkbenchBoardView: View {
                 kanbanFilterMenu(vm, kanban)
             }
             Spacer()
+            searchField(vm)
             Toggle("Show done", isOn: Binding(get: { vm.showDone }, set: { vm.showDone = $0 }))
                 .toggleStyle(.checkbox)
                 .font(.caption)
         }
+    }
+
+    /// Title, intent or number (`#163` / `163`); a search also finds done
+    /// and dismissed targets.
+    private func searchField(_ vm: WorkbenchBoardViewModel) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField("Search or #id", text: Binding(get: { vm.searchText }, set: { vm.searchText = $0 }))
+                .textFieldStyle(.plain)
+                .onExitCommand { vm.searchText = "" }
+            if !vm.searchText.isEmpty {
+                Button { vm.searchText = "" } label: { Image(systemName: "xmark.circle.fill") }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .help("Clear the search")
+            }
+        }
+        .font(.callout)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3)
+        .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+        .frame(maxWidth: 200)
+        .help("Search the board by title, intent or #number")
     }
 
     private func kanbanFilterMenu(_ vm: WorkbenchBoardViewModel, _ kanban: WorkbenchBoardKanban) -> some View {
@@ -164,7 +188,10 @@ struct WorkbenchBoardView: View {
 
     @ViewBuilder
     private func tree(_ vm: WorkbenchBoardViewModel) -> some View {
-        if vm.rows.isEmpty {
+        if vm.rows.isEmpty, !vm.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            ContentUnavailableView.search(text: vm.searchText)
+                .frame(maxHeight: .infinity)
+        } else if vm.rows.isEmpty {
             ContentUnavailableView(
                 "Nothing open",
                 systemImage: "checkmark.circle",
@@ -186,6 +213,7 @@ struct WorkbenchBoardView: View {
                                            isVisible: hovering || vm.selectedTargetID == row.id)
                     }
                 )
+                .contextMenu { WorkbenchTargetMenu(target: row.node.target) }
                 .listRowSeparator(.hidden)
                 .listRowInsets(EdgeInsets(top: 3, leading: 8, bottom: 3, trailing: 8))
                 .listRowBackground(Color.clear)

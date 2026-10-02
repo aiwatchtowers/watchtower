@@ -66,6 +66,7 @@ private struct WorkbenchBoardKanbanColumnView: View {
                             }
                         )
                         .onTapGesture { onSelect(card.id) }
+                        .contextMenu { WorkbenchTargetMenu(target: card.row.node.target) }
                         .draggable(String(card.id))
                     }
                     if column.hiddenCount > 0 {

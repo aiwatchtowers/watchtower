@@ -2,7 +2,7 @@ import SwiftUI
 import WatchtowerCore
 
 /// One target of the project board as a task card: status icon, title,
-/// priority/status chips, counters, and — for a parent — its children's
+/// its `#id`, priority/status chips, counters, and — for a parent — its children's
 /// progress and a collapse chevron. `trailing` is the card's action slot,
 /// told whether the pointer is over the card; `caption` is an extra line
 /// under the title (the kanban's parent chain).
@@ -92,6 +92,10 @@ struct WorkbenchBoardCardView<Trailing: View>: View {
 
     private func chips(_ card: WorkbenchBoardCard) -> some View {
         HStack(spacing: 6) {
+            Text(WorkbenchTargetNumber.label(target.id))
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .help("Target number — right-click to copy it")
             WorkbenchBoardChip(
                 text: target.priority.capitalized,
                 color: WorkbenchBoardColors.priority(target.priority),
@@ -185,5 +189,25 @@ enum WorkbenchBoardColors {
         case "low": .blue
         default: .orange
         }
+    }
+}
+
+/// A board target's number as the agent writes it (`#163`, board #207), and
+/// the copy to the pasteboard behind the card menu and the detail card.
+enum WorkbenchTargetNumber {
+    static func label(_ id: Int) -> String { "#\(id)" }
+
+    static func copy(_ id: Int) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(label(id), forType: .string)
+    }
+}
+
+/// The context menu of a board row or kanban card.
+struct WorkbenchTargetMenu: View {
+    let target: Target
+
+    var body: some View {
+        Button("Copy \(WorkbenchTargetNumber.label(target.id))") { WorkbenchTargetNumber.copy(target.id) }
     }
 }
