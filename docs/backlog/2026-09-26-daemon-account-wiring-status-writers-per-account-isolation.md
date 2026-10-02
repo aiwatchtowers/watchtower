@@ -1,7 +1,7 @@
 ---
 type: chore
 title: "Daemon account wiring (status writers, per-account isolation, Outlook token rotation) is 0% covered"
-status: open
+status: done
 priority: med
 tags: [test-coverage, auth, multi-account, daemon, review-2026-09-26]
 context: main-branch backlog review 2026-09-26 at 8cf68dcf — track test coverage (Go)

@@ -786,11 +786,13 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 		logger.Printf("google: failed to seed legacy account: %v", err)
 	}
 	// Wire one calendar/gmail syncer per connected google_accounts row.
-	wireGoogleSyncers(ctx, d, cfg, database, logger)
+	calSyncers, gmSyncers := wireGoogleSyncers(ctx, cfg, database, logger)
+	d.SetCalendarSyncers(calSyncers)
+	d.SetGmailSyncers(gmSyncers)
 	// Wire one IMAP/Outlook syncer per connected email_accounts row.
-	wireImapSyncers(ctx, d, cfg, database, logger)
+	d.SetImapSyncers(wireImapSyncers(cfg, database, logger))
 	// Wire one CalDAV/ICS syncer per connected calendar_accounts row.
-	wireCalDAVSyncers(d, cfg, database, logger)
+	d.SetCalDAVSyncers(wireCalDAVSyncers(cfg, database, logger))
 	// Refresh the shipped assistant skills in the workspace. Log-only: a skills
 	// directory we cannot write is not a reason to refuse to run the daemon.
 	deployShippedSkills(cfg, logger)
@@ -1012,7 +1014,15 @@ func newJiraKeyDetector(cfg *config.Config, database *db.DB, logger *log.Logger)
 	return det
 }
 
-// wireGoogleSyncers wires one calendar.Syncer and/or gmail.Syncer per
+// Constructors that reach a provider's token endpoint; tests swap them for
+// stubs so the account wiring runs without the network.
+var (
+	newCalendarClient         = calendar.NewClient
+	newGmailClient            = gmail.NewClient
+	refreshOutlookAccessToken = imap.RefreshAccessToken
+)
+
+// wireGoogleSyncers builds one calendar.Syncer and/or gmail.Syncer per
 // connected google_accounts row whose token store exists, using each
 // account's own OAuth client credentials when it brought one. A broken
 // account records its own auth-state error (e.g. revoked grants) rather than
@@ -1020,35 +1030,29 @@ func newJiraKeyDetector(cfg *config.Config, database *db.DB, logger *log.Logger)
 // wireImapSyncers/wireCalDAVSyncers. The global cfg.Calendar.Enabled /
 // cfg.Gmail.Enabled toggles gate the corresponding syncer kind across every
 // account, matching every other daemon phase's global on/off switch.
-func wireGoogleSyncers(ctx context.Context, d *daemon.Daemon, cfg *config.Config, database *db.DB, logger *log.Logger) {
+func wireGoogleSyncers(ctx context.Context, cfg *config.Config, database *db.DB, logger *log.Logger) ([]*calendar.Syncer, []*gmail.Syncer) {
 	accounts, err := database.ListGoogleAccounts()
 	if err != nil {
 		logger.Printf("google: failed to list accounts: %v", err)
-		return
+		return nil, nil
 	}
 	var calSyncers []*calendar.Syncer
 	var gmSyncers []*gmail.Syncer
 	for _, acct := range accounts {
 		store := calendar.NewAccountTokenStore(cfg.WorkspaceDir(), acct.ID)
 		if !store.Exists() {
-			// Only flip a currently-"ok" account to "error" — an account
-			// already flagged error/revoked stays as-is, so this doesn't
-			// churn the status/updated_at on every daemon cycle.
-			if acct.Status == "ok" {
-				if err := database.SetGoogleAccountAuthState(acct.ID, "error", "no token file — re-login required"); err != nil {
-					logger.Printf("google: account %d: record auth state: %v", acct.ID, err)
-				}
-			}
+			recordGoogleTokenError(database, logger, acct, "no token file — re-login required")
 			continue
 		}
 		token, err := store.Load()
 		if err != nil {
 			logger.Printf("google: account %d: failed to load token: %v", acct.ID, err)
+			recordGoogleTokenError(database, logger, acct, fmt.Sprintf("unreadable token file — re-login required: %v", err))
 			continue
 		}
 		googleCfg := resolveGoogleOAuthConfigForAccount(cfg.WorkspaceDir(), acct.ID)
 		if cfg.Calendar.Enabled && acct.CalendarEnabled {
-			calClient, err := calendar.NewClient(ctx, token.RefreshToken, googleCfg)
+			calClient, err := newCalendarClient(ctx, token.RefreshToken, googleCfg)
 			if err != nil {
 				recordGoogleWireError(database, logger, acct.ID, "calendar", err, errors.Is(err, calendar.ErrAuthRevoked))
 			} else {
@@ -1056,7 +1060,7 @@ func wireGoogleSyncers(ctx context.Context, d *daemon.Daemon, cfg *config.Config
 			}
 		}
 		if cfg.Gmail.Enabled && acct.GmailEnabled {
-			gmClient, err := gmail.NewClient(ctx, token.RefreshToken,
+			gmClient, err := newGmailClient(ctx, token.RefreshToken,
 				gmail.GoogleOAuthConfig{ClientID: googleCfg.ClientID, ClientSecret: googleCfg.ClientSecret})
 			if err != nil {
 				recordGoogleWireError(database, logger, acct.ID, "gmail", err, errors.Is(err, gmail.ErrAuthRevoked))
@@ -1065,8 +1069,20 @@ func wireGoogleSyncers(ctx context.Context, d *daemon.Daemon, cfg *config.Config
 			}
 		}
 	}
-	d.SetCalendarSyncers(calSyncers)
-	d.SetGmailSyncers(gmSyncers)
+	return calSyncers, gmSyncers
+}
+
+// recordGoogleTokenError flags an account whose token file is missing or
+// unreadable. Only a currently-"ok" account flips to "error" — one already
+// flagged error/revoked stays as-is, so this doesn't churn the
+// status/updated_at on every daemon start.
+func recordGoogleTokenError(database *db.DB, logger *log.Logger, acct db.GoogleAccount, msg string) {
+	if acct.Status != "ok" {
+		return
+	}
+	if err := database.SetGoogleAccountAuthState(acct.ID, "error", msg); err != nil {
+		logger.Printf("google: account %d: record auth state: %v", acct.ID, err)
+	}
 }
 
 // recordGoogleWireError logs a per-account client-creation failure and
@@ -1083,15 +1099,15 @@ func recordGoogleWireError(database *db.DB, logger *log.Logger, accountID int64,
 	}
 }
 
-// wireImapSyncers wires one imap.Syncer per connected email_accounts row —
+// wireImapSyncers builds one imap.Syncer per connected email_accounts row —
 // the non-Google mail analog of wireGoogleSyncers. A broken mailbox records
 // its own auth-state error (imap.Syncer.Sync) rather than aborting the
 // wiring step for the others.
-func wireImapSyncers(ctx context.Context, d *daemon.Daemon, cfg *config.Config, database *db.DB, logger *log.Logger) {
+func wireImapSyncers(cfg *config.Config, database *db.DB, logger *log.Logger) []*imap.Syncer {
 	accounts, err := database.ListEmailAccounts()
 	if err != nil {
 		logger.Printf("imap: failed to list accounts: %v", err)
-		return
+		return nil
 	}
 	var syncers []*imap.Syncer
 	for _, acct := range accounts {
@@ -1114,7 +1130,7 @@ func wireImapSyncers(ctx context.Context, d *daemon.Daemon, cfg *config.Config, 
 			}
 			auth = imap.PasswordAuth{Username: acct.EmailAddress, Password: creds.Password}
 		case "outlook":
-			auth = outlookAuthenticator(ctx, cfg, database, acct, logger)
+			auth = outlookAuthenticator(cfg, database, acct, logger)
 			if auth == nil {
 				continue
 			}
@@ -1125,20 +1141,20 @@ func wireImapSyncers(ctx context.Context, d *daemon.Daemon, cfg *config.Config, 
 
 		syncers = append(syncers, imap.NewSyncer(acct, accountCfg, auth, database, cfg, logger))
 	}
-	d.SetImapSyncers(syncers)
+	return syncers
 }
 
-// wireCalDAVSyncers wires one caldav.Syncer per connected calendar_accounts
+// wireCalDAVSyncers builds one caldav.Syncer per connected calendar_accounts
 // row — the exact calendar analog of wireImapSyncers. A broken account
 // records its own auth-state error rather than aborting the wiring step for
 // the others; an account whose credential file can't be loaded is marked
 // status='error' immediately so the Desktop UI shows the problem instead of
 // a silently-dead account.
-func wireCalDAVSyncers(d *daemon.Daemon, cfg *config.Config, database *db.DB, logger *log.Logger) {
+func wireCalDAVSyncers(cfg *config.Config, database *db.DB, logger *log.Logger) []*caldav.Syncer {
 	accounts, err := database.ListCalendarAccounts()
 	if err != nil {
 		logger.Printf("caldav: failed to list accounts: %v", err)
-		return
+		return nil
 	}
 	var syncers []*caldav.Syncer
 	for _, acct := range accounts {
@@ -1153,7 +1169,7 @@ func wireCalDAVSyncers(d *daemon.Daemon, cfg *config.Config, database *db.DB, lo
 		}
 		syncers = append(syncers, caldav.NewSyncer(acct, creds, database, cfg, logger))
 	}
-	d.SetCalDAVSyncers(syncers)
+	return syncers
 }
 
 // outlookAuthenticator builds a RefreshingXOAUTH2Auth for one Outlook
@@ -1163,7 +1179,7 @@ func wireCalDAVSyncers(d *daemon.Daemon, cfg *config.Config, database *db.DB, lo
 // credential store whenever Microsoft rotates the refresh token. Returns nil
 // if the account's credentials can't be loaded, in which case the caller
 // skips wiring a syncer for it (mirroring the imap-provider branch above).
-func outlookAuthenticator(_ context.Context, cfg *config.Config, database *db.DB, acct db.EmailAccount, logger *log.Logger) imap.Authenticator {
+func outlookAuthenticator(cfg *config.Config, database *db.DB, acct db.EmailAccount, logger *log.Logger) imap.Authenticator {
 	store := imap.NewCredentialStore(cfg.WorkspaceDir(), acct.ID)
 	if _, err := store.Load(); err != nil {
 		logger.Printf("imap: account %d: failed to load credentials: %v", acct.ID, err)
@@ -1181,7 +1197,7 @@ func outlookAuthenticator(_ context.Context, cfg *config.Config, database *db.DB
 			if err != nil {
 				return "", fmt.Errorf("loading outlook credentials for account %d: %w", acct.ID, err)
 			}
-			accessToken, newRefreshToken, err := imap.RefreshAccessToken(ctx, msCfg, creds.RefreshToken)
+			accessToken, newRefreshToken, err := refreshOutlookAccessToken(ctx, msCfg, creds.RefreshToken)
 			if err != nil {
 				if dbErr := database.SetEmailAccountAuthState(acct.ID, "error", err.Error()); dbErr != nil {
 					logger.Printf("imap: account %d: record auth state: %v", acct.ID, dbErr)
