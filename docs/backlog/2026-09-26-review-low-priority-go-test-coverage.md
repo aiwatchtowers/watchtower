@@ -18,12 +18,21 @@ stays readable. Split any item into its own file when it gets picked up.
 
 `CredentialStore.Save` in both packages is `os.WriteFile(path, data, 0o600)`. That truncates in place, so a crash mid-write leaves an empty or partial file holding the only Outlook refresh token and forces a re-login. It also does not reset the mode of a file that already exists with wider permissions. `internal/externalmcp.SecretStore.Save` documents and fixes both problems (tmp + O_EXCL 0600 + fsync + rename), and its comment explains why this matters for a just-rotated OAuth token. That is exactly the Outlook path in `outlookAuthenticator`. Neither package has a test for its store (Load/Save/Delete/Exists are 0% in internal/). The CalDAV store is exercised only indirectly via `cmd/caldav_test.go`, the IMAP store not at all. Suggested fix: reuse the externalmcp atomic-save helper (or `slack.TokenStore`'s shape) and add round-trip plus 0600-mode tests.
 
+Resolution: the atomic write had already landed (`fsutil.WriteFileAtomic`, which also resets the
+mode). `internal/imap/credentials_test.go` and `internal/caldav/credentials_test.go` now cover the
+stores: the round trip, 0600 over a pre-existing 0644 file, a corrupt file read as a parse error,
+and `Delete`, which ignores a missing file but surfaces any other error. The same pass covered
+`externalmcp.SecretStore`'s untested `Delete`/`Exists`/`Lock`.
+
 ## Inventory cites a guard test that no longer exists and describes the opposite behavior
 
 - type: chore · confidence: high · tags: [test-coverage, inventory, agent-actions, docs-drift]
 - where: docs/inventory/agent-actions.md:15, internal/mcp/actions_test.go:98
 
-AGENT-01's "Test guards" line lists `TestChatMode_SkipsReadToolWithoutPanicking`, described as "the registry adapter mounts only write tools onto the chat-mode server — a read-access tool is skipped". No test by that name exists. The current test, `TestChatMode_MountsReadToolViaRegistry`, pins the opposite: read tools are mounted through the registry and return data. A reviewer checking AGENT-01's guards against the doc would look for a guarantee that no longer holds. Suggested fix: update the inventory line to name the current test and the current behavior (a doc-only edit; the contract itself is unchanged). A repo-wide scan found no other live contract citing a missing Go test. The remaining misses are historical/retired entries, and the tracks.md "Tracked gap" entries are already declared as open.
+AGENT-01's "Test guards" line lists `TestChatMode_SkipsReadToolWithoutPanicking`, described as "the registry adapter mounts only write tools onto the chat-mode server — a read-access tool is skipped". No test by that name exists. The current test, `TestChatMode_MountsReadToolViaRegistry`, pins the opposite: read tools are mounted through the registry and return data. A reviewer checking AGENT-01's guards against the doc would look for a guarantee that no longer holds. Suggested fix: update the inventory line to name the current test and the current behavior (a doc-only edit; the contract itself is unchanged).
+
+Deferred (owner): this edits a guard line in `docs/inventory/agent-actions.md`, and inventory
+changes need owner approval. Still open. A repo-wide scan found no other live contract citing a missing Go test. The remaining misses are historical/retired entries, and the tracks.md "Tracked gap" entries are already declared as open.
 
 ## Memory extraction: cancellation between batches (the "N windows left" path) is never exercised
 
@@ -32,12 +41,25 @@ AGENT-01's "Test guards" line lists `TestChatMode_SkipsReadToolWithoutPanicking`
 
 `remainingWindows` is 0% even inside the 332-second memory suite. It is called only from the `ctx.Err() != nil` early-break in the extraction batch loop, for both Slack and Gmail. So no test cancels a run between two committed batches and checks that the watermark sits exactly at the last committed batch (MEM-04) and that the remaining windows are re-extracted with no duplicate episodes. Daemon shutdown mid-cycle is the common real trigger (see the 2026-09-25 shutdown-hang incident). The existing interruption tests cover an AI failure in the last batch and cancellation in rewrite/reconcile, not this loop. Suggested fix: a fake generator that cancels ctx after batch 1, then assertions on the watermark and on a re-run.
 
+Resolution (Slack path): `TestMemory04_CancelBetweenBatchesKeepsCommittedWatermark`
+(internal/memory/pipeline_cancel_test.go) cancels while batch 1's AI call is in flight. It asserts
+four things: no further AI call, the batch commits, the "2 windows left" log line appears, and the
+watermark sits exactly at the committed batch's last message. A re-run re-extracts only the
+remaining windows. The Gmail loop (`gmail_extract.go`) has the same shape and is still untested on
+this path.
+
 ## Four daemon sync phases: per-account isolation untested and failures invisible in pipeline_runs
 
 - type: chore · confidence: high · tags: [test-coverage, daemon, observability, silent-failure]
 - where: internal/daemon/daemon.go:570-626 (phaseCalendarSync/CalDAV/Gmail/Imap 16.7% each)
 
 Only the no-syncer early exit is covered. No test injects two syncers where the first errors and checks that the second still runs, which is the fan-out rule each doc comment states. Unlike `phaseSlackSync` (wrapped in `trackedPipelineRun("slack-sync")` since 2026-08-19) and Jira, these four phases write no `pipeline_runs` row, so a Gmail or IMAP account failing every cycle shows only in `watchtower.log`, never in Pipeline Progress. Suggested fix: fake-syncer fan-out tests. It is also worth considering tracked runs for these phases (owner call: extra rows per cycle).
+
+Partly resolved: `TestPhaseCalDAVSync_FailingAccountDoesNotBlockTheNext`
+(internal/daemon/daemon_calsync_fanout_test.go) wires two real ICS syncers, a failing one first,
+and asserts that the second still syncs and the first records its error. The other three phases
+use the same loop over concrete syncer types, which need a live Google/IMAP fake, so they are not
+pinned separately. Still open: whether these phases should write `pipeline_runs` rows (owner call).
 
 ## Timing-based daemon loop tests (sleep 100 ms, deadline 500 ms)
 
@@ -46,12 +68,26 @@ Only the no-syncer early exit is covered. No test injects two syncers where the 
 
 The wake and trigger tests start `d.Run` with a 500 ms context, send the signal from a goroutine after `time.Sleep(100 ms)`, and require at least 2 syncs. The initial sync (a real SQLite orchestrator plus the heartbeat write) plus the wake-triggered sync must both finish inside 500 ms. On a loaded CI runner, or under `-race` (which the repo notes is already very slow for daemon/cmd), that budget is thin, and the test fails as a count mismatch rather than a timeout. Suggested fix: signal once the first sync is observed (a channel from the fake orchestrator) and use a generous deadline, the same deadline-not-spin fix PR #108 applied to the Swift wait helpers.
 
+Resolution: the poll, wake and manual-trigger tests now use `runDaemonUntil`
+(internal/daemon/daemon_helpers_test.go). It runs the daemon until the sync count reaches the
+target, under a 10 s deadline. The wake/trigger signal is sent only after the initial sync is
+observed. A slow runner now makes the tests slower instead of failing them on a count.
+
 ## Runtime-B client entry points untested; its HTTP client has no timeout
 
 - type: chore · confidence: med · tags: [test-coverage, agentloop, ollama]
 - where: internal/agentloop/client.go:55-93 (NewClient/Query/QuerySync 0%), internal/agentloop/client.go:62
 
 The loop tests drive `run` directly, so the public `ai.Provider` surface that `cmd/generator.go:143` actually builds (default base URL, trailing-slash trim, streaming channel close order, error delivery on `errCh`) is never executed. `NewClient` uses `&http.Client{}` with no `Timeout`, unlike every other HTTP client in the repo (30 s is the house norm), so a hung Ollama/LM Studio server stalls the chat until the caller cancels ctx. Suggested fix: one `Query` test against an httptest server that asserts the chunk order and channel closure, and a bounded client or ResponseHeaderTimeout.
+
+Resolution (tests): internal/agentloop/client_test.go covers `NewClient` (default base URL and
+trailing-slash trim, checked on the request path), `Query` (tool boundary then answer, every
+channel closed, no session id, and an endpoint error delivered on `errCh` while the text channel
+still closes), and `QuerySync` (usage summed across rounds). Deferred: the HTTP timeout. A
+tool-loop round is a non-streaming completion, so its response headers arrive only after the local
+model finishes generating, and on a slow machine that can legitimately take minutes. A 30 s
+`Timeout` or `ResponseHeaderTimeout` would cut real answers short. The bound should be a deliberate
+per-surface choice, so it is left as an owner call.
 
 ## Inbox watermark "never moves backwards" clamp is never exercised (fixed in fix/bl-inbox-triggers)
 

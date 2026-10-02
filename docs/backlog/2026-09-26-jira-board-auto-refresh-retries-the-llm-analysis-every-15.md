@@ -28,3 +28,9 @@ existing `TestCheckAndRefreshProfiles_Cooldown*`/`TestMergeUserOverridesLogic` t
 flagged as fake — asserting against hand-built data instead of calling the named function — are
 unchanged and still have that gap; `fields.go`'s `DiscoverFields`/`ClassifyFields` remain untested
 too). Those two remaining coverage gaps are left open as a smaller follow-up.
+
+Follow-up (2026-10-02): both remaining gaps are now covered. `internal/jira/board_refresh_test.go`
+drives the real `CheckAndRefreshProfiles` (cooldown skip, unchanged hash, report-only mode,
+refresh with the owner's overrides merged back), `mergeUserOverrides`, `CheckConfigChanged` and
+`AnalyzeAllSelected`. `internal/jira/fields_test.go` covers `DiscoverFields`, `ClassifyFields` and
+`MapFieldsForBoard`.
