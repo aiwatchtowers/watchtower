@@ -224,6 +224,13 @@ jobs:
         timeout-minutes: 20
         run: swift test
 
+      # The process-spawning suites again on a one-thread concurrency pool,
+      # so blocking I/O that slips back onto pool threads fails here.
+      - name: Test (strict concurrency pool)
+        timeout-minutes: 10
+        working-directory: .
+        run: make test-swift-strict-pool
+
   sentrux-quality:
     name: Sentrux Quality Gate
     needs: gate

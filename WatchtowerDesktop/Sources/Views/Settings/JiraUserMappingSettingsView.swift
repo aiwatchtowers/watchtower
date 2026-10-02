@@ -177,13 +177,10 @@ struct JiraUserMappingSettingsView: View {
             process.environment = Constants.resolvedEnvironment()
             process.currentDirectoryURL =
                 Constants.processWorkingDirectory()
-            process.standardOutput = FileHandle.nullDevice
-            process.standardError = Pipe()
-
-            do {
-                try process.run()
-                process.waitUntilExit()
-            } catch {}
+            let output = await ProcessPipes.run(process)
+            if output.exitCode != 0 {
+                CLILog.failure(args: process.arguments ?? [], exitCode: output.exitCode, stderr: output.stderr)
+            }
         }
     }
 
@@ -196,12 +193,10 @@ struct JiraUserMappingSettingsView: View {
             process.arguments = ["jira", "users", "resolve"]
             process.environment = Constants.resolvedEnvironment()
             process.currentDirectoryURL = Constants.processWorkingDirectory()
-            process.standardOutput = FileHandle.nullDevice
-            process.standardError = FileHandle.nullDevice
-            do {
-                try process.run()
-                process.waitUntilExit()
-            } catch {}
+            let output = await ProcessPipes.run(process)
+            if output.exitCode != 0 {
+                CLILog.failure(args: process.arguments ?? [], exitCode: output.exitCode, stderr: output.stderr)
+            }
             await MainActor.run {
                 isResolving = false
             }

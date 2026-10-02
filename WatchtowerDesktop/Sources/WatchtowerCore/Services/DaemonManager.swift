@@ -176,12 +176,13 @@ package final class DaemonManager {
 
     /// Run a process off the main thread
     nonisolated private static func runProcess(path: String, arguments: [String]) async throws -> Int32 {
-        try await Task.detached {
-            let process = makeProcess(path: path, arguments: arguments)
-            try process.run()
+        let process = makeProcess(path: path, arguments: arguments)
+        try process.run()
+        // Off the concurrency pool (see ProcessPipes).
+        return await ProcessPipes.offPool {
             process.waitUntilExit()
             return process.terminationStatus
-        }.value
+        }
     }
 
     /// `runProcess` with the child's stderr kept instead of muted, for the one
@@ -192,18 +193,19 @@ package final class DaemonManager {
         path: String,
         arguments: [String]
     ) async throws -> (status: Int32, stderr: String) {
-        try await Task.detached {
-            let process = makeProcess(path: path, arguments: arguments)
-            let pipe = Pipe()
-            process.standardError = pipe
-            try process.run()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let process = makeProcess(path: path, arguments: arguments)
+        let pipe = Pipe()
+        process.standardError = pipe
+        try process.run()
+        let data = await ProcessPipes.drain(pipe).value
+        let status = await ProcessPipes.offPool {
             process.waitUntilExit()
-            // Latin-1 never fails, so a non-UTF-8 diagnostic degrades to mojibake
-            // instead of vanishing.
-            let stderr = String(bytes: data, encoding: .utf8) ?? String(bytes: data, encoding: .isoLatin1) ?? ""
-            return (process.terminationStatus, stderr)
-        }.value
+            return process.terminationStatus
+        }
+        // Latin-1 never fails, so a non-UTF-8 diagnostic degrades to mojibake
+        // instead of vanishing.
+        let stderr = String(bytes: data, encoding: .utf8) ?? String(bytes: data, encoding: .isoLatin1) ?? ""
+        return (status, stderr)
     }
 
     /// Public entry point for external callers (e.g. DataSettings reset).

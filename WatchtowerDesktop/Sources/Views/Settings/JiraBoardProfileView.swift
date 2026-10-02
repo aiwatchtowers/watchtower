@@ -616,7 +616,7 @@ struct JiraBoardProfileView: View {
         )
 
         Task.detached {
-            let failure = JiraBoardsCLI.run(
+            let failure = await JiraBoardsCLI.run(
                 cliPath: cliPath,
                 arguments: arguments,
                 fallbackMessage: failureMessage

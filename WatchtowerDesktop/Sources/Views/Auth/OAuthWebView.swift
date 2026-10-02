@@ -129,25 +129,9 @@ final class SlackOAuthManager {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments
-
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-
-        do {
-            try process.run()
-            process.waitUntilExit()
-
-            let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-            let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-
-            let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
-            let stderr = String(data: stderrData, encoding: .utf8) ?? ""
-
-            return (stdout, stderr, process.terminationStatus)
-        } catch {
-            return ("", error.localizedDescription, -1)
-        }
+        // Both streams drained while it runs, off the concurrency pool; a
+        // launch failure is exit -1 with its error (ProcessPipes).
+        let output = await ProcessPipes.run(process)
+        return (output.stdout, output.stderr, output.exitCode)
     }
 }

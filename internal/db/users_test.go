@@ -263,3 +263,24 @@ func TestSearchUsersByName(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, users)
 }
+
+func TestSearchUsersByName_WildcardsMatchLiterally(t *testing.T) {
+	db, err := Open(":memory:")
+	require.NoError(t, err)
+	defer db.Close()
+
+	require.NoError(t, db.UpsertUser(User{ID: "U001", Name: "john_s"}))
+	require.NoError(t, db.UpsertUser(User{ID: "U002", Name: "johnas"}))
+	require.NoError(t, db.UpsertUser(User{ID: "U003", Name: "carol"}))
+
+	// "_" is not a single-character wildcard: john_s must not match johnas.
+	users, err := db.SearchUsersByName("john_s", 10)
+	require.NoError(t, err)
+	require.Len(t, users, 1)
+	assert.Equal(t, "U001", users[0].ID)
+
+	// "%" is not a match-everything wildcard.
+	users, err = db.SearchUsersByName("%", 10)
+	require.NoError(t, err)
+	assert.Empty(t, users)
+}

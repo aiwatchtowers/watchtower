@@ -51,20 +51,17 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         process.arguments = ["ai", "test"]
 
-        let stdout = Pipe()
-        let stderr = Pipe()
-        process.standardOutput = stdout
-        process.standardError = stderr
-
-        try process.run()
-
-        let exitStatus = await Task.detached { () -> Int32 in
-            process.waitUntilExit()
-            return process.terminationStatus
-        }.value
-
-        let data = stdout.fileHandleForReading.readDataToEndOfFile()
+        let output = await ProcessPipes.run(process)
+        if output.exitCode == -1 {
+            throw WatchtowerAIError.launchFailed(output.stderr)
+        }
+        let data = Data(output.stdout.utf8)
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            // A crash leaves no JSON: its stderr is the diagnostic.
+            let detail = CLILog.detail(output.stderr)
+            if output.exitCode != 0, !detail.isEmpty {
+                throw WatchtowerAIError.exitCode(Int(output.exitCode), detail)
+            }
             throw WatchtowerAIError.badResponse("Invalid JSON from watchtower ai test")
         }
 
@@ -77,8 +74,8 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
             throw WatchtowerAIError.testFailed(errMsg, provider: provider, model: model)
         }
 
-        if exitStatus != 0 {
-            throw WatchtowerAIError.exitCode(Int(exitStatus), "watchtower ai test failed")
+        if output.exitCode != 0 {
+            throw WatchtowerAIError.exitCode(Int(output.exitCode), "watchtower ai test failed")
         }
 
         return (ok: true, provider: provider, model: model)
@@ -192,14 +189,12 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         processHandle.set(process)
         try process.run()
 
-        // Written off the caller's actor: a prompt larger than the pipe buffer
-        // blocks until the CLI reads it, which it does first thing in RunE.
-        Task.detached { Self.feedStdin(stdin, payload: stdinPrompt) }
+        // On a thread of its own (never the caller's actor or the concurrency
+        // pool, see ProcessPipes): a prompt larger than the pipe buffer blocks
+        // until the CLI reads it, which it does first thing in RunE.
+        Thread.detachNewThread { Self.feedStdin(stdin, payload: stdinPrompt) }
 
-        let stderrTask = Task.detached { () -> String in
-            let data = stderr.fileHandleForReading.readDataToEndOfFile()
-            return String(data: data.prefix(65536), encoding: .utf8) ?? ""
-        }
+        let stderrRead = ProcessPipes.drain(stderr)
 
         var accumulatedText = ""
         let handle = stdout.fileHandleForReading
@@ -211,13 +206,13 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
             }
         }
 
-        let exitStatus = await Task.detached { () -> Int32 in
+        let exitStatus = await ProcessPipes.offPool { () -> Int32 in
             process.waitUntilExit()
             return process.terminationStatus
-        }.value
+        }
 
         if !Task.isCancelled && exitStatus != 0 {
-            let stderrText = await stderrTask.value
+            let stderrText = String(data: (await stderrRead.value).prefix(65536), encoding: .utf8) ?? ""
             let detail = stderrText.trimmingCharacters(in: .whitespacesAndNewlines)
             throw WatchtowerAIError.exitCode(
                 Int(exitStatus),
@@ -303,6 +298,7 @@ private final class WatchtowerProcessHandle: @unchecked Sendable {
 
 package enum WatchtowerAIError: LocalizedError {
     case cliNotFound
+    case launchFailed(String)
     case exitCode(Int, String)
     case badResponse(String)
     case testFailed(String, provider: String, model: String)
@@ -311,6 +307,8 @@ package enum WatchtowerAIError: LocalizedError {
         switch self {
         case .cliNotFound:
             "Watchtower CLI not found in app bundle"
+        case let .launchFailed(detail):
+            "Couldn't start the Watchtower CLI: \(detail)"
         case let .exitCode(code, detail):
             "AI query failed (exit \(code)): \(detail)"
         case let .badResponse(detail):

@@ -68,26 +68,16 @@ struct JiraFeaturesSettingsView: View {
             process.currentDirectoryURL =
                 Constants.processWorkingDirectory()
 
-            let stdoutPipe = Pipe()
-            let stderrPipe = Pipe()
-            process.standardOutput = stdoutPipe
-            process.standardError = stderrPipe
-
-            do {
-                try process.run()
-            } catch {
+            let output = await ProcessPipes.run(process)
+            if output.exitCode == -1 { // launch failure
                 await MainActor.run {
                     isLoading = false
                     loadError = "Failed to launch CLI"
                 }
                 return
             }
-
-            let stdoutData = stdoutPipe.fileHandleForReading
-                .readDataToEndOfFile()
-            let stderrData = stderrPipe.fileHandleForReading
-                .readDataToEndOfFile()
-            process.waitUntilExit()
+            let stdoutData = Data(output.stdout.utf8)
+            let stderrData = Data(output.stderr.utf8)
 
             await MainActor.run {
                 isLoading = false
@@ -254,23 +244,15 @@ struct JiraFeaturesDetailView: View {
             process.currentDirectoryURL =
                 Constants.processWorkingDirectory()
 
-            let stderrPipe = Pipe()
-            process.standardOutput = FileHandle.nullDevice
-            process.standardError = stderrPipe
-
-            do {
-                try process.run()
-            } catch {
+            let output = await ProcessPipes.run(process)
+            if output.exitCode == -1 { // launch failure
                 await MainActor.run {
                     actionError = "Failed to launch CLI"
                     featuresState?.features[key] = !enable
                 }
                 return
             }
-
-            let stderrData = stderrPipe.fileHandleForReading
-                .readDataToEndOfFile()
-            process.waitUntilExit()
+            let stderrData = Data(output.stderr.utf8)
 
             if process.terminationStatus != 0 {
                 let stderr = String(
@@ -304,22 +286,14 @@ struct JiraFeaturesDetailView: View {
             process.currentDirectoryURL =
                 Constants.processWorkingDirectory()
 
-            let stderrPipe = Pipe()
-            process.standardOutput = FileHandle.nullDevice
-            process.standardError = stderrPipe
-
-            do {
-                try process.run()
-            } catch {
+            let output = await ProcessPipes.run(process)
+            if output.exitCode == -1 { // launch failure
                 await MainActor.run {
                     actionError = "Failed to launch CLI"
                 }
                 return
             }
-
-            let stderrData = stderrPipe.fileHandleForReading
-                .readDataToEndOfFile()
-            process.waitUntilExit()
+            let stderrData = Data(output.stderr.utf8)
 
             await MainActor.run {
                 if process.terminationStatus != 0 {
@@ -361,26 +335,16 @@ struct JiraFeaturesDetailView: View {
             process.currentDirectoryURL =
                 Constants.processWorkingDirectory()
 
-            let stdoutPipe = Pipe()
-            let stderrPipe = Pipe()
-            process.standardOutput = stdoutPipe
-            process.standardError = stderrPipe
-
-            do {
-                try process.run()
-            } catch {
+            let output = await ProcessPipes.run(process)
+            if output.exitCode == -1 { // launch failure
                 await MainActor.run {
                     isLoading = false
                     loadError = "Failed to launch CLI"
                 }
                 return
             }
-
-            let stdoutData = stdoutPipe.fileHandleForReading
-                .readDataToEndOfFile()
-            let stderrData = stderrPipe.fileHandleForReading
-                .readDataToEndOfFile()
-            process.waitUntilExit()
+            let stdoutData = Data(output.stdout.utf8)
+            let stderrData = Data(output.stderr.utf8)
 
             await MainActor.run {
                 isLoading = false

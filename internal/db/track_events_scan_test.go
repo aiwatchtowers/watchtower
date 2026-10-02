@@ -18,6 +18,11 @@ func scanBase() time.Time {
 	return time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
 }
 
+// scanUntil is a window end at the current second, after every seeded row.
+func scanUntil() string {
+	return time.Now().UTC().Format("2006-01-02T15:04:05Z")
+}
+
 func seedScanDigest(t *testing.T, d *DB, typ, summary, createdAt string) int {
 	t.Helper()
 	res, err := d.Exec(`INSERT INTO digests (channel_id, period_from, period_to, type, summary, created_at)
@@ -72,7 +77,7 @@ func TestGetScanActivity_UncappedWindow(t *testing.T) {
 	in := seedScanInbox(t, d, "mention", scanTS(base, 1))
 	seedScanInbox(t, d, "before the watermark", scanTS(base, -1))
 
-	act, err := d.GetScanActivity(since, 10)
+	act, err := d.GetScanActivity(since, scanUntil(), 10)
 	if err != nil {
 		t.Fatalf("GetScanActivity: %v", err)
 	}
@@ -87,6 +92,35 @@ func TestGetScanActivity_UncappedWindow(t *testing.T) {
 	}
 	if act.CappedAt != "" {
 		t.Errorf("CappedAt = %q on an uncapped window; want empty", act.CappedAt)
+	}
+}
+
+// TestGetScanActivity_UntilIsInclusive pins the window's upper bound: a row at
+// until is read, a row after it is left for the next window — in every source.
+func TestGetScanActivity_UntilIsInclusive(t *testing.T) {
+	d := openTestDB(t)
+	base := scanBase()
+	since, until, after := scanTS(base, 0), scanTS(base, 1), scanTS(base, 2)
+
+	dg := seedScanDigest(t, d, "channel", "at until", until)
+	seedScanDigest(t, d, "channel", "after until", after)
+	tr := seedScanTrack(t, d, "auto", "at until", "", until)
+	seedScanTrack(t, d, "auto", "after until", "", after)
+	in := seedScanInbox(t, d, "at until", until)
+	seedScanInbox(t, d, "after until", after)
+
+	act, err := d.GetScanActivity(since, until, 10)
+	if err != nil {
+		t.Fatalf("GetScanActivity: %v", err)
+	}
+	if len(act.Digests) != 1 || act.Digests[0].ID != dg {
+		t.Errorf("digests = %+v; want only %d", act.Digests, dg)
+	}
+	if len(act.Tracks) != 1 || act.Tracks[0].ID != tr {
+		t.Errorf("tracks = %+v; want only %d", act.Tracks, tr)
+	}
+	if len(act.Inbox) != 1 || act.Inbox[0].ID != in {
+		t.Errorf("inbox = %+v; want only %d", act.Inbox, in)
 	}
 }
 
@@ -106,7 +140,7 @@ func TestGetScanActivity_CapDrainsBoundaryTies(t *testing.T) {
 	}
 	later := seedScanInbox(t, d, "later", scanTS(base, 3))
 
-	act, err := d.GetScanActivity(since, 2)
+	act, err := d.GetScanActivity(since, scanUntil(), 2)
 	if err != nil {
 		t.Fatalf("GetScanActivity: %v", err)
 	}
@@ -123,7 +157,7 @@ func TestGetScanActivity_CapDrainsBoundaryTies(t *testing.T) {
 	}
 
 	// The next window opens at CappedAt and picks up exactly the overflow.
-	next, err := d.GetScanActivity(act.CappedAt, 2)
+	next, err := d.GetScanActivity(act.CappedAt, scanUntil(), 2)
 	if err != nil {
 		t.Fatalf("GetScanActivity(next): %v", err)
 	}
@@ -152,7 +186,7 @@ func TestGetScanActivity_CappedAtIsMinAcrossSources(t *testing.T) {
 	}
 	seedScanInbox(t, d, "only one", scanTS(base, 9))
 
-	act, err := d.GetScanActivity(since, 2)
+	act, err := d.GetScanActivity(since, scanUntil(), 2)
 	if err != nil {
 		t.Fatalf("GetScanActivity: %v", err)
 	}
