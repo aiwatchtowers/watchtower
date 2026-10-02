@@ -170,33 +170,6 @@ func truncateRunes(s string, n int) string {
 	return string(r[:n]) + "…"
 }
 
-// learnSystemPrompt drives the learning interpreter: given a recap topic the
-// operator reviewed plus their free-text comment and rating, derive targeted
-// learned-rules addressed to whichever pipeline(s) produced the topic's sources.
-const learnSystemPrompt = `You are the learning interpreter for a chief-of-staff catch-up review tool.
-
-The operator just reviewed ONE topic (a cross-source cluster of items from a time window) and left a rating (+1 like / -1 dislike) and a free-text comment. The topic's source refs tell you which underlying pipeline produced each item:
-- area "digests"     → pipeline "digest"
-- area "streams"     → pipeline "digest"   (Gmail/Jira stream digests)
-- area "inbox"       → pipeline "inbox"
-- area "tracks"      → pipeline "tracks"
-- areas "recaps", "transcripts", "decisions", "targets" → no source pipeline; only "catchup" rules apply
-A correction about how the recap itself grouped, titled, or phrased things belongs to pipeline "catchup".
-
-Your job is to turn the comment into durable, targeted learned-rules so the right system surfaces things better next time. Be conservative: only derive a rule when the comment expresses a clear, generalizable preference (e.g. "this channel is noise", "always show me anything from Jane"). Vague approval/disapproval with no actionable signal yields no rules.
-
-For each rule produce:
-- pipeline: "digest" | "tracks" | "inbox" | "briefing" | "catchup".
-- rule_type: "source_mute" (suppress/down-rank) or "source_boost" (surface/up-rank).
-- scope_key: build it ONLY from the channel_id / sender_user_id supplied with the relevant ref below — never invent ids. For the "inbox" pipeline use a BARE key, exactly "sender:<sender_user_id>" or "channel:<channel_id>", so it matches how inbox looks rules up. For every other pipeline ("digest"/"tracks"/"briefing"/"catchup") PREFIX the key with the pipeline, e.g. "digest:channel:<channel_id>". If no usable id is supplied for a target, emit no rule for it rather than guessing.
-- weight: a float in [-1.0, 1.0]; negative mutes, positive boosts; magnitude = confidence.
-- reason: one short sentence grounding the rule in the comment.
-
-Also decide "regenerate": true only when the comment is a presentation correction about THIS recap (wrong title/narrative/priority/grouping) that should be re-rendered now; false when the comment is purely a forward-looking preference.
-
-Respond with ONLY a JSON object, no markdown fences:
-{"rules": [{"pipeline": "digest", "rule_type": "source_mute", "scope_key": "digest:channel:Cxxx", "weight": -1.0, "reason": "..."}], "regenerate": false}`
-
 // buildLearnUserMessage renders a reviewed topic (title, narrative, refs with
 // their areas and source ids) plus the operator's rating and comment into the
 // learn user message.

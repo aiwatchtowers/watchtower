@@ -49,25 +49,21 @@ func New(database *db.DB, cfg *config.TargetsConfig, gen digest.Generator, resol
 }
 
 // SetPromptStore sets an optional prompt store for loading customized
-// targets.extract/targets.link prompts. If not set, the compiled-in
-// defaults (ExtractPromptTemplate/LinkPromptTemplate) are used. Unlike
-// digest/briefing, targets has no role profile, so getPrompt reads
-// store.Get, not GetForRole.
+// targets.extract/targets.link prompts. If not set, the registered
+// defaults (prompts.Defaults) are used. Unlike digest/briefing, targets has
+// no role profile, so getPrompt resolves with an empty role.
 func (p *Pipeline) SetPromptStore(store *prompts.Store) {
 	p.promptStore = store
 }
 
-// getPrompt loads a prompt template from the store (if set), falling back
-// to the built-in const on a miss or read error.
-func (p *Pipeline) getPrompt(id, fallback string) string {
-	if p.promptStore != nil {
-		tmpl, _, err := p.promptStore.Get(id)
-		if err == nil {
-			return tmpl
-		}
-		p.logger.Printf("targets: loading prompt %q failed, using the built-in default: %v", id, err)
+// getPrompt resolves a prompt via prompts.Resolve: the store row, else the
+// registered default.
+func (p *Pipeline) getPrompt(id string) string {
+	tmpl, _, err := prompts.Resolve(p.promptStore, id, "")
+	if err != nil {
+		p.logger.Printf("targets: %v — using the built-in default", err)
 	}
-	return fallback
+	return tmpl
 }
 
 // Extract runs the AI extraction pipeline for the given request.
@@ -119,7 +115,7 @@ func (p *Pipeline) Extract(ctx context.Context, req ExtractRequest) (*ExtractRes
 	}
 
 	// Build and call the AI.
-	tmpl := p.getPrompt(prompts.TargetsExtract, ExtractPromptTemplate)
+	tmpl := p.getPrompt(prompts.TargetsExtract)
 	prompt := buildExtractPrompt(tmpl, req, enrichments, snapshot, time.Now())
 	ctx2 := digest.WithSource(aiCtx, digest.SourceLight)
 
@@ -165,7 +161,7 @@ func (p *Pipeline) LinkExisting(ctx context.Context, targetID int64) (*LinkResul
 		snapshot = nil
 	}
 
-	tmpl := p.getPrompt(prompts.TargetsLink, LinkPromptTemplate)
+	tmpl := p.getPrompt(prompts.TargetsLink)
 	prompt := buildLinkPrompt(tmpl, *target, snapshot)
 	ctx2 := digest.WithSource(ctx, "targets.link")
 

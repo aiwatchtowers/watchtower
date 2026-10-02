@@ -17,6 +17,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/prompts"
 	watchtowerslack "watchtower/internal/slack"
 )
 
@@ -147,6 +148,10 @@ type Pipeline struct {
 	generator  digest.Generator
 	logger     *log.Logger
 	OnProgress ProgressFunc
+
+	// promptStore, set by SetPromptStore, carries the owner's tuned
+	// inbox.style_sample prompt; nil uses the registered default.
+	promptStore *prompts.Store
 
 	// owner is the install's owner identity, set by SetOwner; Run resolves it
 	// from the DB (db.ResolveOwner) when it is not set.

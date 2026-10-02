@@ -64,7 +64,7 @@ func TestSubmitTopicFeedback_BareRatingWritesNoRuleAndNoAICall(t *testing.T) {
 func TestSubmitTopicFeedback_CommentDerivesTargetedRule(t *testing.T) {
 	var learnSystem, learnUser string
 	gen := &mockGenerator{fn: func(system, user string) string {
-		if !strings.HasPrefix(system, learnSystemPrompt) {
+		if !strings.HasPrefix(system, prompts.Defaults[prompts.CatchupLearn]) {
 			t.Errorf("unexpected AI call with system prompt %q", system)
 			return ""
 		}
@@ -104,7 +104,7 @@ func TestSubmitTopicFeedback_PresentationCorrectionRegeneratesRecap(t *testing.T
 	recapID := seedReadyRecap(t, d, digestID)
 	var composeUser string
 	gen.fn = func(system, user string) string {
-		if strings.HasPrefix(system, learnSystemPrompt) {
+		if strings.HasPrefix(system, prompts.Defaults[prompts.CatchupLearn]) {
 			return `{"rules":[],"regenerate":true}`
 		}
 		composeUser = user
@@ -132,7 +132,7 @@ func TestSubmitTopicFeedback_FailedRegenerationStillReportsItsRecap(t *testing.T
 	p, d := newPipeline(t, gen, &fakeTopUp{})
 	recapID := seedReadyRecap(t, d, seedDigest(t, d, 1500, 1900))
 	gen.fn = func(system, _ string) string {
-		if strings.HasPrefix(system, learnSystemPrompt) {
+		if strings.HasPrefix(system, prompts.Defaults[prompts.CatchupLearn]) {
 			return `{"rules":[],"regenerate":true}`
 		}
 		return "not json"
@@ -188,7 +188,7 @@ func TestSubmitTopicFeedback_InvalidRulesAreSkippedNotPersisted(t *testing.T) {
 	digestID := seedDigest(t, d, 1500, 1900)
 	recapID := seedReadyRecap(t, d, digestID)
 	gen.fn = func(system, _ string) string {
-		if strings.HasPrefix(system, learnSystemPrompt) {
+		if strings.HasPrefix(system, prompts.Defaults[prompts.CatchupLearn]) {
 			return `{"rules":[
 				{"pipeline":"digest","rule_type":"source_mute","scope_key":"digest:channel:Cxxx","weight":-1},
 				{"pipeline":"digest","rule_type":"trigger_nonsense","scope_key":"digest:channel:1:C1","weight":-1},

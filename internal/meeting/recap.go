@@ -53,7 +53,7 @@ func (p *Pipeline) GenerateRecap(
 	}
 	langDirective := prompts.Directive(lang)
 
-	tmpl := p.loadRecapPrompt()
+	tmpl := p.getPrompt(prompts.MeetingRecap)
 	systemPrompt := fmt.Sprintf(
 		tmpl,
 		title, startTime, endTime, attendees, description,
@@ -124,18 +124,3 @@ func trimNonEmpty(in []string) []string {
 	}
 	return out
 }
-
-func (p *Pipeline) loadRecapPrompt() string {
-	if p.promptStore != nil {
-		if tmpl, _, err := p.promptStore.Get(prompts.MeetingRecap); err == nil && tmpl != "" {
-			return tmpl
-		}
-	}
-	if tmpl, ok := prompts.Defaults[prompts.MeetingRecap]; ok && tmpl != "" {
-		return tmpl
-	}
-	return defaultRecapPromptFallback
-}
-
-const defaultRecapPromptFallback = `Recap the meeting. Event: %s (%s-%s, attendees: %s, description: %s). Topics: %s. Notes: %s. Raw: %s. %s
-Return JSON: {"summary":"","key_decisions":[],"action_items":[],"open_questions":[],"ideas":[]}`

@@ -24,13 +24,13 @@ type promptInputs struct {
 // buildPrompt formats the system prompt from the store (or built-in default)
 // and returns it together with the version label.
 func (p *Pipeline) buildPrompt(in *promptInputs) (string, string) {
-	tmpl := prompts.Defaults[prompts.DayPlanGenerate]
+	tmpl, v, err := prompts.Resolve(p.promptStore, prompts.DayPlanGenerate, "")
+	if err != nil && p.logger != nil {
+		p.logger.Printf("dayplan: %v — using the built-in default", err)
+	}
 	version := "default"
-	if p.promptStore != nil {
-		if stored, v, err := p.promptStore.Get(prompts.DayPlanGenerate); err == nil && stored != "" {
-			tmpl = stored
-			version = fmt.Sprintf("stored:%d", v)
-		}
+	if v > 0 {
+		version = fmt.Sprintf("stored:%d", v)
 	}
 	return fmt.Sprintf(tmpl,
 		prompts.Directive(p.cfg.Digest.Language),

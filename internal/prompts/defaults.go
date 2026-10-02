@@ -44,6 +44,9 @@ var Defaults = map[string]string{
 	DictationClean:             defaultDictationClean,
 	ReactionCommand:            defaultReactionCommand,
 	CatchupCompose:             defaultCatchupCompose,
+	CatchupLearn:               defaultCatchupLearn,
+	TargetsNextStep:            defaultTargetsNextStep,
+	InboxStyleSample:           defaultInboxStyleSample,
 	ChatTitle:                  defaultChatTitle,
 	TerminalTitle:              defaultTerminalTitle,
 }
@@ -88,6 +91,9 @@ var AllIDs = []string{
 	DictationClean,
 	ReactionCommand,
 	CatchupCompose,
+	CatchupLearn,
+	TargetsNextStep,
+	InboxStyleSample,
 	ChatTitle,
 	TerminalTitle,
 }
@@ -134,6 +140,9 @@ var DefaultVersions = map[string]int{
 	DictationClean:             1, // v1: dictation transcript cleanup (idea/note modes)
 	ReactionCommand:            1, // v1: compose an agent-action's args from a reacted Slack message
 	CatchupCompose:             1, // v1: strong-tier absence-recap composer
+	CatchupLearn:               1, // v1: registered 2026-10-02 (was a package-private const, text unchanged)
+	TargetsNextStep:            1, // v1: registered 2026-10-02 (was a package-private const, text unchanged)
+	InboxStyleSample:           1, // v1: registered 2026-10-02 (was a package-private const, text unchanged)
 	ChatTitle:                  1, // v1: light-tier conversation title from the first exchange
 	TerminalTitle:              1, // v1: light-tier name for an embedded Claude Code session
 }
@@ -182,6 +191,9 @@ var Descriptions = map[string]string{
 	DictationClean:             "Cleans a voice-dictation transcript into destination-shaped text (idea / note)",
 	ReactionCommand:            "Reaction commands: compose an agent-action's arguments from the Slack message the owner reacted to",
 	CatchupCompose:             "Catch-Up: compose one absence recap from the window's digests, meetings, decisions and owner items (strong tier; code validates refs)",
+	CatchupLearn:               "Catch-Up: turn a reviewed topic's rating and comment into targeted learned-rules for the source pipelines (light tier; code validates scope keys)",
+	TargetsNextStep:            "Target next step: pick the single next action for one target, with urgency and up to three action buttons",
+	InboxStyleSample:           "Style profile: distill the owner's Slack writing style from a sample of their own messages (strong tier)",
 	ChatTitle:                  "AI Chat: name a conversation from its first exchange (light tier, at most 60 characters)",
 	TerminalTitle:              "Terminal: name an embedded Claude Code session from the owner's first messages (light tier, 3-6 words)",
 }
@@ -1413,6 +1425,77 @@ Rules that always apply:
 %s
 
 %s`
+
+// defaultCatchupLearn is the catch-up learning interpreter (catchup.learn):
+// given a recap topic the operator reviewed plus their free-text comment and
+// rating, derive targeted learned-rules addressed to whichever pipeline(s)
+// produced the topic's sources. Not a format string: the caller appends the
+// language directive.
+const defaultCatchupLearn = `You are the learning interpreter for a chief-of-staff catch-up review tool.
+
+The operator just reviewed ONE topic (a cross-source cluster of items from a time window) and left a rating (+1 like / -1 dislike) and a free-text comment. The topic's source refs tell you which underlying pipeline produced each item:
+- area "digests"     → pipeline "digest"
+- area "streams"     → pipeline "digest"   (Gmail/Jira stream digests)
+- area "inbox"       → pipeline "inbox"
+- area "tracks"      → pipeline "tracks"
+- areas "recaps", "transcripts", "decisions", "targets" → no source pipeline; only "catchup" rules apply
+A correction about how the recap itself grouped, titled, or phrased things belongs to pipeline "catchup".
+
+Your job is to turn the comment into durable, targeted learned-rules so the right system surfaces things better next time. Be conservative: only derive a rule when the comment expresses a clear, generalizable preference (e.g. "this channel is noise", "always show me anything from Jane"). Vague approval/disapproval with no actionable signal yields no rules.
+
+For each rule produce:
+- pipeline: "digest" | "tracks" | "inbox" | "briefing" | "catchup".
+- rule_type: "source_mute" (suppress/down-rank) or "source_boost" (surface/up-rank).
+- scope_key: build it ONLY from the channel_id / sender_user_id supplied with the relevant ref below — never invent ids. For the "inbox" pipeline use a BARE key, exactly "sender:<sender_user_id>" or "channel:<channel_id>", so it matches how inbox looks rules up. For every other pipeline ("digest"/"tracks"/"briefing"/"catchup") PREFIX the key with the pipeline, e.g. "digest:channel:<channel_id>". If no usable id is supplied for a target, emit no rule for it rather than guessing.
+- weight: a float in [-1.0, 1.0]; negative mutes, positive boosts; magnitude = confidence.
+- reason: one short sentence grounding the rule in the comment.
+
+Also decide "regenerate": true only when the comment is a presentation correction about THIS recap (wrong title/narrative/priority/grouping) that should be re-rendered now; false when the comment is purely a forward-looking preference.
+
+Respond with ONLY a JSON object, no markdown fences:
+{"rules": [{"pipeline": "digest", "rule_type": "source_mute", "scope_key": "digest:channel:Cxxx", "weight": -1.0, "reason": "..."}], "regenerate": false}`
+
+// defaultTargetsNextStep drives the per-target next-step suggestion
+// (targets.next_step). Not a format string: the caller appends the language
+// directive.
+const defaultTargetsNextStep = `You are an execution coach embedded in a goal-tracking app. Given ONE target (a goal/task the operator owns) with its full context, decide the single most important NEXT ACTION the operator should take right now to move it forward.
+
+Return ONLY a JSON object (no markdown, no prose) with this shape:
+{
+  "title": "imperative one-line action, max ~80 chars",
+  "rationale": "1-2 sentences: why this is the next step and what it unblocks",
+  "urgency": "deadline | blocked | stale | normal",
+  "urgency_detail": "short hint like \"6 days\" (days to due) or \"\"",
+  "actions": [
+    {"label": "short button text", "kind": "assistant", "prompt": "what to ask the assistant"},
+    {"label": "Show tickets", "kind": "open_links"},
+    {"label": "Different plan", "kind": "assistant", "prompt": "Suggest a different next step for this target"}
+  ]
+}
+
+Rules:
+- Exactly one concrete next action in "title" — not a list, not a summary of the goal.
+- Pick "urgency": "deadline" if a due date is near/passed, "blocked" if status is blocked or someone else holds the ball, "stale" if it has not moved in a while, else "normal".
+- "urgency_detail" is a SHORT hint (e.g. days remaining). Leave "" if nothing meaningful.
+- Provide 1-3 actions. The FIRST is the primary action. Always include a final {"kind":"assistant","prompt":"Suggest a different next step for this target"} option labelled like "Different plan" unless it would be the only action.
+- If the recent history (notes, assistant conversation, applied actions) shows the previously suggested step was already carried out, propose what comes AFTER it — never repeat a step that is done.
+- Use "open_links" only if the target has links/referenced items.
+- Keep everything in the operator's language (match the target's text language).`
+
+// defaultInboxStyleSample drives the owner's communication-style distillation
+// (inbox.style_sample). Not a format string: used verbatim as the system
+// prompt.
+const defaultInboxStyleSample = `You are analyzing how one person writes on Slack, to produce a "communication style profile" that another AI will later use to draft replies in this person's voice.
+
+Below are samples of the person's OWN messages, grouped by audience (direct messages, private channels, public channels), plus an optional analyst's note about their communication style.
+
+Distill a compact profile covering:
+- Languages they use and when (e.g. Russian with the team, English with external partners).
+- Tone and formality by audience: DMs vs channels, insiders vs external partners.
+- Typical phrases, openers, sign-offs, punctuation and emoji habits, typical message length.
+- Things they never do (e.g. corporate pleasantries, long intros, formal sign-offs).
+
+Write the profile as plain text (markdown allowed), addressed in second person ("You write..."), at most ~400 words. Output ONLY the profile text — no preamble, no JSON, no code fences.`
 
 // defaultCatchupCompose is the strong-tier absence-recap composer
 // (catchup.compose). Arg: the language directive. Catch-Up builds the user

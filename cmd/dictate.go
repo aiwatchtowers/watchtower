@@ -93,11 +93,7 @@ func runDictateClean(cmd *cobra.Command, _ []string) error {
 	}
 	defer database.Close()
 
-	store := prompts.New(database, nil)
-	tmpl, _, _ := store.Get(prompts.DictationClean)
-	if tmpl == "" {
-		tmpl = prompts.Defaults[prompts.DictationClean]
-	}
+	tmpl, _, _ := prompts.Resolve(prompts.New(database, nil), prompts.DictationClean, "")
 	system := fmt.Sprintf(tmpl, instructions, prompts.Directive(cfg.Digest.Language))
 	// The transcript rides the USER message so the >32 KB stdin path stays
 	// reachable and a leading "-" can never be parsed as a CLI flag.

@@ -91,10 +91,7 @@ func openChatTitleDB() (*config.Config, *db.DB, error) {
 // chatTitlePrompt renders the chat.title system prompt (the tunable DB row,
 // else the compiled default) and the first-exchange user message.
 func chatTitlePrompt(database *db.DB, cfg *config.Config, owner, assistant string) (system, user string) {
-	tmpl, _, _ := prompts.New(database, nil).Get(prompts.ChatTitle)
-	if tmpl == "" {
-		tmpl = prompts.Defaults[prompts.ChatTitle]
-	}
+	tmpl, _, _ := prompts.Resolve(prompts.New(database, nil), prompts.ChatTitle, "")
 	system = fmt.Sprintf(tmpl, prompts.Directive(cfg.Digest.Language))
 	user = "=== FIRST EXCHANGE ===\nOwner: " + excerptRunes(owner, chatTitleExcerptRunes) +
 		"\n\nAssistant: " + excerptRunes(assistant, chatTitleExcerptRunes)

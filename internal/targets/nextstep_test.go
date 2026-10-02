@@ -905,8 +905,8 @@ func TestBuildNextStepPrompt_AbsentChatTablesStillBuilds(t *testing.T) {
 // the live-step work: history showing the step was carried out must push the
 // model to what comes next.
 func TestNextStepSystemPrompt_ForbidsRepeatingADoneStep(t *testing.T) {
-	if !strings.Contains(nextStepSystemPrompt, "never repeat a step that is done") {
-		t.Errorf("system prompt lost the already-carried-out rule:\n%s", nextStepSystemPrompt)
+	if !strings.Contains(prompts.Defaults[prompts.TargetsNextStep], "never repeat a step that is done") {
+		t.Errorf("system prompt lost the already-carried-out rule:\n%s", prompts.Defaults[prompts.TargetsNextStep])
 	}
 }
 

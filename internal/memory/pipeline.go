@@ -139,15 +139,14 @@ func (p *Pipeline) SetPromptStore(store *prompts.Store) {
 	p.promptStore = store
 }
 
-// getPrompt loads a template from the prompt store, falling back to the
-// built-in default (same shape as the inbox pipeline's seam).
+// getPrompt resolves a prompt via prompts.Resolve: the store row, else the
+// registered default.
 func (p *Pipeline) getPrompt(id string) string {
-	if p.promptStore != nil {
-		if tmpl, _, err := p.promptStore.Get(id); err == nil {
-			return tmpl
-		}
+	tmpl, _, err := prompts.Resolve(p.promptStore, id, "")
+	if err != nil {
+		p.logf("memory: %v — using the built-in default", err)
 	}
-	return prompts.Defaults[id]
+	return tmpl
 }
 
 // NewPipeline creates a memory consolidation pipeline. generator may be nil

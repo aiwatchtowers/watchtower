@@ -1852,8 +1852,8 @@ func TestGetPrompt_FallbackToDefault(t *testing.T) {
 
 	p := New(database, cfg, gen, testLogger())
 
-	tmpl, version := p.getPrompt("nonexistent.id", "fallback template %s")
-	assert.Equal(t, "fallback template %s", tmpl)
+	tmpl, version := p.getPrompt(prompts.DigestDaily)
+	assert.Equal(t, prompts.Defaults[prompts.DigestDaily], tmpl)
 	assert.Equal(t, 0, version)
 }
 
@@ -1868,9 +1868,9 @@ func TestGetPrompt_WithPromptStore(t *testing.T) {
 	p := New(database, cfg, gen, testLogger())
 	p.SetPromptStore(store)
 
-	tmpl, version := p.getPrompt(prompts.DigestChannel, "fallback")
-	// Should get the seeded prompt, not fallback.
-	assert.NotEqual(t, "fallback", tmpl)
+	tmpl, version := p.getPrompt(prompts.DigestChannel)
+	// Should get the seeded prompt row, not the version-0 built-in.
+	assert.Equal(t, prompts.Defaults[prompts.DigestChannel], tmpl)
 	assert.GreaterOrEqual(t, version, 1)
 }
 
@@ -1886,9 +1886,9 @@ func TestGetPrompt_WithRole(t *testing.T) {
 	p.SetPromptStore(store)
 	p.profile = &db.UserProfile{Role: "top_management"}
 
-	tmpl, _ := p.getPrompt(prompts.DigestChannel, "fallback")
+	tmpl, _ := p.getPrompt(prompts.DigestChannel)
 	// Role instruction should be prepended.
-	assert.Contains(t, tmpl, "You are analyzing Slack messages")
+	assert.Equal(t, prompts.GetRoleInstruction("top_management")+"\n\n"+prompts.Defaults[prompts.DigestChannel], tmpl)
 }
 
 // windowFor returns the resolved window start for one channel, or -1 when the
@@ -2586,29 +2586,28 @@ func TestRunChannelDigests_WorkersDefault(t *testing.T) {
 	assert.Equal(t, 1, n)
 }
 
-func TestFallbackPromptFormatVerbs(t *testing.T) {
-	// Verify that hardcoded fallback prompts have the correct number of %s
+func TestDigestPromptFormatVerbs(t *testing.T) {
+	// Verify that the registered digest prompts have the correct number of %s
 	// placeholders matching the fmt.Sprintf calls in pipeline.go.
 	// This prevents regressions where prompts and Sprintf args go out of sync,
 	// which causes messages to silently disappear from prompts.
 
 	tests := []struct {
-		name     string
-		prompt   string
+		id       string
 		expected int // number of %s placeholders expected
 	}{
-		{"channelDigestPrompt", channelDigestPrompt, 7},           // channelName, fromStr, toStr, profileCtx, langInstr, previousCtx, messages
-		{"channelBatchDigestPrompt", channelBatchDigestPrompt, 6}, // fromStr, toStr, profileCtx, langInstr, prevCtxNote, channelBlocks
-		{"dailyRollupPrompt", dailyRollupPrompt, 5},               // dateStr, profileCtx, langInstr, previousCtx, channelInput
-		{"weeklyTrendsPrompt", weeklyTrendsPrompt, 7},             // date, fromStr, toStr, profileCtx, langInstr, previousCtx, dailies
-		{"periodSummaryPrompt", periodSummaryPrompt, 5},           // fromStr, toStr, profileCtx, langInstr, digests
+		{prompts.DigestChannel, 7},      // channelName, fromStr, toStr, profileCtx, langInstr, previousCtx, messages
+		{prompts.DigestChannelBatch, 6}, // fromStr, toStr, profileCtx, langInstr, prevCtxNote, channelBlocks
+		{prompts.DigestDaily, 5},        // dateStr, profileCtx, langInstr, previousCtx, channelInput
+		{prompts.DigestWeekly, 7},       // date, fromStr, toStr, profileCtx, langInstr, previousCtx, dailies
+		{prompts.DigestPeriod, 5},       // fromStr, toStr, profileCtx, langInstr, digests
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			count := strings.Count(tt.prompt, "%s")
+		t.Run(tt.id, func(t *testing.T) {
+			count := strings.Count(prompts.Defaults[tt.id], "%s")
 			assert.Equal(t, tt.expected, count,
-				"%s has %d %%s placeholders, expected %d", tt.name, count, tt.expected)
+				"%s has %d %%s placeholders, expected %d", tt.id, count, tt.expected)
 		})
 	}
 }

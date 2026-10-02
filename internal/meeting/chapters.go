@@ -129,7 +129,7 @@ func (p *Pipeline) GenerateTranscriptChapters(ctx context.Context, eventID strin
 		lang = p.cfg.Digest.Language
 	}
 
-	tmpl := p.loadChaptersPrompt()
+	tmpl := p.getPrompt(prompts.MeetingChapters)
 	systemPrompt := fmt.Sprintf(tmpl,
 		title, startTime, endTime, attendees, description,
 		prompts.Directive(lang),
@@ -236,18 +236,3 @@ func CarryConvertedTargets(old, fresh *ChaptersResult) {
 		}
 	}
 }
-
-func (p *Pipeline) loadChaptersPrompt() string {
-	if p.promptStore != nil {
-		if tmpl, _, err := p.promptStore.Get(prompts.MeetingChapters); err == nil && tmpl != "" {
-			return tmpl
-		}
-	}
-	if tmpl, ok := prompts.Defaults[prompts.MeetingChapters]; ok && tmpl != "" {
-		return tmpl
-	}
-	return defaultChaptersPromptFallback
-}
-
-const defaultChaptersPromptFallback = `Segment the meeting into chapters. Event: %s (%s-%s, attendees: %s, description: %s). %s
-Return ONLY JSON: {"overall_summary": "...", "chapters": [{"title", "start_sec", "end_sec", "participants", "summary", "decisions", "action_items", "open_questions"}]}.`

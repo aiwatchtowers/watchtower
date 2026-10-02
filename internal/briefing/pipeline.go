@@ -299,35 +299,22 @@ func (p *Pipeline) learnedPrefs() string {
 	return digest.LearnedPreferencesBlock(rules)
 }
 
+// getPrompt resolves a prompt via prompts.Resolve (store row, else the
+// registered default) with the owner role's instruction prepended. A resolved
+// template whose %s count differs from the shipped default's is replaced by
+// the default: that is a row the owner customized before a version added a
+// section, and formatting it with the new argument list would shift every
+// later section and append %!(EXTRA ...) to the prompt.
 func (p *Pipeline) getPrompt(id, role string) (string, int) {
-	tmpl, version := p.storedPrompt(id, role)
-	if tmpl == "" {
-		tmpl, version = prompts.Defaults[id], 0
-	}
-	if roleInstr := prompts.GetRoleInstruction(role); roleInstr != "" {
-		tmpl = roleInstr + "\n\n" + tmpl
-	}
-	return tmpl, version
-}
-
-// storedPrompt returns the prompt store's template, or "" when there is no
-// store, the lookup fails, or the stored template's %s count differs from the
-// shipped default's. The last case is a row the owner customized before a
-// version added a section: formatting it with the new argument list would
-// shift every later section and append %!(EXTRA ...) to the prompt.
-func (p *Pipeline) storedPrompt(id, role string) (string, int) {
-	if p.promptStore == nil {
-		return "", 0
-	}
-	tmpl, version, err := p.promptStore.GetForRole(id, role)
+	tmpl, version, err := prompts.Resolve(p.promptStore, id, role)
 	if err != nil {
-		return "", 0
+		p.logger.Printf("briefing: %v — using the built-in default", err)
 	}
 	if got, want := countVerbs(tmpl), countVerbs(prompts.Defaults[id]); got != want {
 		p.logger.Printf("briefing: stored %s template has %d placeholders, the default has %d — using the default (reset the prompt in Settings to pick up the new sections)", id, got, want)
-		return "", 0
+		tmpl, version = prompts.Defaults[id], 0
 	}
-	return tmpl, version
+	return prompts.WithRoleInstruction(role, tmpl), version
 }
 
 // countVerbs counts %s verbs, not counting an escaped %%s.

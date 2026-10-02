@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"watchtower/internal/db"
+	"watchtower/internal/prompts"
 )
 
 func TestLinkExisting_HappyPath(t *testing.T) {
@@ -161,7 +162,7 @@ func TestBuildLinkPrompt_ContainsTargetInfo(t *testing.T) {
 	snapshot := []db.Target{
 		{ID: 1, Text: "Q2 OKR", Level: "quarter", PeriodStart: "2026-04-01", PeriodEnd: "2026-06-30", Status: "todo", Priority: "high"},
 	}
-	prompt := buildLinkPrompt(LinkPromptTemplate, target, snapshot)
+	prompt := buildLinkPrompt(prompts.Defaults[prompts.TargetsLink], target, snapshot)
 
 	if prompt == "" {
 		t.Fatal("expected non-empty prompt")
