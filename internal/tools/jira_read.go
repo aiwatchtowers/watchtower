@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 
 	"watchtower/internal/db"
 )
@@ -100,14 +101,50 @@ func jiraIssueTypesByProject(d *db.DB) (map[projectKeyID]projectTypes, error) {
 	return out, rows.Err()
 }
 
+// syncedJiraProjects returns every (account, project) Watchtower syncs, with
+// the issue types seen in each. A project counts as synced once any of three
+// sources knows it: a full-sync watermark, a selected board (SyncBoard pulls
+// its active issues at once but deliberately writes no watermark), or synced
+// issues. Watermarks alone hide a just-selected board's project until the
+// next daemon Jira phase.
+func syncedJiraProjects(d *db.DB) (map[projectKeyID]bool, map[projectKeyID]projectTypes, error) {
+	states, err := d.GetJiraSyncStates()
+	if err != nil {
+		return nil, nil, fmt.Errorf("listing jira sync states: %w", err)
+	}
+	boards, err := d.ListSelectedJiraBoards()
+	if err != nil {
+		return nil, nil, fmt.Errorf("listing selected jira boards: %w", err)
+	}
+	typesByProject, err := jiraIssueTypesByProject(d)
+	if err != nil {
+		return nil, nil, fmt.Errorf("listing issue types: %w", err)
+	}
+	keys := map[projectKeyID]bool{}
+	for _, s := range states {
+		keys[projectKeyID{s.AccountID, s.ProjectKey}] = true
+	}
+	for _, b := range boards {
+		if b.ProjectKey != "" {
+			keys[projectKeyID{b.AccountID, b.ProjectKey}] = true
+		}
+	}
+	for k := range typesByProject {
+		keys[k] = true
+	}
+	return keys, typesByProject, nil
+}
+
 // NewListJiraProjects lists the connected Jira accounts and their synced
-// projects with the issue types seen in each — what create_jira_issue accepts
-// for account_id, project_key and issue_type.
+// projects (a full-sync watermark, a selected board, or synced issues) with
+// the issue types seen in each — the account_id, project_key and issue_type
+// values create_jira_issue takes.
 func NewListJiraProjects() *Tool {
 	return &Tool{
 		Name: "list_jira_projects",
-		Description: "List the connected Jira accounts and their synced projects, with the issue types seen in " +
-			"each project — what create_jira_issue accepts for account_id, project_key and issue_type.",
+		Description: "List the connected Jira accounts and their synced projects (including projects of boards " +
+			"selected in the app), with the issue types seen in each project — the account_id, project_key and " +
+			"issue_type values create_jira_issue takes.",
 		InputSchema: mustSchema[listJiraProjectsArgs]("list_jira_projects"),
 		Access:      AccessRead,
 		Execute: func(_ context.Context, d *db.DB, _ Call) (any, error) {
@@ -115,24 +152,23 @@ func NewListJiraProjects() *Tool {
 			if err != nil {
 				return nil, fmt.Errorf("listing jira accounts: %w", err)
 			}
-			states, err := d.GetJiraSyncStates()
+			keys, typesByProject, err := syncedJiraProjects(d)
 			if err != nil {
-				return nil, fmt.Errorf("listing jira projects: %w", err)
+				return nil, err
 			}
-			typesByProject, err := jiraIssueTypesByProject(d)
-			if err != nil {
-				return nil, fmt.Errorf("listing issue types: %w", err)
+			byAccount := map[int64][]string{}
+			for k := range keys {
+				byAccount[k.accountID] = append(byAccount[k.accountID], k.projectKey)
 			}
 			out := make([]jiraProjectsView, 0, len(accounts))
 			for _, a := range accounts {
 				view := jiraProjectsView{AccountID: a.ID, Label: a.Label, SiteName: a.SiteName, SiteURL: a.SiteURL}
-				for _, s := range states {
-					if s.AccountID != a.ID {
-						continue
-					}
-					pt := typesByProject[projectKeyID{a.ID, s.ProjectKey}]
+				projectKeys := byAccount[a.ID]
+				sort.Strings(projectKeys)
+				for _, key := range projectKeys {
+					pt := typesByProject[projectKeyID{a.ID, key}]
 					view.Projects = append(view.Projects, jiraProjectView{
-						ProjectKey: s.ProjectKey, IssueTypes: pt.types, IssueCount: pt.count,
+						ProjectKey: key, IssueTypes: pt.types, IssueCount: pt.count,
 					})
 				}
 				out = append(out, view)
