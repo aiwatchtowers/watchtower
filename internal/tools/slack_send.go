@@ -556,7 +556,7 @@ func NewSendSlackMessage(factory SlackSenderFactory) *Tool {
 		InputSchema:             mustSchema[sendSlackMessageArgs]("send_slack_message"),
 		Access:                  AccessWrite,
 		External:                true,
-		Surfaces:                []string{"main", "project"},
+		Surfaces:                []string{"main", WorkbenchSurface},
 		ProposeUnderDirectApply: true,
 		Validate: func(ctx context.Context, d *db.DB, raw json.RawMessage) error {
 			var a sendSlackMessageArgs

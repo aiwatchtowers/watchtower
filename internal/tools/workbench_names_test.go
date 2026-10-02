@@ -70,7 +70,7 @@ func TestLegacyName_RowStoredUnderAnOldNameStillApplies(t *testing.T) {
 	reg := workbenchRegistry(t, fx.d)
 	id, err := fx.d.InsertAgentAction(db.AgentAction{
 		Tool: "update_project", ArgsJSON: `{"description":"From before the rename.","reason":"r"}`, Reason: "r",
-		Surface: workbenchSurface, ContextType: WorkbenchContextType, ContextID: strconv.FormatInt(fx.a, 10),
+		Surface: WorkbenchSurface, ContextType: WorkbenchContextType, ContextID: strconv.FormatInt(fx.a, 10),
 		Status: "approved", TrustAtCreate: "execute",
 	})
 	require.NoError(t, err)
