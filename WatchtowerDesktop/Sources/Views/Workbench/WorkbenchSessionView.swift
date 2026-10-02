@@ -38,7 +38,7 @@ struct WorkbenchSessionView: View {
 
 /// A standalone terminal (no project, spec §3): always the whole page,
 /// single pane, under a slim header — its folder, Rename and Delete
-/// (the title is in the Projects tab's title row). No install badge, board or documents: nothing of a project.
+/// (the title is in the Workbench tab's title row). No install badge, board or documents: nothing of a project.
 struct StandaloneTerminalView: View {
     let session: TerminalSession
     /// The panel's row actions: Rename and Delete open the page's own sheet

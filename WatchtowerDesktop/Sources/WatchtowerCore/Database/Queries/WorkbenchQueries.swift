@@ -12,7 +12,7 @@ package enum WorkbenchQueryError: LocalizedError, Equatable {
         switch self {
         case .emptyBody: "A comment needs some text."
         case .noSubject: "A comment belongs to a target or a document."
-        case .wrongWorkbench: "That target or document belongs to another project."
+        case .wrongWorkbench: "That target or document belongs to another workbench."
         case let .notARoot(id): "Comment \(id) is a reply; only a thread's first comment has a status."
         case let .invalidStatus(status): "Unknown comment status \u{201C}\(status)\u{201D}."
         }

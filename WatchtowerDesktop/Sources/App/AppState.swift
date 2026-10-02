@@ -255,7 +255,7 @@ final class AppState {
     /// — persists across tab switches like its siblings above.
     private(set) var actionStripViewModel: ActionStripViewModel?
 
-    /// Projects tab (spec §6). Owned here so create/repair and the selection
+    /// Workbench tab (spec §6). Owned here so create/repair and the selection
     /// survive navigation.
     private(set) var workbenchesViewModel: WorkbenchesViewModel?
     /// Owner notifications for project activity; polls every 30 s.
@@ -396,7 +396,7 @@ final class AppState {
 
     func navigateToWorkbench(_ route: WorkbenchRoute) {
         pendingWorkbenchRoute = route
-        selectedDestination = .projects
+        selectedDestination = .workbench
     }
 
     private var isInitializing = false
@@ -990,7 +990,7 @@ final class AppState {
             notices?.recordOwnerWrite(projectID: projectID, subject: subject)
         }
         vm.isTabOnScreen = { [weak self] in
-            self?.selectedDestination == .projects
+            self?.selectedDestination == .workbench
                 && NSApp.windows.contains { TrayAppDelegate.isMainWindow($0) && $0.isVisible && $0.occlusionState.contains(.visible) }
         }
         notices.onPolled = { [weak vm] in await vm?.refreshOnPoll() }

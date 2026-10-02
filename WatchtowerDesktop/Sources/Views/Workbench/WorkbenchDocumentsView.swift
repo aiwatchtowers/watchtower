@@ -132,7 +132,8 @@ struct WorkbenchDocumentsView: View {
         // A failed reload after the commit leaves `threads` stale: never count fewer than were open plus sent.
         let count = max(WorkbenchCommentPrompt.openOwnerCount(docVM.threads), before + written)
         let line = WorkbenchCommentPrompt.line(
-            relPath: docVM.document.relPath, documentID: docVM.document.id, count: count
+            relPath: docVM.document.relPath, documentID: docVM.document.id, count: count,
+            vocabulary: vm.vocabulary(projectID: docVM.project.id)
         )
         let center = appState.terminalCenter
         let target = center.activeSession(projectID: docVM.project.id)

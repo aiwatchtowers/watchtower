@@ -383,7 +383,7 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
     }
 
     func testModeAndKanbanFilterAreRememberedPerProject() throws {
-        let suite = "ProjectBoardViewModelTests-\(UUID().uuidString)"
+        let suite = "WorkbenchBoardViewModelTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         let pid = try dbManager.dbPool.write { try Self.insertWorkbench($0) }

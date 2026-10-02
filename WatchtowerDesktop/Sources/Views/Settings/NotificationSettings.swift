@@ -33,7 +33,7 @@ struct NotificationSettings: View {
             Section("Notification Types") {
                 Toggle("Decision notifications", isOn: $notifyDecisions)
                 Toggle("Daily summary notifications", isOn: $notifyDailySummary)
-                Toggle("Project notifications", isOn: $notifyWorkbenches)
+                Toggle("Workbench notifications", isOn: $notifyWorkbenches)
                     .help("Agent questions, documents ready for review, answered comments, finished targets")
             }
 

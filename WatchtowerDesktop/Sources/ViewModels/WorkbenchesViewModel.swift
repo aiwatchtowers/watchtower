@@ -3,7 +3,7 @@ import GRDB
 import Observation
 import WatchtowerCore
 
-/// The Projects tab (spec §6.1). Owned by `AppState` so a create or repair in
+/// The Workbench tab (spec §6.1). Owned by `AppState` so a create or repair in
 /// flight — and the selection — survive navigating away (house rule).
 ///
 /// The daemon/CLI/MCP server write these tables from other processes, so
@@ -12,7 +12,8 @@ import WatchtowerCore
 @MainActor
 @Observable
 final class WorkbenchesViewModel {
-    /// Document id (string) → the `updated_at` the owner last opened.
+    /// Document id (string) → the `updated_at` the owner last opened. The
+    /// `projects.` prefix predates the Workbench rename; persisted, so kept (spec 2026-10-02 A1).
     static let viewedDocumentsKey = "projects.viewedDocuments"
 
     private(set) var summaries: [WorkbenchSummary] = []
@@ -177,7 +178,7 @@ final class WorkbenchesViewModel {
     /// project's sessions in initWorkbenches; a project with none is a no-op,
     /// so calling it twice is harmless.
     var closeTerminal: ((Int64) async -> Void)?
-    /// Whether the Projects tab is what the owner is looking at (AppState:
+    /// Whether the Workbench tab is what the owner is looking at (AppState:
     /// sidebar on Projects, main window visible). The poll marks agent
     /// replies read only then — an open-but-hidden document is not "seen".
     /// Unwired = never on screen.
@@ -248,7 +249,7 @@ final class WorkbenchesViewModel {
             // stale `viewed` stamps are never read again, so none are pruned.
             summaries = try await dbPool.read { try WorkbenchQueries.summaries($0) }
         } catch {
-            errorMessage = "Could not load projects: \(error.localizedDescription)"
+            errorMessage = "Could not load workbenches: \(error.localizedDescription)"
             return
         }
         for id in Self.vanished(previous: previousIDs, current: summaries.map(\.id)) {
@@ -284,7 +285,7 @@ final class WorkbenchesViewModel {
         do {
             result = try await cli.delete(projectID: id)
         } catch {
-            deleteError = "Could not delete the project: \(error.localizedDescription)"
+            deleteError = "Could not delete the workbench: \(error.localizedDescription)"
             return false
         }
         if let warning = result.cleanupWarning {
@@ -369,7 +370,7 @@ final class WorkbenchesViewModel {
         do {
             created = try await cli.create(folder: folder.path, name: name)
         } catch {
-            errorMessage = "Could not create the project: \(error.localizedDescription)"
+            errorMessage = "Could not create the workbench: \(error.localizedDescription)"
             return
         }
         importNotes[created.id] = created.importNote
@@ -378,7 +379,7 @@ final class WorkbenchesViewModel {
             try await cli.install(projectID: created.id)
         } catch {
             installed = false
-            installNotes[created.id] = "The project was created, but installing into the folder failed — use Repair. "
+            installNotes[created.id] = "The workbench was created, but installing into the folder failed — use Repair. "
                 + error.localizedDescription
         }
         await reload()
@@ -390,8 +391,15 @@ final class WorkbenchesViewModel {
         // and MCP server it relies on, so no first-run session.
         if installed {
             await startNewSession(project: project, title: TerminalSessionNaming.setupTitle,
-                                  prompt: TerminalLaunch.firstRunPrompt)
+                                  prompt: TerminalLaunch.firstRunPrompt(vocabulary(projectID: project.id)))
         }
+    }
+
+    /// The skill and server names the workbench's folder answers to
+    /// (`WorkbenchInstallStatus.vocabulary`); the current ones while its status
+    /// is unknown — not read yet, or the read failed (spec 2026-10-02 §5.3).
+    func vocabulary(projectID: Int64) -> WorkbenchVocabulary {
+        installStatus[projectID]?.vocabulary ?? .current
     }
 
     /// Reads `integrate status` for one project. The page runs this in

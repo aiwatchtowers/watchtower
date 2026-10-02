@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 import WatchtowerCore
 
-/// One project: a one-row header (folder, install status, view controls,
+/// One workbench: a one-row header (folder, install status, view controls,
 /// the "…" menu with Repair / Re-run Setup / Delete) over its workspace — one pane or a split (spec 2026-09-30-project-workspace-sessions §3).
 struct WorkbenchPageView: View {
     @Bindable var vm: WorkbenchesViewModel
@@ -38,7 +38,7 @@ struct WorkbenchPageView: View {
             isPresented: Binding(get: { deleteSummary != nil }, set: { if !$0 { deleteSummary = nil } }),
             titleVisibility: .visible
         ) {
-            Button("Delete Project", role: .destructive) {
+            Button("Delete Workbench", role: .destructive) {
                 let id = project.id
                 Task { await vm.deleteWorkbench(id) }
             }
@@ -47,7 +47,7 @@ struct WorkbenchPageView: View {
             Text(deleteSummary?.message ?? "")
         }
         .alert(
-            "Could not delete the project",
+            "Could not delete the workbench",
             isPresented: Binding(
                 get: { vm.deleteError != nil },
                 set: { if !$0 { vm.deleteError = nil } }
@@ -58,7 +58,7 @@ struct WorkbenchPageView: View {
             Text(vm.deleteError ?? "")
         }
         .alert(
-            "Could not read the project",
+            "Could not read the workbench",
             isPresented: Binding(get: { deleteSummaryError != nil }, set: { if !$0 { deleteSummaryError = nil } })
         ) {
             Button("OK", role: .cancel) {}
@@ -142,14 +142,14 @@ struct WorkbenchPageView: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
-        .help("Project actions")
-        .accessibilityLabel("Project actions")
+        .help("Workbench actions")
+        .accessibilityLabel("Workbench actions")
     }
 
     private func confirmDelete() {
         guard let pool = appState.databaseManager?.dbPool else { return }
         do {
-            deleteSummary = try pool.read { try WorkbenchDeleteSummary.fetch($0, project: project) }
+            deleteSummary = try pool.read { try WorkbenchDeleteSummary.fetch($0, project: project, vocabulary: vm.vocabulary(projectID: project.id)) }
         } catch {
             // Never confirm a delete against unknown counts.
             deleteSummaryError = error.localizedDescription
@@ -192,6 +192,13 @@ struct WorkbenchPageView: View {
                     .font(.caption)
                     .help("The folder install is incomplete — Repair install is in the … menu.\n\(repairHelp(status))")
                     .accessibilityLabel("Install incomplete")
+            } else if let notice = status.legacyNotice {
+                // A nudge only: nothing migrates until the owner runs it (O6).
+                Image(systemName: "exclamationmark.circle")
+                    .foregroundStyle(.orange)
+                    .font(.caption)
+                    .help("\(notice)\n\(repairHelp(status))")
+                    .accessibilityLabel("Older setup")
             } else if status.claudeFound || status.mcp {
                 Image(systemName: "checkmark.seal")
                     .foregroundStyle(.secondary)
@@ -203,7 +210,7 @@ struct WorkbenchPageView: View {
     }
 
     private func repairHelp(_ status: WorkbenchInstallStatus) -> String {
-        "Skill \(status.skill) · hook \(status.hook ? "on" : "missing") · "
+        "Skill \(status.skillDisplay) · hook \(status.hook ? "on" : "missing") · "
             + "drift hook \(status.stopHook ? "on" : "missing") · MCP \(status.mcp ? "on" : "missing")"
     }
 

@@ -12,7 +12,7 @@ final class WorkbenchesViewModelTests: XCTestCase {
 
     override func setUpWithError() throws {
         (pool, path) = try TestDatabase.createPool()
-        defaults = try XCTUnwrap(UserDefaults(suiteName: "ProjectsViewModelTests-\(UUID().uuidString)"))
+        defaults = try XCTUnwrap(UserDefaults(suiteName: "WorkbenchesViewModelTests-\(UUID().uuidString)"))
     }
 
     override func tearDown() {
@@ -99,7 +99,7 @@ final class WorkbenchesViewModelTests: XCTestCase {
 
         let ok = await vm.attachDocument(fileURL: URL(fileURLWithPath: "/tmp/acme/notes/x.md"), kind: "spec", targetID: nil)
         XCTAssertTrue(ok)
-        XCTAssertEqual(runner.invocations, [["project", "attach-doc", "--kind", "spec", "--json", "--", "\(p)", "/tmp/acme/notes/x.md"]])
+        XCTAssertEqual(runner.invocations, [["workbench", "attach-doc", "--kind", "spec", "--json", "--", "\(p)", "/tmp/acme/notes/x.md"]])
         XCTAssertEqual(vm.documentViewModel?.document.id, doc)
         XCTAssertEqual(ownerWrites, [.document(doc)])
         XCTAssertNil(vm.attachError)
@@ -206,7 +206,7 @@ final class WorkbenchesViewModelTests: XCTestCase {
         await vm.createWorkbench(folder: URL(fileURLWithPath: "/tmp/acme"), name: nil)
         let note = try XCTUnwrap(vm.importNotes[id])
         XCTAssertTrue(note.contains("permission denied"))
-        XCTAssertTrue(note.contains("watchtower project import-docs \(id)"))
+        XCTAssertTrue(note.contains("watchtower workbench import-docs \(id)"))
         XCTAssertNil(vm.installErrors[id], "its own line, apart from the install note")
         XCTAssertNil(vm.errorMessage, "the project exists; the note belongs to it")
     }
@@ -225,7 +225,7 @@ final class WorkbenchesViewModelTests: XCTestCase {
         await vm.createWorkbench(folder: URL(fileURLWithPath: "/tmp/acme"), name: nil)
 
         XCTAssertEqual(runner.invocations.map { Array($0.prefix(2)) }, [
-            ["project", "create"], ["integrate", "claude-code"], ["integrate", "status"]
+            ["workbench", "create"], ["integrate", "claude-code"], ["integrate", "status"]
         ])
         XCTAssertEqual(vm.selectedWorkbenchID, id)
         guard case .session = vm.layout.primary else { return XCTFail("the setup session goes on screen") }
@@ -272,8 +272,8 @@ final class WorkbenchesViewModelTests: XCTestCase {
         let vm = makeVM(runner)
         await vm.repairInstall(projectID: id)
         XCTAssertEqual(runner.invocations, [
-            ["integrate", "claude-code", "--project", String(id)],
-            ["integrate", "status", "--project", String(id), "--json"]
+            ["integrate", "claude-code", "--workbench", String(id)],
+            ["integrate", "status", "--workbench", String(id), "--json"]
         ])
         XCTAssertEqual(vm.installStatus[id]?.needsRepair, false)
     }
@@ -362,9 +362,9 @@ final class WorkbenchesViewModelTests: XCTestCase {
     func testRepairSuccessLeavesTheListWideErrorAlone() async throws {
         let runner = FakeCLIRunner(stdout: Data(#"{"skill":"unchanged","hook":true,"mcp":true}"#.utf8))
         let vm = makeVM(runner)
-        vm.errorMessage = "Could not load projects"
+        vm.errorMessage = "Could not load workbenches"
         await vm.repairInstall(projectID: 1)
-        XCTAssertEqual(vm.errorMessage, "Could not load projects")
+        XCTAssertEqual(vm.errorMessage, "Could not load workbenches")
     }
 
     func testRepairFailureStaysShownAfterTheStatusRefresh() async throws {
@@ -395,7 +395,7 @@ final class WorkbenchesViewModelTests: XCTestCase {
         appState.terminalCenter.makeProcess = { FakeTerminalSession() }
         appState.initWorkbenches(dbPool: pool, cliRunner: held, notifier: RecordingWorkbenchNotifier())
         let vm = try XCTUnwrap(appState.workbenchesViewModel)
-        appState.selectedDestination = .projects
+        appState.selectedDestination = .workbench
 
         let run = Task { await vm.createWorkbench(folder: URL(fileURLWithPath: "/tmp/acme"), name: nil) }
         await awaitStarted(held)
@@ -405,7 +405,7 @@ final class WorkbenchesViewModelTests: XCTestCase {
         held.release()
         await run.value
 
-        appState.selectedDestination = .projects
+        appState.selectedDestination = .workbench
         XCTAssertTrue(appState.workbenchesViewModel === vm, "the same AppState-owned VM, not a fresh one")
         XCTAssertEqual(vm.selectedWorkbenchID, id)
         XCTAssertFalse(vm.isCreating)
@@ -528,14 +528,14 @@ final class WorkbenchesViewModelTests: XCTestCase {
         XCTAssertEqual(appState.terminalCenter.states[row.id], .running)
         XCTAssertEqual(appState.terminalCenter.focusOrder, [row.id])
         XCTAssertEqual(process.launches.last?.args.last,
-                       "exec claude --session-id \(uuid) '\(TerminalLaunch.firstRunPrompt)'")
+                       "exec claude --session-id \(uuid) '\(TerminalLaunch.firstRunPrompt(.current))'")
         XCTAssertEqual(vm.terminalSessions[id]?.map(\.id), [row.id])
     }
 
     func testNavigateToProjectSetsThePendingRouteAndTheTab() {
         let appState = AppState()
         appState.navigateToWorkbench(WorkbenchRoute(projectID: 2, pane: .board))
-        XCTAssertEqual(appState.selectedDestination, .projects)
+        XCTAssertEqual(appState.selectedDestination, .workbench)
         XCTAssertEqual(appState.pendingWorkbenchRoute, WorkbenchRoute(projectID: 2, pane: .board))
     }
 

@@ -22,7 +22,7 @@ package enum NewWorkbenchFolder {
             case let .notADirectory(path):
                 "\(path) already exists and is not a folder."
             case let .notEmpty(path):
-                "\(path) already exists and is not empty — use Add Existing Folder… to make a project of it."
+                "\(path) already exists and is not empty — use Add Existing Folder… to make a workbench of it."
             case let .unreadable(path, reason):
                 "Could not read \(path): \(reason)"
             case let .createFailed(path, reason):

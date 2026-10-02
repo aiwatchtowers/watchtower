@@ -110,7 +110,7 @@ final class TerminalCenterTests: XCTestCase {
     func testFreshStartLaunchesTheSessionIDAndPromptInTheFolder() throws {
         let center = makeCenter()
         let s = try row()
-        center.start(s, fresh: true, prompt: TerminalLaunch.firstRunPrompt)
+        center.start(s, fresh: true, prompt: TerminalLaunch.firstRunPrompt(.current))
         XCTAssertEqual(center.states[s.id], .running)
         XCTAssertEqual(center.liveIDs, [s.id])
         let launch = try XCTUnwrap(sessions.first?.launches.first)
@@ -118,7 +118,7 @@ final class TerminalCenterTests: XCTestCase {
         XCTAssertEqual(launch.executable, "/bin/zsh")
         XCTAssertEqual(launch.currentDirectory, folder.path)
         XCTAssertEqual(launch.args.last,
-                       "exec claude --session-id \(try XCTUnwrap(s.claudeSessionID)) '\(TerminalLaunch.firstRunPrompt)'")
+                       "exec claude --session-id \(try XCTUnwrap(s.claudeSessionID)) '\(TerminalLaunch.firstRunPrompt(.current))'")
     }
 
     func testNonFreshStartResumesTheStoredSession() throws {
@@ -136,7 +136,7 @@ final class TerminalCenterTests: XCTestCase {
     func testNonFreshStartWithoutATranscriptStartsTheSameIDAnew() throws {
         let center = makeCenter()
         let s = try row()
-        center.start(s, fresh: false, prompt: TerminalLaunch.firstRunPrompt)
+        center.start(s, fresh: false, prompt: TerminalLaunch.firstRunPrompt(.current))
         XCTAssertEqual(sessions.first?.launches.first?.args.last,
                        "exec claude --session-id \(try XCTUnwrap(s.claudeSessionID))")
     }
@@ -177,7 +177,7 @@ final class TerminalCenterTests: XCTestCase {
     func testShellRowLaunchesTheLoginShellAlone() throws {
         let center = makeCenter()
         let s = try row(project: nil, kind: .shell)
-        center.start(s, fresh: true, prompt: TerminalLaunch.firstRunPrompt)
+        center.start(s, fresh: true, prompt: TerminalLaunch.firstRunPrompt(.current))
         XCTAssertEqual(sessions.first?.launches.first?.args, ["-l"])
         XCTAssertEqual(center.states[s.id], .running)
     }
@@ -203,7 +203,7 @@ final class TerminalCenterTests: XCTestCase {
     func testStartWhileRunningIsANoOp() throws {
         let center = makeCenter()
         let s = try row()
-        center.start(s, fresh: true, prompt: TerminalLaunch.firstRunPrompt)
+        center.start(s, fresh: true, prompt: TerminalLaunch.firstRunPrompt(.current))
         center.start(s, fresh: false)
         XCTAssertEqual(sessions.count, 1)
         XCTAssertEqual(sessions[0].launches.count, 1)
@@ -222,7 +222,7 @@ final class TerminalCenterTests: XCTestCase {
         appState.terminalCenter.shell = { "/bin/zsh" }
         let center = appState.terminalCenter
         let s = try row()
-        appState.selectedDestination = .projects
+        appState.selectedDestination = .workbench
         center.start(s, fresh: true)
 
         let host = NSView()
@@ -230,7 +230,7 @@ final class TerminalCenterTests: XCTestCase {
         host.addSubview(first.view)
         first.view.removeFromSuperview()          // the pane's view is dismantled
         appState.selectedDestination = .inbox     // navigate away …
-        appState.selectedDestination = .projects  // … and back
+        appState.selectedDestination = .workbench  // … and back
 
         center.start(s, fresh: false)             // the pane asks again on appear
         XCTAssertTrue(center.process(for: s.id) === first)
@@ -242,7 +242,7 @@ final class TerminalCenterTests: XCTestCase {
     func testExitShowsExitedAndStartRelaunchesInTheSameProcessViewWithResume() throws {
         let center = makeCenter()
         let s = try row()
-        center.start(s, fresh: true, prompt: TerminalLaunch.firstRunPrompt)
+        center.start(s, fresh: true, prompt: TerminalLaunch.firstRunPrompt(.current))
         transcripts = [try XCTUnwrap(s.claudeSessionID)]
         sessions[0].exit(0)
         XCTAssertEqual(center.states[s.id], .exited(0))
@@ -318,7 +318,7 @@ final class TerminalCenterTests: XCTestCase {
     func testMissingFolderIsUnavailableAndStartsNothing() throws {
         let center = makeCenter()
         let s = try row(folder: "/tmp/does-not-exist-\(UUID().uuidString)")
-        center.start(s, fresh: true, prompt: TerminalLaunch.firstRunPrompt)
+        center.start(s, fresh: true, prompt: TerminalLaunch.firstRunPrompt(.current))
         guard case .unavailable = center.states[s.id] else {
             return XCTFail("expected unavailable, got \(String(describing: center.states[s.id]))")
         }
@@ -390,7 +390,7 @@ final class TerminalCenterTests: XCTestCase {
         let center = makeCenter()
         let s = try row()
         center.start(s, fresh: true)
-        let line = WorkbenchCommentPrompt.line(relPath: "docs/plan.md", documentID: 7, count: 3)
+        let line = WorkbenchCommentPrompt.line(relPath: "docs/plan.md", documentID: 7, count: 3, vocabulary: .current)
         XCTAssertEqual(center.sendPrompt(line, sessionID: s.id), .sent)
         XCTAssertEqual(sessions[0].inputs, [
             [0x1B, 0x5B, 0x32, 0x30, 0x30, 0x7E] + Array(line.utf8) + [0x1B, 0x5B, 0x32, 0x30, 0x31, 0x7E]

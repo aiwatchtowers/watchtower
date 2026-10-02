@@ -9,7 +9,7 @@ import WatchtowerCore
 struct WorkbenchCommentsSendBar: View {
     static let copiedNote = "Prompt copied — press ⌘V in the terminal"
     static let noSessionNote =
-        "No Claude Code session is running for this project. The next session you start gets these comments in its brief."
+        "No Claude Code session is running for this workbench. The next session you start gets these comments in its brief."
 
     static func unsendableNote(_ drafts: Int) -> String {
         (drafts == 1 ? "1 draft" : "\(drafts) drafts") + " can't be sent — see Drafts."

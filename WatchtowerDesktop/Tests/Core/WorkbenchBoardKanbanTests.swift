@@ -236,11 +236,11 @@ final class WorkbenchBoardKanbanTests: XCTestCase {
     // MARK: - Preferences
 
     func testPreferencesArePerProjectAndDefaultToListAndAll() throws {
-        let suite = "ProjectBoardKanbanTests-\(UUID().uuidString)"
+        let suite = "WorkbenchBoardKanbanTests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
 
-        let one = WorkbenchBoardPreferences(projectID: 1, defaults: defaults)
+        let one = WorkbenchBoardPreferences(workbenchID: 1, defaults: defaults)
         XCTAssertEqual(one.mode, .list)
         XCTAssertNil(one.kanbanFilterRootID)
 
@@ -249,17 +249,17 @@ final class WorkbenchBoardKanbanTests: XCTestCase {
         XCTAssertEqual(defaults.string(forKey: "projects.boardMode.1"), "kanban")
         XCTAssertEqual(defaults.integer(forKey: "projects.boardKanbanFilter.1"), 42)
 
-        let reread = WorkbenchBoardPreferences(projectID: 1, defaults: defaults)
+        let reread = WorkbenchBoardPreferences(workbenchID: 1, defaults: defaults)
         XCTAssertEqual(reread.mode, .kanban)
         XCTAssertEqual(reread.kanbanFilterRootID, 42)
 
-        let two = WorkbenchBoardPreferences(projectID: 2, defaults: defaults)
+        let two = WorkbenchBoardPreferences(workbenchID: 2, defaults: defaults)
         XCTAssertEqual(two.mode, .list)
         XCTAssertNil(two.kanbanFilterRootID)
 
         one.kanbanFilterRootID = nil
         XCTAssertNil(defaults.object(forKey: "projects.boardKanbanFilter.1"))
         defaults.set("bogus", forKey: "projects.boardMode.1")
-        XCTAssertEqual(WorkbenchBoardPreferences(projectID: 1, defaults: defaults).mode, .list)
+        XCTAssertEqual(WorkbenchBoardPreferences(workbenchID: 1, defaults: defaults).mode, .list)
     }
 }

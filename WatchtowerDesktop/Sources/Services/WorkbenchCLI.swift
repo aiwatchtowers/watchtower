@@ -1,7 +1,7 @@
 import Foundation
 import WatchtowerCore
 
-/// The Go `projectdocs.Report` inside the create and resync envelopes; every
+/// The Go `workbenchdocs.Report` inside the create and resync envelopes; every
 /// list optional, so a CLI that omits one still decodes.
 private struct WorkbenchDocsReport: Decodable {
     let imported: [String]?
@@ -14,8 +14,8 @@ private struct WorkbenchDocsReport: Decodable {
     }
 }
 
-/// `watchtower project create --json` envelope (Task 4). The folder's
-/// document import is best-effort: the project exists whenever the command
+/// `watchtower workbench create --json` envelope (Task 4). The folder's
+/// document import is best-effort: the workbench exists whenever the command
 /// exits 0; `docsImportOK == false` says the import failed, and a successful
 /// one may still have skipped unreadable paths or files past its cap.
 struct WorkbenchCreated: Decodable, Equatable {
@@ -67,10 +67,10 @@ struct WorkbenchCreated: Decodable, Equatable {
         skippedOverCap = report?.skippedOverCap?.count ?? 0
     }
 
-    /// What the project page tells the owner about the import, or nil when
+    /// What the workbench page tells the owner about the import, or nil when
     /// everything was attached. Each case ends with the command that retries.
     var importNote: String? {
-        let retry = "watchtower project import-docs \(id)"
+        let retry = "watchtower workbench import-docs \(id)"
         if !docsImportOK {
             let reason = docsImportError.isEmpty ? "" : " (\(docsImportError))"
             return "Importing the folder's documents failed\(reason) — retry with: \(retry)"
@@ -87,7 +87,7 @@ struct WorkbenchCreated: Decodable, Equatable {
     }
 }
 
-/// `watchtower project delete N --json` envelope. The project rows are gone
+/// `watchtower workbench delete N --json` envelope. The workbench rows are gone
 /// whenever the command exits 0; `removalOK == false` means only the folder
 /// cleanup failed, and `removalError` says why; `filesOK == false` means
 /// Watchtower's stored copies of the targets' images could not all be
@@ -134,11 +134,11 @@ struct WorkbenchDeleted: Decodable, Equatable {
         var parts: [String] = []
         if !removalOK { parts.append("cleaning its folder failed: \(removalError)") }
         if !filesOK { parts.append("removing its stored images failed: \(filesError)") }
-        return parts.isEmpty ? nil : "The project was deleted, but " + parts.joined(separator: "; ")
+        return parts.isEmpty ? nil : "The workbench was deleted, but " + parts.joined(separator: "; ")
     }
 }
 
-/// `watchtower project attach-doc N <path> --json` envelope (#80).
+/// `watchtower workbench attach-doc N <path> --json` envelope (#80).
 /// `created == false` means the path was already attached (left untouched).
 struct WorkbenchDocumentAttached: Decodable, Equatable {
     let documentID: Int64
@@ -152,12 +152,12 @@ struct WorkbenchDocumentAttached: Decodable, Equatable {
     }
 }
 
-/// `watchtower project resync N --json` (#91): what Re-run Setup added. The
+/// `watchtower workbench resync N --json` (#91): what Re-run Setup added. The
 /// command is additive — it never deletes or changes targets, comments,
 /// documents, sources or the description, and never creates targets;
 /// `suggestions` are what the owner may take to the agent. It exits 0 once
-/// the project is found; the `*_ok`/`*_error` fields say which step failed
-/// (the `project create --json` precedent).
+/// the workbench is found; the `*_ok`/`*_error` fields say which step failed
+/// (the `workbench create --json` precedent).
 struct WorkbenchResynced: Decodable, Equatable {
     /// One summary line; `problem` lines show in the error colour.
     struct Line: Equatable {
@@ -181,7 +181,17 @@ struct WorkbenchResynced: Decodable, Equatable {
     let mcpCommand: String
     let suggestions: [String]
     let suggestionsError: String
-    /// The project documents' search index (#89). A CLI older than it sends
+    /// The migration of a folder set up before the Workbench rename (spec
+    /// 2026-10-02 §5.4). `legacySkill` is what became of the old skill:
+    /// `removed`, `drifted`/`foreign` (kept — the owner's, PROJ-04), or empty
+    /// when there was none. A permission-rule count above zero already comes
+    /// with its own line in `suggestions`. A CLI older than the rename sends
+    /// none of these keys: nothing was migrated.
+    let legacySkill: String
+    let legacyMCPRemoved: Bool
+    let legacyHooksReplaced: Bool
+    let legacyPermissionRules: Int
+    /// The workbench documents' search index (#89). A CLI older than it sends
     /// none of these keys: nothing was indexed, nothing failed.
     let indexOK: Bool
     let indexError: String
@@ -203,6 +213,10 @@ struct WorkbenchResynced: Decodable, Equatable {
         case indexError = "index_error"
         case indexed
         case indexSkipped = "index_skipped"
+        case legacySkill = "legacy_skill"
+        case legacyMCPRemoved = "legacy_mcp_removed"
+        case legacyHooksReplaced = "legacy_hooks_replaced"
+        case legacyPermissionRules = "legacy_permission_rules"
     }
 
     init(from decoder: Decoder) throws {
@@ -226,9 +240,13 @@ struct WorkbenchResynced: Decodable, Equatable {
         indexError = try c.decodeIfPresent(String.self, forKey: .indexError) ?? ""
         indexed = try c.decodeIfPresent(Int.self, forKey: .indexed) ?? 0
         indexSkipped = try c.decodeIfPresent(Bool.self, forKey: .indexSkipped) ?? false
+        legacySkill = try c.decodeIfPresent(String.self, forKey: .legacySkill) ?? ""
+        legacyMCPRemoved = try c.decodeIfPresent(Bool.self, forKey: .legacyMCPRemoved) ?? false
+        legacyHooksReplaced = try c.decodeIfPresent(Bool.self, forKey: .legacyHooksReplaced) ?? false
+        legacyPermissionRules = try c.decodeIfPresent(Int.self, forKey: .legacyPermissionRules) ?? 0
     }
 
-    /// What the project page shows: what was added, what failed, then the
+    /// What the workbench page shows: what was added, what failed, then the
     /// suggestions. Never empty.
     var summaryLines: [Line] {
         var lines = documentLines + indexLines + integrationLines
@@ -260,22 +278,27 @@ struct WorkbenchResynced: Decodable, Equatable {
         if !indexOK { return [Line(text: "Indexing the documents for search failed: \(indexError)", problem: true)] }
         if indexSkipped { return [Line(text: "Documents not indexed for search: knowledge search is off", problem: false)] }
         if indexed > 0 {
-            return [Line(text: "Indexed \(indexed) document(s) for search in this project's sessions", problem: false)]
+            return [Line(text: "Indexed \(indexed) document(s) for search in this workbench's sessions", problem: false)]
         }
         return []
     }
 
     private var integrationLines: [Line] {
+        let skillName = WorkbenchVocabulary.current.skillName
         var lines: [Line] = []
         switch skill {
-        case "installed": lines.append(Line(text: "Installed the watchtower-project skill", problem: false))
-        case "updated": lines.append(Line(text: "Updated the watchtower-project skill", problem: false))
+        case "installed": lines.append(Line(text: "Installed the \(skillName) skill", problem: false))
+        case "updated": lines.append(Line(text: "Updated the \(skillName) skill", problem: false))
         case "drifted", "foreign":
-            lines.append(Line(text: "Your own copy of the watchtower-project skill was kept, so its update was not applied "
+            lines.append(Line(text: "Your own copy of the \(skillName) skill was kept, so its update was not applied "
                               + "— merge it by hand, or delete your copy and run Re-run Setup again", problem: true))
         default: break
         }
-        if hooksAdded { lines.append(Line(text: "Added the session hooks", problem: false)) }
+        // A replaced legacy hook also reports `hooks_added` (the file changed).
+        if hooksAdded {
+            lines.append(Line(text: legacyHooksReplaced ? "Replaced the old session hooks" : "Added the session hooks",
+                              problem: false))
+        }
         if !excluded.isEmpty {
             lines.append(Line(text: "Excluded \(excluded.count) more path(s) from git", problem: false))
         }
@@ -285,11 +308,31 @@ struct WorkbenchResynced: Decodable, Equatable {
         if !integrationOK {
             lines.append(Line(text: "Installing into the folder failed: \(integrationError)", problem: true))
         }
+        return lines + legacyLines
+    }
+
+    /// What the migration did to a folder set up before the rename. The
+    /// wording follows Go's `printLegacyMigration` and `legacySkillKeptNote`
+    /// (`cmd/integrate_workbench.go`), which `--json` does not carry.
+    private var legacyLines: [Line] {
+        let legacy = WorkbenchVocabulary.legacy
+        var lines: [Line] = []
+        switch legacySkill {
+        case "removed": lines.append(Line(text: "Removed the old \(legacy.skillName) skill", problem: false))
+        case "drifted", "foreign":
+            lines.append(Line(text: "Your own copy of the old \(legacy.skillName) skill was kept — delete "
+                              + ".claude/skills/\(legacy.skillName) yourself once you no longer need it; "
+                              + "until then Claude Code sees both skills.", problem: true))
+        default: break
+        }
+        if legacyMCPRemoved {
+            lines.append(Line(text: "Removed the old \(legacy.mcpServerName) MCP server", problem: false))
+        }
         return lines
     }
 }
 
-/// `watchtower integrate status --project N --json` (Task 12). `skill` is a
+/// `watchtower integrate status --workbench N --json` (Task 12). `skill` is a
 /// devpack status state: `unchanged` (current), `updated` (an older shipped
 /// version that an install would replace), `missing`, or `drifted`/`foreign`
 /// — the owner's own content (PROJ-04), which counts as present.
@@ -298,19 +341,39 @@ struct WorkbenchResynced: Decodable, Equatable {
 struct WorkbenchInstallStatus: Decodable, Equatable {
     let skill: String
     let hook: Bool
-    /// The Stop hook running the board drift check (PROJ-07). A project
+    /// The Stop hook running the board drift check (PROJ-07). A workbench
     /// installed before it existed lacks it until a Repair.
     let stopHook: Bool
     let mcp: Bool
     let claudeFound: Bool
+    /// The folder was set up before the Workbench rename and still holds
+    /// something Re-run Setup migrates — the old MCP registration, an old
+    /// hook command, or the old skill as shipped (spec 2026-10-02 §5.4). Its
+    /// old hooks count in `hook`/`stopHook` and its old registration in
+    /// `mcp`, so it reads as working; only the new skill reads `missing`.
+    let legacy: Bool
+    /// The old skill's state: empty when absent, `unchanged`, `drifted` or
+    /// `foreign`.
+    let legacySkill: String
 
     enum CodingKeys: String, CodingKey {
-        case skill, hook, mcp
+        case skill, hook, mcp, legacy
         case stopHook = "stop_hook"
         case claudeFound = "claude_found"
+        case legacySkill = "legacy_skill"
     }
 
-    init(skill: String, hook: Bool, stopHook: Bool = true, mcp: Bool, claudeFound: Bool = true) {
+    init(
+        skill: String,
+        hook: Bool,
+        stopHook: Bool = true,
+        mcp: Bool,
+        claudeFound: Bool = true,
+        legacy: Bool = false,
+        legacySkill: String = ""
+    ) {
+        self.legacy = legacy
+        self.legacySkill = legacySkill
         self.skill = skill
         self.hook = hook
         self.stopHook = stopHook
@@ -327,23 +390,53 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         mcp = try c.decode(Bool.self, forKey: .mcp)
         // An older CLI without the key could always check the registration.
         claudeFound = try c.decodeIfPresent(Bool.self, forKey: .claudeFound) ?? true
+        // A CLI older than the Workbench rename knows no legacy folder.
+        legacy = try c.decodeIfPresent(Bool.self, forKey: .legacy) ?? false
+        legacySkill = try c.decodeIfPresent(String.self, forKey: .legacySkill) ?? ""
     }
 
     /// Whether Repair can fix something. Without `claude` an unregistered
     /// MCP server is not repairable from here — see `manualMCPCommand`.
     var needsRepair: Bool {
-        skill == "missing" || skill == "updated" || !hook || !stopHook || (claudeFound && !mcp)
+        (skill == "missing" && !runsOnLegacySkill) || skill == "updated" || !hook || !stopHook || (claudeFound && !mcp)
+    }
+
+    /// The install icon's tooltip for a folder set up before the Workbench
+    /// rename (spec 2026-10-02 A10), or nil for any other.
+    var legacyNotice: String? {
+        legacy ? "Set up by an older Watchtower — Re-run Setup to update" : nil
+    }
+
+    /// A legacy folder whose new skill is `missing` but whose old one is still
+    /// there: the agent works through the old skill, so the missing new one
+    /// is no repair — the "older setup" nudge covers it (spec 2026-10-02 A10,
+    /// §5.4) and the owner decides when to Re-run Setup (O6). With no skill
+    /// at all, Repair stays on: there is nothing for the agent to read.
+    var runsOnLegacySkill: Bool {
+        legacy && !legacySkill.isEmpty
+    }
+
+    /// The skill the folder's agent reads, for the prompts the Desktop types
+    /// (spec 2026-10-02 §5.3): the old one only while it is all there is.
+    var vocabulary: WorkbenchVocabulary {
+        runsOnLegacySkill && skill == "missing" ? .legacy : .current
+    }
+
+    /// The skill state the tooltip shows: a legacy folder's new skill is
+    /// `missing` only because it still runs on the old one.
+    var skillDisplay: String {
+        vocabulary == .legacy ? "\(WorkbenchVocabulary.legacy.skillName) (older setup)" : skill
     }
 
     /// The command the owner runs once Claude Code is installed, mirroring
-    /// what `integrate claude-code --project` registers. It starts with
+    /// what `integrate claude-code --workbench` registers. It starts with
     /// `cd <folder> &&` because a local-scope registration is keyed on the
-    /// working directory. Go twin: `devpack.ProjectMCPCommand`
-    /// (`internal/devpack/project.go`) — same text, pinned by one shared
+    /// working directory. Go twin: `devpack.WorkbenchMCPCommand`
+    /// (`internal/devpack/workbench.go`) — same text, pinned by one shared
     /// fixture on both sides.
     static func manualMCPCommand(projectID: Int64, folder: String, cliPath: String) -> String {
-        "cd \(shellQuote(folder)) && claude mcp add --scope local watchtower-project -- "
-            + "\(shellQuote(cliPath)) mcp --project \(projectID)"
+        "cd \(shellQuote(folder)) && claude mcp add --scope local \(WorkbenchVocabulary.current.mcpServerName) -- "
+            + "\(shellQuote(cliPath)) mcp --workbench \(projectID)"
     }
 
     /// Go `shellQuote`'s rule: bare when every character is shell-safe,
@@ -355,37 +448,37 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
     }
 }
 
-/// The Projects tab's CLI calls. Everything the Desktop does to the folder or
-/// to project rows it does not own goes through here — never a direct write.
+/// The Workbench tab's CLI calls. Everything the Desktop does to the folder or
+/// to workbench rows it does not own goes through here — never a direct write.
 /// Folder paths travel as a single argv element (`Process` does no shell
 /// parsing), so spaces and Unicode need no quoting.
 struct WorkbenchCLI {
     let runner: any CLIRunnerProtocol
 
     func create(folder: String, name: String?) async throws -> WorkbenchCreated {
-        var args = ["project", "create", "--folder", folder, "--json"]
+        var args = ["workbench", "create", "--folder", folder, "--json"]
         if let name, !name.isEmpty { args += ["--name", name] }
         let data = try await runner.run(args: args)
         return try JSONDecoder().decode(WorkbenchCreated.self, from: data)
     }
 
     /// Installs the skill, the SessionStart and Stop hooks and the local MCP
-    /// registration into the project folder. Idempotent — also the Repair action.
+    /// registration into the workbench folder. Idempotent — also the Repair action.
     func install(projectID: Int64) async throws {
-        _ = try await runner.run(args: ["integrate", "claude-code", "--project", String(projectID)])
+        _ = try await runner.run(args: ["integrate", "claude-code", "--workbench", String(projectID)])
     }
 
     func status(projectID: Int64) async throws -> WorkbenchInstallStatus {
-        let data = try await runner.run(args: ["integrate", "status", "--project", String(projectID), "--json"])
+        let data = try await runner.run(args: ["integrate", "status", "--workbench", String(projectID), "--json"])
         return try JSONDecoder().decode(WorkbenchInstallStatus.self, from: data)
     }
 
-    /// Attaches a file inside the project folder as the owner's document. The
+    /// Attaches a file inside the workbench folder as the owner's document. The
     /// CLI owns the checks (inside the folder with symlinks resolved, a regular
     /// .md/.txt file, the target on this board) — the attach_document rules.
     /// `--` ends the flags, so no path can be read as one.
     func attachDocument(projectID: Int64, path: String, kind: String, targetID: Int64?) async throws -> WorkbenchDocumentAttached {
-        var args = ["project", "attach-doc", "--kind", kind, "--json"]
+        var args = ["workbench", "attach-doc", "--kind", kind, "--json"]
         if let targetID { args += ["--target", String(targetID)] }
         args += ["--", String(projectID), path]
         let data = try await runner.run(args: args)
@@ -395,21 +488,21 @@ struct WorkbenchCLI {
     /// The board drift check (PROJ-07), offline — no gh call, so it stays
     /// cheap enough to run whenever the board changes.
     func checkDrift(projectID: Int64) async throws -> WorkbenchDriftReport {
-        let data = try await runner.run(args: ["project", "check", "--project", String(projectID), "--json", "--no-network"])
+        let data = try await runner.run(args: ["workbench", "check", "--workbench", String(projectID), "--json", "--no-network"])
         return try JSONDecoder().decode(WorkbenchDriftReport.self, from: data)
     }
 
     /// Re-run setup (#91): attaches new documents and re-installs missing or
     /// outdated integration pieces — additive only, never creates targets.
     func resync(projectID: Int64) async throws -> WorkbenchResynced {
-        let data = try await runner.run(args: ["project", "resync", String(projectID), "--json"])
+        let data = try await runner.run(args: ["workbench", "resync", String(projectID), "--json"])
         return try JSONDecoder().decode(WorkbenchResynced.self, from: data)
     }
 
-    /// Removes what was installed in the folder, then the project and every
+    /// Removes what was installed in the folder, then the workbench and every
     /// row it owns (Task 4 runs the removal first). Used by Task 20.
     func delete(projectID: Int64) async throws -> WorkbenchDeleted {
-        let data = try await runner.run(args: ["project", "delete", String(projectID), "--json"])
+        let data = try await runner.run(args: ["workbench", "delete", String(projectID), "--json"])
         return try JSONDecoder().decode(WorkbenchDeleted.self, from: data)
     }
 }

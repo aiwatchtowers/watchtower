@@ -290,7 +290,7 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
                 + (unsentComments > 0 ? " Your \(drafts) will be lost." : "")
         } else {
             alert.messageText = "You have \(drafts)"
-            alert.informativeText = "Drafts are kept only while Watchtower runs. Send them from the project's "
+            alert.informativeText = "Drafts are kept only while Watchtower runs. Send them from the workbench's "
                 + "Documents pane first, or quit and lose them."
         }
         alert.addButton(withTitle: recording ? "Stop & Quit" : "Quit")

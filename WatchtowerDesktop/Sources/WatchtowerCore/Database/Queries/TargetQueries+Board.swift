@@ -15,7 +15,7 @@ package struct TargetParentBoardError: LocalizedError, Equatable {
     }
 
     private static func boardName(_ projectID: Int64?) -> String {
-        projectID.map { "project \($0)'s board" } ?? "the personal board"
+        projectID.map { "workbench \($0)'s board" } ?? "the personal board"
     }
 }
 

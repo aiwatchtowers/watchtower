@@ -5,9 +5,10 @@ import Foundation
 /// order (most recently active first) stays the VM's recency order; this is
 /// display only, persisted per project in UserDefaults like the layout.
 package enum TerminalSessionOrder {
-    /// `projectID` nil = the standalone terminals.
-    package static func key(projectID: Int64?) -> String {
-        "projects.sessionOrder.\(projectID.map(String.init) ?? "standalone")"
+    /// `workbenchID` nil = the standalone terminals. The `projects.` prefix
+    /// predates the Workbench rename; persisted, so kept (spec 2026-10-02 A1).
+    package static func key(workbenchID: Int64?) -> String {
+        "projects.sessionOrder.\(workbenchID.map(String.init) ?? "standalone")"
     }
 
     /// Sessions the owner never placed come first, newest first (a new

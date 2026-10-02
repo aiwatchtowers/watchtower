@@ -124,10 +124,11 @@ package struct WorkbenchBoardPreferences {
     private let modeKey: String
     private let filterKey: String
 
-    package init(projectID: Int64, defaults: UserDefaults = .standard) {
+    package init(workbenchID: Int64, defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        modeKey = "projects.boardMode.\(projectID)"
-        filterKey = "projects.boardKanbanFilter.\(projectID)"
+        // The `projects.` prefix predates the Workbench rename; persisted, so kept (spec 2026-10-02 A1).
+        modeKey = "projects.boardMode.\(workbenchID)"
+        filterKey = "projects.boardKanbanFilter.\(workbenchID)"
     }
 
     /// Defaults to List; an unknown stored value reads as List too.

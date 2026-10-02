@@ -10,7 +10,9 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
     case calendar
     case targets
     case tracks
-    case projects
+    // The raw value is persisted (`sidebar.hiddenItems`, the tab id), so the
+    // Workbench rename keeps its bytes (spec 2026-10-02 A9).
+    case workbench = "projects"
     case digests
     case people
     case memory
@@ -37,7 +39,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         case .calendar: "Calendar"
         case .targets: "Targets"
         case .tracks: "Tracks"
-        case .projects: "Projects"
+        case .workbench: "Workbench"
         case .digests: "Digests"
         case .people: "People"
         case .memory: "Memory"
@@ -64,7 +66,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         case .calendar: "calendar"
         case .targets: "scope"
         case .tracks: "binoculars"
-        case .projects: "folder.badge.gearshape"
+        case .workbench: "folder.badge.gearshape"
         case .digests: "doc.text.magnifyingglass"
         case .people: "person.2"
         case .memory: "archivebox"
@@ -82,7 +84,7 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
 
     /// Always-visible items rendered above the collapsible sections.
     static var rootItems: [Self] {
-        [.targets, .tracks, .projects]
+        [.targets, .tracks, .workbench]
     }
 
     /// Always-visible items rendered below the collapsible sections, as the last

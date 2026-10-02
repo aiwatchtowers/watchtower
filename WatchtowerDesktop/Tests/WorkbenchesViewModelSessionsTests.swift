@@ -40,7 +40,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
 
     override func setUpWithError() throws {
         (pool, path) = try TestDatabase.createPool()
-        defaults = try XCTUnwrap(UserDefaults(suiteName: "ProjectsViewModelSessionsTests-\(UUID().uuidString)"))
+        defaults = try XCTUnwrap(UserDefaults(suiteName: "WorkbenchesViewModelSessionsTests-\(UUID().uuidString)"))
         folder = FileManager.default.temporaryDirectory.appendingPathComponent("wt sessions \(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         processes = []
@@ -146,9 +146,32 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         XCTAssertEqual(launches.count, 1, "the second call does not relaunch a running session")
         let uuid = try XCTUnwrap(row.claudeSessionID)
         XCTAssertEqual(launches.first?.args.last,
-                       "exec claude --session-id \(uuid) '\(TerminalLaunch.workOnTargetPrompt(targetID: target))'")
+                       "exec claude --session-id \(uuid) '\(TerminalLaunch.workOnTargetPrompt(targetID: target, vocabulary: .current))'")
         XCTAssertEqual(center.focusOrder.last, row.id)
         XCTAssertEqual(vm.layout(projectID: p).primary, .session(row.id))
+    }
+
+    /// A folder set up before the Workbench rename has only the old skill
+    /// (spec 2026-10-02 §5.3): once `integrate status` says so, "Work on it"
+    /// names that skill; before the status is read, the new one.
+    func testWorkOnNamesTheLegacySkillOnceTheStatusSaysSo() async throws {
+        let p = try await workbenchWithFolder()
+        let first = try await pool.write { try TestDatabase.insertWorkbenchTarget($0, projectID: p, text: "One") }
+        let second = try await pool.write { try TestDatabase.insertWorkbenchTarget($0, projectID: p, text: "Two") }
+        let status = #"{"skill":"missing","hook":true,"stop_hook":true,"mcp":true,"legacy":true,"legacy_skill":"unchanged"}"#
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: FakeCLIRunner(stdout: Data(status.utf8))),
+                                      defaults: defaults, terminalCenter: center)
+        vm.titleService = { _ in .init(title: "", written: false) }
+        await vm.reload()
+
+        XCTAssertEqual(vm.vocabulary(projectID: p), .current, "unknown status: the new name")
+        await vm.workOn(targetID: first, targetText: "One")
+        XCTAssertEqual(launches.last?.args.last?.hasSuffix("'Work on target #\(first) using the watchtower-workbench skill.'"), true)
+
+        await vm.refreshInstallStatus(projectID: p)
+        XCTAssertEqual(vm.vocabulary(projectID: p), .legacy)
+        await vm.workOn(targetID: second, targetText: "Two")
+        XCTAssertEqual(launches.last?.args.last?.hasSuffix("'Work on target #\(second) using the watchtower-project skill.'"), true)
     }
 
     /// Board #160: `/clear` moved Claude Code to a new session id, which the
@@ -210,7 +233,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         XCTAssertEqual(vm.layout.visiblePanes, [.session(row.id), .board])
         XCTAssertEqual(row.title, title.trimmingCharacters(in: .whitespacesAndNewlines))
         let uuid = try XCTUnwrap(row.claudeSessionID)
-        let command = "exec claude --session-id \(uuid) '\(TerminalLaunch.workOnTargetPrompt(targetID: target))'"
+        let command = "exec claude --session-id \(uuid) '\(TerminalLaunch.workOnTargetPrompt(targetID: target, vocabulary: .current))'"
         XCTAssertEqual(launches.map(\.args), [["-l", "-c", command]])
     }
 
@@ -950,7 +973,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
 
         vm.hideView(.board, projectID: p)
         XCTAssertEqual(vm.layout.visiblePanes, [.session(row.id)])
-        XCTAssertEqual(vm.layout(projectID: p), WorkspaceLayout.decode(defaults.data(forKey: WorkspaceLayout.key(projectID: p))),
+        XCTAssertEqual(vm.layout(projectID: p), WorkspaceLayout.decode(defaults.data(forKey: WorkspaceLayout.key(workbenchID: p))),
                        "the layout is persisted")
     }
 
@@ -1016,7 +1039,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         var stale = WorkspaceLayout.default
         stale.show(.session(999))
         stale.split(with: .documents)
-        defaults.set(try JSONEncoder().encode(stale), forKey: WorkspaceLayout.key(projectID: p))
+        defaults.set(try JSONEncoder().encode(stale), forKey: WorkspaceLayout.key(workbenchID: p))
         let vm = makeVM()
         await vm.reload()
         vm.drill(into: p)

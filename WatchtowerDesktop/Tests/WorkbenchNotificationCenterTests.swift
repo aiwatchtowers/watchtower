@@ -21,6 +21,35 @@ struct FailingWorkbenchActivityReader: WorkbenchActivityReading {
     }
 }
 
+/// The Workbench rename keeps every persisted UserDefaults key byte for byte
+/// (spec 2026-10-02 A1): a renamed key would silently reset layouts, panel
+/// widths and board modes, and lose the notification watermark (a burst of
+/// re-notifications). The `@AppStorage` panel keys in `WorkbenchesView` are
+/// literals beside a comment saying the same.
+@MainActor
+final class WorkbenchPersistedKeysTests: XCTestCase {
+    func testKeysKeepTheirPreRenameBytes() {
+        XCTAssertEqual(WorkspaceLayout.key(workbenchID: 7), "projects.layout.7")
+        XCTAssertEqual(TerminalSessionOrder.key(workbenchID: 7), "projects.sessionOrder.7")
+        XCTAssertEqual(TerminalSessionOrder.key(workbenchID: nil), "projects.sessionOrder.standalone")
+        XCTAssertEqual(WorkbenchesViewModel.viewedDocumentsKey, "projects.viewedDocuments")
+        XCTAssertEqual(WorkbenchNotificationCenter.enabledKey, "projects.notifications")
+        XCTAssertEqual(WorkbenchNotificationCenter.snapshotKey(7), "projects.notificationSnapshot.7")
+        XCTAssertEqual(NotificationForwarding.workbenchIDKey, "projectId")
+    }
+
+    func testBoardPreferencesKeepTheirPreRenameKeys() throws {
+        let suite = "WorkbenchPersistedKeysTests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("kanban", forKey: "projects.boardMode.7")
+        defaults.set(42, forKey: "projects.boardKanbanFilter.7")
+        let prefs = WorkbenchBoardPreferences(workbenchID: 7, defaults: defaults)
+        XCTAssertEqual(prefs.mode, .kanban, "a board mode saved before the rename still reads")
+        XCTAssertEqual(prefs.kanbanFilterRootID, 42)
+    }
+}
+
 @MainActor
 final class WorkbenchNotificationCenterTests: XCTestCase {
     private var pool: DatabasePool!
@@ -32,7 +61,7 @@ final class WorkbenchNotificationCenterTests: XCTestCase {
 
     override func setUpWithError() throws {
         (pool, path) = try TestDatabase.createPool()
-        defaults = try XCTUnwrap(UserDefaults(suiteName: "ProjectNotificationCenterTests-\(UUID().uuidString)"))
+        defaults = try XCTUnwrap(UserDefaults(suiteName: "WorkbenchNotificationCenterTests-\(UUID().uuidString)"))
         notifier = RecordingWorkbenchNotifier()
         (projectID, targetID) = try pool.write { d in
             let p = try TestDatabase.insertWorkbench(d)

@@ -244,11 +244,11 @@ struct MainNavigationView: View {
             TargetsListView()
         case .tracks:
             TracksListView()
-        case .projects:
+        case .workbench:
             if let vm = appState.workbenchesViewModel {
                 WorkbenchesView(vm: vm)
             } else {
-                Text("Projects unavailable")
+                Text("Workbench unavailable")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }

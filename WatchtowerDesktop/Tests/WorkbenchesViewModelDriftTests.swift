@@ -4,7 +4,7 @@ import GRDB
 import WatchtowerCore
 import WatchtowerTestSupport
 
-/// The board drift check (PROJ-07) as the Projects tab runs it.
+/// The board drift check (PROJ-07) as the Workbench tab runs it.
 @MainActor
 final class WorkbenchesViewModelDriftTests: XCTestCase {
     private var pool: DatabasePool!
@@ -13,7 +13,7 @@ final class WorkbenchesViewModelDriftTests: XCTestCase {
 
     override func setUpWithError() throws {
         (pool, path) = try TestDatabase.createPool()
-        defaults = try XCTUnwrap(UserDefaults(suiteName: "ProjectsViewModelDriftTests-\(UUID().uuidString)"))
+        defaults = try XCTUnwrap(UserDefaults(suiteName: "WorkbenchesViewModelDriftTests-\(UUID().uuidString)"))
     }
 
     override func tearDown() {
@@ -32,7 +32,7 @@ final class WorkbenchesViewModelDriftTests: XCTestCase {
         let runner = ScriptedCLIRunner(results: [.success(report(1, findings: 2))])
         let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: runner), defaults: defaults)
         await vm.refreshDrift(projectID: 1, force: true)
-        XCTAssertEqual(runner.invocations, [["project", "check", "--project", "1", "--json", "--no-network"]])
+        XCTAssertEqual(runner.invocations, [["workbench", "check", "--workbench", "1", "--json", "--no-network"]])
         XCTAssertEqual(vm.drift[1]?.findings.count, 2)
         XCTAssertNil(vm.drift[2])
     }
