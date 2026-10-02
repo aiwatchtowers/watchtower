@@ -2,12 +2,12 @@
 
 Spec: `docs/superpowers/specs/2026-10-01-shared-chat-component-design.md`. Plan: `docs/superpowers/plans/2026-10-01-shared-chat-component.md`. Board: #168.
 
-Every assistant chat outside the main AI Chat (target, track, idea/decision, meeting, onboarding, calendar/email setup) runs on one engine and one view built from the main chat's pieces. The backend is unchanged: one `watchtower ai query` per turn through `WatchtowerAIService.stream`. The warm `ai session` v2 protocol and `ChatSessionPool` remain main-chat only.
+Every assistant chat outside the main AI Chat (target, track, idea/decision, meeting, calendar/email setup) runs on one engine and one view built from the main chat's pieces. The backend is unchanged: one `watchtower ai query` per turn through `WatchtowerAIService.stream`. The warm `ai session` v2 protocol and `ChatSessionPool` remain main-chat only.
 
 **Migration status:** complete. The infrastructure and the main chat's move onto `ChatFeedView`/`ChatComposerBar` landed with #170. Then:
 - track, idea/decision and meeting (#172–#174) as `TrackChatSurface`/`IdeaChatSurface`/`MeetingChatSurface` in `Sources/Services/ChatSurfaces/`;
 - target (#171), with `TargetChatViewModel` as the task controller around its tab's engine;
-- onboarding (#175), with `OnboardingChatViewModel` on a memory engine;
+- onboarding (#175) ran on a memory engine until onboarding v2 removed the interview (2026-10-03);
 - calendar/email setup (#176) as `SetupAssistantChat<Snapshot, Patch>` with one `SetupAssistantPanel`.
 
 `MessageBubble` is deleted, and the old `ChatInput` is now `ChatComposerField`, the field inside `ChatComposerBar` and the only text input of every chat (#177).
