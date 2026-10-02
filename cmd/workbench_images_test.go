@@ -90,6 +90,10 @@ func TestProj02_TargetDeleteDiscardsItsUnsharedImages(t *testing.T) {
 
 	var out bytes.Buffer
 	rootCmd.SetOut(&out)
+	// targets_test.go points targetsDeleteCmd's own writer at its buffer, which
+	// would shadow rootCmd's; this file now sorts after it, so set ours here.
+	targetsDeleteCmd.SetOut(&out)
+	t.Cleanup(func() { targetsDeleteCmd.SetOut(nil) })
 	rootCmd.SetArgs([]string{"targets", "delete", strconv.FormatInt(doomed, 10), "--json"})
 	err = rootCmd.Execute()
 	rootCmd.SetArgs(nil)
