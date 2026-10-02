@@ -117,9 +117,9 @@ must be able to undo the whole feature for a folder in one step.
 
 **Locked since:** 2026-09-29
 
-## PROJ-03 — the Desktop never writes a workbench document
+## PROJ-03 — the Desktop never writes a workbench document behind anyone's back
 
-**Status:** Enforced
+**Status:** Enforced (amended 2026-10-02 — the code viewer may write the owner's own edits, never over a newer version)
 
 **Observable:** The Desktop reads an attached document (`project_documents.rel_path`
 under the workbench folder) to render it and re-anchor its comments, and writes
@@ -133,12 +133,31 @@ workbench folder either: `attach_document` only resolves and stats it, and a
 target image is copied *out* of wherever it is into Watchtower's own
 workspace directory (`project_files/`), never into the folder.
 
+**Amended 2026-10-02 (board #234, owner decision in the code-viewer review):**
+the Files pane's editor writes a file of the workbench folder — an attached
+document included — only with the owner's own typed edits, and never over a
+version it has not seen: every save re-reads the disk and refuses when the
+file changed, was deleted or no longer reads as text since the edits began
+(`CodeFileBuffer.saveNow`), an edit typed before a disk reload reached the page
+counts as a conflict, and the owner then picks Reload from disk or Keep mine
+(Write it back for a file deleted under the edits — Cmd+S does the same, an
+explicit save; Write mine over it for a version that no longer reads as
+text). The autosave never takes any of these choices by itself.
+The document view, its comments and every workbench tool still never write
+the file.
+
 **Why locked:** Owner decision D8. Two writers on one file — Claude Code in
 the terminal and the Desktop view — would race and lose either the agent's or
-the owner's edits; comments are the owner's channel into the document.
+the owner's edits; comments are the owner's channel into the document. The
+amendment keeps that promise for the agent's side (nothing it wrote is ever
+overwritten unseen) while letting the owner fix a line by hand.
 
 **Test guards:**
 - `WatchtowerDesktop/Tests/WorkbenchDocumentViewModelTests.swift::testProj03DesktopNeverWritesTheDocument`
+- `WatchtowerDesktop/Tests/CodeFileBufferTests.swift::testProj03FilesEditorNeverWritesOverANewerDiskVersion`
+- `WatchtowerDesktop/Tests/CodeFileBufferTests.swift::testProj03AnEditTypedBeforeAReloadIsAConflictNotASave`
+- `WatchtowerDesktop/Tests/CodeFileBufferTests.swift::testProj03ADeletionUnderEditsIsNeverUndoneByTheAutosave`
+- `WatchtowerDesktop/Tests/CodeFileBufferTests.swift::testProj03AnUnreadableDiskVersionIsNeverWrittenOver`
 - Go side, by review: `grep -nE "os\.(WriteFile|Create|OpenFile|Rename|Remove)" internal/tools/workbench_docs.go`
 (expected: no match).
 
@@ -592,6 +611,7 @@ attributed to Watchtower.
 
 ## Changelog
 
+- 2026-10-02 (board #234, code viewer): **PROJ-03 amended** with the owner's approval — the Files pane may write the owner's own edits to any file of the folder, attached documents included, but never over a version it has not seen (a changed, deleted or unreadable disk version blocks the save until the owner picks Reload from disk or Keep mine; an edit typed on a stale disk revision is a conflict). New guards `testProj03FilesEditorNeverWritesOverANewerDiskVersion`, `testProj03AnEditTypedBeforeAReloadIsAConflictNotASave`, `testProj03ADeletionUnderEditsIsNeverUndoneByTheAutosave` and `testProj03AnUnreadableDiskVersionIsNeverWrittenOver`; the existing `testProj03DesktopNeverWritesTheDocument` (the document view writes nothing) is unchanged. PROJ-01/02/04..09 unchanged.
 - 2026-10-02 (board target #233): **PROJ-10** proposed — pending owner approval — the Workbench header's git branch button and popover switch and create local branches through `watchtower workbench git status|branches|switch|create` (`internal/workbenchgit`, git located by `internal/gitbin`, never the `/usr/bin/git` shim); a switch never loses work (nonce-named stash found by its message and applied back by sha, never popped or dropped; no force/discard/reset/clean), never runs without the owner's confirmation of uncommitted changes or a live Claude Code session in the work tree, and no git runs without the developer tools or outside a repository. Guards listed under PROJ-10. PROJ-07 is unchanged: `workbench check` still runs `git` through PATH (moving it onto `gitbin` is a separate, owner-gated target). PROJ-01..09 unchanged.
 - 2026-10-02 (board target #186): **PROJ-09** added — a workbench target can be re-parented within its workbench (`update_target`'s `parent_id`, the Desktop board's drag onto a row and **Move to…**), never into a cycle or across boards; `db.UpdateTarget` (`targets update --parent`) and Swift `TargetQueries.updateParent` refuse a cycle too. PROJ-05's rollup already covered a `parent_id` change; its wording and guards are unchanged. The `watchtower-workbench` skill now has the agent nest a new target under a topical group (creating the group if needed). PROJ-01..08 unchanged.
 - 2026-10-02 (board target #207): the Desktop board shows each target's `#id` on list rows, kanban cards and the detail card (copy from the card menu or the detail chip) and gains a search field (`WorkbenchBoardSearch`: `#N` = that id only, a bare number = the id or a title/intent containing it, other text = title/intent; matches keep their ancestors and subtrees, include closed targets and ignore collapse). Read-only UI over existing rows; no contract semantics or guard tests changed.

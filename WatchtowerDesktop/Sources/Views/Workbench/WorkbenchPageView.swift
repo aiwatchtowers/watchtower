@@ -320,6 +320,7 @@ private extension WorkspaceView {
         case .terminal: "Show the terminal (in a split, beside the other pane)"
         case .board: "Show the Board (in a split, beside the terminal)"
         case .documents: "Show the Documents (in a split, beside the terminal)"
+        case .files: "Show the open files (in a split, beside the terminal)"
         }
     }
 }

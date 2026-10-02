@@ -59,7 +59,7 @@ package enum MemoryVaultGit {
 
     /// `xcode-select -p`: the active developer directory, nil when none is
     /// set. Unlike the shims it only prints, never prompts.
-    private static func developerDir() async -> String? {
+    static func developerDir() async -> String? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/xcode-select")
         process.arguments = ["-p"]

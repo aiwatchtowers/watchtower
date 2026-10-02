@@ -59,3 +59,6 @@ projects/-Users-user-PhpstormProjects-watchtower/
 
 # SDD progress ledger (scratch)
 .superpowers/
+
+# Monaco editor build, fetched by scripts/fetch-monaco.sh (code viewer POC)
+WatchtowerDesktop/Sources/CodeEditorWeb/vs/

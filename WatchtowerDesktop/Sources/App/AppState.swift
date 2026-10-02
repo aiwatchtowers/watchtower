@@ -561,6 +561,8 @@ final class AppState {
                 MainActor.assumeIsolated {
                     // A reply streaming in an embedded chat keeps what it has, as `partial`.
                     self?.embeddedChatCenter.finishAllAsPartial()
+                    // Edits in the code viewer not yet on disk are written now.
+                    self?.workbenchesViewModel?.codeFiles.flushAll()
                 }
                 self?.backgroundTaskManager.terminateProcessesSync()
             }

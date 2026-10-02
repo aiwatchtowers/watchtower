@@ -91,6 +91,7 @@ struct WorkspacePaneView: View {
         Menu {
             Button("Board") { show(.board) }.disabled(pane == .board)
             Button("Documents") { show(.documents) }.disabled(pane == .documents)
+            Button("Files") { show(.files) }.disabled(pane == .files)
             Divider()
             Section("Sessions") {
                 ForEach(vm.orderedSessions(projectID: project.id)) { session in
@@ -133,6 +134,9 @@ struct WorkspacePaneView: View {
         case let .session(id):
             WorkbenchSessionView(projectID: project.id, sessionID: id)
                 .id(id)
+        case .files:
+            CodeFilesPaneView(files: vm.codeFiles, project: project)
+                .id(project.id)
         }
     }
 }
@@ -237,6 +241,7 @@ extension WorkspaceView {
         case .terminal: "Terminal"
         case .board: "Board"
         case .documents: "Documents"
+        case .files: "Files"
         }
     }
 
@@ -245,6 +250,7 @@ extension WorkspaceView {
         case .terminal: "terminal"
         case .board: "square.grid.2x2"
         case .documents: "doc.text"
+        case .files: "chevron.left.forwardslash.chevron.right"
         }
     }
 }
