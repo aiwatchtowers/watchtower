@@ -19,10 +19,15 @@ and typing context by hand.
 - **Open Quickly** (double Shift or ⇧⌘O, ⇧⌘F jumps straight to text): a
   Spotlight-style floating panel over the workbench. Files, symbols (functions,
   methods, types) and text in one list, with a preview of the doc comment and the
-  first lines of code. ↩ opens, ⌥↩ opens beside, ⌘↩ asks the AI.
+  first lines of code. On the highlighted result:
+  - Return opens it in the Files pane, at the right line;
+  - Option-Return opens it in a second editor pane next to the current one
+    (side by side), so the file you were in stays visible;
+  - Command-Return does not open anything: it sends what you typed to the AI
+    as a question, and the answer appears right in the panel.
 - **⌘-click / ⌃⌘J** on a name jumps to its definition; several candidates show a
   regular macOS menu at the cursor. ⌃⌘← / ⌃⌘→ go back and forth.
-- **Usages** (⌃⇧⌘F) in an inspector on the right, grouped by file.
+- **Usages** (⇧⌘U, U for Usages) in an inspector on the right, grouped by file.
 - **Jump bar** above the editor: folder › file › type › method, each segment a
   menu of its neighbours; ⌃6 lists the file's symbols.
 - **Ask the AI** about a selection: a ✦ button next to it (like Writing Tools),
@@ -369,7 +374,7 @@ Decisions from these numbers:
   `line  text` with the name bold; click opens at the line.
 - Source: `code search --word --case` (same-named symbols included — accepted).
   Streaming fills the list; a new query cancels the old one.
-- Triggers: ⌃⇧⌘F (word under cursor), context menu, "Show All Usages…".
+- Triggers: ⇧⌘U (word under cursor), context menu, "Show All Usages…".
 
 ### 8.4 Jump bar (#268)
 
@@ -481,7 +486,7 @@ harness:
 | Open Quickly | ⇧⇧, ⇧⌘O |
 | Find text in workbench | ⇧⌘F |
 | Go to definition | ⌘-click, ⌃⌘J |
-| Usages | ⌃⇧⌘F |
+| Usages | ⇧⌘U |
 | File symbols | ⌃6 |
 | Back / Forward | ⌃⌘← / ⌃⌘→ |
 | Quick Look | Space (in Open Quickly) |
