@@ -371,6 +371,21 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         case currentMCP = "current_mcp"
     }
 
+    /// Without `currentMCP`: the current registration is taken to be `mcp`,
+    /// as the decoder does for a CLI that does not send the key.
+    init(
+        skill: String,
+        hook: Bool,
+        stopHook: Bool = true,
+        mcp: Bool,
+        claudeFound: Bool = true,
+        legacy: Bool = false,
+        legacySkill: String = ""
+    ) {
+        self.init(skill: skill, hook: hook, stopHook: stopHook, mcp: mcp, claudeFound: claudeFound,
+                  legacy: legacy, legacySkill: legacySkill, currentMCP: mcp)
+    }
+
     init(
         skill: String,
         hook: Bool,
@@ -379,7 +394,7 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         claudeFound: Bool = true,
         legacy: Bool = false,
         legacySkill: String = "",
-        currentMCP: Bool = true
+        currentMCP: Bool
     ) {
         self.legacy = legacy
         self.currentMCP = currentMCP
