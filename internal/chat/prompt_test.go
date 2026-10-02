@@ -15,6 +15,7 @@ import (
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/prompts"
 )
 
 var updateGolden = flag.Bool("update", false, "rewrite testdata/*.golden")
@@ -67,6 +68,17 @@ func TestBuildSystemPrompt_Golden(t *testing.T) {
 	assert.Equal(t, string(want), got)
 }
 
+// The chat replies in the owner's language and falls back to the configured
+// one; the strict background-pipeline directive must not reach it.
+func TestBuildSystemPrompt_ChatLanguageDirective(t *testing.T) {
+	d, cfg, o := promptFixture(t)
+	cfg.Digest.Language = "Ukrainian"
+	got, err := BuildSystemPrompt(context.Background(), d, cfg, o)
+	require.NoError(t, err)
+	assert.Contains(t, got, prompts.ChatDirective("Ukrainian"))
+	assert.False(t, prompts.HasDirective(got), "the strict Respond ONLY directive is for background pipelines")
+}
+
 func TestBuildSystemPrompt_SectionsAndOrder(t *testing.T) {
 	d, cfg, o := promptFixture(t)
 	got, err := BuildSystemPrompt(context.Background(), d, cfg, o)
@@ -74,7 +86,7 @@ func TestBuildSystemPrompt_SectionsAndOrder(t *testing.T) {
 
 	order := []string{
 		"You are Watchtower",
-		"Respond ONLY in English",
+		"IMPORTANT: Reply in the language of the owner's latest message. Judge it by the text the owner typed",
 		"=== CONNECTED SOURCES ===",
 		"=== LINKING RULES ===",
 		"=== TOOLS",

@@ -1570,19 +1570,51 @@ func (p *Pipeline) loadChannelRunningSummary(channelID string) string {
 }
 
 // formatProfileContext builds the profile context section for the AI prompt.
+// The block renders whenever the profile carries an identity line or a people
+// list; CustomPromptContext, when a legacy profile has one, stands in for the
+// role and team lines.
 func (p *Pipeline) formatProfileContext() string {
 	p.cacheMu.RLock()
 	profile := p.profile
 	p.cacheMu.RUnlock()
 
-	if profile == nil || profile.CustomPromptContext == "" {
+	if profile == nil {
+		return ""
+	}
+
+	// Rendered in raw-id form (SplitAccountID via RawIDsJSON): the model matches
+	// these ids against message text, which carries raw Slack ids regardless of
+	// how the id blob itself is namespaced. profile.Manager is a scalar column
+	// (not a JSON id array), so it is out of RawIDsJSON's scope and left as is.
+	var people strings.Builder
+	if profile.Reports != "" && profile.Reports != "[]" {
+		fmt.Fprintf(&people, "\nMY REPORTS (user_ids): %s\n", sanitize(watchtowerslack.RawIDsJSON(profile.Reports)))
+		people.WriteString("Tasks assigned to or owned by these people → ownership: \"delegated\", owner_user_id: their user_id\n")
+	}
+	if profile.Peers != "" && profile.Peers != "[]" {
+		fmt.Fprintf(&people, "\nMY PEERS (user_ids): %s\n", sanitize(watchtowerslack.RawIDsJSON(profile.Peers)))
+	}
+	if profile.Manager != "" {
+		fmt.Fprintf(&people, "\nMY MANAGER (user_id): %s\n", sanitize(profile.Manager))
+	}
+	if profile.StarredChannels != "" && profile.StarredChannels != "[]" {
+		fmt.Fprintf(&people, "\nSTARRED CHANNELS: %s — create more tracks from these channels, lower threshold for relevance\n", sanitize(watchtowerslack.RawIDsJSON(profile.StarredChannels)))
+	}
+	if profile.StarredPeople != "" && profile.StarredPeople != "[]" {
+		fmt.Fprintf(&people, "\nSTARRED PEOPLE: %s — messages from these people get higher priority\n", sanitize(watchtowerslack.RawIDsJSON(profile.StarredPeople)))
+	}
+
+	identity := profileIdentity(profile)
+	if identity == "" && people.Len() == 0 {
 		return ""
 	}
 
 	var sb strings.Builder
 	sb.WriteString("=== USER PROFILE CONTEXT ===\n")
-	sb.WriteString(sanitize(profile.CustomPromptContext))
-	sb.WriteString("\n\nOWNERSHIP RULES (based on user profile):\n")
+	if identity != "" {
+		sb.WriteString(identity + "\n\n")
+	}
+	sb.WriteString("OWNERSHIP RULES (based on user profile):\n")
 	sb.WriteString("- If the track is a task/question/request directed at ME → ownership: \"mine\"\n")
 	sb.WriteString("- If the track involves one of MY REPORTS as the responsible person → ownership: \"delegated\", owner_user_id: report's user_id\n")
 	sb.WriteString("- If the track is a decision/discussion that affects my area but I'm not the actor → ownership: \"watching\"\n")
@@ -1591,29 +1623,25 @@ func (p *Pipeline) formatProfileContext() string {
 	sb.WriteString("- ball_on = user_id of the person who needs to act NEXT\n")
 	sb.WriteString("- If I asked a question and am waiting for reply → ball_on: other person's user_id\n")
 	sb.WriteString("- If someone asked me something → ball_on: my user_id\n")
-
-	// Rendered in raw-id form (SplitAccountID via RawIDsJSON): the model matches
-	// these ids against message text, which carries raw Slack ids regardless of
-	// how the id blob itself is namespaced. profile.Manager is a scalar column
-	// (not a JSON id array), so it is out of RawIDsJSON's scope and left as is.
-	if profile.Reports != "" && profile.Reports != "[]" {
-		fmt.Fprintf(&sb, "\nMY REPORTS (user_ids): %s\n", sanitize(watchtowerslack.RawIDsJSON(profile.Reports)))
-		sb.WriteString("Tasks assigned to or owned by these people → ownership: \"delegated\", owner_user_id: their user_id\n")
-	}
-	if profile.Peers != "" && profile.Peers != "[]" {
-		fmt.Fprintf(&sb, "\nMY PEERS (user_ids): %s\n", sanitize(watchtowerslack.RawIDsJSON(profile.Peers)))
-	}
-	if profile.Manager != "" {
-		fmt.Fprintf(&sb, "\nMY MANAGER (user_id): %s\n", sanitize(profile.Manager))
-	}
-	if profile.StarredChannels != "" && profile.StarredChannels != "[]" {
-		fmt.Fprintf(&sb, "\nSTARRED CHANNELS: %s — create more tracks from these channels, lower threshold for relevance\n", sanitize(watchtowerslack.RawIDsJSON(profile.StarredChannels)))
-	}
-	if profile.StarredPeople != "" && profile.StarredPeople != "[]" {
-		fmt.Fprintf(&sb, "\nSTARRED PEOPLE: %s — messages from these people get higher priority\n", sanitize(watchtowerslack.RawIDsJSON(profile.StarredPeople)))
-	}
+	sb.WriteString(people.String())
 
 	return sb.String()
+}
+
+// profileIdentity is the profile's free-text identity: the legacy
+// CustomPromptContext when set, else the role and team lines.
+func profileIdentity(profile *db.UserProfile) string {
+	if profile.CustomPromptContext != "" {
+		return sanitize(profile.CustomPromptContext)
+	}
+	var lines []string
+	if profile.Role != "" {
+		lines = append(lines, "Role: "+sanitize(profile.Role))
+	}
+	if profile.Team != "" {
+		lines = append(lines, "Team: "+sanitize(profile.Team))
+	}
+	return strings.Join(lines, "\n")
 }
 
 // formatRoleRules generates role-specific extraction rules.
@@ -1627,11 +1655,13 @@ func (p *Pipeline) formatRoleRules() string {
 	}
 
 	role := strings.ToLower(profile.Role)
-	if role == "" {
+	// No declared role: declared reports alone make the owner a manager.
+	reportsOnly := role == "" && profile.Reports != "" && profile.Reports != "[]"
+	if role == "" && !reportsOnly {
 		return ""
 	}
 
-	isManager := role == "top_management" || role == "direction_owner" || role == "middle_management" ||
+	isManager := reportsOnly || role == "top_management" || role == "direction_owner" || role == "middle_management" ||
 		strings.Contains(role, "manager") || strings.Contains(role, "director") ||
 		strings.Contains(role, "vp") || strings.Contains(role, "head") ||
 		strings.Contains(role, "cto") || strings.Contains(role, "ceo")
