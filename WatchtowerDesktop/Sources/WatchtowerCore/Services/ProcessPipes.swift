@@ -36,9 +36,8 @@ package struct ProcessOutput: Sendable {
 /// is as wide as the CPU count and does not grow when a thread blocks, so a
 /// few concurrent children (parallel tests on a 3-core CI runner) parked
 /// every pool thread in a read whose other pipe nobody could drain any more —
-/// a deadlock that also starved the tests' own deadline watchdogs. Not a GCD
-/// global queue either: those share the same CPU-wide thread budget and
-/// stalled the same way.
+/// a deadlock that also starves any `Task.sleep` deadline. Not a GCD global
+/// queue either: those share the same CPU-wide thread budget.
 package enum ProcessPipes {
     /// Starts reading `pipe` to EOF at once, on its own thread. Call it right
     /// after `Process.run()` for any stream the caller does not read itself,
@@ -80,11 +79,19 @@ package enum ProcessPipes {
         let stderrRead = drain(stderrPipe)
 
         if let stdin, let inputPipe = process.standardInput as? Pipe {
+            // Not awaited: the child may answer before reading its input. A
+            // child that exits unread must not SIGPIPE the app, and a failed
+            // write is logged — the child's exit code tells the caller.
             let writer = inputPipe.fileHandleForWriting
-            let data = stdin.data(using: .utf8)
+            _ = fcntl(writer.fileDescriptor, F_SETNOSIGPIPE, 1)
+            let data = Data(stdin.utf8)
             Thread.detachNewThread {
-                if let data { writer.write(data) }
-                writer.closeFile()
+                do {
+                    try writer.write(contentsOf: data)
+                } catch {
+                    NSLog("[ProcessPipes] writing the child's stdin failed: %@", String(describing: error))
+                }
+                try? writer.close()
             }
         }
 
@@ -114,10 +121,12 @@ private final class BlockingCall<T: Sendable>: @unchecked Sendable {
         Thread.detachNewThread { self.finish(work()) }
     }
 
+    /// Awaited once (one waiter is kept).
     var value: T {
         get async {
             await withCheckedContinuation { continuation in
                 lock.lock()
+                precondition(waiter == nil, "BlockingCall awaited twice")
                 if let result {
                     lock.unlock()
                     continuation.resume(returning: result)

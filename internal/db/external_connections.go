@@ -107,7 +107,7 @@ func scanExternalConnection(scanner interface{ Scan(dest ...any) error }) (Exter
 // decodeCachedTools decodes tools_json; stale reports a list cached before
 // tools carried their destructive mark (a tool without the key), whose write
 // verdicts can no longer be trusted (QC-02).
-func decodeCachedTools(toolsJSON string) (tools []ExternalTool, stale bool, err error) {
+func decodeCachedTools(toolsJSON string) ([]ExternalTool, bool, error) {
 	var stored []struct {
 		ExternalTool
 		Destructive *bool `json:"destructive_hint"` // shadows the embedded field
@@ -115,7 +115,7 @@ func decodeCachedTools(toolsJSON string) (tools []ExternalTool, stale bool, err 
 	if err := json.Unmarshal([]byte(toolsJSON), &stored); err != nil {
 		return nil, false, fmt.Errorf("decoding tools_json: %w", err)
 	}
-	tools = make([]ExternalTool, 0, len(stored))
+	tools := make([]ExternalTool, 0, len(stored))
 	for _, t := range stored {
 		if t.Destructive == nil {
 			return nil, true, nil

@@ -14,6 +14,9 @@ package struct ExternalConnectionTools: Decodable, Equatable {
     package let listedAt: String?
     /// The owner's explicit allow list replaces the read-only default.
     package let explicit: Bool
+    /// The cached list predates write marks and is ignored (`listed` is
+    /// false) until the tools are listed again.
+    package let stale: Bool
     package let tools: [Tool]
 
     package struct Tool: Decodable, Equatable, Identifiable {
@@ -59,7 +62,7 @@ package struct ExternalConnectionTools: Decodable, Equatable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, name, listed, explicit, tools
+        case id, name, listed, explicit, stale, tools
         case listedAt = "listed_at"
     }
 
@@ -89,5 +92,20 @@ package struct ExternalConnectionTools: Decodable, Equatable {
         }
         let allow = names.isEmpty ? ["--allow="] : names.map { "--allow=\($0)" }
         return ["connections", "tools", String(id)] + allow + ["--json"]
+    }
+}
+
+// In an extension, so the memberwise initializer stays synthesized.
+extension ExternalConnectionTools {
+    package init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(Int64.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        listed = try c.decode(Bool.self, forKey: .listed)
+        listedAt = try c.decodeIfPresent(String.self, forKey: .listedAt)
+        explicit = try c.decode(Bool.self, forKey: .explicit)
+        // A CLI older than the field never reports a stale list.
+        stale = try c.decodeIfPresent(Bool.self, forKey: .stale) ?? false
+        tools = try c.decode([Tool].self, forKey: .tools)
     }
 }

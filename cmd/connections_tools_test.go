@@ -544,9 +544,16 @@ func TestQC02_StaleCacheFailsClosed(t *testing.T) {
 	conn, err := database.GetExternalConnection(id)
 	require.NoError(t, err)
 	assert.Equal(t, "error", conn.Status)
+	assert.Contains(t, conn.Error, "predates write marks", "the owner is told the cache, not the server, changed")
 	assert.Contains(t, conn.Error, "listing its tools failed")
 
 	out, err := runConnections(t, "", "tools", strconv.FormatInt(id, 10))
 	require.NoError(t, err, out)
 	assert.Contains(t, out, "stale")
+	out, err = runConnections(t, "", "tools", strconv.FormatInt(id, 10), "--json")
+	require.NoError(t, err, out)
+	var wire connectionToolsJSON
+	require.NoError(t, json.Unmarshal([]byte(out), &wire))
+	assert.True(t, wire.Stale)
+	assert.False(t, wire.Listed)
 }

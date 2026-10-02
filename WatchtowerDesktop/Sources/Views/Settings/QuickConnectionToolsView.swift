@@ -25,6 +25,9 @@ struct QuickConnectionToolsView: View {
                     ForEach(list.tools) { tool in
                         toolRow(tool)
                     }
+                } else if list.stale {
+                    caption("The saved tool list is from before write tools were marked, so none is available "
+                        + "to the assistant until it is listed again. Refresh the list to fetch it.")
                 } else {
                     caption("Tools not listed yet, so none is available to the assistant. Refresh the list to fetch them.")
                 }

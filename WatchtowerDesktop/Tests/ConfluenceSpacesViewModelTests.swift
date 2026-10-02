@@ -537,7 +537,6 @@ final class ConfluenceSpacesViewModelTests: XCTestCase {
                 XCTFail("timed out waiting for \(what)")
                 return false
             }
-            await Task.yield()
             try? await Task.sleep(for: .milliseconds(2))
         }
         return true

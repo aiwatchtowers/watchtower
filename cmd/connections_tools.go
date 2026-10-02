@@ -60,12 +60,15 @@ type connectionToolJSON struct {
 
 // connectionToolsJSON is the wire shape of `connections tools --json`.
 type connectionToolsJSON struct {
-	ID          int64                `json:"id"`
-	Name        string               `json:"name"`
-	Listed      bool                 `json:"listed"`
-	ListedAt    string               `json:"listed_at,omitempty"`
-	ExplicitSet bool                 `json:"explicit"`
-	Tools       []connectionToolJSON `json:"tools"`
+	ID          int64  `json:"id"`
+	Name        string `json:"name"`
+	Listed      bool   `json:"listed"`
+	ListedAt    string `json:"listed_at,omitempty"`
+	ExplicitSet bool   `json:"explicit"`
+	// Stale: the cached list predates write marks and is ignored until the
+	// tools are listed again (db.ExternalConnection.ToolsStale).
+	Stale bool                 `json:"stale"`
+	Tools []connectionToolJSON `json:"tools"`
 }
 
 func runConnectionsTools(cmd *cobra.Command, args []string) error {
@@ -170,7 +173,7 @@ func refreshToolsAfterEnable(cmd *cobra.Command, cfg *config.Config, database *d
 		return
 	}
 	if err != nil && !conn.ToolsListed {
-		reason := fmt.Sprintf("listing its tools failed (%v); none is available to the chat — `watchtower connections tools %d --refresh`", err, id)
+		reason := fmt.Sprintf("%slisting its tools failed (%v); none is available to the chat — `watchtower connections tools %d --refresh`", staleNote(conn), err, id)
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: connection %d: %s\n", id, reason)
 		connectionUnmounted(database, conn, reason)
 		return
@@ -219,7 +222,11 @@ func parseAllowList(names []string) ([]string, error) {
 // checked once it is listed.
 func checkAllowList(w io.Writer, conn db.ExternalConnection, names []string) error {
 	if !conn.ToolsListed {
-		fmt.Fprintf(w, "warning: connection %d's tools were never listed, so these names are unchecked; none is available until a listing confirms it is not a write\n", conn.ID)
+		state := "were never listed"
+		if conn.ToolsStale {
+			state = "were listed before write marks were recorded (stale)"
+		}
+		fmt.Fprintf(w, "warning: connection %d's tools %s, so these names are unchecked; none is available until a listing confirms it is not a write\n", conn.ID, state)
 		return nil
 	}
 	for _, name := range names {
@@ -237,7 +244,7 @@ func checkAllowList(w io.Writer, conn db.ExternalConnection, names []string) err
 func printConnectionTools(w io.Writer, conn db.ExternalConnection, asJSON bool) error {
 	allowed, _ := externalmcp.ResolveTools(conn)
 	wire := connectionToolsJSON{ID: conn.ID, Name: conn.Name, Listed: conn.ToolsListed,
-		ListedAt: conn.ToolsListedAt, ExplicitSet: conn.AllowTools != nil, Tools: []connectionToolJSON{}}
+		ListedAt: conn.ToolsListedAt, ExplicitSet: conn.AllowTools != nil, Stale: conn.ToolsStale, Tools: []connectionToolJSON{}}
 	for _, t := range conn.Tools {
 		wire.Tools = append(wire.Tools, connectionToolJSON{Name: t.Name,
 			Allowed: slices.Contains(allowed, t.Name), ReadOnly: externalmcp.IsReadOnly(t),
