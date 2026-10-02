@@ -17,9 +17,9 @@ package struct OnboardingGoalsActions {
     package var initWorkspace: () async throws -> Void
     /// `watchtower config set digest.language <name>`.
     package var setLanguage: (String) async throws -> Void
-    /// Applies the feature selection; returns the failure to show, nil when
-    /// every change landed.
-    package var applyFeatures: (OnboardingFeatureSelection) async -> String?
+    /// Applies the feature selection; returns the failure to show (nil when
+    /// every change landed) and whether any feature actually changed.
+    package var applyFeatures: (OnboardingFeatureSelection) async -> (failure: String?, changed: Bool)
     /// Whether the config has no `sync.initial_history_days` yet — read
     /// before `workspace init`, which fills in Go's default.
     package var historyDepthUnset: @MainActor () -> Bool
@@ -29,7 +29,7 @@ package struct OnboardingGoalsActions {
     package init(
         initWorkspace: @escaping () async throws -> Void,
         setLanguage: @escaping (String) async throws -> Void,
-        applyFeatures: @escaping (OnboardingFeatureSelection) async -> String?,
+        applyFeatures: @escaping (OnboardingFeatureSelection) async -> (failure: String?, changed: Bool),
         historyDepthUnset: @escaping @MainActor () -> Bool = { false },
         setHistoryDepth: @escaping (Int) async throws -> Void = { _ in }
     ) {
@@ -70,6 +70,9 @@ package final class OnboardingGoalsModel {
     package private(set) var isContinuing = false
     package private(set) var continueError: String?
     package private(set) var savedGoals: Set<OnboardingGoal>
+    /// A Continue of this run changed the config (language, history depth)
+    /// or a feature: the daemon needs a restart to pick it up.
+    package private(set) var wroteChanges = false
 
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let checkCLI: () async -> OnboardingCLICheck
@@ -167,6 +170,7 @@ package final class OnboardingGoalsModel {
         languagePrepared = false
         configuredLanguage = nil
         isCustomizingFeatures = false
+        wroteChanges = false
     }
 
     /// "Run setup again" starts from what is in effect now: the feature set
@@ -214,6 +218,7 @@ package final class OnboardingGoalsModel {
         if historyUnset {
             do {
                 try await actions.setHistoryDepth(Self.defaultHistoryDays)
+                wroteChanges = true
             } catch {
                 continueError = "Could not save the history depth: \(error.localizedDescription)"
                 return nil
@@ -223,12 +228,15 @@ package final class OnboardingGoalsModel {
             if language != configuredLanguage {
                 try await actions.setLanguage(language)
                 configuredLanguage = language
+                wroteChanges = true
             }
         } catch {
             continueError = "Could not save the assistant language: \(error.localizedDescription)"
             return nil
         }
-        if let failure = await actions.applyFeatures(selection) {
+        let applied = await actions.applyFeatures(selection)
+        if applied.changed { wroteChanges = true }
+        if let failure = applied.failure {
             continueError = failure
             return nil
         }

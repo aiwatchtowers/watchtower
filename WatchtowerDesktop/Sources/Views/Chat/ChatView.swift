@@ -159,12 +159,20 @@ struct ChatSplitView: View {
                 .help("New Chat (⌘N)")
                 .accessibilityLabel("New Chat (⌘N)")
             Button {
-                Task {
-                    if let error = await appState.rerunOnboarding() {
-                        print("[ChatView] Run setup again failed: \(error)")
-                    }
-                }
+                Task { await appState.rerunOnboarding() }
             } label: { Image(systemName: "person.crop.circle.badge.questionmark") }
+                .disabled(appState.needsOnboarding || appState.isPreparingRerun)
+                .alert(
+                    "Could not run setup again",
+                    isPresented: Binding(
+                        get: { appState.rerunError != nil },
+                        set: { if !$0 { appState.clearRerunError() } }
+                    )
+                ) {
+                    Button("OK", role: .cancel) {}
+                } message: {
+                    Text(appState.rerunError ?? "")
+                }
                 .help(appState.profileComplete ? "Update Profile" : "Setup Profile")
                 .accessibilityLabel(appState.profileComplete ? "Update Profile" : "Setup Profile")
         }

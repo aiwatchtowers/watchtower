@@ -96,7 +96,12 @@ package struct OnboardingFeatureSelection: Equatable, Sendable {
             closeness(lhs, to: savedGoals) < closeness(rhs, to: savedGoals)
         }
         if let closest { return Self(goals: closest) }
-        var selection = Self(goals: savedGoals)
+        // The goals whose features overlap the set most (fewest extras,
+        // then closest to the saved goals), with the set as a manual pick.
+        let nearest = allGoalCombinations.max { lhs, rhs in
+            overlapScore(lhs, enabled: enabled, saved: savedGoals) < overlapScore(rhs, enabled: enabled, saved: savedGoals)
+        } ?? savedGoals
+        var selection = Self(goals: nearest)
         selection.customEnabledIDs = enabled
         return selection
     }
@@ -107,6 +112,15 @@ package struct OnboardingFeatureSelection: Equatable, Sendable {
             Set(goals.enumerated().filter { mask & (1 << $0.offset) != 0 }.map(\.element))
         }
     }()
+
+    private static func overlapScore(
+        _ goals: Set<OnboardingGoal>,
+        enabled: Set<String>,
+        saved: Set<OnboardingGoal>
+    ) -> (overlap: Int, extras: Int, closeness: Int) {
+        let ids = OnboardingFeaturePlan.enabledFeatureIDs(for: goals)
+        return (ids.intersection(enabled).count, -ids.subtracting(enabled).count, closeness(goals, to: saved))
+    }
 
     /// Goals in both minus goals in only one: ties keep `saved` itself on top.
     private static func closeness(_ goals: Set<OnboardingGoal>, to saved: Set<OnboardingGoal>) -> Int {

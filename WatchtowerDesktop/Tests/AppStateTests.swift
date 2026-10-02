@@ -1106,6 +1106,9 @@ final class AppStateTests: XCTestCase {
         let (defaults, suiteName) = try onboardingSuite()
         defer { defaults.removePersistentDomain(forName: suiteName) }
         defaults.set(7, forKey: OnboardingStateMachineV2.legacyStepKey)
+        try await dbManager.dbPool.write { db in
+            try TestDatabase.insertProfile(db, slackUserID: "1:U_ME", role: "kept", onboardingDone: true)
+        }
         let appState = await launch(defaults, db: dbManager)
         let daemon = FakeDaemon()
         appState.daemonControlOverride = daemon
@@ -1117,9 +1120,10 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(screen(appState), .main)
         XCTAssertEqual(appState.onboarding.currentStep, .complete)
         XCTAssertFalse(appState.isOnboardingRerun)
-        XCTAssertEqual(daemon.starts + daemon.restarts + daemon.stops, 0)
-        let profiles = try await dbManager.dbPool.read { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM user_profile") }
-        XCTAssertEqual(profiles, 0)
+        await appState.onboardingDaemonStart?.value
+        XCTAssertEqual(daemon.starts + daemon.restarts + daemon.stops, 0, "nothing changed: no restart")
+        let role = try await dbManager.dbPool.read { db in try String.fetchOne(db, sql: "SELECT role FROM user_profile") }
+        XCTAssertEqual(role, "kept", "the profile is untouched")
     }
 
     /// A first-run onboarding has no Cancel.
@@ -1178,7 +1182,13 @@ final class AppStateTests: XCTestCase {
         await appState.leaveOnboardingStep(.purpose, route: route) {}
         await waitUntil { daemon.isRestartParked }
 
+        // A re-run that connects an account (so it restarts too).
+        appState.initSlackAccounts(dbPool: dbManager.dbPool)
+        let vm = try XCTUnwrap(appState.slackAccountsViewModel)
+        await vm.refreshAsync()
         appState.startOnboarding(enabledFeatureIDs: [], configuredLanguage: nil)
+        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertSlackAccount(db, teamID: "T1") }
+        await vm.refreshAsync()
         await appState.leaveOnboardingStep(.purpose, route: route) {}
         for _ in 0..<50 { await Task.yield() }
         XCTAssertEqual(daemon.restarts, 1, "the second restart waits for the first")
@@ -1188,5 +1198,114 @@ final class AppStateTests: XCTestCase {
         daemon.releaseRestart()
         await appState.onboardingDaemonStart?.value
         XCTAssertEqual(daemon.restarts, 2)
+    }
+
+    // MARK: - #296 review
+
+    /// An account connected during a re-run (its sheet defers the restart):
+    /// Cancel still restarts the daemon, once.
+    func testCancelAfterAChangeRestartsTheDaemonOnce() async throws {
+        let appState = AppState.isolated()
+        appState.databaseManager = dbManager
+        appState.initSlackAccounts(dbPool: dbManager.dbPool)
+        let vm = try XCTUnwrap(appState.slackAccountsViewModel)
+        await vm.refreshAsync()
+        let daemon = FakeDaemon()
+        daemon.running = true
+        appState.daemonControlOverride = daemon
+        appState.startOnboarding(enabledFeatureIDs: [], configuredLanguage: nil)
+
+        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertSlackAccount(db, teamID: "T1") }
+        await vm.refreshAsync()
+        appState.cancelOnboardingRerun()
+        await appState.onboardingDaemonStart?.value
+
+        XCTAssertEqual(daemon.restarts, 1)
+        XCTAssertEqual(daemon.starts, 0)
+    }
+
+    /// A re-run finished without a change: no restart, and the owner stays
+    /// where they were.
+    func testUnchangedRerunFinishKeepsTheDaemonAndTheTab() async throws {
+        defer { UserDefaults.standard.removeObject(forKey: Constants.pipelinesCompletedKey) }
+        let manager = try XCTUnwrap(dbManager)
+        let open: @Sendable () throws -> DatabaseManager = { manager }
+        let appState = AppState.isolated(openDatabase: open)
+        appState.databaseManager = dbManager
+        let daemon = FakeDaemon()
+        daemon.running = true
+        appState.daemonControlOverride = daemon
+        appState.selectedDestination = .targets
+        appState.startOnboarding(enabledFeatureIDs: [], configuredLanguage: nil)
+
+        await appState.leaveOnboardingStep(.purpose, route: OnboardingRoute(goals: [.development], hasSlackAccount: false)) {}
+        await appState.onboardingDaemonStart?.value
+
+        XCTAssertEqual(appState.onboarding.currentStep, .complete)
+        XCTAssertEqual(daemon.restarts + daemon.starts, 0)
+        XCTAssertEqual(appState.selectedDestination, .targets)
+    }
+
+    /// ...but a daemon that is not running gets started.
+    func testUnchangedRerunFinishStartsAStoppedDaemon() async throws {
+        defer { UserDefaults.standard.removeObject(forKey: Constants.pipelinesCompletedKey) }
+        let manager = try XCTUnwrap(dbManager)
+        let open: @Sendable () throws -> DatabaseManager = { manager }
+        let appState = AppState.isolated(openDatabase: open)
+        appState.databaseManager = dbManager
+        let daemon = FakeDaemon()
+        appState.daemonControlOverride = daemon
+        appState.startOnboarding(enabledFeatureIDs: [], configuredLanguage: nil)
+
+        await appState.leaveOnboardingStep(.purpose, route: OnboardingRoute(goals: [.development], hasSlackAccount: false)) {}
+        await appState.onboardingDaemonStart?.value
+
+        XCTAssertEqual(daemon.starts, 1)
+        XCTAssertEqual(daemon.restarts, 0)
+    }
+
+    func testRerunFeaturesReadFailureIsShownAndStartsNothing() async {
+        let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "list failed"))
+        let appState = AppState.isolated(featuresRunner: runner)
+
+        await appState.rerunOnboarding()
+
+        XCTAssertNotNil(appState.rerunError)
+        XCTAssertFalse(appState.needsOnboarding)
+        XCTAssertFalse(appState.isOnboardingRerun)
+        XCTAssertFalse(appState.isPreparingRerun)
+    }
+
+    func testRerunConfigReadFailureIsShownAndStartsNothing() async throws {
+        let path = (NSTemporaryDirectory() as NSString).appendingPathComponent("bad-\(UUID().uuidString).yaml")
+        try "digest: [unclosed".write(toFile: path, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let appState = AppState.isolated()
+
+        await appState.rerunOnboarding { ConfigService(configPath: path) }
+
+        XCTAssertEqual(appState.rerunError?.hasPrefix("Could not read the config"), true)
+        XCTAssertFalse(appState.isOnboardingRerun)
+    }
+
+    func testRerunReadsTheConfigLanguage() async throws {
+        let path = (NSTemporaryDirectory() as NSString).appendingPathComponent("ok-\(UUID().uuidString).yaml")
+        try "digest:\n  language: Polish\n".write(toFile: path, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let appState = AppState.isolated()
+
+        await appState.rerunOnboarding { ConfigService(configPath: path) }
+
+        XCTAssertNil(appState.rerunError)
+        XCTAssertTrue(appState.isOnboardingRerun)
+        XCTAssertEqual(appState.onboardingGoals.language, "Polish")
+    }
+
+    /// No second re-run while one is on screen.
+    func testRerunIsIgnoredDuringOnboarding() async {
+        let appState = AppState.isolated()
+        appState.needsOnboarding = true
+        await appState.rerunOnboarding()
+        XCTAssertFalse(appState.isOnboardingRerun)
     }
 }

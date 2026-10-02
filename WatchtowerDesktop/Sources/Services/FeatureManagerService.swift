@@ -78,6 +78,9 @@ final class FeatureManagerService {
     var applyWithDependents: Set<String> = []
     /// True for the whole of an `applySelection()` call.
     private var isApplyingSelection = false
+    /// How many features the last `applySelection()` actually changed (0
+    /// when the selection matched the live state).
+    private(set) var lastSelectionChangeCount = 0
 
     /// Fires with the freshly computed `disabledFeatureIDs` after every
     /// successful `load()` — including the trailing reload inside a fully
@@ -340,6 +343,7 @@ final class FeatureManagerService {
         isApplyingSelection = true
         defer { isApplyingSelection = false }
 
+        lastSelectionChangeCount = 0
         await load()
         guard loadError == nil else { return false }
 
@@ -347,7 +351,9 @@ final class FeatureManagerService {
         for feature in features where !feature.core && managed.contains(feature.id) {
             setPending(feature.id, enabled: enabled.contains(feature.id))
         }
+        let staged = pending.count
         await apply {}
+        lastSelectionChangeCount = staged - pending.count
         return loadError == nil && pending.isEmpty
     }
 

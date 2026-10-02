@@ -58,7 +58,7 @@ struct OnboardingV2View: View {
             if appState.isOnboardingRerun {
                 Button("Cancel") { appState.cancelOnboardingRerun() }
                     .keyboardShortcut(.cancelAction)
-                    .disabled(appState.isFinishingOnboarding)
+                    .disabled(appState.isFinishingOnboarding || appState.onboardingGoals.isContinuing)
                     .padding(16)
             }
         }

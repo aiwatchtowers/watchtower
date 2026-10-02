@@ -1,6 +1,7 @@
 import Foundation
 @testable import WatchtowerDesktop
 import WatchtowerCore
+import WatchtowerTestSupport
 
 extension AppState {
     /// An AppState for tests: its onboarding state lives in a throwaway
@@ -12,14 +13,16 @@ extension AppState {
     /// per instance, so a run leaves no per-test plist behind.
     static func isolated(
         openDatabase: @escaping @Sendable () throws -> DatabaseManager = { throw CocoaError(.fileNoSuchFile) },
-        peopleRosterRun: @escaping PeopleRosterLoad.Run = { _, _ in (0, "") }
+        peopleRosterRun: @escaping PeopleRosterLoad.Run = { _, _ in (0, "") },
+        featuresRunner: FakeCLIRunner = FakeCLIRunner(stdout: Data(#"{"features":[]}"#.utf8))
     ) -> AppState {
         let name = "WatchtowerDesktopTests.onboarding"
         UserDefaults.standard.removePersistentDomain(forName: name)
         let appState = AppState(
             onboardingDefaults: UserDefaults(suiteName: name) ?? .standard,
             openDatabase: openDatabase,
-            peopleRosterRun: peopleRosterRun
+            peopleRosterRun: peopleRosterRun,
+            featureManager: FeatureManagerService(runner: featuresRunner)
         )
         appState.daemonControlOverride = FakeDaemon()
         appState.wireAppDatabaseOverride = { _ in }

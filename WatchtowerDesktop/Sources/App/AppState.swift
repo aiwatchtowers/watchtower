@@ -340,15 +340,16 @@ final class AppState {
     @ObservationIgnored var wireAppDatabaseOverride: ((DatabaseManager) -> Void)?
 
     /// `onboardingDefaults` backs the onboarding step and goals, `openDatabase`
-    /// the database open, `peopleRosterRun` the people load — tests pass an
-    /// isolated suite and fakes.
+    /// the database open, `peopleRosterRun` the people load, `featureManager`
+    /// the Feature Manager — tests pass an isolated suite and fakes.
     init(
         onboardingDefaults: UserDefaults = .standard,
         openDatabase: @escaping @Sendable () throws -> DatabaseManager = { try DatabaseManager.migrateAndOpen() },
-        peopleRosterRun: @escaping PeopleRosterLoad.Run = PeopleRosterLoad.cliRun
+        peopleRosterRun: @escaping PeopleRosterLoad.Run = PeopleRosterLoad.cliRun,
+        featureManager: FeatureManagerService? = nil
     ) {
-        let features = FeatureManagerService()
-        featureManager = features
+        let features = featureManager ?? FeatureManagerService()
+        self.featureManager = features
         onboarding = OnboardingStateMachineV2(defaults: onboardingDefaults)
         self.onboardingDefaults = onboardingDefaults
         onboardingGoals = .production(defaults: onboardingDefaults, featureManager: features)
@@ -778,6 +779,7 @@ final class AppState {
         }
         isFinishingOnboarding = true
         defer { isFinishingOnboarding = false }
+        let isRerun = isOnboardingRerun
         let finished = await OnboardingCompletion.finish(
             markOnboardingDone: {
                 if let failure = await openDatabaseForOnboarding() {
@@ -805,23 +807,17 @@ final class AppState {
                 // restart may wait up to a minute for the old daemon to die,
                 // and Continue must not. It starts only after the
                 // onboarding_done write above.
-                let daemon = daemonControl
-                // After any earlier bring-up (a quick re-run): two restarts
-                // overlapping would read as a failed start.
-                let previous = onboardingDaemonStart
-                onboardingDaemonStart = Task {
-                    await previous?.value
-                    // The flag tells the next launch nothing is left to resume.
-                    if await OnboardingFinishPlan.bringUpDaemon(daemon) {
-                        UserDefaults.standard.set(true, forKey: Constants.pipelinesCompletedKey)
-                    }
-                }
+                // A re-run that changed nothing needs no restart — only a
+                // daemon, if none runs.
+                bringUpDaemonInBackground(startOnly: isRerun && !rerunChangedSomething)
                 // The landing reads the sources the steps just connected.
                 await refreshConnectedSources()
             },
             completeOnboarding: {
                 completeOnboarding()
-                land(after: route)
+                // Landing is for the first run; a re-run goes back to where
+                // the owner was.
+                if !isRerun { land(after: route) }
             },
             onRetry: onRetry
         )
@@ -914,6 +910,40 @@ final class AppState {
     /// Finish's daemon bring-up, held so tests can await it.
     @ObservationIgnored private(set) var onboardingDaemonStart: Task<Void, Never>?
 
+    /// Starts (or, with `startOnly` false, restarts) the daemon in the
+    /// background, after any earlier bring-up still running: two restarts
+    /// overlapping would read as a failed start.
+    private func bringUpDaemonInBackground(startOnly: Bool) {
+        let daemon = daemonControl
+        let previous = onboardingDaemonStart
+        onboardingDaemonStart = Task {
+            await previous?.value
+            let up = startOnly && daemon.daemonIsRunning()
+                ? true
+                : await OnboardingFinishPlan.bringUpDaemon(daemon)
+            // The flag tells the next launch nothing is left to resume.
+            if up {
+                UserDefaults.standard.set(true, forKey: Constants.pipelinesCompletedKey)
+            }
+        }
+    }
+
+    /// The Slack, Google and Jira account ids when a re-run started: an
+    /// account added or removed meanwhile (the Connect sheets defer the
+    /// daemon restart to finish) counts as a change.
+    @ObservationIgnored private var rerunAccountsAtStart: [Int] = []
+
+    private var accountFingerprint: [Int] {
+        (slackAccountsViewModel?.accounts.map(\.id) ?? []).sorted()
+            + [-1] + (googleAccountsViewModel?.accounts.map(\.id) ?? []).sorted()
+            + [-1] + (jiraAccountsViewModel?.accounts.map(\.id) ?? []).sorted()
+    }
+
+    /// The re-run wrote something the daemon must pick up.
+    private var rerunChangedSomething: Bool {
+        onboardingGoals.wroteChanges || accountFingerprint != rerunAccountsAtStart
+    }
+
     private var daemonControl: any DaemonControl { daemonControlOverride ?? daemonManager }
 
     /// Opens the tab the goals point at (`OnboardingFinishPlan.landing`).
@@ -973,6 +1003,15 @@ final class AppState {
     /// The onboarding on screen was started from Settings: it can be
     /// cancelled back to the main window.
     private(set) var isOnboardingRerun = false
+    /// Why the last "Run setup again" did not start, for both of its
+    /// buttons (Settings → Profile's line, the chat's alert).
+    private(set) var rerunError: String?
+    /// The re-run is reading the features and config.
+    private(set) var isPreparingRerun = false
+
+    func clearRerunError() {
+        rerunError = nil
+    }
 
     /// "Run setup again" (Settings → Profile, the chat's profile button):
     /// reads what is in effect now — the feature set from the Feature
@@ -980,19 +1019,23 @@ final class AppState {
     /// flow from it. Returns the failure to show instead of starting with a
     /// guess (a reverted feature, the macOS language over the configured
     /// one).
-    @discardableResult
-    func rerunOnboarding() async -> String? {
+    func rerunOnboarding(readConfig: @MainActor () -> ConfigService = { ConfigService() }) async {
+        guard !needsOnboarding, !isPreparingRerun else { return }
+        isPreparingRerun = true
+        defer { isPreparingRerun = false }
+        rerunError = nil
         await featureManager.load()
         if let error = featureManager.loadError {
-            return "Could not read the features: \(error)"
+            rerunError = "Could not read the features: \(error)"
+            return
         }
-        let config = ConfigService()
+        let config = readConfig()
         if let error = config.parseError {
-            return "Could not read the config: \(error)"
+            rerunError = "Could not read the config: \(error)"
+            return
         }
         let enabled = Set(featureManager.features.filter { $0.state == "enabled" }.map(\.id))
         startOnboarding(enabledFeatureIDs: enabled, configuredLanguage: config.digestLanguage)
-        return nil
     }
 
     /// Re-triggers the onboarding flow back at Goals, seeded from
@@ -1008,14 +1051,19 @@ final class AppState {
         onboardingAboutYou.prepareForRerun()
         onboardingStepError = nil
         isOnboardingRerun = true
+        rerunAccountsAtStart = accountFingerprint
         needsOnboarding = true
         profileComplete = false
     }
 
-    /// Cancel on a re-run: back to the main window, nothing written (what a
-    /// step's Continue already wrote stays).
+    /// Cancel on a re-run: back to the main window, nothing more written.
+    /// What a step's Continue already wrote stays and reaches the daemon (a
+    /// restart in the background).
     func cancelOnboardingRerun() {
-        guard isOnboardingRerun, !isFinishingOnboarding else { return }
+        guard isOnboardingRerun, !isFinishingOnboarding, !onboardingGoals.isContinuing else { return }
+        if rerunChangedSomething {
+            bringUpDaemonInBackground(startOnly: false)
+        }
         isOnboardingRerun = false
         onboarding.goTo(.complete)
         onboardingStepError = nil

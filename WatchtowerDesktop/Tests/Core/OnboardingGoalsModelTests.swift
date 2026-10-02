@@ -17,6 +17,7 @@ final class OnboardingGoalsModelTests: XCTestCase {
         var featuresFailure: String?
         var appliedSelection: OnboardingFeatureSelection?
         var historyUnset = false
+        var featuresChanged = false
     }
 
     private struct Failure: LocalizedError {
@@ -56,7 +57,7 @@ final class OnboardingGoalsModelTests: XCTestCase {
                 applyFeatures: {
                     spy.calls.append("features")
                     spy.appliedSelection = $0
-                    return spy.featuresFailure
+                    return (spy.featuresFailure, spy.featuresChanged)
                 },
                 historyDepthUnset: { spy.historyUnset },
                 setHistoryDepth: { spy.calls.append("history \($0)") }
@@ -398,8 +399,8 @@ final class OnboardingGoalsModelTests: XCTestCase {
         XCTAssertFalse(seeded.isCustomized)
 
         let fromNothing = OnboardingFeatureSelection.current(enabledIDs: wcTasks, savedGoals: [])
-        XCTAssertTrue(fromNothing.goals.isSuperset(of: [.workCommunication, .tasksAndJira]))
-        XCTAssertEqual(fromNothing.enabledFeatureIDs, wcTasks)
+        XCTAssertEqual(fromNothing.goals, [.workCommunication, .tasksAndJira], "no extra goal without a reason")
+        XCTAssertFalse(fromNothing.isCustomized)
 
         let devOnly = OnboardingFeatureSelection.current(
             enabledIDs: OnboardingFeaturePlan.alwaysOnFeatureIDs, savedGoals: [.development]
@@ -412,9 +413,31 @@ final class OnboardingGoalsModelTests: XCTestCase {
         enabled.remove("ideas")
         enabled.insert("memory")
         enabled.insert("not-managed")
-        let seeded = OnboardingFeatureSelection.current(enabledIDs: enabled, savedGoals: [.workCommunication])
+        let seeded = OnboardingFeatureSelection.current(enabledIDs: enabled, savedGoals: [.development])
         XCTAssertTrue(seeded.isCustomized)
-        XCTAssertEqual(seeded.goals, [.workCommunication])
+        XCTAssertTrue(seeded.goals.contains(.workCommunication), "the goals the set overlaps most, not the saved ones")
         XCTAssertEqual(seeded.enabledFeatureIDs, enabled.subtracting(["not-managed"]))
+    }
+
+    // MARK: - What a Continue wrote
+
+    func testWroteChangesFollowsRealWrites() async {
+        let model = makeModel()
+        model.seedForRerun(enabledFeatureIDs: [], language: "Polish")
+        await model.prepare(configuredLanguage: nil)
+        _ = await model.submit(hasSlackAccount: true)
+        XCTAssertFalse(model.wroteChanges, "no language change, no feature change")
+
+        spy.featuresChanged = true
+        _ = await model.submit(hasSlackAccount: true)
+        XCTAssertTrue(model.wroteChanges)
+
+        model.seedForRerun(enabledFeatureIDs: [], language: "Polish")
+        XCTAssertFalse(model.wroteChanges, "a new run starts clean")
+        spy.featuresChanged = false
+        await model.prepare(configuredLanguage: nil)
+        model.language = "German"
+        _ = await model.submit(hasSlackAccount: true)
+        XCTAssertTrue(model.wroteChanges, "a language write counts")
     }
 }

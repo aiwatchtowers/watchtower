@@ -5,7 +5,6 @@ struct ProfileSettings: View {
     @Environment(AppState.self) private var appState
 
     @State private var profile: UserProfile?
-    @State private var rerunError: String?
     @State private var allUsers: [User] = []
     @State private var allChannels: [Channel] = []
     @State private var isLoading = false
@@ -119,11 +118,12 @@ struct ProfileSettings: View {
     @ViewBuilder
     private var onboardingSection: some View {
         Section {
-            Button("Run Setup Again") {
-                Task { rerunError = await appState.rerunOnboarding() }
+            Button(appState.isPreparingRerun ? "Reading your setup…" : "Run Setup Again") {
+                Task { await appState.rerunOnboarding() }
             }
             .foregroundStyle(.secondary)
-            if let rerunError {
+            .disabled(appState.needsOnboarding || appState.isPreparingRerun)
+            if let rerunError = appState.rerunError {
                 Text(rerunError).font(.caption).foregroundStyle(.red)
             }
         } footer: {
