@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -203,4 +204,147 @@ func TestSyncer_Sync_RevokedGrantDuringHistoryAbortsAccount(t *testing.T) {
 	_, err := s.Sync(context.Background())
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, ErrAuthRevoked), "got %v", err)
+}
+
+func TestBulkFetchChangelogs_PageGuardStoresNothing(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		_, _ = w.Write([]byte(`{"issueChangeLogs":[{"issueId":"1","changeHistories":[]}],"nextPageToken":"again"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	got, err := makeTestClient(t, srv.URL).BulkFetchChangelogs(context.Background(), []string{"1"}, changelogFields)
+	require.Error(t, err)
+	assert.Nil(t, got, "a history cut short by the guard is never returned")
+	assert.EqualValues(t, maxChangelogPages, calls.Load())
+}
+
+// seedBoardIssues writes n board issues PROJ-1..n with ids 1..n.
+func seedBoardIssues(t *testing.T, database *db.DB, n int) {
+	t.Helper()
+	ts := db.FormatJiraTime(time.Now().UTC())
+	issues := make([]db.JiraIssue, n)
+	for i := range issues {
+		issues[i] = db.JiraIssue{AccountID: 1, Key: "PROJ-" + strconv.Itoa(i+1), ID: strconv.Itoa(i + 1), ProjectKey: "PROJ",
+			Summary: "S", Status: "Open", StatusCategory: "todo", Labels: `[]`, Components: `[]`,
+			CreatedAt: ts, UpdatedAt: ts, SyncedAt: ts}
+	}
+	require.NoError(t, database.UpsertJiraIssueBatch(issues, nil))
+}
+
+func TestSyncChangelogs_BatchesAndSplitsARejectedRequest(t *testing.T) {
+	database := syncerDBWithBoard(t, "PROJ")
+	seedBoardIssues(t, database, 101)
+	var sizes []int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			IssueIDsOrKeys []string `json:"issueIdsOrKeys"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+		sizes = append(sizes, len(req.IssueIDsOrKeys))
+		for _, id := range req.IssueIDsOrKeys {
+			if id == "7" { // the site refuses one issue
+				http.Error(w, `{"errorMessages":["bad id 7"]}`, http.StatusBadRequest)
+				return
+			}
+		}
+		_, _ = w.Write([]byte(`{"issueChangeLogs":[]}`))
+	}))
+	t.Cleanup(srv.Close)
+	s := quietSyncer(t, database, srv.URL)
+	s.SetChangelogLimit(500)
+
+	err := s.syncChangelogs(context.Background())
+	require.Error(t, err, "the refused issue is reported")
+	assert.Equal(t, 100, sizes[0])
+	assert.Equal(t, 1, sizes[len(sizes)-1], "the 101st issue is its own batch")
+
+	due, err := database.ListJiraChangelogDue(1, 500)
+	require.NoError(t, err)
+	require.Len(t, due, 1, "only the refused issue stays due; its 99 batch mates are stored")
+	assert.Equal(t, "PROJ-7", due[0].Key)
+}
+
+func TestSyncChangelogs_OutageIsNotSplit(t *testing.T) {
+	database := syncerDBWithBoard(t, "PROJ")
+	seedBoardIssues(t, database, 10)
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		http.Error(w, `{"errorMessages":["down"]}`, http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(srv.Close)
+	s := quietSyncer(t, database, srv.URL)
+	s.SetChangelogLimit(500)
+
+	require.Error(t, s.syncChangelogs(context.Background()))
+	assert.EqualValues(t, 1, calls.Load())
+}
+
+func TestSyncLinkedIssues_MovedAndUnreturnedKeys(t *testing.T) {
+	database := syncerDBWithBoard(t, "PROJ")
+	seedBoardIssues(t, database, 1)
+	ts := db.FormatJiraTime(time.Now().UTC())
+	for i, target := range []string{"OTH-1", "OTH-2"} {
+		require.NoError(t, database.UpsertJiraIssueLink(db.JiraIssueLink{AccountID: 1, ID: strconv.Itoa(i), SourceKey: "PROJ-1", TargetKey: target, LinkType: "Blocks", SyncedAt: ts}))
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// OTH-1 was moved: Jira answers with NEW-5. OTH-2 is neither returned nor reported.
+		body, _ := json.Marshal(bulkIssuesResponse{Issues: []Issue{{ID: "501", Key: "NEW-5", Fields: IssueFields{Summary: "moved"}}}})
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(srv.Close)
+	s := quietSyncer(t, database, srv.URL)
+
+	require.NoError(t, s.syncLinkedIssues(context.Background()))
+	rows, err := database.Query(`SELECT key, fetch_error FROM jira_linked_issues ORDER BY key`)
+	require.NoError(t, err)
+	defer rows.Close()
+	got := map[string]string{}
+	for rows.Next() {
+		var k, e string
+		require.NoError(t, rows.Scan(&k, &e))
+		got[k] = e
+	}
+	assert.Len(t, got, 2, "NEW-5 is not stored: no link names it, so it would only churn")
+	assert.Contains(t, got["OTH-1"], "moved")
+	assert.NotEmpty(t, got["OTH-2"])
+}
+
+func TestSyncLinkedIssues_RevokedGrantAborts(t *testing.T) {
+	stubTokenEndpoint(t)
+	database := syncerDBWithBoard(t, "PROJ")
+	seedBoardIssues(t, database, 1)
+	require.NoError(t, database.UpsertJiraIssueLink(db.JiraIssueLink{AccountID: 1, ID: "l", SourceKey: "PROJ-1", TargetKey: "OTH-1", LinkType: "Blocks", SyncedAt: "now"}))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	t.Cleanup(srv.Close)
+	s := quietSyncer(t, database, srv.URL)
+	s.SetChangelogLimit(500)
+
+	err := s.syncHistory(context.Background())
+	assert.True(t, errors.Is(err, ErrAuthRevoked), "got %v", err)
+}
+
+func TestSyncChangelogs_IssueAbsentFromResponseIsStoredWithoutChanges(t *testing.T) {
+	database := syncerDBWithBoard(t, "PROJ")
+	seedBoardIssues(t, database, 2)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"issueChangeLogs":[{"issueId":"1","changeHistories":[{"id":"3","created":"` +
+			jiraWire(time.Now()) + `","items":[{"fieldId":"status","fromString":"Open","toString":"Done"}]}]}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	s := quietSyncer(t, database, srv.URL)
+	s.SetChangelogLimit(500)
+
+	require.NoError(t, s.syncChangelogs(context.Background()))
+	due, err := database.ListJiraChangelogDue(1, 10)
+	require.NoError(t, err)
+	assert.Empty(t, due, "both cursors stamped")
+	got, err := database.ListJiraIssueChangelog(1, []string{"PROJ-1", "PROJ-2"})
+	require.NoError(t, err)
+	assert.Len(t, got["PROJ-1"], 1)
+	assert.Empty(t, got["PROJ-2"])
 }

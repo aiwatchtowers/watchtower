@@ -2,6 +2,7 @@ package tools
 
 import (
 	"encoding/json"
+	"strconv"
 	"testing"
 	"time"
 
@@ -22,7 +23,8 @@ func TestBuildStatusIntervals_NoChangesIsOneInterval(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	is := historyIssue("A-1", now.Add(-10*time.Hour), "In Progress", "acc-a", "A")
 
-	got := buildStatusIntervals(is, nil, now)
+	got, ok := buildStatusIntervals(is, nil, now)
+	require.True(t, ok)
 	require.Len(t, got, 1)
 	assert.Equal(t, "In Progress", got[0].Status)
 	assert.Equal(t, "A", got[0].Assignee)
@@ -39,7 +41,7 @@ func TestBuildStatusIntervals_InterleavedStatusAndAssignee(t *testing.T) {
 		{Field: "status", FromString: "In Progress", ToString: "Done", ChangedAt: ft(created.Add(8 * time.Hour))},
 	}
 
-	got := buildStatusIntervals(is, items, now)
+	got, _ := buildStatusIntervals(is, items, now)
 	type seg struct {
 		status, assignee string
 		hours            float64
@@ -60,7 +62,7 @@ func TestBuildStatusIntervals_EndBeforeLaterChanges(t *testing.T) {
 	items := []db.JiraChangelogItem{
 		{Field: "status", FromString: "To Do", ToString: "Done", ChangedAt: ft(created.Add(6 * time.Hour))},
 	}
-	got := buildStatusIntervals(is, items, created.Add(4*time.Hour))
+	got, _ := buildStatusIntervals(is, items, created.Add(4*time.Hour))
 	require.Len(t, got, 1)
 	assert.Equal(t, "To Do", got[0].Status)
 	assert.Equal(t, 4.0, got[0].Hours)
@@ -173,4 +175,99 @@ func TestJiraHistoryTools_EndToEnd(t *testing.T) {
 func replaceHistory(t *testing.T, d *db.DB, key, updatedAt string, items []db.JiraChangelogItem) {
 	t.Helper()
 	require.NoError(t, d.ReplaceJiraIssueChangelogs(1, []db.JiraIssueHistory{{Key: key, UpdatedAt: updatedAt, Items: items}}))
+}
+
+func TestBuildStatusIntervals_SameInstantAndUnreadableTimes(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	created := now.Add(-6 * time.Hour)
+	is := historyIssue("A-1", created, "Done", "acc-b", "B")
+	at := ft(created.Add(2 * time.Hour))
+	items := []db.JiraChangelogItem{
+		// A transition that also assigns: one history, same instant.
+		{Field: "status", FromString: "To Do", ToString: "In Progress", ChangedAt: at},
+		{Field: "assignee", FromValue: "", FromString: "", ToValue: "acc-b", ToString: "B", ChangedAt: at},
+		// An unreadable time still moves the state.
+		{Field: "status", FromString: "In Progress", ToString: "Done", ChangedAt: "garbage"},
+	}
+	got, ok := buildStatusIntervals(is, items, now)
+	require.True(t, ok)
+	require.Len(t, got, 2, "no zero-length interval at the shared instant")
+	assert.Equal(t, "To Do", got[0].Status)
+	assert.Equal(t, "", got[0].Assignee)
+	assert.Equal(t, "Done", got[1].Status, "the change with the unreadable time is applied, not dropped")
+	assert.Equal(t, "B", got[1].Assignee)
+
+	is.CreatedAt = "garbage"
+	_, ok = buildStatusIntervals(is, items, now)
+	assert.False(t, ok)
+}
+
+func TestTimeInStatus_PersonKeyedByAccountAndUnassigned(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	created := now.Add(-10 * time.Hour)
+	issues := []db.JiraHistoryIssue{historyIssue("A-1", created, "In Progress", "acc-a", "Alice Renamed")}
+	changelogs := map[int64]map[string][]db.JiraChangelogItem{1: {"A-1": {
+		{Field: "assignee", FromValue: "", FromString: "", ToValue: "acc-a", ToString: "Alice", ChangedAt: ft(created.Add(2 * time.Hour))},
+		{Field: "assignee", FromValue: "acc-a", FromString: "Alice", ToValue: "acc-a", ToString: "Alice Renamed", ChangedAt: ft(created.Add(4 * time.Hour))},
+	}}}
+	res := timeInStatus(jiraTimeInStatusArgs{}, issues, changelogs, map[string]string{"In Progress": "in_progress"}, created, now)
+
+	require.Len(t, res.PerAssignee, 2)
+	assert.Equal(t, timeInStatusTotal{AssigneeAccountID: "acc-a", Assignee: "Alice Renamed", Hours: 8, Issues: 1}, res.PerAssignee[0],
+		"one person despite two names, shown by the latest")
+	assert.Equal(t, "(unassigned)", res.PerAssignee[1].Assignee)
+	assert.Equal(t, 2.0, res.PerAssignee[1].Hours)
+
+	byID := timeInStatus(jiraTimeInStatusArgs{Assignee: "acc-a"}, issues, changelogs, map[string]string{"In Progress": "in_progress"}, created, now)
+	assert.Len(t, byID.PerAssignee, 1)
+
+	unknown := timeInStatus(jiraTimeInStatusArgs{}, issues, changelogs, map[string]string{}, created, now)
+	assert.Equal(t, []string{"In Progress"}, unknown.StatusesWithoutCategory)
+	assert.Equal(t, 0, unknown.IssuesWithoutHistoryCount)
+}
+
+func TestActiveSince_DoneTimeRequested(t *testing.T) {
+	since := time.Now().UTC()
+	assert.Equal(t, db.FormatJiraTime(since), activeSince(jiraTimeInStatusArgs{}, since))
+	assert.Empty(t, activeSince(jiraTimeInStatusArgs{IncludeDone: true}, since))
+	assert.Empty(t, activeSince(jiraTimeInStatusArgs{Statuses: []string{"Done"}}, since))
+}
+
+func TestTimeInStatusPeriod_DateOnlyUntilCoversTheDay(t *testing.T) {
+	now := time.Now().UTC()
+	day := now.AddDate(0, 0, -3).In(time.Local).Format("2006-01-02")
+	_, until, err := timeInStatusPeriod("", day, now)
+	require.NoError(t, err)
+	want, err := time.ParseInLocation("2006-01-02", day, time.Local)
+	require.NoError(t, err)
+	assert.Equal(t, want.AddDate(0, 0, 1).UTC(), until)
+
+	_, until, err = timeInStatusPeriod("", now.Add(48*time.Hour).Format(time.RFC3339), now)
+	require.NoError(t, err)
+	assert.Equal(t, now, until, "a future until is clamped to now")
+
+	_, _, err = timeInStatusPeriod("", "next week", now)
+	var ve *ValidationError
+	assert.ErrorAs(t, err, &ve)
+}
+
+func TestGetJiraStatusHistory_Validation(t *testing.T) {
+	d := openDB(t)
+	reg := New(d)
+	require.NoError(t, reg.Register(NewGetJiraStatusHistory()))
+	tool, ok := reg.Get("get_jira_status_history")
+	require.True(t, ok)
+	for _, args := range []string{`{}`, `{"keys":["  "]}`} {
+		_, err := tool.Execute(t.Context(), d, Call{Args: json.RawMessage(args)})
+		var ve *ValidationError
+		assert.ErrorAs(t, err, &ve, args)
+	}
+	many := make([]string, maxHistoryKeys+1)
+	for i := range many {
+		many[i] = "K-" + strconv.Itoa(i)
+	}
+	raw, _ := json.Marshal(map[string]any{"keys": many})
+	_, err := tool.Execute(t.Context(), d, Call{Args: raw})
+	var ve *ValidationError
+	assert.ErrorAs(t, err, &ve)
 }

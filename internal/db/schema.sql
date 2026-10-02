@@ -973,6 +973,8 @@ CREATE TABLE IF NOT EXISTS jira_issue_links (
     link_type TEXT NOT NULL, synced_at TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (account_id, id)
 );
+CREATE INDEX IF NOT EXISTS idx_jira_issue_links_target ON jira_issue_links(account_id, target_key);
+CREATE INDEX IF NOT EXISTS idx_jira_issue_links_source ON jira_issue_links(account_id, source_key);
 
 -- Jira user mapping — intentionally NOT account-scoped: Atlassian account
 -- ids are globally unique across sites (see 00049)

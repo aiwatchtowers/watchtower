@@ -58,20 +58,30 @@ stamps the cursor. A failed write leaves the cursor, so the next pass retries.
 A new step at the end of `Syncer.Sync`, after issues, sprints and releases, once per account per
 `phaseJiraSync` pass (15 min default). Disabled when `jira.changelog_issues_per_sync` is 0.
 
-1. **Linked issues.** Prune `jira_linked_issues` rows that are now in `jira_issues` or no longer
-   referenced by any link (their changelog and cursor go with the unreferenced ones). Then pick up to
+0. **Links are replaced per issue** (`UpsertJiraIssueBatch`): an issue's stored links are deleted
+   and rewritten with every upsert, so a link removed in Jira disappears when the issue re-syncs
+   (before this, `jira_issue_links` only ever grew). Indexes on `(account_id, target_key)` and
+   `(account_id, source_key)` back the lookups below.
+1. **Linked issues.** Prune `jira_linked_issues` rows that are now board issues or that no
+   non-deleted board issue links to any more (their changelog and cursor go with the unlinked
+   ones); the keys are read before the write transaction opens. Then pick up to
    `linkedPerPass` (200) link targets that are not in `jira_issues`: never-fetched first, then the
    oldest `synced_at`. Fetch them with `POST /rest/api/3/issue/bulkfetch` (100 keys per call, explicit
    single-valued `fields`). Every requested key gets its row's `synced_at` stamped: a returned issue
    is upserted under its own key; a key reported in `issueErrors` or not returned (no access, deleted,
    moved) keeps a row with `fetch_error` set, so it rotates to the back instead of being re-asked every
-   pass.
+   pass. An issue returned under a key nobody asked for (Jira follows a moved issue) is dropped: no
+   link names that key yet, so storing it would only churn; it appears once the linking issue
+   re-syncs with the new key.
 2. **Changelog.** Pick up to `changelog_issues_per_sync` (default 500) due issues from
    `jira_issues` (not deleted) ∪ `jira_linked_issues` (no `fetch_error`), newest `updated_at` first —
    fresh changes win over the backfill. Fetch with `POST /rest/api/3/changelog/bulkfetch`,
    `fieldIds: ["status","assignee"]`, 100 issues per request, following `nextPageToken` (safety cap
    50 pages per request; hitting it stores nothing for that batch and logs). The response is keyed by
-   issue **id**, mapped back to the requested keys.
+   issue **id**, mapped back to the requested keys. An issue the response does not mention had no
+   status/assignee change and is stored with an empty history (the pass log counts them). A request
+   the site rejects (4xx other than 429) is split in half down to single issues, so one refused
+   issue cannot starve its batch; an outage (5xx, network) is not split.
 
 Errors follow the existing syncer split: `ErrAuthRevoked` aborts the account's pass (the daemon records
 `revoked`); anything else is logged and the cursors stay, so the next pass retries. The step never
@@ -105,16 +115,19 @@ substring), `statuses` (exact names; default every status except the done catego
 
 Returns: `note` ("time in status: wall-clock time an issue spent in a status while assigned to that
 person — not hours worked"), the period, `totals` per (assignee, status) with hours and issue count,
-`per_assignee` totals, raw `intervals` clipped to the period (key, status, status_category,
-assignee, start, end, hours), `truncated`, `issues_considered`, `issues_without_history` (excluded),
-`issues_with_stale_history` (included, flagged), and `status_categories` (status name → category as
-seen on synced issues).
+`per_assignee` totals (a person is keyed by account id, shown by their latest name), raw
+`intervals` clipped to the period (key, status, status_category, assignee, start, end, hours),
+`truncated`, `issues_considered`, `issues_without_history[_count]` (excluded),
+`issues_with_stale_history[_count]` (included, flagged; both lists capped at 100),
+`statuses_without_category` (counted statuses no synced issue holds now), and `status_categories`
+(status name → category as seen on synced issues).
 
 **Reconstruction.** Each issue's timeline starts at `created_at`. The status before the first status
 change is that change's `from`; with no changes, the current status. Same for the assignee. Status and
 assignee change points are merged, giving intervals of (status, assignee). The last interval ends at
-`min(now, until)`. Intervals are clipped to `[since, until]`. Issues already in a done-category status
-whose last update predates `since` are skipped up front. An issue without a synced changelog is
+`min(now, until)`. Intervals are clipped to `[since, until]`. Unless done time is asked for (`include_done`
+or explicit `statuses`), issues already in a done-category status whose last update predates
+`since` are skipped up front. An issue without a synced changelog is
 excluded (its reconstruction would claim the current status since creation) and listed.
 
 ## 5. Out of scope / v1 limits
@@ -124,6 +137,10 @@ excluded (its reconstruction would claim the current status since creation) and 
 - Fields other than status and assignee.
 - Bare-key ambiguity across two connected sites stays as in `get_jira_issue` (pass `account_id`).
 - The changelog of an issue that left the selected boards stays until the account is deleted.
+- A moved linked issue is invisible until the issue linking to it re-syncs.
+- A status that only appears in history (renamed or retired) has no known category; it is listed
+  in `statuses_without_category` and counted as not done.
+- `watchtower jira sync` (manual) does not run the history step, like comment sync; the daemon does.
 
 ## 6. Test plan
 

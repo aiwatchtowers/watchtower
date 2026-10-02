@@ -185,9 +185,12 @@ func (s *Syncer) syncLinkedIssues(ctx context.Context) error {
 	return firstErr
 }
 
-// linkedRows turns one bulk issue response into rows: one per returned issue
-// (under its own key — a moved issue comes back under its new one) and one
-// fetch_error row per requested key that did not come back.
+// linkedRows turns one bulk issue response into rows: one per requested key
+// that came back, and one fetch_error row per requested key that did not. An
+// issue returned under a key nobody asked for (Jira follows a moved issue to
+// its new key) is dropped: no link names that key, so the next prune would
+// delete it and the fetch would repeat every rotation. It shows up once the
+// linking issue is re-synced and its link carries the new key.
 func (s *Syncer) linkedRows(requested []string, issues []Issue, issueErrs []BulkIssueError) []db.JiraLinkedIssue {
 	now := db.FormatJiraTime(time.Now())
 	errByID := map[string]string{}
@@ -196,7 +199,14 @@ func (s *Syncer) linkedRows(requested []string, issues []Issue, issueErrs []Bulk
 	}
 	returned := map[string]bool{}
 	rows := make([]db.JiraLinkedIssue, 0, len(requested))
+	asked := make(map[string]bool, len(requested))
+	for _, key := range requested {
+		asked[key] = true
+	}
 	for _, is := range issues {
+		if !asked[is.Key] {
+			continue
+		}
 		returned[is.Key] = true
 		f := is.Fields
 		row := db.JiraLinkedIssue{
@@ -227,7 +237,7 @@ func (s *Syncer) linkedRows(requested []string, issues []Issue, issueErrs []Bulk
 		}
 		msg := errByID[key]
 		if msg == "" {
-			msg = "not returned by the site (no access, deleted or moved)"
+			msg = "not returned under this key (no access, deleted, or moved to another key)"
 		}
 		rows = append(rows, db.JiraLinkedIssue{AccountID: s.accountID, Key: key, FetchError: msg, SyncedAt: now})
 	}
@@ -244,20 +254,18 @@ func projectKeyOf(key string) string {
 
 // syncChangelogs fetches the status/assignee history of up to changelogLimit
 // due issues, newest change first, changelogBatch issues per request and per
-// write, replacing each issue's stored history. A failed batch is skipped
-// (its issues stay due); the first failure is returned after the rest ran.
+// write, replacing each issue's stored history. A failed batch does not stop
+// the next one (see syncChangelogBatch); the first failure is returned after
+// the rest ran.
 func (s *Syncer) syncChangelogs(ctx context.Context) error {
 	due, err := s.db.ListJiraChangelogDue(s.accountID, s.changelogLimit)
 	if err != nil {
 		return err
 	}
 	var firstErr error
-	stored := 0
+	var tally changelogTally
 	for start := 0; start < len(due); start += changelogBatch {
-		batch := due[start:min(start+changelogBatch, len(due))]
-		n, err := s.syncChangelogBatch(ctx, batch)
-		stored += n
-		if err != nil {
+		if err := s.syncChangelogBatch(ctx, due[start:min(start+changelogBatch, len(due))], &tally); err != nil {
 			if errors.Is(err, ErrAuthRevoked) || ctx.Err() != nil {
 				return err
 			}
@@ -266,32 +274,73 @@ func (s *Syncer) syncChangelogs(ctx context.Context) error {
 			}
 		}
 	}
-	if stored > 0 {
-		s.logger.Printf("changelog sync: stored the history of %d of %d due issues", stored, len(due))
+	if tally.stored > 0 {
+		s.logger.Printf("changelog sync: stored the history of %d of %d due issues (%d had no status/assignee change in the response)",
+			tally.stored, len(due), tally.unchanged)
 	}
 	return firstErr
 }
 
-// syncChangelogBatch fetches and stores one batch in one write; it returns
-// how many issues' histories were stored. An issue the response does not
-// mention has no status/assignee changes and is stored with an empty history.
-func (s *Syncer) syncChangelogBatch(ctx context.Context, batch []db.JiraChangelogDue) (int, error) {
+// changelogTally counts what one pass stored.
+type changelogTally struct {
+	stored    int // issues whose history was written
+	unchanged int // of those, issues the response did not mention
+}
+
+// syncChangelogBatch fetches and stores one batch in one write. An issue the
+// response does not mention has no status/assignee changes and is stored with
+// an empty history (counted in tally.unchanged, so a site that omits issues
+// for another reason shows up in the log). A rejected request (a 4xx other
+// than 429: the site refused what was asked) is split in half and retried,
+// down to single issues, so one issue the API refuses cannot keep the rest of
+// its batch without history pass after pass; the issue that still fails alone
+// is logged by key and stays due.
+func (s *Syncer) syncChangelogBatch(ctx context.Context, batch []db.JiraChangelogDue, tally *changelogTally) error {
 	ids := make([]string, len(batch))
 	for i, d := range batch {
 		ids[i] = d.ID
 	}
 	histories, err := s.client.BulkFetchChangelogs(ctx, ids, changelogFields)
 	if err != nil {
-		return 0, err
+		if errors.Is(err, ErrAuthRevoked) || ctx.Err() != nil {
+			return err
+		}
+		if !isRequestRejected(err) {
+			return err // an outage is not split: it would only multiply the calls
+		}
+		if len(batch) == 1 {
+			s.logger.Printf("changelog sync: %s: %v", batch[0].Key, err)
+			return err
+		}
+		half := len(batch) / 2
+		errLeft := s.syncChangelogBatch(ctx, batch[:half], tally)
+		if errors.Is(errLeft, ErrAuthRevoked) || ctx.Err() != nil {
+			return errLeft
+		}
+		return errors.Join(errLeft, s.syncChangelogBatch(ctx, batch[half:], tally))
 	}
 	writes := make([]db.JiraIssueHistory, len(batch))
+	unchanged := 0
 	for i, d := range batch {
-		writes[i] = db.JiraIssueHistory{Key: d.Key, UpdatedAt: d.UpdatedAt, Items: s.changelogItems(d.Key, histories[d.ID])}
+		h, ok := histories[d.ID]
+		if !ok {
+			unchanged++
+		}
+		writes[i] = db.JiraIssueHistory{Key: d.Key, UpdatedAt: d.UpdatedAt, Items: s.changelogItems(d.Key, h)}
 	}
 	if err := s.db.ReplaceJiraIssueChangelogs(s.accountID, writes); err != nil {
-		return 0, err
+		return err
 	}
-	return len(batch), nil
+	tally.stored += len(batch)
+	tally.unchanged += unchanged
+	return nil
+}
+
+// isRequestRejected reports whether err is the site refusing the request
+// itself (4xx other than 429), as opposed to an outage or a rate limit.
+func isRequestRejected(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr.Status >= 400 && apiErr.Status < 500 && apiErr.Status != http.StatusTooManyRequests
 }
 
 // changelogItems flattens one issue's histories into the kept fields' rows.

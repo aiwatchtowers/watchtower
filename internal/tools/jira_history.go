@@ -22,7 +22,7 @@ const (
 	defaultTimeInStatusDays   = 30
 	defaultTimeInStatusLimit  = 300
 	maxTimeInStatusIntervals  = 2000
-	maxIssuesWithoutHistory   = 100
+	maxIssuesListed           = 100
 	historyStateSynced        = "synced"
 	historyStateStale         = "stale"
 	historyStateMissing       = "missing"
@@ -59,12 +59,13 @@ func parseStored(s string) (time.Time, bool) {
 // from its creation to end. The status before the first status change is
 // that change's "from" (no change: the current status); the same for the
 // assignee. Changes are applied in stored order (oldest first); a change
-// before creation or at the same instant as the previous one only updates
-// the state.
-func buildStatusIntervals(is db.JiraHistoryIssue, items []db.JiraChangelogItem, end time.Time) []statusInterval {
+// before creation, at the same instant as the previous one, or with an
+// unreadable time only updates the state. ok is false when the issue's own
+// creation time is unreadable: there is no timeline to build.
+func buildStatusIntervals(is db.JiraHistoryIssue, items []db.JiraChangelogItem, end time.Time) (_ []statusInterval, ok bool) {
 	start, ok := parseStored(is.CreatedAt)
 	if !ok {
-		return nil
+		return nil, false
 	}
 	status, assigneeID, assignee := is.Status, is.AssigneeAccountID, is.AssigneeDisplayName
 	seenStatus, seenAssignee := false, false
@@ -88,14 +89,12 @@ func buildStatusIntervals(is db.JiraHistoryIssue, items []db.JiraChangelogItem, 
 		}
 	}
 	for _, it := range items {
-		at, ok := parseStored(it.ChangedAt)
-		if !ok {
-			continue
+		if at, ok := parseStored(it.ChangedAt); ok {
+			if at.After(end) {
+				break
+			}
+			emit(at)
 		}
-		if at.After(end) {
-			break
-		}
-		emit(at)
 		switch it.Field {
 		case "status":
 			status = it.ToString
@@ -104,7 +103,7 @@ func buildStatusIntervals(is db.JiraHistoryIssue, items []db.JiraChangelogItem, 
 		}
 	}
 	emit(end)
-	return out
+	return out, true
 }
 
 // clipInterval cuts iv to [since, until); ok is false when nothing is left.
@@ -246,7 +245,8 @@ func NewGetJiraStatusHistory() *Tool {
 					view.Events = append(view.Events, ev)
 				}
 				if view.History != historyStateMissing {
-					for _, iv := range buildStatusIntervals(is, items, now) {
+					intervals, _ := buildStatusIntervals(is, items, now) // an unreadable created_at leaves the list empty
+					for _, iv := range intervals {
 						iv.StatusCategory = cats[iv.Status]
 						view.StatusIntervals = append(view.StatusIntervals, iv)
 					}
@@ -302,17 +302,25 @@ type timeInStatusTotal struct {
 }
 
 type timeInStatusResult struct {
-	Note                   string              `json:"note"`
-	Since                  time.Time           `json:"since"`
-	Until                  time.Time           `json:"until"`
-	IssuesConsidered       int                 `json:"issues_considered"`
-	Totals                 []timeInStatusTotal `json:"totals"`
-	PerAssignee            []timeInStatusTotal `json:"per_assignee"`
-	Intervals              []statusInterval    `json:"intervals"`
-	Truncated              bool                `json:"truncated"`
-	IssuesWithoutHistory   []string            `json:"issues_without_history,omitempty"`
-	IssuesWithStaleHistory []string            `json:"issues_with_stale_history,omitempty"`
-	StatusCategories       map[string]string   `json:"status_categories"`
+	Note             string              `json:"note"`
+	Since            time.Time           `json:"since"`
+	Until            time.Time           `json:"until"`
+	IssuesConsidered int                 `json:"issues_considered"`
+	Totals           []timeInStatusTotal `json:"totals"`
+	PerAssignee      []timeInStatusTotal `json:"per_assignee"`
+	Intervals        []statusInterval    `json:"intervals"`
+	Truncated        bool                `json:"truncated"`
+	// IssuesWithoutHistoryCount issues are left out of every total (history
+	// not synced yet, or an unreadable creation time); the list names at most
+	// maxIssuesListed of them. Stale issues are counted in.
+	IssuesWithoutHistoryCount   int      `json:"issues_without_history_count"`
+	IssuesWithoutHistory        []string `json:"issues_without_history,omitempty"`
+	IssuesWithStaleHistoryCount int      `json:"issues_with_stale_history_count"`
+	IssuesWithStaleHistory      []string `json:"issues_with_stale_history,omitempty"`
+	// StatusesWithoutCategory are counted statuses no synced issue holds now,
+	// so their category (and whether they are "done") is unknown.
+	StatusesWithoutCategory []string          `json:"statuses_without_category,omitempty"`
+	StatusCategories        map[string]string `json:"status_categories"`
 }
 
 // timeInStatusPeriod resolves since/until: a date-only until covers that
@@ -371,7 +379,7 @@ func NewGetJiraTimeInStatus() *Tool {
 			issues, err := d.ListJiraHistoryIssues(db.JiraHistoryFilter{
 				AccountID: a.AccountID, Keys: normalizeKeys(a.IssueKeys), BoardID: a.BoardID,
 				ProjectKey: strings.ToUpper(strings.TrimSpace(a.Project)), IncludeLinked: includeLinked,
-				ActiveSince: db.FormatJiraTime(since),
+				ActiveSince: activeSince(a, since),
 			})
 			if err != nil {
 				return nil, fmt.Errorf("listing jira issues: %w", err)
@@ -387,6 +395,16 @@ func NewGetJiraTimeInStatus() *Tool {
 			return timeInStatus(a, issues, changelogs, cats, since, until), nil
 		},
 	}
+}
+
+// activeSince is the done-issue pre-filter: an issue already done before the
+// period only adds done-category time, so it is skipped unless the caller
+// asked for done time (include_done, or any explicit statuses).
+func activeSince(a jiraTimeInStatusArgs, since time.Time) string {
+	if a.IncludeDone || len(a.Statuses) > 0 {
+		return ""
+	}
+	return db.FormatJiraTime(since)
 }
 
 // timeInStatus is the tool's pure part: reconstruct, clip, filter, sum.
@@ -421,40 +439,70 @@ func timeInStatus(a jiraTimeInStatusArgs, issues []db.JiraHistoryIssue, changelo
 
 	res := timeInStatusResult{Note: timeInStatusNote, Since: since, Until: until, IssuesConsidered: len(issues),
 		Intervals: []statusInterval{}, StatusCategories: cats}
-	type totalKey struct{ assigneeID, assignee, status string }
+	// A person is keyed by account id (their display name can differ between
+	// the issue row and the changelog); a name stands in only without one.
+	type totalKey struct{ person, status string }
 	totals := map[totalKey]*timeInStatusTotal{}
 	totalIssues := map[totalKey]map[string]bool{}
+	type shownName struct {
+		name string
+		at   time.Time
+	}
+	names := map[string]shownName{} // person → their latest display name
+	uncategorized := map[string]bool{}
 	var all []statusInterval
 	for _, is := range issues {
-		switch historyState(is) {
-		case historyStateMissing:
-			if len(res.IssuesWithoutHistory) < maxIssuesWithoutHistory {
+		state := historyState(is)
+		intervals, ok := buildStatusIntervals(is, changelogs[is.AccountID][is.Key], until)
+		if state == historyStateMissing || !ok {
+			res.IssuesWithoutHistoryCount++
+			if len(res.IssuesWithoutHistory) < maxIssuesListed {
 				res.IssuesWithoutHistory = append(res.IssuesWithoutHistory, is.Key)
 			}
 			continue
-		case historyStateStale:
-			res.IssuesWithStaleHistory = append(res.IssuesWithStaleHistory, is.Key)
 		}
-		for _, iv := range buildStatusIntervals(is, changelogs[is.AccountID][is.Key], until) {
+		if state == historyStateStale {
+			res.IssuesWithStaleHistoryCount++
+			if len(res.IssuesWithStaleHistory) < maxIssuesListed {
+				res.IssuesWithStaleHistory = append(res.IssuesWithStaleHistory, is.Key)
+			}
+		}
+		issueID := fmt.Sprintf("%d/%s", is.AccountID, is.Key)
+		for _, iv := range intervals {
 			iv.StatusCategory = cats[iv.Status]
 			iv, ok := clipInterval(iv, since, until)
 			if !ok || !keep(iv) {
 				continue
 			}
 			all = append(all, iv)
-			for _, k := range []totalKey{{iv.AssigneeAccountID, iv.Assignee, iv.Status}, {iv.AssigneeAccountID, iv.Assignee, ""}} {
+			if iv.StatusCategory == "" {
+				uncategorized[iv.Status] = true
+			}
+			person := iv.AssigneeAccountID
+			if person == "" {
+				person = "name:" + iv.Assignee
+			}
+			for _, k := range []totalKey{{person, iv.Status}, {person, ""}} {
 				t := totals[k]
 				if t == nil {
-					t = &timeInStatusTotal{AssigneeAccountID: k.assigneeID, Assignee: k.assignee, Status: k.status}
+					t = &timeInStatusTotal{AssigneeAccountID: iv.AssigneeAccountID, Status: k.status}
 					totals[k] = t
 					totalIssues[k] = map[string]bool{}
 				}
 				t.Hours += iv.End.Sub(iv.Start).Hours()
-				totalIssues[k][is.Key] = true
+				totalIssues[k][issueID] = true
+			}
+			if iv.Assignee != "" && !iv.End.Before(names[person].at) {
+				names[person] = shownName{iv.Assignee, iv.End}
 			}
 		}
 	}
+	for st := range uncategorized {
+		res.StatusesWithoutCategory = append(res.StatusesWithoutCategory, st)
+	}
+	sort.Strings(res.StatusesWithoutCategory)
 	for k, t := range totals {
+		t.Assignee = names[k.person].name
 		t.Hours = math.Round(t.Hours*timeInStatusHoursDecimals) / timeInStatusHoursDecimals
 		t.Issues = len(totalIssues[k])
 		if t.Assignee == "" && t.AssigneeAccountID == "" {

@@ -225,6 +225,8 @@ func readOnlyGuardCalls() []mcpsdk.CallToolParams {
 		{Name: "list_upcoming_events", Arguments: map[string]any{"hours": 48}},
 		{Name: "list_jira_issues"}, {Name: "get_jira_issue", Arguments: map[string]any{"key": "ABC-1"}},
 		{Name: "list_jira_projects"},
+		{Name: "get_jira_status_history", Arguments: map[string]any{"keys": []any{"ABC-1"}}},
+		{Name: "get_jira_time_in_status", Arguments: map[string]any{"project": "ABC", "include_done": true}},
 		{Name: "get_task_context", Arguments: map[string]any{"key": "ABC-1"}},
 		{Name: "find_experts", Arguments: map[string]any{"topic": "guard", "issue_key": "ABC-1"}},
 		{Name: "list_transcripts"}, {Name: "list_transcripts", Arguments: map[string]any{"query": "guard"}},

@@ -101,9 +101,10 @@ func TestJiraLinkedCandidatesAndPrune(t *testing.T) {
 	require.NoError(t, err)
 	assert.EqualValues(t, 2, n)
 
-	var left int
-	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM jira_linked_issues`).Scan(&left))
-	assert.Equal(t, 2, left)
+	assert.Equal(t, []string{"OTH-1", "OTH-2"}, queryKeys(t, d, `SELECT key FROM jira_linked_issues ORDER BY key`))
+	var cursors int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM jira_changelog_sync WHERE issue_key = 'GONE-1'`).Scan(&cursors))
+	assert.Zero(t, cursors, "an unlinked issue's cursor goes with it")
 	cl, err := d.ListJiraIssueChangelog(1, []string{"GONE-1", "PROJ-2"})
 	require.NoError(t, err)
 	assert.Empty(t, cl["GONE-1"], "an unlinked issue's history goes with it")
@@ -144,4 +145,144 @@ func TestListJiraHistoryIssues_FiltersAndLinkedExpansion(t *testing.T) {
 func replaceHistory(t *testing.T, d *DB, key, updatedAt string, items []JiraChangelogItem) {
 	t.Helper()
 	require.NoError(t, d.ReplaceJiraIssueChangelogs(1, []JiraIssueHistory{{Key: key, UpdatedAt: updatedAt, Items: items}}))
+}
+
+func TestJiraChangelog_AccountsStayApart(t *testing.T) {
+	d := openTestDB(t)
+	SeedTestJiraAccount(t, d)
+	_, err := d.Exec(`INSERT INTO jira_accounts (id, cloud_id) VALUES (2, 'c2')`)
+	require.NoError(t, err)
+	now := time.Now().UTC()
+	ts := FormatJiraTime(now)
+	for _, acct := range []int64{1, 2} {
+		require.NoError(t, d.UpsertJiraIssue(JiraIssue{
+			AccountID: acct, Key: "PROJ-1", ID: "101", ProjectKey: "PROJ", BoardID: 7, Summary: "S",
+			Status: "In Progress", StatusCategory: "in_progress", Labels: `[]`, Components: `[]`,
+			CreatedAt: ts, UpdatedAt: ts, SyncedAt: ts,
+		}))
+		require.NoError(t, d.UpsertJiraIssueLink(JiraIssueLink{AccountID: acct, ID: "l1", SourceKey: "PROJ-1", TargetKey: "OTH-1", LinkType: "Blocks", SyncedAt: ts}))
+		require.NoError(t, d.UpsertJiraLinkedIssues([]JiraLinkedIssue{{AccountID: acct, Key: "OTH-1", ID: "201", UpdatedAt: ts, SyncedAt: ts}}))
+	}
+	require.NoError(t, d.ReplaceJiraIssueChangelogs(2, []JiraIssueHistory{
+		{Key: "PROJ-1", UpdatedAt: ts, Items: []JiraChangelogItem{{HistoryID: "1", Field: "status", ToString: "In Progress", ChangedAt: ts}}},
+		{Key: "OTH-1", UpdatedAt: ts},
+	}))
+
+	due1, err := d.ListJiraChangelogDue(1, 10)
+	require.NoError(t, err)
+	assert.Len(t, due1, 2, "account 2's cursors do not make account 1's issues current")
+	due2, err := d.ListJiraChangelogDue(2, 10)
+	require.NoError(t, err)
+	assert.Empty(t, due2)
+
+	cl1, err := d.ListJiraIssueChangelog(1, []string{"PROJ-1"})
+	require.NoError(t, err)
+	assert.Empty(t, cl1["PROJ-1"])
+
+	// Account 2 loses its link: only its own linked row and history go.
+	_, err = d.Exec(`DELETE FROM jira_issue_links WHERE account_id = 2`)
+	require.NoError(t, err)
+	n, err := d.PruneJiraLinkedIssues(2)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, n)
+	cands1, err := d.ListJiraLinkedCandidates(1, 10)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"OTH-1"}, cands1)
+	cands2, err := d.ListJiraLinkedCandidates(2, 10)
+	require.NoError(t, err)
+	assert.Empty(t, cands2)
+
+	only1, err := d.ListJiraHistoryIssues(JiraHistoryFilter{AccountID: 1, IncludeLinked: true})
+	require.NoError(t, err)
+	require.Len(t, only1, 2)
+	for _, is := range only1 {
+		assert.EqualValues(t, 1, is.AccountID)
+	}
+	both, err := d.ListJiraHistoryIssues(JiraHistoryFilter{Keys: []string{"PROJ-1"}})
+	require.NoError(t, err)
+	assert.Len(t, both, 2, "account_id 0 reads every account")
+}
+
+func TestJiraHistory_BoardIssueWinsOverStaleLinkedRow(t *testing.T) {
+	d := openTestDB(t)
+	SeedTestJiraAccount(t, d)
+	now := time.Now().UTC()
+	changelogTestIssue(t, d, "PROJ-2", "102", "in_progress", FormatJiraTime(now), false)
+	require.NoError(t, d.UpsertJiraLinkedIssues([]JiraLinkedIssue{
+		{AccountID: 1, Key: "PROJ-2", ID: "102", UpdatedAt: FormatJiraTime(now.Add(-time.Hour)), SyncedAt: FormatJiraTime(now)},
+	}))
+
+	got, err := d.ListJiraHistoryIssues(JiraHistoryFilter{Keys: []string{"PROJ-2"}})
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "board", got[0].Source)
+	due, err := d.ListJiraChangelogDue(1, 10)
+	require.NoError(t, err)
+	require.Len(t, due, 1)
+	assert.Equal(t, FormatJiraTime(now), due[0].UpdatedAt)
+}
+
+func TestListJiraHistoryIssues_FollowsLinksInBothDirections(t *testing.T) {
+	d := openTestDB(t)
+	SeedTestJiraAccount(t, d)
+	ts := FormatJiraTime(time.Now().UTC())
+	changelogTestIssue(t, d, "PROJ-1", "101", "in_progress", ts, false)
+	changelogTestIssue(t, d, "PROJ-2", "102", "in_progress", ts, false)
+	// The shared link row is owned by PROJ-2 (synced last).
+	require.NoError(t, d.UpsertJiraIssueLink(JiraIssueLink{AccountID: 1, ID: "l1", SourceKey: "PROJ-2", TargetKey: "PROJ-1", LinkType: "Blocks", SyncedAt: ts}))
+
+	got, err := d.ListJiraHistoryIssues(JiraHistoryFilter{Keys: []string{"PROJ-1"}, IncludeLinked: true})
+	require.NoError(t, err)
+	var keys []string
+	for _, is := range got {
+		keys = append(keys, is.Key)
+	}
+	assert.Equal(t, []string{"PROJ-1", "PROJ-2"}, keys)
+}
+
+func TestListJiraIssueChangelog_OrdersHistoryIDsNumerically(t *testing.T) {
+	d := openTestDB(t)
+	SeedTestJiraAccount(t, d)
+	ts := FormatJiraTime(time.Now().UTC())
+	replaceHistory(t, d, "PROJ-1", ts, []JiraChangelogItem{
+		{HistoryID: "10", Field: "status", FromString: "B", ToString: "C", ChangedAt: ts},
+		{HistoryID: "9", Field: "status", FromString: "A", ToString: "B", ChangedAt: ts},
+	})
+	got, err := d.ListJiraIssueChangelog(1, []string{"PROJ-1"})
+	require.NoError(t, err)
+	require.Len(t, got["PROJ-1"], 2)
+	assert.Equal(t, "9", got["PROJ-1"][0].HistoryID, "same instant: history 9 before 10, not string order")
+}
+
+func TestUpsertJiraIssueBatch_ReplacesAnIssuesLinks(t *testing.T) {
+	d := openTestDB(t)
+	SeedTestJiraAccount(t, d)
+	ts := FormatJiraTime(time.Now().UTC())
+	issue := JiraIssue{AccountID: 1, Key: "PROJ-1", ID: "101", ProjectKey: "PROJ", Summary: "S", Status: "Open",
+		StatusCategory: "todo", Labels: `[]`, Components: `[]`, CreatedAt: ts, UpdatedAt: ts, SyncedAt: ts}
+	require.NoError(t, d.UpsertJiraIssueBatch([]JiraIssue{issue}, []JiraIssueLink{
+		{AccountID: 1, ID: "l1", SourceKey: "PROJ-1", TargetKey: "OTH-1", LinkType: "Blocks", SyncedAt: ts},
+		{AccountID: 1, ID: "l2", SourceKey: "PROJ-1", TargetKey: "OTH-2", LinkType: "Blocks", SyncedAt: ts},
+	}))
+	require.NoError(t, d.UpsertJiraIssueBatch([]JiraIssue{issue}, []JiraIssueLink{
+		{AccountID: 1, ID: "l2", SourceKey: "PROJ-1", TargetKey: "OTH-2", LinkType: "Blocks", SyncedAt: ts},
+	}))
+
+	targets := queryKeys(t, d, `SELECT target_key FROM jira_issue_links WHERE account_id = 1 ORDER BY target_key`)
+	assert.Equal(t, []string{"OTH-2"}, targets, "a link removed in Jira is gone after the issue is re-synced")
+}
+
+func queryKeys(t *testing.T, d *DB, q string) []string {
+	t.Helper()
+	rows, err := d.Query(q)
+	require.NoError(t, err)
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var k string
+		require.NoError(t, rows.Scan(&k))
+		out = append(out, k)
+	}
+	require.NoError(t, rows.Err())
+	return out
 }

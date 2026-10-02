@@ -60,7 +60,14 @@ CREATE TABLE IF NOT EXISTS jira_linked_issues (
     PRIMARY KEY (account_id, key)
 );
 
+-- The linked-issue queries (candidates, prune, link expansion) look links up
+-- by either end; jira_issue_links had only its (account_id, id) key.
+CREATE INDEX IF NOT EXISTS idx_jira_issue_links_target ON jira_issue_links(account_id, target_key);
+CREATE INDEX IF NOT EXISTS idx_jira_issue_links_source ON jira_issue_links(account_id, source_key);
+
 -- +goose Down
+DROP INDEX IF EXISTS idx_jira_issue_links_source;
+DROP INDEX IF EXISTS idx_jira_issue_links_target;
 DROP TABLE IF EXISTS jira_linked_issues;
 DROP TABLE IF EXISTS jira_changelog_sync;
 DROP INDEX IF EXISTS idx_jira_issue_changelog_issue;
