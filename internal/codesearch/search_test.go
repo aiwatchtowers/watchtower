@@ -116,11 +116,16 @@ func TestRun_Word(t *testing.T) {
 	if len(got) != 3 {
 		t.Errorf("$x without --word = %v, want 3", positions(got))
 	}
-	// A rejected candidate does not hide a later one on the same line.
-	write(t, root, "b.go", "ida id\n")
-	got, _ = search(t, root, Options{Query: "id", Word: true})
-	if p := positions(got); !slices.Contains(p, "b.go:1:5") {
-		t.Errorf("--word id = %v, want b.go:1:5", p)
+	// `$` is an identifier character: `x` alone is not a word inside `$x`.
+	got, _ = search(t, root, Options{Query: "x", Word: true})
+	if len(got) != 0 {
+		t.Errorf("--word x = %v, want none", positions(got))
+	}
+	// A rejected candidate does not hide an overlapping one after it.
+	write(t, root, "b.txt", "xa-a-a\n")
+	got, _ = search(t, root, Options{Query: "a-a", Word: true})
+	if p := positions(got); !slices.Equal(p, []string{"b.txt:1:4"}) {
+		t.Errorf("--word a-a = %v, want [b.txt:1:4]", p)
 	}
 }
 
