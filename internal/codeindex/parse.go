@@ -73,6 +73,7 @@ func (t *tsParser) parse(l *langSpec, src []byte) ([]Symbol, bool, error) {
 	}
 	var spans []span
 	seen := map[uint]bool{}
+	cols := &columns{src: src}
 	tree := src
 	if l.mask != nil {
 		tree = l.mask(src)
@@ -94,7 +95,7 @@ func (t *tsParser) parse(l *langSpec, src []byte) ([]Symbol, bool, error) {
 			return
 		}
 		seen[name.StartByte()] = true
-		if s, ok := symbolAt(l, src, name, def, kind); ok {
+		if s, ok := symbolAt(l, src, cols, name, def, kind); ok {
 			spans = append(spans, s)
 		}
 	})
@@ -107,7 +108,7 @@ func (t *tsParser) parse(l *langSpec, src []byte) ([]Symbol, bool, error) {
 // symbolAt builds the symbol a match names; ok=false drops it (a kind
 // outside the set, a local, or an empty name: a node the parser inserted
 // to recover from an error).
-func symbolAt(l *langSpec, src []byte, name, def *ts.Node, kind Kind) (span, bool) {
+func symbolAt(l *langSpec, src []byte, cols *columns, name, def *ts.Node, kind Kind) (span, bool) {
 	var container string
 	if r := refiners[l.id]; r != nil {
 		kind, container = r(src, def, kind)
@@ -124,7 +125,7 @@ func symbolAt(l *langSpec, src []byte, name, def *ts.Node, kind Kind) (span, boo
 			Name:      symbolName(l, src, name, def),
 			Kind:      kind,
 			Line:      int(name.StartPosition().Row) + 1,
-			Col:       utf16Col(src, int(name.StartByte())),
+			Col:       cols.at(int(name.StartByte())),
 			EndLine:   int(endRow) + 1,
 			Container: container,
 			Signature: signature(l, src, outer, def),
@@ -331,7 +332,7 @@ func signature(l *langSpec, src []byte, outer, def *ts.Node) string {
 	end := def.EndByte()
 	if body := bodyOf(l, def); body != nil {
 		end = body.StartByte()
-	} else if nl := strings.IndexByte(string(src[start:end]), '\n'); nl >= 0 {
+	} else if nl := strings.IndexByte(window(src, int(start), int(end)), '\n'); nl >= 0 {
 		end = start + uint(nl)
 	}
 	for i := range def.ChildCount() {
@@ -340,7 +341,7 @@ func signature(l *langSpec, src []byte, outer, def *ts.Node) string {
 			break
 		}
 	}
-	s := strings.TrimSpace(string(src[start:end]))
+	s := strings.TrimSpace(window(src, int(start), int(end)))
 	s = strings.TrimSpace(strings.TrimRight(s, "{:="))
 	return clip(s)
 }

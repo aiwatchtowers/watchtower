@@ -364,6 +364,7 @@ type jsonOutline struct {
 	// line counts the lines up to lineFrom, for lineOf's forward-only
 	// lookups.
 	line, lineFrom int
+	cols           columns
 }
 
 // jsonKeys lists the keys of a JSON file's top-level object, in order,
@@ -372,7 +373,7 @@ type jsonOutline struct {
 // skipped; only the first top-level value is read (a JSON Lines file
 // lists its first record's keys); a top-level array or scalar lists none.
 func jsonKeys(src []byte) []Symbol {
-	s := jsonOutline{src: src, open: -1, lastSig: -1, line: 1}
+	s := jsonOutline{src: src, open: -1, lastSig: -1, line: 1, cols: columns{src: src}}
 	for i := 0; i < len(src) && !s.done; {
 		i = s.step(i)
 	}
@@ -431,18 +432,18 @@ func (s *jsonOutline) key(start, end int) {
 	if err := json.Unmarshal(s.src[start:end], &name); err != nil {
 		name = unquote(string(s.src[start:end]))
 	}
-	lineEnd := bytes.IndexByte(s.src[start:], '\n')
-	if lineEnd < 0 {
-		lineEnd = len(s.src) - start
+	sig := window(s.src, start, len(s.src))
+	if nl := strings.IndexByte(sig, '\n'); nl >= 0 {
+		sig = sig[:nl]
 	}
 	line := s.lineOf(start)
 	s.syms = append(s.syms, Symbol{
 		Name:      name,
 		Kind:      KindField,
 		Line:      line,
-		Col:       utf16Col(s.src, start+1),
+		Col:       s.cols.at(start + 1),
 		EndLine:   line,
-		Signature: clip(strings.TrimRight(strings.TrimSpace(string(s.src[start:start+lineEnd])), ",{[ \t")),
+		Signature: clip(strings.TrimRight(strings.TrimSpace(sig), ",{[ \t")),
 		Outline:   true,
 	})
 	s.open = len(s.syms) - 1

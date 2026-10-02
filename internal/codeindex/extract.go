@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"slices"
 	"strings"
+	"unicode"
 	"unicode/utf16"
 	"unicode/utf8"
 )
@@ -11,24 +12,97 @@ import (
 // textLimit caps a signature and a doc, in characters.
 const textLimit = 200
 
-// clip collapses whitespace and caps s at textLimit characters.
+// clip collapses whitespace and caps s at textLimit characters. It reads
+// s only as far as the cap.
 func clip(s string) string {
-	s = strings.Join(strings.Fields(s), " ")
-	if utf8.RuneCountInString(s) <= textLimit {
-		return s
+	var b strings.Builder
+	n := 0         // characters in b
+	space := false // a space is due before the next character
+	for _, r := range s {
+		if unicode.IsSpace(r) {
+			space = n > 0
+			continue
+		}
+		if space {
+			if n == textLimit {
+				return strings.TrimSpace(trimLastRune(b.String())) + "…"
+			}
+			b.WriteByte(' ')
+			n++
+			space = false
+		}
+		if n == textLimit {
+			return strings.TrimSpace(trimLastRune(b.String())) + "…"
+		}
+		b.WriteRune(r)
+		n++
 	}
-	r := []rune(s)
-	return strings.TrimSpace(string(r[:textLimit-1])) + "…"
+	return b.String()
 }
 
-// utf16Col is the 1-based UTF-16 column of byte offset off in src.
+// trimLastRune drops s's last character.
+func trimLastRune(s string) string {
+	_, size := utf8.DecodeLastRuneInString(s)
+	return s[:len(s)-size]
+}
+
+// utf16Col is the 1-based UTF-16 column of byte offset off in src. It
+// scans back to the line's start: for one offset per line (a scanner's
+// line), not for many on one line — see columns.
 func utf16Col(src []byte, off int) int {
 	start := bytes.LastIndexByte(src[:off], '\n') + 1
+	return utf16Len(src[start:off]) + 1
+}
+
+// utf16Len is the length of b in UTF-16 units; an invalid UTF-8 byte
+// counts one.
+func utf16Len(b []byte) int {
 	n := 0
-	for _, r := range string(src[start:off]) {
+	for _, r := range string(b) {
 		n += utf16.RuneLen(r)
 	}
-	return n + 1
+	return n
+}
+
+// columns turns byte offsets of one source into 1-based UTF-16 columns,
+// carrying the column forward from the previous offset: offsets asked for
+// in document order cost the distance between them, so a file written on
+// one line (a minified bundle) is linear, not quadratic, in its symbols.
+// An offset before the previous one rescans from its line's start.
+type columns struct {
+	src []byte
+	// off is the previous offset, col its 0-based column.
+	off, col int
+}
+
+func (c *columns) at(off int) int {
+	if off < c.off {
+		c.off = bytes.LastIndexByte(c.src[:off], '\n') + 1
+		c.col = 0
+	}
+	gap := c.src[c.off:off]
+	if nl := bytes.LastIndexByte(gap, '\n'); nl >= 0 {
+		gap, c.col = gap[nl+1:], 0
+	}
+	c.col += utf16Len(gap)
+	c.off = off
+	return c.col + 1
+}
+
+// sigWindow bounds the source a signature is cut from, so a definition on
+// a megabyte line costs a bounded copy; clip keeps far fewer characters.
+const sigWindow = 4 << 10
+
+// window is src[start:end], cut to at most sigWindow bytes at a character
+// boundary.
+func window(src []byte, start, end int) string {
+	if end-start > sigWindow {
+		end = start + sigWindow
+		for end > start && !utf8.RuneStart(src[end]) {
+			end--
+		}
+	}
+	return string(src[start:end])
 }
 
 // firstSentence is the text up to and including the first period that
