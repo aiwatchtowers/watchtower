@@ -348,3 +348,19 @@ func TestSyncChangelogs_IssueAbsentFromResponseIsStoredWithoutChanges(t *testing
 	assert.Len(t, got["PROJ-1"], 1)
 	assert.Empty(t, got["PROJ-2"])
 }
+
+func TestSyncChangelogs_RequestLevelRejectionStopsSplitting(t *testing.T) {
+	database := syncerDBWithBoard(t, "PROJ")
+	seedBoardIssues(t, database, 100)
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		http.Error(w, `{"errorMessages":["not here"]}`, http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+	s := quietSyncer(t, database, srv.URL)
+	s.SetChangelogLimit(500)
+
+	require.Error(t, s.syncChangelogs(context.Background()))
+	assert.EqualValues(t, 3, calls.Load(), "the batch and its two halves, then stop")
+}

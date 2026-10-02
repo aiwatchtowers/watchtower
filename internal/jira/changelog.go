@@ -189,8 +189,10 @@ func (s *Syncer) syncLinkedIssues(ctx context.Context) error {
 // that came back, and one fetch_error row per requested key that did not. An
 // issue returned under a key nobody asked for (Jira follows a moved issue to
 // its new key) is dropped: no link names that key, so the next prune would
-// delete it and the fetch would repeat every rotation. It shows up once the
-// linking issue is re-synced and its link carries the new key.
+// delete it and the fetch would repeat every rotation. It shows up only once
+// the linking issue is re-synced for some change of its own (a move of the
+// target does not touch it) and its link carries the new key; until then the
+// old key rotates with a fetch_error, one request slot per rotation.
 func (s *Syncer) linkedRows(requested []string, issues []Issue, issueErrs []BulkIssueError) []db.JiraLinkedIssue {
 	now := db.FormatJiraTime(time.Now())
 	errByID := map[string]string{}
@@ -287,37 +289,62 @@ type changelogTally struct {
 	unchanged int // of those, issues the response did not mention
 }
 
-// syncChangelogBatch fetches and stores one batch in one write. An issue the
-// response does not mention has no status/assignee changes and is stored with
-// an empty history (counted in tally.unchanged, so a site that omits issues
-// for another reason shows up in the log). A rejected request (a 4xx other
-// than 429: the site refused what was asked) is split in half and retried,
-// down to single issues, so one issue the API refuses cannot keep the rest of
-// its batch without history pass after pass; the issue that still fails alone
-// is logged by key and stays due.
+// syncChangelogBatch fetches and stores one batch; a request the site
+// rejects is narrowed down by splitRejected.
 func (s *Syncer) syncChangelogBatch(ctx context.Context, batch []db.JiraChangelogDue, tally *changelogTally) error {
+	err := s.storeChangelogBatch(ctx, batch, tally)
+	if err == nil || len(batch) == 1 || !isRequestRejected(err) || errors.Is(err, ErrAuthRevoked) || ctx.Err() != nil {
+		return err // an outage is not split: it would only multiply the calls
+	}
+	return s.splitRejected(ctx, batch, tally)
+}
+
+// splitRejected retries a rejected batch as two halves, then narrows each
+// half that is still rejected the same way, so one issue the API refuses
+// cannot keep the rest of its batch without history pass after pass. When
+// both halves are rejected the refusal is not about one issue (the endpoint
+// itself, a scope), so it stops there: three calls, not one per issue. An
+// issue rejected on its own is logged by key and stays due.
+func (s *Syncer) splitRejected(ctx context.Context, batch []db.JiraChangelogDue, tally *changelogTally) error {
+	halves := [][]db.JiraChangelogDue{batch[:len(batch)/2], batch[len(batch)/2:]}
+	errs := make([]error, len(halves))
+	for i, h := range halves {
+		errs[i] = s.storeChangelogBatch(ctx, h, tally)
+		if errors.Is(errs[i], ErrAuthRevoked) || ctx.Err() != nil {
+			return errs[i]
+		}
+	}
+	if isRequestRejected(errs[0]) && isRequestRejected(errs[1]) {
+		return errors.Join(errs...)
+	}
+	for i, h := range halves {
+		switch {
+		case !isRequestRejected(errs[i]):
+		case len(h) == 1:
+			s.logger.Printf("changelog sync: %s: %v", h[0].Key, errs[i])
+		default:
+			errs[i] = s.splitRejected(ctx, h, tally)
+			if errors.Is(errs[i], ErrAuthRevoked) || ctx.Err() != nil {
+				return errs[i]
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// storeChangelogBatch fetches one batch's histories in one request and
+// stores them in one write. An issue the response does not mention has no
+// status/assignee changes and is stored with an empty history (counted in
+// tally.unchanged, so a site that omits issues for another reason shows up
+// in the log).
+func (s *Syncer) storeChangelogBatch(ctx context.Context, batch []db.JiraChangelogDue, tally *changelogTally) error {
 	ids := make([]string, len(batch))
 	for i, d := range batch {
 		ids[i] = d.ID
 	}
 	histories, err := s.client.BulkFetchChangelogs(ctx, ids, changelogFields)
 	if err != nil {
-		if errors.Is(err, ErrAuthRevoked) || ctx.Err() != nil {
-			return err
-		}
-		if !isRequestRejected(err) {
-			return err // an outage is not split: it would only multiply the calls
-		}
-		if len(batch) == 1 {
-			s.logger.Printf("changelog sync: %s: %v", batch[0].Key, err)
-			return err
-		}
-		half := len(batch) / 2
-		errLeft := s.syncChangelogBatch(ctx, batch[:half], tally)
-		if errors.Is(errLeft, ErrAuthRevoked) || ctx.Err() != nil {
-			return errLeft
-		}
-		return errors.Join(errLeft, s.syncChangelogBatch(ctx, batch[half:], tally))
+		return err
 	}
 	writes := make([]db.JiraIssueHistory, len(batch))
 	unchanged := 0

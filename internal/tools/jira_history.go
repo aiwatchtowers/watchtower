@@ -375,18 +375,18 @@ func NewGetJiraTimeInStatus() *Tool {
 			if err != nil {
 				return nil, err
 			}
+			cats, err := d.JiraStatusCategories()
+			if err != nil {
+				return nil, fmt.Errorf("reading jira status categories: %w", err)
+			}
 			includeLinked := a.IncludeLinked == nil || *a.IncludeLinked
 			issues, err := d.ListJiraHistoryIssues(db.JiraHistoryFilter{
 				AccountID: a.AccountID, Keys: normalizeKeys(a.IssueKeys), BoardID: a.BoardID,
 				ProjectKey: strings.ToUpper(strings.TrimSpace(a.Project)), IncludeLinked: includeLinked,
-				ActiveSince: activeSince(a, since),
+				ActiveSince: activeSince(a, cats, since),
 			})
 			if err != nil {
 				return nil, fmt.Errorf("listing jira issues: %w", err)
-			}
-			cats, err := d.JiraStatusCategories()
-			if err != nil {
-				return nil, fmt.Errorf("reading jira status categories: %w", err)
 			}
 			changelogs, err := changelogByAccount(d, issues)
 			if err != nil {
@@ -398,11 +398,17 @@ func NewGetJiraTimeInStatus() *Tool {
 }
 
 // activeSince is the done-issue pre-filter: an issue already done before the
-// period only adds done-category time, so it is skipped unless the caller
-// asked for done time (include_done, or any explicit statuses).
-func activeSince(a jiraTimeInStatusArgs, since time.Time) string {
-	if a.IncludeDone || len(a.Statuses) > 0 {
+// period only adds time in its done status, so it is skipped unless the
+// caller asked for done time — include_done, or a named status that is done
+// or of unknown category.
+func activeSince(a jiraTimeInStatusArgs, cats map[string]string, since time.Time) string {
+	if a.IncludeDone {
 		return ""
+	}
+	for _, st := range a.Statuses {
+		if cat := cats[strings.TrimSpace(st)]; cat == "" || cat == statusCategoryDone {
+			return ""
+		}
 	}
 	return db.FormatJiraTime(since)
 }

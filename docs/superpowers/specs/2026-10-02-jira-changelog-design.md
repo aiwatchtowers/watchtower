@@ -137,7 +137,10 @@ excluded (its reconstruction would claim the current status since creation) and 
 - Fields other than status and assignee.
 - Bare-key ambiguity across two connected sites stays as in `get_jira_issue` (pass `account_id`).
 - The changelog of an issue that left the selected boards stays until the account is deleted.
-- A moved linked issue is invisible until the issue linking to it re-syncs.
+- A moved linked issue is invisible until the issue linking to it changes for some other reason
+  and re-syncs (moving the target does not update the linking issue).
+- Links already stale before this change stay until their source issue changes again; there is no
+  one-time cleanup (it would need a full re-scan of every project).
 - A status that only appears in history (renamed or retired) has no known category; it is listed
   in `statuses_without_category` and counted as not done.
 - `watchtower jira sync` (manual) does not run the history step, like comment sync; the daemon does.

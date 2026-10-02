@@ -228,9 +228,24 @@ func TestTimeInStatus_PersonKeyedByAccountAndUnassigned(t *testing.T) {
 
 func TestActiveSince_DoneTimeRequested(t *testing.T) {
 	since := time.Now().UTC()
-	assert.Equal(t, db.FormatJiraTime(since), activeSince(jiraTimeInStatusArgs{}, since))
-	assert.Empty(t, activeSince(jiraTimeInStatusArgs{IncludeDone: true}, since))
-	assert.Empty(t, activeSince(jiraTimeInStatusArgs{Statuses: []string{"Done"}}, since))
+	cats := map[string]string{"Done": "done", "In Progress": "in_progress"}
+	assert.Equal(t, db.FormatJiraTime(since), activeSince(jiraTimeInStatusArgs{}, cats, since))
+	assert.Equal(t, db.FormatJiraTime(since), activeSince(jiraTimeInStatusArgs{Statuses: []string{"In Progress"}}, cats, since),
+		"an issue done before the period has no In Progress time in it")
+	assert.Empty(t, activeSince(jiraTimeInStatusArgs{IncludeDone: true}, cats, since))
+	assert.Empty(t, activeSince(jiraTimeInStatusArgs{Statuses: []string{"Done"}}, cats, since))
+	assert.Empty(t, activeSince(jiraTimeInStatusArgs{Statuses: []string{"Archived"}}, cats, since), "unknown category: keep")
+}
+
+func TestTimeInStatus_SameKeyOnTwoAccountsIsTwoIssues(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	created := now.Add(-4 * time.Hour)
+	a, b := historyIssue("A-1", created, "In Progress", "acc-a", "Alice"), historyIssue("A-1", created, "In Progress", "acc-a", "Alice")
+	b.AccountID = 2
+	res := timeInStatus(jiraTimeInStatusArgs{}, []db.JiraHistoryIssue{a, b}, nil, map[string]string{"In Progress": "in_progress"}, created, now)
+	require.Len(t, res.PerAssignee, 1)
+	assert.Equal(t, 2, res.PerAssignee[0].Issues)
+	assert.Equal(t, 8.0, res.PerAssignee[0].Hours)
 }
 
 func TestTimeInStatusPeriod_DateOnlyUntilCoversTheDay(t *testing.T) {

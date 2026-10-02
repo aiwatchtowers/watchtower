@@ -163,6 +163,7 @@ func TestJiraChangelog_AccountsStayApart(t *testing.T) {
 		require.NoError(t, d.UpsertJiraIssueLink(JiraIssueLink{AccountID: acct, ID: "l1", SourceKey: "PROJ-1", TargetKey: "OTH-1", LinkType: "Blocks", SyncedAt: ts}))
 		require.NoError(t, d.UpsertJiraLinkedIssues([]JiraLinkedIssue{{AccountID: acct, Key: "OTH-1", ID: "201", UpdatedAt: ts, SyncedAt: ts}}))
 	}
+	replaceHistory(t, d, "OTH-1", ts, []JiraChangelogItem{{HistoryID: "5", Field: "status", ChangedAt: ts}}) // account 1
 	require.NoError(t, d.ReplaceJiraIssueChangelogs(2, []JiraIssueHistory{
 		{Key: "PROJ-1", UpdatedAt: ts, Items: []JiraChangelogItem{{HistoryID: "1", Field: "status", ToString: "In Progress", ChangedAt: ts}}},
 		{Key: "OTH-1", UpdatedAt: ts},
@@ -170,7 +171,8 @@ func TestJiraChangelog_AccountsStayApart(t *testing.T) {
 
 	due1, err := d.ListJiraChangelogDue(1, 10)
 	require.NoError(t, err)
-	assert.Len(t, due1, 2, "account 2's cursors do not make account 1's issues current")
+	require.Len(t, due1, 1, "account 2's cursors do not make account 1's issues current")
+	assert.Equal(t, "PROJ-1", due1[0].Key)
 	due2, err := d.ListJiraChangelogDue(2, 10)
 	require.NoError(t, err)
 	assert.Empty(t, due2)
@@ -185,6 +187,12 @@ func TestJiraChangelog_AccountsStayApart(t *testing.T) {
 	n, err := d.PruneJiraLinkedIssues(2)
 	require.NoError(t, err)
 	assert.EqualValues(t, 1, n)
+	kept, err := d.ListJiraIssueChangelog(1, []string{"OTH-1"})
+	require.NoError(t, err)
+	assert.Len(t, kept["OTH-1"], 1, "account 2's prune leaves account 1's history")
+	due1, err = d.ListJiraChangelogDue(1, 10)
+	require.NoError(t, err)
+	assert.Len(t, due1, 1, "and its cursor")
 	cands1, err := d.ListJiraLinkedCandidates(1, 10)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"OTH-1"}, cands1)
