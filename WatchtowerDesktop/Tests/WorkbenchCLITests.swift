@@ -183,7 +183,7 @@ final class WorkbenchCLITests: XCTestCase {
     func testStatusWithoutCurrentMCPKeepsTheOldRule() throws {
         let older = try JSONDecoder().decode(WorkbenchInstallStatus.self, from: Data(
             #"{"skill":"unchanged","hook":true,"mcp":true,"legacy":true,"legacy_skill":""}"#.utf8))
-        XCTAssertNil(older.currentMCP)
+        XCTAssertEqual(older.currentMCP, older.mcp)
         XCTAssertFalse(older.needsRepair)
     }
 

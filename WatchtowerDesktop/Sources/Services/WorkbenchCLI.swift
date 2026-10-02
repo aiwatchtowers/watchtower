@@ -359,8 +359,9 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
     /// `foreign`.
     let legacySkill: String
     /// The watchtower-workbench registration itself; `mcp` also counts the
-    /// old one. nil from a CLI that does not send the key.
-    let currentMCP: Bool?
+    /// old one. A CLI that does not send the key gets `mcp`, which keeps the
+    /// pre-`current_mcp` repair rule.
+    let currentMCP: Bool
 
     enum CodingKeys: String, CodingKey {
         case skill, hook, mcp, legacy
@@ -378,7 +379,7 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         claudeFound: Bool = true,
         legacy: Bool = false,
         legacySkill: String = "",
-        currentMCP: Bool? = nil
+        currentMCP: Bool = true
     ) {
         self.legacy = legacy
         self.currentMCP = currentMCP
@@ -402,8 +403,8 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         // A CLI older than the Workbench rename knows no legacy folder.
         legacy = try c.decodeIfPresent(Bool.self, forKey: .legacy) ?? false
         legacySkill = try c.decodeIfPresent(String.self, forKey: .legacySkill) ?? ""
-        // nil from a CLI older than `current_mcp`: needsRepair keeps the old rule.
-        currentMCP = try c.decodeIfPresent(Bool.self, forKey: .currentMCP)
+        // A CLI older than `current_mcp`: fall back to `mcp`, so needsRepair keeps the old rule.
+        currentMCP = try c.decodeIfPresent(Bool.self, forKey: .currentMCP) ?? mcp
     }
 
     /// Whether Repair can fix something. Without `claude` an unregistered
@@ -417,7 +418,7 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
     /// resync whose `mcp add` failed: the skill names tools the session does
     /// not have, so Repair re-runs the add.
     private var missesCurrentMCP: Bool {
-        skill != "missing" && currentMCP == false
+        skill != "missing" && !currentMCP
     }
 
     /// The install icon's tooltip for a folder set up before the Workbench
