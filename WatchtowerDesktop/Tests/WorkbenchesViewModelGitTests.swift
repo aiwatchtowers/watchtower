@@ -146,7 +146,7 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
         XCTAssertEqual(runner.invocations[1], switchArgs(["--stash"]))
         XCTAssertNil(vm.pendingBranchConfirmation[project.id])
         XCTAssertEqual(vm.gitStatus[project.id]?.branch, "feature/x")
-        XCTAssertEqual(vm.gitNotices[project.id], "Your changes are saved in the stash entry "
+        XCTAssertEqual(vm.gitStashNotes[project.id]?.text, "Your changes are saved in the stash entry "
                        + "\"watchtower: switching from main to feature/x [d0a6]\" — get them back with git stash apply 37ec889.")
     }
 
@@ -342,7 +342,7 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
         let vm = makeVM(runner)
         await vm.switchBranch("feature/x", project: project)
         XCTAssertEqual(vm.gitErrors[project.id], "git failed: error: Your local changes would be overwritten")
-        XCTAssertEqual(vm.gitNotices[project.id],
+        XCTAssertEqual(vm.gitStashNotes[project.id]?.text,
                        "Your changes are back in the work tree; the stash entry \"watchtower: m\" was kept on the stack.")
     }
 
@@ -355,9 +355,54 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
         ])
         let vm = makeVM(runner)
         await vm.switchBranch("feature/x", project: project)
-        XCTAssertEqual(vm.gitErrors[project.id]?.contains("only in the stash entry \"watchtower: m\""), true)
-        XCTAssertEqual(vm.gitErrors[project.id]?.contains("git stash apply d28fb3e"), true)
+        XCTAssertEqual(vm.gitErrors[project.id], "git failed: error: simulated switch failure")
+        XCTAssertEqual(vm.gitStashNotes[project.id]?.isError, true)
+        XCTAssertEqual(vm.gitStashNotes[project.id]?.text.contains("only in the stash entry \"watchtower: m\""), true)
+        XCTAssertEqual(vm.gitStashNotes[project.id]?.text.contains("git stash apply d28fb3e"), true)
         XCTAssertNil(vm.gitNotices[project.id])
+    }
+
+    /// The stash note is the only place the app names the stash sha: it
+    /// outlives reopening the popover, a status refresh and a switch that
+    /// stashed nothing, until the owner dismisses it or a newer stash
+    /// replaces it.
+    func testTheStashNoteStaysUntilDismissedOrReplaced() async throws {
+        let runner = ScriptedCLIRunner(results: [
+            .success(switchResult(#""switched":false,"error":"error: simulated switch failure","stashed":"d28fb3e","#
+                                  + #""stash_message":"watchtower: m","stash_error":"error: conflict""#)),
+            .success(status()),
+            .success(branches()),
+            // The popover reopens, the status refreshes.
+            .success(branches()),
+            .success(status()),
+            // A switch that stashed nothing.
+            .success(switchResult(#""switched":true"#)),
+            .success(status(branch: "feature/x")),
+            .success(branches()),
+            // A newer stash.
+            .success(switchResult(#""switched":true,"stashed":"37ec889","stash_message":"watchtower: n""#)),
+            .success(status(branch: "feature/x")),
+            .success(branches())
+        ])
+        let vm = makeVM(runner)
+        await vm.switchBranch("feature/x", project: project)
+        let first = try XCTUnwrap(vm.gitStashNotes[project.id])
+        XCTAssertTrue(first.text.contains("git stash apply d28fb3e"))
+
+        await vm.loadBranches(project: project)
+        await vm.refreshGitStatus(projectID: project.id)
+        XCTAssertNil(vm.gitErrors[project.id], "a transient error still clears on reopen")
+        XCTAssertEqual(vm.gitStashNotes[project.id], first, "the stash note survives reopen and refresh")
+
+        await vm.switchBranch("feature/x", project: project)
+        XCTAssertEqual(vm.gitStashNotes[project.id], first, "a switch without a stash leaves it")
+
+        await vm.switchBranch("feature/x", project: project)
+        XCTAssertEqual(vm.gitStashNotes[project.id]?.entry, "watchtower: n", "a newer stash replaces it")
+        XCTAssertEqual(vm.gitStashNotes[project.id]?.isError, false)
+
+        vm.dismissStashNote(projectID: project.id)
+        XCTAssertNil(vm.gitStashNotes[project.id])
     }
 
     func testAWarningAfterASwitchIsANotice() async {

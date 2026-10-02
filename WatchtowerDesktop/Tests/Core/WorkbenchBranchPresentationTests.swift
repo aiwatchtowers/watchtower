@@ -122,6 +122,19 @@ final class WorkbenchBranchPresentationTests: XCTestCase {
         XCTAssertFalse(confirmation.message.contains("Claude Code"))
     }
 
+    /// Go may ask about a dirty tree without a count: no "0 changes" line.
+    func testConfirmationWithoutACountOmitsTheCountSentence() throws {
+        let result = WorkbenchGitSwitchResult(branch: "feature/x", needsConfirmation: [.uncommittedChanges])
+        let confirmation = try XCTUnwrap(Pres.confirmation(for: result, stashing: false))
+        XCTAssertFalse(confirmation.message.contains("0 changes"))
+        XCTAssertTrue(confirmation.message.hasPrefix("Uncommitted changes will be stashed (untracked files included)"),
+                      confirmation.message)
+        let stashing = try XCTUnwrap(Pres.confirmation(
+            for: WorkbenchGitSwitchResult(branch: "feature/x", needsConfirmation: [.agentRunning]), stashing: true
+        ))
+        XCTAssertFalse(stashing.message.contains("0 changes"))
+    }
+
     func testConfirmationForARunningAgent() throws {
         let result = WorkbenchGitSwitchResult(branch: "feature/x", needsConfirmation: [.agentRunning])
         let confirmation = try XCTUnwrap(Pres.confirmation(for: result, stashing: false))
@@ -191,17 +204,21 @@ final class WorkbenchBranchPresentationTests: XCTestCase {
 
     /// The stash stack is shared by every worktree and session: the note
     /// names the entry and applies it by id — never `git stash pop`.
-    func testAStashNoteNamesTheEntryAndAppliesItByID() {
+    func testAStashNoteNamesTheEntryAndAppliesItByID() throws {
         let outcome = Pres.outcome(WorkbenchGitSwitchResult(switched: true, stashed: sha, stashMessage: entry))
-        XCTAssertNil(outcome.error)
-        XCTAssertEqual(outcome.notice, "Your changes are saved in the stash entry \"\(entry)\" — get them back with git stash apply \(sha).")
-        XCTAssertFalse(outcome.notice?.contains("pop") ?? true)
+        XCTAssertEqual(outcome.error, nil)
+        XCTAssertEqual(outcome.notice, nil, "the stash note is kept apart from the transient notice")
+        let note = try XCTUnwrap(outcome.stash)
+        XCTAssertEqual(note.text, "Your changes are saved in the stash entry \"\(entry)\" — get them back with git stash apply \(sha).")
+        XCTAssertFalse(note.isError)
+        XCTAssertEqual(note.entry, entry)
+        XCTAssertFalse(note.text.contains("pop"))
     }
 
     func testAStashNoteShowsWhateverTheSwitchDid() {
         let failed = Pres.outcome(WorkbenchGitSwitchResult(switched: false, stashed: sha, stashMessage: entry,
                                                            error: "a stash was created but git stash push failed"))
-        XCTAssertEqual(failed.notice?.contains("git stash apply \(sha)"), true, "a stash a failed switch left is named too")
+        XCTAssertEqual(failed.stash?.text.contains("git stash apply \(sha)"), true, "a stash a failed switch left is named too")
         XCTAssertNotNil(failed.error)
     }
 
@@ -209,20 +226,33 @@ final class WorkbenchBranchPresentationTests: XCTestCase {
         let outcome = Pres.outcome(WorkbenchGitSwitchResult(stashed: sha, stashMessage: entry, stashRestored: true,
                                                             error: "fatal: simulated switch failure"))
         XCTAssertEqual(outcome.error, "git failed: fatal: simulated switch failure")
-        XCTAssertEqual(outcome.notice, "Your changes are back in the work tree; the stash entry \"\(entry)\" was kept on the stack.")
+        XCTAssertEqual(outcome.stash?.text, "Your changes are back in the work tree; the stash entry \"\(entry)\" was kept on the stack.")
+        XCTAssertEqual(outcome.stash?.isError, false)
     }
 
     func testAStashThatCouldNotBeAppliedIsAnError() {
         let outcome = Pres.outcome(WorkbenchGitSwitchResult(stashed: sha, stashMessage: entry, stashError: "error: conflict",
                                                             error: "fatal: simulated switch failure"))
         XCTAssertNil(outcome.notice)
-        XCTAssertEqual(outcome.error, "git failed: fatal: simulated switch failure\nYour changes are only in the stash entry "
-                       + "\"\(entry)\" — putting them back failed: error: conflict. Get them back with git stash apply \(sha).")
+        XCTAssertEqual(outcome.error, "git failed: fatal: simulated switch failure")
+        XCTAssertEqual(outcome.stash?.text, "Your changes are only in the stash entry \"\(entry)\" — putting them back failed: "
+                       + "error: conflict. Get them back with git stash apply \(sha).")
+        XCTAssertEqual(outcome.stash?.isError, true)
     }
 
     func testAStashWithoutAMessageIsNamedByItsID() {
-        XCTAssertEqual(Pres.outcome(WorkbenchGitSwitchResult(switched: true, stashed: sha)).notice,
-                       "Your changes are saved in the stash entry \(sha) — get them back with git stash apply \(sha).")
+        let outcome = Pres.outcome(WorkbenchGitSwitchResult(switched: true, stashed: sha))
+        XCTAssertEqual(outcome.stash?.text, "Your changes are saved in the stash entry \(sha) — get them back with git stash apply \(sha).")
+        XCTAssertEqual(outcome.stash?.entry, sha)
+    }
+
+    func testNoStashNoStashNote() {
+        XCTAssertNil(Pres.outcome(WorkbenchGitSwitchResult(switched: true, warning: "hook says no")).stash)
+    }
+
+    func testHelpNamesAPendingStashNote() {
+        XCTAssertEqual(Pres.help(WorkbenchGitStatus(branch: "main"), staleError: nil, pendingBranch: nil, stashEntry: entry),
+                       "main\nStashed changes: \(entry)")
     }
 
     func testUpstreamCaption() {

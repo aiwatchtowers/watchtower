@@ -76,10 +76,17 @@ package enum WorkbenchBranchPresentation {
 
     /// The button's tooltip: the full name, plus an operation in progress,
     /// plus why it may be out of date (the reads since this status failed),
-    /// plus a switch waiting for the owner's confirmation.
-    package static func help(_ status: WorkbenchGitStatus, staleError: String?, pendingBranch: String?) -> String {
+    /// plus a switch waiting for the owner's confirmation, plus a stash note
+    /// the owner has not dismissed (its entry stays findable).
+    package static func help(
+        _ status: WorkbenchGitStatus,
+        staleError: String?,
+        pendingBranch: String?,
+        stashEntry: String? = nil
+    ) -> String {
         var lines = [status.detached ? "Detached HEAD at \(status.head)" : status.branch]
         if let pendingBranch { lines.append(pendingHelp(pendingBranch)) }
+        if let stashEntry { lines.append("Stashed changes: \(stashEntry)") }
         if status.dirty { lines.append("\(changeCount(status.changes)) not committed") }
         if !status.upstream.isEmpty { lines.append("Upstream \(status.upstream)") }
         if !status.operation.isEmpty { lines.append("A \(status.operation) is in progress — switching is refused until it ends") }
@@ -155,8 +162,11 @@ package enum WorkbenchBranchPresentation {
                           + "under it to the ones on \(result.branch).")
         }
         if dirty {
-            parts.append("\(changeCount(result.changes)) not committed. They will be stashed (untracked files "
-                         + "included) and stay in the stash list — Watchtower does not restore them after the switch.")
+            // Go names no count when only the stash rides along (or an old
+            // CLI): no "0 changes" sentence then.
+            let subject = result.changes > 0 ? "\(changeCount(result.changes)) not committed. They" : "Uncommitted changes"
+            parts.append("\(subject) will be stashed (untracked files included) and stay in the stash list — "
+                         + "Watchtower does not restore them after the switch.")
         }
         return BranchSwitchConfirmation(
             branch: result.branch,
@@ -169,11 +179,28 @@ package enum WorkbenchBranchPresentation {
     }
 
     /// What the popover says after a switch or create: `error` in red (why
-    /// it did not happen, or a stash entry the owner's changes are stuck
-    /// in), `notice` as a caption (git's warning, the entry a switch left).
+    /// it did not happen), `notice` as a caption (git's warning), `stash`
+    /// the entry a switch left — kept apart because it outlives the popover.
     package struct Outcome: Equatable, Sendable {
         package let error: String?
         package let notice: String?
+        package let stash: StashNote?
+
+        package init(error: String?, notice: String?, stash: StashNote? = nil) {
+            self.error = error
+            self.notice = notice
+            self.stash = stash
+        }
+    }
+
+    /// The stash entry a switch pushed. The only place the app names its
+    /// sha, so it stays until the owner dismisses it.
+    package struct StashNote: Equatable, Sendable {
+        package let text: String
+        /// Putting the changes back failed: they are only in the stash.
+        package let isError: Bool
+        /// The entry's message, or its sha when it has none.
+        package let entry: String
     }
 
     package static func outcome(_ result: WorkbenchGitSwitchResult) -> Outcome {
@@ -190,24 +217,28 @@ package enum WorkbenchBranchPresentation {
         if !result.warning.isEmpty {
             notices.append("\(result.created ? "Created" : "Switched to") \(result.branch), but git reported: \(result.warning)")
         }
-        if !result.stashed.isEmpty {
-            // The stack is shared by every worktree and session: the entry is
-            // named by its message and got back by its id, never popped.
-            let entry = result.stashMessage.isEmpty ? result.stashed : "\"\(result.stashMessage)\""
-            let apply = "git stash apply \(result.stashed)"
-            if !result.stashError.isEmpty {
-                errors.append("Your changes are only in the stash entry \(entry) — putting them back failed: "
-                              + "\(result.stashError). Get them back with \(apply).")
-            } else if result.stashRestored {
-                notices.append("Your changes are back in the work tree; the stash entry \(entry) was kept on the stack.")
-            } else {
-                notices.append("Your changes are saved in the stash entry \(entry) — get them back with \(apply).")
-            }
-        }
         return Outcome(
             error: errors.isEmpty ? nil : errors.joined(separator: "\n"),
-            notice: notices.isEmpty ? nil : notices.joined(separator: "\n")
+            notice: notices.isEmpty ? nil : notices.joined(separator: "\n"),
+            stash: stashNote(result)
         )
+    }
+
+    private static func stashNote(_ result: WorkbenchGitSwitchResult) -> StashNote? {
+        guard !result.stashed.isEmpty else { return nil }
+        // The stack is shared by every worktree and session: the entry is
+        // named by its message and got back by its id, never popped.
+        let entry = result.stashMessage.isEmpty ? result.stashed : result.stashMessage
+        let named = result.stashMessage.isEmpty ? entry : "\"\(entry)\""
+        let apply = "git stash apply \(result.stashed)"
+        if !result.stashError.isEmpty {
+            return StashNote(text: "Your changes are only in the stash entry \(named) — putting them back failed: "
+                             + "\(result.stashError). Get them back with \(apply).", isError: true, entry: entry)
+        }
+        let text = result.stashRestored
+            ? "Your changes are back in the work tree; the stash entry \(named) was kept on the stack."
+            : "Your changes are saved in the stash entry \(named) — get them back with \(apply)."
+        return StashNote(text: text, isError: false, entry: entry)
     }
 
     /// Go's detail wins over the generic text, except for a failed status

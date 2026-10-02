@@ -216,8 +216,12 @@ final class WorkbenchesViewModel {
     var gitErrors: [Int64: String] = [:]
     /// Why the last status read failed; the next successful read clears it.
     var gitStatusErrors: [Int64: String] = [:]
-    /// What the last switch left behind (the stash it pushed).
+    /// What the last branch action left to note (git's warning).
     var gitNotices: [Int64: String] = [:]
+    /// The stash entry the latest stashing switch left: the only place the
+    /// app names its sha, so it survives popover reopens and status reads
+    /// until the owner dismisses it or a newer stash replaces it.
+    var gitStashNotes: [Int64: WorkbenchBranchPresentation.StashNote] = [:]
     /// The branch a switch or create is running for.
     var switchingBranch: [Int64: String] = [:]
     /// A switch Go refused until the owner confirms (dirty tree, live agent).

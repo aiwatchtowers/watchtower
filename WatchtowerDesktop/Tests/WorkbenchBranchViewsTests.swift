@@ -211,6 +211,32 @@ final class WorkbenchBranchViewsTests: XCTestCase {
         XCTAssertThrowsError(try fresh.inspect().find(text: "The list may be out of date."))
     }
 
+    func testThePopoverShowsTheStashNoteAndDismissClearsIt() throws {
+        let vm = makeVM()
+        vm.gitBranches[project.id] = WorkbenchGitBranches()
+        vm.branchListStates[project.id] = .loaded
+        let note = try XCTUnwrap(WorkbenchBranchPresentation.outcome(
+            WorkbenchGitSwitchResult(switched: true, stashed: "37ec889", stashMessage: "watchtower: m")
+        ).stash)
+        vm.gitStashNotes[project.id] = note
+        let popover = WorkbenchBranchPopover(vm: vm, project: project)
+        XCTAssertNoThrow(try popover.inspect().find(text: note.text))
+        try popover.inspect().find(viewWithAccessibilityLabel: "Dismiss stash note").button().tap()
+        XCTAssertNil(vm.gitStashNotes[project.id])
+        XCTAssertThrowsError(try WorkbenchBranchPopover(vm: vm, project: project).inspect()
+            .find(viewWithAccessibilityLabel: "Dismiss stash note"))
+    }
+
+    func testAPendingStashNoteIsInTheButtonTooltip() throws {
+        let vm = makeVM()
+        vm.gitStatus[project.id] = WorkbenchGitStatus(branch: "main")
+        vm.gitStashNotes[project.id] = WorkbenchBranchPresentation.outcome(
+            WorkbenchGitSwitchResult(switched: true, stashed: "37ec889", stashMessage: "watchtower: m")
+        ).stash
+        let crumb = WorkbenchBranchCrumb(vm: vm, project: project)
+        XCTAssertEqual(try crumb.inspect().find(ViewType.Button.self).help().string(), "main\nStashed changes: watchtower: m")
+    }
+
     func testCopyBranchNameCallsTheViewModel() throws {
         let vm = makeVM()
         vm.gitStatus[project.id] = WorkbenchGitStatus(branch: "feature/x")

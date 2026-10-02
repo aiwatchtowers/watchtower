@@ -22,6 +22,7 @@ struct WorkbenchBranchCrumb: View {
                     status: status,
                     staleError: error,
                     pendingBranch: vm.pendingBranchConfirmation[project.id]?.branch,
+                    stashEntry: vm.gitStashNotes[project.id]?.entry,
                     busy: vm.switchingBranch[project.id] != nil
                 ) {
                     // A pending confirmation shows as the popover's dialog.
@@ -53,6 +54,9 @@ struct WorkbenchBranchButton: View {
     /// A switch waiting for the owner's confirmation (asked while the
     /// popover was closed): an orange mark until it is answered.
     var pendingBranch: String?
+    /// The stash entry of a note the owner has not dismissed: named in the
+    /// tooltip so it stays findable with the popover closed.
+    var stashEntry: String?
     var busy = false
     let action: () -> Void
 
@@ -103,7 +107,8 @@ struct WorkbenchBranchButton: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.borderless)
-        .help(WorkbenchBranchPresentation.help(status, staleError: staleError, pendingBranch: pendingBranch))
+        .help(WorkbenchBranchPresentation.help(status, staleError: staleError, pendingBranch: pendingBranch,
+                                               stashEntry: stashEntry))
         .accessibilityLabel("Branch \(label.text)")
     }
 }

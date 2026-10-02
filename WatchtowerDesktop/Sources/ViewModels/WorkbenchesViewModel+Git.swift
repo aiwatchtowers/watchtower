@@ -58,7 +58,8 @@ extension WorkbenchesViewModel {
     }
 
     /// The popover opened: the branch list (CLI) and the board's branch
-    /// targets (DB) for the badges. Clears the previous popover's messages.
+    /// targets (DB) for the badges. Clears the previous popover's messages,
+    /// but not the stash note.
     func loadBranches(project: Workbench) async {
         gitErrors[project.id] = nil
         gitNotices[project.id] = nil
@@ -87,6 +88,11 @@ extension WorkbenchesViewModel {
 
     func cancelPendingSwitch(projectID: Int64) {
         pendingBranchConfirmation[projectID] = nil
+    }
+
+    /// The owner read the stash note: the entry itself stays on the stack.
+    func dismissStashNote(projectID: Int64) {
+        gitStashNotes[projectID] = nil
     }
 
     /// "New branch from current…": `git switch -c` from HEAD (no files
@@ -121,6 +127,7 @@ extension WorkbenchesViewModel {
         let outcome = WorkbenchBranchPresentation.outcome(result)
         gitErrors[id] = outcome.error ?? (created ? nil : "The branch was not created.")
         gitNotices[id] = outcome.notice
+        if let stash = outcome.stash { gitStashNotes[id] = stash }
         await afterGitWrite(project: project)
         return created
     }
@@ -205,6 +212,7 @@ extension WorkbenchesViewModel {
         let moved = result.switched || result.already
         gitErrors[id] = outcome.error ?? (moved ? nil : "Not switched to \(branch).")
         gitNotices[id] = outcome.notice
+        if let stash = outcome.stash { gitStashNotes[id] = stash }
         await afterGitWrite(project: project)
     }
 

@@ -141,8 +141,24 @@ struct WorkbenchBranchPopover: View {
         let id = project.id
         if let error = vm.gitErrors[id] { caption(error, color: .red) }
         if let status = vm.gitStatusErrors[id] { caption(status, color: .red) }
-        // Selectable: it names the stash entry and how to apply it.
         if let notice = vm.gitNotices[id] { caption(notice, color: .secondary) }
+        // Selectable: it names the stash entry and how to apply it. Stays
+        // until dismissed — reopening the popover does not clear it.
+        if let stash = vm.gitStashNotes[id] {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                caption(stash.text, color: stash.isError ? .red : .secondary)
+                Spacer(minLength: 0)
+                Button {
+                    vm.dismissStashNote(projectID: id)
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.caption2)
+                }
+                .buttonStyle(.borderless)
+                .help("Dismiss — the stash entry stays on the stack")
+                .accessibilityLabel("Dismiss stash note")
+            }
+        }
     }
 
     /// A message line: wraps, and can be selected to copy git's words.
