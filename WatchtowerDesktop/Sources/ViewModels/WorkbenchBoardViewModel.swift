@@ -6,7 +6,7 @@ import WatchtowerCore
 /// detail and its comment threads. Owner edits are direct GRDB writes through
 /// the same `TargetQueries` mutators the Targets tab uses (the targets
 /// dual-path precedent). Agent writes arrive from another process
-/// (`watchtower mcp --project N`), which ValueObservation cannot see, so the
+/// (`watchtower mcp --workbench N`), which ValueObservation cannot see, so the
 /// pane polls a cheap fingerprint while it is on screen.
 @MainActor
 @Observable

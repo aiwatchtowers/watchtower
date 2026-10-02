@@ -187,7 +187,7 @@ final class WorkbenchesViewModel {
     private(set) var deletingWorkbenchID: Int64?
     /// Why the last delete failed; the page shows it in an alert.
     var deleteError: String?
-    /// The last board drift check per project (PROJ-07, `project check`).
+    /// The last board drift check per workbench (PROJ-07, `workbench check`).
     /// Kept here, not on the board pane, so a result survives navigation.
     private(set) var drift: [Int64: WorkbenchDriftReport] = [:]
     /// Why the last drift check of a project failed; the next success clears it.
@@ -264,7 +264,7 @@ final class WorkbenchesViewModel {
 
     /// Deletes a project (spec §6.1, Review Focus #5). Order matters: the
     /// terminal — and with it the Claude Code session writing through
-    /// `mcp --project` — closes first, then `watchtower project delete N`
+    /// `mcp --workbench` — closes first, then `watchtower workbench delete N`
     /// removes the rows and the folder install, then the list reloads. A CLI
     /// failure keeps the project listed and reports the CLI's error. A folder
     /// cleanup failure (`removal_ok == false`) still deletes the project and
@@ -353,7 +353,7 @@ final class WorkbenchesViewModel {
         setLayout(updated, projectID: projectID)
     }
 
-    /// New project… → `project create`, then the folder install. A failed
+    /// New Workbench… → `workbench create`, then the folder install. A failed
     /// install keeps the project (it exists now), shows the install error,
     /// points at Repair and reports `installed: false` to `onWorkbenchCreated`.
     func createWorkbench(folder: URL, name: String?) async {
@@ -464,7 +464,7 @@ final class WorkbenchesViewModel {
         await refreshInstallStatus(projectID: projectID)
     }
 
-    /// Re-run setup (#91): `project resync` attaches the folder's new
+    /// Re-run setup (#91): `workbench resync` attaches the folder's new
     /// documents and re-installs missing or outdated integration pieces, then
     /// the page reloads what it may have changed. Additive only — it never
     /// creates targets; the result's suggestions say what to ask the agent.
@@ -513,7 +513,7 @@ final class WorkbenchesViewModel {
         }
     }
 
-    /// "Add document…" (#80): `project attach-doc` writes the owner's row —
+    /// "Add document…" (#80): `workbench attach-doc` writes the owner's row —
     /// the CLI checks the file is a .md/.txt inside the folder, symlinks
     /// resolved — and the pane opens it. The file itself is never written
     /// (PROJ-03). Returns whether it attached; on false `attachError` says why.

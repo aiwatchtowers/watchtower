@@ -38,7 +38,7 @@ package struct WorkbenchRoute: Equatable, Sendable {
     }
 }
 
-/// A `projects` row. Written only by the Go CLI (`watchtower project create`);
+/// A `projects` row. Written only by the Go CLI (`watchtower workbench create`);
 /// the Desktop reads it.
 package struct Workbench: FetchableRecord, Identifiable, Equatable, Hashable, Sendable {
     package let id: Int64
@@ -258,7 +258,7 @@ package struct WorkbenchDocumentListItem: Identifiable, Equatable, Sendable {
     package var id: Int64 { document.id }
 
     /// The agent handed it to the owner for review (#105): an agent document
-    /// whose target is `in_review`, as the watchtower-project skill does it.
+    /// whose target is `in_review`, as the watchtower-workbench skill does it.
     package var awaitingReview: Bool {
         document.isAgentAttached && targetStatus == "in_review"
     }
