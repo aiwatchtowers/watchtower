@@ -67,6 +67,13 @@ Two bugs found and fixed:
 Still open (low): `internal/ui` has no tests (CLI markdown/spinner, low risk); the daemon wiring in
 `cmd/sync.go` is only covered through the gate's `cmd` tests; the dayplan prompt formatters
 (`formatPeopleSection`, `formatPreviousPlanSection`, `formatBriefingContext`) are mostly unexercised.
+Follow-ups from the review of this pass (low): a mapped custom value that fails to decode (say,
+`story_points` on an option field) is dropped without a log line, so a wrong LLM mapping looks like
+"unestimated". `jira_board_field_map` rows that an older build let the LLM invent stay in place
+until the board is re-mapped. Issues synced before the custom-field fix keep empty story points
+until they change. Whether to reset each board's watermark once, so the values are backfilled, is
+an owner call. Two `ai.Provider` fakes in the jira tests overlap (`failingAIProvider`,
+`scriptedAI`).
 The old `TestCheckAndRefreshProfiles_Cooldown*` and `TestMergeUserOverridesLogic` tests, which assert
 against hand-built data, are still in `board_analyzer_test.go`. Real tests now sit next to them in
 `board_refresh_test.go`, and the old ones can be deleted.
