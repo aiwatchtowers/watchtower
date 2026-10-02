@@ -50,7 +50,7 @@ Requires Go 1.25+, Swift 5.10+, macOS 14+.
 ```bash
 git clone https://github.com/aiwathctowers/watchtower.git
 cd watchtower
-make app          # Full release build → build/Watchtower.app
+make app          # Full release build → build/Watchtower.app (see "Rebuilding while the app runs")
 # or
 make app-dev      # Fast dev build
 ```
@@ -142,7 +142,22 @@ make test-swift   # Swift tests (395 tests)
 make lint-all     # Go + Swift linting
 make app-dev      # Fast dev build (CLI + desktop)
 make app          # Release build with notarization
+make app-swap     # Finish a deferred swap (see below)
+make app-install  # Copy build/Watchtower.app to /Applications (INSTALL_DIR=...)
 ```
+
+### Rebuilding while the app runs
+
+`make app` / `make app-dev` build into `build.next/` and swap it into `build/`
+only at the end, so there is no need to quit Watchtower for the build. If the
+app is running from `build/`, the swap is deferred: quit Watchtower, then run
+`make app-swap` (`WAIT=1 make app-swap` waits for
+the quit and swaps right after). A deferred release build exits 3 (built, swap
+deferred; its DMG/ZIP are still in `build.next/`), a deferred `make app-dev`
+exits 0. Recommended habit: run the installed copy via
+`make app-install`, which leaves `build/` free so the swap never waits. If the
+installed copy is running, `make app-install` asks you to quit it, waits, and
+relaunches it after the copy. Neither script ever quits or kills the app.
 
 ### Build profiles
 

@@ -1,6 +1,8 @@
 # Build output
 watchtower
 build/
+build.next/
+build.old/
 WatchtowerDesktop/.build/
 WatchtowerDesktop/*.app
 

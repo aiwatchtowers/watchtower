@@ -34,7 +34,7 @@ JIRA_ID     ?= $(WATCHTOWER_JIRA_CLIENT_ID)
 JIRA_SECRET ?= $(WATCHTOWER_JIRA_CLIENT_SECRET)
 LDFLAGS     := -ldflags "-X watchtower/cmd.Version=$(VERSION) -X watchtower/cmd.Commit=$(COMMIT) -X watchtower/cmd.BuildDate=$(BUILD_DATE) -X watchtower/cmd.BuildFlavor=$(BUILD_FLAVOR) -X watchtower/internal/auth.DefaultClientID=$(OAUTH_ID) -X watchtower/internal/auth.DefaultClientSecret=$(OAUTH_SECRET) -X watchtower/internal/calendar.DefaultGoogleClientID=$(GOOGLE_ID) -X watchtower/internal/calendar.DefaultGoogleClientSecret=$(GOOGLE_SECRET) -X watchtower/internal/jira.DefaultJiraClientID=$(JIRA_ID) -X watchtower/internal/jira.DefaultJiraClientSecret=$(JIRA_SECRET)"
 
-.PHONY: build test test-verbose test-cover lint lint-diff lint-swift lint-all install clean app app-dev dmg test-swift test-swift-strict-pool test-scripts hooks leak-check sentrux-check sentrux-gate sentrux-baseline quality periphery periphery-check periphery-baseline release-check
+.PHONY: build test test-verbose test-cover lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool test-scripts hooks leak-check sentrux-check sentrux-gate sentrux-baseline quality periphery periphery-check periphery-baseline release-check
 
 build:
 	go build $(LDFLAGS) -o $(BINARY_NAME) .
@@ -44,6 +44,17 @@ app dmg:
 
 app-dev:
 	./scripts/build-app.sh --dev $(VERSION)
+
+# `make app` builds into build.next/ and swaps it into build/ at the end; while
+# the app runs from build/ the swap is deferred until you quit it and run
+# `make app-swap` (WAIT=1 waits for the quit). `make app-install` copies
+# build/Watchtower.app to INSTALL_DIR so build/ stays free for the next build.
+INSTALL_DIR ?= /Applications
+app-swap:
+	./scripts/app-swap.sh
+
+app-install:
+	INSTALL_DIR="$(INSTALL_DIR)" ./scripts/app-install.sh
 
 test:
 	go test ./...
@@ -73,8 +84,9 @@ STRICT_POOL_SUITES = ProcessPipes|CLIRunner|JiraBoardsCLITests|DaemonManager|Upd
 test-swift-strict-pool:
 	cd WatchtowerDesktop && LIBDISPATCH_COOPERATIVE_POOL_STRICT=1 swift test --skip-build --filter '$(STRICT_POOL_SUITES)'
 
-# Shell-level tests for build-app.sh. Each extracts a marked block from the
-# script and runs it against stubbed binaries — no real build, no codesign.
+# Shell-level tests for build-app.sh and the app-swap/app-install scripts. They
+# extract marked blocks or run the scripts in a temp tree against stubbed
+# binaries — no real build, no codesign.
 test-scripts:
 	@rc=0; for t in scripts/tests/test-*.sh; do \
 	  echo "==> $$t"; \
@@ -108,7 +120,7 @@ install:
 
 clean:
 	rm -f $(BINARY_NAME)
-	rm -rf build/
+	rm -rf build/ build.next/ build.old/
 
 # Architectural rules + structural regression via sentrux.
 # `make quality` runs both: check (rules in .sentrux/rules.toml) and gate
