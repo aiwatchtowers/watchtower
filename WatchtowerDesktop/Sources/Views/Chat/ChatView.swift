@@ -158,7 +158,13 @@ struct ChatSplitView: View {
                 .keyboardShortcut("n", modifiers: .command)
                 .help("New Chat (⌘N)")
                 .accessibilityLabel("New Chat (⌘N)")
-            Button { appState.startOnboarding() } label: { Image(systemName: "person.crop.circle.badge.questionmark") }
+            Button {
+                Task {
+                    if let error = await appState.rerunOnboarding() {
+                        print("[ChatView] Run setup again failed: \(error)")
+                    }
+                }
+            } label: { Image(systemName: "person.crop.circle.badge.questionmark") }
                 .help(appState.profileComplete ? "Update Profile" : "Setup Profile")
                 .accessibilityLabel(appState.profileComplete ? "Update Profile" : "Setup Profile")
         }

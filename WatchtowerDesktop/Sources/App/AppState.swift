@@ -927,6 +927,7 @@ final class AppState {
 
     /// Called when onboarding flow completes successfully.
     func completeOnboarding() {
+        isOnboardingRerun = false
         onboarding.goTo(.complete)
         needsOnboarding = false
         profileComplete = true
@@ -965,14 +966,57 @@ final class AppState {
         sidebarCountsViewModel = countsVM
     }
 
-    /// Re-triggers the onboarding flow (from Settings), back at Goals.
-    func startOnboarding() {
+    /// The onboarding on screen was started from Settings: it can be
+    /// cancelled back to the main window.
+    private(set) var isOnboardingRerun = false
+
+    /// "Run setup again" (Settings → Profile, the chat's profile button):
+    /// reads what is in effect now — the feature set from the Feature
+    /// Manager, the assistant language from the config — and starts the
+    /// flow from it. Returns the failure to show instead of starting with a
+    /// guess (a reverted feature, the macOS language over the configured
+    /// one).
+    @discardableResult
+    func rerunOnboarding() async -> String? {
+        await featureManager.load()
+        if let error = featureManager.loadError {
+            return "Could not read the features: \(error)"
+        }
+        let config = ConfigService()
+        if let error = config.parseError {
+            return "Could not read the config: \(error)"
+        }
+        let enabled = Set(featureManager.features.filter { $0.state == "enabled" }.map(\.id))
+        startOnboarding(enabledFeatureIDs: enabled, configuredLanguage: config.digestLanguage)
+        return nil
+    }
+
+    /// Re-triggers the onboarding flow back at Goals, seeded from
+    /// `enabledFeatureIDs` and `configuredLanguage` (absent: English, what
+    /// the pipelines use). Nothing is written until a step's Continue.
+    func startOnboarding(enabledFeatureIDs: Set<String>, configuredLanguage: String?) {
+        let language = configuredLanguage?.trimmingCharacters(in: .whitespaces) ?? ""
         onboarding.reset()
-        onboardingGoals.prepareForRerun()
+        onboardingGoals.seedForRerun(
+            enabledFeatureIDs: enabledFeatureIDs,
+            language: language.isEmpty ? AssistantLanguageCatalog.fallbackName : language
+        )
         onboardingAboutYou.prepareForRerun()
         onboardingStepError = nil
+        isOnboardingRerun = true
         needsOnboarding = true
         profileComplete = false
+    }
+
+    /// Cancel on a re-run: back to the main window, nothing written (what a
+    /// step's Continue already wrote stays).
+    func cancelOnboardingRerun() {
+        guard isOnboardingRerun, !isFinishingOnboarding else { return }
+        isOnboardingRerun = false
+        onboarding.goTo(.complete)
+        onboardingStepError = nil
+        needsOnboarding = false
+        profileComplete = true
     }
 
     /// Wipe all LLM-generated data, stop the daemon, and start it again to

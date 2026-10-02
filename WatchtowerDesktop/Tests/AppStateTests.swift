@@ -462,7 +462,7 @@ final class AppStateTests: XCTestCase {
         let appState = await launch(defaults, db: dbManager)
         UserDefaults.standard.set(true, forKey: Constants.pipelinesCompletedKey)
 
-        appState.startOnboarding()
+        appState.startOnboarding(enabledFeatureIDs: [], configuredLanguage: nil)
 
         XCTAssertEqual(appState.onboarding.currentStep, .purpose)
         XCTAssertTrue(appState.needsOnboarding)
@@ -502,7 +502,7 @@ final class AppStateTests: XCTestCase {
         let appState = await launch(defaults, db: dbManager)
         appState.onboardingGoals.isCustomizingFeatures = true
 
-        appState.startOnboarding()
+        appState.startOnboarding(enabledFeatureIDs: [], configuredLanguage: nil)
 
         XCTAssertFalse(appState.onboardingGoals.isCustomizingFeatures)
         XCTAssertEqual(appState.onboardingGoals.cliCheck, .checking)
@@ -1069,7 +1069,66 @@ final class AppStateTests: XCTestCase {
         defer { UserDefaults.standard.removeObject(forKey: Constants.pipelinesCompletedKey) }
         UserDefaults.standard.set(true, forKey: Constants.pipelinesCompletedKey)
         let appState = AppState.isolated()
-        appState.startOnboarding()
+        appState.startOnboarding(enabledFeatureIDs: [], configuredLanguage: nil)
         XCTAssertTrue(UserDefaults.standard.bool(forKey: Constants.pipelinesCompletedKey))
+    }
+
+    // MARK: - Run setup again
+
+    func testRerunStartsAtGoalsSeededFromWhatIsInEffect() async throws {
+        let (defaults, suiteName) = try onboardingSuite()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(7, forKey: OnboardingStateMachineV2.legacyStepKey)
+        let appState = await launch(defaults, db: dbManager)
+        let enabled = OnboardingFeaturePlan.enabledFeatureIDs(for: [.tasksAndJira])
+
+        appState.startOnboarding(enabledFeatureIDs: enabled, configuredLanguage: "Polish")
+
+        XCTAssertEqual(appState.onboarding.currentStep, .purpose)
+        XCTAssertTrue(appState.isOnboardingRerun)
+        XCTAssertEqual(screen(appState), .onboarding)
+        XCTAssertEqual(appState.onboardingGoals.selection.enabledFeatureIDs, enabled)
+        XCTAssertFalse(appState.onboardingGoals.selection.isCustomized)
+        XCTAssertEqual(appState.onboardingGoals.language, "Polish")
+    }
+
+    /// No digest.language: English (what the pipelines use), not the Mac's.
+    func testRerunWithoutAConfiguredLanguagePrefillsEnglish() {
+        let appState = AppState.isolated()
+        appState.startOnboarding(enabledFeatureIDs: [], configuredLanguage: nil)
+        XCTAssertEqual(appState.onboardingGoals.language, "English")
+        appState.startOnboarding(enabledFeatureIDs: [], configuredLanguage: "  ")
+        XCTAssertEqual(appState.onboardingGoals.language, "English")
+    }
+
+    /// Cancel goes back to the main window and writes nothing.
+    func testCancelRerunReturnsToTheMainWindowWritingNothing() async throws {
+        let (defaults, suiteName) = try onboardingSuite()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(7, forKey: OnboardingStateMachineV2.legacyStepKey)
+        let appState = await launch(defaults, db: dbManager)
+        let daemon = FakeDaemon()
+        appState.daemonControlOverride = daemon
+        appState.startOnboarding(enabledFeatureIDs: [], configuredLanguage: nil)
+        appState.onboarding.goTo(.connect)
+
+        appState.cancelOnboardingRerun()
+
+        XCTAssertEqual(screen(appState), .main)
+        XCTAssertEqual(appState.onboarding.currentStep, .complete)
+        XCTAssertFalse(appState.isOnboardingRerun)
+        XCTAssertEqual(daemon.starts + daemon.restarts + daemon.stops, 0)
+        let profiles = try await dbManager.dbPool.read { db in try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM user_profile") }
+        XCTAssertEqual(profiles, 0)
+    }
+
+    /// A first-run onboarding has no Cancel.
+    func testFirstRunCannotBeCancelled() async throws {
+        let (defaults, suiteName) = try onboardingSuite()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let appState = await launch(defaults, db: dbManager)
+        XCTAssertFalse(appState.isOnboardingRerun)
+        appState.cancelOnboardingRerun()
+        XCTAssertEqual(screen(appState), .onboarding)
     }
 }

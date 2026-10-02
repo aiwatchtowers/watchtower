@@ -360,4 +360,61 @@ final class OnboardingGoalsModelTests: XCTestCase {
         _ = await model.submit(hasSlackAccount: false)
         XCTAssertFalse(spy.calls.contains { $0.hasPrefix("history") })
     }
+
+    // MARK: - Run setup again
+
+    /// A re-run with no change writes no language (and the features apply
+    /// as a no-op — `FeatureManagerServiceTests`).
+    func testRerunWithoutChangesWritesNoLanguage() async {
+        let model = makeModel()
+        let enabled = OnboardingFeaturePlan.enabledFeatureIDs(for: [.workCommunication])
+        model.seedForRerun(enabledFeatureIDs: enabled, language: "Polish")
+        await model.prepare(configuredLanguage: "German")
+        XCTAssertEqual(model.language, "Polish", "the seeded config language is kept")
+
+        _ = await model.submit(hasSlackAccount: true)
+
+        XCTAssertEqual(spy.calls, ["features"])
+        XCTAssertEqual(spy.appliedSelection?.enabledFeatureIDs, enabled)
+    }
+
+    func testRerunWithANewLanguageWritesIt() async {
+        let model = makeModel()
+        model.seedForRerun(enabledFeatureIDs: [], language: "Polish")
+        await model.prepare(configuredLanguage: nil)
+        model.language = "German"
+        _ = await model.submit(hasSlackAccount: true)
+        XCTAssertEqual(spy.calls, ["language German", "features"])
+    }
+
+    /// The reverse mapping: goals whose features are on; the saved goals win
+    /// among equal combinations; a hand-toggled set is "customized".
+    func testCurrentSelectionMapsBackToGoals() {
+        let wcTasks = OnboardingFeaturePlan.enabledFeatureIDs(for: [.workCommunication, .tasksAndJira])
+        let seeded = OnboardingFeatureSelection.current(
+            enabledIDs: wcTasks, savedGoals: [.workCommunication, .tasksAndJira, .development]
+        )
+        XCTAssertEqual(seeded.goals, [.workCommunication, .tasksAndJira, .development])
+        XCTAssertFalse(seeded.isCustomized)
+
+        let fromNothing = OnboardingFeatureSelection.current(enabledIDs: wcTasks, savedGoals: [])
+        XCTAssertTrue(fromNothing.goals.isSuperset(of: [.workCommunication, .tasksAndJira]))
+        XCTAssertEqual(fromNothing.enabledFeatureIDs, wcTasks)
+
+        let devOnly = OnboardingFeatureSelection.current(
+            enabledIDs: OnboardingFeaturePlan.alwaysOnFeatureIDs, savedGoals: [.development]
+        )
+        XCTAssertEqual(devOnly.goals, [.development])
+    }
+
+    func testHandToggledSetIsCustomized() {
+        var enabled = OnboardingFeaturePlan.enabledFeatureIDs(for: [.workCommunication])
+        enabled.remove("ideas")
+        enabled.insert("memory")
+        enabled.insert("not-managed")
+        let seeded = OnboardingFeatureSelection.current(enabledIDs: enabled, savedGoals: [.workCommunication])
+        XCTAssertTrue(seeded.isCustomized)
+        XCTAssertEqual(seeded.goals, [.workCommunication])
+        XCTAssertEqual(seeded.enabledFeatureIDs, enabled.subtracting(["not-managed"]))
+    }
 }

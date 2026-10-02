@@ -82,6 +82,9 @@ package final class OnboardingGoalsModel {
     /// re-appearing (Goals ↔ Customize) does not run another.
     @ObservationIgnored private var cliCheckStarted = false
     @ObservationIgnored private var languagePrepared = false
+    /// The language the config already holds on a re-run; Continue writes
+    /// the language only when it differs.
+    @ObservationIgnored private var configuredLanguage: String?
     /// Set once `workspace init` succeeded: a second Continue (back from
     /// Connect) does not run it again.
     @ObservationIgnored private var workspaceReady = false
@@ -162,7 +165,20 @@ package final class OnboardingGoalsModel {
         cliCheck = .checking
         continueError = nil
         languagePrepared = false
+        configuredLanguage = nil
         isCustomizingFeatures = false
+    }
+
+    /// "Run setup again" starts from what is in effect now: the feature set
+    /// (`OnboardingFeatureSelection.current`) and the configured language
+    /// (`language`, English when the config names none — Go's default),
+    /// never the macOS default.
+    package func seedForRerun(enabledFeatureIDs: Set<String>, language: String) {
+        prepareForRerun()
+        selection = OnboardingFeatureSelection.current(enabledIDs: enabledFeatureIDs, savedGoals: savedGoals)
+        self.language = language
+        configuredLanguage = language
+        languagePrepared = true
     }
 
     package func toggle(_ goal: OnboardingGoal) {
@@ -204,7 +220,10 @@ package final class OnboardingGoalsModel {
             }
         }
         do {
-            try await actions.setLanguage(language)
+            if language != configuredLanguage {
+                try await actions.setLanguage(language)
+                configuredLanguage = language
+            }
         } catch {
             continueError = "Could not save the assistant language: \(error.localizedDescription)"
             return nil
