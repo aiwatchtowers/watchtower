@@ -308,4 +308,38 @@ final class WorkspaceLayoutTests: XCTestCase {
         XCTAssertTrue(l.isShowing(.files))
         XCTAssertEqual(WorkspaceLayout.decode(try JSONEncoder().encode(l)), l)
     }
+
+    // MARK: - ⌘↵ in the go-to palette
+
+    func testOpenBesideSplitsASinglePaneWithItSecond() {
+        var l = WorkspaceLayout(primary: .session(1), secondary: nil, expanded: nil, dividerFraction: 0.5)
+        l.openBeside(.session(2), keeping: .session(1))
+        XCTAssertEqual(l.visiblePanes, [.session(1), .session(2)])
+    }
+
+    func testOpenBesideReplacesThePaneNotKept() {
+        var l = WorkspaceLayout(primary: .board, secondary: .session(1), expanded: nil, dividerFraction: 0.5)
+        l.openBeside(.session(2), keeping: .session(1))
+        XCTAssertEqual(l.visiblePanes, [.session(2), .session(1)])
+
+        l.openBeside(.session(3), keeping: .session(2))
+        XCTAssertEqual(l.visiblePanes, [.session(2), .session(3)])
+    }
+
+    func testOpenBesideLeavesAPaneOnScreenAlone() {
+        let l = WorkspaceLayout(primary: .board, secondary: .session(1), expanded: nil, dividerFraction: 0.5)
+        var moved = l
+        moved.openBeside(.session(1), keeping: .board)
+        XCTAssertEqual(moved, l)
+
+        var single = WorkspaceLayout(primary: .session(1), secondary: nil, expanded: nil, dividerFraction: 0.5)
+        single.openBeside(.session(1), keeping: .session(1))
+        XCTAssertFalse(single.isSplit)
+    }
+
+    func testOpenBesideOverAnExpansionShowsTheSplit() {
+        var l = WorkspaceLayout(primary: .session(1), secondary: .board, expanded: .session(1), dividerFraction: 0.5)
+        l.openBeside(.session(2), keeping: .session(1))
+        XCTAssertEqual(l.visiblePanes, [.session(1), .session(2)])
+    }
 }

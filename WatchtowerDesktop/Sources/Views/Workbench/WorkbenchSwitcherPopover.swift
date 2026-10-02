@@ -118,9 +118,7 @@ struct WorkbenchSwitcherRow: View {
                         .truncationMode(.middle)
                 }
                 Spacer(minLength: 4)
-                ForEach(segments, id: \.text) { segment in
-                    segmentView(segment)
-                }
+                WorkbenchStateSegments(segments: segments)
                 if isLive {
                     Circle()
                         .fill(.green)
@@ -139,6 +137,19 @@ struct WorkbenchSwitcherRow: View {
         .buttonStyle(.plain)
         .help(row.project.folderPath)
         .accessibilityAddTraits(isCurrent ? .isSelected : [])
+    }
+}
+
+/// A workbench's state text (`WorkbenchSwitcherPresentation.stateSegments`):
+/// new comments as a blue badge, blocked in orange, the rest grey. The
+/// switcher's rows and the go-to palette's workbench rows show it.
+struct WorkbenchStateSegments: View {
+    let segments: [WorkbenchSwitcherPresentation.Segment]
+
+    var body: some View {
+        ForEach(segments, id: \.text) { segment in
+            segmentView(segment)
+        }
     }
 
     @ViewBuilder

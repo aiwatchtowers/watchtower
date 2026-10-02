@@ -31,6 +31,8 @@ struct WorkbenchesView: View {
     @State private var sensitiveLocation: String?
     @State private var renamingSession: TerminalSession?
     @State private var deletingSession: TerminalSession?
+    /// The ⌘K palette (board #252). View state: it closes with the tab.
+    @State private var goToOpen = false
 
     var body: some View {
         HStack(spacing: 0) {
@@ -41,7 +43,7 @@ struct WorkbenchesView: View {
                 PanelResizeHandle(width: $panelWidth, liveWidth: $dragPanelWidth)
             }
             VStack(spacing: 0) {
-                WorkbenchTitleRow(vm: vm, switcherActions: switcherActions)
+                WorkbenchTitleRow(vm: vm, switcherActions: switcherActions) { goToOpen = true }
                 Divider()
                 Group {
                     if let standalone = vm.selectedStandalone {
@@ -64,6 +66,11 @@ struct WorkbenchesView: View {
         // under dark), Board and Documents — on the detail backdrop, as AI
         // Chat's conversation is; the panel paints its own lighter surface.
         .detailBackground()
+        .overlay {
+            if goToOpen {
+                GoToPaletteOverlay(vm: vm) { goToOpen = false }
+            }
+        }
         .sessionActionDialogs(vm: vm, renaming: $renamingSession, deleting: $deletingSession)
         .onAppear {
             consumeRoute()
@@ -312,11 +319,13 @@ struct WorkbenchesView: View {
 /// window toolbar, which would add a tall title-bar strip above the tab.
 /// It stays visible with the panel hidden: its toggle is the way back, and
 /// then on a workbench page it carries `▦ <workbench> ▾ › ● <session> ▾`
-/// (board #251, variant H) instead of the plain title. It also holds the
-/// tab's shortcuts, so they exist on the Workbench tab only.
+/// (board #251, variant H) instead of the plain title. At its right, Go
+/// to… opens the go-to palette (⌘K, board #252). It also holds the tab's
+/// shortcuts, so they exist on the Workbench tab only.
 struct WorkbenchTitleRow: View {
     @Bindable var vm: WorkbenchesViewModel
     let switcherActions: WorkbenchSwitcherActions
+    let openGoTo: () -> Void
 
     var body: some View {
         HStack(spacing: 10) {
@@ -339,6 +348,16 @@ struct WorkbenchTitleRow: View {
                     .lineLimit(1)
             }
             Spacer()
+            Button(action: openGoTo) {
+                HStack(spacing: 4) {
+                    Image(systemName: "magnifyingglass")
+                    Text("Go to…")
+                    Text("⌘K").foregroundStyle(.secondary)
+                }
+            }
+            .keyboardShortcut("k", modifiers: .command)
+            .help("Go to… (⌘K)")
+            .accessibilityLabel("Go to…")
         }
         .buttonStyle(.borderless)
         .padding(.horizontal, 12)
