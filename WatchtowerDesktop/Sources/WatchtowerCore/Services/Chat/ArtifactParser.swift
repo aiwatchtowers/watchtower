@@ -44,14 +44,33 @@ package enum ArtifactParser {
     package static let knownKinds: Set<String> = ["document", "table", "email", "slack", "event", "code"]
     static let opener = ":::artifact"
 
+    private final class Box {
+        let parsed: ParsedMessage
+        init(_ parsed: ParsedMessage) { self.parsed = parsed }
+    }
+
+    /// Memoized like `MarkdownDocument.parse`: a streamed turn is parsed by
+    /// its row's body and again by `ChatViewModel.updateLiveArtifacts` on
+    /// every published delta, and every finished row re-parses whenever a
+    /// scroll rebuilds it.
+    private static let cache: NSCache<NSString, Box> = {
+        let cache = NSCache<NSString, Box>()
+        cache.totalCostLimit = 8 << 20
+        return cache
+    }()
+
     package static func parse(_ text: String, final: Bool) -> ParsedMessage {
+        let key = ((final ? "1" : "0") + text) as NSString
+        if let hit = cache.object(forKey: key) { return hit.parsed }
         var machine = Machine(final: final)
         let lines = splitLines(text)
         for (index, entry) in lines.enumerated() {
             let trailingPartial = index == lines.count - 1 && !entry.terminated
             guard machine.consume(entry.line, isTrailingPartial: trailingPartial) else { break }
         }
-        return machine.finish()
+        let parsed = machine.finish()
+        cache.setObject(Box(parsed), forKey: key, cost: text.utf16.count)
+        return parsed
     }
 
     package static func slug(_ title: String) -> String {
