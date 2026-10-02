@@ -363,18 +363,10 @@ func (r *Registry) Approve(ctx context.Context, id int64, patch json.RawMessage)
 		return false, nil
 	}
 	t, known := r.tools[row.Tool]
-	args := json.RawMessage(row.ArgsJSON)
 	hasPatch := len(bytes.TrimSpace(patch)) > 0
-	if hasPatch {
-		if !known || t.Revise == nil {
-			return false, &ValidationError{Msg: row.Tool + " takes no edits"}
-		}
-		if args, err = t.Revise(ctx, r.db, args, patch); err != nil {
-			return false, err
-		}
-		if !json.Valid(args) {
-			return false, fmt.Errorf("revise: tool %q returned invalid JSON", row.Tool)
-		}
+	args, err := r.revisedArgs(ctx, row, t, known, hasPatch, patch)
+	if err != nil {
+		return false, err
 	}
 	if known && t.Ready != nil {
 		if err := t.Ready(args); err != nil {
@@ -384,18 +376,44 @@ func (r *Registry) Approve(ctx context.Context, id int64, patch json.RawMessage)
 	if !hasPatch {
 		return r.db.TransitionAgentAction(id, []string{"pending"}, "approved", "", "")
 	}
-	ok, err := r.db.ApproveAgentActionWithArgs(id, row.ArgsJSON, string(args))
+	return r.approveEdited(row, args)
+}
+
+// revisedArgs is a pending row's args after the owner's patch (unchanged
+// without one); only a tool with Revise takes edits.
+func (r *Registry) revisedArgs(ctx context.Context, row *db.AgentAction, t *Tool, known, hasPatch bool, patch json.RawMessage) (json.RawMessage, error) {
+	args := json.RawMessage(row.ArgsJSON)
+	if !hasPatch {
+		return args, nil
+	}
+	if !known || t.Revise == nil {
+		return nil, &ValidationError{Msg: row.Tool + " takes no edits"}
+	}
+	args, err := t.Revise(ctx, r.db, args, patch)
+	if err != nil {
+		return nil, err
+	}
+	if !json.Valid(args) {
+		return nil, fmt.Errorf("revise: tool %q returned invalid JSON", row.Tool)
+	}
+	return args, nil
+}
+
+// approveEdited lands the edited args and the approval in one conditional
+// update; a lost race on a still-pending row means another edit landed after
+// this one read the row — refused rather than approving what the owner did
+// not see.
+func (r *Registry) approveEdited(row *db.AgentAction, args json.RawMessage) (bool, error) {
+	ok, err := r.db.ApproveAgentActionWithArgs(row.ID, row.ArgsJSON, string(args))
 	if err != nil || ok {
 		return ok, err
 	}
-	// Still pending but with other args: an edit landed after this one read
-	// the row. Refuse rather than approve what the owner did not see.
-	cur, err := r.db.GetAgentAction(id)
+	cur, err := r.db.GetAgentAction(row.ID)
 	if err != nil {
-		return false, fmt.Errorf("re-reading action #%d after a lost approve: %w", id, err)
+		return false, fmt.Errorf("re-reading action #%d after a lost approve: %w", row.ID, err)
 	}
 	if cur != nil && cur.Status == "pending" {
-		return false, fmt.Errorf("%w: #%d was edited elsewhere; reload it and approve again", ErrBadTransition, id)
+		return false, fmt.Errorf("%w: #%d was edited elsewhere; reload it and approve again", ErrBadTransition, row.ID)
 	}
 	return false, nil
 }

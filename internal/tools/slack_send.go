@@ -165,14 +165,9 @@ func sendableSlackAccounts(d *db.DB, accountID int64) ([]db.SlackAccount, error)
 // recipient per workspace it exists in. Zero matches, or several inside one
 // workspace, is the model's to fix (a ValidationError, no row).
 func resolveSlackRecipients(ctx context.Context, d *db.DB, a sendSlackMessageArgs) ([]slackRecipient, error) {
-	hasChannel, hasUser := strings.TrimSpace(a.Channel) != "", strings.TrimSpace(a.User) != ""
-	switch {
-	case hasChannel == hasUser:
-		return nil, &ValidationError{Msg: "pass exactly one of channel or user"}
-	case hasUser && a.ThreadTS != "":
-		return nil, &ValidationError{Msg: "thread_ts needs a channel; to reply in a DM thread pass the DM's message link as channel"}
-	case a.ThreadTS != "" && !slackThreadTSRE.MatchString(a.ThreadTS):
-		return nil, &ValidationError{Msg: "thread_ts must look like 1700000000.123456"}
+	hasChannel, err := checkSlackRecipientArgs(a)
+	if err != nil {
+		return nil, err
 	}
 	accounts, err := sendableSlackAccounts(d, a.AccountID)
 	if err != nil {
@@ -190,22 +185,13 @@ func resolveSlackRecipients(ctx context.Context, d *db.DB, a sendSlackMessageArg
 			return nil, err
 		}
 		if len(found) > 1 {
-			names := make([]string, 0, len(found))
-			for _, f := range found {
-				id := f.ChannelID
-				if f.UserID != "" {
-					id = f.UserID
-				}
-				names = append(names, f.Label+" ("+slack.Namespace(acct.ID, id)+")")
-			}
-			return nil, &ValidationError{Msg: fmt.Sprintf("%q matches several in %s: %s — ask the owner which one and pass its id",
-				strings.TrimSpace(a.Channel+a.User), slackWorkspaceName(acct), strings.Join(names, ", "))}
+			return nil, ambiguousInWorkspace(a, acct, found)
 		}
 		out = append(out, found...)
 	}
 	if len(out) == 0 {
 		what := "channel " + a.Channel
-		if hasUser {
+		if !hasChannel {
 			what = "person " + a.User
 		}
 		return nil, &ValidationError{Msg: fmt.Sprintf("no %s in the connected Slack workspaces (only synced channels and people can be addressed)", what)}
@@ -213,28 +199,40 @@ func resolveSlackRecipients(ctx context.Context, d *db.DB, a sendSlackMessageArg
 	return out, nil
 }
 
+// checkSlackRecipientArgs checks the recipient's shape and reports whether
+// it is a channel (else a person).
+func checkSlackRecipientArgs(a sendSlackMessageArgs) (bool, error) {
+	hasChannel, hasUser := strings.TrimSpace(a.Channel) != "", strings.TrimSpace(a.User) != ""
+	switch {
+	case hasChannel == hasUser:
+		return false, &ValidationError{Msg: "pass exactly one of channel or user"}
+	case hasUser && a.ThreadTS != "":
+		return false, &ValidationError{Msg: "thread_ts needs a channel; to reply in a DM thread pass the DM's message link as channel"}
+	case a.ThreadTS != "" && !slackThreadTSRE.MatchString(a.ThreadTS):
+		return false, &ValidationError{Msg: "thread_ts must look like 1700000000.123456"}
+	}
+	return hasChannel, nil
+}
+
+// ambiguousInWorkspace is the refusal for several matches inside one
+// workspace: the model asks the owner which one and passes its id.
+func ambiguousInWorkspace(a sendSlackMessageArgs, acct db.SlackAccount, found []slackRecipient) error {
+	names := make([]string, 0, len(found))
+	for _, f := range found {
+		id := f.ChannelID
+		if f.UserID != "" {
+			id = f.UserID
+		}
+		names = append(names, f.Label+" ("+slack.Namespace(acct.ID, id)+")")
+	}
+	return &ValidationError{Msg: fmt.Sprintf("%q matches several in %s: %s — ask the owner which one and pass its id",
+		strings.TrimSpace(a.Channel+a.User), slackWorkspaceName(acct), strings.Join(names, ", "))}
+}
+
 func resolveSlackChannel(ctx context.Context, d *db.DB, acct db.SlackAccount, a sendSlackMessageArgs, all []db.SlackAccount) ([]slackRecipient, error) {
-	ref, err := parseSlackChannelRef(a.Channel)
-	if err != nil {
+	name, thread, inAccount, err := slackChannelLookup(acct, a, all)
+	if err != nil || !inAccount {
 		return nil, err
-	}
-	thread := a.ThreadTS
-	if ref.threadTS != "" {
-		if thread != "" && thread != ref.threadTS {
-			return nil, &ValidationError{Msg: "thread_ts differs from the thread in the channel link"}
-		}
-		thread = ref.threadTS
-	}
-	// A link names its workspace by host; honour it when it is one we know.
-	if ref.domain != "" && acct.TeamDomain != ref.domain && knowsSlackDomain(all, ref.domain) {
-		return nil, nil
-	}
-	name := ref.ref
-	if n, raw, ok := slack.SplitAccountID(name); ok {
-		if n != acct.ID {
-			return nil, nil
-		}
-		name = raw
 	}
 	// A DM addressed by its id or a link names the person, not the IM: the
 	// card must say who receives it.
@@ -257,23 +255,58 @@ func resolveSlackChannel(ctx context.Context, d *db.DB, acct db.SlackAccount, a 
 		}
 		_, raw, _ := slack.SplitAccountID(id)
 		r := slackRecipient{AccountID: acct.ID, Workspace: slackWorkspaceName(acct), ChannelID: raw, ThreadTS: thread}
-		switch {
-		case chType == "dm":
-			_, r.UserID, _ = slack.SplitAccountID(dmUser)
-			r.Label = "@" + person
-			if person == "" {
-				r.Label = "DM " + raw
-			}
-		case chType == "group_dm":
-			r.Label = "group DM " + chName
-		case chName != "":
-			r.Label = "#" + chName
-		default:
-			r.Label = raw
-		}
+		r.UserID, r.Label = channelRecipientLabel(raw, chName, chType, dmUser, person)
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// slackChannelLookup parses the channel argument for one account: the name
+// or raw id to look up, the thread to reply in, and whether the reference
+// can live in this account at all (a link's known host or a namespaced id
+// may name another).
+func slackChannelLookup(acct db.SlackAccount, a sendSlackMessageArgs, all []db.SlackAccount) (string, string, bool, error) {
+	ref, err := parseSlackChannelRef(a.Channel)
+	if err != nil {
+		return "", "", false, err
+	}
+	thread := a.ThreadTS
+	if ref.threadTS != "" {
+		if thread != "" && thread != ref.threadTS {
+			return "", "", false, &ValidationError{Msg: "thread_ts differs from the thread in the channel link"}
+		}
+		thread = ref.threadTS
+	}
+	// A link names its workspace by host; honour it when it is one we know.
+	if ref.domain != "" && acct.TeamDomain != ref.domain && knowsSlackDomain(all, ref.domain) {
+		return "", "", false, nil
+	}
+	name := ref.ref
+	if n, raw, ok := slack.SplitAccountID(name); ok {
+		if n != acct.ID {
+			return "", "", false, nil
+		}
+		name = raw
+	}
+	return name, thread, true, nil
+}
+
+// channelRecipientLabel names a resolved channel for the card: a DM by its
+// person (and returns that person's raw id), a group DM, else #name.
+func channelRecipientLabel(raw, chName, chType, dmUser, person string) (userID, label string) {
+	switch {
+	case chType == "dm":
+		_, userID, _ = slack.SplitAccountID(dmUser)
+		if person == "" {
+			return userID, "DM " + raw
+		}
+		return userID, "@" + person
+	case chType == "group_dm":
+		return "", "group DM " + chName
+	case chName != "":
+		return "", "#" + chName
+	}
+	return "", raw
 }
 
 func knowsSlackDomain(accounts []db.SlackAccount, domain string) bool {
@@ -563,18 +596,9 @@ func NewSendSlackMessage(factory SlackSenderFactory) *Tool {
 }
 
 func executeSlackSend(ctx context.Context, d *db.DB, factory SlackSenderFactory, call Call, s storedSlackSend) (any, error) {
-	// Did any earlier attempt reach chat.postMessage? Only then can a message
-	// have landed, and only then does a retry look for it first.
-	mayHaveLanded, proposedAt := false, ""
-	if call.Retry {
-		row, err := d.GetAgentAction(call.ActionID)
-		if err != nil {
-			return nil, err
-		}
-		if row == nil {
-			return nil, fmt.Errorf("action #%d not found", call.ActionID)
-		}
-		mayHaveLanded, proposedAt = !strings.HasPrefix(row.Error, SlackNotSentPrefix), row.CreatedAt
+	mayHaveLanded, proposedAt, err := slackAttemptState(d, call)
+	if err != nil {
+		return nil, err
 	}
 	notSent := func(err error) error {
 		if mayHaveLanded {
@@ -582,55 +606,93 @@ func executeSlackSend(ctx context.Context, d *db.DB, factory SlackSenderFactory,
 		}
 		return fmt.Errorf("%s%w", SlackNotSentPrefix, err)
 	}
+	conn, err := prepareSlackSend(ctx, d, factory, s)
+	if err != nil {
+		return nil, notSent(err)
+	}
 	t := s.Target
-	account, err := d.GetSlackAccount(t.AccountID)
-	if err != nil {
-		return nil, notSent(err)
-	}
-	if !account.Enabled || account.Status == "removed" {
-		return nil, notSent(fmt.Errorf("slack workspace %s is disabled or removed; enable it, or ask for the message again", slackWorkspaceName(account)))
-	}
-	text, err := rawSlackMentions(s.Text, account.ID)
-	if err != nil {
-		return nil, notSent(err)
-	}
-	sender, scope, err := factory(account)
-	if err != nil {
-		return nil, notSent(err)
-	}
-	if scope != "" && !(&slack.Token{Scope: scope}).HasScope(slack.SendScope) {
-		return nil, notSent(slackScopeError(account))
-	}
-	channel := t.ChannelID
-	if channel == "" {
-		if channel, err = sender.OpenDM(ctx, t.UserID); err != nil {
-			return nil, notSent(slackSendFailed(account, "conversations.open", err))
-		}
-	}
 	ts, reused := "", false
 	if mayHaveLanded {
-		_, ownerRaw, _ := slack.SplitAccountID(account.CurrentUserID)
-		if ts, err = findLandedSlackMessage(ctx, sender, proposedAt, ownerRaw, channel, t.ThreadTS, text); err != nil {
+		_, ownerRaw, _ := slack.SplitAccountID(conn.account.CurrentUserID)
+		if ts, err = findLandedSlackMessage(ctx, conn.sender, proposedAt, ownerRaw, conn.channel, t.ThreadTS, conn.text); err != nil {
 			return nil, err
 		}
 		reused = ts != ""
 	}
 	if ts == "" {
-		if ts, err = sender.PostMessage(ctx, channel, text, t.ThreadTS); err != nil {
-			failed := slackSendFailed(account, "chat.postMessage", err)
+		if ts, err = conn.sender.PostMessage(ctx, conn.channel, conn.text, t.ThreadTS); err != nil {
+			failed := slackSendFailed(conn.account, "chat.postMessage", err)
 			if slackRejected(err) {
 				return nil, notSent(failed) // refused by Slack: nothing posted
 			}
 			return nil, failed // a timeout or a lost answer may have posted it
 		}
 	}
-	result := map[string]any{"channel_id": channel, "ts": ts, "workspace": slackWorkspaceName(account),
+	result := map[string]any{"channel_id": conn.channel, "ts": ts, "workspace": slackWorkspaceName(conn.account),
 		"label": "Message to " + t.Label}
-	if account.TeamDomain != "" {
-		result["url"] = slack.GeneratePermalink(account.TeamDomain, channel, ts)
+	if conn.account.TeamDomain != "" {
+		result["url"] = slack.GeneratePermalink(conn.account.TeamDomain, conn.channel, ts)
 	}
 	if reused {
 		result["reused"] = true
 	}
 	return result, nil
+}
+
+// slackAttemptState reads whether any earlier attempt reached
+// chat.postMessage (only then can a message have landed, and only then does
+// a retry look for it first) and when the proposal was recorded.
+func slackAttemptState(d *db.DB, call Call) (bool, string, error) {
+	if !call.Retry {
+		return false, "", nil
+	}
+	row, err := d.GetAgentAction(call.ActionID)
+	if err != nil {
+		return false, "", err
+	}
+	if row == nil {
+		return false, "", fmt.Errorf("action #%d not found", call.ActionID)
+	}
+	return !strings.HasPrefix(row.Error, SlackNotSentPrefix), row.CreatedAt, nil
+}
+
+// slackConn is everything a send needs once the checks before
+// chat.postMessage passed.
+type slackConn struct {
+	account db.SlackAccount
+	sender  SlackSender
+	channel string
+	text    string
+}
+
+// prepareSlackSend runs every step before chat.postMessage: the pinned
+// account is still usable, the text's mentions are this workspace's, the
+// token may send, and a DM has its channel. Nothing is posted here.
+func prepareSlackSend(ctx context.Context, d *db.DB, factory SlackSenderFactory, s storedSlackSend) (slackConn, error) {
+	t := s.Target
+	account, err := d.GetSlackAccount(t.AccountID)
+	if err != nil {
+		return slackConn{}, err
+	}
+	if !account.Enabled || account.Status == "removed" {
+		return slackConn{}, fmt.Errorf("slack workspace %s is disabled or removed; enable it, or ask for the message again", slackWorkspaceName(account))
+	}
+	text, err := rawSlackMentions(s.Text, account.ID)
+	if err != nil {
+		return slackConn{}, err
+	}
+	sender, scope, err := factory(account)
+	if err != nil {
+		return slackConn{}, err
+	}
+	if scope != "" && !(&slack.Token{Scope: scope}).HasScope(slack.SendScope) {
+		return slackConn{}, slackScopeError(account)
+	}
+	channel := t.ChannelID
+	if channel == "" {
+		if channel, err = sender.OpenDM(ctx, t.UserID); err != nil {
+			return slackConn{}, slackSendFailed(account, "conversations.open", err)
+		}
+	}
+	return slackConn{account: account, sender: sender, channel: channel, text: text}, nil
 }
