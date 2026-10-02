@@ -192,28 +192,8 @@ func NewDismissTracks() *Tool {
 		// The main chat only: the target chat's mandate stays on its own
 		// vertical line (TGT-BRIEF-01 axis 3), the reaction path has no
 		// track to bind to.
-		Surfaces: []string{"main"},
-		Validate: func(_ context.Context, _ *db.DB, raw json.RawMessage) error {
-			var a dismissTracksArgs
-			if err := decodeStrict(raw, &a); err != nil {
-				return err
-			}
-			if len(a.ResolvedIDs) > 0 || a.Summary != "" || len(a.SampleTitles) > 0 {
-				return &ValidationError{Msg: "resolved_ids, summary and sample_titles are filled in automatically; do not set them"}
-			}
-			switch {
-			case len(a.IDs) > 0 && a.Filter != nil:
-				return &ValidationError{Msg: "pass ids or filter, not both"}
-			case len(a.IDs) == 0 && a.Filter == nil:
-				return &ValidationError{Msg: "pass ids, or filter ({} for every active track)"}
-			case a.Filter != nil:
-				if _, err := a.Filter.selection(); err != nil {
-					return err
-				}
-				return validTrackIDs(a.Filter.ExceptIDs)
-			}
-			return validTrackIDs(a.IDs)
-		},
+		Surfaces:  []string{"main"},
+		Validate:  validateDismissTracks,
 		Normalize: normalizeDismissTracks,
 		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
 			var a dismissTracksArgs
@@ -238,6 +218,28 @@ func NewDismissTracks() *Tool {
 	}
 }
 
+func validateDismissTracks(_ context.Context, _ *db.DB, raw json.RawMessage) error {
+	var a dismissTracksArgs
+	if err := decodeStrict(raw, &a); err != nil {
+		return err
+	}
+	if len(a.ResolvedIDs) > 0 || a.Summary != "" || len(a.SampleTitles) > 0 {
+		return &ValidationError{Msg: "resolved_ids, summary and sample_titles are filled in automatically; do not set them"}
+	}
+	switch {
+	case len(a.IDs) > 0 && a.Filter != nil:
+		return &ValidationError{Msg: "pass ids or filter, not both"}
+	case len(a.IDs) == 0 && a.Filter == nil:
+		return &ValidationError{Msg: "pass ids, or filter ({} for every active track)"}
+	case a.Filter != nil:
+		if _, err := a.Filter.selection(); err != nil {
+			return err
+		}
+		return validTrackIDs(a.Filter.ExceptIDs)
+	}
+	return validTrackIDs(a.IDs)
+}
+
 // normalizeDismissTracks pins the proposal: the active tracks the call
 // selects right now become resolved_ids, with the card's summary line and a
 // few sample titles. Selecting nothing is a model-facing refusal.
@@ -246,44 +248,13 @@ func normalizeDismissTracks(_ context.Context, d *db.DB, raw json.RawMessage) (j
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return nil, fmt.Errorf("decoding dismiss_tracks args: %w", err)
 	}
-	var picked []db.TrackBrief
-	var notes []string
+	pick := pickTracksByID
 	if a.Filter != nil {
-		// An id to keep that does not exist is a typo the card would hide
-		// behind "keeping #N" while the meant track gets dismissed.
-		if _, err := knownTracks(d, a.Filter.ExceptIDs); err != nil {
-			return nil, err
-		}
-		sel, err := a.Filter.selection()
-		if err != nil {
-			return nil, err
-		}
-		if picked, err = d.ActiveTracksMatching(sel); err != nil {
-			return nil, err
-		}
-		notes = a.Filter.describe()
-		if len(a.Filter.ExceptIDs) > 0 {
-			notes = append(notes, "keeping "+idList(a.Filter.ExceptIDs))
-		}
-		if len(picked) == 0 {
-			return nil, &ValidationError{Msg: "no active track matches — nothing to dismiss"}
-		}
-	} else {
-		briefs, err := knownTracks(d, a.IDs)
-		if err != nil {
-			return nil, err
-		}
-		for _, b := range briefs {
-			if !b.Dismissed {
-				picked = append(picked, b)
-			}
-		}
-		if len(picked) == 0 {
-			return nil, &ValidationError{Msg: "all of these tracks are already dismissed — nothing to dismiss"}
-		}
-		if dismissed := len(briefs) - len(picked); dismissed > 0 {
-			notes = append(notes, fmt.Sprintf("%d already dismissed", dismissed))
-		}
+		pick = pickTracksByFilter
+	}
+	picked, notes, err := pick(d, a)
+	if err != nil {
+		return nil, err
 	}
 	a.ResolvedIDs = make([]int, len(picked))
 	a.SampleTitles = nil
@@ -302,6 +273,53 @@ func normalizeDismissTracks(_ context.Context, d *db.DB, raw json.RawMessage) (j
 		a.Summary += " (" + strings.Join(notes, "; ") + ")"
 	}
 	return json.Marshal(a)
+}
+
+// pickTracksByFilter selects every active track the filter matches.
+func pickTracksByFilter(d *db.DB, a dismissTracksArgs) ([]db.TrackBrief, []string, error) {
+	// An id to keep that does not exist is a typo the card would hide
+	// behind "keeping #N" while the meant track gets dismissed.
+	if _, err := knownTracks(d, a.Filter.ExceptIDs); err != nil {
+		return nil, nil, err
+	}
+	sel, err := a.Filter.selection()
+	if err != nil {
+		return nil, nil, err
+	}
+	picked, err := d.ActiveTracksMatching(sel)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(picked) == 0 {
+		return nil, nil, &ValidationError{Msg: "no active track matches — nothing to dismiss"}
+	}
+	notes := a.Filter.describe()
+	if len(a.Filter.ExceptIDs) > 0 {
+		notes = append(notes, "keeping "+idList(a.Filter.ExceptIDs))
+	}
+	return picked, notes, nil
+}
+
+// pickTracksByID selects the given ids that are still active.
+func pickTracksByID(d *db.DB, a dismissTracksArgs) ([]db.TrackBrief, []string, error) {
+	briefs, err := knownTracks(d, a.IDs)
+	if err != nil {
+		return nil, nil, err
+	}
+	var picked []db.TrackBrief
+	for _, b := range briefs {
+		if !b.Dismissed {
+			picked = append(picked, b)
+		}
+	}
+	if len(picked) == 0 {
+		return nil, nil, &ValidationError{Msg: "all of these tracks are already dismissed — nothing to dismiss"}
+	}
+	var notes []string
+	if dismissed := len(briefs) - len(picked); dismissed > 0 {
+		notes = append(notes, fmt.Sprintf("%d already dismissed", dismissed))
+	}
+	return picked, notes, nil
 }
 
 // validTrackIDs refuses a non-positive id.
