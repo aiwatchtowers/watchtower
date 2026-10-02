@@ -99,7 +99,7 @@ package final class OnboardingAboutYouModel {
     /// Active, non-bot users other than Slackbot and the owner (any Slack
     /// account's current user, and the resolved owner).
     package nonisolated static func pickablePeople(_ db: Database) throws -> [User] {
-        var owners = try String.fetchAll(db, sql: "SELECT current_user_id FROM slack_accounts WHERE current_user_id != ''")
+        var owners = try OwnerQueries.ownSlackUserIDs(db)
         let owner = try OwnerQueries.resolve(db)
         if owner.isKnown { owners.append(owner.id) }
         return try UserQueries.fetchAll(db, activeOnly: true).filter { user in
