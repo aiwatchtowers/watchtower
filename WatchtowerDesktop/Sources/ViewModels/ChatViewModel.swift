@@ -606,13 +606,16 @@ final class ChatViewModel {
     /// still present as `@Label` in `text` are kept (`liveMentions`) and
     /// composed into the stored/sent owner text along with `skill`
     /// (`ChatTurnComposer`, spec §4.3, preflight A31). Clears the composer's
-    /// pending mentions/skill once the turn actually starts.
+    /// pending mentions/skill once the turn actually starts — unless
+    /// `keepsComposer`: a turn sent from elsewhere (a question card's answer)
+    /// leaves the owner's half-written draft and its picks alone.
     @discardableResult
     func send(
         text: String,
         attachments: [ChatAttachment] = [],
         mentions: [MentionCandidate] = [],
         skill: String? = nil,
+        keepsComposer: Bool = false,
         alsoWrite: ((Database) throws -> Void)? = nil
     ) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -622,7 +625,7 @@ final class ChatViewModel {
         guard !turnText.isEmpty || !attachments.isEmpty, !isStreaming else { return false }
         let fromLanding = isOnLanding
         guard let id = conversationIDCreatingIfNeeded() else { return false }
-        composer.reset()
+        if !keepsComposer { composer.reset() }
         // The floor is the PREVIOUS owner message, and it alone: codex never
         // emits a session id, so gating on the session would exclude it.
         let outcomes = actionFeed.outcomesBlock(after: thread.last { $0.message.isUser }?.message.createdDate)
