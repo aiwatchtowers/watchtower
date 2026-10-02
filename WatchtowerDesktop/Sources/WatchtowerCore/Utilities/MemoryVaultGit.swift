@@ -7,7 +7,7 @@ import Foundation
 package enum MemoryVaultGit {
 
     /// Last 50 commits touching `path` (vault-relative), or the whole repo
-    /// history when nil. Any git failure — missing binary, corrupt repo,
+    /// history when nil. Any git failure — no git (`gitPath`), corrupt repo,
     /// non-zero exit — degrades to an empty list, reported with git's stderr
     /// through `report` (the log).
     package static func log(
@@ -19,7 +19,11 @@ package enum MemoryVaultGit {
         if let path {
             args += ["--follow", "--", path]
         }
-        let result = await run(arguments: args)
+        guard let git = gitPath(developerDir: await developerDir()) else {
+            report("git log skipped: no git outside the xcode-select shim (developer tools not installed)")
+            return []
+        }
+        let result = await run(git: git, arguments: args)
         guard result.exitCode == 0 else {
             report("git log failed (exit \(result.exitCode)): \(CLILog.detail(result.stderr))")
             return []
@@ -31,10 +35,42 @@ package enum MemoryVaultGit {
         }
     }
 
-    /// Off the concurrency pool, both streams drained (`ProcessPipes`).
-    private static func run(arguments: [String]) async -> ProcessOutput {
+    /// The git binary to run, never `/usr/bin/git`: that is the xcode-select
+    /// shim, and on a Mac without the Command Line Tools it pops the system
+    /// "install developer tools" dialog — attributed to Watchtower — for a
+    /// history that would come back empty anyway. The active developer
+    /// directory's git first, then the standard CLT and Homebrew installs;
+    /// nil when none is there.
+    static func gitPath(
+        developerDir: String?,
+        isExecutable: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) }
+    ) -> String? {
+        var candidates: [String] = []
+        if let developerDir, !developerDir.isEmpty {
+            candidates.append(developerDir + "/usr/bin/git")
+        }
+        candidates += [
+            "/Library/Developer/CommandLineTools/usr/bin/git",
+            "/opt/homebrew/bin/git",
+            "/usr/local/bin/git"
+        ]
+        return candidates.first(where: isExecutable)
+    }
+
+    /// `xcode-select -p`: the active developer directory, nil when none is
+    /// set. Unlike the shims it only prints, never prompts.
+    private static func developerDir() async -> String? {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/xcode-select")
+        process.arguments = ["-p"]
+        let result = await ProcessPipes.run(process).trimmed
+        return result.exitCode == 0 ? result.stdout : nil
+    }
+
+    /// Off the concurrency pool, both streams drained (`ProcessPipes`).
+    private static func run(git: String, arguments: [String]) async -> ProcessOutput {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: git)
         process.arguments = arguments
         return await ProcessPipes.run(process)
     }
