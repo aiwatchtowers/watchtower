@@ -131,10 +131,10 @@ func TestIntegrateWorkbenchRemove_NamesEverySurvivingRegistration(t *testing.T) 
 	assert.NotContains(t, out.String(), "Nothing left installed.")
 }
 
-// A resync whose `mcp add` failed leaves a legacy folder on the new skill
-// with only the old registration: mcp still reads true (the session keeps
-// working), current_mcp says the new one is missing, so the Desktop can
-// offer Repair. A later install that registers it clears both.
+// A resync whose `mcp add` failed leaves a legacy folder entirely on its old
+// setup (old skill, hooks and registration): mcp and hook still read true
+// (the session keeps working), current_mcp says the new registration is
+// missing. A later install that registers it migrates the folder.
 func TestIntegrateWorkbenchStatusJSON_ReportsTheCurrentRegistration(t *testing.T) {
 	f := useFakeWorkbenchClaude(t)
 	p := testWorkbench(t)
@@ -145,7 +145,9 @@ func TestIntegrateWorkbenchStatusJSON_ReportsTheCurrentRegistration(t *testing.T
 	var out bytes.Buffer
 	assert.Error(t, runWorkbenchInstall(context.Background(), &out, p))
 	got := statusJSON(t, p)
-	assert.Equal(t, "unchanged", got.Skill)
+	assert.Equal(t, "missing", got.Skill, "the new skill is not installed over an old registration")
+	assert.Equal(t, "unchanged", got.LegacySkill, "the old skill is kept")
+	assert.True(t, got.Hook && got.StopHook, "the old hooks are kept: %+v", got)
 	assert.True(t, got.MCP, "the old registration still serves the folder")
 	assert.False(t, got.CurrentMCP)
 	assert.True(t, got.Legacy)

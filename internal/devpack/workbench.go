@@ -81,8 +81,9 @@ type WorkbenchInstallOptions struct {
 // anchored exclude patterns it added. The Legacy* fields report the
 // migration of a folder set up before the Workbench rename (spec 2026-10-02
 // §5.4): LegacySkill is what became of the old skill (StateMissing when
-// there was none, StateRemoved, or StateDrifted/StateForeign when it was
-// kept), LegacyMCPRemoved that the old registration was taken out,
+// there was none, StateRemoved, StateDrifted/StateForeign when it was
+// kept as the owner's, or StateUnchanged when the whole old setup was left
+// because the new registration did not go in), LegacyMCPRemoved that the old registration was taken out,
 // LegacyHooksReplaced that the old hook commands were replaced in place, and
 // LegacyPermissionRules how many allow rules in the folder's
 // settings.local.json still name the old server (reported, never changed).
@@ -178,16 +179,22 @@ func mcpRemoveCommand(o WorkbenchInstallOptions, server string) string {
 }
 
 // InstallWorkbench makes the folder ready for Claude Code: exclude lines
-// first (so nothing we write ever shows in git status), then the skill, the
-// SessionStart and Stop hooks and the local MCP registration. Every step runs
-// even when an earlier one failed; the failures come back joined.
+// first (so nothing we write ever shows in git status), then the local MCP
+// registration, the skill and the SessionStart and Stop hooks. Every step
+// runs even when an earlier one failed; the failures come back joined.
 //
 // It is also the migration of a folder set up before the Workbench rename
 // (spec 2026-10-02 §5.4), run only by an explicit install or resync: the old
 // skill is removed when it is ours and un-edited, the old hook commands are
 // replaced in place, the old registration is removed, and the old skill's
 // exclude line goes once its directory is gone. Nothing the owner owns is
-// touched (PROJ-04).
+// touched (PROJ-04). The registration goes first because the new skill and
+// hooks name tools only the new server serves: when it cannot be registered
+// (a failed `mcp add`, no claude CLI), a pre-rename folder is left entirely
+// on its old skill, hooks and registration — one vocabulary, still working
+// through the legacy aliases — rather than half-migrated, and the error says
+// so (the report's LegacySkill is then StateUnchanged when the old skill is
+// there).
 func InstallWorkbench(ctx context.Context, o WorkbenchInstallOptions) (WorkbenchInstallReport, error) {
 	if err := o.validate(); err != nil {
 		return WorkbenchInstallReport{}, err
@@ -197,10 +204,22 @@ func InstallWorkbench(ctx context.Context, o WorkbenchInstallOptions) (Workbench
 	}
 	rep := WorkbenchInstallReport{MCPCommand: WorkbenchMCPCommand(o)}
 	hadLegacyHooks, _ := HasLegacyHooks(o.Folder, o.WorkbenchID) // a malformed file is reported by the hook step
-	legacyFolder := hadLegacyHooks || exists(filepath.Join(o.skillsDir(), LegacySkillName))
+	legacySkillDir := filepath.Join(o.skillsDir(), LegacySkillName)
+	legacyFolder := hadLegacyHooks || exists(legacySkillDir)
 	var errs []error
 	var err error
 	if rep.Excluded, err = EnsureGitExclude(o.Folder, workbenchExcludeLines); err != nil {
+		errs = append(errs, err)
+	}
+	rep.MCPRegistered, rep.LegacyMCPRemoved, err = registerWorkbenchMCP(ctx, o, legacyFolder)
+	if legacyFolder && !rep.MCPRegistered {
+		rep.LegacySkill = SkillStatus{Name: LegacySkillName, State: StateMissing}
+		if exists(legacySkillDir) {
+			rep.LegacySkill.State, rep.LegacySkill.Path = StateUnchanged, filepath.Join(legacySkillDir, "SKILL.md")
+		}
+		return rep, errors.Join(append(errs, keptLegacySetup(err))...)
+	}
+	if err != nil {
 		errs = append(errs, err)
 	}
 	if rep.Skill, err = installSkill(o.skillsDir(), workbenchSkill()); err != nil {
@@ -219,11 +238,17 @@ func InstallWorkbench(ctx context.Context, o WorkbenchInstallOptions) (Workbench
 		stillLegacy, err := HasLegacyHooks(o.Folder, o.WorkbenchID)
 		rep.LegacyHooksReplaced = err == nil && !stillLegacy
 	}
-	if rep.MCPRegistered, rep.LegacyMCPRemoved, err = registerWorkbenchMCP(ctx, o, legacyFolder); err != nil {
-		errs = append(errs, err)
-	}
 	rep.LegacyPermissionRules = LegacyPermissionRules(o.Folder)
 	return rep, errors.Join(errs...)
+}
+
+// keptLegacySetup wraps the registration failure of a pre-rename folder that
+// was therefore left on its old setup (InstallWorkbench).
+func keptLegacySetup(regErr error) error {
+	return fmt.Errorf("%w — this folder was set up before the Workbench rename and was left on that setup "+
+		"(the old %s skill, hooks and MCP registration kept; nothing of the new setup installed), so it keeps working; "+
+		"run the setup again once the %s registration can succeed",
+		regErr, LegacySkillName, WorkbenchMCPServerName)
 }
 
 // RemoveWorkbench undoes InstallWorkbench (PROJ-02): our two hooks, our
@@ -373,8 +398,8 @@ func registerWorkbenchMCP(ctx context.Context, o WorkbenchInstallOptions, legacy
 	switch {
 	case errors.Is(err, ErrClaudeNotFound):
 		if legacyFolder {
-			err = fmt.Errorf("%w — this folder was set up before the Workbench rename: also remove its old MCP server yourself with: %s",
-				err, mcpRemoveCommand(o, LegacyMCPServerName))
+			err = fmt.Errorf("%w — once %s is registered, also remove the old MCP server yourself with: %s",
+				err, WorkbenchMCPServerName, mcpRemoveCommand(o, LegacyMCPServerName))
 		}
 		return false, false, err
 	case err != nil:
