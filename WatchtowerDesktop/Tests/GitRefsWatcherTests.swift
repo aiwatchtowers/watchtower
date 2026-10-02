@@ -1,3 +1,4 @@
+import CoreServices
 import XCTest
 @testable import WatchtowerDesktop
 
@@ -43,6 +44,40 @@ final class GitRefsWatcherTests: XCTestCase {
         for path in no {
             XCTAssertFalse(GitRefsWatcher.isRelevant(path: path, gitDir: worktree, commonDir: git), path)
         }
+    }
+
+    private typealias Flags = FSEventStreamEventFlags
+
+    private func notifies(_ path: String, flag: Int, id: FSEventStreamEventId, start: FSEventStreamEventId = 100) -> Bool {
+        GitRefsWatcher.shouldNotify(paths: [path], flags: [Flags(flag)], ids: [id], startEventID: start,
+                                    gitDir: "/r/.git", commonDir: "/r/.git")
+    }
+
+    /// RootChanged comes with event id 0: the rescan flag must win over the
+    /// "older than the stream" filter, or a renamed or recreated `.git`
+    /// goes unnoticed.
+    func testARescanNotifiesWhateverItsEventID() {
+        XCTAssertTrue(notifies("/r/.git", flag: kFSEventStreamEventFlagRootChanged, id: 0))
+        XCTAssertTrue(notifies("/r/.git", flag: kFSEventStreamEventFlagMustScanSubDirs, id: 0))
+        XCTAssertTrue(notifies("/r/.git/objects", flag: kFSEventStreamEventFlagMustScanSubDirs, id: 500))
+    }
+
+    func testAnOrdinaryEventNeedsANewIDAndARelevantPath() {
+        let none = kFSEventStreamEventFlagNone
+        XCTAssertTrue(notifies("/r/.git/HEAD", flag: none, id: 101))
+        XCTAssertFalse(notifies("/r/.git/HEAD", flag: none, id: 100), "not newer than the stream's start")
+        XCTAssertFalse(notifies("/r/.git/HEAD", flag: none, id: 7))
+        XCTAssertFalse(notifies("/r/.git/objects/ab/cd", flag: none, id: 101))
+        XCTAssertFalse(GitRefsWatcher.shouldNotify(paths: [], flags: [], ids: [], startEventID: 0,
+                                                   gitDir: "/r/.git", commonDir: "/r/.git"))
+    }
+
+    func testOneRelevantEventInABatchIsEnough() {
+        XCTAssertTrue(GitRefsWatcher.shouldNotify(
+            paths: ["/r/.git/objects/ab/cd", "/r/.git/refs/heads/main"],
+            flags: [Flags(kFSEventStreamEventFlagNone), Flags(kFSEventStreamEventFlagNone)],
+            ids: [101, 102], startEventID: 100, gitDir: "/r/.git", commonDir: "/r/.git"
+        ))
     }
 
     func testWatchedPathsAreDeduped() {
@@ -96,6 +131,20 @@ final class GitRefsWatcherTests: XCTestCase {
         try Data("blob".utf8).write(to: gitDir.appendingPathComponent("objects/ab/cd"))
         try Data("log".utf8).write(to: gitDir.appendingPathComponent("logs/HEAD"))
         await fulfillment(of: [never], timeout: 1.5)
+    }
+
+    /// `.git` moved away and a new one put in its place (a re-clone, a
+    /// worktree recreated): FSEvents says RootChanged, with event id 0.
+    func testReplacingTheWatchedDirFires() async throws {
+        let fired = expectation(description: "fired")
+        fired.assertForOverFulfill = false
+        await settle(.seconds(1))
+        _ = watch { fired.fulfill() }
+        await settle()
+        let moved = root.appendingPathComponent("git-moved", isDirectory: true)
+        try FileManager.default.moveItem(at: gitDir, to: moved)
+        try FileManager.default.createDirectory(at: gitDir, withIntermediateDirectories: true)
+        await fulfillment(of: [fired], timeout: 5)
     }
 
     func testStopSilencesTheWatcher() async throws {

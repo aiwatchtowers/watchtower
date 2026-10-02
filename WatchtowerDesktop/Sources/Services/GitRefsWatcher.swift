@@ -41,19 +41,21 @@ final class GitRefsWatcher: GitRefsWatching {
     }
 
     deinit {
-        if let stream {
-            FSEventStreamStop(stream)
-            FSEventStreamInvalidate(stream)
-            FSEventStreamRelease(stream)
-        }
+        if let stream { Self.tearDown(stream) }
     }
 
     func stop() {
         guard let stream else { return }
+        Self.tearDown(stream)
+        self.stream = nil
+    }
+
+    /// Releasing the stream releases the relay it holds (the context's
+    /// `release`).
+    nonisolated private static func tearDown(_ stream: FSEventStreamRef) {
         FSEventStreamStop(stream)
         FSEventStreamInvalidate(stream)
         FSEventStreamRelease(stream)
-        self.stream = nil
     }
 
     /// The directories one stream watches: the common dir, plus the git dir
@@ -70,6 +72,27 @@ final class GitRefsWatcher: GitRefsWatching {
         [gitDir, commonDir].contains { root in
             guard !root.isEmpty, path.hasPrefix(root + "/") else { return false }
             return isRelevant(relative: String(path.dropFirst(root.count + 1)))
+        }
+    }
+
+    /// Whether one FSEvents batch calls `onChange`. A rescan (the root was
+    /// renamed, deleted or recreated, or events were dropped) always does,
+    /// checked before the id filter: RootChanged arrives with event id 0.
+    /// Otherwise only an event newer than the stream's start, on a path the
+    /// header reads. Pure, so it is tested without FSEvents.
+    nonisolated static func shouldNotify(
+        paths: [String],
+        flags: [FSEventStreamEventFlags],
+        ids: [FSEventStreamEventId],
+        startEventID: FSEventStreamEventId,
+        gitDir: String,
+        commonDir: String
+    ) -> Bool {
+        let rescan = FSEventStreamEventFlags(kFSEventStreamEventFlagRootChanged | kFSEventStreamEventFlagMustScanSubDirs)
+        return zip(paths, zip(flags, ids)).contains { path, event in
+            let (flag, id) = event
+            if flag & rescan != 0 { return true }
+            return id > startEventID && isRelevant(path: path, gitDir: gitDir, commonDir: commonDir)
         }
     }
 
@@ -91,9 +114,10 @@ final class GitRefsWatcher: GitRefsWatching {
     private func start(latency: TimeInterval) {
         let relay = Relay()
         relay.watcher = self
+        let retained = Unmanaged.passRetained(relay)
         var context = FSEventStreamContext(
             version: 0,
-            info: Unmanaged.passRetained(relay).toOpaque(),
+            info: retained.toOpaque(),
             retain: nil,
             release: { info in
                 guard let info else { return }
@@ -119,25 +143,30 @@ final class GitRefsWatcher: GitRefsWatching {
             kCFAllocatorDefault, callback, &context, watched as CFArray,
             FSEventStreamEventId(kFSEventStreamEventIdSinceNow), latency, FSEventStreamCreateFlags(flags)
         ) else {
-            // FSEvents refused the stream; the caller's timer and
-            // app-activation reads still refresh the header.
+            // FSEvents refused the stream and never took the relay. The
+            // caller's timer and app-activation reads still refresh the
+            // header.
+            retained.release()
             print("[GitRefsWatcher] could not watch \(watched.joined(separator: ", "))")
             return
         }
         FSEventStreamSetDispatchQueue(created, .main)
-        FSEventStreamStart(created)
+        guard FSEventStreamStart(created) else {
+            // Never started, so nothing to stop; releasing it releases the relay.
+            FSEventStreamInvalidate(created)
+            FSEventStreamRelease(created)
+            print("[GitRefsWatcher] could not start watching \(watched.joined(separator: ", "))")
+            return
+        }
         stream = created
     }
 
     private func handle(paths: [String], flags: [FSEventStreamEventFlags], ids: [FSEventStreamEventId]) {
         guard stream != nil else { return }
-        let rescan = FSEventStreamEventFlags(kFSEventStreamEventFlagRootChanged | kFSEventStreamEventFlagMustScanSubDirs)
-        let relevant = zip(paths, zip(flags, ids)).contains { path, event in
-            let (flag, id) = event
-            guard id > startEventID else { return false }
-            return flag & rescan != 0 || Self.isRelevant(path: path, gitDir: gitDir, commonDir: commonDir)
+        if Self.shouldNotify(paths: paths, flags: flags, ids: ids, startEventID: startEventID,
+                             gitDir: gitDir, commonDir: commonDir) {
+            onChange()
         }
-        if relevant { onChange() }
     }
 
     nonisolated private static func realPath(_ path: String) -> String {
