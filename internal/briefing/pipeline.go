@@ -161,11 +161,11 @@ func (p *Pipeline) RunForDate(ctx context.Context, date string) (int, error) {
 	peopleSummaryCtx := p.gatherPeopleSummary()
 	profileCtx := formatUserProfile(profile)
 	jiraCtx := p.gatherJiraContext(owner)
-	projectsCtx, hasRealProjects := p.gatherProjects(p.revisionWindowStart(currentUserID, date))
+	workbenchesCtx, hasRealWorkbenches := p.gatherWorkbenches(p.revisionWindowStart(currentUserID, date))
 	memRevisionsCtx := p.gatherMemoryRevisions(currentUserID, date)
 
 	// Check we have some data (suggestion text alone doesn't count).
-	hasData := hasAnyData(digestsCtx, dailyDigestCtx, hasRealTracks, hasRealTargets, hasRealInbox, hasRealProjects)
+	hasData := hasAnyData(digestsCtx, dailyDigestCtx, hasRealTracks, hasRealTargets, hasRealInbox, hasRealWorkbenches)
 	if !hasData {
 		p.logger.Println("briefing: no digests or tracks available, skipping")
 		return 0, nil
@@ -201,7 +201,7 @@ func (p *Pipeline) RunForDate(ctx context.Context, date string) (int, error) {
 		peopleSummaryCtx,
 		profileCtx,
 		jiraCtx,
-		projectsCtx,
+		workbenchesCtx,
 		memRevisionsCtx,
 	)
 

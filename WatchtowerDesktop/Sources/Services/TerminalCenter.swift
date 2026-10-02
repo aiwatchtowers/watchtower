@@ -96,7 +96,7 @@ final class TerminalCenter {
     }
 
     /// Sessions of `projectID` this center holds a process for (running or not).
-    func sessionIDs(ofProject projectID: Int64) -> Set<Int64> {
+    func sessionIDs(ofWorkbench projectID: Int64) -> Set<Int64> {
         Set(rows.values.filter { $0.projectID == projectID }.map(\.id))
     }
 
@@ -118,7 +118,7 @@ final class TerminalCenter {
         case sent
         /// Bracketed paste was off: the line is on the clipboard instead.
         case copied
-        /// Nothing running: the next session gets it from `project brief`.
+        /// Nothing running: the next session gets it from `workbench brief`.
         case noSession
     }
 
@@ -135,7 +135,7 @@ final class TerminalCenter {
     /// permission prompt the owner has not seen. Never starts a session.
     func sendPrompt(_ line: String, sessionID: Int64) -> PromptDelivery {
         guard states[sessionID] == .running, let process = processes[sessionID] else { return .noSession }
-        switch ProjectCommentPrompt.terminalPayload(line, bracketedPaste: process.bracketedPasteMode) {
+        switch WorkbenchCommentPrompt.terminalPayload(line, bracketedPaste: process.bracketedPasteMode) {
         case let .paste(bytes):
             clipboardHints.remove(sessionID)
             process.sendInput(bytes)

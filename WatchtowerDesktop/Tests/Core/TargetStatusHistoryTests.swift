@@ -14,8 +14,8 @@ final class TargetStatusHistoryTests: XCTestCase {
 
     func testDesktopStatusWritesAreRecordedAsTheOwners() throws {
         try db.write { d in
-            let p = try TestDatabase.insertProject(d)
-            let id = try TestDatabase.insertProjectTarget(d, projectID: p)
+            let p = try TestDatabase.insertWorkbench(d)
+            let id = try TestDatabase.insertWorkbenchTarget(d, projectID: p)
             // The agent's write, as the Go MCP path makes it.
             try d.execute(sql: "UPDATE targets SET status = 'in_review', status_actor = 'agent' WHERE id = ?",
                           arguments: [id])
@@ -32,17 +32,17 @@ final class TargetStatusHistoryTests: XCTestCase {
 
     func testInReviewDecodesAsActiveWithProgressAndBoardRank() throws {
         try db.write { d in
-            let p = try TestDatabase.insertProject(d)
-            _ = try TestDatabase.insertProjectTarget(d, projectID: p, text: "blocked one", status: "blocked")
-            _ = try TestDatabase.insertProjectTarget(d, projectID: p, text: "review one", status: "in_review")
-            let board = try ProjectQueries.board(d, projectID: p)
+            let p = try TestDatabase.insertWorkbench(d)
+            _ = try TestDatabase.insertWorkbenchTarget(d, projectID: p, text: "blocked one", status: "blocked")
+            _ = try TestDatabase.insertWorkbenchTarget(d, projectID: p, text: "review one", status: "in_review")
+            let board = try WorkbenchQueries.board(d, projectID: p)
             XCTAssertEqual(board.map(\.target.text), ["review one", "blocked one"], "in_review ranks before blocked")
             let review = board[0].target
             XCTAssertEqual(review.status, "in_review")
             XCTAssertTrue(review.isActive)
             XCTAssertEqual(TargetQueries.statusProgress("in_review"), 0.8, accuracy: 1e-9)
 
-            let summary = try XCTUnwrap(ProjectQueries.summaries(d).first)
+            let summary = try XCTUnwrap(WorkbenchQueries.summaries(d).first)
             XCTAssertEqual(summary.openTargets, 2)
             XCTAssertEqual(summary.inProgressTargets, 0, "like the CLI, in progress excludes in_review")
         }

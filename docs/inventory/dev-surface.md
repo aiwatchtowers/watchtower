@@ -5,9 +5,9 @@
 > from @Vadym.
 >
 > AI assistant: when working in `internal/mcp/`, the registry's read tools
-> (`internal/tools/taskcontext.go`, `experts.go`), the project tools
-> (`internal/tools/projects.go`, `project_targets.go`, `project_docs.go`,
-> `project_scope.go`) or the registry's `DirectApply` path, `internal/devpack/`,
+> (`internal/tools/taskcontext.go`, `experts.go`), the workbench tools
+> (`internal/tools/workbenches.go`, `workbench_targets.go`, `workbench_docs.go`,
+> `workbench_scope.go`, `workbench_names.go`) or the registry's `DirectApply` path, `internal/devpack/`,
 > `cmd/mcp.go`, or `cmd/integrate.go`, read this file first. Any proposed change
 > that would break a guard test or remove a contract must be raised as a
 > question before touching code.
@@ -17,21 +17,22 @@ from a developer's coding agent. Design:
 `docs/superpowers/specs/2026-08-09-dev-knowledge-base-design.md`.
 
 **Module:** `internal/mcp/` (`get_task_context`, `find_experts`) +
-`internal/devpack/` + `cmd/integrate.go` + `cmd/mcp.go` (`--project`, DEV-06) +
-`internal/tools/{projects,project_targets,project_docs,project_images,project_scope}.go`
+`internal/devpack/` + `cmd/integrate.go` + `cmd/mcp.go` (`--workbench`, legacy `--project`, DEV-06) +
+`internal/tools/{workbenches,workbench_targets,workbench_docs,workbench_images,workbench_scope,workbench_names}.go`
 **Last full audit:** 2026-08-09
 
 ## DEV-01 — read-only forever
 
 **Status:** Enforced
 
-**Scope (amended 2026-09-29, spec `docs/superpowers/specs/2026-09-29-project-board-poc-design.md` D5):**
+**Scope (amended 2026-09-29, spec `docs/superpowers/specs/2026-09-29-project-board-poc-design.md` D5; flag renamed 2026-10-02):**
 "read-only forever" is a promise about `watchtower mcp` **without**
-`--project` — the server plain `integrate claude-code` registers for any
-coding agent. `watchtower mcp --project N` is the one writable mode of this
-surface and has its own contract, DEV-06; `--chat` is governed by
-AGENT-01/02/06 (`agent-actions.md`). Plain `watchtower mcp` still mounts no
-project tool, no write tool and no `get_action`, and still runs under
+`--workbench` (or its legacy spelling `--project`) — the server plain
+`integrate claude-code` registers for any coding agent. `watchtower mcp
+--workbench N` is the one writable mode of this surface and has its own
+contract, DEV-06; `--chat` is governed by AGENT-01/02/06
+(`agent-actions.md`). Plain `watchtower mcp` still mounts no
+workbench tool, no write tool and no `get_action`, and still runs under
 `query_only` (`TestDev06_PlainMCPStaysReadOnly`).
 
 **Observable:** Every tool on the plain `watchtower mcp` surface is a read. The real enforcement is
@@ -113,7 +114,7 @@ a way for an external agent session to mutate the product's data.
 - `internal/db/db_test.go::TestSetReadOnlyBlocksWrites`
 - `internal/mcp/server_test.go::TestAllToolsAreReadOnly` (naming lint only)
 - `internal/mcp/server_test.go::TestNoToolMutatesDatabase` (the real guard)
-- `cmd/mcp_test.go::TestDev06_PlainMCPStaysReadOnly` (the `cmd` wiring: no `--chat`/`--project` → `query_only` on, no write/project tool, no `get_action`)
+- `cmd/mcp_test.go::TestDev06_PlainMCPStaysReadOnly` (the `cmd` wiring: no `--chat`/`--workbench`/`--project` → `query_only` on, no write/workbench tool, no `get_action`)
 
 **Locked since:** 2026-08-09
 
@@ -181,7 +182,12 @@ that differs from both what we ship and what the sidecar recorded is
 `x-watchtower-pack` frontmatter marker at all (`devpack.HasMarker`,
 `pack.go`) is `StateForeign` and never touched by `Install` or `Remove`.
 `Remove` deletes only marker-carrying, non-drifted files — a drifted file is
-reported and kept, since it is the user's now.
+reported and kept, since it is the user's now. The workbench skill
+(`watchtower-workbench`, embedded separately from the pack by
+`//go:embed workbenchskill/*/SKILL.md` in `internal/devpack/workbench.go`)
+follows the same rules, and so does the removal of the pre-rename
+`watchtower-project` skill when a workbench folder is resynced
+(`removeSkill`: only a marked, un-edited copy is deleted).
 
 **Test guards:**
 - `internal/devpack/install_test.go::TestInstallWritesThePackAndIsIdempotent`
@@ -219,16 +225,20 @@ interrupt the exact flow this feature exists to protect. Adding one requires
 an explicit, CLI-controlled opt-in and an owner decision, not an
 implementation detail slipped into a handler.
 
-**Amended 2026-09-29 (spec `docs/superpowers/specs/2026-09-29-project-board-poc-design.md` D5/D6):**
-the one hook on this surface is the `SessionStart` hook
-`watchtower integrate claude-code --project N` installs into that project
+**Amended 2026-09-29 (spec `docs/superpowers/specs/2026-09-29-project-board-poc-design.md` D5/D6; names updated 2026-10-02):**
+the hooks on this surface are the `SessionStart` hook
+`watchtower integrate claude-code --workbench N` installs into that workbench
 folder's `.claude/settings.local.json`, running
-`watchtower project brief --project N`. It is the explicit, CLI-controlled
-opt-in this contract requires: only that command installs it (typed by the
-owner, or run by the Desktop's New-project flow the owner starts);
-`integrate remove --project N` and `watchtower project delete N` remove it;
-plain `integrate claude-code` never installs one; and it runs only when the
-owner's own Claude Code session starts in that folder. There is still no
+`watchtower workbench brief --workbench N`, and its `Stop` hook
+(`workbench check --workbench N --stop-hook`, PROJ-07). They are the
+explicit, CLI-controlled opt-in this contract requires: only that command
+installs them (typed by the owner, or run by the Desktop's New Workbench /
+Re-run Setup flows the owner starts — a folder set up before the rename keeps
+its `project brief --project N` entry until such a resync replaces it in
+place); `integrate remove --workbench N` and `watchtower workbench delete N`
+remove them, either spelling; plain `integrate claude-code` never installs
+one; and they run only when the owner's own Claude Code session starts or
+stops in that folder. There is still no
 daemon phase for this surface, and the brief only reads the board. (2026-10-01,
 board #160: inside a session the Desktop's embedded terminal launched —
 `WATCHTOWER_TERMINAL_SESSION_ID` set — it also stores the conversation's
@@ -243,36 +253,44 @@ match) — and by code review against this contract.
 
 **Locked since:** 2026-08-09
 
-## DEV-06 — the project-bound mode writes only its own project
+## DEV-06 — the workbench-bound mode writes only its own workbench
 
 **Status:** Enforced
 
-**Observable:** `watchtower mcp --project N` (`cmd/mcp.go`'s
-`mcpProjectOptions`; registered in the project folder as the local
-`watchtower-project` server by `watchtower integrate claude-code --project N`)
-is the one writable mode of this surface. It refuses to start when project N
+**Observable:** `watchtower mcp --workbench N` (`cmd/mcp.go`'s
+`mcpWorkbenchOptions`; registered in the workbench folder as the local
+`watchtower-workbench` server by `watchtower integrate claude-code --workbench N`)
+is the one writable mode of this surface. It refuses to start when workbench N
 does not exist or together with `--chat`, keeps the connection writable, and
-mounts the registry (`buildToolRegistry`) on the `project` surface with
-`tools.Binding{Surface: "project", ProjectID: N, DirectApply: true}`: the
-eleven project tools (`internal/tools/projects.go`, `project_targets.go`,
-`project_docs.go`) plus every surface-less read tool and `get_action`; no
-other write tool is visible there. Three rules keep it narrow:
+mounts the registry (`buildToolRegistry`) on the `project` surface (the
+stored surface value keeps its pre-rename spelling) with
+`tools.Binding{Surface: "project", WorkbenchID: N, DirectApply: true}`: the
+eleven workbench tools (`internal/tools/workbenches.go`, `workbench_targets.go`,
+`workbench_docs.go`) plus every surface-less read tool and `get_action`; no
+other write tool is visible there. The legacy spelling `--project N` (a
+folder registered as `watchtower-project` before the 2026-10-02 rename and
+not yet resynced) is the same mode with `Binding.LegacyNames` set: the same
+eleven tools, the five renamed ones listed under their old names
+(`project_info`, `project_board`, `update_project`, `add_project_source`,
+`remove_project_source`; `tools.LegacyWorkbenchToolNames`), the audit row
+recording the canonical new name, and `Registry.Get` resolving both
+spellings. Three rules keep it narrow:
 
-1. **Only project N's rows.** Every project write resolves what it touches —
+1. **Only workbench N's rows.** Every workbench write resolves what it touches —
    target, parent, source, document, comment — and its `Tool.Scope` refuses
-   anything outside `Binding.ProjectID` ("… is not in this project") before
+   anything outside `Binding.WorkbenchID` ("… is not in this workbench") before
    any row, data or audit, is written; new rows take `project_id` from the
    binding only (a `project_id` argument is an unknown field and refused).
    `attach_document` accepts only an existing `.md`/`.txt` regular file that
-   resolves, after symlinks, inside the project's `folder_path`
+   resolves, after symlinks, inside the workbench's `folder_path`
    (`resolveInsideFolder`: `../`, absolute paths, and symlinked files or
    directories pointing out are refused). Target images (`create_targets`'
-   `images`, `update_target`'s `add_images`) attach only to project N's
+   `images`, `update_target`'s `add_images`) attach only to workbench N's
    targets and `remove_image_ids` detaches only the target's own images
    (`scopeImageIDs`); the source file is read, never modified, and its copy
-   lands only in project N's own `<workspace>/project_files/N/`.
+   lands only in workbench N's own `<workspace>/project_files/N/`.
    `list_targets`/`get_target` see only
-   project N's targets; `get_action` shows only project N's rows
+   workbench N's targets; `get_action` shows only workbench N's rows
    (`actionVisible`).
 2. **Applied directly, audited.** Under `DirectApply`, `Registry.Propose`
    inserts the call's `agent_actions` row `approved` with
@@ -287,44 +305,46 @@ other write tool is visible there. Three rules keep it narrow:
    (`directApplyGate`). The one exception (owner decision 2026-10-02, board
    #166): an External tool that opts in with `Tool.ProposeUnderDirectApply`
    and names `project` — today only `send_slack_message` — is recorded as a
-   **pending** proposal bound to project N (`trust_at_create='ask'`, never
+   **pending** proposal bound to workbench N (`trust_at_create='ask'`, never
    applied inline, a stale `execute` trust row ignored) and runs only after the
    owner's Approve in the Desktop's Inbox → Actions strip, through the ordinary
    `Apply` claim (AGENT-05).
 
-Once project N is deleted, every tool on a still-connected session — project
-tool or not, read or write, `get_action` included — answers `project N no
-longer exists` and writes nothing (`Registry.ProjectAlive`, the first check of
+Once workbench N is deleted, every tool on a still-connected session — workbench
+tool or not, read or write, `get_action` included — answers `workbench N no
+longer exists` and writes nothing (`Registry.WorkbenchAlive`, the first check of
 every call).
 
 DEV-06's scoping is a guardrail on Watchtower's own tools only: the agent runs
 as the owner with a shell, so Claude Code's own permission prompt is the real
-boundary. A project session also mounts the full read tool set plain
-`watchtower mcp` does (`projects.md`, "v1 limits and notes").
+boundary. A workbench session also mounts the full read tool set plain
+`watchtower mcp` does (`workbench.md`, "v1 limits and notes").
 
 **Why locked:** This is the only place an external coding agent writes into
 Watchtower without a per-call owner click. It is acceptable because the blast
-radius is one project the owner created and bound to the very folder the agent
-works in. A tool that wrote outside it, a non-project write tool visible on
+radius is one workbench the owner created and bound to the very folder the agent
+works in. A tool that wrote outside it, a non-workbench write tool visible on
 this surface, or an External call would turn a folder-scoped board into an
 unreviewed write path into the owner's whole app — or off the machine.
 
 **Test guards:**
-- `internal/tools/projects_test.go::TestDev06_WriteOutsideTheBoundProjectIsRefused` (every write aimed at another project's target/source/comment, a non-project target, or smuggling a `project_id` is refused; the other project's rows are byte-identical; no audit row)
-- `internal/tools/registry_project_test.go::TestDev06_ExternalToolRefusedUnderDirectApply`
-- `internal/tools/registry_approve_test.go::TestDev06_ProposeOnlyExternalToolLandsPendingUnderDirectApply` (one pending row bound to the project, never executed on propose even with a stale execute trust row; runs once after Approve), `TestDirectApply_ProposeOnlyToolStillNeedsTheSurface`; `internal/tools/slack_send_test.go::TestSendSlackMessage_ProjectSessionOnlyProposes`
-- `internal/tools/project_docs_test.go::TestDev06_AttachDocumentStaysInsideTheFolder` (`../`, nested `../`, absolute path, symlinked file, symlinked directory, missing file, wrong extension, directory, the folder itself)
+- `internal/tools/workbenches_test.go::TestDev06_WriteOutsideTheBoundProjectIsRefused` (every write aimed at another workbench's target/source/comment, a non-workbench target, or smuggling a `project_id` is refused; the other workbench's rows are byte-identical; no audit row)
+- `internal/tools/registry_workbench_test.go::TestDev06_ExternalToolRefusedUnderDirectApply`
+- `internal/tools/registry_approve_test.go::TestDev06_ProposeOnlyExternalToolLandsPendingUnderDirectApply` (one pending row bound to the workbench, never executed on propose even with a stale execute trust row; runs once after Approve), `TestDirectApply_ProposeOnlyToolStillNeedsTheSurface`; `internal/tools/slack_send_test.go::TestSendSlackMessage_ProjectSessionOnlyProposes`
+- `internal/tools/workbench_docs_test.go::TestDev06_AttachDocumentStaysInsideTheFolder` (`../`, nested `../`, absolute path, symlinked file, symlinked directory, missing file, wrong extension, directory, the folder itself)
 - `cmd/mcp_test.go::TestDev06_PlainMCPStaysReadOnly` (the boundary with DEV-01)
-- supporting: `TestDirectApply_AppliesInlineWithAuditRow`, `TestDirectApply_RefusesToolNotOnTheSurface`, `TestScope_RunsInProposeAndAgainInApply`, `TestProjectBinding_DeletedProjectAnswersNoLongerExists` (`internal/tools`); `TestProjectMode_DeletedProjectEveryToolAnswersNoLongerExists`, `TestGetAction_ProjectSessionSeesOnlyItsRows` (`internal/mcp`); `TestMCPProjectMode_BindsTheProjectAndAppliesDirectly`, `TestMCPProjectMode_RefusesMissingProjectAndChat`, and the project-surface block of `TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces` (exact tool set; none External except `send_slack_message`, which must be propose-only) (`cmd`).
+- supporting: `TestDirectApply_AppliesInlineWithAuditRow`, `TestDirectApply_RefusesToolNotOnTheSurface`, `TestScope_RunsInProposeAndAgainInApply`, `TestProjectBinding_DeletedProjectAnswersNoLongerExists` (`internal/tools`); `TestProjectMode_DeletedProjectEveryToolAnswersNoLongerExists`, `TestGetAction_ProjectSessionSeesOnlyItsRows` (`internal/mcp`); `TestMCPProjectMode_BindsTheProjectAndAppliesDirectly`, `TestMCPProjectMode_RefusesMissingProjectAndChat`, `TestMCPProjectMode_LegacyFlagServesTheOldToolNames`, and the workbench-surface block of `TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces` (exact tool set; none External except `send_slack_message`, which must be propose-only) (`cmd`); the legacy vocabulary: `TestWorkbenchMode_EachVocabularyListsElevenToolsUnderItsOwnNames`, `TestLegacyMode_WritesRecordTheCanonicalNameAndOldRowsResolve` (`internal/mcp`), `TestLegacyName_WriteRecordsTheCanonicalName`, `TestRegistryGet_ResolvesBothSpellings` (`internal/tools`).
 
 **Locked since:** 2026-09-29
 
 ## Changelog
 
-- 2026-10-02 (board #166, Slack send): DEV-06 rule 3 amended by owner decision — an External tool that opts into `ProposeUnderDirectApply` (only `send_slack_message`) is recorded pending in a project session and sent after the owner's Approve in the Desktop; it is still never applied inline. `TestDev06_ExternalToolRefusedUnderDirectApply` is unchanged and green; the registry pin's "nothing External on the project surface" assertion now names the one propose-only exception and requires the flag on it. New guards listed above. The project surface also gains the read tool `get_writing_style` (not in `ReadTools()`, so plain `watchtower mcp` is unchanged, DEV-01).
+- 2026-10-02 (Workbench rename, spec `docs/superpowers/specs/2026-10-02-workbench-rename-design.md`): Projects is renamed **Workbench**. DEV-06 is reworded with the same meaning — `watchtower mcp --workbench N`, registered as `watchtower-workbench`, still exactly eleven tools on the `project` surface under `DirectApply`, scoped to one workbench; the hidden legacy `--project N` serves the same tools with the five renamed ones under their old names and records the canonical name in the audit row (new tests `TestWorkbenchMode_EachVocabularyListsElevenToolsUnderItsOwnNames`, `TestLegacyMode_WritesRecordTheCanonicalNameAndOldRowsResolve`, `TestMCPProjectMode_LegacyFlagServesTheOldToolNames`). DEV-01's scope sentence names `--workbench` and `--project`. DEV-04 now names the workbench skill's embed (`workbenchskill/*/SKILL.md`) and the resync's removal of the legacy skill through the same marker/digest rule. DEV-05's amendment names the renamed hook commands and also lists the `Stop` hook installed since PROJ-07 (2026-10-01), which it had not named; a resync replacing our own legacy hook entry is still the explicit CLI/Desktop opt-in. Guard file paths updated; no guard test renamed or relaxed.
+- 2026-10-02 (board #166, Slack send): DEV-06 rule 3 amended by owner decision — an External tool that opts into `ProposeUnderDirectApply` (only `send_slack_message`) is recorded pending in a workbench session and sent after the owner's Approve in the Desktop; it is still never applied inline. `TestDev06_ExternalToolRefusedUnderDirectApply` is unchanged and green; the registry pin's "nothing External on the project surface" assertion now names the one propose-only exception and requires the flag on it. New guards listed above. The project surface also gains the read tool `get_writing_style` (not in `ReadTools()`, so plain `watchtower mcp` is unchanged, DEV-01).
+
 - 2026-10-01 (board target #160): DEV-05's 2026-09-29 amendment no longer says the brief "only reads" without qualification — inside a session the Desktop's embedded terminal launched, the `SessionStart` hook also stores the conversation's session id on that `terminal_sessions` row after `/clear`, `/compact`, a resume or a fork (see `projects.md` changelog); approved by the owner 2026-10-01. Still pull-only: no new hook, no daemon phase, no output change. No guard tests changed.
 - 2026-09-30 (fix wave 2 of PR #30): DEV-06's Observable now says `get_action` answers `project N no longer exists` after a delete too (it skipped the liveness check before; `Registry.ProjectAlive` is exported for it), and states that DEV-06 is a guardrail on Watchtower's tools only — Claude Code's permission prompt is the real boundary. `TestGetAction_ProjectSessionSeesOnlyItsRows` now also pins the `context_id` clause with a second project's row. No guard relaxed.
-- 2026-09-29: the Projects POC's install lands on the DEV-04 installer rules unchanged — the `watchtower-project` skill carries the `x-watchtower-pack` marker and `.watchtower-shipped` digest and is embedded separately (`//go:embed projectskill/*/SKILL.md`), so plain `integrate claude-code` never installs it; `integrate remove --project N` deletes only marker-carrying files, our own `SessionStart` entry and the exclude lines it added. No DEV-01..05 semantics beyond Task 9's DEV-01/DEV-05 amendments and the new DEV-06 changed.
+- 2026-09-29: the Projects POC's install lands on the DEV-04 installer rules unchanged — the `watchtower-project` skill carries the `x-watchtower-pack` marker and `.watchtower-shipped` digest and is embedded separately (`//go:embed projectskill/*/SKILL.md`; `workbenchskill/*/SKILL.md` since the 2026-10-02 rename), so plain `integrate claude-code` never installs it; `integrate remove --project N` deletes only marker-carrying files, our own `SessionStart` entry and the exclude lines it added. No DEV-01..05 semantics beyond Task 9's DEV-01/DEV-05 amendments and the new DEV-06 changed.
 - 2026-09-29 (Projects POC, spec `docs/superpowers/specs/2026-09-29-project-board-poc-design.md` §4.2/§4.3/§7, owner decision D5): **DEV-06 added** (Enforced) — `watchtower mcp --project N`, this surface's one writable mode: eleven project tools on the `project` registry surface, applied directly under `tools.Binding.DirectApply` with an `agent_actions` audit row, scoped to project N, never an `External` tool. **DEV-01 amended**: "read-only forever" is scoped to `watchtower mcp` without `--project`; no DEV-01 guard changed, and `TestDev06_PlainMCPStaysReadOnly` joins its guard list. **DEV-05 amended**: the `SessionStart` hook installed by `integrate claude-code --project N` is the explicit CLI opt-in the contract requires (the installer itself lands in Phase 3). `Registry.CallRead` now takes the caller's `Binding` (dev mode passes the zero value, so its reads are unchanged), and `get_target` answers "no target with id N" for a project target outside that project's session (PROJ-01, `projects.md`).
 - 2026-09-14: **inbox demolition** (spec `docs/superpowers/specs/2026-09-14-inbox-demolition-design.md`) — the pack is now **three skills, not four**. `list_situations`/`get_situation` (`internal/tools/situations.go`) are deleted along with the situations pipeline, and the `watchtower-whats-changed` skill, which was built entirely on those two tools, is removed from `internal/devpack/skills/` rather than left pointing at a table frozen on 2026-09-06 (audit finding L4). DEV-01's `TestNoToolMutatesDatabase` call list and DEV-02's Observable/grep drop the two tools; DEV-05's skill list drops the skill. **No contract semantics changed and no guard relaxed** — the installer needs no special handling for a shipped file that leaves the pack (DEV-04: `integrate status` reports it, `integrate remove` deletes only marker-carrying files), and the pack-install guards in `internal/devpack/install_test.go` are untouched. A "what changed" skill over Catch-Up would need Catch-Up exposed as a read tool first — a follow-up, not this spec.
 - 2026-09-07: read-tool migration slice 2b — the dependency-carrying read tools

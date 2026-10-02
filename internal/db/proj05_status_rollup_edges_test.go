@@ -16,8 +16,8 @@ import (
 
 func TestProj05_MoveOutOfAParentWithRemainingChildrenReRollsIt(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestProject(t, d)
-	root := insertProjectTargetRow(t, d, pid, "plan")
+	pid := newTestWorkbench(t, d)
+	root := insertWorkbenchTargetRow(t, d, pid, "plan")
 	mid := insertBoardChild(t, d, pid, root, "todo")
 	a := insertBoardChild(t, d, pid, mid, "in_progress")
 	insertBoardChild(t, d, pid, mid, "blocked")
@@ -32,8 +32,8 @@ func TestProj05_MoveOutOfAParentWithRemainingChildrenReRollsIt(t *testing.T) {
 
 func TestProj05_OldAndNewParentShareAnAncestor(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestProject(t, d)
-	root := insertProjectTargetRow(t, d, pid, "plan")
+	pid := newTestWorkbench(t, d)
+	root := insertWorkbenchTargetRow(t, d, pid, "plan")
 	m1 := insertBoardChild(t, d, pid, root, "todo")
 	m2 := insertBoardChild(t, d, pid, root, "todo")
 	x := insertBoardChild(t, d, pid, m1, "todo")
@@ -54,8 +54,8 @@ func TestProj05_OldAndNewParentShareAnAncestor(t *testing.T) {
 
 func TestProj05_ChildLeavingOrJoiningTheProjectReRollsTheParent(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestProject(t, d)
-	parent := insertProjectTargetRow(t, d, pid, "feature")
+	pid := newTestWorkbench(t, d)
+	parent := insertWorkbenchTargetRow(t, d, pid, "feature")
 	insertBoardChild(t, d, pid, parent, "done")
 	open := insertBoardChild(t, d, pid, parent, "in_progress")
 	require.Equal(t, "in_progress", targetStatus(t, d, parent))
@@ -71,8 +71,8 @@ func TestProj05_ChildLeavingOrJoiningTheProjectReRollsTheParent(t *testing.T) {
 
 func TestProj05_OneStatementClosingSeveralChildren(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestProject(t, d)
-	root := insertProjectTargetRow(t, d, pid, "plan")
+	pid := newTestWorkbench(t, d)
+	root := insertWorkbenchTargetRow(t, d, pid, "plan")
 	mid := insertBoardChild(t, d, pid, root, "todo")
 	l1 := insertBoardChild(t, d, pid, mid, "todo")
 	l2 := insertBoardChild(t, d, pid, mid, "todo")
@@ -85,8 +85,8 @@ func TestProj05_OneStatementClosingSeveralChildren(t *testing.T) {
 
 func TestProj05_ParentOwnChangeStillRollsIntoItsParent(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestProject(t, d)
-	root := insertProjectTargetRow(t, d, pid, "plan")
+	pid := newTestWorkbench(t, d)
+	root := insertWorkbenchTargetRow(t, d, pid, "plan")
 	parent := insertBoardChild(t, d, pid, root, "todo")
 	insertBoardChild(t, d, pid, parent, "todo")
 
@@ -97,8 +97,8 @@ func TestProj05_ParentOwnChangeStillRollsIntoItsParent(t *testing.T) {
 
 func TestProj05_DeletingTheLastChildLeavesTheParentUntouched(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestProject(t, d)
-	parent := insertProjectTargetRow(t, d, pid, "feature")
+	pid := newTestWorkbench(t, d)
+	parent := insertWorkbenchTargetRow(t, d, pid, "feature")
 	only := insertBoardChild(t, d, pid, parent, "in_progress")
 	require.Equal(t, "in_progress", targetStatus(t, d, parent))
 
@@ -108,8 +108,8 @@ func TestProj05_DeletingTheLastChildLeavesTheParentUntouched(t *testing.T) {
 
 func TestProj05_DeletingAMiddleParentReRollsTheGrandparent(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestProject(t, d)
-	root := insertProjectTargetRow(t, d, pid, "plan")
+	pid := newTestWorkbench(t, d)
+	root := insertWorkbenchTargetRow(t, d, pid, "plan")
 	mid := insertBoardChild(t, d, pid, root, "todo")
 	insertBoardChild(t, d, pid, mid, "in_progress")
 	insertBoardChild(t, d, pid, root, "done")
@@ -125,8 +125,8 @@ func TestProj05_DeletingAMiddleParentReRollsTheGrandparent(t *testing.T) {
 // neither it nor anything above it moves because of a change below it.
 func TestProj05_DismissedAncestorIsNeverReDerived(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestProject(t, d)
-	root := insertProjectTargetRow(t, d, pid, "plan")
+	pid := newTestWorkbench(t, d)
+	root := insertWorkbenchTargetRow(t, d, pid, "plan")
 	mid := insertBoardChild(t, d, pid, root, "todo")
 	leaf := insertBoardChild(t, d, pid, mid, "todo")
 	insertBoardChild(t, d, pid, root, "todo")
@@ -150,8 +150,8 @@ func TestProj05_DismissedAncestorIsNeverReDerived(t *testing.T) {
 
 func TestProj05_AllChildrenDismissedDismissesTheParentAndItRollsOn(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestProject(t, d)
-	root := insertProjectTargetRow(t, d, pid, "plan")
+	pid := newTestWorkbench(t, d)
+	root := insertWorkbenchTargetRow(t, d, pid, "plan")
 	parent := insertBoardChild(t, d, pid, root, "todo")
 	a := insertBoardChild(t, d, pid, parent, "todo")
 	insertBoardChild(t, d, pid, root, "done")
@@ -168,8 +168,8 @@ func TestProj05_AllChildrenDismissedDismissesTheParentAndItRollsOn(t *testing.T)
 
 func TestProj05_HundredLevelChainRollsUpToTheRoot(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestProject(t, d)
-	root := insertProjectTargetRow(t, d, pid, "root")
+	pid := newTestWorkbench(t, d)
+	root := insertWorkbenchTargetRow(t, d, pid, "root")
 	parent := root
 	for i := 0; i < 100; i++ {
 		parent = insertBoardChild(t, d, pid, parent, "todo")
@@ -180,8 +180,8 @@ func TestProj05_HundredLevelChainRollsUpToTheRoot(t *testing.T) {
 
 func TestProj05_ParentIDCycleTerminates(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestProject(t, d)
-	a := insertProjectTargetRow(t, d, pid, "a")
+	pid := newTestWorkbench(t, d)
+	a := insertWorkbenchTargetRow(t, d, pid, "a")
 	b := insertBoardChild(t, d, pid, a, "todo")
 	_, err := d.Exec(`UPDATE targets SET parent_id = ? WHERE id = ?`, b, a)
 	require.NoError(t, err)
@@ -192,7 +192,7 @@ func TestProj05_ParentIDCycleTerminates(t *testing.T) {
 
 func TestProj05_PersonalParentOfAProjectChildIsNeverWritten(t *testing.T) {
 	d := openTestDB(t)
-	pid := newTestProject(t, d)
+	pid := newTestWorkbench(t, d)
 	res, err := d.Exec(`INSERT INTO targets (text, period_start, period_end, status)
 		VALUES ('personal', '2026-09-29', '2026-09-29', 'todo')`)
 	require.NoError(t, err)

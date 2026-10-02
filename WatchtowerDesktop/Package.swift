@@ -11,7 +11,7 @@ let package = Package(
         .package(url: "https://github.com/groue/GRDB.swift", from: "7.0.0"),
         // Markdown AST for the shared chat renderer (tables, task lists, fences).
         .package(url: "https://github.com/swiftlang/swift-markdown.git", from: "0.5.0"),
-        // Embedded terminal for the Projects tab (Claude Code in the project
+        // Embedded terminal for the Workbench tab (Claude Code in the project
         // folder). MIT. App target only — WatchtowerCore stays AppKit-free.
         .package(url: "https://github.com/migueldeicaza/SwiftTerm", from: "1.20.0"),
         .package(url: "https://github.com/jpsim/Yams", from: "5.0.0"),

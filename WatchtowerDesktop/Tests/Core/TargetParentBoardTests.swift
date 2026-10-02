@@ -6,7 +6,7 @@ import WatchtowerTestSupport
 /// A target's parent must be on the same board — the Swift twin of Go
 /// `checkParentBoard` (internal/db/targets_board.go). NULL vs N is different.
 final class TargetParentBoardTests: XCTestCase {
-    private func projectTarget(_ db: Database, text: String) throws -> Int {
+    private func workbenchTarget(_ db: Database, text: String) throws -> Int {
         try db.execute(sql: "INSERT INTO projects (name, folder_path) VALUES ('acme', '/tmp/acme')")
         let projectID = db.lastInsertedRowID
         try db.execute(sql: """
@@ -27,7 +27,7 @@ final class TargetParentBoardTests: XCTestCase {
     func testPersonalChildUnderAProjectParentIsRefused() throws {
         let queue = try TestDatabase.create()
         try queue.write { db in
-            let board = try projectTarget(db, text: "Board task")
+            let board = try workbenchTarget(db, text: "Board task")
             let before = try count(db)
             XCTAssertThrowsError(try personal(db, text: "Mine", parent: board)) { error in
                 XCTAssertTrue(error is TargetParentBoardError)
@@ -45,11 +45,11 @@ final class TargetParentBoardTests: XCTestCase {
         let queue = try TestDatabase.create()
         try queue.write { db in
             let mine = try personal(db, text: "Mine")
-            let board = try projectTarget(db, text: "Board task")
+            let board = try workbenchTarget(db, text: "Board task")
             XCTAssertThrowsError(try TargetQueries.updateParent(db, id: board, parentID: mine)) { error in
                 XCTAssertEqual(
                     error as? TargetParentBoardError,
-                    TargetParentBoardError(parentID: mine, parentProjectID: nil, childProjectID: 1)
+                    TargetParentBoardError(parentID: mine, parentWorkbenchID: nil, childWorkbenchID: 1)
                 )
             }
             XCTAssertNil(try TargetQueries.parentID(db, of: board))

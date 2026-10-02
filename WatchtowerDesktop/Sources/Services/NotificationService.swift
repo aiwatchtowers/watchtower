@@ -266,14 +266,15 @@ final class NotificationService: Sendable {
         UNUserNotificationCenter.current().add(request)
     }
 
-    /// Project activity (spec §6.5). The identifier comes from the policy and
+    /// Workbench activity (spec §6.5). The identifier comes from the policy and
     /// is stable per event, so a re-post replaces rather than stacks; the
-    /// payload deep-links to the project pane (`NotificationDelegate.route`).
-    func sendProjectNotice(_ notice: ProjectNotice) {
+    /// payload deep-links to the workbench pane (`NotificationDelegate.route`).
+    func sendWorkbenchNotice(_ notice: WorkbenchNotice) {
         let content = UNMutableNotificationContent()
         content.title = notice.title
         content.body = String(notice.body.prefix(200))
         content.sound = .default
+        // Pre-rename `type`/`projectId` values: delivered pushes still route (spec 2026-10-02 A1).
         var info: [String: Any] = [
             // A proposal's card lives in the Inbox strip, not on the project page.
             "type": notice.kind == .actionAwaitsApproval ? "agent_action" : "project",

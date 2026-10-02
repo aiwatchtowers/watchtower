@@ -13,22 +13,22 @@ import (
 // Catch-Up's CATCHUP-04 precedent). Its methods are nil-safe: a gather
 // function called outside RunForDate (tests) records nothing.
 type shownIDs struct {
-	targets  map[int]bool
-	tracks   map[int]bool
-	digests  map[int]bool
-	inbox    map[int]bool
-	people   map[string]bool
-	projects map[int64]bool
+	targets     map[int]bool
+	tracks      map[int]bool
+	digests     map[int]bool
+	inbox       map[int]bool
+	people      map[string]bool
+	workbenches map[int64]bool
 }
 
 func newShownIDs() *shownIDs {
 	return &shownIDs{
-		targets:  map[int]bool{},
-		tracks:   map[int]bool{},
-		digests:  map[int]bool{},
-		inbox:    map[int]bool{},
-		people:   map[string]bool{},
-		projects: map[int64]bool{},
+		targets:     map[int]bool{},
+		tracks:      map[int]bool{},
+		digests:     map[int]bool{},
+		inbox:       map[int]bool{},
+		people:      map[string]bool{},
+		workbenches: map[int64]bool{},
 	}
 }
 
@@ -62,9 +62,9 @@ func (s *shownIDs) addPerson(userID string) {
 	}
 }
 
-func (s *shownIDs) addProject(id int64) {
+func (s *shownIDs) addWorkbench(id int64) {
 	if s != nil {
-		s.projects[id] = true
+		s.workbenches[id] = true
 	}
 }
 
@@ -174,7 +174,7 @@ func (s *shownIDs) resolveAttentionSource(sourceType, sourceID string) (string, 
 		return s.resolvePerson(sourceID)
 	case "project":
 		id, err := strconv.ParseInt(strings.TrimSpace(sourceID), 10, 64)
-		if err != nil || !s.projects[id] {
+		if err != nil || !s.workbenches[id] {
 			return "", false
 		}
 		return strconv.FormatInt(id, 10), true

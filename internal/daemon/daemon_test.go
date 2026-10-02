@@ -626,9 +626,8 @@ func TestDaemon_RunSyncWithAllPipelines(t *testing.T) {
 			SyncOnWake:   false,
 		},
 		Digest: config.DigestConfig{
-			Enabled:        true,
-			MinMessages:    1,
-			TracksInterval: 1 * time.Millisecond, // Allow tracks to run immediately
+			Enabled:     true,
+			MinMessages: 1,
 		},
 	}
 

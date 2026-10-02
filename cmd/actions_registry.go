@@ -8,9 +8,9 @@ import (
 	"watchtower/internal/confluence"
 	"watchtower/internal/db"
 	"watchtower/internal/jira"
-	"watchtower/internal/projectfiles"
 	watchtowerslack "watchtower/internal/slack"
 	"watchtower/internal/tools"
+	"watchtower/internal/workbenchfiles"
 )
 
 // jiraAccountClient builds a per-account Jira client the way the sync wiring
@@ -161,14 +161,15 @@ func buildToolRegistry(cfg *config.Config, database *db.DB) *tools.Registry {
 		// tools.ReadTools() — dev-mode MCP stays local-only (DEV-01).
 		tools.NewGetConfluencePage(confluencePageClientFactory(cfg)),
 		tools.NewEditConfluencePage(confluencePageClientFactory(cfg)),
-		// Slack send (#166): main chat + project sessions; in a project
+		// Slack send (#166): main chat + workbench sessions; in a workbench
 		// session it is recorded pending for the Desktop's Approve (DEV-06).
 		tools.NewSendSlackMessage(slackSenderFactory(cfg)),
 		tools.NewGetWritingStyle(),
 	)
-	// The project tools (surface "project" only): mounted by `mcp --project N`,
+	// The workbench tools (surface "project" only, spec 2026-10-02 A1):
+	// mounted by `mcp --workbench N` (and the legacy `mcp --project N`),
 	// which applies them directly under Binding.DirectApply (DEV-06).
-	regTools = append(regTools, tools.ProjectTools(projectfiles.New(cfg.WorkspaceDir()), cfg.Knowledge.Enabled)...)
+	regTools = append(regTools, tools.WorkbenchTools(workbenchfiles.New(cfg.WorkspaceDir()), cfg.Knowledge.Enabled)...)
 	// Every migrated read tool. Chat mode dispatches these through the registry's
 	// read branch; the runtime-B loop calls them in-process. Dev-mode MCP mounts
 	// the same list via tools.NewReadRegistry.

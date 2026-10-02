@@ -29,7 +29,7 @@ package enum TerminalSessionPolicy {
     /// so titling them would name them after that prompt, not the owner.
     package static func needsTitle(_ s: TerminalSession, attempts: Int) -> Bool {
         s.kind == .claude && s.titleSource == .auto && s.targetID == nil
-            && s.title != TerminalSessionNaming.setupTitle && attempts < maxTitleAttempts
+            && !TerminalSessionNaming.isSetupTitle(s.title) && attempts < maxTitleAttempts
     }
 
     /// `lastActiveAt` is fixed-format ISO, so a string compare orders it; ties go to the higher id.

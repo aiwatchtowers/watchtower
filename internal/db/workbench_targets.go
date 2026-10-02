@@ -1,0 +1,99 @@
+package db
+
+import (
+	"database/sql"
+	"errors"
+	"fmt"
+	"slices"
+	"strings"
+	"time"
+)
+
+// WorkbenchTargetInput is one item of a CreateWorkbenchTargetsTx batch. Its parent
+// is an existing target of the same workbench (ParentID) or an earlier item of
+// the same batch (BatchParent, 1-based; 0 = none) — never both — so a whole
+// plan (feature → tasks → steps) lands in one call.
+type WorkbenchTargetInput struct {
+	Title       string
+	Intent      string
+	Priority    string // high | medium | low; "" = medium
+	ParentID    sql.NullInt64
+	BatchParent int
+	Branch      string // the git branch carrying the work (board drift, PROJ-07); "" = none
+	PR          string // the pull request, a number or URL; "" = none
+}
+
+// CreateWorkbenchTargetsTx inserts items, in order, as targets of workbench
+// projectID inside tx and returns their ids. Every item gets the board
+// defaults: level custom, custom_label project (persisted, kept by the rename), period = the UTC day of
+// creation, source chat, ownership mine, status todo, and priority medium
+// unless the item sets one. Its one production caller is the agent's
+// create_targets tool, so the creation is recorded as the agent's
+// (status_actor, PROJ-06). The first invalid item
+// fails the call; the caller's transaction then rolls the whole batch back.
+func (db *DB) CreateWorkbenchTargetsTx(tx *sql.Tx, projectID int64, items []WorkbenchTargetInput) ([]int64, error) {
+	if err := requireWorkbench(tx, projectID); err != nil {
+		return nil, err
+	}
+	day := time.Now().UTC().Format("2006-01-02")
+	ids := make([]int64, 0, len(items))
+	for i, it := range items {
+		id, err := insertWorkbenchTarget(tx, projectID, day, it, ids)
+		if err != nil {
+			return nil, fmt.Errorf("target %d of %d: %w", i+1, len(items), err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
+func insertWorkbenchTarget(tx *sql.Tx, projectID int64, day string, it WorkbenchTargetInput, created []int64) (int64, error) {
+	title := strings.TrimSpace(it.Title)
+	if title == "" {
+		return 0, errors.New("empty title")
+	}
+	priority := it.Priority
+	if priority == "" {
+		priority = "medium"
+	}
+	if !slices.Contains(TargetPriorities, priority) {
+		return 0, fmt.Errorf("invalid priority %q", it.Priority)
+	}
+	parent, err := resolveWorkbenchParent(tx, projectID, it, created)
+	if err != nil {
+		return 0, err
+	}
+	res, err := tx.Exec(`INSERT INTO targets
+		(text, intent, level, custom_label, period_start, period_end, parent_id,
+		 status, priority, ownership, source_type, project_id, status_actor, branch, pr)
+		VALUES (?, ?, 'custom', 'project', ?, ?, ?, 'todo', ?, 'mine', 'chat', ?, 'agent', ?, ?)`,
+		title, strings.TrimSpace(it.Intent), day, day, parent, priority, projectID,
+		strings.TrimSpace(it.Branch), strings.TrimSpace(it.PR))
+	if err != nil {
+		return 0, fmt.Errorf("inserting workbench target: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+	if parent.Valid {
+		if err := recomputeParentProgressOn(tx, parent.Int64); err != nil {
+			return 0, err
+		}
+	}
+	return id, nil
+}
+
+func resolveWorkbenchParent(q targetsQuerier, projectID int64, it WorkbenchTargetInput, created []int64) (sql.NullInt64, error) {
+	switch {
+	case it.ParentID.Valid && it.BatchParent != 0:
+		return sql.NullInt64{}, errors.New("parent_id and a batch parent are mutually exclusive")
+	case it.BatchParent < 0 || it.BatchParent > len(created):
+		return sql.NullInt64{}, fmt.Errorf("batch parent %d is not an earlier item of this batch", it.BatchParent)
+	case it.BatchParent > 0:
+		return sql.NullInt64{Int64: created[it.BatchParent-1], Valid: true}, nil
+	case it.ParentID.Valid:
+		return it.ParentID, checkTargetInWorkbench(q, projectID, it.ParentID.Int64)
+	}
+	return sql.NullInt64{}, nil
+}
