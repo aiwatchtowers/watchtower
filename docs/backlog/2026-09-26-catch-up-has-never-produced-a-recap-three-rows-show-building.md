@@ -1,7 +1,7 @@
 ---
 type: question
 title: "Catch-Up has never produced a recap; three rows show \"building\" for 15 days"
-status: open
+status: done
 priority: med
 tags: [catchup, usage, desktop, review-2026-09-26]
 context: main-branch backlog review 2026-09-26 at 8cf68dcf — track usage analysis & dead functionality
@@ -21,3 +21,5 @@ read time on the Desktop too (dual-path with the Go constant), and get an owner 
 Catch-Up is the intended daily surface (see the finding above).
 
 > Original note: «а давай проведем ревью нашего репоза на ветке мейн с целью наполнения беклога. Наши треки - покрытие тестами, баги существующие и потенциальные, архитектурные проблемы, анализ использования и бессмысленный функционал»
+
+**Resolution (verified 2026-10-02):** the actionable half landed in PR #11 (merge `b89bd601`, 2026-10-01): `CatchUpRecap.init(row:now:)` projects a `building` row older than 30 min to `failed` with the Go reaper's exact error text (a Go↔Swift dual path with `staleBuildingAfter`/`staleBuildingError`, documented in `docs/inventory/catchup.md` and `docs/features/catchup.md`), and `CatchUpViewModel` re-reads the list once the oldest `building` row crosses the threshold, so Retry appears without waiting for the next `catchup run`. Guards: `CatchUpModelsTests`, `CatchUpViewModelTests.testBuildingRowFlipsToFailedOnceItGoesStaleWithoutAWrite`. The usage half — whether Catch-Up is the intended daily surface — is an owner product call, not a code change; it is not tracked by this file.

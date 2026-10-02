@@ -146,12 +146,9 @@ func openTerminalTitleDB() (*config.Config, *db.DB, error) {
 // generateTerminalTitle asks the light-tier model for a title of the owner's
 // messages; an empty answer is an error.
 func generateTerminalTitle(cmd *cobra.Command, cfg *config.Config, database *db.DB, owner string) (string, error) {
-	tmpl, _, err := prompts.New(database, nil).Get(prompts.TerminalTitle)
+	tmpl, _, err := prompts.Resolve(prompts.New(database, nil), prompts.TerminalTitle, "")
 	if err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "terminal title: using the default prompt: %v\n", err)
-	}
-	if tmpl == "" {
-		tmpl = prompts.Defaults[prompts.TerminalTitle]
 	}
 	ctx := cmd.Context()
 	if ctx == nil { // RunE invoked directly (tests)

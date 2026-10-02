@@ -7,22 +7,9 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/prompts"
 	"watchtower/internal/textutil"
 )
-
-// styleSampleSystemPrompt drives the communication-style distillation.
-// Package-private const — not user-editable via the prompt store.
-const styleSampleSystemPrompt = `You are analyzing how one person writes on Slack, to produce a "communication style profile" that another AI will later use to draft replies in this person's voice.
-
-Below are samples of the person's OWN messages, grouped by audience (direct messages, private channels, public channels), plus an optional analyst's note about their communication style.
-
-Distill a compact profile covering:
-- Languages they use and when (e.g. Russian with the team, English with external partners).
-- Tone and formality by audience: DMs vs channels, insiders vs external partners.
-- Typical phrases, openers, sign-offs, punctuation and emoji habits, typical message length.
-- Things they never do (e.g. corporate pleasantries, long intros, formal sign-offs).
-
-Write the profile as plain text (markdown allowed), addressed in second person ("You write..."), at most ~400 words. Output ONLY the profile text — no preamble, no JSON, no code fences.`
 
 // capStyleSample keeps at most perChannel messages per channel and total
 // messages overall, preserving input (newest-first) order.
@@ -74,7 +61,7 @@ func (p *Pipeline) GenerateStyleProfile(ctx context.Context) error {
 
 	user := buildStyleSampleUserMessage(sample, analystNote)
 	out, _, _, err := p.generator.Generate(
-		digest.WithSource(ctx, "inbox.style_sample"), styleSampleSystemPrompt, user, "")
+		digest.WithSource(ctx, "inbox.style_sample"), p.getPrompt(prompts.InboxStyleSample), user, "")
 	if err != nil {
 		return fmt.Errorf("style sample: %w", err)
 	}

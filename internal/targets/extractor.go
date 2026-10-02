@@ -90,7 +90,7 @@ type aiSecondaryLink struct {
 }
 
 // buildExtractPrompt assembles the full extraction prompt per spec. tmpl is
-// the resolved template (store override or ExtractPromptTemplate) — the
+// the resolved template (store override or the registered targets.extract default) — the
 // function itself stays pure, with no store access.
 func buildExtractPrompt(tmpl string, req ExtractRequest, enrichments []Enrichment, activeSnapshot []db.Target, now time.Time) string {
 	// ENRICHMENTS block.

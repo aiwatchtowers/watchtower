@@ -55,7 +55,7 @@ func (p *Pipeline) GenerateFollowupDraft(ctx context.Context, in FollowupInput) 
 		participants = strings.Join(list, ", ")
 	}
 
-	tmpl := p.loadFollowupPrompt()
+	tmpl := p.getPrompt(prompts.MeetingFollowup)
 	systemPrompt := fmt.Sprintf(tmpl,
 		title, in.MeetingDate, participants,
 		styleBlock,
@@ -99,18 +99,3 @@ func renderFollowupContent(in FollowupInput) string {
 	writeGroup("Open questions:", in.OpenQuestions)
 	return strings.TrimSpace(b.String())
 }
-
-func (p *Pipeline) loadFollowupPrompt() string {
-	if p.promptStore != nil {
-		if tmpl, _, err := p.promptStore.Get(prompts.MeetingFollowup); err == nil && tmpl != "" {
-			return tmpl
-		}
-	}
-	if tmpl, ok := prompts.Defaults[prompts.MeetingFollowup]; ok && tmpl != "" {
-		return tmpl
-	}
-	return defaultFollowupPromptFallback
-}
-
-const defaultFollowupPromptFallback = `Draft a follow-up message in the owner's voice for meeting %s (%s, participants: %s). Style: %s. %s
-Render ONLY the stated content from the user message; return only the message text.`

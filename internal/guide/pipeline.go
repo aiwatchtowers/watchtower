@@ -491,7 +491,7 @@ func (p *Pipeline) processUser(ctx context.Context, stats db.UserStats, from, to
 	fromStr := time.Unix(int64(from), 0).Local().Format("2006-01-02")
 	toStr := time.Unix(int64(to), 0).Local().Format("2006-01-02")
 
-	tmpl, pv := p.getPrompt(prompts.PeopleReduce, defaultPeopleReducePrompt)
+	tmpl, pv := p.getPrompt(prompts.PeopleReduce)
 	prompt := fmt.Sprintf(tmpl,
 		p.userName(stats.UserID), fromStr, toStr,
 		p.formatProfileContext(),
@@ -663,7 +663,7 @@ func (p *Pipeline) generateBatchCards(ctx context.Context, entries []batchUserEn
 
 	normsBlock := p.formatTeamNorms(teamNorms)
 
-	tmpl, pv := p.getPrompt(prompts.PeopleBatch, defaultPeopleBatchPrompt)
+	tmpl, pv := p.getPrompt(prompts.PeopleBatch)
 	prompt := fmt.Sprintf(tmpl,
 		fromStr, toStr,
 		p.formatProfileContext(),
@@ -813,7 +813,7 @@ func (p *Pipeline) generateTeamSummary(ctx context.Context, from, to float64) er
 
 	fromStr := time.Unix(int64(from), 0).Local().Format("2006-01-02")
 	toStr := time.Unix(int64(to), 0).Local().Format("2006-01-02")
-	tmpl, pv := p.getPrompt(prompts.PeopleTeam, defaultPeopleTeamPrompt)
+	tmpl, pv := p.getPrompt(prompts.PeopleTeam)
 	prompt := fmt.Sprintf(tmpl, fromStr, toStr, p.formatProfileContext(), p.languageInstruction(), sb.String())
 
 	teamSys, teamUser := digest.SplitPromptAtData(prompt)
@@ -1022,27 +1022,18 @@ func (p *Pipeline) relationshipContext(targetUserID string) string {
 	return ""
 }
 
-func (p *Pipeline) getPrompt(id, fallback string) (string, int) {
+// getPrompt resolves a prompt via prompts.Resolve (store row, else the
+// registered default) with the owner role's instruction prepended.
+func (p *Pipeline) getPrompt(id string) (string, int) {
 	role := ""
 	if p.profile != nil {
 		role = p.profile.Role
 	}
-	if p.promptStore != nil {
-		tmpl, version, err := p.promptStore.GetForRole(id, role)
-		if err == nil {
-			roleInstr := prompts.GetRoleInstruction(role)
-			if roleInstr != "" {
-				tmpl = roleInstr + "\n\n" + tmpl
-			}
-			return tmpl, version
-		}
+	tmpl, version, err := prompts.Resolve(p.promptStore, id, role)
+	if err != nil {
+		p.logger.Printf("people: %v — using the built-in default", err)
 	}
-	tmpl := fallback
-	roleInstr := prompts.GetRoleInstruction(role)
-	if roleInstr != "" {
-		tmpl = roleInstr + "\n\n" + tmpl
-	}
-	return tmpl, 0
+	return prompts.WithRoleInstruction(role, tmpl), version
 }
 
 func (p *Pipeline) loadCaches() {
@@ -1130,13 +1121,6 @@ func (p *Pipeline) progress(completed, total int, status string) {
 		p.OnProgress(completed, total, status)
 	}
 }
-
-// Fallback prompt consts — used when prompt store has no entry.
-var (
-	defaultPeopleReducePrompt = prompts.Defaults[prompts.PeopleReduce]
-	defaultPeopleTeamPrompt   = prompts.Defaults[prompts.PeopleTeam]
-	defaultPeopleBatchPrompt  = prompts.Defaults[prompts.PeopleBatch]
-)
 
 func sanitize(text string) string {
 	text = strings.ReplaceAll(text, "\n", " ")

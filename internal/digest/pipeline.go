@@ -227,34 +227,19 @@ func (p *Pipeline) SetPromptStore(store *prompts.Store) {
 	p.promptStore = store
 }
 
-// getPrompt loads a prompt template from the store (if set), falling back to the
-// registered default (prompts.Defaults). Returns the template string and its
-// version (0 = built-in). Includes role-specific instructions if available.
+// getPrompt resolves a prompt via prompts.Resolve (store row, else the
+// registered default) with the owner role's instruction prepended. Returns the
+// template and its version (0 = built-in).
 func (p *Pipeline) getPrompt(id string) (string, int) {
 	role := ""
 	if p.profile != nil {
 		role = p.profile.Role
 	}
-
-	if p.promptStore != nil {
-		tmpl, version, err := p.promptStore.GetForRole(id, role)
-		if err == nil {
-			// Prepend role instruction if available
-			roleInstr := prompts.GetRoleInstruction(role)
-			if roleInstr != "" {
-				tmpl = roleInstr + "\n\n" + tmpl
-			}
-			return tmpl, version
-		}
+	tmpl, version, err := prompts.Resolve(p.promptStore, id, role)
+	if err != nil {
+		p.logger.Printf("digest: %v — using the built-in default", err)
 	}
-
-	// Fallback to default
-	tmpl := prompts.Defaults[id]
-	roleInstr := prompts.GetRoleInstruction(role)
-	if roleInstr != "" {
-		tmpl = roleInstr + "\n\n" + tmpl
-	}
-	return tmpl, 0
+	return prompts.WithRoleInstruction(role, tmpl), version
 }
 
 // acquireDigestLock acquires an exclusive file lock to prevent concurrent digest runs.

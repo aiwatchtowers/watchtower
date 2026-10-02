@@ -18,7 +18,10 @@ private final class ScriptedConfluenceCLI: CLIRunnerProtocol, @unchecked Sendabl
     /// its failure.
     var accessJSON = #"{"read":true,"write":false}"#
     var accessError: String?
-    private(set) var invocations: [[String]] = []
+    /// Read under the lock: the tests poll these from the main actor while
+    /// `run` writes them on the cooperative pool.
+    var invocations: [[String]] { lock.withLock { recorded } }
+    private var recorded: [[String]] = []
 
     private let lock = NSLock()
     private var gateArmed = false
@@ -30,7 +33,8 @@ private final class ScriptedConfluenceCLI: CLIRunnerProtocol, @unchecked Sendabl
     /// `spacesJSON`), and which calls wait for `releaseSpaces(call)`.
     var spacesQueue: [String] = []
     var gatedSpacesCalls: Set<Int> = []
-    private(set) var spacesCalls = 0
+    var spacesCalls: Int { lock.withLock { spacesCallCount } }
+    private var spacesCallCount = 0
     private var spacesWaiters: [Int: CheckedContinuation<Void, Never>] = [:]
     private var releasedSpaces: Set<Int> = []
 
@@ -72,14 +76,14 @@ private final class ScriptedConfluenceCLI: CLIRunnerProtocol, @unchecked Sendabl
 
     func run(args: [String]) async throws -> Data {
         lock.lock()
-        invocations.append(args)
+        recorded.append(args)
         lock.unlock()
         guard args.first == "confluence", args.count >= 2 else { return Data() }
         switch args[1] {
         case "spaces":
             lock.lock()
-            let call = spacesCalls
-            spacesCalls += 1
+            let call = spacesCallCount
+            spacesCallCount += 1
             let json = call < spacesQueue.count ? spacesQueue[call] : spacesJSON
             let gated = gatedSpacesCalls.contains(call)
             lock.unlock()
@@ -437,11 +441,7 @@ final class ConfluenceSpacesViewModelTests: XCTestCase {
         }
         let task = Task { [weak viewVM] in await viewVM?.setSelected("ENG", true) }
         // Let the select reach the CLI, then "navigate away".
-        let deadline = Date().addingTimeInterval(5)
-        while !cli.invocations.contains(where: { $0.count > 1 && $0[1] == "select" }) {
-            guard Date() < deadline else { return XCTFail("select never reached the CLI") }
-            await Task.yield()
-        }
+        guard await waitUntil("select call", { cli.selectCount == 1 }) else { return }
         weak var weakVM = viewVM
         viewVM = nil
         XCTAssertNotNil(weakVM, "AppState keeps the VM alive after the view lets go")
@@ -537,7 +537,7 @@ final class ConfluenceSpacesViewModelTests: XCTestCase {
                 XCTFail("timed out waiting for \(what)")
                 return false
             }
-            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(2))
         }
         return true
     }

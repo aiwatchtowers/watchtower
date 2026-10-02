@@ -2,7 +2,10 @@ import Foundation
 
 /// Prompt rules the Discuss chats still build in Swift (the main chat's
 /// prompt moved to Go, `internal/chat`). `knowledgeLinkRule` is a deliberate
-/// dual path with Go's `LinkingRules` — change both together.
+/// dual path with Go's `LinkingRules` — change both together. Every tool name
+/// in this file and in the Discuss surfaces' `=== TOOLS` blocks must be a
+/// registered Go read tool: `internal/tools/prompt_mentions_test.go` fails
+/// otherwise.
 package enum ChatPromptRules {
     /// Written against a real failure: tools the model cannot use get
     /// silently denied in headless mode, so an unbriefed model wastes a turn

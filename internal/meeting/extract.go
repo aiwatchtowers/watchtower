@@ -48,7 +48,7 @@ func (p *Pipeline) ExtractDiscussionTopics(
 		titleCtx = eventTitle
 	}
 
-	tmpl := p.loadExtractTopicsPrompt()
+	tmpl := p.getPrompt(prompts.MeetingExtractTopics)
 
 	// Template args: 1=eventTitle, 2=langDirective, 3=rawText
 	systemPrompt := fmt.Sprintf(tmpl, titleCtx, langDirective, trimmed)
@@ -83,46 +83,3 @@ func (p *Pipeline) ExtractDiscussionTopics(
 	result.Topics = cleanedTopics
 	return &result, nil
 }
-
-func (p *Pipeline) loadExtractTopicsPrompt() string {
-	if p.promptStore != nil {
-		tmpl, _, err := p.promptStore.Get(prompts.MeetingExtractTopics)
-		if err == nil && tmpl != "" {
-			return tmpl
-		}
-	}
-	if tmpl, ok := prompts.Defaults[prompts.MeetingExtractTopics]; ok && tmpl != "" {
-		return tmpl
-	}
-	return defaultExtractTopicsPromptFallback
-}
-
-// defaultExtractTopicsPromptFallback is used when the prompts package is not
-// yet migrated (defensive — should not normally be reached).
-const defaultExtractTopicsPromptFallback = `You split a raw blob of meeting-prep text into atomic discussion topics.
-
-=== MEETING TITLE ===
-%s
-=== /MEETING TITLE ===
-
-%s
-
-=== RAW TEXT ===
-%s
-=== /RAW TEXT ===
-
-Return ONLY a JSON object (no markdown fences, no commentary) matching:
-
-{
-  "topics": [
-    {"text": "string (<=200 chars, imperative where possible)", "priority": "high|medium|low|"}
-  ],
-  "notes": "optional short note about what was skipped or merged"
-}
-
-Rules:
-- Produce 1-15 atomic topics. Merge near-duplicates. Skip pure recap unless it flags action.
-- Each topic is a single idea that can be discussed independently.
-- Strip markdown syntax (**bold**, numbered lists, emojis) from topic text.
-- priority is optional. Use "" when unclear. Use "high" only for blockers or explicit urgency signals.
-- Return empty topics array if the text has no actionable content.`

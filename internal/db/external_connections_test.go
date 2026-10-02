@@ -139,3 +139,36 @@ func TestExternalConnectionTools_GoWithTheConnection(t *testing.T) {
 	assert.Zero(t, n, "the tool row must go with its connection")
 	assert.Error(t, d.SetExternalConnectionTools(id, nil, "x"), "caching tools for a removed connection must fail")
 }
+
+// TestExternalConnectionTools_PreDestructiveCacheIsStale: a list cached
+// before tools carried their destructive mark reads as never listed (QC-02:
+// its write verdicts cannot be trusted); a list written now always carries
+// the mark, false included, and reads back as listed.
+func TestExternalConnectionTools_PreDestructiveCacheIsStale(t *testing.T) {
+	d := openTestDB(t)
+	id, err := d.InsertExternalConnection(ExternalConnection{Name: "acme", Kind: "http", URL: "https://x", Enabled: true})
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO external_connection_tools (connection_id, tools_json, listed_at, allow_json)
+        VALUES (?, '[{"name":"purgeCache","read_only_hint":true,"annotated":true}]', '2026-01-02T03:04:05Z', '["purgeCache"]')`, id)
+	require.NoError(t, err)
+
+	c, err := d.GetExternalConnection(id)
+	require.NoError(t, err)
+	assert.True(t, c.ToolsStale)
+	assert.False(t, c.ToolsListed)
+	assert.Nil(t, c.Tools)
+	assert.Empty(t, c.ToolsListedAt)
+	assert.Equal(t, []string{"purgeCache"}, c.AllowTools, "the owner's list survives; it applies once listed again")
+
+	tools := []ExternalTool{{Name: "getIssue", Annotated: true, ReadOnlyHint: true},
+		{Name: "purgeCache", Annotated: true, ReadOnlyHint: true, DestructiveHint: true}}
+	require.NoError(t, d.SetExternalConnectionTools(id, tools, "2026-01-02T03:04:06Z"))
+	var raw string
+	require.NoError(t, d.QueryRow(`SELECT tools_json FROM external_connection_tools WHERE connection_id = ?`, id).Scan(&raw))
+	assert.Contains(t, raw, `"name":"getIssue","read_only_hint":true,"destructive_hint":false`, "false is stored too")
+	c, err = d.GetExternalConnection(id)
+	require.NoError(t, err)
+	assert.False(t, c.ToolsStale)
+	assert.True(t, c.ToolsListed)
+	assert.Equal(t, tools, c.Tools)
+}

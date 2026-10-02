@@ -8,7 +8,7 @@ final class ExternalConnectionToolsTests: XCTestCase {
 
     private func list(explicit: Bool = false, _ tools: [Tool]) -> ExternalConnectionTools {
         ExternalConnectionTools(id: 7, name: "jira", listed: true, listedAt: "2026-01-01T00:00:00Z",
-                                explicit: explicit, tools: tools)
+                                explicit: explicit, stale: false, tools: tools)
     }
 
     func testDecodesTheCLIWireShape() throws {
@@ -33,12 +33,20 @@ final class ExternalConnectionToolsTests: XCTestCase {
     func testDecodesTheNeverListedShapeAndAMissingWriteField() throws {
         let json = #"{"id":7,"name":"jira","listed":false,"explicit":false,"tools":[]}"#
         let decoded = try JSONDecoder().decode(ExternalConnectionTools.self, from: Data(json.utf8))
+        XCTAssertFalse(decoded.stale, "a CLI without the field never reports a stale list")
         XCTAssertFalse(decoded.listed)
         XCTAssertNil(decoded.listedAt)
         XCTAssertTrue(decoded.tools.isEmpty)
 
         let old = #"{"name":"createIssue","allowed":false,"read_only":false}"#
         XCTAssertFalse(try JSONDecoder().decode(Tool.self, from: Data(old.utf8)).write)
+    }
+
+    func testDecodesAStaleList() throws {
+        let json = #"{"id":7,"name":"jira","listed":false,"explicit":true,"stale":true,"tools":[]}"#
+        let decoded = try JSONDecoder().decode(ExternalConnectionTools.self, from: Data(json.utf8))
+        XCTAssertTrue(decoded.stale)
+        XCTAssertFalse(decoded.listed)
     }
 
     func testListAndDefaultArgs() {

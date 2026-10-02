@@ -180,10 +180,9 @@ Pinned by `TestSearchUsersByName_WildcardsMatchLiterally` and
 
 Checked via an overlay test: all five digest consts differ from `prompts.Defaults` — `digest.channel` (4824 vs 5819 bytes, default v5), `digest.channel_batch` (3747 vs 4793, v5), `digest.daily`, `digest.weekly`, `digest.period` (v1 each). Wave 5 wired `SetPromptStore`, so production normally reads the DB row, but `getPrompt` still falls back to these stale consts whenever the store is nil or `GetForRole` returns an error (DB read error, a future constructor that forgets the wiring). That fallback silently drops the `ideas` array (Slack idea mining) and other newer instructions, and every digest unit test that runs without a store exercises the stale template. Targets got the fix-plus-pin treatment (`internal/targets/prompt_store_test.go`); digest did not. Fix: make the fallback `prompts.Defaults[id]` (as tracks/briefing/memory/catchup do) and delete the consts, or pin equality in a test.
 
-Resolution (fix/go-low-priority-bundle): `getPrompt` falls back to `prompts.Defaults[id]` (the
-tracks/briefing/memory/catchup shape) and `internal/digest/prompt.go` is deleted;
-`TestGetPrompt_FallbackToDefault` pins the fallback for all five digest ids and
-`TestFallbackPromptFormatVerbs` now counts the defaults' verbs.
+Resolution: already fixed in 910bab14 (PR #116, "one prompts.Resolve lookup") — digest's `getPrompt`
+resolves through `prompts.Resolve` (store row, else `prompts.Defaults[id]`), `internal/digest/prompt.go`
+is gone and `TestDigestPromptFormatVerbs` counts the defaults' verbs.
 
 ## Codex chat MCP config relies on a project-local .codex/config.toml in an untrusted temp dir
 

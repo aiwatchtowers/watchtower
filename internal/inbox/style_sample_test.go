@@ -8,6 +8,7 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/prompts"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -148,4 +149,34 @@ func TestStyleSample_TotalCapAcrossChannels(t *testing.T) {
 	require.Len(t, msgs, 180)
 	capped := capStyleSample(msgs, 15, 150)
 	assert.Len(t, capped, 150, "total cap of 150 must hold across channels")
+}
+
+// systemCapturingGen records the system prompt of its last call.
+type systemCapturingGen struct{ system string }
+
+func (g *systemCapturingGen) Generate(_ context.Context, system, _, _ string) (string, *digest.Usage, string, error) {
+	g.system = system
+	return "You write tersely.", &digest.Usage{}, "", nil
+}
+
+// TestStyleSample_UsesPromptStoreOverride pins the inbox.style_sample
+// registration: a customized store row, not the registered default, is the
+// system prompt.
+func TestStyleSample_UsesPromptStoreOverride(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspaceAndUser(t, d, "U1")
+	insertChannel(t, d, "C1", "public")
+	insertMessage(t, d, "C1", "100.1", "U1", "shipping the fix today")
+
+	const sentinel = "SENTINEL-CUSTOMIZED-INBOX-STYLE-SAMPLE-2F6E"
+	store := prompts.New(d, nil)
+	require.NoError(t, store.Seed())
+	require.NoError(t, store.Update(prompts.InboxStyleSample, sentinel, "test customization"))
+
+	gen := &systemCapturingGen{}
+	p := New(d, testConfig(), gen, log.Default())
+	p.SetPromptStore(store)
+	require.NoError(t, p.GenerateStyleProfile(context.Background()))
+
+	assert.Equal(t, sentinel, gen.system)
 }

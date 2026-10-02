@@ -364,10 +364,11 @@ package final class BackgroundTaskManager {
 
         // Wait for process exit using blocking waitUntilExit (more reliable than
         // terminationHandler which can fire prematurely on some macOS versions).
-        let exitCode: Int32 = await Task.detached {
+        // Off the concurrency pool: a sync runs for minutes (see ProcessPipes).
+        let exitCode: Int32 = await ProcessPipes.offPool {
             process.waitUntilExit()
             return process.terminationStatus
-        }.value
+        }
 
         _ = await readTask.value
 

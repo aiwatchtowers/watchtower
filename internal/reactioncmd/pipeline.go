@@ -438,13 +438,14 @@ func (p *Pipeline) threadContext(c candidate) []string {
 	return out
 }
 
+// getPrompt resolves a prompt via prompts.Resolve: the store row, else the
+// registered default.
 func (p *Pipeline) getPrompt(id string) (string, int) {
-	if p.promptStore != nil {
-		if tmpl, version, err := p.promptStore.Get(id); err == nil {
-			return tmpl, version
-		}
+	tmpl, version, err := prompts.Resolve(p.promptStore, id, "")
+	if err != nil {
+		p.logf("reactioncmd: %v — using the built-in default", err)
 	}
-	return prompts.Defaults[id], 0
+	return tmpl, version
 }
 
 func (p *Pipeline) language() string {

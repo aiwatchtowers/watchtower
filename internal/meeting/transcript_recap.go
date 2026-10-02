@@ -37,7 +37,7 @@ func (p *Pipeline) GenerateTranscriptRecap(ctx context.Context, eventID, transcr
 		lang = p.cfg.Digest.Language
 	}
 
-	tmpl := p.loadRecapPrompt()
+	tmpl := p.getPrompt(prompts.MeetingRecap)
 	systemPrompt := fmt.Sprintf(tmpl,
 		title, startTime, endTime, attendees, description,
 		topicsBlock, notesBlock,

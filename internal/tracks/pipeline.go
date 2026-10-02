@@ -1650,27 +1650,18 @@ func (p *Pipeline) formatRoleRules() string {
 
 // --- helpers: prompt template ---
 
+// getPrompt resolves a prompt via prompts.Resolve (store row, else the
+// registered default) with the owner role's instruction prepended.
 func (p *Pipeline) getPrompt(id string) (string, int) {
 	role := ""
 	if p.profile != nil {
 		role = p.profile.Role
 	}
-	if p.promptStore != nil {
-		tmpl, version, err := p.promptStore.GetForRole(id, role)
-		if err == nil {
-			roleInstr := prompts.GetRoleInstruction(role)
-			if roleInstr != "" {
-				tmpl = roleInstr + "\n\n" + tmpl
-			}
-			return tmpl, version
-		}
+	tmpl, version, err := prompts.Resolve(p.promptStore, id, role)
+	if err != nil {
+		p.logger.Printf("tracks: %v — using the built-in default", err)
 	}
-	tmpl := prompts.Defaults[id]
-	roleInstr := prompts.GetRoleInstruction(role)
-	if roleInstr != "" {
-		tmpl = roleInstr + "\n\n" + tmpl
-	}
-	return tmpl, 0
+	return prompts.WithRoleInstruction(role, tmpl), version
 }
 
 // --- helpers: caches ---
