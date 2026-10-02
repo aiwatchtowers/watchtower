@@ -2,8 +2,8 @@ import Foundation
 import Observation
 
 /// Onboarding v2's steps: Goals → Connect → About you → done. Persisted by
-/// raw string under its own key, so no value can be mistaken for a legacy
-/// `OnboardingStep` integer. The raw values ARE the persisted format:
+/// raw string under its own key, so no value can be mistaken for the old
+/// flow's `onboarding_current_step` integer. The raw values ARE the persisted format:
 /// renaming a case sends everyone parked on it back to Goals.
 package enum OnboardingV2Step: String, CaseIterable, Sendable {
     case purpose

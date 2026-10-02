@@ -190,11 +190,8 @@ struct FeatureCustomizeView: View {
 
     /// Read from a snapshot taken at the first successful load, not from the
     /// live `state`: the tag means "this ships off by default", not "is
-    /// currently off". `apply()` reloads when it finishes, including after a
-    /// partial failure, and that reload correctly reports the cards the owner
-    /// just switched off as `state == "disabled"` — reading the tag off it
-    /// would stamp Experimental onto their cards in front of them. Also not
-    /// `disabledFeatureIDs`, which folds in staged, not-yet-applied toggles.
+    /// currently off" — a later reload (Goals' Continue applying the
+    /// selection) reports what the owner switched off as `disabled` too.
     private func isExperimental(_ feature: FeatureInfo) -> Bool {
         experimentalIDs.contains(feature.id)
     }
@@ -216,11 +213,9 @@ struct FeatureCustomizeView: View {
                 .foregroundStyle(.red)
                 .multilineTextAlignment(.leading)
             Spacer()
-            // Retry re-runs load() only when there is nothing to show yet.
-            // Once features ARE loaded, a lingering loadError is an apply()
-            // failure instead, and a second Continue is what retries the
-            // still-pending remainder (below) — a Retry button here would
-            // just re-fetch the same list without touching pending at all.
+            // Retry re-reads the list, offered only while there is nothing to
+            // show: this screen writes nothing, so with a list on screen the
+            // error is a stale one and Goals' Continue reports its own.
             if service.features.isEmpty {
                 Button("Retry") {
                     Task {

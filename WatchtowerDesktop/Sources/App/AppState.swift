@@ -61,7 +61,7 @@ final class AppState {
     /// True while initialize() is running (before DB and onboarding check complete).
     var isLoading: Bool = true
 
-    /// Whether the user needs to complete the onboarding chat flow.
+    /// Whether onboarding (Goals → Connect → About you) is on screen.
     var needsOnboarding: Bool = false
 
     /// Persistent onboarding state machine — tracks which step the user is on across app restarts.
@@ -274,9 +274,6 @@ final class AppState {
     /// Set by `navigateToWorkbench`; `WorkbenchesView` consumes and clears it.
     var pendingWorkbenchRoute: WorkbenchRoute?
 
-    /// Whether legacy people analytics is enabled (analysis.legacy_mode in config).
-    var analysisLegacyMode: Bool = false
-
     /// Whether the user has completed onboarding (profile exists and onboarding_done == true).
     var profileComplete: Bool = true
 
@@ -322,9 +319,6 @@ final class AppState {
     /// CLI), so it can live as a plain, always-constructed `let` here and
     /// load independently of the DB-open Task in `initialize()`.
     let featureManager: FeatureManagerService
-
-    /// Manages background pipeline tasks (digests, people) started after onboarding sync.
-    let backgroundTaskManager = BackgroundTaskManager()
 
     /// `onboardingDefaults` backs the onboarding step and goals — tests pass
     /// an isolated suite.
@@ -608,7 +602,6 @@ final class AppState {
                     // Onboarding's people load: its child gets SIGTERM.
                     self?.peopleRoster.stop()
                 }
-                self?.backgroundTaskManager.terminateProcessesSync()
             }
         }
         if embeddedChatSweep == nil {
@@ -650,7 +643,6 @@ final class AppState {
                 await wireOnboardingDatabase(manager)
                 await reconcileOnboarding(dbPool: manager.dbPool)
                 profileComplete = !needsOnboarding
-                analysisLegacyMode = ConfigService().analysisLegacyMode
                 // Pre-load sidebar badge counts so they're already visible when the splash hides.
                 // Skipped when onboarding is needed — the onboarding view replaces the sidebar entirely.
                 if !needsOnboarding {
@@ -1180,10 +1172,7 @@ final class AppState {
     func resetLLMData(workspaceDir: String? = Constants.activeWorkspaceDir()) async throws {
         guard let db = databaseManager else { return }
 
-        // 1. Stop running pipelines (if any) — await ensures process exits and releases file locks
-        await backgroundTaskManager.stopAll()
-
-        // 2. Stop the daemon so nothing writes while the tables are wiped —
+        // 1. Stop the daemon so nothing writes while the tables are wiped —
         // after a finish still bringing one up, and only once its process is
         // really gone (a timeout wipes nothing).
         await onboardingDaemonStart?.value
@@ -1193,14 +1182,13 @@ final class AppState {
         }
         try await daemon.waitUntilStopped()
 
-        // 3. Wipe LLM-generated tables and the daemon's stamps.
+        // 2. Wipe LLM-generated tables and the daemon's stamps.
         try db.wipeLLMData()
         if let workspaceDir {
             try DaemonStampFiles.clear(in: workspaceDir)
         }
 
-        // 4. Restart: waits for the stopped daemon to be gone, then starts it.
-        backgroundTaskManager.tasks.removeAll()
+        // 3. Restart: waits for the stopped daemon to be gone, then starts it.
         try await daemon.restartWaiting()
         UserDefaults.standard.set(true, forKey: Constants.pipelinesCompletedKey)
     }
@@ -1226,7 +1214,6 @@ final class AppState {
     private func wireOnboardingDatabase(_ manager: DatabaseManager) async {
         databaseManager = manager
         errorMessage = nil
-        analysisLegacyMode = ConfigService().analysisLegacyMode
         await refreshOwner()
         await refreshConnectedSources()
         guard slackAccountsViewModel == nil else { return }

@@ -28,7 +28,6 @@ final class ConfigService {
     var aiModelStrong: String?
     var aiOllamaURL: String?
     var aiWorkers: Int?
-    var analysisLegacyMode: Bool = false
     var briefingHour: Int = 8
     var aiProvider: String?
     var claudePath: String?
@@ -100,10 +99,6 @@ final class ConfigService {
                 digestEnabled = (digest["enabled"] as? Bool) ?? false
                 digestMinMessages = digest["min_messages"] as? Int
                 digestLanguage = digest["language"] as? String
-            }
-
-            if let analysis = yaml["analysis"] as? [String: Any] {
-                analysisLegacyMode = (analysis["legacy_mode"] as? Bool) ?? false
             }
 
             if let briefing = yaml["briefing"] as? [String: Any] {

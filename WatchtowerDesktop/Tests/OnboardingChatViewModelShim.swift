@@ -1,11 +1,12 @@
 import Foundation
+@testable import WatchtowerDesktop
 import WatchtowerCore
 
-/// What is left of the old onboarding interview: its LLM-written
-/// `custom_prompt_context` save, kept only because three OWNER-01 guards
-/// (`OnboardingChatViewModelOwnerTests`) still assert it while the owner
+/// Test-only: what is left of the old onboarding interview, its LLM-written
+/// `custom_prompt_context` save, for the three OWNER-01 guards
+/// (`OnboardingChatViewModelOwnerTests`) still asserting it while the owner
 /// decides whether they move to `OnboardingProfileWriter` (variant A, see
-/// docs/inventory/owner-identity.md). Nothing in the app uses it: onboarding
+/// docs/inventory/owner-identity.md). The app has no such step: onboarding
 /// v2 has no chat. Delete it with those tests.
 @MainActor
 @Observable

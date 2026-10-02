@@ -126,9 +126,6 @@ struct SidebarView: View {
 
             SidebarConnectRow()
 
-            // Background tasks progress
-            SidebarProgressView()
-
             // Tools section
             VStack(alignment: .leading, spacing: 2) {
                 Text("TOOLS")
@@ -509,8 +506,6 @@ struct SidebarView: View {
             }
 
             Spacer()
-
-            SidebarProgressView(compact: true)
 
             railSeparator
 
