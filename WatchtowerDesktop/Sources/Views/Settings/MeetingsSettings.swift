@@ -139,7 +139,7 @@ struct MeetingsSettings: View {
                     + "Moments where remote participants are the dominant sound are left untouched, "
                     + "so their audio leaking into your mic is never amplified.")
 
-            Toggle("Follow output device changes", isOn: $reattachSystemAudio)
+            Toggle("Follow audio device changes", isOn: $reattachSystemAudio)
                 .help("When headphones or a Bluetooth headset connect or disconnect during a recording, "
                     + "reconnect the call audio capture to the new device automatically. "
                     + "Takes effect from the next recording.")

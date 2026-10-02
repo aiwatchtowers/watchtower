@@ -17,7 +17,10 @@ final class SystemAudioReattachGateTests: XCTestCase {
     }
 
     func testReattachIsOnWhenNeverSet() {
-        XCTAssertTrue(SystemAudioRecorder.reattachEnabled(defaults))
+        XCTAssertTrue(
+            SystemAudioRecorder.reattachEnabled(defaults),
+            "ships on: without it a device switch loses the call for the rest of the meeting"
+        )
     }
 
     func testReattachFollowsTheToggle() {

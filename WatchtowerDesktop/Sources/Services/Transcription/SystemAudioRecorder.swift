@@ -25,8 +25,9 @@ final class SystemAudioRecorder: AudioRecording {
     /// `transcription.reattachSystemAudio`, default ON: rebuild the tap when
     /// the default output or input device changes mid-recording
     /// (`TapReattachController`). A kill switch rather than a dark launch —
-    /// the rebuild is make-before-break, so a failed one leaves the capture
-    /// exactly as it would have been without it. `defaults` is injectable so
+    /// without it the call channel is lost for the rest of the meeting
+    /// anyway, and the rebuild is make-before-break: one that fails before
+    /// the switch leaves the capture as it was. `defaults` is injectable so
     /// tests use an isolated suite.
     static func reattachEnabled(_ defaults: UserDefaults = .standard) -> Bool {
         defaults.object(forKey: reattachKey) as? Bool ?? true
@@ -264,10 +265,13 @@ private final class TapRecorderImpl {
     }
 
     deinit {
-        // Not `controlQueue.sync`: the last reference can drop inside a
-        // rebuild running on controlQueue, and syncing there would deadlock.
-        // `stop()` already did this on every normal path.
-        reattach?.stop()
+        // `stop()` already did this on every normal path. Not
+        // `controlQueue.sync`: the last reference can drop inside a rebuild
+        // running on controlQueue, and syncing there would deadlock. The
+        // controller is captured, not self, and stopped on its own queue.
+        if let reattach {
+            controlQueue.async { reattach.stop() }
+        }
         if let procID = ioProcID {
             AudioDeviceStop(aggregateID, procID)
             AudioDeviceDestroyIOProcID(aggregateID, procID)
@@ -479,7 +483,10 @@ private final class TapRecorderImpl {
         let controller = TapReattachController(
             monitor: DefaultDeviceChangeMonitor(queue: controlQueue),
             scheduler: DispatchReattachScheduler(queue: controlQueue),
-            rebuild: { [weak self] in try self?.swapCapture() },
+            rebuild: { [weak self] in
+                guard let self else { throw CancellationError() }
+                try self.swapCapture()
+            },
             log: { print("[Recorder] \($0)") }
         )
         controlQueue.sync {
@@ -487,7 +494,7 @@ private final class TapRecorderImpl {
                 try controller.start()
                 reattach = controller
             } catch {
-                print("[Recorder] cannot follow output device changes, the tap will not re-attach: "
+                print("[Recorder] cannot follow audio device changes, the tap will not re-attach: "
                     + error.localizedDescription)
             }
         }
@@ -503,6 +510,14 @@ private final class TapRecorderImpl {
     /// permissions were granted when `start` ran (it requests them; this does
     /// not), and both are per app, not per device.
     private func swapCapture() throws {
+        // start() set all three before the controller existed, and stop()
+        // drains controlQueue before clearing them.
+        guard let runningProcID = ioProcID, let oldFormat = deviceFormat, let oldConverter = converter else {
+            throw AudioRecordingError.deviceSetupFailed("re-attach without a running capture")
+        }
+        // nil once the old proc is gone and there is nothing to roll back to.
+        var oldProcID: AudioDeviceIOProcID? = runningProcID
+        let previous = CaptureFormat(deviceFormat: oldFormat, converter: oldConverter)
         let tap = try Self.createTap()
         let newAggregate: AudioObjectID
         do {
@@ -516,10 +531,14 @@ private final class TapRecorderImpl {
             AudioHardwareDestroyAggregateDevice(newAggregate)
             AudioHardwareDestroyProcessTap(tap.id)
         }
-        let sampleRate = Self.nominalSampleRate(of: newAggregate)
+        let sampleRate: Double
         let newProcID: AudioDeviceIOProcID
         let capture: CaptureFormat
         do {
+            // A device that just appeared may not report its rate yet; a
+            // guessed rate would resample the rest of the meeting at the
+            // wrong speed, so fail (and retry) instead of falling back.
+            sampleRate = try Self.requireNominalSampleRate(of: newAggregate)
             capture = try Self.makeCaptureFormat(sampleRate: sampleRate)
             newProcID = try makeIOProc(on: newAggregate)
         } catch {
@@ -530,40 +549,60 @@ private final class TapRecorderImpl {
         // Switch. Once the old proc is stopped no old buffer is still queued
         // ahead of the format swap (the sync below runs after them on the
         // serial writeQueue), and none of the new device's arrives before it.
-        let oldProcID = ioProcID
-        if let oldProcID { AudioDeviceStop(aggregateID, oldProcID) }
-        let previous = writeQueue.sync { installCaptureFormat(capture) }
+        if let procID = oldProcID {
+            let stopStatus = AudioDeviceStop(aggregateID, procID)
+            if stopStatus != noErr {
+                // Typically the old mic is gone and its aggregate with it.
+                // Destroying the proc guarantees it delivers nothing more
+                // into the new format; there is nothing left to roll back to.
+                print("[Recorder] stopping the previous capture failed (OSStatus \(stopStatus)), dropping it")
+                AudioDeviceDestroyIOProcID(aggregateID, procID)
+                oldProcID = nil
+                ioProcID = nil
+            }
+        }
+        writeQueue.sync { installCaptureFormat(capture) }
         let status = AudioDeviceStart(newAggregate, newProcID)
         guard status == noErr else {
-            if let previous { _ = writeQueue.sync { installCaptureFormat(previous) } }
-            if let oldProcID { AudioDeviceStart(aggregateID, oldProcID) }
+            writeQueue.sync { installCaptureFormat(previous) }
+            if let procID = oldProcID {
+                let restart = AudioDeviceStart(aggregateID, procID)
+                if restart != noErr {
+                    print("[Recorder] the previous capture could not be restarted either (OSStatus \(restart)): "
+                        + "nothing is being captured until a re-attach succeeds")
+                }
+            }
             discardNew(newProcID)
             throw AudioRecordingError.deviceSetupFailed("starting the re-attached device (OSStatus \(status))")
         }
-        if let oldProcID { AudioDeviceDestroyIOProcID(aggregateID, oldProcID) }
+        if let procID = oldProcID { AudioDeviceDestroyIOProcID(aggregateID, procID) }
         teardownDevices()
         tapID = tap.id
         aggregateID = newAggregate
         ioProcID = newProcID
         print("[Recorder] system audio tap rebuilt on the current default devices (\(Int(sampleRate)) Hz)")
+
+        // Starting IO can move a Bluetooth headset into its call profile and
+        // change the rate under the new aggregate; follow it so the file is
+        // not resampled at the wrong speed. The few buffers in between are
+        // mis-rated, which is inaudible next to the switch gap itself.
+        if let settledRate = try? Self.requireNominalSampleRate(of: newAggregate), settledRate != sampleRate,
+           let settled = try? Self.makeCaptureFormat(sampleRate: settledRate) {
+            writeQueue.sync { installCaptureFormat(settled) }
+            print("[Recorder] re-attached device settled at \(Int(settledRate)) Hz")
+        }
     }
 
     /// Swaps in the mix format/converter for a (possibly different) device
-    /// rate and returns the previous pair (nil only before `openOutputFile`,
-    /// which runs before any rebuild can be scheduled). The activity
-    /// sidecar's bin size is counted in device frames, so its accumulator
-    /// follows the rate (the partial bin at the switch is dropped). Runs on
-    /// `writeQueue`.
-    private func installCaptureFormat(_ capture: CaptureFormat) -> CaptureFormat? {
-        let previous = deviceFormat.flatMap { format in
-            converter.map { CaptureFormat(deviceFormat: format, converter: $0) }
-        }
+    /// rate. The activity sidecar's bin size is counted in device frames, so
+    /// its accumulator follows the rate (the partial bin at the switch is
+    /// dropped). Runs on `writeQueue`.
+    private func installCaptureFormat(_ capture: CaptureFormat) {
         if capture.deviceFormat.sampleRate != deviceFormat?.sampleRate, activityAccumulator != nil {
             activityAccumulator = MicActivityAccumulator(sampleRate: capture.deviceFormat.sampleRate)
         }
         deviceFormat = capture.deviceFormat
         converter = capture.converter
-        return previous
     }
 
     // MARK: Setup helpers
@@ -672,7 +711,10 @@ private final class TapRecorderImpl {
 
     private func teardownDevices() {
         if aggregateID != kAudioObjectUnknown {
-            AudioHardwareDestroyAggregateDevice(aggregateID)
+            let status = AudioHardwareDestroyAggregateDevice(aggregateID)
+            if status != noErr {
+                print("[Recorder] destroying the recorder aggregate device failed (OSStatus \(status))")
+            }
             aggregateID = AudioObjectID(kAudioObjectUnknown)
         }
         teardownTap()
@@ -680,7 +722,10 @@ private final class TapRecorderImpl {
 
     private func teardownTap() {
         if tapID != kAudioObjectUnknown {
-            AudioHardwareDestroyProcessTap(tapID)
+            let status = AudioHardwareDestroyProcessTap(tapID)
+            if status != noErr {
+                print("[Recorder] destroying the process tap failed (OSStatus \(status))")
+            }
             tapID = AudioObjectID(kAudioObjectUnknown)
         }
     }
@@ -712,6 +757,10 @@ private final class TapRecorderImpl {
     }
 
     private static func nominalSampleRate(of deviceID: AudioObjectID) -> Double {
+        (try? requireNominalSampleRate(of: deviceID)) ?? 48_000
+    }
+
+    private static func requireNominalSampleRate(of deviceID: AudioObjectID) throws -> Double {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyNominalSampleRate,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -720,7 +769,9 @@ private final class TapRecorderImpl {
         var rate: Float64 = 0
         var size = UInt32(MemoryLayout<Float64>.size)
         let status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &rate)
-        guard status == noErr, rate > 0 else { return 48_000 }
+        guard status == noErr, rate > 0 else {
+            throw AudioRecordingError.deviceSetupFailed("reading the device sample rate (OSStatus \(status))")
+        }
         return rate
     }
 }

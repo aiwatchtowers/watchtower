@@ -9,19 +9,15 @@ package enum AudioDeviceChange: String, Sendable {
 /// The CoreAudio listener seam: reports default-device changes while a
 /// recording runs. `startMonitoring`'s handler must be called on the queue
 /// the owning `TapReattachController` lives on.
-package protocol AudioDeviceChangeMonitoring: AnyObject {
+package protocol AudioDeviceChangeMonitoring {
     func startMonitoring(_ handler: @escaping (AudioDeviceChange) -> Void) throws
     func stopMonitoring()
 }
 
-/// Something scheduled that can still be called off.
-package protocol ReattachCancellable {
-    func cancel()
-}
-
-/// The timer seam: runs `work` after `delay` on the controller's queue.
+/// The timer seam: runs `work` after `delay` on the controller's queue and
+/// returns what calls it off.
 package protocol ReattachScheduling {
-    func schedule(after delay: TimeInterval, _ work: @escaping () -> Void) -> ReattachCancellable
+    func schedule(after delay: TimeInterval, _ work: @escaping () -> Void) -> () -> Void
 }
 
 /// Re-attaches the system-audio capture when the default output (or input)
@@ -64,39 +60,30 @@ package final class TapReattachController {
         case stopped
     }
 
-    package static let defaultDebounce: TimeInterval = 1
-    package static let defaultRetryDelay: TimeInterval = 2
-    package static let defaultMaxRetries = 2
+    static let debounce: TimeInterval = 1
+    static let retryDelay: TimeInterval = 2
+    static let maxRetries = 2
 
     private let monitor: AudioDeviceChangeMonitoring
     private let scheduler: ReattachScheduling
-    private let debounce: TimeInterval
-    private let retryDelay: TimeInterval
-    private let maxRetries: Int
     private let rebuild: () throws -> Void
     private let log: (String) -> Void
 
-    package private(set) var state: State = .idle
+    private(set) var state: State = .idle
     /// Successful rebuilds so far (for the log line).
-    package private(set) var reattachCount = 0
-    private var pendingWork: ReattachCancellable?
+    private(set) var reattachCount = 0
+    private var cancelPending: (() -> Void)?
     /// The changes collected since the last rebuild, for the log line.
     private var pendingTriggers: [AudioDeviceChange] = []
 
     package init(
         monitor: AudioDeviceChangeMonitoring,
         scheduler: ReattachScheduling,
-        debounce: TimeInterval = TapReattachController.defaultDebounce,
-        retryDelay: TimeInterval = TapReattachController.defaultRetryDelay,
-        maxRetries: Int = TapReattachController.defaultMaxRetries,
         rebuild: @escaping () throws -> Void,
         log: @escaping (String) -> Void
     ) {
         self.monitor = monitor
         self.scheduler = scheduler
-        self.debounce = debounce
-        self.retryDelay = retryDelay
-        self.maxRetries = maxRetries
         self.rebuild = rebuild
         self.log = log
     }
@@ -104,7 +91,6 @@ package final class TapReattachController {
     /// Starts listening. Throws when the listener cannot be installed — the
     /// recording itself is unaffected; it just will not re-attach.
     package func start() throws {
-        guard state == .idle else { return }
         try monitor.startMonitoring { [weak self] change in
             self?.deviceChanged(change)
         }
@@ -115,8 +101,8 @@ package final class TapReattachController {
     package func stop() {
         guard state != .stopped else { return }
         let wasMonitoring = state != .idle
-        pendingWork?.cancel()
-        pendingWork = nil
+        cancelPending?()
+        cancelPending = nil
         pendingTriggers = []
         state = .stopped
         if wasMonitoring {
@@ -125,38 +111,41 @@ package final class TapReattachController {
     }
 
     private func deviceChanged(_ change: AudioDeviceChange) {
-        guard state == .attached || state == .pending || state == .detached else { return }
+        guard state != .stopped else { return }
         if !pendingTriggers.contains(change) {
             pendingTriggers.append(change)
         }
         state = .pending
         // A new change restarts the debounce and the retry budget: the device
         // set moved again, so the previous attempt's verdict no longer holds.
-        schedule(after: debounce, attempt: 0)
+        schedule(after: Self.debounce, attempt: 0)
     }
 
     private func schedule(after delay: TimeInterval, attempt: Int) {
-        pendingWork?.cancel()
-        pendingWork = scheduler.schedule(after: delay) { [weak self] in
+        cancelPending?()
+        cancelPending = scheduler.schedule(after: delay) { [weak self] in
             self?.runRebuild(attempt: attempt)
         }
     }
 
     private func runRebuild(attempt: Int) {
-        pendingWork = nil
+        cancelPending = nil
         guard state == .pending else { return }
         let triggers = pendingTriggers.map(\.rawValue).joined(separator: " + ")
         do {
             try rebuild()
+            // A stop that landed during the rebuild wins.
+            guard state == .pending else { return }
             reattachCount += 1
             pendingTriggers = []
             state = .attached
             log("re-attached system audio after \(triggers) change (re-attach #\(reattachCount))")
         } catch {
-            if attempt < maxRetries {
+            guard state == .pending else { return }
+            if attempt < Self.maxRetries {
                 log("re-attaching system audio after \(triggers) change failed, retrying "
-                    + "(\(attempt + 1)/\(maxRetries)): \(error.localizedDescription)")
-                schedule(after: retryDelay, attempt: attempt + 1)
+                    + "(\(attempt + 1)/\(Self.maxRetries)): \(error.localizedDescription)")
+                schedule(after: Self.retryDelay, attempt: attempt + 1)
             } else {
                 pendingTriggers = []
                 state = .detached
@@ -175,11 +164,9 @@ package struct DispatchReattachScheduler: ReattachScheduling {
         self.queue = queue
     }
 
-    package func schedule(after delay: TimeInterval, _ work: @escaping () -> Void) -> ReattachCancellable {
+    package func schedule(after delay: TimeInterval, _ work: @escaping () -> Void) -> () -> Void {
         let item = DispatchWorkItem(block: work)
         queue.asyncAfter(deadline: .now() + delay, execute: item)
-        return item
+        return item.cancel
     }
 }
-
-extension DispatchWorkItem: ReattachCancellable {}

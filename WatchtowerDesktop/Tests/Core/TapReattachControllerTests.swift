@@ -4,12 +4,10 @@ import XCTest
 final class TapReattachControllerTests: XCTestCase {
     private final class FakeMonitor: AudioDeviceChangeMonitoring {
         var handler: ((AudioDeviceChange) -> Void)?
-        var startCalls = 0
         var stopCalls = 0
         var startError: Error?
 
         func startMonitoring(_ handler: @escaping (AudioDeviceChange) -> Void) throws {
-            startCalls += 1
             if let startError { throw startError }
             self.handler = handler
         }
@@ -27,7 +25,7 @@ final class TapReattachControllerTests: XCTestCase {
 
     /// A manual clock: `advance` runs whatever came due, in order.
     private final class ManualScheduler: ReattachScheduling {
-        private final class Item: ReattachCancellable {
+        private final class Item {
             let due: TimeInterval
             let work: () -> Void
             var cancelled = false
@@ -43,10 +41,10 @@ final class TapReattachControllerTests: XCTestCase {
 
         var pendingCount: Int { items.filter { !$0.cancelled }.count }
 
-        func schedule(after delay: TimeInterval, _ work: @escaping () -> Void) -> ReattachCancellable {
+        func schedule(after delay: TimeInterval, _ work: @escaping () -> Void) -> () -> Void {
             let item = Item(due: now + delay, work: work)
             items.append(item)
-            return item
+            return item.cancel
         }
 
         func advance(_ seconds: TimeInterval) {
@@ -91,9 +89,6 @@ final class TapReattachControllerTests: XCTestCase {
         return TapReattachController(
             monitor: monitor,
             scheduler: scheduler,
-            debounce: 1,
-            retryDelay: 2,
-            maxRetries: 2,
             rebuild: {
                 probe.rebuilds += 1
                 if !probe.outcomes.isEmpty, !probe.outcomes.removeFirst() { throw RebuildFailed() }
@@ -119,15 +114,13 @@ final class TapReattachControllerTests: XCTestCase {
         XCTAssertEqual(logLines, ["re-attached system audio after default output change (re-attach #1)"])
     }
 
-    func testChangeBeforeStartDoesNothing() {
+    // Not started: no listener is installed, so no change can reach it.
+    func testControllerThatNeverStartedListensToNothing() {
         let controller = makeController()
-        // Not started: no listener is installed, and a stray call is ignored.
-        XCTAssertEqual(monitor.startCalls, 0)
+        XCTAssertNil(monitor.handler)
         controller.stop()
         XCTAssertEqual(monitor.stopCalls, 0, "a controller that never started has no listener to remove")
-        monitor.fire(.defaultOutput)
-        scheduler.advance(10)
-        XCTAssertEqual(rebuilds, 0)
+        XCTAssertEqual(controller.state, .stopped)
     }
 
     func testChangeAfterStopDoesNothing() throws {
@@ -236,23 +229,52 @@ final class TapReattachControllerTests: XCTestCase {
     }
 
     // A change during the retry wait restarts the debounce and the retry
-    // budget instead of stacking a second schedule.
+    // budget instead of stacking a second schedule: after it, the controller
+    // again gets the first attempt plus both retries.
     func testChangeDuringRetryWaitRestartsTheBudget() throws {
-        probe.outcomes = [false, false]
+        probe.outcomes = [false, false, false, false, false]
         let controller = makeController()
         try controller.start()
         monitor.fire(.defaultOutput)
-        scheduler.advance(1)
-        XCTAssertEqual(rebuilds, 1)
+        scheduler.advance(1 + 2)
+        XCTAssertEqual(rebuilds, 2, "first attempt and first retry spent")
 
         monitor.fire(.defaultOutput)
         XCTAssertEqual(scheduler.pendingCount, 1)
-        scheduler.advance(1)
-        XCTAssertEqual(rebuilds, 2)
+        scheduler.advance(1 + 2)
+        XCTAssertEqual(rebuilds, 4)
+        XCTAssertEqual(controller.state, .pending, "the old budget would have given up here")
         scheduler.advance(2)
 
-        XCTAssertEqual(rebuilds, 3)
-        XCTAssertEqual(controller.state, .attached)
+        XCTAssertEqual(rebuilds, 5)
+        XCTAssertEqual(controller.state, .detached)
+        XCTAssertEqual(scheduler.pendingCount, 0)
+    }
+
+    // The recorder can be torn down while a rebuild runs: the stop wins and
+    // no success or retry follows it.
+    func testStopDuringRebuildWins() throws {
+        var controller: TapReattachController?
+        let probe = self.probe
+        let monitor = try XCTUnwrap(self.monitor)
+        controller = TapReattachController(
+            monitor: monitor,
+            scheduler: scheduler,
+            rebuild: {
+                probe.rebuilds += 1
+                controller?.stop()
+            },
+            log: { probe.logLines.append($0) }
+        )
+        try controller?.start()
+        monitor.fire(.defaultOutput)
+        scheduler.advance(10)
+
+        XCTAssertEqual(probe.rebuilds, 1)
+        XCTAssertEqual(controller?.state, .stopped)
+        XCTAssertEqual(controller?.reattachCount, 0)
+        XCTAssertEqual(probe.logLines, [])
+        XCTAssertEqual(scheduler.pendingCount, 0)
     }
 
     func testListenerInstallFailureThrowsAndLeavesItIdle() {
@@ -263,12 +285,5 @@ final class TapReattachControllerTests: XCTestCase {
         XCTAssertEqual(controller.state, .idle)
         controller.stop()
         XCTAssertEqual(monitor.stopCalls, 0)
-    }
-
-    func testStartTwiceInstallsOneListener() throws {
-        let controller = makeController()
-        try controller.start()
-        try controller.start()
-        XCTAssertEqual(monitor.startCalls, 1)
     }
 }
