@@ -41,6 +41,19 @@ package struct EmbeddedChatKey: Hashable, Sendable, CustomStringConvertible {
     }
 }
 
+/// A change a surface's `postTurn` already wrote. `key` identifies the
+/// change itself (not its wording), so a retried reply proposing it again
+/// can be recognised; `summary` is what the owner reads.
+package struct ChatAppliedChange: Equatable, Sendable {
+    package let key: String
+    package let summary: String
+
+    package init(key: String, summary: String) {
+        self.key = key
+        self.summary = summary
+    }
+}
+
 /// What a turn's prompt is built from.
 package struct ChatTurnInput: Sendable {
     package let text: String
@@ -51,12 +64,22 @@ package struct ChatTurnInput: Sendable {
     /// follow-up turns) — the target chat's outcomes floor.
     package let previousOwnerMessageAt: Date?
     package let turnID: String
+    /// Set on a Retry only: what the failed attempt had already applied
+    /// before its reply could not be saved. Empty on every other turn.
+    package let alreadyApplied: [ChatAppliedChange]
 
-    package init(text: String, isResumed: Bool, previousOwnerMessageAt: Date?, turnID: String) {
+    package init(
+        text: String,
+        isResumed: Bool,
+        previousOwnerMessageAt: Date?,
+        turnID: String,
+        alreadyApplied: [ChatAppliedChange] = []
+    ) {
         self.text = text
         self.isResumed = isResumed
         self.previousOwnerMessageAt = previousOwnerMessageAt
         self.turnID = turnID
+        self.alreadyApplied = alreadyApplied
     }
 }
 
@@ -65,11 +88,14 @@ package struct ChatPostTurnInput: Sendable {
     package let turnID: String
     /// The assistant row the reply is stored in.
     package let messageID: Int64
+    /// As `ChatTurnInput.alreadyApplied`: a surface must not apply these again.
+    package let alreadyApplied: [ChatAppliedChange]
 
-    package init(reply: String, turnID: String, messageID: Int64) {
+    package init(reply: String, turnID: String, messageID: Int64, alreadyApplied: [ChatAppliedChange] = []) {
         self.reply = reply
         self.turnID = turnID
         self.messageID = messageID
+        self.alreadyApplied = alreadyApplied
     }
 }
 
@@ -83,11 +109,22 @@ package struct ChatPostTurnResult: Equatable, Sendable {
     /// The surface could not use the reply (e.g. an unreadable directive);
     /// shown under that message. Nothing is applied silently.
     package var failure: String?
+    /// What the surface has written for this reply, including changes from
+    /// `alreadyApplied` it recognised and skipped. If the reply then cannot
+    /// be saved, the error names them and a Retry hands them back as
+    /// `alreadyApplied`.
+    package var applied: [ChatAppliedChange]
 
-    package init(displayText: String, notices: [String] = [], failure: String? = nil) {
+    package init(
+        displayText: String,
+        notices: [String] = [],
+        failure: String? = nil,
+        applied: [ChatAppliedChange] = []
+    ) {
         self.displayText = displayText
         self.notices = notices
         self.failure = failure
+        self.applied = applied
     }
 
     package static func identity(_ input: ChatPostTurnInput) -> Self {

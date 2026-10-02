@@ -383,4 +383,15 @@ final class ProposedActionTests: XCTestCase {
         let other = try decode(#"{"type":"add_label","text":"ops","reason":"r","mode":"execute","target_id":9}"#)
         XCTAssertFalse(other.autoApplies(inChatFor: 7))
     }
+
+    func testChangeKeyIgnoresTheWordingButNotThePayload() {
+        let base = ProposedAction(type: .addSubItem, reason: "owner instructed", text: "draft", mode: "execute")
+        let reworded = ProposedAction(type: .addSubItem, reason: "as asked", text: "draft")
+        XCTAssertEqual(base.changeKey, reworded.changeKey)
+        XCTAssertNotEqual(base.changeKey, ProposedAction(type: .addSubItem, reason: "r", text: "other").changeKey)
+        XCTAssertNotEqual(base.changeKey, ProposedAction(type: .createChildTarget, reason: "r", text: "draft").changeKey)
+        // updateIntent's card hides the intent; its key does not.
+        XCTAssertNotEqual(ProposedAction(type: .updateIntent, reason: "r", intent: "a").changeKey,
+                          ProposedAction(type: .updateIntent, reason: "r", intent: "b").changeKey)
+    }
 }
