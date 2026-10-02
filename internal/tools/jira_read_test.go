@@ -106,7 +106,7 @@ func listJiraProjectsFor(t *testing.T, d *db.DB) map[int64][]jiraProjectView {
 	return out
 }
 
-func seedProjectIssue(t *testing.T, d *db.DB, acct int64, key, project, issueType string, boardID int) {
+func seedJiraProjectIssue(t *testing.T, d *db.DB, acct int64, key, project, issueType string, boardID int) {
 	t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339)
 	require.NoError(t, d.UpsertJiraIssue(db.JiraIssue{
@@ -117,7 +117,7 @@ func seedProjectIssue(t *testing.T, d *db.DB, acct int64, key, project, issueTyp
 	}))
 }
 
-func seedBoard(t *testing.T, d *db.DB, acct int64, id int, project string, selected bool) {
+func seedJiraBoard(t *testing.T, d *db.DB, acct int64, id int, project string, selected bool) {
 	t.Helper()
 	require.NoError(t, d.UpsertJiraBoard(db.JiraBoard{
 		AccountID: acct, ID: id, Name: project + " board", ProjectKey: project, BoardType: "scrum", IsSelected: selected,
@@ -129,9 +129,9 @@ func seedBoard(t *testing.T, d *db.DB, acct int64, id int, project string, selec
 func TestListJiraProjects_SelectedBoardFastPathWithoutSyncState(t *testing.T) {
 	d := openDB(t)
 	acct := db.SeedTestJiraAccount(t, d)
-	seedBoard(t, d, acct, 10, "ACME", true)
-	seedProjectIssue(t, d, acct, "ACME-1", "ACME", "Story", 10)
-	seedProjectIssue(t, d, acct, "ACME-2", "ACME", "Bug", 10)
+	seedJiraBoard(t, d, acct, 10, "ACME", true)
+	seedJiraProjectIssue(t, d, acct, "ACME-1", "ACME", "Story", 10)
+	seedJiraProjectIssue(t, d, acct, "ACME-2", "ACME", "Bug", 10)
 
 	got := listJiraProjectsFor(t, d)[acct]
 	require.Len(t, got, 1)
@@ -145,9 +145,9 @@ func TestListJiraProjects_SelectedBoardFastPathWithoutSyncState(t *testing.T) {
 func TestListJiraProjects_SelectedBoardWithoutIssues(t *testing.T) {
 	d := openDB(t)
 	acct := db.SeedTestJiraAccount(t, d)
-	seedBoard(t, d, acct, 11, "ZETA", true)
-	seedBoard(t, d, acct, 12, "OFF", false)
-	seedBoard(t, d, acct, 13, "", true)
+	seedJiraBoard(t, d, acct, 11, "ZETA", true)
+	seedJiraBoard(t, d, acct, 12, "OFF", false)
+	seedJiraBoard(t, d, acct, 13, "", true)
 
 	got := listJiraProjectsFor(t, d)[acct]
 	require.Len(t, got, 1)
@@ -163,9 +163,9 @@ func TestListJiraProjects_NoDuplicatesAndSorted(t *testing.T) {
 	acct := db.SeedTestJiraAccount(t, d)
 	_, err := d.Exec(`INSERT INTO jira_sync_state (account_id, project_key, last_synced_at, issues_synced) VALUES (?, 'BETA', 'x', 1)`, acct)
 	require.NoError(t, err)
-	seedBoard(t, d, acct, 20, "BETA", true)
-	seedProjectIssue(t, d, acct, "BETA-1", "BETA", "Task", 20)
-	seedBoard(t, d, acct, 21, "ACME", true)
+	seedJiraBoard(t, d, acct, 20, "BETA", true)
+	seedJiraProjectIssue(t, d, acct, "BETA-1", "BETA", "Task", 20)
+	seedJiraBoard(t, d, acct, 21, "ACME", true)
 
 	got := listJiraProjectsFor(t, d)[acct]
 	require.Len(t, got, 2)
@@ -174,25 +174,40 @@ func TestListJiraProjects_NoDuplicatesAndSorted(t *testing.T) {
 	assert.Equal(t, 1, got[1].IssueCount)
 }
 
-// Another account's selected boards and issues never leak into an account's list.
+// Another account's selected boards never leak into an account's list.
 func TestListJiraProjects_AccountScoped(t *testing.T) {
 	d := openDB(t)
 	a1, err := d.CreateJiraAccount(db.JiraAccount{CloudID: "c1", SiteURL: "https://acme.atlassian.net", SiteName: "Acme"})
 	require.NoError(t, err)
 	a2, err := d.CreateJiraAccount(db.JiraAccount{CloudID: "c2", SiteURL: "https://example.atlassian.net", SiteName: "Example"})
 	require.NoError(t, err)
-	seedBoard(t, d, a1, 30, "ACME", true)
-	seedBoard(t, d, a2, 31, "OTHER", true)
-	seedProjectIssue(t, d, a2, "SIDE-1", "SIDE", "Task", 0)
+	seedJiraBoard(t, d, a1, 30, "ACME", true)
+	seedJiraBoard(t, d, a2, 31, "OTHER", true)
 
 	got := listJiraProjectsFor(t, d)
 	require.Len(t, got[a1], 1)
 	assert.Equal(t, "ACME", got[a1][0].ProjectKey)
-	keys := []string{}
-	for _, p := range got[a2] {
-		keys = append(keys, p.ProjectKey)
+	require.Len(t, got[a2], 1)
+	assert.Equal(t, "OTHER", got[a2][0].ProjectKey)
+}
+
+// Mirrored issues alone do not make a project synced: an issue-key write
+// mirrors a row for an unwatched project, and a board deselected after its
+// fast sync leaves its issues behind. Neither is listed nor creatable.
+func TestListJiraProjects_IssuesWithoutBoardOrWatermarkAreNotSynced(t *testing.T) {
+	d := openDB(t)
+	acct := db.SeedTestJiraAccount(t, d)
+	seedJiraProjectIssue(t, d, acct, "SIDE-1", "SIDE", "Task", 0)
+	seedJiraBoard(t, d, acct, 50, "GONE", false)
+	seedJiraProjectIssue(t, d, acct, "GONE-1", "GONE", "Task", 50)
+
+	assert.Empty(t, listJiraProjectsFor(t, d)[acct])
+	tool := NewCreateJiraIssue(func(db.JiraAccount) (JiraIssueClient, error) { return &fakeJira{}, nil })
+	var verr *ValidationError
+	for _, project := range []string{"SIDE", "GONE"} {
+		raw := `{"project_key":"` + project + `","issue_type":"Task","summary":"s","reason":"r"}`
+		assert.ErrorAs(t, tool.Validate(context.Background(), d, json.RawMessage(raw)), &verr, project)
 	}
-	assert.Equal(t, []string{"OTHER", "SIDE"}, keys)
 }
 
 // create_jira_issue accepts exactly the projects list_jira_projects lists: a
@@ -201,8 +216,8 @@ func TestListJiraProjects_AccountScoped(t *testing.T) {
 func TestCreateJiraIssue_AcceptsSelectedBoardProjectBeforeFullSync(t *testing.T) {
 	d := openDB(t)
 	acct := db.SeedTestJiraAccount(t, d)
-	seedBoard(t, d, acct, 40, "ACME", true)
-	seedBoard(t, d, acct, 41, "OFF", false)
+	seedJiraBoard(t, d, acct, 40, "ACME", true)
+	seedJiraBoard(t, d, acct, 41, "OFF", false)
 	tool := NewCreateJiraIssue(func(db.JiraAccount) (JiraIssueClient, error) { return &fakeJira{}, nil })
 	ctx := context.Background()
 

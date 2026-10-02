@@ -101,24 +101,20 @@ func jiraIssueTypesByProject(d *db.DB) (map[projectKeyID]projectTypes, error) {
 	return out, rows.Err()
 }
 
-// syncedJiraProjects returns every (account, project) Watchtower syncs, with
-// the issue types seen in each. A project counts as synced once any of three
-// sources knows it: a full-sync watermark, a selected board (SyncBoard pulls
-// its active issues at once but deliberately writes no watermark), or synced
-// issues. Watermarks alone hide a just-selected board's project until the
-// next daemon Jira phase.
-func syncedJiraProjects(d *db.DB) (map[projectKeyID]bool, map[projectKeyID]projectTypes, error) {
+// syncedJiraProjects returns every (account, project) Watchtower syncs: one
+// with a full-sync watermark or one of a selected board. SyncBoard pulls a
+// just-selected board's active issues at once but deliberately writes no
+// watermark, so watermarks alone hide its project until the next daemon Jira
+// phase. Synced issues alone do not count: an issue-key write mirrors a row
+// for any project it touches, watched or not.
+func syncedJiraProjects(d *db.DB) (map[projectKeyID]bool, error) {
 	states, err := d.GetJiraSyncStates()
 	if err != nil {
-		return nil, nil, fmt.Errorf("listing jira sync states: %w", err)
+		return nil, err
 	}
 	boards, err := d.ListSelectedJiraBoards()
 	if err != nil {
-		return nil, nil, fmt.Errorf("listing selected jira boards: %w", err)
-	}
-	typesByProject, err := jiraIssueTypesByProject(d)
-	if err != nil {
-		return nil, nil, fmt.Errorf("listing issue types: %w", err)
+		return nil, err
 	}
 	keys := map[projectKeyID]bool{}
 	for _, s := range states {
@@ -129,14 +125,11 @@ func syncedJiraProjects(d *db.DB) (map[projectKeyID]bool, map[projectKeyID]proje
 			keys[projectKeyID{b.AccountID, b.ProjectKey}] = true
 		}
 	}
-	for k := range typesByProject {
-		keys[k] = true
-	}
-	return keys, typesByProject, nil
+	return keys, nil
 }
 
 // NewListJiraProjects lists the connected Jira accounts and their synced
-// projects (a full-sync watermark, a selected board, or synced issues) with
+// projects (a full-sync watermark or a selected board) with
 // the issue types seen in each — the account_id, project_key and issue_type
 // values create_jira_issue takes.
 func NewListJiraProjects() *Tool {
@@ -152,9 +145,13 @@ func NewListJiraProjects() *Tool {
 			if err != nil {
 				return nil, fmt.Errorf("listing jira accounts: %w", err)
 			}
-			keys, typesByProject, err := syncedJiraProjects(d)
+			keys, err := syncedJiraProjects(d)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("listing jira projects: %w", err)
+			}
+			typesByProject, err := jiraIssueTypesByProject(d)
+			if err != nil {
+				return nil, fmt.Errorf("listing issue types: %w", err)
 			}
 			byAccount := map[int64][]string{}
 			for k := range keys {
@@ -167,6 +164,9 @@ func NewListJiraProjects() *Tool {
 				sort.Strings(projectKeys)
 				for _, key := range projectKeys {
 					pt := typesByProject[projectKeyID{a.ID, key}]
+					if pt.types == nil {
+						pt.types = []string{} // a board whose issues have not landed yet
+					}
 					view.Projects = append(view.Projects, jiraProjectView{
 						ProjectKey: key, IssueTypes: pt.types, IssueCount: pt.count,
 					})

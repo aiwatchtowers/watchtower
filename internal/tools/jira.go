@@ -102,7 +102,7 @@ func syncedProjectAccount(d *db.DB, accountID int64, projectKey string) (db.Jira
 // projectSynced reports whether list_jira_projects lists projectKey for the
 // account, so a listed project is always one create_jira_issue accepts.
 func projectSynced(d *db.DB, accountID int64, projectKey string) (bool, error) {
-	keys, _, err := syncedJiraProjects(d)
+	keys, err := syncedJiraProjects(d)
 	if err != nil {
 		return false, err
 	}
