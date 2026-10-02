@@ -257,7 +257,21 @@ final class ExternalConnectionsViewModelTests: XCTestCase {
 
         XCTAssertEqual(runner.invocations.count, 2, "only reads, no --allow")
         XCTAssertEqual(vm.toolLists[3]?.tools.map(\.name), ["getIssue"])
-        XCTAssertTrue(vm.toolsErrors[3]?.contains("runQuery is no longer") == true)
+        XCTAssertTrue(vm.toolsErrors[3]?.contains("runQuery changed on the server") == true)
+    }
+
+    func testTogglingAToolTheServerNowMarksAWriteWritesNothing() async throws {
+        var listing = Self.toolsJSON([("runQuery", false, false, false)])
+        let runner = ScriptedToolsRunner { _ in listing }
+        let (vm, c) = try makeToolsVM(runner)
+        await vm.loadTools(c)
+        listing = Self.toolsJSON([("runQuery", false, false, true)])
+
+        await vm.setTool("runQuery", allowed: true, on: c)
+
+        XCTAssertEqual(runner.invocations.count, 2, "only reads, no --allow")
+        XCTAssertEqual(vm.toolLists[3]?.tools.first?.kind, .write)
+        XCTAssertNotNil(vm.toolsErrors[3])
     }
 
     /// A write whose output cannot be read may have landed: the old toggles

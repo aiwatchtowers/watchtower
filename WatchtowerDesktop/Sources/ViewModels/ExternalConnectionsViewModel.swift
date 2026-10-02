@@ -217,14 +217,15 @@ final class ExternalConnectionsViewModel {
     /// Turns one tool on or off. The next allow list is built from a list
     /// read just before the write, never from the snapshot on screen, so a
     /// change made meanwhile (the CLI, a re-listing) is not overwritten.
-    /// A tool the fresh list no longer has (a re-listing dropped it) is an
-    /// error, and nothing is written.
+    /// A tool the fresh list no longer has, or now marks a write (a
+    /// re-listing changed it), is an error: the fresh list is shown and
+    /// nothing is written.
     func setTool(_ name: String, allowed: Bool, on c: ExternalConnection) async {
         await runToolsCommand(c) { runner in
             let fresh = try await Self.decodeTools(runner.run(args: ExternalConnectionTools.listArgs(id: Int64(c.id))))
-            guard fresh.tools.contains(where: { $0.name == name }) else {
+            guard let tool = fresh.tools.first(where: { $0.name == name }), tool.canToggle else {
                 self.toolLists[c.id] = fresh
-                throw ToolsCommandError.toolGone(name)
+                throw ToolsCommandError.toolChanged(name)
             }
             return fresh.allowArgs(setting: name, allowed: allowed)
         }
@@ -273,12 +274,12 @@ final class ExternalConnectionsViewModel {
     }
 
     private enum ToolsCommandError: LocalizedError {
-        case toolGone(String)
+        case toolChanged(String)
 
         var errorDescription: String? {
             switch self {
-            case let .toolGone(name):
-                "\(name) is no longer in the server's tool list. The list is updated; nothing was changed."
+            case let .toolChanged(name):
+                "\(name) changed on the server (gone, or now a write). The list is updated; nothing was changed."
             }
         }
     }
