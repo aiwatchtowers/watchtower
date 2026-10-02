@@ -22,8 +22,8 @@
 3. **No git process outside a repository.** `gitbin.InsideRepository` (moved from `workbenchcheck.insideRepository`) runs before any git call.
 4. **Guards are decided in Go, in one envelope.** `switch` refuses with `needs_confirmation: ["uncommitted_changes"|"agent_running"]` (exit 0) unless `--stash` / `--confirm-agent` are passed. The Desktop supplies the fact `--agent-running` (only it knows its live sessions); Go owns the rule, so refusal without confirmation is tested in Go.
 5. **"A Claude Code session is running in the folder"** = a `TerminalCenter` row with `kind == .claude`, in `liveIDs`, and `projectID == workbench.id` or a standardized `folderPath` equal to or inside the workbench folder. A `claude` in the owner's external terminal is not detected (v1 limit, documented).
-6. **"Dirty"** = any `git status --porcelain=v2` entry: staged, unstaged or untracked (ignored excluded). Stash = `git stash push --include-untracked -m "watchtower: switching from <cur> to <branch>"`. Never popped automatically after a successful switch; the result and the popover name it. If `switch` fails after the stash, it is restored at once with `git stash pop --index`.
-7. **Never run:** `switch --force|--discard-changes`, `checkout -f`, `reset`, `clean`, `stash drop`.
+6. **"Dirty"** = any `git status --porcelain=v2` entry: staged, unstaged or untracked (ignored excluded). Stash = `git stash push --include-untracked -m "watchtower: switching from <cur> to <branch> [<nonce>]"` (16 hex chars). The stash stack is shared by every worktree and session, so this run's entry is found by its exact message in `git stash list --format=%H%x00%gs` after the push (failed or not), never taken from `refs/stash`'s tip. The entry is never popped or dropped; the result and the popover name it. If `switch` fails after the stash (and HEAD did not move), the entry is applied back at once with `git stash apply --index <sha>` and stays on the stack.
+7. **Never run:** `switch --force|--discard-changes`, `checkout -f`, `reset`, `clean`, `stash pop`, `stash drop`.
 8. **`create` has no guards:** `git switch -c <name>` from HEAD swaps no files.
 9. **Badge data:** a GRDB read in WatchtowerCore when the popover opens — this workbench's targets with a non-empty `branch`, open ones first. The CLI stays DB-free beyond resolving the folder.
 10. **Refresh triggers:** page appears; `NSApplication.didBecomeActiveNotification`; after switch/create; FSEvents on `git_dir` and `common_dir` (HEAD, index, packed-refs, `refs/heads/**`, `refs/remotes/**`, `worktrees/*/HEAD`; ignoring `objects/**`, `logs/**`, `*.lock`), 0.5 s latency, coalesced; a 15 s timer while the page is on screen, only for the dirty dot. At most one refresh in flight per workbench plus one queued rerun.
@@ -44,19 +44,21 @@ All four commands exit 0 whenever the workbench resolves; non-zero only for a ba
 ```
 
 - `operation`: `merge|rebase|cherry-pick|revert|bisect|""`, from file checks in `git_dir` (MERGE_HEAD, rebase-merge/, rebase-apply/, CHERRY_PICK_HEAD, REVERT_HEAD, BISECT_LOG).
-- `git:false` → `note` says why (not a work tree, git unavailable); the Desktop shows neither `›` nor the button.
+- `git:false` → `note` says why (not in a repository, git unavailable); the Desktop shows neither `›` nor the button.
+- Inside a repository a failing git (`rev-parse`, an unreadable operation marker, `status`) keeps `git:true` with `status_ok:false` and `status_error` set; a killed git reads `git <cmd> timed out` / `was canceled`.
 - Built from `git rev-parse --absolute-git-dir --git-common-dir --show-toplevel` plus one `git status --porcelain=v2 --branch -z --untracked-files=normal`.
 
 **`workbench git branches --workbench N --json`**
 
 ```json
-{"workbench_id":7,"git_available":true,"git":true,"current":"main",
+{"workbench_id":7,"git_available":true,"git":true,"note":"","current":"main",
  "branches":[{"name":"main","current":true,"head":"a1b2c3d","committed_at":"2026-10-02T09:00:00Z",
-              "upstream":"origin/main","ahead":0,"behind":0,"worktree":"","worktree_name":""}],
+              "upstream":"origin/main","upstream_gone":false,"ahead":0,"behind":0,"worktree":"","worktree_name":""}],
  "branches_ok":true,"branches_error":""}
 ```
 
-- One `git for-each-ref --sort=-committerdate refs/heads/` with a NUL-separated format of `%(refname) %(objectname:short) %(committerdate:unix) %(upstream:short) %(upstream:track,nobracket) %(worktreepath)`.
+- One `git for-each-ref --sort=-committerdate refs/heads/` with a NUL-separated format of `%(refname) %(objectname) %(committerdate:unix) %(upstream:short) %(upstream:track,nobracket) %(worktreepath)`; `head` is the full id cut to 7 characters, as in the status (`:short` follows `core.abbrev`).
+- `upstream_gone:true` when the tracked upstream no longer exists; an unreadable track text fails the listing. `note` carries the same note as the status.
 - `worktree` is set only when the branch is checked out in a worktree other than `top_level`; `worktree_name` is its base name.
 
 **`workbench git switch --workbench N --branch B [--stash] [--agent-running] [--confirm-agent] --json`**
@@ -65,40 +67,43 @@ All four commands exit 0 whenever the workbench resolves; non-zero only for a ba
 {"workbench_id":7,"branch":"feature/x","switched":false,"already":false,
  "needs_confirmation":["uncommitted_changes","agent_running"],"changes":5,
  "refused":"","refused_detail":"",
- "stashed":"","stash_message":"","stash_restored":false,
- "error":"",
+ "stashed":"","stash_message":"","stash_restored":false,"stash_error":"",
+ "error":"","warning":"",
  "status":{}}
 ```
 
-- `refused`: `unknown_branch|checked_out_elsewhere|operation_in_progress|not_git|git_unavailable`.
-- `error`: git stderr, trimmed, ≤300 chars, when git failed. `status`: the status object after the call.
+- `refused`: `unknown_branch|checked_out_elsewhere|operation_in_progress|not_git|git_unavailable|git_failed` (`git_failed`: the status read failed inside a repository; `refused_detail` is its `status_error`).
+- `error`: git stderr, trimmed, ≤300 chars, when git failed. A `stash push` that failed after making the entry sets `stashed`/`stash_message` and says "a stash was created" in `error`.
+- `stash_restored:true`: the entry was applied back after a failed switch (it stays on the stack); `stash_error`: why applying it failed.
+- `warning`: git's stderr when `switch`/`switch -c` exited non-zero but HEAD is the target (a failing post-checkout hook) — `switched`/`created` are true and the stash is not applied.
+- `status`: the status object after the call, read on its own 5 s budget even when the call's context is done.
 
 Order of checks (load-bearing):
-1. git unavailable / not a repository → refused.
+1. git unavailable / not a repository / status unreadable → refused.
 2. `B` must exactly match a `refs/heads/` name and must not start with `-`.
 3. `B` == current branch → `already:true`, no git write.
 4. checked out in another worktree → refused (no flag overrides it).
 5. operation in progress or unmerged entries → refused.
 6. collect `needs_confirmation`: dirty without `--stash`; `--agent-running` without `--confirm-agent`. Any → return, no git write.
 7. `--stash` and dirty → `stash push`.
-8. `git switch --no-guess B`; on failure, `stash pop --index` if this run stashed.
+8. `git switch --no-guess --no-overwrite-ignore B` (never replaces an ignored file B tracks); on failure, read HEAD: if it is `B` → switched with `warning`; else `stash apply --index <sha>` if this run stashed.
 9. read the status again.
 
-**`workbench git create --workbench N --name X --json`** — same envelope plus `"created":bool`; `refused` gains `invalid_name` (via `git check-ref-format --branch`; also rejects a leading `-` and empty) and `exists`. Runs `git switch -c X`. No dirty or agent guard.
+**`workbench git create --workbench N --name X --json`** — same envelope plus `"created":bool`; `refused` gains `invalid_name` (empty, `HEAD` or a leading `-`, then `git check-ref-format refs/heads/X` exiting 1 — `--branch` exits 128 on a bad name, the same code as git failing; any other failure is `error`) and `exists`. Runs `git switch -c X`. No dirty or agent guard.
 
 ## Tasks
 
 ### G1 — `internal/gitbin`: locate git without the shim; InsideRepository
 - **Depends on:** none
 - **Files:** new `internal/gitbin/gitbin.go`, `gitbin_test.go`; edit `internal/workbenchcheck/git.go` (`ExecRunner` resolves `"git"` via gitbin; `insideRepository` → `gitbin.InsideRepository`; new note "git is not available (no Command Line Tools); branch checks skipped" on `errors.Is(err, gitbin.ErrUnavailable)`); `check_test.go` (new case only).
-- **Interface:** `type Locator struct{ GOOS string; Getenv func(string) string; Readlink func(string) (string, error); IsExecutable func(string) bool; LookPath func(string) (string, error) }`; `func (Locator) Locate() (string, bool)`; `func Locate() (string, bool)` (cached, default Locator); `var ErrUnavailable`; `func InsideRepository(dir string) bool`.
+- **Interface:** `type locator struct{ GOOS string; Getenv func(string) string; Readlink func(string) (string, error); IsExecutable func(string) bool; LookPath func(string) (string, error) }`; `func (locator) locate() (string, bool)`; `func Locate() (string, bool)` (cached, default locator); `var ErrUnavailable`; `func InsideRepository(dir string) bool`.
 - **Tests:** DEVELOPER_DIR wins; xcode_select_link target used; CLT path used; Xcode.app default used; Homebrew arm64 then Intel; `/usr/bin/git` never returned even when "executable"; none → false; non-darwin uses LookPath. InsideRepository: `.git` dir, `.git` gitdir file, parent repo, non-repo. `TestProj07_GitUnavailableIsANote`: runner returns `ErrUnavailable` → `Git:false`, note present, no findings. All existing `TestProj07_*` stay green unchanged.
 - **Verify:** `go test ./internal/gitbin ./internal/workbenchcheck`; `make lint-diff`
 
 ### G2 — `internal/workbenchgit`: status and branch reading
 - **Depends on:** G1
 - **Files:** new `internal/workbenchgit/{status.go,branches.go,run.go,status_test.go,branches_test.go,helpers_test.go}`
-- **Interface:** `type Options struct{ Folder string; Run workbenchcheck.Runner /*nil = ExecRunner*/; Locate func() (string, bool) }`; `func ReadStatus(ctx, Options) Status`; `func ParseStatus(porcelainV2Z []byte) (StatusFields, error)`; `func ListBranches(ctx, Options) BranchList`; `func ParseBranches(out []byte, topLevel string) ([]Branch, error)`. `Status`/`Branch`/`BranchList` carry the contract's JSON tags. `run.go` adds `GIT_EDITOR=true`, keeps ExecRunner's env.
+- **Interface:** `type Options struct{ Folder string; Run workbenchcheck.Runner /*nil = ExecRunner*/; Locate func() (string, bool) }`; `func ReadStatus(ctx, Options) Status`; `func parseStatus(porcelainV2Z []byte) (StatusFields, error)`; `func ListBranches(ctx, Options) BranchList`; `func parseBranches(out []byte, topLevel string) ([]Branch, error)`. `Status`/`Branch`/`BranchList` carry the contract's JSON tags. `run.go` adds `GIT_EDITOR=true`, keeps ExecRunner's env and strips inherited `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_COMMON_DIR`, `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_NAMESPACE`, `GIT_PREFIX`.
 - **Tests (parsers on canned output):** clean on main `# branch.ab +0 -0`; dirty — modified, staged, renamed, untracked counted in `changes`; ahead/behind `+2 -1`; no upstream → 0/0, `upstream` ""; detached `(detached)` → `detached:true`, short `head`; unborn `(initial)` → `unborn:true`, name kept; unmerged `u` entries. Branches: order as given, current flagged, another worktree's `worktreepath` → `worktree`/`worktree_name`, own worktree → empty, a name with `/`, track `ahead 2, behind 1` / `gone`.
 - **Tests (real git, temp repos):** linked worktree → `git_dir` ends with `worktrees/<name>`, `common_dir` is the main `.git`, main checkout's branch shows as `worktree` from the linked side; a repo subdirectory as folder works; non-repo dir → zero runner calls; Locate false → `git_available:false`, zero runner calls; `operation` detection (MERGE_HEAD).
 - **Verify:** `go test ./internal/workbenchgit`; `make lint-diff`
