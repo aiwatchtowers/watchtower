@@ -103,8 +103,9 @@ package final class AIModelCatalog {
         }
     }
 
-    /// `watchtower ai models --json`, configured off the main actor (the
-    /// first `resolvedEnvironment()` runs the login shell).
+    /// `watchtower ai models --json`, set up off the main actor: an
+    /// unresolved `resolvedEnvironment()` runs the login shell (AppState
+    /// prewarms it at launch on a thread of its own).
     nonisolated private static func fetchModels(cliPath: String) async -> ProcessOutput {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: cliPath)
