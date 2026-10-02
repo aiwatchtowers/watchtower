@@ -231,7 +231,10 @@ func (fd *FieldDiscovery) NeedsDiscovery() bool {
 func (fd *FieldDiscovery) MapFieldsForBoard(ctx context.Context, board db.JiraBoard) ([]db.JiraBoardFieldMap, error) {
 	// 1. Get useful fields from DB
 	usefulFields, err := fd.db.GetUsefulJiraCustomFields(fd.accountID)
-	if err != nil || len(usefulFields) == 0 {
+	if err != nil {
+		return nil, fmt.Errorf("loading useful custom fields: %w", err)
+	}
+	if len(usefulFields) == 0 {
 		return nil, fmt.Errorf("no useful fields discovered, run field discovery first")
 	}
 
@@ -383,15 +386,31 @@ Consider the sample values to determine the correct role.`
 
 	// 6. Save to DB
 	var mappings []db.JiraBoardFieldMap
+	unknown := 0
 	for _, r := range results {
 		if r.Role == "skip" || r.Role == "" {
 			continue
 		}
+		// Only a field the LLM was shown may get a role: an invented id
+		// would land in jira_board_field_map and reach the board profile
+		// as a nameless custom field.
+		if _, sampled := fieldStats[r.ID]; !sampled {
+			fd.logger.Printf("warning: LLM mapped unknown field %s on board %d, ignoring", r.ID, board.ID)
+			unknown++
+			continue
+		}
 		mappings = append(mappings, db.JiraBoardFieldMap{
-			BoardID: board.ID,
-			FieldID: r.ID,
-			Role:    r.Role,
+			AccountID: fd.accountID,
+			BoardID:   board.ID,
+			FieldID:   r.ID,
+			Role:      r.Role,
 		})
+	}
+
+	// A reply naming only fields it was never shown is a bad reply, not "no
+	// field matters": keep the stored map rather than replace it with nothing.
+	if len(mappings) == 0 && unknown > 0 {
+		return nil, fmt.Errorf("LLM field mapping named only unknown fields (%d) for board %d", unknown, board.ID)
 	}
 
 	if err := fd.db.UpsertJiraBoardFieldMap(fd.accountID, board.ID, mappings); err != nil {

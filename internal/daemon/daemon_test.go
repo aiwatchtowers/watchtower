@@ -177,13 +177,10 @@ func TestDaemon_PollTriggersSync(t *testing.T) {
 	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	defer cancel()
-
-	err := d.Run(ctx)
+	// Initial sync + at least one 50ms poll sync, under a deadline generous
+	// enough for a loaded or -race runner.
+	err := runDaemonUntil(t, d, func() bool { return syncCount.Load() >= 2 })
 	assert.NoError(t, err)
-	// With 50ms interval and 300ms timeout, we should get initial sync + at least 2-3 poll syncs.
-	assert.GreaterOrEqual(t, syncCount.Load(), int32(2), "daemon should run multiple syncs from polling")
 }
 
 func TestDaemon_WakeEventTriggersSync(t *testing.T) {
@@ -207,19 +204,18 @@ func TestDaemon_WakeEventTriggersSync(t *testing.T) {
 	wakeCh := make(chan struct{}, 1)
 	d.wakeCh = wakeCh
 
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
-
-	// Send a wake signal after a brief delay.
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		wakeCh <- struct{}{}
-	}()
-
-	err := d.Run(ctx)
-	assert.NoError(t, err)
-	// Initial sync + wake-triggered sync = at least 2.
-	assert.GreaterOrEqual(t, syncCount.Load(), int32(2), "wake event should trigger an additional sync")
+	// Send the wake signal once the initial sync is observed, then wait for
+	// the wake-triggered one: initial + wake = at least 2.
+	err := runDaemonUntil(t, d, func() bool {
+		if syncCount.Load() >= 1 {
+			select {
+			case wakeCh <- struct{}{}:
+			default:
+			}
+		}
+		return syncCount.Load() >= 2
+	})
+	assert.NoError(t, err, "wake event should trigger an additional sync")
 }
 
 func TestDaemon_GracefulShutdown(t *testing.T) {
@@ -1188,16 +1184,18 @@ func TestDaemon_ManualTriggerCausesSync(t *testing.T) {
 	triggerCh := make(chan struct{}, 1)
 	d.triggerCh = triggerCh
 
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
-
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		triggerCh <- struct{}{}
-	}()
-
-	require.NoError(t, d.Run(ctx))
-	assert.GreaterOrEqual(t, syncCount.Load(), int32(2), "manual trigger should cause an additional sync")
+	// Trigger once the initial sync is observed, then wait for the triggered
+	// sync. runDaemonUntil returns only after Run has, so the heartbeat
+	// read below sees the finished sync.
+	require.NoError(t, runDaemonUntil(t, d, func() bool {
+		if syncCount.Load() >= 1 {
+			select {
+			case triggerCh <- struct{}{}:
+			default:
+			}
+		}
+		return syncCount.Load() >= 2
+	}), "manual trigger should cause an additional sync")
 
 	progress, err := sync.ReadSyncProgress(filepath.Join(cfg.WorkspaceDir(), "sync_progress.json"))
 	require.NoError(t, err, "a sync must publish the heartbeat the tray reads")

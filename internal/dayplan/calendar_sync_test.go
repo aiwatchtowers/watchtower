@@ -1,6 +1,7 @@
 package dayplan
 
 import (
+	"context"
 	"database/sql"
 	"testing"
 	"time"
@@ -165,4 +166,37 @@ func TestSyncCalendarItems_OrphansStaleAllDayItem(t *testing.T) {
 	for _, it := range items {
 		assert.NotEqual(t, "Company Holiday", it.Title, "stale all-day timeblock must be cleaned up as an orphan")
 	}
+}
+
+// TestSyncCalendarItemsForDate is the daemon-facing wrapper: without a plan
+// for the date it writes nothing; with one, the day's timed calendar events
+// become calendar timeblocks on that plan.
+func TestSyncCalendarItemsForDate(t *testing.T) {
+	d := gatherTestDB(t)
+	p := New(d, pipeTestCfg(), nil, nil)
+	now := time.Now()
+	date := now.Format("2006-01-02")
+	noon := time.Date(now.Year(), now.Month(), now.Day(), 12, 0, 0, 0, time.Local)
+
+	require.NoError(t, d.UpsertCalendar(0, db.CalendarCalendar{ID: "cal-001", Name: "Primary", IsPrimary: true}))
+	require.NoError(t, d.UpsertCalendarEvent(db.CalendarEvent{
+		ID: "evt-noon", CalendarID: "cal-001", Title: "Sync",
+		StartTime: noon.UTC().Format(time.RFC3339), EndTime: noon.Add(30 * time.Minute).UTC().Format(time.RFC3339),
+		Attendees: "[]",
+	}))
+
+	require.NoError(t, p.SyncCalendarItemsForDate(context.Background(), "U1", date), "no plan is a no-op")
+
+	planID, err := d.CreateDayPlan(&db.DayPlan{
+		UserID: "U1", PlanDate: date, Status: "active", GeneratedAt: now, FeedbackHistory: "[]",
+	})
+	require.NoError(t, err)
+	require.NoError(t, p.SyncCalendarItemsForDate(context.Background(), "U1", date))
+
+	items, err := d.GetDayPlanItems(planID)
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	assert.Equal(t, db.DayPlanItemSourceCalendar, items[0].SourceType)
+	assert.Equal(t, "evt-noon", items[0].SourceID.String)
+	assert.Equal(t, int64(30), items[0].DurationMin.Int64)
 }

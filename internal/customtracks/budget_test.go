@@ -218,3 +218,32 @@ func TestRunShutdownIsNotCountedAsFailure(t *testing.T) {
 		t.Fatalf("shutdown charged the budget: scan_attempts = %d, %d; want 0, 0", a, b)
 	}
 }
+
+// TestHasDueTracks pins the daemon's pre-run gate: no custom track means
+// nothing is due, a fresh track is due, and a track that spent today's
+// failure budget is not — so the daemon opens no empty tracked run for it.
+func TestHasDueTracks(t *testing.T) {
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	seedActivity(t, d)
+	gen := newScripted("BROKEN")
+	gen.broken["BROKEN"] = true
+	p := New(d, gen, "", nil)
+
+	if due, err := p.HasDueTracks(); err != nil || due {
+		t.Fatalf("no custom tracks: HasDueTracks = (%v, %v), want (false, nil)", due, err)
+	}
+	newCustomTrack(t, d, "BROKEN")
+	if due, err := p.HasDueTracks(); err != nil || !due {
+		t.Fatalf("fresh track: HasDueTracks = (%v, %v), want (true, nil)", due, err)
+	}
+	for i := 0; i < maxDailyScanAttempts; i++ {
+		_, _ = p.Run(context.Background())
+	}
+	if due, err := p.HasDueTracks(); err != nil || due {
+		t.Fatalf("budget spent: HasDueTracks = (%v, %v), want (false, nil)", due, err)
+	}
+}

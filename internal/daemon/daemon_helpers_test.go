@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"io"
 	"log"
 	"os"
@@ -160,4 +161,34 @@ func TestDaemon_New(t *testing.T) {
 	assert.Nil(t, d.db) // SetDB hasn't been called.
 	d.SetDB((*db.DB)(nil))
 	d.SetLogger(log.New(io.Discard, "", 0))
+}
+
+// runDaemonUntil runs d until cond holds (polled every 10ms under a 10s
+// deadline), then cancels it and returns Run's error. A deadline instead of a
+// fixed run window keeps the loop tests honest on a loaded or -race runner:
+// a slow sync only makes them take longer, never fail on a count.
+func runDaemonUntil(t *testing.T, d *Daemon, cond func() bool) error {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- d.Run(ctx) }()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			cancel()
+			<-done
+			t.Fatal("condition not reached within 10s")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(10 * time.Second):
+		t.Fatal("daemon did not stop within 10s of cancellation")
+		return nil
+	}
 }

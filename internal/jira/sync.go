@@ -35,12 +35,11 @@ type Syncer struct {
 	logger           *log.Logger
 	boardIDs         []int
 	accountID        int64
-	boardAnalyzer    *BoardAnalyzer                 // optional, for config change detection
-	autoRefresh      bool                           // when true, auto re-analyze boards with changed config
-	fieldMapCache    map[int][]db.JiraBoardFieldMap // boardID -> field mappings
-	commentSyncLimit int                            // max changed issues fetched for comments per project sync pass (0 = disabled)
-	changelogLimit   int                            // max issues whose status/assignee history is fetched per pass (0 = disabled)
-	OnProgress       func(SyncProgress)             // optional progress callback
+	boardAnalyzer    *BoardAnalyzer     // optional, for config change detection
+	autoRefresh      bool               // when true, auto re-analyze boards with changed config
+	commentSyncLimit int                // max changed issues fetched for comments per project sync pass (0 = disabled)
+	changelogLimit   int                // max issues whose status/assignee history is fetched per pass (0 = disabled)
+	OnProgress       func(SyncProgress) // optional progress callback
 }
 
 // NewSyncer creates a Syncer for one Jira account.
@@ -470,12 +469,27 @@ func (s *Syncer) syncWithJQL(ctx context.Context, jql string, boardID int) (int,
 	pageCh := make(chan fetchedPage, 2) // buffer 2 pages ahead
 	fetchErr := make(chan error, 1)
 
+	// Request the board's mapped custom fields too (convertIssue reads them).
+	// Read once per pass, so a map written since the last pass (board analysis,
+	// `jira boards map`) takes effect, and before the reader starts: DB access
+	// stays off the reader goroutine. A failed read fails the board rather than
+	// syncing it without the fields, which would overwrite stored story points
+	// and custom field values with empty ones.
+	fieldMap, err := s.db.GetJiraBoardFieldMap(s.accountID, boardID)
+	if err != nil {
+		return 0, nil, fmt.Errorf("loading field map for board %d: %w", boardID, err)
+	}
+	extraFields := make([]string, 0, len(fieldMap))
+	for _, fm := range fieldMap {
+		extraFields = append(extraFields, fm.FieldID)
+	}
+
 	// Reader: fetch pages from Jira API using cursor-based pagination (no DB access).
 	go func() {
 		defer close(pageCh)
 		nextToken := ""
 		for {
-			result, err := s.client.SearchIssues(ctx, jql, maxResults, nextToken)
+			result, err := s.client.searchIssues(ctx, jql, maxResults, nextToken, extraFields)
 			if err != nil {
 				fetchErr <- fmt.Errorf("searching issues: %w", err)
 				return
@@ -497,7 +511,7 @@ func (s *Syncer) syncWithJQL(ctx context.Context, jql string, boardID int) (int,
 	var changedKeys []string
 	var writeErr error // the first failed batch write
 	for page := range pageCh {
-		dbIssues, dbLinks := s.prepareIssueBatch(ctx, page.issues, boardID)
+		dbIssues, dbLinks := s.prepareIssueBatch(ctx, page.issues, boardID, fieldMap)
 
 		if err := s.db.UpsertJiraIssueBatch(dbIssues, dbLinks); err != nil {
 			// A lost batch is a project failure: returning it (below) keeps
@@ -591,20 +605,22 @@ func (s *Syncer) syncComments(ctx context.Context, changedKeys []string) error {
 }
 
 // prepareIssueBatch converts API issues to DB records without writing to the database.
-func (s *Syncer) prepareIssueBatch(ctx context.Context, issues []Issue, boardID int) ([]db.JiraIssue, []db.JiraIssueLink) {
+func (s *Syncer) prepareIssueBatch(ctx context.Context, issues []Issue, boardID int, fieldMap []db.JiraBoardFieldMap) ([]db.JiraIssue, []db.JiraIssueLink) {
 	dbIssues := make([]db.JiraIssue, 0, len(issues))
 	var dbLinks []db.JiraIssueLink
 
 	for _, issue := range issues {
-		dbIssue, links := s.convertIssue(ctx, issue, boardID)
+		dbIssue, links := s.convertIssue(ctx, issue, boardID, fieldMap)
 		dbIssues = append(dbIssues, dbIssue)
 		dbLinks = append(dbLinks, links...)
 	}
 	return dbIssues, dbLinks
 }
 
-// convertIssue converts a Jira API issue to DB records without writing to the database.
-func (s *Syncer) convertIssue(ctx context.Context, issue Issue, boardID int) (db.JiraIssue, []db.JiraIssueLink) {
+// convertIssue converts a Jira API issue to DB records without writing to the
+// database. fieldMap is the board's custom field mapping; its fields' values
+// come from issue.CustomFields.
+func (s *Syncer) convertIssue(ctx context.Context, issue Issue, boardID int, fieldMap []db.JiraBoardFieldMap) (db.JiraIssue, []db.JiraIssueLink) {
 	f := issue.Fields
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -690,48 +706,43 @@ func (s *Syncer) convertIssue(ctx context.Context, issue Issue, boardID int) (db
 
 	rawJSON, _ := json.Marshal(issue)
 
-	// Extract custom field values from raw JSON.
+	// Extract the board's mapped custom field values.
 	var storyPoints *float64
 	customFieldsMap := make(map[string]interface{})
 
-	fieldMappings := s.getFieldMap(boardID)
-	if len(fieldMappings) > 0 {
-		// Parse raw issue JSON to access custom fields.
-		var rawIssue struct {
-			Fields map[string]json.RawMessage `json:"fields"`
+	for _, fm := range fieldMap {
+		rawVal, ok := issue.CustomFields[fm.FieldID]
+		if !ok || string(rawVal) == "null" {
+			continue
 		}
-		if err := json.Unmarshal(rawJSON, &rawIssue); err == nil {
-			for _, fm := range fieldMappings {
-				rawVal, ok := rawIssue.Fields[fm.FieldID]
-				if !ok || string(rawVal) == "null" {
-					continue
-				}
 
-				switch fm.Role {
-				case "story_points":
-					var sp float64
-					if err := json.Unmarshal(rawVal, &sp); err == nil {
-						storyPoints = &sp
-					}
-				case "planned_end":
-					// Use as due date if standard dueDate is empty.
-					if dueDate == "" {
-						var val interface{}
-						if err := json.Unmarshal(rawVal, &val); err == nil {
-							if dateStr := extractDisplayValue(val); dateStr != "" {
-								dueDate = dateStr
-							}
+		switch fm.Role {
+		case "story_points":
+			var sp float64
+			if err := json.Unmarshal(rawVal, &sp); err == nil {
+				storyPoints = &sp
+			}
+		case "planned_end":
+			// Use as due date if standard dueDate is empty. due_date holds
+			// YYYY-MM-DD, so a datetime field keeps only its date part and a
+			// value that is not a date is ignored.
+			if dueDate == "" {
+				var val interface{}
+				if err := json.Unmarshal(rawVal, &val); err == nil {
+					if dateStr := extractDisplayValue(val); len(dateStr) >= 10 {
+						if _, perr := time.Parse("2006-01-02", dateStr[:10]); perr == nil {
+							dueDate = dateStr[:10]
 						}
 					}
-				default:
-					// For other roles, extract a display value.
-					var val interface{}
-					if err := json.Unmarshal(rawVal, &val); err == nil {
-						displayVal := extractDisplayValue(val)
-						if displayVal != "" {
-							customFieldsMap[fm.Role] = displayVal
-						}
-					}
+				}
+			}
+		default:
+			// For other roles, extract a display value.
+			var val interface{}
+			if err := json.Unmarshal(rawVal, &val); err == nil {
+				displayVal := extractDisplayValue(val)
+				if displayVal != "" {
+					customFieldsMap[fm.Role] = displayVal
 				}
 			}
 		}
@@ -1034,22 +1045,6 @@ func (s *Syncer) syncReleases(ctx context.Context, boards []db.JiraBoard) error 
 	// Individual version errors are logged but non-blocking by design; only a
 	// revoked grant (returned above) reaches the caller.
 	return nil
-}
-
-// getFieldMap returns the custom field mappings for a board, using a cache.
-func (s *Syncer) getFieldMap(boardID int) []db.JiraBoardFieldMap {
-	if s.fieldMapCache == nil {
-		s.fieldMapCache = make(map[int][]db.JiraBoardFieldMap)
-	}
-	if cached, ok := s.fieldMapCache[boardID]; ok {
-		return cached
-	}
-	mappings, err := s.db.GetJiraBoardFieldMap(s.accountID, boardID)
-	if err != nil {
-		return nil
-	}
-	s.fieldMapCache[boardID] = mappings
-	return mappings
 }
 
 // NormalizeTimestamp rewrites a Jira timestamp ("2006-01-02T15:04:05.000-0700",
