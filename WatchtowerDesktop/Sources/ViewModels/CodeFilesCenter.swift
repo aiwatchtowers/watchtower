@@ -471,7 +471,8 @@ final class CodeFilesCenter {
                     do {
                         try FileManager.default.moveItem(at: step, to: from)
                     } catch {
-                        throw OperationError.failed("The rename stopped halfway: the entry is now named “\(step.lastPathComponent)” in the same folder.")
+                        let name = step.lastPathComponent
+                        throw OperationError.failed("The rename stopped halfway: the entry is now named “\(name)” in the same folder.")
                     }
                     throw error
                 }
