@@ -132,7 +132,7 @@ extension WorkbenchesViewModel {
         }
         let rows = orderedSessions(projectID: projectID)
         guard n <= rows.count else { return }
-        await showFromPanel(sessionID: rows[n - 1].id)
+        await showSession(id: rows[n - 1].id)
     }
 
     /// The workbench's sessions running in this app (`TerminalCenter`, not the DB).
@@ -144,7 +144,7 @@ extension WorkbenchesViewModel {
     /// A level-2 click on a session — or a pick in the collapsed header's
     /// switcher, or ⌘N — in the workbench on screen: it is opened (one not
     /// running starts) and put on screen like any panel click.
-    func showFromPanel(sessionID id: Int64) async {
+    func showSession(id: Int64) async {
         guard let projectID = selectedWorkbenchID else { return }
         // The list may not be loaded yet (the panel loads it on appear).
         // A failed load already reports itself; the row is not "gone".
@@ -162,7 +162,7 @@ extension WorkbenchesViewModel {
     /// Level 2's "New session" (and ⌘T): a fresh `claude` session of the
     /// workbench on screen, put on screen like a panel click. The panel may
     /// be hidden or at level 1 (`drilledWorkbenchID` is nil or this one).
-    func newPanelSession() async {
+    func newSessionOnPage() async {
         guard let projectID = selectedWorkbenchID else { return }
         await newSession(projectID: projectID)
     }

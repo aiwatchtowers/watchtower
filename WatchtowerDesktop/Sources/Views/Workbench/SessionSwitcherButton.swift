@@ -21,11 +21,11 @@ struct SessionSwitcher: View {
                 currentID: session?.id,
                 onSelect: { id in
                     showsPopover = false
-                    Task { await vm.showFromPanel(sessionID: id) }
+                    Task { await vm.showSession(id: id) }
                 },
                 onNewSession: {
                     showsPopover = false
-                    Task { await vm.newPanelSession() }
+                    Task { await vm.newSessionOnPage() }
                 },
                 onShowPanel: {
                     showsPopover = false

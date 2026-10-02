@@ -157,7 +157,7 @@ final class WorkbenchHeaderSwitcherTests: XCTestCase {
         XCTAssertFalse(vm.hasWorkbenchPage, "the empty state")
 
         await vm.openSession(atShortcut: 1)
-        await vm.newPanelSession()
+        await vm.newSessionOnPage()
         XCTAssertTrue(launches.isEmpty)
 
         await vm.newStandalone(kind: .shell, folder: folder)
@@ -199,7 +199,7 @@ final class WorkbenchHeaderSwitcherTests: XCTestCase {
         XCTAssertEqual(vm.headerSession?.id, only.id)
         XCTAssertEqual(center.liveIDs, [only.id])
 
-        await vm.newPanelSession()
+        await vm.newSessionOnPage()
         let rows = try await pool.read { try TerminalSessionQueries.fetchForWorkbench($0, projectID: a) }
         XCTAssertEqual(rows.count, 2, "⌘T creates a session in the page's workbench")
         XCTAssertNil(vm.drilledWorkbenchID)
@@ -243,7 +243,7 @@ final class WorkbenchHeaderSwitcherTests: XCTestCase {
         vm.terminalSessions[a] = nil
         let gate = holdFirstRead(of: a, vm)
 
-        let picking = Task { await vm.showFromPanel(sessionID: row.id) }
+        let picking = Task { await vm.showSession(id: row.id) }
         try await yieldUntil { gate.continuation != nil }
         vm.drill(into: b)
         let layoutB = vm.layout(projectID: b)
@@ -295,7 +295,7 @@ final class WorkbenchHeaderSwitcherTests: XCTestCase {
         vm.drill(into: a)
         XCTAssertNil(vm.headerSession, "nothing opened yet")
 
-        await vm.showFromPanel(sessionID: one.id)
+        await vm.showSession(id: one.id)
         XCTAssertEqual(vm.headerSession?.id, one.id)
 
         vm.layout.show(.board)
@@ -314,7 +314,7 @@ final class WorkbenchHeaderSwitcherTests: XCTestCase {
         let vm = makeVM()
         await vm.reload()
         vm.drill(into: a)
-        await vm.showFromPanel(sessionID: one.id)
+        await vm.showSession(id: one.id)
         vm.panelVisible = false
 
         let row = titleRow(vm)

@@ -48,7 +48,7 @@ struct WorkbenchSessionsPanel: View {
         HStack(spacing: 6) {
             WorkbenchSwitcher(vm: vm, project: project, actions: switcherActions)
             Button {
-                Task { await vm.newPanelSession() }
+                Task { await vm.newSessionOnPage() }
             } label: {
                 Image(systemName: "plus")
             }

@@ -113,7 +113,7 @@ struct WorkbenchesView: View {
                     if session.projectID == nil {
                         await vm.selectStandalone(session)
                     } else {
-                        await vm.showFromPanel(sessionID: session.id)
+                        await vm.showSession(id: session.id)
                     }
                 }
             },
@@ -354,7 +354,7 @@ struct WorkbenchTitleRow: View {
             Button("", action: vm.showAllWorkbenches)
                 .keyboardShortcut("o", modifiers: [.command, .shift])
             Group {
-                Button("") { Task { await vm.newPanelSession() } }
+                Button("") { Task { await vm.newSessionOnPage() } }
                     .keyboardShortcut("t", modifiers: .command)
                 ForEach(1...SessionSwitcherPresentation.maxShortcut, id: \.self) { n in
                     Button("") { Task { await vm.openSession(atShortcut: n) } }
