@@ -11,11 +11,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
 	"testing"
 	"time"
+
+	"watchtower/internal/codesearch"
 )
 
 // runCLIEnv makes the test binary run as the real CLI (see TestMain).
@@ -109,6 +112,8 @@ type cliProcess struct {
 	stdin io.WriteCloser
 	lines chan string
 	wait  func() error
+	// stderr is a copy of the process's stderr; read it only after wait.
+	stderr bytes.Buffer
 }
 
 func startCLI(t *testing.T, args ...string) *cliProcess {
@@ -118,7 +123,8 @@ func startCLI(t *testing.T, args ...string) *cliProcess {
 	// SIGTERM timing tests would measure.
 	c.Env = append(os.Environ(), runCLIEnv+"=1", "GORACE=atexit_sleep_ms=0")
 	c.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	c.Stderr = os.Stderr
+	p := &cliProcess{cmd: c, lines: make(chan string, 1<<14)}
+	c.Stderr = io.MultiWriter(os.Stderr, &p.stderr)
 	stdin, err := c.StdinPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -130,7 +136,7 @@ func startCLI(t *testing.T, args ...string) *cliProcess {
 	if err := c.Start(); err != nil {
 		t.Fatal(err)
 	}
-	p := &cliProcess{cmd: c, stdin: stdin, lines: make(chan string, 1<<14)}
+	p.stdin = stdin
 	scanned := make(chan struct{})
 	go func() {
 		defer close(scanned)
@@ -312,5 +318,129 @@ func TestCodeIndex_SIGTERMWhileIdleExitsAtOnce(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("still running 5s after SIGTERM (blocked on stdin)")
+	}
+}
+
+func TestCodeSearch_StreamsMatchesThenDone(t *testing.T) {
+	root := t.TempDir()
+	writeCodeFile(t, root, "a.go", "package a\n\nfunc saveNow() {}\n")
+	writeCodeFile(t, root, "b.txt", "nothing here\n")
+	var out bytes.Buffer
+	opt := codesearch.Options{Query: "savenow", Max: 2000, Context: 2}
+	if err := codeSearch(context.Background(), root, opt, &out); err != nil {
+		t.Fatalf("codeSearch: %v", err)
+	}
+	lines := strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n")
+	want := []string{
+		`{"path":"a.go","line":3,"col":6,"text":"func saveNow() {}","before":["package a",""],"after":[]}`,
+		`{"done":true,"files":1,"matches":1,"truncated":false}`,
+	}
+	if !slices.Equal(lines, want) {
+		t.Fatalf("output:\n%s\nwant:\n%s", out.String(), strings.Join(want, "\n"))
+	}
+
+	out.Reset()
+	if err := codeSearch(context.Background(), root, codesearch.Options{Query: "absent", Max: 10}, &out); err != nil {
+		t.Fatalf("codeSearch(no match): %v", err)
+	}
+	if got := out.String(); got != `{"done":true,"files":0,"matches":0,"truncated":false}`+"\n" {
+		t.Fatalf("no-match output = %q", got)
+	}
+}
+
+func TestCodeSearch_MaxTruncates(t *testing.T) {
+	root := t.TempDir()
+	writeCodeFile(t, root, "a.txt", strings.Repeat("hit\n", 20))
+	p := startCLI(t, "code", "search", "--folder", root, "--query", "hit", "--max", "5", "--json")
+	_ = p.stdin.Close()
+	run := p.untilDone(t)
+	if len(run) != 6 || run[5] != `{"done":true,"files":1,"matches":5,"truncated":true}` {
+		t.Fatalf("run = %v", run)
+	}
+	if code := exitCode(p.wait()); code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+}
+
+func TestCodeSearch_InvalidRegexExitsTwoWithAMessage(t *testing.T) {
+	root := t.TempDir()
+	p := startCLI(t, "code", "search", "--folder", root, "--query", "(", "--regex")
+	_ = p.stdin.Close()
+	if code := exitCode(p.wait()); code != 2 {
+		t.Fatalf("exit code = %d, want 2", code)
+	}
+	if msg := p.stderr.String(); !strings.Contains(msg, "invalid query") || !strings.Contains(msg, "missing closing )") {
+		t.Fatalf("stderr = %q, want the regexp error", msg)
+	}
+}
+
+func TestCodeSearch_UsageErrorsExitTwo(t *testing.T) {
+	root := t.TempDir()
+	writeCodeFile(t, root, "file.txt", "x\n")
+	for name, args := range map[string][]string{
+		"no folder":        {"--query", "x"},
+		"missing folder":   {"--folder", filepath.Join(root, "missing"), "--query", "x"},
+		"folder is a file": {"--folder", filepath.Join(root, "file.txt"), "--query", "x"},
+		"no query":         {"--folder", root},
+		"zero max":         {"--folder", root, "--query", "x", "--max", "0"},
+		"negative context": {"--folder", root, "--query", "x", "--context", "-1"},
+		"stray argument":   {"--folder", root, "--query", "x", "extra"},
+		"unknown flag":     {"--folder", root, "--query", "x", "--nope"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := startCLI(t, append([]string{"code", "search"}, args...)...)
+			_ = p.stdin.Close()
+			if code := exitCode(p.wait()); code != 2 {
+				t.Fatalf("exit code = %d, want 2", code)
+			}
+		})
+	}
+}
+
+func TestCodeSearch_SIGTERMMidRunExitsAtOnceWithNoDone(t *testing.T) {
+	root := t.TempDir()
+	body := strings.Repeat("hit1 hit2 hit3 hit4\n", 200)
+	const files = 1500
+	for i := range files {
+		writeCodeFile(t, root, fmt.Sprintf("d%d/f%d.txt", i%30, i), body)
+	}
+	p := startCLI(t, "code", "search", "--folder", root, "--query", "hit", "--max", "100000000", "--context", "0")
+	_ = p.stdin.Close()
+	if line, _ := p.next(t, 10*time.Second); !strings.HasPrefix(line, `{"path":`) {
+		t.Fatalf("first line = %q, want a match line", line)
+	}
+	// Drain stdout while the process exits, so a full pipe cannot block it.
+	type drained struct {
+		n    int
+		done bool
+	}
+	rest := make(chan drained, 1)
+	go func() {
+		var d drained
+		for line := range p.lines {
+			d.n++
+			d.done = d.done || strings.Contains(line, `"done"`)
+		}
+		rest <- d
+	}()
+
+	sent := time.Now()
+	if err := p.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	err := p.wait()
+	elapsed := time.Since(sent)
+	if code := exitCode(err); code != 0 {
+		t.Fatalf("exit code after SIGTERM = %d (%v), want 0", code, err)
+	}
+	if elapsed > 50*time.Millisecond {
+		t.Errorf("exited %v after SIGTERM, want ≤ 50ms", elapsed)
+	}
+	d := <-rest
+	if d.done {
+		t.Fatal("a done line after SIGTERM")
+	}
+	if total := files * 800; d.n+1 >= total {
+		t.Errorf("all %d matches were emitted: SIGTERM did not stop the run", total)
 	}
 }

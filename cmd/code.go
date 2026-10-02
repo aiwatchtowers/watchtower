@@ -28,7 +28,7 @@ func usageError(format string, args ...any) error {
 
 var codeCmd = &cobra.Command{
 	Use:   "code",
-	Short: "Code navigation for a workbench folder (symbol index)",
+	Short: "Code navigation for a workbench folder (symbol index, text search)",
 	// No config or database: the Desktop runs these per workbench.
 	PersistentPreRunE: func(*cobra.Command, []string) error { return nil },
 }
