@@ -30,13 +30,29 @@ package struct ProcessOutput: Sendable {
 /// stderr before it closes stdout blocks on that write until someone reads
 /// stderr; a parent parked on stdout EOF — or on `waitUntilExit` — first
 /// never gets there, and both sides wait forever.
+///
+/// Every blocking call (a read to EOF, the stdin write, `waitUntilExit`) runs
+/// on a thread of its own, never on a Swift-concurrency pool thread: the pool
+/// is as wide as the CPU count and does not grow when a thread blocks, so a
+/// few concurrent children (parallel tests on a 3-core CI runner) parked
+/// every pool thread in a read whose other pipe nobody could drain any more —
+/// a deadlock that also starved the tests' own deadline watchdogs. Not a GCD
+/// global queue either: those share the same CPU-wide thread budget and
+/// stalled the same way.
 package enum ProcessPipes {
-    /// Starts reading `pipe` to EOF on a detached task. Call it right after
-    /// `Process.run()` for any stream the caller does not read itself, and
-    /// await the task's value once the stream it does read is done.
+    /// Starts reading `pipe` to EOF at once, on its own thread. Call it right
+    /// after `Process.run()` for any stream the caller does not read itself,
+    /// and await the task's value once the stream it does read is done.
     package static func drain(_ pipe: Pipe) -> Task<Data, Never> {
         let handle = pipe.fileHandleForReading
-        return Task.detached { handle.readDataToEndOfFile() }
+        let read = BlockingCall { handle.readDataToEndOfFile() }
+        return Task { await read.value }
+    }
+
+    /// Runs blocking `work` on its own thread and awaits its result, leaving
+    /// the Swift-concurrency pool free meanwhile.
+    package static func offPool<T: Sendable>(_ work: @escaping @Sendable () -> T) async -> T {
+        await BlockingCall(work).value
     }
 
     /// Attaches fresh stdout/stderr pipes to a pre-configured `process`,
@@ -64,20 +80,61 @@ package enum ProcessPipes {
         let stderrRead = drain(stderrPipe)
 
         if let stdin, let inputPipe = process.standardInput as? Pipe {
-            if let data = stdin.data(using: .utf8) {
-                inputPipe.fileHandleForWriting.write(data)
+            let writer = inputPipe.fileHandleForWriting
+            let data = stdin.data(using: .utf8)
+            Thread.detachNewThread {
+                if let data { writer.write(data) }
+                writer.closeFile()
             }
-            inputPipe.fileHandleForWriting.closeFile()
         }
 
         let stdoutData = await stdoutRead.value
         let stderrData = await stderrRead.value
-        await Task.detached { process.waitUntilExit() }.value
+        await offPool { process.waitUntilExit() }
 
         return ProcessOutput(
             exitCode: process.terminationStatus,
             stdout: String(data: stdoutData, encoding: .utf8) ?? "",
             stderr: String(data: stderrData, encoding: .utf8) ?? ""
         )
+    }
+}
+
+// MARK: - BlockingCall
+
+/// One blocking call started on a thread of its own the moment it is
+/// created; its result is awaited without holding a Swift-concurrency pool
+/// thread.
+private final class BlockingCall<T: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var result: T?
+    private var waiter: CheckedContinuation<T, Never>?
+
+    init(_ work: @escaping @Sendable () -> T) {
+        Thread.detachNewThread { self.finish(work()) }
+    }
+
+    var value: T {
+        get async {
+            await withCheckedContinuation { continuation in
+                lock.lock()
+                if let result {
+                    lock.unlock()
+                    continuation.resume(returning: result)
+                } else {
+                    waiter = continuation
+                    lock.unlock()
+                }
+            }
+        }
+    }
+
+    private func finish(_ value: T) {
+        lock.lock()
+        result = value
+        let waiter = waiter
+        self.waiter = nil
+        lock.unlock()
+        waiter?.resume(returning: value)
     }
 }

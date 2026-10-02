@@ -127,4 +127,52 @@ struct ProcessPipesTests {
         #expect(trimmed.stdout == "out")
         #expect(trimmed.stderr == "err")
     }
+
+    /// The CI hang (2026-10-02): blocking reads ran on Swift-concurrency
+    /// pool threads. The pool is as wide as the CPU count and never grows,
+    /// so with most of it busy (parallel tests on a 3-core runner) one pool
+    /// thread sat in a read while the child blocked on its other, undrained
+    /// pipe. Here every pool thread but one is held, and the child fills both
+    /// pipes past the 64 KiB buffer in turn, so a run needs both drains
+    /// active at once. Everything that ends the test runs on threads of its
+    /// own (a GCD global queue starves with the pool): a regression fails on
+    /// the watchdog's exit code instead of hanging the suite.
+    @Test("run needs no free concurrency-pool threads for its blocking reads")
+    func runDoesNotBlockPoolThreads() async {
+        let process = Self.shell("printf '%300000s' '' 1>&2; printf '%300000s' ''; printf '%300000s' '' 1>&2")
+        let held = max(ProcessInfo.processInfo.activeProcessorCount - 1, 0)
+        let release = DispatchSemaphore(value: 0)
+        let started = DispatchSemaphore(value: 0)
+        let finished = DispatchSemaphore(value: 0)
+        for _ in 0..<held {
+            Task.detached {
+                started.signal()
+                release.wait()
+            }
+        }
+        // The watchdog: ends a stuck run, and always frees the held threads.
+        Thread.detachNewThread {
+            if finished.wait(timeout: .now() + 15) == .timedOut, process.isRunning { process.terminate() }
+            for _ in 0..<held { release.signal() }
+        }
+        await Self.onOwnThread { for _ in 0..<held { started.wait() } }
+
+        let output = await ProcessPipes.run(process)
+        finished.signal()
+
+        #expect(output.exitCode == 0, "the run needed a free pool thread and was killed by the watchdog")
+        #expect(output.stdout.count == 300_000)
+        #expect(output.stderr.count == 600_000)
+    }
+
+    /// Waits for blocking `work` on a thread of its own (a test-local twin of
+    /// `ProcessPipes.offPool`, so the test does not lean on the code under test).
+    private static func onOwnThread(_ work: @escaping @Sendable () -> Void) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            Thread.detachNewThread {
+                work()
+                continuation.resume()
+            }
+        }
+    }
 }
