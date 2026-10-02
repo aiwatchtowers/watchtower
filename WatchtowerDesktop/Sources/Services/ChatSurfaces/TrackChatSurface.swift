@@ -133,7 +133,7 @@ enum TrackChatSurface {
         Slack web domain: \(domain).slack.com
 
         \(Self.linkingGuidance(teamID: teamID, domain: domain))
-        """ + skillsSuffix
+        """ + skillsSuffix + "\n\n" + ChatQuestionsContract.promptBlock
     }
 
     /// LINKING RULES / RESPONSE STYLE guidance shared by buildSystemPrompt's

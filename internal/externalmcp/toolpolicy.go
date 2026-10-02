@@ -45,7 +45,7 @@ var mutatingWords = map[string]bool{
 // conjunction or a write verb.
 func IsReadOnly(t db.ExternalTool) bool {
 	if t.Annotated {
-		return t.ReadOnlyHint
+		return !IsAnnotatedWrite(t)
 	}
 	words := nameWords(t.Name)
 	if len(words) == 0 || !readVerbs[words[0]] {
@@ -83,26 +83,35 @@ func nameWords(name string) []string {
 	return words
 }
 
-// ResolveTools splits c's tools into the names the chat may call and the
-// listed names it must not (QC-02). With the owner's explicit allow list,
-// exactly those names are allowed. Otherwise only IsReadOnly tools are, and a
+// IsAnnotatedWrite reports whether t's server declared it a write: it sent
+// annotations without readOnlyHint (the MCP default is false), or with
+// destructiveHint: true. No owner allow list can admit such a tool — owner
+// decision 2026-10-02: external MCP writes stay impossible until they get an
+// Approve path (QC-02).
+func IsAnnotatedWrite(t db.ExternalTool) bool {
+	return t.Annotated && (!t.ReadOnlyHint || t.DestructiveHint)
+}
+
+// ResolveTools splits c's listed tools into the names the chat may call and
+// the names it must not (QC-02). With the owner's explicit allow list, a
+// listed tool it names is allowed unless the listing shows it annotated as a
+// write; a name the listing lacks is never allowed (only a listing shows
+// whether a tool is a write). Otherwise only IsReadOnly tools are. A
 // connection whose tools were never listed allows none (fail closed).
 func ResolveTools(c db.ExternalConnection) (allowed, denied []string) {
+	if !c.ToolsListed {
+		return nil, nil
+	}
+	ok := IsReadOnly
 	if c.AllowTools != nil {
-		allow := make(map[string]bool, len(c.AllowTools))
+		named := make(map[string]bool, len(c.AllowTools))
 		for _, name := range c.AllowTools {
-			allow[name] = true
+			named[name] = true
 		}
-		allowed = append(allowed, c.AllowTools...)
-		for _, t := range c.Tools {
-			if !allow[t.Name] {
-				denied = append(denied, t.Name)
-			}
-		}
-		return allowed, denied
+		ok = func(t db.ExternalTool) bool { return named[t.Name] && !IsAnnotatedWrite(t) }
 	}
 	for _, t := range c.Tools {
-		if IsReadOnly(t) {
+		if ok(t) {
 			allowed = append(allowed, t.Name)
 		} else {
 			denied = append(denied, t.Name)

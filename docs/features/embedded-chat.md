@@ -25,6 +25,15 @@ Every assistant chat outside the main AI Chat (target, track, idea/decision, mee
 | `ChatFeedView`, `ChatComposerBar` | `Views/Chat/` | Extracted from the main chat (follow-scroll feed, composer with a status line and an accessory slot). The main chat renders through them too. |
 | `EmbeddedChatView` / `EmbeddedChatRows` / `EmbeddedChatComposer` | `Views/Chat/Embedded/` | `ChatMessageRow` with `ChatRowActions.embedded` (Copy, plus Retry on the last failed reply) and `LiveAssistantRow`. Slots: `accessory(for:)` and `footer`. `density` is `.regular` or `.compact`. Use the rows/composer split when the chat sits inside its pane's scroll. |
 
+## Question cards (#182)
+
+A reply may end with a ```watchtower-question JSON block. The Go prompt's `QuestionsContract()` and the embedded prompts' `ChatQuestionsContract.promptBlock` carry the same text (`internal/chat/questions_contract.md`, pinned by `ChatQuestionsContractFixtureTests`). `AssistantMessageBody` renders the block as `ChatQuestionCardView`:
+- `ChatQuestionParser` reads the block. A malformed block stays plain text, and an open block is hidden while the reply streams.
+- The answers go out as the owner's next message, formatted by `ChatQuestionAnswer.format`. They can be given only on the latest reply, while nothing runs.
+- An answered card reads its selections back from that message, so nothing new is stored.
+
+See spec `docs/superpowers/specs/2026-10-02-chat-question-card-design.md`.
+
 ## Contracts
 
 - A draft-only surface never sends a `toolMode`. Only the target spec uses `.actions("target")`, and only when the provider is not ollama.

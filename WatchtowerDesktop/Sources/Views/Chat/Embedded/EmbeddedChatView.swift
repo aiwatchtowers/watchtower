@@ -92,7 +92,9 @@ struct EmbeddedChatRows<Accessory: View>: View {
             LiveAssistantRow(turn: live)
         } else {
             ChatMessageRow(item: item, isLast: item.id == engine.messages.last?.id, isEditing: false,
-                           actions: .embedded(copy: Self.copy, retry: retry(for: item)))
+                           actions: .embedded(copy: Self.copy, retry: retry(for: item),
+                                              answerQuestion: answerQuestion(for: item)),
+                           questionAnswer: ownerReply(after: item))
                 .equatable()
         }
     }
@@ -102,6 +104,22 @@ struct EmbeddedChatRows<Accessory: View>: View {
         guard engine.canRetry, !engine.isBusy, item.message.status == "error",
               item.id == engine.messages.last(where: { $0.message.isAssistant })?.id else { return nil }
         return { _ in engine.retry() }
+    }
+
+    /// A question card is answered from the latest reply only, while
+    /// nothing runs; the answer is an ordinary owner turn.
+    private func answerQuestion(for item: ChatThreadItem) -> ((String) -> Void)? {
+        let rows = engine.messages.map(\.message)
+        guard let index = rows.firstIndex(where: { $0.id == item.id }),
+              ChatQuestionThread.isAnswerable(at: index, in: rows, busy: engine.isBusy) else { return nil }
+        return { _ = engine.send($0) }
+    }
+
+    /// The owner's words right after `item` — a question card's answer.
+    private func ownerReply(after item: ChatThreadItem) -> String? {
+        let rows = engine.messages.map(\.message)
+        guard let index = rows.firstIndex(where: { $0.id == item.id }) else { return nil }
+        return ChatQuestionThread.ownerReply(after: index, in: rows)
     }
 
     private static func copy(_ text: String) {
