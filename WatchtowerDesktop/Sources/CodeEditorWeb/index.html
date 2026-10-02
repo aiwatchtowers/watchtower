@@ -3,11 +3,13 @@
   POC (code viewer): the Monaco host page, served by CodeEditorSchemeHandler
   under wtcode://editor/. Swift drives it through window.wt; the page reports
   back through webkit.messageHandlers.wt with {type: ...} messages:
-    ready                      — Monaco loaded, open() may be called
-    dirty   {dirty}            — the buffer differs (or no longer) from the last save point
-    text    {text}             — the buffer's text, debounced, so Swift keeps unsaved edits
-    save    {text}             — Cmd+S; Swift writes the file, then calls markSaved()
+    ready                      — Monaco loaded, show() may be called
+    text    {path, text, now}  — a file's text after an edit: debounced while
+                                 typing, at once (now: true on Cmd+S) on a tab
+                                 switch, a blur or Cmd+S. Swift saves it.
     error   {message}          — load failure or an uncaught script error
+  One model per open file, so each keeps its own undo stack, cursor and
+  scroll position across tab switches.
 -->
 <html>
 <head>
@@ -67,73 +69,77 @@
       renderWhitespace: "selection",
       model: null
     });
-    var savedVersion = 0;
-    var lastDirty = false;
-    var textTimer = null;
+    var models = {};      // path -> model
+    var viewStates = {};  // path -> saved cursor/scroll
+    var pending = {};     // path -> debounce timer of an unsent edit
+    var current = null;   // path on screen
 
-    function syncText() {
-      clearTimeout(textTimer);
-      textTimer = setTimeout(function () {
-        var model = editor.getModel();
-        if (model) { post({ type: "text", text: model.getValue() }); }
-      }, 300);
+    function send(path, now) {
+      clearTimeout(pending[path]);
+      delete pending[path];
+      var model = models[path];
+      if (model) { post({ type: "text", path: path, text: model.getValue(), now: !!now }); }
     }
 
-    function reportDirty() {
-      var model = editor.getModel();
-      var dirty = !!model && model.getAlternativeVersionId() !== savedVersion;
-      if (dirty !== lastDirty) {
-        lastDirty = dirty;
-        post({ type: "dirty", dirty: dirty });
-      }
+    function flush(now) {
+      Object.keys(pending).forEach(function (path) { send(path, false); });
+      if (now && current) { send(current, true); }
     }
 
-    function requestSave() {
-      var model = editor.getModel();
-      if (model) { post({ type: "save", text: model.getValue() }); }
+    function modelFor(path, text) {
+      if (models[path]) { return models[path]; }
+      var uri = monaco.Uri.file(path);
+      var stale = monaco.editor.getModel(uri);
+      if (stale) { stale.dispose(); }
+      var model = monaco.editor.createModel(text, undefined, uri);
+      model.setEOL(text.indexOf("\r\n") >= 0 ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
+      model.onDidChangeContent(function (event) {
+        if (model.__reloading) { return; }
+        clearTimeout(pending[path]);
+        pending[path] = setTimeout(function () { send(path, false); }, 300);
+      });
+      models[path] = model;
+      return model;
     }
-    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, requestSave);
+
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, function () { flush(true); });
+    window.addEventListener("blur", function () { flush(false); });
 
     window.wt = {
-      // A new file: fresh model, language picked from the path's extension.
-      // dirty = the text carries unsaved edits (the pane was re-created).
-      open: function (args) {
-        var old = editor.getModel();
-        var uri = monaco.Uri.file(args.path);
-        var existing = monaco.editor.getModel(uri);
-        if (existing) { existing.dispose(); }
-        var model = monaco.editor.createModel(args.text, undefined, uri);
-        model.setEOL(args.text.indexOf("\r\n") >= 0 ? monaco.editor.EndOfLineSequence.CRLF : monaco.editor.EndOfLineSequence.LF);
+      // Puts `path` on screen: its model when it has one (undo, cursor and
+      // scroll as left), else a new one from `text` — the buffer's text,
+      // which may carry unsaved edits from an earlier pane.
+      show: function (args) {
+        if (current === args.path && editor.getModel()) { return; }
+        flush(false);
+        if (current && models[current]) { viewStates[current] = editor.saveViewState(); }
+        var model = modelFor(args.path, args.text);
         editor.setModel(model);
-        if (old) { old.dispose(); }
-        editor.updateOptions({ readOnly: !!args.readOnly });
-        savedVersion = args.dirty ? -1 : model.getAlternativeVersionId();
-        lastDirty = !!args.dirty;
-        model.onDidChangeContent(function () { reportDirty(); syncText(); });
+        if (viewStates[args.path]) { editor.restoreViewState(viewStates[args.path]); }
+        current = args.path;
         editor.focus();
-        post({ type: "opened", language: model.getLanguageId() });
+      },
+      // The tab closed (or a preview tab was replaced): an edit still in
+      // the debounce goes out first, saved at once, then the model goes.
+      close: function (path) {
+        if (pending[path]) { send(path, true); }
+        if (models[path]) {
+          if (current === path) { editor.setModel(null); current = null; }
+          models[path].dispose();
+          delete models[path];
+        }
+        delete viewStates[path];
       },
       // The file changed on disk and the buffer was clean: replace the text
       // as one undoable edit, so the view (scroll, cursor) mostly stays.
-      reload: function (text) {
-        var model = editor.getModel();
+      reload: function (path, text) {
+        var model = models[path];
         if (!model || model.getValue() === text) { return; }
+        model.__reloading = true;
         model.pushEditOperations([], [{ range: model.getFullModelRange(), text: text }], function () { return null; });
-        savedVersion = model.getAlternativeVersionId();
-        reportDirty();
+        model.__reloading = false;
       },
-      // Swift wrote the file: this version is the new save point.
-      markSaved: function () {
-        var model = editor.getModel();
-        if (model) { savedVersion = model.getAlternativeVersionId(); }
-        reportDirty();
-      },
-      // The pane's Save button: same path as Cmd+S.
-      requestSave: requestSave,
-      currentText: function () {
-        var model = editor.getModel();
-        return model ? model.getValue() : null;
-      },
+      flush: function () { flush(false); },
       focus: function () { editor.focus(); }
     };
     post({ type: "ready" });

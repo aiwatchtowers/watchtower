@@ -297,15 +297,20 @@ final class WorkspaceLayoutTests: XCTestCase {
         XCTAssertFalse(WorkspaceView.board.matches(.documents))
     }
 
-    // POC (code viewer): a file pane round-trips through the saved layout
-    // and opens beside a terminal without displacing it.
-    func testFilePaneRoundTripsAndKeepsTheTerminal() throws {
+    // POC (code viewer): the Files pane round-trips through the saved
+    // layout, opens beside a terminal without displacing it, and is a
+    // header view like Board and Documents.
+    func testFilesPaneRoundTripsAndKeepsTheTerminal() throws {
         var l = split()
-        l.showWorkbenchView(.file("cmd/main.go"))
-        XCTAssertEqual(l.visiblePanes, [.file("cmd/main.go"), .session(1)])
-        XCTAssertEqual(WorkspaceView(.file("x")), .editor)
-        XCTAssertFalse(WorkspaceView.headerCases.contains(.editor))
-        let decoded = WorkspaceLayout.decode(try JSONEncoder().encode(l))
-        XCTAssertEqual(decoded, l)
+        l.showWorkbenchView(.files)
+        XCTAssertEqual(l.visiblePanes, [.files, .session(1)])
+        XCTAssertEqual(WorkspaceView(.files), .files)
+        XCTAssertTrue(l.isShowing(.files))
+        XCTAssertEqual(WorkspaceLayout.decode(try JSONEncoder().encode(l)), l)
+    }
+
+    func testRetiredFilePaneFallsBackToDefault() {
+        let old = Data(#"{"primary":{"file":{"_0":"a.go"}},"dividerFraction":0.5}"#.utf8)
+        XCTAssertEqual(WorkspaceLayout.decode(old), .default)
     }
 }

@@ -244,7 +244,7 @@ struct WorkbenchPageView: View {
     private var viewButtons: some View {
         let layout = vm.layout(projectID: project.id)
         return HStack(spacing: 2) {
-            ForEach(WorkspaceView.headerCases, id: \.self) { view in
+            ForEach(WorkspaceView.allCases, id: \.self) { view in
                 Toggle(isOn: Binding(
                     get: { layout.isShowing(view) },
                     set: { on in
@@ -309,7 +309,7 @@ private extension WorkspaceView {
         case .terminal: "Show the terminal (in a split, beside the other pane)"
         case .board: "Show the Board (in a split, beside the terminal)"
         case .documents: "Show the Documents (in a split, beside the terminal)"
-        case .editor: "Files open from the FILES tree in the side panel"
+        case .files: "Show the open files (in a split, beside the terminal)"
         }
     }
 }

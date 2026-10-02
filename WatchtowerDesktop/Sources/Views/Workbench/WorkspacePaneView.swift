@@ -91,6 +91,7 @@ struct WorkspacePaneView: View {
         Menu {
             Button("Board") { show(.board) }.disabled(pane == .board)
             Button("Documents") { show(.documents) }.disabled(pane == .documents)
+            Button("Files") { show(.files) }.disabled(pane == .files)
             Divider()
             Section("Sessions") {
                 ForEach(vm.orderedSessions(projectID: project.id)) { session in
@@ -117,7 +118,6 @@ struct WorkspacePaneView: View {
 
     private var title: String {
         if case let .session(id) = pane { return vm.session(id, projectID: project.id)?.title ?? "Session" }
-        if case let .file(path) = pane { return (path as NSString).lastPathComponent }
         return WorkspaceView(pane).title
     }
 
@@ -134,9 +134,9 @@ struct WorkspacePaneView: View {
         case let .session(id):
             WorkbenchSessionView(projectID: project.id, sessionID: id)
                 .id(id)
-        case let .file(path):
-            CodeFilePaneView(files: vm.codeFiles, project: project, relPath: path)
-                .id(path)
+        case .files:
+            CodeFilesPaneView(files: vm.codeFiles, project: project)
+                .id(project.id)
         }
     }
 }
@@ -241,7 +241,7 @@ extension WorkspaceView {
         case .terminal: "Terminal"
         case .board: "Board"
         case .documents: "Documents"
-        case .editor: "Editor"
+        case .files: "Files"
         }
     }
 
@@ -250,7 +250,7 @@ extension WorkspaceView {
         case .terminal: "terminal"
         case .board: "square.grid.2x2"
         case .documents: "doc.text"
-        case .editor: "chevron.left.forwardslash.chevron.right"
+        case .files: "chevron.left.forwardslash.chevron.right"
         }
     }
 }

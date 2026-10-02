@@ -22,21 +22,15 @@ struct WorkbenchFilesSection: View {
             if isExpanded { resizeHandle } else { Divider() }
             header(tree)
             if isExpanded {
-                CodeFileTreeList(tree: tree, openFiles: openFiles) { entry in
-                    vm.openFile(entry.relPath, projectID: project.id)
+                CodeFileTreeList(
+                    tree: tree, activeFile: vm.codeFiles.tabs(for: project).active, git: vm.codeFiles.git(for: project)
+                ) { entry, preview in
+                    vm.openFile(entry.relPath, project: project, preview: preview)
                 }
                 .frame(height: liveHeight ?? height)
                 .onAppear { tree.loadIfNeeded() }
             }
         }
-    }
-
-    /// The files on screen, highlighted in the tree.
-    private var openFiles: Set<String> {
-        Set(vm.layout(projectID: project.id).visiblePanes.compactMap { pane in
-            if case let .file(path) = pane { return path }
-            return nil
-        })
     }
 
     private func header(_ tree: CodeFileTree) -> some View {
@@ -114,11 +108,14 @@ struct WorkbenchFilesSection: View {
     }
 }
 
-/// The tree's visible rows: folders toggle on click, files open.
+/// The tree's visible rows: folders toggle on click; a file opens in a
+/// preview tab on a single click and in a kept tab on a double click.
+/// Uncommitted files carry their git mark, and a folder holding one a dot.
 struct CodeFileTreeList: View {
     let tree: CodeFileTree
-    let openFiles: Set<String>
-    let onOpen: (CodeFileEntry) -> Void
+    let activeFile: String?
+    let git: GitStatusSnapshot
+    let onOpen: (CodeFileEntry, _ preview: Bool) -> Void
 
     var body: some View {
         ScrollView {
@@ -127,13 +124,19 @@ struct CodeFileTreeList: View {
                     Text(error).font(.caption).foregroundStyle(.red).padding(8)
                 }
                 ForEach(tree.rows, id: \.entry.relPath) { row in
-                    CodeFileTreeRow(row: row, isOpen: openFiles.contains(row.entry.relPath), root: tree.root) {
-                        if row.entry.isDirectory {
-                            tree.toggle(row.entry.relPath)
-                        } else {
-                            onOpen(row.entry)
-                        }
-                    }
+                    let path = row.entry.relPath
+                    CodeFileTreeRow(
+                        row: row, isOpen: activeFile == path, root: tree.root,
+                        status: git.files[path], holdsChanges: row.entry.isDirectory && git.dirtyDirectories.contains(path),
+                        action: {
+                            if row.entry.isDirectory {
+                                tree.toggle(path)
+                            } else {
+                                onOpen(row.entry, true)
+                            }
+                        },
+                        keep: { if !row.entry.isDirectory { onOpen(row.entry, false) } }
+                    )
                 }
             }
             .padding(.bottom, 6)
@@ -145,7 +148,10 @@ private struct CodeFileTreeRow: View {
     let row: CodeFileTree.Row
     let isOpen: Bool
     let root: URL
+    let status: GitFileStatus?
+    let holdsChanges: Bool
     let action: () -> Void
+    let keep: () -> Void
     @State private var isHovering = false
 
     var body: some View {
@@ -167,16 +173,29 @@ private struct CodeFileTreeRow: View {
                 .frame(width: 14)
             Text(row.entry.name)
                 .font(.callout)
+                .foregroundStyle(status.map(GitMark.color) ?? .primary)
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer(minLength: 0)
+            if let status {
+                Text(status.letter)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(GitMark.color(status))
+                    .help("Not committed")
+            } else if holdsChanges {
+                Circle()
+                    .fill(Color.orange)
+                    .frame(width: 5, height: 5)
+                    .help("Holds uncommitted changes")
+            }
         }
         .padding(.leading, 10 + CGFloat(row.depth) * 12)
         .padding(.trailing, 8)
         .padding(.vertical, 2)
         .background(background)
         .contentShape(Rectangle())
-        .onTapGesture(perform: action)
+        .onTapGesture(count: 2, perform: keep)
+        .simultaneousGesture(TapGesture().onEnded(action))
         .onHover { isHovering = $0 }
         .contextMenu {
             Button("Reveal in Finder") {
