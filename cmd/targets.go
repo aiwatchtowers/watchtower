@@ -47,6 +47,7 @@ var (
 
 	// extract subcommand flags
 	targetsFlagExtractText      string
+	targetsFlagExtractTextFile  string
 	targetsFlagExtractSourceRef string
 	targetsFlagExtractFromInbox int
 	targetsFlagExtractJSON      bool
@@ -263,6 +264,7 @@ func init() {
 
 	// extract flags
 	targetsExtractCmd.Flags().StringVar(&targetsFlagExtractText, "text", "", "raw text to extract targets from")
+	targetsExtractCmd.Flags().StringVar(&targetsFlagExtractTextFile, "text-file", "", "read the raw text from this file instead of --text")
 	targetsExtractCmd.Flags().StringVar(&targetsFlagExtractSourceRef, "source-ref", "", "source reference (e.g. slack:C123:ts, inbox:42)")
 	targetsExtractCmd.Flags().IntVar(&targetsFlagExtractFromInbox, "from-inbox", 0, "load raw text from inbox item with this ID")
 	targetsExtractCmd.Flags().BoolVar(&targetsFlagExtractJSON, "json", false, "output extracted targets as JSON (non-interactive; caller is responsible for persistence)")

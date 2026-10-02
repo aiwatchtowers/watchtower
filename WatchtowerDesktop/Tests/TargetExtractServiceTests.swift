@@ -53,8 +53,9 @@ final class TargetExtractServiceTests: XCTestCase {
         XCTAssertTrue(lastArgs.contains("targets"))
         XCTAssertTrue(lastArgs.contains("extract"))
         XCTAssertTrue(lastArgs.contains("--json"))
-        XCTAssertTrue(lastArgs.contains("--text"))
-        XCTAssertTrue(lastArgs.contains("hello world"))
+        XCTAssertTrue(lastArgs.contains("--text-file"))
+        XCTAssertFalse(lastArgs.contains("hello world"), "pasted text never rides argv")
+        XCTAssertEqual(runner.textFileContents, ["hello world"])
         XCTAssertTrue(lastArgs.contains("--source-ref"))
         XCTAssertTrue(lastArgs.contains("inbox:42"))
     }

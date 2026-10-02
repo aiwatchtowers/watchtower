@@ -18,13 +18,15 @@ var (
 	meetingPrepFlagForceRefresh bool
 	meetingPrepFlagUserNotes    string
 
-	meetingExtractTopicsFlagText    string
-	meetingExtractTopicsFlagEventID string
-	meetingExtractTopicsFlagJSON    bool
+	meetingExtractTopicsFlagText     string
+	meetingExtractTopicsFlagTextFile string
+	meetingExtractTopicsFlagEventID  string
+	meetingExtractTopicsFlagJSON     bool
 
-	meetingRecapFlagEventID string
-	meetingRecapFlagText    string
-	meetingRecapFlagJSON    bool
+	meetingRecapFlagEventID  string
+	meetingRecapFlagText     string
+	meetingRecapFlagTextFile string
+	meetingRecapFlagJSON     bool
 )
 
 var meetingPrepCmd = &cobra.Command{
@@ -56,13 +58,15 @@ func init() {
 	meetingPrepCmd.Flags().StringVar(&meetingPrepFlagUserNotes, "user-notes", "", "additional context or agenda notes from the user")
 
 	meetingPrepCmd.AddCommand(meetingExtractTopicsCmd)
-	meetingExtractTopicsCmd.Flags().StringVar(&meetingExtractTopicsFlagText, "text", "", "raw text to split into topics (required)")
+	meetingExtractTopicsCmd.Flags().StringVar(&meetingExtractTopicsFlagText, "text", "", "raw text to split into topics (this or --text-file is required)")
+	meetingExtractTopicsCmd.Flags().StringVar(&meetingExtractTopicsFlagTextFile, "text-file", "", "read the text from this file instead of --text")
 	meetingExtractTopicsCmd.Flags().StringVar(&meetingExtractTopicsFlagEventID, "event-id", "", "optional event id for title context")
 	meetingExtractTopicsCmd.Flags().BoolVar(&meetingExtractTopicsFlagJSON, "json", false, "output as JSON (default format is also JSON — kept for symmetry)")
 
 	meetingPrepCmd.AddCommand(meetingRecapCmd)
 	meetingRecapCmd.Flags().StringVar(&meetingRecapFlagEventID, "event-id", "", "calendar event id (required)")
-	meetingRecapCmd.Flags().StringVar(&meetingRecapFlagText, "text", "", "raw recap text (required)")
+	meetingRecapCmd.Flags().StringVar(&meetingRecapFlagText, "text", "", "raw recap text (this or --text-file is required)")
+	meetingRecapCmd.Flags().StringVar(&meetingRecapFlagTextFile, "text-file", "", "read the recap text from this file instead of --text")
 	meetingRecapCmd.Flags().BoolVar(&meetingRecapFlagJSON, "json", true, "output as JSON (default true)")
 }
 
@@ -199,8 +203,12 @@ func runMeetingRecap(cmd *cobra.Command, _ []string) error {
 	if meetingRecapFlagEventID == "" {
 		return fmt.Errorf("--event-id is required")
 	}
-	if meetingRecapFlagText == "" {
-		return fmt.Errorf("--text is required")
+	text, err := textFlagValue(meetingRecapFlagText, meetingRecapFlagTextFile)
+	if err != nil {
+		return err
+	}
+	if text == "" {
+		return fmt.Errorf("--text or --text-file is required")
 	}
 
 	cfg, err := config.Load(flagConfig)
@@ -224,7 +232,7 @@ func runMeetingRecap(cmd *cobra.Command, _ []string) error {
 	pipe := meeting.New(database, cfg, gen, nil)
 	pipe.SetPromptStore(prompts.New(database, nil))
 
-	result, err := pipe.GenerateRecap(cmd.Context(), meetingRecapFlagEventID, meetingRecapFlagText)
+	result, err := pipe.GenerateRecap(cmd.Context(), meetingRecapFlagEventID, text)
 	if err != nil {
 		return err
 	}
@@ -234,7 +242,7 @@ func runMeetingRecap(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("marshalling recap: %w", err)
 	}
 	// The event-notes recap path has no associated transcript (0 = none).
-	if err := database.UpsertMeetingRecap(meetingRecapFlagEventID, meetingRecapFlagText, string(recapBytes), 0); err != nil {
+	if err := database.UpsertMeetingRecap(meetingRecapFlagEventID, text, string(recapBytes), 0); err != nil {
 		return fmt.Errorf("persisting recap: %w", err)
 	}
 
@@ -259,8 +267,12 @@ func runMeetingRecap(cmd *cobra.Command, _ []string) error {
 }
 
 func runMeetingExtractTopics(cmd *cobra.Command, args []string) error {
-	if meetingExtractTopicsFlagText == "" {
-		return fmt.Errorf("--text is required")
+	text, err := textFlagValue(meetingExtractTopicsFlagText, meetingExtractTopicsFlagTextFile)
+	if err != nil {
+		return err
+	}
+	if text == "" {
+		return fmt.Errorf("--text or --text-file is required")
 	}
 
 	cfg, err := config.Load(flagConfig)
@@ -291,7 +303,7 @@ func runMeetingExtractTopics(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	result, err := pipe.ExtractDiscussionTopics(cmd.Context(), meetingExtractTopicsFlagText, eventTitle)
+	result, err := pipe.ExtractDiscussionTopics(cmd.Context(), text, eventTitle)
 	if err != nil {
 		return err
 	}

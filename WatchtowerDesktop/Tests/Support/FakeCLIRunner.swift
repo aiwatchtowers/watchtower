@@ -37,8 +37,17 @@ package final class FakeCLIRunner: CLIRunnerProtocol, @unchecked Sendable {
         return recordedInvocations
     }
 
+    /// What each `--text-file` held when its call ran (`nil` when the file
+    /// was unreadable) — the file is gone once the call returns.
+    package var textFileContents: [String?] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedTextFiles
+    }
+
     private let lock = NSLock()
     private var recordedInvocations: [[String]] = []
+    private var recordedTextFiles: [String?] = []
     private var cancelWaiter: CheckedContinuation<Void, Never>?
     private var cancelled = false
 
@@ -60,8 +69,13 @@ package final class FakeCLIRunner: CLIRunnerProtocol, @unchecked Sendable {
     }
 
     private func record(_ args: [String]) {
+        var textFile: String??
+        if let flag = args.firstIndex(of: "--text-file"), args.indices.contains(flag + 1) {
+            textFile = .some(try? String(contentsOfFile: args[flag + 1], encoding: .utf8))
+        }
         lock.lock()
         recordedInvocations.append(args)
+        if let textFile { recordedTextFiles.append(textFile) }
         lock.unlock()
     }
 

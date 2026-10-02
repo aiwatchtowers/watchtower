@@ -28,6 +28,10 @@ import (
 // cmd/targets.go alongside the lifecycle commands.
 
 func runTargetsExtract(cmd *cobra.Command, _ []string) error {
+	rawText, err := textFlagValue(targetsFlagExtractText, targetsFlagExtractTextFile)
+	if err != nil {
+		return err
+	}
 	cfg, err := config.Load(flagConfig)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
@@ -45,7 +49,6 @@ func runTargetsExtract(cmd *cobra.Command, _ []string) error {
 	}
 	defer database.Close()
 
-	rawText := targetsFlagExtractText
 	sourceRef := targetsFlagExtractSourceRef
 
 	if targetsFlagExtractFromInbox > 0 {
@@ -63,7 +66,7 @@ func runTargetsExtract(cmd *cobra.Command, _ []string) error {
 	}
 
 	if rawText == "" {
-		return fmt.Errorf("--text or --from-inbox is required")
+		return fmt.Errorf("--text, --text-file or --from-inbox is required")
 	}
 
 	applyProviderOverride(cfg)

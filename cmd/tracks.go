@@ -75,9 +75,10 @@ var tracksGenerateCmd = &cobra.Command{
 }
 
 var (
-	tracksCreateFlagText   string
-	tracksCreateFlagTarget int
-	tracksScanFlagSince    string
+	tracksCreateFlagText     string
+	tracksCreateFlagTextFile string
+	tracksCreateFlagTarget   int
+	tracksScanFlagSince      string
 )
 
 var tracksCreateCmd = &cobra.Command{
@@ -131,6 +132,7 @@ func init() {
 	tracksCmd.AddCommand(tracksCreateCmd, tracksWatchCmd, tracksScanCmd,
 		tracksEventsCmd, tracksEnableCmd, tracksDisableCmd)
 	tracksCreateCmd.Flags().StringVar(&tracksCreateFlagText, "text", "", "description of what to watch")
+	tracksCreateCmd.Flags().StringVar(&tracksCreateFlagTextFile, "text-file", "", "read the description from this file instead of --text")
 	tracksCreateCmd.Flags().IntVar(&tracksCreateFlagTarget, "target", 0, "optional linked target id")
 	tracksScanCmd.Flags().StringVar(&tracksScanFlagSince, "since", "", "scan history from this ISO8601 instant")
 	tracksCmd.Flags().StringVar(&tracksFlagPriority, "priority", "", "filter by priority (high, medium, low)")
@@ -747,8 +749,12 @@ func openTracksDB() (*db.DB, error) {
 }
 
 func runTracksCreate(cmd *cobra.Command, _ []string) error {
-	if strings.TrimSpace(tracksCreateFlagText) == "" {
-		return fmt.Errorf("--text is required")
+	text, err := textFlagValue(tracksCreateFlagText, tracksCreateFlagTextFile)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(text) == "" {
+		return fmt.Errorf("--text or --text-file is required")
 	}
 	database, cfg, err := openTracksDBWithConfig()
 	if err != nil {
@@ -765,12 +771,12 @@ func runTracksCreate(cmd *cobra.Command, _ []string) error {
 	pipe := customtracks.New(database, cliGenerator(cfg), cfg.Digest.Language, nil)
 	ctx, cancel := context.WithTimeout(cmd.Context(), 120*time.Second)
 	defer cancel()
-	res, err := pipe.Compose(ctx, tracksCreateFlagTarget, tracksCreateFlagText)
+	res, err := pipe.Compose(ctx, tracksCreateFlagTarget, text)
 	if err != nil {
 		return fmt.Errorf("compose failed: %w", err)
 	}
 	id, err := database.CreateCustomTrack(db.Track{
-		AssigneeUserID: owner.ID, Text: res.Title, Context: tracksCreateFlagText,
+		AssigneeUserID: owner.ID, Text: res.Title, Context: text,
 		Instruction: res.Instruction, LinkedTargetID: tracksCreateFlagTarget,
 	})
 	if err != nil {

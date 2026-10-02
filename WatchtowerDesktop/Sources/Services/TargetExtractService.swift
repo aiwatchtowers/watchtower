@@ -18,11 +18,13 @@ struct TargetExtractService {
     let runner: CLIRunnerProtocol
 
     func extract(text: String, sourceRef: String = "") async throws -> TargetExtractResult {
-        var args = ["targets", "extract", "--json", "--text", text]
-        if !sourceRef.isEmpty {
-            args.append(contentsOf: ["--source-ref", sourceRef])
+        let data = try await CLITextFile.with(text) { path in
+            var args = ["targets", "extract", "--json", "--text-file", path]
+            if !sourceRef.isEmpty {
+                args.append(contentsOf: ["--source-ref", sourceRef])
+            }
+            return try await runner.run(args: args)
         }
-        let data = try await runner.run(args: args)
         let decoded = try JSONDecoder().decode(CLIExtractResponse.self, from: data)
 
         let proposed = decoded.extracted.map { Self.proposedFrom($0) }
