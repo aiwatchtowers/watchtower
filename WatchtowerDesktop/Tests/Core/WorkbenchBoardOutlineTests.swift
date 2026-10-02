@@ -7,16 +7,27 @@ final class WorkbenchBoardOutlineTests: XCTestCase {
 
     // Builds real Target rows through the DB so the fixture never drifts from
     // Target's own row decoding.
-    private func target(_ id: Int, _ text: String, status: String = "todo", intent: String = "") throws -> Target {
+    private func target(
+        _ id: Int, _ text: String, status: String = "todo", intent: String = "", parent: Int? = nil
+    ) throws -> Target {
         let queue = try TestDatabase.create()
         return try queue.write { db in
+            if let parent {
+                try db.execute(
+                    sql: """
+                        INSERT INTO targets (id, text, level, period_start, period_end, source_type)
+                        VALUES (?, 'parent', 'custom', '2026-09-29', '2026-09-29', 'chat')
+                        """,
+                    arguments: [parent]
+                )
+            }
             try db.execute(
                 sql: """
                     INSERT INTO targets (id, text, intent, level, custom_label, period_start, period_end,
-                        status, source_type, ownership)
-                    VALUES (?, ?, ?, 'custom', 'project', '2026-09-29', '2026-09-29', ?, 'chat', 'mine')
+                        status, source_type, ownership, parent_id)
+                    VALUES (?, ?, ?, 'custom', 'project', '2026-09-29', '2026-09-29', ?, 'chat', 'mine', ?)
                     """,
-                arguments: [id, text, intent, status]
+                arguments: [id, text, intent, status, parent]
             )
             return try XCTUnwrap(TargetQueries.fetchByID(db, id: id))
         }
@@ -110,5 +121,39 @@ final class WorkbenchBoardOutlineTests: XCTestCase {
         XCTAssertTrue(WorkbenchBoardOutline.rows(tree, collapsed: [], showDone: false, query: "#999").isEmpty)
         XCTAssertTrue(WorkbenchBoardOutline.rows(tree, collapsed: [], showDone: false, query: "#").isEmpty,
                       "a lone # is text, and no title contains it")
+    }
+
+    // MARK: - Move (board #186)
+
+    /// 1 > {2 > {3}, 4}, 5 — parent ids set as the board stores them.
+    private func moveTree() throws -> [WorkbenchBoardNode] {
+        [
+            node(try target(1, "Group"), [
+                node(try target(2, "Feature", parent: 1), [node(try target(3, "Task", parent: 2))]),
+                node(try target(4, "Other", parent: 1))
+            ]),
+            node(try target(5, "Loose"))
+        ]
+    }
+
+    func testCanMoveRefusesSelfSubtreeSameParentAndUnknownIDs() throws {
+        let tree = try moveTree()
+        XCTAssertTrue(WorkbenchBoardOutline.canMove(5, under: 2, in: tree))
+        XCTAssertTrue(WorkbenchBoardOutline.canMove(2, under: 5, in: tree), "a whole subtree moves")
+        XCTAssertFalse(WorkbenchBoardOutline.canMove(2, under: 2, in: tree), "itself")
+        XCTAssertFalse(WorkbenchBoardOutline.canMove(1, under: 3, in: tree), "its own grandchild")
+        XCTAssertFalse(WorkbenchBoardOutline.canMove(3, under: 2, in: tree), "already there")
+        XCTAssertFalse(WorkbenchBoardOutline.canMove(5, under: 99, in: tree), "a parent not on the board")
+        XCTAssertFalse(WorkbenchBoardOutline.canMove(99, under: 1, in: tree), "a target not on the board")
+        XCTAssertTrue(WorkbenchBoardOutline.canMove(3, under: nil, in: tree))
+        XCTAssertFalse(WorkbenchBoardOutline.canMove(5, under: nil, in: tree), "already at the top level")
+    }
+
+    func testMoveDestinationsLeaveOutTheSubtreeAndTheCurrentParent() throws {
+        let tree = try moveTree()
+        XCTAssertEqual(WorkbenchBoardOutline.moveDestinations(for: 2, in: tree).map(\.id), [4, 5])
+        XCTAssertEqual(WorkbenchBoardOutline.moveDestinations(for: 5, in: tree).map(\.id), [1, 2, 3, 4])
+        XCTAssertEqual(WorkbenchBoardOutline.moveDestinations(for: 5, in: tree).map(\.depth), [0, 1, 2, 1])
+        XCTAssertTrue(WorkbenchBoardOutline.moveDestinations(for: 99, in: tree).isEmpty)
     }
 }

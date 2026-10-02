@@ -203,11 +203,41 @@ enum WorkbenchTargetNumber {
     }
 }
 
-/// The context menu of a board row or kanban card.
+/// The context menu of a board row or kanban card: copy the number, and
+/// "Move to…" another target or the top level (board #186).
 struct WorkbenchTargetMenu: View {
     let target: Target
+    let vm: WorkbenchBoardViewModel
 
     var body: some View {
         Button("Copy \(WorkbenchTargetNumber.label(target.id))") { WorkbenchTargetNumber.copy(target.id) }
+        Divider()
+        Menu("Move to") {
+            ForEach(WorkbenchBoardOutline.moveDestinations(for: target.id, in: vm.roots)) { row in
+                Button(Self.destinationTitle(row)) { vm.move(target.id, under: row.id) }
+            }
+        }
+        Button("Move to Top Level") { vm.move(target.id, under: nil) }
+            .disabled(!WorkbenchBoardOutline.canMove(target.id, under: nil, in: vm.roots))
+    }
+
+    /// Indented by depth so the menu reads as the board's tree.
+    private static func destinationTitle(_ row: WorkbenchBoardRow) -> String {
+        let title = WorkbenchBoardCard.title(row.node.target.text)
+        return String(repeating: "    ", count: min(row.depth, 6))
+            + "\(WorkbenchTargetNumber.label(row.id))  \(title.isEmpty ? "Untitled" : title)"
+    }
+}
+
+/// The list's drag payload (board #186): a prefixed id, so plain text dropped
+/// from elsewhere (a number from the terminal) never moves a target.
+enum WorkbenchTargetDrag {
+    private static let prefix = "watchtower-board-target:"
+
+    static func payload(_ id: Int) -> String { prefix + String(id) }
+
+    static func targetID(_ payload: String) -> Int? {
+        guard payload.hasPrefix(prefix) else { return nil }
+        return Int(payload.dropFirst(prefix.count))
     }
 }

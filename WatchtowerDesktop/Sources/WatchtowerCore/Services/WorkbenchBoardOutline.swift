@@ -38,6 +38,26 @@ package enum WorkbenchBoardOutline {
         return nil
     }
 
+    /// Whether the board may move `targetID` under `parentID` (nil = the
+    /// top level, board #186): both on this board, the parent neither the
+    /// target nor inside its subtree, and not where it already is. The DB
+    /// write re-checks all of it (`WorkbenchQueries.moveTarget`).
+    package static func canMove(_ targetID: Int, under parentID: Int?, in roots: [WorkbenchBoardNode]) -> Bool {
+        guard let node = find(targetID, in: roots) else { return false }
+        guard let parentID else { return node.target.parentId != nil }
+        return node.target.parentId != parentID
+            && find(parentID, in: roots) != nil
+            && find(parentID, in: [node]) == nil
+    }
+
+    /// The "Move to…" menu for `targetID`: every board target it may move
+    /// under, depth-first with its depth.
+    package static func moveDestinations(for targetID: Int, in roots: [WorkbenchBoardNode]) -> [WorkbenchBoardRow] {
+        guard let node = find(targetID, in: roots) else { return [] }
+        return rows(roots, collapsed: [node.target.id], showDone: true)
+            .filter { $0.id != targetID && $0.id != node.target.parentId }
+    }
+
     private static func append(
         _ nodes: [WorkbenchBoardNode],
         depth: Int,

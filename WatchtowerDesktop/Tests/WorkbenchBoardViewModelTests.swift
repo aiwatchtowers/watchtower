@@ -295,6 +295,45 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         XCTAssertEqual(reported, [.target(leaf), .target(root), .target(mid)])
     }
 
+    // MARK: - Move (board #186)
+
+    /// A move re-rolls the old and the new parent (PROJ-05): the hook names
+    /// the moved target and both parents, the new parent is expanded, and a
+    /// move the board does not allow writes nothing.
+    func testMoveReportsBothRolledUpParentsAndExpandsTheNewOne() throws {
+        let (pid, from, to, leaf) = try dbManager.dbPool.write { db -> (Int64, Int64, Int64, Int64) in
+            let pid = try Self.insertWorkbench(db)
+            let from = try Self.insertTarget(db, project: pid, text: "From")
+            let to = try Self.insertTarget(db, project: pid, text: "To")
+            _ = try Self.insertTarget(db, project: pid, text: "Stays", parent: from, status: "done")
+            let leaf = try Self.insertTarget(db, project: pid, text: "Moves", parent: from, status: "in_progress")
+            _ = try Self.insertTarget(db, project: pid, text: "Waits", parent: to)
+            return (pid, from, to, leaf)
+        }
+        let vm = makeVM(project: pid)
+        var reported: [WorkbenchSubject] = []
+        vm.onOwnerWrite = { _, subject in reported.append(subject) }
+        vm.load()
+        vm.collapsed = [Int(to)]
+
+        XCTAssertTrue(vm.move(Int(leaf), under: Int(to)))
+
+        XCTAssertEqual(reported, [.target(leaf), .target(from), .target(to)])
+        XCTAssertFalse(vm.collapsed.contains(Int(to)))
+        let moved = try XCTUnwrap(WorkbenchBoardOutline.find(Int(leaf), in: vm.roots))
+        XCTAssertEqual(moved.target.parentId, Int(to))
+        XCTAssertEqual(WorkbenchBoardOutline.find(Int(from), in: vm.roots)?.target.status, "done")
+
+        reported = []
+        XCTAssertFalse(vm.move(Int(to), under: Int(leaf)), "under its own sub-target")
+        XCTAssertFalse(vm.move(Int(leaf), under: Int(to)), "already there")
+        XCTAssertTrue(reported.isEmpty)
+        XCTAssertNil(vm.errorMessage)
+
+        XCTAssertTrue(vm.move(Int(leaf), under: nil))
+        XCTAssertNil(WorkbenchBoardOutline.find(Int(leaf), in: vm.roots)?.target.parentId)
+    }
+
     // MARK: - Kanban drag (setStatus for a target other than the selected one)
 
     /// A kanban drop moves the dragged card, not the selected one; the hook

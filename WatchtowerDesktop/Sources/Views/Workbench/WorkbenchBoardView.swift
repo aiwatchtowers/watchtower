@@ -107,6 +107,7 @@ struct WorkbenchBoardView: View {
             } else if let kanban {
                 WorkbenchBoardKanbanView(
                     board: kanban,
+                    vm: vm,
                     selectedTargetID: vm.selectedTargetID,
                     onSelect: { vm.select($0) },
                     onMove: { vm.setStatus($1, for: $0) }
@@ -213,7 +214,13 @@ struct WorkbenchBoardView: View {
                                            isVisible: hovering || vm.selectedTargetID == row.id)
                     }
                 )
-                .contextMenu { WorkbenchTargetMenu(target: row.node.target) }
+                .contextMenu { WorkbenchTargetMenu(target: row.node.target, vm: vm) }
+                // Drop a row onto another to nest it there (board #186).
+                .draggable(WorkbenchTargetDrag.payload(row.id))
+                .dropDestination(for: String.self) { items, _ in
+                    let moved = items.compactMap(WorkbenchTargetDrag.targetID).filter { vm.move($0, under: row.id) }
+                    return !moved.isEmpty
+                }
                 .listRowSeparator(.hidden)
                 .listRowInsets(EdgeInsets(top: 3, leading: 8, bottom: 3, trailing: 8))
                 .listRowBackground(Color.clear)

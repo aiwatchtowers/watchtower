@@ -247,6 +247,8 @@ type updateTargetArgs struct {
 	Text     string   `json:"text,omitempty" jsonschema:"new title, at most 200 characters"`
 	Intent   string   `json:"intent,omitempty" jsonschema:"new intent"`
 	Priority string   `json:"priority,omitempty" jsonschema:"high | medium | low"`
+	// ParentID moves the target (board #186): nil leaves it, 0 = top level.
+	ParentID *int64 `json:"parent_id,omitempty" jsonschema:"move under this target of the workbench; 0 moves it to the top level"`
 	// AddImages / RemoveImageIDs attach and detach images (board target #117).
 	AddImages      []string `json:"add_images,omitempty" jsonschema:"absolute paths of image files (PNG, JPEG, GIF or WebP, at most 5 MB each) to attach"`
 	Branch         *string  `json:"branch,omitempty" jsonschema:"the local git branch carrying the work (e.g. feature/x, no origin/ prefix); \"\" clears it"`
@@ -265,7 +267,8 @@ func NewUpdateTarget(store workbenchfiles.Store) *Tool {
 			"dismissed; in_review while the work is being reviewed), progress (0..1), title, intent or priority (high, medium, low); " +
 			"attach images (add_images: absolute paths of PNG, JPEG, GIF or WebP files, at most 5 MB each) or detach them " +
 			"(remove_image_ids, from get_target); set the git branch / pull request carrying the work (branch, pr; " +
-			"\"\" clears one). Applied immediately.",
+			"\"\" clears one); move it under another target of this workbench (parent_id; 0 = top level — never under " +
+			"itself or one of its sub-targets). Applied immediately.",
 		InputSchema: mustSchema[updateTargetArgs]("update_target"),
 		Access:      AccessWrite,
 		Surfaces:    workbenchSurfaces,
@@ -287,6 +290,9 @@ func NewUpdateTarget(store workbenchfiles.Store) *Tool {
 			if _, err := targetInWorkbench(d, b.WorkbenchID, a.TargetID); err != nil {
 				return err
 			}
+			if err := scopeTargetMove(d, b.WorkbenchID, a); err != nil {
+				return err
+			}
 			return scopeImageIDs(d, a.TargetID, a.RemoveImageIDs)
 		},
 		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
@@ -301,7 +307,13 @@ func NewUpdateTarget(store workbenchfiles.Store) *Tool {
 
 func validateTargetUpdate(a updateTargetArgs) error {
 	if nothingToUpdate(a) {
-		return &ValidationError{Msg: "give at least one of status, progress, text, intent, priority, add_images, remove_image_ids, branch, pr"}
+		return &ValidationError{Msg: "give at least one of status, progress, text, intent, priority, parent_id, add_images, remove_image_ids, branch, pr"}
+	}
+	if a.ParentID != nil && *a.ParentID < 0 {
+		return &ValidationError{Msg: "parent_id must be a target id, or 0 for the top level"}
+	}
+	if a.ParentID != nil && *a.ParentID == a.TargetID {
+		return &ValidationError{Msg: "a target cannot be its own parent", Err: db.ErrParentCycle}
 	}
 	if err := validateImagePaths("add_images", a.AddImages); err != nil {
 		return err
@@ -322,12 +334,12 @@ func validateTargetUpdate(a updateTargetArgs) error {
 }
 
 func nothingToUpdate(a updateTargetArgs) bool {
-	return a.Status == "" && a.Progress == nil && a.Priority == "" && len(a.AddImages) == 0 && len(a.RemoveImageIDs) == 0 &&
+	return a.Status == "" && a.Progress == nil && a.Priority == "" && a.ParentID == nil && len(a.AddImages) == 0 && len(a.RemoveImageIDs) == 0 &&
 		a.Branch == nil && a.PR == nil && strings.TrimSpace(a.Text) == "" && strings.TrimSpace(a.Intent) == ""
 }
 
-// applyTargetUpdate copies add_images in, then writes title/intent and
-// priority, then status, then progress — status first because a status
+// applyTargetUpdate copies add_images in, then moves the target, writes
+// title/intent and priority, then status, then progress — status first because a status
 // change re-derives a leaf's progress — and the image rows in one
 // transaction, so a failure part-way leaves the target untouched. A detached
 // image's copy is removed once no row names it.
@@ -366,6 +378,9 @@ func applyTargetUpdate(d *db.DB, store workbenchfiles.Store, projectID int64, a 
 }
 
 func applyTargetFields(d *db.DB, tx *sql.Tx, t *db.Target, a updateTargetArgs) error {
+	if err := applyTargetMove(d, tx, t, a.ParentID); err != nil {
+		return err
+	}
 	if err := applyTargetText(d, tx, t, a); err != nil {
 		return err
 	}
@@ -386,6 +401,47 @@ func applyTargetFields(d *db.DB, tx *sql.Tx, t *db.Target, a updateTargetArgs) e
 		if err := d.SetTargetProgressTx(tx, t.ID, *a.Progress); err != nil {
 			return fmt.Errorf("updating progress: %w", err)
 		}
+	}
+	return nil
+}
+
+// scopeTargetMove refuses a parent_id outside the workbench or inside the
+// target's own subtree before anything is written; applyTargetMove re-checks
+// in the write transaction.
+func scopeTargetMove(d *db.DB, projectID int64, a updateTargetArgs) error {
+	if a.ParentID == nil || *a.ParentID == 0 {
+		return nil
+	}
+	if _, err := targetInWorkbench(d, projectID, *a.ParentID); err != nil {
+		return err
+	}
+	return cycleRefusal(d.CheckParentCycle(a.TargetID, sql.NullInt64{Int64: *a.ParentID, Valid: true}), a.TargetID, *a.ParentID)
+}
+
+// cycleRefusal turns db.ErrParentCycle into the model-facing refusal.
+func cycleRefusal(err error, targetID, parentID int64) error {
+	if errors.Is(err, db.ErrParentCycle) {
+		return &ValidationError{Msg: fmt.Sprintf("target %d cannot move under %d: that is the target itself or one of its sub-targets",
+			targetID, parentID), Err: err}
+	}
+	return err
+}
+
+// applyTargetMove re-parents the target (board #186); a cycle or a parent
+// that left the workbench since Scope is the model's error to fix.
+func applyTargetMove(d *db.DB, tx *sql.Tx, t *db.Target, parentID *int64) error {
+	if parentID == nil {
+		return nil
+	}
+	parent := sql.NullInt64{Int64: *parentID, Valid: *parentID != 0}
+	err := d.MoveWorkbenchTargetTx(tx, t.WorkbenchID.Int64, int64(t.ID), parent)
+	switch {
+	case errors.Is(err, db.ErrParentCycle):
+		return cycleRefusal(err, int64(t.ID), *parentID)
+	case errors.Is(err, db.ErrNotInWorkbench):
+		return notInWorkbench("target", *parentID)
+	case err != nil:
+		return fmt.Errorf("moving target: %w", err)
 	}
 	return nil
 }

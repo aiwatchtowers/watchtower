@@ -238,6 +238,29 @@ final class WorkbenchBoardViewModel {
         return write("change the status", target: id, alsoTouched: { rolledUp }, body)
     }
 
+    /// Nests a target under another one, or moves it to the top level when
+    /// `parentID` is nil (board #186) — the list's drag and drop and the
+    /// "Move to…" menu. A move the board does not allow (`canMove`) writes
+    /// nothing. The new parent is expanded so the moved target stays in view.
+    /// - Returns: whether the target moved (a failed write sets `errorMessage`).
+    @discardableResult
+    func move(_ id: Int, under parentID: Int?) -> Bool {
+        guard WorkbenchBoardOutline.canMove(id, under: parentID, in: roots) else { return false }
+        let pid = projectID
+        // Both the old and the new parent chain may roll up (PROJ-05); those
+        // are the owner's doing too, so they never notify.
+        var rolledUp: [Int64] = []
+        let body: (Database) throws -> Void = { db in
+            let before = try WorkbenchQueries.statuses(db, projectID: pid)
+            try WorkbenchQueries.moveTarget(db, projectID: pid, targetID: Int64(id), parentID: parentID.map(Int64.init))
+            let after = try WorkbenchQueries.statuses(db, projectID: pid)
+            rolledUp = after.filter { before[$0.key] != $0.value }.map(\.key).sorted()
+        }
+        let moved = write("move the target", target: id, alsoTouched: { rolledUp }, body)
+        if moved, let parentID { collapsed.remove(parentID) }
+        return moved
+    }
+
     func setPriority(_ priority: String) {
         guard let id = selectedTargetID, WorkbenchBoardCard.editablePriorities.contains(priority) else { return }
         write("change the priority") { db in try TargetQueries.updatePriority(db, id: id, priority: priority) }

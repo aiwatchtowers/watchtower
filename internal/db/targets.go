@@ -160,6 +160,13 @@ func (db *DB) UpdateTarget(t Target) error {
 	// Capture old parent before mutating.
 	var oldParentID sql.NullInt64
 	_ = db.QueryRow(`SELECT parent_id FROM targets WHERE id = ?`, t.ID).Scan(&oldParentID)
+	// Only a parent change is checked, so a row already in a cycle can still
+	// be edited.
+	if t.ParentID.Valid && t.ParentID != oldParentID {
+		if err := checkParentCycle(db, int64(t.ID), t.ParentID); err != nil {
+			return err
+		}
+	}
 
 	// Derive progress from status (applied when target has no non-dismissed children).
 	progress := statusToProgress(t.Status)
