@@ -2,8 +2,11 @@ import GRDB
 
 package enum AgentActionQueries {
     /// NULL-safe filter shared by every strip/badge reader: a project's
-    /// direct-apply audit rows are not owner decisions (STRIP-01).
-    private static let notProjectRow = "context_type IS NOT 'project'"
+    /// direct-apply audit rows are not owner decisions (STRIP-01). An External
+    /// project row is the exception — DEV-06 refuses every External tool
+    /// inline, so it is a propose-only proposal (a Slack send from the project
+    /// terminal) that waits for the owner's Approve here.
+    private static let notProjectRow = "(context_type IS NOT 'project' OR external = 1)"
 
     /// Every proposal of one conversation, oldest first — the feed's
     /// observation query.
@@ -54,7 +57,8 @@ package enum AgentActionQueries {
     ///
     /// Project rows (`context_type = 'project'`) are the audit trail of the
     /// project agent's direct MCP writes, never an owner gesture, so they
-    /// stay off the strip (STRIP-01).
+    /// stay off the strip (STRIP-01) — except an External one, which is a
+    /// proposal awaiting the owner (`notProjectRow`).
     package static func fetchStrip(_ db: Database, terminalSince: String) throws -> [AgentAction] {
         try AgentAction.fetchAll(db, sql: """
             SELECT * FROM agent_actions

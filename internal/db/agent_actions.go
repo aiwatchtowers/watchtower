@@ -169,6 +169,24 @@ func (db *DB) TransitionAgentAction(id int64, from []string, to, resultJSON, err
 	return n > 0, nil
 }
 
+// ApproveAgentActionWithArgs approves a pending row and replaces its args in
+// one conditional UPDATE: it lands only while the row is still pending AND
+// still holds oldArgs, so an owner edit can never overwrite a decision or
+// another edit that landed first. False means the row moved on (or is gone).
+func (db *DB) ApproveAgentActionWithArgs(id int64, oldArgs, newArgs string) (bool, error) {
+	now := time.Now().UTC().Format("2006-01-02T15:04:05Z")
+	res, err := db.Exec(`UPDATE agent_actions SET status = 'approved', args_json = ?, decided_at = ?
+		WHERE id = ? AND status = 'pending' AND args_json = ?`, newArgs, now, id, oldArgs)
+	if err != nil {
+		return false, fmt.Errorf("approving agent action %d with edits: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("approving agent action %d with edits: %w", id, err)
+	}
+	return n > 0, nil
+}
+
 // GetToolTrust returns "ask" when no row exists.
 func (db *DB) GetToolTrust(tool string) (string, error) {
 	var trust string

@@ -165,7 +165,8 @@ CREATE TABLE jira_boards (
 
 === HOW TO REACH JIRA DATA ===
 list_jira_issues filters by project, status, or assignee account id; get_jira_issue fetches one issue by key
-with its full fields. The tables above are reference for what those fields mean — you cannot query them directly.
+with its full fields. get_jira_status_history returns an issue's status/assignee changes; get_jira_time_in_status
+sums time in status per assignee over a period (wall-clock time in a status, not hours worked). The tables above are reference for what those fields mean — you cannot query them directly.
 
 Notes:
 - assignee_slack_id links directly to users.id when available

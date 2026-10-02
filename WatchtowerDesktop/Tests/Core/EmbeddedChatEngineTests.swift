@@ -314,6 +314,117 @@ final class EmbeddedChatEngineTests: XCTestCase {
         XCTAssertNotNil(engine.bannerError)
     }
 
+    /// Actions applied for a reply that then cannot be saved are named in
+    /// the error, which can be retried; the row is marked failed when the
+    /// second write goes through.
+    func testAnUnsavedReplyNamesWhatWasAlreadyApplied() async throws {
+        let store = FlakyStore()
+        let change = ChatAppliedChange(key: "k1", summary: "set status to done")
+        var outcome: EmbeddedChatEngine.TurnOutcome?
+        var handedBack: [[ChatAppliedChange]] = []
+        let engine = makeEngine(spec: spec { input in
+            handedBack.append(input.alreadyApplied)
+            return ChatPostTurnResult(displayText: input.reply, applied: input.alreadyApplied.isEmpty ? [change] : [])
+        }, store: store)
+        engine.onTurnFinished = { outcome = $0 }
+        engine.send("mark it done")
+        store.failFinalizeOnce = true
+        ai.emit(.text("Done."))
+        ai.finish()
+        expectTrue(await waitIdle(engine))
+        guard case .failed(_, let message) = outcome else { return XCTFail("\(String(describing: outcome))") }
+        XCTAssertTrue(message.contains("Already applied: set status to done"))
+        XCTAssertTrue(message.contains("Retry won't apply them again"))
+        XCTAssertTrue(engine.canRetry)
+        XCTAssertEqual(engine.messages.last?.message.status, "error", "the second write marked the row")
+        XCTAssertEqual(engine.bannerError, message)
+
+        // Retry hands the applied change back to the surface.
+        engine.retry()
+        ai.emit(.text("Done."), call: 1)
+        ai.finish(call: 1)
+        expectTrue(await waitIdle(engine))
+        XCTAssertEqual(handedBack, [[], [change]])
+    }
+
+    /// A Retry whose reply also cannot be saved keeps the first attempt's
+    /// changes even when it did not propose them again.
+    func testASecondUnsavedReplyStillCarriesTheFirstAttemptsChanges() async throws {
+        let store = FlakyStore()
+        let first = ChatAppliedChange(key: "k1", summary: "added x")
+        let second = ChatAppliedChange(key: "k2", summary: "set due")
+        var outcome: EmbeddedChatEngine.TurnOutcome?
+        var handedBack: [[ChatAppliedChange]] = []
+        let engine = makeEngine(spec: spec { input in
+            handedBack.append(input.alreadyApplied)
+            return ChatPostTurnResult(displayText: input.reply, applied: input.alreadyApplied.isEmpty ? [first] : [second])
+        }, store: store)
+        engine.onTurnFinished = { outcome = $0 }
+        engine.send("do it")
+        store.failFinalizeOnce = true
+        ai.emit(.text("Done."))
+        ai.finish()
+        expectTrue(await waitIdle(engine))
+
+        engine.retry()
+        store.failFinalizeOnce = true
+        ai.emit(.text("Done."), call: 1)
+        ai.finish(call: 1)
+        expectTrue(await waitIdle(engine))
+        guard case .failed(_, let message) = outcome else { return XCTFail("\(String(describing: outcome))") }
+        XCTAssertTrue(message.contains("Already applied: added x; set due"), message)
+
+        engine.retry()
+        ai.emit(.text("Done."), call: 2)
+        ai.finish(call: 2)
+        expectTrue(await waitIdle(engine))
+        XCTAssertEqual(handedBack, [[], [first], [first, second]])
+    }
+
+    /// Only a Retry carries the list: the owner's next message after a
+    /// failed turn is a new turn with nothing already applied.
+    func testANewOwnerTurnAfterAnUnsavedReplyCarriesNothingApplied() async throws {
+        let store = FlakyStore()
+        var handedBack: [[ChatAppliedChange]] = []
+        let engine = makeEngine(spec: spec { input in
+            handedBack.append(input.alreadyApplied)
+            return ChatPostTurnResult(displayText: input.reply, applied: [ChatAppliedChange(key: "k", summary: "s")])
+        }, store: store)
+        engine.send("first")
+        store.failFinalizeOnce = true
+        ai.emit(.text("Done."))
+        ai.finish()
+        expectTrue(await waitIdle(engine))
+        XCTAssertTrue(engine.canRetry)
+
+        engine.send("something else")
+        ai.emit(.text("ok"), call: 1)
+        ai.finish(call: 1)
+        expectTrue(await waitIdle(engine))
+        XCTAssertEqual(handedBack.map(\.count), [0, 0])
+    }
+
+    /// The error row could not be written either: it stays `partial` on
+    /// disk, and the message says Retry exists only in this session.
+    func testAnUnsavedReplyThatCannotBeMarkedFailedSaysSo() async throws {
+        let store = FlakyStore()
+        var outcome: EmbeddedChatEngine.TurnOutcome?
+        let engine = makeEngine(spec: spec {
+            ChatPostTurnResult(displayText: $0.reply, applied: [ChatAppliedChange(key: "k", summary: "added x")])
+        }, store: store)
+        engine.onTurnFinished = { outcome = $0 }
+        engine.send("add x")
+        store.failFinalize = true
+        ai.emit(.text("Done."))
+        ai.finish()
+        expectTrue(await waitIdle(engine))
+        guard case .failed(_, let message) = outcome else { return XCTFail("\(String(describing: outcome))") }
+        XCTAssertTrue(message.contains("Already applied: added x"))
+        XCTAssertTrue(message.contains("retry now"), message)
+        XCTAssertTrue(engine.canRetry)
+        XCTAssertEqual(engine.bannerError, message)
+    }
+
     func testASessionIDThatCannotBeSavedFailsTheTurn() async throws {
         let store = FlakyStore()
         store.failSession = true
@@ -686,6 +797,8 @@ private final class FlakyStore: EmbeddedChatStore {
     var failBegin = false
     var failProgress = false
     var failFinalize = false
+    /// Fails the next finalize only (a transient lock).
+    var failFinalizeOnce = false
     var failSession = false
     var failAppend = false
 
@@ -713,6 +826,10 @@ private final class FlakyStore: EmbeddedChatStore {
 
     func finalize(messageID: Int64, text: String, status: String, errorCode: String?, errorMessage: String?) throws {
         if failFinalize { throw Failure() }
+        if failFinalizeOnce {
+            failFinalizeOnce = false
+            throw Failure()
+        }
         try base.finalize(messageID: messageID, text: text, status: status, errorCode: errorCode, errorMessage: errorMessage)
     }
 

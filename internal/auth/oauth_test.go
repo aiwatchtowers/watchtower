@@ -433,6 +433,7 @@ func TestComplete_HappyPath(t *testing.T) {
 			AuthedUser: slack.OAuthV2ResponseAuthedUser{
 				ID:          "U111",
 				AccessToken: "xoxp-complete-token",
+				Scope:       "channels:read,chat:write",
 			},
 			Team: slack.OAuthV2ResponseTeam{ID: "T111", Name: "Complete Team"},
 		}, nil
@@ -446,6 +447,7 @@ func TestComplete_HappyPath(t *testing.T) {
 	assert.Equal(t, "T111", result.TeamID)
 	assert.Equal(t, "Complete Team", result.TeamName)
 	assert.Equal(t, "U111", result.UserID)
+	assert.Equal(t, "channels:read,chat:write", result.Scope, "the granted scopes are carried for the token file")
 }
 
 func TestComplete_EmptyCode(t *testing.T) {
@@ -801,6 +803,7 @@ func TestUserScopes(t *testing.T) {
 	assert.Contains(t, UserScopes, "search:read")
 	assert.Contains(t, UserScopes, "users:read")
 	assert.Contains(t, UserScopes, "team:read")
+	assert.Contains(t, UserScopes, "chat:write", "send_slack_message posts with the user token")
 	assert.Greater(t, len(UserScopes), 10)
 }
 

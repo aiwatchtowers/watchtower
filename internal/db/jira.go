@@ -295,6 +295,17 @@ func (db *DB) UpsertJiraIssueBatch(issues []JiraIssue, links []JiraIssueLink) er
 		}
 	}
 
+	// Each issue's link set is replaced, not merged: a link removed in Jira
+	// changes the issue's updated time, so the issue comes back with its
+	// current links, and a stale row would otherwise live forever (and keep
+	// feeding the linked-issue history sync). A link shared by two synced
+	// issues is stored once, owned by whichever side was written last.
+	for i := range issues {
+		if _, err := tx.Exec(`DELETE FROM jira_issue_links WHERE account_id = ? AND source_key = ?`,
+			issues[i].AccountID, issues[i].Key); err != nil {
+			return fmt.Errorf("clearing links of jira issue %s: %w", issues[i].Key, err)
+		}
+	}
 	for i := range links {
 		link := &links[i]
 		_, err := tx.Exec(`INSERT INTO jira_issue_links (account_id, id, source_key, target_key, link_type, synced_at)

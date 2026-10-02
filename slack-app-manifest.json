@@ -33,7 +33,8 @@
         "users:read.email",
         "files:read",
         "reactions:read",
-        "team:read"
+        "team:read",
+        "chat:write"
       ]
     }
   },

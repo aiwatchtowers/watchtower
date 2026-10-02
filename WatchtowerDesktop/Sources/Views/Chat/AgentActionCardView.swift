@@ -19,6 +19,22 @@ struct AgentActionCardView: View {
     /// hides the in-app "Open" button; a web destination (a created Jira
     /// issue) still links, since opening a browser needs no navigation.
     var onOpen: ((AgentActionDestination) -> Void)?
+    /// Approve with the owner's card edits (`actions approve --patch`), for a
+    /// tool whose card is editable (send_slack_message). Nil = the card offers
+    /// no edits and Approve runs `onApprove`.
+    var onApproveEdited: ((String) -> Void)?
+    /// Re-consents a Slack account whose token lacks the send grant
+    /// (`SlackSendProposal.reconnectAccountID`) and returns why it failed, nil
+    /// on success. Nil hides the button.
+    var onReconnectSlack: ((Int64) async -> String?)?
+
+    /// The pending Slack send's edited text (nil = untouched) and workspace pick.
+    @State private var slackDraft: String?
+    @State private var slackPick: Int?
+    /// The card's own Slack gestures: an edit that could not be encoded, and
+    /// the outcome of Reconnect Slack (shown here, not only in Settings).
+    @State private var slackMessage: String?
+    @State private var reconnecting = false
 
     /// The shared human name (`ReactionToolCatalog`) — the same words the
     /// Inbox cheat sheet and the Settings reaction dictionary use.
@@ -47,7 +63,7 @@ struct AgentActionCardView: View {
             // The Confluence edit first: its args carry the whole new page
             // storage, and every other branch would decode them per render.
             return confluenceEditSummaryLines(for: action) ?? waveTwoSummaryLines(for: action)
-                ?? jiraIssueWriteSummaryLines(for: action) ?? [action.argsJSON]
+                ?? jiraIssueWriteSummaryLines(for: action) ?? slackSummaryLines(for: action) ?? [action.argsJSON]
         }
     }
 
@@ -125,6 +141,42 @@ struct AgentActionCardView: View {
         }
     }
 
+    /// The Slack send this card may edit: only where the host wired
+    /// `onApproveEdited` (the main chat and the Inbox strip).
+    private var editableSlack: SlackSendProposal? {
+        onApproveEdited == nil ? nil : SlackSendProposal(action: action)
+    }
+
+    /// The summary, minus the Slack text while the editor shows it.
+    private var displayLines: [String] {
+        if action.isPending, let slack = editableSlack { return [slack.recipientLine] }
+        return Self.summaryLines(for: action)
+    }
+
+    /// After a sign-in that reported no error — which a cancelled one does
+    /// not either, and a grant Slack still refused send for neither.
+    static let reconnectDoneNote = "Sign-in closed. Press Retry — if sending is still refused, Slack has not "
+        + "allowed it for this workspace yet (its app settings or admin must)."
+
+    /// The owner's edits travel with the approval; no edits is a plain
+    /// approve. An edit that cannot be encoded is reported, never dropped
+    /// for the original draft.
+    private func approveSlack(_ slack: SlackSendProposal, text: String) {
+        do {
+            switch try slack.approval(text: text, pick: slackPick) {
+            case .edited(let patch): onApproveEdited?(patch)
+            case .plain: onApprove()
+            }
+            slackMessage = nil
+        } catch {
+            slackMessage = "Could not save your edits: \(error.localizedDescription)"
+        }
+    }
+
+    private func slackTextBinding(_ slack: SlackSendProposal) -> Binding<String> {
+        Binding(get: { slackDraft ?? slack.text }, set: { slackDraft = $0 })
+    }
+
     private var statusLabel: String {
         switch action.status {
         case "pending": return "Awaiting your approval"
@@ -140,11 +192,15 @@ struct AgentActionCardView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             header
-            ForEach(Self.summaryLines(for: action), id: \.self) { line in
+            ForEach(displayLines, id: \.self) { line in
                 Text(line).font(.callout).fixedSize(horizontal: false, vertical: true)
             }
             if let edit = Self.confluenceEdit(for: action) {
                 ConfluenceEditChangesView(edit: edit)
+            }
+            if action.isPending, let slack = editableSlack {
+                SlackSendEditor(proposal: slack, text: slackTextBinding(slack), pick: $slackPick)
+                    .disabled(inFlight)
             }
             if !action.reason.isEmpty {
                 Text(action.reason).font(.caption).foregroundStyle(.secondary).italic()
@@ -166,8 +222,30 @@ struct AgentActionCardView: View {
             // one provably never reached Jira. (A Confluence edit is version-
             // checked, so its note says why a retry cannot double-write.)
             if action.status == "failed", action.external {
-                Text(Self.retryNote(for: action))
+                Text(action.tool == SlackSendProposal.tool ? Self.slackRetryNote() : Self.retryNote(for: action))
                     .font(.caption).foregroundStyle(.orange)
+            }
+            if let accountID = SlackSendProposal.reconnectAccountID(action), let onReconnectSlack {
+                HStack(spacing: 8) {
+                    Button("Reconnect Slack") {
+                        Task {
+                            reconnecting = true
+                            let failure = await onReconnectSlack(accountID)
+                            reconnecting = false
+                            slackMessage = failure.map { "Reconnect failed: \($0)" } ?? Self.reconnectDoneNote
+                        }
+                    }
+                    .disabled(reconnecting)
+                    .help("Sign in to Slack again to grant Watchtower permission to send, then Retry")
+                    .accessibilityIdentifier("agentAction.reconnectSlack")
+                    if reconnecting { ProgressView().controlSize(.small) }
+                }
+            }
+            if let slackMessage {
+                Text(slackMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("agentAction.slackMessage")
             }
             actions
         }
@@ -264,7 +342,14 @@ struct AgentActionCardView: View {
                 ProgressView().controlSize(.small)
             } else {
                 if action.isPending {
-                    if Self.canApprove(action) {
+                    if let slack = editableSlack {
+                        let text = slackDraft ?? slack.text
+                        Button(gestureError?.isApprove == true ? "Retry" : "Approve & send") {
+                            approveSlack(slack, text: text)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!slack.canApprove(text: text, pick: slackPick))
+                    } else if Self.canApprove(action) {
                         Button(gestureError?.isApprove == true ? "Retry" : "Approve", action: onApprove)
                             .buttonStyle(.borderedProminent)
                     }

@@ -330,7 +330,7 @@ func saveAuthResult(cmd *cobra.Command, result *auth.OAuthResult) (*authResultIn
 		isNewRow = true
 	}
 
-	if _, err := connectSlackAccount(cmd.Context(), cfg, database, id, result.AccessToken, isNewRow, cmd.ErrOrStderr()); err != nil {
+	if _, err := connectSlackAccount(cmd.Context(), cfg, database, id, result, isNewRow, cmd.ErrOrStderr()); err != nil {
 		return nil, err
 	}
 

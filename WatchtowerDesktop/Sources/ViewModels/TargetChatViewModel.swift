@@ -311,7 +311,12 @@ final class TargetChatViewModel {
                 + "\(Self.taskActionsContract)\n\n"
                 + "\(toolsAvailable ? AgentToolsContract.promptBlock(surface: .target) : "")\n\n\(input.text)"
             : input.text
-        return outcomes.map { "\($0)\n\n\(base)" } ?? base
+        let prompt = outcomes.map { "\($0)\n\n\(base)" } ?? base
+        // A Retry of a turn whose reply was lost after its writes landed.
+        guard !input.alreadyApplied.isEmpty else { return prompt }
+        let done = input.alreadyApplied.map { "- \($0.summary)" }.joined(separator: "\n")
+        return "Your previous attempt at this turn already applied these changes (do NOT apply them again):\n"
+            + "\(done)\n\n\(prompt)"
     }
 
     // MARK: - Commands
@@ -400,6 +405,9 @@ final class TargetChatViewModel {
 
         let assistantMessageID = UUID(chatRowID: input.messageID)
         var appliedSummaries: [String] = []
+        // Recognised from the failed attempt this Retry re-runs, or written now.
+        var appliedChanges: [ChatAppliedChange] = []
+        var alreadyApplied = input.alreadyApplied
         var failedSummaries: [String] = []
         var heldForApproval = 0
         for action in parsed.actions {
@@ -410,8 +418,15 @@ final class TargetChatViewModel {
                 heldForApproval += 1
             }
             guard action.autoApplies(inChatFor: target.id) else { continue }
+            let key = action.changeKey
+            if let done = alreadyApplied.firstIndex(where: { $0.key == key }) {
+                appliedChanges.append(alreadyApplied.remove(at: done))
+                actionCards[actionCards.count - 1].state = .applied("already applied before the retry")
+                continue
+            }
             switch applyAction(action, cardIndex: actionCards.count - 1) {
             case .success(let summary):
+                appliedChanges.append(ChatAppliedChange(key: key, summary: summary))
                 appliedSummaries.append(summary)
             case .failure(let error):
                 failedSummaries.append("\(action.type.rawValue): \(error.localizedDescription)")
@@ -450,7 +465,7 @@ final class TargetChatViewModel {
         for err in parsed.errors {
             systemMessages.append("⚠️ Invalid action proposal: \(err)")
         }
-        return ChatPostTurnResult(displayText: displayText, notices: systemMessages)
+        return ChatPostTurnResult(displayText: displayText, notices: systemMessages, applied: appliedChanges)
     }
 
     /// Feed a follow-up turn back into the conversation. The text is shown as a

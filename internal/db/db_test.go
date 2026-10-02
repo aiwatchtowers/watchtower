@@ -183,6 +183,7 @@ func TestAllTablesExist(t *testing.T) {
 		"memory_provenance", "memory_digest_shadow", "memory_retrieve_shadow",
 		"memory_focus_matches", "memory_step_state", "memory_extract_failures",
 		"ideas", "idea_mentions", "stream_digests", "jira_comments",
+		"jira_issue_changelog", "jira_changelog_sync", "jira_linked_issues",
 		"catchup_recaps",
 		"agent_actions", "tool_trust",
 		"reaction_command_map", "reaction_commands", "reminders",

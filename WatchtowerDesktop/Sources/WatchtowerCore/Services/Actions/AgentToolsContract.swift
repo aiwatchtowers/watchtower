@@ -19,7 +19,10 @@ package enum AgentToolsContract {
         case .main: tools = mainTools
         case .target: tools = targetTools
         }
-        var text = (header + tools + rules).joined(separator: "\n")
+        let surfaceRules = surface == .main
+            ? Array(rules.dropLast()) + [slackSendRule] + [rules[rules.count - 1]]
+            : rules
+        var text = (header + tools + surfaceRules).joined(separator: "\n")
         if surface == .target {
             text += "\n\n" + targetCoexistence
         }
@@ -56,8 +59,15 @@ package enum AgentToolsContract {
         "- create_track — propose a track that follows a topic over time.",
         "- create_idea — capture an idea in the owner's ideas registry.",
         "- remind_me — set a reminder that resurfaces in the Inbox at a chosen time; pass message_ref when it is "
-            + "about one Slack message."
+            + "about one Slack message.",
+        "- send_slack_message — propose a Slack message sent as the owner to a channel, a thread (pass a message "
+            + "link), or a person (DM)."
     ]
+
+    /// The main surface's Slack send rule, placed before the closing get_action line.
+    private static let slackSendRule = "- To write to Slack, call get_writing_style FIRST and draft the message in "
+        + "the owner's own voice: their language, their tone for this audience, short, no facts you were not given. "
+        + "Mention people as <@USER_ID>. The owner sees the text on the card and may edit it before approving."
 
     private static let targetTools = ["- create_jira_issue — propose a Jira issue on a connected site."]
         + jiraIssueWriteTools + confluenceWriteTools

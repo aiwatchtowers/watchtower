@@ -13,6 +13,7 @@ private struct QuoteTarget: Identifiable {
 /// `LiveAssistantRow` alone.
 struct ChatThreadView: View {
     @Bindable var chatVM: ChatViewModel
+    @Environment(AppState.self) private var appState
     let ownerName: String
 
     /// The answer being quoted ("Quote in reply"); nil = no sheet.
@@ -69,7 +70,7 @@ struct ChatThreadView: View {
         let rows = chatVM.thread.map(\.message)
         if let index = rows.firstIndex(where: { $0.id == item.id }),
            ChatQuestionThread.isAnswerable(at: index, in: rows, busy: chatVM.isStreaming) {
-            actions.answerQuestion = { _ = chatVM.send(text: $0) }
+            actions.answerQuestion = { _ = chatVM.send(text: $0, keepsComposer: true) }
         }
         return actions
     }
@@ -161,7 +162,9 @@ struct ChatThreadView: View {
             onApprove: { Task { await chatVM.actionFeed.approve(action.id) } },
             onReject: { Task { await chatVM.actionFeed.reject(action.id) } },
             onRetry: { Task { await chatVM.actionFeed.retry(action.id) } },
-            gestureError: chatVM.actionFeed.rowErrors[action.id]
+            gestureError: chatVM.actionFeed.rowErrors[action.id],
+            onApproveEdited: { patch in Task { await chatVM.actionFeed.approve(action.id, patch: patch) } },
+            onReconnectSlack: { id in await appState.reconnectSlack(accountID: id) }
         )
     }
 }

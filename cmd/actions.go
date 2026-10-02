@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -21,6 +22,7 @@ var (
 	actionsFlagConversation int64
 	actionsFlagSurface      string
 	actionsFlagForce        bool
+	actionsFlagPatch        string
 )
 
 // externalRetryWarning is what the card shows on a failed external row, said
@@ -28,6 +30,10 @@ var (
 // An external retry re-sends the request; only the owner can tell whether the
 // first attempt got through before it failed.
 const externalRetryWarning = "Retrying re-sends the request — check Jira for a duplicate first."
+
+// slackRetryWarning: a Slack send's retry first looks for the message the
+// failed attempt may have posted, and re-posts only when it finds none.
+const slackRetryWarning = "Retrying first checks whether the message already reached Slack and posts it only if it did not."
 
 var actionsCmd = &cobra.Command{
 	Use:   "actions",
@@ -54,6 +60,8 @@ func init() {
 	actionsCmd.AddCommand(actionsTrustCmd)
 	actionsApplyCmd.Flags().BoolVar(&actionsFlagForce, "force", false,
 		"reclaim a row stranded in 'executing' by an interrupted apply")
+	actionsApproveCmd.Flags().StringVar(&actionsFlagPatch, "patch", "",
+		"the owner's edits as a JSON object, merged into the pending row before it is approved (e.g. a Slack message's text)")
 	actionsListCmd.Flags().StringVar(&actionsFlagStatus, "status", "", "filter by status")
 	actionsListCmd.Flags().Int64Var(&actionsFlagConversation, "conversation", 0, "filter by chat conversation id")
 	actionsToolsCmd.Flags().StringVar(&actionsFlagSurface, "surface", "", "filter by chat surface (main|target)")
@@ -232,6 +240,9 @@ func prepareApply(database *db.DB, id int64) (string, error) {
 	// A row that never reached `executing` provably never ran the tool, so
 	// only a failed one can have left a half-finished external write behind.
 	if row.External && row.Status == "failed" {
+		if row.Tool == "send_slack_message" {
+			return slackRetryWarning, nil
+		}
 		return externalRetryWarning, nil
 	}
 	return "", nil
@@ -254,7 +265,7 @@ func decideAndMaybeApply(cmd *cobra.Command, idArg string, from []string, to str
 	env := actionEnvelope{OK: true}
 	switch {
 	case to != "":
-		ok, err := database.TransitionAgentAction(id, from, to, "", "")
+		ok, err := decide(reg, database, id, from, to)
 		if err != nil {
 			return err
 		}
@@ -312,6 +323,20 @@ func decideAndMaybeApply(cmd *cobra.Command, idArg string, from []string, to str
 		fmt.Fprintf(cmd.OutOrStdout(), "  warning: %s\n", env.Warning)
 	}
 	return nil
+}
+
+// decide records the owner's decision. An approval goes through the
+// registry, which merges --patch and checks the tool is ready to run; a
+// rejection is the plain conditional transition.
+func decide(reg *tools.Registry, database *db.DB, id int64, from []string, to string) (bool, error) {
+	if to != "approved" {
+		return database.TransitionAgentAction(id, from, to, "", "")
+	}
+	ok, err := reg.Approve(context.Background(), id, json.RawMessage(actionsFlagPatch))
+	if errors.Is(err, tools.ErrNotFound) {
+		return false, nil // reported below as "no action #N", like any other miss
+	}
+	return ok, err
 }
 
 func runActionsApprove(cmd *cobra.Command, args []string) error {

@@ -217,6 +217,10 @@ type JiraConfig struct {
 	SyncIntervalMins int                `mapstructure:"sync_interval_mins"`
 	UserMap          map[string]string  `mapstructure:"user_map"`
 	Features         JiraFeatureToggles `mapstructure:"features"`
+
+	// ChangelogIssuesPerSync caps the issues whose status/assignee history
+	// one sync pass fetches per account (0 disables history sync).
+	ChangelogIssuesPerSync int `mapstructure:"changelog_issues_per_sync"`
 }
 
 // AnalysisConfig holds settings for the people analysis pipeline.
@@ -475,6 +479,7 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("imap.max_body_bytes", DefaultImapMaxBodyBytes)
 	v.SetDefault("jira.enabled", DefaultJiraEnabled)
 	v.SetDefault("jira.sync_interval_mins", DefaultJiraSyncIntervalMins)
+	v.SetDefault("jira.changelog_issues_per_sync", DefaultJiraChangelogIssuesPerSync)
 	setJiraFeatureDefaults(v)
 	v.SetDefault("day_plan.enabled", DefaultDayPlanEnabled)
 	v.SetDefault("day_plan.hour", DefaultDayPlanHour)
