@@ -142,7 +142,9 @@ struct ProcessPipesTests {
         // deadline still fired. `wait` keeps the trap live while the sleeper
         // runs in the background off the pipes; the handler reaps it.
         let process = Self.shell("trap 'kill $!; exit 0' TERM; /bin/sleep 30 >/dev/null 2>&1 & wait")
-        let (output, timedOut) = await ProcessPipes.run(process, timeout: .milliseconds(300))
+        // A full second: the shell must have set its trap before the deadline
+        // even on a loaded CI runner.
+        let (output, timedOut) = await ProcessPipes.run(process, timeout: .seconds(1))
         #expect(timedOut)
         #expect(output.exitCode == 0)
     }
