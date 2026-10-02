@@ -733,6 +733,28 @@ struct MeetingPrepResultTests {
         #expect(result.suggestedPrep[0] == "Review track #42")
     }
 
+    @Test("Missing or null arrays decode as empty, not a parse failure")
+    func decodeMissingAndNullArrays() throws {
+        let json = """
+            {
+                "event_id": "solo1",
+                "title": "Focus block",
+                "start_time": "2026-04-02T09:00:00Z",
+                "talking_points": null,
+                "recommendations": null
+            }
+            """
+        let data = try #require(json.data(using: .utf8))
+        let result = try JSONDecoder().decode(MeetingPrepResult.self, from: data)
+
+        #expect(result.talkingPoints.isEmpty)
+        #expect(result.openItems.isEmpty)
+        #expect(result.peopleNotes.isEmpty)
+        #expect(result.suggestedPrep.isEmpty)
+        #expect(result.recommendations == nil)
+        #expect(result.contextGaps == nil)
+    }
+
     @Test("TalkingPoint identity uses text")
     func talkingPointID() throws {
         let point = TalkingPoint(

@@ -81,6 +81,28 @@ func TestPrepareForEvent(t *testing.T) {
 	assert.Len(t, result.SuggestedPrep, 1)
 }
 
+// A solo event: the model omits people_notes and writes null for the rest.
+// The marshalled result must still carry empty arrays, never null — the
+// Desktop decodes them as non-optional arrays.
+func TestPrepareForEvent_EmptyArraysOnTheWire(t *testing.T) {
+	database := openTestDB(t)
+	seedTestEvent(t, database)
+
+	gen := &mockGenerator{response: `{"talking_points":null,"suggested_prep":null}`}
+	pipe := New(database, &config.Config{}, gen, nil)
+
+	result, err := pipe.PrepareForEvent(context.Background(), "evt1", "")
+	require.NoError(t, err)
+
+	wire, err := json.Marshal(result)
+	require.NoError(t, err)
+	var fields map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(wire, &fields))
+	for _, key := range []string{"talking_points", "open_items", "people_notes", "suggested_prep", "recommendations"} {
+		assert.Equal(t, "[]", string(fields[key]), key)
+	}
+}
+
 func TestPrepareForEvent_NotFound(t *testing.T) {
 	database := openTestDB(t)
 	gen := &mockGenerator{response: "{}"}

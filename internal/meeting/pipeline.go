@@ -30,6 +30,27 @@ type MeetingPrepResult struct {
 	ContextGaps     []string                `json:"context_gaps,omitempty"`
 }
 
+// normalizeSlices turns the arrays the model omitted (or wrote as null) into
+// empty ones, so the wire shape is always `[]`: the Desktop decodes them as
+// non-optional arrays and would reject a valid prep over a missing key.
+func (r *MeetingPrepResult) normalizeSlices() {
+	if r.TalkingPoints == nil {
+		r.TalkingPoints = []TalkingPoint{}
+	}
+	if r.OpenItems == nil {
+		r.OpenItems = []OpenItem{}
+	}
+	if r.PeopleNotes == nil {
+		r.PeopleNotes = []PersonNote{}
+	}
+	if r.SuggestedPrep == nil {
+		r.SuggestedPrep = []string{}
+	}
+	if r.Recommendations == nil {
+		r.Recommendations = []MeetingRecommendation{}
+	}
+}
+
 // MeetingRecommendation is a suggestion for improving the meeting.
 type MeetingRecommendation struct {
 	Text     string `json:"text"`
@@ -236,6 +257,7 @@ func (p *Pipeline) prepareForEvent(ctx context.Context, event db.CalendarEvent, 
 	result.EventID = event.ID
 	result.Title = event.Title
 	result.StartTime = event.StartTime
+	result.normalizeSlices()
 
 	p.logger.Printf("meeting: completed prep for %q (%d talking points, %d open items)",
 		event.Title, len(result.TalkingPoints), len(result.OpenItems))
