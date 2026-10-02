@@ -61,7 +61,9 @@ final class CodeFilesCenter {
     /// The editor page failed (load error, crash); shown over the pane.
     var editorErrors: [Int64: String] = [:]
     @ObservationIgnored private var trees: [Int64: CodeFileTree] = [:]
-    @ObservationIgnored private var buffers: [String: CodeFileBuffer] = [:]
+    /// Per workbench and path: a workbench nested in another has its own
+    /// buffer of a shared file (both guard their saves against the disk).
+    @ObservationIgnored private var buffers: [BufferKey: CodeFileBuffer] = [:]
     @ObservationIgnored private var watchers: [Int64: FolderWatcher] = [:]
     @ObservationIgnored private var folders: [Int64: URL] = [:]
     @ObservationIgnored private var bridges: [Int64: WeakBridge] = [:]
@@ -155,17 +157,17 @@ final class CodeFilesCenter {
 
     /// What FSEvents saw; internal for tests.
     func handle(_ batch: FolderWatcher.Batch, projectID: Int64) {
-        guard let root = folders[projectID] else { return }
+        guard folders[projectID] != nil else { return }
         let tree = trees[projectID]
         if batch.mustRescan {
             tree?.reloadAll()
-            for buffer in buffers.values where buffer.url.path.hasPrefix(root.path + "/") {
+            for (key, buffer) in buffers where key.workbench == projectID {
                 buffer.diskChanged()
             }
         } else {
             if !batch.paths.isEmpty { tree?.refresh(directories: Set(batch.paths.map(Self.parent))) }
             for rel in batch.paths {
-                buffers[root.appendingPathComponent(rel).path]?.diskChanged()
+                buffers[BufferKey(workbench: projectID, path: rel)]?.diskChanged()
             }
         }
         if !batch.isEmpty { refreshGit(projectID) }
@@ -301,17 +303,17 @@ final class CodeFilesCenter {
     // MARK: Buffers
 
     func buffer(for project: Workbench, relPath: String) -> CodeFileBuffer {
-        let url = project.folderURL.appendingPathComponent(relPath)
-        if let buffer = buffers[url.path] { return buffer }
-        let buffer = CodeFileBuffer(url: url, relPath: relPath)
-        buffers[url.path] = buffer
+        let key = BufferKey(workbench: project.id, path: relPath)
+        if let buffer = buffers[key] { return buffer }
+        let buffer = CodeFileBuffer(url: project.folderURL.appendingPathComponent(relPath), relPath: relPath)
+        buffers[key] = buffer
         return buffer
     }
 
     /// The buffer of `path` if one is loaded — also after a preview tab was
     /// replaced, so an edit the page sends late still lands.
     func existingBuffer(_ project: Workbench, _ path: String) -> CodeFileBuffer? {
-        buffers[project.folderURL.appendingPathComponent(path).path]
+        buffers[BufferKey(workbench: project.id, path: path)]
     }
 
     func buffer(id: String) -> CodeFileBuffer? {
@@ -319,20 +321,15 @@ final class CodeFilesCenter {
     }
 
     /// The loaded buffers of `project` at `path` or under it (a folder) —
-    /// never another workbench's file of the same relative name.
+    /// never another workbench's, whatever the paths.
     func buffers(under path: String, project: Workbench) -> [CodeFileBuffer] {
-        let root = project.folderURL
-        let target = root.appendingPathComponent(path).path
-        return buffers.values.filter { buffer in
-            // Its own: a nested workbench's buffer of the same folder has a
-            // path relative to that workbench, not this one.
-            root.appendingPathComponent(buffer.relPath).path == buffer.url.path
-                && (buffer.url.path == target || buffer.url.path.hasPrefix(target + "/"))
+        buffers.compactMap { key, buffer in
+            key.workbench == project.id && (key.path == path || key.path.hasPrefix(path + "/")) ? buffer : nil
         }
     }
 
     private func forgetBuffer(_ project: Workbench, _ path: String) {
-        let key = project.folderURL.appendingPathComponent(path).path
+        let key = BufferKey(workbench: project.id, path: path)
         buffers[key]?.cancelAutosave()
         buffers[key] = nil
     }
@@ -484,9 +481,9 @@ final class CodeFilesCenter {
         }
         for buffer in affected {
             let moved = newPath + buffer.relPath.dropFirst(path.count)
-            buffers[buffer.url.path] = nil
+            buffers[BufferKey(workbench: project.id, path: buffer.relPath)] = nil
             buffer.moved(to: root.appendingPathComponent(moved), relPath: moved)
-            buffers[buffer.url.path] = buffer
+            buffers[BufferKey(workbench: project.id, path: moved)] = buffer
         }
         mutateTabs(project) { $0.rename(path, to: newPath) }
         let tree = tree(for: project)
@@ -518,7 +515,7 @@ final class CodeFilesCenter {
         }
         for buffer in gone {
             buffer.cancelAutosave()
-            buffers[buffer.url.path] = nil
+            buffers[BufferKey(workbench: project.id, path: buffer.relPath)] = nil
         }
         mutateTabs(project) { $0.closeTree(path) }
         tree(for: project).refresh(directories: [Self.parent(path)])
@@ -550,6 +547,11 @@ final class CodeFilesCenter {
         let parent = (relPath as NSString).deletingLastPathComponent
         return parent == "." ? "" : parent
     }
+}
+
+private struct BufferKey: Hashable {
+    let workbench: Int64
+    let path: String
 }
 
 private struct WeakBridge {

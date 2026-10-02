@@ -358,14 +358,25 @@ final class CodeFilesCenterTests: XCTestCase {
         XCTAssertEqual(count, 1)
     }
 
-    func testANestedWorkbenchsBufferIsNotMovedByARenameOfItsFolder() async throws {
+    func testANestedWorkbenchKeepsItsOwnBufferAndTheParentsEditIsSavedAndMoved() async throws {
         let nested = Workbench(row: Row(["id": 9, "name": "nested", "folder_path": folder.appendingPathComponent("cmd").path]))
         let center = makeCenter()
+        // The nested workbench opens the file first…
         let theirs = center.buffer(for: nested, relPath: "main.go")
         theirs.loadIfNeeded()
+        // …then the parent opens and edits the same file.
+        center.open("cmd/main.go", project: project, preview: false)
+        let mine = center.buffer(for: project, relPath: "cmd/main.go")
+        XCTAssertFalse(mine === theirs, "one buffer per workbench")
+        mine.loadIfNeeded()
+        mine.edited("package edited\n", base: 0)
+
         try await center.rename("cmd", to: "tools", project: project)
-        XCTAssertEqual(theirs.relPath, "main.go")
-        XCTAssertEqual(theirs.url, folder.appendingPathComponent("cmd/main.go"), "left where it was, like any outside move")
+
+        XCTAssertEqual(try text("tools/main.go"), "package edited\n", "saved before the move")
+        XCTAssertTrue(center.existingBuffer(project, "tools/main.go") === mine)
+        XCTAssertEqual(mine.url, folder.appendingPathComponent("tools/main.go"))
+        XCTAssertEqual(theirs.relPath, "main.go", "the nested workbench's buffer is its own business")
     }
 
     // MARK: Watching and git
