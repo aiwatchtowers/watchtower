@@ -20,36 +20,46 @@ import (
 // The file is then never written (PROJ-04): the owner fixes it, not us.
 var ErrMalformedSettings = errors.New("malformed .claude/settings.local.json")
 
-// hookSpec is one Claude Code hook event the project install owns an entry
+// hookSpec is one Claude Code hook event the workbench install owns an entry
 // in: the event name, the command suffix that recognises our entry for a
-// project (after the watchtower binary), and the entry's timeout.
+// workbench (after the watchtower binary), and the entry's timeout.
+// legacySubcommand is the suffix an install from before the Workbench rename
+// wrote (spec 2026-10-02 §5.4): it is still recognised as ours, so an install
+// replaces that entry in place and a removal takes it out.
 type hookSpec struct {
-	event      string
-	subcommand string // e.g. "project brief --project"; the project id follows
-	flags      string // appended after the id, e.g. " --stop-hook"
-	timeoutSec int
+	event            string
+	subcommand       string // e.g. "workbench brief --workbench"; the workbench id follows
+	legacySubcommand string // e.g. "project brief --project"
+	flags            string // appended after the id, e.g. " --stop-hook"
+	timeoutSec       int
 }
 
 var (
 	// sessionStartSpec: the brief. The timeout bounds it so a stuck DB can
-	// never stall a Claude Code session start (`project brief` itself always
-	// exits 0).
-	sessionStartSpec = hookSpec{event: "SessionStart", subcommand: "project brief --project", timeoutSec: 10}
+	// never stall a Claude Code session start (`workbench brief` itself
+	// always exits 0).
+	sessionStartSpec = hookSpec{event: "SessionStart", subcommand: "workbench brief --workbench",
+		legacySubcommand: "project brief --project", timeoutSec: 10}
 	// stopSpec: the board drift check at the end of every agent turn
-	// (PROJ-07). `project check --stop-hook` bounds its own git work well
+	// (PROJ-07). `workbench check --stop-hook` bounds its own git work well
 	// under this timeout and always exits 0.
-	stopSpec = hookSpec{event: "Stop", subcommand: "project check --project", flags: " --stop-hook", timeoutSec: 15}
+	stopSpec = hookSpec{event: "Stop", subcommand: "workbench check --workbench",
+		legacySubcommand: "project check --project", flags: " --stop-hook", timeoutSec: 15}
 )
 
-// command is the hook's command line for bin and projectID. Claude Code
+// command is the hook's command line for bin and workbenchID. Claude Code
 // runs it through a shell, so a binary path with spaces (the CLI store sits
 // under "Application Support") is single-quoted.
-func (h hookSpec) command(bin string, projectID int64) string {
-	return shellQuote(bin) + h.suffix(projectID)
+func (h hookSpec) command(bin string, workbenchID int64) string {
+	return shellQuote(bin) + h.suffix(workbenchID)
 }
 
-func (h hookSpec) suffix(projectID int64) string {
-	return " " + h.subcommand + " " + strconv.FormatInt(projectID, 10) + h.flags
+func (h hookSpec) suffix(workbenchID int64) string {
+	return " " + h.subcommand + " " + strconv.FormatInt(workbenchID, 10) + h.flags
+}
+
+func (h hookSpec) legacySuffix(workbenchID int64) string {
+	return " " + h.legacySubcommand + " " + strconv.FormatInt(workbenchID, 10) + h.flags
 }
 
 func settingsLocalPath(dir string) string {
@@ -249,10 +259,20 @@ func groupHooks(g any) (map[string]any, []any, bool) {
 // entry. After stripping an optional single-quoted binary token
 // (hookSpec.command's only quoting style — see unquoteShellSingle), the
 // command must end in exactly spec's suffix — e.g.
-// " project brief --project <projectID>" — and the binary's basename must
-// be "watchtower".
+// " workbench brief --workbench <projectID>", or its pre-rename form
+// " project brief --project <projectID>" (looksLikeLegacyHook) — and the
+// binary's basename must be "watchtower".
 func looksLikeOurHook(cmd string, spec hookSpec, projectID int64) bool {
-	bin, ok := strings.CutSuffix(cmd, spec.suffix(projectID))
+	return endsInOurCommand(cmd, spec.suffix(projectID)) || looksLikeLegacyHook(cmd, spec, projectID)
+}
+
+// looksLikeLegacyHook is looksLikeOurHook for the pre-rename command only.
+func looksLikeLegacyHook(cmd string, spec hookSpec, projectID int64) bool {
+	return endsInOurCommand(cmd, spec.legacySuffix(projectID))
+}
+
+func endsInOurCommand(cmd, suffix string) bool {
+	bin, ok := strings.CutSuffix(cmd, suffix)
 	if !ok || bin == "" {
 		return false
 	}
@@ -270,25 +290,85 @@ func unquoteShellSingle(s string) string {
 }
 
 func isOurHook(h any, spec hookSpec, projectID int64) bool {
-	m, ok := h.(map[string]any)
-	if !ok {
-		return false
-	}
-	cmd, ok := m["command"].(string)
+	cmd, ok := hookCommand(h)
 	return ok && looksLikeOurHook(cmd, spec, projectID)
 }
 
+func isLegacyHook(h any, spec hookSpec, projectID int64) bool {
+	cmd, ok := hookCommand(h)
+	return ok && looksLikeLegacyHook(cmd, spec, projectID)
+}
+
+// hookCommand is a hook object's command string.
+func hookCommand(h any) (string, bool) {
+	m, ok := h.(map[string]any)
+	if !ok {
+		return "", false
+	}
+	cmd, ok := m["command"].(string)
+	return cmd, ok
+}
+
 func hasOurHook(groups []any, spec hookSpec, projectID int64) bool {
+	return anyHook(groups, func(h any) bool { return isOurHook(h, spec, projectID) })
+}
+
+func anyHook(groups []any, match func(h any) bool) bool {
 	for _, g := range groups {
 		_, hs, ok := groupHooks(g)
-		if !ok {
-			continue
-		}
-		if slices.ContainsFunc(hs, func(h any) bool { return isOurHook(h, spec, projectID) }) {
+		if ok && slices.ContainsFunc(hs, match) {
 			return true
 		}
 	}
 	return false
+}
+
+// HasLegacyHooks reports whether either of our hooks for workbenchID in dir's
+// .claude/settings.local.json still runs the pre-rename command (`project
+// brief --project N`, `project check --project N`): the folder was set up
+// before the Workbench rename and not resynced since.
+func HasLegacyHooks(dir string, workbenchID int64) (bool, error) {
+	file := settingsLocalPath(dir)
+	settings, _, existed, err := readSettings(file)
+	if err != nil || !existed {
+		return false, err
+	}
+	for _, spec := range []hookSpec{sessionStartSpec, stopSpec} {
+		_, groups, err := eventGroupsOf(settings, file, spec.event)
+		if err != nil {
+			return false, err
+		}
+		if anyHook(groups, func(h any) bool { return isLegacyHook(h, spec, workbenchID) }) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// legacyPermissionPrefix starts every Claude Code permission rule naming a
+// tool of the pre-rename MCP server.
+const legacyPermissionPrefix = "mcp__" + LegacyMCPServerName
+
+// LegacyPermissionRules counts the allow rules in dir's
+// .claude/settings.local.json that name the pre-rename MCP server
+// (`mcp__watchtower-project` or `mcp__watchtower-project__<tool>`). They are
+// the owner's: a resync only reports them (spec 2026-10-02 A6). A missing or
+// malformed file counts 0 — the hook step reports a malformed one.
+func LegacyPermissionRules(dir string) int {
+	settings, _, _, err := readSettings(settingsLocalPath(dir))
+	if err != nil {
+		return 0
+	}
+	perms, _ := settings["permissions"].(map[string]any)
+	allow, _ := perms["allow"].([]any)
+	n := 0
+	for _, r := range allow {
+		rule, _ := r.(string)
+		if rule == legacyPermissionPrefix || strings.HasPrefix(rule, legacyPermissionPrefix+"__") {
+			n++
+		}
+	}
+	return n
 }
 
 // upsertOurHook returns groups with our hook for projectID set to command.
@@ -495,7 +575,9 @@ func filePerm(path string, def os.FileMode) os.FileMode {
 // --- git exclude ---
 
 // Our exclude lines live between these markers so removal can never take a
-// line the owner wrote themselves, even an identical one.
+// line the owner wrote themselves, even an identical one. The markers keep
+// their pre-rename text (spec 2026-10-02 A5): changing them would orphan the
+// block every connected folder already has.
 const (
 	excludeBegin = "# >>> watchtower-project: managed by `watchtower integrate --project`"
 	excludeEnd   = "# <<< watchtower-project"
