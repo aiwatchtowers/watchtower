@@ -32,11 +32,32 @@ enum FeatureSplashLogic {
 /// (FEAT-04, "no silent cascade"; a dependent left on just runs degraded,
 /// which is fine for a first-run pick) — and no sub-toggle editing (Memory's
 /// "Advanced" disclosure stays a Settings-only affordance).
+///
+/// `.customize` is onboarding v2's "Customize features" screen, opened from
+/// the Goals step: the switches edit an `OnboardingFeatureSelection` owned by
+/// the caller (preset from the goals) instead of staging into the service,
+/// and nothing is written here — the Goals step applies the selection with
+/// `FeatureManagerService.applySelection`, which never restarts the daemon.
 struct FeatureSplashView: View {
-    /// Returns whether onboarding actually finished (`OnboardingCompletion.finish`'s
-    /// result) — `false` means the DB write failed and nothing else ran, so
-    /// the splash stays up and shows an inline retry instead of moving on.
-    let onFinish: () async -> Bool
+    enum Mode {
+        /// Returns whether onboarding actually finished (`OnboardingCompletion.finish`'s
+        /// result) — `false` means the DB write failed and nothing else ran, so
+        /// the splash stays up and shows an inline retry instead of moving on.
+        case splash(onFinish: () async -> Bool)
+        /// `onDone` returns to the Goals step; the selection is already
+        /// up to date by then.
+        case customize(selection: Binding<OnboardingFeatureSelection>, onDone: () -> Void)
+    }
+
+    let mode: Mode
+
+    init(onFinish: @escaping () async -> Bool) {
+        mode = .splash(onFinish: onFinish)
+    }
+
+    init(selection: Binding<OnboardingFeatureSelection>, onDone: @escaping () -> Void) {
+        mode = .customize(selection: selection, onDone: onDone)
+    }
 
     @Environment(AppState.self) private var appState
     /// Set when the most recent `onFinish()` call returned `false`. Distinct
@@ -73,8 +94,13 @@ struct FeatureSplashView: View {
         VStack(spacing: 0) {
             ScrollView {
                 VStack(spacing: 28) {
-                    hero
-                    contentBody
+                    switch mode {
+                    case .splash:
+                        hero
+                        contentBody
+                    case .customize(let selection, _):
+                        customizeBody(selection)
+                    }
                 }
                 .frame(maxWidth: 900)
                 .frame(maxWidth: .infinity)
@@ -84,7 +110,12 @@ struct FeatureSplashView: View {
             }
 
             Divider()
-            footer
+            switch mode {
+            case .splash:
+                footer
+            case let .customize(selection, onDone):
+                customizeFooter(selection, onDone: onDone)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // Cards as well as the footer, the FeatureManagerSection precedent:
@@ -407,7 +438,7 @@ struct FeatureSplashView: View {
     /// has already cleared `isApplying`), leaving one main-actor hop in which
     /// a queued tap on another exit could start a second completion.
     private func runFinish() async {
-        guard !isFinishing else { return }
+        guard case .splash(let onFinish) = mode, !isFinishing else { return }
         isFinishing = true
         defer { isFinishing = false }
         finishFailed = !(await onFinish())
@@ -434,6 +465,132 @@ struct FeatureSplashView: View {
     /// `disabledFeatureIDs`, which folds in staged, not-yet-applied toggles.
     private func isExperimental(_ feature: FeatureInfo) -> Bool {
         experimentalIDs.contains(feature.id)
+    }
+
+    // MARK: - Customize features
+
+    /// Registry order, as the CLI lists it.
+    private var customizableFeatures: [FeatureInfo] {
+        service.features.filter { OnboardingFeaturePlan.customizableFeatureIDs.contains($0.id) }
+    }
+
+    /// Core entries, the features onboarding always switches on, and
+    /// Workbench (no feature switch at all), in that order.
+    private var alwaysOnTitles: [String] {
+        service.features
+            .filter { $0.core || OnboardingFeaturePlan.alwaysOnFeatureIDs.contains($0.id) }
+            .map(\.title) + ["Workbench"]
+    }
+
+    @ViewBuilder
+    private func customizeBody(_ selection: Binding<OnboardingFeatureSelection>) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Features")
+                    .font(.title3)
+                    .fontWeight(.semibold)
+                Text("Preset from your goals. A feature that's off doesn't run in the background and hides its tab.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+
+            if service.features.isEmpty {
+                if service.loadError == nil {
+                    ProgressView("Loading features…")
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 40)
+                }
+            } else {
+                (Text("Always on: ").foregroundStyle(.secondary)
+                    + Text(alwaysOnTitles.joined(separator: " · ")))
+                    .font(.caption)
+
+                LazyVGrid(
+                    columns: [GridItem(.flexible(), spacing: 14), GridItem(.flexible(), spacing: 14)],
+                    spacing: 8
+                ) {
+                    ForEach(customizableFeatures) { feature in
+                        customizeRow(feature, selection: selection)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func customizeRow(_ feature: FeatureInfo, selection: Binding<OnboardingFeatureSelection>) -> some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(feature.title)
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                    if let cost = compactCostWords(feature.cost) {
+                        Text("· " + cost)
+                            .font(.caption)
+                            .foregroundStyle(feature.cost == "heavy" ? .orange : .secondary)
+                    }
+                    if isExperimental(feature) {
+                        experimentalTag
+                    }
+                }
+                Text(feature.tagline)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 8)
+            Toggle("", isOn: Binding(
+                get: { selection.wrappedValue.isEnabled(feature.id) },
+                set: { selection.wrappedValue.setFeature(feature.id, enabled: $0) }
+            ))
+            .labelsHidden()
+            .toggleStyle(.switch)
+        }
+        .padding(.vertical, 9)
+        .padding(.horizontal, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+        )
+    }
+
+    private func customizeFooter(_ selection: Binding<OnboardingFeatureSelection>, onDone: @escaping () -> Void) -> some View {
+        VStack(spacing: 10) {
+            if let error = service.loadError {
+                errorBanner(error)
+            }
+            HStack(spacing: 16) {
+                Button("Reset to goals") {
+                    selection.wrappedValue.resetToGoals()
+                }
+                .buttonStyle(.borderless)
+                .disabled(!selection.wrappedValue.isCustomized)
+
+                Spacer()
+
+                Button {
+                    onDone()
+                } label: {
+                    Text("Done").frame(minWidth: 120)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .keyboardShortcut(.return, modifiers: .command)
+            }
+        }
+        .padding(20)
+    }
+
+    private func compactCostWords(_ cost: String) -> String? {
+        switch cost {
+        case "heavy": return "heavy AI"
+        case "medium": return "medium"
+        case "light": return "light"
+        default: return nil // "none"
+        }
     }
 
     /// Fills the snapshot from the first load that actually returned

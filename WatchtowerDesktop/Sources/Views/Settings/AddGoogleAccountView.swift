@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 /// Sheet for connecting a new Google account (Calendar and/or Gmail),
 /// presented from Settings → Google Accounts. Unlike the IMAP/CalDAV "Add"
@@ -9,6 +10,14 @@ struct AddGoogleAccountView: View {
     @Environment(\.dismiss) private var dismiss
 
     private var vm: GoogleAccountsViewModel? { appState.googleAccountsViewModel }
+
+    /// `.deferred` from onboarding: the connect must not restart the daemon
+    /// mid-setup (`DaemonRestartPolicy`). Settings keeps the default.
+    private let daemonPolicy: DaemonRestartPolicy
+
+    init(daemonPolicy: DaemonRestartPolicy = .restart) {
+        self.daemonPolicy = daemonPolicy
+    }
 
     @State private var label = ""
     @State private var wantCalendar = true
@@ -132,7 +141,8 @@ struct AddGoogleAccountView: View {
             calendar: wantCalendar,
             gmail: wantGmail,
             clientID: clientID.trimmingCharacters(in: .whitespaces),
-            clientSecret: clientSecret
+            clientSecret: clientSecret,
+            daemonPolicy: daemonPolicy
         ) ?? false
     }
 }

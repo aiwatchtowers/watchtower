@@ -19,11 +19,27 @@ final class GoogleAccountsViewModel {
     var isConnecting = false
     var error: String?
 
+    /// The restart the last successful account change kicked off under
+    /// `.restart` (nil under `.deferred`) — held so tests can await it.
+    @ObservationIgnored private(set) var daemonRestartTask: Task<Void, Never>?
+    /// The in-flight `addAccount` connect — held so tests can await the
+    /// fire-and-forget flow.
+    @ObservationIgnored private(set) var addTask: Task<Void, Never>?
+
     private let dbPool: DatabasePool
+    private let daemon: any DaemonRestarting
+    /// Resolves the CLI binary; injectable so tests can run a stand-in.
+    private let cliPath: () -> String?
     private var authProcess: Process?
 
-    init(dbPool: DatabasePool) {
+    init(
+        dbPool: DatabasePool,
+        daemon: any DaemonRestarting = LiveDaemonRestarter(),
+        cliPath: @escaping () -> String? = Constants.findCLIPath
+    ) {
         self.dbPool = dbPool
+        self.daemon = daemon
+        self.cliPath = cliPath
     }
 
     // MARK: - Refresh
@@ -87,12 +103,19 @@ final class GoogleAccountsViewModel {
     /// `AddGoogleAccountView`'s auto-dismiss-on-success `onChange`) must not
     /// arm itself when this returns `false`.
     @discardableResult
-    func addAccount(label: String, calendar: Bool, gmail: Bool, clientID: String, clientSecret: String) -> Bool {
+    func addAccount(
+        label: String,
+        calendar: Bool,
+        gmail: Bool,
+        clientID: String,
+        clientSecret: String,
+        daemonPolicy: DaemonRestartPolicy = .restart
+    ) -> Bool {
         guard !isConnecting else {
             error = "Another connection is already in progress."
             return false
         }
-        guard let cliPath = Constants.findCLIPath() else {
+        guard let cliPath = cliPath() else {
             error = "Watchtower CLI not found"
             return false
         }
@@ -113,7 +136,7 @@ final class GoogleAccountsViewModel {
         }
         authProcess = process
 
-        Task.detached {
+        addTask = Task.detached {
             let result = await Self.runProcess(process, stdin: hasCustomClient ? clientSecret + "\n" : nil)
             await MainActor.run {
                 self.authProcess = nil
@@ -121,8 +144,9 @@ final class GoogleAccountsViewModel {
                 if result.exitCode == 0 {
                     self.error = nil
                     self.refresh()
-                    // Re-wire the daemon so the new account's first sync runs now.
-                    Task { await DaemonManager.restartLogging() }
+                    // Re-wire the daemon so the new account's first sync runs
+                    // now (unless onboarding defers it — `DaemonRestartPolicy`).
+                    self.daemonRestartTask = daemonPolicy.apply(using: self.daemon)
                 } else if result.exitCode == 15 || result.exitCode == 9 {
                     // SIGTERM/SIGKILL — user cancelled
                     self.error = nil
@@ -157,7 +181,7 @@ final class GoogleAccountsViewModel {
             error = "Another connection is already in progress."
             return
         }
-        guard let cliPath = Constants.findCLIPath() else {
+        guard let cliPath = cliPath() else {
             error = "Watchtower CLI not found"
             return
         }
@@ -182,7 +206,7 @@ final class GoogleAccountsViewModel {
                 if result.exitCode == 0 {
                     self.error = nil
                     self.refresh()
-                    Task { await DaemonManager.restartLogging() }
+                    self.daemonRestartTask = DaemonRestartPolicy.restart.apply(using: self.daemon)
                 } else if result.exitCode == 15 || result.exitCode == 9 {
                     // SIGTERM/SIGKILL — user cancelled
                     self.error = nil
@@ -213,12 +237,12 @@ final class GoogleAccountsViewModel {
     }
 
     /// Removes `account` via `watchtower google remove <id>`.
-    func remove(_ account: GoogleAccount) async {
+    func remove(_ account: GoogleAccount, daemonPolicy: DaemonRestartPolicy = .restart) async {
         guard !isConnecting else {
             error = "Another connection is already in progress."
             return
         }
-        guard let cliPath = Constants.findCLIPath() else {
+        guard let cliPath = cliPath() else {
             error = "Watchtower CLI not found"
             return
         }
@@ -233,8 +257,9 @@ final class GoogleAccountsViewModel {
         if result.exitCode == 0 {
             error = nil
             refresh()
-            // Restart so the daemon drops the removed account's syncers.
-            Task { await DaemonManager.restartLogging() }
+            // Restart so the daemon drops the removed account's syncers
+            // (unless onboarding defers it — `DaemonRestartPolicy`).
+            daemonRestartTask = daemonPolicy.apply(using: daemon)
         } else {
             error = result.stderr.isEmpty
                 ? "Remove failed (exit \(result.exitCode))"
