@@ -10,6 +10,12 @@ struct OnboardingView: View {
 
     @Environment(AppState.self) private var appState
     @State private var isRunning = false
+    /// runSync is waiting for the DB open before it starts the sync: a
+    /// second runSync (chatStep's .task, a double Retry) must not start one too.
+    @State private var syncStarting = false
+    /// skipOnboarding is running (it waits for the DB open): a second click
+    /// must not run the completion sequence twice.
+    @State private var isSkipping = false
     @State private var output = ""
     @State private var cliError: String?
     @State private var dbError: String?
@@ -94,9 +100,10 @@ struct OnboardingView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .overlay(alignment: .topTrailing) {
             if appState.onboarding.currentStep != .complete {
-                Button("Skip setup") {
+                Button(isSkipping ? "Finishing setup…" : "Skip setup") {
                     skipOnboarding()
                 }
+                .disabled(isSkipping)
                 .buttonStyle(.plain)
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -905,14 +912,7 @@ struct OnboardingView: View {
             syncProgressCompactBanner
         } else if dbOpener.isOpening {
             Divider()
-            HStack(spacing: 6) {
-                ProgressView().controlSize(.small)
-                Text("Opening the local database…")
-                    .font(.caption)
-                    .fontWeight(.medium)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
+            dbOpeningCompactBanner
         } else if dbError != nil {
             Divider()
             dbFailedCompactBanner
@@ -931,6 +931,18 @@ struct OnboardingView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
         }
+    }
+
+    /// The DB open runs the CLI migrations (up to 30 s) off the main actor.
+    private var dbOpeningCompactBanner: some View {
+        HStack(spacing: 6) {
+            ProgressView().controlSize(.small)
+            Text("Opening the local database…")
+                .font(.caption)
+                .fontWeight(.medium)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
     }
 
     /// DB-open failures get their own line: they are not a Slack sync failure,
@@ -1030,9 +1042,10 @@ struct OnboardingView: View {
             }
 
             // Escape hatch: this step can hang on an AI call.
-            Button("Skip and finish setup") {
+            Button(isSkipping ? "Finishing setup…" : "Skip and finish setup") {
                 skipOnboarding()
             }
+            .disabled(isSkipping)
             .buttonStyle(.plain)
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -1331,7 +1344,9 @@ struct OnboardingView: View {
             dbError = nil
         case .failure(let error):
             // Deliberately NOT cliError: the strip renders a DB-specific line
-            // for this, never the "Slack sync failed" banner.
+            // for this, never the "Slack sync failed" banner. Logged too: a
+            // step without the strip (the splash) would not show it.
+            NSLog("[Onboarding] opening the database failed: %@", String(describing: error))
             dbError = "Failed to open database: \(error.localizedDescription)"
         }
     }
@@ -1341,6 +1356,8 @@ struct OnboardingView: View {
     /// in UserDefaults by `OnboardingStateMachine.markComplete()`, so this
     /// works even with no database or Slack account at all.
     private func skipOnboarding() {
+        guard !isSkipping else { return }
+        isSkipping = true
         // Cancel any in-flight interview stream (and its claude subprocess)
         // before tearing the flow down.
         onboardingVM?.skipChat()
@@ -1401,9 +1418,11 @@ struct OnboardingView: View {
     /// Opens the DB first (its CLI migrations must finish before the sync's
     /// own CLI touches the same file), then starts the sync.
     private func runSync() {
-        guard let path = cliPath else { return }
+        guard let path = cliPath, !syncStarting, !isRunning else { return }
+        syncStarting = true
         Task {
             await ensureOnboardingDatabase()
+            syncStarting = false
             startSync(path: path)
         }
     }

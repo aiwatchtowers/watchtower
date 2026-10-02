@@ -44,6 +44,17 @@ final class CLIMigrationsAndOAuthStderrTests: XCTestCase {
         XCTAssertTrue(line.value.contains("could not start"), line.value)
     }
 
+    func testMissingCLIIsReported() {
+        let reported = expectation(description: "missing CLI reported")
+        let line = Line()
+        DatabaseManager.runCLIMigrations(cliPath: nil) {
+            line.set($0)
+            reported.fulfill()
+        }
+        wait(for: [reported], timeout: 1)
+        XCTAssertTrue(line.value.contains("not found"), line.value)
+    }
+
     func testMigrateSuccessReportsNothing() throws {
         let cli = try stubCLI(stderr: "", code: 0)
         let reported = expectation(description: "nothing reported")

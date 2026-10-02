@@ -55,22 +55,32 @@ final class OnboardingDatabaseOpenerTests: XCTestCase {
         let first = Task { await opener.open() }
         await waitUntil { opener.isOpening }
         let second = Task { await opener.open() }
-        await Task.yield()
         gate.signal()
-        _ = await first.value
-        _ = await second.value
+        gate.signal() // a regression's second open must fail the count, not hang
+        let firstManager = try await first.value.get()
+        let secondManager = try await second.value.get()
+        let later = try await opener.open().get()
 
-        XCTAssertEqual(calls.value, 1, "a second step asking meanwhile waits for the same open")
+        XCTAssertEqual(calls.value, 1, "asking meanwhile or afterwards reuses the one open")
+        XCTAssertTrue(firstManager === secondManager && secondManager === later)
     }
 
-    func testFailureIsReturned() async {
+    func testFailureIsReturnedAndRetried() async throws {
         struct Boom: Error {}
-        let opener = OnboardingDatabaseOpener { throw Boom() }
+        let manager = try makeManager()
+        let calls = Counter()
+        let opener = OnboardingDatabaseOpener {
+            calls.increment()
+            if calls.value == 1 { throw Boom() }
+            return manager
+        }
 
-        let result = await opener.open()
-
-        XCTAssertThrowsError(try result.get())
+        let failed = await opener.open()
+        XCTAssertThrowsError(try failed.get())
         XCTAssertFalse(opener.isOpening)
+        let retried = await opener.open()
+        XCTAssertNotNil(try? retried.get(), "a failure is not cached: Retry opens again")
+        XCTAssertEqual(calls.value, 2)
     }
 
     private func waitUntil(_ condition: () -> Bool) async {
