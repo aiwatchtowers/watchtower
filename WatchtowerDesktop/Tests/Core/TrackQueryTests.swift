@@ -196,7 +196,6 @@ final class TrackQueryTests: XCTestCase {
     func testFetchLatestCustomReturnsNewestCustomTrack() throws {
         let db = try TestDatabase.create()
         try db.write { db in
-            try db.execute(sql: "ALTER TABLE tracks ADD COLUMN origin TEXT NOT NULL DEFAULT 'auto'")
             try TestDatabase.insertTrack(db, text: "Auto track")
             try db.execute(sql: "INSERT INTO tracks (text, origin) VALUES ('Older custom', 'custom')")
             try db.execute(sql: "INSERT INTO tracks (text, origin) VALUES ('Newer custom', 'custom')")
@@ -208,7 +207,6 @@ final class TrackQueryTests: XCTestCase {
     func testFetchLatestCustomReturnsNilWhenNoneCustom() throws {
         let db = try TestDatabase.create()
         try db.write { db in
-            try db.execute(sql: "ALTER TABLE tracks ADD COLUMN origin TEXT NOT NULL DEFAULT 'auto'")
             try TestDatabase.insertTrack(db, text: "Auto track")
         }
         let latest = try db.read { try TrackQueries.fetchLatestCustom($0) }
@@ -241,8 +239,6 @@ final class TrackQueryTests: XCTestCase {
         let db = try TestDatabase.create()
         var ids: [Int64] = []
         try db.write { db in
-            // The test schema predates tracks.origin (see testFetchLatestCustom…).
-            try db.execute(sql: "ALTER TABLE tracks ADD COLUMN origin TEXT NOT NULL DEFAULT 'auto'")
             for text in ["auto", "custom", "dismissed"] { ids.append(try TestDatabase.insertTrack(db, text: text)) }
             try db.execute(sql: "UPDATE tracks SET origin = 'custom' WHERE id = ?", arguments: [ids[1]])
             try TrackQueries.dismiss(db, id: Int(ids[2]))

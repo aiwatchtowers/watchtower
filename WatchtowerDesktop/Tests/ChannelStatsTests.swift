@@ -11,6 +11,7 @@ final class ChannelStatsTests: XCTestCase {
     func testChannelSettingsRoundTrip() throws {
         let db = try TestDatabase.create()
         try db.write { db in
+            try TestDatabase.insertChannel(db, id: "C001")
             let settings = ChannelSettings(channelID: "C001", isMutedForLLM: true, isFavorite: false)
             try settings.insert(db)
             let fetched = try XCTUnwrap(ChannelSettings.fetchOne(db, key: "C001"))
@@ -332,7 +333,10 @@ final class ChannelStatsTests: XCTestCase {
 
     func testToggleFavorite() throws {
         let db = try TestDatabase.create()
-        try db.write { try ChannelStatsQueries.toggleFavorite($0, channelID: "C001", favorite: true) }
+        try db.write { db in
+            try TestDatabase.insertChannel(db, id: "C001")
+            try ChannelStatsQueries.toggleFavorite(db, channelID: "C001", favorite: true)
+        }
         let settings = try XCTUnwrap(db.read { try ChannelSettings.fetchOne($0, key: "C001") })
         XCTAssertTrue(settings.isFavorite)
     }
@@ -340,6 +344,7 @@ final class ChannelStatsTests: XCTestCase {
     func testTogglePreservesOtherSetting() throws {
         let db = try TestDatabase.create()
         try db.write { db in
+            try TestDatabase.insertChannel(db, id: "C001")
             try ChannelStatsQueries.toggleMuteForLLM(db, channelID: "C001", muted: true)
             try ChannelStatsQueries.toggleFavorite(db, channelID: "C001", favorite: true)
         }

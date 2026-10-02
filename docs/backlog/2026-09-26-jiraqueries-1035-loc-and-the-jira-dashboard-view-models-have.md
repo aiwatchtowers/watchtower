@@ -1,7 +1,7 @@
 ---
 type: chore
 title: "JiraQueries (1035 LOC) and the Jira dashboard view models have zero tests"
-status: open
+status: done
 priority: med
 tags: [test-coverage, jira, multi-account, review-2026-09-26]
 context: main-branch backlog review 2026-09-26 at 8cf68dcf — track test coverage (Swift Desktop)
@@ -14,3 +14,7 @@ created: 2026-09-26
 No test file references `JiraQueries` or any of these view models. The file contains the heaviest SQL in the app: sprint stats, delivery stats, team workload, stale/blocked issues, epic progress, scope changes. It also contains the composite-PK `fetchBoard(accountID:id:)`, which CLAUDE.md names as the account-scoping guarantee for per-board actions ("account-scoped end to end"). Nothing pins the two-sites-same-board-id case, and the fix-version divergence above slipped through for the same reason. `ProjectMapViewModel.computeStatusBadge`/`buildEpicItem` and `ReleaseDashboardViewModel.buildReleaseItem` are pure `nonisolated static` functions that are cheap to test. Suggest a `JiraQueriesTests` in `Tests/Core` with a two-account fixture (colliding board id, issue key, and release name) plus pure-function tests for the badge and release math.
 
 > Original note: «а давай проведем ревью нашего репоза на ветке мейн с целью наполнения беклога. Наши треки - покрытие тестами, баги существующие и потенциальные, архитектурные проблемы, анализ использования и бессмысленный функционал»
+
+Fixed in test/swift-test-infra: `Tests/Core/JiraQueriesTests` covers the account-scoped `fetchBoard` (two sites, colliding board id), the date-bounded aggregates against fixed-width UTC timestamps (`fetchDeliveryStats` window edges one second either side, `fetchStaleIssues`, `fetchTeamWorkload`, `fetchEpicProgress`), blocked issues, track/link grouping and channels without Jira; `JiraIssueFixture` (Tests/Support/TestDatabase+Jira.swift) stores timestamps the way the Go sync does. `Tests/JiraDashboardViewModelTests` covers every `ProjectMapViewModel.computeStatusBadge` branch, `buildEpicItem` roll-up, `ReleaseDashboardViewModel.load` on two sites sharing release id and name, and the `EpicProgressItem` badge and metrics (`computeStatusBadge`/`buildEpicItem` lost `private` for this).
+
+Remaining (not fixed here): several `JiraQueries` lookups are not account-scoped — `fetchIssueByKey`, `fetchLinkedIssuesGrouped` (issue keys collide across sites) and the Release Dashboard's in-memory `issueByKey` epic-name map. `fetchActiveSprintStats`, `fetchIssueCountByBoard`, `fetchIssuesByEpicKey`, `fetchParticipantsForEpic`, `fetchAllEpics` and `fetchReleases` have no callers and were left untested.

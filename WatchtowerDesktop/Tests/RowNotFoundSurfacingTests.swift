@@ -53,7 +53,6 @@ final class RowNotFoundSurfacingTests: XCTestCase {
     func testWatchApply_OfAnEventDeletedElsewhere_LeavesTheTargetAlone() throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        try manager.dbPool.write { db in try db.execute(sql: TargetWatchesViewModelTests.trackEventsSQL) }
         let targetID = try manager.dbPool.write { db in
             try TargetQueries.create(db, text: "goal", periodStart: "2026-09-01", periodEnd: "2026-09-30")
         }

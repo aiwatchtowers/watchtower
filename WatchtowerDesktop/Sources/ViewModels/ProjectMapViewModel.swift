@@ -249,7 +249,7 @@ final class ProjectMapViewModel {
 
     // MARK: - Build
 
-    private nonisolated static func buildEpicItem(
+    nonisolated static func buildEpicItem(
         epic: JiraIssue,
         childIssues: [JiraIssue],
         displayIssues: [JiraIssue]? = nil,
@@ -383,7 +383,7 @@ final class ProjectMapViewModel {
         )
     }
 
-    private nonisolated static func computeStatusBadge(
+    nonisolated static func computeStatusBadge(
         total: Int,
         done: Int,
         resolvedLastWeek: Int,

@@ -2,8 +2,7 @@ import XCTest
 import GRDB
 import WatchtowerTestSupport
 
-/// The test schema mirror carries migration 00082 so the artifact-comment
-/// queries are tested against the real shape.
+/// Migration 00082's constraints the artifact-comment queries rely on.
 final class ArtifactCommentSchemaMirrorTests: XCTestCase {
     func testMirrorHasTheTableAndItsConstraints() throws {
         let queue = try TestDatabase.create()

@@ -7,32 +7,6 @@ import WatchtowerTestSupport
 @MainActor
 final class CustomTrackTimelineViewModelTests: XCTestCase {
 
-    /// Mirrors the Go-side track_events DDL; the shared TestDatabase.schema
-    /// predates custom tracks, so the harness patches the tracks table with the
-    /// custom-only columns (origin/instruction/enabled/last_run_at) and adds
-    /// the track_events table. linked_target_id is now part of the shared
-    /// schema itself (Secretary Memory Slice C) — no longer patched here.
-    private static let trackEventsSQL = """
-        ALTER TABLE tracks ADD COLUMN origin TEXT NOT NULL DEFAULT 'auto';
-        ALTER TABLE tracks ADD COLUMN instruction TEXT NOT NULL DEFAULT '';
-        ALTER TABLE tracks ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1;
-        ALTER TABLE tracks ADD COLUMN last_run_at TEXT NOT NULL DEFAULT '';
-        CREATE TABLE track_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            track_id INTEGER NOT NULL,
-            summary TEXT NOT NULL DEFAULT '',
-            detail TEXT NOT NULL DEFAULT '',
-            source_type TEXT NOT NULL DEFAULT '',
-            source_id TEXT NOT NULL DEFAULT '',
-            source_refs TEXT NOT NULL DEFAULT '[]',
-            decision TEXT NOT NULL DEFAULT '',
-            proposed_action TEXT NOT NULL DEFAULT '',
-            action_status TEXT NOT NULL DEFAULT 'none',
-            read_at TEXT,
-            created_at TEXT NOT NULL DEFAULT ''
-        );
-        """
-
     /// Builds a manager + a custom track. When `linkToTarget` is true the track's
     /// linked_target_id points at a freshly created target (so applyAction has a
     /// real row to mutate); otherwise the track is standalone (linked id NULL).
@@ -41,7 +15,6 @@ final class CustomTrackTimelineViewModelTests: XCTestCase {
         scanRunner: CLIRunnerProtocol = FakeCLIRunner(stdout: Data("[]".utf8))
     ) throws -> (manager: DatabaseManager, path: String, track: Track, timeline: CustomTrackTimelineViewModel) {
         let (manager, path) = try TestDatabase.createDatabaseManager()
-        try manager.dbPool.write { db in try db.execute(sql: Self.trackEventsSQL) }
 
         var targetID: Int?
         if linkToTarget {
