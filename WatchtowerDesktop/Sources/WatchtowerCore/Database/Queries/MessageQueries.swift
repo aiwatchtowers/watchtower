@@ -41,23 +41,6 @@ package enum MessageQueries {
         )
     }
 
-    package static func fetchRecentWatched(_ db: Database, sinceUnix: Double, limit: Int = 50) throws -> [MessageWithContext] {
-        try MessageWithContext.fetchAll(
-            db,
-            sql: """
-                SELECT m.*, c.name as channel_name, u.display_name as user_name
-                FROM messages m
-                JOIN channels c ON c.id = m.channel_id
-                LEFT JOIN users u ON u.id = m.user_id
-                JOIN watch_list w ON w.entity_type = 'channel' AND w.entity_id = m.channel_id
-                WHERE m.ts_unix > ?
-                ORDER BY m.ts_unix DESC
-                LIMIT ?
-                """,
-            arguments: [sinceUnix, limit]
-        )
-    }
-
     package static func countByChannel(_ db: Database, channelID: String) throws -> Int {
         try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM messages WHERE channel_id = ?", arguments: [channelID]) ?? 0
     }
@@ -109,38 +92,5 @@ package enum MessageQueries {
         )
 
         return Array(earlier) + triggerAndAfter
-    }
-}
-
-package struct MessageWithContext: FetchableRecord, Decodable, Identifiable, Equatable {
-    package let channelID: String
-    package let ts: String
-    package let userID: String
-    package let text: String
-    package let threadTS: String?
-    package let replyCount: Int
-    package let isEdited: Bool
-    package let isDeleted: Bool
-    package let subtype: String
-    package let permalink: String
-    package let tsUnix: Double
-    package let rawJSON: String
-    package let channelName: String?
-    package let userName: String?
-
-    package var id: String { "\(channelID)_\(ts)" }
-
-    package enum CodingKeys: String, CodingKey {
-        case ts, text, subtype, permalink
-        case channelID = "channel_id"
-        case userID = "user_id"
-        case threadTS = "thread_ts"
-        case replyCount = "reply_count"
-        case isEdited = "is_edited"
-        case isDeleted = "is_deleted"
-        case tsUnix = "ts_unix"
-        case rawJSON = "raw_json"
-        case channelName = "channel_name"
-        case userName = "user_name"
     }
 }

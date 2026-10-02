@@ -149,21 +149,6 @@ package enum DayPlanQueries {
         return db.lastInsertedRowID
     }
 
-    // MARK: - Mark Read
-
-    /// Set read_at to now on the plan.
-    package static func markRead(_ db: Database, planId: Int64) throws {
-        try db.execute(
-            sql: """
-                UPDATE day_plans
-                SET read_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
-                    updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-                WHERE id = ?
-                """,
-            arguments: [planId]
-        )
-    }
-
     // MARK: - Private Helpers
 
     /// If the item has source_type='task' and a valid Int64 source_id, update that task's status
