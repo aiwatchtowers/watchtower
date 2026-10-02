@@ -52,7 +52,7 @@ var sessionSwitchSources = map[string]bool{"clear": true, "compact": true, "resu
 // session), another source, a row that is gone or already current; an error
 // means the row may still name the previous conversation. Never panics: the
 // hook must exit 0.
-func recordTerminalSessionID(stdin io.Reader, projectID int64) (err error) {
+func recordTerminalSessionID(stdin io.Reader, workbenchID int64) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("panic: %v", r)
@@ -101,6 +101,6 @@ func recordTerminalSessionID(stdin io.Reader, projectID int64) (err error) {
 	if err := database.SetBusyTimeout(sessionRecordBusyTimeout); err != nil {
 		return err
 	}
-	_, err = database.SetTerminalClaudeSessionID(rowID, projectID, hook.SessionID)
+	_, err = database.SetTerminalClaudeSessionID(rowID, workbenchID, hook.SessionID)
 	return err
 }

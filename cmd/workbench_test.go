@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -20,16 +21,30 @@ import (
 	"watchtower/internal/kb"
 )
 
-// runWorkbench executes the real "project" command tree via rootCmd (the
-// runActions precedent) with stdout and stderr captured separately.
+// runWorkbench executes the real command tree via rootCmd (the runActions
+// precedent) under the pre-rename "project" alias — what every Desktop build
+// and legacy hook before the rename runs — with stdout and stderr captured
+// separately.
 func runWorkbench(t *testing.T, args ...string) (stdout, stderr string, err error) {
+	t.Helper()
+	return runWorkbenchAs(t, "project", args...)
+}
+
+// runWorkbenchAs is runWorkbench run as the command called name ("workbench"
+// or its alias "project").
+func runWorkbenchAs(t *testing.T, name string, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
 	var out, errOut bytes.Buffer
 	rootCmd.SetOut(&out)
 	rootCmd.SetErr(&errOut)
-	rootCmd.SetArgs(append([]string{"project"}, args...))
+	rootCmd.SetArgs(append([]string{name}, args...))
 	err = rootCmd.Execute()
 	rootCmd.SetArgs(nil)
+	// rootCmd is shared: a flag left marked Changed would make the next
+	// run's --workbench collide with this run's --project.
+	for _, c := range append(workbenchCmd.Commands(), workbenchCmd) {
+		c.Flags().VisitAll(func(f *pflag.Flag) { f.Changed = false })
+	}
 	workbenchFlagJSON = false
 	workbenchCreateFlagFolder = ""
 	workbenchCreateFlagName = ""
@@ -166,7 +181,7 @@ func TestProject_CreateJSONReportsAFailedImportOnStderr(t *testing.T) {
 	assert.False(t, created.DocsImportOK)
 	assert.NotEmpty(t, created.DocsImportError)
 	assert.Contains(t, errOut, "warning: importing the folder's documents failed")
-	assert.Contains(t, errOut, "watchtower project import-docs "+strconv.FormatInt(created.ID, 10))
+	assert.Contains(t, errOut, "watchtower workbench import-docs "+strconv.FormatInt(created.ID, 10))
 }
 
 func TestProject_CreateRefusesMissingAndAlreadyBoundFolders(t *testing.T) {
@@ -266,7 +281,7 @@ func TestProject_DeleteStillDeletesWhenInstallRemovalFails(t *testing.T) {
 	require.NotNil(t, removed, "the folder cleanup ran")
 	assert.Equal(t, pid, removed.ID)
 	assert.Contains(t, errOut, "folder is read-only")
-	assert.Contains(t, out, "Deleted project")
+	assert.Contains(t, out, "Deleted workbench")
 
 	_, err = database.GetWorkbench(pid)
 	assert.ErrorIs(t, err, db.ErrWorkbenchNotFound)
@@ -408,6 +423,6 @@ func TestProj08_IndexFailureIsAWarningNotAnError(t *testing.T) {
 	got := indexWorkbenchDocs(cmd, true, database, pid)
 	assert.False(t, got.IndexOK)
 	assert.NotEmpty(t, got.IndexError)
-	assert.Contains(t, errOut.String(), "warning: indexing the project's documents for search failed")
-	assert.Contains(t, errOut.String(), "watchtower project resync "+strconv.FormatInt(pid, 10))
+	assert.Contains(t, errOut.String(), "warning: indexing the workbench's documents for search failed")
+	assert.Contains(t, errOut.String(), "watchtower workbench resync "+strconv.FormatInt(pid, 10))
 }

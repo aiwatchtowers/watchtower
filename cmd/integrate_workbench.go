@@ -66,11 +66,11 @@ func removeWorkbenchInstall(ctx context.Context, _ *config.Config, p *db.Workben
 	return devpack.RemoveWorkbench(ctx, o)
 }
 
-// checkWorkbenchFlags refuses the global-pack flags next to --project: the
-// project install always targets the project's own folder.
+// checkWorkbenchFlags refuses the global-pack flags next to --workbench: the
+// workbench install always targets the workbench's own folder.
 func checkWorkbenchFlags(scopeChanged bool, explicitPath string, skillsOnly, mcpOnly bool) error {
 	if scopeChanged || explicitPath != "" || skillsOnly || mcpOnly {
-		return errors.New("--project installs into the project's own folder; it cannot be combined with --scope, --path, --skills-only or --mcp-only")
+		return errors.New("--workbench installs into the workbench's own folder; it cannot be combined with --scope, --path, --skills-only or --mcp-only")
 	}
 	return nil
 }
@@ -100,7 +100,7 @@ func loadIntegrateWorkbench(id int64) (*db.Workbench, error) {
 	defer func() { _ = database.Close() }()
 	p, err := database.GetWorkbench(id)
 	if err != nil {
-		return nil, fmt.Errorf("project %d: %w", id, err)
+		return nil, fmt.Errorf("workbench %d: %w", id, err)
 	}
 	return p, nil
 }
@@ -116,7 +116,7 @@ func runWorkbenchInstall(ctx context.Context, w io.Writer, p *db.Workbench) erro
 }
 
 func printWorkbenchInstallReport(w io.Writer, p *db.Workbench, rep devpack.WorkbenchInstallReport, err error) {
-	fmt.Fprintf(w, "Project %d (%s):\n", p.ID, p.FolderPath)
+	fmt.Fprintf(w, "Workbench %d (%s):\n", p.ID, p.FolderPath)
 	printWorkbenchInstallBody(w, rep, err)
 	if err != nil {
 		fmt.Fprintf(w, "\nProblems:\n  %v\n", err)
@@ -157,7 +157,7 @@ func runWorkbenchRemove(ctx context.Context, w io.Writer, p *db.Workbench) error
 		return err
 	}
 	rmErr := devpack.RemoveWorkbench(ctx, o)
-	fmt.Fprintf(w, "Project %d (%s): removal ran.\n", p.ID, p.FolderPath)
+	fmt.Fprintf(w, "Workbench %d (%s): removal ran.\n", p.ID, p.FolderPath)
 	if st, err := devpack.StatusWorkbench(ctx, o); err == nil {
 		printWorkbenchLeftovers(w, st)
 	}
@@ -223,7 +223,7 @@ func runWorkbenchStatus(ctx context.Context, w io.Writer, p *db.Workbench, asJSO
 			Hook: st.Hook, StopHook: st.StopHook, MCP: st.MCP, ClaudeFound: st.ClaudeFound,
 		})
 	}
-	fmt.Fprintf(w, "Project %d (%s):\n", p.ID, p.FolderPath)
+	fmt.Fprintf(w, "Workbench %d (%s):\n", p.ID, p.FolderPath)
 	fmt.Fprintf(w, "  skill    %s%s\n", st.Skill.State, skillStateNote(st.Skill.State))
 	fmt.Fprintf(w, "  hook     %v\n", st.Hook)
 	fmt.Fprintf(w, "  stop     %v\n", st.StopHook)
