@@ -14,12 +14,13 @@ final class ChatMessageRowTests: XCTestCase {
         errorCode: String? = nil,
         errorMessage: String? = nil,
         provider: String? = nil,
-        siblings: Int = 1
+        siblings: Int = 1,
+        text: String = "body"
     ) throws -> ChatThreadItem {
         let db = try TestDatabase.create()
         let message = try db.write { d -> ChatMessageRecord in
             let conv = try TestDatabase.insertChatConversation(d)
-            let id = try TestDatabase.insertChatMessage(d, conversationID: conv, role: role, text: "body", status: status)
+            let id = try TestDatabase.insertChatMessage(d, conversationID: conv, role: role, text: text, status: status)
             try d.execute(sql: "UPDATE chat_messages SET error_code = ?, error_message = ?, provider = ? WHERE id = ?",
                           arguments: [errorCode, errorMessage, provider, id])
             return try XCTUnwrap(ChatMessageRecord.fetchOne(d, sql: "SELECT * FROM chat_messages WHERE id = ?", arguments: [id]))
@@ -92,6 +93,28 @@ final class ChatMessageRowTests: XCTestCase {
         try row.inspect().find(ViewType.Button.self) { try $0.accessibilityLabel().string() == "Quote in reply" }.tap()
         XCTAssertEqual(quoted?.0, base.id)
         XCTAssertEqual(quoted?.1, "body")
+    }
+
+    func testCopyAndQuoteTakeAQuestionCardAsTextNotJSON() throws {
+        let reply = """
+        Which one?
+        ```watchtower-question
+        {"questions": [{"question": "Pick a release", "options": [{"label": "v1"}, {"label": "v2"}]}]}
+        ```
+        """
+        var copied: String?
+        var quoted: String?
+        var actions = ChatRowActions()
+        actions.copy = { copied = $0 }
+        actions.quote = { quoted = $1 }
+        let row = ChatMessageRow(item: try item(role: "assistant", status: "complete", text: reply),
+                                 isLast: true, isEditing: false, actions: actions)
+        for label in ["Copy message", "Quote in reply"] {
+            try row.inspect().find(ViewType.Button.self) { try $0.accessibilityLabel().string() == label }.tap()
+        }
+        let expected = "Which one?\n\nPick a release\n- v1\n- v2"
+        XCTAssertEqual(copied, expected)
+        XCTAssertEqual(quoted, expected)
     }
 
     func testOwnerMessagesHaveNoQuoteButton() throws {

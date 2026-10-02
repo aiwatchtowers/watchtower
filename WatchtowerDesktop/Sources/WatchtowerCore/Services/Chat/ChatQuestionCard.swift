@@ -88,6 +88,19 @@ package enum ChatQuestionParser {
         return (visible.trimmingCharacters(in: .whitespacesAndNewlines), card)
     }
 
+    /// A finished reply as a person reads it — what Copy and Quote take: the
+    /// prose, then the card's questions and options as plain lines instead
+    /// of the raw JSON block.
+    package static func readableText(_ text: String) -> String {
+        let parsed = parse(text, final: true)
+        guard let card = parsed.card else { return parsed.text }
+        let questions = card.questions.map { question in
+            ([question.question] + question.options.map { "- \($0.label)\($0.recommended ? " (recommended)" : "")" })
+                .joined(separator: "\n")
+        }
+        return ([parsed.text].filter { !$0.isEmpty } + questions).joined(separator: "\n\n")
+    }
+
     /// The line that is exactly ``` after `start` (a newline); its range
     /// covers the leading newline and the fence.
     private static func closingFence(in text: String, from start: String.Index) -> Range<String.Index>? {

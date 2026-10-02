@@ -116,6 +116,9 @@ struct ChatMessageRow: View, Equatable {
     /// user message.
     private var userDisplayBody: String { ChatTurnComposer.displayParts(item.message.text).body }
 
+    /// A reply without its raw question-card JSON — what Copy and Quote take.
+    private var assistantReadableText: String { ChatQuestionParser.readableText(item.message.text) }
+
     private var editor: some View {
         VStack(alignment: .trailing, spacing: 6) {
             TextEditor(text: $editText)
@@ -134,7 +137,7 @@ struct ChatMessageRow: View, Equatable {
 
     private var actionBar: some View {
         HStack(spacing: 10) {
-            Button { actions.copy(item.message.isUser ? userDisplayBody : item.message.text) }
+            Button { actions.copy(item.message.isUser ? userDisplayBody : assistantReadableText) }
                 label: { Image(systemName: "doc.on.doc") }
                 .help("Copy message")
                 .accessibilityLabel("Copy message")
@@ -144,7 +147,7 @@ struct ChatMessageRow: View, Equatable {
                     .accessibilityLabel("Edit")
             } else if item.message.isAssistant {
                 if let quote = actions.quote {
-                    Button { quote(item.id, item.message.text) } label: { Image(systemName: "text.quote") }
+                    Button { quote(item.id, assistantReadableText) } label: { Image(systemName: "text.quote") }
                         .help("Quote in reply")
                         .accessibilityLabel("Quote in reply")
                 }
