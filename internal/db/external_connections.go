@@ -41,7 +41,10 @@ type ExternalConnection struct {
 type ExternalTool struct {
 	Name         string `json:"name"`
 	ReadOnlyHint bool   `json:"read_only_hint"`
-	Annotated    bool   `json:"annotated"`
+	// DestructiveHint is the server's explicit destructiveHint: true. It
+	// makes the tool a write even beside a (contradictory) readOnlyHint.
+	DestructiveHint bool `json:"destructive_hint,omitempty"`
+	Annotated       bool `json:"annotated"`
 }
 
 // externalConnectionColumns is the shared column list for

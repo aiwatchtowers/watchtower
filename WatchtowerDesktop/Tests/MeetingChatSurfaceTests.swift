@@ -141,4 +141,13 @@ final class MeetingChatSurfaceTests: XCTestCase {
         XCTAssertEqual(engine.messages.last?.message.text, "answer")
         XCTAssertEqual(engine.messages.last?.message.status, "complete")
     }
+
+    /// The question card is taught on this surface too (spec 2026-10-02).
+    func testSystemPromptTeachesTheQuestionCard() throws {
+        let transcript = try loadTranscript()
+        let prompt = MeetingChatSurface.buildSystemPrompt(
+            transcript: transcript, recapContent: nil, dbPool: dbManager.dbPool,
+            memoryChatEnabled: false, memoryVaultDir: nil, skillsDir: nil)
+        XCTAssertTrue(prompt.hasSuffix(ChatQuestionsContract.promptBlock))
+    }
 }

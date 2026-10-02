@@ -45,7 +45,7 @@ var mutatingWords = map[string]bool{
 // conjunction or a write verb.
 func IsReadOnly(t db.ExternalTool) bool {
 	if t.Annotated {
-		return t.ReadOnlyHint
+		return !IsAnnotatedWrite(t)
 	}
 	words := nameWords(t.Name)
 	if len(words) == 0 || !readVerbs[words[0]] {
@@ -84,11 +84,12 @@ func nameWords(name string) []string {
 }
 
 // IsAnnotatedWrite reports whether t's server declared it a write: it sent
-// annotations without readOnlyHint (the MCP default is false, and a
-// destructiveHint is meaningful only then). No owner allow list can admit
-// such a tool (QC-02 stays read-only until external writes get an Approve).
+// annotations without readOnlyHint (the MCP default is false), or with
+// destructiveHint: true. No owner allow list can admit such a tool — owner
+// decision 2026-10-02: external MCP writes stay impossible until they get an
+// Approve path (QC-02).
 func IsAnnotatedWrite(t db.ExternalTool) bool {
-	return t.Annotated && !t.ReadOnlyHint
+	return t.Annotated && (!t.ReadOnlyHint || t.DestructiveHint)
 }
 
 // ResolveTools splits c's listed tools into the names the chat may call and
