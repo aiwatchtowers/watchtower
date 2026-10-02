@@ -118,7 +118,7 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
 
     // MARK: - Switch guards
 
-    func testADirtyRefusalWaitsForTheOwnerWithNoSecondCall() async throws {
+    func testProj10_ADirtyRefusalWaitsForTheOwnerWithNoSecondCall() async throws {
         let runner = ScriptedCLIRunner(results: [
             .success(switchResult(#""switched":false,"needs_confirmation":["uncommitted_changes"],"changes":3"#))
         ])
@@ -132,7 +132,7 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
         XCTAssertNil(vm.gitErrors[project.id])
     }
 
-    func testConfirmResendsWithStash() async throws {
+    func testProj10_ConfirmResendsWithStash() async throws {
         let runner = ScriptedCLIRunner(results: [
             .success(switchResult(#""switched":false,"needs_confirmation":["uncommitted_changes"],"changes":3"#)),
             .success(switchResult(#""switched":true,"stashed":"37ec889","stash_message":"watchtower: switching from main to feature/x [d0a6]""#)),
@@ -150,7 +150,7 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
                        + "\"watchtower: switching from main to feature/x [d0a6]\" — get them back with git stash apply 37ec889.")
     }
 
-    func testCancelClearsThePendingSwitchWithNoCall() async {
+    func testProj10_CancelClearsThePendingSwitchWithNoCall() async {
         let runner = ScriptedCLIRunner(results: [
             .success(switchResult(#""switched":false,"needs_confirmation":["uncommitted_changes"]"#))
         ])
@@ -163,7 +163,7 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
 
     /// The dialog's dismissal clears the pending switch; the confirmation it
     /// showed still goes through.
-    func testTheShownConfirmationGoesThroughAfterTheDialogClearedIt() async throws {
+    func testProj10_TheShownConfirmationGoesThroughAfterTheDialogClearedIt() async throws {
         let runner = ScriptedCLIRunner(results: [
             .success(switchResult(#""switched":false,"needs_confirmation":["uncommitted_changes"]"#)),
             .success(switchResult(#""switched":true"#)),
@@ -178,7 +178,7 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
         XCTAssertEqual(runner.invocations[1], switchArgs(["--stash"]))
     }
 
-    func testALiveSessionIsReportedAndItsConfirmationResent() async throws {
+    func testProj10_ALiveSessionIsReportedAndItsConfirmationResent() async throws {
         let runner = ScriptedCLIRunner(results: [
             .success(switchResult(#""switched":false,"needs_confirmation":["agent_running"]"#)),
             .success(switchResult(#""switched":true"#)),
@@ -198,7 +198,7 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
     /// The owner confirmed the stash; a session started before the resend:
     /// the resend reports it (no `--confirm-agent` — the owner was not
     /// asked), Go asks, and confirming that keeps the stash.
-    func testASessionStartedAfterAStashConfirmationIsAskedAbout() async throws {
+    func testProj10_ASessionStartedAfterAStashConfirmationIsAskedAbout() async throws {
         let runner = ScriptedCLIRunner(results: [
             .success(switchResult(#""switched":false,"needs_confirmation":["uncommitted_changes"],"changes":3"#)),
             .success(switchResult(#""switched":false,"needs_confirmation":["agent_running"],"changes":3"#)),
@@ -222,7 +222,7 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
 
     /// Go asked about a live session; it exited before the owner confirmed:
     /// the resend reports no agent and confirms none.
-    func testASessionThatExitedBeforeTheConfirmationIsNotReported() async throws {
+    func testProj10_ASessionThatExitedBeforeTheConfirmationIsNotReported() async throws {
         let runner = ScriptedCLIRunner(results: [
             .success(switchResult(#""switched":false,"needs_confirmation":["agent_running"]"#)),
             .success(switchResult(#""switched":true"#)),
@@ -240,7 +240,7 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
 
     /// The workbench is a subfolder of its repository; a session at the
     /// repository root works in the files the switch swaps.
-    func testASessionAtTheRepositoryRootOfASubfolderWorkbenchIsReported() async throws {
+    func testProj10_ASessionAtTheRepositoryRootOfASubfolderWorkbenchIsReported() async throws {
         let sub = folder.appendingPathComponent("app", isDirectory: true)
         try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: true)
         let subPath = sub.path
@@ -277,7 +277,7 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
 
     /// Asked while on main; the folder moved to another branch (the agent,
     /// a terminal) before the owner answered: the question is stale.
-    func testAPendingConfirmationIsDroppedWhenTheBranchMoved() async {
+    func testProj10_APendingConfirmationIsDroppedWhenTheBranchMoved() async {
         let runner = ScriptedCLIRunner(results: [
             .success(status(branch: "main")),
             .success(switchResult(#""switched":false,"needs_confirmation":["uncommitted_changes"]"#)),
@@ -291,7 +291,7 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
         XCTAssertNil(vm.pendingBranchConfirmation[project.id])
     }
 
-    func testAPendingConfirmationIsDroppedOnceTheFolderIsOnItsBranch() async {
+    func testProj10_APendingConfirmationIsDroppedOnceTheFolderIsOnItsBranch() async {
         let runner = ScriptedCLIRunner(results: [
             .success(switchResult(#""switched":false,"needs_confirmation":["agent_running"]"#)),
             .success(status(branch: "feature/x"))
@@ -489,7 +489,7 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
                        + "`watchtower workbench git status` — the CLI and the app may be out of sync; update Watchtower")
     }
 
-    func testNoGitHidesTheButton() async {
+    func testProj10_NoGitHidesTheButton() async {
         let vm = makeVM(ScriptedCLIRunner(results: [.success(status(git: false))]))
         XCTAssertFalse(WorkbenchBranchPresentation.showsButton(vm.gitStatus[project.id]), "unknown status: no button")
         await vm.refreshGitStatus(projectID: project.id)

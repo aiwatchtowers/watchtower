@@ -594,7 +594,7 @@ final class WorkbenchGitDecodingTests: XCTestCase {
         XCTAssertEqual(refused.warning, "")
     }
 
-    func testUnknownConfirmationsAreKeptApart() throws {
+    func testProj10_UnknownConfirmationsAreKeptApart() throws {
         let result = try decode(WorkbenchGitSwitchResult.self,
                                 #"{"switched":false,"needs_confirmation":["agent_running","lfs_locked"]}"#)
         XCTAssertEqual(result.needsConfirmation, [.agentRunning])

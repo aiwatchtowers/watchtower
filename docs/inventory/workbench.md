@@ -512,13 +512,13 @@ attributed to Watchtower.
 - `internal/workbenchgit/status_test.go` — `TestReadStatus_NoGitOutsideARepository`,
   `TestReadStatus_GitUnavailableRunsNothing`, `TestReadStatus_RunsTheLocatedBinary`,
   `TestReadStatus_IgnoresInheritedRepositoryEnvironment`
-- `WatchtowerDesktop/Tests/WorkbenchesViewModelGitTests.swift` — `testADirtyRefusalWaitsForTheOwnerWithNoSecondCall`,
-  `testConfirmResendsWithStash`, `testCancelClearsThePendingSwitchWithNoCall`,
-  `testTheShownConfirmationGoesThroughAfterTheDialogClearedIt`, `testALiveSessionIsReportedAndItsConfirmationResent`,
-  `testASessionStartedAfterAStashConfirmationIsAskedAbout`, `testASessionThatExitedBeforeTheConfirmationIsNotReported`,
-  `testASessionAtTheRepositoryRootOfASubfolderWorkbenchIsReported`, `testAPendingConfirmationIsDroppedWhenTheBranchMoved`,
-  `testAPendingConfirmationIsDroppedOnceTheFolderIsOnItsBranch`, `testNoGitHidesTheButton`
-- `WatchtowerDesktop/Tests/Core/WorkbenchGitDecodingTests.swift::testUnknownConfirmationsAreKeptApart`
+- `WatchtowerDesktop/Tests/WorkbenchesViewModelGitTests.swift` — `testProj10_ADirtyRefusalWaitsForTheOwnerWithNoSecondCall`,
+  `testProj10_ConfirmResendsWithStash`, `testProj10_CancelClearsThePendingSwitchWithNoCall`,
+  `testProj10_TheShownConfirmationGoesThroughAfterTheDialogClearedIt`, `testProj10_ALiveSessionIsReportedAndItsConfirmationResent`,
+  `testProj10_ASessionStartedAfterAStashConfirmationIsAskedAbout`, `testProj10_ASessionThatExitedBeforeTheConfirmationIsNotReported`,
+  `testProj10_ASessionAtTheRepositoryRootOfASubfolderWorkbenchIsReported`, `testProj10_APendingConfirmationIsDroppedWhenTheBranchMoved`,
+  `testProj10_APendingConfirmationIsDroppedOnceTheFolderIsOnItsBranch`, `testProj10_NoGitHidesTheButton`
+- `WatchtowerDesktop/Tests/Core/WorkbenchGitDecodingTests.swift::testProj10_UnknownConfirmationsAreKeptApart`
 
 **Locked since:** — (proposed 2026-10-02; not locked until the owner approves)
 
