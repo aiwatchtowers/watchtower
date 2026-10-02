@@ -220,6 +220,60 @@ final class AppStateTests: XCTestCase {
 
     /// Connecting a source in Settings shows its tabs at once: the account
     /// VMs' reload hook re-reads the connected sources.
+    func testCalendarAndJiraReloadsRefreshConnectedSources() async throws {
+        let appState = AppState()
+        appState.databaseManager = dbManager
+        appState.initCalendarAccounts(dbPool: dbManager.dbPool)
+        appState.initJiraAccounts(dbPool: dbManager.dbPool)
+        let calendar = try XCTUnwrap(appState.calendarAccountsViewModel)
+        let jira = try XCTUnwrap(appState.jiraAccountsViewModel)
+
+        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertCalendarAccount(db) }
+        await calendar.refreshAsync()
+        XCTAssertEqual(appState.featureVisibility.connectedSources, ConnectedSources(calendar: true))
+
+        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertJiraAccount(db, cloudID: "c1") }
+        await jira.refreshAsync()
+        XCTAssertEqual(appState.featureVisibility.connectedSources, ConnectedSources(calendar: true, jira: true))
+    }
+
+    func testRemovedSlackAccountNoLongerCounts() async throws {
+        let appState = AppState()
+        appState.databaseManager = dbManager
+        appState.initSlackAccounts(dbPool: dbManager.dbPool)
+        let slack = try XCTUnwrap(appState.slackAccountsViewModel)
+        let id = try await dbManager.dbPool.write { db in try TestDatabase.insertSlackAccount(db, teamID: "T1") }
+        await slack.refreshAsync()
+        XCTAssertTrue(appState.featureVisibility.connectedSources.slack)
+
+        try await dbManager.dbPool.write { db in
+            try db.execute(sql: "UPDATE slack_accounts SET status = 'removed' WHERE id = ?", arguments: [id])
+        }
+        await slack.refreshAsync()
+        XCTAssertFalse(appState.featureVisibility.connectedSources.slack)
+    }
+
+    /// An existing DB with no accounts; onboarding connects Slack (through
+    /// the CLI, no VM reload); completion re-reads the sources, so Inbox
+    /// shows right away.
+    func testCompleteOnboardingRefreshesConnectedSources() async throws {
+        defer { UserDefaults.standard.removeObject(forKey: "onboarding_current_step") }
+        let appState = AppState()
+        appState.databaseManager = dbManager
+        await appState.refreshConnectedSources()
+        XCTAssertFalse(SidebarDestination.inbox.isVisible(
+            disabledFeatures: [], connected: appState.featureVisibility.connectedSources
+        ))
+
+        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertSlackAccount(db, teamID: "T1") }
+        appState.completeOnboarding()
+        await appState.connectedSourcesRefresh?.value
+
+        XCTAssertTrue(SidebarDestination.inbox.isVisible(
+            disabledFeatures: [], connected: appState.featureVisibility.connectedSources
+        ))
+    }
+
     func testAccountReloadRefreshesConnectedSources() async throws {
         let appState = AppState()
         appState.databaseManager = dbManager

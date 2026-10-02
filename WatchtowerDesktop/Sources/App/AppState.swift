@@ -726,6 +726,9 @@ final class AppState {
         if sidebarCountsViewModel == nil, let pool = databaseManager?.dbPool {
             Task { await initSidebarCounts(dbPool: pool) }
         }
+        // Sources onboarding connected (its account sheets may write through
+        // the CLI without a VM reload) must reach the sidebar now.
+        connectedSourcesRefresh = Task { await refreshConnectedSources() }
     }
 
     /// Re-runs the full launch bootstrap after onboarding completes or is skipped,
@@ -1034,6 +1037,12 @@ final class AppState {
         GoogleConnectFlow.shared.configure(dbPool: dbPool)
     }
 
+    @ObservationIgnored private var connectedSourcesGeneration = 0
+    @ObservationIgnored private var appliedConnectedSourcesGeneration = 0
+    /// The refresh `completeOnboarding()` kicked off — held so tests can
+    /// await it.
+    @ObservationIgnored private(set) var connectedSourcesRefresh: Task<Void, Never>?
+
     /// A Slack/Google/Jira account-list reload: re-resolves the owner
     /// (OWNER-02) and the connected sources the sidebar gates on.
     private func accountsChanged() async {
@@ -1044,10 +1053,19 @@ final class AppState {
     /// Re-reads which sources are connected, so a tab whose source was just
     /// connected (or removed) in Settings shows (or hides) at once. A failed
     /// read keeps the last value (logged), like `refreshOwner()`.
+    ///
+    /// Reads run off the main actor and can finish out of order; each one
+    /// takes a generation number and writes only if no later-started read
+    /// has written yet, so an older read never overwrites a newer one.
     func refreshConnectedSources() async {
         guard let pool = databaseManager?.dbPool else { return }
+        connectedSourcesGeneration += 1
+        let generation = connectedSourcesGeneration
         do {
-            featureVisibility.connectedSources = try await pool.read { db in try ConnectedSources.fetch(db) }
+            let sources = try await pool.read { db in try ConnectedSources.fetch(db) }
+            guard generation > appliedConnectedSourcesGeneration else { return }
+            appliedConnectedSourcesGeneration = generation
+            featureVisibility.connectedSources = sources
         } catch {
             print("[AppState] connected sources read failed, keeping the last value: \(error.localizedDescription)")
         }

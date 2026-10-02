@@ -115,7 +115,7 @@ Meeting prep is generated via the CLI (`watchtower meeting-prep [event-id|next] 
 
 **Sidebar** — Shows a compact "next event" indicator with time and title when calendar is connected. The Calendar tab is a top-level sidebar item right under Workbench, shown once a Google account with Calendar or a CalDAV/ICS calendar is connected (it is not in the collapsible FOCUS section and has no Hide menu — if you had hidden it there before, it shows again).
 
-**Not connected state** — When Google Calendar is not connected, the tab shows a prompt to connect in Settings.
+**Not connected** — With no calendar connected the Calendar tab is not in the sidebar at all; connect Google Calendar or a CalDAV/ICS calendar under Settings › Connections and it appears.
 
 **Settings** — The Google Calendar section under Settings › Connections › Google shows connection status and a "Sync days ahead" picker (3/5/7/14 days) when connected. Config fields: `calendar.sync_days_ahead` (default: 2), `calendar.history_days` (past days kept synced and shown in the Meetings list; default: 14).
 

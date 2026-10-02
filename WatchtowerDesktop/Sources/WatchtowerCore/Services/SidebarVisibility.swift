@@ -37,7 +37,11 @@ package struct ConnectedSources: Equatable, Sendable {
     }
 
     /// Reads the account tables. Removed Slack/Jira accounts don't count;
-    /// Google, IMAP and calendar accounts are deleted on removal.
+    /// Google, IMAP and calendar accounts are deleted on removal. A paused
+    /// account (`enabled = 0`, not removed) counts as connected on purpose:
+    /// its synced data is still there to show — unlike
+    /// `SlackAccountQueries.hasConnectedAccount`, which counts only enabled
+    /// accounts.
     package static func fetch(_ db: Database) throws -> Self {
         func any(_ sql: String) throws -> Bool {
             try Bool.fetchOne(db, sql: "SELECT EXISTS(\(sql))") ?? false

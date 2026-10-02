@@ -131,15 +131,23 @@ final class SidebarSectionTests: XCTestCase {
         XCTAssertTrue(SidebarDestination.digests.isVisible(disabledFeatures: ["stream-digests", "ideas"], connected: .all))
     }
 
+    /// Core tabs have neither gate: everything off, nothing connected.
     func testCoreTabsAlwaysVisible() {
         let everythingDisabled: Set<String> = [
             "slack-digests", "stream-digests", "ideas", "memory",
             "briefing", "day-plan", "tracks", "people-cards", "secretary-inbox"
         ]
-        XCTAssertTrue(SidebarDestination.inbox.isVisible(disabledFeatures: everythingDisabled, connected: .all))
-        XCTAssertTrue(SidebarDestination.targets.isVisible(disabledFeatures: everythingDisabled, connected: .all))
-        XCTAssertTrue(SidebarDestination.chat.isVisible(disabledFeatures: everythingDisabled, connected: .all))
-        XCTAssertTrue(SidebarDestination.calendar.isVisible(disabledFeatures: everythingDisabled, connected: .all))
+        XCTAssertTrue(SidebarDestination.targets.isVisible(disabledFeatures: everythingDisabled, connected: .none))
+        XCTAssertTrue(SidebarDestination.chat.isVisible(disabledFeatures: everythingDisabled, connected: .none))
+    }
+
+    /// Inbox and Calendar have no feature gate, only a source one.
+    func testInboxAndCalendarIgnoreFeaturesButNeedTheirSource() {
+        let everythingDisabled: Set<String> = ["secretary-inbox", "briefing", "day-plan"]
+        XCTAssertTrue(SidebarDestination.inbox.isVisible(disabledFeatures: everythingDisabled, connected: ConnectedSources(slack: true)))
+        XCTAssertFalse(SidebarDestination.inbox.isVisible(disabledFeatures: [], connected: .none))
+        XCTAssertTrue(SidebarDestination.calendar.isVisible(disabledFeatures: everythingDisabled, connected: ConnectedSources(calendar: true)))
+        XCTAssertFalse(SidebarDestination.calendar.isVisible(disabledFeatures: [], connected: .none))
     }
 
     func testRootItemTracksFilterable() {

@@ -237,7 +237,7 @@ struct SidebarView: View {
                     .frame(width: 6, height: 6)
             }
         } else if item == .calendar {
-            if !googleAuth.isConnected {
+            if !connectedSources.calendar {
                 Image(systemName: "exclamationmark.circle.fill")
                     .font(.caption)
                     .foregroundStyle(.orange)
@@ -554,10 +554,10 @@ struct SidebarView: View {
             count: count,
             overdue: overdueTaskCount > 0,
             dayPlanHasConflicts: appState.dayPlanViewModel?.hasConflicts == true,
-            calendarConnected: googleAuth.isConnected
+            calendarConnected: connectedSources.calendar
         )
         var help = Self.railHelp(title: item.title, count: count)
-        if item == .calendar, !googleAuth.isConnected {
+        if item == .calendar, !connectedSources.calendar {
             help += " · Google is not connected"
         }
         return Button {
