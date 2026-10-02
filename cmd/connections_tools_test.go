@@ -410,6 +410,29 @@ func TestQC02_AllowNeverAdmitsAnAnnotatedWrite(t *testing.T) {
 	assert.Equal(t, []string{"createIssue", "summarize"}, conn.AllowTools)
 }
 
+// TestQC02_AllowRefusesADestructiveTool: owner decision 2026-10-02 — a tool
+// the server marks destructiveHint: true is a write even beside readOnlyHint,
+// and no --allow unlocks it.
+func TestQC02_AllowRefusesADestructiveTool(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	id := insertStaticConnection(t, database, cfg)
+	require.NoError(t, database.SetExternalConnectionTools(id, []db.ExternalTool{
+		{Name: "getIssue", Annotated: true, ReadOnlyHint: true},
+		{Name: "purgeCache", Annotated: true, ReadOnlyHint: true, DestructiveHint: true},
+	}, time.Now().UTC().Format(time.RFC3339)))
+
+	_, err = runConnections(t, "", "tools", strconv.FormatInt(id, 10), "--allow", "getIssue,purgeCache")
+	require.ErrorContains(t, err, `"purgeCache" is a write tool`)
+
+	servers := loadExternalMCPServers(cfg, cfg.DBPath())
+	require.Len(t, servers, 1)
+	assert.Equal(t, []string{"getIssue"}, servers[0].AllowTools)
+	assert.Equal(t, []string{"purgeCache"}, servers[0].DenyTools)
+}
+
 // The Desktop reads `connections tools --json`: an annotated write carries
 // write:true (shown without a toggle), the empty states are [] not null, and
 // `--allow=` (no names) stores an explicit empty list — every tool off.
@@ -429,6 +452,7 @@ func TestConnectionsTools_JSONForTheDesktop(t *testing.T) {
 		{Name: "getIssue", Annotated: true, ReadOnlyHint: true},
 		{Name: "createIssue", Annotated: true},
 		{Name: "runQuery"},
+		{Name: "purgeCache", Annotated: true, ReadOnlyHint: true, DestructiveHint: true},
 	}, time.Now().UTC().Format(time.RFC3339)))
 	out, err = runConnections(t, "", "tools", idArg, "--json")
 	require.NoError(t, err, out)
@@ -438,6 +462,7 @@ func TestConnectionsTools_JSONForTheDesktop(t *testing.T) {
 		{Name: "getIssue", Allowed: true, ReadOnly: true},
 		{Name: "createIssue", Write: true},
 		{Name: "runQuery"},
+		{Name: "purgeCache", Write: true},
 	}, wire.Tools)
 
 	// The Desktop passes `--allow=`, which a fresh process parses to an empty,

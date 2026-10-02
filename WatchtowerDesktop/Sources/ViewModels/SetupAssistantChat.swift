@@ -42,6 +42,8 @@ final class SetupAssistantChat<Snapshot, Patch> {
     ) {
         self.greeting = greeting
         self.connectionErrorLead = connectionErrorLead
+        // The question card works here too: "Which calendar?" as a click.
+        let systemPrompt = systemPrompt + "\n\n" + ChatQuestionsContract.promptBlock
         let key = EmbeddedChatKey(contextType: "setup", contextID: contextID, conversationID: nil)
         engine = EmbeddedChatEngine(
             spec: ChatSurfaceSpec(key: key, persistence: .memory, toolAccess: .draftOnly,

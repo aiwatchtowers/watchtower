@@ -125,6 +125,6 @@ enum IdeaChatSurface {
         === RESPONSE STYLE ===
         - Match the user's language in conversation.
         - Be concise; this is a working discussion, not a report.
-        """ + skillsSuffix
+        """ + skillsSuffix + "\n\n" + ChatQuestionsContract.promptBlock
     }
 }

@@ -16,12 +16,20 @@ struct ChatRowActions {
     var openArtifact: (String) -> Void = { _ in }
     var openSources: (Int64, [ChatSource]) -> Void = { _, _ in }
     var quote: ((Int64, String) -> Void)? = { _, _ in }
+    /// Sends a question card's answers as the owner's next message; nil
+    /// while the card cannot be answered (an older reply, a turn running).
+    var answerQuestion: ((String) -> Void)?
 
     /// An embedded chat's row: Copy always, Retry only where the caller
-    /// passes one (the last failed reply).
-    static func embedded(copy: @escaping (String) -> Void, retry: ((Int64) -> Void)?) -> Self {
+    /// passes one (the last failed reply), answering a question card only on
+    /// the latest reply.
+    static func embedded(
+        copy: @escaping (String) -> Void,
+        retry: ((Int64) -> Void)?,
+        answerQuestion: ((String) -> Void)? = nil
+    ) -> Self {
         Self(copy: copy, regenerate: nil, retry: retry, continueStopped: nil, showVariant: nil,
-             beginEdit: nil, quote: nil)
+             beginEdit: nil, quote: nil, answerQuestion: answerQuestion)
     }
 }
 
@@ -33,6 +41,8 @@ struct ChatMessageRow: View, Equatable {
     let isEditing: Bool
     let actions: ChatRowActions
     var artifactVersions: [String: Int] = [:]
+    /// The owner message that followed this reply — answers a question card.
+    var questionAnswer: String?
     @State private var hovering = false
     @State private var editText = ""
 
@@ -42,6 +52,8 @@ struct ChatMessageRow: View, Equatable {
             // Retry comes and goes on an embedded chat's failed reply (it
             // hides while a turn runs or waits): its presence is data.
             && (lhs.actions.retry == nil) == (rhs.actions.retry == nil)
+            && lhs.questionAnswer == rhs.questionAnswer
+            && (lhs.actions.answerQuestion == nil) == (rhs.actions.answerQuestion == nil)
     }
 
     var body: some View {
@@ -59,9 +71,9 @@ struct ChatMessageRow: View, Equatable {
             if isEditing { editor } else { UserMessageBubble(text: item.message.text, attachments: item.attachments) }
         } else if item.message.isAssistant {
             AssistantMessageBody(text: item.message.text, steps: item.stepDisplays, isRunning: false,
-                                 versions: artifactVersions, onOpenArtifact: actions.openArtifact) {
-                actions.openSources(item.id, item.sources)
-            }
+                                 versions: artifactVersions, onOpenArtifact: actions.openArtifact,
+                                 onOpenSources: { actions.openSources(item.id, item.sources) },
+                                 questionAnswer: questionAnswer, onAnswerQuestion: actions.answerQuestion)
             statusCard
         } else {
             Text(item.message.text).font(.caption).foregroundStyle(.tertiary).frame(maxWidth: .infinity)
@@ -179,8 +191,12 @@ struct LiveAssistantRow: View {
     var onStreamingTextChanged: (String) -> Void = { _ in }
 
     var body: some View {
+        // Labelled: the question-card closures follow onOpenSources.
+        // swiftlint:disable trailing_closure
         AssistantMessageBody(text: turn.text, steps: turn.steps, isRunning: turn.isRunning,
-                             onOpenArtifact: onOpenArtifact) { onOpenSources(turn.steps.flatMap(\.sources)) }
+                             onOpenArtifact: onOpenArtifact,
+                             onOpenSources: { onOpenSources(turn.steps.flatMap(\.sources)) })
+        // swiftlint:enable trailing_closure
             .onChange(of: turn.text, initial: true) { _, newValue in onStreamingTextChanged(newValue) }
     }
 }
@@ -199,14 +215,20 @@ struct AssistantMessageBody: View {
     var versions: [String: Int] = [:]
     var onOpenArtifact: (String) -> Void = { _ in }
     var onOpenSources: () -> Void = {}
+    /// A question card's answer (the next owner message) and its sender.
+    var questionAnswer: String?
+    var onAnswerQuestion: ((String) -> Void)?
 
     var body: some View {
+        // A question card leaves the text; while streaming its open block is
+        // hidden (ChatQuestionParser).
+        let question = ChatQuestionParser.parse(text, final: !isRunning)
         VStack(alignment: .leading, spacing: 8) {
             StepsBlockView(steps: steps, isRunning: isRunning)
-            if text.isEmpty && isRunning {
+            if question.text.isEmpty && isRunning {
                 StreamingIndicator()
             } else {
-                let parsed = ArtifactParser.parse(text, final: !isRunning)
+                let parsed = ArtifactParser.parse(question.text, final: !isRunning)
                 ForEach(Array(parsed.segments.enumerated()), id: \.offset) { _, segment in
                     switch segment {
                     case .markdown(let markdown):
@@ -216,6 +238,9 @@ struct AssistantMessageBody: View {
                                          version: versions[draft.key]) { onOpenArtifact(draft.key) }
                     }
                 }
+            }
+            if let card = question.card {
+                ChatQuestionCardView(card: card, answerText: questionAnswer, onAnswer: onAnswerQuestion)
             }
             if !isRunning {
                 SourcesSummaryRow(sources: steps.flatMap(\.sources), onOpen: onOpenSources)
