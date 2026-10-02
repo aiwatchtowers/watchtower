@@ -40,9 +40,9 @@ func TestMCPTurnBinding(t *testing.T) {
 // resetMCPFlags restores the mcp command's package-level flags after a test.
 func resetMCPFlags(t *testing.T) {
 	t.Helper()
-	chat, project := mcpFlagChat, mcpFlagWorkbench
-	t.Cleanup(func() { mcpFlagChat, mcpFlagWorkbench = chat, project })
-	mcpFlagChat, mcpFlagWorkbench = false, 0
+	chat, project, chatProject := mcpFlagChat, mcpFlagWorkbench, mcpFlagChatProject
+	t.Cleanup(func() { mcpFlagChat, mcpFlagWorkbench, mcpFlagChatProject = chat, project, chatProject })
+	mcpFlagChat, mcpFlagWorkbench, mcpFlagChatProject = false, 0, 0
 }
 
 func openMCPTestDB(t *testing.T) *db.DB {
@@ -123,6 +123,43 @@ func TestMCPProjectMode_BindsTheProjectAndAppliesDirectly(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, board, 1)
 	assert.Equal(t, "Feature X", board[0].Target.Text)
+}
+
+// Board #209: `mcp --chat --chat-project N` binds the chat project, so
+// search_knowledge resolves that project's pins; --chat-project without
+// --chat is refused.
+func TestMCPChatMode_BindsTheChatProject(t *testing.T) {
+	resetMCPFlags(t)
+	database := openMCPTestDB(t)
+	cfg := &config.Config{ActiveWorkspace: "test-ws"}
+	res, err := database.Exec(`INSERT INTO chat_projects (name, created_at, updated_at) VALUES ('p', 1, 1)`)
+	require.NoError(t, err)
+	pid, err := res.LastInsertId()
+	require.NoError(t, err)
+
+	mcpFlagChatProject = pid
+	_, err = mcpModeOptions(cfg, database, "", nil)
+	assert.ErrorContains(t, err, "--chat-project requires --chat")
+
+	mcpFlagChat = true
+	opts, err := mcpModeOptions(cfg, database, "t1", nil)
+	require.NoError(t, err)
+	_, ls := localToolNames(t, database, opts)
+	text, isErr, err := ls.Call(context.Background(), "search_knowledge", map[string]any{
+		"queries": []any{"x"}, "workbench_scope": "only",
+	})
+	require.NoError(t, err)
+	assert.True(t, isErr)
+	assert.Contains(t, text, "this chat project has no usable", "the session is bound to the chat project")
+}
+
+func TestSessionMCPArgs_PassesTheChatProject(t *testing.T) {
+	conv := &db.ChatConversation{ID: 5}
+	assert.NotContains(t, sessionMCPArgs("main", conv, "/tmp/turn", 0), "--chat-project")
+	args := sessionMCPArgs("main", conv, "/tmp/turn", 9)
+	i := slices.Index(args, "--chat-project")
+	require.GreaterOrEqual(t, i, 0)
+	assert.Equal(t, "9", args[i+1])
 }
 
 func TestMCPProjectMode_RefusesMissingProjectAndChat(t *testing.T) {

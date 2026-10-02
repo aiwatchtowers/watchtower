@@ -96,7 +96,7 @@ func runAISession(cmd *cobra.Command, _ []string) error {
 		return fail(chat.CodeInternal, fmt.Sprintf("creating the turn file: %v", err))
 	}
 	defer os.Remove(turnFile)
-	mcpArgs := sessionMCPArgs(aiSessionFlagSurface, conv, turnFile)
+	mcpArgs := sessionMCPArgs(aiSessionFlagSurface, conv, turnFile, aiSessionFlagProjectID)
 
 	var project *db.ChatProjectContext
 	if aiSessionFlagProjectID > 0 {
@@ -108,7 +108,7 @@ func runAISession(cmd *cobra.Command, _ []string) error {
 	backend, err := newSessionBackend(sessionWiring{
 		cfg: cfg, database: database, dbPath: dbPath, conv: conv,
 		model: model, prompt: prompt, mcpArgs: mcpArgs, turnFile: turnFile,
-		project: project, warn: cmd.ErrOrStderr(),
+		project: project, chatProjectID: aiSessionFlagProjectID, warn: cmd.ErrOrStderr(),
 	})
 	if err != nil {
 		return fail(chat.CodeProviderUnavailable, err.Error())
@@ -155,12 +155,16 @@ func openAISessionConversation(convID int64, dbPathFlag string) (*config.Config,
 }
 
 // sessionMCPArgs are the chat-mode MCP server's arguments: the running turn
-// is read from turnFile at propose time (spec §1.2).
-func sessionMCPArgs(surface string, conv *db.ChatConversation, turnFile string) []string {
+// is read from turnFile at propose time (spec §1.2); a project chat passes
+// its chat project on so search_knowledge prefers the pinned sources.
+func sessionMCPArgs(surface string, conv *db.ChatConversation, turnFile string, chatProjectID int64) []string {
 	args := []string{"--chat", "--surface", surface,
 		"--conversation", strconv.FormatInt(conv.ID, 10), "--turn-file", turnFile}
 	if conv.ContextType != "" {
 		args = append(args, "--context-type", conv.ContextType, "--context-id", conv.ContextID)
+	}
+	if chatProjectID > 0 {
+		args = append(args, "--chat-project", strconv.FormatInt(chatProjectID, 10))
 	}
 	return args
 }
@@ -188,7 +192,10 @@ type sessionWiring struct {
 	mcpArgs  []string
 	turnFile string
 	project  *db.ChatProjectContext // nil = not a project chat
-	warn     io.Writer              // skipped project files are named here
+	// chatProjectID is the --project-id the session runs under (0 = none);
+	// the in-process (ollama) registry binds it like the MCP server does.
+	chatProjectID int64
+	warn          io.Writer // skipped project files are named here
 }
 
 // newSessionBackend picks the provider backend for `ai session`.
@@ -217,7 +224,7 @@ func newSessionBackend(w sessionWiring) (chat.Backend, error) {
 		binding := tools.Binding{
 			Surface: aiSessionFlagSurface, ConversationID: w.conv.ID,
 			ContextType: w.conv.ContextType, ContextID: w.conv.ContextID,
-			TurnIDFunc: chat.TurnFileReader(w.turnFile),
+			TurnIDFunc: chat.TurnFileReader(w.turnFile), ChatProjectID: w.chatProjectID,
 		}
 		loop := agentloop.NewClient(w.model, w.cfg.AI.OllamaURL, buildToolRegistry(w.cfg, w.database), binding)
 		return chat.NewTurnBackend(loop, w.database, w.conv.ID, chat.WithSystemPrompt(w.prompt)), nil

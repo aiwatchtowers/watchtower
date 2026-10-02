@@ -7,13 +7,14 @@ package enum ChatEntityKind: String, CaseIterable, Sendable {
     case channel
     case jiraIssue = "jira"
     case jiraProject = "jira_project"
+    case confluenceSpace = "confluence_space"
     case target
     case track
 }
 
 /// One local-DB entity found by a prefix search. `ref` is the id the model's
 /// `get_*` tools take: a namespaced Slack user/channel id, an issue key, a
-/// project key, or a target/track row id.
+/// project key, a Confluence space key, or a target/track row id.
 package struct ChatEntityHit: Equatable, Hashable, Sendable {
     package let kind: ChatEntityKind
     package let ref: String
@@ -36,6 +37,7 @@ extension ChatProjectSource.Kind {
         case .person: self = .person
         case .channel: self = .slackChannel
         case .jiraProject: self = .jiraProject
+        case .confluenceSpace: self = .confluenceSpace
         case .target: self = .target
         case .track: self = .track
         case .jiraIssue: return nil
@@ -45,7 +47,7 @@ extension ChatProjectSource.Kind {
 
 /// Prefix search over the local DB (spec §6.2: people, Slack channels, Jira
 /// issues, targets, tracks — prefix match, 8 results), plus Jira project keys
-/// for the project source picker. Pure reads; every function is bounded by
+/// and Confluence spaces for the project source picker. Pure reads; every function is bounded by
 /// `limit`.
 package enum ChatEntitySearch {
     package static let defaultLimit = 8
@@ -58,6 +60,7 @@ package enum ChatEntitySearch {
         case .channel: return try channels(db, query: query, limit: limit)
         case .jiraIssue: return try jiraIssues(db, query: query, limit: limit)
         case .jiraProject: return try jiraProjects(db, query: query, limit: limit)
+        case .confluenceSpace: return try confluenceSpaces(db, query: query, limit: limit)
         case .target: return try targets(db, query: query, limit: limit)
         case .track: return try tracks(db, query: query, limit: limit)
         }
@@ -146,6 +149,35 @@ package enum ChatEntitySearch {
             return ChatEntityHit(
                 kind: .jiraProject, ref: row["project_key"], label: row["project_key"],
                 detail: count == 1 ? "1 issue" : "\(count) issues"
+            )
+        }
+    }
+
+    /// The synced Confluence spaces (`ext_sources`), by key prefix or name
+    /// word prefix. A key two sites share is one hit — search scopes a space
+    /// by key alone (Go `kb.Scope`).
+    package static func confluenceSpaces(_ db: Database, query: String, limit: Int = defaultLimit) throws -> [ChatEntityHit] {
+        let name = PrefixMatch(query).clause(columns: ["container_name"])
+        let keyPattern = PrefixMatch.escape(query.trimmingCharacters(in: .whitespaces).uppercased()) + "%"
+        var args: StatementArguments = [keyPattern]
+        args += StatementArguments(name.args)
+        args += [limit]
+        let rows = try Row.fetchAll(
+            db,
+            sql: """
+                SELECT upper(container_key) AS space_key, MAX(container_name) AS name FROM ext_sources
+                WHERE provider = 'confluence' AND (upper(container_key) LIKE ? ESCAPE '\\' OR \(name.sql))
+                GROUP BY upper(container_key)
+                ORDER BY space_key
+                LIMIT ?
+                """,
+            arguments: args
+        )
+        return rows.map { row in
+            let key: String = row["space_key"]
+            let name: String = row["name"]
+            return ChatEntityHit(
+                kind: .confluenceSpace, ref: key, label: name.isEmpty ? key : name, detail: "Confluence space " + key
             )
         }
     }

@@ -2108,7 +2108,7 @@ CREATE INDEX IF NOT EXISTS idx_chat_artifact_comments_key ON chat_artifact_comme
 CREATE TABLE IF NOT EXISTS chat_project_sources (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id INTEGER NOT NULL REFERENCES chat_projects(id) ON DELETE CASCADE,
-    kind       TEXT NOT NULL CHECK(kind IN ('jira_project','slack_channel','target','track','person')),
+    kind       TEXT NOT NULL CHECK(kind IN ('jira_project','slack_channel','confluence_space','target','track','person')),
     ref        TEXT NOT NULL,
     label      TEXT NOT NULL DEFAULT '',
     UNIQUE(project_id, kind, ref)

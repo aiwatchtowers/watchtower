@@ -3,7 +3,7 @@ import SwiftUI
 import WatchtowerCore
 
 /// Picks one entity to pin as a project source (spec §6.1): a Jira project,
-/// Slack channel, target, track or person, from the local DB.
+/// Slack channel, Confluence space, target, track or person, from the local DB.
 struct ProjectSourcePickerSheet: View {
     let dbPool: DatabasePool
     let onPick: (ChatEntityHit) -> Void
@@ -14,7 +14,7 @@ struct ProjectSourcePickerSheet: View {
     @State private var searchError: String?
 
     private static let kinds: [(ChatEntityKind, String)] = [
-        (.jiraProject, "Jira project"), (.channel, "Slack channel"),
+        (.jiraProject, "Jira project"), (.channel, "Slack channel"), (.confluenceSpace, "Confluence"),
         (.target, "Target"), (.track, "Track"), (.person, "Person")
     ]
 
@@ -58,7 +58,7 @@ struct ProjectSourcePickerSheet: View {
             }
         }
         .padding(16)
-        .frame(width: 460)
+        .frame(width: 540)
         .onAppear(perform: runSearch)
         .onChange(of: kind) { runSearch() }
         .onChange(of: query) { runSearch() }

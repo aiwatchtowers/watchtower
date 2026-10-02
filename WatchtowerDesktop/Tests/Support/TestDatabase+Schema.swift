@@ -1275,14 +1275,6 @@ CREATE TABLE IF NOT EXISTS chat_artifacts (
     created_at      REAL NOT NULL,
     UNIQUE(conversation_id, artifact_key, version)
 );
-CREATE TABLE IF NOT EXISTS chat_project_sources (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    project_id INTEGER NOT NULL REFERENCES chat_projects(id) ON DELETE CASCADE,
-    kind       TEXT NOT NULL CHECK(kind IN ('jira_project','slack_channel','target','track','person')),
-    ref        TEXT NOT NULL,
-    label      TEXT NOT NULL DEFAULT '',
-    UNIQUE(project_id, kind, ref)
-);
 CREATE VIRTUAL TABLE IF NOT EXISTS chat_fts USING fts5(
     text,
     content='chat_messages', content_rowid='id',
@@ -1538,6 +1530,14 @@ CREATE TABLE IF NOT EXISTS jira_linked_issues (
     fetch_error           TEXT NOT NULL DEFAULT '',
     synced_at             TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (account_id, key)
+);
+CREATE TABLE IF NOT EXISTS "chat_project_sources" (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES chat_projects(id) ON DELETE CASCADE,
+    kind       TEXT NOT NULL CHECK(kind IN ('jira_project','slack_channel','confluence_space','target','track','person')),
+    ref        TEXT NOT NULL,
+    label      TEXT NOT NULL DEFAULT '',
+    UNIQUE(project_id, kind, ref)
 );
 CREATE INDEX IF NOT EXISTS idx_users_name ON users(name);
 CREATE INDEX IF NOT EXISTS idx_users_is_bot ON users(is_bot);

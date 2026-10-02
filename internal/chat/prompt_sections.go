@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -295,14 +296,24 @@ func writePinnedSources(b *strings.Builder, sources []db.ChatProjectSource) {
 		return
 	}
 	b.WriteString("Pinned sources (prefer these when relevant):\n")
+	searchable := false
 	for _, s := range sources {
 		line := "- " + oneLine(s.Kind, maxFieldRunes) + ": " + oneLine(s.Ref, maxFieldRunes)
 		if s.Label != "" {
 			line += " (" + oneLine(s.Label, maxFieldRunes) + ")"
 		}
 		b.WriteString(line + "\n")
+		searchable = searchable || slices.Contains(scopedSourceKinds, s.Kind)
+	}
+	if searchable {
+		b.WriteString("search_knowledge already ranks hits from the pinned Slack channels, Jira projects and " +
+			"Confluence spaces first (marked in_scope); pass workbench_scope: \"only\" to search just them.\n")
 	}
 }
+
+// scopedSourceKinds are the pinned-source kinds search_knowledge's scope
+// resolves (tools.ChatProjectKnowledgeScope); the others are prompt-only.
+var scopedSourceKinds = []string{"slack_channel", "jira_project", "confluence_space"}
 
 // writeProjectTextFiles inlines text files until ProjectFilesCapChars and
 // names the overflowing and unreadable ones.
