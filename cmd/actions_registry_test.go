@@ -90,11 +90,11 @@ func TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces(t *testing.T) {
 		assert.False(t, reaction[w], "%s has no reacted message to act on", w)
 	}
 
-	// The project surface (`mcp --project N`, DEV-06): exactly the project
+	// The workbench surface (`mcp --workbench N`, DEV-06): exactly the workbench
 	// tools plus the surface-less read tools — no other write tool, nothing
-	// External — and no project tool leaks onto another surface.
+	// External — and no workbench tool leaks onto another surface.
 	projectTools := []string{
-		"project_info", "project_board", "update_project", "add_project_source", "remove_project_source",
+		"workbench_info", "workbench_board", "update_workbench", "add_workbench_source", "remove_workbench_source",
 		"create_targets", "update_target", "attach_document", "list_comments", "add_comment", "resolve_comment",
 	}
 	project := names("project")

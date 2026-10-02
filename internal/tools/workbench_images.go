@@ -30,14 +30,14 @@ func validateImagePaths(field string, paths []string) error {
 	return nil
 }
 
-// ingestedImages is what one call copied into the project's directory, by
+// ingestedImages is what one call copied into the workbench's directory, by
 // the argument path it came from.
 type ingestedImages struct {
 	store  workbenchfiles.Store
 	byPath map[string]workbenchfiles.Image
 }
 
-// ingestImages copies every path into project projectID's directory before
+// ingestImages copies every path into workbench projectID's directory before
 // any row is written, so a refused file fails the whole call with nothing
 // on the board. A copy already there (same content) is reused.
 func ingestImages(d *db.DB, store workbenchfiles.Store, projectID int64, paths []string) (*ingestedImages, error) {
@@ -103,7 +103,7 @@ func (in *ingestedImages) undo(d *db.DB, projectID int64, writeErr error) error 
 	return fmt.Errorf("%w%s", writeErr, note)
 }
 
-// discardUnreferenced removes those of paths that no row of the project
+// discardUnreferenced removes those of paths that no row of the workbench
 // names — the copies of detached images, or of a failed write.
 func discardUnreferenced(d *db.DB, store workbenchfiles.Store, projectID int64, paths []string) error {
 	if len(paths) == 0 {

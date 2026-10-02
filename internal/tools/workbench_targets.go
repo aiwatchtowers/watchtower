@@ -20,7 +20,7 @@ type newTargetItem struct {
 	Text      string   `json:"text" jsonschema:"the target title, imperative, at most 200 characters"`
 	Intent    string   `json:"intent,omitempty" jsonschema:"why it matters / what done means; for a plan task, the plan path and task number"`
 	Priority  string   `json:"priority,omitempty" jsonschema:"high | medium | low; default medium"`
-	ParentID  int64    `json:"parent_id,omitempty" jsonschema:"an existing target of this project to nest under"`
+	ParentID  int64    `json:"parent_id,omitempty" jsonschema:"an existing target of this workbench to nest under"`
 	ParentKey string   `json:"parent_key,omitempty" jsonschema:"the key of an EARLIER item in this call to nest under"`
 	Images    []string `json:"images,omitempty" jsonschema:"absolute paths of image files (PNG, JPEG, GIF or WebP, at most 5 MB each) to attach, e.g. a screenshot the owner shared in the message this target comes from; Watchtower keeps its own copy"`
 	Branch    string   `json:"branch,omitempty" jsonschema:"the local git branch the work happens on (e.g. feature/x, no origin/ prefix), if already known"`
@@ -37,16 +37,16 @@ type createdTarget struct {
 	TargetID int64  `json:"target_id"`
 }
 
-// NewCreateTargets creates a batch of project targets in one transaction —
+// NewCreateTargets creates a batch of workbench targets in one transaction —
 // a whole plan in one call. Nesting is by parent_id (an existing target of
-// the project) or parent_key (an earlier item). An item's images are copied
+// the workbench) or parent_key (an earlier item). An item's images are copied
 // into store before the transaction. All or nothing.
 func NewCreateTargets(store workbenchfiles.Store) *Tool {
 	return &Tool{
 		Name: "create_targets",
-		Description: "Create targets on this project's board in one all-or-nothing call — e.g. a feature " +
+		Description: "Create targets on this workbench's board in one all-or-nothing call — e.g. a feature " +
 			"target plus one sub-target per plan task. Nest with parent_id (an existing target of this " +
-			"project) or parent_key (the key of an earlier item in the same call). Optional priority " +
+			"workbench) or parent_key (the key of an earlier item in the same call). Optional priority " +
 			"high | medium | low (default medium). Optional images: absolute paths of image files to " +
 			"attach to that target (PNG, JPEG, GIF or WebP, at most 5 MB each); the git branch / pull request " +
 			"carrying the work (branch, pr). Applied immediately.",
@@ -160,7 +160,7 @@ func validBranchName(b string) bool {
 	return b != "@"
 }
 
-// scopeTargetItems checks every parent_id belongs to the bound project.
+// scopeTargetItems checks every parent_id belongs to the bound workbench.
 func scopeTargetItems(ctx context.Context, d *db.DB, items []newTargetItem, b Binding) error {
 	if _, err := workbenchOf(ctx, d, b); err != nil {
 		return err
@@ -241,7 +241,7 @@ func targetInputs(items []newTargetItem) []db.WorkbenchTargetInput {
 // ---- update_target -----------------------------------------------------
 
 type updateTargetArgs struct {
-	TargetID int64    `json:"target_id" jsonschema:"the project target to change"`
+	TargetID int64    `json:"target_id" jsonschema:"the workbench target to change"`
 	Status   string   `json:"status,omitempty" jsonschema:"todo | in_progress | in_review | blocked | done | dismissed"`
 	Progress *float64 `json:"progress,omitempty" jsonschema:"0.0 to 1.0; set after status (a status change resets a leaf's progress)"`
 	Text     string   `json:"text,omitempty" jsonschema:"new title, at most 200 characters"`
@@ -255,13 +255,13 @@ type updateTargetArgs struct {
 	Reason         string   `json:"reason" jsonschema:"one sentence: why, e.g. 'task 3 passed review'"`
 }
 
-// NewUpdateTarget changes one project target's status, progress, title,
+// NewUpdateTarget changes one workbench target's status, progress, title,
 // intent or priority, and attaches or detaches its images (copied into
 // store).
 func NewUpdateTarget(store workbenchfiles.Store) *Tool {
 	return &Tool{
 		Name: "update_target",
-		Description: "Change a target on this project's board: status (todo, in_progress, in_review, blocked, done, " +
+		Description: "Change a target on this workbench's board: status (todo, in_progress, in_review, blocked, done, " +
 			"dismissed; in_review while the work is being reviewed), progress (0..1), title, intent or priority (high, medium, low); " +
 			"attach images (add_images: absolute paths of PNG, JPEG, GIF or WebP files, at most 5 MB each) or detach them " +
 			"(remove_image_ids, from get_target); set the git branch / pull request carrying the work (branch, pr; " +

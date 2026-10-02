@@ -15,13 +15,31 @@ import (
 
 type searchKnowledgeArgs struct {
 	Queries []string `json:"queries" jsonschema:"1-5 search queries: the key terms, synonyms, both Russian and English variants, and word stems ending in * for Russian word forms (e.g. договор*)"`
-	Sources []string `json:"sources,omitempty" jsonschema:"optional filter: slack, gmail, imap, jira, confluence, calendar, transcript, recap, digest, stream_digest, idea, project_doc (this project's attached documents; project sessions only)"`
+	Sources []string `json:"sources,omitempty" jsonschema:"optional filter: slack, gmail, imap, jira, confluence, calendar, transcript, recap, digest, stream_digest, idea, project_doc (this workbench's attached documents; workbench sessions only)"`
 	From    string   `json:"from,omitempty" jsonschema:"only documents active on/after this date (YYYY-MM-DD)"`
 	To      string   `json:"to,omitempty" jsonschema:"only documents active on/before this date (YYYY-MM-DD)"`
 	Limit   int      `json:"limit,omitempty" jsonschema:"max documents, 0 = default (10), capped at 25"`
-	// ProjectScope is honoured only in a project session (watchtower mcp
-	// --project N); elsewhere a value is refused rather than ignored.
-	ProjectScope string `json:"project_scope,omitempty" jsonschema:"project sessions only: boost (default) ranks hits from this project's Slack channels, Jira projects and Confluence spaces first (marked in_scope) and drops nothing; only returns just those; off ignores them"`
+	// WorkbenchScope is honoured only in a workbench session (watchtower mcp
+	// --workbench N); elsewhere a value is refused rather than ignored.
+	WorkbenchScope string `json:"workbench_scope,omitempty" jsonschema:"workbench sessions only: boost (default) ranks hits from this workbench's Slack channels, Jira projects and Confluence spaces first (marked in_scope) and drops nothing; only returns just those; off ignores them"`
+	// ProjectScope is WorkbenchScope's pre-rename name, still sent by the
+	// skill of a folder set up before the Workbench rename. It must stay in
+	// the schema — the MCP SDK refuses an argument the schema does not name.
+	ProjectScope string `json:"project_scope,omitempty" jsonschema:"deprecated alias of workbench_scope"`
+}
+
+// scope is the workbench scope mode the call asked for, under either
+// spelling, and the argument name it used (for a message that names it
+// back). Both at once is refused: the two could disagree.
+func (a searchKnowledgeArgs) scope() (mode, arg string, err error) {
+	switch {
+	case a.WorkbenchScope != "" && a.ProjectScope != "":
+		return "", "", &ValidationError{Msg: "project_scope is the old name of workbench_scope; pass one"}
+	case a.ProjectScope != "":
+		return a.ProjectScope, "project_scope", nil
+	default:
+		return a.WorkbenchScope, "workbench_scope", nil
+	}
 }
 
 type getKnowledgeDocumentArgs struct {
@@ -39,8 +57,8 @@ func NewSearchKnowledge() *Tool {
 			"relevance. Pass several queries (synonyms, Russian and English variants, stems with *). Returns " +
 			"documents with snippets, a ref for get_knowledge_document, the best-matching chunk (open the " +
 			"document there with from_chunk) with its chunk_anchor (e.g. the Slack message ts), and a source " +
-			"anchor and permalink for links. In a project session, hits from the project's own sources rank " +
-			"first and carry in_scope (project_scope: only or off to change that), and the project's attached " +
+			"anchor and permalink for links. In a workbench session, hits from the workbench's own sources rank " +
+			"first and carry in_scope (workbench_scope: only or off to change that), and the workbench's attached " +
 			"documents (source project_doc) are searchable too.",
 		InputSchema: mustSchema[searchKnowledgeArgs]("search_knowledge"),
 		Access:      AccessRead,
@@ -49,11 +67,11 @@ func NewSearchKnowledge() *Tool {
 			if err := json.Unmarshal(call.Args, &a); err != nil {
 				return nil, &ValidationError{Msg: "invalid arguments"}
 			}
-			// A project session sees its own attached documents; every other
+			// A workbench session sees its own attached documents; every other
 			// caller (ProjectID 0) none of them (PROJ-08) — and is told so
 			// rather than handed an empty result that reads as "no match".
 			if call.Binding.WorkbenchID == 0 && slices.Contains(a.Sources, kb.WorkbenchDocSource) {
-				return nil, &ValidationError{Msg: "project_doc is searchable only from that project's own session (watchtower mcp --project N)"}
+				return nil, &ValidationError{Msg: "project_doc is searchable only from that workbench's own session (watchtower mcp --workbench N)"}
 			}
 			req := kb.Request{Queries: a.Queries, Sources: a.Sources, Limit: a.Limit, WorkbenchID: call.Binding.WorkbenchID}
 			var err error
@@ -63,7 +81,11 @@ func NewSearchKnowledge() *Tool {
 			if req.To, err = parseDay(a.To, true); err != nil {
 				return nil, &ValidationError{Msg: "to must be YYYY-MM-DD"}
 			}
-			scopeNote, err := applyWorkbenchScope(ctx, d, call.Binding, a.ProjectScope, &req)
+			mode, arg, err := a.scope()
+			if err != nil {
+				return nil, err
+			}
+			scopeNote, err := applyWorkbenchScope(ctx, d, call.Binding, mode, arg, &req)
 			if err != nil {
 				return nil, err
 			}
@@ -81,22 +103,24 @@ func NewSearchKnowledge() *Tool {
 	}
 }
 
-// scopeSources are the kb sources a project scope can hold documents of.
+// scopeSources are the kb sources a workbench scope can hold documents of.
 var scopeSources = []string{"slack", "jira", "confluence"}
 
-// applyWorkbenchScope sets req's scope from the bound project's sources:
+// applyWorkbenchScope sets req's scope from the bound workbench's sources:
 // boost by default, only/off on request. An explicit sources filter still
 // applies on top (kb.Search honours it in the scoped retrieval too). The
-// returned note names the project's sources that matched no synced data.
-func applyWorkbenchScope(ctx context.Context, d *db.DB, b Binding, mode string, req *kb.Request) (string, error) {
+// returned note names the workbench's sources that matched no synced data.
+// arg is the argument name the mode came under (workbench_scope or its alias
+// project_scope), named back in every refusal.
+func applyWorkbenchScope(ctx context.Context, d *db.DB, b Binding, mode, arg string, req *kb.Request) (string, error) {
 	mode = strings.TrimSpace(mode)
 	if b.WorkbenchID == 0 {
 		if mode != "" {
-			return "", &ValidationError{Msg: "project_scope works only in a project session (watchtower mcp --project N)"}
+			return "", &ValidationError{Msg: arg + " works only in a workbench session (watchtower mcp --workbench N)"}
 		}
 		return "", nil
 	}
-	if err := validateEnum("project_scope", mode, "boost", "only", "off"); err != nil {
+	if err := validateEnum(arg, mode, "boost", "only", "off"); err != nil {
 		return "", err
 	}
 	if mode == "off" {
@@ -108,16 +132,16 @@ func applyWorkbenchScope(ctx context.Context, d *db.DB, b Binding, mode string, 
 	}
 	only := mode == "only"
 	if only && scope.Empty() {
-		return "", &ValidationError{Msg: "this project has no usable Slack channel, Jira project or Confluence space source — add one with add_project_source, or search without project_scope"}
+		return "", &ValidationError{Msg: "this workbench has no usable Slack channel, Jira project or Confluence space source — add one with " + AddWorkbenchSourceTool + ", or search without " + arg}
 	}
 	if only && len(req.Sources) > 0 && !slices.ContainsFunc(req.Sources, func(s string) bool { return slices.Contains(scopeSources, s) }) {
-		return "", &ValidationError{Msg: "project_scope only covers slack, jira and confluence; sources names none of them"}
+		return "", &ValidationError{Msg: arg + " only covers slack, jira and confluence; sources names none of them"}
 	}
 	req.Scope, req.ScopeOnly = scope, only
 	if len(unresolved) == 0 {
 		return "", nil
 	}
-	return "left out of the project scope (no synced Slack channel by that ref, or not a Jira project or Confluence space key): " + strings.Join(unresolved, "; "), nil
+	return "left out of the workbench scope (no synced Slack channel by that ref, or not a Jira project or Confluence space key): " + strings.Join(unresolved, "; "), nil
 }
 
 // parseDay parses a YYYY-MM-DD filter date in UTC; "" passes through as "no

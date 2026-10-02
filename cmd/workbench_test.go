@@ -168,7 +168,7 @@ func TestProject_AttachDocAttachesOwnerDocumentsInsideTheFolderOnly(t *testing.T
 	assert.Contains(t, out, "already attached")
 
 	_, _, err = runWorkbench(t, "attach-doc", id, outside)
-	assert.ErrorContains(t, err, "outside the project folder")
+	assert.ErrorContains(t, err, "outside the workbench folder")
 	_, _, err = runWorkbench(t, "attach-doc", id, "notes/idea.md", "--kind", "memo")
 	assert.Error(t, err, "unknown kind")
 	_, _, err = runWorkbench(t, "attach-doc", id, "notes/idea.md", "--target", "999")

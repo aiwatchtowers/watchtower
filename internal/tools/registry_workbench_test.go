@@ -119,7 +119,7 @@ func TestProjectBinding_DeletedProjectAnswersNoLongerExists(t *testing.T) {
 	require.NoError(t, reg.Register(newWorkbenchEchoTool(t, false, []string{"project"}, &executed)))
 	require.NoError(t, reg.Register(newPeekTool(t, &reads)))
 	require.NoError(t, d.DeleteWorkbench(pid))
-	want := "project " + strconv.FormatInt(pid, 10) + " no longer exists"
+	want := "workbench " + strconv.FormatInt(pid, 10) + " no longer exists"
 
 	_, err := reg.Propose(context.Background(), "pecho", json.RawMessage(pechoArgs), directBinding(pid))
 	var verr *ValidationError

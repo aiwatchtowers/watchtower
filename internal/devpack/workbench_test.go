@@ -14,14 +14,14 @@ import (
 
 func TestProjectSkillShipsWithMarkerAndName(t *testing.T) {
 	name, body := WorkbenchSkill()
-	if name != "watchtower-project" {
-		t.Fatalf("expected the skill to be named watchtower-project, got %q", name)
+	if name != "watchtower-workbench" {
+		t.Fatalf("expected the skill to be named watchtower-workbench, got %q", name)
 	}
 	content := string(body)
 	if !HasMarker(content) {
 		t.Fatalf("the project skill must carry %s in its frontmatter (DEV-04)", MarkerKey)
 	}
-	if !strings.Contains(content, "\nname: watchtower-project\n") {
+	if !strings.Contains(content, "\nname: watchtower-workbench\n") {
 		t.Fatalf("frontmatter name must match the directory name")
 	}
 	if !strings.Contains(content, "\ndescription: ") {
@@ -48,8 +48,8 @@ func TestProjectSkillTeachesEveryProjectTool(t *testing.T) {
 	_, body := WorkbenchSkill()
 	content := string(body)
 	for _, tool := range []string{
-		"project_info", "project_board", "update_project",
-		"add_project_source", "remove_project_source",
+		"workbench_info", "workbench_board", "update_workbench",
+		"add_workbench_source", "remove_workbench_source",
 		"create_targets", "update_target", "attach_document",
 		"list_comments", "add_comment", "resolve_comment",
 	} {
@@ -65,9 +65,9 @@ func TestProjectSkillTeachesEveryFlow(t *testing.T) {
 	content := string(body)
 	for _, phrase := range []string{
 		"## Setup",
-		"empty description",              // setup trigger #2
-		"Set up this Watchtower project", // setup trigger #1: the first-run prompt
-		"Only after the owner agrees",    // first board created only on agreement
+		"empty description",                // setup trigger #2
+		"Set up this Watchtower workbench", // setup trigger #1: the first-run prompt
+		"Only after the owner agrees",      // first board created only on agreement
 		"## Features, specs and plans",
 		"one sub-target per plan task",
 		"plan path plus the task number",
@@ -95,16 +95,22 @@ func TestProjectSkillTeachesEveryFlow(t *testing.T) {
 	}
 }
 
-// fakeClaude stands in for the claude CLI: it keeps one local-scope
-// registration per cwd and records every call. It never execs anything.
+// fakeClaude stands in for the claude CLI: it keeps the local-scope
+// registrations per cwd and server name and records every call. It never
+// execs anything.
 type fakeClaude struct {
 	mu         sync.Mutex
-	registered map[string][]string // cwd → the `mcp add` args
+	registered map[string][]string // cwd → the `mcp add` args of the current server
+	legacy     map[string]bool     // cwd → the pre-rename server is registered
 	calls      [][]string          // cwd, name, args...
 	missing    bool                // behave as if claude is not installed
+	failAdd    bool                // every `mcp add` exits non-zero
+	failRemove bool                // every `mcp remove` exits non-zero
 }
 
-func newFakeClaude() *fakeClaude { return &fakeClaude{registered: map[string][]string{}} }
+func newFakeClaude() *fakeClaude {
+	return &fakeClaude{registered: map[string][]string{}, legacy: map[string]bool{}}
+}
 
 func (f *fakeClaude) run(_ context.Context, dir, name string, args ...string) ([]byte, error) {
 	f.mu.Lock()
@@ -113,27 +119,49 @@ func (f *fakeClaude) run(_ context.Context, dir, name string, args ...string) ([
 	if f.missing {
 		return nil, fmt.Errorf("exec: %q: %w", name, exec.ErrNotFound)
 	}
-	if name != "claude" || len(args) < 2 || args[0] != "mcp" {
+	if name != "claude" || len(args) < 3 || args[0] != "mcp" {
 		return nil, fmt.Errorf("unexpected command %s %v", name, args)
 	}
-	_, isRegistered := f.registered[dir]
+	server := args[len(args)-1] // get NAME, remove --scope local NAME
+	if args[1] == "add" {
+		server = args[4] // add --scope local NAME -- ...
+	}
+	var isRegistered bool
+	switch server {
+	case WorkbenchMCPServerName:
+		_, isRegistered = f.registered[dir]
+	case LegacyMCPServerName:
+		isRegistered = f.legacy[dir]
+	default:
+		return nil, fmt.Errorf("unexpected server %q in %v", server, args)
+	}
 	switch args[1] {
 	case "get":
 		if isRegistered {
-			return []byte("watchtower-project:\n  Scope: Local config"), nil
+			return []byte(server + ":\n  Scope: Local config"), nil
 		}
-		return []byte("No MCP server found with name: watchtower-project"), ErrCommandExit
+		return []byte("No MCP server found with name: " + server), ErrCommandExit
 	case "add":
+		if f.failAdd {
+			return []byte("add failed"), ErrCommandExit
+		}
 		if isRegistered {
-			return []byte("MCP server watchtower-project already exists in local config"), ErrCommandExit
+			return []byte("MCP server " + server + " already exists in local config"), ErrCommandExit
 		}
 		f.registered[dir] = args
 		return nil, nil
 	case "remove":
+		if f.failRemove {
+			return []byte("remove failed"), ErrCommandExit
+		}
 		if !isRegistered {
 			return []byte("No local-scoped MCP server found"), ErrCommandExit
 		}
-		delete(f.registered, dir)
+		if server == LegacyMCPServerName {
+			delete(f.legacy, dir)
+		} else {
+			delete(f.registered, dir)
+		}
 		return nil, nil
 	}
 	return nil, ErrCommandExit
@@ -148,11 +176,11 @@ func workbenchSkillFile(folder string) string {
 }
 
 func TestProjectHookCommandQuotesPathsWithSpaces(t *testing.T) {
-	if got := WorkbenchHookCommand("/tmp/acme/bin/watchtower", 3); got != "/tmp/acme/bin/watchtower project brief --project 3" {
+	if got := WorkbenchHookCommand("/tmp/acme/bin/watchtower", 3); got != "/tmp/acme/bin/watchtower workbench brief --workbench 3" {
 		t.Fatalf("a plain path must stay unquoted, got %q", got)
 	}
 	got := WorkbenchHookCommand("/tmp/Application Support/it's/watchtower", 3)
-	want := `'/tmp/Application Support/it'\''s/watchtower' project brief --project 3`
+	want := `'/tmp/Application Support/it'\''s/watchtower' workbench brief --workbench 3`
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
@@ -183,7 +211,7 @@ func TestInstallProjectInstallsSkillHookExcludeAndMCP(t *testing.T) {
 	if len(rep.Excluded) != 2 {
 		t.Fatalf("expected both exclude lines added, got %v", rep.Excluded)
 	}
-	want := []string{"mcp", "add", "--scope", "local", "watchtower-project", "--", "/tmp/acme bin/watchtower", "mcp", "--project", "7"}
+	want := []string{"mcp", "add", "--scope", "local", "watchtower-workbench", "--", "/tmp/acme bin/watchtower", "mcp", "--workbench", "7"}
 	if got := f.registered[folder]; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("mcp add args = %q, want %q", got, want)
 	}
@@ -195,7 +223,7 @@ func TestInstallProjectInstallsSkillHookExcludeAndMCP(t *testing.T) {
 			t.Fatalf("every claude call must run with cwd = the project folder, got %q", c[0])
 		}
 	}
-	if !strings.Contains(rep.MCPCommand, "claude mcp add --scope local watchtower-project -- '/tmp/acme bin/watchtower' mcp --project 7") {
+	if !strings.Contains(rep.MCPCommand, "claude mcp add --scope local watchtower-workbench -- '/tmp/acme bin/watchtower' mcp --workbench 7") {
 		t.Fatalf("printable MCP command: %q", rep.MCPCommand)
 	}
 }
@@ -361,7 +389,7 @@ func TestProj02_RemoveProjectKeepsOwnerSettingsButDropsOurHook(t *testing.T) {
 	// The owner's file survives, so its exclude line stays: removing it
 	// would suddenly surface the owner's own file in `git status`.
 	exclude := readTestFile(t, filepath.Join(folder, ".git", "info", "exclude"))
-	if !strings.Contains(exclude, "/.claude/settings.local.json") || strings.Contains(exclude, "/.claude/skills/watchtower-project/") {
+	if !strings.Contains(exclude, "/.claude/settings.local.json") || strings.Contains(exclude, "/.claude/skills/watchtower-workbench/") {
 		t.Fatalf("exclude after remove:\n%s", exclude)
 	}
 }
@@ -373,7 +401,7 @@ func TestProj04_EditedProjectSkillIsNeverClobbered(t *testing.T) {
 	if _, err := InstallWorkbench(context.Background(), o); err != nil {
 		t.Fatalf("install: %v", err)
 	}
-	edited := "---\nname: watchtower-project\ndescription: mine now\n" + MarkerKey + ": v1\n---\n\nMy own board rules.\n"
+	edited := "---\nname: watchtower-workbench\ndescription: mine now\n" + MarkerKey + ": v1\n---\n\nMy own board rules.\n"
 	writeTestFile(t, workbenchSkillFile(folder), edited)
 
 	rep, err := InstallWorkbench(context.Background(), o)
@@ -394,7 +422,7 @@ func TestProj04_EditedProjectSkillIsNeverClobbered(t *testing.T) {
 		t.Fatalf("after remove only the edited skill may remain: %+v err=%v", st, err)
 	}
 	// The kept skill stays git-invisible.
-	if !strings.Contains(readTestFile(t, filepath.Join(folder, ".git", "info", "exclude")), "/.claude/skills/watchtower-project/") {
+	if !strings.Contains(readTestFile(t, filepath.Join(folder, ".git", "info", "exclude")), "/.claude/skills/watchtower-workbench/") {
 		t.Fatalf("the kept skill's exclude line must stay")
 	}
 }
@@ -447,9 +475,9 @@ func TestProjectMCPCommand_MatchesTheDesktopFixture(t *testing.T) {
 		want string
 	}{
 		{WorkbenchInstallOptions{WorkbenchID: 7, Folder: "/tmp/acme project", Bin: "/tmp/acme bin/it's/watchtower"},
-			`cd '/tmp/acme project' && claude mcp add --scope local watchtower-project -- '/tmp/acme bin/it'\''s/watchtower' mcp --project 7`},
+			`cd '/tmp/acme project' && claude mcp add --scope local watchtower-workbench -- '/tmp/acme bin/it'\''s/watchtower' mcp --workbench 7`},
 		{WorkbenchInstallOptions{WorkbenchID: 3, Folder: "/tmp/acme", Bin: "/usr/local/bin/watchtower"},
-			`cd /tmp/acme && claude mcp add --scope local watchtower-project -- /usr/local/bin/watchtower mcp --project 3`},
+			`cd /tmp/acme && claude mcp add --scope local watchtower-workbench -- /usr/local/bin/watchtower mcp --workbench 3`},
 	}
 	for _, c := range cases {
 		if got := WorkbenchMCPCommand(c.o); got != c.want {

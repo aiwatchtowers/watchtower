@@ -11,7 +11,7 @@ import (
 )
 
 type listTargetsArgs struct {
-	Status    string `json:"status,omitempty" jsonschema:"filter by status: todo|in_progress|in_review|blocked|done|dismissed|snoozed (in_review: project targets only)"`
+	Status    string `json:"status,omitempty" jsonschema:"filter by status: todo|in_progress|in_review|blocked|done|dismissed|snoozed (in_review: workbench targets only)"`
 	Priority  string `json:"priority,omitempty" jsonschema:"filter by priority: high|medium|low"`
 	Level     string `json:"level,omitempty" jsonschema:"filter by level: quarter|month|week|day|custom"`
 	Ownership string `json:"ownership,omitempty" jsonschema:"filter by ownership: mine|delegated|watching"`
@@ -49,8 +49,8 @@ func NewListTargets() *Tool {
 				// GetTargets excludes done/dismissed unless IncludeDone is set;
 				// without this, filtering by status=done/dismissed returns [].
 				IncludeDone: a.Status == "done" || a.Status == "dismissed",
-				// 0 (every non-project session) excludes project targets
-				// (PROJ-01); a project session sees only its own board.
+				// 0 (every non-workbench session) excludes workbench targets
+				// (PROJ-01); a workbench session sees only its own board.
 				WorkbenchID: call.Binding.WorkbenchID,
 			})
 			if err != nil {
@@ -64,7 +64,7 @@ func NewListTargets() *Tool {
 	}
 }
 
-// workbenchTargetView is get_target's answer in a project session: the target
+// workbenchTargetView is get_target's answer in a workbench session: the target
 // plus its newest status changes, oldest first, and its attached images.
 type workbenchTargetView struct {
 	*db.Target
@@ -76,7 +76,7 @@ type workbenchTargetView struct {
 func NewGetTarget() *Tool {
 	return &Tool{
 		Name: "get_target",
-		Description: "Get a single target by id, including sub-items, notes, and metadata; a project " +
+		Description: "Get a single target by id, including sub-items, notes, and metadata; a workbench " +
 			"target also carries its status_history (newest 50 changes, oldest first) and its attached images " +
 			"(id, file_name, mime, size, path of Watchtower's stored copy — read that path to look at one).",
 		InputSchema: mustSchema[getTargetArgs]("get_target"),
@@ -93,16 +93,16 @@ func NewGetTarget() *Tool {
 				}
 				return nil, fmt.Errorf("getting target: %w", err)
 			}
-			// A target outside the session's scope reads as missing: a project
-			// target never reaches a non-project session (PROJ-01), and a
-			// project session sees only its own project's targets (DEV-06).
+			// A target outside the session's scope reads as missing: a workbench
+			// target never reaches a non-workbench session (PROJ-01), and a
+			// workbench session sees only its own workbench's targets (DEV-06).
 			if target.WorkbenchID.Int64 != call.Binding.WorkbenchID {
 				return nil, fmt.Errorf("no target with id %d", a.ID)
 			}
 			if call.Binding.WorkbenchID == 0 {
 				return target, nil
 			}
-			// A project target also carries its status history (PROJ-06).
+			// A workbench target also carries its status history (PROJ-06).
 			history, err := d.GetTargetStatusHistory(int64(target.ID), db.MaxStatusHistory)
 			if err != nil {
 				return nil, err

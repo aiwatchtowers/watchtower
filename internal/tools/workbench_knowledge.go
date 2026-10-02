@@ -28,7 +28,7 @@ var jiraProjectKey = regexp.MustCompile(`^[A-Z][A-Z0-9_]+$`)
 func WorkbenchKnowledgeScope(ctx context.Context, d *db.DB, projectID int64) (s kb.Scope, unresolved []string, err error) {
 	sources, err := d.ListWorkbenchSources(projectID)
 	if err != nil {
-		return kb.Scope{}, nil, fmt.Errorf("listing project sources: %w", err)
+		return kb.Scope{}, nil, fmt.Errorf("listing workbench sources: %w", err)
 	}
 	for _, src := range sources {
 		var found []string

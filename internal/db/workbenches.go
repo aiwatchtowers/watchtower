@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-// Workbench is a folder-bound project (Projects POC, migration 00081). Its
+// Workbench is a folder-bound workbench (Projects POC, migration 00081). Its
 // targets, documents and comments live only on its board (PROJ-01,
 // docs/inventory/projects.md).
 type Workbench struct {
@@ -22,7 +22,7 @@ type Workbench struct {
 	UpdatedAt   string
 }
 
-// WorkbenchSource is a source the project's docs name (a channel, a Jira
+// WorkbenchSource is a source the workbench's docs name (a channel, a Jira
 // project, a Confluence space, a person, a link).
 type WorkbenchSource struct {
 	ID          int64
@@ -32,13 +32,13 @@ type WorkbenchSource struct {
 	Label       string
 }
 
-// WorkbenchDocument is a file inside the project folder (a spec, a plan, a doc)
+// WorkbenchDocument is a file inside the workbench folder (a spec, a plan, a doc)
 // that Claude Code attached for owner review.
 type WorkbenchDocument struct {
 	ID          int64
 	WorkbenchID int64
 	TargetID    sql.NullInt64
-	RelPath     string // relative to the project folder
+	RelPath     string // relative to the workbench folder
 	Kind        string // spec | plan | doc
 	Title       string
 	CreatedAt   string
@@ -47,11 +47,11 @@ type WorkbenchDocument struct {
 }
 
 var (
-	ErrWorkbenchFolderTaken = errors.New("folder is already bound to a project")
-	ErrWorkbenchNotFound    = errors.New("project not found")
+	ErrWorkbenchFolderTaken = errors.New("folder is already bound to a workbench")
+	ErrWorkbenchNotFound    = errors.New("workbench not found")
 	// ErrNotInWorkbench is returned when a target, document, source or comment
-	// named by a project write belongs to another project, or to none.
-	ErrNotInWorkbench = errors.New("does not belong to this project")
+	// named by a workbench write belongs to another workbench, or to none.
+	ErrNotInWorkbench = errors.New("does not belong to this workbench")
 )
 
 var (
@@ -80,12 +80,12 @@ func (db *DB) WithTx(fn func(*sql.Tx) error) error {
 
 // ResolveWorkbenchFolder turns dir into the absolute, symlink-resolved path of
 // an existing directory — the only form CreateWorkbench stores, so two spellings
-// of one folder can never bind two projects. A folder a project must not own
+// of one folder can never bind two projects. A folder a workbench must not own
 // — root, home or an ancestor, or overlapping one of the protected dirs the
 // caller passes (Watchtower's own data) — fails with ErrWorkbenchFolderNotAllowed.
 func ResolveWorkbenchFolder(dir string, protected []string) (string, error) {
 	if strings.TrimSpace(dir) == "" {
-		return "", errors.New("project folder is required")
+		return "", errors.New("workbench folder is required")
 	}
 	abs, err := filepath.Abs(dir)
 	if err != nil {
@@ -108,16 +108,16 @@ func ResolveWorkbenchFolder(dir string, protected []string) (string, error) {
 	return resolved, nil
 }
 
-// CreateWorkbench binds a new project to folder, which must already be resolved
-// (ResolveWorkbenchFolder). A folder bound to another project fails with
+// CreateWorkbench binds a new workbench to folder, which must already be resolved
+// (ResolveWorkbenchFolder). A folder bound to another workbench fails with
 // ErrWorkbenchFolderTaken.
 func (db *DB) CreateWorkbench(name, folder string) (int64, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
-		return 0, errors.New("project name is required")
+		return 0, errors.New("workbench name is required")
 	}
 	if !filepath.IsAbs(folder) {
-		return 0, fmt.Errorf("project folder %q must be an absolute, resolved path", folder)
+		return 0, fmt.Errorf("workbench folder %q must be an absolute, resolved path", folder)
 	}
 	if err := checkFolderLineBreaks(folder); err != nil {
 		return 0, err
@@ -137,7 +137,7 @@ func (db *DB) CreateWorkbench(name, folder string) (int64, error) {
 		if strings.Contains(err.Error(), "UNIQUE constraint failed: projects.folder_path") {
 			return 0, fmt.Errorf("%s: %w", folder, ErrWorkbenchFolderTaken)
 		}
-		return 0, fmt.Errorf("inserting project: %w", err)
+		return 0, fmt.Errorf("inserting workbench: %w", err)
 	}
 	return res.LastInsertId()
 }
@@ -150,19 +150,19 @@ func scanWorkbench(row interface{ Scan(...any) error }) (*Workbench, error) {
 	return &p, nil
 }
 
-// GetWorkbench returns project id, or ErrWorkbenchNotFound.
+// GetWorkbench returns workbench id, or ErrWorkbenchNotFound.
 func (db *DB) GetWorkbench(id int64) (*Workbench, error) {
 	p, err := scanWorkbench(db.QueryRow(`SELECT `+workbenchCols+` FROM projects WHERE id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, fmt.Errorf("project %d: %w", id, ErrWorkbenchNotFound)
+		return nil, fmt.Errorf("workbench %d: %w", id, ErrWorkbenchNotFound)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("getting project %d: %w", id, err)
+		return nil, fmt.Errorf("getting workbench %d: %w", id, err)
 	}
 	return p, nil
 }
 
-// ListWorkbenches returns every project in id order.
+// ListWorkbenches returns every workbench in id order.
 func (db *DB) ListWorkbenches() ([]Workbench, error) {
 	rows, err := db.Query(`SELECT ` + workbenchCols + ` FROM projects ORDER BY id`)
 	if err != nil {
@@ -173,24 +173,24 @@ func (db *DB) ListWorkbenches() ([]Workbench, error) {
 	for rows.Next() {
 		p, err := scanWorkbench(rows)
 		if err != nil {
-			return nil, fmt.Errorf("scanning project: %w", err)
+			return nil, fmt.Errorf("scanning workbench: %w", err)
 		}
 		out = append(out, *p)
 	}
 	return out, rows.Err()
 }
 
-// UpdateWorkbenchDescription replaces the project's description (trimmed).
+// UpdateWorkbenchDescription replaces the workbench's description (trimmed).
 func (db *DB) UpdateWorkbenchDescription(id int64, description string) error {
 	res, err := db.Exec(`UPDATE projects SET description = ?,
 		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`, strings.TrimSpace(description), id)
 	if err != nil {
-		return fmt.Errorf("updating project %d: %w", id, err)
+		return fmt.Errorf("updating workbench %d: %w", id, err)
 	}
-	return requireAffected(res, fmt.Errorf("project %d: %w", id, ErrWorkbenchNotFound))
+	return requireAffected(res, fmt.Errorf("workbench %d: %w", id, ErrWorkbenchNotFound))
 }
 
-// DeleteWorkbench removes the project; the foreign keys cascade to its targets,
+// DeleteWorkbench removes the workbench; the foreign keys cascade to its targets,
 // sources, documents and comments, and its documents' search index entries
 // (kb source project_doc, PROJ-08) go in the same transaction, so the delete
 // is all-or-nothing (PROJ-02). The folder install is removed by the caller.
@@ -198,26 +198,26 @@ func (db *DB) DeleteWorkbench(id int64) error {
 	return db.WithTx(func(tx *sql.Tx) error {
 		res, err := tx.Exec(`DELETE FROM projects WHERE id = ?`, id)
 		if err != nil {
-			return fmt.Errorf("deleting project %d: %w", id, err)
+			return fmt.Errorf("deleting workbench %d: %w", id, err)
 		}
-		if err := requireAffected(res, fmt.Errorf("project %d: %w", id, ErrWorkbenchNotFound)); err != nil {
+		if err := requireAffected(res, fmt.Errorf("workbench %d: %w", id, ErrWorkbenchNotFound)); err != nil {
 			return err
 		}
 		return deleteWorkbenchDocIndex(tx, id)
 	})
 }
 
-// deleteWorkbenchDocIndex drops a project's documents from the knowledge index
+// deleteWorkbenchDocIndex drops a workbench's documents from the knowledge index
 // (kb_chunks first: the FTS triggers hang off it).
 func deleteWorkbenchDocIndex(tx *sql.Tx, projectID int64) error {
 	const docs = `SELECT id FROM kb_documents WHERE source = 'project_doc'
 		AND json_extract(anchor_json, '$.project_id') = ?`
 	pid := strconv.FormatInt(projectID, 10)
 	if _, err := tx.Exec(`DELETE FROM kb_chunks WHERE doc_id IN (`+docs+`)`, pid); err != nil {
-		return fmt.Errorf("deleting project %d search index: %w", projectID, err)
+		return fmt.Errorf("deleting workbench %d search index: %w", projectID, err)
 	}
 	if _, err := tx.Exec(`DELETE FROM kb_documents WHERE id IN (`+docs+`)`, pid); err != nil {
-		return fmt.Errorf("deleting project %d search index: %w", projectID, err)
+		return fmt.Errorf("deleting workbench %d search index: %w", projectID, err)
 	}
 	return nil
 }
@@ -233,15 +233,15 @@ func requireAffected(res sql.Result, notFound error) error {
 	return nil
 }
 
-// requireWorkbench fails with ErrWorkbenchNotFound unless project id exists.
+// requireWorkbench fails with ErrWorkbenchNotFound unless workbench id exists.
 func requireWorkbench(q targetsQuerier, id int64) error {
 	var one int
 	err := q.QueryRow(`SELECT 1 FROM projects WHERE id = ?`, id).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("project %d: %w", id, ErrWorkbenchNotFound)
+		return fmt.Errorf("workbench %d: %w", id, ErrWorkbenchNotFound)
 	}
 	if err != nil {
-		return fmt.Errorf("checking project %d: %w", id, err)
+		return fmt.Errorf("checking workbench %d: %w", id, err)
 	}
 	return nil
 }
@@ -252,7 +252,7 @@ const (
 )
 
 // checkTargetInWorkbench fails with ErrNotInWorkbench unless target id is on
-// project projectID's board.
+// workbench projectID's board.
 func checkTargetInWorkbench(q targetsQuerier, projectID, id int64) error {
 	return checkOwnedBy(q, targetWorkbenchQuery, "target", projectID, id)
 }
@@ -279,45 +279,45 @@ func checkOwnedBy(q targetsQuerier, query, noun string, projectID, id int64) err
 // the existing row's id.
 func (db *DB) AddWorkbenchSource(s WorkbenchSource) (int64, error) {
 	if !workbenchSourceKinds[s.Kind] {
-		return 0, fmt.Errorf("invalid project source kind %q", s.Kind)
+		return 0, fmt.Errorf("invalid workbench source kind %q", s.Kind)
 	}
 	if strings.TrimSpace(s.Ref) == "" {
-		return 0, errors.New("project source ref is required")
+		return 0, errors.New("workbench source ref is required")
 	}
 	if _, err := db.Exec(`INSERT INTO project_sources (project_id, kind, ref, label) VALUES (?, ?, ?, ?)
 		ON CONFLICT(project_id, kind, ref) DO NOTHING`, s.WorkbenchID, s.Kind, s.Ref, s.Label); err != nil {
-		return 0, fmt.Errorf("adding project source: %w", err)
+		return 0, fmt.Errorf("adding workbench source: %w", err)
 	}
 	var id int64
 	if err := db.QueryRow(`SELECT id FROM project_sources WHERE project_id = ? AND kind = ? AND ref = ?`,
 		s.WorkbenchID, s.Kind, s.Ref).Scan(&id); err != nil {
-		return 0, fmt.Errorf("reading project source id: %w", err)
+		return 0, fmt.Errorf("reading workbench source id: %w", err)
 	}
 	return id, nil
 }
 
-// RemoveWorkbenchSource deletes one source of the project.
+// RemoveWorkbenchSource deletes one source of the workbench.
 func (db *DB) RemoveWorkbenchSource(projectID, sourceID int64) error {
 	res, err := db.Exec(`DELETE FROM project_sources WHERE id = ? AND project_id = ?`, sourceID, projectID)
 	if err != nil {
-		return fmt.Errorf("removing project source %d: %w", sourceID, err)
+		return fmt.Errorf("removing workbench source %d: %w", sourceID, err)
 	}
-	return requireAffected(res, fmt.Errorf("project source %d: %w", sourceID, ErrNotInWorkbench))
+	return requireAffected(res, fmt.Errorf("workbench source %d: %w", sourceID, ErrNotInWorkbench))
 }
 
-// ListWorkbenchSources returns the project's sources by kind, then id.
+// ListWorkbenchSources returns the workbench's sources by kind, then id.
 func (db *DB) ListWorkbenchSources(projectID int64) ([]WorkbenchSource, error) {
 	rows, err := db.Query(`SELECT id, project_id, kind, ref, label FROM project_sources
 		WHERE project_id = ? ORDER BY kind, id`, projectID)
 	if err != nil {
-		return nil, fmt.Errorf("listing project sources: %w", err)
+		return nil, fmt.Errorf("listing workbench sources: %w", err)
 	}
 	defer rows.Close()
 	var out []WorkbenchSource
 	for rows.Next() {
 		var s WorkbenchSource
 		if err := rows.Scan(&s.ID, &s.WorkbenchID, &s.Kind, &s.Ref, &s.Label); err != nil {
-			return nil, fmt.Errorf("scanning project source: %w", err)
+			return nil, fmt.Errorf("scanning workbench source: %w", err)
 		}
 		out = append(out, s)
 	}
@@ -336,7 +336,7 @@ func scanWorkbenchDocument(row interface{ Scan(...any) error }) (*WorkbenchDocum
 
 func validateWorkbenchDocument(d WorkbenchDocument) error {
 	if strings.TrimSpace(d.RelPath) == "" || filepath.IsAbs(d.RelPath) {
-		return fmt.Errorf("document path %q must be relative to the project folder", d.RelPath)
+		return fmt.Errorf("document path %q must be relative to the workbench folder", d.RelPath)
 	}
 	if d.Kind != "" && !workbenchDocumentKinds[d.Kind] {
 		return fmt.Errorf("invalid document kind %q", d.Kind)
@@ -344,7 +344,7 @@ func validateWorkbenchDocument(d WorkbenchDocument) error {
 	return nil
 }
 
-// UpsertWorkbenchDocument attaches d as the agent's. On an existing (project,
+// UpsertWorkbenchDocument attaches d as the agent's. On an existing (workbench,
 // rel_path) it bumps updated_at ("revised"), marks it origin 'agent' (an
 // imported document the agent revises is the agent's from then on) and
 // replaces kind/title/target only with the values d sets; created reports
@@ -415,7 +415,7 @@ func reviseWorkbenchDocument(tx *sql.Tx, id int64, d WorkbenchDocument) error {
 }
 
 // AttachOwnerWorkbenchDocument attaches d as the owner's (origin 'owner', the
-// Desktop's "Add document…"). A rel_path the project already has — compared
+// Desktop's "Add document…"). A rel_path the workbench already has — compared
 // ignoring case, the import rule — is left untouched: created=false, and the
 // returned relPath is the stored spelling. The owner attaching a file is never
 // a revision. Whether rel_path stays inside the folder is the caller's check.
@@ -462,7 +462,7 @@ func (db *DB) GetWorkbenchDocument(id int64) (*WorkbenchDocument, error) {
 	return d, nil
 }
 
-// ListWorkbenchDocuments returns the project's documents in id order.
+// ListWorkbenchDocuments returns the workbench's documents in id order.
 func (db *DB) ListWorkbenchDocuments(projectID int64) ([]WorkbenchDocument, error) {
 	rows, err := db.Query(`SELECT `+workbenchDocumentCols+` FROM project_documents WHERE project_id = ? ORDER BY id`, projectID)
 	if err != nil {
@@ -481,7 +481,7 @@ func (db *DB) ListWorkbenchDocuments(projectID int64) ([]WorkbenchDocument, erro
 }
 
 // ImportWorkbenchDocuments attaches docs as origin 'import' in one transaction,
-// skipping every rel_path the project already has — an attached document,
+// skipping every rel_path the workbench already has — an attached document,
 // whatever its origin, is never touched. It returns the rel_paths inserted.
 func (db *DB) ImportWorkbenchDocuments(projectID int64, docs []WorkbenchDocument) ([]string, error) {
 	var inserted []string
@@ -506,7 +506,7 @@ func (db *DB) ImportWorkbenchDocuments(projectID int64, docs []WorkbenchDocument
 	return inserted, nil
 }
 
-// importWorkbenchDocument inserts d unless the project already has its
+// importWorkbenchDocument inserts d unless the workbench already has its
 // rel_path — compared ignoring case, since APFS is case-insensitive and the
 // agent may have attached another spelling of the same file.
 func importWorkbenchDocument(tx *sql.Tx, projectID int64, d WorkbenchDocument) (bool, error) {

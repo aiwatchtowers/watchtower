@@ -22,7 +22,7 @@ func stopGroups(t *testing.T, m map[string]any) []any {
 
 func TestProjectStopHookCommand(t *testing.T) {
 	got := WorkbenchStopHookCommand("/tmp/Application Support/watchtower", 3)
-	if got != "'/tmp/Application Support/watchtower' project check --project 3 --stop-hook" {
+	if got != "'/tmp/Application Support/watchtower' workbench check --workbench 3 --stop-hook" {
 		t.Fatalf("got %q", got)
 	}
 }

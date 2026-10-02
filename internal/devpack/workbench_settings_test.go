@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-const testHookCmd = "/tmp/acme bin/watchtower project brief --project 7"
+const testHookCmd = "/tmp/acme bin/watchtower workbench brief --workbench 7"
 
 func settingsFile(dir string) string {
 	return filepath.Join(dir, ".claude", "settings.local.json")
@@ -461,7 +461,7 @@ func fakeRepo(t *testing.T) string {
 	return dir
 }
 
-var testExcludeLines = []string{".claude/skills/watchtower-project/", ".claude/settings.local.json"}
+var testExcludeLines = []string{".claude/skills/watchtower-workbench/", ".claude/settings.local.json"}
 
 func TestEnsureGitExcludeAddsAnchoredBlockOnce(t *testing.T) {
 	dir := fakeRepo(t)
@@ -469,7 +469,7 @@ func TestEnsureGitExcludeAddsAnchoredBlockOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
-	want := []string{"/.claude/skills/watchtower-project/", "/.claude/settings.local.json"}
+	want := []string{"/.claude/skills/watchtower-workbench/", "/.claude/settings.local.json"}
 	if strings.Join(added, "|") != strings.Join(want, "|") {
 		t.Fatalf("added = %v, want %v", added, want)
 	}
@@ -499,7 +499,7 @@ func TestEnsureGitExcludeKeepsOwnerLinesAndSkipsWhatTheOwnerHas(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
-	if len(added) != 1 || added[0] != "/.claude/skills/watchtower-project/" {
+	if len(added) != 1 || added[0] != "/.claude/skills/watchtower-workbench/" {
 		t.Fatalf("only the line the owner lacks may be added, got %v", added)
 	}
 	content := readTestFile(t, exclude)
@@ -550,7 +550,7 @@ func TestEnsureGitExcludeRecognizesACRLFOwnerLine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
-	if len(added) != 1 || added[0] != "/.claude/skills/watchtower-project/" {
+	if len(added) != 1 || added[0] != "/.claude/skills/watchtower-workbench/" {
 		t.Fatalf("the CRLF-authored owner line must be recognised as already present, got %v", added)
 	}
 	content := readTestFile(t, exclude)

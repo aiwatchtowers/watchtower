@@ -18,7 +18,7 @@ type Report struct {
 	DryRun          bool     `json:"dry_run"`
 }
 
-// Import scans the project folder and attaches every candidate the project
+// Import scans the workbench folder and attaches every candidate the workbench
 // does not have yet as an origin 'import' document. It is additive and
 // idempotent: an attached rel_path is never touched, so running it again
 // (e.g. a re-run of setup) only adds what is new. A dry run writes nothing.
@@ -52,7 +52,7 @@ func Import(d *db.DB, p *db.Workbench, dryRun bool) (Report, error) {
 	}
 	inserted, err := d.ImportWorkbenchDocuments(p.ID, todo)
 	if err != nil {
-		return Report{}, fmt.Errorf("importing documents into project %d: %w", p.ID, err)
+		return Report{}, fmt.Errorf("importing documents into workbench %d: %w", p.ID, err)
 	}
 	rep.Imported = append(rep.Imported, inserted...)
 	// A queued path the insert refused was attached meanwhile (or is a
@@ -65,12 +65,12 @@ func Import(d *db.DB, p *db.Workbench, dryRun bool) (Report, error) {
 	return rep, nil
 }
 
-// attachedPaths is the project's attached rel_paths, lowercased (APFS is
+// attachedPaths is the workbench's attached rel_paths, lowercased (APFS is
 // case-insensitive).
 func attachedPaths(d *db.DB, projectID int64) (map[string]bool, error) {
 	docs, err := d.ListWorkbenchDocuments(projectID)
 	if err != nil {
-		return nil, fmt.Errorf("listing documents of project %d: %w", projectID, err)
+		return nil, fmt.Errorf("listing documents of workbench %d: %w", projectID, err)
 	}
 	out := make(map[string]bool, len(docs))
 	for _, doc := range docs {

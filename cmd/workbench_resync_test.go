@@ -122,7 +122,7 @@ func TestProjectResync_IsAdditive(t *testing.T) {
 	assert.Equal(t, string(devpack.StateInstalled), res.Skill)
 	assert.True(t, res.HooksAdded)
 	assert.True(t, res.MCPRegistered)
-	assert.True(t, f.registered[folder])
+	assert.True(t, f.registered[fakeRegistration(folder, devpack.WorkbenchMCPServerName)])
 	assert.Empty(t, res.MCPCommand)
 	require.Len(t, res.Suggestions, 1)
 	assert.Contains(t, res.Suggestions[0], "1 new document(s)")
@@ -261,7 +261,7 @@ func TestProjectResync_FailedImportStillInstalls(t *testing.T) {
 	assert.False(t, res.DocsOK)
 	assert.NotEmpty(t, res.DocsError)
 	assert.True(t, res.IntegrationOK, res.IntegrationError)
-	assert.True(t, f.registered[folder])
+	assert.True(t, f.registered[fakeRegistration(folder, devpack.WorkbenchMCPServerName)])
 
 	out, _, err = runResync(t, id)
 	require.Error(t, err)

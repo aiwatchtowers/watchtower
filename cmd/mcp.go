@@ -44,6 +44,10 @@ var (
 	mcpFlagContextType  string
 	mcpFlagContextID    string
 	mcpFlagWorkbench    int64
+	// mcpFlagWorkbenchLegacy reports an `mcp --project N` invocation: the
+	// registration a pre-rename install wrote, whose session lists the
+	// renamed workbench tools under their old names (spec 2026-10-02 §5.2).
+	mcpFlagWorkbenchLegacy func() bool
 )
 
 func init() {
@@ -56,7 +60,7 @@ func init() {
 	mcpCmd.Flags().StringVar(&mcpFlagTurnFile, "turn-file", "", "file holding the running turn id for --chat (a warm ai session); mutually exclusive with --turn")
 	mcpCmd.Flags().StringVar(&mcpFlagContextType, "context-type", "", "chat context type for --chat (e.g. target)")
 	mcpCmd.Flags().StringVar(&mcpFlagContextID, "context-id", "", "chat context id for --chat")
-	addWorkbenchIDFlag(mcpCmd, &mcpFlagWorkbench, "workbench mode: bind to workbench N and apply its workbench tools directly (installed by 'integrate claude-code --workbench N')")
+	mcpFlagWorkbenchLegacy = addWorkbenchIDFlag(mcpCmd, &mcpFlagWorkbench, "workbench mode: bind to workbench N and apply its workbench tools directly (installed by 'integrate claude-code --workbench N')")
 }
 
 // mcpTurnBinding resolves the turn a chat-mode proposal attaches to: a fixed
@@ -92,7 +96,7 @@ func mcpModeOptions(cfg *config.Config, database *db.DB, turn string, turnFunc f
 		return nil, err
 	}
 	if mcpFlagWorkbench != 0 {
-		return mcpWorkbenchOptions(cfg, database, mcpFlagWorkbench)
+		return mcpWorkbenchOptions(cfg, database, mcpFlagWorkbench, mcpFlagWorkbenchLegacy())
 	}
 	// Chat mode: the connection stays writable ONLY so the registry can
 	// record proposals (agent_actions) — the tools themselves still never
@@ -110,20 +114,23 @@ func mcpModeOptions(cfg *config.Config, database *db.DB, turn string, turnFunc f
 // mcpWorkbenchOptions is `watchtower mcp --workbench N` (DEV-06): the connection
 // stays writable, the registry is bound to workbench N on the "project" surface,
 // and its tools apply directly (DirectApply) with an agent_actions audit row —
-// never an External tool. The project must exist when the server starts; if
-// it is deleted later, every tool answers "project N no longer exists".
-func mcpWorkbenchOptions(cfg *config.Config, database *db.DB, workbenchID int64) ([]internalmcp.ServerOption, error) {
+// never an External tool. The workbench must exist when the server starts; if
+// it is deleted later, every tool answers "workbench N no longer exists".
+// legacy is the pre-rename `--project N` spelling: the same session, listing
+// the renamed tools under their old names (Binding.LegacyNames).
+func mcpWorkbenchOptions(cfg *config.Config, database *db.DB, workbenchID int64, legacy bool) ([]internalmcp.ServerOption, error) {
+	flag := workbenchFlagName(legacy)
 	if mcpFlagChat {
-		return nil, errors.New("--workbench and --chat are mutually exclusive")
+		return nil, fmt.Errorf("%s and --chat are mutually exclusive", flag)
 	}
 	if workbenchID < 0 {
-		return nil, fmt.Errorf("--workbench must be a workbench id, got %d", workbenchID)
+		return nil, fmt.Errorf("%s must be a workbench id, got %d", flag, workbenchID)
 	}
 	if _, err := database.GetWorkbench(workbenchID); err != nil {
 		return nil, fmt.Errorf("workbench %d: %w", workbenchID, err)
 	}
 	return []internalmcp.ServerOption{internalmcp.WithRegistry(buildToolRegistry(cfg, database), tools.Binding{
-		Surface: "project", WorkbenchID: workbenchID, DirectApply: true,
+		Surface: "project", WorkbenchID: workbenchID, DirectApply: true, LegacyNames: legacy,
 	})}, nil
 }
 
