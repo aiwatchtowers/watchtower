@@ -11,16 +11,7 @@ final class JiraQueriesTests: XCTestCase {
 
     // MARK: - Fixtures
 
-    private static let dayFormatter: DateFormatter = {
-        let fmt = DateFormatter()
-        fmt.dateFormat = "yyyy-MM-dd"
-        fmt.locale = Locale(identifier: "en_US_POSIX")
-        return fmt
-    }()
-
     private func daysAgo(_ days: Double) -> Date { Date().addingTimeInterval(-days * 86400) }
-
-    private func day(_ date: Date) -> String { Self.dayFormatter.string(from: date) }
 
     private func issue(
         _ db: Database,
@@ -86,9 +77,9 @@ final class JiraQueriesTests: XCTestCase {
                 $0.category = "done"; $0.assignee = "U2"; $0.storyPoints = 21; $0.resolved = Date()
             }
             // Open: one overdue, one due in the future.
-            try issue(db, acct, "PROJ-6") { $0.assignee = "U1"; $0.dueDate = self.day(self.daysAgo(3)) }
+            try issue(db, acct, "PROJ-6") { $0.assignee = "U1"; $0.dueDate = TestDatabase.jiraDay(self.daysAgo(3)) }
             try issue(db, acct, "PROJ-7") {
-                $0.category = "in_progress"; $0.assignee = "U1"; $0.dueDate = self.day(self.daysAgo(-5))
+                $0.category = "in_progress"; $0.assignee = "U1"; $0.dueDate = TestDatabase.jiraDay(self.daysAgo(-5))
             }
         }
 
@@ -159,7 +150,7 @@ final class JiraQueriesTests: XCTestCase {
             let ann: (inout JiraIssueFixture) -> Void = { $0.assignee = "U1"; $0.assigneeName = "Ann" }
             try issue(db, acct, "PROJ-1") {
                 ann(&$0); $0.status = "Blocked"; $0.category = "in_progress"
-                $0.dueDate = self.day(self.daysAgo(2)); $0.storyPoints = 3
+                $0.dueDate = TestDatabase.jiraDay(self.daysAgo(2)); $0.storyPoints = 3
             }
             try issue(db, acct, "PROJ-2") { ann(&$0); $0.storyPoints = 2 }
             // Resolved 10 days ago after 4 days: inside the 30-day cycle window.

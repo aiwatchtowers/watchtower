@@ -58,19 +58,21 @@ func TestSanitize_StripsNewlines(t *testing.T) {
 	assert.True(t, strings.Contains(got, "line1") && strings.Contains(got, "line3"))
 }
 
-func TestExtractFingerprint_GenericTicketKeys(t *testing.T) {
-	fp := extractFingerprint("Ship ACME-123 and OPS_2-7", "see also ACME-123 and QA1-42")
-	assert.Equal(t, []string{"ACME-123", "OPS_2-7", "QA1-42"}, fp, "any Jira-shaped key counts, deduplicated")
+func TestExtractFingerprint_TicketKeysOfSyncedProjects(t *testing.T) {
+	projects := map[string]bool{"ACME": true, "OPS_2": true, "QA1": true}
+	fp := extractFingerprint("Ship ACME-123 and OPS_2-7", "see also acme-123 and QA1-42", projects)
+	assert.Equal(t, []string{"ACME-123", "OPS_2-7", "QA1-42"}, fp, "any case, deduplicated, upper-cased")
 }
 
-func TestExtractFingerprint_StandardNamesAreNotTickets(t *testing.T) {
-	fp := extractFingerprint("Encode as UTF-8, hash with SHA-256, dates in ISO-8601 per RFC-3339", "")
+func TestExtractFingerprint_KeyShapedTokensOutsideSyncedProjectsAreNotTickets(t *testing.T) {
+	projects := map[string]bool{"ACME": true}
+	fp := extractFingerprint("Encode as UTF-8, hash with SHA-256, plan Q3-2026 on GPT-5", "", projects)
 	assert.Empty(t, fp)
 
-	fp = extractFingerprint("Patch CVE-2024-12345 before ACME-9", "")
+	fp = extractFingerprint("Patch CVE-2024-12345 before ACME-9", "", projects)
 	assert.Equal(t, []string{"ACME-9", "CVE-2024-12345"}, fp, "a CVE id is taken whole, its head is not a ticket")
 }
 
-func TestExtractFingerprint_LowercaseIsNotATicket(t *testing.T) {
-	assert.Empty(t, extractFingerprint("acme-123 is prose, not a key", ""))
+func TestExtractFingerprint_NoSyncedProjectsMeansNoTickets(t *testing.T) {
+	assert.Empty(t, extractFingerprint("ACME-123 and OPS-7", "", nil))
 }

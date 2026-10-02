@@ -12,13 +12,6 @@ final class OnboardingSetupTests: XCTestCase {
         XCTAssertEqual(OnboardingClaudePathConfig.yamlQuote("/it's/claude"), "'/it''s/claude'")
     }
 
-    /// A path carrying a newline and a YAML key stays one quoted scalar: the
-    /// only top-level key the edit adds is `claude_path`.
-    func testAPathCannotInjectAKey() {
-        let content = OnboardingClaudePathConfig.settingClaudePath("/x'\nslack_token: stolen", in: nil)
-        XCTAssertEqual(content, "claude_path: '/x''\nslack_token: stolen'\n")
-    }
-
     func testSettingReplacesAnExistingPathAndKeepsOtherLines() {
         let existing = "digest:\n  language: English\nclaude_path: '/old'\nsync:\n  poll_interval: 15m"
         XCTAssertEqual(
@@ -54,9 +47,39 @@ final class OnboardingSetupTests: XCTestCase {
         let configPath = dir.appendingPathComponent("config.yaml").path
         try "active_workspace: acme\nclaude_path: '/old'\n".write(toFile: configPath, atomically: true, encoding: .utf8)
 
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: configPath)
+
         try OnboardingClaudePathConfig.save("/new", configPath: configPath)
 
         XCTAssertEqual(try String(contentsOfFile: configPath, encoding: .utf8), "active_workspace: acme\nclaude_path: '/new'\n")
+        let mode = try FileManager.default.attributesOfItem(atPath: configPath)[.posixPermissions] as? Int
+        XCTAssertEqual(mode, 0o600, "a rewrite locks a loose config down")
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: dir.path), ["config.yaml"], "no staged file left")
+    }
+
+    /// A line break in the path would end the quoted scalar's line: refused,
+    /// the config untouched.
+    func testSaveRefusesAPathWithALineBreak() throws {
+        let dir = try tempDir()
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let configPath = dir.appendingPathComponent("config.yaml").path
+        try "active_workspace: acme\n".write(toFile: configPath, atomically: true, encoding: .utf8)
+
+        XCTAssertThrowsError(try OnboardingClaudePathConfig.save("/x\nslack_token: stolen", configPath: configPath))
+        XCTAssertEqual(try String(contentsOfFile: configPath, encoding: .utf8), "active_workspace: acme\n")
+    }
+
+    /// The old writer fell back to overwriting a config it could not read as
+    /// UTF-8 with the single line, wiping the owner's settings.
+    func testSaveLeavesAnUnreadableConfigAlone() throws {
+        let dir = try tempDir()
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let configPath = dir.appendingPathComponent("config.yaml").path
+        let garbage = Data([0x61, 0x3A, 0x20, 0xFF, 0xFE, 0x0A])
+        try garbage.write(to: URL(fileURLWithPath: configPath))
+
+        XCTAssertThrowsError(try OnboardingClaudePathConfig.save("/c", configPath: configPath))
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: configPath)), garbage)
     }
 
     /// A failed write surfaces instead of passing silently — and an unreadable
@@ -102,6 +125,17 @@ final class OnboardingSetupTests: XCTestCase {
         XCTAssertEqual(argv.map { $0[2] }, ["a", "b"], "nothing after the failure is written")
     }
 
+    func testApplyFailureWithoutStderrStillSaysWhy() async {
+        let fromStdout = await OnboardingSettingsPlan.apply([("a", "1")]) { _ in
+            ProcessOutput(exitCode: 1, stdout: "unknown key\n", stderr: " ")
+        }
+        XCTAssertEqual(fromStdout, "Failed to set a: unknown key")
+        let silent = await OnboardingSettingsPlan.apply([("a", "1")]) { _ in
+            ProcessOutput(exitCode: 9, stdout: "", stderr: "")
+        }
+        XCTAssertEqual(silent, "Failed to set a: exit code 9")
+    }
+
     // MARK: - Sync progress
 
     private func progress(_ phase: String, done: Int = 0, total: Int = 0) throws -> SyncProgressData {
@@ -126,15 +160,15 @@ final class OnboardingSetupTests: XCTestCase {
     }
 
     func testPhaseCountsReadThePhasesOwnCounters() throws {
-        XCTAssertTrue(OnboardingSyncProgress.phaseCounts(try progress("Discovery", done: 2, total: 5)) == (2, 5))
-        XCTAssertTrue(OnboardingSyncProgress.phaseCounts(try progress("Messages", done: 3, total: 9)) == (3, 9))
-        XCTAssertTrue(OnboardingSyncProgress.phaseCounts(try progress("Users", done: 4, total: 8)) == (4, 8))
-        XCTAssertTrue(OnboardingSyncProgress.phaseCounts(try progress("Threads", done: 1, total: 2)) == (1, 2))
-        XCTAssertTrue(OnboardingSyncProgress.phaseCounts(try progress("Finishing")) == (0, 0))
+        XCTAssertTrue(OnboardingSyncETA.phaseCounts(try progress("Discovery", done: 2, total: 5)) == (2, 5))
+        XCTAssertTrue(OnboardingSyncETA.phaseCounts(try progress("Messages", done: 3, total: 9)) == (3, 9))
+        XCTAssertTrue(OnboardingSyncETA.phaseCounts(try progress("Users", done: 4, total: 8)) == (4, 8))
+        XCTAssertTrue(OnboardingSyncETA.phaseCounts(try progress("Threads", done: 1, total: 2)) == (1, 2))
+        XCTAssertTrue(OnboardingSyncETA.phaseCounts(try progress("Finishing")) == (0, 0))
     }
 
     func testETAExtrapolatesThePhaseRateAndRestartsOnANewPhase() throws {
-        var eta = OnboardingSyncProgress()
+        var eta = OnboardingSyncETA()
         let start = Date()
 
         eta.update(try progress("Messages", done: 0, total: 100), now: start)
@@ -154,11 +188,11 @@ final class OnboardingSetupTests: XCTestCase {
     }
 
     func testFormatting() {
-        XCTAssertEqual(OnboardingSyncProgress.formatElapsed(42.9), "42s")
-        XCTAssertEqual(OnboardingSyncProgress.formatElapsed(125), "2m 5s")
-        XCTAssertEqual(OnboardingSyncProgress.formatETA(3), "< 5s")
-        XCTAssertEqual(OnboardingSyncProgress.formatETA(45), "~45s")
-        XCTAssertEqual(OnboardingSyncProgress.formatETA(120), "~2m")
-        XCTAssertEqual(OnboardingSyncProgress.formatETA(150), "~2m 30s")
+        XCTAssertEqual(OnboardingSyncETA.formatElapsed(42.9), "42s")
+        XCTAssertEqual(OnboardingSyncETA.formatElapsed(125), "2m 5s")
+        XCTAssertEqual(OnboardingSyncETA.formatETA(3), "< 5s")
+        XCTAssertEqual(OnboardingSyncETA.formatETA(45), "~45s")
+        XCTAssertEqual(OnboardingSyncETA.formatETA(120), "~2m")
+        XCTAssertEqual(OnboardingSyncETA.formatETA(150), "~2m 30s")
     }
 }

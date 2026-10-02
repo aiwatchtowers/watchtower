@@ -45,7 +45,10 @@ package enum OnboardingSettingsPlan {
         for (key, value) in sets {
             let result = await run(["config", "set", key, value])
             if result.exitCode != 0 {
-                return "Failed to set \(key): \(result.stderr)"
+                let reason = [result.stderr, result.stdout]
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .first { !$0.isEmpty } ?? "exit code \(result.exitCode)"
+                return "Failed to set \(key): \(reason)"
             }
         }
         return nil

@@ -1324,3 +1324,18 @@ func TestLoadWindowContext_UsesProfileParkedUnderAnotherKey(t *testing.T) {
 	require.NotNil(t, profile, "the parked profile must be found for the owner")
 	assert.Equal(t, "middle_management", profile.Role)
 }
+
+// The window context loads the synced Jira project keys a fingerprint counts
+// as ticket prefixes.
+func TestLoadWindowContext_LoadsTicketProjects(t *testing.T) {
+	database := testDB(t)
+	_, err := database.Exec(`INSERT INTO jira_accounts (id) VALUES (1)`)
+	require.NoError(t, err)
+	_, err = database.Exec(`INSERT INTO jira_boards (account_id, id, name, project_key) VALUES (1, 7, 'Board', 'ACME')`)
+	require.NoError(t, err)
+	pipe := New(database, testConfig(), nil, log.Default())
+
+	pipe.loadWindowContext(db.Owner{ID: "U1", Source: db.OwnerSourceSlack})
+
+	assert.Equal(t, []string{"ACME-4"}, extractFingerprint("ship ACME-4 in UTF-8", "", pipe.ticketProjects))
+}

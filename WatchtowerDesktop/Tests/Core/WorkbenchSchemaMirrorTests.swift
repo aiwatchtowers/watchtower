@@ -2,20 +2,8 @@ import XCTest
 import GRDB
 import WatchtowerTestSupport
 
-/// The test schema mirror must carry migration 00081 (projects) so Desktop
-/// queries written against it see the real shape.
+/// Migration 00081 (projects) behaviour the workbench queries rely on.
 final class WorkbenchSchemaMirrorTests: XCTestCase {
-    func testMirrorHasProjectTablesAndTargetsProjectID() throws {
-        let queue = try TestDatabase.create()
-        try queue.read { db in
-            for table in ["projects", "project_sources", "project_documents", "project_comments", "project_target_images"] {
-                XCTAssertTrue(try db.tableExists(table), "missing \(table)")
-            }
-            let columns = try db.columns(in: "targets").map(\.name)
-            XCTAssertTrue(columns.contains("project_id"))
-        }
-    }
-
     func testDeletingAProjectCascadesToItsTargetsAndComments() throws {
         let queue = try TestDatabase.create()
         try queue.write { db in

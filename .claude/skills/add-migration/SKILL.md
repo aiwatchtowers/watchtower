@@ -27,13 +27,13 @@ Watchtower uses **goose** migrations (numbered `.sql` files), NOT PRAGMA `user_v
 
 4. **New table → add it to `TestAllTablesExist`** in `internal/db/db_test.go` (hardcoded list; the test fails otherwise — this is the intended guard).
 
-5. **Regenerate the schema snapshot** and commit it:
+5. **Regenerate the schema snapshot and the Swift test schema** and commit them:
    ```bash
-   go test ./internal/db/ -run TestSchemaGolden -update
+   go test ./internal/db/ -run 'TestSchemaGolden|TestDesktopTestSchema' -update
    ```
-   Commit the migration AND the updated `internal/db/testdata/*.golden`.
+   Commit the migration AND the updated `internal/db/testdata/*.golden` and `WatchtowerDesktop/Tests/Support/TestDatabase+Schema.swift` (generated from the migrated DB; Desktop tests run against it).
 
-6. **Verify:** `go test ./internal/db/ -run 'TestMigrationIdempotent|TestAllTablesExist|TestSchemaGolden'`.
+6. **Verify:** `go test ./internal/db/ -run 'TestMigrationIdempotent|TestAllTablesExist|TestSchemaGolden|TestDesktopTestSchema'`.
 
 ## Gotchas
 

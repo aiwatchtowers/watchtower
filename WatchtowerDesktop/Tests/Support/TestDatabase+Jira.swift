@@ -31,7 +31,7 @@ package struct JiraIssueFixture {
         self.key = key
     }
 
-    package func insert(_ db: Database) throws {
+    fileprivate func insert(_ db: Database) throws {
         let now = TestDatabase.jiraTime(Date())
         try db.execute(
             sql: """
@@ -61,6 +61,18 @@ extension TestDatabase {
         fmt.timeZone = TimeZone(identifier: "UTC")
         return fmt
     }()
+
+    private static let jiraDayFormatter: DateFormatter = {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd"
+        fmt.locale = Locale(identifier: "en_US_POSIX")
+        return fmt
+    }()
+
+    /// `date`'s local day in the date-only form of Jira due and release dates.
+    package static func jiraDay(_ date: Date) -> String {
+        jiraDayFormatter.string(from: date)
+    }
 
     /// `date` in the stored Jira timestamp form: fixed-width UTC with
     /// milliseconds (Go `db.FormatJiraTime`, migration 00092), so string

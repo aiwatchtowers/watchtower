@@ -100,8 +100,9 @@ type Pipeline struct {
 	channelNames       map[string]string
 	userNames          map[string]string
 	profile            *db.UserProfile
-	crossChannelCache  string     // pre-formatted cross-channel section
-	allActiveTracksRef []db.Track // cached active tracks for the run
+	crossChannelCache  string          // pre-formatted cross-channel section
+	ticketProjects     map[string]bool // synced Jira project keys: the only ticket keys a fingerprint counts
+	allActiveTracksRef []db.Track      // cached active tracks for the run
 
 	// jiraKeyDetector, if set, detects Jira keys in extracted tracks.
 	jiraKeyDetector interface {
@@ -495,10 +496,20 @@ func (p *Pipeline) loadWindowContext(owner db.Owner) (*db.UserProfile, []db.Trac
 		p.logger.Printf("tracks: warning: failed to pre-load active tracks: %v", err)
 	}
 
+	projectKeys, err := p.db.GetKnownProjectKeys()
+	if err != nil {
+		p.logger.Printf("tracks: warning: failed to load Jira project keys (fingerprints carry no tickets this run): %v", err)
+	}
+	ticketProjects := make(map[string]bool, len(projectKeys))
+	for _, k := range projectKeys {
+		ticketProjects[k] = true
+	}
+
 	p.cacheMu.Lock()
 	p.profile = profile
 	p.allActiveTracksRef = allActive
 	p.crossChannelCache = ""
+	p.ticketProjects = ticketProjects
 	p.cacheMu.Unlock()
 	return profile, allActive
 }
@@ -879,7 +890,10 @@ func (p *Pipeline) storeTrackItems(items []aiItem, userID, channelID, channelNam
 			requesterUserID = item.Requester.UserID
 		}
 
-		fp := extractFingerprint(item.Text, item.Context)
+		p.cacheMu.RLock()
+		ticketProjects := p.ticketProjects
+		p.cacheMu.RUnlock()
+		fp := extractFingerprint(item.Text, item.Context, ticketProjects)
 		fpJSON := fingerprintJSON(fp)
 
 		channelIDsJSON := jsonStringArray([]string{channelID})
@@ -1925,30 +1939,25 @@ var (
 	reSlackTS = regexp.MustCompile(`\b\d{10}\.\d{6}\b`)
 )
 
-// nonTicketPrefixes are standard and spec names that share the Jira key shape
-// ("UTF-8", "SHA-256", "ISO-8601"). A fingerprint merges tracks, so a shared
-// false "ticket" would fold unrelated tracks together. CVE ids are taken whole
-// by reCVE; their "CVE-<year>" head must not count as a ticket too.
-var nonTicketPrefixes = map[string]bool{
-	"AES": true, "COVID": true, "CVE": true, "ECMA": true, "HTTP": true,
-	"IEEE": true, "ISO": true, "MD": true, "RFC": true, "RSA": true,
-	"SHA": true, "TLS": true, "UTF": true,
-}
-
-// ticketKeys returns the Jira-shaped issue keys in text (the shared bare
-// jirakey pattern), minus the standard names in nonTicketPrefixes.
-func ticketKeys(text string) []string {
+// ticketKeys returns the Jira issue keys in text (the shared jirakey
+// pattern, case-insensitive) whose project is one in projects — the synced
+// Jira project keys. A fingerprint merges tracks, so a key-shaped token that
+// is not a ticket ("UTF-8", "GPT-5", "Q3-2026") must never count; with no
+// Jira synced there are no ticket keys at all.
+func ticketKeys(text string, projects map[string]bool) []string {
+	if len(projects) == 0 {
+		return nil
+	}
 	var keys []string
-	for _, m := range jirakey.KeyRegexp.FindAllString(text, -1) {
-		prefix := m[:strings.LastIndexByte(m, '-')]
-		if !nonTicketPrefixes[prefix] {
+	for _, m := range jirakey.KeyRegexp.FindAllString(strings.ToUpper(text), -1) {
+		if projects[m[:strings.LastIndexByte(m, '-')]] {
 			keys = append(keys, m)
 		}
 	}
 	return keys
 }
 
-func extractFingerprint(text, ctx string) []string {
+func extractFingerprint(text, ctx string, ticketProjects map[string]bool) []string {
 	combined := text + " " + ctx
 	seen := make(map[string]struct{})
 	var result []string
@@ -1961,7 +1970,7 @@ func extractFingerprint(text, ctx string) []string {
 		}
 	}
 
-	for _, m := range ticketKeys(combined) {
+	for _, m := range ticketKeys(combined, ticketProjects) {
 		add(m)
 	}
 	for _, m := range reCVE.FindAllString(combined, -1) {

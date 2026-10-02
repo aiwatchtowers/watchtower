@@ -9,15 +9,9 @@ import WatchtowerTestSupport
 @MainActor
 final class JiraDashboardViewModelTests: XCTestCase {
 
-    private static let dayFormatter: DateFormatter = {
-        let fmt = DateFormatter()
-        fmt.dateFormat = "yyyy-MM-dd"
-        return fmt
-    }()
-
     /// A due/release date `days` from today (negative: in the past).
     private func dayFromNow(_ days: Int) -> String {
-        Self.dayFormatter.string(from: Calendar.current.date(byAdding: .day, value: days, to: Date()) ?? Date())
+        TestDatabase.jiraDay(Calendar.current.date(byAdding: .day, value: days, to: Date()) ?? Date())
     }
 
     private func daysAgo(_ days: Double) -> Date { Date().addingTimeInterval(-days * 86400) }

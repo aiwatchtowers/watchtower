@@ -26,7 +26,7 @@ struct OnboardingView: View {
     // never sees a false green checkmark.
     @State private var syncRanWithSlack = false
     @State private var syncProgress: SyncProgressData?
-    @State private var syncETA = OnboardingSyncProgress()
+    @State private var syncETA = OnboardingSyncETA()
 
     // Onboarding chat (runs in parallel with sync)
     @State private var onboardingVM: OnboardingChatViewModel?
@@ -446,7 +446,7 @@ struct OnboardingView: View {
                 do {
                     try OnboardingClaudePathConfig.save(path, configPath: Constants.configPath)
                 } catch {
-                    claudeCheckResult = "Could not save the path to config.yaml: \(error.localizedDescription)"
+                    claudeCheckResult = "Could not save the path to \(Constants.configPath): \(error.localizedDescription)"
                     isRunning = false
                     return
                 }
@@ -1107,13 +1107,13 @@ struct OnboardingView: View {
                         .foregroundStyle(.primary)
                     if progress.elapsedSec > 0 {
                         Text("·").font(.caption).foregroundStyle(.secondary.opacity(0.5))
-                        Text(OnboardingSyncProgress.formatElapsed(progress.elapsedSec))
+                        Text(OnboardingSyncETA.formatElapsed(progress.elapsedSec))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
                     if let eta = syncETA.etaSeconds, eta > 0 {
                         Text("·").font(.caption).foregroundStyle(.secondary.opacity(0.5))
-                        Text("\(OnboardingSyncProgress.formatETA(eta)) left")
+                        Text("\(OnboardingSyncETA.formatETA(eta)) left")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -1128,7 +1128,7 @@ struct OnboardingView: View {
 
             // Progress bar from current phase
             if let progress = syncProgress {
-                let (done, total) = OnboardingSyncProgress.phaseCounts(progress)
+                let (done, total) = OnboardingSyncETA.phaseCounts(progress)
                 if total > 0 {
                     ProgressView(value: Double(done), total: Double(total))
                         .tint(.accentColor)
@@ -1350,7 +1350,7 @@ struct OnboardingView: View {
         isRunning = true
         cliError = nil
         syncProgress = nil
-        syncETA = OnboardingSyncProgress()
+        syncETA = OnboardingSyncETA()
 
         Task {
             let process = Process()
