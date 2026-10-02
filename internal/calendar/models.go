@@ -41,4 +41,5 @@ type CalendarInfo struct {
 	Primary  bool
 	Color    string // hex color from Google
 	Selected bool   // user-configured in settings
+	Hidden   bool   // hidden from the user's list in Google
 }
