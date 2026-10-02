@@ -127,8 +127,9 @@ package struct ProcessCLIRunner: CLIRunnerProtocol {
 
         // Terminate the subprocess if the awaiting Task is cancelled (the user
         // pressed Cancel in the extraction capsule). `readDataToEndOfFile` /
-        // `waitUntilExit` run on detached tasks (never the main actor);
-        // terminate() from the cancel handler unblocks both reads.
+        // `waitUntilExit` run on threads of their own (never the main actor, never the
+        // Swift-concurrency pool — see `ProcessPipes`); terminate() from the
+        // cancel handler unblocks both reads.
         //
         // SB3: stdout and stderr MUST be drained concurrently, not
         // sequentially. A child that fills the stderr pipe (macOS's default
@@ -137,11 +138,11 @@ package struct ProcessCLIRunner: CLIRunnerProtocol {
         // parked in `readDataToEndOfFile()` on stdout at that point, both
         // sides wait forever.
         return try await withTaskCancellationHandler {
-            async let stdoutRead = Task.detached { stdoutPipe.fileHandleForReading.readDataToEndOfFile() }.value
-            async let stderrRead = Task.detached { stderrPipe.fileHandleForReading.readDataToEndOfFile() }.value
-            let stdoutData = await stdoutRead
-            let stderrData = await stderrRead
-            process.waitUntilExit()
+            let stdoutRead = ProcessPipes.drain(stdoutPipe)
+            let stderrRead = ProcessPipes.drain(stderrPipe)
+            let stdoutData = await stdoutRead.value
+            let stderrData = await stderrRead.value
+            await ProcessPipes.offPool { process.waitUntilExit() }
 
             if Task.isCancelled {
                 throw CancellationError()

@@ -121,6 +121,9 @@ jobs:
     needs: gate
     if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-latest
+    # A hang must fail the job, not run to GitHub's 6 h default. Measured
+    # 2026-10-02: ~7 min on a PR, up to ~36 min on main with the race pass.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -140,6 +143,7 @@ jobs:
       # Runs the full suite with -cover and enforces coverage.thresholds —
       # this IS the test run on feature branches and PRs.
       - name: Test + coverage gate
+        timeout-minutes: 25
         run: make test-cover
 
       - name: Test (race, library packages)
@@ -154,6 +158,7 @@ jobs:
         # it is CLI glue over file-backed SQLite fixtures whose concurrency
         # all lives in internal/*, which is race-covered here.
         if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
+        timeout-minutes: 40
         run: go test $(go list ./... | grep -v '^watchtower/cmd$') -race -count=1 -timeout 25m
 
   swift-lint:
@@ -182,6 +187,10 @@ jobs:
     # 26.3 (Swift 6.2.4, the newest on macos-15) cannot load on a cold SPM
     # resolve — the job only passed on macos-15 while a warm cache hid it.
     runs-on: macos-26
+    # A hang must fail the job, not run to GitHub's 6 h default (seen
+    # 2026-10-02: a pool-starved test run sat 45+ min). Measured ~8 min, up to
+    # ~12; the margin is for a cold SPM cache.
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: WatchtowerDesktop
@@ -212,6 +221,7 @@ jobs:
         run: swift build
 
       - name: Test
+        timeout-minutes: 20
         run: swift test
 
   sentrux-quality:
