@@ -91,6 +91,8 @@ func openChatTitleDB() (*config.Config, *db.DB, error) {
 // chatTitlePrompt renders the chat.title system prompt (the tunable DB row,
 // else the compiled default) and the first-exchange user message.
 func chatTitlePrompt(database *db.DB, cfg *config.Config, owner, assistant string) (system, user string) {
+	// A store read error falls back to the default silently, as before: stderr
+	// stays clean for the Desktop that runs this command.
 	tmpl, _, _ := prompts.Resolve(prompts.New(database, nil), prompts.ChatTitle, "")
 	system = fmt.Sprintf(tmpl, prompts.Directive(cfg.Digest.Language))
 	user = "=== FIRST EXCHANGE ===\nOwner: " + excerptRunes(owner, chatTitleExcerptRunes) +

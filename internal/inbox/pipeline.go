@@ -179,6 +179,22 @@ func New(database *db.DB, cfg *config.Config, gen digest.Generator, logger *log.
 	}
 }
 
+// SetPromptStore sets the prompt store the style-profile sampler loads its
+// tuned inbox.style_sample prompt from.
+func (p *Pipeline) SetPromptStore(store *prompts.Store) {
+	p.promptStore = store
+}
+
+// getPrompt resolves a prompt via prompts.Resolve: the store row, else the
+// registered default.
+func (p *Pipeline) getPrompt(id string) string {
+	tmpl, _, err := prompts.Resolve(p.promptStore, id, "")
+	if err != nil {
+		p.logger.Printf("inbox: %v — using the built-in default", err)
+	}
+	return tmpl
+}
+
 // SetOwner sets the owner identity the per-source detectors (Jira, Calendar)
 // and their auto-resolve rules match against. Slack detection does not use
 // it: each Slack account is matched against its own current_user_id.

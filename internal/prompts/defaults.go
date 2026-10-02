@@ -140,9 +140,9 @@ var DefaultVersions = map[string]int{
 	DictationClean:             1, // v1: dictation transcript cleanup (idea/note modes)
 	ReactionCommand:            1, // v1: compose an agent-action's args from a reacted Slack message
 	CatchupCompose:             1, // v1: strong-tier absence-recap composer
-	CatchupLearn:               1, // v1: registered 2026-10-02 (was a package-private const, text unchanged)
-	TargetsNextStep:            1, // v1: registered 2026-10-02 (was a package-private const, text unchanged)
-	InboxStyleSample:           1, // v1: registered 2026-10-02 (was a package-private const, text unchanged)
+	CatchupLearn:               1, // v1: catch-up feedback → learned-rules interpreter
+	TargetsNextStep:            1, // v1: single next action per target with urgency and action buttons
+	InboxStyleSample:           1, // v1: owner communication-style profile from their own Slack messages
 	ChatTitle:                  1, // v1: light-tier conversation title from the first exchange
 	TerminalTitle:              1, // v1: light-tier name for an embedded Claude Code session
 }

@@ -936,3 +936,38 @@ func TestProj01_NextStepSkipsProjectTarget(t *testing.T) {
 		t.Fatalf("attempt recorded for a project target: %+v", tg)
 	}
 }
+
+// TestGenerateNextStep_UsesPromptStoreOverride pins the targets.next_step
+// registration: a customized store row, not the registered default, reaches
+// the AI call (the TestPipeline_Extract_UsesPromptStoreOverride pattern).
+func TestGenerateNextStep_UsesPromptStoreOverride(t *testing.T) {
+	gen := &mockGenerator{responses: []string{`{"title": "Ping the vendor", "actions": []}`}}
+	p, d := makeTestPipeline(t, gen)
+
+	const sentinel = "SENTINEL-CUSTOMIZED-TARGETS-NEXT-STEP-5D1A"
+	store := prompts.New(d, nil)
+	if err := store.Seed(); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := store.Update(prompts.TargetsNextStep, sentinel, "test customization"); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	p.SetPromptStore(store)
+
+	id, err := d.CreateTarget(db.Target{
+		Text: "Renew the vendor contract", Status: "todo", Ownership: "mine", SourceType: "manual", Priority: "medium",
+		Level: "week", PeriodStart: time.Now().Format("2006-01-02"), PeriodEnd: time.Now().AddDate(0, 0, 6).Format("2006-01-02"),
+	})
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	if _, err := p.GenerateNextStep(context.Background(), int(id)); err != nil {
+		t.Fatalf("GenerateNextStep: %v", err)
+	}
+	if !strings.HasPrefix(gen.lastSystem, sentinel) {
+		t.Errorf("the customized template must lead the system prompt, got:\n%s", gen.lastSystem)
+	}
+	if strings.Contains(gen.lastSystem, "You are an execution coach") {
+		t.Errorf("the registered default leaked through a customized store")
+	}
+}

@@ -1869,8 +1869,8 @@ func TestGetPrompt_WithPromptStore(t *testing.T) {
 	p.SetPromptStore(store)
 
 	tmpl, version := p.getPrompt(prompts.DigestChannel)
-	// Should get the seeded prompt row, not the version-0 built-in.
 	assert.Equal(t, prompts.Defaults[prompts.DigestChannel], tmpl)
+	// The seeded row carries a real version; the version-0 built-in would not.
 	assert.GreaterOrEqual(t, version, 1)
 }
 

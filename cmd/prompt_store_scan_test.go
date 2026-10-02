@@ -93,13 +93,13 @@ func TestPromptStoreWiring_EveryPipelineConstructionIsWired(t *testing.T) {
 }
 
 // minPromptStorePackages, minCmdFilesWalked and minPipelineConstructions are
-// coverage floors, not exact counts. As of the 2026-09-23 targets.extract/
-// targets.link wiring, discovery finds the SetPromptStore seam on
-// 11 packages (briefing, catchup, dayplan, digest, guide, ideas, meeting,
-// memory, reactioncmd, targets, tracks — "inbox" dropped off this list when
-// the 2026-09-14 inbox demolition removed its last AI call and, with it, its
-// SetPromptStore seam), walks 60 non-test .go files under cmd/, and checks
-// 35 constructions (all four numbers are logged on every run by the t.Logf
+// coverage floors, not exact counts. As of the 2026-10-02 prompts.Resolve
+// unification, discovery finds the SetPromptStore seam on 12 packages
+// (briefing, catchup, dayplan, digest, guide, ideas, inbox, meeting, memory,
+// reactioncmd, targets, tracks — "inbox" dropped off this list with the
+// 2026-09-14 inbox demolition and came back when inbox.style_sample was
+// registered), walks 75 non-test .go files under cmd/, and checks 38
+// constructions (all four numbers are logged on every run by the t.Logf
 // above). The floors sit below those measured values so ordinary growth
 // never trips them, while a walk that silently covers nothing fails loudly
 // instead of reporting a false "no problems found". Raise them deliberately

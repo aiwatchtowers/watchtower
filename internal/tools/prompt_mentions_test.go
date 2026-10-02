@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -21,21 +20,26 @@ import (
 // not that the tool exists. A prompt naming a tool the registry lacks sends the
 // model after a tool that is not there.
 //
-// A token counts as a tool mention when it is snake_case and starts with the
-// verb of a registered tool (list_, get_, search_, ...), so a field name such
-// as channel_id or an action kind such as link_target is not mistaken for one,
-// while a renamed or dropped tool still is. Each Swift TOOLS block runs from
-// its "=== TOOLS" line to the first blank line, "===" header or end of the
-// string literal.
+// A token counts as a tool mention when it is snake_case and starts with one
+// of toolVerbs, so a field name such as channel_id or an action kind such as
+// link_target is not mistaken for one, while a renamed or dropped tool still
+// is — the verbs are pinned here rather than derived from the registry, so
+// dropping the only find_ tool cannot also drop find_ from the scan. Each
+// Swift TOOLS block runs from its "=== TOOLS" line to the first blank line,
+// "===" header or end of the string literal.
+//
+// Scope: the Go blocks below, every Swift TOOLS block and ChatPromptRules.swift.
+// Prompt text elsewhere (the registered prompts.Defaults bodies, the embedded
+// skill pack) is not scanned.
 func TestPromptToolMentionsAreRegistered(t *testing.T) {
 	registered := map[string]bool{}
-	verbs := map[string]bool{}
-	all := append(ReadTools(), DependentReadTools(ReadDeps{})...)
-	for _, tool := range all {
+	for _, tool := range append(ReadTools(), DependentReadTools(ReadDeps{})...) {
 		registered[tool.Name] = true
-		verbs[strings.SplitN(tool.Name, "_", 2)[0]] = true
+		if verb := strings.SplitN(tool.Name, "_", 2)[0]; !toolVerbs[verb] {
+			t.Errorf("read tool %q has verb %q, which toolVerbs does not list — add it so prompt mentions of it are checked", tool.Name, verb)
+		}
 	}
-	mention := mentionPattern(verbs)
+	mention := mentionPattern(toolVerbs)
 
 	// Go side: the text both the main AI Chat and the CLI ask prompt carry.
 	goText := map[string]string{
@@ -46,12 +50,18 @@ func TestPromptToolMentionsAreRegistered(t *testing.T) {
 	for name, text := range goText {
 		checkMentions(t, name, text, mention, registered)
 	}
+	// Coverage floor: the shared tools list names a dozen-plus tools; finding
+	// a handful means the pattern broke and the check above passed vacuously.
+	if n := len(mention.FindAllString(blocks.ToolsList, -1)); n < 10 {
+		t.Fatalf("blocks.ToolsList yields %d tool mentions, want at least 10", n)
+	}
 
 	// Swift side: every TOOLS block in the Desktop sources, plus the shared
 	// rules file the Discuss surfaces interpolate.
-	root := repoRootForMentions(t)
+	root := repoRoot(t)
 	sources := filepath.Join(root, "WatchtowerDesktop", "Sources")
 	blocksFound := 0
+	rulesSeen := false
 	err := filepath.WalkDir(sources, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".swift") {
 			return err
@@ -63,6 +73,7 @@ func TestPromptToolMentionsAreRegistered(t *testing.T) {
 		}
 		rel, _ := filepath.Rel(root, path)
 		if filepath.Base(path) == "ChatPromptRules.swift" {
+			rulesSeen = true
 			checkMentions(t, rel, string(raw), mention, registered)
 		}
 		for _, block := range swiftToolsBlocks(string(raw)) {
@@ -79,10 +90,16 @@ func TestPromptToolMentionsAreRegistered(t *testing.T) {
 	// Coverage floor: the four Discuss surfaces (meeting, idea, track, target)
 	// carry a tool-naming TOOLS block each. Finding fewer means the scan looked
 	// in the wrong place or the block shape changed, and would pass vacuously.
+	if !rulesSeen {
+		t.Fatalf("ChatPromptRules.swift not found under %s — renamed or moved? update the scan", sources)
+	}
 	if blocksFound < 4 {
 		t.Fatalf("found %d tool-naming Swift TOOLS blocks under %s, want at least 4", blocksFound, sources)
 	}
 }
+
+// toolVerbs are the leading words of the registered read tools' names.
+var toolVerbs = map[string]bool{"find": true, "get": true, "list": true, "load": true, "memory": true, "search": true}
 
 func mentionPattern(verbs map[string]bool) *regexp.Regexp {
 	list := make([]string, 0, len(verbs))
@@ -122,17 +139,4 @@ func swiftToolsBlocks(src string) []string {
 		out = append(out, strings.Join(block, "\n"))
 	}
 	return out
-}
-
-func repoRootForMentions(t *testing.T) string {
-	t.Helper()
-	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("runtime.Caller failed")
-	}
-	root := filepath.Join(filepath.Dir(file), "..", "..")
-	if _, err := os.Stat(filepath.Join(root, "WatchtowerDesktop", "Package.swift")); err != nil {
-		t.Fatalf("repo root %q has no WatchtowerDesktop/Package.swift: %v", root, err)
-	}
-	return root
 }

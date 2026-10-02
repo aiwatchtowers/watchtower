@@ -42,7 +42,7 @@ func TestResolve_EmptyStoredTemplateReturnsDefault(t *testing.T) {
 	require.NoError(t, database.UpsertPrompt(db.Prompt{ID: MeetingNotes, Template: "", Version: 7}))
 
 	tmpl, version, err := Resolve(New(database, nil), MeetingNotes, "")
-	require.NoError(t, err)
+	require.Error(t, err, "an empty row is reported so the caller logs the fallback")
 	assert.Equal(t, Defaults[MeetingNotes], tmpl)
 	assert.Equal(t, 0, version)
 }
@@ -81,4 +81,13 @@ func TestWithRoleInstruction(t *testing.T) {
 
 	got := WithRoleInstruction("top_management", "body")
 	assert.Equal(t, GetRoleInstruction("top_management")+"\n\nbody", got)
+}
+
+func TestResolve_UnregisteredIDReturnsEmptyAndError(t *testing.T) {
+	store := New(openTestDB(t), nil)
+
+	tmpl, version, err := Resolve(store, "no.such.prompt", "")
+	require.Error(t, err)
+	assert.Empty(t, tmpl)
+	assert.Equal(t, 0, version)
 }

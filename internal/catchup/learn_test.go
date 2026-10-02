@@ -241,3 +241,27 @@ func TestValidateLearnRule_SenderKeyAndNaN(t *testing.T) {
 	_, why = validateLearnRule(learnRule{Pipeline: "inbox", RuleType: "source_mute", ScopeKey: "sender:1:U7", Weight: -0.3}, nil)
 	assert.NotEmpty(t, why, "no refs → no key can be valid")
 }
+
+// TestSubmitTopicFeedback_UsesPromptStoreOverride pins the catchup.learn
+// registration: a customized store row, not the registered default, reaches
+// the AI call.
+func TestSubmitTopicFeedback_UsesPromptStoreOverride(t *testing.T) {
+	const sentinel = "SENTINEL-CUSTOMIZED-CATCHUP-LEARN-8B3C"
+	var learnSystem string
+	gen := &mockGenerator{fn: func(system, _ string) string {
+		learnSystem = system
+		return learnMuteRule
+	}}
+	p, d := newPipeline(t, gen, &fakeTopUp{})
+	store := prompts.New(d, nil)
+	require.NoError(t, store.Seed())
+	require.NoError(t, store.Update(prompts.CatchupLearn, sentinel, "test customization"))
+	p.SetPromptStore(store)
+	recapID := seedReadyRecap(t, d, seedDigest(t, d, 1500, 1900))
+
+	_, err := p.SubmitTopicFeedback(context.Background(), recapID, 0, -1, "this channel is noise")
+	require.NoError(t, err)
+
+	assert.True(t, strings.HasPrefix(learnSystem, sentinel), "the customized template must lead the system prompt")
+	assert.NotContains(t, learnSystem, "You are the learning interpreter", "the registered default leaked through a customized store")
+}

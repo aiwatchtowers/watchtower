@@ -10,22 +10,6 @@ import (
 	"watchtower/internal/prompts"
 )
 
-// SetPromptStore sets the prompt store the style-profile sampler loads its
-// tuned inbox.style_sample prompt from.
-func (p *Pipeline) SetPromptStore(store *prompts.Store) {
-	p.promptStore = store
-}
-
-// getPrompt resolves a prompt via prompts.Resolve: the store row, else the
-// registered default.
-func (p *Pipeline) getPrompt(id string) string {
-	tmpl, _, err := prompts.Resolve(p.promptStore, id, "")
-	if err != nil {
-		p.logger.Printf("inbox: %v — using the built-in default", err)
-	}
-	return tmpl
-}
-
 // capStyleSample keeps at most perChannel messages per channel and total
 // messages overall, preserving input (newest-first) order.
 func capStyleSample(msgs []db.StyleSampleMessage, perChannel, total int) []db.StyleSampleMessage {
