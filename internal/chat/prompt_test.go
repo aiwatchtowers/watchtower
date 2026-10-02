@@ -86,7 +86,7 @@ func TestBuildSystemPrompt_SectionsAndOrder(t *testing.T) {
 
 	order := []string{
 		"You are Watchtower",
-		"Reply in the language of the owner's latest message",
+		"IMPORTANT: Reply in the language of the owner's latest message. Judge it by the text the owner typed",
 		"=== CONNECTED SOURCES ===",
 		"=== LINKING RULES ===",
 		"=== TOOLS",

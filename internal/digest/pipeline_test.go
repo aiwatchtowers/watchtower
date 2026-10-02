@@ -3359,9 +3359,17 @@ func TestFormatProfileContext_NoCustomContext_ReportsOnly(t *testing.T) {
 	assert.Contains(t, got, "MY REPORTS")
 }
 
-func TestFormatProfileContext_EmptyLists_NoBlock(t *testing.T) {
-	p := &Pipeline{profile: &db.UserProfile{Reports: "[]", StarredChannels: "[]", StarredPeople: "[]"}}
-	assert.Equal(t, "", p.formatProfileContext())
+func TestFormatProfileContext_AllEmpty_NoBlock(t *testing.T) {
+	for name, profile := range map[string]*db.UserProfile{
+		"nil":         nil,
+		"zero":        {},
+		"empty lists": {Reports: "[]", StarredChannels: "[]", StarredPeople: "[]"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := &Pipeline{profile: profile}
+			assert.Equal(t, "", p.formatProfileContext())
+		})
+	}
 }
 
 // A legacy profile with CustomPromptContext renders byte-for-byte as before.

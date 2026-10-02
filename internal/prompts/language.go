@@ -56,7 +56,9 @@ func ChatDirective(lang string) string {
 		lang = DefaultLanguage
 	}
 	return fmt.Sprintf(
-		"IMPORTANT: %s. If it is unclear (a message that is only a link, code or a name), reply in %s.",
+		"IMPORTANT: %s. Judge it by the text the owner typed: ignore the injected "+
+			"[Current time: …] line and any quoted or pasted text (artifact comments, quoted replies). "+
+			"If it is unclear (a message that is only a link, code or a name), reply in %s.",
 		chatDirectiveMarker, lang,
 	)
 }

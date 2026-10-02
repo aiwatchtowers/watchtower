@@ -2331,6 +2331,8 @@ func (p *Pipeline) formatProfileContext() string {
 		return ""
 	}
 
+	// Only starred lists and reports are rendered: the digest prompts carry no
+	// rules for a manager or peers, so those fields are left out on purpose.
 	// Rendered in raw-id form (SplitAccountID via RawIDsJSON): the model matches
 	// these ids against message text, which carries raw Slack ids regardless of
 	// how the id blob itself is namespaced.
