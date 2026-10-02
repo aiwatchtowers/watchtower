@@ -394,25 +394,54 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
         XCTAssertEqual(vm.gitBranches[projectID]?.branches.count, 2)
     }
 
-    func testAFailedListingIsShown() async {
+    func testAFailedListingIsAFailedState() async {
         let vm = makeVM(ScriptedCLIRunner(results: [
             .success(Data(#"{"git":true,"branches":[],"branches_ok":false,"branches_error":"fatal: bad object"}"#.utf8))
         ]))
         await vm.loadBranches(project: project)
-        XCTAssertEqual(vm.gitErrors[project.id], "Could not list the branches: fatal: bad object")
+        XCTAssertEqual(vm.branchListStates[project.id], .failed("Could not list branches: fatal: bad object"))
+        XCTAssertNil(vm.gitBranches[project.id], "no list, so no endless spinner either: the state says failed")
+        XCTAssertNil(vm.gitErrors[project.id], "the list's failure is the list's, not the last action's")
     }
 
-    func testCreateBranch() async {
+    func testAListingOfANonRepositoryShowsTheNote() async {
+        let vm = makeVM(ScriptedCLIRunner(results: [
+            .success(Data(#"{"git":false,"note":"the folder is not a git work tree","branches":[],"branches_ok":false,"branches_error":""}"#.utf8))
+        ]))
+        await vm.loadBranches(project: project)
+        XCTAssertEqual(vm.branchListStates[project.id], .failed("Could not list branches: the folder is not a git work tree"))
+    }
+
+    func testAFailedReloadKeepsTheOldListAsStale() async {
         let runner = ScriptedCLIRunner(results: [
-            .success(Data(#"{"branch":"new/one","switched":true,"created":true}"#.utf8)),
-            .success(status(branch: "new/one")),
-            .success(branches(["new/one", "main"]))
+            .success(branches()),
+            .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "no such workbench"))
         ])
         let vm = makeVM(runner)
-        let created = await vm.createBranch("  new/one ", project: project)
-        XCTAssertTrue(created)
-        XCTAssertEqual(runner.invocations[0], ["workbench", "git", "create", "--workbench", String(project.id), "--name", "new/one", "--json"])
-        XCTAssertEqual(vm.gitStatus[project.id]?.branch, "new/one")
+        await vm.loadBranches(project: project)
+        XCTAssertEqual(vm.branchListStates[project.id], .loaded)
+        await vm.loadBranches(project: project)
+        XCTAssertEqual(vm.gitBranches[project.id]?.branches.map(\.name), ["main", "feature/x"])
+        guard case .failed(let message) = vm.branchListStates[project.id] else {
+            return XCTFail("expected a failed state, got \(String(describing: vm.branchListStates[project.id]))")
+        }
+        XCTAssertTrue(message.hasPrefix("Could not list branches: "), message)
+    }
+
+    func testAMissingCLIFailsTheList() async {
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: nil, defaults: defaults)
+        await vm.loadBranches(project: project)
+        XCTAssertEqual(vm.branchListStates[project.id], .failed(WorkbenchesViewModel.cliMissingMessage))
+    }
+
+    func testAFailedBadgeReadDropsTheOldBadges() async throws {
+        let vm = makeVM(ScriptedCLIRunner(results: [.success(branches())]))
+        vm.branchTargets[project.id] = ["feature/x": [WorkbenchBranchTarget(id: 1, title: "old", status: "todo")]]
+        try await pool.write { try $0.execute(sql: "ALTER TABLE targets RENAME TO targets_gone") }
+        await vm.loadBranches(project: project)
+        XCTAssertNil(vm.branchTargets[project.id], "stale badges are not shown as current")
+        XCTAssertEqual(vm.gitErrors[project.id]?.hasPrefix("Could not read the board's branches:"), true)
+        XCTAssertEqual(vm.branchListStates[project.id], .loaded)
     }
 
     func testAFailedCreateCallReadsTheStatusAgain() async {

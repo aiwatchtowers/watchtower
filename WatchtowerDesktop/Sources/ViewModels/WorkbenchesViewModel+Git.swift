@@ -14,6 +14,13 @@ extension WorkbenchesViewModel {
 
     static let cliMissingMessage = "The watchtower CLI was not found."
 
+    enum BranchListState: Equatable {
+        case loading
+        case loaded
+        /// The owner's line: why the list could not be read.
+        case failed(String)
+    }
+
     /// Whether the header shows `›` and the branch button.
     func showsBranchButton(projectID: Int64) -> Bool {
         WorkbenchBranchPresentation.showsButton(gitStatus[projectID])
@@ -209,29 +216,44 @@ extension WorkbenchesViewModel {
         await reloadBranchList(project: project)
     }
 
+    /// The branch list, then the board's branch targets for the badges. A
+    /// failed list keeps the last good one (shown as stale); a failed
+    /// badge read drops the old badges rather than show them as current.
     private func reloadBranchList(project: Workbench) async {
         let id = project.id
         guard let cli else {
-            gitErrors[id] = Self.cliMissingMessage
+            branchListStates[id] = .failed(Self.cliMissingMessage)
             return
         }
-        var problems: [String] = []
+        branchListStates[id] = .loading
         do {
             let list = try await cli.gitBranches(projectID: id)
-            gitBranches[id] = list
-            if !list.branchesOK { problems.append("Could not list the branches: \(list.branchesError)") }
+            if list.branchesOK {
+                gitBranches[id] = list
+                branchListStates[id] = .loaded
+            } else {
+                branchListStates[id] = .failed(Self.branchListFailure(list.branchesError.isEmpty ? list.note : list.branchesError))
+            }
         } catch {
-            if error is CancellationError || Task.isCancelled { return }
-            problems.append("Could not list the branches: \(gitFailureText(error, command: "branches", projectID: id))")
+            if error is CancellationError || Task.isCancelled {
+                // The popover closed; the next one reads again.
+                branchListStates[id] = nil
+                return
+            }
+            branchListStates[id] = .failed(Self.branchListFailure(gitFailureText(error, command: "branches", projectID: id)))
         }
         do {
             branchTargets[id] = try await dbPool.read { try WorkbenchQueries.branchTargets($0, projectID: id) }
         } catch {
-            problems.append("Could not read the board's branches: \(error.localizedDescription)")
+            branchTargets[id] = nil
+            print("[WorkbenchGit] board branch targets for workbench \(id) failed: \(error)")
+            let problem = "Could not read the board's branches: \(error.localizedDescription)"
+            gitErrors[id] = [gitErrors[id], problem].compactMap { $0 }.joined(separator: "\n")
         }
-        if !problems.isEmpty {
-            gitErrors[id] = ([gitErrors[id]].compactMap { $0 } + problems).joined(separator: "\n")
-        }
+    }
+
+    private static func branchListFailure(_ detail: String) -> String {
+        detail.isEmpty ? "Could not list branches." : "Could not list branches: \(detail)"
     }
 
     /// A status git could not read inside the repository is a failed read:

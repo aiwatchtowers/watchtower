@@ -204,8 +204,11 @@ final class WorkbenchesViewModel {
 
     /// The last `workbench git status` per workbench.
     var gitStatus: [Int64: WorkbenchGitStatus] = [:]
-    /// The popover's branch list, read when it opens.
+    /// The popover's branch list: the last one read in full.
     var gitBranches: [Int64: WorkbenchGitBranches] = [:]
+    /// Where the latest read of that list stands; a failure beside a list
+    /// in `gitBranches` means that list is stale. nil before the first read.
+    var branchListStates: [Int64: BranchListState] = [:]
     /// Board targets carrying a branch, by branch name — the `#id` badges.
     var branchTargets: [Int64: [String: [WorkbenchBranchTarget]]] = [:]
     /// Why the last branch action (list, switch, create) failed or was

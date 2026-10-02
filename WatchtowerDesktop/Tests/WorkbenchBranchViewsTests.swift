@@ -157,10 +157,41 @@ final class WorkbenchBranchViewsTests: XCTestCase {
     func testThePopoverShowsTheGitError() throws {
         let vm = makeVM()
         vm.gitBranches[project.id] = WorkbenchGitBranches()
+        vm.branchListStates[project.id] = .loaded
         vm.gitErrors[project.id] = "git failed: fatal: bad object"
         let popover = WorkbenchBranchPopover(vm: vm, project: project)
         XCTAssertNoThrow(try popover.inspect().find(text: "git failed: fatal: bad object"))
         XCTAssertNoThrow(try popover.inspect().find(text: "No local branches yet."))
+    }
+
+    func testAFailedFirstListingShowsTheFailureNotASpinner() throws {
+        let vm = makeVM()
+        vm.branchListStates[project.id] = .failed("Could not list branches: fatal: bad object")
+        let popover = WorkbenchBranchPopover(vm: vm, project: project)
+        XCTAssertNoThrow(try popover.inspect().find(text: "Could not list branches: fatal: bad object"))
+        XCTAssertThrowsError(try popover.inspect().find(ViewType.ProgressView.self))
+        XCTAssertThrowsError(try popover.inspect().find(text: "No local branches yet."))
+    }
+
+    func testTheFirstListingShowsASpinner() throws {
+        let vm = makeVM()
+        vm.branchListStates[project.id] = .loading
+        XCTAssertNoThrow(try WorkbenchBranchPopover(vm: vm, project: project).inspect().find(ViewType.ProgressView.self))
+    }
+
+    func testAStaleListIsShownDisabled() throws {
+        let vm = makeVM()
+        vm.gitBranches[project.id] = WorkbenchGitBranches(current: "main", branches: [WorkbenchGitBranch(name: "feature/x")])
+        vm.branchListStates[project.id] = .failed("Could not list branches: boom")
+        let popover = WorkbenchBranchPopover(vm: vm, project: project)
+        XCTAssertNoThrow(try popover.inspect().find(text: "Could not list branches: boom"))
+        XCTAssertNoThrow(try popover.inspect().find(text: "The list may be out of date."))
+        XCTAssertTrue(try popover.inspect().find(ViewType.ScrollView.self).isDisabled())
+
+        vm.branchListStates[project.id] = .loaded
+        let fresh = WorkbenchBranchPopover(vm: vm, project: project)
+        XCTAssertFalse(try fresh.inspect().find(ViewType.ScrollView.self).isDisabled())
+        XCTAssertThrowsError(try fresh.inspect().find(text: "The list may be out of date."))
     }
 
     func testCopyBranchNameCallsTheViewModel() throws {

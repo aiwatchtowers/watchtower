@@ -65,16 +65,35 @@ struct WorkbenchBranchPopover: View {
         }
     }
 
+    /// The list, a spinner only while the first read runs, the failure
+    /// otherwise. A list a later read could not refresh stays visible but
+    /// disabled: switching from stale rows would guess.
     @ViewBuilder
     private var branchList: some View {
         let id = project.id
+        let state = vm.branchListStates[id] ?? .loading
+        let failed: String? = if case .failed(let message) = state { message } else { nil }
+        if let failed {
+            Text(failed)
+                .font(.caption)
+                .foregroundStyle(.red)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        }
         if let list = vm.gitBranches[id] {
             let rows = WorkbenchBranchPresentation.filter(list.branches, query: query)
             if rows.isEmpty {
-                Text(list.branches.isEmpty ? "No local branches yet." : "No branch matches.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                if failed == nil {
+                    Text(list.branches.isEmpty ? "No local branches yet." : "No branch matches.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             } else {
+                if failed != nil {
+                    Text("The list may be out of date.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
                 ScrollView {
                     VStack(alignment: .leading, spacing: 1) {
                         ForEach(rows) { branch in
@@ -90,8 +109,9 @@ struct WorkbenchBranchPopover: View {
                 }
                 .frame(maxHeight: 260)
                 .fixedSize(horizontal: false, vertical: true)
+                .disabled(failed != nil)
             }
-        } else {
+        } else if failed == nil {
             ProgressView().controlSize(.small)
         }
     }
