@@ -5,7 +5,8 @@ import WatchtowerCore
 /// The header's branch button and popover (#233). Every git operation is a
 /// `watchtower workbench git` call — Go owns git and every switch guard; the
 /// Desktop only supplies the one fact Go cannot know (a live Claude Code
-/// session it runs in the folder) and resends what the owner confirmed.
+/// session it runs in the folder), saves the code viewer's edits before a
+/// switch, and resends what the owner confirmed.
 /// Never a force, a discard or an automatic stash pop.
 extension WorkbenchesViewModel {
     /// How often the page on screen re-reads the status for the dirty dot
@@ -96,7 +97,8 @@ extension WorkbenchesViewModel {
     }
 
     /// "New branch from current…": `git switch -c` from HEAD (no files
-    /// change, so no guard). Returns whether the branch was created.
+    /// change, so no guard and no save of the code viewer's edits first).
+    /// Returns whether the branch was created.
     @discardableResult
     func createBranch(_ name: String, project: Workbench) async -> Bool {
         let id = project.id
@@ -191,6 +193,14 @@ extension WorkbenchesViewModel {
         // folder: a session at the repository root or in a sibling counts.
         let topLevel = gitStatus[id]?.topLevel ?? ""
         let workTree = topLevel.isEmpty ? project.folderPath : topLevel
+        // Edits typed in the code viewer are not on disk until their
+        // autosave: saved now, so Go's dirty check sees them (and a stash
+        // takes them). One that cannot be written would land on the other
+        // branch — nothing is sent.
+        if let unsaved = await codeFiles.saveEdits(project: project, workTree: workTree) {
+            gitErrors[id] = "Save or discard the edits in \(unsaved) first — they are not on disk yet."
+            return
+        }
         let agentRunning = terminalCenter?.hasLiveClaudeSession(workbenchID: id, workTree: workTree) ?? false
         let result: WorkbenchGitSwitchResult
         do {

@@ -130,7 +130,7 @@ final class TerminalCenter {
 
     /// The path with symlinks resolved; a path that does not exist (any
     /// more) only standardized.
-    private static func resolvedPath(_ path: String) -> String {
+    static func resolvedPath(_ path: String) -> String {
         let standard = URL(fileURLWithPath: path).standardizedFileURL.path
         guard let resolved = realpath(standard, nil) else { return standard }
         defer { free(resolved) }

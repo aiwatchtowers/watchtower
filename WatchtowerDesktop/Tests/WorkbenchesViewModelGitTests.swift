@@ -262,6 +262,100 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
                         "--agent-running", "--json"])
     }
 
+    // MARK: - The code viewer's edits
+
+    private func writeFile(_ name: String, _ text: String, in dir: URL? = nil) throws {
+        try text.write(to: (dir ?? folder).appendingPathComponent(name), atomically: true, encoding: .utf8)
+    }
+
+    private func readFile(_ name: String) throws -> String {
+        try String(contentsOf: folder.appendingPathComponent(name), encoding: .utf8)
+    }
+
+    /// An edit the page has not sent yet (its debounce) and one waiting for
+    /// its autosave are both on disk when Go is asked about a dirty tree.
+    func testProj10_ASwitchFirstSavesTheCodeViewersEdits() async throws {
+        try writeFile("a.go", "package a\n")
+        try writeFile("b.go", "package b\n")
+        let fileA = folder.appendingPathComponent("a.go")
+        let fileB = folder.appendingPathComponent("b.go")
+        let runner = DiskPeekingRunner(files: [fileA, fileB], results: [
+            .success(switchResult(#""switched":false,"needs_confirmation":["uncommitted_changes"],"changes":2"#))
+        ])
+        let vm = makeVM(runner)
+        let bufferA = vm.codeFiles.buffer(for: project, relPath: "a.go")
+        bufferA.loadIfNeeded()
+        let bufferB = vm.codeFiles.buffer(for: project, relPath: "b.go")
+        bufferB.loadIfNeeded()
+        vm.codeFiles.edited(bufferB, text: "package b // typed\n", base: 0, project: project)
+        let page = EditorPage(edits: [CodeEditorPendingEdit(id: bufferA.id, text: "package a // typed\n", base: 0)])
+        vm.codeFiles.register(page, for: project)
+
+        await vm.switchBranch("feature/x", project: project)
+
+        XCTAssertEqual(runner.invocations, [switchArgs([])])
+        XCTAssertEqual(runner.seen.first, ["package a // typed\n", "package b // typed\n"],
+                       "both edits were on disk when the switch was asked")
+        XCTAssertNotNil(vm.pendingBranchConfirmation[project.id])
+        XCTAssertNil(vm.gitErrors[project.id])
+    }
+
+    /// A buffer holding edits it cannot write (here a conflict with the
+    /// disk) holds the switch in the Desktop: nothing reaches Go.
+    func testProj10_AnEditThatCannotBeSavedHoldsTheSwitch() async throws {
+        try writeFile("a.go", "package a\n")
+        let runner = ScriptedCLIRunner(results: [.success(switchResult(#""switched":true"#))])
+        let vm = makeVM(runner)
+        let buffer = vm.codeFiles.buffer(for: project, relPath: "a.go")
+        buffer.loadIfNeeded()
+        vm.codeFiles.edited(buffer, text: "package a // mine\n", base: 0, project: project)
+        try writeFile("a.go", "package a // theirs\n")
+        buffer.diskChanged()
+        XCTAssertTrue(buffer.conflict)
+
+        await vm.switchBranch("feature/x", project: project)
+
+        XCTAssertEqual(runner.invocations, [], "no CLI call")
+        XCTAssertEqual(vm.gitErrors[project.id], "Save or discard the edits in a.go first — they are not on disk yet.")
+        XCTAssertNil(vm.switchingBranch[project.id])
+        XCTAssertNil(vm.pendingBranchConfirmation[project.id])
+        XCTAssertEqual(try readFile("a.go"), "package a // theirs\n", "the disk is not written over")
+        XCTAssertTrue(buffer.isDirty, "the edits stay in the buffer")
+    }
+
+    /// Open, unedited files — and another workbench's unsaved edit outside
+    /// this work tree — leave the switch as it was.
+    func testProj10_NoUnsavedEditsInTheWorkTreeLeaveTheSwitchAsItWas() async throws {
+        try writeFile("a.go", "package a\n")
+        let other = FileManager.default.temporaryDirectory.appendingPathComponent("wt other \(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: other) }
+        try writeFile("c.go", "package c\n", in: other)
+        let otherPath = other.path
+        let otherProject = try await pool.write { d in
+            let id = try TestDatabase.insertWorkbench(d, name: "other", folder: otherPath)
+            return try XCTUnwrap(WorkbenchQueries.fetch(d, id: id))
+        }
+        let runner = ScriptedCLIRunner(results: [
+            .success(switchResult(#""switched":false,"needs_confirmation":["uncommitted_changes"],"changes":3"#))
+        ])
+        let vm = makeVM(runner)
+        vm.codeFiles.buffer(for: project, relPath: "a.go").loadIfNeeded()
+        let foreign = vm.codeFiles.buffer(for: otherProject, relPath: "c.go")
+        foreign.loadIfNeeded()
+        vm.codeFiles.edited(foreign, text: "package c // mine\n", base: 0, project: otherProject)
+        try writeFile("c.go", "package c // theirs\n", in: other)
+        foreign.diskChanged()
+        XCTAssertTrue(foreign.conflict)
+
+        await vm.switchBranch("feature/x", project: project)
+
+        XCTAssertEqual(runner.invocations, [switchArgs([])])
+        XCTAssertEqual(vm.pendingBranchConfirmation[project.id]?.primaryLabel, "Stash and switch")
+        XCTAssertNil(vm.gitErrors[project.id])
+        XCTAssertEqual(try readFile("a.go"), "package a\n")
+    }
+
     func testAPendingConfirmationOutlivesAReadOfTheSameBranch() async throws {
         let runner = ScriptedCLIRunner(results: [
             .success(status(branch: "main")),
@@ -823,5 +917,49 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
     private func settle(_ vm: WorkbenchesViewModel) async {
         for _ in 0..<20 { await Task.yield() }
         try? await Task.sleep(for: .milliseconds(50))
+    }
+}
+
+@MainActor
+private final class EditorPage: CodeEditorBridge {
+    var edits: [CodeEditorPendingEdit]
+
+    init(edits: [CodeEditorPendingEdit]) {
+        self.edits = edits
+    }
+
+    func takePending() async -> [CodeEditorPendingEdit]? {
+        defer { edits = [] }
+        return edits
+    }
+}
+
+/// A scripted runner that reads `files` off the disk as each call starts:
+/// what Go's dirty check would see.
+private final class DiskPeekingRunner: CLIRunnerProtocol, @unchecked Sendable {
+    private let files: [URL]
+    private let scripted: ScriptedCLIRunner
+    private let lock = NSLock()
+    private var peeks: [[String]] = []
+
+    init(files: [URL], results: [Result<Data, Error>]) {
+        self.files = files
+        scripted = ScriptedCLIRunner(results: results)
+    }
+
+    var invocations: [[String]] { scripted.invocations }
+
+    var seen: [[String]] {
+        lock.lock()
+        defer { lock.unlock() }
+        return peeks
+    }
+
+    func run(args: [String]) async throws -> Data {
+        let contents = files.map { (try? String(contentsOf: $0, encoding: .utf8)) ?? "" }
+        lock.lock()
+        peeks.append(contents)
+        lock.unlock()
+        return try await scripted.run(args: args)
     }
 }

@@ -389,6 +389,34 @@ final class CodeFilesCenter {
         flushAll()
     }
 
+    /// A branch switch is about to rewrite `workTree` (the repository's work
+    /// tree): the unsent edits of `project` and of any workbench inside the
+    /// work tree are pulled and every buffer there saved, so the switch's
+    /// dirty check sees them on disk. Returns the path of a buffer whose
+    /// edits could not be written (a conflict, a deleted or unreadable file,
+    /// a write error) — the switch must wait for the owner — nil when every
+    /// edit is on disk.
+    func saveEdits(project: Workbench, workTree: String) async -> String? {
+        let root = TerminalCenter.resolvedPath(workTree)
+        let prefix = root.hasSuffix("/") ? root : root + "/"
+        func inside(_ path: String) -> Bool {
+            let resolved = TerminalCenter.resolvedPath(path)
+            return resolved == root || resolved.hasPrefix(prefix)
+        }
+        for entry in bridges.values where entry.project.id == project.id || inside(entry.project.folderPath) {
+            await pullPending(entry.project)
+        }
+        let affected = buffers
+            .filter { key, buffer in key.workbench == project.id || inside(buffer.url.path) }
+            .sorted { $0.key.path < $1.key.path }
+        var unsaved: String?
+        for (_, buffer) in affected where buffer.isDirty && !buffer.saveNow() {
+            NSLog("CodeFilesCenter: %@ not saved before a branch switch: %@", buffer.relPath, buffer.unsavedReason ?? "")
+            unsaved = unsaved ?? buffer.relPath
+        }
+        return unsaved
+    }
+
     /// Saves every buffer with unsaved edits (also on quit, where the page
     /// can no longer be asked).
     func flushAll() {

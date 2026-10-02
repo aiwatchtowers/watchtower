@@ -222,9 +222,11 @@ final class WorkbenchesViewModel {
     var gitStatusErrors: [Int64: String] = [:]
     /// What the last branch action left to note (git's warning).
     var gitNotices: [Int64: String] = [:]
-    /// The stash entry the latest stashing switch left: the only place the
-    /// app names its sha, so it survives popover reopens and status reads
-    /// until the owner dismisses it or a newer stash replaces it.
+    /// The stash entry the latest stashing switch left, with its sha (Go
+    /// keeps no record of it). In memory only: it survives popover reopens
+    /// and status reads until the owner dismisses it, a newer stash replaces
+    /// it or the app quits — after that `git stash list` finds the entry by
+    /// its `watchtower: switching from …` message.
     var gitStashNotes: [Int64: WorkbenchBranchPresentation.StashNote] = [:]
     /// The branch a switch or create is running for.
     var switchingBranch: [Int64: String] = [:]
