@@ -104,6 +104,8 @@ type fakeClaude struct {
 	legacy     map[string]bool     // cwd → the pre-rename server is registered
 	calls      [][]string          // cwd, name, args...
 	missing    bool                // behave as if claude is not installed
+	failAdd    bool                // every `mcp add` exits non-zero
+	failRemove bool                // every `mcp remove` exits non-zero
 }
 
 func newFakeClaude() *fakeClaude {
@@ -140,12 +142,18 @@ func (f *fakeClaude) run(_ context.Context, dir, name string, args ...string) ([
 		}
 		return []byte("No MCP server found with name: " + server), ErrCommandExit
 	case "add":
+		if f.failAdd {
+			return []byte("add failed"), ErrCommandExit
+		}
 		if isRegistered {
 			return []byte("MCP server " + server + " already exists in local config"), ErrCommandExit
 		}
 		f.registered[dir] = args
 		return nil, nil
 	case "remove":
+		if f.failRemove {
+			return []byte("remove failed"), ErrCommandExit
+		}
 		if !isRegistered {
 			return []byte("No local-scoped MCP server found"), ErrCommandExit
 		}

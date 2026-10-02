@@ -100,3 +100,27 @@ func TestBindingSpell_LegacySessionsReadTheOldNames(t *testing.T) {
 		}
 	}
 }
+
+// Spell rewrites only standalone tool names: a path, a file name or an
+// identifier the text echoes from the agent's input stays as it was.
+func TestBindingSpell_LeavesPathsAndIdentifiersAlone(t *testing.T) {
+	legacy := Binding{LegacyNames: true}
+	for _, text := range []string{
+		"internal/db/workbench_board.go resolves outside the workbench folder",
+		"docs/workbench_info.md",
+		"workbench_info.go",
+		"my_workbench_info",
+		"update_workbench_v2",
+		"x-workbench_board",
+		"workbench_board-old",
+	} {
+		assert.Equal(t, text, legacy.Spell(text))
+	}
+	assert.Equal(t, "Call project_info first, then project_board.",
+		legacy.Spell("Call workbench_info first, then workbench_board."))
+	assert.Equal(t, "(id from project_info); `update_project`: \"remove_project_source\"",
+		legacy.Spell("(id from workbench_info); `update_workbench`: \"remove_workbench_source\""))
+	assert.Equal(t, "project_info project_board", legacy.Spell("workbench_info workbench_board"))
+	assert.Equal(t, "a path internal/db/workbench_board.go and the tool project_board.",
+		legacy.Spell("a path internal/db/workbench_board.go and the tool workbench_board."))
+}

@@ -27,13 +27,8 @@ var LegacyWorkbenchToolNames = map[string]string{
 	RemoveWorkbenchSourceTool: "remove_project_source",
 }
 
-var (
-	// canonicalWorkbenchToolNames is LegacyWorkbenchToolNames inverted.
-	canonicalWorkbenchToolNames = invert(LegacyWorkbenchToolNames)
-	// legacySpeller rewrites every renamed tool name in a model-facing text
-	// to its old name.
-	legacySpeller = newLegacySpeller(LegacyWorkbenchToolNames)
-)
+// canonicalWorkbenchToolNames is LegacyWorkbenchToolNames inverted.
+var canonicalWorkbenchToolNames = invert(LegacyWorkbenchToolNames)
 
 func invert(m map[string]string) map[string]string {
 	out := make(map[string]string, len(m))
@@ -41,14 +36,6 @@ func invert(m map[string]string) map[string]string {
 		out[v] = k
 	}
 	return out
-}
-
-func newLegacySpeller(m map[string]string) *strings.Replacer {
-	pairs := make([]string, 0, 2*len(m))
-	for newName, oldName := range m {
-		pairs = append(pairs, newName, oldName)
-	}
-	return strings.NewReplacer(pairs...)
 }
 
 // CanonicalToolName is name with a pre-rename workbench tool name replaced by
@@ -64,10 +51,58 @@ func CanonicalToolName(name string) string {
 // the vocabulary this binding's session sees: unchanged, or, for a legacy
 // session (LegacyNames), with every renamed workbench tool named by its old
 // name, so the text never points the agent at a tool its session does not
-// list.
+// list. Only a standalone name is rewritten: one that touches no identifier
+// character, '/', '.' or '-' on either side, so a path, a file name or an
+// identifier the text echoes from the agent's input
+// (internal/db/workbench_board.go) is left as it was.
 func (b Binding) Spell(text string) string {
 	if !b.LegacyNames {
 		return text
 	}
-	return legacySpeller.Replace(text)
+	var out strings.Builder
+	last := 0 // text[last:i] is not yet copied
+	for i := 0; i < len(text); i++ {
+		if i > 0 && nameRune(text[i-1]) {
+			continue
+		}
+		for newName, oldName := range LegacyWorkbenchToolNames {
+			end := i + len(newName)
+			if !strings.HasPrefix(text[i:], newName) || !tokenEnds(text, end) {
+				continue
+			}
+			out.WriteString(text[last:i])
+			out.WriteString(oldName)
+			last = end
+			i = end - 1
+			break
+		}
+	}
+	if last == 0 {
+		return text
+	}
+	out.WriteString(text[last:])
+	return out.String()
+}
+
+// tokenEnds reports whether a name ending at text[end] stands alone: the
+// text ends there or goes on with a non-name character — a '.' counting as
+// the end of a sentence when no name character follows it ("… from
+// workbench_info."), and as part of a file name otherwise
+// ("workbench_info.go").
+func tokenEnds(text string, end int) bool {
+	switch {
+	case end >= len(text):
+		return true
+	case text[end] == '.':
+		return end+1 >= len(text) || !nameRune(text[end+1])
+	default:
+		return !nameRune(text[end])
+	}
+}
+
+// nameRune reports whether c, next to a tool name, makes it part of a longer
+// token: an identifier, a path or a file name.
+func nameRune(c byte) bool {
+	return c == '_' || c == '/' || c == '.' || c == '-' ||
+		(c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
 }

@@ -142,7 +142,8 @@ func TestGetAction_ProjectSessionSeesOnlyItsRows(t *testing.T) {
 
 // workbenchToolsListed is every listed tool of the session that is a
 // workbench tool (surface "project") under either spelling, by listed name,
-// with its description.
+// with every text the agent reads about it: its description and its input
+// schema (the argument descriptions), as JSON.
 func workbenchToolsListed(t *testing.T, cs *mcpsdk.ClientSession) map[string]string {
 	t.Helper()
 	res, err := cs.ListTools(context.Background(), nil)
@@ -156,7 +157,11 @@ func workbenchToolsListed(t *testing.T, cs *mcpsdk.ClientSession) map[string]str
 	out := map[string]string{}
 	for _, tool := range res.Tools {
 		if workbench[tools.CanonicalToolName(tool.Name)] {
-			out[tool.Name] = tool.Description
+			schema, err := json.Marshal(tool.InputSchema)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out[tool.Name] = tool.Description + "\n" + string(schema)
 		}
 	}
 	return out
@@ -164,7 +169,8 @@ func workbenchToolsListed(t *testing.T, cs *mcpsdk.ClientSession) map[string]str
 
 // Spec 2026-10-02 §5.2 (extends DEV-06): `mcp --workbench N` lists only the
 // new names, `mcp --project N` only the old ones — eleven workbench tools
-// either way, with no description pointing at a tool the session lacks.
+// either way, with no description or input schema pointing at a tool the
+// session lacks.
 func TestWorkbenchMode_EachVocabularyListsElevenToolsUnderItsOwnNames(t *testing.T) {
 	database := seedDB(t)
 	pid := seedMCPWorkbench(t, database)
@@ -186,16 +192,23 @@ func TestWorkbenchMode_EachVocabularyListsElevenToolsUnderItsOwnNames(t *testing
 			}
 			for name, desc := range listed {
 				if strings.Contains(desc, unwanted) {
-					t.Errorf("legacy=%v: %s's description names %s", legacy, name, unwanted)
+					t.Errorf("legacy=%v: %s's description or input schema names %s", legacy, name, unwanted)
 				}
 			}
+		}
+		// The argument descriptions are spelled too, not only the tool's own.
+		want := map[bool]string{false: "the source id from workbench_info", true: "the source id from project_info"}[legacy]
+		remove := tools.Binding{LegacyNames: legacy}.Spell(tools.RemoveWorkbenchSourceTool)
+		if !strings.Contains(listed[remove], want) {
+			t.Errorf("legacy=%v: %s's schema lacks %q: %s", legacy, remove, want, listed[remove])
 		}
 	}
 }
 
-// A write through a legacy name records the canonical name; get_action on a
-// row stored under an old name (before the rename) resolves; a refusal names
-// the tools the legacy session lists.
+// A write through a legacy name records the canonical name; get_action names
+// a row's tool in the asking session's vocabulary, whether the row was
+// recorded under the new name or (before the rename) the old one; a refusal
+// names the tools the legacy session lists.
 func TestLegacyMode_WritesRecordTheCanonicalNameAndOldRowsResolve(t *testing.T) {
 	database := seedDB(t)
 	pid := seedMCPWorkbench(t, database)
@@ -231,13 +244,32 @@ func TestLegacyMode_WritesRecordTheCanonicalNameAndOldRowsResolve(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, s := range []*mcpsdk.ClientSession{cs, newWorkbenchSession(t, database, pid)} {
-		res, err := s.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "get_action", Arguments: map[string]any{"id": oldRow}})
+	// get_action names a row's tool the way the asking session lists it,
+	// whichever spelling the row was recorded under.
+	current := newWorkbenchSession(t, database, pid)
+	for _, c := range []struct {
+		session  *mcpsdk.ClientSession
+		legacy   bool
+		id       int64
+		wantTool string
+	}{
+		{cs, true, rc.ActionID, "update_project"}, // recorded as update_workbench
+		{cs, true, oldRow, "add_project_source"},  // recorded before the rename
+		{current, false, rc.ActionID, "update_workbench"},
+		{current, false, oldRow, "add_workbench_source"},
+	} {
+		res, err := c.session.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "get_action", Arguments: map[string]any{"id": c.id}})
 		if err != nil || res.IsError {
-			t.Fatalf("get_action on a pre-rename row: %v %s", err, textContent(t, res))
+			t.Fatalf("get_action #%d (legacy=%v): %v %s", c.id, c.legacy, err, textContent(t, res))
 		}
-		if !strings.Contains(textContent(t, res), `"tool": "add_project_source"`) {
-			t.Errorf("get_action shows the row as recorded: %s", textContent(t, res))
+		var view struct {
+			Tool string `json:"tool"`
+		}
+		if err := json.Unmarshal([]byte(textContent(t, res)), &view); err != nil {
+			t.Fatal(err)
+		}
+		if view.Tool != c.wantTool {
+			t.Errorf("get_action #%d (legacy=%v) names %q, want %q", c.id, c.legacy, view.Tool, c.wantTool)
 		}
 	}
 

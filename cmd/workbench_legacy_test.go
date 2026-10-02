@@ -113,3 +113,20 @@ func TestWorkbenchResyncJSON_ReportsTheLegacyMigration(t *testing.T) {
 	assert.False(t, res.LegacyMCPRemoved || res.LegacyHooksReplaced)
 	assert.Equal(t, 2, res.LegacyPermissionRules, "the owner's rules are reported, never rewritten")
 }
+
+// When both unregistrations fail, the removal names each registration that
+// survived — the current one is not hidden behind the legacy one.
+func TestIntegrateWorkbenchRemove_NamesEverySurvivingRegistration(t *testing.T) {
+	f := useFakeWorkbenchClaude(t)
+	p := testWorkbench(t)
+	f.registered[fakeRegistration(p.FolderPath, devpack.WorkbenchMCPServerName)] = true
+	f.registered[fakeRegistration(p.FolderPath, devpack.LegacyMCPServerName)] = true
+	f.failRemove = true
+
+	var out bytes.Buffer
+	err := runWorkbenchRemove(context.Background(), &out, p)
+	require.Error(t, err, "failed unregistrations are reported")
+	assert.Contains(t, out.String(), "still registered: "+devpack.WorkbenchMCPServerName+"\n")
+	assert.Contains(t, out.String(), "still registered: "+devpack.LegacyMCPServerName+"\n")
+	assert.NotContains(t, out.String(), "Nothing left installed.")
+}

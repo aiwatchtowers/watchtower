@@ -106,18 +106,20 @@ type WorkbenchInstallReport struct {
 // registration, an old hook command, or the old skill as we shipped it.
 // LegacySkill is the old skill's state: StateMissing, StateUnchanged (ours,
 // un-edited), StateDrifted (edited, kept by every resync — PROJ-04) or
-// StateForeign.
+// StateForeign. CurrentMCP and LegacyMCP say which registration MCP stands
+// for, so a report can name each one that is there.
 type WorkbenchStatus struct {
 	Skill       SkillStatus
 	Hook        bool // the SessionStart hook (the brief)
 	StopHook    bool // the Stop hook (the board drift check, PROJ-07)
-	MCP         bool
+	MCP         bool // CurrentMCP || LegacyMCP
 	ClaudeFound bool
 
 	Legacy      bool
 	LegacySkill SkillStatus
 	LegacyHooks bool
-	LegacyMCP   bool
+	CurrentMCP  bool // watchtower-workbench is registered
+	LegacyMCP   bool // watchtower-project is registered
 }
 
 // WorkbenchSkill returns the embedded watchtower-workbench skill.
@@ -290,7 +292,7 @@ func StatusWorkbench(ctx context.Context, o WorkbenchInstallOptions) (WorkbenchS
 	}
 	// Its only possible failure is the malformed file already reported above.
 	ps.LegacyHooks, _ = HasLegacyHooks(o.Folder, o.WorkbenchID)
-	current, err := mcpRegistered(ctx, o, WorkbenchMCPServerName)
+	ps.CurrentMCP, err = mcpRegistered(ctx, o, WorkbenchMCPServerName)
 	if err == nil {
 		ps.LegacyMCP, err = mcpRegistered(ctx, o, LegacyMCPServerName)
 	}
@@ -300,7 +302,7 @@ func StatusWorkbench(ctx context.Context, o WorkbenchInstallOptions) (WorkbenchS
 	case err != nil:
 		errs = append(errs, err)
 	}
-	ps.MCP = current || ps.LegacyMCP
+	ps.MCP = ps.CurrentMCP || ps.LegacyMCP
 	ps.Legacy = ps.LegacyMCP || ps.LegacyHooks || ps.LegacySkill.State == StateUnchanged
 	return ps, errors.Join(errs...)
 }
@@ -357,23 +359,33 @@ func (o WorkbenchInstallOptions) mcpAddArgs() []string {
 		o.Bin, "mcp", "--workbench", strconv.FormatInt(o.WorkbenchID, 10)}
 }
 
-// registerWorkbenchMCP removes the pre-rename registration when there is one,
-// then (re)registers the server in the folder's local scope. An existing
+// registerWorkbenchMCP (re)registers the server in the folder's local scope,
+// then removes the pre-rename registration when there is one. An existing
 // registration is replaced, so a moved binary is picked up on every install
-// (the Desktop's Repair). legacyFolder (old hooks or an old skill were found)
-// adds the manual removal of the old registration to a claude-not-found
-// error, since the claude CLI cannot be asked whether it is there.
+// (the Desktop's Repair). The old registration goes only once the new one
+// is in: a failed add leaves a not-yet-migrated folder with its working old
+// server rather than with none. legacyFolder (old hooks or an old skill were
+// found) adds the manual removal of the old registration to a
+// claude-not-found error, since the claude CLI cannot be asked whether it is
+// there.
 func registerWorkbenchMCP(ctx context.Context, o WorkbenchInstallOptions, legacyFolder bool) (registered, legacyRemoved bool, err error) {
-	legacyRemoved, legacyErr := removeMCPRegistration(ctx, o, LegacyMCPServerName)
-	if errors.Is(legacyErr, ErrClaudeNotFound) {
-		if legacyFolder {
-			legacyErr = fmt.Errorf("%w — this folder was set up before the Workbench rename: also remove its old MCP server yourself with: %s",
-				legacyErr, mcpRemoveCommand(o, LegacyMCPServerName))
-		}
-		return false, false, legacyErr
-	}
 	registered, err = registerCurrentMCP(ctx, o)
-	return registered, legacyRemoved, errors.Join(legacyErr, err)
+	switch {
+	case errors.Is(err, ErrClaudeNotFound):
+		if legacyFolder {
+			err = fmt.Errorf("%w — this folder was set up before the Workbench rename: also remove its old MCP server yourself with: %s",
+				err, mcpRemoveCommand(o, LegacyMCPServerName))
+		}
+		return false, false, err
+	case err != nil:
+		if kept, _ := mcpRegistered(ctx, o, LegacyMCPServerName); kept {
+			err = fmt.Errorf("%w (the old %s registration was kept, so this folder keeps working until the registration succeeds)",
+				err, LegacyMCPServerName)
+		}
+		return false, false, err
+	}
+	legacyRemoved, err = removeMCPRegistration(ctx, o, LegacyMCPServerName)
+	return registered, legacyRemoved, err
 }
 
 func registerCurrentMCP(ctx context.Context, o WorkbenchInstallOptions) (bool, error) {
