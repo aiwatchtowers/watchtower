@@ -158,17 +158,23 @@ struct MainNavigationView: View {
         }
         .onAppear { applyFeatureFallback() }
         .onChange(of: appState.featureVisibility.disabledFeatureIDs) { _, _ in applyFeatureFallback() }
+        .onChange(of: appState.featureVisibility.connectedSources) { _, _ in applyFeatureFallback() }
+        // Direct writes (deep links, Day Plan, the action strip, Catch-Up
+        // cards) must not land on a hidden tab either.
+        .onChange(of: appState.selectedDestination) { _, _ in applyFeatureFallback() }
     }
 
     /// Redirects away from the current tab when it becomes hidden — a
     /// feature was just disabled, or a persisted selection from a previous
     /// launch points at a tab that's now gated off. Runs once at appear
-    /// (stale persisted selection) and again on every live feature-list
-    /// change, sharing the same pure `fallbackDestination` rule.
+    /// (stale persisted selection), on every live feature-list or
+    /// connected-source change, and on every selection change, sharing the
+    /// same pure `fallbackDestination` rule.
     private func applyFeatureFallback() {
         if let fallback = SidebarDestination.fallbackDestination(
             current: appState.selectedDestination,
-            disabled: appState.featureVisibility.disabledFeatureIDs
+            disabled: appState.featureVisibility.disabledFeatureIDs,
+            connected: appState.featureVisibility.connectedSources
         ) {
             appState.selectedDestination = fallback
         }

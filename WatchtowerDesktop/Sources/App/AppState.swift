@@ -607,6 +607,7 @@ final class AppState {
                 // Before the splash hides, so Day Plan / Briefings never flash
                 // the no-owner state on an install that has one.
                 await refreshOwner()
+                await refreshConnectedSources()
                 wireMeetingRecorderLoaders(dbPool: manager.dbPool)
                 wireTargetBriefCenter()
                 // Sync state machine with DB: if profile says done, mark complete
@@ -725,6 +726,9 @@ final class AppState {
         if sidebarCountsViewModel == nil, let pool = databaseManager?.dbPool {
             Task { await initSidebarCounts(dbPool: pool) }
         }
+        // Sources onboarding connected (its account sheets may write through
+        // the CLI without a VM reload) must reach the sidebar now.
+        connectedSourcesRefresh = Task { await refreshConnectedSources() }
     }
 
     /// Re-runs the full launch bootstrap after onboarding completes or is skipped,
@@ -882,19 +886,21 @@ final class AppState {
 
     func initEmailAccounts(dbPool: DatabasePool) {
         let vm = EmailAccountsViewModel(dbPool: dbPool)
+        vm.onAccountsChanged = { [weak self] in await self?.refreshConnectedSources() }
         vm.refresh()
         emailAccountsViewModel = vm
     }
 
     func initCalendarAccounts(dbPool: DatabasePool) {
         let vm = CalendarAccountsViewModel(dbPool: dbPool)
+        vm.onAccountsChanged = { [weak self] in await self?.refreshConnectedSources() }
         vm.refresh()
         calendarAccountsViewModel = vm
     }
 
     func initSlackAccounts(dbPool: DatabasePool) {
         let vm = SlackAccountsViewModel(dbPool: dbPool)
-        vm.onAccountsChanged = { [weak self] in await self?.refreshOwner() }
+        vm.onAccountsChanged = { [weak self] in await self?.accountsChanged() }
         vm.refresh()
         slackAccountsViewModel = vm
     }
@@ -917,7 +923,7 @@ final class AppState {
 
     func initJiraAccounts(dbPool: DatabasePool) {
         let vm = JiraAccountsViewModel(dbPool: dbPool)
-        vm.onAccountsChanged = { [weak self] in await self?.refreshOwner() }
+        vm.onAccountsChanged = { [weak self] in await self?.accountsChanged() }
         vm.refresh()
         jiraAccountsViewModel = vm
         // Pickers built over a previous pool would read a stale database.
@@ -1020,7 +1026,7 @@ final class AppState {
 
     func initGoogleAccounts(dbPool: DatabasePool) {
         let vm = GoogleAccountsViewModel(dbPool: dbPool)
-        vm.onAccountsChanged = { [weak self] in await self?.refreshOwner() }
+        vm.onAccountsChanged = { [weak self] in await self?.accountsChanged() }
         vm.refresh()
         googleAccountsViewModel = vm
         // GoogleConnectFlow.shared is a singleton constructed before any
@@ -1029,6 +1035,40 @@ final class AppState {
         // sibling VM above gets its pool, so isConnected reads google_accounts
         // instead of staying permanently false.
         GoogleConnectFlow.shared.configure(dbPool: dbPool)
+    }
+
+    @ObservationIgnored private var connectedSourcesGeneration = 0
+    @ObservationIgnored private var appliedConnectedSourcesGeneration = 0
+    /// The refresh `completeOnboarding()` kicked off — held so tests can
+    /// await it.
+    @ObservationIgnored private(set) var connectedSourcesRefresh: Task<Void, Never>?
+
+    /// A Slack/Google/Jira account-list reload: re-resolves the owner
+    /// (OWNER-02) and the connected sources the sidebar gates on.
+    private func accountsChanged() async {
+        await refreshOwner()
+        await refreshConnectedSources()
+    }
+
+    /// Re-reads which sources are connected, so a tab whose source was just
+    /// connected (or removed) in Settings shows (or hides) at once. A failed
+    /// read keeps the last value (logged), like `refreshOwner()`.
+    ///
+    /// Reads run off the main actor and can finish out of order; each one
+    /// takes a generation number and writes only if no later-started read
+    /// has written yet, so an older read never overwrites a newer one.
+    func refreshConnectedSources() async {
+        guard let pool = databaseManager?.dbPool else { return }
+        connectedSourcesGeneration += 1
+        let generation = connectedSourcesGeneration
+        do {
+            let sources = try await pool.read { db in try ConnectedSources.fetch(db) }
+            guard generation > appliedConnectedSourcesGeneration else { return }
+            appliedConnectedSourcesGeneration = generation
+            featureVisibility.connectedSources = sources
+        } catch {
+            print("[AppState] connected sources read failed, keeping the last value: \(error.localizedDescription)")
+        }
     }
 
     /// Re-resolves `owner` off the main thread. A failed read keeps the last
