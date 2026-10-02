@@ -1,42 +1,55 @@
-# Projects — Behavior Inventory
+# Workbench — Behavior Inventory
 
 > Each item below is a **behavioral contract** that must be preserved.
 > Modifying or weakening the protecting test requires explicit approval
 > from @Vadym.
 >
-> AI assistant: when working in `internal/db/projects.go`,
-> `project_comments.go`, `project_board.go`, the `project_id` exclusions in
-> the targets readers, `internal/tools/project*.go`, `cmd/project*.go`,
-> `internal/devpack/project*.go`, or `WatchtowerDesktop/Sources/**/Project*`,
-> read this file first. Any proposed change that would break a guard test or
+> AI assistant: when working in `internal/db/workbenches.go`,
+> `workbench_comments.go`, `workbench_board.go`, the `project_id` exclusions in
+> the targets readers, `internal/tools/workbench*.go`, `cmd/workbench*.go`,
+> `cmd/integrate_workbench.go`, `internal/devpack/workbench*.go`, or
+> `WatchtowerDesktop/Sources/**/Workbench*`, read this file first. Any proposed change that would break a guard test or
 > remove a contract must be raised as a question before touching code.
 
-A project is a folder with a board of targets, attached documents and
+A workbench is a folder with a board of targets, attached documents and
 owner↔agent comments, worked on by Claude Code through
-`watchtower mcp --project N` (DEV-06 in `dev-surface.md`), a project skill,
+`watchtower mcp --workbench N` (DEV-06 in `dev-surface.md`), a workbench skill,
 a `SessionStart` hook (the brief) and a `Stop` hook (the board drift check, PROJ-07). Design:
 `docs/superpowers/specs/2026-09-29-project-board-poc-design.md`.
 
-**Module:** `internal/db/{projects,project_comments,project_board}.go` +
-`internal/tools/{projects,project_targets,project_docs,project_images,project_scope}.go` +
-`internal/db/project_images.go` + `internal/projectfiles/` +
-`cmd/{project,project_brief,project_check}.go` + `internal/devpack/{project,project_settings}.go` + `internal/projectdocs/` + `internal/projectcheck/` +
-`WatchtowerDesktop/Sources/Views/Projects/`
+**Naming (2026-10-02):** this feature was called *Projects* until the
+Workbench rename (`docs/superpowers/specs/2026-10-02-workbench-rename-design.md`).
+The contracts keep their `PROJ-NN` ids and their meaning, and the guard tests
+keep their `TestProjNN_…`/`testProjNN_…` names (only their files moved).
+Storage and wire keep `project`: the `projects`/`project_*` tables, the
+`project_id` columns, DB values such as `custom_label='project'`, the kb
+source `project_doc`, `<workspace>/project_files/`, the `projects.*`
+UserDefaults keys and every CLI `--json` key. A folder set up before the
+rename keeps working through the legacy aliases (`watchtower project …`,
+`--project N`, the `watchtower-project` server and skill, the old tool names
+under `mcp --project N`) until the owner resyncs it; see
+`docs/features/workbench.md`, "Rename".
+
+**Module:** `internal/db/{workbenches,workbench_comments,workbench_board}.go` +
+`internal/tools/{workbenches,workbench_targets,workbench_docs,workbench_images,workbench_scope,workbench_names}.go` +
+`internal/db/workbench_images.go` + `internal/workbenchfiles/` +
+`cmd/{workbench,workbench_brief,workbench_check,workbench_flags,integrate_workbench}.go` + `internal/devpack/{workbench,workbench_settings}.go` + `internal/workbenchdocs/` + `internal/workbenchcheck/` +
+`WatchtowerDesktop/Sources/Views/Workbench/`
 **Last full audit:** 2026-09-29
 
-## PROJ-01 — project targets never reach a non-board reader
+## PROJ-01 — workbench targets never reach a non-board reader
 
 **Status:** Enforced (Go and Desktop; the Desktop half landed with Task 20)
 
-**Observable:** A target with `project_id` set lives only on its project's
+**Observable:** A target with `project_id` set lives only on its workbench's
 board. Every non-board Go reader filters `project_id IS NULL`: `GetTargets` by
-default (`TargetFilter.ProjectID == 0`), `GetTargetsNeedingNextStep`,
+default (`TargetFilter.WorkbenchID == 0`), `GetTargetsNeedingNextStep`,
 `GetTargetsForBriefing`, `GetTargetCounts`, `NotifyDueTargets`,
 `ListCatchupTargets`, `ListTargetsForMirror`, `internal/dayplan/gather.go`,
 `internal/db/channel_stats.go`, and the extract/dedup snapshots in
 `internal/targets/pipeline.go`; `nextstep.go`'s single-target path skips a
-project target. The registry's `list_targets`/`get_target` return a project
-target only inside that project's own session (`watchtower mcp --project N`);
+workbench target. The registry's `list_targets`/`get_target` return a workbench
+target only inside that workbench's own session (`watchtower mcp --workbench N`);
 any other session is told `no target with id N`.
 
 **Why locked:** Owner decision D4. An agent decomposes a plan into dozens of
@@ -47,7 +60,7 @@ calls on it.
 
 **Test guards:**
 - `internal/db` — `TestProj01_ProjectTargetsNeverReachNonBoardReaders` (Task 3)
-- `internal/tools/projects_test.go::TestProj01_TargetReadsFollowTheSessionScope`
+- `internal/tools/workbenches_test.go::TestProj01_TargetReadsFollowTheSessionScope`
 
 **Locked since:** 2026-09-29
 
@@ -55,60 +68,67 @@ calls on it.
 
 **Status:** Enforced
 
-**Observable:** `watchtower project delete N` first runs the folder removal
-(`projectRemoveInstall`, wired to `devpack.RemoveProject`: the
-`watchtower-project` skill, our `SessionStart` and `Stop` hook entries, the local
-`watchtower-project` MCP registration and the `.git/info/exclude` lines
+**Observable:** `watchtower workbench delete N` first runs the folder removal
+(`workbenchRemoveInstall`, wired to `devpack.RemoveWorkbench`: the
+`watchtower-workbench` skill, our `SessionStart` and `Stop` hook entries, the local
+`watchtower-workbench` MCP registration and the `.git/info/exclude` lines
 Watchtower added) — a removal failure is reported and the delete still
-happens — then deletes the project row, which removes every project target,
+happens — then deletes the workbench row, which removes every workbench target,
 source, document entry, comment, target-image row and terminal session row
-in the same transaction (`db.DeleteProject`, `ON DELETE CASCADE` from `projects`)
+in the same transaction (`db.DeleteWorkbench`, `ON DELETE CASCADE` from `projects`)
 together with its documents' search index entries (`kb_documents`/`kb_chunks`
-of source `project_doc` for that project, PROJ-08), and then removes
-the project's stored image copies (`<workspace>/project_files/<id>/`,
-`projectfiles.Store.RemoveProject`; a failure is reported as `files_ok:
-false` and never undoes the delete). Deleting one project target
+of source `project_doc` for that workbench, PROJ-08), and then removes
+the workbench's stored image copies (`<workspace>/project_files/<id>/`,
+`workbenchfiles.Store.RemoveWorkbench`; a failure is reported as `files_ok:
+false` and never undoes the delete). Deleting one workbench target
 (`watchtower targets delete`) removes the stored copies no other target of
-the project still names; `update_target`'s `remove_image_ids` does the same
+the workbench still names; `update_target`'s `remove_image_ids` does the same
 for a detached image. A Claude Code
-session still connected answers `project N no longer exists` on every tool
+session still connected answers `workbench N no longer exists` on every tool
 (DEV-06). The document files themselves are the owner's and stay in the
 folder. An exclude line is removed only when its path is gone — a skill the
 owner edited (kept, PROJ-04) or a settings file holding the owner's own keys
 keeps its line, so removal never surfaces an owner file in `git status`.
+The removal takes away both vocabularies (since 2026-10-02): a folder set up
+before the Workbench rename and never resynced loses its legacy
+`project brief --project N`/`project check --project N` hook entries, its
+`watchtower-project` skill (through the same DEV-04 rule, so an edited copy
+stays, PROJ-04), its `watchtower-project` registration and their exclude
+lines, exactly as a current folder does.
 
-**Why locked:** Owner decision D7. A half-deleted project — orphan targets, a
-hook that briefs about a project that no longer exists, an MCP server
-registered against a dead id — is worse than no project at all, and the owner
+**Why locked:** Owner decision D7. A half-deleted workbench — orphan targets, a
+hook that briefs about a workbench that no longer exists, an MCP server
+registered against a dead id — is worse than no workbench at all, and the owner
 must be able to undo the whole feature for a folder in one step.
 
 **Test guards:**
-- `internal/db/projects_test.go::TestProj02_DeleteProjectLeavesNoRows`
-- `cmd/project_images_test.go::TestProj02_ProjectDeleteRemovesStoredTargetImages`
-- `cmd/project_images_test.go::TestProj02_TargetDeleteDiscardsItsUnsharedImages`
-- `internal/tools/registry_project_test.go::TestProjectBinding_DeletedProjectAnswersNoLongerExists`
-- `internal/mcp/project_test.go::TestProjectMode_DeletedProjectEveryToolAnswersNoLongerExists`
-- `internal/devpack/project_test.go::TestProj02_RemoveProjectLeavesNothingInstalled`
-- `internal/devpack/project_test.go::TestProj02_RemoveProjectLeavesGitStatusClean`
-- `internal/devpack/project_test.go::TestProj02_RemoveProjectKeepsOwnerSettingsButDropsOurHook`
-- `cmd/integrate_project_test.go::TestProj02_ProjectDeleteRunsTheFolderRemoval`
-- `cmd/project_check_test.go::TestProj02_ProjectDeleteLeavesNoHookOfTheProject` (neither hook of the deleted project survives in `settings.local.json`; the owner's own `Stop` hook and keys do)
+- `internal/db/workbenches_test.go::TestProj02_DeleteProjectLeavesNoRows`
+- `cmd/workbench_images_test.go::TestProj02_ProjectDeleteRemovesStoredTargetImages`
+- `cmd/workbench_images_test.go::TestProj02_TargetDeleteDiscardsItsUnsharedImages`
+- `internal/tools/registry_workbench_test.go::TestProjectBinding_DeletedProjectAnswersNoLongerExists`
+- `internal/mcp/workbench_test.go::TestProjectMode_DeletedProjectEveryToolAnswersNoLongerExists`
+- `internal/devpack/workbench_test.go::TestProj02_RemoveProjectLeavesNothingInstalled`
+- `internal/devpack/workbench_test.go::TestProj02_RemoveProjectLeavesGitStatusClean`
+- `internal/devpack/workbench_test.go::TestProj02_RemoveProjectKeepsOwnerSettingsButDropsOurHook`
+- `cmd/integrate_workbench_test.go::TestProj02_ProjectDeleteRunsTheFolderRemoval`
+- `cmd/workbench_check_test.go::TestProj02_ProjectDeleteLeavesNoHookOfTheProject` (neither hook of the deleted workbench survives in `settings.local.json`; the owner's own `Stop` hook and keys do)
+- `internal/devpack/workbench_legacy_test.go::TestProj02_RemoveLegacyFolderLeavesNothingInstalled` (a never-resynced pre-rename folder: legacy hooks, skill, registration and exclude lines gone, `git status` clean, `integrate status` reports nothing installed)
 
 **Locked since:** 2026-09-29
 
-## PROJ-03 — the Desktop never writes a project document
+## PROJ-03 — the Desktop never writes a workbench document
 
 **Status:** Enforced
 
 **Observable:** The Desktop reads an attached document (`project_documents.rel_path`
-under the project folder) to render it and re-anchor its comments, and writes
+under the workbench folder) to render it and re-anchor its comments, and writes
 only `project_comments` rows — owner comments, replies, status, `read_at` —
 never the file. Only the agent edits a document; the Desktop watches the file
 and re-anchors, and a comment whose quote is gone becomes `outdated`, never
 re-attached elsewhere — except that a thread with an owner reply newer than
 its latest agent comment stays `open` until the agent answers, so an
-unanswered owner reply is never hidden from the agent by a re-anchor. No project tool writes a file in the
-project folder either: `attach_document` only resolves and stats it, and a
+unanswered owner reply is never hidden from the agent by a re-anchor. No workbench tool writes a file in the
+workbench folder either: `attach_document` only resolves and stats it, and a
 target image is copied *out* of wherever it is into Watchtower's own
 workspace directory (`project_files/`), never into the folder.
 
@@ -117,8 +137,8 @@ the terminal and the Desktop view — would race and lose either the agent's or
 the owner's edits; comments are the owner's channel into the document.
 
 **Test guards:**
-- `WatchtowerDesktop/Tests/ProjectDocumentViewModelTests.swift::testProj03DesktopNeverWritesTheDocument`
-- Go side, by review: `grep -nE "os\.(WriteFile|Create|OpenFile|Rename|Remove)" internal/tools/project_docs.go`
+- `WatchtowerDesktop/Tests/WorkbenchDocumentViewModelTests.swift::testProj03DesktopNeverWritesTheDocument`
+- Go side, by review: `grep -nE "os\.(WriteFile|Create|OpenFile|Rename|Remove)" internal/tools/workbench_docs.go`
 (expected: no match).
 
 **Locked since:** 2026-09-29
@@ -127,39 +147,48 @@ the owner's edits; comments are the owner's channel into the document.
 
 **Status:** Enforced
 
-**Observable:** `watchtower integrate claude-code --project N` merges into
+**Observable:** `watchtower integrate claude-code --workbench N` merges into
 `DIR/.claude/settings.local.json` preserving every key and every hook the
 owner has, adding exactly one `SessionStart` entry and one `Stop` entry
 (PROJ-07), each recognised by its command suffix after a `watchtower` binary
 (installing twice leaves one of each); a malformed settings file — `hooks`,
 `hooks.SessionStart` or `hooks.Stop` of the wrong type — is left
-byte-identical and reported once; `integrate remove --project N` deletes only
-those entries. The `watchtower-project` skill follows DEV-04: a copy the owner
+byte-identical and reported once; `integrate remove --workbench N` deletes only
+those entries. The `watchtower-workbench` skill follows DEV-04: a copy the owner
 edited (differs from both what we ship and its `.watchtower-shipped` digest)
-is never overwritten or deleted.
+is never overwritten or deleted. The same holds for the pre-rename
+`watchtower-project` skill (since 2026-10-02): a resync (`workbench resync`,
+Re-run Setup, `integrate claude-code --workbench N`) deletes it only when it
+is our marked, un-edited copy; an edited or foreign copy stays byte-identical,
+is reported, and keeps its exclude line. The resync replaces our own legacy
+hook entries in place (one `SessionStart` and one `Stop` entry of ours
+afterwards, the owner's hooks and keys byte-exact), and allow rules naming
+`mcp__watchtower-project__…` are only counted for a suggestion, never
+rewritten.
 
-**Why locked:** The project folder is the owner's repository. An installer
+**Why locked:** The workbench folder is the owner's repository. An installer
 that dropped one of the owner's settings keys or hooks, or clobbered an edited
 skill, would make every later `integrate` a risk to the owner's own setup.
 
 **Test guards:**
-- `internal/devpack/project_settings_test.go::TestProj04_InstallKeepsOwnerSettingsKeysAndHooks`
-- `internal/devpack/project_settings_test.go::TestProj04_MalformedSettingsLeftByteIdentical`
-- `internal/devpack/project_settings_test.go::TestProj04_RemoveDeletesOnlyOurHook`
-- `internal/devpack/project_test.go::TestProj04_EditedProjectSkillIsNeverClobbered`
-- `internal/devpack/project_stop_hook_test.go::TestProj04_StopHookKeepsOwnerStopHooksAndRemovesOnlyOurs`
-- `internal/devpack/project_stop_hook_test.go::TestProj04_MalformedStopLeavesTheFileByteIdentical`
-- `internal/devpack/project_settings_test.go::TestProj04_RemoveLeavingNothingThroughASymlinkEmptiesTheTarget`
+- `internal/devpack/workbench_settings_test.go::TestProj04_InstallKeepsOwnerSettingsKeysAndHooks`
+- `internal/devpack/workbench_settings_test.go::TestProj04_MalformedSettingsLeftByteIdentical`
+- `internal/devpack/workbench_settings_test.go::TestProj04_RemoveDeletesOnlyOurHook`
+- `internal/devpack/workbench_test.go::TestProj04_EditedProjectSkillIsNeverClobbered`
+- `internal/devpack/workbench_stop_hook_test.go::TestProj04_StopHookKeepsOwnerStopHooksAndRemovesOnlyOurs`
+- `internal/devpack/workbench_stop_hook_test.go::TestProj04_MalformedStopLeavesTheFileByteIdentical`
+- `internal/devpack/workbench_settings_test.go::TestProj04_RemoveLeavingNothingThroughASymlinkEmptiesTheTarget`
+- `internal/devpack/workbench_legacy_test.go::TestProj04_ResyncKeepsAnEditedLegacySkill` (an edited legacy skill and its sidecar stay byte-identical, reported `drifted`, its exclude line kept; a later removal keeps it too)
 
 **Locked since:** 2026-09-29
 
-## PROJ-05 — a project parent's status never lags its children
+## PROJ-05 — a workbench parent's status never lags its children
 
 **Status:** Enforced (Go and Desktop — one implementation, in SQLite)
 
-**Observable:** When a project target (`project_id` set) is inserted,
+**Observable:** When a workbench target (`project_id` set) is inserted,
 deleted, or changes `status`, `parent_id` or `project_id`, its parent's
-status is re-derived from the parent's direct children of the same project
+status is re-derived from the parent's direct children of the same workbench
 (closed = `done`|`dismissed`): all closed with at least one `done` → `done`;
 all `dismissed` → `dismissed`; every open child
 `blocked` → `blocked`; any child `in_progress`, `in_review` or `done` →
@@ -171,13 +200,13 @@ nothing above it moves because of that change. A status
 set on a parent itself stands until one of its children changes — the
 parent's own update is never rolled up, and an ancestor none of whose
 children changed keeps its status. `updated_at` moves only with a real
-status change. A non-project target, and a row of another project, is never
+status change. A non-workbench target, and a row of another workbench, is never
 read as a child nor written. The rule is migration `00085`'s triggers
 (`targets_project_status_rollup_{ai,au,ad}`), so every writer — the Go
 MCP/CLI and the Desktop's direct GRDB writes — gets it with no dual path, and
 it does not depend on `PRAGMA recursive_triggers`. The migration re-derives
 every existing board once, deepest parent first, without bumping
-`updated_at` and leaving a dismissed or snoozed parent as it is. The `watchtower-project`
+`updated_at` and leaving a dismissed or snoozed parent as it is. The `watchtower-workbench`
 skill tells the agent never to set a parent's status. A change the rollup
 makes is recorded in the status history (#119) with actor `system`.
 
@@ -190,47 +219,47 @@ at a glance.
 **Test guards:**
 - `internal/db/proj05_status_rollup_test.go::TestProj05_ProjectParentStatusFollowsChildren`
   (and the other `TestProj05_*` in that file: multi-level chain, override,
-  insert/delete/move, non-project and other-project rows, `updated_at`,
-  `recursive_triggers` on, project delete with a multi-level board)
+  insert/delete/move, non-workbench and other-workbench rows, `updated_at`,
+  `recursive_triggers` on, workbench delete with a multi-level board)
 - `internal/db/proj05_status_rollup_edges_test.go` — moves out of a parent that keeps children,
-  a shared ancestor, a child leaving/joining the project, multi-row updates, deletes, a
+  a shared ancestor, a child leaving/joining the workbench, multi-row updates, deletes, a
   100-level chain, and `TestProj05_SwiftTestSchemaMirrorsTheTriggers` (the Swift test
   schema's copy of the triggers equals the migration's)
 - `internal/db/project_status_rollup_migration_test.go::TestMigration00085_RecomputesExistingBoards`
-- `WatchtowerDesktop/Tests/Core/ProjectStatusRollupTests.swift::testGRDBChildStatusUpdateRollsTheChainUp`
-- `WatchtowerDesktop/Tests/ProjectBoardViewModelTests.swift::testStatusWriteReportsTheParentsTheRollupMoved`
+- `WatchtowerDesktop/Tests/Core/WorkbenchStatusRollupTests.swift::testGRDBChildStatusUpdateRollsTheChainUp`
+- `WatchtowerDesktop/Tests/WorkbenchBoardViewModelTests.swift::testStatusWriteReportsTheParentsTheRollupMoved`
   (parents the rollup moved in an owner's write count as the owner's writes — no "done" notice)
 
 **Locked since:** 2026-09-30
 
-## PROJ-06 — every project target status transition is recorded with time and actor
+## PROJ-06 — every workbench target status transition is recorded with time and actor
 
 **Status:** Enforced (Go and Desktop — one implementation, in SQLite)
 
-**Observable:** A project target (`project_id` set) can be `in_review`
+**Observable:** A workbench target (`project_id` set) can be `in_review`
 between `in_progress` and `done`; a personal target never can (`CHECK(status
-!= 'in_review' OR project_id IS NOT NULL)`, migration `00086`). Every project
+!= 'in_review' OR project_id IS NOT NULL)`, migration `00086`). Every workbench
 target's creation and every change of its status — by any writer: the
-agent's `watchtower mcp --project N` tools, the CLI, the Desktop's direct
+agent's `watchtower mcp --workbench N` tools, the CLI, the Desktop's direct
 GRDB writes, the PROJ-05 rollup — adds exactly one `target_status_history`
 row `{target_id, from_status (NULL at creation), to_status, changed_at (UTC
 ISO-8601), actor}`, written by the triggers `targets_status_history_{ai,au}`,
 never by application code. `actor` is what the write claimed in
-`targets.status_actor` in the same statement — `agent` (the project MCP
+`targets.status_actor` in the same statement — `agent` (the workbench MCP
 tools), `owner` (the Desktop's `TargetQueries`/`DayPlanQueries` status
 writers) or `system` (the rollup triggers, the daemon's unsnooze, the Jira status sync) — and `owner` when nothing was
-claimed (every automated writer of a project target claims its actor, so an
+claimed (every automated writer of a workbench target claims its actor, so an
 unclaimed write comes from an owner-facing surface such as the CLI). A claim
 never outlives its own write: the history trigger clears it, and
 `targets_status_actor_reset_au` clears a claim that produced no row. A
 personal target gets no history rows; a status write that does not change
 the status adds none; the rows go with their target (`ON DELETE CASCADE`).
 None of these triggers touches `updated_at`, so the next-step attempt budget
-sees no extra churn. Existing project targets were seeded with one `system`
-row dated by their `updated_at`. Readers: `get_target` in a project session
-(`status_history`, newest 50, oldest first), `project_board`/`project
-board`/`project brief` (the time a target has held its status, from its
-latest row). A target that joins a project later has no history until its
+sees no extra churn. Existing workbench targets were seeded with one `system`
+row dated by their `updated_at`. Readers: `get_target` in a workbench session
+(`status_history`, newest 50, oldest first), `workbench_board`/`workbench
+board`/`workbench brief` (the time a target has held its status, from its
+latest row). A target that joins a workbench later has no history until its
 next status change (the board then shows its bare status).
 
 **Why locked:** Owner decision (board target #119): the owner wants to see
@@ -244,7 +273,7 @@ dual path.
   (and the other `TestProj06_*`: no-change writes, personal targets, the
   `in_review` CHECK, the cascade, `recursive_triggers` on)
 - `internal/db/target_in_review_migration_test.go::TestMigration00086_RebuildKeepsRowsChildrenIndexesAndRollup`
-- `internal/tools/projects_test.go::TestUpdateTarget_InReviewIsRecordedAsTheAgentsAndShown`
+- `internal/tools/workbenches_test.go::TestUpdateTarget_InReviewIsRecordedAsTheAgentsAndShown`
 - `WatchtowerDesktop/Tests/Core/TargetStatusHistoryTests.swift::testDesktopStatusWritesAreRecordedAsTheOwners`
 
 **Locked since:** 2026-09-30
@@ -253,12 +282,12 @@ dual path.
 
 **Status:** Enforced (Go; the Desktop shows the same check)
 
-**Observable:** A project target may carry a git `branch` and a pull request
+**Observable:** A workbench target may carry a git `branch` and a pull request
 `pr` (migration `00089`; set by `create_targets`/`update_target`; one token,
 never starting with `-`; a branch is the plain local name — no `origin/` or
-`refs/` prefix, no revision syntax). `watchtower project check --project N
-[--json] [--stale-days D] [--no-network]` (`internal/projectcheck`,
-mechanical, no AI) reads the board and the project folder's git state and
+`refs/` prefix, no revision syntax). `watchtower workbench check --workbench N
+[--json] [--stale-days D] [--no-network]` (`internal/workbenchcheck`,
+mechanical, no AI) reads the board and the workbench folder's git state and
 never writes — no DB row, no ref, no object, only read-only git subcommands,
 and no git process at all outside a repository. Kinds:
 - `merged_but_open` — an open target's branch is in `origin/<default>` or
@@ -280,7 +309,7 @@ and no git process at all outside a repository. Kinds:
 
 A git call that fails (anything but "no such ref") gives no finding, and a
 check cut short by its deadline reports `incomplete` and never a finding from
-a cut-short target. The `Stop` hook (`project check --project N
+a cut-short target. The `Stop` hook (`workbench check --workbench N
 --stop-hook`, installed next to the `SessionStart` hook) reads Claude Code's
 input, runs offline (no gh) with an 8 s budget for its git work (the
 database open is never cut off by that budget — it may be applying a
@@ -291,14 +320,14 @@ the offline guess `done_but_unmerged` — and only when `stop_hook_active` is
 false, so it blocks at most once per stop and a turn can never loop on it. It
 always exits 0, a panic included; stdout stays empty on every failure, and a
 real failure (bad id, no config, a missing folder, time ran out) is one
-stderr line, while a deleted project's leftover hook says nothing at all.
-`project brief` shows every finding (offline, 4 s budget), and so does the
-Desktop board: `ProjectsViewModel.refreshDrift` runs `project check --json
+stderr line, while a deleted workbench's leftover hook says nothing at all.
+`workbench brief` shows every finding (offline, 4 s budget), and so does the
+Desktop board: `WorkbenchesViewModel.refreshDrift` runs `workbench check --json
 --no-network` when the Board pane appears, on the owner's Refresh, and every
-30 s while the pane polls, and `ProjectDriftBanner` lists the findings (a
+30 s while the pane polls, and `WorkbenchDriftBanner` lists the findings (a
 failed or partial check is shown as such, never as "in step") — the Desktop decodes, never
-re-derives them (`ProjectDriftReport`). `integrate status --json` reports
-`stop_hook`, and a project without it is offered Repair.
+re-derives them (`WorkbenchDriftReport`). `integrate status --json` reports
+`stop_hook`, and a workbench without it is offered Repair.
 
 **Why locked:** Owner request (board target #131). The agent finished and
 merged work but never moved its targets, so a board that looks alive lied
@@ -307,35 +336,35 @@ A hook that could loop a turn, fail a turn, or cry drift on a guess or a
 timeout would be worse than none.
 
 **Test guards:**
-- `cmd/project_check_test.go::TestProj07_StopHookBlocksOnceWithTheDrift`
-- `cmd/project_check_test.go::TestProj07_StopHookIsSilentWithoutGitDrift`
-- `cmd/project_check_test.go::TestProj07_StopHookFailuresAreSilent`
-- `WatchtowerDesktop/Tests/ProjectsViewModelDriftTests.swift`, `WatchtowerDesktop/Tests/Core/ProjectDriftReportTests.swift`, `WatchtowerDesktop/Tests/ProjectCLITests.swift::testMissingStopHookNeedsRepair`
-- `cmd/project_brief_test.go::TestProj07_BriefSaysWhenTheDriftCheckWasPartial`
-- `internal/projectcheck/check_test.go` — `TestProj07_UnresolvableDefaultBranchIsANote`, `TestProj07_GitRules`, `TestProj07_SharedBranchAndParents`, `TestProj07_GitErrorsAreNeverFindings`, `TestProj07_NoGitCallOutsideARepository`, `TestProj07_ReadsNothingButGit`, `TestProj07_DeadlineReportsIncompleteNeverFalseFindings`, `TestProj07_MidWalkDeadlineKeepsEarlierFindingsOnly`
+- `cmd/workbench_check_test.go::TestProj07_StopHookBlocksOnceWithTheDrift`
+- `cmd/workbench_check_test.go::TestProj07_StopHookIsSilentWithoutGitDrift`
+- `cmd/workbench_check_test.go::TestProj07_StopHookFailuresAreSilent`
+- `WatchtowerDesktop/Tests/WorkbenchesViewModelDriftTests.swift`, `WatchtowerDesktop/Tests/Core/WorkbenchDriftReportTests.swift`, `WatchtowerDesktop/Tests/WorkbenchCLITests.swift::testMissingStopHookNeedsRepair`
+- `cmd/workbench_brief_test.go::TestProj07_BriefSaysWhenTheDriftCheckWasPartial`
+- `internal/workbenchcheck/check_test.go` — `TestProj07_UnresolvableDefaultBranchIsANote`, `TestProj07_GitRules`, `TestProj07_SharedBranchAndParents`, `TestProj07_GitErrorsAreNeverFindings`, `TestProj07_NoGitCallOutsideARepository`, `TestProj07_ReadsNothingButGit`, `TestProj07_DeadlineReportsIncompleteNeverFalseFindings`, `TestProj07_MidWalkDeadlineKeepsEarlierFindingsOnly`
 
 **Locked since:** 2026-10-01
 
-## PROJ-08 — a project's documents are searchable only from its own sessions
+## PROJ-08 — a workbench's documents are searchable only from its own sessions
 
 **Status:** Enforced
 
-**Observable:** Attached project documents (`project_documents`, read from
-the project folder) are indexed into the knowledge index as source
-`project_doc` (`internal/kb/source_project.go`; anchor `project_id`,
+**Observable:** Attached workbench documents (`project_documents`, read from
+the workbench folder) are indexed into the knowledge index as source
+`project_doc` (`internal/kb/source_workbench.go`; anchor `project_id`,
 `document_id`, `rel_path`; sections split at `#`–`###` headings, the heading
 as `chunk_anchor`). They are visible only to a search or an open made in
-that project's own session — `watchtower mcp --project N`, whose
-`tools.Binding.ProjectID` is N. `kb.Search` (`Request.ProjectID`),
-`kb.GetDocument` (`DocOptions.ProjectID`) and `kb.Recent` apply one SQL
-condition (`projectDocVisible`, `internal/kb/search.go`) on every call, so
-the default — ProjectID 0, i.e. the main AI Chat, every Discuss chat, `kb
+that workbench's own session — `watchtower mcp --workbench N`, whose
+`tools.Binding.WorkbenchID` is N. `kb.Search` (`Request.WorkbenchID`),
+`kb.GetDocument` (`DocOptions.WorkbenchID`) and `kb.Recent` apply one SQL
+condition (`workbenchDocVisible`, `internal/kb/search.go`) on every call, so
+the default — WorkbenchID 0, i.e. the main AI Chat, every Discuss chat, `kb
 search`, the Confluence title lookup, `get_task_context` and any other
-caller — sees no project document at all; `search_knowledge` asked for
-`sources: ["project_doc"]` outside a project session is refused (not an
-empty result), and another project's session sees only its own. An open of
+caller — sees no workbench document at all; `search_knowledge` asked for
+`sources: ["project_doc"]` outside a workbench session is refused (not an
+empty result), and another workbench's session sees only its own. An open of
 a hidden document reads as "not found", the same as a missing one. Deleting
-the project deletes its index entries in the same transaction (PROJ-02).
+the workbench deletes its index entries in the same transaction (PROJ-02).
 
 Indexing is mechanical (no AI, KB-02): the daemon's knowledge phase
 re-renders a document whose file's mtime differs from the indexed one (any
@@ -344,30 +373,30 @@ direction) or whose file is gone, hash-gated; it never reads a folder under
 `~/Library/Mobile Documents` or `/Volumes` (case-insensitive; a background
 read there could raise a macOS privacy prompt attributed to Watchtower, and
 a dead network mount could block it), and it never follows a symlink out of
-a project folder (`resolveInside` refuses each step before touching it).
-Those projects are indexed only by an explicit trigger —
-`kb.IndexProjectDocs`, run by `project resync`, by `kb reindex` (owner-
-started; it re-indexes every project so a rebuild loses nothing) and, when
+a workbench folder (`resolveInside` refuses each step before touching it).
+Those workbenches are indexed only by an explicit trigger —
+`kb.IndexWorkbenchDocs`, run by `workbench resync`, by `kb reindex` (owner-
+started; it re-indexes every workbench so a rebuild loses nothing) and, when
 `knowledge.enabled` is on, by the agent's `attach_document` and by the
-owner's `project create`, `project import-docs` (not a dry run) and
-`project attach-doc` (the Desktop's Add Document) — best-effort: a failure
+owner's `workbench create`, `workbench import-docs` (not a dry run) and
+`workbench attach-doc` (the Desktop's Add Document) — best-effort: a failure
 there is a stderr warning, the attach stands. A
 file that is gone, not a regular file (never opened blocking), or no longer
 resolves inside the folder (symlinks followed inside it only) is indexed by its title only,
 its anchor's `unreadable` saying why; a file over 2 MiB is indexed up to
 that, its anchor's `truncated` saying so.
 
-**Why locked:** Owner decision (board target #89): project documents are
-working material of one project and its coding agent; they must not leak
-into the owner's general assistant or another project — the PROJ-01 spirit
+**Why locked:** Owner decision (board target #89): workbench documents are
+working material of one workbench and its coding agent; they must not leak
+into the owner's general assistant or another workbench — the PROJ-01 spirit
 applied to search.
 
 **Test guards:**
-- `internal/kb/source_project_test.go::TestProj08_ProjectDocsOnlyInTheirOwnProjectSession`
-- `internal/tools/project_knowledge_test.go::TestProj08_KnowledgeToolsShowProjectDocsOnlyToTheirProject`
-- `internal/db/projects_test.go::TestProj02_DeleteProjectLeavesNoRows` (the index entries go with the project)
-- `cmd/project_test.go::TestProj08_OwnerAttachPathsIndexTheDocumentsAtOnce`
-- `cmd/project_test.go::TestProj08_IndexFailureIsAWarningNotAnError`
+- `internal/kb/source_workbench_test.go::TestProj08_ProjectDocsOnlyInTheirOwnProjectSession`
+- `internal/tools/workbench_knowledge_test.go::TestProj08_KnowledgeToolsShowProjectDocsOnlyToTheirProject`
+- `internal/db/workbenches_test.go::TestProj02_DeleteProjectLeavesNoRows` (the index entries go with the workbench)
+- `cmd/workbench_test.go::TestProj08_OwnerAttachPathsIndexTheDocumentsAtOnce`
+- `cmd/workbench_test.go::TestProj08_IndexFailureIsAWarningNotAnError`
 
 **Locked since:** 2026-10-01
 
@@ -381,22 +410,22 @@ applied to search.
   struct) puts the old status back as if set explicitly; the next child
   change re-derives it. A `snoozed` child counts as not started, and the live
   rule re-derives a snoozed parent (leaving `snooze_until` set; nothing
-  snoozes a project target today). A parent the rollup dismissed (all its
+  snoozes a workbench target today). A parent the rollup dismissed (all its
   children dismissed) stays dismissed even if a child is reopened later —
   dismissed is terminal for the rollup (owner decision 2026-09-30); set it
   back by hand. A parent status the rollup replaces gets no board marker;
   #119's status history records rollup changes with actor `system`.
 
-- **TCC attribution (owner decision 2026-09-30).** A project folder under a
+- **TCC attribution (owner decision 2026-09-30).** A workbench folder under a
   TCC-protected location (`~/Documents`, `~/Desktop`, `~/Downloads`, cloud
   drives under `~/Library/CloudStorage`) can make macOS show a privacy prompt
   attributed to Watchtower, because the Desktop reads the documents and
   launches `claude` from its own process. Accepted for the POC — the Desktop
   warns at create; the real fix (read and launch outside the app process) is a
   follow-up before any non-dogfood use.
-- **Full read tool set in a project session.** `watchtower mcp --project N`
+- **Full read tool set in a workbench session.** `watchtower mcp --workbench N`
   mounts every read tool plain `watchtower mcp` does, and
-  `get_today_briefing` includes the PROJECTS block of every project. DEV-06's
+  `get_today_briefing` includes the WORKBENCHES block of every workbench. DEV-06's
   scoping is a guardrail on Watchtower's own tools only — the agent runs as the
   owner with a shell, so Claude Code's own permission prompt is the real
   boundary.
@@ -405,7 +434,7 @@ applied to search.
   embedded terminal, reading a file under `~/Desktop`, `~/Documents` or
   `~/Downloads` (where macOS saves screenshots) is attributed to Watchtower
   and may show a privacy prompt — the same class as the TCC note above, now
-  reachable from an image path rather than only the project folder. A denied
+  reachable from an image path rather than only the workbench folder. A denied
   read is refused with the OS cause and a hint to copy the file elsewhere.
   Accepted by the owner 2026-10-01 as a known v1 limit: on a denied read
   the agent asks the owner to copy the file elsewhere. (b) *Concurrent sessions:* a failed write discards only
@@ -416,9 +445,9 @@ applied to search.
   Desktop shows as "Missing". (c) Stored paths are absolute: after the data
   directory moves, cleanup leaves the old copies behind (it never touches a
   path outside the current store). (d) A session still connected during
-  `project delete` can re-create an empty `project_files/<id>/`.
-- **Audit rows outlive their project.** `agent_actions` rows with
-  `context_type='project'` are kept after a project delete as audit history
+  `workbench delete` can re-create an empty `project_files/<id>/`.
+- **Audit rows outlive their workbench.** `agent_actions` rows with
+  `context_type='project'` are kept after a workbench delete as audit history
   and are never shown on the Inbox action strip.
 - **Re-anchor hides an owner root.** A Desktop re-anchor that marks an owner
   root `outdated` removes it from the agent's new-for-agent channels
@@ -426,19 +455,21 @@ applied to search.
   reopen or re-post it.
 - **An owner reply reopens a closed thread.** New-for-agent reads only open
   threads, so an owner reply under a `resolved` or `outdated` root reopens
-  that root in the same write (Go `AddProjectCommentTx` ↔ Swift
-  `ProjectQueries.reply`); otherwise the reply would silently never reach
+  that root in the same write (Go `AddWorkbenchCommentTx` ↔ Swift
+  `WorkbenchQueries.reply`); otherwise the reply would silently never reach
   the agent. An agent reply never reopens a thread. While such a reply is
   unanswered (newer than the thread's latest agent comment), the Desktop
   re-anchor leaves the root `open` even though its quote is still gone — a
   narrow exception to PROJ-03's "a comment whose quote is gone becomes
   `outdated`" — so the next document load cannot hide the reply again; once
   the agent answers, the next re-anchor marks it `outdated` as usual
-  (`ProjectCommentThread.hasUnansweredOwnerReply`).
+  (`WorkbenchCommentThread.hasUnansweredOwnerReply`).
 
-- **Board language is advisory.** It is an instruction to the agent (brief, `project_info`, skill) — always the session's language — never enforced on a write: a target written in another language is accepted, and nothing already on the board is translated. The mechanical document import keeps each file's own title.
+- **Board language is advisory.** It is an instruction to the agent (brief, `workbench_info`, skill) — always the session's language — never enforced on a write: a target written in another language is accepted, and nothing already on the board is translated. The mechanical document import keeps each file's own title.
 
 ## Changelog
+
+- 2026-10-02 (Workbench rename, spec `docs/superpowers/specs/2026-10-02-workbench-rename-design.md`, owner decisions O1–O8): the feature is renamed from Projects to **Workbench** and this file moves from `docs/inventory/projects.md` to `docs/inventory/workbench.md`. PROJ-01..08 are reworded to the new names with the **same ids and the same meaning** (rewording approved by the owner, O2); every guard keeps its test function name (`TestProjNN_…`/`testProjNN_…`, A4) and only its file path changed (`project*`/`Project*` test files → `workbench*`/`Workbench*`; the migration tests keep theirs). Storage and wire keep `project` (tables, columns, DB values, `project_doc`, `project_files/`, `projects.*` UserDefaults keys, CLI `--json` keys). **PROJ-02 strengthened:** removal and delete also take away a never-resynced folder's legacy hooks, skill, `watchtower-project` registration and exclude lines — new guard `TestProj02_RemoveLegacyFolderLeavesNothingInstalled`. **PROJ-04 strengthened:** a resync deletes the legacy `watchtower-project` skill only through the DEV-04 marker/digest rule and replaces only our own legacy hook entries; an edited legacy skill is kept byte-identical with its exclude line — new guard `TestProj04_ResyncKeepsAnEditedLegacySkill`. Guard assertions whose expected literal said "project" (for example "workbench N no longer exists") were updated to the new wording with the same strictness. The entries below are historical and keep the names of their date (A11).
 
 - 2026-10-01 (board item #181): project documents render tables as one paragraph per cell and a rule as a blank line (they were `a | b` rows and `———`); `CommentAnchor.locate` gains a last tier that reads those legacy separators (` | `, `———`, and for a `table` artifact its CSV commas) in a stored quote and its context as the new line breaks, and accepts a match only where real stored context still surrounds it, so comments made on the old rendering keep their passage instead of turning `outdated`. PROJ-03 unchanged — the same passage is found, look-alike text elsewhere is not (`testTheLegacyTierNeedsTheOriginalContext`); no guard test changed.
 - 2026-10-01 (board target #192, release audit): **PROJ-07 strengthened** — the session brief says when its drift check was cut short or its branch checks could not run (no default branch resolves), so a partial check never reads as a clean board ("a failed or partial check is shown as such" now holds for the brief too); `project check` adds a note when the default branch named by `origin/HEAD` no longer resolves. The brief also frames the recent-in-sources titles as other people's words — data, not instructions. New guards `TestProj07_BriefSaysWhenTheDriftCheckWasPartial`, `TestProj07_UnresolvableDefaultBranchIsANote`. Also: the agent's `attach_document` matches an attached `rel_path` ignoring case (as the import and the owner attach do) and reports the stored spelling.
