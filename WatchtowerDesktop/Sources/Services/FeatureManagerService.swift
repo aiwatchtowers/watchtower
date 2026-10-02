@@ -76,6 +76,8 @@ final class FeatureManagerService {
     /// together with their currently-enabled dependents. `apply()` passes
     /// `--with-dependents` for exactly these ids, then clears the set.
     var applyWithDependents: Set<String> = []
+    /// True for the whole of an `applySelection()` call.
+    private var isApplyingSelection = false
 
     /// Fires with the freshly computed `disabledFeatureIDs` after every
     /// successful `load()` — including the trailing reload inside a fully
@@ -315,26 +317,38 @@ final class FeatureManagerService {
 
     /// Onboarding's write path: makes exactly `enabled` on and the rest of
     /// `managed` off, through the same `features enable`/`disable` calls as
-    /// `apply()` but with NO daemon restart — onboarding starts the daemon
-    /// itself once it completes. Anything staged elsewhere is discarded
-    /// first, so only this decision is replayed.
+    /// `apply()` but never restarting the daemon — onboarding's completion
+    /// step is the only place it starts. Anything staged elsewhere is
+    /// discarded first, so only this decision is replayed.
     ///
     /// It re-reads the live state first and does nothing if that fails:
     /// against an empty list `setPending` would stage every id, and
     /// `features enable` on a feature that is already on still runs its
     /// fast-forward hook (FEAT-03). Ids the CLI does not list, or lists as
-    /// core, are never staged. Failure surfaces through `loadError`, as for
-    /// `apply()`.
-    func applySelection(enabled: Set<String>, managed: Set<String>) async {
-        guard !isApplying else { return }
+    /// core, are never staged.
+    ///
+    /// Returns true when every change landed (the live list was read and
+    /// nothing is left pending); false when the read or a write failed —
+    /// the reason is in `loadError`, the unwritten remainder in `pending` —
+    /// or when another call was still in flight.
+    @discardableResult
+    func applySelection(enabled: Set<String>, managed: Set<String>) async -> Bool {
+        // Covers the whole call, not just apply(): the leading load() is an
+        // await too, and a second call landing there would interleave its
+        // discardPending()/staging with this one's.
+        guard !isApplyingSelection, !isApplying else { return false }
+        isApplyingSelection = true
+        defer { isApplyingSelection = false }
+
         await load()
-        guard loadError == nil else { return }
+        guard loadError == nil else { return false }
 
         discardPending()
         for feature in features where !feature.core && managed.contains(feature.id) {
             setPending(feature.id, enabled: enabled.contains(feature.id))
         }
         await apply {}
+        return loadError == nil && pending.isEmpty
     }
 
     private func applyOne(id: String, enabled: Bool, isFeature: Bool) async throws {

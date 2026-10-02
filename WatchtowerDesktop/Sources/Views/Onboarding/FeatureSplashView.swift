@@ -530,7 +530,7 @@ struct FeatureSplashView: View {
                             .font(.caption)
                             .foregroundStyle(feature.cost == "heavy" ? .orange : .secondary)
                     }
-                    if OnboardingFeaturePlan.alwaysOffFeatureIDs.contains(feature.id) {
+                    if isExperimental(feature) {
                         experimentalTag
                     }
                 }

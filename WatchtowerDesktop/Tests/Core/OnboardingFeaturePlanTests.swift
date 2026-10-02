@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 @testable import WatchtowerCore
 
@@ -61,6 +62,41 @@ final class OnboardingFeaturePlanTests: XCTestCase {
     func testCustomizableSetIsManagedMinusAlwaysOn() {
         XCTAssertEqual(Plan.customizableFeatureIDs, Plan.managedFeatureIDs.subtracting(["knowledge-search"]))
         XCTAssertTrue(Plan.customizableFeatureIDs.contains("memory"))
+    }
+
+    // MARK: - Registry drift
+
+    /// (id, core) for every entry of the Go registry, read straight from
+    /// `internal/features/registry.go` (the `ArtifactContractFixtureTests`
+    /// precedent): each `ID:` field opens an entry, and `Core: true` before
+    /// the next one marks it core. Sub-toggles carry `Key:`, not `ID:`.
+    private static func registryEntries() throws -> [(id: String, core: Bool)] {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // Core
+            .deletingLastPathComponent() // Tests
+            .deletingLastPathComponent() // WatchtowerDesktop
+            .deletingLastPathComponent() // repo root
+            .appendingPathComponent("internal/features/registry.go")
+        let source = try String(contentsOf: url, encoding: .utf8) as NSString
+        let idPattern = try NSRegularExpression(pattern: #"\bID:\s+"([^"]+)""#)
+        let matches = idPattern.matches(in: source as String, range: NSRange(location: 0, length: source.length))
+        return matches.enumerated().map { index, match in
+            let end = index + 1 < matches.count ? matches[index + 1].range.location : source.length
+            let entry = source.substring(with: NSRange(location: match.range.location, length: end - match.range.location))
+            return (source.substring(with: match.range(at: 1)), entry.range(of: #"Core:\s+true"#, options: .regularExpression) != nil)
+        }
+    }
+
+    func testEveryToggleableRegistryFeatureIsClassified() throws {
+        let entries = try Self.registryEntries()
+        XCTAssertGreaterThan(entries.count, 10, "registry parse found too few entries")
+        let toggleable = Set(entries.filter { !$0.core }.map(\.id))
+        let classified = Plan.managedFeatureIDs.union(Plan.unmanagedFeatureIDs)
+        XCTAssertEqual(toggleable.subtracting(classified), [],
+                       "a registry feature onboarding neither manages nor lists in unmanagedFeatureIDs")
+        XCTAssertEqual(classified.subtracting(toggleable), [],
+                       "a plan id that is not a toggleable registry feature (renamed, removed, or core)")
+        XCTAssertTrue(Plan.managedFeatureIDs.isDisjoint(with: Plan.unmanagedFeatureIDs))
     }
 
     // MARK: - Selection: goals decide until a manual flip

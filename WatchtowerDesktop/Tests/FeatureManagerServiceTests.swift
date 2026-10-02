@@ -647,6 +647,37 @@ struct FeatureManagerServiceTests {
 /// `stdout`, so a test can hand back an already-updated fixture — modeling
 /// what the real CLI would report once the calls before the failure have
 /// actually taken effect.
+/// Parks the first `run` until `release()`; every later call returns
+/// `stdout` at once. `firstCallArrived` yields once the first call is parked.
+private final class FirstCallGatedRunner: CLIRunnerProtocol {
+    let firstCallArrived: AsyncStream<Void>
+    private let arrived: AsyncStream<Void>.Continuation
+    private let stdout: Data
+    private var gate: CheckedContinuation<Void, Never>?
+    private(set) var invocations: [[String]] = []
+
+    init(stdout: Data) {
+        self.stdout = stdout
+        (firstCallArrived, arrived) = AsyncStream.makeStream()
+    }
+
+    func run(args: [String]) async throws -> Data {
+        invocations.append(args)
+        if invocations.count == 1 {
+            await withCheckedContinuation { continuation in
+                gate = continuation
+                arrived.yield()
+            }
+        }
+        return stdout
+    }
+
+    func release() {
+        gate?.resume()
+        gate = nil
+    }
+}
+
 private final class NthCallFailingRunner: CLIRunnerProtocol {
     private let failOnCall: Int
     private let error: Error
@@ -798,11 +829,12 @@ extension FeatureManagerServiceTests {
 
         // ideas on → off, tracks off → on, memory already off; the core
         // "dashboard" and an id the CLI does not list are never staged.
-        await service.applySelection(
+        let applied = await service.applySelection(
             enabled: ["tracks", "dashboard", "ghost"],
             managed: ["ideas", "tracks", "memory", "dashboard", "ghost"]
         )
 
+        #expect(applied)
         #expect(runner.invocations == [
             ["features", "list", "--json"],
             ["features", "list", "--json"],
@@ -819,8 +851,9 @@ extension FeatureManagerServiceTests {
     func applySelectionNoOpWhenStateMatches() async {
         let (service, runner) = Self.makeService(stdout: Self.featuresListJSON)
 
-        await service.applySelection(enabled: ["ideas"], managed: ["ideas", "tracks", "memory"])
+        let applied = await service.applySelection(enabled: ["ideas"], managed: ["ideas", "tracks", "memory"])
 
+        #expect(applied)
         #expect(runner.invocations == [["features", "list", "--json"]])
         #expect(service.pending.isEmpty)
     }
@@ -832,10 +865,61 @@ extension FeatureManagerServiceTests {
             error: CLIRunnerError.nonZeroExit(code: 1, stderr: "list failed")
         )
 
-        await service.applySelection(enabled: ["tracks"], managed: ["ideas", "tracks"])
+        let applied = await service.applySelection(enabled: ["tracks"], managed: ["ideas", "tracks"])
 
+        #expect(!applied)
         #expect(runner.invocations == [["features", "list", "--json"]])
         #expect(service.pending.isEmpty)
         #expect(service.loadError?.contains("list failed") == true)
+    }
+
+    @Test("applySelection() stops at the first failed write, reports it, returns false, and never restarts")
+    func applySelectionPartialFailure() async {
+        // #1 the leading reload, #2 "ideas" (sorts first, succeeds), #3
+        // "tracks" (fails), #4 apply()'s trailing reload.
+        let runner = NthCallFailingRunner(
+            failOnCall: 3,
+            error: CLIRunnerError.nonZeroExit(code: 1, stderr: "boom: enable failed"),
+            stdout: Data(Self.featuresListJSON.utf8),
+            stdoutAfterFailure: Data(Self.featuresListAfterIdeasDisabledJSON.utf8)
+        )
+        let service = FeatureManagerService(runner: runner)
+
+        let applied = await service.applySelection(enabled: ["tracks"], managed: ["ideas", "tracks"])
+
+        #expect(!applied)
+        // No `sync` call anywhere: applySelection has no restart to make.
+        #expect(runner.invocations == [
+            ["features", "list", "--json"],
+            ["features", "disable", "ideas"],
+            ["features", "enable", "tracks"],
+            ["features", "list", "--json"]
+        ])
+        #expect(service.pending == ["tracks": true], "the failed write stays pending for a retry")
+        #expect(service.loadError?.contains("boom: enable failed") == true)
+        #expect(service.isApplying == false)
+    }
+
+    @Test("applySelection() while another call is in flight is a no-op that returns false")
+    func applySelectionRejectsReentry() async {
+        let runner = FirstCallGatedRunner(stdout: Data(Self.featuresListJSON.utf8))
+        let service = FeatureManagerService(runner: runner)
+
+        let first = Task { await service.applySelection(enabled: ["tracks"], managed: ["ideas", "tracks"]) }
+        for await _ in runner.firstCallArrived { break }
+
+        // The first call is parked in its leading load(), before apply().
+        let second = await service.applySelection(enabled: [], managed: ["ideas", "tracks"])
+        #expect(!second)
+        #expect(runner.invocations == [["features", "list", "--json"]])
+
+        runner.release()
+        #expect(await first.value)
+        #expect(runner.invocations == [
+            ["features", "list", "--json"],
+            ["features", "disable", "ideas"],
+            ["features", "enable", "tracks"],
+            ["features", "list", "--json"]
+        ])
     }
 }

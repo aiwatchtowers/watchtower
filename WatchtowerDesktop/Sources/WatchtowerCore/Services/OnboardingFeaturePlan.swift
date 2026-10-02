@@ -42,8 +42,15 @@ package enum OnboardingFeaturePlan {
         }
     }
 
+    /// Toggleable features onboarding deliberately leaves at whatever state
+    /// they have: Confluence in search does nothing until a space is picked
+    /// in Settings. Every non-core registry id is either managed or listed
+    /// here — `OnboardingFeaturePlanTests` checks it against
+    /// `internal/features/registry.go`, so a new feature must be classified.
+    package static let unmanagedFeatureIDs: Set<String> = ["knowledge-connectors"]
+
     /// Every feature whose state onboarding decides. Anything outside it
-    /// (core entries, Confluence in search) keeps whatever state it has.
+    /// (core entries, `unmanagedFeatureIDs`) keeps whatever state it has.
     package static let managedFeatureIDs: Set<String> = OnboardingGoal.allCases.reduce(
         alwaysOnFeatureIDs.union(alwaysOffFeatureIDs)
     ) { $0.union(featureIDs(for: $1)) }
