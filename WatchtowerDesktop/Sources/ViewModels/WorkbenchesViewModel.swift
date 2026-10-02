@@ -444,6 +444,14 @@ final class WorkbenchesViewModel {
     }
 
     func repairInstall(projectID: Int64) async {
+        // On a folder set up before the Workbench rename the install is the
+        // migration (spec 2026-10-02 §5.4); its report — the permission
+        // rules to re-allow, an edited old skill that was kept — only comes
+        // back from the resync, so Repair runs that and shows its summary.
+        if installStatus[projectID]?.legacy == true {
+            await resync(projectID: projectID)
+            return
+        }
         guard let cli, !isInstalling(projectID: projectID) else { return }
         repairing.insert(projectID)
         defer { repairing.remove(projectID) }

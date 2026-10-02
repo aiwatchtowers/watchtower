@@ -135,6 +135,45 @@ final class WorkbenchesViewModelResyncTests: XCTestCase {
         XCTAssertEqual(older.legacyPermissionRules, 0)
     }
 
+    /// Repair on a legacy folder is the migration: it runs the resync, so
+    /// the owner sees its report (the permission rules, a kept old skill)
+    /// instead of an install whose output is dropped. A current folder's
+    /// Repair still runs the plain install.
+    func testRepairOnALegacyFolderRunsTheResyncAndShowsItsSummary() async throws {
+        let id = try await pool.write { try TestDatabase.insertWorkbench($0) }
+        let legacyStatus = Data(#"{"skill":"missing","hook":false,"mcp":true,"legacy":true,"legacy_skill":"unchanged"}"#.utf8)
+        let migrated = Self.upToDate.replacingOccurrences(
+            of: #""suggestions":[],"suggestions_error":"""#,
+            with: #""suggestions":["2 permission rule(s) still name the old watchtower-project server; "#
+                + #"re-allow the tools under watchtower-workbench when Claude Code asks."],"suggestions_error":"","#
+                + #""legacy_skill":"removed","legacy_mcp_removed":true,"legacy_hooks_replaced":true,"legacy_permission_rules":2"#)
+        let runner = ScriptedCLIRunner(results: [
+            .success(legacyStatus), .success(Data(migrated.utf8)), .success(Self.status)
+        ])
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: runner), defaults: defaults)
+        await vm.refreshInstallStatus(projectID: id)
+        XCTAssertEqual(vm.installStatus[id]?.needsRepair, true)
+
+        await vm.repairInstall(projectID: id)
+
+        XCTAssertEqual(runner.invocations, [
+            ["integrate", "status", "--workbench", String(id), "--json"],
+            ["workbench", "resync", String(id), "--json"],
+            ["integrate", "status", "--workbench", String(id), "--json"]
+        ])
+        let lines = try XCTUnwrap(vm.resyncResults[id]?.summaryLines)
+        XCTAssertTrue(lines.contains(line("Next: 2 permission rule(s) still name the old watchtower-project server; "
+                                          + "re-allow the tools under watchtower-workbench when Claude Code asks.")))
+        XCTAssertEqual(vm.installStatus[id]?.legacy, false)
+
+        let current = ScriptedCLIRunner(results: [.success(Data(#"{"skill":"missing","hook":true,"mcp":true}"#.utf8))])
+        let plain = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: current), defaults: defaults)
+        await plain.refreshInstallStatus(projectID: id)
+        await plain.repairInstall(projectID: id)
+        XCTAssertEqual(current.invocations[1], ["integrate", "claude-code", "--workbench", String(id)])
+        XCTAssertNil(plain.resyncResults[id])
+    }
+
     func testResyncStoresTheResultAndRefreshesTheInstallStatus() async throws {
         let id = try await pool.write { try TestDatabase.insertWorkbench($0) }
         let runner = ScriptedCLIRunner(results: [.success(Data(Self.added.utf8)), .success(Self.status)])
