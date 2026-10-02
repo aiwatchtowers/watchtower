@@ -260,6 +260,9 @@ type DayPlanConfig struct {
 	Hour              int    `yaml:"hour" mapstructure:"hour"`
 	WorkingHoursStart string `yaml:"working_hours_start" mapstructure:"working_hours_start"`
 	WorkingHoursEnd   string `yaml:"working_hours_end" mapstructure:"working_hours_end"`
+	MaxTimeblocks     int    `yaml:"max_timeblocks" mapstructure:"max_timeblocks"`
+	MinBacklog        int    `yaml:"min_backlog" mapstructure:"min_backlog"`
+	MaxBacklog        int    `yaml:"max_backlog" mapstructure:"max_backlog"`
 }
 
 // MemoryConfig holds settings for the secretary memory consolidation
@@ -470,6 +473,9 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("day_plan.hour", DefaultDayPlanHour)
 	v.SetDefault("day_plan.working_hours_start", DefaultDayPlanWorkingHoursStart)
 	v.SetDefault("day_plan.working_hours_end", DefaultDayPlanWorkingHoursEnd)
+	v.SetDefault("day_plan.max_timeblocks", DefaultDayPlanMaxTimeblocks)
+	v.SetDefault("day_plan.min_backlog", DefaultDayPlanMinBacklog)
+	v.SetDefault("day_plan.max_backlog", DefaultDayPlanMaxBacklog)
 	v.SetDefault("memory.enabled", false) // off by default until the feature settles
 	v.SetDefault("memory.max_chunk_messages", 2000)
 	v.SetDefault("memory.seed_min_messages", 20)

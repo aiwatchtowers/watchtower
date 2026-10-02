@@ -38,14 +38,17 @@ Of the 119 mapstructure fields, 7 are never read outside `internal/config` (conf
 `targets.resolver.slack_enabled`, `targets.resolver.jira_enabled`) were already
 removed in PR #120. This pass removed the struct fields and defaults of
 `digest.action_items_interval` (and its alias `digest.tracks_interval`),
-`inbox.max_items_per_run`, and `jira.selected_boards`. It also removed three
-more no-reader keys from the 2026-09-13 audit: `tracks.min_messages` and
-`day_plan.max_timeblocks`/`min_backlog`/`max_backlog`. `config set` now refuses
-all twelve with a "retired" error (`retiredConfigKeys` in `cmd/config.go`),
-and a config.yaml that still carries them loads unchanged (pinned by tests).
-Kept on purpose: `analysis.legacy_mode`, which the Desktop reads, and the
-frozen `jira.cloud_id`/`site_url`/`user_display_name`, which the legacy-seed
-path (`cmd/jira_legacy.go`) reads. Not done: the reflection "every field has a
+`inbox.max_items_per_run`, and `jira.selected_boards`. It also removed
+`tracks.min_messages`, another no-reader key from the 2026-09-13 audit.
+`config set` now refuses all nine with a "retired" error (`retiredConfigKeys`
+in `cmd/config.go`, case-insensitive), and a config.yaml that still carries
+them loads unchanged (pinned by tests). Kept on purpose:
+`analysis.legacy_mode`, which the Desktop reads, and the frozen
+`jira.cloud_id`/`site_url`/`user_display_name`, which the legacy-seed path
+(`cmd/jira_legacy.go`) reads. The audit's
+`day_plan.max_timeblocks`/`min_backlog`/`max_backlog` are not retired here.
+Go never reads them, but the Desktop Settings still edits them, so they now
+have their own item: `2026-10-02-day-plan-settings-steppers-change-nothing.md`. Not done: the reflection "every field has a
 reader" test. Go reflection cannot see readers, so it would need a source scan,
 and fields with common names like `Enabled` make that scan noisy. Revisit it
 only if dead keys come back.

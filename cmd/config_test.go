@@ -448,6 +448,11 @@ func TestConfigSet_RetiredKeyIsRefusedAndNotWritten(t *testing.T) {
 		assert.Empty(t, buf.String(), key)
 	}
 
+	// viper keys are case-insensitive, so the refusal is too.
+	err := configSetCmd.RunE(configSetCmd, []string{"Inbox.Max_Items_Per_Run", "5"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "retired")
+
 	data, err := os.ReadFile(configPath)
 	require.NoError(t, err)
 	assert.Equal(t, initial, string(data), "a retired key must not touch config.yaml")

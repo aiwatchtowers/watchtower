@@ -347,10 +347,11 @@ func TestDayPlanConfig_Defaults(t *testing.T) {
 	assert.Equal(t, DefaultDayPlanHour, cfg.DayPlan.Hour)
 	assert.Equal(t, DefaultDayPlanWorkingHoursStart, cfg.DayPlan.WorkingHoursStart)
 	assert.Equal(t, DefaultDayPlanWorkingHoursEnd, cfg.DayPlan.WorkingHoursEnd)
+	assert.Equal(t, DefaultDayPlanMaxTimeblocks, cfg.DayPlan.MaxTimeblocks)
+	assert.Equal(t, DefaultDayPlanMinBacklog, cfg.DayPlan.MinBacklog)
+	assert.Equal(t, DefaultDayPlanMaxBacklog, cfg.DayPlan.MaxBacklog)
 }
 
-// The retired max_timeblocks/min_backlog/max_backlog keys stay in the
-// fixture: an existing config.yaml still carrying them must load.
 func TestDayPlanConfig_FromYAML(t *testing.T) {
 	yaml := `
 day_plan:
@@ -370,6 +371,9 @@ day_plan:
 	assert.Equal(t, 7, cfg.DayPlan.Hour)
 	assert.Equal(t, "08:00", cfg.DayPlan.WorkingHoursStart)
 	assert.Equal(t, "18:00", cfg.DayPlan.WorkingHoursEnd)
+	assert.Equal(t, 5, cfg.DayPlan.MaxTimeblocks)
+	assert.Equal(t, 2, cfg.DayPlan.MinBacklog)
+	assert.Equal(t, 10, cfg.DayPlan.MaxBacklog)
 }
 
 func TestMemoryConfig_Defaults(t *testing.T) {

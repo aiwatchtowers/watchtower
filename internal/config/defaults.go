@@ -109,6 +109,9 @@ const (
 	DefaultDayPlanHour              = 8
 	DefaultDayPlanWorkingHoursStart = "09:00"
 	DefaultDayPlanWorkingHoursEnd   = "19:00"
+	DefaultDayPlanMaxTimeblocks     = 3
+	DefaultDayPlanMinBacklog        = 3
+	DefaultDayPlanMaxBacklog        = 8
 
 	// Targets defaults
 	DefaultTargetsExtractEnabled        = true

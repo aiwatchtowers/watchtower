@@ -278,9 +278,6 @@ var retiredConfigKeys = map[string]bool{
 	"inbox.max_items_per_run":        true,
 	"tracks.min_messages":            true,
 	"jira.selected_boards":           true,
-	"day_plan.max_timeblocks":        true,
-	"day_plan.min_backlog":           true,
-	"day_plan.max_backlog":           true,
 	"targets.extract.max_per_call":   true,
 	"targets.extract.model":          true,
 	"targets.resolver.slack_enabled": true,
@@ -292,7 +289,7 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 	value := args[1]
 	configPath := flagConfig
 
-	if retiredConfigKeys[key] {
+	if retiredConfigKeys[strings.ToLower(key)] {
 		return fmt.Errorf("%q is retired and has no effect; nothing was written", key)
 	}
 
