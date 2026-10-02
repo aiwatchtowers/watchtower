@@ -18,12 +18,12 @@ import (
 	"watchtower/internal/devpack"
 )
 
-// workbenchCommandRunner runs the claude CLI for the project install; tests
+// workbenchCommandRunner runs the claude CLI for the workbench install; tests
 // replace it so no test ever execs the real claude.
 var workbenchCommandRunner devpack.CommandRunner = execCommandRunner
 
 // workbenchExecutable resolves the watchtower binary path recorded in the
-// project's hook and MCP registration. A seam (not a bare os.Executable
+// workbench's hook and MCP registration. A seam (not a bare os.Executable
 // call) because looksLikeOurHook (I2) keys on the binary's basename being
 // "watchtower" — the real binary always is, but a test binary (e.g.
 // "cmd.test") is not, so tests substitute a fixed watchtower-named path.
@@ -56,7 +56,7 @@ func workbenchInstallOptions(p *db.Workbench) (devpack.WorkbenchInstallOptions, 
 	return devpack.WorkbenchInstallOptions{WorkbenchID: p.ID, Folder: p.FolderPath, Bin: bin, Run: workbenchCommandRunner}, nil
 }
 
-// removeWorkbenchInstall is `project delete`'s folder cleanup (PROJ-02),
+// removeWorkbenchInstall is `workbench delete`'s folder cleanup (PROJ-02),
 // assigned to workbenchRemoveInstall in integrate.go's init.
 func removeWorkbenchInstall(ctx context.Context, _ *config.Config, p *db.Workbench) error {
 	o, err := workbenchInstallOptions(p)
@@ -66,19 +66,26 @@ func removeWorkbenchInstall(ctx context.Context, _ *config.Config, p *db.Workben
 	return devpack.RemoveWorkbench(ctx, o)
 }
 
-// checkWorkbenchFlags refuses the global-pack flags next to --workbench: the
-// workbench install always targets the workbench's own folder.
-func checkWorkbenchFlags(scopeChanged bool, explicitPath string, skillsOnly, mcpOnly bool) error {
+// checkWorkbenchFlags refuses the global-pack flags next to --workbench (flag
+// is the spelling the caller used): the workbench install always targets
+// the workbench's own folder.
+func checkWorkbenchFlags(flag string, scopeChanged bool, explicitPath string, skillsOnly, mcpOnly bool) error {
 	if scopeChanged || explicitPath != "" || skillsOnly || mcpOnly {
-		return errors.New("--workbench installs into the workbench's own folder; it cannot be combined with --scope, --path, --skills-only or --mcp-only")
+		return fmt.Errorf("%s installs into the workbench's own folder; it cannot be combined with --scope, --path, --skills-only or --mcp-only", flag)
 	}
 	return nil
 }
 
 type workbenchIntegrateFunc func(ctx context.Context, w io.Writer, p *db.Workbench) error
 
+// runIntegrateForWorkbench runs fn for --workbench N. The hidden --project N a
+// pre-rename Desktop passes acts the same: an install or resync through
+// either spelling sets the folder up in the current vocabulary (that is the
+// migration, spec 2026-10-02 §5.4); the spelling is only named back in
+// messages.
 func runIntegrateForWorkbench(cmd *cobra.Command, fn workbenchIntegrateFunc) error {
-	if err := checkWorkbenchFlags(cmd.Flags().Changed("scope"), integratePath, integrateSkillsOnly, integrateMCPOnly); err != nil {
+	flag := workbenchFlagName(cmd.Flags().Changed(legacyWorkbenchFlag))
+	if err := checkWorkbenchFlags(flag, cmd.Flags().Changed("scope"), integratePath, integrateSkillsOnly, integrateMCPOnly); err != nil {
 		return err
 	}
 	p, err := loadIntegrateWorkbench(integrateWorkbenchID)
@@ -118,6 +125,9 @@ func runWorkbenchInstall(ctx context.Context, w io.Writer, p *db.Workbench) erro
 func printWorkbenchInstallReport(w io.Writer, p *db.Workbench, rep devpack.WorkbenchInstallReport, err error) {
 	fmt.Fprintf(w, "Workbench %d (%s):\n", p.ID, p.FolderPath)
 	printWorkbenchInstallBody(w, rep, err)
+	if notes := legacyPermissionNote(rep); notes != "" {
+		fmt.Fprintf(w, "\nNote:\n  %s\n", notes)
+	}
 	if err != nil {
 		fmt.Fprintf(w, "\nProblems:\n  %v\n", err)
 	}
@@ -136,6 +146,40 @@ func printWorkbenchInstallBody(w io.Writer, rep devpack.WorkbenchInstallReport, 
 	} else {
 		fmt.Fprintf(w, "  mcp      NOT registered — run:\n    %s\n", rep.MCPCommand)
 	}
+	printLegacyMigration(w, rep)
+}
+
+// printLegacyMigration reports what the install did to a folder set up
+// before the Workbench rename (spec 2026-10-02 §5.4); nothing for any other.
+func printLegacyMigration(w io.Writer, rep devpack.WorkbenchInstallReport) {
+	switch rep.LegacySkill.State {
+	case devpack.StateRemoved:
+		fmt.Fprintf(w, "  legacy   removed the old %s skill\n", devpack.LegacySkillName)
+	case devpack.StateDrifted, devpack.StateForeign:
+		fmt.Fprintf(w, "  legacy   %s\n", legacySkillKeptNote)
+	}
+	if rep.LegacyHooksReplaced {
+		fmt.Fprintln(w, "  legacy   replaced the old hook commands")
+	}
+	if rep.LegacyMCPRemoved {
+		fmt.Fprintf(w, "  legacy   removed the old %s MCP server\n", devpack.LegacyMCPServerName)
+	}
+}
+
+// legacySkillKeptNote is the report line for an old skill a resync kept:
+// edited by the owner, or not ours at all (PROJ-04).
+var legacySkillKeptNote = "Your own copy of the old " + devpack.LegacySkillName + " skill was kept — delete .claude/skills/" +
+	devpack.LegacySkillName + " yourself once you no longer need it; until then Claude Code sees both skills."
+
+// legacyPermissionNote is the suggestion for the owner's allow rules that
+// still name the old server; "" when there are none. The rules are never
+// rewritten (spec 2026-10-02 A6).
+func legacyPermissionNote(rep devpack.WorkbenchInstallReport) string {
+	if rep.LegacyPermissionRules == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d permission rule(s) still name the old %s server; re-allow the tools under %s when Claude Code asks.",
+		rep.LegacyPermissionRules, devpack.LegacyMCPServerName, devpack.WorkbenchMCPServerName)
 }
 
 func hookReportLine(changed bool, err error) string {
@@ -168,12 +212,15 @@ func runWorkbenchRemove(ctx context.Context, w io.Writer, p *db.Workbench) error
 }
 
 // printWorkbenchLeftovers names whatever is still installed after a removal —
-// in practice only a skill the owner edited (kept by PROJ-04).
+// in practice only a skill the owner edited (kept by PROJ-04), in either
+// vocabulary.
 func printWorkbenchLeftovers(w io.Writer, st devpack.WorkbenchStatus) {
 	left := false
-	if st.Skill.State != devpack.StateMissing {
-		fmt.Fprintf(w, "  kept: skill %s%s (%s)\n", st.Skill.State, skillStateNote(st.Skill.State), st.Skill.Path)
-		left = true
+	for _, s := range []devpack.SkillStatus{st.Skill, st.LegacySkill} {
+		if s.State != devpack.StateMissing {
+			fmt.Fprintf(w, "  kept: skill %s %s%s (%s)\n", s.Name, s.State, skillStateNote(s.State), s.Path)
+			left = true
+		}
 	}
 	if st.Hook {
 		fmt.Fprintln(w, "  still present: SessionStart hook")
@@ -183,7 +230,11 @@ func printWorkbenchLeftovers(w io.Writer, st devpack.WorkbenchStatus) {
 		fmt.Fprintln(w, "  still present: Stop hook")
 		left = true
 	}
-	if st.MCP {
+	if st.LegacyMCP {
+		fmt.Fprintf(w, "  still registered: %s\n", devpack.LegacyMCPServerName)
+		left = true
+	}
+	if st.MCP && !st.LegacyMCP {
 		fmt.Fprintf(w, "  still registered: %s\n", devpack.WorkbenchMCPServerName)
 		left = true
 	}
@@ -192,8 +243,14 @@ func printWorkbenchLeftovers(w io.Writer, st devpack.WorkbenchStatus) {
 	}
 }
 
-// workbenchStatusJSON is `integrate status --project N --json`, read by the
-// Desktop's ProjectCLI (Task 14).
+// workbenchStatusJSON is `integrate status --workbench N --json`, read by the
+// Desktop's WorkbenchCLI. Keys are a wire contract and keep their pre-rename
+// spelling (spec 2026-10-02 A2); new ones are only added. hook, stop_hook
+// and mcp count a pre-rename entry too, so a working folder that was never
+// resynced reads as installed. legacy says such a folder still holds
+// something a resync would migrate (old registration, old hook command, or
+// the old skill as we shipped it); legacy_skill is the old skill's state
+// ("" = absent, "unchanged", "drifted", "foreign").
 type workbenchStatusJSON struct {
 	WorkbenchID int64  `json:"project_id"`
 	Folder      string `json:"folder"`
@@ -203,6 +260,17 @@ type workbenchStatusJSON struct {
 	StopHook    bool   `json:"stop_hook"`
 	MCP         bool   `json:"mcp"`
 	ClaudeFound bool   `json:"claude_found"`
+	Legacy      bool   `json:"legacy"`
+	LegacySkill string `json:"legacy_skill"`
+}
+
+// legacySkillState is a legacy skill's state on the wire: "" when there is
+// none.
+func legacySkillState(s devpack.SkillStatus) string {
+	if s.State == devpack.StateMissing {
+		return ""
+	}
+	return string(s.State)
 }
 
 func runWorkbenchStatus(ctx context.Context, w io.Writer, p *db.Workbench, asJSON bool) error {
@@ -221,6 +289,7 @@ func runWorkbenchStatus(ctx context.Context, w io.Writer, p *db.Workbench, asJSO
 			WorkbenchID: p.ID, Folder: p.FolderPath,
 			Skill: string(st.Skill.State), SkillPath: st.Skill.Path,
 			Hook: st.Hook, StopHook: st.StopHook, MCP: st.MCP, ClaudeFound: st.ClaudeFound,
+			Legacy: st.Legacy, LegacySkill: legacySkillState(st.LegacySkill),
 		})
 	}
 	fmt.Fprintf(w, "Workbench %d (%s):\n", p.ID, p.FolderPath)
@@ -232,6 +301,12 @@ func runWorkbenchStatus(ctx context.Context, w io.Writer, p *db.Workbench, asJSO
 		fmt.Fprintln(w, "  mcp      unknown — claude CLI not found")
 	default:
 		fmt.Fprintf(w, "  mcp      %v\n", st.MCP)
+	}
+	if st.Legacy {
+		fmt.Fprintf(w, "  legacy   set up by an older Watchtower — run 'watchtower workbench resync %d' (the Desktop's Re-run Setup) to update\n", p.ID)
+	}
+	if s := legacySkillState(st.LegacySkill); s != "" {
+		fmt.Fprintf(w, "  old skill %s %s%s (%s)\n", devpack.LegacySkillName, s, skillStateNote(st.LegacySkill.State), st.LegacySkill.Path)
 	}
 	return nil
 }

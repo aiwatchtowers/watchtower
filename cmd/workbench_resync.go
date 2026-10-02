@@ -39,8 +39,9 @@ func init() {
 	workbenchCmd.AddCommand(workbenchResyncCmd)
 }
 
-// workbenchResyncJSON is `project resync --json`, read by the Desktop's
-// Re-run Setup.
+// workbenchResyncJSON is `workbench resync --json`, read by the Desktop's
+// Re-run Setup. Keys keep their pre-rename spelling (spec 2026-10-02 A2);
+// new ones are only added.
 type workbenchResyncJSON struct {
 	ID int64 `json:"id"`
 
@@ -55,6 +56,14 @@ type workbenchResyncJSON struct {
 	Excluded         []string `json:"excluded"`
 	MCPRegistered    bool     `json:"mcp_registered"`
 	MCPCommand       string   `json:"mcp_command"` // the manual registration when MCPRegistered is false
+
+	// The migration of a folder set up before the Workbench rename (spec
+	// 2026-10-02 §5.4). LegacySkill is a devpack state: removed, drifted or
+	// foreign (both kept), "" = there was none.
+	LegacySkill           string `json:"legacy_skill"`
+	LegacyMCPRemoved      bool   `json:"legacy_mcp_removed"`
+	LegacyHooksReplaced   bool   `json:"legacy_hooks_replaced"`
+	LegacyPermissionRules int    `json:"legacy_permission_rules"`
 
 	// The search index of the project's documents (PROJ-08: searchable from
 	// this project's sessions only). IndexSkipped: knowledge search is off.
@@ -133,6 +142,9 @@ func resyncWorkbench(ctx context.Context, database *db.DB, p *db.Workbench, know
 	}
 
 	suggestions, err := resyncSuggestions(database, p, res.Docs)
+	if note := legacyPermissionNote(res.install); note != "" {
+		suggestions = append(suggestions, note)
+	}
 	res.Suggestions = suggestions
 	if err != nil {
 		res.SuggestionsError = err.Error()
@@ -154,6 +166,9 @@ func resyncIntegration(ctx context.Context, p *db.Workbench, res *workbenchResyn
 		res.Excluded = rep.Excluded
 	}
 	res.MCPRegistered = rep.MCPRegistered
+	res.LegacySkill = legacySkillState(rep.LegacySkill)
+	res.LegacyMCPRemoved, res.LegacyHooksReplaced = rep.LegacyMCPRemoved, rep.LegacyHooksReplaced
+	res.LegacyPermissionRules = rep.LegacyPermissionRules
 	if !rep.MCPRegistered {
 		res.MCPCommand = rep.MCPCommand
 	}

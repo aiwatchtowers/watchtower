@@ -4,6 +4,9 @@ import (
 	"errors"
 
 	"github.com/spf13/cobra"
+
+	"watchtower/internal/devpack"
+	"watchtower/internal/tools"
 )
 
 // workbenchFlag is the workbench id flag; legacyWorkbenchFlag is its
@@ -71,11 +74,15 @@ type vocabulary struct {
 
 var (
 	workbenchVocabulary = vocabulary{
-		SkillName: "watchtower-workbench", InfoTool: "workbench_info", UpdateTool: "update_workbench", BoardTool: "workbench_board",
+		SkillName: devpack.WorkbenchSkillName, InfoTool: tools.WorkbenchInfoTool,
+		UpdateTool: tools.UpdateWorkbenchTool, BoardTool: tools.WorkbenchBoardTool,
 	}
 	legacyWorkbenchVocabulary = vocabulary{
-		SkillName: "watchtower-project", InfoTool: "project_info", UpdateTool: "update_project", BoardTool: "project_board",
-		Legacy: true,
+		SkillName:  devpack.LegacySkillName,
+		InfoTool:   tools.LegacyWorkbenchToolNames[tools.WorkbenchInfoTool],
+		UpdateTool: tools.LegacyWorkbenchToolNames[tools.UpdateWorkbenchTool],
+		BoardTool:  tools.LegacyWorkbenchToolNames[tools.WorkbenchBoardTool],
+		Legacy:     true,
 	}
 )
 

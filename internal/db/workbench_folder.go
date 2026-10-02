@@ -8,11 +8,11 @@ import (
 	"strings"
 )
 
-// ErrWorkbenchFolderNotAllowed is returned for a folder a project must never be
+// ErrWorkbenchFolderNotAllowed is returned for a folder a workbench must never be
 // bound to: the agent working it would roam the whole disk, the whole home
 // directory, or a protected directory (Watchtower's own data — the caller
 // knows where that lives; db stays a leaf and never imports config).
-var ErrWorkbenchFolderNotAllowed = errors.New("folder cannot be a project")
+var ErrWorkbenchFolderNotAllowed = errors.New("folder cannot be a workbench")
 
 // checkWorkbenchFolderAllowed refuses resolved when it contains a line break
 // (checkFolderLineBreaks), is the filesystem root, the home directory or an
@@ -55,7 +55,7 @@ func pathWithin(child, parent string) bool {
 }
 
 // checkFolderLineBreaks refuses a folder path holding \n or \r: the path is
-// written verbatim into .git/info/exclude lines by the project install, where
+// written verbatim into .git/info/exclude lines by the workbench install, where
 // a line break would smuggle in an extra pattern.
 func checkFolderLineBreaks(folder string) error {
 	if strings.ContainsAny(folder, "\n\r") {

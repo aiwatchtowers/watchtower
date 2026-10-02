@@ -19,10 +19,10 @@ import (
 	"watchtower/internal/db"
 )
 
-// WorkbenchDocSource is the source name of attached project documents. Its
-// documents are visible only to a search or open that names their project
+// WorkbenchDocSource is the source name of attached workbench documents. Its
+// documents are visible only to a search or open that names their workbench
 // (Request.ProjectID, DocOptions.ProjectID; workbenchDocVisible in search.go) —
-// PROJ-08: a project session sees its own documents, every other caller none.
+// PROJ-08: a workbench session sees its own documents, every other caller none.
 const WorkbenchDocSource = "project_doc"
 
 const (
@@ -33,8 +33,8 @@ const (
 	workbenchDocMaxBytes = 2 << 20
 )
 
-// workbenchDocSource renders one document per attached project document
-// (project_documents), reading the file from the project folder.
+// workbenchDocSource renders one document per attached workbench document
+// (project_documents), reading the file from the workbench folder.
 //
 // There is no cursor: a file changes on disk without its row changing, and
 // an edit can carry an older mtime (cp -p, a sync client). Changed instead
@@ -47,7 +47,7 @@ const (
 // (~/Documents, ~/Desktop, ~/Downloads, iCloud and cloud storage): a
 // background read there could raise a macOS privacy prompt attributed to
 // Watchtower. Those projects' documents are indexed only on an explicit
-// trigger — IndexWorkbenchDocs, run by `project resync` and the agent's
+// trigger — IndexWorkbenchDocs, run by `workbench resync` and the agent's
 // attach_document.
 type workbenchDocSource struct{}
 
@@ -75,7 +75,7 @@ func (workbenchDocSource) Changed(ctx context.Context, q Queryer, cursor string,
 		FROM project_documents d JOIN projects p ON p.id = d.project_id
 		LEFT JOIN kb_documents k ON k.id = '`+workbenchDocPrefix+`' || d.id ORDER BY d.id`)
 	if err != nil {
-		return nil, cursor, true, fmt.Errorf("kb project docs: %w", err)
+		return nil, cursor, true, fmt.Errorf("kb workbench docs: %w", err)
 	}
 	defer rs.Close()
 	var keys []string
@@ -84,7 +84,7 @@ func (workbenchDocSource) Changed(ctx context.Context, q Queryer, cursor string,
 		var folder, rel string
 		var indexed float64
 		if err := rs.Scan(&id, &folder, &rel, &indexed); err != nil {
-			return nil, cursor, true, fmt.Errorf("kb project docs: %w", err)
+			return nil, cursor, true, fmt.Errorf("kb workbench docs: %w", err)
 		}
 		if privacyProtected(folder) {
 			continue
@@ -237,7 +237,7 @@ type workbenchDocFile struct {
 var (
 	errDocMissing    = errors.New("file is missing")
 	errDocNotRegular = errors.New("not a regular file")
-	errDocOutside    = errors.New("no longer inside the project folder")
+	errDocOutside    = errors.New("no longer inside the workbench folder")
 )
 
 // readWorkbenchDoc reads a regular file that still resolves (symlinks
@@ -248,7 +248,7 @@ var (
 func readWorkbenchDoc(folder, rel string) (workbenchDocFile, error) {
 	realFolder, err := filepath.EvalSymlinks(folder)
 	if err != nil {
-		return workbenchDocFile{}, fmt.Errorf("project folder: %w", err)
+		return workbenchDocFile{}, fmt.Errorf("workbench folder: %w", err)
 	}
 	realPath, err := resolveInside(realFolder, rel)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -285,7 +285,7 @@ func readWorkbenchDoc(folder, rel string) (workbenchDocFile, error) {
 }
 
 // privacyProtected reports whether folder sits where macOS asks the user
-// before an app reads it — the home locations the Desktop's New-project flow
+// before an app reads it — the home locations the Desktop's New-workbench flow
 // warns about, and any other volume (removable and network volumes are
 // guarded too, and a dead network mount can block a stat for minutes).
 // Paths compare case-insensitively, as on the default APFS volume.
@@ -317,17 +317,17 @@ func hasPathPrefix(path, root string) bool {
 		(len(path) > len(root) && path[len(root)] == filepath.Separator && strings.EqualFold(path[:len(root)], root))
 }
 
-// IndexWorkbenchDocs re-renders every attached document of one project now,
-// protected location or not — an explicit trigger (`project resync`, the
+// IndexWorkbenchDocs re-renders every attached document of one workbench now,
+// protected location or not — an explicit trigger (`workbench resync`, the
 // agent's attach_document) runs in a process the owner or the agent started
-// — and drops index entries of documents the project no longer has. An
+// — and drops index entries of documents the workbench no longer has. An
 // unreadable document is indexed by its title, never an error. documents is
-// how many the project has, changed how many index entries were written or
+// how many the workbench has, changed how many index entries were written or
 // removed.
 func IndexWorkbenchDocs(ctx context.Context, d *db.DB, projectID int64) (documents, changed int, err error) {
 	rows, err := workbenchDocRows(ctx, d, projectID)
 	if err != nil {
-		return 0, 0, fmt.Errorf("kb: listing project %d documents: %w", projectID, err)
+		return 0, 0, fmt.Errorf("kb: listing workbench %d documents: %w", projectID, err)
 	}
 	docs := make([]*Doc, 0, len(rows))
 	live := map[string]bool{}
@@ -363,7 +363,7 @@ func IndexWorkbenchDocs(ctx context.Context, d *db.DB, projectID int64) (documen
 		return nil
 	})
 	if err != nil {
-		return 0, 0, fmt.Errorf("kb: indexing project %d documents: %w", projectID, err)
+		return 0, 0, fmt.Errorf("kb: indexing workbench %d documents: %w", projectID, err)
 	}
 	return len(docs), changed, nil
 }

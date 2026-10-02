@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-// WorkbenchComment is a comment on a project target or document, or a reply in
+// WorkbenchComment is a comment on a workbench target or document, or a reply in
 // a thread (ParentID = the thread root; threads are flat). Status is
 // meaningful on roots only; an agent comment is unread for the owner while
 // ReadAt is empty.
@@ -67,7 +67,7 @@ func scanWorkbenchComment(row interface{ Scan(...any) error }) (*WorkbenchCommen
 
 // AddWorkbenchComment stores c. A reply (ParentID set) is re-pointed at its
 // thread root and inherits the root's target/document; a root must name a
-// target or a document of the same project. Every reference is checked
+// target or a document of the same workbench. Every reference is checked
 // against c.ProjectID (ErrNotInWorkbench).
 func (db *DB) AddWorkbenchComment(c WorkbenchComment) (int64, error) {
 	var id int64

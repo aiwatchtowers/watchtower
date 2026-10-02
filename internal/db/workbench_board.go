@@ -2,7 +2,7 @@ package db
 
 import "fmt"
 
-// BoardNode is one target of a project board with its subtree, its comment
+// BoardNode is one target of a workbench board with its subtree, its comment
 // counters and the documents attached to it.
 type BoardNode struct {
 	Target         Target
@@ -24,8 +24,8 @@ const boardSiblingOrder = `CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1
 
 type boardCounts struct{ newForAgent, unreadForOwner int }
 
-// GetWorkbenchBoard returns project projectID's target forest. An unknown
-// project yields an empty board; callers check GetWorkbench first.
+// GetWorkbenchBoard returns workbench projectID's target forest. An unknown
+// workbench yields an empty board; callers check GetWorkbench first.
 func (db *DB) GetWorkbenchBoard(projectID int64) ([]BoardNode, error) {
 	targets, err := db.listBoardTargets(projectID)
 	if err != nil {
@@ -118,7 +118,7 @@ func assembleBoard(targets []Target, counts map[int64]boardCounts, docs []Workbe
 }
 
 // build turns one sibling list into nodes. seen stops a parent cycle (which
-// no project writer can create) from recursing forever.
+// no workbench writer can create) from recursing forever.
 func (ix boardIndex) build(level []Target) []BoardNode {
 	nodes := make([]BoardNode, 0, len(level))
 	for _, t := range level {

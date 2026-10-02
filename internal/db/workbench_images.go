@@ -6,16 +6,16 @@ import (
 	"fmt"
 )
 
-// MaxTargetImages caps the images one project target carries.
+// MaxTargetImages caps the images one workbench target carries.
 const MaxTargetImages = 20
 
 // ErrTooManyImages refuses an attach past MaxTargetImages.
 var ErrTooManyImages = fmt.Errorf("a target carries at most %d images", MaxTargetImages)
 
-// WorkbenchTargetImage is an image attached to a project target (migration
+// WorkbenchTargetImage is an image attached to a workbench target (migration
 // 00088). Path is the absolute stored copy under
 // <workspace>/project_files/<project_id>/ (internal/workbenchfiles); several
-// rows of one project may share it (same content on several targets).
+// rows of one workbench may share it (same content on several targets).
 type WorkbenchTargetImage struct {
 	ID          int64  `json:"id"`
 	WorkbenchID int64  `json:"-"`
@@ -64,9 +64,9 @@ func AddWorkbenchTargetImageTx(tx *sql.Tx, img WorkbenchTargetImage) (int64, err
 }
 
 // RemoveWorkbenchTargetImageTx detaches image id from target targetID of
-// project projectID and returns its stored path, which the caller discards
+// workbench projectID and returns its stored path, which the caller discards
 // once no row names it (workbenchfiles.Store.Discard). An image of another
-// target or project reads as ErrNotInWorkbench.
+// target or workbench reads as ErrNotInWorkbench.
 func RemoveWorkbenchTargetImageTx(tx *sql.Tx, projectID, targetID, id int64) (string, error) {
 	var path string
 	err := tx.QueryRow(`DELETE FROM project_target_images WHERE id = ? AND target_id = ? AND project_id = ?
@@ -100,12 +100,12 @@ func (db *DB) ListWorkbenchTargetImages(targetID int64) ([]WorkbenchTargetImage,
 	return out, rows.Err()
 }
 
-// WorkbenchImagePaths returns the set of stored paths project projectID's rows
+// WorkbenchImagePaths returns the set of stored paths workbench projectID's rows
 // still name — what a sweep of its file directory must keep.
 func (db *DB) WorkbenchImagePaths(projectID int64) (map[string]bool, error) {
 	rows, err := db.Query(`SELECT DISTINCT path FROM project_target_images WHERE project_id = ?`, projectID)
 	if err != nil {
-		return nil, fmt.Errorf("listing image paths of project %d: %w", projectID, err)
+		return nil, fmt.Errorf("listing image paths of workbench %d: %w", projectID, err)
 	}
 	defer rows.Close()
 	keep := map[string]bool{}

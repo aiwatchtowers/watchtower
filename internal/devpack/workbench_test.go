@@ -65,9 +65,9 @@ func TestProjectSkillTeachesEveryFlow(t *testing.T) {
 	content := string(body)
 	for _, phrase := range []string{
 		"## Setup",
-		"empty description",              // setup trigger #2
+		"empty description",                // setup trigger #2
 		"Set up this Watchtower workbench", // setup trigger #1: the first-run prompt
-		"Only after the owner agrees",    // first board created only on agreement
+		"Only after the owner agrees",      // first board created only on agreement
 		"## Features, specs and plans",
 		"one sub-target per plan task",
 		"plan path plus the task number",

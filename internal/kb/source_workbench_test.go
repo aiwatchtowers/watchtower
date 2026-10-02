@@ -82,7 +82,7 @@ func TestProjectDoc_UnreadableFilesAreTitleOnlyAndSaySo(t *testing.T) {
 		name, reason string
 		setup        func()
 	}{
-		{"escaping symlink", "no longer inside the project folder", func() {
+		{"escaping symlink", "no longer inside the workbench folder", func() {
 			require.NoError(t, os.Symlink(filepath.Join(outside, "secret.md"), readme))
 		}},
 		{"named pipe", "not a regular file", func() { require.NoError(t, syscall.Mkfifo(readme, 0o600)) }},

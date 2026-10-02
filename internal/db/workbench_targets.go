@@ -10,7 +10,7 @@ import (
 )
 
 // WorkbenchTargetInput is one item of a CreateWorkbenchTargetsTx batch. Its parent
-// is an existing target of the same project (ParentID) or an earlier item of
+// is an existing target of the same workbench (ParentID) or an earlier item of
 // the same batch (BatchParent, 1-based; 0 = none) — never both — so a whole
 // plan (feature → tasks → steps) lands in one call.
 type WorkbenchTargetInput struct {
@@ -23,9 +23,9 @@ type WorkbenchTargetInput struct {
 	PR          string // the pull request, a number or URL; "" = none
 }
 
-// CreateWorkbenchTargetsTx inserts items, in order, as targets of project
+// CreateWorkbenchTargetsTx inserts items, in order, as targets of workbench
 // projectID inside tx and returns their ids. Every item gets the board
-// defaults: level custom, custom_label project, period = the UTC day of
+// defaults: level custom, custom_label project (persisted, kept by the rename), period = the UTC day of
 // creation, source chat, ownership mine, status todo, and priority medium
 // unless the item sets one. Its one production caller is the agent's
 // create_targets tool, so the creation is recorded as the agent's
@@ -70,7 +70,7 @@ func insertWorkbenchTarget(tx *sql.Tx, projectID int64, day string, it Workbench
 		title, strings.TrimSpace(it.Intent), day, day, parent, priority, projectID,
 		strings.TrimSpace(it.Branch), strings.TrimSpace(it.PR))
 	if err != nil {
-		return 0, fmt.Errorf("inserting project target: %w", err)
+		return 0, fmt.Errorf("inserting workbench target: %w", err)
 	}
 	id, err := res.LastInsertId()
 	if err != nil {

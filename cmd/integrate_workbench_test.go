@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -16,30 +17,38 @@ import (
 	"watchtower/internal/devpack"
 )
 
-// fakeWorkbenchClaude keeps one local-scope registration per cwd. It never
-// execs anything; tests swap it in for workbenchCommandRunner.
+// fakeWorkbenchClaude keeps the local-scope registrations per cwd and server
+// name ("<cwd>\x00<server>"). It never execs anything; tests swap it in for
+// workbenchCommandRunner.
 type fakeWorkbenchClaude struct {
 	mu         sync.Mutex
 	registered map[string]bool
 }
 
+func fakeRegistration(dir, server string) string { return dir + "\x00" + server }
+
 func (f *fakeWorkbenchClaude) run(_ context.Context, dir, name string, args ...string) ([]byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if name != "claude" || len(args) < 2 || args[0] != "mcp" {
+	if name != "claude" || len(args) < 3 || args[0] != "mcp" {
 		return nil, fmt.Errorf("unexpected command %s %v", name, args)
 	}
+	server := args[len(args)-1] // get NAME, remove --scope local NAME
+	if args[1] == "add" {
+		server = args[4] // add --scope local NAME -- ...
+	}
+	key := fakeRegistration(dir, server)
 	switch args[1] {
 	case "get":
-		if f.registered[dir] {
+		if f.registered[key] {
 			return nil, nil
 		}
 		return nil, devpack.ErrCommandExit
 	case "add":
-		f.registered[dir] = true
+		f.registered[key] = true
 		return nil, nil
 	case "remove":
-		delete(f.registered, dir)
+		delete(f.registered, key)
 		return nil, nil
 	}
 	return nil, devpack.ErrCommandExit
@@ -90,7 +99,7 @@ func TestProj02_ProjectDeleteRunsTheFolderRemoval(t *testing.T) {
 			t.Fatalf("PROJ-02: %s survived project delete's removal (err=%v)", path, err)
 		}
 	}
-	if f.registered[p.FolderPath] {
+	if f.registered[fakeRegistration(p.FolderPath, devpack.WorkbenchMCPServerName)] {
 		t.Fatalf("PROJ-02: the MCP registration survived project delete's removal")
 	}
 }
@@ -116,7 +125,7 @@ func TestIntegrateProjectStatusJSON(t *testing.T) {
 }
 
 func TestIntegrateProjectRejectsGlobalFlags(t *testing.T) {
-	if err := checkWorkbenchFlags(false, "", false, false); err != nil {
+	if err := checkWorkbenchFlags("--workbench", false, "", false, false); err != nil {
 		t.Fatalf("plain --project must be accepted: %v", err)
 	}
 	for name, args := range map[string][4]any{
@@ -125,7 +134,7 @@ func TestIntegrateProjectRejectsGlobalFlags(t *testing.T) {
 		"skills-only": {false, "", true, false},
 		"mcp-only":    {false, "", false, true},
 	} {
-		if err := checkWorkbenchFlags(args[0].(bool), args[1].(string), args[2].(bool), args[3].(bool)); err == nil {
+		if err := checkWorkbenchFlags("--project", args[0].(bool), args[1].(string), args[2].(bool), args[3].(bool)); err == nil || !strings.HasPrefix(err.Error(), "--project ") {
 			t.Fatalf("--project with --%s must be refused", name)
 		}
 	}
