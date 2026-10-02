@@ -1,4 +1,5 @@
 import Foundation
+import os
 import GRDB
 import Yams
 import WatchtowerCore
@@ -135,10 +136,26 @@ final class DatabaseManager: Sendable {
 
     // MARK: - CLI Migrations
 
+    /// Runs the CLI migrations, then opens the workspace DB. Blocks for up to
+    /// 30 s: call it off the main actor and off the concurrency pool
+    /// (`ProcessPipes.offPool`).
+    static func migrateAndOpen() throws -> DatabaseManager {
+        runCLIMigrations()
+        return try DatabaseManager(path: try resolveDBPath())
+    }
+
     /// Run the bundled Go CLI to apply all pending DB migrations before opening the pool.
     /// The CLI owns all schema migrations — desktop app never writes migrations itself.
-    static func runCLIMigrations() {
-        guard let cliPath = Constants.findCLIPath() else { return }
+    /// A failure is not fatal (the DB opens as it is) but is reported — with
+    /// the launch error or the CLI's stderr — through `report` (the log).
+    static func runCLIMigrations(
+        cliPath: String? = Constants.findCLIPath(),
+        report: @escaping @Sendable (String) -> Void = { NSLog("[Watchtower] %@", $0) }
+    ) {
+        guard let cliPath else {
+            report("CLI migration skipped: the watchtower CLI was not found")
+            return
+        }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: cliPath)
         process.arguments = ["db", "migrate"]
@@ -146,24 +163,34 @@ final class DatabaseManager: Sendable {
         process.standardOutput = nil
         let stderrPipe = Pipe()
         process.standardError = stderrPipe
-        guard (try? process.run()) != nil else { return }
+        do {
+            try process.run()
+        } catch {
+            report("CLI migration could not start: \(error.localizedDescription)")
+            return
+        }
         // SB3: drain stderr while the child runs — an unread pipe fills at
         // 64 KiB and a chatty migrate then blocks until the timer kills it.
         let stderrRead = ProcessPipes.drain(stderrPipe)
         // C2: timeout to prevent indefinite hang on DB lock or broken CLI
+        let timedOut = OSAllocatedUnfairLock(initialState: false)
         let timer = DispatchSource.makeTimerSource()
         timer.schedule(deadline: .now() + 30)
-        timer.setEventHandler { process.terminate() }
+        timer.setEventHandler {
+            timedOut.withLock { $0 = true }
+            process.terminate()
+        }
         timer.resume()
         process.waitUntilExit()
         timer.cancel()
         let status = process.terminationStatus
         guard status != 0 else { return }
+        let what = timedOut.withLock { $0 } ? "timed out after 30 s (exit code \(status))" : "failed with exit code \(status)"
         // Off this (possibly main) thread: the drain finishes at the child's
         // EOF, which a grandchild still holding stderr could postpone.
         Task.detached {
             let stderr = String(data: await stderrRead.value, encoding: .utf8) ?? ""
-            NSLog("[Watchtower] CLI migration failed with exit code \(status): \(CLILog.detail(stderr))")
+            report("CLI migration \(what): \(CLILog.detail(stderr))")
         }
     }
 

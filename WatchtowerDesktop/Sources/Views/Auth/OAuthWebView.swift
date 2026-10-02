@@ -33,6 +33,8 @@ final class SlackOAuthManager {
         case invalidCallbackURL
         case cancelled
         case cliNotFound
+        /// A CLI step failed: what it was doing and its stderr (or launch error).
+        case cliFailed(step: String, detail: String)
 
         var errorDescription: String? {
             switch self {
@@ -44,6 +46,8 @@ final class SlackOAuthManager {
                 "Authorization was cancelled"
             case .cliNotFound:
                 "Watchtower CLI not found"
+            case let .cliFailed(step, detail):
+                detail.isEmpty ? "Could not \(step)" : "Could not \(step): \(detail)"
             }
         }
     }
@@ -72,12 +76,14 @@ final class SlackOAuthManager {
         }
     }
 
-    private static func obtainAuthURL(cliPath: String) async throws -> URL {
-        let trustResult = await runCLI(path: cliPath, arguments: ["auth", "trust-cert"])
-        if trustResult.exitCode != 0 { throw OAuthError.invalidAuthURL }
+    static func obtainAuthURL(cliPath: String) async throws -> URL {
+        let trustArgs = ["auth", "trust-cert"]
+        let trustResult = await runCLI(path: cliPath, arguments: trustArgs)
+        try checkStep(trustResult, args: trustArgs, step: "trust the local certificate")
 
-        let urlResult = await runCLI(path: cliPath, arguments: ["auth", "url"])
-        if urlResult.exitCode != 0 { throw OAuthError.invalidAuthURL }
+        let urlArgs = ["auth", "url"]
+        let urlResult = await runCLI(path: cliPath, arguments: urlArgs)
+        try checkStep(urlResult, args: urlArgs, step: "get the Slack authorization URL")
 
         guard let authURL = URL(
             string: urlResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -88,6 +94,15 @@ final class SlackOAuthManager {
             throw OAuthError.invalidCallbackURL
         }
         return authURL
+    }
+
+    /// A failed step is logged and thrown with its stderr (or launch error).
+    private static func checkStep(
+        _ result: (stdout: String, stderr: String, exitCode: Int32), args: [String], step: String
+    ) throws {
+        guard result.exitCode != 0 else { return }
+        CLILog.failure(args: args, exitCode: result.exitCode, stderr: result.stderr)
+        throw OAuthError.cliFailed(step: step, detail: CLILog.detail(result.stderr))
     }
 
     private static func createAuthSession(

@@ -10,9 +10,17 @@ struct OnboardingView: View {
 
     @Environment(AppState.self) private var appState
     @State private var isRunning = false
+    /// runSync is waiting for the DB open before it starts the sync: a
+    /// second runSync (chatStep's .task, a double Retry) must not start one too.
+    @State private var syncStarting = false
+    /// skipOnboarding is running (it waits for the DB open): a second click
+    /// must not run the completion sequence twice.
+    @State private var isSkipping = false
     @State private var output = ""
     @State private var cliError: String?
     @State private var dbError: String?
+    /// Opens the onboarding DB off the main actor; drives the progress line.
+    @State private var dbOpener = OnboardingDatabaseOpener()
     // True only when runSync() actually ran a Slack sync (token present) —
     // gates the "Sync complete!" banner so a user with no Slack connected
     // never sees a false green checkmark.
@@ -92,9 +100,10 @@ struct OnboardingView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .overlay(alignment: .topTrailing) {
             if appState.onboarding.currentStep != .complete {
-                Button("Skip setup") {
+                Button(isSkipping ? "Finishing setup…" : "Skip setup") {
                     skipOnboarding()
                 }
+                .disabled(isSkipping)
                 .buttonStyle(.plain)
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -867,8 +876,8 @@ struct OnboardingView: View {
                 // mid-wait under the old sync-gated flow) — go straight to the team
                 // form instead of re-running the interview. A DB-open failure does
                 // not block navigation: the team form degrades gracefully.
-                ensureOnboardingDatabase()
                 appState.onboarding.goTo(.teamForm)
+                await ensureOnboardingDatabase()
                 return
             }
             if !isRunning && !appState.onboarding.syncCompleted {
@@ -901,6 +910,9 @@ struct OnboardingView: View {
         if isRunning {
             Divider()
             syncProgressCompactBanner
+        } else if dbOpener.isOpening {
+            Divider()
+            dbOpeningCompactBanner
         } else if dbError != nil {
             Divider()
             dbFailedCompactBanner
@@ -921,6 +933,18 @@ struct OnboardingView: View {
         }
     }
 
+    /// The DB open runs the CLI migrations (up to 30 s) off the main actor.
+    private var dbOpeningCompactBanner: some View {
+        HStack(spacing: 6) {
+            ProgressView().controlSize(.small)
+            Text("Opening the local database…")
+                .font(.caption)
+                .fontWeight(.medium)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+    }
+
     /// DB-open failures get their own line: they are not a Slack sync failure,
     /// and the background daemon will not retry them — only the button does.
     private var dbFailedCompactBanner: some View {
@@ -932,7 +956,7 @@ struct OnboardingView: View {
                 .fontWeight(.medium)
             Button("Retry") {
                 dbError = nil
-                ensureOnboardingDatabase()
+                Task { await ensureOnboardingDatabase() }
             }
             .controlSize(.small)
         }
@@ -1018,9 +1042,10 @@ struct OnboardingView: View {
             }
 
             // Escape hatch: this step can hang on an AI call.
-            Button("Skip and finish setup") {
+            Button(isSkipping ? "Finishing setup…" : "Skip and finish setup") {
                 skipOnboarding()
             }
+            .disabled(isSkipping)
             .buttonStyle(.plain)
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -1075,7 +1100,7 @@ struct OnboardingView: View {
                     onboardingVM = OnboardingChatViewModel(
                         language: language, dbManager: appState.databaseManager, gate: appState.embeddedChatCenter.gate)
                 }
-                _ = ensureOnboardingDatabase()
+                await ensureOnboardingDatabase()
                 guard let vm = onboardingVM else { return false }
                 return await vm.markOnboardingDone()
             },
@@ -1305,26 +1330,24 @@ struct OnboardingView: View {
         }
     }
 
-    /// Opens the database and passes it to the onboarding ViewModel.
+    /// Opens the database (CLI migrations first, off the main actor — see
+    /// `OnboardingDatabaseOpener`) and passes it to the onboarding ViewModel.
     /// No-op if the VM already has users loaded.
-    @discardableResult
-    private func ensureOnboardingDatabase() -> Bool {
+    private func ensureOnboardingDatabase() async {
         guard onboardingVM?.allUsers.isEmpty ?? true else {
             dbError = nil
-            return true
+            return
         }
-        do {
-            DatabaseManager.runCLIMigrations()
-            let dbPath = try DatabaseManager.resolveDBPath()
-            let manager = try DatabaseManager(path: dbPath)
+        switch await dbOpener.open() {
+        case .success(let manager):
             onboardingVM?.setDatabase(manager)
             dbError = nil
-            return true
-        } catch {
+        case .failure(let error):
             // Deliberately NOT cliError: the strip renders a DB-specific line
-            // for this, never the "Slack sync failed" banner.
+            // for this, never the "Slack sync failed" banner. Logged too: a
+            // step without the strip (the splash) would not show it.
+            NSLog("[Onboarding] opening the database failed: %@", String(describing: error))
             dbError = "Failed to open database: \(error.localizedDescription)"
-            return false
         }
     }
 
@@ -1333,6 +1356,8 @@ struct OnboardingView: View {
     /// in UserDefaults by `OnboardingStateMachine.markComplete()`, so this
     /// works even with no database or Slack account at all.
     private func skipOnboarding() {
+        guard !isSkipping else { return }
+        isSkipping = true
         // Cancel any in-flight interview stream (and its claude subprocess)
         // before tearing the flow down.
         onboardingVM?.skipChat()
@@ -1349,8 +1374,8 @@ struct OnboardingView: View {
             let language = configSvc.digestLanguage ?? settingsLanguage
             onboardingVM = OnboardingChatViewModel(language: language, dbManager: appState.databaseManager, gate: appState.embeddedChatCenter.gate)
         }
-        _ = ensureOnboardingDatabase()
         Task {
+            await ensureOnboardingDatabase()
             // Best-effort by design — unlike the splash's gated
             // OnboardingCompletion.finish, the skip escape hatch must never
             // block on the DB flag (completion itself is persisted in
@@ -1376,9 +1401,10 @@ struct OnboardingView: View {
     private func advanceToTeamForm() {
         appState.onboarding.chatFinished = true
         // Continue even if the DB open fails — the team form degrades
-        // gracefully with no users and teamFormStep has its own DB fallback.
-        ensureOnboardingDatabase()
+        // gracefully with no users and teamFormStep has its own DB fallback;
+        // the users appear once the open (shown in the status strip) lands.
         appState.onboarding.goTo(.teamForm)
+        Task { await ensureOnboardingDatabase() }
     }
 
     /// A connected Slack account is an enabled, non-removed `slack_accounts`
@@ -1389,9 +1415,19 @@ struct OnboardingView: View {
         return (try? dbPool.read { db in try SlackAccountQueries.hasConnectedAccount(db) }) ?? false
     }
 
+    /// Opens the DB first (its CLI migrations must finish before the sync's
+    /// own CLI touches the same file), then starts the sync.
     private func runSync() {
-        guard let path = cliPath else { return }
-        _ = ensureOnboardingDatabase()
+        guard let path = cliPath, !syncStarting, !isRunning else { return }
+        syncStarting = true
+        Task {
+            await ensureOnboardingDatabase()
+            syncStarting = false
+            startSync(path: path)
+        }
+    }
+
+    private func startSync(path: String) {
         // No Slack connected — the one-shot CLI sync is Slack-only, so skip it;
         // other sources sync via the daemon after onboarding. Connection is a
         // slack_accounts row (the multi-account model), NOT the retired
@@ -1466,7 +1502,7 @@ struct OnboardingView: View {
 
                 // Open DB and pass to onboarding ViewModel (loads users for the team form).
                 // Sync completion is informational only — it never drives navigation.
-                ensureOnboardingDatabase()
+                await ensureOnboardingDatabase()
                 appState.onboarding.syncCompleted = true
             } else {
                 cliError = stderrText.isEmpty
