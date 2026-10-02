@@ -1505,4 +1505,53 @@ final class AppStateTests: XCTestCase {
 
         XCTAssertEqual(Set(appState.featureSuggestion.map(\.id)), ["stream-digests", "next-step", "tracks"])
     }
+
+    /// A sources read that began during onboarding and lands after its
+    /// completion offers nothing: onboarding picked those features itself.
+    func testReadStartedDuringOnboardingOffersNothing() async throws {
+        let runner = LiveFeaturesRunner(disabled: ["stream-digests", "next-step"])
+        let appState = AppState.isolated(featuresRunner: runner)
+        appState.databaseManager = dbManager
+        await appState.refreshConnectedSources()
+        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertJiraAccount(db) }
+
+        appState.needsOnboarding = true
+        // Hold the read back so onboarding ends while it is in flight.
+        let pool = try XCTUnwrap(dbManager?.dbPool)
+        let barrier = Task.detached {
+            try pool.barrierWriteWithoutTransaction { _ in Thread.sleep(forTimeInterval: 0.3) }
+        }
+        try await Task.sleep(for: .milliseconds(50))
+        let refresh = Task { await appState.refreshConnectedSources() }
+        try await Task.sleep(for: .milliseconds(50))
+        appState.needsOnboarding = false
+        _ = try await barrier.value
+        await refresh.value
+        await appState.featureSuggestionCheck?.value
+
+        XCTAssertTrue(appState.featureVisibility.connectedSources.jira, "the read did land")
+        XCTAssertTrue(appState.featureSuggestion.isEmpty)
+    }
+
+    /// An offer that arrives while Turn on runs is kept and shown after it.
+    func testOfferDuringAnApplyIsMergedAfterIt() async throws {
+        let runner = LiveFeaturesRunner(disabled: ["stream-digests", "next-step", "tracks"])
+        let appState = try await appStateOffering(runner)
+        let daemon = FakeDaemon()
+        daemon.running = true
+        daemon.holdRestart = true
+        appState.daemonControlOverride = daemon
+
+        let accept = Task { await appState.acceptFeatureSuggestion() }
+        await waitUntil { daemon.isRestartParked }
+        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertSlackAccount(db, teamID: "T1") }
+        await appState.refreshConnectedSources()
+        await appState.featureSuggestionCheck?.value
+        XCTAssertEqual(Set(appState.featureSuggestion.map(\.id)), ["stream-digests", "next-step"], "left alone during the apply")
+
+        daemon.releaseRestart()
+        await accept.value
+
+        XCTAssertEqual(appState.featureSuggestion.map(\.id), ["tracks"], "applied ids cleared, the late one kept")
+    }
 }
