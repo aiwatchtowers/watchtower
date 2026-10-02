@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 import WatchtowerCore
 
-/// One workbench: a one-row header (folder, install status, view controls,
+/// One workbench: a one-row header (folder › branch, install status, view controls,
 /// the "…" menu with Repair / Re-run Setup / Delete) over its workspace — one pane or a split (spec 2026-09-30-project-workspace-sessions §3).
 struct WorkbenchPageView: View {
     @Bindable var vm: WorkbenchesViewModel
@@ -33,6 +33,9 @@ struct WorkbenchPageView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .task(id: project.id) { await vm.refreshInstallStatus(projectID: project.id) }
+        .task(id: project.id) { await vm.startGitWatching(project: project) }
+        .onChange(of: project.id) { old, _ in vm.stopGitWatching(projectID: old) }
+        .onDisappear { vm.stopGitWatching(projectID: project.id) }
         .confirmationDialog(
             deleteSummary?.title ?? "",
             isPresented: Binding(get: { deleteSummary != nil }, set: { if !$0 { deleteSummary = nil } }),
@@ -73,14 +76,22 @@ struct WorkbenchPageView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 8) {
+                // Breadcrumbs: 📁 ~/folder › ⎇ branch ● ↑2 ▾ (#233).
                 Button {
                     NSWorkspace.shared.activateFileViewerSelecting([project.folderURL])
                 } label: {
-                    Text(project.folderPath).font(.caption).lineLimit(1).truncationMode(.middle)
+                    HStack(spacing: 4) {
+                        Image(systemName: "folder")
+                        Text(WorkbenchBranchPresentation.displayPath(project.folderPath, home: NSHomeDirectory()))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    .font(.caption)
                 }
                 .buttonStyle(.link)
-                .help("Reveal in Finder")
+                .help("\(project.folderPath)\nShow in Finder")
                 .layoutPriority(-1)
+                WorkbenchBranchCrumb(vm: vm, project: project)
                 installStatusIcons
                 if vm.isInstalling(projectID: project.id) { ProgressView().controlSize(.mini) }
                 Spacer(minLength: 8)

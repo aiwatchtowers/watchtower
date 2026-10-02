@@ -123,12 +123,9 @@ func runWorkbenchCheck(cmd *cobra.Command, _ []string) error {
 // checkWorkbench loads workbench id's board and checks it in the
 // workbench's folder; o.Folder is filled in here.
 func checkWorkbench(ctx context.Context, database *db.DB, id int64, o workbenchcheck.Options) (workbenchcheck.Report, error) {
-	p, err := database.GetWorkbench(id)
+	p, err := workbenchWithFolder(database, id)
 	if err != nil {
-		return workbenchcheck.Report{}, fmt.Errorf("workbench %d: %w", id, err)
-	}
-	if _, err := os.Stat(p.FolderPath); err != nil {
-		return workbenchcheck.Report{}, fmt.Errorf("workbench %d: folder %s is missing (moved or deleted?)", id, p.FolderPath)
+		return workbenchcheck.Report{}, err
 	}
 	board, err := database.GetWorkbenchBoard(p.ID)
 	if err != nil {
@@ -136,6 +133,19 @@ func checkWorkbench(ctx context.Context, database *db.DB, id int64, o workbenchc
 	}
 	o.Folder = p.FolderPath
 	return workbenchcheck.Check(ctx, p.ID, board, o), nil
+}
+
+// workbenchWithFolder loads workbench id and checks that its folder still
+// exists.
+func workbenchWithFolder(database *db.DB, id int64) (*db.Workbench, error) {
+	p, err := database.GetWorkbench(id)
+	if err != nil {
+		return nil, fmt.Errorf("workbench %d: %w", id, err)
+	}
+	if _, err := os.Stat(p.FolderPath); err != nil {
+		return nil, fmt.Errorf("workbench %d: folder %s is missing (moved or deleted?)", id, p.FolderPath)
+	}
+	return p, nil
 }
 
 func printCheckReport(w io.Writer, rep workbenchcheck.Report) {

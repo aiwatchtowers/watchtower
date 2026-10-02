@@ -108,6 +108,35 @@ final class TerminalCenter {
         )
     }
 
+    /// Whether a Claude Code session this app runs works in the files a
+    /// branch switch swaps: a live `claude` row of the workbench, or one (a
+    /// standalone terminal, another workbench) whose folder is the
+    /// repository's work tree or inside it — a workbench in a subfolder
+    /// shares one checkout with the repository root and every sibling
+    /// package. Symlinks are resolved on both sides (`/tmp` is
+    /// `/private/tmp`). The branch switch's agent guard (#233); a `claude`
+    /// in the owner's own terminal app is not seen (v1 limit).
+    func hasLiveClaudeSession(workbenchID: Int64, workTree: String) -> Bool {
+        let root = Self.resolvedPath(workTree)
+        let prefix = root.hasSuffix("/") ? root : root + "/"
+        let live = liveIDs
+        return rows.values.contains { row in
+            guard row.kind == .claude, live.contains(row.id) else { return false }
+            if row.projectID == workbenchID { return true }
+            let path = Self.resolvedPath(row.folderPath)
+            return path == root || path.hasPrefix(prefix)
+        }
+    }
+
+    /// The path with symlinks resolved; a path that does not exist (any
+    /// more) only standardized.
+    static func resolvedPath(_ path: String) -> String {
+        let standard = URL(fileURLWithPath: path).standardizedFileURL.path
+        guard let resolved = realpath(standard, nil) else { return standard }
+        defer { free(resolved) }
+        return String(cString: resolved)
+    }
+
     func focus(_ sessionID: Int64) {
         focusOrder.removeAll { $0 == sessionID }
         focusOrder.append(sessionID)

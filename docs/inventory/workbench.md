@@ -7,7 +7,8 @@
 > AI assistant: when working in `internal/db/workbenches.go`,
 > `workbench_comments.go`, `workbench_board.go`, the `project_id` exclusions in
 > the targets readers, `internal/tools/workbench*.go`, `cmd/workbench*.go`,
-> `cmd/integrate_workbench.go`, `internal/devpack/workbench*.go`, or
+> `cmd/integrate_workbench.go`, `internal/devpack/workbench*.go`,
+> `internal/gitbin/`, `internal/workbenchgit/`, or
 > `WatchtowerDesktop/Sources/**/Workbench*`, read this file first. Any proposed change that would break a guard test or
 > remove a contract must be raised as a question before touching code.
 
@@ -461,6 +462,108 @@ separation of boards.
 
 **Locked since:** 2026-10-02
 
+## PROJ-10 — a branch switch from the header never loses work, never runs unconfirmed, never pops the install dialog
+
+**Status:** Proposed — pending owner approval (Go and Desktop; the rule lives in Go)
+
+**Observable:** Branch switching from the Workbench header never loses work,
+never switches without the owner's confirmation, and never runs git where it
+could pop the developer-tools install dialog. The branch button and popover
+never run git in the Desktop: every branch read and write is `watchtower
+workbench git status|branches|switch|create --workbench N --json`
+(`cmd/workbench_git.go`, `internal/workbenchgit`). Known exception outside the
+branch UI: the code viewer's FILES git marks (`CodeFilesCenter.refreshGit` →
+`GitStatusSnapshot.read`, WatchtowerCore) run `git status` from the Desktop.
+That reader never runs the `/usr/bin/git` shim either (`MemoryVaultGit.gitPath`:
+the active developer directory's git, the Command Line Tools', Homebrew's), but
+it spawns `xcode-select -p` to find the developer directory and has no
+outside-a-repository pre-check, so the "no stray process" bullet below is Go's
+rule, not the marks reader's.
+- **The code viewer's edits are on disk first.** Before every `switch` (the
+  first try and a confirmed resend; not `create`, which swaps no files) the
+  Desktop pulls the editor page's unsent edits and saves every dirty buffer of
+  the workbench or of any workbench inside the repository's work tree, so Go's
+  dirty check sees them and a stash takes them. A buffer whose edits cannot be
+  written (a conflict, a deleted or unreadable file, a write error) holds the
+  switch in the Desktop — "Save or discard the edits in <file> first — they
+  are not on disk yet." — and nothing is sent to Go. Unlike a close or a
+  rename, an editor page that fails to hand over its unsent edits, or does
+  not answer within 2 s, holds the switch too ("The editor did not hand over
+  its latest edits — try again."; nothing sent); edits it hands over later
+  still reach their buffers.
+- **No shim, no stray process.** git is located by `internal/gitbin` without
+  spawning anything (`$DEVELOPER_DIR`, the `xcode_select_link` target, the
+  Command Line Tools, Xcode.app, Homebrew) and is never `/usr/bin/git` — the
+  xcrun shim — nor a PATH lookup on darwin, nor a candidate symlinked to the
+  shim. No git found → `git_available:false`, no git process, and the header
+  shows no branch button (no install dialog, ever). No git process runs in a
+  folder outside a repository (`gitbin.InsideRepository` first).
+- **Guards before any write, in order:** status readable → an exact local
+  branch name (option-like names never match) → not already on it → not
+  checked out in another worktree → no merge/rebase/cherry-pick/revert/bisect
+  in progress and no unmerged paths → the owner's confirmations. A refusal is
+  final (no flag overrides it); a missing confirmation returns
+  `needs_confirmation` (`uncommitted_changes` without `--stash`,
+  `agent_running` without `--confirm-agent`) and writes nothing.
+- **Confirmation comes from the owner.** The Desktop's first `switch` carries
+  no confirmation flag; it resends `--stash`/`--confirm-agent` only after the
+  owner chose the dialog's primary button, with exactly the flags that dialog
+  named; Cancel sends nothing. `--agent-running` is the Desktop's fact (a
+  live embedded Claude Code session of the workbench, or one whose folder is
+  in the repository's work tree), re-read on every resend, so a session
+  started after the owner confirmed a stash is asked about again; a
+  confirmation the app does not understand is never sent back as confirmed.
+- **Work is never lost.** Uncommitted changes (untracked included) are only
+  ever moved into a stash entry with a nonce-tagged message
+  (`watchtower: switching from <cur> to <B> [<nonce>]`), found afterwards by
+  that exact message — never the stack's tip, which another worktree or
+  session may own — and applied back by its sha (`stash apply --index`) when
+  the switch fails without moving HEAD. The entry is never popped or dropped,
+  and the switch is `git switch --no-guess --no-overwrite-ignore`: no force,
+  discard, reset, clean or checkout ever runs, and an ignored file the target
+  branch tracks is never overwritten. A switch that failed after HEAD moved
+  (a failing hook) counts as switched and leaves the stash alone. The
+  envelope names the entry and its sha, and the Desktop shows the
+  `git stash apply <sha>` that brings it back.
+
+**Why locked:** Owner request (board target #233). Switching branches swaps
+every file in the folder: done silently it can bury the owner's edits or pull
+the files out from under a working agent, and the shared stash stack makes a
+naive `stash pop` take another session's work. On a Mac without the
+developer tools, a single `/usr/bin/git` call raises a system install dialog
+attributed to Watchtower.
+
+**Test guards:**
+- `internal/workbenchgit/switch_test.go` — `TestProj10_RefusesDirtyWithoutStash`,
+  `TestProj10_RefusesAgentRunningWithoutConfirm`, `TestProj10_ListsBothConfirmations`,
+  `TestProj10_StashAndSwitch`, `TestProj10_ConfirmedAgentSwitches`,
+  `TestProj10_CheckedOutElsewhereIsRefusedWithAllFlags`, `TestProj10_UnknownOrOptionLikeBranchIsRefused`,
+  `TestProj10_OperationInProgressIsRefused`, `TestProj10_FailedSwitchRestoresTheStash`,
+  `TestProj10_AlreadyOnBranchIsANoOp`, `TestProj10_DetachedSwitchesAwayWithTheDirtyGuard`,
+  `TestProj10_NoGitIsRefused`, `TestProj10_NeverForcesOrDiscards`, `TestProj10_CreateCarriesTheChanges`,
+  `TestProj10_CreateRefusesAnExistingBranch`, `TestProj10_CreateRefusesAnInvalidName`,
+  `TestProj10_FailedSwitchLeavesAForeignStashAlone`, `TestProj10_FailedSwitchRestoresOursPastAConcurrentStash`,
+  `TestProj10_FailedStashPushReportsTheStashItMade`, `TestProj10_FailingHookAfterTheSwitchCountsAsSwitched`,
+  `TestProj10_SwitchNeverOverwritesAnIgnoredFile`, `TestProj10_GitFailureIsRefusedAsGitFailed`,
+  `TestProj10_CanceledSwitchStillReadsTheStatusAfter`, `TestProj10_CheckRefFormatFailureIsNotAnInvalidName`
+- `internal/gitbin/gitbin_test.go` — `TestLocate_DarwinOrder`, `TestLocate_NeverTheShim`,
+  `TestLocate_NoneFound`, `TestInsideRepository`
+- `internal/workbenchgit/status_test.go` — `TestReadStatus_NoGitOutsideARepository`,
+  `TestReadStatus_GitUnavailableRunsNothing`, `TestReadStatus_RunsTheLocatedBinary`,
+  `TestReadStatus_IgnoresInheritedRepositoryEnvironment`
+- `WatchtowerDesktop/Tests/WorkbenchesViewModelGitTests.swift` — `testProj10_ADirtyRefusalWaitsForTheOwnerWithNoSecondCall`,
+  `testProj10_ConfirmResendsWithStash`, `testProj10_CancelClearsThePendingSwitchWithNoCall`,
+  `testProj10_TheShownConfirmationGoesThroughAfterTheDialogClearedIt`, `testProj10_ALiveSessionIsReportedAndItsConfirmationResent`,
+  `testProj10_ASessionStartedAfterAStashConfirmationIsAskedAbout`, `testProj10_ASessionThatExitedBeforeTheConfirmationIsNotReported`,
+  `testProj10_ASessionAtTheRepositoryRootOfASubfolderWorkbenchIsReported`, `testProj10_APendingConfirmationIsDroppedWhenTheBranchMoved`,
+  `testProj10_APendingConfirmationIsDroppedOnceTheFolderIsOnItsBranch`, `testProj10_NoGitHidesTheButton`,
+  `testProj10_TheStashNoteStaysUntilDismissedOrReplaced`, `testProj10_ASwitchFirstSavesTheCodeViewersEdits`,
+  `testProj10_AnEditThatCannotBeSavedHoldsTheSwitch`, `testProj10_NoUnsavedEditsInTheWorkTreeLeaveTheSwitchAsItWas`,
+  `testProj10_AnEditorThatDoesNotAnswerHoldsTheSwitch`, `testProj10_AnEditorThatTimesOutHoldsTheSwitch`
+- `WatchtowerDesktop/Tests/Core/WorkbenchGitDecodingTests.swift::testProj10_UnknownConfirmationsAreKeptApart`
+
+**Locked since:** — (proposed 2026-10-02; not locked until the owner approves)
+
 ## v1 limits and notes (accepted)
 
 - **Status rollup bounds (PROJ-05).** The ancestor walk stops after 256
@@ -531,6 +634,7 @@ separation of boards.
 ## Changelog
 
 - 2026-10-02 (board #234, code viewer): **PROJ-03 amended** with the owner's approval — the Files pane may write the owner's own edits to any file of the folder, attached documents included, but never over a version it has not seen (a changed, deleted or unreadable disk version blocks the save until the owner picks Reload from disk or Keep mine; an edit typed on a stale disk revision is a conflict). New guards `testProj03FilesEditorNeverWritesOverANewerDiskVersion`, `testProj03AnEditTypedBeforeAReloadIsAConflictNotASave`, `testProj03ADeletionUnderEditsIsNeverUndoneByTheAutosave` and `testProj03AnUnreadableDiskVersionIsNeverWrittenOver`; the existing `testProj03DesktopNeverWritesTheDocument` (the document view writes nothing) is unchanged. PROJ-01/02/04..09 unchanged.
+- 2026-10-02 (board target #233): **PROJ-10** proposed — pending owner approval — the Workbench header's git branch button and popover switch and create local branches through `watchtower workbench git status|branches|switch|create` (`internal/workbenchgit`, git located by `internal/gitbin`, never the `/usr/bin/git` shim); a switch never loses work (nonce-named stash found by its message and applied back by sha, never popped or dropped; no force/discard/reset/clean), never runs without the owner's confirmation of uncommitted changes or a live Claude Code session in the work tree, and no git runs without the developer tools or outside a repository. Guards listed under PROJ-10. PROJ-07 is unchanged: `workbench check` still runs `git` through PATH (moving it onto `gitbin` is a separate, owner-gated target). PROJ-01..09 unchanged.
 - 2026-10-02 (board target #186): **PROJ-09** added — a workbench target can be re-parented within its workbench (`update_target`'s `parent_id`, the Desktop board's drag onto a row and **Move to…**), never into a cycle or across boards; `db.UpdateTarget` (`targets update --parent`) and Swift `TargetQueries.updateParent` refuse a cycle too. PROJ-05's rollup already covered a `parent_id` change; its wording and guards are unchanged. The `watchtower-workbench` skill now has the agent nest a new target under a topical group (creating the group if needed). PROJ-01..08 unchanged.
 - 2026-10-02 (board target #207): the Desktop board shows each target's `#id` on list rows, kanban cards and the detail card (copy from the card menu or the detail chip) and gains a search field (`WorkbenchBoardSearch`: `#N` = that id only, a bare number = the id or a title/intent containing it, other text = title/intent; matches keep their ancestors and subtrees, include closed targets and ignore collapse). Read-only UI over existing rows; no contract semantics or guard tests changed.
 - 2026-10-02 (Workbench rename, spec `docs/superpowers/specs/2026-10-02-workbench-rename-design.md`, owner decisions O1–O8): the feature is renamed from Projects to **Workbench** and this file moves from `docs/inventory/projects.md` to `docs/inventory/workbench.md`. PROJ-01..08 are reworded to the new names with the **same ids and the same meaning** (rewording approved by the owner, O2); every guard keeps its test function name (`TestProjNN_…`/`testProjNN_…`, A4) and only its file path changed (`project*`/`Project*` test files → `workbench*`/`Workbench*`; the migration tests keep theirs). Storage and wire keep `project` (tables, columns, DB values, `project_doc`, `project_files/`, `projects.*` UserDefaults keys, CLI `--json` keys). **PROJ-02 strengthened:** removal and delete also take away a never-resynced folder's legacy hooks, skill, `watchtower-project` registration and exclude lines — new guard `TestProj02_RemoveLegacyFolderLeavesNothingInstalled`. **PROJ-04 strengthened:** a resync deletes the legacy `watchtower-project` skill only through the DEV-04 marker/digest rule and replaces only our own legacy hook entries; an edited legacy skill is kept byte-identical with its exclude line — new guard `TestProj04_ResyncKeepsAnEditedLegacySkill`. Guard assertions whose expected literal said "project" (for example "workbench N no longer exists") were updated to the new wording with the same strictness. The entries below are historical and keep the names of their date (A11).

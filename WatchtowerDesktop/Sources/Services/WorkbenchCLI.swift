@@ -534,6 +534,47 @@ struct WorkbenchCLI {
         return try JSONDecoder().decode(WorkbenchResynced.self, from: data)
     }
 
+    /// The folder's branch, upstream counters and dirty state (#233). Go runs
+    /// git (never the `/usr/bin/git` shim, never outside a repository); the
+    /// Desktop never does.
+    func gitStatus(projectID: Int64) async throws -> WorkbenchGitStatus {
+        let data = try await runner.run(args: ["workbench", "git", "status", "--workbench", String(projectID), "--json"])
+        return try JSONDecoder().decode(WorkbenchGitStatus.self, from: data)
+    }
+
+    /// The local branches, newest commit first.
+    func gitBranches(projectID: Int64) async throws -> WorkbenchGitBranches {
+        let data = try await runner.run(args: ["workbench", "git", "branches", "--workbench", String(projectID), "--json"])
+        return try JSONDecoder().decode(WorkbenchGitBranches.self, from: data)
+    }
+
+    /// Switches the folder to a local branch. Go decides the guards: without
+    /// `stash` a dirty tree comes back as `needs_confirmation`, and so does
+    /// `agentRunning` (a fact only the Desktop knows) without `confirmAgent`.
+    /// A refusal exits 0 with the envelope.
+    func gitSwitch(
+        projectID: Int64,
+        branch: String,
+        stash: Bool,
+        agentRunning: Bool,
+        confirmAgent: Bool
+    ) async throws -> WorkbenchGitSwitchResult {
+        var args = ["workbench", "git", "switch", "--workbench", String(projectID), "--branch", branch]
+        if stash { args.append("--stash") }
+        if agentRunning { args.append("--agent-running") }
+        if confirmAgent { args.append("--confirm-agent") }
+        args.append("--json")
+        let data = try await runner.run(args: args)
+        return try JSONDecoder().decode(WorkbenchGitSwitchResult.self, from: data)
+    }
+
+    /// Creates a branch from HEAD and switches to it (`git switch -c`): no
+    /// files change, so no guard applies.
+    func gitCreateBranch(projectID: Int64, name: String) async throws -> WorkbenchGitSwitchResult {
+        let data = try await runner.run(args: ["workbench", "git", "create", "--workbench", String(projectID), "--name", name, "--json"])
+        return try JSONDecoder().decode(WorkbenchGitSwitchResult.self, from: data)
+    }
+
     /// Removes what was installed in the folder, then the workbench and every
     /// row it owns (Task 4 runs the removal first). Used by Task 20.
     func delete(projectID: Int64) async throws -> WorkbenchDeleted {

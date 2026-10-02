@@ -355,6 +355,91 @@ final class TerminalCenterTests: XCTestCase {
         XCTAssertTrue(center.sessionIDs(ofWorkbench: 1).isEmpty)
     }
 
+    // MARK: - The branch switch's agent guard (#233)
+
+    func testALiveClaudeRowOfTheWorkbenchCountsWhateverItsFolder() throws {
+        let center = makeCenter()
+        let s = try row(project: 1)
+        center.start(s, fresh: true)
+        XCTAssertTrue(center.hasLiveClaudeSession(workbenchID: 1, workTree: "/tmp/elsewhere"))
+        XCTAssertFalse(center.hasLiveClaudeSession(workbenchID: 2, workTree: "/tmp/elsewhere"))
+    }
+
+    func testAShellRowDoesNotCount() throws {
+        let center = makeCenter()
+        center.start(try row(project: 1, kind: .shell), fresh: true)
+        XCTAssertFalse(center.hasLiveClaudeSession(workbenchID: 1, workTree: folder.path))
+    }
+
+    func testAnExitedClaudeRowDoesNotCount() throws {
+        let center = makeCenter()
+        let s = try row(project: 1)
+        center.start(s, fresh: true)
+        sessions.first?.exit(0)
+        XCTAssertFalse(center.hasLiveClaudeSession(workbenchID: 1, workTree: folder.path))
+    }
+
+    /// `folder` plays a repository; `dir` makes a folder inside it.
+    private func dir(_ relative: String) throws -> URL {
+        let url = folder.appendingPathComponent(relative, isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    func testAStandaloneClaudeRowInsideTheWorkTreeCounts() throws {
+        let deeper = try dir("sub/deeper")
+        let center = makeCenter()
+        center.start(try row(project: nil, folder: deeper.path), fresh: true)
+        XCTAssertTrue(center.hasLiveClaudeSession(workbenchID: 9, workTree: folder.path))
+        XCTAssertTrue(center.hasLiveClaudeSession(workbenchID: 9, workTree: folder.path + "/"))
+        XCTAssertTrue(center.hasLiveClaudeSession(workbenchID: 9, workTree: deeper.path))
+    }
+
+    /// The workbench is `repo/app`; the switch swaps the whole checkout, so
+    /// a session at the repository root works in the same files.
+    func testASessionAtTheRepositoryRootOfASubfolderWorkbenchCounts() throws {
+        _ = try dir("app")
+        let center = makeCenter()
+        center.start(try row(project: nil, folder: folder.path), fresh: true)
+        XCTAssertTrue(center.hasLiveClaudeSession(workbenchID: 9, workTree: folder.path))
+    }
+
+    func testASessionInASiblingPackageOfTheSameRepositoryCounts() throws {
+        _ = try dir("app")
+        let sibling = try dir("lib")
+        let center = makeCenter()
+        center.start(try row(project: nil, folder: sibling.path), fresh: true)
+        XCTAssertTrue(center.hasLiveClaudeSession(workbenchID: 9, workTree: folder.path))
+    }
+
+    func testASessionInAnotherRepositoryDoesNotCount() throws {
+        let other = FileManager.default.temporaryDirectory.appendingPathComponent("wt other \(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: other) }
+        let center = makeCenter()
+        center.start(try row(project: nil, folder: other.path), fresh: true)
+        XCTAssertFalse(center.hasLiveClaudeSession(workbenchID: 9, workTree: folder.path))
+    }
+
+    func testSymlinkedSpellingsOfOneFolderMatch() throws {
+        let real = URL(fileURLWithPath: "/private/tmp/wt-term-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: real.appendingPathComponent("sub"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: real) }
+        let viaTmp = "/tmp/" + real.lastPathComponent
+        let center = makeCenter()
+        center.start(try row(project: nil, folder: viaTmp + "/sub"), fresh: true)
+        XCTAssertTrue(center.hasLiveClaudeSession(workbenchID: 9, workTree: real.path))
+        XCTAssertTrue(center.hasLiveClaudeSession(workbenchID: 9, workTree: viaTmp))
+    }
+
+    func testASiblingSharingANamePrefixDoesNotCount() throws {
+        let b = try dir("b")
+        let bc = try dir("bc")
+        let center = makeCenter()
+        center.start(try row(project: nil, folder: bc.path), fresh: true)
+        XCTAssertFalse(center.hasLiveClaudeSession(workbenchID: 9, workTree: b.path))
+    }
+
     func testFocusMovesAnIDToTheEndWithoutDuplicates() {
         let center = makeCenter()
         center.focus(1)

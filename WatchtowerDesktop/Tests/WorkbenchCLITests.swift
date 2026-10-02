@@ -238,4 +238,45 @@ final class WorkbenchCLITests: XCTestCase {
             XCTAssertTrue(error.localizedDescription.contains("already bound"))
         }
     }
+
+    // MARK: - workbench git (#233)
+
+    func testGitStatusAndBranchesArguments() async throws {
+        let runner = ScriptedCLIRunner(results: [
+            .success(Data(#"{"workbench_id":3,"git":true,"branch":"main"}"#.utf8)),
+            .success(Data(#"{"workbench_id":3,"git":true,"current":"main","branches":[{"name":"main","current":true}]}"#.utf8))
+        ])
+        let cli = WorkbenchCLI(runner: runner)
+        let status = try await cli.gitStatus(projectID: 3)
+        let branches = try await cli.gitBranches(projectID: 3)
+        XCTAssertEqual(runner.invocations, [
+            ["workbench", "git", "status", "--workbench", "3", "--json"],
+            ["workbench", "git", "branches", "--workbench", "3", "--json"]
+        ])
+        XCTAssertEqual(status.branch, "main")
+        XCTAssertEqual(branches.branches.map(\.name), ["main"])
+    }
+
+    func testGitSwitchPassesFlagsOnlyWhenSet() async throws {
+        let runner = FakeCLIRunner(stdout: Data(#"{"switched":true,"branch":"-odd name"}"#.utf8))
+        let cli = WorkbenchCLI(runner: runner)
+        _ = try await cli.gitSwitch(projectID: 3, branch: "-odd name", stash: false, agentRunning: false, confirmAgent: false)
+        _ = try await cli.gitSwitch(projectID: 3, branch: "feature/x", stash: true, agentRunning: false, confirmAgent: false)
+        _ = try await cli.gitSwitch(projectID: 3, branch: "feature/x", stash: false, agentRunning: true, confirmAgent: false)
+        _ = try await cli.gitSwitch(projectID: 3, branch: "feature/x", stash: true, agentRunning: true, confirmAgent: true)
+        let base = ["workbench", "git", "switch", "--workbench", "3", "--branch"]
+        XCTAssertEqual(runner.invocations, [
+            base + ["-odd name", "--json"],
+            base + ["feature/x", "--stash", "--json"],
+            base + ["feature/x", "--agent-running", "--json"],
+            base + ["feature/x", "--stash", "--agent-running", "--confirm-agent", "--json"]
+        ], "the branch is one argv element of its own, right after --branch")
+    }
+
+    func testGitCreateBranchArguments() async throws {
+        let runner = FakeCLIRunner(stdout: Data(#"{"switched":true,"created":true,"branch":"new/one"}"#.utf8))
+        let result = try await WorkbenchCLI(runner: runner).gitCreateBranch(projectID: 5, name: "new/one")
+        XCTAssertEqual(runner.invocations, [["workbench", "git", "create", "--workbench", "5", "--name", "new/one", "--json"]])
+        XCTAssertTrue(result.created)
+    }
 }
