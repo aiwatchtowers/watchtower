@@ -10,6 +10,13 @@ package enum PeopleRosterState: Equatable, Sendable {
     case done(count: Int)
     case failed(String)
 
+    package var isLoadingOrFailed: Bool {
+        switch self {
+        case .loading, .failed: true
+        case .idle, .done: false
+        }
+    }
+
     package var isFailure: Bool {
         if case .failed = self { return true }
         return false

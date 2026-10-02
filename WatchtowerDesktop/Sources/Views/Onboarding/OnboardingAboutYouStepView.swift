@@ -34,22 +34,34 @@ struct OnboardingAboutYouStepView: View {
             }
 
             HStack(alignment: .top, spacing: 14) {
-                OnboardingPeoplePicker(
-                    title: "Your manager",
-                    people: model.people,
-                    selection: Binding(
-                        get: { model.manager.isEmpty ? [] : [model.manager] },
-                        set: { model.manager = $0.last ?? "" }
-                    )
-                )
-                OnboardingPeoplePicker(title: "Your reports", people: model.people, selection: $model.reports)
                 VStack(alignment: .leading, spacing: 6) {
-                    OnboardingPeoplePicker(title: "Peers", people: model.people, selection: $model.peers)
+                    OnboardingPeoplePicker(
+                        title: "Your manager",
+                        model: model,
+                        selection: Binding(
+                            get: { model.manager.isEmpty ? [] : [model.manager] },
+                            set: { model.manager = $0.last ?? "" }
+                        )
+                    )
+                    Text("Picking someone replaces the current manager.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                OnboardingPeoplePicker(title: "Your reports", model: model, selection: $model.reports)
+                VStack(alignment: .leading, spacing: 6) {
+                    OnboardingPeoplePicker(title: "Peers", model: model, selection: $model.peers)
                     rosterLine
                 }
             }
 
-            if let error = model.loadError {
+            if let error = model.profileError {
+                HStack(spacing: 6) {
+                    Text(error).foregroundStyle(.red)
+                    Button("Retry") { Task { await loadModel() } }.buttonStyle(.link)
+                }
+                .font(.caption)
+            }
+            if let error = model.peopleError {
                 Text(error).font(.caption).foregroundStyle(.red)
             }
 
@@ -69,23 +81,38 @@ struct OnboardingAboutYouStepView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
+                // Done before the prefill would write empty fields over the
+                // profile.
+                .disabled(!model.isPrefilled)
             }
             .disabled(appState.isFinishingOnboarding)
         }
         .task { await watchPeople() }
     }
 
+    private func loadModel() async {
+        guard let pool = appState.databaseManager?.dbPool else {
+            model.databaseUnavailable()
+            return
+        }
+        await model.load(from: pool)
+    }
+
     /// Reads the people, then again every ~2 s while the roster load is
-    /// still saving them (one last read once it ends).
+    /// still saving them — and through a failure, until a Retry ends it —
+    /// with one last read once it is over.
     private func watchPeople() async {
         appState.resumePeopleRosterIfNeeded()
+        await loadModel()
         guard let pool = appState.databaseManager?.dbPool else { return }
-        await model.load(from: pool)
-        while case .loading = appState.peopleRoster.state {
+        while appState.peopleRoster.state.isLoadingOrFailed {
             try? await Task.sleep(for: .seconds(2))
             if Task.isCancelled { return }
-            await model.reloadPeople(from: pool)
+            if case .loading = appState.peopleRoster.state {
+                await model.reloadPeople(from: pool)
+            }
         }
+        await model.reloadPeople(from: pool)
     }
 
     @ViewBuilder
@@ -111,14 +138,19 @@ struct OnboardingAboutYouStepView: View {
 }
 
 /// A token field over the Slack users: the picked people as chips, a search
-/// field, and the matches under it. One pick for a single-person field is
-/// expressed by the binding keeping only the last id.
+/// field (Return picks the first match), and the matches under it. One pick
+/// for a single-person field is expressed by the binding keeping only the
+/// last id. People picked in any field are not offered again.
 struct OnboardingPeoplePicker: View {
     let title: String
-    let people: [User]
+    let model: OnboardingAboutYouModel
     @Binding var selection: [String]
 
     @State private var query = ""
+
+    private var matches: [User] {
+        OnboardingAboutYouModel.search(query, in: model.people, excluding: model.allPicked)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -128,24 +160,29 @@ struct OnboardingPeoplePicker: View {
                 TextField("Search…", text: $query)
                     .textFieldStyle(.plain)
                     .accessibilityLabel("Search \(title)")
+                    .onSubmit {
+                        if let first = matches.first { pick(first) }
+                    }
             }
             .padding(6)
             .frame(maxWidth: .infinity, minHeight: 76, alignment: .topLeading)
             .background(RoundedRectangle(cornerRadius: 6).fill(Color.secondary.opacity(0.06)))
             .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.secondary.opacity(0.3)))
 
-            let matches = OnboardingAboutYouModel.search(query, in: people, excluding: selection)
+            let matches = matches
             if !matches.isEmpty {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(matches) { user in
                         Button {
-                            selection.append(user.id)
-                            query = ""
+                            pick(user)
                         } label: {
                             HStack(spacing: 4) {
                                 Text(user.bestName)
                                 if !user.name.isEmpty {
                                     Text("@\(user.name)").foregroundStyle(.secondary)
+                                }
+                                if let workspace = model.workspaceName(for: user.id) {
+                                    Text("· \(workspace)").foregroundStyle(.tertiary)
                                 }
                                 Spacer()
                             }
@@ -154,6 +191,7 @@ struct OnboardingPeoplePicker: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .accessibilityLabel(accessibilityName(user))
                     }
                 }
                 .font(.caption)
@@ -163,8 +201,20 @@ struct OnboardingPeoplePicker: View {
         .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
+    private func pick(_ user: User) {
+        selection.append(user.id)
+        query = ""
+    }
+
+    private func accessibilityName(_ user: User) -> String {
+        [user.bestName, user.name.isEmpty ? nil : "@\(user.name)", model.workspaceName(for: user.id)]
+            .compactMap { $0 }
+            .joined(separator: ", ")
+    }
+
     private func chip(_ id: String) -> some View {
-        let name = people.first { SlackAccountID.matches($0.id, id) }?.bestName ?? id
+        let user = model.people.first { SlackAccountID.matches($0.id, id) }
+        let name = [user?.bestName ?? id, model.workspaceName(for: id)].compactMap { $0 }.joined(separator: " · ")
         return HStack(spacing: 2) {
             Text(name)
             Button {
