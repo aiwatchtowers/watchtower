@@ -375,19 +375,49 @@ func TestStatusWorkbench_ReportsALegacyFolderUntilItIsResynced(t *testing.T) {
 // never rewritten.
 func TestLegacyPermissionRules_CountsWithoutWriting(t *testing.T) {
 	folder := fakeRepo(t)
-	if n := LegacyPermissionRules(folder); n != 0 {
-		t.Fatalf("no settings file: want 0, got %d", n)
+	if n, err := LegacyPermissionRules(folder); n != 0 || err != nil {
+		t.Fatalf("no settings file: want 0, got %d err=%v", n, err)
 	}
 	writeTestFile(t, settingsFile(folder), legacyOwnerSettings)
-	if n := LegacyPermissionRules(folder); n != 2 {
-		t.Fatalf("want 2, got %d", n)
+	if n, err := LegacyPermissionRules(folder); n != 2 || err != nil {
+		t.Fatalf("want 2, got %d err=%v", n, err)
 	}
 	if readTestFile(t, settingsFile(folder)) != legacyOwnerSettings {
 		t.Fatalf("counting the rules changed the file")
 	}
 	writeTestFile(t, settingsFile(folder), `{"permissions": {"allow": ["mcp__watchtower-project", "mcp__watchtower-projector__x", "mcp__watchtower-project__x"]}}`)
-	if n := LegacyPermissionRules(folder); n != 2 {
-		t.Fatalf("the bare server rule and a tool rule count, a lookalike does not: got %d", n)
+	if n, err := LegacyPermissionRules(folder); n != 2 || err != nil {
+		t.Fatalf("the bare server rule and a tool rule count, a lookalike does not: got %d err=%v", n, err)
+	}
+	// Only settings.local.json is read: rules in settings.json are not counted.
+	writeTestFile(t, filepath.Join(folder, ".claude", "settings.json"), legacyOwnerSettings)
+	writeTestFile(t, settingsFile(folder), `{}`)
+	if n, err := LegacyPermissionRules(folder); n != 0 || err != nil {
+		t.Fatalf("settings.json is not counted: got %d err=%v", n, err)
+	}
+}
+
+// A settings file that cannot be read or parsed is an error, not 0 rules.
+func TestLegacyPermissionRules_ReportsAnUnreadableFile(t *testing.T) {
+	folder := fakeRepo(t)
+	writeTestFile(t, settingsFile(folder), `{"permissions": [`)
+	if _, err := LegacyPermissionRules(folder); !errors.Is(err, ErrMalformedSettings) {
+		t.Fatalf("a malformed file: want ErrMalformedSettings, got %v", err)
+	}
+	if err := os.Remove(settingsFile(folder)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(settingsFile(folder), 0o755); err != nil { // a directory cannot be read as a file
+		t.Fatal(err)
+	}
+	if _, err := LegacyPermissionRules(folder); err == nil {
+		t.Fatalf("an unreadable file must be an error")
+	}
+	// The install reports it (the hook step's own error aside).
+	f := newFakeClaude()
+	if _, err := InstallWorkbench(context.Background(), legacyOpts(folder, f)); err == nil ||
+		!strings.Contains(err.Error(), "counting the allow rules that name the old watchtower-project server") {
+		t.Fatalf("the install must report the failed count: %v", err)
 	}
 }
 

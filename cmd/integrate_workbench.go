@@ -183,7 +183,7 @@ func legacyPermissionNote(rep devpack.WorkbenchInstallReport) string {
 	if rep.LegacyPermissionRules == 0 {
 		return ""
 	}
-	return fmt.Sprintf("%d permission rule(s) still name the old %s server; re-allow the tools under %s when Claude Code asks.",
+	return fmt.Sprintf("%d permission rule(s) in .claude/settings.local.json still name the old %s server; re-allow the tools under %s when Claude Code asks.",
 		rep.LegacyPermissionRules, devpack.LegacyMCPServerName, devpack.WorkbenchMCPServerName)
 }
 

@@ -234,14 +234,18 @@ func InstallWorkbench(ctx context.Context, o WorkbenchInstallOptions) (Workbench
 	if err := RemoveGitExclude(o.Folder, goneExcludeLines(o.Folder, []string{legacySkillExcludeLine})); err != nil {
 		errs = append(errs, err)
 	}
-	if rep.HookChanged, err = installWorkbenchHooks(o); err != nil {
-		errs = append(errs, err)
+	var hookErr error
+	if rep.HookChanged, hookErr = installWorkbenchHooks(o); hookErr != nil {
+		errs = append(errs, hookErr)
 	}
 	if hadLegacyHooks {
 		stillLegacy, err := HasLegacyHooks(o.Folder, o.WorkbenchID)
 		rep.LegacyHooksReplaced = err == nil && !stillLegacy
 	}
-	rep.LegacyPermissionRules = LegacyPermissionRules(o.Folder)
+	// A malformed file is already reported by the hook step.
+	if rep.LegacyPermissionRules, err = LegacyPermissionRules(o.Folder); err != nil && !bothMalformed(hookErr, err) {
+		errs = append(errs, fmt.Errorf("counting the allow rules that name the old %s server: %w", LegacyMCPServerName, err))
+	}
 	return rep, errors.Join(errs...)
 }
 

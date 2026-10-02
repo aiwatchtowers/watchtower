@@ -72,7 +72,7 @@ func TestIntegrateWorkbenchStatusJSON_ReportsALegacyFolder(t *testing.T) {
 	var out bytes.Buffer
 	require.NoError(t, runWorkbenchInstall(context.Background(), &out, p))
 	assert.Contains(t, out.String(), "legacy   removed the old watchtower-project skill")
-	assert.Contains(t, out.String(), "2 permission rule(s) still name the old watchtower-project server")
+	assert.Contains(t, out.String(), "2 permission rule(s) in .claude/settings.local.json still name the old watchtower-project server")
 
 	got = statusJSON(t, p)
 	assert.False(t, got.Legacy)
@@ -105,7 +105,7 @@ func TestWorkbenchResyncJSON_ReportsTheLegacyMigration(t *testing.T) {
 	assert.True(t, res.LegacyHooksReplaced)
 	assert.Equal(t, 2, res.LegacyPermissionRules)
 	assert.Contains(t, res.Suggestions,
-		"2 permission rule(s) still name the old watchtower-project server; re-allow the tools under watchtower-workbench when Claude Code asks.")
+		"2 permission rule(s) in .claude/settings.local.json still name the old watchtower-project server; re-allow the tools under watchtower-workbench when Claude Code asks.")
 
 	// A second resync finds nothing legacy left.
 	out, _, err = runResync(t, strconv.FormatInt(pid, 10), "--json")
