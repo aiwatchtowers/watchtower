@@ -87,6 +87,9 @@ func TestMaskGroovy_LeavesCommentsAndStringsAlone(t *testing.T) {
 		"/**\n * class Foo implements Bar\n */\nclass Cache {\n}\n",
 		"// this class Foo implements Bar\ndef x = 1\nclass Real {\n}\n",
 		"def s = \"class X implements Y\"\nclass Z {\n}\n",
+		"/*\nclass Foo implements Bar\n*/\nclass Cache {\n}\n",
+		"/*\nclass Foo implements Bar */\nclass Cache {\n}\n",
+		"/*\ntrait Old {\n}\n*/\nclass Cache {\n}\n",
 	} {
 		if got := maskGroovy([]byte(src)); string(got) != src {
 			t.Errorf("maskGroovy changed %q to %q", src, got)
@@ -104,5 +107,21 @@ func TestMaskObjC(t *testing.T) {
 	}
 	if i := strings.Index(string(src), "Shape)"); string(got[i:i+5]) != "Shape" {
 		t.Error("the enum's name moved")
+	}
+}
+
+// Annotations with arguments and the sealed modifiers may open a header.
+func TestMaskGroovy_AnnotationArgumentsAndSealed(t *testing.T) {
+	for src, want := range map[string]string{
+		"@Foo(x) class Bar implements Baz {\n}\n":         "@Foo(x) class Bar                {\n}\n",
+		"sealed class Shape implements Drawable {\n}\n":   "sealed class Shape                     {\n}\n",
+		"non-sealed class Box implements Drawable {\n}\n": "non-sealed class Box                     {\n}\n",
+		"@Canonical(includes = 'a') trait Named {\n}\n":   "@Canonical(includes = 'a') class Named {\n}\n",
+	} {
+		got := maskGroovy([]byte(src))
+		sameShape(t, []byte(src), got)
+		if string(got) != want {
+			t.Errorf("maskGroovy(%q) = %q, want %q", src, got, want)
+		}
 	}
 }

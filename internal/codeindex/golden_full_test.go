@@ -496,7 +496,11 @@ func TestGroovy_ClassesTraitsAndGroovyDoc(t *testing.T) {
 		"add": {"method", "Store"}, "empty": {"method", "Store"}, "twice": {"function", ""},
 		"helper": {"function", ""}, "Named": {"interface", ""}, "label": {"method", "Named"},
 		"Cache": {"class", ""}, "text": {"field", "Cache"},
+		"Ledger": {"class", ""}, "total": {"field", "Ledger"}, "Journal": {"class", ""},
 	})
+	if len(byName(syms, "Old")) != 0 || len(byName(syms, "Older")) != 0 {
+		t.Error("a class header inside a block comment was indexed")
+	}
 	if s := one(t, syms, "Store"); s.Signature != "@CompileStatic class Store implements Storable" || s.Doc != "Keeps entries by key." {
 		t.Errorf("Store = %+v", s)
 	}

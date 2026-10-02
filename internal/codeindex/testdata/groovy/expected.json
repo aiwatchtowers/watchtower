@@ -190,5 +190,53 @@
     "signature": "def text = \"class X implements Y\"",
     "doc": "",
     "lang": "groovy"
+  },
+  {
+    "name": "Ledger",
+    "kind": "class",
+    "path": "Sample.groovy",
+    "line": 66,
+    "col": 7,
+    "end_line": 68,
+    "container": "",
+    "signature": "class Ledger",
+    "doc": "",
+    "lang": "groovy"
+  },
+  {
+    "name": "total",
+    "kind": "field",
+    "path": "Sample.groovy",
+    "line": 67,
+    "col": 9,
+    "end_line": 67,
+    "container": "Ledger",
+    "signature": "def total = 0",
+    "doc": "",
+    "lang": "groovy"
+  },
+  {
+    "name": "Journal",
+    "kind": "class",
+    "path": "Sample.groovy",
+    "line": 72,
+    "col": 7,
+    "end_line": 74,
+    "container": "",
+    "signature": "class Journal implements Storable",
+    "doc": "",
+    "lang": "groovy"
+  },
+  {
+    "name": "key",
+    "kind": "method",
+    "path": "Sample.groovy",
+    "line": 73,
+    "col": 12,
+    "end_line": 73,
+    "container": "Journal",
+    "signature": "String key()",
+    "doc": "",
+    "lang": "groovy"
   }
 ]

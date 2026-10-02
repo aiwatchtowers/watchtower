@@ -81,20 +81,23 @@ func fillTrigger(region []byte) {
 }
 
 var (
+	// groovyHead is what may open a class header's line: indentation,
+	// annotations (with arguments) and modifiers.
+	groovyHead = `(?m)^[ \t]*(?:(?:@\w+(?:\([^)\n]*\))?|public|protected|private|abstract|final|static|sealed|non-sealed)[ \t]+)*`
 	// groovyImplements is a class header's `implements` clause, which the
 	// grammar does not know (it then takes the interface for the class's
-	// name). The header starts its line (after annotations and modifiers),
-	// and neither it nor the clause crosses a comment opener or a quote, so
-	// prose in a comment or a string ("a class that implements X") is not
-	// a header.
-	groovyImplements = regexp.MustCompile(`(?m)^[ \t]*(?:(?:@\w+|public|protected|private|abstract|final|static)[ \t]+)*(?:class|interface|trait)\s+\w+[^{\n;/"']*?(\bimplements\b[^{;/"']*)`)
+	// name). The header starts its line, and neither it nor the clause
+	// crosses a comment opener or closer or a quote (a type list has none),
+	// so prose in a comment or a string is not a header.
+	groovyImplements = regexp.MustCompile(groovyHead + `(?:class|interface|trait)\s+\w+[^{\n;/*"']*?(\bimplements\b[^{;/*"']*)`)
 	// groovyTrait is a trait's keyword, which the grammar does not know.
-	groovyTrait = regexp.MustCompile(`(?m)^[ \t]*(?:(?:@\w+|public|protected|private|abstract|final|static)[ \t]+)*(trait)\b`)
+	groovyTrait = regexp.MustCompile(groovyHead + `(trait)\b`)
 )
 
 // maskGroovy is src with each class header's `implements …` blanked and
 // each `trait` keyword spelled `class` (same length, newlines kept), so
-// the grammar parses both as a class with its own name.
+// the grammar parses both as a class with its own name. A header inside a
+// block comment is left alone.
 func maskGroovy(src []byte) []byte {
 	impl := groovyImplements.FindAllSubmatchIndex(src, -1)
 	trait := groovyTrait.FindAllSubmatchIndex(src, -1)
@@ -103,12 +106,23 @@ func maskGroovy(src []byte) []byte {
 	}
 	out := bytes.Clone(src)
 	for _, m := range impl {
-		blank(out[m[2]:m[3]])
+		if !inBlockComment(src, m[0]) {
+			blank(out[m[2]:m[3]])
+		}
 	}
 	for _, m := range trait {
-		copy(out[m[2]:m[3]], "class")
+		if !inBlockComment(src, m[0]) {
+			copy(out[m[2]:m[3]], "class")
+		}
 	}
 	return out
+}
+
+// inBlockComment reports a `/*` before offset at with no `*/` after it:
+// at is inside a block comment (commented-out code). Comment markers in
+// strings are not told apart.
+func inBlockComment(src []byte, at int) bool {
+	return bytes.LastIndex(src[:at], []byte("/*")) > bytes.LastIndex(src[:at], []byte("*/"))
 }
 
 // objcEnumMacro is a Foundation enum macro: `NS_ENUM(NSInteger, Shape)`,

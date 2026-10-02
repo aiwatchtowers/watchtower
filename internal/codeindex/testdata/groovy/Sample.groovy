@@ -59,3 +59,16 @@ println twice(2)
 class Cache {
     def text = "class X implements Y"
 }
+
+/*
+class Old implements Storable
+*/
+class Ledger {
+    def total = 0
+}
+
+/*
+class Older implements Storable */
+class Journal implements Storable {
+    String key() { 'journal' }
+}
