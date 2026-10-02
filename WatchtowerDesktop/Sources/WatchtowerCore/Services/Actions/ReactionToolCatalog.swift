@@ -110,6 +110,14 @@ package enum ReactionToolCatalog {
             summary: "Changes text or a section of an existing Confluence page",
             destination: "Confluence",
             alwaysAsks: true
+        ),
+        // Main chat + project sessions (spec 2026-10-02) — External: always
+        // behind Approve, the owner may edit the text first.
+        "send_slack_message": ReactionToolInfo(
+            title: "Send to Slack",
+            summary: "Sends a message as you to a channel, a thread or a person",
+            destination: "Slack",
+            alwaysAsks: true
         )
     ]
 

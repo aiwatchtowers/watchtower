@@ -110,7 +110,8 @@ func mcpModeOptions(cfg *config.Config, database *db.DB, turn string, turnFunc f
 // mcpProjectOptions is `watchtower mcp --project N` (DEV-06): the connection
 // stays writable, the registry is bound to project N on the "project" surface,
 // and its tools apply directly (DirectApply) with an agent_actions audit row —
-// never an External tool. The project must exist when the server starts; if
+// never an External tool inline: the one propose-only External tool
+// (send_slack_message) is recorded pending for the owner's Approve (DEV-06). The project must exist when the server starts; if
 // it is deleted later, every tool answers "project N no longer exists".
 func mcpProjectOptions(cfg *config.Config, database *db.DB, projectID int64) ([]internalmcp.ServerOption, error) {
 	if mcpFlagChat {

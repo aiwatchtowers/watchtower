@@ -20,7 +20,11 @@ func ActionsContract(surface string) string {
 	lines := make([]string, 0, len(actionsHeader)+len(tools)+len(actionsRules))
 	lines = append(lines, actionsHeader...)
 	lines = append(lines, tools...)
-	lines = append(lines, actionsRules...)
+	if surface == "main" {
+		lines = append(lines, mainActionsRules...)
+	} else {
+		lines = append(lines, actionsRules...)
+	}
 	text := strings.Join(lines, "\n")
 	if surface == "target" {
 		text += "\n\n" + targetCoexistence
@@ -57,6 +61,7 @@ var mainActionTools = concat(
 		"- create_track — propose a track that follows a topic over time.",
 		"- create_idea — capture an idea in the owner's ideas registry.",
 		"- remind_me — set a reminder that resurfaces in the Inbox at a chosen time; pass message_ref when it is about one Slack message.",
+		"- send_slack_message — propose a Slack message sent as the owner to a channel, a thread (pass a message link), or a person (DM).",
 	},
 )
 
@@ -65,6 +70,10 @@ var targetActionTools = concat(
 	jiraIssueWriteTools,
 	confluenceWriteTools,
 )
+
+// slackSendRule is the main surface's rule for send_slack_message (the target
+// chat has no Slack send).
+const slackSendRule = "- To write to Slack, call get_writing_style FIRST and draft the message in the owner's own voice: their language, their tone for this audience, short, no facts you were not given. Mention people as <@USER_ID>. The owner sees the text on the card and may edit it before approving."
 
 var actionsRules = []string{
 	"Rules:",
@@ -78,6 +87,9 @@ var actionsRules = []string{
 
 const targetCoexistence = "Changes to THIS task and its vertical line still go through `watchtower-action` blocks (TASK ACTIONS above); " +
 	"Jira work goes through the Jira tools. Never create other Watchtower tasks from here — report the finding in prose instead."
+
+// mainActionsRules adds the Slack send rule before the closing get_action line.
+var mainActionsRules = concat(actionsRules[:len(actionsRules)-1], []string{slackSendRule}, actionsRules[len(actionsRules)-1:])
 
 func concat(parts ...[]string) []string {
 	var out []string

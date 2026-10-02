@@ -58,6 +58,9 @@ var UserScopes = []string{
 	"search:read",
 	"users:read", "users:read.email",
 	"files:read", "reactions:read", "team:read",
+	// Sending from the assistant (send_slack_message, behind the owner's
+	// Approve). Accounts connected before it was asked for re-consent.
+	"chat:write",
 }
 
 // exchangeToken is the function used to exchange an OAuth code for a token.
@@ -97,6 +100,8 @@ type OAuthResult struct {
 	TeamName    string
 	UserID      string
 	ExpiresIn   int
+	// Scope is the comma-separated user scopes Slack actually granted.
+	Scope string
 }
 
 // PrepareResult holds the data needed by the desktop app to start the OAuth flow.
@@ -154,6 +159,7 @@ func Complete(ctx context.Context, cfg OAuthConfig, code, redirectURI string) (*
 		TeamName:    resp.Team.Name,
 		UserID:      resp.AuthedUser.ID,
 		ExpiresIn:   resp.AuthedUser.ExpiresIn,
+		Scope:       resp.AuthedUser.Scope,
 	}
 
 	if result.AccessToken == "" {
@@ -312,6 +318,7 @@ func Login(ctx context.Context, cfg OAuthConfig, out io.Writer, opts ...LoginOpt
 		TeamName:    resp.Team.Name,
 		UserID:      resp.AuthedUser.ID,
 		ExpiresIn:   resp.AuthedUser.ExpiresIn,
+		Scope:       resp.AuthedUser.Scope,
 	}
 
 	if result.AccessToken == "" {
