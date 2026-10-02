@@ -7,6 +7,7 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/textutil"
 )
 
 // styleSampleSystemPrompt drives the communication-style distillation.
@@ -110,10 +111,7 @@ func buildStyleSampleUserMessage(sample []db.StyleSampleMessage, analystNote str
 		}
 		fmt.Fprintf(&b, "=== %s ===\n", key)
 		for _, m := range msgs {
-			text := strings.Join(strings.Fields(m.Text), " ")
-			if len(text) > 300 {
-				text = text[:300]
-			}
+			text := textutil.Truncate(strings.Join(strings.Fields(m.Text), " "), 300, "")
 			fmt.Fprintf(&b, "- [#%s] %s\n", m.ChannelName, text)
 		}
 		b.WriteString("\n")

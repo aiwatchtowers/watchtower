@@ -21,6 +21,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/prompts"
 	watchtowerslack "watchtower/internal/slack"
+	"watchtower/internal/textutil"
 )
 
 // Usage holds token metrics from an AI generation call.
@@ -2110,8 +2111,8 @@ func (p *Pipeline) formatMessages(msgs []db.Message, reactions map[string][]db.R
 			text = strings.ReplaceAll(text, "---", "- - -")
 		}
 		// Truncate very long messages to save input tokens.
-		if truncateLimit > 0 && len(text) > truncateLimit {
-			text = text[:truncateLimit] + "... [truncated]"
+		if truncateLimit > 0 {
+			text = textutil.Truncate(text, truncateLimit, "... [truncated]")
 		}
 		return text
 	}

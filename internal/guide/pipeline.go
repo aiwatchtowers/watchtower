@@ -18,6 +18,7 @@ import (
 	"watchtower/internal/prompts"
 	"watchtower/internal/providers"
 	watchtowerslack "watchtower/internal/slack"
+	"watchtower/internal/textutil"
 )
 
 const (
@@ -941,10 +942,7 @@ func (p *Pipeline) formatRawMessages(userID string, to float64) string {
 
 	var sb strings.Builder
 	for _, m := range msgs {
-		text := sanitize(m.Text)
-		if len(text) > 200 {
-			text = text[:200] + "..."
-		}
+		text := textutil.Truncate(sanitize(m.Text), 200, "...")
 		reactStr := db.FormatReactions(reactionMap[m.TS])
 		fmt.Fprintf(&sb, "[%s] %s%s\n", m.TS, text, reactStr)
 	}
