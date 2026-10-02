@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	gosync "sync"
@@ -87,7 +88,7 @@ func stubUsersOnlySlack(t *testing.T) *usersOnlySlack {
 func usersOnlyWorkspace(t *testing.T, tokens ...string) (string, []int64) {
 	t.Helper()
 	_, configPath := workspaceInitHome(t)
-	_, err := initWorkspace(configPath, "default")
+	_, err := initWorkspace(configPath, "", "default")
 	require.NoError(t, err)
 	cfg, err := config.Load(configPath)
 	require.NoError(t, err)
@@ -203,7 +204,7 @@ func TestSyncUsersOnly_UnknownAccountIsAnError(t *testing.T) {
 
 	_, _, err := runRootCmd(t, []*cobra.Command{syncCmd},
 		"sync", "--users-only", "--account", "7", "--config", configPath)
-	require.ErrorContains(t, err, "slack account 7 is not connected")
+	require.ErrorContains(t, err, "slack account 7 does not exist")
 	assert.Zero(t, fake.total())
 }
 
@@ -228,4 +229,78 @@ func TestSyncUsersOnly_RejectsIncompatibleFlags(t *testing.T) {
 		require.Error(t, err, "%v", args)
 		assert.Contains(t, err.Error(), "--", "%v", args)
 	}
+}
+
+// lastProgressLine decodes the last --progress-json line of stdout.
+func lastProgressLine(t *testing.T, stdout string) progressJSON {
+	t.Helper()
+	lines := strings.Split(strings.TrimSpace(stdout), "\n")
+	require.NotEmpty(t, lines)
+	var p progressJSON
+	require.NoError(t, json.Unmarshal([]byte(lines[len(lines)-1]), &p), "not a JSON line: %q", stdout)
+	return p
+}
+
+// An error before any account runs still ends the JSON stream with a line
+// carrying it, so the picker never waits on a stream that just stopped.
+func TestSyncUsersOnly_EarlyErrorsEndTheProgressStream(t *testing.T) {
+	stubUsersOnlySlack(t)
+	configPath, _ := usersOnlyWorkspace(t)
+
+	stdout, _, err := runRootCmd(t, []*cobra.Command{syncCmd},
+		"sync", "--users-only", "--progress-json", "--config", configPath)
+	require.ErrorContains(t, err, "slack is not connected")
+	last := lastProgressLine(t, stdout)
+	assert.Equal(t, "Done", last.Phase)
+	assert.Contains(t, last.Error, "slack is not connected")
+
+	stdout, _, err = runRootCmd(t, []*cobra.Command{syncCmd},
+		"sync", "--users-only", "--account", "7", "--progress-json", "--config", configPath)
+	require.ErrorContains(t, err, "slack account 7 does not exist")
+	assert.Contains(t, lastProgressLine(t, stdout).Error, "slack account 7 does not exist")
+}
+
+// An account wireSlackSyncers skipped is reported with its real reason.
+func TestSyncUsersOnly_SkippedAccountNamesItsReason(t *testing.T) {
+	fake := stubUsersOnlySlack(t)
+	configPath, ids := usersOnlyWorkspace(t, "alpha", "beta", "gamma")
+	cfg, err := config.Load(configPath)
+	require.NoError(t, err)
+	database := usersOnlyDB(t, configPath)
+	require.NoError(t, watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), ids[1]).Delete())
+	require.NoError(t, database.SetSlackAccountEnabled(ids[2], false))
+
+	stdout, _, err := runRootCmd(t, []*cobra.Command{syncCmd},
+		"sync", "--users-only", "--account", "2", "--progress-json", "--config", configPath)
+	require.ErrorContains(t, err, "slack account 2 cannot sync (status error: no token file")
+	assert.Contains(t, lastProgressLine(t, stdout).Error, "no token file")
+
+	_, _, err = runRootCmd(t, []*cobra.Command{syncCmd},
+		"sync", "--users-only", "--account", "3", "--config", configPath)
+	require.ErrorContains(t, err, "slack account 3 is disabled")
+	assert.Zero(t, fake.total())
+}
+
+// --users-only never seeds a legacy config token (the daemon does, and two
+// processes migrating it would race): it fails with a clear error and leaves
+// the token where it is.
+func TestSyncUsersOnly_LegacyTokenIsNotSeeded(t *testing.T) {
+	fake := stubUsersOnlySlack(t)
+	configPath, _ := usersOnlyWorkspace(t)
+	require.NoError(t, os.WriteFile(configPath,
+		[]byte("active_workspace: default\nworkspaces:\n  default:\n    slack_token: xoxp-legacy-token\n"), 0o600))
+
+	_, _, err := runRootCmd(t, []*cobra.Command{syncCmd},
+		"sync", "--users-only", "--config", configPath)
+	require.ErrorContains(t, err, "slack is not connected")
+	assert.Contains(t, err.Error(), "still in config.yaml")
+	assert.Zero(t, fake.total())
+
+	database := usersOnlyDB(t, configPath)
+	accounts, err := database.ListSlackAccounts()
+	require.NoError(t, err)
+	assert.Empty(t, accounts, "no account row was seeded")
+	data, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "xoxp-legacy-token", "the config token was not migrated")
 }

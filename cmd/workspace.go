@@ -33,7 +33,9 @@ other command work before (or without) a Slack connection.
 
 Idempotent: when the config already has a workspace (set explicitly, or the
 single workspace holding a database), that workspace is kept and only its
-directory and database are ensured; --name is ignored. A Slack login made
+directory and database are ensured; --name is ignored. The global
+--workspace flag selects the workspace the same way, for this run; it is
+recorded in config.yaml only when the file names no workspace yet. A Slack login made
 afterwards writes into this same workspace instead of creating a second one.
 
 Flags:
@@ -61,7 +63,7 @@ func runWorkspaceInit(cmd *cobra.Command, _ []string) error {
 	name, _ := cmd.Flags().GetString("name")
 	asJSON, _ := cmd.Flags().GetBool("json")
 
-	res, err := initWorkspace(flagConfig, name)
+	res, err := initWorkspace(flagConfig, flagWorkspace, name)
 	if err != nil {
 		return err
 	}
@@ -78,16 +80,19 @@ func runWorkspaceInit(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-// initWorkspace ensures a workspace exists: the config's own workspace when it
-// resolves to one, otherwise name. It creates the directory and the migrated
-// database and records active_workspace in the config file when the file does
-// not already name it. Several workspaces holding a database with none
+// initWorkspace ensures a workspace exists: override (the --workspace flag)
+// when set, else the config's own workspace when it resolves to one, else
+// name. It creates the directory and the migrated database and records
+// active_workspace in the config file when the file names no workspace yet. Several workspaces holding a database with none
 // selected is refused, like every other command (a guess could split data
 // across two databases).
-func initWorkspace(configPath, name string) (*workspaceInitResult, error) {
+func initWorkspace(configPath, override, name string) (*workspaceInitResult, error) {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("loading config: %w", err)
+	}
+	if override != "" {
+		cfg.ActiveWorkspace = override
 	}
 	if cfg.ActiveWorkspace == "" {
 		if err := cfg.ValidateWorkspace(); !errors.Is(err, config.ErrNoWorkspace) {
@@ -126,9 +131,11 @@ func initWorkspace(configPath, name string) (*workspaceInitResult, error) {
 // writeWorkspaceScaffold records workspace as active_workspace in the config
 // file and fills in the sync/digest defaults a fresh install needs, leaving
 // every key the file already sets alone. With force=false a file that already
-// names this workspace is not rewritten at all (an idempotent re-run must not
-// churn the owner's file); force=true always writes, which the Slack login
-// path needs to switch to a team-named workspace.
+// names a workspace is not rewritten at all (an idempotent re-run must not
+// churn the owner's file, and a --workspace override is for that run only);
+// force=true always writes, which the Slack login path needs to switch to a
+// team-named workspace. A missing file starts empty; any other read failure
+// is returned, so an unreadable file is never overwritten with defaults.
 func writeWorkspaceScaffold(configPath, workspace string, force bool) error {
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
 		return fmt.Errorf("creating config directory: %w", err)
@@ -136,9 +143,14 @@ func writeWorkspaceScaffold(configPath, workspace string, force bool) error {
 
 	v := viper.New()
 	v.SetConfigFile(configPath)
-	_ = v.ReadInConfig()
+	if err := v.ReadInConfig(); err != nil {
+		var notFound viper.ConfigFileNotFoundError
+		if !errors.As(err, &notFound) && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("reading config: %w", err)
+		}
+	}
 
-	if !force && v.GetString("active_workspace") == workspace {
+	if !force && v.GetString("active_workspace") != "" {
 		return nil
 	}
 	v.Set("active_workspace", workspace)

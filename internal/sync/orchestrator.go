@@ -184,13 +184,18 @@ func (o *Orchestrator) Run(ctx context.Context, opts SyncOptions) error {
 // (users.list, every page) into users — no search, channels, messages or
 // reactions. It ignores the roster's daily throttle and stamps the shared
 // roster marker, so the next regular sync does not fetch the roster again
-// within the day. A failure is recorded on the account row as Run records
-// one; success leaves the row's auth state alone, so a search-gap note the
-// last full cycle kept there is not erased by a run that never searched.
+// within the day. Only a dead token (IsRevokedAuthError) is recorded on the
+// account row; any other outcome leaves the row's auth state alone — a
+// transient failure (rate limit retries exhausted, the network) is the
+// caller's to report and must not mark the account broken, and a success
+// must not erase a search-gap note the last full cycle kept there, since
+// this run never searched.
 func (o *Orchestrator) RunUsersOnly(ctx context.Context) error {
 	err := o.runUsersOnly(ctx)
-	if err != nil {
+	if IsRevokedAuthError(err) {
 		o.recordAuthResult(ctx, err)
+	} else if err != nil {
+		o.logger.Printf("users-only sync failed (account state left as is): %v", err)
 	}
 	return err
 }
@@ -432,8 +437,16 @@ func (o *Orchestrator) runSearchSync(ctx context.Context, opts SyncOptions) erro
 	// the complete workspace roster is fetched here; once a day, not every
 	// cycle, counting a `sync --users-only` fetch (the shared account-row
 	// marker). A failed fetch fails the run (as it always did) and retries next cycle.
+	// A stamp that does not parse (a corrupt value) reads as never fetched:
+	// the refresh runs and its stamp overwrites the bad value, instead of the
+	// phase failing on it every cycle. A database read error still fails it.
 	rosterSyncedAt, err := o.db.SlackRosterSyncedAt(o.accountID)
-	if err != nil {
+	var parseErr *time.ParseError
+	switch {
+	case errors.As(err, &parseErr):
+		o.logger.Printf("warning: %v (treating the roster as due)", err)
+		rosterSyncedAt = time.Time{}
+	case err != nil:
 		return fmt.Errorf("user roster sync: %w", err)
 	}
 	if o.refreshDue(rosterSyncedAt, rosterRefreshInterval) {

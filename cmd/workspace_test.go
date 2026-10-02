@@ -73,7 +73,7 @@ func TestWorkspaceInit_FreshHomeCreatesDefaultWorkspace(t *testing.T) {
 func TestWorkspaceInit_CustomName(t *testing.T) {
 	_, configPath := workspaceInitHome(t)
 
-	res, err := initWorkspace(configPath, "acme")
+	res, err := initWorkspace(configPath, "", "acme")
 	require.NoError(t, err)
 	assert.Equal(t, "acme", res.Workspace)
 	assert.Equal(t, []string{"acme"}, workspaceDirs(t))
@@ -82,7 +82,7 @@ func TestWorkspaceInit_CustomName(t *testing.T) {
 func TestWorkspaceInit_RejectsInvalidName(t *testing.T) {
 	_, configPath := workspaceInitHome(t)
 
-	_, err := initWorkspace(configPath, "../escape")
+	_, err := initWorkspace(configPath, "", "../escape")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid workspace name")
 	assert.NoFileExists(t, configPath)
@@ -91,12 +91,12 @@ func TestWorkspaceInit_RejectsInvalidName(t *testing.T) {
 func TestWorkspaceInit_RepeatIsNoOp(t *testing.T) {
 	_, configPath := workspaceInitHome(t)
 
-	first, err := initWorkspace(configPath, "default")
+	first, err := initWorkspace(configPath, "", "default")
 	require.NoError(t, err)
 	before, err := os.ReadFile(configPath)
 	require.NoError(t, err)
 
-	second, err := initWorkspace(configPath, "other")
+	second, err := initWorkspace(configPath, "", "other")
 	require.NoError(t, err)
 	assert.Equal(t, "default", second.Workspace, "an existing workspace wins over --name")
 	assert.False(t, second.Created)
@@ -112,7 +112,7 @@ func TestWorkspaceInit_KeepsAnExplicitWorkspace(t *testing.T) {
 	_, configPath := workspaceInitHome(t)
 	require.NoError(t, os.WriteFile(configPath, []byte("active_workspace: acme\n"), 0o600))
 
-	res, err := initWorkspace(configPath, "default")
+	res, err := initWorkspace(configPath, "", "default")
 	require.NoError(t, err)
 	assert.Equal(t, "acme", res.Workspace)
 	assert.True(t, res.Created, "the named workspace had no database yet")
@@ -126,7 +126,7 @@ func TestWorkspaceInit_AdoptsTheSingleExistingWorkspace(t *testing.T) {
 	home, configPath := workspaceInitHome(t)
 	seedWorkspaceDB(t, home, "acme")
 
-	res, err := initWorkspace(configPath, "default")
+	res, err := initWorkspace(configPath, "", "default")
 	require.NoError(t, err)
 	assert.Equal(t, "acme", res.Workspace)
 	assert.False(t, res.Created)
@@ -140,7 +140,7 @@ func TestWorkspaceInit_RefusesWhenSeveralWorkspacesHoldADatabase(t *testing.T) {
 	seedWorkspaceDB(t, home, "alpha")
 	seedWorkspaceDB(t, home, "zenith")
 
-	_, err := initWorkspace(configPath, "default")
+	_, err := initWorkspace(configPath, "", "default")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "several workspaces hold a database")
 	assert.ElementsMatch(t, []string{"alpha", "zenith"}, workspaceDirs(t))
@@ -152,7 +152,7 @@ func TestWorkspaceInit_RefusesWhenSeveralWorkspacesHoldADatabase(t *testing.T) {
 // commands, and a daemon that has no sources and idles.
 func TestWorkspaceInit_UnblocksCommandsWithoutSlack(t *testing.T) {
 	_, configPath := workspaceInitHome(t)
-	_, err := initWorkspace(configPath, "default")
+	_, err := initWorkspace(configPath, "", "default")
 	require.NoError(t, err)
 
 	database, err := openDBFromConfig()
@@ -192,7 +192,7 @@ func TestWorkspaceInit_UnblocksCommandsWithoutSlack(t *testing.T) {
 func TestSaveAuthResult_AfterWorkspaceInitReusesTheWorkspace(t *testing.T) {
 	stubSlackIdentityServer(t, "U456", "T123", "Acme Corp", "acme")
 	_, configPath := workspaceInitHome(t)
-	_, err := initWorkspace(configPath, "default")
+	_, err := initWorkspace(configPath, "", "default")
 	require.NoError(t, err)
 
 	result := &auth.OAuthResult{AccessToken: "xoxp-acme", TeamID: "T123", TeamName: "Acme Corp", UserID: "U456"}
@@ -224,7 +224,7 @@ func TestSaveAuthResult_AfterWorkspaceInitReusesTheWorkspace(t *testing.T) {
 // account #1 with the other team's token and mix the two teams' data.
 func TestSaveAuthResult_DifferentTeamKeepsTeamNamedWorkspace(t *testing.T) {
 	_, configPath := workspaceInitHome(t)
-	_, err := initWorkspace(configPath, "default")
+	_, err := initWorkspace(configPath, "", "default")
 	require.NoError(t, err)
 
 	stubSlackIdentityServer(t, "U456", "T123", "Acme Corp", "acme")
@@ -249,4 +249,133 @@ func seedWorkspaceDB(t *testing.T, home, name string) {
 	database, err := db.Open(filepath.Join(dir, "watchtower.db"))
 	require.NoError(t, err)
 	require.NoError(t, database.Close())
+}
+
+// --workspace selects the workspace for this run; it is written to the file
+// only when the file names none yet.
+func TestWorkspaceInit_HonoursTheWorkspaceFlag(t *testing.T) {
+	_, configPath := workspaceInitHome(t)
+	require.NoError(t, os.WriteFile(configPath, []byte("active_workspace: acme\n"), 0o600))
+
+	res, err := initWorkspace(configPath, "beta", "default")
+	require.NoError(t, err)
+	assert.Equal(t, "beta", res.Workspace)
+	assert.True(t, res.Created)
+	data, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	assert.Equal(t, "active_workspace: acme\n", string(data), "an override does not switch the configured workspace")
+
+	_, freshConfig := workspaceInitHome(t)
+	res, err = initWorkspace(freshConfig, "beta", "default")
+	require.NoError(t, err)
+	assert.Equal(t, "beta", res.Workspace)
+	data, err = os.ReadFile(freshConfig)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "active_workspace: beta")
+}
+
+// Only a missing config file starts empty: an unreadable one is an error and
+// is never overwritten with defaults.
+func TestWriteWorkspaceScaffold_UnreadableConfigIsAnError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a 0000 file")
+	}
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(configPath, []byte("ai:\n  model: custom\n"), 0o600))
+	require.NoError(t, os.Chmod(configPath, 0o000))
+	t.Cleanup(func() { _ = os.Chmod(configPath, 0o600) })
+
+	err := writeWorkspaceScaffold(configPath, "default", true)
+	require.ErrorContains(t, err, "reading config")
+	require.NoError(t, os.Chmod(configPath, 0o600))
+	data, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	assert.Equal(t, "ai:\n  model: custom\n", string(data))
+}
+
+func TestSaveAuthResult_HonoursTheWorkspaceFlag(t *testing.T) {
+	stubSlackIdentityServer(t, "U456", "T123", "Acme Corp", "acme")
+	home, configPath := workspaceInitHome(t)
+	_, err := initWorkspace(configPath, "", "default")
+	require.NoError(t, err)
+	seedWorkspaceDB(t, home, "other")
+	old := flagWorkspace
+	flagWorkspace = "other"
+	t.Cleanup(func() { flagWorkspace = old })
+
+	info, err := saveAuthResult(newSaveAuthResultCmd(),
+		&auth.OAuthResult{AccessToken: "xoxp-acme", TeamID: "T123", TeamName: "Acme Corp", UserID: "U456"})
+	require.NoError(t, err)
+	assert.Equal(t, "other", info.Workspace)
+	assert.ElementsMatch(t, []string{"default", "other"}, workspaceDirs(t))
+}
+
+// Several workspaces with a database and none selected: the login fails
+// instead of guessing (or forking a third, team-named one).
+func TestSaveAuthResult_AmbiguousWorkspaceFailsTheLogin(t *testing.T) {
+	stubSlackIdentityServer(t, "U456", "T123", "Acme Corp", "acme")
+	home, _ := workspaceInitHome(t)
+	seedWorkspaceDB(t, home, "alpha")
+	seedWorkspaceDB(t, home, "zenith")
+
+	_, err := saveAuthResult(newSaveAuthResultCmd(),
+		&auth.OAuthResult{AccessToken: "xoxp-acme", TeamID: "T123", TeamName: "Acme Corp", UserID: "U456"})
+	require.ErrorContains(t, err, "several workspaces hold a database")
+	assert.ElementsMatch(t, []string{"alpha", "zenith"}, workspaceDirs(t))
+}
+
+// A database path that cannot be checked (not merely absent) fails the
+// login rather than falling back to a team-named workspace.
+func TestSaveAuthResult_UncheckableDatabaseFailsTheLogin(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	stubSlackIdentityServer(t, "U456", "T123", "Acme Corp", "acme")
+	_, configPath := workspaceInitHome(t)
+	res, err := initWorkspace(configPath, "", "default")
+	require.NoError(t, err)
+	dir := filepath.Dir(res.DBPath)
+	require.NoError(t, os.Chmod(dir, 0o000))
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	_, err = saveAuthResult(newSaveAuthResultCmd(),
+		&auth.OAuthResult{AccessToken: "xoxp-acme", TeamID: "T123", TeamName: "Acme Corp", UserID: "U456"})
+	require.ErrorContains(t, err, "checking database")
+}
+
+// Legacy account #1 seeded while offline has no team id yet: it is this
+// install's own Slack connection, so the login stays in the workspace.
+func TestSaveAuthResult_LegacyAccountWithoutTeamIsReused(t *testing.T) {
+	stubSlackIdentityServer(t, "U456", "T123", "Acme Corp", "acme")
+	_, configPath := workspaceInitHome(t)
+	res, err := initWorkspace(configPath, "", "default")
+	require.NoError(t, err)
+	database, err := db.Open(res.DBPath)
+	require.NoError(t, err)
+	id, err := database.CreateSlackAccount(db.SlackAccount{})
+	require.NoError(t, err)
+	require.Equal(t, int64(1), id)
+	require.NoError(t, database.Close())
+
+	info, err := saveAuthResult(newSaveAuthResultCmd(),
+		&auth.OAuthResult{AccessToken: "xoxp-acme", TeamID: "T123", TeamName: "Acme Corp", UserID: "U456"})
+	require.NoError(t, err)
+	assert.Equal(t, "default", info.Workspace)
+	assert.Equal(t, []string{"default"}, workspaceDirs(t))
+}
+
+// --workspace naming a workspace with no database yet: the login creates and
+// uses it rather than falling back to a team-named one.
+func TestSaveAuthResult_WorkspaceFlagWithoutDatabaseIsCreated(t *testing.T) {
+	stubSlackIdentityServer(t, "U456", "T123", "Acme Corp", "acme")
+	workspaceInitHome(t)
+	old := flagWorkspace
+	flagWorkspace = "chosen"
+	t.Cleanup(func() { flagWorkspace = old })
+
+	info, err := saveAuthResult(newSaveAuthResultCmd(),
+		&auth.OAuthResult{AccessToken: "xoxp-acme", TeamID: "T123", TeamName: "Acme Corp", UserID: "U456"})
+	require.NoError(t, err)
+	assert.Equal(t, "chosen", info.Workspace)
+	assert.Equal(t, []string{"chosen"}, workspaceDirs(t))
 }

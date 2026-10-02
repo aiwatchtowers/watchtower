@@ -115,18 +115,23 @@ func TestRunUsersOnly_NextRegularSyncSkipsTheRoster(t *testing.T) {
 	assert.Equal(t, 1, calls.count("/users.list"), "the roster fetched by users-only is not fetched again within the day")
 }
 
-func TestRunUsersOnly_FailureRecordsAuthState(t *testing.T) {
+// failingUsersList is defaultMux with users.list answering slackErr.
+func failingUsersList(slackErr string) *http.ServeMux {
 	inner := defaultMux()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/users.list" {
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "token_revoked"})
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": slackErr})
 			return
 		}
 		inner.ServeHTTP(w, r)
 	})
-	ts := newTestSetup(t, mux)
+	return mux
+}
+
+func TestRunUsersOnly_RevokedTokenIsRecorded(t *testing.T) {
+	ts := newTestSetup(t, failingUsersList("token_revoked"))
 
 	err := ts.orch.RunUsersOnly(context.Background())
 	require.ErrorContains(t, err, "user roster sync")
@@ -152,4 +157,47 @@ func TestRunUsersOnly_SuccessKeepsTheAccountNote(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "ok", acct.Status)
 	assert.Equal(t, note, acct.Error)
+}
+
+// A failure that is not a dead token (here a Slack server error; in real life
+// also exhausted 429 retries or the network) is returned to the caller only:
+// the account row keeps its status and its search-gap note.
+func TestRunUsersOnly_TransientFailureLeavesTheAccountAlone(t *testing.T) {
+	ts := newTestSetup(t, failingUsersList("internal_error"))
+	const note = "search sync clamped: some history was not fetched"
+	require.NoError(t, ts.db.SetSlackAccountAuthState(ts.accountID, "ok", note))
+
+	err := ts.orch.RunUsersOnly(context.Background())
+	require.ErrorContains(t, err, "user roster sync")
+
+	acct, err := ts.db.GetSlackAccount(ts.accountID)
+	require.NoError(t, err)
+	assert.Equal(t, "ok", acct.Status)
+	assert.Equal(t, note, acct.Error)
+}
+
+// A corrupt roster stamp reads as "due": the regular sync fetches the roster
+// and overwrites the stamp instead of failing the phase on it every cycle.
+func TestSearchSync_UnparsableRosterStampIsDue(t *testing.T) {
+	mux, calls := countingMux(t, defaultMux())
+	ts := newTestSetup(t, mux)
+	_, err := ts.db.Exec(`UPDATE slack_accounts SET roster_synced_at = 'not-a-time' WHERE id = ?`, ts.accountID)
+	require.NoError(t, err)
+
+	require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}))
+	assert.Equal(t, 1, calls.count("/users.list"))
+	stamp, err := ts.db.SlackRosterSyncedAt(ts.accountID)
+	require.NoError(t, err)
+	assert.False(t, stamp.IsZero(), "the fetch replaced the corrupt stamp")
+}
+
+// Only an unparsable stamp is forgiven; failing to read it at all still
+// fails the phase (here the column is gone, as on a broken schema).
+func TestSearchSync_RosterStampReadErrorFailsThePhase(t *testing.T) {
+	ts := newTestSetup(t, defaultMux())
+	_, err := ts.db.Exec(`ALTER TABLE slack_accounts DROP COLUMN roster_synced_at`)
+	require.NoError(t, err)
+
+	err = ts.orch.Run(context.Background(), SyncOptions{})
+	require.ErrorContains(t, err, "user roster sync")
 }

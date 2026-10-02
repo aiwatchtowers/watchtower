@@ -276,7 +276,11 @@ func (db *DB) SetSlackRosterSyncedAt(id int64, at time.Time) error {
 	if err != nil {
 		return fmt.Errorf("stamping roster for slack account %d: %w", id, err)
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("stamping roster for slack account %d: %w", id, err)
+	}
+	if n == 0 {
 		return fmt.Errorf("stamping roster: no slack_accounts row %d", id)
 	}
 	return nil

@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"os"
 	"regexp"
@@ -319,26 +321,43 @@ func saveAuthResult(cmd *cobra.Command, result *auth.OAuthResult) (*authResultIn
 
 // slackLoginWorkspace returns the existing workspace a Slack login into team
 // teamID must reuse, or "" to name the workspace after the team (the
-// pre-onboarding-v2 behavior). An existing workspace is one the config
-// selects (explicitly or as the single workspace holding a database) whose
-// database already exists. It is reused when its database has no Slack
-// account yet — `workspace init` created it, or the owner started with
-// Google or Jira — or when account #1 (the account this login re-consents)
-// is already this team, so connecting Slack later never forks a second
-// database. A login into a different team from a Slack-connected workspace,
-// or onto a legacy config token not migrated yet, keeps the team-named
-// workspace: re-consenting account #1 with another team's token would mix two
-// teams' data under one namespace.
+// pre-onboarding-v2 behavior). A workspace named with --workspace is always
+// used, created when it has no database yet. Otherwise an existing workspace
+// is the one the config selects (explicitly, or as the single workspace
+// holding a database) whose database already exists. It is reused when its database
+// has no Slack account yet — `workspace init` created it, or the owner started
+// with Google or Jira — or when account #1 (the account this login
+// re-consents) is already this team, so connecting Slack later never forks a
+// second database. Account #1 with no team id yet (a legacy row seeded while
+// offline) counts as this team: it is this install's own Slack connection.
+// A login into a different team from a Slack-connected workspace, or onto a
+// legacy config token not migrated yet, keeps the team-named workspace:
+// re-consenting account #1 with another team's token would mix two teams'
+// data under one namespace. Only "no workspace yet" and "no database yet"
+// (without --workspace) fall back to the team name; any other failure (several workspaces and none
+// selected, an unreadable database) fails the login rather than guessing.
 func slackLoginWorkspace(configPath, teamID string) (string, error) {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return "", fmt.Errorf("loading config: %w", err)
 	}
-	if cfg.ValidateWorkspace() != nil {
-		return "", nil
+	if flagWorkspace != "" {
+		cfg.ActiveWorkspace = flagWorkspace
+	}
+	if err := cfg.ValidateWorkspace(); err != nil {
+		if errors.Is(err, config.ErrNoWorkspace) {
+			return "", nil
+		}
+		return "", err
 	}
 	if _, err := os.Stat(cfg.DBPath()); err != nil {
-		return "", nil
+		if errors.Is(err, fs.ErrNotExist) {
+			if flagWorkspace != "" {
+				return cfg.ActiveWorkspace, nil
+			}
+			return "", nil
+		}
+		return "", fmt.Errorf("checking database: %w", err)
 	}
 
 	database, err := db.Open(cfg.DBPath())
@@ -350,11 +369,16 @@ func slackLoginWorkspace(configPath, teamID string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("listing slack accounts: %w", err)
 	}
-	switch {
-	case len(accounts) == 0 && legacySlackConfigToken(cfg) == "":
-		return cfg.ActiveWorkspace, nil
-	case len(accounts) > 0 && accounts[0].TeamID == teamID:
-		return cfg.ActiveWorkspace, nil
+	if len(accounts) == 0 {
+		if legacySlackConfigToken(cfg) == "" {
+			return cfg.ActiveWorkspace, nil
+		}
+		return "", nil
+	}
+	for _, a := range accounts {
+		if a.ID == 1 && (a.TeamID == "" || a.TeamID == teamID) {
+			return cfg.ActiveWorkspace, nil
+		}
 	}
 	return "", nil
 }
