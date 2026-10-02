@@ -23,6 +23,7 @@ import (
 type fakeWorkbenchClaude struct {
 	mu         sync.Mutex
 	registered map[string]bool
+	failRemove bool // every `mcp remove` exits non-zero
 }
 
 func fakeRegistration(dir, server string) string { return dir + "\x00" + server }
@@ -48,6 +49,9 @@ func (f *fakeWorkbenchClaude) run(_ context.Context, dir, name string, args ...s
 		f.registered[key] = true
 		return nil, nil
 	case "remove":
+		if f.failRemove {
+			return []byte("remove failed"), devpack.ErrCommandExit
+		}
 		delete(f.registered, key)
 		return nil, nil
 	}

@@ -106,18 +106,20 @@ type WorkbenchInstallReport struct {
 // registration, an old hook command, or the old skill as we shipped it.
 // LegacySkill is the old skill's state: StateMissing, StateUnchanged (ours,
 // un-edited), StateDrifted (edited, kept by every resync — PROJ-04) or
-// StateForeign.
+// StateForeign. CurrentMCP and LegacyMCP say which registration MCP stands
+// for, so a report can name each one that is there.
 type WorkbenchStatus struct {
 	Skill       SkillStatus
 	Hook        bool // the SessionStart hook (the brief)
 	StopHook    bool // the Stop hook (the board drift check, PROJ-07)
-	MCP         bool
+	MCP         bool // CurrentMCP || LegacyMCP
 	ClaudeFound bool
 
 	Legacy      bool
 	LegacySkill SkillStatus
 	LegacyHooks bool
-	LegacyMCP   bool
+	CurrentMCP  bool // watchtower-workbench is registered
+	LegacyMCP   bool // watchtower-project is registered
 }
 
 // WorkbenchSkill returns the embedded watchtower-workbench skill.
@@ -290,7 +292,7 @@ func StatusWorkbench(ctx context.Context, o WorkbenchInstallOptions) (WorkbenchS
 	}
 	// Its only possible failure is the malformed file already reported above.
 	ps.LegacyHooks, _ = HasLegacyHooks(o.Folder, o.WorkbenchID)
-	current, err := mcpRegistered(ctx, o, WorkbenchMCPServerName)
+	ps.CurrentMCP, err = mcpRegistered(ctx, o, WorkbenchMCPServerName)
 	if err == nil {
 		ps.LegacyMCP, err = mcpRegistered(ctx, o, LegacyMCPServerName)
 	}
@@ -300,7 +302,7 @@ func StatusWorkbench(ctx context.Context, o WorkbenchInstallOptions) (WorkbenchS
 	case err != nil:
 		errs = append(errs, err)
 	}
-	ps.MCP = current || ps.LegacyMCP
+	ps.MCP = ps.CurrentMCP || ps.LegacyMCP
 	ps.Legacy = ps.LegacyMCP || ps.LegacyHooks || ps.LegacySkill.State == StateUnchanged
 	return ps, errors.Join(errs...)
 }

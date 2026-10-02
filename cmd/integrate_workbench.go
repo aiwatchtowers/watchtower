@@ -233,12 +233,12 @@ func printWorkbenchLeftovers(w io.Writer, st devpack.WorkbenchStatus) {
 		fmt.Fprintln(w, "  still present: Stop hook")
 		left = true
 	}
-	if st.LegacyMCP {
-		fmt.Fprintf(w, "  still registered: %s\n", devpack.LegacyMCPServerName)
+	if st.CurrentMCP {
+		fmt.Fprintf(w, "  still registered: %s\n", devpack.WorkbenchMCPServerName)
 		left = true
 	}
-	if st.MCP && !st.LegacyMCP {
-		fmt.Fprintf(w, "  still registered: %s\n", devpack.WorkbenchMCPServerName)
+	if st.LegacyMCP {
+		fmt.Fprintf(w, "  still registered: %s\n", devpack.LegacyMCPServerName)
 		left = true
 	}
 	if !left {
