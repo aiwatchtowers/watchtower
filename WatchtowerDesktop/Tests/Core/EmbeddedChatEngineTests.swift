@@ -420,7 +420,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
         expectTrue(await waitIdle(engine))
         guard case .failed(_, let message) = outcome else { return XCTFail("\(String(describing: outcome))") }
         XCTAssertTrue(message.contains("Already applied: added x"))
-        XCTAssertTrue(message.contains("retry before quitting the app"), message)
+        XCTAssertTrue(message.contains("retry now"), message)
         XCTAssertTrue(engine.canRetry)
         XCTAssertEqual(engine.bannerError, message)
     }

@@ -537,7 +537,7 @@ package final class EmbeddedChatEngine {
             let marked = EmbeddedChatErrorClassifier.Failure(code: .internalError, message: message, retryable: true)
             if !markFailedBestEffort(turn, text: text, failure: marked) {
                 // The row stays `partial` on disk; Retry is only in memory.
-                message += " The reply couldn't be marked failed either — retry before quitting the app."
+                message += " The reply couldn't be marked failed either — retry now; Retry is gone once this chat is left for long."
             }
             bannerError = message
             return failTurn(turn, text: text, failure: .init(code: .internalError, message: message, retryable: true),
