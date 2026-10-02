@@ -29,6 +29,9 @@ extension WorkbenchesViewModel {
         /// The layout stays as it is: a button inside the session's own pane
         /// (Resume, Restart, Start fresh) must not undo an expansion.
         case inPlace
+        /// ⌘↵ in the go-to palette, beside this pane:
+        /// `WorkspaceLayout.openBeside(_:keeping:)`.
+        case beside(WorkspacePane)
     }
 
     /// The selected project's sessions, most recently active first (the
@@ -449,6 +452,7 @@ extension WorkbenchesViewModel {
                 if !updated.replace(slot, with: .session(row.id)) { updated.show(.session(row.id)) }
             case .inPlace:
                 break
+            case let .beside(kept): updated.openBeside(.session(row.id), keeping: kept)
             }
             setLayout(updated, projectID: projectID)
         }

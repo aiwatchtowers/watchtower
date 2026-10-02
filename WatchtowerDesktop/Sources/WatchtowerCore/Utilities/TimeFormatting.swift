@@ -24,6 +24,17 @@ package enum TimeFormatting {
         return relativeTime(from: date)
     }
 
+    /// A compact age for the workbench switchers: "just now", "5m", "3h",
+    /// "2d". Nil for an unreadable stamp.
+    package static func shortAge(from isoString: String, now: Date) -> String? {
+        guard let date = parseISO(isoString) else { return nil }
+        let interval = now.timeIntervalSince(date)
+        if interval < 60 { return "just now" }
+        if interval < 3600 { return "\(Int(interval / 60))m" }
+        if interval < 86400 { return "\(Int(interval / 3600))h" }
+        return "\(Int(interval / 86400))d"
+    }
+
     /// Relative time from unix timestamp
     package static func relativeTimeFromUnix(_ ts: Double) -> String {
         relativeTime(from: Date(timeIntervalSince1970: ts))

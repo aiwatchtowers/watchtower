@@ -23,25 +23,27 @@ private enum PendingFolder {
 struct WorkbenchesView: View {
     @Bindable var vm: WorkbenchesViewModel
     @Environment(AppState.self) private var appState
-    // The `projects.` keys predate the Workbench rename; persisted, so kept (spec 2026-10-02 A1).
-    @AppStorage("projects.panelVisible") private var panelVisible = true
+    // The `projects.` keys predate the Workbench rename; persisted, so kept
+    // (spec 2026-10-02 A1). The panel's visibility is the VM's (`panelVisible`).
     @AppStorage("projects.panelWidth") private var panelWidth = PanelResizeHandle.defaultWidth
     @State private var dragPanelWidth: Double?
     @State private var pendingFolder: PendingFolder?
     @State private var sensitiveLocation: String?
     @State private var renamingSession: TerminalSession?
     @State private var deletingSession: TerminalSession?
+    /// The ⌘K palette (board #252). View state: it closes with the tab.
+    @State private var goToOpen = false
 
     var body: some View {
         HStack(spacing: 0) {
-            if panelVisible {
+            if vm.panelVisible {
                 panel
                     .frame(width: dragPanelWidth ?? PanelResizeHandle.clamp(panelWidth))
                     .panelSurface()
                 PanelResizeHandle(width: $panelWidth, liveWidth: $dragPanelWidth)
             }
             VStack(spacing: 0) {
-                titleRow
+                WorkbenchTitleRow(vm: vm, switcherActions: switcherActions, paletteOpen: goToOpen) { goToOpen = true }
                 Divider()
                 Group {
                     if let standalone = vm.selectedStandalone {
@@ -57,10 +59,18 @@ struct WorkbenchesView: View {
             }
             .frame(minWidth: 480, maxWidth: .infinity, maxHeight: .infinity)
         }
+        // ⌥⌘S, the title row's toggle, ⌘⇧O and the switchers' "Show
+        // Sessions Panel" all slide the panel the same way.
+        .animation(.easeInOut(duration: 0.2), value: vm.panelVisible)
         // The workspace — title row, page header, the terminal (transparent
         // under dark), Board and Documents — on the detail backdrop, as AI
         // Chat's conversation is; the panel paints its own lighter surface.
         .detailBackground()
+        .overlay {
+            if goToOpen {
+                GoToPaletteOverlay(vm: vm) { goToOpen = false }
+            }
+        }
         .sessionActionDialogs(vm: vm, renaming: $renamingSession, deleting: $deletingSession)
         .onAppear {
             consumeRoute()
@@ -82,26 +92,6 @@ struct WorkbenchesView: View {
         }
     }
 
-    /// The chat's inline title row (`ChatSplitView.toolbar`) instead of a
-    /// window toolbar, which would add a tall title-bar strip above the tab.
-    /// It stays visible with the panel hidden: its toggle is the way back.
-    private var titleRow: some View {
-        HStack(spacing: 10) {
-            Button { withAnimation(.easeInOut(duration: 0.2)) { panelVisible.toggle() } } label: {
-                Image(systemName: "sidebar.leading")
-            }
-            .help("Toggle Workbench Panel")
-            .accessibilityLabel("Toggle Workbench Panel")
-            Text(vm.selectedStandalone?.title ?? vm.selectedWorkbench?.name ?? "Workbench")
-                .font(.headline)
-                .lineLimit(1)
-            Spacer()
-        }
-        .buttonStyle(.borderless)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-    }
-
     private var isTerminalPending: Bool {
         if case .terminal? = pendingFolder { return true }
         return false
@@ -110,10 +100,17 @@ struct WorkbenchesView: View {
     @ViewBuilder
     private var panel: some View {
         if let project = vm.drilledWorkbench {
-            WorkbenchSessionsPanel(vm: vm, project: project, actions: sessionActions)
+            WorkbenchSessionsPanel(
+                vm: vm, project: project, actions: sessionActions,
+                switcherActions: switcherActions
+            )
         } else {
             workbenchList
         }
+    }
+
+    private var switcherActions: WorkbenchSwitcherActions {
+        WorkbenchSwitcherActions(newWorkbench: chooseNewWorkbenchFolder, showAll: vm.showAllWorkbenches)
     }
 
     private var sessionActions: SessionRowActions {
@@ -123,7 +120,7 @@ struct WorkbenchesView: View {
                     if session.projectID == nil {
                         await vm.selectStandalone(session)
                     } else {
-                        await vm.showFromPanel(sessionID: session.id)
+                        await vm.showSession(id: session.id)
                     }
                 }
             },
@@ -193,7 +190,7 @@ struct WorkbenchesView: View {
     }
 
     private func row(_ summary: WorkbenchSummary) -> some View {
-        let badge = summary.unreadAgentComments + vm.revisedDocumentCount(for: summary)
+        let badge = vm.badgeCount(for: summary)
         return HStack {
             VStack(alignment: .leading, spacing: 2) {
                 Text(summary.project.name).font(.body)
@@ -208,13 +205,7 @@ struct WorkbenchesView: View {
             }
             Spacer()
             if badge > 0 {
-                Text("\(badge)")
-                    .font(.caption2)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(Color.blue, in: Capsule())
+                WorkbenchCapsuleBadge(text: "\(badge)")
             }
         }
         .padding(.vertical, 2)
@@ -237,10 +228,19 @@ struct WorkbenchesView: View {
         do {
             _ = try NewWorkbenchFolder.check(url)
         } catch {
-            vm.errorMessage = error.localizedDescription
+            showCreateOutcome(error: error)
             return
         }
         confirmLocation(of: .newWorkbench(url), path: url.path)
+    }
+
+    /// New Workbench… may come from the switcher (level 2, or the panel
+    /// hidden), where the list that carries the create's progress and
+    /// errors is not on screen: it goes there once the create fails or
+    /// starts, not on "Choose another folder".
+    private func showCreateOutcome(error: Error?) {
+        vm.showAllWorkbenches()
+        if let error { vm.errorMessage = error.localizedDescription }
     }
 
     /// Add Existing Folder… → a folder already on disk becomes the project.
@@ -302,9 +302,10 @@ struct WorkbenchesView: View {
             do {
                 try NewWorkbenchFolder.prepare(folder)
             } catch {
-                vm.errorMessage = error.localizedDescription
+                showCreateOutcome(error: error)
                 return
             }
+            showCreateOutcome(error: nil)
             Task { await vm.createWorkbench(folder: folder, name: folder.lastPathComponent) }
         case let .terminal(kind, folder):
             Task { await vm.newStandalone(kind: kind, folder: folder) }
@@ -315,5 +316,80 @@ struct WorkbenchesView: View {
         guard let route = appState.pendingWorkbenchRoute else { return }
         appState.pendingWorkbenchRoute = nil
         vm.reveal(route)
+    }
+}
+
+/// The chat's inline title row (`ChatSplitView.toolbar`) instead of a
+/// window toolbar, which would add a tall title-bar strip above the tab.
+/// It stays visible with the panel hidden: its toggle is the way back, and
+/// then on a workbench page it carries `▦ <workbench> ▾ › ● <session> ▾`
+/// (board #251, variant H) instead of the plain title. At its right, Go
+/// to… opens the go-to palette (⌘K, board #252). It also holds the tab's
+/// shortcuts, so they exist on the Workbench tab only, and not under the
+/// open palette (they would change the page behind it).
+struct WorkbenchTitleRow: View {
+    @Bindable var vm: WorkbenchesViewModel
+    let switcherActions: WorkbenchSwitcherActions
+    var paletteOpen = false
+    let openGoTo: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Button { vm.panelVisible.toggle() } label: {
+                Image(systemName: "sidebar.leading")
+            }
+            .keyboardShortcut("s", modifiers: [.command, .option])
+            .disabled(paletteOpen)
+            .help(vm.panelVisible ? "Hide Sessions Panel (⌥⌘S)" : "Show Sessions Panel (⌥⌘S)")
+            .accessibilityLabel(vm.panelVisible ? "Hide Sessions Panel" : "Show Sessions Panel")
+            if let project = vm.headerSwitcherWorkbench {
+                WorkbenchSwitcher(vm: vm, project: project, actions: switcherActions, fillsWidth: false)
+                Image(systemName: "chevron.right")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .accessibilityHidden(true)
+                SessionSwitcher(vm: vm, project: project)
+            } else {
+                Text(vm.selectedStandalone?.title ?? vm.selectedWorkbench?.name ?? "Workbench")
+                    .font(.headline)
+                    .lineLimit(1)
+            }
+            Spacer()
+            Button(action: openGoTo) {
+                HStack(spacing: 4) {
+                    Image(systemName: "magnifyingglass")
+                    Text("Go to…")
+                    Text("⌘K").foregroundStyle(.secondary)
+                }
+            }
+            .keyboardShortcut("k", modifiers: .command)
+            .help("Go to… (⌘K)")
+            .accessibilityLabel("Go to…")
+        }
+        .buttonStyle(.borderless)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background { shortcuts }
+    }
+
+    /// ⌘⇧O (the workbench switcher shows it beside "All Workbenches"), ⌘T
+    /// and ⌘1…⌘9 (the session switcher shows them) as hidden buttons; the
+    /// session ones need a workbench page.
+    private var shortcuts: some View {
+        Group {
+            Button("", action: vm.showAllWorkbenches)
+                .keyboardShortcut("o", modifiers: [.command, .shift])
+            Group {
+                Button("") { Task { await vm.newSessionOnPage() } }
+                    .keyboardShortcut("t", modifiers: .command)
+                ForEach(1...SessionSwitcherPresentation.maxShortcut, id: \.self) { n in
+                    Button("") { Task { await vm.openSession(atShortcut: n) } }
+                        .keyboardShortcut(KeyEquivalent(Character(String(n))), modifiers: .command)
+                }
+            }
+            .disabled(!vm.hasWorkbenchPage)
+        }
+        .disabled(paletteOpen)
+        .hidden()
     }
 }

@@ -137,6 +137,17 @@ package struct WorkspaceLayout: Codable, Equatable, Sendable {
         }
     }
 
+    /// ⌘↵ in the go-to palette: `pane` on screen beside `kept`. A single
+    /// pane splits with it second; a split replaces the pane that is not
+    /// `kept` (`reveal`); on screen already → nothing moves.
+    package mutating func openBeside(_ pane: WorkspacePane, keeping kept: WorkspacePane) {
+        if isSplit {
+            reveal(pane, keeping: kept)
+        } else {
+            split(with: pane)
+        }
+    }
+
     /// Whether a header view button shows as on: that kind of pane is on screen.
     package func isShowing(_ view: WorkspaceView) -> Bool {
         visiblePanes.contains(where: view.matches)
