@@ -16,6 +16,7 @@ final class OnboardingGoalsModelTests: XCTestCase {
         var languageError: Error?
         var featuresFailure: String?
         var appliedSelection: OnboardingFeatureSelection?
+        var historyUnset = false
     }
 
     private struct Failure: LocalizedError {
@@ -56,7 +57,9 @@ final class OnboardingGoalsModelTests: XCTestCase {
                     spy.calls.append("features")
                     spy.appliedSelection = $0
                     return spy.featuresFailure
-                }
+                },
+                historyDepthUnset: { spy.historyUnset },
+                setHistoryDepth: { spy.calls.append("history \($0)") }
             )
         )
     }
@@ -339,5 +342,22 @@ final class OnboardingGoalsModelTests: XCTestCase {
         await model.prepare(configuredLanguage: "German")
         XCTAssertEqual(model.language, "German", "the configured language is adopted again")
         XCTAssertEqual(model.cliCheck, .ready(provider: "claude"), "the CLI is checked again")
+    }
+
+    // MARK: - History depth
+
+    /// A config with no history depth gets the old onboarding's default,
+    /// written after the workspace exists; one that has it is left alone.
+    func testUnsetHistoryDepthGetsTheOldDefault() async {
+        spy.historyUnset = true
+        let model = await readyModel()
+        _ = await model.submit(hasSlackAccount: false)
+        XCTAssertEqual(spy.calls, ["workspace init", "history 3", "language Russian", "features"])
+    }
+
+    func testSetHistoryDepthIsLeftAlone() async {
+        let model = await readyModel()
+        _ = await model.submit(hasSlackAccount: false)
+        XCTAssertFalse(spy.calls.contains { $0.hasPrefix("history") })
     }
 }

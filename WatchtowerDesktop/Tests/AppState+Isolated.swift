@@ -21,27 +21,52 @@ extension AppState {
             openDatabase: openDatabase,
             peopleRosterRun: peopleRosterRun
         )
-        appState.onboardingDaemonOverride = FakeOnboardingDaemon()
+        appState.daemonControlOverride = FakeDaemon()
         appState.wireAppDatabaseOverride = { _ in }
         return appState
     }
 }
 
-/// Counts finish's daemon calls; `running` is what it reports.
+/// Counts the daemon calls; `running` is what it reports, `startSucceeds`
+/// and `restartError` what start and restart do. `holdRestart` parks a
+/// restart until `releaseRestart()`.
 @MainActor
-final class FakeOnboardingDaemon: OnboardingDaemonControl {
+final class FakeDaemon: DaemonControl {
     var running = false
+    var startSucceeds = true
+    var restartError: Error?
+    var holdRestart = false
     private(set) var starts = 0
     private(set) var restarts = 0
+    private(set) var stops = 0
+    private var parked: CheckedContinuation<Void, Never>?
+
+    var isRestartParked: Bool { parked != nil }
 
     func daemonIsRunning() -> Bool { running }
 
-    func startDaemon() async {
+    func startDetached() async -> Bool {
         starts += 1
+        running = startSucceeds
+        return startSucceeds
+    }
+
+    func restartWaiting() async throws {
+        restarts += 1
+        if holdRestart {
+            await withCheckedContinuation { parked = $0 }
+        }
+        if let restartError { throw restartError }
         running = true
     }
 
-    func restartDaemon() async {
-        restarts += 1
+    func stopDaemonNow() async {
+        stops += 1
+        running = false
+    }
+
+    func releaseRestart() {
+        parked?.resume()
+        parked = nil
     }
 }

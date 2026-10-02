@@ -20,15 +20,24 @@ package struct OnboardingGoalsActions {
     /// Applies the feature selection; returns the failure to show, nil when
     /// every change landed.
     package var applyFeatures: (OnboardingFeatureSelection) async -> String?
+    /// Whether the config has no `sync.initial_history_days` yet — read
+    /// before `workspace init`, which fills in Go's default.
+    package var historyDepthUnset: @MainActor () -> Bool
+    /// `watchtower config set sync.initial_history_days <days>`.
+    package var setHistoryDepth: (Int) async throws -> Void
 
     package init(
         initWorkspace: @escaping () async throws -> Void,
         setLanguage: @escaping (String) async throws -> Void,
-        applyFeatures: @escaping (OnboardingFeatureSelection) async -> String?
+        applyFeatures: @escaping (OnboardingFeatureSelection) async -> String?,
+        historyDepthUnset: @escaping @MainActor () -> Bool = { false },
+        setHistoryDepth: @escaping (Int) async throws -> Void = { _ in }
     ) {
         self.initWorkspace = initWorkspace
         self.setLanguage = setLanguage
         self.applyFeatures = applyFeatures
+        self.historyDepthUnset = historyDepthUnset
+        self.setHistoryDepth = setHistoryDepth
     }
 }
 
@@ -47,6 +56,10 @@ package final class OnboardingGoalsModel {
     /// All but Meetings: its calendar connection and transcription model are
     /// the heaviest setup, opted into deliberately.
     package static let defaultGoals: Set<OnboardingGoal> = [.workCommunication, .tasksAndJira, .development]
+    /// The Slack history the first sync fetches when nothing set it: the
+    /// old onboarding's default pick, kept so a fresh install syncs as much
+    /// as it used to.
+    package static let defaultHistoryDays = 3
 
     package var selection: OnboardingFeatureSelection
     /// An English language name, the `digest.language` value Continue writes.
@@ -172,12 +185,21 @@ package final class OnboardingGoalsModel {
         continueError = nil
         defer { isContinuing = false }
 
+        let historyUnset = actions.historyDepthUnset()
         if !hasSlackAccount && !workspaceReady {
             do {
                 try await actions.initWorkspace()
                 workspaceReady = true
             } catch {
                 continueError = "Could not create the workspace: \(error.localizedDescription)"
+                return nil
+            }
+        }
+        if historyUnset {
+            do {
+                try await actions.setHistoryDepth(Self.defaultHistoryDays)
+            } catch {
+                continueError = "Could not save the history depth: \(error.localizedDescription)"
                 return nil
             }
         }

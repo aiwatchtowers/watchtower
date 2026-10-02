@@ -3,36 +3,58 @@ import XCTest
 
 @MainActor
 final class OnboardingFinishPlanTests: XCTestCase {
-    private final class Daemon: OnboardingDaemonControl {
+    private struct Boom: Error {}
+
+    private final class Daemon: DaemonControl {
         var running: Bool
+        var startOK = true
+        var restartFails = false
         var calls: [String] = []
         init(running: Bool) { self.running = running }
         func daemonIsRunning() -> Bool { running }
-        func startDaemon() async { calls.append("start") }
-        func restartDaemon() async { calls.append("restart") }
+        func startDetached() async -> Bool {
+            calls.append("start")
+            return startOK
+        }
+        func restartWaiting() async throws {
+            calls.append("restart")
+            if restartFails { throw Boom() }
+        }
+        func stopDaemonNow() async { calls.append("stop") }
     }
 
     func testStartsAStoppedDaemonAndRestartsARunningOne() async {
         let stopped = Daemon(running: false)
-        await OnboardingFinishPlan.bringUpDaemon(stopped)
+        let started = await OnboardingFinishPlan.bringUpDaemon(stopped)
         XCTAssertEqual(stopped.calls, ["start"])
+        XCTAssertTrue(started)
 
         let running = Daemon(running: true)
-        await OnboardingFinishPlan.bringUpDaemon(running)
+        let restarted = await OnboardingFinishPlan.bringUpDaemon(running)
         XCTAssertEqual(running.calls, ["restart"])
+        XCTAssertTrue(restarted)
+    }
+
+    func testFailuresAreReported() async {
+        let stopped = Daemon(running: false)
+        stopped.startOK = false
+        let started = await OnboardingFinishPlan.bringUpDaemon(stopped)
+        XCTAssertFalse(started)
+
+        let running = Daemon(running: true)
+        running.restartFails = true
+        let restarted = await OnboardingFinishPlan.bringUpDaemon(running)
+        XCTAssertFalse(restarted)
     }
 
     func testLanding() {
-        let slack = ConnectedSources(slack: true)
-        let mail = ConnectedSources(mail: true)
-        let none = ConnectedSources()
-        XCTAssertEqual(OnboardingFinishPlan.landing(goals: [.workCommunication], connected: slack), .catchUp)
-        XCTAssertEqual(OnboardingFinishPlan.landing(goals: [.workCommunication], connected: mail), .catchUp)
-        XCTAssertEqual(OnboardingFinishPlan.landing(goals: [.workCommunication, .development], connected: none), .workbench,
-                       "no Catch-Up tab without Slack or mail")
-        XCTAssertEqual(OnboardingFinishPlan.landing(goals: [.development, .meetings], connected: slack), .workbench)
-        XCTAssertEqual(OnboardingFinishPlan.landing(goals: [.tasksAndJira, .meetings], connected: slack), .chat)
-        XCTAssertEqual(OnboardingFinishPlan.landing(goals: [], connected: none), .chat)
+        XCTAssertEqual(OnboardingFinishPlan.landing(goals: [.workCommunication], catchUpVisible: true), .catchUp)
+        XCTAssertEqual(OnboardingFinishPlan.landing(goals: [.workCommunication, .development], catchUpVisible: false), .workbench,
+                       "no Catch-Up tab to land on")
+        XCTAssertEqual(OnboardingFinishPlan.landing(goals: [.workCommunication], catchUpVisible: false), .chat)
+        XCTAssertEqual(OnboardingFinishPlan.landing(goals: [.development, .meetings], catchUpVisible: true), .workbench)
+        XCTAssertEqual(OnboardingFinishPlan.landing(goals: [.tasksAndJira, .meetings], catchUpVisible: true), .chat)
+        XCTAssertEqual(OnboardingFinishPlan.landing(goals: [], catchUpVisible: false), .chat)
     }
 
     private func progress(active: Bool, updated: Date) throws -> SyncProgress {
@@ -41,22 +63,62 @@ final class OnboardingFinishPlanTests: XCTestCase {
         return try JSONDecoder().decode(SyncProgress.self, from: Data(json.utf8))
     }
 
-    func testFirstSyncTextWhileSyncing() throws {
-        let now = Date()
-        let text = OnboardingFinishPlan.firstSyncText(progress: try progress(active: true, updated: now), historyDays: 7, now: now)
-        XCTAssertEqual(text?.title, "Syncing Slack for the last 7 days — usually 3–5 min")
-        XCTAssertEqual(text?.detail, "Messages · 34/105 channels")
-        XCTAssertEqual(
-            OnboardingFinishPlan.firstSyncText(progress: try progress(active: true, updated: now), historyDays: 1, now: now)?.title,
-            "Syncing Slack for the last day — usually 3–5 min"
+    private func text(
+        _ progress: SyncProgress?,
+        lastSync: Date? = nil,
+        days: Int = 7,
+        connected: ConnectedSources = ConnectedSources(slack: true),
+        now: Date
+    ) -> (title: String, detail: String)? {
+        OnboardingFinishPlan.firstSyncText(
+            progress: progress, lastSyncTime: lastSync, historyDays: days, connected: connected, now: now
         )
+    }
+
+    func testFirstSyncTextWhileTheFirstSyncRuns() throws {
+        let now = Date()
+        let syncing = try progress(active: true, updated: now)
+        XCTAssertEqual(text(syncing, now: now)?.title, "Syncing Slack for the last 7 days — usually 3–5 min")
+        XCTAssertEqual(text(syncing, now: now)?.detail, "Messages · 34/105 channels")
+        XCTAssertEqual(text(syncing, days: 1, now: now)?.title, "Syncing Slack for the last day — usually 3–5 min")
+    }
+
+    /// Worded from what is connected.
+    func testFirstSyncTextNamesTheSources() throws {
+        let now = Date()
+        let syncing = try progress(active: true, updated: now)
+        XCTAssertEqual(text(syncing, connected: ConnectedSources(slack: true, mail: true), now: now)?.title,
+                       "Syncing Slack and mail for the last 7 days — usually 3–5 min")
+        XCTAssertEqual(text(syncing, connected: ConnectedSources(mail: true), now: now)?.title, "Syncing mail — usually 3–5 min")
+        XCTAssertEqual(text(syncing, connected: ConnectedSources(), now: now)?.title, "Syncing your sources — usually 3–5 min")
+    }
+
+    /// Only before the first finished sync: a routine sync later on keeps
+    /// the ordinary empty state.
+    func testNoFirstSyncTextOnceASyncFinished() throws {
+        let now = Date()
+        let syncing = try progress(active: true, updated: now)
+        XCTAssertNil(text(syncing, lastSync: now.addingTimeInterval(-3600), now: now))
     }
 
     func testNoFirstSyncTextWhenIdleOrStale() throws {
         let now = Date()
-        XCTAssertNil(OnboardingFinishPlan.firstSyncText(progress: nil, historyDays: 2, now: now))
-        XCTAssertNil(OnboardingFinishPlan.firstSyncText(progress: try progress(active: false, updated: now), historyDays: 2, now: now))
-        let stale = try progress(active: true, updated: now.addingTimeInterval(-SyncProgress.staleAfter - 60))
-        XCTAssertNil(OnboardingFinishPlan.firstSyncText(progress: stale, historyDays: 2, now: now))
+        XCTAssertNil(text(nil, now: now))
+        XCTAssertNil(text(try progress(active: false, updated: now), now: now))
+        XCTAssertNil(text(try progress(active: true, updated: now.addingTimeInterval(-SyncProgress.staleAfter - 60)), now: now))
+    }
+
+    func testClearingStampsKeepsEverythingElse() throws {
+        let dir = (NSTemporaryDirectory() as NSString).appendingPathComponent("stamps-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        for name in ["last_people.txt", "briefing_attempts.txt", "last_sync.json", "watchtower.db"] {
+            FileManager.default.createFile(atPath: (dir as NSString).appendingPathComponent(name), contents: Data())
+        }
+
+        try DaemonStampFiles.clear(in: dir)
+
+        XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: dir)), ["last_sync.json", "watchtower.db"])
+        XCTAssertNoThrow(try DaemonStampFiles.clear(in: dir), "missing stamps are fine")
     }
 }

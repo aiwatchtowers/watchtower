@@ -336,7 +336,7 @@ final class AppState {
     /// Test seams for the two steps of finishing onboarding that spawn CLI
     /// children or ask macOS for permissions; nil runs the real thing
     /// (`daemonManager`, `wireAppDatabase`'s body).
-    @ObservationIgnored var onboardingDaemonOverride: (any OnboardingDaemonControl)?
+    @ObservationIgnored var daemonControlOverride: (any DaemonControl)?
     @ObservationIgnored var wireAppDatabaseOverride: ((DatabaseManager) -> Void)?
 
     /// `onboardingDefaults` backs the onboarding step and goals, `openDatabase`
@@ -662,10 +662,10 @@ final class AppState {
                 if !needsOnboarding {
                     wireAppDatabase(manager)
                 }
-                // Resume pipelines if app was closed mid-generation
-                if !needsOnboarding && !UserDefaults.standard.bool(forKey: Constants.pipelinesCompletedKey) {
-                    backgroundTaskManager.startPipelines(legacyPeople: analysisLegacyMode, disabledFeatures: featureManager.disabledFeatureIDs)
-                } else if !needsOnboarding {
+                // The daemon's cycle generates everything itself, so a launch
+                // after an interrupted generation needs nothing more than the
+                // daemon (`pipelinesCompletedKey` is kept for older builds).
+                if !needsOnboarding {
                     // Ensure a fresh daemon is running (rebuild-safe): stop any existing
                     // one (possibly from an older binary), then start the current binary.
                     ensureDaemonRunning()
@@ -801,10 +801,19 @@ final class AppState {
             },
             startDaemon: {
                 // One daemon start (or restart) instead of one-shot CLI
-                // generators racing its first cycle; the flag tells the next
-                // launch nothing is left to resume.
-                await OnboardingFinishPlan.bringUpDaemon(onboardingDaemonOverride ?? daemonManager)
-                UserDefaults.standard.set(true, forKey: Constants.pipelinesCompletedKey)
+                // generators racing its first cycle. In the background: a
+                // restart may wait up to a minute for the old daemon to die,
+                // and Continue must not. It starts only after the
+                // onboarding_done write above.
+                let daemon = daemonControl
+                onboardingDaemonStart = Task {
+                    // The flag tells the next launch nothing is left to resume.
+                    if await OnboardingFinishPlan.bringUpDaemon(daemon) {
+                        UserDefaults.standard.set(true, forKey: Constants.pipelinesCompletedKey)
+                    }
+                }
+                // The landing reads the sources the steps just connected.
+                await refreshConnectedSources()
             },
             completeOnboarding: {
                 completeOnboarding()
@@ -894,9 +903,18 @@ final class AppState {
         }
     }
 
+    /// Finish's daemon bring-up, held so tests can await it.
+    @ObservationIgnored private(set) var onboardingDaemonStart: Task<Void, Never>?
+
+    private var daemonControl: any DaemonControl { daemonControlOverride ?? daemonManager }
+
     /// Opens the tab the goals point at (`OnboardingFinishPlan.landing`).
     private func land(after route: OnboardingRoute) {
-        switch OnboardingFinishPlan.landing(goals: route.goals, connected: featureVisibility.connectedSources) {
+        let catchUpVisible = SidebarDestination.catchUp.isVisible(
+            disabledFeatures: featureVisibility.disabledFeatureIDs,
+            connected: featureVisibility.connectedSources
+        )
+        switch OnboardingFinishPlan.landing(goals: route.goals, catchUpVisible: catchUpVisible) {
         case .catchUp: selectedDestination = .catchUp
         case .workbench: selectedDestination = .workbench
         case .chat: selectedDestination = .chat
@@ -951,30 +969,33 @@ final class AppState {
         onboardingStepError = nil
         needsOnboarding = true
         profileComplete = false
-        UserDefaults.standard.removeObject(forKey: Constants.pipelinesCompletedKey)
     }
 
     /// Wipe all LLM-generated data, stop the daemon, and start it again to
-    /// rebuild them.
-    func resetLLMData() async throws {
+    /// rebuild them: its stamps go too, so the first cycle regenerates
+    /// people cards and the briefing at once instead of on their cadence.
+    /// A failed restart is thrown for the Settings error line.
+    func resetLLMData(workspaceDir: String? = Constants.activeWorkspaceDir()) async throws {
         guard let db = databaseManager else { return }
 
         // 1. Stop running pipelines (if any) — await ensures process exits and releases file locks
         await backgroundTaskManager.stopAll()
 
-        // 2. Stop daemon
-        daemonManager.resolvePathIfNeeded()
-        if DaemonManager.checkDaemonRunning() {
-            await daemonManager.stopDaemon()
-            try? await Task.sleep(for: .milliseconds(500))
+        // 2. Stop the daemon so nothing writes while the tables are wiped.
+        let daemon = daemonControl
+        if daemon.daemonIsRunning() {
+            await daemon.stopDaemonNow()
         }
 
-        // 3. Wipe LLM-generated tables
+        // 3. Wipe LLM-generated tables and the daemon's stamps.
         try db.wipeLLMData()
+        if let workspaceDir {
+            try DaemonStampFiles.clear(in: workspaceDir)
+        }
 
-        // 4. Start the daemon again: its first cycle regenerates everything.
+        // 4. Restart: waits for the stopped daemon to be gone, then starts it.
         backgroundTaskManager.tasks.removeAll()
-        await daemonManager.startDaemon()
+        try await daemon.restartWaiting()
         UserDefaults.standard.set(true, forKey: Constants.pipelinesCompletedKey)
     }
 
@@ -999,9 +1020,7 @@ final class AppState {
     private func wireOnboardingDatabase(_ manager: DatabaseManager) async {
         databaseManager = manager
         errorMessage = nil
-        let config = ConfigService()
-        analysisLegacyMode = config.analysisLegacyMode
-        initialHistoryDays = config.initialHistoryDays ?? Self.defaultInitialHistoryDays
+        analysisLegacyMode = ConfigService().analysisLegacyMode
         await refreshOwner()
         await refreshConnectedSources()
         guard slackAccountsViewModel == nil else { return }
@@ -1016,8 +1035,6 @@ final class AppState {
 
     /// Mirrors Go's `DefaultInitialHistDays`.
     static let defaultInitialHistoryDays = 2
-    /// `sync.initial_history_days`, for Catch-Up's first-sync line.
-    private(set) var initialHistoryDays = AppState.defaultInitialHistoryDays
 
     /// The rest of the database wiring, once per process: on launch when no
     /// onboarding is pending, else at its completion.

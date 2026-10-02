@@ -82,6 +82,17 @@ package final class DaemonManager {
     package func checkStatus() {
         isRunning = Self.isDaemonRunning()
         syncProgress = Self.readSyncProgress()
+        lastSyncTime = Self.readLastSyncTime() ?? lastSyncTime
+    }
+
+    /// When the active workspace's last sync finished: `last_sync.json` is
+    /// written at the end of every run (and only then). nil before the
+    /// first one.
+    nonisolated package static func readLastSyncTime() -> Date? {
+        guard let dir = Constants.activeWorkspaceDir(),
+              let attributes = try? FileManager.default.attributesOfItem(atPath: "\(dir)/last_sync.json")
+        else { return nil }
+        return attributes[.modificationDate] as? Date
     }
 
     /// Reads the active workspace's sync heartbeat. Scoped to the active
