@@ -778,7 +778,7 @@ final class AppState {
         }
         isFinishingOnboarding = true
         defer { isFinishingOnboarding = false }
-        await OnboardingCompletion.finish(
+        let finished = await OnboardingCompletion.finish(
             markOnboardingDone: {
                 if let failure = await openDatabaseForOnboarding() {
                     onboardingStepError = "Could not open the database: \(failure)"
@@ -821,6 +821,10 @@ final class AppState {
             },
             onRetry: onRetry
         )
+        // About you was answered (or deferred) here: no later sheet.
+        if finished, step == .aboutYou {
+            markAboutYouShown()
+        }
     }
 
     /// Opens the database for onboarding's Connect step, whose account
@@ -1172,33 +1176,50 @@ final class AppState {
             return
         }
         guard let added = OnboardingConnectPlan.newlyConnected(before: known, after: active) else { return }
-        peopleRoster.start(accountID: added)
-        if !needsOnboarding {
-            lateAboutYouCheck = Task { await offerLateAboutYou() }
+        if needsOnboarding {
+            peopleRoster.start(accountID: added)
+        } else if known.isEmpty, lateAboutYouCheck == nil {
+            // The first Slack account after onboarding; a second workspace
+            // is not "connecting Slack".
+            lateAboutYouCheck = Task {
+                await offerLateAboutYou(accountID: added)
+                lateAboutYouCheck = nil
+            }
         }
     }
 
     // MARK: - About you after a later Slack connect
 
-    /// UserDefaults key: the About you sheet was offered after a Slack
-    /// connect outside onboarding — it is offered once, ever.
+    /// UserDefaults key: About you was shown — the onboarding step left
+    /// through Done or Later, or the sheet after a later Slack connect. The
+    /// sheet is offered only while it is unset.
     static let lateAboutYouShownKey = "about_you_after_slack_shown"
 
-    /// The About you sheet over the main window.
+    /// The sheet waits for Settings: set once the offer passed its checks,
+    /// turned into `showsLateAboutYou` by `presentLateAboutYouIfReady()`.
+    private(set) var lateAboutYouPending = false
+    /// The About you sheet over the Settings window.
     var showsLateAboutYou = false
+    /// Settings' Add Slack sheet is up: a second sheet waits for it.
+    var isAddingSlackAccount = false {
+        didSet { presentLateAboutYouIfReady() }
+    }
     private(set) var isSavingLateAboutYou = false
     private(set) var lateAboutYouError: String?
     /// The check `slackAccountsDidChange` kicked off — held so tests can
-    /// await it.
+    /// await it; a second one does not start while it runs.
     @ObservationIgnored private(set) var lateAboutYouCheck: Task<Void, Never>?
 
-    /// A Slack account connected after onboarding (say a Development-only
-    /// setup, Slack added in Settings later): offer About you once, unless
-    /// the profile already names people. The roster load is already
-    /// running for the pickers.
-    private func offerLateAboutYou() async {
-        guard !onboardingDefaults.bool(forKey: Self.lateAboutYouShownKey),
-              let pool = databaseManager?.dbPool else { return }
+    private var lateAboutYouShown: Bool {
+        onboardingDefaults.bool(forKey: Self.lateAboutYouShownKey)
+    }
+
+    /// The first Slack account connected after onboarding (say a
+    /// Development-only setup, Slack added in Settings later): offer About
+    /// you once, unless it was shown or the profile already names people.
+    /// Only then does the people load start, for the pickers.
+    private func offerLateAboutYou(accountID: Int) async {
+        guard !lateAboutYouShown, let pool = databaseManager?.dbPool else { return }
         do {
             let answers = try await pool.read { db in try OnboardingProfileWriter.currentAnswers(db) }
             guard answers.manager.isEmpty, answers.reports.isEmpty, answers.peers.isEmpty else { return }
@@ -1206,26 +1227,41 @@ final class AppState {
             print("[AppState] About you check failed: \(error.localizedDescription)")
             return
         }
-        onboardingDefaults.set(true, forKey: Self.lateAboutYouShownKey)
+        // Shown meanwhile (the onboarding step, another offer)?
+        guard !lateAboutYouShown else { return }
+        peopleRoster.start(accountID: accountID)
         onboardingAboutYou.prepareForRerun()
         lateAboutYouError = nil
+        lateAboutYouPending = true
+        presentLateAboutYouIfReady()
+    }
+
+    /// Shows the pending sheet unless the Add Slack sheet is still up (its
+    /// dismissal calls this again).
+    func presentLateAboutYouIfReady() {
+        guard lateAboutYouPending, !isAddingSlackAccount else { return }
+        lateAboutYouPending = false
         showsLateAboutYou = true
     }
 
-    /// The sheet's Done (`about`) or Later (nil): the profile write alone —
-    /// no daemon, no onboarding state. The sheet stays up on a failure.
+    /// The sheet appeared: it counts as shown from now on.
+    func markAboutYouShown() {
+        onboardingDefaults.set(true, forKey: Self.lateAboutYouShownKey)
+    }
+
+    /// The sheet's Done (`about`) writes the answers — the profile alone, no
+    /// daemon, no onboarding state; the sheet stays up on a failure. Later
+    /// (nil) only closes it.
     func finishLateAboutYou(_ about: OnboardingAboutYou?) async {
+        guard let about else {
+            showsLateAboutYou = false
+            return
+        }
         guard !isSavingLateAboutYou, let pool = databaseManager?.dbPool else { return }
         isSavingLateAboutYou = true
         defer { isSavingLateAboutYou = false }
         do {
-            try await pool.write { db in
-                if let about {
-                    try OnboardingProfileWriter.done(db, about: about)
-                } else {
-                    try OnboardingProfileWriter.later(db)
-                }
-            }
+            try await pool.write { db in try OnboardingProfileWriter.done(db, about: about) }
             lateAboutYouError = nil
             showsLateAboutYou = false
         } catch {

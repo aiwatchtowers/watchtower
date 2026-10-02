@@ -1,9 +1,11 @@
 import SwiftUI
 import WatchtowerCore
 
-/// Onboarding step 3 (only with Slack connected): role and team, and the
-/// manager / reports / peers pickers over the synced Slack users. Done
-/// writes the answers, Later only marks onboarding done; both finish.
+/// About you: role and team, and the manager / reports / peers pickers over
+/// the synced Slack users. Onboarding's step 3 (only with Slack connected),
+/// where Done writes the answers and Later only marks onboarding done, both
+/// finishing it; and `LateAboutYouSheet` after the first Slack connect from
+/// Settings, where Done writes the answers and Later just closes.
 struct OnboardingAboutYouStepView: View {
     /// nil hides Back (the sheet after a later Slack connect).
     let onBack: (() -> Void)?

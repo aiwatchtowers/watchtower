@@ -39,5 +39,11 @@ struct SettingsView: View {
                 .tag(SettingsTab.profile)
         }
         .frame(width: 760, height: 580)
+        // About you after the first Slack connect from Connections — here,
+        // where the connect happened, once the Add sheet has gone.
+        .sheet(isPresented: $appState.showsLateAboutYou) {
+            LateAboutYouSheet().environment(appState)
+        }
+        .onAppear { appState.presentLateAboutYouIfReady() }
     }
 }

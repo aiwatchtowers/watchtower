@@ -1,9 +1,9 @@
 import SwiftUI
 import WatchtowerCore
 
-/// About you, once, after a Slack account was connected outside onboarding
-/// (`AppState.offerLateAboutYou`): the onboarding step in a sheet, its exits
-/// writing the profile only.
+/// About you, once, after the first Slack account was connected outside
+/// onboarding (`AppState.offerLateAboutYou`), over the Settings window: the
+/// onboarding step in a sheet. Done writes the profile only; Later closes.
 struct LateAboutYouSheet: View {
     @Environment(AppState.self) private var appState
 
@@ -21,5 +21,6 @@ struct LateAboutYouSheet: View {
         .padding(24)
         .frame(width: 760, height: 460)
         .interactiveDismissDisabled(appState.isSavingLateAboutYou)
+        .onAppear { appState.markAboutYouShown() }
     }
 }
