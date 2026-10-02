@@ -6,7 +6,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"testing"
@@ -158,4 +160,34 @@ func TestIntegrateWorkbenchStatusJSON_ReportsTheCurrentRegistration(t *testing.T
 	got = statusJSON(t, p)
 	assert.True(t, got.MCP && got.CurrentMCP, "%+v", got)
 	assert.False(t, got.Legacy)
+}
+
+// Without the claude CLI the removal cannot see the registrations, so its
+// report says so instead of "Nothing left installed."
+func TestIntegrateWorkbenchRemove_WithoutClaudeRegistrationsAreUnknown(t *testing.T) {
+	p := testWorkbench(t)
+	prev := workbenchCommandRunner
+	workbenchCommandRunner = func(context.Context, string, string, ...string) ([]byte, error) {
+		return nil, fmt.Errorf("exec: claude: %w", exec.ErrNotFound)
+	}
+	t.Cleanup(func() { workbenchCommandRunner = prev })
+
+	var out bytes.Buffer
+	require.Error(t, runWorkbenchRemove(context.Background(), &out, p), "the manual unregistration is reported")
+	assert.Contains(t, out.String(), "MCP registrations: unknown (claude CLI not found)")
+	assert.NotContains(t, out.String(), "Nothing left installed.")
+}
+
+// A leftovers check that fails is reported, not swallowed.
+func TestIntegrateWorkbenchRemove_ReportsAFailedLeftoversCheck(t *testing.T) {
+	useFakeWorkbenchClaude(t)
+	p := testWorkbench(t)
+	settings := filepath.Join(p.FolderPath, ".claude", "settings.local.json")
+	require.NoError(t, os.MkdirAll(filepath.Dir(settings), 0o755))
+	require.NoError(t, os.WriteFile(settings, []byte(`{"hooks": [`), 0o644))
+
+	var out bytes.Buffer
+	require.Error(t, runWorkbenchRemove(context.Background(), &out, p))
+	assert.Contains(t, out.String(), "Could not check what is left installed:")
+	assert.NotContains(t, out.String(), "Nothing left installed.")
 }
