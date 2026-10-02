@@ -39,6 +39,7 @@ type Syncer struct {
 	autoRefresh      bool                           // when true, auto re-analyze boards with changed config
 	fieldMapCache    map[int][]db.JiraBoardFieldMap // boardID -> field mappings
 	commentSyncLimit int                            // max changed issues fetched for comments per project sync pass (0 = disabled)
+	changelogLimit   int                            // max issues whose status/assignee history is fetched per pass (0 = disabled)
 	OnProgress       func(SyncProgress)             // optional progress callback
 }
 
@@ -142,6 +143,13 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 			return total, err
 		}
 		s.logger.Printf("releases sync error: %v", err)
+	}
+
+	// Status/assignee history of the synced and linked issues (changelog.go),
+	// after the issues so it sees this pass's updated_at values.
+	if err := s.syncHistory(ctx); err != nil {
+		s.logger.Printf("history sync aborted: %v", err)
+		return total, err
 	}
 
 	// Check if board configs changed since last analysis and optionally auto-refresh.

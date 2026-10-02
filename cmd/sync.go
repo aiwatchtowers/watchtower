@@ -959,6 +959,9 @@ func newJiraAccountSyncer(cfg *config.Config, database *db.DB, acct db.JiraAccou
 	if jiraCommentSyncEnabled(cfg) {
 		syncer.SetCommentSyncLimit(cfg.Ideas.MaxCommentIssuesPerSync)
 	}
+	// Status/assignee history for the chat's time-in-status questions;
+	// paced per pass so a first backfill spreads over cycles.
+	syncer.SetChangelogLimit(cfg.Jira.ChangelogIssuesPerSync)
 	// Wire board analyzer for auto-refresh of changed configs. This
 	// serves Boards, not digests, so it attaches whenever the account
 	// itself is wired — no longer behind cfg.Digest.Enabled (Task 3).

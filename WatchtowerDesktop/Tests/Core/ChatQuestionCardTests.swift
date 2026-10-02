@@ -134,4 +134,25 @@ final class ChatQuestionCardTests: XCTestCase {
         let card = try XCTUnwrap(ChatQuestionParser.parse(block(validJSON), final: true).card)
         XCTAssertTrue(ChatQuestionAnswer.selections(in: "the current one, for support", for: card).isEmpty)
     }
+
+    func testReadableTextSpellsTheCardOutInsteadOfItsJSON() {
+        let readable = ChatQuestionParser.readableText("Two readings here.\n" + block(validJSON))
+        XCTAssertEqual(readable, """
+        Two readings here.
+
+        Which release?
+        - v0.11 (recommended)
+        - v0.10
+
+        Who reads it?
+        - Support
+        - Sales
+        - Execs
+        """)
+        XCTAssertEqual(ChatQuestionParser.readableText(block(validJSON)).components(separatedBy: "\n").first,
+                       "Which release?", "no blank prose line when the reply is only a card")
+        XCTAssertEqual(ChatQuestionParser.readableText("no card here"), "no card here")
+        XCTAssertEqual(ChatQuestionParser.readableText(block("{not json")), block("{not json"),
+                       "a block that is not a card is the text the owner sees")
+    }
 }

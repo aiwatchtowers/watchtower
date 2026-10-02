@@ -328,6 +328,23 @@ package struct ProposedAction: Codable, Identifiable, Equatable {
         return hits[0]
     }
 
+    /// The change itself, without the model's wording: every payload field
+    /// but `reason` and `mode`. Two proposals with the same key write the
+    /// same thing (a Retry's re-proposal is recognised by it).
+    package var changeKey: String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        let payload = Self(
+            type: type, reason: "", status: status, note: note, progress: progress, text: text, intent: intent,
+            priority: priority, targetId: targetId, relation: relation, index: index, match: match, done: done,
+            dueDate: dueDate, ballOn: ballOn
+        )
+        guard let data = try? encoder.encode(payload), let key = String(bytes: data, encoding: .utf8) else {
+            return "\(type.rawValue): \(cardDescription)"
+        }
+        return key
+    }
+
     package var cardDescription: String {
         switch type {
         case .updateStatus:

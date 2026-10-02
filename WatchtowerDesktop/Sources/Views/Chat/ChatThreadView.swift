@@ -70,7 +70,7 @@ struct ChatThreadView: View {
         let rows = chatVM.thread.map(\.message)
         if let index = rows.firstIndex(where: { $0.id == item.id }),
            ChatQuestionThread.isAnswerable(at: index, in: rows, busy: chatVM.isStreaming) {
-            actions.answerQuestion = { _ = chatVM.send(text: $0) }
+            actions.answerQuestion = { _ = chatVM.send(text: $0, keepsComposer: true) }
         }
         return actions
     }

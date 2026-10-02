@@ -160,6 +160,15 @@ CREATE INDEX idx_jira_comments_issue_author ON jira_comments(issue_key, author_a
 index	idx_jira_comments_synced
 CREATE INDEX idx_jira_comments_synced ON jira_comments(synced_at)
 
+index	idx_jira_issue_changelog_issue
+CREATE INDEX idx_jira_issue_changelog_issue ON jira_issue_changelog(account_id, issue_key, changed_at)
+
+index	idx_jira_issue_links_source
+CREATE INDEX idx_jira_issue_links_source ON jira_issue_links(account_id, source_key)
+
+index	idx_jira_issue_links_target
+CREATE INDEX idx_jira_issue_links_target ON jira_issue_links(account_id, target_key)
+
 index	idx_jira_issues_assignee
 CREATE INDEX idx_jira_issues_assignee ON jira_issues(assignee_account_id)
 
@@ -1158,6 +1167,15 @@ profile_generated_at TEXT NOT NULL DEFAULT '',
 PRIMARY KEY (account_id, id)
 )
 
+table	jira_changelog_sync
+CREATE TABLE jira_changelog_sync (
+account_id INTEGER NOT NULL REFERENCES jira_accounts(id) ON DELETE CASCADE,
+issue_key TEXT NOT NULL,
+issue_updated_at TEXT NOT NULL,
+synced_at TEXT NOT NULL,
+PRIMARY KEY (account_id, issue_key)
+)
+
 table	jira_comments
 CREATE TABLE jira_comments (
 account_id INTEGER NOT NULL REFERENCES jira_accounts(id) ON DELETE CASCADE,
@@ -1183,6 +1201,22 @@ is_useful INTEGER NOT NULL DEFAULT 0,
 usage_hint TEXT NOT NULL DEFAULT '',
 synced_at TEXT NOT NULL DEFAULT '',
 PRIMARY KEY (account_id, id)
+)
+
+table	jira_issue_changelog
+CREATE TABLE jira_issue_changelog (
+account_id INTEGER NOT NULL REFERENCES jira_accounts(id) ON DELETE CASCADE,
+issue_key TEXT NOT NULL,
+history_id TEXT NOT NULL,
+field TEXT NOT NULL,
+from_value TEXT NOT NULL DEFAULT '',
+from_string TEXT NOT NULL DEFAULT '',
+to_value TEXT NOT NULL DEFAULT '',
+to_string TEXT NOT NULL DEFAULT '',
+author_account_id TEXT NOT NULL DEFAULT '',
+author_display_name TEXT NOT NULL DEFAULT '',
+changed_at TEXT NOT NULL,
+PRIMARY KEY (account_id, issue_key, history_id, field)
 )
 
 table	jira_issue_links
@@ -1215,6 +1249,26 @@ fix_versions TEXT NOT NULL DEFAULT '[]',
 created_at TEXT NOT NULL, updated_at TEXT NOT NULL, resolved_at TEXT NOT NULL DEFAULT '',
 raw_json TEXT NOT NULL DEFAULT '', custom_fields_json TEXT NOT NULL DEFAULT '',
 synced_at TEXT NOT NULL, is_deleted INTEGER NOT NULL DEFAULT 0,
+PRIMARY KEY (account_id, key)
+)
+
+table	jira_linked_issues
+CREATE TABLE jira_linked_issues (
+account_id INTEGER NOT NULL REFERENCES jira_accounts(id) ON DELETE CASCADE,
+key TEXT NOT NULL,
+id TEXT NOT NULL DEFAULT '',
+project_key TEXT NOT NULL DEFAULT '',
+summary TEXT NOT NULL DEFAULT '',
+issue_type TEXT NOT NULL DEFAULT '',
+status TEXT NOT NULL DEFAULT '',
+status_category TEXT NOT NULL DEFAULT '',
+assignee_account_id TEXT NOT NULL DEFAULT '',
+assignee_display_name TEXT NOT NULL DEFAULT '',
+created_at TEXT NOT NULL DEFAULT '',
+updated_at TEXT NOT NULL DEFAULT '',
+resolved_at TEXT NOT NULL DEFAULT '',
+fetch_error TEXT NOT NULL DEFAULT '',
+synced_at TEXT NOT NULL DEFAULT '',
 PRIMARY KEY (account_id, key)
 )
 
@@ -3152,6 +3206,12 @@ END
 13	config_hash	TEXT	notnull=1	dflt=''	pk=0
 14	profile_generated_at	TEXT	notnull=1	dflt=''	pk=0
 
+## jira_changelog_sync
+0	account_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	issue_key	TEXT	notnull=1	dflt=NULL	pk=2
+2	issue_updated_at	TEXT	notnull=1	dflt=NULL	pk=0
+3	synced_at	TEXT	notnull=1	dflt=NULL	pk=0
+
 ## jira_comments
 0	account_id	INTEGER	notnull=1	dflt=NULL	pk=1
 1	issue_key	TEXT	notnull=1	dflt=NULL	pk=0
@@ -3172,6 +3232,19 @@ END
 5	is_useful	INTEGER	notnull=1	dflt=0	pk=0
 6	usage_hint	TEXT	notnull=1	dflt=''	pk=0
 7	synced_at	TEXT	notnull=1	dflt=''	pk=0
+
+## jira_issue_changelog
+0	account_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	issue_key	TEXT	notnull=1	dflt=NULL	pk=2
+2	history_id	TEXT	notnull=1	dflt=NULL	pk=3
+3	field	TEXT	notnull=1	dflt=NULL	pk=4
+4	from_value	TEXT	notnull=1	dflt=''	pk=0
+5	from_string	TEXT	notnull=1	dflt=''	pk=0
+6	to_value	TEXT	notnull=1	dflt=''	pk=0
+7	to_string	TEXT	notnull=1	dflt=''	pk=0
+8	author_account_id	TEXT	notnull=1	dflt=''	pk=0
+9	author_display_name	TEXT	notnull=1	dflt=''	pk=0
+10	changed_at	TEXT	notnull=1	dflt=NULL	pk=0
 
 ## jira_issue_links
 0	account_id	INTEGER	notnull=1	dflt=NULL	pk=1
@@ -3219,6 +3292,23 @@ END
 34	custom_fields_json	TEXT	notnull=1	dflt=''	pk=0
 35	synced_at	TEXT	notnull=1	dflt=NULL	pk=0
 36	is_deleted	INTEGER	notnull=1	dflt=0	pk=0
+
+## jira_linked_issues
+0	account_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	key	TEXT	notnull=1	dflt=NULL	pk=2
+2	id	TEXT	notnull=1	dflt=''	pk=0
+3	project_key	TEXT	notnull=1	dflt=''	pk=0
+4	summary	TEXT	notnull=1	dflt=''	pk=0
+5	issue_type	TEXT	notnull=1	dflt=''	pk=0
+6	status	TEXT	notnull=1	dflt=''	pk=0
+7	status_category	TEXT	notnull=1	dflt=''	pk=0
+8	assignee_account_id	TEXT	notnull=1	dflt=''	pk=0
+9	assignee_display_name	TEXT	notnull=1	dflt=''	pk=0
+10	created_at	TEXT	notnull=1	dflt=''	pk=0
+11	updated_at	TEXT	notnull=1	dflt=''	pk=0
+12	resolved_at	TEXT	notnull=1	dflt=''	pk=0
+13	fetch_error	TEXT	notnull=1	dflt=''	pk=0
+14	synced_at	TEXT	notnull=1	dflt=''	pk=0
 
 ## jira_releases
 0	account_id	INTEGER	notnull=1	dflt=NULL	pk=1
