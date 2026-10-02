@@ -34,7 +34,9 @@ struct NavigationRoot: View {
                 appState.reinitializeAfterOnboarding()
             }
         case .main:
+            @Bindable var appState = appState
             MainNavigationView()
+                .sheet(isPresented: $appState.showsLateAboutYou) { LateAboutYouSheet() }
         }
     }
 }

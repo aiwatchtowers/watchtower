@@ -34,7 +34,8 @@ struct OnboardingV2View: View {
                         await appState.leaveOnboardingStep(
                             .aboutYou, route: appState.onboardingRoute, about: about, onRetry: onRetry
                         )
-                    }
+                    },
+                    isBusy: appState.isFinishingOnboarding
                 )
             case .complete:
                 EmptyView()

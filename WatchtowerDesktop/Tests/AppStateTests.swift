@@ -571,20 +571,6 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(launches.accounts, [Int(id)])
     }
 
-    func testSlackAccountOutsideOnboardingStartsNothing() async throws {
-        let launches = RosterLaunches()
-        let appState = onboardingAppState(launches)
-        appState.needsOnboarding = false
-        appState.slackAccountsDidChange([])
-        let id = try await dbManager.dbPool.write { db in try TestDatabase.insertSlackAccount(db, teamID: "T1") }
-        let accounts = try await dbManager.dbPool.read { db in try SlackAccountQueries.fetchAll(db) }
-        XCTAssertEqual(accounts.map(\.id), [Int(id)])
-
-        appState.slackAccountsDidChange(accounts)
-
-        XCTAssertEqual(appState.peopleRoster.state, .idle)
-    }
-
     /// A relaunch on Connect / About you: the connected account's load runs
     /// once.
     func testResumePeopleRosterStartsOnceForAConnectedAccount() async throws {
@@ -794,5 +780,92 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(profile.role, "old role")
         XCTAssertEqual(profile.manager, "1:U_BOSS")
         XCTAssertEqual(profile.reports, #"["1:U_OLD"]"#)
+    }
+
+    // MARK: - About you after a later Slack connect
+
+    /// A finished install (no onboarding pending) with its Slack accounts
+    /// VM; returns the state and the launches the people load made.
+    private func finishedInstall() async throws -> (AppState, RosterLaunches, SlackAccountsViewModel) {
+        let launches = RosterLaunches()
+        let appState = onboardingAppState(launches)
+        appState.needsOnboarding = false
+        appState.initSlackAccounts(dbPool: dbManager.dbPool)
+        let vm = try XCTUnwrap(appState.slackAccountsViewModel)
+        await vm.refreshAsync()
+        return (appState, launches, vm)
+    }
+
+    private func connectSlack(_ vm: SlackAccountsViewModel, team: String, appState: AppState) async throws {
+        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertSlackAccount(db, teamID: team) }
+        await vm.refreshAsync()
+        await appState.lateAboutYouCheck?.value
+    }
+
+    func testLateSlackConnectOffersAboutYouOnce() async throws {
+        let (appState, launches, vm) = try await finishedInstall()
+        XCTAssertFalse(appState.showsLateAboutYou)
+
+        try await connectSlack(vm, team: "T1", appState: appState)
+        XCTAssertTrue(appState.showsLateAboutYou)
+        XCTAssertEqual(launches.accounts.count, 1, "the pickers' people load starts too")
+
+        appState.showsLateAboutYou = false
+        await appState.peopleRoster.waitForCompletion()
+        try await connectSlack(vm, team: "T2", appState: appState)
+        XCTAssertFalse(appState.showsLateAboutYou, "offered once, ever")
+    }
+
+    func testLateSlackConnectSkipsAProfileThatNamesPeople() async throws {
+        let (appState, _, vm) = try await finishedInstall()
+        try await dbManager.dbPool.write { db in
+            try OnboardingProfileWriter.done(db, about: OnboardingAboutYou(role: "EM", manager: "1:U_BOSS"))
+        }
+
+        try await connectSlack(vm, team: "T1", appState: appState)
+
+        XCTAssertFalse(appState.showsLateAboutYou)
+    }
+
+    func testAlreadyConnectedSlackOnLaunchOffersNothing() async throws {
+        try await dbManager.dbPool.write { db in _ = try TestDatabase.insertSlackAccount(db, teamID: "T1") }
+        let (appState, launches, vm) = try await finishedInstall()
+        await vm.refreshAsync()
+        await appState.lateAboutYouCheck?.value
+
+        XCTAssertFalse(appState.showsLateAboutYou)
+        XCTAssertEqual(launches.accounts, [])
+    }
+
+    /// Done writes the profile and closes the sheet; nothing else moves —
+    /// no daemon, no onboarding step.
+    func testLateAboutYouDoneWritesOnlyTheProfile() async throws {
+        let (appState, _, vm) = try await finishedInstall()
+        let daemon = FakeOnboardingDaemon()
+        appState.onboardingDaemonOverride = daemon
+        appState.onboarding.goTo(.complete)
+        try await connectSlack(vm, team: "T1", appState: appState)
+
+        let about = OnboardingAboutYou(role: "EM", manager: "1:U_ANNA", reports: ["1:U_OLEG"], peers: [])
+        await appState.finishLateAboutYou(about)
+
+        XCTAssertFalse(appState.showsLateAboutYou)
+        XCTAssertNil(appState.lateAboutYouError)
+        let saved = try await dbManager.dbPool.read { db in try OnboardingProfileWriter.currentAnswers(db) }
+        XCTAssertEqual(saved, about)
+        XCTAssertEqual(daemon.starts + daemon.restarts, 0)
+        XCTAssertEqual(appState.onboarding.currentStep, .complete)
+        XCTAssertFalse(appState.needsOnboarding)
+    }
+
+    func testLateAboutYouFailedWriteKeepsTheSheet() async throws {
+        let (appState, _, vm) = try await finishedInstall()
+        try await connectSlack(vm, team: "T1", appState: appState)
+        try await dbManager.dbPool.write { db in try db.execute(sql: "DROP TABLE user_profile") }
+
+        await appState.finishLateAboutYou(nil)
+
+        XCTAssertTrue(appState.showsLateAboutYou)
+        XCTAssertNotNil(appState.lateAboutYouError)
     }
 }

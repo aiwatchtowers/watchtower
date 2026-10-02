@@ -5,9 +5,12 @@ import WatchtowerCore
 /// manager / reports / peers pickers over the synced Slack users. Done
 /// writes the answers, Later only marks onboarding done; both finish.
 struct OnboardingAboutYouStepView: View {
-    let onBack: () -> Void
+    /// nil hides Back (the sheet after a later Slack connect).
+    let onBack: (() -> Void)?
     /// `about` is nil for Later.
     let onFinish: (_ about: OnboardingAboutYou?) async -> Void
+    /// A finish is running: the exits are off.
+    var isBusy: Bool
 
     @Environment(AppState.self) private var appState
 
@@ -68,9 +71,11 @@ struct OnboardingAboutYouStepView: View {
             Spacer(minLength: 0)
 
             HStack {
-                Button("Back", action: onBack)
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
+                if let onBack {
+                    Button("Back", action: onBack)
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
                 Button("Later") { Task { await onFinish(nil) } }
                     .controlSize(.large)
@@ -85,7 +90,7 @@ struct OnboardingAboutYouStepView: View {
                 // profile.
                 .disabled(!model.isPrefilled)
             }
-            .disabled(appState.isFinishingOnboarding)
+            .disabled(isBusy)
         }
         .task { await watchPeople() }
     }

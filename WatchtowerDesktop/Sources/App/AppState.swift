@@ -328,6 +328,8 @@ final class AppState {
 
     /// `onboardingDefaults` backs the onboarding step and goals — tests pass
     /// an isolated suite.
+    @ObservationIgnored private let onboardingDefaults: UserDefaults
+
     /// Opens (and migrates) the workspace database.
     @ObservationIgnored private let openDatabase: @Sendable () throws -> DatabaseManager
 
@@ -348,6 +350,7 @@ final class AppState {
         let features = FeatureManagerService()
         featureManager = features
         onboarding = OnboardingStateMachineV2(defaults: onboardingDefaults)
+        self.onboardingDefaults = onboardingDefaults
         onboardingGoals = .production(defaults: onboardingDefaults, featureManager: features)
         peopleRoster = PeopleRosterLoad(run: peopleRosterRun)
         self.openDatabase = openDatabase
@@ -1138,21 +1141,79 @@ final class AppState {
     /// The active Slack accounts at the last refresh; nil before the first.
     @ObservationIgnored private var knownSlackAccountIDs: Set<Int>?
 
-    /// During onboarding, a Slack account that appeared since the last
-    /// refresh starts the people load — however its Add sheet was left
-    /// (closed mid-sign-in, the connect finishing afterwards, included).
-    /// The first refresh records what is already there, and an account
-    /// already connected (a relaunch mid-onboarding) resumes the load.
+    /// A Slack account that appeared since the last refresh starts the
+    /// people load — however its Add sheet was left (closed mid-sign-in, the
+    /// connect finishing afterwards, included) — and, outside onboarding,
+    /// offers About you once. The first refresh records what is already
+    /// there, and during onboarding an account already connected (a
+    /// relaunch mid-onboarding) resumes the load.
     func slackAccountsDidChange(_ accounts: [SlackAccount]) {
         let active = accounts.filter { $0.status != "removed" }.map(\.id)
         defer { knownSlackAccountIDs = Set(active) }
-        guard needsOnboarding else { return }
         guard let known = knownSlackAccountIDs else {
-            resumePeopleRosterIfNeeded()
+            if needsOnboarding { resumePeopleRosterIfNeeded() }
             return
         }
         guard let added = OnboardingConnectPlan.newlyConnected(before: known, after: active) else { return }
         peopleRoster.start(accountID: added)
+        if !needsOnboarding {
+            lateAboutYouCheck = Task { await offerLateAboutYou() }
+        }
+    }
+
+    // MARK: - About you after a later Slack connect
+
+    /// UserDefaults key: the About you sheet was offered after a Slack
+    /// connect outside onboarding — it is offered once, ever.
+    static let lateAboutYouShownKey = "about_you_after_slack_shown"
+
+    /// The About you sheet over the main window.
+    var showsLateAboutYou = false
+    private(set) var isSavingLateAboutYou = false
+    private(set) var lateAboutYouError: String?
+    /// The check `slackAccountsDidChange` kicked off — held so tests can
+    /// await it.
+    @ObservationIgnored private(set) var lateAboutYouCheck: Task<Void, Never>?
+
+    /// A Slack account connected after onboarding (say a Development-only
+    /// setup, Slack added in Settings later): offer About you once, unless
+    /// the profile already names people. The roster load is already
+    /// running for the pickers.
+    private func offerLateAboutYou() async {
+        guard !onboardingDefaults.bool(forKey: Self.lateAboutYouShownKey),
+              let pool = databaseManager?.dbPool else { return }
+        do {
+            let answers = try await pool.read { db in try OnboardingProfileWriter.currentAnswers(db) }
+            guard answers.manager.isEmpty, answers.reports.isEmpty, answers.peers.isEmpty else { return }
+        } catch {
+            print("[AppState] About you check failed: \(error.localizedDescription)")
+            return
+        }
+        onboardingDefaults.set(true, forKey: Self.lateAboutYouShownKey)
+        onboardingAboutYou.prepareForRerun()
+        lateAboutYouError = nil
+        showsLateAboutYou = true
+    }
+
+    /// The sheet's Done (`about`) or Later (nil): the profile write alone —
+    /// no daemon, no onboarding state. The sheet stays up on a failure.
+    func finishLateAboutYou(_ about: OnboardingAboutYou?) async {
+        guard !isSavingLateAboutYou, let pool = databaseManager?.dbPool else { return }
+        isSavingLateAboutYou = true
+        defer { isSavingLateAboutYou = false }
+        do {
+            try await pool.write { db in
+                if let about {
+                    try OnboardingProfileWriter.done(db, about: about)
+                } else {
+                    try OnboardingProfileWriter.later(db)
+                }
+            }
+            lateAboutYouError = nil
+            showsLateAboutYou = false
+        } catch {
+            lateAboutYouError = "Could not save: \(error.localizedDescription)"
+        }
     }
 
     /// Connect or About you on a relaunch: the load did not survive the quit,
