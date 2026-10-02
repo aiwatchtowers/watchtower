@@ -59,8 +59,8 @@ type WhatHappenedItem struct {
 // TeamPulseItem is a people signal.
 type TeamPulseItem struct {
 	Text       string `json:"text"`
-	UserID     string `json:"user_id"`
-	SignalType string `json:"signal_type"` // volume_drop, volume_spike, new_red_flag, highlight, conflict
+	UserID     string `json:"user_id,omitempty"` // omitted when blanked (Swift decodes a missing key as nil)
+	SignalType string `json:"signal_type"`       // volume_drop, volume_spike, new_red_flag, highlight, conflict
 	Detail     string `json:"detail"`
 }
 

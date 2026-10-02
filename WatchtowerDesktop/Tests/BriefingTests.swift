@@ -120,6 +120,54 @@ final class BriefingModelTests: XCTestCase {
         XCTAssertNil(items[1].suggestTrack)
     }
 
+    /// Go-shaped fixture: `internal/briefing` writes `target_id` and
+    /// `suggest_target` (omitempty), never the pre-rename `task_id` /
+    /// `suggest_task` keys.
+    func testYourDayAndAttentionDecodeGoTargetKeys() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try TestDatabase.insertBriefing(
+                db,
+                attention: """
+                [{"text":"Make it a target","source_type":"track","source_id":"3","priority":"high","reason":"r","suggest_target":true}]
+                """,
+                yourDay: """
+                [{"text":"Ship the fix","target_id":42,"priority":"high","status":"active","ownership":"mine"},\
+                {"text":"Follow the track","track_id":7,"priority":"medium","status":"active","ownership":"mine"}]
+                """
+            )
+        }
+
+        let briefing = try db.read { db in try BriefingQueries.fetchLatest(db) }
+        let yourDay = briefing?.parsedYourDay ?? []
+        XCTAssertEqual(yourDay.count, 2)
+        XCTAssertEqual(yourDay.first?.targetID, 42)
+        XCTAssertNil(yourDay.first?.trackID)
+        XCTAssertNil(yourDay.last?.targetID)
+        XCTAssertEqual(yourDay.last?.trackID, 7)
+        XCTAssertEqual(briefing?.parsedAttention.first?.suggestTarget, true)
+    }
+
+    /// Rows written before the tasks → targets rename still open their target.
+    func testYourDayAndAttentionDecodeLegacyTaskKeys() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try TestDatabase.insertBriefing(
+                db,
+                attention: """
+                [{"text":"Old row","suggest_task":true}]
+                """,
+                yourDay: """
+                [{"text":"Old row","task_id":9,"priority":"high","status":"active","ownership":"mine"}]
+                """
+            )
+        }
+
+        let briefing = try db.read { db in try BriefingQueries.fetchLatest(db) }
+        XCTAssertEqual(briefing?.parsedYourDay.first?.targetID, 9)
+        XCTAssertEqual(briefing?.parsedAttention.first?.suggestTarget, true)
+    }
+
     func testBriefingEmptyJSONReturnsEmptyArrays() throws {
         let db = try TestDatabase.create()
         try db.write { db in
