@@ -30,13 +30,15 @@ struct DefaultWorkbenchActivityReader: WorkbenchActivityReading {
 @MainActor
 @Observable
 final class WorkbenchNotificationCenter {
-    /// `@AppStorage` key of the Settings toggle; absent = on.
+    /// `@AppStorage` key of the Settings toggle; absent = on. The `projects.`
+    /// prefix here and in `snapshotKey` predates the Workbench rename;
+    /// persisted, so kept (spec 2026-10-02 A1).
     static let enabledKey = "projects.notifications"
     static let pollInterval: Duration = .seconds(30)
 
     static func snapshotKey(_ projectID: Int64) -> String { "projects.notificationSnapshot.\(projectID)" }
 
-    /// After every poll — the Projects list reloads here (its data changes in
+    /// After every poll — the Workbench list reloads here (its data changes in
     /// other processes too).
     @ObservationIgnored var onPolled: (() async -> Void)?
 
@@ -98,7 +100,7 @@ final class WorkbenchNotificationCenter {
         } catch {
             // Nothing to iterate and nothing to prune against: bail before
             // touching either.
-            print("[ProjectNotifications] poll error: \(error.localizedDescription)")
+            print("[WorkbenchNotifications] poll error: \(error.localizedDescription)")
             await onPolled?()
             return
         }
@@ -109,7 +111,7 @@ final class WorkbenchNotificationCenter {
             do {
                 try await poll(project)
             } catch {
-                print("[ProjectNotifications] poll error for project \(project.id): \(error.localizedDescription)")
+                print("[WorkbenchNotifications] poll error for workbench \(project.id): \(error.localizedDescription)")
             }
         }
         prune(keeping: Set(projects.map(\.id)))
@@ -142,7 +144,7 @@ final class WorkbenchNotificationCenter {
         } catch {
             // Undecodable ≠ absent: say so, then re-baseline silently rather
             // than replay the project's whole history.
-            print("[ProjectNotifications] snapshot for project \(projectID) unreadable, re-baselining: \(error)")
+            print("[WorkbenchNotifications] snapshot for workbench \(projectID) unreadable, re-baselining: \(error)")
             return nil
         }
     }
@@ -151,7 +153,7 @@ final class WorkbenchNotificationCenter {
         do {
             defaults.set(try JSONEncoder().encode(snapshot), forKey: Self.snapshotKey(snapshot.projectID))
         } catch {
-            print("[ProjectNotifications] could not save snapshot for project \(snapshot.projectID): \(error)")
+            print("[WorkbenchNotifications] could not save snapshot for workbench \(snapshot.projectID): \(error)")
         }
     }
 

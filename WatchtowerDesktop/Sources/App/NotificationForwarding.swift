@@ -48,6 +48,7 @@ enum NotificationForwarding {
     static let digestIDKey = "digestId"
     static let ideaIDKey = "ideaId"
     static let transcriptIDKey = "transcriptID"
+    // The workbench push keeps its pre-rename `userInfo` (spec 2026-10-02 A1).
     static let workbenchIDKey = "projectId"
     static let workbenchSubjectIDKey = "subjectId"
     static let workbenchPaneKey = "pane"

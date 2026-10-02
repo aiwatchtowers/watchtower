@@ -467,7 +467,7 @@ func TestStatusProjectReportsEachPart(t *testing.T) {
 }
 
 // TestProjectMCPCommand_MatchesTheDesktopFixture pins the text the Desktop's
-// ProjectInstallStatus.manualMCPCommand reproduces (ProjectCLITests
+// WorkbenchInstallStatus.manualMCPCommand reproduces (WorkbenchCLITests
 // testManualMCPCommandMatchesTheGoTwin): change both sides together.
 func TestProjectMCPCommand_MatchesTheDesktopFixture(t *testing.T) {
 	cases := []struct {

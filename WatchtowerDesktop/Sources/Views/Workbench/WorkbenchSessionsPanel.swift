@@ -48,8 +48,8 @@ struct WorkbenchSessionsPanel: View {
                 Image(systemName: "chevron.backward")
             }
             .buttonStyle(.borderless)
-            .help("Back to Projects")
-            .accessibilityLabel("Back to Projects")
+            .help("Back to Workbenches")
+            .accessibilityLabel("Back to Workbenches")
             Text(project.name)
                 .font(.headline)
                 .lineLimit(1)

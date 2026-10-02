@@ -14,7 +14,7 @@ final class WorkbenchesViewModelDeleteTests: XCTestCase {
 
     override func setUpWithError() throws {
         (pool, path) = try TestDatabase.createPool()
-        defaults = try XCTUnwrap(UserDefaults(suiteName: "ProjectsViewModelDeleteTests-\(UUID().uuidString)"))
+        defaults = try XCTUnwrap(UserDefaults(suiteName: "WorkbenchesViewModelDeleteTests-\(UUID().uuidString)"))
     }
 
     override func tearDown() {
@@ -22,7 +22,7 @@ final class WorkbenchesViewModelDeleteTests: XCTestCase {
         super.tearDown()
     }
 
-    /// Stands in for `watchtower project delete N`: records the call and, unless
+    /// Stands in for `watchtower workbench delete N`: records the call and, unless
     /// told to fail, deletes the row the way the CLI's transaction would.
     private final class DeletingCLIRunner: CLIRunnerProtocol, @unchecked Sendable {
         let pool: DatabasePool
@@ -35,7 +35,7 @@ final class WorkbenchesViewModelDeleteTests: XCTestCase {
         func run(args: [String]) async throws -> Data {
             calls.append(args)
             if fail { throw CLIRunnerError.nonZeroExit(code: 1, stderr: "database is locked") }
-            guard args.count == 4, args[0] == "project", args[1] == "delete", let id = Int64(args[2]) else {
+            guard args.count == 4, args[0] == "workbench", args[1] == "delete", let id = Int64(args[2]) else {
                 return Data()
             }
             try await pool.write { try $0.execute(sql: "DELETE FROM projects WHERE id = ?", arguments: [id]) }
@@ -66,7 +66,7 @@ final class WorkbenchesViewModelDeleteTests: XCTestCase {
 
         XCTAssertTrue(ok)
         XCTAssertEqual(closedBeforeCLI, [id], "the terminal closes before `project delete` runs")
-        XCTAssertEqual(runner.calls, [["project", "delete", String(id), "--json"]])
+        XCTAssertEqual(runner.calls, [["workbench", "delete", String(id), "--json"]])
         XCTAssertTrue(vm.summaries.isEmpty)
         XCTAssertNil(vm.selectedWorkbenchID)
         XCTAssertNil(vm.deleteError)
@@ -145,7 +145,7 @@ final class WorkbenchesViewModelDeleteTests: XCTestCase {
         _ = await first.value
 
         XCTAssertFalse(second)
-        XCTAssertEqual(runner.calls, [["project", "delete", String(a), "--json"]])
+        XCTAssertEqual(runner.calls, [["workbench", "delete", String(a), "--json"]])
     }
 
     func testReloadClosesTheTerminalOfAProjectDeletedFromOutside() async throws {
@@ -158,7 +158,7 @@ final class WorkbenchesViewModelDeleteTests: XCTestCase {
         var closed: [Int64] = []
         vm.closeTerminal = { closed.append($0) }
 
-        // `watchtower project delete` from a terminal, not through the VM.
+        // `watchtower workbench delete` from a terminal, not through the VM.
         try await pool.write { try $0.execute(sql: "DELETE FROM projects WHERE id = ?", arguments: [a]) }
         await vm.reload()
 

@@ -65,7 +65,7 @@ final class WorkbenchBoardViewModel {
     init(dbPool: DatabasePool, projectID: Int64, defaults: UserDefaults = .standard) {
         self.dbPool = dbPool
         self.projectID = projectID
-        let preferences = WorkbenchBoardPreferences(projectID: projectID, defaults: defaults)
+        let preferences = WorkbenchBoardPreferences(workbenchID: projectID, defaults: defaults)
         self.preferences = preferences
         mode = preferences.mode
         kanbanFilterRootID = preferences.kanbanFilterRootID

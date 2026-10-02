@@ -1,7 +1,7 @@
 import Foundation
 import WatchtowerCore
 
-/// The Projects tab's left panel (spec 2026-09-30-project-workspace-sessions
+/// The Workbench tab's left panel (spec 2026-09-30-project-workspace-sessions
 /// §3): level 1 lists projects and standalone terminals, level 2 one
 /// project's Board, Documents and sessions. The views only call these.
 extension WorkbenchesViewModel {
@@ -29,18 +29,18 @@ extension WorkbenchesViewModel {
     func moveSessions(_ displayed: [TerminalSession], projectID: Int64?, from source: IndexSet, to destination: Int) {
         let order = TerminalSessionOrder.move(displayed, from: source, to: destination)
         sessionOrders[projectID] = order
-        defaults.set(order.map(NSNumber.init(value:)), forKey: TerminalSessionOrder.key(projectID: projectID))
+        defaults.set(order.map(NSNumber.init(value:)), forKey: TerminalSessionOrder.key(workbenchID: projectID))
     }
 
     /// Cached once dragged: UserDefaults is not observed, the cache is what
     /// re-renders the list after a drag.
     private func sessionOrder(projectID: Int64?) -> [Int64] {
         if let cached = sessionOrders[projectID] { return cached }
-        let key = TerminalSessionOrder.key(projectID: projectID)
+        let key = TerminalSessionOrder.key(workbenchID: projectID)
         guard let raw = defaults.array(forKey: key) else { return [] }
         let ids = raw.compactMap { ($0 as? NSNumber)?.int64Value }
         if ids.count != raw.count {
-            NSLog("ProjectsViewModel: ignored %d unreadable entries in %@", raw.count - ids.count, key)
+            NSLog("WorkbenchesViewModel: ignored %d unreadable entries in %@", raw.count - ids.count, key)
         }
         return ids
     }

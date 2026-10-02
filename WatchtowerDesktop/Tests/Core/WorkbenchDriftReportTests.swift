@@ -7,7 +7,7 @@ final class WorkbenchDriftReportTests: XCTestCase {
         try JSONDecoder().decode(WorkbenchDriftReport.self, from: Data(json.utf8))
     }
 
-    /// The shape `watchtower project check --json` prints (Go
+    /// The shape `watchtower workbench check --json` prints (Go
     /// `projectcheck.Report`, cmd/project_check_test.go's JSON test).
     func testDecodesTheGoReport() throws {
         let report = try decode("""

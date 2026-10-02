@@ -5,9 +5,9 @@ final class TerminalLaunchTests: XCTestCase {
     private let uuid = "3f2a1b4c-0000-4000-8000-000000000001"
 
     func testNewClaudeWithPromptQuotesPromptAndPassesSessionID() {
-        let prompt = TerminalLaunch.workOnTargetPrompt(targetID: 42)
+        let prompt = TerminalLaunch.workOnTargetPrompt(targetID: 42, vocabulary: .current)
         let l = TerminalLaunch.make(shell: "/bin/zsh", folder: "/tmp/acme", mode: .newClaude(uuid: uuid, prompt: prompt))
-        let command = "exec claude --session-id \(uuid) 'Work on target #42 using the watchtower-project skill.'"
+        let command = "exec claude --session-id \(uuid) 'Work on target #42 using the watchtower-workbench skill.'"
         XCTAssertEqual(l.args, ["-l", "-c", command])
         XCTAssertEqual(l.currentDirectory, "/tmp/acme")
     }
@@ -41,7 +41,7 @@ final class TerminalLaunchTests: XCTestCase {
     }
 
     func testFirstRunKeepsTheSetupPrompt() {
-        let prompt = TerminalLaunch.firstRunPrompt
+        let prompt = TerminalLaunch.firstRunPrompt(.current)
         let l = TerminalLaunch.make(shell: "/bin/zsh", folder: "/tmp/acme", mode: .newClaude(uuid: uuid, prompt: prompt))
         XCTAssertEqual(l.args.last?.hasSuffix("'\(prompt)'"), true)
     }
@@ -55,8 +55,29 @@ final class TerminalLaunchTests: XCTestCase {
     }
 
     func testFixedPromptsHoldNoQuote() {
-        XCTAssertFalse(TerminalLaunch.firstRunPrompt.contains("'"))
-        XCTAssertFalse(TerminalLaunch.workOnTargetPrompt(targetID: 9_223_372_036_854_775_807).contains("'"))
+        for vocabulary in [WorkbenchVocabulary.current, .legacy] {
+            XCTAssertFalse(TerminalLaunch.firstRunPrompt(vocabulary).contains("'"))
+            XCTAssertFalse(TerminalLaunch.workOnTargetPrompt(targetID: 9_223_372_036_854_775_807, vocabulary: vocabulary).contains("'"))
+        }
+    }
+
+    /// A folder set up before the Workbench rename has only the old skill
+    /// (spec 2026-10-02 §5.3); the prompts name what the folder has, and stay
+    /// one line without control characters.
+    func testPromptsNameTheFoldersSkill() {
+        XCTAssertEqual(TerminalLaunch.firstRunPrompt(.current),
+                       "Set up this Watchtower workbench using the watchtower-workbench skill.")
+        XCTAssertEqual(TerminalLaunch.firstRunPrompt(.legacy),
+                       "Set up this Watchtower workbench using the watchtower-project skill.")
+        XCTAssertEqual(TerminalLaunch.workOnTargetPrompt(targetID: 7, vocabulary: .current),
+                       "Work on target #7 using the watchtower-workbench skill.")
+        XCTAssertEqual(TerminalLaunch.workOnTargetPrompt(targetID: 7, vocabulary: .legacy),
+                       "Work on target #7 using the watchtower-project skill.")
+        for vocabulary in [WorkbenchVocabulary.current, .legacy] {
+            for prompt in [TerminalLaunch.firstRunPrompt(vocabulary), TerminalLaunch.workOnTargetPrompt(targetID: 7, vocabulary: vocabulary)] {
+                XCTAssertFalse(prompt.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) || CharacterSet.newlines.contains($0) })
+            }
+        }
     }
 
     func testMissingOrRelativeShellFallsBackToZsh() {

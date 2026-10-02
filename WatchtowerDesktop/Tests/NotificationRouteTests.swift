@@ -269,7 +269,7 @@ final class NotificationRouteTests: XCTestCase {
                 appState: appState,
                 forwarded: forwarded
             )
-            XCTAssertEqual(appState.selectedDestination, .projects, "forwarded: \(forwarded)")
+            XCTAssertEqual(appState.selectedDestination, .workbench, "forwarded: \(forwarded)")
             XCTAssertEqual(appState.pendingWorkbenchRoute, WorkbenchRoute(projectID: 3, pane: .documents, subjectID: 8))
         }
     }

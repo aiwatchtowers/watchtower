@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 import WatchtowerCore
 
-/// A level-1 row of the Projects panel: a project, or a standalone terminal.
+/// A level-1 row of the Workbench panel: a project, or a standalone terminal.
 enum WorkbenchesPanelItem: Hashable {
     case project(Int64)
     case terminal(Int64)
@@ -16,13 +16,14 @@ private enum PendingFolder {
     case terminal(TerminalSession.Kind, URL)
 }
 
-/// Projects tab: the collapsible, resizable two-level panel on the left
+/// Workbench tab: the collapsible, resizable two-level panel on the left
 /// (projects and standalone terminals, or one project's sessions) and the
 /// selected project's page — or standalone terminal — on the right
 /// (spec 2026-09-30-project-workspace-sessions §3).
 struct WorkbenchesView: View {
     @Bindable var vm: WorkbenchesViewModel
     @Environment(AppState.self) private var appState
+    // The `projects.` keys predate the Workbench rename; persisted, so kept (spec 2026-10-02 A1).
     @AppStorage("projects.panelVisible") private var panelVisible = true
     @AppStorage("projects.panelWidth") private var panelWidth = PanelResizeHandle.defaultWidth
     @State private var dragPanelWidth: Double?
@@ -89,9 +90,9 @@ struct WorkbenchesView: View {
             Button { withAnimation(.easeInOut(duration: 0.2)) { panelVisible.toggle() } } label: {
                 Image(systemName: "sidebar.leading")
             }
-            .help("Toggle Projects Panel")
-            .accessibilityLabel("Toggle Projects Panel")
-            Text(vm.selectedStandalone?.title ?? vm.selectedWorkbench?.name ?? "Projects")
+            .help("Toggle Workbench Panel")
+            .accessibilityLabel("Toggle Workbench Panel")
+            Text(vm.selectedStandalone?.title ?? vm.selectedWorkbench?.name ?? "Workbench")
                 .font(.headline)
                 .lineLimit(1)
             Spacer()
@@ -157,11 +158,11 @@ struct WorkbenchesView: View {
     /// The chat history's header shape ("Chats" + New Chat).
     private var workbenchListHeader: some View {
         HStack(spacing: 6) {
-            Text("Projects").font(.headline)
+            Text("Workbenches").font(.headline)
             Spacer(minLength: 4)
             if vm.isCreating { ProgressView().controlSize(.small) }
             Menu {
-                Button("New Project…") { chooseNewWorkbenchFolder() }
+                Button("New Workbench…") { chooseNewWorkbenchFolder() }
                 Button("Add Existing Folder…") { chooseExistingFolder() }
             } label: {
                 Image(systemName: "plus")
@@ -170,8 +171,8 @@ struct WorkbenchesView: View {
             .menuIndicator(.hidden)
             .fixedSize()
             .disabled(vm.isCreating)
-            .help("New project…")
-            .accessibilityLabel("New project…")
+            .help("New workbench…")
+            .accessibilityLabel("New workbench…")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -223,7 +224,7 @@ struct WorkbenchesView: View {
     private var emptyState: some View {
         VStack(spacing: 8) {
             Image(systemName: "folder.badge.gearshape").font(.largeTitle).foregroundStyle(.secondary)
-            Text("Pick a folder to start a project. Claude Code sets it up from there.")
+            Text("Pick a folder to start a workbench. Claude Code sets it up from there.")
                 .foregroundStyle(.secondary)
         }
     }
@@ -270,8 +271,8 @@ struct WorkbenchesView: View {
     /// is reused and anything else is refused by `NewWorkbenchFolder`.
     private func runNewWorkbenchPanel() -> URL? {
         let panel = NSSavePanel()
-        panel.title = "New Project"
-        panel.nameFieldLabel = "Project name:"
+        panel.title = "New Workbench"
+        panel.nameFieldLabel = "Workbench name:"
         panel.prompt = "Create"
         panel.canCreateDirectories = true
         panel.showsTagField = false

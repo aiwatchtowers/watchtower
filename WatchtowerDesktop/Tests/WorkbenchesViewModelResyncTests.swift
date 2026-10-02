@@ -4,7 +4,7 @@ import WatchtowerCore
 @testable import WatchtowerDesktop
 import WatchtowerTestSupport
 
-/// Board target #91: Re-run setup runs `watchtower project resync`, shows what
+/// Board target #91: Re-run setup runs `watchtower workbench resync`, shows what
 /// it added and its suggestions, and keeps the result across navigation.
 @MainActor
 final class WorkbenchesViewModelResyncTests: XCTestCase {
@@ -14,7 +14,7 @@ final class WorkbenchesViewModelResyncTests: XCTestCase {
 
     override func setUpWithError() throws {
         (pool, path) = try TestDatabase.createPool()
-        defaults = try XCTUnwrap(UserDefaults(suiteName: "ProjectsViewModelResyncTests-\(UUID().uuidString)"))
+        defaults = try XCTUnwrap(UserDefaults(suiteName: "WorkbenchesViewModelResyncTests-\(UUID().uuidString)"))
     }
 
     override func tearDown() {
@@ -62,7 +62,7 @@ final class WorkbenchesViewModelResyncTests: XCTestCase {
     func testCLIPassesTheProjectAndDecodesEveryShape() async throws {
         let runner = FakeCLIRunner(stdout: Data(Self.upToDate.utf8))
         let result = try await WorkbenchCLI(runner: runner).resync(projectID: 7)
-        XCTAssertEqual(runner.invocations, [["project", "resync", "7", "--json"]])
+        XCTAssertEqual(runner.invocations, [["workbench", "resync", "7", "--json"]])
         XCTAssertEqual(result.summaryLines, [line("Everything was already up to date.")],
                        "an envelope without the index keys (an older CLI) reports nothing about it")
 
@@ -75,8 +75,8 @@ final class WorkbenchesViewModelResyncTests: XCTestCase {
             line("Attached 1 new document(s): docs/specs/a.md"),
             line("1 more document(s) past the import cap — run Re-run Setup again", problem: true),
             line("Could not read docs/x: permission denied", problem: true),
-            line("Indexed 2 document(s) for search in this project's sessions"),
-            line("Updated the watchtower-project skill"),
+            line("Indexed 2 document(s) for search in this workbench's sessions"),
+            line("Updated the watchtower-workbench skill"),
             line("Added the session hooks"),
             line("Excluded 1 more path(s) from git"),
             line("Next: The project has no sources: add them.")
@@ -86,12 +86,53 @@ final class WorkbenchesViewModelResyncTests: XCTestCase {
         XCTAssertEqual(failed.summaryLines, [
             line("Attaching documents failed: permission denied", problem: true),
             line("Indexing the documents for search failed: database is locked", problem: true),
-            line("Your own copy of the watchtower-project skill was kept, so its update was not applied "
+            line("Your own copy of the watchtower-workbench skill was kept, so its update was not applied "
                  + "— merge it by hand, or delete your copy and run Re-run Setup again", problem: true),
             line("The MCP server is not registered — run: cd /tmp/a && claude mcp add", problem: true),
             line("Installing into the folder failed: claude CLI not found", problem: true),
             line("Suggestions may be incomplete: listing sources: database is locked", problem: true)
         ])
+    }
+
+    /// Re-run Setup on a folder set up before the Workbench rename (spec
+    /// 2026-10-02 §5.4): the migration's own lines, in Go's wording. The
+    /// permission-rule note arrives as a suggestion (Go adds it), so it shows
+    /// once; an envelope without the legacy keys reports no migration.
+    func testLegacyMigrationLines() throws {
+        let legacy = Self.upToDate
+            .replacingOccurrences(of: #""skill":"unchanged","hooks_added":false"#,
+                                  with: #""skill":"installed","hooks_added":true"#)
+            .replacingOccurrences(
+                of: #""suggestions":[],"suggestions_error":"""#,
+                with: #""suggestions":["2 permission rule(s) still name the old watchtower-project server; "#
+                    + #"re-allow the tools under watchtower-workbench when Claude Code asks."],"suggestions_error":"","#
+                    + #""legacy_skill":"removed","legacy_mcp_removed":true,"legacy_hooks_replaced":true,"#
+                    + #""legacy_permission_rules":2"#)
+        let removed = try decode(legacy)
+        XCTAssertEqual(removed.legacyPermissionRules, 2)
+        XCTAssertEqual(removed.summaryLines, [
+            line("Installed the watchtower-workbench skill"),
+            line("Replaced the old session hooks"),
+            line("Removed the old watchtower-project skill"),
+            line("Removed the old watchtower-project MCP server"),
+            line("Next: 2 permission rule(s) still name the old watchtower-project server; "
+                 + "re-allow the tools under watchtower-workbench when Claude Code asks.")
+        ])
+
+        let kept = "Your own copy of the old watchtower-project skill was kept — delete .claude/skills/watchtower-project "
+            + "yourself once you no longer need it; until then Claude Code sees both skills."
+        for state in ["drifted", "foreign"] {
+            let lines = try decode(legacy.replacingOccurrences(of: #""legacy_skill":"removed""#,
+                                                               with: #""legacy_skill":"\#(state)""#)).summaryLines
+            XCTAssertTrue(lines.contains(line(kept, problem: true)), state)
+            XCTAssertFalse(lines.contains(line("Removed the old watchtower-project skill")), state)
+        }
+
+        let older = try decode(Self.upToDate)
+        XCTAssertEqual(older.legacySkill, "")
+        XCTAssertFalse(older.legacyMCPRemoved)
+        XCTAssertFalse(older.legacyHooksReplaced)
+        XCTAssertEqual(older.legacyPermissionRules, 0)
     }
 
     func testResyncStoresTheResultAndRefreshesTheInstallStatus() async throws {
@@ -102,8 +143,8 @@ final class WorkbenchesViewModelResyncTests: XCTestCase {
         await vm.resync(projectID: id)
 
         XCTAssertEqual(runner.invocations, [
-            ["project", "resync", String(id), "--json"],
-            ["integrate", "status", "--project", String(id), "--json"]
+            ["workbench", "resync", String(id), "--json"],
+            ["integrate", "status", "--workbench", String(id), "--json"]
         ])
         XCTAssertEqual(vm.resyncResults[id]?.imported, ["docs/specs/a.md"])
         XCTAssertNil(vm.resyncErrors[id])
@@ -130,7 +171,7 @@ final class WorkbenchesViewModelResyncTests: XCTestCase {
         let error = try XCTUnwrap(vm.resyncErrors[id])
         XCTAssertTrue(error.hasPrefix("Re-run Setup failed"), error)
         XCTAssertFalse(vm.resyncing.contains(id))
-        XCTAssertEqual(runner.invocations.last, ["integrate", "status", "--project", String(id), "--json"],
+        XCTAssertEqual(runner.invocations.last, ["integrate", "status", "--workbench", String(id), "--json"],
                        "the CLI may have changed the folder before failing: the status is re-read")
     }
 

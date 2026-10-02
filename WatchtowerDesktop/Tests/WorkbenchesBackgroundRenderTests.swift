@@ -20,7 +20,7 @@ final class WorkbenchesBackgroundRenderTests: XCTestCase {
 
     override func setUpWithError() throws {
         (manager, path) = try TestDatabase.createDatabaseManager()
-        suiteName = "ProjectsBackgroundRenderTests-\(UUID().uuidString)"
+        suiteName = "WorkbenchesBackgroundRenderTests-\(UUID().uuidString)"
     }
 
     override func tearDown() {

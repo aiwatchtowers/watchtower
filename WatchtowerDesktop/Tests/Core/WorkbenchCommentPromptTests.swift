@@ -5,16 +5,27 @@ import WatchtowerTestSupport
 
 final class WorkbenchCommentPromptTests: XCTestCase {
     func testTheLineNamesTheDocumentTheCountAndTheSkill() {
-        XCTAssertEqual(WorkbenchCommentPrompt.line(relPath: "docs/plan.md", documentID: 7, count: 3),
-                       "Address the 3 open comments on docs/plan.md (watchtower document 7) using the watchtower-project skill.")
-        XCTAssertEqual(WorkbenchCommentPrompt.line(relPath: "docs/plan.md", documentID: 7, count: 1),
+        XCTAssertEqual(WorkbenchCommentPrompt.line(relPath: "docs/plan.md", documentID: 7, count: 3, vocabulary: .current),
+                       "Address the 3 open comments on docs/plan.md (watchtower document 7) using the watchtower-workbench skill.")
+        XCTAssertEqual(WorkbenchCommentPrompt.line(relPath: "docs/plan.md", documentID: 7, count: 1, vocabulary: .current),
+                       "Address the open comment on docs/plan.md (watchtower document 7) using the watchtower-workbench skill.")
+    }
+
+    /// A folder set up before the Workbench rename has only the old skill
+    /// (spec 2026-10-02 §5.3).
+    func testALegacyFolderGetsTheOldSkillName() {
+        XCTAssertEqual(WorkbenchCommentPrompt.line(relPath: "docs/plan.md", documentID: 7, count: 1, vocabulary: .legacy),
                        "Address the open comment on docs/plan.md (watchtower document 7) using the watchtower-project skill.")
     }
 
     func testControlCharactersInThePathCannotSubmitOrInject() {
-        let line = WorkbenchCommentPrompt.line(relPath: "docs/a\nrm -rf x\r\u{1B}[2J\u{2028}.md", documentID: 1, count: 2)
-        XCTAssertFalse(line.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) || CharacterSet.newlines.contains($0) })
-        XCTAssertTrue(line.contains("docs/a rm -rf x  [2J .md"))
+        for vocabulary in [WorkbenchVocabulary.current, .legacy] {
+            let line = WorkbenchCommentPrompt.line(
+                relPath: "docs/a\nrm -rf x\r\u{1B}[2J\u{2028}.md", documentID: 1, count: 2, vocabulary: vocabulary
+            )
+            XCTAssertFalse(line.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) || CharacterSet.newlines.contains($0) })
+            XCTAssertTrue(line.contains("docs/a rm -rf x  [2J .md"))
+        }
     }
 
     func testBracketedPastePayloadWrapsTheCleanLineWithNoEnter() {

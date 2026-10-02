@@ -140,7 +140,7 @@ final class WorkspaceLayoutTests: XCTestCase {
     }
 
     func testKey() {
-        XCTAssertEqual(WorkspaceLayout.key(projectID: 12), "projects.layout.12")
+        XCTAssertEqual(WorkspaceLayout.key(workbenchID: 12), "projects.layout.12")
     }
 
     // MARK: - Pane pickers, close, Send comments, divider

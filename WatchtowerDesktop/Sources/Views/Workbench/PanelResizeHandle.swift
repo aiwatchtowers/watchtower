@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// The Projects panel's right edge (board target #144): a strip the owner
+/// The Workbench panel's right edge (board target #144): a strip the owner
 /// drags to resize the panel, within `widthRange`. It draws nothing — the
 /// edge line is the panel's own (`panelSurface()`), so the selected session
 /// row can cover it — and shows the workspace's backdrop behind it. `liveWidth` follows the

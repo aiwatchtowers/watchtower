@@ -28,7 +28,17 @@ final class SidebarSectionTests: XCTestCase {
     }
 
     func testRootItems() {
-        XCTAssertEqual(SidebarDestination.rootItems, [.targets, .tracks, .projects])
+        XCTAssertEqual(SidebarDestination.rootItems, [.targets, .tracks, .workbench])
+    }
+
+    /// The Workbench tab keeps the persisted raw value of the old Projects
+    /// tab (spec 2026-10-02 A9): `sidebar.hiddenItems` and every stored tab id
+    /// written before the rename still resolve to it.
+    func testWorkbenchKeepsTheProjectsRawValue() {
+        XCTAssertEqual(SidebarDestination.workbench.rawValue, "projects")
+        XCTAssertEqual(SidebarDestination.workbench.id, "projects")
+        XCTAssertEqual(SidebarDestination(rawValue: "projects"), .workbench)
+        XCTAssertEqual(SidebarDestination.workbench.title, "Workbench")
     }
 
     func testChatIsTrailingMainItemNotTool() {

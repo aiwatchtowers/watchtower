@@ -47,15 +47,15 @@ extension WorkbenchesViewModel {
     }
 
     func layout(projectID: Int64) -> WorkspaceLayout {
-        layouts[projectID] ?? WorkspaceLayout.decode(defaults.data(forKey: WorkspaceLayout.key(projectID: projectID)))
+        layouts[projectID] ?? WorkspaceLayout.decode(defaults.data(forKey: WorkspaceLayout.key(workbenchID: projectID)))
     }
 
     func setLayout(_ layout: WorkspaceLayout, projectID: Int64) {
         layouts[projectID] = layout
         do {
-            defaults.set(try JSONEncoder().encode(layout), forKey: WorkspaceLayout.key(projectID: projectID))
+            defaults.set(try JSONEncoder().encode(layout), forKey: WorkspaceLayout.key(workbenchID: projectID))
         } catch {
-            NSLog("ProjectsViewModel: could not save the layout of project %lld: %@", projectID, error.localizedDescription)
+            NSLog("WorkbenchesViewModel: could not save the layout of workbench %lld: %@", projectID, error.localizedDescription)
         }
     }
 
@@ -192,7 +192,7 @@ extension WorkbenchesViewModel {
             return
         }
         guard let found else {
-            setSessionError("Target #\(targetID) is not on a project board.", projectID: projectID ?? selectedWorkbenchID)
+            setSessionError("Target #\(targetID) is not on a workbench board.", projectID: projectID ?? selectedWorkbenchID)
             return
         }
         if let existing = TerminalSessionPolicy.sessionForTarget(targetID, in: found.rows) {
@@ -204,7 +204,7 @@ extension WorkbenchesViewModel {
             .init(projectID: found.project.id, kind: .claude, title: text.isEmpty ? "Target #\(targetID)" : text,
                   targetID: targetID, folderPath: found.project.folderPath,
                   claudeSessionID: Self.newClaudeSessionID()),
-            prompt: TerminalLaunch.workOnTargetPrompt(targetID: targetID),
+            prompt: TerminalLaunch.workOnTargetPrompt(targetID: targetID, vocabulary: vocabulary(projectID: found.project.id)),
             placement: placement
         )
     }
@@ -353,7 +353,7 @@ extension WorkbenchesViewModel {
         do {
             row = try await dbPool.read { try TerminalSessionQueries.fetch($0, id: sessionID) }
         } catch {
-            NSLog("ProjectsViewModel: could not read session %lld for its title: %@", sessionID, error.localizedDescription)
+            NSLog("WorkbenchesViewModel: could not read session %lld for its title: %@", sessionID, error.localizedDescription)
             return
         }
         guard let row, TerminalSessionPolicy.needsTitle(row, attempts: titleAttempts[sessionID, default: 0]),
@@ -368,7 +368,7 @@ extension WorkbenchesViewModel {
             }
         } catch {
             titleAttempts[sessionID, default: 0] += 1
-            NSLog("ProjectsViewModel: title for session %lld failed: %@", sessionID, error.localizedDescription)
+            NSLog("WorkbenchesViewModel: title for session %lld failed: %@", sessionID, error.localizedDescription)
         }
     }
 
@@ -395,9 +395,9 @@ extension WorkbenchesViewModel {
         if let known = summaries.first(where: { $0.id == id })?.project { return known }
         do {
             if let fetched = try await dbPool.read({ try WorkbenchQueries.fetch($0, id: id) }) { return fetched }
-            setSessionError("Project \(id) no longer exists.", projectID: id)
+            setSessionError("Workbench \(id) no longer exists.", projectID: id)
         } catch {
-            setSessionError("Could not read the project: \(error.localizedDescription)", projectID: id)
+            setSessionError("Could not read the workbench: \(error.localizedDescription)", projectID: id)
         }
         return nil
     }

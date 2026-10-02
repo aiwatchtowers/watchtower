@@ -8,7 +8,7 @@ final class WorkbenchCLITests: XCTestCase {
         let runner = FakeCLIRunner(stdout: Data(#"{"id":7,"folder":"/tmp/acme","name":"acme"}"#.utf8))
         let created = try await WorkbenchCLI(runner: runner).create(folder: "/tmp/acme dir", name: "Acme")
         XCTAssertEqual(created, WorkbenchCreated(id: 7, folder: "/tmp/acme", name: "acme"))
-        XCTAssertEqual(runner.invocations, [["project", "create", "--folder", "/tmp/acme dir", "--json", "--name", "Acme"]])
+        XCTAssertEqual(runner.invocations, [["workbench", "create", "--folder", "/tmp/acme dir", "--json", "--name", "Acme"]])
     }
 
     func testCreateDecodesAFailedDocumentImport() async throws {
@@ -17,7 +17,7 @@ final class WorkbenchCLITests: XCTestCase {
         XCTAssertFalse(created.docsImportOK)
         XCTAssertEqual(created.docsImportError, "permission denied")
         XCTAssertEqual(created.importNote,
-                       "Importing the folder's documents failed (permission denied) — retry with: watchtower project import-docs 7")
+                       "Importing the folder's documents failed (permission denied) — retry with: watchtower workbench import-docs 7")
     }
 
     func testCreateDecodesSkippedPathsAndAnOlderEnvelopeMeansNothingFailed() throws {
@@ -32,8 +32,8 @@ final class WorkbenchCLITests: XCTestCase {
         XCTAssertEqual(created.skippedOverCap, 2)
         XCTAssertEqual(created.importNote,
                        "Could not read docs/private: permission denied and 1 more — fix it, then run: "
-                       + "watchtower project import-docs 7. 2 more document(s) past the import cap — run: "
-                       + "watchtower project import-docs 7")
+                       + "watchtower workbench import-docs 7. 2 more document(s) past the import cap — run: "
+                       + "watchtower workbench import-docs 7")
 
         let older = try JSONDecoder().decode(WorkbenchCreated.self, from: Data(#"{"id":1,"folder":"/tmp/a","name":"a"}"#.utf8))
         XCTAssertTrue(older.docsImportOK)
@@ -44,7 +44,7 @@ final class WorkbenchCLITests: XCTestCase {
     func testCreateWithoutNameOmitsTheFlag() async throws {
         let runner = FakeCLIRunner(stdout: Data(#"{"id":1,"folder":"/tmp/a","name":"a"}"#.utf8))
         _ = try await WorkbenchCLI(runner: runner).create(folder: "/tmp/a", name: nil)
-        XCTAssertEqual(runner.invocations, [["project", "create", "--folder", "/tmp/a", "--json"]])
+        XCTAssertEqual(runner.invocations, [["workbench", "create", "--folder", "/tmp/a", "--json"]])
     }
 
     func testInstallStatusAndDeleteArguments() async throws {
@@ -53,8 +53,8 @@ final class WorkbenchCLITests: XCTestCase {
         try await cli.install(projectID: 3)
         let status = try await cli.status(projectID: 3)
         XCTAssertEqual(runner.invocations, [
-            ["integrate", "claude-code", "--project", "3"],
-            ["integrate", "status", "--project", "3", "--json"]
+            ["integrate", "claude-code", "--workbench", "3"],
+            ["integrate", "status", "--workbench", "3", "--json"]
         ])
         XCTAssertEqual(status, WorkbenchInstallStatus(skill: "unchanged", hook: true, mcp: false))
         XCTAssertTrue(status.needsRepair)
@@ -76,14 +76,14 @@ final class WorkbenchCLITests: XCTestCase {
     func testCheckDriftRunsOfflineAndDecodesTheReport() async throws {
         let runner = FakeCLIRunner(stdout: Data(#"{"project_id":4,"git":true,"base":"main","findings":[]}"#.utf8))
         let report = try await WorkbenchCLI(runner: runner).checkDrift(projectID: 4)
-        XCTAssertEqual(runner.invocations, [["project", "check", "--project", "4", "--json", "--no-network"]])
+        XCTAssertEqual(runner.invocations, [["workbench", "check", "--workbench", "4", "--json", "--no-network"]])
         XCTAssertTrue(report.findings.isEmpty)
     }
 
     func testDeletePassesJSONAndDecodesBothEnvelopeShapes() async throws {
         let clean = FakeCLIRunner(stdout: Data(#"{"id":3,"deleted":true,"removal_ok":true,"removal_error":""}"#.utf8))
         let ok = try await WorkbenchCLI(runner: clean).delete(projectID: 3)
-        XCTAssertEqual(clean.invocations, [["project", "delete", "3", "--json"]])
+        XCTAssertEqual(clean.invocations, [["workbench", "delete", "3", "--json"]])
         XCTAssertEqual(ok, WorkbenchDeleted(id: 3, deleted: true, removalOK: true, removalError: ""))
 
         let partial = FakeCLIRunner(
@@ -98,12 +98,12 @@ final class WorkbenchCLITests: XCTestCase {
         let imageWarned = try await WorkbenchCLI(runner: images).delete(projectID: 3)
         XCTAssertFalse(imageWarned.filesOK)
         XCTAssertEqual(imageWarned.filesError, "permission denied")
-        XCTAssertEqual(imageWarned.cleanupWarning, "The project was deleted, but removing its stored images failed: permission denied")
+        XCTAssertEqual(imageWarned.cleanupWarning, "The workbench was deleted, but removing its stored images failed: permission denied")
         XCTAssertTrue(ok.filesOK, "an envelope without files_* keys decodes as clean")
         XCTAssertNil(ok.cleanupWarning)
         XCTAssertEqual(
             WorkbenchDeleted(id: 3, deleted: true, removalOK: false, removalError: "a", filesOK: false, filesError: "b").cleanupWarning,
-            "The project was deleted, but cleaning its folder failed: a; removing its stored images failed: b"
+            "The workbench was deleted, but cleaning its folder failed: a; removing its stored images failed: b"
         )
     }
 
@@ -114,8 +114,8 @@ final class WorkbenchCLITests: XCTestCase {
         XCTAssertEqual(attached, WorkbenchDocumentAttached(documentID: 9, relPath: "docs/-x.md", created: true))
         _ = try await cli.attachDocument(projectID: 3, path: "/tmp/acme/a.md", kind: "doc", targetID: nil)
         XCTAssertEqual(runner.invocations, [
-            ["project", "attach-doc", "--kind", "spec", "--json", "--target", "5", "--", "3", "/tmp/acme/docs/-x.md"],
-            ["project", "attach-doc", "--kind", "doc", "--json", "--", "3", "/tmp/acme/a.md"]
+            ["workbench", "attach-doc", "--kind", "spec", "--json", "--target", "5", "--", "3", "/tmp/acme/docs/-x.md"],
+            ["workbench", "attach-doc", "--kind", "doc", "--json", "--", "3", "/tmp/acme/a.md"]
         ])
     }
 
@@ -137,6 +137,49 @@ final class WorkbenchCLITests: XCTestCase {
         XCTAssertTrue(legacy.claudeFound, "an older CLI without the key could check the registration")
     }
 
+    /// `integrate status` on a folder set up before the Workbench rename
+    /// (spec 2026-10-02 §5.4): its old hooks and registration count as
+    /// present, only the new skill reads `missing`. That is no Repair — the
+    /// icon nudges toward Re-run Setup instead (A10) — and the prompts name
+    /// the old skill (§5.3). An older CLI's JSON has no legacy keys.
+    func testLegacyFolderStatus() throws {
+        let legacy = try JSONDecoder().decode(WorkbenchInstallStatus.self, from: Data(#"""
+            {"project_id":1,"folder":"/tmp/acme","skill":"missing","skill_path":"","hook":true,"stop_hook":true,
+             "mcp":true,"claude_found":true,"legacy":true,"legacy_skill":"unchanged"}
+            """#.utf8))
+        XCTAssertTrue(legacy.legacy)
+        XCTAssertEqual(legacy.legacySkill, "unchanged")
+        XCTAssertFalse(legacy.needsRepair, "a working legacy folder is not offered Repair")
+        XCTAssertEqual(legacy.legacyNotice, "Set up by an older Watchtower — Re-run Setup to update")
+        XCTAssertEqual(legacy.vocabulary, .legacy)
+        XCTAssertEqual(legacy.skillDisplay, "watchtower-project (older setup)")
+
+        let older = try JSONDecoder().decode(WorkbenchInstallStatus.self, from: Data(
+            #"{"skill":"unchanged","hook":true,"mcp":true}"#.utf8))
+        XCTAssertFalse(older.legacy)
+        XCTAssertEqual(older.legacySkill, "")
+        XCTAssertNil(older.legacyNotice)
+        XCTAssertEqual(older.vocabulary, .current)
+        XCTAssertEqual(older.skillDisplay, "unchanged")
+
+        // Still legacy but already on the new skill (e.g. only the old
+        // registration is left): the prompts name the new one.
+        let mixed = WorkbenchInstallStatus(skill: "unchanged", hook: true, mcp: true, legacy: true, legacySkill: "drifted")
+        XCTAssertEqual(mixed.vocabulary, .current)
+        XCTAssertEqual(mixed.legacyNotice, "Set up by an older Watchtower — Re-run Setup to update")
+        XCTAssertFalse(mixed.needsRepair)
+    }
+
+    /// A legacy folder still needs Repair for what is actually broken, and
+    /// when it has no skill at all there is nothing for the agent to read.
+    func testLegacyFolderStillRepairsWhatIsBroken() {
+        XCTAssertTrue(WorkbenchInstallStatus(skill: "missing", hook: false, mcp: true, legacy: true, legacySkill: "unchanged").needsRepair)
+        XCTAssertTrue(WorkbenchInstallStatus(skill: "missing", hook: true, mcp: true, legacy: true).needsRepair,
+                      "no skill in either vocabulary")
+        XCTAssertTrue(WorkbenchInstallStatus(skill: "missing", hook: true, mcp: true, legacySkill: "drifted").needsRepair,
+                      "not legacy: the new skill is simply missing")
+    }
+
     /// Without `claude` the MCP registration is unknown and not repairable:
     /// Repair must not loop on `mcp=false`, but still repairs the rest.
     func testClaudeNotFoundDoesNotAskForRepairOfMCP() {
@@ -146,17 +189,17 @@ final class WorkbenchCLITests: XCTestCase {
     }
 
     /// Shared fixture with Go `TestProjectMCPCommand_MatchesTheDesktopFixture`
-    /// (`internal/devpack/project_test.go`): same inputs, same text.
+    /// (`internal/devpack/workbench_test.go`): same inputs, same text.
     func testManualMCPCommandMatchesTheGoTwin() {
         XCTAssertEqual(
             WorkbenchInstallStatus.manualMCPCommand(
                 projectID: 7, folder: "/tmp/acme project", cliPath: "/tmp/acme bin/it's/watchtower"
             ),
-            #"cd '/tmp/acme project' && claude mcp add --scope local watchtower-project -- '/tmp/acme bin/it'\''s/watchtower' mcp --project 7"#
+            #"cd '/tmp/acme project' && claude mcp add --scope local watchtower-workbench -- '/tmp/acme bin/it'\''s/watchtower' mcp --workbench 7"#
         )
         XCTAssertEqual(
             WorkbenchInstallStatus.manualMCPCommand(projectID: 3, folder: "/tmp/acme", cliPath: "/usr/local/bin/watchtower"),
-            "cd /tmp/acme && claude mcp add --scope local watchtower-project -- /usr/local/bin/watchtower mcp --project 3",
+            "cd /tmp/acme && claude mcp add --scope local watchtower-workbench -- /usr/local/bin/watchtower mcp --workbench 3",
             "shell-safe paths stay bare, as Go leaves them"
         )
     }

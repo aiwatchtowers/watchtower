@@ -122,7 +122,7 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
             if let id = userInfo["transcriptID"] as? Int64 ?? (userInfo["transcriptID"] as? NSNumber)?.int64Value {
                 await appState?.voiceRegistryCenter.open(.queue(transcriptID: id))
             }
-        case "project":
+        case "project": // the workbench push; its pre-rename type (spec 2026-10-02 A1)
             routeWorkbench(userInfo, appState: appState)
         case "meeting_reminder":
             if forwarded {
@@ -196,7 +196,7 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
         if let route = workbenchRoute(userInfo) {
             appState?.navigateToWorkbench(route)
         } else {
-            appState?.selectedDestination = .projects
+            appState?.selectedDestination = .workbench
         }
     }
 

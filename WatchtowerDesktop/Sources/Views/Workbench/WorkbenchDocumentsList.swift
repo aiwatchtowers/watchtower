@@ -43,7 +43,7 @@ struct WorkbenchDocumentsList: View {
                     Label("Add Document…", systemImage: "plus")
                 }
                 .buttonStyle(.borderless)
-                .help("Attach a .md or .txt file from the project folder")
+                .help("Attach a .md or .txt file from the workbench folder")
                 Spacer()
             }
             .padding(8)

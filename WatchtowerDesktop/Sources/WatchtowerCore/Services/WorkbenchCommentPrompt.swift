@@ -1,7 +1,7 @@
 import Foundation
 
-/// "Send N comments to Claude" on a project document: ONE prompt line typed
-/// into the project's Claude Code session. The line carries only the
+/// "Send N comments to Claude" on a workbench document: ONE prompt line typed
+/// into the workbench's Claude Code session. The line carries only the
 /// document's path and id — Claude reads the open comments themselves through
 /// its `list_comments` tool — so the whole batch goes at once. Pure.
 package enum WorkbenchCommentPrompt {
@@ -12,12 +12,13 @@ package enum WorkbenchCommentPrompt {
 
     /// The rel path is agent-supplied, so every control or newline scalar in
     /// it becomes a space: the line can never submit early or carry an escape.
-    package static func line(relPath: String, documentID: Int64, count: Int) -> String {
+    /// `vocabulary` names the skill the folder has installed (spec 2026-10-02 §5.3).
+    package static func line(relPath: String, documentID: Int64, count: Int, vocabulary: WorkbenchVocabulary) -> String {
         let path = String(relPath.unicodeScalars.map { scalar -> Character in
             isControl(scalar) ? " " : Character(scalar)
         })
         let what = count == 1 ? "the open comment" : "the \(count) open comments"
-        return "Address \(what) on \(path) (watchtower document \(documentID)) using the watchtower-project skill."
+        return "Address \(what) on \(path) (watchtower document \(documentID)) using the \(vocabulary.skillName) skill."
     }
 
     /// How the line reaches Claude Code — never with a trailing Enter.
