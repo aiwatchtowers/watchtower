@@ -1,7 +1,7 @@
 ---
 type: chore
 title: "Custom-track scan: watermark/cap/dedup logic and the whole backfill path are untested"
-status: open
+status: done
 priority: high
 tags: [test-coverage, watermark, customtracks, ai-cost, review-2026-09-26]
 context: main-branch backlog review 2026-09-26 at 8cf68dcf — track test coverage (Go)
