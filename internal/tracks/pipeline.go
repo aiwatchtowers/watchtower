@@ -17,6 +17,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/jirakey"
 	"watchtower/internal/prompts"
 	watchtowerslack "watchtower/internal/slack"
 )
@@ -1917,13 +1918,35 @@ func (p *Pipeline) findSimilarTrack(userID, text, context string) (int, float64)
 }
 
 var (
-	reTicket  = regexp.MustCompile(`(?i)\b(CEX|FIAT|NOVA|DEV|INFRA|CONVERT|DVSP|BLINC)-\d+\b`)
 	reUserID  = regexp.MustCompile(`\bU[A-Z0-9]{8,}\b`)
 	reIP      = regexp.MustCompile(`\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b`)
 	reCVE     = regexp.MustCompile(`(?i)\bCVE-\d{4}-\d+\b`)
 	reMR      = regexp.MustCompile(`!(\d{4,})\b`)
 	reSlackTS = regexp.MustCompile(`\b\d{10}\.\d{6}\b`)
 )
+
+// nonTicketPrefixes are standard and spec names that share the Jira key shape
+// ("UTF-8", "SHA-256", "ISO-8601"). A fingerprint merges tracks, so a shared
+// false "ticket" would fold unrelated tracks together. CVE ids are taken whole
+// by reCVE; their "CVE-<year>" head must not count as a ticket too.
+var nonTicketPrefixes = map[string]bool{
+	"AES": true, "COVID": true, "CVE": true, "ECMA": true, "HTTP": true,
+	"IEEE": true, "ISO": true, "MD": true, "RFC": true, "RSA": true,
+	"SHA": true, "TLS": true, "UTF": true,
+}
+
+// ticketKeys returns the Jira-shaped issue keys in text (the shared bare
+// jirakey pattern), minus the standard names in nonTicketPrefixes.
+func ticketKeys(text string) []string {
+	var keys []string
+	for _, m := range jirakey.KeyRegexp.FindAllString(text, -1) {
+		prefix := m[:strings.LastIndexByte(m, '-')]
+		if !nonTicketPrefixes[prefix] {
+			keys = append(keys, m)
+		}
+	}
+	return keys
+}
 
 func extractFingerprint(text, ctx string) []string {
 	combined := text + " " + ctx
@@ -1938,7 +1961,7 @@ func extractFingerprint(text, ctx string) []string {
 		}
 	}
 
-	for _, m := range reTicket.FindAllString(combined, -1) {
+	for _, m := range ticketKeys(combined) {
 		add(m)
 	}
 	for _, m := range reCVE.FindAllString(combined, -1) {
