@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
@@ -57,6 +58,61 @@ func TestScanEmptyActivityAdvancesWatermarkNoAICall(t *testing.T) {
 	got, _ := d.GetTrackByID(int(tid))
 	if got.LastRunAt == "" {
 		t.Fatal("watermark not advanced on empty activity")
+	}
+}
+
+// sameSecondInboxGenerator inserts an inbox item while the scan's AI call is
+// running — after the activity read, stamped with the current second — and
+// records that stamp.
+type sameSecondInboxGenerator struct {
+	mockGenerator
+	d       *db.DB
+	stamp   string
+	inserts int
+}
+
+func (g *sameSecondInboxGenerator) Generate(ctx context.Context, sys, user, sess string) (string, *digest.Usage, string, error) {
+	if g.inserts == 0 {
+		g.inserts++
+		g.stamp = time.Now().UTC().Format("2006-01-02T15:04:05Z")
+		if _, err := g.d.Exec(`INSERT INTO inbox_items (channel_id, message_ts, sender_user_id, trigger_type, snippet, created_at, updated_at)
+			VALUES ('C1', '2.0', 'U2', 'mention', 'late arrival', ?, ?)`, g.stamp, g.stamp); err != nil {
+			return "", nil, "", err
+		}
+	}
+	return g.mockGenerator.Generate(ctx, sys, user, sess)
+}
+
+func TestScanWatermarkDoesNotSkipRowsWrittenInTheReadSecond(t *testing.T) {
+	d, _ := db.Open(":memory:")
+	defer d.Close()
+	tid, _ := d.CreateCustomTrack(db.Track{AssigneeUserID: "U1", Text: "watch", Instruction: "i"})
+	stamp := time.Now().UTC().Add(-time.Minute).Format("2006-01-02T15:04:05Z")
+	if _, err := d.Exec(`INSERT INTO inbox_items (channel_id, message_ts, sender_user_id, trigger_type, snippet, created_at, updated_at)
+		VALUES ('C1', '1.0', 'U2', 'mention', 'first item', ?, ?)`, stamp, stamp); err != nil {
+		t.Fatalf("seed inbox item: %v", err)
+	}
+	gen := &sameSecondInboxGenerator{mockGenerator: mockGenerator{out: `{"events":[]}`}, d: d}
+	p := New(d, gen, "", nil)
+
+	if _, err := p.RunForTrack(context.Background(), int(tid)); err != nil {
+		t.Fatalf("first RunForTrack: %v", err)
+	}
+	if !strings.Contains(gen.lastUser, "first item") {
+		t.Fatalf("first run did not read the seeded row; prompt:\n%s", gen.lastUser)
+	}
+	got, _ := d.GetTrackByID(int(tid))
+	if got.LastRunAt >= gen.stamp {
+		t.Fatalf("watermark %s is not before the late row's second %s; the next run's strict > would skip it", got.LastRunAt, gen.stamp)
+	}
+
+	// The next window, once the late row's second has elapsed, reads it.
+	next, err := d.GetScanActivity(got.LastRunAt, gen.stamp, 40)
+	if err != nil {
+		t.Fatalf("GetScanActivity: %v", err)
+	}
+	if len(next.Inbox) != 1 || next.Inbox[0].Snippet != "late arrival" {
+		t.Fatalf("next window = %+v, want only the late row", next.Inbox)
 	}
 }
 

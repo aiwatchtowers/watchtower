@@ -181,6 +181,15 @@ func (p *Pipeline) runOne(ctx context.Context, t db.Track, opts runOpts) ([]db.T
 		since = time.Now().Add(-defaultLookback).UTC().Format("2006-01-02T15:04:05Z")
 	}
 
+	// The window ends at the last fully elapsed second, which becomes the next
+	// watermark: activity timestamps have second granularity and the next
+	// window opens with a strict "> since", so a row written after the read
+	// but within the read's own second would otherwise fall at the watermark
+	// and never be read. Rows of the current second wait for the next run.
+	// A row stamped earlier but committed after the read (a writer
+	// transaction held open longer than a second) can still be missed.
+	until := time.Now().UTC().Add(-time.Second).Format("2006-01-02T15:04:05Z")
+
 	// Forward runs feed recent activity directly; a backfill window holds too much
 	// to feed whole, so it goes through the cheap shortlist → extract retrieval.
 	var act db.ScanActivity
@@ -188,23 +197,21 @@ func (p *Pipeline) runOne(ctx context.Context, t db.Track, opts runOpts) ([]db.T
 	if opts.isBackfill() {
 		act, err = p.gatherBackfillActivity(ctx, t, since)
 	} else {
-		act, err = p.db.GetScanActivity(since, defaultActivityLimit)
+		act, err = p.db.GetScanActivity(since, until, defaultActivityLimit)
 	}
 	if err != nil {
 		return nil, err
 	}
 
-	now := time.Now().UTC().Format("2006-01-02T15:04:05Z")
-
 	// No new activity since the watermark: advance it and exit without an AI call.
 	if len(act.Digests) == 0 && len(act.Tracks) == 0 && len(act.Inbox) == 0 {
-		return nil, p.db.SetTrackLastRun(t.ID, now)
+		return nil, p.db.SetTrackLastRun(t.ID, until)
 	}
 
 	// When a source hit the per-source cap the window was only partially read:
 	// advance the watermark to the last row actually loaded, not to now, so the
 	// overflow is picked up by the next run instead of being skipped forever.
-	next := now
+	next := until
 	if !opts.isBackfill() && act.CappedAt != "" {
 		next = act.CappedAt
 		p.logger.Printf("customtracks: track %d: activity cap (%d/source) hit; watermark advances to %s, overflow resumes next run",
