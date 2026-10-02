@@ -76,6 +76,10 @@ package final class LiveTurn {
     package func appendDelta(_ chunk: String, now: Date) {
         fullText += chunk
         fullLength += chunk.utf16.count
+        publishOrScheduleFlush(now: now)
+    }
+
+    private func publishOrScheduleFlush(now: Date) {
         if throttle.shouldPublish(now: now, length: fullLength) {
             // A pending flush would only re-publish this same text a moment
             // later — a second full re-render of a long message.
@@ -102,11 +106,8 @@ package final class LiveTurn {
     /// embedded chats' `ai query` stream), throttled like `appendDelta`.
     package func replaceText(_ newText: String, now: Date) {
         fullText = newText
-        if throttle.shouldPublish(now: now) {
-            text = fullText
-            return
-        }
-        scheduleTrailingFlush()
+        fullLength = newText.utf16.count
+        publishOrScheduleFlush(now: now)
     }
 
     /// Returns the step's position (its persisted `seq`); a repeated
