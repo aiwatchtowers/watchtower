@@ -281,7 +281,7 @@ func TestAttachOwnerProjectDocument_RefusesBadInput(t *testing.T) {
 }
 
 // TestProj02_DeleteProjectLeavesNoRows is the DB half of PROJ-02
-// (docs/inventory/projects.md): deleting a project leaves no project, target,
+// (docs/inventory/workbench.md): deleting a project leaves no project, target,
 // source, document or comment row of it, and touches no other project.
 // Task 12 adds the folder half.
 func TestProj02_DeleteProjectLeavesNoRows(t *testing.T) {

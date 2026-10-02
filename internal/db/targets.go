@@ -92,7 +92,7 @@ func (db *DB) CreateTarget(t Target) (int64, error) {
 // leaf's progress from its status on every call), this is safe for a caller
 // that only means to rename or reword a target: the project board's
 // update_target tool uses it so renaming an in-progress target never resets
-// the progress the owner or agent set earlier (I4, docs/inventory/projects.md).
+// the progress the owner or agent set earlier (I4, docs/inventory/workbench.md).
 func (db *DB) UpdateTargetText(id int, text, intent string) error {
 	return updateTargetTextOn(db, id, text, intent)
 }
@@ -321,7 +321,7 @@ func (db *DB) GetTargetsNeedingNextStep(limit int) ([]Target, error) {
 }
 
 // workbenchScope is the PROJ-01 clause of GetTargets: 0 keeps project targets
-// out, N selects only project N's board (docs/inventory/projects.md).
+// out, N selects only project N's board (docs/inventory/workbench.md).
 func workbenchScope(projectID int64) (string, []any) {
 	if projectID > 0 {
 		return "project_id = ?", []any{projectID}

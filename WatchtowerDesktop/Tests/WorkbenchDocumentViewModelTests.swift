@@ -379,7 +379,7 @@ final class WorkbenchDocumentViewModelTests: XCTestCase {
         XCTAssertTrue(vm.rendered?.text.contains("New task.") == true)
     }
 
-    /// BEHAVIOR PROJ-03 — see docs/inventory/projects.md
+    /// BEHAVIOR PROJ-03 — see docs/inventory/workbench.md
     func testProj03DesktopNeverWritesTheDocument() async throws {
         let before = try Data(contentsOf: fileURL)
         let modified = try FileManager.default.attributesOfItem(atPath: fileURL.path)[.modificationDate] as? Date

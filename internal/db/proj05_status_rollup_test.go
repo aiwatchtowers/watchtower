@@ -8,7 +8,7 @@ import (
 )
 
 // Migration 00085's triggers: a project parent's status follows its
-// children (PROJ-05, docs/inventory/projects.md).
+// children (PROJ-05, docs/inventory/workbench.md).
 
 // insertBoardChild plants a project target under parent with a given status.
 func insertBoardChild(t *testing.T, d *DB, projectID, parentID int64, status string) int64 {

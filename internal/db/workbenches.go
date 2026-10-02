@@ -12,7 +12,7 @@ import (
 
 // Workbench is a folder-bound workbench (Projects POC, migration 00081). Its
 // targets, documents and comments live only on its board (PROJ-01,
-// docs/inventory/projects.md).
+// docs/inventory/workbench.md).
 type Workbench struct {
 	ID          int64
 	Name        string

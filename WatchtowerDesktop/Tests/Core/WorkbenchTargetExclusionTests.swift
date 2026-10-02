@@ -5,7 +5,7 @@ import WatchtowerTestSupport
 
 /// BEHAVIOR PROJ-01 (Desktop side) — a project target lives only on its
 /// project's board: it never reaches the Targets tab's list, counts, tag menu,
-/// or the chat `@` picker. See docs/inventory/projects.md.
+/// or the chat `@` picker. See docs/inventory/workbench.md.
 final class WorkbenchTargetExclusionTests: XCTestCase {
 
     /// One ordinary target and one project target, identical in every field a

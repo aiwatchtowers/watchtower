@@ -11,7 +11,7 @@ import (
 )
 
 // TestProj01_ProjectTargetsNeverReachNonBoardReaders guards PROJ-01
-// (docs/inventory/projects.md): with one personal and one project target that
+// (docs/inventory/workbench.md): with one personal and one project target that
 // otherwise look identical (active, overdue, digest-sourced, high priority),
 // every non-board reader of spec §4.1 in internal/db returns only the personal
 // one. Companions in their own packages: TestProj01_DayPlanGatherExcludesProjectTargets

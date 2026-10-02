@@ -2,7 +2,7 @@
 // status disagrees with the git work they are linked to (branch, pull
 // request), and in-progress work that has not moved for days. Mechanical —
 // no AI call, no database write, nothing written to the folder's
-// repository (PROJ-07, docs/inventory/projects.md).
+// repository (PROJ-07, docs/inventory/workbench.md).
 package workbenchcheck
 
 import (

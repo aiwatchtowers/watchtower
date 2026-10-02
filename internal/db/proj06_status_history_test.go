@@ -10,7 +10,7 @@ import (
 
 // Migration 00086: project targets gain in_review, and every project target
 // status transition is recorded with its time and actor (PROJ-06,
-// docs/inventory/projects.md).
+// docs/inventory/workbench.md).
 
 type historyRow struct {
 	from, to, actor, at string

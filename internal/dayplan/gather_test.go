@@ -215,7 +215,7 @@ func TestGatherJira_NoJiraOrSlackIdentityGathersNothing(t *testing.T) {
 }
 
 // TestProj01_DayPlanGatherExcludesProjectTargets: a project target never
-// reaches the day-plan input (PROJ-01, docs/inventory/projects.md).
+// reaches the day-plan input (PROJ-01, docs/inventory/workbench.md).
 func TestProj01_DayPlanGatherExcludesProjectTargets(t *testing.T) {
 	d := gatherTestDB(t)
 	p := testPipeline(d)
