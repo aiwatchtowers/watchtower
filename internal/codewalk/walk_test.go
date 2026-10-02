@@ -305,3 +305,42 @@ func TestLookup(t *testing.T) {
 		}
 	}
 }
+
+// A directory symlink is resolved too: a file reached through a link to a
+// directory outside the folder is skipped, and one reached through a link
+// to an inside directory is the same file, listed once.
+func TestFiles_DirectoryLinksInThePath(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	write(t, outside, "secret.go", []byte("package secret\n"))
+	write(t, root, "dir/sub.go", []byte("package dir\n"))
+	symlink(t, outside, filepath.Join(root, "dirout"))
+	symlink(t, "dir", filepath.Join(root, "dirin"))
+
+	if _, err := Lookup(root, "dirout/secret.go"); !errors.Is(err, ErrSkipped) {
+		t.Errorf("Lookup(dirout/secret.go) err = %v, want ErrSkipped", err)
+	}
+	if f, err := Lookup(root, "dirin/sub.go"); err != nil || f.Rel != "dirin/sub.go" {
+		t.Errorf("Lookup(dirin/sub.go) = %+v, %v; want the inside file", f, err)
+	}
+	// Candidates naming paths through both links (as a git list of a
+	// repository with such entries would) yield the inside file once.
+	w, err := newWalker(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	w.list(context.Background(), slices.Values([]string{"dirin/sub.go", "dirout/secret.go", "dir/sub.go"}), func(f File, err error) bool {
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, f.Rel)
+		return true
+	})
+	if !slices.Equal(got, []string{"dir/sub.go"}) {
+		t.Fatalf("listed %v, want [dir/sub.go]", got)
+	}
+	if got := list(t, files(context.Background(), root, noGit)); !slices.Equal(got, []string{"dir/sub.go"}) {
+		t.Fatalf("walk = %v, want [dir/sub.go]", got)
+	}
+}

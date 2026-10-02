@@ -115,9 +115,9 @@ func newWalker(root string) (*walker, error) {
 	return &walker{root: root, realRoot: realRoot, seen: map[string]bool{}}, nil
 }
 
-// list yields the files among names. Symlinks wait until every regular
-// file is listed, so a link to a listed file is dropped and the file
-// appears once, under its own name.
+// list yields the files among names. Paths through a symlink wait until
+// every direct path is listed, so a link to a listed file is dropped and
+// the file appears once, under its own name.
 func (w *walker) list(ctx context.Context, names iter.Seq[string], yield func(File, error) bool) {
 	var links []string
 	for rel := range names {
@@ -163,7 +163,8 @@ func (w *walker) emit(f File, realPath string, yield func(File, error) bool) boo
 }
 
 // check decides whether rel (relative to the folder) is a listed file. It
-// returns the file, its real path and whether rel itself is a symlink, or
+// returns the file, its real path and whether rel goes through a symlink
+// (in any component), or
 // fs.ErrNotExist / ErrSkipped / a read error.
 func (w *walker) check(rel string) (f File, realPath string, isLink bool, err error) {
 	clean := filepath.Clean(filepath.FromSlash(rel))
@@ -171,22 +172,21 @@ func (w *walker) check(rel string) (f File, realPath string, isLink bool, err er
 		return File{}, "", false, ErrSkipped
 	}
 	abs := filepath.Join(w.realRoot, clean)
-	info, err := os.Lstat(abs)
-	if err != nil {
+	if _, err := os.Lstat(abs); err != nil {
 		return File{}, "", false, err
 	}
-	realPath = abs
-	if info.Mode()&fs.ModeSymlink != 0 {
-		isLink = true
-		if realPath, err = filepath.EvalSymlinks(abs); err != nil {
-			return File{}, "", true, ErrSkipped // dangling or looping link
-		}
-		if !inside(w.realRoot, realPath) {
-			return File{}, "", true, ErrSkipped
-		}
-		if info, err = os.Stat(realPath); err != nil {
-			return File{}, "", true, err
-		}
+	// Every component is resolved, not just the last: a file reached
+	// through a directory link is judged (inside, seen) by its real path.
+	if realPath, err = filepath.EvalSymlinks(abs); err != nil {
+		return File{}, "", true, ErrSkipped // dangling or looping link
+	}
+	isLink = realPath != abs
+	if !inside(w.realRoot, realPath) {
+		return File{}, "", isLink, ErrSkipped
+	}
+	info, err := os.Stat(realPath)
+	if err != nil {
+		return File{}, "", isLink, err
 	}
 	if !info.Mode().IsRegular() || info.Size() > MaxSearchBytes {
 		return File{}, "", isLink, ErrSkipped
