@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"watchtower/internal/gitbin"
@@ -145,10 +146,53 @@ func TestFiles_GitFailureFallsBackToTheWalk(t *testing.T) {
 	write(t, repo, ".git", []byte("gitdir: /nonexistent/worktree\n"))
 	write(t, repo, "main.go", []byte("package main\n"))
 
+	warned := captureWarnings(t)
 	got := list(t, Files(context.Background(), repo))
 	if !slices.Equal(got, []string{"main.go"}) {
 		t.Fatalf("Files(broken repo) = %v, want [main.go]", got)
 	}
+	if w := warned.String(); strings.Count(w, "\n") != 1 || !strings.Contains(w, "git ls-files") || !strings.Contains(w, "walking the folder") {
+		t.Errorf("warnings = %q, want one line naming the git failure and the fallback", w)
+	}
+}
+
+// A workbench folder that its repository ignores: git succeeds and lists
+// nothing, so the walk lists the folder instead (with one note), not zero
+// files.
+func TestFiles_IgnoredFolderFallsBackToTheWalk(t *testing.T) {
+	repo := t.TempDir()
+	git := gitInit(t, repo)
+	write(t, repo, ".gitignore", []byte("ignored/\n"))
+	write(t, repo, "top.go", []byte("package top\n"))
+	write(t, repo, "ignored/a.go", []byte("package a\n"))
+	write(t, repo, "ignored/sub/b.go", []byte("package b\n"))
+	git("add", "-A")
+
+	warned := captureWarnings(t)
+	got := list(t, Files(context.Background(), filepath.Join(repo, "ignored")))
+	if want := []string{"a.go", "sub/b.go"}; !slices.Equal(got, want) {
+		t.Fatalf("Files(ignored folder) = %v, want %v", got, want)
+	}
+	if w := warned.String(); strings.Count(w, "\n") != 1 || !strings.Contains(w, "git lists no files") {
+		t.Errorf("warnings = %q, want one line naming the empty git list", w)
+	}
+
+	// A listed folder writes no note.
+	warned.Reset()
+	list(t, Files(context.Background(), repo))
+	if warned.Len() != 0 {
+		t.Errorf("warnings = %q for a folder git lists", warned)
+	}
+}
+
+// captureWarnings points the walk's notes at a buffer for the test.
+func captureWarnings(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := warnings
+	warnings = &buf
+	t.Cleanup(func() { warnings = prev })
+	return &buf
 }
 
 func hiddenFixture(t *testing.T) []string {

@@ -4,8 +4,9 @@
 //
 // Inside a git repository the list is git's (`ls-files --cached --others
 // --exclude-standard`, git found through internal/gitbin, never the macOS
-// /usr/bin/git shim); elsewhere, or when git is missing or fails, it is a
-// directory walk that skips the Desktop's CodeFileTree.hiddenNames. Either
+// /usr/bin/git shim); elsewhere, when git is missing or fails, or when it
+// lists nothing (a folder the repository ignores), it is a directory walk
+// that skips the Desktop's CodeFileTree.hiddenNames. Either
 // way it never lists a symlink that leaves the folder, a file larger than
 // MaxSearchBytes, or a file whose first 8 KB hold a NUL byte.
 package codewalk
@@ -74,12 +75,7 @@ func files(ctx context.Context, root string, locateGit func() (string, bool)) it
 			yield(File{}, err)
 			return
 		}
-		var names []string
-		if bin, ok := locateGit(); ok && gitbin.InsideRepository(root) {
-			// A git that fails (a broken worktree link, a repository it
-			// refuses to read) falls back to the walk: never zero files.
-			names, _ = gitListFiles(ctx, bin, root)
-		}
+		names := gitNames(ctx, locateGit, root)
 		if err := ctx.Err(); err != nil {
 			yield(File{}, err)
 			return
@@ -90,6 +86,34 @@ func files(ctx context.Context, root string, locateGit func() (string, bool)) it
 		}
 		w.list(ctx, w.walkNames(ctx), yield)
 	}
+}
+
+// warnings receives the walk's one-line notes (a git fallback); the
+// command's stderr.
+var warnings io.Writer = os.Stderr
+
+// gitNames is git's list of the folder's files, or nil for the directory
+// walk: outside a repository, without a git, or — noted on warnings —
+// when git fails (a broken worktree link, a repository it refuses to
+// read) or lists nothing (a folder the repository ignores). Never zero
+// files because of git.
+func gitNames(ctx context.Context, locateGit func() (string, bool), root string) []string {
+	bin, ok := locateGit()
+	if !ok || !gitbin.InsideRepository(root) {
+		return nil
+	}
+	names, err := gitListFiles(ctx, bin, root)
+	switch {
+	case ctx.Err() != nil:
+		return nil
+	case err != nil:
+		fmt.Fprintf(warnings, "code walk: %v; walking the folder instead\n", err)
+		return nil
+	case len(names) == 0:
+		fmt.Fprintf(warnings, "code walk: git lists no files in %s (ignored by its repository?); walking the folder instead\n", root)
+		return nil
+	}
+	return names
 }
 
 // walker turns candidate names into listed files: it checks each one and
@@ -303,6 +327,11 @@ func gitListFiles(ctx context.Context, bin, root string) ([]string, error) {
 	c.Env = gitEnv()
 	out, err := c.Output()
 	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && len(exit.Stderr) > 0 {
+			msg, _, _ := strings.Cut(strings.TrimSpace(string(exit.Stderr)), "\n")
+			return nil, fmt.Errorf("git ls-files: %w: %s", err, msg)
+		}
 		return nil, fmt.Errorf("git ls-files: %w", err)
 	}
 	names := []string{}
