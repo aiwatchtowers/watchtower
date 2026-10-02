@@ -96,7 +96,7 @@ func registerRegistry(s *mcpsdk.Server, database *db.DB, reg *tools.Registry, bi
 			"failed), result and error. Use it when the owner asks what happened to a proposal.",
 	}, func(ctx context.Context, req *mcpsdk.CallToolRequest, args getActionArgs) (*mcpsdk.CallToolResult, any, error) {
 		if err := reg.WorkbenchAlive(ctx, binding); err != nil {
-			return errResult(err.Error()), nil, nil
+			return errResult(binding.Spell(err.Error())), nil, nil
 		}
 		row, err := database.GetAgentAction(args.ID)
 		if err != nil {
