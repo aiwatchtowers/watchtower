@@ -33,7 +33,7 @@ type progressReporter interface {
 func allSources() []Source {
 	return []Source{
 		calendarSource{},
-		projectDocSource{},
+		workbenchDocSource{},
 		ideaSource{},
 		digestSource{},
 		streamDigestSource{},

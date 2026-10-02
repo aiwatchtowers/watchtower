@@ -12,7 +12,7 @@ var ErrTerminalSessionNotFound = errors.New("terminal session not found")
 // Desktop owns every other column.
 type TerminalSession struct {
 	ID              int64
-	ProjectID       sql.NullInt64
+	WorkbenchID     sql.NullInt64
 	Kind            string
 	Title           string
 	TitleSource     string
@@ -24,7 +24,7 @@ func (db *DB) GetTerminalSession(id int64) (*TerminalSession, error) {
 	var s TerminalSession
 	err := db.QueryRow(`SELECT id, project_id, kind, title, title_source, folder_path, claude_session_id
 		FROM terminal_sessions WHERE id = ?`, id).
-		Scan(&s.ID, &s.ProjectID, &s.Kind, &s.Title, &s.TitleSource, &s.FolderPath, &s.ClaudeSessionID)
+		Scan(&s.ID, &s.WorkbenchID, &s.Kind, &s.Title, &s.TitleSource, &s.FolderPath, &s.ClaudeSessionID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrTerminalSessionNotFound
 	}

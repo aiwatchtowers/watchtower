@@ -100,11 +100,12 @@ func TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces(t *testing.T) {
 		assert.False(t, reaction[w], "%s has no reacted message to act on", w)
 	}
 
-	// The project surface (`mcp --project N`, DEV-06): exactly the project
-	// tools plus the surface-less read tools — no other write tool, nothing
-	// External — and no project tool leaks onto another surface.
+	// The workbench surface (`mcp --workbench N`, DEV-06): exactly the workbench
+	// tools, the Slack pair and the surface-less read tools — no other write
+	// tool, nothing External but the propose-only Slack send — and no
+	// workbench tool leaks onto another surface.
 	projectTools := []string{
-		"project_info", "project_board", "update_project", "add_project_source", "remove_project_source",
+		"workbench_info", "workbench_board", "update_workbench", "add_workbench_source", "remove_workbench_source",
 		"create_targets", "update_target", "attach_document", "list_comments", "add_comment", "resolve_comment",
 	}
 	project := names("project")
@@ -131,7 +132,7 @@ func TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces(t *testing.T) {
 	for _, tool := range reg.List("project") {
 		if tool.Name == "send_slack_message" {
 			assert.True(t, tool.External, "a Slack send leaves the machine (AGENT-03)")
-			assert.True(t, tool.ProposeUnderDirectApply, "in a project session it is only ever proposed (DEV-06)")
+			assert.True(t, tool.ProposeUnderDirectApply, "in a workbench session it is only ever proposed (DEV-06)")
 			continue
 		}
 		assert.False(t, tool.External, "%s is External on the project surface (DEV-06)", tool.Name)

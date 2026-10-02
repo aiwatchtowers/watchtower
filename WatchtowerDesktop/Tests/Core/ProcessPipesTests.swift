@@ -1,4 +1,5 @@
 import Foundation
+import os
 import Testing
 @testable import WatchtowerCore
 
@@ -107,6 +108,68 @@ struct ProcessPipesTests {
         let output = await Self.withDeadline(process) { await ProcessPipes.run(process, stdin: "secret-value") }
         #expect(output?.stdout == "secret-value")
         #expect(output?.exitCode == 0)
+    }
+
+    @Test("run with a timeout terminates a hung child and says it timed out")
+    func runTimeoutTerminatesHungChild() async {
+        // `/bin/sleep` itself, not a shell around it: terminate() must reach
+        // the sleeper, or it would outlive the test as an orphan.
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        process.arguments = ["30"]
+        let started = ContinuousClock.now
+        let (output, timedOut) = await ProcessPipes.run(process, timeout: .milliseconds(300))
+        #expect(timedOut)
+        #expect(output.exitCode != 0)
+        #expect(!process.isRunning)
+        #expect(ContinuousClock.now - started < .seconds(10))
+    }
+
+    @Test("run with a timeout kills a child that ignores SIGTERM")
+    func runTimeoutKillsSigtermIgnorer() async {
+        // `exec` keeps one process: the trap-ignoring shell becomes the sleeper.
+        let process = Self.shell("trap '' TERM; exec /bin/sleep 30")
+        let started = ContinuousClock.now
+        let (_, timedOut) = await ProcessPipes.run(process, timeout: .milliseconds(300), killGrace: .milliseconds(300))
+        #expect(timedOut)
+        #expect(process.terminationStatus == SIGKILL)
+        #expect(ContinuousClock.now - started < .seconds(10))
+    }
+
+    @Test("run with a timeout reports a hang even when the child exits 0 on SIGTERM")
+    func runTimeoutCleanExitOnSigterm() async {
+        // A graceful SIGTERM handler (as Node CLIs have) exits normally; the
+        // deadline still fired. `wait` keeps the trap live while the sleeper
+        // runs in the background off the pipes; the handler reaps it.
+        let process = Self.shell("trap 'kill $!; exit 0' TERM; /bin/sleep 30 >/dev/null 2>&1 & wait")
+        // A full second: the shell must have set its trap before the deadline
+        // even on a loaded CI runner.
+        let (output, timedOut) = await ProcessPipes.run(process, timeout: .seconds(1))
+        #expect(timedOut)
+        #expect(output.exitCode == 0)
+    }
+
+    @Test("run with a timeout leaves a child that finishes in time alone")
+    func runTimeoutFinishesInTime() async {
+        let (output, timedOut) = await ProcessPipes.run(Self.shell("echo ok"), timeout: .seconds(10))
+        #expect(!timedOut)
+        #expect(output.exitCode == 0)
+        #expect(output.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "ok")
+    }
+
+    @Test("onLaunch sees the running child and can terminate it")
+    func onLaunchCanTerminate() async {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        process.arguments = ["30"]
+        let sawRunning = OSAllocatedUnfairLock(initialState: false)
+        let output = await ProcessPipes.run(process) { launched in
+            sawRunning.withLock { $0 = launched.isRunning }
+            launched.terminate()
+        }
+        #expect(sawRunning.withLock { $0 })
+        #expect(output.exitCode == SIGTERM)
+        #expect(process.terminationReason == .uncaughtSignal)
     }
 
     @Test("run reports a launch failure as exit -1 with the error text")

@@ -33,6 +33,25 @@ final class CLIMigrationsAndOAuthStderrTests: XCTestCase {
         XCTAssertTrue(line.value.contains("database is locked"), line.value)
     }
 
+    /// SB3 at the call site: more than the 64 KiB pipe buffer of stderr must
+    /// not block the migrate until the 30 s watchdog kills it.
+    func testMigrateLargeStderrIsDrainedNotTimedOut() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("wt-stub-\(UUID().uuidString)")
+        try "#!/bin/sh\nprintf '%300000s' '' 1>&2\necho 'database is locked' 1>&2\nexit 3\n"
+            .write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+        scripts.append(url)
+        let reported = expectation(description: "failure reported")
+        let line = Line()
+        DatabaseManager.runCLIMigrations(cliPath: url.path) {
+            line.set($0)
+            reported.fulfill()
+        }
+        wait(for: [reported], timeout: 10)
+        XCTAssertTrue(line.value.contains("exit code 3"), String(line.value.suffix(200)))
+        XCTAssertFalse(line.value.contains("timed out"), String(line.value.suffix(200)))
+    }
+
     func testMigrateLaunchFailureIsReported() {
         let reported = expectation(description: "launch failure reported")
         let line = Line()

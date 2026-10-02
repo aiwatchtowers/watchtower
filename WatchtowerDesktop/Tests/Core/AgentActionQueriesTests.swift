@@ -175,7 +175,7 @@ final class AgentActionQueriesTests: XCTestCase {
         XCTAssertEqual(try dbq.read { try AgentActionQueries.awaitingOwnerCount($0) }, 1)
     }
 
-    /// #166: a Slack send proposed from a project terminal is External and
+    /// #166: a Slack send proposed from a workbench terminal is External and
     /// only ever pending/failed for the owner — it shows on the strip and the
     /// badge, while the project's direct-apply audit rows stay hidden.
     func testStripShowsAProjectTerminalsExternalProposal() throws {

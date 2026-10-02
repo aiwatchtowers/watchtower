@@ -416,18 +416,18 @@ func TestSendSlackMessage_ExternalCannotBeExecuteTrust(t *testing.T) {
 	assert.Empty(t, env.sender.posts)
 }
 
-// From a project terminal the send is recorded pending for the Desktop's
-// Approve, bound to the project, and never posted on propose (DEV-06).
+// From a workbench terminal the send is recorded pending for the Desktop's
+// Approve, bound to the workbench, and never posted on propose (DEV-06).
 func TestSendSlackMessage_ProjectSessionOnlyProposes(t *testing.T) {
 	env := newSlackSendEnv(t)
-	pid := seedProject(t, env.d, "acme")
+	pid := seedWorkbench(t, env.d, "acme")
 	rc, err := env.reg.Propose(context.Background(), "send_slack_message",
 		json.RawMessage(`{"channel":"#ops","text":"build is green","reason":"r"}`), directBinding(pid))
 	require.NoError(t, err)
 	assert.Equal(t, "pending", rc.Status)
 	assert.Empty(t, env.sender.posts)
 	row := mustRow(t, env.d, rc.ActionID)
-	assert.Equal(t, ProjectContextType, row.ContextType)
+	assert.Equal(t, WorkbenchContextType, row.ContextType)
 	assert.Equal(t, "project", row.Surface)
 }
 

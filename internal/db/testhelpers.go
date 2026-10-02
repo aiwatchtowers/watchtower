@@ -36,14 +36,14 @@ func SeedTestJiraAccount(t *testing.T, d *DB) int64 {
 	return id
 }
 
-// SeedTestProjectTarget creates one target on project projectID's board (the
-// board defaults, via CreateProjectTargetsTx) and returns its id.
-func SeedTestProjectTarget(t *testing.T, d *DB, projectID int64, parent sql.NullInt64, title string) int64 {
+// SeedTestWorkbenchTarget creates one target on project projectID's board (the
+// board defaults, via CreateWorkbenchTargetsTx) and returns its id.
+func SeedTestWorkbenchTarget(t *testing.T, d *DB, projectID int64, parent sql.NullInt64, title string) int64 {
 	t.Helper()
 	var ids []int64
 	err := d.WithTx(func(tx *sql.Tx) error {
 		var err error
-		ids, err = d.CreateProjectTargetsTx(tx, projectID, []ProjectTargetInput{{Title: title, ParentID: parent}})
+		ids, err = d.CreateWorkbenchTargetsTx(tx, projectID, []WorkbenchTargetInput{{Title: title, ParentID: parent}})
 		return err
 	})
 	if err != nil {

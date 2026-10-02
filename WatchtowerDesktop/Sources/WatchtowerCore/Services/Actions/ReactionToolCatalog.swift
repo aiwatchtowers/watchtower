@@ -120,7 +120,7 @@ package enum ReactionToolCatalog {
             destination: "Confluence",
             alwaysAsks: true
         ),
-        // Main chat + project sessions (spec 2026-10-02) — External: always
+        // Main chat + workbench sessions (spec 2026-10-02) — External: always
         // behind Approve, the owner may edit the text first.
         "send_slack_message": ReactionToolInfo(
             title: "Send to Slack",

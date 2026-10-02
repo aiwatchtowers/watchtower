@@ -215,7 +215,7 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         let recording = AppState.shared.meetingRecorderCenter.isBusy
         // Unsent document comments live in memory only; a quit drops them.
-        let unsentComments = AppState.shared.projectsViewModel?.commentDrafts.count ?? 0
+        let unsentComments = AppState.shared.workbenchesViewModel?.commentDrafts.count ?? 0
         return Self.terminateDecision(
             managesLifecycle: managesLifecycle,
             hasBlockingWork: recording || unsentComments > 0,
@@ -290,7 +290,7 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
                 + (unsentComments > 0 ? " Your \(drafts) will be lost." : "")
         } else {
             alert.messageText = "You have \(drafts)"
-            alert.informativeText = "Drafts are kept only while Watchtower runs. Send them from the project's "
+            alert.informativeText = "Drafts are kept only while Watchtower runs. Send them from the workbench's "
                 + "Documents pane first, or quit and lose them."
         }
         alert.addButton(withTitle: recording ? "Stop & Quit" : "Quit")

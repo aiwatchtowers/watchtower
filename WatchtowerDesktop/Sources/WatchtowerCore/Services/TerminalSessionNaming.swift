@@ -3,7 +3,14 @@ import Foundation
 /// Provisional titles for embedded-terminal sessions, before an AI or the
 /// owner names them.
 package enum TerminalSessionNaming {
-    package static let setupTitle = "Project setup"
+    package static let setupTitle = "Workbench setup"
+    /// The setup title rows created before the Workbench rename still carry.
+    package static let legacySetupTitle = "Project setup"
+
+    /// Whether `title` is the setup session's title, in either spelling.
+    package static func isSetupTitle(_ title: String) -> Bool {
+        title == setupTitle || title == legacySetupTitle
+    }
 
     package static func provisional(now: Date, calendar: Calendar = .current) -> String {
         let parts = calendar.dateComponents([.hour, .minute], from: now)

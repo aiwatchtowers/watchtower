@@ -140,7 +140,7 @@ final class WorkspaceLayoutTests: XCTestCase {
     }
 
     func testKey() {
-        XCTAssertEqual(WorkspaceLayout.key(projectID: 12), "projects.layout.12")
+        XCTAssertEqual(WorkspaceLayout.key(workbenchID: 12), "projects.layout.12")
     }
 
     // MARK: - Pane pickers, close, Send comments, divider
@@ -243,21 +243,21 @@ final class WorkspaceLayoutTests: XCTestCase {
 
     func testShowProjectViewNeverHidesTheTerminal() {
         var l = WorkspaceLayout(primary: .session(1), secondary: .board, expanded: nil, dividerFraction: 0.5)
-        l.showProjectView(.documents)
+        l.showWorkbenchView(.documents)
         XCTAssertEqual(l.visiblePanes, [.session(1), .documents])
 
         l.toggleExpand(.documents)
-        l.showProjectView(.board)
+        l.showWorkbenchView(.board)
         XCTAssertEqual(l.visiblePanes, [.session(1), .board], "the expansion ends; the session stays")
 
         var single = WorkspaceLayout(primary: .session(1), secondary: nil, expanded: nil, dividerFraction: 0.5)
-        single.showProjectView(.board)
+        single.showWorkbenchView(.board)
         XCTAssertEqual(single.visiblePanes, [.board], "a single pane switches")
     }
 
     func testShowProjectViewInASplitWithoutASession() {
         var l = WorkspaceLayout(primary: .board, secondary: .documents, expanded: .documents, dividerFraction: 0.5)
-        l.showProjectView(.board)
+        l.showWorkbenchView(.board)
         XCTAssertEqual(l.visiblePanes, [.board, .documents], "a pane in a slot comes back; the expansion ends")
     }
 

@@ -152,11 +152,17 @@ func TestGatherInbox_WithItems(t *testing.T) {
 	})
 	require.NoError(t, err)
 
+	p.shown = newShownIDs()
 	got, hasItems := p.gatherInbox()
 	assert.True(t, hasItems)
 	assert.Contains(t, got, "@mention")
 	assert.Contains(t, got, "PR review needed")
 	assert.Contains(t, got, "blocking deploy")
+	// The prompt showed the sender, so a team_pulse/coaching item about
+	// them keeps its link.
+	resolved, ok := p.shown.resolvePerson("U1")
+	assert.True(t, ok)
+	assert.Equal(t, "U1", resolved)
 }
 
 func TestGatherInbox_DMTriggerType(t *testing.T) {

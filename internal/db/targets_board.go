@@ -7,14 +7,14 @@ import (
 )
 
 // ErrParentOtherBoard is returned when a parent and its child would live on
-// different boards — the personal board (project_id NULL) or a project's.
+// different boards — the personal board (project_id NULL) or a workbench's.
 var ErrParentOtherBoard = errors.New("a parent and its child must be on the same board")
 
 func boardName(projectID sql.NullInt64) string {
 	if !projectID.Valid {
 		return "the personal board"
 	}
-	return fmt.Sprintf("project %d's board", projectID.Int64)
+	return fmt.Sprintf("workbench %d's board", projectID.Int64)
 }
 
 func sameBoard(a, b sql.NullInt64) bool {

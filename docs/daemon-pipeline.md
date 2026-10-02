@@ -503,14 +503,11 @@ Data is available in the desktop app (Usage tab).
 | `digest.language` | Russian | Output language |
 | `digest.batch_max_channels` | 10 | Max channels per batch (medium tier; low tier = ×2) |
 | `digest.batch_max_messages` | 800 | Max messages per batch |
-| **Tracks** | | |
-| `tracks.min_messages` | 3 | (deprecated — tracks now operate on digests) |
 | **Briefing** | | |
 | `briefing.enabled` | true | Generate briefings |
 | `briefing.hour` | 8 | Generation hour (0-23) |
 | **Inbox** | | |
 | `inbox.enabled` | true | Mention detection |
-| `inbox.max_items_per_run` | 100 | Max items per run |
 | `inbox.initial_lookback_days` | 7 | Lookback depth when no watermark |
 
 ---

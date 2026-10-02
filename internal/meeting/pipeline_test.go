@@ -81,6 +81,56 @@ func TestPrepareForEvent(t *testing.T) {
 	assert.Len(t, result.SuggestedPrep, 1)
 }
 
+// A solo event: the model omits most sections and writes null for one.
+// The marshalled result must still carry empty arrays, never null — the
+// Desktop decodes them as non-optional arrays.
+func TestPrepareForEvent_EmptyArraysOnTheWire(t *testing.T) {
+	database := openTestDB(t)
+	seedTestEvent(t, database)
+
+	gen := &mockGenerator{response: `{"talking_points":null,"suggested_prep":["Skim the agenda"]}`}
+	pipe := New(database, &config.Config{}, gen, nil)
+
+	result, err := pipe.PrepareForEvent(context.Background(), "evt1", "")
+	require.NoError(t, err)
+
+	wire, err := json.Marshal(result)
+	require.NoError(t, err)
+	var fields map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(wire, &fields))
+	for _, key := range []string{"talking_points", "open_items", "people_notes", "recommendations"} {
+		assert.Equal(t, "[]", string(fields[key]), key)
+	}
+}
+
+// An answer with no prep section at all ({} after cleanJSON, renamed keys)
+// is a failure, not an empty prep that would be cached.
+func TestPrepareForEvent_NoSectionsIsAnError(t *testing.T) {
+	database := openTestDB(t)
+	seedTestEvent(t, database)
+
+	gen := &mockGenerator{response: `{"talkingPoints":[{"text":"x"}]}`}
+	pipe := New(database, &config.Config{}, gen, nil)
+
+	_, err := pipe.PrepareForEvent(context.Background(), "evt1", "")
+	assert.ErrorContains(t, err, "no prep sections")
+}
+
+// The prompt asks for [] when a section has no data: an all-empty but
+// well-formed prep (here only a recommendation) is a valid answer.
+func TestPrepareForEvent_AllEmptySectionsIsValid(t *testing.T) {
+	database := openTestDB(t)
+	seedTestEvent(t, database)
+
+	gen := &mockGenerator{response: `{"talking_points":[],"open_items":[],"people_notes":[],"suggested_prep":[],` +
+		`"recommendations":[{"text":"Add an agenda","category":"agenda","priority":"high"}],"context_gaps":["No agenda"]}`}
+	pipe := New(database, &config.Config{}, gen, nil)
+
+	result, err := pipe.PrepareForEvent(context.Background(), "evt1", "")
+	require.NoError(t, err)
+	assert.Len(t, result.Recommendations, 1)
+}
+
 func TestPrepareForEvent_NotFound(t *testing.T) {
 	database := openTestDB(t)
 	gen := &mockGenerator{response: "{}"}
@@ -97,8 +147,9 @@ func TestPrepareForNext(t *testing.T) {
 	seedTestEvent(t, database)
 
 	mockResp := MeetingPrepResult{
-		EventID: "evt1",
-		Title:   "1:1 with Alice",
+		EventID:       "evt1",
+		Title:         "1:1 with Alice",
+		SuggestedPrep: []string{"Skim the agenda"},
 	}
 	respJSON, _ := json.Marshal(mockResp)
 
@@ -187,7 +238,7 @@ func TestPrepareForEvent_GoogleOnlyOwnerNameAndProfile(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, database.UpsertOwnerProfile(owner, db.UserProfile{Role: "Staff Engineer"}))
 
-	gen := &capturingGenerator{response: `{"event_id":"evt1"}`}
+	gen := &capturingGenerator{response: `{"event_id":"evt1","suggested_prep":["Skim the agenda"]}`}
 	pipe := New(database, &config.Config{Digest: config.DigestConfig{Language: "English"}}, gen, nil)
 	_, err = pipe.PrepareForEvent(context.Background(), "evt1", "")
 	require.NoError(t, err)

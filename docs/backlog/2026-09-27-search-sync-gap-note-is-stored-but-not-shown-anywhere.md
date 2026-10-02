@@ -20,3 +20,5 @@ sees that messages were skipped. Fix: show a non-error warning line in Settings 
 > Original note: «так там два больших фичи влилось. Пройдись еще разок, дополнии беклог и давай его начинать закрывать»
 
 Review note (fix/backlog-wave2): the note survives its own run but is erased by the next gap-free cycle (~15 min), and `TestRun_ClampedGapNoteSurvivesTheRunsOKWrite` pins that clearing — whoever implements this changes that assertion on purpose. Suggested shape: a separate `sync_gap_note` column cleared only when the owner acknowledges it (owner UX call: acknowledge vs keep N days).
+
+**Status (fix/desktop-low-bundle):** shown: Settings → Slack puts an orange note under an ok workspace whose error column is set (`SlackAccount.syncNote`), and `watchtower slack accounts` prints it under the account line. Left: the note still lives only until the next gap-free cycle — keeping it (a separate column, acknowledge vs keep N days) is the owner UX call above.

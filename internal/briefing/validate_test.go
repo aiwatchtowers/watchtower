@@ -107,3 +107,25 @@ func TestShownIDs_NilIsSafeAndEmptyResultIsNoop(t *testing.T) {
 	s.addPerson("1:U1")
 	assert.Zero(t, newShownIDs().validateIDs(&BriefingResult{}))
 }
+
+// Person ids in team_pulse and coaching navigate on the Desktop too: a raw
+// echo resolves to the stored namespaced id, an unshown one is blanked.
+func TestShownIDs_ValidatesTeamPulseAndCoachingPeople(t *testing.T) {
+	s := newShownIDs()
+	s.addPerson("1:U1")
+	result := &BriefingResult{
+		TeamPulse: []TeamPulseItem{{Text: "a", UserID: "U1"}, {Text: "b", UserID: "U9"}, {Text: "c"}},
+		Coaching:  []CoachingItem{{Text: "d", RelatedUserID: "@U1"}, {Text: "e", RelatedUserID: "U9"}},
+	}
+
+	assert.Equal(t, 2, s.validateIDs(result))
+	assert.Equal(t, "1:U1", result.TeamPulse[0].UserID)
+	assert.Empty(t, result.TeamPulse[1].UserID)
+	assert.Empty(t, result.TeamPulse[2].UserID)
+	assert.Equal(t, "1:U1", result.Coaching[0].RelatedUserID)
+	assert.Empty(t, result.Coaching[1].RelatedUserID)
+
+	wire, err := json.Marshal(result.TeamPulse[1])
+	require.NoError(t, err)
+	assert.NotContains(t, string(wire), "user_id", "a blanked id is omitted, not stored as \"\"")
+}

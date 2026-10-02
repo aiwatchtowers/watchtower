@@ -11,7 +11,7 @@ import (
 )
 
 // TestProj01_ProjectTargetsNeverReachNonBoardReaders guards PROJ-01
-// (docs/inventory/projects.md): with one personal and one project target that
+// (docs/inventory/workbench.md): with one personal and one project target that
 // otherwise look identical (active, overdue, digest-sourced, high priority),
 // every non-board reader of spec §4.1 in internal/db returns only the personal
 // one. Companions in their own packages: TestProj01_DayPlanGatherExcludesProjectTargets
@@ -33,8 +33,8 @@ func TestProj01_ProjectTargetsNeverReachNonBoardReaders(t *testing.T) {
 	personal, err := d.CreateTarget(Target{Text: "personal", Status: "todo", Priority: "high", Ownership: "mine",
 		SourceType: "digest", SourceID: source, DueDate: due})
 	require.NoError(t, err)
-	pid := newTestProject(t, d)
-	onBoard := SeedTestProjectTarget(t, d, pid, sql.NullInt64{}, "board only")
+	pid := newTestWorkbench(t, d)
+	onBoard := SeedTestWorkbenchTarget(t, d, pid, sql.NullInt64{}, "board only")
 	// Defense in depth: the predicate, not the project defaults, keeps it out.
 	_, err = d.Exec(`UPDATE targets SET source_type = 'digest', source_id = ?, due_date = ?, priority = 'high' WHERE id = ?`,
 		source, due, onBoard)

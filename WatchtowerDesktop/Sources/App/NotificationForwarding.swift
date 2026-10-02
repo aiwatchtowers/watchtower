@@ -17,8 +17,8 @@ struct ForwardedNotificationResponse: Codable {
         info[NotificationForwarding.digestIDKey] = payload[NotificationForwarding.digestIDKey].flatMap(Int.init)
         info[NotificationForwarding.ideaIDKey] = payload[NotificationForwarding.ideaIDKey].flatMap(Int.init)
         info[NotificationForwarding.transcriptIDKey] = payload[NotificationForwarding.transcriptIDKey].flatMap(Int64.init)
-        info[NotificationForwarding.projectIDKey] = payload[NotificationForwarding.projectIDKey].flatMap(Int64.init)
-        info[NotificationForwarding.projectSubjectIDKey] = payload[NotificationForwarding.projectSubjectIDKey].flatMap(Int64.init)
+        info[NotificationForwarding.workbenchIDKey] = payload[NotificationForwarding.workbenchIDKey].flatMap(Int64.init)
+        info[NotificationForwarding.workbenchSubjectIDKey] = payload[NotificationForwarding.workbenchSubjectIDKey].flatMap(Int64.init)
         return info
     }
 }
@@ -48,15 +48,16 @@ enum NotificationForwarding {
     static let digestIDKey = "digestId"
     static let ideaIDKey = "ideaId"
     static let transcriptIDKey = "transcriptID"
-    static let projectIDKey = "projectId"
-    static let projectSubjectIDKey = "subjectId"
-    static let projectPaneKey = "pane"
+    // The workbench push keeps its pre-rename `userInfo` (spec 2026-10-02 A1).
+    static let workbenchIDKey = "projectId"
+    static let workbenchSubjectIDKey = "subjectId"
+    static let workbenchPaneKey = "pane"
 
     /// The `userInfo` keys forwarded routing in `NotificationDelegate.route` actually
     /// reads — anything else in the push is dropped rather than shipped across the
     /// process boundary.
     static let routedKeys = [
-        "type", digestIDKey, ideaIDKey, transcriptIDKey, projectIDKey, projectSubjectIDKey, projectPaneKey
+        "type", digestIDKey, ideaIDKey, transcriptIDKey, workbenchIDKey, workbenchSubjectIDKey, workbenchPaneKey
     ]
 
     static func encode(actionID: String, userInfo: [AnyHashable: Any]) -> String? {

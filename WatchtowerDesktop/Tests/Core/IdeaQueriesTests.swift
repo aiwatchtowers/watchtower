@@ -313,6 +313,27 @@ final class IdeaQueriesTests: XCTestCase {
         XCTAssertEqual(Set(targetMentions.map(\.quote)), ["one", "two"])
     }
 
+    /// C merged into A, then A into B: C must point at B, since the
+    /// consolidator follows the link exactly one hop (IDEA-03).
+    func testMergeRepointsEarlierMergesAtTheSurvivor() throws {
+        let db = try TestDatabase.create()
+        let (cID, aID, bID) = try db.write { db -> (Int64, Int64, Int64) in
+            let cID = try TestDatabase.insertIdea(db, title: "C")
+            let aID = try TestDatabase.insertIdea(db, title: "A")
+            let bID = try TestDatabase.insertIdea(db, title: "B")
+            return (cID, aID, bID)
+        }
+
+        try db.write { try IdeaQueries.merge($0, id: Int(cID), into: Int(aID)) }
+        try db.write { try IdeaQueries.merge($0, id: Int(aID), into: Int(bID)) }
+
+        let c = try db.read { try IdeaQueries.fetchOne($0, id: Int(cID)) }
+        let a = try db.read { try IdeaQueries.fetchOne($0, id: Int(aID)) }
+        XCTAssertEqual(c?.mergedIntoID, Int(bID))
+        XCTAssertEqual(c?.status, .merged)
+        XCTAssertEqual(a?.mergedIntoID, Int(bID))
+    }
+
     // MARK: - supersede
 
     func testSupersedeSetsStatusAndLink() throws {

@@ -47,6 +47,7 @@ var (
 
 	// extract subcommand flags
 	targetsFlagExtractText      string
+	targetsFlagExtractTextFile  string
 	targetsFlagExtractSourceRef string
 	targetsFlagExtractFromInbox int
 	targetsFlagExtractJSON      bool
@@ -263,6 +264,8 @@ func init() {
 
 	// extract flags
 	targetsExtractCmd.Flags().StringVar(&targetsFlagExtractText, "text", "", "raw text to extract targets from")
+	targetsExtractCmd.Flags().StringVar(&targetsFlagExtractTextFile, "text-file", "", "read the raw text from this file instead of --text")
+	targetsExtractCmd.MarkFlagsMutuallyExclusive("text", "text-file")
 	targetsExtractCmd.Flags().StringVar(&targetsFlagExtractSourceRef, "source-ref", "", "source reference (e.g. slack:C123:ts, inbox:42)")
 	targetsExtractCmd.Flags().IntVar(&targetsFlagExtractFromInbox, "from-inbox", 0, "load raw text from inbox item with this ID")
 	targetsExtractCmd.Flags().BoolVar(&targetsFlagExtractJSON, "json", false, "output extracted targets as JSON (non-interactive; caller is responsible for persistence)")
@@ -719,7 +722,7 @@ func runTargetsDelete(cmd *cobra.Command, args []string) error {
 		}
 		return fmt.Errorf("looking up target #%d: %w", id, err)
 	}
-	images, err := database.ListProjectTargetImages(int64(id))
+	images, err := database.ListWorkbenchTargetImages(int64(id))
 	if err != nil {
 		return fmt.Errorf("listing target #%d's images: %w", id, err)
 	}
@@ -732,8 +735,8 @@ func runTargetsDelete(cmd *cobra.Command, args []string) error {
 	// A failure leaves only unreferenced files — reported, never undoing
 	// the delete.
 	var ferr error
-	if target.ProjectID.Valid {
-		ferr = discardTargetImages(cfg, database, target.ProjectID.Int64, images)
+	if target.WorkbenchID.Valid {
+		ferr = discardTargetImages(cfg, database, target.WorkbenchID.Int64, images)
 		if ferr != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "warning: removing target #%d's stored images failed: %v\n", id, ferr)
 		}
@@ -743,7 +746,7 @@ func runTargetsDelete(cmd *cobra.Command, args []string) error {
 		payload := map[string]any{"id": id, "removed": true}
 		// Only a project target has stored images; a reader treats absent
 		// files_* keys as clean (the ProjectDeleted precedent).
-		if target.ProjectID.Valid {
+		if target.WorkbenchID.Valid {
 			payload["files_ok"] = ferr == nil
 			payload["files_error"] = ""
 			if ferr != nil {

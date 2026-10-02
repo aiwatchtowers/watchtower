@@ -3,10 +3,10 @@ import GRDB
 package enum AgentActionQueries {
     /// NULL-safe filter shared by every strip/badge reader: a project's
     /// direct-apply audit rows are not owner decisions (STRIP-01). An External
-    /// project row is the exception — DEV-06 refuses every External tool
-    /// inline, so it is a propose-only proposal (a Slack send from the project
+    /// workbench row is the exception — DEV-06 refuses every External tool
+    /// inline, so it is a propose-only proposal (a Slack send from the workbench
     /// terminal) that waits for the owner's Approve here.
-    private static let notProjectRow = "(context_type IS NOT 'project' OR external = 1)"
+    private static let notWorkbenchRow = "(context_type IS NOT 'project' OR external = 1)"
 
     /// Every proposal of one conversation, oldest first — the feed's
     /// observation query.
@@ -43,7 +43,7 @@ package enum AgentActionQueries {
     package static func awaitingOwnerCount(_ db: Database) throws -> Int {
         try Int.fetchOne(db, sql: """
             SELECT COUNT(*) FROM agent_actions
-            WHERE status IN ('pending','failed') AND \(notProjectRow)
+            WHERE status IN ('pending','failed') AND \(notWorkbenchRow)
             """) ?? 0
     }
 
@@ -58,13 +58,13 @@ package enum AgentActionQueries {
     /// Project rows (`context_type = 'project'`) are the audit trail of the
     /// project agent's direct MCP writes, never an owner gesture, so they
     /// stay off the strip (STRIP-01) — except an External one, which is a
-    /// proposal awaiting the owner (`notProjectRow`).
+    /// proposal awaiting the owner (`notWorkbenchRow`).
     package static func fetchStrip(_ db: Database, terminalSince: String) throws -> [AgentAction] {
         try AgentAction.fetchAll(db, sql: """
             SELECT * FROM agent_actions
             WHERE (status IN ('pending','approved','failed','executing')
                    OR (status IN ('applied','rejected') AND decided_at >= ?))
-              AND \(notProjectRow)
+              AND \(notWorkbenchRow)
             ORDER BY (status IN ('applied','rejected')) ASC, created_at DESC, id DESC
             """, arguments: [terminalSince])
     }

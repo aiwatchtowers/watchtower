@@ -120,11 +120,11 @@ func (r runner) reindex(ctx context.Context, d *db.DB, names []string, now time.
 	}
 	st, err := r.run(ctx, d, Options{Sources: names, Now: now})
 	for _, src := range sources {
-		if src.Name() == ProjectDocSource {
+		if src.Name() == WorkbenchDocSource {
 			// The daemon path skips guarded folders; a rebuild the owner
 			// started indexes every project, so it loses nothing an
 			// explicit trigger had indexed — even when another source failed.
-			n, perr := indexAllProjectDocs(ctx, d)
+			n, perr := indexAllWorkbenchDocs(ctx, d)
 			st.Written += n
 			err = errors.Join(err, perr)
 		}
@@ -132,7 +132,7 @@ func (r runner) reindex(ctx context.Context, d *db.DB, names []string, now time.
 	return st, err
 }
 
-func indexAllProjectDocs(ctx context.Context, d *db.DB) (int, error) {
+func indexAllWorkbenchDocs(ctx context.Context, d *db.DB) (int, error) {
 	ids, err := queryStrings(ctx, d, `SELECT id FROM projects ORDER BY id`)
 	if err != nil {
 		return 0, fmt.Errorf("kb: listing projects: %w", err)
@@ -143,7 +143,7 @@ func indexAllProjectDocs(ctx context.Context, d *db.DB) (int, error) {
 		if err != nil {
 			return total, fmt.Errorf("kb: project id %q: %w", id, err)
 		}
-		_, n, err := IndexProjectDocs(ctx, d, pid)
+		_, n, err := IndexWorkbenchDocs(ctx, d, pid)
 		total += n
 		if err != nil {
 			return total, err

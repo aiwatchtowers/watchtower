@@ -30,6 +30,42 @@ type MeetingPrepResult struct {
 	ContextGaps     []string                `json:"context_gaps,omitempty"`
 }
 
+// normalizeSlices turns the arrays the model omitted (or wrote as null) into
+// empty ones, so a fresh prep's wire shape is always `[]` (the Desktop also
+// tolerates null, for preps cached before this normalisation).
+func (r *MeetingPrepResult) normalizeSlices() {
+	if r.TalkingPoints == nil {
+		r.TalkingPoints = []TalkingPoint{}
+	}
+	if r.OpenItems == nil {
+		r.OpenItems = []OpenItem{}
+	}
+	if r.PeopleNotes == nil {
+		r.PeopleNotes = []PersonNote{}
+	}
+	if r.SuggestedPrep == nil {
+		r.SuggestedPrep = []string{}
+	}
+	if r.Recommendations == nil {
+		r.Recommendations = []MeetingRecommendation{}
+	}
+}
+
+// hasPrepSection reports whether the model's JSON object carries at least
+// one prep section key, whatever its value.
+func hasPrepSection(cleaned string) bool {
+	var keys map[string]json.RawMessage
+	if json.Unmarshal([]byte(cleaned), &keys) != nil {
+		return false
+	}
+	for _, k := range []string{"talking_points", "open_items", "people_notes", "suggested_prep", "recommendations", "context_gaps"} {
+		if _, ok := keys[k]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 // MeetingRecommendation is a suggestion for improving the meeting.
 type MeetingRecommendation struct {
 	Text     string `json:"text"`
@@ -236,6 +272,13 @@ func (p *Pipeline) prepareForEvent(ctx context.Context, event db.CalendarEvent, 
 	result.EventID = event.ID
 	result.Title = event.Title
 	result.StartTime = event.StartTime
+	result.normalizeSlices()
+	// Omitted or empty sections are fine (the prompt asks for [] when there
+	// is no data); no section key at all means the answer was not a prep
+	// ({} after cleanJSON, renamed or wrapped keys) and must not be cached.
+	if !hasPrepSection(cleaned) {
+		return nil, fmt.Errorf("AI response has no prep sections (raw: %.500s)", aiResponse)
+	}
 
 	p.logger.Printf("meeting: completed prep for %q (%d talking points, %d open items)",
 		event.Title, len(result.TalkingPoints), len(result.OpenItems))

@@ -270,7 +270,7 @@ struct BriefingDetailView: View {
         }
         .buttonStyle(.plain)
 
-        if item.suggestTask == true {
+        if item.suggestTarget == true {
             HStack {
                 Spacer()
                 Button {
@@ -318,8 +318,8 @@ struct BriefingDetailView: View {
 
     private func yourDayCard(_ item: YourDayItem) -> some View {
         Button {
-            if let taskID = item.taskID {
-                appState.navigateToTarget(taskID)
+            if let targetID = item.targetID {
+                appState.navigateToTarget(targetID)
             } else if let trackID = item.trackID {
                 navigateToSource(type: "track", id: String(trackID))
             }
@@ -355,7 +355,7 @@ struct BriefingDetailView: View {
 
                 Spacer()
 
-                if item.trackID != nil || item.taskID != nil {
+                if item.trackID != nil || item.targetID != nil {
                     Image(systemName: "chevron.right")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
@@ -586,11 +586,11 @@ struct BriefingDetailView: View {
             } else {
                 appState.selectedDestination = .people
             }
-        case "project":
+        case "project": // a workbench; the stored source_type predates the rename (spec 2026-10-02 A1)
             if let id, let projectID = Int64(id) {
-                appState.navigateToProject(ProjectRoute(projectID: projectID, pane: .board))
+                appState.navigateToWorkbench(WorkbenchRoute(projectID: projectID, pane: .board))
             } else {
-                appState.selectedDestination = .projects
+                appState.selectedDestination = .workbench
             }
         default:
             break
@@ -636,7 +636,7 @@ struct BriefingDetailView: View {
             case "track": return ("checklist", "Track")
             case "digest": return ("newspaper", "Digest")
             case "people": return ("person.2", "Person")
-            case "project": return ("folder", "Project")
+            case "project": return ("folder", "Workbench")
             default: return ("questionmark.circle", type)
             }
         }()

@@ -91,6 +91,20 @@ final class SlackAccountQueriesTests: XCTestCase {
         XCTAssertTrue(accounts[0].isOK)
     }
 
+    /// The search catch-up gap note rides the error column of an ok account;
+    /// a failing account's error is its failure, not a note.
+    func testSyncNoteOnlyForOKAccountWithError() throws {
+        let pool = try makePool()
+        try pool.write { db in
+            _ = try TestDatabase.insertSlackAccount(db, label: "Gap", error: "search sync: gap of 40 days")
+            _ = try TestDatabase.insertSlackAccount(db, label: "Broken", status: "error", error: "token revoked")
+            _ = try TestDatabase.insertSlackAccount(db, label: "Clean")
+        }
+
+        let accounts = try pool.read { db in try SlackAccountQueries.fetchAll(db) }
+        XCTAssertEqual(accounts.map(\.syncNote), ["search sync: gap of 40 days", nil, nil])
+    }
+
     func testDisplayNameFallsBackToTeamNameThenID() throws {
         let pool = try makePool()
         let idWithTeam = try pool.write { db in

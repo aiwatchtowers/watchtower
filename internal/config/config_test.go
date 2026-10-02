@@ -605,6 +605,35 @@ targets:
 	assert.Equal(t, 20, cfg.Targets.Resolver.MCPTimeoutSeconds)
 }
 
+// TestRetiredNoReaderKeysStillLoad pins that a config.yaml still carrying
+// the retired digest/inbox/tracks/jira keys loads and leaves its live
+// siblings intact.
+func TestRetiredNoReaderKeysStillLoad(t *testing.T) {
+	yaml := `
+digest:
+  min_messages: 4
+  action_items_interval: 30m
+  tracks_interval: 2h
+inbox:
+  max_items_per_run: 10
+  initial_lookback_days: 3
+tracks:
+  enabled: false
+  min_messages: 9
+jira:
+  enabled: true
+  selected_boards: [1, 2]
+`
+	path := writeTestConfig(t, yaml)
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	assert.Equal(t, 4, cfg.Digest.MinMessages)
+	assert.Equal(t, 3, cfg.Inbox.InitialLookbackDays)
+	assert.False(t, cfg.Tracks.Enabled)
+	assert.True(t, cfg.Jira.Enabled)
+}
+
 func TestTargetsConfigDisabled(t *testing.T) {
 	yaml := `
 targets:

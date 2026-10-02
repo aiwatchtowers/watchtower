@@ -11,7 +11,7 @@ import (
 // same UPDATE; the history trigger copies it and clears the claim again. An
 // unclaimed write is recorded as ActorOwner.
 const (
-	ActorAgent  = "agent"  // the project MCP tools (watchtower mcp --project N)
+	ActorAgent  = "agent"  // the workbench MCP tools (watchtower mcp --workbench N)
 	ActorOwner  = "owner"  // the Desktop, the CLI
 	ActorSystem = "system" // the rollup triggers (PROJ-05), unsnooze, the Jira status sync
 )
@@ -62,10 +62,10 @@ func (db *DB) GetTargetStatusHistory(targetID int64, limit int) ([]TargetStatusC
 	return out, nil
 }
 
-// projectStatusSince maps each of project projectID's targets to the time
+// workbenchStatusSince maps each of project projectID's targets to the time
 // it entered its current status: the changed_at of its latest history row
 // (by id, the order the triggers wrote them in).
-func (db *DB) projectStatusSince(projectID int64) (map[int64]string, error) {
+func (db *DB) workbenchStatusSince(projectID int64) (map[int64]string, error) {
 	rows, err := db.Query(`SELECT h.target_id, h.changed_at FROM target_status_history h
 		WHERE h.id IN (SELECT MAX(l.id) FROM target_status_history l
 		               JOIN targets t ON t.id = l.target_id

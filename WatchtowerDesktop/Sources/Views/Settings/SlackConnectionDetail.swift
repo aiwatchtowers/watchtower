@@ -1,3 +1,4 @@
+import os
 import SwiftUI
 import WatchtowerCore
 
@@ -17,6 +18,11 @@ final class SlackAuthFlowState {
     var reconnectResult: String?
     var reconnectSuccess = false
     var authProcess: Process?
+    /// Set by Cancel, read off the main actor by the running reconnect: a
+    /// Cancel that lands before `auth login` is running (during trust-cert or
+    /// the launch hop) cannot terminate it, so the flow checks this after
+    /// trust-cert and right after the launch. Replaced per reconnect.
+    @ObservationIgnored var cancelRequested = OSAllocatedUnfairLock(initialState: false)
     var disconnecting = false
     let daemonManager = DaemonManager()
 }
@@ -202,6 +208,12 @@ struct SlackConnectionDetail: View {
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
+                                if let note = account.syncNote {
+                                    Label(note, systemImage: "exclamationmark.triangle")
+                                        .font(.caption)
+                                        .foregroundStyle(.orange)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
                             }
                             Spacer()
                             Circle()
@@ -372,10 +384,16 @@ struct SlackConnectionDetail: View {
         flow.reconnecting = true
         flow.reconnectResult = nil
         flow.reconnectSuccess = false
+        let cancelRequested = OSAllocatedUnfairLock(initialState: false)
+        flow.cancelRequested = cancelRequested
 
         Task.detached {
             // Ensure TLS cert is trusted first
             let trustResult = await Self.runCLIProcess(path: cliPath, arguments: ["auth", "trust-cert"])
+            // Cancelled during trust-cert: cancelSlackReconnect already reset
+            // the flow; never go on to open the browser. The trust-cert child
+            // itself (a seconds-long local step) is left to finish.
+            if cancelRequested.withLock({ $0 }) { return }
             if trustResult.exitCode != 0 {
                 await MainActor.run {
                     flow.reconnecting = false
@@ -387,7 +405,11 @@ struct SlackConnectionDetail: View {
             }
 
             await MainActor.run {
-                flow.reconnectResult = "Complete authorization in your browser..."
+                // Re-checked here: a Cancel since the check above already
+                // cleared the line, and must not get it written back.
+                if !cancelRequested.withLock({ $0 }) {
+                    flow.reconnectResult = "Complete authorization in your browser..."
+                }
             }
 
             // Run auth login (opens browser) — keep reference to process for cancellation
@@ -397,12 +419,31 @@ struct SlackConnectionDetail: View {
             process.environment = Constants.resolvedEnvironment()
 
             // Published before launch so Cancel can reach it; cancelling
-            // checks `isRunning`, so an unlaunched process is left alone.
+            // checks `isRunning`, so an unlaunched process is left alone —
+            // `onLaunch` re-checks the flag once it is running.
             await MainActor.run {
                 flow.authProcess = process
             }
 
-            let output = await ProcessPipes.run(process)
+            let output = await ProcessPipes.run(process) { launched in
+                if cancelRequested.withLock({ $0 }) { launched.terminate() }
+            }
+            if cancelRequested.withLock({ $0 }) {
+                // A newer reconnect may own the slot by now.
+                await MainActor.run {
+                    if flow.authProcess === process { flow.authProcess = nil }
+                    // The login finished just before Cancel landed: the token
+                    // is written, so the status must show it.
+                    if output.exitCode == 0 {
+                        config.reload()
+                        Task {
+                            slackAuth.clearDisconnectError()
+                            await slackAuth.refreshStatus()
+                        }
+                    }
+                }
+                return
+            }
             let stderr = output.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
 
             await MainActor.run {
@@ -433,6 +474,9 @@ struct SlackConnectionDetail: View {
     }
 
     private func cancelSlackReconnect() {
+        // Flag first, then the running check: a launch in between is caught
+        // by the flow's `onLaunch` re-check.
+        flow.cancelRequested.withLock { $0 = true }
         if let process = flow.authProcess, process.isRunning {
             process.terminate()
         }

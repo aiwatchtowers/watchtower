@@ -439,9 +439,9 @@ type Target struct {
 	NextStepAt          string        // when NextStep was generated; compared to UpdatedAt for staleness
 	NextStepAttempts    int           // attempts made since the last per-target budget reset (see 00068)
 	NextStepAttemptedAt string        // UTC ISO8601 of the most recent attempt (success or failure), "" if never attempted
-	ProjectID           sql.NullInt64 // set = lives only on that project's board (migration 00081, PROJ-01)
-	Branch              string        // project targets: the git branch carrying the work, "" = none (00089)
-	PR                  string        // project targets: the pull request, a number or URL, "" = none (00089)
+	WorkbenchID         sql.NullInt64 `json:"ProjectID"` // set = lives only on that workbench's board (migration 00081, PROJ-01); the key stays ProjectID, the `targets list --json`/MCP wire key (spec 2026-10-02 A1)
+	Branch              string        // workbench targets: the git branch carrying the work, "" = none (00089)
+	PR                  string        // workbench targets: the pull request, a number or URL, "" = none (00089)
 }
 
 // TargetNote represents a single note entry in a target's notes JSON array.
@@ -462,9 +462,9 @@ type TargetFilter struct {
 	Search      string
 	Limit       int
 	IncludeDone bool
-	// ProjectID scopes the query to one project board: 0 (every existing
+	// WorkbenchID scopes the query to one project board: 0 (every existing
 	// caller) excludes project targets, N returns only project N's (PROJ-01).
-	ProjectID int64
+	WorkbenchID int64
 }
 
 // TargetLink represents a typed link between two targets or to an external reference.

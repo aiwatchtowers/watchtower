@@ -143,7 +143,7 @@ func TestTerminalTitle_IgnoresAStoredProjectBoardLanguage(t *testing.T) {
 	d, err := db.Open(filepath.Join(os.Getenv("HOME"), ".local", "share", "watchtower", "test-ws", "watchtower.db"))
 	require.NoError(t, err)
 	defer d.Close()
-	pid, err := d.CreateProject("acme", t.TempDir())
+	pid, err := d.CreateWorkbench("acme", t.TempDir())
 	require.NoError(t, err)
 	// A value stored before board item #153 retired the override.
 	_, err = d.Exec(`UPDATE projects SET board_language = 'Russian' WHERE id = ?`, pid)

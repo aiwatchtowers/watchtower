@@ -59,8 +59,8 @@ type WhatHappenedItem struct {
 // TeamPulseItem is a people signal.
 type TeamPulseItem struct {
 	Text       string `json:"text"`
-	UserID     string `json:"user_id"`
-	SignalType string `json:"signal_type"` // volume_drop, volume_spike, new_red_flag, highlight, conflict
+	UserID     string `json:"user_id,omitempty"` // omitted when blanked (Swift decodes a missing key as nil)
+	SignalType string `json:"signal_type"`       // volume_drop, volume_spike, new_red_flag, highlight, conflict
 	Detail     string `json:"detail"`
 }
 
@@ -161,11 +161,11 @@ func (p *Pipeline) RunForDate(ctx context.Context, date string) (int, error) {
 	peopleSummaryCtx := p.gatherPeopleSummary()
 	profileCtx := formatUserProfile(profile)
 	jiraCtx := p.gatherJiraContext(owner)
-	projectsCtx, hasRealProjects := p.gatherProjects(p.revisionWindowStart(currentUserID, date))
+	workbenchesCtx, hasRealWorkbenches := p.gatherWorkbenches(p.revisionWindowStart(currentUserID, date))
 	memRevisionsCtx := p.gatherMemoryRevisions(currentUserID, date)
 
 	// Check we have some data (suggestion text alone doesn't count).
-	hasData := hasAnyData(digestsCtx, dailyDigestCtx, hasRealTracks, hasRealTargets, hasRealInbox, hasRealProjects)
+	hasData := hasAnyData(digestsCtx, dailyDigestCtx, hasRealTracks, hasRealTargets, hasRealInbox, hasRealWorkbenches)
 	if !hasData {
 		p.logger.Println("briefing: no digests or tracks available, skipping")
 		return 0, nil
@@ -201,7 +201,7 @@ func (p *Pipeline) RunForDate(ctx context.Context, date string) (int, error) {
 		peopleSummaryCtx,
 		profileCtx,
 		jiraCtx,
-		projectsCtx,
+		workbenchesCtx,
 		memRevisionsCtx,
 	)
 
@@ -410,6 +410,7 @@ func (p *Pipeline) gatherInbox() (string, bool) {
 			typeLabel = "DM"
 		}
 		p.shown.addInbox(item.ID)
+		p.shown.addPerson(item.SenderUserID)
 		sb.WriteString(fmt.Sprintf("- [inbox_id=%d %s %s] from %s: %s\n",
 			item.ID, item.Priority, typeLabel, item.SenderUserID, item.Snippet))
 		if item.AIReason != "" {

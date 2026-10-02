@@ -225,7 +225,7 @@ func TestPrepareForEvent_GateOnCarriesMemoryBlock(t *testing.T) {
 	writePersonEntity(t, d, vp, "ent_alice", "Alice", "Backend lead", "Owns the migration", []string{"prefers async comms"}, []string{"U123", "alice@example.com"})
 	writeBelief(t, d, vp, "bel_a1", "Alice dislikes long meetings", "ent_alice", "active", 0.6)
 
-	gen := &capturingGenerator{response: `{"event_id":"evt1"}`}
+	gen := &capturingGenerator{response: `{"event_id":"evt1","suggested_prep":["Skim the agenda"]}`}
 	p := New(d, cfg, gen, nil)
 
 	_, err := p.PrepareForEvent(context.Background(), "evt1", "")
@@ -247,7 +247,7 @@ func TestPrepareForEvent_GateOffPromptHasSentinel(t *testing.T) {
 	writePersonEntity(t, d, vp, "ent_alice", "Alice", "Backend lead", "Owns the migration", []string{"prefers async comms"}, []string{"U123", "alice@example.com"})
 	writeBelief(t, d, vp, "bel_a1", "Alice dislikes long meetings", "ent_alice", "active", 0.6)
 
-	gen := &capturingGenerator{response: `{"event_id":"evt1"}`}
+	gen := &capturingGenerator{response: `{"event_id":"evt1","suggested_prep":["Skim the agenda"]}`}
 	p := New(d, cfg, gen, nil)
 
 	_, err := p.PrepareForEvent(context.Background(), "evt1", "")
@@ -269,7 +269,7 @@ func TestPrepareForEvent_LeavesVaultGitLogUnchanged(t *testing.T) {
 	writePersonEntity(t, d, vp, "ent_alice", "Alice", "Backend lead", "Owns the migration", []string{"prefers async comms"}, []string{"U123", "alice@example.com"})
 
 	before := memGitHeadCount(t, vp)
-	gen := &capturingGenerator{response: `{"event_id":"evt1"}`}
+	gen := &capturingGenerator{response: `{"event_id":"evt1","suggested_prep":["Skim the agenda"]}`}
 	p := New(d, cfg, gen, nil)
 	_, err := p.PrepareForEvent(context.Background(), "evt1", "")
 	require.NoError(t, err)

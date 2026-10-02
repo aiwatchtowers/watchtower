@@ -53,7 +53,7 @@ final class TerminalSessionOrderTests: XCTestCase {
     }
 
     func testKey() {
-        XCTAssertEqual(TerminalSessionOrder.key(projectID: 7), "projects.sessionOrder.7")
-        XCTAssertEqual(TerminalSessionOrder.key(projectID: nil), "projects.sessionOrder.standalone")
+        XCTAssertEqual(TerminalSessionOrder.key(workbenchID: 7), "projects.sessionOrder.7")
+        XCTAssertEqual(TerminalSessionOrder.key(workbenchID: nil), "projects.sessionOrder.standalone")
     }
 }

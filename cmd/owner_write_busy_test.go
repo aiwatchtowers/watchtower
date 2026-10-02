@@ -39,9 +39,9 @@ func TestMCPModeOptions_WritableModesGetTheOwnerWriteBusyTimeout(t *testing.T) {
 
 	resetMCPFlags(t)
 	projectDB := openMCPTestDB(t)
-	folder, err := db.ResolveProjectFolder(t.TempDir(), nil)
+	folder, err := db.ResolveWorkbenchFolder(t.TempDir(), nil)
 	require.NoError(t, err)
-	mcpFlagProject, err = projectDB.CreateProject("acme", folder)
+	mcpFlagWorkbench, err = projectDB.CreateWorkbench("acme", folder)
 	require.NoError(t, err)
 	_, err = mcpModeOptions(cfg, projectDB, "", nil)
 	require.NoError(t, err)
