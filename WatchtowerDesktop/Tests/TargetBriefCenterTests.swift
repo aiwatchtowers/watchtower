@@ -456,7 +456,8 @@ final class TargetBriefCenterTests: XCTestCase {
         XCTAssertTrue(vmB.isStreaming)
 
         mockA.release()
-        let busy = "The chat was busy when this brief was due — re-ask here."
+        let busy = "The chat was busy when this brief was due — the brief is back in the message box; "
+            + "send it from there."
         await waitUntil("B to fail on the busy chat") {
             center.phase(for: targetB.id) == .failed(targetID: targetB.id, message: busy)
         }
@@ -536,9 +537,10 @@ final class TargetBriefCenterTests: XCTestCase {
 
         center.startBrief(target: target, text: "brief text")
 
-        guard case .failed = center.phase(for: target.id) else {
+        guard case .failed(_, let message) = center.phase(for: target.id) else {
             return XCTFail("expected .failed, got \(center.phase(for: target.id))")
         }
+        XCTAssertTrue(message.hasSuffix("the brief is back in the message box; send it from there."), message)
         XCTAssertTrue(mock.prompts.isEmpty)
         XCTAssertEqual(chatVM.inputText, "half-typed draft\n\nbrief text")
     }

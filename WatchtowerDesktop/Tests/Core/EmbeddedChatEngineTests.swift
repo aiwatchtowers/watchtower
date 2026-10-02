@@ -319,9 +319,13 @@ final class EmbeddedChatEngineTests: XCTestCase {
     /// second write goes through.
     func testAnUnsavedReplyNamesWhatWasAlreadyApplied() async throws {
         let store = FlakyStore()
+        let change = ChatAppliedChange(key: "k1", summary: "set status to done")
         var outcome: EmbeddedChatEngine.TurnOutcome?
-        let engine = makeEngine(spec: spec { ChatPostTurnResult(displayText: $0.reply, applied: ["set status to done"]) },
-                                store: store)
+        var handedBack: [[ChatAppliedChange]] = []
+        let engine = makeEngine(spec: spec { input in
+            handedBack.append(input.alreadyApplied)
+            return ChatPostTurnResult(displayText: input.reply, applied: input.alreadyApplied.isEmpty ? [change] : [])
+        }, store: store)
         engine.onTurnFinished = { outcome = $0 }
         engine.send("mark it done")
         store.failFinalizeOnce = true
@@ -333,6 +337,57 @@ final class EmbeddedChatEngineTests: XCTestCase {
         XCTAssertTrue(message.contains("Retry won't apply them again"))
         XCTAssertTrue(engine.canRetry)
         XCTAssertEqual(engine.messages.last?.message.status, "error", "the second write marked the row")
+        XCTAssertEqual(engine.bannerError, message)
+
+        // Retry hands the applied change back to the surface.
+        engine.retry()
+        ai.emit(.text("Done."), call: 1)
+        ai.finish(call: 1)
+        expectTrue(await waitIdle(engine))
+        XCTAssertEqual(handedBack, [[], [change]])
+    }
+
+    /// Only a Retry carries the list: the owner's next message after a
+    /// failed turn is a new turn with nothing already applied.
+    func testANewOwnerTurnAfterAnUnsavedReplyCarriesNothingApplied() async throws {
+        let store = FlakyStore()
+        var handedBack: [[ChatAppliedChange]] = []
+        let engine = makeEngine(spec: spec { input in
+            handedBack.append(input.alreadyApplied)
+            return ChatPostTurnResult(displayText: input.reply, applied: [ChatAppliedChange(key: "k", summary: "s")])
+        }, store: store)
+        engine.send("first")
+        store.failFinalizeOnce = true
+        ai.emit(.text("Done."))
+        ai.finish()
+        expectTrue(await waitIdle(engine))
+        XCTAssertTrue(engine.canRetry)
+
+        engine.send("something else")
+        ai.emit(.text("ok"), call: 1)
+        ai.finish(call: 1)
+        expectTrue(await waitIdle(engine))
+        XCTAssertEqual(handedBack.map(\.count), [0, 0])
+    }
+
+    /// The error row could not be written either: it stays `partial` on
+    /// disk, and the message says Retry exists only in this session.
+    func testAnUnsavedReplyThatCannotBeMarkedFailedSaysSo() async throws {
+        let store = FlakyStore()
+        var outcome: EmbeddedChatEngine.TurnOutcome?
+        let engine = makeEngine(spec: spec {
+            ChatPostTurnResult(displayText: $0.reply, applied: [ChatAppliedChange(key: "k", summary: "added x")])
+        }, store: store)
+        engine.onTurnFinished = { outcome = $0 }
+        engine.send("add x")
+        store.failFinalize = true
+        ai.emit(.text("Done."))
+        ai.finish()
+        expectTrue(await waitIdle(engine))
+        guard case .failed(_, let message) = outcome else { return XCTFail("\(String(describing: outcome))") }
+        XCTAssertTrue(message.contains("Already applied: added x"))
+        XCTAssertTrue(message.contains("retry before leaving this chat"), message)
+        XCTAssertTrue(engine.canRetry)
         XCTAssertEqual(engine.bannerError, message)
     }
 

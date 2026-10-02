@@ -89,6 +89,10 @@ package final class EmbeddedChatEngine {
     @ObservationIgnored private var running: RunningTurn?
     @ObservationIgnored private var pending: TurnRequest?
     @ObservationIgnored private var lastRequest: TurnRequest?
+    /// What the latest failed turn had already applied; a Retry hands it to
+    /// the surface. Lives here, not on a surface controller, because the
+    /// engine (and its Retry) outlives the screen that made it.
+    @ObservationIgnored private var appliedBeforeFailure: [ChatAppliedChange] = []
     @ObservationIgnored private var queuedFollowUps: [String] = []
     /// The latest turn ended in an error: new follow-ups wait for Retry or
     /// the next owner turn instead of running on the session that failed.
@@ -107,6 +111,8 @@ package final class EmbeddedChatEngine {
         /// queue if the turn never starts or does not complete.
         let carriedFollowUps: [String]
         let previousOwnerMessageAt: Date?
+        /// A Retry's `ChatTurnInput.alreadyApplied`; empty for every other turn.
+        var alreadyApplied: [ChatAppliedChange] = []
 
         var promptText: String {
             let carried = carriedFollowUps.joined(separator: "\n")
@@ -229,7 +235,8 @@ package final class EmbeddedChatEngine {
     package func retry() {
         guard canRetry, !isBusy, let last = lastRequest, spec.mayContinue() else { return }
         let request = TurnRequest(ownerText: nil, basePrompt: last.basePrompt, carriedFollowUps: takeFollowUps(),
-                                  previousOwnerMessageAt: last.previousOwnerMessageAt)
+                                  previousOwnerMessageAt: last.previousOwnerMessageAt,
+                                  alreadyApplied: appliedBeforeFailure)
         guard !request.promptText.isEmpty else { return }
         start(request)
     }
@@ -342,6 +349,8 @@ package final class EmbeddedChatEngine {
         if request.ownerText != nil { draftMirror?.clear(for: spec.key) }
         canRetry = false
         lastRequest = request
+        // Still applied if this turn fails before its postTurn runs.
+        appliedBeforeFailure = request.alreadyApplied
         let now = clock()
         let turn = LiveTurn(messageID: ids.assistantID, turnID: turnID, startedAt: now)
         liveTurn = turn
@@ -349,7 +358,8 @@ package final class EmbeddedChatEngine {
         refreshRows()
 
         let input = ChatTurnInput(text: request.promptText, isResumed: sessionID != nil,
-                                  previousOwnerMessageAt: request.previousOwnerMessageAt, turnID: turnID)
+                                  previousOwnerMessageAt: request.previousOwnerMessageAt, turnID: turnID,
+                                  alreadyApplied: request.alreadyApplied)
         let stream = aiService.stream(
             prompt: spec.turnPrompt(input),
             systemPrompt: sessionID == nil ? spec.systemPrompt() : nil,
@@ -504,7 +514,8 @@ package final class EmbeddedChatEngine {
                 code: .internalError, message: "Couldn't save the reply: \(error.localizedDescription)", retryable: false),
                 persist: false)
         }
-        let result = spec.postTurn(ChatPostTurnInput(reply: text, turnID: turn.turnID, messageID: turn.messageID))
+        let result = spec.postTurn(ChatPostTurnInput(reply: text, turnID: turn.turnID, messageID: turn.messageID,
+                                                     alreadyApplied: current.request.alreadyApplied))
         // An action surface may answer with tool proposals only and show a
         // placeholder; a reply that still has nothing to show is an error.
         if result.displayText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -516,14 +527,19 @@ package final class EmbeddedChatEngine {
             // Retry (which the surface tells not to repeat it) can follow.
             var message = bannerError ?? "Couldn't save the reply"
             if !result.applied.isEmpty {
-                message += ". Already applied: " + result.applied.joined(separator: "; ")
+                message += ". Already applied: " + result.applied.map(\.summary).joined(separator: "; ")
                     + " — Retry won't apply them again."
             }
+            appliedBeforeFailure = result.applied
+            let marked = EmbeddedChatErrorClassifier.Failure(code: .internalError, message: message, retryable: true)
+            if !markFailedBestEffort(turn, text: text, failure: marked) {
+                // The row stays `partial` on disk: Retry lives only in this
+                // session, so say so.
+                message += " The reply couldn't be marked failed either — retry before leaving this chat."
+            }
             bannerError = message
-            let failure = EmbeddedChatErrorClassifier.Failure(code: .internalError, message: message, retryable: true)
-            let outcome = failTurn(turn, text: text, failure: failure, persist: false)
-            markFailedBestEffort(turn, text: text, failure: failure)
-            return outcome
+            return failTurn(turn, text: text, failure: .init(code: .internalError, message: message, retryable: true),
+                            persist: false)
         }
         turn.finish(.complete, at: clock())
         for notice in result.notices { appendRow(role: "system", text: notice, reloading: false) }
@@ -537,12 +553,14 @@ package final class EmbeddedChatEngine {
         _ turn: LiveTurn,
         text: String,
         failure: EmbeddedChatErrorClassifier.Failure
-    ) {
+    ) -> Bool {
         do {
             try store.finalize(messageID: turn.messageID, text: text, status: "error",
                                errorCode: (failure.code ?? .internalError).rawValue, errorMessage: failure.message)
+            return true
         } catch {
             log("the failed reply could not be marked either: \(error)")
+            return false
         }
     }
 

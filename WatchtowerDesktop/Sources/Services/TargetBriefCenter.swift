@@ -183,13 +183,16 @@ final class TargetBriefCenter {
         // VM, and the watcher would then mistake the OWNER's run for the
         // brief's — so a busy chat fails the brief visibly instead.
         guard !chatVM.isStreaming else {
-            Self.returnBrief(next.request.text, to: chatVM)
-            failToStart(next.id, message: "The chat was busy when this brief was due — re-ask here.")
+            let returned = Self.returnBrief(next.request.text, to: chatVM)
+            failToStart(next.id, message: "The chat was busy when this brief was due"
+                + (returned ? Self.backInTheBox : " — re-ask here."))
             return
         }
         setVM(chatVM, for: next.id)
         guard send(next.request.text, on: chatVM) else {
-            failToStart(next.id, message: chatVM.errorMessage ?? "The brief could not be sent — re-ask here.")
+            let returned = Self.returnBrief(next.request.text, to: chatVM)
+            failToStart(next.id, message: (chatVM.errorMessage ?? "The brief could not be sent")
+                + (returned ? Self.backInTheBox : " — re-ask here."))
             return
         }
         watch(next.id, chatVM: chatVM)
@@ -209,19 +212,19 @@ final class TargetBriefCenter {
         chatVM.inputText = text
         chatVM.send()
         chatVM.inputText = draft
-        guard chatVM.isStreaming else {
-            Self.returnBrief(text, to: chatVM)
-            return false
-        }
-        return true
+        return chatVM.isStreaming
     }
 
+    private static let backInTheBox = " — the brief is back in the message box; send it from there."
+
     /// A brief that never went out lands in the chat's composer, after any
-    /// owner draft, so "re-ask here" is one press away instead of a retype.
-    private static func returnBrief(_ text: String, to chatVM: TargetChatViewModel) {
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+    /// owner draft, so re-asking is one press instead of a retype. False for
+    /// a blank brief (nothing to give back).
+    private static func returnBrief(_ text: String, to chatVM: TargetChatViewModel) -> Bool {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
         let draft = chatVM.inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         chatVM.inputText = draft.isEmpty ? text : "\(chatVM.inputText)\n\n\(text)"
+        return true
     }
 
     /// Poll until `isStreaming` clears, which observes the whole run (stream

@@ -1382,22 +1382,17 @@ final class TargetChatViewModelTests: XCTestCase {
         XCTAssertEqual(chat.engine.messages.last?.message.status, "error")
     }
 
-    /// An execute-mode write landed but the reply row could not be saved: the
-    /// error names what was already applied, and Retry — the model proposes
-    /// the same change again — does not apply it a second time.
-    func testRetryAfterAnUnsavedReplyDoesNotReapplyItsActions() async throws {
-        let (manager, path) = try TestDatabase.createDatabaseManager()
-        defer { TestDatabase.cleanup(path: path) }
-        let target = try makeTarget(manager, intent: "x")
-        let vm = TargetsViewModel(dbManager: manager)
+    private func addSubItemReply(reason: String) -> [StreamEvent] {
         let reply = """
         Added it.
         ```watchtower-action
-        { "type": "add_sub_item", "text": "draft reply", "mode": "execute", "reason": "owner instructed" }
+        { "type": "add_sub_item", "text": "draft reply", "mode": "execute", "reason": "\(reason)" }
         ```
         """
-        let mock = MockClaudeService(events: [.sessionID("s1"), .text(reply), .done])
-        let chat = try makeChat(target: target, vm: vm, manager: manager, aiService: mock)
+        return [.sessionID("s1"), .text(reply), .done]
+    }
+
+    private func failReplySaves(_ manager: DatabaseManager) async throws {
         try await manager.dbPool.write { db in
             try db.execute(sql: """
                 CREATE TRIGGER fail_reply_save BEFORE UPDATE ON chat_messages
@@ -1405,6 +1400,34 @@ final class TargetChatViewModelTests: XCTestCase {
                 BEGIN SELECT RAISE(ABORT, 'disk full'); END
                 """)
         }
+    }
+
+    private func draftReplyCount(_ manager: DatabaseManager, _ target: Target) throws -> Int {
+        try XCTUnwrap(fetchTargetRow(manager, id: target.id)).decodedSubItems.filter { $0.text == "draft reply" }.count
+    }
+
+    /// An execute-mode write landed but the reply row could not be saved: the
+    /// error names what was already applied. The owner leaves the tab and
+    /// comes back (a new VM over the center's engine), presses Retry, and the
+    /// model proposes the same change in other words: it is not applied twice.
+    func testRetryAfterAnUnsavedReplyDoesNotReapplyItsActions() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        let mock = MockClaudeService(eventSequence: [
+            addSubItemReply(reason: "owner instructed"),
+            addSubItemReply(reason: "as the owner asked")
+        ])
+        let center = EmbeddedChatCenter { spec, gate in
+            makeSurfaceEngine(spec, dbPool: manager.dbPool, ai: mock, gate: gate)
+        }
+        let conv = try await manager.dbPool.write { db in
+            try ChatConversationQueries.create(db, title: "Task", contextType: "target", contextID: String(target.id)).id
+        }
+        let chat = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
+                                       conversationID: conv, center: center)
+        try await failReplySaves(manager)
 
         chat.inputText = "add the step"
         chat.send()
@@ -1412,23 +1435,52 @@ final class TargetChatViewModelTests: XCTestCase {
 
         let message = try XCTUnwrap(chat.errorMessage)
         XCTAssertTrue(message.contains("Already applied: added sub-item \"draft reply\""), message)
-        XCTAssertTrue(chat.engine.canRetry)
-        XCTAssertEqual(try XCTUnwrap(fetchTargetRow(manager, id: target.id))
-            .decodedSubItems.filter { $0.text == "draft reply" }.count, 1)
+        XCTAssertEqual(try draftReplyCount(manager, target), 1)
+        chat.stop()
+
+        try await manager.dbPool.write { db in try db.execute(sql: "DROP TRIGGER fail_reply_save") }
+        let back = TargetChatViewModel(target: target, viewModel: vm, dbManager: manager,
+                                       conversationID: conv, center: center)
+        XCTAssertTrue(back.engine === chat.engine, "the center keeps the engine across the tab")
+        XCTAssertTrue(back.engine.canRetry)
+        back.engine.retry()
+        try await waitForStreamEnd(back)
+
+        XCTAssertNil(back.errorMessage)
+        XCTAssertEqual(mock.prompts.count, 2)
+        XCTAssertTrue(mock.prompts[1].contains("already applied these changes"), mock.prompts[1])
+        XCTAssertTrue(mock.prompts[1].contains("added sub-item \"draft reply\""))
+        XCTAssertEqual(try draftReplyCount(manager, target), 1, "Retry wrote the change a second time")
+        XCTAssertEqual(back.actionCards.last?.state, .applied("already applied before the retry"))
+        XCTAssertEqual(back.engine.messages.last { $0.message.role == "assistant" }?.message.status, "complete")
+        back.stop()
+    }
+
+    /// Only Retry skips: a new owner message after the failed turn is a turn
+    /// of its own, and the same change asked for again is applied.
+    func testANewMessageAfterAnUnsavedReplyAppliesItsActions() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        let mock = MockClaudeService(eventSequence: [addSubItemReply(reason: "r"), addSubItemReply(reason: "r")])
+        let chat = try makeChat(target: target, vm: vm, manager: manager, aiService: mock)
+        try await failReplySaves(manager)
+
+        chat.inputText = "add the step"
+        chat.send()
+        try await waitForStreamEnd(chat)
+        XCTAssertNotNil(chat.errorMessage)
 
         try await manager.dbPool.write { db in try db.execute(sql: "DROP TRIGGER fail_reply_save") }
         chat.errorMessage = nil
-        chat.engine.retry()
+        chat.inputText = "add it once more"
+        chat.send()
         try await waitForStreamEnd(chat)
 
-        XCTAssertNil(chat.errorMessage)
-        XCTAssertEqual(mock.prompts.count, 2)
-        XCTAssertTrue(mock.prompts[1].contains("Already applied in the previous attempt"), mock.prompts[1])
-        XCTAssertTrue(mock.prompts[1].contains("draft reply"))
-        XCTAssertEqual(try XCTUnwrap(fetchTargetRow(manager, id: target.id))
-            .decodedSubItems.filter { $0.text == "draft reply" }.count, 1)
-        XCTAssertEqual(chat.actionCards.last?.state, .applied("already applied before the retry"))
-        XCTAssertEqual(chat.engine.messages.last { $0.message.role == "assistant" }?.message.status, "complete")
+        XCTAssertFalse(mock.prompts[1].contains("already applied these changes"), mock.prompts[1])
+        XCTAssertEqual(try draftReplyCount(manager, target), 2)
+        XCTAssertEqual(chat.actionCards.last?.state, .applied("added sub-item \"draft reply\""))
     }
 
     /// A reply that is only a malformed block keeps its warning (TGT-BRIEF-03:

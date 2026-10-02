@@ -100,8 +100,9 @@ struct EmbeddedChatRows<Accessory: View>: View {
     }
 
     /// Retry sits on the last failed reply only, and only while nothing runs.
+    /// A reply whose error could not be written stays `partial` on disk.
     private func retry(for item: ChatThreadItem) -> ((Int64) -> Void)? {
-        guard engine.canRetry, !engine.isBusy, item.message.status == "error",
+        guard engine.canRetry, !engine.isBusy, item.message.status != "complete",
               item.id == engine.messages.last(where: { $0.message.isAssistant })?.id else { return nil }
         return { _ in engine.retry() }
     }
