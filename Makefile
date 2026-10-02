@@ -34,7 +34,7 @@ JIRA_ID     ?= $(WATCHTOWER_JIRA_CLIENT_ID)
 JIRA_SECRET ?= $(WATCHTOWER_JIRA_CLIENT_SECRET)
 LDFLAGS     := -ldflags "-X watchtower/cmd.Version=$(VERSION) -X watchtower/cmd.Commit=$(COMMIT) -X watchtower/cmd.BuildDate=$(BUILD_DATE) -X watchtower/cmd.BuildFlavor=$(BUILD_FLAVOR) -X watchtower/internal/auth.DefaultClientID=$(OAUTH_ID) -X watchtower/internal/auth.DefaultClientSecret=$(OAUTH_SECRET) -X watchtower/internal/calendar.DefaultGoogleClientID=$(GOOGLE_ID) -X watchtower/internal/calendar.DefaultGoogleClientSecret=$(GOOGLE_SECRET) -X watchtower/internal/jira.DefaultJiraClientID=$(JIRA_ID) -X watchtower/internal/jira.DefaultJiraClientSecret=$(JIRA_SECRET)"
 
-.PHONY: build test test-verbose test-cover lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool test-scripts hooks leak-check sentrux-check sentrux-gate sentrux-baseline quality periphery periphery-check periphery-baseline release-check
+.PHONY: build test test-verbose test-cover lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool test-scripts hooks leak-check sentrux-check sentrux-gate sentrux-baseline quality periphery periphery-check periphery-baseline release-check editor-bridge-check
 
 build:
 	go build $(LDFLAGS) -o $(BINARY_NAME) .
@@ -165,6 +165,12 @@ periphery-baseline:
 	count=$$($(PERIPHERY) scan --skip-build 2>/dev/null | grep -cE "warning:" || echo 0); \
 	echo "$$count" > .periphery-baseline-count.txt; \
 	echo "Periphery baseline saved: $$count warnings"
+
+# Manual check of the Files pane's editor page (CodeEditorWeb/index.html
+# protocol + languages.js grammars) in a headless WKWebView. Not in any gate;
+# needs scripts/fetch-monaco.sh first.
+editor-bridge-check:
+	bash scripts/editor-bridge-check.sh
 
 # Pre-release gate. Runs sentrux quality (rules + structural regression),
 # periphery dead-code check (vs baseline), Go tests, and Swift tests. Failing
