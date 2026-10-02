@@ -654,6 +654,13 @@ final class AppState {
                 }
                 isLoading = false
             }
+            // A pending onboarding is a fresh install (or a setup re-run):
+            // the one moment the transcription langset may follow the Mac's
+            // languages. An install that finished onboarding keeps the
+            // "ru,uk,en" default it has been transcribing with.
+            if needsOnboarding {
+                TranscriptionLangsetSeed.seedIfUntouched(.standard)
+            }
         }
         // Check for updates now and every UpdateService.checkInterval while
         // running (a no-op for builds without an update channel).
