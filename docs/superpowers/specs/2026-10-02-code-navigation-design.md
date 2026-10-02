@@ -94,8 +94,8 @@ watchtower code index  ──JSON lines──▶   CodeIndexCenter (AppState)
 watchtower code search ──JSON lines──▶   CodeSearchRun (one process per query,
   internal/codesearch                      killed on the next keystroke)
                                          Views: OpenQuicklyPanel, JumpBar,
-watchtower mcp (code read tools) ◀────     DefinitionMenu, CodeInspector
-  read_workbench_file, search_…            CodeQuestionSurface (EmbeddedChat)
+watchtower ai query --read-folder ◀────     DefinitionMenu, CodeInspector
+  (provider's own read tools, cwd = folder) CodeQuestionSurface (EmbeddedChat)
 ```
 
 - Go owns parsing and searching (one implementation, testable, shared later by
