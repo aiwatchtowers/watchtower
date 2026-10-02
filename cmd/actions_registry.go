@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 
 	"watchtower/internal/config"
@@ -8,6 +9,7 @@ import (
 	"watchtower/internal/db"
 	"watchtower/internal/jira"
 	"watchtower/internal/projectfiles"
+	watchtowerslack "watchtower/internal/slack"
 	"watchtower/internal/tools"
 )
 
@@ -82,6 +84,48 @@ func jiraConnectFactory(cfg *config.Config, database *db.DB) tools.JiraConnectFa
 	}
 }
 
+// slackSender adapts the rate-limited Slack client to tools.SlackSender.
+type slackSender struct{ *watchtowerslack.Client }
+
+func (s slackSender) RecentMessages(ctx context.Context, channelID, threadTS, oldest string) ([]tools.SlackPosted, bool, error) {
+	var out []tools.SlackPosted
+	if threadTS != "" {
+		replies, err := s.GetConversationReplies(ctx, channelID, threadTS)
+		if err != nil {
+			return nil, false, err
+		}
+		for _, m := range replies {
+			if m.Timestamp > oldest { // same-width Slack ts strings compare in order
+				out = append(out, tools.SlackPosted{User: m.User, Text: m.Text, TS: m.Timestamp})
+			}
+		}
+		return out, false, nil
+	}
+	page, err := s.GetConversationHistory(ctx, watchtowerslack.HistoryOptions{ChannelID: channelID, Oldest: oldest})
+	if err != nil {
+		return nil, false, err
+	}
+	for _, m := range page.Messages {
+		out = append(out, tools.SlackPosted{User: m.User, Text: m.Text, TS: m.Timestamp})
+	}
+	return out, page.HasMore, nil
+}
+
+// slackSenderFactory serves send_slack_message: the account's token file,
+// and the scopes it records (empty for a token saved before they were).
+func slackSenderFactory(cfg *config.Config) tools.SlackSenderFactory {
+	return func(account db.SlackAccount) (tools.SlackSender, string, error) {
+		tok, err := watchtowerslack.NewTokenStore(cfg.WorkspaceDir(), account.ID).Load()
+		if err != nil {
+			return nil, "", fmt.Errorf("reading slack account #%d token: %w", account.ID, err)
+		}
+		if tok == nil || tok.AccessToken == "" {
+			return nil, "", fmt.Errorf("slack account #%d has no token; run 'watchtower slack login --account %d'", account.ID, account.ID)
+		}
+		return slackSender{newSlackClientForToken(tok.AccessToken)}, tok.Scope, nil
+	}
+}
+
 // buildToolRegistry is the ONE place the assistant's tools are assembled —
 // shared by `mcp --chat`, `actions …`, `jira create` and the runtime-B
 // `ai query --tools chat` ollama loop, so the entry points can never disagree
@@ -104,6 +148,10 @@ func buildToolRegistry(cfg *config.Config, database *db.DB) *tools.Registry {
 		// tools.ReadTools() — dev-mode MCP stays local-only (DEV-01).
 		tools.NewGetConfluencePage(confluencePageClientFactory(cfg)),
 		tools.NewEditConfluencePage(confluencePageClientFactory(cfg)),
+		// Slack send (#166): main chat + project sessions; in a project
+		// session it is recorded pending for the Desktop's Approve (DEV-06).
+		tools.NewSendSlackMessage(slackSenderFactory(cfg)),
+		tools.NewGetWritingStyle(),
 	)
 	// The project tools (surface "project" only): mounted by `mcp --project N`,
 	// which applies them directly under Binding.DirectApply (DEV-06).

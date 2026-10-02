@@ -31,6 +31,10 @@ var (
 // first attempt got through before it failed.
 const externalRetryWarning = "Retrying re-sends the request — check Jira for a duplicate first."
 
+// slackRetryWarning: a Slack send's retry first looks for the message the
+// failed attempt may have posted, and re-posts only when it finds none.
+const slackRetryWarning = "Retrying first checks whether the message already reached Slack and posts it only if it did not."
+
 var actionsCmd = &cobra.Command{
 	Use:   "actions",
 	Short: "Proposed assistant actions: list, approve, reject, retry, tool trust",
@@ -236,6 +240,9 @@ func prepareApply(database *db.DB, id int64) (string, error) {
 	// A row that never reached `executing` provably never ran the tool, so
 	// only a failed one can have left a half-finished external write behind.
 	if row.External && row.Status == "failed" {
+		if row.Tool == "send_slack_message" {
+			return slackRetryWarning, nil
+		}
 		return externalRetryWarning, nil
 	}
 	return "", nil

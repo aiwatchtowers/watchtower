@@ -239,3 +239,42 @@ func TestActions_ListAndShow(t *testing.T) {
 	_, err = runActions(t, "show", "99", "--json")
 	assert.Error(t, err)
 }
+
+// `approve --patch` (#166): the owner's card edits land with the approval in
+// one write, and Apply runs exactly the edited args. With no Slack token in
+// this test workspace the send itself fails at the token read — after the
+// approval, before any network call.
+func TestActions_ApprovePatchSavesTheEditWithTheDecision(t *testing.T) {
+	database := writeActionsConfig(t)
+	acct, err := database.CreateSlackAccount(db.SlackAccount{TeamName: "Acme", TeamDomain: "acme"})
+	require.NoError(t, err)
+	target := `{"account_id":` + strconv.FormatInt(acct, 10) + `,"workspace":"Acme","channel_id":"CGEN","label":"#general"}`
+	id, err := database.InsertAgentAction(db.AgentAction{Tool: "send_slack_message", External: true, Surface: "main",
+		ArgsJSON: `{"channel":"#general","text":"draft","reason":"r","candidates":[` + target + `]}`, Reason: "r"})
+	require.NoError(t, err)
+
+	// Not ready: no workspace chosen yet — refused, row untouched.
+	_, err = runActions(t, "approve", strconv.FormatInt(id, 10), "--json")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "choose the workspace")
+	row, err := database.GetAgentAction(id)
+	require.NoError(t, err)
+	assert.Equal(t, "pending", row.Status)
+
+	out, err := runActions(t, "approve", strconv.FormatInt(id, 10), "--patch", `{"text":"edited","candidate":0}`, "--json")
+	require.NoError(t, err, out)
+	assert.Contains(t, out, `"applied_ok": false`)
+	assert.Contains(t, out, "has no token")
+	row, err = database.GetAgentAction(id)
+	require.NoError(t, err)
+	assert.Equal(t, "failed", row.Status)
+	assert.Contains(t, row.ArgsJSON, `"text":"edited"`)
+	assert.Contains(t, row.ArgsJSON, `"target":{`)
+
+	// A retry warns in Slack's terms, not Jira's.
+	out, err = runActions(t, "apply", strconv.FormatInt(id, 10), "--json")
+	require.NoError(t, err, out)
+	assert.Contains(t, out, "already reached Slack")
+	_, err = runActions(t, "approve", strconv.FormatInt(id, 10), "--patch", `{"text":"late"}`, "--json")
+	require.Error(t, err, "a decided row takes no edits")
+}

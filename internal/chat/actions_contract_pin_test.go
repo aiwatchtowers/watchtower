@@ -26,13 +26,17 @@ func TestActionsContract_MatchesSharedFixtures(t *testing.T) {
 func TestActionsContract_ListsEveryWriteToolOfTheSurface(t *testing.T) {
 	main := ActionsContract("main")
 	for _, tool := range []string{"create_target", "create_jira_issue", "connect_jira_board", "add_jira_comment",
-		"transition_jira_issue", "assign_jira_issue", "update_jira_issue", "edit_confluence_page", "create_track", "create_idea", "remind_me"} {
+		"transition_jira_issue", "assign_jira_issue", "update_jira_issue", "edit_confluence_page", "create_track", "create_idea", "remind_me",
+		"send_slack_message"} {
 		assert.Contains(t, main, "- "+tool+" — ", tool)
 	}
 	target := ActionsContract("target")
-	for _, tool := range []string{"create_target", "connect_jira_board", "create_track", "create_idea", "remind_me"} {
+	for _, tool := range []string{"create_target", "connect_jira_board", "create_track", "create_idea", "remind_me", "send_slack_message"} {
 		assert.NotContains(t, target, "- "+tool+" — ", "%s is not offered on the target surface", tool)
 	}
+	// Slack send (#166): the style rule rides with the tool, main only.
+	assert.Contains(t, main, "call get_writing_style FIRST")
+	assert.NotContains(t, target, "get_writing_style")
 	assert.Contains(t, target, "watchtower-action")
 	// Confluence page editing (spec 2026-09-30 §5): both surfaces carry the
 	// write tool and the read-first / markers / base_version rule.
