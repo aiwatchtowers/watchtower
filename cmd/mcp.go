@@ -26,11 +26,11 @@ people, tracks, calendar, Jira) as read-only tools so any MCP client
 Add it to Claude Code with:
   claude mcp add watchtower -- watchtower mcp
 
-With --project N the server is bound to one Watchtower project: its project
-tools (board, documents, comments) apply directly to that project only, and
-nothing else becomes writable. 'watchtower integrate claude-code --project N'
-registers this mode in the project folder; never register it by hand for an
-unrelated client.`,
+With --workbench N the server is bound to one Watchtower workbench: its
+workbench tools (board, documents, comments) apply directly to that workbench
+only, and nothing else becomes writable. 'watchtower integrate claude-code
+--workbench N' registers this mode in the workbench folder; never register it
+by hand for an unrelated client.`,
 	RunE: runMCP,
 }
 
@@ -56,7 +56,7 @@ func init() {
 	mcpCmd.Flags().StringVar(&mcpFlagTurnFile, "turn-file", "", "file holding the running turn id for --chat (a warm ai session); mutually exclusive with --turn")
 	mcpCmd.Flags().StringVar(&mcpFlagContextType, "context-type", "", "chat context type for --chat (e.g. target)")
 	mcpCmd.Flags().StringVar(&mcpFlagContextID, "context-id", "", "chat context id for --chat")
-	mcpCmd.Flags().Int64Var(&mcpFlagWorkbench, "project", 0, "project mode: bind to project N and apply its project tools directly (installed by 'integrate claude-code --project N')")
+	addWorkbenchIDFlag(mcpCmd, &mcpFlagWorkbench, "workbench mode: bind to workbench N and apply its workbench tools directly (installed by 'integrate claude-code --workbench N')")
 }
 
 // mcpTurnBinding resolves the turn a chat-mode proposal attaches to: a fixed
@@ -107,27 +107,30 @@ func mcpModeOptions(cfg *config.Config, database *db.DB, turn string, turnFunc f
 	})}, nil
 }
 
-// mcpWorkbenchOptions is `watchtower mcp --project N` (DEV-06): the connection
-// stays writable, the registry is bound to project N on the "project" surface,
+// mcpWorkbenchOptions is `watchtower mcp --workbench N` (DEV-06): the connection
+// stays writable, the registry is bound to workbench N on the "project" surface,
 // and its tools apply directly (DirectApply) with an agent_actions audit row —
 // never an External tool. The project must exist when the server starts; if
 // it is deleted later, every tool answers "project N no longer exists".
-func mcpWorkbenchOptions(cfg *config.Config, database *db.DB, projectID int64) ([]internalmcp.ServerOption, error) {
+func mcpWorkbenchOptions(cfg *config.Config, database *db.DB, workbenchID int64) ([]internalmcp.ServerOption, error) {
 	if mcpFlagChat {
-		return nil, errors.New("--project and --chat are mutually exclusive")
+		return nil, errors.New("--workbench and --chat are mutually exclusive")
 	}
-	if projectID < 0 {
-		return nil, fmt.Errorf("--project must be a project id, got %d", projectID)
+	if workbenchID < 0 {
+		return nil, fmt.Errorf("--workbench must be a workbench id, got %d", workbenchID)
 	}
-	if _, err := database.GetWorkbench(projectID); err != nil {
-		return nil, fmt.Errorf("project %d: %w", projectID, err)
+	if _, err := database.GetWorkbench(workbenchID); err != nil {
+		return nil, fmt.Errorf("workbench %d: %w", workbenchID, err)
 	}
 	return []internalmcp.ServerOption{internalmcp.WithRegistry(buildToolRegistry(cfg, database), tools.Binding{
-		Surface: "project", WorkbenchID: projectID, DirectApply: true,
+		Surface: "project", WorkbenchID: workbenchID, DirectApply: true,
 	})}, nil
 }
 
 func runMCP(cmd *cobra.Command, args []string) error {
+	if err := checkWorkbenchIDFlags(cmd); err != nil {
+		return err
+	}
 	cfg, err := config.Load(flagConfig)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)

@@ -8,9 +8,12 @@ import (
 	"watchtower/internal/db"
 )
 
-// noWorkbenchActivity is the PROJECTS placeholder when no project has anything
-// to report; the template tells the model to ignore projects entirely then,
-// and it keeps the Sprintf argument count fixed.
+// noWorkbenchActivity is the WORKBENCHES placeholder when no workbench has
+// anything to report; the template tells the model to ignore workbenches
+// entirely then, and it keeps the Sprintf argument count fixed. The text,
+// like the block's "[project_id=N]" lines, keeps its pre-rename wording: a
+// customized v8 template (which names both) is rendered with this same data
+// (spec 2026-10-02 A8), and v9 names them as they are.
 const noWorkbenchActivity = "(no project activity)"
 
 // maxBriefingWorkbenches and maxWorkbenchItems keep the block short: the briefing
@@ -32,14 +35,14 @@ func (a workbenchActivity) empty() bool {
 		a.unreadAgent == 0 && len(a.docsAwaiting) == 0
 }
 
-// gatherWorkbenches renders the PROJECTS block: per project with activity — in
+// gatherWorkbenches renders the WORKBENCHES block: per project with activity — in
 // progress, blocked, done since `since` (the previous briefing), unread agent
 // comments, and documents whose owner comments still wait for the agent. A
 // project that fails to load is logged and skipped; the rest still render.
 func (p *Pipeline) gatherWorkbenches(since time.Time) (string, bool) {
 	projects, err := p.db.ListWorkbenches()
 	if err != nil {
-		p.logger.Printf("briefing: error loading projects: %v", err)
+		p.logger.Printf("briefing: error loading workbenches: %v", err)
 		return noWorkbenchActivity, false
 	}
 	sinceTS := since.UTC().Format("2006-01-02T15:04:05Z")
@@ -51,7 +54,7 @@ func (p *Pipeline) gatherWorkbenches(since time.Time) (string, bool) {
 		}
 		a, err := p.workbenchActivity(projects[i].ID, sinceTS)
 		if err != nil {
-			p.logger.Printf("briefing: project %d: %v", projects[i].ID, err)
+			p.logger.Printf("briefing: workbench %d: %v", projects[i].ID, err)
 			continue
 		}
 		if a.empty() {

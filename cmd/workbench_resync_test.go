@@ -238,7 +238,7 @@ func TestProjectResync_RequiresAProject(t *testing.T) {
 	_, _, err := runResync(t)
 	require.Error(t, err)
 	_, _, err = runResync(t, "99")
-	require.ErrorContains(t, err, "project 99")
+	require.ErrorContains(t, err, "workbench 99")
 }
 
 // An unreadable docs/ fails the import step; the install still runs and the
@@ -267,7 +267,7 @@ func TestProjectResync_FailedImportStillInstalls(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, out, "re-synced with errors")
 	assert.Contains(t, out, "Documents: FAILED")
-	assert.Contains(t, out, "retry: watchtower project resync "+id)
+	assert.Contains(t, out, "retry: watchtower workbench resync "+id)
 }
 
 // A failed read behind the suggestions is reported, not an empty list

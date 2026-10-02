@@ -71,14 +71,14 @@ func init() {
 	}
 
 	for _, c := range []*cobra.Command{integrateClaudeCodeCmd, integrateStatusCmd, integrateRemoveCmd} {
-		c.Flags().Int64Var(&integrateWorkbenchID, "project", 0,
-			"act on a Watchtower project's folder (skill, SessionStart hook, local MCP) instead of the global pack")
+		addWorkbenchIDFlag(c, &integrateWorkbenchID,
+			"act on a Watchtower workbench's folder (skill, SessionStart hook, local MCP) instead of the global pack")
 	}
-	integrateStatusCmd.Flags().BoolVar(&integrateJSON, "json", false, "with --project: print the status as JSON")
+	integrateStatusCmd.Flags().BoolVar(&integrateJSON, "json", false, "with --workbench: print the status as JSON")
 
-	// `project delete` removes what the install put in the folder (PROJ-02).
+	// `workbench delete` removes what the install put in the folder (PROJ-02).
 	// A package var's initializer runs before any init(), so this replaces
-	// cmd/project.go's no-op default.
+	// cmd/workbench.go's no-op default.
 	workbenchRemoveInstall = removeWorkbenchInstall
 }
 
@@ -108,6 +108,9 @@ func resolveSkillsDir(scope, explicit string) (string, error) {
 }
 
 func runIntegrateClaudeCode(cmd *cobra.Command, args []string) error {
+	if err := checkWorkbenchIDFlags(cmd); err != nil {
+		return err
+	}
 	if integrateWorkbenchID != 0 {
 		return runIntegrateForWorkbench(cmd, runWorkbenchInstall)
 	}
@@ -135,6 +138,9 @@ func runIntegrateClaudeCode(cmd *cobra.Command, args []string) error {
 }
 
 func runIntegrateStatus(cmd *cobra.Command, args []string) error {
+	if err := checkWorkbenchIDFlags(cmd); err != nil {
+		return err
+	}
 	if integrateWorkbenchID != 0 {
 		return runIntegrateForWorkbench(cmd, func(ctx context.Context, w io.Writer, p *db.Workbench) error {
 			return runWorkbenchStatus(ctx, w, p, integrateJSON)
@@ -159,6 +165,9 @@ func runIntegrateStatus(cmd *cobra.Command, args []string) error {
 }
 
 func runIntegrateRemove(cmd *cobra.Command, args []string) error {
+	if err := checkWorkbenchIDFlags(cmd); err != nil {
+		return err
+	}
 	if integrateWorkbenchID != 0 {
 		return runIntegrateForWorkbench(cmd, runWorkbenchRemove)
 	}

@@ -31,7 +31,7 @@ const (
 	// only, PROJ-07), so a slow repository never stalls a session start.
 	briefDriftBudget = 4 * time.Second
 
-	// The recent-in-project-sources section: documents of the project's
+	// The recent-in-workbench-sources section: documents of the workbench's
 	// Slack channels, Jira projects and Confluence spaces active in the last
 	// briefRecentDays, newest first. It takes only what the board and the
 	// comments leave, at most briefRecentChars, and is left out when less
@@ -50,12 +50,12 @@ var briefRules = []string{
 
 var workbenchBriefCmd = &cobra.Command{
 	Use:   "brief",
-	Short: "Print a project's brief for Claude Code (the SessionStart hook body)",
+	Short: "Print a workbench's brief for Claude Code (the SessionStart hook body)",
 	Long: "Prints at most 4000 characters: target counts, the open part of the board with\n" +
 		"ids, status and priority (in progress and blocked first, then by priority; done omitted),\n" +
-		"comments waiting for the agent, recent threads, issues and pages from the project's\n" +
+		"comments waiting for the agent, recent threads, issues and pages from the workbench's\n" +
 		"sources when room is left, and the board rules. Always exits 0 — a hook must\n" +
-		"never break a session start, so any failure (project gone, folder moved, database\n" +
+		"never break a session start, so any failure (workbench gone, folder moved, database\n" +
 		"unreadable) is one line. Inside a session the Desktop launched (" + terminalSessionEnv + "\n" +
 		"set) it also reads the hook's stdin payload and, after /clear, /compact, a resume or a fork,\n" +
 		"stores the conversation's session id on that terminal row.",
@@ -72,59 +72,69 @@ var workbenchBriefCmd = &cobra.Command{
 }
 
 // workbenchBriefFlagWorkbench is a string, not an int64: an Int64Var flag makes
-// cobra's flag parser itself reject a non-numeric --project value before
+// cobra's flag parser itself reject a non-numeric --workbench value before
 // RunE (or PersistentPreRunE) ever runs, exiting non-zero — exactly what this
 // command must never do. loadWorkbenchBriefFlag turns it into an id (0 for
 // empty/invalid) so every bad value becomes the one-line brief instead.
 var workbenchBriefFlagWorkbench string
 
+// workbenchBriefLegacy says the hook passed the pre-rename --project: the
+// folder is still on its old install (spec 2026-10-02 §5.2).
+var workbenchBriefLegacy func() bool
+
 func init() {
-	workbenchBriefCmd.Flags().StringVar(&workbenchBriefFlagWorkbench, "project", "", "project id")
+	workbenchBriefLegacy = addWorkbenchIDFlag(workbenchBriefCmd, &workbenchBriefFlagWorkbench, "workbench id")
 	workbenchCmd.AddCommand(workbenchBriefCmd)
 }
 
 func runWorkbenchBrief(cmd *cobra.Command, _ []string) error {
-	if id, err := parseWorkbenchBriefFlag(workbenchBriefFlagWorkbench); err == nil && id > 0 {
+	if err := checkWorkbenchIDFlags(cmd); err != nil {
+		fmt.Fprintln(cmd.OutOrStdout(), briefUnavailable(0, "is unavailable: "+err.Error()))
+		return nil //nolint:nilerr // a hook never fails: the reason is the one-line brief
+	}
+	legacy := workbenchBriefLegacy()
+	flag := workbenchFlagName(legacy)
+	if id, err := parseWorkbenchBriefFlag(workbenchBriefFlagWorkbench, flag); err == nil && id > 0 {
 		if err := recordTerminalSessionID(cmd.InOrStdin(), id); err != nil {
 			// Best effort: the hook log shows it (never the model), and the
 			// brief is printed as always.
-			fmt.Fprintf(cmd.ErrOrStderr(), "watchtower: project %d brief: terminal session not recorded: %v\n", id, err)
+			fmt.Fprintf(cmd.ErrOrStderr(), "watchtower: workbench %d brief: terminal session not recorded: %v\n", id, err)
 		}
 	}
-	fmt.Fprintln(cmd.OutOrStdout(), loadWorkbenchBriefFlag(workbenchBriefFlagWorkbench))
+	fmt.Fprintln(cmd.OutOrStdout(), loadWorkbenchBriefFlag(workbenchBriefFlagWorkbench, flag, vocabularyFor(legacy)))
 	return nil
 }
 
-// parseWorkbenchBriefFlag parses the raw --project flag value: 0 for empty
-// (missing, or explicitly ""), an error for a value that isn't a positive
-// integer.
-func parseWorkbenchBriefFlag(raw string) (int64, error) {
+// parseWorkbenchBriefFlag parses the raw id flag value, given under the
+// spelling flag: 0 for empty (missing, or explicitly ""), an error for a
+// value that isn't a positive integer.
+func parseWorkbenchBriefFlag(raw, flag string) (int64, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
 		return 0, nil
 	}
 	id, err := strconv.ParseInt(trimmed, 10, 64)
 	if err != nil || id <= 0 {
-		return 0, fmt.Errorf("invalid --project value %q", raw)
+		return 0, fmt.Errorf("invalid %s value %q", flag, raw)
 	}
 	return id, nil
 }
 
-// loadWorkbenchBriefFlag is the brief for the raw --project flag value. Empty
-// reads as "no --project id given" via loadWorkbenchBrief's own id<=0 branch;
-// an invalid value gets its own one-line reason so it isn't misreported as
-// missing.
-func loadWorkbenchBriefFlag(raw string) string {
-	id, err := parseWorkbenchBriefFlag(raw)
+// loadWorkbenchBriefFlag is the brief for the raw id flag value. Empty
+// reads as "no --workbench id given" via loadWorkbenchBrief's own id<=0
+// branch; an invalid value gets its own one-line reason so it isn't
+// misreported as missing.
+func loadWorkbenchBriefFlag(raw, flag string, vocab vocabulary) string {
+	id, err := parseWorkbenchBriefFlag(raw, flag)
 	if err != nil {
 		return briefUnavailable(0, "is unavailable: "+err.Error())
 	}
-	return loadWorkbenchBrief(id)
+	return loadWorkbenchBrief(id, vocab)
 }
 
-func loadWorkbenchBrief(id int64) string {
+func loadWorkbenchBrief(id int64, vocab vocabulary) string {
 	if id <= 0 {
-		return briefUnavailable(id, "is unavailable: no --project id given")
+		return briefUnavailable(id, "is unavailable: no --workbench id given")
 	}
 	_, database, err := openJiraCmdDB()
 	if err != nil {
@@ -141,10 +151,10 @@ func loadWorkbenchBrief(id int64) string {
 	if _, err := os.Stat(p.FolderPath); err != nil {
 		return briefUnavailable(id, fmt.Sprintf("folder %s is missing (moved or deleted?)", p.FolderPath))
 	}
-	return briefFromDB(database, p)
+	return briefFromDB(database, p, vocab)
 }
 
-func briefFromDB(database *db.DB, p *db.Workbench) string {
+func briefFromDB(database *db.DB, p *db.Workbench, vocab vocabulary) string {
 	board, err := database.GetWorkbenchBoard(p.ID)
 	if err != nil {
 		return briefUnavailable(p.ID, "is unavailable: "+err.Error())
@@ -165,11 +175,11 @@ func briefFromDB(database *db.DB, p *db.Workbench) string {
 	defer cancel()
 	drift := workbenchcheck.Check(ctx, p.ID, board, workbenchcheck.Options{Folder: p.FolderPath})
 	now := time.Now()
-	return renderWorkbenchBrief(board, p, comments, byID, drift, loadBriefRecent(database, p.ID, now), now)
+	return renderWorkbenchBrief(board, p, comments, byID, drift, loadBriefRecent(database, p.ID, now), now, vocab)
 }
 
-// briefRecent is the recent-in-project-sources input; nil when the project
-// has no Slack channel, Jira project or Confluence space source that
+// briefRecent is the recent-in-workbench-sources input; nil when the
+// workbench has no Slack channel, Jira project or Confluence space source that
 // resolves. err is shown as the section's one line, never failing the brief.
 // indexed says the index holds any document of the scope at all, so "none"
 // means quiet rather than "not indexed yet".
@@ -183,20 +193,20 @@ type briefRecent struct {
 // fast whatever the index size; a timeout is shown as the error line.
 const briefRecentTimeout = 2 * time.Second
 
-func loadBriefRecent(database *db.DB, projectID int64, now time.Time) *briefRecent {
+func loadBriefRecent(database *db.DB, workbenchID int64, now time.Time) *briefRecent {
 	ctx, cancel := context.WithTimeout(context.Background(), briefRecentTimeout)
 	defer cancel()
-	r := readBriefRecent(ctx, database, projectID, now)
+	r := readBriefRecent(ctx, database, workbenchID, now)
 	if r != nil && r.err != nil {
 		// The section may be left out for room; stderr keeps the failure
 		// visible on a manual run or in claude --debug (exit stays 0).
-		fmt.Fprintf(os.Stderr, "watchtower: project %d brief: recent in project sources: %v\n", projectID, r.err)
+		fmt.Fprintf(os.Stderr, "watchtower: workbench %d brief: recent in workbench sources: %v\n", workbenchID, r.err)
 	}
 	return r
 }
 
-func readBriefRecent(ctx context.Context, database *db.DB, projectID int64, now time.Time) *briefRecent {
-	scope, _, err := tools.WorkbenchKnowledgeScope(ctx, database, projectID)
+func readBriefRecent(ctx context.Context, database *db.DB, workbenchID int64, now time.Time) *briefRecent {
+	scope, _, err := tools.WorkbenchKnowledgeScope(ctx, database, workbenchID)
 	if err != nil {
 		return &briefRecent{err: err}
 	}
@@ -213,16 +223,24 @@ func readBriefRecent(ctx context.Context, database *db.DB, projectID int64, now 
 
 // briefUnavailable is the one-line brief for every failure.
 func briefUnavailable(id int64, reason string) string {
-	return briefClip(fmt.Sprintf("Watchtower: project %d %s.", id, reason), briefLineChars)
+	return briefClip(fmt.Sprintf("Watchtower: workbench %d %s.", id, reason), briefLineChars)
 }
+
+// briefLegacyLine asks the agent of a folder still on its pre-rename
+// install to suggest Re-run Setup (spec 2026-10-02 A10). It only ever uses
+// room nothing else wanted: the first thing dropped at the cap.
+const briefLegacyLine = "This folder's Watchtower setup predates the Workbench rename — suggest Re-run Setup to the owner."
 
 // renderWorkbenchBrief is the hook body: header, the board drift (when any),
 // the open tree, the comments new for the agent, recent documents of the
-// project's sources (recent nil = the project has none, the section is left
-// out), the rules — at most briefMaxChars runes. A drift check cut short
+// workbench's sources (recent nil = the workbench has none, the section is
+// left out), the rules — at most briefMaxChars runes. vocab names the skill
+// and tools the folder's install knows; a legacy folder also gets
+// briefLegacyLine after the header when it fits. A drift check cut short
 // says so, so a partial check never reads as a clean board. Pure.
-func renderWorkbenchBrief(board []db.BoardNode, p *db.Workbench, comments []db.WorkbenchComment, docs map[int64]db.WorkbenchDocument, drift workbenchcheck.Report, recent *briefRecent, now time.Time) string {
-	head := briefHeader(p, board, len(comments))
+func renderWorkbenchBrief(board []db.BoardNode, p *db.Workbench, comments []db.WorkbenchComment, docs map[int64]db.WorkbenchDocument, drift workbenchcheck.Report, recent *briefRecent, now time.Time, vocab vocabulary) string {
+	header := briefHeader(p, board, len(comments), vocab)
+	head := header
 	rules := strings.Join(briefRules, "\n")
 	budget := briefMaxChars - utf8.RuneCountInString(head) - utf8.RuneCountInString(rules) - 3 // three joining newlines
 	if section := briefDriftSection(drift, budget/4); section != "" {
@@ -238,7 +256,7 @@ func renderWorkbenchBrief(board []db.BoardNode, p *db.Workbench, comments []db.W
 		treeBudget = budget / 2
 	}
 	targetLines := briefTargetLines(board, now)
-	tree, treeShown := fitBriefSection("Open targets:", targetLines, treeBudget, "targets (project_board)")
+	tree, treeShown := fitBriefSection("Open targets:", targetLines, treeBudget, "targets ("+vocab.BoardTool+")")
 	section, commentsShown := fitBriefSection(commentsTitle, commentLines, budget-utf8.RuneCountInString(tree), "comments (list_comments)")
 	parts := []string{head, tree, section}
 	// Recent documents only ever use room nothing else wanted: once targets
@@ -249,7 +267,11 @@ func renderWorkbenchBrief(board []db.BoardNode, p *db.Workbench, comments []db.W
 			parts = append(parts, r)
 		}
 	}
-	return strings.Join(append(parts, rules), "\n")
+	out := strings.Join(append(parts, rules), "\n")
+	if vocab.Legacy && utf8.RuneCountInString(out)+1+utf8.RuneCountInString(briefLegacyLine) <= briefMaxChars {
+		out = header + "\n" + briefLegacyLine + out[len(header):]
+	}
+	return out
 }
 
 // briefDriftSection renders the drift findings within limit runes; "" when
@@ -278,7 +300,7 @@ func briefDriftSection(drift workbenchcheck.Report, limit int) string {
 	for _, f := range drift.Findings {
 		lines = append(lines, "- "+briefClip(f.Line(), briefLineChars))
 	}
-	section, _ := fitBriefSection(title, lines, limit, "drift findings (watchtower project check)")
+	section, _ := fitBriefSection(title, lines, limit, "drift findings (watchtower workbench check)")
 	return section
 }
 
@@ -288,7 +310,7 @@ func briefRecentSection(recent *briefRecent, limit int) string {
 	if recent == nil || limit < briefRecentMinChars {
 		return ""
 	}
-	title := fmt.Sprintf("Recent in project sources (last %d days):", briefRecentDays)
+	title := fmt.Sprintf("Recent in workbench sources (last %d days):", briefRecentDays)
 	switch {
 	case recent.err != nil:
 		return briefClip(title+" unavailable: "+recent.err.Error(), min(limit, briefLineChars))
@@ -320,16 +342,16 @@ func briefDay(when string) string {
 	return when
 }
 
-func briefHeader(p *db.Workbench, board []db.BoardNode, newComments int) string {
+func briefHeader(p *db.Workbench, board []db.BoardNode, newComments int, vocab vocabulary) string {
 	c := countBoardStatuses(board)
 	lines := []string{
-		briefClip(fmt.Sprintf("Watchtower project #%d %q — %s", p.ID, p.Name, p.FolderPath), briefLineChars),
+		briefClip(fmt.Sprintf("Watchtower workbench #%d %q — %s", p.ID, p.Name, p.FolderPath), briefLineChars),
 		fmt.Sprintf("Targets: %d in progress, %d in review, %d blocked, %d todo, %d done. New comments for you: %d.",
 			c["in_progress"], c["in_review"], c["blocked"], c["todo"], c["done"], newComments),
 		tools.BoardLanguageLine,
 	}
 	if strings.TrimSpace(p.Description) == "" {
-		lines = append(lines, "Setup pending: run the watchtower-project skill's setup (project_info, update_project, first board).")
+		lines = append(lines, fmt.Sprintf("Setup pending: run the %s skill's setup (%s, %s, first board).", vocab.SkillName, vocab.InfoTool, vocab.UpdateTool))
 	}
 	return strings.Join(lines, "\n")
 }

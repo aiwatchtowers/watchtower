@@ -81,7 +81,7 @@ func stopHook(t *testing.T, id int64, input string) string {
 func stopHookIO(t *testing.T, rawID, input string) (stdout, stderr string) {
 	t.Helper()
 	var out, errOut bytes.Buffer
-	runStopHook(context.Background(), strings.NewReader(input), &out, &errOut, rawID)
+	runStopHook(context.Background(), strings.NewReader(input), &out, &errOut, rawID, workbenchVocabulary)
 	return out.String(), errOut.String()
 }
 
@@ -132,7 +132,12 @@ func TestProj07_StopHookFailuresAreSilent(t *testing.T) {
 	assert.Empty(t, stopHook(t, pid, ``))
 	out, errOut := stopHookIO(t, "abc", `{}`)
 	assert.Empty(t, out)
-	assert.Contains(t, errOut, "invalid --project", "a real failure names itself on stderr")
+	assert.Contains(t, errOut, "invalid --workbench", "a real failure names itself on stderr")
+	// The pre-rename install's hook (--project, legacy vocabulary) too.
+	var legacyOut, legacyErr bytes.Buffer
+	runStopHook(context.Background(), strings.NewReader(`{}`), &legacyOut, &legacyErr, "abc", legacyWorkbenchVocabulary)
+	assert.Empty(t, legacyOut.String())
+	assert.Contains(t, legacyErr.String(), "invalid --project", "a real failure names itself on stderr")
 
 	require.NoError(t, database.DeleteWorkbench(pid))
 	out, errOut = stopHookIO(t, strconv.FormatInt(pid, 10), `{"stop_hook_active":false}`)
@@ -183,7 +188,7 @@ func TestProjectBrief_ShowsTheBoardDrift(t *testing.T) {
 	database := writeActionsConfig(t)
 	folder := driftRepo(t)
 	pid, tid := driftWorkbench(t, database, folder, "merged")
-	brief := loadWorkbenchBrief(pid)
+	brief := loadWorkbenchBrief(pid, workbenchVocabulary)
 	assert.Contains(t, brief, "Board drift")
 	assert.Contains(t, brief, "#"+strconv.FormatInt(tid, 10)+` "Feature" [in_progress]: branch merged is merged into main`)
 	assert.LessOrEqual(t, len([]rune(brief)), briefMaxChars)
@@ -218,10 +223,10 @@ func TestStopHookReason_CapsAndClips(t *testing.T) {
 		findings = append(findings, workbenchcheck.Finding{TargetID: i + 1, Title: strings.Repeat("x", 600), Status: "in_progress",
 			Kind: workbenchcheck.KindMergedOpen, Detail: "d", Fix: "f"})
 	}
-	reason := stopHookReason(3, findings)
+	reason := stopHookReason(3, findings, workbenchVocabulary)
 	lines := strings.Split(reason, "\n")
 	require.Len(t, lines, 1+stopHookMaxFindings+1, "header, the capped findings, one overflow line")
-	assert.Equal(t, "- … 5 more (watchtower project check --project 3)", lines[len(lines)-1])
+	assert.Equal(t, "- … 5 more (watchtower workbench check --workbench 3)", lines[len(lines)-1])
 	for _, l := range lines[1 : len(lines)-1] {
 		assert.LessOrEqual(t, len([]rune(l)), 402, "each finding is clipped")
 	}

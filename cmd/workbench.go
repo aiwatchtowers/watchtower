@@ -23,52 +23,56 @@ import (
 )
 
 var workbenchCmd = &cobra.Command{
-	Use:   "project",
-	Short: "Manage folder-bound projects (board, documents, comments)",
-	Long: "A project binds a folder (e.g. a repository) to a board of targets, attached\n" +
+	Use: "workbench",
+	// The pre-rename name keeps working for the Desktop builds and the
+	// folders set up before the rename; cobra shows it only in this
+	// command's own help, never in the root command list.
+	Aliases: []string{"project"},
+	Short:   "Manage workbenches: folder-bound boards (board, documents, comments)",
+	Long: "A workbench binds a folder (e.g. a repository) to a board of targets, attached\n" +
 		"documents and owner<->agent comments. Claude Code works on it through\n" +
-		"`watchtower mcp --project N`, installed by `watchtower integrate claude-code --project N`.",
+		"`watchtower mcp --workbench N`, installed by `watchtower integrate claude-code --workbench N`.",
 }
 
 var workbenchCreateCmd = &cobra.Command{
 	Use:   "create",
-	Short: "Create a project bound to a folder",
-	Long: "Binds --folder (symlinks resolved) to a new project. Refuses a missing directory\nor a folder already bound to a project. The name defaults to the folder's base name.\n" +
+	Short: "Create a workbench bound to a folder",
+	Long: "Binds --folder (symlinks resolved) to a new workbench. Refuses a missing directory\nor a folder already bound to a workbench. The name defaults to the folder's base name.\n" +
 		"Then attaches the folder's README.md and its docs/**/specs and docs/**/plans files to\n" +
-		"Documents (see `project import-docs`); an import failure is reported, the project stays.\n" +
-		"The attached documents are then indexed for search from the project's sessions\n" +
+		"Documents (see `workbench import-docs`); an import failure is reported, the workbench stays.\n" +
+		"The attached documents are then indexed for search from the workbench's sessions\n" +
 		"(skipped when knowledge search is off; a failure is a warning).",
 	RunE: runWorkbenchCreate,
 }
 
 var workbenchListCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List projects",
+	Short: "List workbenches",
 	RunE:  runWorkbenchList,
 }
 
 var workbenchShowCmd = &cobra.Command{
 	Use:   "show <id>",
-	Short: "Show a project: folder, description, sources, documents, target counts",
+	Short: "Show a workbench: folder, description, sources, documents, target counts",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runWorkbenchShow,
 }
 
 var workbenchBoardCmd = &cobra.Command{
 	Use:   "board <id>",
-	Short: "Print a project's target tree (status, priority; siblings by priority) with comment and document counters",
+	Short: "Print a workbench's target tree (status, priority; siblings by priority) with comment and document counters",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runWorkbenchBoard,
 }
 
 var workbenchImportDocsCmd = &cobra.Command{
 	Use:   "import-docs <id>",
-	Short: "Attach the folder's README, specs and plans to the project's Documents",
+	Short: "Attach the folder's README, specs and plans to the workbench's Documents",
 	Long: "Mechanical, no AI: attaches README.md at the folder root and every .md/.txt file\n" +
 		"directly inside a specs or plans directory under docs/ (symlinks never followed),\n" +
 		"at most 50 new ones per run, README first then newest. Additive and idempotent: an\n" +
 		"already attached path is never touched. Then re-indexes the attached documents for\n" +
-		"search from the project's sessions (not on a dry run; skipped when knowledge search\n" +
+		"search from the workbench's sessions (not on a dry run; skipped when knowledge search\n" +
 		"is off; a failure is a warning).",
 	Args: cobra.ExactArgs(1),
 	RunE: runWorkbenchImportDocs,
@@ -76,12 +80,12 @@ var workbenchImportDocsCmd = &cobra.Command{
 
 var workbenchAttachDocCmd = &cobra.Command{
 	Use:   "attach-doc <id> <path>",
-	Short: "Attach a .md/.txt file inside the project folder to Documents, as the owner's",
+	Short: "Attach a .md/.txt file inside the workbench folder to Documents, as the owner's",
 	Long: "The owner's counterpart of the agent's attach_document, with the same checks: the\n" +
 		"path (absolute, or relative to the folder) must resolve — symlinks followed — to a\n" +
-		"regular .md/.txt file inside the project folder. An already attached path is left\n" +
+		"regular .md/.txt file inside the workbench folder. An already attached path is left\n" +
 		"untouched and reported (created=false). Writes the document row and re-indexes the\n" +
-		"project's documents for search (skipped when knowledge search is off; a failure is a\n" +
+		"workbench's documents for search (skipped when knowledge search is off; a failure is a\n" +
 		"warning), never the file.",
 	Args: cobra.ExactArgs(2),
 	RunE: runWorkbenchAttachDoc,
@@ -89,8 +93,8 @@ var workbenchAttachDocCmd = &cobra.Command{
 
 var workbenchDeleteCmd = &cobra.Command{
 	Use:   "delete <id>",
-	Short: "Delete a project, its board, documents and comments, and Watchtower's install in its folder",
-	Long:  "Removes what `integrate claude-code --project N` installed in the folder first; a\nremoval failure is reported and the project is deleted anyway.",
+	Short: "Delete a workbench, its board, documents and comments, and Watchtower's install in its folder",
+	Long:  "Removes what `integrate claude-code --workbench N` installed in the folder first; a\nremoval failure is reported and the workbench is deleted anyway.",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runWorkbenchDelete,
 }
@@ -112,12 +116,12 @@ var (
 var workbenchRemoveInstall = func(context.Context, *config.Config, *db.Workbench) error { return nil }
 
 func init() {
-	workbenchCreateCmd.Flags().StringVar(&workbenchCreateFlagFolder, "folder", "", "project folder (required; symlinks are resolved)")
-	workbenchCreateCmd.Flags().StringVar(&workbenchCreateFlagName, "name", "", "project name (default: the folder's base name)")
+	workbenchCreateCmd.Flags().StringVar(&workbenchCreateFlagFolder, "folder", "", "workbench folder (required; symlinks are resolved)")
+	workbenchCreateCmd.Flags().StringVar(&workbenchCreateFlagName, "name", "", "workbench name (default: the folder's base name)")
 	workbenchImportDocsCmd.Flags().BoolVar(&workbenchImportFlagDryRun, "dry-run", false, "list what would be attached, write nothing")
 	workbenchAttachDocCmd.Flags().StringVar(&workbenchAttachFlagKind, "kind", "doc", "spec | plan | doc")
 	workbenchAttachDocCmd.Flags().StringVar(&workbenchAttachFlagTitle, "title", "", "display title (default: the file name)")
-	workbenchAttachDocCmd.Flags().Int64Var(&workbenchAttachFlagTarget, "target", 0, "the project target the document belongs to")
+	workbenchAttachDocCmd.Flags().Int64Var(&workbenchAttachFlagTarget, "target", 0, "the workbench target the document belongs to")
 	for _, c := range []*cobra.Command{workbenchCreateCmd, workbenchListCmd, workbenchShowCmd, workbenchBoardCmd, workbenchImportDocsCmd, workbenchAttachDocCmd, workbenchDeleteCmd} {
 		c.Flags().BoolVar(&workbenchFlagJSON, "json", false, "output JSON")
 	}
@@ -224,7 +228,7 @@ func countBoardStatuses(nodes []db.BoardNode) map[string]int {
 func parseWorkbenchID(arg string) (int64, error) {
 	id, err := strconv.ParseInt(arg, 10, 64)
 	if err != nil || id <= 0 {
-		return 0, fmt.Errorf("invalid project id %q", arg)
+		return 0, fmt.Errorf("invalid workbench id %q", arg)
 	}
 	return id, nil
 }
@@ -269,13 +273,13 @@ func runWorkbenchCreate(cmd *cobra.Command, _ []string) error {
 	if ierr != nil {
 		// On stderr in JSON mode too: a caller that decodes only the project
 		// fields still leaves the warning in its log.
-		fmt.Fprintf(cmd.ErrOrStderr(), "warning: importing the folder's documents failed: %v (retry: watchtower project import-docs %d)\n", ierr, id)
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: importing the folder's documents failed: %v (retry: watchtower workbench import-docs %d)\n", ierr, id)
 	}
 	idx := indexWorkbenchDocs(cmd, cfg.Knowledge.Enabled, database, id)
 	if workbenchFlagJSON {
 		return writeJSON(cmd.OutOrStdout(), newWorkbenchCreateJSON(workbenchJSON{ID: id, Folder: folder, Name: name}, rep, ierr, idx))
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "Created project %d %q at %s\n", id, name, folder)
+	fmt.Fprintf(cmd.OutOrStdout(), "Created workbench %d %q at %s\n", id, name, folder)
 	if ierr != nil {
 		return nil
 	}
@@ -396,7 +400,7 @@ func indexWorkbenchDocs(cmd *cobra.Command, knowledgeEnabled bool, database *db.
 		ctx = context.Background()
 	}
 	if _, _, err := kb.IndexWorkbenchDocs(ctx, database, id); err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warning: indexing the project's documents for search failed: %v (retry: watchtower project resync %d)\n", err, id)
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: indexing the workbench's documents for search failed: %v (retry: watchtower workbench resync %d)\n", err, id)
 		return workbenchIndexJSON{IndexError: err.Error()}
 	}
 	return workbenchIndexJSON{IndexOK: true}
@@ -439,21 +443,21 @@ func runWorkbenchList(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	defer database.Close()
-	projects, err := database.ListWorkbenches()
+	workbenches, err := database.ListWorkbenches()
 	if err != nil {
 		return err
 	}
 	if workbenchFlagJSON {
-		out := make([]workbenchJSON, 0, len(projects))
-		for _, p := range projects {
+		out := make([]workbenchJSON, 0, len(workbenches))
+		for _, p := range workbenches {
 			out = append(out, toWorkbenchJSON(p))
 		}
 		return writeJSON(cmd.OutOrStdout(), out)
 	}
-	if len(projects) == 0 {
-		fmt.Fprintln(cmd.OutOrStdout(), "No projects.")
+	if len(workbenches) == 0 {
+		fmt.Fprintln(cmd.OutOrStdout(), "No workbenches.")
 	}
-	for _, p := range projects {
+	for _, p := range workbenches {
 		fmt.Fprintf(cmd.OutOrStdout(), "#%d  %s  %s\n", p.ID, p.Name, p.FolderPath)
 	}
 	return nil
@@ -506,7 +510,7 @@ func loadWorkbenchView(database *db.DB, id int64) (workbenchViewJSON, error) {
 }
 
 func printWorkbenchView(w io.Writer, v workbenchViewJSON) {
-	fmt.Fprintf(w, "Project #%d %q\nFolder: %s\n", v.ID, v.Name, v.Folder)
+	fmt.Fprintf(w, "Workbench #%d %q\nFolder: %s\n", v.ID, v.Name, v.Folder)
 	if v.Description != "" {
 		fmt.Fprintf(w, "Description: %s\n", v.Description)
 	}
@@ -614,7 +618,7 @@ func runWorkbenchDelete(cmd *cobra.Command, args []string) error {
 	}
 	rerr := workbenchRemoveInstall(cmd.Context(), cfg, p)
 	if rerr != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warning: removing Watchtower's install from %s failed: %v (the project is deleted anyway)\n",
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: removing Watchtower's install from %s failed: %v (the workbench is deleted anyway)\n",
 			p.FolderPath, rerr)
 	}
 	if err := database.DeleteWorkbench(id); err != nil {
@@ -625,7 +629,7 @@ func runWorkbenchDelete(cmd *cobra.Command, args []string) error {
 	// delete.
 	ferr := workbenchfiles.New(cfg.WorkspaceDir()).RemoveWorkbench(id)
 	if ferr != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warning: removing the project's stored images failed: %v (the project is deleted anyway)\n", ferr)
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: removing the workbench's stored images failed: %v (the workbench is deleted anyway)\n", ferr)
 	}
 	if workbenchFlagJSON {
 		out := workbenchDeleteJSON{ID: id, Deleted: true, RemovalOK: rerr == nil, FilesOK: ferr == nil}
@@ -637,7 +641,7 @@ func runWorkbenchDelete(cmd *cobra.Command, args []string) error {
 		}
 		return writeJSON(cmd.OutOrStdout(), out)
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "Deleted project %d %q.\n", id, p.Name)
+	fmt.Fprintf(cmd.OutOrStdout(), "Deleted workbench %d %q.\n", id, p.Name)
 	return nil
 }
 
