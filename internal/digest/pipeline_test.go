@@ -1852,9 +1852,11 @@ func TestGetPrompt_FallbackToDefault(t *testing.T) {
 
 	p := New(database, cfg, gen, testLogger())
 
-	tmpl, version := p.getPrompt("nonexistent.id", "fallback template %s")
-	assert.Equal(t, "fallback template %s", tmpl)
-	assert.Equal(t, 0, version)
+	for _, id := range []string{prompts.DigestChannel, prompts.DigestChannelBatch, prompts.DigestDaily, prompts.DigestWeekly, prompts.DigestPeriod} {
+		tmpl, version := p.getPrompt(id)
+		assert.Equal(t, prompts.Defaults[id], tmpl, "%s without a store must fall back to the registered default", id)
+		assert.Equal(t, 0, version)
+	}
 }
 
 func TestGetPrompt_WithPromptStore(t *testing.T) {
@@ -1868,9 +1870,9 @@ func TestGetPrompt_WithPromptStore(t *testing.T) {
 	p := New(database, cfg, gen, testLogger())
 	p.SetPromptStore(store)
 
-	tmpl, version := p.getPrompt(prompts.DigestChannel, "fallback")
-	// Should get the seeded prompt, not fallback.
-	assert.NotEqual(t, "fallback", tmpl)
+	tmpl, version := p.getPrompt(prompts.DigestChannel)
+	// Should get the seeded prompt, not the built-in default.
+	assert.NotEmpty(t, tmpl)
 	assert.GreaterOrEqual(t, version, 1)
 }
 
@@ -1886,7 +1888,7 @@ func TestGetPrompt_WithRole(t *testing.T) {
 	p.SetPromptStore(store)
 	p.profile = &db.UserProfile{Role: "top_management"}
 
-	tmpl, _ := p.getPrompt(prompts.DigestChannel, "fallback")
+	tmpl, _ := p.getPrompt(prompts.DigestChannel)
 	// Role instruction should be prepended.
 	assert.Contains(t, tmpl, "You are analyzing Slack messages")
 }
@@ -2587,7 +2589,7 @@ func TestRunChannelDigests_WorkersDefault(t *testing.T) {
 }
 
 func TestFallbackPromptFormatVerbs(t *testing.T) {
-	// Verify that hardcoded fallback prompts have the correct number of %s
+	// Verify that the registered default prompts have the correct number of %s
 	// placeholders matching the fmt.Sprintf calls in pipeline.go.
 	// This prevents regressions where prompts and Sprintf args go out of sync,
 	// which causes messages to silently disappear from prompts.
@@ -2597,11 +2599,11 @@ func TestFallbackPromptFormatVerbs(t *testing.T) {
 		prompt   string
 		expected int // number of %s placeholders expected
 	}{
-		{"channelDigestPrompt", channelDigestPrompt, 7},           // channelName, fromStr, toStr, profileCtx, langInstr, previousCtx, messages
-		{"channelBatchDigestPrompt", channelBatchDigestPrompt, 6}, // fromStr, toStr, profileCtx, langInstr, prevCtxNote, channelBlocks
-		{"dailyRollupPrompt", dailyRollupPrompt, 5},               // dateStr, profileCtx, langInstr, previousCtx, channelInput
-		{"weeklyTrendsPrompt", weeklyTrendsPrompt, 7},             // date, fromStr, toStr, profileCtx, langInstr, previousCtx, dailies
-		{"periodSummaryPrompt", periodSummaryPrompt, 5},           // fromStr, toStr, profileCtx, langInstr, digests
+		{prompts.DigestChannel, prompts.Defaults[prompts.DigestChannel], 7},           // channelName, fromStr, toStr, profileCtx, langInstr, previousCtx, messages
+		{prompts.DigestChannelBatch, prompts.Defaults[prompts.DigestChannelBatch], 6}, // fromStr, toStr, profileCtx, langInstr, prevCtxNote, channelBlocks
+		{prompts.DigestDaily, prompts.Defaults[prompts.DigestDaily], 5},               // dateStr, profileCtx, langInstr, previousCtx, channelInput
+		{prompts.DigestWeekly, prompts.Defaults[prompts.DigestWeekly], 7},             // date, fromStr, toStr, profileCtx, langInstr, previousCtx, dailies
+		{prompts.DigestPeriod, prompts.Defaults[prompts.DigestPeriod], 5},             // fromStr, toStr, profileCtx, langInstr, digests
 	}
 
 	for _, tt := range tests {
