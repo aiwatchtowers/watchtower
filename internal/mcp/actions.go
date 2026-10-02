@@ -104,7 +104,13 @@ func registerRegistry(s *mcpsdk.Server, database *db.DB, reg *tools.Registry, bi
 		if row == nil || !actionVisible(*row, binding) {
 			return errResult(fmt.Sprintf("no action #%d", args.ID)), nil, nil
 		}
-		return jsonResult(newActionView(*row))
+		view := newActionView(*row)
+		// The tool by the name this session lists it under: a row recorded
+		// under either spelling reads as the current name, or, in a legacy
+		// session, as the old one.
+		view.Tool = binding.Spell(tools.CanonicalToolName(row.Tool))
+		view.Error = binding.Spell(view.Error)
+		return jsonResult(view)
 	})
 }
 

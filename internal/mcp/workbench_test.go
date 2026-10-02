@@ -205,9 +205,10 @@ func TestWorkbenchMode_EachVocabularyListsElevenToolsUnderItsOwnNames(t *testing
 	}
 }
 
-// A write through a legacy name records the canonical name; get_action on a
-// row stored under an old name (before the rename) resolves; a refusal names
-// the tools the legacy session lists.
+// A write through a legacy name records the canonical name; get_action names
+// a row's tool in the asking session's vocabulary, whether the row was
+// recorded under the new name or (before the rename) the old one; a refusal
+// names the tools the legacy session lists.
 func TestLegacyMode_WritesRecordTheCanonicalNameAndOldRowsResolve(t *testing.T) {
 	database := seedDB(t)
 	pid := seedMCPWorkbench(t, database)
@@ -243,13 +244,32 @@ func TestLegacyMode_WritesRecordTheCanonicalNameAndOldRowsResolve(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, s := range []*mcpsdk.ClientSession{cs, newWorkbenchSession(t, database, pid)} {
-		res, err := s.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "get_action", Arguments: map[string]any{"id": oldRow}})
+	// get_action names a row's tool the way the asking session lists it,
+	// whichever spelling the row was recorded under.
+	current := newWorkbenchSession(t, database, pid)
+	for _, c := range []struct {
+		session  *mcpsdk.ClientSession
+		legacy   bool
+		id       int64
+		wantTool string
+	}{
+		{cs, true, rc.ActionID, "update_project"}, // recorded as update_workbench
+		{cs, true, oldRow, "add_project_source"},  // recorded before the rename
+		{current, false, rc.ActionID, "update_workbench"},
+		{current, false, oldRow, "add_workbench_source"},
+	} {
+		res, err := c.session.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "get_action", Arguments: map[string]any{"id": c.id}})
 		if err != nil || res.IsError {
-			t.Fatalf("get_action on a pre-rename row: %v %s", err, textContent(t, res))
+			t.Fatalf("get_action #%d (legacy=%v): %v %s", c.id, c.legacy, err, textContent(t, res))
 		}
-		if !strings.Contains(textContent(t, res), `"tool": "add_project_source"`) {
-			t.Errorf("get_action shows the row as recorded: %s", textContent(t, res))
+		var view struct {
+			Tool string `json:"tool"`
+		}
+		if err := json.Unmarshal([]byte(textContent(t, res)), &view); err != nil {
+			t.Fatal(err)
+		}
+		if view.Tool != c.wantTool {
+			t.Errorf("get_action #%d (legacy=%v) names %q, want %q", c.id, c.legacy, view.Tool, c.wantTool)
 		}
 	}
 
