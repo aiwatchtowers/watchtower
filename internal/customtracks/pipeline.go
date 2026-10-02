@@ -181,6 +181,13 @@ func (p *Pipeline) runOne(ctx context.Context, t db.Track, opts runOpts) ([]db.T
 		since = time.Now().Add(-defaultLookback).UTC().Format("2006-01-02T15:04:05Z")
 	}
 
+	// The window ends at the last fully elapsed second, which becomes the next
+	// watermark: activity timestamps have second granularity and the next
+	// window opens with a strict "> since", so a row written after the read
+	// but within the read's own second would otherwise fall at the watermark
+	// and never be read. Rows of the current second wait for the next run.
+	now := time.Now().UTC().Add(-time.Second).Format("2006-01-02T15:04:05Z")
+
 	// Forward runs feed recent activity directly; a backfill window holds too much
 	// to feed whole, so it goes through the cheap shortlist → extract retrieval.
 	var act db.ScanActivity
@@ -188,13 +195,11 @@ func (p *Pipeline) runOne(ctx context.Context, t db.Track, opts runOpts) ([]db.T
 	if opts.isBackfill() {
 		act, err = p.gatherBackfillActivity(ctx, t, since)
 	} else {
-		act, err = p.db.GetScanActivity(since, defaultActivityLimit)
+		act, err = p.db.GetScanActivity(since, now, defaultActivityLimit)
 	}
 	if err != nil {
 		return nil, err
 	}
-
-	now := time.Now().UTC().Format("2006-01-02T15:04:05Z")
 
 	// No new activity since the watermark: advance it and exit without an AI call.
 	if len(act.Digests) == 0 && len(act.Tracks) == 0 && len(act.Inbox) == 0 {
