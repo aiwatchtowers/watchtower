@@ -145,7 +145,7 @@ final class NotificationRouteTests: XCTestCase {
         let pushTypes = [
             "decision", "track", "track_update", "task_overdue", "target_extract",
             "daily_summary", "voice_label", "meeting_reminder", "meeting_stop_recording",
-            "test", "briefing", "board_config_changed", "meeting_transcript", "project", "update"
+            "test", "briefing", "board_config_changed", "meeting_transcript", "project", "update", "agent_action"
         ]
         let actionIDs = [
             UNNotificationDefaultActionIdentifier,
@@ -237,7 +237,8 @@ final class NotificationRouteTests: XCTestCase {
             ("track_update", .tracks),
             ("task_overdue", .targets),
             ("target_extract", .targets),
-            ("daily_summary", .digests)
+            ("daily_summary", .digests),
+            ("agent_action", .inbox)
         ]
 
         for forwarded in [true, false] {

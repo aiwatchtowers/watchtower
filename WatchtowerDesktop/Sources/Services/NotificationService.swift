@@ -275,7 +275,8 @@ final class NotificationService: Sendable {
         content.body = String(notice.body.prefix(200))
         content.sound = .default
         var info: [String: Any] = [
-            "type": "project",
+            // A proposal's card lives in the Inbox strip, not on the project page.
+            "type": notice.kind == .actionAwaitsApproval ? "agent_action" : "project",
             "projectId": notice.route.projectID,
             "pane": notice.route.pane.rawValue
         ]

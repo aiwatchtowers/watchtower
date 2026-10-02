@@ -217,12 +217,13 @@ struct SlackConnectionDetail: View {
                             .toggleStyle(.switch)
                             .controlSize(.mini)
                             .disabled(vm.isConnecting)
-                            if !account.isOK {
-                                Button("Re-login") {
-                                    Task { await vm.relogin(account) }
-                                }
-                                .disabled(vm.isConnecting)
+                            // Always offered: a healthy account re-consents to pick up a
+                            // newly requested permission (sending, chat:write).
+                            Button(account.isOK ? "Reconnect" : "Re-login") {
+                                Task { await vm.relogin(account) }
                             }
+                            .help("Sign in to this workspace again (grants new permissions such as sending messages)")
+                            .disabled(vm.isConnecting)
                             Button("Remove") {
                                 slackAccountPendingRemoval = account
                             }

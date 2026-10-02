@@ -174,4 +174,30 @@ final class AgentActionQueriesTests: XCTestCase {
         XCTAssertEqual(rows.map(\.turnID), ["normal-pending"])
         XCTAssertEqual(try dbq.read { try AgentActionQueries.awaitingOwnerCount($0) }, 1)
     }
+
+    /// #166: a Slack send proposed from a project terminal is External and
+    /// only ever pending/failed for the owner — it shows on the strip and the
+    /// badge, while the project's direct-apply audit rows stay hidden.
+    func testStripShowsAProjectTerminalsExternalProposal() throws {
+        let dbq = try TestDatabase.create()
+        try dbq.write { db in
+            _ = try TestDatabase.insertAgentAction(
+                db, contextType: "project", contextID: "7", turnID: "project-applied", status: "applied",
+                createdAt: "2026-09-04T13:00:00Z", decidedAt: "2026-09-04T13:00:05Z", appliedAt: "2026-09-04T13:00:05Z"
+            )
+            _ = try TestDatabase.insertAgentAction(
+                db, tool: "send_slack_message", external: true, surface: "project", conversationID: 0,
+                contextType: "project", contextID: "7", turnID: "slack-pending", status: "pending",
+                createdAt: "2026-09-04T13:02:00Z"
+            )
+            _ = try TestDatabase.insertAgentAction(
+                db, tool: "send_slack_message", external: true, surface: "project", conversationID: 0,
+                contextType: "project", contextID: "7", turnID: "slack-failed", status: "failed",
+                createdAt: "2026-09-04T13:01:00Z"
+            )
+        }
+        let rows = try dbq.read { try AgentActionQueries.fetchStrip($0, terminalSince: "2026-09-04T00:00:00Z") }
+        XCTAssertEqual(rows.map(\.turnID), ["slack-pending", "slack-failed"])
+        XCTAssertEqual(try dbq.read { try AgentActionQueries.awaitingOwnerCount($0) }, 2)
+    }
 }

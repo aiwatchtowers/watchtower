@@ -48,7 +48,7 @@ struct ActionStripView: View {
                         onEnable: enableReactionCommands,
                         onOpenSettings: openReactionDictionary,
                         onOpen: open
-                    )
+                    ) { id in await appState.reconnectSlack(accountID: id) }
                 } else {
                     ProgressView()
                 }
@@ -133,6 +133,8 @@ struct ActionStripActionsView: View {
     let onEnable: () -> Void
     let onOpenSettings: () -> Void
     let onOpen: (AgentActionDestination) -> Void
+    /// A failed Slack send's Reconnect Slack button (`AppState.reconnectSlack`).
+    var onReconnectSlack: ((Int64) async -> String?)?
 
     @State private var showsCheatSheet = false
 
@@ -184,21 +186,27 @@ struct ActionStripActionsView: View {
                     if !vm.actionRows.isEmpty {
                         Section("Proposals") {
                             ForEach(vm.actionRows) { action in
-                                AgentActionCardView(
-                                    action: action,
-                                    inFlight: vm.actionFeed.inFlight.contains(action.id),
-                                    onApprove: { Task { await vm.approve(action.id) } },
-                                    onReject: { Task { await vm.reject(action.id) } },
-                                    onRetry: { Task { await vm.retry(action.id) } },
-                                    gestureError: vm.actionFeed.rowErrors[action.id],
-                                    onOpen: onOpen
-                                )
+                                card(action)
                             }
                         }
                     }
                 }
             }
         }
+    }
+
+    private func card(_ action: AgentAction) -> AgentActionCardView {
+        AgentActionCardView(
+            action: action,
+            inFlight: vm.actionFeed.inFlight.contains(action.id),
+            onApprove: { Task { await vm.approve(action.id) } },
+            onReject: { Task { await vm.reject(action.id) } },
+            onRetry: { Task { await vm.retry(action.id) } },
+            gestureError: vm.actionFeed.rowErrors[action.id],
+            onOpen: onOpen,
+            onApproveEdited: { patch in Task { await vm.approve(action.id, patch: patch) } },
+            onReconnectSlack: onReconnectSlack
+        )
     }
 
     /// The `IdeasView` house pattern: a write failure

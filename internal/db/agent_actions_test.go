@@ -82,3 +82,31 @@ func TestToolTrust_DefaultAskAndUpsert(t *testing.T) {
 	trust, _ = database.GetToolTrust("create_target")
 	assert.Equal(t, "ask", trust)
 }
+
+// An owner edit lands with the approval or not at all: a row that is no
+// longer pending, or whose args changed since the card was read, is refused.
+func TestAgentActions_ApproveWithArgsIsConditional(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+	id, err := database.InsertAgentAction(AgentAction{Tool: "send_slack_message", ArgsJSON: `{"text":"a"}`})
+	require.NoError(t, err)
+
+	ok, err := database.ApproveAgentActionWithArgs(id, `{"text":"stale"}`, `{"text":"b"}`)
+	require.NoError(t, err)
+	assert.False(t, ok, "args changed since the card was read")
+	row, _ := database.GetAgentAction(id)
+	assert.Equal(t, "pending", row.Status)
+	assert.Equal(t, `{"text":"a"}`, row.ArgsJSON)
+
+	ok, err = database.ApproveAgentActionWithArgs(id, `{"text":"a"}`, `{"text":"b"}`)
+	require.NoError(t, err)
+	assert.True(t, ok)
+	row, _ = database.GetAgentAction(id)
+	assert.Equal(t, "approved", row.Status)
+	assert.Equal(t, `{"text":"b"}`, row.ArgsJSON)
+	assert.NotEmpty(t, row.DecidedAt)
+
+	ok, err = database.ApproveAgentActionWithArgs(id, `{"text":"b"}`, `{"text":"c"}`)
+	require.NoError(t, err)
+	assert.False(t, ok, "an approved row takes no further edits")
+}

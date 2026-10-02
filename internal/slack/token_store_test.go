@@ -70,3 +70,18 @@ func TestTokenStore_Path(t *testing.T) {
 
 	assert.Contains(t, path, "slack_token_3.json")
 }
+
+func TestToken_HasScope(t *testing.T) {
+	assert.False(t, (*Token)(nil).HasScope(SendScope))
+	assert.False(t, (&Token{}).HasScope(SendScope), "an unrecorded grant is not a grant")
+	assert.False(t, (&Token{Scope: "channels:read,chat:write.public"}).HasScope(SendScope), "a prefix is not the scope")
+	assert.True(t, (&Token{Scope: "channels:read, chat:write,im:write"}).HasScope(SendScope))
+}
+
+func TestTokenStore_RoundTripsScope(t *testing.T) {
+	store := NewTokenStore(t.TempDir(), 1)
+	require.NoError(t, store.Save(&Token{AccessToken: "xoxp-1", Scope: "chat:write"}))
+	loaded, err := store.Load()
+	require.NoError(t, err)
+	assert.Equal(t, "chat:write", loaded.Scope)
+}

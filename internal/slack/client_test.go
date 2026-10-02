@@ -780,3 +780,47 @@ func TestNewHTTPClientBounds(t *testing.T) {
 	assert.Equal(t, responseHeaderTimeout, tr.ResponseHeaderTimeout, "HTTP/1.1 header wait")
 	assert.Contains(t, tr.TLSNextProto, "h2", "HTTP/2 keepalive must be configured")
 }
+
+func TestPostMessage_SendsTextAndThread(t *testing.T) {
+	var form map[string]string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/chat.postMessage", func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseForm())
+		form = map[string]string{"channel": r.FormValue("channel"), "text": r.FormValue("text"), "thread_ts": r.FormValue("thread_ts")}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "channel": "C1", "ts": "1700000000.000200"})
+	})
+	c := newUnlimitedTestClient(t, mux)
+	ts, err := c.PostMessage(context.Background(), "C1", "hello *there*", "1700000000.000100")
+	require.NoError(t, err)
+	assert.Equal(t, "1700000000.000200", ts)
+	assert.Equal(t, map[string]string{"channel": "C1", "text": "hello *there*", "thread_ts": "1700000000.000100"}, form)
+}
+
+func TestPostMessage_SurfacesSlackError(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/chat.postMessage", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "missing_scope"})
+	})
+	c := newUnlimitedTestClient(t, mux)
+	_, err := c.PostMessage(context.Background(), "C1", "hi", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing_scope")
+}
+
+func TestOpenDM_ReturnsTheIMChannel(t *testing.T) {
+	var users string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/conversations.open", func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseForm())
+		users = r.FormValue("users")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "channel": map[string]any{"id": "D42"}})
+	})
+	c := newUnlimitedTestClient(t, mux)
+	id, err := c.OpenDM(context.Background(), "U7")
+	require.NoError(t, err)
+	assert.Equal(t, "D42", id)
+	assert.Equal(t, "U7", users)
+}

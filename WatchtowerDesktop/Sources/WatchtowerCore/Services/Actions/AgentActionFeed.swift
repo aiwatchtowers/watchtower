@@ -129,8 +129,10 @@ package final class AgentActionFeed {
         rows.filter { !messageTurnIDs.contains($0.turnID) && !$0.isTerminal }
     }
 
-    package func approve(_ id: Int64) async {
-        await run("approve", id: id)
+    /// `patch` carries the owner's card edits (`actions approve --patch`,
+    /// e.g. a Slack message's text); Go merges and approves them in one write.
+    package func approve(_ id: Int64, patch: String? = nil) async {
+        await run("approve", id: id, extra: patch.map { ["--patch", $0] } ?? [])
     }
 
     package func reject(_ id: Int64) async {
@@ -187,7 +189,7 @@ package final class AgentActionFeed {
     /// Clears only this row's error: another row's failure stays on its card.
     /// `lastError` is reset too — the `refresh()` below re-reports a read that
     /// still fails.
-    private func run(_ verb: String, id: Int64) async {
+    private func run(_ verb: String, id: Int64, extra: [String] = []) async {
         rowErrors[id] = nil
         lastError = nil
         guard let runner = cliRunner ?? ProcessCLIRunner.makeDefault() else {
@@ -197,7 +199,7 @@ package final class AgentActionFeed {
         inFlight.insert(id)
         defer { inFlight.remove(id) }
         do {
-            let data = try await runner.run(args: ["actions", verb, String(id), "--json"])
+            let data = try await runner.run(args: ["actions", verb, String(id)] + extra + ["--json"])
             if let env = try? JSONDecoder().decode(Envelope.self, from: data),
                let err = env.error, !err.isEmpty {
                 rowErrors[id] = RowError(verb: verb, message: err)
