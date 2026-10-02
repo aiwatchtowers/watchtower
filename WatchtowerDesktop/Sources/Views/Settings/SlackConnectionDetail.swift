@@ -262,12 +262,10 @@ struct SlackConnectionDetail: View {
                     .foregroundStyle(.secondary)
             }
         }
-        // A pending About you sheet shows once this one has gone.
-        .sheet(isPresented: $showAddSlackAccountSheet, onDismiss: addSheetDismissed) {
+        .sheet(isPresented: $showAddSlackAccountSheet) {
             AddSlackAccountView()
                 .environment(appState)
-                .onAppear { appState.isAddingSlackAccount = true }
-                .onDisappear { appState.isAddingSlackAccount = false }
+                .marksAccountSheet(appState)
         }
         .confirmationDialog(
             "Remove \(slackAccountPendingRemoval?.displayName ?? "this workspace")?",
@@ -500,11 +498,5 @@ struct SlackConnectionDetail: View {
         process.arguments = arguments
         process.environment = Constants.resolvedEnvironment()
         return await ProcessPipes.run(process).trimmed
-    }
-}
-
-extension SlackConnectionDetail {
-    private func addSheetDismissed() {
-        appState.isAddingSlackAccount = false
     }
 }

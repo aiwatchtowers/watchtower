@@ -928,6 +928,65 @@ final class AppState {
         }
     }
 
+    // MARK: - Features for a source connected from Settings
+
+    /// What `refreshConnectedSources` last read; nil before the first read.
+    @ObservationIgnored private var lastReadConnectedSources: ConnectedSources?
+    /// The check a new source kicked off — held so tests can await it.
+    @ObservationIgnored private(set) var featureSuggestionCheck: Task<Void, Never>?
+
+    /// Features the goals of a just-connected source would turn on, off
+    /// now, waiting for the owner's yes.
+    private(set) var featureSuggestion: [FeatureInfo] = []
+    private(set) var isApplyingFeatureSuggestion = false
+    private(set) var featureSuggestionError: String?
+
+    /// The offer shows in Settings after the late About you sheet and once
+    /// no Add account sheet is up.
+    var showsFeatureSuggestion: Bool {
+        !featureSuggestion.isEmpty && !showsLateAboutYou && !lateAboutYouPending && !isAddingAccount
+    }
+
+    private func suggestFeatures(for goals: [OnboardingGoal]) async {
+        await featureManager.load()
+        guard featureManager.loadError == nil else { return }
+        let features = featureManager.features
+        let ids = SourceConnectPrompt.suggestedFeatureIDs(
+            for: goals,
+            disabled: featureManager.disabledFeatureIDs,
+            registryOrder: features.map(\.id)
+        )
+        let suggested = features.filter { ids.contains($0.id) }
+        guard !suggested.isEmpty else { return }
+        featureSuggestionError = nil
+        featureSuggestion = suggested
+    }
+
+    /// Yes: enables the offered features through the Feature Manager (the
+    /// CLI, `features enable`) and restarts the daemon once, as Settings →
+    /// Features' Save does.
+    func acceptFeatureSuggestion() async {
+        guard !featureSuggestion.isEmpty, !isApplyingFeatureSuggestion else { return }
+        isApplyingFeatureSuggestion = true
+        defer { isApplyingFeatureSuggestion = false }
+        featureManager.discardPending()
+        for feature in featureSuggestion {
+            featureManager.setPending(feature.id, enabled: true)
+        }
+        let daemon = daemonControl
+        await featureManager.apply { try await daemon.restartWaiting() }
+        if let error = featureManager.loadError {
+            featureSuggestionError = error
+            return
+        }
+        featureSuggestion = []
+    }
+
+    func declineFeatureSuggestion() {
+        featureSuggestion = []
+        featureSuggestionError = nil
+    }
+
     /// The Slack, Google and Jira account ids when a re-run started: an
     /// account added or removed meanwhile (the Connect sheets defer the
     /// daemon restart to finish) counts as a change.
@@ -1300,8 +1359,9 @@ final class AppState {
     private(set) var lateAboutYouPending = false
     /// The About you sheet over the Settings window.
     var showsLateAboutYou = false
-    /// Settings' Add Slack sheet is up: a second sheet waits for it.
-    var isAddingSlackAccount = false {
+    /// One of Settings' Add account sheets is up: the late About you sheet
+    /// and the feature suggestion wait for it.
+    var isAddingAccount = false {
         didSet { presentLateAboutYouIfReady() }
     }
     private(set) var isSavingLateAboutYou = false
@@ -1339,7 +1399,7 @@ final class AppState {
     /// Shows the pending sheet unless the Add Slack sheet is still up (its
     /// dismissal calls this again).
     func presentLateAboutYouIfReady() {
-        guard lateAboutYouPending, !isAddingSlackAccount else { return }
+        guard lateAboutYouPending, !isAddingAccount else { return }
         lateAboutYouPending = false
         showsLateAboutYou = true
     }
@@ -1538,6 +1598,14 @@ final class AppState {
             guard generation > appliedConnectedSourcesGeneration else { return }
             appliedConnectedSourcesGeneration = generation
             featureVisibility.connectedSources = sources
+            let previous = lastReadConnectedSources
+            lastReadConnectedSources = sources
+            if let previous, !needsOnboarding {
+                let goals = SourceConnectPrompt.goals(newlyConnectedFrom: previous, to: sources)
+                if !goals.isEmpty {
+                    featureSuggestionCheck = Task { await suggestFeatures(for: goals) }
+                }
+            }
         } catch {
             print("[AppState] connected sources read failed, keeping the last value: \(error.localizedDescription)")
         }

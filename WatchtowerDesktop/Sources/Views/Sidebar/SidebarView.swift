@@ -124,6 +124,8 @@ struct SidebarView: View {
 
             Spacer()
 
+            SidebarConnectRow()
+
             // Background tasks progress
             SidebarProgressView()
 

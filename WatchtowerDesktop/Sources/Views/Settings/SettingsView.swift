@@ -45,5 +45,10 @@ struct SettingsView: View {
             LateAboutYouSheet().environment(appState)
         }
         .onAppear { appState.presentLateAboutYouIfReady() }
+        // Related features for a source connected here — after the About
+        // you sheet, never in its place. Only its buttons close it.
+        .sheet(isPresented: Binding(get: { appState.showsFeatureSuggestion }, set: { _ in })) {
+            FeatureSuggestionSheet().environment(appState)
+        }
     }
 }
