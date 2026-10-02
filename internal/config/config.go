@@ -230,18 +230,14 @@ type AnalysisConfig struct {
 
 // TargetsExtractConfig holds settings for the targets extraction phase.
 type TargetsExtractConfig struct {
-	Enabled        bool   `mapstructure:"enabled"`
-	MaxPerCall     int    `mapstructure:"max_per_call"`
-	TimeoutSeconds int    `mapstructure:"timeout_seconds"`
-	Model          string `mapstructure:"model"`
+	Enabled        bool `mapstructure:"enabled"`
+	TimeoutSeconds int  `mapstructure:"timeout_seconds"`
 }
 
 // TargetsResolverConfig holds settings for the targets resolver phase.
 type TargetsResolverConfig struct {
-	SlackEnabled        bool `mapstructure:"slack_enabled"`
-	JiraEnabled         bool `mapstructure:"jira_enabled"`
-	MCPTimeoutSeconds   int  `mapstructure:"mcp_timeout_seconds"`
-	ActiveSnapshotLimit int  `mapstructure:"active_snapshot_limit"`
+	MCPTimeoutSeconds   int `mapstructure:"mcp_timeout_seconds"`
+	ActiveSnapshotLimit int `mapstructure:"active_snapshot_limit"`
 }
 
 // TargetsNextStepConfig holds settings for the targets next step feature.
@@ -521,11 +517,7 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("memory.retrieve.meeting_prep_compare", false)
 	v.SetDefault("memory.focus.enabled", false) // focus-salience Run step dark by default
 	v.SetDefault("targets.extract.enabled", DefaultTargetsExtractEnabled)
-	v.SetDefault("targets.extract.max_per_call", DefaultTargetsExtractMaxPerCall)
 	v.SetDefault("targets.extract.timeout_seconds", DefaultTargetsExtractTimeoutSeconds)
-	v.SetDefault("targets.extract.model", DefaultTargetsExtractModel)
-	v.SetDefault("targets.resolver.slack_enabled", DefaultTargetsResolverSlackEnabled)
-	v.SetDefault("targets.resolver.jira_enabled", DefaultTargetsResolverJiraEnabled)
 	v.SetDefault("targets.resolver.mcp_timeout_seconds", DefaultTargetsResolverMCPTimeoutSeconds)
 	v.SetDefault("targets.resolver.active_snapshot_limit", DefaultTargetsResolverActiveSnapshotLimit)
 	v.SetDefault("transcripts.audio_retention_days", DefaultTranscriptAudioRetentionDays)

@@ -332,6 +332,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.loadBriefingAttempts()
 	d.loadRollupAttempts()
 	d.loadPeopleAttempts()
+	d.reapStalePipelineRuns()
 
 	d.logger.Printf("daemon started, polling every %s", pollInterval)
 
@@ -496,6 +497,37 @@ func (d *Daemon) trackedPipelineRun(name string, fn func() pipelineRunStats) {
 		errMsg = stats.err.Error()
 	}
 	_ = d.db.CompletePipelineRun(runID, stats.items, stats.inTok, stats.outTok, stats.cost, stats.totalAPI, stats.pFrom, stats.pTo, errMsg)
+}
+
+// stalePipelineRunAfter is how long another process's pipeline_runs row may
+// stay 'running' before a daemon start treats it as abandoned. Generous on
+// purpose: a CLI run (a backfill) another live process is still working on
+// must not be failed under it.
+const stalePipelineRunAfter = 24 * time.Hour
+
+// stalePipelineRunError is the error_msg a reaped run carries.
+const stalePipelineRunError = "interrupted: the process running it exited before it finished"
+
+// reapStalePipelineRuns fails every pipeline_runs row a killed process left in
+// 'running' (the catchup reapStaleRecaps precedent), so the Pipeline Progress
+// view and run statistics stop counting runs that will never finish. Runs once
+// at daemon start, before this process opens any run of its own. Every
+// 'daemon' row still running then is an orphan whatever its age — the daemon
+// holds sync.lock, so no other daemon can be writing one; other sources only
+// past stalePipelineRunAfter. Best-effort: a failed cleanup must not keep the
+// daemon from starting.
+func (d *Daemon) reapStalePipelineRuns() {
+	if d.db == nil {
+		return
+	}
+	n, err := d.db.FailStalePipelineRuns("daemon", time.Now().Add(-stalePipelineRunAfter), stalePipelineRunError)
+	if err != nil {
+		d.logger.Printf("pipeline_runs: reaping abandoned runs failed: %v", err)
+		return
+	}
+	if n > 0 {
+		d.logger.Printf("pipeline_runs: marked %d abandoned run(s) as error", n)
+	}
 }
 
 // phaseSlackSync runs every connected account's orchestrator and persists one

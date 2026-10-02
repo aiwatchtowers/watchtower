@@ -11,7 +11,14 @@ created: 2026-09-27
 6 low-priority findings from the PR #3 Confluence connector (Go) track, bundled so the backlog
 stays readable. Split any item into its own file when it gets picked up.
 
-## HTML attachments that omit </head> (valid HTML5) index as empty text with status ok (fixed in fix/bl-confluence-content)
+**Triage 2026-10-02 (checked against main e0f7fec6):** items 1–4 are in main
+(`fix/bl-confluence-content` → PR #23, dbd59d84; `fix/bl-jira-hardening` →
+PR #15, a1d11196) with their pinning tests present. Item 5 is fixed except the
+withdrawn undeclared-charset guess, and item 6 needs a `doc_links` schema
+design — both wait on an owner design call, so the bundle stays open for those
+two only. Nothing mechanical is left here.
+
+## HTML attachments that omit </head> (valid HTML5) index as empty text with status ok (fixed — PR #23, dbd59d84)
 
 - type: bug · confidence: high · tags: [extract, html, content-loss]
 - where: internal/extract/plain.go:65-66, 114-124 (skippedElements / tag)
@@ -30,7 +37,7 @@ template) closes it, even with no `<body>` tag at all (e.g.
 `<html><head><title>T</title><p>Hello`). Pinned by
 `TestHTMLHeadClosedByOrdinaryTag`.
 
-## Storage XHTML nested deeper than 512 elements silently indexes as an empty page (fixed in fix/bl-confluence-content)
+## Storage XHTML nested deeper than 512 elements silently indexes as an empty page (fixed — PR #23, dbd59d84)
 
 - type: bug · confidence: high · tags: [confluence, storage, parser, silent-failure]
 - where: internal/confluence/storage.go (StorageToSections, "in practice this never returns a non-nil error"), golang.org/x/net/html parser (open-element stack cap 512)
@@ -57,7 +64,7 @@ path (`userIDs` stays nil — a mention token only ever comes from an
 `ac:link`/`ri:user` element the fallback never parses). Pinned by
 `TestStorageFallbackScansJiraKeys`.
 
-## Storage converter drops date lozenges and status macro labels (fixed in fix/bl-confluence-content)
+## Storage converter drops date lozenges and status macro labels (fixed — PR #23, dbd59d84)
 
 - type: bug · confidence: med · tags: [confluence, storage, content-loss, search]
 - where: internal/confluence/storage.go (inlineElement default → inlineChildren; renderMacro default → renderMacroBody), internal/confluence/storage.go (normalizeSelfClosing only rewrites names containing ':')
@@ -76,7 +83,7 @@ Pinned by `TestStorageDateLozenge`/`TestStorageStatusMacroLabel`
 (`internal/confluence/storage_test.go`) and extended into the
 `macros.xhtml`/`macros.golden.json` fixture pair.
 
-## A "scope does not match" 401 rotates the Atlassian refresh token three times before it surfaces (fixed in fix/bl-jira-hardening)
+## A "scope does not match" 401 rotates the Atlassian refresh token three times before it surfaces (fixed — PR #15, a1d11196)
 
 - type: bug · confidence: high · tags: [jira, oauth, confluence, tokens]
 - where: internal/jira/client.go:117-176 (doURLWith 401 loop), internal/jira/client.go:180-195 (persistentUnauthorized)
@@ -91,7 +98,7 @@ refresh-then-retry behavior, now on their own independent budget (see the go-bug
 `TestClient_PersistentUnauthorizedScopeIsNotRevoked`, updated to assert exactly one server call
 instead of the four the old behavior required.
 
-## Non-UTF-8 text attachments (UTF-16 or cp1251 CSV/TXT) are recorded as final failed (partially fixed in fix/bl-confluence-content — see below)
+## Non-UTF-8 text attachments (UTF-16 or cp1251 CSV/TXT) are recorded as final failed (partially fixed — PR #23, dbd59d84; the undeclared-charset guess is left for an owner design call, see below)
 
 - type: bug · confidence: med · tags: [extract, encoding, content-loss, localization]
 - where: internal/extract/plain.go (readUTF8, decodeDirect, htmlText)
@@ -115,7 +122,7 @@ Three approaches were tried across rounds 2–4 and each regressed on some class
 
 Tests restored/added this round: `TestPlainInvalidUTF8Fails` reverted to its pre-detection-work fixture and intent; `TestPlainWindows1251WithoutDeclarationFails` (was `TestPlainWindows1251Decodes`) now asserts `StatusFailed`; `TestPlainMojibakeFamiliesFail` folds in koi8-r/koi8-u/windows-1251 alongside the other rejected families (undeclared Cyrillic content fails just like everything else now); `TestPlainUTF8WithOneStrayByteFails` pins the specific regression that triggered the withdrawal; `TestHTMLDeclaredUTF8OverInvalidBytesFails` (was `...FallsThrough`) now asserts failure instead of guess-recovery; `TestHTMLUnknownMetaLabelRecoversValidUTF8`/`OverNonUTF8Fails` and `TestHTMLUndeclaredNonUTF8Fails` split the old guess-recovery tests into their new fail/recover-via-decodeDirect halves. All of `looksLikeCyrillicPlainText`, `isWordAnomalyMeaningful`, `bestCyrillicText`, `scoreCyrillicText`, `scoreCandidate`, `cyrillicCandidate` and their constants are deleted; `decodeCleanly` stays (used only by the UTF-16-BOM path now).
 
-## linkscan freezes a Slack message's from_ref at first sighting, so a root later promoted to a thread keeps its channel-day ref
+## linkscan freezes a Slack message's from_ref at first sighting, so a root later promoted to a thread keeps its channel-day ref (left — needs an owner design call)
 
 - type: bug · confidence: med · tags: [doclinks, linkscan, slack, cursor]
 - where: internal/doclinks/linkscan/scan.go:56-60, 285-310 (readSlack via kb.SlackDocRef), internal/kb/source_slack.go (slackKeyFor)

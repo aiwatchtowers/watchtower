@@ -147,22 +147,6 @@ final class MessageQueryTests: XCTestCase {
         let count = try db.read { try MessageQueries.countByChannel($0, channelID: "C001") }
         XCTAssertEqual(count, 3)
     }
-
-    func testFetchRecentWatched() throws {
-        let db = try TestDatabase.create()
-        try db.write { db in
-            try TestDatabase.insertChannel(db, id: "C001", name: "general")
-            try TestDatabase.insertUser(db, id: "U001", displayName: "Alice")
-            try TestDatabase.insertWatchItem(db, entityType: "channel", entityID: "C001")
-            try TestDatabase.insertMessage(db, channelID: "C001", ts: "1700000001.000100", userID: "U001", text: "Hello")
-        }
-        let messages = try db.read {
-            try MessageQueries.fetchRecentWatched($0, sinceUnix: 1700000000)
-        }
-        XCTAssertEqual(messages.count, 1)
-        XCTAssertEqual(messages[0].channelName, "general")
-        XCTAssertEqual(messages[0].userName, "Alice")
-    }
 }
 
 final class DigestQueryTests: XCTestCase {
@@ -527,18 +511,6 @@ final class WorkspaceQueryTests: XCTestCase {
         let db = try TestDatabase.create()
         let workspace = try db.read { try WorkspaceQueries.fetchWorkspace($0) }
         XCTAssertNil(workspace)
-    }
-
-    func testFetchStats() throws {
-        let db = try TestDatabase.create()
-        try db.write { db in
-            try TestDatabase.insertChannel(db, id: "C001")
-            try TestDatabase.insertUser(db, id: "U001")
-        }
-        let stats = try db.read { try WorkspaceQueries.fetchStats($0) }
-        XCTAssertEqual(stats.channelCount, 1)
-        XCTAssertEqual(stats.userCount, 1)
-        XCTAssertEqual(stats.messageCount, 0)
     }
 }
 

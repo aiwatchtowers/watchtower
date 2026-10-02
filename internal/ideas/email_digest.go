@@ -387,8 +387,8 @@ func renderedEmailWindow(msgs []db.GmailExtractMessage, renderedIDs map[string]b
 // passes). A generator, extraction, parse, or missing-"topics"-key failure
 // returns an error, so the caller writes no row and leaves its floor untouched
 // (IDEA-01). Shared by the Gmail and Jira passes, which differ only in their
-// prompt and their tag vocabulary.
-func (p *Pipeline) mineStreamTopics(ctx context.Context, promptID, block string, renderedTags map[string]bool) ([]streamTopic, error) {
+// prompt and their tag vocabulary. what labels the account in the log.
+func (p *Pipeline) mineStreamTopics(ctx context.Context, promptID, what, block string, renderedTags map[string]bool) ([]streamTopic, error) {
 	tmpl, _ := p.getPrompt(promptID)
 	system := fmt.Sprintf(tmpl, prompts.Directive(p.language()))
 
@@ -409,7 +409,22 @@ func (p *Pipeline) mineStreamTopics(ctx context.Context, promptID, block string,
 	if parsed.Topics == nil {
 		return nil, fmt.Errorf("%s reply has no \"topics\" key", promptID)
 	}
-	return validateRefs(*parsed.Topics, renderedTags), nil
+	topics := validateRefs(*parsed.Topics, renderedTags)
+	// Log what validation threw away, so "the model found nothing" and "the
+	// model found topics but every ref was rejected" read differently in the
+	// log.
+	if proposed, kept := countCandidates(*parsed.Topics), countCandidates(topics); kept < proposed {
+		p.logf("ideas: %s: dropped %d of %d proposed candidates whose ref is not among the rendered tags", what, proposed-kept, proposed)
+	}
+	return topics, nil
+}
+
+func countCandidates(topics []streamTopic) int {
+	n := 0
+	for _, t := range topics {
+		n += len(t.Ideas) + len(t.Decisions)
+	}
+	return n
 }
 
 // insertStreamTopics writes one stream_digests row carrying topics, or writes
@@ -564,7 +579,8 @@ func (p *Pipeline) runEmailDigestAccount(ctx context.Context, acct db.GoogleAcco
 	}
 	minTS, maxTS := win.minTS, win.maxTS
 
-	topics, err := p.mineStreamTopics(ctx, "ideas.digest_email", block, tags)
+	what := fmt.Sprintf("email account %d", acct.ID)
+	topics, err := p.mineStreamTopics(ctx, "ideas.digest_email", what, block, tags)
 	if err != nil {
 		return err
 	}
@@ -575,7 +591,7 @@ func (p *Pipeline) runEmailDigestAccount(ctx context.Context, acct db.GoogleAcco
 		Scope:      "",
 		PeriodFrom: time.Unix(int64(minTS), 0).UTC().Format(time.RFC3339),
 		PeriodTo:   time.Unix(int64(maxTS), 0).UTC().Format(time.RFC3339),
-	}, topics, fmt.Sprintf("email account %d", acct.ID)); err != nil {
+	}, topics, what); err != nil {
 		return err
 	}
 
