@@ -506,9 +506,8 @@ struct SystemSettings: View {
         }
     }
 
-    /// One CLI probe; nil means the model answered. nonisolated so the
-    /// detached test task can run it off the main actor (View infers @MainActor);
-    /// the child's I/O runs off the concurrency pool (ProcessPipes).
+    /// One CLI probe; nil means the model answered. nonisolated: the View is
+    /// @MainActor, and the probe sets up the child off it.
     nonisolated private static func runCLIProbe(path: String, isCodex: Bool, model: String) async -> String? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)

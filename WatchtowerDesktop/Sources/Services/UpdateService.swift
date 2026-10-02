@@ -877,7 +877,6 @@ final class UpdateService {
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
         try process.run()
-        // Off the concurrency pool (ProcessPipes).
         return await ProcessPipes.offPool {
             process.waitUntilExit()
             return process.terminationStatus

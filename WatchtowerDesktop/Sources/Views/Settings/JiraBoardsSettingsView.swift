@@ -274,22 +274,14 @@ struct JiraBoardsSettingsView: View {
             process.currentDirectoryURL =
                 Constants.processWorkingDirectory()
 
-            let stderrPipe = Pipe()
-            process.standardOutput = FileHandle.nullDevice
-            process.standardError = stderrPipe
-
-            do {
-                try process.run()
-            } catch {
+            let output = await ProcessPipes.run(process)
+            if output.exitCode == -1 { // launch failure
                 await MainActor.run {
                     toggleError = "Failed to launch CLI"
                 }
                 return
             }
-
-            // Off the concurrency pool (ProcessPipes).
-            let stderrData = await ProcessPipes.drain(stderrPipe).value
-            await ProcessPipes.offPool { process.waitUntilExit() }
+            let stderrData = Data(output.stderr.utf8)
 
             if process.terminationStatus != 0 {
                 let stderr = String(
@@ -415,8 +407,6 @@ struct JiraBoardsSettingsView: View {
 enum JiraBoardsCLI {
     /// Runs `arguments`, returning nil on success or a user-facing message on
     /// failure (trimmed stderr, else `fallbackMessage` plus the exit status).
-    /// stderr is drained before `waitUntilExit` so a chatty failure can't fill
-    /// the pipe buffer and deadlock the wait.
     static func run(
         cliPath: String,
         arguments: [String],
@@ -428,26 +418,14 @@ enum JiraBoardsCLI {
         process.environment = Constants.resolvedEnvironment()
         process.currentDirectoryURL = Constants.processWorkingDirectory()
 
-        let stderrPipe = Pipe()
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = stderrPipe
-
-        do {
-            try process.run()
-        } catch {
+        let output = await ProcessPipes.run(process).trimmed
+        if output.exitCode == -1 { // launch failure
             return "Failed to launch CLI"
         }
-
-        // Off the concurrency pool (ProcessPipes).
-        let stderrData = await ProcessPipes.drain(stderrPipe).value
-        await ProcessPipes.offPool { process.waitUntilExit() }
-
-        guard process.terminationStatus != 0 else { return nil }
-        let stderr = String(data: stderrData, encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard output.exitCode != 0 else { return nil }
         // With nothing on stderr the exit status is the only diagnostic left.
-        return stderr.isEmpty
-            ? "\(fallbackMessage) (exit \(process.terminationStatus))"
-            : String(stderr.prefix(200))
+        return output.stderr.isEmpty
+            ? "\(fallbackMessage) (exit \(output.exitCode))"
+            : String(output.stderr.prefix(200))
     }
 }

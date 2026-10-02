@@ -177,8 +177,10 @@ struct JiraUserMappingSettingsView: View {
             process.environment = Constants.resolvedEnvironment()
             process.currentDirectoryURL =
                 Constants.processWorkingDirectory()
-            // Both streams drained, off the concurrency pool (ProcessPipes).
-            _ = await ProcessPipes.run(process)
+            let output = await ProcessPipes.run(process)
+            if output.exitCode != 0 {
+                CLILog.failure(args: process.arguments ?? [], exitCode: output.exitCode, stderr: output.stderr)
+            }
         }
     }
 
@@ -191,8 +193,10 @@ struct JiraUserMappingSettingsView: View {
             process.arguments = ["jira", "users", "resolve"]
             process.environment = Constants.resolvedEnvironment()
             process.currentDirectoryURL = Constants.processWorkingDirectory()
-            // Both streams drained, off the concurrency pool (ProcessPipes).
-            _ = await ProcessPipes.run(process)
+            let output = await ProcessPipes.run(process)
+            if output.exitCode != 0 {
+                CLILog.failure(args: process.arguments ?? [], exitCode: output.exitCode, stderr: output.stderr)
+            }
             await MainActor.run {
                 isResolving = false
             }

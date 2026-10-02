@@ -87,15 +87,10 @@ package final class AIModelCatalog {
             return
         }
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: cliPath)
-        process.currentDirectoryURL = Constants.processWorkingDirectory()
-        process.arguments = ["ai", "models", "--json"]
-        process.environment = Constants.resolvedEnvironment()
-        // Both streams drained, off the concurrency pool (`ProcessPipes`).
-        let output = await ProcessPipes.run(process)
+        let output = await Self.fetchModels(cliPath: cliPath)
         guard output.exitCode == 0 else {
-            lastError = "watchtower ai models failed"
+            let detail = CLILog.detail(output.stderr)
+            lastError = "watchtower ai models failed (exit \(output.exitCode))" + (detail.isEmpty ? "" : ": \(detail)")
             return
         }
         let data = Data(output.stdout.utf8)
@@ -106,5 +101,16 @@ package final class AIModelCatalog {
         } catch {
             lastError = "parsing ai models output: \(error.localizedDescription)"
         }
+    }
+
+    /// `watchtower ai models --json`, configured off the main actor (the
+    /// first `resolvedEnvironment()` runs the login shell).
+    nonisolated private static func fetchModels(cliPath: String) async -> ProcessOutput {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: cliPath)
+        process.currentDirectoryURL = Constants.processWorkingDirectory()
+        process.arguments = ["ai", "models", "--json"]
+        process.environment = Constants.resolvedEnvironment()
+        return await ProcessPipes.run(process)
     }
 }
