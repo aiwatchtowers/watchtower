@@ -323,6 +323,46 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
         XCTAssertTrue(buffer.isDirty, "the edits stay in the buffer")
     }
 
+    /// A page that fails to hand over its edits holds the switch: the files
+    /// would be swapped under edits only the page has.
+    func testProj10_AnEditorThatDoesNotAnswerHoldsTheSwitch() async throws {
+        try writeFile("a.go", "package a\n")
+        let runner = ScriptedCLIRunner(results: [.success(switchResult(#""switched":true"#))])
+        let vm = makeVM(runner)
+        vm.codeFiles.buffer(for: project, relPath: "a.go").loadIfNeeded()
+        let page = EditorPage(edits: [])
+        page.fails = true
+        vm.codeFiles.register(page, for: project)
+
+        await vm.switchBranch("feature/x", project: project)
+
+        XCTAssertEqual(runner.invocations, [], "no CLI call")
+        XCTAssertEqual(vm.gitErrors[project.id], "The editor did not hand over its latest edits — try again.")
+        XCTAssertNil(vm.switchingBranch[project.id])
+    }
+
+    /// A page that does not answer in time holds the switch too; the edits
+    /// it hands over later still reach their buffer.
+    func testProj10_AnEditorThatTimesOutHoldsTheSwitch() async throws {
+        try writeFile("a.go", "package a\n")
+        let runner = ScriptedCLIRunner(results: [.success(switchResult(#""switched":true"#))])
+        let vm = makeVM(runner)
+        vm.codeFiles.pendingTimeout = .milliseconds(50)
+        let buffer = vm.codeFiles.buffer(for: project, relPath: "a.go")
+        buffer.loadIfNeeded()
+        let page = StalledEditorPage()
+        vm.codeFiles.register(page, for: project)
+
+        await vm.switchBranch("feature/x", project: project)
+
+        XCTAssertEqual(runner.invocations, [], "no CLI call")
+        XCTAssertEqual(vm.gitErrors[project.id], "The editor did not hand over its latest edits — try again.")
+        XCTAssertNil(vm.switchingBranch[project.id])
+        page.answer([CodeEditorPendingEdit(id: buffer.id, text: "package a // late\n", base: 0)])
+        await waitUntil { buffer.text == "package a // late\n" }
+        buffer.cancelAutosave()
+    }
+
     /// Open, unedited files — and another workbench's unsaved edit outside
     /// this work tree — leave the switch as it was.
     func testProj10_NoUnsavedEditsInTheWorkTreeLeaveTheSwitchAsItWas() async throws {
@@ -923,14 +963,32 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
 @MainActor
 private final class EditorPage: CodeEditorBridge {
     var edits: [CodeEditorPendingEdit]
+    /// The page could not be asked (`takePending` answers nil).
+    var fails = false
 
     init(edits: [CodeEditorPendingEdit]) {
         self.edits = edits
     }
 
     func takePending() async -> [CodeEditorPendingEdit]? {
+        guard !fails else { return nil }
         defer { edits = [] }
         return edits
+    }
+}
+
+/// A page whose `takePending` answers only when the test says so.
+@MainActor
+private final class StalledEditorPage: CodeEditorBridge {
+    private var waiting: CheckedContinuation<[CodeEditorPendingEdit]?, Never>?
+
+    func takePending() async -> [CodeEditorPendingEdit]? {
+        await withCheckedContinuation { waiting = $0 }
+    }
+
+    func answer(_ edits: [CodeEditorPendingEdit]) {
+        waiting?.resume(returning: edits)
+        waiting = nil
     }
 }
 
@@ -957,9 +1015,7 @@ private final class DiskPeekingRunner: CLIRunnerProtocol, @unchecked Sendable {
 
     func run(args: [String]) async throws -> Data {
         let contents = files.map { (try? String(contentsOf: $0, encoding: .utf8)) ?? "" }
-        lock.lock()
-        peeks.append(contents)
-        lock.unlock()
+        lock.withLock { peeks.append(contents) }
         return try await scripted.run(args: args)
     }
 }

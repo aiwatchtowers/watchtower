@@ -195,10 +195,17 @@ extension WorkbenchesViewModel {
         let workTree = topLevel.isEmpty ? project.folderPath : topLevel
         // Edits typed in the code viewer are not on disk until their
         // autosave: saved now, so Go's dirty check sees them (and a stash
-        // takes them). One that cannot be written would land on the other
-        // branch — nothing is sent.
-        if let unsaved = await codeFiles.saveEdits(project: project, workTree: workTree) {
-            gitErrors[id] = "Save or discard the edits in \(unsaved) first — they are not on disk yet."
+        // takes them). One that cannot be written, or a page that does not
+        // hand its edits over, would leave them under the other branch —
+        // nothing is sent.
+        switch await codeFiles.saveEdits(project: project, workTree: workTree) {
+        case .saved:
+            break
+        case let .unsaved(path):
+            gitErrors[id] = "Save or discard the edits in \(path) first — they are not on disk yet."
+            return
+        case .editorSilent:
+            gitErrors[id] = "The editor did not hand over its latest edits — try again."
             return
         }
         let agentRunning = terminalCenter?.hasLiveClaudeSession(workbenchID: id, workTree: workTree) ?? false

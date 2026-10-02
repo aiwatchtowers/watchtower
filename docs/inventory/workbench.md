@@ -486,7 +486,11 @@ rule, not the marks reader's.
   dirty check sees them and a stash takes them. A buffer whose edits cannot be
   written (a conflict, a deleted or unreadable file, a write error) holds the
   switch in the Desktop — "Save or discard the edits in <file> first — they
-  are not on disk yet." — and nothing is sent to Go.
+  are not on disk yet." — and nothing is sent to Go. Unlike a close or a
+  rename, an editor page that fails to hand over its unsent edits, or does
+  not answer within 2 s, holds the switch too ("The editor did not hand over
+  its latest edits — try again."; nothing sent); edits it hands over later
+  still reach their buffers.
 - **No shim, no stray process.** git is located by `internal/gitbin` without
   spawning anything (`$DEVELOPER_DIR`, the `xcode_select_link` target, the
   Command Line Tools, Xcode.app, Homebrew) and is never `/usr/bin/git` — the
@@ -554,7 +558,8 @@ attributed to Watchtower.
   `testProj10_ASessionAtTheRepositoryRootOfASubfolderWorkbenchIsReported`, `testProj10_APendingConfirmationIsDroppedWhenTheBranchMoved`,
   `testProj10_APendingConfirmationIsDroppedOnceTheFolderIsOnItsBranch`, `testProj10_NoGitHidesTheButton`,
   `testProj10_TheStashNoteStaysUntilDismissedOrReplaced`, `testProj10_ASwitchFirstSavesTheCodeViewersEdits`,
-  `testProj10_AnEditThatCannotBeSavedHoldsTheSwitch`, `testProj10_NoUnsavedEditsInTheWorkTreeLeaveTheSwitchAsItWas`
+  `testProj10_AnEditThatCannotBeSavedHoldsTheSwitch`, `testProj10_NoUnsavedEditsInTheWorkTreeLeaveTheSwitchAsItWas`,
+  `testProj10_AnEditorThatDoesNotAnswerHoldsTheSwitch`, `testProj10_AnEditorThatTimesOutHoldsTheSwitch`
 - `WatchtowerDesktop/Tests/Core/WorkbenchGitDecodingTests.swift::testProj10_UnknownConfirmationsAreKeptApart`
 
 **Locked since:** — (proposed 2026-10-02; not locked until the owner approves)

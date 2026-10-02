@@ -389,23 +389,46 @@ final class CodeFilesCenter {
         flushAll()
     }
 
+    /// What `saveEdits` left on disk before a branch switch.
+    enum WorkTreeSave: Equatable {
+        /// Every edit under the work tree is on disk.
+        case saved
+        /// This buffer's edits could not be written (a conflict, a deleted or
+        /// unreadable file, a write error).
+        case unsaved(String)
+        /// An editor page did not hand over its unsent edits (it failed, or
+        /// did not answer within `pendingTimeout`).
+        case editorSilent
+    }
+
+    /// How long a branch switch waits for the editor page's unsent edits.
+    /// Internal for tests.
+    @ObservationIgnored var pendingTimeout: Duration = .seconds(2)
+
     /// A branch switch is about to rewrite `workTree` (the repository's work
     /// tree): the unsent edits of `project` and of any workbench inside the
     /// work tree are pulled and every buffer there saved, so the switch's
-    /// dirty check sees them on disk. Returns the path of a buffer whose
-    /// edits could not be written (a conflict, a deleted or unreadable file,
-    /// a write error) — the switch must wait for the owner — nil when every
-    /// edit is on disk.
-    func saveEdits(project: Workbench, workTree: String) async -> String? {
+    /// dirty check sees them on disk. Unlike a close or a rename, a page
+    /// that does not answer stops the switch: the files would be swapped
+    /// under edits nobody has.
+    func saveEdits(project: Workbench, workTree: String) async -> WorkTreeSave {
         let root = TerminalCenter.resolvedPath(workTree)
         let prefix = root.hasSuffix("/") ? root : root + "/"
         func inside(_ path: String) -> Bool {
             let resolved = TerminalCenter.resolvedPath(path)
             return resolved == root || resolved.hasPrefix(prefix)
         }
+        var silent = false
         for entry in bridges.values where entry.project.id == project.id || inside(entry.project.folderPath) {
-            await pullPending(entry.project)
+            guard let bridge = entry.bridge else { continue }
+            guard let edits = await takePending(bridge, project: entry.project) else {
+                NSLog("CodeFilesCenter: the editor of workbench %lld did not hand over its edits before a branch switch", entry.project.id)
+                silent = true
+                continue
+            }
+            apply(edits, project: entry.project, now: false)
         }
+        if silent { return .editorSilent }
         let affected = buffers
             .filter { key, buffer in key.workbench == project.id || inside(buffer.url.path) }
             .sorted { $0.key.path < $1.key.path }
@@ -414,7 +437,30 @@ final class CodeFilesCenter {
             NSLog("CodeFilesCenter: %@ not saved before a branch switch: %@", buffer.relPath, buffer.unsavedReason ?? "")
             unsaved = unsaved ?? buffer.relPath
         }
-        return unsaved
+        return unsaved.map(WorkTreeSave.unsaved) ?? .saved
+    }
+
+    /// The page's unsent edits, nil when it failed or did not answer within
+    /// `pendingTimeout`. Edits handed over after that still go into their
+    /// buffers — the page has let go of them.
+    private func takePending(_ bridge: CodeEditorBridge, project: Workbench) async -> [CodeEditorPendingEdit]? {
+        let wait = PendingWait()
+        let limit = pendingTimeout
+        return await withCheckedContinuation { continuation in
+            let timer = Task { @MainActor in
+                try? await Task.sleep(for: limit)
+                if wait.finish() { continuation.resume(returning: nil) }
+            }
+            Task { @MainActor in
+                let edits = await bridge.takePending()
+                timer.cancel()
+                if wait.finish() {
+                    continuation.resume(returning: edits)
+                } else if let edits {
+                    self.apply(edits, project: project, now: false)
+                }
+            }
+        }
     }
 
     /// Saves every buffer with unsaved edits (also on quit, where the page
@@ -580,6 +626,18 @@ final class CodeFilesCenter {
 private struct BufferKey: Hashable {
     let workbench: Int64
     let path: String
+}
+
+/// Which of `takePending`'s two tasks answered first.
+@MainActor
+private final class PendingWait {
+    private var done = false
+
+    /// true for the first caller only.
+    func finish() -> Bool {
+        defer { done = true }
+        return !done
+    }
 }
 
 private struct WeakBridge {
