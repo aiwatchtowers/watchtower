@@ -241,7 +241,6 @@ struct WorkbenchResynced: Decodable, Equatable {
         indexed = try c.decodeIfPresent(Int.self, forKey: .indexed) ?? 0
         indexSkipped = try c.decodeIfPresent(Bool.self, forKey: .indexSkipped) ?? false
         legacySkill = try c.decodeIfPresent(String.self, forKey: .legacySkill) ?? ""
-        currentMCP = try c.decodeIfPresent(Bool.self, forKey: .currentMCP)
         legacyMCPRemoved = try c.decodeIfPresent(Bool.self, forKey: .legacyMCPRemoved) ?? false
         legacyHooksReplaced = try c.decodeIfPresent(Bool.self, forKey: .legacyHooksReplaced) ?? false
         legacyPermissionRules = try c.decodeIfPresent(Int.self, forKey: .legacyPermissionRules) ?? 0
@@ -403,6 +402,8 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         // A CLI older than the Workbench rename knows no legacy folder.
         legacy = try c.decodeIfPresent(Bool.self, forKey: .legacy) ?? false
         legacySkill = try c.decodeIfPresent(String.self, forKey: .legacySkill) ?? ""
+        // nil from a CLI older than `current_mcp`: needsRepair keeps the old rule.
+        currentMCP = try c.decodeIfPresent(Bool.self, forKey: .currentMCP)
     }
 
     /// Whether Repair can fix something. Without `claude` an unregistered
