@@ -157,6 +157,9 @@ func printLegacyMigration(w io.Writer, rep devpack.WorkbenchInstallReport) {
 		fmt.Fprintf(w, "  legacy   removed the old %s skill\n", devpack.LegacySkillName)
 	case devpack.StateDrifted, devpack.StateForeign:
 		fmt.Fprintf(w, "  legacy   %s\n", legacySkillKeptNote)
+	case devpack.StateMissing, devpack.StateInstalled, devpack.StateUpdated, devpack.StateUnchanged:
+		// Missing: there was no old skill. The removal never reports the
+		// install states.
 	}
 	if rep.LegacyHooksReplaced {
 		fmt.Fprintln(w, "  legacy   replaced the old hook commands")
