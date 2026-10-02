@@ -146,9 +146,13 @@ func gitError(err error) string {
 	if errors.As(err, &re) && re.stderr != "" {
 		msg = re.stderr
 	}
-	msg = strings.TrimSpace(msg)
+	return clip(strings.TrimSpace(msg))
+}
+
+// clip caps msg at errorLimit characters.
+func clip(msg string) string {
 	if r := []rune(msg); len(r) > errorLimit {
-		msg = string(r[:errorLimit-1]) + "…"
+		return string(r[:errorLimit-1]) + "…"
 	}
 	return msg
 }
