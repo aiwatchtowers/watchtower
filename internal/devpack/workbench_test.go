@@ -126,14 +126,9 @@ func (f *fakeClaude) run(_ context.Context, dir, name string, args ...string) ([
 	if args[1] == "add" {
 		server = args[4] // add --scope local NAME -- ...
 	}
-	var isRegistered bool
-	switch server {
-	case WorkbenchMCPServerName:
-		_, isRegistered = f.registered[dir]
-	case LegacyMCPServerName:
-		isRegistered = f.legacy[dir]
-	default:
-		return nil, fmt.Errorf("unexpected server %q in %v", server, args)
+	isRegistered, err := f.isRegistered(dir, server)
+	if err != nil {
+		return nil, fmt.Errorf("%w in %v", err, args)
 	}
 	switch args[1] {
 	case "get":
@@ -142,29 +137,50 @@ func (f *fakeClaude) run(_ context.Context, dir, name string, args ...string) ([
 		}
 		return []byte("No MCP server found with name: " + server), ErrCommandExit
 	case "add":
-		if f.failAdd {
-			return []byte("add failed"), ErrCommandExit
-		}
-		if isRegistered {
-			return []byte("MCP server " + server + " already exists in local config"), ErrCommandExit
-		}
-		f.registered[dir] = args
-		return nil, nil
+		return f.add(dir, server, args, isRegistered)
 	case "remove":
-		if f.failRemove {
-			return []byte("remove failed"), ErrCommandExit
-		}
-		if !isRegistered {
-			return []byte("No local-scoped MCP server found"), ErrCommandExit
-		}
-		if server == LegacyMCPServerName {
-			delete(f.legacy, dir)
-		} else {
-			delete(f.registered, dir)
-		}
-		return nil, nil
+		return f.remove(dir, server, isRegistered)
 	}
 	return nil, ErrCommandExit
+}
+
+// isRegistered reports whether server — the current or the pre-rename one —
+// is registered in dir; any other server name is an error.
+func (f *fakeClaude) isRegistered(dir, server string) (bool, error) {
+	switch server {
+	case WorkbenchMCPServerName:
+		_, ok := f.registered[dir]
+		return ok, nil
+	case LegacyMCPServerName:
+		return f.legacy[dir], nil
+	}
+	return false, fmt.Errorf("unexpected server %q", server)
+}
+
+func (f *fakeClaude) add(dir, server string, args []string, isRegistered bool) ([]byte, error) {
+	if f.failAdd {
+		return []byte("add failed"), ErrCommandExit
+	}
+	if isRegistered {
+		return []byte("MCP server " + server + " already exists in local config"), ErrCommandExit
+	}
+	f.registered[dir] = args
+	return nil, nil
+}
+
+func (f *fakeClaude) remove(dir, server string, isRegistered bool) ([]byte, error) {
+	if f.failRemove {
+		return []byte("remove failed"), ErrCommandExit
+	}
+	if !isRegistered {
+		return []byte("No local-scoped MCP server found"), ErrCommandExit
+	}
+	if server == LegacyMCPServerName {
+		delete(f.legacy, dir)
+	} else {
+		delete(f.registered, dir)
+	}
+	return nil, nil
 }
 
 func workbenchOpts(folder string, f *fakeClaude) WorkbenchInstallOptions {

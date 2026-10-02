@@ -216,15 +216,33 @@ func InstallWorkbench(ctx context.Context, o WorkbenchInstallOptions) (Workbench
 	}
 	rep.MCPRegistered, rep.LegacyMCPRemoved, err = registerWorkbenchMCP(ctx, o, legacyFolder || hooksErr != nil)
 	if legacyFolder && !rep.MCPRegistered {
-		rep.LegacySkill = SkillStatus{Name: LegacySkillName, State: StateMissing}
-		if exists(legacySkillDir) {
-			rep.LegacySkill.State, rep.LegacySkill.Path = StateUnchanged, filepath.Join(legacySkillDir, "SKILL.md")
-		}
+		rep.LegacySkill = keptLegacySkill(legacySkillDir)
 		return rep, errors.Join(append(errs, keptLegacySetup(err))...)
 	}
 	if err != nil {
 		errs = append(errs, err)
 	}
+	errs = append(errs, installWorkbenchFiles(o, &rep, hadLegacyHooks)...)
+	return rep, errors.Join(errs...)
+}
+
+// keptLegacySkill reports the old skill of a pre-rename folder left on its
+// old setup: StateUnchanged when it is there, StateMissing otherwise.
+func keptLegacySkill(legacySkillDir string) SkillStatus {
+	st := SkillStatus{Name: LegacySkillName, State: StateMissing}
+	if exists(legacySkillDir) {
+		st.State, st.Path = StateUnchanged, filepath.Join(legacySkillDir, "SKILL.md")
+	}
+	return st
+}
+
+// installWorkbenchFiles is InstallWorkbench past the registration: the new
+// skill in, the old one and its exclude line out, the hooks installed (the
+// legacy ones replaced in place), and the allow rules naming the old server
+// counted. Every step runs; the failures come back in order.
+func installWorkbenchFiles(o WorkbenchInstallOptions, rep *WorkbenchInstallReport, hadLegacyHooks bool) []error {
+	var errs []error
+	var err error
 	if rep.Skill, err = installSkill(o.skillsDir(), workbenchSkill()); err != nil {
 		errs = append(errs, err)
 	}
@@ -246,7 +264,7 @@ func InstallWorkbench(ctx context.Context, o WorkbenchInstallOptions) (Workbench
 	if rep.LegacyPermissionRules, err = LegacyPermissionRules(o.Folder); err != nil && !bothMalformed(hookErr, err) {
 		errs = append(errs, fmt.Errorf("counting the allow rules that name the old %s server: %w", LegacyMCPServerName, err))
 	}
-	return rep, errors.Join(errs...)
+	return errs
 }
 
 // keptLegacySetup wraps the registration failure of a pre-rename folder that

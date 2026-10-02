@@ -214,18 +214,7 @@ func TestLegacyMode_WritesRecordTheCanonicalNameAndOldRowsResolve(t *testing.T) 
 	pid := seedMCPWorkbench(t, database)
 	cs := newLegacyWorkbenchSession(t, database, pid)
 
-	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "update_project",
-		Arguments: map[string]any{"description": "Set up before the rename.", "reason": "setup"}})
-	if err != nil || res.IsError {
-		t.Fatalf("update_project: %v %s", err, textContent(t, res))
-	}
-	var rc tools.Receipt
-	if err := json.Unmarshal([]byte(textContent(t, res)), &rc); err != nil {
-		t.Fatal(err)
-	}
-	if rc.Status != "applied" || rc.Tool != "update_project" {
-		t.Fatalf("the legacy session's receipt names the tool it called: %+v", rc)
-	}
+	rc := applyLegacyUpdateProject(t, cs)
 	row, err := database.GetAgentAction(rc.ActionID)
 	if err != nil || row == nil {
 		t.Fatalf("action row: %v", err)
@@ -258,22 +247,12 @@ func TestLegacyMode_WritesRecordTheCanonicalNameAndOldRowsResolve(t *testing.T) 
 		{current, false, rc.ActionID, "update_workbench"},
 		{current, false, oldRow, "add_workbench_source"},
 	} {
-		res, err := c.session.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "get_action", Arguments: map[string]any{"id": c.id}})
-		if err != nil || res.IsError {
-			t.Fatalf("get_action #%d (legacy=%v): %v %s", c.id, c.legacy, err, textContent(t, res))
-		}
-		var view struct {
-			Tool string `json:"tool"`
-		}
-		if err := json.Unmarshal([]byte(textContent(t, res)), &view); err != nil {
-			t.Fatal(err)
-		}
-		if view.Tool != c.wantTool {
-			t.Errorf("get_action #%d (legacy=%v) names %q, want %q", c.id, c.legacy, view.Tool, c.wantTool)
+		if got := getActionTool(t, c.session, c.id); got != c.wantTool {
+			t.Errorf("get_action #%d (legacy=%v) names %q, want %q", c.id, c.legacy, got, c.wantTool)
 		}
 	}
 
-	res, err = cs.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "search_knowledge",
+	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "search_knowledge",
 		Arguments: map[string]any{"queries": []any{"x"}, "project_scope": "only"}})
 	if err != nil || !res.IsError {
 		t.Fatalf("a scope with no sources must be refused: %v", err)
@@ -281,4 +260,40 @@ func TestLegacyMode_WritesRecordTheCanonicalNameAndOldRowsResolve(t *testing.T) 
 	if got := textContent(t, res); !strings.Contains(got, "add one with add_project_source") || strings.Contains(got, "add_workbench_source") {
 		t.Errorf("the legacy session's refusal must name its own tools: %s", got)
 	}
+}
+
+// applyLegacyUpdateProject sets the description through the legacy
+// update_project name and returns the receipt, which names the tool the
+// session called.
+func applyLegacyUpdateProject(t *testing.T, cs *mcpsdk.ClientSession) tools.Receipt {
+	t.Helper()
+	res, err := cs.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "update_project",
+		Arguments: map[string]any{"description": "Set up before the rename.", "reason": "setup"}})
+	if err != nil || res.IsError {
+		t.Fatalf("update_project: %v %s", err, textContent(t, res))
+	}
+	var rc tools.Receipt
+	if err := json.Unmarshal([]byte(textContent(t, res)), &rc); err != nil {
+		t.Fatal(err)
+	}
+	if rc.Status != "applied" || rc.Tool != "update_project" {
+		t.Fatalf("the legacy session's receipt names the tool it called: %+v", rc)
+	}
+	return rc
+}
+
+// getActionTool returns the tool get_action names for action id in session.
+func getActionTool(t *testing.T, session *mcpsdk.ClientSession, id int64) string {
+	t.Helper()
+	res, err := session.CallTool(context.Background(), &mcpsdk.CallToolParams{Name: "get_action", Arguments: map[string]any{"id": id}})
+	if err != nil || res.IsError {
+		t.Fatalf("get_action #%d: %v %s", id, err, textContent(t, res))
+	}
+	var view struct {
+		Tool string `json:"tool"`
+	}
+	if err := json.Unmarshal([]byte(textContent(t, res)), &view); err != nil {
+		t.Fatal(err)
+	}
+	return view.Tool
 }

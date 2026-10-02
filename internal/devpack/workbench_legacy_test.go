@@ -111,9 +111,26 @@ func TestInstallWorkbench_MigratesALegacyFolder(t *testing.T) {
 	if _, err := os.Lstat(legacySkillDir(folder)); !os.IsNotExist(err) {
 		t.Fatalf("the legacy skill directory survived (err=%v)", err)
 	}
+	assertLegacyHooksReplaced(t, folder, rep, before)
+	assertLegacyMCPReplaced(t, folder, f, rep)
+	assertLegacyExcludeReplaced(t, folder)
 
-	// Hooks: replaced in place — exactly one of ours per event, the new
-	// command, the owner's hooks and keys as they were.
+	if rep.LegacyPermissionRules != 2 {
+		t.Fatalf("two allow rules name the old server, got %d", rep.LegacyPermissionRules)
+	}
+
+	// A second resync is the ordinary idempotent install.
+	rep, err = InstallWorkbench(context.Background(), legacyOpts(folder, f))
+	if err != nil || rep.LegacySkill.State != StateMissing || rep.LegacyMCPRemoved || rep.LegacyHooksReplaced || rep.HookChanged {
+		t.Fatalf("the second install must find nothing legacy left: %+v err=%v", rep, err)
+	}
+}
+
+// assertLegacyHooksReplaced: the legacy hooks were replaced in place —
+// exactly one of ours per event, the new command, the owner's hooks and
+// keys as they were (before is the settings decoded before the install).
+func assertLegacyHooksReplaced(t *testing.T, folder string, rep WorkbenchInstallReport, before map[string]any) {
+	t.Helper()
 	want := map[string][]string{
 		"SessionStart": {WorkbenchHookCommand(legacyBin, 7)},
 		"Stop":         {WorkbenchStopHookCommand(legacyBin, 7)},
@@ -143,9 +160,12 @@ func TestInstallWorkbench_MigratesALegacyFolder(t *testing.T) {
 	if strings.Count(settings, `"timeout": 10`) != 1 || strings.Count(settings, `"timeout": 15`) != 1 {
 		t.Fatalf("each replaced entry keeps its own fields:\n%s", settings)
 	}
+}
 
-	// MCP: the new registration added first, then the old one removed — never
-	// a moment without a server if the add fails.
+// assertLegacyMCPReplaced: the new registration was added first, then the
+// old one removed — never a moment without a server if the add fails.
+func assertLegacyMCPReplaced(t *testing.T, folder string, f *fakeClaude, rep WorkbenchInstallReport) {
+	t.Helper()
 	var mcpCalls []string
 	for _, c := range f.calls {
 		if c[3] != "get" {
@@ -162,24 +182,17 @@ func TestInstallWorkbench_MigratesALegacyFolder(t *testing.T) {
 	if !rep.MCPRegistered || !rep.LegacyMCPRemoved || f.legacy[folder] {
 		t.Fatalf("mcp: %+v, legacy still registered=%v", rep, f.legacy[folder])
 	}
+}
 
-	// Exclude: the new skill's line added, the old one dropped, the
-	// settings line kept.
+// assertLegacyExcludeReplaced: the new skill's exclude line added, the old
+// one dropped, the settings line kept.
+func assertLegacyExcludeReplaced(t *testing.T, folder string) {
+	t.Helper()
 	exclude := excludeOf(t, folder)
 	if strings.Contains(exclude, "/.claude/skills/watchtower-project/") ||
 		!strings.Contains(exclude, "/.claude/skills/watchtower-workbench/") ||
 		strings.Count(exclude, "/.claude/settings.local.json") != 1 {
 		t.Fatalf("exclude after the migration:\n%s", exclude)
-	}
-
-	if rep.LegacyPermissionRules != 2 {
-		t.Fatalf("two allow rules name the old server, got %d", rep.LegacyPermissionRules)
-	}
-
-	// A second resync is the ordinary idempotent install.
-	rep, err = InstallWorkbench(context.Background(), legacyOpts(folder, f))
-	if err != nil || rep.LegacySkill.State != StateMissing || rep.LegacyMCPRemoved || rep.LegacyHooksReplaced || rep.HookChanged {
-		t.Fatalf("the second install must find nothing legacy left: %+v err=%v", rep, err)
 	}
 }
 
@@ -294,22 +307,7 @@ func TestInstallWorkbench_LegacyFolderWithMalformedSettings(t *testing.T) {
 // takes out the legacy hooks, skill, registration and exclude lines, and
 // git status is clean afterwards.
 func TestProj02_RemoveLegacyFolderLeavesNothingInstalled(t *testing.T) {
-	gitBin, err := exec.LookPath("git")
-	if err != nil {
-		t.Skip("git not installed")
-	}
-	folder := t.TempDir()
-	git := func(args ...string) string {
-		t.Helper()
-		c := exec.Command(gitBin, args...)
-		c.Dir = folder
-		c.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
-		out, err := c.CombinedOutput()
-		if err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
-		return string(out)
-	}
+	folder, git := newGitFolder(t)
 	git("init", "-q")
 	status := func() string { return git("status", "--porcelain", "--untracked-files=all") }
 
@@ -339,8 +337,36 @@ func TestProj02_RemoveLegacyFolderLeavesNothingInstalled(t *testing.T) {
 		t.Fatalf("PROJ-02: git status is not clean after removal:\n%s", s)
 	}
 	st, err := StatusWorkbench(context.Background(), legacyOpts(folder, f))
-	if err != nil || st.Legacy || st.Hook || st.StopHook || st.MCP || st.LegacySkill.State != StateMissing {
+	if err != nil || installedSomething(st) {
 		t.Fatalf("PROJ-02: something is still installed: %+v err=%v", st, err)
+	}
+}
+
+// installedSomething reports whether a status still shows any part of the
+// install, legacy or current.
+func installedSomething(st WorkbenchStatus) bool {
+	return st.Legacy || st.Hook || st.StopHook || st.MCP || st.LegacySkill.State != StateMissing
+}
+
+// newGitFolder returns a fresh folder and a git runner bound to it (no
+// global or system config), skipping the test when git is not installed.
+func newGitFolder(t *testing.T) (string, func(args ...string) string) {
+	t.Helper()
+	gitBin, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not installed")
+	}
+	folder := t.TempDir()
+	return folder, func(args ...string) string {
+		t.Helper()
+		c := exec.Command(gitBin, args...)
+		c.Dir = folder
+		c.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+		out, err := c.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return string(out)
 	}
 }
 
@@ -356,8 +382,7 @@ func TestStatusWorkbench_ReportsALegacyFolderUntilItIsResynced(t *testing.T) {
 	if err != nil {
 		t.Fatalf("status: %v", err)
 	}
-	if !st.Legacy || !st.Hook || !st.StopHook || !st.MCP || !st.LegacyMCP || !st.LegacyHooks ||
-		st.LegacySkill.State != StateUnchanged || st.Skill.State != StateMissing {
+	if !isLegacyStatus(st) {
 		t.Fatalf("a legacy folder: %+v", st)
 	}
 
@@ -365,10 +390,23 @@ func TestStatusWorkbench_ReportsALegacyFolderUntilItIsResynced(t *testing.T) {
 		t.Fatalf("install: %v", err)
 	}
 	st, err = StatusWorkbench(context.Background(), o)
-	if err != nil || st.Legacy || st.LegacyMCP || st.LegacyHooks || st.LegacySkill.State != StateMissing ||
-		!st.Hook || !st.StopHook || !st.MCP || st.Skill.State != StateUnchanged {
+	if err != nil || !isResyncedStatus(st) {
 		t.Fatalf("after the resync: %+v err=%v", st, err)
 	}
+}
+
+// isLegacyStatus: a never-resynced pre-rename folder — legacy, its old hooks
+// still count as installed, its old skill there and the new one not.
+func isLegacyStatus(st WorkbenchStatus) bool {
+	return st.Legacy && st.Hook && st.StopHook && st.MCP && st.LegacyMCP && st.LegacyHooks &&
+		st.LegacySkill.State == StateUnchanged && st.Skill.State == StateMissing
+}
+
+// isResyncedStatus: the same folder after a resync — nothing legacy left,
+// the current install complete.
+func isResyncedStatus(st WorkbenchStatus) bool {
+	return !st.Legacy && !st.LegacyMCP && !st.LegacyHooks && st.LegacySkill.State == StateMissing &&
+		st.Hook && st.StopHook && st.MCP && st.Skill.State == StateUnchanged
 }
 
 // Spec 2026-10-02 A6: the allow rules naming the old server are counted,

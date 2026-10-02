@@ -33,23 +33,8 @@ func TestWorkbenchSkill_NamesOnlyCurrentToolsAndServer(t *testing.T) {
 		}
 	}
 
-	session := map[string]bool{}
-	workbench := map[string]bool{}
-	for _, tool := range tools.WorkbenchTools(workbenchfiles.Store{}, false) {
-		session[tool.Name], workbench[tool.Name] = true, true
-	}
-	for _, tool := range tools.ReadTools() {
-		session[tool.Name] = true
-	}
-
-	section := content[strings.Index(content, "## Tools"):strings.Index(content, "## Setup")]
-	entry := regexp.MustCompile("(?m)^- (`[a-z_]+`(?: / `[a-z_]+`)*) —")
-	named := map[string]bool{}
-	for _, m := range entry.FindAllStringSubmatch(section, -1) {
-		for _, tok := range strings.Split(m[1], " / ") {
-			named[strings.Trim(tok, "`")] = true
-		}
-	}
+	session, workbench := workbenchSessionTools()
+	named := skillToolsSectionNames(content)
 	for tool := range named {
 		if !session[tool] {
 			t.Errorf("the skill's Tools section names %s, which a workbench session does not list", tool)
@@ -60,4 +45,31 @@ func TestWorkbenchSkill_NamesOnlyCurrentToolsAndServer(t *testing.T) {
 			t.Errorf("the skill's Tools section never lists the workbench tool %s", tool)
 		}
 	}
+}
+
+// workbenchSessionTools returns every tool a workbench session lists and,
+// of those, the workbench's own.
+func workbenchSessionTools() (session, workbench map[string]bool) {
+	session, workbench = map[string]bool{}, map[string]bool{}
+	for _, tool := range tools.WorkbenchTools(workbenchfiles.Store{}, false) {
+		session[tool.Name], workbench[tool.Name] = true, true
+	}
+	for _, tool := range tools.ReadTools() {
+		session[tool.Name] = true
+	}
+	return session, workbench
+}
+
+// skillToolsSectionNames returns every tool the skill's Tools section lists
+// (an entry may name several, separated by " / ").
+func skillToolsSectionNames(content string) map[string]bool {
+	section := content[strings.Index(content, "## Tools"):strings.Index(content, "## Setup")]
+	entry := regexp.MustCompile("(?m)^- (`[a-z_]+`(?: / `[a-z_]+`)*) —")
+	named := map[string]bool{}
+	for _, m := range entry.FindAllStringSubmatch(section, -1) {
+		for _, tok := range strings.Split(m[1], " / ") {
+			named[strings.Trim(tok, "`")] = true
+		}
+	}
+	return named
 }
