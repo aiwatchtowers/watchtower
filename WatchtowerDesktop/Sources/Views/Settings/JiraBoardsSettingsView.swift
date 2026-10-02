@@ -287,9 +287,9 @@ struct JiraBoardsSettingsView: View {
                 return
             }
 
-            let stderrData = stderrPipe.fileHandleForReading
-                .readDataToEndOfFile()
-            process.waitUntilExit()
+            // Off the concurrency pool (ProcessPipes).
+            let stderrData = await ProcessPipes.drain(stderrPipe).value
+            await ProcessPipes.offPool { process.waitUntilExit() }
 
             if process.terminationStatus != 0 {
                 let stderr = String(
@@ -390,7 +390,7 @@ struct JiraBoardsSettingsView: View {
 
             var failures: [String] = []
             for call in calls {
-                let failure = JiraBoardsCLI.run(
+                let failure = await JiraBoardsCLI.run(
                     cliPath: cliPath,
                     arguments: call.arguments,
                     fallbackMessage: "failed to fetch boards"
@@ -421,7 +421,7 @@ enum JiraBoardsCLI {
         cliPath: String,
         arguments: [String],
         fallbackMessage: String
-    ) -> String? {
+    ) async -> String? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: cliPath)
         process.arguments = arguments
@@ -438,8 +438,9 @@ enum JiraBoardsCLI {
             return "Failed to launch CLI"
         }
 
-        let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
+        // Off the concurrency pool (ProcessPipes).
+        let stderrData = await ProcessPipes.drain(stderrPipe).value
+        await ProcessPipes.offPool { process.waitUntilExit() }
 
         guard process.terminationStatus != 0 else { return nil }
         let stderr = String(data: stderrData, encoding: .utf8)?

@@ -115,7 +115,7 @@ struct JiraSyncInfoView: View {
 
             var failures: [String] = []
             for call in calls {
-                if let failure = JiraBoardsCLI.run(
+                if let failure = await JiraBoardsCLI.run(
                     cliPath: cliPath,
                     arguments: call.arguments,
                     fallbackMessage: "sync failed"

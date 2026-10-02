@@ -34,7 +34,7 @@ JIRA_ID     ?= $(WATCHTOWER_JIRA_CLIENT_ID)
 JIRA_SECRET ?= $(WATCHTOWER_JIRA_CLIENT_SECRET)
 LDFLAGS     := -ldflags "-X watchtower/cmd.Version=$(VERSION) -X watchtower/cmd.Commit=$(COMMIT) -X watchtower/cmd.BuildDate=$(BUILD_DATE) -X watchtower/cmd.BuildFlavor=$(BUILD_FLAVOR) -X watchtower/internal/auth.DefaultClientID=$(OAUTH_ID) -X watchtower/internal/auth.DefaultClientSecret=$(OAUTH_SECRET) -X watchtower/internal/calendar.DefaultGoogleClientID=$(GOOGLE_ID) -X watchtower/internal/calendar.DefaultGoogleClientSecret=$(GOOGLE_SECRET) -X watchtower/internal/jira.DefaultJiraClientID=$(JIRA_ID) -X watchtower/internal/jira.DefaultJiraClientSecret=$(JIRA_SECRET)"
 
-.PHONY: build test test-verbose test-cover lint lint-diff lint-swift lint-all install clean app app-dev dmg test-swift test-scripts hooks leak-check sentrux-check sentrux-gate sentrux-baseline quality periphery periphery-check periphery-baseline release-check
+.PHONY: build test test-verbose test-cover lint lint-diff lint-swift lint-all install clean app app-dev dmg test-swift test-swift-strict-pool test-scripts hooks leak-check sentrux-check sentrux-gate sentrux-baseline quality periphery periphery-check periphery-baseline release-check
 
 build:
 	go build $(LDFLAGS) -o $(BINARY_NAME) .
@@ -63,6 +63,14 @@ test-cover:
 # suite runs as before.
 test-swift:
 	cd WatchtowerDesktop && swift test $(if $(FILTER),--filter '$(FILTER)',)
+
+# The suites that spawn child processes, on a one-thread Swift concurrency
+# pool: a blocking pipe read or waitUntilExit on a pool thread (instead of
+# ProcessPipes' own threads) hangs or times out here, as it did on the 3-core
+# CI runner. Runs after a test build (--skip-build); CI runs it in Swift Test.
+STRICT_POOL_SUITES = ProcessPipes|CLIRunner|JiraBoardsCLITests|DaemonManagerStartTests|DaemonManagerRestartTests|DaemonManagerStopTests|DaemonManagerLivePIDTests|CatchUpViewModelTests|UpdateServiceTests
+test-swift-strict-pool:
+	cd WatchtowerDesktop && LIBDISPATCH_COOPERATIVE_POOL_STRICT=1 swift test --skip-build --filter '$(STRICT_POOL_SUITES)'
 
 # Shell-level tests for build-app.sh. Each extracts a marked block from the
 # script and runs it against stubbed binaries — no real build, no codesign.

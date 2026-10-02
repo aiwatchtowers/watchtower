@@ -51,19 +51,13 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         process.arguments = ["ai", "test"]
 
-        let stdout = Pipe()
-        let stderr = Pipe()
-        process.standardOutput = stdout
-        process.standardError = stderr
-
-        try process.run()
-
-        let exitStatus = await Task.detached { () -> Int32 in
-            process.waitUntilExit()
-            return process.terminationStatus
-        }.value
-
-        let data = stdout.fileHandleForReading.readDataToEndOfFile()
+        // Both streams drained while it runs, off the concurrency pool.
+        let output = await ProcessPipes.run(process)
+        if output.exitCode == -1 {
+            throw WatchtowerAIError.exitCode(-1, output.stderr)
+        }
+        let exitStatus = output.exitCode
+        let data = Data(output.stdout.utf8)
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw WatchtowerAIError.badResponse("Invalid JSON from watchtower ai test")
         }
@@ -194,10 +188,12 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
 
         // Written off the caller's actor: a prompt larger than the pipe buffer
         // blocks until the CLI reads it, which it does first thing in RunE.
-        Task.detached { Self.feedStdin(stdin, payload: stdinPrompt) }
+        // On a thread of its own, not the concurrency pool (see ProcessPipes).
+        Thread.detachNewThread { Self.feedStdin(stdin, payload: stdinPrompt) }
 
-        let stderrTask = Task.detached { () -> String in
-            let data = stderr.fileHandleForReading.readDataToEndOfFile()
+        let stderrRead = ProcessPipes.drain(stderr)
+        let stderrTask = Task { () -> String in
+            let data = await stderrRead.value
             return String(data: data.prefix(65536), encoding: .utf8) ?? ""
         }
 
@@ -211,10 +207,10 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
             }
         }
 
-        let exitStatus = await Task.detached { () -> Int32 in
+        let exitStatus = await ProcessPipes.offPool { () -> Int32 in
             process.waitUntilExit()
             return process.terminationStatus
-        }.value
+        }
 
         if !Task.isCancelled && exitStatus != 0 {
             let stderrText = await stderrTask.value

@@ -87,35 +87,21 @@ package final class AIModelCatalog {
             return
         }
 
-        let result: Data? = await Task.detached {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: cliPath)
-            process.currentDirectoryURL = Constants.processWorkingDirectory()
-            process.arguments = ["ai", "models", "--json"]
-            process.environment = Constants.resolvedEnvironment()
-
-            let stdout = Pipe()
-            process.standardOutput = stdout
-            process.standardError = Pipe()
-
-            do {
-                try process.run()
-            } catch {
-                return nil
-            }
-            let data = stdout.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
-            guard process.terminationStatus == 0 else { return nil }
-            return data
-        }.value
-
-        guard let data = result else {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: cliPath)
+        process.currentDirectoryURL = Constants.processWorkingDirectory()
+        process.arguments = ["ai", "models", "--json"]
+        process.environment = Constants.resolvedEnvironment()
+        // Both streams drained, off the concurrency pool (`ProcessPipes`).
+        let output = await ProcessPipes.run(process)
+        guard output.exitCode == 0 else {
             lastError = "watchtower ai models failed"
             return
         }
+        let data = Data(output.stdout.utf8)
         do {
-            let output = try Self.parse(data)
-            providers = output.providers
+            let parsed = try Self.parse(data)
+            providers = parsed.providers
             lastError = nil
         } catch {
             lastError = "parsing ai models output: \(error.localizedDescription)"

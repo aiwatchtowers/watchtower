@@ -871,16 +871,17 @@ final class UpdateService {
     }
 
     nonisolated private func runProcess(path: String, arguments: [String]) async throws -> Int32 {
-        try await Task.detached {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: path)
-            process.arguments = arguments
-            process.standardOutput = FileHandle.nullDevice
-            process.standardError = FileHandle.nullDevice
-            try process.run()
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: path)
+        process.arguments = arguments
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        // Off the concurrency pool (ProcessPipes).
+        return await ProcessPipes.offPool {
             process.waitUntilExit()
             return process.terminationStatus
-        }.value
+        }
     }
 
     /// Compare semantic versions. Returns true if `new` is strictly greater than `current`.

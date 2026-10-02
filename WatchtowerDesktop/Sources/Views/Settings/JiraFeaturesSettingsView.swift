@@ -83,11 +83,12 @@ struct JiraFeaturesSettingsView: View {
                 return
             }
 
-            let stdoutData = stdoutPipe.fileHandleForReading
-                .readDataToEndOfFile()
-            let stderrData = stderrPipe.fileHandleForReading
-                .readDataToEndOfFile()
-            process.waitUntilExit()
+            // Both pipes drained at once, off the concurrency pool (ProcessPipes).
+            let stdoutRead = ProcessPipes.drain(stdoutPipe)
+            let stderrRead = ProcessPipes.drain(stderrPipe)
+            let stdoutData = await stdoutRead.value
+            let stderrData = await stderrRead.value
+            await ProcessPipes.offPool { process.waitUntilExit() }
 
             await MainActor.run {
                 isLoading = false
@@ -268,9 +269,9 @@ struct JiraFeaturesDetailView: View {
                 return
             }
 
-            let stderrData = stderrPipe.fileHandleForReading
-                .readDataToEndOfFile()
-            process.waitUntilExit()
+            // Off the concurrency pool (ProcessPipes).
+            let stderrData = await ProcessPipes.drain(stderrPipe).value
+            await ProcessPipes.offPool { process.waitUntilExit() }
 
             if process.terminationStatus != 0 {
                 let stderr = String(
@@ -317,9 +318,9 @@ struct JiraFeaturesDetailView: View {
                 return
             }
 
-            let stderrData = stderrPipe.fileHandleForReading
-                .readDataToEndOfFile()
-            process.waitUntilExit()
+            // Off the concurrency pool (ProcessPipes).
+            let stderrData = await ProcessPipes.drain(stderrPipe).value
+            await ProcessPipes.offPool { process.waitUntilExit() }
 
             await MainActor.run {
                 if process.terminationStatus != 0 {
@@ -376,11 +377,12 @@ struct JiraFeaturesDetailView: View {
                 return
             }
 
-            let stdoutData = stdoutPipe.fileHandleForReading
-                .readDataToEndOfFile()
-            let stderrData = stderrPipe.fileHandleForReading
-                .readDataToEndOfFile()
-            process.waitUntilExit()
+            // Both pipes drained at once, off the concurrency pool (ProcessPipes).
+            let stdoutRead = ProcessPipes.drain(stdoutPipe)
+            let stderrRead = ProcessPipes.drain(stderrPipe)
+            let stdoutData = await stdoutRead.value
+            let stderrData = await stderrRead.value
+            await ProcessPipes.offPool { process.waitUntilExit() }
 
             await MainActor.run {
                 isLoading = false

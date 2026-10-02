@@ -576,6 +576,7 @@ final class AppState {
         guard !isInitializing else { return }
         isInitializing = true
         isLoading = true
+        Constants.prewarmResolvedEnvironment()
         // Surface a recording captured before a crash/relaunch so the global
         // indicator can offer to (re-)transcribe it. No DB needed.
         meetingRecorderCenter.restorePendingOnLaunch()
@@ -593,12 +594,17 @@ final class AppState {
             // caches whatever path it first resolves.
             daemonManager.startPolling()
             do {
-                let manager = try await Task.detached {
-                    // Run Go CLI to apply any pending DB migrations before opening
-                    DatabaseManager.runCLIMigrations()
-                    let dbPath = try DatabaseManager.resolveDBPath()
-                    return try DatabaseManager(path: dbPath)
-                }.value
+                // Off the concurrency pool: the migrate child may run for up
+                // to 30 s (see ProcessPipes).
+                let opened = await ProcessPipes.offPool {
+                    Result {
+                        // Run Go CLI to apply any pending DB migrations before opening
+                        DatabaseManager.runCLIMigrations()
+                        let dbPath = try DatabaseManager.resolveDBPath()
+                        return try DatabaseManager(path: dbPath)
+                    }
+                }
+                let manager = try opened.get()
                 databaseManager = manager
                 embeddedChats.dbPool = manager.dbPool
                 errorMessage = nil

@@ -1455,7 +1455,8 @@ struct OnboardingView: View {
             readTask.cancel()
             stdoutPipe.fileHandleForReading.readabilityHandler = nil
 
-            let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+            // Not a blocking read here (this runs on the main actor).
+            let stderrData = await ProcessPipes.drain(stderrPipe).value
             let stderrText = String(data: stderrData, encoding: .utf8) ?? ""
 
             isRunning = false

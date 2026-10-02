@@ -23,28 +23,12 @@ package enum MemoryVaultGit {
         }
     }
 
+    /// Off the concurrency pool, both streams drained (`ProcessPipes`).
     private static func run(arguments: [String]) async -> (exitCode: Int32, stdout: String) {
-        await withCheckedContinuation { continuation in
-            DispatchQueue.global().async {
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
-                process.arguments = arguments
-                let stdoutPipe = Pipe()
-                process.standardOutput = stdoutPipe
-                // Discard stderr outright: an unread Pipe that fills its buffer
-                // would block git and deadlock waitUntilExit.
-                process.standardError = FileHandle.nullDevice
-                do {
-                    try process.run()
-                } catch {
-                    continuation.resume(returning: (-1, ""))
-                    return
-                }
-                let data = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-                process.waitUntilExit()
-                let out = String(data: data, encoding: .utf8) ?? ""
-                continuation.resume(returning: (process.terminationStatus, out))
-            }
-        }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = arguments
+        let output = await ProcessPipes.run(process)
+        return (output.exitCode, output.stdout)
     }
 }
