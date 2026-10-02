@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -743,6 +744,27 @@ func TestFormatMessages(t *testing.T) {
 	assert.Contains(t, formatted, "@Alice Smith (U1)] another message")
 	assert.NotContains(t, formatted, "deleted")
 	assert.NotContains(t, formatted, "empty")
+}
+
+// TestFormatMessages_TruncatesByRunes pins DefaultMessageTruncateLen as a
+// character budget: a Cyrillic message is cut on a rune boundary at that many
+// characters, not at that many bytes (half the characters, often mid-rune).
+func TestFormatMessages_TruncatesByRunes(t *testing.T) {
+	database := testDB(t)
+	seedUser(t, database, "U1", "alice", "Alice Smith")
+	p := New(database, testConfig(), &mockGenerator{}, testLogger())
+	p.loadCaches()
+
+	fits := strings.Repeat("я", config.DefaultMessageTruncateLen)
+	long := strings.Repeat("ж", config.DefaultMessageTruncateLen+1)
+	formatted := p.formatMessages([]db.Message{
+		{UserID: "U1", Text: fits, TSUnix: 1000000},
+		{UserID: "U1", Text: long, TSUnix: 1000060},
+	}, nil)
+
+	assert.True(t, utf8.ValidString(formatted), "formatted prompt must stay valid UTF-8")
+	assert.Contains(t, formatted, "] "+fits+"\n", "a message within the character budget is not cut")
+	assert.Contains(t, formatted, "] "+strings.Repeat("ж", config.DefaultMessageTruncateLen)+"... [truncated]")
 }
 
 func TestStoreDigest(t *testing.T) {

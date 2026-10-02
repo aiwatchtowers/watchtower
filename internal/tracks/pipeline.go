@@ -1404,11 +1404,7 @@ func (p *Pipeline) formatExistingTracks(userID string) string {
 		}
 		contextSnippet := ""
 		if track.Context != "" {
-			c := sanitize(track.Context)
-			if len(c) > 120 {
-				c = c[:120] + "..."
-			}
-			contextSnippet = " — " + c
+			contextSnippet = " — " + truncate(sanitize(track.Context), 120)
 		}
 		fmt.Fprintf(&sb, "#%d [%s] %q%s%s\n", track.ID, track.Ownership, sanitize(track.Text), contextSnippet, tagsStr)
 	}
@@ -1462,10 +1458,7 @@ func (p *Pipeline) enrichKeyMessages(channelID, keyMessagesJSON string, fallback
 
 	enriched := make([]enrichedMsg, 0, len(messages))
 	for _, msg := range messages {
-		text := msg.Text
-		if len(text) > 200 {
-			text = text[:200] + "..."
-		}
+		text := truncate(msg.Text, 200)
 		author := msg.UserID
 		p.cacheMu.RLock()
 		if name, ok := p.userNames[msg.UserID]; ok {

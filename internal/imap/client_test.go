@@ -43,6 +43,14 @@ type testServer struct {
 
 func startTestServer(t *testing.T) *testServer {
 	t.Helper()
+	return startTestServerWith(t, func(s imapserver.Session) imapserver.Session { return s })
+}
+
+// startTestServerWith is startTestServer with each session passed through
+// wrap, so a test can make the in-memory server behave like a real one where
+// the two differ.
+func startTestServerWith(t *testing.T, wrap func(imapserver.Session) imapserver.Session) *testServer {
+	t.Helper()
 	memServer := imapmemserver.New()
 	user := imapmemserver.NewUser(testUsername, testPassword)
 	if err := user.Create("INBOX", nil); err != nil {
@@ -52,7 +60,7 @@ func startTestServer(t *testing.T) *testServer {
 
 	srv := imapserver.New(&imapserver.Options{
 		NewSession: func(conn *imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
-			return memServer.NewSession(), nil, nil
+			return wrap(memServer.NewSession()), nil, nil
 		},
 		InsecureAuth: true,
 		Caps: goimap.CapSet{
@@ -202,6 +210,53 @@ Second body.
 	}
 	if msgs[0].Subject != "Second" {
 		t.Errorf("Subject = %q, want %q", msgs[0].Subject, "Second")
+	}
+}
+
+// lastMessageFetchSession widens every FETCH to "1:*", standing in for a real
+// server applying RFC 3501 §6.4.8 (a "N:*" range always includes the last
+// message) — the in-memory server answers "N:*" past the highest UID with
+// nothing. SearchNewSince must still return only UIDs above lastUID.
+type lastMessageFetchSession struct {
+	imapserver.SessionIMAP4rev2
+}
+
+func (s lastMessageFetchSession) Fetch(w *imapserver.FetchWriter, _ goimap.NumSet, options *goimap.FetchOptions) error {
+	var all goimap.UIDSet
+	all.AddRange(1, 0)
+	return s.SessionIMAP4rev2.Fetch(w, all, options)
+}
+
+func TestSearchNewSinceDropsAlreadySeenUIDsTheServerReturns(t *testing.T) {
+	ts := startTestServerWith(t, func(s imapserver.Session) imapserver.Session {
+		return lastMessageFetchSession{s.(imapserver.SessionIMAP4rev2)}
+	})
+	ts.seedMessage(t, simpleRawMessage)
+	lastUID := ts.seedMessage(t, simpleRawMessage)
+	host, port := ts.hostPort(t)
+
+	client, _, err := Dial(AccountConfig{Host: host, Port: port, Security: SecurityNone, Folder: "INBOX"},
+		PasswordAuth{Username: testUsername, Password: testPassword})
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	uids, err := client.SearchNewSince(lastUID)
+	if err != nil {
+		t.Fatalf("SearchNewSince: %v", err)
+	}
+	if len(uids) != 0 {
+		t.Fatalf("no mail newer than uid %d, want [], got %v", lastUID, uids)
+	}
+
+	newUID := ts.seedMessage(t, simpleRawMessage)
+	uids, err = client.SearchNewSince(lastUID)
+	if err != nil {
+		t.Fatalf("SearchNewSince: %v", err)
+	}
+	if len(uids) != 1 || uids[0] != newUID {
+		t.Fatalf("want [%d], got %v", newUID, uids)
 	}
 }
 

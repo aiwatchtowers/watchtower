@@ -229,9 +229,9 @@ func (db *DB) ListIdeas(f IdeaFilter) ([]Idea, error) {
 		args = append(args, f.Status)
 	}
 	if f.Query != "" {
-		like := "%" + f.Query + "%"
-		where = append(where, `(title LIKE ? OR essence LIKE ? OR EXISTS (
-			SELECT 1 FROM idea_mentions m WHERE m.idea_id = ideas.id AND m.quote LIKE ?))`)
+		like := "%" + escapeLike(f.Query) + "%"
+		where = append(where, `(title LIKE ? ESCAPE '\' OR essence LIKE ? ESCAPE '\' OR EXISTS (
+			SELECT 1 FROM idea_mentions m WHERE m.idea_id = ideas.id AND m.quote LIKE ? ESCAPE '\'))`)
 		args = append(args, like, like, like)
 	}
 
