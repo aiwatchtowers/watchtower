@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -54,14 +55,29 @@ var (
 	syncFlagDays         int
 	syncFlagProgressJSON bool
 	syncFlagNoPipelines  bool
+	syncFlagUsersOnly    bool
+	syncFlagAccount      int64
 	syncStopFlagForce    bool
 )
 
 var syncCmd = &cobra.Command{
 	Use:   "sync",
 	Short: "Sync Slack workspace data to local database",
-	Long:  "Fetches workspace metadata, messages, and threads from Slack and stores them in the local SQLite database.",
-	RunE:  runSync,
+	Long: `Fetches workspace metadata, messages, and threads from Slack and stores them in the local SQLite database.
+
+--users-only fetches just each Slack account's team, current user and full
+user roster (users.list, every page) into the users table — no search,
+channels, messages or AI pipelines — for the onboarding people picker. It
+ignores the roster's once-a-day throttle and records the fetch, so the next
+regular sync does not fetch the roster again within the day. It takes no
+sync lock, so it runs alongside a running daemon. --account <id> limits it to
+one Slack account (default: every enabled account). With --progress-json it
+prints the usual progress lines: while users.list pages arrive,
+user_profiles_total is the running count fetched and user_profiles_done is 0
+(Slack reports no total up front); while saving, user_profiles_total is the
+final count and user_profiles_done the users saved; the last line per
+account has phase "Done", or carries "error".`,
+	RunE: runSync,
 }
 
 var syncStopCmd = &cobra.Command{
@@ -85,6 +101,8 @@ func init() {
 	syncCmd.Flags().BoolVar(&syncFlagProgressJSON, "progress-json", false, "output progress as JSON lines to stdout")
 	syncCmd.Flags().IntVar(&syncFlagDays, "days", 0, "override initial_history_days for this run")
 	syncCmd.Flags().BoolVar(&syncFlagNoPipelines, "no-pipelines", false, "sync messages only, skip digest/tracks/people/briefing pipelines")
+	syncCmd.Flags().BoolVar(&syncFlagUsersOnly, "users-only", false, "fetch only the Slack user roster (team, current user, users.list), no messages or AI")
+	syncCmd.Flags().Int64Var(&syncFlagAccount, "account", 0, "with --users-only: the Slack account id to fetch (default: every enabled account)")
 }
 
 func runSyncStopCmd(cmd *cobra.Command, args []string) error {
@@ -454,6 +472,10 @@ func runSync(cmd *cobra.Command, args []string) error {
 	}
 	applyProviderOverride(cfg)
 
+	if err := validateUsersOnlyFlags(); err != nil {
+		return err
+	}
+
 	// --stop only needs workspace validation (no Slack token).
 	if syncFlagStop {
 		if err := cfg.ValidateWorkspace(); err != nil {
@@ -484,20 +506,19 @@ func runSync(cmd *cobra.Command, args []string) error {
 		return runSyncDetach(cfg)
 	}
 
-	// Acquire exclusive lock to prevent concurrent syncs.
-	lockPath := filepath.Join(cfg.WorkspaceDir(), "sync.lock")
-	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+	if err := os.MkdirAll(cfg.WorkspaceDir(), 0o755); err != nil {
 		return fmt.Errorf("creating workspace directory: %w", err)
 	}
-	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
-	if err != nil {
-		return fmt.Errorf("opening lock file: %w", err)
+	// Acquire exclusive lock to prevent concurrent syncs. --users-only takes
+	// none: it writes only users and the account rows (idempotent upserts),
+	// and the onboarding picker needs it while the daemon holds the lock.
+	if !syncFlagUsersOnly {
+		unlock, err := acquireSyncLock(cfg)
+		if err != nil {
+			return err
+		}
+		defer unlock()
 	}
-	defer lockFile.Close()
-	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		return fmt.Errorf("another sync is already running (lock: %s)", lockPath)
-	}
-	defer func() { _ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN) }()
 
 	database, err := db.Open(cfg.DBPath())
 	if err != nil {
@@ -527,11 +548,19 @@ func runSync(cmd *cobra.Command, args []string) error {
 	// before wiring, so a single-account install keeps syncing without a
 	// re-login: the migration seeds row #1 but only Go can move the token out
 	// of config into slack_token_<id>.json, which wireSlackSyncers requires.
-	if _, err := ensureLegacySlackAccount(ctx, cfg, database, logger); err != nil {
-		logger.Printf("slack: failed to seed legacy account: %v", err)
+	// --users-only skips it: it runs beside the daemon, whose own start does
+	// the seeding, and two processes migrating one token would race.
+	if !syncFlagUsersOnly {
+		if _, err := ensureLegacySlackAccount(ctx, cfg, database, logger); err != nil {
+			logger.Printf("slack: failed to seed legacy account: %v", err)
+		}
 	}
 	// Wire one Slack sync orchestrator per connected, enabled slack_accounts row.
 	orchestrators := wireSlackSyncers(database, cfg, logger)
+
+	if syncFlagUsersOnly {
+		return runSyncUsersOnly(ctx, cmd.OutOrStdout(), cfg, database, orchestrators, syncFlagAccount)
+	}
 
 	// Daemon mode: run periodic syncs until interrupted
 	if syncFlagDaemon {
@@ -591,7 +620,9 @@ func runSync(cmd *cobra.Command, args []string) error {
 	// orchestrator runs in turn with its own progress display; failures are
 	// recorded but do not block the remaining accounts (the fan-out pattern),
 	// and a single aggregated result is written after all accounts finish.
-	snaps, firstErr := runOrchestratorsWithProgress(ctx, orchestrators, opts, out, cfg)
+	snaps, firstErr := runOrchestratorsWithProgress(ctx, orchestrators, func(ctx context.Context, o *sync.Orchestrator) error {
+		return o.Run(ctx, opts)
+	}, out, cfg)
 
 	if wErr := sync.WriteSyncResult(syncResultPath(cfg), sync.ResultFromSnapshots(snaps, firstErr)); wErr != nil {
 		logger.Printf("warning: failed to write sync result: %v", wErr)
@@ -607,15 +638,106 @@ func runSync(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// runOrchestratorsWithProgress runs each orchestrator in turn against opts,
+// acquireSyncLock takes the workspace's exclusive sync.lock flock, refusing
+// when another sync holds it; the returned func releases it.
+func acquireSyncLock(cfg *config.Config) (func(), error) {
+	lockPath := filepath.Join(cfg.WorkspaceDir(), "sync.lock")
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("opening lock file: %w", err)
+	}
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		lockFile.Close()
+		return nil, fmt.Errorf("another sync is already running (lock: %s)", lockPath)
+	}
+	return func() {
+		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+		lockFile.Close()
+	}, nil
+}
+
+// validateUsersOnlyFlags rejects flag combinations --users-only cannot honor:
+// it is a one-shot roster fetch, never a daemon or a message sync, and
+// --account only scopes it.
+func validateUsersOnlyFlags() error {
+	if syncFlagAccount != 0 && !syncFlagUsersOnly {
+		return fmt.Errorf("--account requires --users-only")
+	}
+	if syncFlagUsersOnly && (syncFlagDaemon || syncFlagDetach || syncFlagFull || len(syncFlagChannels) > 0) {
+		return fmt.Errorf("--users-only cannot be combined with --daemon, --detach, --full or --channels")
+	}
+	return nil
+}
+
+// runSyncUsersOnly runs the roster-only fetch (Orchestrator.RunUsersOnly) for
+// accountID, or for every enabled account when accountID is 0, with the usual
+// progress output. Like the regular sync's fan-out, one account's failure
+// does not stop the others; the first error is returned. It writes no
+// last_sync.json and runs no pipelines: no messages were synced. A failure
+// before any account runs still ends --progress-json output with one line
+// carrying the error, so a UI reading the stream always gets a terminal line.
+func runSyncUsersOnly(ctx context.Context, out io.Writer, cfg *config.Config, database *db.DB, orchestrators []*sync.Orchestrator, accountID int64) error {
+	orchestrators, err := pickUsersOnlyOrchestrators(cfg, database, orchestrators, accountID)
+	if err != nil {
+		if syncFlagProgressJSON {
+			printProgressJSON(out, sync.Snapshot{Phase: sync.PhaseDone, StartTime: time.Now()}, err)
+		}
+		return err
+	}
+	_, firstErr := runOrchestratorsWithProgress(ctx, orchestrators, func(ctx context.Context, o *sync.Orchestrator) error {
+		return o.RunUsersOnly(ctx)
+	}, out, cfg)
+	if firstErr != nil {
+		return fmt.Errorf("users sync failed: %w", firstErr)
+	}
+	return nil
+}
+
+// pickUsersOnlyOrchestrators narrows the wired orchestrators to accountID (0
+// = all of them). An account wireSlackSyncers did not wire is reported with
+// its real reason — missing, removed, disabled, or its recorded status and
+// error (a missing token file) — and no wired account at all is "not
+// connected", naming an unmigrated legacy config token when one is the cause.
+func pickUsersOnlyOrchestrators(cfg *config.Config, database *db.DB, orchestrators []*sync.Orchestrator, accountID int64) ([]*sync.Orchestrator, error) {
+	if accountID == 0 {
+		if len(orchestrators) > 0 {
+			return orchestrators, nil
+		}
+		if legacySlackConfigToken(cfg) != "" {
+			return nil, fmt.Errorf("slack is not connected for workspace %q: its token is still in config.yaml; run 'watchtower sync' once (or start the daemon) to migrate it", cfg.ActiveWorkspace)
+		}
+		return nil, fmt.Errorf("slack is not connected for workspace %q; run 'watchtower auth login' first", cfg.ActiveWorkspace)
+	}
+	for _, o := range orchestrators {
+		if o.AccountID() == accountID {
+			return []*sync.Orchestrator{o}, nil
+		}
+	}
+	acct, err := database.GetSlackAccount(accountID)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil, fmt.Errorf("slack account %d does not exist; see 'watchtower slack accounts'", accountID)
+	case err != nil:
+		return nil, err
+	case acct.Status == "removed":
+		return nil, fmt.Errorf("slack account %d was removed; reconnect it with 'watchtower slack login --account %d'", accountID, accountID)
+	case !acct.Enabled:
+		return nil, fmt.Errorf("slack account %d is disabled; enable it with 'watchtower slack enable %d'", accountID, accountID)
+	case acct.Error != "":
+		return nil, fmt.Errorf("slack account %d cannot sync (status %s: %s)", accountID, acct.Status, acct.Error)
+	}
+	return nil, fmt.Errorf("slack account %d cannot sync (status %s); see 'watchtower slack accounts'", accountID, acct.Status)
+}
+
+// runOrchestratorsWithProgress runs each orchestrator in turn through run,
 // rendering a live progress display to out while it syncs (a ticker repaints
-// the display every 500ms; a panic inside Run is recovered and reported as
+// the display every 500ms; a panic inside run is recovered and reported as
 // that orchestrator's error rather than crashing the process). One account's
 // failure is recorded but does not block the remaining accounts — the
 // fan-out pattern used throughout this file — so the returned snapshots
 // always cover every orchestrator passed in, and the returned error is only
 // the first one encountered.
-func runOrchestratorsWithProgress(ctx context.Context, orchestrators []*sync.Orchestrator, opts sync.SyncOptions, out io.Writer, cfg *config.Config) ([]sync.Snapshot, error) {
+func runOrchestratorsWithProgress(ctx context.Context, orchestrators []*sync.Orchestrator, run func(context.Context, *sync.Orchestrator) error, out io.Writer, cfg *config.Config) ([]sync.Snapshot, error) {
 	progressLines.Store(0)
 	var snaps []sync.Snapshot
 	var firstErr error
@@ -627,7 +749,7 @@ func runOrchestratorsWithProgress(ctx context.Context, orchestrators []*sync.Orc
 					done <- fmt.Errorf("sync panicked: %v\n%s", r, debug.Stack())
 				}
 			}()
-			done <- o.Run(ctx, opts)
+			done <- run(ctx, o)
 		}()
 
 		ticker := time.NewTicker(500 * time.Millisecond)
@@ -831,7 +953,7 @@ func wireSlackSyncers(database *db.DB, cfg *config.Config, logger *log.Logger) [
 			recordSlackWireError(database, logger, acct.ID, acct.Status, fmt.Errorf("no token file — re-login required"))
 			continue
 		}
-		client := watchtowerslack.NewClient(token.AccessToken)
+		client := newSlackClientForToken(token.AccessToken)
 		client.SetLogger(logger)
 		orch := sync.NewOrchestrator(database, client, cfg, acct.ID)
 		orch.SetLogger(logger)
