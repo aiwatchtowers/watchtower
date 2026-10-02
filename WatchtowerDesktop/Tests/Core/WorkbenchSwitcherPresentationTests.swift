@@ -79,8 +79,8 @@ final class WorkbenchSwitcherPresentationTests: XCTestCase {
         XCTAssertEqual(segments(all, comments: 1), [
             Seg(text: "1 new comment", tone: .comments),
             Seg(text: "2 blocked", tone: .blocked),
-            Seg(text: "5 sessions", tone: .sessions)
-        ], "no live session → no second part")
+            Seg(text: "1m", tone: .age)
+        ], "nothing running → the age instead of the sessions")
         let sessionsOnly = summary(id: 2, name: "b", sessions: 1, lastActivity: iso(60))
         XCTAssertEqual(segments(sessionsOnly, live: 1), [Seg(text: "1 session · 1 running", tone: .sessions)])
         let blockedOnly = summary(id: 3, name: "c", blocked: 1)
@@ -97,8 +97,8 @@ final class WorkbenchSwitcherPresentationTests: XCTestCase {
     }
 
     func testSegmentsFallBackToTheAgeThenToNothing() {
-        let quiet = summary(id: 1, name: "a", lastActivity: iso(3 * 86_400 + 100))
-        XCTAssertEqual(segments(quiet), [.init(text: "3d", tone: .age)])
+        let quiet = summary(id: 1, name: "a", sessions: 2, lastActivity: iso(3 * 86_400 + 100))
+        XCTAssertEqual(segments(quiet), [.init(text: "3d", tone: .age)], "sessions on file, none running")
         XCTAssertEqual(segments(summary(id: 2, name: "b")), [])
         XCTAssertEqual(segments(summary(id: 3, name: "c", lastActivity: "garbage")), [],
                        "an unreadable stamp shows nothing rather than the raw text")

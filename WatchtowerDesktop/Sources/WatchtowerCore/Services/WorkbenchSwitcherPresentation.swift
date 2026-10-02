@@ -51,8 +51,8 @@ package enum WorkbenchSwitcherPresentation {
 
     /// The row's state, left to right, each only when non-zero: new
     /// comments (`newComments` — the list row's badge number), blocked
-    /// targets, sessions with the live ones; none of them → the age of the
-    /// last session activity, or nothing.
+    /// targets; then, with a session running, the sessions with the live
+    /// ones, else the age of the last session activity (or nothing).
     package static func stateSegments(
         summary: WorkbenchSwitcherSummary,
         newComments: Int,
@@ -66,15 +66,14 @@ package enum WorkbenchSwitcherPresentation {
         if summary.blockedTargets > 0 {
             out.append(Segment(text: "\(summary.blockedTargets) blocked", tone: .blocked))
         }
-        var sessions: [String] = []
-        if summary.sessionCount > 0 {
-            sessions.append("\(summary.sessionCount) \(summary.sessionCount == 1 ? "session" : "sessions")")
-        }
-        if liveCount > 0 { sessions.append("\(liveCount) running") }
-        if !sessions.isEmpty {
+        if liveCount > 0 {
+            var sessions: [String] = []
+            if summary.sessionCount > 0 {
+                sessions.append("\(summary.sessionCount) \(summary.sessionCount == 1 ? "session" : "sessions")")
+            }
+            sessions.append("\(liveCount) running")
             out.append(Segment(text: sessions.joined(separator: " · "), tone: .sessions))
-        }
-        if out.isEmpty, let age = TimeFormatting.shortAge(from: summary.lastSessionActivity, now: now) {
+        } else if let age = TimeFormatting.shortAge(from: summary.lastSessionActivity, now: now) {
             out.append(Segment(text: age, tone: .age))
         }
         return out
