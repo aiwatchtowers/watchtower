@@ -116,6 +116,12 @@ final class TargetChatViewModel {
     // Cancelled by stop() (main actor) — the container calls it on tab close
     // and on container eviction; there is no deinit touching this.
     private var observationTask: Task<Void, Never>?
+    /// Actions auto-applied by the turn in flight, as `appliedKey`s.
+    private var appliedThisTurn: [String] = []
+    /// Actions a failed turn had already applied before its reply couldn't be
+    /// saved. Retry re-runs the turn: the model gets told, and a matching
+    /// action in the retried reply is not applied a second time.
+    private var alreadyApplied: [String] = []
 
     /// Called after the chat did something that counts as activity on the target:
     /// an applied action or a finished turn. The host screen uses it to re-read the
@@ -305,13 +311,24 @@ final class TargetChatViewModel {
     /// never loses track of which target it is working on, sees the target's
     /// current state, and can still emit valid watchtower-action blocks.
     private func turnPrompt(_ input: ChatTurnInput) -> String {
+        appliedThisTurn = []
         let outcomes = actionFeed.outcomesBlock(after: input.previousOwnerMessageAt)
         let base = input.isResumed
             ? "\(Self.taskContextBlock(target))\n\(Self.taskTreeBlock(target: target, dbPool: dbManager.dbPool))\n\n"
                 + "\(Self.taskActionsContract)\n\n"
                 + "\(toolsAvailable ? AgentToolsContract.promptBlock(surface: .target) : "")\n\n\(input.text)"
             : input.text
-        return outcomes.map { "\($0)\n\n\(base)" } ?? base
+        let prompt = outcomes.map { "\($0)\n\n\(base)" } ?? base
+        guard !alreadyApplied.isEmpty else { return prompt }
+        let done = alreadyApplied.map { "- \($0)" }.joined(separator: "\n")
+        return "Already applied in the previous attempt of this turn (do NOT propose them again):\n"
+            + "\(done)\n\n\(prompt)"
+    }
+
+    /// What makes two proposals "the same change" across a retry: the stored
+    /// `ProposedAction.id` is fresh per parse, the rendered card is not.
+    private static func appliedKey(_ action: ProposedAction) -> String {
+        "\(action.type.rawValue): \(action.cardDescription)"
     }
 
     // MARK: - Commands
@@ -331,11 +348,15 @@ final class TargetChatViewModel {
     /// appear. The host re-reads the task.
     private func turnFinished(_ outcome: EmbeddedChatEngine.TurnOutcome) {
         switch outcome {
-        case .failed(_, let message), .notStarted(let message):
+        case .failed(_, let message):
+            errorMessage = message
+            alreadyApplied += appliedThisTurn
+        case .notStarted(let message):
             errorMessage = message
         case .completed, .stopped:
-            break
+            alreadyApplied = []
         }
+        appliedThisTurn = []
         actionFeed.refresh()
         reloadTarget()
         releaseHeldFollowUps()
@@ -410,8 +431,17 @@ final class TargetChatViewModel {
                 heldForApproval += 1
             }
             guard action.autoApplies(inChatFor: target.id) else { continue }
+            let key = Self.appliedKey(action)
+            if let done = alreadyApplied.firstIndex(of: key) {
+                // Applied by the failed attempt this turn retries.
+                alreadyApplied.remove(at: done)
+                appliedThisTurn.append(key)
+                actionCards[actionCards.count - 1].state = .applied("already applied before the retry")
+                continue
+            }
             switch applyAction(action, cardIndex: actionCards.count - 1) {
             case .success(let summary):
+                appliedThisTurn.append(key)
                 appliedSummaries.append(summary)
             case .failure(let error):
                 failedSummaries.append("\(action.type.rawValue): \(error.localizedDescription)")
@@ -450,7 +480,7 @@ final class TargetChatViewModel {
         for err in parsed.errors {
             systemMessages.append("⚠️ Invalid action proposal: \(err)")
         }
-        return ChatPostTurnResult(displayText: displayText, notices: systemMessages)
+        return ChatPostTurnResult(displayText: displayText, notices: systemMessages, applied: appliedSummaries)
     }
 
     /// Feed a follow-up turn back into the conversation. The text is shown as a

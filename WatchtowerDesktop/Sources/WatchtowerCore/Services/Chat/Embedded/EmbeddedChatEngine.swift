@@ -511,15 +511,39 @@ package final class EmbeddedChatEngine {
             return failTurn(turn, text: text, failure: .init(code: nil, message: Self.emptyReplyMessage))
         }
         guard persistFinal(turn, text: result.displayText, status: "complete", failure: nil) else {
-            // The reply is not on disk: not a successful turn, whatever postTurn did.
-            let failure = EmbeddedChatErrorClassifier.Failure(
-                code: .internalError, message: bannerError ?? "Couldn't save the reply", retryable: false)
-            return failTurn(turn, text: text, failure: failure, persist: false)
+            // The reply is not on disk: not a successful turn. What postTurn
+            // already applied is named, so the owner knows it happened and a
+            // Retry (which the surface tells not to repeat it) can follow.
+            var message = bannerError ?? "Couldn't save the reply"
+            if !result.applied.isEmpty {
+                message += ". Already applied: " + result.applied.joined(separator: "; ")
+                    + " — Retry won't apply them again."
+            }
+            bannerError = message
+            let failure = EmbeddedChatErrorClassifier.Failure(code: .internalError, message: message, retryable: true)
+            let outcome = failTurn(turn, text: text, failure: failure, persist: false)
+            markFailedBestEffort(turn, text: text, failure: failure)
+            return outcome
         }
         turn.finish(.complete, at: clock())
         for notice in result.notices { appendRow(role: "system", text: notice, reloading: false) }
         postTurnResults[turn.messageID] = result
         return .completed(messageID: turn.messageID, result: result)
+    }
+
+    /// One more try to record the error row (the save just failed — a
+    /// transient lock may have cleared), so its card and Retry show.
+    private func markFailedBestEffort(
+        _ turn: LiveTurn,
+        text: String,
+        failure: EmbeddedChatErrorClassifier.Failure
+    ) {
+        do {
+            try store.finalize(messageID: turn.messageID, text: text, status: "error",
+                               errorCode: (failure.code ?? .internalError).rawValue, errorMessage: failure.message)
+        } catch {
+            log("the failed reply could not be marked either: \(error)")
+        }
     }
 
     private func failTurn(

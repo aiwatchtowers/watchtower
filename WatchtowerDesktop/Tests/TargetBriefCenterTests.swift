@@ -466,6 +466,7 @@ final class TargetBriefCenterTests: XCTestCase {
         XCTAssertEqual(center.phase(for: targetB.id), .failed(targetID: targetB.id, message: busy))
         XCTAssertEqual(mockB.prompts, ["owner message"])
         XCTAssertFalse(mockB.prompts.contains("brief B"), "the brief reached the model through the busy chat")
+        XCTAssertEqual(vmB.inputText, "brief B", "the unsent brief must wait in the composer")
     }
 
     /// An unsent owner draft in a queued target's chat survives the brief:
@@ -513,6 +514,33 @@ final class TargetBriefCenterTests: XCTestCase {
                        .failed(targetID: target.id, message: "The brief could not be sent — re-ask here."))
         XCTAssertTrue(mock.prompts.isEmpty)
         XCTAssertNil(center.adoptVM(for: target.id))
+    }
+
+    /// A brief whose owner row cannot be written never starts: it fails
+    /// visibly and its text lands in the chat's composer after the owner's
+    /// own draft, ready to re-send.
+    func testABriefThatFailsToSendGoesBackIntoTheComposer() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager)
+        let mock = MockClaudeService(events: [.sessionID("s1"), .text("ok"), .done])
+        let chatVM = try XCTUnwrap(makeChatVM(manager, target: target, service: mock))
+        let center = makeCenter { _ in chatVM }
+        try await manager.dbPool.write { db in
+            try db.execute(sql: """
+                CREATE TRIGGER fail_owner_row BEFORE INSERT ON chat_messages
+                BEGIN SELECT RAISE(ABORT, 'disk full'); END
+                """)
+        }
+        chatVM.inputText = "half-typed draft"
+
+        center.startBrief(target: target, text: "brief text")
+
+        guard case .failed = center.phase(for: target.id) else {
+            return XCTFail("expected .failed, got \(center.phase(for: target.id))")
+        }
+        XCTAssertTrue(mock.prompts.isEmpty)
+        XCTAssertEqual(chatVM.inputText, "half-typed draft\n\nbrief text")
     }
 
     /// The owner explicitly cancelling the running brief frees the slot: the

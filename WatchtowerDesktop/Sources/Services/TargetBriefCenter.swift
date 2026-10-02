@@ -183,6 +183,7 @@ final class TargetBriefCenter {
         // VM, and the watcher would then mistake the OWNER's run for the
         // brief's — so a busy chat fails the brief visibly instead.
         guard !chatVM.isStreaming else {
+            Self.returnBrief(next.request.text, to: chatVM)
             failToStart(next.id, message: "The chat was busy when this brief was due — re-ask here.")
             return
         }
@@ -208,7 +209,19 @@ final class TargetBriefCenter {
         chatVM.inputText = text
         chatVM.send()
         chatVM.inputText = draft
-        return chatVM.isStreaming
+        guard chatVM.isStreaming else {
+            Self.returnBrief(text, to: chatVM)
+            return false
+        }
+        return true
+    }
+
+    /// A brief that never went out lands in the chat's composer, after any
+    /// owner draft, so "re-ask here" is one press away instead of a retype.
+    private static func returnBrief(_ text: String, to chatVM: TargetChatViewModel) {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        let draft = chatVM.inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        chatVM.inputText = draft.isEmpty ? text : "\(chatVM.inputText)\n\n\(text)"
     }
 
     /// Poll until `isStreaming` clears, which observes the whole run (stream

@@ -314,6 +314,28 @@ final class EmbeddedChatEngineTests: XCTestCase {
         XCTAssertNotNil(engine.bannerError)
     }
 
+    /// Actions applied for a reply that then cannot be saved are named in
+    /// the error, which can be retried; the row is marked failed when the
+    /// second write goes through.
+    func testAnUnsavedReplyNamesWhatWasAlreadyApplied() async throws {
+        let store = FlakyStore()
+        var outcome: EmbeddedChatEngine.TurnOutcome?
+        let engine = makeEngine(spec: spec { ChatPostTurnResult(displayText: $0.reply, applied: ["set status to done"]) },
+                                store: store)
+        engine.onTurnFinished = { outcome = $0 }
+        engine.send("mark it done")
+        store.failFinalizeOnce = true
+        ai.emit(.text("Done."))
+        ai.finish()
+        expectTrue(await waitIdle(engine))
+        guard case .failed(_, let message) = outcome else { return XCTFail("\(String(describing: outcome))") }
+        XCTAssertTrue(message.contains("Already applied: set status to done"))
+        XCTAssertTrue(message.contains("Retry won't apply them again"))
+        XCTAssertTrue(engine.canRetry)
+        XCTAssertEqual(engine.messages.last?.message.status, "error", "the second write marked the row")
+        XCTAssertEqual(engine.bannerError, message)
+    }
+
     func testASessionIDThatCannotBeSavedFailsTheTurn() async throws {
         let store = FlakyStore()
         store.failSession = true
@@ -686,6 +708,8 @@ private final class FlakyStore: EmbeddedChatStore {
     var failBegin = false
     var failProgress = false
     var failFinalize = false
+    /// Fails the next finalize only (a transient lock).
+    var failFinalizeOnce = false
     var failSession = false
     var failAppend = false
 
@@ -713,6 +737,10 @@ private final class FlakyStore: EmbeddedChatStore {
 
     func finalize(messageID: Int64, text: String, status: String, errorCode: String?, errorMessage: String?) throws {
         if failFinalize { throw Failure() }
+        if failFinalizeOnce {
+            failFinalizeOnce = false
+            throw Failure()
+        }
         try base.finalize(messageID: messageID, text: text, status: status, errorCode: errorCode, errorMessage: errorMessage)
     }
 

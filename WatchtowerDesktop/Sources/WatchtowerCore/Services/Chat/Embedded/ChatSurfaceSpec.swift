@@ -83,11 +83,15 @@ package struct ChatPostTurnResult: Equatable, Sendable {
     /// The surface could not use the reply (e.g. an unreadable directive);
     /// shown under that message. Nothing is applied silently.
     package var failure: String?
+    /// What the surface already applied for this reply (summaries) — named
+    /// in the error if the reply then cannot be saved.
+    package var applied: [String]
 
-    package init(displayText: String, notices: [String] = [], failure: String? = nil) {
+    package init(displayText: String, notices: [String] = [], failure: String? = nil, applied: [String] = []) {
         self.displayText = displayText
         self.notices = notices
         self.failure = failure
+        self.applied = applied
     }
 
     package static func identity(_ input: ChatPostTurnInput) -> Self {

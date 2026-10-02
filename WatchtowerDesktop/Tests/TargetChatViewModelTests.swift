@@ -1382,6 +1382,55 @@ final class TargetChatViewModelTests: XCTestCase {
         XCTAssertEqual(chat.engine.messages.last?.message.status, "error")
     }
 
+    /// An execute-mode write landed but the reply row could not be saved: the
+    /// error names what was already applied, and Retry — the model proposes
+    /// the same change again — does not apply it a second time.
+    func testRetryAfterAnUnsavedReplyDoesNotReapplyItsActions() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let target = try makeTarget(manager, intent: "x")
+        let vm = TargetsViewModel(dbManager: manager)
+        let reply = """
+        Added it.
+        ```watchtower-action
+        { "type": "add_sub_item", "text": "draft reply", "mode": "execute", "reason": "owner instructed" }
+        ```
+        """
+        let mock = MockClaudeService(events: [.sessionID("s1"), .text(reply), .done])
+        let chat = try makeChat(target: target, vm: vm, manager: manager, aiService: mock)
+        try await manager.dbPool.write { db in
+            try db.execute(sql: """
+                CREATE TRIGGER fail_reply_save BEFORE UPDATE ON chat_messages
+                WHEN NEW.role = 'assistant' AND NEW.status = 'complete'
+                BEGIN SELECT RAISE(ABORT, 'disk full'); END
+                """)
+        }
+
+        chat.inputText = "add the step"
+        chat.send()
+        try await waitForStreamEnd(chat)
+
+        let message = try XCTUnwrap(chat.errorMessage)
+        XCTAssertTrue(message.contains("Already applied: added sub-item \"draft reply\""), message)
+        XCTAssertTrue(chat.engine.canRetry)
+        XCTAssertEqual(try XCTUnwrap(fetchTargetRow(manager, id: target.id))
+            .decodedSubItems.filter { $0.text == "draft reply" }.count, 1)
+
+        try await manager.dbPool.write { db in try db.execute(sql: "DROP TRIGGER fail_reply_save") }
+        chat.errorMessage = nil
+        chat.engine.retry()
+        try await waitForStreamEnd(chat)
+
+        XCTAssertNil(chat.errorMessage)
+        XCTAssertEqual(mock.prompts.count, 2)
+        XCTAssertTrue(mock.prompts[1].contains("Already applied in the previous attempt"), mock.prompts[1])
+        XCTAssertTrue(mock.prompts[1].contains("draft reply"))
+        XCTAssertEqual(try XCTUnwrap(fetchTargetRow(manager, id: target.id))
+            .decodedSubItems.filter { $0.text == "draft reply" }.count, 1)
+        XCTAssertEqual(chat.actionCards.last?.state, .applied("already applied before the retry"))
+        XCTAssertEqual(chat.engine.messages.last { $0.message.role == "assistant" }?.message.status, "complete")
+    }
+
     /// A reply that is only a malformed block keeps its warning (TGT-BRIEF-03:
     /// surfaced as an error and skipped) and is a completed turn.
     func testAReplyOfOnlyAMalformedBlockKeepsItsWarning() async throws {
