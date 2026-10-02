@@ -2,8 +2,12 @@ WatchtowerDesktop/Sources/App/Navigation.swift
 WatchtowerDesktop/Sources/ViewModels/WorkbenchesViewModel+Sessions.swift
 WatchtowerDesktop/Sources/Views/Calendar/CalendarEventsView.swift
 WatchtowerDesktop/Sources/Views/Calendar/RecordingDetailView.swift
+WatchtowerDesktop/Sources/Views/Chat/ChatThreadView.swift
+WatchtowerDesktop/Sources/Views/DayPlan/DayPlanView.swift
 WatchtowerDesktop/Sources/Views/Digests/DigestListView.swift
-WatchtowerDesktop/Sources/Views/Targets/TargetChatView.swift
+WatchtowerDesktop/Sources/Views/Ideas/IdeaDetailPane.swift
+WatchtowerDesktop/Sources/Views/Inbox/ActionStripView.swift
 WatchtowerDesktop/Sources/Views/Targets/TargetDetailView.swift
 WatchtowerDesktop/Sources/Views/Targets/TargetsListView.swift
-WatchtowerDesktop/Sources/Views/Workbench/WorkbenchDocumentsView.swift
+WatchtowerDesktop/Sources/Views/Workbench/WorkbenchBoardView.swift
+WatchtowerDesktop/Sources/Views/Workbench/WorkbenchFilesSection.swift
