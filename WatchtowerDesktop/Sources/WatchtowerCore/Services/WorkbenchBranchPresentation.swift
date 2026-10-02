@@ -137,9 +137,11 @@ package enum WorkbenchBranchPresentation {
 
     /// The dialog for a refused switch, or nil when there is nothing to
     /// confirm (it switched, was already there, or was refused outright).
-    package static func confirmation(for result: WorkbenchGitSwitchResult) -> BranchSwitchConfirmation? {
+    /// `stashing`: the refused call already carried `--stash` (the owner
+    /// confirmed it, then a session started) — the resend keeps it.
+    package static func confirmation(for result: WorkbenchGitSwitchResult, stashing: Bool) -> BranchSwitchConfirmation? {
         guard !result.switched, !result.already, !result.needsConfirmation.isEmpty else { return nil }
-        let dirty = result.needsConfirmation.contains(.uncommittedChanges)
+        let dirty = stashing || result.needsConfirmation.contains(.uncommittedChanges)
         let agent = result.needsConfirmation.contains(.agentRunning)
         var parts: [String] = []
         if agent {

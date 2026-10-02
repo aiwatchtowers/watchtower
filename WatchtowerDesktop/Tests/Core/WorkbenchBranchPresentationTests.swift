@@ -104,7 +104,7 @@ final class WorkbenchBranchPresentationTests: XCTestCase {
 
     func testConfirmationForUncommittedChanges() throws {
         let result = WorkbenchGitSwitchResult(branch: "feature/x", needsConfirmation: [.uncommittedChanges], changes: 5)
-        let confirmation = try XCTUnwrap(Pres.confirmation(for: result))
+        let confirmation = try XCTUnwrap(Pres.confirmation(for: result, stashing: false))
         XCTAssertEqual(confirmation.title, "Switch to feature/x?")
         XCTAssertEqual(confirmation.primaryLabel, "Stash and switch")
         XCTAssertTrue(confirmation.stash)
@@ -115,7 +115,7 @@ final class WorkbenchBranchPresentationTests: XCTestCase {
 
     func testConfirmationForARunningAgent() throws {
         let result = WorkbenchGitSwitchResult(branch: "feature/x", needsConfirmation: [.agentRunning])
-        let confirmation = try XCTUnwrap(Pres.confirmation(for: result))
+        let confirmation = try XCTUnwrap(Pres.confirmation(for: result, stashing: false))
         XCTAssertEqual(confirmation.primaryLabel, "Switch anyway")
         XCTAssertFalse(confirmation.stash)
         XCTAssertTrue(confirmation.confirmAgent)
@@ -124,7 +124,7 @@ final class WorkbenchBranchPresentationTests: XCTestCase {
 
     func testConfirmationForBoth() throws {
         let result = WorkbenchGitSwitchResult(branch: "b", needsConfirmation: [.uncommittedChanges, .agentRunning], changes: 1)
-        let confirmation = try XCTUnwrap(Pres.confirmation(for: result))
+        let confirmation = try XCTUnwrap(Pres.confirmation(for: result, stashing: false))
         XCTAssertEqual(confirmation.primaryLabel, "Stash and switch")
         XCTAssertTrue(confirmation.stash)
         XCTAssertTrue(confirmation.confirmAgent)
@@ -132,11 +132,23 @@ final class WorkbenchBranchPresentationTests: XCTestCase {
         XCTAssertTrue(confirmation.message.contains("1 change is not committed"))
     }
 
+    /// The owner confirmed the stash, then a session started: Go asks
+    /// about the agent only, and the resend must still stash.
+    func testAnAgentConfirmationAfterAConfirmedStashKeepsTheStash() throws {
+        let result = WorkbenchGitSwitchResult(branch: "b", needsConfirmation: [.agentRunning], changes: 2)
+        let confirmation = try XCTUnwrap(Pres.confirmation(for: result, stashing: true))
+        XCTAssertTrue(confirmation.stash)
+        XCTAssertTrue(confirmation.confirmAgent)
+        XCTAssertEqual(confirmation.primaryLabel, "Stash and switch")
+        XCTAssertTrue(confirmation.message.contains("2 changes are not committed"))
+    }
+
     func testNoConfirmationWhenNothingIsAsked() {
-        XCTAssertNil(Pres.confirmation(for: WorkbenchGitSwitchResult(branch: "b", switched: true)))
-        XCTAssertNil(Pres.confirmation(for: WorkbenchGitSwitchResult(branch: "b", already: true)))
-        XCTAssertNil(Pres.confirmation(for: WorkbenchGitSwitchResult(branch: "b", refused: "unknown_branch")))
-        XCTAssertNil(Pres.confirmation(for: WorkbenchGitSwitchResult(branch: "b", switched: true, needsConfirmation: [.agentRunning])),
+        XCTAssertNil(Pres.confirmation(for: WorkbenchGitSwitchResult(branch: "b", switched: true), stashing: false))
+        XCTAssertNil(Pres.confirmation(for: WorkbenchGitSwitchResult(branch: "b", already: true), stashing: false))
+        XCTAssertNil(Pres.confirmation(for: WorkbenchGitSwitchResult(branch: "b", refused: "unknown_branch"), stashing: false))
+        XCTAssertNil(Pres.confirmation(for: WorkbenchGitSwitchResult(branch: "b", switched: true, needsConfirmation: [.agentRunning]),
+                                       stashing: false),
                      "a switched result is never confirmed again")
     }
 

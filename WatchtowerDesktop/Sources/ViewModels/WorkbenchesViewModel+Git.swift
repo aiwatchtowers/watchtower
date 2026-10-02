@@ -186,7 +186,11 @@ extension WorkbenchesViewModel {
         gitNotices[id] = nil
         switchingBranch[id] = branch
         defer { switchingBranch[id] = nil }
-        let agentRunning = terminalCenter?.hasLiveClaudeSession(workbenchID: id, folder: project.folderPath) ?? false
+        // The switch swaps the whole work tree, not just the workbench
+        // folder: a session at the repository root or in a sibling counts.
+        let topLevel = gitStatus[id]?.topLevel ?? ""
+        let workTree = topLevel.isEmpty ? project.folderPath : topLevel
+        let agentRunning = terminalCenter?.hasLiveClaudeSession(workbenchID: id, workTree: workTree) ?? false
         let result: WorkbenchGitSwitchResult
         do {
             result = try await cli.gitSwitch(projectID: id, branch: branch, stash: stash,
@@ -196,8 +200,9 @@ extension WorkbenchesViewModel {
             await refreshGitStatus(projectID: id)
             return
         }
-        // Go wrote nothing: wait for the owner, no further call.
-        if let confirmation = WorkbenchBranchPresentation.confirmation(for: result) {
+        // Go wrote nothing: wait for the owner, no further call. A stash
+        // the owner already agreed to rides along with what Go asks now.
+        if let confirmation = WorkbenchBranchPresentation.confirmation(for: result, stashing: stash) {
             pendingBranchConfirmation[id] = confirmation
             return
         }

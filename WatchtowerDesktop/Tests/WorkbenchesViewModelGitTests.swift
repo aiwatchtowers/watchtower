@@ -54,12 +54,13 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
         branch: String = "main",
         dirty: Bool = false,
         git: Bool = true,
+        topLevel: String = "",
         gitDir: String = "/r/.git",
         commonDir: String = "/r/.git"
     ) -> Data {
         Data(#"""
             {"workbench_id":\#(project.id),"git_available":\#(git),"git":\#(git),"branch":"\#(branch)",
-             "head":"a1b2c3d","dirty":\#(dirty),"changes":\#(dirty ? 3 : 0),
+             "head":"a1b2c3d","dirty":\#(dirty),"changes":\#(dirty ? 3 : 0),"top_level":"\#(topLevel)",
              "git_dir":"\#(gitDir)","common_dir":"\#(commonDir)","status_ok":true,"status_error":""}
             """#.utf8)
     }
@@ -81,21 +82,37 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
         ["workbench", "git", "switch", "--workbench", String(project.id), "--branch", "feature/x"] + extra + ["--json"]
     }
 
-    /// A TerminalCenter running one live `claude` session in the workbench.
-    private func liveClaudeCenter() throws -> TerminalCenter {
-        let center = TerminalCenter { FakeTerminalSession() }
+    /// The fake processes `terminalCenter()` started, in start order.
+    private var fakeSessions: [FakeTerminalSession] = []
+
+    private func terminalCenter() -> TerminalCenter {
+        let center = TerminalCenter { [weak self] in
+            let session = FakeTerminalSession()
+            self?.fakeSessions.append(session)
+            return session
+        }
         center.shell = { "/bin/zsh" }
         center.transcriptExists = { _ in false }
-        let projectID = project.id
-        let folderPath = folder.path
+        return center
+    }
+
+    /// Starts a live `claude` session in `folder` — of the workbench, or a
+    /// standalone terminal with `projectID: nil`.
+    private func startClaude(in center: TerminalCenter, folder path: String, projectID: Int64?) throws {
         let row = try pool.write { d in
             try TerminalSessionQueries.create(d, .init(
-                projectID: projectID, kind: .claude, title: "s", folderPath: folderPath,
+                projectID: projectID, kind: .claude, title: "s", folderPath: path,
                 claudeSessionID: UUID().uuidString.lowercased()
             ))
         }
         center.start(row, fresh: true)
-        XCTAssertTrue(center.hasLiveClaudeSession(workbenchID: projectID, folder: folderPath))
+    }
+
+    /// A TerminalCenter running one live `claude` session in the workbench.
+    private func liveClaudeCenter() throws -> TerminalCenter {
+        let center = terminalCenter()
+        try startClaude(in: center, folder: folder.path, projectID: project.id)
+        XCTAssertTrue(center.hasLiveClaudeSession(workbenchID: project.id, workTree: folder.path))
         return center
     }
 
@@ -176,6 +193,73 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
         XCTAssertEqual(pending.primaryLabel, "Switch anyway")
         await vm.confirmPendingSwitch(project: project)
         XCTAssertEqual(runner.invocations[1], switchArgs(["--agent-running", "--confirm-agent"]))
+    }
+
+    /// The owner confirmed the stash; a session started before the resend:
+    /// the resend reports it (no `--confirm-agent` — the owner was not
+    /// asked), Go asks, and confirming that keeps the stash.
+    func testASessionStartedAfterAStashConfirmationIsAskedAbout() async throws {
+        let runner = ScriptedCLIRunner(results: [
+            .success(switchResult(#""switched":false,"needs_confirmation":["uncommitted_changes"],"changes":3"#)),
+            .success(switchResult(#""switched":false,"needs_confirmation":["agent_running"],"changes":3"#)),
+            .success(switchResult(#""switched":true"#)),
+            .success(status(branch: "feature/x")),
+            .success(branches())
+        ])
+        let center = terminalCenter()
+        let vm = makeVM(runner, terminals: center)
+        await vm.switchBranch("feature/x", project: project)
+        let stash = try XCTUnwrap(vm.pendingBranchConfirmation[project.id])
+        try startClaude(in: center, folder: folder.path, projectID: project.id)
+        await vm.confirmPendingSwitch(project: project, stash)
+        XCTAssertEqual(runner.invocations[1], switchArgs(["--stash", "--agent-running"]))
+        let agent = try XCTUnwrap(vm.pendingBranchConfirmation[project.id], "Go's agent question reaches the owner")
+        XCTAssertTrue(agent.confirmAgent)
+        XCTAssertTrue(agent.stash, "the confirmed stash rides along")
+        await vm.confirmPendingSwitch(project: project, agent)
+        XCTAssertEqual(runner.invocations[2], switchArgs(["--stash", "--agent-running", "--confirm-agent"]))
+    }
+
+    /// Go asked about a live session; it exited before the owner confirmed:
+    /// the resend reports no agent and confirms none.
+    func testASessionThatExitedBeforeTheConfirmationIsNotReported() async throws {
+        let runner = ScriptedCLIRunner(results: [
+            .success(switchResult(#""switched":false,"needs_confirmation":["agent_running"]"#)),
+            .success(switchResult(#""switched":true"#)),
+            .success(status(branch: "feature/x")),
+            .success(branches())
+        ])
+        let center = try liveClaudeCenter()
+        let vm = makeVM(runner, terminals: center)
+        await vm.switchBranch("feature/x", project: project)
+        let pending = try XCTUnwrap(vm.pendingBranchConfirmation[project.id])
+        fakeSessions[0].exit(0)
+        await vm.confirmPendingSwitch(project: project, pending)
+        XCTAssertEqual(runner.invocations[1], switchArgs([]))
+    }
+
+    /// The workbench is a subfolder of its repository; a session at the
+    /// repository root works in the files the switch swaps.
+    func testASessionAtTheRepositoryRootOfASubfolderWorkbenchIsReported() async throws {
+        let sub = folder.appendingPathComponent("app", isDirectory: true)
+        try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: true)
+        let subPath = sub.path
+        let workbench = try await pool.write { d in
+            let id = try TestDatabase.insertWorkbench(d, name: "app", folder: subPath)
+            return try XCTUnwrap(WorkbenchQueries.fetch(d, id: id))
+        }
+        let runner = ScriptedCLIRunner(results: [
+            .success(status(topLevel: folder.path)),
+            .success(switchResult(#""switched":false,"needs_confirmation":["agent_running"]"#))
+        ])
+        let center = terminalCenter()
+        try startClaude(in: center, folder: folder.path, projectID: nil)
+        let vm = makeVM(runner, terminals: center)
+        await vm.refreshGitStatus(projectID: workbench.id)
+        await vm.switchBranch("feature/x", project: workbench)
+        XCTAssertEqual(runner.invocations[1],
+                       ["workbench", "git", "switch", "--workbench", String(workbench.id), "--branch", "feature/x",
+                        "--agent-running", "--json"])
     }
 
     func testARefusalShowsGosDetailAndKeepsTheStatus() async {
