@@ -93,9 +93,10 @@ func runDictateClean(cmd *cobra.Command, _ []string) error {
 	}
 	defer database.Close()
 
-	// A store read error falls back to the default silently, as before: stderr
-	// stays clean for the Desktop that runs this command.
-	tmpl, _, _ := prompts.Resolve(prompts.New(database, nil), prompts.DictationClean, "")
+	tmpl, _, err := prompts.Resolve(prompts.New(database, nil), prompts.DictationClean, "")
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "dictate clean: using the default prompt: %v\n", err)
+	}
 	system := fmt.Sprintf(tmpl, instructions, prompts.Directive(cfg.Digest.Language))
 	// The transcript rides the USER message so the >32 KB stdin path stays
 	// reachable and a leading "-" can never be parsed as a CLI flag.

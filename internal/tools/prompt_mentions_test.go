@@ -87,12 +87,12 @@ func TestPromptToolMentionsAreRegistered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("walking %s: %v", sources, err)
 	}
-	// Coverage floor: the four Discuss surfaces (meeting, idea, track, target)
-	// carry a tool-naming TOOLS block each. Finding fewer means the scan looked
-	// in the wrong place or the block shape changed, and would pass vacuously.
 	if !rulesSeen {
 		t.Fatalf("ChatPromptRules.swift not found under %s — renamed or moved? update the scan", sources)
 	}
+	// Coverage floor: the four Discuss surfaces (meeting, idea, track, target)
+	// carry a tool-naming TOOLS block each. Finding fewer means the scan looked
+	// in the wrong place or the block shape changed, and would pass vacuously.
 	if blocksFound < 4 {
 		t.Fatalf("found %d tool-naming Swift TOOLS blocks under %s, want at least 4", blocksFound, sources)
 	}

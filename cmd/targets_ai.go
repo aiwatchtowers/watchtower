@@ -400,7 +400,6 @@ func runTargetsGenerate(cmd *cobra.Command, _ []string) error {
 	now := time.Now().Format("2006-01-02T15:04 (Monday)")
 	promptTmpl := prompts.Defaults[prompts.TasksGenerate]
 	if promptDB, dbErr := db.Open(cfg.DBPath()); dbErr == nil {
-		var err error
 		promptTmpl, _, err = prompts.Resolve(prompts.New(promptDB, nil), prompts.TasksGenerate, "")
 		if err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: using the default prompt: %v\n", err)

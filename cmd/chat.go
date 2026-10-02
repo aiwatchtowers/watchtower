@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 
@@ -89,11 +90,13 @@ func openChatTitleDB() (*config.Config, *db.DB, error) {
 }
 
 // chatTitlePrompt renders the chat.title system prompt (the tunable DB row,
-// else the compiled default) and the first-exchange user message.
-func chatTitlePrompt(database *db.DB, cfg *config.Config, owner, assistant string) (system, user string) {
-	// A store read error falls back to the default silently, as before: stderr
-	// stays clean for the Desktop that runs this command.
-	tmpl, _, _ := prompts.Resolve(prompts.New(database, nil), prompts.ChatTitle, "")
+// else the registered default; a fallback is reported on stderr) and the
+// first-exchange user message.
+func chatTitlePrompt(database *db.DB, cfg *config.Config, owner, assistant string, stderr io.Writer) (system, user string) {
+	tmpl, _, err := prompts.Resolve(prompts.New(database, nil), prompts.ChatTitle, "")
+	if err != nil {
+		fmt.Fprintf(stderr, "chat title: using the default prompt: %v\n", err)
+	}
 	system = fmt.Sprintf(tmpl, prompts.Directive(cfg.Digest.Language))
 	user = "=== FIRST EXCHANGE ===\nOwner: " + excerptRunes(owner, chatTitleExcerptRunes) +
 		"\n\nAssistant: " + excerptRunes(assistant, chatTitleExcerptRunes)
@@ -132,7 +135,7 @@ func runChatTitle(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("conversation %d has no owner message yet", id)
 	}
 
-	system, user := chatTitlePrompt(database, cfg, owner, assistant)
+	system, user := chatTitlePrompt(database, cfg, owner, assistant, cmd.ErrOrStderr())
 	ctx := cmd.Context()
 	if ctx == nil { // RunE invoked directly (tests)
 		ctx = context.Background()
