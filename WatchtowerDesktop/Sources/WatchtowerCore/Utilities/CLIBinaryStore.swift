@@ -1,6 +1,7 @@
 import Foundation
 import CryptoKit
 import Security
+import os
 
 /// Owns the out-of-bundle CLI copy the daemon and all Desktop-spawned CLI
 /// processes run from. Rebuilding or updating the app overwrites the bundle
@@ -40,24 +41,43 @@ package enum CLIBinaryStore {
         storeBinary: String = storeBinaryPath,
         bundleBinary: String? = Constants.bundledCLIPath()
     ) -> String? {
-        let fm = FileManager.default
-        guard let bundleBinary, fm.isExecutableFile(atPath: storeBinary) else { return nil }
+        guard let bundleBinary, storeMatches(storeBinary, bundleBinary) == .match else { return nil }
+        return storeBinary
+    }
+
+    /// `unreadable` is not a verdict: a file could not be read right now, so
+    /// the resolver must not cache it as a rejection.
+    private enum StoreMatch { case match, mismatch, unreadable }
+
+    /// Whether `store` is executable and byte-identical to `bundle`.
+    nonisolated private static func storeMatches(_ store: String, _ bundle: String) -> StoreMatch {
+        guard FileManager.default.isExecutableFile(atPath: store) else { return .mismatch }
+        guard let storeSize = fileSize(store), let bundleSize = fileSize(bundle) else { return .unreadable }
         // Size first: a mismatched copy is usually a different build, and this
         // way the common mismatch costs a stat instead of two full hashes.
-        guard let storeSize = fileSize(storeBinary), storeSize == fileSize(bundleBinary) else { return nil }
-        guard let bundleHash = sha256(bundleBinary), sha256(storeBinary) == bundleHash else { return nil }
-        return storeBinary
+        guard storeSize == bundleSize else { return .mismatch }
+        guard let bundleHash = sha256(bundle), let storeHash = sha256(store) else { return .unreadable }
+        return storeHash == bundleHash ? .match : .mismatch
     }
 
     /// The store path handed to callers that will EXEC it (`Constants.
     /// findCLIPath`'s ~50 sites). Byte-identity to the bundle is necessary but
     /// not sufficient: the store lives in a user-writable directory, so a
     /// same-uid attacker could overwrite `.../bin/watchtower` AFTER launch and,
-    /// with a cached verdict, hijack every subsequent CLI spawn in the app's
-    /// TCC context (a check≠use TOCTOU). So there is deliberately **no
-    /// launch-long cache** — the code-signature check re-runs on every
-    /// resolution, keeping check and use close: a binary swapped after launch
-    /// is rejected at the next spawn.
+    /// with a launch-long verdict, hijack every subsequent CLI spawn in the
+    /// app's TCC context (a check≠use TOCTOU).
+    ///
+    /// So the verdict is cached only against the on-disk identity of both
+    /// files — device, inode, size, mtime and ctime, re-read with `stat` on
+    /// every call. A write(2)/truncate to the store file bumps its ctime
+    /// (which a same-uid process cannot set back), and a rename-over gives it
+    /// a new inode, so a binary swapped after launch still misses the cache
+    /// and is re-verified at the next spawn, while an unchanged one costs two
+    /// `stat` calls instead of two 35 MB SHA-256 passes plus a signature
+    /// check. (Pages patched through a shared writable mapping may reach exec
+    /// before the timestamps move; the kernel's code-signing page validation
+    /// of the Team-signed binary is the backstop there.) A file that changes
+    /// while it is being verified is neither cached nor handed out.
     ///
     /// The gate is the on-disk file's own code signature, validated against a
     /// Team-ID designated requirement pinned to the *running* app's Team ID
@@ -69,15 +89,111 @@ package enum CLIBinaryStore {
     /// `installedPath()` already returns nil, so resolution falls through to
     /// PATH exactly as before.
     package nonisolated static func resolvedInstalledPath() -> String? {
-        guard let path = installedPath() else { return nil }
-        guard signatureIsValid(path: path, teamID: runningTeamIdentifier()) else { return nil }
+        // A build with no Team ID can never validate the store: skip the hashing.
+        guard let teamID = cachedRunningTeamID() else { return nil }
+        return resolvedInstalledPath(
+            storeBinary: storeBinaryPath,
+            bundleBinary: Constants.bundledCLIPath()
+        ) { signatureIsValid(path: $0, teamID: teamID) }
+    }
+
+    /// `resolvedInstalledPath()` over explicit inputs, so tests can drive the
+    /// identity cache with unsigned fixtures. `signatureCheck` runs only on a
+    /// cache miss, after the byte-identity check passed.
+    package nonisolated static func resolvedInstalledPath(
+        storeBinary: String,
+        bundleBinary: String?,
+        signatureCheck: (String) -> Bool
+    ) -> String? {
+        guard let bundleBinary,
+              let storeID = FileIdentity(path: storeBinary),
+              let bundleID = FileIdentity(path: bundleBinary) else { return nil }
+        let key = VerdictKey(storePath: storeBinary, store: storeID, bundlePath: bundleBinary, bundle: bundleID)
+        if let cached = verdictCache.withLock({ $0 }), cached.key == key {
+            return cached.path
+        }
+        let path: String?
+        switch storeMatches(storeBinary, bundleBinary) {
+        case .unreadable: return nil // fall back for this call, cache nothing
+        case .mismatch: path = nil
+        case .match: path = signatureCheck(storeBinary) ? storeBinary : nil
+        }
+        // Re-stat after verifying: a file that changed while it was being
+        // hashed or checked is not the file that passed — never hand it out.
+        guard FileIdentity(path: storeBinary) == storeID, FileIdentity(path: bundleBinary) == bundleID else {
+            return nil
+        }
+        let previous = verdictCache.withLock { state -> Verdict? in
+            defer { state = Verdict(key: key, path: path) }
+            return state
+        }
+        if path == nil, let previous, previous.key.storePath == storeBinary, previous.path != nil {
+            NSLog("CLIBinaryStore: the store CLI at %@ changed and failed verification; CLI spawns fall back to the bundle",
+                  storeBinary)
+        }
         return path
     }
 
-    /// Retained as a no-op: there is no longer a cached verdict to drop.
-    /// `sync()` still calls it at its mutation points; keeping the call sites
-    /// documents "the store just changed" without reintroducing a cache.
-    package nonisolated static func invalidateResolvedPath() {}
+    /// Drops the cached verdict. The identity key already catches every
+    /// change `sync()` makes; the explicit drop at its mutation points (and
+    /// in tests, between fixtures) keeps a verdict from outliving a store the
+    /// app itself just rewrote.
+    package nonisolated static func invalidateResolvedPath() {
+        verdictCache.withLock { $0 = nil }
+    }
+
+    /// The on-disk identity a cached verdict is valid for. ctime is the
+    /// load-bearing field: unlike mtime it cannot be set back by a same-uid
+    /// process, so any in-place write is visible here.
+    private struct FileIdentity: Equatable, Sendable {
+        let device: dev_t
+        let inode: ino_t
+        let size: off_t
+        let mtime: timespec
+        let ctime: timespec
+
+        init?(path: String) {
+            var st = stat()
+            guard stat(path, &st) == 0 else { return nil }
+            device = st.st_dev
+            inode = st.st_ino
+            size = st.st_size
+            mtime = st.st_mtimespec
+            ctime = st.st_ctimespec
+        }
+
+        static func == (lhs: Self, rhs: Self) -> Bool {
+            lhs.device == rhs.device && lhs.inode == rhs.inode && lhs.size == rhs.size
+                && lhs.mtime.tv_sec == rhs.mtime.tv_sec && lhs.mtime.tv_nsec == rhs.mtime.tv_nsec
+                && lhs.ctime.tv_sec == rhs.ctime.tv_sec && lhs.ctime.tv_nsec == rhs.ctime.tv_nsec
+        }
+    }
+
+    private struct VerdictKey: Equatable, Sendable {
+        let storePath: String
+        let store: FileIdentity
+        let bundlePath: String
+        let bundle: FileIdentity
+    }
+
+    private struct Verdict: Sendable {
+        let key: VerdictKey
+        let path: String?
+    }
+
+    nonisolated private static let verdictCache = OSAllocatedUnfairLock<Verdict?>(initialState: nil)
+
+    nonisolated private static let teamIDCache = OSAllocatedUnfairLock<String?>(initialState: nil)
+
+    /// The running app's Team ID never changes during a launch, so it is read
+    /// once — but a nil (an ad-hoc build, or a failed read) is re-read rather
+    /// than pinned for the whole launch.
+    nonisolated private static func cachedRunningTeamID() -> String? {
+        if let cached = teamIDCache.withLock({ $0 }) { return cached }
+        let teamID = runningTeamIdentifier()
+        if let teamID { teamIDCache.withLock { $0 = teamID } }
+        return teamID
+    }
 
     // MARK: - Code-signature validation
 

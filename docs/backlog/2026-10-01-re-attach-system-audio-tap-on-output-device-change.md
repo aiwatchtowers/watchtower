@@ -1,7 +1,7 @@
 ---
 type: bug
 title: Re-attach the system-audio tap when the output device changes mid-recording
-status: open
+status: done
 priority: med
 tags: [transcription, meeting-recorder, audio-capture, desktop, coreaudio]
 context: split from docs/backlog/2026-10-01-system-audio-tap-dropout-is-silent.md (detection and warning shipped in PR #71)
@@ -32,3 +32,11 @@ Constraints:
 - Needs validation on real hardware (switching headphones mid-call) before it
   ships. If the behaviour is uncertain, ship it dark behind a Settings
   toggle, following the house precedent.
+
+Resolution (2026-10-02): `TapReattachController` + a make-before-break
+rebuild in `SystemAudioRecorder`, default on behind
+`transcription.reattachSystemAudio` (a failed rebuild leaves the capture as
+it was, so a kill switch rather than a dark launch). The "process tap going
+quiet without a device change" trigger is not covered; only default
+output/input device changes rebuild. Real-hardware validation is the owner's
+manual checklist in the PR.

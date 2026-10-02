@@ -1,17 +1,33 @@
 import Foundation
 import Observation
 
-/// Publishes at most once per `interval` (≈30 fps for streaming markdown).
+/// Publishes at most once per interval: `interval` (≈30 fps) for a short
+/// text, stretched with the text's length. A published delta re-parses and
+/// re-lays out the whole streamed message on the main actor, so its cost
+/// grows with the text (~5 ms at 2k chars, ~22 ms at 10k, ~70 ms at 30k —
+/// `TextRenderingBenchmarkTests`); at a fixed 30 fps a long answer would
+/// saturate the main actor and freeze the whole UI while it streams.
 package struct TextThrottle: Sendable {
     package let interval: TimeInterval
     private var lastPublish: Date?
+
+    /// Interval per character: keeps a publish's render under roughly a
+    /// third of the main actor (10k chars → ~65 ms) up to the cap, reached
+    /// at ~38k chars; past it a publish's share grows again.
+    static let secondsPerCharacter: TimeInterval = 6.5e-6
+    /// The slowest cadence, so a very long answer still visibly flows.
+    static let maxInterval: TimeInterval = 0.25
 
     package init(interval: TimeInterval) {
         self.interval = interval
     }
 
-    package mutating func shouldPublish(now: Date) -> Bool {
-        if let lastPublish, now.timeIntervalSince(lastPublish) < interval { return false }
+    package func interval(forLength length: Int) -> TimeInterval {
+        max(interval, min(Double(length) * Self.secondsPerCharacter, Self.maxInterval))
+    }
+
+    package mutating func shouldPublish(now: Date, length: Int) -> Bool {
+        if let lastPublish, now.timeIntervalSince(lastPublish) < interval(forLength: length) { return false }
         lastPublish = now
         return true
     }
@@ -43,6 +59,8 @@ package final class LiveTurn {
 
     /// Authoritative text — what is persisted.
     @ObservationIgnored package private(set) var fullText = ""
+    /// `fullText.utf16.count`, kept incrementally (O(chunk), not O(text)).
+    @ObservationIgnored private var fullLength = 0
     @ObservationIgnored private var throttle: TextThrottle
     @ObservationIgnored private var trailingFlush: Task<Void, Never>?
 
@@ -57,7 +75,16 @@ package final class LiveTurn {
 
     package func appendDelta(_ chunk: String, now: Date) {
         fullText += chunk
-        if throttle.shouldPublish(now: now) {
+        fullLength += chunk.utf16.count
+        publishOrScheduleFlush(now: now)
+    }
+
+    private func publishOrScheduleFlush(now: Date) {
+        if throttle.shouldPublish(now: now, length: fullLength) {
+            // A pending flush would only re-publish this same text a moment
+            // later — a second full re-render of a long message.
+            trailingFlush?.cancel()
+            trailingFlush = nil
             text = fullText
             return
         }
@@ -66,7 +93,7 @@ package final class LiveTurn {
 
     private func scheduleTrailingFlush() {
         guard trailingFlush == nil else { return }
-        let delay = Duration.milliseconds(Int(throttle.interval * 1000) + 1)
+        let delay = Duration.milliseconds(Int(throttle.interval(forLength: fullLength) * 1000) + 1)
         trailingFlush = Task { [weak self] in
             try? await Task.sleep(for: delay)
             guard let self, !Task.isCancelled else { return }
@@ -79,11 +106,8 @@ package final class LiveTurn {
     /// embedded chats' `ai query` stream), throttled like `appendDelta`.
     package func replaceText(_ newText: String, now: Date) {
         fullText = newText
-        if throttle.shouldPublish(now: now) {
-            text = fullText
-            return
-        }
-        scheduleTrailingFlush()
+        fullLength = newText.utf16.count
+        publishOrScheduleFlush(now: now)
     }
 
     /// Returns the step's position (its persisted `seq`); a repeated

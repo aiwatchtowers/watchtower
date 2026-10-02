@@ -68,6 +68,7 @@ type claudeProc struct {
 	resumed   bool
 	gotResult atomic.Bool
 	lostMsg   atomic.Value // string: the session_lost error the child reported on stdout
+	sessionID atomic.Value // string: the latest session id the child reported (see noteSessionID)
 }
 
 // exitedOutputWait bounds how long an exited child's stdout may take to be
@@ -244,7 +245,7 @@ func (b *claudeBackend) Start(ctx context.Context) (string, error) {
 	if _, err := b.spawnLocked(); err != nil {
 		return "", err
 	}
-	return b.resume, nil
+	return b.resumeLocked(), nil
 }
 
 // initialProjectPending reports whether the first turn of a newly started
@@ -442,7 +443,8 @@ func (b *claudeBackend) warn() io.Writer {
 }
 
 func (b *claudeBackend) spawnLocked() (*claudeProc, error) {
-	cmd := exec.Command(b.opts.Binary, claudeArgs(b.opts, b.promptFile, b.mcpFile, b.resume)...)
+	resume := b.resumeLocked() // before b.proc is replaced: the dead child's id counts
+	cmd := exec.Command(b.opts.Binary, claudeArgs(b.opts, b.promptFile, b.mcpFile, resume)...)
 	// A TCC-neutral, empty cwd: never inherit one inside ~/Documents or
 	// ~/Desktop, and never one holding a project CLAUDE.md (see WorkDir).
 	cmd.Dir = b.workDir()
@@ -480,7 +482,7 @@ func (b *claudeBackend) spawnLocked() (*claudeProc, error) {
 		cmd: cmd, pgid: cmd.Process.Pid, stdin: stdin,
 		events: make(chan Event, 256), exited: make(chan struct{}), outDone: make(chan struct{}),
 		errDone: make(chan struct{}), stop: make(chan struct{}),
-		stderr: &boundedBuffer{limit: 64 << 10}, resumed: b.resume != "",
+		stderr: &boundedBuffer{limit: 64 << 10}, resumed: resume != "",
 	}
 	go func() {
 		_ = cmd.Wait()
@@ -533,14 +535,27 @@ func (b *claudeBackend) read(p *claudeProc, r *os.File) {
 // already carries it) the one the next spawn resumes. Without it a fresh
 // child killed mid-turn (a cancel past InterruptGrace) left resume empty, and
 // the next turn — sent without replay, as the app counts the stopped turn as
-// seen — opened a blank session with no history. A replaced child's late
-// lines are ignored: restartFresh has already cleared resume for the new one.
+// seen — opened a blank session with no history.
+//
+// It records the id on the child only and never takes b.mu: rejectedResume
+// waits for this reader to reach EOF while holding b.mu, so a reader blocked
+// on b.mu would stall that wait to its bound and hide the rejection — the
+// dead --resume was then respawned (a flaky third spawn under load).
+// resumeLocked promotes the id; a replaced child's late lines are ignored, as
+// restartFresh has already detached it.
 func (b *claudeBackend) noteSessionID(p *claudeProc, sid string) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.proc == p {
-		b.resume = sid
+	p.sessionID.Store(sid)
+}
+
+// resumeLocked returns the session id the next spawn resumes: the latest one
+// the current child reported, else the stored one. Called under b.mu.
+func (b *claudeBackend) resumeLocked() string {
+	if b.proc != nil {
+		if sid, _ := b.proc.sessionID.Load().(string); sid != "" {
+			b.resume = sid
+		}
 	}
+	return b.resume
 }
 
 type outcomeKind int
@@ -643,7 +658,7 @@ func (b *claudeBackend) attemptTurn(ctx context.Context, c Command, fresh bool, 
 // the grace), otherwise the classified exit message.
 func (b *claudeBackend) exitedTerminal(turnID, msg string) Event {
 	b.mu.Lock()
-	cancelled, sid := b.cancelled, b.resume
+	cancelled, sid := b.cancelled, b.resumeLocked()
 	b.mu.Unlock()
 	if cancelled {
 		return Event{Type: EventTurnDone, TurnID: turnID, Status: StatusInterrupted, SessionID: sid}
@@ -759,7 +774,7 @@ func (b *claudeBackend) claimForSend(ctx context.Context) (*claudeProc, error) {
 func (b *claudeBackend) sessionToResume() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.resume
+	return b.resumeLocked()
 }
 
 // ensureProcLocked returns the live child, respawning (with --resume of the
@@ -790,7 +805,7 @@ func (b *claudeBackend) ensureProcLocked() (*claudeProc, error) {
 			return b.proc, nil
 		}
 	}
-	if b.resume == "" {
+	if b.resumeLocked() == "" {
 		// A fresh session (the child died before reporting a session id):
 		// its history holds no project files. This turn's line is already
 		// built, so the flag reaches the next turn at the latest.

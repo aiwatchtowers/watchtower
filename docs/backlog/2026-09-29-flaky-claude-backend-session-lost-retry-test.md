@@ -47,3 +47,15 @@ EOF; skipped when the result already settled it), `exitOutcome` does the
 same, and the reader stores the rejection before marking the result. That
 half is a timing fix: no test pins it (a 500 ms bound passes locally too).
 
+
+## Follow-up (2026-10-02)
+
+`.../lost_result` still flaked on CI (three spawns instead of two). The bigger
+wait could not help: `rejectedResume` waits for the reader while holding
+`b.mu`, and the reader took `b.mu` in `noteSessionID` for the rejection line's
+`session_id` — so it blocked until the wait hit its 5 s bound, the rejection
+was never seen, and the dead `--resume` was respawned. Reproduced every time
+by delaying the reader of a resumed child by 300 ms. Fix: `noteSessionID`
+records the id on the child (lock-free); `resumeLocked` promotes it under
+`b.mu`. Pinned by `TestClaudeBackend_RejectedResumeSeenWhileHoldingTheLock`,
+which failed (5 s, no rejection) before the fix.

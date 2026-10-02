@@ -3,17 +3,25 @@ import WatchtowerCore
 
 /// The one markdown renderer for every chat surface (spec §3.3) — main chat,
 /// Discuss chats, setup assistants, recording notes, memory pages.
+///
+/// No `.environment(\.openURL, …)` here: an `OpenURLAction` cannot be
+/// compared, so re-applying it on every body pass (each streamed delta)
+/// invalidates every `Text` below and re-lays the whole message out — ~5×
+/// the cost of a delta without it (`TextRenderingBenchmarkTests`). Links stay
+/// gated: `inlineText` strips every disallowed-scheme link before it renders,
+/// and the main, Settings, Progress and Logs window roots also install the
+/// app-wide gate. A surface's own handler (MemoryView's wiki links) is no
+/// longer shadowed.
 struct MarkdownView: View {
     let text: String
 
     var body: some View {
         MarkdownBlocksView(blocks: MarkdownDocument.parse(text))
             .textSelection(.enabled)
-            .environment(\.openURL, AllowedURLSchemes.openURLAction)
     }
 
-    /// Inline render with disallowed-scheme links stripped (defence in depth
-    /// on top of the app-wide `openURL` gate).
+    /// Inline render with disallowed-scheme links stripped (the gate every
+    /// markdown link passes).
     static func inlineText(_ inlines: [MarkdownInline]) -> AttributedString {
         AllowedURLSchemes.strippingDisallowedLinks(MarkdownInlineRenderer.attributed(inlines))
     }
