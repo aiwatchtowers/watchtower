@@ -91,14 +91,18 @@ func (db *DB) CompletePipelineRun(id int64, itemsFound, inputTokens, outputToken
 	return nil
 }
 
-// FailStalePipelineRuns marks every run still 'running' that started before
-// cutoff as 'error' with errMsg — rows a killed process never finished, which
-// otherwise sit in 'running' forever and inflate the Pipeline Progress view.
+// FailStalePipelineRuns marks as 'error' with errMsg every run still 'running'
+// that is either from ownSource or started before cutoff — rows a killed
+// process never finished, which otherwise sit in 'running' forever and
+// inflate the Pipeline Progress view. ownSource is the caller's own source
+// when the caller is the only process that can write it (the singleton
+// daemon at start), so those rows are orphans however young they are.
 // duration_seconds stays 0: the real run length is unknown.
-func (db *DB) FailStalePipelineRuns(cutoff time.Time, errMsg string) (int64, error) {
+func (db *DB) FailStalePipelineRuns(ownSource string, cutoff time.Time, errMsg string) (int64, error) {
 	res, err := db.DB.Exec(`UPDATE pipeline_runs SET status='error', error_msg=?,
-		finished_at=strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE status='running' AND started_at < ?`,
-		errMsg, cutoff.UTC().Format("2006-01-02T15:04:05Z"))
+		finished_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')
+		WHERE status='running' AND (source = ? OR started_at < ?)`,
+		errMsg, ownSource, cutoff.UTC().Format("2006-01-02T15:04:05Z"))
 	if err != nil {
 		return 0, fmt.Errorf("failing stale pipeline_runs: %w", err)
 	}

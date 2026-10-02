@@ -8,8 +8,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// A run left in 'running' by a process that died is the only row the reap may
-// touch: not a run still inside the window, and not an old finished run.
+// The reap fails every running row of the caller's own source, plus any other
+// running row past the cutoff — never another source's run still inside the
+// window, and never a finished run.
 func TestFailStalePipelineRuns(t *testing.T) {
 	d := openTestDB(t)
 	now := time.Now().UTC()
@@ -19,20 +20,23 @@ func TestFailStalePipelineRuns(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	stale, err := d.CreatePipelineRun("memory", "daemon", "auto")
+	stale, err := d.CreatePipelineRun("ask", "cli", "auto")
 	require.NoError(t, err)
 	backdate(stale, 25*time.Hour)
 	fresh, err := d.CreatePipelineRun("ask", "cli", "auto")
 	require.NoError(t, err)
 	backdate(fresh, time.Hour)
+	ownFresh, err := d.CreatePipelineRun("memory", "daemon", "auto")
+	require.NoError(t, err)
+	backdate(ownFresh, time.Minute)
 	done, err := d.CreatePipelineRun("people", "daemon", "auto")
 	require.NoError(t, err)
 	backdate(done, 48*time.Hour)
 	require.NoError(t, d.CompletePipelineRun(done, 3, 0, 0, 0, 0, nil, nil, ""))
 
-	n, err := d.FailStalePipelineRuns(now.Add(-24*time.Hour), "interrupted")
+	n, err := d.FailStalePipelineRuns("daemon", now.Add(-24*time.Hour), "interrupted")
 	require.NoError(t, err)
-	assert.Equal(t, int64(1), n, "only the abandoned run is reaped")
+	assert.Equal(t, int64(2), n, "the old run and the caller's own run are reaped")
 
 	byID := map[int64]PipelineRun{}
 	runs, err := d.GetPipelineRuns(10)
@@ -43,12 +47,13 @@ func TestFailStalePipelineRuns(t *testing.T) {
 	assert.Equal(t, "error", byID[stale].Status)
 	assert.Equal(t, "interrupted", byID[stale].ErrorMsg, "the reaped run explains itself")
 	assert.NotNil(t, byID[stale].FinishedAt, "a reaped run is finished")
-	assert.Equal(t, "running", byID[fresh].Status, "a run still inside the window is left alone")
+	assert.Equal(t, "error", byID[ownFresh].Status, "the caller's own source is reaped however young")
+	assert.Equal(t, "running", byID[fresh].Status, "another source's run still inside the window is left alone")
 	assert.Equal(t, "done", byID[done].Status, "an old finished run is not a stale one")
 	assert.Equal(t, 3, byID[done].ItemsFound)
 
 	// Idempotent: nothing left to reap on a second pass.
-	n, err = d.FailStalePipelineRuns(now.Add(-24*time.Hour), "interrupted")
+	n, err = d.FailStalePipelineRuns("daemon", now.Add(-24*time.Hour), "interrupted")
 	require.NoError(t, err)
 	assert.Zero(t, n)
 }

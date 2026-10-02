@@ -1381,18 +1381,23 @@ func TestInbox09_RunSyncBoundsAndFreezesInboxWatermark(t *testing.T) {
 }
 
 // A daemon start fails the pipeline_runs rows a killed process left in
-// 'running' long ago, and leaves a recent run (another live process may still
-// own it) alone.
+// 'running': every earlier daemon run whatever its age (the daemon is a
+// singleton, so nothing else writes those), and another source's run only once
+// it is past stalePipelineRunAfter (a live CLI may still own a recent one).
 func TestDaemon_StartReapsAbandonedPipelineRuns(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	database := db.OpenTestDB(t)
-	stale, err := database.CreatePipelineRun("memory", "daemon", "auto")
-	require.NoError(t, err)
-	fresh, err := database.CreatePipelineRun("ask", "cli", "auto")
-	require.NoError(t, err)
-	_, err = database.Exec(`UPDATE pipeline_runs SET started_at=? WHERE id=?`,
-		time.Now().Add(-stalePipelineRunAfter-time.Hour).UTC().Format("2006-01-02T15:04:05Z"), stale)
-	require.NoError(t, err)
+	create := func(source string, age time.Duration) int64 {
+		id, err := database.CreatePipelineRun("memory", source, "auto")
+		require.NoError(t, err)
+		_, err = database.Exec(`UPDATE pipeline_runs SET started_at=? WHERE id=?`,
+			time.Now().Add(-age).UTC().Format("2006-01-02T15:04:05Z"), id)
+		require.NoError(t, err)
+		return id
+	}
+	daemonRecent := create("daemon", time.Minute)
+	cliOld := create("cli", stalePipelineRunAfter+time.Hour)
+	cliRecent := create("cli", time.Hour)
 
 	d := newDaemon(nil, &config.Config{Sync: config.SyncConfig{PollInterval: 10 * time.Second}})
 	d.SetLogger(log.New(io.Discard, "", 0))
@@ -1406,6 +1411,7 @@ func TestDaemon_StartReapsAbandonedPipelineRuns(t *testing.T) {
 		require.NoError(t, database.QueryRow(`SELECT status FROM pipeline_runs WHERE id=?`, id).Scan(&s))
 		return s
 	}
-	assert.Equal(t, "error", status(stale), "an abandoned run is failed at daemon start")
-	assert.Equal(t, "running", status(fresh), "a recent run is left to the process that owns it")
+	assert.Equal(t, "error", status(daemonRecent), "a previous daemon's run is an orphan however young")
+	assert.Equal(t, "error", status(cliOld), "an abandoned CLI run is failed once past the window")
+	assert.Equal(t, "running", status(cliRecent), "a recent CLI run is left to the process that may own it")
 }

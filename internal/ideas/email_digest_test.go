@@ -314,7 +314,7 @@ func TestRunEmailDigests_LogsRejectedRefs(t *testing.T) {
 					"ideas":[{"text":"real","author":"Ann","ref":"gmail:%d:thr-1"},{"text":"invented","author":"Ann","ref":"gmail:999:fake"}],
 					"decisions":[{"text":"invented too","author":"Ann","ref":"gmail:999:fake-2"}]}]}`, acctID)
 			},
-			wantLog: "ideas: ideas.digest_email: dropped 2 of 3 proposed candidates",
+			wantLog: "dropped 2 of 3 proposed candidates",
 		},
 		{
 			name:  "an empty reply rejects nothing",
@@ -339,7 +339,7 @@ func TestRunEmailDigests_LogsRejectedRefs(t *testing.T) {
 				assert.NotContains(t, logBuf.String(), "dropped")
 				return
 			}
-			assert.Contains(t, logBuf.String(), tc.wantLog)
+			assert.Contains(t, logBuf.String(), fmt.Sprintf("ideas: email account %d: %s", acctID, tc.wantLog))
 		})
 	}
 }

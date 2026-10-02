@@ -93,7 +93,7 @@ reaps it (no stale-running sweep on either side). They inflate "running" in Pipe
 skew duration/error statistics. Suggest a startup sweep marking `running` rows older than N hours as
 `error` ("interrupted"), the Catch-Up `reapStaleRecaps` precedent.
 
-Resolution: `db.FailStalePipelineRuns(cutoff, msg)` marks every `running` row started before the cutoff as `error` with an "interrupted" message and a `finished_at`; the daemon calls it once at start (`reapStalePipelineRuns`, before it opens any run of its own) with a 24 h cutoff — generous so a long CLI run another live process still owns is never failed under it. Pinned by `TestFailStalePipelineRuns` (`internal/db/pipeline_runs_test.go`) and `TestDaemon_StartReapsAbandonedPipelineRuns` (`internal/daemon/daemon_test.go`).
+Resolution: `db.FailStalePipelineRuns(ownSource, cutoff, msg)` marks `running` rows as `error` with an "interrupted" message and a `finished_at`; the daemon calls it once at start (`reapStalePipelineRuns`, before it opens any run of its own). Every `daemon` row still running then is an orphan whatever its age (the daemon holds `sync.lock`, so no other daemon writes one); other sources' rows are reaped only past 24 h, so a long CLI run another live process still owns is never failed under it. A CLI run orphaned while a daemon keeps running waits for the next daemon start. Pinned by `TestFailStalePipelineRuns` (`internal/db/pipeline_runs_test.go`) and `TestDaemon_StartReapsAbandonedPipelineRuns` (`internal/daemon/daemon_test.go`).
 
 ## items_found means different things per pipeline, making usage metrics unreliable (left — own task)
 
@@ -120,7 +120,7 @@ model found no topics" with "the model found topics but every ref was rejected" 
 silent-drop bug with the floor already advanced (IDEA-01 converse clause). Log proposed vs rejected counts
 (the `refs_rejected` pattern used elsewhere) to tell the two apart; then decide whether this is a bug.
 
-Resolution (logging half): `mineStreamTopics` now logs `ideas: <prompt>: dropped N of M proposed candidates with a ref outside the mined window` whenever ref validation throws candidates away, so "the model found nothing" (no such line) and "every ref was rejected" read differently next to the existing "no topics survived validation" line. Pinned by `TestRunEmailDigests_LogsRejectedRefs` (`internal/ideas/email_digest_test.go`). Whether the live runs are a bug can only be decided from a live log with this line in it — owner to check after the next streams cycle.
+Resolution (logging half): `mineStreamTopics` now logs `ideas: <email|jira> account <id>: dropped N of M proposed candidates whose ref is not among the rendered tags` whenever ref validation throws candidates away, so "the model found nothing" (no such line) and "every ref was rejected" read differently next to the existing "no topics survived validation" line. Pinned by `TestRunEmailDigests_LogsRejectedRefs` (`internal/ideas/email_digest_test.go`). Whether the live runs are a bug can only be decided from a live log with this line in it — owner to check after the next streams cycle.
 
 ## Legacy CLI surfaces: visible tasks stub and a second decisions view (left — owner call)
 
