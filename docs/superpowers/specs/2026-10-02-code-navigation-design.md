@@ -39,15 +39,12 @@ and typing context by hand.
   conversation goes to a terminal session, which does the work. `file:line` in
   the terminal output becomes clickable.
 
-**Decisions for you** (each with a recommendation; details in §12):
-1. *How the AI reads the workbench's files when you ask about code.* Recommend
-   **new read-only Watchtower tools confined to the workbench folder**, not
-   Claude Code's own `Read`/`Grep` (those can read any file on the Mac and work
-   only with the Claude provider).
-2. *Where conversations are stored.* Recommend the existing chat tables (no
-   migration), one conversation per question, listed per workbench.
-3. *Which model answers.* Recommend the default (strong) tier, like the other
-   embedded chats.
+**Your decisions (2026-10-02):**
+1. The AI reads the workbench folder itself, with its own read tools — it is
+   started in that folder (no Watchtower-specific read tools).
+2. Conversations are kept (history in the Questions tab) but never show up in
+   the main AI Chat.
+3. You pick the model in the question popover; the default tier is preselected.
 
 **Out of scope (POC).** Type-aware precision (same-named symbols appear in the
 candidate list and in Usages), hover types, refactoring, compile errors (LSP,
@@ -417,14 +414,26 @@ harness:
   folder name, file path, language, the selection (or the cursor line) with
   ±40 lines around it, and up to 10 index entries (signature + doc) for names the
   selection references that the index resolves uniquely.
-- Reading more of the folder: **decision 1 (§12)**. Recommended: three read-only
-  MCP tools on the watchtower server, available only to this surface and only
-  for its workbench — `read_workbench_file {path, start_line?, end_line?}`
-  (≤ 2 000 lines / 200 KB per call), `search_workbench_code {query, word?}`
-  (wraps `code search`, ≤ 200 matches) and `find_workbench_symbol {name}` (wraps
-  the index). Every path realpath'd and refused outside the workbench folder;
-  hidden names and files the walk skips are refused.
-- System prompt (in the surface spec, Swift, as every embedded surface): answers in the owner's language, cites code as
+- Reading more of the folder (owner decision 1): the provider's own read
+  tools, run in the workbench folder. `watchtower ai query` gains
+  `--read-folder DIR` (DIR must resolve to a workbench folder; refused
+  otherwise, exit 2):
+  - Claude: the process starts with cwd = DIR, and `Read`, `Grep`, `Glob`, `LS`
+    are removed from `--disallowedTools` for this run only; everything else in
+    `DisallowedTools` stays hidden (`Edit`, `Write`, `Bash`, `WebFetch`,
+    `WebSearch`, `Task`, …), and no watchtower write tools are mounted
+    (`toolAccess` `.draftOnly`).
+  - Codex: `--cd DIR` with its read-only sandbox, same no-write tool set.
+  - Ollama: no file tools; the answer uses the first-turn context only, and the
+    popover says so once ("this model cannot read other files").
+  - Accepted (owner): these tools can read outside the folder; nothing can
+    write or reach the network.
+- Model (owner decision 3): the popover and the Questions tab carry the same
+  provider/model picker as the main chat composer, preselected to the default
+  tier; the choice is kept per conversation (`chat_conversations.provider`/
+  `model`), and a follow-up keeps it.
+- System prompt (in the surface spec, Swift, as every embedded surface):
+  answers in the owner's language, cites code as
   `path:line` (repo-relative), never claims to have changed a file; "Suggest a
   change" replies end with one fenced block tagged `wt-edit` holding the
   replacement for the selection only.
@@ -458,10 +467,14 @@ harness:
 - Inspector tab listing this workbench's code conversations (newest first):
   first question, `path:line` it was asked from, time. Click opens it in the
   inspector (`EmbeddedChatView` `.compact`). Delete removes the conversation.
-- Storage: **decision 2 (§12)** — recommended `chat_conversations` rows with
+- Storage (owner decision 2): `chat_conversations` rows with
   `context_type = 'code_question'` and `context_id = '<workbench id>:<path>:<line>'`;
-  `context_type` has no CHECK, so no migration. Excluded from the main chat's
-  conversation list like the other embedded contexts.
+  `context_type` has no CHECK, so no migration. **Never in the main AI Chat:**
+  its list, search and FTS read `context_type IS NULL` only
+  (`ChatConversationQueries`, `ChatSearchQueries`); a guard test inserts a
+  `code_question` conversation with messages and asserts it appears in none of
+  the main chat's list, title search or full-text search, nor in the Go
+  chat history/search tools.
 
 ### 9.5 Hand to Claude Code (#273)
 
@@ -518,21 +531,13 @@ removed so they do not double-fire).
 
 ---
 
-## 12. Open owner decisions
+## 12. Owner decisions on this spec (2026-10-02)
 
-1. **How the AI reads workbench files.**
-   - (A) *Recommended:* our read-only MCP tools (§9.1), confined to the folder;
-     works with every provider; no new trust surface.
-   - (B) Claude Code built-ins `Read`/`Grep`/`Glob` with the workbench as cwd:
-     less code, but they read any path on the Mac (`~/.ssh`, other repos), only
-     the Claude provider has them, and the chat's tool deny-list
-     (`internal/ai/client.go`) exists precisely to keep them off.
-   - Blocks #270.
-2. **Conversation storage.** (A) *Recommended:* existing chat tables,
-   `context_type = code_question`; (B) memory-only (lost on restart, no history).
-   Blocks #272.
-3. **Model tier.** (A) *Recommended:* default tier like other embedded chats;
-   (B) fast tier for quick actions, default for follow-ups. Blocks nothing.
+1. File reading: the provider's own read tools in the workbench folder (§9.1),
+   not Watchtower read tools.
+2. Storage: chat tables, hidden from the main chat (§9.4).
+3. Model: picker in the popover, default tier preselected (§9.1).
+4. Keys: Open Quickly keeps ↩ / ⌥↩ / ⌘↩; Usages is ⇧⌘U (not ⌃⇧⌘F).
 
 ---
 
