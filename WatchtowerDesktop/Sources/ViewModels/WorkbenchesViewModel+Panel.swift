@@ -76,6 +76,31 @@ extension WorkbenchesViewModel {
         selectedWorkbenchID = projectID
     }
 
+    /// A workbench picked in the switcher (board #250): drilled into, and
+    /// its most recent session opened — the live one focused last, else the
+    /// latest active (a `claude` row resumes). No sessions: its page alone,
+    /// nothing starts. The workbench already on screen is left as it is.
+    func switchTo(workbenchID id: Int64) async {
+        guard selectedWorkbenchID != id || drilledWorkbenchID != id else { return }
+        drill(into: id)
+        guard await loadSessions(projectID: id), selectedWorkbenchID == id else { return }
+        let rows = terminalSessions[id] ?? []
+        let live = activeSessionID(projectID: id).flatMap { active in rows.first { $0.id == active } }
+        if let row = live ?? rows.first { await open(row) }
+    }
+
+    /// The switcher's "All workbenches" (⌘⇧O): back to level 1, the page
+    /// stays on screen.
+    func showAllWorkbenches() {
+        drilledWorkbenchID = nil
+    }
+
+    /// The workbench's sessions running in this app (`TerminalCenter`, not the DB).
+    func liveSessionCount(workbenchID: Int64) -> Int {
+        guard let terminalCenter else { return 0 }
+        return terminalCenter.sessionIDs(ofWorkbench: workbenchID).intersection(terminalCenter.liveIDs).count
+    }
+
     /// A level-2 click on a session: it is opened (one not running starts)
     /// and put on screen like any panel click.
     func showFromPanel(sessionID id: Int64) async {

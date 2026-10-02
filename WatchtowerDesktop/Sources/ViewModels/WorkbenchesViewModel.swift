@@ -22,6 +22,10 @@ final class WorkbenchesViewModel {
     let codeFiles: CodeFilesCenter
 
     private(set) var summaries: [WorkbenchSummary] = []
+    /// The workbench switcher's rows (board #250), read when its popover opens.
+    private(set) var switcherSummaries: [WorkbenchSwitcherSummary] = []
+    /// Why the last switcher read failed; the next successful read clears it.
+    private(set) var switcherError: String?
     var selectedWorkbenchID: Int64? {
         didSet {
             if selectedWorkbenchID != oldValue {
@@ -287,7 +291,12 @@ final class WorkbenchesViewModel {
 
     /// Sidebar badge: unread agent comments + documents revised since last viewed.
     var badgeCount: Int {
-        summaries.reduce(0) { $0 + $1.unreadAgentComments + revisedDocumentCount(for: $1) }
+        summaries.reduce(0) { $0 + newCommentCount(for: $1) }
+    }
+
+    /// A workbench row's blue badge: unread agent comments + revised documents.
+    func newCommentCount(for summary: WorkbenchSummary) -> Int {
+        summary.unreadAgentComments + revisedDocumentCount(for: summary)
     }
 
     func revisedDocumentCount(for summary: WorkbenchSummary) -> Int {
@@ -321,6 +330,17 @@ final class WorkbenchesViewModel {
         }
         if let selectedWorkbenchID { await loadSessions(projectID: selectedWorkbenchID) }
         await loadSessions(projectID: nil)
+    }
+
+    /// The switcher popover's read. A failure keeps the rows of the last
+    /// read beside the error.
+    func loadSwitcherSummaries() async {
+        do {
+            switcherSummaries = try await dbPool.read { try WorkbenchQueries.switcherSummaries($0) }
+            switcherError = nil
+        } catch {
+            switcherError = "Could not load workbenches: \(error.localizedDescription)"
+        }
     }
 
     /// Deletes a project (spec §6.1, Review Focus #5). Order matters: the

@@ -2,7 +2,7 @@ import SwiftUI
 import WatchtowerCore
 
 /// The left panel's level 2 (spec 2026-09-30-project-workspace-sessions §3):
-/// one header row (Back, the project's name, New session), a SESSIONS label
+/// one header row (the workbench switcher, New session), a SESSIONS label
 /// in the app sidebar's style, then the project's sessions. The session on
 /// screen is a tab of the workspace: filled with its backdrop, it runs on
 /// into the page beside it (`panelTab(isSelected:)`, `panelSurface()`).
@@ -11,6 +11,7 @@ struct WorkbenchSessionsPanel: View {
     @Bindable var vm: WorkbenchesViewModel
     let project: Workbench
     let actions: SessionRowActions
+    let switcherActions: WorkbenchSwitcherActions
 
     var body: some View {
         let sessions = vm.drilledSessions
@@ -40,22 +41,12 @@ struct WorkbenchSessionsPanel: View {
         .task(id: project.id) { await vm.loadSessions(projectID: project.id) }
     }
 
-    /// The chat history's header shape ("Chats" + New Chat) with Back in front.
+    /// The chat history's header shape ("Chats" + New Chat), the title being
+    /// the workbench switcher (board #250): it fills the width, and its
+    /// popover's "Все workbench" is the way back to level 1.
     private var header: some View {
         HStack(spacing: 6) {
-            Button {
-                vm.drilledWorkbenchID = nil
-            } label: {
-                Image(systemName: "chevron.backward")
-            }
-            .buttonStyle(.borderless)
-            .help("Back to Workbenches")
-            .accessibilityLabel("Back to Workbenches")
-            Text(project.name)
-                .font(.headline)
-                .lineLimit(1)
-                .truncationMode(.tail)
-            Spacer(minLength: 4)
+            WorkbenchSwitcher(vm: vm, project: project, actions: switcherActions)
             Button {
                 Task { await vm.newPanelSession() }
             } label: {
