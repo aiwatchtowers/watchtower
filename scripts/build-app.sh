@@ -1,7 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# pwd -P: the live-process guard compares against the resolved paths ps prints.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 # BEGIN profile-selection (extracted verbatim by scripts/tests/test-build-app-profile.sh)
@@ -93,12 +94,13 @@ echo ""
 # `make app-swap`. Any other swap failure fails the build. Sets OUT_DIR (where
 # the artifacts ended up), APP_BUNDLE and SWAP_DEFERRED.
 # app-swap.sh runs as a child process, not a sourced function, so its own
-# set -e stays in force despite the `||` here.
+# set -e stays in force despite the `||` here. WAIT is cleared for it: an
+# exported WAIT=1 must not turn the end of a build into a 10-minute wait.
 finish_staged_build() {
     touch "$STAGE_DIR/$STAGED_BUILD_MARKER"
     cd "$PROJECT_ROOT"
     local swap_rc=0
-    "$SCRIPT_DIR/app-swap.sh" || swap_rc=$?
+    WAIT='' "$SCRIPT_DIR/app-swap.sh" || swap_rc=$?
     case "$swap_rc" in
         0) OUT_DIR="$BUILD_DIR"; SWAP_DEFERRED=false ;;
         3) OUT_DIR="$STAGE_DIR"; SWAP_DEFERRED=true ;;
@@ -415,7 +417,9 @@ if $DEV_MODE; then
     echo "==> Done! (dev mode)"
     echo "    App: $APP_BUNDLE"
     echo ""
-    echo "    To run: open \"$APP_BUNDLE\"   (or 'make app-install' to run an installed copy)"
+    if ! $SWAP_DEFERRED; then
+        echo "    To run: open \"$APP_BUNDLE\"   (or 'make app-install' to run an installed copy)"
+    fi
     print_swap_deferred_banner
     exit 0
 fi

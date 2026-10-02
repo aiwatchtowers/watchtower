@@ -50,6 +50,12 @@ running_from() {
 wait_until_free() {
     local dir="$1"
     local timeout="${WAIT_TIMEOUT:-600}"
+    case "$timeout" in
+        '' | *[!0-9]*)
+            echo "ERROR: WAIT_TIMEOUT must be a whole number of seconds, got '$timeout'" >&2
+            return 1
+            ;;
+    esac
     local deadline=$((SECONDS + timeout))
     local announced=false
     local running
@@ -74,4 +80,31 @@ wait_until_free() {
         fi
         sleep 1
     done
+}
+
+# replace_dir <new> <dest> <aside> — moves <new> into place at <dest>: an
+# existing <dest> is renamed to <aside> first and deleted after, so <dest> is
+# missing only between two renames. The caller has already checked that nothing
+# runs from <dest> or <new>, and removed any stale <aside>. Returns 1 on
+# failure, with the previous <dest> moved back when possible and the message
+# saying where it is otherwise. Explicit error handling throughout: callers use
+# `replace_dir ... || exit 1`, where errexit does not apply.
+replace_dir() {
+    local new="$1" dest="$2" aside="$3"
+    if [ -e "$dest" ] && ! mv "$dest" "$aside"; then
+        echo "ERROR: could not move $dest aside — nothing was replaced" >&2
+        return 1
+    fi
+    # Re-check: had <dest> reappeared, `mv` would nest <new> inside it.
+    if [ -e "$dest" ] || ! mv "$new" "$dest"; then
+        if [ -e "$aside" ] && { [ -e "$dest" ] || ! mv "$aside" "$dest"; }; then
+            echo "ERROR: could not move $new into $dest, nor restore the previous copy — it is at $aside" >&2
+        else
+            echo "ERROR: could not move $new into $dest — the previous copy (if any) is back in place" >&2
+        fi
+        return 1
+    fi
+    if ! rm -rf "$aside"; then
+        echo "WARNING: replaced $dest, but could not delete the previous copy at $aside" >&2
+    fi
 }

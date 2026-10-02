@@ -12,7 +12,9 @@
 # half bundle behind.
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# pwd -P (here and for INSTALL_DIR below): ps reports the resolved path
+# LaunchServices launched, so guard prefixes must be canonical.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 BUILD_DIR="$PROJECT_ROOT/build"
 STAGE_DIR="$PROJECT_ROOT/build.next"
@@ -28,9 +30,6 @@ case "$INSTALL_DIR" in
     "~") INSTALL_DIR="$HOME" ;;
     "~/"*) INSTALL_DIR="$HOME/${INSTALL_DIR#"~/"}" ;;
 esac
-DEST="$INSTALL_DIR/$APP_NAME"
-TMP_DEST="$INSTALL_DIR/.$APP_NAME.installing"
-OLD_DEST="$INSTALL_DIR/.$APP_NAME.old"
 
 # shellcheck source=lib/app-guard.sh
 . "$SCRIPT_DIR/lib/app-guard.sh"
@@ -44,8 +43,19 @@ if [ ! -d "$SRC" ]; then
     exit 1
 fi
 
+# Canonicalise: a trailing slash, '//' or a relative path would never match
+# the absolute path ps prints, and the guard below would pass under a live app.
 mkdir -p "$INSTALL_DIR"
-rm -rf "$TMP_DEST"
+INSTALL_DIR="$(cd "$INSTALL_DIR" && pwd -P)"
+if [ "$INSTALL_DIR" = "$BUILD_DIR" ]; then
+    echo "ERROR: INSTALL_DIR is build/ itself — pick another directory (default /Applications)" >&2
+    exit 1
+fi
+DEST="$INSTALL_DIR/$APP_NAME"
+TMP_DEST="$INSTALL_DIR/.$APP_NAME.installing"
+OLD_DEST="$INSTALL_DIR/.$APP_NAME.old"
+
+rm -rf "$TMP_DEST" "$OLD_DEST"
 trap 'rm -rf "$TMP_DEST"' EXIT
 
 # Copy first (the slow part) while the installed app may still run; ditto
@@ -60,19 +70,10 @@ RUNNING=$(running_from "$DEST") || {
 }
 if [ -n "$RUNNING" ]; then
     WAS_RUNNING=true
-    wait_until_free "$DEST"
+    wait_until_free "$DEST" || exit 1
 fi
 
-rm -rf "$OLD_DEST"
-if [ -e "$DEST" ]; then
-    mv "$DEST" "$OLD_DEST"
-fi
-if ! mv "$TMP_DEST" "$DEST"; then
-    [ -e "$OLD_DEST" ] && mv "$OLD_DEST" "$DEST"
-    echo "ERROR: could not move the new bundle into $DEST — the previous install (if any) was moved back" >&2
-    exit 1
-fi
-rm -rf "$OLD_DEST"
+replace_dir "$TMP_DEST" "$DEST" "$OLD_DEST" || exit 1
 echo "==> Installed $DEST"
 
 # Both bundles share one bundle id; point LaunchServices at the installed one so

@@ -20,6 +20,9 @@
 #   - lsregister fails                         → warning only, exit 0
 #   - ps fails                                 → exit 1, old install untouched
 #   - INSTALL_DIR='~/...' (unexpanded tilde)   → resolved against $HOME
+#   - INSTALL_DIR with a trailing slash, or relative, while the app runs from
+#     it → still detected (canonicalised), nothing replaced on timeout
+#   - INSTALL_DIR=build/ itself                → refused
 #   - paths with a space and a '+'
 set -euo pipefail
 
@@ -53,7 +56,9 @@ check_eq() {
     fi
 }
 
-WORK_DIR="$(mktemp -d)"
+# Canonical (pwd -P) like the scripts' own paths: on macOS mktemp lands under
+# the /var -> /private/var symlink, and fixtures must name the path ps would.
+WORK_DIR="$(cd "$(mktemp -d)" && pwd -P)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
 STUB_DIR="$WORK_DIR/stub"
@@ -245,6 +250,29 @@ make_tree "$ROOT" yes no
 run_install "$ROOT" "~/Applications" HOME="$FAKE_HOME"
 check_eq "tilde INSTALL_DIR exits 0" "$RC" 0
 check_eq "tilde INSTALL_DIR resolves against HOME" "$(version_of "$FAKE_HOME/Applications")" new
+
+# --- 9b. Trailing slash / relative INSTALL_DIR must not blind the guard ------
+make_ps_stub 0 <<EOF
+$DEST_DIR/Watchtower.app/Contents/MacOS/WatchtowerDesktop
+EOF
+for spelling in "$DEST_DIR/" "$DEST_DIR//" "Applications"; do
+    make_tree "$ROOT" yes no
+    seed_install "$DEST_DIR"
+    RC=0
+    OUT=$(cd "$WORK_DIR" && env PATH="$STUB_DIR:$PATH" LSREGISTER="$STUB_DIR/lsregister" \
+        INSTALL_DIR="$spelling" WAIT_TIMEOUT=0 bash "$ROOT/scripts/app-install.sh" 2>&1) || RC=$?
+    check_eq "INSTALL_DIR='$spelling': running app still blocks" "$RC" 1
+    check "INSTALL_DIR='$spelling': waits for the quit" "$OUT" "Quit Watchtower"
+    check_eq "INSTALL_DIR='$spelling': installed copy untouched" "$(version_of "$DEST_DIR")" old
+done
+make_ps_stub 0 <<< "$CLEAN_PS"
+
+# --- 9c. INSTALL_DIR=build/ itself -----------------------------------------------
+make_tree "$ROOT" yes no
+run_install "$ROOT" "$ROOT/build/"
+check_eq "INSTALL_DIR=build/ is refused" "$RC" 1
+check "INSTALL_DIR=build/ says why" "$OUT" "INSTALL_DIR is build/ itself"
+check_eq "INSTALL_DIR=build/ leaves the build alone" "$(version_of "$ROOT/build")" new
 
 # --- 10. Space and '+' in both paths -------------------------------------------
 ODD_ROOT="$WORK_DIR/my feature+x/project"
