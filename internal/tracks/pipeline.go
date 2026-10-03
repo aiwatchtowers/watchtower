@@ -1604,7 +1604,7 @@ func (p *Pipeline) formatProfileContext() string {
 		fmt.Fprintf(&people, "\nSTARRED PEOPLE: %s — messages from these people get higher priority\n", sanitize(watchtowerslack.RawIDsJSON(profile.StarredPeople)))
 	}
 
-	identity := profileIdentity(profile)
+	identity := profile.Identity(sanitize)
 	if identity == "" && people.Len() == 0 {
 		return ""
 	}
@@ -1626,22 +1626,6 @@ func (p *Pipeline) formatProfileContext() string {
 	sb.WriteString(people.String())
 
 	return sb.String()
-}
-
-// profileIdentity is the profile's free-text identity: the legacy
-// CustomPromptContext when set, else the role and team lines.
-func profileIdentity(profile *db.UserProfile) string {
-	if profile.CustomPromptContext != "" {
-		return sanitize(profile.CustomPromptContext)
-	}
-	var lines []string
-	if profile.Role != "" {
-		lines = append(lines, "Role: "+sanitize(profile.Role))
-	}
-	if profile.Team != "" {
-		lines = append(lines, "Team: "+sanitize(profile.Team))
-	}
-	return strings.Join(lines, "\n")
 }
 
 // formatRoleRules generates role-specific extraction rules.

@@ -457,7 +457,7 @@ Actions: **"Update to <version> available…"** (only shown once a new version h
 
 The Slack sync also shows up in **Usage & Pipeline Progress** now, as a "Slack Sync" run alongside Digests, Tracks and the rest — previously it was the one background job that ran invisibly.
 
-**Closing the window ≠ quitting** — the red close button on the main window just closes the window; Watchtower leaves the Dock but keeps running in the menu bar with background sync still active. Reopen it from the tray's "Open Watchtower", or from the Dock if it's still showing. If Settings or the Pipeline Progress window is still open, the Dock icon stays until that window is closed too.
+**Closing the window ≠ quitting** — the red close button on the main window just closes the window; Watchtower leaves the Dock but keeps running in the menu bar with background sync still active. Reopen it from the tray's "Open Watchtower", or from the Dock if it's still showing. If Settings or another Watchtower window (Logs, Voices) is still open, the Dock icon stays until that window is closed too.
 
 **Quitting stops the daemon** — Cmd+Q or the tray's "Quit Watchtower" is the one full-exit path: it stops the background sync daemon (no further syncing or AI token spend) and then quits the app. If a recording is capturing, or a finished recording is still being transcribed, Watchtower asks first — "Stop & Quit" ends that work before quitting, "Cancel" aborts the quit and lets it finish. Audio already captured is kept on disk and offered again on the next launch.
 

@@ -656,9 +656,8 @@ final class AppState {
                 if !needsOnboarding {
                     wireAppDatabase(manager)
                 }
-                // The daemon's cycle generates everything itself, so a launch
-                // after an interrupted generation needs nothing more than the
-                // daemon (`pipelinesCompletedKey` is kept for older builds).
+                // The daemon's cycle generates everything itself: a launch
+                // needs nothing more than a running daemon.
                 if !needsOnboarding {
                     // Ensure a fresh daemon is running (rebuild-safe): stop any existing
                     // one (possibly from an older binary), then start the current binary.
@@ -933,9 +932,7 @@ final class AppState {
             let up = startOnly && daemon.daemonIsRunning()
                 ? true
                 : await OnboardingFinishPlan.bringUpDaemon(daemon)
-            // The flag tells the next launch nothing is left to resume.
             if up {
-                UserDefaults.standard.set(true, forKey: Constants.pipelinesCompletedKey)
                 daemonStartFailure = nil
             } else {
                 daemonStartFailure = Self.daemonStartFailureText(daemonManager.errorMessage)
@@ -1261,7 +1258,6 @@ final class AppState {
             failure = failure ?? error
         }
         if let failure { throw failure }
-        UserDefaults.standard.set(true, forKey: Constants.pipelinesCompletedKey)
     }
 
     /// Ensure the daemon is running against the current CLI binary.

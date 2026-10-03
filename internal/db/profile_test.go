@@ -1,6 +1,7 @@
 package db
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -240,4 +241,23 @@ func TestRemoveStarredPerson(t *testing.T) {
 	got, err = db.GetUserProfile("U123")
 	require.NoError(t, err)
 	assert.Equal(t, `["U999"]`, got.StarredPeople)
+}
+
+func TestUserProfileIdentity(t *testing.T) {
+	upper := strings.ToUpper
+	cases := []struct {
+		name    string
+		profile UserProfile
+		want    string
+	}{
+		{"legacy context wins", UserProfile{CustomPromptContext: "ctx", Role: "EM", Team: "Core"}, "CTX"},
+		{"role and team", UserProfile{Role: "EM", Team: "Core"}, "Role: EM\nTeam: CORE"},
+		{"role only", UserProfile{Role: "em"}, "Role: EM"},
+		{"empty", UserProfile{}, ""},
+	}
+	for _, tc := range cases {
+		if got := tc.profile.Identity(upper); got != tc.want {
+			t.Errorf("%s: Identity = %q, want %q", tc.name, got, tc.want)
+		}
+	}
 }

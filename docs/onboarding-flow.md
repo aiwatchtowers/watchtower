@@ -121,7 +121,7 @@ About you shows "Still loading people — N" and re-reads the users every
 2. The daemon, in the background: started if none runs, restarted once if
    one does (a setup re-run with a new feature set). One
    `sync --daemon --detach`; its first cycle syncs and runs every enabled
-   pipeline itself. `pipelines_completed` is set once it is up.
+   pipeline itself.
 3. `.complete`, the rest of the app's database wiring, sidebar counts, the
    connected-sources refresh, and the landing tab: Catch-Up when the goals
    include Work communication and the Catch-Up tab shows, else Workbench
@@ -139,7 +139,9 @@ starting. The flow then starts at Goals seeded from what is in effect —
 goals mapped back from the enabled features (or "Features customized"),
 the configured language (English when none), About you prefilled from the
 profile. **Cancel** (top right, every step) returns to the main window
-without writing anything more. A re-run that changed nothing does not
+without writing anything more; if a step's Continue already changed
+something (a feature, the language, an account), Cancel restarts the
+daemon once so it picks that up. A re-run that changed nothing does not
 restart the daemon and does not change the tab the owner was on.
 
 ## After onboarding
