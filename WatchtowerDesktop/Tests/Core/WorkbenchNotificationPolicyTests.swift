@@ -85,7 +85,7 @@ final class WorkbenchNotificationPolicyTests: XCTestCase {
         )
         let notices = Policy.decide(previous: previous, current: current)
         XCTAssertEqual(notices.map(\.kind), [.agentAsks, .agentAsks, .askOpened, .targetDone])
-        XCTAssertEqual(notices[2].title, "Ждёт тебя 4")
+        XCTAssertEqual(notices[2].title, "Waiting for you (4)")
         XCTAssertEqual(notices[3].title, "3 targets done")
     }
 
@@ -151,7 +151,7 @@ final class WorkbenchNotificationPolicyTests: XCTestCase {
         let notices = Policy.decide(previous: snapshot(asks: [3: ask("Old")]),
                                     current: snapshot(asks: [3: ask("Old"), 4: ask("Review the plan")]))
         XCTAssertEqual(notices.map(\.kind), [.askOpened], "only the ask the previous poll did not see")
-        XCTAssertEqual(notices.first?.title, "Агент просит: Review the plan")
+        XCTAssertEqual(notices.first?.title, "Agent asks: Review the plan")
         XCTAssertEqual(notices.first?.body, "acme")
         XCTAssertEqual(notices.first?.route, WorkbenchRoute(projectID: 1, pane: .terminal, subjectID: 5, askID: 4))
         XCTAssertEqual(notices.first?.identifier, "project-1-askOpened-4")
@@ -167,12 +167,12 @@ final class WorkbenchNotificationPolicyTests: XCTestCase {
 
     func testTwoAsksStayIndividualAndThreeCoalesce() {
         let two = Policy.decide(previous: snapshot(), current: snapshot(asks: [1: ask("A"), 2: ask("B")]))
-        XCTAssertEqual(two.map(\.title), ["Агент просит: A", "Агент просит: B"])
+        XCTAssertEqual(two.map(\.title), ["Agent asks: A", "Agent asks: B"])
 
         let three = Policy.decide(previous: snapshot(), current: snapshot(asks: [1: ask("A"), 2: ask("B"), 3: ask("C")]))
         XCTAssertEqual(three.count, 1)
         XCTAssertEqual(three.first?.kind, .askOpened)
-        XCTAssertEqual(three.first?.title, "Ждёт тебя 3")
+        XCTAssertEqual(three.first?.title, "Waiting for you (3)")
         XCTAssertEqual(three.first?.route, WorkbenchRoute(projectID: 1, pane: .board))
     }
 
@@ -201,6 +201,6 @@ final class WorkbenchNotificationPolicyTests: XCTestCase {
         let saved = try JSONDecoder().decode(Policy.Snapshot.self, from: JSONEncoder().encode(current.persisted))
         XCTAssertTrue(saved.asksKnown)
         XCTAssertEqual(Policy.decide(previous: saved, current: snapshot(asks: [1: ask("A"), 2: ask("B"), 9: ask("New")]))
-            .map(\.title), ["Агент просит: New"])
+            .map(\.title), ["Agent asks: New"])
     }
 }

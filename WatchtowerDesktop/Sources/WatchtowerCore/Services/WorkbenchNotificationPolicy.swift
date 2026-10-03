@@ -196,7 +196,7 @@ package enum WorkbenchNotificationPolicy {
             let route = ask.sessionID.map {
                 WorkbenchRoute(projectID: current.projectID, pane: .terminal, subjectID: $0, askID: id)
             } ?? WorkbenchRoute(projectID: current.projectID, pane: .board, askID: id)
-            return notice(.askOpened, current, title: "Агент просит: \(ask.title)", body: current.projectName,
+            return notice(.askOpened, current, title: "Agent asks: \(ask.title)", body: current.projectName,
                           route: route, key: "\(id)")
         }
     }
@@ -238,8 +238,7 @@ package enum WorkbenchNotificationPolicy {
     private static func summaryTitle(_ kind: WorkbenchNoticeKind, count: Int) -> String {
         switch kind {
         case .agentAsks: "\(count) agent questions"
-        // The asks stack's own header (spec 2026-10-03 Part 8).
-        case .askOpened: "Ждёт тебя \(count)"
+        case .askOpened: "Waiting for you (\(count))"
         case .targetDone: "\(count) targets done"
         case .actionAwaitsApproval: "\(count) proposals await your approval"
         }

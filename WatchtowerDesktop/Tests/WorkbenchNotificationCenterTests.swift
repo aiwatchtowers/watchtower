@@ -141,7 +141,7 @@ final class WorkbenchNotificationCenterTests: XCTestCase {
             return (session, try TestDatabase.insertOwnerAsk(d, projectID: pid, sessionID: session, title: "Review the plan"))
         }
         await center.poll()
-        XCTAssertEqual(notifier.sent.map(\.title), ["Агент просит: Review the plan"])
+        XCTAssertEqual(notifier.sent.map(\.title), ["Agent asks: Review the plan"])
         XCTAssertEqual(notifier.sent.first?.route, WorkbenchRoute(projectID: projectID, pane: .terminal, subjectID: session, askID: ask))
         await center.poll()
         XCTAssertEqual(notifier.sent.count, 1, "still open: no repeat")
@@ -160,7 +160,7 @@ final class WorkbenchNotificationCenterTests: XCTestCase {
         center.seedBaseline(project: try XCTUnwrap(fetched))
         try await write { _ = try TestDatabase.insertOwnerAsk($0, projectID: self.projectID, title: "Which stack?") }
         await center.poll()
-        XCTAssertEqual(notifier.sent.map(\.title), ["Агент просит: Which stack?"])
+        XCTAssertEqual(notifier.sent.map(\.title), ["Agent asks: Which stack?"])
 
         // Without a seed, the first poll baselines silently.
         notifier = RecordingWorkbenchNotifier()
