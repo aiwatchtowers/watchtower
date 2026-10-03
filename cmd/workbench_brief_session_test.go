@@ -74,6 +74,47 @@ func TestProjectBrief_HookRecordsTheSessionIDAfterClear(t *testing.T) {
 	}
 }
 
+// storeAgentState gives the fixture row a state from a previous run.
+func storeAgentState(t *testing.T, database *db.DB, projectID, rowID int64, sessionID string) {
+	t.Helper()
+	ok, err := database.SetTerminalAgentState(rowID, projectID, sessionID, "waiting", time.Now().Add(-time.Minute), "")
+	require.NoError(t, err)
+	require.True(t, ok)
+}
+
+// Board #312: a launch or a resume is a new process run, so the previous
+// run's agent state goes — after the id moved, so a resume onto another
+// conversation clears too. /clear and compaction keep it (the same run), and
+// a nested `claude -p` (another id) clears nothing. The brief is unchanged.
+func TestProjectBrief_HookClearsTheAgentStateOnANewRun(t *testing.T) {
+	for _, tc := range []struct {
+		name, source, sessionID string
+		cleared                 bool
+	}{
+		{"startup", "startup", briefLaunchID, true},
+		{"resume", "resume", briefLaunchID, true},
+		{"resume onto another conversation", "resume", briefClearedID, true},
+		{"clear", "clear", briefClearedID, false},
+		{"compact", "compact", briefLaunchID, false},
+		{"nested session", "startup", briefClearedID, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			database, pid, row := briefSessionFixture(t)
+			storeAgentState(t, database, pid, row, briefLaunchID)
+			t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+			want, _ := runBriefHook(t, pid, "") // the brief without a payload
+
+			out, errOut := runBriefHook(t, pid, hookPayload(tc.source, tc.sessionID))
+
+			s, err := database.GetTerminalSession(row)
+			require.NoError(t, err)
+			assert.Equal(t, !tc.cleared, s.AgentState.Valid, "agent state kept")
+			assert.Equal(t, want, out, "the brief is byte-identical")
+			assert.Empty(t, errOut)
+		})
+	}
+}
+
 // The dual path's other half is TerminalLaunch.sessionRowEnv.
 func TestTerminalSessionEnvName(t *testing.T) {
 	assert.Equal(t, "WATCHTOWER_TERMINAL_SESSION_ID", terminalSessionEnv)

@@ -222,7 +222,8 @@ struct WorkbenchPageView: View {
 
     private func repairHelp(_ status: WorkbenchInstallStatus) -> String {
         "Skill \(status.skillDisplay) · hook \(status.hook ? "on" : "missing") · "
-            + "drift hook \(status.stopHook ? "on" : "missing") · MCP \(status.mcp ? "on" : "missing")"
+            + "drift hook \(status.stopHook ? "on" : "missing") · "
+            + "state hooks \(status.stateHooks ? "on" : "missing") · MCP \(status.mcp ? "on" : "missing")"
     }
 
     /// Repair cannot register the MCP server without `claude`: a warning

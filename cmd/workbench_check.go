@@ -43,7 +43,8 @@ var workbenchCheckCmd = &cobra.Command{
 		"--stop-hook is the Claude Code Stop hook installed by `integrate claude-code --workbench N`:\n" +
 		"it reads the hook input on stdin, runs offline, and asks the agent to fix the board\n" +
 		"(once per stop) when git certainly disagrees with it — never for stale or\n" +
-		"done_but_unmerged. It always exits 0. The check never runs git fetch.",
+		"done_but_unmerged. In a Desktop terminal it also records that the session waits for\n" +
+		"you when it lets the turn end. It always exits 0. The check never runs git fetch.",
 	// No root schema/config pre-run: in --stop-hook mode a broken config must
 	// not fail the hook (the workbench brief precedent); the DB is opened by
 	// the command itself.
@@ -173,7 +174,8 @@ func printCheckReport(w io.Writer, rep workbenchcheck.Report) {
 
 // stopHookInput is the part of Claude Code's Stop hook input we read.
 type stopHookInput struct {
-	StopHookActive bool `json:"stop_hook_active"`
+	SessionID      string `json:"session_id"`
+	StopHookActive bool   `json:"stop_hook_active"`
 }
 
 // stopHookOutput blocks the stop and hands reason back to the agent.
@@ -191,6 +193,12 @@ type stopHookOutput struct {
 // hook blocked this stop, so this one never blocks again: the agent gets one
 // chance to fix the board, never an endless loop. vocab names the skill the
 // folder's install has (the reason points the agent at it).
+//
+// In a Desktop terminal (the terminal env var set) the hook also records
+// "waiting" on the session's row whenever it lets the turn end: Claude Code
+// runs an event's hooks in parallel, so only the process that decides the
+// block knows whether the turn really ended. That write comes after the
+// drift output, never changes stdout, and a failure is one stderr line.
 func runStopHook(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, rawID string, vocab vocabulary) {
 	defer func() {
 		// A panic would exit 2, which for a Stop hook means "block and feed
@@ -199,48 +207,130 @@ func runStopHook(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer,
 			fmt.Fprintf(stderr, "watchtower: board drift check failed: %v\n", r)
 		}
 	}()
+	at := hookNow()
 	inCtx, cancelIn := context.WithTimeout(ctx, stopHookStdinWait)
-	in, err := readHookInput[stopHookInput](inCtx, stdin)
+	// The session state's cap: Stop carries last_assistant_message, and a
+	// cut-off input would lose the "waiting" write.
+	in, err := readHookInputLimit[stopHookInput](inCtx, stdin, sessionStateStdinLimit)
 	cancelIn()
-	if err != nil || in.StopHookActive {
+	if err != nil {
+		if _, inTerminal := os.LookupEnv(terminalSessionEnv); inTerminal && !errors.Is(err, io.EOF) {
+			fmt.Fprintf(stderr, "watchtower: session state not recorded: reading the hook input: %v\n", err)
+		}
 		return
 	}
 	id, err := strconv.ParseInt(strings.TrimSpace(rawID), 10, 64)
 	if err != nil || id <= 0 {
-		fmt.Fprintf(stderr, "watchtower: board drift check skipped: invalid %s %q\n", workbenchFlagName(vocab.Legacy), rawID)
+		stopHookInvalidID(stderr, in, rawID, vocab)
 		return
 	}
-	// Not under the hook's own budget: db.Open may be applying a migration,
-	// which our deadline must never cut off part-way (Claude Code's hook
-	// timeout still bounds the whole run).
-	_, database, err := openJiraCmdDB()
-	if err != nil {
-		fmt.Fprintf(stderr, "watchtower: board drift check skipped: %v\n", err)
-		return
+	// database is nil until opened; the state write opens its own then.
+	var database *db.DB
+	defer func() {
+		if database != nil {
+			database.Close()
+		}
+	}()
+	if !in.StopHookActive {
+		// Not under the hook's own budget: db.Open may be applying a migration,
+		// which our deadline must never cut off part-way (Claude Code's hook
+		// timeout still bounds the whole run).
+		if _, database, err = openJiraCmdDB(); err != nil {
+			fmt.Fprintf(stderr, "watchtower: board drift check skipped%s: %v\n", stopStateLost(in.SessionID), err)
+			return
+		}
+		if blocked := stopHookDrift(ctx, stdout, stderr, database, id, vocab); blocked {
+			return
+		}
 	}
-	defer database.Close()
+	recordStopAgentState(stderr, database, id, in.SessionID, at)
+}
+
+// stopHookDrift runs the drift check and prints the block JSON when git
+// certainly disagrees with the board; true when it blocked the stop.
+func stopHookDrift(ctx context.Context, stdout, stderr io.Writer, database *db.DB, id int64, vocab vocabulary) bool {
 	ctx, cancel := context.WithTimeout(ctx, stopHookBudget)
 	defer cancel()
 	rep, err := checkWorkbench(ctx, database, id, workbenchcheck.Options{})
 	switch {
 	case errors.Is(err, db.ErrWorkbenchNotFound):
-		return // a deleted workbench's leftover hook: nothing to say
+		return false // a deleted workbench's leftover hook: nothing to say
 	case err != nil:
 		fmt.Fprintf(stderr, "watchtower: board drift check skipped: %v\n", err)
-		return
+		return false
 	case rep.Incomplete:
 		fmt.Fprintf(stderr, "watchtower: board drift check ran out of time after %s; only part of the board was checked\n", stopHookBudget)
 	}
 	findings := rep.BlockingFindings()
 	if len(findings) == 0 {
-		return
+		return false
 	}
 	_ = json.NewEncoder(stdout).Encode(stopHookOutput{Decision: "block", Reason: stopHookReason(id, findings, vocab)})
+	return true
+}
+
+// stopHookInvalidID reports a bad --workbench: the drift check it skips
+// (never on the continued turn, which checks nothing) and the state write it
+// loses in a Desktop terminal.
+func stopHookInvalidID(stderr io.Writer, in stopHookInput, rawID string, vocab vocabulary) {
+	flag := workbenchFlagName(vocab.Legacy)
+	switch {
+	case !in.StopHookActive:
+		fmt.Fprintf(stderr, "watchtower: board drift check skipped%s: invalid %s %q\n", stopStateLost(in.SessionID), flag, rawID)
+	case stopStateExpected(in.SessionID):
+		fmt.Fprintf(stderr, "watchtower: session state not recorded: invalid %s %q\n", flag, rawID)
+	}
+}
+
+// stopStateLost is the drift-skipped line's suffix when the state write is
+// lost with it.
+func stopStateLost(sessionID string) string {
+	if stopStateExpected(sessionID) {
+		return " and session state not recorded"
+	}
+	return ""
+}
+
+// stopStateExpected: the Stop hook would record the session state (a
+// Desktop terminal and a payload naming its conversation), so a failure
+// before the write says the state was lost too.
+func stopStateExpected(sessionID string) bool {
+	_, inTerminal := os.LookupEnv(terminalSessionEnv)
+	return inTerminal && sessionID != ""
+}
+
+// recordStopAgentState records "waiting" for a turn the Stop hook let end.
+// Outside a Desktop terminal it does nothing and opens nothing; database is
+// the hook's own handle, or nil to open one.
+func recordStopAgentState(stderr io.Writer, database *db.DB, workbenchID int64, sessionID string, at time.Time) {
+	rowID, ok, err := terminalSessionRowID()
+	if !ok || (err == nil && sessionID == "") {
+		return
+	}
+	if err == nil && database == nil {
+		var opened *db.DB
+		if _, opened, err = openJiraCmdDB(); err == nil {
+			defer opened.Close()
+			database = opened
+		}
+	}
+	if err == nil {
+		state, onlyFrom, _ := agentStateFor("Stop", "")
+		err = recordAgentState(database, rowID, workbenchID, sessionID, state, onlyFrom, at)
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "watchtower: session state not recorded: %v\n", err)
+	}
 }
 
 // readHookInput decodes a hook's JSON input from stdin, giving up at ctx's
 // deadline (a run from a terminal may never send one).
 func readHookInput[T any](ctx context.Context, stdin io.Reader) (T, error) {
+	return readHookInputLimit[T](ctx, stdin, hookStdinLimit)
+}
+
+// readHookInputLimit is readHookInput reading at most limit bytes.
+func readHookInputLimit[T any](ctx context.Context, stdin io.Reader, limit int64) (T, error) {
 	type result struct {
 		in  T
 		err error
@@ -248,7 +338,7 @@ func readHookInput[T any](ctx context.Context, stdin io.Reader) (T, error) {
 	ch := make(chan result, 1)
 	go func() {
 		var in T
-		err := json.NewDecoder(io.LimitReader(stdin, hookStdinLimit)).Decode(&in)
+		err := json.NewDecoder(io.LimitReader(stdin, limit)).Decode(&in)
 		ch <- result{in, err}
 	}()
 	select {

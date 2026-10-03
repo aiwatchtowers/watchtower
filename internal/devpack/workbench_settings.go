@@ -15,8 +15,8 @@ import (
 )
 
 // ErrMalformedSettings means .claude/settings.local.json exists but is not
-// a JSON object whose hooks / hooks.SessionStart / hooks.Stop have the
-// documented types.
+// a JSON object whose hooks and hooks.<event> of every event we own an entry
+// in (ownedHookSpecs) have the documented types.
 // The file is then never written (PROJ-04): the owner fixes it, not us.
 var ErrMalformedSettings = errors.New("malformed .claude/settings.local.json")
 
@@ -25,13 +25,17 @@ var ErrMalformedSettings = errors.New("malformed .claude/settings.local.json")
 // workbench (after the watchtower binary), and the entry's timeout.
 // legacySubcommand is the suffix an install from before the Workbench rename
 // wrote (spec 2026-10-02 §5.4): it is still recognised as ours, so an install
-// replaces that entry in place and a removal takes it out.
+// replaces that entry in place and a removal takes it out. An empty one
+// means the hook is newer than the rename and has no old spelling. async
+// installs the entry as `"async": true`: Claude Code runs it in the
+// background and never waits for it.
 type hookSpec struct {
 	event            string
 	subcommand       string // e.g. "workbench brief --workbench"; the workbench id follows
 	legacySubcommand string // e.g. "project brief --project"
 	flags            string // appended after the id, e.g. " --stop-hook"
 	timeoutSec       int
+	async            bool
 }
 
 var (
@@ -45,7 +49,23 @@ var (
 	// under this timeout and always exits 0.
 	stopSpec = hookSpec{event: "Stop", subcommand: "workbench check --workbench",
 		legacySubcommand: "project check --project", flags: " --stop-hook", timeoutSec: 15}
+	// stateHookSpecs: the session state the Desktop shows for an embedded
+	// terminal (`workbench session-state` reads the event from its input, so
+	// one command line serves all four). Async, so a prompt or a tool call
+	// never waits for it; the Stop half lives in stopSpec's command.
+	stateHookSpecs = []hookSpec{
+		stateHookSpec("UserPromptSubmit"),
+		stateHookSpec("Notification"),
+		stateHookSpec("PostToolUse"),
+		stateHookSpec("StopFailure"),
+	}
+	// ownedHookSpecs is every event the workbench install owns an entry in.
+	ownedHookSpecs = append([]hookSpec{sessionStartSpec, stopSpec}, stateHookSpecs...)
 )
+
+func stateHookSpec(event string) hookSpec {
+	return hookSpec{event: event, subcommand: "workbench session-state --workbench", timeoutSec: 5, async: true}
+}
 
 // command is the hook's command line for bin and workbenchID. Claude Code
 // runs it through a shell, so a binary path with spaces (the CLI store sits
@@ -58,7 +78,12 @@ func (h hookSpec) suffix(workbenchID int64) string {
 	return " " + h.subcommand + " " + strconv.FormatInt(workbenchID, 10) + h.flags
 }
 
+// legacySuffix is "" for a hook with no pre-rename spelling, which no
+// command matches.
 func (h hookSpec) legacySuffix(workbenchID int64) string {
+	if h.legacySubcommand == "" {
+		return ""
+	}
 	return " " + h.legacySubcommand + " " + strconv.FormatInt(workbenchID, 10) + h.flags
 }
 
@@ -81,6 +106,22 @@ func InstallSessionStartHook(dir, command string, projectID int64) (bool, error)
 // board drift check (PROJ-07), under the same PROJ-04 rules.
 func InstallStopHook(dir, command string, projectID int64) (bool, error) {
 	return installHook(dir, stopSpec, command, projectID)
+}
+
+// InstallStateHooks installs the session state hooks (stateHookSpecs) for
+// workbenchID running bin, one entry per event, under the PROJ-04 rules;
+// changed is true when any was added or repaired. A malformed file is
+// reported once and none is attempted.
+func InstallStateHooks(dir, bin string, workbenchID int64) (bool, error) {
+	changed := false
+	for _, spec := range stateHookSpecs {
+		c, err := installHook(dir, spec, spec.command(bin, workbenchID), workbenchID)
+		if err != nil {
+			return changed, err
+		}
+		changed = changed || c
+	}
+	return changed, nil
 }
 
 func installHook(dir string, spec hookSpec, command string, projectID int64) (bool, error) {
@@ -115,6 +156,20 @@ func RemoveSessionStartHook(dir string, projectID int64) (bool, error) {
 // RemoveStopHook is RemoveSessionStartHook for the Stop hook (PROJ-02/04).
 func RemoveStopHook(dir string, projectID int64) (bool, error) {
 	return removeHook(dir, stopSpec, projectID)
+}
+
+// RemoveStateHooks removes every session state hook of workbenchID
+// (PROJ-02/04); the owner's own entries under those events stay.
+func RemoveStateHooks(dir string, workbenchID int64) (bool, error) {
+	changed := false
+	for _, spec := range stateHookSpecs {
+		c, err := removeHook(dir, spec, workbenchID)
+		if err != nil {
+			return changed, err
+		}
+		changed = changed || c
+	}
+	return changed, nil
 }
 
 func removeHook(dir string, spec hookSpec, projectID int64) (bool, error) {
@@ -157,6 +212,18 @@ func HasSessionStartHook(dir string, projectID int64) (bool, error) {
 // HasStopHook is HasSessionStartHook for the Stop hook.
 func HasStopHook(dir string, projectID int64) (bool, error) {
 	return hasHook(dir, stopSpec, projectID)
+}
+
+// HasStateHooks reports whether every session state hook of workbenchID is
+// installed; one missing is false.
+func HasStateHooks(dir string, workbenchID int64) (bool, error) {
+	for _, spec := range stateHookSpecs {
+		ok, err := hasHook(dir, spec, workbenchID)
+		if err != nil || !ok {
+			return false, err
+		}
+	}
+	return true, nil
 }
 
 func hasHook(dir string, spec hookSpec, projectID int64) (bool, error) {
@@ -212,7 +279,7 @@ func readSettings(file string) (map[string]any, os.FileMode, bool, error) {
 // wrong shape, so a file one install step refuses is refused — and left
 // byte-identical — by every step (PROJ-04).
 func eventGroupsOf(settings map[string]any, file, event string) (map[string]any, []any, error) {
-	for _, spec := range []hookSpec{sessionStartSpec, stopSpec} {
+	for _, spec := range ownedHookSpecs {
 		if _, _, err := rawEventGroups(settings, file, spec.event); err != nil {
 			return nil, nil, err
 		}
@@ -272,6 +339,9 @@ func looksLikeLegacyHook(cmd string, spec hookSpec, projectID int64) bool {
 }
 
 func endsInOurCommand(cmd, suffix string) bool {
+	if suffix == "" {
+		return false
+	}
 	bin, ok := strings.CutSuffix(cmd, suffix)
 	if !ok || bin == "" {
 		return false
@@ -429,11 +499,11 @@ func upsertOurHook(groups []any, spec hookSpec, projectID int64, command string)
 		out = append(out, cp)
 	}
 	if !found {
-		out = append(out, map[string]any{"hooks": []any{map[string]any{
-			"type":    "command",
-			"command": command,
-			"timeout": spec.timeoutSec,
-		}}})
+		h := map[string]any{"type": "command", "command": command, "timeout": spec.timeoutSec}
+		if spec.async {
+			h["async"] = true
+		}
+		out = append(out, map[string]any{"hooks": []any{h}})
 		changed = true
 	}
 	return out, changed

@@ -54,11 +54,7 @@ struct SessionSwitcherPopover: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         let rows = SessionSwitcherPresentation.matching(
-            SessionSwitcherPresentation.rows(
-                vm.orderedSessions(projectID: project.id),
-                liveIDs: vm.terminalCenter?.liveIDs ?? [], now: vm.now()
-            ),
-            query: query
+            vm.sessionRows(vm.orderedSessions(projectID: project.id)), query: query
         )
         if rows.isEmpty {
             if !query.trimmingCharacters(in: .whitespaces).isEmpty {
@@ -98,10 +94,9 @@ struct SessionSwitcherRow: View {
     let onSelect: () -> Void
 
     var body: some View {
-        let running = row.state == .running
         Button(action: onSelect) {
             HStack(spacing: 6) {
-                SessionLiveDot(isLive: running)
+                SessionLiveDot(state: row.state)
                     .frame(width: 12)
                 Text(row.session.title)
                     .font(.callout.weight(isCurrent ? .semibold : .regular))
@@ -112,7 +107,13 @@ struct SessionSwitcherRow: View {
                 }
                 Spacer(minLength: 4)
                 if let caption = row.caption {
-                    Text(caption).font(.caption2).foregroundStyle(.secondary).lineLimit(1).fixedSize()
+                    // A live caption repeats the dot's label for VoiceOver.
+                    Text(caption)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .fixedSize()
+                        .accessibilityHidden(row.state.isLive)
                 }
                 if let shortcut = row.shortcut {
                     Text("⌘\(shortcut)").font(.caption2).foregroundStyle(.secondary).fixedSize()

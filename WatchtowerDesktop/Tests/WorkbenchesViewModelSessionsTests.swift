@@ -737,12 +737,12 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         await vm.reload()
         await vm.loadSessions(projectID: nil)
         XCTAssertEqual(vm.standaloneSessions.map(\.id), [shell.id], "a legacy closed terminal is listed")
-        XCTAssertFalse(vm.isLive(shell))
+        XCTAssertFalse(vm.sessionState(shell).isLive)
 
         await vm.selectStandalone(shell)
 
         XCTAssertEqual(vm.selectedStandalone?.id, shell.id)
-        XCTAssertTrue(vm.isLive(shell))
+        XCTAssertTrue(vm.sessionState(shell).isLive)
         XCTAssertEqual(launches.count, 1)
     }
 
@@ -930,7 +930,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
 
         await vm.showInPane(.board, item: .session(closed.id), projectID: p)
         XCTAssertEqual(vm.layout.visiblePanes, [.session(closed.id), .documents], "the picked pane, not the secondary")
-        XCTAssertTrue(vm.isLive(try XCTUnwrap(vm.sessions.first { $0.id == closed.id })),
+        XCTAssertTrue(vm.sessionState(try XCTUnwrap(vm.sessions.first { $0.id == closed.id })).isLive,
                       "a session closed by an older build resumes like any not running one")
         XCTAssertTrue(launches.last?.args.last?.contains("--resume") == true)
 
@@ -940,7 +940,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         await vm.newSession(inPane: .session(closed.id), projectID: p)
         let fresh = try XCTUnwrap(vm.sessions.first { $0.id != closed.id })
         XCTAssertEqual(vm.layout.visiblePanes, [.session(fresh.id), .board])
-        XCTAssertTrue(vm.isLive(try XCTUnwrap(vm.sessions.first { $0.id == closed.id })), "replacing a pane keeps its process")
+        XCTAssertTrue(vm.sessionState(try XCTUnwrap(vm.sessions.first { $0.id == closed.id })).isLive, "replacing a pane keeps its process")
     }
 
     /// The page header's buttons: Board / Documents swap the pane beside the
@@ -1063,7 +1063,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         XCTAssertEqual(vm.layout.expanded, .session(row.id))
         await vm.startFresh(row, placement: .inPlace)
         XCTAssertEqual(vm.layout.expanded, .session(row.id))
-        XCTAssertTrue(vm.isLive(row))
+        XCTAssertTrue(vm.sessionState(row).isLive)
     }
 
     /// A pane picked from a menu that left the layout while the session
@@ -1099,6 +1099,100 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
 
         XCTAssertEqual(vm.layout(projectID: p).visiblePanes, [.session(row.id)])
         XCTAssertTrue(launches.isEmpty, "a deep link starts nothing")
+    }
+
+    /// A session notice's click (board #312): the deep link's subject is
+    /// that session, drilled into and on screen — not the live-else-latest
+    /// one — also when it was created after the last read.
+    func testTerminalDeepLinkWithASubjectShowsThatSession() async throws {
+        let p = try await workbenchWithFolder()
+        let vm = makeVM()
+        let latest = try await liveSession(p, "latest")
+        await vm.open(latest)
+        let waiting = try await liveSession(p, "waiting")
+        await vm.open(waiting)
+        await vm.open(latest)
+        XCTAssertEqual(vm.layout(projectID: p).visiblePanes, [.session(latest.id)])
+        let later = try await liveSession(p, "created since the read")
+        try await pool.write { db in
+            try db.execute(sql: "UPDATE terminal_sessions SET last_active_at = '2000-01-01T00:00:00Z' WHERE id = ?",
+                           arguments: [later.id])
+        }
+        let launchesBefore = launches.count
+
+        await vm.revealTerminal(projectID: p, sessionID: waiting.id)
+        XCTAssertEqual(vm.drilledWorkbenchID, p)
+        XCTAssertEqual(vm.layout(projectID: p).visiblePanes, [.session(waiting.id)])
+        XCTAssertEqual(launches.count, launchesBefore, "a live session is shown, not started again")
+
+        await vm.revealTerminal(projectID: p, sessionID: later.id)
+        XCTAssertEqual(vm.layout(projectID: p).visiblePanes, [.session(later.id)], "a session missing from the last read is found too")
+    }
+
+    /// The banner click goes through `reveal(_:)`: its `subjectId` reaches
+    /// the terminal reveal, so the waiting session is shown, not the latest.
+    func testTerminalRouteWithASubjectRevealsThatSession() async throws {
+        let p = try await workbenchWithFolder()
+        let vm = makeVM()
+        let latest = try await liveSession(p, "latest")
+        await vm.open(latest)
+        let waiting = try await liveSession(p, "waiting")
+        await vm.open(waiting)
+        await vm.open(latest)
+        XCTAssertEqual(vm.layout(projectID: p).visiblePanes, [.session(latest.id)])
+
+        vm.reveal(WorkbenchRoute(projectID: p, pane: .terminal, subjectID: waiting.id))
+
+        let deadline = ContinuousClock.now + .seconds(3)
+        while vm.layout(projectID: p).visiblePanes != [.session(waiting.id)], ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(vm.layout(projectID: p).visiblePanes, [.session(waiting.id)])
+    }
+
+    /// A stale banner (the session stopped since it was posted) shows that
+    /// session without starting it: a click never launches an agent.
+    func testTerminalDeepLinkToAStoppedSessionStartsNothing() async throws {
+        let p = try await workbenchWithFolder()
+        let vm = makeVM()
+        let live = try await liveSession(p, "live")
+        await vm.open(live)
+        let stopped = try await liveSession(p, "stopped")
+        await vm.open(stopped)
+        processes.last?.exit(0)
+        await vm.open(live)
+        XCTAssertFalse(vm.sessionState(stopped).isLive)
+        let launchesBefore = launches.count
+
+        await vm.revealTerminal(projectID: p, sessionID: stopped.id)
+
+        XCTAssertEqual(vm.drilledWorkbenchID, p)
+        XCTAssertEqual(vm.layout(projectID: p).visiblePanes, [.session(stopped.id)])
+        XCTAssertEqual(launches.count, launchesBefore, "no claude --resume from a banner")
+        XCTAssertFalse(vm.sessionState(stopped).isLive)
+    }
+
+    /// A subject that names no session of the workbench (deleted, or
+    /// another workbench's) falls back to the live-else-latest one.
+    func testTerminalDeepLinkWithAGoneSubjectFallsBack() async throws {
+        let p = try await workbenchWithFolder()
+        let other = try await workbenchWithFolder("other")
+        let foreign = try await insertSession(.init(
+            projectID: other, kind: .claude, title: "foreign", folderPath: acme,
+            claudeSessionID: UUID().uuidString.lowercased()
+        ))
+        let vm = makeVM()
+        let live = try await liveSession(p, "live")
+        await vm.open(live)
+        let gone = try await liveSession(p, "gone")
+        try await pool.write { try TerminalSessionQueries.delete($0, id: gone.id) }
+        let launchesBefore = launches.count
+
+        await vm.revealTerminal(projectID: p, sessionID: gone.id)
+        XCTAssertEqual(vm.layout(projectID: p).visiblePanes, [.session(live.id)])
+        await vm.revealTerminal(projectID: p, sessionID: foreign.id)
+        XCTAssertEqual(vm.layout(projectID: p).visiblePanes, [.session(live.id)])
+        XCTAssertEqual(launches.count, launchesBefore, "the fallback starts nothing")
     }
 
     /// Two overlapping reads, the older one finishing last: the newer list

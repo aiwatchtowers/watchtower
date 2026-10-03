@@ -13,8 +13,15 @@ final class SessionSwitcherPresentationTests: XCTestCase {
         )
     }
 
-    private func rows(_ sessions: [TerminalSession], live: Set<Int64> = []) -> [SessionSwitcherPresentation.Row] {
-        SessionSwitcherPresentation.rows(sessions, liveIDs: live, now: now)
+    private func rows(
+        _ sessions: [TerminalSession],
+        live: Set<Int64> = [],
+        statuses: [Int64: SessionSwitcherPresentation.State] = [:]
+    ) -> [SessionSwitcherPresentation.Row] {
+        let mapped = statuses.mapValues { state in
+            SessionAgentStatus(sessionID: 0, workbenchID: 1, workbenchName: "acme", title: "", state: state, at: "t")
+        }
+        return SessionSwitcherPresentation.rows(sessions, liveIDs: live, statuses: mapped, now: now)
     }
 
     func testOnlyTheFirstNineGetShortcutsInTheGivenOrder() {
@@ -28,6 +35,34 @@ final class SessionSwitcherPresentationTests: XCTestCase {
         let result = rows([session(1, secondsAgo: 3 * 3600)], live: [1])
         XCTAssertEqual(result[0].state, .running)
         XCTAssertNil(result[0].caption)
+    }
+
+    func testLiveCaptionsNameTheAgentState() {
+        let result = rows(
+            [session(1, secondsAgo: 3600), session(2), session(3), session(4)],
+            live: [1, 2, 3, 4],
+            statuses: [1: .working, 2: .waitingForOwner, 3: .needsApproval]
+        )
+        XCTAssertEqual(result.map(\.state), [.working, .waitingForOwner, .needsApproval, .running])
+        XCTAssertEqual(result.map(\.caption), ["working", "waiting for you", "needs approval", nil],
+                       "a live session never carries an age caption")
+        XCTAssertTrue(result.allSatisfy(\.state.isLive))
+    }
+
+    func testAStatusOfASessionNoLongerLiveIsIgnored() {
+        let result = rows([session(1, secondsAgo: 5 * 60 + 3)], statuses: [1: .waitingForOwner])
+        XCTAssertEqual(result[0].state, .notStarted)
+        XCTAssertFalse(result[0].state.isLive)
+        XCTAssertEqual(result[0].caption, "not started · 5m")
+    }
+
+    func testStatesKeepShortcutsAndMatching() {
+        let result = rows([session(1, "Board work"), session(2, "Other")], live: [1, 2], statuses: [2: .needsApproval])
+        XCTAssertEqual(result.map(\.shortcut), [1, 2])
+        let matched = SessionSwitcherPresentation.matching(result, query: "other")
+        XCTAssertEqual(matched.map(\.id), [2])
+        XCTAssertEqual(matched.first?.state, .needsApproval)
+        XCTAssertEqual(matched.first?.shortcut, 2)
     }
 
     func testNotStartedCaptionsCarryTheAge() {

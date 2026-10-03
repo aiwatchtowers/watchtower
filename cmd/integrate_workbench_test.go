@@ -130,6 +130,44 @@ func TestIntegrateProjectStatusJSON(t *testing.T) {
 	if got.WorkbenchID != 7 || got.Folder != p.FolderPath || got.Skill != "unchanged" || !got.Hook || !got.MCP || !got.ClaudeFound {
 		t.Fatalf("unexpected status: %+v", got)
 	}
+	if !got.StopHook || !got.StateHooks {
+		t.Fatalf("every hook is installed: %+v", got)
+	}
+}
+
+// state_hooks is false while any one of the session state entries is
+// missing (the Desktop then offers Repair).
+func TestIntegrateWorkbenchStatusJSON_StateHooksFalseWithOneMissing(t *testing.T) {
+	useFakeWorkbenchClaude(t)
+	p := testWorkbench(t)
+	var out bytes.Buffer
+	if err := runWorkbenchInstall(context.Background(), &out, p); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	settings := filepath.Join(p.FolderPath, ".claude", "settings.local.json")
+	b, err := os.ReadFile(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	delete(m["hooks"].(map[string]any), "PostToolUse")
+	b, err = json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(settings, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if err := runWorkbenchStatus(context.Background(), &out, p, true); err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if !strings.Contains(out.String(), `"state_hooks": false`) || !strings.Contains(out.String(), `"stop_hook": true`) {
+		t.Fatalf("status --json must report state_hooks false and stop_hook true:\n%s", out.String())
+	}
 }
 
 func TestIntegrateProjectRejectsGlobalFlags(t *testing.T) {
