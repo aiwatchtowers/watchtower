@@ -5,7 +5,8 @@
 #   - the notices file names every grammar module the release build compiles
 #     in (internal/codeindex/grammar_<id>.go and grammars_min.go), and
 #     carries the licence texts the grammars need: the MIT text, the full
-#     Apache-2.0 text, the Elixir NOTICE and the MPL-2.0 source pointer.
+#     Apache-2.0 text, the Elixir NOTICE, the MPL-2.0 source pointer and
+#     both ICU notices (ICU 58+ and IBM's ICU 1.8.1–57.1).
 #
 # Reads files only — never builds.
 set -euo pipefail
@@ -39,7 +40,8 @@ for marker in \
     'TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION' \
     'Copyright 2021 The Elixir Team' \
     'https://github.com/alaviss/tree-sitter-nim' \
-    'COPYRIGHT AND PERMISSION NOTICE (ICU 58 and later)'; do
+    'COPYRIGHT AND PERMISSION NOTICE (ICU 58 and later)' \
+    'Copyright (c) 1995-2016 International Business Machines Corporation and others'; do
     grep -qF "$marker" "$NOTICES" || fail "THIRD_PARTY_NOTICES.md lacks: $marker"
 done
 [ "$rc" -eq 0 ] && echo "ok: licence texts present"

@@ -124,6 +124,8 @@ both commands so they agree on what "the workbench's files" are:
 - Always skipped: symlinks that leave the folder, files > 2 MB (index) / > 5 MB
   (search, same cap as the editor), files whose first 8 KB contain NUL.
 - Order: as git/the walk yields; consumers do not depend on it.
+- Limit (parked): a non-ignored folder whose every file is git-ignored is
+  walked in full, while `--files` reports those files as ignored.
 
 ---
 
