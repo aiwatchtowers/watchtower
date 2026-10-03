@@ -2,8 +2,8 @@ import GRDB
 
 /// A kind of data a sidebar tab needs before it has anything to show.
 package enum SidebarSource: Sendable {
-    /// Slack or mail (Gmail, IMAP/Outlook) — what Inbox, Catch-Up and
-    /// Statistics are built from.
+    /// Slack or mail (Gmail, IMAP/Outlook) — what Statistics is built from,
+    /// and one of the sources Inbox and Catch-Up accept.
     case messages
     /// A Google account with Calendar, or a CalDAV/ICS calendar.
     case calendar

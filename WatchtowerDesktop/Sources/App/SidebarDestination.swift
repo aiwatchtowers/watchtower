@@ -108,11 +108,11 @@ extension SidebarDestination {
     /// nil = no feature gate (core tabs, and tabs with no single owning
     /// feature — e.g. `.inbox`, which stays reachable even with the
     /// secretary-inbox feature off so its banner and existing situations
-    /// remain visible). Catch-Up is fed by Attention detection, not by Slack
-    /// Digests.
+    /// remain visible). Catch-Up shows a recap built from Attention
+    /// detection or from the digests, so any of the three keeps it.
     var requiredFeatures: [String]? {
         switch self {
-        case .catchUp: ["secretary-inbox"]
+        case .catchUp: ["secretary-inbox", "slack-digests", "stream-digests"]
         case .digests: ["slack-digests", "stream-digests", "ideas"]
         case .ideas: ["ideas"]
         case .memory: ["memory"]
@@ -130,7 +130,9 @@ extension SidebarDestination {
         switch self {
         case .calendar: [.calendar]
         case .boards, .workload, .blockers, .projectMap, .releases: [.jira]
-        case .inbox, .catchUp, .statistics: [.messages]
+        // Inbox and Catch-Up also surface Jira mentions and meeting items.
+        case .inbox, .catchUp: [.messages, .jira, .calendar]
+        case .statistics: [.messages]
         default: nil
         }
     }
@@ -152,7 +154,7 @@ extension SidebarDestination {
     /// or a persisted selection from a previous launch points at a now-hidden
     /// tab), or nil when `current` is still visible and no fallback is
     /// needed: Inbox when it shows, else Workbench, which has no gate at all
-    /// (an install with no message source hides Inbox). Pure — no AppState
+    /// (an install with no source hides Inbox). Pure — no AppState
     /// dependency — so the selection owner can call it both on a live change
     /// and once at appear.
     static func fallbackDestination(

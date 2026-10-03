@@ -29,8 +29,11 @@ goals are `workCommunication`, `tasksAndJira`, `meetings`, `development`.
 **Sidebar visibility.** A tab shows when its feature rule AND its source
 rule hold (`SidebarDestination.isVisible`, `ConnectedSources`): Calendar
 needs a calendar; Boards, Workload, Blockers, Project Map and Releases need
-Jira; Inbox, Catch-Up and Statistics need Slack or mail. Catch-Up follows
-`secretary-inbox`. The quiet "+ Connect Slack, Mail, Jira…" row at the
+Jira; Statistics needs Slack or mail; Inbox and Catch-Up need any source
+(Slack, mail, Jira or a calendar). Inbox has no feature rule; Catch-Up
+needs `secretary-inbox`, `slack-digests` or `stream-digests` on (owner
+decision 2026-10-03, #284). A Jira- or calendar-only install that lands
+on a hidden tab therefore falls back to Inbox. The quiet "+ Connect Slack, Mail, Jira…" row at the
 bottom of the menu names the kinds still missing (Mail = any Google, IMAP
 or CalDAV/ICS source), opens Settings → Connections, and hides for good
 with its × (`sidebar_connect_row_dismissed`).
