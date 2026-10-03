@@ -251,3 +251,36 @@ func TestIsOurHook_AskGuardPromptMarker(t *testing.T) {
 		t.Fatal("a prompt hook matched the command spec")
 	}
 }
+
+// Our AskUserQuestion block sitting in a group with another matcher ("" or
+// "*" would deny every tool) is not reported installed, and an install
+// moves it into a group of its own; the owner's hook in that group stays.
+func TestAskToolBlock_InAnotherMatcherGroupIsRepaired(t *testing.T) {
+	for _, matcher := range []string{`"matcher": "",`, `"matcher": "*",`, ``, `"matcher": "Bash",`} {
+		t.Run(matcher, func(t *testing.T) {
+			dir := t.TempDir()
+			cmd := WorkbenchAskGuardHookCommand("/tmp/acme bin/watchtower", 7)
+			writeTestFile(t, settingsFile(dir), `{"hooks": {"PreToolUse": [{`+matcher+` "hooks": [`+
+				`{"type": "command", "command": "echo owner-pre"}, {"type": "command", "command": "'/tmp/acme bin/watchtower' workbench ask-guard --workbench 7 --pre-tool-use"}]}]}}`)
+			if ok, err := HasAskToolBlockHook(dir, 7); err != nil || ok {
+				t.Fatalf("an entry outside an AskUserQuestion group must not count: ok=%v err=%v", ok, err)
+			}
+			if changed, err := InstallAskGuardHooks(dir, "/tmp/acme bin/watchtower", 7); err != nil || !changed {
+				t.Fatalf("install: changed=%v err=%v", changed, err)
+			}
+			pre := eventGroups(t, decodeSettings(t, dir), "PreToolUse")
+			if len(pre) != 2 || countCommand(pre[:1], "echo owner-pre") != 1 || countCommand(pre[:1], cmd) != 0 {
+				t.Fatalf("the owner's group must keep only the owner's hook, got %#v", pre)
+			}
+			if g := pre[1].(map[string]any); g["matcher"] != "AskUserQuestion" || countCommand(pre[1:], cmd) != 1 {
+				t.Fatalf("ours must move to its own AskUserQuestion group, got %#v", g)
+			}
+			if ok, err := HasAskToolBlockHook(dir, 7); err != nil || !ok {
+				t.Fatalf("after the repair it is installed: ok=%v err=%v", ok, err)
+			}
+			if changed, err := RemoveAskGuardHooks(dir, 7); err != nil || !changed {
+				t.Fatalf("remove: changed=%v err=%v", changed, err)
+			}
+		})
+	}
+}

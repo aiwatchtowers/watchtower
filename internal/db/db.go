@@ -109,10 +109,13 @@ func Open(dbPath string) (*DB, error) {
 
 // OpenExisting opens the database at dbPath for a caller on a hard time
 // budget that only reads — a Claude Code hook the agent waits for. Unlike
-// Open it creates no directory or file, runs no migration (a schema older
-// than the caller's query just fails that query), refuses every write
-// (query_only), and a statement waits at most busy for another process's
-// lock, never Open's 5 s.
+// Open it never creates the directory or the database file (mode=rw),
+// runs no migration and writes no schema (a schema older than the caller's
+// query just fails that query), sets query_only so a statement that writes
+// fails, and a statement waits at most busy for another process's lock,
+// never Open's 5 s. SQLite itself may still create the -wal/-shm sidecars
+// (when no other connection has them open) and checkpoint on close; neither
+// changes the database's content.
 func OpenExisting(dbPath string, busy time.Duration) (*DB, error) {
 	// A file: URI so mode=rw (open, never create) reaches SQLite; the
 	// driver still applies the _pragma params on every connection.

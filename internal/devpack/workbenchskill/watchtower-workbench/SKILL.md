@@ -86,7 +86,7 @@ The board must never lag the work. Watchtower checks it against git: at the end 
 - **A target only partly done** when its branch merges: split it — `create_targets` under it one sub-target for what landed and one for what remains, set the landed one `done` and the remaining one `todo` (or `in_progress`); the parent then follows its children by itself. Move the branch to the remaining sub-target if work continues there, and clear it (`branch: ""`) from the landed one only if it would otherwise read as unmerged.
 - **When the hook reports drift**, fix the board with `update_target` / `create_targets` as the finding says, then finish. For a parent target, fix its sub-targets — its status follows them. If a target is deliberately kept open although its branch merged (a follow-up on the same branch name, say), clear its `branch` — never leave the drift standing.
 - **`done_but_unmerged`** (a done target whose branch is not in the default branch, and no open target still carries that branch) does not stop your turn: `git fetch` if it was merged on GitHub; otherwise merge it, or move the target back to `in_review` until it is merged.
-- **A `stale` finding** (in progress, nothing moved for days) is not a git conflict and does not stop your turn: move the target on if it is finished, or set it `blocked` with an `add_comment` saying what it waits on.
+- **A `stale` finding** (in progress, nothing moved for days) is not a git conflict and does not stop your turn: move the target on if it is finished, or set it `blocked` and say what it waits on — an `ask_owner` when it waits on the owner, an `add_comment` for any other blocker.
 
 ## Blocked, or an owner decision is needed
 

@@ -485,8 +485,24 @@ func hookString(h any, key string) (string, bool) {
 	return v, ok
 }
 
+// hasOurHook counts our entry only in a group whose matcher is spec's: in
+// another group it is not the hook we install (one under matcher "" would
+// fire for every tool), and an install repairs it.
 func hasOurHook(groups []any, spec hookSpec, projectID int64) bool {
-	return anyHook(groups, func(h any) bool { return isOurHook(h, spec, projectID) })
+	for _, g := range groups {
+		m, hs, ok := groupHooks(g)
+		if ok && inOurGroup(m, spec) && slices.ContainsFunc(hs, func(h any) bool { return isOurHook(h, spec, projectID) }) {
+			return true
+		}
+	}
+	return false
+}
+
+// inOurGroup reports whether group m is where spec's entry belongs: any
+// group for a spec without a matcher, otherwise a group whose matcher is
+// exactly spec's.
+func inOurGroup(m map[string]any, spec hookSpec) bool {
+	return spec.matcher == "" || m["matcher"] == spec.matcher
 }
 
 func anyHook(groups []any, match func(h any) bool) bool {
@@ -553,9 +569,10 @@ func LegacyPermissionRules(dir string) (int, error) {
 // recognised by isOurHook is kept and, if it differs, updated in place with
 // its other keys kept; any further one (there should never be more than
 // one, but a hand-edited file could hold a leftover) is dropped as a
-// duplicate. Absent any match, a new group is appended, carrying spec's
-// matcher. changed is false only when exactly one matching entry already
-// held value.
+// duplicate. An entry of ours in a group with another matcher than spec's
+// is dropped too, so it is re-added in a group of its own. Absent any
+// match, a new group is appended, carrying spec's matcher. changed is false
+// only when exactly one matching entry already held value.
 func upsertOurHook(groups []any, spec hookSpec, projectID int64, value string) ([]any, bool) {
 	found := false
 	changed := false
@@ -573,8 +590,8 @@ func upsertOurHook(groups []any, spec hookSpec, projectID int64, value string) (
 				rest = append(rest, h)
 				continue
 			}
-			if found {
-				groupChanged = true // a duplicate stale entry: drop it
+			if found || !inOurGroup(m, spec) {
+				groupChanged = true // a duplicate stale entry, or one in the wrong group: drop it
 				continue
 			}
 			found = true

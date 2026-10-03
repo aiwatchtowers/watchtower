@@ -10,12 +10,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// The directory exists, so SQLite could create the file: only mode=rw
+// keeps it from doing so.
 func TestOpenExisting_NeverCreatesAFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "missing", "watchtower.db")
-	_, err := OpenExisting(path, 100*time.Millisecond)
+	dir := t.TempDir()
+	_, err := OpenExisting(filepath.Join(dir, "watchtower.db"), 100*time.Millisecond)
 	require.Error(t, err)
-	_, statErr := os.Stat(filepath.Dir(path))
-	assert.True(t, os.IsNotExist(statErr), "no directory or file may be created")
+	entries, readErr := os.ReadDir(dir)
+	require.NoError(t, readErr)
+	assert.Empty(t, entries, "no database file may be created")
 }
 
 func TestOpenExisting_ReadsAndRefusesWrites(t *testing.T) {

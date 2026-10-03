@@ -67,7 +67,7 @@ func TestInstallProjectAddsTheStopHookToAnOldInstall(t *testing.T) {
 	}
 	m := decodeSettings(t, folder)
 	stop := stopGroups(t, m)
-	if len(sessionStartGroups(t, m)) != 1 || countCommand(stop, WorkbenchStopHookCommand("/tmp/acme bin/watchtower", 7)) != 1 || len(promptHooks(stop)) != 1 {
+	if len(sessionStartGroups(t, m)) != 1 || len(stop) != 2 || countCommand(stop, WorkbenchStopHookCommand("/tmp/acme bin/watchtower", 7)) != 1 || len(promptHooks(stop)) != 1 {
 		t.Fatalf("expected one entry per event, got %#v", m["hooks"])
 	}
 }
