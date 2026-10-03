@@ -29,6 +29,21 @@ func TestOpen_PathWithQuestionMarkOpensThatFile(t *testing.T) {
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("the database must live at the exact path: %v", err)
 	}
+	// The file at the exact path exists either way once the test hook seeds
+	// it, so read the probe table back off that file through a raw
+	// connection: Open must have written there, not elsewhere.
+	raw, err := sql.Open("sqlite", sqliteDSN(path, ""))
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	t.Cleanup(func() { raw.Close() })
+	var probes int
+	if err := raw.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'dsn_probe'`).Scan(&probes); err != nil {
+		t.Fatalf("read the exact path: %v", err)
+	}
+	if probes != 1 {
+		t.Fatalf("dsn_probe must exist in the file at the exact path, found %d", probes)
+	}
 	if _, err := os.Stat(filepath.Join(dir, "what")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("no database may appear at the path truncated at '?' (stat err %v)", err)
 	}
