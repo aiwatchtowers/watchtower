@@ -13,23 +13,59 @@ package enum AskAnswerError: LocalizedError, Equatable {
     }
 }
 
+/// A list of asks read row by row: a row `OwnerAsk(row:)` refuses (a payload
+/// or answer this app cannot read, e.g. after Go relaxed a card bound) is
+/// left out and named, so it never blanks the others — the way `targetAsks`
+/// and the notification snapshot read raw rows.
+package struct OwnerAskRows: Equatable, Sendable {
+    package var asks: [OwnerAsk]
+    /// The ids of the rows that could not be read, in list order.
+    package var unreadableIDs: [Int64]
+
+    package init(asks: [OwnerAsk] = [], unreadableIDs: [Int64] = []) {
+        self.asks = asks
+        self.unreadableIDs = unreadableIDs
+    }
+
+    /// "1 ask could not be read (#12)." — nil when every row was read.
+    package var problem: String? {
+        guard !unreadableIDs.isEmpty else { return nil }
+        let count = unreadableIDs.count
+        let ids = unreadableIDs.map { "#\($0)" }.joined(separator: ", ")
+        return "\(count) \(count == 1 ? "ask" : "asks") could not be read (\(ids))."
+    }
+
+    static func fetch(_ db: Database, sql: String, arguments: StatementArguments) throws -> OwnerAskRows {
+        var out = OwnerAskRows()
+        for row in try Row.fetchAll(db, sql: sql, arguments: arguments) {
+            do {
+                out.asks.append(try OwnerAsk(row: row))
+            } catch {
+                out.unreadableIDs.append(row["id"])
+            }
+        }
+        return out
+    }
+}
+
 /// Owner asks (spec 2026-10-03 Parts 2 and 8). Go writes `open`, `withdrawn`
 /// and `delivered`; the Desktop's only write is `open → answered` with the
 /// answer, guarded on `status = 'open'` (`answer`).
 package enum OwnerAskQueries {
-    /// The workbench's open asks, oldest first.
-    package static func openAsks(_ db: Database, projectID: Int64) throws -> [OwnerAsk] {
-        try OwnerAsk.fetchAll(
+    /// The workbench's open asks, oldest first, read row by row.
+    package static func openAsks(_ db: Database, projectID: Int64) throws -> OwnerAskRows {
+        try OwnerAskRows.fetch(
             db,
             sql: "SELECT * FROM owner_asks WHERE project_id = ? AND status = 'open' ORDER BY created_at, id",
             arguments: [projectID]
         )
     }
 
-    /// A session's answered, delivered and withdrawn asks, newest first. A
-    /// nil session lists the workbench's asks filed from outside the app.
-    package static func closedAsks(_ db: Database, projectID: Int64, sessionID: Int64?) throws -> [OwnerAsk] {
-        try OwnerAsk.fetchAll(
+    /// A session's answered, delivered and withdrawn asks, newest first, read
+    /// row by row. A nil session lists the workbench's asks filed from
+    /// outside the app.
+    package static func closedAsks(_ db: Database, projectID: Int64, sessionID: Int64?) throws -> OwnerAskRows {
+        try OwnerAskRows.fetch(
             db,
             sql: """
                 SELECT * FROM owner_asks

@@ -293,6 +293,30 @@ final class OwnerAsksViewModelTests: XCTestCase {
 
     // MARK: - Polling
 
+    /// One ask the app cannot read leaves the stack listing the others and
+    /// names the broken one, instead of an error over the whole stack.
+    func testAnUndecodableAskIsNamedAndTheOthersStillList() async throws {
+        let (p, _, good) = try await seed()
+        let bad = try await pool.write { d in
+            try TestDatabase.insertOwnerAsk(d, projectID: p, payload: #"{"questions":[{"question":"One","options":[{"label":"A"}]}]}"#)
+        }
+        let vm = makeVM()
+        await vm.asks.load(projectID: p)
+        XCTAssertEqual(vm.asks.openAsks[p]?.map(\.id), [good])
+        XCTAssertEqual(vm.asks.loadErrors[p], "1 ask could not be read (#\(bad)).")
+
+        await vm.asks.loadClosed(projectID: p, sessionID: nil)
+        XCTAssertNil(vm.asks.closedErrors[.init(projectID: p, sessionID: nil)], "nothing broken among the closed ones")
+        try await pool.write { d in
+            try d.execute(sql: "UPDATE owner_asks SET status = 'withdrawn', withdrawn_reason = 'agent' WHERE id = ?", arguments: [bad])
+        }
+        await vm.asks.load(projectID: p)
+        XCTAssertNil(vm.asks.loadErrors[p], "the broken ask left the open list")
+        await vm.asks.loadClosed(projectID: p, sessionID: nil)
+        XCTAssertEqual(vm.asks.closedLists[.init(projectID: p, sessionID: nil)], [])
+        XCTAssertEqual(vm.asks.closedErrors[.init(projectID: p, sessionID: nil)], "1 ask could not be read (#\(bad)).")
+    }
+
     func testThePollReloadsOnlyWhenTheFingerprintChanges() async throws {
         let (p, _, askID) = try await seed()
         let vm = makeVM()

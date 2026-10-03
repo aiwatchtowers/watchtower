@@ -34,7 +34,7 @@ final class OwnerAskQueriesTests: XCTestCase {
                 INSERT INTO owner_asks (project_id, kind, title, payload)
                 VALUES (?, 'check', 'Try it', '{"focus":[],"questions":[],"checklist":[{"text":"Launch"},{"id":"q","text":"Quit","hint":"Cmd-Q"}]}')
                 """, arguments: [p])
-            let asks = try OwnerAskQueries.openAsks(d, projectID: p)
+            let asks = try OwnerAskQueries.openAsks(d, projectID: p).asks
             XCTAssertEqual(asks.map(\.kind), [.review, .check])
             let review = asks[0]
             XCTAssertEqual(review.id, id)
@@ -51,11 +51,30 @@ final class OwnerAskQueriesTests: XCTestCase {
         }
     }
 
-    func testABrokenPayloadIsAnErrorNotAnAskWithoutQuestions() throws {
+    /// A payload this app cannot read is never shown as an ask without
+    /// questions: the row is left out and named, and the good rows around it
+    /// still list — open and closed alike.
+    func testABrokenPayloadIsLeftOutAndNamedTheOthersStillList() throws {
+        let broken = #"{"questions":[{"question":"Only one option","options":[{"label":"A"}]}]}"#
         try db.write { d in
             let p = try TestDatabase.insertWorkbench(d)
-            try TestDatabase.insertOwnerAsk(d, projectID: p, payload: #"{"questions":[{"question":"Only one option","options":[{"label":"A"}]}]}"#)
-            XCTAssertThrowsError(try OwnerAskQueries.openAsks(d, projectID: p))
+            let first = try TestDatabase.insertOwnerAsk(d, projectID: p, createdAt: stamp(minutesAgo: 3))
+            let bad = try TestDatabase.insertOwnerAsk(d, projectID: p, payload: broken, createdAt: stamp(minutesAgo: 2))
+            let last = try TestDatabase.insertOwnerAsk(d, projectID: p, createdAt: stamp(minutesAgo: 1))
+            let open = try OwnerAskQueries.openAsks(d, projectID: p)
+            XCTAssertEqual(open.asks.map(\.id), [first, last])
+            XCTAssertEqual(open.unreadableIDs, [bad])
+            XCTAssertEqual(open.problem, "1 ask could not be read (#\(bad)).")
+
+            let badClosed = try TestDatabase.insertOwnerAsk(d, projectID: p, payload: broken, status: "withdrawn", withdrawnReason: "agent")
+            let badAnswer = try TestDatabase.insertOwnerAsk(d, projectID: p, status: "answered", answer: "not json")
+            let goodClosed = try TestDatabase.insertOwnerAsk(d, projectID: p, status: "withdrawn", withdrawnReason: "agent",
+                                                             createdAt: stamp(minutesAgo: 10))
+            let closed = try OwnerAskQueries.closedAsks(d, projectID: p, sessionID: nil)
+            XCTAssertEqual(closed.asks.map(\.id), [goodClosed])
+            XCTAssertEqual(Set(closed.unreadableIDs), [badClosed, badAnswer])
+            XCTAssertTrue(closed.problem?.hasPrefix("2 asks could not be read (#") == true, closed.problem ?? "nil")
+            XCTAssertThrowsError(try OwnerAskQueries.ask(d, id: bad, projectID: p), "a single read still refuses the row")
         }
     }
 
@@ -67,7 +86,7 @@ final class OwnerAskQueriesTests: XCTestCase {
             let older = try TestDatabase.insertOwnerAsk(d, projectID: p, title: "older", createdAt: stamp(minutesAgo: 2))
             try TestDatabase.insertOwnerAsk(d, projectID: p, status: "withdrawn")
             try TestDatabase.insertOwnerAsk(d, projectID: other)
-            XCTAssertEqual(try OwnerAskQueries.openAsks(d, projectID: p).map(\.id), [older, newer])
+            XCTAssertEqual(try OwnerAskQueries.openAsks(d, projectID: p).asks.map(\.id), [older, newer])
         }
     }
 
@@ -83,10 +102,10 @@ final class OwnerAskQueriesTests: XCTestCase {
             try TestDatabase.insertOwnerAsk(d, projectID: p, sessionID: s)
             let outside = try TestDatabase.insertOwnerAsk(d, projectID: p, status: "delivered", answer: answer)
 
-            let closed = try OwnerAskQueries.closedAsks(d, projectID: p, sessionID: s)
+            let closed = try OwnerAskQueries.closedAsks(d, projectID: p, sessionID: s).asks
             XCTAssertEqual(closed.map(\.id), [withdrawn, answered])
             XCTAssertEqual(closed[1].answer?.answers, [.init(id: "1", labels: ["A"])])
-            XCTAssertEqual(try OwnerAskQueries.closedAsks(d, projectID: p, sessionID: nil).map(\.id), [outside])
+            XCTAssertEqual(try OwnerAskQueries.closedAsks(d, projectID: p, sessionID: nil).asks.map(\.id), [outside])
         }
     }
 
@@ -109,7 +128,7 @@ final class OwnerAskQueriesTests: XCTestCase {
             XCTAssertThrowsError(try OwnerAskQueries.answer(d, askID: id, projectID: p, with: OwnerAskAnswer(verdict: .changes))) {
                 XCTAssertEqual($0 as? AskAnswerError, .notOpen, "a second answer is refused")
             }
-            XCTAssertEqual(try OwnerAskQueries.closedAsks(d, projectID: p, sessionID: nil).first?.answer, answer)
+            XCTAssertEqual(try OwnerAskQueries.closedAsks(d, projectID: p, sessionID: nil).asks.first?.answer, answer)
         }
     }
 
@@ -135,7 +154,7 @@ final class OwnerAskQueriesTests: XCTestCase {
             XCTAssertThrowsError(try OwnerAskQueries.answer(d, askID: open, projectID: other, with: answer)) {
                 XCTAssertEqual($0 as? AskAnswerError, .notOpen, "another workbench's ask is never answered")
             }
-            XCTAssertEqual(try OwnerAskQueries.openAsks(d, projectID: p).map(\.id), [open])
+            XCTAssertEqual(try OwnerAskQueries.openAsks(d, projectID: p).asks.map(\.id), [open])
         }
     }
 

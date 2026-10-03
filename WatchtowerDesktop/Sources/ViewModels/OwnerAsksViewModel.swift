@@ -116,7 +116,7 @@ final class OwnerAsksViewModel {
 
     /// What one read of a workbench's asks gives.
     private struct Snapshot {
-        let open: [OwnerAsk]
+        let open: OwnerAskRows
         let fingerprint: String
         let closedCounts: [Int64?: Int]
         let replacements: [Int64: Int64]
@@ -130,7 +130,7 @@ final class OwnerAsksViewModel {
             let snapshot = try await dbPool.read { db in
                 let open = try OwnerAskQueries.openAsks(db, projectID: projectID)
                 let shown = try drawerID.flatMap { id in
-                    open.contains { $0.id == id } ? nil : try OwnerAskQueries.ask(db, id: id, projectID: projectID)
+                    open.asks.contains { $0.id == id } ? nil : try OwnerAskQueries.ask(db, id: id, projectID: projectID)
                 }
                 return Snapshot(
                     open: open,
@@ -140,12 +140,13 @@ final class OwnerAsksViewModel {
                     shown: shown
                 )
             }
-            openAsks[projectID] = snapshot.open
+            openAsks[projectID] = snapshot.open.asks
             fingerprints[projectID] = snapshot.fingerprint
             closedCounts[projectID] = snapshot.closedCounts
             replacements[projectID] = snapshot.replacements
             if let shown = snapshot.shown { shownAsks[shown.id] = shown }
-            loadErrors[projectID] = nil
+            // A row it cannot read is left out of the stack and named here.
+            loadErrors[projectID] = snapshot.open.problem
         } catch {
             // The last list stays beside the error.
             loadErrors[projectID] = "Could not load the asks: \(error.localizedDescription)"
@@ -195,10 +196,10 @@ final class OwnerAsksViewModel {
                  try OwnerAskQueries.replacements(db, projectID: projectID),
                  try OwnerAskQueries.closedCounts(db, projectID: projectID))
             }
-            closedLists[key] = asks
+            closedLists[key] = asks.asks
             replacements[projectID] = replaced
             closedCounts[projectID] = counts
-            closedErrors[key] = nil
+            closedErrors[key] = asks.problem
         } catch {
             closedErrors[key] = "Could not load the closed asks: \(error.localizedDescription)"
         }
