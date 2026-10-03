@@ -81,6 +81,8 @@ func Open(dbPath string) (*DB, error) {
 				if err := seedNewFileHook(dbPath); err != nil {
 					return nil, fmt.Errorf("seeding test database: %w", err)
 				}
+			} else if err != nil {
+				return nil, fmt.Errorf("checking database path: %w", err)
 			}
 		}
 	}
