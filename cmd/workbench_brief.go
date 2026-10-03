@@ -44,7 +44,7 @@ const (
 )
 
 var briefRules = []string{
-	"Board rules: set a target in_progress (update_target) before you work on it, in_review when its review starts and done once the review passes; ask the owner with add_comment instead of stopping.",
+	"Board rules: set a target in_progress (update_target) before you work on it, in_review when its review starts and done once the review passes; anything that waits on the owner (a question, a decision, a check, a review) is an ask_owner call, never terminal text or a comment, and you keep working; comments are for blockers and done summaries.",
 }
 
 var workbenchBriefCmd = &cobra.Command{

@@ -204,7 +204,7 @@ Open targets:
 - #3 [in_progress, medium, 0%] active feature
 New comments for you:
 - comment #22 on target #3 "active feature": Use the new API
-Board rules: set a target in_progress (update_target) before you work on it, in_review when its review starts and done once the review passes; ask the owner with add_comment instead of stopping.`
+Board rules: set a target in_progress (update_target) before you work on it, in_review when its review starts and done once the review passes; anything that waits on the owner (a question, a decision, a check, a review) is an ask_owner call, never terminal text or a comment, and you keep working; comments are for blockers and done summaries.`
 
 func TestRenderProjectBrief_EmptyProjectAsksForSetup(t *testing.T) {
 	p := briefWorkbench()
@@ -479,7 +479,7 @@ Answered asks for you:
 #11 check — Smoke test (answered) → get_ask 11
 2 more answered for other sessions of this workbench — leave them to those sessions.
 Recent in workbench sources (last 14 days): none.
-Board rules: set a target in_progress (update_target) before you work on it, in_review when its review starts and done once the review passes; ask the owner with add_comment instead of stopping.`
+Board rules: set a target in_progress (update_target) before you work on it, in_review when its review starts and done once the review passes; anything that waits on the owner (a question, a decision, a check, a review) is an ask_owner call, never terminal text or a comment, and you keep working; comments are for blockers and done summaries.`
 
 // No answered ask at all leaves the section out; only other sessions'
 // answers still say so; a read failure is one line, the brief stays.
