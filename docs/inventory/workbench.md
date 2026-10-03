@@ -130,12 +130,25 @@ must be able to undo the whole feature for a folder in one step.
 
 **Locked since:** 2026-09-29
 
-## PROJ-03 — Watchtower never writes a workbench folder file behind anyone's back
+## PROJ-03 — the Desktop never writes a workbench document behind anyone's back
 
-**Status:** Enforced (amended 2026-10-02 — the code viewer may write the owner's own edits, never over a newer version; amended 2026-10-03 — the document view is gone, owner asks only read the folder)
+**Status:** Enforced (amended 2026-10-02 — the code viewer may write the owner's own edits, never over a newer version; amended 2026-10-03 — the document view is gone with attached documents)
 
-**Observable:** The Desktop writes a file of the workbench folder only through
-the Files pane's editor, with the owner's own typed edits, and never over a
+**Observable:** The Desktop writes files of the workbench folder only through
+the Files pane — the owner's own actions there: the editor's saves under the
+2026-10-02 rule below (never over a version it has not seen), and the FILES
+tree's create, rename/move and Move to Trash (see the Code viewer notes in
+`docs/features/workbench.md`). No workbench MCP tool writes a file in the
+workbench folder: `ask_owner` only resolves and reads its `doc_path`
+(`tools.ResolveWorkbenchDocumentPath`, then a read through `os.OpenRoot` on
+the folder) into the ask's `doc_snapshot`, `get_ask`, `list_asks` and
+`withdraw_ask` touch only `owner_asks` rows, and a target image is copied
+*out* of wherever it is into Watchtower's own workspace directory
+(`project_files/`), never into the folder.
+
+**Amended 2026-10-02 (board #234, owner decision in the code-viewer review):**
+the Files pane's editor writes a file of the workbench folder — an attached
+document included — only with the owner's own typed edits, and never over a
 version it has not seen: every save re-reads the disk and refuses when the
 file changed, was deleted or no longer reads as text since the edits began
 (`CodeFileBuffer.saveNow`), an edit typed before a disk reload reached the page
@@ -143,32 +156,20 @@ counts as a conflict, and the owner then picks Reload from disk or Keep mine
 (Write it back for a file deleted under the edits — Cmd+S does the same, an
 explicit save; Write mine over it for a version that no longer reads as
 text). The autosave never takes any of these choices by itself.
-
-No workbench tool writes a file in the workbench folder: `ask_owner` only
-resolves and reads its `doc_path` (`tools.ResolveWorkbenchDocumentPath`, then
-a read through `os.OpenRoot` on the folder) into the ask's `doc_snapshot`;
-`get_ask`, `list_asks` and `withdraw_ask` touch only `owner_asks` rows; and a
-target image is copied *out* of wherever it is into Watchtower's own
-workspace directory (`project_files/`), never into the folder. The Desktop's
-ask view is read-only over that snapshot: the owner's margin comments are
-part of the answer (`owner_asks.answer`), never written to the file.
-
-**Amended 2026-10-02 (board #234, owner decision in the code-viewer review):**
-the Files editor may write any file of the folder with the owner's own edits,
-under the never-over-an-unseen-version rule above.
+The document view, its comments and every workbench tool still never write
+the file.
 
 **Amended 2026-10-03 (owner asks, spec
 `docs/superpowers/specs/2026-10-03-workbench-owner-asks-design.md` §9,
 approved by the owner):** the Desktop document view, its comments and their
 re-anchoring are removed with attached documents; the contract is the Files
-editor rule plus "no workbench tool writes the folder".
+pane rule above plus "no workbench tool writes the folder".
 
 **Why locked:** Owner decision D8. Two writers on one file — Claude Code in
-the terminal and a Watchtower writer — would race and lose either the agent's
-or the owner's edits. The 2026-10-02 amendment keeps that promise for the
+the terminal and the Desktop — would race and lose either the agent's or
+the owner's edits. The 2026-10-02 amendment keeps that promise for the
 agent's side (nothing it wrote is ever overwritten unseen) while letting the
-owner fix a line by hand; an ask reads a snapshot instead of handing the
-owner a second editor.
+owner fix a line by hand.
 
 **Test guards:**
 - `WatchtowerDesktop/Tests/CodeFileBufferTests.swift::testProj03FilesEditorNeverWritesOverANewerDiskVersion`
@@ -712,8 +713,9 @@ return `{"ok": true}` when `stop_hook_active` is true, or when
 `ask #<number>` — Claude Code's Stop input has no `tool_calls`, and the skill
 has the agent name every ask it filed in its final text), or when the message
 asks the owner for nothing; it blocks only a message that clearly waits on
-the owner, and passes when unsure — so a blocked stop gets exactly one
-nudge, and the continued turn's stop passes on `stop_hook_active`. The
+the owner, and passes when unsure. The intent is one nudge per stop: the
+prompt tells the model to pass when `stop_hook_active` is set (pinned by the
+golden; the model's compliance is not something a test can check). The
 `PreToolUse` command hook (`workbench ask-guard --workbench N
 --pre-tool-use`, matcher `AskUserQuestion`, `timeout: 5`) prints the deny
 decision only when workbench N exists and its stdin (read for at most 0.5 s)
@@ -801,7 +803,7 @@ because Watchtower is broken would be worse than none.
   one fast-model call per agent stop of a workbench session (about 1–2 s);
   it may miss a plain-text request (told to pass when unsure), and an agent
   that filed an ask without naming it gets one extra nudge (then
-  `stop_hook_active` passes). (b) After a stop the ask guard blocks, the
+  the prompt then tells it to pass on `stop_hook_active`). (b) After a stop the ask guard blocks, the
   session's PROJ-11 state reads "waiting for you" (and may post its notice
   while the app is inactive) for the whole nudged turn:
   the drift `Stop` hook runs in parallel and records `waiting` whenever it
@@ -821,7 +823,7 @@ because Watchtower is broken would be worse than none.
 
 ## Changelog
 
-- 2026-10-03 (workbench owner asks, spec `docs/superpowers/specs/2026-10-03-workbench-owner-asks-design.md` §9, plan `docs/superpowers/plans/2026-10-03-workbench-owner-asks.md`, approved by the owner on 2026-10-03): attached documents, document comments and the Desktop Documents pane are replaced by **owner asks** (`owner_asks`, migration `00097`, which also drops `project_documents` and the document columns of `project_comments`). **PROJ-03 amended** — the document view and its comment re-anchoring are gone (the guard `testProj03DesktopNeverWritesTheDocument` went with `WorkbenchDocumentViewModelTests.swift`); the contract is the Files-editor rule plus "no workbench tool writes the folder" (`ask_owner` only reads `doc_path`), new guard `TestProj03_AskOwnerNeverWritesTheFolder`; the Files-editor guards are unchanged. **PROJ-08 amended** — "attached documents" becomes every `.md`/`.markdown`/`.txt` file of the folder git does not ignore (or the walk keeps outside git), ≤ 2000 per workbench; visibility, privacy, symlink, caps and PROJ-02 deletion unchanged. Recorded beyond the spec's letter: explicit triggers render every file gated by content hash (only the daemon is mtime-gated), a file that left the listing loses its entry, the installed skill directories are skipped, and a privacy-protected folder is indexed only by an explicit trigger (`resync`, `create`, `kb reindex`, `ask_owner`'s one file). Guards renamed in place, assertions kept: `TestProj08_ProjectDocsOnlyInTheirOwnProjectSession` → `TestProj08_FolderFilesOnlyInTheirOwnWorkbenchSession`, `TestProj08_KnowledgeToolsShowProjectDocsOnlyToTheirProject` → `TestProj08_KnowledgeToolsShowFolderFilesOnlyToTheirWorkbench`, `TestProj08_OwnerAttachPathsIndexTheDocumentsAtOnce` → `TestProj08_ResyncAndCreateIndexTheFolderAtOnce` (its "a dry run indexes nothing" step went with `import-docs` and became "a daemon pass never reads a protected folder"). **PROJ-12 added** (the spec's "PROJ-11", renumbered — PROJ-11 is the session state hooks): an ask reaches its session as typed text, never submitted. **PROJ-13 added** (the spec's "PROJ-12"): the ask guard never traps a turn; the Stop prompt's pass clause "tool_calls contains a call whose name ends with ask_owner" became "last_assistant_message says it filed an ask, e.g. names ask #<number>", since Claude Code's Stop input has no `tool_calls`. **PROJ-04 reworded** (widened, no guard relaxed) — `Stop` now holds two entries of ours (the drift command and the ask guard prompt, recognised by its marker line) and `PreToolUse` is a newly owned event (matcher `AskUserQuestion`; malformed counts as a malformed file); new guards `TestProj04_AskGuardReplacesOurEditedPromptAndKeepsOwnerHooks`, `TestProj04_MalformedPreToolUseLeavesTheFileByteIdentical`. **PROJ-02** — asks join the cascaded rows and both ask guard hooks the removal (its guards extended, none relaxed); `TestProj02_DeletedProjectDocumentAndCommentIDsAreNeverReused` lost its document half with the table and is now `TestProj02_DeletedProjectAndCommentIDsAreNeverReused`. The v1 note "Re-anchor hides an owner root" is retired with re-anchoring; owner-asks limits are added. PROJ-01, 05–07, 09–11 unchanged.
+- 2026-10-03 (workbench owner asks, spec `docs/superpowers/specs/2026-10-03-workbench-owner-asks-design.md`, plan `docs/superpowers/plans/2026-10-03-workbench-owner-asks.md`). **Approved by the owner (§9, 2026-10-03):** attached documents, document comments and the Desktop Documents pane are replaced by **owner asks** (`owner_asks`, migration `00097`, which also drops `project_documents` and the document columns of `project_comments`). **PROJ-03 amended** — the document view and its comment re-anchoring are gone (the guard `testProj03DesktopNeverWritesTheDocument` went with `WorkbenchDocumentViewModelTests.swift`); the contract is the Files-editor rule plus "no workbench tool writes the folder" (`ask_owner` only reads `doc_path`), new guard `TestProj03_AskOwnerNeverWritesTheFolder`; the Files-editor guards are unchanged. **PROJ-08 amended** — "attached documents" becomes every `.md`/`.markdown`/`.txt` file of the folder git does not ignore (or the walk keeps outside git), ≤ 2000 per workbench; visibility, privacy, symlink, caps and PROJ-02 deletion unchanged. (Beyond §9, see the rulings below: explicit triggers render every file gated by content hash (only the daemon is mtime-gated), a file that left the listing loses its entry, the installed skill directories are skipped, and a privacy-protected folder is indexed only by an explicit trigger (`resync`, `create`, `kb reindex`, `ask_owner`'s one file.) Guards renamed in place, assertions kept: `TestProj08_ProjectDocsOnlyInTheirOwnProjectSession` → `TestProj08_FolderFilesOnlyInTheirOwnWorkbenchSession`, `TestProj08_KnowledgeToolsShowProjectDocsOnlyToTheirProject` → `TestProj08_KnowledgeToolsShowFolderFilesOnlyToTheirWorkbench`, `TestProj08_OwnerAttachPathsIndexTheDocumentsAtOnce` → `TestProj08_ResyncAndCreateIndexTheFolderAtOnce` (its "a dry run indexes nothing" step went with `import-docs` and became "a daemon pass never reads a protected folder"). **PROJ-12 added** (the spec's "PROJ-11", renumbered — PROJ-11 is the session state hooks): an ask reaches its session as typed text, never submitted. **PROJ-13 added** (the spec's "PROJ-12"): the ask guard never traps a turn. **PROJ-02** — asks join the cascaded rows and both ask guard hooks the removal (its guards extended, none relaxed); `TestProj02_DeletedProjectDocumentAndCommentIDsAreNeverReused` lost its document half with the table and is now `TestProj02_DeletedProjectAndCommentIDsAreNeverReused`. **Implementation rulings, pending owner confirmation:** (1) the PROJ-13 pass clause "tool_calls contains a call whose name ends with ask_owner" became "last_assistant_message says it filed an ask, e.g. names ask #<number>", since Claude Code's Stop input has no `tool_calls`; (2) the PROJ-08 extras in parentheses above; (3) **PROJ-04 reworded** (widened, no guard relaxed) — `Stop` now holds two entries of ours (the drift command and the ask guard prompt, recognised by its marker line) and `PreToolUse` is a newly owned event (matcher `AskUserQuestion`; malformed counts as a malformed file); new guards `TestProj04_AskGuardReplacesOurEditedPromptAndKeepsOwnerHooks`, `TestProj04_MalformedPreToolUseLeavesTheFileByteIdentical`; (4) `get_ask`'s unaudited `delivered` write, the AGENT-06 scope exception and DEV-06's ask session binding (`dev-surface.md`, `agent-actions.md`). The v1 note "Re-anchor hides an owner root" is retired with re-anchoring; owner-asks limits are added. PROJ-01, 05–07, 09–11 unchanged.
 - 2026-10-03 (board #312, plan `docs/superpowers/plans/2026-10-03-session-agent-state.md`): **PROJ-11** added and **PROJ-04** reworded, both approved by the owner on 2026-10-03 — Claude Code sessions in the Desktop's workbench terminal show working / waiting for you / needs approval from new async `workbench session-state` hook entries (`UserPromptSubmit`, `Notification`, `PostToolUse`, `StopFailure`; migration `00098`) and the extended Stop hook, with a macOS notice while the app is inactive. PROJ-04 now says one entry of ours per event we own, with a malformed state event counting as a malformed file (widened, no guard relaxed; two new guards). **PROJ-02** strengthened — remove/delete also take the state entries away (its hook guards extended). **PROJ-07** gains a note on the Stop hook's state write; its stdout/exit contract and guards are unchanged.
 - 2026-10-02 (board #234, code viewer): **PROJ-03 amended** with the owner's approval — the Files pane may write the owner's own edits to any file of the folder, attached documents included, but never over a version it has not seen (a changed, deleted or unreadable disk version blocks the save until the owner picks Reload from disk or Keep mine; an edit typed on a stale disk revision is a conflict). New guards `testProj03FilesEditorNeverWritesOverANewerDiskVersion`, `testProj03AnEditTypedBeforeAReloadIsAConflictNotASave`, `testProj03ADeletionUnderEditsIsNeverUndoneByTheAutosave` and `testProj03AnUnreadableDiskVersionIsNeverWrittenOver`; the existing `testProj03DesktopNeverWritesTheDocument` (the document view writes nothing) is unchanged. PROJ-01/02/04..09 unchanged.
 - 2026-10-02 (board target #233): **PROJ-10** proposed — pending owner approval — the Workbench header's git branch button and popover switch and create local branches through `watchtower workbench git status|branches|switch|create` (`internal/workbenchgit`, git located by `internal/gitbin`, never the `/usr/bin/git` shim); a switch never loses work (nonce-named stash found by its message and applied back by sha, never popped or dropped; no force/discard/reset/clean), never runs without the owner's confirmation of uncommitted changes or a live Claude Code session in the work tree, and no git runs without the developer tools or outside a repository. Guards listed under PROJ-10. PROJ-07 is unchanged: `workbench check` still runs `git` through PATH (moving it onto `gitbin` is a separate, owner-gated target). PROJ-01..09 unchanged.

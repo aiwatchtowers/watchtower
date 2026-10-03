@@ -21,6 +21,9 @@ contracts for the implementing sessions.
   → "k of N ›", «Показать дифф» → "Show diff", «агент отозвал» → "withdrawn by the agent",
   «заменено #N» → "replaced by #N", «Агент просит: <title>» → "Agent asks: <title>".
 - Part 2's Down keeps target comments (only the document columns and rows go).
+- PROJ-04 is reworded in the inventory (not part of the Part 9 approval): "exactly one entry
+  of ours per event" no longer holds — `Stop` holds the drift command and the ask guard
+  prompt, and `PreToolUse` (matcher `AskUserQuestion`) is a newly owned event.
 - After a stop the ask guard blocks, the session state (PROJ-11) reads "waiting" for the
   nudged turn — an accepted v1 limit (Part 10).
 
@@ -419,9 +422,6 @@ Names follow the existing `Workbench*` pattern. Core pieces are pure and tested 
   workbench.
 - **PROJ-02:** unchanged wording, plus "asks" in the cascaded list and both new hooks in the
   removal list.
-- **PROJ-04 (reworded during implementation):** "exactly one entry of ours per event" no
-  longer holds — `Stop` holds the drift command and the ask guard prompt, and `PreToolUse`
-  (matcher `AskUserQuestion`) is a newly owned event.
 
 ## Part 10 — Non-goals and v1 limits
 
