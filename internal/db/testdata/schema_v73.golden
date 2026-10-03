@@ -262,6 +262,12 @@ CREATE INDEX idx_messages_ts_unix ON messages(ts_unix)
 index	idx_messages_user_id
 CREATE INDEX idx_messages_user_id ON messages(user_id)
 
+index	idx_owner_asks_project
+CREATE INDEX idx_owner_asks_project ON owner_asks(project_id, status, created_at)
+
+index	idx_owner_asks_session
+CREATE INDEX idx_owner_asks_session ON owner_asks(session_id)
+
 index	idx_people_cards_period
 CREATE INDEX idx_people_cards_period ON people_cards(period_from, period_to)
 
@@ -280,9 +286,6 @@ CREATE INDEX idx_pipeline_runs_started ON pipeline_runs(started_at DESC)
 index	idx_pipeline_steps_run
 CREATE INDEX idx_pipeline_steps_run ON pipeline_steps(run_id)
 
-index	idx_project_comments_document
-CREATE INDEX idx_project_comments_document ON project_comments(document_id)
-
 index	idx_project_comments_parent
 CREATE INDEX idx_project_comments_parent ON project_comments(parent_id)
 
@@ -291,9 +294,6 @@ CREATE INDEX idx_project_comments_project ON project_comments(project_id, create
 
 index	idx_project_comments_target
 CREATE INDEX idx_project_comments_target ON project_comments(target_id)
-
-index	idx_project_documents_target
-CREATE INDEX idx_project_documents_target ON project_documents(target_id)
 
 index	idx_project_target_images_project
 CREATE INDEX idx_project_target_images_project ON project_target_images(project_id)
@@ -1602,6 +1602,31 @@ CREATE TABLE 'messages_fts_docsize'(id INTEGER PRIMARY KEY, sz BLOB)
 table	messages_fts_idx
 CREATE TABLE 'messages_fts_idx'(segid, term, pgno, PRIMARY KEY(segid, term)) WITHOUT ROWID
 
+table	owner_asks
+CREATE TABLE owner_asks (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+session_id INTEGER REFERENCES terminal_sessions(id) ON DELETE SET NULL,
+target_id INTEGER REFERENCES targets(id) ON DELETE SET NULL,
+kind TEXT NOT NULL CHECK(kind IN ('review','check','question')),
+title TEXT NOT NULL CHECK(title != ''),
+summary TEXT NOT NULL DEFAULT '',
+changes TEXT NOT NULL DEFAULT '', -- review re-round: what changed, agent-written
+payload TEXT NOT NULL DEFAULT '{}', -- JSON: focus[], questions[], checklist[]
+doc_path TEXT NOT NULL DEFAULT '', -- review only: rel path inside the folder
+doc_snapshot TEXT NOT NULL DEFAULT '', -- review only: file text at ask time
+previous_ask_id INTEGER REFERENCES owner_asks(id) ON DELETE SET NULL,
+status TEXT NOT NULL DEFAULT 'open'
+CHECK(status IN ('open','answered','delivered','withdrawn')),
+withdrawn_reason TEXT NOT NULL DEFAULT '' CHECK(withdrawn_reason IN ('','agent','superseded')),
+answer TEXT NOT NULL DEFAULT '', -- JSON, Desktop-written
+created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+answered_at TEXT NOT NULL DEFAULT '',
+delivered_at TEXT NOT NULL DEFAULT '',
+CHECK ((kind = 'review') = (doc_path != '')),
+CHECK ((status IN ('answered','delivered')) = (answer != ''))
+)
+
 table	people_card_summaries
 CREATE TABLE people_card_summaries (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1714,37 +1739,18 @@ created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 )
 
 table	project_comments
-CREATE TABLE project_comments (
+CREATE TABLE "project_comments" (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
 project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
 target_id INTEGER REFERENCES targets(id) ON DELETE CASCADE,
-document_id INTEGER REFERENCES project_documents(id) ON DELETE CASCADE,
 parent_id INTEGER REFERENCES project_comments(id) ON DELETE CASCADE,
 author TEXT NOT NULL CHECK(author IN ('owner','agent')),
 agent_label TEXT NOT NULL DEFAULT '',
 body TEXT NOT NULL,
-anchor_quote TEXT NOT NULL DEFAULT '',
-anchor_prefix TEXT NOT NULL DEFAULT '',
-anchor_suffix TEXT NOT NULL DEFAULT '',
-anchor_heading TEXT NOT NULL DEFAULT '',
 status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','resolved','outdated')),
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
 read_at TEXT NOT NULL DEFAULT '',
-CHECK (target_id IS NOT NULL OR document_id IS NOT NULL OR parent_id IS NOT NULL)
-)
-
-table	project_documents
-CREATE TABLE project_documents (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-target_id INTEGER REFERENCES targets(id) ON DELETE SET NULL,
-rel_path TEXT NOT NULL,
-kind TEXT NOT NULL DEFAULT 'doc' CHECK(kind IN ('spec','plan','doc')),
-title TEXT NOT NULL DEFAULT '',
-created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')), origin TEXT NOT NULL DEFAULT 'agent'
-CHECK(origin IN ('agent','import','owner')), -- re-attach bumps it ("revised")
-UNIQUE(project_id, rel_path)
+CHECK (target_id IS NOT NULL OR parent_id IS NOT NULL)
 )
 
 table	project_sources
@@ -3615,6 +3621,26 @@ END
 1	term		notnull=1	dflt=NULL	pk=2
 2	pgno		notnull=0	dflt=NULL	pk=0
 
+## owner_asks
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	project_id	INTEGER	notnull=1	dflt=NULL	pk=0
+2	session_id	INTEGER	notnull=0	dflt=NULL	pk=0
+3	target_id	INTEGER	notnull=0	dflt=NULL	pk=0
+4	kind	TEXT	notnull=1	dflt=NULL	pk=0
+5	title	TEXT	notnull=1	dflt=NULL	pk=0
+6	summary	TEXT	notnull=1	dflt=''	pk=0
+7	changes	TEXT	notnull=1	dflt=''	pk=0
+8	payload	TEXT	notnull=1	dflt='{}'	pk=0
+9	doc_path	TEXT	notnull=1	dflt=''	pk=0
+10	doc_snapshot	TEXT	notnull=1	dflt=''	pk=0
+11	previous_ask_id	INTEGER	notnull=0	dflt=NULL	pk=0
+12	status	TEXT	notnull=1	dflt='open'	pk=0
+13	withdrawn_reason	TEXT	notnull=1	dflt=''	pk=0
+14	answer	TEXT	notnull=1	dflt=''	pk=0
+15	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
+16	answered_at	TEXT	notnull=1	dflt=''	pk=0
+17	delivered_at	TEXT	notnull=1	dflt=''	pk=0
+
 ## people_card_summaries
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
 1	period_from	REAL	notnull=1	dflt=NULL	pk=0
@@ -3713,29 +3739,13 @@ END
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
 1	project_id	INTEGER	notnull=1	dflt=NULL	pk=0
 2	target_id	INTEGER	notnull=0	dflt=NULL	pk=0
-3	document_id	INTEGER	notnull=0	dflt=NULL	pk=0
-4	parent_id	INTEGER	notnull=0	dflt=NULL	pk=0
-5	author	TEXT	notnull=1	dflt=NULL	pk=0
-6	agent_label	TEXT	notnull=1	dflt=''	pk=0
-7	body	TEXT	notnull=1	dflt=NULL	pk=0
-8	anchor_quote	TEXT	notnull=1	dflt=''	pk=0
-9	anchor_prefix	TEXT	notnull=1	dflt=''	pk=0
-10	anchor_suffix	TEXT	notnull=1	dflt=''	pk=0
-11	anchor_heading	TEXT	notnull=1	dflt=''	pk=0
-12	status	TEXT	notnull=1	dflt='open'	pk=0
-13	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
-14	read_at	TEXT	notnull=1	dflt=''	pk=0
-
-## project_documents
-0	id	INTEGER	notnull=0	dflt=NULL	pk=1
-1	project_id	INTEGER	notnull=1	dflt=NULL	pk=0
-2	target_id	INTEGER	notnull=0	dflt=NULL	pk=0
-3	rel_path	TEXT	notnull=1	dflt=NULL	pk=0
-4	kind	TEXT	notnull=1	dflt='doc'	pk=0
-5	title	TEXT	notnull=1	dflt=''	pk=0
-6	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
-7	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
-8	origin	TEXT	notnull=1	dflt='agent'	pk=0
+3	parent_id	INTEGER	notnull=0	dflt=NULL	pk=0
+4	author	TEXT	notnull=1	dflt=NULL	pk=0
+5	agent_label	TEXT	notnull=1	dflt=''	pk=0
+6	body	TEXT	notnull=1	dflt=NULL	pk=0
+7	status	TEXT	notnull=1	dflt='open'	pk=0
+8	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
+9	read_at	TEXT	notnull=1	dflt=''	pk=0
 
 ## project_sources
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1

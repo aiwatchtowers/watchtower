@@ -148,7 +148,7 @@ func TestProjectSources_AddIsIdempotentAndRemoveIsScoped(t *testing.T) {
 
 // TestProj02_DeleteProjectLeavesNoRows is the DB half of PROJ-02
 // (docs/inventory/workbench.md): deleting a project leaves no project, target,
-// source or comment row of it, and touches no other project.
+// source, comment or ask row of it, and touches no other project.
 // Task 12 adds the folder half.
 func TestProj02_DeleteProjectLeavesNoRows(t *testing.T) {
 	d := openTestDB(t)
@@ -174,9 +174,12 @@ func TestProj02_DeleteProjectLeavesNoRows(t *testing.T) {
 		return err
 	}))
 
-	_, err = d.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id)
-		VALUES (?, 'claude', 'New session', '/tmp/acme', 'uuid-1')`, pid)
-	require.NoError(t, err)
+	sid := newTestSession(t, d, pid)
+	mustInsertAsk(t, d, OwnerAsk{WorkbenchID: pid, SessionID: nullID(sid), TargetID: nullID(parent),
+		Kind: "question", Title: "Which?"})
+	answered := mustInsertAsk(t, d, questionAsk(pid, "Done?"))
+	markAskAnswered(t, d, answered)
+	keepAsk := mustInsertAsk(t, d, questionAsk(keep, "Theirs"))
 	// The folder files' search index entries (PROJ-08), this project's and another's.
 	for _, doc := range []struct {
 		id  string
@@ -201,6 +204,7 @@ func TestProj02_DeleteProjectLeavesNoRows(t *testing.T) {
 		`SELECT COUNT(*) FROM project_sources WHERE project_id = ?`,
 		`SELECT COUNT(*) FROM project_comments WHERE project_id = ?`,
 		`SELECT COUNT(*) FROM project_target_images WHERE project_id = ?`,
+		`SELECT COUNT(*) FROM owner_asks WHERE project_id = ?`,
 	} {
 		var n int
 		require.NoError(t, d.QueryRow(q, pid).Scan(&n))
@@ -219,6 +223,8 @@ func TestProj02_DeleteProjectLeavesNoRows(t *testing.T) {
 	assert.Equal(t, 1, kept, "another project's index entries are untouched")
 	_, err = d.GetTargetByID(int(keepTarget))
 	assert.NoError(t, err, "another project's board is untouched")
+	_, err = d.GetOwnerAsk(keep, keepAsk)
+	assert.NoError(t, err, "another project's asks are untouched")
 	var standalone int
 	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM terminal_sessions WHERE project_id IS NULL`).Scan(&standalone))
 	assert.Equal(t, 1, standalone, "a standalone terminal survives a project delete")

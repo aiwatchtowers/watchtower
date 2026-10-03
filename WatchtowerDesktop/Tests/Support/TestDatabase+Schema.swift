@@ -1352,36 +1352,6 @@ CREATE TABLE IF NOT EXISTS project_sources (
     label      TEXT NOT NULL DEFAULT '',
     UNIQUE(project_id, kind, ref)
 );
-CREATE TABLE IF NOT EXISTS project_documents (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    target_id  INTEGER REFERENCES targets(id) ON DELETE SET NULL,
-    rel_path   TEXT NOT NULL,
-    kind       TEXT NOT NULL DEFAULT 'doc' CHECK(kind IN ('spec','plan','doc')),
-    title      TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')), origin TEXT NOT NULL DEFAULT 'agent'
-    CHECK(origin IN ('agent','import','owner')),  -- re-attach bumps it ("revised")
-    UNIQUE(project_id, rel_path)
-);
-CREATE TABLE IF NOT EXISTS project_comments (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    project_id     INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    target_id      INTEGER REFERENCES targets(id) ON DELETE CASCADE,
-    document_id    INTEGER REFERENCES project_documents(id) ON DELETE CASCADE,
-    parent_id      INTEGER REFERENCES project_comments(id) ON DELETE CASCADE,
-    author         TEXT NOT NULL CHECK(author IN ('owner','agent')),
-    agent_label    TEXT NOT NULL DEFAULT '',
-    body           TEXT NOT NULL,
-    anchor_quote   TEXT NOT NULL DEFAULT '',
-    anchor_prefix  TEXT NOT NULL DEFAULT '',
-    anchor_suffix  TEXT NOT NULL DEFAULT '',
-    anchor_heading TEXT NOT NULL DEFAULT '',
-    status         TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','resolved','outdated')),
-    created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-    read_at        TEXT NOT NULL DEFAULT '',
-    CHECK (target_id IS NOT NULL OR document_id IS NOT NULL OR parent_id IS NOT NULL)
-);
 CREATE TABLE IF NOT EXISTS chat_artifact_comments (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     conversation_id  INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
@@ -1539,6 +1509,42 @@ CREATE TABLE IF NOT EXISTS "chat_project_sources" (
     label      TEXT NOT NULL DEFAULT '',
     UNIQUE(project_id, kind, ref)
 );
+CREATE TABLE IF NOT EXISTS owner_asks (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id       INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    session_id       INTEGER REFERENCES terminal_sessions(id) ON DELETE SET NULL,
+    target_id        INTEGER REFERENCES targets(id) ON DELETE SET NULL,
+    kind             TEXT NOT NULL CHECK(kind IN ('review','check','question')),
+    title            TEXT NOT NULL CHECK(title != ''),
+    summary          TEXT NOT NULL DEFAULT '',
+    changes          TEXT NOT NULL DEFAULT '',   -- review re-round: what changed, agent-written
+    payload          TEXT NOT NULL DEFAULT '{}', -- JSON: focus[], questions[], checklist[]
+    doc_path         TEXT NOT NULL DEFAULT '',   -- review only: rel path inside the folder
+    doc_snapshot     TEXT NOT NULL DEFAULT '',   -- review only: file text at ask time
+    previous_ask_id  INTEGER REFERENCES owner_asks(id) ON DELETE SET NULL,
+    status           TEXT NOT NULL DEFAULT 'open'
+                     CHECK(status IN ('open','answered','delivered','withdrawn')),
+    withdrawn_reason TEXT NOT NULL DEFAULT '' CHECK(withdrawn_reason IN ('','agent','superseded')),
+    answer           TEXT NOT NULL DEFAULT '',   -- JSON, Desktop-written
+    created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    answered_at      TEXT NOT NULL DEFAULT '',
+    delivered_at     TEXT NOT NULL DEFAULT '',
+    CHECK ((kind = 'review') = (doc_path != '')),
+    CHECK ((status IN ('answered','delivered')) = (answer != ''))
+);
+CREATE TABLE IF NOT EXISTS "project_comments" (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id     INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    target_id      INTEGER REFERENCES targets(id) ON DELETE CASCADE,
+    parent_id      INTEGER REFERENCES project_comments(id) ON DELETE CASCADE,
+    author         TEXT NOT NULL CHECK(author IN ('owner','agent')),
+    agent_label    TEXT NOT NULL DEFAULT '',
+    body           TEXT NOT NULL,
+    status         TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','resolved','outdated')),
+    created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    read_at        TEXT NOT NULL DEFAULT '',
+    CHECK (target_id IS NOT NULL OR parent_id IS NOT NULL)
+);
 CREATE INDEX IF NOT EXISTS idx_users_name ON users(name);
 CREATE INDEX IF NOT EXISTS idx_users_is_bot ON users(is_bot);
 CREATE INDEX IF NOT EXISTS idx_users_is_stub ON users(is_stub);
@@ -1664,11 +1670,6 @@ CREATE INDEX IF NOT EXISTS idx_voice_samples_person_status ON voice_samples(pers
 CREATE INDEX IF NOT EXISTS idx_voice_samples_transcript ON voice_samples(transcript_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_voice_label_queue_open ON voice_label_queue(transcript_id, cluster_label) WHERE status = 'pending';
 CREATE INDEX IF NOT EXISTS idx_voice_label_queue_status ON voice_label_queue(status, created_at);
-CREATE INDEX IF NOT EXISTS idx_project_documents_target ON project_documents(target_id);
-CREATE INDEX IF NOT EXISTS idx_project_comments_project  ON project_comments(project_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_project_comments_target   ON project_comments(target_id);
-CREATE INDEX IF NOT EXISTS idx_project_comments_document ON project_comments(document_id);
-CREATE INDEX IF NOT EXISTS idx_project_comments_parent   ON project_comments(parent_id);
 CREATE INDEX IF NOT EXISTS idx_chat_artifact_comments_key ON chat_artifact_comments(conversation_id, artifact_key);
 CREATE INDEX IF NOT EXISTS idx_terminal_sessions_project ON terminal_sessions(project_id, last_active_at);
 CREATE INDEX IF NOT EXISTS idx_terminal_sessions_target ON terminal_sessions(target_id);
@@ -1688,6 +1689,11 @@ CREATE INDEX IF NOT EXISTS idx_project_target_images_project ON project_target_i
 CREATE INDEX IF NOT EXISTS idx_jira_issue_changelog_issue ON jira_issue_changelog(account_id, issue_key, changed_at);
 CREATE INDEX IF NOT EXISTS idx_jira_issue_links_target ON jira_issue_links(account_id, target_key);
 CREATE INDEX IF NOT EXISTS idx_jira_issue_links_source ON jira_issue_links(account_id, source_key);
+CREATE INDEX IF NOT EXISTS idx_owner_asks_project ON owner_asks(project_id, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_owner_asks_session ON owner_asks(session_id);
+CREATE INDEX IF NOT EXISTS idx_project_comments_project ON project_comments(project_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_project_comments_target  ON project_comments(target_id);
+CREATE INDEX IF NOT EXISTS idx_project_comments_parent  ON project_comments(parent_id);
 CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages
 WHEN NEW.text != '' AND NEW.is_deleted = 0
 BEGIN
