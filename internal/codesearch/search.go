@@ -52,7 +52,9 @@ type Options struct {
 // to maxTextChars around the match when longer; Before and After hold up
 // to Options.Context neighbouring lines, each cut to maxTextChars.
 // TextCol is the match's 1-based UTF-16 column inside Text (equal to Col
-// when the line was not cut), for highlighting it.
+// when the line was not cut), for highlighting it. A byte that is not
+// valid UTF-8 counts one UTF-16 unit in both (it reads as one U+FFFD, as
+// the JSON text carries it).
 type Match struct {
 	Path    string   `json:"path"`
 	Line    int      `json:"line"`

@@ -44,7 +44,8 @@ type Symbol struct {
 	// Path is relative to the indexed folder, slash-separated.
 	Path string `json:"path"`
 	// Line and EndLine are 1-based; Col is the 1-based UTF-16 column of
-	// the name (what Monaco and NSString count).
+	// the name (what Monaco and NSString count), a byte that is not valid
+	// UTF-8 counting one unit.
 	Line    int `json:"line"`
 	Col     int `json:"col"`
 	EndLine int `json:"end_line"`
