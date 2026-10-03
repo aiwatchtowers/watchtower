@@ -163,7 +163,9 @@ final class CodeNavigationCenterTests: XCTestCase {
     /// folder-wide text search.
     func testAMissInAnIndexedLanguageBeepsWithoutSearching() async {
         let (center, vm) = makeCenter(symbols: [loadInStore])
-        await center.goToDefinition(request("frob", at: "src/store.swift", 30, 12), project: project, anchor: nil)
+        let task = Task { await center.goToDefinition(request("frob", at: "src/store.swift", 30, 12), project: project, anchor: nil) }
+        let ended = await finishes(task)
+        XCTAssertTrue(ended)
         XCTAssertTrue(searches.started.isEmpty, "no text search for an indexed file")
         XCTAssertEqual(beeps, 1)
         XCTAssertEqual(center.notice(for: project.id), "No definition of `frob`")
