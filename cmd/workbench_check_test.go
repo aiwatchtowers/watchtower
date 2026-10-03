@@ -205,7 +205,8 @@ func TestProj02_ProjectDeleteLeavesNoHookOfTheProject(t *testing.T) {
 	settings := filepath.Join(p.FolderPath, ".claude", "settings.local.json")
 	require.NoError(t, os.MkdirAll(filepath.Dir(settings), 0o755))
 	require.NoError(t, os.WriteFile(settings, []byte(`{"model":"sonnet","hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo mine"}]}],`+
-		`"UserPromptSubmit":[{"hooks":[{"type":"command","command":"echo mine-prompt"}]}]}}`), 0o644))
+		`"UserPromptSubmit":[{"hooks":[{"type":"command","command":"echo mine-prompt"}]}],`+
+		`"PreToolUse":[{"matcher":"AskUserQuestion","hooks":[{"type":"command","command":"echo mine-ask"}]}]}}`), 0o644))
 	var out bytes.Buffer
 	require.NoError(t, runWorkbenchInstall(context.Background(), &out, p), out.String())
 	installed, err := os.ReadFile(settings)
@@ -214,6 +215,8 @@ func TestProj02_ProjectDeleteLeavesNoHookOfTheProject(t *testing.T) {
 		devpack.WorkbenchStopHookCommand("/usr/local/bin/watchtower", p.ID),
 		devpack.WorkbenchHookCommand("/usr/local/bin/watchtower", p.ID),
 		devpack.WorkbenchSessionStateHookCommand("/usr/local/bin/watchtower", p.ID),
+		devpack.WorkbenchAskGuardHookCommand("/usr/local/bin/watchtower", p.ID),
+		"[watchtower-workbench ask-guard 7]",
 	}
 	for _, c := range ours {
 		require.Contains(t, string(installed), c)
@@ -229,6 +232,8 @@ func TestProj02_ProjectDeleteLeavesNoHookOfTheProject(t *testing.T) {
 	assert.NotContains(t, string(after), "session-state", "PROJ-02: a session state hook survived:\n%s", after)
 	assert.Contains(t, string(after), "echo mine", "PROJ-04: the owner's own Stop hook stays")
 	assert.Contains(t, string(after), "echo mine-prompt", "PROJ-04: the owner's own UserPromptSubmit hook stays")
+	assert.Contains(t, string(after), "echo mine-ask", "PROJ-04: the owner's own PreToolUse hook stays")
+	assert.NotContains(t, string(after), "ask-guard", "PROJ-02: an ask guard hook survived:\n%s", after)
 	assert.Contains(t, string(after), `"model": "sonnet"`)
 }
 

@@ -107,6 +107,29 @@ func Open(dbPath string) (*DB, error) {
 	return db, nil
 }
 
+// OpenExisting opens the database at dbPath for a caller on a hard time
+// budget that only reads — a Claude Code hook the agent waits for. Unlike
+// Open it creates no directory or file, runs no migration (a schema older
+// than the caller's query just fails that query), refuses every write
+// (query_only), and a statement waits at most busy for another process's
+// lock, never Open's 5 s.
+func OpenExisting(dbPath string, busy time.Duration) (*DB, error) {
+	// A file: URI so mode=rw (open, never create) reaches SQLite; the
+	// driver still applies the _pragma params on every connection.
+	dsn := "file:" + (&url.URL{Path: dbPath}).EscapedPath() +
+		fmt.Sprintf("?mode=rw&_pragma=busy_timeout(%d)&_pragma=query_only(1)", busy.Milliseconds())
+	sqlDB, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("opening database: %w", err)
+	}
+	sqlDB.SetMaxOpenConns(1)
+	if err := sqlDB.Ping(); err != nil {
+		sqlDB.Close()
+		return nil, fmt.Errorf("opening database %s: %w", dbPath, err)
+	}
+	return &DB{DB: sqlDB}, nil
+}
+
 // tightenDBFilePerms restricts the database file and its WAL/SHM sidecars to
 // 0600. SQLite creates all three itself, per the process umask (0644 in
 // practice), so the mode is fixed after the fact rather than at creation —
