@@ -187,8 +187,17 @@ func (f *fakeClaude) run(_ context.Context, dir, name string, args ...string) ([
 	if f.missing {
 		return nil, fmt.Errorf("exec: %q: %w", name, exec.ErrNotFound)
 	}
+	isolated := len(args) >= 2 && args[0] == "--setting-sources" && args[1] == "project,local"
+	if isolated {
+		args = args[2:]
+	}
 	if name != "claude" || len(args) < 3 || args[0] != "mcp" {
 		return nil, fmt.Errorf("unexpected command %s %v", name, args)
+	}
+	// `mcp get` health-checks the server, loading settings on the way: it
+	// must skip the user-level ones (TCC isolation, board #200).
+	if args[1] == "get" && !isolated {
+		return nil, fmt.Errorf("mcp get without --setting-sources project,local: %v", args)
 	}
 	server := args[len(args)-1] // get NAME, remove --scope local NAME
 	if args[1] == "add" {

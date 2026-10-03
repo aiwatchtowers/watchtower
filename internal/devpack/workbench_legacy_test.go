@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -178,7 +179,7 @@ func assertLegacyMCPReplaced(t *testing.T, folder string, f *fakeClaude, rep Wor
 	t.Helper()
 	var mcpCalls []string
 	for _, c := range f.calls {
-		if c[3] != "get" {
+		if !slices.Contains(c[2:], "get") {
 			mcpCalls = append(mcpCalls, strings.Join(c[2:], " "))
 		}
 	}
