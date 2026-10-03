@@ -20,7 +20,7 @@ struct DocumentTypography: Equatable {
     var codeFont: NSFont { .monospacedSystemFont(ofSize: codeSize, weight: .regular) }
 
     func headingSize(_ level: Int) -> CGFloat {
-        (1...headingSizes.count).contains(level) ? headingSizes[level - 1] : bodySize
+        headingSizes.indices.contains(level - 1) ? headingSizes[level - 1] : bodySize
     }
 
     /// What a paragraph is, as far as its spacing goes.
@@ -64,7 +64,8 @@ struct DocumentTypography: Equatable {
             }
             body = multiple(rhythm.lineHeight, type.bodyFont)
             code = multiple(rhythm.codeLineHeight, type.codeFont)
-            headings = (1...max(type.headingSizes.count, 1)).map {
+            // Markdown's six levels; past `headingSizes` they take the body size.
+            headings = (1...6).map {
                 multiple(rhythm.headingLineHeight, .systemFont(ofSize: type.headingSize($0), weight: .bold))
             }
         }

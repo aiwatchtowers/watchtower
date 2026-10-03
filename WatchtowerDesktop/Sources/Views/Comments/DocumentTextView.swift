@@ -47,10 +47,19 @@ struct DocumentTextView: NSViewRepresentable {
     var scrollTarget: DocumentScrollTarget?
     /// Ranges the caller lays views out against (an ask's margin comments
     /// and focus bars): `trackedRects` gets each one's box in the visible
-    /// area (top-left origin, possibly scrolled out of it), in order — nil
-    /// for a range outside the text. Kept current on scroll and resize.
+    /// area (top-left origin, possibly scrolled out of it), keyed by the
+    /// range it was measured for, so a caller never pairs a box with
+    /// another range; a range outside the text has none. Kept current on
+    /// scroll and resize.
     var trackedRanges: [NSRange] = []
-    var trackedRects: Binding<[CGRect?]> = .constant([])
+    var trackedRects: Binding<[NSRange: CGRect]> = .constant([:])
+    /// With tracked ranges: the whole text's box in the same coordinates
+    /// (its top and end), for laying views out within it.
+    var textExtent: Binding<CGRect?> = .constant(nil)
+    /// Background highlights drawn as layout-manager temporary attributes:
+    /// changing them redraws, never re-sets or re-lays out the text (an
+    /// owner ask's comments on a 2 MiB snapshot).
+    var highlightRanges: [NSRange] = []
     let onClick: (Int) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
@@ -59,7 +68,9 @@ struct DocumentTextView: NSViewRepresentable {
         let scroll = Self.makeScrollView(horizontalInset: horizontalInset)
         guard let textView = scroll.documentView as? NSTextView else { return scroll }
         textView.delegate = context.coordinator
+        textView.layoutManager?.delegate = context.coordinator
         context.coordinator.apply(text, contentID: contentID, to: textView)
+        context.coordinator.applyHighlights(highlightRanges, to: textView, force: true)
         context.coordinator.observeGeometry(of: scroll)
         // A rebuilt view must not replay a jump made in its predecessor.
         context.coordinator.scrolledTargetID = scrollTarget?.id
@@ -87,7 +98,8 @@ struct DocumentTextView: NSViewRepresentable {
         context.coordinator.parent = self
         guard let textView = scroll.documentView as? NSTextView else { return }
         Self.setInset(horizontalInset, on: textView)
-        context.coordinator.apply(text, contentID: contentID, to: textView)
+        let replaced = context.coordinator.apply(text, contentID: contentID, to: textView)
+        context.coordinator.applyHighlights(highlightRanges, to: textView, force: replaced)
         context.coordinator.scroll(textView, to: scrollTarget)
         context.coordinator.reportTrackedRects(textView)
     }
@@ -106,7 +118,7 @@ struct DocumentTextView: NSViewRepresentable {
         NotificationCenter.default.removeObserver(coordinator)
     }
 
-    final class Coordinator: NSObject, NSTextViewDelegate {
+    final class Coordinator: NSObject, NSTextViewDelegate, NSLayoutManagerDelegate {
         var parent: DocumentTextView
         private var shown: NSAttributedString?
         private var shownID: String?
@@ -120,9 +132,11 @@ struct DocumentTextView: NSViewRepresentable {
         /// highlight change, a new comment, a re-read of an unchanged file)
         /// keep the reading position; new characters start at the top. New
         /// content clears the selection — in the view and in the binding.
-        func apply(_ text: NSAttributedString, contentID: String, to textView: NSTextView) {
+        /// Returns whether the text was replaced.
+        @discardableResult
+        func apply(_ text: NSAttributedString, contentID: String, to textView: NSTextView) -> Bool {
             let sameContent = shownID == contentID
-            if sameContent, let shown, shown === text || shown.isEqual(to: text) { return }
+            if sameContent, let shown, shown === text || shown.isEqual(to: text) { return false }
             let sameText = shown?.string == text.string
             shown = text
             shownID = contentID
@@ -137,6 +151,23 @@ struct DocumentTextView: NSViewRepresentable {
             if carried != selected {
                 DispatchQueue.main.async { [parent] in parent.selection = carried }
             }
+            return true
+        }
+
+        private var shownHighlights: [NSRange] = []
+
+        /// Redraws the highlights when they changed, or (`force`) after the
+        /// text was replaced.
+        func applyHighlights(_ ranges: [NSRange], to textView: NSTextView, force: Bool) {
+            guard force || ranges != shownHighlights, let layout = textView.layoutManager else { return }
+            let length = textView.textStorage?.length ?? 0
+            if !shownHighlights.isEmpty || force {
+                layout.removeTemporaryAttribute(.backgroundColor, forCharacterRange: NSRange(location: 0, length: length))
+            }
+            for range in ranges where range.location != NSNotFound && NSMaxRange(range) <= length {
+                layout.addTemporaryAttribute(.backgroundColor, value: DocumentAttributedString.highlight, forCharacterRange: range)
+            }
+            shownHighlights = ranges
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {
@@ -180,6 +211,12 @@ struct DocumentTextView: NSViewRepresentable {
                                name: NSView.frameDidChangeNotification, object: textView)
         }
 
+        /// Background layout reached more text: boxes there can be measured.
+        func layoutManager(_ layoutManager: NSLayoutManager, didCompleteLayoutFor container: NSTextContainer?, atEnd: Bool) {
+            guard let observedTextView, !parent.trackedRanges.isEmpty else { return }
+            reportTrackedRects(observedTextView)
+        }
+
         @objc private func geometryDidChange() {
             guard let observedTextView else { return }
             reportSelectionRect(observedTextView)
@@ -191,20 +228,43 @@ struct DocumentTextView: NSViewRepresentable {
         func reportTrackedRects(_ textView: NSTextView) {
             let ranges = parent.trackedRanges
             guard !ranges.isEmpty || !parent.trackedRects.wrappedValue.isEmpty else { return }
-            let rects = Self.visibleRects(of: ranges, in: textView)
-            guard rects != parent.trackedRects.wrappedValue else { return }
-            DispatchQueue.main.async { [parent] in parent.trackedRects.wrappedValue = rects }
+            var rects: [NSRange: CGRect] = [:]
+            for (range, rect) in zip(ranges, Self.visibleRects(of: ranges, in: textView)) {
+                if let rect { rects[range] = rect }
+            }
+            let extent = Self.visibleExtent(of: textView)
+            guard rects != parent.trackedRects.wrappedValue || extent != parent.textExtent.wrappedValue else { return }
+            DispatchQueue.main.async { [parent] in
+                parent.trackedRects.wrappedValue = rects
+                parent.textExtent.wrappedValue = extent
+            }
+        }
+
+        /// The text view's box inside its insets, relative to the visible
+        /// area (top-left origin): no layout, just the frame.
+        static func visibleExtent(of textView: NSTextView) -> CGRect? {
+            guard let clip = textView.enclosingScrollView?.contentView else { return nil }
+            let box = textView.bounds.insetBy(dx: 0, dy: textView.textContainerInset.height)
+            return clip.convert(box, from: textView).offsetBy(dx: -clip.bounds.minX, dy: -clip.bounds.minY)
         }
 
         /// Each range's line box relative to the visible area, top-left
-        /// origin; nil for a range outside the text.
+        /// origin; nil for a range outside the text or not laid out yet.
+        /// It never forces layout: on a 2 MiB text a box near the end would
+        /// lay out everything before it on the main actor (seconds). Text
+        /// is laid out in the background and up to whatever is scrolled to,
+        /// and the view's frame grows as it is, which reports again.
+        /// (Non-contiguous layout is no way out: it estimates the position
+        /// of text not laid out, and boxes deep in the text land far off.)
         static func visibleRects(of ranges: [NSRange], in textView: NSTextView) -> [CGRect?] {
             let length = textView.textStorage?.length ?? 0
             guard let layout = textView.layoutManager, let container = textView.textContainer,
                   let clip = textView.enclosingScrollView?.contentView else { return ranges.map { _ in nil } }
             let origin = textView.textContainerOrigin
+            let laidOut = layout.firstUnlaidCharacterIndex()
             return ranges.map { range in
-                guard range.location != NSNotFound, range.length > 0, NSMaxRange(range) <= length else { return nil }
+                guard range.location != NSNotFound, range.length > 0, NSMaxRange(range) <= length,
+                      NSMaxRange(range) <= laidOut else { return nil }
                 let glyphs = layout.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
                 let box = layout.boundingRect(forGlyphRange: glyphs, in: container).offsetBy(dx: origin.x, dy: origin.y)
                 let inClip = clip.convert(box, from: textView)

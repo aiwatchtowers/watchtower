@@ -9,8 +9,32 @@ final class OwnerAskMarginLayoutTests: XCTestCase {
     }
 
     func testTheMarginStaysWithinItsBounds() {
-        XCTAssertEqual(OwnerAskMarginLayout.width(total: 400, comments: 2), OwnerAskMarginLayout.minWidth)
+        XCTAssertEqual(OwnerAskMarginLayout.width(total: 600, comments: 2), OwnerAskMarginLayout.minWidth)
         XCTAssertEqual(OwnerAskMarginLayout.width(total: 3000, comments: 2), OwnerAskMarginLayout.maxWidth)
+    }
+
+    func testInANarrowDrawerTheTextKeepsItsWidth() {
+        let width = OwnerAskMarginLayout.width(total: 440, comments: 1)
+        XCTAssertEqual(width, 120, "the default drawer: the margin gives way")
+        XCTAssertGreaterThanOrEqual(440 - width, OwnerAskMarginLayout.minTextWidth)
+        XCTAssertEqual(OwnerAskMarginLayout.width(total: 300, comments: 1), OwnerAskMarginLayout.narrowMinWidth,
+                       "never below its own floor")
+    }
+
+    func testCardsPastTheEndOfTheTextStackUpToEndThere() throws {
+        let items: [OwnerAskMarginLayout.Item] = [.init(anchorY: 480, height: 60), .init(anchorY: 490, height: 60)]
+        let tops = try XCTUnwrap(OwnerAskMarginLayout.place(items, start: 0, end: 500))
+        XCTAssertEqual(tops[1], 500 - 60, "the last ends where the text does")
+        XCTAssertEqual(tops[0], 500 - 60 - OwnerAskMarginLayout.spacing - 60, "the one above moves up with it")
+        XCTAssertLessThanOrEqual(tops[0] + 60, tops[1])
+        XCTAssertEqual(OwnerAskMarginLayout.place(items, start: 0, end: nil), OwnerAskMarginLayout.tops(items))
+        XCTAssertEqual(OwnerAskMarginLayout.place([.init(anchorY: 10, height: 20)], start: 0, end: 500), [10],
+                       "a card with room stays at its line")
+    }
+
+    func testCardsTallerThanTheTextAreListed() {
+        let items = (0..<5).map { _ in OwnerAskMarginLayout.Item(anchorY: 10, height: 60) }
+        XCTAssertNil(OwnerAskMarginLayout.place(items, start: 0, end: 200), "five cards do not fit beside 200 pt of text")
     }
 
     func testCommentsOnOverlappingLinesDoNotOverlap() {

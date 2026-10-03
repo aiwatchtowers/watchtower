@@ -10,8 +10,11 @@ import WatchtowerCore
 /// comments, read-only.
 ///
 /// The snapshot is rendered off the main actor and its places located once
-/// per ask (`OwnerAskReviewDocuments`); a keystroke in a margin comment
-/// costs no render.
+/// per ask (`OwnerAskReviewDocuments`). Its attributed text depends on the
+/// snapshot alone: comment highlights are drawn over it
+/// (`DocumentTextView.highlightRanges`), so adding, removing or typing a
+/// comment never re-sets or re-lays out the text; boxes are measured only
+/// on text already laid out (`DocumentTextView.Coordinator.visibleRects`).
 struct OwnerAskReviewBody: View {
     let asks: OwnerAsksViewModel
     let ask: OwnerAsk
@@ -22,10 +25,9 @@ struct OwnerAskReviewBody: View {
 
     @State private var selection = DocumentSelectionCarry.none
     @State private var composerText = ""
-    @State private var rects: [CGRect?] = []
+    @State private var rects: [NSRange: CGRect] = [:]
+    @State private var extent: CGRect?
     @State private var activeComment: String?
-
-    private static let missing = NSRange(location: NSNotFound, length: 0)
 
     private var documents: OwnerAskReviewDocuments { asks.reviewDocuments }
 
@@ -51,6 +53,8 @@ struct OwnerAskReviewBody: View {
         .onChange(of: ask.id) { _, _ in
             selection = DocumentSelectionCarry.none
             activeComment = nil
+            rects = [:]
+            extent = nil
         }
     }
 
@@ -73,13 +77,8 @@ struct OwnerAskReviewBody: View {
                                   placed: ranges[index] != nil)
         }
         let focus = ask.payload.focus.compactMap { documents.range(of: $0, askID: askID) }
-        // No active emphasis: a click would re-style (and re-lay out) the
-        // whole snapshot.
-        let highlights = Dictionary(
-            uniqueKeysWithValues: ranges.enumerated().compactMap { index, range in range.map { (Int64(index), $0) } }
-        )
-        let text = DocumentAttributedString.make(doc, highlights: highlights, activeThreadID: nil,
-                                                 typography: ReviewTypography.style)
+        let placed = ranges.compactMap(\.self)
+        let text = DocumentAttributedString.make(doc, highlights: [:], activeThreadID: nil, typography: ReviewTypography.style)
         return GeometryReader { geo in
             let marginWidth = OwnerAskMarginLayout.width(total: geo.size.width, comments: margin.count)
             let textWidth = geo.size.width - marginWidth
@@ -92,8 +91,10 @@ struct OwnerAskReviewBody: View {
                     composerText: $composerText,
                     horizontalInset: inset,
                     scrollTarget: scrollTarget,
-                    trackedRanges: ranges.map { $0 ?? Self.missing } + focus,
+                    trackedRanges: placed + focus,
                     trackedRects: $rects,
+                    textExtent: $extent,
+                    highlightRanges: placed,
                     onComment: editable ? { body, range in addComment(body, on: range, in: doc) } : nil
                 ) { location in
                     // A click on a highlight picks its comment.
@@ -101,12 +102,16 @@ struct OwnerAskReviewBody: View {
                     else { return }
                     activeComment = margin[index].id
                 }
-                .overlay(alignment: .topLeading) { focusBars(Array(rects.dropFirst(margin.count)), x: inset - 10) }
+                // Boxes are looked up by the range they were measured for:
+                // a pass before the next report shows nothing, never a
+                // box of another passage.
+                .overlay(alignment: .topLeading) { focusBars(focus.map { rects[$0] }, x: inset - 10) }
                 .frame(width: textWidth)
                 if marginWidth > 0 {
                     OwnerAskMarginComments(
                         comments: margin,
-                        rects: Array(rects.prefix(margin.count)),
+                        rects: ranges.map { $0.flatMap { rects[$0] } },
+                        textExtent: extent,
                         active: $activeComment,
                         setBody: { id, body in setBody(body, of: id) },
                         remove: remove

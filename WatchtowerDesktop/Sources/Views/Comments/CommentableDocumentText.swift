@@ -19,9 +19,11 @@ struct CommentableDocumentText: View {
     @Binding var composerText: String
     var horizontalInset: CGFloat = ReadableColumn.minInset
     var scrollTarget: DocumentScrollTarget?
-    /// `DocumentTextView`'s tracked ranges, passed through.
+    /// `DocumentTextView`'s tracked ranges and highlights, passed through.
     var trackedRanges: [NSRange] = []
-    var trackedRects: Binding<[CGRect?]> = .constant([])
+    var trackedRects: Binding<[NSRange: CGRect]> = .constant([:])
+    var textExtent: Binding<CGRect?> = .constant(nil)
+    var highlightRanges: [NSRange] = []
     /// Saves a comment on `range`; returns whether it was saved (the composer
     /// then closes and clears). On false the composer stays open with the
     /// text and a generic note; the host's own error line says why. nil
@@ -52,6 +54,8 @@ struct CommentableDocumentText: View {
                 scrollTarget: scrollTarget,
                 trackedRanges: trackedRanges,
                 trackedRects: trackedRects,
+                textExtent: textExtent,
+                highlightRanges: highlightRanges,
                 onClick: onClick
             )
             .overlay(alignment: .topLeading) { commentButton(in: geo.size) }
@@ -102,6 +106,10 @@ struct CommentableDocumentText: View {
                 .frame(width: 320)
             if let composeError {
                 Text(composeError).font(.caption).foregroundStyle(.red)
+            } else if onComment == nil {
+                // Commenting closed while composing (an ask's answer is
+                // being sent): the typed text stays, Comment is disabled.
+                Text(Self.closedNote).font(.caption).foregroundStyle(.secondary)
             }
             HStack {
                 Text("⌘↩ or ⌃↩ to comment").font(.caption).foregroundStyle(.secondary)
@@ -118,8 +126,10 @@ struct CommentableDocumentText: View {
         .padding(12)
     }
 
+    static let closedNote = "Comments can't be added now; your text is kept."
+
     private var canSave: Bool {
-        !saving && !composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        onComment != nil && !saving && !composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func save() {
@@ -128,7 +138,10 @@ struct CommentableDocumentText: View {
             composeError = refusal
             return
         }
-        guard let onComment else { return }
+        guard let onComment else {
+            composeError = Self.closedNote
+            return
+        }
         let (body, range) = (composerText, composeRange)
         saving = true
         Task {

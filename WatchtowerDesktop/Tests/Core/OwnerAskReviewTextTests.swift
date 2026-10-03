@@ -64,6 +64,29 @@ final class OwnerAskReviewTextTests: XCTestCase {
         XCTAssertEqual(OwnerAskReviewText.range(of: OwnerAskReviewText.anchor(of: comment), in: doc), selection)
     }
 
+    func testAnchorsRoundTripAfterEmojiAndCJK() throws {
+        let doc = DocumentRendering.render("# 計画 🚀\n\n👩‍💻 先に 🙂 ship the retry budget, then 日本語 the canary.")
+        let text = doc.text as NSString
+        for quote in ["retry budget", "日本語", "🙂 ship"] {
+            let selection = text.range(of: quote)
+            let anchor = try XCTUnwrap(OwnerAskReviewText.anchor(selection: selection, in: doc), quote)
+            XCTAssertEqual(anchor.quote, quote)
+            XCTAssertEqual(anchor.heading, "計画 🚀")
+            XCTAssertEqual(OwnerAskReviewText.range(of: anchor, in: doc), selection, quote)
+            let stored = OwnerAskReviewText.anchor(of: OwnerAskAnswer.Comment(anchor: anchor, body: "x"))
+            XCTAssertEqual(OwnerAskReviewText.range(of: stored, in: doc), selection, "\(quote) through the stored answer")
+        }
+    }
+
+    func testACommentOnTheSecondOccurrenceStaysThere() throws {
+        let doc = DocumentRendering.render("Keep the budget small.\n\nLater, keep the budget small again.")
+        let text = doc.text as NSString
+        let first = text.range(of: "the budget")
+        let second = text.range(of: "the budget", range: NSRange(location: NSMaxRange(first), length: text.length - NSMaxRange(first)))
+        let anchor = try XCTUnwrap(OwnerAskReviewText.anchor(selection: second, in: doc))
+        XCTAssertEqual(OwnerAskReviewText.range(of: anchor, in: doc), second, "its context picks the second")
+    }
+
     func testAnEmptyOrStaleSelectionTakesNoAnchor() {
         XCTAssertNil(OwnerAskReviewText.anchor(selection: NSRange(location: 3, length: 0), in: doc))
         XCTAssertNil(OwnerAskReviewText.anchor(selection: NSRange(location: 3, length: 10_000), in: doc))

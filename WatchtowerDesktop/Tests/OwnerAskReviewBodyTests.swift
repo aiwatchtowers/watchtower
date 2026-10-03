@@ -42,6 +42,24 @@ final class OwnerAskReviewBodyTests: XCTestCase {
         XCTAssertEqual(documents.range(of: anchor, askID: 1), selection)
     }
 
+    func testARememberedAnchorAndAFreshLocateAgreeOnARepeatedPassage() async throws {
+        let snapshot = "# Notes 📝\n\n中文 the retry budget. 🙂 Later: the retry budget, again."
+        let review = try ask(9, snapshot: snapshot)
+        let fresh = OwnerAskReviewDocuments()
+        let remembering = OwnerAskReviewDocuments()
+        await fresh.prepare(review)
+        await remembering.prepare(review)
+        let doc = try XCTUnwrap(fresh.rendered[9])
+        let text = doc.text as NSString
+        let first = text.range(of: "the retry budget")
+        let second = text.range(of: "the retry budget", range: NSRange(location: NSMaxRange(first), length: text.length - NSMaxRange(first)))
+        XCTAssertNotEqual(first, second)
+        let anchor = try XCTUnwrap(OwnerAskReviewText.anchor(selection: second, in: doc))
+        remembering.remember(anchor, at: second, askID: 9)
+        XCTAssertEqual(remembering.range(of: anchor, askID: 9), second)
+        XCTAssertEqual(fresh.range(of: anchor, askID: 9), second, "located on the second occurrence, not the first")
+    }
+
     func testOnlyAFewRecentSnapshotsAreKept() async throws {
         let documents = OwnerAskReviewDocuments()
         for id in 1...Int64(OwnerAskReviewDocuments.limit + 1) {
@@ -87,6 +105,9 @@ final class OwnerAskReviewBodyTests: XCTestCase {
         scroll.frame = NSRect(x: 0, y: 0, width: 400, height: 300)
         let textView = try XCTUnwrap(scroll.documentView as? NSTextView)
         textView.textStorage?.setAttributedString(NSAttributedString(string: "First line\nSecond line\nThird line"))
+        XCTAssertEqual(DocumentTextView.Coordinator.visibleRects(of: [NSRange(location: 0, length: 5)], in: textView), [nil],
+                       "nothing laid out yet: no box, and no layout forced")
+        textView.layoutManager?.ensureLayout(for: try XCTUnwrap(textView.textContainer))
         let text = textView.string as NSString
         let rects = DocumentTextView.Coordinator.visibleRects(
             of: [text.range(of: "Second"), NSRange(location: NSNotFound, length: 0), NSRange(location: 5, length: 500),
@@ -100,5 +121,8 @@ final class OwnerAskReviewBodyTests: XCTestCase {
         XCTAssertNil(rects[2], "a range past the text has no box")
         XCTAssertGreaterThan(third.minY, second.minY, "boxes follow the lines")
         XCTAssertGreaterThanOrEqual(second.minX, 20, "inside the column's inset")
+        let extent = try XCTUnwrap(DocumentTextView.Coordinator.visibleExtent(of: textView))
+        XCTAssertLessThanOrEqual(extent.minY, second.minY)
+        XCTAssertGreaterThanOrEqual(extent.maxY, third.maxY, "the text's end is below its last line")
     }
 }
