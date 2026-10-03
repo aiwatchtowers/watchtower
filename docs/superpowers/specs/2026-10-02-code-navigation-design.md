@@ -118,7 +118,9 @@ both commands so they agree on what "the workbench's files" are:
   shim — the PROJ-07 / #248 rule). Paths relative to the workbench folder.
 - No repository (or git missing): a directory walk that skips
   `CodeFileTree.hiddenNames` — the Go list is a copy pinned to the Swift one by
-  a fixture test (`code_hidden_names.json`, read by both test suites).
+  a fixture test (`code_hidden_names.json`, read by both test suites). Git
+  failing, or listing nothing (a folder the repository ignores), also falls
+  back to the walk, with one stderr line.
 - Always skipped: symlinks that leave the folder, files > 2 MB (index) / > 5 MB
   (search, same cap as the editor), files whose first 8 KB contain NUL.
 - Order: as git/the walk yields; consumers do not depend on it.
@@ -139,9 +141,12 @@ watchtower code search --folder DIR --query Q [--word] [--case] [--regex]
 - Smart case by default: case-insensitive unless Q has an upper-case letter;
   `--case` forces sensitive.
 - Output: one JSON object per line, flushed per file:
-  `{"path","line","col","text","before":[…],"after":[…]}` — `col` in UTF-16
-  units (what Monaco and NSString use), `text` capped at 400 chars around the
-  match. A final `{"done":true,"files":N,"matches":M,"truncated":bool}`.
+  `{"path","line","col","text","text_col","before":[…],"after":[…]}` — `col`
+  in UTF-16 units (what Monaco and NSString use) of the full line, `text`
+  capped at 400 chars around the match, `text_col` the match's column inside
+  `text` (an invalid UTF-8 byte counts one unit). A final
+  `{"done":true,"files":N,"matches":M,"truncated":bool}`, `files` = files
+  searched.
 - The enclosing function ("in `saveNow`") is **not** computed in Go: Swift adds
   it from its index when it has one (keeps search independent of the index).
 - Cancellation: SIGTERM/SIGINT → stop within 50 ms (`signal.NotifyContext`),
@@ -176,6 +181,9 @@ Usages (§8.3) are `code search --word --case --query NAME`.
 - `signature`: the definition's first line(s) up to the body opener, whitespace
   collapsed, ≤ 200 chars. `doc`: the first sentence of the preceding doc
   comment (`///`, `/** */`, `#`/`"""` docstring per language), ≤ 200 chars.
+- `outline` (bool, omitted when false): a document-outline entry — Markdown
+  headings and config files' top-level keys — shown in the jump bar, kept out
+  of Open Quickly's Symbols scope.
 
 ### 6.2 CLI
 
@@ -190,6 +198,15 @@ for a file that parsed with none, `"lang":""` for an unsupported file), then
 `{"done":true,"files":N,"symbols":M,"ms":T}`. A path given to `--files` that no
 longer exists yields `{"file":path,"deleted":true}`. Same cancel/exit rules as
 search.
+
+- A `--files`/`--serve` path the full run would not list — a directory, binary,
+  over 2 MB, outside the folder, or `.gitignore`d (one `git check-ignore
+  --stdin` per batch, inside a repository) — yields `"lang":""` with no
+  symbols, not `deleted`.
+- Every `--files`/`--serve` result (and its symbols' `path`) echoes the request
+  path verbatim, deleted ones included (`./a.go` stays `./a.go`).
+- A file whose parse fails or panics, or whose language's query does not
+  compile, yields `"lang":""` and one stderr line; the run goes on.
 
 ### 6.3 Runtime, grammars and queries (from the spike)
 
@@ -212,7 +229,8 @@ search.
   TypeScript, TSX, Python, PHP, Swift, Ruby, Lua, Scala, Elixir, OCaml, Elm,
   Dart, R, Kotlin, Bash, Groovy, SQL, HCL/Terraform, Protobuf, Dockerfile, HTML,
   CSS, SCSS, YAML, TOML, JSON, Markdown, Svelte, Vue, Erlang, Haskell, Zig,
-  Objective-C, Julia, Perl, Nim, Clojure, GraphQL.
+  Objective-C, Julia, Perl, Nim, Clojure, GraphQL — 35 grammars; the 10 markup
+  and config formats below have none of their own.
 - **Queries are ours**, vendored as `internal/codeindex/queries/<lang>.scm`,
   each with a golden fixture (`testdata/<lang>/` source + expected symbols):
   - 20 start from upstream `tags.scm` (C, C++, C#, Dart, Elixir, Elm, Go, Java,
@@ -228,11 +246,12 @@ search.
     TABLE/VIEW/INDEX/TRIGGER`), HCL (`resource`/`data`/`module`/`variable`/
     `output` blocks), Protobuf (`message`/`enum`/`service`/`rpc`), GraphQL
     (type and operation definitions).
-  - 10 markup/config: Markdown headings and YAML/TOML/JSON top-level keys as
-    `module`/`field` outline symbols (for the jump bar and ⌃6 only, excluded
-    from Open Quickly's Symbols scope); HTML, CSS, SCSS, Dockerfile: no
-    symbols in the POC; Svelte and Vue: the `<script>` block re-parsed with the
-    JS/TS query (injection) — deferred to #261's end, low priority.
+  - 10 markup/config, by line scanners in Go, not grammars (work in every
+    build, past what a parser rejects): Markdown headings and YAML/TOML/JSON
+    top-level keys as `module`/`field` outline symbols (for the jump bar and
+    ⌃6 only, excluded from Open Quickly's Symbols scope); HTML, CSS, SCSS,
+    Dockerfile: known by name, no symbols in the POC; Svelte and Vue: the
+    `<script>` blocks parsed with the JS/TS grammar and query, the rest masked.
 - **Signature and doc are extracted in Go, not by the query** (no query
   predicate is relied on): signature = the definition node's source from its
   start to the first body child (per-language body node names in the language
@@ -248,8 +267,10 @@ search.
 - Language table (extensions, file names, shebangs → language id): one Go
   table, and a fixture test that every association in `languages.js` /
   Monaco's built-ins for a supported language maps to the same id.
-- Licences: every grammar's licence in `THIRD_PARTY_NOTICES` (all MIT in the
-  spike's check of forest's vendored files; re-checked upstream in #261).
+- Licences: `THIRD_PARTY_NOTICES.md` lists every grammar and carries the
+  copyright lines, the MIT and Apache-2.0 texts, the Elixir NOTICE and the
+  MPL-2.0 source pointer (Nim); `build-app.sh` ships it in the app's
+  `Contents/Resources`.
 
 ### 6.4 Performance (measured by the spike, loaded machine, M1 Pro)
 
@@ -285,8 +306,9 @@ Decisions from these numbers:
   cross-compiled).
 - A CI job `codeindex-full` (ubuntu, gcc present) runs
   `go test -tags codegrammars ./internal/codeindex/...` only when
-  `internal/codeindex/**`, `go.mod` or `go.sum` change; ≈ +50 s CPU cold,
-  cached by `setup-go` afterwards.
+  `internal/codeindex/**`, `internal/codewalk/**`, `go.mod`, `go.sum`,
+  `Makefile` or `.github/workflows/ci.yml` change; ≈ +50 s CPU cold, cached by
+  `setup-go` afterwards.
 - `.golangci.yml` adds `build-tags: [codegrammars]` so tagged files are linted.
 - `go mod tidy` keeps the grammar modules in `go.mod` regardless of tags
   (expected; untagged builds never download them).
