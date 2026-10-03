@@ -31,11 +31,15 @@ package struct CodeIndexDone: Equatable, Sendable {
     package let files: Int
     package let symbols: Int
     package let ms: Int
+    /// Why the owner's rules file (`code-languages.yaml`, spec §6.5) was
+    /// ignored as a whole; nil = no file, or one that loaded.
+    package let rulesError: String?
 
-    package init(files: Int, symbols: Int, ms: Int) {
+    package init(files: Int, symbols: Int, ms: Int, rulesError: String? = nil) {
         self.files = files
         self.symbols = symbols
         self.ms = ms
+        self.rulesError = rulesError
     }
 }
 
@@ -55,6 +59,7 @@ package enum CodeIndexLine: Decodable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case done, files, symbols, ms, file, lang, deleted, skipped, defs
+        case rulesError = "rules_error"
     }
 
     package init(from decoder: any Decoder) throws {
@@ -63,7 +68,9 @@ package enum CodeIndexLine: Decodable, Equatable, Sendable {
             self = try .done(CodeIndexDone(
                 files: c.decode(Int.self, forKey: .files),
                 symbols: c.decode(Int.self, forKey: .symbols),
-                ms: c.decode(Int.self, forKey: .ms)
+                ms: c.decode(Int.self, forKey: .ms),
+                // `rules_error,omitempty` on the Go side; "" never means an error.
+                rulesError: c.decodeIfPresent(String.self, forKey: .rulesError).flatMap { $0.isEmpty ? nil : $0 }
             ))
             return
         }

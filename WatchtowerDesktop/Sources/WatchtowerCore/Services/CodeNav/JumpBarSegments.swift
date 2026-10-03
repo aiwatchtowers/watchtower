@@ -27,12 +27,41 @@ package enum JumpBarStatus: Equatable, Sendable {
     }
 }
 
+/// The owner's rules file was ignored (spec §6.5): "Rules file: <error>",
+/// muted after the status. Shown on every file whenever set — once the
+/// file failed to load, which extensions it was meant to cover is unknown.
+package struct JumpBarRulesNote: Equatable, Sendable {
+    /// The longest error the bar shows; the tooltip has all of it.
+    package static let maxErrorLength = 80
+
+    /// The bar's text: the error without its leading file path (the
+    /// tooltip names it), whitespace collapsed, cut to `maxErrorLength`.
+    package let text: String
+    /// The tooltip: the whole error as the CLI reported it.
+    package let help: String
+
+    package init(error: String) {
+        help = "Rules file: " + error
+        var short = error.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        // The CLI names the file first ("/…/code-languages.yaml: tcl: …").
+        if short.hasPrefix("/"), let colon = short.range(of: ": "), !short[colon.upperBound...].isEmpty {
+            short = String(short[colon.upperBound...])
+        }
+        if short.count > Self.maxErrorLength {
+            short = short.prefix(Self.maxErrorLength - 1).trimmingCharacters(in: .whitespaces) + "…"
+        }
+        text = "Rules file: " + short
+    }
+}
+
 /// The jump bar of the file on screen: folders › file › type › method at
 /// the cursor, found in the index by line range (spec §8.4).
 package struct JumpBarModel: Equatable, Sendable {
     package let path: String
     package let segments: [JumpBarSegment]
     package let status: JumpBarStatus?
+    /// After the status, whatever it is (nil = the rules file is fine).
+    package let rulesNote: JumpBarRulesNote?
 
     /// - Parameters:
     ///   - rootName: the workbench folder's name, the first segment.
@@ -41,7 +70,11 @@ package struct JumpBarModel: Equatable, Sendable {
     ///   - symbols: the file's symbols from the index.
     ///   - language: as the index reported it ("" = one it does not read);
     ///     nil = the file is not in the index.
-    package init(path: String, rootName: String, cursorLine: Int?, symbols: [CodeSymbol], language: String?, state: CodeIndexState) {
+    ///   - rulesError: why the index ignored the owner's rules file.
+    package init(
+        path: String, rootName: String, cursorLine: Int?, symbols: [CodeSymbol], language: String?, state: CodeIndexState,
+        rulesError: String? = nil
+    ) {
         self.path = path
         let parts = path.split(separator: "/").map(String.init)
         var segments: [JumpBarSegment] = [.folder(name: rootName, path: "")]
@@ -54,6 +87,7 @@ package struct JumpBarModel: Equatable, Sendable {
         }
         self.segments = segments
         status = Self.status(path: path, language: language, state: state)
+        rulesNote = rulesError.map(JumpBarRulesNote.init(error:))
     }
 
     private static func status(path: String, language: String?, state: CodeIndexState) -> JumpBarStatus? {

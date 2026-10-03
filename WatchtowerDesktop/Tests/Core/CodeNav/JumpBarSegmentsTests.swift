@@ -27,9 +27,13 @@ final class JumpBarSegmentsTests: XCTestCase {
     }
 
     private func model(
-        line: Int?, symbols: [CodeSymbol]? = nil, language: String? = "swift", state: CodeIndexState = .ready, file: String? = nil
+        line: Int?, symbols: [CodeSymbol]? = nil, language: String? = "swift", state: CodeIndexState = .ready, file: String? = nil,
+        rulesError: String? = nil
     ) -> JumpBarModel {
-        JumpBarModel(path: file ?? path, rootName: "acme", cursorLine: line, symbols: symbols ?? all, language: language, state: state)
+        JumpBarModel(
+            path: file ?? path, rootName: "acme", cursorLine: line, symbols: symbols ?? all, language: language, state: state,
+            rulesError: rulesError
+        )
     }
 
     private var folderAndFile: [JumpBarSegment] {
@@ -122,6 +126,47 @@ final class JumpBarSegmentsTests: XCTestCase {
         XCTAssertEqual(bar.status, .indexFailed(failure))
         XCTAssertEqual(bar.status?.text, failure)
         XCTAssertEqual(model(line: 7, state: .failed(failure)).status?.text, failure, "also for an indexed language")
+    }
+
+    // MARK: The rules file's note (spec §6.5)
+
+    private let rulesPath = "/home/acme/Library/Application Support/Watchtower/code-languages.yaml"
+
+    /// Which files a rejected rules file was meant to cover is unknown, so
+    /// the note shows on every file, after whatever the status says.
+    func testARulesErrorShowsOnEveryFileAfterTheStatus() {
+        let error = rulesPath + ": tcl: definitions: none given"
+        for bar in [
+            model(line: 7, rulesError: error),
+            model(line: 3, symbols: [], language: "", file: "lib/util.tcl", rulesError: error),
+            model(line: 1, symbols: [], language: nil, state: .indexing(done: 1, total: 4), rulesError: error),
+            model(line: 7, state: .failed("code index exited with status 2"), rulesError: error)
+        ] {
+            XCTAssertEqual(bar.rulesNote?.text, "Rules file: tcl: definitions: none given")
+            XCTAssertEqual(bar.rulesNote?.help, "Rules file: " + error, "the tooltip names the file")
+        }
+        let unsupported = model(line: 3, symbols: [], language: "", file: "lib/util.tcl", rulesError: error)
+        XCTAssertEqual(unsupported.status?.text, "Language TCL: text search", "the status is unchanged")
+        XCTAssertNil(model(line: 7).rulesNote)
+        XCTAssertNil(model(line: 3, symbols: [], language: "", file: "lib/util.tcl").rulesNote)
+    }
+
+    func testALongRulesErrorIsCutAndItsWhitespaceCollapsed() {
+        let error = rulesPath + ": invalid YAML: yaml: unmarshal errors:\n  line 2: field extension not found in type codeindex.rulesFileLang"
+        let note = JumpBarRulesNote(error: error)
+        XCTAssertEqual(
+            note.text,
+            "Rules file: invalid YAML: yaml: unmarshal errors: line 2: field extension not found in type…"
+        )
+        XCTAssertLessThanOrEqual(note.text.count, "Rules file: ".count + JumpBarRulesNote.maxErrorLength)
+        XCTAssertEqual(note.help, "Rules file: " + error)
+    }
+
+    func testAnErrorThatDoesNotStartWithThePathIsShownWhole() {
+        let error = "reading " + rulesPath + ": permission denied"
+        XCTAssertEqual(JumpBarRulesNote(error: error).text, "Rules file: reading /home/acme/Library/Application Support/Watchtower/code-languages.yaml:…")
+        XCTAssertEqual(JumpBarRulesNote(error: "tcl: bad").text, "Rules file: tcl: bad")
+        XCTAssertEqual(JumpBarRulesNote(error: "/only/a/path").text, "Rules file: /only/a/path", "nothing after the path: kept")
     }
 
     // MARK: Save state (the old path line's)
