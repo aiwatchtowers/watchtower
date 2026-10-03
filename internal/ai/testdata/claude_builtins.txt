@@ -1,0 +1,67 @@
+# Known Claude Code built-in tool names, one per line (union across the CLI
+# versions Watchtower supports; a legacy name stays listed). Pinned so the
+# offline guard TestChatBuiltins_* runs in CI without a CLI. Seeded by hand
+# for Claude Code 2.1.288 from the CLI's tool registry strings and the
+# previous deny list. `scripts/check-claude-builtins.sh` compares the
+# installed CLI's built-in set against this file; with --update it adds the
+# names the CLI has that are missing here, keeping the list sorted.
+#
+# WaitForMcpServers is registered only when MCP servers are mounted (every
+# chat run mounts watchtower); --tools already hides it from chats, and the
+# deny list carries it too as defence in depth: no chat prompt relies on the
+# model waiting for a server.
+Agent
+Artifact
+ArtifactCheck
+ArtifactComments
+ArtifactData
+AskUserQuestion
+Bash
+BashOutput
+ConnectGitHub
+CronCreate
+CronDelete
+CronList
+DesignSync
+Edit
+EnterPlanMode
+EnterWorktree
+ExitPlanMode
+ExitWorktree
+Glob
+Grep
+KillShell
+LS
+ListAgents
+ListMcpResourcesTool
+Monitor
+NotebookEdit
+PowerShell
+PushNotification
+Read
+ReadMcpResourceDirTool
+ReadMcpResourceTool
+RemoteTrigger
+ReportFindings
+ScheduleWakeup
+SendMessage
+SendUserMessage
+ShareOnboardingGuide
+Skill
+SlashCommand
+StructuredOutput
+SubagentHandback
+Task
+TaskCreate
+TaskGet
+TaskList
+TaskStop
+TaskUpdate
+TodoRead
+TodoWrite
+ToolSearch
+WaitForMcpServers
+WebFetch
+WebSearch
+Workflow
+Write

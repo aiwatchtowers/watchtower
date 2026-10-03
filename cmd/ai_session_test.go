@@ -201,6 +201,7 @@ func TestClaudeSessionOptions_QC02PerToolAllowlist(t *testing.T) {
 
 	assert.Equal(t, "mcp__watchtower,mcp__acme__getIssue,"+ai.WebSearchTool, opts.AllowedTools)
 	assert.Equal(t, ai.SessionDisallowedTools+",mcp__acme__createIssue", opts.DisallowedTools)
+	assert.Equal(t, ai.SessionBuiltinTools, opts.Tools, "built-in allowlist: ToolSearch + WebSearch only")
 	for _, tok := range strings.Split(opts.AllowedTools, ",") {
 		assert.NotEqual(t, "mcp__acme", tok, "the whole server must never be granted")
 	}
