@@ -249,6 +249,7 @@ func TestProj11_HookNeverWritesStdoutAndExitsZero(t *testing.T) {
 			if tc.name == "repeat is a no-op" {
 				s, err := database.GetTerminalSession(row)
 				require.NoError(t, err)
+				assert.False(t, s.AgentStateAt.IsZero())
 				assert.True(t, s.AgentStateAt.Before(time.Now().Add(-30*time.Minute)), "a repeat keeps the transition time, got %v", s.AgentStateAt)
 			}
 		})
@@ -354,10 +355,15 @@ func TestSessionState_StopHookLostStateIsOneLine(t *testing.T) {
 	for _, tc := range []struct{ name, rawID, input, want string }{
 		{"unreadable input", "", `{"session_id":`, "session state not recorded: reading the hook input"},
 		{"bad id on the continued turn", "abc", `{"session_id":"` + briefLaunchID + `","stop_hook_active":true}`, "session state not recorded: invalid --workbench"},
+		{"bad id", "abc", `{"session_id":"` + briefLaunchID + `"}`, "board drift check skipped and session state not recorded: invalid --workbench"},
+		{"broken config", "", statePayload("Stop", briefLaunchID, ""), "board drift check skipped and session state not recorded"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			database, pid, row := stopStateFixture(t, "open")
 			t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+			if tc.name == "broken config" {
+				brokenConfig(t)
+			}
 			rawID := tc.rawID
 			if rawID == "" {
 				rawID = strconv.FormatInt(pid, 10)

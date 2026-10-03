@@ -13,6 +13,11 @@ var ErrTerminalSessionNotFound = errors.New("terminal session not found")
 // is time order, and the Desktop parses it pinned to UTC.
 const agentStateAtLayout = "2006-01-02T15:04:05.000Z"
 
+// agentStateAtGlob matches a stamp in agentStateAtLayout. A stored stamp that
+// does not match never blocks a write: string order means nothing for it, and
+// the next write replaces it with a valid one.
+const agentStateAtGlob = "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z"
+
 // TerminalSession is the slice of a terminal_sessions row Go reads; the
 // Desktop owns every other column but the agent state, which only the
 // workbench hooks write.
@@ -101,7 +106,7 @@ func (db *DB) ClearTerminalAgentState(id, workbenchID int64, sessionID string, a
 	res, err := db.Exec(`UPDATE terminal_sessions SET agent_state = NULL, agent_state_at = ?
 		WHERE id = ? AND project_id = ? AND kind = 'claude' AND claude_session_id = ?
 		  AND agent_state IS NOT NULL
-		  AND (agent_state_at IS NULL OR agent_state_at < ?)`,
+		  AND (agent_state_at IS NULL OR agent_state_at < ? OR agent_state_at NOT GLOB '`+agentStateAtGlob+`')`,
 		stamp, id, workbenchID, sessionID, stamp)
 	if err != nil {
 		return false, fmt.Errorf("clearing terminal session %d agent state: %w", id, err)
@@ -126,7 +131,7 @@ func (db *DB) SetTerminalAgentState(id, workbenchID int64, sessionID, state stri
 	res, err := db.Exec(`UPDATE terminal_sessions SET agent_state = ?, agent_state_at = ?
 		WHERE id = ? AND project_id = ? AND kind = 'claude' AND claude_session_id = ?
 		  AND agent_state IS NOT ?
-		  AND (agent_state_at IS NULL OR agent_state_at < ?)
+		  AND (agent_state_at IS NULL OR agent_state_at < ? OR agent_state_at NOT GLOB '`+agentStateAtGlob+`')
 		  AND (? = '' OR agent_state = ?)`,
 		state, stamp, id, workbenchID, sessionID, state, stamp, onlyFrom, onlyFrom)
 	if err != nil {

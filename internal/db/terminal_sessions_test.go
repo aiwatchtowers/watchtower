@@ -253,6 +253,20 @@ func TestGetTerminalSession_UnreadableStampReadsAsNeverReported(t *testing.T) {
 	if !s.AgentStateAt.IsZero() || s.AgentState.String != "waiting" || s.ClaudeSessionID.String != agentStateUUID {
 		t.Fatalf("row = %+v", s)
 	}
+	// The next write replaces it, though "yesterday" sorts after any real stamp.
+	at := time.Now()
+	if ok, err := d.SetTerminalAgentState(id, pid, agentStateUUID, "working", at, ""); err != nil || !ok {
+		t.Fatalf("a write over a bad stamp: ok=%v err=%v", ok, err)
+	}
+	if s, err = d.GetTerminalSession(id); err != nil || !s.AgentStateAt.Equal(at.Truncate(time.Millisecond)) {
+		t.Fatalf("stamp after the write = %v (err %v), want %v", s.AgentStateAt, err, at)
+	}
+	if _, err := d.Exec(`UPDATE terminal_sessions SET agent_state_at = 'yesterday' WHERE id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := d.ClearTerminalAgentState(id, pid, agentStateUUID, at); err != nil || !ok {
+		t.Fatalf("a clear over a bad stamp: ok=%v err=%v", ok, err)
+	}
 }
 
 func TestSetTerminalAgentState_TimestampFormat(t *testing.T) {

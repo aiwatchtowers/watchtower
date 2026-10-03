@@ -223,7 +223,11 @@ func runStopHook(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer,
 	if err != nil || id <= 0 {
 		switch {
 		case !in.StopHookActive:
-			fmt.Fprintf(stderr, "watchtower: board drift check skipped: invalid %s %q\n", workbenchFlagName(vocab.Legacy), rawID)
+			lost := ""
+			if stopStateExpected(in.SessionID) {
+				lost = " and session state not recorded"
+			}
+			fmt.Fprintf(stderr, "watchtower: board drift check skipped%s: invalid %s %q\n", lost, workbenchFlagName(vocab.Legacy), rawID)
 		case stopStateExpected(in.SessionID):
 			fmt.Fprintf(stderr, "watchtower: session state not recorded: invalid %s %q\n", workbenchFlagName(vocab.Legacy), rawID)
 		}
