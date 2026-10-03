@@ -26,7 +26,9 @@ final class WorkbenchDocumentsRemovedScanTests: XCTestCase {
         let removed = [
             "WorkbenchDocumentsView", "WorkbenchDocumentsList", "WorkbenchDocumentThreadsPanel",
             "AddWorkbenchDocumentSheet", "WorkbenchDocumentViewModel", "WorkbenchDocumentGrouping",
-            "WorkbenchCommentsSendBar"
+            "WorkbenchCommentsSendBar",
+            // The CLI's document import (create's envelope, resync's docs keys).
+            "import-docs", "docs_import", "docs_ok", "importNote"
         ]
         // The document models and the attach envelope, as whole words (the
         // names above all start with `WorkbenchDocument`).

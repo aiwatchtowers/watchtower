@@ -59,10 +59,6 @@ final class WorkbenchesViewModel {
     private var installNotes: [Int64: String] = [:]
     /// Why the last status read failed; the next successful read clears it.
     private var statusReadErrors: [Int64: String] = [:]
-    /// What create's document import could not do (`WorkbenchCreated.importNote`),
-    /// per project. A status read says nothing about it, so it stays for the
-    /// session; a retry runs in the terminal, which the Desktop does not watch.
-    private(set) var importNotes: [Int64: String] = [:]
     /// The page's error line, per project — never the shared `errorMessage`,
     /// where one project's failure would outlive a switch to another.
     var installErrors: [Int64: String] {
@@ -437,7 +433,6 @@ final class WorkbenchesViewModel {
             errorMessage = "Could not create the workbench: \(error.localizedDescription)"
             return
         }
-        importNotes[created.id] = created.importNote
         var installed = true
         do {
             try await cli.install(projectID: created.id)

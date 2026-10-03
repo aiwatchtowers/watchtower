@@ -1,90 +1,13 @@
 import Foundation
 import WatchtowerCore
 
-/// The Go `workbenchdocs.Report` inside the create and resync envelopes; every
-/// list optional, so a CLI that omits one still decodes.
-private struct WorkbenchDocsReport: Decodable {
-    let imported: [String]?
-    let unreadable: [String]?
-    let skippedOverCap: [String]?
-
-    enum CodingKeys: String, CodingKey {
-        case imported, unreadable
-        case skippedOverCap = "skipped_over_cap"
-    }
-}
-
-/// `watchtower workbench create --json` envelope (Task 4). The folder's
-/// document import is best-effort: the workbench exists whenever the command
-/// exits 0; `docsImportOK == false` says the import failed, and a successful
-/// one may still have skipped unreadable paths or files past its cap.
+/// `watchtower workbench create --json` envelope (Task 4): the workbench
+/// exists whenever the command exits 0. The folder's search-index keys it
+/// also carries are not read here.
 struct WorkbenchCreated: Decodable, Equatable {
     let id: Int64
     let folder: String
     let name: String
-    let docsImportOK: Bool
-    let docsImportError: String
-    /// `"<rel_path>: <reason>"` per path the import could not read.
-    let unreadable: [String]
-    /// New documents past the per-run cap; the next `import-docs` takes them.
-    let skippedOverCap: Int
-
-    enum CodingKeys: String, CodingKey {
-        case id, folder, name
-        case docsImportOK = "docs_import_ok"
-        case docsImportError = "docs_import_error"
-        case docsImport = "docs_import"
-    }
-
-    init(
-        id: Int64,
-        folder: String,
-        name: String,
-        docsImportOK: Bool = true,
-        docsImportError: String = "",
-        unreadable: [String] = [],
-        skippedOverCap: Int = 0
-    ) {
-        self.id = id
-        self.folder = folder
-        self.name = name
-        self.docsImportOK = docsImportOK
-        self.docsImportError = docsImportError
-        self.unreadable = unreadable
-        self.skippedOverCap = skippedOverCap
-    }
-
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        id = try c.decode(Int64.self, forKey: .id)
-        folder = try c.decode(String.self, forKey: .folder)
-        name = try c.decode(String.self, forKey: .name)
-        // An older CLI without the keys imported nothing, so nothing failed.
-        docsImportOK = try c.decodeIfPresent(Bool.self, forKey: .docsImportOK) ?? true
-        docsImportError = try c.decodeIfPresent(String.self, forKey: .docsImportError) ?? ""
-        let report = try c.decodeIfPresent(WorkbenchDocsReport.self, forKey: .docsImport)
-        unreadable = report?.unreadable ?? []
-        skippedOverCap = report?.skippedOverCap?.count ?? 0
-    }
-
-    /// What the workbench page tells the owner about the import, or nil when
-    /// everything was attached. Each case ends with the command that retries.
-    var importNote: String? {
-        let retry = "watchtower workbench import-docs \(id)"
-        if !docsImportOK {
-            let reason = docsImportError.isEmpty ? "" : " (\(docsImportError))"
-            return "Importing the folder's documents failed\(reason) — retry with: \(retry)"
-        }
-        var parts: [String] = []
-        if let first = unreadable.first {
-            let more = unreadable.count > 1 ? " and \(unreadable.count - 1) more" : ""
-            parts.append("Could not read \(first)\(more) — fix it, then run: \(retry)")
-        }
-        if skippedOverCap > 0 {
-            parts.append("\(skippedOverCap) more document(s) past the import cap — run: \(retry)")
-        }
-        return parts.isEmpty ? nil : parts.joined(separator: ". ")
-    }
 }
 
 /// `watchtower workbench delete N --json` envelope. The workbench rows are gone
@@ -140,7 +63,7 @@ struct WorkbenchDeleted: Decodable, Equatable {
 
 /// `watchtower workbench resync N --json` (#91): what Re-run Setup added. The
 /// command is additive — it never deletes or changes targets, comments,
-/// documents, sources or the description, and never creates targets;
+/// sources or the description, and never creates targets;
 /// `suggestions` are what the owner may take to the agent. It exits 0 once
 /// the workbench is found; the `*_ok`/`*_error` fields say which step failed
 /// (the `workbench create --json` precedent).
@@ -151,11 +74,6 @@ struct WorkbenchResynced: Decodable, Equatable {
         let problem: Bool
     }
 
-    let docsOK: Bool
-    let docsError: String
-    let imported: [String]
-    let skippedOverCap: Int
-    let unreadable: [String]
     let integrationOK: Bool
     let integrationError: String
     /// A devpack state: installed, updated, unchanged, drifted or foreign;
@@ -177,7 +95,7 @@ struct WorkbenchResynced: Decodable, Equatable {
     let legacyMCPRemoved: Bool
     let legacyHooksReplaced: Bool
     let legacyPermissionRules: Int
-    /// The workbench documents' search index (#89). A CLI older than it sends
+    /// The workbench folder files' search index (#89). A CLI older than it sends
     /// none of these keys: nothing was indexed, nothing failed.
     let indexOK: Bool
     let indexError: String
@@ -185,9 +103,6 @@ struct WorkbenchResynced: Decodable, Equatable {
     let indexSkipped: Bool
 
     enum CodingKeys: String, CodingKey {
-        case docsOK = "docs_ok"
-        case docsError = "docs_error"
-        case docs
         case integrationOK = "integration_ok"
         case integrationError = "integration_error"
         case skill, excluded, suggestions
@@ -207,14 +122,6 @@ struct WorkbenchResynced: Decodable, Equatable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        // A CLI that no longer imports documents (spec 2026-10-03 §7) sends
-        // none of the docs keys: nothing was imported, nothing failed.
-        docsOK = try c.decodeIfPresent(Bool.self, forKey: .docsOK) ?? true
-        docsError = try c.decodeIfPresent(String.self, forKey: .docsError) ?? ""
-        let docs = try c.decodeIfPresent(WorkbenchDocsReport.self, forKey: .docs)
-        imported = docs?.imported ?? []
-        unreadable = docs?.unreadable ?? []
-        skippedOverCap = docs?.skippedOverCap?.count ?? 0
         integrationOK = try c.decode(Bool.self, forKey: .integrationOK)
         integrationError = try c.decode(String.self, forKey: .integrationError)
         skill = try c.decode(String.self, forKey: .skill)
@@ -237,27 +144,11 @@ struct WorkbenchResynced: Decodable, Equatable {
     /// What the workbench page shows: what was added, what failed, then the
     /// suggestions. Never empty.
     var summaryLines: [Line] {
-        var lines = documentLines + indexLines + integrationLines
+        var lines = indexLines + integrationLines
         if lines.isEmpty { lines.append(Line(text: "Everything was already up to date.", problem: false)) }
         lines += suggestions.map { Line(text: "Next: \($0)", problem: false) }
         if !suggestionsError.isEmpty {
             lines.append(Line(text: "Suggestions may be incomplete: \(suggestionsError)", problem: true))
-        }
-        return lines
-    }
-
-    private var documentLines: [Line] {
-        guard docsOK else { return [Line(text: "Attaching documents failed: \(docsError)", problem: true)] }
-        var lines: [Line] = []
-        if !imported.isEmpty {
-            lines.append(Line(text: "Attached \(imported.count) new document(s): \(imported.joined(separator: ", "))", problem: false))
-        }
-        if skippedOverCap > 0 {
-            lines.append(Line(text: "\(skippedOverCap) more document(s) past the import cap — run Re-run Setup again", problem: true))
-        }
-        if let first = unreadable.first {
-            let more = unreadable.count > 1 ? " and \(unreadable.count - 1) more" : ""
-            lines.append(Line(text: "Could not read \(first)\(more)", problem: true))
         }
         return lines
     }

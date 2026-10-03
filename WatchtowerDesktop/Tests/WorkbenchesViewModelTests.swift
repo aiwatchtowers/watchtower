@@ -100,22 +100,6 @@ final class WorkbenchesViewModelTests: XCTestCase {
         XCTAssertEqual(vm.badgeCount, 0)
     }
 
-    func testCreateShowsAFailedDocumentImportWithTheRetryCommand() async throws {
-        let id = try await pool.write { try TestDatabase.insertWorkbench($0) }
-        let runner = ScriptedCLIRunner(results: [
-            .success(Data(#"{"id":\#(id),"folder":"/tmp/acme","name":"acme","docs_import_ok":false,"docs_import_error":"permission denied"}"#.utf8)),
-            .success(Data("installed".utf8)),
-            .success(Data(#"{"skill":"unchanged","hook":true,"mcp":true}"#.utf8))
-        ])
-        let vm = makeVM(runner)
-        await vm.createWorkbench(folder: URL(fileURLWithPath: "/tmp/acme"), name: nil)
-        let note = try XCTUnwrap(vm.importNotes[id])
-        XCTAssertTrue(note.contains("permission denied"))
-        XCTAssertTrue(note.contains("watchtower workbench import-docs \(id)"))
-        XCTAssertNil(vm.installErrors[id], "its own line, apart from the install note")
-        XCTAssertNil(vm.errorMessage, "the project exists; the note belongs to it")
-    }
-
     func testCreateRunsCreateThenInstallSelectsTheProjectAndAnnouncesIt() async throws {
         let id = try await pool.write { try TestDatabase.insertWorkbench($0) }
         let runner = ScriptedCLIRunner(results: [

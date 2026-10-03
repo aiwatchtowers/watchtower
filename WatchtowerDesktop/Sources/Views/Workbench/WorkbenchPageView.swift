@@ -114,16 +114,6 @@ struct WorkbenchPageView: View {
                     .lineLimit(1)
                     .help(installError)
             }
-            if let importNote = vm.importNotes[project.id] {
-                // Selectable: it ends with the command that retries.
-                Text(importNote)
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .textSelection(.enabled)
-                    .help(importNote)
-            }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
