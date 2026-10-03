@@ -1182,3 +1182,13 @@ Entry format:
 - weak-dimension: 7. The hosted A→B→A rounds use sessions that are already listed and running, so their awaits resolve FIFO and would likely pass on the pre-fix code. Only the two VM tests and the trailing C block distinguish. One lane (the prosecutor) caught this.
 - rule-gap (candidate, Swift): *a race fix guarded by an ordering token ships, per entry point that takes the token, a test where that entry point's own pre-ticket await is the slow one. A test whose racing operations all take the same fast path does not prove ordering.*
 - outcome: TBD
+
+## 2026-10-04 — fix/db-busy-timeout-flake (PR #159: busy-timeout lower bound 200 ms → 50 ms with EINTR rationale, code index SIGTERM bound to 500 ms, test-only `seedNewFileHook` seeding new db files from the migrated template, ~60 `internal/db` migration tests made `t.Parallel`, release.yml mirrored to ci.yml; panel: prosecutor + 3 specialists, codex lane DOWN — timed out twice at 300 s; judge synthesis, round 1) — verdict: approve
+
+- contested: whether the template seed hollows out the "fresh migration" tests. It does not: the golden, desktop-schema and clone-parity tests go through `openMigratingFresh`. But nothing proved that the opt-out actually fired, so a silent self-comparison was possible. **When a test-only fast path is added to a production entry point, the tests that need the slow path must assert that the fast path did NOT run, not only opt out of it.** [7]
+- false-positive: silent-failure's L2 ("Stat error ignored") and L1 ("empty snapshot") were dismissed as test-only/unreachable; M2 (non-atomic seed write) kept as a nit. [9]
+- false-positive: "step timeouts sum above the job cap" — step caps are upper bounds, not a budget to add up. [8]
+- miss: none unique, since codex was absent. The seed making the `dsn_test` exact-path stat vacuous was found by 3 lanes.
+- weak-dimension: none notable; the panel converged.
+- rule-gap (candidate, dim 7): *a test hook that pre-populates state ahead of a production code path (seed, cache, clone) ships with a way for the opt-out tests to prove the hook did not fire for them, and a review lists the existing assertions the pre-population makes vacuous (exact-path existence checks are the tell).*
+- outcome: TBD
