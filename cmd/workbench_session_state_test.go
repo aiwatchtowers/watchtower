@@ -125,6 +125,28 @@ func TestSessionState_RecordsEachEvent(t *testing.T) {
 	}
 }
 
+// A PostToolUse input carries the tool's input and result: one past the
+// other hooks' 1 MiB cap still clears "needs approval".
+func TestSessionState_LargePostToolUsePayloadClearsApproval(t *testing.T) {
+	database, pid, row := briefSessionFixture(t)
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	stepClock(t)
+	_, _, err := runSessionState(t, pid, strings.NewReader(statePayload("Notification", briefLaunchID, "permission_prompt")))
+	require.NoError(t, err)
+	require.Equal(t, "approval", storedAgentState(t, database, row))
+
+	big := `{"session_id":"` + briefLaunchID + `","hook_event_name":"PostToolUse","tool_name":"Write",` +
+		`"tool_input":{"file_path":"/tmp/acme/a.txt","content":"` + strings.Repeat("x", hookStdinLimit+1) + `"},` +
+		`"tool_response":{"success":true}}`
+	require.Greater(t, len(big), hookStdinLimit)
+	out, errOut, err := runSessionState(t, pid, strings.NewReader(big))
+
+	require.NoError(t, err)
+	assert.Empty(t, out)
+	assert.Empty(t, errOut)
+	assert.Equal(t, "working", storedAgentState(t, database, row))
+}
+
 // An external terminal has no row: the hook neither reads stdin nor opens
 // the database (a broken config would print a line if it did).
 func TestSessionState_NoEnvReadsNothing(t *testing.T) {

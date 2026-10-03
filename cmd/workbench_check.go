@@ -293,6 +293,11 @@ func recordStopAgentState(stderr io.Writer, database *db.DB, workbenchID int64, 
 // readHookInput decodes a hook's JSON input from stdin, giving up at ctx's
 // deadline (a run from a terminal may never send one).
 func readHookInput[T any](ctx context.Context, stdin io.Reader) (T, error) {
+	return readHookInputLimit[T](ctx, stdin, hookStdinLimit)
+}
+
+// readHookInputLimit is readHookInput reading at most limit bytes.
+func readHookInputLimit[T any](ctx context.Context, stdin io.Reader, limit int64) (T, error) {
 	type result struct {
 		in  T
 		err error
@@ -300,7 +305,7 @@ func readHookInput[T any](ctx context.Context, stdin io.Reader) (T, error) {
 	ch := make(chan result, 1)
 	go func() {
 		var in T
-		err := json.NewDecoder(io.LimitReader(stdin, hookStdinLimit)).Decode(&in)
+		err := json.NewDecoder(io.LimitReader(stdin, limit)).Decode(&in)
 		ch <- result{in, err}
 	}()
 	select {

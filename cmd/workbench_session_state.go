@@ -27,6 +27,13 @@ const (
 // writes it and closes stdin at once. A var for tests.
 var sessionStateInputWait = time.Second
 
+// sessionStateStdinLimit caps what the state hook reads of its input. Far
+// above hookStdinLimit: a PostToolUse input carries the tool's input and
+// result (a Write of a large file, a big MCP result), and a cut-off input
+// would leave "needs approval" on screen until the turn ends. The hook is
+// async, so the size never delays the agent.
+const sessionStateStdinLimit = 64 << 20
+
 // hookNow is the clock the state hooks stamp an event with. A var for tests.
 var hookNow = time.Now
 
@@ -122,7 +129,7 @@ func recordHookAgentState(stdin io.Reader, rowID int64, rawWorkbenchID string) e
 		return fmt.Errorf("invalid --workbench %q", briefClip(rawWorkbenchID, 40))
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), sessionStateInputWait)
-	in, err := readHookInput[sessionStateInput](ctx, stdin)
+	in, err := readHookInputLimit[sessionStateInput](ctx, stdin, sessionStateStdinLimit)
 	cancel()
 	if errors.Is(err, io.EOF) {
 		return nil // a manual run with stdin closed
