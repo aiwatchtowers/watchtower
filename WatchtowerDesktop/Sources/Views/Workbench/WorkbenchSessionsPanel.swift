@@ -84,7 +84,12 @@ struct TerminalSessionRow: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(session.title).lineLimit(1).truncationMode(.tail)
                 if let caption = row.caption {
-                    Text(caption).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                    // A live caption repeats the dot's label for VoiceOver.
+                    Text(caption)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .accessibilityHidden(row.state.isLive)
                 }
                 if let badge = row.badge {
                     Text(badge).font(.caption2).foregroundStyle(.secondary)
@@ -118,7 +123,7 @@ struct SessionLiveDot: View {
         Image(systemName: state.isLive ? "circle.fill" : "circle")
             .font(.system(size: 7))
             .foregroundStyle(color)
-            .accessibilityLabel(Self.label(state))
+            .accessibilityLabel(state.label)
     }
 
     private var color: Color {
@@ -126,16 +131,6 @@ struct SessionLiveDot: View {
         case .running, .working: .green
         case .waitingForOwner, .needsApproval: .orange
         case .notStarted: .secondary
-        }
-    }
-
-    static func label(_ state: SessionSwitcherPresentation.State) -> String {
-        switch state {
-        case .running: "Running"
-        case .working: "Working"
-        case .waitingForOwner: "Waiting for you"
-        case .needsApproval: "Needs approval"
-        case .notStarted: "Not running"
         }
     }
 }

@@ -136,8 +136,7 @@ final class SessionAgentStateCenter {
         } else if pollTask == nil {
             pollTask = Task { [weak self, interval] in
                 while !Task.isCancelled {
-                    guard let self else { return }
-                    await self.poll()
+                    await self?.poll()
                     try? await Task.sleep(for: interval)
                 }
             }

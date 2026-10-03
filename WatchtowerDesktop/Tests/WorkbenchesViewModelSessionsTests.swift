@@ -737,12 +737,12 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         await vm.reload()
         await vm.loadSessions(projectID: nil)
         XCTAssertEqual(vm.standaloneSessions.map(\.id), [shell.id], "a legacy closed terminal is listed")
-        XCTAssertFalse(vm.isLive(shell))
+        XCTAssertFalse(vm.sessionState(shell).isLive)
 
         await vm.selectStandalone(shell)
 
         XCTAssertEqual(vm.selectedStandalone?.id, shell.id)
-        XCTAssertTrue(vm.isLive(shell))
+        XCTAssertTrue(vm.sessionState(shell).isLive)
         XCTAssertEqual(launches.count, 1)
     }
 
@@ -930,7 +930,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
 
         await vm.showInPane(.board, item: .session(closed.id), projectID: p)
         XCTAssertEqual(vm.layout.visiblePanes, [.session(closed.id), .documents], "the picked pane, not the secondary")
-        XCTAssertTrue(vm.isLive(try XCTUnwrap(vm.sessions.first { $0.id == closed.id })),
+        XCTAssertTrue(vm.sessionState(try XCTUnwrap(vm.sessions.first { $0.id == closed.id })).isLive,
                       "a session closed by an older build resumes like any not running one")
         XCTAssertTrue(launches.last?.args.last?.contains("--resume") == true)
 
@@ -940,7 +940,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         await vm.newSession(inPane: .session(closed.id), projectID: p)
         let fresh = try XCTUnwrap(vm.sessions.first { $0.id != closed.id })
         XCTAssertEqual(vm.layout.visiblePanes, [.session(fresh.id), .board])
-        XCTAssertTrue(vm.isLive(try XCTUnwrap(vm.sessions.first { $0.id == closed.id })), "replacing a pane keeps its process")
+        XCTAssertTrue(vm.sessionState(try XCTUnwrap(vm.sessions.first { $0.id == closed.id })).isLive, "replacing a pane keeps its process")
     }
 
     /// The page header's buttons: Board / Documents swap the pane beside the
@@ -1063,7 +1063,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         XCTAssertEqual(vm.layout.expanded, .session(row.id))
         await vm.startFresh(row, placement: .inPlace)
         XCTAssertEqual(vm.layout.expanded, .session(row.id))
-        XCTAssertTrue(vm.isLive(row))
+        XCTAssertTrue(vm.sessionState(row).isLive)
     }
 
     /// A pane picked from a menu that left the layout while the session

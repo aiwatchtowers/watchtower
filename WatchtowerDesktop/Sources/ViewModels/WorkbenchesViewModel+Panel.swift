@@ -49,10 +49,6 @@ extension WorkbenchesViewModel {
         standaloneSessions.first { $0.id == selectedStandaloneID }
     }
 
-    func isLive(_ session: TerminalSession) -> Bool {
-        terminalCenter?.liveIDs.contains(session.id) ?? false
-    }
-
     /// The live sessions' agent statuses, for `SessionSwitcherPresentation.rows`.
     var sessionStatuses: [Int64: SessionAgentStatus] {
         agentStates?.statuses ?? [:]

@@ -109,13 +109,39 @@ final class SessionAgentStateCenterTests: XCTestCase {
         return formatter.string(from: started.addingTimeInterval(offset))
     }
 
-    /// What the hook does: a write from another connection (in the app, another process).
-    private func hookWrites(_ id: Int64, _ state: String, at offset: TimeInterval) throws {
+    /// What the hook does, from another connection (in the app, another
+    /// process), with the guards of Go's `db.SetTerminalAgentState`: the
+    /// row's own conversation, a changed state, a later stamp. Returns
+    /// whether it wrote.
+    @discardableResult
+    private func hookWrites(_ id: Int64, _ state: String, at offset: TimeInterval) throws -> Bool {
+        let other = try DatabaseQueue(path: path)
+        return try other.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE terminal_sessions SET agent_state = ?, agent_state_at = ?
+                    WHERE id = ? AND kind = 'claude' AND claude_session_id IS NOT NULL
+                      AND agent_state IS NOT ?
+                      AND (agent_state_at IS NULL OR agent_state_at < ?)
+                    """,
+                arguments: [state, stamp(offset), id, state, stamp(offset)]
+            )
+            return db.changesCount > 0
+        }
+    }
+
+    /// The SessionStart hook of a launch or a resume, with the guards of Go's
+    /// `db.ClearTerminalAgentState`.
+    private func sessionStartClears(_ id: Int64, at offset: TimeInterval) throws {
         let other = try DatabaseQueue(path: path)
         try other.write { db in
             try db.execute(
-                sql: "UPDATE terminal_sessions SET agent_state = ?, agent_state_at = ? WHERE id = ?",
-                arguments: [state, stamp(offset), id]
+                sql: """
+                    UPDATE terminal_sessions SET agent_state = NULL, agent_state_at = ?
+                    WHERE id = ? AND kind = 'claude' AND agent_state IS NOT NULL
+                      AND (agent_state_at IS NULL OR agent_state_at < ?)
+                    """,
+                arguments: [stamp(offset), id, stamp(offset)]
             )
         }
     }
@@ -212,6 +238,28 @@ final class SessionAgentStateCenterTests: XCTestCase {
         try hookWrites(row.id, "working", at: 11)
         await center.poll()
         XCTAssertEqual(center.statuses[row.id]?.state, .working)
+    }
+
+    /// A relaunch whose first state equals the previous run's last one:
+    /// without the SessionStart clear the repeat is skipped and the old
+    /// run's stamp is not trusted; with it the new run's state shows.
+    func testTheSameStateInANewRunIsTrusted() async throws {
+        let center = makeCenter()
+        let row = try await session()
+        terminals.start(row, fresh: true)
+        XCTAssertTrue(try hookWrites(row.id, "waiting", at: 1))
+        await center.poll()
+        XCTAssertEqual(center.statuses[row.id]?.state, .waitingForOwner)
+        processes.last?.exit(0)
+
+        terminals.now = { [started] in started.addingTimeInterval(10) }
+        terminals.start(row, fresh: false)
+        try sessionStartClears(row.id, at: 10.5)
+        XCTAssertTrue(try hookWrites(row.id, "waiting", at: 11), "the new run's waiting is not a repeat")
+        XCTAssertFalse(try hookWrites(row.id, "working", at: 5), "a late hook of the previous run cannot land")
+        await center.poll()
+        XCTAssertEqual(center.statuses[row.id]?.state, .waitingForOwner)
+        XCTAssertEqual(center.statuses[row.id]?.at, stamp(11))
     }
 
     func testExitDropsTheStatusWhileOtherSessionsRun() async throws {
@@ -376,6 +424,8 @@ final class SessionAgentStateCenterTests: XCTestCase {
         let waiting = SessionSwitcherPresentation.rows([session], liveIDs: [id], statuses: [id: status], now: Date())[0]
         let live = TerminalSessionRow(row: waiting, actions: actions)
         XCTAssertNoThrow(try live.inspect().find(text: "waiting for you"))
+        XCTAssertTrue(try live.inspect().find(text: "waiting for you").accessibilityHidden(),
+                      "VoiceOver hears the state once, from the dot")
         let dot = try live.inspect().find(SessionLiveDot.self)
         XCTAssertEqual(try dot.actualView().state, .waitingForOwner)
         XCTAssertEqual(try dot.find(ViewType.Image.self).foregroundStyleShapeStyle(Color.self), .orange)
@@ -384,6 +434,7 @@ final class SessionAgentStateCenterTests: XCTestCase {
         let dead = SessionSwitcherPresentation.rows([session], liveIDs: [], statuses: [id: status], now: Date())[0]
         let idle = TerminalSessionRow(row: dead, actions: actions)
         XCTAssertNoThrow(try idle.inspect().find(text: "not started · 5m"))
+        XCTAssertFalse(try idle.inspect().find(text: "not started · 5m").accessibilityHidden(), "the age is read")
         XCTAssertThrowsError(try idle.inspect().find(text: "waiting for you"))
         XCTAssertNoThrow(try idle.inspect().find(viewWithAccessibilityLabel: "Not running"))
     }

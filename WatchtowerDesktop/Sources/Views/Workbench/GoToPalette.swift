@@ -203,7 +203,13 @@ struct GoToPalette: View {
                 if let badge = row.badge { WorkbenchCapsuleBadge(text: badge) }
                 Spacer(minLength: 4)
                 if let caption = row.caption {
-                    Text(caption).font(.caption2).foregroundStyle(.secondary).lineLimit(1).fixedSize()
+                    // A live caption repeats the dot's label for VoiceOver.
+                    Text(caption)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .fixedSize()
+                        .accessibilityHidden(row.state.isLive)
                 }
             } else {
                 SessionLiveDot(state: vm.sessionState(session)).frame(width: 12)

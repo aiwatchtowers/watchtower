@@ -14,13 +14,23 @@ package enum SessionSwitcherPresentation {
 
         package var isLive: Bool { self != .notStarted }
 
-        /// The caption a live state carries; nil for plain running and for
-        /// not started (whose caption carries the age).
+        /// The state's one name — the dot's accessibility label, the
+        /// switcher button's, and (lower-cased) a live row's caption.
+        package var label: String {
+            switch self {
+            case .notStarted: "Not running"
+            case .running: "Running"
+            case .working: "Working"
+            case .waitingForOwner: "Waiting for you"
+            case .needsApproval: "Needs approval"
+            }
+        }
+
+        /// The caption a live state carries ("waiting for you"); nil for
+        /// plain running and for not started (whose caption carries the age).
         package var agentCaption: String? {
             switch self {
-            case .working: "working"
-            case .waitingForOwner: "waiting for you"
-            case .needsApproval: "needs approval"
+            case .working, .waitingForOwner, .needsApproval: label.lowercased()
             case .running, .notStarted: nil
             }
         }

@@ -12,14 +12,9 @@ final class SessionAgentStatusTests: XCTestCase {
     }
 
     private func effective(
-        live: Bool = true, _ stored: SessionAgentState?, at: String?, startedAt: Date?
+        _ stored: SessionAgentState?, at: String?, startedAt: Date?
     ) -> SessionSwitcherPresentation.State {
-        SessionAgentStatus.effective(live: live, stored: stored, storedAt: at, startedAt: startedAt)
-    }
-
-    func testNotLiveIsNotStartedWhateverIsStored() {
-        XCTAssertEqual(effective(live: false, .waiting, at: stamp(5), startedAt: started), .notStarted)
-        XCTAssertEqual(effective(live: false, nil, at: nil, startedAt: nil), .notStarted)
+        SessionAgentStatus.effective(stored: stored, storedAt: at, startedAt: startedAt)
     }
 
     /// PROJ-11: a state written during an earlier process run (before the

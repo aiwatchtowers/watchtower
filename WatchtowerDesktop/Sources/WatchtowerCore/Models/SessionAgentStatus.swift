@@ -76,18 +76,18 @@ package struct SessionAgentStatus: Equatable, Sendable {
         self.at = at
     }
 
-    /// The trust rule (decision 9): a stored state counts only for a live
-    /// session and only when it was written during the current process run
-    /// (`storedAt ≥ startedAt`). A state from an earlier run, an unknown
-    /// start time or an unreadable stamp shows plain running — never a dead
-    /// run's "waiting". No staleness timeout: a turn may work for an hour.
+    /// The trust rule (decision 9) for a live session — liveness is the
+    /// caller's (`resolve`, `SessionSwitcherPresentation.state(of:)`): a
+    /// stored state counts only when it was written during the current
+    /// process run (`storedAt ≥ startedAt`). A state from an earlier run, an
+    /// unknown start time or an unreadable stamp shows plain running — never
+    /// a dead run's "waiting". No staleness timeout: a turn may work for an
+    /// hour.
     package static func effective(
-        live: Bool,
         stored: SessionAgentState?,
         storedAt: String?,
         startedAt: Date?
     ) -> SessionSwitcherPresentation.State {
-        guard live else { return .notStarted }
         guard let stored, let startedAt, let at = storedAt.flatMap(parseStamp), at >= startedAt else {
             return .running
         }
@@ -107,9 +107,7 @@ package struct SessionAgentStatus: Equatable, Sendable {
     ) -> [Int64: Self] {
         var result: [Int64: Self] = [:]
         for row in rows where liveIDs.contains(row.id) {
-            let state = effective(
-                live: true, stored: row.stored, storedAt: row.agentStateAt, startedAt: startedAt[row.id]
-            )
+            let state = effective(stored: row.stored, storedAt: row.agentStateAt, startedAt: startedAt[row.id])
             result[row.id] = Self(
                 sessionID: row.id,
                 workbenchID: row.projectID,
