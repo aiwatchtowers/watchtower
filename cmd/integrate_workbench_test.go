@@ -32,6 +32,9 @@ func fakeRegistration(dir, server string) string { return dir + "\x00" + server 
 func (f *fakeWorkbenchClaude) run(_ context.Context, dir, name string, args ...string) ([]byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if len(args) >= 2 && args[0] == "--setting-sources" && args[1] == "project,local" {
+		args = args[2:] // devpack's `mcp get` isolation; its own tests pin it
+	}
 	if name != "claude" || len(args) < 3 || args[0] != "mcp" {
 		return nil, fmt.Errorf("unexpected command %s %v", name, args)
 	}
