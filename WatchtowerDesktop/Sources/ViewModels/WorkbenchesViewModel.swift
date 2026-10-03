@@ -242,7 +242,7 @@ final class WorkbenchesViewModel {
         self.agentStates = agentStates
         panelVisible = defaults.object(forKey: Self.panelVisibleKey) as? Bool ?? true
         codeFiles = CodeFilesCenter(defaults: defaults)
-        asks = OwnerAsksViewModel(dbPool: dbPool, terminalCenter: terminalCenter)
+        asks = OwnerAsksViewModel(dbPool: dbPool, terminalCenter: terminalCenter, defaults: defaults)
         if let cli {
             let service = TerminalTitleService(runner: cli.runner)
             titleService = { try await service.title(sessionID: $0) }
@@ -344,11 +344,15 @@ final class WorkbenchesViewModel {
     }
 
     /// A deep link puts its pane on screen the way a panel click does. An
-    /// ask's notice (`route.askID`) lands on the session that filed it, or
-    /// the board for one filed outside the app; opening the ask itself is the
-    /// ask drawer's (spec 2026-10-03 Part 8), which reads `route.askID` here.
+    /// ask's notice (`route.askID`) opens that ask the way a stack row does
+    /// (`showAsk`): its session on screen and the drawer on it.
     func reveal(_ route: WorkbenchRoute) {
         selectedWorkbenchID = route.projectID
+        if let askID = route.askID {
+            let projectID = route.projectID
+            Task { await showAsk(askID, projectID: projectID) }
+            return
+        }
         switch route.pane {
         case .board: layout.show(.board)
         case .terminal:

@@ -341,8 +341,19 @@ final class OwnerAsksViewModelTests: XCTestCase {
         defer { vm.asks.stop() }
 
         notifications.post(name: NSApplication.didBecomeActiveNotification, object: nil)
-        for _ in 0..<200 where vm.asks.openAsks[p] == nil { await Task.yield() }
+        await waitUntil { vm.asks.openAsks[p] != nil }
 
         XCTAssertEqual(vm.asks.openAsks[p]?.map(\.id), [askID])
+    }
+
+    private func waitUntil(timeout: TimeInterval = 5, _ condition: @escaping @MainActor () -> Bool) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() {
+            if Date() > deadline {
+                XCTFail("condition not met in \(timeout)s")
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
     }
 }

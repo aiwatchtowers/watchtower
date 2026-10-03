@@ -37,6 +37,16 @@ final class OwnerAsksViewModel {
     static let noSessionNote = "Answer saved — it goes to the session's brief when it starts"
     static let withdrawnNote = "The agent withdrew this ask — your draft is kept"
     static let pollInterval: Duration = .seconds(5)
+    static let drawerWidthKey = "workbench.asks.drawerWidth"
+    static let drawerWidthRange: ClosedRange<Double> = 320...900
+    static let defaultDrawerWidth: Double = 440
+
+    /// One session's closed list, or (`sessionID` nil) the asks filed from
+    /// outside the app.
+    struct ClosedListKey: Hashable {
+        let projectID: Int64
+        let sessionID: Int64?
+    }
 
     /// Never written to the DB; answering is what persists a draft.
     let drafts = OwnerAskDrafts()
@@ -44,14 +54,32 @@ final class OwnerAsksViewModel {
     private(set) var openAsks: [Int64: [OwnerAsk]] = [:]
     /// The last answer's outcome per ask id, until dismissed.
     private(set) var notices: [Int64: Notice] = [:]
-    /// Why the last read or answer of a workbench failed; the next success clears it.
-    private(set) var errors: [Int64: String] = [:]
+    /// Why the last read of a workbench's asks failed; the next read clears it.
+    private(set) var loadErrors: [Int64: String] = [:]
+    /// Why the last answer to an ask failed, apart from the reads: a good
+    /// reload never hides it; the next answer that saves clears it.
+    private(set) var answerErrors: [Int64: String] = [:]
+    /// Each workbench's closed asks per session (nil = outside the app), as
+    /// the session rows count them.
+    private(set) var closedCounts: [Int64: [Int64?: Int]] = [:]
+    /// Each workbench's superseded ask id → the round that replaced it.
+    private(set) var replacements: [Int64: [Int64: Int64]] = [:]
+    /// The read-only lists behind "N closed", read when one opens.
+    private(set) var closedLists: [ClosedListKey: [OwnerAsk]] = [:]
+    private(set) var closedErrors: [ClosedListKey: String] = [:]
+    /// The asks a drawer shows that are no longer open (answered, withdrawn
+    /// meanwhile, or picked from a closed list), as last read.
+    private(set) var shownAsks: [Int64: OwnerAsk] = [:]
     /// Asks an answer is being written for: Answer is disabled meanwhile,
     /// and a second click writes nothing.
     private(set) var answering: Set<Int64> = []
     /// The ask each workbench's drawer shows (nil = closed). An answer that
     /// typed or copied its line closes it: the terminal takes over.
     private(set) var drawerAskIDs: [Int64: Int64] = [:]
+    /// The drawer takes the whole session pane; closing it resets this.
+    var drawerExpanded = false
+    /// The drawer's width, kept across launches under `drawerWidthKey`.
+    private(set) var drawerWidth: Double
 
     /// Whether the Workbench tab is what the owner sees; the poll reads only then.
     @ObservationIgnored var isTabOnScreen: () -> Bool = { false }
@@ -66,13 +94,16 @@ final class OwnerAsksViewModel {
 
     private let dbPool: DatabasePool
     private let terminalCenter: TerminalCenter?
+    private let defaults: UserDefaults
     @ObservationIgnored private var fingerprints: [Int64: String] = [:]
     @ObservationIgnored private var pollTask: Task<Void, Never>?
     @ObservationIgnored private var activationObserver: NSObjectProtocol?
 
-    init(dbPool: DatabasePool, terminalCenter: TerminalCenter?) {
+    init(dbPool: DatabasePool, terminalCenter: TerminalCenter?, defaults: UserDefaults = .standard) {
         self.dbPool = dbPool
         self.terminalCenter = terminalCenter
+        self.defaults = defaults
+        drawerWidth = Self.clampDrawerWidth(defaults.object(forKey: Self.drawerWidthKey) as? Double ?? Self.defaultDrawerWidth)
     }
 
     func stack(projectID: Int64) -> OwnerAskStack {
@@ -81,17 +112,83 @@ final class OwnerAsksViewModel {
 
     // MARK: - Loading
 
+    /// What one read of a workbench's asks gives.
+    private struct Snapshot {
+        let open: [OwnerAsk]
+        let fingerprint: String
+        let closedCounts: [Int64?: Int]
+        let replacements: [Int64: Int64]
+        /// The drawer's ask when it is no longer open.
+        let shown: OwnerAsk?
+    }
+
     func load(projectID: Int64) async {
+        let drawerID = drawerAskIDs[projectID]
         do {
-            let (asks, stamp) = try await dbPool.read { db in
-                (try OwnerAskQueries.openAsks(db, projectID: projectID), try Self.fingerprint(db, projectID: projectID))
+            let snapshot = try await dbPool.read { db in
+                let open = try OwnerAskQueries.openAsks(db, projectID: projectID)
+                let shown = try drawerID.flatMap { id in
+                    open.contains { $0.id == id } ? nil : try OwnerAskQueries.ask(db, id: id, projectID: projectID)
+                }
+                return Snapshot(
+                    open: open,
+                    fingerprint: try Self.fingerprint(db, projectID: projectID),
+                    closedCounts: try OwnerAskQueries.closedCounts(db, projectID: projectID),
+                    replacements: try OwnerAskQueries.replacements(db, projectID: projectID),
+                    shown: shown
+                )
             }
-            openAsks[projectID] = asks
-            fingerprints[projectID] = stamp
-            errors[projectID] = nil
+            openAsks[projectID] = snapshot.open
+            fingerprints[projectID] = snapshot.fingerprint
+            closedCounts[projectID] = snapshot.closedCounts
+            replacements[projectID] = snapshot.replacements
+            if let shown = snapshot.shown { shownAsks[shown.id] = shown }
+            loadErrors[projectID] = nil
         } catch {
             // The last list stays beside the error.
-            errors[projectID] = "Could not load the asks: \(error.localizedDescription)"
+            loadErrors[projectID] = "Could not load the asks: \(error.localizedDescription)"
+        }
+    }
+
+    /// The ask a stack row, a closed list or a notice names: from the open
+    /// list, else read (a closed one is kept for the drawer, an open one not
+    /// listed yet reloads the list). nil, with the reason in `loadErrors`,
+    /// when it is gone or the read failed.
+    func lookUp(askID: Int64, projectID: Int64) async -> OwnerAsk? {
+        if let ask = openAsks[projectID]?.first(where: { $0.id == askID }) { return ask }
+        let found: OwnerAsk?
+        do {
+            found = try await dbPool.read { try OwnerAskQueries.ask($0, id: askID, projectID: projectID) }
+        } catch {
+            loadErrors[projectID] = "Could not load the ask: \(error.localizedDescription)"
+            return nil
+        }
+        guard let found else {
+            loadErrors[projectID] = "That ask no longer exists."
+            return nil
+        }
+        guard found.isOpen else {
+            shownAsks[found.id] = found
+            return found
+        }
+        await load(projectID: projectID)
+        return openAsks[projectID]?.first { $0.id == askID } ?? found
+    }
+
+    /// A session's (nil: outside the app) answered, delivered and withdrawn
+    /// asks, newest first, for its "N closed" list.
+    func loadClosed(projectID: Int64, sessionID: Int64?) async {
+        let key = ClosedListKey(projectID: projectID, sessionID: sessionID)
+        do {
+            let (asks, replaced) = try await dbPool.read { db in
+                (try OwnerAskQueries.closedAsks(db, projectID: projectID, sessionID: sessionID),
+                 try OwnerAskQueries.replacements(db, projectID: projectID))
+            }
+            closedLists[key] = asks
+            replacements[projectID] = replaced
+            closedErrors[key] = nil
+        } catch {
+            closedErrors[key] = "Could not load the closed asks: \(error.localizedDescription)"
         }
     }
 
@@ -100,8 +197,14 @@ final class OwnerAsksViewModel {
     /// it reloaded.
     @discardableResult
     func refreshIfChanged(projectID: Int64) async -> Bool {
-        let current = try? await dbPool.read { try Self.fingerprint($0, projectID: projectID) }
-        guard let current, current != fingerprints[projectID] else { return false }
+        let current: String
+        do {
+            current = try await dbPool.read { try Self.fingerprint($0, projectID: projectID) }
+        } catch {
+            loadErrors[projectID] = "Could not load the asks: \(error.localizedDescription)"
+            return false
+        }
+        guard current != fingerprints[projectID] else { return false }
         await load(projectID: projectID)
         return true
     }
@@ -143,7 +246,7 @@ final class OwnerAsksViewModel {
     /// withdraws asks and marks them delivered in place: the open count, the
     /// max id or a stamp moves with every such write.
     nonisolated private static func fingerprint(_ db: Database, projectID: Int64) throws -> String {
-        let row = try Row.fetchOne(
+        guard let row = try Row.fetchOne(
             db,
             sql: """
                 SELECT COUNT(*), MAX(id), SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END),
@@ -151,8 +254,13 @@ final class OwnerAsksViewModel {
                 FROM owner_asks WHERE project_id = ?
                 """,
             arguments: [projectID]
-        )
-        return row?.description ?? ""
+        ) else { return "" }
+        let count: Int = row[0]
+        let maxID: Int64? = row[1]
+        let open: Int? = row[2]
+        let answered: String? = row[3]
+        let delivered: String? = row[4]
+        return "\(count)|\(maxID ?? 0)|\(open ?? 0)|\(answered ?? "")|\(delivered ?? "")"
     }
 
     // MARK: - Drawer
@@ -161,8 +269,33 @@ final class OwnerAsksViewModel {
         drawerAskIDs[projectID] = askID
     }
 
+    /// Opens the drawer on `ask`; a closed one shows read-only.
+    func openDrawer(_ ask: OwnerAsk) {
+        if !ask.isOpen { shownAsks[ask.id] = ask }
+        drawerAskIDs[ask.projectID] = ask.id
+    }
+
+    /// "Later" and the drawer's close: the drafts stay.
     func closeDrawer(projectID: Int64) {
+        if let id = drawerAskIDs[projectID] { shownAsks[id] = nil }
         drawerAskIDs[projectID] = nil
+        drawerExpanded = false
+    }
+
+    /// The ask the workbench's drawer shows: open, or as last read once
+    /// it closed (answered, withdrawn meanwhile).
+    func drawerAsk(projectID: Int64) -> OwnerAsk? {
+        guard let id = drawerAskIDs[projectID] else { return nil }
+        return openAsks[projectID]?.first { $0.id == id } ?? shownAsks[id]
+    }
+
+    func setDrawerWidth(_ width: Double) {
+        drawerWidth = Self.clampDrawerWidth(width)
+        defaults.set(drawerWidth, forKey: Self.drawerWidthKey)
+    }
+
+    static func clampDrawerWidth(_ width: Double) -> Double {
+        min(max(width, drawerWidthRange.lowerBound), drawerWidthRange.upperBound)
     }
 
     func dismissNotice(askID: Int64) {
@@ -171,6 +304,16 @@ final class OwnerAsksViewModel {
 
     // MARK: - Answering
 
+    /// Every draft edit of the views. Refused while the ask's answer is
+    /// being written: the write took the draft as it was, and its success
+    /// discards it, so a later edit would be lost.
+    @discardableResult
+    func editDraft(_ askID: Int64, _ change: (inout OwnerAskDraft) -> Void) -> Bool {
+        guard !answering.contains(askID) else { return false }
+        drafts.update(askID, change)
+        return true
+    }
+
     /// Answers `ask` from its draft (spec 2026-10-03 Part 5, PROJ-12): one
     /// guarded write, and only then exactly one `sendPrompt` of the
     /// `OwnerAskPrompt` line to the ask's session — pasted, never submitted.
@@ -178,8 +321,10 @@ final class OwnerAsksViewModel {
     /// brief delivers it. An ask the agent withdrew meanwhile writes nothing
     /// and keeps the draft. Returns the delivery, nil when nothing was written
     /// (an incomplete draft, an answer already running, a failure).
+    /// A review's buttons pass their `verdict`, set on the draft first.
     @discardableResult
-    func answer(_ ask: OwnerAsk) async -> TerminalCenter.PromptDelivery? {
+    func answer(_ ask: OwnerAsk, verdict: OwnerAskAnswer.Verdict? = nil) async -> TerminalCenter.PromptDelivery? {
+        if let verdict { editDraft(ask.id) { $0.verdict = verdict } }
         let draft = drafts.draft(for: ask.id)
         guard !answering.contains(ask.id), draft.isAnswerable(for: ask) else { return nil }
         answering.insert(ask.id)
@@ -195,10 +340,10 @@ final class OwnerAsksViewModel {
             await load(projectID: projectID)
             return nil
         } catch {
-            errors[projectID] = "Could not save the answer: \(error.localizedDescription)"
+            answerErrors[askID] = "Could not save the answer: \(error.localizedDescription)"
             return nil
         }
-        errors[projectID] = nil
+        answerErrors[askID] = nil
         drafts.discard(askID)
         let line = OwnerAskPrompt.line(id: askID, kind: ask.kind, answer: answer)
         let delivery = ask.sessionID.flatMap { terminalCenter?.sendPrompt(line, sessionID: $0) } ?? .noSession
