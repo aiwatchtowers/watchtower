@@ -181,6 +181,10 @@ final class WorkbenchesViewModel {
     /// `workOn` is running for: a double click must not create two rows.
     @ObservationIgnored var openingSession: Set<Int64> = []
     @ObservationIgnored var workingOnTarget: Set<Int64> = []
+    /// Per workbench, the ticket of the session switch the owner asked for
+    /// last (`beginSwitch`); only that switch may still move the layout.
+    @ObservationIgnored var latestSwitch: [Int64: Int] = [:]
+    @ObservationIgnored var switchSerial = 0
     @ObservationIgnored var titleTask: Task<Void, Never>?
     /// Standalone list reads started; only the latest one is applied.
     @ObservationIgnored var standaloneLoads = 0

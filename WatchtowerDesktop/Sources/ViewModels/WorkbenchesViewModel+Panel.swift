@@ -129,10 +129,11 @@ extension WorkbenchesViewModel {
             return
         }
         drill(into: id)
+        let ticket = beginSwitch(projectID: id)
         guard await loadSessions(projectID: id), selectedWorkbenchID == id else { return }
         let rows = terminalSessions[id] ?? []
         let active = activeSessionID(projectID: id)
-        if let row = rows.first(where: { $0.id == active }) ?? rows.first { await open(row) }
+        if let row = rows.first(where: { $0.id == active }) ?? rows.first { await open(row, ticket: ticket) }
     }
 
     /// The switcher's "All Workbenches" (⌘⇧O): back to level 1, the panel
@@ -167,6 +168,7 @@ extension WorkbenchesViewModel {
     /// running starts) and put on screen like any panel click.
     func showSession(id: Int64) async {
         guard let projectID = selectedWorkbenchID else { return }
+        let ticket = beginSwitch(projectID: projectID)
         // The list may not be loaded yet (the panel loads it on appear).
         // A failed load already reports itself; the row is not "gone".
         if terminalSessions[projectID]?.contains(where: { $0.id == id }) != true {
@@ -177,7 +179,7 @@ extension WorkbenchesViewModel {
             sessionActionErrors[projectID] = "That session no longer exists."
             return
         }
-        await open(session)
+        await open(session, ticket: ticket)
     }
 
     /// Level 2's "New session" (and ⌘T): a fresh `claude` session of the
@@ -278,6 +280,7 @@ extension WorkbenchesViewModel {
             setLayout(updated, projectID: projectID)
             return
         }
+        let ticket = beginSwitch(projectID: projectID)
         if session(id, projectID: projectID) == nil {
             guard await loadSessions(projectID: projectID) else { return }
         }
@@ -285,7 +288,7 @@ extension WorkbenchesViewModel {
             sessionActionErrors[projectID] = "That session no longer exists."
             return
         }
-        await open(row, placement: .replacing(slot))
+        await open(row, placement: .replacing(slot), ticket: ticket)
     }
 
     /// A pane picker's "New session": starts one in that pane.

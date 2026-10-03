@@ -140,8 +140,11 @@ extension WorkbenchesViewModel {
     // MARK: - Creating
 
     func newSession(projectID: Int64, placement: Placement = .show) async {
+        let ticket = beginSwitch(projectID: projectID)
         guard let project = await project(id: projectID) else { return }
-        await startNewSession(project: project, title: TerminalSessionNaming.provisional(now: now()), placement: placement)
+        await startNewSession(
+            project: project, title: TerminalSessionNaming.provisional(now: now()), placement: placement, ticket: ticket
+        )
     }
 
     /// A terminal outside any project, in `folder`, put on screen (a
@@ -162,12 +165,15 @@ extension WorkbenchesViewModel {
 
     /// Creates a `claude` session row with a new Claude session id and starts
     /// it fresh (`--session-id`).
-    func startNewSession(project: Workbench, title: String, prompt: String? = nil, placement: Placement = .show) async {
+    func startNewSession(
+        project: Workbench, title: String, prompt: String? = nil, placement: Placement = .show, ticket: Int? = nil
+    ) async {
         await createAndStart(
             .init(projectID: project.id, kind: .claude, title: title, folderPath: project.folderPath,
                   claudeSessionID: Self.newClaudeSessionID()),
             prompt: prompt,
-            placement: placement
+            placement: placement,
+            ticket: ticket
         )
     }
 
@@ -217,13 +223,16 @@ extension WorkbenchesViewModel {
     func openMostRecentSession(project: Workbench, placement: Placement = .show) async {
         guard openingSession.insert(project.id).inserted else { return }
         defer { openingSession.remove(project.id) }
+        let ticket = beginSwitch(projectID: project.id)
         // A failed load says nothing about the project's sessions: starting a
         // new one would duplicate the session the owner meant to resume.
         guard await loadSessions(projectID: project.id) else { return }
         if let row = terminalSessions[project.id]?.first {
-            await open(row, placement: placement)
+            await open(row, placement: placement, ticket: ticket)
         } else {
-            await startNewSession(project: project, title: TerminalSessionNaming.provisional(now: now()), placement: placement)
+            await startNewSession(
+                project: project, title: TerminalSessionNaming.provisional(now: now()), placement: placement, ticket: ticket
+            )
         }
     }
 
@@ -231,7 +240,10 @@ extension WorkbenchesViewModel {
 
     /// Selects a session: marks it active, starts it
     /// (a `claude` row resumes) unless it is running, focuses it and shows it.
-    func open(_ session: TerminalSession, placement: Placement = .show) async {
+    /// `ticket` is the switch's `beginSwitch` when the caller took it before
+    /// an await of its own; otherwise it is taken here.
+    func open(_ session: TerminalSession, placement: Placement = .show, ticket: Int? = nil) async {
+        let ticket = ticket ?? beginSwitch(projectID: session.projectID)
         setSessionError(nil, projectID: session.projectID)
         let row: TerminalSession
         do {
@@ -247,14 +259,15 @@ extension WorkbenchesViewModel {
             return
         }
         resumeFailed.remove(row.id)
-        await activate(row, fresh: false, prompt: nil, placement: placement)
+        await activate(row, fresh: false, prompt: nil, placement: placement, ticket: ticket)
     }
 
     /// "Start fresh" after a failed resume: a new Claude session id under the
     /// same row and title. A shell has no Claude session: it just opens.
     func startFresh(_ session: TerminalSession, placement: Placement = .show) async {
+        let ticket = beginSwitch(projectID: session.projectID)
         guard session.kind == .claude else {
-            await open(session, placement: placement)
+            await open(session, placement: placement, ticket: ticket)
             return
         }
         setSessionError(nil, projectID: session.projectID)
@@ -276,7 +289,7 @@ extension WorkbenchesViewModel {
             return
         }
         resumeFailed.remove(row.id)
-        await activate(row, fresh: true, prompt: nil, placement: placement)
+        await activate(row, fresh: true, prompt: nil, placement: placement, ticket: ticket)
     }
 
     /// Closes the process first, then deletes the row and drops it from the
@@ -408,8 +421,9 @@ extension WorkbenchesViewModel {
     /// The created row, or nil when it could not be written.
     @discardableResult
     private func createAndStart(
-        _ new: TerminalSessionQueries.NewSession, prompt: String?, placement: Placement = .show
+        _ new: TerminalSessionQueries.NewSession, prompt: String?, placement: Placement = .show, ticket: Int? = nil
     ) async -> TerminalSession? {
+        let ticket = ticket ?? beginSwitch(projectID: new.projectID)
         setSessionError(nil, projectID: new.projectID)
         let row: TerminalSession
         do {
@@ -418,14 +432,31 @@ extension WorkbenchesViewModel {
             setSessionError("Could not create a terminal session: \(error.localizedDescription)", projectID: new.projectID)
             return nil
         }
-        await activate(row, fresh: true, prompt: prompt, placement: placement)
+        await activate(row, fresh: true, prompt: prompt, placement: placement, ticket: ticket)
         return row
+    }
+
+    /// Records a session switch the owner just asked for in `projectID` and
+    /// returns its ticket. Taken before the switch's first await: switches
+    /// finish out of order (a list load, the `touch` write behind another
+    /// writer, a Start fresh waiting for its old process), and only the one
+    /// asked for last may still focus its session and move the layout —
+    /// else an earlier, slower click lands after a later one and puts its
+    /// session back on screen (board #187). nil = standalone: its selection
+    /// is set at once (`showStandalone`), nothing to order.
+    func beginSwitch(projectID: Int64?) -> Int {
+        switchSerial += 1
+        if let projectID { latestSwitch[projectID] = switchSerial }
+        return switchSerial
     }
 
     /// Starts (unless running) and focuses `row`, refreshes its list, places
     /// it in its own project's layout, then titles the session the owner
-    /// switched away from.
-    private func activate(_ row: TerminalSession, fresh: Bool, prompt: String?, placement: Placement) async {
+    /// switched away from. A switch superseded by a later one (`beginSwitch`)
+    /// only starts its session: the later switch decides what is focused
+    /// and on screen.
+    private func activate(_ row: TerminalSession, fresh: Bool, prompt: String?, placement: Placement, ticket: Int) async {
+        let isLatest = row.projectID.map { latestSwitch[$0] == ticket } ?? true
         let previous = terminalCenter?.focusOrder.last
         notYetTitledStreak[row.id] = nil // the owner is back in it: ask again
         if let center = terminalCenter {
@@ -441,9 +472,9 @@ extension WorkbenchesViewModel {
             default:
                 resumeStarts[row.id] = nil
             }
-            center.focus(row.id)
+            if isLatest { center.focus(row.id) }
         }
-        if let projectID = row.projectID {
+        if isLatest, let projectID = row.projectID {
             var updated = layout(projectID: projectID)
             switch placement {
             case .show: updated.show(.session(row.id))
@@ -457,7 +488,7 @@ extension WorkbenchesViewModel {
             setLayout(updated, projectID: projectID)
         }
         await loadSessions(projectID: row.projectID)
-        if let previous, previous != row.id { await refreshTitle(sessionID: previous) }
+        if isLatest, let previous, previous != row.id { await refreshTitle(sessionID: previous) }
     }
 
     private func failed(_ session: TerminalSession, _ what: String, _ error: Error) async {
