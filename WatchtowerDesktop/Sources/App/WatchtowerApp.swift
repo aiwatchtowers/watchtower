@@ -432,6 +432,22 @@ struct WatchtowerApp: App {
                 Button("Find in Workbench…") { appState.openQuicklyCenter.present(scope: .text) }
                     .keyboardShortcut("f", modifiers: [.command, .shift])
                     .disabled(!appState.openQuicklyCenter.canPresent)
+                Divider()
+                // The workbench on screen (Open Quickly's host); inside Monaco
+                // these chords reach the menu because the page drops its own.
+                let navigation = appState.codeNavigationCenter
+                let shown = appState.openQuicklyCenter.host?.project
+                Button("Go to Definition") {
+                    if let shown { Task { await navigation.goToDefinitionAtCursor(project: shown) } }
+                }
+                .keyboardShortcut("j", modifiers: [.control, .command])
+                .disabled(shown == nil)
+                Button("Back") { if let shown { navigation.goBack(project: shown) } }
+                    .keyboardShortcut(.leftArrow, modifiers: [.control, .command])
+                    .disabled(!navigation.canGoBack(workbenchID: shown?.id))
+                Button("Forward") { if let shown { navigation.goForward(project: shown) } }
+                    .keyboardShortcut(.rightArrow, modifiers: [.control, .command])
+                    .disabled(!navigation.canGoForward(workbenchID: shown?.id))
             }
         }
 

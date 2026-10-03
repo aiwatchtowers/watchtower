@@ -43,17 +43,13 @@ package enum DefinitionOutcome: Equatable, Sendable {
 /// callables → the rest), then by path and line.
 package enum DefinitionCandidates {
     package static func ordered(_ symbols: [CodeSymbol], from originPath: String) -> [CodeSymbol] {
-        symbols.enumerated().sorted { lhs, rhs in
-            let a = lhs.element
-            let b = rhs.element
-            let nearA = nearness(of: a.path, to: originPath)
-            let nearB = nearness(of: b.path, to: originPath)
-            if nearA != nearB { return nearA < nearB }
-            if a.kind.rankGroup != b.kind.rankGroup { return a.kind.rankGroup > b.kind.rankGroup }
-            if a.path != b.path { return a.path < b.path }
-            if a.line != b.line { return a.line < b.line }
-            return lhs.offset < rhs.offset
-        }.map(\.element)
+        let keyed = symbols.enumerated().map { offset, symbol in
+            // Nearness ascending, kind group descending, then path, line, input order.
+            (symbol, nearness(of: symbol.path, to: originPath), -symbol.kind.rankGroup, offset)
+        }
+        return keyed
+            .sorted { a, b in (a.1, a.2, a.0.path, a.0.line, a.3) < (b.1, b.2, b.0.path, b.0.line, b.3) }
+            .map(\.0)
     }
 
     package static func outcome(for symbols: [CodeSymbol], from originPath: String) -> DefinitionOutcome {

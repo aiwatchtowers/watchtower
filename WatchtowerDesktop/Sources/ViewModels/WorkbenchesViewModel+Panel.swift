@@ -258,6 +258,20 @@ extension WorkbenchesViewModel {
         setLayout(updated, projectID: project.id)
     }
 
+    /// Go to definition and back/forward (spec §8.2): `location` in the Files
+    /// pane, the cursor on its line and column. A jump (`keepingTab`) opens
+    /// a kept tab — keeping a preview tab it lands on; back/forward
+    /// activate the tab as it is, reopening a closed file as a kept tab.
+    func showLocation(_ location: CodeNavLocation, project: Workbench, keepingTab: Bool) {
+        if keepingTab || !codeFiles.tabs(for: project).contains(location.path) {
+            codeFiles.open(location.path, project: project, preview: false)
+        } else {
+            codeFiles.activate(location.path, project: project)
+        }
+        codeFiles.requestReveal(location.path, line: location.line, col: location.col, project: project)
+        showFilesPane(projectID: project.id)
+    }
+
     /// The Files pane on screen, the way the header's Files button puts it.
     func showFilesPane(projectID: Int64) {
         var updated = layout(projectID: projectID)

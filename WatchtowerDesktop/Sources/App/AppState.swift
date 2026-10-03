@@ -161,6 +161,9 @@ final class AppState {
     let codeIndexCenter = CodeIndexCenter()
     /// Open Quickly (⇧⇧, ⇧⌘O, ⇧⌘F) for the workbench page on screen.
     @ObservationIgnored private(set) lazy var openQuicklyCenter = OpenQuicklyCenter(codeIndex: codeIndexCenter)
+    /// Go to definition (⌘-click, ⌃⌘J) and the Files pane's back/forward
+    /// history (⌃⌘← / ⌃⌘→), per workbench.
+    @ObservationIgnored private(set) lazy var codeNavigationCenter = CodeNavigationCenter(codeIndex: codeIndexCenter)
 
     /// Diarizer models are prefetched only while speaker roles are on; a
     /// failure is fine — the post-pass retries the download and degrades to a
@@ -1006,6 +1009,8 @@ final class AppState {
         )
         vm.codeFiles.codeIndex = codeIndexCenter
         openQuicklyCenter.workbenches = vm
+        codeNavigationCenter.workbenches = vm
+        vm.codeFiles.navigation = codeNavigationCenter
         vm.closeTerminal = { [weak self] projectID in
             guard let center = self?.terminalCenter else { return }
             let ids = center.sessionIDs(ofWorkbench: projectID)

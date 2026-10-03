@@ -37,6 +37,11 @@ struct CodeFilesPaneView: View {
                 if let active = tabs.active {
                     let buffer = files.buffer(for: project, relPath: active)
                     CodeFileHeader(buffer: buffer, status: git.files[active])
+                        .overlay(alignment: .leading) {
+                            if let notice = files.navigation?.notice(for: project.id) {
+                                CodeNavNotice(text: notice)
+                            }
+                        }
                     Divider()
                     CodeFileBanners(buffer: buffer)
                 }
@@ -276,6 +281,23 @@ private struct CodeFileHeader: View {
     }
 }
 
+/// A go-to-definition miss ("No definition of `w`", spec §8.2), over the
+/// path line for 2 s — the place the jump bar (Task 9) takes over.
+private struct CodeNavNotice: View {
+    let text: String
+
+    var body: some View {
+        Label(text, systemImage: "questionmark.circle")
+            .font(.caption)
+            .lineLimit(1)
+            .padding(.horizontal, 8)
+            .frame(maxHeight: .infinity)
+            .background(Color(nsColor: .windowBackgroundColor))
+            .transition(.opacity)
+            .accessibilityAddTraits(.updatesFrequently)
+    }
+}
+
 private struct CodeFileBanners: View {
     let buffer: CodeFileBuffer
 
@@ -346,6 +368,7 @@ struct MonacoEditorView: NSViewRepresentable {
         webView.navigationDelegate = context.coordinator
         context.coordinator.webView = webView
         files.register(context.coordinator, for: project)
+        files.navigation?.registerPage(context.coordinator, for: project.id)
         webView.load(URLRequest(url: CodeEditorSchemeHandler.pageURL))
         return webView
     }
@@ -368,7 +391,7 @@ struct MonacoEditorView: NSViewRepresentable {
     }
 
     @MainActor
-    final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate, CodeEditorBridge {
+    final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate, CodeEditorBridge, CodeDefinitionPage {
         struct BufferState: Equatable {
             let path: String
             let revision: Int
@@ -412,6 +435,12 @@ struct MonacoEditorView: NSViewRepresentable {
                     buffer, text: text, base: base, project: project,
                     now: body["now"] as? Bool ?? false, explicit: body["explicit"] as? Bool ?? false
                 )
+            case "definition":
+                definitionRequested(body)
+            case "cursor":
+                guard let id = body["id"] as? String, let line = body["line"] as? Int, let col = body["col"] as? Int,
+                      let buffer = files.buffer(id: id) else { return }
+                files.cursorMoved(CodeNavLocation(path: buffer.relPath, line: line, col: col), workbenchID: project.id)
             case "error":
                 files.editorErrors[project.id] = (body["message"] as? String) ?? "The editor reported an error."
             default:
@@ -473,6 +502,48 @@ struct MonacoEditorView: NSViewRepresentable {
             Task { @MainActor in files.revealSent(request, workbenchID: workbenchID) }
         }
 
+        /// ⌘-click or ⌃⌘J in the page: go to definition, then
+        /// `definitionDone(req)` clears the word's busy underline — on every
+        /// path, also when the request could not be read.
+        private func definitionRequested(_ body: [String: Any]) {
+            guard let req = body["req"] as? Int else {
+                NSLog("CodeFilesPane: a definition message without req was dropped")
+                return
+            }
+            guard let id = body["id"] as? String, let word = body["word"] as? String,
+                  let line = body["line"] as? Int, let col = body["col"] as? Int,
+                  let buffer = files.buffer(id: id), let navigation = files.navigation else {
+                call("wt.definitionDone", req)
+                return
+            }
+            let request = CodeDefinitionRequest(req: req, word: word, origin: CodeNavLocation(path: buffer.relPath, line: line, col: col))
+            let anchor = menuAnchor(x: body["x"] as? Double, y: body["y"] as? Double)
+            let project = project
+            Task { @MainActor [weak self] in
+                await navigation.goToDefinition(request, project: project, anchor: anchor)
+                self?.call("wt.definitionDone", req)
+            }
+        }
+
+        /// The page's point (CSS px from the top left) in the web view.
+        private func menuAnchor(x: Double?, y: Double?) -> DefinitionMenuAnchor? {
+            guard let webView, let x, let y else { return nil }
+            let flippedY = webView.isFlipped ? y : webView.bounds.height - y
+            return DefinitionMenuAnchor(view: webView, point: NSPoint(x: x, y: flippedY))
+        }
+
+        // MARK: CodeDefinitionPage
+
+        func requestDefinitionAtCursor() async -> Bool {
+            guard ready, let webView else { return false }
+            do {
+                return try await webView.evaluateJavaScript("wt.definitionAtCursor()") as? Bool ?? false
+            } catch {
+                NSLog("CodeFilesPane: wt.definitionAtCursor failed: %@", error.localizedDescription)
+                return false
+            }
+        }
+
         // MARK: CodeEditorBridge
 
         func takePending() async -> [CodeEditorPendingEdit]? {
@@ -499,6 +570,7 @@ struct MonacoEditorView: NSViewRepresentable {
 
         func dismantle(_ webView: WKWebView) {
             files.unregister(self, for: project.id)
+            files.navigation?.unregisterPage(self, for: project.id)
             let files = files
             let project = project
             let wasReady = ready

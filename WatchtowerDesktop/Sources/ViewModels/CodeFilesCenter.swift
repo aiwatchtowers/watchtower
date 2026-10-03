@@ -21,7 +21,7 @@ protocol CodeEditorBridge: AnyObject {
 }
 
 /// Where the Files pane puts the cursor once a file is on screen (Open
-/// Quickly; later go to definition): sent to the page as
+/// Quickly, go to definition, back/forward): sent to the page as
 /// `reveal({id, line, col})` when the file is the one shown, then cleared.
 /// Either way the keyboard moves into the editor.
 struct CodeRevealRequest: Equatable {
@@ -76,6 +76,9 @@ final class CodeFilesCenter {
     var editorErrors: [Int64: String] = [:]
     /// Per workbench: where the cursor goes once the file is on screen.
     private(set) var reveals: [Int64: CodeRevealRequest] = [:]
+    /// Per workbench: the editor's cursor as the page last reported it
+    /// (`cursor`, at most 10 a second) — back/forward and the jump bar.
+    private(set) var cursors: [Int64: CodeNavLocation] = [:]
     @ObservationIgnored private var revealSerial = 0
     /// Per workbench, loaded on first use (gone files pruned).
     @ObservationIgnored private var recents: [Int64: CodeRecentFiles] = [:]
@@ -102,6 +105,9 @@ final class CodeFilesCenter {
     /// The symbol index (on `AppState`), told when a workbench shows and
     /// hides and fed this center's FSEvents batches — one stream per folder.
     @ObservationIgnored weak var codeIndex: CodeIndexCenter?
+    /// Go to definition and history (on `AppState`); the editor page
+    /// reports its `definition` requests there.
+    @ObservationIgnored weak var navigation: CodeNavigationCenter?
 
     init(
         defaults: UserDefaults = .standard,
@@ -359,6 +365,11 @@ final class CodeFilesCenter {
         reveals[project.id] = CodeRevealRequest(
             path: path, line: line.map { max(1, $0) }, col: max(1, col ?? 1), serial: revealSerial
         )
+    }
+
+    /// The page's `cursor` message.
+    func cursorMoved(_ location: CodeNavLocation, workbenchID: Int64) {
+        if cursors[workbenchID] != location { cursors[workbenchID] = location }
     }
 
     /// The page was told: the request is done (a newer one stays).
