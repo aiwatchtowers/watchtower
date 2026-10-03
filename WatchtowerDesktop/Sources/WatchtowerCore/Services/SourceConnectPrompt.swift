@@ -31,9 +31,9 @@ package enum SourceConnectPrompt {
     /// "+ Connect Slack, Mail, Jira…" naming what is still missing; nil once
     /// all three are connected or the row was closed.
     package static func rowTitle(connected: ConnectedSources, dismissed: Bool) -> String? {
-        let missing = missing(connected)
-        guard !dismissed, !missing.isEmpty else { return nil }
-        return "+ Connect " + missing.map(\.title).joined(separator: ", ") + "…"
+        let absent = missing(connected)
+        guard !dismissed, !absent.isEmpty else { return nil }
+        return "+ Connect " + absent.map(\.title).joined(separator: ", ") + "…"
     }
 
     /// The goals a newly connected source serves: Slack and mail are work

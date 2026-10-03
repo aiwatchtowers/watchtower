@@ -176,10 +176,10 @@ struct OnboardingPeoplePicker: View {
             .background(RoundedRectangle(cornerRadius: 6).fill(Color.secondary.opacity(0.06)))
             .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.secondary.opacity(0.3)))
 
-            let matches = matches
-            if !matches.isEmpty {
+            let found = matches
+            if !found.isEmpty {
                 VStack(alignment: .leading, spacing: 0) {
-                    ForEach(matches) { user in
+                    ForEach(found) { user in
                         Button {
                             pick(user)
                         } label: {
