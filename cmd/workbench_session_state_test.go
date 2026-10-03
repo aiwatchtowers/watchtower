@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/db"
+	"watchtower/internal/devpack"
 )
 
 // nestedSessionID is a `claude -p` the agent ran from its shell: it inherits
@@ -283,11 +285,15 @@ func TestProj11_NestedSessionNeverMovesTheRow(t *testing.T) {
 }
 
 // stopStateFixture: a drift workbench (branch "merged" drifts, "open" does
-// not) with one embedded claude row running briefLaunchID.
+// not) whose folder has the session state hooks, with one embedded claude
+// row running briefLaunchID.
 func stopStateFixture(t *testing.T, branch string) (database *db.DB, pid, row int64) {
 	t.Helper()
 	database = writeActionsConfig(t)
-	pid, _ = driftWorkbench(t, database, driftRepo(t), branch)
+	folder := driftRepo(t)
+	pid, _ = driftWorkbench(t, database, folder, branch)
+	_, err := devpack.InstallStateHooks(folder, "watchtower", pid)
+	require.NoError(t, err)
 	res, err := database.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id)
 		VALUES (?, 'claude', 's', '/tmp/acme', ?)`, pid, briefLaunchID)
 	require.NoError(t, err)
@@ -379,8 +385,8 @@ func TestSessionState_StopHookLostStateIsOneLine(t *testing.T) {
 	}
 }
 
-// A folder never resynced since the rename runs the legacy Stop entry
-// (`project check --project N`); its state half arrives with the binary too.
+// A folder still on the legacy Stop entry (`project check --project N`)
+// records the state like the new one once it has the state hooks.
 func TestSessionState_LegacyStopHookRecordsWaiting(t *testing.T) {
 	database, pid, row := stopStateFixture(t, "open")
 	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
@@ -405,4 +411,95 @@ func TestSessionState_StopHookStateFailureIsOneLine(t *testing.T) {
 	assert.Empty(t, out)
 	assert.Contains(t, errOut, "invalid "+terminalSessionEnv)
 	assert.Equal(t, 1, strings.Count(errOut, "\n"))
+}
+
+// Without the state hooks nothing records "working", so the Stop hook
+// records nothing either (board #340): no "waiting" stuck after the first
+// turn of a folder not yet repaired. A malformed settings file counts as no
+// state hooks. stdout and stderr are what they are outside a Desktop
+// terminal: the block JSON on drift, nothing otherwise.
+func TestSessionState_StopHookWithoutStateHooksRecordsNothing(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		settings func(t *testing.T, folder string, pid int64)
+	}{
+		{"hooks removed", func(t *testing.T, folder string, pid int64) {
+			changed, err := devpack.RemoveStateHooks(folder, pid)
+			require.NoError(t, err)
+			require.True(t, changed)
+		}},
+		{"one state hook missing", func(t *testing.T, folder string, _ int64) {
+			file := filepath.Join(folder, ".claude", "settings.local.json")
+			b, err := os.ReadFile(file)
+			require.NoError(t, err)
+			var settings map[string]any
+			require.NoError(t, json.Unmarshal(b, &settings))
+			hooks := settings["hooks"].(map[string]any)
+			require.Contains(t, hooks, "StopFailure")
+			delete(hooks, "StopFailure")
+			b, err = json.Marshal(settings)
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(file, b, 0o644))
+		}},
+		{"no settings file", func(t *testing.T, folder string, _ int64) {
+			require.NoError(t, os.Remove(filepath.Join(folder, ".claude", "settings.local.json")))
+		}},
+		{"malformed settings", func(t *testing.T, folder string, _ int64) {
+			require.NoError(t, os.WriteFile(filepath.Join(folder, ".claude", "settings.local.json"), []byte("{not json"), 0o644))
+		}},
+	} {
+		for _, branch := range []string{"open", "merged"} {
+			t.Run(tc.name+"/"+branch, func(t *testing.T) {
+				database, pid, row := stopStateFixture(t, branch)
+				tc.settings(t, mustFolder(t, database, pid), pid)
+				id := strconv.FormatInt(pid, 10)
+				payload := statePayload("Stop", briefLaunchID, "")
+				unsetTerminalEnv(t)
+				plain, plainErr := stopHookIO(t, id, payload)
+
+				t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+				out, errOut := stopHookIO(t, id, payload)
+
+				assert.Equal(t, plain, out, "stdout is byte-identical")
+				assert.Equal(t, branch == "merged", out != "", "blocks only on drift")
+				assert.Equal(t, plainErr, errOut)
+				assert.Empty(t, errOut)
+				assert.Empty(t, storedAgentState(t, database, row))
+			})
+		}
+	}
+	t.Run("gone workbench", func(t *testing.T) {
+		database, pid, row := stopStateFixture(t, "open")
+		t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+		for _, payload := range []string{
+			statePayload("Stop", briefLaunchID, ""),
+			`{"session_id":"` + briefLaunchID + `","hook_event_name":"Stop","stop_hook_active":true}`,
+		} {
+			out, errOut := stopHookIO(t, strconv.FormatInt(pid+100, 10), payload)
+
+			assert.Empty(t, out)
+			assert.Empty(t, errOut, "a deleted workbench's leftover hook says nothing")
+			assert.Empty(t, storedAgentState(t, database, row))
+		}
+	})
+	t.Run("continued turn", func(t *testing.T) {
+		database, pid, row := stopStateFixture(t, "merged")
+		_, err := devpack.RemoveStateHooks(mustFolder(t, database, pid), pid)
+		require.NoError(t, err)
+		t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+
+		out, errOut := stopHookIO(t, strconv.FormatInt(pid, 10),
+			`{"session_id":"`+briefLaunchID+`","hook_event_name":"Stop","stop_hook_active":true}`)
+
+		assert.Empty(t, out)
+		assert.Empty(t, errOut)
+		assert.Empty(t, storedAgentState(t, database, row))
+	})
+}
+
+func mustFolder(t *testing.T, database *db.DB, pid int64) string {
+	t.Helper()
+	wb, err := database.GetWorkbench(pid)
+	require.NoError(t, err)
+	return wb.FolderPath
 }
