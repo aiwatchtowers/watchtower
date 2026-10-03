@@ -191,6 +191,10 @@ func scopeAskOwner(ctx context.Context, d *db.DB, b Binding, a askOwnerArgs) err
 			return fieldRefusal("target_id", err)
 		}
 	}
+	open, err := d.CountOpenOwnerAsks(p.ID)
+	if err != nil {
+		return err
+	}
 	if a.PreviousAskID != 0 {
 		prev, err := askInWorkbench(d, p.ID, a.PreviousAskID)
 		if err != nil {
@@ -199,6 +203,14 @@ func scopeAskOwner(ctx context.Context, d *db.DB, b Binding, a askOwnerArgs) err
 		if prev.Kind != a.Kind {
 			return &ValidationError{Msg: fmt.Sprintf("previous_ask_id: ask %d is a %s ask, not a %s ask", prev.ID, prev.Kind, a.Kind)}
 		}
+		if prev.Status == "open" {
+			open-- // superseded in the same transaction
+		}
+	}
+	// Refused here, nothing is recorded; InsertOwnerAsk re-checks in its
+	// transaction for a race with another session.
+	if open >= asks.MaxOpenPerWorkbench {
+		return &ValidationError{Msg: db.ErrTooManyOpenAsks.Error(), Err: db.ErrTooManyOpenAsks}
 	}
 	if a.Kind == asks.KindReview {
 		_, _, err = readReviewDoc(p.FolderPath, a.DocPath)

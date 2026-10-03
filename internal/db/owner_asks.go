@@ -107,10 +107,9 @@ func (db *DB) InsertOwnerAsk(tx *sql.Tx, a OwnerAsk) (id, superseded int64, err 
 			return 0, 0, err
 		}
 	}
-	var open int
-	if err := tx.QueryRow(`SELECT COUNT(*) FROM owner_asks WHERE project_id = ? AND status = 'open'`,
-		a.WorkbenchID).Scan(&open); err != nil {
-		return 0, 0, fmt.Errorf("counting open asks: %w", err)
+	open, err := countOpenOwnerAsks(tx, a.WorkbenchID)
+	if err != nil {
+		return 0, 0, err
 	}
 	if open >= asks.MaxOpenPerWorkbench {
 		return 0, 0, ErrTooManyOpenAsks
@@ -131,6 +130,21 @@ func (db *DB) InsertOwnerAsk(tx *sql.Tx, a OwnerAsk) (id, superseded int64, err 
 		return 0, 0, err
 	}
 	return id, superseded, nil
+}
+
+// CountOpenOwnerAsks returns how many asks of workbench projectID are open —
+// for a refusal before anything is recorded; InsertOwnerAsk enforces the cap.
+func (db *DB) CountOpenOwnerAsks(projectID int64) (int, error) {
+	return countOpenOwnerAsks(db, projectID)
+}
+
+func countOpenOwnerAsks(q targetsQuerier, projectID int64) (int, error) {
+	var open int
+	if err := q.QueryRow(`SELECT COUNT(*) FROM owner_asks WHERE project_id = ? AND status = 'open'`,
+		projectID).Scan(&open); err != nil {
+		return 0, fmt.Errorf("counting open asks: %w", err)
+	}
+	return open, nil
 }
 
 // supersedeOwnerAsk withdraws a.PreviousAskID as superseded when it is still

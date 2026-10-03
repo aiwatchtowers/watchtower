@@ -133,10 +133,20 @@ func TestAskOwner_TheOpenCapIsTheAgentFacingText(t *testing.T) {
 	for i := 0; i < 30; i++ {
 		mustApply(t, reg, fx.a, "ask_owner", questionAsk)
 	}
-	rc, err := proposeIn(t, reg, fx.a, "ask_owner", questionAsk)
-	require.NoError(t, err)
-	assert.Equal(t, "failed", rc.Status)
-	assert.Equal(t, "too many open asks (30) — withdraw or wait for answers", rc.Error)
+	var actions int
+	require.NoError(t, fx.d.QueryRow(`SELECT COUNT(*) FROM agent_actions`).Scan(&actions))
+	_, err := proposeIn(t, reg, fx.a, "ask_owner", questionAsk)
+	assert.Equal(t, "too many open asks (30) — withdraw or wait for answers", refusal(t, err))
+	var after int
+	require.NoError(t, fx.d.QueryRow(`SELECT COUNT(*) FROM agent_actions`).Scan(&after))
+	assert.Equal(t, actions, after, "an over-cap ask records no failed action")
+
+	// A follow-up that supersedes an open ask replaces it, so it still fits.
+	var last int64
+	require.NoError(t, fx.d.QueryRow(`SELECT MAX(id) FROM owner_asks`).Scan(&last))
+	out := mustApply(t, reg, fx.a, "ask_owner", fmt.Sprintf(`{"kind":"question","title":"Again",`+
+		`"questions":[{"question":"Where?","options":[{"label":"SQLite"},{"label":"Files"}]}],"previous_ask_id":%d,"reason":"r"}`, last))
+	assert.EqualValues(t, last, out["superseded"])
 }
 
 func TestAskOwner_SessionBinding(t *testing.T) {
