@@ -330,6 +330,12 @@ final class WorkbenchGoToPaletteTests: XCTestCase {
         XCTAssertNoThrow(try palette.inspect().find(text: "↑↓ select   ↵ open   ⌘↵ open in split   esc close"))
         XCTAssertEqual(try palette.inspect().findAll(ViewType.Text.self) { try $0.string() == "↵" }.count, 1,
                        "only the selected row")
+        // §4b: the palette shows the dot only, its label the caption.
+        XCTAssertThrowsError(try palette.inspect().find(SessionStateLabel.self))
+        XCTAssertThrowsError(try palette.inspect().find(ViewType.Text.self) { try $0.string().hasPrefix("Not running") },
+                             "no caption text")
+        XCTAssertFalse(try palette.inspect().findAll(SessionLiveDot.self).isEmpty)
+        XCTAssertNoThrow(try palette.inspect().find(viewWithAccessibilityLabel: "Not running"))
     }
 
     /// No workbench page (the empty state): no first section.

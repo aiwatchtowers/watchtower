@@ -38,6 +38,8 @@ struct WorkbenchSessionsPanel: View {
                         row: row,
                         actions: actions,
                         openAsks: stack.count(session: row.id),
+                        reportLine: row.showsStateLabel ? vm.reportLine(sessionID: row.id, projectID: project.id) : nil,
+                        reportProgress: row.showsStateLabel ? vm.reportProgress(sessionID: row.id, projectID: project.id) : nil,
                         closedAsks: (closed[row.id] ?? 0) > 0
                             ? OwnerAskClosedButton(vm: vm, projectID: project.id, sessionID: row.id, count: closed[row.id] ?? 0)
                             : nil
@@ -49,7 +51,7 @@ struct WorkbenchSessionsPanel: View {
             .clearPlainList()
             WorkbenchFilesSection(vm: vm, project: project)
         }
-        .task(id: project.id) { await vm.loadSessions(projectID: project.id) }
+        .task(id: project.id) { await vm.sessionRowsAppeared(projectID: project.id) }
     }
 
     /// The chat history's header shape ("Chats" + New Chat), the title being
@@ -80,14 +82,21 @@ struct SessionRowActions {
     let delete: (TerminalSession) -> Void
 }
 
-/// One terminal session in the panel: its state dot and caption ("waiting
-/// for you", "not started · 5m"), and the target it works on. A workbench's
+/// One terminal session in the panel: its state dot, its state label
+/// ("Stopped", "Not running · 5m"; a standalone terminal's plain caption),
+/// a workbench session's report line ("#314 · 14/15 · PR #147 open"), and
+/// the target it works on. A workbench's
 /// rows also count the session's open asks and offer "▸ N closed"; that
 /// button sits outside the row's open click, which would start the session.
 struct TerminalSessionRow: View {
     let row: SessionSwitcherPresentation.Row
     let actions: SessionRowActions
     var openAsks = 0
+    /// The session report's line (`WorkbenchesViewModel.reportLine`); a
+    /// standalone terminal has none.
+    var reportLine: String?
+    /// The line's mini progress bar (`WorkbenchesViewModel.reportProgress`).
+    var reportProgress: Double?
     var closedAsks: OwnerAskClosedButton?
 
     private var session: TerminalSession { row.session }
@@ -117,15 +126,36 @@ struct TerminalSessionRow: View {
         HStack(spacing: 6) {
             SessionLiveDot(state: row.state)
                 .frame(width: 16)
+                // The label below reads the state out.
+                .accessibilityHidden(row.showsStateLabel)
             VStack(alignment: .leading, spacing: 1) {
                 Text(session.title).lineLimit(1).truncationMode(.tail)
-                if let caption = row.caption {
-                    // A live caption repeats the dot's label for VoiceOver.
+                if row.showsStateLabel, let caption = row.caption {
+                    SessionStateLabel(state: row.state, caption: caption)
+                    if let reportLine {
+                        HStack(spacing: 4) {
+                            if let reportProgress {
+                                ProgressView(value: reportProgress)
+                                    .progressViewStyle(.linear)
+                                    .controlSize(.mini)
+                                    .frame(width: 32)
+                                    .accessibilityLabel("Progress")
+                            }
+                            Text(reportLine)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                        }
+                    }
+                } else if let caption = row.caption {
+                    // A standalone terminal's caption repeats the dot's label
+                    // for VoiceOver, except a not started one's age.
                     Text(caption)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
-                        .accessibilityHidden(row.state.isLive)
+                        .accessibilityHidden(row.state.kind != .notStarted)
                 }
                 if let badge = row.badge {
                     Text(badge).font(.caption2).foregroundStyle(.secondary)
@@ -138,29 +168,68 @@ struct TerminalSessionRow: View {
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { actions.open(session) }
-        .help(row.state.isLive ? session.title : "Not running — click to start")
+        .help(row.state.live ? session.title : "Not running — click to start")
     }
 }
 
-/// A session's state dot: green while its process runs (working or not
-/// reported), orange while its agent waits for the owner or for approval,
-/// hollow when not running — the panel's rows, both session switchers and
-/// the go-to palette draw the same one.
+/// A session's state dot (`SessionStatePresentation`): its kind's colour,
+/// filled while its process runs and a ring when not — the panel's rows,
+/// both session switchers and the go-to palette draw the same one. Its
+/// accessibility label is the state's caption.
 struct SessionLiveDot: View {
     let state: SessionSwitcherPresentation.State
 
     var body: some View {
-        Image(systemName: state.isLive ? "circle.fill" : "circle")
+        Image(systemName: SessionStatePresentation.isRing(state) ? "circle" : "circle.fill")
             .font(.system(size: 7))
-            .foregroundStyle(color)
-            .accessibilityLabel(state.label)
+            .foregroundStyle(SessionStatePresentation.color(for: state).color)
+            .accessibilityLabel(SessionStatePresentation.caption(for: state))
     }
+}
 
-    private var color: Color {
-        switch state {
-        case .running, .working: .green
-        case .waitingForOwner, .needsApproval: .orange
-        case .notStarted: .secondary
+/// A session's state glyph and caption ("? Waiting for you · ask #12"),
+/// where a site has room for more than the dot: the panel row, the header
+/// switcher button and its popover rows. One accessibility element reading
+/// the caption.
+struct SessionStateLabel: View {
+    let state: SessionSwitcherPresentation.State
+    /// The row's caption (with a not started session's age), else the
+    /// state's own.
+    var caption: String?
+
+    var body: some View {
+        let text = caption ?? SessionStatePresentation.caption(for: state)
+        HStack(spacing: 3) {
+            if let glyph = SessionStatePresentation.glyph(for: state) {
+                Image(systemName: glyph)
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(SessionStatePresentation.color(for: state).color)
+                if state.kind == .working {
+                    Text("\(state.openAsks)")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(SessionStatePresentation.color(for: state).color)
+                }
+            }
+            Text(text)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(text)
+    }
+}
+
+extension SessionStatePresentation.Tone {
+    /// The system colour of a state's tone, light and dark.
+    var color: Color {
+        switch self {
+        case .green: .green
+        case .orange: .orange
+        case .blue: .blue
+        case .red: .red
+        case .secondary: .secondary
         }
     }
 }

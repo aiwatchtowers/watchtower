@@ -54,12 +54,20 @@ struct WorkbenchBoardView: View {
                 vm.load()
                 viewModel = vm
             }
+            takeFocus()
             viewModel?.startPolling()
         }
+        // A target id in the Session view opens its card here.
+        .onChange(of: appState.workbenchesViewModel?.boardFocus[projectID]) { _, _ in takeFocus() }
         .onDisappear { viewModel?.stopPolling() }
         .task(id: projectID) {
             await appState.workbenchesViewModel?.refreshDrift(projectID: projectID, force: true)
         }
+    }
+
+    private func takeFocus() {
+        guard let vm = viewModel, let id = appState.workbenchesViewModel?.takeBoardFocus(projectID: projectID) else { return }
+        vm.select(Int(id))
     }
 
     // MARK: - Board (list or kanban)

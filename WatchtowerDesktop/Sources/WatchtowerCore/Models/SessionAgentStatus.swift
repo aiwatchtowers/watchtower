@@ -9,7 +9,8 @@ package enum SessionAgentState: String, Sendable {
 }
 
 /// One row of `TerminalSessionQueries.fetchAgentStates`: the stored state of
-/// a session and what a notice about it names.
+/// a session — the hook state, finished, the error, its open asks — and what
+/// a notice about it names.
 package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Sendable {
     package var id: Int64
     package var projectID: Int64?
@@ -20,6 +21,20 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
     package var agentStateAt: String?
     /// nil for a standalone terminal or a workbench that no longer exists.
     package var workbenchName: String?
+    /// Set by `finish_session` (same format as `agentStateAt`); nil = not
+    /// finished. Any `working` write clears it.
+    package var finishedAt: String?
+    /// The last `finish_session` summary, kept after `finishedAt` clears.
+    package var finishSummary: String
+    /// The `agentStateAt` of the StopFailure write that set it; nil = no
+    /// error.
+    package var agentFailedAt: String?
+    /// The StopFailure error type; '' when unknown.
+    package var agentError: String
+    /// The session's `owner_asks` with `status = 'open'`.
+    package var openAsks: Int
+    /// The oldest of those asks; nil when none is open.
+    package var oldestOpenAskID: Int64?
 
     package init(
         id: Int64,
@@ -27,7 +42,13 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
         title: String,
         agentState: String?,
         agentStateAt: String?,
-        workbenchName: String?
+        workbenchName: String?,
+        finishedAt: String? = nil,
+        finishSummary: String = "",
+        agentFailedAt: String? = nil,
+        agentError: String = "",
+        openAsks: Int = 0,
+        oldestOpenAskID: Int64? = nil
     ) {
         self.id = id
         self.projectID = projectID
@@ -35,6 +56,12 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
         self.agentState = agentState
         self.agentStateAt = agentStateAt
         self.workbenchName = workbenchName
+        self.finishedAt = finishedAt
+        self.finishSummary = finishSummary
+        self.agentFailedAt = agentFailedAt
+        self.agentError = agentError
+        self.openAsks = openAsks
+        self.oldestOpenAskID = oldestOpenAskID
     }
 
     package var stored: SessionAgentState? { agentState.flatMap(SessionAgentState.init(rawValue:)) }
@@ -45,20 +72,30 @@ package struct SessionAgentStateRow: Decodable, FetchableRecord, Equatable, Send
         case agentState = "agent_state"
         case agentStateAt = "agent_state_at"
         case workbenchName = "workbench_name"
+        case finishedAt = "finished_at"
+        case finishSummary = "finish_summary"
+        case agentFailedAt = "agent_failed_at"
+        case agentError = "agent_error"
+        case openAsks = "open_asks"
+        case oldestOpenAskID = "oldest_open_ask_id"
     }
 }
 
-/// A live session's effective status — what the dots, captions and notices
-/// show (spec 2026-10-03-session-agent-state, decisions 9–12).
+/// A session's effective status — what the dots, captions and notices show
+/// (spec 2026-10-03-session-agent-state, decisions 9–12; the state set of
+/// spec 2026-10-03-workbench-session-report §4b).
 package struct SessionAgentStatus: Equatable, Sendable {
     package let sessionID: Int64
     package let workbenchID: Int64?
     package let workbenchName: String?
     package let title: String
     package let state: SessionSwitcherPresentation.State
-    /// The trusted state's `agent_state_at`; nil when no stored state is
-    /// trusted (plain running).
+    /// The trusted hook state's `agent_state_at`; nil when no hook state is
+    /// trusted (not live, or none written during this run).
     package let at: String?
+    /// The last `finish_session` summary ('' when none), a finished
+    /// notice's body.
+    package let finishSummary: String
 
     package init(
         sessionID: Int64,
@@ -66,7 +103,8 @@ package struct SessionAgentStatus: Equatable, Sendable {
         workbenchName: String?,
         title: String,
         state: SessionSwitcherPresentation.State,
-        at: String?
+        at: String?,
+        finishSummary: String = ""
     ) {
         self.sessionID = sessionID
         self.workbenchID = workbenchID
@@ -74,56 +112,92 @@ package struct SessionAgentStatus: Equatable, Sendable {
         self.title = title
         self.state = state
         self.at = at
+        self.finishSummary = finishSummary
     }
 
-    /// The trust rule (decision 9) for a live session — liveness is the
-    /// caller's (`resolve`, `SessionSwitcherPresentation.state(of:)`): a
-    /// stored state counts only when it was written during the current
-    /// process run (`storedAt ≥ startedAt`). A state from an earlier run, an
-    /// unknown start time or an unreadable stamp shows plain running — never
-    /// a dead run's "waiting". No staleness timeout: a turn may work for an
-    /// hour.
+    /// The §4b order over a row: the hook states count only for a live
+    /// session and only when written during the current process run
+    /// (`agent_state_at ≥ startedAt`, decision 9) — a state from an earlier
+    /// run, an unknown start time or an unreadable stamp counts as none,
+    /// never a dead run's state. `finished` and the open asks are not
+    /// run-scoped, so they show whether the session runs or not. No
+    /// staleness timeout: a turn may work for an hour.
     package static func effective(
-        stored: SessionAgentState?,
-        storedAt: String?,
+        row: SessionAgentStateRow,
+        live: Bool,
         startedAt: Date?
     ) -> SessionSwitcherPresentation.State {
-        guard let stored, let startedAt, let at = storedAt.flatMap(parseStamp), at >= startedAt else {
-            return .running
+        let hook = live ? trustedHook(row, startedAt: startedAt) : nil
+        let failed = hook == .waiting && row.agentFailedAt != nil && row.agentFailedAt == row.agentStateAt
+        let kind: SessionSwitcherPresentation.State.Kind
+        if hook == .approval {
+            kind = .needsApproval
+        } else if failed {
+            kind = .failed
+        } else if hook == .working {
+            kind = .working
+        } else if row.finishedAt != nil {
+            kind = .finished
+        } else if row.openAsks > 0 {
+            kind = .waitingOnAsk
+        } else if hook == .waiting {
+            kind = .stopped
+        } else {
+            kind = live ? .running : .notStarted
         }
-        switch stored {
-        case .working: return .working
-        case .waiting: return .waitingForOwner
-        case .approval: return .needsApproval
+        return SessionSwitcherPresentation.State(
+            kind: kind, live: live, openAsks: row.openAsks, error: failed ? row.agentError : "",
+            oldestAskID: row.openAsks > 0 ? row.oldestOpenAskID : nil
+        )
+    }
+
+    /// The row's hook state when it was written during the run started at
+    /// `startedAt`; nil otherwise.
+    private static func trustedHook(_ row: SessionAgentStateRow, startedAt: Date?) -> SessionAgentState? {
+        guard let stored = row.stored, let startedAt,
+              let at = row.agentStateAt.flatMap(parseStamp), at >= startedAt else { return nil }
+        return stored
+    }
+
+    /// The agent's turn is over and it sits at its prompt: a trusted
+    /// `waiting` of the current run (stopped, failed, or finished/waiting on
+    /// an ask over a turn end) — where a hand-off may press Return.
+    package var isAtPrompt: Bool {
+        guard state.live, at != nil else { return false }
+        switch state.kind {
+        case .stopped, .failed, .finished, .waitingOnAsk: return true
+        case .notStarted, .running, .working, .needsApproval: return false
         }
     }
 
     /// Whether this status still holds for a run started at `startedAt`:
-    /// plain running always does, a trusted state only when it was written
-    /// during that run (decision 9 again, for a run that began after the read).
+    /// one without a trusted hook state always does, one with it only when
+    /// that state was written during that run (decision 9 again, for a run that began after the read).
     package func isTrusted(startedAt: Date?) -> Bool {
         guard let at else { return true }
         guard let startedAt, let stamp = Self.parseStamp(at) else { return false }
         return stamp >= startedAt
     }
 
-    /// The statuses of the live sessions among `rows`, keyed by session id.
-    /// A row that is not live is left out.
+    /// The statuses of `rows`, keyed by session id; liveness comes from
+    /// `liveIDs`.
     package static func resolve(
         _ rows: [SessionAgentStateRow],
         liveIDs: Set<Int64>,
         startedAt: [Int64: Date]
     ) -> [Int64: Self] {
         var result: [Int64: Self] = [:]
-        for row in rows where liveIDs.contains(row.id) {
-            let state = effective(stored: row.stored, storedAt: row.agentStateAt, startedAt: startedAt[row.id])
+        for row in rows {
+            let live = liveIDs.contains(row.id)
+            let trusted = live && trustedHook(row, startedAt: startedAt[row.id]) != nil
             result[row.id] = Self(
                 sessionID: row.id,
                 workbenchID: row.projectID,
                 workbenchName: row.workbenchName,
                 title: row.title,
-                state: state,
-                at: state == .running ? nil : row.agentStateAt
+                state: effective(row: row, live: live, startedAt: startedAt[row.id]),
+                at: trusted ? row.agentStateAt : nil,
+                finishSummary: row.finishSummary
             )
         }
         return result

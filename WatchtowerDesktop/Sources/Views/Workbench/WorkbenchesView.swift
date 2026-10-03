@@ -74,7 +74,7 @@ struct WorkbenchesView: View {
         .sessionActionDialogs(vm: vm, renaming: $renamingSession, deleting: $deletingSession)
         .onAppear {
             consumeRoute()
-            Task { await vm.reload() }
+            Task { await vm.tabAppeared() }
         }
         .onChange(of: appState.pendingWorkbenchRoute) { _, _ in consumeRoute() }
         .alert(

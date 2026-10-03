@@ -4,42 +4,63 @@ import Foundation
 /// of the views so it is testable. A running session also shows what its
 /// workbench hooks reported (`SessionAgentStatus`, board #312).
 package enum SessionSwitcherPresentation {
-    package enum State: Equatable, Sendable {
-        case notStarted
-        /// Live, with no state reported during this run.
-        case running
-        case working
-        case waitingForOwner
-        case needsApproval
-
-        package var isLive: Bool { self != .notStarted }
-
-        /// The state's one name — the dot's accessibility label, the
-        /// switcher button's, and (lower-cased) a live row's caption.
-        package var label: String {
-            switch self {
-            case .notStarted: "Not running"
-            case .running: "Running"
-            case .working: "Working"
-            case .waitingForOwner: "Waiting for you"
-            case .needsApproval: "Needs approval"
-            }
+    /// A session's state (spec 2026-10-03-workbench-session-report §4b),
+    /// decided by `SessionAgentStatus.effective`; `SessionStatePresentation`
+    /// maps it to the dot's colour, glyph, fill and caption.
+    package struct State: Equatable, Sendable {
+        package enum Kind: Equatable, Sendable {
+            case notStarted
+            /// Live, with no state reported during this run.
+            case running
+            case working
+            case needsApproval
+            /// The turn ended on a StopFailure.
+            case failed
+            /// An open ask of the session waits for the owner, live or not.
+            case waitingOnAsk
+            /// The turn is over and nothing waits for the owner.
+            case stopped
+            /// The agent called `finish_session`, live or not.
+            case finished
         }
 
-        /// The caption a live state carries ("waiting for you"); nil for
-        /// plain running and for not started (whose caption carries the age).
-        package var agentCaption: String? {
-            switch self {
-            case .working, .waitingForOwner, .needsApproval: label.lowercased()
-            case .running, .notStarted: nil
-            }
+        package let kind: Kind
+        /// The process runs: the dot is filled, else a ring.
+        package let live: Bool
+        /// The session's open asks.
+        package let openAsks: Int
+        /// `agent_error` of a failed turn ('' when unknown); '' for any
+        /// other kind.
+        package let error: String
+        /// The oldest open ask, the one a waiting caption names ("ask #12");
+        /// nil without open asks.
+        package let oldestAskID: Int64?
+
+        package init(kind: Kind, live: Bool, openAsks: Int = 0, error: String = "", oldestAskID: Int64? = nil) {
+            self.kind = kind
+            self.live = live
+            self.openAsks = openAsks
+            self.error = error
+            self.oldestAskID = oldestAskID
+        }
+
+        /// Not running, no asks, not finished.
+        package static let notStarted = Self(kind: .notStarted, live: false)
+
+        /// A live session's state.
+        package static func live(_ kind: Kind, openAsks: Int = 0, error: String = "", oldestAskID: Int64? = nil) -> Self {
+            Self(kind: kind, live: true, openAsks: openAsks, error: error, oldestAskID: oldestAskID)
         }
     }
 
     package struct Row: Identifiable, Equatable, Sendable {
         package let session: TerminalSession
         package let state: State
-        /// "not started · 5m", "waiting for you", …; nil for plain running.
+        /// A workbench session's state caption (§4b) — what its state label
+        /// shows and every site reads out: "Stopped", "Waiting for you · ask
+        /// #12"; not started adds the age ("Not running · 5m"). A standalone
+        /// terminal keeps its plain caption: nil while running, "not started
+        /// · 5m" otherwise.
         package let caption: String?
         /// `#233` for a session working on a target.
         package let badge: String?
@@ -47,6 +68,10 @@ package enum SessionSwitcherPresentation {
         package let shortcut: Int?
 
         package var id: Int64 { session.id }
+
+        /// Whether the row draws the state label (glyph and caption): a
+        /// workbench session; a standalone terminal shows its plain caption.
+        package var showsStateLabel: Bool { session.projectID != nil }
     }
 
     /// The highest ⌘N the switchers bind.
@@ -66,21 +91,36 @@ package enum SessionSwitcherPresentation {
             return Row(
                 session: session,
                 state: state,
-                caption: state.isLive ? state.agentCaption : notStartedCaption(session, now: now),
+                caption: caption(state, session: session, now: now),
                 badge: session.targetID.map { "#\($0)" },
                 shortcut: index < maxShortcut ? index + 1 : nil
             )
         }
     }
 
-    /// A session's state: not started unless live, then its reported status.
+    /// A session's state. Liveness decides first: a status read while the
+    /// session was live is ignored once it no longer is, and a live session
+    /// without a status is plain running.
     package static func state(
         of sessionID: Int64,
         liveIDs: Set<Int64>,
         statuses: [Int64: SessionAgentStatus]
     ) -> State {
-        guard liveIDs.contains(sessionID) else { return .notStarted }
-        return statuses[sessionID]?.state ?? .running
+        let live = liveIDs.contains(sessionID)
+        if let state = statuses[sessionID]?.state, state.live == live { return state }
+        return live ? .live(.running) : .notStarted
+    }
+
+    /// A workbench session's §4b caption, with the age when not started; a
+    /// standalone terminal's plain caption (nil while running).
+    private static func caption(_ state: State, session: TerminalSession, now: Date) -> String? {
+        guard session.projectID != nil else {
+            return state.live ? nil : notStartedCaption(session, now: now)
+        }
+        let caption = SessionStatePresentation.caption(for: state)
+        guard state.kind == .notStarted,
+              let age = TimeFormatting.shortAge(from: session.lastActiveAt, now: now) else { return caption }
+        return "\(caption) · \(age)"
     }
 
     private static func notStartedCaption(_ session: TerminalSession, now: Date) -> String {

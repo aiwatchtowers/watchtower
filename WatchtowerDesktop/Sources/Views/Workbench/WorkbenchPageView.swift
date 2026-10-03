@@ -114,9 +114,7 @@ struct WorkbenchPageView: View {
                 installStatusIcons
                 if vm.isInstalling(projectID: project.id) { ProgressView().controlSize(.mini) }
                 Spacer(minLength: 8)
-                viewButtons
-                splitToggle
-                moreMenu
+                WorkbenchHeaderControls(vm: vm, project: project, onDelete: confirmDelete)
             }
             if let installError = vm.installErrors[project.id] {
                 Text(installError)
@@ -128,42 +126,6 @@ struct WorkbenchPageView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
-    }
-
-    /// Repair install, Re-run Setup and Delete…, out of the header row.
-    private var moreMenu: some View {
-        let status = vm.installStatus[project.id]
-        let installing = vm.isInstalling(projectID: project.id)
-        return Menu {
-            Button {
-                Task { await vm.repairInstall(projectID: project.id) }
-            } label: {
-                Label("Repair install", systemImage: "wrench.and.screwdriver")
-            }
-            .disabled(installing || status?.needsRepair != true)
-            .help(status.map(repairHelp) ?? "Re-install what is missing in the folder")
-            Button {
-                Task { await vm.resync(projectID: project.id) }
-            } label: {
-                Label("Re-run Setup", systemImage: "arrow.triangle.2.circlepath")
-            }
-            .disabled(installing)
-            .help("Re-index the folder for search and re-install what is missing. Never changes the board, comments or sources.")
-            Divider()
-            Button(role: .destructive) {
-                confirmDelete()
-            } label: {
-                Label("Delete…", systemImage: "trash")
-            }
-            .disabled(vm.deletingWorkbenchID != nil)
-        } label: {
-            Image(systemName: "ellipsis.circle")
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .help("Workbench actions")
-        .accessibilityLabel("Workbench actions")
     }
 
     private func confirmDelete() {
@@ -210,30 +172,23 @@ struct WorkbenchPageView: View {
                 Image(systemName: "exclamationmark.circle")
                     .foregroundStyle(.orange)
                     .font(.caption)
-                    .help("The folder install is incomplete — Repair install is in the … menu.\n\(repairHelp(status))")
+                    .help("The folder install is incomplete — Repair install is in the … menu.\n\(status.repairHelp)")
                     .accessibilityLabel("Install incomplete")
             } else if let notice = status.legacyNotice {
                 // A nudge only: nothing migrates until the owner runs it (O6).
                 Image(systemName: "exclamationmark.circle")
                     .foregroundStyle(.orange)
                     .font(.caption)
-                    .help("\(notice)\n\(repairHelp(status))")
+                    .help("\(notice)\n\(status.repairHelp)")
                     .accessibilityLabel("Older setup")
             } else if status.claudeFound || status.mcp {
                 Image(systemName: "checkmark.seal")
                     .foregroundStyle(.secondary)
                     .font(.caption)
-                    .help("Installed: \(repairHelp(status))")
+                    .help("Installed: \(status.repairHelp)")
                     .accessibilityLabel("Installed")
             }
         }
-    }
-
-    private func repairHelp(_ status: WorkbenchInstallStatus) -> String {
-        "Skill \(status.skillDisplay) · hook \(status.hook ? "on" : "missing") · "
-            + "drift hook \(status.stopHook ? "on" : "missing") · "
-            + "state hooks \(status.stateHooks ? "on" : "missing") · "
-            + "ask guard \(status.askGuard && status.askToolBlock ? "on" : "missing") · MCP \(status.mcp ? "on" : "missing")"
     }
 
     /// Repair cannot register the MCP server without `claude`: a warning
@@ -258,79 +213,5 @@ struct WorkbenchPageView: View {
         .fixedSize()
         .help("Claude Code CLI not found. Install Claude Code, then run:\n\(command)")
         .accessibilityLabel("Claude Code CLI not found")
-    }
-
-    /// Terminal / Board / Files: on = on screen. Turning one on shows it
-    /// (beside the terminal in a split); turning it off closes that pane of
-    /// a split. Split then puts two side by side.
-    private var viewButtons: some View {
-        let layout = vm.layout(projectID: project.id)
-        return HStack(spacing: 2) {
-            ForEach(WorkspaceView.allCases, id: \.self) { view in
-                Toggle(isOn: Binding(
-                    get: { layout.isShowing(view) },
-                    set: { on in
-                        if on {
-                            Task { await vm.showView(view, project: project) }
-                        } else {
-                            vm.hideView(view, projectID: project.id)
-                        }
-                    }
-                )) {
-                    Label(view.title, systemImage: view.icon)
-                }
-                .toggleStyle(.button)
-                .help(view.help)
-                if view == .terminal { sessionMenu(slot: layout.terminalSlot) }
-            }
-        }
-        .controlSize(.small)
-    }
-
-    /// The Terminal button's dropdown: which session the terminal pane shows,
-    /// or a new one — the split panes' picker actions, so a single pane can
-    /// switch sessions with the side panel hidden. A chevron, no extra row.
-    private func sessionMenu(slot: WorkspacePane) -> some View {
-        Menu {
-            ForEach(vm.orderedSessions(projectID: project.id)) { session in
-                Button(session.title) {
-                    Task { await vm.showInPane(slot, item: .session(session.id), projectID: project.id) }
-                }
-                .disabled(slot == .session(session.id))
-            }
-            Divider()
-            Button("New session") {
-                Task { await vm.newSession(inPane: slot, projectID: project.id) }
-            }
-        } label: {
-            Image(systemName: "chevron.down")
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .help("Show another session in the terminal pane, or start a new one")
-        .accessibilityLabel("Sessions")
-    }
-
-    private var splitToggle: some View {
-        let isSplit = vm.layout(projectID: project.id).isSplit
-        return Button {
-            vm.toggleSplit(projectID: project.id)
-        } label: {
-            Image(systemName: isSplit ? "rectangle" : "rectangle.split.2x1")
-        }
-        .buttonStyle(.borderless)
-        .help(isSplit ? "Show one pane" : "Split: show two panes side by side")
-        .accessibilityLabel(isSplit ? "Single Pane" : "Split")
-    }
-}
-
-private extension WorkspaceView {
-    var help: String {
-        switch self {
-        case .terminal: "Show the terminal (in a split, beside the other pane)"
-        case .board: "Show the Board (in a split, beside the terminal)"
-        case .files: "Show the open files (in a split, beside the terminal)"
-        }
     }
 }

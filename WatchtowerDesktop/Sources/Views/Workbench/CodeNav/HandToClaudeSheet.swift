@@ -59,13 +59,14 @@ struct HandToClaudeSheet: View {
     }
 
     private func label(_ choice: CodeHandoffSessionChoice) -> String {
-        let suffix = choice.isWaitingForApproval ? " — waiting for a permission answer" : " — \(choice.state.label.lowercased())"
-        return choice.session.title + suffix
+        guard !choice.isWaitingForApproval else { return choice.session.title + " — waiting for a permission answer" }
+        let caption = SessionStatePresentation.caption(for: choice.state).lowercased()
+        return choice.session.title + " — " + caption
     }
 
     private func note(_ choices: [CodeHandoffSessionChoice]) -> String {
         let running = choices.isEmpty ? "No Claude Code session of this workbench is running. " : ""
-        return running + "A session waiting for you gets the text and Return; a working one gets the text and you press Return; "
+        return running + "A session idle at its prompt gets the text and Return; a working one gets the text and you press Return; "
             + "a new session starts with it. "
             + "Only the question, the answer and file:line references are sent."
     }

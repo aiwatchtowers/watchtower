@@ -72,6 +72,19 @@ final class WorkbenchesViewModel {
     /// What the live sessions' agents are doing (board #312). AppState passes
     /// its own; nil = plain running dots.
     let agentStates: SessionAgentStateCenter?
+    /// The sessions' report lines and the Session view's report (spec
+    /// 2026-10-03-workbench-session-report Part 7). AppState wires its own;
+    /// nil = rows without a report line, a Session view with nothing to show.
+    @ObservationIgnored weak var sessionReports: SessionReportCenter?
+    /// A target the Board of that workbench opens once it is on screen
+    /// (`showTargetOnBoard`); the Board takes it (`takeBoardFocus`).
+    var boardFocus: [Int64: Int64] = [:]
+    /// Each workbench's GitHub repository from its `origin` remote, for the
+    /// Session view's PR links; `.some(nil)` = read, not on GitHub.
+    var gitHubRepositories: [Int64: URL?] = [:]
+    @ObservationIgnored var gitHubRepositoryReads: Set<Int64> = []
+    /// `git remote get-url origin` of a folder. A seam for tests.
+    @ObservationIgnored var readOriginRemote: (URL) async -> String? = { await GitHubRemote.readOrigin(folder: $0) }
     /// Runs `watchtower terminal title`; nil without a CLI. A seam for tests.
     @ObservationIgnored var titleService: ((Int64) async throws -> TerminalTitleResult)?
     @ObservationIgnored var now: () -> Date = Date.init
@@ -256,6 +269,15 @@ final class WorkbenchesViewModel {
         asks.onDelivered = { [weak self] projectID, sessionID in
             self?.showAnsweredSession(sessionID, projectID: projectID)
         }
+        // A closed session's ring follows its open asks without a poll.
+        asks.onAnswered = { [weak agentStates] in await agentStates?.poll() }
+    }
+
+    /// The Workbench tab appeared: the list reloads, and the sessions'
+    /// states are read even with none live.
+    func tabAppeared() async {
+        agentStates?.refresh()
+        await reload()
     }
 
     var selectedWorkbench: Workbench? {

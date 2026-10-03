@@ -22,19 +22,13 @@ import (
 	"watchtower/internal/workbenchfiles"
 )
 
-// askRegistry is a workbench registry whose ask tools read the terminal
-// session from env instead of the process environment.
+// askRegistry is a workbench registry whose tools read the terminal session
+// from env instead of the process environment.
 func askRegistry(t *testing.T, d *db.DB, env string) *Registry {
 	t.Helper()
-	getenv := func() string { return env }
 	reg := New(d)
-	for _, tool := range WorkbenchTools(workbenchfiles.New(t.TempDir())) {
-		switch tool.Name {
-		case "ask_owner":
-			tool = NewAskOwner(getenv)
-		case "list_asks":
-			tool = NewListAsks(getenv)
-		}
+	for _, tool := range append(workbenchTools(workbenchfiles.New(t.TempDir()), func() string { return env }),
+		NewListTargets(), NewGetTarget()) {
 		require.NoError(t, reg.Register(tool))
 	}
 	return reg

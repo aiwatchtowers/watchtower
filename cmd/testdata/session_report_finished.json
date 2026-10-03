@@ -1,0 +1,121 @@
+{
+  "session": {
+    "id": 3,
+    "title": "Export feature",
+    "target_id": 400,
+    "kind": "claude",
+    "created_at": "2026-10-01T08:30:00Z",
+    "last_active_at": "2026-10-02T16:00:00Z",
+    "agent_state": "waiting",
+    "agent_state_at": "2026-10-02T16:00:00.000Z",
+    "finished_at": "2026-10-02T15:59:30.000Z",
+    "finish_summary": "Exporter merged in PR #150.\nThe progress sheet is open in PR #151 and waits on your answer about the file name."
+  },
+  "progress": {
+    "done": 3,
+    "total": 5
+  },
+  "on_you": [
+    {
+      "id": 7,
+      "kind": "question",
+      "title": "Which default file name should the export use?",
+      "target_id": 422,
+      "created_at": "2026-10-02T15:58:00Z"
+    }
+  ],
+  "now": [
+    {
+      "id": 422,
+      "text": "Export progress sheet",
+      "status": "in_progress",
+      "branch": "feat/export-ui",
+      "since": "2026-10-02T10:15:00Z"
+    }
+  ],
+  "next": [
+    {
+      "id": 423,
+      "text": "Document the export",
+      "status": "todo"
+    }
+  ],
+  "phases": [
+    {
+      "target_id": 420,
+      "text": "Phase B: export UI",
+      "done": 1,
+      "total": 3,
+      "started_at": "2026-10-02T09:00:00Z",
+      "finished_at": "",
+      "items": [
+        {
+          "id": 422,
+          "text": "Export progress sheet",
+          "status": "in_progress"
+        },
+        {
+          "id": 423,
+          "text": "Document the export",
+          "status": "todo"
+        },
+        {
+          "id": 421,
+          "text": "Add the export button",
+          "status": "done"
+        }
+      ]
+    },
+    {
+      "target_id": 410,
+      "text": "Phase A: exporter",
+      "done": 2,
+      "total": 2,
+      "started_at": "2026-10-01T09:00:00Z",
+      "finished_at": "2026-10-01T12:30:00Z",
+      "items": [
+        {
+          "id": 411,
+          "text": "Write the exporter",
+          "status": "done"
+        },
+        {
+          "id": 412,
+          "text": "Test the exporter",
+          "status": "done"
+        }
+      ]
+    }
+  ],
+  "prs": [
+    {
+      "ref": "pr:151",
+      "pr_number": 151,
+      "title": "Export progress sheet",
+      "state": "open",
+      "additions": 180,
+      "deletions": 12,
+      "merged_at": "",
+      "checked_at": "2026-10-02T15:30:00Z",
+      "targets": [
+        422
+      ]
+    },
+    {
+      "ref": "pr:150",
+      "pr_number": 150,
+      "title": "Exporter",
+      "state": "merged",
+      "additions": 420,
+      "deletions": 35,
+      "merged_at": "2026-10-02T12:00:00Z",
+      "checked_at": "2026-10-02T15:00:00Z",
+      "targets": [
+        421,
+        411,
+        412
+      ]
+    }
+  ],
+  "pr_note": "the folder is not a git work tree; branch and pull request states not checked"
+}

@@ -30,17 +30,28 @@ type TerminalSession struct {
 	FolderPath      string
 	ClaudeSessionID sql.NullString
 	AgentState      sql.NullString
-	AgentStateAt    time.Time // zero when never reported
+	AgentStateAt    time.Time     // zero when never reported
+	AgentFailure    *AgentFailure // nil when the stored state is no StopFailure
+	Finished        bool          // finished_at is set (finish_session)
+}
+
+// AgentFailure flags a stored `waiting` as a turn that ended on an error (a
+// StopFailure hook). At is agent_failed_at, the agent_state_at of the write
+// that set it: a write stamps it with its own time, so At is read-only.
+type AgentFailure struct {
+	At    string
+	Error string // the StopFailure error type, clipped by the hook; '' = unknown
 }
 
 func (db *DB) GetTerminalSession(id int64) (*TerminalSession, error) {
 	var s TerminalSession
-	var stateAt sql.NullString
+	var stateAt, failedAt sql.NullString
+	var agentError string
 	err := db.QueryRow(`SELECT id, project_id, kind, title, title_source, folder_path, claude_session_id,
-		agent_state, agent_state_at
+		agent_state, agent_state_at, agent_failed_at, agent_error, finished_at IS NOT NULL
 		FROM terminal_sessions WHERE id = ?`, id).
 		Scan(&s.ID, &s.WorkbenchID, &s.Kind, &s.Title, &s.TitleSource, &s.FolderPath, &s.ClaudeSessionID,
-			&s.AgentState, &stateAt)
+			&s.AgentState, &stateAt, &failedAt, &agentError, &s.Finished)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrTerminalSessionNotFound
 	}
@@ -54,6 +65,9 @@ func (db *DB) GetTerminalSession(id int64) (*TerminalSession, error) {
 		if at, perr := time.Parse(agentStateAtLayout, stateAt.String); perr == nil {
 			s.AgentStateAt = at
 		}
+	}
+	if failedAt.Valid {
+		s.AgentFailure = &AgentFailure{At: failedAt.String, Error: agentError}
 	}
 	return &s, nil
 }
@@ -99,11 +113,13 @@ func (db *DB) SetTerminalClaudeSessionID(id, projectID int64, sessionID string) 
 // state equals the previous run's last one would be skipped as a repeat and
 // keep the old run's time, which the Desktop does not trust. agent_state_at
 // becomes at, not NULL, so a late async hook of the previous run (stamped
-// earlier) still cannot land. Same row guards as SetTerminalAgentState; false
+// earlier) still cannot land. A new run starts with no error either. Same
+// row guards as SetTerminalAgentState; false
 // when there was no state to clear or a guard held it back.
 func (db *DB) ClearTerminalAgentState(id, workbenchID int64, sessionID string, at time.Time) (bool, error) {
 	stamp := at.UTC().Format(agentStateAtLayout)
-	res, err := db.Exec(`UPDATE terminal_sessions SET agent_state = NULL, agent_state_at = ?
+	res, err := db.Exec(`UPDATE terminal_sessions SET agent_state = NULL, agent_state_at = ?,
+		agent_failed_at = NULL, agent_error = ''
 		WHERE id = ? AND project_id = ? AND kind = 'claude' AND claude_session_id = ?
 		  AND agent_state IS NOT NULL
 		  AND (agent_state_at IS NULL OR agent_state_at < ? OR agent_state_at NOT GLOB '`+agentStateAtGlob+`')`,
@@ -119,21 +135,45 @@ func (db *DB) ClearTerminalAgentState(id, workbenchID int64, sessionID string, a
 }
 
 // SetTerminalAgentState records what workbench workbenchID's claude row id is
-// doing, reported by a Claude Code hook of conversation sessionID at at. It
-// writes only when the row still runs that conversation (a nested `claude -p`
-// that inherited the row's env has another id), the state changes (a repeat
-// keeps the transition time), at is later than the stored time (a late async
-// hook never overwrites a newer state) and, with onlyFrom set, the stored
-// state is onlyFrom. One guarded UPDATE, no transaction; false when a guard
-// held it back.
-func (db *DB) SetTerminalAgentState(id, workbenchID int64, sessionID, state string, at time.Time, onlyFrom string) (bool, error) {
+// doing, reported by a Claude Code hook of conversation sessionID at at.
+// failure is a StopFailure's error (nil for every other event): the write
+// stores agent_failed_at = at and its Error, or clears both. prompt says the
+// event is a UserPromptSubmit. A write that changes the state into `working`
+// clears finished_at (finish_summary is kept): a new prompt, or a tool run
+// out of waiting or approval — a turn the agent started itself. A `working`
+// over a stored `working` clears it only for a prompt, never for a tool run:
+// that is the finish_session turn itself. It writes only when the row still
+// runs that conversation (a nested `claude -p` that inherited the row's env
+// has another id), the state changes, a failure lands on a plain state or on
+// one with another error, or a prompt's `working` lands on a finished row (a
+// repeat keeps the transition time; a plain `waiting` — idle_prompt, the
+// Stop hook — over a failed one keeps the error until a real state change),
+// at is later than the stored time (a late async hook never overwrites a
+// newer state) and, with onlyFrom set, the stored state is onlyFrom. One
+// guarded UPDATE, no transaction; false when a guard held it back.
+func (db *DB) SetTerminalAgentState(id, workbenchID int64, sessionID, state string, at time.Time, onlyFrom string,
+	failure *AgentFailure, prompt bool) (bool, error) {
 	stamp := at.UTC().Format(agentStateAtLayout)
-	res, err := db.Exec(`UPDATE terminal_sessions SET agent_state = ?, agent_state_at = ?
+	var failedAt sql.NullString
+	agentError, failed, fromPrompt := "", 0, 0
+	if prompt {
+		fromPrompt = 1
+	}
+	if failure != nil {
+		failedAt = sql.NullString{String: stamp, Valid: true}
+		agentError, failed = failure.Error, 1
+	}
+	res, err := db.Exec(`UPDATE terminal_sessions SET agent_state = ?, agent_state_at = ?,
+		agent_failed_at = ?, agent_error = ?,
+		finished_at = CASE WHEN ? = 'working' AND (agent_state IS NOT 'working' OR ? = 1)
+		                   THEN NULL ELSE finished_at END
 		WHERE id = ? AND project_id = ? AND kind = 'claude' AND claude_session_id = ?
-		  AND agent_state IS NOT ?
+		  AND (agent_state IS NOT ? OR (? = 1 AND (agent_failed_at IS NULL OR agent_error IS NOT ?))
+		       OR (? = 'working' AND ? = 1 AND finished_at IS NOT NULL))
 		  AND (agent_state_at IS NULL OR agent_state_at < ? OR agent_state_at NOT GLOB '`+agentStateAtGlob+`')
 		  AND (? = '' OR agent_state = ?)`,
-		state, stamp, id, workbenchID, sessionID, state, stamp, onlyFrom, onlyFrom)
+		state, stamp, failedAt, agentError, state, fromPrompt, id, workbenchID, sessionID, state, failed, agentError,
+		state, fromPrompt, stamp, onlyFrom, onlyFrom)
 	if err != nil {
 		return false, fmt.Errorf("setting terminal session %d agent state: %w", id, err)
 	}

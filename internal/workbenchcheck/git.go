@@ -120,6 +120,56 @@ func newGitState(ctx context.Context, o Options) *gitState {
 
 func (g *gitState) ready() bool { return len(g.bases) > 0 }
 
+// Repository is a folder's git state read the way Check reads it, for
+// branch merge detection outside the check (the session report's PR cache).
+type Repository struct{ g *gitState }
+
+// OpenRepository probes folder's repository like Check does: no git process
+// outside a repository, git located through gitbin. run nil = ExecRunner.
+func OpenRepository(ctx context.Context, folder string, run Runner) *Repository {
+	if run == nil {
+		run = ExecRunner
+	}
+	return &Repository{g: newGitState(ctx, Options{Folder: folder, Run: run})}
+}
+
+// GitMissing reports that the folder is inside a repository but no git
+// binary exists outside the /usr/bin/git shim (gh, which runs git from PATH,
+// must not run either).
+func (r *Repository) GitMissing() bool { return r.g.noGit }
+
+// Notes say why branch checks are skipped, if they are.
+func (r *Repository) Notes() []string { return r.g.notes }
+
+// BranchMerge is a branch's merge state against the default branch.
+type BranchMerge int
+
+const (
+	BranchUnknown   BranchMerge = iota // a git call failed, no default branch, or the branch is the default one
+	BranchMissing                      // exists neither locally nor on origin
+	BranchMerged                       // its work is in the default branch (merge, fast-forward, cherry, squash)
+	BranchNotMerged                    // every base says its work is not in it
+)
+
+// BranchMerge runs the check's merge detection on branch.
+func (r *Repository) BranchMerge(ctx context.Context, branch string) BranchMerge {
+	if branch == "" || branch == r.g.defaultName {
+		return BranchUnknown
+	}
+	tip := r.g.branchState(ctx, branch)
+	switch {
+	case tip.state == tipMissing:
+		return BranchMissing
+	case tip.state != tipFound:
+		return BranchUnknown
+	case tip.merge == merged:
+		return BranchMerged
+	case tip.merge == notMerged:
+		return BranchNotMerged
+	}
+	return BranchUnknown
+}
+
 func (g *gitState) baseName() string { return g.baseLabel }
 
 func (g *gitState) git(ctx context.Context, args ...string) (string, int, error) {

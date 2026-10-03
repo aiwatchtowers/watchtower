@@ -2,7 +2,10 @@ package devpack
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -12,20 +15,27 @@ import (
 // marker line and a PreToolUse command hook denying AskUserQuestion, both
 // installed, recognised and removed under the PROJ-02/04 rules.
 
-// goldenAskGuardPrompt7 is the spec's §6.2 text for workbench 7, pinned
-// verbatim: only the marker's <N> is substituted.
+// goldenAskGuardPrompt7 is the v2 text of spec 2026-10-03-workbench-session-report
+// Part 5 for workbench 7, pinned verbatim: only the marker's <N> is
+// substituted. The v1 text it replaced is testdata/askguard_prompt_v1.md.
 const goldenAskGuardPrompt7 = `[watchtower-workbench ask-guard 7]
-You check whether a coding agent left a request to its owner as plain text instead of filing it.
+You check a coding agent's final message of a turn.
 Input (JSON): $ARGUMENTS
-Return {"ok": true} when ANY of these holds:
-- stop_hook_active is true;
-- last_assistant_message says it filed an ask, for example by naming "ask #<number>";
-- last_assistant_message does not ask the owner to do, decide, check, review or answer anything.
-Return {"ok": false, "reason": "You asked the owner in plain text. File it with ask_owner (kind question, check or review), name it as 'ask #<id>' in your text, then stop."}
-only when last_assistant_message clearly waits on the owner: a question to them, a decision
-they must make, something they must try or check by hand, or a document they must read.
-Rhetorical questions, questions the agent answers itself, summaries of finished work and
-offers such as "say if you want X" are NOT requests. When unsure, return {"ok": true}.`
+Return {"ok": true} when stop_hook_active is true.
+Otherwise check two things, in this order, and return the FIRST failure:
+1. Request left as text. If last_assistant_message clearly waits on the owner (a question to them, a decision they must
+   make, something they must try or check by hand, a document they must read) and does not say it filed an ask (for
+   example by naming "ask #<number>"), return {"ok": false, "reason": "You asked the owner in plain text. File it with
+   ask_owner (kind question, check or review), name it as 'ask #<id>' in your text, then stop."}
+   Rhetorical questions, questions the agent answers itself, summaries of finished work and offers such as "say if you
+   want X" are NOT requests.
+2. Finished without saying so. If last_assistant_message reports that the work of this session is complete (every task
+   done, a PR opened or merged, or "nothing left for me to do here") and does not say it called finish_session (for
+   example "session finished"), return {"ok": false, "reason": "Your work in this session looks complete. Call
+   finish_session with a 2-3 line summary for the owner (what was done, the PRs, what is left on them), say 'session
+   finished', then stop."}
+   A progress report with work still left, a pause for an answer, or a partial result is NOT complete.
+Otherwise return {"ok": true}. When unsure, return {"ok": true}.`
 
 // promptHooks returns every hook object of type prompt across groups.
 func promptHooks(groups []any) []map[string]any {
@@ -51,14 +61,14 @@ func TestAskGuardPrompt_IsTheGoldenWithTheMarkerSubstituted(t *testing.T) {
 	}
 }
 
-// PROJ-13: the Stop prompt hook passes a continued turn and a turn that
-// filed an ask, so it can never trap the agent.
+// PROJ-13: the Stop prompt hook passes a continued turn, a turn that filed
+// an ask and a finished session that says so, so it can never trap the agent.
 func TestProj13_AskGuardPromptPassesAContinuedTurnAndAFiledAsk(t *testing.T) {
 	p := askGuardPrompt(7)
 	for _, clause := range []string{
-		`Return {"ok": true} when ANY of these holds:`,
-		"- stop_hook_active is true;",
-		`- last_assistant_message says it filed an ask, for example by naming "ask #<number>";`,
+		`Return {"ok": true} when stop_hook_active is true.`,
+		`does not say it filed an ask (for` + "\n" + `   example by naming "ask #<number>")`,
+		`does not say it called finish_session (for` + "\n" + `   example "session finished")`,
 		`When unsure, return {"ok": true}.`,
 	} {
 		if !strings.Contains(p, clause) {
@@ -298,5 +308,78 @@ func assertAskToolBlockMovedOut(t *testing.T, pre []any, cmd string) {
 	}
 	if g := pre[1].(map[string]any); g["matcher"] != "AskUserQuestion" || countCommand(pre[1:], cmd) != 1 {
 		t.Fatalf("ours must move to its own AskUserQuestion group, got %#v", g)
+	}
+}
+
+// askGuardPromptV1 is the v1 prompt (the owner-asks text) for workbenchID:
+// the upgrade fixture testdata/askguard_prompt_v1.md with its marker
+// substituted, as an install from before the v2 text wrote it.
+func askGuardPromptV1(t *testing.T, workbenchID int64) string {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("testdata", "askguard_prompt_v1.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, ok := strings.CutPrefix(strings.TrimSuffix(string(raw), "\n"), askGuardMarkerTemplate)
+	if !ok {
+		t.Fatalf("the v1 fixture must open with %s", askGuardMarkerTemplate)
+	}
+	return askGuardMarker(workbenchID) + body
+}
+
+// stopPromptHook returns the prompt text of the Stop prompt hook whose
+// first line is marker, "" when there is none.
+func stopPromptHook(t *testing.T, folder, marker string) string {
+	t.Helper()
+	for _, p := range promptHooks(eventGroups(t, decodeSettings(t, folder), "Stop")) {
+		if text, _ := p["prompt"].(string); opensWithLine(text, marker) {
+			return text
+		}
+	}
+	return ""
+}
+
+// PROJ-13 (with PROJ-04): a resync sets our prompt to v2 whether it holds
+// the v1 text byte-exact or an owner's edit of it; another workbench's v1
+// prompt is left as it is; a second resync changes nothing.
+func TestProj13_V1PromptIsUpgradedToV2(t *testing.T) {
+	if askGuardPromptV1(t, 7) == askGuardPrompt(7) {
+		t.Fatal("the shipped prompt must differ from v1, or there is nothing to upgrade")
+	}
+	for _, tc := range []struct{ name, ours string }{
+		{"v1", askGuardPromptV1(t, 7)},
+		{"edited v1", askGuardPromptV1(t, 7) + "\nAlso check the tests ran."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			folder := fakeRepo(t)
+			other := askGuardPromptV1(t, 8)
+			settings := map[string]any{"hooks": map[string]any{"Stop": []any{
+				map[string]any{"hooks": []any{map[string]any{"type": "prompt", "prompt": tc.ours, "timeout": 30}}},
+				map[string]any{"hooks": []any{map[string]any{"type": "prompt", "prompt": other, "timeout": 30}}},
+			}}}
+			raw, err := json.MarshalIndent(settings, "", "  ")
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeTestFile(t, settingsFile(folder), string(raw))
+			o := workbenchOpts(folder, newFakeClaude())
+			if _, err := InstallWorkbench(context.Background(), o); err != nil {
+				t.Fatalf("install: %v", err)
+			}
+			if got := stopPromptHook(t, folder, askGuardMarker(7)); got != goldenAskGuardPrompt7 {
+				t.Fatalf("our prompt must be set to v2, got %q", got)
+			}
+			if got := stopPromptHook(t, folder, askGuardMarker(8)); got != other {
+				t.Fatalf("another workbench's prompt must stay as it was, got %q", got)
+			}
+			once := readTestFile(t, settingsFile(folder))
+			rep, err := InstallWorkbench(context.Background(), o)
+			if err != nil || rep.HookChanged {
+				t.Fatalf("a second resync must change no hook: %+v err=%v", rep, err)
+			}
+			if twice := readTestFile(t, settingsFile(folder)); twice != once {
+				t.Fatalf("a second resync rewrote the settings:\n%s\nwas\n%s", twice, once)
+			}
+		})
 	}
 }

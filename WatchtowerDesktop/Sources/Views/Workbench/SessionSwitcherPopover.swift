@@ -86,7 +86,7 @@ struct SessionSwitcherPopover: View {
     }
 }
 
-/// One session: its dot, title, `#id` badge, state caption and ⌘N; the
+/// One session: its dot, title, `#id` badge, state label and ⌘N; the
 /// current one highlighted.
 struct SessionSwitcherRow: View {
     let row: SessionSwitcherPresentation.Row
@@ -98,6 +98,8 @@ struct SessionSwitcherRow: View {
             HStack(spacing: 6) {
                 SessionLiveDot(state: row.state)
                     .frame(width: 12)
+                    // The label reads the state out.
+                    .accessibilityHidden(row.caption != nil)
                 Text(row.session.title)
                     .font(.callout.weight(isCurrent ? .semibold : .regular))
                     .lineLimit(1)
@@ -107,13 +109,7 @@ struct SessionSwitcherRow: View {
                 }
                 Spacer(minLength: 4)
                 if let caption = row.caption {
-                    // A live caption repeats the dot's label for VoiceOver.
-                    Text(caption)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .fixedSize()
-                        .accessibilityHidden(row.state.isLive)
+                    SessionStateLabel(state: row.state, caption: caption).fixedSize()
                 }
                 if let shortcut = row.shortcut {
                     Text("⌘\(shortcut)").font(.caption2).foregroundStyle(.secondary).fixedSize()

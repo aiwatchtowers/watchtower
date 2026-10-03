@@ -49,7 +49,7 @@ extension WorkbenchesViewModel {
         standaloneSessions.first { $0.id == selectedStandaloneID }
     }
 
-    /// The live sessions' agent statuses, for `SessionSwitcherPresentation.rows`.
+    /// The sessions' agent statuses, for `SessionSwitcherPresentation.rows`.
     var sessionStatuses: [Int64: SessionAgentStatus] {
         agentStates?.statuses ?? [:]
     }
@@ -68,6 +68,13 @@ extension WorkbenchesViewModel {
         SessionSwitcherPresentation.state(
             of: session.id, liveIDs: terminalCenter?.liveIDs ?? [], statuses: sessionStatuses
         )
+    }
+
+    /// Whether a live session's agent sits at its prompt after a turn of
+    /// this run (`SessionAgentStatus.isAtPrompt`).
+    func isSessionAtPrompt(_ session: TerminalSession) -> Bool {
+        guard terminalCenter?.liveIDs.contains(session.id) == true else { return false }
+        return sessionStatuses[session.id]?.isAtPrompt == true
     }
 
     /// A session pane's row; nil once the row is gone (the next load drops
@@ -211,8 +218,8 @@ extension WorkbenchesViewModel {
         setLayout(updated, projectID: projectID)
     }
 
-    /// The page header's Terminal / Board / Files buttons. Board and Files
-    /// never hide a terminal (`WorkspaceLayout.showWorkbenchView`).
+    /// The page header's Terminal / Session / Board / Files buttons. Session,
+    /// Board and Files never hide a terminal (`WorkspaceLayout.showWorkbenchView`).
     /// Terminal keeps the view on screen beside it in a split: a session
     /// already in a slot (or the live one) comes back as is; otherwise the
     /// most recent open session is resumed, or a new one starts.
@@ -224,6 +231,22 @@ extension WorkbenchesViewModel {
             updated.showWorkbenchView(.board)
         case .files:
             updated.showWorkbenchView(.files)
+        case .report:
+            // The session on screen, else the active one, else the first
+            // listed claude session; with none there is nothing to report on.
+            let id = updated.sessionIDs.first ?? activeSessionID(projectID: project.id)
+                ?? orderedSessions(projectID: project.id).first { $0.kind == .claude }?.id
+            guard let id else { return }
+            // Beside its own session's terminal (board #357): a split showing
+            // that terminal swaps its other pane; otherwise the page becomes
+            // the terminal and its report side by side, so a panel click
+            // re-points the report instead of replacing it. Nothing starts.
+            if updated.isSplit, updated.visiblePanes.contains(.session(id)) {
+                updated.showWorkbenchView(.sessionReport(id))
+            } else {
+                updated.primary = .session(id)
+                updated.split(with: .sessionReport(id))
+            }
         case .terminal:
             let kept = updated.visiblePanes.first ?? updated.primary
             // `openMostRecentSession` takes its own ticket — past its

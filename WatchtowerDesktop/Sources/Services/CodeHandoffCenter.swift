@@ -26,7 +26,7 @@ struct CodeHandoffSessionChoice: Identifiable, Equatable {
 
     var id: Int64 { session.id }
     /// A Return would answer the permission prompt it shows.
-    var isWaitingForApproval: Bool { state == .needsApproval }
+    var isWaitingForApproval: Bool { state.kind == .needsApproval }
 }
 
 /// "Hand to Claude Code" (⌥⌘↩, spec 2026-10-02 §9.5), on `AppState`: a code
@@ -146,7 +146,7 @@ final class CodeHandoffCenter {
             // Cancel during the pause stops it) — ruling R52.
             let session = choice.session
             let canSubmit = { [weak self] in
-                self?.requests[workbenchID]?.id == request.id && vm.sessionState(session) == .waitingForOwner
+                self?.requests[workbenchID]?.id == request.id && vm.isSessionAtPrompt(session)
             }
             guard let center = terminalCenter,
                   await center.submitPrompt(request.text, sessionID: id, refresh: { await vm.agentStates?.poll() },
