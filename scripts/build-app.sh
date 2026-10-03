@@ -238,6 +238,12 @@ echo "    Bundled default.metallib ($(du -h "$MLX_BUNDLE/default.metallib" | cut
 cp "$STAGE_DIR/watchtower" "$APP_BUNDLE/Contents/MacOS/watchtower"
 cp "$OCR_HELPER" "$APP_BUNDLE/Contents/MacOS/watchtower-ocr"
 
+# The licence notices of the third-party code compiled into the CLI (the
+# tree-sitter runtime and the code index's grammars): MIT, Apache-2.0 and
+# MPL-2.0 need them to reach whoever receives the binary. Guarded by
+# scripts/tests/test-build-app-notices.sh.
+cp "$PROJECT_ROOT/THIRD_PARTY_NOTICES.md" "$APP_BUNDLE/Contents/Resources/THIRD_PARTY_NOTICES.md"
+
 # Create Info.plist
 cat > "$APP_BUNDLE/Contents/Info.plist" << PLIST
 <?xml version="1.0" encoding="UTF-8"?>
