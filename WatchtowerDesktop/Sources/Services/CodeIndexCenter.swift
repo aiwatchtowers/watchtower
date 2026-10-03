@@ -22,6 +22,9 @@ final class CodeIndexCenter {
     private let resolveExecutable: () -> String?
     private let environment: () -> [String: String]
     private let debounce: Duration
+    /// The debounce never holds a change longer than this: a folder written
+    /// continuously (a log, test output) would otherwise reset it forever.
+    private let debounceMaxWait: Duration
     private let idleTTL: TimeInterval
     private let clock: () -> Date
     private let hiddenNames: Set<String>
@@ -32,6 +35,7 @@ final class CodeIndexCenter {
         resolveExecutable: @escaping () -> String? = Constants.findCLIPath,
         environment: @escaping () -> [String: String] = Constants.resolvedEnvironment,
         debounce: Duration = .milliseconds(300),
+        debounceMaxWait: Duration = .seconds(1),
         idleTTL: TimeInterval = 300,
         clock: @escaping () -> Date = Date.init,
         hiddenNames: Set<String> = CodeFileTree.hiddenNames,
@@ -40,6 +44,7 @@ final class CodeIndexCenter {
         self.resolveExecutable = resolveExecutable
         self.environment = environment
         self.debounce = debounce
+        self.debounceMaxWait = debounceMaxWait
         self.idleTTL = idleTTL
         self.clock = clock
         self.hiddenNames = hiddenNames
@@ -83,20 +88,28 @@ final class CodeIndexCenter {
     }
 
     /// What FSEvents saw in the workbench's folder (from `CodeFilesCenter`).
-    /// Ignored for a workbench with no index.
+    /// Ignored for a workbench with no index. Paths wait `debounce` after
+    /// the last batch, but never more than `debounceMaxWait` after the first
+    /// one; a rescan's full run covers whatever was waiting.
     func applyWatcherBatch(_ batch: FolderWatcher.Batch, workbenchID: Int64) {
         guard let session = sessions[workbenchID] else { return }
         if batch.mustRescan {
+            session.debounceTask?.cancel()
+            session.debounceTask = nil
+            session.debouncing = []
             session.fullPending = true
             startNextRun(session)
+            return
         }
         let paths = batch.paths.filter { !$0.isEmpty }
         guard !paths.isEmpty else { return }
+        let now = ContinuousClock.now
+        if session.debouncing.isEmpty { session.debounceDeadline = now + debounceMaxWait }
         session.debouncing.formUnion(paths)
         session.debounceTask?.cancel()
-        let debounce = debounce
+        let wait = max(.zero, min(debounce, session.debounceDeadline - now))
         session.debounceTask = Task { @MainActor [weak self, weak session] in
-            try? await Task.sleep(for: debounce)
+            try? await Task.sleep(for: wait)
             guard !Task.isCancelled, let self, let session else { return }
             session.queued.formUnion(session.debouncing)
             session.debouncing = []
@@ -255,6 +268,8 @@ private final class CodeIndexSession {
     /// Changed paths inside the debounce window.
     var debouncing: Set<String> = []
     var debounceTask: Task<Void, Never>?
+    /// When the waiting paths must go out at the latest.
+    var debounceDeadline = ContinuousClock.now
     private var runID = 0
 
     init(folder: URL, index: WorkbenchCodeIndex) {

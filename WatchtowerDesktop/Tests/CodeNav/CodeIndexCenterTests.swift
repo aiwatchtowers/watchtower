@@ -123,6 +123,37 @@ final class CodeIndexCenterTests: XCTestCase {
         XCTAssertEqual(stub.fullRuns, 1)
     }
 
+    /// A folder written every 200 ms (under the 300 ms debounce) still gets
+    /// indexed: the wait is capped at 1 s after the first change.
+    func testContinuousWritesDoNotStarveTheDebounce() async throws {
+        let center = makeCenter()
+        center.markShown(workbenchID: 7, folder: folder)
+        let index = center.index(for: 7)
+        let ready = await eventually { index.state == .ready }
+        XCTAssertTrue(ready)
+        let paths = (0 ..< 10).map { "log\($0).swift" }
+        for path in paths {
+            center.applyWatcherBatch(FolderWatcher.Batch(paths: [path]), workbenchID: 7)
+            try await Task.sleep(for: .milliseconds(200))
+        }
+        XCTAssertFalse(stub.requests.isEmpty, "a request went out while the writes went on")
+        let all = await eventually { Set(self.stub.requests.joined()) == Set(paths) }
+        XCTAssertTrue(all, "requests: \(stub.requests)")
+    }
+
+    func testARescanDropsWhatWasDebouncing() async throws {
+        let center = makeCenter()
+        center.markShown(workbenchID: 7, folder: folder)
+        let ready = await eventually { center.index(for: 7).state == .ready }
+        XCTAssertTrue(ready)
+        center.applyWatcherBatch(FolderWatcher.Batch(paths: ["a.swift"]), workbenchID: 7)
+        center.applyWatcherBatch(FolderWatcher.Batch(mustRescan: true), workbenchID: 7)
+        let again = await eventually { self.stub.fullRuns == 2 && center.index(for: 7).state == .ready }
+        XCTAssertTrue(again)
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(stub.requests, [], "the full run covered the debounced path")
+    }
+
     func testABatchDuringTheFullRunWaitsForIt() async {
         let center = makeCenter(["STUB_FULL_DELAY": "0.8"])
         center.markShown(workbenchID: 7, folder: folder)
