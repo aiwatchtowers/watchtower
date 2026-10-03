@@ -73,11 +73,13 @@ type sessionStateInput struct {
 	HookEventName    string `json:"hook_event_name"`
 	SessionID        string `json:"session_id"`
 	NotificationType string `json:"notification_type"`
+	// AgentID is set when the hook fired inside a subagent.
+	AgentID string `json:"agent_id"`
 }
 
 // agentStateFor maps a hook event to the state it records. onlyFrom, when
-// set, is the stored state the write requires (no event sets it today). A
-// PostToolUse means a tool just ran: it clears "needs approval" after a
+// set, is the stored state the write requires (a subagent's PostToolUse,
+// recordHookAgentState). A main-thread PostToolUse means a tool just ran: it clears "needs approval" after a
 // granted permission and "waiting" when a turn started without a prompt (a
 // teammate or background-task message, a wakeup fires no UserPromptSubmit);
 // one stamped before the stop's "waiting" is an older event and writes
@@ -146,6 +148,11 @@ func recordHookAgentState(stdin io.Reader, rowID int64, rawWorkbenchID string) e
 	state, onlyFrom, ok := agentStateFor(in.HookEventName, in.NotificationType)
 	if !ok || in.SessionID == "" {
 		return nil
+	}
+	if in.AgentID != "" && in.HookEventName == "PostToolUse" {
+		// A background subagent works on after the main turn stopped to wait
+		// for the owner: its tool results clear only a granted permission.
+		onlyFrom = agentStateApproval
 	}
 	// Not under a deadline: db.Open may be applying a migration, which must
 	// never be cut off part-way (the Stop hook precedent); the hook is async,

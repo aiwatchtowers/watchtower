@@ -180,6 +180,29 @@ func TestSessionState_ToolResultEndsWaitingOfASelfStartedTurn(t *testing.T) {
 	assert.Equal(t, "working", storedAgentState(t, database, row), "the self-started turn's first tool result")
 }
 
+// A background subagent's tool result never ends the main turn's "waiting"
+// (the agent asked the owner and stopped); it still clears a granted
+// permission.
+func TestSessionState_SubagentToolResultClearsOnlyApproval(t *testing.T) {
+	database, pid, row := briefSessionFixture(t)
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	stepClock(t)
+	subagent := `{"session_id":"` + briefLaunchID + `","hook_event_name":"PostToolUse","agent_id":"a1b2c3","agent_type":"general-purpose"}`
+
+	for _, step := range []struct {
+		payload, want string
+	}{
+		{statePayload("Notification", briefLaunchID, "idle_prompt"), "waiting"},
+		{subagent, "waiting"},
+		{statePayload("Notification", briefLaunchID, "permission_prompt"), "approval"},
+		{subagent, "working"},
+	} {
+		_, _, err := runSessionState(t, pid, strings.NewReader(step.payload))
+		require.NoError(t, err)
+		assert.Equal(t, step.want, storedAgentState(t, database, row), "after %s", step.payload)
+	}
+}
+
 // An external terminal has no row: the hook neither reads stdin nor opens
 // the database (a broken config would print a line if it did).
 func TestSessionState_NoEnvReadsNothing(t *testing.T) {
