@@ -91,7 +91,7 @@ func (jiraSource) Build(ctx context.Context, q Queryer, key string) (*Doc, error
 	}
 	// The first section is always the summary + status/assignee line, even
 	// when description and comments are both empty (a common real-world
-	// shape) — otherwise the issue renders zero sections and writeDoc drops
+	// shape) — otherwise the issue renders zero sections and prepareDoc drops
 	// it as if it didn't exist.
 	var infoParts []string
 	if status != "" {

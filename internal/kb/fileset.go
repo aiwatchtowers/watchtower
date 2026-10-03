@@ -113,8 +113,9 @@ func indexFileSet(ctx context.Context, d *db.DB, set FileSet, prune bool) (docs,
 		keys = append(keys, key)
 		rendered = append(rendered, renderFile(set.Source, kind, set.Container, set.Root, rel)) // before the write tx opens
 	}
+	prepared := prepareBatch(rendered)
 	err = withTx(ctx, d, func(tx *sql.Tx) error {
-		written, deleted, err := storeBatch(ctx, tx, keys, rendered)
+		written, deleted, err := storeBatch(ctx, tx, keys, prepared)
 		if err != nil {
 			return err
 		}

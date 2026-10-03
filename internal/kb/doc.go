@@ -61,7 +61,12 @@ func BuildChunks(sections []Section) []Chunk {
 			cut := splitPoint(text)
 			cur, curAnchor = text[:cut], s.Anchor
 			flush()
-			text = []rune(strings.TrimLeftFunc(string(text[cut:]), unicode.IsSpace))
+			// Trim the rest in place: converting it back to a string on
+			// every cut made a long section quadratic (seconds for 2 MiB).
+			text = text[cut:]
+			for len(text) > 0 && unicode.IsSpace(text[0]) {
+				text = text[1:]
+			}
 		}
 		if len(text) == 0 {
 			continue

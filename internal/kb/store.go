@@ -18,27 +18,48 @@ type Queryer interface {
 
 const isoLayout = "2006-01-02T15:04:05Z"
 
-// writeDoc writes one rendered document behind the content-hash gate.
-// It normalizes d's Title/Meta/Sections text in place before hashing/storing
-// it — callers should not reuse d's text fields afterward without expecting
-// the normalized form. A document whose sections are all blank but whose
-// title is not (a summary-only issue, a transcript with no text) is indexed
-// as one section holding the title: only a nil Build means "gone". A
-// document with neither is deleted.
-func writeDoc(ctx context.Context, q Queryer, d *Doc) (bool, error) {
+// preparedDoc is a rendered document ready to store: its text normalized,
+// its chunks built and their hash taken. That is the CPU work of indexing a
+// document (seconds for a 2 MiB file), so it is done before the write
+// transaction opens — the transaction only compares the hash and writes.
+type preparedDoc struct {
+	doc    *Doc
+	chunks []Chunk // none = nothing to index: the document is deleted
+	hash   string
+}
+
+// buildChunks is BuildChunks; a test swaps it to see where chunking runs.
+var buildChunks = BuildChunks
+
+// prepareDoc normalizes d's Title/Meta/Sections text in place and chunks
+// and hashes it — callers should not reuse d's text fields afterward
+// without expecting the normalized form. A document whose sections are all
+// blank but whose title is not (a summary-only issue, a transcript with no
+// text) is indexed as one section holding the title.
+func prepareDoc(d *Doc) *preparedDoc {
 	d.Title, d.Meta = Normalize(d.Title), Normalize(d.Meta)
 	for i := range d.Sections {
 		d.Sections[i].Text = Normalize(d.Sections[i].Text)
 	}
-	chunks := BuildChunks(d.Sections)
+	chunks := buildChunks(d.Sections)
 	if len(chunks) == 0 {
-		chunks = BuildChunks([]Section{{Text: d.Title}})
+		chunks = buildChunks([]Section{{Text: d.Title}})
 	}
+	p := &preparedDoc{doc: d, chunks: chunks}
+	if len(chunks) > 0 {
+		p.hash = contentHash(d, chunks)
+	}
+	return p
+}
+
+// storeDoc writes one prepared document behind the content-hash gate; a
+// document with no chunks (neither sections nor title) is deleted.
+func storeDoc(ctx context.Context, q Queryer, p *preparedDoc) (bool, error) {
+	d, chunks, hash := p.doc, p.chunks, p.hash
 	if len(chunks) == 0 {
 		_, err := deleteDoc(ctx, q, d.ID)
 		return false, err
 	}
-	hash := contentHash(d, chunks)
 	var old string
 	err := q.QueryRowContext(ctx, `SELECT content_hash FROM kb_documents WHERE id = ?`, d.ID).Scan(&old)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
