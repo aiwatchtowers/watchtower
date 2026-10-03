@@ -187,6 +187,7 @@ final class UpdateService {
             }
             state = .idle
             availableVersion = nil
+            availableNotes = ""
         case let .found(version, notes, downloadURL, gated):
             if case .available(let known, _, _) = previous, !Self.isNewer(version, than: known) {
                 state = previous
@@ -194,7 +195,7 @@ final class UpdateService {
             }
             gatedDownload = gated
             state = .available(version: version, notes: notes, downloadURL: downloadURL)
-            await noteAvailable(version: version)
+            await noteAvailable(version: version, notes: notes, background: background)
         case .failed(let message):
             NSLog("UpdateService: %@ update check failed: %@", background ? "background" : "manual", message)
             if case .available = previous {
@@ -285,6 +286,7 @@ final class UpdateService {
     nonisolated static let checkInterval: Duration = .seconds(6 * 60 * 60)
 
     private static let lastAnnouncedVersionKey = "lastAnnouncedUpdateVersion"
+    private static let lastPresentedVersionKey = "lastPresentedUpdateVersion"
 
     /// Where the announced-version memo lives. Instance property so tests can
     /// inject an isolated suite.
@@ -295,9 +297,18 @@ final class UpdateService {
     /// instead of posting.
     var announce: (String) async -> Bool = { await NotificationService.shared.sendUpdateAvailableNotification(version: $0) }
 
+    /// Opens the "update available" window (bringing the app out of the
+    /// tray) and reports whether it did. Nil until a scene wires it — a check
+    /// that lands before then presents nothing and retries on the next one.
+    var presentUpdateWindow: (() -> Bool)?
+
     /// Version of the update the last check found; nil when none. Survives
     /// `.downloading`/`.readyToInstall`, which carry no version of their own.
     private(set) var availableVersion: String?
+
+    /// Release notes (markdown) of `availableVersion`; empty when the channel
+    /// published none. Survives the download/install states like the version.
+    private(set) var availableNotes = ""
 
     /// The periodic-check loop; nil once it has ended. Readable so tests can
     /// await it.
@@ -344,15 +355,31 @@ final class UpdateService {
         version != lastAnnounced
     }
 
-    /// Record a found update and announce it once per version. The memo is
-    /// written only when the push was accepted, so a failed post is retried
-    /// on the next check instead of being marked as shown.
-    func noteAvailable(version: String) async {
+    /// Record a found update, present its window once per version and
+    /// announce it once per version. Each memo is written only when its
+    /// surface was actually shown, so a refused push or a window that could
+    /// not open yet is retried on the next check instead of being marked as
+    /// shown. A manual check only marks the window as seen: the user is
+    /// already looking at the update in Settings.
+    func noteAvailable(version: String, notes: String = "", background: Bool = true) async {
         availableVersion = version
+        availableNotes = notes
+        presentOncePerVersion(version, background: background)
         let last = defaults.string(forKey: Self.lastAnnouncedVersionKey)
         guard Self.shouldAnnounce(version: version, lastAnnounced: last) else { return }
         guard await announce(version) else { return }
         defaults.set(version, forKey: Self.lastAnnouncedVersionKey)
+    }
+
+    /// Never pops a window over a running capture or transcription — that
+    /// version is presented by the first check after it ends.
+    private func presentOncePerVersion(_ version: String, background: Bool) {
+        let last = defaults.string(forKey: Self.lastPresentedVersionKey)
+        guard Self.shouldAnnounce(version: version, lastAnnounced: last) else { return }
+        if background {
+            guard let present = presentUpdateWindow, !isBusy(), present() else { return }
+        }
+        defaults.set(version, forKey: Self.lastPresentedVersionKey)
     }
 
     // MARK: - Download

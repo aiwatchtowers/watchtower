@@ -919,6 +919,84 @@ struct UpdateServicePeriodicTests {
         #expect(attempts == ["v1.1.0", "v1.1.0"])
     }
 
+    /// A service on `defaults` that records window presentations; pushes
+    /// are accepted silently.
+    private func presentingService(
+        _ defaults: UserDefaults, busy: @escaping () -> Bool = { false }, presented: @escaping (String) -> Void
+    ) -> UpdateService {
+        let svc = UpdateService()
+        svc.defaults = defaults
+        svc.announce = { _ in true }
+        svc.isBusy = busy
+        svc.presentUpdateWindow = { [weak svc] in
+            presented(svc?.availableVersion ?? "")
+            return true
+        }
+        return svc
+    }
+
+    @Test("a background check presents the update window once per version, across relaunches")
+    func windowPresentedOncePerVersion() async throws {
+        let (defaults, suite) = try isolatedDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var presented: [String] = []
+        let first = presentingService(defaults) { presented.append($0) }
+        await first.noteAvailable(version: "v1.1.0", notes: "## Fixes")
+        await first.noteAvailable(version: "v1.1.0")
+        #expect(first.availableNotes.isEmpty)
+
+        let relaunched = presentingService(defaults) { presented.append($0) }
+        await relaunched.noteAvailable(version: "v1.1.0", notes: "## Fixes")
+        await relaunched.noteAvailable(version: "v1.2.0", notes: "## New")
+        #expect(relaunched.availableNotes == "## New")
+        #expect(presented == ["v1.1.0", "v1.2.0"])
+    }
+
+    @Test("a manual check never pops the window but marks the version as seen")
+    func manualCheckMarksSeen() async throws {
+        let (defaults, suite) = try isolatedDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var presented: [String] = []
+        let svc = presentingService(defaults) { presented.append($0) }
+        await svc.noteAvailable(version: "v1.1.0", background: false)
+        await svc.noteAvailable(version: "v1.1.0", background: true)
+        #expect(presented.isEmpty)
+    }
+
+    @Test("no window over a busy recorder, and none before a scene wires it; both retry on the next check")
+    func busyOrUnwiredRetries() async throws {
+        let (defaults, suite) = try isolatedDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var presented: [String] = []
+        var busy = true
+        let svc = presentingService(defaults, busy: { busy }, presented: { presented.append($0) })
+        let present = svc.presentUpdateWindow
+        svc.presentUpdateWindow = nil
+        busy = false
+        await svc.noteAvailable(version: "v1.1.0")
+        svc.presentUpdateWindow = present
+        busy = true
+        await svc.noteAvailable(version: "v1.1.0")
+        #expect(presented.isEmpty)
+        busy = false
+        await svc.noteAvailable(version: "v1.1.0")
+        #expect(presented == ["v1.1.0"])
+    }
+
+    @Test("the notes follow the offer: kept from a found update, cleared when up to date")
+    func notesFollowTheOffer() async throws {
+        let (defaults, suite) = try isolatedDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let svc = presentingService(defaults) { _ in }
+        let url = URL(fileURLWithPath: "/tmp/new.zip")
+        await svc.applyCheckResult(.found(version: "v2.0.0", notes: "- one", downloadURL: url, gated: nil),
+                                   previous: .idle, background: true)
+        #expect(svc.availableNotes == "- one")
+        await svc.applyCheckResult(.upToDate, previous: .idle, background: true)
+        #expect(svc.availableNotes.isEmpty)
+        #expect(svc.availableVersion == nil)
+    }
+
     @Test("shouldAnnounce compares against the last announced version")
     func shouldAnnounceDecision() {
         #expect(UpdateService.shouldAnnounce(version: "v1.0.0", lastAnnounced: nil))
