@@ -27,7 +27,11 @@ final class JumpBarSegmentsTests: XCTestCase {
     }
 
     private func model(
-        line: Int?, symbols: [CodeSymbol]? = nil, language: String? = "swift", state: CodeIndexState = .ready, file: String? = nil,
+        line: Int?,
+        symbols: [CodeSymbol]? = nil,
+        language: String? = "swift",
+        state: CodeIndexState = .ready,
+        file: String? = nil,
         rulesError: String? = nil
     ) -> JumpBarModel {
         JumpBarModel(
@@ -164,7 +168,9 @@ final class JumpBarSegmentsTests: XCTestCase {
 
     func testAnErrorThatDoesNotStartWithThePathIsShownWhole() {
         let error = "reading " + rulesPath + ": permission denied"
-        XCTAssertEqual(JumpBarRulesNote(error: error).text, "Rules file: reading /home/acme/Library/Application Support/Watchtower/code-languages.yaml:…")
+        XCTAssertEqual(
+            JumpBarRulesNote(error: error).text, "Rules file: reading /home/acme/Library/Application Support/Watchtower/code-languages.yaml:…"
+        )
         XCTAssertEqual(JumpBarRulesNote(error: "tcl: bad").text, "Rules file: tcl: bad")
         XCTAssertEqual(JumpBarRulesNote(error: "/only/a/path").text, "Rules file: /only/a/path", "nothing after the path: kept")
     }

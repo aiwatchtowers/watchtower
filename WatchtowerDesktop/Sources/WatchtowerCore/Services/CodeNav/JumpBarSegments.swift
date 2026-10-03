@@ -72,7 +72,12 @@ package struct JumpBarModel: Equatable, Sendable {
     ///     nil = the file is not in the index.
     ///   - rulesError: why the index ignored the owner's rules file.
     package init(
-        path: String, rootName: String, cursorLine: Int?, symbols: [CodeSymbol], language: String?, state: CodeIndexState,
+        path: String,
+        rootName: String,
+        cursorLine: Int?,
+        symbols: [CodeSymbol],
+        language: String?,
+        state: CodeIndexState,
         rulesError: String? = nil
     ) {
         self.path = path
