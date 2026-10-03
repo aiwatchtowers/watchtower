@@ -376,8 +376,11 @@ final class WorkbenchesViewModel {
     /// An answer's line was typed or copied into `sessionID` (spec 2026-10-03
     /// Part 5): that terminal goes on its workbench's page and the keyboard
     /// into it, so the owner reads the line (or pastes it) and presses
-    /// Return. Keyed by the ask's own workbench, never the selection.
+    /// Return. Keyed by the ask's own workbench, never the selection. Takes
+    /// a switch ticket: a slower session switch still pending must not land
+    /// afterwards and move the keyboard off the line (board #187).
     func showAnsweredSession(_ sessionID: Int64, projectID: Int64) {
+        beginSwitch(projectID: projectID)
         var updated = layout(projectID: projectID)
         updated.show(.session(sessionID))
         setLayout(updated, projectID: projectID)
