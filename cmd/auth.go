@@ -359,7 +359,13 @@ func slackLoginWorkspace(configPath, teamID string) (string, error) {
 		}
 		return "", fmt.Errorf("checking database: %w", err)
 	}
+	return reusableSlackWorkspace(cfg, teamID)
+}
 
+// reusableSlackWorkspace is slackLoginWorkspace's decision for a workspace
+// whose database exists: cfg.ActiveWorkspace when the login into teamID may
+// reuse it, "" to fall back to the team-named workspace.
+func reusableSlackWorkspace(cfg *config.Config, teamID string) (string, error) {
 	database, err := db.Open(cfg.DBPath())
 	if err != nil {
 		return "", fmt.Errorf("opening database: %w", err)
