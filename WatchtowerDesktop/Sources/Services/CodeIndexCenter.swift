@@ -13,6 +13,12 @@ import WatchtowerCore
 /// debounce). Changes that arrive meanwhile wait and merge into the next
 /// request, so results are applied in the order the runs were made.
 ///
+/// The owner's rules file (`code-languages.yaml`, spec §6.5) is read once
+/// per CLI process, so a change to it (500 ms debounce) kills every run in
+/// flight and every `--serve` child — the next update starts a fresh one —
+/// and runs a full index for the workbenches on screen; a hidden one gets
+/// its full run when it is shown again.
+///
 /// Not observable itself: views observe the `WorkbenchCodeIndex` they get,
 /// and `index(for:)` may create one while a view body runs.
 @MainActor
@@ -30,6 +36,17 @@ final class CodeIndexCenter {
     private let hiddenNames: Set<String>
     /// A changed folder holding more files than this is reindexed in full.
     private let expansionCap: Int
+    /// The rules file watched; passed to the CLI as `--rules` only when
+    /// pinned (tests), since the CLI's default is `defaultRulesFile`.
+    private let rulesFile: URL
+    private let pinsRulesFile: Bool
+    private let rulesDebounce: Duration
+    private var rulesWatcher: CodeRulesFileWatcher?
+    private var rulesDebounceTask: Task<Void, Never>?
+
+    /// Where `watchtower code index` reads the rules file from by default.
+    static let defaultRulesFile = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support/Watchtower/code-languages.yaml")
 
     init(
         resolveExecutable: @escaping () -> String? = Constants.findCLIPath,
@@ -39,7 +56,9 @@ final class CodeIndexCenter {
         idleTTL: TimeInterval = 300,
         clock: @escaping () -> Date = Date.init,
         hiddenNames: Set<String> = CodeFileTree.hiddenNames,
-        expansionCap: Int = 2000
+        expansionCap: Int = 2000,
+        rulesFile: URL? = nil,
+        rulesDebounce: Duration = .milliseconds(500)
     ) {
         self.resolveExecutable = resolveExecutable
         self.environment = environment
@@ -49,6 +68,9 @@ final class CodeIndexCenter {
         self.clock = clock
         self.hiddenNames = hiddenNames
         self.expansionCap = expansionCap
+        self.rulesFile = rulesFile ?? Self.defaultRulesFile
+        pinsRulesFile = rulesFile != nil
+        self.rulesDebounce = rulesDebounce
     }
 
     /// The workbench's index — empty and `.idle` until a view shows the
@@ -63,6 +85,7 @@ final class CodeIndexCenter {
     /// A view shows the workbench: the first show (or one after a failure,
     /// or with a new folder) starts a full run. Balanced by `markHidden`.
     func markShown(workbenchID: Int64, folder: URL) {
+        watchRulesFile()
         if let stale = sessions[workbenchID], stale.folder != folder {
             // The workbench moved to another folder: nothing of the old index holds.
             releaseIndex(workbenchID)
@@ -75,10 +98,12 @@ final class CodeIndexCenter {
         case .idle, .failed:
             guard session.run == nil else { return }
             session.fullPending = true
-            startNextRun(session)
         case .indexing, .ready:
             break
         }
+        // A first show, one after a failure, or one after the rules file
+        // changed while the workbench was hidden.
+        if session.fullPending { startNextRun(session) }
     }
 
     func markHidden(workbenchID: Int64) {
@@ -127,9 +152,46 @@ final class CodeIndexCenter {
         }
     }
 
-    /// App quit: every child is killed.
+    /// App quit: every child is killed, the rules file no longer watched.
     func stopAll() {
+        rulesDebounceTask?.cancel()
+        rulesDebounceTask = nil
+        rulesWatcher?.stop()
+        rulesWatcher = nil
         for id in Array(sessions.keys) { releaseIndex(id) }
+    }
+
+    // MARK: Rules file
+
+    /// Starts watching the rules file on the first show. Its folder may not
+    /// exist yet: then the next show tries again.
+    private func watchRulesFile() {
+        guard rulesWatcher == nil else { return }
+        rulesWatcher = CodeRulesFileWatcher(file: rulesFile) { [weak self] in
+            self?.rulesFileChanged()
+        }
+        if rulesWatcher == nil {
+            NSLog("CodeIndexCenter: cannot watch %@: its folder is missing", rulesFile.path)
+        }
+    }
+
+    private func rulesFileChanged() {
+        rulesDebounceTask?.cancel()
+        rulesDebounceTask = Task { @MainActor [weak self, rulesDebounce] in
+            try? await Task.sleep(for: rulesDebounce)
+            guard !Task.isCancelled, let self else { return }
+            rulesDebounceTask = nil
+            reindexForRules()
+        }
+    }
+
+    /// Every CLI process read the old rules: each is killed and a full run
+    /// waits — started now for a workbench on screen.
+    private func reindexForRules() {
+        for session in sessions.values {
+            session.dropRunsForRulesChange()
+            if session.shownCount > 0 { startNextRun(session) }
+        }
     }
 
     private func releaseIndex(_ workbenchID: Int64) {
@@ -165,7 +227,7 @@ final class CodeIndexCenter {
         let index = session.index
         let process: CodeCLIProcess
         do {
-            process = try launch(["code", "index", "--folder", session.folder.path, "--json"])
+            process = try launch(indexArguments(session.folder, mode: "--json"))
         } catch {
             index.state = .failed(error.localizedDescription)
             return
@@ -212,7 +274,7 @@ final class CodeIndexCenter {
     }
 
     private func startServe(_ session: CodeIndexSession) throws -> CodeCLIProcess {
-        let process = try launch(["code", "index", "--folder", session.folder.path, "--serve"])
+        let process = try launch(indexArguments(session.folder, mode: "--serve"))
         session.serve = process
         let index = session.index
         process.streamDecodedLines(as: CodeIndexLine.self) { [weak self, weak session] lines in
@@ -234,6 +296,11 @@ final class CodeIndexCenter {
             index.state = .failed(exit.failureMessage(command: "code index --serve"))
         }
         return process
+    }
+
+    /// `code index` over the folder, with `--rules` only when pinned.
+    private func indexArguments(_ folder: URL, mode: String) -> [String] {
+        ["code", "index", "--folder", folder.path] + (pinsRulesFile ? ["--rules", rulesFile.path] : []) + [mode]
     }
 
     private func launch(_ arguments: [String]) throws -> CodeCLIProcess {
@@ -289,6 +356,18 @@ private final class CodeIndexSession {
 
     func isCurrent(_ id: Int) -> Bool {
         runID == id
+    }
+
+    /// The rules file changed: the runs in flight and the `--serve` child
+    /// read the old one. They are killed (their late lines and exits are
+    /// ignored) and a full run — covering every waiting path — is pending.
+    func dropRunsForRulesChange() {
+        if case .full = run { index.abandonFullRun() }
+        stopChildren()
+        debounceTask = nil
+        debouncing = []
+        queued = []
+        fullPending = true
     }
 
     /// Kills every child; late lines and exits of the old runs are ignored.

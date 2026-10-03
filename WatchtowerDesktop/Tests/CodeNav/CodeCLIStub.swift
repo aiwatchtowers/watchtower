@@ -7,7 +7,10 @@ import XCTest
 /// `STUB_FAIL` on stderr; `code index --serve` answers each request line
 /// after `STUB_SERVE_DELAY` seconds with one symbol `r<N>` (N = request
 /// number) per path — `dist/…` comes back skipped (git-ignored), `*.txt`
-/// as an unsupported language; `code search` prints one match then sleeps. Every
+/// as an unsupported language; `code search` prints one match then sleeps.
+/// A `--rules` file whose first line starts with "invalid" is read once per
+/// process, as the CLI does: every done line of that process carries
+/// `rules_error` "<path>: invalid YAML". Every
 /// start ("start <pid> <args>") and request ("request <N>\t<paths>") is
 /// logged, so a test counts runs and reaps every process group it saw.
 struct CodeCLIStub {
@@ -54,6 +57,11 @@ struct CodeCLIStub {
         }
     }
 
+    /// The arguments of each `code index --serve` started, in order.
+    var serveStarts: [String] {
+        lines.filter { $0.hasPrefix("start ") && $0.hasSuffix("--serve") }
+    }
+
     var startedPIDs: [pid_t] {
         lines.filter { $0.hasPrefix("start ") }.compactMap { pid_t($0.split(separator: " ")[1]) }
     }
@@ -80,6 +88,16 @@ struct CodeCLIStub {
     #!/bin/sh
     echo "start $$ $*" >> "$STUB_LOG"
     rest='"line":1,"col":1,"end_line":1,"container":"","signature":"","doc":"","lang":"swift"'
+    rules=""
+    prev=""
+    for a in "$@"; do
+        [ "$prev" = "--rules" ] && rules="$a"
+        prev="$a"
+    done
+    rerr=""
+    if [ -n "$rules" ] && head -n 1 "$rules" 2>/dev/null | grep -q '^invalid'; then
+        rerr=',"rules_error":"'"$rules"': invalid YAML"'
+    fi
     case "$*" in
     *"code search"*)
         echo '{"path":"a.swift","line":1,"col":1,"text":"hit","text_col":1,"before":[],"after":[]}'
@@ -98,7 +116,7 @@ struct CodeCLIStub {
                 *) printf '{"file":"%s","lang":"swift","symbols":[{"name":"r%s","kind":"function","path":"%s",%s}]}\n' "$p" "$n" "$p" "$rest" ;;
                 esac
             done
-            echo '{"done":true,"files":1,"symbols":1,"ms":1}'
+            echo '{"done":true,"files":1,"symbols":1,"ms":1'"$rerr"'}'
         done
         exit 0 ;;
     esac
@@ -110,7 +128,7 @@ struct CodeCLIStub {
     for f in ${STUB_FILES:-}; do
         printf '{"file":"%s","lang":"swift","symbols":[{"name":"full","kind":"class","path":"%s",%s}]}\n' "$f" "$f" "$rest"
     done
-    echo '{"done":true,"files":2,"symbols":2,"ms":1}'
+    echo '{"done":true,"files":2,"symbols":2,"ms":1'"$rerr"'}'
     echo "full done" >> "$STUB_LOG"
     """#
 }
